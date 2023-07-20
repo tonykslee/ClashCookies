@@ -1,5 +1,8 @@
 import { Client, ClientOptions, IntentsBitField } from "discord.js";
-import * as dotenv from "dotenv";
+import interactionCreate from "./listeners/interactionCreate";
+import ready from "./listeners/ready";
+
+require("dotenv").config();
 
 console.log("ClashCookies is starting...");
 
@@ -11,7 +14,9 @@ const client = new Client({
     IntentsBitField.Flags.MessageContent,
   ],
 });
-console.log(process.env.TOKEN);
-client.login("MTEzMTMzNTc4MjAxNjIzNzc0OQ.GOXQIg.rJ1xpfO39L5dAAUL6NuMY_geQaArHBzjPcnCXQ");
 
-console.log(client);
+ready(client); //register with client
+interactionCreate(client); //register interactionCreate
+
+client.login(process.env.TOKEN);
+
