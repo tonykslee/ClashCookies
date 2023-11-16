@@ -1,12 +1,12 @@
 import { Client, ClientOptions, IntentsBitField } from "discord.js";
 import interactionCreate from "./listeners/interactionCreate";
 import ready from "./listeners/ready";
+import { CoCService } from "./services/CoCService";
+import * as ko from "knockout";
 
 require("dotenv").config();
 
-console.log("ClashCookies is starting...");
-
-const client = new Client({
+const discordClient = new Client({
   intents: [
     IntentsBitField.Flags.Guilds,
     IntentsBitField.Flags.GuildMembers,
@@ -15,8 +15,20 @@ const client = new Client({
   ],
 });
 
-ready(client); //register with client
-interactionCreate(client); //register interactionCreate
+class ClashCookies {
+  public clashClient = ko.observable();
 
-client.login(process.env.TOKEN);
+  constructor() {
+    console.log("test timing");
+    
+  }
+}
+
+ready(discordClient); //register with client
+
+// interactionCreate(discordClient, CoCService); //register interactionCreate
+// const cocService = new CoCService();
+
+
+discordClient.login(process.env.TOKEN);
 
