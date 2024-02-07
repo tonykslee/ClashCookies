@@ -1,6 +1,5 @@
 import { CommandInteraction as CommandInteraction, Client } from "discord.js";
 import { Command } from "../Command";
-import { Client as ClashClient } from 'clashofclans.js';
 
 
 export const Members: Command = {
