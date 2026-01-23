@@ -21,3 +21,23 @@ model PlayerSnapshot {
 
   @@index([tag, createdAt])
 }
+
+model PlayerActivity {
+  tag            String   @id
+  name           String
+  clanTag        String
+
+  lastDonationAt DateTime?
+  lastCapitalAt  DateTime?
+  lastTrophyAt   DateTime?
+  lastWarAt      DateTime?
+  lastBuilderAt  DateTime?
+  
+  lastTrophies          Int?
+  lastWarStars          Int?
+  lastBuilderTrophies   Int?
+
+
+  lastSeenAt     DateTime
+  updatedAt      DateTime @updatedAt
+}
