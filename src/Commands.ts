@@ -1,6 +1,9 @@
-import { Command } from "./Command";
 import { Hello } from "./commands/Hello";
-import { Members } from "./commands/Members";
 import { GetClanName } from "./commands/GetClanName";
+import { LastSeen } from "./commands/LastSeen";
 
-export const Commands: Command[] = [Hello, Members, GetClanName];
+export const Commands = [
+  Hello,
+  GetClanName,
+  LastSeen,
+];

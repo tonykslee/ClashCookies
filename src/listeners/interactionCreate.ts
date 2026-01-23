@@ -1,26 +1,48 @@
-import { CommandInteraction, Client, Interaction } from "discord.js";
+import {
+  Client,
+  Interaction,
+  ChatInputCommandInteraction,
+} from "discord.js";
 import { Commands } from "../Commands";
-import { Client as ClashClient } from 'clashofclans.js';
+import { CoCService } from "../services/CoCService";
 
-export default (client: Client, clashClient: ko.Observable): void => {
+let isRegistered = false;
+
+export default (client: Client, cocService: CoCService): void => {
+  if (isRegistered) {
+    console.warn("interactionCreate already registered, skipping");
+    return;
+  }
+
+  isRegistered = true;
+
   client.on("interactionCreate", async (interaction: Interaction) => {
-    if (interaction.isCommand() || interaction.isContextMenuCommand()) {
-      await handleSlashCommand(client, interaction, clashClient);
-    }
+    if (!interaction.isChatInputCommand()) return;
+
+    console.log("Received interaction:", interaction.commandName, interaction.options);
+
+    await handleSlashCommand(client, interaction, cocService);
   });
 };
 
 const handleSlashCommand = async (
   client: Client,
-  interaction: CommandInteraction,
-  clashClient: ko.Observable
+  interaction: ChatInputCommandInteraction,
+  cocService: CoCService
 ): Promise<void> => {
-  const slashCommand = Commands.find((c) => c.name === interaction.commandName);
+  const slashCommand = Commands.find(
+    (c) => c.name === interaction.commandName
+  );
+
   if (!slashCommand) {
-    interaction.followUp({ content: "An error has occurred" });
+    try {
+      await interaction.reply({
+        ephemeral: true,
+        content: "An error has occurred",
+      });
+    } catch {}
     return;
   }
-  await interaction.deferReply();
 
-  slashCommand.run(client, interaction, clashClient);
+  await slashCommand.run(client, interaction, cocService);
 };

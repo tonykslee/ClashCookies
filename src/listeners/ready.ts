@@ -1,35 +1,30 @@
 import { Client } from "discord.js";
 import { Commands } from "../Commands";
 import { CoCService } from "../services/CoCService";
-import interactionCreate from "./interactionCreate";
-import { Client as ClashClient } from 'clashofclans.js';
+import { SnapshotService } from "../services/SnapshotService";
 
-export default (client: Client): void => {
-// export default (client: Client): void => {
-  client.on("ready", async () => {
-    if (!client.user || !client.application) {
-      return;
-    }
-
+export default (client: Client, cocService: CoCService): void => {
+  client.once("ready", async () => {
+    if (!client.user || !client.application) return;
+  
     console.log("ClashCookies is starting...");
+  
+    // 🔥 Clear global commands (one-time cleanup)
+    await client.application.commands.set([]);
+    console.log("Global commands cleared");
+  
+    const GUILD_ID = process.env.GUILD_ID!;
+    const guild = await client.guilds.fetch(GUILD_ID);
+  
+    const snapshotService = new SnapshotService(cocService);
+    await snapshotService.snapshotClan("#2RYGLU2UY");
+    console.log("Initial snapshots collected");
 
-    let registerBotCommands : Promise<any> = client.application.commands.set(Commands).then(() => {
-      console.log(Commands.length, "discord bot commands registered");
-    }).catch(err => {
-      console.log(err);
-    });
-
-    const clashService = new CoCService();
-    let connectClashAPI = clashService.login();
-
-    Promise.allSettled([registerBotCommands, connectClashAPI]).then(() => {
-      console.log(`ClashCookies is online`);
-      interactionCreate(client, clashService.cocClient); //register interactionCreate
-    });
+    
+    await guild.commands.set(Commands);
+    console.log(`Guild commands registered (${Commands.length})`);
+  
+    console.log("ClashCookies is online");
   });
-
-  client.on("messageCreate", (message) => {
-    console.log(message)
-  })
-
+  
 };

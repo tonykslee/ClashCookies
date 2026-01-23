@@ -1,26 +1,43 @@
-import { CommandInteraction as CommandInteraction, Client } from "discord.js";
+import {
+  Client,
+  ChatInputCommandInteraction,
+  ApplicationCommandOptionType,
+} from "discord.js";
 import { Command } from "../Command";
 import { CoCService } from "../services/CoCService";
-import { Client as ClashClient } from 'clashofclans.js';
-
-
+import { safeReply } from "../helper/safeReply";
 
 export const GetClanName: Command = {
   name: "clan-name",
-  description: "get clan name from tag",
-  run: async (client: Client, interaction: CommandInteraction, clashClient: ko.Observable) => {
-  // run: async (client: Client, interaction: CommandInteraction, clashClient: ClashClient) => {
-    let content;
-    let cocService = new CoCService();
-    cocService.login().then(() => {
-      (cocService.cocClient() as ClashClient).getClan('#2QG2C08UP').then((clan) => {
-          content = `${clan.name} (${clan.tag})`;
-          console.log(content);
-        });
-    });
-    await interaction.followUp({
-      ephemeral: true,
-      content,
-    });
+  description: "Get the name of a Clash of Clans clan by tag",
+  options: [
+    {
+      name: "tag",
+      description: "Clan tag (example: #2QG2C08UP)",
+      type: ApplicationCommandOptionType.String,
+      required: true,
+    },
+  ],
+  run: async (
+    client: Client,
+    interaction: ChatInputCommandInteraction,
+    cocService: CoCService
+  ) => {
+    try {
+      const clanTag = interaction.options.getString("tag", true);
+      const clanName = await cocService.getClanName(clanTag);
+
+      await safeReply(interaction, {
+        ephemeral: true,
+        content: `🏰 **Clan Name:** ${clanName}`,
+      });
+    } catch (err) {
+      console.error("GetClanName error:", err);
+
+      await safeReply(interaction, {
+        ephemeral: true,
+        content: "❌ Failed to fetch clan name. Please check the clan tag.",
+      });
+    }
   },
 };

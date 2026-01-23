@@ -1,10 +1,13 @@
-import {
-  CommandInteraction,
-  ChatInputApplicationCommandData,
-  Client,
-} from "discord.js";
-import { Client as ClashClient } from 'clashofclans.js';
+import { Client, ChatInputCommandInteraction } from "discord.js";
+import { CoCService } from "./services/CoCService";
 
-export interface Command extends ChatInputApplicationCommandData {
-  run: (client: Client, interaction: CommandInteraction, clashClient: ko.Observable) => void;
+export interface Command {
+  name: string;
+  description: string;
+  options?: any[];
+  run: (
+    client: Client,
+    interaction: ChatInputCommandInteraction,
+    cocService: CoCService
+  ) => Promise<void>;
 }
