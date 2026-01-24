@@ -1,10 +1,10 @@
-import { CommandInteraction, Client } from "discord.js";
+import { Client, CommandInteraction } from "discord.js";
 import { Command } from "../Command";
 import { prisma } from "../prisma";
+import { CoCService } from "../services/CoCService";
 
 function formatRelativeTime(date: Date): string {
-  const now = Date.now();
-  const diffMs = now - date.getTime();
+  const diffMs = Date.now() - date.getTime();
   const minutes = Math.floor(diffMs / 60000);
   const hours = Math.floor(minutes / 60);
   const days = Math.floor(hours / 24);
@@ -14,6 +14,22 @@ function formatRelativeTime(date: Date): string {
   return `${days} day(s) ago`;
 }
 
+// Helpers for reset windows (approximate, ClashPerk-style)
+function getSeasonStart(): Date {
+  const now = new Date();
+  return new Date(now.getFullYear(), now.getMonth(), 1);
+}
+
+function getRaidWeekendStart(): Date {
+  const now = new Date();
+  const day = now.getUTCDay(); // 5 = Friday
+  const diff = (day >= 5 ? day - 5 : day + 2);
+  const friday = new Date(now);
+  friday.setUTCDate(now.getUTCDate() - diff);
+  friday.setUTCHours(7, 0, 0, 0); // Raid weekends start ~7am UTC
+  return friday;
+}
+
 export const LastSeen: Command = {
   name: "lastseen",
   description: "Check when a player was last seen active",
@@ -21,45 +37,72 @@ export const LastSeen: Command = {
     {
       name: "tag",
       description: "Player tag (without #)",
-      type: 3, // STRING
+      type: 3,
       required: true,
     },
   ],
 
-  run: async (_client: Client, interaction: CommandInteraction) => {
+  run: async (client: Client, interaction: CommandInteraction) => {
     await interaction.deferReply({ ephemeral: true });
 
     const tagInput = interaction.options.get("tag", true).value as string;
     const tag = tagInput.startsWith("#") ? tagInput : `#${tagInput}`;
 
-    const activity = await prisma.playerActivity.findUnique({
+    // 1️⃣ Try historical data first
+    let activity = await prisma.playerActivity.findUnique({
       where: { tag },
     });
 
-    if (!activity) {
+    if (activity) {
+      const relative = formatRelativeTime(activity.lastSeenAt);
+
       await interaction.editReply(
-        "⚠️ This player has not been observed yet."
+        `🕒 **Last seen:** ${relative}\nBased on historical activity`
       );
       return;
     }
 
-    const lastSeen = activity.lastSeenAt;
-    const relative = formatRelativeTime(lastSeen);
+    // 2️⃣ LIVE inference fallback (ClashPerk-style)
+    const cocService = new CoCService();
+    const player = await cocService.getPlayerRaw(tag);
+    const now = new Date();
 
-    const signals: string[] = [];
-    if (activity.lastDonationAt) signals.push("🎁 donations");
-    if (activity.lastCapitalAt) signals.push("🏛 capital raids");
-    if (activity.lastTrophyAt) signals.push("🏆 battles");
-    if (activity.lastWarAt) signals.push("⚔️ war");
-    if (activity.lastBuilderAt) signals.push("🛠 builder base");
+    let inferredAt = now;
+    const reasons: string[] = [];
 
-    const reason =
-      signals.length > 0
-        ? `Based on ${signals.join(", ")}`
-        : "Based on observation";
+    if (player.clanCapitalContributions > 0) {
+      inferredAt = getRaidWeekendStart();
+      reasons.push("🏛 capital raids");
+    } else if (player.donations > 0) {
+      inferredAt = getSeasonStart();
+      reasons.push("🎁 donations this season");
+    } else if (player.warStars > 0) {
+      inferredAt = getSeasonStart();
+      reasons.push("⚔️ war activity");
+    } else {
+      reasons.push("👀 live observation");
+    }
+
+    // 3️⃣ Persist inferred activity for future accuracy
+    await prisma.playerActivity.upsert({
+      where: { tag },
+      update: {
+        name: player.name,
+        clanTag: player.clan?.tag ?? "UNKNOWN",
+        lastSeenAt: inferredAt,
+      },
+      create: {
+        tag,
+        name: player.name,
+        clanTag: player.clan?.tag ?? "UNKNOWN",
+        lastSeenAt: inferredAt,
+      },
+    });
+
+    const relative = formatRelativeTime(inferredAt);
 
     await interaction.editReply(
-      `🕒 **Last seen:** ${relative}\n${reason}`
+      `🕒 **Last seen:** ${relative}\nBased on ${reasons.join(", ")}`
     );
   },
 };
