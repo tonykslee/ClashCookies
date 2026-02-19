@@ -1,51 +1,79 @@
-import { Client as ClashClient, Clan } from "clashofclans.js";
+import { AxiosError } from "axios";
+import {
+  ClansApi,
+  Configuration,
+  Player,
+  PlayersApi,
+} from "../generated/coc-api";
 
 export class CoCService {
-  private client: ClashClient;
-  private token: string; // ✅ ADD THIS LINE
+  private clansApi: ClansApi;
+  private playersApi: PlayersApi;
 
   constructor() {
-    const token = process.env.COC_API_TOKEN;
+    const token = process.env.COC_API_TOKEN?.trim();
     if (!token) throw new Error("COC_API_TOKEN missing");
 
-    this.token = token; // ✅ now valid
-    this.client = new ClashClient({ keys: [token] });
+    const config = new Configuration({
+      accessToken: token,
+      basePath: "https://api.clashofclans.com/v1",
+    });
+
+    this.clansApi = new ClansApi(config);
+    this.playersApi = new PlayersApi(config);
   }
 
-  async getClan(tag: string): Promise<Clan> {
+  async getClan(tag: string): Promise<any> {
     const clanTag = tag.startsWith("#") ? tag : `#${tag}`;
-    return this.client.getClan(clanTag);
+    const { data } = await this.clansApi.getClan(encodeURIComponent(clanTag));
+
+    // Preserve existing call sites that expect `clan.members`.
+    return {
+      ...data,
+      tag: data.tag ?? "",
+      name: data.name ?? "Unknown Clan",
+      members: data.memberList ?? [],
+    };
   }
 
   async getClanName(tag: string): Promise<string> {
     const clan = await this.getClan(tag);
-    return clan.name;
+    return clan.name ?? "Unknown Clan";
   }
-  
 
-  // ✅ RAW PLAYER FETCH — no SDK parsing
-  async getPlayerRaw(tag: string): Promise<any> {
+  async getPlayerRaw(tag: string | undefined): Promise<any> {
+    if (!tag) return null;
     const playerTag = tag.startsWith("#") ? tag : `#${tag}`;
-    const encodedTag = encodeURIComponent(playerTag);
 
-    const res = await fetch(
-      `https://api.clashofclans.com/v1/players/${encodedTag}`,
-      {
-        headers: {
-          Authorization: `Bearer ${this.token}`,
-        },
-      }
-    );
-
-    if (res.status === 404) {
-      return null;
+    try {
+      const { data } = await this.playersApi.getPlayer(
+        encodeURIComponent(playerTag)
+      );
+      return this.normalizePlayer(data);
+    } catch (err) {
+      const status = (err as AxiosError)?.response?.status;
+      if (status === 404) return null;
+      if (status) throw new Error(`CoC API error ${status}`);
+      throw err;
     }
-    
-    if (!res.ok) {
-      throw new Error(`CoC API error ${res.status}`);
-    }
-    
+  }
 
-    return res.json();
+  private normalizePlayer(player: Player): any {
+    return {
+      ...player,
+      tag: player.tag ?? "",
+      name: player.name ?? "Unknown",
+      clan: {
+        ...player.clan,
+        tag: player.clan?.tag ?? "UNKNOWN",
+      },
+      trophies: player.trophies ?? 0,
+      donations: player.donations ?? 0,
+      warStars: player.warStars ?? 0,
+      // API v1 exposes builder trophies as versusTrophies.
+      builderBaseTrophies: player.versusTrophies ?? 0,
+      // Not present in this schema; keep compat field for existing logic.
+      clanCapitalContributions: 0,
+    };
   }
 }

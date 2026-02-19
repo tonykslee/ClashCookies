@@ -1,12 +1,13 @@
 {
   "dependencies": {
-    "typescript": "^5.9.3",
     "@prisma/client": "^5.22.0",
+    "axios": "^1.13.5",
     "clashofclans.js": "^3.1.0",
     "discord.js": "^14.11.0",
     "dotenv": "^16.3.1",
     "knockout": "^3.5.1",
-    "q": "^1.5.1"
+    "q": "^1.5.1",
+    "typescript": "^5.9.3"
   },
   "devDependencies": {
     "@types/node": "^20.4.2",

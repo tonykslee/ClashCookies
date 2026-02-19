@@ -5,7 +5,7 @@ import { CoCService } from "./services/CoCService";
 import "dotenv/config";
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds],
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
 });
 
 const cocService = new CoCService();

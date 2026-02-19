@@ -1,0 +1,22 @@
+# WarLeague
+
+
+## Properties
+
+Name | Type | Description | Notes
+------------ | ------------- | ------------- | -------------
+**name** | **string** |  | [optional] [readonly] [default to undefined]
+**id** | **number** |  | [optional] [readonly] [default to undefined]
+
+## Example
+
+```typescript
+import { WarLeague } from './api';
+
+const instance: WarLeague = {
+    name,
+    id,
+};
+```
+
+[[Back to Model list]](../README.md#documentation-for-models) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to README]](../README.md)
