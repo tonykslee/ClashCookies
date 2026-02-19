@@ -17,7 +17,7 @@
   "scripts": {
     "build": "tsc",
     "start": "prisma migrate deploy && node dist/ClashCookies.js",
-    "dev": "ts-node-dev src/ClashCookies.ts",
+    "dev": "ts-node-dev dist/ClashCookies.ts",
     "postinstall": "prisma generate"
   }
 }

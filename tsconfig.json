@@ -3,7 +3,7 @@
       "pretty": true,
       "strict": true,
       "outDir": "dist",
-      "rootDir": "./",
+      "rootDir": "src",
       "sourceRoot": "/",
       "lib": ["esnext"],
       "sourceMap": true,
