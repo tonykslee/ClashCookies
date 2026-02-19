@@ -15,8 +15,8 @@ export class CoCService {
     if (!token) throw new Error("COC_API_TOKEN missing");
 
     const config = new Configuration({
-      accessToken: token,
-      basePath: "https://api.clashofclans.com/v1",
+      apiKey: `Bearer ${token}`,
+      basePath: process.env.COC_API_BASE_URL ?? "https://api.clashofclans.com/v1",
     });
 
     this.clansApi = new ClansApi(config);
@@ -25,7 +25,7 @@ export class CoCService {
 
   async getClan(tag: string): Promise<any> {
     const clanTag = tag.startsWith("#") ? tag : `#${tag}`;
-    const { data } = await this.clansApi.getClan(encodeURIComponent(clanTag));
+    const { data } = await this.clansApi.getClan(clanTag);
 
     // Preserve existing call sites that expect `clan.members`.
     return {
@@ -46,9 +46,7 @@ export class CoCService {
     const playerTag = tag.startsWith("#") ? tag : `#${tag}`;
 
     try {
-      const { data } = await this.playersApi.getPlayer(
-        encodeURIComponent(playerTag)
-      );
+      const { data } = await this.playersApi.getPlayer(playerTag);
       return this.normalizePlayer(data);
     } catch (err) {
       const status = (err as AxiosError)?.response?.status;
