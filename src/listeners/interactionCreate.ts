@@ -15,7 +15,7 @@ export default (client: Client, cocService: CoCService): void => {
   }
 
   isRegistered = true;
-
+  
   client.on("interactionCreate", async (interaction: Interaction) => {
     if (!interaction.isChatInputCommand()) return;
 
@@ -44,5 +44,16 @@ const handleSlashCommand = async (
     return;
   }
 
-  await slashCommand.run(client, interaction, cocService);
+  try {
+    await slashCommand.run(client, interaction, cocService);
+  } catch (err) {
+    console.error("Command failed:", err);
+    if (!interaction.replied) {
+      await interaction.reply({
+        content: "⚠️ Something went wrong.",
+        ephemeral: true,
+      });
+    }
+  }
+  
 };

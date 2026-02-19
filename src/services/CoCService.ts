@@ -37,11 +37,14 @@ export class CoCService {
       }
     );
 
-    if (!res.ok) {
-      throw new Error(
-        `Failed to fetch player ${playerTag}: ${res.status}`
-      );
+    if (res.status === 404) {
+      return null;
     }
+    
+    if (!res.ok) {
+      throw new Error(`CoC API error ${res.status}`);
+    }
+    
 
     return res.json();
   }

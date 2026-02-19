@@ -63,46 +63,61 @@ export const LastSeen: Command = {
     }
 
     // 2️⃣ LIVE inference fallback (ClashPerk-style)
-    const cocService = new CoCService();
-    const player = await cocService.getPlayerRaw(tag);
-    const now = new Date();
+    try {
+      const cocService = new CoCService();
+      const player = await cocService.getPlayerRaw(tag);
 
-    let inferredAt = now;
-    const reasons: string[] = [];
-
-    if (player.clanCapitalContributions > 0) {
-      inferredAt = getRaidWeekendStart();
-      reasons.push("🏛 capital raids");
-    } else if (player.donations > 0) {
-      inferredAt = getSeasonStart();
-      reasons.push("🎁 donations this season");
-    } else if (player.warStars > 0) {
-      inferredAt = getSeasonStart();
-      reasons.push("⚔️ war activity");
-    } else {
-      reasons.push("👀 live observation");
+      if (!player) {
+        await interaction.editReply(
+          "❌ Invalid player tag or player not found."
+        );
+        return;
+      }
+    
+      const now = new Date();
+      let inferredAt = now;
+      const reasons: string[] = [];
+    
+      if (player.clanCapitalContributions > 0) {
+        inferredAt = getRaidWeekendStart();
+        reasons.push("🏛 capital raids");
+      } else if (player.donations > 0) {
+        inferredAt = getSeasonStart();
+        reasons.push("🎁 donations this season");
+      } else if (player.warStars > 0) {
+        inferredAt = getSeasonStart();
+        reasons.push("⚔️ war activity");
+      } else {
+        reasons.push("👀 live observation");
+      }
+    
+      await prisma.playerActivity.upsert({
+        where: { tag },
+        update: {
+          name: player.name,
+          clanTag: player.clan?.tag ?? "UNKNOWN",
+          lastSeenAt: inferredAt,
+        },
+        create: {
+          tag,
+          name: player.name,
+          clanTag: player.clan?.tag ?? "UNKNOWN",
+          lastSeenAt: inferredAt,
+        },
+      });
+    
+      const relative = formatRelativeTime(inferredAt);
+    
+      await interaction.editReply(
+        `🕒 **Last seen:** ${relative}\nBased on ${reasons.join(", ")}`
+      );
+    } catch (err: any) {
+      console.error("LastSeen error:", err.message);
+    
+      await interaction.editReply(
+        "❌ Invalid player tag or player not found."
+      );
     }
-
-    // 3️⃣ Persist inferred activity for future accuracy
-    await prisma.playerActivity.upsert({
-      where: { tag },
-      update: {
-        name: player.name,
-        clanTag: player.clan?.tag ?? "UNKNOWN",
-        lastSeenAt: inferredAt,
-      },
-      create: {
-        tag,
-        name: player.name,
-        clanTag: player.clan?.tag ?? "UNKNOWN",
-        lastSeenAt: inferredAt,
-      },
-    });
-
-    const relative = formatRelativeTime(inferredAt);
-
-    await interaction.editReply(
-      `🕒 **Last seen:** ${relative}\nBased on ${reasons.join(", ")}`
-    );
+    
   },
 };
