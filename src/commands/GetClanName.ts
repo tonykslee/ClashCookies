@@ -4,6 +4,7 @@ import {
   ApplicationCommandOptionType,
 } from "discord.js";
 import { Command } from "../Command";
+import { formatError } from "../helper/formatError";
 import { CoCService } from "../services/CoCService";
 import { safeReply } from "../helper/safeReply";
 
@@ -32,7 +33,7 @@ export const GetClanName: Command = {
         content: `🏰 **Clan Name:** ${clanName}`,
       });
     } catch (err) {
-      console.error("GetClanName error:", err);
+      console.error(`GetClanName error: ${formatError(err)}`);
 
       await safeReply(interaction, {
         ephemeral: true,

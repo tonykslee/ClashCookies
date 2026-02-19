@@ -12,6 +12,7 @@ import {
   Role,
 } from "discord.js";
 import { Command } from "../Command";
+import { formatError } from "../helper/formatError";
 import { CoCService } from "../services/CoCService";
 
 const PAGE_SIZE = 25;
@@ -102,7 +103,9 @@ export const RoleUsers: Command = {
       try {
         await interaction.guild.members.fetch();
       } catch (err) {
-        console.warn("role-users: guild.members.fetch failed, using cached role members", err);
+        console.warn(
+          `role-users: guild.members.fetch failed, using cached role members: ${formatError(err)}`
+        );
       }
 
       const role = interaction.options.getRole("role", true);
@@ -168,7 +171,7 @@ export const RoleUsers: Command = {
             components: [getRow(page, pages.length)],
           });
         } catch (err) {
-          console.error("role-users button handler failed:", err);
+          console.error(`role-users button handler failed: ${formatError(err)}`);
           try {
             if (!button.replied && !button.deferred) {
               await button.reply({
@@ -192,7 +195,7 @@ export const RoleUsers: Command = {
         }
       });
     } catch (err) {
-      console.error("role-users command failed:", err);
+      console.error(`role-users command failed: ${formatError(err)}`);
       if (!interaction.replied && !interaction.deferred) {
         await interaction.reply({
           content: "Failed to list role users.",

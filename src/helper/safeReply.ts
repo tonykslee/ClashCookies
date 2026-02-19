@@ -1,4 +1,5 @@
 import { ChatInputCommandInteraction, DiscordAPIError } from "discord.js";
+import { formatError } from "./formatError";
 
 export async function safeReply(
   interaction: ChatInputCommandInteraction,
@@ -18,6 +19,6 @@ export async function safeReply(
       return; // expected in duplicate handler scenarios
     }
 
-    console.error("safeReply unexpected error:", err);
+    console.error(`safeReply unexpected error: ${formatError(err)}`);
   }
 }

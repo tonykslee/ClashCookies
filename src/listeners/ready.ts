@@ -2,6 +2,7 @@ import { Client } from "discord.js";
 import { Commands } from "../Commands";
 import { CoCService } from "../services/CoCService";
 import { ActivityService } from "../services/ActivityService";
+import { formatError } from "../helper/formatError";
 
 export default (client: Client, cocService: CoCService): void => {
   client.once("ready", async () => {
@@ -21,7 +22,14 @@ export default (client: Client, cocService: CoCService): void => {
     // await activityService.observeClan("#2RYGLU2UY");
     const clans = process.env.TRACKED_CLANS?.split(",") ?? [];
     for (const tag of clans) {
-      await activityService.observeClan(`#${tag}`);
+      const trimmed = tag.trim();
+      if (!trimmed) continue;
+
+      try {
+        await activityService.observeClan(`#${trimmed}`);
+      } catch (err) {
+        console.error(`observeClan failed for ${trimmed}: ${formatError(err)}`);
+      }
     }
 
 
