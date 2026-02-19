@@ -1,5 +1,5 @@
-import { CoCService } from "./CoCService";
 import { prisma } from "../prisma";
+import { CoCService } from "./CoCService";
 
 export class ActivityService {
   constructor(private coc: CoCService) {}
@@ -13,6 +13,7 @@ export class ActivityService {
 
     for (const member of clan.members) {
       const player = await this.coc.getPlayerRaw(member.tag);
+      if (!player) continue;
 
       await this.observePlayer({
         tag: player.tag,
@@ -51,33 +52,27 @@ export class ActivityService {
       clanTag: input.clanTag,
     };
 
-    // 🎁 Donations (season-based, non-zero proves login)
-    if (input.donations > 0) {
+    // Prevent restart-driven false positives: do not stamp "now" every poll
+    // just because seasonal counters are non-zero.
+    if (input.donations > 0 && (!existing || !existing.lastDonationAt)) {
       updates.lastDonationAt = input.now;
     }
 
-    // 🏛 Capital gold (raid weekend proof)
-    if (input.capitalGold > 0) {
+    if (input.capitalGold > 0 && (!existing || !existing.lastCapitalAt)) {
       updates.lastCapitalAt = input.now;
     }
 
-    // 🏆 Home village trophies (delta-based)
-    if (!existing || input.trophies !== (existing as any).lastTrophies) {
+    if (!existing || input.trophies !== existing.lastTrophies) {
       updates.lastTrophyAt = input.now;
       updates.lastTrophies = input.trophies;
     }
 
-    // ⚔️ War stars (monotonic increase)
-    if (!existing || input.warStars > (existing as any).lastWarStars) {
+    if (!existing || input.warStars > (existing.lastWarStars ?? -1)) {
       updates.lastWarAt = input.now;
       updates.lastWarStars = input.warStars;
     }
 
-    // 🛠 Builder base
-    if (
-      !existing ||
-      input.builderTrophies !== (existing as any).lastBuilderTrophies
-    ) {
+    if (!existing || input.builderTrophies !== existing.lastBuilderTrophies) {
       updates.lastBuilderAt = input.now;
       updates.lastBuilderTrophies = input.builderTrophies;
     }
@@ -89,15 +84,13 @@ export class ActivityService {
       updates.lastWarAt ?? existing?.lastWarAt,
       updates.lastBuilderAt ?? existing?.lastBuilderAt,
     ].filter(Boolean) as Date[];
-    
-    if (timestamps.length > 0) {
-      updates.lastSeenAt = new Date(
-        Math.max(...timestamps.map(d => d.getTime()))
-      );
-    }
-    
 
-    // 🧠 Upsert (single row per player)
+    if (timestamps.length > 0) {
+      updates.lastSeenAt = new Date(Math.max(...timestamps.map((d) => d.getTime())));
+    } else if (!existing) {
+      updates.lastSeenAt = input.now;
+    }
+
     await prisma.playerActivity.upsert({
       where: { tag: input.tag },
       update: updates,
