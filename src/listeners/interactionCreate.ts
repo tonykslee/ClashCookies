@@ -19,6 +19,20 @@ export default (client: Client, cocService: CoCService): void => {
 
   client.on("interactionCreate", async (interaction: Interaction) => {
     if (!interaction.isChatInputCommand()) return;
+
+    const user = `${interaction.user.tag} (${interaction.user.id})`;
+    const guild = interaction.guild
+      ? `${interaction.guild.name} (${interaction.guild.id})`
+      : "DM";
+    const options = interaction.options.data
+      .map((opt) => `${opt.name}=${String(opt.value ?? "")}`)
+      .join(", ");
+
+    console.log(
+      `[cmd] user=${user} guild=${guild} command=/${interaction.commandName}` +
+        (options ? ` options={${options}}` : "")
+    );
+
     await handleSlashCommand(client, interaction, cocService);
   });
 };
