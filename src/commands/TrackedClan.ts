@@ -57,6 +57,7 @@ export const TrackedClan: Command = {
     cocService: CoCService
   ) => {
     try {
+      await interaction.deferReply({ ephemeral: true });
       const subcommand = interaction.options.getSubcommand(true);
 
       if (subcommand === "list") {
@@ -89,11 +90,21 @@ export const TrackedClan: Command = {
       if (subcommand === "add") {
         const clan = await cocService.getClan(tag);
         const activityService = new ActivityService(cocService);
-
-        const created = await prisma.trackedClan.upsert({
+        const existing = await prisma.trackedClan.findUnique({
           where: { tag },
-          update: { name: clan.name ?? null },
-          create: { tag, name: clan.name ?? null },
+        });
+
+        if (existing) {
+          const name = existing.name ?? clan.name ?? "Unknown Clan";
+          await safeReply(interaction, {
+            ephemeral: true,
+            content: `${name} (${tag}) is already being tracked`,
+          });
+          return;
+        }
+
+        const created = await prisma.trackedClan.create({
+          data: { tag, name: clan.name ?? null },
         });
 
         try {
@@ -106,7 +117,7 @@ export const TrackedClan: Command = {
 
         await safeReply(interaction, {
           ephemeral: true,
-          content: `Added tracked clan ${created.tag}${created.name ? ` (${created.name})` : ""}.`,
+          content: `Now tracking ${created.name ?? "Unknown Clan"} (${created.tag})`,
         });
         return;
       }
