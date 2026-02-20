@@ -42,3 +42,10 @@ model PlayerActivity {
   lastSeenAt     DateTime
   updatedAt      DateTime @updatedAt
 }
+
+model TrackedClan {
+  id        Int      @id @default(autoincrement())
+  tag       String   @unique
+  name      String?
+  createdAt DateTime @default(now())
+}
