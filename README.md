@@ -26,12 +26,17 @@ https://discord.com/oauth2/authorize?client_id=1474193888146358393&permissions=8
 
 This bot can link to a Google Sheet and be re-linked later without code changes.
 
-1. Create a Google Cloud service account with Sheets API enabled.
-2. Share your sheet with the service account email (Viewer is enough).
-3. Add one of these env options:
-   - `GOOGLE_SERVICE_ACCOUNT_JSON` (full JSON as one line)
-   - `GOOGLE_SERVICE_ACCOUNT_JSON_BASE64` (base64 of full JSON)
-   - `GOOGLE_SERVICE_ACCOUNT_EMAIL` + `GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY`
+1. Create Google API credentials with Sheets API enabled.
+2. Share your sheet with the account used by your auth flow (Viewer is enough).
+3. Add one of these auth options:
+   - OAuth:
+     - `GOOGLE_OAUTH_CLIENT_ID`
+     - `GOOGLE_OAUTH_CLIENT_SECRET`
+     - `GOOGLE_OAUTH_REFRESH_TOKEN`
+   - Service account:
+     - `GOOGLE_SERVICE_ACCOUNT_JSON` (full JSON as one line)
+     - `GOOGLE_SERVICE_ACCOUNT_JSON_BASE64` (base64 of full JSON)
+     - `GOOGLE_SERVICE_ACCOUNT_EMAIL` + `GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY`
 
 Commands:
 - `/sheet link sheet_id_or_url:<id-or-url> [tab:<tab-name>]`

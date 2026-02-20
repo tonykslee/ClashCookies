@@ -22,6 +22,38 @@ function clampCell(value: string): string {
   return sanitized.length > 40 ? `${sanitized.slice(0, 37)}...` : sanitized;
 }
 
+function getSheetErrorHint(err: unknown): string {
+  const message = formatError(err).toLowerCase();
+
+  if (message.includes("invalid_grant")) {
+    return "Invalid Google auth grant. For OAuth, re-check GOOGLE_OAUTH_* values and refresh token.";
+  }
+  if (
+    message.includes("invalid_client") ||
+    message.includes("unauthorized_client")
+  ) {
+    return "OAuth client is invalid/unauthorized. Re-check GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET.";
+  }
+  if (
+    message.includes("permission denied") ||
+    message.includes("does not have permission") ||
+    message.includes("403")
+  ) {
+    return "Share the sheet with your service account or OAuth Google account as Viewer/Editor.";
+  }
+  if (message.includes("requested entity was not found") || message.includes("404")) {
+    return "Sheet ID looks invalid or the sheet is not accessible to this account.";
+  }
+  if (message.includes("unable to parse range") || message.includes("badrequest")) {
+    return "Range/tab is invalid. Try a valid tab name or omit range.";
+  }
+  if (message.includes("relation \"botsetting\" does not exist")) {
+    return "Database migration missing. Run prisma migrate deploy for BotSetting.";
+  }
+
+  return "Check credentials, sharing, sheet ID, and optional tab/range.";
+}
+
 export const Sheet: Command = {
   name: "sheet",
   description: "Manage Google Sheet link for this bot",
@@ -160,8 +192,7 @@ export const Sheet: Command = {
       console.error(`sheet command failed: ${formatError(err)}`);
       await safeReply(interaction, {
         ephemeral: true,
-        content:
-          "Failed to access Google Sheet. Check credentials, sharing, sheet ID, and tab name.",
+        content: `Failed to access Google Sheet. ${getSheetErrorHint(err)}`,
       });
     }
   },

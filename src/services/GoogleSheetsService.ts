@@ -73,8 +73,51 @@ export class GoogleSheetsService {
       return cache.token;
     }
 
+    const tokenRes = await this.requestAccessToken();
+
+    const token = tokenRes.data.access_token;
+    const expiresIn = tokenRes.data.expires_in ?? 3600;
+    GoogleSheetsService.accessTokenCache = {
+      token,
+      expiresAtMs: now + expiresIn * 1000,
+    };
+
+    return token;
+  }
+
+  private async requestAccessToken(): Promise<{
+    data: {
+      access_token: string;
+      expires_in: number;
+      token_type: string;
+    };
+  }> {
+    const oauthClientId = process.env.GOOGLE_OAUTH_CLIENT_ID?.trim();
+    const oauthClientSecret = process.env.GOOGLE_OAUTH_CLIENT_SECRET?.trim();
+    const oauthRefreshToken = process.env.GOOGLE_OAUTH_REFRESH_TOKEN?.trim();
+
+    if (oauthClientId && oauthClientSecret && oauthRefreshToken) {
+      return axios.post<{
+        access_token: string;
+        expires_in: number;
+        token_type: string;
+      }>(
+        "https://oauth2.googleapis.com/token",
+        new URLSearchParams({
+          grant_type: "refresh_token",
+          client_id: oauthClientId,
+          client_secret: oauthClientSecret,
+          refresh_token: oauthRefreshToken,
+        }).toString(),
+        {
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          timeout: 10000,
+        }
+      );
+    }
+
     const assertion = this.buildServiceAccountAssertion();
-    const tokenRes = await axios.post<{
+    return axios.post<{
       access_token: string;
       expires_in: number;
       token_type: string;
@@ -89,15 +132,6 @@ export class GoogleSheetsService {
         timeout: 10000,
       }
     );
-
-    const token = tokenRes.data.access_token;
-    const expiresIn = tokenRes.data.expires_in ?? 3600;
-    GoogleSheetsService.accessTokenCache = {
-      token,
-      expiresAtMs: now + expiresIn * 1000,
-    };
-
-    return token;
   }
 
   private buildServiceAccountAssertion(): string {
@@ -158,7 +192,7 @@ export class GoogleSheetsService {
 
     if (!clientEmail || !privateKey) {
       throw new Error(
-        "Google Sheets credentials missing. Set GOOGLE_SERVICE_ACCOUNT_JSON or GOOGLE_SERVICE_ACCOUNT_EMAIL + GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY."
+        "Google Sheets credentials missing. Set OAuth env vars (GOOGLE_OAUTH_CLIENT_ID/SECRET/REFRESH_TOKEN) or service-account vars."
       );
     }
 
