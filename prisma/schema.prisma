@@ -7,22 +7,6 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-
-model PlayerSnapshot {
-  id                 Int      @id @default(autoincrement())
-  tag                String
-  name               String
-  clanTag            String
-  trophies           Int
-  donations          Int
-  warStars           Int
-  builderTrophies    Int
-  capitalGold        Int
-  createdAt          DateTime @default(now())
-
-  @@index([tag, createdAt])
-}
-
 model PlayerActivity {
   tag            String   @id
   name           String
