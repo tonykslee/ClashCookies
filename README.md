@@ -21,3 +21,20 @@ https://discord.com/oauth2/authorize?client_id=1474193888146358393&permissions=8
 
 Staging user bot install:
 https://discord.com/oauth2/authorize?client_id=1474193888146358393&permissions=8&integration_type=1&scope=bot+applications.commands
+
+## Google Sheets setup
+
+This bot can link to a Google Sheet and be re-linked later without code changes.
+
+1. Create a Google Cloud service account with Sheets API enabled.
+2. Share your sheet with the service account email (Viewer is enough).
+3. Add one of these env options:
+   - `GOOGLE_SERVICE_ACCOUNT_JSON` (full JSON as one line)
+   - `GOOGLE_SERVICE_ACCOUNT_JSON_BASE64` (base64 of full JSON)
+   - `GOOGLE_SERVICE_ACCOUNT_EMAIL` + `GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY`
+
+Commands:
+- `/sheet link sheet_id_or_url:<id-or-url> [tab:<tab-name>]`
+- `/sheet show`
+- `/sheet preview [range:<A1-notation>]`
+- `/sheet unlink`
