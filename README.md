@@ -45,14 +45,17 @@ Optional fallback auth (not required for your current setup):
 - `/lastseen tag:<playerTag>` - Show a player's last seen activity.
 - `/inactive days:<number>` - List players inactive for N days.
 - `/role-users role:<discordRole>` - List users in a role with pagination.
-- `/tracked-clan add tag:<tag>` - Add tracked clan.
-- `/tracked-clan remove tag:<tag>` - Remove tracked clan.
-- `/tracked-clan list` - List tracked clans.
-- `/sheet link sheet_id_or_url:<id-or-url> [tab:<tab-name>] [mode:actual|war]` - Link or relink sheet; mode is optional.
-- `/sheet show [mode:actual|war]` - Show linked sheet settings (single mode or all).
-- `/sheet unlink [mode:actual|war]` - Remove one mode link or all links.
+- `/tracked-clan add tag:<tag>` - Add tracked clan (Administrator only).
+- `/tracked-clan remove tag:<tag>` - Remove tracked clan (Administrator only).
+- `/tracked-clan list` - List tracked clans (available to non-admin users).
+- `/sheet link sheet_id_or_url:<id-or-url> [tab:<tab-name>] [mode:actual|war]` - Link or relink sheet; mode is optional (Administrator only).
+- `/sheet show [mode:actual|war]` - Show linked sheet settings (single mode or all, Administrator only).
+- `/sheet unlink [mode:actual|war]` - Remove one mode link or all links (Administrator only).
 - `/compo advice clan:<tracked-clan> [mode:actual|war]` - Pull advice using mode-specific sheet link.
 - `/compo state [mode:actual|war]` - Render AllianceDashboard state as an attached PNG image with mode label.
+- `/compo place weight:<value>` - Suggest placement options from ACTUAL state (vacancy + composition fit). Accepts formats like `145000`, `145,000`, or `145k` and maps to TH weight buckets.
+- `/cc player tag:<tag>` - Build `https://cc.fwafarm.com/cc_n/member.php?tag=<tag>`.
+- `/cc clan tag:<tag>` - Build `https://cc.fwafarm.com/cc_n/clan.php?tag=<tag>`.
 
 ## Deployment Notes
 - Commands are registered as guild commands using `GUILD_ID` on startup.
@@ -68,27 +71,5 @@ https://discord.com/oauth2/authorize?client_id=1131335782016237749&permissions=8
 Staging guild install:
 https://discord.com/oauth2/authorize?client_id=1474193888146358393&permissions=8&integration_type=0&scope=bot+applications.commands
 
-<<<<<<< HEAD
 Staging user install:
 https://discord.com/oauth2/authorize?client_id=1474193888146358393&permissions=8&integration_type=1&scope=bot+applications.commands
-=======
-Staging user bot install:
-https://discord.com/oauth2/authorize?client_id=1474193888146358393&permissions=8&integration_type=1&scope=bot+applications.commands
-
-## Google Sheets setup
-
-This bot can link to a Google Sheet and be re-linked later without code changes.
-
-1. Create a Google Cloud service account with Sheets API enabled.
-2. Share your sheet with the service account email (Viewer is enough).
-3. Add one of these env options:
-   - `GOOGLE_SERVICE_ACCOUNT_JSON` (full JSON as one line)
-   - `GOOGLE_SERVICE_ACCOUNT_JSON_BASE64` (base64 of full JSON)
-   - `GOOGLE_SERVICE_ACCOUNT_EMAIL` + `GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY`
-
-Commands:
-- `/sheet link sheet_id_or_url:<id-or-url> [tab:<tab-name>]`
-- `/sheet show`
-- `/sheet preview [range:<A1-notation>]`
-- `/sheet unlink`
->>>>>>> d7f8290 (feat: add Google Sheets linking and runtime sheet management (#5))

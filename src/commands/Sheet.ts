@@ -8,14 +8,10 @@ import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
 import { safeReply } from "../helper/safeReply";
 import { CoCService } from "../services/CoCService";
-<<<<<<< HEAD
 import {
   GoogleSheetMode,
   GoogleSheetsService,
 } from "../services/GoogleSheetsService";
-=======
-import { GoogleSheetsService } from "../services/GoogleSheetsService";
->>>>>>> d7f8290 (feat: add Google Sheets linking and runtime sheet management (#5))
 import { SettingsService } from "../services/SettingsService";
 
 function extractSheetId(input: string): string {
@@ -24,7 +20,6 @@ function extractSheetId(input: string): string {
   return match?.[1] ?? trimmed;
 }
 
-<<<<<<< HEAD
 function getSheetErrorHint(err: unknown): string {
   const message = formatError(err).toLowerCase();
 
@@ -70,11 +65,6 @@ function getModeOptionValue(
     return raw;
   }
   return undefined;
-=======
-function clampCell(value: string): string {
-  const sanitized = value.replace(/\s+/g, " ").trim();
-  return sanitized.length > 40 ? `${sanitized.slice(0, 37)}...` : sanitized;
->>>>>>> d7f8290 (feat: add Google Sheets linking and runtime sheet management (#5))
 }
 
 export const Sheet: Command = {
@@ -98,7 +88,6 @@ export const Sheet: Command = {
           type: ApplicationCommandOptionType.String,
           required: false,
         },
-<<<<<<< HEAD
         {
           name: "mode",
           description: "Link sheet for a specific roster mode",
@@ -106,15 +95,12 @@ export const Sheet: Command = {
           required: false,
           choices: SHEET_MODE_CHOICES,
         },
-=======
->>>>>>> d7f8290 (feat: add Google Sheets linking and runtime sheet management (#5))
       ],
     },
     {
       name: "show",
       description: "Show current linked Google Sheet",
       type: ApplicationCommandOptionType.Subcommand,
-<<<<<<< HEAD
       options: [
         {
           name: "mode",
@@ -124,14 +110,11 @@ export const Sheet: Command = {
           choices: SHEET_MODE_CHOICES,
         },
       ],
-=======
->>>>>>> d7f8290 (feat: add Google Sheets linking and runtime sheet management (#5))
     },
     {
       name: "unlink",
       description: "Unlink the current Google Sheet",
       type: ApplicationCommandOptionType.Subcommand,
-<<<<<<< HEAD
       options: [
         {
           name: "mode",
@@ -139,19 +122,6 @@ export const Sheet: Command = {
           type: ApplicationCommandOptionType.String,
           required: false,
           choices: SHEET_MODE_CHOICES,
-=======
-    },
-    {
-      name: "preview",
-      description: "Preview rows from the linked Google Sheet",
-      type: ApplicationCommandOptionType.Subcommand,
-      options: [
-        {
-          name: "range",
-          description: "A1 notation range, e.g. Sheet1!A1:D10",
-          type: ApplicationCommandOptionType.String,
-          required: false,
->>>>>>> d7f8290 (feat: add Google Sheets linking and runtime sheet management (#5))
         },
       ],
     },
@@ -164,11 +134,11 @@ export const Sheet: Command = {
     try {
       if (
         interaction.inGuild() &&
-        !interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)
+        !interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)
       ) {
         await safeReply(interaction, {
           ephemeral: true,
-          content: "You need Manage Server permission to manage sheet settings.",
+          content: "You need Administrator permission to use /sheet commands.",
         });
         return;
       }
@@ -176,15 +146,11 @@ export const Sheet: Command = {
       await interaction.deferReply({ ephemeral: true });
 
       const subcommand = interaction.options.getSubcommand(true);
-<<<<<<< HEAD
       const mode = getModeOptionValue(interaction);
-=======
->>>>>>> d7f8290 (feat: add Google Sheets linking and runtime sheet management (#5))
       const settings = new SettingsService();
       const sheets = new GoogleSheetsService(settings);
 
       if (subcommand === "show") {
-<<<<<<< HEAD
         if (mode) {
           const { sheetId, tabName } = await sheets.getLinkedSheet(mode);
           if (!sheetId) {
@@ -198,18 +164,10 @@ export const Sheet: Command = {
           await safeReply(interaction, {
             ephemeral: true,
             content: `Linked sheet (${mode}): ${sheetId}\nDefault tab: ${tabName ?? "(not set)"}`,
-=======
-        const { sheetId, tabName } = await sheets.getLinkedSheet();
-        if (!sheetId) {
-          await safeReply(interaction, {
-            ephemeral: true,
-            content: "No Google Sheet is linked yet. Use `/sheet link`.",
->>>>>>> d7f8290 (feat: add Google Sheets linking and runtime sheet management (#5))
           });
           return;
         }
 
-<<<<<<< HEAD
         const [legacy, actual, war] = await Promise.all([
           sheets.getLinkedSheet(),
           sheets.getLinkedSheet("actual"),
@@ -222,17 +180,11 @@ export const Sheet: Command = {
             `Legacy/default sheet: ${legacy.sheetId || "(not set)"} | tab: ${legacy.tabName ?? "(not set)"}\n` +
             `Actual mode sheet: ${actual.sheetId || "(not set)"} | tab: ${actual.tabName ?? "(not set)"}\n` +
             `War mode sheet: ${war.sheetId || "(not set)"} | tab: ${war.tabName ?? "(not set)"}`,
-=======
-        await safeReply(interaction, {
-          ephemeral: true,
-          content: `Linked sheet: ${sheetId}\nDefault tab: ${tabName ?? "(not set)"}`,
->>>>>>> d7f8290 (feat: add Google Sheets linking and runtime sheet management (#5))
         });
         return;
       }
 
       if (subcommand === "unlink") {
-<<<<<<< HEAD
         if (mode) {
           await sheets.clearLinkedSheet(mode);
           await safeReply(interaction, {
@@ -250,12 +202,6 @@ export const Sheet: Command = {
         await safeReply(interaction, {
           ephemeral: true,
           content: "All Google Sheet links removed (legacy/default, actual, and war).",
-=======
-        await sheets.clearLinkedSheet();
-        await safeReply(interaction, {
-          ephemeral: true,
-          content: "Google Sheet unlinked.",
->>>>>>> d7f8290 (feat: add Google Sheets linking and runtime sheet management (#5))
         });
         return;
       }
@@ -264,7 +210,6 @@ export const Sheet: Command = {
         const rawInput = interaction.options.getString("sheet_id_or_url", true);
         const sheetId = extractSheetId(rawInput);
         const tab = interaction.options.getString("tab", false) ?? undefined;
-<<<<<<< HEAD
         const selectedMode = mode;
 
         await sheets.testAccess(sheetId, tab);
@@ -277,60 +222,20 @@ export const Sheet: Command = {
             `Sheet ID: ${sheetId}\n` +
             `Default tab: ${tab ?? "(unchanged)"}\n` +
             "You can relink anytime with `/sheet link`.",
-=======
-
-        await sheets.testAccess(sheetId, tab);
-        await sheets.setLinkedSheet(sheetId, tab);
-
-        await safeReply(interaction, {
-          ephemeral: true,
-          content: `Google Sheet linked.\nSheet ID: ${sheetId}\nDefault tab: ${tab ?? "(unchanged)"}\nYou can relink anytime with \`/sheet link\`.`,
->>>>>>> d7f8290 (feat: add Google Sheets linking and runtime sheet management (#5))
         });
         return;
       }
 
-<<<<<<< HEAD
       await safeReply(interaction, {
         ephemeral: true,
         content: "Unknown subcommand.",
       });
       return;
-=======
-      if (subcommand === "preview") {
-        const range = interaction.options.getString("range", false) ?? undefined;
-        const values = await sheets.readLinkedValues(range);
-
-        if (values.length === 0) {
-          await safeReply(interaction, {
-            ephemeral: true,
-            content: "No rows found for that range.",
-          });
-          return;
-        }
-
-        const rendered = values
-          .slice(0, 8)
-          .map((row) => row.slice(0, 5).map(clampCell).join(" | "))
-          .join("\n");
-        const suffix = values.length > 8 ? `\n...and ${values.length - 8} more row(s).` : "";
-
-        await safeReply(interaction, {
-          ephemeral: true,
-          content: `Preview (${range ?? "default range"}):\n\`\`\`\n${rendered}\n\`\`\`${suffix}`,
-        });
-      }
->>>>>>> d7f8290 (feat: add Google Sheets linking and runtime sheet management (#5))
     } catch (err) {
       console.error(`sheet command failed: ${formatError(err)}`);
       await safeReply(interaction, {
         ephemeral: true,
-<<<<<<< HEAD
         content: `Failed to access Google Sheet. ${getSheetErrorHint(err)}`,
-=======
-        content:
-          "Failed to access Google Sheet. Check credentials, sharing, sheet ID, and tab name.",
->>>>>>> d7f8290 (feat: add Google Sheets linking and runtime sheet management (#5))
       });
     }
   },

@@ -4,7 +4,6 @@ import { SettingsService } from "./SettingsService";
 
 export const SHEET_SETTING_ID_KEY = "google_sheet_id";
 export const SHEET_SETTING_TAB_KEY = "google_sheet_tab";
-<<<<<<< HEAD
 export const SHEET_SETTING_ACTUAL_ID_KEY = "google_sheet_actual_id";
 export const SHEET_SETTING_ACTUAL_TAB_KEY = "google_sheet_actual_tab";
 export const SHEET_SETTING_WAR_ID_KEY = "google_sheet_war_id";
@@ -12,8 +11,6 @@ export const SHEET_SETTING_WAR_TAB_KEY = "google_sheet_war_tab";
 const GOOGLE_API_TIMEOUT_MS = 20000;
 
 export type GoogleSheetMode = "actual" | "war";
-=======
->>>>>>> d7f8290 (feat: add Google Sheets linking and runtime sheet management (#5))
 
 type AccessTokenCache = {
   token: string;
@@ -25,7 +22,6 @@ export class GoogleSheetsService {
 
   constructor(private settings: SettingsService) {}
 
-<<<<<<< HEAD
   async getLinkedSheet(
     mode?: GoogleSheetMode
   ): Promise<{ sheetId: string; tabName: string | null }> {
@@ -47,15 +43,11 @@ export class GoogleSheetsService {
       return { sheetId: "", tabName: null };
     }
 
-=======
-  async getLinkedSheet(): Promise<{ sheetId: string; tabName: string | null }> {
->>>>>>> d7f8290 (feat: add Google Sheets linking and runtime sheet management (#5))
     const sheetId = await this.settings.get(SHEET_SETTING_ID_KEY);
     const tabName = await this.settings.get(SHEET_SETTING_TAB_KEY);
     return { sheetId: sheetId ?? "", tabName };
   }
 
-<<<<<<< HEAD
   async setLinkedSheet(
     sheetId: string,
     tabName?: string,
@@ -70,16 +62,12 @@ export class GoogleSheetsService {
       return;
     }
 
-=======
-  async setLinkedSheet(sheetId: string, tabName?: string): Promise<void> {
->>>>>>> d7f8290 (feat: add Google Sheets linking and runtime sheet management (#5))
     await this.settings.set(SHEET_SETTING_ID_KEY, sheetId);
     if (tabName && tabName.trim().length > 0) {
       await this.settings.set(SHEET_SETTING_TAB_KEY, tabName.trim());
     }
   }
 
-<<<<<<< HEAD
   async clearLinkedSheet(mode?: GoogleSheetMode): Promise<void> {
     if (mode) {
       const modeKeys = this.getModeKeys(mode);
@@ -88,9 +76,6 @@ export class GoogleSheetsService {
       return;
     }
 
-=======
-  async clearLinkedSheet(): Promise<void> {
->>>>>>> d7f8290 (feat: add Google Sheets linking and runtime sheet management (#5))
     await this.settings.delete(SHEET_SETTING_ID_KEY);
     await this.settings.delete(SHEET_SETTING_TAB_KEY);
   }
@@ -102,7 +87,6 @@ export class GoogleSheetsService {
     await this.readValues(sheetId, range);
   }
 
-<<<<<<< HEAD
   async readLinkedValues(
     range?: string,
     mode?: GoogleSheetMode
@@ -112,11 +96,6 @@ export class GoogleSheetsService {
       if (mode) {
         throw new Error(`No linked Google Sheet found for mode: ${mode}.`);
       }
-=======
-  async readLinkedValues(range?: string): Promise<string[][]> {
-    const { sheetId, tabName } = await this.getLinkedSheet();
-    if (!sheetId) {
->>>>>>> d7f8290 (feat: add Google Sheets linking and runtime sheet management (#5))
       throw new Error("No linked Google Sheet found.");
     }
 
@@ -134,11 +113,7 @@ export class GoogleSheetsService {
       headers: {
         Authorization: `Bearer ${token}`,
       },
-<<<<<<< HEAD
       timeout: GOOGLE_API_TIMEOUT_MS,
-=======
-      timeout: 10000,
->>>>>>> d7f8290 (feat: add Google Sheets linking and runtime sheet management (#5))
     });
 
     return response.data.values ?? [];
@@ -151,7 +126,6 @@ export class GoogleSheetsService {
       return cache.token;
     }
 
-<<<<<<< HEAD
     const tokenRes = await this.requestAccessToken();
 
     const token = tokenRes.data.access_token;
@@ -197,10 +171,6 @@ export class GoogleSheetsService {
 
     const assertion = this.buildServiceAccountAssertion();
     return axios.post<{
-=======
-    const assertion = this.buildServiceAccountAssertion();
-    const tokenRes = await axios.post<{
->>>>>>> d7f8290 (feat: add Google Sheets linking and runtime sheet management (#5))
       access_token: string;
       expires_in: number;
       token_type: string;
@@ -212,24 +182,9 @@ export class GoogleSheetsService {
       }).toString(),
       {
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
-<<<<<<< HEAD
         timeout: GOOGLE_API_TIMEOUT_MS,
       }
     );
-=======
-        timeout: 10000,
-      }
-    );
-
-    const token = tokenRes.data.access_token;
-    const expiresIn = tokenRes.data.expires_in ?? 3600;
-    GoogleSheetsService.accessTokenCache = {
-      token,
-      expiresAtMs: now + expiresIn * 1000,
-    };
-
-    return token;
->>>>>>> d7f8290 (feat: add Google Sheets linking and runtime sheet management (#5))
   }
 
   private buildServiceAccountAssertion(): string {
@@ -290,11 +245,7 @@ export class GoogleSheetsService {
 
     if (!clientEmail || !privateKey) {
       throw new Error(
-<<<<<<< HEAD
         "Google Sheets credentials missing. Set OAuth env vars (GOOGLE_OAUTH_CLIENT_ID/SECRET/REFRESH_TOKEN) or service-account vars."
-=======
-        "Google Sheets credentials missing. Set GOOGLE_SERVICE_ACCOUNT_JSON or GOOGLE_SERVICE_ACCOUNT_EMAIL + GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY."
->>>>>>> d7f8290 (feat: add Google Sheets linking and runtime sheet management (#5))
       );
     }
 
@@ -309,7 +260,6 @@ export class GoogleSheetsService {
       .replace(/\//g, "_")
       .replace(/=+$/g, "");
   }
-<<<<<<< HEAD
 
   private getModeKeys(mode: GoogleSheetMode): { idKey: string; tabKey: string } {
     if (mode === "actual") {
@@ -324,6 +274,4 @@ export class GoogleSheetsService {
       tabKey: SHEET_SETTING_WAR_TAB_KEY,
     };
   }
-=======
->>>>>>> d7f8290 (feat: add Google Sheets linking and runtime sheet management (#5))
 }
