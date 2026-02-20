@@ -4,6 +4,7 @@ import { LastSeen } from "./commands/LastSeen";
 import { Inactive } from "./commands/Inactive";
 import { RoleUsers } from "./commands/RoleUsers";
 import { TrackedClan } from "./commands/TrackedClan";
+import { Sheet } from "./commands/Sheet";
 
 // ...existing code...
 export const Commands = [
@@ -13,4 +14,5 @@ export const Commands = [
   Inactive,
   RoleUsers,
   TrackedClan,
+  Sheet,
 ];
