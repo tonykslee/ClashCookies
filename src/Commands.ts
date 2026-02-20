@@ -1,14 +1,16 @@
-import { Hello } from "./commands/Hello";
+import { Help } from "./commands/Help";
 import { GetClanName } from "./commands/GetClanName";
 import { LastSeen } from "./commands/LastSeen";
 import { Inactive } from "./commands/Inactive";
 import { RoleUsers } from "./commands/RoleUsers";
+import { TrackedClan } from "./commands/TrackedClan";
 
-
+// ...existing code...
 export const Commands = [
-  Hello,
+  Help,
   GetClanName,
   LastSeen,
   Inactive,
   RoleUsers,
+  TrackedClan,
 ];
