@@ -6,7 +6,6 @@ Discord bot for Clash of Clans activity tooling.
 - Supports last seen and inactivity queries.
 - Manages tracked clans at runtime (`/tracked-clan ...`).
 - Links to a Google Sheet at runtime (`/sheet ...`).
-- Supports mode-specific sheet links for `actual` and `war` roster workflows.
 
 ## Setup
 1. Create a `.env` with required Discord, CoC API, and database values.
@@ -45,17 +44,13 @@ Optional fallback auth (not required for your current setup):
 - `/lastseen tag:<playerTag>` - Show a player's last seen activity.
 - `/inactive days:<number>` - List players inactive for N days.
 - `/role-users role:<discordRole>` - List users in a role with pagination.
-- `/tracked-clan add tag:<tag>` - Add tracked clan (Administrator only).
-- `/tracked-clan remove tag:<tag>` - Remove tracked clan (Administrator only).
-- `/tracked-clan list` - List tracked clans (available to non-admin users).
-- `/sheet link sheet_id_or_url:<id-or-url> [tab:<tab-name>] [mode:actual|war]` - Link or relink sheet; mode is optional (Administrator only).
-- `/sheet show [mode:actual|war]` - Show linked sheet settings (single mode or all, Administrator only).
-- `/sheet unlink [mode:actual|war]` - Remove one mode link or all links (Administrator only).
-- `/compo advice clan:<tracked-clan> [mode:actual|war]` - Pull advice using mode-specific sheet link.
-- `/compo state [mode:actual|war]` - Render AllianceDashboard state as an attached PNG image with mode label.
-- `/compo place weight:<value>` - Suggest placement options from ACTUAL state (vacancy + composition fit). Accepts formats like `145000`, `145,000`, or `145k` and maps to TH weight buckets.
-- `/cc player tag:<tag>` - Build `https://cc.fwafarm.com/cc_n/member.php?tag=<tag>`.
-- `/cc clan tag:<tag>` - Build `https://cc.fwafarm.com/cc_n/clan.php?tag=<tag>`.
+- `/tracked-clan add tag:<tag>` - Add tracked clan.
+- `/tracked-clan remove tag:<tag>` - Remove tracked clan.
+- `/tracked-clan list` - List tracked clans.
+- `/sheet link sheet_id_or_url:<id-or-url> [tab:<tab-name>]` - Link or relink sheet.
+- `/sheet show` - Show linked sheet settings.
+- `/sheet preview [range:<A1-notation>]` - Preview sheet rows.
+- `/sheet unlink` - Remove linked sheet settings.
 
 ## Deployment Notes
 - Commands are registered as guild commands using `GUILD_ID` on startup.
