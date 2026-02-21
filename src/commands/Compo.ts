@@ -28,7 +28,11 @@ function readMode(interaction: ChatInputCommandInteraction): GoogleSheetMode {
 
 function clampCell(value: string): string {
   const sanitized = value.replace(/\s+/g, " ").trim();
-  return sanitized.length > 32 ? `${sanitized.slice(0, 29)}...` : sanitized;
+  const normalizedLabel =
+    sanitized.toLowerCase() === "missing weights" ? "Missing" : sanitized;
+  return normalizedLabel.length > 32
+    ? `${normalizedLabel.slice(0, 29)}...`
+    : normalizedLabel;
 }
 
 function abbreviateClan(value: string): string {
@@ -36,6 +40,8 @@ function abbreviateClan(value: string): string {
     .normalize("NFKC")
     .replace(/["'`]/g, "")
     .replace(/[^A-Za-z0-9 ]/g, "")
+    .replace(/\s+/g, " ")
+    .replace(/\bTM\b/g, "")
     .replace(/\s+/g, " ")
     .trim()
     .toUpperCase();
@@ -70,15 +76,22 @@ function padRows(rows: string[][], rowCount: number, colCount: number): string[]
 function mergeStateRows(
   left: string[][],
   middle: string[][],
-  right: string[][]
+  right: string[][],
+  targetBand: string[][]
 ): string[][] {
   const out: string[][] = [];
   for (let i = 0; i < 9; i += 1) {
+    const rightRow = right[i] ?? ["", "", "", "", "", "", ""];
+    const beforeMissingWeights = rightRow.slice(0, 6);
+    const missingWeights = rightRow[6] ?? "";
+    const targetBandValue = (targetBand[i] ?? [""])[0] ?? "";
+
     out.push([
-      String(i + 1),
       abbreviateClan((left[i] ?? [""])[0] ?? ""),
       (middle[i] ?? ["", ""])[0] ?? "",
-      ...(right[i] ?? ["", "", "", "", "", "", ""]),
+      ...beforeMissingWeights,
+      targetBandValue,
+      missingWeights,
     ]);
   }
   return out;
@@ -207,22 +220,24 @@ export const Compo: Command = {
         const settings = new SettingsService();
         const sheets = new GoogleSheetsService(settings);
 
-        const [leftBlock, middleBlock, rightBlock] = await Promise.all([
+        const [leftBlock, middleBlock, rightBlock, targetBandBlock] = await Promise.all([
           sheets.readLinkedValues("AllianceDashboard!A1:A9", mode),
           sheets.readLinkedValues("AllianceDashboard!D1:E9", mode),
           sheets.readLinkedValues("AllianceDashboard!U1:AA9", mode),
+          sheets.readLinkedValues("AllianceDashboard!AW1:AW9", mode),
         ]);
 
         const mergedRows = mergeStateRows(
           padRows(leftBlock, 9, 1),
           padRows(middleBlock, 9, 2),
-          padRows(rightBlock, 9, 7)
+          padRows(rightBlock, 9, 7),
+          padRows(targetBandBlock, 9, 1)
         );
 
         const content = [
           `Mode Displayed: **${mode.toUpperCase()}**`,
           "",
-          renderPlainTable("AllianceDashboard!A1:A9 + D1 + U1:AA9", mergedRows),
+          renderPlainTable("AllianceDashboard!A1:A9 + D1 + U1:AA9 + AW1:AW9", mergedRows),
         ].join("\n");
 
         await safeReply(interaction, {
