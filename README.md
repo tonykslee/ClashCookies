@@ -52,7 +52,7 @@ Optional fallback auth (not required for your current setup):
 - `/sheet show [mode:actual|war]` - Show linked sheet settings (single mode or all).
 - `/sheet unlink [mode:actual|war]` - Remove one mode link or all links.
 - `/compo advice clan:<tracked-clan> [mode:actual|war]` - Pull advice using mode-specific sheet link.
-- `/compo state [mode:actual|war]` - Render AllianceDashboard state as an attached image with mode label.
+- `/compo state [mode:actual|war]` - Render AllianceDashboard state as an attached PNG image with mode label.
 
 ## Deployment Notes
 - Commands are registered as guild commands using `GUILD_ID` on startup.
