@@ -8,7 +8,10 @@ import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
 import { safeReply } from "../helper/safeReply";
 import { CoCService } from "../services/CoCService";
-import { GoogleSheetsService } from "../services/GoogleSheetsService";
+import {
+  GoogleSheetMode,
+  GoogleSheetsService,
+} from "../services/GoogleSheetsService";
 import { SettingsService } from "../services/SettingsService";
 
 function extractSheetId(input: string): string {
@@ -54,6 +57,21 @@ function getSheetErrorHint(err: unknown): string {
   return "Check credentials, sharing, sheet ID, and optional tab/range.";
 }
 
+const SHEET_MODE_CHOICES = [
+  { name: "Actual Roster", value: "actual" },
+  { name: "War Roster", value: "war" },
+];
+
+function getModeOptionValue(
+  interaction: ChatInputCommandInteraction
+): GoogleSheetMode | undefined {
+  const raw = interaction.options.getString("mode", false);
+  if (raw === "actual" || raw === "war") {
+    return raw;
+  }
+  return undefined;
+}
+
 export const Sheet: Command = {
   name: "sheet",
   description: "Manage Google Sheet link for this bot",
@@ -75,17 +93,42 @@ export const Sheet: Command = {
           type: ApplicationCommandOptionType.String,
           required: false,
         },
+        {
+          name: "mode",
+          description: "Link sheet for a specific roster mode",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          choices: SHEET_MODE_CHOICES,
+        },
       ],
     },
     {
       name: "show",
       description: "Show current linked Google Sheet",
       type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "mode",
+          description: "Show only one roster mode",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          choices: SHEET_MODE_CHOICES,
+        },
+      ],
     },
     {
       name: "unlink",
       description: "Unlink the current Google Sheet",
       type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "mode",
+          description: "Unlink only one roster mode",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          choices: SHEET_MODE_CHOICES,
+        },
+      ],
     },
     {
       name: "preview",
@@ -97,6 +140,13 @@ export const Sheet: Command = {
           description: "A1 notation range, e.g. Sheet1!A1:D10",
           type: ApplicationCommandOptionType.String,
           required: false,
+        },
+        {
+          name: "mode",
+          description: "Preview from actual or war roster sheet",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          choices: SHEET_MODE_CHOICES,
         },
       ],
     },
@@ -121,31 +171,62 @@ export const Sheet: Command = {
       await interaction.deferReply({ ephemeral: true });
 
       const subcommand = interaction.options.getSubcommand(true);
+      const mode = getModeOptionValue(interaction);
       const settings = new SettingsService();
       const sheets = new GoogleSheetsService(settings);
 
       if (subcommand === "show") {
-        const { sheetId, tabName } = await sheets.getLinkedSheet();
-        if (!sheetId) {
+        if (mode) {
+          const { sheetId, tabName } = await sheets.getLinkedSheet(mode);
+          if (!sheetId) {
+            await safeReply(interaction, {
+              ephemeral: true,
+              content: `No Google Sheet is linked for ${mode} mode yet. Use \`/sheet link\` with mode.`,
+            });
+            return;
+          }
+
           await safeReply(interaction, {
             ephemeral: true,
-            content: "No Google Sheet is linked yet. Use `/sheet link`.",
+            content: `Linked sheet (${mode}): ${sheetId}\nDefault tab: ${tabName ?? "(not set)"}`,
           });
           return;
         }
 
+        const [legacy, actual, war] = await Promise.all([
+          sheets.getLinkedSheet(),
+          sheets.getLinkedSheet("actual"),
+          sheets.getLinkedSheet("war"),
+        ]);
+
         await safeReply(interaction, {
           ephemeral: true,
-          content: `Linked sheet: ${sheetId}\nDefault tab: ${tabName ?? "(not set)"}`,
+          content:
+            `Legacy/default sheet: ${legacy.sheetId || "(not set)"} | tab: ${legacy.tabName ?? "(not set)"}\n` +
+            `Actual mode sheet: ${actual.sheetId || "(not set)"} | tab: ${actual.tabName ?? "(not set)"}\n` +
+            `War mode sheet: ${war.sheetId || "(not set)"} | tab: ${war.tabName ?? "(not set)"}`,
         });
         return;
       }
 
       if (subcommand === "unlink") {
-        await sheets.clearLinkedSheet();
+        if (mode) {
+          await sheets.clearLinkedSheet(mode);
+          await safeReply(interaction, {
+            ephemeral: true,
+            content: `Google Sheet unlinked for ${mode} mode.`,
+          });
+          return;
+        }
+
+        await Promise.all([
+          sheets.clearLinkedSheet(),
+          sheets.clearLinkedSheet("actual"),
+          sheets.clearLinkedSheet("war"),
+        ]);
         await safeReply(interaction, {
           ephemeral: true,
-          content: "Google Sheet unlinked.",
+          content: "All Google Sheet links removed (legacy/default, actual, and war).",
         });
         return;
       }
@@ -154,20 +235,25 @@ export const Sheet: Command = {
         const rawInput = interaction.options.getString("sheet_id_or_url", true);
         const sheetId = extractSheetId(rawInput);
         const tab = interaction.options.getString("tab", false) ?? undefined;
+        const selectedMode = mode;
 
         await sheets.testAccess(sheetId, tab);
-        await sheets.setLinkedSheet(sheetId, tab);
+        await sheets.setLinkedSheet(sheetId, tab, selectedMode);
 
         await safeReply(interaction, {
           ephemeral: true,
-          content: `Google Sheet linked.\nSheet ID: ${sheetId}\nDefault tab: ${tab ?? "(unchanged)"}\nYou can relink anytime with \`/sheet link\`.`,
+          content:
+            `Google Sheet linked${selectedMode ? ` for ${selectedMode} mode` : ""}.\n` +
+            `Sheet ID: ${sheetId}\n` +
+            `Default tab: ${tab ?? "(unchanged)"}\n` +
+            "You can relink anytime with `/sheet link`.",
         });
         return;
       }
 
       if (subcommand === "preview") {
         const range = interaction.options.getString("range", false) ?? undefined;
-        const values = await sheets.readLinkedValues(range);
+        const values = await sheets.readLinkedValues(range, mode);
 
         if (values.length === 0) {
           await safeReply(interaction, {
@@ -185,7 +271,7 @@ export const Sheet: Command = {
 
         await safeReply(interaction, {
           ephemeral: true,
-          content: `Preview (${range ?? "default range"}):\n\`\`\`\n${rendered}\n\`\`\`${suffix}`,
+          content: `Preview (${range ?? "default range"}${mode ? `, ${mode} mode` : ""}):\n\`\`\`\n${rendered}\n\`\`\`${suffix}`,
         });
       }
     } catch (err) {
