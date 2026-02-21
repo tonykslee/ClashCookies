@@ -41,7 +41,7 @@ function abbreviateClan(value: string): string {
     .replace(/["'`]/g, "")
     .replace(/[^A-Za-z0-9 ]/g, "")
     .replace(/\s+/g, " ")
-    .replace(/\bTM\b/g, "")
+    .replace(/TM/g, "")
     .replace(/\s+/g, " ")
     .trim()
     .toUpperCase();
@@ -82,16 +82,16 @@ function mergeStateRows(
   const out: string[][] = [];
   for (let i = 0; i < 9; i += 1) {
     const rightRow = right[i] ?? ["", "", "", "", "", "", ""];
-    const beforeMissingWeights = rightRow.slice(0, 6);
-    const missingWeights = rightRow[6] ?? "";
+    const beforeTargetBand = rightRow.slice(0, 2);
+    const afterTargetBand = rightRow.slice(2);
     const targetBandValue = (targetBand[i] ?? [""])[0] ?? "";
 
     out.push([
       abbreviateClan((left[i] ?? [""])[0] ?? ""),
       (middle[i] ?? ["", ""])[0] ?? "",
-      ...beforeMissingWeights,
+      ...beforeTargetBand,
       targetBandValue,
-      missingWeights,
+      ...afterTargetBand,
     ]);
   }
   return out;
