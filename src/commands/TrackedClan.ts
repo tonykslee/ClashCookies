@@ -2,6 +2,7 @@ import {
   ApplicationCommandOptionType,
   ChatInputCommandInteraction,
   Client,
+  PermissionFlagsBits,
 } from "discord.js";
 import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
@@ -57,8 +58,22 @@ export const TrackedClan: Command = {
     cocService: CoCService
   ) => {
     try {
-      await interaction.deferReply({ ephemeral: true });
       const subcommand = interaction.options.getSubcommand(true);
+
+      if (
+        interaction.inGuild() &&
+        (subcommand === "add" || subcommand === "remove") &&
+        !interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)
+      ) {
+        await safeReply(interaction, {
+          ephemeral: true,
+          content:
+            "You need Administrator permission to use /tracked-clan add or /tracked-clan remove.",
+        });
+        return;
+      }
+
+      await interaction.deferReply({ ephemeral: true });
 
       if (subcommand === "list") {
         const tracked = await prisma.trackedClan.findMany({
