@@ -1,5 +1,6 @@
 import {
   ApplicationCommandOptionType,
+  AutocompleteInteraction,
   ChatInputCommandInteraction,
   Client,
 } from "discord.js";
@@ -7,6 +8,7 @@ import { Command } from "../Command";
 import { safeReply } from "../helper/safeReply";
 import { formatError } from "../helper/formatError";
 import { CoCService } from "../services/CoCService";
+import { prisma } from "../prisma";
 
 function normalizeTag(input: string): string {
   return input.trim().replace(/^#/, "");
@@ -39,6 +41,7 @@ export const CC: Command = {
           description: "Clan tag (with or without #)",
           type: ApplicationCommandOptionType.String,
           required: true,
+          autocomplete: true,
         },
       ],
     },
@@ -77,6 +80,47 @@ export const CC: Command = {
         content: "Failed to build CC URL. Check the tag and try again.",
       });
     }
+  },
+  autocomplete: async (interaction: AutocompleteInteraction) => {
+    const focused = interaction.options.getFocused(true);
+    if (focused.name !== "tag") {
+      await interaction.respond([]);
+      return;
+    }
+
+    let subcommand = "";
+    try {
+      subcommand = interaction.options.getSubcommand(true);
+    } catch {
+      await interaction.respond([]);
+      return;
+    }
+
+    if (subcommand !== "clan") {
+      await interaction.respond([]);
+      return;
+    }
+
+    const query = String(focused.value ?? "").trim().toLowerCase();
+    const tracked = await prisma.trackedClan.findMany({
+      orderBy: { createdAt: "asc" },
+      select: { name: true, tag: true },
+    });
+
+    const choices = tracked
+      .map((c) => {
+        const tag = c.tag.trim();
+        const label = c.name?.trim() ? `${c.name.trim()} (${tag})` : tag;
+        return { name: label.slice(0, 100), value: tag };
+      })
+      .filter(
+        (c) =>
+          c.name.toLowerCase().includes(query) ||
+          c.value.toLowerCase().includes(query)
+      )
+      .slice(0, 25);
+
+    await interaction.respond(choices);
   },
 };
 
