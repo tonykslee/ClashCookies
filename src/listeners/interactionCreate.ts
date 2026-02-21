@@ -1,4 +1,5 @@
 import {
+  AutocompleteInteraction,
   ChatInputCommandInteraction,
   Client,
   Interaction,
@@ -18,6 +19,11 @@ export default (client: Client, cocService: CoCService): void => {
   isRegistered = true;
 
   client.on("interactionCreate", async (interaction: Interaction) => {
+    if (interaction.isAutocomplete()) {
+      await handleAutocomplete(interaction);
+      return;
+    }
+
     if (!interaction.isChatInputCommand()) return;
 
     const user = `${interaction.user.tag} (${interaction.user.id})`;
@@ -35,6 +41,31 @@ export default (client: Client, cocService: CoCService): void => {
 
     await handleSlashCommand(client, interaction, cocService);
   });
+};
+
+const handleAutocomplete = async (
+  interaction: AutocompleteInteraction
+): Promise<void> => {
+  const slashCommand = Commands.find((c) => c.name === interaction.commandName);
+  if (!slashCommand?.autocomplete) {
+    try {
+      await interaction.respond([]);
+    } catch {
+      // no-op
+    }
+    return;
+  }
+
+  try {
+    await slashCommand.autocomplete(interaction);
+  } catch (err) {
+    console.error(`Autocomplete failed: ${formatError(err)}`);
+    try {
+      await interaction.respond([]);
+    } catch {
+      // no-op
+    }
+  }
 };
 
 const handleSlashCommand = async (
