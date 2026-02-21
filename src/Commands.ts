@@ -5,6 +5,7 @@ import { Inactive } from "./commands/Inactive";
 import { RoleUsers } from "./commands/RoleUsers";
 import { TrackedClan } from "./commands/TrackedClan";
 import { Sheet } from "./commands/Sheet";
+import { Compo } from "./commands/Compo";
 
 // ...existing code...
 export const Commands = [
@@ -15,4 +16,5 @@ export const Commands = [
   RoleUsers,
   TrackedClan,
   Sheet,
+  Compo,
 ];
