@@ -9,11 +9,7 @@ import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
 import { safeReply } from "../helper/safeReply";
 import { CoCService } from "../services/CoCService";
-import {
-  GoogleSheetMode,
-  SheetRgbColor,
-  GoogleSheetsService,
-} from "../services/GoogleSheetsService";
+import { GoogleSheetMode, GoogleSheetsService } from "../services/GoogleSheetsService";
 import { SettingsService } from "../services/SettingsService";
 
 function normalize(value: string): string {
@@ -32,39 +28,41 @@ function readMode(interaction: ChatInputCommandInteraction): GoogleSheetMode {
 
 function clampCell(value: string): string {
   const sanitized = value.replace(/\s+/g, " ").trim();
-  return sanitized.length > 28 ? `${sanitized.slice(0, 25)}...` : sanitized;
+  return sanitized.length > 32 ? `${sanitized.slice(0, 29)}...` : sanitized;
 }
 
-function colorSwatch(color: SheetRgbColor | null): string {
-  if (!color) return "⬜";
-  const r = Math.round(color.red * 255);
-  const g = Math.round(color.green * 255);
-  const b = Math.round(color.blue * 255);
-
-  if (r > 225 && g > 225 && b > 225) return "⬜";
-  if (r > 200 && g < 110 && b < 110) return "🟥";
-  if (r > 215 && g > 160 && b < 110) return "🟧";
-  if (r > 210 && g > 200 && b < 120) return "🟨";
-  if (g > 170 && r < 140 && b < 140) return "🟩";
-  if (b > 180 && r < 150 && g < 180) return "🟦";
-  if (r > 150 && b > 150 && g < 130) return "🟪";
-  return "⬛";
+function padRows(rows: string[][], rowCount: number, colCount: number): string[][] {
+  const padded: string[][] = [];
+  for (let r = 0; r < rowCount; r += 1) {
+    const source = rows[r] ?? [];
+    const normalized: string[] = [];
+    for (let c = 0; c < colCount; c += 1) {
+      normalized.push(clampCell(source[c] ?? ""));
+    }
+    padded.push(normalized);
+  }
+  return padded;
 }
 
-function renderGridSection(title: string, rows: Array<Array<{ value: string; backgroundColor: SheetRgbColor | null }>>): string {
-  const lines: string[] = [];
-  lines.push(`**${title}**`);
-
-  for (let i = 0; i < rows.length; i += 1) {
-    const rowNumber = String(i + 1).padStart(2, "0");
-    const formattedCells = rows[i].map((cell) => {
-      const value = clampCell(cell.value || "-");
-      return `${colorSwatch(cell.backgroundColor)} ${value}`;
-    });
-    lines.push(`${rowNumber}. ${formattedCells.join(" | ")}`);
+function renderPlainTable(title: string, rows: string[][]): string {
+  if (rows.length === 0) {
+    return `**${title}**\n\`\`\`\n(no data)\n\`\`\``;
   }
 
-  return lines.join("\n");
+  const colCount = Math.max(...rows.map((row) => row.length), 1);
+  const widths = Array.from({ length: colCount }, (_, col) =>
+    Math.max(1, ...rows.map((row) => (row[col] ?? "").length))
+  );
+
+  const divider = `+-${widths.map((w) => "-".repeat(w)).join("-+-")}-+`;
+  const body = rows
+    .map(
+      (row) =>
+        `| ${widths.map((w, col) => (row[col] ?? "").padEnd(w, " ")).join(" | ")} |`
+    )
+    .join("\n");
+
+  return `**${title}**\n\`\`\`\n${divider}\n${body}\n${divider}\n\`\`\``;
 }
 
 export const Compo: Command = {
@@ -94,7 +92,7 @@ export const Compo: Command = {
     },
     {
       name: "state",
-      description: "Show AllianceDashboard state blocks with color indicators",
+      description: "Show AllianceDashboard state blocks",
       type: ApplicationCommandOptionType.Subcommand,
       options: [
         {
@@ -170,21 +168,19 @@ export const Compo: Command = {
         const sheets = new GoogleSheetsService(settings);
 
         const [leftBlock, middleBlock, rightBlock] = await Promise.all([
-          sheets.readLinkedFormattedGrid("AllianceDashboard!A1:A9", mode),
-          sheets.readLinkedFormattedGrid("AllianceDashboard!D1:E9", mode),
-          sheets.readLinkedFormattedGrid("AllianceDashboard!U1:AA9", mode),
+          sheets.readLinkedValues("AllianceDashboard!A1:A9", mode),
+          sheets.readLinkedValues("AllianceDashboard!D1:E9", mode),
+          sheets.readLinkedValues("AllianceDashboard!U1:AA9", mode),
         ]);
 
         const content = [
           `Mode Displayed: **${mode.toUpperCase()}**`,
           "",
-          renderGridSection("AllianceDashboard!A1:A9", leftBlock),
+          renderPlainTable("AllianceDashboard!A1:A9", padRows(leftBlock, 9, 1)),
           "",
-          renderGridSection("AllianceDashboard!D1:E9", middleBlock),
+          renderPlainTable("AllianceDashboard!D1:E9", padRows(middleBlock, 9, 2)),
           "",
-          renderGridSection("AllianceDashboard!U1:AA9", rightBlock),
-          "",
-          "Color key: sheet-like swatches are approximated via emoji.",
+          renderPlainTable("AllianceDashboard!U1:AA9", padRows(rightBlock, 9, 7)),
         ].join("\n");
 
         await safeReply(interaction, {
