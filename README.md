@@ -43,3 +43,4 @@ Commands:
 - `/sheet show`
 - `/sheet preview [range:<A1-notation>]`
 - `/sheet unlink`
+- `/compo advice clan:<name>`
