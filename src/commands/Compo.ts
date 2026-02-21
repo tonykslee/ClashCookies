@@ -34,6 +34,35 @@ function parseNumber(value: string | undefined): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function parseWeightInput(input: string): number | null {
+  const trimmed = input.trim().toLowerCase();
+  if (!trimmed) return null;
+
+  const compact = trimmed.replace(/,/g, "");
+  const kMatch = compact.match(/^(\d+(?:\.\d+)?)k$/);
+  if (kMatch) {
+    const base = Number(kMatch[1]);
+    if (!Number.isFinite(base)) return null;
+    return Math.round(base * 1000);
+  }
+
+  const numeric = Number(compact);
+  if (!Number.isFinite(numeric)) return null;
+  return Math.round(numeric);
+}
+
+type WeightBucket = "TH18" | "TH17" | "TH16" | "TH15" | "TH14" | "<=TH13";
+
+function getWeightBucket(weight: number): WeightBucket | null {
+  if (weight >= 171000 && weight <= 180000) return "TH18";
+  if (weight >= 161000 && weight <= 170000) return "TH17";
+  if (weight >= 151000 && weight <= 160000) return "TH16";
+  if (weight >= 141000 && weight <= 150000) return "TH15";
+  if (weight >= 131000 && weight <= 140000) return "TH14";
+  if (weight >= 121000 && weight <= 130000) return "<=TH13";
+  return null;
+}
+
 function clampCell(value: string): string {
   const sanitized = value.replace(/\s+/g, " ").trim();
   const normalizedLabelMap: Record<string, string> = {
@@ -117,6 +146,7 @@ type PlacementCandidate = {
   targetBand: number;
   missingCount: number;
   remainingToTarget: number;
+  bucketDeltaByHeader: Record<string, number>;
 };
 
 function readPlacementCandidates(
@@ -141,6 +171,12 @@ function readPlacementCandidates(
       missingIndex >= 0 ? rightBlock[i]?.[missingIndex] : rightBlock[i]?.[0];
     const missingCount = parseNumber(missingRaw);
     const remainingToTarget = targetBand - totalWeight;
+    const bucketDeltaByHeader: Record<string, number> = {};
+    for (let c = 0; c < missingHeaderRow.length; c += 1) {
+      const key = normalize(missingHeaderRow[c] ?? "");
+      if (!key) continue;
+      bucketDeltaByHeader[key] = parseNumber(rightBlock[i]?.[c]);
+    }
 
     candidates.push({
       clanName,
@@ -148,6 +184,7 @@ function readPlacementCandidates(
       targetBand,
       missingCount,
       remainingToTarget,
+      bucketDeltaByHeader,
     });
   }
 
@@ -350,9 +387,8 @@ export const Compo: Command = {
         {
           name: "weight",
           description: "Member war weight",
-          type: ApplicationCommandOptionType.Integer,
+          type: ApplicationCommandOptionType.String,
           required: true,
-          min_value: 1,
         },
       ],
     },
@@ -451,7 +487,27 @@ export const Compo: Command = {
       }
 
       if (subcommand === "place") {
-        const inputWeight = interaction.options.getInteger("weight", true);
+        const rawWeight = interaction.options.getString("weight", true);
+        const inputWeight = parseWeightInput(rawWeight);
+        if (!inputWeight || inputWeight <= 0) {
+          await safeReply(interaction, {
+            ephemeral: true,
+            content:
+              "Invalid weight. Use formats like `145000`, `145,000`, or `145k`.",
+          });
+          return;
+        }
+
+        const bucket = getWeightBucket(inputWeight);
+        if (!bucket) {
+          await safeReply(interaction, {
+            ephemeral: true,
+            content:
+              "Weight is outside supported ranges (121,000 to 180,000).",
+          });
+          return;
+        }
+
         const stateMode: GoogleSheetMode = "actual";
         const settings = new SettingsService();
         const sheets = new GoogleSheetsService(settings);
@@ -487,10 +543,14 @@ export const Compo: Command = {
 
         const compositionNeeds = candidates
           .filter((c) => c.missingCount > 0)
+          .map((c) => {
+            const key = normalize(`${bucket}-delta`);
+            const delta = c.bucketDeltaByHeader[key] ?? 0;
+            return { ...c, delta };
+          })
+          .filter((c) => c.delta < 0)
           .sort((a, b) => {
-            const aFit = Math.abs(a.remainingToTarget - inputWeight);
-            const bFit = Math.abs(b.remainingToTarget - inputWeight);
-            if (aFit !== bFit) return aFit - bFit;
+            if (a.delta !== b.delta) return a.delta - b.delta;
             return b.missingCount - a.missingCount;
           })[0];
 
@@ -499,12 +559,14 @@ export const Compo: Command = {
           : "1) Vacancy option: No clan currently shows a vacancy.";
 
         const option2 = compositionNeeds
-          ? `2) Composition-fit option: **${abbreviateClan(compositionNeeds.clanName)}** (Target gap after add: ${compositionNeeds.remainingToTarget - inputWeight >= 0 ? "+" : ""}${(compositionNeeds.remainingToTarget - inputWeight).toLocaleString()})`
-          : "2) Composition-fit option: No clan has usable ACTUAL-state composition data.";
+          ? `2) Composition-fit option: **${abbreviateClan(compositionNeeds.clanName)}** (${bucket} delta: ${compositionNeeds.delta})`
+          : `2) Composition-fit option: No clan currently needs ${bucket} weight (no negative delta).`;
 
         await safeReply(interaction, {
           ephemeral: true,
-          content: `ACTUAL placement suggestions for weight **${inputWeight.toLocaleString()}**:\n${option1}\n${option2}`,
+          content:
+            `ACTUAL placement suggestions for weight **${inputWeight.toLocaleString()}** (${bucket} bucket):\n` +
+            `${option1}\n${option2}`,
         });
         return;
       }
