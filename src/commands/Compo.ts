@@ -41,7 +41,7 @@ function abbreviateClan(value: string): string {
     .replace(/["'`]/g, "")
     .replace(/[^A-Za-z0-9 ]/g, "")
     .replace(/\s+/g, " ")
-    .replace(/\bTM\b/g, "")
+    .replace(/TM/g, "")
     .replace(/\s+/g, " ")
     .trim()
     .toUpperCase();
