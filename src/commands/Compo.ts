@@ -44,6 +44,23 @@ function padRows(rows: string[][], rowCount: number, colCount: number): string[]
   return padded;
 }
 
+function mergeStateRows(
+  left: string[][],
+  middle: string[][],
+  right: string[][]
+): string[][] {
+  const out: string[][] = [];
+  for (let i = 0; i < 9; i += 1) {
+    out.push([
+      String(i + 1),
+      ...(left[i] ?? [""]),
+      ...(middle[i] ?? ["", ""]),
+      ...(right[i] ?? ["", "", "", "", "", "", ""]),
+    ]);
+  }
+  return out;
+}
+
 function renderPlainTable(title: string, rows: string[][]): string {
   if (rows.length === 0) {
     return `**${title}**\n\`\`\`\n(no data)\n\`\`\``;
@@ -173,14 +190,17 @@ export const Compo: Command = {
           sheets.readLinkedValues("AllianceDashboard!U1:AA9", mode),
         ]);
 
+        const mergedRows = mergeStateRows(
+          padRows(leftBlock, 9, 1),
+          padRows(middleBlock, 9, 2),
+          padRows(rightBlock, 9, 7)
+        );
+        const header = [["#", "A", "D", "E", "U", "V", "W", "X", "Y", "Z", "AA"]];
+
         const content = [
           `Mode Displayed: **${mode.toUpperCase()}**`,
           "",
-          renderPlainTable("AllianceDashboard!A1:A9", padRows(leftBlock, 9, 1)),
-          "",
-          renderPlainTable("AllianceDashboard!D1:E9", padRows(middleBlock, 9, 2)),
-          "",
-          renderPlainTable("AllianceDashboard!U1:AA9", padRows(rightBlock, 9, 7)),
+          renderPlainTable("AllianceDashboard!A1:A9 + D1:E9 + U1:AA9", [...header, ...mergedRows]),
         ].join("\n");
 
         await safeReply(interaction, {
