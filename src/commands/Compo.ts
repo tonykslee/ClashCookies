@@ -144,7 +144,7 @@ function renderStateSvg(mode: GoogleSheetMode, rows: string[][]): string {
   let svg = "";
   svg += `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`;
   svg += `<rect x="0" y="0" width="${width}" height="${height}" fill="#101427"/>`;
-  svg += `<text x="${margin}" y="${margin + 30}" fill="#e8edf8" font-family="Courier New, monospace" font-size="26" font-weight="700">Alliance State (${mode.toUpperCase()})</text>`;
+  svg += `<text x="${margin}" y="${margin + 30}" fill="#e8edf8" font-family="DejaVu Sans Mono, monospace" font-size="26" font-weight="700">Alliance State (${mode.toUpperCase()})</text>`;
 
   for (let r = 0; r < tableRows.length; r += 1) {
     const y = margin + titleHeight + r * rowHeight;
@@ -156,7 +156,7 @@ function renderStateSvg(mode: GoogleSheetMode, rows: string[][]): string {
       const text = escapeXml((tableRows[r][c] ?? "").slice(0, widths[c]));
       const textY = y + Math.floor(rowHeight / 2) + 8;
       const fill = r === 0 ? "#9ec2ff" : "#f0f4ff";
-      svg += `<text x="${cx + cellPadding}" y="${textY}" fill="${fill}" font-family="Courier New, monospace" font-size="${fontSize}" font-weight="${r === 0 ? "700" : "500"}">${text}</text>`;
+      svg += `<text x="${cx + cellPadding}" y="${textY}" fill="${fill}" font-family="DejaVu Sans Mono, monospace" font-size="${fontSize}" font-weight="${r === 0 ? "700" : "500"}">${text}</text>`;
     }
   }
 
