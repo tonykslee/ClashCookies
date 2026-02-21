@@ -4,6 +4,7 @@ import { SettingsService } from "./SettingsService";
 
 export const SHEET_SETTING_ID_KEY = "google_sheet_id";
 export const SHEET_SETTING_TAB_KEY = "google_sheet_tab";
+const GOOGLE_API_TIMEOUT_MS = 20000;
 
 type AccessTokenCache = {
   token: string;
@@ -60,7 +61,7 @@ export class GoogleSheetsService {
       headers: {
         Authorization: `Bearer ${token}`,
       },
-      timeout: 10000,
+      timeout: GOOGLE_API_TIMEOUT_MS,
     });
 
     return response.data.values ?? [];
@@ -111,7 +112,7 @@ export class GoogleSheetsService {
         }).toString(),
         {
           headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          timeout: 10000,
+          timeout: GOOGLE_API_TIMEOUT_MS,
         }
       );
     }
@@ -129,7 +130,7 @@ export class GoogleSheetsService {
       }).toString(),
       {
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        timeout: 10000,
+        timeout: GOOGLE_API_TIMEOUT_MS,
       }
     );
   }
