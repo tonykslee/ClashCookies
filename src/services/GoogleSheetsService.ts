@@ -17,6 +17,17 @@ type AccessTokenCache = {
   expiresAtMs: number;
 };
 
+export type SheetRgbColor = {
+  red: number;
+  green: number;
+  blue: number;
+};
+
+export type SheetGridCell = {
+  value: string;
+  backgroundColor: SheetRgbColor | null;
+};
+
 export class GoogleSheetsService {
   private static accessTokenCache: AccessTokenCache | null = null;
 
@@ -117,6 +128,65 @@ export class GoogleSheetsService {
     });
 
     return response.data.values ?? [];
+  }
+
+  async readLinkedFormattedGrid(
+    range: string,
+    mode?: GoogleSheetMode
+  ): Promise<SheetGridCell[][]> {
+    const { sheetId } = await this.getLinkedSheet(mode);
+    if (!sheetId) {
+      if (mode) {
+        throw new Error(`No linked Google Sheet found for mode: ${mode}.`);
+      }
+      throw new Error("No linked Google Sheet found.");
+    }
+
+    return this.readFormattedGrid(sheetId, range);
+  }
+
+  async readFormattedGrid(sheetId: string, range: string): Promise<SheetGridCell[][]> {
+    const token = await this.getAccessToken();
+    const encodedSheetId = encodeURIComponent(sheetId);
+    const encodedRange = encodeURIComponent(range);
+    const fields = encodeURIComponent(
+      "sheets(data(rowData(values(formattedValue,effectiveFormat(backgroundColor)))))"
+    );
+    const url =
+      `https://sheets.googleapis.com/v4/spreadsheets/${encodedSheetId}` +
+      `?includeGridData=true&ranges=${encodedRange}&fields=${fields}`;
+
+    const response = await axios.get<{
+      sheets?: Array<{
+        data?: Array<{
+          rowData?: Array<{
+            values?: Array<{
+              formattedValue?: string;
+              effectiveFormat?: {
+                backgroundColor?: {
+                  red?: number;
+                  green?: number;
+                  blue?: number;
+                };
+              };
+            }>;
+          }>;
+        }>;
+      }>;
+    }>(url, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+      timeout: GOOGLE_API_TIMEOUT_MS,
+    });
+
+    const rowData = response.data.sheets?.[0]?.data?.[0]?.rowData ?? [];
+    return rowData.map((row) =>
+      (row.values ?? []).map((cell) => ({
+        value: cell.formattedValue ?? "",
+        backgroundColor: this.normalizeRgb(cell.effectiveFormat?.backgroundColor),
+      }))
+    );
   }
 
   private async getAccessToken(): Promise<string> {
@@ -259,6 +329,21 @@ export class GoogleSheetsService {
       .replace(/\+/g, "-")
       .replace(/\//g, "_")
       .replace(/=+$/g, "");
+  }
+
+  private normalizeRgb(input?: {
+    red?: number;
+    green?: number;
+    blue?: number;
+  }): SheetRgbColor | null {
+    if (!input) {
+      return null;
+    }
+    return {
+      red: typeof input.red === "number" ? input.red : 1,
+      green: typeof input.green === "number" ? input.green : 1,
+      blue: typeof input.blue === "number" ? input.blue : 1,
+    };
   }
 
   private getModeKeys(mode: GoogleSheetMode): { idKey: string; tabKey: string } {
