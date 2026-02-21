@@ -26,6 +26,14 @@ function readMode(interaction: ChatInputCommandInteraction): GoogleSheetMode {
   return rawMode === "war" ? "war" : "actual";
 }
 
+function parseNumber(value: string | undefined): number {
+  if (!value) return 0;
+  const digits = value.replace(/[^0-9-]/g, "");
+  if (!digits || digits === "-") return 0;
+  const parsed = Number(digits);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function clampCell(value: string): string {
   const sanitized = value.replace(/\s+/g, " ").trim();
   const normalizedLabelMap: Record<string, string> = {
@@ -101,6 +109,49 @@ function mergeStateRows(
     ]);
   }
   return out;
+}
+
+type PlacementCandidate = {
+  clanName: string;
+  totalWeight: number;
+  targetBand: number;
+  missingCount: number;
+  remainingToTarget: number;
+};
+
+function readPlacementCandidates(
+  clanCol: string[][],
+  totalCol: string[][],
+  targetBandCol: string[][],
+  rightBlock: string[][]
+): PlacementCandidate[] {
+  const missingHeaderRow = rightBlock[0] ?? [];
+  const missingIndex = missingHeaderRow.findIndex((v) =>
+    normalize(v).includes("missing")
+  );
+
+  const candidates: PlacementCandidate[] = [];
+  for (let i = 1; i < 9; i += 1) {
+    const clanName = (clanCol[i]?.[0] ?? "").trim();
+    if (!clanName) continue;
+
+    const totalWeight = parseNumber(totalCol[i]?.[0]);
+    const targetBand = parseNumber(targetBandCol[i]?.[0]);
+    const missingRaw =
+      missingIndex >= 0 ? rightBlock[i]?.[missingIndex] : rightBlock[i]?.[0];
+    const missingCount = parseNumber(missingRaw);
+    const remainingToTarget = targetBand - totalWeight;
+
+    candidates.push({
+      clanName,
+      totalWeight,
+      targetBand,
+      missingCount,
+      remainingToTarget,
+    });
+  }
+
+  return candidates;
 }
 
 const GLYPHS: Record<string, string[]> = {
@@ -291,6 +342,20 @@ export const Compo: Command = {
         },
       ],
     },
+    {
+      name: "place",
+      description: "Suggest clan placement for a given war weight (uses ACTUAL state)",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "weight",
+          description: "Member war weight",
+          type: ApplicationCommandOptionType.Integer,
+          required: true,
+          min_value: 1,
+        },
+      ],
+    },
   ],
   run: async (
     _client: Client,
@@ -386,6 +451,65 @@ export const Compo: Command = {
               name: `compo-state-${mode}.png`,
             },
           ],
+        });
+        return;
+      }
+
+      if (subcommand === "place") {
+        const inputWeight = interaction.options.getInteger("weight", true);
+        const stateMode: GoogleSheetMode = "actual";
+        const settings = new SettingsService();
+        const sheets = new GoogleSheetsService(settings);
+
+        const [clanCol, totalCol, targetBandCol, rightBlock] = await Promise.all([
+          sheets.readLinkedValues("AllianceDashboard!A1:A9", stateMode),
+          sheets.readLinkedValues("AllianceDashboard!D1:D9", stateMode),
+          sheets.readLinkedValues("AllianceDashboard!AW1:AW9", stateMode),
+          sheets.readLinkedValues("AllianceDashboard!U1:AA9", stateMode),
+        ]);
+
+        const candidates = readPlacementCandidates(
+          clanCol,
+          totalCol,
+          targetBandCol,
+          rightBlock
+        );
+
+        if (candidates.length === 0) {
+          await safeReply(interaction, {
+            ephemeral: true,
+            content: "No placement data found in ACTUAL state ranges.",
+          });
+          return;
+        }
+
+        const vacancyChoice = candidates
+          .filter((c) => c.missingCount > 0)
+          .sort((a, b) => {
+            if (b.missingCount !== a.missingCount) return b.missingCount - a.missingCount;
+            return Math.abs(a.remainingToTarget - inputWeight) - Math.abs(b.remainingToTarget - inputWeight);
+          })[0];
+
+        const compositionNeeds = candidates
+          .filter((c) => c.missingCount > 0)
+          .sort((a, b) => {
+            const aFit = Math.abs(a.remainingToTarget - inputWeight);
+            const bFit = Math.abs(b.remainingToTarget - inputWeight);
+            if (aFit !== bFit) return aFit - bFit;
+            return b.missingCount - a.missingCount;
+          })[0];
+
+        const option1 = vacancyChoice
+          ? `1) Vacancy option: **${abbreviateClan(vacancyChoice.clanName)}** (Missing: ${vacancyChoice.missingCount})`
+          : "1) Vacancy option: No clan currently shows a vacancy.";
+
+        const option2 = compositionNeeds
+          ? `2) Composition-fit option: **${abbreviateClan(compositionNeeds.clanName)}** (Target gap after add: ${compositionNeeds.remainingToTarget - inputWeight >= 0 ? "+" : ""}${(compositionNeeds.remainingToTarget - inputWeight).toLocaleString()})`
+          : "2) Composition-fit option: No clan has usable ACTUAL-state composition data.";
+
+        await safeReply(interaction, {
+          ephemeral: true,
+          content: `ACTUAL placement suggestions for weight **${inputWeight.toLocaleString()}**:\n${option1}\n${option2}`,
         });
         return;
       }

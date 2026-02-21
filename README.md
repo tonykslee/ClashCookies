@@ -56,6 +56,7 @@ Optional fallback auth (not required for your current setup):
 - `/sheet unlink [mode:actual|war]` - Remove one mode link or all links.
 - `/compo advice clan:<tracked-clan> [mode:actual|war]` - Pull advice using mode-specific sheet link.
 - `/compo state [mode:actual|war]` - Render AllianceDashboard state as an attached PNG image with mode label.
+- `/compo place weight:<number>` - Suggest placement options from ACTUAL state (vacancy + composition fit).
 - `/post sync time [role:<discordRole>]` - Open modal, compose sync-time message, post it, and pin it.
 
 ## Command Access Control
