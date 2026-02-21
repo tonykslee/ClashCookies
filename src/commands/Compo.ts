@@ -103,25 +103,74 @@ function mergeStateRows(
   return out;
 }
 
-function renderPlainTable(title: string, rows: string[][]): string {
-  if (rows.length === 0) {
-    return `**${title}**\n\`\`\`\n(no data)\n\`\`\``;
-  }
+function escapeXml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
 
-  const colCount = Math.max(...rows.map((row) => row.length), 1);
+function renderStateSvg(mode: GoogleSheetMode, rows: string[][]): string {
+  const tableRows = rows.length > 0 ? rows : [["(no data)"]];
+  const colCount = Math.max(...tableRows.map((row) => row.length), 1);
   const widths = Array.from({ length: colCount }, (_, col) =>
-    Math.max(1, ...rows.map((row) => (row[col] ?? "").length))
+    Math.min(
+      24,
+      Math.max(4, ...tableRows.map((row) => (row[col] ?? "").length))
+    )
   );
 
-  const divider = `+-${widths.map((w) => "-".repeat(w)).join("-+-")}-+`;
-  const body = rows
-    .map(
-      (row) =>
-        `| ${widths.map((w, col) => (row[col] ?? "").padEnd(w, " ")).join(" | ")} |`
-    )
-    .join("\n");
+  const fontSize = 22;
+  const charWidth = 12;
+  const rowHeight = 46;
+  const cellPadding = 14;
+  const titleHeight = 64;
+  const margin = 24;
 
-  return `**${title}**\n\`\`\`\n${divider}\n${body}\n${divider}\n\`\`\``;
+  const colPixelWidths = widths.map((w) => w * charWidth + cellPadding * 2);
+  const tableWidth = colPixelWidths.reduce((a, b) => a + b, 0);
+  const width = margin * 2 + tableWidth;
+  const height = margin * 2 + titleHeight + tableRows.length * rowHeight;
+
+  const xStarts: number[] = [];
+  let x = margin;
+  for (const w of colPixelWidths) {
+    xStarts.push(x);
+    x += w;
+  }
+
+  let svg = "";
+  svg += `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`;
+  svg += `<rect x="0" y="0" width="${width}" height="${height}" fill="#101427"/>`;
+  svg += `<text x="${margin}" y="${margin + 30}" fill="#e8edf8" font-family="Courier New, monospace" font-size="26" font-weight="700">Alliance State (${mode.toUpperCase()})</text>`;
+
+  for (let r = 0; r < tableRows.length; r += 1) {
+    const y = margin + titleHeight + r * rowHeight;
+    const rowFill = r % 2 === 0 ? "#171d34" : "#131a2f";
+    svg += `<rect x="${margin}" y="${y}" width="${tableWidth}" height="${rowHeight}" fill="${rowFill}"/>`;
+
+    for (let c = 0; c < colCount; c += 1) {
+      const cx = xStarts[c];
+      const text = escapeXml((tableRows[r][c] ?? "").slice(0, widths[c]));
+      const textY = y + Math.floor(rowHeight / 2) + 8;
+      const fill = r === 0 ? "#9ec2ff" : "#f0f4ff";
+      svg += `<text x="${cx + cellPadding}" y="${textY}" fill="${fill}" font-family="Courier New, monospace" font-size="${fontSize}" font-weight="${r === 0 ? "700" : "500"}">${text}</text>`;
+    }
+  }
+
+  for (let i = 0; i <= colCount; i += 1) {
+    const lineX = i === colCount ? margin + tableWidth : xStarts[i];
+    svg += `<line x1="${lineX}" y1="${margin + titleHeight}" x2="${lineX}" y2="${margin + titleHeight + tableRows.length * rowHeight}" stroke="#2a3558" stroke-width="1"/>`;
+  }
+  for (let i = 0; i <= tableRows.length; i += 1) {
+    const lineY = margin + titleHeight + i * rowHeight;
+    svg += `<line x1="${margin}" y1="${lineY}" x2="${margin + tableWidth}" y2="${lineY}" stroke="#2a3558" stroke-width="1"/>`;
+  }
+
+  svg += `</svg>`;
+  return svg;
 }
 
 export const Compo: Command = {
@@ -242,13 +291,17 @@ export const Compo: Command = {
 
         const content = [
           `Mode Displayed: **${mode.toUpperCase()}**`,
-          "",
-          renderPlainTable("AllianceDashboard!A1:A9 + D1 + U1:AA9 + AW1:AW9", mergedRows),
         ].join("\n");
+        const svg = renderStateSvg(mode, mergedRows);
 
-        await safeReply(interaction, {
-          ephemeral: true,
+        await interaction.editReply({
           content,
+          files: [
+            {
+              attachment: Buffer.from(svg, "utf8"),
+              name: `compo-state-${mode}.svg`,
+            },
+          ],
         });
         return;
       }
