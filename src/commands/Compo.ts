@@ -544,10 +544,9 @@ export const Compo: Command = {
           .sort((a, b) => {
             if (b.missingCount !== a.missingCount) return b.missingCount - a.missingCount;
             return Math.abs(a.remainingToTarget - inputWeight) - Math.abs(b.remainingToTarget - inputWeight);
-          })[0];
+          });
 
         const compositionNeeds = candidates
-          .filter((c) => c.missingCount > 0)
           .map((c) => {
             const key = normalize(`${bucket}-delta`);
             const delta = c.bucketDeltaByHeader[key] ?? 0;
@@ -557,21 +556,43 @@ export const Compo: Command = {
           .sort((a, b) => {
             if (a.delta !== b.delta) return a.delta - b.delta;
             return b.missingCount - a.missingCount;
-          })[0];
+          });
 
-        const option1 = vacancyChoice
-          ? `1) Vacancy option: **${abbreviateClan(vacancyChoice.clanName)}** (Missing: ${vacancyChoice.missingCount})`
-          : "1) Vacancy option: No clan currently shows a vacancy.";
+        const recommended = compositionNeeds.filter((c) => c.missingCount > 0);
+        const vacancyList = vacancyChoice;
+        const compositionList = compositionNeeds;
 
-        const option2 = compositionNeeds
-          ? `2) Composition-fit option: **${abbreviateClan(compositionNeeds.clanName)}** (${bucket} delta: ${compositionNeeds.delta})`
-          : `2) Composition-fit option: No clan currently needs ${bucket} weight (no negative delta).`;
+        const recommendedText =
+          recommended.length > 0
+            ? recommended
+                .map(
+                  (c) =>
+                    `${abbreviateClan(c.clanName)} (${c.missingCount}, ${c.delta})`
+                )
+                .join(", ")
+            : "None";
+
+        const vacancyText =
+          vacancyList.length > 0
+            ? vacancyList
+                .map((c) => `${abbreviateClan(c.clanName)} (${c.missingCount})`)
+                .join(", ")
+            : "None";
+
+        const compositionText =
+          compositionList.length > 0
+            ? compositionList
+                .map((c) => `${abbreviateClan(c.clanName)} (${c.delta})`)
+                .join(", ")
+            : "None";
 
         await safeReply(interaction, {
           ephemeral: true,
           content:
             `ACTUAL placement suggestions for weight **${inputWeight.toLocaleString()}** (${bucket} bucket):\n` +
-            `${option1}\n${option2}`,
+            `- Recommended: ${recommendedText}\n` +
+            `- Vacancy: ${vacancyText}\n` +
+            `- Composition: ${compositionText}`,
         });
         return;
       }
