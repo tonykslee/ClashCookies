@@ -45,12 +45,12 @@ Optional fallback auth (not required for your current setup):
 - `/lastseen tag:<playerTag>` - Show a player's last seen activity.
 - `/inactive days:<number>` - List players inactive for N days.
 - `/role-users role:<discordRole>` - List users in a role with pagination.
-- `/tracked-clan add tag:<tag>` - Add tracked clan.
-- `/tracked-clan remove tag:<tag>` - Remove tracked clan.
-- `/tracked-clan list` - List tracked clans.
-- `/sheet link sheet_id_or_url:<id-or-url> [tab:<tab-name>] [mode:actual|war]` - Link or relink sheet; mode is optional.
-- `/sheet show [mode:actual|war]` - Show linked sheet settings (single mode or all).
-- `/sheet unlink [mode:actual|war]` - Remove one mode link or all links.
+- `/tracked-clan add tag:<tag>` - Add tracked clan (Administrator only).
+- `/tracked-clan remove tag:<tag>` - Remove tracked clan (Administrator only).
+- `/tracked-clan list` - List tracked clans (available to non-admin users).
+- `/sheet link sheet_id_or_url:<id-or-url> [tab:<tab-name>] [mode:actual|war]` - Link or relink sheet; mode is optional (Administrator only).
+- `/sheet show [mode:actual|war]` - Show linked sheet settings (single mode or all, Administrator only).
+- `/sheet unlink [mode:actual|war]` - Remove one mode link or all links (Administrator only).
 - `/compo advice clan:<tracked-clan> [mode:actual|war]` - Pull advice using mode-specific sheet link.
 - `/compo state [mode:actual|war]` - Render AllianceDashboard state as an attached PNG image with mode label.
 
