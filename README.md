@@ -50,9 +50,9 @@ Optional fallback auth (not required for your current setup):
 - `/tracked-clan list` - List tracked clans.
 - `/sheet link sheet_id_or_url:<id-or-url> [tab:<tab-name>] [mode:actual|war]` - Link or relink sheet; mode is optional.
 - `/sheet show [mode:actual|war]` - Show linked sheet settings (single mode or all).
-- `/sheet preview [range:<A1-notation>] [mode:actual|war]` - Preview rows from selected sheet mode.
 - `/sheet unlink [mode:actual|war]` - Remove one mode link or all links.
 - `/compo advice clan:<tracked-clan> [mode:actual|war]` - Pull advice using mode-specific sheet link.
+- `/compo state [mode:actual|war]` - Show key AllianceDashboard state blocks with mode label and color indicators.
 
 ## Deployment Notes
 - Commands are registered as guild commands using `GUILD_ID` on startup.

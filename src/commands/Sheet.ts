@@ -20,11 +20,6 @@ function extractSheetId(input: string): string {
   return match?.[1] ?? trimmed;
 }
 
-function clampCell(value: string): string {
-  const sanitized = value.replace(/\s+/g, " ").trim();
-  return sanitized.length > 40 ? `${sanitized.slice(0, 37)}...` : sanitized;
-}
-
 function getSheetErrorHint(err: unknown): string {
   const message = formatError(err).toLowerCase();
 
@@ -124,26 +119,6 @@ export const Sheet: Command = {
         {
           name: "mode",
           description: "Unlink only one roster mode",
-          type: ApplicationCommandOptionType.String,
-          required: false,
-          choices: SHEET_MODE_CHOICES,
-        },
-      ],
-    },
-    {
-      name: "preview",
-      description: "Preview rows from the linked Google Sheet",
-      type: ApplicationCommandOptionType.Subcommand,
-      options: [
-        {
-          name: "range",
-          description: "A1 notation range, e.g. Sheet1!A1:D10",
-          type: ApplicationCommandOptionType.String,
-          required: false,
-        },
-        {
-          name: "mode",
-          description: "Preview from actual or war roster sheet",
           type: ApplicationCommandOptionType.String,
           required: false,
           choices: SHEET_MODE_CHOICES,
@@ -251,29 +226,11 @@ export const Sheet: Command = {
         return;
       }
 
-      if (subcommand === "preview") {
-        const range = interaction.options.getString("range", false) ?? undefined;
-        const values = await sheets.readLinkedValues(range, mode);
-
-        if (values.length === 0) {
-          await safeReply(interaction, {
-            ephemeral: true,
-            content: "No rows found for that range.",
-          });
-          return;
-        }
-
-        const rendered = values
-          .slice(0, 8)
-          .map((row) => row.slice(0, 5).map(clampCell).join(" | "))
-          .join("\n");
-        const suffix = values.length > 8 ? `\n...and ${values.length - 8} more row(s).` : "";
-
-        await safeReply(interaction, {
-          ephemeral: true,
-          content: `Preview (${range ?? "default range"}${mode ? `, ${mode} mode` : ""}):\n\`\`\`\n${rendered}\n\`\`\`${suffix}`,
-        });
-      }
+      await safeReply(interaction, {
+        ephemeral: true,
+        content: "Unknown subcommand.",
+      });
+      return;
     } catch (err) {
       console.error(`sheet command failed: ${formatError(err)}`);
       await safeReply(interaction, {
