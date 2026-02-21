@@ -4,13 +4,7 @@ import { SettingsService } from "./SettingsService";
 
 export const SHEET_SETTING_ID_KEY = "google_sheet_id";
 export const SHEET_SETTING_TAB_KEY = "google_sheet_tab";
-export const SHEET_SETTING_ACTUAL_ID_KEY = "google_sheet_actual_id";
-export const SHEET_SETTING_ACTUAL_TAB_KEY = "google_sheet_actual_tab";
-export const SHEET_SETTING_WAR_ID_KEY = "google_sheet_war_id";
-export const SHEET_SETTING_WAR_TAB_KEY = "google_sheet_war_tab";
 const GOOGLE_API_TIMEOUT_MS = 20000;
-
-export type GoogleSheetMode = "actual" | "war";
 
 type AccessTokenCache = {
   token: string;
@@ -22,60 +16,20 @@ export class GoogleSheetsService {
 
   constructor(private settings: SettingsService) {}
 
-  async getLinkedSheet(
-    mode?: GoogleSheetMode
-  ): Promise<{ sheetId: string; tabName: string | null }> {
-    if (mode) {
-      const modeKeys = this.getModeKeys(mode);
-      const modeSheetId = await this.settings.get(modeKeys.idKey);
-      const modeTabName = await this.settings.get(modeKeys.tabKey);
-
-      if (modeSheetId) {
-        return { sheetId: modeSheetId, tabName: modeTabName };
-      }
-
-      if (mode === "actual") {
-        const legacySheetId = await this.settings.get(SHEET_SETTING_ID_KEY);
-        const legacyTabName = await this.settings.get(SHEET_SETTING_TAB_KEY);
-        return { sheetId: legacySheetId ?? "", tabName: legacyTabName };
-      }
-
-      return { sheetId: "", tabName: null };
-    }
-
+  async getLinkedSheet(): Promise<{ sheetId: string; tabName: string | null }> {
     const sheetId = await this.settings.get(SHEET_SETTING_ID_KEY);
     const tabName = await this.settings.get(SHEET_SETTING_TAB_KEY);
     return { sheetId: sheetId ?? "", tabName };
   }
 
-  async setLinkedSheet(
-    sheetId: string,
-    tabName?: string,
-    mode?: GoogleSheetMode
-  ): Promise<void> {
-    if (mode) {
-      const modeKeys = this.getModeKeys(mode);
-      await this.settings.set(modeKeys.idKey, sheetId);
-      if (tabName && tabName.trim().length > 0) {
-        await this.settings.set(modeKeys.tabKey, tabName.trim());
-      }
-      return;
-    }
-
+  async setLinkedSheet(sheetId: string, tabName?: string): Promise<void> {
     await this.settings.set(SHEET_SETTING_ID_KEY, sheetId);
     if (tabName && tabName.trim().length > 0) {
       await this.settings.set(SHEET_SETTING_TAB_KEY, tabName.trim());
     }
   }
 
-  async clearLinkedSheet(mode?: GoogleSheetMode): Promise<void> {
-    if (mode) {
-      const modeKeys = this.getModeKeys(mode);
-      await this.settings.delete(modeKeys.idKey);
-      await this.settings.delete(modeKeys.tabKey);
-      return;
-    }
-
+  async clearLinkedSheet(): Promise<void> {
     await this.settings.delete(SHEET_SETTING_ID_KEY);
     await this.settings.delete(SHEET_SETTING_TAB_KEY);
   }
@@ -87,15 +41,9 @@ export class GoogleSheetsService {
     await this.readValues(sheetId, range);
   }
 
-  async readLinkedValues(
-    range?: string,
-    mode?: GoogleSheetMode
-  ): Promise<string[][]> {
-    const { sheetId, tabName } = await this.getLinkedSheet(mode);
+  async readLinkedValues(range?: string): Promise<string[][]> {
+    const { sheetId, tabName } = await this.getLinkedSheet();
     if (!sheetId) {
-      if (mode) {
-        throw new Error(`No linked Google Sheet found for mode: ${mode}.`);
-      }
       throw new Error("No linked Google Sheet found.");
     }
 
@@ -259,19 +207,5 @@ export class GoogleSheetsService {
       .replace(/\+/g, "-")
       .replace(/\//g, "_")
       .replace(/=+$/g, "");
-  }
-
-  private getModeKeys(mode: GoogleSheetMode): { idKey: string; tabKey: string } {
-    if (mode === "actual") {
-      return {
-        idKey: SHEET_SETTING_ACTUAL_ID_KEY,
-        tabKey: SHEET_SETTING_ACTUAL_TAB_KEY,
-      };
-    }
-
-    return {
-      idKey: SHEET_SETTING_WAR_ID_KEY,
-      tabKey: SHEET_SETTING_WAR_TAB_KEY,
-    };
   }
 }

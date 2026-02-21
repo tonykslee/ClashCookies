@@ -57,21 +57,19 @@ export const Compo: Command = {
 
       const settings = new SettingsService();
       const sheets = new GoogleSheetsService(settings);
-      const clanRows = await sheets.readLinkedValues("AllianceDashboard!A13:A20");
-      const adviceRows = await sheets.readLinkedValues("AllianceDashboard!F13:F20");
+      const rows = await sheets.readLinkedValues("AllianceDashboard!A13:F20");
 
-      if (clanRows.length === 0) {
+      if (rows.length === 0) {
         await safeReply(interaction, {
           ephemeral: true,
-          content: "No rows found in AllianceDashboard!A13:A20.",
+          content: "No rows found in AllianceDashboard!A13:F20.",
         });
         return;
       }
 
-      const rowCount = Math.max(clanRows.length, adviceRows.length);
-      for (let i = 0; i < rowCount; i += 1) {
-        const clanName = clanRows[i]?.[0]?.trim();
-        const advice = adviceRows[i]?.[0]?.trim();
+      for (const row of rows) {
+        const clanName = row[0]?.trim();
+        const advice = row[5]?.trim();
         if (!clanName) continue;
 
         if (normalize(clanName) === targetClan) {
@@ -86,7 +84,7 @@ export const Compo: Command = {
         }
       }
 
-      const knownClans = clanRows
+      const knownClans = rows
         .map((row) => row[0]?.trim())
         .filter((name): name is string => Boolean(name));
 
