@@ -82,16 +82,13 @@ function mergeStateRows(
   const out: string[][] = [];
   for (let i = 0; i < 9; i += 1) {
     const rightRow = right[i] ?? ["", "", "", "", "", "", ""];
-    const beforeTargetBand = rightRow.slice(0, 2);
-    const afterTargetBand = rightRow.slice(2);
     const targetBandValue = (targetBand[i] ?? [""])[0] ?? "";
 
     out.push([
       abbreviateClan((left[i] ?? [""])[0] ?? ""),
       (middle[i] ?? ["", ""])[0] ?? "",
-      ...beforeTargetBand,
       targetBandValue,
-      ...afterTargetBand,
+      ...rightRow,
     ]);
   }
   return out;
