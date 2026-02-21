@@ -134,11 +134,11 @@ export const Sheet: Command = {
     try {
       if (
         interaction.inGuild() &&
-        !interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)
+        !interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)
       ) {
         await safeReply(interaction, {
           ephemeral: true,
-          content: "You need Manage Server permission to manage sheet settings.",
+          content: "You need Administrator permission to use /sheet commands.",
         });
         return;
       }
