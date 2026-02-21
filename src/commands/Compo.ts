@@ -103,36 +103,128 @@ function mergeStateRows(
   return out;
 }
 
-function escapeXml(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
+const GLYPHS: Record<string, string[]> = {
+  " ": ["00000", "00000", "00000", "00000", "00000", "00000", "00000"],
+  "-": ["00000", "00000", "00000", "01110", "00000", "00000", "00000"],
+  ",": ["00000", "00000", "00000", "00000", "00110", "00110", "00100"],
+  ".": ["00000", "00000", "00000", "00000", "00000", "00110", "00110"],
+  ":": ["00000", "00110", "00110", "00000", "00110", "00110", "00000"],
+  "<": ["00010", "00100", "01000", "10000", "01000", "00100", "00010"],
+  "=": ["00000", "11111", "00000", "11111", "00000", "00000", "00000"],
+  "/": ["00001", "00010", "00100", "01000", "10000", "00000", "00000"],
+  "(": ["00010", "00100", "01000", "01000", "01000", "00100", "00010"],
+  ")": ["01000", "00100", "00010", "00010", "00010", "00100", "01000"],
+  "0": ["01110", "10001", "10011", "10101", "11001", "10001", "01110"],
+  "1": ["00100", "01100", "00100", "00100", "00100", "00100", "01110"],
+  "2": ["01110", "10001", "00001", "00010", "00100", "01000", "11111"],
+  "3": ["11110", "00001", "00001", "01110", "00001", "00001", "11110"],
+  "4": ["00010", "00110", "01010", "10010", "11111", "00010", "00010"],
+  "5": ["11111", "10000", "10000", "11110", "00001", "00001", "11110"],
+  "6": ["01110", "10000", "10000", "11110", "10001", "10001", "01110"],
+  "7": ["11111", "00001", "00010", "00100", "01000", "01000", "01000"],
+  "8": ["01110", "10001", "10001", "01110", "10001", "10001", "01110"],
+  "9": ["01110", "10001", "10001", "01111", "00001", "00001", "01110"],
+  A: ["01110", "10001", "10001", "11111", "10001", "10001", "10001"],
+  B: ["11110", "10001", "10001", "11110", "10001", "10001", "11110"],
+  C: ["01110", "10001", "10000", "10000", "10000", "10001", "01110"],
+  D: ["11100", "10010", "10001", "10001", "10001", "10010", "11100"],
+  E: ["11111", "10000", "10000", "11110", "10000", "10000", "11111"],
+  F: ["11111", "10000", "10000", "11110", "10000", "10000", "10000"],
+  G: ["01110", "10001", "10000", "10111", "10001", "10001", "01110"],
+  H: ["10001", "10001", "10001", "11111", "10001", "10001", "10001"],
+  I: ["01110", "00100", "00100", "00100", "00100", "00100", "01110"],
+  J: ["00001", "00001", "00001", "00001", "10001", "10001", "01110"],
+  K: ["10001", "10010", "10100", "11000", "10100", "10010", "10001"],
+  L: ["10000", "10000", "10000", "10000", "10000", "10000", "11111"],
+  M: ["10001", "11011", "10101", "10101", "10001", "10001", "10001"],
+  N: ["10001", "11001", "10101", "10011", "10001", "10001", "10001"],
+  O: ["01110", "10001", "10001", "10001", "10001", "10001", "01110"],
+  P: ["11110", "10001", "10001", "11110", "10000", "10000", "10000"],
+  Q: ["01110", "10001", "10001", "10001", "10101", "10010", "01101"],
+  R: ["11110", "10001", "10001", "11110", "10100", "10010", "10001"],
+  S: ["01111", "10000", "10000", "01110", "00001", "00001", "11110"],
+  T: ["11111", "00100", "00100", "00100", "00100", "00100", "00100"],
+  U: ["10001", "10001", "10001", "10001", "10001", "10001", "01110"],
+  V: ["10001", "10001", "10001", "10001", "10001", "01010", "00100"],
+  W: ["10001", "10001", "10001", "10101", "10101", "10101", "01010"],
+  X: ["10001", "10001", "01010", "00100", "01010", "10001", "10001"],
+  Y: ["10001", "10001", "01010", "00100", "00100", "00100", "00100"],
+  Z: ["11111", "00001", "00010", "00100", "01000", "10000", "11111"],
+  "?": ["01110", "10001", "00001", "00010", "00100", "00000", "00100"],
+};
+
+function hexToRgb(hex: string): [number, number, number] {
+  const clean = hex.replace("#", "");
+  return [
+    parseInt(clean.slice(0, 2), 16),
+    parseInt(clean.slice(2, 4), 16),
+    parseInt(clean.slice(4, 6), 16),
+  ];
 }
 
-function renderStateSvg(mode: GoogleSheetMode, rows: string[][]): string {
-  const tableRows = rows.length > 0 ? rows : [["(no data)"]];
+function renderStatePng(mode: GoogleSheetMode, rows: string[][]): Buffer {
+  const { PNG } = require("pngjs");
+  const tableRows = rows.length > 0 ? rows : [["(NO DATA)"]];
   const colCount = Math.max(...tableRows.map((row) => row.length), 1);
   const widths = Array.from({ length: colCount }, (_, col) =>
-    Math.min(
-      24,
-      Math.max(4, ...tableRows.map((row) => (row[col] ?? "").length))
-    )
+    Math.min(24, Math.max(4, ...tableRows.map((row) => (row[col] ?? "").length)))
   );
 
-  const fontSize = 22;
-  const charWidth = 12;
-  const rowHeight = 46;
-  const cellPadding = 14;
-  const titleHeight = 64;
-  const margin = 24;
+  const scale = 3;
+  const glyphW = 5 * scale;
+  const glyphH = 7 * scale;
+  const glyphGap = scale;
+  const charPx = glyphW + glyphGap;
+  const cellPadX = 12;
+  const rowHeight = glyphH + 18;
+  const titleHeight = glyphH + 26;
+  const margin = 20;
 
-  const colPixelWidths = widths.map((w) => w * charWidth + cellPadding * 2);
+  const colPixelWidths = widths.map((w) => w * charPx + cellPadX * 2);
   const tableWidth = colPixelWidths.reduce((a, b) => a + b, 0);
   const width = margin * 2 + tableWidth;
   const height = margin * 2 + titleHeight + tableRows.length * rowHeight;
+  const png = new PNG({ width, height });
+
+  const setPixel = (x: number, y: number, rgb: [number, number, number]) => {
+    if (x < 0 || y < 0 || x >= width || y >= height) return;
+    const idx = (width * y + x) * 4;
+    png.data[idx] = rgb[0];
+    png.data[idx + 1] = rgb[1];
+    png.data[idx + 2] = rgb[2];
+    png.data[idx + 3] = 255;
+  };
+  const fillRect = (x: number, y: number, w: number, h: number, rgb: [number, number, number]) => {
+    for (let yy = y; yy < y + h; yy += 1) {
+      for (let xx = x; xx < x + w; xx += 1) {
+        setPixel(xx, yy, rgb);
+      }
+    }
+  };
+  const drawChar = (x: number, y: number, ch: string, rgb: [number, number, number]) => {
+    const glyph = GLYPHS[ch] ?? GLYPHS["?"];
+    for (let gy = 0; gy < glyph.length; gy += 1) {
+      for (let gx = 0; gx < glyph[gy].length; gx += 1) {
+        if (glyph[gy][gx] !== "1") continue;
+        fillRect(x + gx * scale, y + gy * scale, scale, scale, rgb);
+      }
+    }
+  };
+  const drawText = (x: number, y: number, text: string, rgb: [number, number, number]) => {
+    const upper = text.toUpperCase();
+    for (let i = 0; i < upper.length; i += 1) {
+      drawChar(x + i * charPx, y, upper[i], rgb);
+    }
+  };
+
+  const bg = hexToRgb("#101427");
+  const rowA = hexToRgb("#171d34");
+  const rowB = hexToRgb("#131a2f");
+  const grid = hexToRgb("#2a3558");
+  const text = hexToRgb("#f0f4ff");
+  const title = hexToRgb("#9ec2ff");
+  fillRect(0, 0, width, height, bg);
+  drawText(margin, margin + 2, `ALLIANCE STATE (${mode})`, title);
 
   const xStarts: number[] = [];
   let x = margin;
@@ -140,46 +232,24 @@ function renderStateSvg(mode: GoogleSheetMode, rows: string[][]): string {
     xStarts.push(x);
     x += w;
   }
-
-  let svg = "";
-  svg += `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`;
-  svg += `<rect x="0" y="0" width="${width}" height="${height}" fill="#101427"/>`;
-  svg += `<text x="${margin}" y="${margin + 30}" fill="#e8edf8" font-family="DejaVu Sans Mono, Noto Sans Mono, monospace" font-size="26" font-weight="700">Alliance State (${mode.toUpperCase()})</text>`;
-
   for (let r = 0; r < tableRows.length; r += 1) {
     const y = margin + titleHeight + r * rowHeight;
-    const rowFill = r % 2 === 0 ? "#171d34" : "#131a2f";
-    svg += `<rect x="${margin}" y="${y}" width="${tableWidth}" height="${rowHeight}" fill="${rowFill}"/>`;
-
+    fillRect(margin, y, tableWidth, rowHeight, r % 2 === 0 ? rowA : rowB);
     for (let c = 0; c < colCount; c += 1) {
-      const cx = xStarts[c];
-      const text = escapeXml((tableRows[r][c] ?? "").slice(0, widths[c]));
-      const textY = y + Math.floor(rowHeight / 2) + 8;
-      const fill = r === 0 ? "#9ec2ff" : "#f0f4ff";
-      svg += `<text x="${cx + cellPadding}" y="${textY}" fill="${fill}" font-family="DejaVu Sans Mono, Noto Sans Mono, monospace" font-size="${fontSize}" font-weight="${r === 0 ? "700" : "500"}">${text}</text>`;
+      const cell = (tableRows[r][c] ?? "").slice(0, widths[c]);
+      drawText(xStarts[c] + cellPadX, y + 8, cell, r === 0 ? title : text);
     }
   }
-
   for (let i = 0; i <= colCount; i += 1) {
     const lineX = i === colCount ? margin + tableWidth : xStarts[i];
-    svg += `<line x1="${lineX}" y1="${margin + titleHeight}" x2="${lineX}" y2="${margin + titleHeight + tableRows.length * rowHeight}" stroke="#2a3558" stroke-width="1"/>`;
+    fillRect(lineX, margin + titleHeight, 1, tableRows.length * rowHeight, grid);
   }
   for (let i = 0; i <= tableRows.length; i += 1) {
     const lineY = margin + titleHeight + i * rowHeight;
-    svg += `<line x1="${margin}" y1="${lineY}" x2="${margin + tableWidth}" y2="${lineY}" stroke="#2a3558" stroke-width="1"/>`;
+    fillRect(margin, lineY, tableWidth, 1, grid);
   }
 
-  svg += `</svg>`;
-  return svg;
-}
-
-async function renderStatePng(mode: GoogleSheetMode, rows: string[][]): Promise<Buffer> {
-  // Railway can inject broken/null fontconfig vars; force sane defaults before loading sharp.
-  process.env.FONTCONFIG_PATH = "/etc/fonts";
-  process.env.FONTCONFIG_FILE = "/etc/fonts/fonts.conf";
-  const sharp = require("sharp");
-  const svg = renderStateSvg(mode, rows);
-  return sharp(Buffer.from(svg, "utf8")).png().toBuffer();
+  return PNG.sync.write(png);
 }
 
 export const Compo: Command = {
