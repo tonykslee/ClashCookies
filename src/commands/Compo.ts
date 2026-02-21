@@ -173,6 +173,12 @@ function renderStateSvg(mode: GoogleSheetMode, rows: string[][]): string {
   return svg;
 }
 
+async function renderStatePng(mode: GoogleSheetMode, rows: string[][]): Promise<Buffer> {
+  const sharp = require("sharp");
+  const svg = renderStateSvg(mode, rows);
+  return sharp(Buffer.from(svg, "utf8")).png().toBuffer();
+}
+
 export const Compo: Command = {
   name: "compo",
   description: "Composition tools",
@@ -292,14 +298,14 @@ export const Compo: Command = {
         const content = [
           `Mode Displayed: **${mode.toUpperCase()}**`,
         ].join("\n");
-        const svg = renderStateSvg(mode, mergedRows);
+        const png = await renderStatePng(mode, mergedRows);
 
         await interaction.editReply({
           content,
           files: [
             {
-              attachment: Buffer.from(svg, "utf8"),
-              name: `compo-state-${mode}.svg`,
+              attachment: png,
+              name: `compo-state-${mode}.png`,
             },
           ],
         });
