@@ -1,10 +1,12 @@
 import {
   ApplicationCommandOptionType,
+  AutocompleteInteraction,
   ChatInputCommandInteraction,
   Client,
 } from "discord.js";
 import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
+import { prisma } from "../prisma";
 import { safeReply } from "../helper/safeReply";
 import { CoCService } from "../services/CoCService";
 import { GoogleSheetsService } from "../services/GoogleSheetsService";
@@ -25,9 +27,10 @@ export const Compo: Command = {
       options: [
         {
           name: "clan",
-          description: "Tracked clan name (as listed in your sheet A13:A20)",
+          description: "Tracked clan name",
           type: ApplicationCommandOptionType.String,
           required: true,
+          autocomplete: true,
         },
       ],
     },
@@ -54,36 +57,36 @@ export const Compo: Command = {
 
       const settings = new SettingsService();
       const sheets = new GoogleSheetsService(settings);
-      const linked = await sheets.getLinkedSheet();
-      const range = linked.tabName ? `${linked.tabName}!A13:F20` : "A13:F20";
-      const rows = await sheets.readLinkedValues(range);
+      const clanRows = await sheets.readLinkedValues("AllianceDashboard!A13:A20");
+      const adviceRows = await sheets.readLinkedValues("AllianceDashboard!F13:F20");
 
-      if (rows.length === 0) {
+      if (clanRows.length === 0) {
         await safeReply(interaction, {
           ephemeral: true,
-          content:
-            "No rows found in A13:F20. Verify your sheet tab and that clan names are in A13:A20.",
+          content: "No rows found in AllianceDashboard!A13:A20.",
         });
         return;
       }
 
-      for (const row of rows) {
-        const clanName = row[0]?.trim();
-        const advice = row[5]?.trim();
+      const rowCount = Math.max(clanRows.length, adviceRows.length);
+      for (let i = 0; i < rowCount; i += 1) {
+        const clanName = clanRows[i]?.[0]?.trim();
+        const advice = adviceRows[i]?.[0]?.trim();
         if (!clanName) continue;
 
         if (normalize(clanName) === targetClan) {
           await safeReply(interaction, {
             ephemeral: true,
-            content: advice && advice.length > 0
-              ? `**${clanName}** adjustment:\n${advice}`
-              : `Found **${clanName}**, but there is no advice text in column F.`,
+            content:
+              advice && advice.length > 0
+                ? `**${clanName}** adjustment:\n${advice}`
+                : `Found **${clanName}**, but there is no advice text in AllianceDashboard!F13:F20.`,
           });
           return;
         }
       }
 
-      const knownClans = rows
+      const knownClans = clanRows
         .map((row) => row[0]?.trim())
         .filter((name): name is string => Boolean(name));
 
@@ -99,8 +102,32 @@ export const Compo: Command = {
       await safeReply(interaction, {
         ephemeral: true,
         content:
-          "Failed to get compo advice. Check linked sheet access and A13:F20 layout.",
+          "Failed to get compo advice. Check linked sheet access and AllianceDashboard A13:A20 + F13:F20 layout.",
       });
     }
+  },
+  autocomplete: async (interaction: AutocompleteInteraction) => {
+    const focused = interaction.options.getFocused(true);
+    if (focused.name !== "clan") {
+      await interaction.respond([]);
+      return;
+    }
+
+    const query = normalize(String(focused.value ?? ""));
+    const tracked = await prisma.trackedClan.findMany({
+      orderBy: { createdAt: "asc" },
+      select: { name: true, tag: true },
+    });
+
+    const names = tracked
+      .map((c) => c.name?.trim() || c.tag.trim())
+      .filter((v, i, arr) => v.length > 0 && arr.indexOf(v) === i);
+
+    const filtered = names
+      .filter((name) => normalize(name).includes(query))
+      .slice(0, 25)
+      .map((name) => ({ name, value: name }));
+
+    await interaction.respond(filtered);
   },
 };

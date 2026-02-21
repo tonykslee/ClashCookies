@@ -1,4 +1,8 @@
-import { Client, ChatInputCommandInteraction } from "discord.js";
+import {
+  AutocompleteInteraction,
+  ChatInputCommandInteraction,
+  Client,
+} from "discord.js";
 import { CoCService } from "./services/CoCService";
 
 export interface Command {
@@ -9,5 +13,8 @@ export interface Command {
     client: Client,
     interaction: ChatInputCommandInteraction,
     cocService: CoCService
+  ) => Promise<void>;
+  autocomplete?: (
+    interaction: AutocompleteInteraction
   ) => Promise<void>;
 }
