@@ -6,6 +6,7 @@ Discord bot for Clash of Clans activity tooling.
 - Supports last seen and inactivity queries.
 - Manages tracked clans at runtime (`/tracked-clan ...`).
 - Links to a Google Sheet at runtime (`/sheet ...`).
+- Supports mode-specific sheet links for `actual` and `war` roster workflows.
 
 ## Setup
 1. Create a `.env` with required Discord, CoC API, and database values.
@@ -47,10 +48,11 @@ Optional fallback auth (not required for your current setup):
 - `/tracked-clan add tag:<tag>` - Add tracked clan.
 - `/tracked-clan remove tag:<tag>` - Remove tracked clan.
 - `/tracked-clan list` - List tracked clans.
-- `/sheet link sheet_id_or_url:<id-or-url> [tab:<tab-name>]` - Link or relink sheet.
-- `/sheet show` - Show linked sheet settings.
-- `/sheet preview [range:<A1-notation>]` - Preview sheet rows.
-- `/sheet unlink` - Remove linked sheet settings.
+- `/sheet link sheet_id_or_url:<id-or-url> [tab:<tab-name>] [mode:actual|war]` - Link or relink sheet; mode is optional.
+- `/sheet show [mode:actual|war]` - Show linked sheet settings (single mode or all).
+- `/sheet preview [range:<A1-notation>] [mode:actual|war]` - Preview rows from selected sheet mode.
+- `/sheet unlink [mode:actual|war]` - Remove one mode link or all links.
+- `/compo advice clan:<tracked-clan> [mode:actual|war]` - Pull advice using mode-specific sheet link.
 
 ## Deployment Notes
 - Commands are registered as guild commands using `GUILD_ID` on startup.

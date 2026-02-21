@@ -9,7 +9,10 @@ import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
 import { safeReply } from "../helper/safeReply";
 import { CoCService } from "../services/CoCService";
-import { GoogleSheetsService } from "../services/GoogleSheetsService";
+import {
+  GoogleSheetMode,
+  GoogleSheetsService,
+} from "../services/GoogleSheetsService";
 import { SettingsService } from "../services/SettingsService";
 
 function normalize(value: string): string {
@@ -31,6 +34,16 @@ export const Compo: Command = {
           type: ApplicationCommandOptionType.String,
           required: true,
           autocomplete: true,
+        },
+        {
+          name: "mode",
+          description: "Use the actual or war roster sheet link",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          choices: [
+            { name: "Actual Roster", value: "actual" },
+            { name: "War Roster", value: "war" },
+          ],
         },
       ],
     },
@@ -54,10 +67,12 @@ export const Compo: Command = {
 
       const clanInput = interaction.options.getString("clan", true);
       const targetClan = normalize(clanInput);
+      const rawMode = interaction.options.getString("mode", false);
+      const mode: GoogleSheetMode = rawMode === "war" ? "war" : "actual";
 
       const settings = new SettingsService();
       const sheets = new GoogleSheetsService(settings);
-      const rows = await sheets.readLinkedValues("AllianceDashboard!A13:F20");
+      const rows = await sheets.readLinkedValues("AllianceDashboard!A13:F20", mode);
 
       if (rows.length === 0) {
         await safeReply(interaction, {
@@ -100,7 +115,7 @@ export const Compo: Command = {
       await safeReply(interaction, {
         ephemeral: true,
         content:
-          "Failed to get compo advice. Check linked sheet access and AllianceDashboard A13:A20 + F13:F20 layout.",
+          "Failed to get compo advice. Check linked sheet access for the selected mode and AllianceDashboard A13:A20 + F13:F20 layout.",
       });
     }
   },
