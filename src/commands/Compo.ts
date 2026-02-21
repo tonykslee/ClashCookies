@@ -28,8 +28,17 @@ function readMode(interaction: ChatInputCommandInteraction): GoogleSheetMode {
 
 function clampCell(value: string): string {
   const sanitized = value.replace(/\s+/g, " ").trim();
+  const normalizedLabelMap: Record<string, string> = {
+    "missing weights": "Missing",
+    "th18-delta": "TH18",
+    "th17-delta": "TH17",
+    "th16-delta": "TH16",
+    "th15-delta": "TH15",
+    "th14-delta": "TH14",
+    "<=th13-delta": "<=TH13",
+  };
   const normalizedLabel =
-    sanitized.toLowerCase() === "missing weights" ? "Missing" : sanitized;
+    normalizedLabelMap[sanitized.toLowerCase()] ?? sanitized;
   return normalizedLabel.length > 32
     ? `${normalizedLabel.slice(0, 29)}...`
     : normalizedLabel;
