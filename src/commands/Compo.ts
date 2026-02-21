@@ -562,7 +562,7 @@ export const Compo: Command = {
             ? recommended
                 .map(
                   (c) =>
-                    `${abbreviateClan(c.clanName)} (${c.missingCount}, ${c.delta})`
+                    `${abbreviateClan(c.clanName)} (Missing ${c.missingCount}, ${bucket.toLowerCase()}-delta: ${c.delta})`
                 )
                 .join(", ")
             : "None";
