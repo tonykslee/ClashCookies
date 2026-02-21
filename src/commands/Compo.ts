@@ -31,6 +31,29 @@ function clampCell(value: string): string {
   return sanitized.length > 32 ? `${sanitized.slice(0, 29)}...` : sanitized;
 }
 
+function abbreviateClan(value: string): string {
+  const normalized = value
+    .normalize("NFKC")
+    .replace(/["'`]/g, "")
+    .replace(/[^A-Za-z0-9 ]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toUpperCase();
+
+  const map: Record<string, string> = {
+    "RISING DAWN": "RD",
+    "ZERO GRAVITY": "ZG",
+    "DARK EMPIRE": "DE",
+    "STEEL EMPIRE 2": "SE",
+    "THEWISECOWBOYS": "TWC",
+    MARVELS: "MV",
+    "ROCKY ROAD": "RR",
+    AKATSUKI: "AK",
+  };
+
+  return map[normalized] ?? value;
+}
+
 function padRows(rows: string[][], rowCount: number, colCount: number): string[][] {
   const padded: string[][] = [];
   for (let r = 0; r < rowCount; r += 1) {
@@ -53,8 +76,8 @@ function mergeStateRows(
   for (let i = 0; i < 9; i += 1) {
     out.push([
       String(i + 1),
-      ...(left[i] ?? [""]),
-      ...(middle[i] ?? ["", ""]),
+      abbreviateClan((left[i] ?? [""])[0] ?? ""),
+      (middle[i] ?? ["", ""])[0] ?? "",
       ...(right[i] ?? ["", "", "", "", "", "", ""]),
     ]);
   }
@@ -195,12 +218,11 @@ export const Compo: Command = {
           padRows(middleBlock, 9, 2),
           padRows(rightBlock, 9, 7)
         );
-        const header = [["#", "A", "D", "E", "U", "V", "W", "X", "Y", "Z", "AA"]];
 
         const content = [
           `Mode Displayed: **${mode.toUpperCase()}**`,
           "",
-          renderPlainTable("AllianceDashboard!A1:A9 + D1:E9 + U1:AA9", [...header, ...mergedRows]),
+          renderPlainTable("AllianceDashboard!A1:A9 + D1 + U1:AA9", mergedRows),
         ].join("\n");
 
         await safeReply(interaction, {
