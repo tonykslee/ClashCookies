@@ -25,6 +25,7 @@ export const COMMAND_PERMISSION_TARGETS = [
   "compo",
   "compo:advice",
   "compo:state",
+  "compo:place",
   "cc",
   "cc:player",
   "cc:clan",
