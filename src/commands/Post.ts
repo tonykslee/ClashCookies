@@ -168,6 +168,10 @@ function buildSyncMessage(epochSeconds: number, roleId: string): string {
 <@&${roleId}>`;
 }
 
+function isBotSyncTimeMessage(content: string): boolean {
+  return content.startsWith("# Sync time :gem:");
+}
+
 function buildModalCustomId(userId: string): string {
   return `${POST_SYNC_TIME_MODAL_PREFIX}:${userId}`;
 }
@@ -326,6 +330,14 @@ export async function handlePostModalSubmit(
 
   let pinNote = "";
   try {
+    const pinned = await channel.messages.fetchPinned();
+    for (const pinnedMessage of pinned.values()) {
+      if (pinnedMessage.id === postedMessage.id) continue;
+      if (!pinnedMessage.author.bot) continue;
+      if (!isBotSyncTimeMessage(pinnedMessage.content)) continue;
+      await pinnedMessage.unpin().catch(() => undefined);
+    }
+
     await postedMessage.pin();
   } catch {
     pinNote = " Posted, but I could not pin it (missing permission).";
