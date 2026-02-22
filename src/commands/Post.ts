@@ -60,6 +60,12 @@ function parseTime(input: string): { hour: number; minute: number } | null {
   return { hour, minute };
 }
 
+function to12HourLabel(hour24: number, minute: number): string {
+  const suffix = hour24 >= 12 ? "PM" : "AM";
+  const hour12 = hour24 % 12 === 0 ? 12 : hour24 % 12;
+  return `${hour12}:${String(minute).padStart(2, "0")} ${suffix}`;
+}
+
 function getTimeZoneOffsetMs(date: Date, timeZone: string): number {
   const formatter = new Intl.DateTimeFormat("en-US", {
     timeZone,
@@ -324,7 +330,10 @@ export async function handlePostModalSubmit(
   }
 
   await interaction.editReply(
-    `Sync time message posted${pinNote}\nUsed: ${dateInput} ${timeInput} (${timezoneInput}).`
+    `Sync time message posted${pinNote}\nUsed: ${dateInput} ${timeInput} (${to12HourLabel(
+      time.hour,
+      time.minute
+    )}, ${timezoneInput}).`
   );
 }
 
@@ -413,7 +422,13 @@ export const Post: Command = {
       .setLabel("Time (24h HH:mm)")
       .setStyle(TextInputStyle.Short)
       .setRequired(true)
-      .setValue(defaults.time);
+      .setValue(defaults.time)
+      .setPlaceholder(
+        `24h format. ${defaults.time} = ${to12HourLabel(
+          Number(defaults.time.split(":")[0]),
+          Number(defaults.time.split(":")[1])
+        )}`
+      );
     const timeZoneInput = new TextInputBuilder()
       .setCustomId(TIMEZONE_INPUT_ID)
       .setLabel("Timezone (IANA)")
