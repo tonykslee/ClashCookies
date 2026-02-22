@@ -45,7 +45,7 @@ Optional fallback auth (not required for your current setup):
 
 ## Commands
 - `/help` - List available commands.
-- `/permission add command:<name> role:<discordRole>` - Allow a role to use a command.
+- `/permission add command:<name> role:<discordRole> [role2] [role3] [role4] [role5]` - Allow one or more roles to use a command.
 - `/permission remove command:<name> role:<discordRole>` - Remove a role from a command whitelist.
 - `/permission list [command:<name>]` - List role policy for one command target, or all if omitted.
 - `/clan-name tag:<tag>` - Get clan name by tag.
