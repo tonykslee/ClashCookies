@@ -411,7 +411,7 @@ export const Post: Command = {
 
     const modal = new ModalBuilder()
       .setCustomId(buildModalCustomId(interaction.user.id))
-      .setTitle("Post Sync Time");
+      .setTitle("Do not post outside FWA Rep channel");
 
     const dateInput = new TextInputBuilder()
       .setCustomId(DATE_INPUT_ID)
