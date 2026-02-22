@@ -421,13 +421,13 @@ export const Post: Command = {
       .setValue(defaults.date);
     const timeInput = new TextInputBuilder()
       .setCustomId(TIME_INPUT_ID)
-      .setLabel("Time (24h HH:mm, e.g. 20:30 = 8:30 PM)")
+      .setLabel("Time (24h HH:mm)")
       .setStyle(TextInputStyle.Short)
       .setRequired(true)
       .setValue(defaults.time);
     const timeZoneInput = new TextInputBuilder()
       .setCustomId(TIMEZONE_INPUT_ID)
-      .setLabel("Timezone (IANA, e.g. America/New_York)")
+      .setLabel("Timezone (IANA)")
       .setStyle(TextInputStyle.Short)
       .setRequired(true)
       .setValue(initialTimeZone);
