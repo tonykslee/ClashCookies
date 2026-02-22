@@ -350,7 +350,14 @@ export const Post: Command = {
           name: "time",
           description: "Post a localized sync time with role ping",
           type: ApplicationCommandOptionType.Subcommand,
-          options: [],
+          options: [
+            {
+              name: "role",
+              description: "Role to ping",
+              type: ApplicationCommandOptionType.Role,
+              required: false,
+            },
+          ],
         },
       ],
     },
@@ -389,6 +396,7 @@ export const Post: Command = {
     }
 
     const settings = new SettingsService();
+    const role = interaction.options.getRole("role", false);
 
     const rememberedTimeZone = await settings.get(userTimeZoneKey(interaction.user.id));
     const rememberedRoleId = await settings.get(guildSyncRoleKey(interaction.guildId));
@@ -397,7 +405,7 @@ export const Post: Command = {
         ? rememberedTimeZone
         : "UTC";
     const defaults = getEffectiveDefaults(initialTimeZone);
-    const initialRoleId = rememberedRoleId ?? "";
+    const initialRoleId = role?.id ?? rememberedRoleId ?? "";
 
     const modal = new ModalBuilder()
       .setCustomId(buildModalCustomId(interaction.user.id))
