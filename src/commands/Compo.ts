@@ -252,34 +252,6 @@ function renderStatePng(mode: GoogleSheetMode, rows: string[][]): Buffer {
   return PNG.sync.write(png);
 }
 
-function parseRefreshEpochSeconds(raw: string | undefined): number | null {
-  if (!raw) return null;
-  const value = raw.trim();
-  if (!value) return null;
-
-  // Unix timestamp (seconds or milliseconds).
-  if (/^\d{10,13}$/.test(value)) {
-    const asNum = Number(value);
-    if (!Number.isFinite(asNum)) return null;
-    if (value.length === 13) return Math.floor(asNum / 1000);
-    return asNum;
-  }
-
-  // Google Sheets/Excel serial date.
-  if (/^\d+(\.\d+)?$/.test(value)) {
-    const serial = Number(value);
-    if (Number.isFinite(serial) && serial > 20000 && serial < 1000000) {
-      const millis = Math.round((serial - 25569) * 86400 * 1000);
-      return Math.floor(millis / 1000);
-    }
-  }
-
-  // Generic date string.
-  const parsed = Date.parse(value);
-  if (Number.isNaN(parsed)) return null;
-  return Math.floor(parsed / 1000);
-}
-
 export const Compo: Command = {
   name: "compo",
   description: "Composition tools",
@@ -387,7 +359,7 @@ export const Compo: Command = {
           sheets.readLinkedValues("AllianceDashboard!D1:E9", mode),
           sheets.readLinkedValues("AllianceDashboard!U1:AA9", mode),
           sheets.readLinkedValues("AllianceDashboard!AW1:AW9", mode),
-          sheets.readLinkedValues("Lookup!B9:B9", mode),
+          sheets.readLinkedValues("Lookup!B10:B10", mode),
         ]);
 
         const mergedRows = mergeStateRows(
@@ -398,11 +370,9 @@ export const Compo: Command = {
         );
 
         const rawRefresh = refreshCell[0]?.[0]?.trim();
-        const refreshEpoch = parseRefreshEpochSeconds(rawRefresh);
-        const refreshLine = refreshEpoch
-          ? `RAW Data last refreshed: <t:${refreshEpoch}:F> (<t:${refreshEpoch}:R>)`
-          : rawRefresh
-            ? `RAW Data last refreshed: ${rawRefresh}`
+        const refreshLine =
+          rawRefresh && /^\d+$/.test(rawRefresh)
+            ? `RAW Data last refreshed: <t:${rawRefresh}:F>`
             : "RAW Data last refreshed: (not available)";
 
         const content = [`Mode Displayed: **${mode.toUpperCase()}**`, refreshLine].join("\n");
