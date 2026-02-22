@@ -8,6 +8,7 @@ import {
 import { Command } from "../Command";
 import { safeReply } from "../helper/safeReply";
 import { CoCService } from "../services/CoCService";
+import { SettingsService } from "../services/SettingsService";
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_PATTERN = /^\d{1,2}:\d{2}$/;
@@ -108,6 +109,36 @@ function validateTimeZone(timeZone: string): boolean {
   }
 }
 
+function getDateTimeInTimeZone(
+  date: Date,
+  timeZone: string
+): { year: number; month: number; day: number; hour: number; minute: number } {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+
+  const parts = formatter.formatToParts(date);
+  const map = new Map(parts.map((p) => [p.type, p.value]));
+
+  return {
+    year: Number(map.get("year")),
+    month: Number(map.get("month")),
+    day: Number(map.get("day")),
+    hour: Number(map.get("hour")),
+    minute: Number(map.get("minute")),
+  };
+}
+
+function userTimeZoneKey(userId: string): string {
+  return `user_timezone:${userId}`;
+}
+
 function buildSyncMessage(epochSeconds: number, roleId: string): string {
   return `# Sync time :gem:
 
@@ -132,21 +163,21 @@ export const Post: Command = {
           options: [
             {
               name: "date",
-              description: "Date in YYYY-MM-DD format",
+              description: "Date in YYYY-MM-DD format (default: now + 12h)",
               type: ApplicationCommandOptionType.String,
-              required: true,
+              required: false,
             },
             {
               name: "time",
-              description: "Time in 24h HH:mm format",
+              description: "Time in 24h HH:mm format (default: now + 12h)",
               type: ApplicationCommandOptionType.String,
-              required: true,
+              required: false,
             },
             {
               name: "timezone",
-              description: "IANA timezone, e.g. America/New_York",
+              description: "IANA timezone, e.g. America/New_York (remembered)",
               type: ApplicationCommandOptionType.String,
-              required: true,
+              required: false,
             },
             {
               name: "role",
@@ -194,11 +225,11 @@ export const Post: Command = {
       return;
     }
 
-    const dateInput = interaction.options.getString("date", true).trim();
-    const timeInput = interaction.options.getString("time", true).trim();
-    const timezoneInput = normalizeTimeZone(
-      interaction.options.getString("timezone", true)
-    );
+    const settings = new SettingsService();
+
+    const dateInput = interaction.options.getString("date", false)?.trim();
+    const timeInput = interaction.options.getString("time", false)?.trim();
+    const timezoneInputRaw = interaction.options.getString("timezone", false);
     const role = interaction.options.getRole("role", true);
 
     if (!(role instanceof Role)) {
@@ -209,7 +240,39 @@ export const Post: Command = {
       return;
     }
 
-    const date = parseDate(dateInput);
+    const rememberedTimeZone = await settings.get(userTimeZoneKey(interaction.user.id));
+    const timezoneInput = timezoneInputRaw
+      ? normalizeTimeZone(timezoneInputRaw)
+      : rememberedTimeZone ?? "UTC";
+
+    if (!validateTimeZone(timezoneInput)) {
+      await safeReply(interaction, {
+        ephemeral: true,
+        content:
+          "Invalid timezone. Use a valid IANA timezone like America/New_York.",
+      });
+      return;
+    }
+
+    if (timezoneInputRaw) {
+      await settings.set(userTimeZoneKey(interaction.user.id), timezoneInput);
+    }
+
+    const plus12Hours = new Date(Date.now() + 12 * 60 * 60 * 1000);
+    const defaultParts = getDateTimeInTimeZone(plus12Hours, timezoneInput);
+
+    const effectiveDateInput =
+      dateInput ??
+      `${defaultParts.year}-${String(defaultParts.month).padStart(2, "0")}-${String(
+        defaultParts.day
+      ).padStart(2, "0")}`;
+    const effectiveTimeInput =
+      timeInput ??
+      `${String(defaultParts.hour).padStart(2, "0")}:${String(
+        defaultParts.minute
+      ).padStart(2, "0")}`;
+
+    const date = parseDate(effectiveDateInput);
     if (!date) {
       await safeReply(interaction, {
         ephemeral: true,
@@ -218,20 +281,11 @@ export const Post: Command = {
       return;
     }
 
-    const time = parseTime(timeInput);
+    const time = parseTime(effectiveTimeInput);
     if (!time) {
       await safeReply(interaction, {
         ephemeral: true,
         content: "Invalid time. Use 24-hour HH:mm, for example 20:30.",
-      });
-      return;
-    }
-
-    if (!validateTimeZone(timezoneInput)) {
-      await safeReply(interaction, {
-        ephemeral: true,
-        content:
-          "Invalid timezone. Use a valid IANA timezone like America/New_York.",
       });
       return;
     }
@@ -255,14 +309,23 @@ export const Post: Command = {
     }
 
     const content = buildSyncMessage(epochSeconds, role.id);
-    await channel.send({
+    const postedMessage = await channel.send({
       content,
       allowedMentions: { roles: [role.id] },
     });
 
+    let pinNote = "";
+    try {
+      await postedMessage.pin();
+    } catch {
+      pinNote = " Posted, but I could not pin it (missing permission).";
+    }
+
     await safeReply(interaction, {
       ephemeral: true,
-      content: "Sync time message posted.",
+      content:
+        `Sync time message posted${pinNote}\n` +
+        `Used: ${effectiveDateInput} ${effectiveTimeInput} (${timezoneInput}).`,
     });
   },
 };
