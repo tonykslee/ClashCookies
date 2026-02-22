@@ -21,6 +21,8 @@ const DATE_INPUT_ID = "date";
 const TIME_INPUT_ID = "time";
 const TIMEZONE_INPUT_ID = "timezone";
 const ROLE_INPUT_ID = "role";
+const IANA_TIMEZONE_HELP_URL =
+  "https://en.wikipedia.org/wiki/List_of_tz_database_time_zones";
 
 function parseDate(input: string): { year: number; month: number; day: number } | null {
   if (!DATE_PATTERN.test(input)) return null;
@@ -256,7 +258,7 @@ export async function handlePostModalSubmit(
 
   if (!validateTimeZone(timezoneInput)) {
     await interaction.editReply(
-      "Invalid timezone. Use a valid IANA timezone like America/New_York."
+      `Invalid timezone. Use a valid IANA timezone like America/New_York.\nReference: ${IANA_TIMEZONE_HELP_URL}`
     );
     return;
   }
@@ -419,19 +421,13 @@ export const Post: Command = {
       .setValue(defaults.date);
     const timeInput = new TextInputBuilder()
       .setCustomId(TIME_INPUT_ID)
-      .setLabel("Time (24h HH:mm)")
+      .setLabel("Time (24h HH:mm, e.g. 20:30 = 8:30 PM)")
       .setStyle(TextInputStyle.Short)
       .setRequired(true)
-      .setValue(defaults.time)
-      .setPlaceholder(
-        `24h format. ${defaults.time} = ${to12HourLabel(
-          Number(defaults.time.split(":")[0]),
-          Number(defaults.time.split(":")[1])
-        )}`
-      );
+      .setValue(defaults.time);
     const timeZoneInput = new TextInputBuilder()
       .setCustomId(TIMEZONE_INPUT_ID)
-      .setLabel("Timezone (IANA)")
+      .setLabel("Timezone (IANA, e.g. America/New_York)")
       .setStyle(TextInputStyle.Short)
       .setRequired(true)
       .setValue(initialTimeZone);
