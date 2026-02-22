@@ -9,6 +9,12 @@ import { Commands } from "../Commands";
 import { formatError } from "../helper/formatError";
 import { CoCService } from "../services/CoCService";
 import { handlePostModalSubmit, isPostModalCustomId } from "../commands/Post";
+import {
+  CommandPermissionService,
+  getCommandTargetsFromInteraction,
+} from "../services/CommandPermissionService";
+
+const commandPermissionService = new CommandPermissionService();
 
 let isRegistered = false;
 
@@ -56,6 +62,18 @@ const handleModalSubmit = async (
   if (!isPostModalCustomId(interaction.customId)) return;
 
   try {
+    const allowed = await commandPermissionService.canUseAnyTarget(
+      ["post:sync:time", "post"],
+      interaction
+    );
+    if (!allowed) {
+      await interaction.reply({
+        content: "You do not have permission to use /post.",
+        ephemeral: true,
+      });
+      return;
+    }
+
     await handlePostModalSubmit(interaction);
   } catch (err) {
     console.error(`Modal submit failed: ${formatError(err)}`);
@@ -118,6 +136,19 @@ const handleSlashCommand = async (
   }
 
   try {
+    const targets = getCommandTargetsFromInteraction(interaction);
+    const allowed = await commandPermissionService.canUseAnyTarget(
+      targets,
+      interaction
+    );
+    if (!allowed) {
+      await interaction.reply({
+        content: `You do not have permission to use /${interaction.commandName}.`,
+        ephemeral: true,
+      });
+      return;
+    }
+
     await slashCommand.run(client, interaction, cocService);
   } catch (err) {
     console.error(`Command failed: ${formatError(err)}`);

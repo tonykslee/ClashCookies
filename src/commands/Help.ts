@@ -12,10 +12,8 @@ export const Help: Command = {
 
     const permissionNotes = [
       "**Permission notes:**",
-      "- `/sheet` subcommands require Administrator.",
-      "- `/post sync time` requires Administrator.",
-      "- `/tracked-clan add` and `/tracked-clan remove` require Administrator.",
-      "- `/tracked-clan list` is available to non-admin users.",
+      "- Administrator-only by default: `/tracked-clan add|remove`, `/permission add|remove`, `/sheet link|unlink|show`, `/post sync time`.",
+      "- Other commands default to everyone unless restricted with `/permission`.",
     ].join("\n");
 
     await interaction.reply({
