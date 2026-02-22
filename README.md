@@ -54,9 +54,12 @@ Optional fallback auth (not required for your current setup):
 - `/sheet link sheet_id_or_url:<id-or-url> [tab:<tab-name>] [mode:actual|war]` - Link or relink sheet; mode is optional.
 - `/sheet show [mode:actual|war]` - Show linked sheet settings (single mode or all).
 - `/sheet unlink [mode:actual|war]` - Remove one mode link or all links.
+- `/sheet refresh mode:actual|war` - Trigger mode-specific Apps Script raw feed refresh.
 - `/compo advice clan:<tracked-clan> [mode:actual|war]` - Pull advice using mode-specific sheet link.
 - `/compo state [mode:actual|war]` - Render AllianceDashboard state as an attached PNG image with mode label.
 - `/compo place weight:<value>` - Suggest placement options from ACTUAL state (vacancy + composition fit). Accepts formats like `145000`, `145,000`, or `145k` and maps to TH weight buckets.
+- `/cc player tag:<tag>` - Build `https://cc.fwafarm.com/cc_n/member.php?tag=<tag>`.
+- `/cc clan tag:<tag>` - Build `https://cc.fwafarm.com/cc_n/clan.php?tag=<tag>`.
 - `/post sync time [role:<discordRole>]` - Open modal, compose sync-time message, post it, and pin it.
 
 ## Command Access Control
@@ -64,7 +67,7 @@ Optional fallback auth (not required for your current setup):
 - Default Administrator-only targets:
   - `/tracked-clan add`, `/tracked-clan remove`
   - `/permission add`, `/permission remove`
-  - `/sheet link`, `/sheet unlink`, `/sheet show`
+  - `/sheet link`, `/sheet unlink`, `/sheet show`, `/sheet refresh`
   - `/post sync time`
 - You can whitelist roles per command with `/permission add`.
 - Administrator users can always use commands regardless of role whitelist.

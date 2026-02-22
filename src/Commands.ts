@@ -8,6 +8,7 @@ import { Sheet } from "./commands/Sheet";
 import { Compo } from "./commands/Compo";
 import { Post } from "./commands/Post";
 import { CommandRole } from "./commands/CommandRole";
+import { CC } from "./commands/CC";
 
 // ...existing code...
 export const Commands = [
@@ -19,6 +20,7 @@ export const Commands = [
   TrackedClan,
   Sheet,
   Compo,
+  CC,
   Post,
   CommandRole,
 ];
