@@ -52,12 +52,70 @@ function getSheetErrorHint(err: unknown): string {
   return "Check credentials, sharing, sheet ID, and optional tab/range.";
 }
 
+function getRefreshErrorHint(err: unknown): string {
+  const message = formatError(err).toLowerCase();
+  if (message.includes("econnaborted") || message.includes("timeout")) {
+    return "Apps Script refresh timed out. The refresh may still be running; try again in a few minutes.";
+  }
+  if (message.includes("unauthorized") || message.includes("401")) {
+    return "Apps Script rejected the shared secret/token. Re-check *_APPS_SCRIPT_SHARED_SECRET.";
+  }
+  if (message.includes("403")) {
+    return "Apps Script endpoint denied access. Re-check web app deployment access and secret.";
+  }
+  if (message.includes("404")) {
+    return "Apps Script webhook URL was not found. Re-check *_APPS_SCRIPT_WEBHOOK_URL.";
+  }
+  if (message.includes("500")) {
+    return "Apps Script returned a server error. Check Apps Script execution logs.";
+  }
+
+  return "Could not trigger Apps Script refresh. Check webhook URL, shared secret, deployment access, and Apps Script logs.";
+}
+
 const SHEET_MODE_CHOICES = [
   { name: "Actual Roster", value: "actual" },
   { name: "War Roster", value: "war" },
 ];
 const SHEET_REFRESH_COOLDOWN_MS = 5 * 60 * 1000;
+const SHEET_REFRESH_TIMEOUT_MS = 120000;
 const lastRefreshAtMsByGuildMode = new Map<string, number>();
+
+async function postRefreshWebhook(
+  url: string,
+  token: string,
+  action: "refreshMembers" | "refreshWar"
+): Promise<string> {
+  const makeRequest = () =>
+    axios.post<string>(
+      url,
+      { token, action },
+      {
+        headers: { "Content-Type": "application/json" },
+        timeout: SHEET_REFRESH_TIMEOUT_MS,
+        responseType: "text",
+      }
+    );
+
+  try {
+    const response = await makeRequest();
+    return String(response.data ?? "").trim();
+  } catch (firstErr) {
+    const hint = formatError(firstErr).toLowerCase();
+    const retryable =
+      hint.includes("timeout") ||
+      hint.includes("econnaborted") ||
+      hint.includes("socket hang up") ||
+      hint.includes("502") ||
+      hint.includes("503") ||
+      hint.includes("504");
+
+    if (!retryable) throw firstErr;
+
+    const second = await makeRequest();
+    return String(second.data ?? "").trim();
+  }
+}
 
 function getModeOptionValue(
   interaction: ChatInputCommandInteraction
@@ -147,10 +205,11 @@ export const Sheet: Command = {
     interaction: ChatInputCommandInteraction,
     _cocService: CoCService
   ) => {
+    let subcommand = "";
     try {
       await interaction.deferReply({ ephemeral: true });
 
-      const subcommand = interaction.options.getSubcommand(true);
+      subcommand = interaction.options.getSubcommand(true);
       const mode = getModeOptionValue(interaction);
       const settings = new SettingsService();
       const sheets = new GoogleSheetsService(settings);
@@ -279,18 +338,13 @@ export const Sheet: Command = {
           return;
         }
 
-        const response = await axios.post<string>(
+        const resultText = await postRefreshWebhook(
           config.url,
-          { token: config.token, action: config.action },
-          {
-            headers: { "Content-Type": "application/json" },
-            timeout: 30000,
-            responseType: "text",
-          }
+          config.token,
+          config.action as "refreshMembers" | "refreshWar"
         );
 
         lastRefreshAtMsByGuildMode.set(guildModeKey, now);
-        const resultText = String(response.data ?? "").trim();
         await safeReply(interaction, {
           ephemeral: true,
           content:
@@ -308,9 +362,16 @@ export const Sheet: Command = {
       return;
     } catch (err) {
       console.error(`sheet command failed: ${formatError(err)}`);
+      const hint =
+        subcommand === "refresh"
+          ? getRefreshErrorHint(err)
+          : getSheetErrorHint(err);
       await safeReply(interaction, {
         ephemeral: true,
-        content: `Failed to access Google Sheet. ${getSheetErrorHint(err)}`,
+        content:
+          subcommand === "refresh"
+            ? `Failed to trigger refresh. ${hint}`
+            : `Failed to access Google Sheet. ${hint}`,
       });
     }
   },
