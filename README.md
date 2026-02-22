@@ -43,7 +43,7 @@ Optional fallback auth (not required for your current setup):
 - `/help` - List available commands.
 - `/permission add command:<name> role:<discordRole>` - Allow a role to use a command.
 - `/permission remove command:<name> role:<discordRole>` - Remove a role from a command whitelist.
-- `/permission list command:<name>` - List roles whitelisted for one command.
+- `/permission list [command:<name>]` - List whitelisted roles for one command, or all commands if omitted.
 - `/clan-name tag:<tag>` - Get clan name by tag.
 - `/lastseen tag:<playerTag>` - Show a player's last seen activity.
 - `/inactive days:<number>` - List players inactive for N days.
