@@ -1,6 +1,7 @@
 import {
   ActionRowBuilder,
   ApplicationCommandOptionType,
+  AutocompleteInteraction,
   ButtonBuilder,
   ButtonInteraction,
   ButtonStyle,
@@ -29,6 +30,18 @@ function isPermissionTarget(value: string): value is (typeof COMMAND_PERMISSION_
 function formatRoleList(roleIds: string[]): string {
   if (roleIds.length === 0) return "(none)";
   return roleIds.map((id) => `<@&${id}>`).join(", ");
+}
+
+function getRoleIdsForAdd(interaction: ChatInputCommandInteraction): string[] {
+  const optionNames = ["role", "role2", "role3", "role4", "role5"];
+  const roleIds: string[] = [];
+  for (const name of optionNames) {
+    const role = interaction.options.getRole(name, name === "role");
+    if (role && "id" in role) {
+      roleIds.push(role.id);
+    }
+  }
+  return [...new Set(roleIds)];
 }
 
 function getListRow(page: number, pageCount: number) {
@@ -80,12 +93,37 @@ export const CommandRole: Command = {
           description: "Command to restrict",
           type: ApplicationCommandOptionType.String,
           required: true,
+          autocomplete: true,
         },
         {
           name: "role",
           description: "Role to allow",
           type: ApplicationCommandOptionType.Role,
           required: true,
+        },
+        {
+          name: "role2",
+          description: "Second role to allow (optional)",
+          type: ApplicationCommandOptionType.Role,
+          required: false,
+        },
+        {
+          name: "role3",
+          description: "Third role to allow (optional)",
+          type: ApplicationCommandOptionType.Role,
+          required: false,
+        },
+        {
+          name: "role4",
+          description: "Fourth role to allow (optional)",
+          type: ApplicationCommandOptionType.Role,
+          required: false,
+        },
+        {
+          name: "role5",
+          description: "Fifth role to allow (optional)",
+          type: ApplicationCommandOptionType.Role,
+          required: false,
         },
       ],
     },
@@ -99,6 +137,7 @@ export const CommandRole: Command = {
           description: "Command to update",
           type: ApplicationCommandOptionType.String,
           required: true,
+          autocomplete: true,
         },
         {
           name: "role",
@@ -118,6 +157,7 @@ export const CommandRole: Command = {
           description: "Command or subcommand target (omit to list all)",
           type: ApplicationCommandOptionType.String,
           required: false,
+          autocomplete: true,
         },
       ],
     },
@@ -249,22 +289,36 @@ export const CommandRole: Command = {
       return;
     }
 
+    if (subcommand === "add") {
+      const roleIds = getRoleIdsForAdd(interaction);
+      if (roleIds.length === 0) {
+        await safeReply(interaction, {
+          ephemeral: true,
+          content: "Please provide at least one valid role.",
+        });
+        return;
+      }
+
+      let next = await permissionService.getAllowedRoleIds(commandInput);
+      for (const roleId of roleIds) {
+        next = await permissionService.addAllowedRoleId(commandInput, roleId);
+      }
+
+      const addedText = roleIds.map((id) => `<@&${id}>`).join(", ");
+      await safeReply(interaction, {
+        ephemeral: true,
+        content:
+          `Added ${addedText} to \`/${commandInput}\`.\n` +
+          `Allowed roles: ${formatRoleList(next)}`,
+      });
+      return;
+    }
+
     const role = interaction.options.getRole("role", true);
     if (!("id" in role)) {
       await safeReply(interaction, {
         ephemeral: true,
         content: "Invalid role selected.",
-      });
-      return;
-    }
-
-    if (subcommand === "add") {
-      const next = await permissionService.addAllowedRoleId(commandInput, role.id);
-      await safeReply(interaction, {
-        ephemeral: true,
-        content:
-          `Added <@&${role.id}> to \`/${commandInput}\`.\n` +
-          `Allowed roles: ${formatRoleList(next)}`,
       });
       return;
     }
@@ -287,5 +341,24 @@ export const CommandRole: Command = {
       ephemeral: true,
       content: "Unknown subcommand.",
     });
+  },
+  autocomplete: async (interaction: AutocompleteInteraction) => {
+    const focused = interaction.options.getFocused(true);
+    if (focused.name !== "command") {
+      await interaction.respond([]);
+      return;
+    }
+
+    const query = String(focused.value ?? "").trim().toLowerCase();
+    const targets = [...COMMAND_PERMISSION_TARGETS];
+    const starts = targets.filter((t) => t.toLowerCase().startsWith(query));
+    const contains = targets.filter(
+      (t) =>
+        !t.toLowerCase().startsWith(query) && t.toLowerCase().includes(query)
+    );
+
+    await interaction.respond(
+      [...starts, ...contains].slice(0, 25).map((t) => ({ name: t, value: t }))
+    );
   },
 };
