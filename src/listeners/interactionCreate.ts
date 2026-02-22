@@ -3,10 +3,12 @@ import {
   ChatInputCommandInteraction,
   Client,
   Interaction,
+  ModalSubmitInteraction,
 } from "discord.js";
 import { Commands } from "../Commands";
 import { formatError } from "../helper/formatError";
 import { CoCService } from "../services/CoCService";
+import { handlePostModalSubmit, isPostModalCustomId } from "../commands/Post";
 
 let isRegistered = false;
 
@@ -21,6 +23,11 @@ export default (client: Client, cocService: CoCService): void => {
   client.on("interactionCreate", async (interaction: Interaction) => {
     if (interaction.isAutocomplete()) {
       await handleAutocomplete(interaction);
+      return;
+    }
+
+    if (interaction.isModalSubmit()) {
+      await handleModalSubmit(interaction);
       return;
     }
 
@@ -41,6 +48,29 @@ export default (client: Client, cocService: CoCService): void => {
 
     await handleSlashCommand(client, interaction, cocService);
   });
+};
+
+const handleModalSubmit = async (
+  interaction: ModalSubmitInteraction
+): Promise<void> => {
+  if (!isPostModalCustomId(interaction.customId)) return;
+
+  try {
+    await handlePostModalSubmit(interaction);
+  } catch (err) {
+    console.error(`Modal submit failed: ${formatError(err)}`);
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.reply({
+        content: "Something went wrong.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    if (interaction.deferred) {
+      await interaction.editReply("Something went wrong.");
+    }
+  }
 };
 
 const handleAutocomplete = async (
