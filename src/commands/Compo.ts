@@ -26,6 +26,43 @@ function readMode(interaction: ChatInputCommandInteraction): GoogleSheetMode {
   return rawMode === "war" ? "war" : "actual";
 }
 
+function parseNumber(value: string | undefined): number {
+  if (!value) return 0;
+  const digits = value.replace(/[^0-9-]/g, "");
+  if (!digits || digits === "-") return 0;
+  const parsed = Number(digits);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function parseWeightInput(input: string): number | null {
+  const trimmed = input.trim().toLowerCase();
+  if (!trimmed) return null;
+
+  const compact = trimmed.replace(/,/g, "");
+  const kMatch = compact.match(/^(\d+(?:\.\d+)?)k$/);
+  if (kMatch) {
+    const base = Number(kMatch[1]);
+    if (!Number.isFinite(base)) return null;
+    return Math.round(base * 1000);
+  }
+
+  const numeric = Number(compact);
+  if (!Number.isFinite(numeric)) return null;
+  return Math.round(numeric);
+}
+
+type WeightBucket = "TH18" | "TH17" | "TH16" | "TH15" | "TH14" | "<=TH13";
+
+function getWeightBucket(weight: number): WeightBucket | null {
+  if (weight >= 171000 && weight <= 180000) return "TH18";
+  if (weight >= 161000 && weight <= 170000) return "TH17";
+  if (weight >= 151000 && weight <= 160000) return "TH16";
+  if (weight >= 141000 && weight <= 150000) return "TH15";
+  if (weight >= 131000 && weight <= 140000) return "TH14";
+  if (weight >= 121000 && weight <= 130000) return "<=TH13";
+  return null;
+}
+
 function clampCell(value: string): string {
   const sanitized = value.replace(/\s+/g, " ").trim();
   const normalizedLabelMap: Record<string, string> = {
@@ -101,6 +138,57 @@ function mergeStateRows(
     ]);
   }
   return out;
+}
+
+type PlacementCandidate = {
+  clanName: string;
+  totalWeight: number;
+  targetBand: number;
+  missingCount: number;
+  remainingToTarget: number;
+  bucketDeltaByHeader: Record<string, number>;
+};
+
+function readPlacementCandidates(
+  clanCol: string[][],
+  totalCol: string[][],
+  targetBandCol: string[][],
+  rightBlock: string[][]
+): PlacementCandidate[] {
+  const missingHeaderRow = rightBlock[0] ?? [];
+  const missingIndex = missingHeaderRow.findIndex((v) =>
+    normalize(v).includes("missing")
+  );
+
+  const candidates: PlacementCandidate[] = [];
+  for (let i = 1; i < 9; i += 1) {
+    const clanName = (clanCol[i]?.[0] ?? "").trim();
+    if (!clanName) continue;
+
+    const totalWeight = parseNumber(totalCol[i]?.[0]);
+    const targetBand = parseNumber(targetBandCol[i]?.[0]);
+    const missingRaw =
+      missingIndex >= 0 ? rightBlock[i]?.[missingIndex] : rightBlock[i]?.[0];
+    const missingCount = parseNumber(missingRaw);
+    const remainingToTarget = targetBand - totalWeight;
+    const bucketDeltaByHeader: Record<string, number> = {};
+    for (let c = 0; c < missingHeaderRow.length; c += 1) {
+      const key = normalize(missingHeaderRow[c] ?? "");
+      if (!key) continue;
+      bucketDeltaByHeader[key] = parseNumber(rightBlock[i]?.[c]);
+    }
+
+    candidates.push({
+      clanName,
+      totalWeight,
+      targetBand,
+      missingCount,
+      remainingToTarget,
+      bucketDeltaByHeader,
+    });
+  }
+
+  return candidates;
 }
 
 const GLYPHS: Record<string, string[]> = {
@@ -291,6 +379,19 @@ export const Compo: Command = {
         },
       ],
     },
+    {
+      name: "place",
+      description: "Suggest clan placement for a given war weight (uses ACTUAL state)",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "weight",
+          description: "Member war weight",
+          type: ApplicationCommandOptionType.String,
+          required: true,
+        },
+      ],
+    },
   ],
   run: async (
     _client: Client,
@@ -386,6 +487,112 @@ export const Compo: Command = {
               name: `compo-state-${mode}.png`,
             },
           ],
+        });
+        return;
+      }
+
+      if (subcommand === "place") {
+        const rawWeight = interaction.options.getString("weight", true);
+        const inputWeight = parseWeightInput(rawWeight);
+        if (!inputWeight || inputWeight <= 0) {
+          await safeReply(interaction, {
+            ephemeral: true,
+            content:
+              "Invalid weight. Use formats like `145000`, `145,000`, or `145k`.",
+          });
+          return;
+        }
+
+        const bucket = getWeightBucket(inputWeight);
+        if (!bucket) {
+          await safeReply(interaction, {
+            ephemeral: true,
+            content:
+              "Weight is outside supported ranges (121,000 to 180,000).",
+          });
+          return;
+        }
+
+        const stateMode: GoogleSheetMode = "actual";
+        const settings = new SettingsService();
+        const sheets = new GoogleSheetsService(settings);
+
+        const [clanCol, totalCol, targetBandCol, rightBlock] = await Promise.all([
+          sheets.readLinkedValues("AllianceDashboard!A1:A9", stateMode),
+          sheets.readLinkedValues("AllianceDashboard!D1:D9", stateMode),
+          sheets.readLinkedValues("AllianceDashboard!AW1:AW9", stateMode),
+          sheets.readLinkedValues("AllianceDashboard!U1:AA9", stateMode),
+        ]);
+
+        const candidates = readPlacementCandidates(
+          clanCol,
+          totalCol,
+          targetBandCol,
+          rightBlock
+        );
+
+        if (candidates.length === 0) {
+          await safeReply(interaction, {
+            ephemeral: true,
+            content: "No placement data found in ACTUAL state ranges.",
+          });
+          return;
+        }
+
+        const vacancyChoice = candidates
+          .filter((c) => c.missingCount > 0)
+          .sort((a, b) => {
+            if (b.missingCount !== a.missingCount) return b.missingCount - a.missingCount;
+            return Math.abs(a.remainingToTarget - inputWeight) - Math.abs(b.remainingToTarget - inputWeight);
+          });
+
+        const compositionNeeds = candidates
+          .map((c) => {
+            const key = normalize(`${bucket}-delta`);
+            const delta = c.bucketDeltaByHeader[key] ?? 0;
+            return { ...c, delta };
+          })
+          .filter((c) => c.delta < 0)
+          .sort((a, b) => {
+            if (a.delta !== b.delta) return a.delta - b.delta;
+            return b.missingCount - a.missingCount;
+          });
+
+        const recommended = compositionNeeds.filter((c) => c.missingCount > 0);
+        const vacancyList = vacancyChoice;
+        const compositionList = compositionNeeds;
+
+        const recommendedText =
+          recommended.length > 0
+            ? recommended
+                .map(
+                  (c) =>
+                    `${abbreviateClan(c.clanName)} (Missing ${c.missingCount}, ${bucket.toLowerCase()}-delta: ${c.delta})`
+                )
+                .join(", ")
+            : "None";
+
+        const vacancyText =
+          vacancyList.length > 0
+            ? vacancyList
+                .map((c) => `${abbreviateClan(c.clanName)} (${c.missingCount})`)
+                .join(", ")
+            : "None";
+
+        const compositionText =
+          compositionList.length > 0
+            ? compositionList
+                .map((c) => `${abbreviateClan(c.clanName)} (${c.delta})`)
+                .join(", ")
+            : "None";
+
+        await safeReply(interaction, {
+          ephemeral: true,
+          content:
+            `ACTUAL placement suggestions for weight **${inputWeight.toLocaleString()}** (${bucket} bucket):\n` +
+            `- Recommended: ${recommendedText}\n` +
+            `- Vacancy: ${vacancyText}\n` +
+            `- Composition: ${compositionText}`,
         });
         return;
       }
