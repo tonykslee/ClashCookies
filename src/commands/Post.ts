@@ -162,6 +162,12 @@ export const Post: Command = {
           type: ApplicationCommandOptionType.Subcommand,
           options: [
             {
+              name: "role",
+              description: "Role to ping",
+              type: ApplicationCommandOptionType.Role,
+              required: true,
+            },
+            {
               name: "date",
               description: "Date in YYYY-MM-DD format (default: now + 12h)",
               type: ApplicationCommandOptionType.String,
@@ -178,12 +184,6 @@ export const Post: Command = {
               description: "IANA timezone, e.g. America/New_York (remembered)",
               type: ApplicationCommandOptionType.String,
               required: false,
-            },
-            {
-              name: "role",
-              description: "Role to ping",
-              type: ApplicationCommandOptionType.Role,
-              required: true,
             },
           ],
         },
