@@ -20,6 +20,7 @@ const POST_SYNC_TIME_MODAL_PREFIX = "post-sync-time";
 const DATE_INPUT_ID = "date";
 const TIME_INPUT_ID = "time";
 const TIMEZONE_INPUT_ID = "timezone";
+const ROLE_INPUT_ID = "role";
 
 function parseDate(input: string): { year: number; month: number; day: number } | null {
   if (!DATE_PATTERN.test(input)) return null;
@@ -147,6 +148,10 @@ function userTimeZoneKey(userId: string): string {
   return `user_timezone:${userId}`;
 }
 
+function guildSyncRoleKey(guildId: string): string {
+  return `guild_sync_role:${guildId}`;
+}
+
 function buildSyncMessage(epochSeconds: number, roleId: string): string {
   return `# Sync time :gem:
 
@@ -155,21 +160,29 @@ function buildSyncMessage(epochSeconds: number, roleId: string): string {
 <@&${roleId}>`;
 }
 
-function buildModalCustomId(userId: string, roleId: string): string {
-  return `${POST_SYNC_TIME_MODAL_PREFIX}:${userId}:${roleId}`;
+function buildModalCustomId(userId: string): string {
+  return `${POST_SYNC_TIME_MODAL_PREFIX}:${userId}`;
 }
 
 function parseModalCustomId(
   customId: string
-): { userId: string; roleId: string } | null {
+): { userId: string } | null {
   const parts = customId.split(":");
-  if (parts.length !== 3 || parts[0] !== POST_SYNC_TIME_MODAL_PREFIX) {
+  if (parts.length !== 2 || parts[0] !== POST_SYNC_TIME_MODAL_PREFIX) {
     return null;
   }
 
-  const [, userId, roleId] = parts;
-  if (!userId || !roleId) return null;
-  return { userId, roleId };
+  const [, userId] = parts;
+  if (!userId) return null;
+  return { userId };
+}
+
+function parseRoleId(input: string): string | null {
+  const trimmed = input.trim();
+  const mentionMatch = trimmed.match(/^<@&(\d+)>$/);
+  if (mentionMatch?.[1]) return mentionMatch[1];
+  if (/^\d+$/.test(trimmed)) return trimmed;
+  return null;
 }
 
 function getEffectiveDefaults(timeZone: string): {
@@ -233,6 +246,7 @@ export async function handlePostModalSubmit(
   const timezoneInput = normalizeTimeZone(
     interaction.fields.getTextInputValue(TIMEZONE_INPUT_ID)
   );
+  const roleInput = interaction.fields.getTextInputValue(ROLE_INPUT_ID).trim();
 
   if (!validateTimeZone(timezoneInput)) {
     await interaction.editReply(
@@ -257,7 +271,29 @@ export async function handlePostModalSubmit(
     return;
   }
 
+  const guild = interaction.guild;
+  if (!guild) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "This command can only be used in a server.",
+    });
+    return;
+  }
+
+  const roleId = parseRoleId(roleInput);
+  if (!roleId) {
+    await interaction.editReply("Invalid role. Provide a role mention like <@&123> or a role ID.");
+    return;
+  }
+
+  const role = await guild.roles.fetch(roleId).catch(() => null);
+  if (!role) {
+    await interaction.editReply("Role not found in this server. Use a valid server role mention or role ID.");
+    return;
+  }
+
   await settings.set(userTimeZoneKey(interaction.user.id), timezoneInput);
+  await settings.set(guildSyncRoleKey(interaction.guildId), role.id);
 
   const epochSeconds = toEpochSeconds(
     date.year,
@@ -274,10 +310,10 @@ export async function handlePostModalSubmit(
     return;
   }
 
-  const content = buildSyncMessage(epochSeconds, parsed.roleId);
+  const content = buildSyncMessage(epochSeconds, role.id);
   const postedMessage = await channel.send({
     content,
-    allowedMentions: { roles: [parsed.roleId] },
+    allowedMentions: { roles: [role.id] },
   });
 
   let pinNote = "";
@@ -310,7 +346,7 @@ export const Post: Command = {
               name: "role",
               description: "Role to ping",
               type: ApplicationCommandOptionType.Role,
-              required: true,
+              required: false,
             },
           ],
         },
@@ -351,17 +387,19 @@ export const Post: Command = {
     }
 
     const settings = new SettingsService();
-    const role = interaction.options.getRole("role", true);
+    const role = interaction.options.getRole("role", false);
 
     const rememberedTimeZone = await settings.get(userTimeZoneKey(interaction.user.id));
+    const rememberedRoleId = await settings.get(guildSyncRoleKey(interaction.guildId));
     const initialTimeZone =
       rememberedTimeZone && validateTimeZone(rememberedTimeZone)
         ? rememberedTimeZone
         : "UTC";
     const defaults = getEffectiveDefaults(initialTimeZone);
+    const initialRoleId = role?.id ?? rememberedRoleId ?? "";
 
     const modal = new ModalBuilder()
-      .setCustomId(buildModalCustomId(interaction.user.id, role.id))
+      .setCustomId(buildModalCustomId(interaction.user.id))
       .setTitle("Post Sync Time");
 
     const dateInput = new TextInputBuilder()
@@ -382,11 +420,21 @@ export const Post: Command = {
       .setStyle(TextInputStyle.Short)
       .setRequired(true)
       .setValue(initialTimeZone);
+    const roleInput = new TextInputBuilder()
+      .setCustomId(ROLE_INPUT_ID)
+      .setLabel("Role (mention or ID)")
+      .setStyle(TextInputStyle.Short)
+      .setRequired(true);
+
+    if (initialRoleId) {
+      roleInput.setValue(`<@&${initialRoleId}>`);
+    }
 
     modal.addComponents(
       new ActionRowBuilder<TextInputBuilder>().addComponents(dateInput),
       new ActionRowBuilder<TextInputBuilder>().addComponents(timeInput),
-      new ActionRowBuilder<TextInputBuilder>().addComponents(timeZoneInput)
+      new ActionRowBuilder<TextInputBuilder>().addComponents(timeZoneInput),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(roleInput)
     );
 
     await interaction.showModal(modal);
