@@ -18,11 +18,6 @@ import {
   CommandPermissionService,
   MANAGE_COMMAND_ROLES_COMMAND,
 } from "../services/CommandPermissionService";
-
-const COMMAND_CHOICES = COMMAND_PERMISSION_TARGETS.map((name) => ({
-  name,
-  value: name,
-}));
 const LIST_PAGE_SIZE = 8;
 const LIST_PREV_ID = "permission-list-prev";
 const LIST_NEXT_ID = "permission-list-next";
@@ -85,7 +80,6 @@ export const CommandRole: Command = {
           description: "Command to restrict",
           type: ApplicationCommandOptionType.String,
           required: true,
-          choices: COMMAND_CHOICES,
         },
         {
           name: "role",
@@ -105,7 +99,6 @@ export const CommandRole: Command = {
           description: "Command to update",
           type: ApplicationCommandOptionType.String,
           required: true,
-          choices: COMMAND_CHOICES,
         },
         {
           name: "role",
@@ -125,7 +118,6 @@ export const CommandRole: Command = {
           description: "Command or subcommand target (omit to list all)",
           type: ApplicationCommandOptionType.String,
           required: false,
-          choices: COMMAND_CHOICES,
         },
       ],
     },
