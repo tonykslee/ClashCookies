@@ -13,7 +13,8 @@ export const Help: Command = {
     const permissionNotes = [
       "**Permission notes:**",
       "- `/sheet` subcommands require Administrator.",
-      "- `/post sync time` requires Administrator.",
+      "- `/permission` is Administrator-only by default (or role-whitelisted).",
+      "- Other commands default to everyone unless restricted with `/permission`.",
       "- `/tracked-clan add` and `/tracked-clan remove` require Administrator.",
       "- `/tracked-clan list` is available to non-admin users.",
     ].join("\n");

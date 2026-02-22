@@ -5,7 +5,6 @@ import {
   Client,
   ModalBuilder,
   ModalSubmitInteraction,
-  PermissionFlagsBits,
   TextInputBuilder,
   TextInputStyle,
 } from "discord.js";
@@ -239,16 +238,6 @@ export async function handlePostModalSubmit(
     return;
   }
 
-  if (
-    !interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)
-  ) {
-    await interaction.reply({
-      ephemeral: true,
-      content: "You need Administrator permission to use /post commands.",
-    });
-    return;
-  }
-
   await interaction.deferReply({ ephemeral: true });
 
   const settings = new SettingsService();
@@ -385,16 +374,6 @@ export const Post: Command = {
       await safeReply(interaction, {
         ephemeral: true,
         content: "This command can only be used in a server.",
-      });
-      return;
-    }
-
-    if (
-      !interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)
-    ) {
-      await safeReply(interaction, {
-        ephemeral: true,
-        content: "You need Administrator permission to use /post commands.",
       });
       return;
     }

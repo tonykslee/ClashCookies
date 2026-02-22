@@ -41,6 +41,9 @@ Optional fallback auth (not required for your current setup):
 
 ## Commands
 - `/help` - List available commands.
+- `/permission add command:<name> role:<discordRole>` - Allow a role to use a command.
+- `/permission remove command:<name> role:<discordRole>` - Remove a role from a command whitelist.
+- `/permission list command:<name>` - List roles whitelisted for one command.
 - `/clan-name tag:<tag>` - Get clan name by tag.
 - `/lastseen tag:<playerTag>` - Show a player's last seen activity.
 - `/inactive days:<number>` - List players inactive for N days.
@@ -53,6 +56,15 @@ Optional fallback auth (not required for your current setup):
 - `/sheet unlink [mode:actual|war]` - Remove one mode link or all links.
 - `/compo advice clan:<tracked-clan> [mode:actual|war]` - Pull advice using mode-specific sheet link.
 - `/compo state [mode:actual|war]` - Render AllianceDashboard state as an attached PNG image with mode label.
+- `/post sync time [role:<discordRole>]` - Open modal, compose sync-time message, post it, and pin it.
+
+## Command Access Control
+- By default, commands are usable by everyone.
+- Exception: `/permission` is Administrator-only by default.
+- You can whitelist roles per command with `/permission add`.
+- Administrator users can always use commands regardless of role whitelist.
+- To lock `/post` to role X, run:
+  - `/permission add command:post role:@RoleX`
 
 ## Deployment Notes
 - Commands are registered as guild commands using `GUILD_ID` on startup.
