@@ -1,3 +1,4 @@
+import axios from "axios";
 import {
   ApplicationCommandOptionType,
   ChatInputCommandInteraction,
@@ -55,6 +56,8 @@ const SHEET_MODE_CHOICES = [
   { name: "Actual Roster", value: "actual" },
   { name: "War Roster", value: "war" },
 ];
+const SHEET_REFRESH_COOLDOWN_MS = 5 * 60 * 1000;
+const lastRefreshAtMsByGuildMode = new Map<string, number>();
 
 function getModeOptionValue(
   interaction: ChatInputCommandInteraction
@@ -120,6 +123,20 @@ export const Sheet: Command = {
           description: "Unlink only one roster mode",
           type: ApplicationCommandOptionType.String,
           required: false,
+          choices: SHEET_MODE_CHOICES,
+        },
+      ],
+    },
+    {
+      name: "refresh",
+      description: "Trigger Apps Script raw data refresh",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "mode",
+          description: "Refresh actual or war raw data",
+          type: ApplicationCommandOptionType.String,
+          required: true,
           choices: SHEET_MODE_CHOICES,
         },
       ],
@@ -210,6 +227,76 @@ export const Sheet: Command = {
             `Sheet ID: ${sheetId}\n` +
             `Default tab: ${tab ?? "(unchanged)"}\n` +
             "You can relink anytime with `/sheet link`.",
+        });
+        return;
+      }
+
+      if (subcommand === "refresh") {
+        const refreshMode = interaction.options.getString("mode", true);
+        if (refreshMode !== "actual" && refreshMode !== "war") {
+          await safeReply(interaction, {
+            ephemeral: true,
+            content: "Invalid mode. Use actual or war.",
+          });
+          return;
+        }
+
+        const guildModeKey = `${interaction.guildId ?? "dm"}:${refreshMode}`;
+        const now = Date.now();
+        const lastRun = lastRefreshAtMsByGuildMode.get(guildModeKey);
+        if (lastRun && now - lastRun < SHEET_REFRESH_COOLDOWN_MS) {
+          const availableAt = Math.floor(
+            (lastRun + SHEET_REFRESH_COOLDOWN_MS) / 1000
+          );
+          await safeReply(interaction, {
+            ephemeral: true,
+            content: `Refresh cooldown active. Try again <t:${availableAt}:R>.`,
+          });
+          return;
+        }
+
+        const config =
+          refreshMode === "actual"
+            ? {
+                url: process.env.ACTUAL_APPS_SCRIPT_WEBHOOK_URL?.trim(),
+                token: process.env.ACTUAL_APPS_SCRIPT_SHARED_SECRET?.trim(),
+                action: "refreshMembers",
+              }
+            : {
+                url: process.env.WAR_APPS_SCRIPT_WEBHOOK_URL?.trim(),
+                token: process.env.WAR_APPS_SCRIPT_SHARED_SECRET?.trim(),
+                action: "refreshWar",
+              };
+
+        if (!config.url || !config.token) {
+          await safeReply(interaction, {
+            ephemeral: true,
+            content:
+              refreshMode === "actual"
+                ? "Missing ACTUAL_APPS_SCRIPT_WEBHOOK_URL or ACTUAL_APPS_SCRIPT_SHARED_SECRET."
+                : "Missing WAR_APPS_SCRIPT_WEBHOOK_URL or WAR_APPS_SCRIPT_SHARED_SECRET.",
+          });
+          return;
+        }
+
+        const response = await axios.post<string>(
+          config.url,
+          { token: config.token, action: config.action },
+          {
+            headers: { "Content-Type": "application/json" },
+            timeout: 30000,
+            responseType: "text",
+          }
+        );
+
+        lastRefreshAtMsByGuildMode.set(guildModeKey, now);
+        const resultText = String(response.data ?? "").trim();
+        await safeReply(interaction, {
+          ephemeral: true,
+          content:
+            resultText.length > 0
+              ? `Refresh triggered for **${refreshMode.toUpperCase()}** mode.\n${resultText}`
+              : `Refresh triggered for **${refreshMode.toUpperCase()}** mode.`,
         });
         return;
       }
