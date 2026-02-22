@@ -98,6 +98,22 @@ function isKnownTarget(target: string): target is CommandPermissionTarget {
   return (COMMAND_PERMISSION_TARGETS as readonly string[]).includes(target);
 }
 
+function getOwnerBypassIds(): Set<string> {
+  const raw = process.env.OWNER_DISCORD_USER_IDS ?? process.env.OWNER_DISCORD_USER_ID;
+  if (!raw) return new Set();
+  const ids = raw
+    .split(",")
+    .map((v) => v.trim())
+    .filter((v) => /^\d+$/.test(v));
+  return new Set(ids);
+}
+
+function hasOwnerBypass(interaction: GuildInteraction): boolean {
+  const owners = getOwnerBypassIds();
+  if (owners.size === 0) return false;
+  return owners.has(interaction.user.id);
+}
+
 export function getCommandTargetsFromInteraction(
   interaction: ChatInputCommandInteraction
 ): string[] {
@@ -156,6 +172,8 @@ export class CommandPermissionService {
     commandName: string,
     interaction: GuildInteraction
   ): Promise<boolean> {
+    if (hasOwnerBypass(interaction)) return true;
+
     if (!interaction.inGuild()) return true;
 
     if (interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
@@ -175,6 +193,8 @@ export class CommandPermissionService {
     targets: string[],
     interaction: GuildInteraction
   ): Promise<boolean> {
+    if (hasOwnerBypass(interaction)) return true;
+
     if (targets.length === 0) return true;
 
     if (!interaction.inGuild()) return true;
