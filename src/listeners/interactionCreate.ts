@@ -9,7 +9,10 @@ import { Commands } from "../Commands";
 import { formatError } from "../helper/formatError";
 import { CoCService } from "../services/CoCService";
 import { handlePostModalSubmit, isPostModalCustomId } from "../commands/Post";
-import { CommandPermissionService } from "../services/CommandPermissionService";
+import {
+  CommandPermissionService,
+  getCommandTargetsFromInteraction,
+} from "../services/CommandPermissionService";
 
 const commandPermissionService = new CommandPermissionService();
 
@@ -59,7 +62,10 @@ const handleModalSubmit = async (
   if (!isPostModalCustomId(interaction.customId)) return;
 
   try {
-    const allowed = await commandPermissionService.canUseCommand("post", interaction);
+    const allowed = await commandPermissionService.canUseAnyTarget(
+      ["post:sync:time", "post"],
+      interaction
+    );
     if (!allowed) {
       await interaction.reply({
         content: "You do not have permission to use /post.",
@@ -130,8 +136,9 @@ const handleSlashCommand = async (
   }
 
   try {
-    const allowed = await commandPermissionService.canUseCommand(
-      interaction.commandName,
+    const targets = getCommandTargetsFromInteraction(interaction);
+    const allowed = await commandPermissionService.canUseAnyTarget(
+      targets,
       interaction
     );
     if (!allowed) {

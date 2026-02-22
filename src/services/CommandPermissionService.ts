@@ -14,15 +14,38 @@ export const COMMAND_PERMISSION_TARGETS = [
   "inactive",
   "role-users",
   "tracked-clan",
+  "tracked-clan:add",
+  "tracked-clan:remove",
+  "tracked-clan:list",
   "sheet",
+  "sheet:link",
+  "sheet:unlink",
+  "sheet:show",
   "compo",
+  "compo:advice",
+  "compo:state",
   "post",
+  "post:sync:time",
   MANAGE_COMMAND_ROLES_COMMAND,
+  `${MANAGE_COMMAND_ROLES_COMMAND}:add`,
+  `${MANAGE_COMMAND_ROLES_COMMAND}:remove`,
+  `${MANAGE_COMMAND_ROLES_COMMAND}:list`,
 ] as const;
 
 export type CommandPermissionTarget = (typeof COMMAND_PERMISSION_TARGETS)[number];
 
 type GuildInteraction = ChatInputCommandInteraction | ModalSubmitInteraction;
+
+const ADMIN_DEFAULT_TARGETS = new Set<string>([
+  "tracked-clan:add",
+  "tracked-clan:remove",
+  "sheet:link",
+  "sheet:unlink",
+  "sheet:show",
+  "post:sync:time",
+  `${MANAGE_COMMAND_ROLES_COMMAND}:add`,
+  `${MANAGE_COMMAND_ROLES_COMMAND}:remove`,
+]);
 
 function commandRolesKey(commandName: string): string {
   return `command_roles:${commandName}`;
@@ -60,6 +83,33 @@ async function getInteractionRoleIds(interaction: GuildInteraction): Promise<str
 
   const fetched = await guild.members.fetch(interaction.user.id);
   return [...fetched.roles.cache.keys()];
+}
+
+function isAdminDefaultTarget(target: string): boolean {
+  return ADMIN_DEFAULT_TARGETS.has(target);
+}
+
+function isKnownTarget(target: string): target is CommandPermissionTarget {
+  return (COMMAND_PERMISSION_TARGETS as readonly string[]).includes(target);
+}
+
+export function getCommandTargetsFromInteraction(
+  interaction: ChatInputCommandInteraction
+): string[] {
+  const command = interaction.commandName;
+  const group = interaction.options.getSubcommandGroup(false);
+  const sub = interaction.options.getSubcommand(false);
+
+  const raw: string[] = [];
+  if (group && sub) {
+    raw.push(`${command}:${group}:${sub}`);
+  }
+  if (sub) {
+    raw.push(`${command}:${sub}`);
+  }
+  raw.push(command);
+
+  return raw.filter((target) => isKnownTarget(target));
 }
 
 export class CommandPermissionService {
@@ -109,17 +159,48 @@ export class CommandPermissionService {
 
     const allowedRoles = await this.getAllowedRoleIds(commandName);
     if (allowedRoles.length === 0) {
-      return commandName === MANAGE_COMMAND_ROLES_COMMAND ? false : true;
+      return isAdminDefaultTarget(commandName) ? false : true;
     }
 
     const userRoles = await getInteractionRoleIds(interaction);
     return allowedRoles.some((id) => userRoles.includes(id));
   }
 
+  async canUseAnyTarget(
+    targets: string[],
+    interaction: GuildInteraction
+  ): Promise<boolean> {
+    if (targets.length === 0) return true;
+
+    if (!interaction.inGuild()) return true;
+
+    if (interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
+      return true;
+    }
+
+    // First, find the most-specific explicit whitelist and enforce it.
+    for (const target of targets) {
+      const allowedRoles = await this.getAllowedRoleIds(target);
+      if (allowedRoles.length > 0) {
+        const userRoles = await getInteractionRoleIds(interaction);
+        return allowedRoles.some((id) => userRoles.includes(id));
+      }
+    }
+
+    // If no explicit whitelist is set, enforce first matching admin-default target.
+    for (const target of targets) {
+      if (isAdminDefaultTarget(target)) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
   async getPolicySummary(commandName: string): Promise<string> {
     const roles = await this.getAllowedRoleIds(commandName);
     if (roles.length === 0) {
-      return commandName === MANAGE_COMMAND_ROLES_COMMAND
+      return isAdminDefaultTarget(commandName)
         ? "Default: Administrator only."
         : "Default: Everyone can use this command.";
     }

@@ -117,12 +117,12 @@ export const CommandRole: Command = {
     },
     {
       name: "list",
-      description: "List roles whitelisted for one command",
+      description: "List role policy for one or all commands",
       type: ApplicationCommandOptionType.Subcommand,
       options: [
         {
           name: "command",
-          description: "Command to inspect (omit to list all)",
+          description: "Command or subcommand target (omit to list all)",
           type: ApplicationCommandOptionType.String,
           required: false,
           choices: COMMAND_CHOICES,
@@ -160,10 +160,9 @@ export const CommandRole: Command = {
 
       if (commandInput) {
         const roleIds = await permissionService.getAllowedRoleIds(commandInput);
-        const summary =
-          roleIds.length === 0
-            ? "No whitelisted roles. Default access applies."
-            : `Whitelisted roles: ${formatRoleList(roleIds)}`;
+        const summary = roleIds.length
+          ? `Whitelisted roles: ${formatRoleList(roleIds)}`
+          : await permissionService.getPolicySummary(commandInput);
         await safeReply(interaction, {
           ephemeral: true,
           content: `\`/${commandInput}\` roles:\n${summary}`,
@@ -173,8 +172,8 @@ export const CommandRole: Command = {
 
       const allLines: string[] = [];
       for (const target of COMMAND_PERMISSION_TARGETS) {
-        const roleIds = await permissionService.getAllowedRoleIds(target);
-        allLines.push(`- \`/${target}\`: ${formatRoleList(roleIds)}`);
+        const summary = await permissionService.getPolicySummary(target);
+        allLines.push(`- \`/${target}\`: ${summary}`);
       }
 
       if (allLines.length === 0) {

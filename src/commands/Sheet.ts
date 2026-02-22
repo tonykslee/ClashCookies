@@ -2,7 +2,6 @@ import {
   ApplicationCommandOptionType,
   ChatInputCommandInteraction,
   Client,
-  PermissionFlagsBits,
 } from "discord.js";
 import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
@@ -132,17 +131,6 @@ export const Sheet: Command = {
     _cocService: CoCService
   ) => {
     try {
-      if (
-        interaction.inGuild() &&
-        !interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)
-      ) {
-        await safeReply(interaction, {
-          ephemeral: true,
-          content: "You need Manage Server permission to manage sheet settings.",
-        });
-        return;
-      }
-
       await interaction.deferReply({ ephemeral: true });
 
       const subcommand = interaction.options.getSubcommand(true);

@@ -43,7 +43,7 @@ Optional fallback auth (not required for your current setup):
 - `/help` - List available commands.
 - `/permission add command:<name> role:<discordRole>` - Allow a role to use a command.
 - `/permission remove command:<name> role:<discordRole>` - Remove a role from a command whitelist.
-- `/permission list [command:<name>]` - List whitelisted roles for one command, or all commands if omitted.
+- `/permission list [command:<name>]` - List role policy for one command target, or all if omitted.
 - `/clan-name tag:<tag>` - Get clan name by tag.
 - `/lastseen tag:<playerTag>` - Show a player's last seen activity.
 - `/inactive days:<number>` - List players inactive for N days.
@@ -60,7 +60,11 @@ Optional fallback auth (not required for your current setup):
 
 ## Command Access Control
 - By default, commands are usable by everyone.
-- Exception: `/permission` is Administrator-only by default.
+- Default Administrator-only targets:
+  - `/tracked-clan add`, `/tracked-clan remove`
+  - `/permission add`, `/permission remove`
+  - `/sheet link`, `/sheet unlink`, `/sheet show`
+  - `/post sync time`
 - You can whitelist roles per command with `/permission add`.
 - Administrator users can always use commands regardless of role whitelist.
 - To lock `/post` to role X, run:
