@@ -21,6 +21,10 @@ npm run build
 npm start
 ```
 
+Optional owner bypass:
+- `OWNER_DISCORD_USER_ID` - single Discord user ID with full command access override in all guilds.
+- `OWNER_DISCORD_USER_IDS` - comma-separated list of Discord user IDs with full override.
+
 ## Google Sheets (OAuth)
 This project is currently set up to use OAuth refresh token auth.
 
