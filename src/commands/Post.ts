@@ -1,9 +1,13 @@
 import {
+  ActionRowBuilder,
   ApplicationCommandOptionType,
   ChatInputCommandInteraction,
   Client,
+  ModalBuilder,
+  ModalSubmitInteraction,
   PermissionFlagsBits,
-  Role,
+  TextInputBuilder,
+  TextInputStyle,
 } from "discord.js";
 import { Command } from "../Command";
 import { safeReply } from "../helper/safeReply";
@@ -12,6 +16,10 @@ import { SettingsService } from "../services/SettingsService";
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_PATTERN = /^\d{1,2}:\d{2}$/;
+const POST_SYNC_TIME_MODAL_PREFIX = "post-sync-time";
+const DATE_INPUT_ID = "date";
+const TIME_INPUT_ID = "time";
+const TIMEZONE_INPUT_ID = "timezone";
 
 function parseDate(input: string): { year: number; month: number; day: number } | null {
   if (!DATE_PATTERN.test(input)) return null;
@@ -147,6 +155,143 @@ function buildSyncMessage(epochSeconds: number, roleId: string): string {
 <@&${roleId}>`;
 }
 
+function buildModalCustomId(userId: string, roleId: string): string {
+  return `${POST_SYNC_TIME_MODAL_PREFIX}:${userId}:${roleId}`;
+}
+
+function parseModalCustomId(
+  customId: string
+): { userId: string; roleId: string } | null {
+  const parts = customId.split(":");
+  if (parts.length !== 3 || parts[0] !== POST_SYNC_TIME_MODAL_PREFIX) {
+    return null;
+  }
+
+  const [, userId, roleId] = parts;
+  if (!userId || !roleId) return null;
+  return { userId, roleId };
+}
+
+function getEffectiveDefaults(timeZone: string): {
+  date: string;
+  time: string;
+} {
+  const plus12Hours = new Date(Date.now() + 12 * 60 * 60 * 1000);
+  const defaultParts = getDateTimeInTimeZone(plus12Hours, timeZone);
+  return {
+    date: `${defaultParts.year}-${String(defaultParts.month).padStart(2, "0")}-${String(
+      defaultParts.day
+    ).padStart(2, "0")}`,
+    time: `${String(defaultParts.hour).padStart(2, "0")}:${String(
+      defaultParts.minute
+    ).padStart(2, "0")}`,
+  };
+}
+
+export function isPostModalCustomId(customId: string): boolean {
+  return customId.startsWith(`${POST_SYNC_TIME_MODAL_PREFIX}:`);
+}
+
+export async function handlePostModalSubmit(
+  interaction: ModalSubmitInteraction
+): Promise<void> {
+  const parsed = parseModalCustomId(interaction.customId);
+  if (!parsed) return;
+
+  if (parsed.userId !== interaction.user.id) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Only the user who opened this modal can submit it.",
+    });
+    return;
+  }
+
+  if (!interaction.inGuild()) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "This command can only be used in a server.",
+    });
+    return;
+  }
+
+  if (
+    !interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)
+  ) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "You need Administrator permission to use /post commands.",
+    });
+    return;
+  }
+
+  await interaction.deferReply({ ephemeral: true });
+
+  const settings = new SettingsService();
+
+  const dateInput = interaction.fields.getTextInputValue(DATE_INPUT_ID).trim();
+  const timeInput = interaction.fields.getTextInputValue(TIME_INPUT_ID).trim();
+  const timezoneInput = normalizeTimeZone(
+    interaction.fields.getTextInputValue(TIMEZONE_INPUT_ID)
+  );
+
+  if (!validateTimeZone(timezoneInput)) {
+    await interaction.editReply(
+      "Invalid timezone. Use a valid IANA timezone like America/New_York."
+    );
+    return;
+  }
+
+  const date = parseDate(dateInput);
+  if (!date) {
+    await interaction.editReply(
+      "Invalid date. Use YYYY-MM-DD, for example 2026-02-22."
+    );
+    return;
+  }
+
+  const time = parseTime(timeInput);
+  if (!time) {
+    await interaction.editReply(
+      "Invalid time. Use 24-hour HH:mm, for example 20:30."
+    );
+    return;
+  }
+
+  await settings.set(userTimeZoneKey(interaction.user.id), timezoneInput);
+
+  const epochSeconds = toEpochSeconds(
+    date.year,
+    date.month,
+    date.day,
+    time.hour,
+    time.minute,
+    timezoneInput
+  );
+
+  const channel = interaction.channel;
+  if (!channel?.isTextBased()) {
+    await interaction.editReply("This command can only post to text channels.");
+    return;
+  }
+
+  const content = buildSyncMessage(epochSeconds, parsed.roleId);
+  const postedMessage = await channel.send({
+    content,
+    allowedMentions: { roles: [parsed.roleId] },
+  });
+
+  let pinNote = "";
+  try {
+    await postedMessage.pin();
+  } catch {
+    pinNote = " Posted, but I could not pin it (missing permission).";
+  }
+
+  await interaction.editReply(
+    `Sync time message posted${pinNote}\nUsed: ${dateInput} ${timeInput} (${timezoneInput}).`
+  );
+}
+
 export const Post: Command = {
   name: "post",
   description: "Post formatted messages",
@@ -166,24 +311,6 @@ export const Post: Command = {
               description: "Role to ping",
               type: ApplicationCommandOptionType.Role,
               required: true,
-            },
-            {
-              name: "date",
-              description: "Date in YYYY-MM-DD format (default: now + 12h)",
-              type: ApplicationCommandOptionType.String,
-              required: false,
-            },
-            {
-              name: "time",
-              description: "Time in 24h HH:mm format (default: now + 12h)",
-              type: ApplicationCommandOptionType.String,
-              required: false,
-            },
-            {
-              name: "timezone",
-              description: "IANA timezone, e.g. America/New_York (remembered)",
-              type: ApplicationCommandOptionType.String,
-              required: false,
             },
           ],
         },
@@ -213,8 +340,6 @@ export const Post: Command = {
       return;
     }
 
-    await interaction.deferReply({ ephemeral: true });
-
     const subcommandGroup = interaction.options.getSubcommandGroup(false);
     const subcommand = interaction.options.getSubcommand(true);
     if (subcommandGroup !== "sync" || subcommand !== "time") {
@@ -226,106 +351,44 @@ export const Post: Command = {
     }
 
     const settings = new SettingsService();
-
-    const dateInput = interaction.options.getString("date", false)?.trim();
-    const timeInput = interaction.options.getString("time", false)?.trim();
-    const timezoneInputRaw = interaction.options.getString("timezone", false);
     const role = interaction.options.getRole("role", true);
 
-    if (!(role instanceof Role)) {
-      await safeReply(interaction, {
-        ephemeral: true,
-        content: "Invalid role selected.",
-      });
-      return;
-    }
-
     const rememberedTimeZone = await settings.get(userTimeZoneKey(interaction.user.id));
-    const timezoneInput = timezoneInputRaw
-      ? normalizeTimeZone(timezoneInputRaw)
-      : rememberedTimeZone ?? "UTC";
+    const initialTimeZone =
+      rememberedTimeZone && validateTimeZone(rememberedTimeZone)
+        ? rememberedTimeZone
+        : "UTC";
+    const defaults = getEffectiveDefaults(initialTimeZone);
 
-    if (!validateTimeZone(timezoneInput)) {
-      await safeReply(interaction, {
-        ephemeral: true,
-        content:
-          "Invalid timezone. Use a valid IANA timezone like America/New_York.",
-      });
-      return;
-    }
+    const modal = new ModalBuilder()
+      .setCustomId(buildModalCustomId(interaction.user.id, role.id))
+      .setTitle("Post Sync Time");
 
-    if (timezoneInputRaw) {
-      await settings.set(userTimeZoneKey(interaction.user.id), timezoneInput);
-    }
+    const dateInput = new TextInputBuilder()
+      .setCustomId(DATE_INPUT_ID)
+      .setLabel("Date (YYYY-MM-DD)")
+      .setStyle(TextInputStyle.Short)
+      .setRequired(true)
+      .setValue(defaults.date);
+    const timeInput = new TextInputBuilder()
+      .setCustomId(TIME_INPUT_ID)
+      .setLabel("Time (24h HH:mm)")
+      .setStyle(TextInputStyle.Short)
+      .setRequired(true)
+      .setValue(defaults.time);
+    const timeZoneInput = new TextInputBuilder()
+      .setCustomId(TIMEZONE_INPUT_ID)
+      .setLabel("Timezone (IANA)")
+      .setStyle(TextInputStyle.Short)
+      .setRequired(true)
+      .setValue(initialTimeZone);
 
-    const plus12Hours = new Date(Date.now() + 12 * 60 * 60 * 1000);
-    const defaultParts = getDateTimeInTimeZone(plus12Hours, timezoneInput);
-
-    const effectiveDateInput =
-      dateInput ??
-      `${defaultParts.year}-${String(defaultParts.month).padStart(2, "0")}-${String(
-        defaultParts.day
-      ).padStart(2, "0")}`;
-    const effectiveTimeInput =
-      timeInput ??
-      `${String(defaultParts.hour).padStart(2, "0")}:${String(
-        defaultParts.minute
-      ).padStart(2, "0")}`;
-
-    const date = parseDate(effectiveDateInput);
-    if (!date) {
-      await safeReply(interaction, {
-        ephemeral: true,
-        content: "Invalid date. Use YYYY-MM-DD, for example 2026-02-22.",
-      });
-      return;
-    }
-
-    const time = parseTime(effectiveTimeInput);
-    if (!time) {
-      await safeReply(interaction, {
-        ephemeral: true,
-        content: "Invalid time. Use 24-hour HH:mm, for example 20:30.",
-      });
-      return;
-    }
-
-    const epochSeconds = toEpochSeconds(
-      date.year,
-      date.month,
-      date.day,
-      time.hour,
-      time.minute,
-      timezoneInput
+    modal.addComponents(
+      new ActionRowBuilder<TextInputBuilder>().addComponents(dateInput),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(timeInput),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(timeZoneInput)
     );
 
-    const channel = interaction.channel;
-    if (!channel?.isTextBased()) {
-      await safeReply(interaction, {
-        ephemeral: true,
-        content: "This command can only post to text channels.",
-      });
-      return;
-    }
-
-    const content = buildSyncMessage(epochSeconds, role.id);
-    const postedMessage = await channel.send({
-      content,
-      allowedMentions: { roles: [role.id] },
-    });
-
-    let pinNote = "";
-    try {
-      await postedMessage.pin();
-    } catch {
-      pinNote = " Posted, but I could not pin it (missing permission).";
-    }
-
-    await safeReply(interaction, {
-      ephemeral: true,
-      content:
-        `Sync time message posted${pinNote}\n` +
-        `Used: ${effectiveDateInput} ${effectiveTimeInput} (${timezoneInput}).`,
-    });
+    await interaction.showModal(modal);
   },
 };
