@@ -517,11 +517,12 @@ export const Compo: Command = {
         const settings = new SettingsService();
         const sheets = new GoogleSheetsService(settings);
 
-        const [clanCol, totalCol, targetBandCol, rightBlock] = await Promise.all([
+        const [clanCol, totalCol, targetBandCol, rightBlock, refreshCell] = await Promise.all([
           sheets.readLinkedValues("AllianceDashboard!A1:A9", stateMode),
           sheets.readLinkedValues("AllianceDashboard!D1:D9", stateMode),
           sheets.readLinkedValues("AllianceDashboard!AW1:AW9", stateMode),
           sheets.readLinkedValues("AllianceDashboard!U1:AA9", stateMode),
+          sheets.readLinkedValues("Lookup!B10:B10", stateMode),
         ]);
 
         const candidates = readPlacementCandidates(
@@ -585,6 +586,11 @@ export const Compo: Command = {
                 .map((c) => `${abbreviateClan(c.clanName)} (${c.delta})`)
                 .join(", ")
             : "None";
+        const rawRefresh = refreshCell[0]?.[0]?.trim();
+        const refreshLine =
+          rawRefresh && /^\d+$/.test(rawRefresh)
+            ? `RAW Data last refreshed: <t:${rawRefresh}:F>`
+            : "RAW Data last refreshed: (not available)";
 
         await safeReply(interaction, {
           ephemeral: true,
@@ -592,7 +598,8 @@ export const Compo: Command = {
             `ACTUAL placement suggestions for weight **${inputWeight.toLocaleString()}** (${bucket} bucket):\n` +
             `- Recommended: ${recommendedText}\n` +
             `- Vacancy: ${vacancyText}\n` +
-            `- Composition: ${compositionText}`,
+            `- Composition: ${compositionText}\n` +
+            refreshLine,
         });
         return;
       }
