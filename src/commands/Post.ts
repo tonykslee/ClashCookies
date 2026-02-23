@@ -3,6 +3,7 @@ import {
   ApplicationCommandOptionType,
   ChatInputCommandInteraction,
   Client,
+  type MessageMentionOptions,
   ModalBuilder,
   ModalSubmitInteraction,
   PermissionFlagsBits,
@@ -347,15 +348,15 @@ export async function handlePostModalSubmit(
   const canMentionEveryone = permissions.has(PermissionFlagsBits.MentionEveryone);
   const mentionWillNotify = role.mentionable || canMentionEveryone;
   const notices: string[] = [];
+  const allowedMentions: MessageMentionOptions = mentionWillNotify
+    ? { roles: [role.id] }
+    : { parse: [] };
 
   const content = buildSyncMessage(epochSeconds, role.id);
   const postedMessage = await channel
     .send({
       content,
-      allowedMentions: {
-        parse: ["roles"],
-        roles: [role.id],
-      },
+      allowedMentions,
     })
     .catch(async (err) => {
       console.error(
