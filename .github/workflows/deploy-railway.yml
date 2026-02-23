@@ -19,14 +19,30 @@ permissions:
 
 jobs:
   deploy:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
+      RAILWAY_PROJECT_ID: 4e5afdf5-8892-4f40-b50f-76f6b5dd81f0
+      RAILWAY_ENVIRONMENT: ${{ github.ref_name == 'main' && 'production' || 'staging' }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Deploy to Railway
-        uses: ayungavis/railway-preview-deploy@v1.0.2
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          railway_api_token: ${{ secrets.RAILWAY_API_TOKEN }}
-          project_id: 4e5afdf5-8892-4f40-b50f-76f6b5dd81f0
-          environment_name: ${{ (github.ref_name == 'main' || github.base_ref == 'main') && 'production' || 'staging' }}
+          node-version: 20
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Deploy to Railway via CLI
+        run: railway up --ci --project "$RAILWAY_PROJECT_ID" --environment "$RAILWAY_ENVIRONMENT"
+
+  pr-check:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: PR deployment check
+        run: echo "PR event detected. Railway deploy runs on push to dev/main."
