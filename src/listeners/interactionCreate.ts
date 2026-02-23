@@ -18,6 +18,15 @@ const commandPermissionService = new CommandPermissionService();
 
 let isRegistered = false;
 
+function isMissingBotPermissionsError(err: unknown): boolean {
+  const code = (err as { code?: number } | null | undefined)?.code;
+  return code === 50013 || code === 50001;
+}
+
+function missingPermissionMessage(context: string): string {
+  return `I couldn't complete ${context} because I'm missing one or more required Discord permissions. Please update my role permissions/channel overrides and retry.`;
+}
+
 export default (client: Client, cocService: CoCService): void => {
   if (isRegistered) {
     console.warn("interactionCreate already registered, skipping");
@@ -77,16 +86,20 @@ const handleModalSubmit = async (
     await handlePostModalSubmit(interaction);
   } catch (err) {
     console.error(`Modal submit failed: ${formatError(err)}`);
+    const message = isMissingBotPermissionsError(err)
+      ? missingPermissionMessage("that modal action")
+      : "Something went wrong.";
+
     if (!interaction.replied && !interaction.deferred) {
       await interaction.reply({
-        content: "Something went wrong.",
+        content: message,
         ephemeral: true,
       });
       return;
     }
 
     if (interaction.deferred) {
-      await interaction.editReply("Something went wrong.");
+      await interaction.editReply(message);
     }
   }
 };
@@ -152,9 +165,18 @@ const handleSlashCommand = async (
     await slashCommand.run(client, interaction, cocService);
   } catch (err) {
     console.error(`Command failed: ${formatError(err)}`);
+    const message = isMissingBotPermissionsError(err)
+      ? missingPermissionMessage(`/${interaction.commandName}`)
+      : "Something went wrong.";
+
+    if (interaction.deferred) {
+      await interaction.editReply(message).catch(() => undefined);
+      return;
+    }
+
     if (!interaction.replied) {
       await interaction.reply({
-        content: "Something went wrong.",
+        content: message,
         ephemeral: true,
       });
     }
