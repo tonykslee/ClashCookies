@@ -5,6 +5,7 @@ import {
   Client,
   ModalBuilder,
   ModalSubmitInteraction,
+  PermissionFlagsBits,
   TextInputBuilder,
   TextInputStyle,
 } from "discord.js";
@@ -167,6 +168,14 @@ function buildSyncMessage(epochSeconds: number, roleId: string): string {
 <@&${roleId}>`;
 }
 
+function summarizePermissionIssue(err: unknown, action: string): string {
+  const code = (err as { code?: number } | null | undefined)?.code;
+  if (code === 50013 || code === 50001) {
+    return `${action} failed due to missing bot permissions in this channel.`;
+  }
+  return `${action} failed. Check bot permissions and logs.`;
+}
+
 function isBotSyncTimeMessage(content: string): boolean {
   return content.startsWith("# Sync time :gem:");
 }
@@ -311,32 +320,83 @@ export async function handlePostModalSubmit(
     return;
   }
 
-  const content = buildSyncMessage(epochSeconds, role.id);
-  const postedMessage = await channel.send({
-    content,
-    allowedMentions: { roles: [role.id] },
-  });
-
-  let pinNote = "";
-  try {
-    const pinned = await channel.messages.fetchPinned();
-    for (const pinnedMessage of pinned.values()) {
-      if (pinnedMessage.id === postedMessage.id) continue;
-      if (!pinnedMessage.author.bot) continue;
-      if (!isBotSyncTimeMessage(pinnedMessage.content)) continue;
-      await pinnedMessage.unpin().catch(() => undefined);
-    }
-
-    await postedMessage.pin();
-  } catch {
-    pinNote = " Posted, but I could not pin it (missing permission).";
+  if (!("permissionsFor" in channel)) {
+    await interaction.editReply("This command can only post in guild text channels.");
+    return;
   }
 
+  const me = guild.members.me ?? (await guild.members.fetchMe().catch(() => null));
+  if (!me) {
+    await interaction.editReply("Could not verify bot permissions in this channel.");
+    return;
+  }
+
+  const permissions = channel.permissionsFor(me);
+  if (!permissions?.has(PermissionFlagsBits.SendMessages)) {
+    await interaction.editReply(
+      "Could not post sync time: bot is missing `Send Messages` in this channel."
+    );
+    return;
+  }
+
+  const canManageMessages = permissions.has(PermissionFlagsBits.ManageMessages);
+  const canMentionEveryone = permissions.has(PermissionFlagsBits.MentionEveryone);
+  const mentionWillNotify = role.mentionable || canMentionEveryone;
+  const notices: string[] = [];
+
+  const content = buildSyncMessage(epochSeconds, role.id);
+  const postedMessage = await channel
+    .send({
+      content,
+      allowedMentions: {
+        parse: ["roles"],
+        roles: [role.id],
+      },
+    })
+    .catch(async (err) => {
+      await interaction.editReply(summarizePermissionIssue(err, "Posting sync time"));
+      return null;
+    });
+  if (!postedMessage) {
+    return;
+  }
+
+  if (!mentionWillNotify) {
+    notices.push(
+      `Role mention was included but may not notify members because \`${role.name}\` is not mentionable and bot lacks \`Mention Everyone\`.`
+    );
+  }
+
+  if (canManageMessages) {
+    try {
+      const pinned = await channel.messages.fetchPinned();
+      for (const pinnedMessage of pinned.values()) {
+        if (pinnedMessage.id === postedMessage.id) continue;
+        if (!pinnedMessage.author.bot) continue;
+        if (!isBotSyncTimeMessage(pinnedMessage.content)) continue;
+        await pinnedMessage.unpin().catch(() => undefined);
+      }
+    } catch (err) {
+      notices.push(summarizePermissionIssue(err, "Cleaning previous sync pins"));
+    }
+
+    try {
+      await postedMessage.pin();
+    } catch (err) {
+      notices.push(summarizePermissionIssue(err, "Pinning message"));
+    }
+  } else {
+    notices.push("Message posted, but bot is missing `Manage Messages` so it could not pin.");
+  }
+
+  const noticeBlock =
+    notices.length > 0 ? `\n${notices.map((n) => `- ${n}`).join("\n")}` : "";
+
   await interaction.editReply(
-    `Sync time message posted${pinNote}\nUsed: ${dateInput} ${timeInput} (${to12HourLabel(
+    `Sync time message posted.\nUsed: ${dateInput} ${timeInput} (${to12HourLabel(
       time.hour,
       time.minute
-    )}, ${timezoneInput}).`
+    )}, ${timezoneInput}).${noticeBlock}`
   );
 }
 
