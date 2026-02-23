@@ -7,11 +7,6 @@ import { prisma } from "../prisma";
 
 const DEFAULT_OBSERVE_INTERVAL_MINUTES = 30;
 
-function normalizeClanTag(input: string): string {
-  const cleaned = input.trim().toUpperCase().replace(/^#/, "");
-  return `#${cleaned}`;
-}
-
 export default (client: Client, cocService: CoCService): void => {
   client.once("ready", async () => {
     if (!client.application) return;
@@ -40,28 +35,21 @@ export default (client: Client, cocService: CoCService): void => {
           orderBy: { createdAt: "asc" },
         });
 
-        const trackedTags =
-          dbTracked.length > 0
-            ? dbTracked.map((c) => c.tag)
-            : (process.env.TRACKED_CLANS?.split(",") ?? [])
-                .map((t) => t.trim())
-                .filter(Boolean)
-                .map(normalizeClanTag);
+        const trackedTags = dbTracked.map((c) => c.tag);
 
         if (trackedTags.length === 0) {
           console.warn(
-            "No tracked clans configured. Use /tracked-clan add or set TRACKED_CLANS in .env."
+            "No tracked clans configured. Use /tracked-clan add."
           );
           return;
         }
 
         for (const tag of trackedTags) {
-          const normalizedTag = normalizeClanTag(tag);
           try {
-            await activityService.observeClan(normalizedTag);
+            await activityService.observeClan(tag);
           } catch (err) {
             console.error(
-              `observeClan failed for ${normalizedTag}: ${formatError(err)}`
+              `observeClan failed for ${tag}: ${formatError(err)}`
             );
           }
         }
