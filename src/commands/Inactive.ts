@@ -2,6 +2,11 @@ import { Client, CommandInteraction } from "discord.js";
 import { Command } from "../Command";
 import { prisma } from "../prisma";
 
+function normalizeClanTag(input: string): string {
+  const cleaned = input.trim().toUpperCase().replace(/^#/, "");
+  return `#${cleaned}`;
+}
+
 export const Inactive: Command = {
   name: "inactive",
   description: "List players inactive for N days",
@@ -28,11 +33,31 @@ export const Inactive: Command = {
       Date.now() - days * 24 * 60 * 60 * 1000
     );
 
+    const dbTracked = await prisma.trackedClan.findMany({
+      orderBy: { createdAt: "asc" },
+      select: { tag: true },
+    });
+
+    const trackedTags =
+      dbTracked.length > 0
+        ? dbTracked.map((c) => c.tag)
+        : (process.env.TRACKED_CLANS?.split(",") ?? [])
+            .map((t) => t.trim())
+            .filter(Boolean)
+            .map(normalizeClanTag);
+
     const inactivePlayers = await prisma.playerActivity.findMany({
       where: {
         lastSeenAt: {
           lt: cutoff,
         },
+        ...(trackedTags.length > 0
+          ? {
+              clanTag: {
+                in: trackedTags,
+              },
+            }
+          : {}),
       },
       orderBy: {
         lastSeenAt: "asc",
@@ -59,6 +84,13 @@ export const Inactive: Command = {
     let message =
       `⚠️ **Inactive for ${days}+ days (${inactivePlayers.length})**\n\n` +
       lines.join("\n");
+
+    if (trackedTags.length > 0) {
+      message += `\n\nScope: ${trackedTags.length} tracked clan(s).`;
+    } else {
+      message +=
+        "\n\nScope: all known players (no tracked clans configured).";
+    }
 
     if (inactivePlayers.length > 25) {
       message += `\n\n…and ${

@@ -5,6 +5,8 @@ import { ActivityService } from "../services/ActivityService";
 import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
 
+const DEFAULT_OBSERVE_INTERVAL_MINUTES = 30;
+
 function normalizeClanTag(input: string): string {
   const cleaned = input.trim().toUpperCase().replace(/^#/, "");
   return `#${cleaned}`;
@@ -23,38 +25,69 @@ export default (client: Client, cocService: CoCService): void => {
     await guild.commands.set(Commands);
     console.log(`✅ Guild commands registered (${Commands.length})`);
 
-    // Initial activity observation for tracked clans.
     const activityService = new ActivityService(cocService);
+    let observeInProgress = false;
 
-    const dbTracked = await prisma.trackedClan.findMany({
-      orderBy: { createdAt: "asc" },
-    });
-
-    const trackedTags =
-      dbTracked.length > 0
-        ? dbTracked.map((c) => c.tag)
-        : (process.env.TRACKED_CLANS?.split(",") ?? [])
-            .map((t) => t.trim())
-            .filter(Boolean)
-            .map(normalizeClanTag);
-
-    if (trackedTags.length === 0) {
-      console.warn(
-        "No tracked clans configured. Use /tracked-clan add or set TRACKED_CLANS in .env."
-      );
-    }
-
-    for (const tag of trackedTags) {
-      const normalizedTag = normalizeClanTag(tag);
-
-      try {
-        await activityService.observeClan(normalizedTag);
-      } catch (err) {
-        console.error(
-          `observeClan failed for ${normalizedTag}: ${formatError(err)}`
-        );
+    const observeTrackedClans = async () => {
+      if (observeInProgress) {
+        console.warn("Skipping observe loop because previous run is still in progress.");
+        return;
       }
-    }
+
+      observeInProgress = true;
+      try {
+        const dbTracked = await prisma.trackedClan.findMany({
+          orderBy: { createdAt: "asc" },
+        });
+
+        const trackedTags =
+          dbTracked.length > 0
+            ? dbTracked.map((c) => c.tag)
+            : (process.env.TRACKED_CLANS?.split(",") ?? [])
+                .map((t) => t.trim())
+                .filter(Boolean)
+                .map(normalizeClanTag);
+
+        if (trackedTags.length === 0) {
+          console.warn(
+            "No tracked clans configured. Use /tracked-clan add or set TRACKED_CLANS in .env."
+          );
+          return;
+        }
+
+        for (const tag of trackedTags) {
+          const normalizedTag = normalizeClanTag(tag);
+          try {
+            await activityService.observeClan(normalizedTag);
+          } catch (err) {
+            console.error(
+              `observeClan failed for ${normalizedTag}: ${formatError(err)}`
+            );
+          }
+        }
+      } finally {
+        observeInProgress = false;
+      }
+    };
+
+    // Initial activity observation for tracked clans.
+    await observeTrackedClans();
+
+    const configuredIntervalMinutes = Number(
+      process.env.ACTIVITY_OBSERVE_INTERVAL_MINUTES ?? DEFAULT_OBSERVE_INTERVAL_MINUTES
+    );
+    const intervalMinutes =
+      Number.isFinite(configuredIntervalMinutes) && configuredIntervalMinutes > 0
+        ? configuredIntervalMinutes
+        : DEFAULT_OBSERVE_INTERVAL_MINUTES;
+    const intervalMs = Math.floor(intervalMinutes * 60 * 1000);
+
+    setInterval(() => {
+      observeTrackedClans().catch((err) => {
+        console.error(`observeTrackedClans loop failed: ${formatError(err)}`);
+      });
+    }, intervalMs);
+    console.log(`Activity observe loop enabled (every ${intervalMinutes} minute(s)).`);
 
 
     console.log("ClashCookies is online");
