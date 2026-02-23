@@ -1,4 +1,4 @@
-import { Client } from "discord.js";
+import { Client, PermissionFlagsBits } from "discord.js";
 import { Commands } from "../Commands";
 import { CoCService } from "../services/CoCService";
 import { ActivityService } from "../services/ActivityService";
@@ -15,6 +15,27 @@ export default (client: Client, cocService: CoCService): void => {
 
     const guildId = process.env.GUILD_ID!;
     const guild = await client.guilds.fetch(guildId);
+    const me = await guild.members.fetch(client.user!.id);
+    const guildPerms = me.permissions;
+    const requiredGuildPerms: Array<[bigint, string]> = [
+      [PermissionFlagsBits.ViewChannel, "View Channels"],
+      [PermissionFlagsBits.SendMessages, "Send Messages"],
+      [PermissionFlagsBits.EmbedLinks, "Embed Links"],
+      [PermissionFlagsBits.ReadMessageHistory, "Read Message History"],
+      [PermissionFlagsBits.ManageMessages, "Manage Messages (for pin/unpin)"],
+      [PermissionFlagsBits.MentionEveryone, "Mention Everyone (for non-mentionable role pings)"],
+    ];
+    const missingGuildPerms = requiredGuildPerms
+      .filter(([bit]) => !guildPerms.has(bit))
+      .map(([, label]) => label);
+    if (missingGuildPerms.length > 0) {
+      console.warn(
+        `Bot is missing recommended guild permissions: ${missingGuildPerms.join(", ")}.`
+      );
+      console.warn(
+        "Some commands may partially fail depending on channel overrides. Update role/channel permissions and redeploy."
+      );
+    }
 
     // Register ONLY guild commands
     await guild.commands.set(Commands);
