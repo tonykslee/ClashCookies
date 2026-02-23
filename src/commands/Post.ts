@@ -10,6 +10,7 @@ import {
   TextInputStyle,
 } from "discord.js";
 import { Command } from "../Command";
+import { formatError } from "../helper/formatError";
 import { safeReply } from "../helper/safeReply";
 import { CoCService } from "../services/CoCService";
 import { SettingsService } from "../services/SettingsService";
@@ -172,6 +173,9 @@ function summarizePermissionIssue(err: unknown, action: string): string {
   const code = (err as { code?: number } | null | undefined)?.code;
   if (code === 50013 || code === 50001) {
     return `${action} failed due to missing bot permissions in this channel.`;
+  }
+  if (code) {
+    return `${action} failed (Discord code: ${code}). Check bot permissions and logs.`;
   }
   return `${action} failed. Check bot permissions and logs.`;
 }
@@ -354,6 +358,11 @@ export async function handlePostModalSubmit(
       },
     })
     .catch(async (err) => {
+      console.error(
+        `[post sync time] send failed guild=${interaction.guildId} channel=${interaction.channelId} role=${role.id} user=${interaction.user.id} error=${formatError(
+          err
+        )}`
+      );
       await interaction.editReply(summarizePermissionIssue(err, "Posting sync time"));
       return null;
     });
@@ -377,12 +386,22 @@ export async function handlePostModalSubmit(
         await pinnedMessage.unpin().catch(() => undefined);
       }
     } catch (err) {
+      console.error(
+        `[post sync time] fetchPinned/unpin failed guild=${interaction.guildId} channel=${interaction.channelId} user=${interaction.user.id} error=${formatError(
+          err
+        )}`
+      );
       notices.push(summarizePermissionIssue(err, "Cleaning previous sync pins"));
     }
 
     try {
       await postedMessage.pin();
     } catch (err) {
+      console.error(
+        `[post sync time] pin failed guild=${interaction.guildId} channel=${interaction.channelId} message=${postedMessage.id} user=${interaction.user.id} error=${formatError(
+          err
+        )}`
+      );
       notices.push(summarizePermissionIssue(err, "Pinning message"));
     }
   } else {
