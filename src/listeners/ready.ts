@@ -17,14 +17,17 @@ export default (client: Client, cocService: CoCService): void => {
     const guild = await client.guilds.fetch(guildId);
     const me = await guild.members.fetch(client.user!.id);
     const guildPerms = me.permissions;
+    const maybePinMessagesBit = (PermissionFlagsBits as Record<string, bigint>).PinMessages;
     const requiredGuildPerms: Array<[bigint, string]> = [
       [PermissionFlagsBits.ViewChannel, "View Channels"],
       [PermissionFlagsBits.SendMessages, "Send Messages"],
       [PermissionFlagsBits.EmbedLinks, "Embed Links"],
       [PermissionFlagsBits.ReadMessageHistory, "Read Message History"],
-      [PermissionFlagsBits.ManageMessages, "Manage Messages (for pin/unpin)"],
       [PermissionFlagsBits.MentionEveryone, "Mention Everyone (for non-mentionable role pings)"],
     ];
+    if (maybePinMessagesBit) {
+      requiredGuildPerms.push([maybePinMessagesBit, "Pin Messages (for pin/unpin)"]);
+    }
     const missingGuildPerms = requiredGuildPerms
       .filter(([bit]) => !guildPerms.has(bit))
       .map(([, label]) => label);
