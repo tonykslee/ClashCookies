@@ -5,6 +5,7 @@ import { CoCService } from "../services/CoCService";
 import { formatError } from "../helper/formatError";
 
 const DEFAULT_STALE_HOURS = 6;
+const DEFAULT_MIN_COVERAGE = 0.8;
 
 export const Inactive: Command = {
   name: "inactive",
@@ -68,9 +69,11 @@ export const Inactive: Command = {
       return;
     }
 
+    const liveMemberTagList = [...liveMemberTags];
+
     const activitySnapshot = await prisma.playerActivity.aggregate({
       where: {
-        tag: { in: [...liveMemberTags] },
+        tag: { in: liveMemberTagList },
       },
       _max: { updatedAt: true },
       _count: { tag: true },
@@ -94,10 +97,36 @@ export const Inactive: Command = {
       return;
     }
 
+    const freshObservedCount = await prisma.playerActivity.count({
+      where: {
+        tag: { in: liveMemberTagList },
+        updatedAt: { gte: staleCutoff },
+      },
+    });
+
+    const minCoverageRaw = Number(
+      process.env.INACTIVE_MIN_OBSERVATION_COVERAGE ?? DEFAULT_MIN_COVERAGE
+    );
+    const minCoverage =
+      Number.isFinite(minCoverageRaw) && minCoverageRaw > 0 && minCoverageRaw <= 1
+        ? minCoverageRaw
+        : DEFAULT_MIN_COVERAGE;
+    const observationCoverage = freshObservedCount / liveMemberTagList.length;
+
+    if (observationCoverage < minCoverage) {
+      await interaction.editReply(
+        `Inactive data is incomplete: only ${freshObservedCount}/${liveMemberTagList.length} live members were observed in the last ${staleHours}h (${Math.floor(
+          observationCoverage * 100
+        )}% coverage). Wait for observation refresh and retry.`
+      );
+      return;
+    }
+
     const inactivePlayers = await prisma.playerActivity.findMany({
       where: {
         lastSeenAt: { lt: cutoff },
-        tag: { in: [...liveMemberTags] },
+        updatedAt: { gte: staleCutoff },
+        tag: { in: liveMemberTagList },
       },
       orderBy: { lastSeenAt: "asc" },
     });
@@ -118,7 +147,8 @@ export const Inactive: Command = {
     message +=
       `\n\nScope: ${trackedTags.length} tracked clan(s), ` +
       `${liveMemberTags.size} live member tag(s), ` +
-      `${activitySnapshot._count.tag} observed player record(s).`;
+      `${activitySnapshot._count.tag} observed player record(s), ` +
+      `${freshObservedCount} fresh in last ${staleHours}h.`;
 
     if (inactivePlayers.length > 25) {
       message += `\n\n...and ${inactivePlayers.length - 25} more.`;
