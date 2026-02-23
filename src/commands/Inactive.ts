@@ -28,11 +28,25 @@ export const Inactive: Command = {
       Date.now() - days * 24 * 60 * 60 * 1000
     );
 
+    const dbTracked = await prisma.trackedClan.findMany({
+      orderBy: { createdAt: "asc" },
+      select: { tag: true },
+    });
+
+    const trackedTags = dbTracked.map((c) => c.tag);
+
     const inactivePlayers = await prisma.playerActivity.findMany({
       where: {
         lastSeenAt: {
           lt: cutoff,
         },
+        ...(trackedTags.length > 0
+          ? {
+              clanTag: {
+                in: trackedTags,
+              },
+            }
+          : {}),
       },
       orderBy: {
         lastSeenAt: "asc",
@@ -59,6 +73,12 @@ export const Inactive: Command = {
     let message =
       `⚠️ **Inactive for ${days}+ days (${inactivePlayers.length})**\n\n` +
       lines.join("\n");
+
+    if (trackedTags.length > 0) {
+      message += `\n\nScope: ${trackedTags.length} tracked clan(s).`;
+    } else {
+      message += "\n\nScope: no tracked clans configured.";
+    }
 
     if (inactivePlayers.length > 25) {
       message += `\n\n…and ${
