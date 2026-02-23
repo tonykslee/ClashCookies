@@ -1,6 +1,8 @@
 import { Client, CommandInteraction } from "discord.js";
 import { Command } from "../Command";
 import { prisma } from "../prisma";
+import { CoCService } from "../services/CoCService";
+import { formatError } from "../helper/formatError";
 
 export const Inactive: Command = {
   name: "inactive",
@@ -14,7 +16,11 @@ export const Inactive: Command = {
     },
   ],
 
-  run: async (_client: Client, interaction: CommandInteraction) => {
+  run: async (
+    _client: Client,
+    interaction: CommandInteraction,
+    cocService: CoCService
+  ) => {
     await interaction.deferReply({ ephemeral: true });
 
     const days = interaction.options.get("days", true).value as number;
@@ -35,15 +41,40 @@ export const Inactive: Command = {
 
     const trackedTags = dbTracked.map((c) => c.tag);
 
+    const liveMemberTags = new Set<string>();
+
+    for (const trackedTag of trackedTags) {
+      try {
+        const clan = await cocService.getClan(trackedTag);
+        for (const member of clan.members ?? []) {
+          const memberTag = String(member?.tag ?? "").trim();
+          if (memberTag) {
+            liveMemberTags.add(memberTag);
+          }
+        }
+      } catch (err) {
+        console.error(
+          `inactive: failed to fetch live roster for ${trackedTag}: ${formatError(err)}`
+        );
+      }
+    }
+
+    if (trackedTags.length > 0 && liveMemberTags.size === 0) {
+      await interaction.editReply(
+        "⚠️ Tracked clans are configured, but live rosters could not be read from CoC API. Try again shortly."
+      );
+      return;
+    }
+
     const inactivePlayers = await prisma.playerActivity.findMany({
       where: {
         lastSeenAt: {
           lt: cutoff,
         },
-        ...(trackedTags.length > 0
+        ...(liveMemberTags.size > 0
           ? {
-              clanTag: {
-                in: trackedTags,
+              tag: {
+                in: [...liveMemberTags],
               },
             }
           : {}),
@@ -75,7 +106,9 @@ export const Inactive: Command = {
       lines.join("\n");
 
     if (trackedTags.length > 0) {
-      message += `\n\nScope: ${trackedTags.length} tracked clan(s).`;
+      message +=
+        `\n\nScope: ${trackedTags.length} tracked clan(s), ` +
+        `${liveMemberTags.size} live member tag(s).`;
     } else {
       message += "\n\nScope: no tracked clans configured.";
     }
