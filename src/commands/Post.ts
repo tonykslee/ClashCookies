@@ -344,7 +344,6 @@ export async function handlePostModalSubmit(
     return;
   }
 
-  const canManageMessages = permissions.has(PermissionFlagsBits.ManageMessages);
   const canMentionEveryone = permissions.has(PermissionFlagsBits.MentionEveryone);
   const mentionWillNotify = role.mentionable || canMentionEveryone;
   const notices: string[] = [];
@@ -377,36 +376,32 @@ export async function handlePostModalSubmit(
     );
   }
 
-  if (canManageMessages) {
-    try {
-      const pinned = await channel.messages.fetchPinned();
-      for (const pinnedMessage of pinned.values()) {
-        if (pinnedMessage.id === postedMessage.id) continue;
-        if (!pinnedMessage.author.bot) continue;
-        if (!isBotSyncTimeMessage(pinnedMessage.content)) continue;
-        await pinnedMessage.unpin().catch(() => undefined);
-      }
-    } catch (err) {
-      console.error(
-        `[post sync time] fetchPinned/unpin failed guild=${interaction.guildId} channel=${interaction.channelId} user=${interaction.user.id} error=${formatError(
-          err
-        )}`
-      );
-      notices.push(summarizePermissionIssue(err, "Cleaning previous sync pins"));
+  try {
+    const pinned = await channel.messages.fetchPinned();
+    for (const pinnedMessage of pinned.values()) {
+      if (pinnedMessage.id === postedMessage.id) continue;
+      if (!pinnedMessage.author.bot) continue;
+      if (!isBotSyncTimeMessage(pinnedMessage.content)) continue;
+      await pinnedMessage.unpin().catch(() => undefined);
     }
+  } catch (err) {
+    console.error(
+      `[post sync time] fetchPinned/unpin failed guild=${interaction.guildId} channel=${interaction.channelId} user=${interaction.user.id} error=${formatError(
+        err
+      )}`
+    );
+    notices.push(summarizePermissionIssue(err, "Cleaning previous sync pins"));
+  }
 
-    try {
-      await postedMessage.pin();
-    } catch (err) {
-      console.error(
-        `[post sync time] pin failed guild=${interaction.guildId} channel=${interaction.channelId} message=${postedMessage.id} user=${interaction.user.id} error=${formatError(
-          err
-        )}`
-      );
-      notices.push(summarizePermissionIssue(err, "Pinning message"));
-    }
-  } else {
-    notices.push("Message posted, but bot is missing `Manage Messages` so it could not pin.");
+  try {
+    await postedMessage.pin();
+  } catch (err) {
+    console.error(
+      `[post sync time] pin failed guild=${interaction.guildId} channel=${interaction.channelId} message=${postedMessage.id} user=${interaction.user.id} error=${formatError(
+        err
+      )}`
+    );
+    notices.push(summarizePermissionIssue(err, "Pinning message"));
   }
 
   const noticeBlock =
