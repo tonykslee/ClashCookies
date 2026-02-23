@@ -15,5 +15,5 @@ jobs:
         uses: ayungavis/railway-preview-deploy@v1.0.2
         with:
           railway_api_token: ${{ secrets.RAILWAY_API_TOKEN }}
-          project_id: YOUR_PROJECT_ID 
-          environment_name: staging  # Points to your staging env
+          project_id: 4e5afdf5-8892-4f40-b50f-76f6b5dd81f0
+          environment_name: staging
