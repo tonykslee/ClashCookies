@@ -92,36 +92,45 @@ export class CoCService {
     }
   }
 
-  async getPlayerRaw(tag: string | undefined): Promise<any> {
+  async getPlayerRaw(
+    tag: string | undefined,
+    options?: { suppressTelemetry?: boolean }
+  ): Promise<any> {
     if (!tag) return null;
     const playerTag = tag.startsWith("#") ? tag : `#${tag}`;
 
     try {
       const { data } = await this.playersApi.getPlayer(playerTag);
-      recordFetchEvent({
-        namespace: "coc",
-        operation: "getPlayerRaw",
-        source: "api",
-        detail: `tag=${playerTag}`,
-      });
-      return this.normalizePlayer(data);
-    } catch (err) {
-      const status = (err as AxiosError)?.response?.status;
-      if (status === 404) {
+      if (!options?.suppressTelemetry) {
         recordFetchEvent({
           namespace: "coc",
           operation: "getPlayerRaw",
           source: "api",
-          detail: `tag=${playerTag} status=404`,
+          detail: `tag=${playerTag}`,
         });
+      }
+      return this.normalizePlayer(data);
+    } catch (err) {
+      const status = (err as AxiosError)?.response?.status;
+      if (status === 404) {
+        if (!options?.suppressTelemetry) {
+          recordFetchEvent({
+            namespace: "coc",
+            operation: "getPlayerRaw",
+            source: "api",
+            detail: `tag=${playerTag} status=404`,
+          });
+        }
         return null;
       }
-      recordFetchEvent({
-        namespace: "coc",
-        operation: "getPlayerRaw",
-        source: "api",
-        detail: `tag=${playerTag} status=${status ?? "unknown"} result=error`,
-      });
+      if (!options?.suppressTelemetry) {
+        recordFetchEvent({
+          namespace: "coc",
+          operation: "getPlayerRaw",
+          source: "api",
+          detail: `tag=${playerTag} status=${status ?? "unknown"} result=error`,
+        });
+      }
       if (status) throw new Error(`CoC API error ${status}`);
       throw err;
     }
