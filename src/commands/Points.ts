@@ -17,8 +17,9 @@ import { SettingsService } from "../services/SettingsService";
 const POINTS_BASE_URL = "https://points.fwafarm.com/clan?tag=";
 const TIEBREAK_ORDER = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 const CACHE_REFRESH_DELAY_MS = 30 * 60 * 1000;
+const WAR_END_RECHECK_MS = 10 * 60 * 1000;
 const DISCORD_CONTENT_MAX = 2000;
-const POINTS_CACHE_VERSION = 2;
+const POINTS_CACHE_VERSION = 3;
 const MATCHUP_CACHE_VERSION = 4;
 const POINTS_REQUEST_HEADERS = {
   "User-Agent":
@@ -42,6 +43,8 @@ type PointsSnapshot = {
   effectiveSync: number | null;
   syncMode: "low" | "high" | null;
   winnerBoxHasTag: boolean;
+  warEndMs: number | null;
+  lastWarCheckAtMs: number;
   fetchedAtMs: number;
   refreshedForWarEndMs: number | null;
 };
@@ -330,7 +333,14 @@ async function writeMatchupCache(
   await settings.set(matchupCacheKey(tag, opponentTag), JSON.stringify(data));
 }
 
-async function scrapeClanPoints(tag: string, refreshedForWarEndMs: number | null): Promise<PointsSnapshot> {
+async function scrapeClanPoints(
+  tag: string,
+  options: {
+    refreshedForWarEndMs: number | null;
+    warEndMs: number | null;
+    lastWarCheckAtMs: number;
+  }
+): Promise<PointsSnapshot> {
   const normalizedTag = normalizeTag(tag);
   const url = buildPointsUrl(normalizedTag);
   const response = await axios.get<string>(url, {
@@ -396,8 +406,10 @@ async function scrapeClanPoints(tag: string, refreshedForWarEndMs: number | null
     effectiveSync,
     syncMode,
     winnerBoxHasTag,
+    warEndMs: options.warEndMs,
+    lastWarCheckAtMs: options.lastWarCheckAtMs,
     fetchedAtMs: Date.now(),
-    refreshedForWarEndMs,
+    refreshedForWarEndMs: options.refreshedForWarEndMs,
   };
 }
 
@@ -408,17 +420,21 @@ async function getClanPointsCached(
 ): Promise<PointsSnapshot> {
   const normalizedTag = normalizeTag(tag);
   const cached = await readPointsCache(settings, normalizedTag);
-  const warEndMs = await getClanWarEndMs(cocService, normalizedTag);
-  const refreshAfterMs = warEndMs === null ? null : warEndMs + CACHE_REFRESH_DELAY_MS;
   const now = Date.now();
+  const knownWarEndMs = cached?.warEndMs ?? null;
+  const refreshAfterKnownMs =
+    knownWarEndMs === null ? null : knownWarEndMs + CACHE_REFRESH_DELAY_MS;
+  const needsRefreshByKnownCycle =
+    knownWarEndMs !== null &&
+    refreshAfterKnownMs !== null &&
+    now >= refreshAfterKnownMs &&
+    cached?.refreshedForWarEndMs !== knownWarEndMs;
+  const shouldRecheckWar =
+    !cached ||
+    !cached.lastWarCheckAtMs ||
+    now - cached.lastWarCheckAtMs >= WAR_END_RECHECK_MS;
 
-  const needsRefreshByCycle =
-    warEndMs !== null &&
-    refreshAfterMs !== null &&
-    now >= refreshAfterMs &&
-    cached?.refreshedForWarEndMs !== warEndMs;
-
-  if (cached && !needsRefreshByCycle) {
+  if (cached && !needsRefreshByKnownCycle && !shouldRecheckWar) {
     recordFetchEvent({
       namespace: "points",
       operation: "clan_points_snapshot",
@@ -427,6 +443,35 @@ async function getClanPointsCached(
     });
     return cached;
   }
+
+  let warEndMs = knownWarEndMs;
+  if (shouldRecheckWar) {
+    warEndMs = await getClanWarEndMs(cocService, normalizedTag);
+  }
+  const refreshAfterMs = warEndMs === null ? null : warEndMs + CACHE_REFRESH_DELAY_MS;
+  const needsRefreshByCycle =
+    warEndMs !== null &&
+    refreshAfterMs !== null &&
+    now >= refreshAfterMs &&
+    cached?.refreshedForWarEndMs !== warEndMs;
+
+  if (cached && !needsRefreshByCycle) {
+    if (shouldRecheckWar) {
+      await writePointsCache(settings, normalizedTag, {
+        ...cached,
+        warEndMs,
+        lastWarCheckAtMs: now,
+      });
+    }
+    recordFetchEvent({
+      namespace: "points",
+      operation: "clan_points_snapshot",
+      source: "cache_hit",
+      detail: `tag=${normalizedTag}${shouldRecheckWar ? " reason=war_checked" : ""}`,
+    });
+    return cached;
+  }
+
   recordFetchEvent({
     namespace: "points",
     operation: "clan_points_snapshot",
@@ -435,10 +480,12 @@ async function getClanPointsCached(
   });
 
   try {
-    const snapshot = await scrapeClanPoints(
-      normalizedTag,
-      warEndMs !== null && refreshAfterMs !== null && now >= refreshAfterMs ? warEndMs : null
-    );
+    const snapshot = await scrapeClanPoints(normalizedTag, {
+      refreshedForWarEndMs:
+        warEndMs !== null && refreshAfterMs !== null && now >= refreshAfterMs ? warEndMs : null,
+      warEndMs,
+      lastWarCheckAtMs: now,
+    });
     await writePointsCache(settings, normalizedTag, snapshot);
     return snapshot;
   } catch (err) {
@@ -613,16 +660,6 @@ export const Points: Command = {
         const trackedNameByTag = new Map(
           trackedPair.map((c) => [normalizeTag(c.tag), sanitizeClanName(c.name)])
         );
-        const [primaryNameFromApi, opponentNameFromApi] = await Promise.all([
-          cocService
-            .getClanName(tag)
-            .then((name) => sanitizeClanName(name))
-            .catch(() => null),
-          cocService
-            .getClanName(opponentTag)
-            .then((name) => sanitizeClanName(name))
-            .catch(() => null),
-        ]);
 
         if (primary.balance === null || Number.isNaN(primary.balance)) {
           await editReplySafe(`Could not fetch point balance for #${tag}.`);
@@ -659,10 +696,29 @@ export const Points: Command = {
           detail: `tag=${tag} opponent=${opponentTag}`,
         });
 
+        const resolvedPrimaryName =
+          trackedNameByTag.get(tag) ?? sanitizeClanName(primary.clanName);
+        const resolvedOpponentName =
+          trackedNameByTag.get(opponentTag) ?? sanitizeClanName(opponent.clanName);
+        const [primaryNameFromApi, opponentNameFromApi] = await Promise.all([
+          resolvedPrimaryName
+            ? Promise.resolve<string | null>(null)
+            : cocService
+                .getClanName(tag)
+                .then((name) => sanitizeClanName(name))
+                .catch(() => null),
+          resolvedOpponentName
+            ? Promise.resolve<string | null>(null)
+            : cocService
+                .getClanName(opponentTag)
+                .then((name) => sanitizeClanName(name))
+                .catch(() => null),
+        ]);
+
         const message = limitDiscordContent(
           buildMatchupMessage(primary, opponent, {
-            primaryName: trackedNameByTag.get(tag) ?? primaryNameFromApi,
-            opponentName: trackedNameByTag.get(opponentTag) ?? opponentNameFromApi,
+            primaryName: resolvedPrimaryName ?? primaryNameFromApi,
+            opponentName: resolvedOpponentName ?? opponentNameFromApi,
           })
         );
         await writeMatchupCache(settings, tag, opponentTag, {
@@ -711,13 +767,18 @@ export const Points: Command = {
         where: { tag: { equals: `#${tag}`, mode: "insensitive" } },
         select: { name: true },
       });
-      const apiName = await cocService
-        .getClanName(tag)
-        .then((name) => sanitizeClanName(name))
-        .catch(() => null);
+      const trackedName = sanitizeClanName(trackedClan?.name);
+      const scrapedName = sanitizeClanName(result.clanName);
+      const apiName =
+        trackedName || scrapedName
+          ? null
+          : await cocService
+              .getClanName(tag)
+              .then((name) => sanitizeClanName(name))
+              .catch(() => null);
       const displayName =
-        sanitizeClanName(trackedClan?.name) ??
-        sanitizeClanName(result.clanName) ??
+        trackedName ??
+        scrapedName ??
         apiName ??
         "Unknown Clan";
 
