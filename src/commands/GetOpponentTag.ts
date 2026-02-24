@@ -52,9 +52,7 @@ export const GetOpponentTag: Command = {
       }
 
       const opponentTag = opponentTagRaw.replace(/^#/, "").toUpperCase();
-      await interaction.editReply(
-        `Opponent tag for ${clanTag}: \`${opponentTag}\``
-      );
+      await interaction.editReply(opponentTag);
     } catch (err) {
       console.error(
         `[opponent] failed tag=${clanTag} error=${formatError(err)}`
