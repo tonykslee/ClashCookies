@@ -664,10 +664,22 @@ export const Points: Command = {
         return;
       }
 
+      const trackedClan = await prisma.trackedClan.findFirst({
+        where: { tag: { equals: `#${tag}`, mode: "insensitive" } },
+        select: { name: true },
+      });
+      const apiName = await cocService
+        .getClanName(tag)
+        .then((name) => sanitizeClanName(name))
+        .catch(() => null);
+      const displayName =
+        sanitizeClanName(trackedClan?.name) ??
+        sanitizeClanName(result.clanName) ??
+        apiName ??
+        "Unknown Clan";
+
       await editReplySafe(
-        `${
-          sanitizeClanName(result.clanName) ? `**${sanitizeClanName(result.clanName)}**\n` : ""
-        }Tag: #${tag}\nPoint Balance: **${formatPoints(balance)}**\n${result.url}`
+        `Clan Name: **${displayName}**\nTag: #${tag}\nPoint Balance: **${formatPoints(balance)}**\n${result.url}`
       );
     } catch (err) {
       console.error(`[points] request failed tag=${tag} error=${formatError(err)}`);
