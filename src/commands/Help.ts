@@ -130,12 +130,13 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     examples: ["/cc player tag:ABCD1234", "/cc clan tag:2QG2C08UP"],
   },
   points: {
-    summary: "Fetch FWA points balance from points.fwafarm.com.",
+    summary: "Fetch FWA points balance and optional matchup projection.",
     details: [
       "Provide a clan tag, or omit tag to fetch all tracked clan balances.",
+      "Optionally provide `opponent-tag` to compare points and apply sync-based tiebreak logic.",
       "Tag supports autocomplete from tracked clans.",
     ],
-    examples: ["/points tag:2QG2C08UP", "/points"],
+    examples: ["/points tag:2QG2C08UP", "/points", "/points tag:2QG2C08UP opponent-tag:ABC12345"],
   },
   post: {
     summary: "Post structured messages such as sync time announcements.",

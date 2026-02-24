@@ -12,6 +12,7 @@ import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
 
 const POINTS_BASE_URL = "https://points.fwafarm.com/clan?tag=";
+const TIEBREAK_ORDER = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
 function normalizeTag(input: string): string {
   return input.trim().toUpperCase().replace(/^#/, "");
@@ -45,12 +46,71 @@ function extractPointBalance(html: string): number | null {
   return Number(textMatch[1]);
 }
 
+function extractWinnerBoxText(html: string): string | null {
+  const match = html.match(
+    /<p[^>]*class=["'][^"']*winner-box[^"']*["'][^>]*>([\s\S]*?)<\/p>/i
+  );
+  if (!match?.[1]) return null;
+  return toPlainText(match[1]);
+}
+
+function extractTagsFromText(text: string): string[] {
+  const tags = new Set<string>();
+  const hashMatches = text.matchAll(/#([0-9A-Z]{4,})/gi);
+  for (const match of hashMatches) {
+    if (match[1]) tags.add(normalizeTag(match[1]));
+  }
+  return [...tags];
+}
+
+function extractSyncNumber(text: string): number | null {
+  const match = text.match(/sync\s*#\s*(\d+)/i);
+  if (!match?.[1]) return null;
+  const value = Number(match[1]);
+  return Number.isFinite(value) ? value : null;
+}
+
+function getSyncMode(syncNumber: number | null): "low" | "high" | null {
+  if (syncNumber === null) return null;
+  return syncNumber % 2 === 0 ? "high" : "low";
+}
+
+function rankChar(ch: string): number {
+  const idx = TIEBREAK_ORDER.indexOf(ch);
+  return idx >= 0 ? idx : Number.MAX_SAFE_INTEGER;
+}
+
+function compareTagsForTiebreak(primaryTag: string, opponentTag: string): number {
+  const a = normalizeTag(primaryTag);
+  const b = normalizeTag(opponentTag);
+  const maxLen = Math.max(a.length, b.length);
+
+  for (let i = 0; i < maxLen; i += 1) {
+    const ra = rankChar(a[i] ?? "");
+    const rb = rankChar(b[i] ?? "");
+    if (ra === rb) continue;
+    return ra - rb;
+  }
+
+  return 0;
+}
+
+function formatPoints(value: number): string {
+  return Intl.NumberFormat("en-US").format(value);
+}
+
 async function fetchClanPoints(tag: string): Promise<{
   tag: string;
   url: string;
   balance: number | null;
   clanName: string | null;
   notFound: boolean;
+  winnerBoxText: string | null;
+  winnerBoxTags: string[];
+  winnerBoxSync: number | null;
+  effectiveSync: number | null;
+  syncMode: "low" | "high" | null;
+  winnerBoxHasTag: boolean;
 }> {
   const normalizedTag = normalizeTag(tag);
   const url = `${POINTS_BASE_URL}${normalizedTag}`;
@@ -67,6 +127,13 @@ async function fetchClanPoints(tag: string): Promise<{
   const plain = toPlainText(html);
   const clanName = extractField(plain, "Clan Name");
   const notFound = /not found|unknown clan|no clan/i.test(plain);
+  const winnerBoxText = extractWinnerBoxText(html);
+  const winnerBoxTags = winnerBoxText ? extractTagsFromText(winnerBoxText) : [];
+  const winnerBoxSync = winnerBoxText ? extractSyncNumber(winnerBoxText) : null;
+  const winnerBoxHasTag = winnerBoxTags.includes(normalizedTag);
+  const effectiveSync =
+    winnerBoxSync === null ? null : winnerBoxHasTag ? winnerBoxSync : winnerBoxSync + 1;
+  const syncMode = getSyncMode(effectiveSync);
 
   return {
     tag: normalizedTag,
@@ -74,16 +141,29 @@ async function fetchClanPoints(tag: string): Promise<{
     balance,
     clanName,
     notFound,
+    winnerBoxText,
+    winnerBoxTags,
+    winnerBoxSync,
+    effectiveSync,
+    syncMode,
+    winnerBoxHasTag,
   };
 }
 
 export const Points: Command = {
   name: "points",
-  description: "Get FWA points balance for a clan tag",
+  description: "Get FWA points balance and optional matchup projection",
   options: [
     {
       name: "tag",
       description: "Clan tag (with or without #). Leave blank for all tracked clans.",
+      type: ApplicationCommandOptionType.String,
+      required: false,
+      autocomplete: true,
+    },
+    {
+      name: "opponent-tag",
+      description: "Opponent clan tag (with or without #)",
       type: ApplicationCommandOptionType.String,
       required: false,
       autocomplete: true,
@@ -96,7 +176,16 @@ export const Points: Command = {
   ) => {
     await interaction.deferReply({ ephemeral: true });
     const rawTag = interaction.options.getString("tag", false);
+    const rawOpponentTag = interaction.options.getString("opponent-tag", false);
     const tag = normalizeTag(rawTag ?? "");
+    const opponentTag = normalizeTag(rawOpponentTag ?? "");
+
+    if (!tag && opponentTag) {
+      await interaction.editReply(
+        "Please provide `tag` when using `opponent-tag`."
+      );
+      return;
+    }
 
     if (!tag) {
       const tracked = await prisma.trackedClan.findMany({
@@ -142,6 +231,83 @@ export const Points: Command = {
       return;
     }
 
+    if (opponentTag) {
+      if (opponentTag === tag) {
+        await interaction.editReply("`tag` and `opponent-tag` must be different clans.");
+        return;
+      }
+
+      try {
+        const [primary, opponent] = await Promise.all([
+          fetchClanPoints(tag),
+          fetchClanPoints(opponentTag),
+        ]);
+
+        if (primary.balance === null || Number.isNaN(primary.balance)) {
+          await interaction.editReply(`Could not fetch point balance for #${tag}.`);
+          return;
+        }
+        if (opponent.balance === null || Number.isNaN(opponent.balance)) {
+          await interaction.editReply(`Could not fetch point balance for #${opponentTag}.`);
+          return;
+        }
+
+        const primaryName = primary.clanName ?? `#${tag}`;
+        const opponentName = opponent.clanName ?? `#${opponentTag}`;
+
+        let outcome = "";
+        if (primary.balance > opponent.balance) {
+          outcome = `**${primaryName}** should win by points (${primary.balance} > ${opponent.balance})`;
+        } else if (primary.balance < opponent.balance) {
+          outcome = `**${primaryName}** should lose by points (${opponent.balance} > ${primary.balance})`;
+        } else {
+          const syncMode = primary.syncMode ?? opponent.syncMode;
+          if (!syncMode) {
+            outcome = `Points are tied (${primary.balance} = ${opponent.balance}) but sync number was not found, so tiebreak cannot be determined.`;
+          } else {
+            const tiebreakCmp = compareTagsForTiebreak(tag, opponentTag);
+            if (tiebreakCmp === 0) {
+              outcome = `Points are tied (${primary.balance} = ${opponent.balance}) and tags are identical for tiebreak ordering.`;
+            } else {
+              const primaryWinsTiebreak =
+                syncMode === "low" ? tiebreakCmp < 0 : tiebreakCmp > 0;
+              outcome = primaryWinsTiebreak
+                ? `**${primaryName}** should win by tiebreak (${primary.balance} = ${opponent.balance}, ${syncMode} sync)`
+                : `**${primaryName}** should lose by tiebreak (${primary.balance} = ${opponent.balance}, ${syncMode} sync)`;
+            }
+          }
+        }
+
+        const matchupVerified =
+          primary.winnerBoxTags.includes(opponentTag) ||
+          opponent.winnerBoxTags.includes(tag);
+        const verificationNote = matchupVerified
+          ? "Matchup verified in winner-box."
+          : "Matchup not verified in winner-box yet (site delay possible).";
+        const syncNote =
+          primary.effectiveSync !== null
+            ? `Sync #${primary.effectiveSync} (${primary.syncMode ?? "unknown"} sync)${
+                primary.winnerBoxHasTag ? "" : " [adjusted +1 due to stale winner-box tag]"
+              }`
+            : "Sync not found in winner-box.";
+
+        await interaction.editReply(
+          `${primaryName} points: **${formatPoints(primary.balance)}**\n` +
+            `${opponentName} points: **${formatPoints(opponent.balance)}**\n\n` +
+            `${outcome}\n\n${syncNote}\n${verificationNote}`
+        );
+        return;
+      } catch (err) {
+        console.error(
+          `[points] matchup request failed tag=${tag} opponent=${opponentTag} error=${formatError(err)}`
+        );
+        await interaction.editReply(
+          "Failed to fetch points matchup. Check both tags and try again."
+        );
+        return;
+      }
+    }
+
     try {
       const result = await fetchClanPoints(tag);
       const balance = result.balance;
@@ -172,7 +338,7 @@ export const Points: Command = {
   },
   autocomplete: async (interaction: AutocompleteInteraction) => {
     const focused = interaction.options.getFocused(true);
-    if (focused.name !== "tag") {
+    if (focused.name !== "tag" && focused.name !== "opponent-tag") {
       await interaction.respond([]);
       return;
     }
