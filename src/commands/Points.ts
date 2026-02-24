@@ -26,6 +26,18 @@ function normalizeTag(input: string): string {
   return input.trim().toUpperCase().replace(/^#/, "");
 }
 
+function buildPointsUrl(tag: string): string {
+  const normalizedTag = normalizeTag(tag);
+  const proxyBase = (process.env.POINTS_PROXY_URL ?? "").trim();
+  if (!proxyBase) {
+    return `${POINTS_BASE_URL}${normalizedTag}`;
+  }
+
+  const proxyUrl = new URL(proxyBase);
+  proxyUrl.searchParams.set("tag", normalizedTag);
+  return proxyUrl.toString();
+}
+
 function toPlainText(html: string): string {
   return html
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
@@ -128,7 +140,7 @@ async function fetchClanPoints(tag: string): Promise<{
   winnerBoxHasTag: boolean;
 }> {
   const normalizedTag = normalizeTag(tag);
-  const url = `${POINTS_BASE_URL}${normalizedTag}`;
+  const url = buildPointsUrl(normalizedTag);
   const response = await axios.get<string>(url, {
     timeout: 15000,
     responseType: "text",
