@@ -132,3 +132,6 @@ dist
 # Prisma
 dev.db
 dev.db-journal
+
+# Local AI workflow instructions (do not commit)
+AGENTS.local.md

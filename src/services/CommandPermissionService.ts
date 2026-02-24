@@ -29,6 +29,7 @@ export const COMMAND_PERMISSION_TARGETS = [
   "cc",
   "cc:player",
   "cc:clan",
+  "points",
   "post",
   "post:sync:time",
   MANAGE_COMMAND_ROLES_COMMAND,
