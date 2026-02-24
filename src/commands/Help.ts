@@ -155,6 +155,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     ],
     examples: [
       "/permission add command:post role:@Leaders",
+      "/permission add command:points role:@Leaders",
       "/permission remove command:post role:@Leaders",
       "/permission list",
     ],

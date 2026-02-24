@@ -79,6 +79,8 @@ Optional fallback auth (not required for your current setup):
 - Administrator users can always use commands regardless of role whitelist.
 - To lock `/post` to role X, run:
   - `/permission add command:post role:@RoleX`
+- To lock `/points` to role X, run:
+  - `/permission add command:points role:@RoleX`
 
 ## Deployment Notes
 - Commands are registered as guild commands using `GUILD_ID` on startup.
