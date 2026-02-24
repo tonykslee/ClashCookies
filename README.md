@@ -65,6 +65,7 @@ Optional fallback auth (not required for your current setup):
 - `/compo place weight:<value>` - Suggest placement options from ACTUAL state (vacancy + composition fit). Accepts formats like `145000`, `145,000`, or `145k` and maps to TH weight buckets.
 - `/cc player tag:<tag>` - Build `https://cc.fwafarm.com/cc_n/member.php?tag=<tag>`.
 - `/cc clan tag:<tag>` - Build `https://cc.fwafarm.com/cc_n/clan.php?tag=<tag>`.
+- `/get-opponent-tag tag:<tag>` - Get current war opponent clan tag from CoC API (without `#`).
 - `/points [tag:<tag>] [opponent-tag:<tag>]` - Fetch current point balance from `https://points.fwafarm.com/clan?tag=<tag-without-#>`. If `tag` is omitted, fetches all tracked clans. If both tags are provided, returns projected winner/loser by points, or sync-based tiebreak when points are tied.
 - `/post sync time [role:<discordRole>]` - Open modal, compose sync-time message, post it, and pin it.
 
