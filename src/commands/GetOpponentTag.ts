@@ -1,9 +1,11 @@
 import {
   ApplicationCommandOptionType,
+  AutocompleteInteraction,
   ChatInputCommandInteraction,
   Client,
 } from "discord.js";
 import { Command } from "../Command";
+import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
 import { formatError } from "../helper/formatError";
 
@@ -22,6 +24,7 @@ export const GetOpponentTag: Command = {
       description: "Your clan tag (with or without #)",
       type: ApplicationCommandOptionType.String,
       required: true,
+      autocomplete: true,
     },
   ],
   run: async (
@@ -60,5 +63,33 @@ export const GetOpponentTag: Command = {
         "Failed to fetch opponent tag from CoC API. Try again shortly."
       );
     }
+  },
+  autocomplete: async (interaction: AutocompleteInteraction) => {
+    const focused = interaction.options.getFocused(true);
+    if (focused.name !== "tag") {
+      await interaction.respond([]);
+      return;
+    }
+
+    const query = String(focused.value ?? "").trim().toLowerCase();
+    const tracked = await prisma.trackedClan.findMany({
+      orderBy: { createdAt: "asc" },
+      select: { name: true, tag: true },
+    });
+
+    const choices = tracked
+      .map((c) => {
+        const normalized = normalizeClanTag(c.tag).replace(/^#/, "");
+        const label = c.name?.trim() ? `${c.name.trim()} (#${normalized})` : `#${normalized}`;
+        return { name: label.slice(0, 100), value: normalized };
+      })
+      .filter(
+        (c) =>
+          c.name.toLowerCase().includes(query) ||
+          c.value.toLowerCase().includes(query)
+      )
+      .slice(0, 25);
+
+    await interaction.respond(choices);
   },
 };
