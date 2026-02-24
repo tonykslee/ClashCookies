@@ -10,7 +10,7 @@ import { Post } from "./commands/Post";
 import { CommandRole } from "./commands/CommandRole";
 import { CC } from "./commands/CC";
 import { Points } from "./commands/Points";
-import { GetOpponentTag } from "./commands/GetOpponentTag";
+import { Opponent } from "./commands/Opponent";
 import { KickList } from "./commands/KickList";
 
 // ...existing code...
@@ -25,7 +25,7 @@ export const Commands = [
   Compo,
   CC,
   Points,
-  GetOpponentTag,
+  Opponent,
   KickList,
   Post,
   CommandRole,

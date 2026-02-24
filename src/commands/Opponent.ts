@@ -15,7 +15,7 @@ function normalizeClanTag(input: string): string {
   return trimmed.startsWith("#") ? trimmed : `#${trimmed}`;
 }
 
-export const GetOpponentTag: Command = {
+export const Opponent: Command = {
   name: "opponent",
   description: "Get current war opponent clan tag for a clan",
   options: [
@@ -51,8 +51,12 @@ export const GetOpponentTag: Command = {
         return;
       }
 
+      const clanName = String(war?.clan?.name ?? clanTag).trim() || clanTag;
+      const opponentName = String(war?.opponent?.name ?? "Unknown").trim() || "Unknown";
       const opponentTag = opponentTagRaw.replace(/^#/, "").toUpperCase();
-      await interaction.editReply(opponentTag);
+      await interaction.editReply(
+        `## ${clanName} vs\n\n## Opponent: \`${opponentName}\`\n---\n## Opponent Tag: \`${opponentTag}\``
+      );
     } catch (err) {
       console.error(
         `[opponent] failed tag=${clanTag} error=${formatError(err)}`
