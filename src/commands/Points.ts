@@ -147,6 +147,15 @@ function formatPoints(value: number): string {
   return Intl.NumberFormat("en-US").format(value);
 }
 
+function sanitizeClanName(input: string | null | undefined): string | null {
+  if (!input) return null;
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+  if (trimmed.length > 80) return null;
+  if (/Clan Tag|Point Balance|Sync #|Winner|War State/i.test(trimmed)) return null;
+  return trimmed;
+}
+
 function buildLimitedMessage(header: string, lines: string[], summary: string): string {
   let message = `${header}\n\n`;
   let included = 0;
@@ -459,7 +468,10 @@ export const Points: Command = {
             lines.push(`- ${clan.name ?? `#${trackedTag}`}: unavailable`);
             continue;
           }
-          const label = result.clanName ?? clan.name ?? `#${trackedTag}`;
+          const label =
+            sanitizeClanName(clan.name) ??
+            sanitizeClanName(result.clanName) ??
+            `#${trackedTag}`;
           lines.push(`- ${label} (#${trackedTag}): **${formatPoints(result.balance)}**`);
         } catch (err) {
           failedCount += 1;
@@ -555,7 +567,9 @@ export const Points: Command = {
       }
 
       await interaction.editReply(
-        `${result.clanName ? `**${result.clanName}**\n` : ""}Tag: #${tag}\nPoint Balance: **${formatPoints(balance)}**\n${result.url}`
+        `${
+          sanitizeClanName(result.clanName) ? `**${sanitizeClanName(result.clanName)}**\n` : ""
+        }Tag: #${tag}\nPoint Balance: **${formatPoints(balance)}**\n${result.url}`
       );
     } catch (err) {
       console.error(`[points] request failed tag=${tag} error=${formatError(err)}`);
