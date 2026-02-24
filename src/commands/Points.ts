@@ -17,7 +17,8 @@ const POINTS_BASE_URL = "https://points.fwafarm.com/clan?tag=";
 const TIEBREAK_ORDER = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 const CACHE_REFRESH_DELAY_MS = 30 * 60 * 1000;
 const DISCORD_CONTENT_MAX = 2000;
-const MATCHUP_CACHE_VERSION = 3;
+const POINTS_CACHE_VERSION = 2;
+const MATCHUP_CACHE_VERSION = 4;
 const POINTS_REQUEST_HEADERS = {
   "User-Agent":
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
@@ -28,6 +29,7 @@ const POINTS_REQUEST_HEADERS = {
 };
 
 type PointsSnapshot = {
+  version: number;
   tag: string;
   url: string;
   balance: number | null;
@@ -284,7 +286,9 @@ async function readPointsCache(
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as PointsSnapshot;
-    return parsed && typeof parsed === "object" ? parsed : null;
+    if (!parsed || typeof parsed !== "object") return null;
+    if (parsed.version !== POINTS_CACHE_VERSION) return null;
+    return parsed;
   } catch {
     return null;
   }
@@ -367,6 +371,7 @@ async function scrapeClanPoints(tag: string, refreshedForWarEndMs: number | null
   const syncMode = getSyncMode(effectiveSync);
 
   return {
+    version: POINTS_CACHE_VERSION,
     tag: normalizedTag,
     url,
     balance,
@@ -577,6 +582,16 @@ export const Points: Command = {
         const trackedNameByTag = new Map(
           trackedPair.map((c) => [normalizeTag(c.tag), sanitizeClanName(c.name)])
         );
+        const [primaryNameFromApi, opponentNameFromApi] = await Promise.all([
+          cocService
+            .getClanName(tag)
+            .then((name) => sanitizeClanName(name))
+            .catch(() => null),
+          cocService
+            .getClanName(opponentTag)
+            .then((name) => sanitizeClanName(name))
+            .catch(() => null),
+        ]);
 
         if (primary.balance === null || Number.isNaN(primary.balance)) {
           await editReplySafe(`Could not fetch point balance for #${tag}.`);
@@ -603,8 +618,8 @@ export const Points: Command = {
 
         const message = limitDiscordContent(
           buildMatchupMessage(primary, opponent, {
-            primaryName: trackedNameByTag.get(tag),
-            opponentName: trackedNameByTag.get(opponentTag),
+            primaryName: trackedNameByTag.get(tag) ?? primaryNameFromApi,
+            opponentName: trackedNameByTag.get(opponentTag) ?? opponentNameFromApi,
           })
         );
         await writeMatchupCache(settings, tag, opponentTag, {
