@@ -55,7 +55,7 @@ export const GetOpponentTag: Command = {
       const opponentName = String(war?.opponent?.name ?? "Unknown").trim() || "Unknown";
       const opponentTag = opponentTagRaw.replace(/^#/, "").toUpperCase();
       await interaction.editReply(
-        `${clanName} vs\nOpponent: \`${opponentName}\`\nOpponent Tag: \`${opponentTag}\``
+        `## ${clanName} vs\n\n## Opponent: \`${opponentName}\`\n---\n## Opponent Tag: \`${opponentTag}\``
       );
     } catch (err) {
       console.error(
