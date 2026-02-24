@@ -75,10 +75,13 @@ function toPlainText(html: string): string {
 
 function extractField(text: string, label: string): string | null {
   const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const regex = new RegExp(`${escaped}\\s*:\\s*([^\\n\\r]+)`, "i");
+  const regex = new RegExp(
+    `${escaped}\\s*:\\s*(.+?)(?=\\s+[A-Za-z][A-Za-z0-9\\s]{1,40}:|$)`,
+    "i"
+  );
   const match = text.match(regex);
   if (!match?.[1]) return null;
-  return match[1].trim();
+  return match[1].trim().slice(0, 120);
 }
 
 function extractPointBalance(html: string): number | null {
@@ -159,6 +162,21 @@ function buildLimitedMessage(header: string, lines: string[], summary: string): 
     const omittedNote = `\n...and ${lines.length - included} more clan(s).`;
     if ((message + omittedNote + summary).length <= DISCORD_CONTENT_MAX) {
       message += omittedNote;
+    }
+  }
+
+  // If the first line alone is too long, still show a shortened version.
+  if (included === 0 && lines.length > 0) {
+    const firstLineBudget = Math.max(0, DISCORD_CONTENT_MAX - message.length - summary.length - 40);
+    const shortened = firstLineBudget > 0 ? `${lines[0].slice(0, firstLineBudget)}...` : "";
+    if (shortened) {
+      message += `${shortened}\n`;
+      if (lines.length > 1) {
+        const omittedNote = `...and ${lines.length - 1} more clan(s).`;
+        if ((message + omittedNote + summary).length <= DISCORD_CONTENT_MAX) {
+          message += omittedNote;
+        }
+      }
     }
   }
 
