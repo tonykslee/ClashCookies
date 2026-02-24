@@ -15,7 +15,7 @@ function normalizeClanTag(input: string): string {
   return trimmed.startsWith("#") ? trimmed : `#${trimmed}`;
 }
 
-export const GetOpponentTag: Command = {
+export const Opponent: Command = {
   name: "opponent",
   description: "Get current war opponent clan tag for a clan",
   options: [
