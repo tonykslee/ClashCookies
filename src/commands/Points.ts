@@ -45,15 +45,47 @@ function extractPointBalance(html: string): number | null {
   return Number(textMatch[1]);
 }
 
+async function fetchClanPoints(tag: string): Promise<{
+  tag: string;
+  url: string;
+  balance: number | null;
+  clanName: string | null;
+  notFound: boolean;
+}> {
+  const normalizedTag = normalizeTag(tag);
+  const url = `${POINTS_BASE_URL}${normalizedTag}`;
+  const response = await axios.get<string>(url, {
+    timeout: 15000,
+    responseType: "text",
+    headers: {
+      "User-Agent": "ClashCookiesBot/1.0 (+https://github.com/tonykslee/ClashCookies)",
+    },
+  });
+
+  const html = String(response.data ?? "");
+  const balance = extractPointBalance(html);
+  const plain = toPlainText(html);
+  const clanName = extractField(plain, "Clan Name");
+  const notFound = /not found|unknown clan|no clan/i.test(plain);
+
+  return {
+    tag: normalizedTag,
+    url,
+    balance,
+    clanName,
+    notFound,
+  };
+}
+
 export const Points: Command = {
   name: "points",
   description: "Get FWA points balance for a clan tag",
   options: [
     {
       name: "tag",
-      description: "Clan tag (with or without #)",
+      description: "Clan tag (with or without #). Leave blank for all tracked clans.",
       type: ApplicationCommandOptionType.String,
-      required: true,
+      required: false,
       autocomplete: true,
     },
   ],
@@ -62,51 +94,74 @@ export const Points: Command = {
     interaction: ChatInputCommandInteraction,
     _cocService: CoCService
   ) => {
-    const rawTag = interaction.options.getString("tag", true);
-    const tag = normalizeTag(rawTag);
+    await interaction.deferReply({ ephemeral: true });
+    const rawTag = interaction.options.getString("tag", false);
+    const tag = normalizeTag(rawTag ?? "");
+
     if (!tag) {
-      await safeReply(interaction, {
-        ephemeral: true,
-        content: "Please provide a valid clan tag.",
+      const tracked = await prisma.trackedClan.findMany({
+        orderBy: { createdAt: "asc" },
+        select: { name: true, tag: true },
       });
+
+      if (tracked.length === 0) {
+        await interaction.editReply(
+          "No tracked clans configured. Use `/tracked-clan add` or provide a clan tag."
+        );
+        return;
+      }
+
+      const lines: string[] = [];
+      let failedCount = 0;
+      for (const clan of tracked) {
+        const trackedTag = normalizeTag(clan.tag);
+        try {
+          const result = await fetchClanPoints(trackedTag);
+          if (result.balance === null || Number.isNaN(result.balance)) {
+            failedCount += 1;
+            lines.push(`- ${clan.name ?? `#${trackedTag}`}: unavailable`);
+            continue;
+          }
+          const label = result.clanName ?? clan.name ?? `#${trackedTag}`;
+          lines.push(`- ${label} (#${trackedTag}): **${result.balance}**`);
+        } catch (err) {
+          failedCount += 1;
+          console.error(
+            `[points] bulk request failed tag=${trackedTag} error=${formatError(err)}`
+          );
+          lines.push(`- ${clan.name ?? `#${trackedTag}`}: unavailable`);
+        }
+      }
+
+      const header = `Tracked clan points (${tracked.length})`;
+      const summary =
+        failedCount > 0
+          ? `\n\n${failedCount} clan(s) could not be fetched right now.`
+          : "";
+      await interaction.editReply(`${header}\n\n${lines.join("\n")}${summary}`);
       return;
     }
 
-    await interaction.deferReply({ ephemeral: true });
-
-    const url = `${POINTS_BASE_URL}${tag}`;
     try {
-      const response = await axios.get<string>(url, {
-        timeout: 15000,
-        responseType: "text",
-        headers: {
-          "User-Agent": "ClashCookiesBot/1.0 (+https://github.com/tonykslee/ClashCookies)",
-        },
-      });
-
-      const html = String(response.data ?? "");
-      const balance = extractPointBalance(html);
+      const result = await fetchClanPoints(tag);
+      const balance = result.balance;
       if (balance === null || Number.isNaN(balance)) {
-        const plain = toPlainText(html);
-        if (/not found|unknown clan|no clan/i.test(plain)) {
+        if (result.notFound) {
           await interaction.editReply(
             `No points data found for #${tag}. Check the clan tag and try again.`
           );
           return;
         }
 
-        console.error(`[points] could not parse point balance for tag=${tag} url=${url}`);
+        console.error(`[points] could not parse point balance for tag=${tag} url=${result.url}`);
         await interaction.editReply(
           "Could not parse point balance from points.fwafarm.com right now. Try again later."
         );
         return;
       }
 
-      const plain = toPlainText(html);
-      const clanName = extractField(plain, "Clan Name");
-      const clanTag = extractField(plain, "Clan Tag") ?? tag;
       await interaction.editReply(
-        `${clanName ? `**${clanName}**\n` : ""}Tag: #${normalizeTag(clanTag)}\nPoint Balance: **${balance}**\n${url}`
+        `${result.clanName ? `**${result.clanName}**\n` : ""}Tag: #${tag}\nPoint Balance: **${balance}**\n${result.url}`
       );
     } catch (err) {
       console.error(`[points] request failed tag=${tag} error=${formatError(err)}`);
