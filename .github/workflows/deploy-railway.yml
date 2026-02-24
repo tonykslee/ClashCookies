@@ -38,7 +38,7 @@ jobs:
         run: npm install -g @railway/cli
 
       - name: Deploy to Railway via CLI
-        run: railway up --ci --project "$RAILWAY_PROJECT_ID" --environment "$RAILWAY_ENVIRONMENT"
+        run: railway up --ci --project "$RAILWAY_PROJECT_ID" --environment "$RAILWAY_ENVIRONMENT" --service ClashCookies
 
   pr-check:
     if: github.event_name == 'pull_request'
