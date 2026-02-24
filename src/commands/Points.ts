@@ -6,6 +6,7 @@ import {
   Client,
 } from "discord.js";
 import { Command } from "../Command";
+import { truncateDiscordContent } from "../helper/discordContent";
 import { formatError } from "../helper/formatError";
 import { safeReply } from "../helper/safeReply";
 import { prisma } from "../prisma";
@@ -154,6 +155,10 @@ function sanitizeClanName(input: string | null | undefined): string | null {
   if (trimmed.length > 80) return null;
   if (/Clan Tag|Point Balance|Sync #|Winner|War State/i.test(trimmed)) return null;
   return trimmed;
+}
+
+function limitDiscordContent(content: string): string {
+  return truncateDiscordContent(content, DISCORD_CONTENT_MAX);
 }
 
 function buildLimitedMessage(header: string, lines: string[], summary: string): string {
@@ -361,8 +366,8 @@ async function getClanPointsCached(
 function buildMatchupMessage(primary: PointsSnapshot, opponent: PointsSnapshot): string {
   const primaryTag = normalizeTag(primary.tag);
   const opponentTag = normalizeTag(opponent.tag);
-  const primaryName = primary.clanName ?? `#${primaryTag}`;
-  const opponentName = opponent.clanName ?? `#${opponentTag}`;
+  const primaryName = sanitizeClanName(primary.clanName) ?? `#${primaryTag}`;
+  const opponentName = sanitizeClanName(opponent.clanName) ?? `#${opponentTag}`;
   const primaryBalance = primary.balance ?? 0;
   const opponentBalance = opponent.balance ?? 0;
 
@@ -400,7 +405,7 @@ function buildMatchupMessage(primary: PointsSnapshot, opponent: PointsSnapshot):
         }`
       : "Sync not found in winner-box.";
 
-  return (
+  return limitDiscordContent(
     `${primaryName} points: **${formatPoints(primaryBalance)}**\n` +
     `${opponentName} points: **${formatPoints(opponentBalance)}**\n\n` +
     `${outcome}\n\n${syncNote}\n${verificationNote}`
@@ -431,6 +436,10 @@ export const Points: Command = {
     interaction: ChatInputCommandInteraction,
     cocService: CoCService
   ) => {
+    const editReplySafe = async (content: string): Promise<void> => {
+      await interaction.editReply(truncateDiscordContent(content));
+    };
+
     const settings = new SettingsService();
     await interaction.deferReply({ ephemeral: true });
     const rawTag = interaction.options.getString("tag", false);
@@ -439,7 +448,7 @@ export const Points: Command = {
     const opponentTag = normalizeTag(rawOpponentTag ?? "");
 
     if (!tag && opponentTag) {
-      await interaction.editReply("Please provide `tag` when using `opponent-tag`.");
+      await editReplySafe("Please provide `tag` when using `opponent-tag`.");
       return;
     }
 
@@ -450,7 +459,7 @@ export const Points: Command = {
       });
 
       if (tracked.length === 0) {
-        await interaction.editReply(
+        await editReplySafe(
           "No tracked clans configured. Use `/tracked-clan add` or provide a clan tag."
         );
         return;
@@ -492,13 +501,13 @@ export const Points: Command = {
         summary +=
           `\n${forbiddenCount} request(s) were blocked by points.fwafarm.com (HTTP 403).`;
       }
-      await interaction.editReply(buildLimitedMessage(header, lines, summary));
+      await editReplySafe(buildLimitedMessage(header, lines, summary));
       return;
     }
 
     if (opponentTag) {
       if (opponentTag === tag) {
-        await interaction.editReply("`tag` and `opponent-tag` must be different clans.");
+        await editReplySafe("`tag` and `opponent-tag` must be different clans.");
         return;
       }
 
@@ -509,41 +518,48 @@ export const Points: Command = {
         ]);
 
         if (primary.balance === null || Number.isNaN(primary.balance)) {
-          await interaction.editReply(`Could not fetch point balance for #${tag}.`);
+          await editReplySafe(`Could not fetch point balance for #${tag}.`);
           return;
         }
         if (opponent.balance === null || Number.isNaN(opponent.balance)) {
-          await interaction.editReply(`Could not fetch point balance for #${opponentTag}.`);
+          await editReplySafe(`Could not fetch point balance for #${opponentTag}.`);
           return;
         }
 
         const cycleKey = `${primary.refreshedForWarEndMs ?? "none"}:${opponent.refreshedForWarEndMs ?? "none"}`;
         const cachedMatchup = await readMatchupCache(settings, tag, opponentTag);
         if (cachedMatchup && cachedMatchup.cycleKey === cycleKey) {
-          await interaction.editReply(cachedMatchup.message);
+          const safeCachedMessage = limitDiscordContent(cachedMatchup.message);
+          await editReplySafe(safeCachedMessage);
+          if (safeCachedMessage !== cachedMatchup.message) {
+            await writeMatchupCache(settings, tag, opponentTag, {
+              ...cachedMatchup,
+              message: safeCachedMessage,
+            });
+          }
           return;
         }
 
-        const message = buildMatchupMessage(primary, opponent);
+        const message = limitDiscordContent(buildMatchupMessage(primary, opponent));
         await writeMatchupCache(settings, tag, opponentTag, {
           cycleKey,
           message,
           createdAtMs: Date.now(),
         });
 
-        await interaction.editReply(message);
+        await editReplySafe(message);
         return;
       } catch (err) {
         console.error(
           `[points] matchup request failed tag=${tag} opponent=${opponentTag} error=${formatError(err)}`
         );
         if (getHttpStatus(err) === 403) {
-          await interaction.editReply(
+          await editReplySafe(
             "points.fwafarm.com blocked this request (HTTP 403). Try again later."
           );
           return;
         }
-        await interaction.editReply("Failed to fetch points matchup. Check both tags and try again.");
+        await editReplySafe("Failed to fetch points matchup. Check both tags and try again.");
         return;
       }
     }
@@ -553,20 +569,20 @@ export const Points: Command = {
       const balance = result.balance;
       if (balance === null || Number.isNaN(balance)) {
         if (result.notFound) {
-          await interaction.editReply(
+          await editReplySafe(
             `No points data found for #${tag}. Check the clan tag and try again.`
           );
           return;
         }
 
         console.error(`[points] could not parse point balance for tag=${tag} url=${result.url}`);
-        await interaction.editReply(
+        await editReplySafe(
           "Could not parse point balance from points.fwafarm.com right now. Try again later."
         );
         return;
       }
 
-      await interaction.editReply(
+      await editReplySafe(
         `${
           sanitizeClanName(result.clanName) ? `**${sanitizeClanName(result.clanName)}**\n` : ""
         }Tag: #${tag}\nPoint Balance: **${formatPoints(balance)}**\n${result.url}`
@@ -574,12 +590,12 @@ export const Points: Command = {
     } catch (err) {
       console.error(`[points] request failed tag=${tag} error=${formatError(err)}`);
       if (getHttpStatus(err) === 403) {
-        await interaction.editReply(
+        await editReplySafe(
           "points.fwafarm.com blocked this request (HTTP 403). Try again later."
         );
         return;
       }
-      await interaction.editReply("Failed to fetch points. Check the tag and try again.");
+      await editReplySafe("Failed to fetch points. Check the tag and try again.");
     }
   },
   autocomplete: async (interaction: AutocompleteInteraction) => {
