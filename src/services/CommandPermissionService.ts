@@ -29,7 +29,7 @@ export const COMMAND_PERMISSION_TARGETS = [
   "cc",
   "cc:player",
   "cc:clan",
-  "get-opponent-tag",
+  "opponent",
   "points",
   "post",
   "post:sync:time",

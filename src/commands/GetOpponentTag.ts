@@ -14,7 +14,7 @@ function normalizeClanTag(input: string): string {
 }
 
 export const GetOpponentTag: Command = {
-  name: "get-opponent-tag",
+  name: "opponent",
   description: "Get current war opponent clan tag for a clan",
   options: [
     {
@@ -54,7 +54,7 @@ export const GetOpponentTag: Command = {
       );
     } catch (err) {
       console.error(
-        `[get-opponent-tag] failed tag=${clanTag} error=${formatError(err)}`
+        `[opponent] failed tag=${clanTag} error=${formatError(err)}`
       );
       await interaction.editReply(
         "Failed to fetch opponent tag from CoC API. Try again shortly."
@@ -62,4 +62,3 @@ export const GetOpponentTag: Command = {
     }
   },
 };
-
