@@ -13,6 +13,14 @@ import { CoCService } from "../services/CoCService";
 
 const POINTS_BASE_URL = "https://points.fwafarm.com/clan?tag=";
 const TIEBREAK_ORDER = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+const POINTS_REQUEST_HEADERS = {
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
+  Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+  "Accept-Language": "en-US,en;q=0.9",
+  Referer: "https://points.fwafarm.com/",
+  Origin: "https://points.fwafarm.com",
+};
 
 function normalizeTag(input: string): string {
   return input.trim().toUpperCase().replace(/^#/, "");
@@ -99,6 +107,13 @@ function formatPoints(value: number): string {
   return Intl.NumberFormat("en-US").format(value);
 }
 
+function getHttpStatus(err: unknown): number | null {
+  const status =
+    (err as { status?: number } | null | undefined)?.status ??
+    (err as { response?: { status?: number } } | null | undefined)?.response?.status;
+  return typeof status === "number" ? status : null;
+}
+
 async function fetchClanPoints(tag: string): Promise<{
   tag: string;
   url: string;
@@ -117,10 +132,15 @@ async function fetchClanPoints(tag: string): Promise<{
   const response = await axios.get<string>(url, {
     timeout: 15000,
     responseType: "text",
-    headers: {
-      "User-Agent": "ClashCookiesBot/1.0 (+https://github.com/tonykslee/ClashCookies)",
-    },
+    headers: POINTS_REQUEST_HEADERS,
+    validateStatus: () => true,
   });
+  if (response.status === 403) {
+    throw { status: 403, message: "points site returned 403" };
+  }
+  if (response.status >= 400) {
+    throw { status: response.status, message: `points site returned ${response.status}` };
+  }
 
   const html = String(response.data ?? "");
   const balance = extractPointBalance(html);
@@ -202,6 +222,7 @@ export const Points: Command = {
 
       const lines: string[] = [];
       let failedCount = 0;
+      let forbiddenCount = 0;
       for (const clan of tracked) {
         const trackedTag = normalizeTag(clan.tag);
         try {
@@ -215,18 +236,26 @@ export const Points: Command = {
           lines.push(`- ${label} (#${trackedTag}): **${result.balance}**`);
         } catch (err) {
           failedCount += 1;
+          if (getHttpStatus(err) === 403) {
+            forbiddenCount += 1;
+          }
           console.error(
             `[points] bulk request failed tag=${trackedTag} error=${formatError(err)}`
           );
           lines.push(`- ${clan.name ?? `#${trackedTag}`}: unavailable`);
         }
+        await new Promise((resolve) => setTimeout(resolve, 250));
       }
 
       const header = `Tracked clan points (${tracked.length})`;
-      const summary =
-        failedCount > 0
-          ? `\n\n${failedCount} clan(s) could not be fetched right now.`
-          : "";
+      let summary = "";
+      if (failedCount > 0) {
+        summary = `\n\n${failedCount} clan(s) could not be fetched right now.`;
+      }
+      if (forbiddenCount > 0) {
+        summary +=
+          `\n${forbiddenCount} request(s) were blocked by points.fwafarm.com (HTTP 403).`;
+      }
       await interaction.editReply(`${header}\n\n${lines.join("\n")}${summary}`);
       return;
     }
@@ -301,6 +330,12 @@ export const Points: Command = {
         console.error(
           `[points] matchup request failed tag=${tag} opponent=${opponentTag} error=${formatError(err)}`
         );
+        if (getHttpStatus(err) === 403) {
+          await interaction.editReply(
+            "points.fwafarm.com blocked this request (HTTP 403). Try again later or fetch one clan at a time."
+          );
+          return;
+        }
         await interaction.editReply(
           "Failed to fetch points matchup. Check both tags and try again."
         );
@@ -331,6 +366,12 @@ export const Points: Command = {
       );
     } catch (err) {
       console.error(`[points] request failed tag=${tag} error=${formatError(err)}`);
+      if (getHttpStatus(err) === 403) {
+        await interaction.editReply(
+          "points.fwafarm.com blocked this request (HTTP 403). Try again later."
+        );
+        return;
+      }
       await interaction.editReply(
         "Failed to fetch points. Check the tag and try again."
       );
