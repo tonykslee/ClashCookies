@@ -7,6 +7,7 @@ Discord bot for Clash of Clans activity tooling.
 - Manages tracked clans at runtime (`/tracked-clan ...`).
 - Links to a Google Sheet at runtime (`/sheet ...`).
 - Supports mode-specific sheet links for `actual` and `war` roster workflows.
+- Fetches FWA points balances for one clan or all tracked clans (`/points`).
 
 ## Setup
 1. Create a `.env` with required Discord, CoC API, and database values.
@@ -64,6 +65,7 @@ Optional fallback auth (not required for your current setup):
 - `/compo place weight:<value>` - Suggest placement options from ACTUAL state (vacancy + composition fit). Accepts formats like `145000`, `145,000`, or `145k` and maps to TH weight buckets.
 - `/cc player tag:<tag>` - Build `https://cc.fwafarm.com/cc_n/member.php?tag=<tag>`.
 - `/cc clan tag:<tag>` - Build `https://cc.fwafarm.com/cc_n/clan.php?tag=<tag>`.
+- `/points [tag:<tag>] [opponent-tag:<tag>]` - Fetch current point balance from `https://points.fwafarm.com/clan?tag=<tag-without-#>`. If `tag` is omitted, fetches all tracked clans. If both tags are provided, returns projected winner/loser by points, or sync-based tiebreak when points are tied.
 - `/post sync time [role:<discordRole>]` - Open modal, compose sync-time message, post it, and pin it.
 
 ## Command Access Control
@@ -77,6 +79,8 @@ Optional fallback auth (not required for your current setup):
 - Administrator users can always use commands regardless of role whitelist.
 - To lock `/post` to role X, run:
   - `/permission add command:post role:@RoleX`
+- To lock `/points` to role X, run:
+  - `/permission add command:points role:@RoleX`
 
 ## Deployment Notes
 - Commands are registered as guild commands using `GUILD_ID` on startup.

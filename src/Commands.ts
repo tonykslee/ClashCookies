@@ -9,6 +9,7 @@ import { Compo } from "./commands/Compo";
 import { Post } from "./commands/Post";
 import { CommandRole } from "./commands/CommandRole";
 import { CC } from "./commands/CC";
+import { Points } from "./commands/Points";
 
 // ...existing code...
 export const Commands = [
@@ -21,6 +22,7 @@ export const Commands = [
   Sheet,
   Compo,
   CC,
+  Points,
   Post,
   CommandRole,
 ];
