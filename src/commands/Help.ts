@@ -24,6 +24,12 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "sheet:unlink",
   "sheet:show",
   "sheet:refresh",
+  "kick-list",
+  "kick-list:build",
+  "kick-list:add",
+  "kick-list:remove",
+  "kick-list:show",
+  "kick-list:clear",
   "post:sync:time",
   "permission:add",
   "permission:remove",
@@ -145,6 +151,20 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "Tag supports autocomplete from tracked clans.",
     ],
     examples: ["/points tag:2QG2C08UP", "/points", "/points tag:2QG2C08UP opponent-tag:ABC12345"],
+  },
+  "kick-list": {
+    summary: "Build and manage kick-list candidates.",
+    details: [
+      "`build` auto-adds inactive players from tracked-clan live rosters (default 3 days).",
+      "`add` supports manual entries with a custom reason.",
+      "`show` displays reasons for each candidate with pagination.",
+    ],
+    examples: [
+      "/kick-list build",
+      "/kick-list build days:5",
+      "/kick-list add tag:#ABC123 reason:Missed war hits",
+      "/kick-list show",
+    ],
   },
   post: {
     summary: "Post structured messages such as sync time announcements.",
