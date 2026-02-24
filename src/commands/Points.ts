@@ -17,7 +17,7 @@ const POINTS_BASE_URL = "https://points.fwafarm.com/clan?tag=";
 const TIEBREAK_ORDER = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 const CACHE_REFRESH_DELAY_MS = 30 * 60 * 1000;
 const DISCORD_CONTENT_MAX = 2000;
-const MATCHUP_CACHE_VERSION = 2;
+const MATCHUP_CACHE_VERSION = 3;
 const POINTS_REQUEST_HEADERS = {
   "User-Agent":
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
@@ -105,10 +105,21 @@ function extractWinnerBoxText(html: string): string | null {
   return toPlainText(match[1]);
 }
 
+function extractTopSectionText(html: string): string {
+  const plain = toPlainText(html);
+  const marker = plain.search(/Last Known War State\s*:/i);
+  if (marker < 0) return plain;
+  return plain.slice(0, marker).trim();
+}
+
 function extractTagsFromText(text: string): string[] {
   const tags = new Set<string>();
   const hashMatches = text.matchAll(/#([0-9A-Z]{4,})/gi);
   for (const match of hashMatches) {
+    if (match[1]) tags.add(normalizeTag(match[1]));
+  }
+  const parenMatches = text.matchAll(/\(\s*([0-9A-Z]{4,})\s*\)/gi);
+  for (const match of parenMatches) {
     if (match[1]) tags.add(normalizeTag(match[1]));
   }
   return [...tags];
@@ -157,6 +168,37 @@ function sanitizeClanName(input: string | null | undefined): string | null {
   if (trimmed.length > 80) return null;
   if (/Clan Tag|Point Balance|Sync #|Winner|War State/i.test(trimmed)) return null;
   return trimmed;
+}
+
+type MatchupHeader = {
+  syncNumber: number | null;
+  primaryName: string | null;
+  primaryTag: string | null;
+  opponentName: string | null;
+  opponentTag: string | null;
+};
+
+function extractMatchupHeader(topText: string): MatchupHeader {
+  const regex =
+    /Sync\s*#\s*(\d+)\s+(.+?)\s*\(\s*([0-9A-Z]{4,})\s*\)\s+vs\.\s+(.+?)\s*\(\s*([0-9A-Z]{4,})\s*\)/i;
+  const match = topText.match(regex);
+  if (!match) {
+    return {
+      syncNumber: extractSyncNumber(topText),
+      primaryName: null,
+      primaryTag: null,
+      opponentName: null,
+      opponentTag: null,
+    };
+  }
+
+  return {
+    syncNumber: Number(match[1]),
+    primaryName: sanitizeClanName(match[2]) ?? null,
+    primaryTag: normalizeTag(match[3]),
+    opponentName: sanitizeClanName(match[4]) ?? null,
+    opponentTag: normalizeTag(match[5]),
+  };
 }
 
 function limitDiscordContent(content: string): string {
@@ -302,11 +344,23 @@ async function scrapeClanPoints(tag: string, refreshedForWarEndMs: number | null
   const html = String(response.data ?? "");
   const balance = extractPointBalance(html);
   const plain = toPlainText(html);
-  const clanName = extractField(plain, "Clan Name");
-  const notFound = /not found|unknown clan|no clan/i.test(plain);
+  const topSection = extractTopSectionText(html);
+  const topHeader = extractMatchupHeader(topSection);
+  const clanNameFromHeader =
+    topHeader.primaryTag === normalizedTag
+      ? topHeader.primaryName
+      : topHeader.opponentTag === normalizedTag
+        ? topHeader.opponentName
+        : null;
+  const clanName =
+    clanNameFromHeader ??
+    extractField(topSection, "Clan Name") ??
+    extractField(plain, "Clan Name");
+  const notFound = /not found|unknown clan|no clan/i.test(topSection || plain);
   const winnerBoxText = extractWinnerBoxText(html);
-  const winnerBoxTags = winnerBoxText ? extractTagsFromText(winnerBoxText) : [];
-  const winnerBoxSync = winnerBoxText ? extractSyncNumber(winnerBoxText) : null;
+  const winnerBoxTags = extractTagsFromText(topSection || winnerBoxText || "");
+  const winnerBoxSync =
+    topHeader.syncNumber ?? extractSyncNumber(topSection || winnerBoxText || "");
   const winnerBoxHasTag = winnerBoxTags.includes(normalizedTag);
   const effectiveSync =
     winnerBoxSync === null ? null : winnerBoxHasTag ? winnerBoxSync : winnerBoxSync + 1;
@@ -368,11 +422,21 @@ async function getClanPointsCached(
   }
 }
 
-function buildMatchupMessage(primary: PointsSnapshot, opponent: PointsSnapshot): string {
+function buildMatchupMessage(
+  primary: PointsSnapshot,
+  opponent: PointsSnapshot,
+  nameOverrides?: { primaryName?: string | null; opponentName?: string | null }
+): string {
   const primaryTag = normalizeTag(primary.tag);
   const opponentTag = normalizeTag(opponent.tag);
-  const primaryName = sanitizeClanName(primary.clanName) ?? primaryTag;
-  const opponentName = sanitizeClanName(opponent.clanName) ?? opponentTag;
+  const primaryName =
+    sanitizeClanName(nameOverrides?.primaryName) ??
+    sanitizeClanName(primary.clanName) ??
+    primaryTag;
+  const opponentName =
+    sanitizeClanName(nameOverrides?.opponentName) ??
+    sanitizeClanName(opponent.clanName) ??
+    opponentTag;
   const primaryBalance = primary.balance ?? 0;
   const opponentBalance = opponent.balance ?? 0;
 
@@ -507,6 +571,12 @@ export const Points: Command = {
           getClanPointsCached(settings, cocService, tag),
           getClanPointsCached(settings, cocService, opponentTag),
         ]);
+        const trackedPair = await prisma.trackedClan.findMany({
+          select: { name: true, tag: true },
+        });
+        const trackedNameByTag = new Map(
+          trackedPair.map((c) => [normalizeTag(c.tag), sanitizeClanName(c.name)])
+        );
 
         if (primary.balance === null || Number.isNaN(primary.balance)) {
           await editReplySafe(`Could not fetch point balance for #${tag}.`);
@@ -531,7 +601,12 @@ export const Points: Command = {
           return;
         }
 
-        const message = limitDiscordContent(buildMatchupMessage(primary, opponent));
+        const message = limitDiscordContent(
+          buildMatchupMessage(primary, opponent, {
+            primaryName: trackedNameByTag.get(tag),
+            opponentName: trackedNameByTag.get(opponentTag),
+          })
+        );
         await writeMatchupCache(settings, tag, opponentTag, {
           version: MATCHUP_CACHE_VERSION,
           cycleKey,
