@@ -6,6 +6,7 @@ import {
   ModalSubmitInteraction,
 } from "discord.js";
 import { Commands } from "../Commands";
+import { truncateDiscordContent } from "../helper/discordContent";
 import { formatError } from "../helper/formatError";
 import { CoCService } from "../services/CoCService";
 import { handlePostModalSubmit, isPostModalCustomId } from "../commands/Post";
@@ -92,14 +93,14 @@ const handleModalSubmit = async (
 
     if (!interaction.replied && !interaction.deferred) {
       await interaction.reply({
-        content: message,
+        content: truncateDiscordContent(message),
         ephemeral: true,
       });
       return;
     }
 
     if (interaction.deferred) {
-      await interaction.editReply(message);
+      await interaction.editReply(truncateDiscordContent(message));
     }
   }
 };
@@ -140,7 +141,7 @@ const handleSlashCommand = async (
     try {
       await interaction.reply({
         ephemeral: true,
-        content: "An error has occurred",
+        content: truncateDiscordContent("An error has occurred"),
       });
     } catch {
       // no-op
@@ -170,13 +171,13 @@ const handleSlashCommand = async (
       : "Something went wrong.";
 
     if (interaction.deferred) {
-      await interaction.editReply(message).catch(() => undefined);
+      await interaction.editReply(truncateDiscordContent(message)).catch(() => undefined);
       return;
     }
 
     if (!interaction.replied) {
       await interaction.reply({
-        content: message,
+        content: truncateDiscordContent(message),
         ephemeral: true,
       });
     }
