@@ -10,9 +10,11 @@ import { formatError } from "../helper/formatError";
 import { safeReply } from "../helper/safeReply";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
+import { SettingsService } from "../services/SettingsService";
 
 const POINTS_BASE_URL = "https://points.fwafarm.com/clan?tag=";
 const TIEBREAK_ORDER = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+const CACHE_REFRESH_DELAY_MS = 30 * 60 * 1000;
 const POINTS_REQUEST_HEADERS = {
   "User-Agent":
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
@@ -22,8 +24,42 @@ const POINTS_REQUEST_HEADERS = {
   Origin: "https://points.fwafarm.com",
 };
 
+type PointsSnapshot = {
+  tag: string;
+  url: string;
+  balance: number | null;
+  clanName: string | null;
+  notFound: boolean;
+  winnerBoxText: string | null;
+  winnerBoxTags: string[];
+  winnerBoxSync: number | null;
+  effectiveSync: number | null;
+  syncMode: "low" | "high" | null;
+  winnerBoxHasTag: boolean;
+  fetchedAtMs: number;
+  refreshedForWarEndMs: number | null;
+};
+
+type MatchupCacheEntry = {
+  cycleKey: string;
+  message: string;
+  createdAtMs: number;
+};
+
 function normalizeTag(input: string): string {
   return input.trim().toUpperCase().replace(/^#/, "");
+}
+
+function buildPointsUrl(tag: string): string {
+  const normalizedTag = normalizeTag(tag);
+  const proxyBase = (process.env.POINTS_PROXY_URL ?? "").trim();
+  if (!proxyBase) {
+    return `${POINTS_BASE_URL}${normalizedTag}`;
+  }
+
+  const proxyUrl = new URL(proxyBase);
+  proxyUrl.searchParams.set("tag", normalizedTag);
+  return proxyUrl.toString();
 }
 
 function toPlainText(html: string): string {
@@ -114,21 +150,78 @@ function getHttpStatus(err: unknown): number | null {
   return typeof status === "number" ? status : null;
 }
 
-async function fetchClanPoints(tag: string): Promise<{
-  tag: string;
-  url: string;
-  balance: number | null;
-  clanName: string | null;
-  notFound: boolean;
-  winnerBoxText: string | null;
-  winnerBoxTags: string[];
-  winnerBoxSync: number | null;
-  effectiveSync: number | null;
-  syncMode: "low" | "high" | null;
-  winnerBoxHasTag: boolean;
-}> {
+function parseCocApiTime(input: string | null | undefined): number | null {
+  if (!input) return null;
+  const match = input.match(
+    /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})\.\d{3}Z$/
+  );
+  if (!match) return null;
+  const [, y, m, d, hh, mm, ss] = match;
+  return Date.UTC(Number(y), Number(m) - 1, Number(d), Number(hh), Number(mm), Number(ss));
+}
+
+function clanCacheKey(tag: string): string {
+  return `points_cache:${normalizeTag(tag)}`;
+}
+
+function matchupCacheKey(tag: string, opponentTag: string): string {
+  return `points_matchup_cache:${normalizeTag(tag)}:${normalizeTag(opponentTag)}`;
+}
+
+async function getClanWarEndMs(cocService: CoCService, tag: string): Promise<number | null> {
+  const war = await cocService.getCurrentWar(`#${normalizeTag(tag)}`);
+  return parseCocApiTime(war?.endTime);
+}
+
+async function readPointsCache(
+  settings: SettingsService,
+  tag: string
+): Promise<PointsSnapshot | null> {
+  const raw = await settings.get(clanCacheKey(tag));
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as PointsSnapshot;
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+async function writePointsCache(
+  settings: SettingsService,
+  tag: string,
+  snapshot: PointsSnapshot
+): Promise<void> {
+  await settings.set(clanCacheKey(tag), JSON.stringify(snapshot));
+}
+
+async function readMatchupCache(
+  settings: SettingsService,
+  tag: string,
+  opponentTag: string
+): Promise<MatchupCacheEntry | null> {
+  const raw = await settings.get(matchupCacheKey(tag, opponentTag));
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as MatchupCacheEntry;
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+async function writeMatchupCache(
+  settings: SettingsService,
+  tag: string,
+  opponentTag: string,
+  data: MatchupCacheEntry
+): Promise<void> {
+  await settings.set(matchupCacheKey(tag, opponentTag), JSON.stringify(data));
+}
+
+async function scrapeClanPoints(tag: string, refreshedForWarEndMs: number | null): Promise<PointsSnapshot> {
   const normalizedTag = normalizeTag(tag);
-  const url = `${POINTS_BASE_URL}${normalizedTag}`;
+  const url = buildPointsUrl(normalizedTag);
   const response = await axios.get<string>(url, {
     timeout: 15000,
     responseType: "text",
@@ -167,7 +260,97 @@ async function fetchClanPoints(tag: string): Promise<{
     effectiveSync,
     syncMode,
     winnerBoxHasTag,
+    fetchedAtMs: Date.now(),
+    refreshedForWarEndMs,
   };
+}
+
+async function getClanPointsCached(
+  settings: SettingsService,
+  cocService: CoCService,
+  tag: string
+): Promise<PointsSnapshot> {
+  const normalizedTag = normalizeTag(tag);
+  const cached = await readPointsCache(settings, normalizedTag);
+  const warEndMs = await getClanWarEndMs(cocService, normalizedTag);
+  const refreshAfterMs = warEndMs === null ? null : warEndMs + CACHE_REFRESH_DELAY_MS;
+  const now = Date.now();
+
+  const needsRefreshByCycle =
+    warEndMs !== null &&
+    refreshAfterMs !== null &&
+    now >= refreshAfterMs &&
+    cached?.refreshedForWarEndMs !== warEndMs;
+
+  if (cached && !needsRefreshByCycle) {
+    return cached;
+  }
+
+  try {
+    const snapshot = await scrapeClanPoints(
+      normalizedTag,
+      warEndMs !== null && refreshAfterMs !== null && now >= refreshAfterMs ? warEndMs : null
+    );
+    await writePointsCache(settings, normalizedTag, snapshot);
+    return snapshot;
+  } catch (err) {
+    if (cached) {
+      console.warn(
+        `[points] using cached value after scrape error tag=${normalizedTag} error=${formatError(err)}`
+      );
+      return cached;
+    }
+    throw err;
+  }
+}
+
+function buildMatchupMessage(primary: PointsSnapshot, opponent: PointsSnapshot): string {
+  const primaryTag = normalizeTag(primary.tag);
+  const opponentTag = normalizeTag(opponent.tag);
+  const primaryName = primary.clanName ?? `#${primaryTag}`;
+  const opponentName = opponent.clanName ?? `#${opponentTag}`;
+  const primaryBalance = primary.balance ?? 0;
+  const opponentBalance = opponent.balance ?? 0;
+
+  let outcome = "";
+  if (primaryBalance > opponentBalance) {
+    outcome = `**${primaryName}** should win by points (${primaryBalance} > ${opponentBalance})`;
+  } else if (primaryBalance < opponentBalance) {
+    outcome = `**${primaryName}** should lose by points (${opponentBalance} > ${primaryBalance})`;
+  } else {
+    const syncMode = primary.syncMode ?? opponent.syncMode;
+    if (!syncMode) {
+      outcome = `Points are tied (${primaryBalance} = ${opponentBalance}) but sync number was not found, so tiebreak cannot be determined.`;
+    } else {
+      const tiebreakCmp = compareTagsForTiebreak(primaryTag, opponentTag);
+      if (tiebreakCmp === 0) {
+        outcome = `Points are tied (${primaryBalance} = ${opponentBalance}) and tags are identical for tiebreak ordering.`;
+      } else {
+        const primaryWinsTiebreak = syncMode === "low" ? tiebreakCmp < 0 : tiebreakCmp > 0;
+        outcome = primaryWinsTiebreak
+          ? `**${primaryName}** should win by tiebreak (${primaryBalance} = ${opponentBalance}, ${syncMode} sync)`
+          : `**${primaryName}** should lose by tiebreak (${primaryBalance} = ${opponentBalance}, ${syncMode} sync)`;
+      }
+    }
+  }
+
+  const matchupVerified =
+    primary.winnerBoxTags.includes(opponentTag) || opponent.winnerBoxTags.includes(primaryTag);
+  const verificationNote = matchupVerified
+    ? "Matchup verified in winner-box."
+    : "Matchup not verified in winner-box yet (site delay possible).";
+  const syncNote =
+    primary.effectiveSync !== null
+      ? `Sync #${primary.effectiveSync} (${primary.syncMode ?? "unknown"} sync)${
+          primary.winnerBoxHasTag ? "" : " [adjusted +1 due to stale winner-box tag]"
+        }`
+      : "Sync not found in winner-box.";
+
+  return (
+    `${primaryName} points: **${formatPoints(primaryBalance)}**\n` +
+    `${opponentName} points: **${formatPoints(opponentBalance)}**\n\n` +
+    `${outcome}\n\n${syncNote}\n${verificationNote}`
+  );
 }
 
 export const Points: Command = {
@@ -192,8 +375,9 @@ export const Points: Command = {
   run: async (
     _client: Client,
     interaction: ChatInputCommandInteraction,
-    _cocService: CoCService
+    cocService: CoCService
   ) => {
+    const settings = new SettingsService();
     await interaction.deferReply({ ephemeral: true });
     const rawTag = interaction.options.getString("tag", false);
     const rawOpponentTag = interaction.options.getString("opponent-tag", false);
@@ -201,9 +385,7 @@ export const Points: Command = {
     const opponentTag = normalizeTag(rawOpponentTag ?? "");
 
     if (!tag && opponentTag) {
-      await interaction.editReply(
-        "Please provide `tag` when using `opponent-tag`."
-      );
+      await interaction.editReply("Please provide `tag` when using `opponent-tag`.");
       return;
     }
 
@@ -226,25 +408,22 @@ export const Points: Command = {
       for (const clan of tracked) {
         const trackedTag = normalizeTag(clan.tag);
         try {
-          const result = await fetchClanPoints(trackedTag);
+          const result = await getClanPointsCached(settings, cocService, trackedTag);
           if (result.balance === null || Number.isNaN(result.balance)) {
             failedCount += 1;
             lines.push(`- ${clan.name ?? `#${trackedTag}`}: unavailable`);
             continue;
           }
           const label = result.clanName ?? clan.name ?? `#${trackedTag}`;
-          lines.push(`- ${label} (#${trackedTag}): **${result.balance}**`);
+          lines.push(`- ${label} (#${trackedTag}): **${formatPoints(result.balance)}**`);
         } catch (err) {
           failedCount += 1;
-          if (getHttpStatus(err) === 403) {
-            forbiddenCount += 1;
-          }
+          if (getHttpStatus(err) === 403) forbiddenCount += 1;
           console.error(
             `[points] bulk request failed tag=${trackedTag} error=${formatError(err)}`
           );
           lines.push(`- ${clan.name ?? `#${trackedTag}`}: unavailable`);
         }
-        await new Promise((resolve) => setTimeout(resolve, 250));
       }
 
       const header = `Tracked clan points (${tracked.length})`;
@@ -268,8 +447,8 @@ export const Points: Command = {
 
       try {
         const [primary, opponent] = await Promise.all([
-          fetchClanPoints(tag),
-          fetchClanPoints(opponentTag),
+          getClanPointsCached(settings, cocService, tag),
+          getClanPointsCached(settings, cocService, opponentTag),
         ]);
 
         if (primary.balance === null || Number.isNaN(primary.balance)) {
@@ -281,50 +460,21 @@ export const Points: Command = {
           return;
         }
 
-        const primaryName = primary.clanName ?? `#${tag}`;
-        const opponentName = opponent.clanName ?? `#${opponentTag}`;
-
-        let outcome = "";
-        if (primary.balance > opponent.balance) {
-          outcome = `**${primaryName}** should win by points (${primary.balance} > ${opponent.balance})`;
-        } else if (primary.balance < opponent.balance) {
-          outcome = `**${primaryName}** should lose by points (${opponent.balance} > ${primary.balance})`;
-        } else {
-          const syncMode = primary.syncMode ?? opponent.syncMode;
-          if (!syncMode) {
-            outcome = `Points are tied (${primary.balance} = ${opponent.balance}) but sync number was not found, so tiebreak cannot be determined.`;
-          } else {
-            const tiebreakCmp = compareTagsForTiebreak(tag, opponentTag);
-            if (tiebreakCmp === 0) {
-              outcome = `Points are tied (${primary.balance} = ${opponent.balance}) and tags are identical for tiebreak ordering.`;
-            } else {
-              const primaryWinsTiebreak =
-                syncMode === "low" ? tiebreakCmp < 0 : tiebreakCmp > 0;
-              outcome = primaryWinsTiebreak
-                ? `**${primaryName}** should win by tiebreak (${primary.balance} = ${opponent.balance}, ${syncMode} sync)`
-                : `**${primaryName}** should lose by tiebreak (${primary.balance} = ${opponent.balance}, ${syncMode} sync)`;
-            }
-          }
+        const cycleKey = `${primary.refreshedForWarEndMs ?? "none"}:${opponent.refreshedForWarEndMs ?? "none"}`;
+        const cachedMatchup = await readMatchupCache(settings, tag, opponentTag);
+        if (cachedMatchup && cachedMatchup.cycleKey === cycleKey) {
+          await interaction.editReply(cachedMatchup.message);
+          return;
         }
 
-        const matchupVerified =
-          primary.winnerBoxTags.includes(opponentTag) ||
-          opponent.winnerBoxTags.includes(tag);
-        const verificationNote = matchupVerified
-          ? "Matchup verified in winner-box."
-          : "Matchup not verified in winner-box yet (site delay possible).";
-        const syncNote =
-          primary.effectiveSync !== null
-            ? `Sync #${primary.effectiveSync} (${primary.syncMode ?? "unknown"} sync)${
-                primary.winnerBoxHasTag ? "" : " [adjusted +1 due to stale winner-box tag]"
-              }`
-            : "Sync not found in winner-box.";
+        const message = buildMatchupMessage(primary, opponent);
+        await writeMatchupCache(settings, tag, opponentTag, {
+          cycleKey,
+          message,
+          createdAtMs: Date.now(),
+        });
 
-        await interaction.editReply(
-          `${primaryName} points: **${formatPoints(primary.balance)}**\n` +
-            `${opponentName} points: **${formatPoints(opponent.balance)}**\n\n` +
-            `${outcome}\n\n${syncNote}\n${verificationNote}`
-        );
+        await interaction.editReply(message);
         return;
       } catch (err) {
         console.error(
@@ -332,19 +482,17 @@ export const Points: Command = {
         );
         if (getHttpStatus(err) === 403) {
           await interaction.editReply(
-            "points.fwafarm.com blocked this request (HTTP 403). Try again later or fetch one clan at a time."
+            "points.fwafarm.com blocked this request (HTTP 403). Try again later."
           );
           return;
         }
-        await interaction.editReply(
-          "Failed to fetch points matchup. Check both tags and try again."
-        );
+        await interaction.editReply("Failed to fetch points matchup. Check both tags and try again.");
         return;
       }
     }
 
     try {
-      const result = await fetchClanPoints(tag);
+      const result = await getClanPointsCached(settings, cocService, tag);
       const balance = result.balance;
       if (balance === null || Number.isNaN(balance)) {
         if (result.notFound) {
@@ -362,7 +510,7 @@ export const Points: Command = {
       }
 
       await interaction.editReply(
-        `${result.clanName ? `**${result.clanName}**\n` : ""}Tag: #${tag}\nPoint Balance: **${balance}**\n${result.url}`
+        `${result.clanName ? `**${result.clanName}**\n` : ""}Tag: #${tag}\nPoint Balance: **${formatPoints(balance)}**\n${result.url}`
       );
     } catch (err) {
       console.error(`[points] request failed tag=${tag} error=${formatError(err)}`);
@@ -372,9 +520,7 @@ export const Points: Command = {
         );
         return;
       }
-      await interaction.editReply(
-        "Failed to fetch points. Check the tag and try again."
-      );
+      await interaction.editReply("Failed to fetch points. Check the tag and try again.");
     }
   },
   autocomplete: async (interaction: AutocompleteInteraction) => {

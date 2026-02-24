@@ -1,5 +1,6 @@
 import { AxiosError } from "axios";
 import {
+  ClanWar,
   ClansApi,
   Configuration,
   Player,
@@ -39,6 +40,19 @@ export class CoCService {
   async getClanName(tag: string): Promise<string> {
     const clan = await this.getClan(tag);
     return clan.name ?? "Unknown Clan";
+  }
+
+  async getCurrentWar(tag: string): Promise<ClanWar | null> {
+    const clanTag = tag.startsWith("#") ? tag : `#${tag}`;
+    try {
+      const { data } = await this.clansApi.getCurrentWar(clanTag);
+      return data;
+    } catch (err) {
+      const status = (err as AxiosError)?.response?.status;
+      if (status === 404) return null;
+      if (status) throw new Error(`CoC API error ${status}`);
+      throw err;
+    }
   }
 
   async getPlayerRaw(tag: string | undefined): Promise<any> {
