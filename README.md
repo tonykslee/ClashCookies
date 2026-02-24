@@ -65,7 +65,13 @@ Optional fallback auth (not required for your current setup):
 - `/compo place weight:<value>` - Suggest placement options from ACTUAL state (vacancy + composition fit). Accepts formats like `145000`, `145,000`, or `145k` and maps to TH weight buckets.
 - `/cc player tag:<tag>` - Build `https://cc.fwafarm.com/cc_n/member.php?tag=<tag>`.
 - `/cc clan tag:<tag>` - Build `https://cc.fwafarm.com/cc_n/clan.php?tag=<tag>`.
+- `/opponent tag:<tag>` - Get current war opponent clan tag from CoC API (without `#`).
 - `/points [tag:<tag>] [opponent-tag:<tag>]` - Fetch current point balance from `https://points.fwafarm.com/clan?tag=<tag-without-#>`. If `tag` is omitted, fetches all tracked clans. If both tags are provided, returns projected winner/loser by points, or sync-based tiebreak when points are tied.
+- `/kick-list build [days:<number>]` - Auto-build kick-list candidates from inactive tracked-clan members (default `3` days).
+- `/kick-list add tag:<playerTag> reason:<text>` - Manually add a kick-list candidate with reason.
+- `/kick-list remove tag:<playerTag>` - Remove a player from kick list.
+- `/kick-list show` - Show current kick-list with reasons.
+- `/kick-list clear [mode:all|auto|manual]` - Clear kick-list entries.
 - `/post sync time [role:<discordRole>]` - Open modal, compose sync-time message, post it, and pin it.
 
 ## Command Access Control
@@ -74,6 +80,7 @@ Optional fallback auth (not required for your current setup):
   - `/tracked-clan add`, `/tracked-clan remove`
   - `/permission add`, `/permission remove`
   - `/sheet link`, `/sheet unlink`, `/sheet show`, `/sheet refresh`
+  - `/kick-list build`, `/kick-list add`, `/kick-list remove`, `/kick-list show`, `/kick-list clear`
   - `/post sync time`
 - You can whitelist roles per command with `/permission add`.
 - Administrator users can always use commands regardless of role whitelist.
