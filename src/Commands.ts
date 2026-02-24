@@ -10,6 +10,7 @@ import { Post } from "./commands/Post";
 import { CommandRole } from "./commands/CommandRole";
 import { CC } from "./commands/CC";
 import { Points } from "./commands/Points";
+import { GetOpponentTag } from "./commands/GetOpponentTag";
 
 // ...existing code...
 export const Commands = [
@@ -23,6 +24,7 @@ export const Commands = [
   Compo,
   CC,
   Points,
+  GetOpponentTag,
   Post,
   CommandRole,
 ];
