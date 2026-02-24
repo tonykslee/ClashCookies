@@ -22,7 +22,7 @@ jobs:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     env:
-      RAILWAY_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
+      RAILWAY_TOKEN: ${{ github.ref_name == 'main' && secrets.RAILWAY_TOKEN_PRODUCTION || secrets.RAILWAY_TOKEN_STAGING }}
       RAILWAY_PROJECT_ID: 4e5afdf5-8892-4f40-b50f-76f6b5dd81f0
       RAILWAY_ENVIRONMENT: ${{ github.ref_name == 'main' && 'production' || 'staging' }}
     steps:
