@@ -17,6 +17,7 @@ const POINTS_BASE_URL = "https://points.fwafarm.com/clan?tag=";
 const TIEBREAK_ORDER = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 const CACHE_REFRESH_DELAY_MS = 30 * 60 * 1000;
 const DISCORD_CONTENT_MAX = 2000;
+const MATCHUP_CACHE_VERSION = 2;
 const POINTS_REQUEST_HEADERS = {
   "User-Agent":
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
@@ -43,6 +44,7 @@ type PointsSnapshot = {
 };
 
 type MatchupCacheEntry = {
+  version: number;
   cycleKey: string;
   message: string;
   createdAtMs: number;
@@ -263,7 +265,10 @@ async function readMatchupCache(
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as MatchupCacheEntry;
-    return parsed && typeof parsed === "object" ? parsed : null;
+    if (!parsed || typeof parsed !== "object") return null;
+    if (parsed.version !== MATCHUP_CACHE_VERSION) return null;
+    if (typeof parsed.message !== "string" || typeof parsed.cycleKey !== "string") return null;
+    return parsed;
   } catch {
     return null;
   }
@@ -366,8 +371,8 @@ async function getClanPointsCached(
 function buildMatchupMessage(primary: PointsSnapshot, opponent: PointsSnapshot): string {
   const primaryTag = normalizeTag(primary.tag);
   const opponentTag = normalizeTag(opponent.tag);
-  const primaryName = sanitizeClanName(primary.clanName) ?? `#${primaryTag}`;
-  const opponentName = sanitizeClanName(opponent.clanName) ?? `#${opponentTag}`;
+  const primaryName = sanitizeClanName(primary.clanName) ?? primaryTag;
+  const opponentName = sanitizeClanName(opponent.clanName) ?? opponentTag;
   const primaryBalance = primary.balance ?? 0;
   const opponentBalance = opponent.balance ?? 0;
 
@@ -393,22 +398,8 @@ function buildMatchupMessage(primary: PointsSnapshot, opponent: PointsSnapshot):
     }
   }
 
-  const matchupVerified =
-    primary.winnerBoxTags.includes(opponentTag) || opponent.winnerBoxTags.includes(primaryTag);
-  const verificationNote = matchupVerified
-    ? "Matchup verified in winner-box."
-    : "Matchup not verified in winner-box yet (site delay possible).";
-  const syncNote =
-    primary.effectiveSync !== null
-      ? `Sync #${primary.effectiveSync} (${primary.syncMode ?? "unknown"} sync)${
-          primary.winnerBoxHasTag ? "" : " [adjusted +1 due to stale winner-box tag]"
-        }`
-      : "Sync not found in winner-box.";
-
   return limitDiscordContent(
-    `${primaryName} points: **${formatPoints(primaryBalance)}**\n` +
-    `${opponentName} points: **${formatPoints(opponentBalance)}**\n\n` +
-    `${outcome}\n\n${syncNote}\n${verificationNote}`
+    `${primaryName} (${primaryTag}) vs. ${opponentName} (${opponentTag}):\n${outcome}`
   );
 }
 
@@ -542,6 +533,7 @@ export const Points: Command = {
 
         const message = limitDiscordContent(buildMatchupMessage(primary, opponent));
         await writeMatchupCache(settings, tag, opponentTag, {
+          version: MATCHUP_CACHE_VERSION,
           cycleKey,
           message,
           createdAtMs: Date.now(),
