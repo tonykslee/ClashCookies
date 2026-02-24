@@ -6,6 +6,7 @@ import {
   Player,
   PlayersApi,
 } from "../generated/coc-api";
+import { recordFetchEvent } from "../helper/fetchTelemetry";
 
 export class CoCService {
   private clansApi: ClansApi;
@@ -26,15 +27,31 @@ export class CoCService {
 
   async getClan(tag: string): Promise<any> {
     const clanTag = tag.startsWith("#") ? tag : `#${tag}`;
-    const { data } = await this.clansApi.getClan(clanTag);
+    try {
+      const { data } = await this.clansApi.getClan(clanTag);
+      recordFetchEvent({
+        namespace: "coc",
+        operation: "getClan",
+        source: "api",
+        detail: `tag=${clanTag}`,
+      });
 
-    // Preserve existing call sites that expect `clan.members`.
-    return {
-      ...data,
-      tag: data.tag ?? "",
-      name: data.name ?? "Unknown Clan",
-      members: data.memberList ?? [],
-    };
+      // Preserve existing call sites that expect `clan.members`.
+      return {
+        ...data,
+        tag: data.tag ?? "",
+        name: data.name ?? "Unknown Clan",
+        members: data.memberList ?? [],
+      };
+    } catch (err) {
+      recordFetchEvent({
+        namespace: "coc",
+        operation: "getClan",
+        source: "api",
+        detail: `tag=${clanTag} result=error`,
+      });
+      throw err;
+    }
   }
 
   async getClanName(tag: string): Promise<string> {
@@ -46,10 +63,30 @@ export class CoCService {
     const clanTag = tag.startsWith("#") ? tag : `#${tag}`;
     try {
       const { data } = await this.clansApi.getCurrentWar(clanTag);
+      recordFetchEvent({
+        namespace: "coc",
+        operation: "getCurrentWar",
+        source: "api",
+        detail: `tag=${clanTag}`,
+      });
       return data;
     } catch (err) {
       const status = (err as AxiosError)?.response?.status;
-      if (status === 404) return null;
+      if (status === 404) {
+        recordFetchEvent({
+          namespace: "coc",
+          operation: "getCurrentWar",
+          source: "api",
+          detail: `tag=${clanTag} status=404`,
+        });
+        return null;
+      }
+      recordFetchEvent({
+        namespace: "coc",
+        operation: "getCurrentWar",
+        source: "api",
+        detail: `tag=${clanTag} status=${status ?? "unknown"} result=error`,
+      });
       if (status) throw new Error(`CoC API error ${status}`);
       throw err;
     }
@@ -61,10 +98,30 @@ export class CoCService {
 
     try {
       const { data } = await this.playersApi.getPlayer(playerTag);
+      recordFetchEvent({
+        namespace: "coc",
+        operation: "getPlayerRaw",
+        source: "api",
+        detail: `tag=${playerTag}`,
+      });
       return this.normalizePlayer(data);
     } catch (err) {
       const status = (err as AxiosError)?.response?.status;
-      if (status === 404) return null;
+      if (status === 404) {
+        recordFetchEvent({
+          namespace: "coc",
+          operation: "getPlayerRaw",
+          source: "api",
+          detail: `tag=${playerTag} status=404`,
+        });
+        return null;
+      }
+      recordFetchEvent({
+        namespace: "coc",
+        operation: "getPlayerRaw",
+        source: "api",
+        detail: `tag=${playerTag} status=${status ?? "unknown"} result=error`,
+      });
       if (status) throw new Error(`CoC API error ${status}`);
       throw err;
     }

@@ -7,6 +7,7 @@ import {
 } from "discord.js";
 import { Command } from "../Command";
 import { truncateDiscordContent } from "../helper/discordContent";
+import { recordFetchEvent } from "../helper/fetchTelemetry";
 import { formatError } from "../helper/formatError";
 import { safeReply } from "../helper/safeReply";
 import { prisma } from "../prisma";
@@ -339,11 +340,23 @@ async function scrapeClanPoints(tag: string, refreshedForWarEndMs: number | null
     validateStatus: () => true,
   });
   if (response.status === 403) {
+    recordFetchEvent({
+      namespace: "points",
+      operation: "clan_points_fetch",
+      source: "web",
+      detail: `tag=${normalizedTag} status=403 blocked=true`,
+    });
     throw { status: 403, message: "points site returned 403" };
   }
   if (response.status >= 400) {
     throw { status: response.status, message: `points site returned ${response.status}` };
   }
+  recordFetchEvent({
+    namespace: "points",
+    operation: "clan_points_fetch",
+    source: "web",
+    detail: `tag=${normalizedTag} status=${response.status}`,
+  });
 
   const html = String(response.data ?? "");
   const balance = extractPointBalance(html);
@@ -406,8 +419,20 @@ async function getClanPointsCached(
     cached?.refreshedForWarEndMs !== warEndMs;
 
   if (cached && !needsRefreshByCycle) {
+    recordFetchEvent({
+      namespace: "points",
+      operation: "clan_points_snapshot",
+      source: "cache_hit",
+      detail: `tag=${normalizedTag}`,
+    });
     return cached;
   }
+  recordFetchEvent({
+    namespace: "points",
+    operation: "clan_points_snapshot",
+    source: "cache_miss",
+    detail: `tag=${normalizedTag}${needsRefreshByCycle ? " reason=refresh_due" : ""}`,
+  });
 
   try {
     const snapshot = await scrapeClanPoints(
@@ -418,6 +443,12 @@ async function getClanPointsCached(
     return snapshot;
   } catch (err) {
     if (cached) {
+      recordFetchEvent({
+        namespace: "points",
+        operation: "clan_points_snapshot",
+        source: "fallback_cache",
+        detail: `tag=${normalizedTag}`,
+      });
       console.warn(
         `[points] using cached value after scrape error tag=${normalizedTag} error=${formatError(err)}`
       );
@@ -605,6 +636,12 @@ export const Points: Command = {
         const cycleKey = `${primary.refreshedForWarEndMs ?? "none"}:${opponent.refreshedForWarEndMs ?? "none"}`;
         const cachedMatchup = await readMatchupCache(settings, tag, opponentTag);
         if (cachedMatchup && cachedMatchup.cycleKey === cycleKey) {
+          recordFetchEvent({
+            namespace: "points",
+            operation: "matchup_projection",
+            source: "cache_hit",
+            detail: `tag=${tag} opponent=${opponentTag}`,
+          });
           const safeCachedMessage = limitDiscordContent(cachedMatchup.message);
           await editReplySafe(safeCachedMessage);
           if (safeCachedMessage !== cachedMatchup.message) {
@@ -615,6 +652,12 @@ export const Points: Command = {
           }
           return;
         }
+        recordFetchEvent({
+          namespace: "points",
+          operation: "matchup_projection",
+          source: "cache_miss",
+          detail: `tag=${tag} opponent=${opponentTag}`,
+        });
 
         const message = limitDiscordContent(
           buildMatchupMessage(primary, opponent, {
