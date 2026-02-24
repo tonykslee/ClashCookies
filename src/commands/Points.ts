@@ -15,6 +15,7 @@ import { SettingsService } from "../services/SettingsService";
 const POINTS_BASE_URL = "https://points.fwafarm.com/clan?tag=";
 const TIEBREAK_ORDER = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 const CACHE_REFRESH_DELAY_MS = 30 * 60 * 1000;
+const DISCORD_CONTENT_MAX = 2000;
 const POINTS_REQUEST_HEADERS = {
   "User-Agent":
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
@@ -141,6 +142,32 @@ function compareTagsForTiebreak(primaryTag: string, opponentTag: string): number
 
 function formatPoints(value: number): string {
   return Intl.NumberFormat("en-US").format(value);
+}
+
+function buildLimitedMessage(header: string, lines: string[], summary: string): string {
+  let message = `${header}\n\n`;
+  let included = 0;
+
+  for (const line of lines) {
+    const candidate = `${message}${line}\n`;
+    if ((candidate + summary).length > DISCORD_CONTENT_MAX) break;
+    message = candidate;
+    included += 1;
+  }
+
+  if (included < lines.length) {
+    const omittedNote = `\n...and ${lines.length - included} more clan(s).`;
+    if ((message + omittedNote + summary).length <= DISCORD_CONTENT_MAX) {
+      message += omittedNote;
+    }
+  }
+
+  if ((message + summary).length > DISCORD_CONTENT_MAX) {
+    const allowed = Math.max(0, DISCORD_CONTENT_MAX - message.length);
+    return `${message}${summary.slice(0, allowed)}`;
+  }
+
+  return `${message}${summary}`;
 }
 
 function getHttpStatus(err: unknown): number | null {
@@ -435,7 +462,7 @@ export const Points: Command = {
         summary +=
           `\n${forbiddenCount} request(s) were blocked by points.fwafarm.com (HTTP 403).`;
       }
-      await interaction.editReply(`${header}\n\n${lines.join("\n")}${summary}`);
+      await interaction.editReply(buildLimitedMessage(header, lines, summary));
       return;
     }
 
