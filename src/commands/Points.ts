@@ -72,6 +72,10 @@ function buildPointsUrl(tag: string): string {
   return proxyUrl.toString();
 }
 
+function buildOfficialPointsUrl(tag: string): string {
+  return `${POINTS_BASE_URL}${normalizeTag(tag)}`;
+}
+
 function toPlainText(html: string): string {
   return html
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
@@ -783,7 +787,7 @@ export const Points: Command = {
         "Unknown Clan";
 
       await editReplySafe(
-        `Clan Name: **${displayName}**\nTag: #${tag}\nPoint Balance: **${formatPoints(balance)}**\n${result.url}`
+        `Clan Name: **${displayName}**\nTag: #${tag}\nPoint Balance: **${formatPoints(balance)}**\n${buildOfficialPointsUrl(tag)}`
       );
     } catch (err) {
       console.error(`[points] request failed tag=${tag} error=${formatError(err)}`);
