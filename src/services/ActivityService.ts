@@ -1,4 +1,5 @@
 import { prisma } from "../prisma";
+import { recordFetchEvent } from "../helper/fetchTelemetry";
 import { CoCService } from "./CoCService";
 
 export class ActivityService {
@@ -10,10 +11,16 @@ export class ActivityService {
   async observeClan(clanTag: string) {
     const clan = await this.coc.getClan(clanTag);
     const now = new Date();
+    let playerApiCalls = 0;
+    let playersMissing = 0;
 
     for (const member of clan.members) {
-      const player = await this.coc.getPlayerRaw(member.tag);
-      if (!player) continue;
+      playerApiCalls += 1;
+      const player = await this.coc.getPlayerRaw(member.tag, { suppressTelemetry: true });
+      if (!player) {
+        playersMissing += 1;
+        continue;
+      }
 
       await this.observePlayer({
         tag: player.tag,
@@ -25,6 +32,16 @@ export class ActivityService {
         builderTrophies: player.builderBaseTrophies ?? 0,
         capitalGold: player.clanCapitalContributions ?? 0,
         now,
+      });
+    }
+
+    if (playerApiCalls > 0) {
+      recordFetchEvent({
+        namespace: "coc",
+        operation: "getPlayerRaw",
+        source: "api",
+        incrementBy: playerApiCalls,
+        detail: `mode=observeClan clan=${clan.tag} calls=${playerApiCalls} missing=${playersMissing}`,
       });
     }
   }
