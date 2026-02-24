@@ -7,6 +7,7 @@ Discord bot for Clash of Clans activity tooling.
 - Manages tracked clans at runtime (`/tracked-clan ...`).
 - Links to a Google Sheet at runtime (`/sheet ...`).
 - Supports mode-specific sheet links for `actual` and `war` roster workflows.
+- Fetches FWA points balances for one clan or all tracked clans (`/points`).
 
 ## Setup
 1. Create a `.env` with required Discord, CoC API, and database values.
@@ -64,6 +65,7 @@ Optional fallback auth (not required for your current setup):
 - `/compo place weight:<value>` - Suggest placement options from ACTUAL state (vacancy + composition fit). Accepts formats like `145000`, `145,000`, or `145k` and maps to TH weight buckets.
 - `/cc player tag:<tag>` - Build `https://cc.fwafarm.com/cc_n/member.php?tag=<tag>`.
 - `/cc clan tag:<tag>` - Build `https://cc.fwafarm.com/cc_n/clan.php?tag=<tag>`.
+- `/points [tag:<tag>]` - Fetch current point balance from `https://points.fwafarm.com/clan?tag=<tag-without-#>`. If `tag` is omitted, fetches all tracked clans.
 - `/post sync time [role:<discordRole>]` - Open modal, compose sync-time message, post it, and pin it.
 
 ## Command Access Control
