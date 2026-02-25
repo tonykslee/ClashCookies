@@ -1,7 +1,11 @@
 import axios from "axios";
 import {
+  ActionRowBuilder,
   ApplicationCommandOptionType,
   AutocompleteInteraction,
+  ButtonInteraction,
+  ButtonBuilder,
+  ButtonStyle,
   ChatInputCommandInteraction,
   Client,
 } from "discord.js";
@@ -21,6 +25,7 @@ const WAR_END_RECHECK_MS = 10 * 60 * 1000;
 const DISCORD_CONTENT_MAX = 2000;
 const POINTS_CACHE_VERSION = 3;
 const MATCHUP_CACHE_VERSION = 4;
+const POINTS_POST_BUTTON_PREFIX = "points-post-channel";
 const POINTS_REQUEST_HEADERS = {
   "User-Agent":
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
@@ -74,6 +79,59 @@ function buildPointsUrl(tag: string): string {
 
 function buildOfficialPointsUrl(tag: string): string {
   return `${POINTS_BASE_URL}${normalizeTag(tag)}`;
+}
+
+function buildPointsPostButtonCustomId(userId: string): string {
+  return `${POINTS_POST_BUTTON_PREFIX}:${userId}`;
+}
+
+function parsePointsPostButtonCustomId(customId: string): { userId: string } | null {
+  const parts = customId.split(":");
+  if (parts.length !== 2 || parts[0] !== POINTS_POST_BUTTON_PREFIX) return null;
+  const userId = parts[1]?.trim() ?? "";
+  return userId ? { userId } : null;
+}
+
+export function isPointsPostButtonCustomId(customId: string): boolean {
+  return customId.startsWith(`${POINTS_POST_BUTTON_PREFIX}:`);
+}
+
+export async function handlePointsPostButton(interaction: ButtonInteraction): Promise<void> {
+  const parsed = parsePointsPostButtonCustomId(interaction.customId);
+  if (!parsed) return;
+
+  if (interaction.user.id !== parsed.userId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Only the command requester can use this button.",
+    });
+    return;
+  }
+
+  const channel = interaction.channel;
+  if (!channel?.isTextBased() || !("send" in channel)) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Could not post to this channel.",
+    });
+    return;
+  }
+
+  try {
+    await channel.send({
+      content: truncateDiscordContent(interaction.message.content || "Points result"),
+      embeds: interaction.message.embeds.map((embed) => embed.toJSON()),
+    });
+    await interaction.reply({
+      ephemeral: true,
+      content: "Posted to channel.",
+    });
+  } catch {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Failed to post to channel. Check bot permissions and try again.",
+    });
+  }
 }
 
 function toPlainText(html: string): string {
@@ -559,6 +617,16 @@ export const Points: Command = {
   description: "Get FWA points balance and optional matchup projection",
   options: [
     {
+      name: "visibility",
+      description: "Response visibility",
+      type: ApplicationCommandOptionType.String,
+      required: false,
+      choices: [
+        { name: "private", value: "private" },
+        { name: "public", value: "public" },
+      ],
+    },
+    {
       name: "tag",
       description: "Clan tag (with or without #). Leave blank for all tracked clans.",
       type: ApplicationCommandOptionType.String,
@@ -578,12 +646,28 @@ export const Points: Command = {
     interaction: ChatInputCommandInteraction,
     cocService: CoCService
   ) => {
+    const visibility = interaction.options.getString("visibility", false) ?? "private";
+    const isPublic = visibility === "public";
+    const components = !isPublic
+      ? [
+          new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder()
+              .setCustomId(buildPointsPostButtonCustomId(interaction.user.id))
+              .setLabel("Post to Channel")
+              .setStyle(ButtonStyle.Secondary)
+          ),
+        ]
+      : [];
+
     const editReplySafe = async (content: string): Promise<void> => {
-      await interaction.editReply(truncateDiscordContent(content));
+      await interaction.editReply({
+        content: truncateDiscordContent(content),
+        components,
+      });
     };
 
     const settings = new SettingsService();
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ ephemeral: !isPublic });
     const rawTag = interaction.options.getString("tag", false);
     const rawOpponentTag = interaction.options.getString("opponent-tag", false);
     const tag = normalizeTag(rawTag ?? "");

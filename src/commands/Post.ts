@@ -3,6 +3,8 @@ import {
   ApplicationCommandOptionType,
   ChatInputCommandInteraction,
   Client,
+  EmbedBuilder,
+  GuildMember,
   type MessageMentionOptions,
   ModalBuilder,
   ModalSubmitInteraction,
@@ -25,6 +27,234 @@ const TIMEZONE_INPUT_ID = "timezone";
 const ROLE_INPUT_ID = "role";
 const IANA_TIMEZONE_HELP_URL =
   "https://en.wikipedia.org/wiki/List_of_tz_database_time_zones";
+const PROD_BOT_ID = "1131335782016237749";
+const STAGING_BOT_ID = "1474193888146358393";
+
+type BadgeEmoji = { code: string; label: string; name: string; id: string };
+
+const SYNC_BADGE_EMOJIS_BY_BOT: Record<string, BadgeEmoji[]> = {
+  [STAGING_BOT_ID]: [
+    { code: "ZG", label: "ZERO GRAVITY", name: "zg", id: "1476279645174366449" },
+    { code: "TWC", label: "TheWiseCowboys", name: "twc", id: "1476279643660091452" },
+    { code: "SE", label: "Steel Empire 2", name: "se", id: "1476279635208573009" },
+    { code: "RR", label: "Rocky Road", name: "rr", id: "1476279632729866242" },
+    { code: "RD", label: "RISING DAWN", name: "rd", id: "1476279631345614902" },
+    { code: "MV", label: "MARVELS", name: "mv", id: "1476279630129528986" },
+    { code: "DE", label: "DARK EMPIRE™!", name: "de", id: "1476279629106118676" },
+    { code: "AK", label: "ＡＫＡＴＳＵＫＩ", name: "ak", id: "1476279627839307836" },
+  ],
+  [PROD_BOT_ID]: [
+    { code: "ZG", label: "ZERO GRAVITY", name: "zg", id: "1476279778670673930" },
+    { code: "TWC", label: "TheWiseCowboys", name: "twc", id: "1476279777466908755" },
+    { code: "SE", label: "Steel Empire 2", name: "se", id: "1476279774241493104" },
+    { code: "RR", label: "Rocky Road", name: "rr", id: "1476279773243379762" },
+    { code: "RD", label: "RISING DAWN", name: "rd", id: "1476279771884290100" },
+    { code: "MV", label: "MARVELS", name: "mv", id: "1476279770667814932" },
+    { code: "DE", label: "DARK EMPIRE™!", name: "de", id: "1476279769552392427" },
+    { code: "AK", label: "ＡＫＡＴＳＵＫＩ", name: "ak", id: "1476279768608411874" },
+  ],
+};
+
+function getSyncBadgeEmojis(botUserId: string | undefined): BadgeEmoji[] {
+  if (!botUserId) return [];
+  return SYNC_BADGE_EMOJIS_BY_BOT[botUserId] ?? [];
+}
+
+function getSyncBadgeEmojiIdentifiers(botUserId: string | undefined): string[] {
+  const badges = getSyncBadgeEmojis(botUserId);
+  return badges.map((e) => `${e.name}:${e.id}`);
+}
+
+function parseAllowedRoleIds(raw: string | null): string[] {
+  if (!raw) return [];
+  return [...new Set(raw.split(",").map((s) => s.trim()).filter((s) => /^\d+$/.test(s)))];
+}
+
+async function getLeaderRoleIds(settings: SettingsService): Promise<string[]> {
+  const syncRoles = parseAllowedRoleIds(await settings.get("command_roles:post:sync:time"));
+  if (syncRoles.length > 0) return syncRoles;
+  return parseAllowedRoleIds(await settings.get("command_roles:post"));
+}
+
+function activeSyncPostKey(guildId: string): string {
+  return `active_sync_post:${guildId}`;
+}
+
+function parseActiveSyncPost(
+  raw: string | null
+): { channelId: string; messageId: string } | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as { channelId?: unknown; messageId?: unknown };
+    const channelId = String(parsed.channelId ?? "").trim();
+    const messageId = String(parsed.messageId ?? "").trim();
+    if (!/^\d{17,22}$/.test(channelId) || !/^\d{17,22}$/.test(messageId)) {
+      return null;
+    }
+    return { channelId, messageId };
+  } catch {
+    return null;
+  }
+}
+
+async function resolveStoredActiveSyncMessage(
+  interaction: ChatInputCommandInteraction,
+  settings: SettingsService
+) {
+  const guild = interaction.guild;
+  if (!guild) return null;
+  const guildId = guild.id;
+
+  const stored = parseActiveSyncPost(await settings.get(activeSyncPostKey(guildId)));
+  if (!stored) return null;
+
+  const channel = await guild.channels.fetch(stored.channelId).catch(() => null);
+  if (!channel?.isTextBased() || !("messages" in channel)) {
+    await settings.delete(activeSyncPostKey(guildId));
+    return null;
+  }
+
+  const message = await channel.messages.fetch(stored.messageId).catch(() => null);
+  if (!message || !message.author.bot || !isBotSyncTimeMessage(message.content)) {
+    await settings.delete(activeSyncPostKey(guildId));
+    return null;
+  }
+
+  return message;
+}
+
+async function resolveSyncStatusMessage(
+  interaction: ChatInputCommandInteraction,
+  settings: SettingsService
+) {
+  const storedActiveMessage = await resolveStoredActiveSyncMessage(interaction, settings);
+  if (storedActiveMessage) return storedActiveMessage;
+
+  const channel = interaction.channel;
+  if (!channel?.isTextBased() || !("messages" in channel)) {
+    return null;
+  }
+
+  const pinned = await channel.messages.fetchPinned().catch(() => null);
+  if (pinned && pinned.size > 0) {
+    const latestPinnedSync = [...pinned.values()]
+      .filter((m) => m.author.bot && isBotSyncTimeMessage(m.content))
+      .sort((a, b) => b.createdTimestamp - a.createdTimestamp)[0];
+    if (latestPinnedSync) return latestPinnedSync;
+  }
+
+  const recent = await channel.messages.fetch({ limit: 50 }).catch(() => null);
+  if (!recent) return null;
+  return [...recent.values()]
+    .filter((m) => m.author.bot && isBotSyncTimeMessage(m.content))
+    .sort((a, b) => b.createdTimestamp - a.createdTimestamp)
+    .at(0) ?? null;
+}
+
+async function handleSyncStatusSubcommand(
+  interaction: ChatInputCommandInteraction
+): Promise<void> {
+  await interaction.deferReply({ ephemeral: true });
+
+  const settings = new SettingsService();
+  const message = await resolveSyncStatusMessage(interaction, settings);
+  if (!message) {
+    await interaction.editReply(
+      "Could not find an active sync-time message. Post one with `/post sync time` first."
+    );
+    return;
+  }
+
+  const guild = interaction.guild;
+  if (!guild) {
+    await interaction.editReply("This command can only be used in a server.");
+    return;
+  }
+
+  const badges = getSyncBadgeEmojis(interaction.client.user?.id);
+  if (badges.length === 0) {
+    await interaction.editReply(
+      "No badge emoji configuration found for this bot ID."
+    );
+    return;
+  }
+
+  const leaderRoleIds = await getLeaderRoleIds(settings);
+  const memberCache = new Map<string, GuildMember | null>();
+  const getMember = async (userId: string): Promise<GuildMember | null> => {
+    if (memberCache.has(userId)) return memberCache.get(userId) ?? null;
+    const member = await guild.members.fetch(userId).catch(() => null);
+    memberCache.set(userId, member);
+    return member;
+  };
+
+  const claimedLines: string[] = [];
+  const unclaimedLines: string[] = [];
+
+  for (const badge of badges) {
+    const reaction = [...message.reactions.cache.values()].find((r) => r.emoji.id === badge.id);
+    const claimedBy: string[] = [];
+    const nonLeader: string[] = [];
+
+    if (reaction) {
+      const users = await reaction.users.fetch().catch(() => null);
+      if (users) {
+        for (const user of users.values()) {
+          if (user.bot) continue;
+          const member = await getMember(user.id);
+          if (!member) continue;
+
+          const isAdmin = member.permissions.has(PermissionFlagsBits.Administrator);
+          const hasLeaderRole =
+            leaderRoleIds.length > 0 &&
+            leaderRoleIds.some((roleId) => member.roles.cache.has(roleId));
+          if (isAdmin || hasLeaderRole) {
+            claimedBy.push(`<@${user.id}>`);
+          } else {
+            nonLeader.push(`<@${user.id}>`);
+          }
+        }
+      }
+    }
+
+    const emojiInline = `<:${badge.name}:${badge.id}>`;
+    if (claimedBy.length > 0) {
+      const extra =
+        nonLeader.length > 0 ? ` | non-leader: ${[...new Set(nonLeader)].join(", ")}` : "";
+      claimedLines.push(
+        `- ${emojiInline} **${badge.code}** (${badge.label}) - ${[...new Set(claimedBy)].join(", ")}${extra}`
+      );
+    } else {
+      const extra =
+        nonLeader.length > 0 ? ` (only non-leader: ${[...new Set(nonLeader)].join(", ")})` : "";
+      unclaimedLines.push(`- ${emojiInline} **${badge.code}** (${badge.label})${extra}`);
+    }
+  }
+
+  const embed = new EmbedBuilder()
+    .setTitle("Sync Claim Status")
+    .setDescription(
+      [
+        `Message: https://discord.com/channels/${guild.id}/${message.channelId}/${message.id}`,
+        "",
+        `Claimed: **${claimedLines.length}/${badges.length}**`,
+        "",
+        "**Claimed Clans**",
+        ...(claimedLines.length > 0 ? claimedLines : ["- None"]),
+        "",
+        "**Unclaimed Clans**",
+        ...(unclaimedLines.length > 0 ? unclaimedLines : ["- None"]),
+      ].join("\n")
+    )
+    .setFooter({
+      text:
+        leaderRoleIds.length > 0
+          ? "Leader = Administrator or role allowed for /post sync time"
+          : "Leader = Administrator (no explicit /post role whitelist configured)",
+    });
+
+  await interaction.editReply({ embeds: [embed] });
+}
 
 function parseDate(input: string): { year: number; month: number; day: number } | null {
   if (!DATE_PATTERN.test(input)) return null;
@@ -369,11 +599,40 @@ export async function handlePostModalSubmit(
   if (!postedMessage) {
     return;
   }
+  await settings.set(
+    activeSyncPostKey(interaction.guildId),
+    JSON.stringify({
+      channelId: postedMessage.channelId,
+      messageId: postedMessage.id,
+    })
+  );
 
   if (!mentionWillNotify) {
     notices.push(
       `Role mention was included but may not notify members because \`${role.name}\` is not mentionable and bot lacks \`Mention Everyone\`.`
     );
+  }
+
+  const badgeEmojiIdentifiers = getSyncBadgeEmojiIdentifiers(interaction.client.user?.id);
+  if (badgeEmojiIdentifiers.length > 0) {
+    let reactedCount = 0;
+    for (const emojiIdentifier of badgeEmojiIdentifiers) {
+      try {
+        await postedMessage.react(emojiIdentifier);
+        reactedCount += 1;
+      } catch (err) {
+        console.error(
+          `[post sync time] react failed guild=${interaction.guildId} channel=${interaction.channelId} message=${postedMessage.id} emoji=${emojiIdentifier} user=${interaction.user.id} error=${formatError(
+            err
+          )}`
+        );
+      }
+    }
+    if (reactedCount < badgeEmojiIdentifiers.length) {
+      notices.push(
+        `Some clan badge reactions failed (${reactedCount}/${badgeEmojiIdentifiers.length}). Check bot \`Add Reactions\` and emoji access in this server.`
+      );
+    }
   }
 
   try {
@@ -437,6 +696,11 @@ export const Post: Command = {
             },
           ],
         },
+        {
+          name: "status",
+          description: "Show claimed/unclaimed clan badges for a sync-time post",
+          type: ApplicationCommandOptionType.Subcommand,
+        },
       ],
     },
   ],
@@ -455,7 +719,20 @@ export const Post: Command = {
 
     const subcommandGroup = interaction.options.getSubcommandGroup(false);
     const subcommand = interaction.options.getSubcommand(true);
-    if (subcommandGroup !== "sync" || subcommand !== "time") {
+    if (subcommandGroup !== "sync") {
+      await safeReply(interaction, {
+        ephemeral: true,
+        content: "Unknown subcommand.",
+      });
+      return;
+    }
+
+    if (subcommand === "status") {
+      await handleSyncStatusSubcommand(interaction);
+      return;
+    }
+
+    if (subcommand !== "time") {
       await safeReply(interaction, {
         ephemeral: true,
         content: "Unknown subcommand.",

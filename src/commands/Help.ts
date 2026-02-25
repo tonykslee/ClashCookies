@@ -17,6 +17,7 @@ import { formatError } from "../helper/formatError";
 
 const OVERVIEW_PAGE_SIZE = 4;
 const HELP_TIMEOUT_MS = 10 * 60 * 1000;
+const HELP_POST_BUTTON_PREFIX = "help-post-channel";
 const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "tracked-clan:add",
   "tracked-clan:remove",
@@ -54,8 +55,9 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     details: [
       "Use pages for a quick command overview.",
       "Select any command to drill into syntax and example flows.",
+      "Set `visibility:public` to post the help response directly in channel.",
     ],
-    examples: ["/help", "/help command:sheet"],
+    examples: ["/help", "/help command:sheet", "/help visibility:public"],
   },
   "clan-name": {
     summary: "Resolve a clan tag into its clan name.",
@@ -149,8 +151,30 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "Provide a clan tag, or omit tag to fetch all tracked clan balances.",
       "Optionally provide `opponent-tag` to compare points and apply sync-based tiebreak logic.",
       "Tag supports autocomplete from tracked clans.",
+      "Set `visibility:public` to post the result directly in channel.",
     ],
-    examples: ["/points tag:2QG2C08UP", "/points", "/points tag:2QG2C08UP opponent-tag:ABC12345"],
+    examples: [
+      "/points tag:2QG2C08UP",
+      "/points",
+      "/points tag:2QG2C08UP opponent-tag:ABC12345",
+      "/points tag:2QG2C08UP visibility:public",
+    ],
+  },
+  recruitment: {
+    summary: "Manage recruitment templates and per-platform posting cooldowns.",
+    details: [
+      "`show` renders platform-specific recruitment output for a tracked clan.",
+      "`edit` opens a modal to save Required TH, focus, body, and image URLs per clan.",
+      "`countdown start` begins exact platform cooldown timers; `countdown status` shows your timers.",
+      "`dashboard` summarizes readiness across all tracked clans and platforms for your account.",
+    ],
+    examples: [
+      "/recruitment show platform:discord clan:2QG2C08UP",
+      "/recruitment edit clan:2QG2C08UP",
+      "/recruitment countdown start platform:reddit clan:2QG2C08UP",
+      "/recruitment countdown status",
+      "/recruitment dashboard",
+    ],
   },
   "kick-list": {
     summary: "Build and manage kick-list candidates.",
@@ -170,10 +194,11 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     summary: "Post structured messages such as sync time announcements.",
     details: [
       "`/post sync time` opens a modal to capture date/time/timezone and role ping.",
-      "Creates and pins a sync-time message in the active channel.",
+      "Creates and pins a sync-time message in the active channel, then adds clan badge reactions.",
+      "`/post sync status` shows claimed vs unclaimed clans from the stored active sync post.",
       "`sync time` is admin-only by default.",
     ],
-    examples: ["/post sync time role:@War", "/post sync time"],
+    examples: ["/post sync time role:@War", "/post sync status"],
   },
   permission: {
     summary: "Control which roles can run each command target.",
@@ -340,12 +365,18 @@ function getDetailEmbed(command: Command): EmbedBuilder {
     .setFooter({ text: "Select another command or click Back to overview." });
 }
 
-function getControls(commands: Command[], state: RenderState, interactionId: string) {
+function getControls(
+  commands: Command[],
+  state: RenderState,
+  interactionId: string,
+  allowPostToChannel: boolean
+) {
   const pageCount = Math.max(1, Math.ceil(commands.length / OVERVIEW_PAGE_SIZE));
   const prevId = `help-prev:${interactionId}`;
   const nextId = `help-next:${interactionId}`;
   const backId = `help-back:${interactionId}`;
   const closeId = `help-close:${interactionId}`;
+  const postId = `${HELP_POST_BUTTON_PREFIX}:${interactionId}`;
   const selectId = `help-select:${interactionId}`;
 
   const buttonRow = new ActionRowBuilder<ButtonBuilder>();
@@ -354,6 +385,14 @@ function getControls(commands: Command[], state: RenderState, interactionId: str
       new ButtonBuilder().setCustomId(backId).setLabel("Back").setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId(closeId).setLabel("Close").setStyle(ButtonStyle.Danger)
     );
+    if (allowPostToChannel) {
+      buttonRow.addComponents(
+        new ButtonBuilder()
+          .setCustomId(postId)
+          .setLabel("Post to Channel")
+          .setStyle(ButtonStyle.Primary)
+      );
+    }
   } else {
     buttonRow.addComponents(
       new ButtonBuilder()
@@ -368,6 +407,14 @@ function getControls(commands: Command[], state: RenderState, interactionId: str
         .setDisabled(state.page >= pageCount - 1),
       new ButtonBuilder().setCustomId(closeId).setLabel("Close").setStyle(ButtonStyle.Danger)
     );
+    if (allowPostToChannel) {
+      buttonRow.addComponents(
+        new ButtonBuilder()
+          .setCustomId(postId)
+          .setLabel("Post to Channel")
+          .setStyle(ButtonStyle.Primary)
+      );
+    }
   }
 
   const select = new StringSelectMenuBuilder()
@@ -386,10 +433,15 @@ function getControls(commands: Command[], state: RenderState, interactionId: str
   return [buttonRow, selectRow];
 }
 
-function getResponsePayload(commands: Command[], state: RenderState, interactionId: string) {
+function getResponsePayload(
+  commands: Command[],
+  state: RenderState,
+  interactionId: string,
+  allowPostToChannel: boolean
+) {
   const selected = commands.find((cmd) => cmd.name === state.selectedCommand) ?? commands[0];
   const embed = state.detailView ? getDetailEmbed(selected) : getOverviewEmbed(commands, state);
-  const components = getControls(commands, state, interactionId);
+  const components = getControls(commands, state, interactionId, allowPostToChannel);
   return { embeds: [embed], components };
 }
 
@@ -404,10 +456,23 @@ export const Help: Command = {
       required: false,
       autocomplete: true,
     },
+    {
+      name: "visibility",
+      description: "Response visibility",
+      type: ApplicationCommandOptionType.String,
+      required: false,
+      choices: [
+        { name: "private", value: "private" },
+        { name: "public", value: "public" },
+      ],
+    },
   ],
   run: async (_client: Client, interaction: ChatInputCommandInteraction) => {
     const commands = getAllCommands();
     const requestedCommand = interaction.options.getString("command", false)?.trim().toLowerCase();
+    const visibility = interaction.options.getString("visibility", false) ?? "private";
+    const isPublic = visibility === "public";
+    const allowPostToChannel = !isPublic;
 
     const state: RenderState = {
       page: 0,
@@ -431,8 +496,8 @@ export const Help: Command = {
     }
 
     await interaction.reply({
-      ephemeral: true,
-      ...getResponsePayload(commands, state, interaction.id),
+      ephemeral: !isPublic,
+      ...getResponsePayload(commands, state, interaction.id, allowPostToChannel),
     });
 
     const message = await interaction.fetchReply();
@@ -472,6 +537,21 @@ export const Help: Command = {
               });
               collector.stop("closed");
               return;
+            } else if (component.customId === `${HELP_POST_BUTTON_PREFIX}:${interaction.id}`) {
+              const payload = getResponsePayload(
+                commands,
+                state,
+                interaction.id,
+                allowPostToChannel
+              );
+              await interaction.channel?.send({
+                embeds: payload.embeds,
+              });
+              await component.reply({
+                ephemeral: true,
+                content: "Posted to channel.",
+              });
+              return;
             }
           } else if (component.isStringSelectMenu()) {
             const picked = component.values[0];
@@ -485,7 +565,9 @@ export const Help: Command = {
             }
           }
 
-          await component.update(getResponsePayload(commands, state, interaction.id));
+          await component.update(
+            getResponsePayload(commands, state, interaction.id, allowPostToChannel)
+          );
         } catch (err) {
           console.error(`help component handler failed: ${formatError(err)}`);
           try {

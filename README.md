@@ -45,7 +45,7 @@ Optional fallback auth (not required for your current setup):
 - `GOOGLE_SERVICE_ACCOUNT_EMAIL` + `GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY`
 
 ## Commands
-- `/help` - List available commands.
+- `/help [command:<name>] [visibility:private|public]` - List command docs/examples. Default visibility is private.
 - `/permission add command:<name> role:<discordRole> [role2] [role3] [role4] [role5]` - Allow one or more roles to use a command.
 - `/permission remove command:<name> role:<discordRole>` - Remove a role from a command whitelist.
 - `/permission list [command:<name>]` - List role policy for one command target, or all if omitted.
@@ -66,13 +66,19 @@ Optional fallback auth (not required for your current setup):
 - `/cc player tag:<tag>` - Build `https://cc.fwafarm.com/cc_n/member.php?tag=<tag>`.
 - `/cc clan tag:<tag>` - Build `https://cc.fwafarm.com/cc_n/clan.php?tag=<tag>`.
 - `/opponent tag:<tag>` - Get current war opponent clan tag from CoC API (without `#`).
-- `/points [tag:<tag>] [opponent-tag:<tag>]` - Fetch current point balance from `https://points.fwafarm.com/clan?tag=<tag-without-#>`. If `tag` is omitted, fetches all tracked clans. If both tags are provided, returns projected winner/loser by points, or sync-based tiebreak when points are tied.
+- `/points [visibility:private|public] [tag:<tag>] [opponent-tag:<tag>]` - Fetch current point balance from `https://points.fwafarm.com/clan?tag=<tag-without-#>`. If `tag` is omitted, fetches all tracked clans. If both tags are provided, returns projected winner/loser by points, or sync-based tiebreak when points are tied.
+- `/recruitment show platform:discord|reddit|band clan:<tag>` - Render platform-specific recruitment template output for a tracked clan.
+- `/recruitment edit clan:<tag>` - Open modal to edit Required TH, focus, body (max 1024), and default image URLs for a clan.
+- `/recruitment countdown start platform:discord|reddit|band clan:<tag>` - Start exact cooldown timer for your account on that platform+clan pair.
+- `/recruitment countdown status` - Show your current recruitment cooldown timers.
+- `/recruitment dashboard` - Show readiness across all tracked clans/platforms for your account.
 - `/kick-list build [days:<number>]` - Auto-build kick-list candidates from inactive tracked-clan members (default `3` days).
 - `/kick-list add tag:<playerTag> reason:<text>` - Manually add a kick-list candidate with reason.
 - `/kick-list remove tag:<playerTag>` - Remove a player from kick list.
 - `/kick-list show` - Show current kick-list with reasons.
 - `/kick-list clear [mode:all|auto|manual]` - Clear kick-list entries.
 - `/post sync time [role:<discordRole>]` - Open modal, compose sync-time message, post it, and pin it.
+- `/post sync status` - Show claimed vs unclaimed clan badge reactions for the active sync-time post.
 
 ## Command Access Control
 - By default, commands are usable by everyone.
@@ -88,6 +94,8 @@ Optional fallback auth (not required for your current setup):
   - `/permission add command:post role:@RoleX`
 - To lock `/points` to role X, run:
   - `/permission add command:points role:@RoleX`
+- To lock `/recruitment` to role X, run:
+  - `/permission add command:recruitment role:@RoleX`
 
 ## Deployment Notes
 - Commands are registered as guild commands using `GUILD_ID` on startup.
