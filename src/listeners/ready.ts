@@ -1,4 +1,8 @@
-import { Client, PermissionFlagsBits } from "discord.js";
+import {
+  ApplicationCommandOptionType,
+  Client,
+  PermissionFlagsBits,
+} from "discord.js";
 import { Commands } from "../Commands";
 import { CoCService } from "../services/CoCService";
 import { ActivityService } from "../services/ActivityService";
@@ -8,6 +12,69 @@ import { processRecruitmentCooldownReminders } from "../services/RecruitmentServ
 
 const DEFAULT_OBSERVE_INTERVAL_MINUTES = 30;
 const RECRUITMENT_REMINDER_INTERVAL_MS = 5 * 60 * 1000;
+const VISIBILITY_OPTION = {
+  name: "visibility",
+  description: "Response visibility",
+  type: ApplicationCommandOptionType.String,
+  required: false,
+  choices: [
+    { name: "private", value: "private" },
+    { name: "public", value: "public" },
+  ],
+};
+
+function hasVisibilityOption(options: any[] | undefined): boolean {
+  if (!options) return false;
+  return options.some((opt) => opt?.name === "visibility");
+}
+
+function withVisibilityOnSubcommand(sub: any): any {
+  const options = Array.isArray(sub.options) ? [...sub.options] : [];
+  if (!hasVisibilityOption(options)) {
+    options.push(VISIBILITY_OPTION);
+  }
+  return { ...sub, options };
+}
+
+function injectVisibilityOptions(command: any): any {
+  const options = Array.isArray(command.options) ? [...command.options] : [];
+  if (options.length === 0) {
+    return { ...command, options: [VISIBILITY_OPTION] };
+  }
+
+  const hasSubcommands = options.some(
+    (opt) =>
+      opt?.type === ApplicationCommandOptionType.Subcommand ||
+      opt?.type === ApplicationCommandOptionType.SubcommandGroup
+  );
+
+  if (!hasSubcommands) {
+    if (!hasVisibilityOption(options)) {
+      options.push(VISIBILITY_OPTION);
+    }
+    return { ...command, options };
+  }
+
+  const nextOptions = options.map((opt) => {
+    if (opt?.type === ApplicationCommandOptionType.Subcommand) {
+      return withVisibilityOnSubcommand(opt);
+    }
+    if (opt?.type === ApplicationCommandOptionType.SubcommandGroup) {
+      const subOptions = Array.isArray(opt.options) ? opt.options : [];
+      return {
+        ...opt,
+        options: subOptions.map((sub: any) =>
+          sub?.type === ApplicationCommandOptionType.Subcommand
+            ? withVisibilityOnSubcommand(sub)
+            : sub
+        ),
+      };
+    }
+    return opt;
+  });
+
+  return { ...command, options: nextOptions };
+}
 
 export default (client: Client, cocService: CoCService): void => {
   client.once("ready", async () => {
@@ -44,7 +111,8 @@ export default (client: Client, cocService: CoCService): void => {
     }
 
     // Register ONLY guild commands
-    await guild.commands.set(Commands);
+    const commandsWithVisibility = Commands.map((cmd) => injectVisibilityOptions(cmd));
+    await guild.commands.set(commandsWithVisibility);
     console.log(`✅ Guild commands registered (${Commands.length})`);
 
     const activityService = new ActivityService(cocService);
