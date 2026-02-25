@@ -23,6 +23,7 @@ export default (client: Client, cocService: CoCService): void => {
       [PermissionFlagsBits.SendMessages, "Send Messages"],
       [PermissionFlagsBits.EmbedLinks, "Embed Links"],
       [PermissionFlagsBits.ReadMessageHistory, "Read Message History"],
+      [PermissionFlagsBits.AddReactions, "Add Reactions (for sync-time clan badge reactions)"],
       [PermissionFlagsBits.MentionEveryone, "Mention Everyone (for non-mentionable role pings)"],
     ];
     if (maybePinMessagesBit) {

@@ -25,6 +25,39 @@ const TIMEZONE_INPUT_ID = "timezone";
 const ROLE_INPUT_ID = "role";
 const IANA_TIMEZONE_HELP_URL =
   "https://en.wikipedia.org/wiki/List_of_tz_database_time_zones";
+const PROD_BOT_ID = "1131335782016237749";
+const STAGING_BOT_ID = "1474193888146358393";
+
+type BadgeEmoji = { name: string; id: string };
+
+const SYNC_BADGE_EMOJIS_BY_BOT: Record<string, BadgeEmoji[]> = {
+  [STAGING_BOT_ID]: [
+    { name: "zg", id: "1476279645174366449" },
+    { name: "twc", id: "1476279643660091452" },
+    { name: "se", id: "1476279635208573009" },
+    { name: "rr", id: "1476279632729866242" },
+    { name: "rd", id: "1476279631345614902" },
+    { name: "mv", id: "1476279630129528986" },
+    { name: "de", id: "1476279629106118676" },
+    { name: "ak", id: "1476279627839307836" },
+  ],
+  [PROD_BOT_ID]: [
+    { name: "zg", id: "1476279778670673930" },
+    { name: "twc", id: "1476279777466908755" },
+    { name: "se", id: "1476279774241493104" },
+    { name: "rr", id: "1476279773243379762" },
+    { name: "rd", id: "1476279771884290100" },
+    { name: "mv", id: "1476279770667814932" },
+    { name: "de", id: "1476279769552392427" },
+    { name: "ak", id: "1476279768608411874" },
+  ],
+};
+
+function getSyncBadgeEmojiIdentifiers(botUserId: string | undefined): string[] {
+  if (!botUserId) return [];
+  const badges = SYNC_BADGE_EMOJIS_BY_BOT[botUserId] ?? [];
+  return badges.map((e) => `${e.name}:${e.id}`);
+}
 
 function parseDate(input: string): { year: number; month: number; day: number } | null {
   if (!DATE_PATTERN.test(input)) return null;
@@ -374,6 +407,28 @@ export async function handlePostModalSubmit(
     notices.push(
       `Role mention was included but may not notify members because \`${role.name}\` is not mentionable and bot lacks \`Mention Everyone\`.`
     );
+  }
+
+  const badgeEmojiIdentifiers = getSyncBadgeEmojiIdentifiers(interaction.client.user?.id);
+  if (badgeEmojiIdentifiers.length > 0) {
+    let reactedCount = 0;
+    for (const emojiIdentifier of badgeEmojiIdentifiers) {
+      try {
+        await postedMessage.react(emojiIdentifier);
+        reactedCount += 1;
+      } catch (err) {
+        console.error(
+          `[post sync time] react failed guild=${interaction.guildId} channel=${interaction.channelId} message=${postedMessage.id} emoji=${emojiIdentifier} user=${interaction.user.id} error=${formatError(
+            err
+          )}`
+        );
+      }
+    }
+    if (reactedCount < badgeEmojiIdentifiers.length) {
+      notices.push(
+        `Some clan badge reactions failed (${reactedCount}/${badgeEmojiIdentifiers.length}). Check bot \`Add Reactions\` and emoji access in this server.`
+      );
+    }
   }
 
   try {
