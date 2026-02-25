@@ -15,6 +15,10 @@ import {
   isRecruitmentModalCustomId,
 } from "../commands/Recruitment";
 import {
+  handlePointsPostButton,
+  isPointsPostButtonCustomId,
+} from "../commands/Points";
+import {
   CommandPermissionService,
   getCommandTargetsFromInteraction,
 } from "../services/CommandPermissionService";
@@ -46,6 +50,11 @@ export default (client: Client, cocService: CoCService): void => {
       return;
     }
 
+    if (interaction.isButton()) {
+      await handleButtonInteraction(interaction);
+      return;
+    }
+
     if (interaction.isModalSubmit()) {
       await handleModalSubmit(interaction);
       return;
@@ -68,6 +77,24 @@ export default (client: Client, cocService: CoCService): void => {
 
     await handleSlashCommand(client, interaction, cocService);
   });
+};
+
+const handleButtonInteraction = async (interaction: Interaction): Promise<void> => {
+  if (!interaction.isButton()) return;
+
+  if (isPointsPostButtonCustomId(interaction.customId)) {
+    try {
+      await handlePointsPostButton(interaction);
+    } catch (err) {
+      console.error(`Points post button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to post points message to channel.",
+        });
+      }
+    }
+  }
 };
 
 const handleModalSubmit = async (
