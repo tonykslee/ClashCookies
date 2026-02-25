@@ -171,10 +171,10 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     details: [
       "`/post sync time` opens a modal to capture date/time/timezone and role ping.",
       "Creates and pins a sync-time message in the active channel, then adds clan badge reactions.",
-      "`/post sync status` shows claimed vs unclaimed clans from badge reactions on a sync post.",
+      "`/post sync status` shows claimed vs unclaimed clans from the stored active sync post.",
       "`sync time` is admin-only by default.",
     ],
-    examples: ["/post sync time role:@War", "/post sync status", "/post sync status message-id:123456789012345678"],
+    examples: ["/post sync time role:@War", "/post sync status"],
   },
   permission: {
     summary: "Control which roles can run each command target.",

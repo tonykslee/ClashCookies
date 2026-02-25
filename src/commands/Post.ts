@@ -76,16 +76,63 @@ async function getLeaderRoleIds(settings: SettingsService): Promise<string[]> {
   return parseAllowedRoleIds(await settings.get("command_roles:post"));
 }
 
+function activeSyncPostKey(guildId: string): string {
+  return `active_sync_post:${guildId}`;
+}
+
+function parseActiveSyncPost(
+  raw: string | null
+): { channelId: string; messageId: string } | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as { channelId?: unknown; messageId?: unknown };
+    const channelId = String(parsed.channelId ?? "").trim();
+    const messageId = String(parsed.messageId ?? "").trim();
+    if (!/^\d{17,22}$/.test(channelId) || !/^\d{17,22}$/.test(messageId)) {
+      return null;
+    }
+    return { channelId, messageId };
+  } catch {
+    return null;
+  }
+}
+
+async function resolveStoredActiveSyncMessage(
+  interaction: ChatInputCommandInteraction,
+  settings: SettingsService
+) {
+  const guild = interaction.guild;
+  if (!guild) return null;
+  const guildId = guild.id;
+
+  const stored = parseActiveSyncPost(await settings.get(activeSyncPostKey(guildId)));
+  if (!stored) return null;
+
+  const channel = await guild.channels.fetch(stored.channelId).catch(() => null);
+  if (!channel?.isTextBased() || !("messages" in channel)) {
+    await settings.delete(activeSyncPostKey(guildId));
+    return null;
+  }
+
+  const message = await channel.messages.fetch(stored.messageId).catch(() => null);
+  if (!message || !message.author.bot || !isBotSyncTimeMessage(message.content)) {
+    await settings.delete(activeSyncPostKey(guildId));
+    return null;
+  }
+
+  return message;
+}
+
 async function resolveSyncStatusMessage(
   interaction: ChatInputCommandInteraction,
-  explicitMessageId: string | null
+  settings: SettingsService
 ) {
+  const storedActiveMessage = await resolveStoredActiveSyncMessage(interaction, settings);
+  if (storedActiveMessage) return storedActiveMessage;
+
   const channel = interaction.channel;
   if (!channel?.isTextBased() || !("messages" in channel)) {
     return null;
-  }
-  if (explicitMessageId) {
-    return channel.messages.fetch(explicitMessageId).catch(() => null);
   }
 
   const pinned = await channel.messages.fetchPinned().catch(() => null);
@@ -110,18 +157,10 @@ async function handleSyncStatusSubcommand(
   await interaction.deferReply({ ephemeral: true });
 
   const settings = new SettingsService();
-  const explicitMessageIdRaw = interaction.options.getString("message-id", false)?.trim() ?? null;
-  const explicitMessageId =
-    explicitMessageIdRaw && /^\d{17,22}$/.test(explicitMessageIdRaw) ? explicitMessageIdRaw : null;
-  if (explicitMessageIdRaw && !explicitMessageId) {
-    await interaction.editReply("Invalid `message-id`. Use a Discord message ID.");
-    return;
-  }
-
-  const message = await resolveSyncStatusMessage(interaction, explicitMessageId);
+  const message = await resolveSyncStatusMessage(interaction, settings);
   if (!message) {
     await interaction.editReply(
-      "Could not find a sync-time message in this channel. Provide `message-id` or post one first."
+      "Could not find an active sync-time message. Post one with `/post sync time` first."
     );
     return;
   }
@@ -560,6 +599,13 @@ export async function handlePostModalSubmit(
   if (!postedMessage) {
     return;
   }
+  await settings.set(
+    activeSyncPostKey(interaction.guildId),
+    JSON.stringify({
+      channelId: postedMessage.channelId,
+      messageId: postedMessage.id,
+    })
+  );
 
   if (!mentionWillNotify) {
     notices.push(
@@ -654,15 +700,6 @@ export const Post: Command = {
           name: "status",
           description: "Show claimed/unclaimed clan badges for a sync-time post",
           type: ApplicationCommandOptionType.Subcommand,
-          options: [
-            {
-              name: "message-id",
-              description:
-                "Sync-time message ID (optional; defaults to latest sync message in this channel)",
-              type: ApplicationCommandOptionType.String,
-              required: false,
-            },
-          ],
         },
       ],
     },
