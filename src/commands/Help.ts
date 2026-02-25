@@ -59,14 +59,6 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     ],
     examples: ["/help", "/help command:sheet", "/help visibility:public"],
   },
-  "clan-name": {
-    summary: "Resolve a clan tag into its clan name.",
-    details: [
-      "Accepts tags with or without `#`.",
-      "Useful for sanity-checking tags before adding tracked clans.",
-    ],
-    examples: ["/clan-name tag:#2QG2C08UP"],
-  },
   lastseen: {
     summary: "Estimate when a player was last active.",
     details: [
