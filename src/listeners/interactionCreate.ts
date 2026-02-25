@@ -32,6 +32,11 @@ function isMissingBotPermissionsError(err: unknown): boolean {
   return code === 50013 || code === 50001;
 }
 
+function getDiscordErrorCode(err: unknown): number | null {
+  const code = (err as { code?: number } | null | undefined)?.code;
+  return typeof code === "number" ? code : null;
+}
+
 function missingPermissionMessage(context: string): string {
   return `I couldn't complete ${context} because I'm missing one or more required Discord permissions. Please update my role permissions/channel overrides and retry.`;
 }
@@ -209,16 +214,36 @@ const handleSlashCommand = async (
       ? missingPermissionMessage(`/${interaction.commandName}`)
       : "Something went wrong.";
 
-    if (interaction.deferred) {
-      await interaction.editReply(truncateDiscordContent(message)).catch(() => undefined);
-      return;
-    }
+    try {
+      if (interaction.deferred || interaction.replied) {
+        await interaction.editReply(truncateDiscordContent(message));
+        return;
+      }
 
-    if (!interaction.replied) {
       await interaction.reply({
         content: truncateDiscordContent(message),
         ephemeral: true,
       });
+    } catch (responseErr) {
+      const code = getDiscordErrorCode(responseErr);
+      // 10062 Unknown interaction: token expired/invalid; cannot recover.
+      if (code === 10062) {
+        console.warn(
+          `Failed to send error response for /${interaction.commandName}: interaction expired (10062).`
+        );
+        return;
+      }
+      // 40060 already acknowledged: try editReply as final fallback.
+      if (code === 40060) {
+        await interaction
+          .editReply(truncateDiscordContent(message))
+          .catch(() => undefined);
+        return;
+      }
+
+      console.error(
+        `Failed to send error response for /${interaction.commandName}: ${formatError(responseErr)}`
+      );
     }
   }
 };
