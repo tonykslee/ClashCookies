@@ -11,13 +11,17 @@ export class ActivityService {
   /**
    * Observe all members of a clan and update activity signals.
    */
-  async observeClan(clanTag: string) {
+  async observeClan(clanTag: string): Promise<string[]> {
     const clan = await this.coc.getClan(clanTag);
     const now = new Date();
     let playerApiCalls = 0;
     let playersMissing = 0;
+    const observedTags: string[] = [];
 
     for (const member of clan.members) {
+      if (member?.tag) {
+        observedTags.push(String(member.tag));
+      }
       playerApiCalls += 1;
       const player = await this.coc.getPlayerRaw(member.tag, { suppressTelemetry: true });
       if (!player) {
@@ -58,6 +62,8 @@ export class ActivityService {
         detail: `mode=observeClan clan=${clan.tag} calls=${playerApiCalls} missing=${playersMissing}`,
       });
     }
+
+    return observedTags;
   }
 
   /**
