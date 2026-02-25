@@ -9,9 +9,11 @@ import { ActivityService } from "../services/ActivityService";
 import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
 import { processRecruitmentCooldownReminders } from "../services/RecruitmentService";
+import { SettingsService } from "../services/SettingsService";
 
 const DEFAULT_OBSERVE_INTERVAL_MINUTES = 30;
 const RECRUITMENT_REMINDER_INTERVAL_MS = 5 * 60 * 1000;
+const OBSERVE_LAST_RUN_AT_KEY = "activity_observe:last_run_at_ms";
 const VISIBILITY_OPTION = {
   name: "visibility",
   description: "Response visibility",
@@ -116,6 +118,7 @@ export default (client: Client, cocService: CoCService): void => {
     console.log(`✅ Guild commands registered (${Commands.length})`);
 
     const activityService = new ActivityService(cocService);
+    const settings = new SettingsService();
     let observeInProgress = false;
 
     const observeTrackedClans = async () => {
@@ -153,8 +156,42 @@ export default (client: Client, cocService: CoCService): void => {
       }
     };
 
-    // Initial activity observation for tracked clans.
-    await observeTrackedClans();
+    const markObserveRun = async () => {
+      await settings.set(OBSERVE_LAST_RUN_AT_KEY, String(Date.now()));
+    };
+
+    const runObservedCycle = async () => {
+      await observeTrackedClans();
+      try {
+        await markObserveRun();
+      } catch (err) {
+        console.error(`observe run timestamp write failed: ${formatError(err)}`);
+      }
+    };
+
+    const getInitialObserveDelayMs = async (): Promise<number> => {
+      const configuredIntervalMinutes = Number(
+        process.env.ACTIVITY_OBSERVE_INTERVAL_MINUTES ?? DEFAULT_OBSERVE_INTERVAL_MINUTES
+      );
+      const intervalMinutes =
+        Number.isFinite(configuredIntervalMinutes) && configuredIntervalMinutes > 0
+          ? configuredIntervalMinutes
+          : DEFAULT_OBSERVE_INTERVAL_MINUTES;
+      const intervalMs = Math.floor(intervalMinutes * 60 * 1000);
+
+      const rawLastRun = await settings.get(OBSERVE_LAST_RUN_AT_KEY);
+      const lastRunAtMs = Number(rawLastRun ?? "");
+      if (!Number.isFinite(lastRunAtMs) || lastRunAtMs <= 0) {
+        return 0;
+      }
+
+      const elapsedMs = Date.now() - lastRunAtMs;
+      if (elapsedMs >= intervalMs) {
+        return 0;
+      }
+
+      return Math.max(0, intervalMs - elapsedMs);
+    };
 
     const configuredIntervalMinutes = Number(
       process.env.ACTIVITY_OBSERVE_INTERVAL_MINUTES ?? DEFAULT_OBSERVE_INTERVAL_MINUTES
@@ -164,12 +201,34 @@ export default (client: Client, cocService: CoCService): void => {
         ? configuredIntervalMinutes
         : DEFAULT_OBSERVE_INTERVAL_MINUTES;
     const intervalMs = Math.floor(intervalMinutes * 60 * 1000);
+    const initialObserveDelayMs = await getInitialObserveDelayMs();
 
-    setInterval(() => {
-      observeTrackedClans().catch((err) => {
-        console.error(`observeTrackedClans loop failed: ${formatError(err)}`);
-      });
-    }, intervalMs);
+    if (initialObserveDelayMs === 0) {
+      await runObservedCycle();
+      setInterval(() => {
+        runObservedCycle().catch((err) => {
+          console.error(`observeTrackedClans loop failed: ${formatError(err)}`);
+        });
+      }, intervalMs);
+    } else {
+      const initialObserveDelayMin = Math.ceil(initialObserveDelayMs / 60000);
+      console.log(
+        `Skipping startup activity observe run; next run in ${initialObserveDelayMin} minute(s).`
+      );
+      setTimeout(() => {
+        runObservedCycle()
+          .catch((err) => {
+            console.error(`observeTrackedClans delayed run failed: ${formatError(err)}`);
+          })
+          .finally(() => {
+            setInterval(() => {
+              runObservedCycle().catch((err) => {
+                console.error(`observeTrackedClans loop failed: ${formatError(err)}`);
+              });
+            }, intervalMs);
+          });
+      }, initialObserveDelayMs);
+    }
     console.log(`Activity observe loop enabled (every ${intervalMinutes} minute(s)).`);
 
     const runRecruitmentReminders = async () => {
