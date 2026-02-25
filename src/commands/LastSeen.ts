@@ -1,4 +1,11 @@
-import { Client, CommandInteraction } from "discord.js";
+import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ChatInputCommandInteraction,
+  Client,
+  ComponentType,
+} from "discord.js";
 import { Command } from "../Command";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
@@ -30,6 +37,57 @@ function getRaidWeekendStart(): Date {
   return friday;
 }
 
+function toDiscordTime(date: Date): string {
+  const unix = Math.floor(date.getTime() / 1000);
+  return `<t:${unix}:F> (<t:${unix}:R>)`;
+}
+
+function getLastSeenSummaryText(lastSeenAt: Date): string {
+  return `🕒 **Last seen:** ${formatRelativeTime(lastSeenAt)}\nBased on historical activity`;
+}
+
+function getBreakdownText(input: {
+  tag: string;
+  name: string;
+  lastSeenAt: Date;
+  lastDonationAt: Date | null;
+  lastCapitalAt: Date | null;
+  lastTrophyAt: Date | null;
+  lastWarAt: Date | null;
+  lastBuilderAt: Date | null;
+  updatedAt: Date;
+}): string {
+  const line = (label: string, dt: Date | null) =>
+    `- ${label}: ${dt ? toDiscordTime(dt) : "Not tracked yet"}`;
+
+  return [
+    `**${input.name}** (${input.tag})`,
+    "",
+    line("Last Seen", input.lastSeenAt),
+    line("Donations", input.lastDonationAt),
+    line("Capital", input.lastCapitalAt),
+    line("Trophies", input.lastTrophyAt),
+    line("War", input.lastWarAt),
+    line("Builder", input.lastBuilderAt),
+    line("Observation Updated", input.updatedAt),
+  ].join("\n");
+}
+
+function buildLastSeenButtons(prefix: string, showBreakdown: boolean) {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`${prefix}:details`)
+      .setLabel("Activity Breakdown")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(showBreakdown),
+    new ButtonBuilder()
+      .setCustomId(`${prefix}:back`)
+      .setLabel("Back")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(!showBreakdown)
+  );
+}
+
 export const LastSeen: Command = {
   name: "lastseen",
   description: "Check when a player was last seen active",
@@ -42,7 +100,7 @@ export const LastSeen: Command = {
     },
   ],
 
-  run: async (client: Client, interaction: CommandInteraction) => {
+  run: async (_client: Client, interaction: ChatInputCommandInteraction) => {
     await interaction.deferReply({ ephemeral: true });
 
     const tagInput = interaction.options.get("tag", true).value as string;
@@ -56,9 +114,49 @@ export const LastSeen: Command = {
     if (activity) {
       const relative = formatRelativeTime(activity.lastSeenAt);
 
-      await interaction.editReply(
-        `🕒 **Last seen:** ${relative}\nBased on historical activity`
-      );
+      const summary = getLastSeenSummaryText(activity.lastSeenAt);
+      const prefix = `lastseen:${interaction.id}`;
+      const reply = await interaction.editReply({
+        content: summary,
+        components: [buildLastSeenButtons(prefix, false)],
+      });
+
+      const collector = reply.createMessageComponentCollector({
+        componentType: ComponentType.Button,
+        time: 5 * 60 * 1000,
+        filter: (btn) =>
+          btn.user.id === interaction.user.id &&
+          (btn.customId === `${prefix}:details` || btn.customId === `${prefix}:back`),
+      });
+
+      collector.on("collect", async (btn) => {
+        if (btn.customId.endsWith(":details")) {
+          await btn.update({
+            content: getBreakdownText({
+              tag: activity.tag,
+              name: activity.name,
+              lastSeenAt: activity.lastSeenAt,
+              lastDonationAt: activity.lastDonationAt ?? null,
+              lastCapitalAt: activity.lastCapitalAt ?? null,
+              lastTrophyAt: activity.lastTrophyAt ?? null,
+              lastWarAt: activity.lastWarAt ?? null,
+              lastBuilderAt: activity.lastBuilderAt ?? null,
+              updatedAt: activity.updatedAt,
+            }),
+            components: [buildLastSeenButtons(prefix, true)],
+          });
+          return;
+        }
+
+        await btn.update({
+          content: summary,
+          components: [buildLastSeenButtons(prefix, false)],
+        });
+      });
+
+      collector.on("end", async () => {
+        await interaction.editReply({ components: [] }).catch(() => undefined);
+      });
       return;
     }
 
@@ -107,7 +205,7 @@ export const LastSeen: Command = {
       });
     
       const relative = formatRelativeTime(inferredAt);
-    
+
       await interaction.editReply(
         `🕒 **Last seen:** ${relative}\nBased on ${reasons.join(", ")}`
       );

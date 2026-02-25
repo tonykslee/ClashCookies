@@ -78,7 +78,7 @@ Optional fallback auth (not required for your current setup):
 - `/kick-list show` - Show current kick-list with reasons.
 - `/kick-list clear [mode:all|auto|manual]` - Clear kick-list entries.
 - `/post sync time [role:<discordRole>]` - Open modal, compose sync-time message, post it, and pin it.
-- `/post sync status` - Show claimed vs unclaimed clan badge reactions for the active sync-time post.
+- `/post sync status [message-id:<id>]` - Show claimed vs unclaimed clan badge reactions for the active sync-time post, or for a specific message in the channel.
 
 ## Command Access Control
 - By default, commands are usable by everyone.
