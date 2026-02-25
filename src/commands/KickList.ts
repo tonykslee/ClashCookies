@@ -82,12 +82,24 @@ function mapReasons(record: {
   daysThreshold: number | null;
 }): string {
   if (record.source === "AUTO_INACTIVE") {
-    const days = record.daysThreshold ?? DEFAULT_DAYS;
-    if (record.reason.includes("+")) {
-      const detail = record.reason.split("+").slice(1).join("+").trim();
-      return `Inactive for ${days}+ day(s) | ${detail}`;
+    if (record.reason.startsWith("inactive")) {
+      const days = record.daysThreshold ?? DEFAULT_DAYS;
+      if (record.reason.includes("+")) {
+        const detail = record.reason.split("+").slice(1).join("+").trim();
+        return `Inactive for ${days}+ day(s) | ${detail}`;
+      }
+      return `Inactive for ${days}+ day(s)`;
     }
-    return `Inactive for ${days}+ day(s)`;
+
+    if (record.reason.startsWith("unlinked")) {
+      if (record.reason.includes("+")) {
+        const detail = record.reason.split("+").slice(1).join("+").trim();
+        return `Link issue | ${detail}`;
+      }
+      return "Link issue";
+    }
+
+    return record.reason || "Auto";
   }
   return record.reason || "Manual";
 }
@@ -105,13 +117,22 @@ function buildPages(records: KickRecord[]): string[] {
   return pages;
 }
 
+function getKickPriority(record: KickRecord): number {
+  const hasInactive = record.reasons.some((r) => r.startsWith("Inactive for"));
+  const hasLinkIssue = record.reasons.some((r) => r.startsWith("Link issue"));
+  if (hasInactive && hasLinkIssue) return 0;
+  if (hasInactive) return 1;
+  if (hasLinkIssue) return 2;
+  return 3;
+}
+
 export const KickList: Command = {
   name: "kick-list",
   description: "Build and manage kick-list candidates",
   options: [
     {
       name: "build",
-      description: "Auto-build from inactive players in tracked clans",
+      description: "Auto-build from inactive and link-status checks in tracked clans",
       type: ApplicationCommandOptionType.Subcommand,
       options: [
         {
@@ -239,22 +260,24 @@ export const KickList: Command = {
         return;
       }
 
-      const [activities, links] = await Promise.all([
-        prisma.playerActivity.findMany({
-          where: {
-            tag: { in: memberTags },
-            lastSeenAt: { lt: cutoff },
-          },
-          select: { tag: true, lastSeenAt: true },
-        }),
-        prisma.playerLink.findMany({
-          where: { playerTag: { in: memberTags } },
-          select: { playerTag: true, discordUserId: true },
-        }),
-      ]);
+      const links = await prisma.playerLink.findMany({
+        where: { playerTag: { in: memberTags } },
+        select: { playerTag: true, discordUserId: true },
+      });
 
       const linksByTag = new Map(
         links.map((l) => [normalizePlayerTag(l.playerTag), { discordUserId: l.discordUserId }])
+      );
+      const activityByTag = new Set(
+        (
+          await prisma.playerActivity.findMany({
+            where: {
+              tag: { in: memberTags },
+              lastSeenAt: { lt: cutoff },
+            },
+            select: { tag: true },
+          })
+        ).map((a) => normalizePlayerTag(a.tag))
       );
 
       await prisma.kickListEntry.deleteMany({
@@ -265,8 +288,11 @@ export const KickList: Command = {
       });
 
       let created = 0;
-      for (const activity of activities) {
-        const tag = normalizePlayerTag(activity.tag);
+      let inactiveOnly = 0;
+      let linkOnly = 0;
+      let both = 0;
+      for (const tag of memberTags) {
+        const isInactive = activityByTag.has(tag);
         const clan = clanByMemberTag.get(tag);
         const linkReason = await getLinkReason(
           interaction.guild,
@@ -275,7 +301,21 @@ export const KickList: Command = {
           clashKing,
           clashKingCache
         );
-        const reason = linkReason ? `inactive + ${linkReason}` : "inactive";
+        const hasLinkIssue = Boolean(linkReason);
+
+        if (!isInactive && !hasLinkIssue) {
+          continue;
+        }
+
+        if (isInactive && hasLinkIssue) both += 1;
+        else if (isInactive) inactiveOnly += 1;
+        else linkOnly += 1;
+
+        const reason = isInactive
+          ? hasLinkIssue
+            ? `inactive + ${linkReason}`
+            : "inactive"
+          : `unlinked + ${linkReason}`;
 
         await prisma.kickListEntry.upsert({
           where: {
@@ -290,7 +330,7 @@ export const KickList: Command = {
             clanTag: clan?.clanTag ?? null,
             clanName: clan?.clanName ?? null,
             reason,
-            daysThreshold: days,
+            daysThreshold: isInactive ? days : null,
           },
           create: {
             guildId,
@@ -300,14 +340,14 @@ export const KickList: Command = {
             clanName: clan?.clanName ?? null,
             reason,
             source: "AUTO_INACTIVE",
-            daysThreshold: days,
+            daysThreshold: isInactive ? days : null,
           },
         });
         created += 1;
       }
 
       await interaction.editReply(
-        `Kick list auto-build complete: ${created} inactive player(s) added/updated at ${days}+ day(s).`
+        `Kick list auto-build complete: ${created} player(s) added/updated (${both} inactive+link issue, ${inactiveOnly} inactive-only, ${linkOnly} link-only).`
       );
       return;
     }
@@ -425,6 +465,9 @@ export const KickList: Command = {
     }
 
     const records = [...grouped.values()].sort((a, b) => {
+      const priorityA = getKickPriority(a);
+      const priorityB = getKickPriority(b);
+      if (priorityA !== priorityB) return priorityA - priorityB;
       if (a.clanName !== b.clanName) return a.clanName.localeCompare(b.clanName);
       return a.playerName.localeCompare(b.playerName);
     });
