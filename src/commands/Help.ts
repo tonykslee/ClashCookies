@@ -172,7 +172,8 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
   "kick-list": {
     summary: "Build and manage kick-list candidates.",
     details: [
-      "`build` auto-adds inactive players from tracked-clan live rosters (default 3 days).",
+      "`build` auto-adds tracked-clan members who are inactive (default 3 days), unlinked, or linked to users not in this server.",
+      "Results prioritize players who are both inactive and link-mismatched.",
       "`add` supports manual entries with a custom reason.",
       "`show` displays reasons for each candidate with pagination.",
     ],

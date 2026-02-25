@@ -75,7 +75,7 @@ Optional fallback auth (not required for your current setup):
 - `/recruitment countdown start platform:discord|reddit|band clan:<tag>` - Start exact cooldown timer for your account on that platform+clan pair.
 - `/recruitment countdown status` - Show your current recruitment cooldown timers.
 - `/recruitment dashboard` - Show readiness across all tracked clans/platforms for your account.
-- `/kick-list build [days:<number>]` - Auto-build kick-list candidates from inactive tracked-clan members (default `3` days).
+- `/kick-list build [days:<number>]` - Auto-build kick-list candidates from tracked-clan members who are inactive (`days` threshold, default `3`), unlinked, or linked to users not in this server. Players matching both inactivity and link issues are shown first.
 - `/kick-list add tag:<playerTag> reason:<text>` - Manually add a kick-list candidate with reason.
 - `/kick-list remove tag:<playerTag>` - Remove a player from kick list.
 - `/kick-list show` - Show current kick-list with reasons.
