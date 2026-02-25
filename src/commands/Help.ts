@@ -63,6 +63,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     summary: "Estimate when a player was last active.",
     details: [
       "Reads stored activity first, then infers from live profile stats.",
+      "Includes an Activity Breakdown button with localized timestamps for tracked signals.",
       "Stores inference for faster future lookups.",
     ],
     examples: ["/lastseen tag:ABC123XYZ"],

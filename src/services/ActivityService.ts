@@ -1,8 +1,11 @@
 import { prisma } from "../prisma";
 import { recordFetchEvent } from "../helper/fetchTelemetry";
 import { CoCService } from "./CoCService";
+import { ActivitySignalService } from "./ActivitySignalService";
 
 export class ActivityService {
+  private readonly signalService = new ActivitySignalService();
+
   constructor(private coc: CoCService) {}
 
   /**
@@ -28,9 +31,20 @@ export class ActivityService {
         clanTag: clan.tag,
         trophies: player.trophies,
         donations: player.donations,
+        donationsReceived: player.donationsReceived ?? 0,
         warStars: player.warStars,
         builderTrophies: player.builderBaseTrophies ?? 0,
         capitalGold: player.clanCapitalContributions ?? 0,
+        attackWins: player.attackWins ?? 0,
+        defenseWins: player.defenseWins ?? 0,
+        versusBattleWins: player.versusBattleWins ?? 0,
+        expLevel: player.expLevel ?? 0,
+        achievements: Array.isArray(player.achievements) ? player.achievements : [],
+        troops: Array.isArray(player.troops) ? player.troops : [],
+        heroes: Array.isArray(player.heroes) ? player.heroes : [],
+        spells: Array.isArray(player.spells) ? player.spells : [],
+        pets: Array.isArray(player.pets) ? player.pets : [],
+        heroEquipment: Array.isArray(player.heroEquipment) ? player.heroEquipment : [],
         now,
       });
     }
@@ -55,9 +69,20 @@ export class ActivityService {
     clanTag: string;
     trophies: number;
     donations: number;
+    donationsReceived: number;
     warStars: number;
     builderTrophies: number;
     capitalGold: number;
+    attackWins: number;
+    defenseWins: number;
+    versusBattleWins: number;
+    expLevel: number;
+    achievements: unknown[];
+    troops: unknown[];
+    heroes: unknown[];
+    spells: unknown[];
+    pets: unknown[];
+    heroEquipment: unknown[];
     now: Date;
   }) {
     const existing = await prisma.playerActivity.findUnique({
@@ -69,30 +94,49 @@ export class ActivityService {
       clanTag: input.clanTag,
     };
 
-    // Prevent restart-driven false positives: do not stamp "now" every poll
-    // just because seasonal counters are non-zero.
-    if (input.donations > 0 && (!existing || !existing.lastDonationAt)) {
-      updates.lastDonationAt = input.now;
+    const processed = await this.signalService.processPlayer({
+      tag: input.tag,
+      name: input.name,
+      clanTag: input.clanTag,
+      donations: input.donations,
+      donationsReceived: input.donationsReceived,
+      capitalGold: input.capitalGold,
+      trophies: input.trophies,
+      builderTrophies: input.builderTrophies,
+      warStars: input.warStars,
+      attackWins: input.attackWins,
+      defenseWins: input.defenseWins,
+      versusBattleWins: input.versusBattleWins,
+      expLevel: input.expLevel,
+      achievements: input.achievements,
+      troops: input.troops,
+      heroes: input.heroes,
+      spells: input.spells,
+      pets: input.pets,
+      heroEquipment: input.heroEquipment,
+      nowMs: input.now.getTime(),
+    });
+
+    const signalTimes = processed.state.signalTimes;
+    if (signalTimes.donations) {
+      updates.lastDonationAt = new Date(signalTimes.donations);
+    }
+    if (signalTimes.capitalGold) {
+      updates.lastCapitalAt = new Date(signalTimes.capitalGold);
+    }
+    if (signalTimes.trophies) {
+      updates.lastTrophyAt = new Date(signalTimes.trophies);
+    }
+    if (signalTimes.warStars) {
+      updates.lastWarAt = new Date(signalTimes.warStars);
+    }
+    if (signalTimes.builderTrophies) {
+      updates.lastBuilderAt = new Date(signalTimes.builderTrophies);
     }
 
-    if (input.capitalGold > 0 && (!existing || !existing.lastCapitalAt)) {
-      updates.lastCapitalAt = input.now;
-    }
-
-    if (!existing || input.trophies !== existing.lastTrophies) {
-      updates.lastTrophyAt = input.now;
-      updates.lastTrophies = input.trophies;
-    }
-
-    if (!existing || input.warStars > (existing.lastWarStars ?? -1)) {
-      updates.lastWarAt = input.now;
-      updates.lastWarStars = input.warStars;
-    }
-
-    if (!existing || input.builderTrophies !== existing.lastBuilderTrophies) {
-      updates.lastBuilderAt = input.now;
-      updates.lastBuilderTrophies = input.builderTrophies;
-    }
+    updates.lastTrophies = input.trophies;
+    updates.lastWarStars = input.warStars;
+    updates.lastBuilderTrophies = input.builderTrophies;
 
     const timestamps = [
       updates.lastDonationAt ?? existing?.lastDonationAt,
@@ -100,6 +144,7 @@ export class ActivityService {
       updates.lastTrophyAt ?? existing?.lastTrophyAt,
       updates.lastWarAt ?? existing?.lastWarAt,
       updates.lastBuilderAt ?? existing?.lastBuilderAt,
+      processed.lastSeenAtMs ? new Date(processed.lastSeenAtMs) : null,
     ].filter(Boolean) as Date[];
 
     if (timestamps.length > 0) {
