@@ -138,6 +138,16 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     ],
     examples: ["/opponent tag:2QG2C08UP"],
   },
+  "my-accounts": {
+    summary: "List your linked player accounts grouped by their current clan.",
+    details: [
+      "Reads linked tags for your Discord account from the bot database.",
+      "If no local links are found, it queries ClashKing `/discord_links` for your Discord ID and caches results to `PlayerLink`.",
+      "Fetches live player data when available and groups accounts by current clan.",
+      "Set `visibility:public` to post the response directly in channel.",
+    ],
+    examples: ["/my-accounts", "/my-accounts visibility:public"],
+  },
   points: {
     summary: "Fetch FWA points balance and optional matchup projection.",
     details: [

@@ -10,6 +10,7 @@ import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
 import { processRecruitmentCooldownReminders } from "../services/RecruitmentService";
 import { SettingsService } from "../services/SettingsService";
+import { PlayerLinkSyncService } from "../services/PlayerLinkSyncService";
 
 const DEFAULT_OBSERVE_INTERVAL_MINUTES = 30;
 const RECRUITMENT_REMINDER_INTERVAL_MS = 5 * 60 * 1000;
@@ -118,13 +119,14 @@ export default (client: Client, cocService: CoCService): void => {
     console.log(`✅ Guild commands registered (${Commands.length})`);
 
     const activityService = new ActivityService(cocService);
+    const playerLinkSyncService = new PlayerLinkSyncService();
     const settings = new SettingsService();
     let observeInProgress = false;
 
-    const observeTrackedClans = async () => {
+    const observeTrackedClans = async (): Promise<string[]> => {
       if (observeInProgress) {
         console.warn("Skipping observe loop because previous run is still in progress.");
-        return;
+        return [];
       }
 
       observeInProgress = true;
@@ -139,18 +141,24 @@ export default (client: Client, cocService: CoCService): void => {
           console.warn(
             "No tracked clans configured. Use /tracked-clan add."
           );
-          return;
+          return [];
         }
 
+        const observedMemberTags = new Set<string>();
         for (const tag of trackedTags) {
           try {
-            await activityService.observeClan(tag);
+            const memberTags = await activityService.observeClan(tag);
+            for (const memberTag of memberTags) {
+              observedMemberTags.add(memberTag);
+            }
           } catch (err) {
             console.error(
               `observeClan failed for ${tag}: ${formatError(err)}`
             );
           }
         }
+
+        return [...observedMemberTags];
       } finally {
         observeInProgress = false;
       }
@@ -161,7 +169,8 @@ export default (client: Client, cocService: CoCService): void => {
     };
 
     const runObservedCycle = async () => {
-      await observeTrackedClans();
+      const observedMemberTags = await observeTrackedClans();
+      await playerLinkSyncService.syncMissingTagsIfDue(observedMemberTags);
       try {
         await markObserveRun();
       } catch (err) {
