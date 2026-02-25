@@ -9,7 +9,6 @@ export const MANAGE_COMMAND_ROLES_COMMAND = "permission";
 
 export const COMMAND_PERMISSION_TARGETS = [
   "help",
-  "clan-name",
   "lastseen",
   "inactive",
   "role-users",
