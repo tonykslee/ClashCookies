@@ -39,6 +39,7 @@ export const COMMAND_PERMISSION_TARGETS = [
   "kick-list:clear",
   "post",
   "post:sync:time",
+  "post:sync:status",
   MANAGE_COMMAND_ROLES_COMMAND,
   `${MANAGE_COMMAND_ROLES_COMMAND}:add`,
   `${MANAGE_COMMAND_ROLES_COMMAND}:remove`,
