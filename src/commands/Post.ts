@@ -3,6 +3,8 @@ import {
   ApplicationCommandOptionType,
   ChatInputCommandInteraction,
   Client,
+  EmbedBuilder,
+  GuildMember,
   type MessageMentionOptions,
   ModalBuilder,
   ModalSubmitInteraction,
@@ -28,35 +30,191 @@ const IANA_TIMEZONE_HELP_URL =
 const PROD_BOT_ID = "1131335782016237749";
 const STAGING_BOT_ID = "1474193888146358393";
 
-type BadgeEmoji = { name: string; id: string };
+type BadgeEmoji = { code: string; label: string; name: string; id: string };
 
 const SYNC_BADGE_EMOJIS_BY_BOT: Record<string, BadgeEmoji[]> = {
   [STAGING_BOT_ID]: [
-    { name: "zg", id: "1476279645174366449" },
-    { name: "twc", id: "1476279643660091452" },
-    { name: "se", id: "1476279635208573009" },
-    { name: "rr", id: "1476279632729866242" },
-    { name: "rd", id: "1476279631345614902" },
-    { name: "mv", id: "1476279630129528986" },
-    { name: "de", id: "1476279629106118676" },
-    { name: "ak", id: "1476279627839307836" },
+    { code: "ZG", label: "ZERO GRAVITY", name: "zg", id: "1476279645174366449" },
+    { code: "TWC", label: "TheWiseCowboys", name: "twc", id: "1476279643660091452" },
+    { code: "SE", label: "Steel Empire 2", name: "se", id: "1476279635208573009" },
+    { code: "RR", label: "Rocky Road", name: "rr", id: "1476279632729866242" },
+    { code: "RD", label: "RISING DAWN", name: "rd", id: "1476279631345614902" },
+    { code: "MV", label: "MARVELS", name: "mv", id: "1476279630129528986" },
+    { code: "DE", label: "DARK EMPIRE™!", name: "de", id: "1476279629106118676" },
+    { code: "AK", label: "ＡＫＡＴＳＵＫＩ", name: "ak", id: "1476279627839307836" },
   ],
   [PROD_BOT_ID]: [
-    { name: "zg", id: "1476279778670673930" },
-    { name: "twc", id: "1476279777466908755" },
-    { name: "se", id: "1476279774241493104" },
-    { name: "rr", id: "1476279773243379762" },
-    { name: "rd", id: "1476279771884290100" },
-    { name: "mv", id: "1476279770667814932" },
-    { name: "de", id: "1476279769552392427" },
-    { name: "ak", id: "1476279768608411874" },
+    { code: "ZG", label: "ZERO GRAVITY", name: "zg", id: "1476279778670673930" },
+    { code: "TWC", label: "TheWiseCowboys", name: "twc", id: "1476279777466908755" },
+    { code: "SE", label: "Steel Empire 2", name: "se", id: "1476279774241493104" },
+    { code: "RR", label: "Rocky Road", name: "rr", id: "1476279773243379762" },
+    { code: "RD", label: "RISING DAWN", name: "rd", id: "1476279771884290100" },
+    { code: "MV", label: "MARVELS", name: "mv", id: "1476279770667814932" },
+    { code: "DE", label: "DARK EMPIRE™!", name: "de", id: "1476279769552392427" },
+    { code: "AK", label: "ＡＫＡＴＳＵＫＩ", name: "ak", id: "1476279768608411874" },
   ],
 };
 
-function getSyncBadgeEmojiIdentifiers(botUserId: string | undefined): string[] {
+function getSyncBadgeEmojis(botUserId: string | undefined): BadgeEmoji[] {
   if (!botUserId) return [];
-  const badges = SYNC_BADGE_EMOJIS_BY_BOT[botUserId] ?? [];
+  return SYNC_BADGE_EMOJIS_BY_BOT[botUserId] ?? [];
+}
+
+function getSyncBadgeEmojiIdentifiers(botUserId: string | undefined): string[] {
+  const badges = getSyncBadgeEmojis(botUserId);
   return badges.map((e) => `${e.name}:${e.id}`);
+}
+
+function parseAllowedRoleIds(raw: string | null): string[] {
+  if (!raw) return [];
+  return [...new Set(raw.split(",").map((s) => s.trim()).filter((s) => /^\d+$/.test(s)))];
+}
+
+async function getLeaderRoleIds(settings: SettingsService): Promise<string[]> {
+  const syncRoles = parseAllowedRoleIds(await settings.get("command_roles:post:sync:time"));
+  if (syncRoles.length > 0) return syncRoles;
+  return parseAllowedRoleIds(await settings.get("command_roles:post"));
+}
+
+async function resolveSyncStatusMessage(
+  interaction: ChatInputCommandInteraction,
+  explicitMessageId: string | null
+) {
+  const channel = interaction.channel;
+  if (!channel?.isTextBased() || !("messages" in channel)) {
+    return null;
+  }
+  if (explicitMessageId) {
+    return channel.messages.fetch(explicitMessageId).catch(() => null);
+  }
+
+  const pinned = await channel.messages.fetchPinned().catch(() => null);
+  if (pinned && pinned.size > 0) {
+    const latestPinnedSync = [...pinned.values()]
+      .filter((m) => m.author.bot && isBotSyncTimeMessage(m.content))
+      .sort((a, b) => b.createdTimestamp - a.createdTimestamp)[0];
+    if (latestPinnedSync) return latestPinnedSync;
+  }
+
+  const recent = await channel.messages.fetch({ limit: 50 }).catch(() => null);
+  if (!recent) return null;
+  return [...recent.values()]
+    .filter((m) => m.author.bot && isBotSyncTimeMessage(m.content))
+    .sort((a, b) => b.createdTimestamp - a.createdTimestamp)
+    .at(0) ?? null;
+}
+
+async function handleSyncStatusSubcommand(
+  interaction: ChatInputCommandInteraction
+): Promise<void> {
+  await interaction.deferReply({ ephemeral: true });
+
+  const settings = new SettingsService();
+  const explicitMessageIdRaw = interaction.options.getString("message-id", false)?.trim() ?? null;
+  const explicitMessageId =
+    explicitMessageIdRaw && /^\d{17,22}$/.test(explicitMessageIdRaw) ? explicitMessageIdRaw : null;
+  if (explicitMessageIdRaw && !explicitMessageId) {
+    await interaction.editReply("Invalid `message-id`. Use a Discord message ID.");
+    return;
+  }
+
+  const message = await resolveSyncStatusMessage(interaction, explicitMessageId);
+  if (!message) {
+    await interaction.editReply(
+      "Could not find a sync-time message in this channel. Provide `message-id` or post one first."
+    );
+    return;
+  }
+
+  const guild = interaction.guild;
+  if (!guild) {
+    await interaction.editReply("This command can only be used in a server.");
+    return;
+  }
+
+  const badges = getSyncBadgeEmojis(interaction.client.user?.id);
+  if (badges.length === 0) {
+    await interaction.editReply(
+      "No badge emoji configuration found for this bot ID."
+    );
+    return;
+  }
+
+  const leaderRoleIds = await getLeaderRoleIds(settings);
+  const memberCache = new Map<string, GuildMember | null>();
+  const getMember = async (userId: string): Promise<GuildMember | null> => {
+    if (memberCache.has(userId)) return memberCache.get(userId) ?? null;
+    const member = await guild.members.fetch(userId).catch(() => null);
+    memberCache.set(userId, member);
+    return member;
+  };
+
+  const claimedLines: string[] = [];
+  const unclaimedLines: string[] = [];
+
+  for (const badge of badges) {
+    const reaction = [...message.reactions.cache.values()].find((r) => r.emoji.id === badge.id);
+    const claimedBy: string[] = [];
+    const nonLeader: string[] = [];
+
+    if (reaction) {
+      const users = await reaction.users.fetch().catch(() => null);
+      if (users) {
+        for (const user of users.values()) {
+          if (user.bot) continue;
+          const member = await getMember(user.id);
+          if (!member) continue;
+
+          const isAdmin = member.permissions.has(PermissionFlagsBits.Administrator);
+          const hasLeaderRole =
+            leaderRoleIds.length > 0 &&
+            leaderRoleIds.some((roleId) => member.roles.cache.has(roleId));
+          if (isAdmin || hasLeaderRole) {
+            claimedBy.push(`<@${user.id}>`);
+          } else {
+            nonLeader.push(`<@${user.id}>`);
+          }
+        }
+      }
+    }
+
+    const emojiInline = `<:${badge.name}:${badge.id}>`;
+    if (claimedBy.length > 0) {
+      const extra =
+        nonLeader.length > 0 ? ` | non-leader: ${[...new Set(nonLeader)].join(", ")}` : "";
+      claimedLines.push(
+        `- ${emojiInline} **${badge.code}** (${badge.label}) - ${[...new Set(claimedBy)].join(", ")}${extra}`
+      );
+    } else {
+      const extra =
+        nonLeader.length > 0 ? ` (only non-leader: ${[...new Set(nonLeader)].join(", ")})` : "";
+      unclaimedLines.push(`- ${emojiInline} **${badge.code}** (${badge.label})${extra}`);
+    }
+  }
+
+  const embed = new EmbedBuilder()
+    .setTitle("Sync Claim Status")
+    .setDescription(
+      [
+        `Message: https://discord.com/channels/${guild.id}/${message.channelId}/${message.id}`,
+        "",
+        `Claimed: **${claimedLines.length}/${badges.length}**`,
+        "",
+        "**Claimed Clans**",
+        ...(claimedLines.length > 0 ? claimedLines : ["- None"]),
+        "",
+        "**Unclaimed Clans**",
+        ...(unclaimedLines.length > 0 ? unclaimedLines : ["- None"]),
+      ].join("\n")
+    )
+    .setFooter({
+      text:
+        leaderRoleIds.length > 0
+          ? "Leader = Administrator or role allowed for /post sync time"
+          : "Leader = Administrator (no explicit /post role whitelist configured)",
+    });
+
+  await interaction.editReply({ embeds: [embed] });
 }
 
 function parseDate(input: string): { year: number; month: number; day: number } | null {
@@ -492,6 +650,20 @@ export const Post: Command = {
             },
           ],
         },
+        {
+          name: "status",
+          description: "Show claimed/unclaimed clan badges for a sync-time post",
+          type: ApplicationCommandOptionType.Subcommand,
+          options: [
+            {
+              name: "message-id",
+              description:
+                "Sync-time message ID (optional; defaults to latest sync message in this channel)",
+              type: ApplicationCommandOptionType.String,
+              required: false,
+            },
+          ],
+        },
       ],
     },
   ],
@@ -510,7 +682,20 @@ export const Post: Command = {
 
     const subcommandGroup = interaction.options.getSubcommandGroup(false);
     const subcommand = interaction.options.getSubcommand(true);
-    if (subcommandGroup !== "sync" || subcommand !== "time") {
+    if (subcommandGroup !== "sync") {
+      await safeReply(interaction, {
+        ephemeral: true,
+        content: "Unknown subcommand.",
+      });
+      return;
+    }
+
+    if (subcommand === "status") {
+      await handleSyncStatusSubcommand(interaction);
+      return;
+    }
+
+    if (subcommand !== "time") {
       await safeReply(interaction, {
         ephemeral: true,
         content: "Unknown subcommand.",
