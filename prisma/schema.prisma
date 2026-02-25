@@ -53,6 +53,12 @@ enum KickListSource {
   MANUAL
 }
 
+enum RecruitmentPlatform {
+  discord
+  reddit
+  band
+}
+
 model KickListEntry {
   id            Int            @id @default(autoincrement())
   guildId       String
@@ -69,4 +75,31 @@ model KickListEntry {
   @@index([guildId, playerTag])
   @@index([guildId, source])
   @@unique([guildId, playerTag, source])
+}
+
+model RecruitmentTemplate {
+  id         Int      @id @default(autoincrement())
+  clanTag    String   @unique
+  requiredTH String
+  focus      String
+  body       String
+  imageUrls  String[]
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+model RecruitmentCooldown {
+  id        Int                 @id @default(autoincrement())
+  userId    String
+  clanTag   String
+  platform  RecruitmentPlatform
+  startedAt DateTime
+  expiresAt DateTime
+  reminded  Boolean             @default(false)
+  createdAt DateTime            @default(now())
+  updatedAt DateTime            @updatedAt
+
+  @@unique([userId, clanTag, platform])
+  @@index([userId, expiresAt])
+  @@index([expiresAt, reminded])
 }
