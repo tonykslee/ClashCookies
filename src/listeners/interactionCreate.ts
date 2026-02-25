@@ -11,6 +11,10 @@ import { formatError } from "../helper/formatError";
 import { CoCService } from "../services/CoCService";
 import { handlePostModalSubmit, isPostModalCustomId } from "../commands/Post";
 import {
+  handleRecruitmentModalSubmit,
+  isRecruitmentModalCustomId,
+} from "../commands/Recruitment";
+import {
   CommandPermissionService,
   getCommandTargetsFromInteraction,
 } from "../services/CommandPermissionService";
@@ -69,22 +73,30 @@ export default (client: Client, cocService: CoCService): void => {
 const handleModalSubmit = async (
   interaction: ModalSubmitInteraction
 ): Promise<void> => {
-  if (!isPostModalCustomId(interaction.customId)) return;
+  const isPostModal = isPostModalCustomId(interaction.customId);
+  const isRecruitmentModal = isRecruitmentModalCustomId(interaction.customId);
+  if (!isPostModal && !isRecruitmentModal) return;
 
   try {
-    const allowed = await commandPermissionService.canUseAnyTarget(
-      ["post:sync:time", "post"],
-      interaction
-    );
+    const targets = isPostModal
+      ? ["post:sync:time", "post"]
+      : ["recruitment:edit", "recruitment"];
+    const allowed = await commandPermissionService.canUseAnyTarget(targets, interaction);
     if (!allowed) {
       await interaction.reply({
-        content: "You do not have permission to use /post.",
+        content: isPostModal
+          ? "You do not have permission to use /post."
+          : "You do not have permission to use /recruitment.",
         ephemeral: true,
       });
       return;
     }
 
-    await handlePostModalSubmit(interaction);
+    if (isPostModal) {
+      await handlePostModalSubmit(interaction);
+      return;
+    }
+    await handleRecruitmentModalSubmit(interaction);
   } catch (err) {
     console.error(`Modal submit failed: ${formatError(err)}`);
     const message = isMissingBotPermissionsError(err)

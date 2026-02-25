@@ -4,8 +4,10 @@ import { CoCService } from "../services/CoCService";
 import { ActivityService } from "../services/ActivityService";
 import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
+import { processRecruitmentCooldownReminders } from "../services/RecruitmentService";
 
 const DEFAULT_OBSERVE_INTERVAL_MINUTES = 30;
+const RECRUITMENT_REMINDER_INTERVAL_MS = 5 * 60 * 1000;
 
 export default (client: Client, cocService: CoCService): void => {
   client.once("ready", async () => {
@@ -102,6 +104,21 @@ export default (client: Client, cocService: CoCService): void => {
     }, intervalMs);
     console.log(`Activity observe loop enabled (every ${intervalMinutes} minute(s)).`);
 
+    const runRecruitmentReminders = async () => {
+      try {
+        await processRecruitmentCooldownReminders(client);
+      } catch (err) {
+        console.error(`[recruitment] reminder loop failed: ${formatError(err)}`);
+      }
+    };
+
+    await runRecruitmentReminders();
+    setInterval(() => {
+      runRecruitmentReminders().catch((err) => {
+        console.error(`[recruitment] reminder interval failed: ${formatError(err)}`);
+      });
+    }, RECRUITMENT_REMINDER_INTERVAL_MS);
+    console.log("Recruitment reminder loop enabled (every 5 minute(s)).");
 
     console.log("ClashCookies is online");
   });
