@@ -26,6 +26,10 @@ Optional owner bypass:
 - `OWNER_DISCORD_USER_ID` - single Discord user ID with full command access override in all guilds.
 - `OWNER_DISCORD_USER_IDS` - comma-separated list of Discord user IDs with full override.
 
+Optional ClashKing link lookup (kick-list fallback when local links are missing):
+- `CLASHKING_LINKS_URL_TEMPLATE` - ClashKing links endpoint URL (supports either fixed `POST /discord_links` or a `{tag}` URL template).
+- `CLASHKING_API_TOKEN` - bearer token for private ClashKing API (if required).
+
 ## Google Sheets (OAuth)
 This project is currently set up to use OAuth refresh token auth.
 
@@ -49,7 +53,7 @@ Optional fallback auth (not required for your current setup):
 - `/permission add command:<name> role:<discordRole> [role2] [role3] [role4] [role5]` - Allow one or more roles to use a command.
 - `/permission remove command:<name> role:<discordRole>` - Remove a role from a command whitelist.
 - `/permission list [command:<name>]` - List role policy for one command target, or all if omitted.
-- `/lastseen tag:<playerTag>` - Show a player's last seen activity.
+- `/lastseen tag:<playerTag>` - Show a player's last seen activity, with drill-down button for tracked signal timestamps.
 - `/inactive days:<number>` - List players inactive for N days.
 - `/role-users role:<discordRole>` - List users in a role with pagination.
 - `/tracked-clan add tag:<tag>` - Add tracked clan.

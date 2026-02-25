@@ -9,6 +9,11 @@ import {
 import { Command } from "../Command";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
+import {
+  ActivitySignalService,
+  signalKeyLabel,
+  type SignalKey,
+} from "../services/ActivitySignalService";
 
 function formatRelativeTime(date: Date): string {
   const diffMs = Date.now() - date.getTime();
@@ -21,7 +26,17 @@ function formatRelativeTime(date: Date): string {
   return `${days} day(s) ago`;
 }
 
-// Helpers for reset windows (approximate, ClashPerk-style)
+function toDiscordTime(date: Date): string {
+  const unix = Math.floor(date.getTime() / 1000);
+  return `<t:${unix}:F> (<t:${unix}:R>)`;
+}
+
+function normalizePlayerTag(input: string): string {
+  const trimmed = input.trim().toUpperCase();
+  if (!trimmed) return "";
+  return trimmed.startsWith("#") ? trimmed : `#${trimmed}`;
+}
+
 function getSeasonStart(): Date {
   const now = new Date();
   return new Date(now.getFullYear(), now.getMonth(), 1);
@@ -29,63 +44,116 @@ function getSeasonStart(): Date {
 
 function getRaidWeekendStart(): Date {
   const now = new Date();
-  const day = now.getUTCDay(); // 5 = Friday
-  const diff = (day >= 5 ? day - 5 : day + 2);
+  const day = now.getUTCDay();
+  const diff = day >= 5 ? day - 5 : day + 2;
   const friday = new Date(now);
   friday.setUTCDate(now.getUTCDate() - diff);
-  friday.setUTCHours(7, 0, 0, 0); // Raid weekends start ~7am UTC
+  friday.setUTCHours(7, 0, 0, 0);
   return friday;
 }
 
-function toDiscordTime(date: Date): string {
-  const unix = Math.floor(date.getTime() / 1000);
-  return `<t:${unix}:F> (<t:${unix}:R>)`;
-}
-
-function getLastSeenSummaryText(lastSeenAt: Date): string {
-  return `🕒 **Last seen:** ${formatRelativeTime(lastSeenAt)}\nBased on historical activity`;
-}
-
-function getBreakdownText(input: {
-  tag: string;
-  name: string;
-  lastSeenAt: Date;
-  lastDonationAt: Date | null;
-  lastCapitalAt: Date | null;
-  lastTrophyAt: Date | null;
-  lastWarAt: Date | null;
-  lastBuilderAt: Date | null;
-  updatedAt: Date;
-}): string {
-  const line = (label: string, dt: Date | null) =>
-    `- ${label}: ${dt ? toDiscordTime(dt) : "Not tracked yet"}`;
-
-  return [
-    `**${input.name}** (${input.tag})`,
-    "",
-    line("Last Seen", input.lastSeenAt),
-    line("Donations", input.lastDonationAt),
-    line("Capital", input.lastCapitalAt),
-    line("Trophies", input.lastTrophyAt),
-    line("War", input.lastWarAt),
-    line("Builder", input.lastBuilderAt),
-    line("Observation Updated", input.updatedAt),
-  ].join("\n");
-}
-
-function buildLastSeenButtons(prefix: string, showBreakdown: boolean) {
+function buildBreakdownRow(prefix: string, showDetails: boolean) {
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
       .setCustomId(`${prefix}:details`)
       .setLabel("Activity Breakdown")
       .setStyle(ButtonStyle.Secondary)
-      .setDisabled(showBreakdown),
+      .setDisabled(showDetails),
     new ButtonBuilder()
       .setCustomId(`${prefix}:back`)
       .setLabel("Back")
       .setStyle(ButtonStyle.Secondary)
-      .setDisabled(!showBreakdown)
+      .setDisabled(!showDetails)
   );
+}
+
+type BreakdownInput = {
+  tag: string;
+  name: string;
+  clanTag: string;
+  lastSeenAt: Date;
+  updatedAt: Date;
+  baseSignals: {
+    lastDonationAt: Date | null;
+    lastCapitalAt: Date | null;
+    lastTrophyAt: Date | null;
+    lastWarAt: Date | null;
+    lastBuilderAt: Date | null;
+  };
+  extraSignals: Array<{ label: string; at: Date }>;
+};
+
+function buildBreakdownText(input: BreakdownInput): string {
+  const lines: string[] = [];
+  lines.push(`**${input.name}** (${input.tag})`);
+  lines.push(`Clan: ${input.clanTag}`);
+  lines.push("");
+  lines.push(`- Last Seen: ${toDiscordTime(input.lastSeenAt)}`);
+  lines.push(
+    `- Donations: ${input.baseSignals.lastDonationAt ? toDiscordTime(input.baseSignals.lastDonationAt) : "Not tracked yet"}`
+  );
+  lines.push(
+    `- Capital: ${input.baseSignals.lastCapitalAt ? toDiscordTime(input.baseSignals.lastCapitalAt) : "Not tracked yet"}`
+  );
+  lines.push(
+    `- Trophies: ${input.baseSignals.lastTrophyAt ? toDiscordTime(input.baseSignals.lastTrophyAt) : "Not tracked yet"}`
+  );
+  lines.push(
+    `- War Stars: ${input.baseSignals.lastWarAt ? toDiscordTime(input.baseSignals.lastWarAt) : "Not tracked yet"}`
+  );
+  lines.push(
+    `- Builder: ${input.baseSignals.lastBuilderAt ? toDiscordTime(input.baseSignals.lastBuilderAt) : "Not tracked yet"}`
+  );
+
+  if (input.extraSignals.length > 0) {
+    lines.push("");
+    lines.push("**Additional Signals**");
+    for (const signal of input.extraSignals) {
+      lines.push(`- ${signal.label}: ${toDiscordTime(signal.at)}`);
+    }
+  }
+
+  lines.push("");
+  lines.push(`- Observation Updated: ${toDiscordTime(input.updatedAt)}`);
+  return lines.join("\n");
+}
+
+async function renderWithBreakdownButtons(
+  interaction: ChatInputCommandInteraction,
+  summary: string,
+  breakdown: string
+): Promise<void> {
+  const prefix = `lastseen:${interaction.id}`;
+  const reply = await interaction.editReply({
+    content: summary,
+    components: [buildBreakdownRow(prefix, false)],
+  });
+
+  const collector = reply.createMessageComponentCollector({
+    componentType: ComponentType.Button,
+    time: 5 * 60 * 1000,
+    filter: (btn) =>
+      btn.user.id === interaction.user.id &&
+      (btn.customId === `${prefix}:details` || btn.customId === `${prefix}:back`),
+  });
+
+  collector.on("collect", async (btn) => {
+    if (btn.customId.endsWith(":details")) {
+      await btn.update({
+        content: breakdown,
+        components: [buildBreakdownRow(prefix, true)],
+      });
+      return;
+    }
+    await btn.update({
+      content: summary,
+      components: [buildBreakdownRow(prefix, false)],
+    });
+  });
+
+  collector.on("end", async () => {
+    await interaction.editReply({ components: [] }).catch(() => undefined);
+  });
 }
 
 export const LastSeen: Command = {
@@ -94,128 +162,138 @@ export const LastSeen: Command = {
   options: [
     {
       name: "tag",
-      description: "Player tag (without #)",
+      description: "Player tag (with or without #)",
       type: 3,
       required: true,
     },
   ],
-
-  run: async (_client: Client, interaction: ChatInputCommandInteraction) => {
+  run: async (
+    _client: Client,
+    interaction: ChatInputCommandInteraction,
+    cocService: CoCService
+  ) => {
     await interaction.deferReply({ ephemeral: true });
 
-    const tagInput = interaction.options.get("tag", true).value as string;
-    const tag = tagInput.startsWith("#") ? tagInput : `#${tagInput}`;
-
-    // 1️⃣ Try historical data first
-    let activity = await prisma.playerActivity.findUnique({
-      where: { tag },
-    });
-
-    if (activity) {
-      const relative = formatRelativeTime(activity.lastSeenAt);
-
-      const summary = getLastSeenSummaryText(activity.lastSeenAt);
-      const prefix = `lastseen:${interaction.id}`;
-      const reply = await interaction.editReply({
-        content: summary,
-        components: [buildLastSeenButtons(prefix, false)],
-      });
-
-      const collector = reply.createMessageComponentCollector({
-        componentType: ComponentType.Button,
-        time: 5 * 60 * 1000,
-        filter: (btn) =>
-          btn.user.id === interaction.user.id &&
-          (btn.customId === `${prefix}:details` || btn.customId === `${prefix}:back`),
-      });
-
-      collector.on("collect", async (btn) => {
-        if (btn.customId.endsWith(":details")) {
-          await btn.update({
-            content: getBreakdownText({
-              tag: activity.tag,
-              name: activity.name,
-              lastSeenAt: activity.lastSeenAt,
-              lastDonationAt: activity.lastDonationAt ?? null,
-              lastCapitalAt: activity.lastCapitalAt ?? null,
-              lastTrophyAt: activity.lastTrophyAt ?? null,
-              lastWarAt: activity.lastWarAt ?? null,
-              lastBuilderAt: activity.lastBuilderAt ?? null,
-              updatedAt: activity.updatedAt,
-            }),
-            components: [buildLastSeenButtons(prefix, true)],
-          });
-          return;
-        }
-
-        await btn.update({
-          content: summary,
-          components: [buildLastSeenButtons(prefix, false)],
-        });
-      });
-
-      collector.on("end", async () => {
-        await interaction.editReply({ components: [] }).catch(() => undefined);
-      });
+    const tag = normalizePlayerTag(interaction.options.getString("tag", true));
+    if (!tag) {
+      await interaction.editReply("❌ Invalid player tag.");
       return;
     }
 
-    // 2️⃣ LIVE inference fallback (ClashPerk-style)
-    try {
-      const cocService = new CoCService();
-      const player = await cocService.getPlayerRaw(tag);
+    const signalService = new ActivitySignalService();
+    const activity = await prisma.playerActivity.findUnique({
+      where: { tag },
+    });
 
-      if (!player) {
-        await interaction.editReply(
-          "❌ Invalid player tag or player not found."
-        );
-        return;
-      }
-    
-      const now = new Date();
-      let inferredAt = now;
-      const reasons: string[] = [];
-    
-      if (player.clanCapitalContributions > 0) {
-        inferredAt = getRaidWeekendStart();
-        reasons.push("🏛 capital raids");
-      } else if (player.donations > 0) {
-        inferredAt = getSeasonStart();
-        reasons.push("🎁 donations this season");
-      } else if (player.warStars > 0) {
-        inferredAt = getSeasonStart();
-        reasons.push("⚔️ war activity");
-      } else {
-        reasons.push("👀 live observation");
-      }
-    
-      await prisma.playerActivity.upsert({
-        where: { tag },
-        update: {
-          name: player.name,
-          clanTag: player.clan?.tag ?? "UNKNOWN",
-          lastSeenAt: inferredAt,
-        },
-        create: {
+    if (!activity) {
+      try {
+        const player = await cocService.getPlayerRaw(tag);
+        if (!player) {
+          await interaction.editReply("❌ Invalid player tag or player not found.");
+          return;
+        }
+
+        const now = new Date();
+        let inferredAt = now;
+        const reasons: string[] = [];
+
+        if ((player.clanCapitalContributions ?? 0) > 0) {
+          inferredAt = getRaidWeekendStart();
+          reasons.push("capital raids");
+        } else if ((player.donations ?? 0) > 0 || (player.donationsReceived ?? 0) > 0) {
+          inferredAt = getSeasonStart();
+          reasons.push("season donations");
+        } else if ((player.warStars ?? 0) > 0 || (player.attackWins ?? 0) > 0) {
+          inferredAt = getSeasonStart();
+          reasons.push("war/activity counters");
+        } else {
+          reasons.push("live observation");
+        }
+
+        await prisma.playerActivity.upsert({
+          where: { tag },
+          update: {
+            name: player.name,
+            clanTag: player.clan?.tag ?? "UNKNOWN",
+            lastSeenAt: inferredAt,
+          },
+          create: {
+            tag,
+            name: player.name,
+            clanTag: player.clan?.tag ?? "UNKNOWN",
+            lastSeenAt: inferredAt,
+          },
+        });
+
+        await signalService.processPlayer({
           tag,
           name: player.name,
           clanTag: player.clan?.tag ?? "UNKNOWN",
-          lastSeenAt: inferredAt,
-        },
-      });
-    
-      const relative = formatRelativeTime(inferredAt);
+          donations: Number(player.donations ?? 0),
+          donationsReceived: Number(player.donationsReceived ?? 0),
+          capitalGold: Number(player.clanCapitalContributions ?? 0),
+          trophies: Number(player.trophies ?? 0),
+          builderTrophies: Number(player.builderBaseTrophies ?? player.versusTrophies ?? 0),
+          warStars: Number(player.warStars ?? 0),
+          attackWins: Number(player.attackWins ?? 0),
+          defenseWins: Number(player.defenseWins ?? 0),
+          versusBattleWins: Number(player.versusBattleWins ?? 0),
+          expLevel: Number(player.expLevel ?? 0),
+          achievements: Array.isArray(player.achievements) ? player.achievements : [],
+          troops: Array.isArray(player.troops) ? player.troops : [],
+          heroes: Array.isArray(player.heroes) ? player.heroes : [],
+          spells: Array.isArray(player.spells) ? player.spells : [],
+          pets: Array.isArray(player.pets) ? player.pets : [],
+          heroEquipment: Array.isArray(player.heroEquipment) ? player.heroEquipment : [],
+          nowMs: now.getTime(),
+        });
 
-      await interaction.editReply(
-        `🕒 **Last seen:** ${relative}\nBased on ${reasons.join(", ")}`
-      );
-    } catch (err: any) {
-      console.error("LastSeen error:", err.message);
-    
-      await interaction.editReply(
-        "❌ Invalid player tag or player not found."
-      );
+        const relative = formatRelativeTime(inferredAt);
+        await interaction.editReply(`🕒 **Last seen:** ${relative}\nBased on ${reasons.join(", ")}`);
+        return;
+      } catch (err: any) {
+        console.error("LastSeen error:", err?.message ?? err);
+        await interaction.editReply("❌ Invalid player tag or player not found.");
+        return;
+      }
     }
-    
+
+    const signalState = await signalService.getState(tag);
+    const relative = formatRelativeTime(activity.lastSeenAt);
+    const confidence =
+      signalState && Object.keys(signalState.signalTimes ?? {}).length >= 4 ? "high" : "medium";
+    const summary = `🕒 **Last seen:** ${relative}\nConfidence: **${confidence}**\nBased on historical activity`;
+
+    const extraSignals =
+      signalState?.signalTimes
+        ? Object.entries(signalState.signalTimes)
+            .filter(([, ms]) => Number.isFinite(ms))
+            .filter(([key]) =>
+              !["donations", "capitalGold", "trophies", "warStars", "builderTrophies"].includes(key)
+            )
+            .sort((a, b) => Number(b[1]) - Number(a[1]))
+            .map(([key, ms]) => ({
+              label: signalKeyLabel(key as SignalKey),
+              at: new Date(Number(ms)),
+            }))
+        : [];
+
+    const breakdown = buildBreakdownText({
+      tag: activity.tag,
+      name: activity.name,
+      clanTag: activity.clanTag,
+      lastSeenAt: activity.lastSeenAt,
+      updatedAt: activity.updatedAt,
+      baseSignals: {
+        lastDonationAt: activity.lastDonationAt ?? null,
+        lastCapitalAt: activity.lastCapitalAt ?? null,
+        lastTrophyAt: activity.lastTrophyAt ?? null,
+        lastWarAt: activity.lastWarAt ?? null,
+        lastBuilderAt: activity.lastBuilderAt ?? null,
+      },
+      extraSignals,
+    });
+
+    await renderWithBreakdownButtons(interaction, summary, breakdown);
   },
 };

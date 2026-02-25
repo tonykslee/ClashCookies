@@ -11,6 +11,7 @@ import {
 import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
+import { ClashKingService } from "../services/ClashKingService";
 import { CoCService } from "../services/CoCService";
 
 const DEFAULT_DAYS = 3;
@@ -47,18 +48,28 @@ function buildPaginationRow(prefix: string, page: number, totalPages: number) {
 async function getLinkReason(
   guild: ChatInputCommandInteraction["guild"],
   playerTag: string,
-  linksByTag: Map<string, { discordUserId: string }>
+  linksByTag: Map<string, { discordUserId: string }>,
+  clashKing: ClashKingService,
+  clashKingCache: Map<string, string | null>
 ): Promise<string | null> {
-  const link = linksByTag.get(playerTag);
-  if (!link) {
-    return "Tag not linked to a Discord profile";
+  let discordUserId = linksByTag.get(playerTag)?.discordUserId ?? null;
+  if (!discordUserId) {
+    if (clashKingCache.has(playerTag)) {
+      discordUserId = clashKingCache.get(playerTag) ?? null;
+    } else {
+      const linked = await clashKing.getLinkedDiscordUserId(playerTag);
+      clashKingCache.set(playerTag, linked);
+      discordUserId = linked;
+    }
   }
+
+  if (!discordUserId) return "Tag not linked to a Discord profile";
   if (!guild) {
     return "Linked Discord profile cannot be validated outside a guild";
   }
 
   try {
-    await guild.members.fetch(link.discordUserId);
+    await guild.members.fetch(discordUserId);
     return null;
   } catch {
     return "Linked Discord profile is not in this server";
@@ -174,6 +185,8 @@ export const KickList: Command = {
   ) => {
     await interaction.deferReply({ ephemeral: true });
     const guildId = interaction.guildId;
+    const clashKing = new ClashKingService();
+    const clashKingCache = new Map<string, string | null>();
     if (!guildId) {
       await interaction.editReply("This command can only be used in a server.");
       return;
@@ -255,7 +268,13 @@ export const KickList: Command = {
       for (const activity of activities) {
         const tag = normalizePlayerTag(activity.tag);
         const clan = clanByMemberTag.get(tag);
-        const linkReason = await getLinkReason(interaction.guild, tag, linksByTag);
+        const linkReason = await getLinkReason(
+          interaction.guild,
+          tag,
+          linksByTag,
+          clashKing,
+          clashKingCache
+        );
         const reason = linkReason ? `inactive + ${linkReason}` : "inactive";
 
         await prisma.kickListEntry.upsert({
@@ -312,7 +331,9 @@ export const KickList: Command = {
       const linkReason = await getLinkReason(
         interaction.guild,
         tag,
-        new Map(link ? [[tag, { discordUserId: link.discordUserId }]] : [])
+        new Map(link ? [[tag, { discordUserId: link.discordUserId }]] : []),
+        clashKing,
+        clashKingCache
       );
       const finalReason = linkReason ? `${reason} | ${linkReason}` : reason;
 
