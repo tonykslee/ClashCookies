@@ -294,8 +294,21 @@ async function fetchMatchTypeByOpponentTag(opponentTag: string): Promise<"FWA" |
     },
     validateStatus: () => true,
   });
+  recordFetchEvent({
+    namespace: "cc",
+    operation: "association_lookup",
+    source: "web",
+    detail: `tag=${normalizeTag(opponentTag)} status=${response.status}`,
+  });
   if (response.status >= 400) return null;
-  return deriveMatchTypeFromAssociation(String(response.data ?? ""));
+  const matchType = deriveMatchTypeFromAssociation(String(response.data ?? ""));
+  recordFetchEvent({
+    namespace: "cc",
+    operation: "association_lookup_parse",
+    source: matchType ? "cache_hit" : "cache_miss",
+    detail: `tag=${normalizeTag(opponentTag)} matchType=${matchType ?? "null"}`,
+  });
+  return matchType;
 }
 
 async function resolveMatchTypeWithFallback(params: {
@@ -851,6 +864,7 @@ async function buildTrackedMatchOverview(
   sourceSync: number | null,
   guildId: string | null
 ): Promise<string> {
+  const settings = new SettingsService();
   const tracked = await prisma.trackedClan.findMany({
     orderBy: { createdAt: "asc" },
     select: { tag: true, name: true },
@@ -900,15 +914,28 @@ async function buildTrackedMatchOverview(
       continue;
     }
 
+    const currentSync = getCurrentSyncFromPrevious(sourceSync, warState);
+    const [primaryPoints, opponentPoints] = await Promise.all([
+      getClanPointsCached(settings, cocService, clanTag, currentSync).catch(() => null),
+      getClanPointsCached(settings, cocService, opponentTag, currentSync).catch(() => null),
+    ]);
+    const pointsLine =
+      primaryPoints?.balance !== null &&
+      primaryPoints?.balance !== undefined &&
+      opponentPoints?.balance !== null &&
+      opponentPoints?.balance !== undefined
+        ? `Points: ${primaryPoints.balance} - ${opponentPoints.balance}`
+        : "Points: unavailable";
+
     if (matchType === "FWA") {
       lines.push(
-        `- ${clanName}(#${clanTag}) vs ${opponentName}(#${opponentTag})\n  ${clanName} outcome: ${sub?.outcome ?? "UNKNOWN"}`
+        `- ${clanName}(#${clanTag}) vs ${opponentName}(#${opponentTag})\n  ${pointsLine}\n  ${clanName} outcome: ${sub?.outcome ?? "UNKNOWN"}`
       );
       continue;
     }
 
     lines.push(
-      `- ${clanName}(#${clanTag}) vs ${opponentName}(#${opponentTag})\n  Match Type: ${matchType}`
+      `- ${clanName}(#${clanTag}) vs ${opponentName}(#${opponentTag})\n  ${pointsLine}\n  Match Type: ${matchType}`
     );
   }
 

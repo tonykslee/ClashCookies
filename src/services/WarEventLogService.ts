@@ -2,6 +2,7 @@ import { ChannelType, Client, EmbedBuilder } from "discord.js";
 import axios from "axios";
 import { Prisma } from "@prisma/client";
 import { formatError } from "../helper/formatError";
+import { recordFetchEvent } from "../helper/fetchTelemetry";
 import { prisma } from "../prisma";
 import { CoCService } from "./CoCService";
 import { PointsProjectionService } from "./PointsProjectionService";
@@ -142,10 +143,23 @@ export class WarEventLogService {
       },
       validateStatus: () => true,
     });
+    recordFetchEvent({
+      namespace: "cc",
+      operation: "association_lookup",
+      source: "web",
+      detail: `tag=${normalizeTagNoHash(clanTag)} status=${response.status}`,
+    });
     if (response.status >= 400) {
       throw new Error(`cc site returned ${response.status}`);
     }
-    return deriveMatchTypeFromAssociation(String(response.data ?? ""));
+    const matchType = deriveMatchTypeFromAssociation(String(response.data ?? ""));
+    recordFetchEvent({
+      namespace: "cc",
+      operation: "association_lookup_parse",
+      source: matchType ? "cache_hit" : "cache_miss",
+      detail: `tag=${normalizeTagNoHash(clanTag)} matchType=${matchType ?? "null"}`,
+    });
+    return matchType;
   }
 
   private async getPreviousSyncNum(): Promise<number> {
