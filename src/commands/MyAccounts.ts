@@ -1,6 +1,7 @@
 import {
   ActionRowBuilder,
   ApplicationCommandOptionType,
+  AutocompleteInteraction,
   ButtonBuilder,
   ButtonStyle,
   ChatInputCommandInteraction,
@@ -11,6 +12,7 @@ import {
 import { Command } from "../Command";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
+import { ClashKingService } from "../services/ClashKingService";
 import { PlayerLinkSyncService } from "../services/PlayerLinkSyncService";
 
 type AccountRow = {
@@ -129,9 +131,9 @@ function buildEmbeds(rows: AccountRow[]): EmbedBuilder[] {
   );
 }
 
-export const MyAccounts: Command = {
-  name: "my-accounts",
-  description: "List your linked accounts grouped by current clan",
+export const Accounts: Command = {
+  name: "accounts",
+  description: "List linked accounts grouped by current clan",
   options: [
     {
       name: "visibility",
@@ -143,25 +145,93 @@ export const MyAccounts: Command = {
         { name: "public", value: "public" },
       ],
     },
+    {
+      name: "tag",
+      description: "Player tag. Resolves linked Discord ID first.",
+      type: ApplicationCommandOptionType.String,
+      required: false,
+      autocomplete: true,
+    },
+    {
+      name: "discord-id",
+      description: "Discord user ID to inspect linked accounts",
+      type: ApplicationCommandOptionType.String,
+      required: false,
+    },
   ],
   run: async (
     _client: Client,
     interaction: ChatInputCommandInteraction,
     cocService: CoCService
   ) => {
-    await interaction.deferReply({ ephemeral: true });
+    const visibility = interaction.options.getString("visibility", false) ?? "private";
+    const isPublic = visibility === "public";
+    await interaction.deferReply({ ephemeral: !isPublic });
+
+    const rawTag = interaction.options.getString("tag", false)?.trim() ?? "";
+    const rawDiscordId = interaction.options.getString("discord-id", false)?.trim() ?? "";
+    if (rawTag && rawDiscordId) {
+      await interaction.editReply("Use only one of `tag` or `discord-id`.");
+      return;
+    }
+
+    const normalizeDiscordUserId = (input: string): string | null =>
+      /^\d{15,22}$/.test(input) ? input : null;
+
+    let targetDiscordUserId = interaction.user.id;
+    let sourceLabel = "your Discord account";
+    if (rawDiscordId) {
+      const normalized = normalizeDiscordUserId(rawDiscordId);
+      if (!normalized) {
+        await interaction.editReply("Invalid `discord-id`. Expected a Discord snowflake.");
+        return;
+      }
+      targetDiscordUserId = normalized;
+      sourceLabel = `Discord user \`${normalized}\``;
+    } else if (rawTag) {
+      const tag = normalizeTag(rawTag);
+      if (!tag) {
+        await interaction.editReply("Invalid `tag`.");
+        return;
+      }
+
+      const local = await prisma.playerLink.findUnique({
+        where: { playerTag: tag },
+        select: { discordUserId: true },
+      });
+
+      let linkedDiscordId = local?.discordUserId ?? null;
+      if (!linkedDiscordId) {
+        const clashKing = new ClashKingService();
+        linkedDiscordId = await clashKing.getLinkedDiscordUserId(tag);
+        if (linkedDiscordId) {
+          await prisma.playerLink.upsert({
+            where: { playerTag: tag },
+            update: { discordUserId: linkedDiscordId },
+            create: { playerTag: tag, discordUserId: linkedDiscordId },
+          });
+        }
+      }
+
+      if (!linkedDiscordId) {
+        await interaction.editReply(`No Discord link found for player tag \`${tag}\`.`);
+        return;
+      }
+      targetDiscordUserId = linkedDiscordId;
+      sourceLabel = `player tag \`${tag}\` (linked Discord ID \`${linkedDiscordId}\`)`;
+    }
 
     let links = await prisma.playerLink.findMany({
-      where: { discordUserId: interaction.user.id },
+      where: { discordUserId: targetDiscordUserId },
       orderBy: { createdAt: "asc" },
       select: { playerTag: true },
     });
 
     if (links.length === 0) {
       const syncService = new PlayerLinkSyncService();
-      await syncService.syncByDiscordUserId(interaction.user.id);
+      await syncService.syncByDiscordUserId(targetDiscordUserId);
       links = await prisma.playerLink.findMany({
-        where: { discordUserId: interaction.user.id },
+        where: { discordUserId: targetDiscordUserId },
         orderBy: { createdAt: "asc" },
         select: { playerTag: true },
       });
@@ -169,7 +239,7 @@ export const MyAccounts: Command = {
 
     if (links.length === 0) {
       await interaction.editReply(
-        "No linked player tags were found for your Discord account."
+        `No linked player tags were found for ${sourceLabel}.`
       );
       return;
     }
@@ -212,7 +282,10 @@ export const MyAccounts: Command = {
     });
 
     const embeds = buildEmbeds(rows);
-    const prefix = `my-accounts:${interaction.id}`;
+    for (const embed of embeds) {
+      embed.setTitle(`Accounts by Clan (${rows.length})`);
+    }
+    const prefix = `accounts:${interaction.id}`;
     let page = 0;
 
     const reply = await interaction.editReply({
@@ -245,5 +318,32 @@ export const MyAccounts: Command = {
         .editReply({ embeds: [embeds[page]], components: [] })
         .catch(() => undefined);
     });
+  },
+  autocomplete: async (interaction: AutocompleteInteraction) => {
+    const focused = interaction.options.getFocused(true);
+    if (focused.name !== "tag") {
+      await interaction.respond([]);
+      return;
+    }
+
+    const query = normalizeTag(String(focused.value ?? "")).replace(/^#/, "").toLowerCase();
+    const tracked = await prisma.trackedClan.findMany({
+      orderBy: { createdAt: "asc" },
+      select: { name: true, tag: true },
+    });
+
+    const choices = tracked
+      .map((clan) => {
+        const tag = normalizeTag(clan.tag).replace(/^#/, "");
+        const name = clan.name?.trim() ? `${clan.name.trim()} (#${tag})` : `#${tag}`;
+        return { name: name.slice(0, 100), value: tag };
+      })
+      .filter(
+        (choice) =>
+          choice.name.toLowerCase().includes(query) || choice.value.toLowerCase().includes(query)
+      )
+      .slice(0, 25);
+
+    await interaction.respond(choices);
   },
 };

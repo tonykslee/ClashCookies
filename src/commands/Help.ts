@@ -149,15 +149,23 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     ],
     examples: ["/enable event logs clan:2QG2C08UP target-channel:#war-events"],
   },
-  "my-accounts": {
-    summary: "List your linked player accounts grouped by their current clan.",
+  accounts: {
+    summary: "List linked player accounts grouped by their current clan.",
     details: [
-      "Reads linked tags for your Discord account from the bot database.",
-      "If no local links are found, it queries ClashKing `/discord_links` for your Discord ID and caches results to `PlayerLink`.",
+      "Default behavior lists accounts linked to your Discord account.",
+      "If `discord-id` is provided, lists accounts for that user.",
+      "If `tag` is provided, resolves linked Discord ID from PlayerLink/ClashKing, then lists that user's accounts.",
+      "Only one of `tag` or `discord-id` can be provided.",
+      "If no local links are found for the target user, it queries ClashKing `/discord_links` and caches results to `PlayerLink`.",
       "Fetches live player data when available and groups accounts by current clan.",
       "Set `visibility:public` to post the response directly in channel.",
     ],
-    examples: ["/my-accounts", "/my-accounts visibility:public"],
+    examples: [
+      "/accounts",
+      "/accounts discord-id:143827744717799425",
+      "/accounts tag:G2RG9JCRL",
+      "/accounts visibility:public",
+    ],
   },
   points: {
     summary: "Fetch FWA points balance and optional matchup projection.",
