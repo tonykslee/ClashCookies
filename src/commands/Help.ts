@@ -167,19 +167,19 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/accounts visibility:public",
     ],
   },
-  points: {
-    summary: "Fetch FWA points balance and optional matchup projection.",
+  fwa: {
+    summary: "FWA points and matchup tools.",
     details: [
-      "Provide a clan tag, or omit tag to fetch all tracked clan balances.",
-      "Optionally provide `opponent-tag` to compare points and apply sync-based tiebreak logic.",
+      "`/fwa points` returns point balances (single clan tag or all tracked if tag omitted).",
+      "`/fwa match` auto-resolves current war opponent from CoC API and evaluates win/lose/tiebreak using the same points logic.",
       "Tag supports autocomplete from tracked clans.",
       "Set `visibility:public` to post the result directly in channel.",
     ],
     examples: [
-      "/points tag:2QG2C08UP",
-      "/points",
-      "/points tag:2QG2C08UP opponent-tag:ABC12345",
-      "/points tag:2QG2C08UP visibility:public",
+      "/fwa points tag:2QG2C08UP",
+      "/fwa points",
+      "/fwa match tag:2QG2C08UP",
+      "/fwa points tag:2QG2C08UP visibility:public",
     ],
   },
   recruitment: {
@@ -232,7 +232,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     ],
     examples: [
       "/permission add command:post role:@Leaders",
-      "/permission add command:points role:@Leaders",
+      "/permission add command:fwa role:@Leaders",
       "/permission remove command:post role:@Leaders",
       "/permission list",
     ],

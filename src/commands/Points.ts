@@ -567,6 +567,14 @@ async function getClanPointsCached(
   }
 }
 
+export async function getPointsSnapshotForClan(
+  cocService: CoCService,
+  tag: string
+): Promise<PointsSnapshot> {
+  const settings = new SettingsService();
+  return getClanPointsCached(settings, cocService, tag);
+}
+
 function buildMatchupMessage(
   primary: PointsSnapshot,
   opponent: PointsSnapshot,
@@ -612,33 +620,57 @@ function buildMatchupMessage(
   );
 }
 
-export const Points: Command = {
-  name: "points",
-  description: "Get FWA points balance and optional matchup projection",
+export const Fwa: Command = {
+  name: "fwa",
+  description: "FWA points and matchup tools",
   options: [
     {
-      name: "visibility",
-      description: "Response visibility",
-      type: ApplicationCommandOptionType.String,
-      required: false,
-      choices: [
-        { name: "private", value: "private" },
-        { name: "public", value: "public" },
+      name: "points",
+      description: "Get FWA points for one clan or all tracked clans",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "visibility",
+          description: "Response visibility",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          choices: [
+            { name: "private", value: "private" },
+            { name: "public", value: "public" },
+          ],
+        },
+        {
+          name: "tag",
+          description: "Clan tag (with or without #). Leave blank for all tracked clans.",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          autocomplete: true,
+        },
       ],
     },
     {
-      name: "tag",
-      description: "Clan tag (with or without #). Leave blank for all tracked clans.",
-      type: ApplicationCommandOptionType.String,
-      required: false,
-      autocomplete: true,
-    },
-    {
-      name: "opponent-tag",
-      description: "Opponent clan tag (with or without #)",
-      type: ApplicationCommandOptionType.String,
-      required: false,
-      autocomplete: true,
+      name: "match",
+      description: "Project FWA matchup using current war opponent and points",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "visibility",
+          description: "Response visibility",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          choices: [
+            { name: "private", value: "private" },
+            { name: "public", value: "public" },
+          ],
+        },
+        {
+          name: "tag",
+          description: "Your clan tag (with or without #)",
+          type: ApplicationCommandOptionType.String,
+          required: true,
+          autocomplete: true,
+        },
+      ],
     },
   ],
   run: async (
@@ -646,6 +678,7 @@ export const Points: Command = {
     interaction: ChatInputCommandInteraction,
     cocService: CoCService
   ) => {
+    const subcommand = interaction.options.getSubcommand(true);
     const visibility = interaction.options.getString("visibility", false) ?? "private";
     const isPublic = visibility === "public";
     const components = !isPublic
@@ -669,16 +702,8 @@ export const Points: Command = {
     const settings = new SettingsService();
     await interaction.deferReply({ ephemeral: !isPublic });
     const rawTag = interaction.options.getString("tag", false);
-    const rawOpponentTag = interaction.options.getString("opponent-tag", false);
     const tag = normalizeTag(rawTag ?? "");
-    const opponentTag = normalizeTag(rawOpponentTag ?? "");
-
-    if (!tag && opponentTag) {
-      await editReplySafe("Please provide `tag` when using `opponent-tag`.");
-      return;
-    }
-
-    if (!tag) {
+    if (subcommand === "points" && !tag) {
       const tracked = await prisma.trackedClan.findMany({
         orderBy: { createdAt: "asc" },
         select: { name: true, tag: true },
@@ -731,13 +756,21 @@ export const Points: Command = {
       return;
     }
 
-    if (opponentTag) {
-      if (opponentTag === tag) {
-        await editReplySafe("`tag` and `opponent-tag` must be different clans.");
+    if (subcommand === "match") {
+      if (!tag) {
+        await editReplySafe("Please provide `tag`.");
         return;
       }
 
+      let opponentTag = "";
       try {
+        const war = await cocService.getCurrentWar(`#${tag}`);
+        opponentTag = normalizeTag(String(war?.opponent?.tag ?? ""));
+        if (!opponentTag) {
+          await editReplySafe(`No active war opponent found for #${tag}.`);
+          return;
+        }
+
         const [primary, opponent] = await Promise.all([
           getClanPointsCached(settings, cocService, tag),
           getClanPointsCached(settings, cocService, opponentTag),
@@ -785,9 +818,13 @@ export const Points: Command = {
         });
 
         const resolvedPrimaryName =
-          trackedNameByTag.get(tag) ?? sanitizeClanName(primary.clanName);
+          trackedNameByTag.get(tag) ??
+          sanitizeClanName(String(war?.clan?.name ?? "")) ??
+          sanitizeClanName(primary.clanName);
         const resolvedOpponentName =
-          trackedNameByTag.get(opponentTag) ?? sanitizeClanName(opponent.clanName);
+          trackedNameByTag.get(opponentTag) ??
+          sanitizeClanName(String(war?.opponent?.name ?? "")) ??
+          sanitizeClanName(opponent.clanName);
         const [primaryNameFromApi, opponentNameFromApi] = await Promise.all([
           resolvedPrimaryName
             ? Promise.resolve<string | null>(null)
@@ -834,6 +871,10 @@ export const Points: Command = {
     }
 
     try {
+      if (!tag) {
+        await editReplySafe("Please provide `tag`.");
+        return;
+      }
       const result = await getClanPointsCached(settings, cocService, tag);
       const balance = result.balance;
       if (balance === null || Number.isNaN(balance)) {
@@ -886,7 +927,7 @@ export const Points: Command = {
   },
   autocomplete: async (interaction: AutocompleteInteraction) => {
     const focused = interaction.options.getFocused(true);
-    if (focused.name !== "tag" && focused.name !== "opponent-tag") {
+    if (focused.name !== "tag") {
       await interaction.respond([]);
       return;
     }

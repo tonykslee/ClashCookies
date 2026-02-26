@@ -28,7 +28,7 @@ import {
 
 const commandPermissionService = new CommandPermissionService();
 const GLOBAL_POST_BUTTON_PREFIX = "post-channel";
-const COMMANDS_WITH_CUSTOM_VISIBILITY = new Set(["help", "points"]);
+const COMMANDS_WITH_CUSTOM_VISIBILITY = new Set(["help", "fwa"]);
 
 let isRegistered = false;
 
