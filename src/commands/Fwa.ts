@@ -1114,17 +1114,15 @@ async function buildTrackedMatchOverview(
       getClanPointsCached(settings, cocService, clanTag, currentSync).catch(() => null),
       getClanPointsCached(settings, cocService, opponentTag, currentSync).catch(() => null),
     ]);
-    const hasBothPoints =
+    const hasPrimaryPoints =
       primaryPoints?.balance !== null &&
       primaryPoints?.balance !== undefined &&
-      !Number.isNaN(primaryPoints.balance) &&
+      !Number.isNaN(primaryPoints.balance);
+    const hasOpponentPoints =
       opponentPoints?.balance !== null &&
       opponentPoints?.balance !== undefined &&
       !Number.isNaN(opponentPoints.balance);
-    const hasNeitherPoints =
-      (primaryPoints?.balance === null || primaryPoints?.balance === undefined || Number.isNaN(primaryPoints.balance)) &&
-      (opponentPoints?.balance === null || opponentPoints?.balance === undefined || Number.isNaN(opponentPoints.balance));
-    const inferredFromPointsType: "FWA" | "MM" | null = hasBothPoints ? "FWA" : hasNeitherPoints ? "MM" : null;
+    const inferredFromPointsType: "FWA" | "MM" | null = hasOpponentPoints ? "FWA" : "MM";
     const matchType = matchTypeResolved ?? inferredFromPointsType ?? "UNKNOWN";
     const inferredMatchType = Boolean(sub?.inferredMatchType) || (matchTypeResolved === null && inferredFromPointsType !== null);
     if (matchTypeResolved === null && inferredFromPointsType && guildId) {
@@ -1150,7 +1148,7 @@ async function buildTrackedMatchOverview(
       });
     }
     const pointsLine =
-      hasBothPoints
+      hasPrimaryPoints && hasOpponentPoints
         ? `Points: ${primaryPoints.balance} - ${opponentPoints.balance}`
         : "Points: unavailable";
 
@@ -1632,8 +1630,6 @@ export const Fwa: Command = {
 
         const hasPrimaryPoints = primary.balance !== null && !Number.isNaN(primary.balance);
         const hasOpponentPoints = opponent.balance !== null && !Number.isNaN(opponent.balance);
-        const hasBothPoints = hasPrimaryPoints && hasOpponentPoints;
-        const hasNeitherPoints = !hasPrimaryPoints && !hasOpponentPoints;
         if (!hasPrimaryPoints && hasOpponentPoints) {
           await editReplySafe(`Could not fetch point balance for #${tag}.`);
           return;
@@ -1642,7 +1638,7 @@ export const Fwa: Command = {
           await editReplySafe(`Could not fetch point balance for #${opponentTag}.`);
           return;
         }
-        const inferredFromPointsType: "FWA" | "MM" | null = hasBothPoints ? "FWA" : hasNeitherPoints ? "MM" : null;
+        const inferredFromPointsType: "FWA" | "MM" | null = hasOpponentPoints ? "FWA" : "MM";
         let matchType = (matchTypeResolved ?? inferredFromPointsType ?? "UNKNOWN") as
           | "FWA"
           | "BL"
@@ -1705,7 +1701,7 @@ export const Fwa: Command = {
                 .catch(() => null),
         ]);
 
-        const projectionLine = hasBothPoints
+        const projectionLine = hasPrimaryPoints && hasOpponentPoints
           ? limitDiscordContent(
               buildMatchupMessage(primary, opponent, {
                 primaryName: resolvedPrimaryName ?? primaryNameFromApi,
@@ -1742,9 +1738,9 @@ export const Fwa: Command = {
                 : ""
             }`
           )
-          .addFields({
+            .addFields({
             name: "Points",
-            value: hasBothPoints
+            value: hasPrimaryPoints && hasOpponentPoints
               ? `${leftName}: **${primary.balance}**\n${rightName}: **${opponent.balance}**`
               : "Unavailable on both clans.",
             inline: false,
@@ -1760,8 +1756,8 @@ export const Fwa: Command = {
             `## Opponent Tag`,
             `\`${opponentTag}\``,
             `## Points`,
-            hasBothPoints ? `${leftName}: ${primary.balance}` : "Unavailable",
-            hasBothPoints ? `${rightName}: ${opponent.balance}` : "Unavailable",
+            hasPrimaryPoints && hasOpponentPoints ? `${leftName}: ${primary.balance}` : "Unavailable",
+            hasPrimaryPoints && hasOpponentPoints ? `${rightName}: ${opponent.balance}` : "Unavailable",
             `## Projection`,
             projectionLine,
             `Match Type: ${matchTypeText}`,

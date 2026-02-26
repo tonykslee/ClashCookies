@@ -132,14 +132,6 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     ],
     examples: ["/cc player tag:ABCD1234", "/cc clan tag:2QG2C08UP"],
   },
-  opponent: {
-    summary: "Get current war opponent clan tag from CoC API.",
-    details: [
-      "Returns the opponent clan tag without the `#` prefix.",
-      "If no active war is available, returns a clear fallback message.",
-    ],
-    examples: ["/opponent tag:2QG2C08UP"],
-  },
   notify: {
     summary: "Configure notification features.",
     details: [

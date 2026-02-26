@@ -250,8 +250,6 @@ export class WarEventLogService {
     if (eventType === "war_started") {
       if (
         nextMatchType === null &&
-        nextFwaPoints !== null &&
-        Number.isFinite(nextFwaPoints) &&
         nextOpponentFwaPoints !== null &&
         Number.isFinite(nextOpponentFwaPoints)
       ) {
@@ -259,7 +257,6 @@ export class WarEventLogService {
         nextInferredMatchType = true;
       } else if (
         nextMatchType === null &&
-        (nextFwaPoints === null || !Number.isFinite(nextFwaPoints)) &&
         (nextOpponentFwaPoints === null || !Number.isFinite(nextOpponentFwaPoints))
       ) {
         nextMatchType = "MM";
