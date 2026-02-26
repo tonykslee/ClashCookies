@@ -75,7 +75,10 @@ Optional fallback auth (not required for your current setup):
 - `/my-accounts [visibility:private|public]` - List your linked player accounts grouped by their current clan.
 - `/points [visibility:private|public] [tag:<tag>] [opponent-tag:<tag>]` - Fetch current point balance from `https://points.fwafarm.com/clan?tag=<tag-without-#>`. If `tag` is omitted, fetches all tracked clans. If both tags are provided, returns projected winner/loser by points, or sync-based tiebreak when points are tied.
 - `/recruitment show platform:discord|reddit|band clan:<tag>` - Render platform-specific recruitment template output for a tracked clan.
-- `/recruitment edit clan:<tag>` - Open modal to edit Required TH, focus, body (max 1024), and default image URLs for a clan.
+- `/recruitment edit platform:discord|reddit|band clan:<tag>` - Open platform-specific modal:
+  - Discord: clan tag, body (max 1024), optional image URL(s)
+  - Band: body, optional image URL(s)
+  - Reddit: subject (`[Recruiting] Name of Clan | #ClanTag | Required TH/Level | Clan Level | FWA | Discord`), body (markdown), optional image URL(s)
 - `/recruitment countdown start platform:discord|reddit|band clan:<tag>` - Start exact cooldown timer for your account on that platform+clan pair.
 - `/recruitment countdown status` - Show your current recruitment cooldown timers.
 - `/recruitment dashboard` - Show readiness across all tracked clans/platforms for your account.
