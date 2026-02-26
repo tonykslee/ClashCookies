@@ -648,12 +648,33 @@ function clanCacheKey(tag: string): string {
   return `points_cache:${normalizeTag(tag)}`;
 }
 
+type CurrentWarResult = Awaited<ReturnType<CoCService["getCurrentWar"]>>;
+type WarLookupCache = Map<string, Promise<CurrentWarResult>>;
+
+function getCurrentWarCached(
+  cocService: CoCService,
+  tag: string,
+  warLookupCache?: WarLookupCache
+): Promise<CurrentWarResult> {
+  const normalized = `#${normalizeTag(tag)}`;
+  if (!warLookupCache) return cocService.getCurrentWar(normalized);
+  const cached = warLookupCache.get(normalized);
+  if (cached) return cached;
+  const pending = cocService.getCurrentWar(normalized);
+  warLookupCache.set(normalized, pending);
+  return pending;
+}
+
 function matchupCacheKey(tag: string, opponentTag: string): string {
   return `points_matchup_cache:${normalizeTag(tag)}:${normalizeTag(opponentTag)}`;
 }
 
-async function getClanWarEndMs(cocService: CoCService, tag: string): Promise<number | null> {
-  const war = await cocService.getCurrentWar(`#${normalizeTag(tag)}`);
+async function getClanWarEndMs(
+  cocService: CoCService,
+  tag: string,
+  warLookupCache?: WarLookupCache
+): Promise<number | null> {
+  const war = await getCurrentWarCached(cocService, tag, warLookupCache);
   return parseCocApiTime(war?.endTime);
 }
 
@@ -792,7 +813,8 @@ async function getClanPointsCached(
   settings: SettingsService,
   cocService: CoCService,
   tag: string,
-  sourceSync: number | null
+  sourceSync: number | null,
+  warLookupCache?: WarLookupCache
 ): Promise<PointsSnapshot> {
   const normalizedTag = normalizeTag(tag);
   const cached = await readPointsCache(settings, normalizedTag);
@@ -822,7 +844,7 @@ async function getClanPointsCached(
 
   let warEndMs = knownWarEndMs;
   if (shouldRecheckWar) {
-    warEndMs = await getClanWarEndMs(cocService, normalizedTag);
+    warEndMs = await getClanWarEndMs(cocService, normalizedTag, warLookupCache);
   }
   const refreshAfterMs = warEndMs === null ? null : warEndMs + CACHE_REFRESH_DELAY_MS;
   const needsRefreshByCycle =
@@ -1039,7 +1061,8 @@ async function buildLastWarMatchOverview(
 async function buildTrackedMatchOverview(
   cocService: CoCService,
   sourceSync: number | null,
-  guildId: string | null
+  guildId: string | null,
+  warLookupCache?: WarLookupCache
 ): Promise<{ embed: EmbedBuilder; copyText: string }> {
   const settings = new SettingsService();
   const tracked = await prisma.trackedClan.findMany({
@@ -1078,7 +1101,7 @@ async function buildTrackedMatchOverview(
   for (const clan of tracked) {
     const clanTag = normalizeTag(clan.tag);
     const clanName = sanitizeClanName(clan.name) ?? `#${clanTag}`;
-    const war = await cocService.getCurrentWar(`#${clanTag}`).catch(() => null);
+    const war = await getCurrentWarCached(cocService, clanTag, warLookupCache).catch(() => null);
     const warState = deriveWarState(war?.state);
     stateCounts.set(warState, (stateCounts.get(warState) ?? 0) + 1);
     if (!stateRemaining.has(warState)) {
@@ -1111,8 +1134,12 @@ async function buildTrackedMatchOverview(
 
     const currentSync = getCurrentSyncFromPrevious(sourceSync, warState);
     const [primaryPoints, opponentPoints] = await Promise.all([
-      getClanPointsCached(settings, cocService, clanTag, currentSync).catch(() => null),
-      getClanPointsCached(settings, cocService, opponentTag, currentSync).catch(() => null),
+      getClanPointsCached(settings, cocService, clanTag, currentSync, warLookupCache).catch(
+        () => null
+      ),
+      getClanPointsCached(settings, cocService, opponentTag, currentSync, warLookupCache).catch(
+        () => null
+      ),
     ]);
     const hasPrimaryPoints =
       primaryPoints?.balance !== null &&
@@ -1337,6 +1364,7 @@ export const Fwa: Command = {
     };
 
     const settings = new SettingsService();
+    const warLookupCache: WarLookupCache = new Map();
     const sourceSync = await getSourceOfTruthSync(settings);
     await interaction.deferReply({ ephemeral: !isPublic });
     const rawTag = interaction.options.getString("tag", false);
@@ -1504,14 +1532,22 @@ export const Fwa: Command = {
       for (const clan of tracked) {
         const trackedTag = normalizeTag(clan.tag);
         try {
-          const war = await cocService.getCurrentWar(`#${trackedTag}`).catch(() => null);
+          const war = await getCurrentWarCached(cocService, trackedTag, warLookupCache).catch(
+            () => null
+          );
           const warState = deriveWarState(war?.state);
           stateCounts.set(warState, (stateCounts.get(warState) ?? 0) + 1);
           if (!stateRemaining.has(warState)) {
             stateRemaining.set(warState, getWarStateRemaining(war, warState));
           }
           const currentSync = getCurrentSyncFromPrevious(sourceSync, warState);
-          const result = await getClanPointsCached(settings, cocService, trackedTag, currentSync);
+          const result = await getClanPointsCached(
+            settings,
+            cocService,
+            trackedTag,
+            currentSync,
+            warLookupCache
+          );
           if (result.balance === null || Number.isNaN(result.balance)) {
             failedCount += 1;
             lines.push(`- ${clan.name ?? `#${trackedTag}`}: unavailable`);
@@ -1565,7 +1601,8 @@ export const Fwa: Command = {
         const overview = await buildTrackedMatchOverview(
           cocService,
           sourceSync,
-          interaction.guildId ?? null
+          interaction.guildId ?? null,
+          warLookupCache
         );
         const key = interaction.id;
         fwaMatchCopyPayloads.set(key, {
@@ -1584,7 +1621,7 @@ export const Fwa: Command = {
 
       let opponentTag = "";
       try {
-        const war = await cocService.getCurrentWar(`#${tag}`);
+        const war = await getCurrentWarCached(cocService, tag, warLookupCache);
         const warState = deriveWarState(war?.state);
         const warRemaining = getWarStateRemaining(war, warState);
         const currentSync = getCurrentSyncFromPrevious(sourceSync, warState);
@@ -1600,8 +1637,8 @@ export const Fwa: Command = {
         }
 
         const [primary, opponent] = await Promise.all([
-          getClanPointsCached(settings, cocService, tag, currentSync),
-          getClanPointsCached(settings, cocService, opponentTag, currentSync),
+          getClanPointsCached(settings, cocService, tag, currentSync, warLookupCache),
+          getClanPointsCached(settings, cocService, opponentTag, currentSync, warLookupCache),
         ]);
         const subscription = interaction.guildId
           ? await prisma.warEventLogSubscription.findUnique({
@@ -1818,11 +1855,17 @@ export const Fwa: Command = {
         await editReplySafe("Please provide `tag`.");
         return;
       }
-      const war = await cocService.getCurrentWar(`#${tag}`).catch(() => null);
+      const war = await getCurrentWarCached(cocService, tag, warLookupCache).catch(() => null);
       const warState = deriveWarState(war?.state);
       const warRemaining = getWarStateRemaining(war, warState);
       const currentSync = getCurrentSyncFromPrevious(sourceSync, warState);
-      const result = await getClanPointsCached(settings, cocService, tag, currentSync);
+      const result = await getClanPointsCached(
+        settings,
+        cocService,
+        tag,
+        currentSync,
+        warLookupCache
+      );
       const balance = result.balance;
       if (balance === null || Number.isNaN(balance)) {
         if (result.notFound) {
