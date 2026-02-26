@@ -108,3 +108,53 @@ model RecruitmentCooldown {
   @@index([userId, expiresAt])
   @@index([expiresAt, reminded])
 }
+
+model WarHistoryParticipant {
+  id              Int      @id @default(autoincrement())
+  clanTag         String
+  clanName        String?
+  opponentClanTag String?
+  opponentClanName String?
+  warStartTime    DateTime
+  warEndTime      DateTime?
+  warState        String?
+  playerTag       String
+  playerName      String?
+  playerPosition  Int?
+  attacksUsed     Int
+  updatedAt       DateTime @updatedAt
+  createdAt       DateTime @default(now())
+
+  @@unique([clanTag, warStartTime, playerTag])
+  @@index([clanTag, warStartTime])
+  @@index([playerTag, warStartTime])
+}
+
+model WarHistoryAttack {
+  id               Int      @id @default(autoincrement())
+  clanTag          String
+  clanName         String?
+  opponentClanTag  String?
+  opponentClanName String?
+  warStartTime     DateTime
+  warEndTime       DateTime?
+  warState         String?
+  playerTag        String
+  playerName       String?
+  playerPosition   Int?
+  attackOrder      Int
+  attackNumber     Int
+  defenderTag      String?
+  defenderName     String?
+  defenderPosition Int?
+  stars            Int
+  trueStars        Int
+  destruction      Float
+  attackSeenAt     DateTime
+  updatedAt        DateTime @updatedAt
+  createdAt        DateTime @default(now())
+
+  @@unique([clanTag, warStartTime, playerTag, attackOrder])
+  @@index([clanTag, warStartTime])
+  @@index([playerTag, warStartTime])
+}
