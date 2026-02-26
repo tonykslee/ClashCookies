@@ -9,7 +9,6 @@ import { Post } from "./commands/Post";
 import { CommandRole } from "./commands/CommandRole";
 import { CC } from "./commands/CC";
 import { Fwa } from "./commands/Fwa";
-import { Opponent } from "./commands/Opponent";
 import { KickList } from "./commands/KickList";
 import { Recruitment } from "./commands/Recruitment";
 import { Accounts } from "./commands/Accounts";
@@ -27,7 +26,6 @@ export const Commands = [
   CC,
   Accounts,
   Fwa,
-  Opponent,
   Notify,
   Recruitment,
   KickList,
