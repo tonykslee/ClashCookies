@@ -23,8 +23,8 @@ const TIEBREAK_ORDER = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 const CACHE_REFRESH_DELAY_MS = 30 * 60 * 1000;
 const WAR_END_RECHECK_MS = 10 * 60 * 1000;
 const DISCORD_CONTENT_MAX = 2000;
-const POINTS_CACHE_VERSION = 3;
-const MATCHUP_CACHE_VERSION = 4;
+const POINTS_CACHE_VERSION = 4;
+const MATCHUP_CACHE_VERSION = 5;
 const POINTS_POST_BUTTON_PREFIX = "points-post-channel";
 const POINTS_REQUEST_HEADERS = {
   "User-Agent":
@@ -725,6 +725,7 @@ async function buildLastWarMatchOverview(
       ...(guildId ? { guildId } : {}),
     },
     select: {
+      matchType: true,
       outcome: true,
       lastClanStars: true,
       lastOpponentStars: true,
@@ -761,6 +762,7 @@ async function buildLastWarMatchOverview(
     [
       `Match overview for Sync ${syncLabel}`,
       `${clanName} (#${normalizedTag}) vs ${opponentName}${opponentTag ? ` (#${opponentTag})` : ""}`,
+      `Match type: **${sub?.matchType ?? "UNKNOWN"}**`,
       `Expected outcome: **${sub?.outcome ?? "UNKNOWN"}**`,
       `Actual outcome: **${actualOutcome}**`,
       `Total stars: ${clanName} ${clanStars} - ${opponentName} ${opponentStars ?? "unknown"}`,
@@ -769,6 +771,79 @@ async function buildLastWarMatchOverview(
       `FWA points gained (${clanName}): ${pointsDelta === null ? "unknown" : pointsDelta >= 0 ? `+${pointsDelta}` : String(pointsDelta)}`,
     ].join("\n")
   );
+}
+
+async function buildTrackedMatchOverview(
+  cocService: CoCService,
+  sourceSync: number | null,
+  guildId: string | null
+): Promise<string> {
+  const tracked = await prisma.trackedClan.findMany({
+    orderBy: { createdAt: "asc" },
+    select: { tag: true, name: true },
+  });
+  if (tracked.length === 0) {
+    return "No tracked clans configured. Use `/tracked-clan add` first.";
+  }
+
+  const subscriptions = await prisma.warEventLogSubscription.findMany({
+    where: guildId ? { guildId } : undefined,
+    select: {
+      clanTag: true,
+      matchType: true,
+      outcome: true,
+    },
+  });
+  const subByTag = new Map(subscriptions.map((s) => [normalizeTag(s.clanTag), s]));
+
+  const stateCounts = new Map<WarStateForSync, number>([
+    ["preparation", 0],
+    ["inWar", 0],
+    ["notInWar", 0],
+  ]);
+  const lines: string[] = [];
+
+  for (const clan of tracked) {
+    const clanTag = normalizeTag(clan.tag);
+    const clanName = sanitizeClanName(clan.name) ?? `#${clanTag}`;
+    const war = await cocService.getCurrentWar(`#${clanTag}`).catch(() => null);
+    const warState = deriveWarState(war?.state);
+    stateCounts.set(warState, (stateCounts.get(warState) ?? 0) + 1);
+
+    const opponentTag = normalizeTag(String(war?.opponent?.tag ?? ""));
+    const opponentName = sanitizeClanName(String(war?.opponent?.name ?? "")) ?? "Unknown";
+    const sub = subByTag.get(clanTag);
+    const matchType = sub?.matchType ?? "UNKNOWN";
+
+    if (!opponentTag) {
+      lines.push(`- ${clanName}(#${clanTag}) vs Unknown\n  No active war opponent`);
+      continue;
+    }
+
+    if (matchType === "FWA") {
+      lines.push(
+        `- ${clanName}(#${clanTag}) vs ${opponentName}(#${opponentTag})\n  ${clanName} outcome: ${sub?.outcome ?? "UNKNOWN"}`
+      );
+      continue;
+    }
+
+    lines.push(
+      `- ${clanName}(#${clanTag}) vs ${opponentName}(#${opponentTag})\n  Match Type: ${matchType}`
+    );
+  }
+
+  const nonZeroStates = [...stateCounts.entries()].filter(([, count]) => count > 0);
+  const stateLabel =
+    nonZeroStates.length === 1 ? formatWarStateLabel(nonZeroStates[0][0]) : "mixed";
+  let syncLabel = "unknown";
+  if (sourceSync !== null) {
+    if (stateLabel === "no war") syncLabel = `between #${sourceSync} and #${sourceSync + 1}`;
+    else if (stateLabel === "mixed") syncLabel = "mixed";
+    else syncLabel = `#${sourceSync + 1}`;
+  }
+
+  const header = `Tracked FWA match overview (${tracked.length})\nSync: ${syncLabel}\nWar State: ${stateLabel}`;
+  return buildLimitedMessage(header, lines, "");
 }
 
 export const Fwa: Command = {
@@ -808,7 +883,7 @@ export const Fwa: Command = {
           name: "tag",
           description: "Your clan tag (with or without #)",
           type: ApplicationCommandOptionType.String,
-          required: true,
+          required: false,
           autocomplete: true,
         },
         {
@@ -871,11 +946,17 @@ export const Fwa: Command = {
       const lines: string[] = [];
       let failedCount = 0;
       let forbiddenCount = 0;
+      const stateCounts = new Map<WarStateForSync, number>([
+        ["preparation", 0],
+        ["inWar", 0],
+        ["notInWar", 0],
+      ]);
       for (const clan of tracked) {
         const trackedTag = normalizeTag(clan.tag);
         try {
           const war = await cocService.getCurrentWar(`#${trackedTag}`).catch(() => null);
           const warState = deriveWarState(war?.state);
+          stateCounts.set(warState, (stateCounts.get(warState) ?? 0) + 1);
           const currentSync = getCurrentSyncFromPrevious(sourceSync, warState);
           const result = await getClanPointsCached(settings, cocService, trackedTag, currentSync);
           if (result.balance === null || Number.isNaN(result.balance)) {
@@ -887,11 +968,7 @@ export const Fwa: Command = {
             sanitizeClanName(clan.name) ??
             sanitizeClanName(result.clanName) ??
             `#${trackedTag}`;
-          lines.push(
-            `- ${label} (#${trackedTag}): **${formatPoints(result.balance)}** | state: ${formatWarStateLabel(
-              warState
-            )} | sync: ${getSyncDisplay(sourceSync, warState)}`
-          );
+          lines.push(`- ${label} (#${trackedTag}): **${formatPoints(result.balance)}**`);
         } catch (err) {
           failedCount += 1;
           if (getHttpStatus(err) === 403) forbiddenCount += 1;
@@ -911,8 +988,17 @@ export const Fwa: Command = {
         summary +=
           `\n${forbiddenCount} request(s) were blocked by points.fwafarm.com (HTTP 403).`;
       }
-      if (sourceSync !== null) {
-        summary += `\nSource previous sync: #${sourceSync}`;
+      const nonZeroStates = [...stateCounts.entries()].filter(([, count]) => count > 0);
+      if (nonZeroStates.length === 1) {
+        const state = nonZeroStates[0][0];
+        summary += `\nWar state: ${formatWarStateLabel(state)}`;
+        summary += `\nSync: ${getSyncDisplay(sourceSync, state)}`;
+      } else if (nonZeroStates.length > 1) {
+        summary += `\nWar state: mixed`;
+        summary += `\nSync: mixed`;
+        summary += `\nState counts: prep=${stateCounts.get("preparation") ?? 0}, battle=${stateCounts.get("inWar") ?? 0}, no-war=${stateCounts.get("notInWar") ?? 0}`;
+      } else if (sourceSync !== null) {
+        summary += `\nSync: between #${sourceSync} and #${sourceSync + 1}`;
       }
       await editReplySafe(buildLimitedMessage(header, lines, summary));
       return;
@@ -920,7 +1006,12 @@ export const Fwa: Command = {
 
     if (subcommand === "match") {
       if (!tag) {
-        await editReplySafe("Please provide `tag`.");
+        const overview = await buildTrackedMatchOverview(
+          cocService,
+          sourceSync,
+          interaction.guildId ?? null
+        );
+        await editReplySafe(overview);
         return;
       }
 
@@ -944,6 +1035,18 @@ export const Fwa: Command = {
           getClanPointsCached(settings, cocService, tag, currentSync),
           getClanPointsCached(settings, cocService, opponentTag, currentSync),
         ]);
+        const subscription = interaction.guildId
+          ? await prisma.warEventLogSubscription.findUnique({
+              where: {
+                guildId_clanTag: {
+                  guildId: interaction.guildId,
+                  clanTag: `#${tag}`,
+                },
+              },
+              select: { matchType: true, outcome: true },
+            })
+          : null;
+        const matchType = subscription?.matchType ?? "UNKNOWN";
         const trackedPair = await prisma.trackedClan.findMany({
           select: { name: true, tag: true },
         });
@@ -1015,11 +1118,22 @@ export const Fwa: Command = {
             opponentName: resolvedOpponentName ?? opponentNameFromApi,
           })
         );
+        const opponentInWinnerBox = primary.winnerBoxTags
+          .map((t) => normalizeTag(t))
+          .includes(opponentTag);
+        const staleSite =
+          !opponentInWinnerBox || (sourceSync !== null && primary.winnerBoxSync === sourceSync);
+        const siteStatusLine = staleSite
+          ? "\nNote: points.fwafarm site is not updated yet."
+          : "";
+        const outcomeLine =
+          matchType === "FWA"
+            ? `\nExpected outcome: ${subscription?.outcome ?? "UNKNOWN"}`
+            : "";
         const messageWithSync = limitDiscordContent(
-          `${message}\nWar state: ${formatWarStateLabel(warState)}\nSync: ${getSyncDisplay(
-            sourceSync,
+          `${message}\nMatch Type: ${matchType}${outcomeLine}\nWar state: ${formatWarStateLabel(
             warState
-          )}`
+          )}\nSync: ${getSyncDisplay(sourceSync, warState)}${siteStatusLine}`
         );
         await writeMatchupCache(settings, tag, opponentTag, {
           version: MATCHUP_CACHE_VERSION,
