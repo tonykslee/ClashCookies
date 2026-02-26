@@ -7,13 +7,17 @@ import { Commands } from "../Commands";
 import { CoCService } from "../services/CoCService";
 import { ActivityService } from "../services/ActivityService";
 import { formatError } from "../helper/formatError";
+import { runFetchTelemetryBatch } from "../helper/fetchTelemetry";
 import { prisma } from "../prisma";
 import { processRecruitmentCooldownReminders } from "../services/RecruitmentService";
 import { SettingsService } from "../services/SettingsService";
 import { PlayerLinkSyncService } from "../services/PlayerLinkSyncService";
+import { WarHistoryService } from "../services/WarHistoryService";
+import { WarEventLogService } from "../services/WarEventLogService";
 
 const DEFAULT_OBSERVE_INTERVAL_MINUTES = 30;
 const RECRUITMENT_REMINDER_INTERVAL_MS = 5 * 60 * 1000;
+const DEFAULT_WAR_EVENT_POLL_INTERVAL_MINUTES = 5;
 const OBSERVE_LAST_RUN_AT_KEY = "activity_observe:last_run_at_ms";
 const VISIBILITY_OPTION = {
   name: "visibility",
@@ -115,11 +119,25 @@ export default (client: Client, cocService: CoCService): void => {
 
     // Register ONLY guild commands
     const commandsWithVisibility = Commands.map((cmd) => injectVisibilityOptions(cmd));
-    await guild.commands.set(commandsWithVisibility);
+    try {
+      await guild.commands.set(commandsWithVisibility);
+    } catch (err) {
+      console.error(`Guild command registration failed: ${formatError(err)}`);
+      console.error(
+        "Command registration payload summary:",
+        commandsWithVisibility.map((c: any) => ({
+          name: c?.name,
+          optionCount: Array.isArray(c?.options) ? c.options.length : 0,
+        }))
+      );
+      throw err;
+    }
     console.log(`✅ Guild commands registered (${Commands.length})`);
 
     const activityService = new ActivityService(cocService);
+    const warHistoryService = new WarHistoryService(cocService);
     const playerLinkSyncService = new PlayerLinkSyncService();
+    const warEventLogService = new WarEventLogService(client, cocService);
     const settings = new SettingsService();
     let observeInProgress = false;
 
@@ -151,6 +169,7 @@ export default (client: Client, cocService: CoCService): void => {
             for (const memberTag of memberTags) {
               observedMemberTags.add(memberTag);
             }
+            await warHistoryService.observeClanWar(tag);
           } catch (err) {
             console.error(
               `observeClan failed for ${tag}: ${formatError(err)}`
@@ -169,13 +188,15 @@ export default (client: Client, cocService: CoCService): void => {
     };
 
     const runObservedCycle = async () => {
-      const observedMemberTags = await observeTrackedClans();
-      await playerLinkSyncService.syncMissingTagsIfDue(observedMemberTags);
-      try {
-        await markObserveRun();
-      } catch (err) {
-        console.error(`observe run timestamp write failed: ${formatError(err)}`);
-      }
+      await runFetchTelemetryBatch("activity_observe_cycle", async () => {
+        const observedMemberTags = await observeTrackedClans();
+        await playerLinkSyncService.syncMissingTagsIfDue(observedMemberTags);
+        try {
+          await markObserveRun();
+        } catch (err) {
+          console.error(`observe run timestamp write failed: ${formatError(err)}`);
+        }
+      });
     };
 
     const getInitialObserveDelayMs = async (): Promise<number> => {
@@ -241,11 +262,13 @@ export default (client: Client, cocService: CoCService): void => {
     console.log(`Activity observe loop enabled (every ${intervalMinutes} minute(s)).`);
 
     const runRecruitmentReminders = async () => {
-      try {
-        await processRecruitmentCooldownReminders(client);
-      } catch (err) {
-        console.error(`[recruitment] reminder loop failed: ${formatError(err)}`);
-      }
+      await runFetchTelemetryBatch("recruitment_reminder_cycle", async () => {
+        try {
+          await processRecruitmentCooldownReminders(client);
+        } catch (err) {
+          console.error(`[recruitment] reminder loop failed: ${formatError(err)}`);
+        }
+      });
     };
 
     await runRecruitmentReminders();
@@ -255,6 +278,33 @@ export default (client: Client, cocService: CoCService): void => {
       });
     }, RECRUITMENT_REMINDER_INTERVAL_MS);
     console.log("Recruitment reminder loop enabled (every 5 minute(s)).");
+
+    const warEventPollMinutesRaw = Number(
+      process.env.WAR_EVENT_LOG_POLL_INTERVAL_MINUTES ?? DEFAULT_WAR_EVENT_POLL_INTERVAL_MINUTES
+    );
+    const warEventPollMinutes =
+      Number.isFinite(warEventPollMinutesRaw) && warEventPollMinutesRaw > 0
+        ? warEventPollMinutesRaw
+        : DEFAULT_WAR_EVENT_POLL_INTERVAL_MINUTES;
+    const warEventPollMs = Math.floor(warEventPollMinutes * 60 * 1000);
+
+    const runWarEventPoll = async () => {
+      await runFetchTelemetryBatch("war_event_poll_cycle", async () => {
+        try {
+          await warEventLogService.poll();
+        } catch (err) {
+          console.error(`[war-events] poll loop failed: ${formatError(err)}`);
+        }
+      });
+    };
+
+    await runWarEventPoll();
+    setInterval(() => {
+      runWarEventPoll().catch((err) => {
+        console.error(`[war-events] poll interval failed: ${formatError(err)}`);
+      });
+    }, warEventPollMs);
+    console.log(`War event log listener enabled (every ${warEventPollMinutes} minute(s)).`);
 
     console.log("ClashCookies is online");
   });

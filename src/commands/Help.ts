@@ -32,6 +32,7 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "kick-list:show",
   "kick-list:clear",
   "post:sync:time",
+  "notify:war",
   "permission:add",
   "permission:remove",
 ]);
@@ -72,9 +73,10 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     summary: "List players inactive for a given number of days.",
     details: [
       "Shows oldest inactive players first.",
+      "Supports `wars` mode to list tracked members who used 0/2 attacks in each of the last X ended wars.",
       "Large results are clipped to keep replies readable.",
     ],
-    examples: ["/inactive days:7", "/inactive days:30"],
+    examples: ["/inactive days:7", "/inactive days:30", "/inactive wars:3"],
   },
   "role-users": {
     summary: "Show members in a role with paging controls.",
@@ -130,37 +132,50 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     ],
     examples: ["/cc player tag:ABCD1234", "/cc clan tag:2QG2C08UP"],
   },
-  opponent: {
-    summary: "Get current war opponent clan tag from CoC API.",
+  notify: {
+    summary: "Configure notification features.",
     details: [
-      "Returns the opponent clan tag without the `#` prefix.",
-      "If no active war is available, returns a clear fallback message.",
+      "`war` enables war-state event embeds for a clan in a selected channel.",
+      "Optional `role` pings that role whenever a war event embed is posted.",
+      "Works with clans outside tracked-clans table (tag must still be valid in CoC API).",
+      "Posts at war start, battle day, and war end with opponent + points projection.",
     ],
-    examples: ["/opponent tag:2QG2C08UP"],
+    examples: ["/notify war clan-tag:2QG2C08UP target-channel:#war-events role:@Leaders"],
   },
-  "my-accounts": {
-    summary: "List your linked player accounts grouped by their current clan.",
+  accounts: {
+    summary: "List linked player accounts grouped by their current clan.",
     details: [
-      "Reads linked tags for your Discord account from the bot database.",
-      "If no local links are found, it queries ClashKing `/discord_links` for your Discord ID and caches results to `PlayerLink`.",
+      "Default behavior lists accounts linked to your Discord account.",
+      "If `discord-id` is provided, lists accounts for that user.",
+      "If `tag` is provided, resolves linked Discord ID from PlayerLink/ClashKing, then lists that user's accounts.",
+      "Only one of `tag` or `discord-id` can be provided.",
+      "If no local links are found for the target user, it queries ClashKing `/discord_links` and caches results to `PlayerLink`.",
       "Fetches live player data when available and groups accounts by current clan.",
       "Set `visibility:public` to post the response directly in channel.",
     ],
-    examples: ["/my-accounts", "/my-accounts visibility:public"],
+    examples: [
+      "/accounts",
+      "/accounts discord-id:143827744717799425",
+      "/accounts tag:G2RG9JCRL",
+      "/accounts visibility:public",
+    ],
   },
-  points: {
-    summary: "Fetch FWA points balance and optional matchup projection.",
+  fwa: {
+    summary: "FWA points and matchup tools.",
     details: [
-      "Provide a clan tag, or omit tag to fetch all tracked clan balances.",
-      "Optionally provide `opponent-tag` to compare points and apply sync-based tiebreak logic.",
+      "`/fwa points` returns point balances (single clan tag or all tracked if tag omitted).",
+      "`/fwa match` auto-resolves current war opponent from CoC API and evaluates win/lose/tiebreak using the same points logic.",
+      "`/fwa match-type` lets admins manually set/view per-clan match type (FWA/BL/MM) with tracked-clan autocomplete.",
       "Tag supports autocomplete from tracked clans.",
       "Set `visibility:public` to post the result directly in channel.",
     ],
     examples: [
-      "/points tag:2QG2C08UP",
-      "/points",
-      "/points tag:2QG2C08UP opponent-tag:ABC12345",
-      "/points tag:2QG2C08UP visibility:public",
+      "/fwa points tag:2QG2C08UP",
+      "/fwa points",
+      "/fwa match tag:2QG2C08UP",
+      "/fwa match-type tag:2QG2C08UP type:FWA",
+      "/fwa match-type",
+      "/fwa points tag:2QG2C08UP visibility:public",
     ],
   },
   recruitment: {
@@ -213,7 +228,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     ],
     examples: [
       "/permission add command:post role:@Leaders",
-      "/permission add command:points role:@Leaders",
+      "/permission add command:fwa role:@Leaders",
       "/permission remove command:post role:@Leaders",
       "/permission list",
     ],

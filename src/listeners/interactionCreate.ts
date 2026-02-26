@@ -18,9 +18,13 @@ import {
   isRecruitmentModalCustomId,
 } from "../commands/Recruitment";
 import {
+  handleFwaMatchCopyButton,
+  handleFwaMatchTypeActionButton,
+  isFwaMatchTypeActionButtonCustomId,
   handlePointsPostButton,
+  isFwaMatchCopyButtonCustomId,
   isPointsPostButtonCustomId,
-} from "../commands/Points";
+} from "../commands/Fwa";
 import {
   CommandPermissionService,
   getCommandTargetsFromInteraction,
@@ -28,7 +32,7 @@ import {
 
 const commandPermissionService = new CommandPermissionService();
 const GLOBAL_POST_BUTTON_PREFIX = "post-channel";
-const COMMANDS_WITH_CUSTOM_VISIBILITY = new Set(["help", "points"]);
+const COMMANDS_WITH_CUSTOM_VISIBILITY = new Set(["help", "fwa"]);
 
 let isRegistered = false;
 
@@ -211,6 +215,34 @@ const handleButtonInteraction = async (interaction: Interaction): Promise<void> 
         await interaction.reply({
           ephemeral: true,
           content: "Failed to post points message to channel.",
+        });
+      }
+    }
+  }
+
+  if (isFwaMatchCopyButtonCustomId(interaction.customId)) {
+    try {
+      await handleFwaMatchCopyButton(interaction);
+    } catch (err) {
+      console.error(`FWA match copy button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to toggle match view.",
+        });
+      }
+    }
+  }
+
+  if (isFwaMatchTypeActionButtonCustomId(interaction.customId)) {
+    try {
+      await handleFwaMatchTypeActionButton(interaction);
+    } catch (err) {
+      console.error(`FWA match type action button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to apply match type update.",
         });
       }
     }

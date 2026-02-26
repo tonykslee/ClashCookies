@@ -7,7 +7,7 @@ Discord bot for Clash of Clans activity tooling.
 - Manages tracked clans at runtime (`/tracked-clan ...`).
 - Links to a Google Sheet at runtime (`/sheet ...`).
 - Supports mode-specific sheet links for `actual` and `war` roster workflows.
-- Fetches FWA points balances for one clan or all tracked clans (`/points`).
+- Fetches FWA points balances and matchup projections (`/fwa ...`).
 
 ## Setup
 1. Create a `.env` with required Discord, CoC API, and database values.
@@ -30,8 +30,11 @@ Optional ClashKing link lookup (kick-list fallback when local links are missing)
 - `CLASHKING_LINKS_URL_TEMPLATE` - ClashKing links endpoint URL (supports either fixed `POST /discord_links` or a `{tag}` URL template).
 - `CLASHKING_API_TOKEN` - bearer token for private ClashKing API (if required).
 - Bot behavior:
-  - `/my-accounts` backfills `PlayerLink` from ClashKing when local links are missing for the requesting user.
+  - `/accounts` backfills `PlayerLink` from ClashKing when local links are missing for the target user.
   - Activity observe loop checks unresolved tracked-member links via ClashKing at most once every 6 hours and caches matches in `PlayerLink`.
+
+Optional war event log poll setting:
+- `WAR_EVENT_LOG_POLL_INTERVAL_MINUTES` - interval for war-state event listener polling (default: `5` minutes).
 
 ## Google Sheets (OAuth)
 This project is currently set up to use OAuth refresh token auth.
@@ -58,6 +61,7 @@ Optional fallback auth (not required for your current setup):
 - `/permission list [command:<name>]` - List role policy for one command target, or all if omitted.
 - `/lastseen tag:<playerTag>` - Show a player's last seen activity, with drill-down button for tracked signal timestamps.
 - `/inactive days:<number>` - List players inactive for N days.
+- `/inactive wars:<number>` - List tracked-clan members who used 0/2 attacks in each of the last N ended wars (requires war-history tracking window).
 - `/role-users role:<discordRole>` - List users in a role with pagination.
 - `/tracked-clan add tag:<tag>` - Add tracked clan.
 - `/tracked-clan remove tag:<tag>` - Remove tracked clan.
@@ -71,9 +75,11 @@ Optional fallback auth (not required for your current setup):
 - `/compo place weight:<value>` - Suggest placement options from ACTUAL state (vacancy + composition fit). Accepts formats like `145000`, `145,000`, or `145k` and maps to TH weight buckets.
 - `/cc player tag:<tag>` - Build `https://cc.fwafarm.com/cc_n/member.php?tag=<tag>`.
 - `/cc clan tag:<tag>` - Build `https://cc.fwafarm.com/cc_n/clan.php?tag=<tag>`.
-- `/opponent tag:<tag>` - Get current war opponent clan tag from CoC API (without `#`).
-- `/my-accounts [visibility:private|public]` - List your linked player accounts grouped by their current clan.
-- `/points [visibility:private|public] [tag:<tag>] [opponent-tag:<tag>]` - Fetch current point balance from `https://points.fwafarm.com/clan?tag=<tag-without-#>`. If `tag` is omitted, fetches all tracked clans. If both tags are provided, returns projected winner/loser by points, or sync-based tiebreak when points are tied.
+- `/notify war clan-tag:<tag> target-channel:<channel> [role:<discordRole>]` - Enable war-state event logs (war start, battle day, war end) for a clan in a selected channel. Optional role is pinged when event logs are posted.
+- `/accounts [visibility:private|public] [tag:<playerTag>] [discord-id:<snowflake>]` - List linked player accounts grouped by current clan. Default is your own account; provide exactly one of `tag` or `discord-id` to inspect a different linked user.
+- `/fwa points [visibility:private|public] [tag:<tag>]` - Fetch current point balance from `https://points.fwafarm.com/clan?tag=<tag-without-#>`. If `tag` is omitted, fetches all tracked clans.
+- `/fwa match [visibility:private|public] tag:<tag>` - Resolve current war opponent from CoC API, then return projected win/lose by points (or sync-based tiebreak on tie).
+- `/fwa match-type [visibility:private|public] [tag:<trackedClanTag>] [type:FWA|BL|MM]` - Manually set or view per-clan match type override used by matchup output. If no args, lists overrides for all tracked clans.
 - `/recruitment show platform:discord|reddit|band clan:<tag>` - Render platform-specific recruitment template output for a tracked clan.
 - `/recruitment edit platform:discord|reddit|band clan:<tag>` - Open platform-specific modal:
   - Discord: clan tag, body (max 1024), optional image URL(s)
@@ -98,14 +104,18 @@ Optional fallback auth (not required for your current setup):
   - `/sheet link`, `/sheet unlink`, `/sheet show`, `/sheet refresh`
   - `/kick-list build`, `/kick-list add`, `/kick-list remove`, `/kick-list show`, `/kick-list clear`
   - `/post sync time`
+  - `/notify war`
 - You can whitelist roles per command with `/permission add`.
 - Administrator users can always use commands regardless of role whitelist.
 - To lock `/post` to role X, run:
   - `/permission add command:post role:@RoleX`
-- To lock `/points` to role X, run:
-  - `/permission add command:points role:@RoleX`
+- To lock `/fwa` to role X, run:
+  - `/permission add command:fwa role:@RoleX`
+- `/fwa match-type` is Administrator-only by default.
 - To lock `/recruitment` to role X, run:
   - `/permission add command:recruitment role:@RoleX`
+- To lock `/notify` to role X, run:
+  - `/permission add command:notify role:@RoleX`
 
 ## Deployment Notes
 - Commands are registered as guild commands using `GUILD_ID` on startup.
