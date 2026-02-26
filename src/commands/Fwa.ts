@@ -190,11 +190,13 @@ function buildFwaMatchCopyComponents(
           buildMatchTypeActionCustomId({
             userId,
             tag: matchTypeAction.tag,
-            targetType: matchTypeAction.currentType,
+            targetType: "FWA",
           })
         )
-        .setLabel("Confirm Current Type")
-        .setStyle(ButtonStyle.Success),
+        .setLabel("FWA")
+        .setStyle(
+          matchTypeAction.currentType === "FWA" ? ButtonStyle.Success : ButtonStyle.Secondary
+        ),
       new ButtonBuilder()
         .setCustomId(
           buildMatchTypeActionCustomId({
@@ -203,8 +205,10 @@ function buildFwaMatchCopyComponents(
             targetType: "BL",
           })
         )
-        .setLabel("Switch to BL")
-        .setStyle(ButtonStyle.Danger),
+        .setLabel("BL")
+        .setStyle(
+          matchTypeAction.currentType === "BL" ? ButtonStyle.Success : ButtonStyle.Danger
+        ),
       new ButtonBuilder()
         .setCustomId(
           buildMatchTypeActionCustomId({
@@ -213,8 +217,10 @@ function buildFwaMatchCopyComponents(
             targetType: "MM",
           })
         )
-        .setLabel("Switch to MM")
-        .setStyle(ButtonStyle.Secondary)
+        .setLabel("MM")
+        .setStyle(
+          matchTypeAction.currentType === "MM" ? ButtonStyle.Success : ButtonStyle.Secondary
+        )
     );
   }
   return [row];
@@ -1446,11 +1452,13 @@ export const Fwa: Command = {
                       buildMatchTypeActionCustomId({
                         userId: interaction.user.id,
                         tag,
-                        targetType: currentType as "FWA" | "BL" | "MM",
+                        targetType: "FWA",
                       })
                     )
-                    .setLabel("Confirm Current Type")
-                    .setStyle(ButtonStyle.Success),
+                    .setLabel("FWA")
+                    .setStyle(
+                      currentType === "FWA" ? ButtonStyle.Success : ButtonStyle.Secondary
+                    ),
                   new ButtonBuilder()
                     .setCustomId(
                       buildMatchTypeActionCustomId({
@@ -1459,8 +1467,8 @@ export const Fwa: Command = {
                         targetType: "BL",
                       })
                     )
-                    .setLabel("Switch to BL")
-                    .setStyle(ButtonStyle.Danger),
+                    .setLabel("BL")
+                    .setStyle(currentType === "BL" ? ButtonStyle.Success : ButtonStyle.Danger),
                   new ButtonBuilder()
                     .setCustomId(
                       buildMatchTypeActionCustomId({
@@ -1469,8 +1477,10 @@ export const Fwa: Command = {
                         targetType: "MM",
                       })
                     )
-                    .setLabel("Switch to MM")
-                    .setStyle(ButtonStyle.Secondary)
+                    .setLabel("MM")
+                    .setStyle(
+                      currentType === "MM" ? ButtonStyle.Success : ButtonStyle.Secondary
+                    )
                 ),
               ]
             : undefined;
