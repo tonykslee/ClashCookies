@@ -4,11 +4,13 @@ import {
   ChannelType,
   ChatInputCommandInteraction,
   Client,
+  Role,
 } from "discord.js";
 import { Prisma } from "@prisma/client";
 import { Command } from "../Command";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
+import { PointsProjectionService } from "../services/PointsProjectionService";
 
 function normalizeClanTag(input: string): string {
   const raw = input.trim().toUpperCase().replace(/^#/, "");
@@ -26,34 +28,33 @@ function normalizeClanTagInput(input: string): string {
   return input.trim().toUpperCase().replace(/^#/, "");
 }
 
-export const Enable: Command = {
-  name: "enable",
-  description: "Enable feature settings",
+export const Notify: Command = {
+  name: "notify",
+  description: "Configure notification features",
   options: [
     {
-      name: "event",
-      description: "War event logging settings",
-      type: ApplicationCommandOptionType.SubcommandGroup,
+      name: "war",
+      description: "Enable war event logs for a clan to a target channel",
+      type: ApplicationCommandOptionType.Subcommand,
       options: [
         {
-          name: "logs",
-          description: "Enable war event logs for a clan to a target channel",
-          type: ApplicationCommandOptionType.Subcommand,
-          options: [
-            {
-              name: "clan",
-              description: "Clan tag (tracked or non-tracked)",
-              type: ApplicationCommandOptionType.String,
-              required: true,
-              autocomplete: true,
-            },
-            {
-              name: "target-channel",
-              description: "Channel to post war start/battle/end logs",
-              type: ApplicationCommandOptionType.Channel,
-              required: true,
-            },
-          ],
+          name: "clan-tag",
+          description: "Clan tag (tracked or non-tracked)",
+          type: ApplicationCommandOptionType.String,
+          required: true,
+          autocomplete: true,
+        },
+        {
+          name: "target-channel",
+          description: "Channel to post war start/battle/end logs",
+          type: ApplicationCommandOptionType.Channel,
+          required: true,
+        },
+        {
+          name: "role",
+          description: "Optional role to ping when war event logs are posted",
+          type: ApplicationCommandOptionType.Role,
+          required: false,
         },
       ],
     },
@@ -69,20 +70,20 @@ export const Enable: Command = {
       return;
     }
 
-    const group = interaction.options.getSubcommandGroup(true);
     const sub = interaction.options.getSubcommand(true);
-    if (group !== "event" || sub !== "logs") {
-      await interaction.editReply("Unknown enable option.");
+    if (sub !== "war") {
+      await interaction.editReply("Unknown notify option.");
       return;
     }
 
-    const clanTag = normalizeClanTag(interaction.options.getString("clan", true));
+    const clanTag = normalizeClanTag(interaction.options.getString("clan-tag", true));
     if (!clanTag) {
       await interaction.editReply("Invalid clan tag.");
       return;
     }
 
     const target = interaction.options.getChannel("target-channel", true);
+    const notifyRole = interaction.options.getRole("role", false) as Role | null;
     if (
       target.type !== ChannelType.GuildText &&
       target.type !== ChannelType.GuildAnnouncement
@@ -92,6 +93,11 @@ export const Enable: Command = {
     }
 
     const war = await cocService.getCurrentWar(clanTag).catch(() => null);
+    const pointsProjection = new PointsProjectionService(cocService);
+    const initialSyncNumber = await pointsProjection
+      .fetchSnapshot(clanTag)
+      .then((snapshot) => snapshot.effectiveSync)
+      .catch(() => null);
     const lastState = deriveWarState(war?.state ?? "notInWar");
     const clanName =
       String(war?.clan?.name ?? (await cocService.getClanName(clanTag).catch(() => clanTag))).trim() ||
@@ -110,30 +116,33 @@ export const Enable: Command = {
     await prisma.$executeRaw(
       Prisma.sql`
         INSERT INTO "WarEventLogSubscription"
-          ("guildId","clanTag","channelId","enabled","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","lastClanName","createdAt","updatedAt")
+          ("guildId","clanTag","channelId","notify","notifyRole","currentSyncNumber","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName","createdAt","updatedAt")
         VALUES
-          (${interaction.guildId}, ${clanTag}, ${target.id}, true, ${lastState}, ${warStartTime}, ${opponentTag}, ${opponentName}, ${clanName}, NOW(), NOW())
+          (${interaction.guildId}, ${clanTag}, ${target.id}, true, ${notifyRole?.id ?? null}, ${initialSyncNumber}, ${lastState}, ${warStartTime}, ${opponentTag}, ${opponentName}, ${clanName}, NOW(), NOW())
         ON CONFLICT ("guildId","clanTag")
         DO UPDATE SET
           "channelId" = EXCLUDED."channelId",
-          "enabled" = true,
+          "notify" = true,
+          "notifyRole" = EXCLUDED."notifyRole",
+          "currentSyncNumber" = COALESCE("WarEventLogSubscription"."currentSyncNumber", EXCLUDED."currentSyncNumber"),
           "lastState" = EXCLUDED."lastState",
           "lastWarStartTime" = EXCLUDED."lastWarStartTime",
           "lastOpponentTag" = EXCLUDED."lastOpponentTag",
           "lastOpponentName" = EXCLUDED."lastOpponentName",
-          "lastClanName" = EXCLUDED."lastClanName",
+          "clanName" = EXCLUDED."clanName",
           "updatedAt" = NOW()
       `
     );
 
     await interaction.editReply(
       `Enabled war event logs for ${clanName} (${clanTag}) in <#${target.id}>.\n` +
+        `Notify role: ${notifyRole ? `<@&${notifyRole.id}>` : "none"}\n` +
         `Current state snapshot: \`${lastState}\``
     );
   },
   autocomplete: async (interaction: AutocompleteInteraction) => {
     const focused = interaction.options.getFocused(true);
-    if (focused.name !== "clan") {
+    if (focused.name !== "clan-tag") {
       await interaction.respond([]);
       return;
     }

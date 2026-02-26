@@ -55,11 +55,23 @@ export const Opponent: Command = {
       const clanName = String(war?.clan?.name ?? clanTag).trim() || clanTag;
       const opponentName = String(war?.opponent?.name ?? "Unknown").trim() || "Unknown";
       const opponentTag = opponentTagRaw.replace(/^#/, "").toUpperCase();
-      const syncSnapshot = await getPointsSnapshotForClan(cocService, clanTag).catch(() => null);
-      const syncLine =
-        syncSnapshot?.effectiveSync !== null && syncSnapshot?.effectiveSync !== undefined
-          ? `\n## Sync: \`#${syncSnapshot.effectiveSync}\``
-          : "";
+      const syncFromSubscription = interaction.guildId
+        ? await prisma.warEventLogSubscription
+            .findUnique({
+              where: {
+                guildId_clanTag: {
+                  guildId: interaction.guildId,
+                  clanTag,
+                },
+              },
+              select: { currentSyncNumber: true },
+            })
+            .then((row) => row?.currentSyncNumber ?? null)
+            .catch(() => null)
+        : null;
+      const syncFromPoints = await getPointsSnapshotForClan(cocService, clanTag).catch(() => null);
+      const syncNumber = syncFromSubscription ?? syncFromPoints?.effectiveSync ?? null;
+      const syncLine = syncNumber !== null ? `\n## Sync: \`#${syncNumber}\`` : "";
       await interaction.editReply(
         `## ${clanName} vs\n\n## Opponent: \`${opponentName}\`\n---\n## Opponent Tag: \`${opponentTag}\`${syncLine}`
       );

@@ -59,6 +59,12 @@ enum RecruitmentPlatform {
   band
 }
 
+enum WarMatchType {
+  FWA
+  BL
+  MM
+}
+
 model KickListEntry {
   id            Int            @id @default(autoincrement())
   guildId       String
@@ -164,15 +170,21 @@ model WarEventLogSubscription {
   guildId          String
   clanTag          String
   channelId        String
-  enabled          Boolean  @default(true)
+  notify           Boolean  @default(true)
+  notifyRole       String?
+  currentSyncNumber Int?
+  fwaPoints        Int?
+  opponentFwaPoints Int?
+  outcome          String?
+  matchType        WarMatchType?
   lastState        String?
   lastWarStartTime DateTime?
   lastOpponentTag  String?
   lastOpponentName String?
-  lastClanName     String?
+  clanName         String?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
   @@unique([guildId, clanTag])
-  @@index([guildId, enabled])
+  @@index([guildId, notify])
 }
