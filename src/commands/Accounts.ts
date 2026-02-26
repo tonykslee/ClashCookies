@@ -180,6 +180,7 @@ export const Accounts: Command = {
 
     let targetDiscordUserId = interaction.user.id;
     let sourceLabel = "your Discord account";
+    let forceHydrateFromClashKingByDiscordId = false;
     if (rawDiscordId) {
       const normalized = normalizeDiscordUserId(rawDiscordId);
       if (!normalized) {
@@ -204,13 +205,7 @@ export const Accounts: Command = {
       if (!linkedDiscordId) {
         const clashKing = new ClashKingService();
         linkedDiscordId = await clashKing.getLinkedDiscordUserId(tag);
-        if (linkedDiscordId) {
-          await prisma.playerLink.upsert({
-            where: { playerTag: tag },
-            update: { discordUserId: linkedDiscordId },
-            create: { playerTag: tag, discordUserId: linkedDiscordId },
-          });
-        }
+        if (linkedDiscordId) forceHydrateFromClashKingByDiscordId = true;
       }
 
       if (!linkedDiscordId) {
@@ -219,6 +214,11 @@ export const Accounts: Command = {
       }
       targetDiscordUserId = linkedDiscordId;
       sourceLabel = `player tag \`${tag}\` (linked Discord ID \`${linkedDiscordId}\`)`;
+    }
+
+    if (forceHydrateFromClashKingByDiscordId) {
+      const syncService = new PlayerLinkSyncService();
+      await syncService.syncByDiscordUserId(targetDiscordUserId);
     }
 
     let links = await prisma.playerLink.findMany({
