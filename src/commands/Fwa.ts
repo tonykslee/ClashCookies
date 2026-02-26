@@ -654,6 +654,13 @@ export const Fwa: Command = {
       type: ApplicationCommandOptionType.Subcommand,
       options: [
         {
+          name: "tag",
+          description: "Your clan tag (with or without #)",
+          type: ApplicationCommandOptionType.String,
+          required: true,
+          autocomplete: true,
+        },
+        {
           name: "visibility",
           description: "Response visibility",
           type: ApplicationCommandOptionType.String,
@@ -662,13 +669,6 @@ export const Fwa: Command = {
             { name: "private", value: "private" },
             { name: "public", value: "public" },
           ],
-        },
-        {
-          name: "tag",
-          description: "Your clan tag (with or without #)",
-          type: ApplicationCommandOptionType.String,
-          required: true,
-          autocomplete: true,
         },
       ],
     },
