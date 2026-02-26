@@ -7,6 +7,7 @@ import { Commands } from "../Commands";
 import { CoCService } from "../services/CoCService";
 import { ActivityService } from "../services/ActivityService";
 import { formatError } from "../helper/formatError";
+import { runFetchTelemetryBatch } from "../helper/fetchTelemetry";
 import { prisma } from "../prisma";
 import { processRecruitmentCooldownReminders } from "../services/RecruitmentService";
 import { SettingsService } from "../services/SettingsService";
@@ -187,13 +188,15 @@ export default (client: Client, cocService: CoCService): void => {
     };
 
     const runObservedCycle = async () => {
-      const observedMemberTags = await observeTrackedClans();
-      await playerLinkSyncService.syncMissingTagsIfDue(observedMemberTags);
-      try {
-        await markObserveRun();
-      } catch (err) {
-        console.error(`observe run timestamp write failed: ${formatError(err)}`);
-      }
+      await runFetchTelemetryBatch("activity_observe_cycle", async () => {
+        const observedMemberTags = await observeTrackedClans();
+        await playerLinkSyncService.syncMissingTagsIfDue(observedMemberTags);
+        try {
+          await markObserveRun();
+        } catch (err) {
+          console.error(`observe run timestamp write failed: ${formatError(err)}`);
+        }
+      });
     };
 
     const getInitialObserveDelayMs = async (): Promise<number> => {
@@ -259,11 +262,13 @@ export default (client: Client, cocService: CoCService): void => {
     console.log(`Activity observe loop enabled (every ${intervalMinutes} minute(s)).`);
 
     const runRecruitmentReminders = async () => {
-      try {
-        await processRecruitmentCooldownReminders(client);
-      } catch (err) {
-        console.error(`[recruitment] reminder loop failed: ${formatError(err)}`);
-      }
+      await runFetchTelemetryBatch("recruitment_reminder_cycle", async () => {
+        try {
+          await processRecruitmentCooldownReminders(client);
+        } catch (err) {
+          console.error(`[recruitment] reminder loop failed: ${formatError(err)}`);
+        }
+      });
     };
 
     await runRecruitmentReminders();
@@ -284,11 +289,13 @@ export default (client: Client, cocService: CoCService): void => {
     const warEventPollMs = Math.floor(warEventPollMinutes * 60 * 1000);
 
     const runWarEventPoll = async () => {
-      try {
-        await warEventLogService.poll();
-      } catch (err) {
-        console.error(`[war-events] poll loop failed: ${formatError(err)}`);
-      }
+      await runFetchTelemetryBatch("war_event_poll_cycle", async () => {
+        try {
+          await warEventLogService.poll();
+        } catch (err) {
+          console.error(`[war-events] poll loop failed: ${formatError(err)}`);
+        }
+      });
     };
 
     await runWarEventPoll();
