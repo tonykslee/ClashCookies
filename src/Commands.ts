@@ -12,7 +12,7 @@ import { Points } from "./commands/Points";
 import { Opponent } from "./commands/Opponent";
 import { KickList } from "./commands/KickList";
 import { Recruitment } from "./commands/Recruitment";
-import { Accounts } from "./commands/MyAccounts";
+import { Accounts } from "./commands/Accounts";
 import { Enable } from "./commands/Enable";
 
 // ...existing code...
