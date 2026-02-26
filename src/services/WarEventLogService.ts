@@ -111,6 +111,7 @@ export class WarEventLogService {
       clanTag: string;
       channelId: string;
       notify: boolean;
+      inferredMatchType: boolean;
       notifyRole: string | null;
       fwaPoints: number | null;
       opponentFwaPoints: number | null;
@@ -130,7 +131,7 @@ export class WarEventLogService {
     const subs = await prisma.$queryRaw<SubRow[]>(
       Prisma.sql`
         SELECT
-          "id","guildId","clanTag","channelId","notify","notifyRole","fwaPoints","opponentFwaPoints","outcome","matchType","warStartFwaPoints","warEndFwaPoints","lastClanStars","lastOpponentStars","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName"
+          "id","guildId","clanTag","channelId","notify","inferredMatchType","notifyRole","fwaPoints","opponentFwaPoints","outcome","matchType","warStartFwaPoints","warEndFwaPoints","lastClanStars","lastOpponentStars","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName"
         FROM "WarEventLogSubscription"
         WHERE "notify" = true
         ORDER BY "updatedAt" ASC
@@ -154,6 +155,7 @@ export class WarEventLogService {
       clanTag: string;
       channelId: string;
       notify: boolean;
+      inferredMatchType: boolean;
       notifyRole: string | null;
       fwaPoints: number | null;
       opponentFwaPoints: number | null;
@@ -172,7 +174,7 @@ export class WarEventLogService {
     const rows = await prisma.$queryRaw<SubRow[]>(
       Prisma.sql`
         SELECT
-          "id","guildId","clanTag","channelId","notify","notifyRole","fwaPoints","opponentFwaPoints","outcome","matchType","warStartFwaPoints","warEndFwaPoints","lastClanStars","lastOpponentStars","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName"
+          "id","guildId","clanTag","channelId","notify","inferredMatchType","notifyRole","fwaPoints","opponentFwaPoints","outcome","matchType","warStartFwaPoints","warEndFwaPoints","lastClanStars","lastOpponentStars","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName"
         FROM "WarEventLogSubscription"
         WHERE "id" = ${subscriptionId}
         LIMIT 1
@@ -244,6 +246,7 @@ export class WarEventLogService {
       }
     }
     let nextMatchType = sub.matchType;
+    let nextInferredMatchType = sub.inferredMatchType;
     if (eventType === "war_started") {
       if (
         nextMatchType === null &&
@@ -253,6 +256,14 @@ export class WarEventLogService {
         Number.isFinite(nextOpponentFwaPoints)
       ) {
         nextMatchType = "FWA";
+        nextInferredMatchType = true;
+      } else if (
+        nextMatchType === null &&
+        (nextFwaPoints === null || !Number.isFinite(nextFwaPoints)) &&
+        (nextOpponentFwaPoints === null || !Number.isFinite(nextOpponentFwaPoints))
+      ) {
+        nextMatchType = "MM";
+        nextInferredMatchType = true;
       }
     }
 
@@ -282,6 +293,7 @@ export class WarEventLogService {
         opponentFwaPoints: nextOpponentFwaPoints,
         outcome: nextOutcome,
         matchType: nextMatchType,
+        inferredMatchType: nextInferredMatchType,
         warStartFwaPoints: nextWarStartFwaPoints,
         warEndFwaPoints: nextWarEndFwaPoints,
         lastClanStars: nextClanStars,

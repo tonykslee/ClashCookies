@@ -242,7 +242,7 @@ const handleButtonInteraction = async (interaction: Interaction): Promise<void> 
       if (!interaction.replied && !interaction.deferred) {
         await interaction.reply({
           ephemeral: true,
-          content: "Failed to apply match type action.",
+          content: "Failed to apply match type update.",
         });
       }
     }
