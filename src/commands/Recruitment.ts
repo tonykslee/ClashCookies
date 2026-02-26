@@ -290,7 +290,10 @@ async function handleShowSubcommand(
   await interaction.editReply(truncateDiscordContent(response));
 }
 
-async function handleEditSubcommand(interaction: ChatInputCommandInteraction): Promise<void> {
+async function handleEditSubcommand(
+  interaction: ChatInputCommandInteraction,
+  cocService: CoCService
+): Promise<void> {
   const clanTag = normalizeClanTag(interaction.options.getString("clan", true));
   const platformRaw = interaction.options.getString("platform", true);
   const platform = parseRecruitmentPlatform(platformRaw);
@@ -346,11 +349,21 @@ async function handleEditSubcommand(interaction: ChatInputCommandInteraction): P
   }
 
   if (platform === "reddit") {
+    const clan = await cocService.getClan(clanTag).catch(() => null);
+    const requiredTh = Number(clan?.requiredTownhallLevel);
+    const clanLevel = Number(clan?.clanLevel);
+    const requiredThText =
+      Number.isFinite(requiredTh) && requiredTh > 0
+        ? `TH${requiredTh}`
+        : "Required TH/Level";
+    const clanLevelText =
+      Number.isFinite(clanLevel) && clanLevel > 0 ? `Level ${clanLevel}` : "Clan Level";
+    const clanNameText = tracked.name?.trim() || clan?.name?.trim() || "Clan Name";
     const defaultSubject =
       existing?.subject?.trim() ||
-      `[Recruiting] ${tracked.name ?? "Clan Name"} | ${formatClanTag(
+      `[Recruiting] ${clanNameText} | ${formatClanTag(
         clanTag
-      )} | Required TH/Level | Clan Level | FWA | Discord`;
+      )} | ${requiredThText} | ${clanLevelText} | FWA | Discord`;
     const subjectInput = new TextInputBuilder()
       .setCustomId(REDDIT_SUBJECT_INPUT_ID)
       .setLabel("Reddit post subject")
@@ -683,7 +696,7 @@ export const Recruitment: Command = {
       return;
     }
     if (sub === "edit") {
-      await handleEditSubcommand(interaction);
+      await handleEditSubcommand(interaction, cocService);
       return;
     }
     if (sub === "dashboard") {
