@@ -309,11 +309,14 @@ export class WarEventLogService {
     }
     let nextMatchType = sub.matchType;
     if (eventType === "war_started") {
+      const opponentTagForMatchType = nextOpponentTag || normalizeTag(sub.lastOpponentTag ?? "");
       try {
-        nextMatchType = await this.fetchClanMatchType(sub.clanTag);
+        if (opponentTagForMatchType) {
+          nextMatchType = await this.fetchClanMatchType(opponentTagForMatchType);
+        }
       } catch (err) {
         console.error(
-          `[war-events] matchType fetch failed clan=${sub.clanTag} error=${formatError(err)}`
+          `[war-events] matchType fetch failed clan=${sub.clanTag} opponent=${opponentTagForMatchType} error=${formatError(err)}`
         );
       }
     }
