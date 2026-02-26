@@ -173,6 +173,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     details: [
       "`/fwa points` returns point balances (single clan tag or all tracked if tag omitted).",
       "`/fwa match` auto-resolves current war opponent from CoC API and evaluates win/lose/tiebreak using the same points logic.",
+      "`/fwa match-type` lets admins manually set/view per-clan match type (FWA/BL/MM) with tracked-clan autocomplete.",
       "Tag supports autocomplete from tracked clans.",
       "Set `visibility:public` to post the result directly in channel.",
     ],
@@ -180,6 +181,8 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/fwa points tag:2QG2C08UP",
       "/fwa points",
       "/fwa match tag:2QG2C08UP",
+      "/fwa match-type tag:2QG2C08UP type:FWA",
+      "/fwa match-type",
       "/fwa points tag:2QG2C08UP visibility:public",
     ],
   },

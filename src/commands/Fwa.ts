@@ -1029,6 +1029,41 @@ export const Fwa: Command = {
         },
       ],
     },
+    {
+      name: "match-type",
+      description: "Manually set or view match type (FWA/BL/MM) for a tracked clan",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "tag",
+          description: "Tracked clan tag (with or without #)",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          autocomplete: true,
+        },
+        {
+          name: "type",
+          description: "Match type override",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          choices: [
+            { name: "FWA", value: "FWA" },
+            { name: "BL", value: "BL" },
+            { name: "MM", value: "MM" },
+          ],
+        },
+        {
+          name: "visibility",
+          description: "Response visibility",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          choices: [
+            { name: "private", value: "private" },
+            { name: "public", value: "public" },
+          ],
+        },
+      ],
+    },
   ],
   run: async (
     _client: Client,
@@ -1061,6 +1096,87 @@ export const Fwa: Command = {
     await interaction.deferReply({ ephemeral: !isPublic });
     const rawTag = interaction.options.getString("tag", false);
     const tag = normalizeTag(rawTag ?? "");
+    if (subcommand === "match-type") {
+      if (!interaction.guildId) {
+        await editReplySafe("This command can only be used in a server.");
+        return;
+      }
+      const type = interaction.options.getString("type", false) as "FWA" | "BL" | "MM" | null;
+      if (type && !tag) {
+        await editReplySafe("Please provide `tag` when setting `type`.");
+        return;
+      }
+
+      if (!tag) {
+        const tracked = await prisma.trackedClan.findMany({
+          orderBy: { createdAt: "asc" },
+          select: { name: true, tag: true },
+        });
+        if (tracked.length === 0) {
+          await editReplySafe("No tracked clans configured.");
+          return;
+        }
+        const rows = await prisma.warEventLogSubscription.findMany({
+          where: { guildId: interaction.guildId },
+          select: { clanTag: true, matchType: true },
+        });
+        const byTag = new Map(rows.map((r) => [normalizeTag(r.clanTag), r.matchType]));
+        const lines = tracked.map((c) => {
+          const t = normalizeTag(c.tag);
+          const name = sanitizeClanName(c.name) ?? `#${t}`;
+          return `- ${name} (#${t}): ${byTag.get(t) ?? "UNKNOWN"}`;
+        });
+        await editReplySafe(buildLimitedMessage("Manual match-type overrides", lines, ""));
+        return;
+      }
+
+      const tracked = await prisma.trackedClan.findFirst({
+        where: { tag: { equals: `#${tag}`, mode: "insensitive" } },
+        select: { name: true, tag: true },
+      });
+      if (!tracked) {
+        await editReplySafe(`Tag #${tag} is not in tracked clans. Add it first via /tracked-clan add.`);
+        return;
+      }
+      const displayName = sanitizeClanName(tracked.name) ?? `#${tag}`;
+
+      if (!type) {
+        const existing = await prisma.warEventLogSubscription.findUnique({
+          where: {
+            guildId_clanTag: {
+              guildId: interaction.guildId,
+              clanTag: `#${tag}`,
+            },
+          },
+          select: { matchType: true },
+        });
+        await editReplySafe(`${displayName} (#${tag}) match type: **${existing?.matchType ?? "UNKNOWN"}**`);
+        return;
+      }
+
+      await prisma.warEventLogSubscription.upsert({
+        where: {
+          guildId_clanTag: {
+            guildId: interaction.guildId,
+            clanTag: `#${tag}`,
+          },
+        },
+        create: {
+          guildId: interaction.guildId,
+          clanTag: `#${tag}`,
+          channelId: interaction.channelId,
+          notify: false,
+          matchType: type,
+        },
+        update: {
+          matchType: type,
+          updatedAt: new Date(),
+        },
+      });
+      await editReplySafe(`${displayName} (#${tag}) match type set to **${type}**.`);
+      return;
+    }
+
     if (subcommand === "points" && !tag) {
       const tracked = await prisma.trackedClan.findMany({
         orderBy: { createdAt: "asc" },
