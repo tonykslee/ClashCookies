@@ -118,7 +118,19 @@ export default (client: Client, cocService: CoCService): void => {
 
     // Register ONLY guild commands
     const commandsWithVisibility = Commands.map((cmd) => injectVisibilityOptions(cmd));
-    await guild.commands.set(commandsWithVisibility);
+    try {
+      await guild.commands.set(commandsWithVisibility);
+    } catch (err) {
+      console.error(`Guild command registration failed: ${formatError(err)}`);
+      console.error(
+        "Command registration payload summary:",
+        commandsWithVisibility.map((c: any) => ({
+          name: c?.name,
+          optionCount: Array.isArray(c?.options) ? c.options.length : 0,
+        }))
+      );
+      throw err;
+    }
     console.log(`✅ Guild commands registered (${Commands.length})`);
 
     const activityService = new ActivityService(cocService);
