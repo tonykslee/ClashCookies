@@ -207,7 +207,9 @@ async function handleSyncStatusSubcommand(
   const unclaimedLines: string[] = [];
 
   for (const badge of badges) {
-    const reaction = [...message.reactions.cache.values()].find((r) => r.emoji.id === badge.id);
+    const reaction = [...message.reactions.cache.values()].find((r) =>
+      reactionMatchesBadge(r, badge)
+    );
     const claimedBy: string[] = [];
     const nonLeader: string[] = [];
 
@@ -251,6 +253,12 @@ async function handleSyncStatusSubcommand(
     .setDescription(
       [
         `Message: https://discord.com/channels/${guild.id}/${message.channelId}/${message.id}`,
+        (() => {
+          const epoch = extractSyncEpochSeconds(message.content);
+          return epoch
+            ? `Sync time: <t:${epoch}:F> (<t:${epoch}:R>)`
+            : "Sync time: not detected from message content";
+        })(),
         "",
         `Claimed: **${claimedLines.length}/${badges.length}**`,
         "",
@@ -264,8 +272,8 @@ async function handleSyncStatusSubcommand(
     .setFooter({
       text:
         leaderRoleIds.length > 0
-          ? "Leader = Administrator or role allowed for /post sync time"
-          : "Leader = Administrator (no explicit /post role whitelist configured)",
+          ? "Leader eligibility: Administrator or role allowed for /post sync time"
+          : "Leader eligibility: Administrator only (no /post sync time role whitelist configured)",
     });
 
   await interaction.editReply({ embeds: [embed] });
@@ -428,6 +436,22 @@ function summarizePermissionIssue(err: unknown, action: string): string {
 
 function isBotSyncTimeMessage(content: string): boolean {
   return content.startsWith("# Sync time :gem:");
+}
+
+function extractSyncEpochSeconds(content: string): number | null {
+  const match = content.match(/<t:(\d{8,12}):F>/);
+  if (!match?.[1]) return null;
+  const epoch = Number(match[1]);
+  if (!Number.isFinite(epoch) || epoch <= 0) return null;
+  return epoch;
+}
+
+function reactionMatchesBadge(
+  reaction: { emoji: { id: string | null; name: string | null } },
+  badge: BadgeEmoji
+): boolean {
+  if (reaction.emoji.id && reaction.emoji.id === badge.id) return true;
+  return Boolean(reaction.emoji.name && reaction.emoji.name === badge.name);
 }
 
 function buildModalCustomId(userId: string): string {
