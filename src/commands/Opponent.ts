@@ -8,6 +8,7 @@ import { Command } from "../Command";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
 import { formatError } from "../helper/formatError";
+import { getPointsSnapshotForClan } from "./Points";
 
 function normalizeClanTag(input: string): string {
   const trimmed = input.trim().toUpperCase();
@@ -54,8 +55,13 @@ export const Opponent: Command = {
       const clanName = String(war?.clan?.name ?? clanTag).trim() || clanTag;
       const opponentName = String(war?.opponent?.name ?? "Unknown").trim() || "Unknown";
       const opponentTag = opponentTagRaw.replace(/^#/, "").toUpperCase();
+      const syncSnapshot = await getPointsSnapshotForClan(cocService, clanTag).catch(() => null);
+      const syncLine =
+        syncSnapshot?.effectiveSync !== null && syncSnapshot?.effectiveSync !== undefined
+          ? `\n## Sync: \`#${syncSnapshot.effectiveSync}\``
+          : "";
       await interaction.editReply(
-        `## ${clanName} vs\n\n## Opponent: \`${opponentName}\`\n---\n## Opponent Tag: \`${opponentTag}\``
+        `## ${clanName} vs\n\n## Opponent: \`${opponentName}\`\n---\n## Opponent Tag: \`${opponentTag}\`${syncLine}`
       );
     } catch (err) {
       console.error(

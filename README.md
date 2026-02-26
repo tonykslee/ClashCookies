@@ -7,7 +7,7 @@ Discord bot for Clash of Clans activity tooling.
 - Manages tracked clans at runtime (`/tracked-clan ...`).
 - Links to a Google Sheet at runtime (`/sheet ...`).
 - Supports mode-specific sheet links for `actual` and `war` roster workflows.
-- Fetches FWA points balances for one clan or all tracked clans (`/points`).
+- Fetches FWA points balances and matchup projections (`/fwa ...`).
 
 ## Setup
 1. Create a `.env` with required Discord, CoC API, and database values.
@@ -78,7 +78,8 @@ Optional fallback auth (not required for your current setup):
 - `/opponent tag:<tag>` - Get current war opponent clan tag from CoC API (without `#`).
 - `/enable event logs clan:<tag> target-channel:<channel>` - Enable war-state event logs (war start, battle day, war end) for a clan in a selected channel.
 - `/accounts [visibility:private|public] [tag:<playerTag>] [discord-id:<snowflake>]` - List linked player accounts grouped by current clan. Default is your own account; provide exactly one of `tag` or `discord-id` to inspect a different linked user.
-- `/points [visibility:private|public] [tag:<tag>] [opponent-tag:<tag>]` - Fetch current point balance from `https://points.fwafarm.com/clan?tag=<tag-without-#>`. If `tag` is omitted, fetches all tracked clans. If both tags are provided, returns projected winner/loser by points, or sync-based tiebreak when points are tied.
+- `/fwa points [visibility:private|public] [tag:<tag>]` - Fetch current point balance from `https://points.fwafarm.com/clan?tag=<tag-without-#>`. If `tag` is omitted, fetches all tracked clans.
+- `/fwa match [visibility:private|public] tag:<tag>` - Resolve current war opponent from CoC API, then return projected win/lose by points (or sync-based tiebreak on tie).
 - `/recruitment show platform:discord|reddit|band clan:<tag>` - Render platform-specific recruitment template output for a tracked clan.
 - `/recruitment edit platform:discord|reddit|band clan:<tag>` - Open platform-specific modal:
   - Discord: clan tag, body (max 1024), optional image URL(s)
@@ -108,8 +109,8 @@ Optional fallback auth (not required for your current setup):
 - Administrator users can always use commands regardless of role whitelist.
 - To lock `/post` to role X, run:
   - `/permission add command:post role:@RoleX`
-- To lock `/points` to role X, run:
-  - `/permission add command:points role:@RoleX`
+- To lock `/fwa` to role X, run:
+  - `/permission add command:fwa role:@RoleX`
 - To lock `/recruitment` to role X, run:
   - `/permission add command:recruitment role:@RoleX`
 - To lock `/enable` to role X, run:

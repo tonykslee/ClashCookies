@@ -8,7 +8,7 @@ import { Compo } from "./commands/Compo";
 import { Post } from "./commands/Post";
 import { CommandRole } from "./commands/CommandRole";
 import { CC } from "./commands/CC";
-import { Points } from "./commands/Points";
+import { Fwa } from "./commands/Points";
 import { Opponent } from "./commands/Opponent";
 import { KickList } from "./commands/KickList";
 import { Recruitment } from "./commands/Recruitment";
@@ -26,7 +26,7 @@ export const Commands = [
   Compo,
   CC,
   Accounts,
-  Points,
+  Fwa,
   Opponent,
   Enable,
   Recruitment,
