@@ -33,6 +33,9 @@ Optional ClashKing link lookup (kick-list fallback when local links are missing)
   - `/my-accounts` backfills `PlayerLink` from ClashKing when local links are missing for the requesting user.
   - Activity observe loop checks unresolved tracked-member links via ClashKing at most once every 6 hours and caches matches in `PlayerLink`.
 
+Optional war event log poll setting:
+- `WAR_EVENT_LOG_POLL_INTERVAL_MINUTES` - interval for war-state event listener polling (default: `5` minutes).
+
 ## Google Sheets (OAuth)
 This project is currently set up to use OAuth refresh token auth.
 
@@ -73,6 +76,7 @@ Optional fallback auth (not required for your current setup):
 - `/cc player tag:<tag>` - Build `https://cc.fwafarm.com/cc_n/member.php?tag=<tag>`.
 - `/cc clan tag:<tag>` - Build `https://cc.fwafarm.com/cc_n/clan.php?tag=<tag>`.
 - `/opponent tag:<tag>` - Get current war opponent clan tag from CoC API (without `#`).
+- `/enable event logs clan:<tag> target-channel:<channel>` - Enable war-state event logs (war start, battle day, war end) for a clan in a selected channel.
 - `/my-accounts [visibility:private|public]` - List your linked player accounts grouped by their current clan.
 - `/points [visibility:private|public] [tag:<tag>] [opponent-tag:<tag>]` - Fetch current point balance from `https://points.fwafarm.com/clan?tag=<tag-without-#>`. If `tag` is omitted, fetches all tracked clans. If both tags are provided, returns projected winner/loser by points, or sync-based tiebreak when points are tied.
 - `/recruitment show platform:discord|reddit|band clan:<tag>` - Render platform-specific recruitment template output for a tracked clan.
@@ -99,6 +103,7 @@ Optional fallback auth (not required for your current setup):
   - `/sheet link`, `/sheet unlink`, `/sheet show`, `/sheet refresh`
   - `/kick-list build`, `/kick-list add`, `/kick-list remove`, `/kick-list show`, `/kick-list clear`
   - `/post sync time`
+  - `/enable event logs`
 - You can whitelist roles per command with `/permission add`.
 - Administrator users can always use commands regardless of role whitelist.
 - To lock `/post` to role X, run:
@@ -107,6 +112,8 @@ Optional fallback auth (not required for your current setup):
   - `/permission add command:points role:@RoleX`
 - To lock `/recruitment` to role X, run:
   - `/permission add command:recruitment role:@RoleX`
+- To lock `/enable` to role X, run:
+  - `/permission add command:enable role:@RoleX`
 
 ## Deployment Notes
 - Commands are registered as guild commands using `GUILD_ID` on startup.

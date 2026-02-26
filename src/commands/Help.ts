@@ -32,6 +32,7 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "kick-list:show",
   "kick-list:clear",
   "post:sync:time",
+  "enable:event:logs",
   "permission:add",
   "permission:remove",
 ]);
@@ -138,6 +139,15 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "If no active war is available, returns a clear fallback message.",
     ],
     examples: ["/opponent tag:2QG2C08UP"],
+  },
+  enable: {
+    summary: "Enable event log features.",
+    details: [
+      "`event logs` enables war-state event embeds for a clan in a selected channel.",
+      "Works with clans outside tracked-clans table (tag must still be valid in CoC API).",
+      "Posts at war start, battle day, and war end with opponent + points projection.",
+    ],
+    examples: ["/enable event logs clan:2QG2C08UP target-channel:#war-events"],
   },
   "my-accounts": {
     summary: "List your linked player accounts grouped by their current clan.",

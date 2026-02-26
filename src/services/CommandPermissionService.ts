@@ -29,6 +29,9 @@ export const COMMAND_PERMISSION_TARGETS = [
   "cc:player",
   "cc:clan",
   "opponent",
+  "enable",
+  "enable:event:logs",
+  "enable:logs",
   "points",
   "recruitment",
   "recruitment:show",
@@ -71,6 +74,7 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "kick-list:show",
   "kick-list:clear",
   "post:sync:time",
+  "enable:event:logs",
   `${MANAGE_COMMAND_ROLES_COMMAND}:add`,
   `${MANAGE_COMMAND_ROLES_COMMAND}:remove`,
 ]);
