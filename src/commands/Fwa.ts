@@ -27,6 +27,7 @@ const DISCORD_CONTENT_MAX = 2000;
 const POINTS_CACHE_VERSION = 4;
 const MATCHUP_CACHE_VERSION = 5;
 const POINTS_POST_BUTTON_PREFIX = "points-post-channel";
+const FWA_MATCH_COPY_BUTTON_PREFIX = "fwa-match-copy";
 const POINTS_REQUEST_HEADERS = {
   "User-Agent":
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
@@ -98,6 +99,111 @@ function parsePointsPostButtonCustomId(customId: string): { userId: string } | n
 
 export function isPointsPostButtonCustomId(customId: string): boolean {
   return customId.startsWith(`${POINTS_POST_BUTTON_PREFIX}:`);
+}
+
+type FwaMatchCopyPayload = {
+  userId: string;
+  embed: EmbedBuilder;
+  copyText: string;
+  includePostButton: boolean;
+};
+
+const fwaMatchCopyPayloads = new Map<string, FwaMatchCopyPayload>();
+
+function buildFwaMatchCopyCustomId(
+  userId: string,
+  key: string,
+  mode: "copy" | "embed"
+): string {
+  return `${FWA_MATCH_COPY_BUTTON_PREFIX}:${userId}:${key}:${mode}`;
+}
+
+function parseFwaMatchCopyCustomId(
+  customId: string
+): { userId: string; key: string; mode: "copy" | "embed" } | null {
+  const parts = customId.split(":");
+  if (parts.length !== 4 || parts[0] !== FWA_MATCH_COPY_BUTTON_PREFIX) return null;
+  const userId = parts[1]?.trim() ?? "";
+  const key = parts[2]?.trim() ?? "";
+  const mode = parts[3] === "copy" || parts[3] === "embed" ? parts[3] : null;
+  if (!userId || !key || !mode) return null;
+  return { userId, key, mode };
+}
+
+export function isFwaMatchCopyButtonCustomId(customId: string): boolean {
+  return customId.startsWith(`${FWA_MATCH_COPY_BUTTON_PREFIX}:`);
+}
+
+function buildFwaMatchCopyComponents(
+  userId: string,
+  key: string,
+  showMode: "embed" | "copy",
+  includePostButton: boolean
+): ActionRowBuilder<ButtonBuilder>[] {
+  const toggleMode = showMode === "embed" ? "copy" : "embed";
+  const toggleLabel = showMode === "embed" ? "Copy/Paste View" : "Embed View";
+  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(buildFwaMatchCopyCustomId(userId, key, toggleMode))
+      .setLabel(toggleLabel)
+      .setStyle(ButtonStyle.Secondary)
+  );
+  if (includePostButton) {
+    row.addComponents(
+      new ButtonBuilder()
+        .setCustomId(buildPointsPostButtonCustomId(userId))
+        .setLabel("Post to Channel")
+        .setStyle(ButtonStyle.Secondary)
+    );
+  }
+  return [row];
+}
+
+export async function handleFwaMatchCopyButton(interaction: ButtonInteraction): Promise<void> {
+  const parsed = parseFwaMatchCopyCustomId(interaction.customId);
+  if (!parsed) return;
+
+  if (interaction.user.id !== parsed.userId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Only the command requester can use this button.",
+    });
+    return;
+  }
+
+  const payload = fwaMatchCopyPayloads.get(parsed.key);
+  if (!payload) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "This match view expired. Please run /fwa match again.",
+    });
+    return;
+  }
+
+  if (parsed.mode === "copy") {
+    await interaction.update({
+      content: limitDiscordContent(payload.copyText),
+      embeds: [],
+      components: buildFwaMatchCopyComponents(
+        payload.userId,
+        parsed.key,
+        "copy",
+        payload.includePostButton
+      ),
+    });
+    return;
+  }
+
+  await interaction.update({
+    content: undefined,
+    embeds: [payload.embed],
+    components: buildFwaMatchCopyComponents(
+      payload.userId,
+      parsed.key,
+      "embed",
+      payload.includePostButton
+    ),
+  });
 }
 
 export async function handlePointsPostButton(interaction: ButtonInteraction): Promise<void> {
@@ -245,6 +351,17 @@ function getSyncDisplay(
   return `#${current}`;
 }
 
+function getSyncModeFromPrevious(previousSync: number | null): "high" | "low" | null {
+  if (previousSync === null) return null;
+  return (previousSync + 1) % 2 === 0 ? "high" : "low";
+}
+
+function withSyncModeLabel(syncText: string, previousSync: number | null): string {
+  const mode = getSyncModeFromPrevious(previousSync);
+  if (!mode) return syncText;
+  return `${syncText} (${mode === "high" ? "High Sync" : "Low Sync"})`;
+}
+
 function formatWarStateLabel(warState: WarStateForSync): string {
   if (warState === "preparation") return "preparation";
   if (warState === "inWar") return "battle day";
@@ -263,67 +380,6 @@ function getWarStateRemaining(
   return `<t:${Math.floor(targetMs / 1000)}:R>`;
 }
 
-function buildCcClanUrl(tag: string): string {
-  const normalizedTag = normalizeTag(tag);
-  const proxyBase = (process.env.CC_PROXY_URL ?? "").trim();
-  if (!proxyBase) return `https://cc.fwafarm.com/cc_n/clan.php?tag=${normalizedTag}`;
-  const proxyUrl = new URL(proxyBase);
-  proxyUrl.searchParams.set("tag", normalizedTag);
-  return proxyUrl.toString();
-}
-
-function deriveMatchTypeFromAssociation(html: string): "FWA" | "BL" | "MM" | null {
-  const associationStart = html.search(/Association\s*:/i);
-  if (associationStart < 0) return null;
-  const windowHtml = html.slice(associationStart, associationStart + 900);
-  const plain = toPlainText(windowHtml);
-  const textMatch = plain.match(/Association\s*:\s*(.+?)(?=\s{2,}|$)/i);
-  const associationText = String(textMatch?.[1] ?? "").trim();
-  const hasRedFont =
-    /color\s*:\s*red/i.test(windowHtml) ||
-    /color\s*=\s*["']?\s*red/i.test(windowHtml) ||
-    /#ff0000|#f00/i.test(windowHtml);
-  const hasBlackFont =
-    /color\s*:\s*black/i.test(windowHtml) ||
-    /color\s*=\s*["']?\s*black/i.test(windowHtml) ||
-    /#000000|#000/i.test(windowHtml);
-  const lower = associationText.toLowerCase();
-
-  if (lower.includes("blacklisted") || hasRedFont) return "BL";
-  if (lower.includes("official fwa")) return "FWA";
-  if (lower.includes("none") || lower.includes("no league association") || hasBlackFont) return "MM";
-  return null;
-}
-
-async function fetchMatchTypeByOpponentTag(opponentTag: string): Promise<"FWA" | "BL" | "MM" | null> {
-  const url = buildCcClanUrl(opponentTag);
-  const response = await axios.get<string>(url, {
-    timeout: 15000,
-    responseType: "text",
-    headers: {
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
-      Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    },
-    validateStatus: () => true,
-  });
-  recordFetchEvent({
-    namespace: "cc",
-    operation: "association_lookup",
-    source: "web",
-    detail: `tag=${normalizeTag(opponentTag)} status=${response.status}`,
-  });
-  if (response.status >= 400) return null;
-  const matchType = deriveMatchTypeFromAssociation(String(response.data ?? ""));
-  recordFetchEvent({
-    namespace: "cc",
-    operation: "association_lookup_parse",
-    source: matchType ? "cache_hit" : "cache_miss",
-    detail: `tag=${normalizeTag(opponentTag)} matchType=${matchType ?? "null"}`,
-  });
-  return matchType;
-}
-
 async function resolveMatchTypeWithFallback(params: {
   guildId: string | null;
   clanTag: string;
@@ -331,22 +387,7 @@ async function resolveMatchTypeWithFallback(params: {
   warState: WarStateForSync;
   existingMatchType: "FWA" | "BL" | "MM" | null | undefined;
 }): Promise<"FWA" | "BL" | "MM" | null> {
-  if (params.existingMatchType) return params.existingMatchType;
-  if (params.warState === "notInWar") return params.existingMatchType ?? null;
-  if (!params.guildId) return params.existingMatchType ?? null;
-  if (!params.opponentTag) return params.existingMatchType ?? null;
-
-  const derived = await fetchMatchTypeByOpponentTag(params.opponentTag).catch(() => null);
-  if (!derived) return null;
-
-  await prisma.warEventLogSubscription.updateMany({
-    where: {
-      guildId: params.guildId,
-      clanTag: `#${normalizeTag(params.clanTag)}`,
-    },
-    data: { matchType: derived },
-  });
-  return derived;
+  return params.existingMatchType ?? null;
 }
 
 function applySourceSync(snapshot: PointsSnapshot, sourceSync: number | null): PointsSnapshot {
@@ -876,16 +917,19 @@ async function buildTrackedMatchOverview(
   cocService: CoCService,
   sourceSync: number | null,
   guildId: string | null
-): Promise<EmbedBuilder> {
+): Promise<{ embed: EmbedBuilder; copyText: string }> {
   const settings = new SettingsService();
   const tracked = await prisma.trackedClan.findMany({
     orderBy: { createdAt: "asc" },
     select: { tag: true, name: true },
   });
   if (tracked.length === 0) {
-    return new EmbedBuilder()
+    return {
+      embed: new EmbedBuilder()
       .setTitle("FWA Match Overview")
-      .setDescription("No tracked clans configured. Use `/tracked-clan add` first.");
+      .setDescription("No tracked clans configured. Use `/tracked-clan add` first."),
+      copyText: "No tracked clans configured. Use `/tracked-clan add` first.",
+    };
   }
 
   const subscriptions = await prisma.warEventLogSubscription.findMany({
@@ -905,6 +949,7 @@ async function buildTrackedMatchOverview(
   ]);
   const stateRemaining = new Map<WarStateForSync, string>();
   const embed = new EmbedBuilder().setTitle(`FWA Match Overview (${tracked.length})`);
+  const copyLines: string[] = [];
 
   for (const clan of tracked) {
     const clanTag = normalizeTag(clan.tag);
@@ -933,6 +978,10 @@ async function buildTrackedMatchOverview(
         value: "No active war opponent",
         inline: false,
       });
+      copyLines.push(
+        `## ${clanName} (#${clanTag})`,
+        "No active war opponent"
+      );
       continue;
     }
 
@@ -980,6 +1029,15 @@ async function buildTrackedMatchOverview(
         value: `${pointsLine}\nOutcome: **${sub?.outcome ?? "UNKNOWN"}**`,
         inline: false,
       });
+      copyLines.push(
+        `## ${clanName} (#${clanTag})`,
+        `### Opponent Name`,
+        `\`${opponentName}\``,
+        `### Opponent Tag`,
+        `\`${opponentTag}\``,
+        `${pointsLine}`,
+        `Outcome: ${sub?.outcome ?? "UNKNOWN"}`
+      );
       continue;
     }
 
@@ -988,6 +1046,15 @@ async function buildTrackedMatchOverview(
       value: `${pointsLine}\nMatch Type: **${matchType}**`,
       inline: false,
     });
+    copyLines.push(
+      `## ${clanName} (#${clanTag})`,
+      `### Opponent Name`,
+      `\`${opponentName}\``,
+      `### Opponent Tag`,
+      `\`${opponentTag}\``,
+      `${pointsLine}`,
+      `Match Type: ${matchType}`
+    );
   }
 
   const nonZeroStates = [...stateCounts.entries()].filter(([, count]) => count > 0);
@@ -1008,10 +1075,15 @@ async function buildTrackedMatchOverview(
           ? (stateRemaining.get("inWar") ?? "unknown")
           : "n/a";
 
+  const syncWithMode = stateLabel === "mixed" ? "mixed" : withSyncModeLabel(syncLabel, sourceSync);
   embed.setDescription(
-    `Sync: **${syncLabel}**\nWar State: **${stateLabel}**\nTime Remaining: **${remainingLabel}**`
+    `Sync: **${syncWithMode}**\nWar State: **${stateLabel}**\nTime Remaining: **${remainingLabel}**`
   );
-  return embed;
+  const copyHeader = `# FWA Match Overview (${tracked.length})\nSync: ${syncWithMode}\nWar State: ${stateLabel}\nTime Remaining: ${remainingLabel}`;
+  return {
+    embed,
+    copyText: buildLimitedMessage(copyHeader, copyLines.map((l) => `${l}\n`), ""),
+  };
 }
 
 export const Fwa: Command = {
@@ -1110,7 +1182,7 @@ export const Fwa: Command = {
     const subcommand = interaction.options.getSubcommand(true);
     const visibility = interaction.options.getString("visibility", false) ?? "private";
     const isPublic = visibility === "public";
-    const components = !isPublic
+    const defaultComponents = !isPublic
       ? [
           new ActionRowBuilder<ButtonBuilder>().addComponents(
             new ButtonBuilder()
@@ -1121,12 +1193,16 @@ export const Fwa: Command = {
         ]
       : [];
 
-    const editReplySafe = async (content: string, embeds?: EmbedBuilder[]): Promise<void> => {
+    const editReplySafe = async (
+      content: string,
+      embeds?: EmbedBuilder[],
+      componentsOverride?: ActionRowBuilder<ButtonBuilder>[]
+    ): Promise<void> => {
       const normalized = content.trim();
       await interaction.editReply({
         content: normalized ? truncateDiscordContent(normalized) : undefined,
         embeds,
-        components,
+        components: componentsOverride ?? defaultComponents,
       });
     };
 
@@ -1304,7 +1380,18 @@ export const Fwa: Command = {
           sourceSync,
           interaction.guildId ?? null
         );
-        await editReplySafe("", [overview]);
+        const key = interaction.id;
+        fwaMatchCopyPayloads.set(key, {
+          userId: interaction.user.id,
+          embed: overview.embed,
+          copyText: overview.copyText,
+          includePostButton: !isPublic,
+        });
+        await editReplySafe(
+          "",
+          [overview.embed],
+          buildFwaMatchCopyComponents(interaction.user.id, key, "embed", !isPublic)
+        );
         return;
       }
 
@@ -1386,29 +1473,10 @@ export const Fwa: Command = {
           matchType = "FWA";
         }
 
-        const cycleKey = `${currentSync ?? "none"}:${primary.refreshedForWarEndMs ?? "none"}:${opponent.refreshedForWarEndMs ?? "none"}`;
-        const cachedMatchup = await readMatchupCache(settings, tag, opponentTag);
-        if (cachedMatchup && cachedMatchup.cycleKey === cycleKey) {
-          recordFetchEvent({
-            namespace: "points",
-            operation: "matchup_projection",
-            source: "cache_hit",
-            detail: `tag=${tag} opponent=${opponentTag}`,
-          });
-          const safeCachedMessage = limitDiscordContent(cachedMatchup.message);
-          await editReplySafe(safeCachedMessage);
-          if (safeCachedMessage !== cachedMatchup.message) {
-            await writeMatchupCache(settings, tag, opponentTag, {
-              ...cachedMatchup,
-              message: safeCachedMessage,
-            });
-          }
-          return;
-        }
         recordFetchEvent({
           namespace: "points",
           operation: "matchup_projection",
-          source: "cache_miss",
+          source: "cache_hit",
           detail: `tag=${tag} opponent=${opponentTag}`,
         });
 
@@ -1441,31 +1509,70 @@ export const Fwa: Command = {
             opponentName: resolvedOpponentName ?? opponentNameFromApi,
           })
         );
+        const projectionLine = message.split("\n")[1]?.trim() ?? message.trim();
+        const syncDisplay = withSyncModeLabel(getSyncDisplay(sourceSync, warState), sourceSync);
         const opponentInWinnerBox = primary.winnerBoxTags
           .map((t) => normalizeTag(t))
           .includes(opponentTag);
         const staleSite =
           !opponentInWinnerBox || (sourceSync !== null && primary.winnerBoxSync === sourceSync);
-        const siteStatusLine = staleSite
-          ? "\nNote: points.fwafarm site is not updated yet."
-          : "";
+        const siteStatusLine = staleSite ? "Note: points.fwafarm site is not updated yet." : null;
         const outcomeLine =
           matchType === "FWA"
-            ? `\nExpected outcome: ${subscription?.outcome ?? "UNKNOWN"}`
+            ? `${subscription?.outcome ?? "UNKNOWN"}`
             : "";
-        const messageWithSync = limitDiscordContent(
-          `${message}\nMatch Type: ${matchType}${outcomeLine}\nWar state: ${formatWarStateLabel(
-            warState
-          )}\nTime remaining: ${warRemaining}\nSync: ${getSyncDisplay(sourceSync, warState)}${siteStatusLine}`
+        const leftName = resolvedPrimaryName ?? primaryNameFromApi ?? tag;
+        const rightName = resolvedOpponentName ?? opponentNameFromApi ?? opponentTag;
+        const pointsEquation = `${primary.balance} ${primary.balance >= opponent.balance ? ">" : primary.balance < opponent.balance ? "<" : "="} ${opponent.balance}`;
+        const embed = new EmbedBuilder()
+          .setTitle(`${leftName} (#${tag}) vs ${rightName} (#${opponentTag})`)
+          .setDescription(
+            `${projectionLine}\nMatch Type: **${matchType}**${
+              outcomeLine ? `\nExpected outcome: **${outcomeLine}**` : ""
+            }\nWar state: **${formatWarStateLabel(warState)}**\nTime remaining: **${warRemaining}**\nSync: **${syncDisplay}**${
+              siteStatusLine ? `\n${siteStatusLine}` : ""
+            }`
+          )
+          .addFields({
+            name: "Points",
+            value: `${leftName}: **${primary.balance}**\n${rightName}: **${opponent.balance}**\nEquation: ${pointsEquation}`,
+            inline: false,
+          });
+        const copyText = limitDiscordContent(
+          [
+            `# ${leftName} (#${tag}) vs ${rightName} (#${opponentTag})`,
+            `Sync: ${syncDisplay}`,
+            `War State: ${formatWarStateLabel(warState)}`,
+            `Time Remaining: ${warRemaining}`,
+            `## Opponent Name`,
+            `\`${rightName}\``,
+            `## Opponent Tag`,
+            `\`${opponentTag}\``,
+            `## Points`,
+            `${leftName}: ${primary.balance}`,
+            `${rightName}: ${opponent.balance}`,
+            `Equation: ${pointsEquation}`,
+            `## Projection`,
+            projectionLine,
+            `Match Type: ${matchType}`,
+            outcomeLine ? `Expected outcome: ${outcomeLine}` : "",
+            siteStatusLine ?? "",
+          ]
+            .filter(Boolean)
+            .join("\n")
         );
-        await writeMatchupCache(settings, tag, opponentTag, {
-          version: MATCHUP_CACHE_VERSION,
-          cycleKey,
-          message: messageWithSync,
-          createdAtMs: Date.now(),
+        const key = interaction.id;
+        fwaMatchCopyPayloads.set(key, {
+          userId: interaction.user.id,
+          embed,
+          copyText,
+          includePostButton: !isPublic,
         });
-
-        await editReplySafe(messageWithSync);
+        await editReplySafe(
+          "",
+          [embed],
+          buildFwaMatchCopyComponents(interaction.user.id, key, "embed", !isPublic)
+        );
         return;
       } catch (err) {
         console.error(

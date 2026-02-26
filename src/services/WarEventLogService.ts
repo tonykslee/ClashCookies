@@ -1,8 +1,6 @@
 import { ChannelType, Client, EmbedBuilder } from "discord.js";
-import axios from "axios";
 import { Prisma } from "@prisma/client";
 import { formatError } from "../helper/formatError";
-import { recordFetchEvent } from "../helper/fetchTelemetry";
 import { prisma } from "../prisma";
 import { CoCService } from "./CoCService";
 import { PointsProjectionService } from "./PointsProjectionService";
@@ -17,51 +15,6 @@ function normalizeTag(input: string | null | undefined): string {
   return raw.startsWith("#") ? raw : `#${raw}`;
 }
 
-function normalizeTagNoHash(input: string | null | undefined): string {
-  return normalizeTag(input).replace(/^#/, "");
-}
-
-function toPlainText(html: string): string {
-  return html
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function buildCcClanUrl(tag: string): string {
-  const normalized = normalizeTagNoHash(tag);
-  const proxyBase = (process.env.CC_PROXY_URL ?? "").trim();
-  if (!proxyBase) return `https://cc.fwafarm.com/cc_n/clan.php?tag=${normalized}`;
-  const proxyUrl = new URL(proxyBase);
-  proxyUrl.searchParams.set("tag", normalized);
-  return proxyUrl.toString();
-}
-
-function deriveMatchTypeFromAssociation(html: string): "FWA" | "BL" | "MM" | null {
-  const associationStart = html.search(/Association\s*:/i);
-  if (associationStart < 0) return null;
-  const windowHtml = html.slice(associationStart, associationStart + 900);
-  const plain = toPlainText(windowHtml);
-  const textMatch = plain.match(/Association\s*:\s*(.+?)(?=\s{2,}|$)/i);
-  const associationText = String(textMatch?.[1] ?? "").trim();
-  const hasRedFont =
-    /color\s*:\s*red/i.test(windowHtml) ||
-    /color\s*=\s*["']?\s*red/i.test(windowHtml) ||
-    /#ff0000|#f00/i.test(windowHtml);
-  const hasBlackFont =
-    /color\s*:\s*black/i.test(windowHtml) ||
-    /color\s*=\s*["']?\s*black/i.test(windowHtml) ||
-    /#000000|#000/i.test(windowHtml);
-  const lower = associationText.toLowerCase();
-
-  if (lower.includes("blacklisted") || hasRedFont) return "BL";
-  if (lower === "official fwa" || lower.includes("official fwa")) return "FWA";
-  if (lower.includes("none") || lower.includes("no league association") || hasBlackFont) return "MM";
-  return null;
-}
 
 function deriveState(rawState: string | null | undefined): WarState {
   const state = String(rawState ?? "").toLowerCase();
@@ -129,37 +82,6 @@ export class WarEventLogService {
   constructor(private readonly client: Client, private readonly coc: CoCService) {
     this.points = new PointsProjectionService(coc);
     this.settings = new SettingsService();
-  }
-
-  private async fetchClanMatchType(clanTag: string): Promise<"FWA" | "BL" | "MM" | null> {
-    const url = buildCcClanUrl(clanTag);
-    const response = await axios.get<string>(url, {
-      timeout: 15000,
-      responseType: "text",
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
-        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      },
-      validateStatus: () => true,
-    });
-    recordFetchEvent({
-      namespace: "cc",
-      operation: "association_lookup",
-      source: "web",
-      detail: `tag=${normalizeTagNoHash(clanTag)} status=${response.status}`,
-    });
-    if (response.status >= 400) {
-      throw new Error(`cc site returned ${response.status}`);
-    }
-    const matchType = deriveMatchTypeFromAssociation(String(response.data ?? ""));
-    recordFetchEvent({
-      namespace: "cc",
-      operation: "association_lookup_parse",
-      source: matchType ? "cache_hit" : "cache_miss",
-      detail: `tag=${normalizeTagNoHash(clanTag)} matchType=${matchType ?? "null"}`,
-    });
-    return matchType;
   }
 
   private async getPreviousSyncNum(): Promise<number> {
@@ -323,15 +245,14 @@ export class WarEventLogService {
     }
     let nextMatchType = sub.matchType;
     if (eventType === "war_started") {
-      const opponentTagForMatchType = nextOpponentTag || normalizeTag(sub.lastOpponentTag ?? "");
-      try {
-        if (opponentTagForMatchType) {
-          nextMatchType = await this.fetchClanMatchType(opponentTagForMatchType);
-        }
-      } catch (err) {
-        console.error(
-          `[war-events] matchType fetch failed clan=${sub.clanTag} opponent=${opponentTagForMatchType} error=${formatError(err)}`
-        );
+      if (
+        nextMatchType === null &&
+        nextFwaPoints !== null &&
+        Number.isFinite(nextFwaPoints) &&
+        nextOpponentFwaPoints !== null &&
+        Number.isFinite(nextOpponentFwaPoints)
+      ) {
+        nextMatchType = "FWA";
       }
     }
 
@@ -353,27 +274,25 @@ export class WarEventLogService {
       });
     }
 
-    await prisma.$executeRaw(
-      Prisma.sql`
-        UPDATE "WarEventLogSubscription"
-        SET
-          "lastState" = ${currentState},
-          "fwaPoints" = ${nextFwaPoints},
-          "opponentFwaPoints" = ${nextOpponentFwaPoints},
-          "outcome" = ${nextOutcome},
-          "matchType" = ${nextMatchType},
-          "warStartFwaPoints" = ${nextWarStartFwaPoints},
-          "warEndFwaPoints" = ${nextWarEndFwaPoints},
-          "lastClanStars" = ${nextClanStars},
-          "lastOpponentStars" = ${nextOpponentStars},
-          "lastWarStartTime" = ${currentState === "notInWar" ? null : nextWarStartTime},
-          "lastOpponentTag" = ${nextOpponentTag || sub.lastOpponentTag},
-          "lastOpponentName" = ${nextOpponentName || sub.lastOpponentName},
-          "clanName" = ${nextClanName},
-          "updatedAt" = NOW()
-        WHERE "id" = ${sub.id}
-      `
-    );
+    await prisma.warEventLogSubscription.update({
+      where: { id: sub.id },
+      data: {
+        lastState: currentState,
+        fwaPoints: nextFwaPoints,
+        opponentFwaPoints: nextOpponentFwaPoints,
+        outcome: nextOutcome,
+        matchType: nextMatchType,
+        warStartFwaPoints: nextWarStartFwaPoints,
+        warEndFwaPoints: nextWarEndFwaPoints,
+        lastClanStars: nextClanStars,
+        lastOpponentStars: nextOpponentStars,
+        lastWarStartTime: currentState === "notInWar" ? null : nextWarStartTime,
+        lastOpponentTag: nextOpponentTag || sub.lastOpponentTag,
+        lastOpponentName: nextOpponentName || sub.lastOpponentName,
+        clanName: nextClanName,
+        updatedAt: new Date(),
+      },
+    });
   }
 
   private async emitEvent(

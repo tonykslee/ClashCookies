@@ -18,7 +18,9 @@ import {
   isRecruitmentModalCustomId,
 } from "../commands/Recruitment";
 import {
+  handleFwaMatchCopyButton,
   handlePointsPostButton,
+  isFwaMatchCopyButtonCustomId,
   isPointsPostButtonCustomId,
 } from "../commands/Fwa";
 import {
@@ -211,6 +213,20 @@ const handleButtonInteraction = async (interaction: Interaction): Promise<void> 
         await interaction.reply({
           ephemeral: true,
           content: "Failed to post points message to channel.",
+        });
+      }
+    }
+  }
+
+  if (isFwaMatchCopyButtonCustomId(interaction.customId)) {
+    try {
+      await handleFwaMatchCopyButton(interaction);
+    } catch (err) {
+      console.error(`FWA match copy button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to toggle match view.",
         });
       }
     }
