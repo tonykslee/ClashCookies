@@ -162,7 +162,7 @@ function buildBandShowMessage(input: {
     `Clan: **${input.clanName}**`,
     "⚠️ Do NOT mention alliances, families, or Discord servers.",
     "",
-    `Recruitment Contents (${sanitizedBody.length}/1024):`,
+    "Recruitment Contents:",
     codeBlock(sanitizedBody),
   ];
 
@@ -194,7 +194,7 @@ function buildRedditShowMessage(input: {
     "Subject:",
     `\`${input.subject}\``,
     "",
-    `Recruitment Contents (${noGiveawayBody.length}/1024):`,
+    "Recruitment Contents:",
     codeBlock(noGiveawayBody, "md"),
     "",
     "Rules:",
