@@ -793,7 +793,7 @@ function buildMatchupMessage(
   if (primaryBalance > opponentBalance) {
     outcome = `**${primaryName}** should win by points (${primaryBalance} > ${opponentBalance})`;
   } else if (primaryBalance < opponentBalance) {
-    outcome = `**${primaryName}** should lose by points (${opponentBalance} > ${primaryBalance})`;
+    outcome = `**${primaryName}** should lose by points (${primaryBalance} < ${opponentBalance})`;
   } else {
     const syncMode = primary.syncMode ?? opponent.syncMode;
     if (!syncMode) {
@@ -1523,7 +1523,6 @@ export const Fwa: Command = {
             : "";
         const leftName = resolvedPrimaryName ?? primaryNameFromApi ?? tag;
         const rightName = resolvedOpponentName ?? opponentNameFromApi ?? opponentTag;
-        const pointsEquation = `${primary.balance} ${primary.balance >= opponent.balance ? ">" : primary.balance < opponent.balance ? "<" : "="} ${opponent.balance}`;
         const embed = new EmbedBuilder()
           .setTitle(`${leftName} (#${tag}) vs ${rightName} (#${opponentTag})`)
           .setDescription(
@@ -1535,7 +1534,7 @@ export const Fwa: Command = {
           )
           .addFields({
             name: "Points",
-            value: `${leftName}: **${primary.balance}**\n${rightName}: **${opponent.balance}**\nEquation: ${pointsEquation}`,
+            value: `${leftName}: **${primary.balance}**\n${rightName}: **${opponent.balance}**`,
             inline: false,
           });
         const copyText = limitDiscordContent(
@@ -1551,7 +1550,6 @@ export const Fwa: Command = {
             `## Points`,
             `${leftName}: ${primary.balance}`,
             `${rightName}: ${opponent.balance}`,
-            `Equation: ${pointsEquation}`,
             `## Projection`,
             projectionLine,
             `Match Type: ${matchType}`,
