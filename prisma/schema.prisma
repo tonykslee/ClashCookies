@@ -172,11 +172,14 @@ model WarEventLogSubscription {
   channelId        String
   notify           Boolean  @default(true)
   notifyRole       String?
-  currentSyncNumber Int?
   fwaPoints        Int?
   opponentFwaPoints Int?
   outcome          String?
   matchType        WarMatchType?
+  warStartFwaPoints Int?
+  warEndFwaPoints  Int?
+  lastClanStars    Int?
+  lastOpponentStars Int?
   lastState        String?
   lastWarStartTime DateTime?
   lastOpponentTag  String?
