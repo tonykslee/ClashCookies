@@ -20,7 +20,7 @@ import {
 import {
   handlePointsPostButton,
   isPointsPostButtonCustomId,
-} from "../commands/Points";
+} from "../commands/Fwa";
 import {
   CommandPermissionService,
   getCommandTargetsFromInteraction,

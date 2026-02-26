@@ -8,7 +8,7 @@ import { Command } from "../Command";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
 import { formatError } from "../helper/formatError";
-import { getPointsSnapshotForClan } from "./Points";
+import { getPointsSnapshotForClan } from "./Fwa";
 
 function normalizeClanTag(input: string): string {
   const trimmed = input.trim().toUpperCase();
