@@ -58,6 +58,7 @@ Optional fallback auth (not required for your current setup):
 - `/permission list [command:<name>]` - List role policy for one command target, or all if omitted.
 - `/lastseen tag:<playerTag>` - Show a player's last seen activity, with drill-down button for tracked signal timestamps.
 - `/inactive days:<number>` - List players inactive for N days.
+- `/inactive wars:<number>` - List tracked-clan members who used 0/2 attacks in each of the last N ended wars (requires war-history tracking window).
 - `/role-users role:<discordRole>` - List users in a role with pagination.
 - `/tracked-clan add tag:<tag>` - Add tracked clan.
 - `/tracked-clan remove tag:<tag>` - Remove tracked clan.

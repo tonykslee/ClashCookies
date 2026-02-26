@@ -11,6 +11,7 @@ import { prisma } from "../prisma";
 import { processRecruitmentCooldownReminders } from "../services/RecruitmentService";
 import { SettingsService } from "../services/SettingsService";
 import { PlayerLinkSyncService } from "../services/PlayerLinkSyncService";
+import { WarHistoryService } from "../services/WarHistoryService";
 
 const DEFAULT_OBSERVE_INTERVAL_MINUTES = 30;
 const RECRUITMENT_REMINDER_INTERVAL_MS = 5 * 60 * 1000;
@@ -119,6 +120,7 @@ export default (client: Client, cocService: CoCService): void => {
     console.log(`✅ Guild commands registered (${Commands.length})`);
 
     const activityService = new ActivityService(cocService);
+    const warHistoryService = new WarHistoryService(cocService);
     const playerLinkSyncService = new PlayerLinkSyncService();
     const settings = new SettingsService();
     let observeInProgress = false;
@@ -151,6 +153,7 @@ export default (client: Client, cocService: CoCService): void => {
             for (const memberTag of memberTags) {
               observedMemberTags.add(memberTag);
             }
+            await warHistoryService.observeClanWar(tag);
           } catch (err) {
             console.error(
               `observeClan failed for ${tag}: ${formatError(err)}`
