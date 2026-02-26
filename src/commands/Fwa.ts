@@ -8,6 +8,7 @@ import {
   ButtonStyle,
   ChatInputCommandInteraction,
   Client,
+  EmbedBuilder,
 } from "discord.js";
 import { Command } from "../Command";
 import { truncateDiscordContent } from "../helper/discordContent";
@@ -875,14 +876,16 @@ async function buildTrackedMatchOverview(
   cocService: CoCService,
   sourceSync: number | null,
   guildId: string | null
-): Promise<string> {
+): Promise<EmbedBuilder> {
   const settings = new SettingsService();
   const tracked = await prisma.trackedClan.findMany({
     orderBy: { createdAt: "asc" },
     select: { tag: true, name: true },
   });
   if (tracked.length === 0) {
-    return "No tracked clans configured. Use `/tracked-clan add` first.";
+    return new EmbedBuilder()
+      .setTitle("FWA Match Overview")
+      .setDescription("No tracked clans configured. Use `/tracked-clan add` first.");
   }
 
   const subscriptions = await prisma.warEventLogSubscription.findMany({
@@ -901,7 +904,7 @@ async function buildTrackedMatchOverview(
     ["notInWar", 0],
   ]);
   const stateRemaining = new Map<WarStateForSync, string>();
-  const lines: string[] = [];
+  const embed = new EmbedBuilder().setTitle(`FWA Match Overview (${tracked.length})`);
 
   for (const clan of tracked) {
     const clanTag = normalizeTag(clan.tag);
@@ -925,7 +928,11 @@ async function buildTrackedMatchOverview(
     });
 
     if (!opponentTag) {
-      lines.push(`- ${clanName}(#${clanTag}) vs Unknown\n  No active war opponent`);
+      embed.addFields({
+        name: `${clanName} (#${clanTag}) vs Unknown`,
+        value: "No active war opponent",
+        inline: false,
+      });
       continue;
     }
 
@@ -968,15 +975,19 @@ async function buildTrackedMatchOverview(
         : "Points: unavailable";
 
     if (matchType === "FWA") {
-      lines.push(
-        `- ${clanName}(#${clanTag}) vs ${opponentName}(#${opponentTag})\n  ${pointsLine}\n  ${clanName} outcome: ${sub?.outcome ?? "UNKNOWN"}`
-      );
+      embed.addFields({
+        name: `${clanName} (#${clanTag}) vs ${opponentName} (#${opponentTag})`,
+        value: `${pointsLine}\nOutcome: **${sub?.outcome ?? "UNKNOWN"}**`,
+        inline: false,
+      });
       continue;
     }
 
-    lines.push(
-      `- ${clanName}(#${clanTag}) vs ${opponentName}(#${opponentTag})\n  ${pointsLine}\n  Match Type: ${matchType}`
-    );
+    embed.addFields({
+      name: `${clanName} (#${clanTag}) vs ${opponentName} (#${opponentTag})`,
+      value: `${pointsLine}\nMatch Type: **${matchType}**`,
+      inline: false,
+    });
   }
 
   const nonZeroStates = [...stateCounts.entries()].filter(([, count]) => count > 0);
@@ -997,8 +1008,10 @@ async function buildTrackedMatchOverview(
           ? (stateRemaining.get("inWar") ?? "unknown")
           : "n/a";
 
-  const header = `Tracked FWA match overview (${tracked.length})\nSync: ${syncLabel}\nWar State: ${stateLabel}\nTime remaining: ${remainingLabel}`;
-  return buildLimitedMessage(header, lines, "");
+  embed.setDescription(
+    `Sync: **${syncLabel}**\nWar State: **${stateLabel}**\nTime Remaining: **${remainingLabel}**`
+  );
+  return embed;
 }
 
 export const Fwa: Command = {
@@ -1108,9 +1121,11 @@ export const Fwa: Command = {
         ]
       : [];
 
-    const editReplySafe = async (content: string): Promise<void> => {
+    const editReplySafe = async (content: string, embeds?: EmbedBuilder[]): Promise<void> => {
+      const normalized = content.trim();
       await interaction.editReply({
-        content: truncateDiscordContent(content),
+        content: normalized ? truncateDiscordContent(normalized) : undefined,
+        embeds,
         components,
       });
     };
@@ -1289,7 +1304,7 @@ export const Fwa: Command = {
           sourceSync,
           interaction.guildId ?? null
         );
-        await editReplySafe(overview);
+        await editReplySafe("", [overview]);
         return;
       }
 
