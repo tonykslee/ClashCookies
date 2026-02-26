@@ -80,6 +80,7 @@ Optional fallback auth (not required for your current setup):
 - `/accounts [visibility:private|public] [tag:<playerTag>] [discord-id:<snowflake>]` - List linked player accounts grouped by current clan. Default is your own account; provide exactly one of `tag` or `discord-id` to inspect a different linked user.
 - `/fwa points [visibility:private|public] [tag:<tag>]` - Fetch current point balance from `https://points.fwafarm.com/clan?tag=<tag-without-#>`. If `tag` is omitted, fetches all tracked clans.
 - `/fwa match [visibility:private|public] tag:<tag>` - Resolve current war opponent from CoC API, then return projected win/lose by points (or sync-based tiebreak on tie).
+- `/fwa match-type [visibility:private|public] [tag:<trackedClanTag>] [type:FWA|BL|MM]` - Manually set or view per-clan match type override used by matchup output. If no args, lists overrides for all tracked clans.
 - `/recruitment show platform:discord|reddit|band clan:<tag>` - Render platform-specific recruitment template output for a tracked clan.
 - `/recruitment edit platform:discord|reddit|band clan:<tag>` - Open platform-specific modal:
   - Discord: clan tag, body (max 1024), optional image URL(s)
@@ -111,6 +112,7 @@ Optional fallback auth (not required for your current setup):
   - `/permission add command:post role:@RoleX`
 - To lock `/fwa` to role X, run:
   - `/permission add command:fwa role:@RoleX`
+- `/fwa match-type` is Administrator-only by default.
 - To lock `/recruitment` to role X, run:
   - `/permission add command:recruitment role:@RoleX`
 - To lock `/notify` to role X, run:
