@@ -27,34 +27,27 @@ function normalizeClanTagInput(input: string): string {
   return input.trim().toUpperCase().replace(/^#/, "");
 }
 
-export const Enable: Command = {
-  name: "enable",
-  description: "Enable feature settings",
+export const Notify: Command = {
+  name: "notify",
+  description: "Configure notification features",
   options: [
     {
-      name: "event",
-      description: "War event logging settings",
-      type: ApplicationCommandOptionType.SubcommandGroup,
+      name: "war",
+      description: "Enable war event logs for a clan to a target channel",
+      type: ApplicationCommandOptionType.Subcommand,
       options: [
         {
-          name: "logs",
-          description: "Enable war event logs for a clan to a target channel",
-          type: ApplicationCommandOptionType.Subcommand,
-          options: [
-            {
-              name: "clan",
-              description: "Clan tag (tracked or non-tracked)",
-              type: ApplicationCommandOptionType.String,
-              required: true,
-              autocomplete: true,
-            },
-            {
-              name: "target-channel",
-              description: "Channel to post war start/battle/end logs",
-              type: ApplicationCommandOptionType.Channel,
-              required: true,
-            },
-          ],
+          name: "clan-tag",
+          description: "Clan tag (tracked or non-tracked)",
+          type: ApplicationCommandOptionType.String,
+          required: true,
+          autocomplete: true,
+        },
+        {
+          name: "target-channel",
+          description: "Channel to post war start/battle/end logs",
+          type: ApplicationCommandOptionType.Channel,
+          required: true,
         },
       ],
     },
@@ -70,14 +63,13 @@ export const Enable: Command = {
       return;
     }
 
-    const group = interaction.options.getSubcommandGroup(true);
     const sub = interaction.options.getSubcommand(true);
-    if (group !== "event" || sub !== "logs") {
-      await interaction.editReply("Unknown enable option.");
+    if (sub !== "war") {
+      await interaction.editReply("Unknown notify option.");
       return;
     }
 
-    const clanTag = normalizeClanTag(interaction.options.getString("clan", true));
+    const clanTag = normalizeClanTag(interaction.options.getString("clan-tag", true));
     if (!clanTag) {
       await interaction.editReply("Invalid clan tag.");
       return;
@@ -116,19 +108,19 @@ export const Enable: Command = {
     await prisma.$executeRaw(
       Prisma.sql`
         INSERT INTO "WarEventLogSubscription"
-          ("guildId","clanTag","channelId","enabled","currentSyncNumber","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","lastClanName","createdAt","updatedAt")
+          ("guildId","clanTag","channelId","notify","currentSyncNumber","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName","createdAt","updatedAt")
         VALUES
           (${interaction.guildId}, ${clanTag}, ${target.id}, true, ${initialSyncNumber}, ${lastState}, ${warStartTime}, ${opponentTag}, ${opponentName}, ${clanName}, NOW(), NOW())
         ON CONFLICT ("guildId","clanTag")
         DO UPDATE SET
           "channelId" = EXCLUDED."channelId",
-          "enabled" = true,
+          "notify" = true,
           "currentSyncNumber" = COALESCE("WarEventLogSubscription"."currentSyncNumber", EXCLUDED."currentSyncNumber"),
           "lastState" = EXCLUDED."lastState",
           "lastWarStartTime" = EXCLUDED."lastWarStartTime",
           "lastOpponentTag" = EXCLUDED."lastOpponentTag",
           "lastOpponentName" = EXCLUDED."lastOpponentName",
-          "lastClanName" = EXCLUDED."lastClanName",
+          "clanName" = EXCLUDED."clanName",
           "updatedAt" = NOW()
       `
     );
@@ -140,7 +132,7 @@ export const Enable: Command = {
   },
   autocomplete: async (interaction: AutocompleteInteraction) => {
     const focused = interaction.options.getFocused(true);
-    if (focused.name !== "clan") {
+    if (focused.name !== "clan-tag") {
       await interaction.respond([]);
       return;
     }

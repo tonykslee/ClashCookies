@@ -13,7 +13,7 @@ import { Opponent } from "./commands/Opponent";
 import { KickList } from "./commands/KickList";
 import { Recruitment } from "./commands/Recruitment";
 import { Accounts } from "./commands/Accounts";
-import { Enable } from "./commands/Enable";
+import { Notify } from "./commands/Notify";
 
 // ...existing code...
 export const Commands = [
@@ -28,7 +28,7 @@ export const Commands = [
   Accounts,
   Fwa,
   Opponent,
-  Enable,
+  Notify,
   Recruitment,
   KickList,
   Post,

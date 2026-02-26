@@ -47,21 +47,21 @@ export class WarEventLogService {
       guildId: string;
       clanTag: string;
       channelId: string;
-      enabled: boolean;
+      notify: boolean;
       currentSyncNumber: number | null;
       lastState: string | null;
       lastWarStartTime: Date | null;
       lastOpponentTag: string | null;
       lastOpponentName: string | null;
-      lastClanName: string | null;
+      clanName: string | null;
     };
 
     const subs = await prisma.$queryRaw<SubRow[]>(
       Prisma.sql`
         SELECT
-          "id","guildId","clanTag","channelId","enabled","currentSyncNumber","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","lastClanName"
+          "id","guildId","clanTag","channelId","notify","currentSyncNumber","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName"
         FROM "WarEventLogSubscription"
-        WHERE "enabled" = true
+        WHERE "notify" = true
         ORDER BY "updatedAt" ASC
       `
     );
@@ -82,31 +82,31 @@ export class WarEventLogService {
       guildId: string;
       clanTag: string;
       channelId: string;
-      enabled: boolean;
+      notify: boolean;
       currentSyncNumber: number | null;
       lastState: string | null;
       lastWarStartTime: Date | null;
       lastOpponentTag: string | null;
       lastOpponentName: string | null;
-      lastClanName: string | null;
+      clanName: string | null;
     };
     const rows = await prisma.$queryRaw<SubRow[]>(
       Prisma.sql`
         SELECT
-          "id","guildId","clanTag","channelId","enabled","currentSyncNumber","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","lastClanName"
+          "id","guildId","clanTag","channelId","notify","currentSyncNumber","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName"
         FROM "WarEventLogSubscription"
         WHERE "id" = ${subscriptionId}
         LIMIT 1
       `
     );
     const sub = rows[0] ?? null;
-    if (!sub || !sub.enabled) return;
+    if (!sub || !sub.notify) return;
 
     const war = await this.coc.getCurrentWar(sub.clanTag).catch(() => null);
     const currentState: WarState = war ? deriveState(String(war.state ?? "")) : "notInWar";
     const prevState: WarState = deriveState(sub.lastState ?? "notInWar");
     const nextClanName =
-      String(war?.clan?.name ?? sub.lastClanName ?? sub.clanTag).trim() || sub.clanTag;
+      String(war?.clan?.name ?? sub.clanName ?? sub.clanTag).trim() || sub.clanTag;
     const nextOpponentTag = normalizeTag(war?.opponent?.tag ?? sub.lastOpponentTag ?? "");
     const nextOpponentName = String(war?.opponent?.name ?? sub.lastOpponentName ?? "").trim() || null;
     const nextWarStartTime = (() => {
@@ -143,7 +143,7 @@ export class WarEventLogService {
           "lastWarStartTime" = ${currentState === "notInWar" ? null : nextWarStartTime},
           "lastOpponentTag" = ${nextOpponentTag || sub.lastOpponentTag},
           "lastOpponentName" = ${nextOpponentName || sub.lastOpponentName},
-          "lastClanName" = ${nextClanName},
+          "clanName" = ${nextClanName},
           "updatedAt" = NOW()
         WHERE "id" = ${sub.id}
       `
