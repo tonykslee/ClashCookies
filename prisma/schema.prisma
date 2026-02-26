@@ -158,3 +158,21 @@ model WarHistoryAttack {
   @@index([clanTag, warStartTime])
   @@index([playerTag, warStartTime])
 }
+
+model WarEventLogSubscription {
+  id               Int      @id @default(autoincrement())
+  guildId          String
+  clanTag          String
+  channelId        String
+  enabled          Boolean  @default(true)
+  lastState        String?
+  lastWarStartTime DateTime?
+  lastOpponentTag  String?
+  lastOpponentName String?
+  lastClanName     String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@unique([guildId, clanTag])
+  @@index([guildId, enabled])
+}

@@ -12,9 +12,11 @@ import { processRecruitmentCooldownReminders } from "../services/RecruitmentServ
 import { SettingsService } from "../services/SettingsService";
 import { PlayerLinkSyncService } from "../services/PlayerLinkSyncService";
 import { WarHistoryService } from "../services/WarHistoryService";
+import { WarEventLogService } from "../services/WarEventLogService";
 
 const DEFAULT_OBSERVE_INTERVAL_MINUTES = 30;
 const RECRUITMENT_REMINDER_INTERVAL_MS = 5 * 60 * 1000;
+const DEFAULT_WAR_EVENT_POLL_INTERVAL_MINUTES = 5;
 const OBSERVE_LAST_RUN_AT_KEY = "activity_observe:last_run_at_ms";
 const VISIBILITY_OPTION = {
   name: "visibility",
@@ -122,6 +124,7 @@ export default (client: Client, cocService: CoCService): void => {
     const activityService = new ActivityService(cocService);
     const warHistoryService = new WarHistoryService(cocService);
     const playerLinkSyncService = new PlayerLinkSyncService();
+    const warEventLogService = new WarEventLogService(client, cocService);
     const settings = new SettingsService();
     let observeInProgress = false;
 
@@ -258,6 +261,31 @@ export default (client: Client, cocService: CoCService): void => {
       });
     }, RECRUITMENT_REMINDER_INTERVAL_MS);
     console.log("Recruitment reminder loop enabled (every 5 minute(s)).");
+
+    const warEventPollMinutesRaw = Number(
+      process.env.WAR_EVENT_LOG_POLL_INTERVAL_MINUTES ?? DEFAULT_WAR_EVENT_POLL_INTERVAL_MINUTES
+    );
+    const warEventPollMinutes =
+      Number.isFinite(warEventPollMinutesRaw) && warEventPollMinutesRaw > 0
+        ? warEventPollMinutesRaw
+        : DEFAULT_WAR_EVENT_POLL_INTERVAL_MINUTES;
+    const warEventPollMs = Math.floor(warEventPollMinutes * 60 * 1000);
+
+    const runWarEventPoll = async () => {
+      try {
+        await warEventLogService.poll();
+      } catch (err) {
+        console.error(`[war-events] poll loop failed: ${formatError(err)}`);
+      }
+    };
+
+    await runWarEventPoll();
+    setInterval(() => {
+      runWarEventPoll().catch((err) => {
+        console.error(`[war-events] poll interval failed: ${formatError(err)}`);
+      });
+    }, warEventPollMs);
+    console.log(`War event log listener enabled (every ${warEventPollMinutes} minute(s)).`);
 
     console.log("ClashCookies is online");
   });
