@@ -1,4 +1,5 @@
 import { ChannelType, Client, EmbedBuilder } from "discord.js";
+import axios from "axios";
 import { Prisma } from "@prisma/client";
 import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
@@ -13,6 +14,52 @@ function normalizeTag(input: string | null | undefined): string {
   const raw = String(input ?? "").trim().toUpperCase();
   if (!raw) return "";
   return raw.startsWith("#") ? raw : `#${raw}`;
+}
+
+function normalizeTagNoHash(input: string | null | undefined): string {
+  return normalizeTag(input).replace(/^#/, "");
+}
+
+function toPlainText(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildCcClanUrl(tag: string): string {
+  const normalized = normalizeTagNoHash(tag);
+  const proxyBase = (process.env.CC_PROXY_URL ?? "").trim();
+  if (!proxyBase) return `https://cc.fwafarm.com/cc_n/clan.php?tag=${normalized}`;
+  const proxyUrl = new URL(proxyBase);
+  proxyUrl.searchParams.set("tag", normalized);
+  return proxyUrl.toString();
+}
+
+function deriveMatchTypeFromAssociation(html: string): "FWA" | "BL" | "MM" | null {
+  const associationStart = html.search(/Association\s*:/i);
+  if (associationStart < 0) return null;
+  const windowHtml = html.slice(associationStart, associationStart + 900);
+  const plain = toPlainText(windowHtml);
+  const textMatch = plain.match(/Association\s*:\s*(.+?)(?=\s{2,}|$)/i);
+  const associationText = String(textMatch?.[1] ?? "").trim();
+  const hasRedFont =
+    /color\s*:\s*red/i.test(windowHtml) ||
+    /color\s*=\s*["']?\s*red/i.test(windowHtml) ||
+    /#ff0000|#f00/i.test(windowHtml);
+  const hasBlackFont =
+    /color\s*:\s*black/i.test(windowHtml) ||
+    /color\s*=\s*["']?\s*black/i.test(windowHtml) ||
+    /#000000|#000/i.test(windowHtml);
+  const lower = associationText.toLowerCase();
+
+  if (lower.includes("blacklisted") || hasRedFont) return "BL";
+  if (lower === "official fwa" || lower.includes("official fwa")) return "FWA";
+  if (lower.includes("none") || lower.includes("no league association") || hasBlackFont) return "MM";
+  return null;
 }
 
 function deriveState(rawState: string | null | undefined): WarState {
@@ -81,6 +128,24 @@ export class WarEventLogService {
   constructor(private readonly client: Client, private readonly coc: CoCService) {
     this.points = new PointsProjectionService(coc);
     this.settings = new SettingsService();
+  }
+
+  private async fetchClanMatchType(clanTag: string): Promise<"FWA" | "BL" | "MM" | null> {
+    const url = buildCcClanUrl(clanTag);
+    const response = await axios.get<string>(url, {
+      timeout: 15000,
+      responseType: "text",
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      },
+      validateStatus: () => true,
+    });
+    if (response.status >= 400) {
+      throw new Error(`cc site returned ${response.status}`);
+    }
+    return deriveMatchTypeFromAssociation(String(response.data ?? ""));
   }
 
   private async getPreviousSyncNum(): Promise<number> {
@@ -242,6 +307,16 @@ export class WarEventLogService {
         nextWarEndFwaPoints = a.balance;
       }
     }
+    let nextMatchType = sub.matchType;
+    if (eventType === "war_started") {
+      try {
+        nextMatchType = await this.fetchClanMatchType(sub.clanTag);
+      } catch (err) {
+        console.error(
+          `[war-events] matchType fetch failed clan=${sub.clanTag} error=${formatError(err)}`
+        );
+      }
+    }
 
     if (eventType) {
       if (eventType === "war_ended") {
@@ -269,7 +344,7 @@ export class WarEventLogService {
           "fwaPoints" = ${nextFwaPoints},
           "opponentFwaPoints" = ${nextOpponentFwaPoints},
           "outcome" = ${nextOutcome},
-          "matchType" = ${sub.matchType},
+          "matchType" = ${nextMatchType},
           "warStartFwaPoints" = ${nextWarStartFwaPoints},
           "warEndFwaPoints" = ${nextWarEndFwaPoints},
           "lastClanStars" = ${nextClanStars},
