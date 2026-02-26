@@ -1,5 +1,6 @@
 import {
   ApplicationCommandOptionType,
+  AutocompleteInteraction,
   ChannelType,
   ChatInputCommandInteraction,
   Client,
@@ -21,6 +22,10 @@ function deriveWarState(raw: string | null | undefined): string {
   return "notInWar";
 }
 
+function normalizeClanTagInput(input: string): string {
+  return input.trim().toUpperCase().replace(/^#/, "");
+}
+
 export const Enable: Command = {
   name: "enable",
   description: "Enable feature settings",
@@ -40,6 +45,7 @@ export const Enable: Command = {
               description: "Clan tag (tracked or non-tracked)",
               type: ApplicationCommandOptionType.String,
               required: true,
+              autocomplete: true,
             },
             {
               name: "target-channel",
@@ -124,5 +130,38 @@ export const Enable: Command = {
       `Enabled war event logs for ${clanName} (${clanTag}) in <#${target.id}>.\n` +
         `Current state snapshot: \`${lastState}\``
     );
+  },
+  autocomplete: async (interaction: AutocompleteInteraction) => {
+    const focused = interaction.options.getFocused(true);
+    if (focused.name !== "clan") {
+      await interaction.respond([]);
+      return;
+    }
+
+    const query = normalizeClanTagInput(String(focused.value ?? "")).toLowerCase();
+    const tracked = await prisma.trackedClan.findMany({
+      orderBy: { createdAt: "asc" },
+      select: { name: true, tag: true },
+    });
+
+    const choices = tracked
+      .map((clan) => {
+        const normalizedTag = normalizeClanTagInput(clan.tag);
+        const label = clan.name?.trim()
+          ? `${clan.name.trim()} (#${normalizedTag})`
+          : `#${normalizedTag}`;
+        return {
+          name: label.slice(0, 100),
+          value: normalizedTag,
+        };
+      })
+      .filter(
+        (choice) =>
+          choice.name.toLowerCase().includes(query) ||
+          choice.value.toLowerCase().includes(query)
+      )
+      .slice(0, 25);
+
+    await interaction.respond(choices);
   },
 };
