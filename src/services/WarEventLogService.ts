@@ -84,15 +84,23 @@ export class WarEventLogService {
     this.settings = new SettingsService();
   }
 
+  private static getDefaultPreviousSyncNum(): number {
+    const raw = process.env.DEFAULT_PREVIOUS_SYNC_NUM?.trim() ?? "";
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed)) return Math.trunc(parsed);
+    return WarEventLogService.PREVIOUS_SYNC_DEFAULT;
+  }
+
   private async getPreviousSyncNum(): Promise<number> {
     const raw = await this.settings.get(WarEventLogService.PREVIOUS_SYNC_KEY);
     const parsed = raw === null ? NaN : Number(raw);
     if (Number.isFinite(parsed)) return Math.trunc(parsed);
+    const fallback = WarEventLogService.getDefaultPreviousSyncNum();
     await this.settings.set(
       WarEventLogService.PREVIOUS_SYNC_KEY,
-      String(WarEventLogService.PREVIOUS_SYNC_DEFAULT)
+      String(fallback)
     );
-    return WarEventLogService.PREVIOUS_SYNC_DEFAULT;
+    return fallback;
   }
 
   private async updatePreviousSyncOnWarEnd(observedSync: number | null): Promise<void> {
