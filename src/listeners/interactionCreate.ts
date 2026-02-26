@@ -19,6 +19,8 @@ import {
 } from "../commands/Recruitment";
 import {
   handleFwaMatchCopyButton,
+  handleFwaMatchTypeActionButton,
+  isFwaMatchTypeActionButtonCustomId,
   handlePointsPostButton,
   isFwaMatchCopyButtonCustomId,
   isPointsPostButtonCustomId,
@@ -227,6 +229,20 @@ const handleButtonInteraction = async (interaction: Interaction): Promise<void> 
         await interaction.reply({
           ephemeral: true,
           content: "Failed to toggle match view.",
+        });
+      }
+    }
+  }
+
+  if (isFwaMatchTypeActionButtonCustomId(interaction.customId)) {
+    try {
+      await handleFwaMatchTypeActionButton(interaction);
+    } catch (err) {
+      console.error(`FWA match type action button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to apply match type action.",
         });
       }
     }

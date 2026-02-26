@@ -28,6 +28,7 @@ const POINTS_CACHE_VERSION = 4;
 const MATCHUP_CACHE_VERSION = 5;
 const POINTS_POST_BUTTON_PREFIX = "points-post-channel";
 const FWA_MATCH_COPY_BUTTON_PREFIX = "fwa-match-copy";
+const FWA_MATCH_TYPE_ACTION_PREFIX = "fwa-match-type-action";
 const POINTS_REQUEST_HEADERS = {
   "User-Agent":
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
@@ -106,6 +107,8 @@ type FwaMatchCopyPayload = {
   embed: EmbedBuilder;
   copyText: string;
   includePostButton: boolean;
+  inferredTypeForTag?: "FWA" | "MM" | null;
+  trackedClanTag?: string | null;
 };
 
 const fwaMatchCopyPayloads = new Map<string, FwaMatchCopyPayload>();
@@ -138,7 +141,8 @@ function buildFwaMatchCopyComponents(
   userId: string,
   key: string,
   showMode: "embed" | "copy",
-  includePostButton: boolean
+  includePostButton: boolean,
+  matchTypeAction?: { tag: string; inferredType: "FWA" | "MM" } | null
 ): ActionRowBuilder<ButtonBuilder>[] {
   const toggleMode = showMode === "embed" ? "copy" : "embed";
   const toggleLabel = showMode === "embed" ? "Copy/Paste View" : "Embed View";
@@ -156,7 +160,95 @@ function buildFwaMatchCopyComponents(
         .setStyle(ButtonStyle.Secondary)
     );
   }
+  if (matchTypeAction) {
+    row.addComponents(
+      new ButtonBuilder()
+        .setCustomId(
+          `${FWA_MATCH_TYPE_ACTION_PREFIX}:${userId}:${normalizeTag(matchTypeAction.tag)}:confirm:${matchTypeAction.inferredType}`
+        )
+        .setLabel(`Confirm ${matchTypeAction.inferredType}`)
+        .setStyle(ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId(
+          `${FWA_MATCH_TYPE_ACTION_PREFIX}:${userId}:${normalizeTag(matchTypeAction.tag)}:bl:${matchTypeAction.inferredType}`
+        )
+        .setLabel("Switch to BL")
+        .setStyle(ButtonStyle.Danger)
+    );
+  }
   return [row];
+}
+
+type MatchTypeActionPayload = {
+  userId: string;
+  clanTag: string;
+  action: "confirm" | "bl";
+  inferredType: "FWA" | "MM";
+};
+
+function parseMatchTypeActionCustomId(customId: string): MatchTypeActionPayload | null {
+  const parts = customId.split(":");
+  if (parts.length !== 5 || parts[0] !== FWA_MATCH_TYPE_ACTION_PREFIX) return null;
+  const userId = parts[1]?.trim() ?? "";
+  const clanTag = normalizeTag(parts[2] ?? "");
+  const action = parts[3] === "confirm" || parts[3] === "bl" ? parts[3] : null;
+  const inferredType = parts[4] === "FWA" || parts[4] === "MM" ? parts[4] : null;
+  if (!userId || !clanTag || !action || !inferredType) return null;
+  return { userId, clanTag, action, inferredType };
+}
+
+export function isFwaMatchTypeActionButtonCustomId(customId: string): boolean {
+  return customId.startsWith(`${FWA_MATCH_TYPE_ACTION_PREFIX}:`);
+}
+
+export async function handleFwaMatchTypeActionButton(interaction: ButtonInteraction): Promise<void> {
+  const parsed = parseMatchTypeActionCustomId(interaction.customId);
+  if (!parsed) return;
+
+  if (interaction.user.id !== parsed.userId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Only the command requester can use this button.",
+    });
+    return;
+  }
+
+  if (!interaction.guildId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "This action can only be used in a server.",
+    });
+    return;
+  }
+
+  const nextType = parsed.action === "bl" ? "BL" : parsed.inferredType;
+  await prisma.warEventLogSubscription.upsert({
+    where: {
+      guildId_clanTag: {
+        guildId: interaction.guildId,
+        clanTag: `#${parsed.clanTag}`,
+      },
+    },
+    create: {
+      guildId: interaction.guildId,
+      clanTag: `#${parsed.clanTag}`,
+      channelId: interaction.channelId,
+      notify: false,
+      matchType: nextType,
+    },
+    update: {
+      matchType: nextType,
+      updatedAt: new Date(),
+    },
+  });
+
+  await interaction.reply({
+    ephemeral: true,
+    content:
+      parsed.action === "bl"
+        ? `Match type for #${parsed.clanTag} set to **BL**.`
+        : `Inferred match type for #${parsed.clanTag} confirmed as **${parsed.inferredType}**.`,
+  });
 }
 
 export async function handleFwaMatchCopyButton(interaction: ButtonInteraction): Promise<void> {
@@ -188,7 +280,10 @@ export async function handleFwaMatchCopyButton(interaction: ButtonInteraction): 
         payload.userId,
         parsed.key,
         "copy",
-        payload.includePostButton
+        payload.includePostButton,
+        payload.inferredTypeForTag && payload.trackedClanTag
+          ? { inferredType: payload.inferredTypeForTag, tag: payload.trackedClanTag }
+          : null
       ),
     });
     return;
@@ -201,7 +296,10 @@ export async function handleFwaMatchCopyButton(interaction: ButtonInteraction): 
       payload.userId,
       parsed.key,
       "embed",
-      payload.includePostButton
+      payload.includePostButton,
+      payload.inferredTypeForTag && payload.trackedClanTag
+        ? { inferredType: payload.inferredTypeForTag, tag: payload.trackedClanTag }
+        : null
     ),
   });
 }
@@ -997,8 +1095,13 @@ async function buildTrackedMatchOverview(
       opponentPoints?.balance !== null &&
       opponentPoints?.balance !== undefined &&
       !Number.isNaN(opponentPoints.balance);
-    const matchType = matchTypeResolved ?? (hasBothPoints ? "FWA" : "UNKNOWN");
-    if (matchTypeResolved === null && hasBothPoints && guildId) {
+    const hasNeitherPoints =
+      (primaryPoints?.balance === null || primaryPoints?.balance === undefined || Number.isNaN(primaryPoints.balance)) &&
+      (opponentPoints?.balance === null || opponentPoints?.balance === undefined || Number.isNaN(opponentPoints.balance));
+    const inferredMatchType: "FWA" | "MM" | null = hasBothPoints ? "FWA" : hasNeitherPoints ? "MM" : null;
+    const matchType = matchTypeResolved ?? inferredMatchType ?? "UNKNOWN";
+    const isInferredFromPoints = !matchTypeResolved && inferredMatchType !== null;
+    if (matchTypeResolved === null && inferredMatchType && guildId) {
       await prisma.warEventLogSubscription.upsert({
         where: {
           guildId_clanTag: {
@@ -1011,10 +1114,10 @@ async function buildTrackedMatchOverview(
           clanTag: `#${clanTag}`,
           notify: false,
           channelId: "",
-          matchType: "FWA",
+          matchType: inferredMatchType,
         },
         update: {
-          matchType: "FWA",
+          matchType: inferredMatchType,
         },
       });
     }
@@ -1024,9 +1127,12 @@ async function buildTrackedMatchOverview(
         : "Points: unavailable";
 
     if (matchType === "FWA") {
+      const matchTypeLine = isInferredFromPoints
+        ? "Match Type: **FWA \u26A0\uFE0F** (inferred: both clans have points)"
+        : "Match Type: **FWA**";
       embed.addFields({
         name: `${clanName} (#${clanTag}) vs ${opponentName} (#${opponentTag})`,
-        value: `${pointsLine}\nOutcome: **${sub?.outcome ?? "UNKNOWN"}**`,
+        value: `${pointsLine}\n${matchTypeLine}\nOutcome: **${sub?.outcome ?? "UNKNOWN"}**`,
         inline: false,
       });
       copyLines.push(
@@ -1036,14 +1142,22 @@ async function buildTrackedMatchOverview(
         `### Opponent Tag`,
         `\`${opponentTag}\``,
         `${pointsLine}`,
+        isInferredFromPoints
+          ? "Match Type: FWA \u26A0\uFE0F (inferred from both clans having points)"
+          : "Match Type: FWA",
         `Outcome: ${sub?.outcome ?? "UNKNOWN"}`
       );
       continue;
     }
 
+    const matchTypeLine =
+      matchType === "MM" && isInferredFromPoints
+        ? "Match Type: **MM** (inferred: no points found on either side)"
+        : `Match Type: **${matchType}**`;
+
     embed.addFields({
       name: `${clanName} (#${clanTag}) vs ${opponentName} (#${opponentTag})`,
-      value: `${pointsLine}\nMatch Type: **${matchType}**`,
+      value: `${pointsLine}\n${matchTypeLine}`,
       inline: false,
     });
     copyLines.push(
@@ -1053,7 +1167,9 @@ async function buildTrackedMatchOverview(
       `### Opponent Tag`,
       `\`${opponentTag}\``,
       `${pointsLine}`,
-      `Match Type: ${matchType}`
+      matchType === "MM" && isInferredFromPoints
+        ? "Match Type: MM (inferred from both clans missing points)"
+        : `Match Type: ${matchType}`
     );
   }
 
@@ -1441,17 +1557,24 @@ export const Fwa: Command = {
           trackedPair.map((c) => [normalizeTag(c.tag), sanitizeClanName(c.name)])
         );
 
-        if (primary.balance === null || Number.isNaN(primary.balance)) {
+        const hasPrimaryPoints = primary.balance !== null && !Number.isNaN(primary.balance);
+        const hasOpponentPoints = opponent.balance !== null && !Number.isNaN(opponent.balance);
+        const hasBothPoints = hasPrimaryPoints && hasOpponentPoints;
+        const hasNeitherPoints = !hasPrimaryPoints && !hasOpponentPoints;
+
+        if (!hasPrimaryPoints && hasOpponentPoints) {
           await editReplySafe(`Could not fetch point balance for #${tag}.`);
           return;
         }
-        if (opponent.balance === null || Number.isNaN(opponent.balance)) {
+        if (hasPrimaryPoints && !hasOpponentPoints) {
           await editReplySafe(`Could not fetch point balance for #${opponentTag}.`);
           return;
         }
-        const hasBothPoints = !Number.isNaN(primary.balance) && !Number.isNaN(opponent.balance);
-        let matchType = matchTypeResolved ?? (hasBothPoints ? "FWA" : "UNKNOWN");
-        if (matchTypeResolved === null && hasBothPoints && interaction.guildId) {
+
+        const inferredMatchType: "FWA" | "MM" | null = hasBothPoints ? "FWA" : hasNeitherPoints ? "MM" : null;
+        const isInferredFromPoints = !matchTypeResolved && inferredMatchType !== null;
+        let matchType = matchTypeResolved ?? inferredMatchType ?? "UNKNOWN";
+        if (matchTypeResolved === null && inferredMatchType && interaction.guildId) {
           await prisma.warEventLogSubscription.upsert({
             where: {
               guildId_clanTag: {
@@ -1464,13 +1587,13 @@ export const Fwa: Command = {
               clanTag: `#${tag}`,
               notify: false,
               channelId: "",
-              matchType: "FWA",
+              matchType: inferredMatchType,
             },
             update: {
-              matchType: "FWA",
+              matchType: inferredMatchType,
             },
           });
-          matchType = "FWA";
+          matchType = inferredMatchType;
         }
 
         recordFetchEvent({
@@ -1503,13 +1626,16 @@ export const Fwa: Command = {
                 .catch(() => null),
         ]);
 
-        const message = limitDiscordContent(
-          buildMatchupMessage(primary, opponent, {
-            primaryName: resolvedPrimaryName ?? primaryNameFromApi,
-            opponentName: resolvedOpponentName ?? opponentNameFromApi,
-          })
-        );
-        const projectionLine = message.split("\n")[1]?.trim() ?? message.trim();
+        const projectionLine = hasBothPoints
+          ? limitDiscordContent(
+              buildMatchupMessage(primary, opponent, {
+                primaryName: resolvedPrimaryName ?? primaryNameFromApi,
+                opponentName: resolvedOpponentName ?? opponentNameFromApi,
+              })
+            )
+              .split("\n")[1]
+              ?.trim() ?? "Projection unavailable."
+          : "Projection unavailable (no points found on either side).";
         const syncDisplay = withSyncModeLabel(getSyncDisplay(sourceSync, warState), sourceSync);
         const opponentInWinnerBox = primary.winnerBoxTags
           .map((t) => normalizeTag(t))
@@ -1523,18 +1649,30 @@ export const Fwa: Command = {
             : "";
         const leftName = resolvedPrimaryName ?? primaryNameFromApi ?? tag;
         const rightName = resolvedOpponentName ?? opponentNameFromApi ?? opponentTag;
+        const matchTypeDisplay =
+          matchType === "FWA" && isInferredFromPoints
+            ? "FWA \u26A0\uFE0F"
+            : matchType;
+        const matchTypeReasonLine =
+          matchType === "FWA" && isInferredFromPoints
+            ? "Inferred from both clans having points. BL clans can also have points."
+            : matchType === "MM" && isInferredFromPoints
+              ? "Inferred from no points found on either side."
+              : null;
         const embed = new EmbedBuilder()
           .setTitle(`${leftName} (#${tag}) vs ${rightName} (#${opponentTag})`)
           .setDescription(
-            `${projectionLine}\nMatch Type: **${matchType}**${
+            `${projectionLine}\nMatch Type: **${matchTypeDisplay}**${
               outcomeLine ? `\nExpected outcome: **${outcomeLine}**` : ""
             }\nWar state: **${formatWarStateLabel(warState)}**\nTime remaining: **${warRemaining}**\nSync: **${syncDisplay}**${
               siteStatusLine ? `\n${siteStatusLine}` : ""
-            }`
+            }${matchTypeReasonLine ? `\n${matchTypeReasonLine}` : ""}`
           )
           .addFields({
             name: "Points",
-            value: `${leftName}: **${primary.balance}**\n${rightName}: **${opponent.balance}**`,
+            value: hasBothPoints
+              ? `${leftName}: **${primary.balance}**\n${rightName}: **${opponent.balance}**`
+              : "Unavailable on both clans.",
             inline: false,
           });
         const copyText = limitDiscordContent(
@@ -1548,11 +1686,12 @@ export const Fwa: Command = {
             `## Opponent Tag`,
             `\`${opponentTag}\``,
             `## Points`,
-            `${leftName}: ${primary.balance}`,
-            `${rightName}: ${opponent.balance}`,
+            hasBothPoints ? `${leftName}: ${primary.balance}` : "Unavailable",
+            hasBothPoints ? `${rightName}: ${opponent.balance}` : "Unavailable",
             `## Projection`,
             projectionLine,
-            `Match Type: ${matchType}`,
+            `Match Type: ${matchTypeDisplay}`,
+            matchTypeReasonLine ?? "",
             outcomeLine ? `Expected outcome: ${outcomeLine}` : "",
             siteStatusLine ?? "",
           ]
@@ -1565,11 +1704,21 @@ export const Fwa: Command = {
           embed,
           copyText,
           includePostButton: !isPublic,
+          inferredTypeForTag: isInferredFromPoints ? inferredMatchType : null,
+          trackedClanTag: tag,
         });
         await editReplySafe(
           "",
           [embed],
-          buildFwaMatchCopyComponents(interaction.user.id, key, "embed", !isPublic)
+          buildFwaMatchCopyComponents(
+            interaction.user.id,
+            key,
+            "embed",
+            !isPublic,
+            isInferredFromPoints && inferredMatchType
+              ? { tag, inferredType: inferredMatchType }
+              : null
+          )
         );
         return;
       } catch (err) {
@@ -1680,3 +1829,5 @@ export const Fwa: Command = {
     await interaction.respond(choices);
   },
 };
+
+
