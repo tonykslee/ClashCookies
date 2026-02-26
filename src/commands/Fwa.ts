@@ -250,6 +250,79 @@ function formatWarStateLabel(warState: WarStateForSync): string {
   return "no war";
 }
 
+function buildCcClanUrl(tag: string): string {
+  const normalizedTag = normalizeTag(tag);
+  const proxyBase = (process.env.CC_PROXY_URL ?? "").trim();
+  if (!proxyBase) return `https://cc.fwafarm.com/cc_n/clan.php?tag=${normalizedTag}`;
+  const proxyUrl = new URL(proxyBase);
+  proxyUrl.searchParams.set("tag", normalizedTag);
+  return proxyUrl.toString();
+}
+
+function deriveMatchTypeFromAssociation(html: string): "FWA" | "BL" | "MM" | null {
+  const associationStart = html.search(/Association\s*:/i);
+  if (associationStart < 0) return null;
+  const windowHtml = html.slice(associationStart, associationStart + 900);
+  const plain = toPlainText(windowHtml);
+  const textMatch = plain.match(/Association\s*:\s*(.+?)(?=\s{2,}|$)/i);
+  const associationText = String(textMatch?.[1] ?? "").trim();
+  const hasRedFont =
+    /color\s*:\s*red/i.test(windowHtml) ||
+    /color\s*=\s*["']?\s*red/i.test(windowHtml) ||
+    /#ff0000|#f00/i.test(windowHtml);
+  const hasBlackFont =
+    /color\s*:\s*black/i.test(windowHtml) ||
+    /color\s*=\s*["']?\s*black/i.test(windowHtml) ||
+    /#000000|#000/i.test(windowHtml);
+  const lower = associationText.toLowerCase();
+
+  if (lower.includes("blacklisted") || hasRedFont) return "BL";
+  if (lower.includes("official fwa")) return "FWA";
+  if (lower.includes("none") || lower.includes("no league association") || hasBlackFont) return "MM";
+  return null;
+}
+
+async function fetchMatchTypeByOpponentTag(opponentTag: string): Promise<"FWA" | "BL" | "MM" | null> {
+  const url = buildCcClanUrl(opponentTag);
+  const response = await axios.get<string>(url, {
+    timeout: 15000,
+    responseType: "text",
+    headers: {
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
+      Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    },
+    validateStatus: () => true,
+  });
+  if (response.status >= 400) return null;
+  return deriveMatchTypeFromAssociation(String(response.data ?? ""));
+}
+
+async function resolveMatchTypeWithFallback(params: {
+  guildId: string | null;
+  clanTag: string;
+  opponentTag: string;
+  warState: WarStateForSync;
+  existingMatchType: "FWA" | "BL" | "MM" | null | undefined;
+}): Promise<"FWA" | "BL" | "MM" | null> {
+  if (params.existingMatchType) return params.existingMatchType;
+  if (params.warState === "notInWar") return params.existingMatchType ?? null;
+  if (!params.guildId) return params.existingMatchType ?? null;
+  if (!params.opponentTag) return params.existingMatchType ?? null;
+
+  const derived = await fetchMatchTypeByOpponentTag(params.opponentTag).catch(() => null);
+  if (!derived) return null;
+
+  await prisma.warEventLogSubscription.updateMany({
+    where: {
+      guildId: params.guildId,
+      clanTag: `#${normalizeTag(params.clanTag)}`,
+    },
+    data: { matchType: derived },
+  });
+  return derived;
+}
+
 function applySourceSync(snapshot: PointsSnapshot, sourceSync: number | null): PointsSnapshot {
   if (sourceSync === null) return snapshot;
   return {
@@ -813,7 +886,14 @@ async function buildTrackedMatchOverview(
     const opponentTag = normalizeTag(String(war?.opponent?.tag ?? ""));
     const opponentName = sanitizeClanName(String(war?.opponent?.name ?? "")) ?? "Unknown";
     const sub = subByTag.get(clanTag);
-    const matchType = sub?.matchType ?? "UNKNOWN";
+    const matchTypeResolved = await resolveMatchTypeWithFallback({
+      guildId,
+      clanTag,
+      opponentTag,
+      warState,
+      existingMatchType: sub?.matchType ?? null,
+    });
+    const matchType = matchTypeResolved ?? "UNKNOWN";
 
     if (!opponentTag) {
       lines.push(`- ${clanName}(#${clanTag}) vs Unknown\n  No active war opponent`);
@@ -1046,7 +1126,14 @@ export const Fwa: Command = {
               select: { matchType: true, outcome: true },
             })
           : null;
-        const matchType = subscription?.matchType ?? "UNKNOWN";
+        const matchTypeResolved = await resolveMatchTypeWithFallback({
+          guildId: interaction.guildId ?? null,
+          clanTag: tag,
+          opponentTag,
+          warState,
+          existingMatchType: subscription?.matchType ?? null,
+        });
+        const matchType = matchTypeResolved ?? "UNKNOWN";
         const trackedPair = await prisma.trackedClan.findMany({
           select: { name: true, tag: true },
         });
