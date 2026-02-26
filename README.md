@@ -78,7 +78,7 @@ Optional fallback auth (not required for your current setup):
 - `/recruitment edit platform:discord|reddit|band clan:<tag>` - Open platform-specific modal:
   - Discord: clan tag, body (max 1024), optional image URL(s)
   - Band: body, optional image URL(s)
-  - Reddit: subject (`[Recruiting] Name of Clan | #ClanTag | Required TH/Level | Clan Level | FWA | Discord`), body (markdown), optional image URL(s)
+  - Reddit: subject (`[Recruiting] Name of Clan | #ClanTag | Required TH/Level | Clan Level | FWA | Discord`) auto-prefilled from in-game TH minimum and clan level, body (markdown), optional image URL(s)
 - `/recruitment countdown start platform:discord|reddit|band clan:<tag>` - Start exact cooldown timer for your account on that platform+clan pair.
 - `/recruitment countdown status` - Show your current recruitment cooldown timers.
 - `/recruitment dashboard` - Show readiness across all tracked clans/platforms for your account.
