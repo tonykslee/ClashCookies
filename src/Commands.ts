@@ -1,5 +1,4 @@
 import { Help } from "./commands/Help";
-import { GetClanName } from "./commands/GetClanName";
 import { LastSeen } from "./commands/LastSeen";
 import { Inactive } from "./commands/Inactive";
 import { RoleUsers } from "./commands/RoleUsers";
@@ -13,11 +12,11 @@ import { Points } from "./commands/Points";
 import { Opponent } from "./commands/Opponent";
 import { KickList } from "./commands/KickList";
 import { Recruitment } from "./commands/Recruitment";
+import { MyAccounts } from "./commands/MyAccounts";
 
 // ...existing code...
 export const Commands = [
   Help,
-  GetClanName,
   LastSeen,
   Inactive,
   RoleUsers,
@@ -25,6 +24,7 @@ export const Commands = [
   Sheet,
   Compo,
   CC,
+  MyAccounts,
   Points,
   Opponent,
   Recruitment,

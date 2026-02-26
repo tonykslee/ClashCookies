@@ -26,6 +26,13 @@ Optional owner bypass:
 - `OWNER_DISCORD_USER_ID` - single Discord user ID with full command access override in all guilds.
 - `OWNER_DISCORD_USER_IDS` - comma-separated list of Discord user IDs with full override.
 
+Optional ClashKing link lookup (kick-list fallback when local links are missing):
+- `CLASHKING_LINKS_URL_TEMPLATE` - ClashKing links endpoint URL (supports either fixed `POST /discord_links` or a `{tag}` URL template).
+- `CLASHKING_API_TOKEN` - bearer token for private ClashKing API (if required).
+- Bot behavior:
+  - `/my-accounts` backfills `PlayerLink` from ClashKing when local links are missing for the requesting user.
+  - Activity observe loop checks unresolved tracked-member links via ClashKing at most once every 6 hours and caches matches in `PlayerLink`.
+
 ## Google Sheets (OAuth)
 This project is currently set up to use OAuth refresh token auth.
 
@@ -49,8 +56,7 @@ Optional fallback auth (not required for your current setup):
 - `/permission add command:<name> role:<discordRole> [role2] [role3] [role4] [role5]` - Allow one or more roles to use a command.
 - `/permission remove command:<name> role:<discordRole>` - Remove a role from a command whitelist.
 - `/permission list [command:<name>]` - List role policy for one command target, or all if omitted.
-- `/clan-name tag:<tag>` - Get clan name by tag.
-- `/lastseen tag:<playerTag>` - Show a player's last seen activity.
+- `/lastseen tag:<playerTag>` - Show a player's last seen activity, with drill-down button for tracked signal timestamps.
 - `/inactive days:<number>` - List players inactive for N days.
 - `/role-users role:<discordRole>` - List users in a role with pagination.
 - `/tracked-clan add tag:<tag>` - Add tracked clan.
@@ -66,19 +72,23 @@ Optional fallback auth (not required for your current setup):
 - `/cc player tag:<tag>` - Build `https://cc.fwafarm.com/cc_n/member.php?tag=<tag>`.
 - `/cc clan tag:<tag>` - Build `https://cc.fwafarm.com/cc_n/clan.php?tag=<tag>`.
 - `/opponent tag:<tag>` - Get current war opponent clan tag from CoC API (without `#`).
+- `/my-accounts [visibility:private|public]` - List your linked player accounts grouped by their current clan.
 - `/points [visibility:private|public] [tag:<tag>] [opponent-tag:<tag>]` - Fetch current point balance from `https://points.fwafarm.com/clan?tag=<tag-without-#>`. If `tag` is omitted, fetches all tracked clans. If both tags are provided, returns projected winner/loser by points, or sync-based tiebreak when points are tied.
 - `/recruitment show platform:discord|reddit|band clan:<tag>` - Render platform-specific recruitment template output for a tracked clan.
-- `/recruitment edit clan:<tag>` - Open modal to edit Required TH, focus, body (max 1024), and default image URLs for a clan.
+- `/recruitment edit platform:discord|reddit|band clan:<tag>` - Open platform-specific modal:
+  - Discord: clan tag, body (max 1024), optional image URL(s)
+  - Band: body, optional image URL(s)
+  - Reddit: subject (`[Recruiting] Name of Clan | #ClanTag | Required TH/Level | Clan Level | FWA | Discord`) auto-prefilled from in-game TH minimum and clan level, body (markdown), optional image URL(s)
 - `/recruitment countdown start platform:discord|reddit|band clan:<tag>` - Start exact cooldown timer for your account on that platform+clan pair.
 - `/recruitment countdown status` - Show your current recruitment cooldown timers.
 - `/recruitment dashboard` - Show readiness across all tracked clans/platforms for your account.
-- `/kick-list build [days:<number>]` - Auto-build kick-list candidates from inactive tracked-clan members (default `3` days).
+- `/kick-list build [days:<number>]` - Auto-build kick-list candidates from tracked-clan members who are inactive (`days` threshold, default `3`), unlinked, or linked to users not in this server. Players matching both inactivity and link issues are shown first.
 - `/kick-list add tag:<playerTag> reason:<text>` - Manually add a kick-list candidate with reason.
 - `/kick-list remove tag:<playerTag>` - Remove a player from kick list.
 - `/kick-list show` - Show current kick-list with reasons.
 - `/kick-list clear [mode:all|auto|manual]` - Clear kick-list entries.
 - `/post sync time [role:<discordRole>]` - Open modal, compose sync-time message, post it, and pin it.
-- `/post sync status` - Show claimed vs unclaimed clan badge reactions for the active sync-time post.
+- `/post sync status [message-id:<id>]` - Show claimed vs unclaimed clan badge reactions for the active sync-time post, or for a specific message in the channel.
 
 ## Command Access Control
 - By default, commands are usable by everyone.

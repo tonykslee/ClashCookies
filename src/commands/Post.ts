@@ -125,15 +125,20 @@ async function resolveStoredActiveSyncMessage(
 
 async function resolveSyncStatusMessage(
   interaction: ChatInputCommandInteraction,
-  settings: SettingsService
+  settings: SettingsService,
+  explicitMessageId: string | null
 ) {
-  const storedActiveMessage = await resolveStoredActiveSyncMessage(interaction, settings);
-  if (storedActiveMessage) return storedActiveMessage;
-
   const channel = interaction.channel;
   if (!channel?.isTextBased() || !("messages" in channel)) {
     return null;
   }
+
+  if (explicitMessageId) {
+    return channel.messages.fetch(explicitMessageId).catch(() => null);
+  }
+
+  const storedActiveMessage = await resolveStoredActiveSyncMessage(interaction, settings);
+  if (storedActiveMessage) return storedActiveMessage;
 
   const pinned = await channel.messages.fetchPinned().catch(() => null);
   if (pinned && pinned.size > 0) {
@@ -157,10 +162,20 @@ async function handleSyncStatusSubcommand(
   await interaction.deferReply({ ephemeral: true });
 
   const settings = new SettingsService();
-  const message = await resolveSyncStatusMessage(interaction, settings);
+  const explicitMessageIdRaw = interaction.options.getString("message-id", false)?.trim() ?? null;
+  const explicitMessageId =
+    explicitMessageIdRaw && /^\d{17,22}$/.test(explicitMessageIdRaw) ? explicitMessageIdRaw : null;
+  if (explicitMessageIdRaw && !explicitMessageId) {
+    await interaction.editReply("Invalid `message-id`. Use a Discord message ID.");
+    return;
+  }
+
+  const message = await resolveSyncStatusMessage(interaction, settings, explicitMessageId);
   if (!message) {
     await interaction.editReply(
-      "Could not find an active sync-time message. Post one with `/post sync time` first."
+      explicitMessageId
+        ? "Could not find that message ID in this channel."
+        : "Could not find an active sync-time message. Post one with `/post sync time` first."
     );
     return;
   }
@@ -700,6 +715,15 @@ export const Post: Command = {
           name: "status",
           description: "Show claimed/unclaimed clan badges for a sync-time post",
           type: ApplicationCommandOptionType.Subcommand,
+          options: [
+            {
+              name: "message-id",
+              description:
+                "Sync-time message ID (optional; defaults to active sync post)",
+              type: ApplicationCommandOptionType.String,
+              required: false,
+            },
+          ],
         },
       ],
     },

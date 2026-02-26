@@ -59,18 +59,11 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     ],
     examples: ["/help", "/help command:sheet", "/help visibility:public"],
   },
-  "clan-name": {
-    summary: "Resolve a clan tag into its clan name.",
-    details: [
-      "Accepts tags with or without `#`.",
-      "Useful for sanity-checking tags before adding tracked clans.",
-    ],
-    examples: ["/clan-name tag:#2QG2C08UP"],
-  },
   lastseen: {
     summary: "Estimate when a player was last active.",
     details: [
       "Reads stored activity first, then infers from live profile stats.",
+      "Includes an Activity Breakdown button with localized timestamps for tracked signals.",
       "Stores inference for faster future lookups.",
     ],
     examples: ["/lastseen tag:ABC123XYZ"],
@@ -145,6 +138,16 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     ],
     examples: ["/opponent tag:2QG2C08UP"],
   },
+  "my-accounts": {
+    summary: "List your linked player accounts grouped by their current clan.",
+    details: [
+      "Reads linked tags for your Discord account from the bot database.",
+      "If no local links are found, it queries ClashKing `/discord_links` for your Discord ID and caches results to `PlayerLink`.",
+      "Fetches live player data when available and groups accounts by current clan.",
+      "Set `visibility:public` to post the response directly in channel.",
+    ],
+    examples: ["/my-accounts", "/my-accounts visibility:public"],
+  },
   points: {
     summary: "Fetch FWA points balance and optional matchup projection.",
     details: [
@@ -164,13 +167,13 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     summary: "Manage recruitment templates and per-platform posting cooldowns.",
     details: [
       "`show` renders platform-specific recruitment output for a tracked clan.",
-      "`edit` opens a modal to save Required TH, focus, body, and image URLs per clan.",
+      "`edit` now requires platform and opens a platform-specific modal (discord/band/reddit fields differ).",
       "`countdown start` begins exact platform cooldown timers; `countdown status` shows your timers.",
       "`dashboard` summarizes readiness across all tracked clans and platforms for your account.",
     ],
     examples: [
       "/recruitment show platform:discord clan:2QG2C08UP",
-      "/recruitment edit clan:2QG2C08UP",
+      "/recruitment edit platform:reddit clan:2QG2C08UP",
       "/recruitment countdown start platform:reddit clan:2QG2C08UP",
       "/recruitment countdown status",
       "/recruitment dashboard",
@@ -179,7 +182,8 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
   "kick-list": {
     summary: "Build and manage kick-list candidates.",
     details: [
-      "`build` auto-adds inactive players from tracked-clan live rosters (default 3 days).",
+      "`build` auto-adds tracked-clan members who are inactive (default 3 days), unlinked, or linked to users not in this server.",
+      "Results prioritize players who are both inactive and link-mismatched.",
       "`add` supports manual entries with a custom reason.",
       "`show` displays reasons for each candidate with pagination.",
     ],
@@ -195,10 +199,10 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     details: [
       "`/post sync time` opens a modal to capture date/time/timezone and role ping.",
       "Creates and pins a sync-time message in the active channel, then adds clan badge reactions.",
-      "`/post sync status` shows claimed vs unclaimed clans from the stored active sync post.",
+      "`/post sync status` shows claimed vs unclaimed clans from the stored active sync post, or a provided message ID.",
       "`sync time` is admin-only by default.",
     ],
-    examples: ["/post sync time role:@War", "/post sync status"],
+    examples: ["/post sync time role:@War", "/post sync status", "/post sync status message-id:123456789012345678"],
   },
   permission: {
     summary: "Control which roles can run each command target.",
