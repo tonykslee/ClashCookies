@@ -871,11 +871,17 @@ export const Fwa: Command = {
       const lines: string[] = [];
       let failedCount = 0;
       let forbiddenCount = 0;
+      const stateCounts = new Map<WarStateForSync, number>([
+        ["preparation", 0],
+        ["inWar", 0],
+        ["notInWar", 0],
+      ]);
       for (const clan of tracked) {
         const trackedTag = normalizeTag(clan.tag);
         try {
           const war = await cocService.getCurrentWar(`#${trackedTag}`).catch(() => null);
           const warState = deriveWarState(war?.state);
+          stateCounts.set(warState, (stateCounts.get(warState) ?? 0) + 1);
           const currentSync = getCurrentSyncFromPrevious(sourceSync, warState);
           const result = await getClanPointsCached(settings, cocService, trackedTag, currentSync);
           if (result.balance === null || Number.isNaN(result.balance)) {
@@ -887,11 +893,7 @@ export const Fwa: Command = {
             sanitizeClanName(clan.name) ??
             sanitizeClanName(result.clanName) ??
             `#${trackedTag}`;
-          lines.push(
-            `- ${label} (#${trackedTag}): **${formatPoints(result.balance)}** | state: ${formatWarStateLabel(
-              warState
-            )} | sync: ${getSyncDisplay(sourceSync, warState)}`
-          );
+          lines.push(`- ${label} (#${trackedTag}): **${formatPoints(result.balance)}**`);
         } catch (err) {
           failedCount += 1;
           if (getHttpStatus(err) === 403) forbiddenCount += 1;
@@ -911,8 +913,17 @@ export const Fwa: Command = {
         summary +=
           `\n${forbiddenCount} request(s) were blocked by points.fwafarm.com (HTTP 403).`;
       }
-      if (sourceSync !== null) {
-        summary += `\nSource previous sync: #${sourceSync}`;
+      const nonZeroStates = [...stateCounts.entries()].filter(([, count]) => count > 0);
+      if (nonZeroStates.length === 1) {
+        const state = nonZeroStates[0][0];
+        summary += `\nWar state: ${formatWarStateLabel(state)}`;
+        summary += `\nSync: ${getSyncDisplay(sourceSync, state)}`;
+      } else if (nonZeroStates.length > 1) {
+        summary += `\nWar state: mixed`;
+        summary += `\nSync: mixed`;
+        summary += `\nState counts: prep=${stateCounts.get("preparation") ?? 0}, battle=${stateCounts.get("inWar") ?? 0}, no-war=${stateCounts.get("notInWar") ?? 0}`;
+      } else if (sourceSync !== null) {
+        summary += `\nSync: between #${sourceSync} and #${sourceSync + 1}`;
       }
       await editReplySafe(buildLimitedMessage(header, lines, summary));
       return;
