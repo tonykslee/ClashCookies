@@ -165,6 +165,7 @@ model WarEventLogSubscription {
   clanTag          String
   channelId        String
   enabled          Boolean  @default(true)
+  currentSyncNumber Int?
   lastState        String?
   lastWarStartTime DateTime?
   lastOpponentTag  String?

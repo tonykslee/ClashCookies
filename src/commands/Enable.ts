@@ -9,6 +9,7 @@ import { Prisma } from "@prisma/client";
 import { Command } from "../Command";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
+import { PointsProjectionService } from "../services/PointsProjectionService";
 
 function normalizeClanTag(input: string): string {
   const raw = input.trim().toUpperCase().replace(/^#/, "");
@@ -92,6 +93,11 @@ export const Enable: Command = {
     }
 
     const war = await cocService.getCurrentWar(clanTag).catch(() => null);
+    const pointsProjection = new PointsProjectionService(cocService);
+    const initialSyncNumber = await pointsProjection
+      .fetchSnapshot(clanTag)
+      .then((snapshot) => snapshot.effectiveSync)
+      .catch(() => null);
     const lastState = deriveWarState(war?.state ?? "notInWar");
     const clanName =
       String(war?.clan?.name ?? (await cocService.getClanName(clanTag).catch(() => clanTag))).trim() ||
@@ -110,13 +116,14 @@ export const Enable: Command = {
     await prisma.$executeRaw(
       Prisma.sql`
         INSERT INTO "WarEventLogSubscription"
-          ("guildId","clanTag","channelId","enabled","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","lastClanName","createdAt","updatedAt")
+          ("guildId","clanTag","channelId","enabled","currentSyncNumber","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","lastClanName","createdAt","updatedAt")
         VALUES
-          (${interaction.guildId}, ${clanTag}, ${target.id}, true, ${lastState}, ${warStartTime}, ${opponentTag}, ${opponentName}, ${clanName}, NOW(), NOW())
+          (${interaction.guildId}, ${clanTag}, ${target.id}, true, ${initialSyncNumber}, ${lastState}, ${warStartTime}, ${opponentTag}, ${opponentName}, ${clanName}, NOW(), NOW())
         ON CONFLICT ("guildId","clanTag")
         DO UPDATE SET
           "channelId" = EXCLUDED."channelId",
           "enabled" = true,
+          "currentSyncNumber" = COALESCE("WarEventLogSubscription"."currentSyncNumber", EXCLUDED."currentSyncNumber"),
           "lastState" = EXCLUDED."lastState",
           "lastWarStartTime" = EXCLUDED."lastWarStartTime",
           "lastOpponentTag" = EXCLUDED."lastOpponentTag",

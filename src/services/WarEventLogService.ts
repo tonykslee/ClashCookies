@@ -48,6 +48,7 @@ export class WarEventLogService {
       clanTag: string;
       channelId: string;
       enabled: boolean;
+      currentSyncNumber: number | null;
       lastState: string | null;
       lastWarStartTime: Date | null;
       lastOpponentTag: string | null;
@@ -58,7 +59,7 @@ export class WarEventLogService {
     const subs = await prisma.$queryRaw<SubRow[]>(
       Prisma.sql`
         SELECT
-          "id","guildId","clanTag","channelId","enabled","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","lastClanName"
+          "id","guildId","clanTag","channelId","enabled","currentSyncNumber","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","lastClanName"
         FROM "WarEventLogSubscription"
         WHERE "enabled" = true
         ORDER BY "updatedAt" ASC
@@ -82,6 +83,7 @@ export class WarEventLogService {
       clanTag: string;
       channelId: string;
       enabled: boolean;
+      currentSyncNumber: number | null;
       lastState: string | null;
       lastWarStartTime: Date | null;
       lastOpponentTag: string | null;
@@ -91,7 +93,7 @@ export class WarEventLogService {
     const rows = await prisma.$queryRaw<SubRow[]>(
       Prisma.sql`
         SELECT
-          "id","guildId","clanTag","channelId","enabled","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","lastClanName"
+          "id","guildId","clanTag","channelId","enabled","currentSyncNumber","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","lastClanName"
         FROM "WarEventLogSubscription"
         WHERE "id" = ${subscriptionId}
         LIMIT 1
@@ -117,6 +119,10 @@ export class WarEventLogService {
     })();
 
     const eventType = shouldEmit(prevState, currentState);
+    const nextSyncNumber =
+      eventType === "war_started"
+        ? Math.max(1, Number(sub.currentSyncNumber ?? 0) + 1)
+        : sub.currentSyncNumber;
     if (eventType) {
       await this.emitEvent(sub.channelId, {
         eventType,
@@ -124,6 +130,7 @@ export class WarEventLogService {
         clanName: nextClanName,
         opponentTag: nextOpponentTag || normalizeTag(sub.lastOpponentTag ?? ""),
         opponentName: nextOpponentName || sub.lastOpponentName || "Unknown",
+        syncNumber: nextSyncNumber,
       });
     }
 
@@ -132,6 +139,7 @@ export class WarEventLogService {
         UPDATE "WarEventLogSubscription"
         SET
           "lastState" = ${currentState},
+          "currentSyncNumber" = ${nextSyncNumber},
           "lastWarStartTime" = ${currentState === "notInWar" ? null : nextWarStartTime},
           "lastOpponentTag" = ${nextOpponentTag || sub.lastOpponentTag},
           "lastOpponentName" = ${nextOpponentName || sub.lastOpponentName},
@@ -150,6 +158,7 @@ export class WarEventLogService {
       clanName: string;
       opponentTag: string;
       opponentName: string;
+      syncNumber: number | null;
     }
   ): Promise<void> {
     const channel = await this.client.channels.fetch(channelId).catch(() => null);
@@ -195,6 +204,11 @@ export class WarEventLogService {
           name: "Opponent",
           value: `${payload.opponentName} (${opponentTag ? `#${opponentTag}` : "unknown"})`,
           inline: false,
+        },
+        {
+          name: "Sync #",
+          value: payload.syncNumber ? `#${payload.syncNumber}` : "unknown",
+          inline: true,
         },
         {
           name: "FWA Points",
