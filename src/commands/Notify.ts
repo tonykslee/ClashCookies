@@ -4,6 +4,7 @@ import {
   ChannelType,
   ChatInputCommandInteraction,
   Client,
+  Role,
 } from "discord.js";
 import { Prisma } from "@prisma/client";
 import { Command } from "../Command";
@@ -49,6 +50,12 @@ export const Notify: Command = {
           type: ApplicationCommandOptionType.Channel,
           required: true,
         },
+        {
+          name: "role",
+          description: "Optional role to ping when war event logs are posted",
+          type: ApplicationCommandOptionType.Role,
+          required: false,
+        },
       ],
     },
   ],
@@ -76,6 +83,7 @@ export const Notify: Command = {
     }
 
     const target = interaction.options.getChannel("target-channel", true);
+    const notifyRole = interaction.options.getRole("role", false) as Role | null;
     if (
       target.type !== ChannelType.GuildText &&
       target.type !== ChannelType.GuildAnnouncement
@@ -108,13 +116,14 @@ export const Notify: Command = {
     await prisma.$executeRaw(
       Prisma.sql`
         INSERT INTO "WarEventLogSubscription"
-          ("guildId","clanTag","channelId","notify","currentSyncNumber","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName","createdAt","updatedAt")
+          ("guildId","clanTag","channelId","notify","notifyRole","currentSyncNumber","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName","createdAt","updatedAt")
         VALUES
-          (${interaction.guildId}, ${clanTag}, ${target.id}, true, ${initialSyncNumber}, ${lastState}, ${warStartTime}, ${opponentTag}, ${opponentName}, ${clanName}, NOW(), NOW())
+          (${interaction.guildId}, ${clanTag}, ${target.id}, true, ${notifyRole?.id ?? null}, ${initialSyncNumber}, ${lastState}, ${warStartTime}, ${opponentTag}, ${opponentName}, ${clanName}, NOW(), NOW())
         ON CONFLICT ("guildId","clanTag")
         DO UPDATE SET
           "channelId" = EXCLUDED."channelId",
           "notify" = true,
+          "notifyRole" = EXCLUDED."notifyRole",
           "currentSyncNumber" = COALESCE("WarEventLogSubscription"."currentSyncNumber", EXCLUDED."currentSyncNumber"),
           "lastState" = EXCLUDED."lastState",
           "lastWarStartTime" = EXCLUDED."lastWarStartTime",
@@ -127,6 +136,7 @@ export const Notify: Command = {
 
     await interaction.editReply(
       `Enabled war event logs for ${clanName} (${clanTag}) in <#${target.id}>.\n` +
+        `Notify role: ${notifyRole ? `<@&${notifyRole.id}>` : "none"}\n` +
         `Current state snapshot: \`${lastState}\``
     );
   },

@@ -144,10 +144,11 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     summary: "Configure notification features.",
     details: [
       "`war` enables war-state event embeds for a clan in a selected channel.",
+      "Optional `role` pings that role whenever a war event embed is posted.",
       "Works with clans outside tracked-clans table (tag must still be valid in CoC API).",
       "Posts at war start, battle day, and war end with opponent + points projection.",
     ],
-    examples: ["/notify war clan-tag:2QG2C08UP target-channel:#war-events"],
+    examples: ["/notify war clan-tag:2QG2C08UP target-channel:#war-events role:@Leaders"],
   },
   accounts: {
     summary: "List linked player accounts grouped by their current clan.",

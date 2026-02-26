@@ -76,7 +76,7 @@ Optional fallback auth (not required for your current setup):
 - `/cc player tag:<tag>` - Build `https://cc.fwafarm.com/cc_n/member.php?tag=<tag>`.
 - `/cc clan tag:<tag>` - Build `https://cc.fwafarm.com/cc_n/clan.php?tag=<tag>`.
 - `/opponent tag:<tag>` - Get current war opponent clan tag from CoC API (without `#`).
-- `/notify war clan-tag:<tag> target-channel:<channel>` - Enable war-state event logs (war start, battle day, war end) for a clan in a selected channel.
+- `/notify war clan-tag:<tag> target-channel:<channel> [role:<discordRole>]` - Enable war-state event logs (war start, battle day, war end) for a clan in a selected channel. Optional role is pinged when event logs are posted.
 - `/accounts [visibility:private|public] [tag:<playerTag>] [discord-id:<snowflake>]` - List linked player accounts grouped by current clan. Default is your own account; provide exactly one of `tag` or `discord-id` to inspect a different linked user.
 - `/fwa points [visibility:private|public] [tag:<tag>]` - Fetch current point balance from `https://points.fwafarm.com/clan?tag=<tag-without-#>`. If `tag` is omitted, fetches all tracked clans.
 - `/fwa match [visibility:private|public] tag:<tag>` - Resolve current war opponent from CoC API, then return projected win/lose by points (or sync-based tiebreak on tie).

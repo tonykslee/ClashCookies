@@ -48,7 +48,12 @@ export class WarEventLogService {
       clanTag: string;
       channelId: string;
       notify: boolean;
+      notifyRole: string | null;
       currentSyncNumber: number | null;
+      fwaPoints: number | null;
+      opponentFwaPoints: number | null;
+      outcome: string | null;
+      matchType: "FWA" | "BL" | "MM" | null;
       lastState: string | null;
       lastWarStartTime: Date | null;
       lastOpponentTag: string | null;
@@ -59,7 +64,7 @@ export class WarEventLogService {
     const subs = await prisma.$queryRaw<SubRow[]>(
       Prisma.sql`
         SELECT
-          "id","guildId","clanTag","channelId","notify","currentSyncNumber","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName"
+          "id","guildId","clanTag","channelId","notify","notifyRole","currentSyncNumber","fwaPoints","opponentFwaPoints","outcome","matchType","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName"
         FROM "WarEventLogSubscription"
         WHERE "notify" = true
         ORDER BY "updatedAt" ASC
@@ -83,7 +88,12 @@ export class WarEventLogService {
       clanTag: string;
       channelId: string;
       notify: boolean;
+      notifyRole: string | null;
       currentSyncNumber: number | null;
+      fwaPoints: number | null;
+      opponentFwaPoints: number | null;
+      outcome: string | null;
+      matchType: "FWA" | "BL" | "MM" | null;
       lastState: string | null;
       lastWarStartTime: Date | null;
       lastOpponentTag: string | null;
@@ -93,7 +103,7 @@ export class WarEventLogService {
     const rows = await prisma.$queryRaw<SubRow[]>(
       Prisma.sql`
         SELECT
-          "id","guildId","clanTag","channelId","notify","currentSyncNumber","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName"
+          "id","guildId","clanTag","channelId","notify","notifyRole","currentSyncNumber","fwaPoints","opponentFwaPoints","outcome","matchType","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName"
         FROM "WarEventLogSubscription"
         WHERE "id" = ${subscriptionId}
         LIMIT 1
@@ -123,6 +133,22 @@ export class WarEventLogService {
       eventType === "war_started"
         ? Math.max(1, Number(sub.currentSyncNumber ?? 0) + 1)
         : sub.currentSyncNumber;
+
+    let nextFwaPoints = sub.fwaPoints;
+    let nextOpponentFwaPoints = sub.opponentFwaPoints;
+    let nextOutcome = sub.outcome;
+    if (nextOpponentTag || normalizeTag(sub.lastOpponentTag ?? "")) {
+      const projectionClanTag = sub.clanTag;
+      const projectionOpponentTag = nextOpponentTag || normalizeTag(sub.lastOpponentTag ?? "");
+      const [a, b] = await Promise.all([
+        this.points.fetchSnapshot(projectionClanTag),
+        this.points.fetchSnapshot(projectionOpponentTag),
+      ]);
+      nextFwaPoints = a.balance;
+      nextOpponentFwaPoints = b.balance;
+      nextOutcome = this.points.buildProjection(a, b);
+    }
+
     if (eventType) {
       await this.emitEvent(sub.channelId, {
         eventType,
@@ -131,6 +157,10 @@ export class WarEventLogService {
         opponentTag: nextOpponentTag || normalizeTag(sub.lastOpponentTag ?? ""),
         opponentName: nextOpponentName || sub.lastOpponentName || "Unknown",
         syncNumber: nextSyncNumber,
+        notifyRole: sub.notifyRole,
+        fwaPoints: nextFwaPoints,
+        opponentFwaPoints: nextOpponentFwaPoints,
+        outcome: nextOutcome,
       });
     }
 
@@ -140,6 +170,10 @@ export class WarEventLogService {
         SET
           "lastState" = ${currentState},
           "currentSyncNumber" = ${nextSyncNumber},
+          "fwaPoints" = ${nextFwaPoints},
+          "opponentFwaPoints" = ${nextOpponentFwaPoints},
+          "outcome" = ${nextOutcome},
+          "matchType" = ${sub.matchType},
           "lastWarStartTime" = ${currentState === "notInWar" ? null : nextWarStartTime},
           "lastOpponentTag" = ${nextOpponentTag || sub.lastOpponentTag},
           "lastOpponentName" = ${nextOpponentName || sub.lastOpponentName},
@@ -159,6 +193,10 @@ export class WarEventLogService {
       opponentTag: string;
       opponentName: string;
       syncNumber: number | null;
+      notifyRole: string | null;
+      fwaPoints: number | null;
+      opponentFwaPoints: number | null;
+      outcome: string | null;
     }
   ): Promise<void> {
     const channel = await this.client.channels.fetch(channelId).catch(() => null);
@@ -174,16 +212,11 @@ export class WarEventLogService {
 
     const clanTag = normalizeTag(payload.clanTag);
     const opponentTag = normalizeTag(payload.opponentTag);
-    let pointsLine = "Points: unavailable";
-    let projection = "Projection: unavailable";
-    if (clanTag && opponentTag) {
-      const [a, b] = await Promise.all([
-        this.points.fetchSnapshot(clanTag),
-        this.points.fetchSnapshot(opponentTag),
-      ]);
-      pointsLine = `Points: ${this.points.formatBalanceLine(a, b)}`;
-      projection = `Projection: ${this.points.buildProjection(a, b)}`;
-    }
+    const pointsLine =
+      payload.fwaPoints !== null && payload.opponentFwaPoints !== null
+        ? `Points: ${payload.clanName}: ${payload.fwaPoints} | ${payload.opponentName}: ${payload.opponentFwaPoints}`
+        : "Points: unavailable";
+    const projection = payload.outcome ? `Projection: ${payload.outcome}` : "Projection: unavailable";
 
     const embed = new EmbedBuilder()
       .setTitle(`Event: ${eventTitle(payload.eventType)} - ${payload.clanName}`)
@@ -223,7 +256,12 @@ export class WarEventLogService {
       )
       .setTimestamp(new Date());
 
-    await channel.send({ embeds: [embed] }).catch((err) => {
+    const roleMention = payload.notifyRole ? `<@&${payload.notifyRole}>` : null;
+    await channel.send({
+      content: roleMention ?? undefined,
+      embeds: [embed],
+      allowedMentions: roleMention ? { roles: [payload.notifyRole as string] } : undefined,
+    }).catch((err) => {
       console.error(
         `[war-events] send failed channel=${channelId} clan=${payload.clanTag} error=${formatError(err)}`
       );
