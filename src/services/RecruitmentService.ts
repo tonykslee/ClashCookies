@@ -7,8 +7,8 @@ export type RecruitmentPlatform = "discord" | "reddit" | "band";
 
 export type RecruitmentTemplateRecord = {
   clanTag: string;
-  requiredTH: string;
-  focus: string;
+  platform: RecruitmentPlatform;
+  subject: string | null;
   body: string;
   imageUrls: string[];
   updatedAt: Date;
@@ -61,20 +61,23 @@ export function toImageUrlsCsv(imageUrls: string[]): string {
 }
 
 export async function getRecruitmentTemplate(
-  clanTag: string
+  clanTag: string,
+  platform: RecruitmentPlatform
 ): Promise<RecruitmentTemplateRecord | null> {
   const normalized = normalizeClanTag(clanTag);
   const rows = await prisma.$queryRaw<RecruitmentTemplateRecord[]>(
     Prisma.sql`
       SELECT
         "clanTag",
-        "requiredTH",
-        "focus",
+        "platform",
+        "subject",
         "body",
         "imageUrls",
         "updatedAt"
       FROM "RecruitmentTemplate"
-      WHERE "clanTag" = ${normalized}
+      WHERE
+        "clanTag" = ${normalized}
+        AND "platform" = ${platform}::"RecruitmentPlatform"
       LIMIT 1
     `
   );
@@ -83,8 +86,8 @@ export async function getRecruitmentTemplate(
 
 export async function upsertRecruitmentTemplate(input: {
   clanTag: string;
-  requiredTH: string;
-  focus: string;
+  platform: RecruitmentPlatform;
+  subject?: string | null;
   body: string;
   imageUrls: string[];
 }): Promise<void> {
@@ -92,13 +95,12 @@ export async function upsertRecruitmentTemplate(input: {
   await prisma.$executeRaw(
     Prisma.sql`
       INSERT INTO "RecruitmentTemplate"
-        ("clanTag", "requiredTH", "focus", "body", "imageUrls", "createdAt", "updatedAt")
+        ("clanTag", "platform", "subject", "requiredTH", "focus", "body", "imageUrls", "createdAt", "updatedAt")
       VALUES
-        (${normalized}, ${input.requiredTH}, ${input.focus}, ${input.body}, ${input.imageUrls}::text[], NOW(), NOW())
-      ON CONFLICT ("clanTag")
+        (${normalized}, ${input.platform}::"RecruitmentPlatform", ${input.subject ?? null}, '', '', ${input.body}, ${input.imageUrls}::text[], NOW(), NOW())
+      ON CONFLICT ("clanTag", "platform")
       DO UPDATE SET
-        "requiredTH" = EXCLUDED."requiredTH",
-        "focus" = EXCLUDED."focus",
+        "subject" = EXCLUDED."subject",
         "body" = EXCLUDED."body",
         "imageUrls" = EXCLUDED."imageUrls",
         "updatedAt" = NOW()

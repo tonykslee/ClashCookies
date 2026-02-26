@@ -167,13 +167,13 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     summary: "Manage recruitment templates and per-platform posting cooldowns.",
     details: [
       "`show` renders platform-specific recruitment output for a tracked clan.",
-      "`edit` opens a modal to save Required TH, focus, body, and image URLs per clan.",
+      "`edit` now requires platform and opens a platform-specific modal (discord/band/reddit fields differ).",
       "`countdown start` begins exact platform cooldown timers; `countdown status` shows your timers.",
       "`dashboard` summarizes readiness across all tracked clans and platforms for your account.",
     ],
     examples: [
       "/recruitment show platform:discord clan:2QG2C08UP",
-      "/recruitment edit clan:2QG2C08UP",
+      "/recruitment edit platform:reddit clan:2QG2C08UP",
       "/recruitment countdown start platform:reddit clan:2QG2C08UP",
       "/recruitment countdown status",
       "/recruitment dashboard",

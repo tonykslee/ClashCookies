@@ -33,8 +33,8 @@ import {
 } from "../services/RecruitmentService";
 
 const RECRUITMENT_MODAL_PREFIX = "recruitment-edit";
-const REQUIRED_TH_INPUT_ID = "required-th";
-const FOCUS_INPUT_ID = "focus";
+const DISCORD_CLAN_TAG_INPUT_ID = "discord-clan-tag";
+const REDDIT_SUBJECT_INPUT_ID = "reddit-subject";
 const BODY_INPUT_ID = "body";
 const IMAGE_URLS_INPUT_ID = "image-urls";
 const DISCORD_RECRUITMENT_CHANNEL_URL =
@@ -71,18 +71,29 @@ function codeBlock(content: string, language = ""): string {
 
 function parseModalCustomId(
   customId: string
-): { userId: string; clanTag: string } | null {
+): { userId: string; clanTag: string; platform: RecruitmentPlatform } | null {
   const parts = customId.split(":");
-  if (parts.length !== 3) return null;
+  if (parts.length !== 4) return null;
   if (parts[0] !== RECRUITMENT_MODAL_PREFIX) return null;
   const userId = parts[1]?.trim() ?? "";
   const clanTag = normalizeClanTag(parts[2] ?? "");
-  if (!userId || !clanTag) return null;
-  return { userId, clanTag };
+  const platform = parseRecruitmentPlatform(parts[3] ?? "");
+  if (!userId || !clanTag || !platform) return null;
+  return { userId, clanTag, platform };
 }
 
-function buildModalCustomId(userId: string, clanTag: string): string {
-  return `${RECRUITMENT_MODAL_PREFIX}:${userId}:${normalizeClanTag(clanTag)}`;
+function buildModalCustomId(
+  userId: string,
+  clanTag: string,
+  platform: RecruitmentPlatform
+): string {
+  return `${RECRUITMENT_MODAL_PREFIX}:${userId}:${normalizeClanTag(clanTag)}:${platform}`;
+}
+
+function isValidRedditSubject(subject: string): boolean {
+  const pattern =
+    /^\[Recruiting\]\s+[^|]+\s+\|\s+#?[A-Z0-9]+\s+\|\s+[^|]+\s+\|\s+[^|]+\s+\|\s+FWA\s+\|\s+Discord$/i;
+  return pattern.test(subject.trim());
 }
 
 function mapTrackedLabel(name: string | null | undefined, tag: string): string {
@@ -166,9 +177,7 @@ function buildBandShowMessage(input: {
 function buildRedditShowMessage(input: {
   clanName: string;
   clanTag: string;
-  requiredTH: string;
-  focus: string;
-  clanLevel: string;
+  subject: string;
   body: string;
   imageUrls: string[];
   cooldownLine: string;
@@ -178,30 +187,15 @@ function buildRedditShowMessage(input: {
     .filter((line) => !/\bgiveaway|giveaways\b/i.test(line))
     .join("\n")
     .trim();
-  const subject = `[Recruiting] ${input.clanName} | ${formatClanTag(input.clanTag)} | ${input.requiredTH} | ${input.clanLevel} | ${input.focus} | Independent`;
-
-  const markdownBody = [
-    `## ${input.clanName}`,
-    `- Clan Tag: ${formatClanTag(input.clanTag)}`,
-    `- Required TH: ${input.requiredTH}`,
-    `- Clan Level: ${input.clanLevel}`,
-    `- Focus: ${input.focus}`,
-    "",
-    noGiveawayBody,
-    ...(input.imageUrls.length > 0
-      ? ["", "Images:", ...input.imageUrls.map((url) => `- ${url}`)]
-      : []),
-  ].join("\n");
-
   return [
     "## Recruitment - Reddit",
     `Clan Tag: \`${formatClanTag(input.clanTag)}\``,
     "",
     "Subject:",
-    `\`${subject}\``,
+    `\`${input.subject}\``,
     "",
     `Recruitment Contents (${noGiveawayBody.length}/1024):`,
-    codeBlock(markdownBody, "md"),
+    codeBlock(noGiveawayBody, "md"),
     "",
     "Rules:",
     "- No giveaway mentions.",
@@ -248,12 +242,12 @@ async function handleShowSubcommand(
     return;
   }
 
-  const template = await getRecruitmentTemplate(clanTag);
+  const template = await getRecruitmentTemplate(clanTag, platform);
   if (!template) {
     await interaction.editReply(
-      `No recruitment template found for ${formatClanTag(
+      `No ${platform} recruitment template found for ${formatClanTag(
         clanTag
-      )}. Use \`/recruitment edit\` first.`
+      )}. Use \`/recruitment edit\` with this platform first.`
     );
     return;
   }
@@ -283,14 +277,10 @@ async function handleShowSubcommand(
       cooldownLine,
     });
   } else {
-    const clan = await cocService.getClan(clanTag).catch(() => null);
-    const clanLevel = String(clan?.clanLevel ?? "Unknown");
     response = buildRedditShowMessage({
       clanName,
       clanTag,
-      requiredTH: template.requiredTH,
-      focus: template.focus,
-      clanLevel,
+      subject: template.subject ?? "",
       body: template.body,
       imageUrls: template.imageUrls,
       cooldownLine,
@@ -302,6 +292,12 @@ async function handleShowSubcommand(
 
 async function handleEditSubcommand(interaction: ChatInputCommandInteraction): Promise<void> {
   const clanTag = normalizeClanTag(interaction.options.getString("clan", true));
+  const platformRaw = interaction.options.getString("platform", true);
+  const platform = parseRecruitmentPlatform(platformRaw);
+  if (!platform) {
+    await interaction.reply({ ephemeral: true, content: "Invalid platform." });
+    return;
+  }
   if (!clanTag) {
     await interaction.reply({ ephemeral: true, content: "Invalid clan tag." });
     return;
@@ -316,30 +312,14 @@ async function handleEditSubcommand(interaction: ChatInputCommandInteraction): P
     return;
   }
 
-  const existing = await getRecruitmentTemplate(clanTag);
+  const existing = await getRecruitmentTemplate(clanTag, platform);
   const modal = new ModalBuilder()
-    .setCustomId(buildModalCustomId(interaction.user.id, clanTag))
-    .setTitle(`Edit Recruitment ${formatClanTag(clanTag)}`);
-
-  const requiredThInput = new TextInputBuilder()
-    .setCustomId(REQUIRED_TH_INPUT_ID)
-    .setLabel("Required TH")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true)
-    .setMaxLength(64)
-    .setValue(existing?.requiredTH ?? "");
-
-  const focusInput = new TextInputBuilder()
-    .setCustomId(FOCUS_INPUT_ID)
-    .setLabel("Focus (FWA/War Farm/etc)")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true)
-    .setMaxLength(128)
-    .setValue(existing?.focus ?? "");
+    .setCustomId(buildModalCustomId(interaction.user.id, clanTag, platform))
+    .setTitle(`Edit ${formatPlatform(platform)} ${formatClanTag(clanTag)}`);
 
   const bodyInput = new TextInputBuilder()
     .setCustomId(BODY_INPUT_ID)
-    .setLabel("Recruitment body")
+    .setLabel(platform === "reddit" ? "Message body (markdown supported)" : "Recruitment body")
     .setStyle(TextInputStyle.Paragraph)
     .setRequired(true)
     .setMaxLength(1024)
@@ -353,12 +333,37 @@ async function handleEditSubcommand(interaction: ChatInputCommandInteraction): P
     .setMaxLength(1024)
     .setValue(existing ? toImageUrlsCsv(existing.imageUrls) : "");
 
-  modal.addComponents(
-    new ActionRowBuilder<TextInputBuilder>().addComponents(requiredThInput),
-    new ActionRowBuilder<TextInputBuilder>().addComponents(focusInput),
-    new ActionRowBuilder<TextInputBuilder>().addComponents(bodyInput),
-    new ActionRowBuilder<TextInputBuilder>().addComponents(imageUrlsInput)
-  );
+  const rows: Array<ActionRowBuilder<TextInputBuilder>> = [];
+  if (platform === "discord") {
+    const clanTagInput = new TextInputBuilder()
+      .setCustomId(DISCORD_CLAN_TAG_INPUT_ID)
+      .setLabel("Clan tag")
+      .setStyle(TextInputStyle.Short)
+      .setRequired(true)
+      .setMaxLength(32)
+      .setValue(formatClanTag(clanTag));
+    rows.push(new ActionRowBuilder<TextInputBuilder>().addComponents(clanTagInput));
+  }
+
+  if (platform === "reddit") {
+    const defaultSubject =
+      existing?.subject?.trim() ||
+      `[Recruiting] ${tracked.name ?? "Clan Name"} | ${formatClanTag(
+        clanTag
+      )} | Required TH/Level | Clan Level | FWA | Discord`;
+    const subjectInput = new TextInputBuilder()
+      .setCustomId(REDDIT_SUBJECT_INPUT_ID)
+      .setLabel("Reddit post subject")
+      .setStyle(TextInputStyle.Short)
+      .setRequired(true)
+      .setMaxLength(200)
+      .setValue(defaultSubject);
+    rows.push(new ActionRowBuilder<TextInputBuilder>().addComponents(subjectInput));
+  }
+
+  rows.push(new ActionRowBuilder<TextInputBuilder>().addComponents(bodyInput));
+  rows.push(new ActionRowBuilder<TextInputBuilder>().addComponents(imageUrlsInput));
+  modal.addComponents(...rows);
 
   await interaction.showModal(modal);
 }
@@ -511,20 +516,10 @@ export async function handleRecruitmentModalSubmit(
     return;
   }
 
-  const requiredTH = interaction.fields.getTextInputValue(REQUIRED_TH_INPUT_ID).trim();
-  const focus = interaction.fields.getTextInputValue(FOCUS_INPUT_ID).trim();
   const body = interaction.fields.getTextInputValue(BODY_INPUT_ID).trim();
   const imageUrlsCsv = interaction.fields.getTextInputValue(IMAGE_URLS_INPUT_ID).trim();
   const imageUrls = parseImageUrlsCsv(imageUrlsCsv);
 
-  if (!requiredTH) {
-    await interaction.editReply("Required TH cannot be empty.");
-    return;
-  }
-  if (!focus) {
-    await interaction.editReply("Focus cannot be empty.");
-    return;
-  }
   if (!body) {
     await interaction.editReply("Recruitment body cannot be empty.");
     return;
@@ -534,16 +529,46 @@ export async function handleRecruitmentModalSubmit(
     return;
   }
 
+  if (parsed.platform === "discord") {
+    const inputTag = normalizeClanTag(
+      interaction.fields.getTextInputValue(DISCORD_CLAN_TAG_INPUT_ID).trim()
+    );
+    if (!inputTag || inputTag !== parsed.clanTag) {
+      await interaction.editReply(
+        `Discord modal clan tag must match ${formatClanTag(parsed.clanTag)}.`
+      );
+      return;
+    }
+  }
+
+  let subject: string | null = null;
+  if (parsed.platform === "reddit") {
+    subject = interaction.fields.getTextInputValue(REDDIT_SUBJECT_INPUT_ID).trim();
+    if (!subject) {
+      await interaction.editReply("Reddit subject cannot be empty.");
+      return;
+    }
+    if (!isValidRedditSubject(subject)) {
+      await interaction.editReply(
+        "Reddit subject must match: [Recruiting] Name of Clan | #ClanTag | Required TH/Level | Clan Level | FWA | Discord"
+      );
+      return;
+    }
+  }
+
   await upsertRecruitmentTemplate({
     clanTag: parsed.clanTag,
-    requiredTH,
-    focus,
+    platform: parsed.platform,
+    subject,
     body,
     imageUrls,
   });
 
   await interaction.editReply(
-    `Saved recruitment template for ${mapTrackedLabel(tracked.name, parsed.clanTag)}.`
+    `Saved ${parsed.platform} recruitment template for ${mapTrackedLabel(
+      tracked.name,
+      parsed.clanTag
+    )}.`
   );
 }
 
@@ -577,6 +602,13 @@ export const Recruitment: Command = {
       description: "Edit stored recruitment template for a clan",
       type: ApplicationCommandOptionType.Subcommand,
       options: [
+        {
+          name: "platform",
+          description: "Template platform",
+          type: ApplicationCommandOptionType.String,
+          required: true,
+          choices: [...PLATFORM_CHOICES],
+        },
         {
           name: "clan",
           description: "Tracked clan tag (with or without #)",

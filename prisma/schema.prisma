@@ -79,13 +79,18 @@ model KickListEntry {
 
 model RecruitmentTemplate {
   id         Int      @id @default(autoincrement())
-  clanTag    String   @unique
+  clanTag    String
+  platform   RecruitmentPlatform
+  subject    String?
   requiredTH String
   focus      String
   body       String
   imageUrls  String[]
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
+
+  @@unique([clanTag, platform])
+  @@index([clanTag])
 }
 
 model RecruitmentCooldown {
