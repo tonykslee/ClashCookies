@@ -12,7 +12,7 @@ import { Points } from "./commands/Points";
 import { Opponent } from "./commands/Opponent";
 import { KickList } from "./commands/KickList";
 import { Recruitment } from "./commands/Recruitment";
-import { MyAccounts } from "./commands/MyAccounts";
+import { Accounts } from "./commands/MyAccounts";
 import { Enable } from "./commands/Enable";
 
 // ...existing code...
@@ -25,7 +25,7 @@ export const Commands = [
   Sheet,
   Compo,
   CC,
-  MyAccounts,
+  Accounts,
   Points,
   Opponent,
   Enable,

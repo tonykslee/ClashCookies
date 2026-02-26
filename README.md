@@ -30,7 +30,7 @@ Optional ClashKing link lookup (kick-list fallback when local links are missing)
 - `CLASHKING_LINKS_URL_TEMPLATE` - ClashKing links endpoint URL (supports either fixed `POST /discord_links` or a `{tag}` URL template).
 - `CLASHKING_API_TOKEN` - bearer token for private ClashKing API (if required).
 - Bot behavior:
-  - `/my-accounts` backfills `PlayerLink` from ClashKing when local links are missing for the requesting user.
+  - `/accounts` backfills `PlayerLink` from ClashKing when local links are missing for the target user.
   - Activity observe loop checks unresolved tracked-member links via ClashKing at most once every 6 hours and caches matches in `PlayerLink`.
 
 Optional war event log poll setting:
@@ -77,7 +77,7 @@ Optional fallback auth (not required for your current setup):
 - `/cc clan tag:<tag>` - Build `https://cc.fwafarm.com/cc_n/clan.php?tag=<tag>`.
 - `/opponent tag:<tag>` - Get current war opponent clan tag from CoC API (without `#`).
 - `/enable event logs clan:<tag> target-channel:<channel>` - Enable war-state event logs (war start, battle day, war end) for a clan in a selected channel.
-- `/my-accounts [visibility:private|public]` - List your linked player accounts grouped by their current clan.
+- `/accounts [visibility:private|public] [tag:<playerTag>] [discord-id:<snowflake>]` - List linked player accounts grouped by current clan. Default is your own account; provide exactly one of `tag` or `discord-id` to inspect a different linked user.
 - `/points [visibility:private|public] [tag:<tag>] [opponent-tag:<tag>]` - Fetch current point balance from `https://points.fwafarm.com/clan?tag=<tag-without-#>`. If `tag` is omitted, fetches all tracked clans. If both tags are provided, returns projected winner/loser by points, or sync-based tiebreak when points are tied.
 - `/recruitment show platform:discord|reddit|band clan:<tag>` - Render platform-specific recruitment template output for a tracked clan.
 - `/recruitment edit platform:discord|reddit|band clan:<tag>` - Open platform-specific modal:
