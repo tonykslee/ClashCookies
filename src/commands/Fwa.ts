@@ -194,9 +194,7 @@ function buildFwaMatchCopyComponents(
           })
         )
         .setLabel("FWA")
-        .setStyle(
-          matchTypeAction.currentType === "FWA" ? ButtonStyle.Success : ButtonStyle.Secondary
-        ),
+        .setStyle(ButtonStyle.Success),
       new ButtonBuilder()
         .setCustomId(
           buildMatchTypeActionCustomId({
@@ -206,9 +204,7 @@ function buildFwaMatchCopyComponents(
           })
         )
         .setLabel("BL")
-        .setStyle(
-          matchTypeAction.currentType === "BL" ? ButtonStyle.Success : ButtonStyle.Danger
-        ),
+        .setStyle(ButtonStyle.Danger),
       new ButtonBuilder()
         .setCustomId(
           buildMatchTypeActionCustomId({
@@ -1456,9 +1452,7 @@ export const Fwa: Command = {
                       })
                     )
                     .setLabel("FWA")
-                    .setStyle(
-                      currentType === "FWA" ? ButtonStyle.Success : ButtonStyle.Secondary
-                    ),
+                    .setStyle(ButtonStyle.Success),
                   new ButtonBuilder()
                     .setCustomId(
                       buildMatchTypeActionCustomId({
@@ -1468,7 +1462,7 @@ export const Fwa: Command = {
                       })
                     )
                     .setLabel("BL")
-                    .setStyle(currentType === "BL" ? ButtonStyle.Success : ButtonStyle.Danger),
+                    .setStyle(ButtonStyle.Danger),
                   new ButtonBuilder()
                     .setCustomId(
                       buildMatchTypeActionCustomId({
