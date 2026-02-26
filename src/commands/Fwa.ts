@@ -65,6 +65,7 @@ type MatchupCacheEntry = {
 };
 
 const PREVIOUS_SYNC_KEY = "previousSyncNum";
+const DEFAULT_PREVIOUS_SYNC_FALLBACK = 469;
 type WarStateForSync = "preparation" | "inWar" | "notInWar";
 
 function normalizeTag(input: string): string {
@@ -430,10 +431,18 @@ function getSyncMode(syncNumber: number | null): "low" | "high" | null {
 
 async function getSourceOfTruthSync(settings: SettingsService): Promise<number | null> {
   const raw = await settings.get(PREVIOUS_SYNC_KEY);
-  if (!raw) return null;
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed)) return null;
-  return Math.trunc(parsed);
+  if (raw) {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed)) return Math.trunc(parsed);
+  }
+
+  const envRaw = process.env.DEFAULT_PREVIOUS_SYNC_NUM?.trim() ?? "";
+  const envParsed = Number(envRaw);
+  const fallback = Number.isFinite(envParsed)
+    ? Math.trunc(envParsed)
+    : DEFAULT_PREVIOUS_SYNC_FALLBACK;
+  await settings.set(PREVIOUS_SYNC_KEY, String(fallback));
+  return fallback;
 }
 
 function deriveWarState(rawState: string | null | undefined): WarStateForSync {
