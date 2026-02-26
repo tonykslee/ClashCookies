@@ -250,6 +250,18 @@ function formatWarStateLabel(warState: WarStateForSync): string {
   return "no war";
 }
 
+function getWarStateRemaining(
+  war: { startTime?: string | null; endTime?: string | null } | null | undefined,
+  warState: WarStateForSync
+): string {
+  if (warState === "notInWar") return "n/a";
+  const startMs = parseCocApiTime(war?.startTime);
+  const endMs = parseCocApiTime(war?.endTime);
+  const targetMs = warState === "preparation" ? startMs : endMs;
+  if (targetMs === null || !Number.isFinite(targetMs)) return "unknown";
+  return `<t:${Math.floor(targetMs / 1000)}:R>`;
+}
+
 function buildCcClanUrl(tag: string): string {
   const normalizedTag = normalizeTag(tag);
   const proxyBase = (process.env.CC_PROXY_URL ?? "").trim();
@@ -888,6 +900,7 @@ async function buildTrackedMatchOverview(
     ["inWar", 0],
     ["notInWar", 0],
   ]);
+  const stateRemaining = new Map<WarStateForSync, string>();
   const lines: string[] = [];
 
   for (const clan of tracked) {
@@ -896,6 +909,9 @@ async function buildTrackedMatchOverview(
     const war = await cocService.getCurrentWar(`#${clanTag}`).catch(() => null);
     const warState = deriveWarState(war?.state);
     stateCounts.set(warState, (stateCounts.get(warState) ?? 0) + 1);
+    if (!stateRemaining.has(warState)) {
+      stateRemaining.set(warState, getWarStateRemaining(war, warState));
+    }
 
     const opponentTag = normalizeTag(String(war?.opponent?.tag ?? ""));
     const opponentName = sanitizeClanName(String(war?.opponent?.name ?? "")) ?? "Unknown";
@@ -948,8 +964,16 @@ async function buildTrackedMatchOverview(
     else if (stateLabel === "mixed") syncLabel = "mixed";
     else syncLabel = `#${sourceSync + 1}`;
   }
+  const remainingLabel =
+    stateLabel === "mixed"
+      ? "mixed"
+      : stateLabel === "preparation"
+        ? (stateRemaining.get("preparation") ?? "unknown")
+        : stateLabel === "battle day"
+          ? (stateRemaining.get("inWar") ?? "unknown")
+          : "n/a";
 
-  const header = `Tracked FWA match overview (${tracked.length})\nSync: ${syncLabel}\nWar State: ${stateLabel}`;
+  const header = `Tracked FWA match overview (${tracked.length})\nSync: ${syncLabel}\nWar State: ${stateLabel}\nTime remaining: ${remainingLabel}`;
   return buildLimitedMessage(header, lines, "");
 }
 
@@ -1058,12 +1082,16 @@ export const Fwa: Command = {
         ["inWar", 0],
         ["notInWar", 0],
       ]);
+      const stateRemaining = new Map<WarStateForSync, string>();
       for (const clan of tracked) {
         const trackedTag = normalizeTag(clan.tag);
         try {
           const war = await cocService.getCurrentWar(`#${trackedTag}`).catch(() => null);
           const warState = deriveWarState(war?.state);
           stateCounts.set(warState, (stateCounts.get(warState) ?? 0) + 1);
+          if (!stateRemaining.has(warState)) {
+            stateRemaining.set(warState, getWarStateRemaining(war, warState));
+          }
           const currentSync = getCurrentSyncFromPrevious(sourceSync, warState);
           const result = await getClanPointsCached(settings, cocService, trackedTag, currentSync);
           if (result.balance === null || Number.isNaN(result.balance)) {
@@ -1099,12 +1127,15 @@ export const Fwa: Command = {
       if (nonZeroStates.length === 1) {
         const state = nonZeroStates[0][0];
         summary += `\nWar state: ${formatWarStateLabel(state)}`;
+        summary += `\nTime remaining: ${stateRemaining.get(state) ?? "unknown"}`;
         summary += `\nSync: ${getSyncDisplay(sourceSync, state)}`;
       } else if (nonZeroStates.length > 1) {
         summary += `\nWar state: mixed`;
+        summary += `\nTime remaining: mixed`;
         summary += `\nSync: mixed`;
         summary += `\nState counts: prep=${stateCounts.get("preparation") ?? 0}, battle=${stateCounts.get("inWar") ?? 0}, no-war=${stateCounts.get("notInWar") ?? 0}`;
       } else if (sourceSync !== null) {
+        summary += `\nTime remaining: n/a`;
         summary += `\nSync: between #${sourceSync} and #${sourceSync + 1}`;
       }
       await editReplySafe(buildLimitedMessage(header, lines, summary));
@@ -1126,6 +1157,7 @@ export const Fwa: Command = {
       try {
         const war = await cocService.getCurrentWar(`#${tag}`);
         const warState = deriveWarState(war?.state);
+        const warRemaining = getWarStateRemaining(war, warState);
         const currentSync = getCurrentSyncFromPrevious(sourceSync, warState);
         opponentTag = normalizeTag(String(war?.opponent?.tag ?? ""));
         if (!opponentTag) {
@@ -1247,7 +1279,7 @@ export const Fwa: Command = {
         const messageWithSync = limitDiscordContent(
           `${message}\nMatch Type: ${matchType}${outcomeLine}\nWar state: ${formatWarStateLabel(
             warState
-          )}\nSync: ${getSyncDisplay(sourceSync, warState)}${siteStatusLine}`
+          )}\nTime remaining: ${warRemaining}\nSync: ${getSyncDisplay(sourceSync, warState)}${siteStatusLine}`
         );
         await writeMatchupCache(settings, tag, opponentTag, {
           version: MATCHUP_CACHE_VERSION,
@@ -1280,6 +1312,7 @@ export const Fwa: Command = {
       }
       const war = await cocService.getCurrentWar(`#${tag}`).catch(() => null);
       const warState = deriveWarState(war?.state);
+      const warRemaining = getWarStateRemaining(war, warState);
       const currentSync = getCurrentSyncFromPrevious(sourceSync, warState);
       const result = await getClanPointsCached(settings, cocService, tag, currentSync);
       const balance = result.balance;
@@ -1320,7 +1353,7 @@ export const Fwa: Command = {
       await editReplySafe(
         `Clan Name: **${displayName}**\nTag: #${tag}\nPoint Balance: **${formatPoints(
           balance
-        )}**\nWar state: ${formatWarStateLabel(warState)}\nSync: ${getSyncDisplay(
+        )}**\nWar state: ${formatWarStateLabel(warState)}\nTime remaining: ${warRemaining}\nSync: ${getSyncDisplay(
           sourceSync,
           warState
         )}\n${buildOfficialPointsUrl(tag)}`

@@ -30,6 +30,28 @@ function formatWarStateLabel(warState: "preparation" | "inWar" | "notInWar"): st
   return "no war";
 }
 
+function parseCocApiTime(input: string | null | undefined): number | null {
+  if (!input) return null;
+  const match = input.match(
+    /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})\.\d{3}Z$/
+  );
+  if (!match) return null;
+  const [, y, m, d, hh, mm, ss] = match;
+  return Date.UTC(Number(y), Number(m) - 1, Number(d), Number(hh), Number(mm), Number(ss));
+}
+
+function getWarStateRemaining(
+  war: { startTime?: string | null; endTime?: string | null } | null | undefined,
+  warState: "preparation" | "inWar" | "notInWar"
+): string {
+  if (warState === "notInWar") return "n/a";
+  const startMs = parseCocApiTime(war?.startTime);
+  const endMs = parseCocApiTime(war?.endTime);
+  const targetMs = warState === "preparation" ? startMs : endMs;
+  if (targetMs === null || !Number.isFinite(targetMs)) return "unknown";
+  return `<t:${Math.floor(targetMs / 1000)}:R>`;
+}
+
 function getSyncDisplay(
   previousSync: number | null,
   warState: "preparation" | "inWar" | "notInWar"
@@ -70,6 +92,7 @@ export const Opponent: Command = {
       const settings = new SettingsService();
       const war = await cocService.getCurrentWar(clanTag);
       const warState = deriveWarState(war?.state);
+      const warRemaining = getWarStateRemaining(war, warState);
       const syncFromSetting = await settings
         .get("previousSyncNum")
         .then((raw) => {
@@ -84,7 +107,7 @@ export const Opponent: Command = {
         await interaction.editReply(
           `No active war opponent found for ${clanTag}.\nWar state: ${formatWarStateLabel(
             warState
-          )}\nSync: ${syncDisplay}`
+          )}\nTime remaining: ${warRemaining}\nSync: ${syncDisplay}`
         );
         return;
       }
@@ -96,7 +119,7 @@ export const Opponent: Command = {
       const fallbackSync = syncFromPoints?.effectiveSync ?? null;
       const syncLine = `\n## War State: \`${formatWarStateLabel(
         warState
-      )}\`\n## Sync: \`${syncDisplay === "unknown" && fallbackSync !== null ? `#${fallbackSync}` : syncDisplay}\``;
+      )}\`\n## Time Remaining: \`${warRemaining}\`\n## Sync: \`${syncDisplay === "unknown" && fallbackSync !== null ? `#${fallbackSync}` : syncDisplay}\``;
       await interaction.editReply(
         `## ${clanName} vs\n\n## Opponent: \`${opponentName}\`\n---\n## Opponent Tag: \`${opponentTag}\`${syncLine}`
       );
