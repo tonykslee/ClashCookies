@@ -923,7 +923,6 @@ async function buildTrackedMatchOverview(
       warState,
       existingMatchType: sub?.matchType ?? null,
     });
-    const matchType = matchTypeResolved ?? "UNKNOWN";
 
     if (!opponentTag) {
       lines.push(`- ${clanName}(#${clanTag}) vs Unknown\n  No active war opponent`);
@@ -935,11 +934,36 @@ async function buildTrackedMatchOverview(
       getClanPointsCached(settings, cocService, clanTag, currentSync).catch(() => null),
       getClanPointsCached(settings, cocService, opponentTag, currentSync).catch(() => null),
     ]);
-    const pointsLine =
+    const hasBothPoints =
       primaryPoints?.balance !== null &&
       primaryPoints?.balance !== undefined &&
+      !Number.isNaN(primaryPoints.balance) &&
       opponentPoints?.balance !== null &&
-      opponentPoints?.balance !== undefined
+      opponentPoints?.balance !== undefined &&
+      !Number.isNaN(opponentPoints.balance);
+    const matchType = matchTypeResolved ?? (hasBothPoints ? "FWA" : "UNKNOWN");
+    if (matchTypeResolved === null && hasBothPoints && guildId) {
+      await prisma.warEventLogSubscription.upsert({
+        where: {
+          guildId_clanTag: {
+            guildId,
+            clanTag: `#${clanTag}`,
+          },
+        },
+        create: {
+          guildId,
+          clanTag: `#${clanTag}`,
+          notify: false,
+          channelId: "",
+          matchType: "FWA",
+        },
+        update: {
+          matchType: "FWA",
+        },
+      });
+    }
+    const pointsLine =
+      hasBothPoints
         ? `Points: ${primaryPoints.balance} - ${opponentPoints.balance}`
         : "Points: unavailable";
 
@@ -1308,7 +1332,6 @@ export const Fwa: Command = {
           warState,
           existingMatchType: subscription?.matchType ?? null,
         });
-        const matchType = matchTypeResolved ?? "UNKNOWN";
         const trackedPair = await prisma.trackedClan.findMany({
           select: { name: true, tag: true },
         });
@@ -1323,6 +1346,29 @@ export const Fwa: Command = {
         if (opponent.balance === null || Number.isNaN(opponent.balance)) {
           await editReplySafe(`Could not fetch point balance for #${opponentTag}.`);
           return;
+        }
+        const hasBothPoints = !Number.isNaN(primary.balance) && !Number.isNaN(opponent.balance);
+        let matchType = matchTypeResolved ?? (hasBothPoints ? "FWA" : "UNKNOWN");
+        if (matchTypeResolved === null && hasBothPoints && interaction.guildId) {
+          await prisma.warEventLogSubscription.upsert({
+            where: {
+              guildId_clanTag: {
+                guildId: interaction.guildId,
+                clanTag: `#${tag}`,
+              },
+            },
+            create: {
+              guildId: interaction.guildId,
+              clanTag: `#${tag}`,
+              notify: false,
+              channelId: "",
+              matchType: "FWA",
+            },
+            update: {
+              matchType: "FWA",
+            },
+          });
+          matchType = "FWA";
         }
 
         const cycleKey = `${currentSync ?? "none"}:${primary.refreshedForWarEndMs ?? "none"}:${opponent.refreshedForWarEndMs ?? "none"}`;
