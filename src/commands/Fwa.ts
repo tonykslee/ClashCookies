@@ -61,6 +61,9 @@ type MatchupCacheEntry = {
   createdAtMs: number;
 };
 
+const PREVIOUS_SYNC_KEY = "previousSyncNum";
+type WarStateForSync = "preparation" | "inWar" | "notInWar";
+
 function normalizeTag(input: string): string {
   return input.trim().toUpperCase().replace(/^#/, "");
 }
@@ -203,6 +206,57 @@ function extractSyncNumber(text: string): number | null {
 function getSyncMode(syncNumber: number | null): "low" | "high" | null {
   if (syncNumber === null) return null;
   return syncNumber % 2 === 0 ? "high" : "low";
+}
+
+async function getSourceOfTruthSync(settings: SettingsService): Promise<number | null> {
+  const raw = await settings.get(PREVIOUS_SYNC_KEY);
+  if (!raw) return null;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return null;
+  return Math.trunc(parsed);
+}
+
+function deriveWarState(rawState: string | null | undefined): WarStateForSync {
+  const state = String(rawState ?? "").toLowerCase();
+  if (state.includes("preparation")) return "preparation";
+  if (state.includes("inwar")) return "inWar";
+  return "notInWar";
+}
+
+function getCurrentSyncFromPrevious(
+  previousSync: number | null,
+  warState: WarStateForSync
+): number | null {
+  if (previousSync === null) return null;
+  if (warState === "notInWar") return null;
+  return previousSync + 1;
+}
+
+function getSyncDisplay(
+  previousSync: number | null,
+  warState: WarStateForSync
+): string {
+  if (previousSync === null) return "unknown";
+  const current = previousSync + 1;
+  if (warState === "notInWar") {
+    return `between #${previousSync} and #${current}`;
+  }
+  return `#${current}`;
+}
+
+function formatWarStateLabel(warState: WarStateForSync): string {
+  if (warState === "preparation") return "preparation";
+  if (warState === "inWar") return "battle day";
+  return "no war";
+}
+
+function applySourceSync(snapshot: PointsSnapshot, sourceSync: number | null): PointsSnapshot {
+  if (sourceSync === null) return snapshot;
+  return {
+    ...snapshot,
+    effectiveSync: sourceSync,
+    syncMode: getSyncMode(sourceSync),
+  };
 }
 
 function rankChar(ch: string): number {
@@ -478,7 +532,8 @@ async function scrapeClanPoints(
 async function getClanPointsCached(
   settings: SettingsService,
   cocService: CoCService,
-  tag: string
+  tag: string,
+  sourceSync: number | null
 ): Promise<PointsSnapshot> {
   const normalizedTag = normalizeTag(tag);
   const cached = await readPointsCache(settings, normalizedTag);
@@ -503,7 +558,7 @@ async function getClanPointsCached(
       source: "cache_hit",
       detail: `tag=${normalizedTag}`,
     });
-    return cached;
+    return applySourceSync(cached, sourceSync);
   }
 
   let warEndMs = knownWarEndMs;
@@ -531,7 +586,7 @@ async function getClanPointsCached(
       source: "cache_hit",
       detail: `tag=${normalizedTag}${shouldRecheckWar ? " reason=war_checked" : ""}`,
     });
-    return cached;
+    return applySourceSync(cached, sourceSync);
   }
 
   recordFetchEvent({
@@ -549,7 +604,7 @@ async function getClanPointsCached(
       lastWarCheckAtMs: now,
     });
     await writePointsCache(settings, normalizedTag, snapshot);
-    return snapshot;
+    return applySourceSync(snapshot, sourceSync);
   } catch (err) {
     if (cached) {
       recordFetchEvent({
@@ -561,7 +616,7 @@ async function getClanPointsCached(
       console.warn(
         `[points] using cached value after scrape error tag=${normalizedTag} error=${formatError(err)}`
       );
-      return cached;
+      return applySourceSync(cached, sourceSync);
     }
     throw err;
   }
@@ -572,7 +627,8 @@ export async function getPointsSnapshotForClan(
   tag: string
 ): Promise<PointsSnapshot> {
   const settings = new SettingsService();
-  return getClanPointsCached(settings, cocService, tag);
+  const sourceSync = await getSourceOfTruthSync(settings);
+  return getClanPointsCached(settings, cocService, tag, sourceSync);
 }
 
 function buildMatchupMessage(
@@ -617,6 +673,101 @@ function buildMatchupMessage(
 
   return limitDiscordContent(
     `${primaryName} (${primaryTag}) vs. ${opponentName} (${opponentTag}):\n${outcome}`
+  );
+}
+
+async function buildLastWarMatchOverview(
+  clanTag: string,
+  guildId: string | null,
+  previousSync: number | null
+): Promise<string | null> {
+  const normalizedTag = normalizeTag(clanTag);
+  const lastWar = await prisma.warHistoryParticipant.findFirst({
+    where: {
+      clanTag: `#${normalizedTag}`,
+      warEndTime: { not: null },
+    },
+    orderBy: { warStartTime: "desc" },
+    select: {
+      warStartTime: true,
+      opponentClanTag: true,
+      opponentClanName: true,
+      clanName: true,
+    },
+  });
+
+  if (!lastWar) return null;
+
+  const participants = await prisma.warHistoryParticipant.findMany({
+    where: {
+      clanTag: `#${normalizedTag}`,
+      warStartTime: lastWar.warStartTime,
+    },
+    select: { attacksUsed: true },
+  });
+
+  const missedHits = participants.reduce((sum, p) => {
+    const used = Math.max(0, Math.min(2, Number(p.attacksUsed ?? 0)));
+    return sum + (2 - used);
+  }, 0);
+  const missedBoth = participants.filter((p) => Number(p.attacksUsed ?? 0) <= 0).length;
+
+  const starsRow = await prisma.$queryRaw<Array<{ stars: number }>>`
+    SELECT COALESCE(SUM("trueStars"), 0)::int AS "stars"
+    FROM "WarHistoryAttack"
+    WHERE "clanTag" = ${`#${normalizedTag}`} AND "warStartTime" = ${lastWar.warStartTime}
+  `;
+  const clanStarsTracked = Number(starsRow[0]?.stars ?? 0);
+
+  const sub = await prisma.warEventLogSubscription.findFirst({
+    where: {
+      clanTag: `#${normalizedTag}`,
+      ...(guildId ? { guildId } : {}),
+    },
+    select: {
+      outcome: true,
+      lastClanStars: true,
+      lastOpponentStars: true,
+      warStartFwaPoints: true,
+      warEndFwaPoints: true,
+    },
+  });
+
+  const clanStars = sub?.lastClanStars ?? clanStarsTracked;
+  const opponentStars = sub?.lastOpponentStars ?? null;
+  const actualOutcome =
+    opponentStars === null
+      ? "UNKNOWN"
+      : clanStars > opponentStars
+        ? "WIN"
+        : clanStars < opponentStars
+          ? "LOSE"
+          : "TIE";
+
+  const pointsDelta =
+    sub?.warStartFwaPoints !== null &&
+    sub?.warStartFwaPoints !== undefined &&
+    sub?.warEndFwaPoints !== null &&
+    sub?.warEndFwaPoints !== undefined
+      ? sub.warEndFwaPoints - sub.warStartFwaPoints
+      : null;
+
+  const syncLabel = previousSync !== null ? `#${previousSync}` : "unknown";
+  const clanName = sanitizeClanName(lastWar.clanName) ?? `#${normalizedTag}`;
+  const opponentName = sanitizeClanName(lastWar.opponentClanName) ?? "Unknown Opponent";
+  const opponentTag = normalizeTag(lastWar.opponentClanTag ?? "");
+
+  return limitDiscordContent(
+    [
+      `Match overview for Sync ${syncLabel}`,
+      `${clanName} (#${normalizedTag}) vs ${opponentName}${opponentTag ? ` (#${opponentTag})` : ""}`,
+      `Expected outcome: **${sub?.outcome ?? "UNKNOWN"}**`,
+      `Actual outcome: **${actualOutcome}**`,
+      `Total stars: ${clanName} ${clanStars} - ${opponentName} ${opponentStars ?? "unknown"}`,
+      `Missed hits (${clanName}): ${missedHits}`,
+      `Members missed both hits (${clanName}): ${missedBoth}`,
+      `FWA points gained (${clanName}): ${pointsDelta === null ? "unknown" : pointsDelta >= 0 ? `+${pointsDelta}` : String(pointsDelta)}`,
+    ].join("\n")
   );
 }
 
@@ -700,6 +851,7 @@ export const Fwa: Command = {
     };
 
     const settings = new SettingsService();
+    const sourceSync = await getSourceOfTruthSync(settings);
     await interaction.deferReply({ ephemeral: !isPublic });
     const rawTag = interaction.options.getString("tag", false);
     const tag = normalizeTag(rawTag ?? "");
@@ -722,7 +874,10 @@ export const Fwa: Command = {
       for (const clan of tracked) {
         const trackedTag = normalizeTag(clan.tag);
         try {
-          const result = await getClanPointsCached(settings, cocService, trackedTag);
+          const war = await cocService.getCurrentWar(`#${trackedTag}`).catch(() => null);
+          const warState = deriveWarState(war?.state);
+          const currentSync = getCurrentSyncFromPrevious(sourceSync, warState);
+          const result = await getClanPointsCached(settings, cocService, trackedTag, currentSync);
           if (result.balance === null || Number.isNaN(result.balance)) {
             failedCount += 1;
             lines.push(`- ${clan.name ?? `#${trackedTag}`}: unavailable`);
@@ -732,7 +887,11 @@ export const Fwa: Command = {
             sanitizeClanName(clan.name) ??
             sanitizeClanName(result.clanName) ??
             `#${trackedTag}`;
-          lines.push(`- ${label} (#${trackedTag}): **${formatPoints(result.balance)}**`);
+          lines.push(
+            `- ${label} (#${trackedTag}): **${formatPoints(result.balance)}** | state: ${formatWarStateLabel(
+              warState
+            )} | sync: ${getSyncDisplay(sourceSync, warState)}`
+          );
         } catch (err) {
           failedCount += 1;
           if (getHttpStatus(err) === 403) forbiddenCount += 1;
@@ -752,6 +911,9 @@ export const Fwa: Command = {
         summary +=
           `\n${forbiddenCount} request(s) were blocked by points.fwafarm.com (HTTP 403).`;
       }
+      if (sourceSync !== null) {
+        summary += `\nSource previous sync: #${sourceSync}`;
+      }
       await editReplySafe(buildLimitedMessage(header, lines, summary));
       return;
     }
@@ -765,15 +927,22 @@ export const Fwa: Command = {
       let opponentTag = "";
       try {
         const war = await cocService.getCurrentWar(`#${tag}`);
+        const warState = deriveWarState(war?.state);
+        const currentSync = getCurrentSyncFromPrevious(sourceSync, warState);
         opponentTag = normalizeTag(String(war?.opponent?.tag ?? ""));
         if (!opponentTag) {
-          await editReplySafe(`No active war opponent found for #${tag}.`);
+          const overview = await buildLastWarMatchOverview(tag, interaction.guildId ?? null, sourceSync);
+          if (!overview) {
+            await editReplySafe(`No active war opponent found for #${tag}. No ended war snapshot is available yet.`);
+            return;
+          }
+          await editReplySafe(overview);
           return;
         }
 
         const [primary, opponent] = await Promise.all([
-          getClanPointsCached(settings, cocService, tag),
-          getClanPointsCached(settings, cocService, opponentTag),
+          getClanPointsCached(settings, cocService, tag, currentSync),
+          getClanPointsCached(settings, cocService, opponentTag, currentSync),
         ]);
         const trackedPair = await prisma.trackedClan.findMany({
           select: { name: true, tag: true },
@@ -791,7 +960,7 @@ export const Fwa: Command = {
           return;
         }
 
-        const cycleKey = `${primary.refreshedForWarEndMs ?? "none"}:${opponent.refreshedForWarEndMs ?? "none"}`;
+        const cycleKey = `${currentSync ?? "none"}:${primary.refreshedForWarEndMs ?? "none"}:${opponent.refreshedForWarEndMs ?? "none"}`;
         const cachedMatchup = await readMatchupCache(settings, tag, opponentTag);
         if (cachedMatchup && cachedMatchup.cycleKey === cycleKey) {
           recordFetchEvent({
@@ -846,14 +1015,20 @@ export const Fwa: Command = {
             opponentName: resolvedOpponentName ?? opponentNameFromApi,
           })
         );
+        const messageWithSync = limitDiscordContent(
+          `${message}\nWar state: ${formatWarStateLabel(warState)}\nSync: ${getSyncDisplay(
+            sourceSync,
+            warState
+          )}`
+        );
         await writeMatchupCache(settings, tag, opponentTag, {
           version: MATCHUP_CACHE_VERSION,
           cycleKey,
-          message,
+          message: messageWithSync,
           createdAtMs: Date.now(),
         });
 
-        await editReplySafe(message);
+        await editReplySafe(messageWithSync);
         return;
       } catch (err) {
         console.error(
@@ -875,7 +1050,10 @@ export const Fwa: Command = {
         await editReplySafe("Please provide `tag`.");
         return;
       }
-      const result = await getClanPointsCached(settings, cocService, tag);
+      const war = await cocService.getCurrentWar(`#${tag}`).catch(() => null);
+      const warState = deriveWarState(war?.state);
+      const currentSync = getCurrentSyncFromPrevious(sourceSync, warState);
+      const result = await getClanPointsCached(settings, cocService, tag, currentSync);
       const balance = result.balance;
       if (balance === null || Number.isNaN(balance)) {
         if (result.notFound) {
@@ -912,7 +1090,12 @@ export const Fwa: Command = {
         "Unknown Clan";
 
       await editReplySafe(
-        `Clan Name: **${displayName}**\nTag: #${tag}\nPoint Balance: **${formatPoints(balance)}**\n${buildOfficialPointsUrl(tag)}`
+        `Clan Name: **${displayName}**\nTag: #${tag}\nPoint Balance: **${formatPoints(
+          balance
+        )}**\nWar state: ${formatWarStateLabel(warState)}\nSync: ${getSyncDisplay(
+          sourceSync,
+          warState
+        )}\n${buildOfficialPointsUrl(tag)}`
       );
     } catch (err) {
       console.error(`[points] request failed tag=${tag} error=${formatError(err)}`);

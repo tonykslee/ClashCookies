@@ -7,6 +7,7 @@ import {
 import { Command } from "../Command";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
+import { SettingsService } from "../services/SettingsService";
 import { formatError } from "../helper/formatError";
 import { getPointsSnapshotForClan } from "./Fwa";
 
@@ -14,6 +15,29 @@ function normalizeClanTag(input: string): string {
   const trimmed = input.trim().toUpperCase();
   if (!trimmed) return "";
   return trimmed.startsWith("#") ? trimmed : `#${trimmed}`;
+}
+
+function deriveWarState(rawState: string | null | undefined): "preparation" | "inWar" | "notInWar" {
+  const state = String(rawState ?? "").toLowerCase();
+  if (state.includes("preparation")) return "preparation";
+  if (state.includes("inwar")) return "inWar";
+  return "notInWar";
+}
+
+function formatWarStateLabel(warState: "preparation" | "inWar" | "notInWar"): string {
+  if (warState === "preparation") return "preparation";
+  if (warState === "inWar") return "battle day";
+  return "no war";
+}
+
+function getSyncDisplay(
+  previousSync: number | null,
+  warState: "preparation" | "inWar" | "notInWar"
+): string {
+  if (previousSync === null) return "unknown";
+  const current = previousSync + 1;
+  if (warState === "notInWar") return `between #${previousSync} and #${current}`;
+  return `#${current}`;
 }
 
 export const Opponent: Command = {
@@ -43,11 +67,24 @@ export const Opponent: Command = {
     }
 
     try {
+      const settings = new SettingsService();
       const war = await cocService.getCurrentWar(clanTag);
+      const warState = deriveWarState(war?.state);
+      const syncFromSetting = await settings
+        .get("previousSyncNum")
+        .then((raw) => {
+          if (!raw) return null;
+          const value = Number(raw);
+          return Number.isFinite(value) ? Math.trunc(value) : null;
+        })
+        .catch(() => null);
+      const syncDisplay = getSyncDisplay(syncFromSetting, warState);
       const opponentTagRaw = String(war?.opponent?.tag ?? "").trim();
       if (!opponentTagRaw) {
         await interaction.editReply(
-          `No active war opponent found for ${clanTag}.`
+          `No active war opponent found for ${clanTag}.\nWar state: ${formatWarStateLabel(
+            warState
+          )}\nSync: ${syncDisplay}`
         );
         return;
       }
@@ -55,23 +92,11 @@ export const Opponent: Command = {
       const clanName = String(war?.clan?.name ?? clanTag).trim() || clanTag;
       const opponentName = String(war?.opponent?.name ?? "Unknown").trim() || "Unknown";
       const opponentTag = opponentTagRaw.replace(/^#/, "").toUpperCase();
-      const syncFromSubscription = interaction.guildId
-        ? await prisma.warEventLogSubscription
-            .findUnique({
-              where: {
-                guildId_clanTag: {
-                  guildId: interaction.guildId,
-                  clanTag,
-                },
-              },
-              select: { currentSyncNumber: true },
-            })
-            .then((row) => row?.currentSyncNumber ?? null)
-            .catch(() => null)
-        : null;
       const syncFromPoints = await getPointsSnapshotForClan(cocService, clanTag).catch(() => null);
-      const syncNumber = syncFromSubscription ?? syncFromPoints?.effectiveSync ?? null;
-      const syncLine = syncNumber !== null ? `\n## Sync: \`#${syncNumber}\`` : "";
+      const fallbackSync = syncFromPoints?.effectiveSync ?? null;
+      const syncLine = `\n## War State: \`${formatWarStateLabel(
+        warState
+      )}\`\n## Sync: \`${syncDisplay === "unknown" && fallbackSync !== null ? `#${fallbackSync}` : syncDisplay}\``;
       await interaction.editReply(
         `## ${clanName} vs\n\n## Opponent: \`${opponentName}\`\n---\n## Opponent Tag: \`${opponentTag}\`${syncLine}`
       );
