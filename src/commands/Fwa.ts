@@ -482,7 +482,7 @@ function buildFwaMatchCopyComponents(
           entries.map((tag) => {
             const viewForTag = payload.singleViews[tag];
             const clanName = (viewForTag?.clanName ?? `#${tag}`).trim();
-            const warningSuffix = viewForTag?.inferredMatchType ? " :warning:" : "";
+            const warningSuffix = viewForTag?.inferredMatchType ? " ⚠️" : "";
             return {
               label: `${clanName}${warningSuffix}`.slice(0, 100),
               description: `#${tag}`.slice(0, 100),
