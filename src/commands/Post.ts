@@ -16,6 +16,10 @@ import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
 import { safeReply } from "../helper/safeReply";
 import { CoCService } from "../services/CoCService";
+import {
+  CommandPermissionService,
+  FWA_LEADER_ROLE_SETTING_KEY,
+} from "../services/CommandPermissionService";
 import { SettingsService } from "../services/SettingsService";
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -70,7 +74,13 @@ function parseAllowedRoleIds(raw: string | null): string[] {
   return [...new Set(raw.split(",").map((s) => s.trim()).filter((s) => /^\d+$/.test(s)))];
 }
 
-async function getLeaderRoleIds(settings: SettingsService): Promise<string[]> {
+async function getLeaderRoleIds(settings: SettingsService, guildId: string): Promise<string[]> {
+  const preferredRole = await settings.get(`${FWA_LEADER_ROLE_SETTING_KEY}:${guildId}`);
+  if (preferredRole && /^\d+$/.test(preferredRole.trim())) {
+    return [preferredRole.trim()];
+  }
+  // Preferred: guild-scoped fwa leader role (new default permission model).
+  // Fallback: legacy command role whitelist for backwards compatibility.
   const syncRoles = parseAllowedRoleIds(await settings.get("command_roles:post:sync:time"));
   if (syncRoles.length > 0) return syncRoles;
   return parseAllowedRoleIds(await settings.get("command_roles:post"));
@@ -128,32 +138,24 @@ async function resolveSyncStatusMessage(
   settings: SettingsService,
   explicitMessageId: string | null
 ) {
-  const channel = interaction.channel;
-  if (!channel?.isTextBased() || !("messages" in channel)) {
-    return null;
-  }
-
   if (explicitMessageId) {
-    return channel.messages.fetch(explicitMessageId).catch(() => null);
+    const guild = interaction.guild;
+    if (!guild) return null;
+    const channels = guild.channels.cache.filter(
+      (c) => c.isTextBased() && "messages" in c
+    );
+    for (const [, guildChannel] of channels) {
+      const found = await (guildChannel as any).messages
+        ?.fetch(explicitMessageId)
+        .catch(() => null);
+      if (found) return found;
+    }
+    return null;
   }
 
   const storedActiveMessage = await resolveStoredActiveSyncMessage(interaction, settings);
   if (storedActiveMessage) return storedActiveMessage;
-
-  const pinned = await channel.messages.fetchPinned().catch(() => null);
-  if (pinned && pinned.size > 0) {
-    const latestPinnedSync = [...pinned.values()]
-      .filter((m) => m.author.bot && isBotSyncTimeMessage(m.content))
-      .sort((a, b) => b.createdTimestamp - a.createdTimestamp)[0];
-    if (latestPinnedSync) return latestPinnedSync;
-  }
-
-  const recent = await channel.messages.fetch({ limit: 50 }).catch(() => null);
-  if (!recent) return null;
-  return [...recent.values()]
-    .filter((m) => m.author.bot && isBotSyncTimeMessage(m.content))
-    .sort((a, b) => b.createdTimestamp - a.createdTimestamp)
-    .at(0) ?? null;
+  return null;
 }
 
 async function handleSyncStatusSubcommand(
@@ -194,7 +196,7 @@ async function handleSyncStatusSubcommand(
     return;
   }
 
-  const leaderRoleIds = await getLeaderRoleIds(settings);
+  const leaderRoleIds = await getLeaderRoleIds(settings, guild.id);
   const memberCache = new Map<string, GuildMember | null>();
   const getMember = async (userId: string): Promise<GuildMember | null> => {
     if (memberCache.has(userId)) return memberCache.get(userId) ?? null;
@@ -531,6 +533,8 @@ export async function handlePostModalSubmit(
     interaction.fields.getTextInputValue(TIMEZONE_INPUT_ID)
   );
   const roleInput = interaction.fields.getTextInputValue(ROLE_INPUT_ID).trim();
+  const permissionService = new CommandPermissionService(settings);
+  const defaultLeaderRoleId = await permissionService.getFwaLeaderRoleId(interaction.guildId);
 
   if (!validateTimeZone(timezoneInput)) {
     await interaction.editReply(
@@ -564,9 +568,11 @@ export async function handlePostModalSubmit(
     return;
   }
 
-  const roleId = parseRoleId(roleInput);
+  const roleId = parseRoleId(roleInput) ?? defaultLeaderRoleId;
   if (!roleId) {
-    await interaction.editReply("Invalid role. Provide a role mention like <@&123> or a role ID.");
+    await interaction.editReply(
+      "Invalid role. Provide a role mention/ID, or set `/set fwa-leader-role` first."
+    );
     return;
   }
 
@@ -792,13 +798,15 @@ export const Post: Command = {
     const role = interaction.options.getRole("role", false);
 
     const rememberedTimeZone = await settings.get(userTimeZoneKey(interaction.user.id));
-    const rememberedRoleId = await settings.get(guildSyncRoleKey(interaction.guildId));
-    const initialTimeZone =
-      rememberedTimeZone && validateTimeZone(rememberedTimeZone)
-        ? rememberedTimeZone
-        : "UTC";
-    const defaults = getEffectiveDefaults(initialTimeZone);
-    const initialRoleId = role?.id ?? rememberedRoleId ?? "";
+  const rememberedRoleId = await settings.get(guildSyncRoleKey(interaction.guildId));
+  const defaultLeaderRoleId =
+    (await settings.get(`${FWA_LEADER_ROLE_SETTING_KEY}:${interaction.guildId}`)) ?? "";
+  const initialTimeZone =
+    rememberedTimeZone && validateTimeZone(rememberedTimeZone)
+      ? rememberedTimeZone
+      : "UTC";
+  const defaults = getEffectiveDefaults(initialTimeZone);
+  const initialRoleId = role?.id ?? rememberedRoleId ?? defaultLeaderRoleId ?? "";
 
     const modal = new ModalBuilder()
       .setCustomId(buildModalCustomId(interaction.user.id))
@@ -826,7 +834,7 @@ export const Post: Command = {
       .setCustomId(ROLE_INPUT_ID)
       .setLabel("Role (mention or ID)")
       .setStyle(TextInputStyle.Short)
-      .setRequired(true);
+      .setRequired(false);
 
     if (initialRoleId) {
       roleInput.setValue(`<@&${initialRoleId}>`);
