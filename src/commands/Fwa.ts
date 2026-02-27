@@ -126,6 +126,7 @@ type MatchView = {
   copyText: string;
   matchTypeAction?: { tag: string; currentType: "FWA" | "BL" | "MM" } | null;
   matchTypeCurrent?: "FWA" | "BL" | "MM" | null;
+  inferredMatchType?: boolean;
   outcomeAction?: { tag: string; currentOutcome: "WIN" | "LOSE" } | null;
   clanName?: string;
   clanTag?: string;
@@ -267,6 +268,59 @@ export function isFwaMatchAllianceButtonCustomId(customId: string): boolean {
   return customId.startsWith(`${FWA_MATCH_ALLIANCE_PREFIX}:`);
 }
 
+function updateSingleViewMatchType(
+  view: MatchView,
+  nextType: "FWA" | "BL" | "MM",
+  inferred: boolean
+): MatchView {
+  const warning = inferred ? " :warning:" : "";
+  const description0 = view.embed.data.description ?? "";
+  const description1 = inferred
+    ? description0
+    : description0
+        .replace(`${MATCHTYPE_WARNING_LEGEND}\n\n\n`, "")
+        .replace(`${MATCHTYPE_WARNING_LEGEND}\n\n`, "");
+  const description2 = description1.replace(
+    /Match Type:\s\*\*.*?\*\*(?:\s+\[[^\]]+\]\([^)]+\))?/,
+    `Match Type: **${nextType}${warning}**`
+  );
+  const nextEmbed = EmbedBuilder.from(view.embed).setDescription(description2);
+  const nextCopy = view.copyText
+    .replace(`${MATCHTYPE_WARNING_LEGEND}\n`, inferred ? `${MATCHTYPE_WARNING_LEGEND}\n` : "")
+    .replace(/Match Type:\s.*$/m, `Match Type: ${nextType}${warning}`)
+    .replace(/^Verify:\s.*$/m, inferred ? "$&" : "");
+  return {
+    ...view,
+    embed: nextEmbed,
+    copyText: nextCopy,
+    matchTypeCurrent: nextType,
+    inferredMatchType: inferred,
+  };
+}
+
+function updateAllianceEmbedMatchType(
+  embed: EmbedBuilder,
+  clanTag: string,
+  nextType: "FWA" | "BL" | "MM",
+  inferred: boolean
+): EmbedBuilder {
+  const warning = inferred ? " :warning:" : "";
+  const next = EmbedBuilder.from(embed);
+  const fields = next.data.fields ?? [];
+  next.setFields(
+    fields.map((f) => {
+      const name = f.name ?? "";
+      if (!name.includes(`(#${clanTag})`)) return f;
+      const value = String(f.value ?? "").replace(
+        /Match Type:\s\*\*.*?\*\*(?:\s+\[[^\]]+\]\([^)]+\))?/,
+        `Match Type: **${nextType}${warning}**`
+      );
+      return { ...f, value };
+    })
+  );
+  return next;
+}
+
 function buildFwaMatchCopyComponents(
   payload: FwaMatchCopyPayload,
   userId: string,
@@ -337,9 +391,7 @@ function buildFwaMatchCopyComponents(
           })
         )
         .setLabel("MM")
-        .setStyle(
-          matchTypeAction.currentType === "MM" ? ButtonStyle.Success : ButtonStyle.Secondary
-        )
+        .setStyle(ButtonStyle.Secondary)
     );
     rows.push(actionRow);
   } else if (payload.currentScope === "single" && view.matchTypeCurrent) {
@@ -377,8 +429,9 @@ function buildFwaMatchCopyComponents(
           entries.map((tag) => {
             const viewForTag = payload.singleViews[tag];
             const clanName = (viewForTag?.clanName ?? `#${tag}`).trim();
+            const warningSuffix = viewForTag?.inferredMatchType ? " :warning:" : "";
             return {
-              label: `${clanName}`.slice(0, 100),
+              label: `${clanName}${warningSuffix}`.slice(0, 100),
               description: `#${tag}`.slice(0, 100),
               value: tag,
             };
@@ -547,15 +600,17 @@ export async function handleFwaMatchTypeActionButton(interaction: ButtonInteract
     if (payload.currentScope !== "single" || payload.currentTag !== parsed.tag) continue;
     const view = payload.singleViews[parsed.tag];
     if (!view) continue;
-    payload.singleViews[parsed.tag] = {
-      ...view,
-      matchTypeCurrent: parsed.targetType,
-      matchTypeAction: null,
+    const updatedSingle = updateSingleViewMatchType(view, parsed.targetType, false);
+    updatedSingle.matchTypeAction = null;
+    payload.singleViews[parsed.tag] = updatedSingle;
+    payload.allianceView = {
+      ...payload.allianceView,
+      embed: updateAllianceEmbedMatchType(payload.allianceView.embed, parsed.tag, parsed.targetType, false),
     };
     fwaMatchCopyPayloads.set(key, payload);
     await interaction.update({
       content: undefined,
-      embeds: [payload.singleViews[parsed.tag].embed],
+      embeds: [updatedSingle.embed],
       components: buildFwaMatchCopyComponents(payload, payload.userId, key, "embed"),
     });
     return;
@@ -1887,7 +1942,7 @@ async function buildTrackedMatchOverview(
         : "Projection unavailable (points missing).";
     const singleDescription = [
       inferredMatchType ? MATCHTYPE_WARNING_LEGEND : "",
-      inferredMatchType ? "" : "",
+      inferredMatchType ? "\u200B" : "",
       `${projectionLineSingle}`,
       `Match Type: **${matchType}${inferredMatchType ? " :warning:" : ""}**${
         inferredMatchType ? ` ${verifyLink}` : ""
@@ -1940,6 +1995,7 @@ async function buildTrackedMatchOverview(
           ? { tag: clanTag, currentType: matchType as "FWA" | "BL" | "MM" }
           : null,
       matchTypeCurrent: matchType as "FWA" | "BL" | "MM",
+      inferredMatchType,
       outcomeAction:
         matchType === "FWA" && (effectiveOutcome === "WIN" || effectiveOutcome === "LOSE")
           ? { tag: clanTag, currentOutcome: effectiveOutcome }
@@ -2500,7 +2556,7 @@ export const Fwa: Command = {
         const embed = new EmbedBuilder()
           .setTitle(`${leftName} (#${tag}) vs ${rightName} (#${opponentTag})`)
           .setDescription(
-            `${inferredMatchType ? `${MATCHTYPE_WARNING_LEGEND}\n\n\n` : ""}${projectionLine}\nMatch Type: **${matchTypeText}**${
+            `${inferredMatchType ? `${MATCHTYPE_WARNING_LEGEND}\n\u200B\n` : ""}${projectionLine}\nMatch Type: **${matchTypeText}**${
               verifyLink ? ` ${verifyLink}` : ""
             }${
               outcomeLine ? `\nExpected outcome: **${outcomeLine}**` : ""
@@ -2557,6 +2613,7 @@ export const Fwa: Command = {
               ? { tag, currentType: matchType as "FWA" | "BL" | "MM" }
               : null,
           matchTypeCurrent: matchType === "UNKNOWN" ? null : (matchType as "FWA" | "BL" | "MM"),
+          inferredMatchType,
           outcomeAction:
             matchType === "FWA" && (effectiveOutcome === "WIN" || effectiveOutcome === "LOSE")
               ? { tag, currentOutcome: effectiveOutcome }
