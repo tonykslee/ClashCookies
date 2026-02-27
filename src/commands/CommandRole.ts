@@ -206,7 +206,7 @@ export const CommandRole: Command = {
       const fwaLeaderRoleId = await permissionService.getFwaLeaderRoleId(interaction.guildId);
       if (!fwaLeaderRoleId) {
         allLines.push(
-          "⚠️ `fwa-leader-role` is not set. Leader-default commands currently require Administrator. Use `/set fwa-leader-role`."
+          "Warning: `fwa-leader-role` is not set. Leader-default commands currently require Administrator. Use `/fwa leader-role`."
         );
         allLines.push("");
       }
@@ -369,3 +369,4 @@ export const CommandRole: Command = {
     );
   },
 };
+

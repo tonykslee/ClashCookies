@@ -571,7 +571,7 @@ export async function handlePostModalSubmit(
   const roleId = parseRoleId(roleInput) ?? defaultLeaderRoleId;
   if (!roleId) {
     await interaction.editReply(
-      "Invalid role. Provide a role mention/ID, or set `/set fwa-leader-role` first."
+      "Invalid role. Provide a role mention/ID, or set `/fwa leader-role` first."
     );
     return;
   }
