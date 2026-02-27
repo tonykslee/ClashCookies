@@ -7,6 +7,7 @@ import {
   Client,
   Interaction,
   ModalSubmitInteraction,
+  StringSelectMenuInteraction,
 } from "discord.js";
 import { Commands } from "../Commands";
 import { truncateDiscordContent } from "../helper/discordContent";
@@ -19,7 +20,11 @@ import {
 } from "../commands/Recruitment";
 import {
   handleFwaMatchCopyButton,
+  handleFwaMatchSelectMenu,
+  handleFwaMatchAllianceButton,
   handleFwaMatchTypeActionButton,
+  isFwaMatchAllianceButtonCustomId,
+  isFwaMatchSelectCustomId,
   isFwaMatchTypeActionButtonCustomId,
   handlePointsPostButton,
   isFwaMatchCopyButtonCustomId,
@@ -134,10 +139,15 @@ export default (client: Client, cocService: CoCService): void => {
       return;
     }
 
-    if (interaction.isButton()) {
-      await handleButtonInteraction(interaction);
-      return;
-    }
+  if (interaction.isButton()) {
+    await handleButtonInteraction(interaction);
+    return;
+  }
+
+  if (interaction.isStringSelectMenu()) {
+    await handleSelectMenuInteraction(interaction);
+    return;
+  }
 
     if (interaction.isModalSubmit()) {
       await handleModalSubmit(interaction);
@@ -161,6 +171,24 @@ export default (client: Client, cocService: CoCService): void => {
 
     await handleSlashCommand(client, interaction, cocService);
   });
+};
+
+const handleSelectMenuInteraction = async (
+  interaction: StringSelectMenuInteraction
+): Promise<void> => {
+  if (isFwaMatchSelectCustomId(interaction.customId)) {
+    try {
+      await handleFwaMatchSelectMenu(interaction);
+    } catch (err) {
+      console.error(`FWA match select menu failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to open clan match view.",
+        });
+      }
+    }
+  }
 };
 
 const handleButtonInteraction = async (interaction: Interaction): Promise<void> => {
@@ -243,6 +271,20 @@ const handleButtonInteraction = async (interaction: Interaction): Promise<void> 
         await interaction.reply({
           ephemeral: true,
           content: "Failed to apply match type update.",
+        });
+      }
+    }
+  }
+
+  if (isFwaMatchAllianceButtonCustomId(interaction.customId)) {
+    try {
+      await handleFwaMatchAllianceButton(interaction);
+    } catch (err) {
+      console.error(`FWA match alliance button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to open alliance view.",
         });
       }
     }

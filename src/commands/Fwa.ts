@@ -10,6 +10,8 @@ import {
   Client,
   EmbedBuilder,
   PermissionFlagsBits,
+  StringSelectMenuBuilder,
+  StringSelectMenuInteraction,
 } from "discord.js";
 import { Command } from "../Command";
 import { truncateDiscordContent } from "../helper/discordContent";
@@ -31,6 +33,8 @@ const MATCHUP_CACHE_VERSION = 5;
 const POINTS_POST_BUTTON_PREFIX = "points-post-channel";
 const FWA_MATCH_COPY_BUTTON_PREFIX = "fwa-match-copy";
 const FWA_MATCH_TYPE_ACTION_PREFIX = "fwa-match-type-action";
+const FWA_MATCH_SELECT_PREFIX = "fwa-match-select";
+const FWA_MATCH_ALLIANCE_PREFIX = "fwa-match-alliance";
 const POINTS_REQUEST_HEADERS = {
   "User-Agent":
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
@@ -93,6 +97,13 @@ function buildOfficialPointsUrl(tag: string): string {
   return `${POINTS_BASE_URL}${normalizeTag(tag)}`;
 }
 
+function buildCcVerifyUrl(tag: string): string {
+  return `https://cc.fwafarm.com/cc_n/clan.php?tag=${normalizeTag(tag)}`;
+}
+
+const MATCHTYPE_WARNING_LEGEND =
+  "?? indicates inferred match type. Verify opponent association before confirming.";
+
 function buildPointsPostButtonCustomId(userId: string): string {
   return `${POINTS_POST_BUTTON_PREFIX}:${userId}`;
 }
@@ -108,12 +119,19 @@ export function isPointsPostButtonCustomId(customId: string): boolean {
   return customId.startsWith(`${POINTS_POST_BUTTON_PREFIX}:`);
 }
 
-type FwaMatchCopyPayload = {
-  userId: string;
+type MatchView = {
   embed: EmbedBuilder;
   copyText: string;
-  includePostButton: boolean;
   matchTypeAction?: { tag: string; currentType: "FWA" | "BL" | "MM" } | null;
+};
+
+type FwaMatchCopyPayload = {
+  userId: string;
+  includePostButton: boolean;
+  allianceView: MatchView;
+  singleViews: Record<string, MatchView>;
+  currentScope: "alliance" | "single";
+  currentTag: string | null;
 };
 
 const fwaMatchCopyPayloads = new Map<string, FwaMatchCopyPayload>();
@@ -124,6 +142,32 @@ function buildFwaMatchCopyCustomId(
   mode: "copy" | "embed"
 ): string {
   return `${FWA_MATCH_COPY_BUTTON_PREFIX}:${userId}:${key}:${mode}`;
+}
+
+function buildFwaMatchSelectCustomId(userId: string, key: string): string {
+  return `${FWA_MATCH_SELECT_PREFIX}:${userId}:${key}`;
+}
+
+function parseFwaMatchSelectCustomId(customId: string): { userId: string; key: string } | null {
+  const parts = customId.split(":");
+  if (parts.length !== 3 || parts[0] !== FWA_MATCH_SELECT_PREFIX) return null;
+  const userId = parts[1]?.trim() ?? "";
+  const key = parts[2]?.trim() ?? "";
+  if (!userId || !key) return null;
+  return { userId, key };
+}
+
+function buildFwaMatchAllianceCustomId(userId: string, key: string): string {
+  return `${FWA_MATCH_ALLIANCE_PREFIX}:${userId}:${key}`;
+}
+
+function parseFwaMatchAllianceCustomId(customId: string): { userId: string; key: string } | null {
+  const parts = customId.split(":");
+  if (parts.length !== 3 || parts[0] !== FWA_MATCH_ALLIANCE_PREFIX) return null;
+  const userId = parts[1]?.trim() ?? "";
+  const key = parts[2]?.trim() ?? "";
+  if (!userId || !key) return null;
+  return { userId, key };
 }
 
 function parseFwaMatchCopyCustomId(
@@ -166,13 +210,25 @@ export function isFwaMatchTypeActionButtonCustomId(customId: string): boolean {
   return customId.startsWith(`${FWA_MATCH_TYPE_ACTION_PREFIX}:`);
 }
 
+export function isFwaMatchSelectCustomId(customId: string): boolean {
+  return customId.startsWith(`${FWA_MATCH_SELECT_PREFIX}:`);
+}
+
+export function isFwaMatchAllianceButtonCustomId(customId: string): boolean {
+  return customId.startsWith(`${FWA_MATCH_ALLIANCE_PREFIX}:`);
+}
+
 function buildFwaMatchCopyComponents(
+  payload: FwaMatchCopyPayload,
   userId: string,
   key: string,
-  showMode: "embed" | "copy",
-  includePostButton: boolean,
-  matchTypeAction?: { tag: string; currentType: "FWA" | "BL" | "MM" } | null
-): ActionRowBuilder<ButtonBuilder>[] {
+  showMode: "embed" | "copy"
+): Array<ActionRowBuilder<ButtonBuilder> | ActionRowBuilder<StringSelectMenuBuilder>> {
+  const view =
+    payload.currentScope === "alliance" || !payload.currentTag
+      ? payload.allianceView
+      : payload.singleViews[payload.currentTag] ?? payload.allianceView;
+  const matchTypeAction = view.matchTypeAction ?? null;
   const toggleMode = showMode === "embed" ? "copy" : "embed";
   const toggleLabel = showMode === "embed" ? "Copy/Paste View" : "Embed View";
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
@@ -181,11 +237,19 @@ function buildFwaMatchCopyComponents(
       .setLabel(toggleLabel)
       .setStyle(ButtonStyle.Secondary)
   );
-  if (includePostButton) {
+  if (payload.includePostButton) {
     row.addComponents(
       new ButtonBuilder()
         .setCustomId(buildPointsPostButtonCustomId(userId))
         .setLabel("Post to Channel")
+        .setStyle(ButtonStyle.Secondary)
+    );
+  }
+  if (payload.currentScope === "single") {
+    row.addComponents(
+      new ButtonBuilder()
+        .setCustomId(buildFwaMatchAllianceCustomId(userId, key))
+        .setLabel("Alliance View")
         .setStyle(ButtonStyle.Secondary)
     );
   }
@@ -225,6 +289,21 @@ function buildFwaMatchCopyComponents(
         )
     );
   }
+  if (payload.currentScope === "alliance") {
+    const entries = Object.keys(payload.singleViews).slice(0, 25);
+    if (entries.length > 0) {
+      const select = new StringSelectMenuBuilder()
+        .setCustomId(buildFwaMatchSelectCustomId(userId, key))
+        .setPlaceholder("Open clan match view")
+        .addOptions(
+          entries.map((tag) => ({
+            label: `#${tag}`,
+            value: tag,
+          }))
+        );
+      return [row, new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select)];
+    }
+  }
   return [row];
 }
 
@@ -249,31 +328,92 @@ export async function handleFwaMatchCopyButton(interaction: ButtonInteraction): 
     return;
   }
 
+  const view =
+    payload.currentScope === "single" && payload.currentTag
+      ? payload.singleViews[payload.currentTag] ?? payload.allianceView
+      : payload.allianceView;
   if (parsed.mode === "copy") {
     await interaction.update({
-      content: limitDiscordContent(payload.copyText),
+      content: limitDiscordContent(view.copyText),
       embeds: [],
-      components: buildFwaMatchCopyComponents(
-        payload.userId,
-        parsed.key,
-        "copy",
-        payload.includePostButton,
-        payload.matchTypeAction ?? null
-      ),
+      components: buildFwaMatchCopyComponents(payload, payload.userId, parsed.key, "copy"),
     });
     return;
   }
 
   await interaction.update({
     content: undefined,
-    embeds: [payload.embed],
-    components: buildFwaMatchCopyComponents(
-      payload.userId,
-      parsed.key,
-      "embed",
-      payload.includePostButton,
-      payload.matchTypeAction ?? null
-    ),
+    embeds: [view.embed],
+    components: buildFwaMatchCopyComponents(payload, payload.userId, parsed.key, "embed"),
+  });
+}
+
+export async function handleFwaMatchSelectMenu(
+  interaction: StringSelectMenuInteraction
+): Promise<void> {
+  const parsed = parseFwaMatchSelectCustomId(interaction.customId);
+  if (!parsed) return;
+  if (interaction.user.id !== parsed.userId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Only the command requester can use this menu.",
+    });
+    return;
+  }
+  const payload = fwaMatchCopyPayloads.get(parsed.key);
+  if (!payload) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "This match view expired. Please run /fwa match again.",
+    });
+    return;
+  }
+  const selectedTag = normalizeTag(interaction.values[0] ?? "");
+  if (!selectedTag || !payload.singleViews[selectedTag]) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Could not open that clan view.",
+    });
+    return;
+  }
+  payload.currentScope = "single";
+  payload.currentTag = selectedTag;
+  fwaMatchCopyPayloads.set(parsed.key, payload);
+  const view = payload.singleViews[selectedTag];
+  await interaction.update({
+    content: undefined,
+    embeds: [view.embed],
+    components: buildFwaMatchCopyComponents(payload, payload.userId, parsed.key, "embed"),
+  });
+}
+
+export async function handleFwaMatchAllianceButton(
+  interaction: ButtonInteraction
+): Promise<void> {
+  const parsed = parseFwaMatchAllianceCustomId(interaction.customId);
+  if (!parsed) return;
+  if (interaction.user.id !== parsed.userId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Only the command requester can use this button.",
+    });
+    return;
+  }
+  const payload = fwaMatchCopyPayloads.get(parsed.key);
+  if (!payload) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "This match view expired. Please run /fwa match again.",
+    });
+    return;
+  }
+  payload.currentScope = "alliance";
+  payload.currentTag = null;
+  fwaMatchCopyPayloads.set(parsed.key, payload);
+  await interaction.update({
+    content: undefined,
+    embeds: [payload.allianceView.embed],
+    components: buildFwaMatchCopyComponents(payload, payload.userId, parsed.key, "embed"),
   });
 }
 
@@ -1227,7 +1367,7 @@ async function buildTrackedMatchOverview(
   sourceSync: number | null,
   guildId: string | null,
   warLookupCache?: WarLookupCache
-): Promise<{ embed: EmbedBuilder; copyText: string }> {
+): Promise<{ embed: EmbedBuilder; copyText: string; singleViews: Record<string, MatchView> }> {
   const settings = new SettingsService();
   const tracked = await prisma.trackedClan.findMany({
     orderBy: { createdAt: "asc" },
@@ -1239,6 +1379,7 @@ async function buildTrackedMatchOverview(
       .setTitle("FWA Match Overview")
       .setDescription("No tracked clans configured. Use `/tracked-clan add` first."),
       copyText: "No tracked clans configured. Use `/tracked-clan add` first.",
+      singleViews: {},
     };
   }
 
@@ -1263,6 +1404,7 @@ async function buildTrackedMatchOverview(
   const stateRemaining = new Map<WarStateForSync, string>();
   const embed = new EmbedBuilder().setTitle(`FWA Match Overview (${tracked.length})`);
   const copyLines: string[] = [];
+  const singleViews: Record<string, MatchView> = {};
 
   for (const clan of tracked) {
     const clanTag = normalizeTag(clan.tag);
@@ -1483,6 +1625,7 @@ async function buildTrackedMatchOverview(
       hasPrimaryPoints && hasOpponentPoints
         ? `Points: ${primaryPoints.balance} - ${opponentPoints!.balance}`
         : "Points: unavailable";
+    const verifyLink = `[cc:${opponentTag}](${buildCcVerifyUrl(opponentTag)})`;
     const siteUpdatedForAlert = Boolean(
       primaryPoints && isPointsSiteUpdatedForOpponent(primaryPoints, opponentTag, sourceSync)
     );
@@ -1503,9 +1646,10 @@ async function buildTrackedMatchOverview(
     const mismatchLines = [primaryMismatch, opponentMismatch].filter(Boolean).join("\n");
 
     if (matchType === "FWA") {
+      const warnSuffix = inferredMatchType ? ` ?? ${verifyLink}` : "";
       embed.addFields({
         name: `${clanName} (#${clanTag}) vs ${opponentName} (#${opponentTag})`,
-        value: `${pointsLine}\nMatch Type: **${formatMatchTypeLabel("FWA", inferredMatchType)}**\nOutcome: **${effectiveOutcome ?? "UNKNOWN"}**${mismatchLines ? `\n${mismatchLines}` : ""}`,
+        value: `${pointsLine}\nMatch Type: **FWA${warnSuffix}**\nOutcome: **${effectiveOutcome ?? "UNKNOWN"}**${mismatchLines ? `\n${mismatchLines}` : ""}`,
         inline: false,
       });
       copyLines.push(
@@ -1515,28 +1659,93 @@ async function buildTrackedMatchOverview(
         `### Opponent Tag`,
         `\`${opponentTag}\``,
         `${pointsLine}`,
-        `Match Type: ${formatMatchTypeLabel("FWA", inferredMatchType)}`,
+        `Match Type: FWA${inferredMatchType ? " ??" : ""}`,
+        inferredMatchType ? `Verify: ${buildCcVerifyUrl(opponentTag)}` : "",
         `Outcome: ${effectiveOutcome ?? "UNKNOWN"}`,
         mismatchLines
       );
-      continue;
+    } else {
+      const warnSuffix = inferredMatchType ? ` ?? ${verifyLink}` : "";
+      embed.addFields({
+        name: `${clanName} (#${clanTag}) vs ${opponentName} (#${opponentTag})`,
+        value: `${pointsLine}\nMatch Type: **${matchType}${warnSuffix}**${mismatchLines ? `\n${mismatchLines}` : ""}`,
+        inline: false,
+      });
+      copyLines.push(
+        `## ${clanName} (#${clanTag})`,
+        `### Opponent Name`,
+        `\`${opponentName}\``,
+        `### Opponent Tag`,
+        `\`${opponentTag}\``,
+        `${pointsLine}`,
+        `Match Type: ${matchType}${inferredMatchType ? " ??" : ""}`,
+        inferredMatchType ? `Verify: ${buildCcVerifyUrl(opponentTag)}` : "",
+        mismatchLines
+      );
     }
 
-    embed.addFields({
-      name: `${clanName} (#${clanTag}) vs ${opponentName} (#${opponentTag})`,
-      value: `${pointsLine}\nMatch Type: **${formatMatchTypeLabel(matchType, inferredMatchType)}**${mismatchLines ? `\n${mismatchLines}` : ""}`,
-      inline: false,
-    });
-    copyLines.push(
-      `## ${clanName} (#${clanTag})`,
-      `### Opponent Name`,
-      `\`${opponentName}\``,
-      `### Opponent Tag`,
-      `\`${opponentTag}\``,
-      `${pointsLine}`,
-      `Match Type: ${formatMatchTypeLabel(matchType, inferredMatchType)}`,
-      mismatchLines
-    );
+    const projectionLineSingle =
+      hasPrimaryPoints && hasOpponentPoints
+        ? (buildMatchupMessage(primaryPoints as PointsSnapshot, opponentPoints as PointsSnapshot, {
+            primaryName: clanName,
+            opponentName,
+          }).split("\n")[1] ?? "Projection unavailable.")
+        : "Projection unavailable (points missing).";
+    const singleDescription = [
+      MATCHTYPE_WARNING_LEGEND,
+      "",
+      `${projectionLineSingle}`,
+      `Match Type: **${matchType}${inferredMatchType ? " ??" : ""}**${
+        inferredMatchType ? ` ${verifyLink}` : ""
+      }`,
+      matchType === "FWA" ? `Expected outcome: **${effectiveOutcome ?? "UNKNOWN"}**` : "",
+      `War state: **${formatWarStateLabel(warState)}**`,
+      `Time remaining: **${getWarStateRemaining(war, warState)}**`,
+      `Sync: **${withSyncModeLabel(getSyncDisplay(sourceSync, warState), sourceSync)}**`,
+      mismatchLines,
+    ]
+      .filter(Boolean)
+      .join("\n");
+    singleViews[clanTag] = {
+      embed: new EmbedBuilder()
+        .setTitle(`${clanName} (#${clanTag}) vs ${opponentName} (#${opponentTag})`)
+        .setDescription(singleDescription)
+        .addFields({
+          name: "Points",
+          value:
+            hasPrimaryPoints && hasOpponentPoints
+              ? `${clanName}: **${primaryPoints!.balance}**\n${opponentName}: **${opponentPoints!.balance}**`
+              : "Unavailable on both clans.",
+          inline: false,
+        }),
+      copyText: limitDiscordContent(
+        [
+          `# ${clanName} (#${clanTag}) vs ${opponentName} (#${opponentTag})`,
+          MATCHTYPE_WARNING_LEGEND,
+          `Sync: ${withSyncModeLabel(getSyncDisplay(sourceSync, warState), sourceSync)}`,
+          `War State: ${formatWarStateLabel(warState)}`,
+          `Time Remaining: ${getWarStateRemaining(war, warState)}`,
+          `## Opponent Name`,
+          `\`${opponentName}\``,
+          `## Opponent Tag`,
+          `\`${opponentTag}\``,
+          `## Points`,
+          hasPrimaryPoints && hasOpponentPoints ? `${clanName}: ${primaryPoints!.balance}` : "Unavailable",
+          hasPrimaryPoints && hasOpponentPoints ? `${opponentName}: ${opponentPoints!.balance}` : "Unavailable",
+          `## Match Type`,
+          `${matchType}${inferredMatchType ? " ??" : ""}`,
+          inferredMatchType ? `Verify: ${buildCcVerifyUrl(opponentTag)}` : "",
+          matchType === "FWA" ? `Expected outcome: ${effectiveOutcome ?? "UNKNOWN"}` : "",
+          mismatchLines,
+        ]
+          .filter(Boolean)
+          .join("\n")
+      ),
+      matchTypeAction:
+        inferredMatchType
+          ? { tag: clanTag, currentType: matchType as "FWA" | "BL" | "MM" }
+          : null,
+    };
   }
 
   const nonZeroStates = [...stateCounts.entries()].filter(([, count]) => count > 0);
@@ -1559,12 +1768,13 @@ async function buildTrackedMatchOverview(
 
   const syncWithMode = stateLabel === "mixed" ? "mixed" : withSyncModeLabel(syncLabel, sourceSync);
   embed.setDescription(
-    `Sync: **${syncWithMode}**\nWar State: **${stateLabel}**\nTime Remaining: **${remainingLabel}**`
+    `${MATCHTYPE_WARNING_LEGEND}\n\nSync: **${syncWithMode}**\nWar State: **${stateLabel}**\nTime Remaining: **${remainingLabel}**`
   );
-  const copyHeader = `# FWA Match Overview (${tracked.length})\nSync: ${syncWithMode}\nWar State: ${stateLabel}\nTime Remaining: ${remainingLabel}`;
+  const copyHeader = `# FWA Match Overview (${tracked.length})\n${MATCHTYPE_WARNING_LEGEND}\nSync: ${syncWithMode}\nWar State: ${stateLabel}\nTime Remaining: ${remainingLabel}`;
   return {
     embed,
     copyText: buildLimitedMessage(copyHeader, copyLines.map((l) => `${l}\n`), ""),
+    singleViews,
   };
 }
 
@@ -1621,41 +1831,6 @@ export const Fwa: Command = {
       ],
     },
     {
-      name: "match-type",
-      description: "Manually set or view match type (FWA/BL/MM) for a tracked clan",
-      type: ApplicationCommandOptionType.Subcommand,
-      options: [
-        {
-          name: "tag",
-          description: "Tracked clan tag (with or without #)",
-          type: ApplicationCommandOptionType.String,
-          required: false,
-          autocomplete: true,
-        },
-        {
-          name: "type",
-          description: "Match type override",
-          type: ApplicationCommandOptionType.String,
-          required: false,
-          choices: [
-            { name: "FWA", value: "FWA" },
-            { name: "BL", value: "BL" },
-            { name: "MM", value: "MM" },
-          ],
-        },
-        {
-          name: "visibility",
-          description: "Response visibility",
-          type: ApplicationCommandOptionType.String,
-          required: false,
-          choices: [
-            { name: "private", value: "private" },
-            { name: "public", value: "public" },
-          ],
-        },
-      ],
-    },
-    {
       name: "leader-role",
       description: "Set the default FWA leader role",
       type: ApplicationCommandOptionType.Subcommand,
@@ -1691,7 +1866,9 @@ export const Fwa: Command = {
     const editReplySafe = async (
       content: string,
       embeds?: EmbedBuilder[],
-      componentsOverride?: ActionRowBuilder<ButtonBuilder>[]
+      componentsOverride?: Array<
+        ActionRowBuilder<ButtonBuilder> | ActionRowBuilder<StringSelectMenuBuilder>
+      >
     ): Promise<void> => {
       const normalized = content.trim();
       await interaction.editReply({
@@ -1741,146 +1918,6 @@ export const Fwa: Command = {
       const permissionService = new CommandPermissionService();
       await permissionService.setFwaLeaderRoleId(interaction.guildId, role.id);
       await editReplySafe(`FWA leader role set to <@&${role.id}>.`);
-      return;
-    }
-
-    if (subcommand === "match-type") {
-      if (!interaction.guildId) {
-        await editReplySafe("This command can only be used in a server.");
-        return;
-      }
-      const type = interaction.options.getString("type", false) as "FWA" | "BL" | "MM" | null;
-      if (type && !tag) {
-        await editReplySafe("Please provide `tag` when setting `type`.");
-        return;
-      }
-
-      if (!tag) {
-        const tracked = await prisma.trackedClan.findMany({
-          orderBy: { createdAt: "asc" },
-          select: { name: true, tag: true },
-        });
-        if (tracked.length === 0) {
-          await editReplySafe("No tracked clans configured.");
-          return;
-        }
-        const rows = await prisma.warEventLogSubscription.findMany({
-          where: { guildId: interaction.guildId },
-          select: { clanTag: true, matchType: true, inferredMatchType: true },
-        });
-        const byTag = new Map(
-          rows.map((r) => [
-            normalizeTag(r.clanTag),
-            {
-              matchType: r.matchType,
-              inferredMatchType: Boolean(r.inferredMatchType),
-            },
-          ])
-        );
-        const lines = tracked.map((c) => {
-          const t = normalizeTag(c.tag);
-          const name = sanitizeClanName(c.name) ?? `#${t}`;
-          const row = byTag.get(t);
-          return `- ${name} (#${t}): ${formatMatchTypeLabel(
-            (row?.matchType ?? "UNKNOWN") as "FWA" | "BL" | "MM" | "UNKNOWN",
-            Boolean(row?.inferredMatchType)
-          )}`;
-        });
-        await editReplySafe(buildLimitedMessage("Manual match-type overrides", lines, ""));
-        return;
-      }
-
-      const tracked = await prisma.trackedClan.findFirst({
-        where: { tag: { equals: `#${tag}`, mode: "insensitive" } },
-        select: { name: true, tag: true },
-      });
-      if (!tracked) {
-        await editReplySafe(`Tag #${tag} is not in tracked clans. Add it first via /tracked-clan add.`);
-        return;
-      }
-      const displayName = sanitizeClanName(tracked.name) ?? `#${tag}`;
-
-      if (!type) {
-        const existing = await prisma.warEventLogSubscription.findUnique({
-          where: {
-            guildId_clanTag: {
-              guildId: interaction.guildId,
-              clanTag: `#${tag}`,
-            },
-          },
-          select: { matchType: true, inferredMatchType: true },
-        });
-        const currentType = (existing?.matchType ?? "UNKNOWN") as "FWA" | "BL" | "MM" | "UNKNOWN";
-        const inferred = Boolean(existing?.inferredMatchType);
-        const actionComponents =
-          inferred && currentType !== "UNKNOWN"
-            ? [
-                new ActionRowBuilder<ButtonBuilder>().addComponents(
-                  new ButtonBuilder()
-                    .setCustomId(
-                      buildMatchTypeActionCustomId({
-                        userId: interaction.user.id,
-                        tag,
-                        targetType: "FWA",
-                      })
-                    )
-                    .setLabel("FWA")
-                    .setStyle(ButtonStyle.Success),
-                  new ButtonBuilder()
-                    .setCustomId(
-                      buildMatchTypeActionCustomId({
-                        userId: interaction.user.id,
-                        tag,
-                        targetType: "BL",
-                      })
-                    )
-                    .setLabel("BL")
-                    .setStyle(ButtonStyle.Danger),
-                  new ButtonBuilder()
-                    .setCustomId(
-                      buildMatchTypeActionCustomId({
-                        userId: interaction.user.id,
-                        tag,
-                        targetType: "MM",
-                      })
-                    )
-                    .setLabel("MM")
-                    .setStyle(
-                      currentType === "MM" ? ButtonStyle.Success : ButtonStyle.Secondary
-                    )
-                ),
-              ]
-            : undefined;
-        await editReplySafe(
-          `${displayName} (#${tag}) match type: **${formatMatchTypeLabel(currentType, inferred)}**`,
-          undefined,
-          actionComponents
-        );
-        return;
-      }
-
-      await prisma.warEventLogSubscription.upsert({
-        where: {
-          guildId_clanTag: {
-            guildId: interaction.guildId,
-            clanTag: `#${tag}`,
-          },
-        },
-        create: {
-          guildId: interaction.guildId,
-          clanTag: `#${tag}`,
-          channelId: interaction.channelId,
-          notify: false,
-          matchType: type,
-          inferredMatchType: false,
-        },
-        update: {
-          matchType: type,
-          inferredMatchType: false,
-          updatedAt: new Date(),
-        },
-      });
-      await editReplySafe(`${displayName} (#${tag}) match type set to **${type}**.`);
       return;
     }
 
@@ -2010,14 +2047,21 @@ export const Fwa: Command = {
         const key = interaction.id;
         fwaMatchCopyPayloads.set(key, {
           userId: interaction.user.id,
-          embed: overview.embed,
-          copyText: overview.copyText,
           includePostButton: !isPublic,
+          allianceView: { embed: overview.embed, copyText: overview.copyText, matchTypeAction: null },
+          singleViews: overview.singleViews,
+          currentScope: "alliance",
+          currentTag: null,
         });
         await editReplySafe(
           "",
           [overview.embed],
-          buildFwaMatchCopyComponents(interaction.user.id, key, "embed", !isPublic)
+          buildFwaMatchCopyComponents(
+            fwaMatchCopyPayloads.get(key)!,
+            interaction.user.id,
+            key,
+            "embed"
+          )
         );
         return;
       }
@@ -2248,20 +2292,21 @@ export const Fwa: Command = {
           matchType === "FWA"
             ? `${effectiveOutcome ?? "UNKNOWN"}`
             : "";
-        const matchTypeText = formatMatchTypeLabel(matchType, inferredMatchType);
+        const matchTypeText = `${matchType}${inferredMatchType ? " ⚠️" : ""}`;
+        const verifyLink = inferredMatchType
+          ? `[cc:${opponentTag}](${buildCcVerifyUrl(opponentTag)})`
+          : "";
         const embed = new EmbedBuilder()
           .setTitle(`${leftName} (#${tag}) vs ${rightName} (#${opponentTag})`)
           .setDescription(
-            `${projectionLine}\nMatch Type: **${matchTypeText}**${
+            `${MATCHTYPE_WARNING_LEGEND}\n\n${projectionLine}\nMatch Type: **${matchTypeText}**${
+              verifyLink ? ` ${verifyLink}` : ""
+            }${
               outcomeLine ? `\nExpected outcome: **${outcomeLine}**` : ""
             }\nWar state: **${formatWarStateLabel(warState)}**\nTime remaining: **${warRemaining}**\nSync: **${syncDisplay}**${
               siteStatusLine ? `\n${siteStatusLine}` : ""
             }${
               mismatchLines ? `\n${mismatchLines}` : ""
-            }${
-              inferredMatchType && matchType !== "UNKNOWN"
-                ? "\nInferred from points presence. BL clans can still have points."
-                : ""
             }`
           )
             .addFields({
@@ -2274,6 +2319,7 @@ export const Fwa: Command = {
         const copyText = limitDiscordContent(
           [
             `# ${leftName} (#${tag}) vs ${rightName} (#${opponentTag})`,
+            MATCHTYPE_WARNING_LEGEND,
             `Sync: ${syncDisplay}`,
             `War State: ${formatWarStateLabel(warState)}`,
             `Time Remaining: ${warRemaining}`,
@@ -2287,9 +2333,7 @@ export const Fwa: Command = {
             `## Projection`,
             projectionLine,
             `Match Type: ${matchTypeText}`,
-            inferredMatchType && matchType !== "UNKNOWN"
-              ? "Inferred from points presence. BL clans can still have points."
-              : "",
+            verifyLink ? `Verify: ${buildCcVerifyUrl(opponentTag)}` : "",
             outcomeLine ? `Expected outcome: ${outcomeLine}` : "",
             mismatchLines,
             siteStatusLine ?? "",
@@ -2298,31 +2342,40 @@ export const Fwa: Command = {
             .join("\n")
         );
         const key = interaction.id;
-        fwaMatchCopyPayloads.set(key, {
-          userId: interaction.user.id,
+        let alliance = await buildTrackedMatchOverview(
+          cocService,
+          sourceSync,
+          interaction.guildId ?? null,
+          warLookupCache
+        );
+        const singleView: MatchView = {
           embed,
           copyText,
-          includePostButton: !isPublic,
           matchTypeAction:
             inferredMatchType && matchType !== "UNKNOWN"
-              ? {
-                  tag,
-                  currentType: matchType as "FWA" | "BL" | "MM",
-                }
+              ? { tag, currentType: matchType as "FWA" | "BL" | "MM" }
               : null,
+        };
+        alliance = {
+          ...alliance,
+          singleViews: {
+            ...alliance.singleViews,
+            [tag]: singleView,
+          },
+        };
+        fwaMatchCopyPayloads.set(key, {
+          userId: interaction.user.id,
+          includePostButton: !isPublic,
+          allianceView: { embed: alliance.embed, copyText: alliance.copyText, matchTypeAction: null },
+          singleViews: alliance.singleViews,
+          currentScope: "single",
+          currentTag: tag,
         });
+        const stored = fwaMatchCopyPayloads.get(key)!;
         await editReplySafe(
           "",
           [embed],
-          buildFwaMatchCopyComponents(
-            interaction.user.id,
-            key,
-            "embed",
-            !isPublic,
-            inferredMatchType && matchType !== "UNKNOWN"
-              ? { tag, currentType: matchType as "FWA" | "BL" | "MM" }
-              : null
-          )
+          buildFwaMatchCopyComponents(stored, interaction.user.id, key, "embed")
         );
         return;
       } catch (err) {
@@ -2456,3 +2509,4 @@ export const Fwa: Command = {
     await interaction.respond(choices);
   },
 };
+
