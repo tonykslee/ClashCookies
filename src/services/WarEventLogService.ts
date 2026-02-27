@@ -17,6 +17,7 @@ type WarState = "notInWar" | "preparation" | "inWar";
 type EventType = "war_started" | "battle_day" | "war_ended";
 type MatchType = "FWA" | "BL" | "MM" | null;
 type TestSource = "current" | "last";
+type FwaLoseStyle = "TRIPLE_TOP_30" | "TRADITIONAL";
 
 type SubscriptionRow = {
   id: number;
@@ -170,10 +171,31 @@ function parseBadgeEmojiMap(): Record<string, string> {
   }
 }
 
+function parseFwaLoseStyleMap(): Record<string, FwaLoseStyle> {
+  const raw = (process.env.WAR_EVENT_FWA_LOSE_STYLE_BY_TAG ?? "").trim();
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as Record<string, string>;
+    const out: Record<string, FwaLoseStyle> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      const tag = normalizeTag(key);
+      const modeRaw = String(value ?? "").trim().toUpperCase();
+      if (!tag) continue;
+      if (modeRaw === "TRIPLE_TOP_30" || modeRaw === "TRADITIONAL") {
+        out[tag] = modeRaw;
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 export class WarEventLogService {
   private readonly points: PointsProjectionService;
   private readonly settings: SettingsService;
   private readonly badgeEmojiByTag: Record<string, string>;
+  private readonly fwaLoseStyleByTag: Record<string, FwaLoseStyle>;
   private static readonly PREVIOUS_SYNC_KEY = "previousSyncNum";
   private static readonly PREVIOUS_SYNC_DEFAULT = 469;
 
@@ -181,6 +203,7 @@ export class WarEventLogService {
     this.points = new PointsProjectionService(coc);
     this.settings = new SettingsService();
     this.badgeEmojiByTag = parseBadgeEmojiMap();
+    this.fwaLoseStyleByTag = parseFwaLoseStyleMap();
   }
 
   private static getDefaultPreviousSyncNum(): number {
@@ -558,7 +581,12 @@ export class WarEventLogService {
         fallbackOpponentStars: payload.lastOpponentStars,
         warStartTime: payload.warStartTime,
       });
-      const compliance = await this.getWarComplianceSnapshot(payload.clanTag, payload.warStartTime);
+      const compliance = await this.getWarComplianceSnapshot(
+        payload.clanTag,
+        payload.warStartTime,
+        payload.matchType,
+        payload.outcome
+      );
       embed.addFields({
         name: "Result",
         value: [
@@ -723,7 +751,9 @@ export class WarEventLogService {
 
   private async getWarComplianceSnapshot(
     clanTagInput: string,
-    preferredWarStartTime: Date | null
+    preferredWarStartTime: Date | null,
+    matchType: MatchType,
+    expectedOutcome: "WIN" | "LOSE" | null
   ): Promise<WarComplianceSnapshot> {
     const clanTag = normalizeTag(clanTagInput);
     const warStartTime = preferredWarStartTime
@@ -746,7 +776,18 @@ export class WarEventLogService {
     });
     const attacks = await prisma.warHistoryAttack.findMany({
       where: { clanTag, warStartTime },
-      select: { playerTag: true, playerName: true, playerPosition: true, defenderPosition: true },
+      select: {
+        playerTag: true,
+        playerName: true,
+        playerPosition: true,
+        defenderPosition: true,
+        stars: true,
+        trueStars: true,
+        attackSeenAt: true,
+        warEndTime: true,
+        attackOrder: true,
+      },
+      orderBy: [{ attackSeenAt: "asc" }, { attackOrder: "asc" }, { playerTag: "asc" }],
     });
 
     const missedBoth = participants
@@ -754,14 +795,133 @@ export class WarEventLogService {
       .map((p) => String(p.playerName ?? p.playerTag).trim())
       .filter(Boolean);
 
+    const labelForTag = new Map<string, string>();
+    for (const p of participants) {
+      const playerTag = normalizeTag(p.playerTag);
+      const label = String(p.playerName ?? p.playerTag).trim();
+      if (playerTag && label) labelForTag.set(playerTag, label);
+    }
     const notFollowing = new Set<string>();
-    for (const attack of attacks) {
-      const playerPos = attack.playerPosition ?? null;
-      const defenderPos = attack.defenderPosition ?? null;
-      if (playerPos === null || defenderPos === null) continue;
-      if (playerPos !== defenderPos) {
-        const label = String(attack.playerName ?? attack.playerTag).trim();
-        if (label) notFollowing.add(label);
+    const addViolation = (playerTagRaw: string | null | undefined, fallbackName: string | null | undefined) => {
+      const playerTag = normalizeTag(playerTagRaw);
+      const label = labelForTag.get(playerTag) ?? String(fallbackName ?? playerTagRaw ?? "").trim();
+      if (label) notFollowing.add(label);
+    };
+
+    if (matchType === "FWA" && expectedOutcome) {
+      const byPlayer = new Map<
+        string,
+        Array<{
+          playerTag: string;
+          playerName: string;
+          playerPosition: number | null;
+          defenderPosition: number | null;
+          stars: number;
+          trueStars: number;
+          attackSeenAt: Date;
+          warEndTime: Date | null;
+        }>
+      >();
+      let cumulativeClanStars = 0;
+      const starsBeforeAttack = new Map<number, number>();
+      const starsAfterAttack = new Map<number, number>();
+      for (let i = 0; i < attacks.length; i += 1) {
+        const attack = attacks[i];
+        const playerTag = normalizeTag(attack.playerTag);
+        if (!playerTag) continue;
+        const bucket = byPlayer.get(playerTag) ?? [];
+        bucket.push({
+          playerTag,
+          playerName: String(attack.playerName ?? attack.playerTag).trim(),
+          playerPosition: attack.playerPosition ?? null,
+          defenderPosition: attack.defenderPosition ?? null,
+          stars: Number(attack.stars ?? 0),
+          trueStars: Number(attack.trueStars ?? 0),
+          attackSeenAt: attack.attackSeenAt,
+          warEndTime: attack.warEndTime ?? null,
+        });
+        byPlayer.set(playerTag, bucket);
+
+        const before = cumulativeClanStars;
+        const gain = Math.max(0, Number(attack.trueStars ?? 0));
+        cumulativeClanStars += gain;
+        starsBeforeAttack.set(i, before);
+        starsAfterAttack.set(i, cumulativeClanStars);
+      }
+
+      const loseStyle = this.fwaLoseStyleByTag[clanTag] ?? "TRADITIONAL";
+      if (expectedOutcome === "WIN") {
+        const mirrorTripleByPlayer = new Map<string, boolean>();
+        const strictWindowSeenByPlayer = new Map<string, boolean>();
+        for (let i = 0; i < attacks.length; i += 1) {
+          const attack = attacks[i];
+          const playerTag = normalizeTag(attack.playerTag);
+          const playerPos = attack.playerPosition ?? null;
+          const defenderPos = attack.defenderPosition ?? null;
+          const stars = Number(attack.stars ?? 0);
+          const trueStars = Number(attack.trueStars ?? 0);
+          const hoursRemaining =
+            attack.warEndTime instanceof Date
+              ? (attack.warEndTime.getTime() - attack.attackSeenAt.getTime()) / (60 * 60 * 1000)
+              : null;
+          const isStrictWindow =
+            hoursRemaining !== null &&
+            Number.isFinite(hoursRemaining) &&
+            hoursRemaining > 12 &&
+            (starsBeforeAttack.get(i) ?? 0) < 100;
+          if (isStrictWindow) {
+            strictWindowSeenByPlayer.set(playerTag, true);
+            const isMirror = playerPos !== null && defenderPos !== null && playerPos === defenderPos;
+            if (isMirror && stars >= 3) {
+              mirrorTripleByPlayer.set(playerTag, true);
+            }
+            if (!isMirror) {
+              if (stars === 3 && trueStars > 0) addViolation(attack.playerTag, attack.playerName);
+              if (stars <= 0) addViolation(attack.playerTag, attack.playerName);
+            }
+          }
+        }
+        for (const [playerTag, seenStrict] of strictWindowSeenByPlayer.entries()) {
+          if (!seenStrict) continue;
+          if (!mirrorTripleByPlayer.get(playerTag)) {
+            addViolation(playerTag, labelForTag.get(playerTag) ?? playerTag);
+          }
+        }
+      } else if (loseStyle === "TRIPLE_TOP_30") {
+        for (const attack of attacks) {
+          const defenderPos = attack.defenderPosition ?? null;
+          if (defenderPos !== null && defenderPos > 30) {
+            addViolation(attack.playerTag, attack.playerName);
+          }
+        }
+      } else {
+        for (let i = 0; i < attacks.length; i += 1) {
+          const attack = attacks[i];
+          const hoursRemaining =
+            attack.warEndTime instanceof Date
+              ? (attack.warEndTime.getTime() - attack.attackSeenAt.getTime()) / (60 * 60 * 1000)
+              : null;
+          const stars = Number(attack.stars ?? 0);
+          if (hoursRemaining !== null && Number.isFinite(hoursRemaining) && hoursRemaining < 12) {
+            const playerPos = attack.playerPosition ?? null;
+            const defenderPos = attack.defenderPosition ?? null;
+            const isMirror = playerPos !== null && defenderPos !== null && playerPos === defenderPos;
+            const validLate = (isMirror && stars === 2) || (!isMirror && stars === 1);
+            if (!validLate) addViolation(attack.playerTag, attack.playerName);
+            continue;
+          }
+          if (!(stars === 1 || stars === 2)) addViolation(attack.playerTag, attack.playerName);
+          if ((starsAfterAttack.get(i) ?? 0) > 100) addViolation(attack.playerTag, attack.playerName);
+        }
+      }
+    } else {
+      for (const attack of attacks) {
+        const playerPos = attack.playerPosition ?? null;
+        const defenderPos = attack.defenderPosition ?? null;
+        if (playerPos === null || defenderPos === null) continue;
+        if (playerPos !== defenderPos) {
+          addViolation(attack.playerTag, attack.playerName);
+        }
       }
     }
 
