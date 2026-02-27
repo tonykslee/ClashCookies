@@ -233,14 +233,14 @@ function buildFwaMatchCopyComponents(
   const matchTypeAction = view.matchTypeAction ?? null;
   const toggleMode = showMode === "embed" ? "copy" : "embed";
   const toggleLabel = showMode === "embed" ? "Copy/Paste View" : "Embed View";
-  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+  const baseRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
       .setCustomId(buildFwaMatchCopyCustomId(userId, key, toggleMode))
       .setLabel(toggleLabel)
       .setStyle(ButtonStyle.Secondary)
   );
   if (payload.includePostButton) {
-    row.addComponents(
+    baseRow.addComponents(
       new ButtonBuilder()
         .setCustomId(buildPointsPostButtonCustomId(userId))
         .setLabel("Post to Channel")
@@ -248,15 +248,18 @@ function buildFwaMatchCopyComponents(
     );
   }
   if (payload.currentScope === "single") {
-    row.addComponents(
+    baseRow.addComponents(
       new ButtonBuilder()
         .setCustomId(buildFwaMatchAllianceCustomId(userId, key))
         .setLabel("Alliance View")
         .setStyle(ButtonStyle.Secondary)
     );
   }
+  const rows: Array<ActionRowBuilder<ButtonBuilder> | ActionRowBuilder<StringSelectMenuBuilder>> = [
+    baseRow,
+  ];
   if (matchTypeAction) {
-    row.addComponents(
+    const actionRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder()
         .setCustomId(
           buildMatchTypeActionCustomId({
@@ -290,6 +293,7 @@ function buildFwaMatchCopyComponents(
           matchTypeAction.currentType === "MM" ? ButtonStyle.Success : ButtonStyle.Secondary
         )
     );
+    rows.push(actionRow);
   }
   if (payload.currentScope === "alliance") {
     const entries = Object.keys(payload.singleViews).slice(0, 25);
@@ -308,10 +312,10 @@ function buildFwaMatchCopyComponents(
             };
           })
         );
-      return [row, new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select)];
+      rows.push(new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select));
     }
   }
-  return [row];
+  return rows;
 }
 
 export async function handleFwaMatchCopyButton(interaction: ButtonInteraction): Promise<void> {
@@ -1699,8 +1703,8 @@ async function buildTrackedMatchOverview(
           }).split("\n")[1] ?? "Projection unavailable.")
         : "Projection unavailable (points missing).";
     const singleDescription = [
-      MATCHTYPE_WARNING_LEGEND,
-      "",
+      inferredMatchType ? MATCHTYPE_WARNING_LEGEND : "",
+      inferredMatchType ? "" : "",
       `${projectionLineSingle}`,
       `Match Type: **${matchType}${inferredMatchType ? " :warning:" : ""}**${
         inferredMatchType ? ` ${verifyLink}` : ""
@@ -1728,7 +1732,7 @@ async function buildTrackedMatchOverview(
       copyText: limitDiscordContent(
         [
           `# ${clanName} (#${clanTag}) vs ${opponentName} (#${opponentTag})`,
-          MATCHTYPE_WARNING_LEGEND,
+          inferredMatchType ? MATCHTYPE_WARNING_LEGEND : "",
           `Sync: ${withSyncModeLabel(getSyncDisplay(sourceSync, warState), sourceSync)}`,
           `War State: ${formatWarStateLabel(warState)}`,
           `Time Remaining: ${getWarStateRemaining(war, warState)}`,
@@ -2308,7 +2312,7 @@ export const Fwa: Command = {
         const embed = new EmbedBuilder()
           .setTitle(`${leftName} (#${tag}) vs ${rightName} (#${opponentTag})`)
           .setDescription(
-            `${MATCHTYPE_WARNING_LEGEND}\n\n${projectionLine}\nMatch Type: **${matchTypeText}**${
+            `${inferredMatchType ? `${MATCHTYPE_WARNING_LEGEND}\n\n` : ""}${projectionLine}\nMatch Type: **${matchTypeText}**${
               verifyLink ? ` ${verifyLink}` : ""
             }${
               outcomeLine ? `\nExpected outcome: **${outcomeLine}**` : ""
@@ -2328,7 +2332,7 @@ export const Fwa: Command = {
         const copyText = limitDiscordContent(
           [
             `# ${leftName} (#${tag}) vs ${rightName} (#${opponentTag})`,
-            MATCHTYPE_WARNING_LEGEND,
+            inferredMatchType ? MATCHTYPE_WARNING_LEGEND : "",
             `Sync: ${syncDisplay}`,
             `War State: ${formatWarStateLabel(warState)}`,
             `Time Remaining: ${warRemaining}`,
