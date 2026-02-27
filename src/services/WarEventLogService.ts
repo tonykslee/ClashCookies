@@ -569,8 +569,6 @@ export class WarEventLogService {
     }
 
     const opponentTag = normalizeTag(payload.opponentTag);
-    const badgeEmoji = this.resolveTrackedClanBadgeEmoji(channel, payload.clanTag, payload.clanName);
-
     const embed = new EmbedBuilder()
       .setTitle(`Event: ${eventTitle(payload.eventType)} - ${payload.clanName}`)
       .setColor(
@@ -594,11 +592,6 @@ export class WarEventLogService {
     });
 
     if (payload.eventType === "battle_day") {
-      embed.addFields({
-        name: "Clan Badge",
-        value: badgeEmoji,
-        inline: true,
-      });
       embed.addFields({
         name: "Match Type",
         value: payload.matchType ?? "unknown",
@@ -631,11 +624,6 @@ export class WarEventLogService {
     }
 
     if (payload.eventType === "war_started") {
-      embed.addFields({
-        name: "Clan Badge",
-        value: badgeEmoji,
-        inline: true,
-      });
       embed.addFields({
         name: "Prep Day Remaining",
         value: toDiscordRelativeTime(payload.warStartTime),
