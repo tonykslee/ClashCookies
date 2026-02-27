@@ -192,3 +192,37 @@ model WarEventLogSubscription {
   @@unique([guildId, clanTag])
   @@index([guildId, notify])
 }
+
+model WarClanHistory {
+  warId               Int           @id @default(autoincrement())
+  syncNumber          Int?
+  matchType           WarMatchType?
+  clanStars           Int?
+  clanDestruction     Float?
+  opponentStars       Int?
+  opponentDestruction Float?
+  fwaPointsGained     Int?
+  expectedOutcome     String?
+  actualOutcome       String?
+  enemyPoints         Int?
+  warStartTime        DateTime
+  warEndTime          DateTime?
+  clanName            String?
+  clanTag             String
+  opponentName        String?
+  opponentTag         String?
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+  lookup              WarLookup?
+
+  @@unique([clanTag, warStartTime])
+  @@index([clanTag, warEndTime])
+}
+
+model WarLookup {
+  warId      Int            @id
+  payload    Json
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
+  warHistory WarClanHistory @relation(fields: [warId], references: [warId], onDelete: Cascade)
+}
