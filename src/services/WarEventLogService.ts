@@ -155,6 +155,11 @@ function formatBadgeEmojiInline(emoji: { id: string; name: string; animated?: bo
   return emoji.animated ? `<a:${emoji.name}:${emoji.id}>` : `<:${emoji.name}:${emoji.id}>`;
 }
 
+function toDiscordRelativeTime(value: Date | null): string {
+  if (!(value instanceof Date) || Number.isNaN(value.getTime())) return "unknown";
+  return `<t:${Math.floor(value.getTime() / 1000)}:R>`;
+}
+
 function parseBadgeEmojiMap(): Record<string, string> {
   const raw = (process.env.WAR_EVENT_BADGE_EMOJI_BY_TAG ?? "").trim();
   if (!raw) return {};
@@ -594,6 +599,11 @@ export class WarEventLogService {
         value: badgeEmoji,
         inline: true,
       });
+      embed.addFields({
+        name: "Match Type",
+        value: payload.matchType ?? "unknown",
+        inline: true,
+      });
       if (payload.matchType !== "BL" && payload.matchType !== "MM") {
         const outcome = payload.outcome ? payload.outcome[0] + payload.outcome.slice(1).toLowerCase() : "Unknown";
         embed.addFields({
@@ -602,6 +612,19 @@ export class WarEventLogService {
             payload.outcome === null
               ? `Unknown war outcome against ${payload.opponentName}`
               : `${outcome} war against ${payload.opponentName}`,
+          inline: false,
+        });
+        embed.addFields({
+          name: "War Plan",
+          value: this.buildWarPlanText(payload.matchType, payload.outcome, payload.clanTag) ?? "N/A",
+          inline: false,
+        });
+      }
+      if (payload.matchType === "BL") {
+        embed.addFields({
+          name: "Message",
+          value:
+            "Battle day has started! Thank you for your help swapping to war bases, please swap back to FWA bases asap!",
           inline: false,
         });
       }
@@ -613,6 +636,28 @@ export class WarEventLogService {
         value: badgeEmoji,
         inline: true,
       });
+      embed.addFields({
+        name: "Prep Day Remaining",
+        value: toDiscordRelativeTime(payload.warStartTime),
+        inline: true,
+      });
+      embed.addFields({
+        name: "Match Type",
+        value: payload.matchType ?? "unknown",
+        inline: true,
+      });
+      if (payload.matchType === "FWA") {
+        embed.addFields({
+          name: "Outcome",
+          value: payload.outcome ?? "unknown",
+          inline: false,
+        });
+        embed.addFields({
+          name: "War Plan",
+          value: this.buildWarPlanText(payload.matchType, payload.outcome, payload.clanTag) ?? "N/A",
+          inline: false,
+        });
+      }
     }
 
     if (payload.eventType === "war_ended") {
@@ -651,8 +696,8 @@ export class WarEventLogService {
       embed.addFields({
         name: "Didn't Follow War Plan",
         value:
-          payload.matchType === "BL"
-            ? "N/A for BL wars"
+          payload.matchType === "BL" || payload.matchType === "MM"
+            ? "N/A for BL/MM wars"
             : formatList(compliance.notFollowingPlan),
         inline: false,
       });
@@ -784,6 +829,32 @@ export class WarEventLogService {
       return input.after - input.before;
     }
     return null;
+  }
+
+  private buildWarPlanText(
+    matchType: MatchType,
+    expectedOutcome: "WIN" | "LOSE" | null,
+    clanTag: string
+  ): string | null {
+    if (matchType !== "FWA") return null;
+    if (expectedOutcome === "WIN") {
+      return [
+        "Win plan: if clan stars are under 100 and time remaining is over 12h,",
+        "one attack must be a 3-star on mirror. Other attack can be 3-star on already-tripled base,",
+        "or 2-star/1-star any base. Outside that window, free hit plan applies.",
+      ].join(" ");
+    }
+    if (expectedOutcome === "LOSE") {
+      const loseStyle = this.fwaLoseStyleByTag[normalizeTag(clanTag)] ?? "TRADITIONAL";
+      if (loseStyle === "TRIPLE_TOP_30") {
+        return "Lose plan (Triple Top 30): hit only top 30 bases with both attacks; do not hit bottom 20.";
+      }
+      return [
+        "Lose plan (Traditional): when under 12h remaining, do mirror 2-star plus non-mirror 1-star.",
+        "Before that, do 1-star/2-star hits while keeping clan stars at or under 100.",
+      ].join(" ");
+    }
+    return "FWA plan unavailable (expected outcome unknown).";
   }
 
   private async persistWarEndHistory(payload: {
