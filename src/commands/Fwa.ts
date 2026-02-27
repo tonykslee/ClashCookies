@@ -1505,7 +1505,7 @@ async function buildTrackedMatchOverview(
     if (matchType === "FWA") {
       embed.addFields({
         name: `${clanName} (#${clanTag}) vs ${opponentName} (#${opponentTag})`,
-        value: `${pointsLine}\nMatch Type: **${formatMatchTypeLabel("FWA", inferredMatchType)}**\nOutcome: **${sub?.outcome ?? "UNKNOWN"}**${mismatchLines ? `\n${mismatchLines}` : ""}`,
+        value: `${pointsLine}\nMatch Type: **${formatMatchTypeLabel("FWA", inferredMatchType)}**\nOutcome: **${effectiveOutcome ?? "UNKNOWN"}**${mismatchLines ? `\n${mismatchLines}` : ""}`,
         inline: false,
       });
       copyLines.push(
@@ -1516,7 +1516,7 @@ async function buildTrackedMatchOverview(
         `\`${opponentTag}\``,
         `${pointsLine}`,
         `Match Type: ${formatMatchTypeLabel("FWA", inferredMatchType)}`,
-        `Outcome: ${sub?.outcome ?? "UNKNOWN"}`,
+        `Outcome: ${effectiveOutcome ?? "UNKNOWN"}`,
         mismatchLines
       );
       continue;
