@@ -7,7 +7,6 @@ import { SettingsService } from "./SettingsService";
 
 export const MANAGE_COMMAND_ROLES_COMMAND = "permission";
 export const FWA_LEADER_ROLE_SETTING_KEY = "fwa_leader_role";
-export const SET_COMMAND = "set";
 
 export const COMMAND_PERMISSION_TARGETS = [
   "help",
@@ -30,6 +29,7 @@ export const COMMAND_PERMISSION_TARGETS = [
   "fwa:points",
   "fwa:match",
   "fwa:match-type",
+  "fwa:leader-role",
   "recruitment:show",
   "recruitment:edit",
   "recruitment:dashboard",
@@ -42,7 +42,6 @@ export const COMMAND_PERMISSION_TARGETS = [
   "kick-list:clear",
   "post:sync:time",
   "post:sync:status",
-  `${SET_COMMAND}:fwa-leader-role`,
   `${MANAGE_COMMAND_ROLES_COMMAND}:add`,
   `${MANAGE_COMMAND_ROLES_COMMAND}:remove`,
   `${MANAGE_COMMAND_ROLES_COMMAND}:list`,
@@ -60,7 +59,7 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "sheet:show",
   "kick-list:clear",
   "notify:war",
-  `${SET_COMMAND}:fwa-leader-role`,
+  "fwa:leader-role",
   `${MANAGE_COMMAND_ROLES_COMMAND}:add`,
   `${MANAGE_COMMAND_ROLES_COMMAND}:remove`,
 ]);
@@ -303,7 +302,7 @@ export class CommandPermissionService {
         if (!guildId) return "Default: FWA Leader role + Administrator.";
         const leaderRoleId = await this.getFwaLeaderRoleId(guildId);
         if (!leaderRoleId) {
-          return "Default: Administrator only (set /set fwa-leader-role).";
+          return "Default: Administrator only (set /fwa leader-role).";
         }
         return `Default: FWA Leader role <@&${leaderRoleId}> + Administrator.`;
       }
