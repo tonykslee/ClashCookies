@@ -9,6 +9,7 @@ import {
   ChatInputCommandInteraction,
   Client,
   EmbedBuilder,
+  PermissionFlagsBits,
 } from "discord.js";
 import { Command } from "../Command";
 import { truncateDiscordContent } from "../helper/discordContent";
@@ -17,6 +18,7 @@ import { formatError } from "../helper/formatError";
 import { safeReply } from "../helper/safeReply";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
+import { CommandPermissionService } from "../services/CommandPermissionService";
 import { SettingsService } from "../services/SettingsService";
 
 const POINTS_BASE_URL = "https://points.fwafarm.com/clan?tag=";
@@ -1653,6 +1655,19 @@ export const Fwa: Command = {
         },
       ],
     },
+    {
+      name: "leader-role",
+      description: "Set the default FWA leader role",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "role",
+          description: "Role to set as the FWA leader role",
+          type: ApplicationCommandOptionType.Role,
+          required: true,
+        },
+      ],
+    },
   ],
   run: async (
     _client: Client,
@@ -1695,6 +1710,40 @@ export const Fwa: Command = {
     await interaction.deferReply({ ephemeral: !isPublic });
     const rawTag = interaction.options.getString("tag", false);
     const tag = normalizeTag(rawTag ?? "");
+    if (subcommand === "leader-role") {
+      if (!interaction.inGuild()) {
+        await editReplySafe("This command can only be used in a server.");
+        return;
+      }
+      const isOwnerBypass = (() => {
+        const raw =
+          process.env.OWNER_DISCORD_USER_IDS ?? process.env.OWNER_DISCORD_USER_ID ?? "";
+        const owners = new Set(
+          raw
+            .split(",")
+            .map((v) => v.trim())
+            .filter((v) => /^\d+$/.test(v))
+        );
+        return owners.has(interaction.user.id);
+      })();
+      if (
+        !isOwnerBypass &&
+        !interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)
+      ) {
+        await editReplySafe("Only administrators can use this command.");
+        return;
+      }
+      const role = interaction.options.getRole("role", true);
+      if (!("id" in role)) {
+        await editReplySafe("Invalid role selected.");
+        return;
+      }
+      const permissionService = new CommandPermissionService();
+      await permissionService.setFwaLeaderRoleId(interaction.guildId, role.id);
+      await editReplySafe(`FWA leader role set to <@&${role.id}>.`);
+      return;
+    }
+
     if (subcommand === "match-type") {
       if (!interaction.guildId) {
         await editReplySafe("This command can only be used in a server.");
