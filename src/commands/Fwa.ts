@@ -33,6 +33,7 @@ const MATCHUP_CACHE_VERSION = 5;
 const POINTS_POST_BUTTON_PREFIX = "points-post-channel";
 const FWA_MATCH_COPY_BUTTON_PREFIX = "fwa-match-copy";
 const FWA_MATCH_TYPE_ACTION_PREFIX = "fwa-match-type-action";
+const FWA_OUTCOME_ACTION_PREFIX = "fwa-outcome-action";
 const FWA_MATCH_SELECT_PREFIX = "fwa-match-select";
 const FWA_MATCH_ALLIANCE_PREFIX = "fwa-match-alliance";
 const POINTS_REQUEST_HEADERS = {
@@ -123,6 +124,7 @@ type MatchView = {
   embed: EmbedBuilder;
   copyText: string;
   matchTypeAction?: { tag: string; currentType: "FWA" | "BL" | "MM" } | null;
+  outcomeAction?: { tag: string; currentOutcome: "WIN" | "LOSE" } | null;
   clanName?: string;
   clanTag?: string;
 };
@@ -212,6 +214,30 @@ export function isFwaMatchTypeActionButtonCustomId(customId: string): boolean {
   return customId.startsWith(`${FWA_MATCH_TYPE_ACTION_PREFIX}:`);
 }
 
+type OutcomeActionParams = {
+  userId: string;
+  tag: string;
+  currentOutcome: "WIN" | "LOSE";
+};
+
+function buildOutcomeActionCustomId(params: OutcomeActionParams): string {
+  return `${FWA_OUTCOME_ACTION_PREFIX}:${params.userId}:${normalizeTag(params.tag)}:${params.currentOutcome}`;
+}
+
+function parseOutcomeActionCustomId(customId: string): OutcomeActionParams | null {
+  const parts = customId.split(":");
+  if (parts.length !== 4 || parts[0] !== FWA_OUTCOME_ACTION_PREFIX) return null;
+  const userId = parts[1]?.trim() ?? "";
+  const tag = normalizeTag(parts[2] ?? "");
+  const currentOutcome = parts[3] === "WIN" || parts[3] === "LOSE" ? parts[3] : null;
+  if (!userId || !tag || !currentOutcome) return null;
+  return { userId, tag, currentOutcome };
+}
+
+export function isFwaOutcomeActionButtonCustomId(customId: string): boolean {
+  return customId.startsWith(`${FWA_OUTCOME_ACTION_PREFIX}:`);
+}
+
 export function isFwaMatchSelectCustomId(customId: string): boolean {
   return customId.startsWith(`${FWA_MATCH_SELECT_PREFIX}:`);
 }
@@ -231,6 +257,7 @@ function buildFwaMatchCopyComponents(
       ? payload.allianceView
       : payload.singleViews[payload.currentTag] ?? payload.allianceView;
   const matchTypeAction = view.matchTypeAction ?? null;
+  const outcomeAction = view.outcomeAction ?? null;
   const toggleMode = showMode === "embed" ? "copy" : "embed";
   const toggleLabel = showMode === "embed" ? "Copy/Paste View" : "Embed View";
   const baseRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
@@ -294,6 +321,21 @@ function buildFwaMatchCopyComponents(
         )
     );
     rows.push(actionRow);
+  }
+  if (outcomeAction) {
+    const outcomeRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(
+          buildOutcomeActionCustomId({
+            userId,
+            tag: outcomeAction.tag,
+            currentOutcome: outcomeAction.currentOutcome,
+          })
+        )
+        .setLabel("Reverse Outcome")
+        .setStyle(ButtonStyle.Primary)
+    );
+    rows.push(outcomeRow);
   }
   if (payload.currentScope === "alliance") {
     const entries = Object.keys(payload.singleViews).slice(0, 25);
@@ -473,6 +515,53 @@ export async function handleFwaMatchTypeActionButton(interaction: ButtonInteract
   await interaction.reply({
     ephemeral: true,
     content: `Match type for #${parsed.tag} is now **${parsed.targetType}** (manual).`,
+  });
+}
+
+export async function handleFwaOutcomeActionButton(interaction: ButtonInteraction): Promise<void> {
+  const parsed = parseOutcomeActionCustomId(interaction.customId);
+  if (!parsed) return;
+
+  if (interaction.user.id !== parsed.userId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Only the command requester can use this button.",
+    });
+    return;
+  }
+
+  if (!interaction.guildId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "This action can only be used in a server.",
+    });
+    return;
+  }
+
+  const nextOutcome = parsed.currentOutcome === "WIN" ? "LOSE" : "WIN";
+  await prisma.warEventLogSubscription.upsert({
+    where: {
+      guildId_clanTag: {
+        guildId: interaction.guildId,
+        clanTag: `#${parsed.tag}`,
+      },
+    },
+    create: {
+      guildId: interaction.guildId,
+      clanTag: `#${parsed.tag}`,
+      channelId: interaction.channelId,
+      notify: false,
+      outcome: nextOutcome,
+    },
+    update: {
+      outcome: nextOutcome,
+      updatedAt: new Date(),
+    },
+  });
+
+  await interaction.reply({
+    ephemeral: true,
+    content: `Expected outcome for #${parsed.tag} reversed to **${nextOutcome}**.`,
   });
 }
 
@@ -1756,6 +1845,10 @@ async function buildTrackedMatchOverview(
         inferredMatchType
           ? { tag: clanTag, currentType: matchType as "FWA" | "BL" | "MM" }
           : null,
+      outcomeAction:
+        matchType === "FWA" && (effectiveOutcome === "WIN" || effectiveOutcome === "LOSE")
+          ? { tag: clanTag, currentOutcome: effectiveOutcome }
+          : null,
       clanName,
       clanTag,
     };
@@ -2367,6 +2460,10 @@ export const Fwa: Command = {
           matchTypeAction:
             inferredMatchType && matchType !== "UNKNOWN"
               ? { tag, currentType: matchType as "FWA" | "BL" | "MM" }
+              : null,
+          outcomeAction:
+            matchType === "FWA" && (effectiveOutcome === "WIN" || effectiveOutcome === "LOSE")
+              ? { tag, currentOutcome: effectiveOutcome }
               : null,
         };
         alliance = {
