@@ -102,7 +102,7 @@ function buildCcVerifyUrl(tag: string): string {
 }
 
 const MATCHTYPE_WARNING_LEGEND =
-  "?? indicates inferred match type. Verify opponent association before confirming.";
+  ":warning: indicates inferred match type. Verify opponent association before confirming.";
 
 function buildPointsPostButtonCustomId(userId: string): string {
   return `${POINTS_POST_BUTTON_PREFIX}:${userId}`;
@@ -123,6 +123,8 @@ type MatchView = {
   embed: EmbedBuilder;
   copyText: string;
   matchTypeAction?: { tag: string; currentType: "FWA" | "BL" | "MM" } | null;
+  clanName?: string;
+  clanTag?: string;
 };
 
 type FwaMatchCopyPayload = {
@@ -296,10 +298,15 @@ function buildFwaMatchCopyComponents(
         .setCustomId(buildFwaMatchSelectCustomId(userId, key))
         .setPlaceholder("Open clan match view")
         .addOptions(
-          entries.map((tag) => ({
-            label: `#${tag}`,
-            value: tag,
-          }))
+          entries.map((tag) => {
+            const viewForTag = payload.singleViews[tag];
+            const clanName = (viewForTag?.clanName ?? `#${tag}`).trim();
+            return {
+              label: `${clanName}`.slice(0, 100),
+              description: `#${tag}`.slice(0, 100),
+              value: tag,
+            };
+          })
         );
       return [row, new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select)];
     }
@@ -1646,7 +1653,7 @@ async function buildTrackedMatchOverview(
     const mismatchLines = [primaryMismatch, opponentMismatch].filter(Boolean).join("\n");
 
     if (matchType === "FWA") {
-      const warnSuffix = inferredMatchType ? ` ?? ${verifyLink}` : "";
+      const warnSuffix = inferredMatchType ? ` :warning: ${verifyLink}` : "";
       embed.addFields({
         name: `${clanName} (#${clanTag}) vs ${opponentName} (#${opponentTag})`,
         value: `${pointsLine}\nMatch Type: **FWA${warnSuffix}**\nOutcome: **${effectiveOutcome ?? "UNKNOWN"}**${mismatchLines ? `\n${mismatchLines}` : ""}`,
@@ -1659,13 +1666,13 @@ async function buildTrackedMatchOverview(
         `### Opponent Tag`,
         `\`${opponentTag}\``,
         `${pointsLine}`,
-        `Match Type: FWA${inferredMatchType ? " ??" : ""}`,
+        `Match Type: FWA${inferredMatchType ? " :warning:" : ""}`,
         inferredMatchType ? `Verify: ${buildCcVerifyUrl(opponentTag)}` : "",
         `Outcome: ${effectiveOutcome ?? "UNKNOWN"}`,
         mismatchLines
       );
     } else {
-      const warnSuffix = inferredMatchType ? ` ?? ${verifyLink}` : "";
+      const warnSuffix = inferredMatchType ? ` :warning: ${verifyLink}` : "";
       embed.addFields({
         name: `${clanName} (#${clanTag}) vs ${opponentName} (#${opponentTag})`,
         value: `${pointsLine}\nMatch Type: **${matchType}${warnSuffix}**${mismatchLines ? `\n${mismatchLines}` : ""}`,
@@ -1678,7 +1685,7 @@ async function buildTrackedMatchOverview(
         `### Opponent Tag`,
         `\`${opponentTag}\``,
         `${pointsLine}`,
-        `Match Type: ${matchType}${inferredMatchType ? " ??" : ""}`,
+        `Match Type: ${matchType}${inferredMatchType ? " :warning:" : ""}`,
         inferredMatchType ? `Verify: ${buildCcVerifyUrl(opponentTag)}` : "",
         mismatchLines
       );
@@ -1695,7 +1702,7 @@ async function buildTrackedMatchOverview(
       MATCHTYPE_WARNING_LEGEND,
       "",
       `${projectionLineSingle}`,
-      `Match Type: **${matchType}${inferredMatchType ? " ??" : ""}**${
+      `Match Type: **${matchType}${inferredMatchType ? " :warning:" : ""}**${
         inferredMatchType ? ` ${verifyLink}` : ""
       }`,
       matchType === "FWA" ? `Expected outcome: **${effectiveOutcome ?? "UNKNOWN"}**` : "",
@@ -1706,9 +1713,9 @@ async function buildTrackedMatchOverview(
     ]
       .filter(Boolean)
       .join("\n");
-    singleViews[clanTag] = {
-      embed: new EmbedBuilder()
-        .setTitle(`${clanName} (#${clanTag}) vs ${opponentName} (#${opponentTag})`)
+      singleViews[clanTag] = {
+        embed: new EmbedBuilder()
+          .setTitle(`${clanName} (#${clanTag}) vs ${opponentName} (#${opponentTag})`)
         .setDescription(singleDescription)
         .addFields({
           name: "Points",
@@ -1733,7 +1740,7 @@ async function buildTrackedMatchOverview(
           hasPrimaryPoints && hasOpponentPoints ? `${clanName}: ${primaryPoints!.balance}` : "Unavailable",
           hasPrimaryPoints && hasOpponentPoints ? `${opponentName}: ${opponentPoints!.balance}` : "Unavailable",
           `## Match Type`,
-          `${matchType}${inferredMatchType ? " ??" : ""}`,
+          `${matchType}${inferredMatchType ? " :warning:" : ""}`,
           inferredMatchType ? `Verify: ${buildCcVerifyUrl(opponentTag)}` : "",
           matchType === "FWA" ? `Expected outcome: ${effectiveOutcome ?? "UNKNOWN"}` : "",
           mismatchLines,
@@ -1745,6 +1752,8 @@ async function buildTrackedMatchOverview(
         inferredMatchType
           ? { tag: clanTag, currentType: matchType as "FWA" | "BL" | "MM" }
           : null,
+      clanName,
+      clanTag,
     };
   }
 
@@ -2292,7 +2301,7 @@ export const Fwa: Command = {
           matchType === "FWA"
             ? `${effectiveOutcome ?? "UNKNOWN"}`
             : "";
-        const matchTypeText = `${matchType}${inferredMatchType ? " ⚠️" : ""}`;
+        const matchTypeText = `${matchType}${inferredMatchType ? " :warning:" : ""}`;
         const verifyLink = inferredMatchType
           ? `[cc:${opponentTag}](${buildCcVerifyUrl(opponentTag)})`
           : "";
