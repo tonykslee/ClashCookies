@@ -616,6 +616,30 @@ export async function handleFwaMatchTypeActionButton(interaction: ButtonInteract
     return;
   }
 
+  for (const [key, payload] of fwaMatchCopyPayloads.entries()) {
+    if (payload.userId !== parsed.userId) continue;
+    if (payload.currentScope !== "single" || payload.currentTag !== parsed.tag) continue;
+    const view = payload.singleViews[parsed.tag];
+    if (!view) continue;
+    payload.singleViews[parsed.tag] = {
+      ...view,
+      matchTypeCurrent: parsed.targetType,
+      inferredMatchType: false,
+      matchTypeAction: null,
+    };
+    payload.allianceView = {
+      ...payload.allianceView,
+      embed: updateAllianceEmbedMatchType(payload.allianceView.embed, parsed.tag, parsed.targetType, false),
+    };
+    fwaMatchCopyPayloads.set(key, payload);
+    await interaction.update({
+      content: undefined,
+      embeds: [payload.singleViews[parsed.tag].embed],
+      components: buildFwaMatchCopyComponents(payload, payload.userId, key, "embed"),
+    });
+    return;
+  }
+
   await interaction.reply({
     ephemeral: true,
     content: `Match type for #${parsed.tag} is now **${parsed.targetType}** (manual).`,
@@ -667,6 +691,7 @@ export async function handleFwaMatchTypeEditButton(interaction: ButtonInteractio
     components: buildFwaMatchCopyComponents(payload, payload.userId, parsed.key, "embed"),
   });
 }
+
 export async function handleFwaOutcomeActionButton(interaction: ButtonInteraction): Promise<void> {
   const parsed = parseOutcomeActionCustomId(interaction.customId);
   if (!parsed) return;
@@ -2294,14 +2319,14 @@ export const Fwa: Command = {
     }
 
     if (subcommand === "match") {
+      const overview = await buildTrackedMatchOverview(
+        cocService,
+        sourceSync,
+        interaction.guildId ?? null,
+        warLookupCache
+      );
+      const key = interaction.id;
       if (!tag) {
-        const overview = await buildTrackedMatchOverview(
-          cocService,
-          sourceSync,
-          interaction.guildId ?? null,
-          warLookupCache
-        );
-        const key = interaction.id;
         fwaMatchCopyPayloads.set(key, {
           userId: interaction.user.id,
           includePostButton: !isPublic,
@@ -2319,6 +2344,25 @@ export const Fwa: Command = {
             key,
             "embed"
           )
+        );
+        return;
+      }
+
+      const trackedSingleView = overview.singleViews[tag];
+      if (trackedSingleView) {
+        fwaMatchCopyPayloads.set(key, {
+          userId: interaction.user.id,
+          includePostButton: !isPublic,
+          allianceView: { embed: overview.embed, copyText: overview.copyText, matchTypeAction: null },
+          singleViews: overview.singleViews,
+          currentScope: "single",
+          currentTag: tag,
+        });
+        const stored = fwaMatchCopyPayloads.get(key)!;
+        await editReplySafe(
+          "",
+          [trackedSingleView.embed],
+          buildFwaMatchCopyComponents(stored, interaction.user.id, key, "embed")
         );
         return;
       }
@@ -2598,13 +2642,7 @@ export const Fwa: Command = {
             .filter(Boolean)
             .join("\n")
         );
-        const key = interaction.id;
-        let alliance = await buildTrackedMatchOverview(
-          cocService,
-          sourceSync,
-          interaction.guildId ?? null,
-          warLookupCache
-        );
+        let alliance = overview;
         const singleView: MatchView = {
           embed,
           copyText,
