@@ -8,6 +8,7 @@ import {
 } from "discord.js";
 import { Prisma } from "@prisma/client";
 import { formatError } from "../helper/formatError";
+import { findSyncBadgeEmojiForClan } from "../helper/syncBadgeEmoji";
 import { prisma } from "../prisma";
 import { CoCService } from "./CoCService";
 import { PointsProjectionService } from "./PointsProjectionService";
@@ -632,6 +633,14 @@ export class WarEventLogService {
   ): string {
     const mapped = this.badgeEmojiByTag[normalizeTag(clanTag)];
     if (mapped) return mapped;
+
+    const fromSyncBadgeMap = findSyncBadgeEmojiForClan(this.client.user?.id, clanName);
+    if (fromSyncBadgeMap) {
+      return formatBadgeEmojiInline({
+        id: fromSyncBadgeMap.id,
+        name: fromSyncBadgeMap.name,
+      });
+    }
 
     const guild = "guild" in channel ? channel.guild : null;
     if (!guild) return "Unavailable";
