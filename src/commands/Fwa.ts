@@ -968,6 +968,32 @@ function buildMatchupMessage(
   );
 }
 
+function deriveProjectedOutcome(
+  clanTag: string,
+  opponentTag: string,
+  clanPoints: number | null,
+  opponentPoints: number | null,
+  syncNumber: number | null
+): "WIN" | "LOSE" | null {
+  if (
+    clanPoints === null ||
+    opponentPoints === null ||
+    Number.isNaN(clanPoints) ||
+    Number.isNaN(opponentPoints)
+  ) {
+    return null;
+  }
+  if (clanPoints > opponentPoints) return "WIN";
+  if (clanPoints < opponentPoints) return "LOSE";
+  if (syncNumber === null) return null;
+  const mode = getSyncMode(syncNumber);
+  if (!mode) return null;
+  const cmp = compareTagsForTiebreak(clanTag, opponentTag);
+  if (cmp === 0) return null;
+  const wins = mode === "low" ? cmp < 0 : cmp > 0;
+  return wins ? "WIN" : "LOSE";
+}
+
 async function buildLastWarMatchOverview(
   clanTag: string,
   guildId: string | null,
@@ -1163,6 +1189,16 @@ async function buildTrackedMatchOverview(
     const inferredFromPointsType: "FWA" | "MM" | null = hasOpponentPoints ? "FWA" : "MM";
     const matchType = matchTypeResolved ?? inferredFromPointsType ?? "UNKNOWN";
     const inferredMatchType = Boolean(sub?.inferredMatchType) || (matchTypeResolved === null && inferredFromPointsType !== null);
+    const derivedOutcome = deriveProjectedOutcome(
+      clanTag,
+      opponentTag,
+      primaryPoints?.balance ?? null,
+      opponentPoints?.balance ?? null,
+      currentSync
+    );
+    const effectiveOutcome =
+      (sub?.outcome as "WIN" | "LOSE" | null | undefined) ??
+      (matchType === "FWA" ? derivedOutcome : null);
     if (matchTypeResolved === null && inferredFromPointsType && guildId) {
       await prisma.warEventLogSubscription.upsert({
         where: {
@@ -1178,10 +1214,115 @@ async function buildTrackedMatchOverview(
           channelId: "",
           matchType: inferredFromPointsType,
           inferredMatchType: true,
+          fwaPoints:
+            primaryPoints?.balance !== null && primaryPoints?.balance !== undefined
+              ? primaryPoints.balance
+              : null,
+          opponentFwaPoints:
+            opponentPoints?.balance !== null && opponentPoints?.balance !== undefined
+              ? opponentPoints.balance
+              : null,
+          outcome: effectiveOutcome,
+          warStartFwaPoints:
+            warState !== "notInWar" &&
+            primaryPoints?.balance !== null &&
+            primaryPoints?.balance !== undefined
+              ? primaryPoints.balance
+              : null,
+          warEndFwaPoints:
+            warState === "notInWar" &&
+            primaryPoints?.balance !== null &&
+            primaryPoints?.balance !== undefined
+              ? primaryPoints.balance
+              : null,
         },
         update: {
           matchType: inferredFromPointsType,
           inferredMatchType: true,
+          fwaPoints:
+            primaryPoints?.balance !== null && primaryPoints?.balance !== undefined
+              ? primaryPoints.balance
+              : null,
+          opponentFwaPoints:
+            opponentPoints?.balance !== null && opponentPoints?.balance !== undefined
+              ? opponentPoints.balance
+              : null,
+          outcome: effectiveOutcome,
+          warStartFwaPoints:
+            warState !== "notInWar" &&
+            primaryPoints?.balance !== null &&
+            primaryPoints?.balance !== undefined
+              ? { set: primaryPoints.balance }
+              : undefined,
+          warEndFwaPoints:
+            warState === "notInWar" &&
+            primaryPoints?.balance !== null &&
+            primaryPoints?.balance !== undefined
+              ? { set: primaryPoints.balance }
+              : undefined,
+        },
+      });
+    } else if (guildId) {
+      await prisma.warEventLogSubscription.upsert({
+        where: {
+          guildId_clanTag: {
+            guildId,
+            clanTag: `#${clanTag}`,
+          },
+        },
+        create: {
+          guildId,
+          clanTag: `#${clanTag}`,
+          notify: false,
+          channelId: "",
+          matchType,
+          inferredMatchType,
+          fwaPoints:
+            primaryPoints?.balance !== null && primaryPoints?.balance !== undefined
+              ? primaryPoints.balance
+              : null,
+          opponentFwaPoints:
+            opponentPoints?.balance !== null && opponentPoints?.balance !== undefined
+              ? opponentPoints.balance
+              : null,
+          outcome: effectiveOutcome,
+          warStartFwaPoints:
+            warState !== "notInWar" &&
+            primaryPoints?.balance !== null &&
+            primaryPoints?.balance !== undefined
+              ? primaryPoints.balance
+              : null,
+          warEndFwaPoints:
+            warState === "notInWar" &&
+            primaryPoints?.balance !== null &&
+            primaryPoints?.balance !== undefined
+              ? primaryPoints.balance
+              : null,
+        },
+        update: {
+          matchType,
+          inferredMatchType,
+          fwaPoints:
+            primaryPoints?.balance !== null && primaryPoints?.balance !== undefined
+              ? primaryPoints.balance
+              : null,
+          opponentFwaPoints:
+            opponentPoints?.balance !== null && opponentPoints?.balance !== undefined
+              ? opponentPoints.balance
+              : null,
+          outcome: effectiveOutcome,
+          warStartFwaPoints:
+            warState !== "notInWar" &&
+            primaryPoints?.balance !== null &&
+            primaryPoints?.balance !== undefined
+              ? { set: primaryPoints.balance }
+              : undefined,
+          warEndFwaPoints:
+            warState === "notInWar" &&
+            primaryPoints?.balance !== null &&
+            primaryPoints?.balance !== undefined
+              ? { set: primaryPoints.balance }
+              : undefined,
         },
       });
     }
@@ -1661,7 +1802,13 @@ export const Fwa: Command = {
                   clanTag: `#${tag}`,
                 },
               },
-              select: { matchType: true, inferredMatchType: true, outcome: true },
+              select: {
+                matchType: true,
+                inferredMatchType: true,
+                outcome: true,
+                warStartFwaPoints: true,
+                warEndFwaPoints: true,
+              },
             })
           : null;
         const matchTypeResolved = await resolveMatchTypeWithFallback({
@@ -1694,10 +1841,20 @@ export const Fwa: Command = {
           | "BL"
           | "MM"
           | "UNKNOWN";
+        const derivedOutcome = deriveProjectedOutcome(
+          tag,
+          opponentTag,
+          primary.balance,
+          opponent.balance,
+          currentSync
+        );
         const inferredMatchType =
           Boolean(subscription?.inferredMatchType) ||
           (matchTypeResolved === null && inferredFromPointsType !== null);
-        if (matchTypeResolved === null && inferredFromPointsType && interaction.guildId) {
+        const effectiveOutcome =
+          (subscription?.outcome as "WIN" | "LOSE" | null | undefined) ??
+          (matchType === "FWA" ? derivedOutcome : null);
+        if (interaction.guildId) {
           await prisma.warEventLogSubscription.upsert({
             where: {
               guildId_clanTag: {
@@ -1709,15 +1866,43 @@ export const Fwa: Command = {
               guildId: interaction.guildId,
               clanTag: `#${tag}`,
               notify: false,
-              channelId: "",
-              matchType: inferredFromPointsType,
-              inferredMatchType: true,
+              channelId: interaction.channelId,
+              matchType:
+                matchTypeResolved === null && inferredFromPointsType
+                  ? inferredFromPointsType
+                  : matchType === "UNKNOWN"
+                    ? null
+                    : matchType,
+              inferredMatchType:
+                matchTypeResolved === null && inferredFromPointsType ? true : inferredMatchType,
+              fwaPoints: primary.balance,
+              opponentFwaPoints: opponent.balance,
+              outcome: effectiveOutcome,
+              warStartFwaPoints:
+                warState !== "notInWar" ? primary.balance : subscription?.warStartFwaPoints ?? null,
+              warEndFwaPoints:
+                warState === "notInWar" ? primary.balance : subscription?.warEndFwaPoints ?? null,
             },
             update: {
-              matchType: inferredFromPointsType,
-              inferredMatchType: true,
+              matchType:
+                matchTypeResolved === null && inferredFromPointsType
+                  ? inferredFromPointsType
+                  : matchType === "UNKNOWN"
+                    ? undefined
+                    : matchType,
+              inferredMatchType:
+                matchTypeResolved === null && inferredFromPointsType ? true : inferredMatchType,
+              fwaPoints: primary.balance,
+              opponentFwaPoints: opponent.balance,
+              outcome: effectiveOutcome,
+              warStartFwaPoints:
+                warState !== "notInWar" ? { set: primary.balance } : undefined,
+              warEndFwaPoints:
+                warState === "notInWar" ? { set: primary.balance } : undefined,
             },
           });
+        }
+        if (matchTypeResolved === null && inferredFromPointsType) {
           matchType = inferredFromPointsType;
         }
 
@@ -1770,7 +1955,7 @@ export const Fwa: Command = {
         const siteStatusLine = staleSite ? "Note: points.fwafarm site is not updated yet." : null;
         const outcomeLine =
           matchType === "FWA"
-            ? `${subscription?.outcome ?? "UNKNOWN"}`
+            ? `${effectiveOutcome ?? "UNKNOWN"}`
             : "";
         const leftName = resolvedPrimaryName ?? primaryNameFromApi ?? tag;
         const rightName = resolvedOpponentName ?? opponentNameFromApi ?? opponentTag;

@@ -194,7 +194,7 @@ export const CommandRole: Command = {
         const roleIds = await permissionService.getAllowedRoleIds(commandInput);
         const summary = roleIds.length
           ? `Whitelisted roles: ${formatRoleList(roleIds)}`
-          : await permissionService.getPolicySummary(commandInput);
+          : await permissionService.getPolicySummary(commandInput, interaction.guildId);
         await safeReply(interaction, {
           ephemeral: true,
           content: `\`/${commandInput}\` roles:\n${summary}`,
@@ -203,8 +203,15 @@ export const CommandRole: Command = {
       }
 
       const allLines: string[] = [];
+      const fwaLeaderRoleId = await permissionService.getFwaLeaderRoleId(interaction.guildId);
+      if (!fwaLeaderRoleId) {
+        allLines.push(
+          "⚠️ `fwa-leader-role` is not set. Leader-default commands currently require Administrator. Use `/set fwa-leader-role`."
+        );
+        allLines.push("");
+      }
       for (const target of COMMAND_PERMISSION_TARGETS) {
-        const summary = await permissionService.getPolicySummary(target);
+        const summary = await permissionService.getPolicySummary(target, interaction.guildId);
         allLines.push(`- \`/${target}\`: ${summary}`);
       }
 
@@ -327,7 +334,7 @@ export const CommandRole: Command = {
       const next = await permissionService.removeAllowedRoleId(commandInput, role.id);
       const summary = next.length
         ? `Allowed roles: ${formatRoleList(next)}`
-        : await permissionService.getPolicySummary(commandInput);
+        : await permissionService.getPolicySummary(commandInput, interaction.guildId);
       await safeReply(interaction, {
         ephemeral: true,
         content:
