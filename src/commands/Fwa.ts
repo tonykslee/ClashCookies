@@ -2500,7 +2500,7 @@ export const Fwa: Command = {
         const embed = new EmbedBuilder()
           .setTitle(`${leftName} (#${tag}) vs ${rightName} (#${opponentTag})`)
           .setDescription(
-            `${inferredMatchType ? `${MATCHTYPE_WARNING_LEGEND}\n\n` : ""}${projectionLine}\nMatch Type: **${matchTypeText}**${
+            `${inferredMatchType ? `${MATCHTYPE_WARNING_LEGEND}\n\n\n` : ""}${projectionLine}\nMatch Type: **${matchTypeText}**${
               verifyLink ? ` ${verifyLink}` : ""
             }${
               outcomeLine ? `\nExpected outcome: **${outcomeLine}**` : ""
