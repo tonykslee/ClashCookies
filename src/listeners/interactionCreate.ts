@@ -22,8 +22,12 @@ import {
   handleFwaMatchCopyButton,
   handleFwaMatchSelectMenu,
   handleFwaMatchAllianceButton,
+  handleFwaMatchTypeEditButton,
+  handleFwaOutcomeActionButton,
   handleFwaMatchTypeActionButton,
   isFwaMatchAllianceButtonCustomId,
+  isFwaMatchTypeEditButtonCustomId,
+  isFwaOutcomeActionButtonCustomId,
   isFwaMatchSelectCustomId,
   isFwaMatchTypeActionButtonCustomId,
   handlePointsPostButton,
@@ -271,6 +275,34 @@ const handleButtonInteraction = async (interaction: Interaction): Promise<void> 
         await interaction.reply({
           ephemeral: true,
           content: "Failed to apply match type update.",
+        });
+      }
+    }
+  }
+
+  if (isFwaMatchTypeEditButtonCustomId(interaction.customId)) {
+    try {
+      await handleFwaMatchTypeEditButton(interaction);
+    } catch (err) {
+      console.error(`FWA match type edit button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to open match type options.",
+        });
+      }
+    }
+  }
+
+  if (isFwaOutcomeActionButtonCustomId(interaction.customId)) {
+    try {
+      await handleFwaOutcomeActionButton(interaction);
+    } catch (err) {
+      console.error(`FWA outcome action button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to reverse expected outcome.",
         });
       }
     }
