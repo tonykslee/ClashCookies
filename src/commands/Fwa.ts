@@ -33,6 +33,7 @@ const MATCHUP_CACHE_VERSION = 5;
 const POINTS_POST_BUTTON_PREFIX = "points-post-channel";
 const FWA_MATCH_COPY_BUTTON_PREFIX = "fwa-match-copy";
 const FWA_MATCH_TYPE_ACTION_PREFIX = "fwa-match-type-action";
+const FWA_MATCH_TYPE_EDIT_PREFIX = "fwa-match-type-edit";
 const FWA_OUTCOME_ACTION_PREFIX = "fwa-outcome-action";
 const FWA_MATCH_SELECT_PREFIX = "fwa-match-select";
 const FWA_MATCH_ALLIANCE_PREFIX = "fwa-match-alliance";
@@ -124,6 +125,7 @@ type MatchView = {
   embed: EmbedBuilder;
   copyText: string;
   matchTypeAction?: { tag: string; currentType: "FWA" | "BL" | "MM" } | null;
+  matchTypeCurrent?: "FWA" | "BL" | "MM" | null;
   outcomeAction?: { tag: string; currentOutcome: "WIN" | "LOSE" } | null;
   clanName?: string;
   clanTag?: string;
@@ -212,6 +214,25 @@ function parseMatchTypeActionCustomId(customId: string): MatchTypeActionParams |
 
 export function isFwaMatchTypeActionButtonCustomId(customId: string): boolean {
   return customId.startsWith(`${FWA_MATCH_TYPE_ACTION_PREFIX}:`);
+}
+
+type MatchTypeEditParams = { userId: string; key: string };
+
+function buildMatchTypeEditCustomId(params: MatchTypeEditParams): string {
+  return `${FWA_MATCH_TYPE_EDIT_PREFIX}:${params.userId}:${params.key}`;
+}
+
+function parseMatchTypeEditCustomId(customId: string): MatchTypeEditParams | null {
+  const parts = customId.split(":");
+  if (parts.length !== 3 || parts[0] !== FWA_MATCH_TYPE_EDIT_PREFIX) return null;
+  const userId = parts[1]?.trim() ?? "";
+  const key = parts[2]?.trim() ?? "";
+  if (!userId || !key) return null;
+  return { userId, key };
+}
+
+export function isFwaMatchTypeEditButtonCustomId(customId: string): boolean {
+  return customId.startsWith(`${FWA_MATCH_TYPE_EDIT_PREFIX}:`);
 }
 
 type OutcomeActionParams = {
@@ -321,6 +342,15 @@ function buildFwaMatchCopyComponents(
         )
     );
     rows.push(actionRow);
+  } else if (payload.currentScope === "single" && view.matchTypeCurrent) {
+    rows.push(
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setCustomId(buildMatchTypeEditCustomId({ userId, key }))
+          .setLabel("Change Match Type")
+          .setStyle(ButtonStyle.Secondary)
+      )
+    );
   }
   if (outcomeAction) {
     const outcomeRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
@@ -512,12 +542,76 @@ export async function handleFwaMatchTypeActionButton(interaction: ButtonInteract
     },
   });
 
+  for (const [key, payload] of fwaMatchCopyPayloads.entries()) {
+    if (payload.userId !== parsed.userId) continue;
+    if (payload.currentScope !== "single" || payload.currentTag !== parsed.tag) continue;
+    const view = payload.singleViews[parsed.tag];
+    if (!view) continue;
+    payload.singleViews[parsed.tag] = {
+      ...view,
+      matchTypeCurrent: parsed.targetType,
+      matchTypeAction: null,
+    };
+    fwaMatchCopyPayloads.set(key, payload);
+    await interaction.update({
+      content: undefined,
+      embeds: [payload.singleViews[parsed.tag].embed],
+      components: buildFwaMatchCopyComponents(payload, payload.userId, key, "embed"),
+    });
+    return;
+  }
+
   await interaction.reply({
     ephemeral: true,
     content: `Match type for #${parsed.tag} is now **${parsed.targetType}** (manual).`,
   });
 }
 
+export async function handleFwaMatchTypeEditButton(interaction: ButtonInteraction): Promise<void> {
+  const parsed = parseMatchTypeEditCustomId(interaction.customId);
+  if (!parsed) return;
+  if (interaction.user.id !== parsed.userId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Only the command requester can use this button.",
+    });
+    return;
+  }
+  const payload = fwaMatchCopyPayloads.get(parsed.key);
+  if (!payload) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "This match view expired. Please run /fwa match again.",
+    });
+    return;
+  }
+  if (payload.currentScope !== "single" || !payload.currentTag) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Open a single clan view first.",
+    });
+    return;
+  }
+  const tag = payload.currentTag;
+  const view = payload.singleViews[tag];
+  if (!view || !view.matchTypeCurrent) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Match type is unavailable for this clan.",
+    });
+    return;
+  }
+  payload.singleViews[tag] = {
+    ...view,
+    matchTypeAction: { tag, currentType: view.matchTypeCurrent },
+  };
+  fwaMatchCopyPayloads.set(parsed.key, payload);
+  await interaction.update({
+    content: undefined,
+    embeds: [payload.singleViews[tag].embed],
+    components: buildFwaMatchCopyComponents(payload, payload.userId, parsed.key, "embed"),
+  });
+}
 export async function handleFwaOutcomeActionButton(interaction: ButtonInteraction): Promise<void> {
   const parsed = parseOutcomeActionCustomId(interaction.customId);
   if (!parsed) return;
@@ -1845,6 +1939,7 @@ async function buildTrackedMatchOverview(
         inferredMatchType
           ? { tag: clanTag, currentType: matchType as "FWA" | "BL" | "MM" }
           : null,
+      matchTypeCurrent: matchType as "FWA" | "BL" | "MM",
       outcomeAction:
         matchType === "FWA" && (effectiveOutcome === "WIN" || effectiveOutcome === "LOSE")
           ? { tag: clanTag, currentOutcome: effectiveOutcome }
@@ -2405,7 +2500,7 @@ export const Fwa: Command = {
         const embed = new EmbedBuilder()
           .setTitle(`${leftName} (#${tag}) vs ${rightName} (#${opponentTag})`)
           .setDescription(
-            `${inferredMatchType ? `${MATCHTYPE_WARNING_LEGEND}\n\n` : ""}${projectionLine}\nMatch Type: **${matchTypeText}**${
+            `${inferredMatchType ? `${MATCHTYPE_WARNING_LEGEND}\n\n\n` : ""}${projectionLine}\nMatch Type: **${matchTypeText}**${
               verifyLink ? ` ${verifyLink}` : ""
             }${
               outcomeLine ? `\nExpected outcome: **${outcomeLine}**` : ""
@@ -2461,6 +2556,7 @@ export const Fwa: Command = {
             inferredMatchType && matchType !== "UNKNOWN"
               ? { tag, currentType: matchType as "FWA" | "BL" | "MM" }
               : null,
+          matchTypeCurrent: matchType === "UNKNOWN" ? null : (matchType as "FWA" | "BL" | "MM"),
           outcomeAction:
             matchType === "FWA" && (effectiveOutcome === "WIN" || effectiveOutcome === "LOSE")
               ? { tag, currentOutcome: effectiveOutcome }
@@ -2619,4 +2715,5 @@ export const Fwa: Command = {
     await interaction.respond(choices);
   },
 };
+
 
