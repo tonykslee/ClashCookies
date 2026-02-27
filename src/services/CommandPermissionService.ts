@@ -6,53 +6,43 @@ import {
 import { SettingsService } from "./SettingsService";
 
 export const MANAGE_COMMAND_ROLES_COMMAND = "permission";
+export const FWA_LEADER_ROLE_SETTING_KEY = "fwa_leader_role";
+export const SET_COMMAND = "set";
 
 export const COMMAND_PERMISSION_TARGETS = [
   "help",
   "lastseen",
   "inactive",
   "role-users",
-  "tracked-clan",
   "tracked-clan:add",
   "tracked-clan:remove",
   "tracked-clan:list",
-  "sheet",
   "sheet:link",
   "sheet:unlink",
   "sheet:show",
   "sheet:refresh",
-  "compo",
   "compo:advice",
   "compo:state",
   "compo:place",
-  "cc",
   "cc:player",
   "cc:clan",
-  "opponent",
-  "notify",
   "notify:war",
-  "fwa",
   "fwa:points",
   "fwa:match",
   "fwa:match-type",
-  "recruitment",
   "recruitment:show",
   "recruitment:edit",
   "recruitment:dashboard",
   "recruitment:countdown:start",
   "recruitment:countdown:status",
-  "recruitment:start",
-  "recruitment:status",
-  "kick-list",
   "kick-list:build",
   "kick-list:add",
   "kick-list:remove",
   "kick-list:show",
   "kick-list:clear",
-  "post",
   "post:sync:time",
   "post:sync:status",
-  MANAGE_COMMAND_ROLES_COMMAND,
+  `${SET_COMMAND}:fwa-leader-role`,
   `${MANAGE_COMMAND_ROLES_COMMAND}:add`,
   `${MANAGE_COMMAND_ROLES_COMMAND}:remove`,
   `${MANAGE_COMMAND_ROLES_COMMAND}:list`,
@@ -68,22 +58,42 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "sheet:link",
   "sheet:unlink",
   "sheet:show",
-  "sheet:refresh",
-  "kick-list",
-  "kick-list:build",
-  "kick-list:add",
-  "kick-list:remove",
-  "kick-list:show",
   "kick-list:clear",
-  "post:sync:time",
   "notify:war",
-  "fwa:match-type",
+  `${SET_COMMAND}:fwa-leader-role`,
   `${MANAGE_COMMAND_ROLES_COMMAND}:add`,
   `${MANAGE_COMMAND_ROLES_COMMAND}:remove`,
 ]);
 
+const FWA_LEADER_DEFAULT_TARGETS = new Set<string>([
+  "tracked-clan:list",
+  "sheet:refresh",
+  "compo:advice",
+  "compo:state",
+  "compo:place",
+  "fwa:points",
+  "fwa:match",
+  "fwa:match-type",
+  "recruitment:show",
+  "recruitment:edit",
+  "recruitment:dashboard",
+  "recruitment:countdown:start",
+  "recruitment:countdown:status",
+  "kick-list:build",
+  "kick-list:add",
+  "kick-list:remove",
+  "kick-list:show",
+  "post:sync:time",
+  "post:sync:status",
+  "inactive",
+]);
+
 function commandRolesKey(commandName: string): string {
   return `command_roles:${commandName}`;
+}
+
+function fwaLeaderRoleKey(guildId: string): string {
+  return `${FWA_LEADER_ROLE_SETTING_KEY}:${guildId}`;
 }
 
 function parseRoleIds(input: string | null): string[] {
@@ -122,6 +132,10 @@ async function getInteractionRoleIds(interaction: GuildInteraction): Promise<str
 
 function isAdminDefaultTarget(target: string): boolean {
   return ADMIN_DEFAULT_TARGETS.has(target);
+}
+
+function isFwaLeaderDefaultTarget(target: string): boolean {
+  return FWA_LEADER_DEFAULT_TARGETS.has(target);
 }
 
 function isKnownTarget(target: string): target is CommandPermissionTarget {
@@ -165,6 +179,16 @@ export function getCommandTargetsFromInteraction(
 
 export class CommandPermissionService {
   constructor(private readonly settings = new SettingsService()) {}
+
+  async getFwaLeaderRoleId(guildId: string): Promise<string | null> {
+    const raw = await this.settings.get(fwaLeaderRoleKey(guildId));
+    if (!raw || !/^\d+$/.test(raw.trim())) return null;
+    return raw.trim();
+  }
+
+  async setFwaLeaderRoleId(guildId: string, roleId: string): Promise<void> {
+    await this.settings.set(fwaLeaderRoleKey(guildId), roleId);
+  }
 
   async getAllowedRoleIds(commandName: string): Promise<string[]> {
     const raw = await this.settings.get(commandRolesKey(commandName));
@@ -212,6 +236,14 @@ export class CommandPermissionService {
 
     const allowedRoles = await this.getAllowedRoleIds(commandName);
     if (allowedRoles.length === 0) {
+      if (isFwaLeaderDefaultTarget(commandName)) {
+        const guildId = interaction.guildId;
+        if (!guildId) return false;
+        const leaderRoleId = await this.getFwaLeaderRoleId(guildId);
+        if (!leaderRoleId) return false;
+        const userRoles = await getInteractionRoleIds(interaction);
+        return userRoles.includes(leaderRoleId);
+      }
       return isAdminDefaultTarget(commandName) ? false : true;
     }
 
@@ -243,6 +275,18 @@ export class CommandPermissionService {
     }
 
     // If no explicit whitelist is set, enforce first matching admin-default target.
+    const userRoles = await getInteractionRoleIds(interaction);
+    for (const target of targets) {
+      if (isFwaLeaderDefaultTarget(target)) {
+        const guildId = interaction.guildId;
+        if (!guildId) return false;
+        const leaderRoleId = await this.getFwaLeaderRoleId(guildId);
+        if (!leaderRoleId) return false;
+        return userRoles.includes(leaderRoleId);
+      }
+    }
+
+    // If no explicit whitelist is set, enforce first matching admin-default target.
     for (const target of targets) {
       if (isAdminDefaultTarget(target)) {
         return false;
@@ -252,9 +296,17 @@ export class CommandPermissionService {
     return true;
   }
 
-  async getPolicySummary(commandName: string): Promise<string> {
+  async getPolicySummary(commandName: string, guildId?: string | null): Promise<string> {
     const roles = await this.getAllowedRoleIds(commandName);
     if (roles.length === 0) {
+      if (isFwaLeaderDefaultTarget(commandName)) {
+        if (!guildId) return "Default: FWA Leader role + Administrator.";
+        const leaderRoleId = await this.getFwaLeaderRoleId(guildId);
+        if (!leaderRoleId) {
+          return "Default: Administrator only (set /set fwa-leader-role).";
+        }
+        return `Default: FWA Leader role <@&${leaderRoleId}> + Administrator.`;
+      }
       return isAdminDefaultTarget(commandName)
         ? "Default: Administrator only."
         : "Default: Everyone can use this command.";
