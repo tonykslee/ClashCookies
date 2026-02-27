@@ -34,8 +34,22 @@ jobs:
         with:
           node-version: 20
 
-      - name: Install Railway CLI
-        run: npm install -g @railway/cli
+      - name: Install Railway CLI (with retries)
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            echo "Installing Railway CLI (attempt ${attempt}/3)..."
+            if npm install -g @railway/cli; then
+              railway --version
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              sleep $((attempt * 10))
+            fi
+          done
+          echo "Railway CLI install failed after 3 attempts."
+          exit 1
 
       - name: Deploy to Railway via CLI
         run: railway up --ci --detach --message "${{ github.event.head_commit.message }}" --project "$RAILWAY_PROJECT_ID" --environment "$RAILWAY_ENVIRONMENT" --service ClashCookies
