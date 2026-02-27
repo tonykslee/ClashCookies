@@ -233,14 +233,14 @@ function buildFwaMatchCopyComponents(
   const matchTypeAction = view.matchTypeAction ?? null;
   const toggleMode = showMode === "embed" ? "copy" : "embed";
   const toggleLabel = showMode === "embed" ? "Copy/Paste View" : "Embed View";
-  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+  const baseRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
       .setCustomId(buildFwaMatchCopyCustomId(userId, key, toggleMode))
       .setLabel(toggleLabel)
       .setStyle(ButtonStyle.Secondary)
   );
   if (payload.includePostButton) {
-    row.addComponents(
+    baseRow.addComponents(
       new ButtonBuilder()
         .setCustomId(buildPointsPostButtonCustomId(userId))
         .setLabel("Post to Channel")
@@ -248,15 +248,18 @@ function buildFwaMatchCopyComponents(
     );
   }
   if (payload.currentScope === "single") {
-    row.addComponents(
+    baseRow.addComponents(
       new ButtonBuilder()
         .setCustomId(buildFwaMatchAllianceCustomId(userId, key))
         .setLabel("Alliance View")
         .setStyle(ButtonStyle.Secondary)
     );
   }
+  const rows: Array<ActionRowBuilder<ButtonBuilder> | ActionRowBuilder<StringSelectMenuBuilder>> = [
+    baseRow,
+  ];
   if (matchTypeAction) {
-    row.addComponents(
+    const actionRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder()
         .setCustomId(
           buildMatchTypeActionCustomId({
@@ -290,6 +293,7 @@ function buildFwaMatchCopyComponents(
           matchTypeAction.currentType === "MM" ? ButtonStyle.Success : ButtonStyle.Secondary
         )
     );
+    rows.push(actionRow);
   }
   if (payload.currentScope === "alliance") {
     const entries = Object.keys(payload.singleViews).slice(0, 25);
@@ -308,10 +312,10 @@ function buildFwaMatchCopyComponents(
             };
           })
         );
-      return [row, new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select)];
+      rows.push(new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select));
     }
   }
-  return [row];
+  return rows;
 }
 
 export async function handleFwaMatchCopyButton(interaction: ButtonInteraction): Promise<void> {
