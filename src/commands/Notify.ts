@@ -10,6 +10,7 @@ import { Prisma } from "@prisma/client";
 import { Command } from "../Command";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
+import { WarEventLogService } from "../services/WarEventLogService";
 
 function normalizeClanTag(input: string): string {
   const raw = input.trim().toUpperCase().replace(/^#/, "");
@@ -57,6 +58,41 @@ export const Notify: Command = {
         },
       ],
     },
+    {
+      name: "war-test",
+      description: "Trigger a test war event embed for a configured clan",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "clan-tag",
+          description: "Clan tag (must already be configured with /notify war)",
+          type: ApplicationCommandOptionType.String,
+          required: true,
+          autocomplete: true,
+        },
+        {
+          name: "event",
+          description: "Event embed type to test",
+          type: ApplicationCommandOptionType.String,
+          required: true,
+          choices: [
+            { name: "prep day start", value: "war_started" },
+            { name: "battle day start", value: "battle_day" },
+            { name: "war end", value: "war_ended" },
+          ],
+        },
+        {
+          name: "source",
+          description: "Data source for test content",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          choices: [
+            { name: "current war", value: "current" },
+            { name: "last war", value: "last" },
+          ],
+        },
+      ],
+    },
   ],
   run: async (
     _client: Client,
@@ -70,6 +106,35 @@ export const Notify: Command = {
     }
 
     const sub = interaction.options.getSubcommand(true);
+    if (sub === "war-test") {
+      const clanTag = normalizeClanTag(interaction.options.getString("clan-tag", true));
+      const eventType = interaction.options.getString("event", true) as
+        | "war_started"
+        | "battle_day"
+        | "war_ended";
+      const source = (interaction.options.getString("source", false) ?? "current") as
+        | "current"
+        | "last";
+
+      const warEventService = new WarEventLogService(_client, cocService);
+      const result = await warEventService.emitTestEventForClan({
+        guildId: interaction.guildId,
+        clanTag,
+        eventType,
+        source,
+      });
+
+      if (!result.ok) {
+        await interaction.editReply(`Failed to trigger test event: ${result.reason ?? "unknown reason"}`);
+        return;
+      }
+
+      await interaction.editReply(
+        `Triggered test event \`${eventType}\` for ${clanTag} using \`${source}\` war data.`
+      );
+      return;
+    }
+
     if (sub !== "war") {
       await interaction.editReply("Unknown notify option.");
       return;

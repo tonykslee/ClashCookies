@@ -1,5 +1,6 @@
 import { AxiosError } from "axios";
 import {
+  ClanWarLogEntry,
   ClanWar,
   ClansApi,
   Configuration,
@@ -89,6 +90,29 @@ export class CoCService {
       });
       if (status) throw new Error(`CoC API error ${status}`);
       throw err;
+    }
+  }
+
+  async getClanWarLog(tag: string, limit = 10): Promise<ClanWarLogEntry[]> {
+    const clanTag = tag.startsWith("#") ? tag : `#${tag}`;
+    try {
+      const { data } = await this.clansApi.getClanWarLog(clanTag, limit);
+      recordFetchEvent({
+        namespace: "coc",
+        operation: "getClanWarLog",
+        source: "api",
+        detail: `tag=${clanTag} limit=${limit}`,
+      });
+      return Array.isArray(data.items) ? data.items : [];
+    } catch (err) {
+      const status = (err as AxiosError)?.response?.status;
+      recordFetchEvent({
+        namespace: "coc",
+        operation: "getClanWarLog",
+        source: "api",
+        detail: `tag=${clanTag} status=${status ?? "unknown"} result=error`,
+      });
+      return [];
     }
   }
 
