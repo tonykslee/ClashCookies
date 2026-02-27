@@ -1703,8 +1703,8 @@ async function buildTrackedMatchOverview(
           }).split("\n")[1] ?? "Projection unavailable.")
         : "Projection unavailable (points missing).";
     const singleDescription = [
-      MATCHTYPE_WARNING_LEGEND,
-      "",
+      inferredMatchType ? MATCHTYPE_WARNING_LEGEND : "",
+      inferredMatchType ? "" : "",
       `${projectionLineSingle}`,
       `Match Type: **${matchType}${inferredMatchType ? " :warning:" : ""}**${
         inferredMatchType ? ` ${verifyLink}` : ""
@@ -1732,7 +1732,7 @@ async function buildTrackedMatchOverview(
       copyText: limitDiscordContent(
         [
           `# ${clanName} (#${clanTag}) vs ${opponentName} (#${opponentTag})`,
-          MATCHTYPE_WARNING_LEGEND,
+          inferredMatchType ? MATCHTYPE_WARNING_LEGEND : "",
           `Sync: ${withSyncModeLabel(getSyncDisplay(sourceSync, warState), sourceSync)}`,
           `War State: ${formatWarStateLabel(warState)}`,
           `Time Remaining: ${getWarStateRemaining(war, warState)}`,
@@ -2312,7 +2312,7 @@ export const Fwa: Command = {
         const embed = new EmbedBuilder()
           .setTitle(`${leftName} (#${tag}) vs ${rightName} (#${opponentTag})`)
           .setDescription(
-            `${MATCHTYPE_WARNING_LEGEND}\n\n${projectionLine}\nMatch Type: **${matchTypeText}**${
+            `${inferredMatchType ? `${MATCHTYPE_WARNING_LEGEND}\n\n` : ""}${projectionLine}\nMatch Type: **${matchTypeText}**${
               verifyLink ? ` ${verifyLink}` : ""
             }${
               outcomeLine ? `\nExpected outcome: **${outcomeLine}**` : ""
@@ -2332,7 +2332,7 @@ export const Fwa: Command = {
         const copyText = limitDiscordContent(
           [
             `# ${leftName} (#${tag}) vs ${rightName} (#${opponentTag})`,
-            MATCHTYPE_WARNING_LEGEND,
+            inferredMatchType ? MATCHTYPE_WARNING_LEGEND : "",
             `Sync: ${syncDisplay}`,
             `War State: ${formatWarStateLabel(warState)}`,
             `Time Remaining: ${warRemaining}`,
