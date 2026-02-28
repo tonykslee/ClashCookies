@@ -28,10 +28,11 @@ model PlayerActivity {
 }
 
 model TrackedClan {
-  id        Int      @id @default(autoincrement())
-  tag       String   @unique
+  id        Int       @id @default(autoincrement())
+  tag       String    @unique
   name      String?
-  createdAt DateTime @default(now())
+  loseStyle LoseStyle @default(TRIPLE_TOP_30)
+  createdAt DateTime  @default(now())
 }
 
 model BotSetting {
@@ -63,6 +64,11 @@ enum WarMatchType {
   FWA
   BL
   MM
+}
+
+enum LoseStyle {
+  TRADITIONAL
+  TRIPLE_TOP_30
 }
 
 model KickListEntry {

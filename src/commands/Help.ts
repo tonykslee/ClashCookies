@@ -90,10 +90,12 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     summary: "Manage tracked clans used by activity features.",
     details: [
       "Add/remove tracked clans or list current tracked set.",
+      "Set clan lose-style on add (defaults to TRIPLE_TOP_30). Re-running add updates lose-style.",
       "`add` and `remove` are admin-only by default.",
     ],
     examples: [
       "/tracked-clan add tag:#2QG2C08UP",
+      "/tracked-clan add tag:#2QG2C08UP lose-style:Traditional",
       "/tracked-clan remove tag:#2QG2C08UP",
       "/tracked-clan list",
     ],

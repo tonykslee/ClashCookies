@@ -178,31 +178,10 @@ function parseBadgeEmojiMap(): Record<string, string> {
   }
 }
 
-function parseFwaLoseStyleMap(): Record<string, FwaLoseStyle> {
-  const raw = (process.env.WAR_EVENT_FWA_LOSE_STYLE_BY_TAG ?? "").trim();
-  if (!raw) return {};
-  try {
-    const parsed = JSON.parse(raw) as Record<string, string>;
-    const out: Record<string, FwaLoseStyle> = {};
-    for (const [key, value] of Object.entries(parsed)) {
-      const tag = normalizeTag(key);
-      const modeRaw = String(value ?? "").trim().toUpperCase();
-      if (!tag) continue;
-      if (modeRaw === "TRIPLE_TOP_30" || modeRaw === "TRADITIONAL") {
-        out[tag] = modeRaw;
-      }
-    }
-    return out;
-  } catch {
-    return {};
-  }
-}
-
 export class WarEventLogService {
   private readonly points: PointsProjectionService;
   private readonly settings: SettingsService;
   private readonly badgeEmojiByTag: Record<string, string>;
-  private readonly fwaLoseStyleByTag: Record<string, FwaLoseStyle>;
   private static readonly PREVIOUS_SYNC_KEY = "previousSyncNum";
   private static readonly PREVIOUS_SYNC_DEFAULT = 469;
 
@@ -210,7 +189,6 @@ export class WarEventLogService {
     this.points = new PointsProjectionService(coc);
     this.settings = new SettingsService();
     this.badgeEmojiByTag = parseBadgeEmojiMap();
-    this.fwaLoseStyleByTag = parseFwaLoseStyleMap();
   }
 
   private static getDefaultPreviousSyncNum(): number {
@@ -609,7 +587,7 @@ export class WarEventLogService {
         });
         embed.addFields({
           name: "War Plan",
-          value: this.buildWarPlanText(payload.matchType, payload.outcome, payload.clanTag) ?? "N/A",
+          value: (await this.buildWarPlanText(payload.matchType, payload.outcome, payload.clanTag)) ?? "N/A",
           inline: false,
         });
       }
@@ -642,7 +620,7 @@ export class WarEventLogService {
         });
         embed.addFields({
           name: "War Plan",
-          value: this.buildWarPlanText(payload.matchType, payload.outcome, payload.clanTag) ?? "N/A",
+          value: (await this.buildWarPlanText(payload.matchType, payload.outcome, payload.clanTag)) ?? "N/A",
           inline: false,
         });
       }
@@ -819,11 +797,11 @@ export class WarEventLogService {
     return null;
   }
 
-  private buildWarPlanText(
+  private async buildWarPlanText(
     matchType: MatchType,
     expectedOutcome: "WIN" | "LOSE" | null,
     clanTag: string
-  ): string | null {
+  ): Promise<string | null> {
     if (matchType !== "FWA") return null;
     if (expectedOutcome === "WIN") {
       return [
@@ -833,7 +811,7 @@ export class WarEventLogService {
       ].join(" ");
     }
     if (expectedOutcome === "LOSE") {
-      const loseStyle = this.fwaLoseStyleByTag[normalizeTag(clanTag)] ?? "TRADITIONAL";
+      const loseStyle = await this.getLoseStyleForClan(normalizeTag(clanTag));
       if (loseStyle === "TRIPLE_TOP_30") {
         return "Lose plan (Triple Top 30): hit only top 30 bases with both attacks; do not hit bottom 20.";
       }
@@ -843,6 +821,20 @@ export class WarEventLogService {
       ].join(" ");
     }
     return "FWA plan unavailable (expected outcome unknown).";
+  }
+
+  private async getLoseStyleForClan(clanTagInput: string): Promise<FwaLoseStyle> {
+    const clanTag = normalizeTag(clanTagInput);
+    if (!clanTag) return "TRIPLE_TOP_30";
+    const row = await prisma.trackedClan.findUnique({
+      where: { tag: clanTag },
+      select: { loseStyle: true },
+    });
+    const loseStyle = String(row?.loseStyle ?? "").toUpperCase();
+    if (loseStyle === "TRADITIONAL" || loseStyle === "TRIPLE_TOP_30") {
+      return loseStyle;
+    }
+    return "TRIPLE_TOP_30";
   }
 
   private async persistWarEndHistory(payload: {
@@ -1106,7 +1098,7 @@ export class WarEventLogService {
         starsAfterAttack.set(i, cumulativeClanStars);
       }
 
-      const loseStyle = this.fwaLoseStyleByTag[clanTag] ?? "TRADITIONAL";
+      const loseStyle = await this.getLoseStyleForClan(clanTag);
       if (expectedOutcome === "WIN") {
         const mirrorTripleByPlayer = new Map<string, boolean>();
         const strictWindowSeenByPlayer = new Map<string, boolean>();
