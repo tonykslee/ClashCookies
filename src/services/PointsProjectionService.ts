@@ -18,6 +18,8 @@ type Snapshot = {
   balance: number | null;
   effectiveSync: number | null;
   syncMode: "low" | "high" | null;
+  winnerBoxSync: number | null;
+  winnerBoxTags: string[];
 };
 
 function normalizeTag(input: string): string {
@@ -137,6 +139,8 @@ export class PointsProjectionService {
         balance: null,
         effectiveSync: null,
         syncMode: null,
+        winnerBoxSync: null,
+        winnerBoxTags: [],
       };
     }
 
@@ -159,6 +163,8 @@ export class PointsProjectionService {
       balance: extractPointBalance(html),
       effectiveSync,
       syncMode: getSyncMode(effectiveSync),
+      winnerBoxSync,
+      winnerBoxTags,
     };
   }
 

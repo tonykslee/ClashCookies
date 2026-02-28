@@ -58,8 +58,8 @@ type WarComplianceSnapshot = {
 };
 
 type PollSyncContext = {
-  previousSync: number;
-  activeSync: number;
+  previousSync: number | null;
+  activeSync: number | null;
 };
 
 function normalizeTag(input: string | null | undefined): string {
@@ -188,7 +188,6 @@ export class WarEventLogService {
   private readonly settings: SettingsService;
   private readonly badgeEmojiByTag: Record<string, string>;
   private static readonly PREVIOUS_SYNC_KEY = "previousSyncNum";
-  private static readonly PREVIOUS_SYNC_DEFAULT = 469;
 
   constructor(private readonly client: Client, private readonly coc: CoCService) {
     this.points = new PointsProjectionService(coc);
@@ -196,30 +195,47 @@ export class WarEventLogService {
     this.badgeEmojiByTag = parseBadgeEmojiMap();
   }
 
-  private static getDefaultPreviousSyncNum(): number {
-    const raw = process.env.DEFAULT_PREVIOUS_SYNC_NUM?.trim() ?? "";
-    const parsed = Number(raw);
-    if (Number.isFinite(parsed)) return Math.trunc(parsed);
-    return WarEventLogService.PREVIOUS_SYNC_DEFAULT;
+  private async recoverPreviousSyncNumFromPoints(): Promise<number | null> {
+    const tracked = await prisma.trackedClan.findMany({
+      orderBy: { createdAt: "asc" },
+      select: { tag: true },
+    });
+    for (const clan of tracked) {
+      const tag = normalizeTag(clan.tag);
+      const war = await this.coc.getCurrentWar(tag).catch(() => null);
+      const opponentTag = normalizeTag(war?.opponent?.tag ?? "");
+      if (!opponentTag) continue;
+
+      const snapshot = await this.points.fetchSnapshot(tag).catch(() => null);
+      if (!snapshot || snapshot.winnerBoxSync === null) continue;
+
+      const siteUpdated = snapshot.winnerBoxTags
+        .map((t) => normalizeTag(t))
+        .includes(opponentTag);
+      const recoveredPrevious = siteUpdated
+        ? snapshot.winnerBoxSync - 1
+        : snapshot.winnerBoxSync;
+      if (!Number.isFinite(recoveredPrevious) || recoveredPrevious < 0) continue;
+
+      const next = Math.trunc(recoveredPrevious);
+      await this.settings.set(WarEventLogService.PREVIOUS_SYNC_KEY, String(next));
+      return next;
+    }
+    return null;
   }
 
-  private async getPreviousSyncNum(): Promise<number> {
+  private async getPreviousSyncNum(): Promise<number | null> {
     const raw = await this.settings.get(WarEventLogService.PREVIOUS_SYNC_KEY);
     const parsed = raw === null ? NaN : Number(raw);
     if (Number.isFinite(parsed)) return Math.trunc(parsed);
-    const fallback = WarEventLogService.getDefaultPreviousSyncNum();
-    await this.settings.set(
-      WarEventLogService.PREVIOUS_SYNC_KEY,
-      String(fallback)
-    );
-    return fallback;
+    return this.recoverPreviousSyncNumFromPoints();
   }
 
   async poll(): Promise<void> {
     const previousSync = await this.getPreviousSyncNum();
     const syncContext: PollSyncContext = {
       previousSync,
-      activeSync: previousSync + 1,
+      activeSync: previousSync === null ? null : previousSync + 1,
     };
     const subs = await prisma.$queryRaw<SubscriptionRow[]>(
       Prisma.sql`
@@ -242,7 +258,7 @@ export class WarEventLogService {
       });
       sawWarEnded = sawWarEnded || ended;
     }
-    if (sawWarEnded) {
+    if (sawWarEnded && syncContext.activeSync !== null) {
       await this.settings.set(
         WarEventLogService.PREVIOUS_SYNC_KEY,
         String(syncContext.activeSync)
@@ -261,7 +277,7 @@ export class WarEventLogService {
     if (!sub.channelId) return { ok: false, reason: "Subscription has no configured channel." };
 
     const previousSync = await this.getPreviousSyncNum();
-    const activeSync = previousSync + 1;
+    const activeSync = previousSync === null ? null : previousSync + 1;
     const syncNumber = params.source === "last" ? previousSync : activeSync;
 
     const currentWar =
