@@ -1356,6 +1356,22 @@ type MatchupHeader = {
   opponentTag: string | null;
 };
 
+type TrackedClanPointsScrape = {
+  version: number;
+  source: "points.fwafarm";
+  fetchedAtMs: number;
+  trackedClanName: string | null;
+  trackedClanTag: string;
+  opponentClanName: string | null;
+  opponentClanTag: string | null;
+  pointBalance: number | null;
+  opponentPointBalance: number | null;
+  activeFwa: boolean;
+  syncNumber: number | null;
+  matchup: string;
+  pointsSiteUpToDate: boolean;
+};
+
 function extractMatchupHeader(topText: string): MatchupHeader {
   const regex =
     /Sync\s*#\s*(\d+)\s+(.+?)\s*\(\s*([0-9A-Z]{4,})\s*\)\s+vs\.\s+(.+?)\s*\(\s*([0-9A-Z]{4,})\s*\)/i;
@@ -1377,6 +1393,48 @@ function extractMatchupHeader(topText: string): MatchupHeader {
     opponentName: sanitizeClanName(match[4]) ?? null,
     opponentTag: normalizeTag(match[5]),
   };
+}
+
+function parseTrackedClanPointsScrape(value: unknown): TrackedClanPointsScrape | null {
+  if (!value || typeof value !== "object") return null;
+  const obj = value as Record<string, unknown>;
+  const trackedClanTag = normalizeTag(String(obj.trackedClanTag ?? ""));
+  if (!trackedClanTag) return null;
+  const opponentClanTagRaw = String(obj.opponentClanTag ?? "").trim();
+  const opponentClanTag = opponentClanTagRaw ? normalizeTag(opponentClanTagRaw) : null;
+  return {
+    version: Number(obj.version ?? 0),
+    source: "points.fwafarm",
+    fetchedAtMs: Number(obj.fetchedAtMs ?? 0),
+    trackedClanName: sanitizeClanName(String(obj.trackedClanName ?? "")),
+    trackedClanTag,
+    opponentClanName: sanitizeClanName(String(obj.opponentClanName ?? "")),
+    opponentClanTag,
+    pointBalance:
+      obj.pointBalance !== null && Number.isFinite(Number(obj.pointBalance))
+        ? Number(obj.pointBalance)
+        : null,
+    opponentPointBalance:
+      obj.opponentPointBalance !== null && Number.isFinite(Number(obj.opponentPointBalance))
+        ? Number(obj.opponentPointBalance)
+        : null,
+    activeFwa: Boolean(obj.activeFwa),
+    syncNumber:
+      obj.syncNumber !== null && Number.isFinite(Number(obj.syncNumber))
+        ? Number(obj.syncNumber)
+        : null,
+    matchup: String(obj.matchup ?? ""),
+    pointsSiteUpToDate: Boolean(obj.pointsSiteUpToDate),
+  };
+}
+
+function isPointsScrapeUpdatedForOpponent(
+  scrape: TrackedClanPointsScrape | null,
+  opponentTag: string
+): boolean {
+  if (!scrape || !scrape.pointsSiteUpToDate) return false;
+  if (!scrape.opponentClanTag) return false;
+  return normalizeTag(scrape.opponentClanTag) === normalizeTag(opponentTag);
 }
 
 function limitDiscordContent(content: string): string {
@@ -1898,7 +1956,7 @@ async function buildTrackedMatchOverview(
   const settings = new SettingsService();
   const tracked = await prisma.trackedClan.findMany({
     orderBy: { createdAt: "asc" },
-    select: { tag: true, name: true },
+    select: { tag: true, name: true, pointsScrape: true },
   });
   if (tracked.length === 0) {
     return {
@@ -1968,15 +2026,47 @@ async function buildTrackedMatchOverview(
     }
 
     const currentSync = getCurrentSyncFromPrevious(sourceSync, warState);
-    const primaryPoints = await getClanPointsCached(
-      settings,
-      cocService,
-      clanTag,
-      currentSync,
-      warLookupCache
-    ).catch(() => null);
+    const trackedScrape = parseTrackedClanPointsScrape(clan.pointsScrape);
+    const scrapeIsCurrentOpponent = isPointsScrapeUpdatedForOpponent(trackedScrape, opponentTag);
+    const primaryPoints = scrapeIsCurrentOpponent
+      ? ({
+          version: POINTS_CACHE_VERSION,
+          tag: clanTag,
+          url: buildOfficialPointsUrl(clanTag),
+          balance: trackedScrape?.pointBalance ?? null,
+          clanName: trackedScrape?.trackedClanName ?? clanName,
+          notFound: false,
+          winnerBoxText: trackedScrape?.matchup ?? null,
+          winnerBoxTags: trackedScrape?.opponentClanTag ? [trackedScrape.opponentClanTag] : [],
+          winnerBoxSync: trackedScrape?.syncNumber ?? null,
+          effectiveSync: trackedScrape?.syncNumber ?? null,
+          syncMode: getSyncMode(trackedScrape?.syncNumber ?? null),
+          winnerBoxHasTag: true,
+          headerPrimaryTag: clanTag,
+          headerOpponentTag: trackedScrape?.opponentClanTag ?? opponentTag,
+          headerPrimaryBalance: trackedScrape?.pointBalance ?? null,
+          headerOpponentBalance: trackedScrape?.opponentPointBalance ?? null,
+          warEndMs: null,
+          lastWarCheckAtMs: trackedScrape?.fetchedAtMs ?? Date.now(),
+          fetchedAtMs: trackedScrape?.fetchedAtMs ?? Date.now(),
+          refreshedForWarEndMs: null,
+        } as PointsSnapshot)
+      : await getClanPointsCached(
+          settings,
+          cocService,
+          clanTag,
+          currentSync,
+          warLookupCache
+        ).catch(() => null);
     let opponentPoints: PointsSnapshot | null = null;
-    if (primaryPoints) {
+    if (scrapeIsCurrentOpponent) {
+      opponentPoints = {
+        ...(primaryPoints as PointsSnapshot),
+        tag: opponentTag,
+        balance: trackedScrape?.opponentPointBalance ?? null,
+        clanName: trackedScrape?.opponentClanName ?? opponentName,
+      };
+    } else if (primaryPoints) {
       const siteUpdated = isPointsSiteUpdatedForOpponent(primaryPoints, opponentTag, sourceSync);
       const opponentFromPrimary = siteUpdated
         ? deriveOpponentBalanceFromPrimarySnapshot(primaryPoints, clanTag, opponentTag)
@@ -2154,7 +2244,8 @@ async function buildTrackedMatchOverview(
         : "Points: unavailable";
     const verifyLink = `[cc:${opponentTag}](${buildCcVerifyUrl(opponentTag)})`;
     const siteUpdatedForAlert = Boolean(
-      primaryPoints && isPointsSiteUpdatedForOpponent(primaryPoints, opponentTag, sourceSync)
+      scrapeIsCurrentOpponent ||
+        (primaryPoints && isPointsSiteUpdatedForOpponent(primaryPoints, opponentTag, sourceSync))
     );
     const primaryMismatch = siteUpdatedForAlert
       ? buildPointsMismatchWarning(
@@ -2659,15 +2750,45 @@ export const Fwa: Command = {
           return;
         }
 
-        const primary = await getClanPointsCached(
-          settings,
-          cocService,
-          tag,
-          currentSync,
-          warLookupCache
-        );
+        const trackedClanMeta = await prisma.trackedClan.findFirst({
+          where: { tag: { equals: `#${tag}`, mode: "insensitive" } },
+          select: { pointsScrape: true },
+        });
+        const trackedScrape = parseTrackedClanPointsScrape(trackedClanMeta?.pointsScrape ?? null);
+        const scrapeIsCurrentOpponent = isPointsScrapeUpdatedForOpponent(trackedScrape, opponentTag);
+        const primary = scrapeIsCurrentOpponent
+          ? ({
+              version: POINTS_CACHE_VERSION,
+              tag,
+              url: buildOfficialPointsUrl(tag),
+              balance: trackedScrape?.pointBalance ?? null,
+              clanName: trackedScrape?.trackedClanName ?? null,
+              notFound: false,
+              winnerBoxText: trackedScrape?.matchup ?? null,
+              winnerBoxTags: trackedScrape?.opponentClanTag ? [trackedScrape.opponentClanTag] : [],
+              winnerBoxSync: trackedScrape?.syncNumber ?? null,
+              effectiveSync: trackedScrape?.syncNumber ?? null,
+              syncMode: getSyncMode(trackedScrape?.syncNumber ?? null),
+              winnerBoxHasTag: true,
+              headerPrimaryTag: tag,
+              headerOpponentTag: trackedScrape?.opponentClanTag ?? opponentTag,
+              headerPrimaryBalance: trackedScrape?.pointBalance ?? null,
+              headerOpponentBalance: trackedScrape?.opponentPointBalance ?? null,
+              warEndMs: null,
+              lastWarCheckAtMs: trackedScrape?.fetchedAtMs ?? Date.now(),
+              fetchedAtMs: trackedScrape?.fetchedAtMs ?? Date.now(),
+              refreshedForWarEndMs: null,
+            } as PointsSnapshot)
+          : await getClanPointsCached(
+              settings,
+              cocService,
+              tag,
+              currentSync,
+              warLookupCache
+            );
         let opponent: PointsSnapshot;
-        const siteUpdated = isPointsSiteUpdatedForOpponent(primary, opponentTag, sourceSync);
+        const siteUpdated =
+          scrapeIsCurrentOpponent || isPointsSiteUpdatedForOpponent(primary, opponentTag, sourceSync);
         const opponentFromPrimary = siteUpdated
           ? deriveOpponentBalanceFromPrimarySnapshot(primary, tag, opponentTag)
           : null;
@@ -2677,6 +2798,14 @@ export const Fwa: Command = {
             tag: opponentTag,
             balance: opponentFromPrimary,
             clanName: sanitizeClanName(String(war?.opponent?.name ?? "")) ?? opponentTag,
+            winnerBoxHasTag: true,
+          };
+        } else if (scrapeIsCurrentOpponent) {
+          opponent = {
+            ...primary,
+            tag: opponentTag,
+            balance: trackedScrape?.opponentPointBalance ?? null,
+            clanName: trackedScrape?.opponentClanName ?? sanitizeClanName(String(war?.opponent?.name ?? "")) ?? opponentTag,
             winnerBoxHasTag: true,
           };
         } else {
@@ -3019,7 +3148,7 @@ export const Fwa: Command = {
 
       const trackedClan = await prisma.trackedClan.findFirst({
         where: { tag: { equals: `#${tag}`, mode: "insensitive" } },
-        select: { name: true },
+        select: { name: true, pointsScrape: true },
       });
       const trackedName = sanitizeClanName(trackedClan?.name);
       const scrapedName = sanitizeClanName(result.clanName);
@@ -3048,11 +3177,23 @@ export const Fwa: Command = {
             })
           : null;
       const trueOpponentTag = normalizeTag(String(war?.opponent?.tag ?? ""));
+      const trackedScrape = parseTrackedClanPointsScrape(trackedClan?.pointsScrape ?? null);
+      const scrapeIsCurrentOpponent = isPointsScrapeUpdatedForOpponent(
+        trackedScrape,
+        trueOpponentTag
+      );
+      const scrapeBalance = trackedScrape?.pointBalance ?? null;
       const siteUpdatedForCurrentWar =
-        trueOpponentTag ? isPointsSiteUpdatedForOpponent(result, trueOpponentTag, sourceSync) : false;
+        trueOpponentTag
+          ? scrapeIsCurrentOpponent || isPointsSiteUpdatedForOpponent(result, trueOpponentTag, sourceSync)
+          : false;
       const mismatch =
         siteUpdatedForCurrentWar
-          ? buildPointsMismatchWarning(displayName, subscription?.fwaPoints ?? null, balance)
+          ? buildPointsMismatchWarning(
+              displayName,
+              subscription?.fwaPoints ?? null,
+              scrapeIsCurrentOpponent ? scrapeBalance : balance
+            )
           : null;
       const syncStatusLine = buildPointsSyncStatusLine(siteUpdatedForCurrentWar, Boolean(mismatch));
 

@@ -32,6 +32,7 @@ model TrackedClan {
   tag       String    @unique
   name      String?
   loseStyle LoseStyle @default(TRIPLE_TOP_30)
+  pointsScrape Json?
   createdAt DateTime  @default(now())
 }
 

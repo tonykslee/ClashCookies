@@ -74,9 +74,26 @@ type WarStartPointsCheckJob = {
   trackedPointBalanceDb: number | null;
   siteSyncNumber: number | null;
   siteOpponentTag: string | null;
+  siteOpponentBalance: number | null;
   inferredOpponentIsFwa: boolean | null;
   opponentChecked: boolean;
   lastCheckedAtMs: number | null;
+};
+
+type TrackedClanPointsScrape = {
+  version: number;
+  source: "points.fwafarm";
+  fetchedAtMs: number;
+  trackedClanName: string | null;
+  trackedClanTag: string;
+  opponentClanName: string | null;
+  opponentClanTag: string | null;
+  pointBalance: number | null;
+  opponentPointBalance: number | null;
+  activeFwa: boolean;
+  syncNumber: number | null;
+  matchup: string;
+  pointsSiteUpToDate: boolean;
 };
 
 function normalizeTag(input: string | null | undefined): string {
@@ -158,6 +175,11 @@ function normalizeOutcome(input: string | null | undefined): "WIN" | "LOSE" | nu
   const normalized = String(input ?? "").trim().toUpperCase();
   if (normalized === "WIN" || normalized === "LOSE") return normalized;
   return null;
+}
+
+function sanitizeClanName(input: string | null | undefined): string | null {
+  const value = String(input ?? "").trim();
+  return value ? value : null;
 }
 
 function formatPercent(value: number | null): string {
@@ -271,6 +293,92 @@ export class WarEventLogService {
     await this.settings.set(this.buildWarStartPointsJobKey(job.clanTag), JSON.stringify(job));
   }
 
+  private buildPointsSiteMatchupSummary(input: {
+    trackedClanName: string | null;
+    trackedClanTag: string;
+    opponentClanName: string | null;
+    opponentClanTag: string | null;
+    trackedPoints: number | null;
+    opponentPoints: number | null;
+    syncNumber: number | null;
+    activeFwa: boolean;
+  }): string {
+    if (!input.activeFwa) return "Not marked as an FWA match.";
+    const primaryName = input.trackedClanName ?? normalizeTagBare(input.trackedClanTag);
+    const opponentName = input.opponentClanName ?? normalizeTagBare(input.opponentClanTag ?? "");
+    const x = input.trackedPoints;
+    const y = input.opponentPoints;
+    if (
+      x === null ||
+      y === null ||
+      !Number.isFinite(x) ||
+      !Number.isFinite(y)
+    ) {
+      return "Not marked as an FWA match.";
+    }
+    if (x > y) return `${primaryName} should win by points (${x} > ${y})`;
+    if (x < y) return `${opponentName} should win by points (${x} < ${y})`;
+    if (input.syncNumber === null || !Number.isFinite(input.syncNumber)) {
+      return "Not marked as an FWA match.";
+    }
+    const mode = input.syncNumber % 2 === 0 ? "high sync" : "low sync";
+    const cmp = compareTagsForTiebreak(input.trackedClanTag, input.opponentClanTag ?? "");
+    if (cmp === 0) return "Not marked as an FWA match.";
+    const winner = mode === "low sync" ? (cmp < 0 ? primaryName : opponentName) : cmp > 0 ? primaryName : opponentName;
+    return `${winner} should win by tiebreak (${x} = ${y}, ${mode})`;
+  }
+
+  private async persistTrackedClanPointsScrape(input: {
+    trackedClanTag: string;
+    trackedClanName: string | null;
+    opponentClanTag: string | null;
+    opponentClanName: string | null;
+    trackedPoints: number | null;
+    opponentPoints: number | null;
+    syncNumber: number | null;
+    pointsSiteUpToDate: boolean;
+    activeFwa: boolean;
+  }): Promise<void> {
+    const blob: TrackedClanPointsScrape = {
+      version: 1,
+      source: "points.fwafarm",
+      fetchedAtMs: Date.now(),
+      trackedClanName: input.trackedClanName?.trim() || null,
+      trackedClanTag: normalizeTag(input.trackedClanTag),
+      opponentClanName: input.opponentClanName?.trim() || null,
+      opponentClanTag: normalizeTag(input.opponentClanTag ?? "") || null,
+      pointBalance:
+        input.trackedPoints !== null && Number.isFinite(input.trackedPoints)
+          ? input.trackedPoints
+          : null,
+      opponentPointBalance:
+        input.opponentPoints !== null && Number.isFinite(input.opponentPoints)
+          ? input.opponentPoints
+          : null,
+      activeFwa: Boolean(input.activeFwa),
+      syncNumber:
+        input.syncNumber !== null && Number.isFinite(input.syncNumber)
+          ? Math.trunc(input.syncNumber)
+          : null,
+      matchup: this.buildPointsSiteMatchupSummary({
+        trackedClanName: input.trackedClanName,
+        trackedClanTag: input.trackedClanTag,
+        opponentClanName: input.opponentClanName,
+        opponentClanTag: input.opponentClanTag,
+        trackedPoints: input.trackedPoints,
+        opponentPoints: input.opponentPoints,
+        syncNumber: input.syncNumber,
+        activeFwa: input.activeFwa,
+      }),
+      pointsSiteUpToDate: input.pointsSiteUpToDate,
+    };
+
+    await prisma.trackedClan.updateMany({
+      where: { tag: { equals: blob.trackedClanTag, mode: "insensitive" } },
+      data: { pointsScrape: blob },
+    });
+  }
+
   private async resetWarStartPointsJob(
     clanTag: string,
     opponentTag: string
@@ -288,6 +396,7 @@ export class WarEventLogService {
       trackedPointBalanceDb: null,
       siteSyncNumber: null,
       siteOpponentTag: null,
+      siteOpponentBalance: null,
       inferredOpponentIsFwa: null,
       opponentChecked: false,
       lastCheckedAtMs: null,
@@ -298,7 +407,9 @@ export class WarEventLogService {
 
   private async maybeRunWarStartPointsCheck(
     sub: SubscriptionRow,
-    opponentTagInput: string
+    opponentTagInput: string,
+    clanNameInput: string | null,
+    opponentNameInput: string | null
   ): Promise<void> {
     const clanTag = normalizeTag(sub.clanTag);
     const opponentTag = normalizeTag(opponentTagInput);
@@ -321,11 +432,16 @@ export class WarEventLogService {
 
       let inferredOpponentIsFwa = job.inferredOpponentIsFwa;
       let opponentChecked = job.opponentChecked;
+      let opponentBalance = job.siteOpponentBalance;
       if (!opponentChecked) {
         const opp = await this.points.fetchSnapshot(opponentTag).catch(() => null);
         opponentChecked = true;
         inferredOpponentIsFwa =
           opp?.balance !== null && opp?.balance !== undefined && Number.isFinite(opp.balance);
+        opponentBalance =
+          opp?.balance !== null && opp?.balance !== undefined && Number.isFinite(opp.balance)
+            ? opp.balance
+            : null;
       }
 
       const mismatch =
@@ -361,10 +477,27 @@ export class WarEventLogService {
             ? Math.trunc(primary.winnerBoxSync)
             : null,
         siteOpponentTag: siteUpdated ? opponentTag : null,
+        siteOpponentBalance: opponentBalance,
         inferredOpponentIsFwa,
         opponentChecked,
         lastCheckedAtMs: Date.now(),
       });
+      if (siteUpdated) {
+        await this.persistTrackedClanPointsScrape({
+          trackedClanTag: clanTag,
+          trackedClanName: sanitizeClanName(clanNameInput) ?? sanitizeClanName(primary.clanName),
+          opponentClanTag: opponentTag,
+          opponentClanName: sanitizeClanName(opponentNameInput),
+          trackedPoints: trackedSite,
+          opponentPoints: opponentBalance,
+          syncNumber:
+            primary.winnerBoxSync !== null && Number.isFinite(primary.winnerBoxSync)
+              ? Math.trunc(primary.winnerBoxSync)
+              : null,
+          pointsSiteUpToDate: true,
+          activeFwa: true,
+        });
+      }
     } catch {
       const exhausted = nextAttempt >= job.maxAttempts;
       await this.setWarStartPointsJob({
@@ -608,7 +741,12 @@ export class WarEventLogService {
       await this.resetWarStartPointsJob(sub.clanTag, nextOpponentTag).catch(() => null);
     }
     if (currentState !== "notInWar" && nextOpponentTag) {
-      await this.maybeRunWarStartPointsCheck(sub, nextOpponentTag).catch(() => null);
+      await this.maybeRunWarStartPointsCheck(
+        sub,
+        nextOpponentTag,
+        nextClanName,
+        nextOpponentName
+      ).catch(() => null);
     }
 
     let nextFwaPoints = sub.fwaPoints;
