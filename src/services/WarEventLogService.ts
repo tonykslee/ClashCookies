@@ -62,6 +62,23 @@ type PollSyncContext = {
   activeSync: number | null;
 };
 
+type WarStartPointsCheckJob = {
+  clanTag: string;
+  opponentTag: string;
+  attempts: number;
+  maxAttempts: number;
+  nextAttemptAtMs: number;
+  completed: boolean;
+  status: "pending" | "in_sync" | "out_of_sync" | "max_attempts" | "error";
+  trackedPointBalanceSite: number | null;
+  trackedPointBalanceDb: number | null;
+  siteSyncNumber: number | null;
+  siteOpponentTag: string | null;
+  inferredOpponentIsFwa: boolean | null;
+  opponentChecked: boolean;
+  lastCheckedAtMs: number | null;
+};
+
 function normalizeTag(input: string | null | undefined): string {
   const raw = String(input ?? "").trim().toUpperCase();
   if (!raw) return "";
@@ -188,6 +205,9 @@ export class WarEventLogService {
   private readonly settings: SettingsService;
   private readonly badgeEmojiByTag: Record<string, string>;
   private static readonly PREVIOUS_SYNC_KEY = "previousSyncNum";
+  private static readonly WAR_START_POINTS_JOB_PREFIX = "warStartPointsCheck";
+  private static readonly WAR_START_POINTS_RECHECK_MS = 30 * 60 * 1000;
+  private static readonly WAR_START_POINTS_MAX_ATTEMPTS = 10;
 
   constructor(private readonly client: Client, private readonly coc: CoCService) {
     this.points = new PointsProjectionService(coc);
@@ -229,6 +249,135 @@ export class WarEventLogService {
     const parsed = raw === null ? NaN : Number(raw);
     if (Number.isFinite(parsed)) return Math.trunc(parsed);
     return this.recoverPreviousSyncNumFromPoints();
+  }
+
+  private buildWarStartPointsJobKey(clanTag: string): string {
+    return `${WarEventLogService.WAR_START_POINTS_JOB_PREFIX}:${normalizeTagBare(clanTag)}`;
+  }
+
+  private async getWarStartPointsJob(clanTag: string): Promise<WarStartPointsCheckJob | null> {
+    const raw = await this.settings.get(this.buildWarStartPointsJobKey(clanTag));
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw) as WarStartPointsCheckJob;
+      if (!parsed || typeof parsed !== "object") return null;
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+
+  private async setWarStartPointsJob(job: WarStartPointsCheckJob): Promise<void> {
+    await this.settings.set(this.buildWarStartPointsJobKey(job.clanTag), JSON.stringify(job));
+  }
+
+  private async resetWarStartPointsJob(
+    clanTag: string,
+    opponentTag: string
+  ): Promise<WarStartPointsCheckJob> {
+    const now = Date.now();
+    const next: WarStartPointsCheckJob = {
+      clanTag: normalizeTag(clanTag),
+      opponentTag: normalizeTag(opponentTag),
+      attempts: 0,
+      maxAttempts: WarEventLogService.WAR_START_POINTS_MAX_ATTEMPTS,
+      nextAttemptAtMs: now,
+      completed: false,
+      status: "pending",
+      trackedPointBalanceSite: null,
+      trackedPointBalanceDb: null,
+      siteSyncNumber: null,
+      siteOpponentTag: null,
+      inferredOpponentIsFwa: null,
+      opponentChecked: false,
+      lastCheckedAtMs: null,
+    };
+    await this.setWarStartPointsJob(next);
+    return next;
+  }
+
+  private async maybeRunWarStartPointsCheck(
+    sub: SubscriptionRow,
+    opponentTagInput: string
+  ): Promise<void> {
+    const clanTag = normalizeTag(sub.clanTag);
+    const opponentTag = normalizeTag(opponentTagInput);
+    if (!clanTag || !opponentTag) return;
+
+    let job = await this.getWarStartPointsJob(clanTag);
+    if (!job || normalizeTag(job.opponentTag) !== opponentTag) {
+      job = await this.resetWarStartPointsJob(clanTag, opponentTag);
+    }
+    if (job.completed) return;
+    if (Date.now() < job.nextAttemptAtMs) return;
+
+    const nextAttempt = job.attempts + 1;
+    try {
+      const primary = await this.points.fetchSnapshot(clanTag);
+      const siteUpdated = primary.winnerBoxTags.map((t) => normalizeTag(t)).includes(opponentTag);
+      const trackedDb = sub.fwaPoints ?? null;
+      const trackedSite =
+        primary.balance !== null && Number.isFinite(primary.balance) ? primary.balance : null;
+
+      let inferredOpponentIsFwa = job.inferredOpponentIsFwa;
+      let opponentChecked = job.opponentChecked;
+      if (!opponentChecked) {
+        const opp = await this.points.fetchSnapshot(opponentTag).catch(() => null);
+        opponentChecked = true;
+        inferredOpponentIsFwa =
+          opp?.balance !== null && opp?.balance !== undefined && Number.isFinite(opp.balance);
+      }
+
+      const mismatch =
+        siteUpdated &&
+        trackedDb !== null &&
+        trackedSite !== null &&
+        Number.isFinite(trackedDb) &&
+        Number.isFinite(trackedSite) &&
+        trackedDb !== trackedSite;
+
+      const exhausted = !siteUpdated && nextAttempt >= job.maxAttempts;
+      const completed = siteUpdated || exhausted;
+      const status: WarStartPointsCheckJob["status"] = siteUpdated
+        ? mismatch
+          ? "out_of_sync"
+          : "in_sync"
+        : exhausted
+          ? "max_attempts"
+          : "pending";
+
+      await this.setWarStartPointsJob({
+        ...job,
+        attempts: nextAttempt,
+        nextAttemptAtMs: completed
+          ? Date.now()
+          : Date.now() + WarEventLogService.WAR_START_POINTS_RECHECK_MS,
+        completed,
+        status,
+        trackedPointBalanceSite: trackedSite,
+        trackedPointBalanceDb: trackedDb,
+        siteSyncNumber:
+          primary.winnerBoxSync !== null && Number.isFinite(primary.winnerBoxSync)
+            ? Math.trunc(primary.winnerBoxSync)
+            : null,
+        siteOpponentTag: siteUpdated ? opponentTag : null,
+        inferredOpponentIsFwa,
+        opponentChecked,
+        lastCheckedAtMs: Date.now(),
+      });
+    } catch {
+      const exhausted = nextAttempt >= job.maxAttempts;
+      await this.setWarStartPointsJob({
+        ...job,
+        attempts: nextAttempt,
+        completed: exhausted,
+        status: exhausted ? "max_attempts" : "error",
+        nextAttemptAtMs: exhausted
+          ? Date.now()
+          : Date.now() + WarEventLogService.WAR_START_POINTS_RECHECK_MS,
+        lastCheckedAtMs: Date.now(),
+      });
+    }
   }
 
   async poll(): Promise<void> {
@@ -455,6 +604,12 @@ export class WarEventLogService {
         : currentState === "notInWar"
           ? syncContext.previousSync
           : syncContext.activeSync;
+    if (eventType === "war_started" && nextOpponentTag) {
+      await this.resetWarStartPointsJob(sub.clanTag, nextOpponentTag).catch(() => null);
+    }
+    if (currentState !== "notInWar" && nextOpponentTag) {
+      await this.maybeRunWarStartPointsCheck(sub, nextOpponentTag).catch(() => null);
+    }
 
     let nextFwaPoints = sub.fwaPoints;
     let nextOpponentFwaPoints = sub.opponentFwaPoints;

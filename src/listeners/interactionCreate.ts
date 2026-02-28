@@ -25,7 +25,9 @@ import {
   handleFwaMatchTypeEditButton,
   handleFwaOutcomeActionButton,
   handleFwaMatchTypeActionButton,
+  handleFwaMatchSyncActionButton,
   isFwaMatchAllianceButtonCustomId,
+  isFwaMatchSyncActionButtonCustomId,
   isFwaMatchTypeEditButtonCustomId,
   isFwaOutcomeActionButtonCustomId,
   isFwaMatchSelectCustomId,
@@ -317,6 +319,20 @@ const handleButtonInteraction = async (interaction: Interaction): Promise<void> 
         await interaction.reply({
           ephemeral: true,
           content: "Failed to open alliance view.",
+        });
+      }
+    }
+  }
+
+  if (isFwaMatchSyncActionButtonCustomId(interaction.customId)) {
+    try {
+      await handleFwaMatchSyncActionButton(interaction);
+    } catch (err) {
+      console.error(`FWA match sync action button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to sync points-site data.",
         });
       }
     }
