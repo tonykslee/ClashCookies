@@ -1437,6 +1437,43 @@ function isPointsScrapeUpdatedForOpponent(
   return normalizeTag(scrape.opponentClanTag) === normalizeTag(opponentTag);
 }
 
+function buildPointsScrapeMatchupSummary(
+  trackedClanName: string | null,
+  trackedClanTag: string,
+  opponentClanName: string | null,
+  opponentClanTag: string | null,
+  trackedPoints: number | null,
+  opponentPoints: number | null,
+  syncNumber: number | null,
+  activeFwa: boolean
+): string {
+  if (!activeFwa) return "Not marked as an FWA match.";
+  if (
+    trackedPoints === null ||
+    opponentPoints === null ||
+    !Number.isFinite(trackedPoints) ||
+    !Number.isFinite(opponentPoints)
+  ) {
+    return "Not marked as an FWA match.";
+  }
+  const left = trackedClanName ?? normalizeTag(trackedClanTag);
+  const right = opponentClanName ?? normalizeTag(opponentClanTag ?? "");
+  if (trackedPoints > opponentPoints) {
+    return `${left} should win by points (${trackedPoints} > ${opponentPoints})`;
+  }
+  if (trackedPoints < opponentPoints) {
+    return `${right} should win by points (${trackedPoints} < ${opponentPoints})`;
+  }
+  if (syncNumber === null || !Number.isFinite(syncNumber)) {
+    return "Not marked as an FWA match.";
+  }
+  const mode = syncNumber % 2 === 0 ? "high sync" : "low sync";
+  const cmp = compareTagsForTiebreak(trackedClanTag, opponentClanTag ?? "");
+  if (cmp === 0) return "Not marked as an FWA match.";
+  const winner = mode === "low sync" ? (cmp < 0 ? left : right) : cmp > 0 ? left : right;
+  return `${winner} should win by tiebreak (${trackedPoints} = ${opponentPoints}, ${mode})`;
+}
+
 function limitDiscordContent(content: string): string {
   return truncateDiscordContent(content, DISCORD_CONTENT_MAX);
 }
@@ -2491,12 +2528,44 @@ export const Fwa: Command = {
         },
       ],
     },
+    {
+      name: "sync",
+      description: "Sync FWA data from points.fwafarm",
+      type: ApplicationCommandOptionType.SubcommandGroup,
+      options: [
+        {
+          name: "force",
+          description: "Force-refresh points and sync number for a tracked clan",
+          type: ApplicationCommandOptionType.Subcommand,
+          options: [
+            {
+              name: "tag",
+              description: "Tracked clan tag (with or without #)",
+              type: ApplicationCommandOptionType.String,
+              required: true,
+              autocomplete: true,
+            },
+            {
+              name: "datapoint",
+              description: "Choose which value to overwrite",
+              type: ApplicationCommandOptionType.String,
+              required: false,
+              choices: [
+                { name: "points", value: "points" },
+                { name: "syncNum", value: "syncNum" },
+              ],
+            },
+          ],
+        },
+      ],
+    },
   ],
   run: async (
     _client: Client,
     interaction: ChatInputCommandInteraction,
     cocService: CoCService
   ) => {
+    const subcommandGroup = interaction.options.getSubcommandGroup(false);
     const subcommand = interaction.options.getSubcommand(true);
     const visibility = interaction.options.getString("visibility", false) ?? "private";
     const isPublic = visibility === "public";
@@ -2566,6 +2635,153 @@ export const Fwa: Command = {
       const permissionService = new CommandPermissionService();
       await permissionService.setFwaLeaderRoleId(interaction.guildId, role.id);
       await editReplySafe(`FWA leader role set to <@&${role.id}>.`);
+      return;
+    }
+
+    if (subcommandGroup === "sync" && subcommand === "force") {
+      if (!tag) {
+        await editReplySafe("Please provide `tag`.");
+        return;
+      }
+      const datapoint = interaction.options.getString("datapoint", false) ?? "all";
+      const shouldOverwritePoints = datapoint === "all" || datapoint === "points";
+      const shouldOverwriteSyncNum = datapoint === "all" || datapoint === "syncNum";
+      const trackedClan = await prisma.trackedClan.findFirst({
+        where: { tag: { equals: `#${tag}`, mode: "insensitive" } },
+        select: { tag: true, name: true },
+      });
+      if (!trackedClan) {
+        await editReplySafe(`Clan #${tag} is not in tracked clans.`);
+        return;
+      }
+
+      const war = await getCurrentWarCached(cocService, tag, warLookupCache).catch(() => null);
+      const opponentTag = normalizeTag(String(war?.opponent?.tag ?? ""));
+      const opponentName = sanitizeClanName(String(war?.opponent?.name ?? "")) ?? null;
+      const currentWarEndMs = await getClanWarEndMs(cocService, tag, warLookupCache).catch(
+        () => null
+      );
+      const fresh = await scrapeClanPoints(tag, {
+        refreshedForWarEndMs: null,
+        warEndMs: currentWarEndMs,
+        lastWarCheckAtMs: Date.now(),
+      });
+      await writePointsCache(settings, tag, fresh);
+
+      const siteSync = fresh.winnerBoxSync;
+      const siteUpdatedForOpponent =
+        opponentTag && isPointsSiteUpdatedForOpponent(fresh, opponentTag, null);
+      let previousSyncSet: number | null = null;
+      if (shouldOverwriteSyncNum && siteSync !== null && Number.isFinite(siteSync)) {
+        const recoveredPrevious = siteUpdatedForOpponent ? siteSync - 1 : siteSync;
+        if (Number.isFinite(recoveredPrevious) && recoveredPrevious >= 0) {
+          previousSyncSet = Math.trunc(recoveredPrevious);
+          await settings.set(PREVIOUS_SYNC_KEY, String(previousSyncSet));
+          sourceSync = previousSyncSet;
+        }
+      }
+
+      if (shouldOverwritePoints && interaction.guildId) {
+        await prisma.warEventLogSubscription.upsert({
+          where: {
+            guildId_clanTag: {
+              guildId: interaction.guildId,
+              clanTag: `#${tag}`,
+            },
+          },
+          create: {
+            guildId: interaction.guildId,
+            clanTag: `#${tag}`,
+            channelId: interaction.channelId,
+            notify: false,
+            fwaPoints:
+              fresh.balance !== null && Number.isFinite(fresh.balance) ? fresh.balance : null,
+          },
+          update: {
+            fwaPoints:
+              fresh.balance !== null && Number.isFinite(fresh.balance) ? fresh.balance : null,
+            updatedAt: new Date(),
+          },
+        });
+      }
+
+      let opponentSnapshot: PointsSnapshot | null = null;
+      let opponentBalance: number | null = null;
+      if (siteUpdatedForOpponent) {
+        const fromPrimary = deriveOpponentBalanceFromPrimarySnapshot(fresh, tag, opponentTag);
+        if (fromPrimary !== null && Number.isFinite(fromPrimary)) {
+          opponentBalance = fromPrimary;
+        } else if (opponentTag) {
+          opponentSnapshot = await scrapeClanPoints(opponentTag, {
+            refreshedForWarEndMs: null,
+            warEndMs: null,
+            lastWarCheckAtMs: Date.now(),
+          }).catch(() => null);
+          opponentBalance =
+            opponentSnapshot?.balance !== null &&
+            opponentSnapshot?.balance !== undefined &&
+            Number.isFinite(opponentSnapshot.balance)
+              ? opponentSnapshot.balance
+              : null;
+        }
+      }
+      if (shouldOverwritePoints && siteUpdatedForOpponent) {
+        const pointsScrape: TrackedClanPointsScrape = {
+          version: 1,
+          source: "points.fwafarm",
+          fetchedAtMs: Date.now(),
+          trackedClanName:
+            sanitizeClanName(trackedClan.name) ?? sanitizeClanName(fresh.clanName) ?? null,
+          trackedClanTag: tag,
+          opponentClanName: opponentName,
+          opponentClanTag: opponentTag || null,
+          pointBalance:
+            fresh.balance !== null && Number.isFinite(fresh.balance) ? fresh.balance : null,
+          opponentPointBalance: opponentBalance,
+          activeFwa: true,
+          syncNumber:
+            siteSync !== null && Number.isFinite(siteSync) ? Math.trunc(siteSync) : null,
+          matchup: buildPointsScrapeMatchupSummary(
+            sanitizeClanName(trackedClan.name) ?? sanitizeClanName(fresh.clanName) ?? null,
+            tag,
+            opponentName,
+            opponentTag || null,
+            fresh.balance !== null && Number.isFinite(fresh.balance) ? fresh.balance : null,
+            opponentBalance,
+            siteSync !== null && Number.isFinite(siteSync) ? Math.trunc(siteSync) : null,
+            true
+          ),
+          pointsSiteUpToDate: true,
+        };
+        await prisma.trackedClan.update({
+          where: { tag: `#${tag}` },
+          data: { pointsScrape },
+        });
+      }
+
+      await editReplySafe(
+        [
+          `Forced sync complete for #${tag} (${datapoint === "all" ? "points + syncNum" : datapoint}).`,
+          `Point balance: ${
+            fresh.balance !== null && Number.isFinite(fresh.balance)
+              ? `**${formatPoints(fresh.balance)}**`
+              : "unavailable"
+          }`,
+          `Site sync #: ${siteSync !== null && Number.isFinite(siteSync) ? `#${Math.trunc(siteSync)}` : "unknown"}`,
+          `Stored previousSyncNum: ${
+            shouldOverwriteSyncNum
+              ? previousSyncSet !== null
+                ? `#${previousSyncSet}`
+                : "unchanged"
+              : "skipped"
+          }`,
+          shouldOverwritePoints
+            ? siteUpdatedForOpponent
+              ? "pointsScrape updated from points.fwafarm."
+              : "points.fwafarm not up-to-date for current opponent; pointsScrape not updated."
+            : "points overwrite skipped.",
+        ].join("\n")
+      );
       return;
     }
 
