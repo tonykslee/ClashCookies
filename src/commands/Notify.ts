@@ -107,6 +107,20 @@ export const Notify: Command = {
         },
       ],
     },
+    {
+      name: "war-remove",
+      description: "Remove war event log subscription for a clan",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "clan-tag",
+          description: "Clan tag to remove from notify routing",
+          type: ApplicationCommandOptionType.String,
+          required: true,
+          autocomplete: true,
+        },
+      ],
+    },
   ],
   run: async (
     _client: Client,
@@ -120,6 +134,27 @@ export const Notify: Command = {
     }
 
     const sub = interaction.options.getSubcommand(true);
+    if (sub === "war-remove") {
+      const clanTag = normalizeClanTag(interaction.options.getString("clan-tag", true));
+      if (!clanTag) {
+        await interaction.editReply("Invalid clan tag.");
+        return;
+      }
+
+      const deleted = await prisma.warEventLogSubscription.deleteMany({
+        where: {
+          guildId: interaction.guildId,
+          clanTag,
+        },
+      });
+      if (deleted.count === 0) {
+        await interaction.editReply(`No /notify war subscription found for ${clanTag}.`);
+        return;
+      }
+      await interaction.editReply(`Removed /notify war subscription for ${clanTag}.`);
+      return;
+    }
+
     if (sub === "show") {
       const rawTag = interaction.options.getString("clan-tag", false);
       const normalizedFilter = rawTag ? normalizeClanTag(rawTag) : "";

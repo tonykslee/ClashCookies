@@ -57,6 +57,11 @@ type WarComplianceSnapshot = {
   notFollowingPlan: string[];
 };
 
+type PollSyncContext = {
+  previousSync: number;
+  activeSync: number;
+};
+
 function normalizeTag(input: string | null | undefined): string {
   const raw = String(input ?? "").trim().toUpperCase();
   if (!raw) return "";
@@ -210,16 +215,12 @@ export class WarEventLogService {
     return fallback;
   }
 
-  private async updatePreviousSyncOnWarEnd(observedSync: number | null): Promise<void> {
-    if (observedSync === null || !Number.isFinite(observedSync)) return;
-    const current = await this.getPreviousSyncNum();
-    const next = Math.max(current, Math.trunc(observedSync));
-    if (next !== current) {
-      await this.settings.set(WarEventLogService.PREVIOUS_SYNC_KEY, String(next));
-    }
-  }
-
   async poll(): Promise<void> {
+    const previousSync = await this.getPreviousSyncNum();
+    const syncContext: PollSyncContext = {
+      previousSync,
+      activeSync: previousSync + 1,
+    };
     const subs = await prisma.$queryRaw<SubscriptionRow[]>(
       Prisma.sql`
         SELECT
@@ -229,14 +230,23 @@ export class WarEventLogService {
         ORDER BY "updatedAt" ASC
       `
     );
+    let sawWarEnded = false;
     for (const sub of subs) {
-      await this.processSubscription(sub.id).catch((err) => {
+      const ended = await this.processSubscription(sub.id, syncContext).catch((err) => {
         console.error(
           `[war-events] process failed guild=${sub.guildId} clan=${sub.clanTag} error=${formatError(
             err
           )}`
         );
+        return false;
       });
+      sawWarEnded = sawWarEnded || ended;
+    }
+    if (sawWarEnded) {
+      await this.settings.set(
+        WarEventLogService.PREVIOUS_SYNC_KEY,
+        String(syncContext.activeSync)
+      );
     }
   }
 
@@ -367,7 +377,25 @@ export class WarEventLogService {
     return rows[0] ?? null;
   }
 
-  private async processSubscription(subscriptionId: number): Promise<void> {
+  private async hasWarEndRecorded(clanTagInput: string, warStartTime: Date): Promise<boolean> {
+    const clanTag = normalizeTag(clanTagInput);
+    const existing = await prisma.warClanHistory.findUnique({
+      where: { clanTag_warStartTime: { clanTag, warStartTime } },
+      select: { warId: true },
+    });
+    return Boolean(existing?.warId);
+  }
+
+  private computeBlPointsDelta(finalResult: WarEndResultSnapshot): number {
+    if (finalResult.resultLabel === "WIN") return 3;
+    if ((finalResult.clanDestruction ?? 0) >= 60) return 2;
+    return 1;
+  }
+
+  private async processSubscription(
+    subscriptionId: number,
+    syncContext: PollSyncContext
+  ): Promise<boolean> {
     const rows = await prisma.$queryRaw<SubscriptionRow[]>(
       Prisma.sql`
         SELECT
@@ -378,7 +406,7 @@ export class WarEventLogService {
       `
     );
     const sub = rows[0] ?? null;
-    if (!sub || !sub.notify) return;
+    if (!sub || !sub.notify) return false;
 
     const war = await this.coc.getCurrentWar(sub.clanTag).catch(() => null);
     const currentState: WarState = war ? deriveState(String(war.state ?? "")) : "notInWar";
@@ -396,15 +424,21 @@ export class WarEventLogService {
       return new Date(Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s)));
     })();
 
-    const eventType = shouldEmit(prevState, currentState);
-    const previousSync = await this.getPreviousSyncNum();
-    const activeSync = previousSync + 1;
+    const eventTypeRaw = shouldEmit(prevState, currentState);
+    let eventType = eventTypeRaw;
+    if (eventType === "war_ended") {
+      if (!sub.lastWarStartTime) {
+        eventType = null;
+      } else if (await this.hasWarEndRecorded(sub.clanTag, sub.lastWarStartTime)) {
+        eventType = null;
+      }
+    }
     const syncNumberForEvent =
       eventType === "war_ended"
-        ? activeSync
+        ? syncContext.activeSync
         : currentState === "notInWar"
-          ? previousSync
-          : activeSync;
+          ? syncContext.previousSync
+          : syncContext.activeSync;
 
     let nextFwaPoints = sub.fwaPoints;
     let nextOpponentFwaPoints = sub.opponentFwaPoints;
@@ -460,6 +494,38 @@ export class WarEventLogService {
         nextInferredMatchType = true;
       }
     }
+    if (
+      eventType === "war_ended" &&
+      nextMatchType === null &&
+      nextInferredMatchType
+    ) {
+      nextMatchType =
+        nextOpponentFwaPoints !== null && Number.isFinite(nextOpponentFwaPoints)
+          ? "FWA"
+          : "MM";
+    }
+
+    if (eventType === "war_ended" && nextMatchType === "BL") {
+      const finalResult = await this.getWarEndResultSnapshot({
+        clanTag: sub.clanTag,
+        opponentTag: nextOpponentTag || normalizeTag(sub.lastOpponentTag ?? ""),
+        fallbackClanStars: nextClanStars,
+        fallbackOpponentStars: nextOpponentStars,
+        warStartTime: nextWarStartTime,
+      });
+      const delta = this.computeBlPointsDelta(finalResult);
+      const before =
+        nextWarStartFwaPoints !== null && Number.isFinite(nextWarStartFwaPoints)
+          ? nextWarStartFwaPoints
+          : nextFwaPoints !== null && Number.isFinite(nextFwaPoints)
+            ? nextFwaPoints
+            : null;
+      if (before !== null) {
+        const after = before + delta;
+        nextWarEndFwaPoints = after;
+        nextFwaPoints = after;
+      }
+    }
 
     if (eventType) {
       const eventPayload = {
@@ -482,7 +548,6 @@ export class WarEventLogService {
       } as const;
 
       if (eventType === "war_ended") {
-        await this.updatePreviousSyncOnWarEnd(activeSync);
         await this.persistWarEndHistory(eventPayload).catch((err) => {
           console.error(
             `[war-events] persist war history failed guild=${sub.guildId} clan=${sub.clanTag} error=${formatError(err)}`
@@ -512,6 +577,7 @@ export class WarEventLogService {
         updatedAt: new Date(),
       },
     });
+    return eventType === "war_ended";
   }
 
   private async emitEvent(
@@ -644,8 +710,8 @@ export class WarEventLogService {
         name: "Result",
         value: [
           ...(payload.matchType === "BL" ? [] : [`Outcome: **${finalResult.resultLabel}**`]),
-          `Stars: ${payload.clanName} ${finalResult.clanStars ?? "unknown"} - ${payload.opponentName} ${finalResult.opponentStars ?? "unknown"}`,
-          `Destruction: ${payload.clanName} ${formatPercent(finalResult.clanDestruction)} - ${payload.opponentName} ${formatPercent(finalResult.opponentDestruction)}`,
+          `Stars: **${payload.clanName}** ${finalResult.clanStars ?? "unknown"} | **${payload.opponentName}** ${finalResult.opponentStars ?? "unknown"}`,
+          `Destruction: **${payload.clanName}** ${formatPercent(finalResult.clanDestruction)} | **${payload.opponentName}** ${formatPercent(finalResult.opponentDestruction)}`,
         ].join("\n"),
         inline: false,
       });
