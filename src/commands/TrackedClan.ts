@@ -30,6 +30,16 @@ export const TrackedClan: Command = {
           type: ApplicationCommandOptionType.String,
           required: true,
         },
+        {
+          name: "lose-style",
+          description: "FWA lose-war plan style for this clan",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          choices: [
+            { name: "Triple-top-30", value: "TRIPLE_TOP_30" },
+            { name: "Traditional", value: "TRADITIONAL" },
+          ],
+        },
       ],
     },
     {
@@ -75,7 +85,9 @@ export const TrackedClan: Command = {
         }
 
         const lines = tracked.map((clan) =>
-          clan.name ? `- ${clan.tag} (${clan.name})` : `- ${clan.tag}`
+          clan.name
+            ? `- ${clan.tag} (${clan.name}) | lose-style: ${clan.loseStyle}`
+            : `- ${clan.tag} | lose-style: ${clan.loseStyle}`
         );
         await safeReply(interaction, {
           ephemeral: true,
@@ -88,23 +100,18 @@ export const TrackedClan: Command = {
       const tag = normalizeClanTag(tagInput);
 
       if (subcommand === "add") {
+        const loseStyle = (interaction.options.getString("lose-style", false) ?? "TRIPLE_TOP_30") as
+          | "TRIPLE_TOP_30"
+          | "TRADITIONAL";
         const clan = await cocService.getClan(tag);
         const activityService = new ActivityService(cocService);
         const existing = await prisma.trackedClan.findUnique({
           where: { tag },
         });
-
-        if (existing) {
-          const name = existing.name ?? clan.name ?? "Unknown Clan";
-          await safeReply(interaction, {
-            ephemeral: true,
-            content: `${name} (${tag}) is already being tracked`,
-          });
-          return;
-        }
-
-        const created = await prisma.trackedClan.create({
-          data: { tag, name: clan.name ?? null },
+        const saved = await prisma.trackedClan.upsert({
+          where: { tag },
+          create: { tag, name: clan.name ?? null, loseStyle },
+          update: { name: clan.name ?? null, loseStyle },
         });
 
         try {
@@ -117,7 +124,9 @@ export const TrackedClan: Command = {
 
         await safeReply(interaction, {
           ephemeral: true,
-          content: `Now tracking ${created.name ?? "Unknown Clan"} (${created.tag})`,
+          content: existing
+            ? `Updated tracked clan ${saved.name ?? "Unknown Clan"} (${saved.tag}) | lose-style: ${saved.loseStyle}`
+            : `Now tracking ${saved.name ?? "Unknown Clan"} (${saved.tag}) | lose-style: ${saved.loseStyle}`,
         });
         return;
       }
