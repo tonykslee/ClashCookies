@@ -93,6 +93,20 @@ export const Notify: Command = {
         },
       ],
     },
+    {
+      name: "show",
+      description: "Show war notify routing for tracked clans",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "clan-tag",
+          description: "Optional clan tag to show a single clan config",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          autocomplete: true,
+        },
+      ],
+    },
   ],
   run: async (
     _client: Client,
@@ -106,6 +120,61 @@ export const Notify: Command = {
     }
 
     const sub = interaction.options.getSubcommand(true);
+    if (sub === "show") {
+      const rawTag = interaction.options.getString("clan-tag", false);
+      const normalizedFilter = rawTag ? normalizeClanTag(rawTag) : "";
+
+      const tracked = await prisma.trackedClan.findMany({
+        orderBy: { createdAt: "asc" },
+        select: { name: true, tag: true },
+      });
+      const subscriptions = await prisma.warEventLogSubscription.findMany({
+        where: { guildId: interaction.guildId },
+        select: {
+          clanTag: true,
+          channelId: true,
+          notifyRole: true,
+          notify: true,
+        },
+      });
+      const subByTag = new Map(
+        subscriptions.map((s) => [normalizeClanTag(s.clanTag), s])
+      );
+
+      const rows = tracked
+        .map((clan) => {
+          const clanTag = normalizeClanTag(clan.tag);
+          const subRow = subByTag.get(clanTag) ?? null;
+          return {
+            clanName: clan.name?.trim() || clanTag,
+            clanTag,
+            channelId: subRow?.channelId ?? null,
+            notifyRole: subRow?.notifyRole ?? null,
+            enabled: Boolean(subRow?.notify),
+          };
+        })
+        .filter((r) => (normalizedFilter ? r.clanTag === normalizedFilter : true));
+
+      if (rows.length === 0) {
+        await interaction.editReply(
+          normalizedFilter
+            ? `No tracked clan found for ${normalizedFilter}.`
+            : "No tracked clans configured."
+        );
+        return;
+      }
+
+      const lines = rows.map((r) => {
+        const channelText = r.channelId ? `<#${r.channelId}>` : "not configured";
+        const roleText = r.notifyRole ? `<@&${r.notifyRole}>` : "none";
+        const status = r.enabled ? "enabled" : "disabled";
+        return `- **${r.clanName}** (${r.clanTag})\n  Channel: ${channelText}\n  Role: ${roleText}\n  Status: ${status}`;
+      });
+
+      await interaction.editReply(lines.join("\n"));
+      return;
+    }
+
     if (sub === "war-test") {
       const clanTag = normalizeClanTag(interaction.options.getString("clan-tag", true));
       const eventType = interaction.options.getString("event", true) as
