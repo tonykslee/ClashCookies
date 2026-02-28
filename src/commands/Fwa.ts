@@ -135,6 +135,7 @@ type MatchView = {
     siteFwaPoints: number | null;
     siteOpponentFwaPoints: number | null;
     siteOutcome: "WIN" | "LOSE" | null;
+    siteSyncNumber: number | null;
   } | null;
   clanName?: string;
   clanTag?: string;
@@ -952,6 +953,15 @@ export async function handleFwaMatchSyncActionButton(
       updatedAt: new Date(),
     },
   });
+  if (
+    syncAction.siteSyncNumber !== null &&
+    syncAction.siteSyncNumber !== undefined &&
+    Number.isFinite(syncAction.siteSyncNumber)
+  ) {
+    const settings = new SettingsService();
+    const nextPrevious = Math.max(0, Math.trunc(syncAction.siteSyncNumber) - 1);
+    await settings.set(PREVIOUS_SYNC_KEY, String(nextPrevious));
+  }
 
   const refreshed = await rebuildTrackedPayloadForTag(
     payload,
@@ -2452,6 +2462,7 @@ async function buildTrackedMatchOverview(
               siteFwaPoints: primaryPoints?.balance ?? null,
               siteOpponentFwaPoints: opponentPoints?.balance ?? null,
               siteOutcome: matchType === "FWA" ? derivedOutcome : null,
+              siteSyncNumber: siteSyncObserved,
             }
           : null,
       clanName,
@@ -3322,6 +3333,7 @@ export const Fwa: Command = {
                   siteFwaPoints: primary.balance,
                   siteOpponentFwaPoints: opponent.balance,
                   siteOutcome: matchType === "FWA" ? derivedOutcome : null,
+                  siteSyncNumber: siteSyncObserved,
                 }
               : null,
         };
