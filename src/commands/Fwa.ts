@@ -2074,6 +2074,15 @@ async function buildTrackedMatchOverview(
     if (!stateRemaining.has(warState)) {
       stateRemaining.set(warState, getWarStateRemaining(war, warState));
     }
+    if (warState === "notInWar") {
+      embed.addFields({
+        name: `${clanName} (#${clanTag})`,
+        value: ":face_palm: failed to start war",
+        inline: false,
+      });
+      copyLines.push(`## ${clanName} (#${clanTag})`, ":face_palm: failed to start war");
+      continue;
+    }
 
     const opponentTag = normalizeTag(String(war?.opponent?.tag ?? ""));
     const opponentName = sanitizeClanName(String(war?.opponent?.name ?? "")) ?? "Unknown";
@@ -2210,17 +2219,10 @@ async function buildTrackedMatchOverview(
               : null,
           outcome: effectiveOutcome,
           warStartFwaPoints:
-            warState !== "notInWar" &&
-            primaryPoints?.balance !== null &&
-            primaryPoints?.balance !== undefined
+            primaryPoints?.balance !== null && primaryPoints?.balance !== undefined
               ? primaryPoints.balance
               : null,
-          warEndFwaPoints:
-            warState === "notInWar" &&
-            primaryPoints?.balance !== null &&
-            primaryPoints?.balance !== undefined
-              ? primaryPoints.balance
-              : null,
+          warEndFwaPoints: null,
         },
         update: {
           matchType: inferredFromPointsType,
@@ -2235,17 +2237,10 @@ async function buildTrackedMatchOverview(
               : null,
           outcome: effectiveOutcome,
           warStartFwaPoints:
-            warState !== "notInWar" &&
-            primaryPoints?.balance !== null &&
-            primaryPoints?.balance !== undefined
+            primaryPoints?.balance !== null && primaryPoints?.balance !== undefined
               ? { set: primaryPoints.balance }
               : undefined,
-          warEndFwaPoints:
-            warState === "notInWar" &&
-            primaryPoints?.balance !== null &&
-            primaryPoints?.balance !== undefined
-              ? { set: primaryPoints.balance }
-              : undefined,
+          warEndFwaPoints: undefined,
         },
       });
     } else if (guildId) {
@@ -2273,17 +2268,10 @@ async function buildTrackedMatchOverview(
               : null,
           outcome: effectiveOutcome,
           warStartFwaPoints:
-            warState !== "notInWar" &&
-            primaryPoints?.balance !== null &&
-            primaryPoints?.balance !== undefined
+            primaryPoints?.balance !== null && primaryPoints?.balance !== undefined
               ? primaryPoints.balance
               : null,
-          warEndFwaPoints:
-            warState === "notInWar" &&
-            primaryPoints?.balance !== null &&
-            primaryPoints?.balance !== undefined
-              ? primaryPoints.balance
-              : null,
+          warEndFwaPoints: null,
         },
         update: {
           matchType,
@@ -2298,17 +2286,10 @@ async function buildTrackedMatchOverview(
               : null,
           outcome: effectiveOutcome,
           warStartFwaPoints:
-            warState !== "notInWar" &&
-            primaryPoints?.balance !== null &&
-            primaryPoints?.balance !== undefined
+            primaryPoints?.balance !== null && primaryPoints?.balance !== undefined
               ? { set: primaryPoints.balance }
               : undefined,
-          warEndFwaPoints:
-            warState === "notInWar" &&
-            primaryPoints?.balance !== null &&
-            primaryPoints?.balance !== undefined
-              ? { set: primaryPoints.balance }
-              : undefined,
+          warEndFwaPoints: undefined,
         },
       });
     }
@@ -3008,13 +2989,8 @@ export const Fwa: Command = {
         const warRemaining = getWarStateRemaining(war, warState);
         const currentSync = getCurrentSyncFromPrevious(sourceSync, warState);
         opponentTag = normalizeTag(String(war?.opponent?.tag ?? ""));
-        if (!opponentTag) {
-          const overview = await buildLastWarMatchOverview(tag, interaction.guildId ?? null, sourceSync);
-          if (!overview) {
-            await editReplySafe(`No active war opponent found for #${tag}. No ended war snapshot is available yet.`);
-            return;
-          }
-          await editReplySafe(overview);
+        if (warState === "notInWar" || !opponentTag) {
+          await editReplySafe(`:face_palm: failed to start war`);
           return;
         }
 
@@ -3171,10 +3147,8 @@ export const Fwa: Command = {
               fwaPoints: primary.balance,
               opponentFwaPoints: opponent.balance,
               outcome: effectiveOutcome,
-              warStartFwaPoints:
-                warState !== "notInWar" ? primary.balance : subscription?.warStartFwaPoints ?? null,
-              warEndFwaPoints:
-                warState === "notInWar" ? primary.balance : subscription?.warEndFwaPoints ?? null,
+              warStartFwaPoints: primary.balance,
+              warEndFwaPoints: subscription?.warEndFwaPoints ?? null,
             },
             update: {
               matchType:
@@ -3188,10 +3162,8 @@ export const Fwa: Command = {
               fwaPoints: primary.balance,
               opponentFwaPoints: opponent.balance,
               outcome: effectiveOutcome,
-              warStartFwaPoints:
-                warState !== "notInWar" ? { set: primary.balance } : undefined,
-              warEndFwaPoints:
-                warState === "notInWar" ? { set: primary.balance } : undefined,
+              warStartFwaPoints: { set: primary.balance },
+              warEndFwaPoints: undefined,
             },
           });
         }
