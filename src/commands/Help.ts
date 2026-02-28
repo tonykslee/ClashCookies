@@ -142,6 +142,19 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     ],
     examples: ["/notify war clan-tag:2QG2C08UP target-channel:#war-events role:@Leaders"],
   },
+  war: {
+    summary: "Query clan-level war history and export war attack payload by war ID.",
+    details: [
+      "`/war history` shows recent clan-level war summary rows from WarClanHistory.",
+      "`/war war-id` exports the stored WarLookup payload as a CSV file for drill-down review.",
+      "Use war IDs returned from `/war history` to retrieve detailed attack rows.",
+    ],
+    examples: [
+      "/war history clan-tag:2QG2C08UP",
+      "/war history clan-tag:2QG2C08UP limit:25",
+      "/war war-id war-id:1000001",
+    ],
+  },
   accounts: {
     summary: "List linked player accounts grouped by their current clan.",
     details: [
