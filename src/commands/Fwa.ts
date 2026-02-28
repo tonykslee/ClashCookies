@@ -1256,6 +1256,15 @@ function buildSyncMismatchWarning(
   return `\u26A0\uFE0F Sync # mismatch: expected #${expectedSync}, site #${siteSync}.`;
 }
 
+function buildOutcomeMismatchWarning(
+  expectedOutcome: "WIN" | "LOSE" | null | undefined,
+  siteOutcome: "WIN" | "LOSE" | null | undefined
+): string | null {
+  if (!siteOutcome) return null;
+  if (expectedOutcome === siteOutcome) return null;
+  return `\u26A0\uFE0F Outcome mismatch: expected ${expectedOutcome ?? "UNKNOWN"}, site ${siteOutcome}.`;
+}
+
 function buildPointsSyncStatusLine(siteUpdated: boolean, hasMismatch: boolean): string {
   if (!siteUpdated) {
     return ":hourglass_flowing_sand: points.fwafarm is not updated for this matchup yet.";
@@ -2332,10 +2341,16 @@ async function buildTrackedMatchOverview(
     const syncMismatch = siteUpdatedForAlert
       ? buildSyncMismatchWarning(currentSync, siteSyncObserved)
       : null;
-    const mismatchLines = [primaryMismatch, opponentMismatch, syncMismatch]
+    const outcomeMismatch = siteUpdatedForAlert
+      ? buildOutcomeMismatchWarning(
+          (sub?.outcome as "WIN" | "LOSE" | null | undefined) ?? null,
+          derivedOutcome
+        )
+      : null;
+    const mismatchLines = [primaryMismatch, opponentMismatch, syncMismatch, outcomeMismatch]
       .filter(Boolean)
       .join("\n");
-    const hasMismatch = Boolean(primaryMismatch || opponentMismatch || syncMismatch);
+    const hasMismatch = Boolean(primaryMismatch || opponentMismatch || syncMismatch || outcomeMismatch);
     const pointsSyncStatus = buildPointsSyncStatusLine(siteUpdatedForAlert, hasMismatch);
     const siteMatchType = hasOpponentPoints ? "FWA" : "MM";
 
@@ -3248,10 +3263,18 @@ export const Fwa: Command = {
         const syncMismatch = siteUpdated
           ? buildSyncMismatchWarning(currentSync, siteSyncObserved)
           : null;
-        const mismatchLines = [trackedMismatch, opponentMismatch, syncMismatch]
+        const outcomeMismatch = siteUpdated
+          ? buildOutcomeMismatchWarning(
+              (subscription?.outcome as "WIN" | "LOSE" | null | undefined) ?? null,
+              derivedOutcome
+            )
+          : null;
+        const mismatchLines = [trackedMismatch, opponentMismatch, syncMismatch, outcomeMismatch]
           .filter(Boolean)
           .join("\n");
-        const hasMismatch = Boolean(trackedMismatch || opponentMismatch || syncMismatch);
+        const hasMismatch = Boolean(
+          trackedMismatch || opponentMismatch || syncMismatch || outcomeMismatch
+        );
         const siteStatusLine = buildPointsSyncStatusLine(siteUpdated, hasMismatch);
         const outcomeLine =
           matchType === "FWA"
@@ -3433,7 +3456,7 @@ export const Fwa: Command = {
                   clanTag: `#${tag}`,
                 },
               },
-              select: { fwaPoints: true },
+              select: { fwaPoints: true, outcome: true },
             })
           : null;
       const trueOpponentTag = normalizeTag(String(war?.opponent?.tag ?? ""));
@@ -3462,10 +3485,32 @@ export const Fwa: Command = {
       const syncMismatch = siteUpdatedForCurrentWar
         ? buildSyncMismatchWarning(expectedSync, siteSyncObserved)
         : null;
-      const mismatchLines = [pointsMismatch, syncMismatch].filter(Boolean).join("\n");
+      const opponentBalanceForOutcome = scrapeIsCurrentOpponent
+        ? trackedScrape?.opponentPointBalance ?? null
+        : trueOpponentTag
+          ? deriveOpponentBalanceFromPrimarySnapshot(result, tag, trueOpponentTag)
+          : null;
+      const siteOutcome = siteUpdatedForCurrentWar && trueOpponentTag
+        ? deriveProjectedOutcome(
+            tag,
+            trueOpponentTag,
+            scrapeIsCurrentOpponent ? scrapeBalance : balance,
+            opponentBalanceForOutcome,
+            siteSyncObserved
+          )
+        : null;
+      const outcomeMismatch = siteUpdatedForCurrentWar
+        ? buildOutcomeMismatchWarning(
+            (subscription?.outcome as "WIN" | "LOSE" | null | undefined) ?? null,
+            siteOutcome
+          )
+        : null;
+      const mismatchLines = [pointsMismatch, syncMismatch, outcomeMismatch]
+        .filter(Boolean)
+        .join("\n");
       const syncStatusLine = buildPointsSyncStatusLine(
         siteUpdatedForCurrentWar,
-        Boolean(pointsMismatch || syncMismatch)
+        Boolean(pointsMismatch || syncMismatch || outcomeMismatch)
       );
 
       await editReplySafe(
