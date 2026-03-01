@@ -14,6 +14,9 @@ jobs:
           -X POST \
           -d "{
             \"content\": \"<@&1477488801478869196>\",
+            \"allowed_mentions\": {
+              \"roles\": [\"1477488801478869196\"]
+            },
             \"username\": \"ClashCookies\",
             \"embeds\": [{
               \"title\": \"🚀 New Release: ${{ github.event.release.name }}\",
