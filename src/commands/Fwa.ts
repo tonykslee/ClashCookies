@@ -2499,11 +2499,17 @@ export const Fwa: Command = {
       const fresh = await scrapeClanPoints(tag);
 
       const siteSync = fresh.winnerBoxSync;
-      const siteUpdatedForOpponent =
-        opponentTag && isPointsSiteUpdatedForOpponent(fresh, opponentTag, null);
+      const siteUpdatedForOpponent = Boolean(
+        opponentTag && isPointsSiteUpdatedForOpponent(fresh, opponentTag, null)
+      );
       let previousSyncSet: number | null = null;
-      if (shouldOverwriteSyncNum && siteSync !== null && Number.isFinite(siteSync)) {
-        const recoveredPrevious = siteUpdatedForOpponent ? siteSync - 1 : siteSync;
+      if (
+        shouldOverwriteSyncNum &&
+        siteUpdatedForOpponent &&
+        siteSync !== null &&
+        Number.isFinite(siteSync)
+      ) {
+        const recoveredPrevious = siteSync - 1;
         if (Number.isFinite(recoveredPrevious) && recoveredPrevious >= 0) {
           previousSyncSet = Math.trunc(recoveredPrevious);
           await settings.set(PREVIOUS_SYNC_KEY, String(previousSyncSet));
