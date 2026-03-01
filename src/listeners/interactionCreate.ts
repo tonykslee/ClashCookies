@@ -26,8 +26,14 @@ import {
   handleFwaOutcomeActionButton,
   handleFwaMatchTypeActionButton,
   handleFwaMatchSyncActionButton,
+  handleFwaMailConfirmButton,
+  handleFwaMailRefreshButton,
+  handleFwaMatchSendMailButton,
   isFwaMatchAllianceButtonCustomId,
   isFwaMatchSyncActionButtonCustomId,
+  isFwaMailConfirmButtonCustomId,
+  isFwaMailRefreshButtonCustomId,
+  isFwaMatchSendMailButtonCustomId,
   isFwaMatchTypeEditButtonCustomId,
   isFwaOutcomeActionButtonCustomId,
   isFwaMatchSelectCustomId,
@@ -333,6 +339,48 @@ const handleButtonInteraction = async (interaction: Interaction): Promise<void> 
         await interaction.reply({
           ephemeral: true,
           content: "Failed to sync points-site data.",
+        });
+      }
+    }
+  }
+
+  if (isFwaMatchSendMailButtonCustomId(interaction.customId)) {
+    try {
+      await handleFwaMatchSendMailButton(interaction);
+    } catch (err) {
+      console.error(`FWA match send-mail button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to open war mail preview.",
+        });
+      }
+    }
+  }
+
+  if (isFwaMailConfirmButtonCustomId(interaction.customId)) {
+    try {
+      await handleFwaMailConfirmButton(interaction);
+    } catch (err) {
+      console.error(`FWA mail confirm button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to send war mail.",
+        });
+      }
+    }
+  }
+
+  if (isFwaMailRefreshButtonCustomId(interaction.customId)) {
+    try {
+      await handleFwaMailRefreshButton(interaction);
+    } catch (err) {
+      console.error(`FWA mail refresh button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to refresh war mail.",
         });
       }
     }
