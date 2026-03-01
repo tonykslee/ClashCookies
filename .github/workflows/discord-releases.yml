@@ -12,13 +12,14 @@ jobs:
         run: |
           curl -H "Content-Type: application/json" \
           -X POST \
-          -d "{
-            \"username\": \"ClashCookies\",
-            \"embeds\": [{
-              \"title\": \"🚀 New Release: ${{ github.event.release.name }}\",
-              \"url\": \"${{ github.event.release.html_url }}\",
-              \"description\": \"${{ github.event.release.body }}\",
-              \"color\": 5814783
+          -d '{
+            "username": "ClashCookies",
+            "embeds": [{
+              "title": "🚀 New Release: ${{ github.event.release.name }}",
+              "url": "${{ github.event.release.html_url }}",
+              "description": "Click below to view full changelog.",
+              "color": 5814783,
+              "footer": { "text": "Version ${{ github.event.release.tag_name }}" }
             }]
-          }" \
+          }' \
           ${{ secrets.DISCORD_WEBHOOK_URL }}
