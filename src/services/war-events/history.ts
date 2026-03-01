@@ -53,6 +53,17 @@ export class WarEventHistoryService {
       return `${payload.clanName}: ${resolvedBefore ?? "unknown"} -> ${after ?? "unknown"} (${delta !== null && delta >= 0 ? `+${delta}` : String(delta ?? "unknown")}) [BL]`;
     }
 
+    if (payload.matchType === "MM") {
+      const resolvedBefore =
+        before !== null && Number.isFinite(before)
+          ? before
+          : payload.warEndFwaPoints !== null && Number.isFinite(payload.warEndFwaPoints)
+            ? payload.warEndFwaPoints
+            : null;
+      const resolvedAfter = resolvedBefore;
+      return `${payload.clanName}: ${resolvedBefore ?? "unknown"} -> ${resolvedAfter ?? "unknown"} (+0) [MM]`;
+    }
+
     const after = payload.warEndFwaPoints;
     if (
       before !== null &&
