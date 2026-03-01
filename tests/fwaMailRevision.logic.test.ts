@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { buildWarMailRevisionLinesForTest } from "../src/commands/Fwa";
+import {
+  buildSupersededWarMailDescriptionForTest,
+  buildWarMailRevisionLinesForTest,
+} from "../src/commands/Fwa";
 
 describe("war mail revision log", () => {
   it("includes both match type and expected outcome changes", () => {
@@ -25,5 +28,16 @@ describe("war mail revision log", () => {
     });
 
     expect(lines).toEqual([]);
+  });
+
+  it("builds superseded description with only revision details", () => {
+    const description = buildSupersededWarMailDescriptionForTest({
+      changedAtMs: 1_700_000_000_000,
+      revisionLines: ["- Match Type: **FWA** -> **BL**"],
+    });
+
+    expect(description).toBe(
+      "Superseded at <t:1700000000:F>\n- Match Type: **FWA** -> **BL**"
+    );
   });
 });
