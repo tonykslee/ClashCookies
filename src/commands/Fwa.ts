@@ -228,6 +228,9 @@ type FwaMailPostedPayload = {
   tag: string;
   channelId: string;
   messageId: string;
+  sentAtMs: number;
+  matchType: "FWA" | "BL" | "MM" | "UNKNOWN";
+  expectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null;
 };
 
 const fwaMatchCopyPayloads = new Map<string, FwaMatchCopyPayload>();
@@ -588,6 +591,8 @@ async function buildWarMailEmbedForTag(
   inferredMatchType: boolean;
   mailChannelId: string | null;
   unavailableReasons: string[];
+  matchType: "FWA" | "BL" | "MM" | "UNKNOWN";
+  expectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null;
 }> {
   const normalizedTag = normalizeTag(tag);
   const trackedConfig = await getTrackedClanMailConfig(normalizedTag);
@@ -720,7 +725,85 @@ async function buildWarMailEmbedForTag(
     inferredMatchType,
     mailChannelId: trackedConfig.mailChannelId,
     unavailableReasons,
+    matchType,
+    expectedOutcome: matchType === "FWA" ? (outcome ?? "UNKNOWN") : null,
   };
+}
+
+function findLatestPostedWarMailForClan(params: {
+  guildId: string;
+  tag: string;
+}): { key: string; payload: FwaMailPostedPayload } | null {
+  const normalizedTag = normalizeTag(params.tag);
+  let latest: { key: string; payload: FwaMailPostedPayload } | null = null;
+  for (const [key, payload] of fwaMailPostedPayloads.entries()) {
+    if (payload.guildId !== params.guildId) continue;
+    if (normalizeTag(payload.tag) !== normalizedTag) continue;
+    if (!latest || payload.sentAtMs > latest.payload.sentAtMs) {
+      latest = { key, payload };
+    }
+  }
+  return latest;
+}
+
+function formatOutcomeForRevision(outcome: "WIN" | "LOSE" | "UNKNOWN" | null): string {
+  return outcome ?? "N/A";
+}
+
+function buildWarMailRevisionLines(params: {
+  previousMatchType: "FWA" | "BL" | "MM" | "UNKNOWN";
+  previousExpectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null;
+  nextMatchType: "FWA" | "BL" | "MM" | "UNKNOWN";
+  nextExpectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null;
+}): string[] {
+  const lines: string[] = [];
+  if (params.previousMatchType !== params.nextMatchType) {
+    lines.push(`- Match Type: **${params.previousMatchType}** -> **${params.nextMatchType}**`);
+  }
+  if (params.previousExpectedOutcome !== params.nextExpectedOutcome) {
+    lines.push(
+      `- Expected outcome: **${formatOutcomeForRevision(params.previousExpectedOutcome)}** -> **${formatOutcomeForRevision(params.nextExpectedOutcome)}**`
+    );
+  }
+  return lines;
+}
+
+export const buildWarMailRevisionLinesForTest = buildWarMailRevisionLines;
+
+async function annotatePreviousWarMailRevision(params: {
+  client: Client;
+  previous: FwaMailPostedPayload;
+  nextMatchType: "FWA" | "BL" | "MM" | "UNKNOWN";
+  nextExpectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null;
+  changedAtMs: number;
+}): Promise<boolean> {
+  const revisionLines = buildWarMailRevisionLines({
+    previousMatchType: params.previous.matchType,
+    previousExpectedOutcome: params.previous.expectedOutcome,
+    nextMatchType: params.nextMatchType,
+    nextExpectedOutcome: params.nextExpectedOutcome,
+  });
+  if (revisionLines.length === 0) return false;
+
+  const channel = await params.client.channels.fetch(params.previous.channelId).catch(() => null);
+  if (!channel || !channel.isTextBased()) return false;
+  const message = await (channel as any).messages.fetch(params.previous.messageId).catch(() => null);
+  if (!message) return false;
+  const previousEmbed = message.embeds[0] ? EmbedBuilder.from(message.embeds[0]) : new EmbedBuilder();
+  const baseDescription = String(previousEmbed.data.description ?? "");
+  const changedAtSec = Math.floor(params.changedAtMs / 1000);
+  const revisionBlock = [
+    "",
+    "---",
+    `Superseded at <t:${changedAtSec}:F>`,
+    ...revisionLines,
+  ].join("\n");
+  const nextDescription = `${baseDescription}${revisionBlock}`.slice(0, 4096);
+  previousEmbed.setDescription(nextDescription);
+  await message.edit({
+    embeds: [previousEmbed],
+  });
+  return true;
 }
 
 function buildWarMailPreviewComponents(params: {
@@ -755,6 +838,11 @@ async function refreshWarMailPost(client: Client, key: string): Promise<void> {
   if (!payload) return;
   const cocService = new CoCService();
   const rendered = await buildWarMailEmbedForTag(cocService, payload.guildId, payload.tag);
+  fwaMailPostedPayloads.set(key, {
+    ...payload,
+    matchType: rendered.matchType,
+    expectedOutcome: rendered.expectedOutcome,
+  });
   const channel = await client.channels.fetch(payload.channelId).catch(() => null);
   if (!channel || !channel.isTextBased()) return;
   const message = await (channel as any).messages.fetch(payload.messageId).catch(() => null);
@@ -1501,16 +1589,36 @@ export async function handleFwaMailConfirmButton(interaction: ButtonInteraction)
     embeds: [rendered.embed],
     components: buildWarMailPostedComponents(postKey),
   });
+  const nowMs = Date.now();
+  const previous = findLatestPostedWarMailForClan({
+    guildId: payload.guildId,
+    tag: payload.tag,
+  });
   fwaMailPostedPayloads.set(postKey, {
     guildId: payload.guildId,
     tag: payload.tag,
     channelId: channel.id,
     messageId: sent.id,
+    sentAtMs: nowMs,
+    matchType: rendered.matchType,
+    expectedOutcome: rendered.expectedOutcome,
   });
+  let revisedPrevious = false;
+  if (previous) {
+    revisedPrevious = await annotatePreviousWarMailRevision({
+      client: interaction.client,
+      previous: previous.payload,
+      nextMatchType: rendered.matchType,
+      nextExpectedOutcome: rendered.expectedOutcome,
+      changedAtMs: nowMs,
+    }).catch(() => false);
+  }
   startWarMailPolling(interaction.client, postKey);
   await interaction.reply({
     ephemeral: true,
-    content: `War mail sent to <#${channel.id}>.`,
+    content: revisedPrevious
+      ? `War mail sent to <#${channel.id}>. Previous mail was updated with a revision log.`
+      : `War mail sent to <#${channel.id}>.`,
   });
 }
 
