@@ -104,6 +104,15 @@ function deriveResultLabelFromStars(
   return "TIE";
 }
 
+function formatResultLabelForEmbed(
+  result: "WIN" | "LOSE" | "TIE" | "UNKNOWN"
+): "WIN" | "LOSS" | "DRAW" | "UNKNOWN" {
+  if (result === "WIN") return "WIN";
+  if (result === "LOSE") return "LOSS";
+  if (result === "TIE") return "DRAW";
+  return "UNKNOWN";
+}
+
 function makeBattleDayPostKey(guildId: string, clanTag: string): string {
   return `${guildId}:${normalizeTag(clanTag)}`;
 }
@@ -785,15 +794,6 @@ export class WarEventLogService {
         inline: true,
       });
       if (payload.matchType !== "BL" && payload.matchType !== "MM") {
-        const outcome = payload.outcome ? payload.outcome[0] + payload.outcome.slice(1).toLowerCase() : "Unknown";
-        embed.addFields({
-          name: "Outcome",
-          value:
-            payload.outcome === null
-              ? `Unknown war outcome against ${payload.opponentName}`
-              : `${outcome} war against ${payload.opponentName}`,
-          inline: false,
-        });
         embed.addFields({
           name: "War Plan",
           value:
@@ -853,11 +853,6 @@ export class WarEventLogService {
       });
       if (payload.matchType === "FWA") {
         embed.addFields({
-          name: "Outcome",
-          value: payload.outcome ?? "unknown",
-          inline: false,
-        });
-        embed.addFields({
           name: "War Plan",
           value:
             (await this.history.buildWarPlanText(
@@ -915,10 +910,7 @@ export class WarEventLogService {
       );
       embed.addFields({
         name: "Result",
-        value:
-          payload.matchType === "BL"
-            ? finalResult.resultLabel
-            : `Outcome: **${finalResult.resultLabel}**`,
+        value: formatResultLabelForEmbed(finalResult.resultLabel),
         inline: false,
       });
       embed.addFields({
@@ -1269,15 +1261,6 @@ export class WarEventLogService {
       inline: true,
     });
     if (payload.matchType !== "BL" && payload.matchType !== "MM") {
-      const outcome = payload.outcome ? payload.outcome[0] + payload.outcome.slice(1).toLowerCase() : "Unknown";
-      embed.addFields({
-        name: "Outcome",
-        value:
-          payload.outcome === null
-            ? `Unknown war outcome against ${payload.opponentName}`
-            : `${outcome} war against ${payload.opponentName}`,
-        inline: false,
-      });
       embed.addFields({
         name: "War Plan",
         value:
