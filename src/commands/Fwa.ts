@@ -1,4 +1,5 @@
 import axios from "axios";
+import { Prisma } from "@prisma/client";
 import {
   ActionRowBuilder,
   ApplicationCommandOptionType,
@@ -22,6 +23,7 @@ import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
 import { CommandPermissionService } from "../services/CommandPermissionService";
 import { SettingsService } from "../services/SettingsService";
+import { WarEventHistoryService } from "../services/war-events/history";
 import {
   buildOutcomeMismatchWarning,
   buildPointsMismatchWarning,
@@ -54,6 +56,9 @@ const FWA_OUTCOME_ACTION_PREFIX = "fwa-outcome-action";
 const FWA_MATCH_SYNC_ACTION_PREFIX = "fwa-match-sync-action";
 const FWA_MATCH_SELECT_PREFIX = "fwa-match-select";
 const FWA_MATCH_ALLIANCE_PREFIX = "fwa-match-alliance";
+const FWA_MAIL_CONFIRM_PREFIX = "fwa-mail-confirm";
+const FWA_MAIL_REFRESH_PREFIX = "fwa-mail-refresh";
+const FWA_MATCH_SEND_MAIL_PREFIX = "fwa-match-send-mail";
 const POINTS_REQUEST_HEADERS = {
   "User-Agent":
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
@@ -147,6 +152,7 @@ type MatchView = {
   } | null;
   clanName?: string;
   clanTag?: string;
+  mailAction?: { tag: string; enabled: boolean; reason: string | null };
 };
 
 type FwaMatchCopyPayload = {
@@ -158,7 +164,23 @@ type FwaMatchCopyPayload = {
   currentTag: string | null;
 };
 
+type FwaMailPreviewPayload = {
+  userId: string;
+  guildId: string;
+  tag: string;
+};
+
+type FwaMailPostedPayload = {
+  guildId: string;
+  tag: string;
+  channelId: string;
+  messageId: string;
+};
+
 const fwaMatchCopyPayloads = new Map<string, FwaMatchCopyPayload>();
+const fwaMailPreviewPayloads = new Map<string, FwaMailPreviewPayload>();
+const fwaMailPostedPayloads = new Map<string, FwaMailPostedPayload>();
+const fwaMailPollers = new Map<string, ReturnType<typeof setInterval>>();
 
 function buildFwaMatchCopyCustomId(
   userId: string,
@@ -309,6 +331,59 @@ export function isFwaMatchAllianceButtonCustomId(customId: string): boolean {
   return customId.startsWith(`${FWA_MATCH_ALLIANCE_PREFIX}:`);
 }
 
+function buildFwaMailConfirmCustomId(userId: string, key: string): string {
+  return `${FWA_MAIL_CONFIRM_PREFIX}:${userId}:${key}`;
+}
+
+function parseFwaMailConfirmCustomId(customId: string): { userId: string; key: string } | null {
+  const parts = customId.split(":");
+  if (parts.length !== 3 || parts[0] !== FWA_MAIL_CONFIRM_PREFIX) return null;
+  const userId = parts[1]?.trim() ?? "";
+  const key = parts[2]?.trim() ?? "";
+  if (!userId || !key) return null;
+  return { userId, key };
+}
+
+export function isFwaMailConfirmButtonCustomId(customId: string): boolean {
+  return customId.startsWith(`${FWA_MAIL_CONFIRM_PREFIX}:`);
+}
+
+function buildFwaMailRefreshCustomId(key: string): string {
+  return `${FWA_MAIL_REFRESH_PREFIX}:${key}`;
+}
+
+function parseFwaMailRefreshCustomId(customId: string): { key: string } | null {
+  const parts = customId.split(":");
+  if (parts.length !== 2 || parts[0] !== FWA_MAIL_REFRESH_PREFIX) return null;
+  const key = parts[1]?.trim() ?? "";
+  if (!key) return null;
+  return { key };
+}
+
+export function isFwaMailRefreshButtonCustomId(customId: string): boolean {
+  return customId.startsWith(`${FWA_MAIL_REFRESH_PREFIX}:`);
+}
+
+function buildFwaMatchSendMailCustomId(userId: string, key: string, tag: string): string {
+  return `${FWA_MATCH_SEND_MAIL_PREFIX}:${userId}:${key}:${tag}`;
+}
+
+function parseFwaMatchSendMailCustomId(
+  customId: string
+): { userId: string; key: string; tag: string } | null {
+  const parts = customId.split(":");
+  if (parts.length !== 4 || parts[0] !== FWA_MATCH_SEND_MAIL_PREFIX) return null;
+  const userId = parts[1]?.trim() ?? "";
+  const key = parts[2]?.trim() ?? "";
+  const tag = normalizeTag(parts[3] ?? "");
+  if (!userId || !key || !tag) return null;
+  return { userId, key, tag };
+}
+
+export function isFwaMatchSendMailButtonCustomId(customId: string): boolean {
+  return customId.startsWith(`${FWA_MATCH_SEND_MAIL_PREFIX}:`);
+}
+
 function updateSingleViewMatchType(
   view: MatchView,
   nextType: "FWA" | "BL" | "MM",
@@ -415,6 +490,249 @@ async function rebuildTrackedPayloadForTag(
   };
 }
 
+async function getTrackedClanMailConfig(tag: string): Promise<{
+  tag: string;
+  name: string | null;
+  mailChannelId: string | null;
+} | null> {
+  const normalizedTag = normalizeTag(tag);
+  const rows = await prisma.$queryRaw<
+    Array<{ tag: string; name: string | null; mailChannelId: string | null }>
+  >(
+    Prisma.sql`
+      SELECT "tag","name","mailChannelId"
+      FROM "TrackedClan"
+      WHERE UPPER(REPLACE("tag",'#','')) = ${normalizedTag}
+      LIMIT 1
+    `
+  );
+  const row = rows[0] ?? null;
+  if (!row) return null;
+  return {
+    tag: normalizeTag(row.tag),
+    name: sanitizeClanName(row.name ?? "") ?? null,
+    mailChannelId: row.mailChannelId ?? null,
+  };
+}
+
+async function upsertTrackedClanMailChannelId(tag: string, channelId: string): Promise<void> {
+  const normalizedTag = `#${normalizeTag(tag)}`;
+  await prisma.$executeRaw(
+    Prisma.sql`
+      INSERT INTO "TrackedClan" ("tag","mailChannelId","createdAt")
+      VALUES (${normalizedTag}, ${channelId}, NOW())
+      ON CONFLICT ("tag")
+      DO UPDATE SET "mailChannelId" = EXCLUDED."mailChannelId"
+    `
+  );
+}
+
+function mailStatusLabelForState(state: WarStateForSync): string {
+  if (state === "preparation") return "Preparation Day";
+  if (state === "inWar") return "Battle Day";
+  return "Not In War";
+}
+
+function formatDiscordRelativeMs(ms: number | null): string {
+  if (ms === null || !Number.isFinite(ms)) return "unknown";
+  return `<t:${Math.floor(ms / 1000)}:R>`;
+}
+
+async function buildWarMailEmbedForTag(
+  cocService: CoCService,
+  guildId: string,
+  tag: string
+): Promise<{
+  embed: EmbedBuilder;
+  inferredMatchType: boolean;
+  mailChannelId: string | null;
+  unavailableReasons: string[];
+}> {
+  const normalizedTag = normalizeTag(tag);
+  const trackedConfig = await getTrackedClanMailConfig(normalizedTag);
+  if (!trackedConfig) {
+    throw new Error(`Tracked clan #${normalizedTag} not found.`);
+  }
+
+  const settings = new SettingsService();
+  let sourceSync = await getSourceOfTruthSync(settings);
+  if (sourceSync === null) {
+    sourceSync = await recoverPreviousSyncNumFromPoints(settings, cocService);
+  }
+
+  const war = await cocService.getCurrentWar(`#${normalizedTag}`).catch(() => null);
+  const warState = deriveWarState(war?.state);
+  const opponentTag = normalizeTag(String(war?.opponent?.tag ?? ""));
+  const opponentName = sanitizeClanName(String(war?.opponent?.name ?? "")) ?? "Unknown";
+  const clanName =
+    trackedConfig.name ?? sanitizeClanName(String(war?.clan?.name ?? "")) ?? `#${normalizedTag}`;
+
+  const subscription = await prisma.warEventLogSubscription.findUnique({
+    where: {
+      guildId_clanTag: {
+        guildId,
+        clanTag: `#${normalizedTag}`,
+      },
+    },
+    select: { matchType: true, inferredMatchType: true, outcome: true },
+  });
+
+  let inferredMatchType = Boolean(subscription?.inferredMatchType);
+  let matchType: "FWA" | "BL" | "MM" | "UNKNOWN" = (subscription?.matchType as
+    | "FWA"
+    | "BL"
+    | "MM"
+    | null) ?? "UNKNOWN";
+  let outcome = (subscription?.outcome as "WIN" | "LOSE" | null | undefined) ?? null;
+
+  const currentSync = getCurrentSyncFromPrevious(sourceSync, warState);
+  let primaryBalance: number | null = null;
+  let opponentBalance: number | null = null;
+  if (opponentTag) {
+    const primary = await getClanPointsCached(settings, cocService, normalizedTag, currentSync).catch(
+      () => null
+    );
+    const opponent = await getClanPointsCached(settings, cocService, opponentTag, currentSync).catch(
+      () => null
+    );
+    primaryBalance = primary?.balance ?? null;
+    opponentBalance = opponent?.balance ?? null;
+    if (matchType === "UNKNOWN") {
+      matchType = opponentBalance !== null && !Number.isNaN(opponentBalance) ? "FWA" : "MM";
+      inferredMatchType = true;
+    }
+    if (matchType === "FWA" && !outcome) {
+      outcome = deriveProjectedOutcome(
+        normalizedTag,
+        opponentTag,
+        primaryBalance,
+        opponentBalance,
+        currentSync
+      );
+    }
+  }
+
+  const history = new WarEventHistoryService(cocService);
+  let planText = "War plan unavailable.";
+  if (matchType === "FWA") {
+    planText =
+      (await history.buildWarPlanText("FWA", outcome, normalizedTag, opponentName)) ??
+      "War plan unavailable.";
+  } else if (matchType === "BL") {
+    planText = [
+      `**⚫️ BLACKLIST WAR 🆚 ${opponentName} 🏴‍☠️**`,
+      "Everyone switch to WAR BASES!!",
+      "This is our opportunity to gain some extra FWA points!",
+      "➕ 30+ people switch to war base = +1 point",
+      "➕ 60% total destruction = +1 point",
+      "➕ win war = +1 point",
+      "---",
+      "If you need war base, check https://clashofclans-layouts.com/ or ⁠bases",
+    ].join("\n");
+  } else if (matchType === "MM") {
+    planText = [
+      `⚪️ MISMATCHED WAR 🆚 ${opponentName} :sob:`,
+      "Keep WA base active, attack what you can!",
+    ].join("\n");
+  }
+
+  const prepTargetMs = parseCocApiTime(war?.startTime);
+  const battleTargetMs = parseCocApiTime(war?.endTime);
+  const remainingText = formatDiscordRelativeMs(
+    warState === "preparation" ? prepTargetMs : battleTargetMs
+  );
+  const lines: string[] = [
+    planText,
+    "------",
+    `War Status: ${mailStatusLabelForState(warState)}`,
+    `Time remaining: ${remainingText}`,
+  ];
+  if (warState === "inWar") {
+    lines.push(
+      `${clanName} ${
+        Number.isFinite(Number(war?.clan?.stars)) ? Number(war?.clan?.stars) : "unknown"
+      } stars`,
+      `${opponentName} ${
+        Number.isFinite(Number(war?.opponent?.stars)) ? Number(war?.opponent?.stars) : "unknown"
+      } stars`
+    );
+  }
+
+  const unavailableReasons: string[] = [];
+  if (!trackedConfig.mailChannelId) {
+    unavailableReasons.push("Tracked clan mail channel is not configured.");
+  }
+  if (inferredMatchType) {
+    unavailableReasons.push("Match type is inferred. Confirm match type before sending war mail.");
+  }
+  if (unavailableReasons.length > 0) {
+    lines.push("", ...unavailableReasons.map((r) => `:warning: ${r}`));
+  }
+
+  const embed = new EmbedBuilder()
+    .setTitle(`War Mail - ${clanName} (#${normalizedTag})`)
+    .setDescription(lines.join("\n"))
+    .setTimestamp(new Date());
+
+  return {
+    embed,
+    inferredMatchType,
+    mailChannelId: trackedConfig.mailChannelId,
+    unavailableReasons,
+  };
+}
+
+function buildWarMailPreviewComponents(params: {
+  userId: string;
+  key: string;
+  enabled: boolean;
+}): Array<ActionRowBuilder<ButtonBuilder>> {
+  return [
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(buildFwaMailConfirmCustomId(params.userId, params.key))
+        .setLabel("Confirm and Send")
+        .setStyle(ButtonStyle.Primary)
+        .setDisabled(!params.enabled)
+    ),
+  ];
+}
+
+function buildWarMailPostedComponents(key: string): Array<ActionRowBuilder<ButtonBuilder>> {
+  return [
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(buildFwaMailRefreshCustomId(key))
+        .setLabel("Refresh")
+        .setStyle(ButtonStyle.Secondary)
+    ),
+  ];
+}
+
+async function refreshWarMailPost(client: Client, key: string): Promise<void> {
+  const payload = fwaMailPostedPayloads.get(key);
+  if (!payload) return;
+  const cocService = new CoCService();
+  const rendered = await buildWarMailEmbedForTag(cocService, payload.guildId, payload.tag);
+  const channel = await client.channels.fetch(payload.channelId).catch(() => null);
+  if (!channel || !channel.isTextBased()) return;
+  const message = await (channel as any).messages.fetch(payload.messageId).catch(() => null);
+  if (!message) return;
+  await message.edit({
+    embeds: [rendered.embed],
+    components: buildWarMailPostedComponents(key),
+  });
+}
+
+function startWarMailPolling(client: Client, key: string): void {
+  const existing = fwaMailPollers.get(key);
+  if (existing) clearInterval(existing);
+  const timer = setInterval(() => {
+    refreshWarMailPost(client, key).catch(() => undefined);
+  }, 20 * 60 * 1000);
+  fwaMailPollers.set(key, timer);
+}
+
 function buildFwaMatchCopyComponents(
   payload: FwaMatchCopyPayload,
   userId: string,
@@ -428,6 +746,7 @@ function buildFwaMatchCopyComponents(
   const matchTypeAction = view.matchTypeAction ?? null;
   const outcomeAction = view.outcomeAction ?? null;
   const syncAction = view.syncAction ?? null;
+  const mailAction = view.mailAction ?? null;
   const toggleMode = showMode === "embed" ? "copy" : "embed";
   const toggleLabel = showMode === "embed" ? "Copy/Paste View" : "Embed View";
   const baseRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
@@ -455,6 +774,17 @@ function buildFwaMatchCopyComponents(
   const rows: Array<ActionRowBuilder<ButtonBuilder> | ActionRowBuilder<StringSelectMenuBuilder>> = [
     baseRow,
   ];
+  if (payload.currentScope === "single" && payload.currentTag && mailAction) {
+    rows.push(
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setCustomId(buildFwaMatchSendMailCustomId(userId, key, payload.currentTag))
+          .setLabel("Send Mail")
+          .setStyle(ButtonStyle.Primary)
+          .setDisabled(!mailAction.enabled)
+      )
+    );
+  }
   if (matchTypeAction) {
     const actionRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder()
@@ -997,6 +1327,149 @@ export async function handleFwaMatchSyncActionButton(
     content: showMode === "copy" ? limitDiscordContent(nextView.copyText) : undefined,
     embeds: showMode === "embed" ? [nextView.embed] : [],
     components: buildFwaMatchCopyComponents(refreshed, refreshed.userId, parsed.key, showMode),
+  });
+}
+
+async function showWarMailPreview(
+  interaction: ChatInputCommandInteraction | ButtonInteraction,
+  guildId: string,
+  userId: string,
+  tag: string,
+  cocService: CoCService
+): Promise<void> {
+  const rendered = await buildWarMailEmbedForTag(cocService, guildId, tag);
+  const previewKey = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  fwaMailPreviewPayloads.set(previewKey, { userId, guildId, tag });
+
+  let enabled = rendered.unavailableReasons.length === 0;
+  if (enabled && rendered.mailChannelId) {
+    const channel = await interaction.client.channels.fetch(rendered.mailChannelId).catch(() => null);
+    if (!channel || !channel.isTextBased()) {
+      enabled = false;
+    }
+  }
+  const extraWarning =
+    enabled || rendered.mailChannelId
+      ? ""
+      : "\n:warning: Tracked clan mail channel is missing or unavailable.";
+  const content = enabled
+    ? "Review mail preview and confirm send."
+    : `Cannot send yet.${extraWarning}`;
+
+  if (interaction.isButton()) {
+    await interaction.reply({
+      ephemeral: true,
+      content,
+      embeds: [rendered.embed],
+      components: buildWarMailPreviewComponents({
+        userId,
+        key: previewKey,
+        enabled,
+      }),
+    });
+    return;
+  }
+
+  await interaction.editReply({
+    content,
+    embeds: [rendered.embed],
+    components: buildWarMailPreviewComponents({
+      userId,
+      key: previewKey,
+      enabled,
+    }),
+  });
+}
+
+export async function handleFwaMatchSendMailButton(interaction: ButtonInteraction): Promise<void> {
+  const parsed = parseFwaMatchSendMailCustomId(interaction.customId);
+  if (!parsed) return;
+  if (interaction.user.id !== parsed.userId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Only the command requester can use this button.",
+    });
+    return;
+  }
+  if (!interaction.guildId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "This action can only be used in a server.",
+    });
+    return;
+  }
+  const cocService = new CoCService();
+  await showWarMailPreview(interaction, interaction.guildId, interaction.user.id, parsed.tag, cocService);
+}
+
+export async function handleFwaMailConfirmButton(interaction: ButtonInteraction): Promise<void> {
+  const parsed = parseFwaMailConfirmCustomId(interaction.customId);
+  if (!parsed) return;
+  if (interaction.user.id !== parsed.userId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Only the command requester can use this button.",
+    });
+    return;
+  }
+  const payload = fwaMailPreviewPayloads.get(parsed.key);
+  if (!payload) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "This mail preview expired. Run /fwa mail send again.",
+    });
+    return;
+  }
+  const cocService = new CoCService();
+  const rendered = await buildWarMailEmbedForTag(cocService, payload.guildId, payload.tag);
+  if (!rendered.mailChannelId || rendered.unavailableReasons.length > 0) {
+    await interaction.reply({
+      ephemeral: true,
+      content: `Cannot send mail: ${rendered.unavailableReasons.join(" ") || "mail channel unavailable."}`,
+    });
+    return;
+  }
+  const channel = await interaction.client.channels.fetch(rendered.mailChannelId).catch(() => null);
+  if (!channel || !channel.isTextBased()) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Configured mail channel is unavailable.",
+    });
+    return;
+  }
+  const postKey = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  const sent = await (channel as any).send({
+    embeds: [rendered.embed],
+    components: buildWarMailPostedComponents(postKey),
+  });
+  fwaMailPostedPayloads.set(postKey, {
+    guildId: payload.guildId,
+    tag: payload.tag,
+    channelId: channel.id,
+    messageId: sent.id,
+  });
+  startWarMailPolling(interaction.client, postKey);
+  await interaction.reply({
+    ephemeral: true,
+    content: `War mail sent to <#${channel.id}>.`,
+  });
+}
+
+export async function handleFwaMailRefreshButton(interaction: ButtonInteraction): Promise<void> {
+  const parsed = parseFwaMailRefreshCustomId(interaction.customId);
+  if (!parsed) return;
+  const payload = fwaMailPostedPayloads.get(parsed.key);
+  if (!payload) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "This mail post can no longer be refreshed.",
+    });
+    return;
+  }
+  await refreshWarMailPost(interaction.client, parsed.key);
+  await interaction.reply({
+    ephemeral: true,
+    content: "War mail refreshed.",
   });
 }
 
@@ -1781,6 +2254,12 @@ async function buildTrackedMatchOverview(
     orderBy: { createdAt: "asc" },
     select: { tag: true, name: true, pointsScrape: true },
   });
+  const trackedMailRows = await prisma.$queryRaw<Array<{ tag: string; mailChannelId: string | null }>>(
+    Prisma.sql`SELECT "tag","mailChannelId" FROM "TrackedClan"`
+  );
+  const mailChannelByTag = new Map(
+    trackedMailRows.map((row) => [normalizeTag(row.tag), row.mailChannelId ?? null])
+  );
   if (tracked.length === 0) {
     return {
       embed: new EmbedBuilder()
@@ -2115,6 +2594,12 @@ async function buildTrackedMatchOverview(
     const hasMismatch = Boolean(primaryMismatch || opponentMismatch || syncMismatch || outcomeMismatch);
     const pointsSyncStatus = buildPointsSyncStatusLine(siteUpdatedForAlert, hasMismatch);
     const siteMatchType = hasOpponentPoints ? "FWA" : "MM";
+    const mailChannelId = mailChannelByTag.get(clanTag) ?? null;
+    const mailBlockedReason = inferredMatchType
+      ? "Match type is inferred. Confirm match type before sending war mail."
+      : !mailChannelId
+        ? "Mail channel is not configured. Use /fwa mail set."
+        : null;
 
     if (matchType === "FWA") {
       const warnSuffix = inferredMatchType ? ` :warning: ${verifyLink}` : "";
@@ -2189,6 +2674,7 @@ async function buildTrackedMatchOverview(
       pointsSyncStatus,
       inferredMatchType ? MATCHTYPE_WARNING_LEGEND : "",
       inferredMatchType ? "\u200B" : "",
+      mailBlockedReason ? `:warning: ${mailBlockedReason}` : "",
       `${projectionLineSingle}`,
       `Match Type: **${matchType}${inferredMatchType ? " :warning:" : ""}**${
         inferredMatchType ? ` ${verifyLink}` : ""
@@ -2266,6 +2752,11 @@ async function buildTrackedMatchOverview(
           : null,
       clanName,
       clanTag,
+      mailAction: {
+        tag: clanTag,
+        enabled: !mailBlockedReason,
+        reason: mailBlockedReason,
+      },
     };
   }
 
@@ -2397,6 +2888,47 @@ export const Fwa: Command = {
         },
       ],
     },
+    {
+      name: "mail",
+      description: "Configure and send tracked clan war mail",
+      type: ApplicationCommandOptionType.SubcommandGroup,
+      options: [
+        {
+          name: "set",
+          description: "Set or overwrite tracked clan mail channel",
+          type: ApplicationCommandOptionType.Subcommand,
+          options: [
+            {
+              name: "tag",
+              description: "Tracked clan tag (with or without #)",
+              type: ApplicationCommandOptionType.String,
+              required: true,
+              autocomplete: true,
+            },
+            {
+              name: "mail-channel",
+              description: "Discord channel to receive war mail",
+              type: ApplicationCommandOptionType.Channel,
+              required: true,
+            },
+          ],
+        },
+        {
+          name: "send",
+          description: "Preview and send war mail for a tracked clan",
+          type: ApplicationCommandOptionType.Subcommand,
+          options: [
+            {
+              name: "tag",
+              description: "Tracked clan tag (with or without #)",
+              type: ApplicationCommandOptionType.String,
+              required: true,
+              autocomplete: true,
+            },
+          ],
+        },
+      ],
+    },
   ],
   run: async (
     _client: Client,
@@ -2473,6 +3005,42 @@ export const Fwa: Command = {
       const permissionService = new CommandPermissionService();
       await permissionService.setFwaLeaderRoleId(interaction.guildId, role.id);
       await editReplySafe(`FWA leader role set to <@&${role.id}>.`);
+      return;
+    }
+
+    if (subcommandGroup === "mail" && subcommand === "set") {
+      if (!interaction.inGuild()) {
+        await editReplySafe("This command can only be used in a server.");
+        return;
+      }
+      if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
+        await editReplySafe("Only administrators can use this command.");
+        return;
+      }
+      if (!tag) {
+        await editReplySafe("Please provide `tag`.");
+        return;
+      }
+      const channel = interaction.options.getChannel("mail-channel", true);
+      if (!("isTextBased" in channel) || !(channel as any).isTextBased()) {
+        await editReplySafe("Mail channel must be a text-based channel.");
+        return;
+      }
+      await upsertTrackedClanMailChannelId(tag, channel.id);
+      await editReplySafe(`Mail channel for #${tag} set to <#${channel.id}>.`);
+      return;
+    }
+
+    if (subcommandGroup === "mail" && subcommand === "send") {
+      if (!interaction.inGuild() || !interaction.guildId) {
+        await editReplySafe("This command can only be used in a server.");
+        return;
+      }
+      if (!tag) {
+        await editReplySafe("Please provide `tag`.");
+        return;
+      }
+      await showWarMailPreview(interaction, interaction.guildId, interaction.user.id, tag, cocService);
       return;
     }
 
@@ -3047,6 +3615,12 @@ export const Fwa: Command = {
           trackedMismatch || opponentMismatch || syncMismatch || outcomeMismatch
         );
         const siteStatusLine = buildPointsSyncStatusLine(siteUpdated, hasMismatch);
+        const trackedMailConfig = await getTrackedClanMailConfig(tag);
+        const mailBlockedReason = inferredMatchType
+          ? "Match type is inferred. Confirm match type before sending war mail."
+          : !trackedMailConfig?.mailChannelId
+            ? "Mail channel is not configured. Use /fwa mail set."
+            : null;
         const outcomeLine =
           matchType === "FWA"
             ? `${effectiveOutcome ?? "UNKNOWN"}`
@@ -3062,7 +3636,9 @@ export const Fwa: Command = {
               verifyLink ? ` ${verifyLink}` : ""
             }${
               outcomeLine ? `\nExpected outcome: **${outcomeLine}**` : ""
-            }\n${siteStatusLine}\nWar state: **${formatWarStateLabel(warState)}**\nTime remaining: **${warRemaining}**\nSync: **${syncDisplay}**${
+            }\n${siteStatusLine}${
+              mailBlockedReason ? `\n:warning: ${mailBlockedReason}` : ""
+            }\nWar state: **${formatWarStateLabel(warState)}**\nTime remaining: **${warRemaining}**\nSync: **${syncDisplay}**${
               mismatchLines ? `\n${mismatchLines}` : ""
             }`
           )
@@ -3083,6 +3659,7 @@ export const Fwa: Command = {
             `# ${leftName} (#${tag}) vs ${rightName} (#${opponentTag})`,
             inferredMatchType ? MATCHTYPE_WARNING_LEGEND : "",
             siteStatusLine,
+            mailBlockedReason ? `Warning: ${mailBlockedReason}` : "",
             `Sync: ${syncDisplay}`,
             `War State: ${formatWarStateLabel(warState)}`,
             `Time Remaining: ${warRemaining}`,
@@ -3130,6 +3707,11 @@ export const Fwa: Command = {
                   siteSyncNumber: siteSyncObserved,
                 }
               : null,
+          mailAction: {
+            tag,
+            enabled: !mailBlockedReason,
+            reason: mailBlockedReason,
+          },
         };
         alliance = {
           ...alliance,
