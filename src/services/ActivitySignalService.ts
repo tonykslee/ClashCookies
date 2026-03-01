@@ -76,10 +76,12 @@ type ProcessedSignals = {
   lastSeenAtMs: number | null;
 };
 
+/** Purpose: signal state key. */
 function signalStateKey(tag: string): string {
   return `player_signal_state:${tag.toUpperCase()}`;
 }
 
+/** Purpose: to finite number. */
 function toFiniteNumber(value: unknown): number {
   const num = Number(value ?? 0);
   if (!Number.isFinite(num)) return 0;
@@ -91,6 +93,7 @@ function normalizeArray<T = unknown>(value: unknown): T[] {
   return value as T[];
 }
 
+/** Purpose: stable hash from array. */
 function stableHashFromArray(items: unknown[]): string {
   const normalized = items
     .map((item) => {
@@ -104,6 +107,7 @@ function stableHashFromArray(items: unknown[]): string {
   return normalized.join("|");
 }
 
+/** Purpose: get default state. */
 function getDefaultState(input: PlayerSignalInput): PlayerSignalState {
   return {
     version: PLAYER_SIGNAL_STATE_VERSION,
@@ -136,6 +140,7 @@ function getDefaultState(input: PlayerSignalInput): PlayerSignalState {
   };
 }
 
+/** Purpose: parse state. */
 function parseState(raw: string | null): PlayerSignalState | null {
   if (!raw) return null;
   try {
@@ -148,6 +153,7 @@ function parseState(raw: string | null): PlayerSignalState | null {
   }
 }
 
+/** Purpose: should count counter change as activity. */
 function shouldCountCounterChangeAsActivity(
   key: CounterKey,
   previous: number,
@@ -166,12 +172,15 @@ function shouldCountCounterChangeAsActivity(
 }
 
 export class ActivitySignalService {
+  /** Purpose: initialize service dependencies. */
   constructor(private readonly settings = new SettingsService()) {}
 
+  /** Purpose: get state. */
   async getState(tag: string): Promise<PlayerSignalState | null> {
     return parseState(await this.settings.get(signalStateKey(tag)));
   }
 
+  /** Purpose: process player. */
   async processPlayer(input: PlayerSignalInput): Promise<ProcessedSignals> {
     const existing = await this.getState(input.tag);
     const nowMs = input.nowMs;
@@ -259,6 +268,7 @@ export class ActivitySignalService {
   }
 }
 
+/** Purpose: signal key label. */
 export function signalKeyLabel(key: SignalKey): string {
   const map: Record<SignalKey, string> = {
     name: "Name Change",

@@ -30,19 +30,23 @@ const PLATFORM_DURATION_MS: Record<RecruitmentPlatform, number> = {
   reddit: 7 * 24 * 60 * 60 * 1000,
 };
 
+/** Purpose: normalize clan tag. */
 export function normalizeClanTag(input: string): string {
   return input.trim().toUpperCase().replace(/^#/, "");
 }
 
+/** Purpose: format clan tag. */
 export function formatClanTag(tag: string): string {
   const normalized = normalizeClanTag(tag);
   return `#${normalized}`;
 }
 
+/** Purpose: get recruitment cooldown duration ms. */
 export function getRecruitmentCooldownDurationMs(platform: RecruitmentPlatform): number {
   return PLATFORM_DURATION_MS[platform];
 }
 
+/** Purpose: parse recruitment platform. */
 export function parseRecruitmentPlatform(input: string): RecruitmentPlatform | null {
   const value = input.trim().toLowerCase();
   if (value === "discord" || value === "reddit" || value === "band") {
@@ -51,15 +55,18 @@ export function parseRecruitmentPlatform(input: string): RecruitmentPlatform | n
   return null;
 }
 
+/** Purpose: parse image urls csv. */
 export function parseImageUrlsCsv(input: string): string[] {
   if (!input.trim()) return [];
   return [...new Set(input.split(",").map((v) => v.trim()).filter(Boolean))];
 }
 
+/** Purpose: to image urls csv. */
 export function toImageUrlsCsv(imageUrls: string[]): string {
   return imageUrls.join(", ");
 }
 
+/** Purpose: get recruitment template. */
 export async function getRecruitmentTemplate(
   clanTag: string,
   platform: RecruitmentPlatform
@@ -84,6 +91,7 @@ export async function getRecruitmentTemplate(
   return rows[0] ?? null;
 }
 
+/** Purpose: upsert recruitment template. */
 export async function upsertRecruitmentTemplate(input: {
   clanTag: string;
   platform: RecruitmentPlatform;
@@ -108,6 +116,7 @@ export async function upsertRecruitmentTemplate(input: {
   );
 }
 
+/** Purpose: get recruitment cooldown. */
 export async function getRecruitmentCooldown(
   userId: string,
   clanTag: string,
@@ -135,6 +144,7 @@ export async function getRecruitmentCooldown(
   return rows[0] ?? null;
 }
 
+/** Purpose: start or reset recruitment cooldown. */
 export async function startOrResetRecruitmentCooldown(input: {
   userId: string;
   clanTag: string;
@@ -159,6 +169,7 @@ export async function startOrResetRecruitmentCooldown(input: {
   );
 }
 
+/** Purpose: list recruitment cooldowns for user. */
 export async function listRecruitmentCooldownsForUser(
   userId: string
 ): Promise<RecruitmentCooldownRecord[]> {
@@ -179,6 +190,7 @@ export async function listRecruitmentCooldownsForUser(
   );
 }
 
+/** Purpose: list recruitment cooldowns for user by clan tags. */
 export async function listRecruitmentCooldownsForUserByClanTags(
   userId: string,
   clanTags: string[]
@@ -205,6 +217,7 @@ export async function listRecruitmentCooldownsForUserByClanTags(
   );
 }
 
+/** Purpose: get tracked clan name map by tags. */
 export async function getTrackedClanNameMapByTags(
   clanTags: string[]
 ): Promise<Map<string, string>> {
@@ -225,6 +238,7 @@ export async function getTrackedClanNameMapByTags(
   );
 }
 
+/** Purpose: process recruitment cooldown reminders. */
 export async function processRecruitmentCooldownReminders(client: Client): Promise<void> {
   const now = new Date();
   const dueRows = await prisma.$queryRaw<RecruitmentCooldownRecord[]>(

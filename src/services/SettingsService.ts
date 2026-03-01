@@ -2,6 +2,7 @@ import { prisma } from "../prisma";
 import { Prisma } from "@prisma/client";
 
 export class SettingsService {
+  /** Purpose: get. */
   async get(key: string): Promise<string | null> {
     const rows = await prisma.$queryRaw<Array<{ value: string }>>(
       Prisma.sql`SELECT "value" FROM "BotSetting" WHERE "key" = ${key} LIMIT 1`
@@ -9,6 +10,7 @@ export class SettingsService {
     return rows[0]?.value ?? null;
   }
 
+  /** Purpose: set. */
   async set(key: string, value: string): Promise<void> {
     await prisma.$executeRaw(
       Prisma.sql`
@@ -20,6 +22,7 @@ export class SettingsService {
     );
   }
 
+  /** Purpose: delete. */
   async delete(key: string): Promise<void> {
     await prisma.$executeRaw(
       Prisma.sql`DELETE FROM "BotSetting" WHERE "key" = ${key}`

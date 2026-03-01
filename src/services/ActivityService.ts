@@ -6,6 +6,7 @@ import { ActivitySignalService } from "./ActivitySignalService";
 export class ActivityService {
   private readonly signalService = new ActivitySignalService();
 
+  /** Purpose: initialize service dependencies. */
   constructor(private coc: CoCService) {}
 
   /**
