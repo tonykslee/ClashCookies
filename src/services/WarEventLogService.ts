@@ -65,6 +65,15 @@ type PollSyncContext = {
   activeSync: number | null;
 };
 
+/** Purpose: detect if current poll belongs to a newer war cycle than the stored snapshot. */
+function isNewWarCycle(
+  previousWarStartTime: Date | null,
+  nextWarStartTime: Date | null
+): boolean {
+  if (!(nextWarStartTime instanceof Date) || Number.isNaN(nextWarStartTime.getTime())) return false;
+  if (!(previousWarStartTime instanceof Date) || Number.isNaN(previousWarStartTime.getTime())) return true;
+  return nextWarStartTime.getTime() !== previousWarStartTime.getTime();
+}
 
 export class WarEventLogService {
   private readonly points: PointsProjectionService;
@@ -295,6 +304,13 @@ export class WarEventLogService {
 
     const eventTypeRaw = shouldEmit(prevState, currentState);
     let eventType = eventTypeRaw;
+    if (!eventType && isNewWarCycle(sub.lastWarStartTime, nextWarStartTime)) {
+      if (currentState === "preparation") {
+        eventType = "war_started";
+      } else if (currentState === "inWar") {
+        eventType = "battle_day";
+      }
+    }
     if (eventType === "war_ended") {
       if (!sub.lastWarStartTime) {
         eventType = null;
