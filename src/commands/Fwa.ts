@@ -62,8 +62,8 @@ const FWA_MATCH_ALLIANCE_PREFIX = "fwa-match-alliance";
 const FWA_MAIL_CONFIRM_PREFIX = "fwa-mail-confirm";
 const FWA_MAIL_REFRESH_PREFIX = "fwa-mail-refresh";
 const FWA_MATCH_SEND_MAIL_PREFIX = "fwa-match-send-mail";
-const MAILBOX_SENT_EMOJI = ":mailbox_with_mail:";
-const MAILBOX_NOT_SENT_EMOJI = ":mailbox_with_no_mail:";
+const MAILBOX_SENT_EMOJI = "📬";
+const MAILBOX_NOT_SENT_EMOJI = "📭";
 const POINTS_REQUEST_HEADERS = {
   "User-Agent":
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
@@ -937,6 +937,19 @@ function getMailStatusEmojiForClan(params: {
   return sent ? MAILBOX_SENT_EMOJI : MAILBOX_NOT_SENT_EMOJI;
 }
 
+function clearPostedMailTrackingForClan(params: {
+  guildId: string;
+  tag: string;
+}): void {
+  const normalizedTag = normalizeTag(params.tag);
+  for (const [key, posted] of fwaMailPostedPayloads.entries()) {
+    if (posted.guildId !== params.guildId) continue;
+    if (normalizeTag(posted.tag) !== normalizedTag) continue;
+    stopWarMailPolling(key);
+    fwaMailPostedPayloads.delete(key);
+  }
+}
+
 function formatOutcomeForRevision(outcome: "WIN" | "LOSE" | "UNKNOWN" | null): string {
   return outcome ?? "N/A";
 }
@@ -1374,6 +1387,10 @@ export async function handleFwaMatchTypeActionButton(interaction: ButtonInteract
       updatedAt: new Date(),
     },
   });
+  clearPostedMailTrackingForClan({
+    guildId: interaction.guildId,
+    tag: parsed.tag,
+  });
 
   for (const [key, payload] of fwaMatchCopyPayloads.entries()) {
     if (payload.userId !== parsed.userId) continue;
@@ -1503,6 +1520,10 @@ export async function handleFwaOutcomeActionButton(interaction: ButtonInteractio
       outcome: nextOutcome,
       updatedAt: new Date(),
     },
+  });
+  clearPostedMailTrackingForClan({
+    guildId: interaction.guildId,
+    tag: parsed.tag,
   });
 
   for (const [key, payload] of fwaMatchCopyPayloads.entries()) {
