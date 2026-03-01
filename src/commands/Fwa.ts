@@ -44,11 +44,8 @@ export { isMissedSyncClanForTest } from "./fwa/matchState";
 
 const POINTS_BASE_URL = "https://points.fwafarm.com/clan?tag=";
 const TIEBREAK_ORDER = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-const CACHE_REFRESH_DELAY_MS = 30 * 60 * 1000;
-const WAR_END_RECHECK_MS = 10 * 60 * 1000;
 const DISCORD_CONTENT_MAX = 2000;
 const POINTS_CACHE_VERSION = 5;
-const MATCHUP_CACHE_VERSION = 5;
 const POINTS_POST_BUTTON_PREFIX = "points-post-channel";
 const FWA_MATCH_COPY_BUTTON_PREFIX = "fwa-match-copy";
 const FWA_MATCH_TYPE_ACTION_PREFIX = "fwa-match-type-action";
@@ -87,13 +84,6 @@ type PointsSnapshot = {
   lastWarCheckAtMs: number;
   fetchedAtMs: number;
   refreshedForWarEndMs: number | null;
-};
-
-type MatchupCacheEntry = {
-  version: number;
-  cycleKey: string;
-  message: string;
-  createdAtMs: number;
 };
 
 const PREVIOUS_SYNC_KEY = "previousSyncNum";
@@ -1173,7 +1163,8 @@ async function recoverPreviousSyncNumFromPoints(
       cocService,
       tag,
       null,
-      warLookupCache
+      warLookupCache,
+      { preferTrackedScrape: false }
     ).catch(() => null);
     if (!snapshot || snapshot.winnerBoxSync === null) continue;
 
@@ -1321,6 +1312,35 @@ function parseTrackedClanPointsScrape(value: unknown): TrackedClanPointsScrape |
   };
 }
 
+function buildSnapshotFromTrackedScrape(
+  tag: string,
+  scrape: TrackedClanPointsScrape
+): PointsSnapshot {
+  const normalizedTag = normalizeTag(tag);
+  return {
+    version: POINTS_CACHE_VERSION,
+    tag: normalizedTag,
+    url: buildOfficialPointsUrl(normalizedTag),
+    balance: scrape.pointBalance ?? null,
+    clanName: scrape.trackedClanName ?? null,
+    notFound: false,
+    winnerBoxText: scrape.matchup ?? null,
+    winnerBoxTags: scrape.opponentClanTag ? [normalizeTag(scrape.opponentClanTag)] : [],
+    winnerBoxSync: scrape.syncNumber ?? null,
+    effectiveSync: scrape.syncNumber ?? null,
+    syncMode: getSyncMode(scrape.syncNumber ?? null),
+    winnerBoxHasTag: true,
+    headerPrimaryTag: normalizedTag,
+    headerOpponentTag: scrape.opponentClanTag ? normalizeTag(scrape.opponentClanTag) : null,
+    headerPrimaryBalance: scrape.pointBalance ?? null,
+    headerOpponentBalance: scrape.opponentPointBalance ?? null,
+    warEndMs: null,
+    lastWarCheckAtMs: scrape.fetchedAtMs ?? Date.now(),
+    fetchedAtMs: scrape.fetchedAtMs ?? Date.now(),
+    refreshedForWarEndMs: null,
+  };
+}
+
 function isPointsScrapeUpdatedForOpponent(
   scrape: TrackedClanPointsScrape | null,
   opponentTag: string
@@ -1429,10 +1449,6 @@ function parseCocApiTime(input: string | null | undefined): number | null {
   return Date.UTC(Number(y), Number(m) - 1, Number(d), Number(hh), Number(mm), Number(ss));
 }
 
-function clanCacheKey(tag: string): string {
-  return `points_cache:${normalizeTag(tag)}`;
-}
-
 type CurrentWarResult = Awaited<ReturnType<CoCService["getCurrentWar"]>>;
 type WarLookupCache = Map<string, Promise<CurrentWarResult>>;
 
@@ -1450,78 +1466,7 @@ function getCurrentWarCached(
   return pending;
 }
 
-function matchupCacheKey(tag: string, opponentTag: string): string {
-  return `points_matchup_cache:${normalizeTag(tag)}:${normalizeTag(opponentTag)}`;
-}
-
-async function getClanWarEndMs(
-  cocService: CoCService,
-  tag: string,
-  warLookupCache?: WarLookupCache
-): Promise<number | null> {
-  const war = await getCurrentWarCached(cocService, tag, warLookupCache);
-  return parseCocApiTime(war?.endTime);
-}
-
-async function readPointsCache(
-  settings: SettingsService,
-  tag: string
-): Promise<PointsSnapshot | null> {
-  const raw = await settings.get(clanCacheKey(tag));
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as PointsSnapshot;
-    if (!parsed || typeof parsed !== "object") return null;
-    if (parsed.version !== POINTS_CACHE_VERSION) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-async function writePointsCache(
-  settings: SettingsService,
-  tag: string,
-  snapshot: PointsSnapshot
-): Promise<void> {
-  await settings.set(clanCacheKey(tag), JSON.stringify(snapshot));
-}
-
-async function readMatchupCache(
-  settings: SettingsService,
-  tag: string,
-  opponentTag: string
-): Promise<MatchupCacheEntry | null> {
-  const raw = await settings.get(matchupCacheKey(tag, opponentTag));
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as MatchupCacheEntry;
-    if (!parsed || typeof parsed !== "object") return null;
-    if (parsed.version !== MATCHUP_CACHE_VERSION) return null;
-    if (typeof parsed.message !== "string" || typeof parsed.cycleKey !== "string") return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-async function writeMatchupCache(
-  settings: SettingsService,
-  tag: string,
-  opponentTag: string,
-  data: MatchupCacheEntry
-): Promise<void> {
-  await settings.set(matchupCacheKey(tag, opponentTag), JSON.stringify(data));
-}
-
-async function scrapeClanPoints(
-  tag: string,
-  options: {
-    refreshedForWarEndMs: number | null;
-    warEndMs: number | null;
-    lastWarCheckAtMs: number;
-  }
-): Promise<PointsSnapshot> {
+async function scrapeClanPoints(tag: string): Promise<PointsSnapshot> {
   const normalizedTag = normalizeTag(tag);
   const url = buildPointsUrl(normalizedTag);
   const response = await axios.get<string>(url, {
@@ -1592,105 +1537,56 @@ async function scrapeClanPoints(
     headerOpponentTag: topHeader.opponentTag,
     headerPrimaryBalance: matchupBalances.primaryBalance,
     headerOpponentBalance: matchupBalances.opponentBalance,
-    warEndMs: options.warEndMs,
-    lastWarCheckAtMs: options.lastWarCheckAtMs,
+    warEndMs: null,
+    lastWarCheckAtMs: Date.now(),
     fetchedAtMs: Date.now(),
-    refreshedForWarEndMs: options.refreshedForWarEndMs,
+    refreshedForWarEndMs: null,
   };
 }
 
 async function getClanPointsCached(
-  settings: SettingsService,
+  _settings: SettingsService,
   cocService: CoCService,
   tag: string,
   sourceSync: number | null,
-  warLookupCache?: WarLookupCache
+  _warLookupCache?: WarLookupCache,
+  options?: {
+    requiredOpponentTag?: string | null;
+    preferTrackedScrape?: boolean;
+  }
 ): Promise<PointsSnapshot> {
   const normalizedTag = normalizeTag(tag);
-  const cached = await readPointsCache(settings, normalizedTag);
-  const now = Date.now();
-  const knownWarEndMs = cached?.warEndMs ?? null;
-  const refreshAfterKnownMs =
-    knownWarEndMs === null ? null : knownWarEndMs + CACHE_REFRESH_DELAY_MS;
-  const needsRefreshByKnownCycle =
-    knownWarEndMs !== null &&
-    refreshAfterKnownMs !== null &&
-    now >= refreshAfterKnownMs &&
-    cached?.refreshedForWarEndMs !== knownWarEndMs;
-  const shouldRecheckWar =
-    !cached ||
-    !cached.lastWarCheckAtMs ||
-    now - cached.lastWarCheckAtMs >= WAR_END_RECHECK_MS;
+  const requiredOpponentTag = normalizeTag(options?.requiredOpponentTag ?? "");
+  const preferTrackedScrape = options?.preferTrackedScrape !== false;
 
-  if (cached && !needsRefreshByKnownCycle && !shouldRecheckWar) {
-    recordFetchEvent({
-      namespace: "points",
-      operation: "clan_points_snapshot",
-      source: "cache_hit",
-      detail: `tag=${normalizedTag}`,
+  if (preferTrackedScrape) {
+    const tracked = await prisma.trackedClan.findFirst({
+      where: { tag: { equals: `#${normalizedTag}`, mode: "insensitive" } },
+      select: { pointsScrape: true },
     });
-    return applySourceSync(cached, sourceSync);
-  }
-
-  let warEndMs = knownWarEndMs;
-  if (shouldRecheckWar) {
-    warEndMs = await getClanWarEndMs(cocService, normalizedTag, warLookupCache);
-  }
-  const refreshAfterMs = warEndMs === null ? null : warEndMs + CACHE_REFRESH_DELAY_MS;
-  const needsRefreshByCycle =
-    warEndMs !== null &&
-    refreshAfterMs !== null &&
-    now >= refreshAfterMs &&
-    cached?.refreshedForWarEndMs !== warEndMs;
-
-  if (cached && !needsRefreshByCycle) {
-    if (shouldRecheckWar) {
-      await writePointsCache(settings, normalizedTag, {
-        ...cached,
-        warEndMs,
-        lastWarCheckAtMs: now,
+    const trackedScrape = parseTrackedClanPointsScrape(tracked?.pointsScrape ?? null);
+    const useTrackedScrape =
+      trackedScrape &&
+      (!requiredOpponentTag || isPointsScrapeUpdatedForOpponent(trackedScrape, requiredOpponentTag));
+    if (trackedScrape && useTrackedScrape) {
+      recordFetchEvent({
+        namespace: "points",
+        operation: "clan_points_snapshot",
+        source: "cache_hit",
+        detail: `tag=${normalizedTag}${requiredOpponentTag ? ` opponent=${requiredOpponentTag}` : ""}`,
       });
+      return applySourceSync(buildSnapshotFromTrackedScrape(normalizedTag, trackedScrape), sourceSync);
     }
-    recordFetchEvent({
-      namespace: "points",
-      operation: "clan_points_snapshot",
-      source: "cache_hit",
-      detail: `tag=${normalizedTag}${shouldRecheckWar ? " reason=war_checked" : ""}`,
-    });
-    return applySourceSync(cached, sourceSync);
   }
 
   recordFetchEvent({
     namespace: "points",
     operation: "clan_points_snapshot",
-    source: "cache_miss",
-    detail: `tag=${normalizedTag}${needsRefreshByCycle ? " reason=refresh_due" : ""}`,
+    source: "web",
+    detail: `tag=${normalizedTag}`,
   });
-
-  try {
-    const snapshot = await scrapeClanPoints(normalizedTag, {
-      refreshedForWarEndMs:
-        warEndMs !== null && refreshAfterMs !== null && now >= refreshAfterMs ? warEndMs : null,
-      warEndMs,
-      lastWarCheckAtMs: now,
-    });
-    await writePointsCache(settings, normalizedTag, snapshot);
-    return applySourceSync(snapshot, sourceSync);
-  } catch (err) {
-    if (cached) {
-      recordFetchEvent({
-        namespace: "points",
-        operation: "clan_points_snapshot",
-        source: "fallback_cache",
-        detail: `tag=${normalizedTag}`,
-      });
-      console.warn(
-        `[points] using cached value after scrape error tag=${normalizedTag} error=${formatError(err)}`
-      );
-      return applySourceSync(cached, sourceSync);
-    }
-    throw err;
-  }
+  const snapshot = await scrapeClanPoints(normalizedTag);
+  return applySourceSync(snapshot, sourceSync);
 }
 
 export async function getPointsSnapshotForClan(
@@ -2018,34 +1914,14 @@ async function buildTrackedMatchOverview(
     const trackedScrape = parseTrackedClanPointsScrape(clan.pointsScrape);
     const scrapeIsCurrentOpponent = isPointsScrapeUpdatedForOpponent(trackedScrape, opponentTag);
     const primaryPoints = scrapeIsCurrentOpponent
-      ? ({
-          version: POINTS_CACHE_VERSION,
-          tag: clanTag,
-          url: buildOfficialPointsUrl(clanTag),
-          balance: trackedScrape?.pointBalance ?? null,
-          clanName: trackedScrape?.trackedClanName ?? clanName,
-          notFound: false,
-          winnerBoxText: trackedScrape?.matchup ?? null,
-          winnerBoxTags: trackedScrape?.opponentClanTag ? [trackedScrape.opponentClanTag] : [],
-          winnerBoxSync: trackedScrape?.syncNumber ?? null,
-          effectiveSync: trackedScrape?.syncNumber ?? null,
-          syncMode: getSyncMode(trackedScrape?.syncNumber ?? null),
-          winnerBoxHasTag: true,
-          headerPrimaryTag: clanTag,
-          headerOpponentTag: trackedScrape?.opponentClanTag ?? opponentTag,
-          headerPrimaryBalance: trackedScrape?.pointBalance ?? null,
-          headerOpponentBalance: trackedScrape?.opponentPointBalance ?? null,
-          warEndMs: null,
-          lastWarCheckAtMs: trackedScrape?.fetchedAtMs ?? Date.now(),
-          fetchedAtMs: trackedScrape?.fetchedAtMs ?? Date.now(),
-          refreshedForWarEndMs: null,
-        } as PointsSnapshot)
+      ? buildSnapshotFromTrackedScrape(clanTag, trackedScrape as TrackedClanPointsScrape)
       : await getClanPointsCached(
           settings,
           cocService,
           clanTag,
           currentSync,
-          warLookupCache
+          warLookupCache,
+          { requiredOpponentTag: opponentTag }
         ).catch(() => null);
     let opponentPoints: PointsSnapshot | null = null;
     if (scrapeIsCurrentOpponent) {
@@ -2624,15 +2500,7 @@ export const Fwa: Command = {
       const war = await getCurrentWarCached(cocService, tag, warLookupCache).catch(() => null);
       const opponentTag = normalizeTag(String(war?.opponent?.tag ?? ""));
       const opponentName = sanitizeClanName(String(war?.opponent?.name ?? "")) ?? null;
-      const currentWarEndMs = await getClanWarEndMs(cocService, tag, warLookupCache).catch(
-        () => null
-      );
-      const fresh = await scrapeClanPoints(tag, {
-        refreshedForWarEndMs: null,
-        warEndMs: currentWarEndMs,
-        lastWarCheckAtMs: Date.now(),
-      });
-      await writePointsCache(settings, tag, fresh);
+      const fresh = await scrapeClanPoints(tag);
 
       const siteSync = fresh.winnerBoxSync;
       const siteUpdatedForOpponent =
@@ -2678,11 +2546,7 @@ export const Fwa: Command = {
         if (fromPrimary !== null && Number.isFinite(fromPrimary)) {
           opponentBalance = fromPrimary;
         } else if (opponentTag) {
-          opponentSnapshot = await scrapeClanPoints(opponentTag, {
-            refreshedForWarEndMs: null,
-            warEndMs: null,
-            lastWarCheckAtMs: Date.now(),
-          }).catch(() => null);
+          opponentSnapshot = await scrapeClanPoints(opponentTag).catch(() => null);
           opponentBalance =
             opponentSnapshot?.balance !== null &&
             opponentSnapshot?.balance !== undefined &&
@@ -2780,23 +2644,59 @@ export const Fwa: Command = {
       const lines: string[] = [];
       let failedCount = 0;
       let forbiddenCount = 0;
-      const stateCounts = new Map<WarStateForSync, number>([
-        ["preparation", 0],
-        ["inWar", 0],
-        ["notInWar", 0],
-      ]);
-      const stateRemaining = new Map<WarStateForSync, string>();
+      const warStateByTag = new Map<string, WarStateForSync>();
+      const warStartMsByTag = new Map<string, number | null>();
+      const activeWarStarts: number[] = [];
+      for (const clan of tracked) {
+        const trackedTag = normalizeTag(clan.tag);
+        const war = await getCurrentWarCached(cocService, trackedTag, warLookupCache).catch(
+          () => null
+        );
+        const warState = deriveWarState(war?.state);
+        const warStartMs = parseCocApiTime(war?.startTime);
+        warStateByTag.set(trackedTag, warState);
+        warStartMsByTag.set(trackedTag, warStartMs);
+        if (warState !== "notInWar" && warStartMs !== null && Number.isFinite(warStartMs)) {
+          activeWarStarts.push(warStartMs);
+        }
+      }
+
+      const baselineWarStartMs =
+        activeWarStarts.length > 0 ? Math.min(...activeWarStarts) : null;
+      const nowMs = Date.now();
+      const missedSyncTags = new Set<string>();
+      for (const clan of tracked) {
+        const trackedTag = normalizeTag(clan.tag);
+        const warState = warStateByTag.get(trackedTag) ?? "notInWar";
+        const warStartMs = warStartMsByTag.get(trackedTag) ?? null;
+        if (
+          isMissedSyncClan({
+            baselineWarStartMs,
+            clanWarState: warState,
+            clanWarStartMs: warStartMs,
+            nowMs,
+          })
+        ) {
+          missedSyncTags.add(trackedTag);
+        }
+      }
+
+      const syncEntries: string[] = [];
+      for (const clan of tracked) {
+        const trackedTag = normalizeTag(clan.tag);
+        if (missedSyncTags.has(trackedTag)) continue;
+        const warState = warStateByTag.get(trackedTag) ?? "notInWar";
+        const clanLabel = sanitizeClanName(clan.name) ?? `#${trackedTag}`;
+        syncEntries.push(`${clanLabel}: ${getSyncDisplay(sourceSync, warState)}`);
+      }
+
       for (const clan of tracked) {
         const trackedTag = normalizeTag(clan.tag);
         try {
           const war = await getCurrentWarCached(cocService, trackedTag, warLookupCache).catch(
             () => null
           );
-          const warState = deriveWarState(war?.state);
-          stateCounts.set(warState, (stateCounts.get(warState) ?? 0) + 1);
-          if (!stateRemaining.has(warState)) {
-            stateRemaining.set(warState, getWarStateRemaining(war, warState));
-          }
+          const warState = warStateByTag.get(trackedTag) ?? deriveWarState(war?.state);
           const currentSync = getCurrentSyncFromPrevious(sourceSync, warState);
           const result = await getClanPointsCached(
             settings,
@@ -2847,20 +2747,15 @@ export const Fwa: Command = {
         summary +=
           `\n${forbiddenCount} request(s) were blocked by points.fwafarm.com (HTTP 403).`;
       }
-      const nonZeroStates = [...stateCounts.entries()].filter(([, count]) => count > 0);
-      if (nonZeroStates.length === 1) {
-        const state = nonZeroStates[0][0];
-        summary += `\nWar state: ${formatWarStateLabel(state)}`;
-        summary += `\nTime remaining: ${stateRemaining.get(state) ?? "unknown"}`;
-        summary += `\nSync: ${getSyncDisplay(sourceSync, state)}`;
-      } else if (nonZeroStates.length > 1) {
-        summary += `\nWar state: mixed`;
-        summary += `\nTime remaining: mixed`;
-        summary += `\nSync: mixed`;
-        summary += `\nState counts: prep=${stateCounts.get("preparation") ?? 0}, battle=${stateCounts.get("inWar") ?? 0}, no-war=${stateCounts.get("notInWar") ?? 0}`;
-      } else if (sourceSync !== null) {
-        summary += `\nTime remaining: n/a`;
-        summary += `\nSync: between #${sourceSync} and #${sourceSync + 1}`;
+      if (syncEntries.length > 0) {
+        const capped = syncEntries.slice(0, 12);
+        const overflow = syncEntries.length - capped.length;
+        summary += `\nSync#: ${capped.join(" | ")}${overflow > 0 ? ` (+${overflow} more)` : ""}`;
+      } else if (tracked.length > 0) {
+        summary += `\nSync#: none (all tracked clans are in missed sync state)`;
+      }
+      if (missedSyncTags.size > 0) {
+        summary += `\nIgnored for Sync#: ${missedSyncTags.size} missed-sync clan(s).`;
       }
       await editReplySafe(buildLimitedMessage(header, lines, summary));
       return;
@@ -2934,34 +2829,14 @@ export const Fwa: Command = {
         const trackedScrape = parseTrackedClanPointsScrape(trackedClanMeta?.pointsScrape ?? null);
         const scrapeIsCurrentOpponent = isPointsScrapeUpdatedForOpponent(trackedScrape, opponentTag);
         const primary = scrapeIsCurrentOpponent
-          ? ({
-              version: POINTS_CACHE_VERSION,
-              tag,
-              url: buildOfficialPointsUrl(tag),
-              balance: trackedScrape?.pointBalance ?? null,
-              clanName: trackedScrape?.trackedClanName ?? null,
-              notFound: false,
-              winnerBoxText: trackedScrape?.matchup ?? null,
-              winnerBoxTags: trackedScrape?.opponentClanTag ? [trackedScrape.opponentClanTag] : [],
-              winnerBoxSync: trackedScrape?.syncNumber ?? null,
-              effectiveSync: trackedScrape?.syncNumber ?? null,
-              syncMode: getSyncMode(trackedScrape?.syncNumber ?? null),
-              winnerBoxHasTag: true,
-              headerPrimaryTag: tag,
-              headerOpponentTag: trackedScrape?.opponentClanTag ?? opponentTag,
-              headerPrimaryBalance: trackedScrape?.pointBalance ?? null,
-              headerOpponentBalance: trackedScrape?.opponentPointBalance ?? null,
-              warEndMs: null,
-              lastWarCheckAtMs: trackedScrape?.fetchedAtMs ?? Date.now(),
-              fetchedAtMs: trackedScrape?.fetchedAtMs ?? Date.now(),
-              refreshedForWarEndMs: null,
-            } as PointsSnapshot)
+          ? buildSnapshotFromTrackedScrape(tag, trackedScrape as TrackedClanPointsScrape)
           : await getClanPointsCached(
               settings,
               cocService,
               tag,
               currentSync,
-              warLookupCache
+              warLookupCache,
+              { requiredOpponentTag: opponentTag }
             );
         let opponent: PointsSnapshot;
         const siteUpdated =
