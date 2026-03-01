@@ -1931,28 +1931,31 @@ export async function handleFwaMailConfirmButton(interaction: ButtonInteraction)
   const refreshedSource = await refreshSourceMatchMessageAfterMailSend(interaction, payload).catch(
     () => ({ refreshed: null, showMode: "embed" as const, sourceUpdated: false })
   );
-  if (payload.sourceMatchPayloadKey && refreshedSource.refreshed) {
-    const currentView =
-      refreshedSource.refreshed.currentScope === "single" && refreshedSource.refreshed.currentTag
-        ? refreshedSource.refreshed.singleViews[refreshedSource.refreshed.currentTag] ??
-          refreshedSource.refreshed.allianceView
-        : refreshedSource.refreshed.allianceView;
-    await interaction.editReply({
-      content:
-        refreshedSource.showMode === "copy"
-          ? limitDiscordContent(currentView.copyText)
-          : revisedPrevious
-            ? `War mail sent to <#${channel.id}>. Previous mail was updated with a revision log.`
-            : `War mail sent to <#${channel.id}>.`,
-      embeds: refreshedSource.showMode === "embed" ? [currentView.embed] : [],
-      components: buildFwaMatchCopyComponents(
-        refreshedSource.refreshed,
-        refreshedSource.refreshed.userId,
-        payload.sourceMatchPayloadKey,
-        refreshedSource.showMode
-      ),
-    });
-    return;
+  if (payload.sourceMatchPayloadKey) {
+    const sourcePayload = refreshedSource.refreshed ?? fwaMatchCopyPayloads.get(payload.sourceMatchPayloadKey) ?? null;
+    if (sourcePayload) {
+      const showMode = refreshedSource.showMode ?? "embed";
+      const currentView =
+        sourcePayload.currentScope === "single" && sourcePayload.currentTag
+          ? sourcePayload.singleViews[sourcePayload.currentTag] ?? sourcePayload.allianceView
+          : sourcePayload.allianceView;
+      await interaction.editReply({
+        content:
+          showMode === "copy"
+            ? limitDiscordContent(currentView.copyText)
+            : revisedPrevious
+              ? `War mail sent to <#${channel.id}>. Previous mail was updated with a revision log.`
+              : `War mail sent to <#${channel.id}>.`,
+        embeds: showMode === "embed" ? [currentView.embed] : [],
+        components: buildFwaMatchCopyComponents(
+          sourcePayload,
+          sourcePayload.userId,
+          payload.sourceMatchPayloadKey,
+          showMode
+        ),
+      });
+      return;
+    }
   }
 
   await interaction.deleteReply().catch(() => undefined);
