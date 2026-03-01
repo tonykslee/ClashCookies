@@ -41,6 +41,7 @@ type SubscriptionRow = {
   clanTag: string;
   channelId: string;
   notify: boolean;
+  pingRole: boolean;
   inferredMatchType: boolean;
   notifyRole: string | null;
   fwaPoints: number | null;
@@ -89,7 +90,7 @@ export class WarEventLogService {
     const subs = await prisma.$queryRaw<SubscriptionRow[]>(
       Prisma.sql`
         SELECT
-          "id","guildId","clanTag","channelId","notify","inferredMatchType","notifyRole","fwaPoints","opponentFwaPoints","outcome","matchType","warStartFwaPoints","warEndFwaPoints","lastClanStars","lastOpponentStars","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName"
+          "id","guildId","clanTag","channelId","notify","pingRole","inferredMatchType","notifyRole","fwaPoints","opponentFwaPoints","outcome","matchType","warStartFwaPoints","warEndFwaPoints","lastClanStars","lastOpponentStars","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName"
         FROM "WarEventLogSubscription"
         WHERE "notify" = true
         ORDER BY "updatedAt" ASC
@@ -198,6 +199,7 @@ export class WarEventLogService {
       opponentName,
       syncNumber,
       notifyRole: sub.notifyRole,
+      pingRole: sub.pingRole,
       fwaPoints,
       opponentFwaPoints,
       outcome,
@@ -233,7 +235,7 @@ export class WarEventLogService {
     const rows = await prisma.$queryRaw<SubscriptionRow[]>(
       Prisma.sql`
         SELECT
-          "id","guildId","clanTag","channelId","notify","inferredMatchType","notifyRole","fwaPoints","opponentFwaPoints","outcome","matchType","warStartFwaPoints","warEndFwaPoints","lastClanStars","lastOpponentStars","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName"
+          "id","guildId","clanTag","channelId","notify","pingRole","inferredMatchType","notifyRole","fwaPoints","opponentFwaPoints","outcome","matchType","warStartFwaPoints","warEndFwaPoints","lastClanStars","lastOpponentStars","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName"
         FROM "WarEventLogSubscription"
         WHERE "guildId" = ${guildId} AND UPPER(REPLACE("clanTag",'#','')) = ${normalizeTagBare(clanTag)}
         LIMIT 1
@@ -266,7 +268,7 @@ export class WarEventLogService {
     const rows = await prisma.$queryRaw<SubscriptionRow[]>(
       Prisma.sql`
         SELECT
-          "id","guildId","clanTag","channelId","notify","inferredMatchType","notifyRole","fwaPoints","opponentFwaPoints","outcome","matchType","warStartFwaPoints","warEndFwaPoints","lastClanStars","lastOpponentStars","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName"
+          "id","guildId","clanTag","channelId","notify","pingRole","inferredMatchType","notifyRole","fwaPoints","opponentFwaPoints","outcome","matchType","warStartFwaPoints","warEndFwaPoints","lastClanStars","lastOpponentStars","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName"
         FROM "WarEventLogSubscription"
         WHERE "id" = ${subscriptionId}
         LIMIT 1
@@ -414,6 +416,7 @@ export class WarEventLogService {
         opponentName: nextOpponentName || sub.lastOpponentName || "Unknown",
         syncNumber: syncNumberForEvent,
         notifyRole: sub.notifyRole,
+        pingRole: sub.pingRole,
         fwaPoints: nextFwaPoints,
         opponentFwaPoints: nextOpponentFwaPoints,
         outcome: normalizeOutcome(nextOutcome),
@@ -468,6 +471,7 @@ export class WarEventLogService {
       opponentName: string;
       syncNumber: number | null;
       notifyRole: string | null;
+      pingRole: boolean;
       fwaPoints: number | null;
       opponentFwaPoints: number | null;
       outcome: "WIN" | "LOSE" | null;
@@ -613,7 +617,8 @@ export class WarEventLogService {
       });
     }
 
-    const roleMention = payload.notifyRole ? `<@&${payload.notifyRole}>` : null;
+    const roleMention =
+      payload.pingRole && payload.notifyRole ? `<@&${payload.notifyRole}>` : null;
     await channel.send({
       content: roleMention ?? undefined,
       embeds: [embed],
