@@ -326,6 +326,10 @@ export class WarEventLogService {
         const before = testWarStartFwaPoints ?? fwaPoints;
         const delta = this.computeBlPointsDelta(testFinalResultOverride);
         testWarEndFwaPoints = before !== null && Number.isFinite(before) ? before + delta : null;
+      } else if (sub.matchType === "FWA" && testFinalResultOverride) {
+        const before = testWarStartFwaPoints ?? fwaPoints;
+        const delta = this.computeTestFwaPointsDelta(testFinalResultOverride);
+        testWarEndFwaPoints = before !== null && Number.isFinite(before) ? before + delta : null;
       } else if (sub.matchType === "MM") {
         const before = testWarStartFwaPoints ?? fwaPoints;
         testWarEndFwaPoints = before !== null && Number.isFinite(before) ? before : fwaPoints;
@@ -420,6 +424,12 @@ export class WarEventLogService {
     if (finalResult.resultLabel === "WIN") return 3;
     if ((finalResult.clanDestruction ?? 0) >= 60) return 2;
     return 1;
+  }
+
+  private computeTestFwaPointsDelta(finalResult: WarEndResultSnapshot): number {
+    if (finalResult.resultLabel === "WIN") return -1;
+    if (finalResult.resultLabel === "LOSE") return 1;
+    return 0;
   }
 
   private async processSubscription(
