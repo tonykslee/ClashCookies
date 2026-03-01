@@ -1168,12 +1168,9 @@ async function recoverPreviousSyncNumFromPoints(
     ).catch(() => null);
     if (!snapshot || snapshot.winnerBoxSync === null) continue;
 
-    const siteUpdated = snapshot.winnerBoxTags
-      .map((t) => normalizeTag(t))
-      .includes(opponentTag);
-    const recoveredPrevious = siteUpdated
-      ? snapshot.winnerBoxSync - 1
-      : snapshot.winnerBoxSync;
+    const siteUpdated = isPointsSiteUpdatedForOpponent(snapshot, opponentTag, null);
+    if (!siteUpdated) continue;
+    const recoveredPrevious = snapshot.winnerBoxSync - 1;
     if (!Number.isFinite(recoveredPrevious) || recoveredPrevious < 0) continue;
 
     const next = Math.trunc(recoveredPrevious);
@@ -1182,7 +1179,7 @@ async function recoverPreviousSyncNumFromPoints(
       namespace: "points",
       operation: "sync_recovery",
       source: "cache_miss",
-      detail: `tag=${tag} opponent=${opponentTag} recovered=${next} mode=${siteUpdated ? "updated_site" : "stale_site"}`,
+      detail: `tag=${tag} opponent=${opponentTag} recovered=${next} mode=updated_site`,
     });
     return next;
   }
@@ -2681,15 +2678,6 @@ export const Fwa: Command = {
         }
       }
 
-      const syncEntries: string[] = [];
-      for (const clan of tracked) {
-        const trackedTag = normalizeTag(clan.tag);
-        if (missedSyncTags.has(trackedTag)) continue;
-        const warState = warStateByTag.get(trackedTag) ?? "notInWar";
-        const clanLabel = sanitizeClanName(clan.name) ?? `#${trackedTag}`;
-        syncEntries.push(`${clanLabel}: ${getSyncDisplay(sourceSync, warState)}`);
-      }
-
       for (const clan of tracked) {
         const trackedTag = normalizeTag(clan.tag);
         try {
@@ -2747,13 +2735,11 @@ export const Fwa: Command = {
         summary +=
           `\n${forbiddenCount} request(s) were blocked by points.fwafarm.com (HTTP 403).`;
       }
-      if (syncEntries.length > 0) {
-        const capped = syncEntries.slice(0, 12);
-        const overflow = syncEntries.length - capped.length;
-        summary += `\nSync#: ${capped.join(" | ")}${overflow > 0 ? ` (+${overflow} more)` : ""}`;
-      } else if (tracked.length > 0) {
-        summary += `\nSync#: none (all tracked clans are in missed sync state)`;
-      }
+      summary += `\nSync#: ${
+        sourceSync !== null && Number.isFinite(sourceSync)
+          ? `#${Math.trunc(sourceSync) + 1}`
+          : "unknown"
+      }`;
       if (missedSyncTags.size > 0) {
         summary += `\nIgnored for Sync#: ${missedSyncTags.size} missed-sync clan(s).`;
       }
