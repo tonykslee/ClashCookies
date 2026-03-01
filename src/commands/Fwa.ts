@@ -653,17 +653,30 @@ async function upsertCurrentWarHistoryAndGetWarId(params: {
   opponentTag: string;
   war: Awaited<ReturnType<CoCService["getCurrentWar"]>>;
 }): Promise<number | null> {
-  if (params.warStartMs === null || !Number.isFinite(params.warStartMs)) {
-    return null;
+  const resolvedWarStartMs =
+    params.warStartMs !== null && Number.isFinite(params.warStartMs)
+      ? params.warStartMs
+      : parseCocApiTime(params.war?.startTime);
+  if (resolvedWarStartMs === null || !Number.isFinite(resolvedWarStartMs)) {
+    const fallback = await prisma.warClanHistory.findFirst({
+      where: { clanTag: `#${params.normalizedTag}` },
+      orderBy: { warStartTime: "desc" },
+      select: { warId: true },
+    });
+    return fallback?.warId ?? null;
   }
 
-  const dedupeKey = `${params.normalizedTag}:${Math.trunc(params.warStartMs)}`;
+  const resolvedWarEndMs =
+    params.warEndMs !== null && Number.isFinite(params.warEndMs)
+      ? params.warEndMs
+      : parseCocApiTime(params.war?.endTime);
+  const dedupeKey = `${params.normalizedTag}:${Math.trunc(resolvedWarStartMs)}`;
   const dedupedAt = warHistoryUpsertDedupedAt.get(dedupeKey) ?? null;
   if (dedupedAt !== null && Date.now() - dedupedAt < WAR_HISTORY_UPSERT_DEDUPE_MS) {
-    return getCurrentWarIdForClan(params.normalizedTag, params.warStartMs);
+    return getCurrentWarIdForClan(params.normalizedTag, resolvedWarStartMs);
   }
 
-  const warStartTime = new Date(params.warStartMs);
+  const warStartTime = new Date(resolvedWarStartMs);
   const saved = await prisma.warClanHistory.upsert({
     where: {
       clanTag_warStartTime: {
@@ -680,7 +693,7 @@ async function upsertCurrentWarHistoryAndGetWarId(params: {
       opponentDestruction: parseNullableFloat(params.war?.opponent?.destructionPercentage),
       expectedOutcome: params.expectedOutcome,
       warStartTime,
-      warEndTime: params.warEndMs !== null ? new Date(params.warEndMs) : null,
+      warEndTime: resolvedWarEndMs !== null ? new Date(resolvedWarEndMs) : null,
       clanName: params.clanName,
       clanTag: `#${params.normalizedTag}`,
       opponentName: params.opponentName,
@@ -694,7 +707,7 @@ async function upsertCurrentWarHistoryAndGetWarId(params: {
       opponentStars: parseNullableInt(params.war?.opponent?.stars),
       opponentDestruction: parseNullableFloat(params.war?.opponent?.destructionPercentage),
       expectedOutcome: params.expectedOutcome,
-      warEndTime: params.warEndMs !== null ? new Date(params.warEndMs) : null,
+      warEndTime: resolvedWarEndMs !== null ? new Date(resolvedWarEndMs) : null,
       clanName: params.clanName,
       opponentName: params.opponentName,
       opponentTag: params.opponentTag ? `#${params.opponentTag}` : null,
@@ -708,7 +721,6 @@ async function upsertCurrentWarHistoryAndGetWarId(params: {
       if (at < cutoff) warHistoryUpsertDedupedAt.delete(key);
     }
   }
-
   return saved.warId ?? null;
 }
 
