@@ -610,6 +610,83 @@ function formatWarPercent(input: unknown): string {
   return `${withPrecision.replace(/\.00$/, "")}%`;
 }
 
+function parseNullableInt(input: unknown): number | null {
+  const value = Number(input);
+  if (!Number.isFinite(value)) return null;
+  return Math.trunc(value);
+}
+
+function parseNullableFloat(input: unknown): number | null {
+  const value = Number(input);
+  if (!Number.isFinite(value)) return null;
+  return value;
+}
+
+function toWarMatchTypeOrNull(
+  input: "FWA" | "BL" | "MM" | "UNKNOWN"
+): "FWA" | "BL" | "MM" | null {
+  if (input === "FWA" || input === "BL" || input === "MM") return input;
+  return null;
+}
+
+async function upsertCurrentWarHistoryAndGetWarId(params: {
+  normalizedTag: string;
+  warStartMs: number | null;
+  warEndMs: number | null;
+  currentSync: number | null;
+  matchType: "FWA" | "BL" | "MM" | "UNKNOWN";
+  expectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null;
+  clanName: string;
+  opponentName: string;
+  opponentTag: string;
+  war: Awaited<ReturnType<CoCService["getCurrentWar"]>>;
+}): Promise<number | null> {
+  if (params.warStartMs === null || !Number.isFinite(params.warStartMs)) {
+    return null;
+  }
+
+  const warStartTime = new Date(params.warStartMs);
+  const saved = await prisma.warClanHistory.upsert({
+    where: {
+      clanTag_warStartTime: {
+        clanTag: `#${params.normalizedTag}`,
+        warStartTime,
+      },
+    },
+    create: {
+      syncNumber: params.currentSync,
+      matchType: toWarMatchTypeOrNull(params.matchType),
+      clanStars: parseNullableInt(params.war?.clan?.stars),
+      clanDestruction: parseNullableFloat(params.war?.clan?.destructionPercentage),
+      opponentStars: parseNullableInt(params.war?.opponent?.stars),
+      opponentDestruction: parseNullableFloat(params.war?.opponent?.destructionPercentage),
+      expectedOutcome: params.expectedOutcome,
+      warStartTime,
+      warEndTime: params.warEndMs !== null ? new Date(params.warEndMs) : null,
+      clanName: params.clanName,
+      clanTag: `#${params.normalizedTag}`,
+      opponentName: params.opponentName,
+      opponentTag: params.opponentTag ? `#${params.opponentTag}` : null,
+    },
+    update: {
+      syncNumber: params.currentSync,
+      matchType: toWarMatchTypeOrNull(params.matchType),
+      clanStars: parseNullableInt(params.war?.clan?.stars),
+      clanDestruction: parseNullableFloat(params.war?.clan?.destructionPercentage),
+      opponentStars: parseNullableInt(params.war?.opponent?.stars),
+      opponentDestruction: parseNullableFloat(params.war?.opponent?.destructionPercentage),
+      expectedOutcome: params.expectedOutcome,
+      warEndTime: params.warEndMs !== null ? new Date(params.warEndMs) : null,
+      clanName: params.clanName,
+      opponentName: params.opponentName,
+      opponentTag: params.opponentTag ? `#${params.opponentTag}` : null,
+    },
+    select: { warId: true },
+  });
+
+  return saved.warId ?? null;
+}
+
 async function getCurrentWarIdForClan(
   normalizedTag: string,
   warStartMs: number | null
@@ -672,7 +749,7 @@ async function buildWarMailEmbedForTag(
         clanTag: `#${normalizedTag}`,
       },
     },
-    select: { matchType: true, inferredMatchType: true, outcome: true },
+    select: { matchType: true, inferredMatchType: true, outcome: true, lastWarStartTime: true },
   });
 
   let inferredMatchType = Boolean(subscription?.inferredMatchType);
@@ -737,10 +814,27 @@ async function buildWarMailEmbedForTag(
   const prepTargetMs = parseCocApiTime(war?.startTime);
   const battleTargetMs = parseCocApiTime(war?.endTime);
   const warStartMs = parseCocApiTime(war?.startTime);
+  const fallbackWarStartMs = subscription?.lastWarStartTime
+    ? subscription.lastWarStartTime.getTime()
+    : null;
+  const effectiveWarStartMs = warStartMs ?? fallbackWarStartMs;
+  const expectedOutcome = matchType === "FWA" ? (outcome ?? "UNKNOWN") : null;
   const remainingText = formatDiscordRelativeMs(
     warState === "preparation" ? prepTargetMs : battleTargetMs
   );
-  const warId = await getCurrentWarIdForClan(normalizedTag, warStartMs);
+  const warId =
+    (await upsertCurrentWarHistoryAndGetWarId({
+      normalizedTag,
+      warStartMs: effectiveWarStartMs,
+      warEndMs: battleTargetMs,
+      currentSync,
+      matchType,
+      expectedOutcome,
+      clanName,
+      opponentName,
+      opponentTag,
+      war,
+    })) ?? (await getCurrentWarIdForClan(normalizedTag, effectiveWarStartMs));
   const starsLeft = formatWarInt(war?.clan?.stars);
   const starsRight = formatWarInt(war?.opponent?.stars);
   const attacksPerMember = Number.isFinite(Number(war?.attacksPerMember))
@@ -792,7 +886,7 @@ async function buildWarMailEmbedForTag(
     clanRoleId: trackedConfig.clanRoleId,
     unavailableReasons,
     matchType,
-    expectedOutcome: matchType === "FWA" ? (outcome ?? "UNKNOWN") : null,
+    expectedOutcome,
   };
 }
 
