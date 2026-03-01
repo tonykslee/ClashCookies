@@ -27,6 +27,7 @@ const POINTS_BASE_URL = "https://points.fwafarm.com/clan?tag=";
 const TIEBREAK_ORDER = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 const CACHE_REFRESH_DELAY_MS = 30 * 60 * 1000;
 const WAR_END_RECHECK_MS = 10 * 60 * 1000;
+const MISSED_SYNC_WINDOW_MS = 2 * 60 * 60 * 1000;
 const DISCORD_CONTENT_MAX = 2000;
 const POINTS_CACHE_VERSION = 5;
 const MATCHUP_CACHE_VERSION = 5;
@@ -1287,6 +1288,31 @@ function getWarStateRemaining(
   return `<t:${Math.floor(targetMs / 1000)}:R>`;
 }
 
+function isMissedSyncClan(input: {
+  baselineWarStartMs: number | null;
+  clanWarState: WarStateForSync;
+  clanWarStartMs: number | null;
+  nowMs: number;
+}): boolean {
+  const { baselineWarStartMs, clanWarState, clanWarStartMs, nowMs } = input;
+  if (baselineWarStartMs === null || !Number.isFinite(baselineWarStartMs)) return false;
+  const deadlineMs = baselineWarStartMs + MISSED_SYNC_WINDOW_MS;
+  if (clanWarState === "notInWar") {
+    return nowMs >= deadlineMs;
+  }
+  if (clanWarStartMs === null || !Number.isFinite(clanWarStartMs)) return false;
+  return clanWarStartMs > deadlineMs;
+}
+
+export function isMissedSyncClanForTest(input: {
+  baselineWarStartMs: number | null;
+  clanWarState: WarStateForSync;
+  clanWarStartMs: number | null;
+  nowMs: number;
+}): boolean {
+  return isMissedSyncClan(input);
+}
+
 async function resolveMatchTypeWithFallback(params: {
   guildId: string | null;
   clanTag: string;
@@ -2061,26 +2087,77 @@ async function buildTrackedMatchOverview(
     ["notInWar", 0],
   ]);
   const stateRemaining = new Map<WarStateForSync, string>();
-  const embed = new EmbedBuilder().setTitle(`FWA Match Overview (${tracked.length})`);
-  const copyLines: string[] = [];
-  const singleViews: Record<string, MatchView> = {};
+  const warByClanTag = new Map<string, CurrentWarResult | null>();
+  const warStateByClanTag = new Map<string, WarStateForSync>();
+  const warStartMsByClanTag = new Map<string, number | null>();
+  const activeWarStarts: number[] = [];
 
   for (const clan of tracked) {
     const clanTag = normalizeTag(clan.tag);
-    const clanName = sanitizeClanName(clan.name) ?? `#${clanTag}`;
     const war = await getCurrentWarCached(cocService, clanTag, warLookupCache).catch(() => null);
     const warState = deriveWarState(war?.state);
+    const warStartMs = parseCocApiTime(war?.startTime);
+    warByClanTag.set(clanTag, war);
+    warStateByClanTag.set(clanTag, warState);
+    warStartMsByClanTag.set(clanTag, warStartMs);
+    if (warState !== "notInWar" && warStartMs !== null && Number.isFinite(warStartMs)) {
+      activeWarStarts.push(warStartMs);
+    }
+  }
+  const baselineWarStartMs =
+    activeWarStarts.length > 0 ? Math.min(...activeWarStarts) : null;
+  const nowMs = Date.now();
+  const missedSyncTags = new Set<string>();
+  for (const clan of tracked) {
+    const clanTag = normalizeTag(clan.tag);
+    const clanWarState = warStateByClanTag.get(clanTag) ?? "notInWar";
+    const clanWarStartMs = warStartMsByClanTag.get(clanTag) ?? null;
+    if (
+      isMissedSyncClan({
+        baselineWarStartMs,
+        clanWarState,
+        clanWarStartMs,
+        nowMs,
+      })
+    ) {
+      missedSyncTags.add(clanTag);
+    }
+  }
+  const includedTracked = tracked.filter((clan) => !missedSyncTags.has(normalizeTag(clan.tag)));
+  const embed = new EmbedBuilder().setTitle(`FWA Match Overview (${includedTracked.length})`);
+  const copyLines: string[] = [];
+  const singleViews: Record<string, MatchView> = {};
+
+  for (const clan of includedTracked) {
+    const clanTag = normalizeTag(clan.tag);
+    const clanName = sanitizeClanName(clan.name) ?? `#${clanTag}`;
+    const war = warByClanTag.get(clanTag) ?? null;
+    const warState = warStateByClanTag.get(clanTag) ?? deriveWarState(war?.state);
     stateCounts.set(warState, (stateCounts.get(warState) ?? 0) + 1);
     if (!stateRemaining.has(warState)) {
       stateRemaining.set(warState, getWarStateRemaining(war, warState));
     }
+    const clanSyncLine = withSyncModeLabel(getSyncDisplay(sourceSync, warState), sourceSync);
+    const clanWarStateLine = formatWarStateLabel(warState);
+    const clanTimeRemainingLine = getWarStateRemaining(war, warState);
     if (warState === "notInWar") {
       embed.addFields({
         name: `${clanName} (#${clanTag})`,
-        value: ":face_palm: failed to start war",
+        value: [
+          ":face_palm: failed to start war",
+          `Sync: **${clanSyncLine}**`,
+          `War State: **${clanWarStateLine}**`,
+          `Time Remaining: **${clanTimeRemainingLine}**`,
+        ].join("\n"),
         inline: false,
       });
-      copyLines.push(`## ${clanName} (#${clanTag})`, ":face_palm: failed to start war");
+      copyLines.push(
+        `## ${clanName} (#${clanTag})`,
+        ":face_palm: failed to start war",
+        `Sync: ${clanSyncLine}`,
+        `War State: ${clanWarStateLine}`,
+        `Time Remaining: ${clanTimeRemainingLine}`
+      );
       continue;
     }
 
@@ -2098,12 +2175,20 @@ async function buildTrackedMatchOverview(
     if (!opponentTag) {
       embed.addFields({
         name: `${clanName} (#${clanTag}) vs Unknown`,
-        value: "No active war opponent",
+        value: [
+          "No active war opponent",
+          `Sync: **${clanSyncLine}**`,
+          `War State: **${clanWarStateLine}**`,
+          `Time Remaining: **${clanTimeRemainingLine}**`,
+        ].join("\n"),
         inline: false,
       });
       copyLines.push(
         `## ${clanName} (#${clanTag})`,
-        "No active war opponent"
+        "No active war opponent",
+        `Sync: ${clanSyncLine}`,
+        `War State: ${clanWarStateLine}`,
+        `Time Remaining: ${clanTimeRemainingLine}`
       );
       continue;
     }
@@ -2339,7 +2424,18 @@ async function buildTrackedMatchOverview(
       const warnSuffix = inferredMatchType ? ` :warning: ${verifyLink}` : "";
       embed.addFields({
         name: `${clanName} (#${clanTag}) vs ${opponentName} (#${opponentTag})`,
-        value: `${pointsLine}\n${pointsSyncStatus}\nMatch Type: **FWA${warnSuffix}**\nOutcome: **${effectiveOutcome ?? "UNKNOWN"}**${mismatchLines ? `\n${mismatchLines}` : ""}`,
+        value: [
+          pointsLine,
+          pointsSyncStatus,
+          `Match Type: **FWA${warnSuffix}**`,
+          `Outcome: **${effectiveOutcome ?? "UNKNOWN"}**`,
+          `Sync: **${clanSyncLine}**`,
+          `War State: **${clanWarStateLine}**`,
+          `Time Remaining: **${clanTimeRemainingLine}**`,
+          mismatchLines,
+        ]
+          .filter(Boolean)
+          .join("\n"),
         inline: false,
       });
       copyLines.push(
@@ -2353,13 +2449,25 @@ async function buildTrackedMatchOverview(
         `Match Type: FWA${inferredMatchType ? " :warning:" : ""}`,
         inferredMatchType ? `Verify: ${buildCcVerifyUrl(opponentTag)}` : "",
         `Outcome: ${effectiveOutcome ?? "UNKNOWN"}`,
+        `Sync: ${clanSyncLine}`,
+        `War State: ${clanWarStateLine}`,
+        `Time Remaining: ${clanTimeRemainingLine}`,
         mismatchLines
       );
     } else {
       const warnSuffix = inferredMatchType ? ` :warning: ${verifyLink}` : "";
       embed.addFields({
         name: `${clanName} (#${clanTag}) vs ${opponentName} (#${opponentTag})`,
-        value: `${pointsSyncStatus}\nMatch Type: **${matchType}${warnSuffix}**${mismatchLines ? `\n${mismatchLines}` : ""}`,
+        value: [
+          pointsSyncStatus,
+          `Match Type: **${matchType}${warnSuffix}**`,
+          `Sync: **${clanSyncLine}**`,
+          `War State: **${clanWarStateLine}**`,
+          `Time Remaining: **${clanTimeRemainingLine}**`,
+          mismatchLines,
+        ]
+          .filter(Boolean)
+          .join("\n"),
         inline: false,
       });
       copyLines.push(
@@ -2371,6 +2479,9 @@ async function buildTrackedMatchOverview(
         pointsSyncStatus,
         `Match Type: ${matchType}${inferredMatchType ? " :warning:" : ""}`,
         inferredMatchType ? `Verify: ${buildCcVerifyUrl(opponentTag)}` : "",
+        `Sync: ${clanSyncLine}`,
+        `War State: ${clanWarStateLine}`,
+        `Time Remaining: ${clanTimeRemainingLine}`,
         mismatchLines
       );
     }
@@ -2419,9 +2530,9 @@ async function buildTrackedMatchOverview(
           `# ${clanName} (#${clanTag}) vs ${opponentName} (#${opponentTag})`,
           inferredMatchType ? MATCHTYPE_WARNING_LEGEND : "",
           pointsSyncStatus,
-          `Sync: ${withSyncModeLabel(getSyncDisplay(sourceSync, warState), sourceSync)}`,
-          `War State: ${formatWarStateLabel(warState)}`,
-          `Time Remaining: ${getWarStateRemaining(war, warState)}`,
+          `Sync: ${clanSyncLine}`,
+          `War State: ${clanWarStateLine}`,
+          `Time Remaining: ${clanTimeRemainingLine}`,
           `## Opponent Name`,
           `\`${opponentName}\``,
           `## Opponent Tag`,
@@ -2485,10 +2596,18 @@ async function buildTrackedMatchOverview(
           : "n/a";
 
   const syncWithMode = stateLabel === "mixed" ? "mixed" : withSyncModeLabel(syncLabel, sourceSync);
+  const ignoredMissedSyncText =
+    missedSyncTags.size > 0
+      ? `\nIgnored missed sync clans: **${missedSyncTags.size}** (started >2h after alliance war start or still no war past 2h).`
+      : "";
   embed.setDescription(
-    `${MATCHTYPE_WARNING_LEGEND}\n\nSync: **${syncWithMode}**\nWar State: **${stateLabel}**\nTime Remaining: **${remainingLabel}**`
+    `${MATCHTYPE_WARNING_LEGEND}\n\nSync: **${syncWithMode}**\nWar State: **${stateLabel}**\nTime Remaining: **${remainingLabel}**${ignoredMissedSyncText}`
   );
-  const copyHeader = `# FWA Match Overview (${tracked.length})\n${MATCHTYPE_WARNING_LEGEND}\nSync: ${syncWithMode}\nWar State: ${stateLabel}\nTime Remaining: ${remainingLabel}`;
+  const copyHeader = `# FWA Match Overview (${includedTracked.length})\n${MATCHTYPE_WARNING_LEGEND}\nSync: ${syncWithMode}\nWar State: ${stateLabel}\nTime Remaining: ${remainingLabel}${
+    missedSyncTags.size > 0
+      ? `\nIgnored missed sync clans: ${missedSyncTags.size} (started >2h late or no war after 2h)`
+      : ""
+  }`;
   return {
     embed,
     copyText: buildLimitedMessage(copyHeader, copyLines.map((l) => `${l}\n`), ""),
