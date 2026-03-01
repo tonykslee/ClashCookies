@@ -232,15 +232,15 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/kick-list show",
     ],
   },
-  post: {
+  sync: {
     summary: "Post structured messages such as sync time announcements.",
     details: [
-      "`/post sync time` opens a modal to capture date/time/timezone and role ping.",
+      "`/sync time post` opens a modal to capture date/time/timezone and role ping.",
       "Creates and pins a sync-time message in the active channel, then adds clan badge reactions.",
-      "`/post sync status` shows claimed vs unclaimed clans from the stored active sync post, or a provided message ID.",
+      "`/sync post status` shows claimed vs unclaimed clans from the stored active sync post, or a provided message ID.",
       "`sync time` is admin-only by default.",
     ],
-    examples: ["/post sync time role:@War", "/post sync status", "/post sync status message-id:123456789012345678"],
+    examples: ["/sync time post role:@War", "/sync post status", "/sync post status message-id:123456789012345678"],
   },
   permission: {
     summary: "Control which roles can run each command target.",
@@ -250,9 +250,9 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`add` and `remove` are admin-only by default.",
     ],
     examples: [
-      "/permission add command:post role:@Leaders",
+      "/permission add command:sync role:@Leaders",
       "/permission add command:fwa role:@Leaders",
-      "/permission remove command:post role:@Leaders",
+      "/permission remove command:sync role:@Leaders",
       "/permission list",
     ],
   },
