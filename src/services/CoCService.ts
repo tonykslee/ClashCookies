@@ -13,6 +13,7 @@ export class CoCService {
   private clansApi: ClansApi;
   private playersApi: PlayersApi;
 
+  /** Purpose: initialize service dependencies. */
   constructor() {
     const token = process.env.COC_API_TOKEN?.trim();
     if (!token) throw new Error("COC_API_TOKEN missing");
@@ -26,6 +27,7 @@ export class CoCService {
     this.playersApi = new PlayersApi(config);
   }
 
+  /** Purpose: get clan. */
   async getClan(tag: string): Promise<any> {
     const clanTag = tag.startsWith("#") ? tag : `#${tag}`;
     try {
@@ -55,11 +57,13 @@ export class CoCService {
     }
   }
 
+  /** Purpose: get clan name. */
   async getClanName(tag: string): Promise<string> {
     const clan = await this.getClan(tag);
     return clan.name ?? "Unknown Clan";
   }
 
+  /** Purpose: get current war. */
   async getCurrentWar(tag: string): Promise<ClanWar | null> {
     const clanTag = tag.startsWith("#") ? tag : `#${tag}`;
     try {
@@ -93,6 +97,7 @@ export class CoCService {
     }
   }
 
+  /** Purpose: get clan war log. */
   async getClanWarLog(tag: string, limit = 10): Promise<ClanWarLogEntry[]> {
     const clanTag = tag.startsWith("#") ? tag : `#${tag}`;
     try {
@@ -160,6 +165,7 @@ export class CoCService {
     }
   }
 
+  /** Purpose: normalize player. */
   private normalizePlayer(player: Player): any {
     return {
       ...player,

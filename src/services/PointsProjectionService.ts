@@ -22,10 +22,12 @@ type Snapshot = {
   winnerBoxTags: string[];
 };
 
+/** Purpose: normalize tag. */
 function normalizeTag(input: string): string {
   return input.trim().toUpperCase().replace(/^#/, "");
 }
 
+/** Purpose: build points url. */
 function buildPointsUrl(tag: string): string {
   const normalizedTag = normalizeTag(tag);
   const proxyBase = (process.env.POINTS_PROXY_URL ?? "").trim();
@@ -35,6 +37,7 @@ function buildPointsUrl(tag: string): string {
   return proxyUrl.toString();
 }
 
+/** Purpose: to plain text. */
 function toPlainText(html: string): string {
   return html
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
@@ -45,6 +48,7 @@ function toPlainText(html: string): string {
     .trim();
 }
 
+/** Purpose: extract point balance. */
 function extractPointBalance(html: string): number | null {
   const directMatch = html.match(/(?:Point Balance|Current Point Balance)\s*:\s*([+-]?\d+)/i);
   if (directMatch?.[1]) return Number(directMatch[1]);
@@ -53,6 +57,7 @@ function extractPointBalance(html: string): number | null {
   return textMatch?.[1] ? Number(textMatch[1]) : null;
 }
 
+/** Purpose: extract field. */
 function extractField(text: string, label: string): string | null {
   const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const regex = new RegExp(
@@ -63,6 +68,7 @@ function extractField(text: string, label: string): string | null {
   return match?.[1] ? match[1].trim().slice(0, 120) : null;
 }
 
+/** Purpose: extract winner box text. */
 function extractWinnerBoxText(html: string): string | null {
   const match = html.match(
     /<p[^>]*class=["'][^"']*winner-box[^"']*["'][^>]*>([\s\S]*?)<\/p>/i
@@ -70,12 +76,14 @@ function extractWinnerBoxText(html: string): string | null {
   return match?.[1] ? toPlainText(match[1]) : null;
 }
 
+/** Purpose: extract top section text. */
 function extractTopSectionText(html: string): string {
   const plain = toPlainText(html);
   const marker = plain.search(/Last Known War State\s*:/i);
   return marker < 0 ? plain : plain.slice(0, marker).trim();
 }
 
+/** Purpose: extract tags from text. */
 function extractTagsFromText(text: string): string[] {
   const tags = new Set<string>();
   for (const m of text.matchAll(/#([0-9A-Z]{4,})/gi)) {
@@ -87,21 +95,25 @@ function extractTagsFromText(text: string): string[] {
   return [...tags];
 }
 
+/** Purpose: extract sync number. */
 function extractSyncNumber(text: string): number | null {
   const match = text.match(/sync\s*#\s*(\d+)/i);
   return match?.[1] ? Number(match[1]) : null;
 }
 
+/** Purpose: get sync mode. */
 function getSyncMode(syncNumber: number | null): "low" | "high" | null {
   if (syncNumber === null) return null;
   return syncNumber % 2 === 0 ? "high" : "low";
 }
 
+/** Purpose: rank char. */
 function rankChar(ch: string): number {
   const idx = TIEBREAK_ORDER.indexOf(ch);
   return idx >= 0 ? idx : Number.MAX_SAFE_INTEGER;
 }
 
+/** Purpose: compare tags for tiebreak. */
 function compareTagsForTiebreak(primaryTag: string, opponentTag: string): number {
   const a = normalizeTag(primaryTag);
   const b = normalizeTag(opponentTag);
@@ -115,14 +127,17 @@ function compareTagsForTiebreak(primaryTag: string, opponentTag: string): number
   return 0;
 }
 
+/** Purpose: format points. */
 function formatPoints(value: number | null): string {
   if (value === null || Number.isNaN(value)) return "N/A";
   return Intl.NumberFormat("en-US").format(value);
 }
 
 export class PointsProjectionService {
+  /** Purpose: initialize service dependencies. */
   constructor(private readonly cocService: CoCService) {}
 
+  /** Purpose: fetch snapshot. */
   async fetchSnapshot(tag: string): Promise<Snapshot> {
     const normalizedTag = normalizeTag(tag);
     const url = buildPointsUrl(normalizedTag);
@@ -168,6 +183,7 @@ export class PointsProjectionService {
     };
   }
 
+  /** Purpose: build projection. */
   buildProjection(primary: Snapshot, opponent: Snapshot): string {
     const primaryName = primary.clanName ?? primary.tag;
     const opponentName = opponent.clanName ?? opponent.tag;
@@ -190,6 +206,7 @@ export class PointsProjectionService {
       : `${primaryName} should lose by tiebreak (${x} = ${y}, ${mode} sync)`;
   }
 
+  /** Purpose: format balance line. */
   formatBalanceLine(primary: Snapshot, opponent: Snapshot): string {
     return `${primary.clanName ?? primary.tag}: ${formatPoints(primary.balance)} | ${
       opponent.clanName ?? opponent.tag

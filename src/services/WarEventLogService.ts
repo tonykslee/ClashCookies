@@ -57,6 +57,25 @@ type WarComplianceSnapshot = {
   notFollowingPlan: string[];
 };
 
+type WarComplianceParticipant = {
+  playerName: string | null;
+  playerTag: string;
+  attacksUsed: number | null;
+  playerPosition: number | null;
+};
+
+type WarComplianceAttack = {
+  playerTag: string;
+  playerName: string | null;
+  playerPosition: number | null;
+  defenderPosition: number | null;
+  stars: number | null;
+  trueStars: number | null;
+  attackSeenAt: Date;
+  warEndTime: Date | null;
+  attackOrder: number;
+};
+
 type PollSyncContext = {
   previousSync: number | null;
   activeSync: number | null;
@@ -96,16 +115,19 @@ type TrackedClanPointsScrape = {
   pointsSiteUpToDate: boolean;
 };
 
+/** Purpose: normalize tag. */
 function normalizeTag(input: string | null | undefined): string {
   const raw = String(input ?? "").trim().toUpperCase();
   if (!raw) return "";
   return raw.startsWith("#") ? raw : `#${raw}`;
 }
 
+/** Purpose: normalize tag bare. */
 function normalizeTagBare(input: string | null | undefined): string {
   return normalizeTag(input).replace(/^#/, "");
 }
 
+/** Purpose: derive state. */
 function deriveState(rawState: string | null | undefined): WarState {
   const state = String(rawState ?? "").toLowerCase();
   if (state.includes("preparation")) return "preparation";
@@ -113,12 +135,14 @@ function deriveState(rawState: string | null | undefined): WarState {
   return "notInWar";
 }
 
+/** Purpose: event title. */
 function eventTitle(eventType: EventType): string {
   if (eventType === "war_started") return "War Started";
   if (eventType === "battle_day") return "Battle Day";
   return "War Ended";
 }
 
+/** Purpose: should emit. */
 function shouldEmit(prev: WarState, next: WarState): EventType | null {
   if (prev === "notInWar" && next === "preparation") return "war_started";
   if ((prev === "preparation" || prev === "notInWar") && next === "inWar") return "battle_day";
@@ -126,12 +150,14 @@ function shouldEmit(prev: WarState, next: WarState): EventType | null {
   return null;
 }
 
+/** Purpose: rank char. */
 function rankChar(ch: string): number {
   const order = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
   const idx = order.indexOf(ch);
   return idx >= 0 ? idx : Number.MAX_SAFE_INTEGER;
 }
 
+/** Purpose: compare tags for tiebreak. */
 function compareTagsForTiebreak(primaryTag: string, opponentTag: string): number {
   const a = normalizeTag(primaryTag);
   const b = normalizeTag(opponentTag);
@@ -145,6 +171,7 @@ function compareTagsForTiebreak(primaryTag: string, opponentTag: string): number
   return 0;
 }
 
+/** Purpose: derive expected outcome. */
 function deriveExpectedOutcome(
   clanTag: string,
   opponentTag: string,
@@ -163,6 +190,7 @@ function deriveExpectedOutcome(
   return wins ? "WIN" : "LOSE";
 }
 
+/** Purpose: parse coc time. */
 function parseCocTime(input: string | null | undefined): Date | null {
   if (!input) return null;
   const m = input.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})\.\d{3}Z$/);
@@ -171,22 +199,26 @@ function parseCocTime(input: string | null | undefined): Date | null {
   return new Date(Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s)));
 }
 
+/** Purpose: normalize outcome. */
 function normalizeOutcome(input: string | null | undefined): "WIN" | "LOSE" | null {
   const normalized = String(input ?? "").trim().toUpperCase();
   if (normalized === "WIN" || normalized === "LOSE") return normalized;
   return null;
 }
 
+/** Purpose: sanitize clan name. */
 function sanitizeClanName(input: string | null | undefined): string | null {
   const value = String(input ?? "").trim();
   return value ? value : null;
 }
 
+/** Purpose: format percent. */
 function formatPercent(value: number | null): string {
   if (value === null || !Number.isFinite(value)) return "unknown";
   return `${value.toFixed(2)}%`;
 }
 
+/** Purpose: format list. */
 function formatList(items: string[]): string {
   if (items.length === 0) return "None";
   const capped = items.slice(0, 15);
@@ -194,16 +226,19 @@ function formatList(items: string[]): string {
   return extra > 0 ? `${capped.join(", ")} (+${extra} more)` : capped.join(", ");
 }
 
+/** Purpose: format badge emoji inline. */
 function formatBadgeEmojiInline(emoji: { id: string; name: string; animated?: boolean } | null): string {
   if (!emoji) return "Unavailable";
   return emoji.animated ? `<a:${emoji.name}:${emoji.id}>` : `<:${emoji.name}:${emoji.id}>`;
 }
 
+/** Purpose: to discord relative time. */
 function toDiscordRelativeTime(value: Date | null): string {
   if (!(value instanceof Date) || Number.isNaN(value.getTime())) return "unknown";
   return `<t:${Math.floor(value.getTime() / 1000)}:R>`;
 }
 
+/** Purpose: parse badge emoji map. */
 function parseBadgeEmojiMap(): Record<string, string> {
   const raw = (process.env.WAR_EVENT_BADGE_EMOJI_BY_TAG ?? "").trim();
   if (!raw) return {};
@@ -222,6 +257,168 @@ function parseBadgeEmojiMap(): Record<string, string> {
   }
 }
 
+/** Purpose: compute war points delta for test. */
+export function computeWarPointsDeltaForTest(input: {
+  matchType: MatchType;
+  before: number | null;
+  after: number | null;
+  finalResult: WarEndResultSnapshot;
+}): number | null {
+  if (input.matchType === "BL") {
+    if (input.finalResult.resultLabel === "WIN") return 3;
+    if ((input.finalResult.clanDestruction ?? 0) >= 60) return 2;
+    return 1;
+  }
+  if (
+    input.before !== null &&
+    Number.isFinite(input.before) &&
+    input.after !== null &&
+    Number.isFinite(input.after)
+  ) {
+    return input.after - input.before;
+  }
+  return null;
+}
+
+/** Purpose: compute war compliance for test. */
+export function computeWarComplianceForTest(input: {
+  clanTag: string;
+  participants: WarComplianceParticipant[];
+  attacks: WarComplianceAttack[];
+  matchType: MatchType;
+  expectedOutcome: "WIN" | "LOSE" | null;
+  loseStyle: FwaLoseStyle;
+}): WarComplianceSnapshot {
+  if (input.matchType === "BL" || input.matchType === "MM") {
+    return { missedBoth: [], notFollowingPlan: [] };
+  }
+
+  const participants = [...input.participants].sort((a, b) => {
+    const posA = a.playerPosition ?? Number.MAX_SAFE_INTEGER;
+    const posB = b.playerPosition ?? Number.MAX_SAFE_INTEGER;
+    if (posA !== posB) return posA - posB;
+    return String(a.playerName ?? "").localeCompare(String(b.playerName ?? ""));
+  });
+  const attacks = [...input.attacks].sort((a, b) => {
+    const t = a.attackSeenAt.getTime() - b.attackSeenAt.getTime();
+    if (t !== 0) return t;
+    const o = (a.attackOrder ?? 0) - (b.attackOrder ?? 0);
+    if (o !== 0) return o;
+    return normalizeTag(a.playerTag).localeCompare(normalizeTag(b.playerTag));
+  });
+
+  const missedBoth = participants
+    .filter((p) => Number(p.attacksUsed ?? 0) <= 0)
+    .map((p) => String(p.playerName ?? p.playerTag).trim())
+    .filter(Boolean);
+
+  const labelForTag = new Map<string, string>();
+  for (const p of participants) {
+    const playerTag = normalizeTag(p.playerTag);
+    const label = String(p.playerName ?? p.playerTag).trim();
+    if (playerTag && label) labelForTag.set(playerTag, label);
+  }
+  const notFollowing = new Set<string>();
+  const addViolation = (playerTagRaw: string | null | undefined, fallbackName: string | null | undefined) => {
+    const playerTag = normalizeTag(playerTagRaw);
+    const label = labelForTag.get(playerTag) ?? String(fallbackName ?? playerTagRaw ?? "").trim();
+    if (label) notFollowing.add(label);
+  };
+
+  if (input.matchType === "FWA" && input.expectedOutcome) {
+    let cumulativeClanStars = 0;
+    const starsBeforeAttack = new Map<number, number>();
+    const starsAfterAttack = new Map<number, number>();
+    for (let i = 0; i < attacks.length; i += 1) {
+      const attack = attacks[i];
+      const before = cumulativeClanStars;
+      const gain = Math.max(0, Number(attack.trueStars ?? 0));
+      cumulativeClanStars += gain;
+      starsBeforeAttack.set(i, before);
+      starsAfterAttack.set(i, cumulativeClanStars);
+    }
+
+    if (input.expectedOutcome === "WIN") {
+      const mirrorTripleByPlayer = new Map<string, boolean>();
+      const strictWindowSeenByPlayer = new Map<string, boolean>();
+      for (let i = 0; i < attacks.length; i += 1) {
+        const attack = attacks[i];
+        const playerTag = normalizeTag(attack.playerTag);
+        const playerPos = attack.playerPosition ?? null;
+        const defenderPos = attack.defenderPosition ?? null;
+        const stars = Number(attack.stars ?? 0);
+        const trueStars = Number(attack.trueStars ?? 0);
+        const hoursRemaining =
+          attack.warEndTime instanceof Date
+            ? (attack.warEndTime.getTime() - attack.attackSeenAt.getTime()) / (60 * 60 * 1000)
+            : null;
+        const isStrictWindow =
+          hoursRemaining !== null &&
+          Number.isFinite(hoursRemaining) &&
+          hoursRemaining > 12 &&
+          (starsBeforeAttack.get(i) ?? 0) < 100;
+        if (isStrictWindow) {
+          strictWindowSeenByPlayer.set(playerTag, true);
+          const isMirror = playerPos !== null && defenderPos !== null && playerPos === defenderPos;
+          if (isMirror && stars >= 3) {
+            mirrorTripleByPlayer.set(playerTag, true);
+          }
+          if (!isMirror) {
+            if (stars === 3 && trueStars > 0) addViolation(attack.playerTag, attack.playerName);
+            if (stars <= 0) addViolation(attack.playerTag, attack.playerName);
+          }
+        }
+      }
+      for (const [playerTag, seenStrict] of strictWindowSeenByPlayer.entries()) {
+        if (!seenStrict) continue;
+        if (!mirrorTripleByPlayer.get(playerTag)) {
+          addViolation(playerTag, labelForTag.get(playerTag) ?? playerTag);
+        }
+      }
+    } else if (input.loseStyle === "TRIPLE_TOP_30") {
+      for (const attack of attacks) {
+        const defenderPos = attack.defenderPosition ?? null;
+        if (defenderPos !== null && defenderPos > 30) {
+          addViolation(attack.playerTag, attack.playerName);
+        }
+      }
+    } else {
+      for (let i = 0; i < attacks.length; i += 1) {
+        const attack = attacks[i];
+        const hoursRemaining =
+          attack.warEndTime instanceof Date
+            ? (attack.warEndTime.getTime() - attack.attackSeenAt.getTime()) / (60 * 60 * 1000)
+            : null;
+        const stars = Number(attack.stars ?? 0);
+        if (hoursRemaining !== null && Number.isFinite(hoursRemaining) && hoursRemaining < 12) {
+          const playerPos = attack.playerPosition ?? null;
+          const defenderPos = attack.defenderPosition ?? null;
+          const isMirror = playerPos !== null && defenderPos !== null && playerPos === defenderPos;
+          const validLate = (isMirror && stars === 2) || (!isMirror && stars === 1);
+          if (!validLate) addViolation(attack.playerTag, attack.playerName);
+          continue;
+        }
+        if (!(stars === 1 || stars === 2)) addViolation(attack.playerTag, attack.playerName);
+        if ((starsAfterAttack.get(i) ?? 0) > 100) addViolation(attack.playerTag, attack.playerName);
+      }
+    }
+  } else {
+    for (const attack of attacks) {
+      const playerPos = attack.playerPosition ?? null;
+      const defenderPos = attack.defenderPosition ?? null;
+      if (playerPos === null || defenderPos === null) continue;
+      if (playerPos !== defenderPos) {
+        addViolation(attack.playerTag, attack.playerName);
+      }
+    }
+  }
+
+  return {
+    missedBoth,
+    notFollowingPlan: [...notFollowing].sort((a, b) => a.localeCompare(b)),
+  };
+}
+
 export class WarEventLogService {
   private readonly points: PointsProjectionService;
   private readonly settings: SettingsService;
@@ -231,12 +428,14 @@ export class WarEventLogService {
   private static readonly WAR_START_POINTS_RECHECK_MS = 30 * 60 * 1000;
   private static readonly WAR_START_POINTS_MAX_ATTEMPTS = 10;
 
+  /** Purpose: initialize service dependencies. */
   constructor(private readonly client: Client, private readonly coc: CoCService) {
     this.points = new PointsProjectionService(coc);
     this.settings = new SettingsService();
     this.badgeEmojiByTag = parseBadgeEmojiMap();
   }
 
+  /** Purpose: recover previous sync num from points. */
   private async recoverPreviousSyncNumFromPoints(): Promise<number | null> {
     const tracked = await prisma.trackedClan.findMany({
       orderBy: { createdAt: "asc" },
@@ -266,6 +465,7 @@ export class WarEventLogService {
     return null;
   }
 
+  /** Purpose: get previous sync num. */
   private async getPreviousSyncNum(): Promise<number | null> {
     const raw = await this.settings.get(WarEventLogService.PREVIOUS_SYNC_KEY);
     const parsed = raw === null ? NaN : Number(raw);
@@ -273,10 +473,12 @@ export class WarEventLogService {
     return this.recoverPreviousSyncNumFromPoints();
   }
 
+  /** Purpose: build war start points job key. */
   private buildWarStartPointsJobKey(clanTag: string): string {
     return `${WarEventLogService.WAR_START_POINTS_JOB_PREFIX}:${normalizeTagBare(clanTag)}`;
   }
 
+  /** Purpose: get war start points job. */
   private async getWarStartPointsJob(clanTag: string): Promise<WarStartPointsCheckJob | null> {
     const raw = await this.settings.get(this.buildWarStartPointsJobKey(clanTag));
     if (!raw) return null;
@@ -289,6 +491,7 @@ export class WarEventLogService {
     }
   }
 
+  /** Purpose: set war start points job. */
   private async setWarStartPointsJob(job: WarStartPointsCheckJob): Promise<void> {
     await this.settings.set(this.buildWarStartPointsJobKey(job.clanTag), JSON.stringify(job));
   }
@@ -513,6 +716,7 @@ export class WarEventLogService {
     }
   }
 
+  /** Purpose: poll. */
   async poll(): Promise<void> {
     const previousSync = await this.getPreviousSyncNum();
     const syncContext: PollSyncContext = {
@@ -675,6 +879,7 @@ export class WarEventLogService {
     return rows[0] ?? null;
   }
 
+  /** Purpose: has war end recorded. */
   private async hasWarEndRecorded(clanTagInput: string, warStartTime: Date): Promise<boolean> {
     const clanTag = normalizeTag(clanTagInput);
     const existing = await prisma.warClanHistory.findUnique({
@@ -684,6 +889,7 @@ export class WarEventLogService {
     return Boolean(existing?.warId);
   }
 
+  /** Purpose: compute bl points delta. */
   private computeBlPointsDelta(finalResult: WarEndResultSnapshot): number {
     if (finalResult.resultLabel === "WIN") return 3;
     if ((finalResult.clanDestruction ?? 0) >= 60) return 2;
@@ -1156,20 +1362,7 @@ export class WarEventLogService {
     after: number | null;
     finalResult: WarEndResultSnapshot;
   }): number | null {
-    if (input.matchType === "BL") {
-      if (input.finalResult.resultLabel === "WIN") return 3;
-      if ((input.finalResult.clanDestruction ?? 0) >= 60) return 2;
-      return 1;
-    }
-    if (
-      input.before !== null &&
-      Number.isFinite(input.before) &&
-      input.after !== null &&
-      Number.isFinite(input.after)
-    ) {
-      return input.after - input.before;
-    }
-    return null;
+    return computeWarPointsDeltaForTest(input);
   }
 
   private async buildWarPlanText(
@@ -1198,6 +1391,7 @@ export class WarEventLogService {
     return "FWA plan unavailable (expected outcome unknown).";
   }
 
+  /** Purpose: get lose style for clan. */
   private async getLoseStyleForClan(clanTagInput: string): Promise<FwaLoseStyle> {
     const clanTag = normalizeTag(clanTagInput);
     if (!clanTag) return "TRIPLE_TOP_30";
@@ -1376,7 +1570,7 @@ export class WarEventLogService {
     matchType: MatchType,
     expectedOutcome: "WIN" | "LOSE" | null
   ): Promise<WarComplianceSnapshot> {
-    if (matchType === "BL") {
+    if (matchType === "BL" || matchType === "MM") {
       return { missedBoth: [], notFollowingPlan: [] };
     }
     const clanTag = normalizeTag(clanTagInput);
@@ -1413,145 +1607,14 @@ export class WarEventLogService {
       },
       orderBy: [{ attackSeenAt: "asc" }, { attackOrder: "asc" }, { playerTag: "asc" }],
     });
-
-    const missedBoth = participants
-      .filter((p) => Number(p.attacksUsed ?? 0) <= 0)
-      .map((p) => String(p.playerName ?? p.playerTag).trim())
-      .filter(Boolean);
-
-    const labelForTag = new Map<string, string>();
-    for (const p of participants) {
-      const playerTag = normalizeTag(p.playerTag);
-      const label = String(p.playerName ?? p.playerTag).trim();
-      if (playerTag && label) labelForTag.set(playerTag, label);
-    }
-    const notFollowing = new Set<string>();
-    const addViolation = (playerTagRaw: string | null | undefined, fallbackName: string | null | undefined) => {
-      const playerTag = normalizeTag(playerTagRaw);
-      const label = labelForTag.get(playerTag) ?? String(fallbackName ?? playerTagRaw ?? "").trim();
-      if (label) notFollowing.add(label);
-    };
-
-    if (matchType === "FWA" && expectedOutcome) {
-      const byPlayer = new Map<
-        string,
-        Array<{
-          playerTag: string;
-          playerName: string;
-          playerPosition: number | null;
-          defenderPosition: number | null;
-          stars: number;
-          trueStars: number;
-          attackSeenAt: Date;
-          warEndTime: Date | null;
-        }>
-      >();
-      let cumulativeClanStars = 0;
-      const starsBeforeAttack = new Map<number, number>();
-      const starsAfterAttack = new Map<number, number>();
-      for (let i = 0; i < attacks.length; i += 1) {
-        const attack = attacks[i];
-        const playerTag = normalizeTag(attack.playerTag);
-        if (!playerTag) continue;
-        const bucket = byPlayer.get(playerTag) ?? [];
-        bucket.push({
-          playerTag,
-          playerName: String(attack.playerName ?? attack.playerTag).trim(),
-          playerPosition: attack.playerPosition ?? null,
-          defenderPosition: attack.defenderPosition ?? null,
-          stars: Number(attack.stars ?? 0),
-          trueStars: Number(attack.trueStars ?? 0),
-          attackSeenAt: attack.attackSeenAt,
-          warEndTime: attack.warEndTime ?? null,
-        });
-        byPlayer.set(playerTag, bucket);
-
-        const before = cumulativeClanStars;
-        const gain = Math.max(0, Number(attack.trueStars ?? 0));
-        cumulativeClanStars += gain;
-        starsBeforeAttack.set(i, before);
-        starsAfterAttack.set(i, cumulativeClanStars);
-      }
-
-      const loseStyle = await this.getLoseStyleForClan(clanTag);
-      if (expectedOutcome === "WIN") {
-        const mirrorTripleByPlayer = new Map<string, boolean>();
-        const strictWindowSeenByPlayer = new Map<string, boolean>();
-        for (let i = 0; i < attacks.length; i += 1) {
-          const attack = attacks[i];
-          const playerTag = normalizeTag(attack.playerTag);
-          const playerPos = attack.playerPosition ?? null;
-          const defenderPos = attack.defenderPosition ?? null;
-          const stars = Number(attack.stars ?? 0);
-          const trueStars = Number(attack.trueStars ?? 0);
-          const hoursRemaining =
-            attack.warEndTime instanceof Date
-              ? (attack.warEndTime.getTime() - attack.attackSeenAt.getTime()) / (60 * 60 * 1000)
-              : null;
-          const isStrictWindow =
-            hoursRemaining !== null &&
-            Number.isFinite(hoursRemaining) &&
-            hoursRemaining > 12 &&
-            (starsBeforeAttack.get(i) ?? 0) < 100;
-          if (isStrictWindow) {
-            strictWindowSeenByPlayer.set(playerTag, true);
-            const isMirror = playerPos !== null && defenderPos !== null && playerPos === defenderPos;
-            if (isMirror && stars >= 3) {
-              mirrorTripleByPlayer.set(playerTag, true);
-            }
-            if (!isMirror) {
-              if (stars === 3 && trueStars > 0) addViolation(attack.playerTag, attack.playerName);
-              if (stars <= 0) addViolation(attack.playerTag, attack.playerName);
-            }
-          }
-        }
-        for (const [playerTag, seenStrict] of strictWindowSeenByPlayer.entries()) {
-          if (!seenStrict) continue;
-          if (!mirrorTripleByPlayer.get(playerTag)) {
-            addViolation(playerTag, labelForTag.get(playerTag) ?? playerTag);
-          }
-        }
-      } else if (loseStyle === "TRIPLE_TOP_30") {
-        for (const attack of attacks) {
-          const defenderPos = attack.defenderPosition ?? null;
-          if (defenderPos !== null && defenderPos > 30) {
-            addViolation(attack.playerTag, attack.playerName);
-          }
-        }
-      } else {
-        for (let i = 0; i < attacks.length; i += 1) {
-          const attack = attacks[i];
-          const hoursRemaining =
-            attack.warEndTime instanceof Date
-              ? (attack.warEndTime.getTime() - attack.attackSeenAt.getTime()) / (60 * 60 * 1000)
-              : null;
-          const stars = Number(attack.stars ?? 0);
-          if (hoursRemaining !== null && Number.isFinite(hoursRemaining) && hoursRemaining < 12) {
-            const playerPos = attack.playerPosition ?? null;
-            const defenderPos = attack.defenderPosition ?? null;
-            const isMirror = playerPos !== null && defenderPos !== null && playerPos === defenderPos;
-            const validLate = (isMirror && stars === 2) || (!isMirror && stars === 1);
-            if (!validLate) addViolation(attack.playerTag, attack.playerName);
-            continue;
-          }
-          if (!(stars === 1 || stars === 2)) addViolation(attack.playerTag, attack.playerName);
-          if ((starsAfterAttack.get(i) ?? 0) > 100) addViolation(attack.playerTag, attack.playerName);
-        }
-      }
-    } else {
-      for (const attack of attacks) {
-        const playerPos = attack.playerPosition ?? null;
-        const defenderPos = attack.defenderPosition ?? null;
-        if (playerPos === null || defenderPos === null) continue;
-        if (playerPos !== defenderPos) {
-          addViolation(attack.playerTag, attack.playerName);
-        }
-      }
-    }
-
-    return {
-      missedBoth,
-      notFollowingPlan: [...notFollowing].sort((a, b) => a.localeCompare(b)),
-    };
+    const loseStyle = await this.getLoseStyleForClan(clanTag);
+    return computeWarComplianceForTest({
+      clanTag,
+      participants,
+      attacks,
+      matchType,
+      expectedOutcome,
+      loseStyle,
+    });
   }
 }

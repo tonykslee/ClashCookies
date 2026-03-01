@@ -20,6 +20,7 @@ type AccessTokenCache = {
 export class GoogleSheetsService {
   private static accessTokenCache: AccessTokenCache | null = null;
 
+  /** Purpose: initialize service dependencies. */
   constructor(private settings: SettingsService) {}
 
   async getLinkedSheet(
@@ -68,6 +69,7 @@ export class GoogleSheetsService {
     }
   }
 
+  /** Purpose: clear linked sheet. */
   async clearLinkedSheet(mode?: GoogleSheetMode): Promise<void> {
     if (mode) {
       const modeKeys = this.getModeKeys(mode);
@@ -80,6 +82,7 @@ export class GoogleSheetsService {
     await this.settings.delete(SHEET_SETTING_TAB_KEY);
   }
 
+  /** Purpose: test access. */
   async testAccess(sheetId: string, tabName?: string): Promise<void> {
     const range = tabName?.trim()
       ? `${tabName.trim()}!A1:A1`
@@ -103,6 +106,7 @@ export class GoogleSheetsService {
     return this.readValues(sheetId, effectiveRange);
   }
 
+  /** Purpose: read values. */
   async readValues(sheetId: string, range: string): Promise<string[][]> {
     const token = await this.getAccessToken();
     const encodedRange = encodeURIComponent(range);
@@ -119,6 +123,7 @@ export class GoogleSheetsService {
     return response.data.values ?? [];
   }
 
+  /** Purpose: get access token. */
   private async getAccessToken(): Promise<string> {
     const cache = GoogleSheetsService.accessTokenCache;
     const now = Date.now();
@@ -138,6 +143,7 @@ export class GoogleSheetsService {
     return token;
   }
 
+  /** Purpose: request access token. */
   private async requestAccessToken(): Promise<{
     data: {
       access_token: string;
@@ -187,6 +193,7 @@ export class GoogleSheetsService {
     );
   }
 
+  /** Purpose: build service account assertion. */
   private buildServiceAccountAssertion(): string {
     const { clientEmail, privateKey } = this.readServiceAccountFromEnv();
     const nowSeconds = Math.floor(Date.now() / 1000);
@@ -211,6 +218,7 @@ export class GoogleSheetsService {
     return `${body}.${this.base64url(signature)}`;
   }
 
+  /** Purpose: read service account from env. */
   private readServiceAccountFromEnv(): {
     clientEmail: string;
     privateKey: string;
@@ -252,6 +260,7 @@ export class GoogleSheetsService {
     return { clientEmail, privateKey };
   }
 
+  /** Purpose: base64url. */
   private base64url(input: string | Buffer): string {
     const raw = typeof input === "string" ? Buffer.from(input, "utf8") : input;
     return raw
@@ -261,6 +270,7 @@ export class GoogleSheetsService {
       .replace(/=+$/g, "");
   }
 
+  /** Purpose: get mode keys. */
   private getModeKeys(mode: GoogleSheetMode): { idKey: string; tabKey: string } {
     if (mode === "actual") {
       return {
