@@ -178,6 +178,7 @@ model WarEventLogSubscription {
   clanTag          String
   channelId        String
   notify           Boolean  @default(true)
+  pingRole         Boolean  @default(true)
   inferredMatchType Boolean @default(true)
   notifyRole       String?
   fwaPoints        Int?
