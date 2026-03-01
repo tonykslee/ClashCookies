@@ -13,6 +13,9 @@ export const COMMAND_PERMISSION_TARGETS = [
   "lastseen",
   "inactive",
   "role-users",
+  "accounts",
+  "war",
+  "notify",
   "tracked-clan:add",
   "tracked-clan:remove",
   "tracked-clan:list",
@@ -39,8 +42,9 @@ export const COMMAND_PERMISSION_TARGETS = [
   "kick-list:remove",
   "kick-list:show",
   "kick-list:clear",
-  "post:sync:time",
-  "post:sync:status",
+  "post",
+  "sync:time:post",
+  "sync:post:status",
   `${MANAGE_COMMAND_ROLES_COMMAND}:add`,
   `${MANAGE_COMMAND_ROLES_COMMAND}:remove`,
   `${MANAGE_COMMAND_ROLES_COMMAND}:list`,
@@ -80,10 +84,15 @@ const FWA_LEADER_DEFAULT_TARGETS = new Set<string>([
   "kick-list:add",
   "kick-list:remove",
   "kick-list:show",
-  "post:sync:time",
-  "post:sync:status",
+  "sync:time:post",
+  "sync:post:status",
   "inactive",
 ]);
+
+const COMMAND_TARGET_ALIASES: Record<string, string> = {
+  "post:sync:time": "sync:time:post",
+  "post:sync:status": "sync:post:status",
+};
 
 /** Purpose: command roles key. */
 function commandRolesKey(commandName: string): string {
@@ -147,6 +156,17 @@ function isKnownTarget(target: string): target is CommandPermissionTarget {
   return (COMMAND_PERMISSION_TARGETS as readonly string[]).includes(target);
 }
 
+export function getPermissionTargetPrefixesForCommand(commandName: string): string[] {
+  return [commandName];
+}
+
+export function hasPermissionTargetForCommand(commandName: string): boolean {
+  const prefixes = getPermissionTargetPrefixesForCommand(commandName);
+  return COMMAND_PERMISSION_TARGETS.some((target) =>
+    prefixes.some((prefix) => target === prefix || target.startsWith(`${prefix}:`))
+  );
+}
+
 /** Purpose: get owner bypass ids. */
 function getOwnerBypassIds(): Set<string> {
   const raw = process.env.OWNER_DISCORD_USER_IDS ?? process.env.OWNER_DISCORD_USER_ID;
@@ -182,7 +202,9 @@ export function getCommandTargetsFromInteraction(
   }
   raw.push(command);
 
-  return raw.filter((target) => isKnownTarget(target));
+  return raw
+    .map((target) => COMMAND_TARGET_ALIASES[target] ?? target)
+    .filter((target) => isKnownTarget(target));
 }
 
 export class CommandPermissionService {

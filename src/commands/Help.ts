@@ -31,7 +31,7 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "kick-list:remove",
   "kick-list:show",
   "kick-list:clear",
-  "post:sync:time",
+  "sync:time:post",
   "notify:war",
   "permission:add",
   "permission:remove",
@@ -257,6 +257,10 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     ],
   },
 };
+
+export function getHelpDocumentedCommandNames(): string[] {
+  return Object.keys(COMMAND_DOCS).sort((a, b) => a.localeCompare(b));
+}
 
 type RenderState = {
   page: number;

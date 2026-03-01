@@ -48,8 +48,11 @@ async function getLeaderRoleIds(settings: SettingsService, guildId: string): Pro
   }
   // Preferred: guild-scoped fwa leader role (new default permission model).
   // Fallback: legacy command role whitelist for backwards compatibility.
-  const syncRoles = parseAllowedRoleIds(await settings.get("command_roles:post:sync:time"));
+  const syncRoles = parseAllowedRoleIds(await settings.get("command_roles:sync:time:post"));
   if (syncRoles.length > 0) return syncRoles;
+  // Backward compatibility for older permission-target key naming.
+  const legacySyncRoles = parseAllowedRoleIds(await settings.get("command_roles:post:sync:time"));
+  if (legacySyncRoles.length > 0) return legacySyncRoles;
   return parseAllowedRoleIds(await settings.get("command_roles:post"));
 }
 
