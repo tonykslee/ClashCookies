@@ -46,6 +46,10 @@ import {
   CommandPermissionService,
   getCommandTargetsFromInteraction,
 } from "../services/CommandPermissionService";
+import {
+  handleNotifyWarRefreshButton,
+  isNotifyWarRefreshButtonCustomId,
+} from "../services/WarEventLogService";
 
 const commandPermissionService = new CommandPermissionService();
 const GLOBAL_POST_BUTTON_PREFIX = "post-channel";
@@ -381,6 +385,20 @@ const handleButtonInteraction = async (interaction: Interaction): Promise<void> 
         await interaction.reply({
           ephemeral: true,
           content: "Failed to refresh war mail.",
+        });
+      }
+    }
+  }
+
+  if (isNotifyWarRefreshButtonCustomId(interaction.customId)) {
+    try {
+      await handleNotifyWarRefreshButton(interaction);
+    } catch (err) {
+      console.error(`Notify war refresh button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to refresh battle-day embed.",
         });
       }
     }

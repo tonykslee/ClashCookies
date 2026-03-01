@@ -13,7 +13,10 @@ import { processRecruitmentCooldownReminders } from "../services/RecruitmentServ
 import { SettingsService } from "../services/SettingsService";
 import { PlayerLinkSyncService } from "../services/PlayerLinkSyncService";
 import { WarHistoryService } from "../services/WarHistoryService";
-import { WarEventLogService } from "../services/WarEventLogService";
+import {
+  WarEventLogService,
+  notifyWarBattleDayRefreshIntervalMs,
+} from "../services/WarEventLogService";
 
 const DEFAULT_OBSERVE_INTERVAL_MINUTES = 30;
 const RECRUITMENT_REMINDER_INTERVAL_MS = 5 * 60 * 1000;
@@ -305,6 +308,22 @@ export default (client: Client, cocService: CoCService): void => {
       });
     }, warEventPollMs);
     console.log(`War event log listener enabled (every ${warEventPollMinutes} minute(s)).`);
+
+    const runBattleDayRefresh = async () => {
+      await runFetchTelemetryBatch("war_event_battle_day_refresh_cycle", async () => {
+        try {
+          await warEventLogService.refreshBattleDayPosts();
+        } catch (err) {
+          console.error(`[war-events] battle-day refresh loop failed: ${formatError(err)}`);
+        }
+      });
+    };
+    setInterval(() => {
+      runBattleDayRefresh().catch((err) => {
+        console.error(`[war-events] battle-day refresh interval failed: ${formatError(err)}`);
+      });
+    }, notifyWarBattleDayRefreshIntervalMs);
+    console.log("War battle-day embed refresh enabled (every 20 minute(s)).");
 
     console.log("ClashCookies is online");
   });
