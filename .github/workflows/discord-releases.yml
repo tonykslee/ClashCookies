@@ -12,26 +12,26 @@ jobs:
         run: |
           curl -H "Content-Type: application/json" \
           -X POST \
-          -d "{
-            \"content\": \"<@&1477488801478869196>\",
-            \"allowed_mentions\": {
-              \"roles\": [\"1477488801478869196\"]
+          -d '{
+            "content": "<@&1477488801478869196>",
+            "allowed_mentions": {
+              "roles": ["1477488801478869196"]
             },
-            \"username\": \"ClashCookies\",
-            \"embeds\": [{
-              \"title\": \"🚀 New Release: ${{ github.event.release.name }}\",
-              \"description\": \"Click the button below to view the full changelog.\",
-              \"color\": 5814783,
-              \"footer\": { \"text\": \"Version ${{ github.event.release.tag_name }}\" }
+            "username": "ClashCookies",
+            "embeds": [{
+              "title": "🚀 New Release: ${{ github.event.release.name }}",
+              "description": "Click the button below to view the full changelog.",
+              "color": 5814783,
+              "footer": { "text": "Version ${{ github.event.release.tag_name }}" }
             }],
-            \"components\": [{
-              \"type\": 1,
-              \"components\": [{
-                \"type\": 2,
-                \"style\": 5,
-                \"label\": \"View Release\",
-                \"url\": \"${{ github.event.release.html_url }}\"
+            "components": [{
+              "type": 1,
+              "components": [{
+                "type": 2,
+                "style": 5,
+                "label": "View Release",
+                "url": "${{ github.event.release.html_url }}"
               }]
             }]
-          }" \
+          }' \
           ${{ secrets.DISCORD_WEBHOOK_URL }}
