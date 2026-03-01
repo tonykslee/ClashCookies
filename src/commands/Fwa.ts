@@ -568,18 +568,6 @@ async function getTrackedClanMailConfig(tag: string): Promise<{
   };
 }
 
-async function upsertTrackedClanMailChannelId(tag: string, channelId: string): Promise<void> {
-  const normalizedTag = `#${normalizeTag(tag)}`;
-  await prisma.$executeRaw(
-    Prisma.sql`
-      INSERT INTO "TrackedClan" ("tag","mailChannelId","createdAt")
-      VALUES (${normalizedTag}, ${channelId}, NOW())
-      ON CONFLICT ("tag")
-      DO UPDATE SET "mailChannelId" = EXCLUDED."mailChannelId"
-    `
-  );
-}
-
 function mailStatusLabelForState(state: WarStateForSync): string {
   if (state === "preparation") return "Preparation Day";
   if (state === "inWar") return "Battle Day";
@@ -2335,8 +2323,8 @@ async function buildTrackedMatchOverview(
     return {
       embed: new EmbedBuilder()
       .setTitle("FWA Match Overview")
-      .setDescription("No tracked clans configured. Use `/tracked-clan add` first."),
-      copyText: "No tracked clans configured. Use `/tracked-clan add` first.",
+      .setDescription("No tracked clans configured. Use `/tracked-clan configure` first."),
+      copyText: "No tracked clans configured. Use `/tracked-clan configure` first.",
       singleViews: {},
     };
   }
@@ -2669,7 +2657,7 @@ async function buildTrackedMatchOverview(
     const mailBlockedReason = inferredMatchType
       ? "Match type is inferred. Confirm match type before sending war mail."
       : !mailChannelId
-        ? "Mail channel is not configured. Use /fwa mail set."
+        ? "Mail channel is not configured. Use /tracked-clan configure with a mail channel."
         : null;
 
     if (matchType === "FWA") {
@@ -2965,26 +2953,6 @@ export const Fwa: Command = {
       type: ApplicationCommandOptionType.SubcommandGroup,
       options: [
         {
-          name: "set",
-          description: "Set or overwrite tracked clan mail channel",
-          type: ApplicationCommandOptionType.Subcommand,
-          options: [
-            {
-              name: "tag",
-              description: "Tracked clan tag (with or without #)",
-              type: ApplicationCommandOptionType.String,
-              required: true,
-              autocomplete: true,
-            },
-            {
-              name: "mail-channel",
-              description: "Discord channel to receive war mail",
-              type: ApplicationCommandOptionType.Channel,
-              required: true,
-            },
-          ],
-        },
-        {
           name: "send",
           description: "Preview and send war mail for a tracked clan",
           type: ApplicationCommandOptionType.Subcommand,
@@ -3076,29 +3044,6 @@ export const Fwa: Command = {
       const permissionService = new CommandPermissionService();
       await permissionService.setFwaLeaderRoleId(interaction.guildId, role.id);
       await editReplySafe(`FWA leader role set to <@&${role.id}>.`);
-      return;
-    }
-
-    if (subcommandGroup === "mail" && subcommand === "set") {
-      if (!interaction.inGuild()) {
-        await editReplySafe("This command can only be used in a server.");
-        return;
-      }
-      if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
-        await editReplySafe("Only administrators can use this command.");
-        return;
-      }
-      if (!tag) {
-        await editReplySafe("Please provide `tag`.");
-        return;
-      }
-      const channel = interaction.options.getChannel("mail-channel", true);
-      if (!("isTextBased" in channel) || !(channel as any).isTextBased()) {
-        await editReplySafe("Mail channel must be a text-based channel.");
-        return;
-      }
-      await upsertTrackedClanMailChannelId(tag, channel.id);
-      await editReplySafe(`Mail channel for #${tag} set to <#${channel.id}>.`);
       return;
     }
 
@@ -3277,7 +3222,7 @@ export const Fwa: Command = {
 
       if (tracked.length === 0) {
         await editReplySafe(
-          "No tracked clans configured. Use `/tracked-clan add` or provide a clan tag."
+          "No tracked clans configured. Use `/tracked-clan configure` or provide a clan tag."
         );
         return;
       }
@@ -3690,7 +3635,7 @@ export const Fwa: Command = {
         const mailBlockedReason = inferredMatchType
           ? "Match type is inferred. Confirm match type before sending war mail."
           : !trackedMailConfig?.mailChannelId
-            ? "Mail channel is not configured. Use /fwa mail set."
+            ? "Mail channel is not configured. Use /tracked-clan configure with a mail channel."
             : null;
         const outcomeLine =
           matchType === "FWA"

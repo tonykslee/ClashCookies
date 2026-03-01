@@ -16,7 +16,7 @@ export const COMMAND_PERMISSION_TARGETS = [
   "accounts",
   "war",
   "notify",
-  "tracked-clan:add",
+  "tracked-clan:configure",
   "tracked-clan:remove",
   "tracked-clan:list",
   "sheet:link",
@@ -56,7 +56,7 @@ export type CommandPermissionTarget = (typeof COMMAND_PERMISSION_TARGETS)[number
 type GuildInteraction = ChatInputCommandInteraction | ModalSubmitInteraction;
 
 const ADMIN_DEFAULT_TARGETS = new Set<string>([
-  "tracked-clan:add",
+  "tracked-clan:configure",
   "tracked-clan:remove",
   "sheet:link",
   "sheet:unlink",

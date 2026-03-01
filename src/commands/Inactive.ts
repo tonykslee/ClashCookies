@@ -203,7 +203,7 @@ async function runDaysMode(
 
   if (roster.trackedTags.length === 0) {
     await interaction.editReply(
-      "No tracked clans configured. Configure at least one clan with `/tracked-clan add` before using `/inactive`."
+      "No tracked clans configured. Configure at least one clan with `/tracked-clan configure` before using `/inactive`."
     );
     return;
   }
@@ -334,7 +334,7 @@ async function runWarsMode(
   const roster = await getRosterSnapshot(cocService);
   if (roster.trackedTags.length === 0) {
     await interaction.editReply(
-      "No tracked clans configured. Configure at least one clan with `/tracked-clan add` before using `/inactive`."
+      "No tracked clans configured. Configure at least one clan with `/tracked-clan configure` before using `/inactive`."
     );
     return;
   }
