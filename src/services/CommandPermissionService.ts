@@ -89,11 +89,6 @@ const FWA_LEADER_DEFAULT_TARGETS = new Set<string>([
   "inactive",
 ]);
 
-const COMMAND_TARGET_ALIASES: Record<string, string> = {
-  "post:sync:time": "sync:time:post",
-  "post:sync:status": "sync:post:status",
-};
-
 /** Purpose: command roles key. */
 function commandRolesKey(commandName: string): string {
   return `command_roles:${commandName}`;
@@ -194,7 +189,11 @@ export function getCommandTargetsFromInteraction(
   const sub = interaction.options.getSubcommand(false);
 
   const raw: string[] = [];
-  if (group && sub) {
+  if (command === "post" && group === "sync" && sub === "time") {
+    raw.push("sync:time:post");
+  } else if (command === "post" && group === "sync" && sub === "status") {
+    raw.push("sync:post:status");
+  } else if (group && sub) {
     raw.push(`${command}:${group}:${sub}`);
   }
   if (sub) {
@@ -202,9 +201,7 @@ export function getCommandTargetsFromInteraction(
   }
   raw.push(command);
 
-  return raw
-    .map((target) => COMMAND_TARGET_ALIASES[target] ?? target)
-    .filter((target) => isKnownTarget(target));
+  return raw.filter((target) => isKnownTarget(target));
 }
 
 export class CommandPermissionService {
