@@ -62,6 +62,7 @@ const FWA_MATCH_ALLIANCE_PREFIX = "fwa-match-alliance";
 const FWA_MAIL_CONFIRM_PREFIX = "fwa-mail-confirm";
 const FWA_MAIL_REFRESH_PREFIX = "fwa-mail-refresh";
 const FWA_MATCH_SEND_MAIL_PREFIX = "fwa-match-send-mail";
+const WAR_HISTORY_UPSERT_DEDUPE_MS = 20 * 60 * 1000;
 const MAILBOX_SENT_EMOJI = "📬";
 const MAILBOX_NOT_SENT_EMOJI = "📭";
 const POINTS_REQUEST_HEADERS = {
@@ -246,6 +247,7 @@ const fwaMatchCopyPayloads = new Map<string, FwaMatchCopyPayload>();
 const fwaMailPreviewPayloads = new Map<string, FwaMailPreviewPayload>();
 const fwaMailPostedPayloads = new Map<string, FwaMailPostedPayload>();
 const fwaMailPollers = new Map<string, ReturnType<typeof setInterval>>();
+const warHistoryUpsertDedupedAt = new Map<string, number>();
 
 function buildFwaMatchCopyCustomId(
   userId: string,
@@ -655,6 +657,12 @@ async function upsertCurrentWarHistoryAndGetWarId(params: {
     return null;
   }
 
+  const dedupeKey = `${params.normalizedTag}:${Math.trunc(params.warStartMs)}`;
+  const dedupedAt = warHistoryUpsertDedupedAt.get(dedupeKey) ?? null;
+  if (dedupedAt !== null && Date.now() - dedupedAt < WAR_HISTORY_UPSERT_DEDUPE_MS) {
+    return getCurrentWarIdForClan(params.normalizedTag, params.warStartMs);
+  }
+
   const warStartTime = new Date(params.warStartMs);
   const saved = await prisma.warClanHistory.upsert({
     where: {
@@ -693,6 +701,13 @@ async function upsertCurrentWarHistoryAndGetWarId(params: {
     },
     select: { warId: true },
   });
+  warHistoryUpsertDedupedAt.set(dedupeKey, Date.now());
+  if (warHistoryUpsertDedupedAt.size > 500) {
+    const cutoff = Date.now() - WAR_HISTORY_UPSERT_DEDUPE_MS * 2;
+    for (const [key, at] of warHistoryUpsertDedupedAt.entries()) {
+      if (at < cutoff) warHistoryUpsertDedupedAt.delete(key);
+    }
+  }
 
   return saved.warId ?? null;
 }
