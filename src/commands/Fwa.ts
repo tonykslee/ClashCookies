@@ -21,7 +21,10 @@ import { formatError } from "../helper/formatError";
 import { safeReply } from "../helper/safeReply";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
-import { CommandPermissionService } from "../services/CommandPermissionService";
+import {
+  CommandPermissionService,
+  FWA_LEADER_ROLE_SETTING_KEY,
+} from "../services/CommandPermissionService";
 import { SettingsService } from "../services/SettingsService";
 import { WarEventHistoryService } from "../services/war-events/history";
 import {
@@ -92,6 +95,56 @@ type PointsSnapshot = {
 };
 
 const PREVIOUS_SYNC_KEY = "previousSyncNum";
+
+function getOwnerBypassIds(): Set<string> {
+  const raw = process.env.OWNER_DISCORD_USER_IDS ?? process.env.OWNER_DISCORD_USER_ID ?? "";
+  const ids = raw
+    .split(",")
+    .map((v) => v.trim())
+    .filter((v) => /^\d+$/.test(v));
+  return new Set(ids);
+}
+
+function hasOwnerBypassUserId(userId: string): boolean {
+  return getOwnerBypassIds().has(userId);
+}
+
+async function getButtonInteractionRoleIds(interaction: ButtonInteraction): Promise<string[]> {
+  if (!interaction.inGuild()) return [];
+
+  const member = interaction.member;
+  if (member && "roles" in member) {
+    const roles = member.roles;
+    if (Array.isArray(roles)) return roles;
+    if (roles && "cache" in roles) {
+      return [...roles.cache.keys()];
+    }
+  }
+
+  const guild = interaction.guild;
+  if (!guild) return [];
+  const fetched = await guild.members.fetch(interaction.user.id);
+  return [...fetched.roles.cache.keys()];
+}
+
+async function canUseFwaMailSendFromButton(interaction: ButtonInteraction): Promise<boolean> {
+  if (!interaction.inGuild() || !interaction.guildId) return false;
+  if (hasOwnerBypassUserId(interaction.user.id)) return true;
+  if (interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) return true;
+
+  const permissionService = new CommandPermissionService();
+  const explicitRoles = await permissionService.getAllowedRoleIds("fwa:mail:send");
+  const userRoles = await getButtonInteractionRoleIds(interaction);
+  if (explicitRoles.length > 0) {
+    return explicitRoles.some((roleId) => userRoles.includes(roleId));
+  }
+
+  const leaderRoleId =
+    (await permissionService.getFwaLeaderRoleId(interaction.guildId)) ??
+    (await new SettingsService().get(`${FWA_LEADER_ROLE_SETTING_KEY}:${interaction.guildId}`));
+  if (!leaderRoleId) return false;
+  return userRoles.includes(leaderRoleId);
+}
 
 function normalizeTag(input: string): string {
   return input.trim().toUpperCase().replace(/^#/, "");
@@ -1398,6 +1451,15 @@ export async function handleFwaMatchSendMailButton(interaction: ButtonInteractio
     });
     return;
   }
+  const allowed = await canUseFwaMailSendFromButton(interaction);
+  if (!allowed) {
+    await interaction.reply({
+      ephemeral: true,
+      content:
+        "You do not have permission to send war mail. Default access is `/fwa leader-role` + Administrator.",
+    });
+    return;
+  }
   const cocService = new CoCService();
   await showWarMailPreview(interaction, interaction.guildId, interaction.user.id, parsed.tag, cocService);
 }
@@ -1409,6 +1471,15 @@ export async function handleFwaMailConfirmButton(interaction: ButtonInteraction)
     await interaction.reply({
       ephemeral: true,
       content: "Only the command requester can use this button.",
+    });
+    return;
+  }
+  const allowed = await canUseFwaMailSendFromButton(interaction);
+  if (!allowed) {
+    await interaction.reply({
+      ephemeral: true,
+      content:
+        "You do not have permission to send war mail. Default access is `/fwa leader-role` + Administrator.",
     });
     return;
   }
