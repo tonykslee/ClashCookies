@@ -1738,8 +1738,7 @@ async function showWarMailPreview(
     : `Cannot send yet.${extraWarning}`;
 
   if (interaction.isButton()) {
-    await interaction.reply({
-      ephemeral: true,
+    await interaction.update({
       content,
       embeds: [rendered.embed],
       components: buildWarMailPreviewComponents({
@@ -1929,6 +1928,33 @@ export async function handleFwaMailConfirmButton(interaction: ButtonInteraction)
   }
   startWarMailPolling(interaction.client, postKey);
   fwaMailPreviewPayloads.delete(parsed.key);
+  const refreshedSource = await refreshSourceMatchMessageAfterMailSend(interaction, payload).catch(
+    () => ({ refreshed: null, showMode: "embed" as const, sourceUpdated: false })
+  );
+  if (payload.sourceMatchPayloadKey && refreshedSource.refreshed) {
+    const currentView =
+      refreshedSource.refreshed.currentScope === "single" && refreshedSource.refreshed.currentTag
+        ? refreshedSource.refreshed.singleViews[refreshedSource.refreshed.currentTag] ??
+          refreshedSource.refreshed.allianceView
+        : refreshedSource.refreshed.allianceView;
+    await interaction.editReply({
+      content:
+        refreshedSource.showMode === "copy"
+          ? limitDiscordContent(currentView.copyText)
+          : revisedPrevious
+            ? `War mail sent to <#${channel.id}>. Previous mail was updated with a revision log.`
+            : `War mail sent to <#${channel.id}>.`,
+      embeds: refreshedSource.showMode === "embed" ? [currentView.embed] : [],
+      components: buildFwaMatchCopyComponents(
+        refreshedSource.refreshed,
+        refreshedSource.refreshed.userId,
+        payload.sourceMatchPayloadKey,
+        refreshedSource.showMode
+      ),
+    });
+    return;
+  }
+
   await interaction.deleteReply().catch(() => undefined);
   await interaction.followUp({
     ephemeral: true,
@@ -1936,9 +1962,6 @@ export async function handleFwaMailConfirmButton(interaction: ButtonInteraction)
       ? `War mail sent to <#${channel.id}>. Previous mail was updated with a revision log.`
       : `War mail sent to <#${channel.id}>.`,
   });
-  const refreshedSource = await refreshSourceMatchMessageAfterMailSend(interaction, payload).catch(
-    () => ({ refreshed: null, showMode: "embed" as const, sourceUpdated: false })
-  );
   if (!refreshedSource.sourceUpdated && refreshedSource.refreshed && payload.sourceMatchPayloadKey) {
     const currentView =
       refreshedSource.refreshed.currentScope === "single" && refreshedSource.refreshed.currentTag
