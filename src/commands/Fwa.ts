@@ -550,13 +550,14 @@ async function getTrackedClanMailConfig(tag: string): Promise<{
   tag: string;
   name: string | null;
   mailChannelId: string | null;
+  clanRoleId: string | null;
 } | null> {
   const normalizedTag = normalizeTag(tag);
   const rows = await prisma.$queryRaw<
-    Array<{ tag: string; name: string | null; mailChannelId: string | null }>
+    Array<{ tag: string; name: string | null; mailChannelId: string | null; clanRoleId: string | null }>
   >(
     Prisma.sql`
-      SELECT "tag","name","mailChannelId"
+      SELECT "tag","name","mailChannelId","clanRoleId"
       FROM "TrackedClan"
       WHERE UPPER(REPLACE("tag",'#','')) = ${normalizedTag}
       LIMIT 1
@@ -568,6 +569,7 @@ async function getTrackedClanMailConfig(tag: string): Promise<{
     tag: normalizeTag(row.tag),
     name: sanitizeClanName(row.name ?? "") ?? null,
     mailChannelId: row.mailChannelId ?? null,
+    clanRoleId: row.clanRoleId ?? null,
   };
 }
 
@@ -582,6 +584,55 @@ function formatDiscordRelativeMs(ms: number | null): string {
   return `<t:${Math.floor(ms / 1000)}:R>`;
 }
 
+function formatWarStatCellLeft(value: string): string {
+  return value.padStart(10, " ");
+}
+
+function formatWarStatCellRight(value: string): string {
+  return value.padEnd(10, " ");
+}
+
+function formatWarStatLine(left: string, emoji: string, right: string): string {
+  return `\`${formatWarStatCellLeft(left)}\` ${emoji} \`${formatWarStatCellRight(right)}\``;
+}
+
+function formatWarInt(input: unknown): string {
+  const value = Number(input);
+  if (!Number.isFinite(value)) return "?";
+  return String(Math.max(0, Math.trunc(value)));
+}
+
+function formatWarPercent(input: unknown): string {
+  const value = Number(input);
+  if (!Number.isFinite(value)) return "?";
+  const rounded = Math.round(value * 100) / 100;
+  const withPrecision = Number.isInteger(rounded) ? `${rounded}` : `${rounded.toFixed(2)}`;
+  return `${withPrecision.replace(/\.00$/, "")}%`;
+}
+
+async function getCurrentWarIdForClan(
+  normalizedTag: string,
+  warStartMs: number | null
+): Promise<number | null> {
+  if (warStartMs !== null && Number.isFinite(warStartMs)) {
+    const exact = await prisma.warClanHistory.findFirst({
+      where: {
+        clanTag: `#${normalizedTag}`,
+        warStartTime: new Date(warStartMs),
+      },
+      orderBy: { warStartTime: "desc" },
+      select: { warId: true },
+    });
+    if (exact?.warId) return exact.warId;
+  }
+  const fallback = await prisma.warClanHistory.findFirst({
+    where: { clanTag: `#${normalizedTag}` },
+    orderBy: { warStartTime: "desc" },
+    select: { warId: true },
+  });
+  return fallback?.warId ?? null;
+}
+
 async function buildWarMailEmbedForTag(
   cocService: CoCService,
   guildId: string,
@@ -590,6 +641,7 @@ async function buildWarMailEmbedForTag(
   embed: EmbedBuilder;
   inferredMatchType: boolean;
   mailChannelId: string | null;
+  clanRoleId: string | null;
   unavailableReasons: string[];
   matchType: "FWA" | "BL" | "MM" | "UNKNOWN";
   expectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null;
@@ -684,25 +736,37 @@ async function buildWarMailEmbedForTag(
 
   const prepTargetMs = parseCocApiTime(war?.startTime);
   const battleTargetMs = parseCocApiTime(war?.endTime);
+  const warStartMs = parseCocApiTime(war?.startTime);
   const remainingText = formatDiscordRelativeMs(
     warState === "preparation" ? prepTargetMs : battleTargetMs
   );
+  const warId = await getCurrentWarIdForClan(normalizedTag, warStartMs);
+  const starsLeft = formatWarInt(war?.clan?.stars);
+  const starsRight = formatWarInt(war?.opponent?.stars);
+  const attacksPerMember = Number.isFinite(Number(war?.attacksPerMember))
+    ? Math.max(1, Math.trunc(Number(war?.attacksPerMember)))
+    : 2;
+  const teamSize = Number.isFinite(Number(war?.teamSize))
+    ? Math.max(1, Math.trunc(Number(war?.teamSize)))
+    : 0;
+  const totalAttacks = teamSize > 0 ? teamSize * attacksPerMember : 0;
+  const attacksLeft = formatWarInt(war?.clan?.attacks);
+  const attacksRight = formatWarInt(war?.opponent?.attacks);
+  const attacksLeftText = totalAttacks > 0 ? `${attacksLeft}/${totalAttacks}` : `${attacksLeft}/?`;
+  const attacksRightText = totalAttacks > 0 ? `${attacksRight}/${totalAttacks}` : `${attacksRight}/?`;
+  const destructionLeft = formatWarPercent(war?.clan?.destructionPercentage);
+  const destructionRight = formatWarPercent(war?.opponent?.destructionPercentage);
   const lines: string[] = [
     planText,
     "------",
     `War Status: ${mailStatusLabelForState(warState)}`,
     `Time remaining: ${remainingText}`,
+    "",
+    "War Stats",
+    formatWarStatLine(starsLeft, ":star:", starsRight),
+    formatWarStatLine(attacksLeftText, ":crossed_swords:", attacksRightText),
+    formatWarStatLine(destructionLeft, ":boom:", destructionRight),
   ];
-  if (warState === "inWar") {
-    lines.push(
-      `${clanName} ${
-        Number.isFinite(Number(war?.clan?.stars)) ? Number(war?.clan?.stars) : "unknown"
-      } stars`,
-      `${opponentName} ${
-        Number.isFinite(Number(war?.opponent?.stars)) ? Number(war?.opponent?.stars) : "unknown"
-      } stars`
-    );
-  }
 
   const unavailableReasons: string[] = [];
   if (!trackedConfig.mailChannelId) {
@@ -718,12 +782,14 @@ async function buildWarMailEmbedForTag(
   const embed = new EmbedBuilder()
     .setTitle(`War Mail - ${clanName} (#${normalizedTag})`)
     .setDescription(lines.join("\n"))
+    .setFooter({ text: `War ID: ${warId ?? "unknown"}` })
     .setTimestamp(new Date());
 
   return {
     embed,
     inferredMatchType,
     mailChannelId: trackedConfig.mailChannelId,
+    clanRoleId: trackedConfig.clanRoleId,
     unavailableReasons,
     matchType,
     expectedOutcome: matchType === "FWA" ? (outcome ?? "UNKNOWN") : null,
@@ -1584,10 +1650,11 @@ export async function handleFwaMailConfirmButton(interaction: ButtonInteraction)
     });
     return;
   }
+  await interaction.deferUpdate();
   const cocService = new CoCService();
   const rendered = await buildWarMailEmbedForTag(cocService, payload.guildId, payload.tag);
   if (!rendered.mailChannelId || rendered.unavailableReasons.length > 0) {
-    await interaction.reply({
+    await interaction.followUp({
       ephemeral: true,
       content: `Cannot send mail: ${rendered.unavailableReasons.join(" ") || "mail channel unavailable."}`,
     });
@@ -1595,7 +1662,7 @@ export async function handleFwaMailConfirmButton(interaction: ButtonInteraction)
   }
   const channel = await interaction.client.channels.fetch(rendered.mailChannelId).catch(() => null);
   if (!channel || !channel.isTextBased()) {
-    await interaction.reply({
+    await interaction.followUp({
       ephemeral: true,
       content: "Configured mail channel is unavailable.",
     });
@@ -1603,6 +1670,8 @@ export async function handleFwaMailConfirmButton(interaction: ButtonInteraction)
   }
   const postKey = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
   const sent = await (channel as any).send({
+    content: rendered.clanRoleId ? `<@&${rendered.clanRoleId}>` : undefined,
+    allowedMentions: rendered.clanRoleId ? { roles: [rendered.clanRoleId] } : undefined,
     embeds: [rendered.embed],
     components: buildWarMailPostedComponents(postKey),
   });
@@ -1633,11 +1702,7 @@ export async function handleFwaMailConfirmButton(interaction: ButtonInteraction)
   }
   startWarMailPolling(interaction.client, postKey);
   fwaMailPreviewPayloads.delete(parsed.key);
-  await interaction.update({
-    content: "",
-    embeds: [],
-    components: [],
-  });
+  await interaction.deleteReply().catch(() => undefined);
   await interaction.followUp({
     ephemeral: true,
     content: revisedPrevious
