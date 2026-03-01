@@ -770,8 +770,27 @@ function buildWarMailRevisionLines(params: {
 
 export const buildWarMailRevisionLinesForTest = buildWarMailRevisionLines;
 
+function buildSupersededWarMailDescription(params: {
+  changedAtMs: number;
+  revisionLines: string[];
+}): string {
+  const changedAtSec = Math.floor(params.changedAtMs / 1000);
+  return [`Superseded at <t:${changedAtSec}:F>`, ...params.revisionLines].join("\n");
+}
+
+export const buildSupersededWarMailDescriptionForTest = buildSupersededWarMailDescription;
+
+function stopWarMailPolling(key: string): void {
+  const timer = fwaMailPollers.get(key);
+  if (timer) {
+    clearInterval(timer);
+    fwaMailPollers.delete(key);
+  }
+}
+
 async function annotatePreviousWarMailRevision(params: {
   client: Client;
+  previousKey: string;
   previous: FwaMailPostedPayload;
   nextMatchType: "FWA" | "BL" | "MM" | "UNKNOWN";
   nextExpectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null;
@@ -790,19 +809,18 @@ async function annotatePreviousWarMailRevision(params: {
   const message = await (channel as any).messages.fetch(params.previous.messageId).catch(() => null);
   if (!message) return false;
   const previousEmbed = message.embeds[0] ? EmbedBuilder.from(message.embeds[0]) : new EmbedBuilder();
-  const baseDescription = String(previousEmbed.data.description ?? "");
-  const changedAtSec = Math.floor(params.changedAtMs / 1000);
-  const revisionBlock = [
-    "",
-    "---",
-    `Superseded at <t:${changedAtSec}:F>`,
-    ...revisionLines,
-  ].join("\n");
-  const nextDescription = `${baseDescription}${revisionBlock}`.slice(0, 4096);
-  previousEmbed.setDescription(nextDescription);
+  previousEmbed.setDescription(
+    buildSupersededWarMailDescription({
+      changedAtMs: params.changedAtMs,
+      revisionLines,
+    }).slice(0, 4096)
+  );
   await message.edit({
     embeds: [previousEmbed],
+    components: [],
   });
+  stopWarMailPolling(params.previousKey);
+  fwaMailPostedPayloads.delete(params.previousKey);
   return true;
 }
 
@@ -854,8 +872,7 @@ async function refreshWarMailPost(client: Client, key: string): Promise<void> {
 }
 
 function startWarMailPolling(client: Client, key: string): void {
-  const existing = fwaMailPollers.get(key);
-  if (existing) clearInterval(existing);
+  stopWarMailPolling(key);
   const timer = setInterval(() => {
     refreshWarMailPost(client, key).catch(() => undefined);
   }, 20 * 60 * 1000);
@@ -1607,6 +1624,7 @@ export async function handleFwaMailConfirmButton(interaction: ButtonInteraction)
   if (previous) {
     revisedPrevious = await annotatePreviousWarMailRevision({
       client: interaction.client,
+      previousKey: previous.key,
       previous: previous.payload,
       nextMatchType: rendered.matchType,
       nextExpectedOutcome: rendered.expectedOutcome,
@@ -1614,7 +1632,13 @@ export async function handleFwaMailConfirmButton(interaction: ButtonInteraction)
     }).catch(() => false);
   }
   startWarMailPolling(interaction.client, postKey);
-  await interaction.reply({
+  fwaMailPreviewPayloads.delete(parsed.key);
+  await interaction.update({
+    content: "",
+    embeds: [],
+    components: [],
+  });
+  await interaction.followUp({
     ephemeral: true,
     content: revisedPrevious
       ? `War mail sent to <#${channel.id}>. Previous mail was updated with a revision log.`
