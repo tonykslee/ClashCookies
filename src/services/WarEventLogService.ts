@@ -2,27 +2,20 @@ import {
   ChannelType,
   Client,
   EmbedBuilder,
-  GuildBasedChannel,
-  PublicThreadChannel,
-  PrivateThreadChannel,
 } from "discord.js";
 import { Prisma } from "@prisma/client";
 import { formatError } from "../helper/formatError";
-import { findSyncBadgeEmojiForClan } from "../helper/syncBadgeEmoji";
 import { prisma } from "../prisma";
 import { CoCService } from "./CoCService";
 import { PointsProjectionService } from "./PointsProjectionService";
 import { SettingsService } from "./SettingsService";
+import { WarEventHistoryService } from "./war-events/history";
+import { WarStartPointsSyncService } from "./war-events/pointsSync";
 import {
   type EventType,
-  type FwaLoseStyle,
   type MatchType,
-  type WarComplianceSnapshot,
   type WarEndResultSnapshot,
   type WarState,
-  compareTagsForTiebreak,
-  computeWarComplianceForTest,
-  computeWarPointsDeltaForTest,
   deriveExpectedOutcome,
   deriveState,
   eventTitle,
@@ -32,7 +25,6 @@ import {
   normalizeTag,
   normalizeTagBare,
   parseCocTime,
-  sanitizeClanName,
   shouldEmit,
   toDiscordRelativeTime,
 } from "./war-events/core";
@@ -72,366 +64,24 @@ type PollSyncContext = {
   activeSync: number | null;
 };
 
-type WarStartPointsCheckJob = {
-  clanTag: string;
-  opponentTag: string;
-  attempts: number;
-  maxAttempts: number;
-  nextAttemptAtMs: number;
-  completed: boolean;
-  status: "pending" | "in_sync" | "out_of_sync" | "max_attempts" | "error";
-  trackedPointBalanceSite: number | null;
-  trackedPointBalanceDb: number | null;
-  siteSyncNumber: number | null;
-  siteOpponentTag: string | null;
-  siteOpponentBalance: number | null;
-  inferredOpponentIsFwa: boolean | null;
-  opponentChecked: boolean;
-  lastCheckedAtMs: number | null;
-};
-
-type TrackedClanPointsScrape = {
-  version: number;
-  source: "points.fwafarm";
-  fetchedAtMs: number;
-  trackedClanName: string | null;
-  trackedClanTag: string;
-  opponentClanName: string | null;
-  opponentClanTag: string | null;
-  pointBalance: number | null;
-  opponentPointBalance: number | null;
-  activeFwa: boolean;
-  syncNumber: number | null;
-  matchup: string;
-  pointsSiteUpToDate: boolean;
-};
-
-/** Purpose: format badge emoji inline. */
-function formatBadgeEmojiInline(emoji: { id: string; name: string; animated?: boolean } | null): string {
-  if (!emoji) return "Unavailable";
-  return emoji.animated ? `<a:${emoji.name}:${emoji.id}>` : `<:${emoji.name}:${emoji.id}>`;
-}
-
-/** Purpose: parse badge emoji map. */
-function parseBadgeEmojiMap(): Record<string, string> {
-  const raw = (process.env.WAR_EVENT_BADGE_EMOJI_BY_TAG ?? "").trim();
-  if (!raw) return {};
-  try {
-    const parsed = JSON.parse(raw) as Record<string, string>;
-    const out: Record<string, string> = {};
-    for (const [key, value] of Object.entries(parsed)) {
-      const tag = normalizeTag(key);
-      const emoji = String(value ?? "").trim();
-      if (!tag || !emoji) continue;
-      out[tag] = emoji;
-    }
-    return out;
-  } catch {
-    return {};
-  }
-}
-
 
 export class WarEventLogService {
   private readonly points: PointsProjectionService;
   private readonly settings: SettingsService;
-  private readonly badgeEmojiByTag: Record<string, string>;
-  private static readonly PREVIOUS_SYNC_KEY = "previousSyncNum";
-  private static readonly WAR_START_POINTS_JOB_PREFIX = "warStartPointsCheck";
-  private static readonly WAR_START_POINTS_RECHECK_MS = 30 * 60 * 1000;
-  private static readonly WAR_START_POINTS_MAX_ATTEMPTS = 10;
+  private readonly pointsSync: WarStartPointsSyncService;
+  private readonly history: WarEventHistoryService;
 
   /** Purpose: initialize service dependencies. */
   constructor(private readonly client: Client, private readonly coc: CoCService) {
     this.points = new PointsProjectionService(coc);
     this.settings = new SettingsService();
-    this.badgeEmojiByTag = parseBadgeEmojiMap();
-  }
-
-  /** Purpose: recover previous sync num from points. */
-  private async recoverPreviousSyncNumFromPoints(): Promise<number | null> {
-    const tracked = await prisma.trackedClan.findMany({
-      orderBy: { createdAt: "asc" },
-      select: { tag: true },
-    });
-    for (const clan of tracked) {
-      const tag = normalizeTag(clan.tag);
-      const war = await this.coc.getCurrentWar(tag).catch(() => null);
-      const opponentTag = normalizeTag(war?.opponent?.tag ?? "");
-      if (!opponentTag) continue;
-
-      const snapshot = await this.points.fetchSnapshot(tag).catch(() => null);
-      if (!snapshot || snapshot.winnerBoxSync === null) continue;
-
-      const siteUpdated = snapshot.winnerBoxTags
-        .map((t) => normalizeTag(t))
-        .includes(opponentTag);
-      const recoveredPrevious = siteUpdated
-        ? snapshot.winnerBoxSync - 1
-        : snapshot.winnerBoxSync;
-      if (!Number.isFinite(recoveredPrevious) || recoveredPrevious < 0) continue;
-
-      const next = Math.trunc(recoveredPrevious);
-      await this.settings.set(WarEventLogService.PREVIOUS_SYNC_KEY, String(next));
-      return next;
-    }
-    return null;
-  }
-
-  /** Purpose: get previous sync num. */
-  private async getPreviousSyncNum(): Promise<number | null> {
-    const raw = await this.settings.get(WarEventLogService.PREVIOUS_SYNC_KEY);
-    const parsed = raw === null ? NaN : Number(raw);
-    if (Number.isFinite(parsed)) return Math.trunc(parsed);
-    return this.recoverPreviousSyncNumFromPoints();
-  }
-
-  /** Purpose: build war start points job key. */
-  private buildWarStartPointsJobKey(clanTag: string): string {
-    return `${WarEventLogService.WAR_START_POINTS_JOB_PREFIX}:${normalizeTagBare(clanTag)}`;
-  }
-
-  /** Purpose: get war start points job. */
-  private async getWarStartPointsJob(clanTag: string): Promise<WarStartPointsCheckJob | null> {
-    const raw = await this.settings.get(this.buildWarStartPointsJobKey(clanTag));
-    if (!raw) return null;
-    try {
-      const parsed = JSON.parse(raw) as WarStartPointsCheckJob;
-      if (!parsed || typeof parsed !== "object") return null;
-      return parsed;
-    } catch {
-      return null;
-    }
-  }
-
-  /** Purpose: set war start points job. */
-  private async setWarStartPointsJob(job: WarStartPointsCheckJob): Promise<void> {
-    await this.settings.set(this.buildWarStartPointsJobKey(job.clanTag), JSON.stringify(job));
-  }
-
-  private buildPointsSiteMatchupSummary(input: {
-    trackedClanName: string | null;
-    trackedClanTag: string;
-    opponentClanName: string | null;
-    opponentClanTag: string | null;
-    trackedPoints: number | null;
-    opponentPoints: number | null;
-    syncNumber: number | null;
-    activeFwa: boolean;
-  }): string {
-    if (!input.activeFwa) return "Not marked as an FWA match.";
-    const primaryName = input.trackedClanName ?? normalizeTagBare(input.trackedClanTag);
-    const opponentName = input.opponentClanName ?? normalizeTagBare(input.opponentClanTag ?? "");
-    const x = input.trackedPoints;
-    const y = input.opponentPoints;
-    if (
-      x === null ||
-      y === null ||
-      !Number.isFinite(x) ||
-      !Number.isFinite(y)
-    ) {
-      return "Not marked as an FWA match.";
-    }
-    if (x > y) return `${primaryName} should win by points (${x} > ${y})`;
-    if (x < y) return `${opponentName} should win by points (${x} < ${y})`;
-    if (input.syncNumber === null || !Number.isFinite(input.syncNumber)) {
-      return "Not marked as an FWA match.";
-    }
-    const mode = input.syncNumber % 2 === 0 ? "high sync" : "low sync";
-    const cmp = compareTagsForTiebreak(input.trackedClanTag, input.opponentClanTag ?? "");
-    if (cmp === 0) return "Not marked as an FWA match.";
-    const winner = mode === "low sync" ? (cmp < 0 ? primaryName : opponentName) : cmp > 0 ? primaryName : opponentName;
-    return `${winner} should win by tiebreak (${x} = ${y}, ${mode})`;
-  }
-
-  private async persistTrackedClanPointsScrape(input: {
-    trackedClanTag: string;
-    trackedClanName: string | null;
-    opponentClanTag: string | null;
-    opponentClanName: string | null;
-    trackedPoints: number | null;
-    opponentPoints: number | null;
-    syncNumber: number | null;
-    pointsSiteUpToDate: boolean;
-    activeFwa: boolean;
-  }): Promise<void> {
-    const blob: TrackedClanPointsScrape = {
-      version: 1,
-      source: "points.fwafarm",
-      fetchedAtMs: Date.now(),
-      trackedClanName: input.trackedClanName?.trim() || null,
-      trackedClanTag: normalizeTag(input.trackedClanTag),
-      opponentClanName: input.opponentClanName?.trim() || null,
-      opponentClanTag: normalizeTag(input.opponentClanTag ?? "") || null,
-      pointBalance:
-        input.trackedPoints !== null && Number.isFinite(input.trackedPoints)
-          ? input.trackedPoints
-          : null,
-      opponentPointBalance:
-        input.opponentPoints !== null && Number.isFinite(input.opponentPoints)
-          ? input.opponentPoints
-          : null,
-      activeFwa: Boolean(input.activeFwa),
-      syncNumber:
-        input.syncNumber !== null && Number.isFinite(input.syncNumber)
-          ? Math.trunc(input.syncNumber)
-          : null,
-      matchup: this.buildPointsSiteMatchupSummary({
-        trackedClanName: input.trackedClanName,
-        trackedClanTag: input.trackedClanTag,
-        opponentClanName: input.opponentClanName,
-        opponentClanTag: input.opponentClanTag,
-        trackedPoints: input.trackedPoints,
-        opponentPoints: input.opponentPoints,
-        syncNumber: input.syncNumber,
-        activeFwa: input.activeFwa,
-      }),
-      pointsSiteUpToDate: input.pointsSiteUpToDate,
-    };
-
-    await prisma.trackedClan.updateMany({
-      where: { tag: { equals: blob.trackedClanTag, mode: "insensitive" } },
-      data: { pointsScrape: blob },
-    });
-  }
-
-  private async resetWarStartPointsJob(
-    clanTag: string,
-    opponentTag: string
-  ): Promise<WarStartPointsCheckJob> {
-    const now = Date.now();
-    const next: WarStartPointsCheckJob = {
-      clanTag: normalizeTag(clanTag),
-      opponentTag: normalizeTag(opponentTag),
-      attempts: 0,
-      maxAttempts: WarEventLogService.WAR_START_POINTS_MAX_ATTEMPTS,
-      nextAttemptAtMs: now,
-      completed: false,
-      status: "pending",
-      trackedPointBalanceSite: null,
-      trackedPointBalanceDb: null,
-      siteSyncNumber: null,
-      siteOpponentTag: null,
-      siteOpponentBalance: null,
-      inferredOpponentIsFwa: null,
-      opponentChecked: false,
-      lastCheckedAtMs: null,
-    };
-    await this.setWarStartPointsJob(next);
-    return next;
-  }
-
-  private async maybeRunWarStartPointsCheck(
-    sub: SubscriptionRow,
-    opponentTagInput: string,
-    clanNameInput: string | null,
-    opponentNameInput: string | null
-  ): Promise<void> {
-    const clanTag = normalizeTag(sub.clanTag);
-    const opponentTag = normalizeTag(opponentTagInput);
-    if (!clanTag || !opponentTag) return;
-
-    let job = await this.getWarStartPointsJob(clanTag);
-    if (!job || normalizeTag(job.opponentTag) !== opponentTag) {
-      job = await this.resetWarStartPointsJob(clanTag, opponentTag);
-    }
-    if (job.completed) return;
-    if (Date.now() < job.nextAttemptAtMs) return;
-
-    const nextAttempt = job.attempts + 1;
-    try {
-      const primary = await this.points.fetchSnapshot(clanTag);
-      const siteUpdated = primary.winnerBoxTags.map((t) => normalizeTag(t)).includes(opponentTag);
-      const trackedDb = sub.fwaPoints ?? null;
-      const trackedSite =
-        primary.balance !== null && Number.isFinite(primary.balance) ? primary.balance : null;
-
-      let inferredOpponentIsFwa = job.inferredOpponentIsFwa;
-      let opponentChecked = job.opponentChecked;
-      let opponentBalance = job.siteOpponentBalance;
-      if (!opponentChecked) {
-        const opp = await this.points.fetchSnapshot(opponentTag).catch(() => null);
-        opponentChecked = true;
-        inferredOpponentIsFwa =
-          opp?.balance !== null && opp?.balance !== undefined && Number.isFinite(opp.balance);
-        opponentBalance =
-          opp?.balance !== null && opp?.balance !== undefined && Number.isFinite(opp.balance)
-            ? opp.balance
-            : null;
-      }
-
-      const mismatch =
-        siteUpdated &&
-        trackedDb !== null &&
-        trackedSite !== null &&
-        Number.isFinite(trackedDb) &&
-        Number.isFinite(trackedSite) &&
-        trackedDb !== trackedSite;
-
-      const exhausted = !siteUpdated && nextAttempt >= job.maxAttempts;
-      const completed = siteUpdated || exhausted;
-      const status: WarStartPointsCheckJob["status"] = siteUpdated
-        ? mismatch
-          ? "out_of_sync"
-          : "in_sync"
-        : exhausted
-          ? "max_attempts"
-          : "pending";
-
-      await this.setWarStartPointsJob({
-        ...job,
-        attempts: nextAttempt,
-        nextAttemptAtMs: completed
-          ? Date.now()
-          : Date.now() + WarEventLogService.WAR_START_POINTS_RECHECK_MS,
-        completed,
-        status,
-        trackedPointBalanceSite: trackedSite,
-        trackedPointBalanceDb: trackedDb,
-        siteSyncNumber:
-          primary.winnerBoxSync !== null && Number.isFinite(primary.winnerBoxSync)
-            ? Math.trunc(primary.winnerBoxSync)
-            : null,
-        siteOpponentTag: siteUpdated ? opponentTag : null,
-        siteOpponentBalance: opponentBalance,
-        inferredOpponentIsFwa,
-        opponentChecked,
-        lastCheckedAtMs: Date.now(),
-      });
-      if (siteUpdated) {
-        await this.persistTrackedClanPointsScrape({
-          trackedClanTag: clanTag,
-          trackedClanName: sanitizeClanName(clanNameInput) ?? sanitizeClanName(primary.clanName),
-          opponentClanTag: opponentTag,
-          opponentClanName: sanitizeClanName(opponentNameInput),
-          trackedPoints: trackedSite,
-          opponentPoints: opponentBalance,
-          syncNumber:
-            primary.winnerBoxSync !== null && Number.isFinite(primary.winnerBoxSync)
-              ? Math.trunc(primary.winnerBoxSync)
-              : null,
-          pointsSiteUpToDate: true,
-          activeFwa: true,
-        });
-      }
-    } catch {
-      const exhausted = nextAttempt >= job.maxAttempts;
-      await this.setWarStartPointsJob({
-        ...job,
-        attempts: nextAttempt,
-        completed: exhausted,
-        status: exhausted ? "max_attempts" : "error",
-        nextAttemptAtMs: exhausted
-          ? Date.now()
-          : Date.now() + WarEventLogService.WAR_START_POINTS_RECHECK_MS,
-        lastCheckedAtMs: Date.now(),
-      });
-    }
+    this.pointsSync = new WarStartPointsSyncService(coc, this.points, this.settings);
+    this.history = new WarEventHistoryService(coc);
   }
 
   /** Purpose: poll. */
   async poll(): Promise<void> {
-    const previousSync = await this.getPreviousSyncNum();
+    const previousSync = await this.pointsSync.getPreviousSyncNum();
     const syncContext: PollSyncContext = {
       previousSync,
       activeSync: previousSync === null ? null : previousSync + 1,
@@ -459,7 +109,7 @@ export class WarEventLogService {
     }
     if (sawWarEnded && syncContext.activeSync !== null) {
       await this.settings.set(
-        WarEventLogService.PREVIOUS_SYNC_KEY,
+        WarStartPointsSyncService.PREVIOUS_SYNC_KEY,
         String(syncContext.activeSync)
       );
     }
@@ -475,7 +125,7 @@ export class WarEventLogService {
     if (!sub) return { ok: false, reason: "No war event subscription found for that guild+clan." };
     if (!sub.channelId) return { ok: false, reason: "Subscription has no configured channel." };
 
-    const previousSync = await this.getPreviousSyncNum();
+    const previousSync = await this.pointsSync.getPreviousSyncNum();
     const activeSync = previousSync === null ? null : previousSync + 1;
     const syncNumber = params.source === "last" ? previousSync : activeSync;
 
@@ -657,10 +307,10 @@ export class WarEventLogService {
           ? syncContext.previousSync
           : syncContext.activeSync;
     if (eventType === "war_started" && nextOpponentTag) {
-      await this.resetWarStartPointsJob(sub.clanTag, nextOpponentTag).catch(() => null);
+      await this.pointsSync.resetWarStartPointsJob(sub.clanTag, nextOpponentTag).catch(() => null);
     }
     if (currentState !== "notInWar" && nextOpponentTag) {
-      await this.maybeRunWarStartPointsCheck(
+      await this.pointsSync.maybeRunWarStartPointsCheck(
         sub,
         nextOpponentTag,
         nextClanName,
@@ -734,7 +384,7 @@ export class WarEventLogService {
     }
 
     if (eventType === "war_ended" && nextMatchType === "BL") {
-      const finalResult = await this.getWarEndResultSnapshot({
+      const finalResult = await this.history.getWarEndResultSnapshot({
         clanTag: sub.clanTag,
         opponentTag: nextOpponentTag || normalizeTag(sub.lastOpponentTag ?? ""),
         fallbackClanStars: nextClanStars,
@@ -776,7 +426,7 @@ export class WarEventLogService {
       } as const;
 
       if (eventType === "war_ended") {
-        await this.persistWarEndHistory(eventPayload).catch((err) => {
+        await this.history.persistWarEndHistory(eventPayload).catch((err) => {
           console.error(
             `[war-events] persist war history failed guild=${sub.guildId} clan=${sub.clanTag} error=${formatError(err)}`
           );
@@ -881,7 +531,7 @@ export class WarEventLogService {
         });
         embed.addFields({
           name: "War Plan",
-          value: (await this.buildWarPlanText(payload.matchType, payload.outcome, payload.clanTag)) ?? "N/A",
+          value: (await this.history.buildWarPlanText(payload.matchType, payload.outcome, payload.clanTag)) ?? "N/A",
           inline: false,
         });
       }
@@ -914,21 +564,21 @@ export class WarEventLogService {
         });
         embed.addFields({
           name: "War Plan",
-          value: (await this.buildWarPlanText(payload.matchType, payload.outcome, payload.clanTag)) ?? "N/A",
+          value: (await this.history.buildWarPlanText(payload.matchType, payload.outcome, payload.clanTag)) ?? "N/A",
           inline: false,
         });
       }
     }
 
     if (payload.eventType === "war_ended") {
-      const finalResult = await this.getWarEndResultSnapshot({
+      const finalResult = await this.history.getWarEndResultSnapshot({
         clanTag: payload.clanTag,
         opponentTag: payload.opponentTag,
         fallbackClanStars: payload.lastClanStars,
         fallbackOpponentStars: payload.lastOpponentStars,
         warStartTime: payload.warStartTime,
       });
-      const compliance = await this.getWarComplianceSnapshot(
+      const compliance = await this.history.getWarComplianceSnapshot(
         payload.clanTag,
         payload.warStartTime,
         payload.matchType,
@@ -945,7 +595,7 @@ export class WarEventLogService {
       });
       embed.addFields({
         name: "FWA Points",
-        value: this.buildWarEndPointsLine(payload, finalResult),
+        value: this.history.buildWarEndPointsLine(payload, finalResult),
         inline: false,
       });
       embed.addFields({
@@ -975,359 +625,4 @@ export class WarEventLogService {
     });
   }
 
-  private resolveTrackedClanBadgeEmoji(
-    channel: GuildBasedChannel | PublicThreadChannel<boolean> | PrivateThreadChannel,
-    clanTag: string,
-    clanName: string
-  ): string {
-    const mapped = this.badgeEmojiByTag[normalizeTag(clanTag)];
-    if (mapped) return mapped;
-
-    const fromSyncBadgeMap = findSyncBadgeEmojiForClan(this.client.user?.id, clanName);
-    if (fromSyncBadgeMap) {
-      return formatBadgeEmojiInline({
-        id: fromSyncBadgeMap.id,
-        name: fromSyncBadgeMap.name,
-      });
-    }
-
-    const guild = "guild" in channel ? channel.guild : null;
-    if (!guild) return "Unavailable";
-    const emojis = [...guild.emojis.cache.values()];
-    if (emojis.length === 0) return "Unavailable";
-
-    const normalizedName = clanName.toLowerCase().replace(/[^a-z0-9]+/g, "");
-    const initials = clanName
-      .split(/[^a-zA-Z0-9]+/)
-      .filter(Boolean)
-      .map((w) => w[0]?.toLowerCase() ?? "")
-      .join("");
-    const candidates = new Set<string>([
-      normalizeTagBare(clanTag).toLowerCase(),
-      normalizedName,
-      initials,
-    ]);
-
-    for (const emoji of emojis) {
-      const rawName = String(emoji.name ?? "").trim();
-      if (!rawName) continue;
-      const name = rawName.toLowerCase();
-      if ([...candidates].some((candidate) => candidate && (name === candidate || name.includes(candidate)))) {
-        return formatBadgeEmojiInline({
-          id: emoji.id,
-          name: rawName,
-          animated: emoji.animated === true,
-        });
-      }
-    }
-    return "Unavailable";
-  }
-
-  private buildWarEndPointsLine(
-    payload: {
-      clanName: string;
-      matchType: MatchType;
-      warStartFwaPoints: number | null;
-      warEndFwaPoints: number | null;
-    },
-    finalResult: WarEndResultSnapshot
-  ): string {
-    const before = payload.warStartFwaPoints;
-    const delta = this.computeWarPointsDelta({
-      matchType: payload.matchType,
-      before,
-      after: payload.warEndFwaPoints,
-      finalResult,
-    });
-
-    if (payload.matchType === "BL") {
-      const afterFromRow = payload.warEndFwaPoints;
-      const after =
-        afterFromRow !== null && Number.isFinite(afterFromRow)
-          ? afterFromRow
-          : before !== null && Number.isFinite(before) && delta !== null
-            ? before + delta
-            : null;
-      const resolvedBefore =
-        before !== null && Number.isFinite(before)
-          ? before
-          : after !== null && Number.isFinite(after) && delta !== null
-            ? after - delta
-            : null;
-      return `${payload.clanName}: ${resolvedBefore ?? "unknown"} -> ${after ?? "unknown"} (${delta !== null && delta >= 0 ? `+${delta}` : String(delta ?? "unknown")}) [BL]`;
-    }
-
-    const after = payload.warEndFwaPoints;
-    if (
-      before !== null &&
-      Number.isFinite(before) &&
-      after !== null &&
-      Number.isFinite(after)
-    ) {
-      return `${payload.clanName}: ${before} -> ${after} (${delta !== null && delta >= 0 ? `+${delta}` : String(delta ?? after - before)})`;
-    }
-    return `${payload.clanName}: ${before ?? "unknown"} -> ${after ?? "unknown"}`;
-  }
-
-  private computeWarPointsDelta(input: {
-    matchType: MatchType;
-    before: number | null;
-    after: number | null;
-    finalResult: WarEndResultSnapshot;
-  }): number | null {
-    return computeWarPointsDeltaForTest(input);
-  }
-
-  private async buildWarPlanText(
-    matchType: MatchType,
-    expectedOutcome: "WIN" | "LOSE" | null,
-    clanTag: string
-  ): Promise<string | null> {
-    if (matchType !== "FWA") return null;
-    if (expectedOutcome === "WIN") {
-      return [
-        "Win plan: if clan stars are under 100 and time remaining is over 12h,",
-        "one attack must be a 3-star on mirror. Other attack can be 3-star on already-tripled base,",
-        "or 2-star/1-star any base. Outside that window, free hit plan applies.",
-      ].join(" ");
-    }
-    if (expectedOutcome === "LOSE") {
-      const loseStyle = await this.getLoseStyleForClan(normalizeTag(clanTag));
-      if (loseStyle === "TRIPLE_TOP_30") {
-        return "Lose plan (Triple Top 30): hit only top 30 bases with both attacks; do not hit bottom 20.";
-      }
-      return [
-        "Lose plan (Traditional): when under 12h remaining, do mirror 2-star plus non-mirror 1-star.",
-        "Before that, do 1-star/2-star hits while keeping clan stars at or under 100.",
-      ].join(" ");
-    }
-    return "FWA plan unavailable (expected outcome unknown).";
-  }
-
-  /** Purpose: get lose style for clan. */
-  private async getLoseStyleForClan(clanTagInput: string): Promise<FwaLoseStyle> {
-    const clanTag = normalizeTag(clanTagInput);
-    if (!clanTag) return "TRIPLE_TOP_30";
-    const row = await prisma.trackedClan.findUnique({
-      where: { tag: clanTag },
-      select: { loseStyle: true },
-    });
-    const loseStyle = String(row?.loseStyle ?? "").toUpperCase();
-    if (loseStyle === "TRADITIONAL" || loseStyle === "TRIPLE_TOP_30") {
-      return loseStyle;
-    }
-    return "TRIPLE_TOP_30";
-  }
-
-  private async persistWarEndHistory(payload: {
-    eventType: EventType;
-    clanTag: string;
-    clanName: string;
-    opponentTag: string;
-    opponentName: string;
-    syncNumber: number | null;
-    notifyRole: string | null;
-    fwaPoints: number | null;
-    opponentFwaPoints: number | null;
-    outcome: "WIN" | "LOSE" | null;
-    matchType: MatchType;
-    warStartFwaPoints: number | null;
-    warEndFwaPoints: number | null;
-    lastClanStars: number | null;
-    lastOpponentStars: number | null;
-    warStartTime: Date | null;
-  }): Promise<void> {
-    if (payload.eventType !== "war_ended") return;
-
-    const clanTag = normalizeTag(payload.clanTag);
-    const warStartTime =
-      payload.warStartTime ??
-      (
-        await prisma.warHistoryParticipant.findFirst({
-          where: { clanTag, warEndTime: { not: null } },
-          orderBy: { warStartTime: "desc" },
-          select: { warStartTime: true },
-        })
-      )?.warStartTime ??
-      null;
-    if (!warStartTime) return;
-
-    const finalResult = await this.getWarEndResultSnapshot({
-      clanTag: payload.clanTag,
-      opponentTag: payload.opponentTag,
-      fallbackClanStars: payload.lastClanStars,
-      fallbackOpponentStars: payload.lastOpponentStars,
-      warStartTime,
-    });
-    const attacks = await prisma.warHistoryAttack.findMany({
-      where: { clanTag, warStartTime },
-      orderBy: [{ attackSeenAt: "asc" }, { attackOrder: "asc" }, { playerTag: "asc" }],
-    });
-    const warEndTime =
-      finalResult.warEndTime ??
-      (await prisma.warHistoryParticipant.findFirst({
-        where: { clanTag, warStartTime },
-        orderBy: { updatedAt: "desc" },
-        select: { warEndTime: true },
-      }))?.warEndTime ??
-      null;
-
-    const pointsDelta = this.computeWarPointsDelta({
-      matchType: payload.matchType,
-      before: payload.warStartFwaPoints,
-      after: payload.warEndFwaPoints,
-      finalResult,
-    });
-    const enemyPoints =
-      payload.matchType === "FWA" &&
-      payload.opponentFwaPoints !== null &&
-      Number.isFinite(payload.opponentFwaPoints)
-        ? payload.opponentFwaPoints
-        : null;
-
-    const row = await prisma.$queryRaw<Array<{ warId: number }>>(
-      Prisma.sql`
-        INSERT INTO "WarClanHistory"
-          ("syncNumber","matchType","clanStars","clanDestruction","opponentStars","opponentDestruction","fwaPointsGained","expectedOutcome","actualOutcome","enemyPoints","warStartTime","warEndTime","clanName","clanTag","opponentName","opponentTag","updatedAt")
-        VALUES
-          (${payload.syncNumber}, ${payload.matchType}, ${finalResult.clanStars}, ${finalResult.clanDestruction}, ${finalResult.opponentStars}, ${finalResult.opponentDestruction}, ${pointsDelta}, ${payload.outcome}, ${finalResult.resultLabel}, ${enemyPoints}, ${warStartTime}, ${warEndTime}, ${payload.clanName}, ${clanTag}, ${payload.opponentName}, ${normalizeTag(payload.opponentTag) || null}, NOW())
-        ON CONFLICT ("clanTag","warStartTime")
-        DO UPDATE SET
-          "syncNumber" = EXCLUDED."syncNumber",
-          "matchType" = EXCLUDED."matchType",
-          "clanStars" = EXCLUDED."clanStars",
-          "clanDestruction" = EXCLUDED."clanDestruction",
-          "opponentStars" = EXCLUDED."opponentStars",
-          "opponentDestruction" = EXCLUDED."opponentDestruction",
-          "fwaPointsGained" = EXCLUDED."fwaPointsGained",
-          "expectedOutcome" = EXCLUDED."expectedOutcome",
-          "actualOutcome" = EXCLUDED."actualOutcome",
-          "enemyPoints" = EXCLUDED."enemyPoints",
-          "warEndTime" = EXCLUDED."warEndTime",
-          "clanName" = EXCLUDED."clanName",
-          "opponentName" = EXCLUDED."opponentName",
-          "opponentTag" = EXCLUDED."opponentTag",
-          "updatedAt" = NOW()
-        RETURNING "warId"
-      `
-    );
-    const warId = Number(row[0]?.warId ?? NaN);
-    if (!Number.isFinite(warId)) return;
-
-    await prisma.$executeRaw(
-      Prisma.sql`
-        INSERT INTO "WarLookup" ("warId","payload","updatedAt")
-        VALUES (${warId}, ${JSON.stringify(attacks)}::jsonb, NOW())
-        ON CONFLICT ("warId")
-        DO UPDATE SET
-          "payload" = EXCLUDED."payload",
-          "updatedAt" = NOW()
-      `
-    );
-  }
-
-  private async getWarEndResultSnapshot(input: {
-    clanTag: string;
-    opponentTag: string;
-    fallbackClanStars: number | null;
-    fallbackOpponentStars: number | null;
-    warStartTime: Date | null;
-  }): Promise<WarEndResultSnapshot> {
-    const log = await this.coc.getClanWarLog(input.clanTag, 10);
-    const normalizedOpponentTag = normalizeTag(input.opponentTag);
-
-    const matched =
-      log.find((entry) => normalizeTag(entry.opponent?.tag ?? "") === normalizedOpponentTag) ??
-      log[0] ??
-      null;
-
-    const clanStars =
-      Number.isFinite(Number(matched?.clan?.stars))
-        ? Number(matched?.clan?.stars)
-        : input.fallbackClanStars;
-    const opponentStars =
-      Number.isFinite(Number(matched?.opponent?.stars))
-        ? Number(matched?.opponent?.stars)
-        : input.fallbackOpponentStars;
-    const clanDestruction = Number.isFinite(Number(matched?.clan?.destructionPercentage))
-      ? Number(matched?.clan?.destructionPercentage)
-      : null;
-    const opponentDestruction = Number.isFinite(Number(matched?.opponent?.destructionPercentage))
-      ? Number(matched?.opponent?.destructionPercentage)
-      : null;
-    const warEndTime = parseCocTime(matched?.endTime ?? null);
-
-    let resultLabel: "WIN" | "LOSE" | "TIE" | "UNKNOWN" = "UNKNOWN";
-    if (clanStars !== null && opponentStars !== null) {
-      resultLabel = clanStars > opponentStars ? "WIN" : clanStars < opponentStars ? "LOSE" : "TIE";
-    } else if (matched?.result) {
-      const result = String(matched.result).toLowerCase();
-      if (result.includes("win")) resultLabel = "WIN";
-      else if (result.includes("lose")) resultLabel = "LOSE";
-      else if (result.includes("tie")) resultLabel = "TIE";
-    }
-
-    return {
-      clanStars,
-      opponentStars,
-      clanDestruction,
-      opponentDestruction,
-      warEndTime,
-      resultLabel,
-    };
-  }
-
-  private async getWarComplianceSnapshot(
-    clanTagInput: string,
-    preferredWarStartTime: Date | null,
-    matchType: MatchType,
-    expectedOutcome: "WIN" | "LOSE" | null
-  ): Promise<WarComplianceSnapshot> {
-    if (matchType === "BL" || matchType === "MM") {
-      return { missedBoth: [], notFollowingPlan: [] };
-    }
-    const clanTag = normalizeTag(clanTagInput);
-    const warStartTime = preferredWarStartTime
-      ? preferredWarStartTime
-      : (
-          await prisma.warHistoryParticipant.findFirst({
-            where: { clanTag, warEndTime: { not: null } },
-            orderBy: { warStartTime: "desc" },
-            select: { warStartTime: true },
-          })
-        )?.warStartTime ?? null;
-    if (!warStartTime) {
-      return { missedBoth: [], notFollowingPlan: [] };
-    }
-
-    const participants = await prisma.warHistoryParticipant.findMany({
-      where: { clanTag, warStartTime },
-      select: { playerName: true, playerTag: true, attacksUsed: true, playerPosition: true },
-      orderBy: [{ playerPosition: "asc" }, { playerName: "asc" }],
-    });
-    const attacks = await prisma.warHistoryAttack.findMany({
-      where: { clanTag, warStartTime },
-      select: {
-        playerTag: true,
-        playerName: true,
-        playerPosition: true,
-        defenderPosition: true,
-        stars: true,
-        trueStars: true,
-        attackSeenAt: true,
-        warEndTime: true,
-        attackOrder: true,
-      },
-      orderBy: [{ attackSeenAt: "asc" }, { attackOrder: "asc" }, { playerTag: "asc" }],
-    });
-    const loseStyle = await this.getLoseStyleForClan(clanTag);
-    return computeWarComplianceForTest({
-      clanTag,
-      participants,
-      attacks,
-      matchType,
-      expectedOutcome,
-      loseStyle,
-    });
-  }
 }
