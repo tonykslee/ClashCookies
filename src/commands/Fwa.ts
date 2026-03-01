@@ -1911,12 +1911,6 @@ async function buildTrackedMatchOverview(
   });
   const subByTag = new Map(subscriptions.map((s) => [normalizeTag(s.clanTag), s]));
 
-  const stateCounts = new Map<WarStateForSync, number>([
-    ["preparation", 0],
-    ["inWar", 0],
-    ["notInWar", 0],
-  ]);
-  const stateRemaining = new Map<WarStateForSync, string>();
   const warByClanTag = new Map<string, CurrentWarResult | null>();
   const warStateByClanTag = new Map<string, WarStateForSync>();
   const warStartMsByClanTag = new Map<string, number | null>();
@@ -1957,16 +1951,13 @@ async function buildTrackedMatchOverview(
   const embed = new EmbedBuilder().setTitle(`FWA Match Overview (${includedTracked.length})`);
   const copyLines: string[] = [];
   const singleViews: Record<string, MatchView> = {};
+  let hasAnyInferredMatchType = false;
 
   for (const clan of includedTracked) {
     const clanTag = normalizeTag(clan.tag);
     const clanName = sanitizeClanName(clan.name) ?? `#${clanTag}`;
     const war = warByClanTag.get(clanTag) ?? null;
     const warState = warStateByClanTag.get(clanTag) ?? deriveWarState(war?.state);
-    stateCounts.set(warState, (stateCounts.get(warState) ?? 0) + 1);
-    if (!stateRemaining.has(warState)) {
-      stateRemaining.set(warState, getWarStateRemaining(war, warState));
-    }
     const clanSyncLine = withSyncModeLabel(getSyncDisplay(sourceSync, warState), sourceSync);
     const clanWarStateLine = formatWarStateLabel(warState);
     const clanTimeRemainingLine = getWarStateRemaining(war, warState);
@@ -2099,6 +2090,7 @@ async function buildTrackedMatchOverview(
     const inferredFromPointsType: "FWA" | "MM" | null = hasOpponentPoints ? "FWA" : "MM";
     const matchType = matchTypeResolved ?? inferredFromPointsType ?? "UNKNOWN";
     const inferredMatchType = Boolean(sub?.inferredMatchType) || (matchTypeResolved === null && inferredFromPointsType !== null);
+    if (inferredMatchType) hasAnyInferredMatchType = true;
     const derivedOutcome = deriveProjectedOutcome(
       clanTag,
       opponentTag,
@@ -2407,37 +2399,29 @@ async function buildTrackedMatchOverview(
     };
   }
 
-  const nonZeroStates = [...stateCounts.entries()].filter(([, count]) => count > 0);
-  const stateLabel =
-    nonZeroStates.length === 1 ? formatWarStateLabel(nonZeroStates[0][0]) : "mixed";
-  let syncLabel = "unknown";
-  if (sourceSync !== null) {
-    if (stateLabel === "no war") syncLabel = `between #${sourceSync} and #${sourceSync + 1}`;
-    else if (stateLabel === "mixed") syncLabel = "mixed";
-    else syncLabel = `#${sourceSync + 1}`;
+  const overviewNotes: string[] = [];
+  if (hasAnyInferredMatchType) {
+    overviewNotes.push(MATCHTYPE_WARNING_LEGEND);
   }
-  const remainingLabel =
-    stateLabel === "mixed"
-      ? "mixed"
-      : stateLabel === "preparation"
-        ? (stateRemaining.get("preparation") ?? "unknown")
-        : stateLabel === "battle day"
-          ? (stateRemaining.get("inWar") ?? "unknown")
-          : "n/a";
+  if (missedSyncTags.size > 0) {
+    overviewNotes.push(
+      `Ignored missed sync clans: **${missedSyncTags.size}** (started >2h after alliance war start or still no war past 2h).`
+    );
+  }
+  if (overviewNotes.length > 0) {
+    embed.setDescription(overviewNotes.join("\n\n"));
+  }
 
-  const syncWithMode = stateLabel === "mixed" ? "mixed" : withSyncModeLabel(syncLabel, sourceSync);
-  const ignoredMissedSyncText =
-    missedSyncTags.size > 0
-      ? `\nIgnored missed sync clans: **${missedSyncTags.size}** (started >2h after alliance war start or still no war past 2h).`
-      : "";
-  embed.setDescription(
-    `${MATCHTYPE_WARNING_LEGEND}\n\nSync: **${syncWithMode}**\nWar State: **${stateLabel}**\nTime Remaining: **${remainingLabel}**${ignoredMissedSyncText}`
-  );
-  const copyHeader = `# FWA Match Overview (${includedTracked.length})\n${MATCHTYPE_WARNING_LEGEND}\nSync: ${syncWithMode}\nWar State: ${stateLabel}\nTime Remaining: ${remainingLabel}${
-    missedSyncTags.size > 0
-      ? `\nIgnored missed sync clans: ${missedSyncTags.size} (started >2h late or no war after 2h)`
-      : ""
-  }`;
+  const copyHeaderLines = [`# FWA Match Overview (${includedTracked.length})`];
+  if (hasAnyInferredMatchType) {
+    copyHeaderLines.push(MATCHTYPE_WARNING_LEGEND);
+  }
+  if (missedSyncTags.size > 0) {
+    copyHeaderLines.push(
+      `Ignored missed sync clans: ${missedSyncTags.size} (started >2h late or no war after 2h)`
+    );
+  }
+  const copyHeader = copyHeaderLines.join("\n");
   return {
     embed,
     copyText: buildLimitedMessage(copyHeader, copyLines.map((l) => `${l}\n`), ""),
