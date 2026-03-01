@@ -9,7 +9,7 @@
 - `/permission add`, `/permission remove`
 - `/sheet link`, `/sheet unlink`, `/sheet show`, `/sheet refresh`
 - `/kick-list build`, `/kick-list add`, `/kick-list remove`, `/kick-list show`, `/kick-list clear`
-- `/post sync time`
+- `/sync time post`
 - `/notify war`
 
 ## Role Whitelisting
@@ -18,11 +18,13 @@
 - Use `/permission list` to inspect current policy.
 
 Examples:
-- Lock `/post` to role `@RoleX`:
-  - `/permission add command:post role:@RoleX`
-- Fine-grained `/post sync ...` targets:
+- Lock `/sync` to role `@RoleX`:
+  - `/permission add command:sync role:@RoleX`
+- Fine-grained `/sync ...` targets:
   - `sync:time:post`
   - `sync:post:status`
+  - Example: `/permission add command:sync:time:post role:@RoleX`
+  - Example: `/permission add command:sync:post:status role:@RoleX`
 - Lock `/fwa` to role `@RoleX`:
   - `/permission add command:fwa role:@RoleX`
 - Lock `/recruitment` to role `@RoleX`:

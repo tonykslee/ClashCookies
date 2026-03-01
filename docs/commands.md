@@ -40,5 +40,5 @@
 - `/kick-list remove tag:<playerTag>` - Remove a player from kick list.
 - `/kick-list show` - Show current kick-list with reasons.
 - `/kick-list clear [mode:all|auto|manual]` - Clear kick-list entries.
-- `/post sync time [role:<discordRole>]` - Open modal, compose sync-time message, post it, and pin it.
-- `/post sync status [message-id:<id>]` - Show claimed vs unclaimed clan badge reactions for the active sync-time post, or for a specific message in the channel.
+- `/sync time post [role:<discordRole>]` - Open modal, compose sync-time message, post it, and pin it.
+- `/sync post status [message-id:<id>]` - Show claimed vs unclaimed clan badge reactions for the active sync-time post, or for a specific message in the channel.
