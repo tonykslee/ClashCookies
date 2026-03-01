@@ -70,25 +70,35 @@ export class WarEventHistoryService {
     matchType: MatchType,
     expectedOutcome: "WIN" | "LOSE" | null,
     clanTag: string,
-    _opponentNameInput?: string | null
+    opponentNameInput?: string | null
   ): Promise<string | null> {
     if (matchType !== "FWA") return null;
+    const opponentName = String(opponentNameInput ?? "").trim() || "Unknown";
     if (expectedOutcome === "WIN") {
       return [
-        "Win plan: if clan stars are under 100 and time remaining is over 12h,",
-        "one attack must be a 3-star on mirror. Other attack can be 3-star on already-tripled base,",
-        "or 2-star/1-star any base. Outside that window, free hit plan applies.",
-      ].join(" ");
+        `**💚 WIN WAR 🆚 ${opponentName} 🟢 **`,
+        "🗡️ 1st Attack: ★ ★ ★ -> Mirror",
+        "🗡️ 2nd Attack: ★ ★ ☆ -> any",
+        "⌛️ Only after 101+ stars -> Attack ANY base",
+      ].join("\n");
     }
     if (expectedOutcome === "LOSE") {
       const loseStyle = await this.getLoseStyleForClan(normalizeTag(clanTag));
       if (loseStyle === "TRIPLE_TOP_30") {
-        return "Lose plan (Triple Top 30): hit only top 30 bases with both attacks; do not hit bottom 20.";
+        return [
+          `**❤️ LOSE WAR 🆚 ${opponentName} 🔴**`,
+          "🗡️ Attack any of the top 30 bases for 1-3 stars",
+          "🚫 Do NOT attack the bottom 20 bases",
+          "🎯 Goal is 90 stars (do not cross)",
+        ].join("\n");
       }
       return [
-        "Lose plan (Traditional): when under 12h remaining, do mirror 2-star plus non-mirror 1-star.",
-        "Before that, do 1-star/2-star hits while keeping clan stars at or under 100.",
-      ].join(" ");
+        `**❤️ LOSE WAR 🆚 ${opponentName} 🔴**`,
+        "🗡️ 1st Attack: ★ ★ ☆ -> Mirror",
+        "🗡️ 2nd Attack: ★ ☆ ☆ -> any",
+        "⏳ Last 12hrs: ★ ★ ☆ -> any",
+        "🎯 Do NOT surpass 100 ★",
+      ].join("\n");
     }
     return "FWA plan unavailable (expected outcome unknown).";
   }

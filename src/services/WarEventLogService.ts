@@ -611,12 +611,14 @@ export class WarEventLogService {
         embed.addFields({
           name: "Message",
           value: [
-            `⚫️ BLACKLIST WAR 🆚 ${payload.opponentName} 🏴‍☠️`,
+            `**⚫️ BLACKLIST WAR 🆚 ${payload.opponentName} 🏴‍☠️**`,
             "Everyone switch to WAR BASES!!",
             "This is our opportunity to gain some extra FWA points!",
             "➕ 30+ people switch to war base = +1 point",
             "➕ 60% total destruction = +1 point",
             "➕ win war = +1 point",
+            "---",
+            "If you need war base, check https://clashofclans-layouts.com/ or ⁠bases",
           ].join("\n"),
           inline: false,
         });
