@@ -1375,6 +1375,17 @@ export async function handleFwaMatchTypeActionButton(interaction: ButtonInteract
     return;
   }
 
+  const existingSub = await prisma.warEventLogSubscription.findUnique({
+    where: {
+      guildId_clanTag: {
+        guildId: interaction.guildId,
+        clanTag: `#${parsed.tag}`,
+      },
+    },
+    select: { matchType: true },
+  });
+  const didMatchTypeChange = existingSub?.matchType !== parsed.targetType;
+
   await prisma.warEventLogSubscription.upsert({
     where: {
       guildId_clanTag: {
@@ -1396,10 +1407,12 @@ export async function handleFwaMatchTypeActionButton(interaction: ButtonInteract
       updatedAt: new Date(),
     },
   });
-  clearPostedMailTrackingForClan({
-    guildId: interaction.guildId,
-    tag: parsed.tag,
-  });
+  if (didMatchTypeChange) {
+    clearPostedMailTrackingForClan({
+      guildId: interaction.guildId,
+      tag: parsed.tag,
+    });
+  }
 
   for (const [key, payload] of fwaMatchCopyPayloads.entries()) {
     if (payload.userId !== parsed.userId) continue;
