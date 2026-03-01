@@ -1845,6 +1845,11 @@ async function buildTrackedMatchOverview(
   const copyLines: string[] = [];
   const singleViews: Record<string, MatchView> = {};
   let hasAnyInferredMatchType = false;
+  const sourceOfTruthSyncLine = `Sync#: ${
+    sourceSync !== null && Number.isFinite(sourceSync)
+      ? `#${Math.trunc(sourceSync) + 1}`
+      : "unknown"
+  }`;
 
   for (const clan of includedTracked) {
     const clanTag = normalizeTag(clan.tag);
@@ -1859,7 +1864,6 @@ async function buildTrackedMatchOverview(
         name: `${clanName} (#${clanTag})`,
         value: [
           ":face_palm: failed to start war",
-          `Sync: **${clanSyncLine}**`,
           `War State: **${clanWarStateLine}**`,
           `Time Remaining: **${clanTimeRemainingLine}**`,
         ].join("\n"),
@@ -1868,7 +1872,6 @@ async function buildTrackedMatchOverview(
       copyLines.push(
         `## ${clanName} (#${clanTag})`,
         ":face_palm: failed to start war",
-        `Sync: ${clanSyncLine}`,
         `War State: ${clanWarStateLine}`,
         `Time Remaining: ${clanTimeRemainingLine}`
       );
@@ -1891,7 +1894,6 @@ async function buildTrackedMatchOverview(
         name: `${clanName} (#${clanTag}) vs Unknown`,
         value: [
           "No active war opponent",
-          `Sync: **${clanSyncLine}**`,
           `War State: **${clanWarStateLine}**`,
           `Time Remaining: **${clanTimeRemainingLine}**`,
         ].join("\n"),
@@ -1900,7 +1902,6 @@ async function buildTrackedMatchOverview(
       copyLines.push(
         `## ${clanName} (#${clanTag})`,
         "No active war opponent",
-        `Sync: ${clanSyncLine}`,
         `War State: ${clanWarStateLine}`,
         `Time Remaining: ${clanTimeRemainingLine}`
       );
@@ -2124,7 +2125,6 @@ async function buildTrackedMatchOverview(
           pointsSyncStatus,
           `Match Type: **FWA${warnSuffix}**`,
           `Outcome: **${effectiveOutcome ?? "UNKNOWN"}**`,
-          `Sync: **${clanSyncLine}**`,
           `War State: **${clanWarStateLine}**`,
           `Time Remaining: **${clanTimeRemainingLine}**`,
           mismatchLines,
@@ -2144,7 +2144,6 @@ async function buildTrackedMatchOverview(
         `Match Type: FWA${inferredMatchType ? " :warning:" : ""}`,
         inferredMatchType ? `Verify: ${buildCcVerifyUrl(opponentTag)}` : "",
         `Outcome: ${effectiveOutcome ?? "UNKNOWN"}`,
-        `Sync: ${clanSyncLine}`,
         `War State: ${clanWarStateLine}`,
         `Time Remaining: ${clanTimeRemainingLine}`,
         mismatchLines
@@ -2156,7 +2155,6 @@ async function buildTrackedMatchOverview(
         value: [
           pointsSyncStatus,
           `Match Type: **${matchType}${warnSuffix}**`,
-          `Sync: **${clanSyncLine}**`,
           `War State: **${clanWarStateLine}**`,
           `Time Remaining: **${clanTimeRemainingLine}**`,
           mismatchLines,
@@ -2174,7 +2172,6 @@ async function buildTrackedMatchOverview(
         pointsSyncStatus,
         `Match Type: ${matchType}${inferredMatchType ? " :warning:" : ""}`,
         inferredMatchType ? `Verify: ${buildCcVerifyUrl(opponentTag)}` : "",
-        `Sync: ${clanSyncLine}`,
         `War State: ${clanWarStateLine}`,
         `Time Remaining: ${clanTimeRemainingLine}`,
         mismatchLines
@@ -2273,6 +2270,7 @@ async function buildTrackedMatchOverview(
   }
 
   const overviewNotes: string[] = [];
+  overviewNotes.push(`Source of truth ${sourceOfTruthSyncLine}`);
   if (hasAnyInferredMatchType) {
     overviewNotes.push(MATCHTYPE_WARNING_LEGEND);
   }
@@ -2286,6 +2284,7 @@ async function buildTrackedMatchOverview(
   }
 
   const copyHeaderLines = [`# FWA Match Overview (${includedTracked.length})`];
+  copyHeaderLines.push(`Source of truth ${sourceOfTruthSyncLine}`);
   if (hasAnyInferredMatchType) {
     copyHeaderLines.push(MATCHTYPE_WARNING_LEGEND);
   }
