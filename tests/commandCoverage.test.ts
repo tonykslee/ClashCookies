@@ -5,9 +5,9 @@ import { Commands } from "../src/Commands";
 import { getHelpDocumentedCommandNames } from "../src/commands/Help";
 import { hasPermissionTargetForCommand } from "../src/services/CommandPermissionService";
 
-function readmeCommandNames(): Set<string> {
-  const readmePath = join(process.cwd(), "README.md");
-  const text = readFileSync(readmePath, "utf8");
+function docsCommandNames(): Set<string> {
+  const commandsDocPath = join(process.cwd(), "docs", "commands.md");
+  const text = readFileSync(commandsDocPath, "utf8");
   const names = new Set<string>();
   const regex = /\/([a-z0-9-]+)/gi;
   let match: RegExpExecArray | null = regex.exec(text);
@@ -35,8 +35,8 @@ describe("command coverage", () => {
     expect(missing).toEqual([]);
   });
 
-  it("ensures every registered command is documented in README", () => {
-    const readmeNames = readmeCommandNames();
+  it("ensures every registered command is documented in docs/commands.md", () => {
+    const readmeNames = docsCommandNames();
     const missing = Commands.map((command) => command.name).filter(
       (name) => !readmeNames.has(name)
     );
