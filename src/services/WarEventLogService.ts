@@ -94,6 +94,16 @@ function isNewWarCycle(
   return nextWarStartTime.getTime() !== previousWarStartTime.getTime();
 }
 
+function deriveResultLabelFromStars(
+  clanStars: number | null,
+  opponentStars: number | null
+): "WIN" | "LOSE" | "TIE" | "UNKNOWN" {
+  if (clanStars === null || opponentStars === null) return "UNKNOWN";
+  if (clanStars > opponentStars) return "WIN";
+  if (clanStars < opponentStars) return "LOSE";
+  return "TIE";
+}
+
 function makeBattleDayPostKey(guildId: string, clanTag: string): string {
   return `${guildId}:${normalizeTag(clanTag)}`;
 }
@@ -282,6 +292,47 @@ export class WarEventLogService {
       opponentFwaPoints = b.balance;
       outcome = deriveExpectedOutcome(clanTag, opponentTag, a.balance, b.balance, syncNumber);
     }
+    const currentWarStartTime = parseCocTime(currentWar?.startTime ?? null);
+    const testWarStartTime =
+      params.source === "current"
+        ? currentWarStartTime ?? sub.lastWarStartTime
+        : lastWarRow?.warStartTime ?? sub.lastWarStartTime ?? currentWarStartTime;
+    const currentClanStars = Number.isFinite(Number(currentWar?.clan?.stars))
+      ? Number(currentWar?.clan?.stars)
+      : sub.lastClanStars;
+    const currentOpponentStars = Number.isFinite(Number(currentWar?.opponent?.stars))
+      ? Number(currentWar?.opponent?.stars)
+      : sub.lastOpponentStars;
+    const testFinalResultOverride: WarEndResultSnapshot | null =
+      params.source === "current" && params.eventType === "war_ended"
+        ? {
+            clanStars: currentClanStars,
+            opponentStars: currentOpponentStars,
+            clanDestruction: Number.isFinite(Number(currentWar?.clan?.destructionPercentage))
+              ? Number(currentWar?.clan?.destructionPercentage)
+              : null,
+            opponentDestruction: Number.isFinite(Number(currentWar?.opponent?.destructionPercentage))
+              ? Number(currentWar?.opponent?.destructionPercentage)
+              : null,
+            warEndTime: new Date(),
+            resultLabel: deriveResultLabelFromStars(currentClanStars, currentOpponentStars),
+          }
+        : null;
+    const testWarStartFwaPoints =
+      params.source === "current" ? sub.warStartFwaPoints ?? fwaPoints : sub.warStartFwaPoints;
+    let testWarEndFwaPoints = sub.warEndFwaPoints;
+    if (params.source === "current" && params.eventType === "war_ended") {
+      if (sub.matchType === "BL" && testFinalResultOverride) {
+        const before = testWarStartFwaPoints ?? fwaPoints;
+        const delta = this.computeBlPointsDelta(testFinalResultOverride);
+        testWarEndFwaPoints = before !== null && Number.isFinite(before) ? before + delta : null;
+      } else if (sub.matchType === "MM") {
+        const before = testWarStartFwaPoints ?? fwaPoints;
+        testWarEndFwaPoints = before !== null && Number.isFinite(before) ? before : fwaPoints;
+      } else {
+        testWarEndFwaPoints = fwaPoints;
+      }
+    }
 
     await this.emitEvent(sub.channelId, {
       eventType: params.eventType,
@@ -296,8 +347,8 @@ export class WarEventLogService {
       opponentFwaPoints,
       outcome,
       matchType: sub.matchType,
-      warStartFwaPoints: sub.warStartFwaPoints,
-      warEndFwaPoints: sub.warEndFwaPoints,
+      warStartFwaPoints: testWarStartFwaPoints,
+      warEndFwaPoints: testWarEndFwaPoints,
       lastClanStars:
         params.source === "last"
           ? Number.isFinite(Number(lastWarLogEntry?.clan?.stars))
@@ -314,7 +365,7 @@ export class WarEventLogService {
           : Number.isFinite(Number(currentWar?.opponent?.stars))
             ? Number(currentWar?.opponent?.stars)
             : sub.lastOpponentStars,
-      warStartTime: lastWarRow?.warStartTime ?? sub.lastWarStartTime ?? parseCocTime(currentWar?.startTime ?? null),
+      warStartTime: testWarStartTime,
       warEndTime: parseCocTime(currentWar?.endTime ?? null),
       clanAttacks: Number.isFinite(Number(currentWar?.clan?.attacks))
         ? Number(currentWar?.clan?.attacks)
@@ -332,6 +383,7 @@ export class WarEventLogService {
       opponentDestruction: Number.isFinite(Number(currentWar?.opponent?.destructionPercentage))
         ? Number(currentWar?.opponent?.destructionPercentage)
         : null,
+      testFinalResultOverride,
     });
 
     return { ok: true };
@@ -656,6 +708,7 @@ export class WarEventLogService {
       attacksPerMember: number | null;
       clanDestruction: number | null;
       opponentDestruction: number | null;
+      testFinalResultOverride?: WarEndResultSnapshot | null;
     }
   ): Promise<void> {
     const channel = await this.client.channels.fetch(channelId).catch(() => null);
@@ -835,13 +888,15 @@ export class WarEventLogService {
     }
 
     if (payload.eventType === "war_ended") {
-      const finalResult = await this.history.getWarEndResultSnapshot({
-        clanTag: payload.clanTag,
-        opponentTag: payload.opponentTag,
-        fallbackClanStars: payload.lastClanStars,
-        fallbackOpponentStars: payload.lastOpponentStars,
-        warStartTime: payload.warStartTime,
-      });
+      const finalResult =
+        payload.testFinalResultOverride ??
+        (await this.history.getWarEndResultSnapshot({
+          clanTag: payload.clanTag,
+          opponentTag: payload.opponentTag,
+          fallbackClanStars: payload.lastClanStars,
+          fallbackOpponentStars: payload.lastOpponentStars,
+          warStartTime: payload.warStartTime,
+        }));
       const compliance = await this.history.getWarComplianceSnapshot(
         payload.clanTag,
         payload.warStartTime,
