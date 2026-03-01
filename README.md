@@ -6,7 +6,7 @@ Discord bot for Clash of Clans activity tooling.
 - Supports last seen and inactivity queries.
 - Manages tracked clans and roster/sheet integrations.
 - Provides FWA points and matchup tooling.
-- Supports FWA war mail channel config and send-preview flow via `/fwa mail ...`.
+- Supports tracked-clan mail channel config via `/tracked-clan configure` and send-preview flow via `/fwa mail send`.
 
 ## Quick Start
 ```bash
