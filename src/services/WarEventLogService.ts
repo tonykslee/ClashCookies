@@ -551,7 +551,13 @@ export class WarEventLogService {
         });
         embed.addFields({
           name: "War Plan",
-          value: (await this.history.buildWarPlanText(payload.matchType, payload.outcome, payload.clanTag)) ?? "N/A",
+          value:
+            (await this.history.buildWarPlanText(
+              payload.matchType,
+              payload.outcome,
+              payload.clanTag,
+              payload.opponentName
+            )) ?? "N/A",
           inline: false,
         });
       }
@@ -559,7 +565,14 @@ export class WarEventLogService {
         embed.addFields({
           name: "Message",
           value:
-            "Battle day has started! Thank you for your help swapping to war bases, please swap back to FWA bases asap!",
+            "**Battle day has started! Thank you for your help swapping to war bases, please swap back to FWA bases asap!**",
+          inline: false,
+        });
+      }
+      if (payload.matchType === "MM") {
+        embed.addFields({
+          name: "Message",
+          value: "Attack whatever you want! Free for all! ⚔️",
           inline: false,
         });
       }
@@ -584,7 +597,37 @@ export class WarEventLogService {
         });
         embed.addFields({
           name: "War Plan",
-          value: (await this.history.buildWarPlanText(payload.matchType, payload.outcome, payload.clanTag)) ?? "N/A",
+          value:
+            (await this.history.buildWarPlanText(
+              payload.matchType,
+              payload.outcome,
+              payload.clanTag,
+              payload.opponentName
+            )) ?? "N/A",
+          inline: false,
+        });
+      }
+      if (payload.matchType === "BL") {
+        embed.addFields({
+          name: "Message",
+          value: [
+            `⚫️ BLACKLIST WAR 🆚 ${payload.opponentName} 🏴‍☠️`,
+            "Everyone switch to WAR BASES!!",
+            "This is our opportunity to gain some extra FWA points!",
+            "➕ 30+ people switch to war base = +1 point",
+            "➕ 60% total destruction = +1 point",
+            "➕ win war = +1 point",
+          ].join("\n"),
+          inline: false,
+        });
+      }
+      if (payload.matchType === "MM") {
+        embed.addFields({
+          name: "Message",
+          value: [
+            `⚪️ MISMATCHED WAR 🆚 ${payload.opponentName} :sob:`,
+            "Keep WA base active, attack what you can!",
+          ].join("\n"),
           inline: false,
         });
       }

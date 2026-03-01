@@ -69,7 +69,8 @@ export class WarEventHistoryService {
   async buildWarPlanText(
     matchType: MatchType,
     expectedOutcome: "WIN" | "LOSE" | null,
-    clanTag: string
+    clanTag: string,
+    _opponentNameInput?: string | null
   ): Promise<string | null> {
     if (matchType !== "FWA") return null;
     if (expectedOutcome === "WIN") {
