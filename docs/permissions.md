@@ -3,6 +3,7 @@
 ## Defaults
 - By default, commands are usable by everyone.
 - Administrator users can always use commands regardless of role whitelist.
+- `/fwa mail send` defaults to FWA leader-role + Administrator when no explicit whitelist is set.
 
 ## Default Administrator-Only Targets
 - `/tracked-clan add`, `/tracked-clan remove`
@@ -27,6 +28,8 @@ Examples:
   - Example: `/permission add command:sync:post:status role:@RoleX`
 - Lock `/fwa` to role `@RoleX`:
   - `/permission add command:fwa role:@RoleX`
+- Lock only `/fwa mail send` to role `@RoleX`:
+  - `/permission add command:fwa:mail:send role:@RoleX`
 - Lock `/recruitment` to role `@RoleX`:
   - `/permission add command:recruitment role:@RoleX`
 - Lock `/notify` to role `@RoleX`:
@@ -34,3 +37,4 @@ Examples:
 
 ## Notes
 - `/fwa match-type` is Administrator-only by default.
+- The `/fwa match` single-clan `Send Mail` button uses the same permission policy as `/fwa mail send`.
