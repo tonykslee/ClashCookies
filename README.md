@@ -76,6 +76,8 @@ Optional fallback auth (not required for your current setup):
 - `/cc player tag:<tag>` - Build `https://cc.fwafarm.com/cc_n/member.php?tag=<tag>`.
 - `/cc clan tag:<tag>` - Build `https://cc.fwafarm.com/cc_n/clan.php?tag=<tag>`.
 - `/notify war clan-tag:<tag> target-channel:<channel> [role:<discordRole>]` - Enable war-state event logs (war start, battle day, war end) for a clan in a selected channel. Optional role is pinged when event logs are posted.
+- `/war history clan-tag:<tag> [limit:<number>]` - Show recent clan-level war history from stored war records.
+- `/war war-id war-id:<number>` - Export stored war lookup payload for one war ID as CSV.
 - `/accounts [visibility:private|public] [tag:<playerTag>] [discord-id:<snowflake>]` - List linked player accounts grouped by current clan. Default is your own account; provide exactly one of `tag` or `discord-id` to inspect a different linked user.
 - `/fwa points [visibility:private|public] [tag:<tag>]` - Fetch current point balance from `https://points.fwafarm.com/clan?tag=<tag-without-#>`. If `tag` is omitted, fetches all tracked clans.
 - `/fwa match [visibility:private|public] tag:<tag>` - Resolve current war opponent from CoC API, then return projected win/lose by points (or sync-based tiebreak on tie).
@@ -109,6 +111,7 @@ Optional fallback auth (not required for your current setup):
 - Administrator users can always use commands regardless of role whitelist.
 - To lock `/post` to role X, run:
   - `/permission add command:post role:@RoleX`
+  - Fine-grained targets for `/post sync ...` are `sync:time:post` and `sync:post:status`.
 - To lock `/fwa` to role X, run:
   - `/permission add command:fwa role:@RoleX`
 - `/fwa match-type` is Administrator-only by default.

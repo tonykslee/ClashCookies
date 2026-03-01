@@ -348,7 +348,7 @@ const handleModalSubmit = async (
 
   try {
     const targets = isPostModal
-      ? ["post:sync:time", "post"]
+      ? ["sync:time:post", "post"]
       : ["recruitment:edit", "recruitment"];
     const allowed = await commandPermissionService.canUseAnyTarget(targets, interaction);
     if (!allowed) {
