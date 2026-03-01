@@ -1802,30 +1802,39 @@ export async function handleFwaMatchSendMailButton(interaction: ButtonInteractio
 async function refreshSourceMatchMessageAfterMailSend(
   interaction: ButtonInteraction,
   previewPayload: FwaMailPreviewPayload
-): Promise<void> {
+): Promise<{
+  refreshed: FwaMatchCopyPayload | null;
+  showMode: "embed" | "copy";
+  sourceUpdated: boolean;
+}> {
   const sourceKey = previewPayload.sourceMatchPayloadKey;
-  if (!sourceKey) return;
-  if (!previewPayload.guildId) return;
+  const showMode = previewPayload.sourceShowMode ?? "embed";
+  if (!sourceKey || !previewPayload.guildId) {
+    return { refreshed: null, showMode, sourceUpdated: false };
+  }
 
   const existing = fwaMatchCopyPayloads.get(sourceKey);
-  if (!existing) return;
+  if (!existing) return { refreshed: null, showMode, sourceUpdated: false };
   const refreshed = await rebuildTrackedPayloadForTag(
     existing,
     previewPayload.guildId,
     normalizeTag(previewPayload.tag)
   ).catch(() => null);
-  if (!refreshed) return;
+  if (!refreshed) return { refreshed: null, showMode, sourceUpdated: false };
   fwaMatchCopyPayloads.set(sourceKey, refreshed);
 
-  if (!previewPayload.sourceChannelId || !previewPayload.sourceMessageId) return;
+  if (!previewPayload.sourceChannelId || !previewPayload.sourceMessageId) {
+    return { refreshed, showMode, sourceUpdated: false };
+  }
   const channel = await interaction.client.channels
     .fetch(previewPayload.sourceChannelId)
     .catch(() => null);
-  if (!channel || !channel.isTextBased()) return;
+  if (!channel || !channel.isTextBased()) {
+    return { refreshed, showMode, sourceUpdated: false };
+  }
   const message = await (channel as any).messages.fetch(previewPayload.sourceMessageId).catch(() => null);
-  if (!message) return;
+  if (!message) return { refreshed, showMode, sourceUpdated: false };
 
-  const showMode = previewPayload.sourceShowMode ?? "embed";
   const currentView =
     refreshed.currentScope === "single" && refreshed.currentTag
       ? refreshed.singleViews[refreshed.currentTag] ?? refreshed.allianceView
@@ -1835,6 +1844,7 @@ async function refreshSourceMatchMessageAfterMailSend(
     embeds: showMode === "embed" ? [currentView.embed] : [],
     components: buildFwaMatchCopyComponents(refreshed, refreshed.userId, sourceKey, showMode),
   });
+  return { refreshed, showMode, sourceUpdated: true };
 }
 
 export async function handleFwaMailConfirmButton(interaction: ButtonInteraction): Promise<void> {
@@ -1926,7 +1936,30 @@ export async function handleFwaMailConfirmButton(interaction: ButtonInteraction)
       ? `War mail sent to <#${channel.id}>. Previous mail was updated with a revision log.`
       : `War mail sent to <#${channel.id}>.`,
   });
-  await refreshSourceMatchMessageAfterMailSend(interaction, payload).catch(() => undefined);
+  const refreshedSource = await refreshSourceMatchMessageAfterMailSend(interaction, payload).catch(
+    () => ({ refreshed: null, showMode: "embed" as const, sourceUpdated: false })
+  );
+  if (!refreshedSource.sourceUpdated && refreshedSource.refreshed && payload.sourceMatchPayloadKey) {
+    const currentView =
+      refreshedSource.refreshed.currentScope === "single" && refreshedSource.refreshed.currentTag
+        ? refreshedSource.refreshed.singleViews[refreshedSource.refreshed.currentTag] ??
+          refreshedSource.refreshed.allianceView
+        : refreshedSource.refreshed.allianceView;
+    await interaction.followUp({
+      ephemeral: true,
+      content:
+        refreshedSource.showMode === "copy"
+          ? limitDiscordContent(currentView.copyText)
+          : "Updated match view:",
+      embeds: refreshedSource.showMode === "embed" ? [currentView.embed] : [],
+      components: buildFwaMatchCopyComponents(
+        refreshedSource.refreshed,
+        refreshedSource.refreshed.userId,
+        payload.sourceMatchPayloadKey,
+        refreshedSource.showMode
+      ),
+    });
+  }
 }
 
 export async function handleFwaMailRefreshButton(interaction: ButtonInteraction): Promise<void> {
