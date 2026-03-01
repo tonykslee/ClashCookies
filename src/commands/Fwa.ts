@@ -928,12 +928,21 @@ function getMailStatusEmojiForClan(params: {
   warStartMs: number | null;
 }): string {
   if (!params.guildId) return MAILBOX_NOT_SENT_EMOJI;
-  const sent = findLatestPostedWarMailForClan({
-    guildId: params.guildId,
-    tag: params.tag,
-    warStartMs: params.warStartMs,
-    strictWarStart: params.warStartMs !== null,
-  });
+  const sentForSameWar =
+    params.warStartMs !== null
+      ? findLatestPostedWarMailForClan({
+          guildId: params.guildId,
+          tag: params.tag,
+          warStartMs: params.warStartMs,
+          strictWarStart: true,
+        })
+      : null;
+  const sent =
+    sentForSameWar ??
+    findLatestPostedWarMailForClan({
+      guildId: params.guildId,
+      tag: params.tag,
+    });
   return sent ? MAILBOX_SENT_EMOJI : MAILBOX_NOT_SENT_EMOJI;
 }
 
