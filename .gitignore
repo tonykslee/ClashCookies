@@ -135,3 +135,9 @@ dev.db-journal
 
 # Local AI workflow instructions (do not commit)
 AGENTS.local.md
+
+# VSCode
+.vscode/
+
+# Local scripts not meant for repo (if applicable)
+scripts/

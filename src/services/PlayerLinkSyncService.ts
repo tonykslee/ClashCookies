@@ -7,12 +7,14 @@ import { SettingsService } from "./SettingsService";
 const UNRESOLVED_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const UNRESOLVED_LAST_SYNC_KEY = "clashking:unresolved_last_sync_ms";
 
+/** Purpose: normalize tag. */
 function normalizeTag(input: string): string {
   const trimmed = String(input ?? "").trim().toUpperCase();
   if (!trimmed) return "";
   return trimmed.startsWith("#") ? trimmed : `#${trimmed}`;
 }
 
+/** Purpose: normalize discord user id. */
 function normalizeDiscordUserId(input: string): string | null {
   const trimmed = String(input ?? "").trim();
   if (!/^\d{15,22}$/.test(trimmed)) return null;
@@ -20,11 +22,13 @@ function normalizeDiscordUserId(input: string): string | null {
 }
 
 export class PlayerLinkSyncService {
+  /** Purpose: initialize service dependencies. */
   constructor(
     private readonly clashKing = new ClashKingService(),
     private readonly settings = new SettingsService()
   ) {}
 
+  /** Purpose: sync by discord user id. */
   async syncByDiscordUserId(discordUserId: string): Promise<number> {
     const normalizedId = normalizeDiscordUserId(discordUserId);
     if (!normalizedId) return 0;
@@ -50,6 +54,7 @@ export class PlayerLinkSyncService {
     return upserted;
   }
 
+  /** Purpose: sync missing tags if due. */
   async syncMissingTagsIfDue(tags: string[]): Promise<void> {
     const normalizedTags = [...new Set(tags.map(normalizeTag).filter(Boolean))];
     if (normalizedTags.length === 0) return;

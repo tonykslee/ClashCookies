@@ -13,6 +13,9 @@ export const COMMAND_PERMISSION_TARGETS = [
   "lastseen",
   "inactive",
   "role-users",
+  "accounts",
+  "war",
+  "notify",
   "tracked-clan:add",
   "tracked-clan:remove",
   "tracked-clan:list",
@@ -39,8 +42,9 @@ export const COMMAND_PERMISSION_TARGETS = [
   "kick-list:remove",
   "kick-list:show",
   "kick-list:clear",
-  "post:sync:time",
-  "post:sync:status",
+  "sync",
+  "sync:time:post",
+  "sync:post:status",
   `${MANAGE_COMMAND_ROLES_COMMAND}:add`,
   `${MANAGE_COMMAND_ROLES_COMMAND}:remove`,
   `${MANAGE_COMMAND_ROLES_COMMAND}:list`,
@@ -80,19 +84,22 @@ const FWA_LEADER_DEFAULT_TARGETS = new Set<string>([
   "kick-list:add",
   "kick-list:remove",
   "kick-list:show",
-  "post:sync:time",
-  "post:sync:status",
+  "sync:time:post",
+  "sync:post:status",
   "inactive",
 ]);
 
+/** Purpose: command roles key. */
 function commandRolesKey(commandName: string): string {
   return `command_roles:${commandName}`;
 }
 
+/** Purpose: fwa leader role key. */
 function fwaLeaderRoleKey(guildId: string): string {
   return `${FWA_LEADER_ROLE_SETTING_KEY}:${guildId}`;
 }
 
+/** Purpose: parse role ids. */
 function parseRoleIds(input: string | null): string[] {
   if (!input) return [];
   const parts = input
@@ -102,10 +109,12 @@ function parseRoleIds(input: string | null): string[] {
   return [...new Set(parts)];
 }
 
+/** Purpose: stringify role ids. */
 function stringifyRoleIds(roleIds: string[]): string {
   return [...new Set(roleIds)].join(",");
 }
 
+/** Purpose: get interaction role ids. */
 async function getInteractionRoleIds(interaction: GuildInteraction): Promise<string[]> {
   if (!interaction.inGuild()) return [];
 
@@ -127,18 +136,33 @@ async function getInteractionRoleIds(interaction: GuildInteraction): Promise<str
   return [...fetched.roles.cache.keys()];
 }
 
+/** Purpose: is admin default target. */
 function isAdminDefaultTarget(target: string): boolean {
   return ADMIN_DEFAULT_TARGETS.has(target);
 }
 
+/** Purpose: is fwa leader default target. */
 function isFwaLeaderDefaultTarget(target: string): boolean {
   return FWA_LEADER_DEFAULT_TARGETS.has(target);
 }
 
+/** Purpose: is known target. */
 function isKnownTarget(target: string): target is CommandPermissionTarget {
   return (COMMAND_PERMISSION_TARGETS as readonly string[]).includes(target);
 }
 
+export function getPermissionTargetPrefixesForCommand(commandName: string): string[] {
+  return [commandName];
+}
+
+export function hasPermissionTargetForCommand(commandName: string): boolean {
+  const prefixes = getPermissionTargetPrefixesForCommand(commandName);
+  return COMMAND_PERMISSION_TARGETS.some((target) =>
+    prefixes.some((prefix) => target === prefix || target.startsWith(`${prefix}:`))
+  );
+}
+
+/** Purpose: get owner bypass ids. */
 function getOwnerBypassIds(): Set<string> {
   const raw = process.env.OWNER_DISCORD_USER_IDS ?? process.env.OWNER_DISCORD_USER_ID;
   if (!raw) return new Set();
@@ -149,12 +173,14 @@ function getOwnerBypassIds(): Set<string> {
   return new Set(ids);
 }
 
+/** Purpose: has owner bypass. */
 function hasOwnerBypass(interaction: GuildInteraction): boolean {
   const owners = getOwnerBypassIds();
   if (owners.size === 0) return false;
   return owners.has(interaction.user.id);
 }
 
+/** Purpose: get command targets from interaction. */
 export function getCommandTargetsFromInteraction(
   interaction: ChatInputCommandInteraction
 ): string[] {
@@ -163,7 +189,11 @@ export function getCommandTargetsFromInteraction(
   const sub = interaction.options.getSubcommand(false);
 
   const raw: string[] = [];
-  if (group && sub) {
+  if (command === "post" && group === "sync" && sub === "time") {
+    raw.push("sync:time:post");
+  } else if (command === "post" && group === "sync" && sub === "status") {
+    raw.push("sync:post:status");
+  } else if (group && sub) {
     raw.push(`${command}:${group}:${sub}`);
   }
   if (sub) {
@@ -175,23 +205,28 @@ export function getCommandTargetsFromInteraction(
 }
 
 export class CommandPermissionService {
+  /** Purpose: initialize service dependencies. */
   constructor(private readonly settings = new SettingsService()) {}
 
+  /** Purpose: get fwa leader role id. */
   async getFwaLeaderRoleId(guildId: string): Promise<string | null> {
     const raw = await this.settings.get(fwaLeaderRoleKey(guildId));
     if (!raw || !/^\d+$/.test(raw.trim())) return null;
     return raw.trim();
   }
 
+  /** Purpose: set fwa leader role id. */
   async setFwaLeaderRoleId(guildId: string, roleId: string): Promise<void> {
     await this.settings.set(fwaLeaderRoleKey(guildId), roleId);
   }
 
+  /** Purpose: get allowed role ids. */
   async getAllowedRoleIds(commandName: string): Promise<string[]> {
     const raw = await this.settings.get(commandRolesKey(commandName));
     return parseRoleIds(raw);
   }
 
+  /** Purpose: set allowed role ids. */
   async setAllowedRoleIds(commandName: string, roleIds: string[]): Promise<void> {
     const serialized = stringifyRoleIds(roleIds);
     if (!serialized) {
@@ -201,6 +236,7 @@ export class CommandPermissionService {
     await this.settings.set(commandRolesKey(commandName), serialized);
   }
 
+  /** Purpose: add allowed role id. */
   async addAllowedRoleId(commandName: string, roleId: string): Promise<string[]> {
     const existing = await this.getAllowedRoleIds(commandName);
     const next = [...new Set([...existing, roleId])];
@@ -208,6 +244,7 @@ export class CommandPermissionService {
     return next;
   }
 
+  /** Purpose: remove allowed role id. */
   async removeAllowedRoleId(commandName: string, roleId: string): Promise<string[]> {
     const existing = await this.getAllowedRoleIds(commandName);
     const next = existing.filter((id) => id !== roleId);
@@ -215,6 +252,7 @@ export class CommandPermissionService {
     return next;
   }
 
+  /** Purpose: clear allowed roles. */
   async clearAllowedRoles(commandName: string): Promise<void> {
     await this.settings.delete(commandRolesKey(commandName));
   }
@@ -293,6 +331,7 @@ export class CommandPermissionService {
     return true;
   }
 
+  /** Purpose: get policy summary. */
   async getPolicySummary(commandName: string, guildId?: string | null): Promise<string> {
     const roles = await this.getAllowedRoleIds(commandName);
     if (roles.length === 0) {

@@ -47,10 +47,10 @@ async function getLeaderRoleIds(settings: SettingsService, guildId: string): Pro
     return [preferredRole.trim()];
   }
   // Preferred: guild-scoped fwa leader role (new default permission model).
-  // Fallback: legacy command role whitelist for backwards compatibility.
-  const syncRoles = parseAllowedRoleIds(await settings.get("command_roles:post:sync:time"));
+  // Fallback: command role whitelist for backwards compatibility.
+  const syncRoles = parseAllowedRoleIds(await settings.get("command_roles:sync:time:post"));
   if (syncRoles.length > 0) return syncRoles;
-  return parseAllowedRoleIds(await settings.get("command_roles:post"));
+  return parseAllowedRoleIds(await settings.get("command_roles:sync"));
 }
 
 function activeSyncPostKey(guildId: string): string {
@@ -144,7 +144,7 @@ async function handleSyncStatusSubcommand(
     await interaction.editReply(
       explicitMessageId
         ? "Could not find that message ID in this channel."
-        : "Could not find an active sync-time message. Post one with `/post sync time` first."
+        : "Could not find an active sync-time message. Post one with `/sync time post` first."
     );
     return;
   }
@@ -241,8 +241,8 @@ async function handleSyncStatusSubcommand(
     .setFooter({
       text:
         leaderRoleIds.length > 0
-          ? "Leader eligibility: Administrator or role allowed for /post sync time"
-          : "Leader eligibility: Administrator only (no /post sync time role whitelist configured)",
+          ? "Leader eligibility: Administrator or role allowed for /sync time post"
+          : "Leader eligibility: Administrator only (no /sync time post role whitelist configured)",
     });
 
   await interaction.editReply({ embeds: [embed] });
@@ -687,16 +687,16 @@ export async function handlePostModalSubmit(
 }
 
 export const Post: Command = {
-  name: "post",
-  description: "Post formatted messages",
+  name: "sync",
+  description: "Sync posting and status commands",
   options: [
     {
-      name: "sync",
-      description: "Sync related posting commands",
+      name: "time",
+      description: "Sync time related commands",
       type: ApplicationCommandOptionType.SubcommandGroup,
       options: [
         {
-          name: "time",
+          name: "post",
           description: "Post a localized sync time with role ping",
           type: ApplicationCommandOptionType.Subcommand,
           options: [
@@ -708,6 +708,13 @@ export const Post: Command = {
             },
           ],
         },
+      ],
+    },
+    {
+      name: "post",
+      description: "Sync post related commands",
+      type: ApplicationCommandOptionType.SubcommandGroup,
+      options: [
         {
           name: "status",
           description: "Show claimed/unclaimed clan badges for a sync-time post",
@@ -740,7 +747,7 @@ export const Post: Command = {
 
     const subcommandGroup = interaction.options.getSubcommandGroup(false);
     const subcommand = interaction.options.getSubcommand(true);
-    if (subcommandGroup !== "sync") {
+    if (!subcommandGroup) {
       await safeReply(interaction, {
         ephemeral: true,
         content: "Unknown subcommand.",
@@ -748,12 +755,12 @@ export const Post: Command = {
       return;
     }
 
-    if (subcommand === "status") {
+    if (subcommandGroup === "post" && subcommand === "status") {
       await handleSyncStatusSubcommand(interaction);
       return;
     }
 
-    if (subcommand !== "time") {
+    if (!(subcommandGroup === "time" && subcommand === "post")) {
       await safeReply(interaction, {
         ephemeral: true,
         content: "Unknown subcommand.",

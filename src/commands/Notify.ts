@@ -56,6 +56,32 @@ export const Notify: Command = {
           type: ApplicationCommandOptionType.Role,
           required: false,
         },
+        {
+          name: "role-ping",
+          description: "Whether to ping the configured role in war event logs (default: on)",
+          type: ApplicationCommandOptionType.Boolean,
+          required: false,
+        },
+      ],
+    },
+    {
+      name: "war-ping",
+      description: "Toggle role ping on/off for an existing /notify war subscription",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "clan-tag",
+          description: "Clan tag already configured with /notify war",
+          type: ApplicationCommandOptionType.String,
+          required: true,
+          autocomplete: true,
+        },
+        {
+          name: "enabled",
+          description: "Enable or disable role ping for war event posts",
+          type: ApplicationCommandOptionType.Boolean,
+          required: true,
+        },
       ],
     },
     {
@@ -163,15 +189,21 @@ export const Notify: Command = {
         orderBy: { createdAt: "asc" },
         select: { name: true, tag: true },
       });
-      const subscriptions = await prisma.warEventLogSubscription.findMany({
-        where: { guildId: interaction.guildId },
-        select: {
-          clanTag: true,
-          channelId: true,
-          notifyRole: true,
-          notify: true,
-        },
-      });
+      const subscriptions = await prisma.$queryRaw<
+        Array<{
+          clanTag: string;
+          channelId: string;
+          notifyRole: string | null;
+          notify: boolean;
+          pingRole: boolean;
+        }>
+      >(
+        Prisma.sql`
+          SELECT "clanTag","channelId","notifyRole","notify","pingRole"
+          FROM "WarEventLogSubscription"
+          WHERE "guildId" = ${interaction.guildId}
+        `
+      );
       const subByTag = new Map(
         subscriptions.map((s) => [normalizeClanTag(s.clanTag), s])
       );
@@ -186,6 +218,7 @@ export const Notify: Command = {
             channelId: subRow?.channelId ?? null,
             notifyRole: subRow?.notifyRole ?? null,
             enabled: Boolean(subRow?.notify),
+            rolePingEnabled: subRow?.pingRole ?? true,
           };
         })
         .filter((r) => (normalizedFilter ? r.clanTag === normalizedFilter : true));
@@ -203,10 +236,33 @@ export const Notify: Command = {
         const channelText = r.channelId ? `<#${r.channelId}>` : "not configured";
         const roleText = r.notifyRole ? `<@&${r.notifyRole}>` : "none";
         const status = r.enabled ? "enabled" : "disabled";
-        return `- **${r.clanName}** (${r.clanTag})\n  Channel: ${channelText}\n  Role: ${roleText}\n  Status: ${status}`;
+        const rolePing = r.rolePingEnabled ? "on" : "off";
+        return `- **${r.clanName}** (${r.clanTag})\n  Channel: ${channelText}\n  Role: ${roleText}\n  Role ping: ${rolePing}\n  Status: ${status}`;
       });
 
       await interaction.editReply(lines.join("\n"));
+      return;
+    }
+
+    if (sub === "war-ping") {
+      const clanTag = normalizeClanTag(interaction.options.getString("clan-tag", true));
+      const enabled = interaction.options.getBoolean("enabled", true);
+      const updated = await prisma.$executeRaw(
+        Prisma.sql`
+          UPDATE "WarEventLogSubscription"
+          SET "pingRole" = ${enabled}, "updatedAt" = NOW()
+          WHERE "guildId" = ${interaction.guildId}
+            AND UPPER(REPLACE("clanTag",'#','')) = ${normalizeClanTagInput(clanTag)}
+        `
+      );
+      if (updated === 0) {
+        await interaction.editReply(`No /notify war subscription found for ${clanTag}.`);
+        return;
+      }
+
+      await interaction.editReply(
+        `Role ping is now **${enabled ? "on" : "off"}** for ${clanTag}.`
+      );
       return;
     }
 
@@ -252,6 +308,7 @@ export const Notify: Command = {
 
     const target = interaction.options.getChannel("target-channel", true);
     const notifyRole = interaction.options.getRole("role", false) as Role | null;
+    const rolePingEnabled = interaction.options.getBoolean("role-ping", false) ?? true;
     if (
       target.type !== ChannelType.GuildText &&
       target.type !== ChannelType.GuildAnnouncement
@@ -279,14 +336,15 @@ export const Notify: Command = {
     await prisma.$executeRaw(
       Prisma.sql`
         INSERT INTO "WarEventLogSubscription"
-          ("guildId","clanTag","channelId","notify","notifyRole","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName","createdAt","updatedAt")
+          ("guildId","clanTag","channelId","notify","notifyRole","pingRole","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName","createdAt","updatedAt")
         VALUES
-          (${interaction.guildId}, ${clanTag}, ${target.id}, true, ${notifyRole?.id ?? null}, ${lastState}, ${warStartTime}, ${opponentTag}, ${opponentName}, ${clanName}, NOW(), NOW())
+          (${interaction.guildId}, ${clanTag}, ${target.id}, true, ${notifyRole?.id ?? null}, ${rolePingEnabled}, ${lastState}, ${warStartTime}, ${opponentTag}, ${opponentName}, ${clanName}, NOW(), NOW())
         ON CONFLICT ("guildId","clanTag")
         DO UPDATE SET
           "channelId" = EXCLUDED."channelId",
           "notify" = true,
           "notifyRole" = EXCLUDED."notifyRole",
+          "pingRole" = EXCLUDED."pingRole",
           "lastState" = EXCLUDED."lastState",
           "lastWarStartTime" = EXCLUDED."lastWarStartTime",
           "lastOpponentTag" = EXCLUDED."lastOpponentTag",
@@ -299,6 +357,7 @@ export const Notify: Command = {
     await interaction.editReply(
       `Enabled war event logs for ${clanName} (${clanTag}) in <#${target.id}>.\n` +
         `Notify role: ${notifyRole ? `<@&${notifyRole.id}>` : "none"}\n` +
+        `Role ping: ${rolePingEnabled ? "on" : "off"}\n` +
         `Current state snapshot: \`${lastState}\``
     );
   },

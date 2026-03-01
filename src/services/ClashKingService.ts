@@ -2,10 +2,12 @@ import axios from "axios";
 import { recordFetchEvent } from "../helper/fetchTelemetry";
 import { formatError } from "../helper/formatError";
 
+/** Purpose: normalize tag. */
 function normalizeTag(tag: string): string {
   return tag.trim().toUpperCase().replace(/^#/, "");
 }
 
+/** Purpose: get lookup url. */
 function getLookupUrl(tag: string): string | null {
   const template = (process.env.CLASHKING_LINKS_URL_TEMPLATE ?? "").trim();
   if (!template) return null;
@@ -15,27 +17,32 @@ function getLookupUrl(tag: string): string | null {
     : template;
 }
 
+/** Purpose: normalize discord user id. */
 function normalizeDiscordUserId(input: string): string | null {
   const trimmed = String(input ?? "").trim();
   if (!/^\d{15,22}$/.test(trimmed)) return null;
   return trimmed;
 }
 
+/** Purpose: is discord user id input. */
 function isDiscordUserIdInput(input: string): boolean {
   return normalizeDiscordUserId(input) !== null;
 }
 
+/** Purpose: is likely player tag. */
 function isLikelyPlayerTag(input: string): boolean {
   const normalized = normalizeTag(input);
   return /^[0-9A-Z]{4,15}$/.test(normalized);
 }
 
+/** Purpose: as discord user id. */
 function asDiscordUserId(value: unknown): string | null {
   const id = String(value ?? "").trim();
   if (!/^\d{15,22}$/.test(id)) return null;
   return id;
 }
 
+/** Purpose: parse discord links payload. */
 function parseDiscordLinksPayload(raw: string): Map<string, string | null> {
   const result = new Map<string, string | null>();
   const pairRegex = /"([^"]+)"\s*:\s*(null|"(\d{15,22})"|(\d{15,22}))/g;
@@ -53,6 +60,7 @@ function parseDiscordLinksPayload(raw: string): Map<string, string | null> {
   return result;
 }
 
+/** Purpose: extract discord user id. */
 function extractDiscordUserId(data: unknown): string | null {
   if (data === null || data === undefined) return null;
 
@@ -88,6 +96,7 @@ function extractDiscordUserId(data: unknown): string | null {
 }
 
 export class ClashKingService {
+  /** Purpose: lookup links. */
   async lookupLinks(inputs: string[]): Promise<Map<string, string | null>> {
     const cleaned = [...new Set(inputs.map((i) => String(i ?? "").trim()).filter(Boolean))];
     if (cleaned.length === 0) return new Map();
@@ -141,6 +150,7 @@ export class ClashKingService {
     }
   }
 
+  /** Purpose: get linked discord user id. */
   async getLinkedDiscordUserId(playerTag: string): Promise<string | null> {
     const url = getLookupUrl(playerTag);
     if (!url) return null;

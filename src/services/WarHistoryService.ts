@@ -3,12 +3,14 @@ import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
 import { CoCService } from "./CoCService";
 
+/** Purpose: normalize tag. */
 function normalizeTag(input: string | null | undefined): string {
   const raw = String(input ?? "").trim().toUpperCase();
   if (!raw) return "";
   return raw.startsWith("#") ? raw : `#${raw}`;
 }
 
+/** Purpose: parse coc time. */
 function parseCocTime(input: string | null | undefined): Date | null {
   if (!input) return null;
   const m = input.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})\.\d{3}Z$/);
@@ -30,8 +32,10 @@ type WarMember = {
 };
 
 export class WarHistoryService {
+  /** Purpose: initialize service dependencies. */
   constructor(private readonly coc: CoCService) {}
 
+  /** Purpose: observe clan war. */
   async observeClanWar(clanTagInput: string): Promise<void> {
     const clanTag = normalizeTag(clanTagInput);
     if (!clanTag) return;
