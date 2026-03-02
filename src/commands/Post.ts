@@ -225,10 +225,10 @@ function parseActiveSyncPost(
 }
 
 async function resolveStoredActiveSyncMessage(
-  interaction: ChatInputCommandInteraction,
+  context: { guild: Guild | null },
   settings: SettingsService
 ) {
-  const guild = interaction.guild;
+  const guild = context.guild;
   if (!guild) return null;
   const guildId = guild.id;
 
@@ -723,6 +723,42 @@ export async function handlePostModalSubmit(
   if (!("permissionsFor" in channel)) {
     await interaction.editReply("This command can only post in guild text channels.");
     return;
+  }
+
+  // Block duplicate submissions when a sync post already exists for the same epoch.
+  const existingActiveSyncPost = await resolveStoredActiveSyncMessage(interaction, settings);
+  const existingActiveEpoch = existingActiveSyncPost
+    ? extractSyncEpochSeconds(existingActiveSyncPost.content)
+    : null;
+  if (existingActiveSyncPost && existingActiveEpoch === epochSeconds) {
+    const existingLink = `https://discord.com/channels/${guild.id}/${existingActiveSyncPost.channelId}/${existingActiveSyncPost.id}`;
+    await interaction.editReply(
+      `A sync time post for <t:${epochSeconds}:F> already exists: ${existingLink}`
+    );
+    return;
+  }
+
+  try {
+    const pinned = await channel.messages.fetchPinned();
+    const duplicatePinned = [...pinned.values()].find((msg) => {
+      if (!msg.author.bot) return false;
+      if (!isBotSyncTimeMessage(msg.content)) return false;
+      const msgEpoch = extractSyncEpochSeconds(msg.content);
+      return msgEpoch === epochSeconds;
+    });
+    if (duplicatePinned) {
+      const existingLink = `https://discord.com/channels/${guild.id}/${duplicatePinned.channelId}/${duplicatePinned.id}`;
+      await interaction.editReply(
+        `A sync time post for <t:${epochSeconds}:F> is already pinned: ${existingLink}`
+      );
+      return;
+    }
+  } catch (err) {
+    console.error(
+      `[post sync time] duplicate-check pinned fetch failed guild=${interaction.guildId} channel=${interaction.channelId} user=${interaction.user.id} error=${formatError(
+        err
+      )}`
+    );
   }
 
   const me = guild.members.me ?? (await guild.members.fetchMe().catch(() => null));
