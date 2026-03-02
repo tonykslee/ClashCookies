@@ -338,19 +338,24 @@ export const Sheet: Command = {
           return;
         }
 
+        const refreshStartedAtMs = Date.now();
         const resultText = await postRefreshWebhook(
           config.url,
           config.token,
           config.action as "refreshMembers" | "refreshWar"
         );
+        const refreshDurationSeconds = (
+          (Date.now() - refreshStartedAtMs) /
+          1000
+        ).toFixed(2);
 
         lastRefreshAtMsByGuildMode.set(guildModeKey, now);
         await safeReply(interaction, {
           ephemeral: true,
           content:
             resultText.length > 0
-              ? `Refresh triggered for **${refreshMode.toUpperCase()}** mode.\n${resultText}`
-              : `Refresh triggered for **${refreshMode.toUpperCase()}** mode.`,
+              ? `Refresh triggered for **${refreshMode.toUpperCase()}** mode in **${refreshDurationSeconds}s**.\n${resultText}`
+              : `Refresh triggered for **${refreshMode.toUpperCase()}** mode in **${refreshDurationSeconds}s**.`,
         });
         return;
       }
