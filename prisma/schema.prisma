@@ -35,6 +35,7 @@ model TrackedClan {
   mailChannelId String?
   logChannelId String?
   clanRoleId String?
+  clanBadge String?
   pointsScrape Json?
   createdAt DateTime  @default(now())
 }
