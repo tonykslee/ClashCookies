@@ -7,6 +7,7 @@ const SYNC_BADGE_EMOJIS_BY_BOT: Record<string, SyncBadgeEmoji[]> = {
   [STAGING_BOT_ID]: [
     { code: "ZG", label: "ZERO GRAVITY", name: "zg", id: "1476279645174366449" },
     { code: "TWC", label: "TheWiseCowboys", name: "twc", id: "1476279643660091452" },
+    { code: "GB", label: "GABBAR", name: "gb", id: "1478101511451185383" },
     { code: "SE", label: "Steel Empire 2", name: "se", id: "1476279635208573009" },
     { code: "RR", label: "Rocky Road", name: "rr", id: "1476279632729866242" },
     { code: "RD", label: "RISING DAWN", name: "rd", id: "1476279631345614902" },
@@ -17,6 +18,7 @@ const SYNC_BADGE_EMOJIS_BY_BOT: Record<string, SyncBadgeEmoji[]> = {
   [PROD_BOT_ID]: [
     { code: "ZG", label: "ZERO GRAVITY", name: "zg", id: "1476279778670673930" },
     { code: "TWC", label: "TheWiseCowboys", name: "twc", id: "1476279777466908755" },
+    { code: "GB", label: "GABBAR", name: "gb", id: "1478106834081546300" },
     { code: "SE", label: "Steel Empire 2", name: "se", id: "1476279774241493104" },
     { code: "RR", label: "Rocky Road", name: "rr", id: "1476279773243379762" },
     { code: "RD", label: "RISING DAWN", name: "rd", id: "1476279771884290100" },
@@ -44,6 +46,7 @@ function getClanCodeFromName(value: string): string {
     "DARK EMPIRE": "DE",
     "STEEL EMPIRE 2": "SE",
     "THEWISECOWBOYS": "TWC",
+    GABBAR: "GB",
     MARVELS: "MV",
     "ROCKY ROAD": "RR",
     AKATSUKI: "AK",
