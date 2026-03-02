@@ -11,14 +11,15 @@ import {
   PermissionFlagsBits,
   TextInputBuilder,
   TextInputStyle,
+  type Guild,
 } from "discord.js";
 import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
 import {
+  findSyncBadgeEmojiForClan,
   getSyncBadgeEmojis,
-  getSyncBadgeEmojiIdentifiers,
-  type SyncBadgeEmoji as BadgeEmoji,
 } from "../helper/syncBadgeEmoji";
+import { prisma } from "../prisma";
 import { safeReply } from "../helper/safeReply";
 import { CoCService } from "../services/CoCService";
 import {
@@ -36,6 +37,155 @@ const TIMEZONE_INPUT_ID = "timezone";
 const ROLE_INPUT_ID = "role";
 const IANA_TIMEZONE_HELP_URL =
   "https://en.wikipedia.org/wiki/List_of_tz_database_time_zones";
+const CUSTOM_EMOJI_PATTERN = /^<(a?):([A-Za-z0-9_]+):(\d+)>$/;
+const SHORTCODE_EMOJI_PATTERN = /^:([A-Za-z0-9_]+):$/;
+
+type SyncBadge = {
+  code: string;
+  label: string;
+  reactionIdentifier: string;
+  emojiInline: string;
+  id: string | null;
+  name: string | null;
+};
+
+function toFallbackAbbreviation(clanName: string | null, clanTag: string): string {
+  const source = (clanName?.trim() || clanTag.replace(/^#/, "")).toUpperCase();
+  const lettersAndNumbers = source.replace(/[^A-Z0-9]/g, "");
+  const base = lettersAndNumbers.length > 0 ? lettersAndNumbers : source.replace(/\s+/g, "");
+  if (base.length >= 3) return base.slice(0, 3);
+  const tagBase = clanTag.replace(/^#/, "").toUpperCase();
+  return (base + tagBase).slice(0, 3);
+}
+
+function resolveAbbreviation(
+  shortName: string | null,
+  clanName: string | null,
+  clanTag: string
+): string {
+  const normalized = shortName?.trim().toUpperCase() ?? "";
+  if (normalized.length > 0) return normalized;
+  return toFallbackAbbreviation(clanName, clanTag);
+}
+
+function parseCustomEmoji(raw: string): {
+  animated: boolean;
+  name: string;
+  id: string;
+} | null {
+  const match = raw.trim().match(CUSTOM_EMOJI_PATTERN);
+  if (!match) return null;
+  return {
+    animated: match[1] === "a",
+    name: match[2],
+    id: match[3],
+  };
+}
+
+function makeSyncBadgeFromHardcoded(entry: {
+  code: string;
+  label: string;
+  name: string;
+  id: string;
+},
+overrides?: { code?: string; label?: string }): SyncBadge {
+  return {
+    code: overrides?.code ?? entry.code,
+    label: overrides?.label ?? entry.label,
+    reactionIdentifier: `${entry.name}:${entry.id}`,
+    emojiInline: `<:${entry.name}:${entry.id}>`,
+    id: entry.id,
+    name: entry.name,
+  };
+}
+
+function makeSyncBadgeFromTrackedClan(
+  clanTag: string,
+  clanName: string | null,
+  configuredBadge: string,
+  shortName: string | null
+): SyncBadge {
+  const code = resolveAbbreviation(shortName, clanName, clanTag);
+  const label = clanName?.trim() || clanTag;
+  const trimmed = configuredBadge.trim();
+  const custom = parseCustomEmoji(trimmed);
+
+  if (custom) {
+    return {
+      code,
+      label,
+      reactionIdentifier: `${custom.name}:${custom.id}`,
+      emojiInline: `<${custom.animated ? "a" : ""}:${custom.name}:${custom.id}>`,
+      id: custom.id,
+      name: custom.name,
+    };
+  }
+
+  return {
+    code,
+    label,
+    reactionIdentifier: trimmed,
+    emojiInline: trimmed,
+    id: null,
+    name: trimmed,
+  };
+}
+
+async function getSyncBadgesWithTrackedClanFallback(
+  botUserId: string | undefined,
+  guild: Guild | null
+): Promise<SyncBadge[]> {
+  const tracked = await prisma.trackedClan.findMany({
+    orderBy: { createdAt: "asc" },
+    select: { tag: true, name: true, clanBadge: true, shortName: true },
+  });
+
+  const hardcoded = getSyncBadgeEmojis(botUserId);
+  if (tracked.length === 0) {
+    return hardcoded.map((entry) => makeSyncBadgeFromHardcoded(entry));
+  }
+
+  const badges: SyncBadge[] = [];
+  for (const clan of tracked) {
+    const configuredBadge = clan.clanBadge?.trim() ?? "";
+    if (configuredBadge.length > 0) {
+      const shortcodeMatch = configuredBadge.match(SHORTCODE_EMOJI_PATTERN);
+      if (shortcodeMatch && guild) {
+        const shortcodeName = shortcodeMatch[1];
+        let emoji = guild.emojis.cache.find((e) => e.name === shortcodeName);
+        if (!emoji) {
+          await guild.emojis.fetch().catch(() => null);
+          emoji = guild.emojis.cache.find((e) => e.name === shortcodeName);
+        }
+        if (emoji) {
+          const emojiToken = `<${emoji.animated ? "a" : ""}:${emoji.name}:${emoji.id}>`;
+          badges.push(makeSyncBadgeFromTrackedClan(clan.tag, clan.name, emojiToken, clan.shortName));
+          continue;
+        }
+      }
+      badges.push(makeSyncBadgeFromTrackedClan(clan.tag, clan.name, configuredBadge, clan.shortName));
+      continue;
+    }
+
+    const fallbackCode = resolveAbbreviation(clan.shortName, clan.name, clan.tag);
+    const fallback = clan.name ? findSyncBadgeEmojiForClan(botUserId, clan.name, fallbackCode) : null;
+    if (fallback) {
+      badges.push(
+        makeSyncBadgeFromHardcoded(fallback, {
+          code: fallbackCode,
+          label: clan.name?.trim() || clan.tag,
+        })
+      );
+    }
+  }
+
+  if (badges.length === 0) {
+    return hardcoded.map((entry) => makeSyncBadgeFromHardcoded(entry));
+  }
+
+  return badges;
+}
+
 function parseAllowedRoleIds(raw: string | null): string[] {
   if (!raw) return [];
   return [...new Set(raw.split(",").map((s) => s.trim()).filter((s) => /^\d+$/.test(s)))];
@@ -75,10 +225,10 @@ function parseActiveSyncPost(
 }
 
 async function resolveStoredActiveSyncMessage(
-  interaction: ChatInputCommandInteraction,
+  context: { guild: Guild | null },
   settings: SettingsService
 ) {
-  const guild = interaction.guild;
+  const guild = context.guild;
   if (!guild) return null;
   const guildId = guild.id;
 
@@ -155,10 +305,13 @@ async function handleSyncStatusSubcommand(
     return;
   }
 
-  const badges = getSyncBadgeEmojis(interaction.client.user?.id);
+  const badges = await getSyncBadgesWithTrackedClanFallback(
+    interaction.client.user?.id,
+    interaction.guild
+  );
   if (badges.length === 0) {
     await interaction.editReply(
-      "No badge emoji configuration found for this bot ID."
+      "No clan badge emoji configuration found."
     );
     return;
   }
@@ -203,7 +356,7 @@ async function handleSyncStatusSubcommand(
       }
     }
 
-    const emojiInline = `<:${badge.name}:${badge.id}>`;
+    const emojiInline = badge.emojiInline;
     if (claimedBy.length > 0) {
       const extra =
         nonLeader.length > 0 ? ` | non-leader: ${[...new Set(nonLeader)].join(", ")}` : "";
@@ -417,10 +570,10 @@ function extractSyncEpochSeconds(content: string): number | null {
 
 function reactionMatchesBadge(
   reaction: { emoji: { id: string | null; name: string | null } },
-  badge: BadgeEmoji
+  badge: SyncBadge
 ): boolean {
   if (reaction.emoji.id && reaction.emoji.id === badge.id) return true;
-  return Boolean(reaction.emoji.name && reaction.emoji.name === badge.name);
+  return Boolean(!badge.id && reaction.emoji.name && reaction.emoji.name === badge.name);
 }
 
 function buildModalCustomId(userId: string): string {
@@ -572,6 +725,42 @@ export async function handlePostModalSubmit(
     return;
   }
 
+  // Block duplicate submissions when a sync post already exists for the same epoch.
+  const existingActiveSyncPost = await resolveStoredActiveSyncMessage(interaction, settings);
+  const existingActiveEpoch = existingActiveSyncPost
+    ? extractSyncEpochSeconds(existingActiveSyncPost.content)
+    : null;
+  if (existingActiveSyncPost && existingActiveEpoch === epochSeconds) {
+    const existingLink = `https://discord.com/channels/${guild.id}/${existingActiveSyncPost.channelId}/${existingActiveSyncPost.id}`;
+    await interaction.editReply(
+      `A sync time post for <t:${epochSeconds}:F> already exists: ${existingLink}`
+    );
+    return;
+  }
+
+  try {
+    const pinned = await channel.messages.fetchPinned();
+    const duplicatePinned = [...pinned.values()].find((msg) => {
+      if (!msg.author.bot) return false;
+      if (!isBotSyncTimeMessage(msg.content)) return false;
+      const msgEpoch = extractSyncEpochSeconds(msg.content);
+      return msgEpoch === epochSeconds;
+    });
+    if (duplicatePinned) {
+      const existingLink = `https://discord.com/channels/${guild.id}/${duplicatePinned.channelId}/${duplicatePinned.id}`;
+      await interaction.editReply(
+        `A sync time post for <t:${epochSeconds}:F> is already pinned: ${existingLink}`
+      );
+      return;
+    }
+  } catch (err) {
+    console.error(
+      `[post sync time] duplicate-check pinned fetch failed guild=${interaction.guildId} channel=${interaction.channelId} user=${interaction.user.id} error=${formatError(
+        err
+      )}`
+    );
+  }
+
   const me = guild.members.me ?? (await guild.members.fetchMe().catch(() => null));
   if (!me) {
     await interaction.editReply("Could not verify bot permissions in this channel.");
@@ -625,7 +814,11 @@ export async function handlePostModalSubmit(
     );
   }
 
-  const badgeEmojiIdentifiers = getSyncBadgeEmojiIdentifiers(interaction.client.user?.id);
+  const badges = await getSyncBadgesWithTrackedClanFallback(
+    interaction.client.user?.id,
+    interaction.guild
+  );
+  const badgeEmojiIdentifiers = badges.map((badge) => badge.reactionIdentifier);
   if (badgeEmojiIdentifiers.length > 0) {
     let reactedCount = 0;
     for (const emojiIdentifier of badgeEmojiIdentifiers) {

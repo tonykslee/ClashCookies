@@ -16,6 +16,52 @@ function normalizeClanTag(input: string): string {
   return `#${cleaned}`;
 }
 
+const CUSTOM_EMOJI_PATTERN = /^<(a?):([A-Za-z0-9_]+):(\d+)>$/;
+const SHORTCODE_EMOJI_PATTERN = /^:([A-Za-z0-9_]+):$/;
+
+function normalizeClanShortNameInput(input: string): string | null {
+  const normalized = input.trim().toUpperCase();
+  return normalized.length > 0 ? normalized : null;
+}
+
+async function normalizeClanBadgeInput(
+  interaction: ChatInputCommandInteraction,
+  input: string
+): Promise<string | null> {
+  const value = input.trim();
+  if (!value) return null;
+
+  const customMatch = value.match(CUSTOM_EMOJI_PATTERN);
+  if (customMatch) {
+    const animated = customMatch[1] === "a";
+    const name = customMatch[2];
+    const id = customMatch[3];
+    return `<${animated ? "a" : ""}:${name}:${id}>`;
+  }
+
+  const shortcodeMatch = value.match(SHORTCODE_EMOJI_PATTERN);
+  if (shortcodeMatch) {
+    const guild = interaction.guild;
+    if (!guild) {
+      throw new Error("CLAN_BADGE_GUILD_REQUIRED");
+    }
+
+    const shortcodeName = shortcodeMatch[1];
+    let emoji = guild.emojis.cache.find((e) => e.name === shortcodeName);
+    if (!emoji) {
+      await guild.emojis.fetch();
+      emoji = guild.emojis.cache.find((e) => e.name === shortcodeName);
+    }
+    if (!emoji) {
+      throw new Error("CLAN_BADGE_SHORTCODE_NOT_FOUND");
+    }
+
+    return `<${emoji.animated ? "a" : ""}:${emoji.name}:${emoji.id}>`;
+  }
+
+  return value;
+}
+
 export const TrackedClan: Command = {
   name: "tracked-clan",
   description: "Configure, remove, or list tracked clans",
@@ -58,6 +104,18 @@ export const TrackedClan: Command = {
           name: "clan-role",
           description: "Discord role associated with this tracked clan",
           type: ApplicationCommandOptionType.Role,
+          required: false,
+        },
+        {
+          name: "clan-badge",
+          description: "Emoji badge for this tracked clan",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+        },
+        {
+          name: "short-name",
+          description: "Short name/abbreviation for this tracked clan",
+          type: ApplicationCommandOptionType.String,
           required: false,
         },
       ],
@@ -110,7 +168,9 @@ export const TrackedClan: Command = {
           const mailChannel = clan.mailChannelId ? `<#${clan.mailChannelId}>` : "not set";
           const logChannel = clan.logChannelId ? `<#${clan.logChannelId}>` : "not set";
           const clanRole = clan.clanRoleId ? `<@&${clan.clanRoleId}>` : "not set";
-          return `- ${label} | lose-style: ${clan.loseStyle} | mailChannel: ${mailChannel} | logChannel: ${logChannel} | clanRole: ${clanRole}`;
+          const clanBadge = clan.clanBadge ?? "not set";
+          const shortName = clan.shortName ?? "not set";
+          return `- ${label} | shortName: ${shortName} | lose-style: ${clan.loseStyle} | mailChannel: ${mailChannel} | logChannel: ${logChannel} | clanRole: ${clanRole} | clanBadge: ${clanBadge}`;
         });
         await safeReply(interaction, {
           ephemeral: true,
@@ -130,6 +190,10 @@ export const TrackedClan: Command = {
         const mailChannel = interaction.options.getChannel("mail-channel", false);
         const logChannel = interaction.options.getChannel("log-channel", false);
         const clanRole = interaction.options.getRole("clan-role", false);
+        const clanBadgeInput = interaction.options.getString("clan-badge", false);
+        const shortNameInput = interaction.options.getString("short-name", false);
+        let clanBadge: string | null = null;
+        const shortName = shortNameInput ? normalizeClanShortNameInput(shortNameInput) : null;
         if (mailChannel && (!("isTextBased" in mailChannel) || !(mailChannel as any).isTextBased())) {
           await safeReply(interaction, {
             ephemeral: true,
@@ -151,11 +215,29 @@ export const TrackedClan: Command = {
           });
           return;
         }
-        const clan = await cocService.getClan(tag);
-        const activityService = new ActivityService(cocService);
+        if (clanBadgeInput) {
+          try {
+            clanBadge = await normalizeClanBadgeInput(interaction, clanBadgeInput);
+          } catch (badgeErr) {
+            const badgeCode = formatError(badgeErr);
+            const badgeHint =
+              badgeCode === "CLAN_BADGE_GUILD_REQUIRED"
+                ? "Custom clan-badge shortcodes can only be resolved in a server."
+                : badgeCode === "CLAN_BADGE_SHORTCODE_NOT_FOUND"
+                  ? "Could not find that emoji in this server. Use an existing server emoji, unicode emoji, or full custom emoji format like `<:Logo_Gabbar:123456789012345678>`."
+                  : "Invalid clan-badge value. Use unicode emoji, `:emoji_name:` from this server, or full custom emoji format.";
+            await safeReply(interaction, {
+              ephemeral: true,
+              content: badgeHint,
+            });
+            return;
+          }
+        }
         const existing = await prisma.trackedClan.findUnique({
           where: { tag },
         });
+        const clan = await cocService.getClan(tag);
+        const activityService = new ActivityService(cocService);
         const createLoseStyle = loseStyle ?? "TRIPLE_TOP_30";
         const saved = await prisma.trackedClan.upsert({
           where: { tag },
@@ -166,6 +248,8 @@ export const TrackedClan: Command = {
             mailChannelId: mailChannel?.id ?? null,
             logChannelId: logChannel?.id ?? null,
             clanRoleId: clanRole?.id ?? null,
+            clanBadge,
+            shortName,
           },
           update: {
             name: clan.name ?? null,
@@ -173,15 +257,19 @@ export const TrackedClan: Command = {
             ...(mailChannel ? { mailChannelId: mailChannel.id } : {}),
             ...(logChannel ? { logChannelId: logChannel.id } : {}),
             ...(clanRole ? { clanRoleId: clanRole.id } : {}),
+            ...(clanBadge ? { clanBadge } : {}),
+            ...(shortName ? { shortName } : {}),
           },
         });
 
-        try {
-          await activityService.observeClan(tag);
-        } catch (observeErr) {
-          console.error(
-            `tracked-clan configure observe failed for ${tag}: ${formatError(observeErr)}`
-          );
+        if (!existing) {
+          try {
+            await activityService.observeClan(tag);
+          } catch (observeErr) {
+            console.error(
+              `tracked-clan configure observe failed for ${tag}: ${formatError(observeErr)}`
+            );
+          }
         }
 
         const summary = [
@@ -189,6 +277,8 @@ export const TrackedClan: Command = {
           `mailChannel: ${saved.mailChannelId ? `<#${saved.mailChannelId}>` : "not set"}`,
           `logChannel: ${saved.logChannelId ? `<#${saved.logChannelId}>` : "not set"}`,
           `clanRole: ${saved.clanRoleId ? `<@&${saved.clanRoleId}>` : "not set"}`,
+          `clanBadge: ${saved.clanBadge ?? "not set"}`,
+          `shortName: ${saved.shortName ?? "not set"}`,
         ].join(" | ");
 
         await safeReply(interaction, {

@@ -8,7 +8,7 @@
 - `/inactive days:<number>` - List players inactive for N days.
 - `/inactive wars:<number>` - List tracked-clan members who used 0/2 attacks in each of the last N ended wars (requires war-history tracking window).
 - `/role-users role:<discordRole>` - List users in a role with pagination.
-- `/tracked-clan configure tag:<tag> [lose-style:triple-top-30|traditional] [mail-channel:<discordChannel>] [log-channel:<discordChannel>] [clan-role:<discordRole>]` - Add/update tracked clan settings.
+- `/tracked-clan configure tag:<tag> [lose-style:triple-top-30|traditional] [mail-channel:<discordChannel>] [log-channel:<discordChannel>] [clan-role:<discordRole>] [clan-badge:<emoji>] [short-name:<abbr>]` - Add/update tracked clan settings.
 - `/tracked-clan remove tag:<tag>` - Remove tracked clan.
 - `/tracked-clan list` - List tracked clans and settings.
 - `/sheet link sheet_id_or_url:<id-or-url> [tab:<tab-name>] [mode:actual|war]` - Link or relink sheet; mode is optional.
