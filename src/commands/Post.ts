@@ -49,6 +49,25 @@ type SyncBadge = {
   name: string | null;
 };
 
+function toFallbackAbbreviation(clanName: string | null, clanTag: string): string {
+  const source = (clanName?.trim() || clanTag.replace(/^#/, "")).toUpperCase();
+  const lettersAndNumbers = source.replace(/[^A-Z0-9]/g, "");
+  const base = lettersAndNumbers.length > 0 ? lettersAndNumbers : source.replace(/\s+/g, "");
+  if (base.length >= 3) return base.slice(0, 3);
+  const tagBase = clanTag.replace(/^#/, "").toUpperCase();
+  return (base + tagBase).slice(0, 3);
+}
+
+function resolveAbbreviation(
+  shortName: string | null,
+  clanName: string | null,
+  clanTag: string
+): string {
+  const normalized = shortName?.trim().toUpperCase() ?? "";
+  if (normalized.length > 0) return normalized;
+  return toFallbackAbbreviation(clanName, clanTag);
+}
+
 function parseCustomEmoji(raw: string): {
   animated: boolean;
   name: string;
@@ -68,10 +87,11 @@ function makeSyncBadgeFromHardcoded(entry: {
   label: string;
   name: string;
   id: string;
-}): SyncBadge {
+},
+overrides?: { code?: string; label?: string }): SyncBadge {
   return {
-    code: entry.code,
-    label: entry.label,
+    code: overrides?.code ?? entry.code,
+    label: overrides?.label ?? entry.label,
     reactionIdentifier: `${entry.name}:${entry.id}`,
     emojiInline: `<:${entry.name}:${entry.id}>`,
     id: entry.id,
@@ -82,9 +102,10 @@ function makeSyncBadgeFromHardcoded(entry: {
 function makeSyncBadgeFromTrackedClan(
   clanTag: string,
   clanName: string | null,
-  configuredBadge: string
+  configuredBadge: string,
+  shortName: string | null
 ): SyncBadge {
-  const code = clanTag.replace(/^#/, "").toUpperCase();
+  const code = resolveAbbreviation(shortName, clanName, clanTag);
   const label = clanName?.trim() || clanTag;
   const trimmed = configuredBadge.trim();
   const custom = parseCustomEmoji(trimmed);
@@ -116,7 +137,7 @@ async function getSyncBadgesWithTrackedClanFallback(
 ): Promise<SyncBadge[]> {
   const tracked = await prisma.trackedClan.findMany({
     orderBy: { createdAt: "asc" },
-    select: { tag: true, name: true, clanBadge: true },
+    select: { tag: true, name: true, clanBadge: true, shortName: true },
   });
 
   const hardcoded = getSyncBadgeEmojis(botUserId);
@@ -138,17 +159,23 @@ async function getSyncBadgesWithTrackedClanFallback(
         }
         if (emoji) {
           const emojiToken = `<${emoji.animated ? "a" : ""}:${emoji.name}:${emoji.id}>`;
-          badges.push(makeSyncBadgeFromTrackedClan(clan.tag, clan.name, emojiToken));
+          badges.push(makeSyncBadgeFromTrackedClan(clan.tag, clan.name, emojiToken, clan.shortName));
           continue;
         }
       }
-      badges.push(makeSyncBadgeFromTrackedClan(clan.tag, clan.name, configuredBadge));
+      badges.push(makeSyncBadgeFromTrackedClan(clan.tag, clan.name, configuredBadge, clan.shortName));
       continue;
     }
 
-    const fallback = clan.name ? findSyncBadgeEmojiForClan(botUserId, clan.name) : null;
+    const fallbackCode = resolveAbbreviation(clan.shortName, clan.name, clan.tag);
+    const fallback = clan.name ? findSyncBadgeEmojiForClan(botUserId, clan.name, fallbackCode) : null;
     if (fallback) {
-      badges.push(makeSyncBadgeFromHardcoded(fallback));
+      badges.push(
+        makeSyncBadgeFromHardcoded(fallback, {
+          code: fallbackCode,
+          label: clan.name?.trim() || clan.tag,
+        })
+      );
     }
   }
 

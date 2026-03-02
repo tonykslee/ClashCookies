@@ -19,6 +19,11 @@ function normalizeClanTag(input: string): string {
 const CUSTOM_EMOJI_PATTERN = /^<(a?):([A-Za-z0-9_]+):(\d+)>$/;
 const SHORTCODE_EMOJI_PATTERN = /^:([A-Za-z0-9_]+):$/;
 
+function normalizeClanShortNameInput(input: string): string | null {
+  const normalized = input.trim().toUpperCase();
+  return normalized.length > 0 ? normalized : null;
+}
+
 async function normalizeClanBadgeInput(
   interaction: ChatInputCommandInteraction,
   input: string
@@ -107,6 +112,12 @@ export const TrackedClan: Command = {
           type: ApplicationCommandOptionType.String,
           required: false,
         },
+        {
+          name: "short-name",
+          description: "Short name/abbreviation for this tracked clan",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+        },
       ],
     },
     {
@@ -158,7 +169,8 @@ export const TrackedClan: Command = {
           const logChannel = clan.logChannelId ? `<#${clan.logChannelId}>` : "not set";
           const clanRole = clan.clanRoleId ? `<@&${clan.clanRoleId}>` : "not set";
           const clanBadge = clan.clanBadge ?? "not set";
-          return `- ${label} | lose-style: ${clan.loseStyle} | mailChannel: ${mailChannel} | logChannel: ${logChannel} | clanRole: ${clanRole} | clanBadge: ${clanBadge}`;
+          const shortName = clan.shortName ?? "not set";
+          return `- ${label} | shortName: ${shortName} | lose-style: ${clan.loseStyle} | mailChannel: ${mailChannel} | logChannel: ${logChannel} | clanRole: ${clanRole} | clanBadge: ${clanBadge}`;
         });
         await safeReply(interaction, {
           ephemeral: true,
@@ -179,7 +191,9 @@ export const TrackedClan: Command = {
         const logChannel = interaction.options.getChannel("log-channel", false);
         const clanRole = interaction.options.getRole("clan-role", false);
         const clanBadgeInput = interaction.options.getString("clan-badge", false);
+        const shortNameInput = interaction.options.getString("short-name", false);
         let clanBadge: string | null = null;
+        const shortName = shortNameInput ? normalizeClanShortNameInput(shortNameInput) : null;
         if (mailChannel && (!("isTextBased" in mailChannel) || !(mailChannel as any).isTextBased())) {
           await safeReply(interaction, {
             ephemeral: true,
@@ -235,6 +249,7 @@ export const TrackedClan: Command = {
             logChannelId: logChannel?.id ?? null,
             clanRoleId: clanRole?.id ?? null,
             clanBadge,
+            shortName,
           },
           update: {
             name: clan.name ?? null,
@@ -243,6 +258,7 @@ export const TrackedClan: Command = {
             ...(logChannel ? { logChannelId: logChannel.id } : {}),
             ...(clanRole ? { clanRoleId: clanRole.id } : {}),
             ...(clanBadge ? { clanBadge } : {}),
+            ...(shortName ? { shortName } : {}),
           },
         });
 
@@ -260,6 +276,7 @@ export const TrackedClan: Command = {
           `logChannel: ${saved.logChannelId ? `<#${saved.logChannelId}>` : "not set"}`,
           `clanRole: ${saved.clanRoleId ? `<@&${saved.clanRoleId}>` : "not set"}`,
           `clanBadge: ${saved.clanBadge ?? "not set"}`,
+          `shortName: ${saved.shortName ?? "not set"}`,
         ].join(" | ");
 
         await safeReply(interaction, {
