@@ -233,11 +233,11 @@ export const TrackedClan: Command = {
             return;
           }
         }
-        const clan = await cocService.getClan(tag);
-        const activityService = new ActivityService(cocService);
         const existing = await prisma.trackedClan.findUnique({
           where: { tag },
         });
+        const clan = await cocService.getClan(tag);
+        const activityService = new ActivityService(cocService);
         const createLoseStyle = loseStyle ?? "TRIPLE_TOP_30";
         const saved = await prisma.trackedClan.upsert({
           where: { tag },
@@ -262,12 +262,14 @@ export const TrackedClan: Command = {
           },
         });
 
-        try {
-          await activityService.observeClan(tag);
-        } catch (observeErr) {
-          console.error(
-            `tracked-clan configure observe failed for ${tag}: ${formatError(observeErr)}`
-          );
+        if (!existing) {
+          try {
+            await activityService.observeClan(tag);
+          } catch (observeErr) {
+            console.error(
+              `tracked-clan configure observe failed for ${tag}: ${formatError(observeErr)}`
+            );
+          }
         }
 
         const summary = [
