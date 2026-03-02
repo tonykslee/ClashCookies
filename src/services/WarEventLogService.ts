@@ -1,4 +1,8 @@
 import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonInteraction,
+  ButtonStyle,
   ChannelType,
   Client,
   EmbedBuilder,
@@ -33,6 +37,10 @@ export {
   computeWarPointsDeltaForTest,
 } from "./war-events/core";
 
+const NOTIFY_WAR_REFRESH_PREFIX = "notify-war-refresh";
+const BATTLE_DAY_REFRESH_MS = 20 * 60 * 1000;
+const battleDayPostByGuildTag = new Map<string, { channelId: string; messageId: string }>();
+
 type TestSource = "current" | "last";
 
 type SubscriptionRow = {
@@ -65,6 +73,17 @@ type PollSyncContext = {
   activeSync: number | null;
 };
 
+type EmbedWarStats = {
+  clanStars: number | null;
+  opponentStars: number | null;
+  clanAttacks: number | null;
+  opponentAttacks: number | null;
+  teamSize: number | null;
+  attacksPerMember: number | null;
+  clanDestruction: number | null;
+  opponentDestruction: number | null;
+};
+
 /** Purpose: detect if current poll belongs to a newer war cycle than the stored snapshot. */
 function isNewWarCycle(
   previousWarStartTime: Date | null,
@@ -73,6 +92,89 @@ function isNewWarCycle(
   if (!(nextWarStartTime instanceof Date) || Number.isNaN(nextWarStartTime.getTime())) return false;
   if (!(previousWarStartTime instanceof Date) || Number.isNaN(previousWarStartTime.getTime())) return true;
   return nextWarStartTime.getTime() !== previousWarStartTime.getTime();
+}
+
+function deriveResultLabelFromStars(
+  clanStars: number | null,
+  opponentStars: number | null
+): "WIN" | "LOSE" | "TIE" | "UNKNOWN" {
+  if (clanStars === null || opponentStars === null) return "UNKNOWN";
+  if (clanStars > opponentStars) return "WIN";
+  if (clanStars < opponentStars) return "LOSE";
+  return "TIE";
+}
+
+function formatResultLabelForEmbed(
+  result: "WIN" | "LOSE" | "TIE" | "UNKNOWN"
+): "WIN" | "LOSS" | "DRAW" | "UNKNOWN" {
+  if (result === "WIN") return "WIN";
+  if (result === "LOSE") return "LOSS";
+  if (result === "TIE") return "DRAW";
+  return "UNKNOWN";
+}
+
+function makeBattleDayPostKey(guildId: string, clanTag: string): string {
+  return `${guildId}:${normalizeTag(clanTag)}`;
+}
+
+function formatWarStatCellLeft(value: string): string {
+  return value.padStart(10, " ");
+}
+
+function formatWarStatCellRight(value: string): string {
+  return value.padEnd(10, " ");
+}
+
+function formatWarStatLine(left: string, emoji: string, right: string): string {
+  return `\`${formatWarStatCellLeft(left)}\` ${emoji} \`${formatWarStatCellRight(right)}\``;
+}
+
+function formatWarInt(input: unknown): string {
+  const value = Number(input);
+  if (!Number.isFinite(value)) return "?";
+  return String(Math.max(0, Math.trunc(value)));
+}
+
+function formatWarPercent(input: unknown): string {
+  const value = Number(input);
+  if (!Number.isFinite(value)) return "?";
+  const rounded = Math.round(value * 100) / 100;
+  const withPrecision = Number.isInteger(rounded) ? `${rounded}` : `${rounded.toFixed(2)}`;
+  return `${withPrecision.replace(/\.00$/, "")}%`;
+}
+
+function parseNullableInt(input: unknown): number | null {
+  const value = Number(input);
+  if (!Number.isFinite(value)) return null;
+  return Math.trunc(value);
+}
+
+function parseNullableFloat(input: unknown): number | null {
+  const value = Number(input);
+  if (!Number.isFinite(value)) return null;
+  return value;
+}
+
+function buildWarStatsLines(stats: EmbedWarStats): string[] {
+  const starsLeft = formatWarInt(stats.clanStars);
+  const starsRight = formatWarInt(stats.opponentStars);
+  const attacksPerMember = Number.isFinite(Number(stats.attacksPerMember))
+    ? Math.max(1, Math.trunc(Number(stats.attacksPerMember)))
+    : 2;
+  const teamSize = Number.isFinite(Number(stats.teamSize))
+    ? Math.max(1, Math.trunc(Number(stats.teamSize)))
+    : 0;
+  const totalAttacks = teamSize > 0 ? teamSize * attacksPerMember : 0;
+  const attacksLeft = formatWarInt(stats.clanAttacks);
+  const attacksRight = formatWarInt(stats.opponentAttacks);
+  const attacksLeftText = totalAttacks > 0 ? `${attacksLeft}/${totalAttacks}` : `${attacksLeft}/?`;
+  const attacksRightText = totalAttacks > 0 ? `${attacksRight}/${totalAttacks}` : `${attacksRight}/?`;
+  return [
+    "War Stats",
+    formatWarStatLine(starsLeft, ":star:", starsRight),
+    formatWarStatLine(attacksLeftText, ":crossed_swords:", attacksRightText),
+    formatWarStatLine(formatWarPercent(stats.clanDestruction), ":boom:", formatWarPercent(stats.opponentDestruction)),
+  ];
 }
 
 export class WarEventLogService {
@@ -199,6 +301,51 @@ export class WarEventLogService {
       opponentFwaPoints = b.balance;
       outcome = deriveExpectedOutcome(clanTag, opponentTag, a.balance, b.balance, syncNumber);
     }
+    const currentWarStartTime = parseCocTime(currentWar?.startTime ?? null);
+    const testWarStartTime =
+      params.source === "current"
+        ? currentWarStartTime ?? sub.lastWarStartTime
+        : lastWarRow?.warStartTime ?? sub.lastWarStartTime ?? currentWarStartTime;
+    const currentClanStars = Number.isFinite(Number(currentWar?.clan?.stars))
+      ? Number(currentWar?.clan?.stars)
+      : sub.lastClanStars;
+    const currentOpponentStars = Number.isFinite(Number(currentWar?.opponent?.stars))
+      ? Number(currentWar?.opponent?.stars)
+      : sub.lastOpponentStars;
+    const testFinalResultOverride: WarEndResultSnapshot | null =
+      params.source === "current" && params.eventType === "war_ended"
+        ? {
+            clanStars: currentClanStars,
+            opponentStars: currentOpponentStars,
+            clanDestruction: Number.isFinite(Number(currentWar?.clan?.destructionPercentage))
+              ? Number(currentWar?.clan?.destructionPercentage)
+              : null,
+            opponentDestruction: Number.isFinite(Number(currentWar?.opponent?.destructionPercentage))
+              ? Number(currentWar?.opponent?.destructionPercentage)
+              : null,
+            warEndTime: new Date(),
+            resultLabel: deriveResultLabelFromStars(currentClanStars, currentOpponentStars),
+          }
+        : null;
+    const testWarStartFwaPoints =
+      params.source === "current" ? sub.warStartFwaPoints ?? fwaPoints : sub.warStartFwaPoints;
+    let testWarEndFwaPoints = sub.warEndFwaPoints;
+    if (params.source === "current" && params.eventType === "war_ended") {
+      if (sub.matchType === "BL" && testFinalResultOverride) {
+        const before = testWarStartFwaPoints ?? fwaPoints;
+        const delta = this.computeBlPointsDelta(testFinalResultOverride);
+        testWarEndFwaPoints = before !== null && Number.isFinite(before) ? before + delta : null;
+      } else if (sub.matchType === "FWA" && testFinalResultOverride) {
+        const before = testWarStartFwaPoints ?? fwaPoints;
+        const delta = this.computeTestFwaPointsDelta(testFinalResultOverride);
+        testWarEndFwaPoints = before !== null && Number.isFinite(before) ? before + delta : null;
+      } else if (sub.matchType === "MM") {
+        const before = testWarStartFwaPoints ?? fwaPoints;
+        testWarEndFwaPoints = before !== null && Number.isFinite(before) ? before : fwaPoints;
+      } else {
+        testWarEndFwaPoints = fwaPoints;
+      }
+    }
 
     await this.emitEvent(sub.channelId, {
       eventType: params.eventType,
@@ -213,8 +360,8 @@ export class WarEventLogService {
       opponentFwaPoints,
       outcome,
       matchType: sub.matchType,
-      warStartFwaPoints: sub.warStartFwaPoints,
-      warEndFwaPoints: sub.warEndFwaPoints,
+      warStartFwaPoints: testWarStartFwaPoints,
+      warEndFwaPoints: testWarEndFwaPoints,
       lastClanStars:
         params.source === "last"
           ? Number.isFinite(Number(lastWarLogEntry?.clan?.stars))
@@ -231,7 +378,25 @@ export class WarEventLogService {
           : Number.isFinite(Number(currentWar?.opponent?.stars))
             ? Number(currentWar?.opponent?.stars)
             : sub.lastOpponentStars,
-      warStartTime: lastWarRow?.warStartTime ?? sub.lastWarStartTime ?? parseCocTime(currentWar?.startTime ?? null),
+      warStartTime: testWarStartTime,
+      warEndTime: parseCocTime(currentWar?.endTime ?? null),
+      clanAttacks: Number.isFinite(Number(currentWar?.clan?.attacks))
+        ? Number(currentWar?.clan?.attacks)
+        : null,
+      opponentAttacks: Number.isFinite(Number(currentWar?.opponent?.attacks))
+        ? Number(currentWar?.opponent?.attacks)
+        : null,
+      teamSize: Number.isFinite(Number(currentWar?.teamSize)) ? Number(currentWar?.teamSize) : null,
+      attacksPerMember: Number.isFinite(Number(currentWar?.attacksPerMember))
+        ? Number(currentWar?.attacksPerMember)
+        : null,
+      clanDestruction: Number.isFinite(Number(currentWar?.clan?.destructionPercentage))
+        ? Number(currentWar?.clan?.destructionPercentage)
+        : null,
+      opponentDestruction: Number.isFinite(Number(currentWar?.opponent?.destructionPercentage))
+        ? Number(currentWar?.opponent?.destructionPercentage)
+        : null,
+      testFinalResultOverride,
     });
 
     return { ok: true };
@@ -270,6 +435,12 @@ export class WarEventLogService {
     return 1;
   }
 
+  private computeTestFwaPointsDelta(finalResult: WarEndResultSnapshot): number {
+    if (finalResult.resultLabel === "WIN") return -1;
+    if (finalResult.resultLabel === "LOSE") return 1;
+    return 0;
+  }
+
   private async processSubscription(
     subscriptionId: number,
     syncContext: PollSyncContext
@@ -301,6 +472,7 @@ export class WarEventLogService {
       const [, y, mo, d, h, mi, s] = m;
       return new Date(Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s)));
     })();
+    const nextWarEndTime = parseCocTime(war?.endTime ?? null);
 
     const eventTypeRaw = shouldEmit(prevState, currentState);
     let eventType = eventTypeRaw;
@@ -349,6 +521,22 @@ export class WarEventLogService {
       Number.isFinite(Number((war as { opponent?: { stars?: number } } | null)?.opponent?.stars))
         ? Number((war as { opponent?: { stars?: number } }).opponent?.stars)
         : sub.lastOpponentStars;
+    const nextClanAttacks = Number.isFinite(Number(war?.clan?.attacks))
+      ? Number(war?.clan?.attacks)
+      : null;
+    const nextOpponentAttacks = Number.isFinite(Number(war?.opponent?.attacks))
+      ? Number(war?.opponent?.attacks)
+      : null;
+    const nextTeamSize = Number.isFinite(Number(war?.teamSize)) ? Number(war?.teamSize) : null;
+    const nextAttacksPerMember = Number.isFinite(Number(war?.attacksPerMember))
+      ? Number(war?.attacksPerMember)
+      : null;
+    const nextClanDestruction = Number.isFinite(Number(war?.clan?.destructionPercentage))
+      ? Number(war?.clan?.destructionPercentage)
+      : null;
+    const nextOpponentDestruction = Number.isFinite(Number(war?.opponent?.destructionPercentage))
+      ? Number(war?.opponent?.destructionPercentage)
+      : null;
     if (nextOpponentTag || normalizeTag(sub.lastOpponentTag ?? "")) {
       const projectionClanTag = sub.clanTag;
       const projectionOpponentTag = nextOpponentTag || normalizeTag(sub.lastOpponentTag ?? "");
@@ -423,6 +611,34 @@ export class WarEventLogService {
       }
     }
 
+    if (currentState !== "notInWar") {
+      await this.upsertCurrentWarHistory({
+        clanTag: sub.clanTag,
+        warStartTime: nextWarStartTime,
+        warEndTime: nextWarEndTime,
+        syncNumber: syncNumberForEvent,
+        matchType: nextMatchType,
+        expectedOutcome: normalizeOutcome(nextOutcome),
+        clanName: nextClanName,
+        opponentName: nextOpponentName || sub.lastOpponentName || "Unknown",
+        opponentTag: nextOpponentTag || normalizeTag(sub.lastOpponentTag ?? ""),
+        stats: {
+          clanStars: nextClanStars,
+          opponentStars: nextOpponentStars,
+          clanAttacks: nextClanAttacks,
+          opponentAttacks: nextOpponentAttacks,
+          teamSize: nextTeamSize,
+          attacksPerMember: nextAttacksPerMember,
+          clanDestruction: nextClanDestruction,
+          opponentDestruction: nextOpponentDestruction,
+        },
+      }).catch((err) => {
+        console.error(
+          `[war-events] current-war history upsert failed guild=${sub.guildId} clan=${sub.clanTag} error=${formatError(err)}`
+        );
+      });
+    }
+
     if (eventType) {
       const eventPayload = {
         eventType,
@@ -442,6 +658,13 @@ export class WarEventLogService {
         lastClanStars: nextClanStars,
         lastOpponentStars: nextOpponentStars,
         warStartTime: nextWarStartTime,
+        warEndTime: nextWarEndTime,
+        clanAttacks: nextClanAttacks,
+        opponentAttacks: nextOpponentAttacks,
+        teamSize: nextTeamSize,
+        attacksPerMember: nextAttacksPerMember,
+        clanDestruction: nextClanDestruction,
+        opponentDestruction: nextOpponentDestruction,
       } as const;
 
       if (eventType === "war_ended") {
@@ -497,6 +720,14 @@ export class WarEventLogService {
       lastClanStars: number | null;
       lastOpponentStars: number | null;
       warStartTime: Date | null;
+      warEndTime: Date | null;
+      clanAttacks: number | null;
+      opponentAttacks: number | null;
+      teamSize: number | null;
+      attacksPerMember: number | null;
+      clanDestruction: number | null;
+      opponentDestruction: number | null;
+      testFinalResultOverride?: WarEndResultSnapshot | null;
     }
   ): Promise<void> {
     const channel = await this.client.channels.fetch(channelId).catch(() => null);
@@ -510,6 +741,23 @@ export class WarEventLogService {
       return;
     }
 
+    const guildId = (channel as { guildId?: string }).guildId ?? null;
+    const warId =
+      payload.warStartTime && normalizeTag(payload.clanTag)
+        ? (
+            await prisma.warClanHistory
+              .findUnique({
+                where: {
+                  clanTag_warStartTime: {
+                    clanTag: normalizeTag(payload.clanTag),
+                    warStartTime: payload.warStartTime,
+                  },
+                },
+                select: { warId: true },
+              })
+              .catch(() => null)
+          )?.warId ?? null
+        : null;
     const opponentTag = normalizeTag(payload.opponentTag);
     const embed = new EmbedBuilder()
       .setTitle(`Event: ${eventTitle(payload.eventType)} - ${payload.clanName}`)
@@ -520,6 +768,7 @@ export class WarEventLogService {
             ? 0xf1c40f
             : 0x2ecc71
       )
+      .setFooter({ text: `War ID: ${warId ?? "unknown"}` })
       .setTimestamp(new Date());
 
     embed.addFields({
@@ -535,20 +784,16 @@ export class WarEventLogService {
 
     if (payload.eventType === "battle_day") {
       embed.addFields({
+        name: "Battle Day Remaining",
+        value: toDiscordRelativeTime(payload.warEndTime),
+        inline: true,
+      });
+      embed.addFields({
         name: "Match Type",
         value: payload.matchType ?? "unknown",
         inline: true,
       });
       if (payload.matchType !== "BL" && payload.matchType !== "MM") {
-        const outcome = payload.outcome ? payload.outcome[0] + payload.outcome.slice(1).toLowerCase() : "Unknown";
-        embed.addFields({
-          name: "Outcome",
-          value:
-            payload.outcome === null
-              ? `Unknown war outcome against ${payload.opponentName}`
-              : `${outcome} war against ${payload.opponentName}`,
-          inline: false,
-        });
         embed.addFields({
           name: "War Plan",
           value:
@@ -578,6 +823,23 @@ export class WarEventLogService {
       }
     }
 
+    if (payload.eventType === "battle_day") {
+      embed.addFields({
+        name: "\u200b",
+        value: buildWarStatsLines({
+          clanStars: payload.lastClanStars,
+          opponentStars: payload.lastOpponentStars,
+          clanAttacks: payload.clanAttacks,
+          opponentAttacks: payload.opponentAttacks,
+          teamSize: payload.teamSize,
+          attacksPerMember: payload.attacksPerMember,
+          clanDestruction: payload.clanDestruction,
+          opponentDestruction: payload.opponentDestruction,
+        }).join("\n"),
+        inline: false,
+      });
+    }
+
     if (payload.eventType === "war_started") {
       embed.addFields({
         name: "Prep Day Remaining",
@@ -590,11 +852,6 @@ export class WarEventLogService {
         inline: true,
       });
       if (payload.matchType === "FWA") {
-        embed.addFields({
-          name: "Outcome",
-          value: payload.outcome ?? "unknown",
-          inline: false,
-        });
         embed.addFields({
           name: "War Plan",
           value:
@@ -636,13 +893,15 @@ export class WarEventLogService {
     }
 
     if (payload.eventType === "war_ended") {
-      const finalResult = await this.history.getWarEndResultSnapshot({
-        clanTag: payload.clanTag,
-        opponentTag: payload.opponentTag,
-        fallbackClanStars: payload.lastClanStars,
-        fallbackOpponentStars: payload.lastOpponentStars,
-        warStartTime: payload.warStartTime,
-      });
+      const finalResult =
+        payload.testFinalResultOverride ??
+        (await this.history.getWarEndResultSnapshot({
+          clanTag: payload.clanTag,
+          opponentTag: payload.opponentTag,
+          fallbackClanStars: payload.lastClanStars,
+          fallbackOpponentStars: payload.lastOpponentStars,
+          warStartTime: payload.warStartTime,
+        }));
       const compliance = await this.history.getWarComplianceSnapshot(
         payload.clanTag,
         payload.warStartTime,
@@ -651,11 +910,26 @@ export class WarEventLogService {
       );
       embed.addFields({
         name: "Result",
-        value: [
-          ...(payload.matchType === "BL" ? [] : [`Outcome: **${finalResult.resultLabel}**`]),
-          `Stars: **${payload.clanName}** ${finalResult.clanStars ?? "unknown"} | **${payload.opponentName}** ${finalResult.opponentStars ?? "unknown"}`,
-          `Destruction: **${payload.clanName}** ${formatPercent(finalResult.clanDestruction)} | **${payload.opponentName}** ${formatPercent(finalResult.opponentDestruction)}`,
-        ].join("\n"),
+        value: formatResultLabelForEmbed(finalResult.resultLabel),
+        inline: false,
+      });
+      embed.addFields({
+        name: "Match Type",
+        value: payload.matchType ?? "unknown",
+        inline: true,
+      });
+      embed.addFields({
+        name: "\u200b",
+        value: buildWarStatsLines({
+          clanStars: finalResult.clanStars,
+          opponentStars: finalResult.opponentStars,
+          clanAttacks: payload.clanAttacks,
+          opponentAttacks: payload.opponentAttacks,
+          teamSize: payload.teamSize,
+          attacksPerMember: payload.attacksPerMember,
+          clanDestruction: finalResult.clanDestruction,
+          opponentDestruction: finalResult.opponentDestruction,
+        }).join("\n"),
         inline: false,
       });
       embed.addFields({
@@ -680,15 +954,378 @@ export class WarEventLogService {
 
     const roleMention =
       payload.pingRole && payload.notifyRole ? `<@&${payload.notifyRole}>` : null;
-    await channel.send({
-      content: roleMention ?? undefined,
-      embeds: [embed],
-      allowedMentions: roleMention ? { roles: [payload.notifyRole as string] } : undefined,
-    }).catch((err) => {
-      console.error(
-        `[war-events] send failed channel=${channelId} clan=${payload.clanTag} error=${formatError(err)}`
-      );
+    const components =
+      payload.eventType === "battle_day" && guildId
+        ? [
+            new ActionRowBuilder<ButtonBuilder>().addComponents(
+              new ButtonBuilder()
+                .setCustomId(buildNotifyWarRefreshCustomId(guildId, payload.clanTag))
+                .setLabel("Refresh")
+                .setStyle(ButtonStyle.Secondary)
+            ),
+          ]
+        : [];
+    const sent = await channel
+      .send({
+        content: roleMention ?? undefined,
+        embeds: [embed],
+        components,
+        allowedMentions: roleMention ? { roles: [payload.notifyRole as string] } : undefined,
+      })
+      .catch((err) => {
+        console.error(
+          `[war-events] send failed channel=${channelId} clan=${payload.clanTag} error=${formatError(err)}`
+        );
+        return null;
+      });
+    if (guildId) {
+      const key = makeBattleDayPostKey(guildId, payload.clanTag);
+      if (payload.eventType === "battle_day" && sent) {
+        battleDayPostByGuildTag.set(key, { channelId, messageId: sent.id });
+      } else if (payload.eventType !== "battle_day") {
+        battleDayPostByGuildTag.delete(key);
+      }
+    }
+  }
+
+  async refreshBattleDayPosts(): Promise<void> {
+    const keys = [...battleDayPostByGuildTag.keys()];
+    for (const key of keys) {
+      await this.refreshBattleDayPostByKey(key).catch((err) => {
+        console.error(`[war-events] battle-day refresh failed key=${key} error=${formatError(err)}`);
+      });
+    }
+  }
+
+  async refreshBattleDayPostByInteraction(interaction: ButtonInteraction): Promise<void> {
+    const parsed = parseNotifyWarRefreshCustomId(interaction.customId);
+    if (!parsed) {
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({ ephemeral: true, content: "Invalid refresh action." });
+      }
+      return;
+    }
+    await interaction.deferReply({ ephemeral: true });
+    const key = makeBattleDayPostKey(parsed.guildId, parsed.clanTag);
+    battleDayPostByGuildTag.set(key, {
+      channelId: interaction.channelId,
+      messageId: interaction.message.id,
+    });
+    await this.refreshBattleDayPostByKey(key);
+    await interaction.editReply({ content: "Battle day embed refreshed." });
+  }
+
+  private async refreshBattleDayPostByKey(key: string): Promise<void> {
+    const tracked = battleDayPostByGuildTag.get(key);
+    if (!tracked) return;
+    const [guildId, clanTag] = key.split(":");
+    if (!guildId || !clanTag) {
+      battleDayPostByGuildTag.delete(key);
+      return;
+    }
+
+    const sub = await this.findSubscriptionByGuildAndTag(guildId, clanTag);
+    if (!sub || !sub.notify) {
+      battleDayPostByGuildTag.delete(key);
+      return;
+    }
+
+    const war = await this.coc.getCurrentWar(sub.clanTag).catch(() => null);
+    if (!war || deriveState(String(war.state ?? "")) !== "inWar") {
+      battleDayPostByGuildTag.delete(key);
+      return;
+    }
+
+    const warStartTime = parseCocTime(war.startTime ?? null) ?? sub.lastWarStartTime ?? null;
+    const warEndTime = parseCocTime(war.endTime ?? null);
+    await this.upsertCurrentWarHistory({
+      clanTag: sub.clanTag,
+      warStartTime,
+      warEndTime,
+      syncNumber: await this.pointsSync.getPreviousSyncNum(),
+      matchType: sub.matchType,
+      expectedOutcome: normalizeOutcome(sub.outcome),
+      clanName: String(war.clan?.name ?? sub.clanName ?? sub.clanTag).trim() || sub.clanTag,
+      opponentName: String(war.opponent?.name ?? sub.lastOpponentName ?? "Unknown").trim() || "Unknown",
+      opponentTag: normalizeTag(war.opponent?.tag ?? sub.lastOpponentTag ?? ""),
+      stats: {
+        clanStars: Number.isFinite(Number(war.clan?.stars)) ? Number(war.clan?.stars) : sub.lastClanStars,
+        opponentStars: Number.isFinite(Number(war.opponent?.stars))
+          ? Number(war.opponent?.stars)
+          : sub.lastOpponentStars,
+        clanAttacks: Number.isFinite(Number(war.clan?.attacks)) ? Number(war.clan?.attacks) : null,
+        opponentAttacks: Number.isFinite(Number(war.opponent?.attacks))
+          ? Number(war.opponent?.attacks)
+          : null,
+        teamSize: Number.isFinite(Number(war.teamSize)) ? Number(war.teamSize) : null,
+        attacksPerMember: Number.isFinite(Number(war.attacksPerMember))
+          ? Number(war.attacksPerMember)
+          : null,
+        clanDestruction: Number.isFinite(Number(war.clan?.destructionPercentage))
+          ? Number(war.clan?.destructionPercentage)
+          : null,
+        opponentDestruction: Number.isFinite(Number(war.opponent?.destructionPercentage))
+          ? Number(war.opponent?.destructionPercentage)
+          : null,
+      },
+    });
+
+    const refreshedSub = await this.findSubscriptionByGuildAndTag(guildId, clanTag);
+    if (!refreshedSub) {
+      battleDayPostByGuildTag.delete(key);
+      return;
+    }
+
+    const channel = await this.client.channels.fetch(tracked.channelId).catch(() => null);
+    if (!channel || !channel.isTextBased()) {
+      battleDayPostByGuildTag.delete(key);
+      return;
+    }
+    const message = await (channel as any).messages.fetch(tracked.messageId).catch(() => null);
+    if (!message) {
+      battleDayPostByGuildTag.delete(key);
+      return;
+    }
+
+    const payload = {
+      eventType: "battle_day" as const,
+      clanTag: refreshedSub.clanTag,
+      clanName: String(war.clan?.name ?? refreshedSub.clanName ?? refreshedSub.clanTag).trim() || refreshedSub.clanTag,
+      opponentTag: normalizeTag(war.opponent?.tag ?? refreshedSub.lastOpponentTag ?? ""),
+      opponentName:
+        String(war.opponent?.name ?? refreshedSub.lastOpponentName ?? "Unknown").trim() || "Unknown",
+      syncNumber: await this.pointsSync.getPreviousSyncNum(),
+      notifyRole: refreshedSub.notifyRole,
+      pingRole: refreshedSub.pingRole,
+      fwaPoints: refreshedSub.fwaPoints,
+      opponentFwaPoints: refreshedSub.opponentFwaPoints,
+      outcome: normalizeOutcome(refreshedSub.outcome),
+      matchType: refreshedSub.matchType,
+      warStartFwaPoints: refreshedSub.warStartFwaPoints,
+      warEndFwaPoints: refreshedSub.warEndFwaPoints,
+      lastClanStars: Number.isFinite(Number(war.clan?.stars))
+        ? Number(war.clan?.stars)
+        : refreshedSub.lastClanStars,
+      lastOpponentStars: Number.isFinite(Number(war.opponent?.stars))
+        ? Number(war.opponent?.stars)
+        : refreshedSub.lastOpponentStars,
+      warStartTime,
+      warEndTime,
+      clanAttacks: Number.isFinite(Number(war.clan?.attacks)) ? Number(war.clan?.attacks) : null,
+      opponentAttacks: Number.isFinite(Number(war.opponent?.attacks))
+        ? Number(war.opponent?.attacks)
+        : null,
+      teamSize: Number.isFinite(Number(war.teamSize)) ? Number(war.teamSize) : null,
+      attacksPerMember: Number.isFinite(Number(war.attacksPerMember))
+        ? Number(war.attacksPerMember)
+        : null,
+      clanDestruction: Number.isFinite(Number(war.clan?.destructionPercentage))
+        ? Number(war.clan?.destructionPercentage)
+        : null,
+      opponentDestruction: Number.isFinite(Number(war.opponent?.destructionPercentage))
+        ? Number(war.opponent?.destructionPercentage)
+        : null,
+    };
+    const warId =
+      warStartTime && normalizeTag(payload.clanTag)
+        ? (
+            await prisma.warClanHistory.findUnique({
+              where: {
+                clanTag_warStartTime: { clanTag: normalizeTag(payload.clanTag), warStartTime },
+              },
+              select: { warId: true },
+            })
+          )?.warId ?? null
+        : null;
+    const embed = EmbedBuilder.from(message.embeds[0] ?? new EmbedBuilder());
+    const next = await this.buildBattleDayRefreshEmbed(payload, warId, embed);
+    await message.edit({
+      embeds: [next],
+      components: [
+        new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder()
+            .setCustomId(buildNotifyWarRefreshCustomId(guildId, payload.clanTag))
+            .setLabel("Refresh")
+            .setStyle(ButtonStyle.Secondary)
+        ),
+      ],
     });
   }
 
+  private async upsertCurrentWarHistory(input: {
+    clanTag: string;
+    warStartTime: Date | null;
+    warEndTime: Date | null;
+    syncNumber: number | null;
+    matchType: MatchType;
+    expectedOutcome: "WIN" | "LOSE" | null;
+    clanName: string;
+    opponentName: string;
+    opponentTag: string;
+    stats: EmbedWarStats;
+  }): Promise<void> {
+    const clanTag = normalizeTag(input.clanTag);
+    if (!clanTag || !input.warStartTime) return;
+    await prisma.warClanHistory.upsert({
+      where: {
+        clanTag_warStartTime: {
+          clanTag,
+          warStartTime: input.warStartTime,
+        },
+      },
+      create: {
+        syncNumber: input.syncNumber,
+        matchType: input.matchType,
+        clanStars: parseNullableInt(input.stats.clanStars),
+        clanDestruction: parseNullableFloat(input.stats.clanDestruction),
+        opponentStars: parseNullableInt(input.stats.opponentStars),
+        opponentDestruction: parseNullableFloat(input.stats.opponentDestruction),
+        expectedOutcome: input.expectedOutcome,
+        warStartTime: input.warStartTime,
+        warEndTime: input.warEndTime,
+        clanName: input.clanName,
+        clanTag,
+        opponentName: input.opponentName,
+        opponentTag: normalizeTag(input.opponentTag) || null,
+      },
+      update: {
+        syncNumber: input.syncNumber,
+        matchType: input.matchType,
+        clanStars: parseNullableInt(input.stats.clanStars),
+        clanDestruction: parseNullableFloat(input.stats.clanDestruction),
+        opponentStars: parseNullableInt(input.stats.opponentStars),
+        opponentDestruction: parseNullableFloat(input.stats.opponentDestruction),
+        expectedOutcome: input.expectedOutcome,
+        warEndTime: input.warEndTime,
+        clanName: input.clanName,
+        opponentName: input.opponentName,
+        opponentTag: normalizeTag(input.opponentTag) || null,
+      },
+    });
+  }
+
+  private async buildBattleDayRefreshEmbed(
+    payload: {
+      eventType: "battle_day";
+      clanTag: string;
+      clanName: string;
+      opponentTag: string;
+      opponentName: string;
+      syncNumber: number | null;
+      notifyRole: string | null;
+      pingRole: boolean;
+      fwaPoints: number | null;
+      opponentFwaPoints: number | null;
+      outcome: "WIN" | "LOSE" | null;
+      matchType: MatchType;
+      warStartFwaPoints: number | null;
+      warEndFwaPoints: number | null;
+      lastClanStars: number | null;
+      lastOpponentStars: number | null;
+      warStartTime: Date | null;
+      warEndTime: Date | null;
+      clanAttacks: number | null;
+      opponentAttacks: number | null;
+      teamSize: number | null;
+      attacksPerMember: number | null;
+      clanDestruction: number | null;
+      opponentDestruction: number | null;
+    },
+    warId: number | null,
+    _previous: EmbedBuilder
+  ): Promise<EmbedBuilder> {
+    const opponentTag = normalizeTag(payload.opponentTag);
+    const embed = new EmbedBuilder()
+      .setTitle(`Event: ${eventTitle(payload.eventType)} - ${payload.clanName}`)
+      .setColor(0xf1c40f)
+      .setFooter({ text: `War ID: ${warId ?? "unknown"}` })
+      .setTimestamp(new Date());
+    embed.addFields({
+      name: "Opponent",
+      value: `${payload.opponentName} (${opponentTag ? `#${opponentTag}` : "unknown"})`,
+      inline: false,
+    });
+    embed.addFields({
+      name: "Sync #",
+      value: payload.syncNumber ? `#${payload.syncNumber}` : "unknown",
+      inline: true,
+    });
+    embed.addFields({
+      name: "Battle Day Remaining",
+      value: toDiscordRelativeTime(payload.warEndTime),
+      inline: true,
+    });
+    embed.addFields({
+      name: "Match Type",
+      value: payload.matchType ?? "unknown",
+      inline: true,
+    });
+    if (payload.matchType !== "BL" && payload.matchType !== "MM") {
+      embed.addFields({
+        name: "War Plan",
+        value:
+          (await this.history.buildWarPlanText(
+            payload.matchType,
+            payload.outcome,
+            payload.clanTag,
+            payload.opponentName
+          )) ?? "N/A",
+        inline: false,
+      });
+    } else if (payload.matchType === "BL") {
+      embed.addFields({
+        name: "Message",
+        value:
+          "**Battle day has started! Thank you for your help swapping to war bases, please swap back to FWA bases asap!**",
+        inline: false,
+      });
+    } else {
+      embed.addFields({
+        name: "Message",
+        value: "Attack whatever you want! Free for all! ⚔️",
+        inline: false,
+      });
+    }
+    embed.addFields({
+      name: "\u200b",
+      value: buildWarStatsLines({
+        clanStars: payload.lastClanStars,
+        opponentStars: payload.lastOpponentStars,
+        clanAttacks: payload.clanAttacks,
+        opponentAttacks: payload.opponentAttacks,
+        teamSize: payload.teamSize,
+        attacksPerMember: payload.attacksPerMember,
+        clanDestruction: payload.clanDestruction,
+        opponentDestruction: payload.opponentDestruction,
+      }).join("\n"),
+      inline: false,
+    });
+    return embed;
+  }
+
 }
+
+export function buildNotifyWarRefreshCustomId(guildId: string, clanTag: string): string {
+  return `${NOTIFY_WAR_REFRESH_PREFIX}:${guildId}:${normalizeTagBare(clanTag)}`;
+}
+
+export function parseNotifyWarRefreshCustomId(
+  customId: string
+): { guildId: string; clanTag: string } | null {
+  const [prefix, guildId, clanTagBare] = String(customId ?? "").split(":");
+  if (prefix !== NOTIFY_WAR_REFRESH_PREFIX || !guildId || !clanTagBare) return null;
+  return { guildId, clanTag: normalizeTag(clanTagBare) };
+}
+
+export function isNotifyWarRefreshButtonCustomId(customId: string): boolean {
+  return String(customId ?? "").startsWith(`${NOTIFY_WAR_REFRESH_PREFIX}:`);
+}
+
+export async function handleNotifyWarRefreshButton(
+  interaction: ButtonInteraction
+): Promise<void> {
+  const service = new WarEventLogService(interaction.client, new CoCService());
+  await service.refreshBattleDayPostByInteraction(interaction);
+}
+
+export const notifyWarBattleDayRefreshIntervalMs = BATTLE_DAY_REFRESH_MS;

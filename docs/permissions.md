@@ -6,7 +6,7 @@
 - `/fwa mail send` defaults to FWA leader-role + Administrator when no explicit whitelist is set.
 
 ## Default Administrator-Only Targets
-- `/tracked-clan add`, `/tracked-clan remove`
+- `/tracked-clan configure`, `/tracked-clan remove`
 - `/permission add`, `/permission remove`
 - `/sheet link`, `/sheet unlink`, `/sheet show`, `/sheet refresh`
 - `/kick-list build`, `/kick-list add`, `/kick-list remove`, `/kick-list show`, `/kick-list clear`

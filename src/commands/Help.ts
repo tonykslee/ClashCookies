@@ -19,7 +19,7 @@ const OVERVIEW_PAGE_SIZE = 4;
 const HELP_TIMEOUT_MS = 10 * 60 * 1000;
 const HELP_POST_BUTTON_PREFIX = "help-post-channel";
 const ADMIN_DEFAULT_TARGETS = new Set<string>([
-  "tracked-clan:add",
+  "tracked-clan:configure",
   "tracked-clan:remove",
   "sheet:link",
   "sheet:unlink",
@@ -89,13 +89,13 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
   "tracked-clan": {
     summary: "Manage tracked clans used by activity features.",
     details: [
-      "Add/remove tracked clans or list current tracked set.",
-      "Set clan lose-style on add (defaults to TRIPLE_TOP_30). Re-running add updates lose-style.",
-      "`add` and `remove` are admin-only by default.",
+      "Configure/remove tracked clans or list current tracked set.",
+      "`configure` upserts tracked clan settings (lose-style, mail channel, log channel, clan role).",
+      "`configure` and `remove` are admin-only by default.",
     ],
     examples: [
-      "/tracked-clan add tag:#2QG2C08UP",
-      "/tracked-clan add tag:#2QG2C08UP lose-style:Traditional",
+      "/tracked-clan configure tag:#2QG2C08UP",
+      "/tracked-clan configure tag:#2QG2C08UP lose-style:Traditional mail-channel:#war-mail",
       "/tracked-clan remove tag:#2QG2C08UP",
       "/tracked-clan list",
     ],
@@ -189,7 +189,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`/fwa points` returns point balances (single clan tag or all tracked if tag omitted).",
       "`/fwa match` auto-resolves current war opponent from CoC API and evaluates win/lose/tiebreak using the same points logic.",
       "If match type is inferred, `/fwa match` shows a warning and quick verify link, with action buttons to confirm FWA/BL/MM.",
-      "`/fwa mail set` upserts the tracked clan mail channel used for war mail posts.",
+      "Tracked clan mail channel is configured via `/tracked-clan configure ... mail-channel`.",
       "`/fwa mail send` opens an ephemeral war mail preview with confirm/send.",
       "The `/fwa match` single-clan `Send Mail` button uses the same permissions as `/fwa mail send`.",
       "Default access for `/fwa mail send` is FWA leader role + Administrator (or override via `/permission add command:fwa:mail:send`).",
@@ -201,7 +201,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/fwa points tag:2QG2C08UP",
       "/fwa points",
       "/fwa match tag:2QG2C08UP",
-      "/fwa mail set tag:2QG2C08UP mail-channel:#war-mail",
+      "/tracked-clan configure tag:#2QG2C08UP mail-channel:#war-mail",
       "/fwa mail send tag:2QG2C08UP",
       "/fwa leader-role role:@FWA-Leaders",
       "/fwa points tag:2QG2C08UP visibility:public",

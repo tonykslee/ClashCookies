@@ -167,6 +167,9 @@ export function computeWarPointsDeltaForTest(input: {
     if ((input.finalResult.clanDestruction ?? 0) >= 60) return 2;
     return 1;
   }
+  if (input.matchType === "MM") {
+    return 0;
+  }
   if (
     input.before !== null &&
     Number.isFinite(input.before) &&

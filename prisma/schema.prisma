@@ -33,6 +33,8 @@ model TrackedClan {
   name      String?
   loseStyle LoseStyle @default(TRIPLE_TOP_30)
   mailChannelId String?
+  logChannelId String?
+  clanRoleId String?
   pointsScrape Json?
   createdAt DateTime  @default(now())
 }

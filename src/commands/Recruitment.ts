@@ -238,7 +238,7 @@ async function handleShowSubcommand(
 
   const trackedClan = await findTrackedClan(clanTag);
   if (!trackedClan) {
-    await interaction.editReply("Clan is not tracked. Add it first with `/tracked-clan add`.");
+    await interaction.editReply("Clan is not tracked. Add it first with `/tracked-clan configure`.");
     return;
   }
 
@@ -310,7 +310,7 @@ async function handleEditSubcommand(
   if (!tracked) {
     await interaction.reply({
       ephemeral: true,
-      content: "Clan is not tracked. Add it first with `/tracked-clan add`.",
+      content: "Clan is not tracked. Add it first with `/tracked-clan configure`.",
     });
     return;
   }
@@ -401,7 +401,7 @@ async function handleCountdownStartSubcommand(
 
   const tracked = await findTrackedClan(clanTag);
   if (!tracked) {
-    await interaction.editReply("Clan is not tracked. Add it first with `/tracked-clan add`.");
+    await interaction.editReply("Clan is not tracked. Add it first with `/tracked-clan configure`.");
     return;
   }
 

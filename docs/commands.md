@@ -8,9 +8,9 @@
 - `/inactive days:<number>` - List players inactive for N days.
 - `/inactive wars:<number>` - List tracked-clan members who used 0/2 attacks in each of the last N ended wars (requires war-history tracking window).
 - `/role-users role:<discordRole>` - List users in a role with pagination.
-- `/tracked-clan add tag:<tag>` - Add tracked clan.
+- `/tracked-clan configure tag:<tag> [lose-style:triple-top-30|traditional] [mail-channel:<discordChannel>] [log-channel:<discordChannel>] [clan-role:<discordRole>]` - Add/update tracked clan settings.
 - `/tracked-clan remove tag:<tag>` - Remove tracked clan.
-- `/tracked-clan list` - List tracked clans.
+- `/tracked-clan list` - List tracked clans and settings.
 - `/sheet link sheet_id_or_url:<id-or-url> [tab:<tab-name>] [mode:actual|war]` - Link or relink sheet; mode is optional.
 - `/sheet show [mode:actual|war]` - Show linked sheet settings (single mode or all).
 - `/sheet unlink [mode:actual|war]` - Remove one mode link or all links.
@@ -27,7 +27,6 @@
 - `/fwa points [visibility:private|public] [tag:<tag>]` - Fetch current point balance from `https://points.fwafarm.com/clan?tag=<tag-without-#>`. If `tag` is omitted, fetches all tracked clans.
 - `/fwa match [visibility:private|public] tag:<tag>` - Resolve current war opponent from CoC API, then return projected win/lose by points (or sync-based tiebreak on tie).
 - `/fwa match-type [visibility:private|public] [tag:<trackedClanTag>] [type:FWA|BL|MM]` - Manually set or view per-clan match type override used by matchup output. If no args, lists overrides for all tracked clans.
-- `/fwa mail set tag:<trackedClanTag> mail-channel:<discordChannel>` - Upsert the tracked clan mail output channel.
 - `/fwa mail send tag:<trackedClanTag>` - Show ephemeral war mail preview with confirm-and-send to the tracked clan mail channel.
 - `/fwa match` single-clan view includes a `Send Mail` button that follows the same access policy as `/fwa mail send`.
 - `/recruitment show platform:discord|reddit|band clan:<tag>` - Render platform-specific recruitment template output for a tracked clan.

@@ -3,6 +3,7 @@ import {
   computeWarComplianceForTest,
   computeWarPointsDeltaForTest,
 } from "../src/services/WarEventLogService";
+import { WarEventHistoryService } from "../src/services/war-events/history";
 
 function dateAt(hour: number): Date {
   return new Date(Date.UTC(2026, 0, 1, hour, 0, 0));
@@ -60,7 +61,7 @@ describe("WarEventLogService.computeWarPointsDeltaForTest", () => {
     expect(delta).toBe(1);
   });
 
-  it("FWA/MM war: returns arithmetic delta (after - before) when both values are present", () => {
+  it("FWA war: returns arithmetic delta (after - before) when both values are present", () => {
     expect(
       computeWarPointsDeltaForTest({
         matchType: "FWA",
@@ -76,6 +77,9 @@ describe("WarEventLogService.computeWarPointsDeltaForTest", () => {
         },
       })
     ).toBe(5);
+  });
+
+  it("MM war: always returns 0 points delta at war end", () => {
     expect(
       computeWarPointsDeltaForTest({
         matchType: "MM",
@@ -90,7 +94,7 @@ describe("WarEventLogService.computeWarPointsDeltaForTest", () => {
           resultLabel: "UNKNOWN",
         },
       })
-    ).toBe(-3);
+    ).toBe(0);
   });
 
   it("FWA/MM war: returns null when before/after values are incomplete", () => {
@@ -108,6 +112,105 @@ describe("WarEventLogService.computeWarPointsDeltaForTest", () => {
       },
     });
     expect(delta).toBeNull();
+  });
+});
+
+describe("WarEventHistoryService.buildWarEndPointsLine", () => {
+  const history = new WarEventHistoryService({} as any);
+  const baseResult = {
+    clanStars: 100,
+    opponentStars: 99,
+    clanDestruction: 59,
+    opponentDestruction: 58,
+    warEndTime: null,
+    resultLabel: "WIN" as const,
+  };
+
+  it("BL win: derives +3 and renders before->after even when after is missing", () => {
+    const line = history.buildWarEndPointsLine(
+      {
+        clanName: "Alpha",
+        matchType: "BL",
+        warStartFwaPoints: 100,
+        warEndFwaPoints: null,
+      },
+      baseResult
+    );
+    expect(line).toBe("Alpha: 100 -> 103 (+3) [BL]");
+  });
+
+  it("BL lose with 60%+ destruction: derives +2", () => {
+    const line = history.buildWarEndPointsLine(
+      {
+        clanName: "Alpha",
+        matchType: "BL",
+        warStartFwaPoints: 100,
+        warEndFwaPoints: null,
+      },
+      {
+        ...baseResult,
+        resultLabel: "LOSE",
+        clanDestruction: 60,
+      }
+    );
+    expect(line).toBe("Alpha: 100 -> 102 (+2) [BL]");
+  });
+
+  it("BL lose below 60% destruction: derives +1", () => {
+    const line = history.buildWarEndPointsLine(
+      {
+        clanName: "Alpha",
+        matchType: "BL",
+        warStartFwaPoints: 100,
+        warEndFwaPoints: null,
+      },
+      {
+        ...baseResult,
+        resultLabel: "LOSE",
+        clanDestruction: 59.99,
+      }
+    );
+    expect(line).toBe("Alpha: 100 -> 101 (+1) [BL]");
+  });
+
+  it("FWA war: renders arithmetic delta using stored before/after", () => {
+    const line = history.buildWarEndPointsLine(
+      {
+        clanName: "Alpha",
+        matchType: "FWA",
+        warStartFwaPoints: 1200,
+        warEndFwaPoints: 1205,
+      },
+      {
+        ...baseResult,
+        resultLabel: "UNKNOWN",
+        clanStars: null,
+        opponentStars: null,
+        clanDestruction: null,
+        opponentDestruction: null,
+      }
+    );
+    expect(line).toBe("Alpha: 1200 -> 1205 (+5)");
+  });
+
+  it("MM war: renders no points change at war end", () => {
+    const line = history.buildWarEndPointsLine(
+      {
+        clanName: "Alpha",
+        matchType: "MM",
+        warStartFwaPoints: 1200,
+        warEndFwaPoints: 1197,
+      },
+      {
+        ...baseResult,
+        resultLabel: "UNKNOWN",
+        clanStars: null,
+        opponentStars: null,
+        clanDestruction: null,
+        opponentDestruction: null,
+      }
+    );
+    expect(line).toBe("Alpha: 1200 -> 1200 (+0) [MM]");
   });
 });
 
