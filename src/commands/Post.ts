@@ -11,6 +11,7 @@ import {
   PermissionFlagsBits,
   TextInputBuilder,
   TextInputStyle,
+  type Guild,
 } from "discord.js";
 import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
@@ -37,6 +38,7 @@ const ROLE_INPUT_ID = "role";
 const IANA_TIMEZONE_HELP_URL =
   "https://en.wikipedia.org/wiki/List_of_tz_database_time_zones";
 const CUSTOM_EMOJI_PATTERN = /^<(a?):([A-Za-z0-9_]+):(\d+)>$/;
+const SHORTCODE_EMOJI_PATTERN = /^:([A-Za-z0-9_]+):$/;
 
 type SyncBadge = {
   code: string;
@@ -109,7 +111,8 @@ function makeSyncBadgeFromTrackedClan(
 }
 
 async function getSyncBadgesWithTrackedClanFallback(
-  botUserId: string | undefined
+  botUserId: string | undefined,
+  guild: Guild | null
 ): Promise<SyncBadge[]> {
   const tracked = await prisma.trackedClan.findMany({
     orderBy: { createdAt: "asc" },
@@ -125,6 +128,20 @@ async function getSyncBadgesWithTrackedClanFallback(
   for (const clan of tracked) {
     const configuredBadge = clan.clanBadge?.trim() ?? "";
     if (configuredBadge.length > 0) {
+      const shortcodeMatch = configuredBadge.match(SHORTCODE_EMOJI_PATTERN);
+      if (shortcodeMatch && guild) {
+        const shortcodeName = shortcodeMatch[1];
+        let emoji = guild.emojis.cache.find((e) => e.name === shortcodeName);
+        if (!emoji) {
+          await guild.emojis.fetch().catch(() => null);
+          emoji = guild.emojis.cache.find((e) => e.name === shortcodeName);
+        }
+        if (emoji) {
+          const emojiToken = `<${emoji.animated ? "a" : ""}:${emoji.name}:${emoji.id}>`;
+          badges.push(makeSyncBadgeFromTrackedClan(clan.tag, clan.name, emojiToken));
+          continue;
+        }
+      }
       badges.push(makeSyncBadgeFromTrackedClan(clan.tag, clan.name, configuredBadge));
       continue;
     }
@@ -261,7 +278,10 @@ async function handleSyncStatusSubcommand(
     return;
   }
 
-  const badges = await getSyncBadgesWithTrackedClanFallback(interaction.client.user?.id);
+  const badges = await getSyncBadgesWithTrackedClanFallback(
+    interaction.client.user?.id,
+    interaction.guild
+  );
   if (badges.length === 0) {
     await interaction.editReply(
       "No clan badge emoji configuration found."
@@ -731,7 +751,10 @@ export async function handlePostModalSubmit(
     );
   }
 
-  const badges = await getSyncBadgesWithTrackedClanFallback(interaction.client.user?.id);
+  const badges = await getSyncBadgesWithTrackedClanFallback(
+    interaction.client.user?.id,
+    interaction.guild
+  );
   const badgeEmojiIdentifiers = badges.map((badge) => badge.reactionIdentifier);
   if (badgeEmojiIdentifiers.length > 0) {
     let reactedCount = 0;
