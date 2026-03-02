@@ -15,10 +15,10 @@ import {
 import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
 import {
+  findSyncBadgeEmojiForClan,
   getSyncBadgeEmojis,
-  getSyncBadgeEmojiIdentifiers,
-  type SyncBadgeEmoji as BadgeEmoji,
 } from "../helper/syncBadgeEmoji";
+import { prisma } from "../prisma";
 import { safeReply } from "../helper/safeReply";
 import { CoCService } from "../services/CoCService";
 import {
@@ -36,6 +36,112 @@ const TIMEZONE_INPUT_ID = "timezone";
 const ROLE_INPUT_ID = "role";
 const IANA_TIMEZONE_HELP_URL =
   "https://en.wikipedia.org/wiki/List_of_tz_database_time_zones";
+const CUSTOM_EMOJI_PATTERN = /^<(a?):([A-Za-z0-9_]+):(\d+)>$/;
+
+type SyncBadge = {
+  code: string;
+  label: string;
+  reactionIdentifier: string;
+  emojiInline: string;
+  id: string | null;
+  name: string | null;
+};
+
+function parseCustomEmoji(raw: string): {
+  animated: boolean;
+  name: string;
+  id: string;
+} | null {
+  const match = raw.trim().match(CUSTOM_EMOJI_PATTERN);
+  if (!match) return null;
+  return {
+    animated: match[1] === "a",
+    name: match[2],
+    id: match[3],
+  };
+}
+
+function makeSyncBadgeFromHardcoded(entry: {
+  code: string;
+  label: string;
+  name: string;
+  id: string;
+}): SyncBadge {
+  return {
+    code: entry.code,
+    label: entry.label,
+    reactionIdentifier: `${entry.name}:${entry.id}`,
+    emojiInline: `<:${entry.name}:${entry.id}>`,
+    id: entry.id,
+    name: entry.name,
+  };
+}
+
+function makeSyncBadgeFromTrackedClan(
+  clanTag: string,
+  clanName: string | null,
+  configuredBadge: string
+): SyncBadge {
+  const code = clanTag.replace(/^#/, "").toUpperCase();
+  const label = clanName?.trim() || clanTag;
+  const trimmed = configuredBadge.trim();
+  const custom = parseCustomEmoji(trimmed);
+
+  if (custom) {
+    return {
+      code,
+      label,
+      reactionIdentifier: `${custom.name}:${custom.id}`,
+      emojiInline: `<${custom.animated ? "a" : ""}:${custom.name}:${custom.id}>`,
+      id: custom.id,
+      name: custom.name,
+    };
+  }
+
+  return {
+    code,
+    label,
+    reactionIdentifier: trimmed,
+    emojiInline: trimmed,
+    id: null,
+    name: trimmed,
+  };
+}
+
+async function getSyncBadgesWithTrackedClanFallback(
+  botUserId: string | undefined
+): Promise<SyncBadge[]> {
+  const tracked = await prisma.trackedClan.findMany({
+    orderBy: { createdAt: "asc" },
+    select: { tag: true, name: true, clanBadge: true },
+  });
+
+  const hardcoded = getSyncBadgeEmojis(botUserId);
+  if (tracked.length === 0) {
+    return hardcoded.map((entry) => makeSyncBadgeFromHardcoded(entry));
+  }
+
+  const badges: SyncBadge[] = [];
+  for (const clan of tracked) {
+    const configuredBadge = clan.clanBadge?.trim() ?? "";
+    if (configuredBadge.length > 0) {
+      badges.push(makeSyncBadgeFromTrackedClan(clan.tag, clan.name, configuredBadge));
+      continue;
+    }
+
+    const fallback = clan.name ? findSyncBadgeEmojiForClan(botUserId, clan.name) : null;
+    if (fallback) {
+      badges.push(makeSyncBadgeFromHardcoded(fallback));
+    }
+  }
+
+  if (badges.length === 0) {
+    return hardcoded.map((entry) => makeSyncBadgeFromHardcoded(entry));
+  }
+
+  return badges;
+}
+
 function parseAllowedRoleIds(raw: string | null): string[] {
   if (!raw) return [];
   return [...new Set(raw.split(",").map((s) => s.trim()).filter((s) => /^\d+$/.test(s)))];
@@ -155,10 +261,10 @@ async function handleSyncStatusSubcommand(
     return;
   }
 
-  const badges = getSyncBadgeEmojis(interaction.client.user?.id);
+  const badges = await getSyncBadgesWithTrackedClanFallback(interaction.client.user?.id);
   if (badges.length === 0) {
     await interaction.editReply(
-      "No badge emoji configuration found for this bot ID."
+      "No clan badge emoji configuration found."
     );
     return;
   }
@@ -203,7 +309,7 @@ async function handleSyncStatusSubcommand(
       }
     }
 
-    const emojiInline = `<:${badge.name}:${badge.id}>`;
+    const emojiInline = badge.emojiInline;
     if (claimedBy.length > 0) {
       const extra =
         nonLeader.length > 0 ? ` | non-leader: ${[...new Set(nonLeader)].join(", ")}` : "";
@@ -417,10 +523,10 @@ function extractSyncEpochSeconds(content: string): number | null {
 
 function reactionMatchesBadge(
   reaction: { emoji: { id: string | null; name: string | null } },
-  badge: BadgeEmoji
+  badge: SyncBadge
 ): boolean {
   if (reaction.emoji.id && reaction.emoji.id === badge.id) return true;
-  return Boolean(reaction.emoji.name && reaction.emoji.name === badge.name);
+  return Boolean(!badge.id && reaction.emoji.name && reaction.emoji.name === badge.name);
 }
 
 function buildModalCustomId(userId: string): string {
@@ -625,7 +731,8 @@ export async function handlePostModalSubmit(
     );
   }
 
-  const badgeEmojiIdentifiers = getSyncBadgeEmojiIdentifiers(interaction.client.user?.id);
+  const badges = await getSyncBadgesWithTrackedClanFallback(interaction.client.user?.id);
+  const badgeEmojiIdentifiers = badges.map((badge) => badge.reactionIdentifier);
   if (badgeEmojiIdentifiers.length > 0) {
     let reactedCount = 0;
     for (const emojiIdentifier of badgeEmojiIdentifiers) {
