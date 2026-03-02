@@ -163,18 +163,26 @@ export const TrackedClan: Command = {
           return;
         }
 
-        const lines = tracked.map((clan) => {
+        const lines = tracked.map((clan, index) => {
           const label = clan.name ? `${clan.tag} (${clan.name})` : clan.tag;
           const mailChannel = clan.mailChannelId ? `<#${clan.mailChannelId}>` : "not set";
           const logChannel = clan.logChannelId ? `<#${clan.logChannelId}>` : "not set";
           const clanRole = clan.clanRoleId ? `<@&${clan.clanRoleId}>` : "not set";
           const clanBadge = clan.clanBadge ?? "not set";
           const shortName = clan.shortName ?? "not set";
-          return `- ${label} | shortName: ${shortName} | lose-style: ${clan.loseStyle} | mailChannel: ${mailChannel} | logChannel: ${logChannel} | clanRole: ${clanRole} | clanBadge: ${clanBadge}`;
+          return [
+            `${index + 1}. ${label}`,
+            `   shortName: ${shortName}`,
+            `   lose-style: ${clan.loseStyle}`,
+            `   mailChannel: ${mailChannel}`,
+            `   logChannel: ${logChannel}`,
+            `   clanRole: ${clanRole}`,
+            `   clanBadge: ${clanBadge}`,
+          ].join("\n");
         });
         await safeReply(interaction, {
           ephemeral: true,
-          content: `Tracked clans (${tracked.length}):\n${lines.join("\n")}`,
+          content: `Tracked clans (${tracked.length}):\n\n${lines.join("\n\n")}`,
         });
         return;
       }
