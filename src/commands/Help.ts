@@ -90,13 +90,14 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     summary: "Manage tracked clans used by activity features.",
     details: [
       "Configure/remove tracked clans or list current tracked set.",
-      "`configure` upserts tracked clan settings (lose-style, mail channel, log channel, clan role, clan badge emoji).",
+      "`configure` upserts tracked clan settings (lose-style, mail channel, log channel, clan role, clan badge emoji, short name).",
       "`configure` and `remove` are admin-only by default.",
     ],
     examples: [
       "/tracked-clan configure tag:#2QG2C08UP",
       "/tracked-clan configure tag:#2QG2C08UP lose-style:Traditional mail-channel:#war-mail",
       "/tracked-clan configure tag:#2QG2C08UP clan-badge::Logo_Gabbar:",
+      "/tracked-clan configure tag:#2QG2C08UP short-name:GB",
       "/tracked-clan remove tag:#2QG2C08UP",
       "/tracked-clan list",
     ],

@@ -65,13 +65,18 @@ export function getSyncBadgeEmojiIdentifiers(botUserId: string | undefined): str
 
 export function findSyncBadgeEmojiForClan(
   botUserId: string | undefined,
-  clanName: string
+  clanName: string,
+  clanCodeHint?: string
 ): SyncBadgeEmoji | null {
   const badges = getSyncBadgeEmojis(botUserId);
   if (badges.length === 0) return null;
   const normalized = normalizeClanName(clanName);
   const code = getClanCodeFromName(clanName);
+  const hintedCode = clanCodeHint?.trim().toUpperCase() ?? "";
   return (
+    (hintedCode
+      ? badges.find((b) => b.code.toUpperCase() === hintedCode)
+      : null) ??
     badges.find((b) => normalizeClanName(b.label) === normalized) ??
     badges.find((b) => b.code.toUpperCase() === code.toUpperCase()) ??
     null
