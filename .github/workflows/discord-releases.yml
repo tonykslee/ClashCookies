@@ -9,29 +9,46 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Send Release to Discord
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          RELEASE_NAME: ${{ github.event.release.name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_URL: ${{ github.event.release.html_url }}
         run: |
-          curl -H "Content-Type: application/json" \
-          -X POST \
-          -d '{
-            "content": "<@&1477488801478869196>",
-            "allowed_mentions": {
-              "roles": ["1477488801478869196"]
-            },
-            "username": "ClashCookies",
-            "embeds": [{
-              "title": "🚀 New Release: ${{ github.event.release.name }}",
-              "description": "Click the button below to view the full changelog.",
-              "color": 5814783,
-              "footer": { "text": "Version ${{ github.event.release.tag_name }}" }
-            }],
-            "components": [{
-              "type": 1,
-              "components": [{
-                "type": 2,
-                "style": 5,
-                "label": "View Release",
-                "url": "${{ github.event.release.html_url }}"
+          if [[ "$DISCORD_WEBHOOK_URL" == *\?* ]]; then
+            WEBHOOK_ENDPOINT="${DISCORD_WEBHOOK_URL}&wait=true&with_components=true"
+          else
+            WEBHOOK_ENDPOINT="${DISCORD_WEBHOOK_URL}?wait=true&with_components=true"
+          fi
+
+          PAYLOAD="$(jq -n \
+            --arg role "1477488801478869196" \
+            --arg title "New Release: ${RELEASE_NAME}" \
+            --arg tag "${RELEASE_TAG}" \
+            --arg release_url "${RELEASE_URL}" \
+            '{
+              content: ("<@&" + $role + ">"),
+              allowed_mentions: { roles: [$role] },
+              username: "ClashCookies",
+              embeds: [{
+                title: $title,
+                description: "Click the button below to view the full changelog.",
+                color: 5814783,
+                footer: { text: ("Version " + $tag) }
+              }],
+              components: [{
+                type: 1,
+                components: [{
+                  type: 2,
+                  style: 5,
+                  label: "View Release",
+                  url: $release_url
+                }]
               }]
-            }]
-          }' \
-          ${{ secrets.DISCORD_WEBHOOK_URL }}
+            }')"
+
+          curl --fail-with-body \
+            -H "Content-Type: application/json" \
+            -X POST \
+            -d "$PAYLOAD" \
+            "$WEBHOOK_ENDPOINT"
