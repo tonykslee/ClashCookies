@@ -154,7 +154,12 @@ function getWeightBucket(weight: number): WeightBucket | null {
 }
 
 function clampCell(value: string): string {
-  const sanitized = value.replace(/\s+/g, " ").trim();
+  const sanitized = value
+    .normalize("NFKC")
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/[\u201C\u201D]/g, '"')
+    .replace(/\s+/g, " ")
+    .trim();
   const normalizedLabelMap: Record<string, string> = {
     "missing weights": "Missing",
     "th18-delta": "TH18",
@@ -169,6 +174,21 @@ function clampCell(value: string): string {
   return normalizedLabel.length > 32
     ? `${normalizedLabel.slice(0, 29)}...`
     : normalizedLabel;
+}
+
+function toGlyphSafeText(input: string): string {
+  const normalized = input
+    .normalize("NFKC")
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/[\u201C\u201D]/g, '"')
+    .replace(/\s+/g, " ")
+    .trim();
+  const upper = normalized.toUpperCase();
+  let out = "";
+  for (const ch of upper) {
+    out += GLYPHS[ch] ? ch : "?";
+  }
+  return out;
 }
 
 function abbreviateClan(value: string): string {
@@ -389,9 +409,9 @@ function renderStatePng(mode: GoogleSheetMode, rows: string[][]): Buffer {
     }
   };
   const drawText = (x: number, y: number, text: string, rgb: [number, number, number]) => {
-    const upper = text.toUpperCase();
-    for (let i = 0; i < upper.length; i += 1) {
-      drawChar(x + i * charPx, y, upper[i], rgb);
+    const glyphSafe = toGlyphSafeText(text);
+    for (let i = 0; i < glyphSafe.length; i += 1) {
+      drawChar(x + i * charPx, y, glyphSafe[i], rgb);
     }
   };
 
