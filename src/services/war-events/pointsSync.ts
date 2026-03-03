@@ -64,14 +64,14 @@ export class WarStartPointsSyncService {
 
   /** Purpose: read previous sync from settings or recover it from points site state. */
   async getPreviousSyncNum(): Promise<number | null> {
-    const latestCurrent = await prisma.currentWar.findFirst({
-      where: { currentSyncNum: { not: null } },
-      orderBy: { updatedAt: "desc" },
-      select: { currentSyncNum: true },
+    const latestHistory = await prisma.clanWarHistory.findFirst({
+      where: { syncNumber: { not: null } },
+      orderBy: { warStartTime: "desc" },
+      select: { syncNumber: true },
     });
-    const currentSync = Number(latestCurrent?.currentSyncNum ?? NaN);
-    if (Number.isFinite(currentSync)) {
-      return Math.max(0, Math.trunc(currentSync) - 1);
+    const latestSync = Number(latestHistory?.syncNumber ?? NaN);
+    if (Number.isFinite(latestSync)) {
+      return Math.max(0, Math.trunc(latestSync) - 1);
     }
     const raw = await this.settings.get(WarStartPointsSyncService.PREVIOUS_SYNC_KEY);
     const parsed = raw === null ? NaN : Number(raw);

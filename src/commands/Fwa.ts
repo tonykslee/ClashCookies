@@ -2212,19 +2212,18 @@ function getSyncMode(syncNumber: number | null): "low" | "high" | null {
 
 async function getSourceOfTruthSync(
   settings: SettingsService,
-  guildId?: string | null
+  _guildId?: string | null
 ): Promise<number | null> {
-  const latestCurrent = await prisma.currentWar.findFirst({
+  const latestHistory = await prisma.clanWarHistory.findFirst({
     where: {
-      currentSyncNum: { not: null },
-      ...(guildId ? { guildId } : {}),
+      syncNumber: { not: null },
     },
-    orderBy: { updatedAt: "desc" },
-    select: { currentSyncNum: true },
+    orderBy: { warStartTime: "desc" },
+    select: { syncNumber: true },
   });
-  const currentSync = Number(latestCurrent?.currentSyncNum ?? NaN);
-  if (Number.isFinite(currentSync)) {
-    return Math.max(0, Math.trunc(currentSync) - 1);
+  const latestSync = Number(latestHistory?.syncNumber ?? NaN);
+  if (Number.isFinite(latestSync)) {
+    return Math.max(0, Math.trunc(latestSync) - 1);
   }
   const raw = await settings.get(PREVIOUS_SYNC_KEY);
   if (!raw) return null;
