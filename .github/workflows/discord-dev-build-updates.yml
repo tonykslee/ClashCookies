@@ -1,0 +1,70 @@
+name: Discord Dev Build Update
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [dev]
+
+jobs:
+  notify-dev-build:
+    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'dev' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Dev Build Update to Discord
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
+          RUN_NUMBER: ${{ github.event.workflow_run.run_number }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          COMMIT_SHA: ${{ github.event.workflow_run.head_sha }}
+          COMMIT_MESSAGE: ${{ github.event.workflow_run.head_commit.message }}
+          ACTOR: ${{ github.event.workflow_run.actor.login }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          SHORT_SHA="${COMMIT_SHA:0:7}"
+          COMMIT_URL="https://github.com/${REPO}/commit/${COMMIT_SHA}"
+
+          if [[ "$DISCORD_WEBHOOK_URL" == *\?* ]]; then
+            WEBHOOK_ENDPOINT="${DISCORD_WEBHOOK_URL}&wait=true&with_components=true"
+          else
+            WEBHOOK_ENDPOINT="${DISCORD_WEBHOOK_URL}?wait=true&with_components=true"
+          fi
+
+          PAYLOAD="$(jq -n \
+            --arg title "Dev Build Succeeded" \
+            --arg workflow_name "$WORKFLOW_NAME" \
+            --arg run_number "$RUN_NUMBER" \
+            --arg branch "$BRANCH" \
+            --arg actor "$ACTOR" \
+            --arg short_sha "$SHORT_SHA" \
+            --arg commit_msg "$COMMIT_MESSAGE" \
+            --arg run_url "$RUN_URL" \
+            --arg commit_url "$COMMIT_URL" \
+            '{
+              username: "ClashCookies",
+              embeds: [{
+                title: $title,
+                description: ("`" + $workflow_name + "` run #" + $run_number + " passed on `" + $branch + "`."),
+                color: 5763719,
+                fields: [
+                  { name: "Actor", value: $actor, inline: true },
+                  { name: "Commit", value: ("`" + $short_sha + "`"), inline: true },
+                  { name: "Message", value: ($commit_msg | if length > 1000 then .[0:1000] + "..." else . end), inline: false }
+                ]
+              }],
+              components: [{
+                type: 1,
+                components: [
+                  { type: 2, style: 5, label: "View CI Run", url: $run_url },
+                  { type: 2, style: 5, label: "View Commit", url: $commit_url }
+                ]
+              }]
+            }')"
+
+          curl --fail-with-body \
+            -H "Content-Type: application/json" \
+            -X POST \
+            -d "$PAYLOAD" \
+            "$WEBHOOK_ENDPOINT"
