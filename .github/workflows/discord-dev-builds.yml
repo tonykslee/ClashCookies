@@ -13,23 +13,18 @@ jobs:
     steps:
       - name: Send Dev Build Update to Discord
         env:
-          DISCORD_DEV_BUILD: ${{ secrets.DISCORD_DEV_BUILD }}
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_DEV_WEBHOOK_URL_DEV: ${{ secrets.DISCORD_DEV_WEBHOOK_URL_DEV }}
           WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
           RUN_NUMBER: ${{ github.event.workflow_run.run_number }}
-          RUN_URL: ${{ github.event.workflow_run.html_url }}
           COMMIT_SHA: ${{ github.event.workflow_run.head_sha }}
           COMMIT_MESSAGE: ${{ github.event.workflow_run.head_commit.message }}
-          ACTOR: ${{ github.event.workflow_run.actor.login }}
-          REPO: ${{ github.repository }}
           BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
           SHORT_SHA="${COMMIT_SHA:0:7}"
-          COMMIT_URL="https://github.com/${REPO}/commit/${COMMIT_SHA}"
-          WEBHOOK_BASE="${DISCORD_DEV_BUILD:-$DISCORD_WEBHOOK_URL}"
+          WEBHOOK_BASE="${DISCORD_DEV_WEBHOOK_URL_DEV}"
 
           if [[ -z "$WEBHOOK_BASE" ]]; then
-            echo "Missing Discord webhook secret. Set DISCORD_DEV_BUILD (preferred) or DISCORD_WEBHOOK_URL."
+            echo "Missing Discord webhook secret. Set DISCORD_DEV_WEBHOOK_URL_DEV."
             exit 1
           fi
 
@@ -39,34 +34,31 @@ jobs:
             WEBHOOK_ENDPOINT="${WEBHOOK_BASE}?wait=true&with_components=true"
           fi
 
+          SANITIZED_MESSAGE="$(printf '%s' "$COMMIT_MESSAGE" | sed -E 's/(from[[:space:]]+)[^[:space:]\/]+\/([^[:space:]]+)/\1\2/g')"
+          if [[ -z "$SANITIZED_MESSAGE" ]]; then
+            SANITIZED_MESSAGE="No commit message provided."
+          fi
+
           PAYLOAD="$(jq -n \
+            --arg role "1478455692569481347" \
             --arg title "Dev Build Succeeded" \
+            --arg branch "$BRANCH" \
+            --arg short_sha "$SHORT_SHA" \
             --arg workflow_name "$WORKFLOW_NAME" \
             --arg run_number "$RUN_NUMBER" \
-            --arg branch "$BRANCH" \
-            --arg actor "$ACTOR" \
-            --arg short_sha "$SHORT_SHA" \
-            --arg commit_msg "$COMMIT_MESSAGE" \
-            --arg run_url "$RUN_URL" \
-            --arg commit_url "$COMMIT_URL" \
+            --arg commit_msg "$SANITIZED_MESSAGE" \
             '{
+              content: ("<@&" + $role + ">"),
+              allowed_mentions: { roles: [$role] },
               username: "ClashCookies",
               embeds: [{
                 title: $title,
-                description: ("`" + $workflow_name + "` run #" + $run_number + " passed on `" + $branch + "`."),
+                description:
+                  ("`" + $workflow_name + "` run #" + $run_number + " passed on `" + $branch + "`.\n" +
+                   "## Highlights\n" +
+                   ($commit_msg | if length > 3800 then .[0:3800] + "..." else . end)),
                 color: 5763719,
-                fields: [
-                  { name: "Actor", value: $actor, inline: true },
-                  { name: "Commit", value: ("`" + $short_sha + "`"), inline: true },
-                  { name: "Message", value: ($commit_msg | if length > 1000 then .[0:1000] + "..." else . end), inline: false }
-                ]
-              }],
-              components: [{
-                type: 1,
-                components: [
-                  { type: 2, style: 5, label: "View CI Run", url: $run_url },
-                  { type: 2, style: 5, label: "View Commit", url: $commit_url }
-                ]
+                footer: { text: ("Build #" + $run_number + " | " + $short_sha) }
               }]
             }')"
 
