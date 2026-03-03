@@ -47,6 +47,10 @@ import {
   getCommandTargetsFromInteraction,
 } from "../services/CommandPermissionService";
 import {
+  handleNotifyWarPreviewPostButton,
+  isNotifyWarPreviewPostButtonCustomId,
+} from "../commands/Notify";
+import {
   handleNotifyWarRefreshButton,
   isNotifyWarRefreshButtonCustomId,
 } from "../services/WarEventLogService";
@@ -156,7 +160,7 @@ export default (client: Client, cocService: CoCService): void => {
     }
 
   if (interaction.isButton()) {
-    await handleButtonInteraction(interaction);
+    await handleButtonInteraction(interaction, cocService);
     return;
   }
 
@@ -207,7 +211,10 @@ const handleSelectMenuInteraction = async (
   }
 };
 
-const handleButtonInteraction = async (interaction: Interaction): Promise<void> => {
+const handleButtonInteraction = async (
+  interaction: Interaction,
+  cocService: CoCService
+): Promise<void> => {
   if (!interaction.isButton()) return;
 
   if (isGlobalPostButtonCustomId(interaction.customId)) {
@@ -399,6 +406,20 @@ const handleButtonInteraction = async (interaction: Interaction): Promise<void> 
         await interaction.reply({
           ephemeral: true,
           content: "Failed to refresh battle-day embed.",
+        });
+      }
+    }
+  }
+
+  if (isNotifyWarPreviewPostButtonCustomId(interaction.customId)) {
+    try {
+      await handleNotifyWarPreviewPostButton(interaction, cocService);
+    } catch (err) {
+      console.error(`Notify war preview post button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to post previewed war embed.",
         });
       }
     }

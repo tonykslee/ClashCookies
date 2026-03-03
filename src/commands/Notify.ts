@@ -1,11 +1,16 @@
 import {
+  ActionRowBuilder,
   ApplicationCommandOptionType,
   AutocompleteInteraction,
+  ButtonBuilder,
+  ButtonInteraction,
+  ButtonStyle,
   ChannelType,
   ChatInputCommandInteraction,
   Client,
   Role,
 } from "discord.js";
+import { randomUUID } from "crypto";
 import { Prisma } from "@prisma/client";
 import { Command } from "../Command";
 import { prisma } from "../prisma";
@@ -26,6 +31,98 @@ function deriveWarState(raw: string | null | undefined): string {
 
 function normalizeClanTagInput(input: string): string {
   return input.trim().toUpperCase().replace(/^#/, "");
+}
+
+const NOTIFY_WAR_PREVIEW_POST_PREFIX = "notify-war-preview-post";
+const notifyWarPreviewRequests = new Map<
+  string,
+  {
+    userId: string;
+    guildId: string;
+    clanTag: string;
+    eventType: "war_started" | "battle_day" | "war_ended";
+    source: "current" | "last";
+    channelId: string;
+    clanName: string;
+    createdAt: number;
+  }
+>();
+
+function buildNotifyWarPreviewPostCustomId(key: string): string {
+  return `${NOTIFY_WAR_PREVIEW_POST_PREFIX}:${key}`;
+}
+
+function parseNotifyWarPreviewPostCustomId(
+  customId: string
+): { key: string } | null {
+  const parts = String(customId ?? "").split(":");
+  if (parts.length !== 2 || parts[0] !== NOTIFY_WAR_PREVIEW_POST_PREFIX) return null;
+  const key = parts[1]?.trim() ?? "";
+  if (!key) return null;
+  return { key };
+}
+
+export function isNotifyWarPreviewPostButtonCustomId(customId: string): boolean {
+  return String(customId ?? "").startsWith(`${NOTIFY_WAR_PREVIEW_POST_PREFIX}:`);
+}
+
+export async function handleNotifyWarPreviewPostButton(
+  interaction: ButtonInteraction,
+  cocService: CoCService
+): Promise<void> {
+  const parsed = parseNotifyWarPreviewPostCustomId(interaction.customId);
+  if (!parsed) return;
+
+  const request = notifyWarPreviewRequests.get(parsed.key);
+  if (!request) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "This preview has expired. Run `/notify war-preview` again.",
+    });
+    return;
+  }
+  if (request.userId !== interaction.user.id) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Only the user who generated this preview can confirm posting.",
+    });
+    return;
+  }
+  if (request.guildId !== interaction.guildId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "This preview is from a different server.",
+    });
+    return;
+  }
+  if (Date.now() - request.createdAt > 30 * 60 * 1000) {
+    notifyWarPreviewRequests.delete(parsed.key);
+    await interaction.reply({
+      ephemeral: true,
+      content: "This preview has expired. Run `/notify war-preview` again.",
+    });
+    return;
+  }
+
+  await interaction.deferReply({ ephemeral: true });
+  const warEventService = new WarEventLogService(interaction.client, cocService);
+  const result = await warEventService.emitTestEventForClan({
+    guildId: request.guildId,
+    clanTag: request.clanTag,
+    eventType: request.eventType,
+    source: request.source,
+  });
+  if (!result.ok) {
+    await interaction.editReply(
+      `Failed to post preview publicly for ${request.clanName} (${request.clanTag}): ${result.reason ?? "unknown reason"}`
+    );
+    return;
+  }
+
+  notifyWarPreviewRequests.delete(parsed.key);
+  await interaction.editReply(
+    `Posted ${request.eventType} for **${request.clanName}** (${request.clanTag}) to <#${request.channelId}>.`
+  );
 }
 
 export const Notify: Command = {
@@ -85,8 +182,8 @@ export const Notify: Command = {
       ],
     },
     {
-      name: "war-test",
-      description: "Trigger a test war event embed for a configured clan",
+      name: "war-preview",
+      description: "Preview a war event embed, then confirm posting publicly",
       type: ApplicationCommandOptionType.Subcommand,
       options: [
         {
@@ -266,7 +363,7 @@ export const Notify: Command = {
       return;
     }
 
-    if (sub === "war-test") {
+    if (sub === "war-preview") {
       const clanTag = normalizeClanTag(interaction.options.getString("clan-tag", true));
       const eventType = interaction.options.getString("event", true) as
         | "war_started"
@@ -277,7 +374,7 @@ export const Notify: Command = {
         | "last";
 
       const warEventService = new WarEventLogService(_client, cocService);
-      const result = await warEventService.emitTestEventForClan({
+      const result = await warEventService.buildTestEventPreviewForClan({
         guildId: interaction.guildId,
         clanTag,
         eventType,
@@ -285,13 +382,41 @@ export const Notify: Command = {
       });
 
       if (!result.ok) {
-        await interaction.editReply(`Failed to trigger test event: ${result.reason ?? "unknown reason"}`);
+        await interaction.editReply(`Failed to build preview: ${result.reason ?? "unknown reason"}`);
+        return;
+      }
+      if (!result.channelId || !result.clanName || !result.embeds || result.embeds.length === 0) {
+        await interaction.editReply("Failed to build preview: incomplete preview payload.");
         return;
       }
 
-      await interaction.editReply(
-        `Triggered test event \`${eventType}\` for ${clanTag} using \`${source}\` war data.`
-      );
+      const previewKey = randomUUID();
+      notifyWarPreviewRequests.set(previewKey, {
+        userId: interaction.user.id,
+        guildId: interaction.guildId,
+        clanTag,
+        eventType,
+        source,
+        channelId: result.channelId,
+        clanName: result.clanName,
+        createdAt: Date.now(),
+      });
+
+      await interaction.editReply({
+        content:
+          `Preview ready for **${result.clanName}** (${clanTag}).\n` +
+          `Target channel: <#${result.channelId}>.\n` +
+          "Click **Confirm Post** to publish this embed publicly.",
+        embeds: result.embeds ?? [],
+        components: [
+          new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder()
+              .setCustomId(buildNotifyWarPreviewPostCustomId(previewKey))
+              .setLabel("Confirm Post")
+              .setStyle(ButtonStyle.Success)
+          ),
+        ],
+      });
       return;
     }
 
