@@ -26,27 +26,19 @@ export class GoogleSheetsService {
   async getLinkedSheet(
     mode?: GoogleSheetMode
   ): Promise<{ sheetId: string; tabName: string | null }> {
-    if (mode) {
-      const modeKeys = this.getModeKeys(mode);
-      const modeSheetId = await this.settings.get(modeKeys.idKey);
-      const modeTabName = await this.settings.get(modeKeys.tabKey);
-
-      if (modeSheetId) {
-        return { sheetId: modeSheetId, tabName: modeTabName };
-      }
-
-      if (mode === "actual") {
-        const legacySheetId = await this.settings.get(SHEET_SETTING_ID_KEY);
-        const legacyTabName = await this.settings.get(SHEET_SETTING_TAB_KEY);
-        return { sheetId: legacySheetId ?? "", tabName: legacyTabName };
-      }
-
-      return { sheetId: "", tabName: null };
-    }
-
     const sheetId = await this.settings.get(SHEET_SETTING_ID_KEY);
     const tabName = await this.settings.get(SHEET_SETTING_TAB_KEY);
-    return { sheetId: sheetId ?? "", tabName };
+    if (sheetId) return { sheetId, tabName };
+
+    const actualSheetId = await this.settings.get(SHEET_SETTING_ACTUAL_ID_KEY);
+    const actualTabName = await this.settings.get(SHEET_SETTING_ACTUAL_TAB_KEY);
+    if (actualSheetId) return { sheetId: actualSheetId, tabName: actualTabName };
+
+    const warSheetId = await this.settings.get(SHEET_SETTING_WAR_ID_KEY);
+    const warTabName = await this.settings.get(SHEET_SETTING_WAR_TAB_KEY);
+    if (warSheetId) return { sheetId: warSheetId, tabName: warTabName };
+
+    return { sheetId: "", tabName: null };
   }
 
   async setLinkedSheet(
@@ -54,32 +46,31 @@ export class GoogleSheetsService {
     tabName?: string,
     mode?: GoogleSheetMode
   ): Promise<void> {
-    if (mode) {
-      const modeKeys = this.getModeKeys(mode);
-      await this.settings.set(modeKeys.idKey, sheetId);
-      if (tabName && tabName.trim().length > 0) {
-        await this.settings.set(modeKeys.tabKey, tabName.trim());
-      }
-      return;
-    }
-
     await this.settings.set(SHEET_SETTING_ID_KEY, sheetId);
     if (tabName && tabName.trim().length > 0) {
       await this.settings.set(SHEET_SETTING_TAB_KEY, tabName.trim());
     }
-  }
-
-  /** Purpose: clear linked sheet. */
-  async clearLinkedSheet(mode?: GoogleSheetMode): Promise<void> {
     if (mode) {
       const modeKeys = this.getModeKeys(mode);
       await this.settings.delete(modeKeys.idKey);
       await this.settings.delete(modeKeys.tabKey);
       return;
     }
+    await this.settings.delete(SHEET_SETTING_ACTUAL_ID_KEY);
+    await this.settings.delete(SHEET_SETTING_ACTUAL_TAB_KEY);
+    await this.settings.delete(SHEET_SETTING_WAR_ID_KEY);
+    await this.settings.delete(SHEET_SETTING_WAR_TAB_KEY);
+  }
 
+  /** Purpose: clear linked sheet. */
+  async clearLinkedSheet(mode?: GoogleSheetMode): Promise<void> {
     await this.settings.delete(SHEET_SETTING_ID_KEY);
     await this.settings.delete(SHEET_SETTING_TAB_KEY);
+    if (mode) {
+      const modeKeys = this.getModeKeys(mode);
+      await this.settings.delete(modeKeys.idKey);
+      await this.settings.delete(modeKeys.tabKey);
+    }
   }
 
   /** Purpose: test access. */
