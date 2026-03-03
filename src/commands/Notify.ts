@@ -461,15 +461,32 @@ export const Notify: Command = {
       const [, y, mo, d, h, mi, s] = m;
       return new Date(Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s)));
     })();
+    const warId =
+      warStartTime && clanTag
+        ? (
+            await prisma.warClanHistory
+              .findUnique({
+                where: {
+                  clanTag_warStartTime: {
+                    clanTag,
+                    warStartTime,
+                  },
+                },
+                select: { warId: true },
+              })
+              .catch(() => null)
+          )?.warId ?? null
+        : null;
 
     await prisma.$executeRaw(
       Prisma.sql`
         INSERT INTO "WarEventLogSubscription"
-          ("guildId","clanTag","channelId","notify","notifyRole","pingRole","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName","createdAt","updatedAt")
+          ("guildId","clanTag","warId","channelId","notify","notifyRole","pingRole","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName","createdAt","updatedAt")
         VALUES
-          (${interaction.guildId}, ${clanTag}, ${target.id}, true, ${notifyRole?.id ?? null}, ${rolePingEnabled}, ${lastState}, ${warStartTime}, ${opponentTag}, ${opponentName}, ${clanName}, NOW(), NOW())
+          (${interaction.guildId}, ${clanTag}, ${warId}, ${target.id}, true, ${notifyRole?.id ?? null}, ${rolePingEnabled}, ${lastState}, ${warStartTime}, ${opponentTag}, ${opponentName}, ${clanName}, NOW(), NOW())
         ON CONFLICT ("guildId","clanTag")
         DO UPDATE SET
+          "warId" = EXCLUDED."warId",
           "channelId" = EXCLUDED."channelId",
           "notify" = true,
           "notifyRole" = EXCLUDED."notifyRole",
