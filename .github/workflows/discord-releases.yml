@@ -18,12 +18,15 @@ jobs:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
           RELEASE_BODY: ${{ github.event.release.body }}
         run: |
+          set -euo pipefail
+
           if [[ -z "$DISCORD_RELEASE_WEBHOOK_DEV" && -z "$DISCORD_RELEASE_WEBHOOK_PROD" ]]; then
             echo "Missing Discord webhook secrets. Set DISCORD_RELEASE_WEBHOOK_DEV and/or DISCORD_RELEASE_WEBHOOK_PROD."
             exit 1
           fi
 
-          HIGHLIGHTS="$(printf '%s' "$RELEASE_BODY" | awk '
+          RELEASE_BODY_CLEAN="$(printf '%s' "${RELEASE_BODY:-}" | tr -d '\r')"
+          HIGHLIGHTS="$(printf '%s' "$RELEASE_BODY_CLEAN" | awk '
             BEGIN { in_section = 0 }
             /^##[[:space:]]+Highlights[[:space:]]*$/ { in_section = 1; next }
             /^##[[:space:]]+/ { if (in_section) exit }
@@ -31,6 +34,17 @@ jobs:
           ')"
           if [[ -z "$HIGHLIGHTS" ]]; then
             HIGHLIGHTS="No Highlights section found in release notes."
+          fi
+          EMBED_DESCRIPTION="## Highlights
+$HIGHLIGHTS"
+          if (( ${#EMBED_DESCRIPTION} > 4096 )); then
+            TRUNCATED_BODY_MAX=$((4096 - 28))
+            EMBED_DESCRIPTION="${EMBED_DESCRIPTION:0:${TRUNCATED_BODY_MAX}}"
+            EMBED_DESCRIPTION="${EMBED_DESCRIPTION}"$'\n'"... (truncated for Discord)"
+          fi
+          RELEASE_TITLE="New Release: ${RELEASE_NAME:-${RELEASE_TAG}}"
+          if (( ${#RELEASE_TITLE} > 256 )); then
+            RELEASE_TITLE="${RELEASE_TITLE:0:253}..."
           fi
 
           while IFS='|' read -r WEBHOOK_BASE ROLE_ID; do
@@ -40,14 +54,14 @@ jobs:
 
             PAYLOAD="$(jq -n \
               --arg role "$ROLE_ID" \
-              --arg title "New Release: ${RELEASE_NAME}" \
+              --arg title "$RELEASE_TITLE" \
               --arg tag "${RELEASE_TAG}" \
-              --arg highlights "${HIGHLIGHTS}" \
+              --arg description "${EMBED_DESCRIPTION}" \
               '{
                 username: "ClashCookies",
                 embeds: [{
                   title: $title,
-                  description: ("## Highlights\n" + $highlights),
+                  description: $description,
                   color: 5814783,
                   footer: { text: ("Version " + $tag) }
                 }]
