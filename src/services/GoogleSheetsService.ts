@@ -9,6 +9,7 @@ export const SHEET_SETTING_ACTUAL_TAB_KEY = "google_sheet_actual_tab";
 export const SHEET_SETTING_WAR_ID_KEY = "google_sheet_war_id";
 export const SHEET_SETTING_WAR_TAB_KEY = "google_sheet_war_tab";
 const GOOGLE_API_TIMEOUT_MS = 20000;
+const APPS_SCRIPT_PROXY_TIMEOUT_MS = 30000;
 
 export type GoogleSheetMode = "actual" | "war";
 
@@ -99,6 +100,11 @@ export class GoogleSheetsService {
 
   /** Purpose: read values. */
   async readValues(sheetId: string, range: string): Promise<string[][]> {
+    const proxyUrl = process.env.GS_WEBHOOK_URL?.trim();
+    if (proxyUrl) {
+      return this.readValuesViaAppsScriptProxy(proxyUrl, sheetId, range);
+    }
+
     const token = await this.getAccessToken();
     const encodedRange = encodeURIComponent(range);
     const encodedSheetId = encodeURIComponent(sheetId);
@@ -112,6 +118,53 @@ export class GoogleSheetsService {
     });
 
     return response.data.values ?? [];
+  }
+
+  private async readValuesViaAppsScriptProxy(
+    url: string,
+    sheetId: string,
+    range: string
+  ): Promise<string[][]> {
+    const token = process.env.GS_WEBHOOK_SHARED_SECRET?.trim();
+    const payload: Record<string, string> = {
+      action: "readValues",
+      sheetId,
+      range,
+    };
+    if (token) payload.token = token;
+
+    const response = await axios.post<{
+      values?: unknown;
+      ok?: boolean;
+      error?: unknown;
+      message?: unknown;
+      result?: { values?: unknown };
+    }>(url, payload, {
+      headers: { "Content-Type": "application/json" },
+      timeout: APPS_SCRIPT_PROXY_TIMEOUT_MS,
+      validateStatus: () => true,
+    });
+
+    if (response.status >= 400) {
+      const message =
+        typeof response.data?.error === "string"
+          ? response.data.error
+          : typeof response.data?.message === "string"
+            ? response.data.message
+            : `Apps Script proxy returned HTTP ${response.status}`;
+      throw new Error(message);
+    }
+
+    const rawValues =
+      response.data?.values ??
+      response.data?.result?.values ??
+      null;
+    if (!Array.isArray(rawValues)) return [];
+
+    return rawValues.map((row) => {
+      if (!Array.isArray(row)) return [];
+      return row.map((cell) => String(cell ?? ""));
+    });
   }
 
   /** Purpose: get access token. */

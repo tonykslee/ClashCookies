@@ -19,6 +19,7 @@ function extractSheetId(input: string): string {
 
 function getSheetErrorHint(err: unknown): string {
   const message = formatError(err).toLowerCase();
+  const usingProxy = Boolean(process.env.GS_WEBHOOK_URL?.trim());
 
   if (message.includes("invalid_grant")) {
     return "Invalid Google auth grant. For OAuth, re-check GOOGLE_OAUTH_* values and refresh token.";
@@ -41,6 +42,9 @@ function getSheetErrorHint(err: unknown): string {
   }
   if (message.includes("unable to parse range") || message.includes("badrequest")) {
     return "Range/tab is invalid. Try a valid tab name or omit range.";
+  }
+  if (usingProxy) {
+    return "Apps Script proxy read failed. Check GS_WEBHOOK_URL deployment access, readValues action support, and Apps Script logs.";
   }
   if (message.includes("relation \"botsetting\" does not exist")) {
     return "Database migration missing. Run prisma migrate deploy for BotSetting.";
