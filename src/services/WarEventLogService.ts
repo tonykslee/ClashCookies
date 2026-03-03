@@ -84,6 +84,43 @@ type EmbedWarStats = {
   opponentDestruction: number | null;
 };
 
+type EventEmitPayload = {
+  eventType: EventType;
+  clanTag: string;
+  clanName: string;
+  opponentTag: string;
+  opponentName: string;
+  syncNumber: number | null;
+  notifyRole: string | null;
+  pingRole: boolean;
+  fwaPoints: number | null;
+  opponentFwaPoints: number | null;
+  outcome: "WIN" | "LOSE" | null;
+  matchType: MatchType;
+  warStartFwaPoints: number | null;
+  warEndFwaPoints: number | null;
+  lastClanStars: number | null;
+  lastOpponentStars: number | null;
+  warStartTime: Date | null;
+  warEndTime: Date | null;
+  clanAttacks: number | null;
+  opponentAttacks: number | null;
+  teamSize: number | null;
+  attacksPerMember: number | null;
+  clanDestruction: number | null;
+  opponentDestruction: number | null;
+  testFinalResultOverride?: WarEndResultSnapshot | null;
+};
+
+export type NotifyWarPreviewResult = {
+  ok: boolean;
+  reason?: string;
+  clanName?: string;
+  clanTag?: string;
+  channelId?: string;
+  embeds?: EmbedBuilder[];
+};
+
 /** Purpose: detect if current poll belongs to a newer war cycle than the stored snapshot. */
 function isNewWarCycle(
   previousWarStartTime: Date | null,
@@ -236,7 +273,40 @@ export class WarEventLogService {
     const sub = await this.findSubscriptionByGuildAndTag(params.guildId, params.clanTag);
     if (!sub) return { ok: false, reason: "No war event subscription found for that guild+clan." };
     if (!sub.channelId) return { ok: false, reason: "Subscription has no configured channel." };
+    const payload = await this.buildTestEventPayload(sub, params);
+    await this.emitEvent(sub.channelId, payload);
 
+    return { ok: true };
+  }
+
+  async buildTestEventPreviewForClan(params: {
+    guildId: string;
+    clanTag: string;
+    eventType: EventType;
+    source: TestSource;
+  }): Promise<NotifyWarPreviewResult> {
+    const sub = await this.findSubscriptionByGuildAndTag(params.guildId, params.clanTag);
+    if (!sub) return { ok: false, reason: "No war event subscription found for that guild+clan." };
+    if (!sub.channelId) return { ok: false, reason: "Subscription has no configured channel." };
+
+    const payload = await this.buildTestEventPayload(sub, params);
+    const message = await this.buildEventMessage(payload, params.guildId, {
+      includeRoleMention: false,
+      includeEventComponents: false,
+    });
+    return {
+      ok: true,
+      clanName: payload.clanName,
+      clanTag: payload.clanTag,
+      channelId: sub.channelId,
+      embeds: message.embeds,
+    };
+  }
+
+  private async buildTestEventPayload(
+    sub: SubscriptionRow,
+    params: { eventType: EventType; source: TestSource }
+  ): Promise<EventEmitPayload> {
     const previousSync = await this.pointsSync.getPreviousSyncNum();
     const activeSync = previousSync === null ? null : previousSync + 1;
     const syncNumber = params.source === "last" ? previousSync : activeSync;
@@ -286,8 +356,7 @@ export class WarEventLogService {
           lastWarRow?.opponentClanName ??
           sub.lastOpponentName ??
           "Unknown"
-      ).trim() ||
-      "Unknown";
+      ).trim() || "Unknown";
 
     let fwaPoints = sub.fwaPoints;
     let opponentFwaPoints = sub.opponentFwaPoints;
@@ -301,6 +370,7 @@ export class WarEventLogService {
       opponentFwaPoints = b.balance;
       outcome = deriveExpectedOutcome(clanTag, opponentTag, a.balance, b.balance, syncNumber);
     }
+
     const currentWarStartTime = parseCocTime(currentWar?.startTime ?? null);
     const testWarStartTime =
       params.source === "current"
@@ -347,7 +417,7 @@ export class WarEventLogService {
       }
     }
 
-    await this.emitEvent(sub.channelId, {
+    return {
       eventType: params.eventType,
       clanTag,
       clanName,
@@ -397,9 +467,240 @@ export class WarEventLogService {
         ? Number(currentWar?.opponent?.destructionPercentage)
         : null,
       testFinalResultOverride,
-    });
+    };
+  }
 
-    return { ok: true };
+  private async buildEventMessage(
+    payload: EventEmitPayload,
+    guildId: string | null,
+    options?: {
+      includeRoleMention?: boolean;
+      includeEventComponents?: boolean;
+      warId?: number | null;
+    }
+  ): Promise<{
+    content?: string;
+    embeds: EmbedBuilder[];
+    components: ActionRowBuilder<ButtonBuilder>[];
+    allowedMentions?: { roles: string[] };
+  }> {
+    const includeRoleMention = options?.includeRoleMention ?? true;
+    const includeEventComponents = options?.includeEventComponents ?? true;
+    const warId = options?.warId ?? null;
+    const opponentTag = normalizeTag(payload.opponentTag);
+    const embed = new EmbedBuilder()
+      .setTitle(`Event: ${eventTitle(payload.eventType)} - ${payload.clanName}`)
+      .setColor(
+        payload.eventType === "war_started"
+          ? 0x3498db
+          : payload.eventType === "battle_day"
+            ? 0xf1c40f
+            : 0x2ecc71
+      )
+      .setFooter({ text: `War ID: ${warId ?? "unknown"}` })
+      .setTimestamp(new Date());
+
+    embed.addFields(
+      {
+        name: "Opponent",
+        value: `${payload.opponentName} (${opponentTag ? `#${opponentTag}` : "unknown"})`,
+        inline: false,
+      },
+      {
+        name: "Sync #",
+        value: payload.syncNumber ? `#${payload.syncNumber}` : "unknown",
+        inline: true,
+      }
+    );
+
+    if (payload.eventType === "battle_day") {
+      embed.addFields(
+        {
+          name: "Battle Day Remaining",
+          value: toDiscordRelativeTime(payload.warEndTime),
+          inline: true,
+        },
+        {
+          name: "Match Type",
+          value: payload.matchType ?? "unknown",
+          inline: true,
+        }
+      );
+      if (payload.matchType !== "BL" && payload.matchType !== "MM") {
+        embed.addFields({
+          name: "War Plan",
+          value:
+            (await this.history.buildWarPlanText(
+              payload.matchType,
+              payload.outcome,
+              payload.clanTag,
+              payload.opponentName
+            )) ?? "N/A",
+          inline: false,
+        });
+      }
+      if (payload.matchType === "BL") {
+        embed.addFields({
+          name: "Message",
+          value:
+            "**Battle day has started! Thank you for helping with war bases; please switch back to FWA bases asap.**",
+          inline: false,
+        });
+      }
+      if (payload.matchType === "MM") {
+        embed.addFields({
+          name: "Message",
+          value: "Attack whatever you want! Free for all!",
+          inline: false,
+        });
+      }
+      embed.addFields({
+        name: "\u200b",
+        value: buildWarStatsLines({
+          clanStars: payload.lastClanStars,
+          opponentStars: payload.lastOpponentStars,
+          clanAttacks: payload.clanAttacks,
+          opponentAttacks: payload.opponentAttacks,
+          teamSize: payload.teamSize,
+          attacksPerMember: payload.attacksPerMember,
+          clanDestruction: payload.clanDestruction,
+          opponentDestruction: payload.opponentDestruction,
+        }).join("\n"),
+        inline: false,
+      });
+    }
+
+    if (payload.eventType === "war_started") {
+      embed.addFields(
+        {
+          name: "Prep Day Remaining",
+          value: toDiscordRelativeTime(payload.warStartTime),
+          inline: true,
+        },
+        {
+          name: "Match Type",
+          value: payload.matchType ?? "unknown",
+          inline: true,
+        }
+      );
+      if (payload.matchType === "FWA") {
+        embed.addFields({
+          name: "War Plan",
+          value:
+            (await this.history.buildWarPlanText(
+              payload.matchType,
+              payload.outcome,
+              payload.clanTag,
+              payload.opponentName
+            )) ?? "N/A",
+          inline: false,
+        });
+      }
+      if (payload.matchType === "BL") {
+        embed.addFields({
+          name: "Message",
+          value: [
+            `BLACKLIST WAR vs ${payload.opponentName}`,
+            "Everyone switch to WAR BASES!",
+            "This is an opportunity to gain extra FWA points.",
+          ].join("\n"),
+          inline: false,
+        });
+      }
+      if (payload.matchType === "MM") {
+        embed.addFields({
+          name: "Message",
+          value: [
+            `MISMATCHED WAR vs ${payload.opponentName}`,
+            "Keep war base active and attack what you can.",
+          ].join("\n"),
+          inline: false,
+        });
+      }
+    }
+
+    if (payload.eventType === "war_ended") {
+      const finalResult =
+        payload.testFinalResultOverride ??
+        (await this.history.getWarEndResultSnapshot({
+          clanTag: payload.clanTag,
+          opponentTag: payload.opponentTag,
+          fallbackClanStars: payload.lastClanStars,
+          fallbackOpponentStars: payload.lastOpponentStars,
+          warStartTime: payload.warStartTime,
+        }));
+      const compliance = await this.history.getWarComplianceSnapshot(
+        payload.clanTag,
+        payload.warStartTime,
+        payload.matchType,
+        payload.outcome
+      );
+      embed.addFields(
+        {
+          name: "Result",
+          value: formatResultLabelForEmbed(finalResult.resultLabel),
+          inline: false,
+        },
+        {
+          name: "Match Type",
+          value: payload.matchType ?? "unknown",
+          inline: true,
+        },
+        {
+          name: "\u200b",
+          value: buildWarStatsLines({
+            clanStars: finalResult.clanStars,
+            opponentStars: finalResult.opponentStars,
+            clanAttacks: payload.clanAttacks,
+            opponentAttacks: payload.opponentAttacks,
+            teamSize: payload.teamSize,
+            attacksPerMember: payload.attacksPerMember,
+            clanDestruction: finalResult.clanDestruction,
+            opponentDestruction: finalResult.opponentDestruction,
+          }).join("\n"),
+          inline: false,
+        },
+        {
+          name: "FWA Points",
+          value: this.history.buildWarEndPointsLine(payload, finalResult),
+          inline: false,
+        },
+        {
+          name: "Missed Both Attacks",
+          value: formatList(compliance.missedBoth),
+          inline: false,
+        },
+        {
+          name: "Didn't Follow War Plan",
+          value:
+            payload.matchType === "BL" || payload.matchType === "MM"
+              ? "N/A for BL/MM wars"
+              : formatList(compliance.notFollowingPlan),
+          inline: false,
+        }
+      );
+    }
+
+    const roleMention =
+      includeRoleMention && payload.pingRole && payload.notifyRole ? `<@&${payload.notifyRole}>` : null;
+    const components =
+      includeEventComponents && payload.eventType === "battle_day" && guildId
+        ? [
+            new ActionRowBuilder<ButtonBuilder>().addComponents(
+              new ButtonBuilder()
+                .setCustomId(buildNotifyWarRefreshCustomId(guildId, payload.clanTag))
+                .setLabel("Refresh")
+                .setStyle(ButtonStyle.Secondary)
+            ),
+          ]
+        : [];
+
+    return {
+      content: roleMention ?? undefined,
+      embeds: [embed],
+      components,
+      allowedMentions: roleMention ? { roles: [payload.notifyRole as string] } : undefined,
+    };
   }
 
   private async findSubscriptionByGuildAndTag(

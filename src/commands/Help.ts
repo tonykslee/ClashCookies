@@ -149,6 +149,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     examples: [
       "/notify war clan-tag:2QG2C08UP target-channel:#war-events role:@Leaders",
       "/notify war clan-tag:2QG2C08UP target-channel:#new-war-events",
+      "/notify war-preview clan-tag:2QG2C08UP event:battle day start source:current",
       "/notify war-remove clan-tag:2QG2C08UP",
       "/notify show",
       "/notify show clan-tag:2QG2C08UP",

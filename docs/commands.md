@@ -21,6 +21,7 @@
 - `/cc player tag:<tag>` - Build `https://cc.fwafarm.com/cc_n/member.php?tag=<tag>`.
 - `/cc clan tag:<tag>` - Build `https://cc.fwafarm.com/cc_n/clan.php?tag=<tag>`.
 - `/notify war clan-tag:<tag> target-channel:<channel> [role:<discordRole>]` - Enable war-state event logs (war start, battle day, war end) for a clan in a selected channel. Optional role is pinged when event logs are posted.
+- `/notify war-preview clan-tag:<tag> event:<war_started|battle_day|war_ended> [source:current|last]` - Show an ephemeral preview embed and confirm before posting publicly to the configured notify channel.
 - `/war history clan-tag:<tag> [limit:<number>]` - Show recent clan-level war history from stored war records.
 - `/war war-id war-id:<number>` - Export stored war lookup payload for one war ID as CSV.
 - `/accounts [visibility:private|public] [tag:<playerTag>] [discord-id:<snowflake>]` - List linked player accounts grouped by current clan. Default is your own account; provide exactly one of `tag` or `discord-id` to inspect a different linked user.
