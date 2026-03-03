@@ -176,6 +176,10 @@ function buildCcVerifyUrl(tag: string): string {
 const MATCHTYPE_WARNING_LEGEND =
   ":warning: indicates inferred match type. Verify opponent association before confirming.";
 
+function logFwaMatchTelemetry(event: string, detail: string): void {
+  console.log(`[telemetry-fwa-match] event=${event} ${detail}`);
+}
+
 function buildPointsPostButtonCustomId(userId: string): string {
   return `${POINTS_POST_BUTTON_PREFIX}:${userId}`;
 }
@@ -1275,6 +1279,10 @@ function buildFwaMatchCopyComponents(
 export async function handleFwaMatchCopyButton(interaction: ButtonInteraction): Promise<void> {
   const parsed = parseFwaMatchCopyCustomId(interaction.customId);
   if (!parsed) return;
+  logFwaMatchTelemetry(
+    "copy_toggle_click",
+    `user=${interaction.user.id} mode=${parsed.mode} key=${parsed.key}`
+  );
 
   if (interaction.user.id !== parsed.userId) {
     await interaction.reply({
@@ -1318,6 +1326,7 @@ export async function handleFwaMatchSelectMenu(
 ): Promise<void> {
   const parsed = parseFwaMatchSelectCustomId(interaction.customId);
   if (!parsed) return;
+  logFwaMatchTelemetry("single_select_click", `user=${interaction.user.id} key=${parsed.key}`);
   if (interaction.user.id !== parsed.userId) {
     await interaction.reply({
       ephemeral: true,
@@ -1357,6 +1366,7 @@ export async function handleFwaMatchAllianceButton(
 ): Promise<void> {
   const parsed = parseFwaMatchAllianceCustomId(interaction.customId);
   if (!parsed) return;
+  logFwaMatchTelemetry("alliance_view_click", `user=${interaction.user.id} key=${parsed.key}`);
   if (interaction.user.id !== parsed.userId) {
     await interaction.reply({
       ephemeral: true,
@@ -1385,6 +1395,10 @@ export async function handleFwaMatchAllianceButton(
 export async function handleFwaMatchTypeActionButton(interaction: ButtonInteraction): Promise<void> {
   const parsed = parseMatchTypeActionCustomId(interaction.customId);
   if (!parsed) return;
+  logFwaMatchTelemetry(
+    "match_type_confirm_click",
+    `user=${interaction.user.id} tag=${parsed.tag} type=${parsed.targetType}`
+  );
 
   if (interaction.user.id !== parsed.userId) {
     await interaction.reply({
@@ -1487,6 +1501,10 @@ export async function handleFwaMatchTypeActionButton(interaction: ButtonInteract
 export async function handleFwaMatchTypeEditButton(interaction: ButtonInteraction): Promise<void> {
   const parsed = parseMatchTypeEditCustomId(interaction.customId);
   if (!parsed) return;
+  logFwaMatchTelemetry(
+    "match_type_edit_click",
+    `user=${interaction.user.id} key=${parsed.key}`
+  );
   if (interaction.user.id !== parsed.userId) {
     await interaction.reply({
       ephemeral: true,
@@ -1533,6 +1551,10 @@ export async function handleFwaMatchTypeEditButton(interaction: ButtonInteractio
 export async function handleFwaOutcomeActionButton(interaction: ButtonInteraction): Promise<void> {
   const parsed = parseOutcomeActionCustomId(interaction.customId);
   if (!parsed) return;
+  logFwaMatchTelemetry(
+    "outcome_reverse_click",
+    `user=${interaction.user.id} tag=${parsed.tag} from=${parsed.currentOutcome}`
+  );
 
   if (interaction.user.id !== parsed.userId) {
     await interaction.reply({
@@ -1639,6 +1661,7 @@ export async function handleFwaMatchSyncActionButton(
 ): Promise<void> {
   const parsed = parseMatchSyncActionCustomId(interaction.customId);
   if (!parsed) return;
+  logFwaMatchTelemetry("sync_action_click", `user=${interaction.user.id} tag=${parsed.tag}`);
 
   if (interaction.user.id !== parsed.userId) {
     await interaction.reply({
@@ -1666,6 +1689,10 @@ export async function handleFwaMatchSyncActionButton(
   const view = payload.singleViews[parsed.tag];
   const syncAction = view?.syncAction ?? null;
   if (!view || !syncAction) {
+    logFwaMatchTelemetry(
+      "sync_action_skipped",
+      `user=${interaction.user.id} tag=${parsed.tag} reason=no_out_of_sync_data`
+    );
     await interaction.reply({
       ephemeral: true,
       content: "No out-of-sync data found for this clan.",
@@ -1709,6 +1736,10 @@ export async function handleFwaMatchSyncActionButton(
     const nextPrevious = Math.max(0, Math.trunc(syncAction.siteSyncNumber) - 1);
     await settings.set(PREVIOUS_SYNC_KEY, String(nextPrevious));
   }
+  logFwaMatchTelemetry(
+    "sync_action_applied",
+    `user=${interaction.user.id} tag=${parsed.tag} site_sync=${syncAction.siteSyncNumber ?? "unknown"} site_points=${syncAction.siteFwaPoints ?? "unknown"} opponent_points=${syncAction.siteOpponentFwaPoints ?? "unknown"}`
+  );
 
   const refreshed = await rebuildTrackedPayloadForTag(
     payload,
@@ -2899,6 +2930,7 @@ async function buildTrackedMatchOverview(
   const copyLines: string[] = [];
   const singleViews: Record<string, MatchView> = {};
   let hasAnyInferredMatchType = false;
+  let syncActionAvailableCount = 0;
   const sourceOfTruthSyncLine = `Sync#: ${
     sourceSync !== null && Number.isFinite(sourceSync)
       ? `#${Math.trunc(sourceSync) + 1}`
@@ -3175,6 +3207,8 @@ async function buildTrackedMatchOverview(
     const hasMismatch = Boolean(primaryMismatch || opponentMismatch || syncMismatch || outcomeMismatch);
     const pointsSyncStatus = buildPointsSyncStatusLine(siteUpdatedForAlert, hasMismatch);
     const siteMatchType = hasOpponentPoints ? "FWA" : "MM";
+    const opponentCcUrl = buildCcVerifyUrl(opponentTag);
+    const opponentPointsUrl = buildOfficialPointsUrl(opponentTag);
     const mailChannelId = mailChannelByTag.get(clanTag) ?? null;
     const mailBlockedReason = inferredMatchType
       ? "Match type is inferred. Confirm match type before sending war mail."
@@ -3269,22 +3303,41 @@ async function buildTrackedMatchOverview(
     ]
       .filter(Boolean)
       .join("\n");
+    const syncAction: MatchView["syncAction"] =
+      siteUpdatedForAlert && hasMismatch
+        ? {
+            tag: clanTag,
+            siteMatchType,
+            siteFwaPoints: primaryPoints?.balance ?? null,
+            siteOpponentFwaPoints: opponentPoints?.balance ?? null,
+            siteOutcome: matchType === "FWA" ? derivedOutcome : null,
+            siteSyncNumber: siteSyncObserved,
+          }
+        : null;
+    if (syncAction) syncActionAvailableCount += 1;
     singleViews[clanTag] = {
       embed: new EmbedBuilder()
         .setTitle(`${clanName} (#${clanTag}) vs ${opponentName} (#${opponentTag})`)
         .setDescription(singleDescription)
-        .addFields({
-          name: "Points",
-          value:
-            matchType === "FWA"
-              ? hasPrimaryPoints && hasOpponentPoints
-                ? `${clanName}: **${primaryPoints!.balance}**\n${opponentName}: **${opponentPoints!.balance}**`
-                : "Unavailable on both clans."
-              : hasPrimaryPoints
-                ? `${clanName}: **${primaryPoints!.balance}**`
-                : "Unavailable",
-          inline: false,
-        }),
+        .addFields(
+          {
+            name: "Points",
+            value:
+              matchType === "FWA"
+                ? hasPrimaryPoints && hasOpponentPoints
+                  ? `${clanName}: **${primaryPoints!.balance}**\n${opponentName}: **${opponentPoints!.balance}**`
+                  : "Unavailable on both clans."
+                : hasPrimaryPoints
+                  ? `${clanName}: **${primaryPoints!.balance}**`
+                  : "Unavailable",
+            inline: true,
+          },
+          {
+            name: "Opponent Links",
+            value: `[cc.fwafarm](${opponentCcUrl})\n[points.fwafarm](${opponentPointsUrl})`,
+            inline: true,
+          }
+        ),
       copyText: limitDiscordContent(
         [
           `# ${mailStatusEmoji} ${clanName} (#${clanTag}) vs ${opponentName} (#${opponentTag})`,
@@ -3298,6 +3351,8 @@ async function buildTrackedMatchOverview(
           `\`${opponentName}\``,
           `## Opponent Tag`,
           `\`${opponentTag}\``,
+          `CC: ${opponentCcUrl}`,
+          `Points: ${opponentPointsUrl}`,
           `## Points`,
           hasPrimaryPoints && hasOpponentPoints ? `${clanName}: ${primaryPoints!.balance}` : "Unavailable",
           matchType === "FWA" && hasPrimaryPoints && hasOpponentPoints
@@ -3322,17 +3377,7 @@ async function buildTrackedMatchOverview(
         matchType === "FWA" && (effectiveOutcome === "WIN" || effectiveOutcome === "LOSE")
           ? { tag: clanTag, currentOutcome: effectiveOutcome }
           : null,
-      syncAction:
-        siteUpdatedForAlert && hasMismatch
-          ? {
-              tag: clanTag,
-              siteMatchType,
-              siteFwaPoints: primaryPoints?.balance ?? null,
-              siteOpponentFwaPoints: opponentPoints?.balance ?? null,
-              siteOutcome: matchType === "FWA" ? derivedOutcome : null,
-              siteSyncNumber: siteSyncObserved,
-            }
-          : null,
+      syncAction,
       clanName,
       clanTag,
       mailStatusEmoji,
@@ -3357,6 +3402,10 @@ async function buildTrackedMatchOverview(
   if (overviewNotes.length > 0) {
     embed.setDescription(overviewNotes.join("\n\n"));
   }
+  logFwaMatchTelemetry(
+    "overview_built",
+    `clans=${includedTracked.length} inferred_match_type=${hasAnyInferredMatchType ? 1 : 0} sync_action_available=${syncActionAvailableCount} missed_sync=${missedSyncTags.size} source_sync=${sourceSync ?? "unknown"}`
+  );
 
   const copyHeaderLines = [`# FWA Match Overview (${includedTracked.length})`];
   copyHeaderLines.push(`Source of truth ${sourceOfTruthSyncLine}`);
@@ -3862,6 +3911,10 @@ export const Fwa: Command = {
     }
 
     if (subcommand === "match") {
+      logFwaMatchTelemetry(
+        "command",
+        `user=${interaction.user.id} guild=${interaction.guildId ?? "dm"} scope=${tag ? "single" : "alliance"} tag=${tag ?? "all"} visibility=${isPublic ? "public" : "private"} source_sync=${sourceSync ?? "unknown"}`
+      );
       const overview = await buildTrackedMatchOverview(
         cocService,
         sourceSync,
@@ -4172,6 +4225,8 @@ export const Fwa: Command = {
         const verifyLink = inferredMatchType
           ? `[cc:${opponentTag}](${buildCcVerifyUrl(opponentTag)})`
           : "";
+        const opponentCcUrl = buildCcVerifyUrl(opponentTag);
+        const opponentPointsUrl = buildOfficialPointsUrl(opponentTag);
         const embed = new EmbedBuilder()
           .setTitle(`${leftName} (#${tag}) vs ${rightName} (#${opponentTag})`)
           .setDescription(
@@ -4185,18 +4240,25 @@ export const Fwa: Command = {
               mismatchLines ? `\n${mismatchLines}` : ""
             }`
           )
-            .addFields({
-            name: "Points",
-            value:
-              matchType === "FWA"
-                ? hasPrimaryPoints && hasOpponentPoints
-                  ? `${leftName}: **${primary.balance}**\n${rightName}: **${opponent.balance}**`
-                  : "Unavailable on both clans."
-                : hasPrimaryPoints
-                  ? `${leftName}: **${primary.balance}**`
-                  : "Unavailable",
-            inline: false,
-          });
+            .addFields(
+              {
+                name: "Points",
+                value:
+                  matchType === "FWA"
+                    ? hasPrimaryPoints && hasOpponentPoints
+                      ? `${leftName}: **${primary.balance}**\n${rightName}: **${opponent.balance}**`
+                      : "Unavailable on both clans."
+                    : hasPrimaryPoints
+                      ? `${leftName}: **${primary.balance}**`
+                      : "Unavailable",
+                inline: true,
+              },
+              {
+                name: "Opponent Links",
+                value: `[cc.fwafarm](${opponentCcUrl})\n[points.fwafarm](${opponentPointsUrl})`,
+                inline: true,
+              }
+            );
         const copyText = limitDiscordContent(
           [
             `# ${leftName} (#${tag}) vs ${rightName} (#${opponentTag})`,
@@ -4210,6 +4272,8 @@ export const Fwa: Command = {
             `\`${rightName}\``,
             `## Opponent Tag`,
             `\`${opponentTag}\``,
+            `CC: ${opponentCcUrl}`,
+            `Points: ${opponentPointsUrl}`,
             `## Points`,
             hasPrimaryPoints && hasOpponentPoints ? `${leftName}: ${primary.balance}` : "Unavailable",
             matchType === "FWA" && hasPrimaryPoints && hasOpponentPoints
