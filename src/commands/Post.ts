@@ -47,7 +47,13 @@ type SyncBadge = {
   emojiInline: string;
   id: string | null;
   name: string | null;
+  matchEmojiIds: string[];
+  matchEmojiNames: string[];
 };
+
+function dedupe(values: Array<string | null | undefined>): string[] {
+  return [...new Set(values.filter((v): v is string => Boolean(v && v.trim())).map((v) => v.trim()))];
+}
 
 function toFallbackAbbreviation(clanName: string | null, clanTag: string): string {
   const source = (clanName?.trim() || clanTag.replace(/^#/, "")).toUpperCase();
@@ -96,6 +102,8 @@ overrides?: { code?: string; label?: string }): SyncBadge {
     emojiInline: `<:${entry.name}:${entry.id}>`,
     id: entry.id,
     name: entry.name,
+    matchEmojiIds: dedupe([entry.id]),
+    matchEmojiNames: dedupe([entry.name]),
   };
 }
 
@@ -118,6 +126,8 @@ function makeSyncBadgeFromTrackedClan(
       emojiInline: `<${custom.animated ? "a" : ""}:${custom.name}:${custom.id}>`,
       id: custom.id,
       name: custom.name,
+      matchEmojiIds: dedupe([custom.id]),
+      matchEmojiNames: dedupe([custom.name]),
     };
   }
 
@@ -128,6 +138,20 @@ function makeSyncBadgeFromTrackedClan(
     emojiInline: trimmed,
     id: null,
     name: trimmed,
+    matchEmojiIds: [],
+    matchEmojiNames: dedupe([trimmed]),
+  };
+}
+
+function addAlternateEmojiMatch(
+  badge: SyncBadge,
+  alternate: { id: string; name: string } | null
+): SyncBadge {
+  if (!alternate) return badge;
+  return {
+    ...badge,
+    matchEmojiIds: dedupe([...badge.matchEmojiIds, alternate.id]),
+    matchEmojiNames: dedupe([...badge.matchEmojiNames, alternate.name]),
   };
 }
 
@@ -149,6 +173,11 @@ async function getSyncBadgesWithTrackedClanFallback(
   for (const clan of tracked) {
     const configuredBadge = clan.clanBadge?.trim() ?? "";
     if (configuredBadge.length > 0) {
+      const fallbackCode = resolveAbbreviation(clan.shortName, clan.name, clan.tag);
+      const fallback = clan.name
+        ? findSyncBadgeEmojiForClan(botUserId, clan.name, fallbackCode)
+        : null;
+
       const shortcodeMatch = configuredBadge.match(SHORTCODE_EMOJI_PATTERN);
       if (shortcodeMatch && guild) {
         const shortcodeName = shortcodeMatch[1];
@@ -159,11 +188,21 @@ async function getSyncBadgesWithTrackedClanFallback(
         }
         if (emoji) {
           const emojiToken = `<${emoji.animated ? "a" : ""}:${emoji.name}:${emoji.id}>`;
-          badges.push(makeSyncBadgeFromTrackedClan(clan.tag, clan.name, emojiToken, clan.shortName));
+          badges.push(
+            addAlternateEmojiMatch(
+              makeSyncBadgeFromTrackedClan(clan.tag, clan.name, emojiToken, clan.shortName),
+              fallback
+            )
+          );
           continue;
         }
       }
-      badges.push(makeSyncBadgeFromTrackedClan(clan.tag, clan.name, configuredBadge, clan.shortName));
+      badges.push(
+        addAlternateEmojiMatch(
+          makeSyncBadgeFromTrackedClan(clan.tag, clan.name, configuredBadge, clan.shortName),
+          fallback
+        )
+      );
       continue;
     }
 
@@ -572,8 +611,8 @@ function reactionMatchesBadge(
   reaction: { emoji: { id: string | null; name: string | null } },
   badge: SyncBadge
 ): boolean {
-  if (reaction.emoji.id && reaction.emoji.id === badge.id) return true;
-  return Boolean(!badge.id && reaction.emoji.name && reaction.emoji.name === badge.name);
+  if (reaction.emoji.id && badge.matchEmojiIds.includes(reaction.emoji.id)) return true;
+  return Boolean(reaction.emoji.name && badge.matchEmojiNames.includes(reaction.emoji.name));
 }
 
 function buildModalCustomId(userId: string): string {
