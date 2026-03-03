@@ -1000,6 +1000,10 @@ export class WarEventLogService {
       where: { id: sub.id },
       data: {
         warId: resolvedWarId,
+        currentSyncNum:
+          syncContext.activeSync !== null && Number.isFinite(syncContext.activeSync)
+            ? Math.trunc(syncContext.activeSync)
+            : undefined,
         lastState: currentState,
         fwaPoints: nextFwaPoints,
         opponentFwaPoints: nextOpponentFwaPoints,

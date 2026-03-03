@@ -216,7 +216,13 @@ export class WarEventHistoryService {
     });
     await prisma.currentWar.updateMany({
       where: { clanTag, lastWarStartTime: warStartTime },
-      data: { warId },
+      data: {
+        warId,
+        currentSyncNum:
+          payload.syncNumber !== null && Number.isFinite(payload.syncNumber)
+            ? Math.trunc(payload.syncNumber)
+            : undefined,
+      },
     });
 
     await prisma.$executeRaw(

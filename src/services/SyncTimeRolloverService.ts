@@ -1,4 +1,5 @@
 import { SettingsService } from "./SettingsService";
+import { prisma } from "../prisma";
 
 const PREVIOUS_SYNC_KEY = "previousSyncNum";
 const SYNC_ROLLOVER_TARGET_EPOCH_KEY = "sync_rollover_target_epoch";
@@ -88,6 +89,10 @@ export class SyncTimeRolloverService {
     }
 
     const nextPreviousSync = Math.trunc(previousSync) + 1;
+    const nextCurrentSync = nextPreviousSync + 1;
+    await prisma.currentWar.updateMany({
+      data: { currentSyncNum: nextCurrentSync },
+    });
     await this.settings.set(PREVIOUS_SYNC_KEY, String(nextPreviousSync));
     await this.settings.set(SYNC_ROLLOVER_APPLIED_EPOCH_KEY, String(Math.trunc(targetEpoch)));
     return {
