@@ -444,6 +444,7 @@ export const Compo: Command = {
           description: "Tracked clan tag (with or without #)",
           type: ApplicationCommandOptionType.String,
           required: true,
+          autocomplete: true,
         },
         {
           name: "mode",
@@ -572,14 +573,14 @@ export const Compo: Command = {
             : "RAW Data last refreshed: (not available)";
 
         const content = [`Mode Displayed: **${mode.toUpperCase()}**`, refreshLine].join("\n");
-        const svg = renderStateSvg(mode, stateRows);
+        const png = renderStatePng(mode, stateRows);
 
         await interaction.editReply({
           content,
           files: [
             {
-              attachment: svg,
-              name: `compo-state-${mode}.svg`,
+              attachment: png,
+              name: `compo-state-${mode}.png`,
             },
           ],
         });
@@ -715,7 +716,7 @@ export const Compo: Command = {
   },
   autocomplete: async (interaction: AutocompleteInteraction) => {
     const focused = interaction.options.getFocused(true);
-    if (focused.name !== "clan") {
+    if (focused.name !== "tag") {
       await interaction.respond([]);
       return;
     }
@@ -726,14 +727,21 @@ export const Compo: Command = {
       select: { name: true, tag: true },
     });
 
-    const names = tracked
-      .map((c) => c.name?.trim() || c.tag.trim())
-      .filter((v, i, arr) => v.length > 0 && arr.indexOf(v) === i);
+    const choices = tracked
+      .map((c) => {
+        const tag = c.tag.trim();
+        const name = c.name?.trim() || tag;
+        return {
+          name: `${name} (${tag})`.slice(0, 100),
+          value: tag,
+        };
+      })
+      .filter((c, i, arr) => c.value.length > 0 && arr.findIndex((v) => v.value === c.value) === i);
 
-    const filtered = names
-      .filter((name) => normalize(name).includes(query))
+    const filtered = choices
+      .filter((choice) => normalize(choice.name).includes(query) || normalize(choice.value).includes(query))
       .slice(0, 25)
-      .map((name) => ({ name, value: name }));
+      .map((choice) => ({ name: choice.name, value: choice.value }));
 
     await interaction.respond(filtered);
   },
