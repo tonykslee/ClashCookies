@@ -27,6 +27,7 @@ import {
   FWA_LEADER_ROLE_SETTING_KEY,
 } from "../services/CommandPermissionService";
 import { SettingsService } from "../services/SettingsService";
+import { SyncTimeRolloverService } from "../services/SyncTimeRolloverService";
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_PATTERN = /^\d{1,2}:\d{2}$/;
@@ -685,6 +686,7 @@ export async function handlePostModalSubmit(
   await interaction.deferReply({ ephemeral: true });
 
   const settings = new SettingsService();
+  const syncRollover = new SyncTimeRolloverService(settings);
 
   const dateInput = interaction.fields.getTextInputValue(DATE_INPUT_ID).trim();
   const timeInput = interaction.fields.getTextInputValue(TIME_INPUT_ID).trim();
@@ -846,6 +848,19 @@ export async function handlePostModalSubmit(
       messageId: postedMessage.id,
     })
   );
+  await syncRollover.schedule(epochSeconds);
+  const rollover = await syncRollover.maybeApplyDueRollover();
+  if (rollover.applied) {
+    notices.push(
+      `Sync rollover applied: previousSyncNum ${rollover.previousSync} -> ${rollover.nextPreviousSync}.`
+    );
+  } else if (rollover.reason === "not_due_yet") {
+    notices.push(`Scheduled sync rollover for <t:${epochSeconds}:F>.`);
+  } else if (rollover.reason === "previous_sync_missing") {
+    notices.push(
+      "Sync rollover is due but previousSyncNum is unset; run `/fwa sync force datapoint:syncNum` to seed it."
+    );
+  }
 
   if (!mentionWillNotify) {
     notices.push(
