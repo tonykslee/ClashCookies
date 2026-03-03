@@ -104,7 +104,7 @@ export async function handleNotifyWarPreviewPostButton(
     return;
   }
 
-  await interaction.deferReply({ ephemeral: true });
+  await interaction.deferUpdate();
   const warEventService = new WarEventLogService(interaction.client, cocService);
   const result = await warEventService.emitTestEventForClan({
     guildId: request.guildId,
@@ -113,16 +113,23 @@ export async function handleNotifyWarPreviewPostButton(
     source: request.source,
   });
   if (!result.ok) {
-    await interaction.editReply(
+    await interaction.followUp({
+      ephemeral: true,
+      content:
       `Failed to post preview publicly for ${request.clanName} (${request.clanTag}): ${result.reason ?? "unknown reason"}`
-    );
+    });
     return;
   }
 
   notifyWarPreviewRequests.delete(parsed.key);
-  await interaction.editReply(
-    `Posted ${request.eventType} for **${request.clanName}** (${request.clanTag}) to <#${request.channelId}>.`
-  );
+  await interaction.deleteReply().catch(async () => {
+    await interaction.editReply({
+      content:
+        `Posted ${request.eventType} for **${request.clanName}** (${request.clanTag}) to <#${request.channelId}>.`,
+      embeds: [],
+      components: [],
+    });
+  });
 }
 
 export const Notify: Command = {
