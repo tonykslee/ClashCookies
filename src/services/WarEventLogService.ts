@@ -47,6 +47,7 @@ type SubscriptionRow = {
   id: number;
   guildId: string;
   clanTag: string;
+  warId: number | null;
   channelId: string;
   notify: boolean;
   pingRole: boolean;
@@ -238,7 +239,7 @@ export class WarEventLogService {
     const subs = await prisma.$queryRaw<SubscriptionRow[]>(
       Prisma.sql`
         SELECT
-          "id","guildId","clanTag","channelId","notify","pingRole","inferredMatchType","notifyRole","fwaPoints","opponentFwaPoints","outcome","matchType","warStartFwaPoints","warEndFwaPoints","lastClanStars","lastOpponentStars","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName"
+          "id","guildId","clanTag","warId","channelId","notify","pingRole","inferredMatchType","notifyRole","fwaPoints","opponentFwaPoints","outcome","matchType","warStartFwaPoints","warEndFwaPoints","lastClanStars","lastOpponentStars","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName"
         FROM "WarEventLogSubscription"
         WHERE "notify" = true
         ORDER BY "updatedAt" ASC
@@ -323,8 +324,8 @@ export class WarEventLogService {
         : null;
     const lastWarRow =
       params.source === "last"
-        ? await prisma.warHistoryParticipant.findFirst({
-            where: { clanTag: normalizeTag(sub.clanTag), warEndTime: { not: null } },
+        ? await prisma.warHistoryAttack.findFirst({
+            where: { clanTag: normalizeTag(sub.clanTag), warEndTime: { not: null }, attackOrder: 0 },
             orderBy: { warStartTime: "desc" },
             select: {
               clanName: true,
@@ -712,7 +713,7 @@ export class WarEventLogService {
     const rows = await prisma.$queryRaw<SubscriptionRow[]>(
       Prisma.sql`
         SELECT
-          "id","guildId","clanTag","channelId","notify","pingRole","inferredMatchType","notifyRole","fwaPoints","opponentFwaPoints","outcome","matchType","warStartFwaPoints","warEndFwaPoints","lastClanStars","lastOpponentStars","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName"
+          "id","guildId","clanTag","warId","channelId","notify","pingRole","inferredMatchType","notifyRole","fwaPoints","opponentFwaPoints","outcome","matchType","warStartFwaPoints","warEndFwaPoints","lastClanStars","lastOpponentStars","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName"
         FROM "WarEventLogSubscription"
         WHERE "guildId" = ${guildId} AND UPPER(REPLACE("clanTag",'#','')) = ${normalizeTagBare(clanTag)}
         LIMIT 1
@@ -751,7 +752,7 @@ export class WarEventLogService {
     const rows = await prisma.$queryRaw<SubscriptionRow[]>(
       Prisma.sql`
         SELECT
-          "id","guildId","clanTag","channelId","notify","pingRole","inferredMatchType","notifyRole","fwaPoints","opponentFwaPoints","outcome","matchType","warStartFwaPoints","warEndFwaPoints","lastClanStars","lastOpponentStars","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName"
+          "id","guildId","clanTag","warId","channelId","notify","pingRole","inferredMatchType","notifyRole","fwaPoints","opponentFwaPoints","outcome","matchType","warStartFwaPoints","warEndFwaPoints","lastClanStars","lastOpponentStars","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName"
         FROM "WarEventLogSubscription"
         WHERE "id" = ${subscriptionId}
         LIMIT 1
@@ -992,9 +993,13 @@ export class WarEventLogService {
       await this.emitEvent(sub.channelId, eventPayload);
     }
 
+    const resolvedWarId =
+      currentState === "notInWar" ? null : await this.resolveWarId(sub.clanTag, nextWarStartTime);
+
     await prisma.warEventLogSubscription.update({
       where: { id: sub.id },
       data: {
+        warId: resolvedWarId,
         lastState: currentState,
         fwaPoints: nextFwaPoints,
         opponentFwaPoints: nextOpponentFwaPoints,

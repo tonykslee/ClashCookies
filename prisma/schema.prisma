@@ -150,6 +150,7 @@ model WarHistoryParticipant {
 
 model WarHistoryAttack {
   id               Int      @id @default(autoincrement())
+  warId            Int?
   clanTag          String
   clanName         String?
   opponentClanTag  String?
@@ -160,6 +161,7 @@ model WarHistoryAttack {
   playerTag        String
   playerName       String?
   playerPosition   Int?
+  attacksUsed      Int      @default(0)
   attackOrder      Int
   attackNumber     Int
   defenderTag      String?
@@ -175,12 +177,14 @@ model WarHistoryAttack {
   @@unique([clanTag, warStartTime, playerTag, attackOrder])
   @@index([clanTag, warStartTime])
   @@index([playerTag, warStartTime])
+  @@index([warId])
 }
 
 model WarEventLogSubscription {
   id               Int      @id @default(autoincrement())
   guildId          String
   clanTag          String
+  warId            Int?
   channelId        String
   notify           Boolean  @default(true)
   pingRole         Boolean  @default(true)
@@ -204,6 +208,7 @@ model WarEventLogSubscription {
 
   @@unique([guildId, clanTag])
   @@index([guildId, notify])
+  @@index([warId])
 }
 
 model WarClanHistory {

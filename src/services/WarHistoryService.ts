@@ -35,6 +35,22 @@ export class WarHistoryService {
   /** Purpose: initialize service dependencies. */
   constructor(private readonly coc: CoCService) {}
 
+  private async resolveWarId(clanTag: string, warStartTime: Date): Promise<number | null> {
+    return (
+      await prisma.warClanHistory
+        .findUnique({
+          where: {
+            clanTag_warStartTime: {
+              clanTag,
+              warStartTime,
+            },
+          },
+          select: { warId: true },
+        })
+        .catch(() => null)
+    )?.warId ?? null;
+  }
+
   /** Purpose: observe clan war. */
   async observeClanWar(clanTagInput: string): Promise<void> {
     const clanTag = normalizeTag(clanTagInput);
@@ -53,6 +69,7 @@ export class WarHistoryService {
       const warEndTime = parseCocTime(war.endTime ?? null);
       const warState = String(war.state ?? "").trim() || null;
       const observedAt = new Date();
+      const warId = await this.resolveWarId(ownClanTag, warStartTime);
 
       const opponentMembers = Array.isArray(war.opponent?.members) ? (war.opponent?.members as WarMember[]) : [];
       const opponentByTag = new Map<string, WarMember>();
@@ -75,12 +92,13 @@ export class WarHistoryService {
 
         await prisma.$executeRaw(
           Prisma.sql`
-            INSERT INTO "WarHistoryParticipant"
-              ("clanTag","clanName","opponentClanTag","opponentClanName","warStartTime","warEndTime","warState","playerTag","playerName","playerPosition","attacksUsed","createdAt","updatedAt")
+            INSERT INTO "WarHistoryAttack"
+              ("warId","clanTag","clanName","opponentClanTag","opponentClanName","warStartTime","warEndTime","warState","playerTag","playerName","playerPosition","attacksUsed","attackOrder","attackNumber","defenderTag","defenderName","defenderPosition","stars","trueStars","destruction","attackSeenAt","createdAt","updatedAt")
             VALUES
-              (${ownClanTag}, ${ownClanName}, ${opponentClanTag || null}, ${opponentClanName || null}, ${warStartTime}, ${warEndTime}, ${warState}, ${playerTag}, ${playerName}, ${playerPosition}, ${sortedAttacks.length}, NOW(), NOW())
-            ON CONFLICT ("clanTag","warStartTime","playerTag")
+              (${warId}, ${ownClanTag}, ${ownClanName}, ${opponentClanTag || null}, ${opponentClanName || null}, ${warStartTime}, ${warEndTime}, ${warState}, ${playerTag}, ${playerName}, ${playerPosition}, ${sortedAttacks.length}, 0, 0, NULL, NULL, NULL, 0, 0, 0, ${observedAt}, NOW(), NOW())
+            ON CONFLICT ("clanTag","warStartTime","playerTag","attackOrder")
             DO UPDATE SET
+              "warId" = EXCLUDED."warId",
               "clanName" = EXCLUDED."clanName",
               "opponentClanTag" = EXCLUDED."opponentClanTag",
               "opponentClanName" = EXCLUDED."opponentClanName",
@@ -89,6 +107,7 @@ export class WarHistoryService {
               "playerName" = EXCLUDED."playerName",
               "playerPosition" = EXCLUDED."playerPosition",
               "attacksUsed" = EXCLUDED."attacksUsed",
+              "attackSeenAt" = EXCLUDED."attackSeenAt",
               "updatedAt" = NOW()
           `
         );
@@ -116,11 +135,12 @@ export class WarHistoryService {
           await prisma.$executeRaw(
             Prisma.sql`
               INSERT INTO "WarHistoryAttack"
-                ("clanTag","clanName","opponentClanTag","opponentClanName","warStartTime","warEndTime","warState","playerTag","playerName","playerPosition","attackOrder","attackNumber","defenderTag","defenderName","defenderPosition","stars","trueStars","destruction","attackSeenAt","createdAt","updatedAt")
+                ("warId","clanTag","clanName","opponentClanTag","opponentClanName","warStartTime","warEndTime","warState","playerTag","playerName","playerPosition","attacksUsed","attackOrder","attackNumber","defenderTag","defenderName","defenderPosition","stars","trueStars","destruction","attackSeenAt","createdAt","updatedAt")
               VALUES
-                (${ownClanTag}, ${ownClanName}, ${opponentClanTag || null}, ${opponentClanName || null}, ${warStartTime}, ${warEndTime}, ${warState}, ${playerTag}, ${playerName}, ${playerPosition}, ${attackOrder}, ${attackNum}, ${defenderTag || null}, ${defenderName}, ${defenderPosition}, ${stars}, ${trueStars}, ${destruction}, ${observedAt}, NOW(), NOW())
+                (${warId}, ${ownClanTag}, ${ownClanName}, ${opponentClanTag || null}, ${opponentClanName || null}, ${warStartTime}, ${warEndTime}, ${warState}, ${playerTag}, ${playerName}, ${playerPosition}, ${sortedAttacks.length}, ${attackOrder}, ${attackNum}, ${defenderTag || null}, ${defenderName}, ${defenderPosition}, ${stars}, ${trueStars}, ${destruction}, ${observedAt}, NOW(), NOW())
               ON CONFLICT ("clanTag","warStartTime","playerTag","attackOrder")
               DO UPDATE SET
+                "warId" = EXCLUDED."warId",
                 "clanName" = EXCLUDED."clanName",
                 "opponentClanTag" = EXCLUDED."opponentClanTag",
                 "opponentClanName" = EXCLUDED."opponentClanName",
@@ -128,6 +148,7 @@ export class WarHistoryService {
                 "warState" = EXCLUDED."warState",
                 "playerName" = EXCLUDED."playerName",
                 "playerPosition" = EXCLUDED."playerPosition",
+                "attacksUsed" = EXCLUDED."attacksUsed",
                 "attackNumber" = EXCLUDED."attackNumber",
                 "defenderTag" = EXCLUDED."defenderTag",
                 "defenderName" = EXCLUDED."defenderName",

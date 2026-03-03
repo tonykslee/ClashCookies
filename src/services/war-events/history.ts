@@ -139,8 +139,8 @@ export class WarEventHistoryService {
     const warStartTime =
       payload.warStartTime ??
       (
-        await prisma.warHistoryParticipant.findFirst({
-          where: { clanTag, warEndTime: { not: null } },
+        await prisma.warHistoryAttack.findFirst({
+          where: { clanTag, warEndTime: { not: null }, attackOrder: 0 },
           orderBy: { warStartTime: "desc" },
           select: { warStartTime: true },
         })
@@ -161,8 +161,8 @@ export class WarEventHistoryService {
     });
     const warEndTime =
       finalResult.warEndTime ??
-      (await prisma.warHistoryParticipant.findFirst({
-        where: { clanTag, warStartTime },
+      (await prisma.warHistoryAttack.findFirst({
+        where: { clanTag, warStartTime, attackOrder: 0 },
         orderBy: { updatedAt: "desc" },
         select: { warEndTime: true },
       }))?.warEndTime ??
@@ -209,6 +209,15 @@ export class WarEventHistoryService {
     );
     const warId = Number(row[0]?.warId ?? NaN);
     if (!Number.isFinite(warId)) return;
+
+    await prisma.warHistoryAttack.updateMany({
+      where: { clanTag, warStartTime },
+      data: { warId },
+    });
+    await prisma.warEventLogSubscription.updateMany({
+      where: { clanTag, lastWarStartTime: warStartTime },
+      data: { warId },
+    });
 
     await prisma.$executeRaw(
       Prisma.sql`
@@ -288,8 +297,8 @@ export class WarEventHistoryService {
     const warStartTime = preferredWarStartTime
       ? preferredWarStartTime
       : (
-          await prisma.warHistoryParticipant.findFirst({
-            where: { clanTag, warEndTime: { not: null } },
+          await prisma.warHistoryAttack.findFirst({
+            where: { clanTag, warEndTime: { not: null }, attackOrder: 0 },
             orderBy: { warStartTime: "desc" },
             select: { warStartTime: true },
           })
@@ -298,8 +307,8 @@ export class WarEventHistoryService {
       return { missedBoth: [], notFollowingPlan: [] };
     }
 
-    const participants = await prisma.warHistoryParticipant.findMany({
-      where: { clanTag, warStartTime },
+    const participants = await prisma.warHistoryAttack.findMany({
+      where: { clanTag, warStartTime, attackOrder: 0 },
       select: { playerName: true, playerTag: true, attacksUsed: true, playerPosition: true },
       orderBy: [{ playerPosition: "asc" }, { playerName: "asc" }],
     });
