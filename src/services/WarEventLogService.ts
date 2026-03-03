@@ -290,9 +290,11 @@ export class WarEventLogService {
     if (!sub.channelId) return { ok: false, reason: "Subscription has no configured channel." };
 
     const payload = await this.buildTestEventPayload(sub, params);
+    const warId = await this.resolveWarId(payload.clanTag, payload.warStartTime);
     const message = await this.buildEventMessage(payload, params.guildId, {
       includeRoleMention: false,
       includeEventComponents: false,
+      warId,
     });
     return {
       ok: true,
@@ -1013,6 +1015,25 @@ export class WarEventLogService {
     return eventType === "war_ended";
   }
 
+  private async resolveWarId(clanTagInput: string, warStartTime: Date | null): Promise<number | null> {
+    if (!warStartTime) return null;
+    const clanTag = normalizeTag(clanTagInput);
+    if (!clanTag) return null;
+    return (
+      await prisma.warClanHistory
+        .findUnique({
+          where: {
+            clanTag_warStartTime: {
+              clanTag,
+              warStartTime,
+            },
+          },
+          select: { warId: true },
+        })
+        .catch(() => null)
+    )?.warId ?? null;
+  }
+
   private async emitEvent(
     channelId: string,
     payload: {
@@ -1069,22 +1090,7 @@ export class WarEventLogService {
     }
 
     const guildId = (channel as { guildId?: string }).guildId ?? null;
-    const warId =
-      payload.warStartTime && normalizeTag(payload.clanTag)
-        ? (
-            await prisma.warClanHistory
-              .findUnique({
-                where: {
-                  clanTag_warStartTime: {
-                    clanTag: normalizeTag(payload.clanTag),
-                    warStartTime: payload.warStartTime,
-                  },
-                },
-                select: { warId: true },
-              })
-              .catch(() => null)
-          )?.warId ?? null
-        : null;
+    const warId = await this.resolveWarId(payload.clanTag, payload.warStartTime);
     const opponentTag = normalizeTag(payload.opponentTag);
     const embed = new EmbedBuilder()
       .setTitle(`Event: ${eventTitle(payload.eventType)} - ${payload.clanName}`)
