@@ -173,7 +173,7 @@ model WarAttacks {
   updatedAt        DateTime  @updatedAt
   createdAt        DateTime  @default(now())
 
-  @@unique([clanTag, warStartTime, playerTag, attackOrder])
+  @@unique([warId, playerTag, attackNumber])
   @@index([clanTag, warStartTime])
   @@index([playerTag, warStartTime])
   @@index([warId])
@@ -209,6 +209,7 @@ model CurrentWar {
   @@unique([guildId, clanTag])
   @@index([guildId, notify])
   @@index([warId])
+  @@index([lastWarStartTime, clanTag, lastOpponentTag])
 }
 
 model ClanWarHistory {
@@ -233,7 +234,7 @@ model ClanWarHistory {
   updatedAt           DateTime      @updatedAt
   lookup              WarLookup?
 
-  @@unique([clanTag, warStartTime])
+  @@unique([warStartTime, clanTag, opponentTag])
   @@index([clanTag, warEndTime])
 }
 
