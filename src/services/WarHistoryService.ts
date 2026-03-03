@@ -38,13 +38,12 @@ export class WarHistoryService {
   private async resolveWarId(clanTag: string, warStartTime: Date): Promise<number | null> {
     return (
       await prisma.clanWarHistory
-        .findUnique({
+        .findFirst({
           where: {
-            clanTag_warStartTime: {
-              clanTag,
-              warStartTime,
-            },
+            clanTag,
+            warStartTime,
           },
+          orderBy: { warId: "desc" },
           select: { warId: true },
         })
         .catch(() => null)

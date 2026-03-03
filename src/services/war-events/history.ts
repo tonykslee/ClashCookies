@@ -187,7 +187,7 @@ export class WarEventHistoryService {
           ("syncNumber","matchType","clanStars","clanDestruction","opponentStars","opponentDestruction","fwaPointsGained","expectedOutcome","actualOutcome","enemyPoints","warStartTime","warEndTime","clanName","clanTag","opponentName","opponentTag","updatedAt")
         VALUES
           (${payload.syncNumber}, ${payload.matchType}, ${finalResult.clanStars}, ${finalResult.clanDestruction}, ${finalResult.opponentStars}, ${finalResult.opponentDestruction}, ${pointsDelta}, ${payload.outcome}, ${finalResult.resultLabel}, ${enemyPoints}, ${warStartTime}, ${warEndTime}, ${payload.clanName}, ${clanTag}, ${payload.opponentName}, ${normalizeTag(payload.opponentTag) || null}, NOW())
-        ON CONFLICT ("clanTag","warStartTime")
+        ON CONFLICT ("warStartTime","clanTag","opponentTag")
         DO UPDATE SET
           "syncNumber" = EXCLUDED."syncNumber",
           "matchType" = EXCLUDED."matchType",

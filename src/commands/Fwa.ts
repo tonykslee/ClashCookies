@@ -681,43 +681,40 @@ async function upsertCurrentWarHistoryAndGetWarId(params: {
   }
 
   const warStartTime = new Date(resolvedWarStartMs);
-  const saved = await prisma.clanWarHistory.upsert({
-    where: {
-      clanTag_warStartTime: {
-        clanTag: `#${params.normalizedTag}`,
-        warStartTime,
-      },
-    },
-    create: {
-      syncNumber: params.currentSync,
-      matchType: toWarMatchTypeOrNull(params.matchType),
-      clanStars: parseNullableInt(params.war?.clan?.stars),
-      clanDestruction: parseNullableFloat(params.war?.clan?.destructionPercentage),
-      opponentStars: parseNullableInt(params.war?.opponent?.stars),
-      opponentDestruction: parseNullableFloat(params.war?.opponent?.destructionPercentage),
-      expectedOutcome: params.expectedOutcome,
-      warStartTime,
-      warEndTime: resolvedWarEndMs !== null ? new Date(resolvedWarEndMs) : null,
-      clanName: params.clanName,
-      clanTag: `#${params.normalizedTag}`,
-      opponentName: params.opponentName,
-      opponentTag: params.opponentTag ? `#${params.opponentTag}` : null,
-    },
-    update: {
-      syncNumber: params.currentSync,
-      matchType: toWarMatchTypeOrNull(params.matchType),
-      clanStars: parseNullableInt(params.war?.clan?.stars),
-      clanDestruction: parseNullableFloat(params.war?.clan?.destructionPercentage),
-      opponentStars: parseNullableInt(params.war?.opponent?.stars),
-      opponentDestruction: parseNullableFloat(params.war?.opponent?.destructionPercentage),
-      expectedOutcome: params.expectedOutcome,
-      warEndTime: resolvedWarEndMs !== null ? new Date(resolvedWarEndMs) : null,
-      clanName: params.clanName,
-      opponentName: params.opponentName,
-      opponentTag: params.opponentTag ? `#${params.opponentTag}` : null,
-    },
+  const normalizedOpponentTag = params.opponentTag ? `#${params.opponentTag}` : null;
+  const clanTag = `#${params.normalizedTag}`;
+  const upsertData = {
+    syncNumber: params.currentSync,
+    matchType: toWarMatchTypeOrNull(params.matchType),
+    clanStars: parseNullableInt(params.war?.clan?.stars),
+    clanDestruction: parseNullableFloat(params.war?.clan?.destructionPercentage),
+    opponentStars: parseNullableInt(params.war?.opponent?.stars),
+    opponentDestruction: parseNullableFloat(params.war?.opponent?.destructionPercentage),
+    expectedOutcome: params.expectedOutcome,
+    warEndTime: resolvedWarEndMs !== null ? new Date(resolvedWarEndMs) : null,
+    clanName: params.clanName,
+    opponentName: params.opponentName,
+    opponentTag: normalizedOpponentTag,
+  };
+  const existing = await prisma.clanWarHistory.findFirst({
+    where: { clanTag, warStartTime, opponentTag: normalizedOpponentTag },
+    orderBy: { warId: "desc" },
     select: { warId: true },
   });
+  const saved = existing?.warId
+    ? await prisma.clanWarHistory.update({
+        where: { warId: existing.warId },
+        data: upsertData,
+        select: { warId: true },
+      })
+    : await prisma.clanWarHistory.create({
+        data: {
+          ...upsertData,
+          warStartTime,
+          clanTag,
+        },
+        select: { warId: true },
+      });
   warHistoryUpsertDedupedAt.set(dedupeKey, Date.now());
   if (warHistoryUpsertDedupedAt.size > 500) {
     const cutoff = Date.now() - WAR_HISTORY_UPSERT_DEDUPE_MS * 2;
