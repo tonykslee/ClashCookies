@@ -26,10 +26,15 @@ jobs:
           SHORT_SHA="${COMMIT_SHA:0:7}"
           COMMIT_URL="https://github.com/${REPO}/commit/${COMMIT_SHA}"
 
-          if [[ "$DISCORD_DEV_BUILD" == *\?* ]]; then
-            WEBHOOK_ENDPOINT="${DISCORD_DEV_BUILD}&wait=true&with_components=true"
+          if [[ -z "$DISCORD_WEBHOOK_URL" ]]; then
+            echo "DISCORD_WEBHOOK_URL is not set."
+            exit 1
+          fi
+
+          if [[ "$DISCORD_WEBHOOK_URL" == *\?* ]]; then
+            WEBHOOK_ENDPOINT="${DISCORD_WEBHOOK_URL}&wait=true&with_components=true"
           else
-            WEBHOOK_ENDPOINT="${DISCORD_DEV_BUILD}?wait=true&with_components=true"
+            WEBHOOK_ENDPOINT="${DISCORD_WEBHOOK_URL}?wait=true&with_components=true"
           fi
 
           PAYLOAD="$(jq -n \
