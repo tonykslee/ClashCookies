@@ -465,13 +465,12 @@ export const Notify: Command = {
       warStartTime && clanTag
         ? (
             await prisma.clanWarHistory
-              .findUnique({
+              .findFirst({
                 where: {
-                  clanTag_warStartTime: {
-                    clanTag,
-                    warStartTime,
-                  },
+                  clanTag,
+                  warStartTime,
                 },
+                orderBy: { warId: "desc" },
                 select: { warId: true },
               })
               .catch(() => null)

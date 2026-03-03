@@ -725,8 +725,9 @@ export class WarEventLogService {
   /** Purpose: has war end recorded. */
   private async hasWarEndRecorded(clanTagInput: string, warStartTime: Date): Promise<boolean> {
     const clanTag = normalizeTag(clanTagInput);
-    const existing = await prisma.clanWarHistory.findUnique({
-      where: { clanTag_warStartTime: { clanTag, warStartTime } },
+    const existing = await prisma.clanWarHistory.findFirst({
+      where: { clanTag, warStartTime },
+      orderBy: { warId: "desc" },
       select: { warId: true },
     });
     return Boolean(existing?.warId);
@@ -1030,13 +1031,12 @@ export class WarEventLogService {
     if (!clanTag) return null;
     return (
       await prisma.clanWarHistory
-        .findUnique({
+        .findFirst({
           where: {
-            clanTag_warStartTime: {
-              clanTag,
-              warStartTime,
-            },
+            clanTag,
+            warStartTime,
           },
+          orderBy: { warId: "desc" },
           select: { warId: true },
         })
         .catch(() => null)
@@ -1476,10 +1476,12 @@ export class WarEventLogService {
     const warId =
       warStartTime && normalizeTag(payload.clanTag)
         ? (
-            await prisma.clanWarHistory.findUnique({
+            await prisma.clanWarHistory.findFirst({
               where: {
-                clanTag_warStartTime: { clanTag: normalizeTag(payload.clanTag), warStartTime },
+                clanTag: normalizeTag(payload.clanTag),
+                warStartTime,
               },
+              orderBy: { warId: "desc" },
               select: { warId: true },
             })
           )?.warId ?? null
@@ -1513,40 +1515,37 @@ export class WarEventLogService {
   }): Promise<void> {
     const clanTag = normalizeTag(input.clanTag);
     if (!clanTag || !input.warStartTime) return;
-    await prisma.clanWarHistory.upsert({
-      where: {
-        clanTag_warStartTime: {
-          clanTag,
-          warStartTime: input.warStartTime,
-        },
-      },
-      create: {
-        syncNumber: input.syncNumber,
-        matchType: input.matchType,
-        clanStars: parseNullableInt(input.stats.clanStars),
-        clanDestruction: parseNullableFloat(input.stats.clanDestruction),
-        opponentStars: parseNullableInt(input.stats.opponentStars),
-        opponentDestruction: parseNullableFloat(input.stats.opponentDestruction),
-        expectedOutcome: input.expectedOutcome,
+    const opponentTag = normalizeTag(input.opponentTag) || null;
+    const upsertData = {
+      syncNumber: input.syncNumber,
+      matchType: input.matchType,
+      clanStars: parseNullableInt(input.stats.clanStars),
+      clanDestruction: parseNullableFloat(input.stats.clanDestruction),
+      opponentStars: parseNullableInt(input.stats.opponentStars),
+      opponentDestruction: parseNullableFloat(input.stats.opponentDestruction),
+      expectedOutcome: input.expectedOutcome,
+      warEndTime: input.warEndTime,
+      clanName: input.clanName,
+      opponentName: input.opponentName,
+      opponentTag,
+    };
+    const existing = await prisma.clanWarHistory.findFirst({
+      where: { clanTag, warStartTime: input.warStartTime, opponentTag },
+      orderBy: { warId: "desc" },
+      select: { warId: true },
+    });
+    if (existing?.warId) {
+      await prisma.clanWarHistory.update({
+        where: { warId: existing.warId },
+        data: upsertData,
+      });
+      return;
+    }
+    await prisma.clanWarHistory.create({
+      data: {
+        ...upsertData,
         warStartTime: input.warStartTime,
-        warEndTime: input.warEndTime,
-        clanName: input.clanName,
         clanTag,
-        opponentName: input.opponentName,
-        opponentTag: normalizeTag(input.opponentTag) || null,
-      },
-      update: {
-        syncNumber: input.syncNumber,
-        matchType: input.matchType,
-        clanStars: parseNullableInt(input.stats.clanStars),
-        clanDestruction: parseNullableFloat(input.stats.clanDestruction),
-        opponentStars: parseNullableInt(input.stats.opponentStars),
-        opponentDestruction: parseNullableFloat(input.stats.opponentDestruction),
-        expectedOutcome: input.expectedOutcome,
-        warEndTime: input.warEndTime,
-        clanName: input.clanName,
-        opponentName: input.opponentName,
-        opponentTag: normalizeTag(input.opponentTag) || null,
       },
     });
   }
