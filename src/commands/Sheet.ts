@@ -81,6 +81,13 @@ const SHEET_REFRESH_MODE_CHOICES = [
 const SHEET_REFRESH_COOLDOWN_MS = 5 * 60 * 1000;
 const SHEET_REFRESH_TIMEOUT_MS = 120000;
 const lastRefreshAtMsByGuild = new Map<string, number>();
+const SHEET_LINK_PREREQUISITES = [
+  "Prerequisites:",
+  "1. Share the sheet with Google service account as Editor: `clashcookies-serviceaccount@project-61d5243b-bd8a-4eae-b4f.iam.gserviceaccount.com`",
+  "2. In Sheets -> Extensions -> Apps Script -> Project Settings, add Script Property `APPS_SCRIPT_SHARED_SECRET` with any alphanumeric key.",
+  "3. Set that same key in bot env var `GS_WEBHOOK_SHARED_SECRET`.",
+  "4. In Apps Script, deploy a Web App and set its URL in bot env var `GS_WEBHOOK_URL`.",
+].join("\n");
 
 async function postRefreshWebhook(
   url: string,
@@ -214,7 +221,8 @@ export const Sheet: Command = {
           content:
             `Google Sheet linked.\nSheet ID: ${sheetId}\n` +
             `Default tab: ${tab ?? "(unchanged)"}\n` +
-            "You can relink anytime with `/sheet link`.",
+            "You can relink anytime with `/sheet link`.\n\n" +
+            SHEET_LINK_PREREQUISITES,
         });
         return;
       }
@@ -295,7 +303,9 @@ export const Sheet: Command = {
         content:
           subcommand === "refresh"
             ? `Failed to trigger refresh. ${hint}`
-            : `Failed to access Google Sheet. ${hint}`,
+            : subcommand === "link"
+              ? `Failed to access Google Sheet. ${hint}\n\n${SHEET_LINK_PREREQUISITES}`
+              : `Failed to access Google Sheet. ${hint}`,
       });
     }
   },
