@@ -658,7 +658,7 @@ async function upsertCurrentWarHistoryAndGetWarId(params: {
       ? params.warStartMs
       : parseCocApiTime(params.war?.startTime);
   if (resolvedWarStartMs === null || !Number.isFinite(resolvedWarStartMs)) {
-    const fallback = await prisma.warClanHistory.findFirst({
+    const fallback = await prisma.clanWarHistory.findFirst({
       where: { clanTag: `#${params.normalizedTag}` },
       orderBy: { warStartTime: "desc" },
       select: { warId: true },
@@ -677,7 +677,7 @@ async function upsertCurrentWarHistoryAndGetWarId(params: {
   }
 
   const warStartTime = new Date(resolvedWarStartMs);
-  const saved = await prisma.warClanHistory.upsert({
+  const saved = await prisma.clanWarHistory.upsert({
     where: {
       clanTag_warStartTime: {
         clanTag: `#${params.normalizedTag}`,
@@ -729,7 +729,7 @@ async function getCurrentWarIdForClan(
   warStartMs: number | null
 ): Promise<number | null> {
   if (warStartMs !== null && Number.isFinite(warStartMs)) {
-    const exact = await prisma.warClanHistory.findFirst({
+    const exact = await prisma.clanWarHistory.findFirst({
       where: {
         clanTag: `#${normalizedTag}`,
         warStartTime: new Date(warStartMs),
@@ -739,7 +739,7 @@ async function getCurrentWarIdForClan(
     });
     if (exact?.warId) return exact.warId;
   }
-  const fallback = await prisma.warClanHistory.findFirst({
+  const fallback = await prisma.clanWarHistory.findFirst({
     where: { clanTag: `#${normalizedTag}` },
     orderBy: { warStartTime: "desc" },
     select: { warId: true },
@@ -780,7 +780,7 @@ async function buildWarMailEmbedForTag(
   const clanName =
     trackedConfig.name ?? sanitizeClanName(String(war?.clan?.name ?? "")) ?? `#${normalizedTag}`;
 
-  const subscription = await prisma.warEventLogSubscription.findUnique({
+  const subscription = await prisma.currentWar.findUnique({
     where: {
       guildId_clanTag: {
         guildId,
@@ -1402,7 +1402,7 @@ export async function handleFwaMatchTypeActionButton(interaction: ButtonInteract
     return;
   }
 
-  const existingSub = await prisma.warEventLogSubscription.findUnique({
+  const existingSub = await prisma.currentWar.findUnique({
     where: {
       guildId_clanTag: {
         guildId: interaction.guildId,
@@ -1413,7 +1413,7 @@ export async function handleFwaMatchTypeActionButton(interaction: ButtonInteract
   });
   const didMatchTypeChange = existingSub?.matchType !== parsed.targetType;
 
-  await prisma.warEventLogSubscription.upsert({
+  await prisma.currentWar.upsert({
     where: {
       guildId_clanTag: {
         guildId: interaction.guildId,
@@ -1551,7 +1551,7 @@ export async function handleFwaOutcomeActionButton(interaction: ButtonInteractio
   }
 
   const nextOutcome = parsed.currentOutcome === "WIN" ? "LOSE" : "WIN";
-  await prisma.warEventLogSubscription.upsert({
+  await prisma.currentWar.upsert({
     where: {
       guildId_clanTag: {
         guildId: interaction.guildId,
@@ -1673,7 +1673,7 @@ export async function handleFwaMatchSyncActionButton(
     return;
   }
 
-  await prisma.warEventLogSubscription.upsert({
+  await prisma.currentWar.upsert({
     where: {
       guildId_clanTag: {
         guildId: interaction.guildId,
@@ -2721,7 +2721,7 @@ async function buildLastWarMatchOverview(
   previousSync: number | null
 ): Promise<string | null> {
   const normalizedTag = normalizeTag(clanTag);
-  const lastWar = await prisma.warHistoryAttack.findFirst({
+  const lastWar = await prisma.warAttacks.findFirst({
     where: {
       clanTag: `#${normalizedTag}`,
       warEndTime: { not: null },
@@ -2738,7 +2738,7 @@ async function buildLastWarMatchOverview(
 
   if (!lastWar) return null;
 
-  const participants = await prisma.warHistoryAttack.findMany({
+  const participants = await prisma.warAttacks.findMany({
     where: {
       clanTag: `#${normalizedTag}`,
       warStartTime: lastWar.warStartTime,
@@ -2755,12 +2755,12 @@ async function buildLastWarMatchOverview(
 
   const starsRow = await prisma.$queryRaw<Array<{ stars: number }>>`
     SELECT COALESCE(SUM("trueStars"), 0)::int AS "stars"
-    FROM "WarHistoryAttack"
+    FROM "WarAttacks"
     WHERE "clanTag" = ${`#${normalizedTag}`} AND "warStartTime" = ${lastWar.warStartTime}
   `;
   const clanStarsTracked = Number(starsRow[0]?.stars ?? 0);
 
-  const sub = await prisma.warEventLogSubscription.findFirst({
+  const sub = await prisma.currentWar.findFirst({
     where: {
       clanTag: `#${normalizedTag}`,
       ...(guildId ? { guildId } : {}),
@@ -2845,7 +2845,7 @@ async function buildTrackedMatchOverview(
     };
   }
 
-  const subscriptions = await prisma.warEventLogSubscription.findMany({
+  const subscriptions = await prisma.currentWar.findMany({
     where: guildId ? { guildId } : undefined,
     select: {
       clanTag: true,
@@ -3036,7 +3036,7 @@ async function buildTrackedMatchOverview(
       (sub?.outcome as "WIN" | "LOSE" | null | undefined) ??
       (matchType === "FWA" ? derivedOutcome : null);
     if (matchTypeResolved === null && inferredFromPointsType && guildId) {
-      await prisma.warEventLogSubscription.upsert({
+      await prisma.currentWar.upsert({
         where: {
           guildId_clanTag: {
             guildId,
@@ -3085,7 +3085,7 @@ async function buildTrackedMatchOverview(
         },
       });
     } else if (guildId) {
-      await prisma.warEventLogSubscription.upsert({
+      await prisma.currentWar.upsert({
         where: {
           guildId_clanTag: {
             guildId,
@@ -3627,7 +3627,7 @@ export const Fwa: Command = {
       }
 
       if (shouldOverwritePoints && interaction.guildId) {
-        await prisma.warEventLogSubscription.upsert({
+        await prisma.currentWar.upsert({
           where: {
             guildId_clanTag: {
               guildId: interaction.guildId,
@@ -3736,7 +3736,7 @@ export const Fwa: Command = {
         { fwaPoints: number | null }
       >();
       if (interaction.guildId) {
-        const subs = await prisma.warEventLogSubscription.findMany({
+        const subs = await prisma.currentWar.findMany({
           where: { guildId: interaction.guildId },
           select: { clanTag: true, fwaPoints: true },
         });
@@ -3972,7 +3972,7 @@ export const Fwa: Command = {
           );
         }
         const subscription = interaction.guildId
-          ? await prisma.warEventLogSubscription.findUnique({
+          ? await prisma.currentWar.findUnique({
               where: {
                 guildId_clanTag: {
                   guildId: interaction.guildId,
@@ -4034,7 +4034,7 @@ export const Fwa: Command = {
           (subscription?.outcome as "WIN" | "LOSE" | null | undefined) ??
           (matchType === "FWA" ? derivedOutcome : null);
         if (interaction.guildId) {
-          await prisma.warEventLogSubscription.upsert({
+          await prisma.currentWar.upsert({
             where: {
               guildId_clanTag: {
                 guildId: interaction.guildId,
@@ -4346,7 +4346,7 @@ export const Fwa: Command = {
         "Unknown Clan";
       const subscription =
         interaction.guildId
-          ? await prisma.warEventLogSubscription.findUnique({
+          ? await prisma.currentWar.findUnique({
               where: {
                 guildId_clanTag: {
                   guildId: interaction.guildId,
@@ -4458,6 +4458,7 @@ export const Fwa: Command = {
     await interaction.respond(choices);
   },
 };
+
 
 
 

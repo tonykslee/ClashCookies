@@ -37,7 +37,7 @@ export class WarHistoryService {
 
   private async resolveWarId(clanTag: string, warStartTime: Date): Promise<number | null> {
     return (
-      await prisma.warClanHistory
+      await prisma.clanWarHistory
         .findUnique({
           where: {
             clanTag_warStartTime: {
@@ -92,7 +92,7 @@ export class WarHistoryService {
 
         await prisma.$executeRaw(
           Prisma.sql`
-            INSERT INTO "WarHistoryAttack"
+            INSERT INTO "WarAttacks"
               ("warId","clanTag","clanName","opponentClanTag","opponentClanName","warStartTime","warEndTime","warState","playerTag","playerName","playerPosition","attacksUsed","attackOrder","attackNumber","defenderTag","defenderName","defenderPosition","stars","trueStars","destruction","attackSeenAt","createdAt","updatedAt")
             VALUES
               (${warId}, ${ownClanTag}, ${ownClanName}, ${opponentClanTag || null}, ${opponentClanName || null}, ${warStartTime}, ${warEndTime}, ${warState}, ${playerTag}, ${playerName}, ${playerPosition}, ${sortedAttacks.length}, 0, 0, NULL, NULL, NULL, 0, 0, 0, ${observedAt}, NOW(), NOW())
@@ -134,7 +134,7 @@ export class WarHistoryService {
 
           await prisma.$executeRaw(
             Prisma.sql`
-              INSERT INTO "WarHistoryAttack"
+              INSERT INTO "WarAttacks"
                 ("warId","clanTag","clanName","opponentClanTag","opponentClanName","warStartTime","warEndTime","warState","playerTag","playerName","playerPosition","attacksUsed","attackOrder","attackNumber","defenderTag","defenderName","defenderPosition","stars","trueStars","destruction","attackSeenAt","createdAt","updatedAt")
               VALUES
                 (${warId}, ${ownClanTag}, ${ownClanName}, ${opponentClanTag || null}, ${opponentClanName || null}, ${warStartTime}, ${warEndTime}, ${warState}, ${playerTag}, ${playerName}, ${playerPosition}, ${sortedAttacks.length}, ${attackOrder}, ${attackNum}, ${defenderTag || null}, ${defenderName}, ${defenderPosition}, ${stars}, ${trueStars}, ${destruction}, ${observedAt}, NOW(), NOW())
@@ -167,3 +167,4 @@ export class WarHistoryService {
     }
   }
 }
+

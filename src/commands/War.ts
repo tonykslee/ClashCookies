@@ -120,7 +120,7 @@ export const War: Command = {
         Prisma.sql`
           SELECT
             "warId","syncNumber","matchType","clanStars","clanDestruction","opponentStars","opponentDestruction","fwaPointsGained","expectedOutcome","actualOutcome","enemyPoints","warStartTime","warEndTime","clanName","clanTag","opponentName","opponentTag"
-          FROM "WarClanHistory"
+          FROM "ClanWarHistory"
           WHERE UPPER(REPLACE("clanTag",'#','')) = ${tagBare}
           ORDER BY "warStartTime" DESC
           LIMIT ${limit}
@@ -257,4 +257,5 @@ export const War: Command = {
     await interaction.respond(choices);
   },
 };
+
 

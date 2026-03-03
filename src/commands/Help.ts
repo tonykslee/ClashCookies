@@ -159,7 +159,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
   war: {
     summary: "Query clan-level war history and export war attack payload by war ID.",
     details: [
-      "`/war history` shows recent clan-level war summary rows from WarClanHistory.",
+      "`/war history` shows recent clan-level war summary rows from ClanWarHistory.",
       "`/war war-id` exports the stored WarLookup payload as a CSV file for drill-down review.",
       "Use war IDs returned from `/war history` to retrieve detailed attack rows.",
     ],
@@ -672,3 +672,4 @@ export const Help: Command = {
     );
   },
 };
+

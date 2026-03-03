@@ -139,7 +139,7 @@ export class WarEventHistoryService {
     const warStartTime =
       payload.warStartTime ??
       (
-        await prisma.warHistoryAttack.findFirst({
+        await prisma.warAttacks.findFirst({
           where: { clanTag, warEndTime: { not: null }, attackOrder: 0 },
           orderBy: { warStartTime: "desc" },
           select: { warStartTime: true },
@@ -155,13 +155,13 @@ export class WarEventHistoryService {
       fallbackOpponentStars: payload.lastOpponentStars,
       warStartTime,
     });
-    const attacks = await prisma.warHistoryAttack.findMany({
+    const attacks = await prisma.warAttacks.findMany({
       where: { clanTag, warStartTime },
       orderBy: [{ attackSeenAt: "asc" }, { attackOrder: "asc" }, { playerTag: "asc" }],
     });
     const warEndTime =
       finalResult.warEndTime ??
-      (await prisma.warHistoryAttack.findFirst({
+      (await prisma.warAttacks.findFirst({
         where: { clanTag, warStartTime, attackOrder: 0 },
         orderBy: { updatedAt: "desc" },
         select: { warEndTime: true },
@@ -183,7 +183,7 @@ export class WarEventHistoryService {
 
     const row = await prisma.$queryRaw<Array<{ warId: number }>>(
       Prisma.sql`
-        INSERT INTO "WarClanHistory"
+        INSERT INTO "ClanWarHistory"
           ("syncNumber","matchType","clanStars","clanDestruction","opponentStars","opponentDestruction","fwaPointsGained","expectedOutcome","actualOutcome","enemyPoints","warStartTime","warEndTime","clanName","clanTag","opponentName","opponentTag","updatedAt")
         VALUES
           (${payload.syncNumber}, ${payload.matchType}, ${finalResult.clanStars}, ${finalResult.clanDestruction}, ${finalResult.opponentStars}, ${finalResult.opponentDestruction}, ${pointsDelta}, ${payload.outcome}, ${finalResult.resultLabel}, ${enemyPoints}, ${warStartTime}, ${warEndTime}, ${payload.clanName}, ${clanTag}, ${payload.opponentName}, ${normalizeTag(payload.opponentTag) || null}, NOW())
@@ -210,11 +210,11 @@ export class WarEventHistoryService {
     const warId = Number(row[0]?.warId ?? NaN);
     if (!Number.isFinite(warId)) return;
 
-    await prisma.warHistoryAttack.updateMany({
+    await prisma.warAttacks.updateMany({
       where: { clanTag, warStartTime },
       data: { warId },
     });
-    await prisma.warEventLogSubscription.updateMany({
+    await prisma.currentWar.updateMany({
       where: { clanTag, lastWarStartTime: warStartTime },
       data: { warId },
     });
@@ -297,7 +297,7 @@ export class WarEventHistoryService {
     const warStartTime = preferredWarStartTime
       ? preferredWarStartTime
       : (
-          await prisma.warHistoryAttack.findFirst({
+          await prisma.warAttacks.findFirst({
             where: { clanTag, warEndTime: { not: null }, attackOrder: 0 },
             orderBy: { warStartTime: "desc" },
             select: { warStartTime: true },
@@ -307,12 +307,12 @@ export class WarEventHistoryService {
       return { missedBoth: [], notFollowingPlan: [] };
     }
 
-    const participants = await prisma.warHistoryAttack.findMany({
+    const participants = await prisma.warAttacks.findMany({
       where: { clanTag, warStartTime, attackOrder: 0 },
       select: { playerName: true, playerTag: true, attacksUsed: true, playerPosition: true },
       orderBy: [{ playerPosition: "asc" }, { playerName: "asc" }],
     });
-    const attacks = await prisma.warHistoryAttack.findMany({
+    const attacks = await prisma.warAttacks.findMany({
       where: { clanTag, warStartTime },
       select: {
         playerTag: true,
@@ -363,4 +363,5 @@ export class WarEventHistoryService {
     return computeWarPointsDeltaForTest(input);
   }
 }
+
 

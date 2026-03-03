@@ -352,7 +352,7 @@ async function runWarsMode(
     const selectedWars = await prisma.$queryRaw<Array<{ warStartTime: Date }>>(
       Prisma.sql`
         SELECT DISTINCT "warStartTime"
-        FROM "WarHistoryAttack"
+        FROM "WarAttacks"
         WHERE
           "clanTag" = ${clanTag}
           AND "attackOrder" = 0
@@ -382,7 +382,7 @@ async function runWarsMode(
           "playerName",
           "playerPosition",
           "attacksUsed"
-        FROM "WarHistoryAttack"
+        FROM "WarAttacks"
         WHERE
           "clanTag" = ${clanTag}
           AND "attackOrder" = 0
@@ -512,4 +512,5 @@ export const Inactive: Command = {
     await runWarsMode(interaction, cocService, warsValue);
   },
 };
+
 

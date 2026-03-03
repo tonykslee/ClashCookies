@@ -286,7 +286,7 @@ export const Notify: Command = {
       >(
         Prisma.sql`
           SELECT "clanTag","channelId","notifyRole","notify","pingRole"
-          FROM "WarEventLogSubscription"
+          FROM "CurrentWar"
           WHERE "guildId" = ${interaction.guildId}
         `
       );
@@ -343,7 +343,7 @@ export const Notify: Command = {
         target === "war_embed"
           ? await prisma.$executeRaw(
               Prisma.sql`
-                UPDATE "WarEventLogSubscription"
+                UPDATE "CurrentWar"
                 SET "notify" = ${enabled}, "updatedAt" = NOW()
                 WHERE "guildId" = ${interaction.guildId}
                   AND UPPER(REPLACE("clanTag",'#','')) = ${normalizeClanTagInput(clanTag)}
@@ -351,7 +351,7 @@ export const Notify: Command = {
             )
           : await prisma.$executeRaw(
               Prisma.sql`
-                UPDATE "WarEventLogSubscription"
+                UPDATE "CurrentWar"
                 SET "pingRole" = ${enabled}, "updatedAt" = NOW()
                 WHERE "guildId" = ${interaction.guildId}
                   AND UPPER(REPLACE("clanTag",'#','')) = ${normalizeClanTagInput(clanTag)}
@@ -464,7 +464,7 @@ export const Notify: Command = {
     const warId =
       warStartTime && clanTag
         ? (
-            await prisma.warClanHistory
+            await prisma.clanWarHistory
               .findUnique({
                 where: {
                   clanTag_warStartTime: {
@@ -480,7 +480,7 @@ export const Notify: Command = {
 
     await prisma.$executeRaw(
       Prisma.sql`
-        INSERT INTO "WarEventLogSubscription"
+        INSERT INTO "CurrentWar"
           ("guildId","clanTag","warId","channelId","notify","notifyRole","pingRole","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName","createdAt","updatedAt")
         VALUES
           (${interaction.guildId}, ${clanTag}, ${warId}, ${target.id}, true, ${notifyRole?.id ?? null}, ${rolePingEnabled}, ${lastState}, ${warStartTime}, ${opponentTag}, ${opponentName}, ${clanName}, NOW(), NOW())
@@ -541,3 +541,4 @@ export const Notify: Command = {
     await interaction.respond(choices);
   },
 };
+
