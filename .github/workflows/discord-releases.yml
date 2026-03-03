@@ -35,8 +35,7 @@ jobs:
           if [[ -z "$HIGHLIGHTS" ]]; then
             HIGHLIGHTS="No Highlights section found in release notes."
           fi
-          EMBED_DESCRIPTION="## Highlights
-$HIGHLIGHTS"
+          EMBED_DESCRIPTION=$(printf '## Highlights\n%s' "$HIGHLIGHTS")
           if (( ${#EMBED_DESCRIPTION} > 4096 )); then
             TRUNCATED_BODY_MAX=$((4096 - 28))
             EMBED_DESCRIPTION="${EMBED_DESCRIPTION:0:${TRUNCATED_BODY_MAX}}"
@@ -47,7 +46,13 @@ $HIGHLIGHTS"
             RELEASE_TITLE="${RELEASE_TITLE:0:253}..."
           fi
 
-          while IFS='|' read -r WEBHOOK_BASE ROLE_ID; do
+          TARGETS=(
+            "${DISCORD_RELEASE_WEBHOOK_DEV}|${DISCORD_RELEASE_ROLE_DEV}"
+            "${DISCORD_RELEASE_WEBHOOK_PROD}|${DISCORD_RELEASE_ROLE_PROD}"
+          )
+
+          for target in "${TARGETS[@]}"; do
+            IFS='|' read -r WEBHOOK_BASE ROLE_ID <<< "$target"
             if [[ -z "$WEBHOOK_BASE" ]]; then
               continue
             fi
@@ -85,7 +90,4 @@ $HIGHLIGHTS"
               -X POST \
               -d "$PAYLOAD" \
               "$WEBHOOK_ENDPOINT"
-          done <<EOF
-${DISCORD_RELEASE_WEBHOOK_DEV}|${DISCORD_RELEASE_ROLE_DEV}
-${DISCORD_RELEASE_WEBHOOK_PROD}|${DISCORD_RELEASE_ROLE_PROD}
-EOF
+          done
