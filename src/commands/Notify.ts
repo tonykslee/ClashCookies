@@ -169,8 +169,8 @@ export const Notify: Command = {
       ],
     },
     {
-      name: "war-ping",
-      description: "Toggle role ping on/off for an existing /notify war subscription",
+      name: "toggle",
+      description: "Toggle war embed or ping on/off for an existing /notify war subscription",
       type: ApplicationCommandOptionType.Subcommand,
       options: [
         {
@@ -181,10 +181,24 @@ export const Notify: Command = {
           autocomplete: true,
         },
         {
-          name: "enabled",
-          description: "Enable or disable role ping for war event posts",
-          type: ApplicationCommandOptionType.Boolean,
+          name: "target",
+          description: "What setting to toggle",
+          type: ApplicationCommandOptionType.String,
           required: true,
+          choices: [
+            { name: "war embed", value: "war_embed" },
+            { name: "ping", value: "ping" },
+          ],
+        },
+        {
+          name: "toggle",
+          description: "Enable or disable the selected target",
+          type: ApplicationCommandOptionType.String,
+          required: true,
+          choices: [
+            { name: "on", value: "on" },
+            { name: "off", value: "off" },
+          ],
         },
       ],
     },
@@ -237,20 +251,6 @@ export const Notify: Command = {
         },
       ],
     },
-    {
-      name: "war-remove",
-      description: "Remove war event log subscription for a clan",
-      type: ApplicationCommandOptionType.Subcommand,
-      options: [
-        {
-          name: "clan-tag",
-          description: "Clan tag to remove from notify routing",
-          type: ApplicationCommandOptionType.String,
-          required: true,
-          autocomplete: true,
-        },
-      ],
-    },
   ],
   run: async (
     _client: Client,
@@ -264,27 +264,6 @@ export const Notify: Command = {
     }
 
     const sub = interaction.options.getSubcommand(true);
-    if (sub === "war-remove") {
-      const clanTag = normalizeClanTag(interaction.options.getString("clan-tag", true));
-      if (!clanTag) {
-        await interaction.editReply("Invalid clan tag.");
-        return;
-      }
-
-      const deleted = await prisma.warEventLogSubscription.deleteMany({
-        where: {
-          guildId: interaction.guildId,
-          clanTag,
-        },
-      });
-      if (deleted.count === 0) {
-        await interaction.editReply(`No /notify war subscription found for ${clanTag}.`);
-        return;
-      }
-      await interaction.editReply(`Removed /notify war subscription for ${clanTag}.`);
-      return;
-    }
-
     if (sub === "show") {
       const rawTag = interaction.options.getString("clan-tag", false);
       const normalizedFilter = rawTag ? normalizeClanTag(rawTag) : "";
@@ -348,25 +327,40 @@ export const Notify: Command = {
       return;
     }
 
-    if (sub === "war-ping") {
+    if (sub === "toggle") {
       const clanTag = normalizeClanTag(interaction.options.getString("clan-tag", true));
-      const enabled = interaction.options.getBoolean("enabled", true);
-      const updated = await prisma.$executeRaw(
-        Prisma.sql`
-          UPDATE "WarEventLogSubscription"
-          SET "pingRole" = ${enabled}, "updatedAt" = NOW()
-          WHERE "guildId" = ${interaction.guildId}
-            AND UPPER(REPLACE("clanTag",'#','')) = ${normalizeClanTagInput(clanTag)}
-        `
-      );
+      const target = interaction.options.getString("target", true);
+      const toggle = interaction.options.getString("toggle", true);
+      const enabled = toggle === "on";
+      if (target !== "war_embed" && target !== "ping") {
+        await interaction.editReply("Invalid target. Use `war embed` or `ping`.");
+        return;
+      }
+      const updated =
+        target === "war_embed"
+          ? await prisma.$executeRaw(
+              Prisma.sql`
+                UPDATE "WarEventLogSubscription"
+                SET "notify" = ${enabled}, "updatedAt" = NOW()
+                WHERE "guildId" = ${interaction.guildId}
+                  AND UPPER(REPLACE("clanTag",'#','')) = ${normalizeClanTagInput(clanTag)}
+              `
+            )
+          : await prisma.$executeRaw(
+              Prisma.sql`
+                UPDATE "WarEventLogSubscription"
+                SET "pingRole" = ${enabled}, "updatedAt" = NOW()
+                WHERE "guildId" = ${interaction.guildId}
+                  AND UPPER(REPLACE("clanTag",'#','')) = ${normalizeClanTagInput(clanTag)}
+              `
+            );
       if (updated === 0) {
         await interaction.editReply(`No /notify war subscription found for ${clanTag}.`);
         return;
       }
 
-      await interaction.editReply(
-        `Role ping is now **${enabled ? "on" : "off"}** for ${clanTag}.`
-      );
+      const targetLabel = target === "war_embed" ? "War embed" : "Ping";
+      await interaction.editReply(`${targetLabel} is now **${enabled ? "on" : "off"}** for ${clanTag}.`);
       return;
     }
 
