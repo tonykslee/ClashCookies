@@ -2017,7 +2017,7 @@ export async function handleFwaMatchSyncActionButton(
       fwaPoints: syncAction.siteFwaPoints,
       opponentFwaPoints: syncAction.siteOpponentFwaPoints,
       matchType: syncAction.siteMatchType ?? undefined,
-      inferredMatchType: syncAction.siteMatchType !== null,
+      inferredMatchType: syncAction.siteMatchType === "MM",
       outcome: syncAction.siteOutcome,
     },
     update: {
@@ -2028,7 +2028,7 @@ export async function handleFwaMatchSyncActionButton(
       fwaPoints: syncAction.siteFwaPoints,
       opponentFwaPoints: syncAction.siteOpponentFwaPoints,
       matchType: syncAction.siteMatchType ?? undefined,
-      inferredMatchType: syncAction.siteMatchType !== null,
+      inferredMatchType: syncAction.siteMatchType === "MM",
       outcome: syncAction.siteOutcome,
       updatedAt: new Date(),
     },
@@ -2566,14 +2566,17 @@ async function getSourceOfTruthSync(
     select: { syncNumber: true },
   });
   const latestSync = Number(latestHistory?.syncNumber ?? NaN);
-  if (Number.isFinite(latestSync)) {
-    return Math.max(0, Math.trunc(latestSync) - 1);
-  }
   const raw = await settings.get(PREVIOUS_SYNC_KEY);
-  if (!raw) return null;
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed)) return null;
-  return Math.trunc(parsed);
+  const parsed = Number(raw ?? NaN);
+  const previousFromHistory = Number.isFinite(latestSync)
+    ? Math.max(0, Math.trunc(latestSync) - 1)
+    : null;
+  const previousFromSetting = Number.isFinite(parsed) ? Math.trunc(parsed) : null;
+  if (previousFromHistory === null && previousFromSetting === null) return null;
+  if (previousFromHistory === null) return previousFromSetting;
+  if (previousFromSetting === null) return previousFromHistory;
+  // Prefer the newer cursor if history and setting drift.
+  return Math.max(previousFromHistory, previousFromSetting);
 }
 
 async function resolveMatchTypeWithFallback(params: {
@@ -3421,6 +3424,15 @@ async function buildTrackedMatchOverview(
       opponentPoints?.balance !== null &&
       opponentPoints?.balance !== undefined &&
       !Number.isNaN(opponentPoints.balance);
+    const siteSyncObservedForWrite = scrapeIsCurrentOpponent
+      ? trackedScrape?.syncNumber ?? null
+      : primaryPoints?.winnerBoxSync ?? null;
+    const syncNumberForWrite =
+      siteSyncObservedForWrite !== null && Number.isFinite(siteSyncObservedForWrite)
+        ? Math.trunc(siteSyncObservedForWrite)
+        : currentSync !== null && Number.isFinite(currentSync)
+          ? Math.trunc(currentSync)
+          : null;
     const inferredFromPointsType: "FWA" | "MM" | null = hasOpponentPoints ? "FWA" : "MM";
     const matchType = matchTypeResolved ?? inferredFromPointsType ?? "UNKNOWN";
     const inferredMatchType = Boolean(sub?.inferredMatchType) || (matchTypeResolved === null && inferredFromPointsType !== null);
@@ -3448,10 +3460,7 @@ async function buildTrackedMatchOverview(
           clanTag: `#${clanTag}`,
           notify: false,
           channelId: "",
-          currentSyncNum:
-            currentSync !== null && Number.isFinite(currentSync)
-              ? Math.trunc(currentSync)
-              : null,
+          currentSyncNum: syncNumberForWrite,
           matchType: inferredFromPointsType,
           inferredMatchType: true,
           fwaPoints:
@@ -3470,10 +3479,7 @@ async function buildTrackedMatchOverview(
           warEndFwaPoints: null,
         },
         update: {
-          currentSyncNum:
-            currentSync !== null && Number.isFinite(currentSync)
-              ? Math.trunc(currentSync)
-              : undefined,
+          currentSyncNum: syncNumberForWrite ?? undefined,
           matchType: inferredFromPointsType,
           inferredMatchType: true,
           fwaPoints:
@@ -3505,10 +3511,7 @@ async function buildTrackedMatchOverview(
           clanTag: `#${clanTag}`,
           notify: false,
           channelId: "",
-          currentSyncNum:
-            currentSync !== null && Number.isFinite(currentSync)
-              ? Math.trunc(currentSync)
-              : null,
+          currentSyncNum: syncNumberForWrite,
           matchType,
           inferredMatchType,
           fwaPoints:
@@ -3527,10 +3530,7 @@ async function buildTrackedMatchOverview(
           warEndFwaPoints: null,
         },
         update: {
-          currentSyncNum:
-            currentSync !== null && Number.isFinite(currentSync)
-              ? Math.trunc(currentSync)
-              : undefined,
+          currentSyncNum: syncNumberForWrite ?? undefined,
           matchType,
           inferredMatchType,
           fwaPoints:
@@ -4634,6 +4634,15 @@ export const Fwa: Command = {
 
         const hasPrimaryPoints = primary.balance !== null && !Number.isNaN(primary.balance);
         const hasOpponentPoints = opponent.balance !== null && !Number.isNaN(opponent.balance);
+        const siteSyncObservedForWrite = scrapeIsCurrentOpponent
+          ? trackedScrape?.syncNumber ?? null
+          : primary.winnerBoxSync ?? null;
+        const syncNumberForWrite =
+          siteSyncObservedForWrite !== null && Number.isFinite(siteSyncObservedForWrite)
+            ? Math.trunc(siteSyncObservedForWrite)
+            : currentSync !== null && Number.isFinite(currentSync)
+              ? Math.trunc(currentSync)
+              : null;
         if (!hasPrimaryPoints && hasOpponentPoints) {
           await editReplySafe(`Could not fetch point balance for #${tag}.`);
           return;
@@ -4674,10 +4683,7 @@ export const Fwa: Command = {
               clanTag: `#${tag}`,
               notify: false,
               channelId: interaction.channelId,
-              currentSyncNum:
-                currentSync !== null && Number.isFinite(currentSync)
-                  ? Math.trunc(currentSync)
-                  : null,
+              currentSyncNum: syncNumberForWrite,
               matchType:
                 matchTypeResolved === null && inferredFromPointsType
                   ? inferredFromPointsType
@@ -4693,10 +4699,7 @@ export const Fwa: Command = {
               warEndFwaPoints: subscription?.warEndFwaPoints ?? null,
             },
             update: {
-              currentSyncNum:
-                currentSync !== null && Number.isFinite(currentSync)
-                  ? Math.trunc(currentSync)
-                  : undefined,
+              currentSyncNum: syncNumberForWrite ?? undefined,
               matchType:
                 matchTypeResolved === null && inferredFromPointsType
                   ? inferredFromPointsType
