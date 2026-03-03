@@ -13,6 +13,7 @@ jobs:
     steps:
       - name: Send Dev Build Update to Discord
         env:
+          DISCORD_DEV_BUILD: ${{ secrets.DISCORD_DEV_BUILD }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
           RUN_NUMBER: ${{ github.event.workflow_run.run_number }}
@@ -25,11 +26,17 @@ jobs:
         run: |
           SHORT_SHA="${COMMIT_SHA:0:7}"
           COMMIT_URL="https://github.com/${REPO}/commit/${COMMIT_SHA}"
+          WEBHOOK_BASE="${DISCORD_DEV_BUILD:-$DISCORD_WEBHOOK_URL}"
 
-          if [[ "$DISCORD_DEV_BUILD" == *\?* ]]; then
-            WEBHOOK_ENDPOINT="${DISCORD_DEV_BUILD}&wait=true&with_components=true"
+          if [[ -z "$WEBHOOK_BASE" ]]; then
+            echo "Missing Discord webhook secret. Set DISCORD_DEV_BUILD (preferred) or DISCORD_WEBHOOK_URL."
+            exit 1
+          fi
+
+          if [[ "$WEBHOOK_BASE" == *\?* ]]; then
+            WEBHOOK_ENDPOINT="${WEBHOOK_BASE}&wait=true&with_components=true"
           else
-            WEBHOOK_ENDPOINT="${DISCORD_DEV_BUILD}?wait=true&with_components=true"
+            WEBHOOK_ENDPOINT="${WEBHOOK_BASE}?wait=true&with_components=true"
           fi
 
           PAYLOAD="$(jq -n \
