@@ -2721,10 +2721,11 @@ async function buildLastWarMatchOverview(
   previousSync: number | null
 ): Promise<string | null> {
   const normalizedTag = normalizeTag(clanTag);
-  const lastWar = await prisma.warHistoryParticipant.findFirst({
+  const lastWar = await prisma.warHistoryAttack.findFirst({
     where: {
       clanTag: `#${normalizedTag}`,
       warEndTime: { not: null },
+      attackOrder: 0,
     },
     orderBy: { warStartTime: "desc" },
     select: {
@@ -2737,10 +2738,11 @@ async function buildLastWarMatchOverview(
 
   if (!lastWar) return null;
 
-  const participants = await prisma.warHistoryParticipant.findMany({
+  const participants = await prisma.warHistoryAttack.findMany({
     where: {
       clanTag: `#${normalizedTag}`,
       warStartTime: lastWar.warStartTime,
+      attackOrder: 0,
     },
     select: { attacksUsed: true },
   });
