@@ -240,7 +240,7 @@ export class WarEventLogService {
       Prisma.sql`
         SELECT
           "id","guildId","clanTag","warId","channelId","notify","pingRole","inferredMatchType","notifyRole","fwaPoints","opponentFwaPoints","outcome","matchType","warStartFwaPoints","warEndFwaPoints","lastClanStars","lastOpponentStars","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName"
-        FROM "WarEventLogSubscription"
+        FROM "CurrentWar"
         WHERE "notify" = true
         ORDER BY "updatedAt" ASC
       `
@@ -324,7 +324,7 @@ export class WarEventLogService {
         : null;
     const lastWarRow =
       params.source === "last"
-        ? await prisma.warHistoryAttack.findFirst({
+        ? await prisma.warAttacks.findFirst({
             where: { clanTag: normalizeTag(sub.clanTag), warEndTime: { not: null }, attackOrder: 0 },
             orderBy: { warStartTime: "desc" },
             select: {
@@ -714,7 +714,7 @@ export class WarEventLogService {
       Prisma.sql`
         SELECT
           "id","guildId","clanTag","warId","channelId","notify","pingRole","inferredMatchType","notifyRole","fwaPoints","opponentFwaPoints","outcome","matchType","warStartFwaPoints","warEndFwaPoints","lastClanStars","lastOpponentStars","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName"
-        FROM "WarEventLogSubscription"
+        FROM "CurrentWar"
         WHERE "guildId" = ${guildId} AND UPPER(REPLACE("clanTag",'#','')) = ${normalizeTagBare(clanTag)}
         LIMIT 1
       `
@@ -725,7 +725,7 @@ export class WarEventLogService {
   /** Purpose: has war end recorded. */
   private async hasWarEndRecorded(clanTagInput: string, warStartTime: Date): Promise<boolean> {
     const clanTag = normalizeTag(clanTagInput);
-    const existing = await prisma.warClanHistory.findUnique({
+    const existing = await prisma.clanWarHistory.findUnique({
       where: { clanTag_warStartTime: { clanTag, warStartTime } },
       select: { warId: true },
     });
@@ -753,7 +753,7 @@ export class WarEventLogService {
       Prisma.sql`
         SELECT
           "id","guildId","clanTag","warId","channelId","notify","pingRole","inferredMatchType","notifyRole","fwaPoints","opponentFwaPoints","outcome","matchType","warStartFwaPoints","warEndFwaPoints","lastClanStars","lastOpponentStars","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName"
-        FROM "WarEventLogSubscription"
+        FROM "CurrentWar"
         WHERE "id" = ${subscriptionId}
         LIMIT 1
       `
@@ -996,7 +996,7 @@ export class WarEventLogService {
     const resolvedWarId =
       currentState === "notInWar" ? null : await this.resolveWarId(sub.clanTag, nextWarStartTime);
 
-    await prisma.warEventLogSubscription.update({
+    await prisma.currentWar.update({
       where: { id: sub.id },
       data: {
         warId: resolvedWarId,
@@ -1025,7 +1025,7 @@ export class WarEventLogService {
     const clanTag = normalizeTag(clanTagInput);
     if (!clanTag) return null;
     return (
-      await prisma.warClanHistory
+      await prisma.clanWarHistory
         .findUnique({
           where: {
             clanTag_warStartTime: {
@@ -1472,7 +1472,7 @@ export class WarEventLogService {
     const warId =
       warStartTime && normalizeTag(payload.clanTag)
         ? (
-            await prisma.warClanHistory.findUnique({
+            await prisma.clanWarHistory.findUnique({
               where: {
                 clanTag_warStartTime: { clanTag: normalizeTag(payload.clanTag), warStartTime },
               },
@@ -1509,7 +1509,7 @@ export class WarEventLogService {
   }): Promise<void> {
     const clanTag = normalizeTag(input.clanTag);
     if (!clanTag || !input.warStartTime) return;
-    await prisma.warClanHistory.upsert({
+    await prisma.clanWarHistory.upsert({
       where: {
         clanTag_warStartTime: {
           clanTag,
@@ -1672,3 +1672,4 @@ export async function handleNotifyWarRefreshButton(
 }
 
 export const notifyWarBattleDayRefreshIntervalMs = BATTLE_DAY_REFRESH_MS;
+
