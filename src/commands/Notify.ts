@@ -124,11 +124,14 @@ export async function handleNotifyWarPreviewPostButton(
   notifyWarPreviewRequests.delete(parsed.key);
   await interaction.deleteReply().catch(async () => {
     await interaction.editReply({
-      content:
-        `Posted ${request.eventType} for **${request.clanName}** (${request.clanTag}) to <#${request.channelId}>.`,
+      content: "Preview cleared.",
       embeds: [],
       components: [],
     });
+  });
+  await interaction.followUp({
+    ephemeral: true,
+    content: `Posted ${request.eventType} for **${request.clanName}** (${request.clanTag}) to <#${request.channelId}>.`,
   });
 }
 
