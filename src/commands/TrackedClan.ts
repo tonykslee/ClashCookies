@@ -1,8 +1,14 @@
 import {
+  ActionRowBuilder,
   ApplicationCommandOptionType,
   AutocompleteInteraction,
+  ButtonBuilder,
+  ButtonInteraction,
+  ButtonStyle,
   ChatInputCommandInteraction,
   Client,
+  ComponentType,
+  EmbedBuilder,
 } from "discord.js";
 import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
@@ -22,6 +28,82 @@ const SHORTCODE_EMOJI_PATTERN = /^:([A-Za-z0-9_]+):$/;
 function normalizeClanShortNameInput(input: string): string | null {
   const normalized = input.trim().toUpperCase();
   return normalized.length > 0 ? normalized : null;
+}
+
+function buildTrackedClanBlock(clan: {
+  name: string | null;
+  tag: string;
+  loseStyle: string;
+  mailChannelId: string | null;
+  logChannelId: string | null;
+  clanRoleId: string | null;
+  clanBadge: string | null;
+  shortName: string | null;
+}): string {
+  const label = clan.name ? `${clan.tag} (${clan.name})` : clan.tag;
+  const mailChannel = clan.mailChannelId ? `<#${clan.mailChannelId}>` : "not set";
+  const logChannel = clan.logChannelId ? `<#${clan.logChannelId}>` : "not set";
+  const clanRole = clan.clanRoleId ? `<@&${clan.clanRoleId}>` : "not set";
+  const clanBadge = clan.clanBadge ?? "not set";
+  const shortName = clan.shortName ?? "not set";
+  return [
+    `**${label}**`,
+    `shortName: ${shortName}`,
+    `lose-style: ${clan.loseStyle}`,
+    `mailChannel: ${mailChannel}`,
+    `logChannel: ${logChannel}`,
+    `clanRole: ${clanRole}`,
+    `clanBadge: ${clanBadge}`,
+  ].join("\n");
+}
+
+function paginateTrackedClanBlocks(blocks: string[]): string[] {
+  const pages: string[] = [];
+  let i = 0;
+  const maxChars = 3900;
+  while (i < blocks.length) {
+    const remaining = blocks.length - i;
+    let pageSize = Math.min(3, remaining);
+    if (pageSize === 3) {
+      const candidate = blocks.slice(i, i + 3).join("\n\n");
+      if (candidate.length > maxChars) {
+        pageSize = Math.min(2, remaining);
+      }
+    }
+    if (pageSize >= 2) {
+      const candidate = blocks.slice(i, i + pageSize).join("\n\n");
+      if (candidate.length > maxChars) {
+        pageSize = 1;
+      }
+    }
+
+    pages.push(blocks.slice(i, i + pageSize).join("\n\n"));
+    i += pageSize;
+  }
+  return pages;
+}
+
+function buildTrackedClanListEmbed(total: number, pageContent: string, page: number, pages: number) {
+  return new EmbedBuilder()
+    .setTitle(`Tracked Clans (${total})`)
+    .setDescription(pageContent)
+    .setColor(0x57f287)
+    .setFooter({ text: `Page ${page + 1}/${pages}` });
+}
+
+function buildTrackedClanListRow(prefix: string, page: number, totalPages: number) {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`${prefix}:prev`)
+      .setLabel("Previous")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(page <= 0),
+    new ButtonBuilder()
+      .setCustomId(`${prefix}:next`)
+      .setLabel("Next")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(page >= totalPages - 1)
+  );
 }
 
 async function normalizeClanBadgeInput(
@@ -163,26 +245,66 @@ export const TrackedClan: Command = {
           return;
         }
 
-        const lines = tracked.map((clan, index) => {
-          const label = clan.name ? `${clan.tag} (${clan.name})` : clan.tag;
-          const mailChannel = clan.mailChannelId ? `<#${clan.mailChannelId}>` : "not set";
-          const logChannel = clan.logChannelId ? `<#${clan.logChannelId}>` : "not set";
-          const clanRole = clan.clanRoleId ? `<@&${clan.clanRoleId}>` : "not set";
-          const clanBadge = clan.clanBadge ?? "not set";
-          const shortName = clan.shortName ?? "not set";
-          return [
-            `${index + 1}. ${label}`,
-            `   shortName: ${shortName}`,
-            `   lose-style: ${clan.loseStyle}`,
-            `   mailChannel: ${mailChannel}`,
-            `   logChannel: ${logChannel}`,
-            `   clanRole: ${clanRole}`,
-            `   clanBadge: ${clanBadge}`,
-          ].join("\n");
+        const blocks = tracked.map((clan) => buildTrackedClanBlock(clan));
+        const pages = paginateTrackedClanBlocks(blocks);
+        let page = 0;
+        const paginatorPrefix = `tracked-clan-list:${interaction.id}`;
+
+        await interaction.editReply({
+          embeds: [buildTrackedClanListEmbed(tracked.length, pages[page], page, pages.length)],
+          components: pages.length > 1 ? [buildTrackedClanListRow(paginatorPrefix, page, pages.length)] : [],
         });
-        await safeReply(interaction, {
-          ephemeral: true,
-          content: `Tracked clans (${tracked.length}):\n\n${lines.join("\n\n")}`,
+
+        if (pages.length <= 1) {
+          return;
+        }
+
+        const message = await interaction.fetchReply();
+        const collector = message.createMessageComponentCollector({
+          componentType: ComponentType.Button,
+          time: 10 * 60 * 1000,
+        });
+
+        collector.on("collect", async (button: ButtonInteraction) => {
+          try {
+            if (button.user.id !== interaction.user.id) {
+              await button.reply({
+                content: "Only the command user can control this paginator.",
+                ephemeral: true,
+              });
+              return;
+            }
+            if (
+              button.customId !== `${paginatorPrefix}:prev` &&
+              button.customId !== `${paginatorPrefix}:next`
+            ) {
+              return;
+            }
+
+            if (button.customId.endsWith(":prev")) page = Math.max(0, page - 1);
+            if (button.customId.endsWith(":next")) page = Math.min(pages.length - 1, page + 1);
+
+            await button.update({
+              embeds: [buildTrackedClanListEmbed(tracked.length, pages[page], page, pages.length)],
+              components: [buildTrackedClanListRow(paginatorPrefix, page, pages.length)],
+            });
+          } catch (err) {
+            console.error(`tracked-clan list paginator failed: ${formatError(err)}`);
+            if (!button.replied && !button.deferred) {
+              await button.reply({ ephemeral: true, content: "Failed to update tracked-clan list page." });
+            }
+          }
+        });
+
+        collector.on("end", async () => {
+          try {
+            await interaction.editReply({
+              embeds: [buildTrackedClanListEmbed(tracked.length, pages[page], page, pages.length)],
+              components: [],
+            });
+          } catch {
+            // no-op
+          }
         });
         return;
       }
