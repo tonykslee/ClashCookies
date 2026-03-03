@@ -252,6 +252,20 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     ],
     examples: ["/sync time post role:@War", "/sync post status", "/sync post status message-id:123456789012345678"],
   },
+  force: {
+    summary: "Run manual force-sync actions for war data and MailConfig references.",
+    details: [
+      "`/force sync data` manually overwrites tracked clan points and/or sync number from points.fwafarm.",
+      "`/force sync mail` upserts `CurrentWar.mailConfig` message references for posted mail/notify messages.",
+      "`force sync` commands are admin-only by default.",
+    ],
+    examples: [
+      "/force sync data tag:2QG2C08UP datapoint:syncNum",
+      "/force sync data tag:2QG2C08UP datapoint:points",
+      "/force sync mail tag:2QG2C08UP message-type:mail message-id:1234567890123456789",
+      "/force sync mail tag:2QG2C08UP message-type:notify:war start message-id:1234567890123456789",
+    ],
+  },
   permission: {
     summary: "Control which roles can run each command target.",
     details: [
