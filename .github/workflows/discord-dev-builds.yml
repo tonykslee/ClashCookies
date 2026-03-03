@@ -54,7 +54,7 @@ jobs:
               embeds: [{
                 title: $title,
                 description:
-                  ("`" + $workflow_name + "` run #" + $run_number + " passed on `" + $branch + "`.\n\n" +
+                  ("`" + $workflow_name + "` run #" + $run_number + " passed on `" + $branch + "`.\n" +
                    "## Highlights\n" +
                    ($commit_msg | if length > 3800 then .[0:3800] + "..." else . end)),
                 color: 5763719,
