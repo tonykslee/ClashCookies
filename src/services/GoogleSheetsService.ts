@@ -9,6 +9,7 @@ export const SHEET_SETTING_ACTUAL_TAB_KEY = "google_sheet_actual_tab";
 export const SHEET_SETTING_WAR_ID_KEY = "google_sheet_war_id";
 export const SHEET_SETTING_WAR_TAB_KEY = "google_sheet_war_tab";
 const GOOGLE_API_TIMEOUT_MS = 20000;
+const APPS_SCRIPT_PROXY_TIMEOUT_MS = 30000;
 
 export type GoogleSheetMode = "actual" | "war";
 
@@ -26,27 +27,19 @@ export class GoogleSheetsService {
   async getLinkedSheet(
     mode?: GoogleSheetMode
   ): Promise<{ sheetId: string; tabName: string | null }> {
-    if (mode) {
-      const modeKeys = this.getModeKeys(mode);
-      const modeSheetId = await this.settings.get(modeKeys.idKey);
-      const modeTabName = await this.settings.get(modeKeys.tabKey);
-
-      if (modeSheetId) {
-        return { sheetId: modeSheetId, tabName: modeTabName };
-      }
-
-      if (mode === "actual") {
-        const legacySheetId = await this.settings.get(SHEET_SETTING_ID_KEY);
-        const legacyTabName = await this.settings.get(SHEET_SETTING_TAB_KEY);
-        return { sheetId: legacySheetId ?? "", tabName: legacyTabName };
-      }
-
-      return { sheetId: "", tabName: null };
-    }
-
     const sheetId = await this.settings.get(SHEET_SETTING_ID_KEY);
     const tabName = await this.settings.get(SHEET_SETTING_TAB_KEY);
-    return { sheetId: sheetId ?? "", tabName };
+    if (sheetId) return { sheetId, tabName };
+
+    const actualSheetId = await this.settings.get(SHEET_SETTING_ACTUAL_ID_KEY);
+    const actualTabName = await this.settings.get(SHEET_SETTING_ACTUAL_TAB_KEY);
+    if (actualSheetId) return { sheetId: actualSheetId, tabName: actualTabName };
+
+    const warSheetId = await this.settings.get(SHEET_SETTING_WAR_ID_KEY);
+    const warTabName = await this.settings.get(SHEET_SETTING_WAR_TAB_KEY);
+    if (warSheetId) return { sheetId: warSheetId, tabName: warTabName };
+
+    return { sheetId: "", tabName: null };
   }
 
   async setLinkedSheet(
@@ -54,38 +47,37 @@ export class GoogleSheetsService {
     tabName?: string,
     mode?: GoogleSheetMode
   ): Promise<void> {
-    if (mode) {
-      const modeKeys = this.getModeKeys(mode);
-      await this.settings.set(modeKeys.idKey, sheetId);
-      if (tabName && tabName.trim().length > 0) {
-        await this.settings.set(modeKeys.tabKey, tabName.trim());
-      }
-      return;
-    }
-
     await this.settings.set(SHEET_SETTING_ID_KEY, sheetId);
     if (tabName && tabName.trim().length > 0) {
       await this.settings.set(SHEET_SETTING_TAB_KEY, tabName.trim());
     }
-  }
-
-  /** Purpose: clear linked sheet. */
-  async clearLinkedSheet(mode?: GoogleSheetMode): Promise<void> {
     if (mode) {
       const modeKeys = this.getModeKeys(mode);
       await this.settings.delete(modeKeys.idKey);
       await this.settings.delete(modeKeys.tabKey);
       return;
     }
+    await this.settings.delete(SHEET_SETTING_ACTUAL_ID_KEY);
+    await this.settings.delete(SHEET_SETTING_ACTUAL_TAB_KEY);
+    await this.settings.delete(SHEET_SETTING_WAR_ID_KEY);
+    await this.settings.delete(SHEET_SETTING_WAR_TAB_KEY);
+  }
 
+  /** Purpose: clear linked sheet. */
+  async clearLinkedSheet(mode?: GoogleSheetMode): Promise<void> {
     await this.settings.delete(SHEET_SETTING_ID_KEY);
     await this.settings.delete(SHEET_SETTING_TAB_KEY);
+    if (mode) {
+      const modeKeys = this.getModeKeys(mode);
+      await this.settings.delete(modeKeys.idKey);
+      await this.settings.delete(modeKeys.tabKey);
+    }
   }
 
   /** Purpose: test access. */
   async testAccess(sheetId: string, tabName?: string): Promise<void> {
     const range = tabName?.trim()
-      ? `${tabName.trim()}!A1:A1`
+      ? `${escapeSheetTabName(tabName.trim())}!A1:A1`
       : "A1:A1";
     await this.readValues(sheetId, range);
   }
@@ -102,12 +94,17 @@ export class GoogleSheetsService {
       throw new Error("No linked Google Sheet found.");
     }
 
-    const effectiveRange = range ?? (tabName ? `${tabName}!A1:D10` : "A1:D10");
+    const effectiveRange = range ?? (tabName ? `${escapeSheetTabName(tabName)}!A1:D10` : "A1:D10");
     return this.readValues(sheetId, effectiveRange);
   }
 
   /** Purpose: read values. */
   async readValues(sheetId: string, range: string): Promise<string[][]> {
+    const proxyUrl = process.env.GS_WEBHOOK_URL?.trim();
+    if (proxyUrl) {
+      return this.readValuesViaAppsScriptProxy(proxyUrl, sheetId, range);
+    }
+
     const token = await this.getAccessToken();
     const encodedRange = encodeURIComponent(range);
     const encodedSheetId = encodeURIComponent(sheetId);
@@ -121,6 +118,53 @@ export class GoogleSheetsService {
     });
 
     return response.data.values ?? [];
+  }
+
+  private async readValuesViaAppsScriptProxy(
+    url: string,
+    sheetId: string,
+    range: string
+  ): Promise<string[][]> {
+    const token = process.env.GS_WEBHOOK_SHARED_SECRET?.trim();
+    const payload: Record<string, string> = {
+      action: "readValues",
+      sheetId,
+      range,
+    };
+    if (token) payload.token = token;
+
+    const response = await axios.post<{
+      values?: unknown;
+      ok?: boolean;
+      error?: unknown;
+      message?: unknown;
+      result?: { values?: unknown };
+    }>(url, payload, {
+      headers: { "Content-Type": "application/json" },
+      timeout: APPS_SCRIPT_PROXY_TIMEOUT_MS,
+      validateStatus: () => true,
+    });
+
+    if (response.status >= 400) {
+      const message =
+        typeof response.data?.error === "string"
+          ? response.data.error
+          : typeof response.data?.message === "string"
+            ? response.data.message
+            : `Apps Script proxy returned HTTP ${response.status}`;
+      throw new Error(message);
+    }
+
+    const rawValues =
+      response.data?.values ??
+      response.data?.result?.values ??
+      null;
+    if (!Array.isArray(rawValues)) return [];
+
+    return rawValues.map((row) => {
+      if (!Array.isArray(row)) return [];
+      return row.map((cell) => String(cell ?? ""));
+    });
   }
 
   /** Purpose: get access token. */
@@ -284,4 +328,9 @@ export class GoogleSheetsService {
       tabKey: SHEET_SETTING_WAR_TAB_KEY,
     };
   }
+}
+
+function escapeSheetTabName(tabName: string): string {
+  const escaped = String(tabName ?? "").trim().replace(/'/g, "''");
+  return `'${escaped}'`;
 }

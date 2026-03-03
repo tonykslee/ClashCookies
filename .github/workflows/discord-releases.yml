@@ -10,15 +10,22 @@ jobs:
     steps:
       - name: Send Release to Discord
         env:
+          DISCORD_RELEASE_WEBHOOK: ${{ secrets.DISCORD_RELEASE_WEBHOOK }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           RELEASE_NAME: ${{ github.event.release.name }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
           RELEASE_URL: ${{ github.event.release.html_url }}
         run: |
-          if [[ "$DISCORD_WEBHOOK_URL" == *\?* ]]; then
-            WEBHOOK_ENDPOINT="${DISCORD_WEBHOOK_URL}&wait=true&with_components=true"
+          WEBHOOK_BASE="${DISCORD_RELEASE_WEBHOOK:-$DISCORD_WEBHOOK_URL}"
+          if [[ -z "$WEBHOOK_BASE" ]]; then
+            echo "Missing Discord webhook secret. Set DISCORD_RELEASE_WEBHOOK (preferred) or DISCORD_WEBHOOK_URL."
+            exit 1
+          fi
+
+          if [[ "$WEBHOOK_BASE" == *\?* ]]; then
+            WEBHOOK_ENDPOINT="${WEBHOOK_BASE}&wait=true&with_components=true"
           else
-            WEBHOOK_ENDPOINT="${DISCORD_WEBHOOK_URL}?wait=true&with_components=true"
+            WEBHOOK_ENDPOINT="${WEBHOOK_BASE}?wait=true&with_components=true"
           fi
 
           PAYLOAD="$(jq -n \
@@ -32,7 +39,8 @@ jobs:
               username: "ClashCookies",
               embeds: [{
                 title: $title,
-                description: "Click the button below to view the full changelog.",
+                url: $release_url,
+                description: ("Click the button below to view the full changelog.\n[View Full Changelog](" + $release_url + ")"),
                 color: 5814783,
                 footer: { text: ("Version " + $tag) }
               }],

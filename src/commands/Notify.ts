@@ -1,11 +1,16 @@
 import {
+  ActionRowBuilder,
   ApplicationCommandOptionType,
   AutocompleteInteraction,
+  ButtonBuilder,
+  ButtonInteraction,
+  ButtonStyle,
   ChannelType,
   ChatInputCommandInteraction,
   Client,
   Role,
 } from "discord.js";
+import { randomUUID } from "crypto";
 import { Prisma } from "@prisma/client";
 import { Command } from "../Command";
 import { prisma } from "../prisma";
@@ -26,6 +31,108 @@ function deriveWarState(raw: string | null | undefined): string {
 
 function normalizeClanTagInput(input: string): string {
   return input.trim().toUpperCase().replace(/^#/, "");
+}
+
+const NOTIFY_WAR_PREVIEW_POST_PREFIX = "notify-war-preview-post";
+const notifyWarPreviewRequests = new Map<
+  string,
+  {
+    userId: string;
+    guildId: string;
+    clanTag: string;
+    eventType: "war_started" | "battle_day" | "war_ended";
+    source: "current" | "last";
+    channelId: string;
+    clanName: string;
+    createdAt: number;
+  }
+>();
+
+function buildNotifyWarPreviewPostCustomId(key: string): string {
+  return `${NOTIFY_WAR_PREVIEW_POST_PREFIX}:${key}`;
+}
+
+function parseNotifyWarPreviewPostCustomId(
+  customId: string
+): { key: string } | null {
+  const parts = String(customId ?? "").split(":");
+  if (parts.length !== 2 || parts[0] !== NOTIFY_WAR_PREVIEW_POST_PREFIX) return null;
+  const key = parts[1]?.trim() ?? "";
+  if (!key) return null;
+  return { key };
+}
+
+export function isNotifyWarPreviewPostButtonCustomId(customId: string): boolean {
+  return String(customId ?? "").startsWith(`${NOTIFY_WAR_PREVIEW_POST_PREFIX}:`);
+}
+
+export async function handleNotifyWarPreviewPostButton(
+  interaction: ButtonInteraction,
+  cocService: CoCService
+): Promise<void> {
+  const parsed = parseNotifyWarPreviewPostCustomId(interaction.customId);
+  if (!parsed) return;
+
+  const request = notifyWarPreviewRequests.get(parsed.key);
+  if (!request) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "This preview has expired. Run `/notify war-preview` again.",
+    });
+    return;
+  }
+  if (request.userId !== interaction.user.id) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Only the user who generated this preview can confirm posting.",
+    });
+    return;
+  }
+  if (request.guildId !== interaction.guildId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "This preview is from a different server.",
+    });
+    return;
+  }
+  if (Date.now() - request.createdAt > 30 * 60 * 1000) {
+    notifyWarPreviewRequests.delete(parsed.key);
+    await interaction.reply({
+      ephemeral: true,
+      content: "This preview has expired. Run `/notify war-preview` again.",
+    });
+    return;
+  }
+
+  await interaction.deferUpdate();
+  const warEventService = new WarEventLogService(interaction.client, cocService);
+  const result = await warEventService.emitTestEventForClan({
+    guildId: request.guildId,
+    clanTag: request.clanTag,
+    eventType: request.eventType,
+    source: request.source,
+  });
+  if (!result.ok) {
+    await interaction.followUp({
+      ephemeral: true,
+      content:
+      `Failed to post preview publicly for ${request.clanName} (${request.clanTag}): ${result.reason ?? "unknown reason"}`
+    });
+    return;
+  }
+
+  notifyWarPreviewRequests.delete(parsed.key);
+  await interaction.deleteReply().catch(async () => {
+    await interaction.editReply({
+      content: "Preview cleared.",
+      embeds: [],
+      components: [],
+    });
+  });
+  await interaction.followUp({
+    ephemeral: true,
+    content: `Posted ${request.eventType} for **${request.clanName}** (${request.clanTag}) to <#${request.channelId}>.`,
+  });
 }
 
 export const Notify: Command = {
@@ -65,8 +172,8 @@ export const Notify: Command = {
       ],
     },
     {
-      name: "war-ping",
-      description: "Toggle role ping on/off for an existing /notify war subscription",
+      name: "toggle",
+      description: "Toggle war embed or ping on/off for an existing /notify war subscription",
       type: ApplicationCommandOptionType.Subcommand,
       options: [
         {
@@ -77,16 +184,30 @@ export const Notify: Command = {
           autocomplete: true,
         },
         {
-          name: "enabled",
-          description: "Enable or disable role ping for war event posts",
-          type: ApplicationCommandOptionType.Boolean,
+          name: "target",
+          description: "What setting to toggle",
+          type: ApplicationCommandOptionType.String,
           required: true,
+          choices: [
+            { name: "war embed", value: "war_embed" },
+            { name: "ping", value: "ping" },
+          ],
+        },
+        {
+          name: "toggle",
+          description: "Enable or disable the selected target",
+          type: ApplicationCommandOptionType.String,
+          required: true,
+          choices: [
+            { name: "on", value: "on" },
+            { name: "off", value: "off" },
+          ],
         },
       ],
     },
     {
-      name: "war-test",
-      description: "Trigger a test war event embed for a configured clan",
+      name: "war-preview",
+      description: "Preview a war event embed, then confirm posting publicly",
       type: ApplicationCommandOptionType.Subcommand,
       options: [
         {
@@ -133,20 +254,6 @@ export const Notify: Command = {
         },
       ],
     },
-    {
-      name: "war-remove",
-      description: "Remove war event log subscription for a clan",
-      type: ApplicationCommandOptionType.Subcommand,
-      options: [
-        {
-          name: "clan-tag",
-          description: "Clan tag to remove from notify routing",
-          type: ApplicationCommandOptionType.String,
-          required: true,
-          autocomplete: true,
-        },
-      ],
-    },
   ],
   run: async (
     _client: Client,
@@ -160,27 +267,6 @@ export const Notify: Command = {
     }
 
     const sub = interaction.options.getSubcommand(true);
-    if (sub === "war-remove") {
-      const clanTag = normalizeClanTag(interaction.options.getString("clan-tag", true));
-      if (!clanTag) {
-        await interaction.editReply("Invalid clan tag.");
-        return;
-      }
-
-      const deleted = await prisma.warEventLogSubscription.deleteMany({
-        where: {
-          guildId: interaction.guildId,
-          clanTag,
-        },
-      });
-      if (deleted.count === 0) {
-        await interaction.editReply(`No /notify war subscription found for ${clanTag}.`);
-        return;
-      }
-      await interaction.editReply(`Removed /notify war subscription for ${clanTag}.`);
-      return;
-    }
-
     if (sub === "show") {
       const rawTag = interaction.options.getString("clan-tag", false);
       const normalizedFilter = rawTag ? normalizeClanTag(rawTag) : "";
@@ -200,7 +286,7 @@ export const Notify: Command = {
       >(
         Prisma.sql`
           SELECT "clanTag","channelId","notifyRole","notify","pingRole"
-          FROM "WarEventLogSubscription"
+          FROM "CurrentWar"
           WHERE "guildId" = ${interaction.guildId}
         `
       );
@@ -244,29 +330,44 @@ export const Notify: Command = {
       return;
     }
 
-    if (sub === "war-ping") {
+    if (sub === "toggle") {
       const clanTag = normalizeClanTag(interaction.options.getString("clan-tag", true));
-      const enabled = interaction.options.getBoolean("enabled", true);
-      const updated = await prisma.$executeRaw(
-        Prisma.sql`
-          UPDATE "WarEventLogSubscription"
-          SET "pingRole" = ${enabled}, "updatedAt" = NOW()
-          WHERE "guildId" = ${interaction.guildId}
-            AND UPPER(REPLACE("clanTag",'#','')) = ${normalizeClanTagInput(clanTag)}
-        `
-      );
+      const target = interaction.options.getString("target", true);
+      const toggle = interaction.options.getString("toggle", true);
+      const enabled = toggle === "on";
+      if (target !== "war_embed" && target !== "ping") {
+        await interaction.editReply("Invalid target. Use `war embed` or `ping`.");
+        return;
+      }
+      const updated =
+        target === "war_embed"
+          ? await prisma.$executeRaw(
+              Prisma.sql`
+                UPDATE "CurrentWar"
+                SET "notify" = ${enabled}, "updatedAt" = NOW()
+                WHERE "guildId" = ${interaction.guildId}
+                  AND UPPER(REPLACE("clanTag",'#','')) = ${normalizeClanTagInput(clanTag)}
+              `
+            )
+          : await prisma.$executeRaw(
+              Prisma.sql`
+                UPDATE "CurrentWar"
+                SET "pingRole" = ${enabled}, "updatedAt" = NOW()
+                WHERE "guildId" = ${interaction.guildId}
+                  AND UPPER(REPLACE("clanTag",'#','')) = ${normalizeClanTagInput(clanTag)}
+              `
+            );
       if (updated === 0) {
         await interaction.editReply(`No /notify war subscription found for ${clanTag}.`);
         return;
       }
 
-      await interaction.editReply(
-        `Role ping is now **${enabled ? "on" : "off"}** for ${clanTag}.`
-      );
+      const targetLabel = target === "war_embed" ? "War embed" : "Ping";
+      await interaction.editReply(`${targetLabel} is now **${enabled ? "on" : "off"}** for ${clanTag}.`);
       return;
     }
 
-    if (sub === "war-test") {
+    if (sub === "war-preview") {
       const clanTag = normalizeClanTag(interaction.options.getString("clan-tag", true));
       const eventType = interaction.options.getString("event", true) as
         | "war_started"
@@ -277,7 +378,7 @@ export const Notify: Command = {
         | "last";
 
       const warEventService = new WarEventLogService(_client, cocService);
-      const result = await warEventService.emitTestEventForClan({
+      const result = await warEventService.buildTestEventPreviewForClan({
         guildId: interaction.guildId,
         clanTag,
         eventType,
@@ -285,13 +386,41 @@ export const Notify: Command = {
       });
 
       if (!result.ok) {
-        await interaction.editReply(`Failed to trigger test event: ${result.reason ?? "unknown reason"}`);
+        await interaction.editReply(`Failed to build preview: ${result.reason ?? "unknown reason"}`);
+        return;
+      }
+      if (!result.channelId || !result.clanName || !result.embeds || result.embeds.length === 0) {
+        await interaction.editReply("Failed to build preview: incomplete preview payload.");
         return;
       }
 
-      await interaction.editReply(
-        `Triggered test event \`${eventType}\` for ${clanTag} using \`${source}\` war data.`
-      );
+      const previewKey = randomUUID();
+      notifyWarPreviewRequests.set(previewKey, {
+        userId: interaction.user.id,
+        guildId: interaction.guildId,
+        clanTag,
+        eventType,
+        source,
+        channelId: result.channelId,
+        clanName: result.clanName,
+        createdAt: Date.now(),
+      });
+
+      await interaction.editReply({
+        content:
+          `Preview ready for **${result.clanName}** (${clanTag}).\n` +
+          `Target channel: <#${result.channelId}>.\n` +
+          "Click **Confirm Post** to publish this embed publicly.",
+        embeds: result.embeds ?? [],
+        components: [
+          new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder()
+              .setCustomId(buildNotifyWarPreviewPostCustomId(previewKey))
+              .setLabel("Confirm Post")
+              .setStyle(ButtonStyle.Success)
+          ),
+        ],
+      });
       return;
     }
 
@@ -332,15 +461,31 @@ export const Notify: Command = {
       const [, y, mo, d, h, mi, s] = m;
       return new Date(Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s)));
     })();
+    const warId =
+      warStartTime && clanTag
+        ? (
+            await prisma.clanWarHistory
+              .findFirst({
+                where: {
+                  clanTag,
+                  warStartTime,
+                },
+                orderBy: { warId: "desc" },
+                select: { warId: true },
+              })
+              .catch(() => null)
+          )?.warId ?? null
+        : null;
 
     await prisma.$executeRaw(
       Prisma.sql`
-        INSERT INTO "WarEventLogSubscription"
-          ("guildId","clanTag","channelId","notify","notifyRole","pingRole","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName","createdAt","updatedAt")
+        INSERT INTO "CurrentWar"
+          ("guildId","clanTag","warId","channelId","notify","notifyRole","pingRole","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName","createdAt","updatedAt")
         VALUES
-          (${interaction.guildId}, ${clanTag}, ${target.id}, true, ${notifyRole?.id ?? null}, ${rolePingEnabled}, ${lastState}, ${warStartTime}, ${opponentTag}, ${opponentName}, ${clanName}, NOW(), NOW())
+          (${interaction.guildId}, ${clanTag}, ${warId}, ${target.id}, true, ${notifyRole?.id ?? null}, ${rolePingEnabled}, ${lastState}, ${warStartTime}, ${opponentTag}, ${opponentName}, ${clanName}, NOW(), NOW())
         ON CONFLICT ("guildId","clanTag")
         DO UPDATE SET
+          "warId" = EXCLUDED."warId",
           "channelId" = EXCLUDED."channelId",
           "notify" = true,
           "notifyRole" = EXCLUDED."notifyRole",
@@ -395,3 +540,4 @@ export const Notify: Command = {
     await interaction.respond(choices);
   },
 };
+

@@ -47,6 +47,7 @@ type SubscriptionRow = {
   id: number;
   guildId: string;
   clanTag: string;
+  warId: number | null;
   channelId: string;
   notify: boolean;
   pingRole: boolean;
@@ -82,6 +83,43 @@ type EmbedWarStats = {
   attacksPerMember: number | null;
   clanDestruction: number | null;
   opponentDestruction: number | null;
+};
+
+type EventEmitPayload = {
+  eventType: EventType;
+  clanTag: string;
+  clanName: string;
+  opponentTag: string;
+  opponentName: string;
+  syncNumber: number | null;
+  notifyRole: string | null;
+  pingRole: boolean;
+  fwaPoints: number | null;
+  opponentFwaPoints: number | null;
+  outcome: "WIN" | "LOSE" | null;
+  matchType: MatchType;
+  warStartFwaPoints: number | null;
+  warEndFwaPoints: number | null;
+  lastClanStars: number | null;
+  lastOpponentStars: number | null;
+  warStartTime: Date | null;
+  warEndTime: Date | null;
+  clanAttacks: number | null;
+  opponentAttacks: number | null;
+  teamSize: number | null;
+  attacksPerMember: number | null;
+  clanDestruction: number | null;
+  opponentDestruction: number | null;
+  testFinalResultOverride?: WarEndResultSnapshot | null;
+};
+
+export type NotifyWarPreviewResult = {
+  ok: boolean;
+  reason?: string;
+  clanName?: string;
+  clanTag?: string;
+  channelId?: string;
+  embeds?: EmbedBuilder[];
 };
 
 /** Purpose: detect if current poll belongs to a newer war cycle than the stored snapshot. */
@@ -201,8 +239,8 @@ export class WarEventLogService {
     const subs = await prisma.$queryRaw<SubscriptionRow[]>(
       Prisma.sql`
         SELECT
-          "id","guildId","clanTag","channelId","notify","pingRole","inferredMatchType","notifyRole","fwaPoints","opponentFwaPoints","outcome","matchType","warStartFwaPoints","warEndFwaPoints","lastClanStars","lastOpponentStars","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName"
-        FROM "WarEventLogSubscription"
+          "id","guildId","clanTag","warId","channelId","notify","pingRole","inferredMatchType","notifyRole","fwaPoints","opponentFwaPoints","outcome","matchType","warStartFwaPoints","warEndFwaPoints","lastClanStars","lastOpponentStars","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName"
+        FROM "CurrentWar"
         WHERE "notify" = true
         ORDER BY "updatedAt" ASC
       `
@@ -236,7 +274,42 @@ export class WarEventLogService {
     const sub = await this.findSubscriptionByGuildAndTag(params.guildId, params.clanTag);
     if (!sub) return { ok: false, reason: "No war event subscription found for that guild+clan." };
     if (!sub.channelId) return { ok: false, reason: "Subscription has no configured channel." };
+    const payload = await this.buildTestEventPayload(sub, params);
+    await this.emitEvent(sub.channelId, payload);
 
+    return { ok: true };
+  }
+
+  async buildTestEventPreviewForClan(params: {
+    guildId: string;
+    clanTag: string;
+    eventType: EventType;
+    source: TestSource;
+  }): Promise<NotifyWarPreviewResult> {
+    const sub = await this.findSubscriptionByGuildAndTag(params.guildId, params.clanTag);
+    if (!sub) return { ok: false, reason: "No war event subscription found for that guild+clan." };
+    if (!sub.channelId) return { ok: false, reason: "Subscription has no configured channel." };
+
+    const payload = await this.buildTestEventPayload(sub, params);
+    const warId = await this.resolveWarId(payload.clanTag, payload.warStartTime);
+    const message = await this.buildEventMessage(payload, params.guildId, {
+      includeRoleMention: false,
+      includeEventComponents: false,
+      warId,
+    });
+    return {
+      ok: true,
+      clanName: payload.clanName,
+      clanTag: payload.clanTag,
+      channelId: sub.channelId,
+      embeds: message.embeds,
+    };
+  }
+
+  private async buildTestEventPayload(
+    sub: SubscriptionRow,
+    params: { eventType: EventType; source: TestSource }
+  ): Promise<EventEmitPayload> {
     const previousSync = await this.pointsSync.getPreviousSyncNum();
     const activeSync = previousSync === null ? null : previousSync + 1;
     const syncNumber = params.source === "last" ? previousSync : activeSync;
@@ -251,8 +324,8 @@ export class WarEventLogService {
         : null;
     const lastWarRow =
       params.source === "last"
-        ? await prisma.warHistoryParticipant.findFirst({
-            where: { clanTag: normalizeTag(sub.clanTag), warEndTime: { not: null } },
+        ? await prisma.warAttacks.findFirst({
+            where: { clanTag: normalizeTag(sub.clanTag), warEndTime: { not: null }, attackOrder: 0 },
             orderBy: { warStartTime: "desc" },
             select: {
               clanName: true,
@@ -286,8 +359,7 @@ export class WarEventLogService {
           lastWarRow?.opponentClanName ??
           sub.lastOpponentName ??
           "Unknown"
-      ).trim() ||
-      "Unknown";
+      ).trim() || "Unknown";
 
     let fwaPoints = sub.fwaPoints;
     let opponentFwaPoints = sub.opponentFwaPoints;
@@ -301,6 +373,7 @@ export class WarEventLogService {
       opponentFwaPoints = b.balance;
       outcome = deriveExpectedOutcome(clanTag, opponentTag, a.balance, b.balance, syncNumber);
     }
+
     const currentWarStartTime = parseCocTime(currentWar?.startTime ?? null);
     const testWarStartTime =
       params.source === "current"
@@ -347,7 +420,7 @@ export class WarEventLogService {
       }
     }
 
-    await this.emitEvent(sub.channelId, {
+    return {
       eventType: params.eventType,
       clanTag,
       clanName,
@@ -397,9 +470,240 @@ export class WarEventLogService {
         ? Number(currentWar?.opponent?.destructionPercentage)
         : null,
       testFinalResultOverride,
-    });
+    };
+  }
 
-    return { ok: true };
+  private async buildEventMessage(
+    payload: EventEmitPayload,
+    guildId: string | null,
+    options?: {
+      includeRoleMention?: boolean;
+      includeEventComponents?: boolean;
+      warId?: number | null;
+    }
+  ): Promise<{
+    content?: string;
+    embeds: EmbedBuilder[];
+    components: ActionRowBuilder<ButtonBuilder>[];
+    allowedMentions?: { roles: string[] };
+  }> {
+    const includeRoleMention = options?.includeRoleMention ?? true;
+    const includeEventComponents = options?.includeEventComponents ?? true;
+    const warId = options?.warId ?? null;
+    const opponentTag = normalizeTag(payload.opponentTag);
+    const embed = new EmbedBuilder()
+      .setTitle(`Event: ${eventTitle(payload.eventType)} - ${payload.clanName}`)
+      .setColor(
+        payload.eventType === "war_started"
+          ? 0x3498db
+          : payload.eventType === "battle_day"
+            ? 0xf1c40f
+            : 0x2ecc71
+      )
+      .setFooter({ text: `War ID: ${warId ?? "unknown"}` })
+      .setTimestamp(new Date());
+
+    embed.addFields(
+      {
+        name: "Opponent",
+        value: `${payload.opponentName} (${opponentTag ? `#${opponentTag}` : "unknown"})`,
+        inline: false,
+      },
+      {
+        name: "Sync #",
+        value: payload.syncNumber ? `#${payload.syncNumber}` : "unknown",
+        inline: true,
+      }
+    );
+
+    if (payload.eventType === "battle_day") {
+      embed.addFields(
+        {
+          name: "Battle Day Remaining",
+          value: toDiscordRelativeTime(payload.warEndTime),
+          inline: true,
+        },
+        {
+          name: "Match Type",
+          value: payload.matchType ?? "unknown",
+          inline: true,
+        }
+      );
+      if (payload.matchType !== "BL" && payload.matchType !== "MM") {
+        embed.addFields({
+          name: "War Plan",
+          value:
+            (await this.history.buildWarPlanText(
+              payload.matchType,
+              payload.outcome,
+              payload.clanTag,
+              payload.opponentName
+            )) ?? "N/A",
+          inline: false,
+        });
+      }
+      if (payload.matchType === "BL") {
+        embed.addFields({
+          name: "Message",
+          value:
+            "**Battle day has started! Thank you for helping with war bases; please switch back to FWA bases asap.**",
+          inline: false,
+        });
+      }
+      if (payload.matchType === "MM") {
+        embed.addFields({
+          name: "Message",
+          value: "Attack whatever you want! Free for all!",
+          inline: false,
+        });
+      }
+      embed.addFields({
+        name: "\u200b",
+        value: buildWarStatsLines({
+          clanStars: payload.lastClanStars,
+          opponentStars: payload.lastOpponentStars,
+          clanAttacks: payload.clanAttacks,
+          opponentAttacks: payload.opponentAttacks,
+          teamSize: payload.teamSize,
+          attacksPerMember: payload.attacksPerMember,
+          clanDestruction: payload.clanDestruction,
+          opponentDestruction: payload.opponentDestruction,
+        }).join("\n"),
+        inline: false,
+      });
+    }
+
+    if (payload.eventType === "war_started") {
+      embed.addFields(
+        {
+          name: "Prep Day Remaining",
+          value: toDiscordRelativeTime(payload.warStartTime),
+          inline: true,
+        },
+        {
+          name: "Match Type",
+          value: payload.matchType ?? "unknown",
+          inline: true,
+        }
+      );
+      if (payload.matchType === "FWA") {
+        embed.addFields({
+          name: "War Plan",
+          value:
+            (await this.history.buildWarPlanText(
+              payload.matchType,
+              payload.outcome,
+              payload.clanTag,
+              payload.opponentName
+            )) ?? "N/A",
+          inline: false,
+        });
+      }
+      if (payload.matchType === "BL") {
+        embed.addFields({
+          name: "Message",
+          value: [
+            `BLACKLIST WAR vs ${payload.opponentName}`,
+            "Everyone switch to WAR BASES!",
+            "This is an opportunity to gain extra FWA points.",
+          ].join("\n"),
+          inline: false,
+        });
+      }
+      if (payload.matchType === "MM") {
+        embed.addFields({
+          name: "Message",
+          value: [
+            `MISMATCHED WAR vs ${payload.opponentName}`,
+            "Keep war base active and attack what you can.",
+          ].join("\n"),
+          inline: false,
+        });
+      }
+    }
+
+    if (payload.eventType === "war_ended") {
+      const finalResult =
+        payload.testFinalResultOverride ??
+        (await this.history.getWarEndResultSnapshot({
+          clanTag: payload.clanTag,
+          opponentTag: payload.opponentTag,
+          fallbackClanStars: payload.lastClanStars,
+          fallbackOpponentStars: payload.lastOpponentStars,
+          warStartTime: payload.warStartTime,
+        }));
+      const compliance = await this.history.getWarComplianceSnapshot(
+        payload.clanTag,
+        payload.warStartTime,
+        payload.matchType,
+        payload.outcome
+      );
+      embed.addFields(
+        {
+          name: "Result",
+          value: formatResultLabelForEmbed(finalResult.resultLabel),
+          inline: false,
+        },
+        {
+          name: "Match Type",
+          value: payload.matchType ?? "unknown",
+          inline: true,
+        },
+        {
+          name: "\u200b",
+          value: buildWarStatsLines({
+            clanStars: finalResult.clanStars,
+            opponentStars: finalResult.opponentStars,
+            clanAttacks: payload.clanAttacks,
+            opponentAttacks: payload.opponentAttacks,
+            teamSize: payload.teamSize,
+            attacksPerMember: payload.attacksPerMember,
+            clanDestruction: finalResult.clanDestruction,
+            opponentDestruction: finalResult.opponentDestruction,
+          }).join("\n"),
+          inline: false,
+        },
+        {
+          name: "FWA Points",
+          value: this.history.buildWarEndPointsLine(payload, finalResult),
+          inline: false,
+        },
+        {
+          name: "Missed Both Attacks",
+          value: formatList(compliance.missedBoth),
+          inline: false,
+        },
+        {
+          name: "Didn't Follow War Plan",
+          value:
+            payload.matchType === "BL" || payload.matchType === "MM"
+              ? "N/A for BL/MM wars"
+              : formatList(compliance.notFollowingPlan),
+          inline: false,
+        }
+      );
+    }
+
+    const roleMention =
+      includeRoleMention && payload.pingRole && payload.notifyRole ? `<@&${payload.notifyRole}>` : null;
+    const components =
+      includeEventComponents && payload.eventType === "battle_day" && guildId
+        ? [
+            new ActionRowBuilder<ButtonBuilder>().addComponents(
+              new ButtonBuilder()
+                .setCustomId(buildNotifyWarRefreshCustomId(guildId, payload.clanTag))
+                .setLabel("Refresh")
+                .setStyle(ButtonStyle.Secondary)
+            ),
+          ]
+        : [];
+
+    return {
+      content: roleMention ?? undefined,
+      embeds: [embed],
+      components,
+      allowedMentions: roleMention ? { roles: [payload.notifyRole as string] } : undefined,
+    };
   }
 
   private async findSubscriptionByGuildAndTag(
@@ -409,8 +713,8 @@ export class WarEventLogService {
     const rows = await prisma.$queryRaw<SubscriptionRow[]>(
       Prisma.sql`
         SELECT
-          "id","guildId","clanTag","channelId","notify","pingRole","inferredMatchType","notifyRole","fwaPoints","opponentFwaPoints","outcome","matchType","warStartFwaPoints","warEndFwaPoints","lastClanStars","lastOpponentStars","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName"
-        FROM "WarEventLogSubscription"
+          "id","guildId","clanTag","warId","channelId","notify","pingRole","inferredMatchType","notifyRole","fwaPoints","opponentFwaPoints","outcome","matchType","warStartFwaPoints","warEndFwaPoints","lastClanStars","lastOpponentStars","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName"
+        FROM "CurrentWar"
         WHERE "guildId" = ${guildId} AND UPPER(REPLACE("clanTag",'#','')) = ${normalizeTagBare(clanTag)}
         LIMIT 1
       `
@@ -421,8 +725,9 @@ export class WarEventLogService {
   /** Purpose: has war end recorded. */
   private async hasWarEndRecorded(clanTagInput: string, warStartTime: Date): Promise<boolean> {
     const clanTag = normalizeTag(clanTagInput);
-    const existing = await prisma.warClanHistory.findUnique({
-      where: { clanTag_warStartTime: { clanTag, warStartTime } },
+    const existing = await prisma.clanWarHistory.findFirst({
+      where: { clanTag, warStartTime },
+      orderBy: { warId: "desc" },
       select: { warId: true },
     });
     return Boolean(existing?.warId);
@@ -448,8 +753,8 @@ export class WarEventLogService {
     const rows = await prisma.$queryRaw<SubscriptionRow[]>(
       Prisma.sql`
         SELECT
-          "id","guildId","clanTag","channelId","notify","pingRole","inferredMatchType","notifyRole","fwaPoints","opponentFwaPoints","outcome","matchType","warStartFwaPoints","warEndFwaPoints","lastClanStars","lastOpponentStars","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName"
-        FROM "WarEventLogSubscription"
+          "id","guildId","clanTag","warId","channelId","notify","pingRole","inferredMatchType","notifyRole","fwaPoints","opponentFwaPoints","outcome","matchType","warStartFwaPoints","warEndFwaPoints","lastClanStars","lastOpponentStars","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName"
+        FROM "CurrentWar"
         WHERE "id" = ${subscriptionId}
         LIMIT 1
       `
@@ -485,8 +790,14 @@ export class WarEventLogService {
     }
     if (eventType === "war_ended") {
       if (!sub.lastWarStartTime) {
+        console.log(
+          `[war-events] war_ended suppressed guild=${sub.guildId} clan=${sub.clanTag} reason=no_last_war_start prev=${prevState} current=${currentState}`
+        );
         eventType = null;
       } else if (await this.hasWarEndRecorded(sub.clanTag, sub.lastWarStartTime)) {
+        console.log(
+          `[war-events] war_ended suppressed guild=${sub.guildId} clan=${sub.clanTag} reason=already_recorded warStart=${sub.lastWarStartTime.toISOString()}`
+        );
         eventType = null;
       }
     }
@@ -640,6 +951,9 @@ export class WarEventLogService {
     }
 
     if (eventType) {
+      console.log(
+        `[war-events] transition detected guild=${sub.guildId} clan=${sub.clanTag} event=${eventType} prev=${prevState} current=${currentState} sync=${syncNumberForEvent ?? "unknown"} warStart=${nextWarStartTime?.toISOString() ?? "unknown"} warEnd=${nextWarEndTime?.toISOString() ?? "unknown"} opponent=${nextOpponentTag || normalizeTag(sub.lastOpponentTag ?? "") || "unknown"}`
+      );
       const eventPayload = {
         eventType,
         clanTag: sub.clanTag,
@@ -674,12 +988,23 @@ export class WarEventLogService {
           );
         });
       }
+      console.log(
+        `[war-events] emit start guild=${sub.guildId} channel=${sub.channelId} clan=${eventPayload.clanTag} event=${eventPayload.eventType}`
+      );
       await this.emitEvent(sub.channelId, eventPayload);
     }
 
-    await prisma.warEventLogSubscription.update({
+    const resolvedWarId =
+      currentState === "notInWar" ? null : await this.resolveWarId(sub.clanTag, nextWarStartTime);
+
+    await prisma.currentWar.update({
       where: { id: sub.id },
       data: {
+        warId: resolvedWarId,
+        currentSyncNum:
+          syncContext.activeSync !== null && Number.isFinite(syncContext.activeSync)
+            ? Math.trunc(syncContext.activeSync)
+            : undefined,
         lastState: currentState,
         fwaPoints: nextFwaPoints,
         opponentFwaPoints: nextOpponentFwaPoints,
@@ -698,6 +1023,24 @@ export class WarEventLogService {
       },
     });
     return eventType === "war_ended";
+  }
+
+  private async resolveWarId(clanTagInput: string, warStartTime: Date | null): Promise<number | null> {
+    if (!warStartTime) return null;
+    const clanTag = normalizeTag(clanTagInput);
+    if (!clanTag) return null;
+    return (
+      await prisma.clanWarHistory
+        .findFirst({
+          where: {
+            clanTag,
+            warStartTime,
+          },
+          orderBy: { warId: "desc" },
+          select: { warId: true },
+        })
+        .catch(() => null)
+    )?.warId ?? null;
   }
 
   private async emitEvent(
@@ -731,33 +1074,32 @@ export class WarEventLogService {
     }
   ): Promise<void> {
     const channel = await this.client.channels.fetch(channelId).catch(() => null);
-    if (!channel || !channel.isTextBased()) return;
+    if (!channel) {
+      console.warn(
+        `[war-events] emit skipped channel=${channelId} clan=${payload.clanTag} event=${payload.eventType} reason=channel_not_found`
+      );
+      return;
+    }
+    if (!channel.isTextBased()) {
+      console.warn(
+        `[war-events] emit skipped channel=${channelId} clan=${payload.clanTag} event=${payload.eventType} reason=channel_not_text_based`
+      );
+      return;
+    }
     if (
       channel.type !== ChannelType.GuildText &&
       channel.type !== ChannelType.GuildAnnouncement &&
       channel.type !== ChannelType.PublicThread &&
       channel.type !== ChannelType.PrivateThread
     ) {
+      console.warn(
+        `[war-events] emit skipped channel=${channelId} clan=${payload.clanTag} event=${payload.eventType} reason=unsupported_channel_type type=${channel.type}`
+      );
       return;
     }
 
     const guildId = (channel as { guildId?: string }).guildId ?? null;
-    const warId =
-      payload.warStartTime && normalizeTag(payload.clanTag)
-        ? (
-            await prisma.warClanHistory
-              .findUnique({
-                where: {
-                  clanTag_warStartTime: {
-                    clanTag: normalizeTag(payload.clanTag),
-                    warStartTime: payload.warStartTime,
-                  },
-                },
-                select: { warId: true },
-              })
-              .catch(() => null)
-          )?.warId ?? null
-        : null;
+    const warId = await this.resolveWarId(payload.clanTag, payload.warStartTime);
     const opponentTag = normalizeTag(payload.opponentTag);
     const embed = new EmbedBuilder()
       .setTitle(`Event: ${eventTitle(payload.eventType)} - ${payload.clanName}`)
@@ -986,6 +1328,11 @@ export class WarEventLogService {
         battleDayPostByGuildTag.delete(key);
       }
     }
+    if (sent) {
+      console.log(
+        `[war-events] emit success guild=${guildId ?? "unknown"} channel=${channelId} message=${sent.id} clan=${payload.clanTag} event=${payload.eventType}`
+      );
+    }
   }
 
   async refreshBattleDayPosts(): Promise<void> {
@@ -1129,10 +1476,12 @@ export class WarEventLogService {
     const warId =
       warStartTime && normalizeTag(payload.clanTag)
         ? (
-            await prisma.warClanHistory.findUnique({
+            await prisma.clanWarHistory.findFirst({
               where: {
-                clanTag_warStartTime: { clanTag: normalizeTag(payload.clanTag), warStartTime },
+                clanTag: normalizeTag(payload.clanTag),
+                warStartTime,
               },
+              orderBy: { warId: "desc" },
               select: { warId: true },
             })
           )?.warId ?? null
@@ -1166,40 +1515,37 @@ export class WarEventLogService {
   }): Promise<void> {
     const clanTag = normalizeTag(input.clanTag);
     if (!clanTag || !input.warStartTime) return;
-    await prisma.warClanHistory.upsert({
-      where: {
-        clanTag_warStartTime: {
-          clanTag,
-          warStartTime: input.warStartTime,
-        },
-      },
-      create: {
-        syncNumber: input.syncNumber,
-        matchType: input.matchType,
-        clanStars: parseNullableInt(input.stats.clanStars),
-        clanDestruction: parseNullableFloat(input.stats.clanDestruction),
-        opponentStars: parseNullableInt(input.stats.opponentStars),
-        opponentDestruction: parseNullableFloat(input.stats.opponentDestruction),
-        expectedOutcome: input.expectedOutcome,
+    const opponentTag = normalizeTag(input.opponentTag) || null;
+    const upsertData = {
+      syncNumber: input.syncNumber,
+      matchType: input.matchType,
+      clanStars: parseNullableInt(input.stats.clanStars),
+      clanDestruction: parseNullableFloat(input.stats.clanDestruction),
+      opponentStars: parseNullableInt(input.stats.opponentStars),
+      opponentDestruction: parseNullableFloat(input.stats.opponentDestruction),
+      expectedOutcome: input.expectedOutcome,
+      warEndTime: input.warEndTime,
+      clanName: input.clanName,
+      opponentName: input.opponentName,
+      opponentTag,
+    };
+    const existing = await prisma.clanWarHistory.findFirst({
+      where: { clanTag, warStartTime: input.warStartTime, opponentTag },
+      orderBy: { warId: "desc" },
+      select: { warId: true },
+    });
+    if (existing?.warId) {
+      await prisma.clanWarHistory.update({
+        where: { warId: existing.warId },
+        data: upsertData,
+      });
+      return;
+    }
+    await prisma.clanWarHistory.create({
+      data: {
+        ...upsertData,
         warStartTime: input.warStartTime,
-        warEndTime: input.warEndTime,
-        clanName: input.clanName,
         clanTag,
-        opponentName: input.opponentName,
-        opponentTag: normalizeTag(input.opponentTag) || null,
-      },
-      update: {
-        syncNumber: input.syncNumber,
-        matchType: input.matchType,
-        clanStars: parseNullableInt(input.stats.clanStars),
-        clanDestruction: parseNullableFloat(input.stats.clanDestruction),
-        opponentStars: parseNullableInt(input.stats.opponentStars),
-        opponentDestruction: parseNullableFloat(input.stats.opponentDestruction),
-        expectedOutcome: input.expectedOutcome,
-        warEndTime: input.warEndTime,
-        clanName: input.clanName,
-        opponentName: input.opponentName,
-        opponentTag: normalizeTag(input.opponentTag) || null,
       },
     });
   }
@@ -1329,3 +1675,4 @@ export async function handleNotifyWarRefreshButton(
 }
 
 export const notifyWarBattleDayRefreshIntervalMs = BATTLE_DAY_REFRESH_MS;
+

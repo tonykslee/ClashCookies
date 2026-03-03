@@ -26,6 +26,96 @@ function readMode(interaction: ChatInputCommandInteraction): GoogleSheetMode {
   return rawMode === "war" ? "war" : "actual";
 }
 
+const COL_CLAN_NAME = 0; // A
+const COL_CLAN_TAG = 1; // B
+const COL_TOTAL_WEIGHT = 3; // D
+const COL_MISSING_WEIGHT = 20; // U
+const COL_BUCKET_START = 21; // V
+const COL_BUCKET_END = 26; // AA
+const COL_ADJUSTMENT = 53; // BB
+const COL_MODE = 55; // BD
+const FIXED_LAYOUT_RANGE = "AllianceDashboard!A6:BD500";
+const STATE_HEADERS = ["Clan", "Total", "Missing", "TH18", "TH17", "TH16", "TH15", "TH14", "<=TH13"];
+
+function normalizeTag(value: string): string {
+  return value.trim().toUpperCase().replace(/^#/, "");
+}
+
+function getModeRows(rows: string[][], mode: GoogleSheetMode): string[][] {
+  const wanted = mode.toUpperCase();
+  return rows.filter((row) => String(row[COL_MODE] ?? "").trim().toUpperCase() === wanted);
+}
+
+function renderStateSvg(mode: GoogleSheetMode, rows: string[][]): Buffer {
+  const tableRows = rows.length > 0 ? rows : [["(NO DATA)"]];
+  const colCount = Math.max(...tableRows.map((row) => row.length), 1);
+  const widths = Array.from({ length: colCount }, (_, col) =>
+    Math.min(40, Math.max(6, ...tableRows.map((row) => String(row[col] ?? "").length)))
+  );
+  const charPx = 8;
+  const paddingX = 12;
+  const rowHeight = 30;
+  const titleHeight = 46;
+  const margin = 16;
+  const colWidthsPx = widths.map((w) => w * charPx + paddingX * 2);
+  const tableWidth = colWidthsPx.reduce((sum, v) => sum + v, 0);
+  const width = margin * 2 + tableWidth;
+  const height = margin * 2 + titleHeight + tableRows.length * rowHeight;
+
+  const xStarts: number[] = [];
+  let runningX = margin;
+  for (const w of colWidthsPx) {
+    xStarts.push(runningX);
+    runningX += w;
+  }
+
+  const cells: string[] = [];
+  for (let r = 0; r < tableRows.length; r += 1) {
+    const y = margin + titleHeight + r * rowHeight;
+    const bg = r === 0 ? "#1f2d5a" : r % 2 === 0 ? "#171d34" : "#131a2f";
+    cells.push(`<rect x="${margin}" y="${y}" width="${tableWidth}" height="${rowHeight}" fill="${bg}" />`);
+    for (let c = 0; c < colCount; c += 1) {
+      const raw = String(tableRows[r][c] ?? "");
+      const text = raw
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+      const color = r === 0 ? "#9ec2ff" : "#f0f4ff";
+      cells.push(
+        `<text x="${xStarts[c] + paddingX}" y="${y + 20}" font-size="14" font-family="Consolas, Menlo, monospace" fill="${color}">${text}</text>`
+      );
+    }
+  }
+
+  const verticalLines: string[] = [];
+  for (let c = 0; c <= colCount; c += 1) {
+    const x = c === colCount ? margin + tableWidth : xStarts[c];
+    verticalLines.push(
+      `<line x1="${x}" y1="${margin + titleHeight}" x2="${x}" y2="${margin + titleHeight + tableRows.length * rowHeight}" stroke="#2a3558" stroke-width="1" />`
+    );
+  }
+  const horizontalLines: string[] = [];
+  for (let r = 0; r <= tableRows.length; r += 1) {
+    const y = margin + titleHeight + r * rowHeight;
+    horizontalLines.push(
+      `<line x1="${margin}" y1="${y}" x2="${margin + tableWidth}" y2="${y}" stroke="#2a3558" stroke-width="1" />`
+    );
+  }
+
+  const title = `Alliance State (${mode.toUpperCase()})`;
+  const svg = [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`,
+    `<rect x="0" y="0" width="${width}" height="${height}" fill="#101427" />`,
+    `<text x="${margin}" y="${margin + 24}" font-size="20" font-family="Consolas, Menlo, monospace" fill="#9ec2ff">${title}</text>`,
+    ...cells,
+    ...verticalLines,
+    ...horizontalLines,
+    "</svg>",
+  ].join("");
+
+  return Buffer.from(svg, "utf8");
+}
+
 function parseNumber(value: string | undefined): number {
   if (!value) return 0;
   const digits = value.replace(/[^0-9-]/g, "");
@@ -64,7 +154,12 @@ function getWeightBucket(weight: number): WeightBucket | null {
 }
 
 function clampCell(value: string): string {
-  const sanitized = value.replace(/\s+/g, " ").trim();
+  const sanitized = value
+    .normalize("NFKC")
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/[\u201C\u201D]/g, '"')
+    .replace(/\s+/g, " ")
+    .trim();
   const normalizedLabelMap: Record<string, string> = {
     "missing weights": "Missing",
     "th18-delta": "TH18",
@@ -79,6 +174,21 @@ function clampCell(value: string): string {
   return normalizedLabel.length > 32
     ? `${normalizedLabel.slice(0, 29)}...`
     : normalizedLabel;
+}
+
+function toGlyphSafeText(input: string): string {
+  const normalized = input
+    .normalize("NFKC")
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/[\u201C\u201D]/g, '"')
+    .replace(/\s+/g, " ")
+    .trim();
+  const upper = normalized.toUpperCase();
+  let out = "";
+  for (const ch of upper) {
+    out += GLYPHS[ch] ? ch : "?";
+  }
+  return out;
 }
 
 function abbreviateClan(value: string): string {
@@ -193,6 +303,8 @@ function readPlacementCandidates(
 
 const GLYPHS: Record<string, string[]> = {
   " ": ["00000", "00000", "00000", "00000", "00000", "00000", "00000"],
+  "'": ["00100", "00100", "00100", "00000", "00000", "00000", "00000"],
+  '"': ["01010", "01010", "01010", "00000", "00000", "00000", "00000"],
   "-": ["00000", "00000", "00000", "01110", "00000", "00000", "00000"],
   ",": ["00000", "00000", "00000", "00000", "00110", "00110", "00100"],
   ".": ["00000", "00000", "00000", "00000", "00000", "00110", "00110"],
@@ -299,9 +411,9 @@ function renderStatePng(mode: GoogleSheetMode, rows: string[][]): Buffer {
     }
   };
   const drawText = (x: number, y: number, text: string, rgb: [number, number, number]) => {
-    const upper = text.toUpperCase();
-    for (let i = 0; i < upper.length; i += 1) {
-      drawChar(x + i * charPx, y, upper[i], rgb);
+    const glyphSafe = toGlyphSafeText(text);
+    for (let i = 0; i < glyphSafe.length; i += 1) {
+      drawChar(x + i * charPx, y, glyphSafe[i], rgb);
     }
   };
 
@@ -350,15 +462,15 @@ export const Compo: Command = {
       type: ApplicationCommandOptionType.Subcommand,
       options: [
         {
-          name: "clan",
-          description: "Tracked clan name",
+          name: "tag",
+          description: "Tracked clan tag (with or without #)",
           type: ApplicationCommandOptionType.String,
           required: true,
           autocomplete: true,
         },
         {
           name: "mode",
-          description: "Use the actual or war roster sheet link",
+          description: "Use ACTUAL or WAR fixed rows",
           type: ApplicationCommandOptionType.String,
           required: false,
           choices: COMPO_MODE_CHOICES,
@@ -372,7 +484,7 @@ export const Compo: Command = {
       options: [
         {
           name: "mode",
-          description: "Use the actual or war roster sheet link",
+          description: "Use ACTUAL or WAR fixed rows",
           type: ApplicationCommandOptionType.String,
           required: false,
           choices: COMPO_MODE_CHOICES,
@@ -405,48 +517,50 @@ export const Compo: Command = {
       const mode = readMode(interaction);
 
       if (subcommand === "advice") {
-        const clanInput = interaction.options.getString("clan", true);
-        const targetClan = normalize(clanInput);
+        const tagInput = interaction.options.getString("tag", true);
+        const targetTag = normalizeTag(tagInput);
 
         const settings = new SettingsService();
         const sheets = new GoogleSheetsService(settings);
-        const rows = await sheets.readLinkedValues("AllianceDashboard!A13:F20", mode);
+        const rows = await sheets.readLinkedValues(FIXED_LAYOUT_RANGE);
+        const modeRows = getModeRows(rows, mode);
 
-        if (rows.length === 0) {
+        if (modeRows.length === 0) {
           await safeReply(interaction, {
             ephemeral: true,
-            content: "No rows found in AllianceDashboard!A13:F20.",
+            content: `No ${mode.toUpperCase()} rows found in ${FIXED_LAYOUT_RANGE}.`,
           });
           return;
         }
 
-        for (const row of rows) {
-          const clanName = row[0]?.trim();
-          const advice = row[5]?.trim();
-          if (!clanName) continue;
+        for (const row of modeRows) {
+          const clanName = String(row[COL_CLAN_NAME] ?? "").trim();
+          const clanTag = normalizeTag(String(row[COL_CLAN_TAG] ?? ""));
+          const advice = String(row[COL_ADJUSTMENT] ?? "").trim();
+          if (!clanName || !clanTag) continue;
 
-          if (normalize(clanName) === targetClan) {
+          if (clanTag === targetTag) {
             await safeReply(interaction, {
               ephemeral: true,
               content:
                 advice && advice.length > 0
-                  ? `Mode: **${mode.toUpperCase()}**\n**${clanName}** adjustment:\n${advice}`
-                  : `Mode: **${mode.toUpperCase()}**\nFound **${clanName}**, but there is no advice text in AllianceDashboard!F13:F20.`,
+                  ? `Mode: **${mode.toUpperCase()}**\n**${clanName}** (\`#${clanTag}\`) adjustment:\n${advice}`
+                  : `Mode: **${mode.toUpperCase()}**\nFound **${clanName}** (\`#${clanTag}\`), but there is no adjustment text in column BB.`,
             });
             return;
           }
         }
 
-        const knownClans = rows
-          .map((row) => row[0]?.trim())
-          .filter((name): name is string => Boolean(name));
+        const knownTags = modeRows
+          .map((row) => normalizeTag(String(row[COL_CLAN_TAG] ?? "")))
+          .filter((tag): tag is string => Boolean(tag));
 
         await safeReply(interaction, {
           ephemeral: true,
           content:
-            knownClans.length > 0
-              ? `Mode: **${mode.toUpperCase()}**\nNo advice mapping found for "${clanInput}". Known clans: ${knownClans.join(", ")}`
-              : `Mode: **${mode.toUpperCase()}**\nNo advice mapping found for "${clanInput}".`,
+            knownTags.length > 0
+              ? `Mode: **${mode.toUpperCase()}**\nNo adjustment mapping found for tag \`#${targetTag}\`. Known tags in this mode: ${knownTags.map((t) => `#${t}`).join(", ")}`
+              : `Mode: **${mode.toUpperCase()}**\nNo adjustment mapping found for tag \`#${targetTag}\`.`,
         });
         return;
       }
@@ -454,21 +568,25 @@ export const Compo: Command = {
       if (subcommand === "state") {
         const settings = new SettingsService();
         const sheets = new GoogleSheetsService(settings);
-
-        const [leftBlock, middleBlock, rightBlock, targetBandBlock, refreshCell] = await Promise.all([
-          sheets.readLinkedValues("AllianceDashboard!A1:A9", mode),
-          sheets.readLinkedValues("AllianceDashboard!D1:E9", mode),
-          sheets.readLinkedValues("AllianceDashboard!U1:AA9", mode),
-          sheets.readLinkedValues("AllianceDashboard!AW1:AW9", mode),
-          sheets.readLinkedValues("Lookup!B10:B10", mode),
+        const [rows, refreshCell] = await Promise.all([
+          sheets.readLinkedValues(FIXED_LAYOUT_RANGE),
+          sheets.readLinkedValues("Lookup!B10:B10"),
         ]);
-
-        const mergedRows = mergeStateRows(
-          padRows(leftBlock, 9, 1),
-          padRows(middleBlock, 9, 2),
-          padRows(rightBlock, 9, 7),
-          padRows(targetBandBlock, 9, 1)
-        );
+        const modeRows = getModeRows(rows, mode);
+        const stateRows = [
+          STATE_HEADERS,
+          ...modeRows.map((row) => [
+            clampCell(String(row[COL_CLAN_NAME] ?? "")),
+            clampCell(String(row[COL_TOTAL_WEIGHT] ?? "")),
+            clampCell(String(row[COL_MISSING_WEIGHT] ?? "")),
+            clampCell(String(row[COL_BUCKET_START] ?? "")),
+            clampCell(String(row[COL_BUCKET_START + 1] ?? "")),
+            clampCell(String(row[COL_BUCKET_START + 2] ?? "")),
+            clampCell(String(row[COL_BUCKET_START + 3] ?? "")),
+            clampCell(String(row[COL_BUCKET_START + 4] ?? "")),
+            clampCell(String(row[COL_BUCKET_END] ?? "")),
+          ]),
+        ];
 
         const rawRefresh = refreshCell[0]?.[0]?.trim();
         const refreshLine =
@@ -477,7 +595,7 @@ export const Compo: Command = {
             : "RAW Data last refreshed: (not available)";
 
         const content = [`Mode Displayed: **${mode.toUpperCase()}**`, refreshLine].join("\n");
-        const png = await renderStatePng(mode, mergedRows);
+        const png = renderStatePng(mode, stateRows);
 
         await interaction.editReply({
           content,
@@ -620,7 +738,7 @@ export const Compo: Command = {
   },
   autocomplete: async (interaction: AutocompleteInteraction) => {
     const focused = interaction.options.getFocused(true);
-    if (focused.name !== "clan") {
+    if (focused.name !== "tag") {
       await interaction.respond([]);
       return;
     }
@@ -631,14 +749,21 @@ export const Compo: Command = {
       select: { name: true, tag: true },
     });
 
-    const names = tracked
-      .map((c) => c.name?.trim() || c.tag.trim())
-      .filter((v, i, arr) => v.length > 0 && arr.indexOf(v) === i);
+    const choices = tracked
+      .map((c) => {
+        const tag = c.tag.trim();
+        const name = c.name?.trim() || tag;
+        return {
+          name: `${name} (${tag})`.slice(0, 100),
+          value: tag,
+        };
+      })
+      .filter((c, i, arr) => c.value.length > 0 && arr.findIndex((v) => v.value === c.value) === i);
 
-    const filtered = names
-      .filter((name) => normalize(name).includes(query))
+    const filtered = choices
+      .filter((choice) => normalize(choice.name).includes(query) || normalize(choice.value).includes(query))
       .slice(0, 25)
-      .map((name) => ({ name, value: name }));
+      .map((choice) => ({ name: choice.name, value: choice.value }));
 
     await interaction.respond(filtered);
   },

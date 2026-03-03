@@ -105,13 +105,13 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
   sheet: {
     summary: "Link and manage Google Sheet settings.",
     details: [
-      "Supports mode-specific links (`actual` and `war`).",
-      "Refresh can trigger an Apps Script webhook per mode.",
+      "Uses one linked Google Sheet for both ACTUAL/WAR data modes.",
+      "Refresh triggers a shared Apps Script webhook and can target ACTUAL or WAR mode.",
       "`link`, `unlink`, `show`, and `refresh` are admin-only by default.",
     ],
     examples: [
-      "/sheet link sheet_id_or_url:https://docs.google.com/... mode:actual",
-      "/sheet show mode:war",
+      "/sheet link sheet_id_or_url:https://docs.google.com/...",
+      "/sheet show",
       "/sheet refresh mode:actual",
     ],
   },
@@ -123,7 +123,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`place`: suggest placement by war weight.",
     ],
     examples: [
-      "/compo advice clan:Rising Dawn mode:actual",
+      "/compo advice tag:#2QG2C08UP mode:actual",
       "/compo state mode:war",
       "/compo place weight:145k",
     ],
@@ -141,7 +141,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     details: [
       "`war` enables war-state event embeds for a clan in a selected channel.",
       "`show` lists notify routing (channel/role/status) for tracked clans, optionally filtered by tag.",
-      "`war-remove` removes a clan's war event subscription for this server.",
+      "`toggle` turns `war embed` or `ping` on/off for an existing clan subscription.",
       "Optional `role` pings that role whenever a war event embed is posted.",
       "Works with clans outside tracked-clans table (tag must still be valid in CoC API).",
       "Posts at war start, battle day, and war end with opponent + points projection.",
@@ -149,7 +149,9 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     examples: [
       "/notify war clan-tag:2QG2C08UP target-channel:#war-events role:@Leaders",
       "/notify war clan-tag:2QG2C08UP target-channel:#new-war-events",
-      "/notify war-remove clan-tag:2QG2C08UP",
+      "/notify toggle clan-tag:2QG2C08UP target:war embed toggle:off",
+      "/notify toggle clan-tag:2QG2C08UP target:ping toggle:on",
+      "/notify war-preview clan-tag:2QG2C08UP event:battle day start source:current",
       "/notify show",
       "/notify show clan-tag:2QG2C08UP",
     ],
@@ -157,7 +159,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
   war: {
     summary: "Query clan-level war history and export war attack payload by war ID.",
     details: [
-      "`/war history` shows recent clan-level war summary rows from WarClanHistory.",
+      "`/war history` shows recent clan-level war summary rows from ClanWarHistory.",
       "`/war war-id` exports the stored WarLookup payload as a CSV file for drill-down review.",
       "Use war IDs returned from `/war history` to retrieve detailed attack rows.",
     ],
@@ -670,3 +672,4 @@ export const Help: Command = {
     );
   },
 };
+
