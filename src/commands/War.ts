@@ -143,7 +143,7 @@ export const War: Command = {
         const startTs = Math.floor(new Date(row.warStartTime).getTime() / 1000);
         const endTs = row.warEndTime ? Math.floor(new Date(row.warEndTime).getTime() / 1000) : null;
         embed.addFields({
-          name: `War #${row.warId} | Sync ${row.syncNumber ?? "unknown"} | ${row.matchType ?? "unknown"}`,
+          name: `War #${row.warId} | Start <t:${startTs}:f> | Sync ${row.syncNumber ?? "unknown"} | ${row.matchType ?? "unknown"}`,
           value: [
             `${displayName} ${row.clanStars ?? "?"} (${formatPercent(row.clanDestruction)}) vs ${row.opponentName ?? "Unknown"} ${row.opponentStars ?? "?"} (${formatPercent(row.opponentDestruction)})`,
             `Expected: ${row.expectedOutcome ?? "UNKNOWN"} | Actual: ${row.actualOutcome ?? "UNKNOWN"}`,
