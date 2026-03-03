@@ -203,6 +203,7 @@ model CurrentWar {
   lastOpponentTag   String?
   lastOpponentName  String?
   clanName          String?
+  mailConfig        Json?
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
 
