@@ -545,7 +545,7 @@ async function rebuildTrackedPayloadForTag(
 ): Promise<FwaMatchCopyPayload | null> {
   if (!guildId) return null;
   const settings = new SettingsService();
-  const sourceSync = await getSourceOfTruthSync(settings);
+  const sourceSync = await getSourceOfTruthSync(settings, guildId);
   const cocService = new CoCService();
   const warLookupCache: WarLookupCache = new Map();
   const overview = await buildTrackedMatchOverview(cocService, sourceSync, guildId, warLookupCache);
@@ -772,7 +772,7 @@ async function buildWarMailEmbedForTag(
   }
 
   const settings = new SettingsService();
-  let sourceSync = await getSourceOfTruthSync(settings);
+  let sourceSync = await getSourceOfTruthSync(settings, guildId);
   if (sourceSync === null) {
     sourceSync = await recoverPreviousSyncNumFromPoints(settings, cocService);
   }
@@ -1712,6 +1712,10 @@ export async function handleFwaMatchSyncActionButton(
       clanTag: `#${parsed.tag}`,
       channelId: interaction.channelId,
       notify: false,
+      currentSyncNum:
+        syncAction.siteSyncNumber !== null && Number.isFinite(syncAction.siteSyncNumber)
+          ? Math.trunc(syncAction.siteSyncNumber)
+          : null,
       fwaPoints: syncAction.siteFwaPoints,
       opponentFwaPoints: syncAction.siteOpponentFwaPoints,
       matchType: syncAction.siteMatchType ?? undefined,
@@ -1719,6 +1723,10 @@ export async function handleFwaMatchSyncActionButton(
       outcome: syncAction.siteOutcome,
     },
     update: {
+      currentSyncNum:
+        syncAction.siteSyncNumber !== null && Number.isFinite(syncAction.siteSyncNumber)
+          ? Math.trunc(syncAction.siteSyncNumber)
+          : undefined,
       fwaPoints: syncAction.siteFwaPoints,
       opponentFwaPoints: syncAction.siteOpponentFwaPoints,
       matchType: syncAction.siteMatchType ?? undefined,
@@ -2202,7 +2210,22 @@ function getSyncMode(syncNumber: number | null): "low" | "high" | null {
   return syncNumber % 2 === 0 ? "high" : "low";
 }
 
-async function getSourceOfTruthSync(settings: SettingsService): Promise<number | null> {
+async function getSourceOfTruthSync(
+  settings: SettingsService,
+  guildId?: string | null
+): Promise<number | null> {
+  const latestCurrent = await prisma.currentWar.findFirst({
+    where: {
+      currentSyncNum: { not: null },
+      ...(guildId ? { guildId } : {}),
+    },
+    orderBy: { updatedAt: "desc" },
+    select: { currentSyncNum: true },
+  });
+  const currentSync = Number(latestCurrent?.currentSyncNum ?? NaN);
+  if (Number.isFinite(currentSync)) {
+    return Math.max(0, Math.trunc(currentSync) - 1);
+  }
   const raw = await settings.get(PREVIOUS_SYNC_KEY);
   if (!raw) return null;
   const parsed = Number(raw);
@@ -2668,7 +2691,7 @@ export async function getPointsSnapshotForClan(
   tag: string
 ): Promise<PointsSnapshot> {
   const settings = new SettingsService();
-  let sourceSync = await getSourceOfTruthSync(settings);
+  let sourceSync = await getSourceOfTruthSync(settings, null);
   if (sourceSync === null) {
     sourceSync = await recoverPreviousSyncNumFromPoints(settings, cocService);
   }
@@ -3080,6 +3103,10 @@ async function buildTrackedMatchOverview(
           clanTag: `#${clanTag}`,
           notify: false,
           channelId: "",
+          currentSyncNum:
+            currentSync !== null && Number.isFinite(currentSync)
+              ? Math.trunc(currentSync)
+              : null,
           matchType: inferredFromPointsType,
           inferredMatchType: true,
           fwaPoints:
@@ -3098,6 +3125,10 @@ async function buildTrackedMatchOverview(
           warEndFwaPoints: null,
         },
         update: {
+          currentSyncNum:
+            currentSync !== null && Number.isFinite(currentSync)
+              ? Math.trunc(currentSync)
+              : undefined,
           matchType: inferredFromPointsType,
           inferredMatchType: true,
           fwaPoints:
@@ -3129,6 +3160,10 @@ async function buildTrackedMatchOverview(
           clanTag: `#${clanTag}`,
           notify: false,
           channelId: "",
+          currentSyncNum:
+            currentSync !== null && Number.isFinite(currentSync)
+              ? Math.trunc(currentSync)
+              : null,
           matchType,
           inferredMatchType,
           fwaPoints:
@@ -3147,6 +3182,10 @@ async function buildTrackedMatchOverview(
           warEndFwaPoints: null,
         },
         update: {
+          currentSyncNum:
+            currentSync !== null && Number.isFinite(currentSync)
+              ? Math.trunc(currentSync)
+              : undefined,
           matchType,
           inferredMatchType,
           fwaPoints:
@@ -3580,7 +3619,7 @@ export const Fwa: Command = {
 
     const settings = new SettingsService();
     const warLookupCache: WarLookupCache = new Map();
-    let sourceSync = await getSourceOfTruthSync(settings);
+    let sourceSync = await getSourceOfTruthSync(settings, interaction.guildId ?? null);
     if (sourceSync === null) {
       sourceSync = await recoverPreviousSyncNumFromPoints(settings, cocService, warLookupCache);
     }
@@ -3688,10 +3727,22 @@ export const Fwa: Command = {
             clanTag: `#${tag}`,
             channelId: interaction.channelId,
             notify: false,
+            currentSyncNum:
+              shouldOverwriteSyncNum &&
+              siteSync !== null &&
+              Number.isFinite(siteSync)
+                ? Math.trunc(siteSync)
+                : null,
             fwaPoints:
               fresh.balance !== null && Number.isFinite(fresh.balance) ? fresh.balance : null,
           },
           update: {
+            currentSyncNum:
+              shouldOverwriteSyncNum &&
+              siteSync !== null &&
+              Number.isFinite(siteSync)
+                ? Math.trunc(siteSync)
+                : undefined,
             fwaPoints:
               fresh.balance !== null && Number.isFinite(fresh.balance) ? fresh.balance : null,
             updatedAt: new Date(),
@@ -4099,6 +4150,10 @@ export const Fwa: Command = {
               clanTag: `#${tag}`,
               notify: false,
               channelId: interaction.channelId,
+              currentSyncNum:
+                currentSync !== null && Number.isFinite(currentSync)
+                  ? Math.trunc(currentSync)
+                  : null,
               matchType:
                 matchTypeResolved === null && inferredFromPointsType
                   ? inferredFromPointsType
@@ -4114,6 +4169,10 @@ export const Fwa: Command = {
               warEndFwaPoints: subscription?.warEndFwaPoints ?? null,
             },
             update: {
+              currentSyncNum:
+                currentSync !== null && Number.isFinite(currentSync)
+                  ? Math.trunc(currentSync)
+                  : undefined,
               matchType:
                 matchTypeResolved === null && inferredFromPointsType
                   ? inferredFromPointsType

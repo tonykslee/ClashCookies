@@ -184,6 +184,7 @@ model CurrentWar {
   guildId           String
   clanTag           String
   warId             Int?
+  currentSyncNum    Int?
   channelId         String
   notify            Boolean       @default(true)
   pingRole          Boolean       @default(true)
