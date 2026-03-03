@@ -2555,28 +2555,46 @@ function getSyncMode(syncNumber: number | null): "low" | "high" | null {
 }
 
 async function getSourceOfTruthSync(
-  settings: SettingsService,
-  _guildId?: string | null
+  _settings: SettingsService,
+  guildId?: string | null
 ): Promise<number | null> {
+  const tracked = await prisma.trackedClan.findMany({
+    select: { tag: true },
+  });
+  const trackedTags = new Set(tracked.map((row) => normalizeTag(row.tag)));
+
+  const currentWarRows = await prisma.currentWar.findMany({
+    where: {
+      ...(guildId ? { guildId } : {}),
+      currentSyncNum: { not: null },
+    },
+    select: { clanTag: true, currentSyncNum: true },
+  });
+  const currentSyncCandidates = currentWarRows
+    .filter((row) => trackedTags.has(normalizeTag(row.clanTag)))
+    .map((row) => Number(row.currentSyncNum))
+    .filter((value) => Number.isFinite(value))
+    .map((value) => Math.trunc(value));
+  if (currentSyncCandidates.length > 0) {
+    const maxCurrentSync = Math.max(...currentSyncCandidates);
+    return Math.max(0, maxCurrentSync - 1);
+  }
+
+  const trackedForHistory = [...trackedTags];
   const latestHistory = await prisma.clanWarHistory.findFirst({
     where: {
       syncNumber: { not: null },
+      ...(trackedForHistory.length > 0 ? { clanTag: { in: trackedForHistory } } : {}),
     },
     orderBy: { warStartTime: "desc" },
     select: { syncNumber: true },
   });
   const latestSync = Number(latestHistory?.syncNumber ?? NaN);
-  const raw = await settings.get(PREVIOUS_SYNC_KEY);
-  const parsed = Number(raw ?? NaN);
-  const previousFromHistory = Number.isFinite(latestSync)
-    ? Math.max(0, Math.trunc(latestSync) - 1)
-    : null;
-  const previousFromSetting = Number.isFinite(parsed) ? Math.trunc(parsed) : null;
-  if (previousFromHistory === null && previousFromSetting === null) return null;
-  if (previousFromHistory === null) return previousFromSetting;
-  if (previousFromSetting === null) return previousFromHistory;
-  // Prefer the newer cursor if history and setting drift.
-  return Math.max(previousFromHistory, previousFromSetting);
+  if (Number.isFinite(latestSync)) {
+    return Math.max(0, Math.trunc(latestSync) - 1);
+  }
+
+  return null;
 }
 
 async function resolveMatchTypeWithFallback(params: {
