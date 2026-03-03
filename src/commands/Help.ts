@@ -105,13 +105,13 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
   sheet: {
     summary: "Link and manage Google Sheet settings.",
     details: [
-      "Supports mode-specific links (`actual` and `war`).",
-      "Refresh can trigger an Apps Script webhook per mode.",
+      "Uses one linked Google Sheet for both ACTUAL/WAR data modes.",
+      "Refresh triggers a shared Apps Script webhook and can target ACTUAL or WAR mode.",
       "`link`, `unlink`, `show`, and `refresh` are admin-only by default.",
     ],
     examples: [
-      "/sheet link sheet_id_or_url:https://docs.google.com/... mode:actual",
-      "/sheet show mode:war",
+      "/sheet link sheet_id_or_url:https://docs.google.com/...",
+      "/sheet show",
       "/sheet refresh mode:actual",
     ],
   },
@@ -123,7 +123,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`place`: suggest placement by war weight.",
     ],
     examples: [
-      "/compo advice clan:Rising Dawn mode:actual",
+      "/compo advice tag:#2QG2C08UP mode:actual",
       "/compo state mode:war",
       "/compo place weight:145k",
     ],

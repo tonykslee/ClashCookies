@@ -8,10 +8,7 @@ import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
 import { safeReply } from "../helper/safeReply";
 import { CoCService } from "../services/CoCService";
-import {
-  GoogleSheetMode,
-  GoogleSheetsService,
-} from "../services/GoogleSheetsService";
+import { GoogleSheetsService } from "../services/GoogleSheetsService";
 import { SettingsService } from "../services/SettingsService";
 
 function extractSheetId(input: string): string {
@@ -64,7 +61,7 @@ function getRefreshErrorHint(err: unknown): string {
     return "Apps Script endpoint denied access. Re-check web app deployment access and secret.";
   }
   if (message.includes("404")) {
-    return "Apps Script webhook URL was not found. Re-check *_APPS_SCRIPT_WEBHOOK_URL.";
+    return "Apps Script webhook URL was not found. Re-check GS_WEBHOOK_URL.";
   }
   if (message.includes("500")) {
     return "Apps Script returned a server error. Check Apps Script execution logs.";
@@ -73,23 +70,25 @@ function getRefreshErrorHint(err: unknown): string {
   return "Could not trigger Apps Script refresh. Check webhook URL, shared secret, deployment access, and Apps Script logs.";
 }
 
-const SHEET_MODE_CHOICES = [
-  { name: "Actual Roster", value: "actual" },
-  { name: "War Roster", value: "war" },
+const SHEET_REFRESH_MODE_CHOICES = [
+  { name: "Actual", value: "actual" },
+  { name: "War", value: "war" },
 ];
 const SHEET_REFRESH_COOLDOWN_MS = 5 * 60 * 1000;
 const SHEET_REFRESH_TIMEOUT_MS = 120000;
-const lastRefreshAtMsByGuildMode = new Map<string, number>();
+const lastRefreshAtMsByGuild = new Map<string, number>();
 
 async function postRefreshWebhook(
   url: string,
-  token: string,
+  token: string | null,
   action: "refreshMembers" | "refreshWar"
 ): Promise<string> {
+  const payload: Record<string, string> = { action };
+  if (token) payload.token = token;
   const makeRequest = () =>
     axios.post<string>(
       url,
-      { token, action },
+      payload,
       {
         headers: { "Content-Type": "application/json" },
         timeout: SHEET_REFRESH_TIMEOUT_MS,
@@ -117,16 +116,6 @@ async function postRefreshWebhook(
   }
 }
 
-function getModeOptionValue(
-  interaction: ChatInputCommandInteraction
-): GoogleSheetMode | undefined {
-  const raw = interaction.options.getString("mode", false);
-  if (raw === "actual" || raw === "war") {
-    return raw;
-  }
-  return undefined;
-}
-
 export const Sheet: Command = {
   name: "sheet",
   description: "Manage Google Sheet link for this bot",
@@ -148,42 +137,17 @@ export const Sheet: Command = {
           type: ApplicationCommandOptionType.String,
           required: false,
         },
-        {
-          name: "mode",
-          description: "Link sheet for a specific roster mode",
-          type: ApplicationCommandOptionType.String,
-          required: false,
-          choices: SHEET_MODE_CHOICES,
-        },
       ],
     },
     {
       name: "show",
       description: "Show current linked Google Sheet",
       type: ApplicationCommandOptionType.Subcommand,
-      options: [
-        {
-          name: "mode",
-          description: "Show only one roster mode",
-          type: ApplicationCommandOptionType.String,
-          required: false,
-          choices: SHEET_MODE_CHOICES,
-        },
-      ],
     },
     {
       name: "unlink",
       description: "Unlink the current Google Sheet",
       type: ApplicationCommandOptionType.Subcommand,
-      options: [
-        {
-          name: "mode",
-          description: "Unlink only one roster mode",
-          type: ApplicationCommandOptionType.String,
-          required: false,
-          choices: SHEET_MODE_CHOICES,
-        },
-      ],
     },
     {
       name: "refresh",
@@ -194,8 +158,8 @@ export const Sheet: Command = {
           name: "mode",
           description: "Refresh actual or war raw data",
           type: ApplicationCommandOptionType.String,
-          required: true,
-          choices: SHEET_MODE_CHOICES,
+          required: false,
+          choices: SHEET_REFRESH_MODE_CHOICES,
         },
       ],
     },
@@ -210,62 +174,25 @@ export const Sheet: Command = {
       await interaction.deferReply({ ephemeral: true });
 
       subcommand = interaction.options.getSubcommand(true);
-      const mode = getModeOptionValue(interaction);
       const settings = new SettingsService();
       const sheets = new GoogleSheetsService(settings);
 
       if (subcommand === "show") {
-        if (mode) {
-          const { sheetId, tabName } = await sheets.getLinkedSheet(mode);
-          if (!sheetId) {
-            await safeReply(interaction, {
-              ephemeral: true,
-              content: `No Google Sheet is linked for ${mode} mode yet. Use \`/sheet link\` with mode.`,
-            });
-            return;
-          }
-
-          await safeReply(interaction, {
-            ephemeral: true,
-            content: `Linked sheet (${mode}): ${sheetId}\nDefault tab: ${tabName ?? "(not set)"}`,
-          });
-          return;
-        }
-
-        const [legacy, actual, war] = await Promise.all([
-          sheets.getLinkedSheet(),
-          sheets.getLinkedSheet("actual"),
-          sheets.getLinkedSheet("war"),
-        ]);
-
+        const { sheetId, tabName } = await sheets.getLinkedSheet();
         await safeReply(interaction, {
           ephemeral: true,
-          content:
-            `Legacy/default sheet: ${legacy.sheetId || "(not set)"} | tab: ${legacy.tabName ?? "(not set)"}\n` +
-            `Actual mode sheet: ${actual.sheetId || "(not set)"} | tab: ${actual.tabName ?? "(not set)"}\n` +
-            `War mode sheet: ${war.sheetId || "(not set)"} | tab: ${war.tabName ?? "(not set)"}`,
+          content: sheetId
+            ? `Linked sheet: ${sheetId}\nDefault tab: ${tabName ?? "(not set)"}`
+            : "No Google Sheet is linked yet. Use `/sheet link`.",
         });
         return;
       }
 
       if (subcommand === "unlink") {
-        if (mode) {
-          await sheets.clearLinkedSheet(mode);
-          await safeReply(interaction, {
-            ephemeral: true,
-            content: `Google Sheet unlinked for ${mode} mode.`,
-          });
-          return;
-        }
-
-        await Promise.all([
-          sheets.clearLinkedSheet(),
-          sheets.clearLinkedSheet("actual"),
-          sheets.clearLinkedSheet("war"),
-        ]);
+        await Promise.all([sheets.clearLinkedSheet(), sheets.clearLinkedSheet("actual"), sheets.clearLinkedSheet("war")]);
         await safeReply(interaction, {
           ephemeral: true,
-          content: "All Google Sheet links removed (legacy/default, actual, and war).",
+          content: "Google Sheet link removed.",
         });
         return;
       }
@@ -274,16 +201,14 @@ export const Sheet: Command = {
         const rawInput = interaction.options.getString("sheet_id_or_url", true);
         const sheetId = extractSheetId(rawInput);
         const tab = interaction.options.getString("tab", false) ?? undefined;
-        const selectedMode = mode;
 
         await sheets.testAccess(sheetId, tab);
-        await sheets.setLinkedSheet(sheetId, tab, selectedMode);
+        await sheets.setLinkedSheet(sheetId, tab);
 
         await safeReply(interaction, {
           ephemeral: true,
           content:
-            `Google Sheet linked${selectedMode ? ` for ${selectedMode} mode` : ""}.\n` +
-            `Sheet ID: ${sheetId}\n` +
+            `Google Sheet linked.\nSheet ID: ${sheetId}\n` +
             `Default tab: ${tab ?? "(unchanged)"}\n` +
             "You can relink anytime with `/sheet link`.",
         });
@@ -291,7 +216,7 @@ export const Sheet: Command = {
       }
 
       if (subcommand === "refresh") {
-        const refreshMode = interaction.options.getString("mode", true);
+        const refreshMode = interaction.options.getString("mode", false) ?? "actual";
         if (refreshMode !== "actual" && refreshMode !== "war") {
           await safeReply(interaction, {
             ephemeral: true,
@@ -300,9 +225,9 @@ export const Sheet: Command = {
           return;
         }
 
-        const guildModeKey = `${interaction.guildId ?? "dm"}:${refreshMode}`;
+        const guildKey = `${interaction.guildId ?? "dm"}`;
         const now = Date.now();
-        const lastRun = lastRefreshAtMsByGuildMode.get(guildModeKey);
+        const lastRun = lastRefreshAtMsByGuild.get(guildKey);
         if (lastRun && now - lastRun < SHEET_REFRESH_COOLDOWN_MS) {
           const availableAt = Math.floor(
             (lastRun + SHEET_REFRESH_COOLDOWN_MS) / 1000
@@ -314,26 +239,16 @@ export const Sheet: Command = {
           return;
         }
 
-        const config =
-          refreshMode === "actual"
-            ? {
-                url: process.env.ACTUAL_APPS_SCRIPT_WEBHOOK_URL?.trim(),
-                token: process.env.ACTUAL_APPS_SCRIPT_SHARED_SECRET?.trim(),
-                action: "refreshMembers",
-              }
-            : {
-                url: process.env.WAR_APPS_SCRIPT_WEBHOOK_URL?.trim(),
-                token: process.env.WAR_APPS_SCRIPT_SHARED_SECRET?.trim(),
-                action: "refreshWar",
-              };
+        const config = {
+          url: process.env.GS_WEBHOOK_URL?.trim(),
+          token: process.env.GS_WEBHOOK_SHARED_SECRET?.trim() ?? null,
+          action: refreshMode === "actual" ? "refreshMembers" : "refreshWar",
+        } as const;
 
-        if (!config.url || !config.token) {
+        if (!config.url) {
           await safeReply(interaction, {
             ephemeral: true,
-            content:
-              refreshMode === "actual"
-                ? "Missing ACTUAL_APPS_SCRIPT_WEBHOOK_URL or ACTUAL_APPS_SCRIPT_SHARED_SECRET."
-                : "Missing WAR_APPS_SCRIPT_WEBHOOK_URL or WAR_APPS_SCRIPT_SHARED_SECRET.",
+            content: "Missing GS_WEBHOOK_URL.",
           });
           return;
         }
@@ -349,7 +264,7 @@ export const Sheet: Command = {
           1000
         ).toFixed(2);
 
-        lastRefreshAtMsByGuildMode.set(guildModeKey, now);
+        lastRefreshAtMsByGuild.set(guildKey, now);
         await safeReply(interaction, {
           ephemeral: true,
           content:
