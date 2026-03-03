@@ -1,7 +1,6 @@
 -- Retroactive backfill: WarHistoryAttack.warId by clanTag + opponent tag.
 UPDATE "WarHistoryAttack" a
-SET "warId" = m."warId"
-FROM LATERAL (
+SET "warId" = (
   SELECT h."warId"
   FROM "WarClanHistory" h
   WHERE UPPER(REPLACE(COALESCE(h."clanTag", ''), '#', '')) = UPPER(REPLACE(COALESCE(a."clanTag", ''), '#', ''))
@@ -10,14 +9,18 @@ FROM LATERAL (
     CASE WHEN h."warStartTime" = a."warStartTime" THEN 0 ELSE 1 END,
     ABS(EXTRACT(EPOCH FROM (h."warStartTime" - a."warStartTime")))
   LIMIT 1
-) m
+)
 WHERE a."warId" IS NULL
-  AND m."warId" IS NOT NULL;
+  AND EXISTS (
+    SELECT 1
+    FROM "WarClanHistory" h
+    WHERE UPPER(REPLACE(COALESCE(h."clanTag", ''), '#', '')) = UPPER(REPLACE(COALESCE(a."clanTag", ''), '#', ''))
+      AND UPPER(REPLACE(COALESCE(h."opponentTag", ''), '#', '')) = UPPER(REPLACE(COALESCE(a."opponentClanTag", ''), '#', ''))
+  );
 
 -- Retroactive backfill: WarEventLogSubscription.warId by clanTag + lastOpponentTag.
 UPDATE "WarEventLogSubscription" s
-SET "warId" = m."warId"
-FROM LATERAL (
+SET "warId" = (
   SELECT h."warId"
   FROM "WarClanHistory" h
   WHERE UPPER(REPLACE(COALESCE(h."clanTag", ''), '#', '')) = UPPER(REPLACE(COALESCE(s."clanTag", ''), '#', ''))
@@ -30,6 +33,11 @@ FROM LATERAL (
     END,
     ABS(EXTRACT(EPOCH FROM (h."warStartTime" - COALESCE(s."lastWarStartTime", h."warStartTime"))))
   LIMIT 1
-) m
+)
 WHERE s."warId" IS NULL
-  AND m."warId" IS NOT NULL;
+  AND EXISTS (
+    SELECT 1
+    FROM "WarClanHistory" h
+    WHERE UPPER(REPLACE(COALESCE(h."clanTag", ''), '#', '')) = UPPER(REPLACE(COALESCE(s."clanTag", ''), '#', ''))
+      AND UPPER(REPLACE(COALESCE(h."opponentTag", ''), '#', '')) = UPPER(REPLACE(COALESCE(s."lastOpponentTag", ''), '#', ''))
+  );
