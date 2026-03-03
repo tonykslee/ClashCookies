@@ -786,8 +786,14 @@ export class WarEventLogService {
     }
     if (eventType === "war_ended") {
       if (!sub.lastWarStartTime) {
+        console.log(
+          `[war-events] war_ended suppressed guild=${sub.guildId} clan=${sub.clanTag} reason=no_last_war_start prev=${prevState} current=${currentState}`
+        );
         eventType = null;
       } else if (await this.hasWarEndRecorded(sub.clanTag, sub.lastWarStartTime)) {
+        console.log(
+          `[war-events] war_ended suppressed guild=${sub.guildId} clan=${sub.clanTag} reason=already_recorded warStart=${sub.lastWarStartTime.toISOString()}`
+        );
         eventType = null;
       }
     }
@@ -941,6 +947,9 @@ export class WarEventLogService {
     }
 
     if (eventType) {
+      console.log(
+        `[war-events] transition detected guild=${sub.guildId} clan=${sub.clanTag} event=${eventType} prev=${prevState} current=${currentState} sync=${syncNumberForEvent ?? "unknown"} warStart=${nextWarStartTime?.toISOString() ?? "unknown"} warEnd=${nextWarEndTime?.toISOString() ?? "unknown"} opponent=${nextOpponentTag || normalizeTag(sub.lastOpponentTag ?? "") || "unknown"}`
+      );
       const eventPayload = {
         eventType,
         clanTag: sub.clanTag,
@@ -975,6 +984,9 @@ export class WarEventLogService {
           );
         });
       }
+      console.log(
+        `[war-events] emit start guild=${sub.guildId} channel=${sub.channelId} clan=${eventPayload.clanTag} event=${eventPayload.eventType}`
+      );
       await this.emitEvent(sub.channelId, eventPayload);
     }
 
@@ -1032,13 +1044,27 @@ export class WarEventLogService {
     }
   ): Promise<void> {
     const channel = await this.client.channels.fetch(channelId).catch(() => null);
-    if (!channel || !channel.isTextBased()) return;
+    if (!channel) {
+      console.warn(
+        `[war-events] emit skipped channel=${channelId} clan=${payload.clanTag} event=${payload.eventType} reason=channel_not_found`
+      );
+      return;
+    }
+    if (!channel.isTextBased()) {
+      console.warn(
+        `[war-events] emit skipped channel=${channelId} clan=${payload.clanTag} event=${payload.eventType} reason=channel_not_text_based`
+      );
+      return;
+    }
     if (
       channel.type !== ChannelType.GuildText &&
       channel.type !== ChannelType.GuildAnnouncement &&
       channel.type !== ChannelType.PublicThread &&
       channel.type !== ChannelType.PrivateThread
     ) {
+      console.warn(
+        `[war-events] emit skipped channel=${channelId} clan=${payload.clanTag} event=${payload.eventType} reason=unsupported_channel_type type=${channel.type}`
+      );
       return;
     }
 
@@ -1286,6 +1312,11 @@ export class WarEventLogService {
       } else if (payload.eventType !== "battle_day") {
         battleDayPostByGuildTag.delete(key);
       }
+    }
+    if (sent) {
+      console.log(
+        `[war-events] emit success guild=${guildId ?? "unknown"} channel=${channelId} message=${sent.id} clan=${payload.clanTag} event=${payload.eventType}`
+      );
     }
   }
 
