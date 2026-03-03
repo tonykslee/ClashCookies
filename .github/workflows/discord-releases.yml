@@ -14,7 +14,7 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           RELEASE_NAME: ${{ github.event.release.name }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
-          RELEASE_URL: ${{ github.event.release.html_url }}
+          RELEASE_BODY: ${{ github.event.release.body }}
         run: |
           WEBHOOK_BASE="${DISCORD_RELEASE_WEBHOOK:-$DISCORD_WEBHOOK_URL}"
           if [[ -z "$WEBHOOK_BASE" ]]; then
@@ -28,30 +28,30 @@ jobs:
             WEBHOOK_ENDPOINT="${WEBHOOK_BASE}?wait=true&with_components=true"
           fi
 
+          HIGHLIGHTS="$(printf '%s' "$RELEASE_BODY" | awk '
+            BEGIN { in_section = 0 }
+            /^##[[:space:]]+Highlights[[:space:]]*$/ { in_section = 1; next }
+            /^##[[:space:]]+/ { if (in_section) exit }
+            { if (in_section) print }
+          ')"
+          if [[ -z "$HIGHLIGHTS" ]]; then
+            HIGHLIGHTS="No Highlights section found in release notes."
+          fi
+
           PAYLOAD="$(jq -n \
             --arg role "1477488801478869196" \
             --arg title "New Release: ${RELEASE_NAME}" \
             --arg tag "${RELEASE_TAG}" \
-            --arg release_url "${RELEASE_URL}" \
+            --arg highlights "${HIGHLIGHTS}" \
             '{
               content: ("<@&" + $role + ">"),
               allowed_mentions: { roles: [$role] },
               username: "ClashCookies",
               embeds: [{
                 title: $title,
-                url: $release_url,
-                description: ("Click the button below to view the full changelog.\n[View Full Changelog](" + $release_url + ")"),
+                description: ("## Highlights\n" + $highlights),
                 color: 5814783,
                 footer: { text: ("Version " + $tag) }
-              }],
-              components: [{
-                type: 1,
-                components: [{
-                  type: 2,
-                  style: 5,
-                  label: "View Release",
-                  url: $release_url
-                }]
               }]
             }')"
 
