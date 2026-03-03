@@ -14,6 +14,7 @@ import { Recruitment } from "./commands/Recruitment";
 import { Accounts } from "./commands/Accounts";
 import { Notify } from "./commands/Notify";
 import { War } from "./commands/War";
+import { Force } from "./commands/Force";
 
 // ...existing code...
 export const Commands = [
@@ -31,6 +32,7 @@ export const Commands = [
   Notify,
   Recruitment,
   KickList,
+  Force,
   Post,
   CommandRole,
 ];

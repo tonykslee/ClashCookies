@@ -33,6 +33,8 @@ export const COMMAND_PERMISSION_TARGETS = [
   "fwa:match",
   "fwa:mail:send",
   "fwa:leader-role",
+  "force:sync:data",
+  "force:sync:mail",
   "recruitment:show",
   "recruitment:edit",
   "recruitment:dashboard",
@@ -64,6 +66,8 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "kick-list:clear",
   "notify:war",
   "fwa:leader-role",
+  "force:sync:data",
+  "force:sync:mail",
   `${MANAGE_COMMAND_ROLES_COMMAND}:add`,
   `${MANAGE_COMMAND_ROLES_COMMAND}:remove`,
 ]);

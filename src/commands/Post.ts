@@ -858,7 +858,7 @@ export async function handlePostModalSubmit(
     notices.push(`Scheduled sync rollover for <t:${epochSeconds}:F>.`);
   } else if (rollover.reason === "previous_sync_missing") {
     notices.push(
-      "Sync rollover is due but previousSyncNum is unset; run `/fwa sync force datapoint:syncNum` to seed it."
+      "Sync rollover is due but previousSyncNum is unset; run `/force sync data datapoint:syncNum` to seed it."
     );
   }
 

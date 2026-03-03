@@ -45,3 +45,5 @@
 - `/kick-list clear [mode:all|auto|manual]` - Clear kick-list entries.
 - `/sync time post [role:<discordRole>]` - Open modal, compose sync-time message, post it, and pin it.
 - `/sync post status [message-id:<id>]` - Show claimed vs unclaimed clan badge reactions for the active sync-time post, or for a specific message in the channel.
+- `/force sync data tag:<trackedClanTag> [datapoint:points|syncNum]` - Manually force-sync tracked clan points and/or sync number from points.fwafarm.
+- `/force sync mail tag:<trackedClanTag> message-type:<mail|notify:war start|notify:battle start|notify:war end> message-id:<id>` - Upsert `CurrentWar.mailConfig` with current match configuration plus a posted message reference.

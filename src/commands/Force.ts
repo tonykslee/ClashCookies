@@ -1,0 +1,138 @@
+import {
+  ApplicationCommandOptionType,
+  AutocompleteInteraction,
+  ChatInputCommandInteraction,
+  Client,
+} from "discord.js";
+import { Command } from "../Command";
+import { prisma } from "../prisma";
+import { CoCService } from "../services/CoCService";
+import {
+  runForceSyncDataCommand,
+  runForceSyncMailCommand,
+} from "./Fwa";
+
+function normalizeTag(input: string): string {
+  return input.trim().toUpperCase().replace(/^#/, "");
+}
+
+export const Force: Command = {
+  name: "force",
+  description: "Manual force-sync utilities",
+  options: [
+    {
+      name: "sync",
+      description: "Force sync data and message references",
+      type: ApplicationCommandOptionType.SubcommandGroup,
+      options: [
+        {
+          name: "data",
+          description: "Force-refresh points and sync number for a tracked clan",
+          type: ApplicationCommandOptionType.Subcommand,
+          options: [
+            {
+              name: "tag",
+              description: "Tracked clan tag (with or without #)",
+              type: ApplicationCommandOptionType.String,
+              required: true,
+              autocomplete: true,
+            },
+            {
+              name: "datapoint",
+              description: "Choose which value to overwrite",
+              type: ApplicationCommandOptionType.String,
+              required: false,
+              choices: [
+                { name: "points", value: "points" },
+                { name: "syncNum", value: "syncNum" },
+              ],
+            },
+          ],
+        },
+        {
+          name: "mail",
+          description: "Upsert MailConfig for a tracked clan message",
+          type: ApplicationCommandOptionType.Subcommand,
+          options: [
+            {
+              name: "tag",
+              description: "Tracked clan tag (with or without #)",
+              type: ApplicationCommandOptionType.String,
+              required: true,
+              autocomplete: true,
+            },
+            {
+              name: "message_type",
+              description: "Message type to record in MailConfig",
+              type: ApplicationCommandOptionType.String,
+              required: true,
+              choices: [
+                { name: "mail", value: "mail" },
+                { name: "notify:war start", value: "notify:war_start" },
+                { name: "notify:battle start", value: "notify:battle_start" },
+                { name: "notify:war end", value: "notify:war_end" },
+              ],
+            },
+            {
+              name: "message_id",
+              description: "Discord message ID to store",
+              type: ApplicationCommandOptionType.String,
+              required: true,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+  run: async (
+    _client: Client,
+    interaction: ChatInputCommandInteraction,
+    cocService: CoCService
+  ) => {
+    const subcommandGroup = interaction.options.getSubcommandGroup(true);
+    const subcommand = interaction.options.getSubcommand(true);
+
+    if (subcommandGroup === "sync" && subcommand === "data") {
+      await runForceSyncDataCommand(interaction, cocService);
+      return;
+    }
+    if (subcommandGroup === "sync" && subcommand === "mail") {
+      await runForceSyncMailCommand(interaction, cocService);
+      return;
+    }
+
+    await interaction.reply({
+      ephemeral: true,
+      content: "Unsupported /force command usage.",
+    });
+  },
+  autocomplete: async (interaction: AutocompleteInteraction) => {
+    const focused = interaction.options.getFocused(true);
+    if (focused.name !== "tag") {
+      await interaction.respond([]);
+      return;
+    }
+
+    const query = String(focused.value ?? "").trim().toLowerCase();
+    const tracked = await prisma.trackedClan.findMany({
+      orderBy: { createdAt: "asc" },
+      select: { name: true, tag: true },
+    });
+
+    const choices = tracked
+      .map((c) => {
+        const normalized = normalizeTag(c.tag);
+        const label = c.name?.trim() ? `${c.name.trim()} (#${normalized})` : `#${normalized}`;
+        return { name: label.slice(0, 100), value: normalized };
+      })
+      .filter(
+        (c) =>
+          c.name.toLowerCase().includes(query) ||
+          c.value.toLowerCase().includes(query)
+      )
+      .slice(0, 25);
+
+    await interaction.respond(choices);
+  },
+};
+
