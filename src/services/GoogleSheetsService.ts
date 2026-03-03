@@ -76,7 +76,7 @@ export class GoogleSheetsService {
   /** Purpose: test access. */
   async testAccess(sheetId: string, tabName?: string): Promise<void> {
     const range = tabName?.trim()
-      ? `${tabName.trim()}!A1:A1`
+      ? `${escapeSheetTabName(tabName.trim())}!A1:A1`
       : "A1:A1";
     await this.readValues(sheetId, range);
   }
@@ -93,7 +93,7 @@ export class GoogleSheetsService {
       throw new Error("No linked Google Sheet found.");
     }
 
-    const effectiveRange = range ?? (tabName ? `${tabName}!A1:D10` : "A1:D10");
+    const effectiveRange = range ?? (tabName ? `${escapeSheetTabName(tabName)}!A1:D10` : "A1:D10");
     return this.readValues(sheetId, effectiveRange);
   }
 
@@ -275,4 +275,9 @@ export class GoogleSheetsService {
       tabKey: SHEET_SETTING_WAR_TAB_KEY,
     };
   }
+}
+
+function escapeSheetTabName(tabName: string): string {
+  const escaped = String(tabName ?? "").trim().replace(/'/g, "''");
+  return `'${escaped}'`;
 }
