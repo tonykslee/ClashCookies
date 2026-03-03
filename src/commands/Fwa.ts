@@ -3849,10 +3849,6 @@ export async function runForceSyncDataCommand(
   const isPublic = visibility === "public";
   const settings = new SettingsService();
   const warLookupCache: WarLookupCache = new Map();
-  let sourceSync = await getSourceOfTruthSync(settings, interaction.guildId ?? null);
-  if (sourceSync === null) {
-    sourceSync = await recoverPreviousSyncNumFromPoints(settings, cocService, warLookupCache);
-  }
   await interaction.deferReply({ ephemeral: !isPublic });
 
   const rawTag = interaction.options.getString("tag", true);
@@ -3875,23 +3871,16 @@ export async function runForceSyncDataCommand(
   const fresh = await scrapeClanPoints(tag);
 
   const siteSync = fresh.winnerBoxSync;
+  const siteSyncNum =
+    siteSync !== null && Number.isFinite(siteSync) ? Math.trunc(siteSync) : null;
   const siteUpdatedForOpponent = Boolean(opponentTag && isPointsSiteUpdatedForOpponent(fresh, opponentTag, null));
   let previousSyncSet: number | null = null;
-  if (
-    shouldOverwriteSyncNum &&
-    siteUpdatedForOpponent &&
-    siteSync !== null &&
-    Number.isFinite(siteSync)
-  ) {
-    const recoveredPrevious = siteSync - 1;
-    if (Number.isFinite(recoveredPrevious) && recoveredPrevious >= 0) {
-      previousSyncSet = Math.trunc(recoveredPrevious);
-      await settings.set(PREVIOUS_SYNC_KEY, String(previousSyncSet));
-      sourceSync = previousSyncSet;
-    }
+  if (shouldOverwriteSyncNum && siteSyncNum !== null) {
+    previousSyncSet = Math.max(0, siteSyncNum - 1);
+    await settings.set(PREVIOUS_SYNC_KEY, String(previousSyncSet));
   }
 
-  if (shouldOverwritePoints && interaction.guildId) {
+  if ((shouldOverwritePoints || shouldOverwriteSyncNum) && interaction.guildId) {
     await prisma.currentWar.upsert({
       where: {
         guildId_clanTag: {
@@ -3906,25 +3895,68 @@ export async function runForceSyncDataCommand(
         notify: false,
         currentSyncNum:
           shouldOverwriteSyncNum &&
-          siteSync !== null &&
-          Number.isFinite(siteSync)
-            ? Math.trunc(siteSync)
+          siteSyncNum !== null
+            ? siteSyncNum
             : null,
         fwaPoints:
-          fresh.balance !== null && Number.isFinite(fresh.balance) ? fresh.balance : null,
+          shouldOverwritePoints &&
+          fresh.balance !== null &&
+          Number.isFinite(fresh.balance)
+            ? fresh.balance
+            : null,
       },
       update: {
         currentSyncNum:
           shouldOverwriteSyncNum &&
-          siteSync !== null &&
-          Number.isFinite(siteSync)
-            ? Math.trunc(siteSync)
+          siteSyncNum !== null
+            ? siteSyncNum
             : undefined,
         fwaPoints:
-          fresh.balance !== null && Number.isFinite(fresh.balance) ? fresh.balance : null,
+          shouldOverwritePoints &&
+          fresh.balance !== null &&
+          Number.isFinite(fresh.balance)
+            ? fresh.balance
+            : undefined,
         updatedAt: new Date(),
       },
     });
+  }
+
+  let historyBackfilledCount = 0;
+  let historyBackfillRange: { latest: number; oldest: number } | null = null;
+  if (shouldOverwriteSyncNum && siteSyncNum !== null) {
+    const rows = await prisma.clanWarHistory.findMany({
+      where: { clanTag: tag },
+      orderBy: { warStartTime: "desc" },
+      select: { warId: true, syncNumber: true },
+    });
+    if (rows.length > 0) {
+      const updates = rows
+        .map((row, index) => {
+          const nextSync = Math.max(0, siteSyncNum - 1 - index);
+          return {
+            warId: row.warId,
+            previous: row.syncNumber,
+            next: nextSync,
+          };
+        })
+        .filter((row) => row.previous !== row.next);
+      if (updates.length > 0) {
+        await prisma.$transaction(
+          updates.map((row) =>
+            prisma.clanWarHistory.update({
+              where: { warId: row.warId },
+              data: { syncNumber: row.next },
+            })
+          )
+        );
+      }
+      historyBackfilledCount = updates.length;
+      historyBackfillRange = {
+        latest: Math.max(0, siteSyncNum - 1),
+        oldest: Math.max(0, siteSyncNum - rows.length),
+      };
+    }
   }
 
   let opponentSnapshot: PointsSnapshot | null = null;
@@ -3985,12 +4017,26 @@ export async function runForceSyncDataCommand(
           ? `**${formatPoints(fresh.balance)}**`
           : "unavailable"
       }`,
-      `Site sync #: ${siteSync !== null && Number.isFinite(siteSync) ? `#${Math.trunc(siteSync)}` : "unknown"}`,
+      `Site sync #: ${siteSyncNum !== null ? `#${siteSyncNum}` : "unknown"}`,
+      `CurrentWar.currentSyncNum: ${
+        shouldOverwriteSyncNum
+          ? siteSyncNum !== null
+            ? `set to #${siteSyncNum}`
+            : "unchanged (site sync unavailable)"
+          : "skipped"
+      }`,
       `Stored previousSyncNum: ${
         shouldOverwriteSyncNum
           ? previousSyncSet !== null
             ? `#${previousSyncSet}`
             : "unchanged"
+          : "skipped"
+      }`,
+      `ClanWarHistory.syncNumber backfill: ${
+        shouldOverwriteSyncNum
+          ? historyBackfillRange
+            ? `${historyBackfilledCount} row(s) updated (latest #${historyBackfillRange.latest}, oldest #${historyBackfillRange.oldest}).`
+            : "skipped (no history rows found)."
           : "skipped"
       }`,
       shouldOverwritePoints
