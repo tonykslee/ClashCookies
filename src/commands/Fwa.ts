@@ -293,6 +293,28 @@ const MATCH_MAIL_CONFIG_DEFAULT: MatchMailConfig = {
   skipSyncHistory: null,
 };
 
+function getPrimaryMailMessageRef(
+  config: MatchMailConfig | null | undefined
+): { channelId: string; messageId: string } | null {
+  if (!config) return null;
+  for (let i = config.messages.length - 1; i >= 0; i -= 1) {
+    const entry = config.messages[i];
+    if (!entry || entry.messageType !== "mail") continue;
+    const fromUrl = parseDiscordMessageUrl(entry.messageUrl);
+    const channelId = (entry.channelId ?? "").trim() || fromUrl?.channelId || "";
+    const messageId = (entry.messageID ?? "").trim() || fromUrl?.messageId || "";
+    if (/^\d+$/.test(channelId) && /^\d+$/.test(messageId)) {
+      return { channelId, messageId };
+    }
+  }
+  const fallbackChannelId = config.lastPostedChannelId?.trim() ?? "";
+  const fallbackMessageId = config.lastPostedMessageId?.trim() ?? "";
+  if (/^\d+$/.test(fallbackChannelId) && /^\d+$/.test(fallbackMessageId)) {
+    return { channelId: fallbackChannelId, messageId: fallbackMessageId };
+  }
+  return null;
+}
+
 function parseForceMailMessageType(value: string): ForceMailMessageType | null {
   const normalized = value.trim().toLowerCase();
   if (normalized === "mail") {
@@ -926,7 +948,7 @@ async function recordMatchMailUpdated(params: {
     ...current,
     lastPostedMessageId: params.messageId,
     lastPostedChannelId: params.channelId,
-    lastPostedAtUnix: Math.floor(params.sentAtMs / 1000),
+    lastPostedAtUnix: null,
     lastWarStartMs: params.warStartMs,
     lastMatchType: params.matchType,
     lastExpectedOutcome: params.expectedOutcome,
@@ -969,7 +991,7 @@ async function markMatchLiveDataChanged(params: {
   const next: MatchMailConfig = {
     ...current,
     lastDataChangedAtUnix: liveMatchesPosted
-      ? (current.lastPostedAtUnix ?? nowUnix)
+      ? (current.lastDataChangedAtUnix ?? nowUnix)
       : nowUnix,
   };
   await saveCurrentWarMailConfig({
@@ -1295,21 +1317,23 @@ function getMailStatusEmojiForClan(params: {
   tag: string;
   warStartMs: number | null;
   mailConfig?: MatchMailConfig | null;
+  liveMatchType?: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN" | null;
+  liveExpectedOutcome?: "WIN" | "LOSE" | "UNKNOWN" | null;
 }): string {
   if (!params.guildId) return MAILBOX_NOT_SENT_EMOJI;
   const config = params.mailConfig ?? null;
-  const postedAfterLatestChange =
-    config?.lastPostedAtUnix !== null &&
-    config?.lastPostedAtUnix !== undefined &&
-    (config.lastDataChangedAtUnix === null ||
-      config.lastDataChangedAtUnix === undefined ||
-      config.lastPostedAtUnix >= config.lastDataChangedAtUnix);
-  if (config?.lastPostedMessageId) {
-    if (!postedAfterLatestChange) return MAILBOX_NOT_SENT_EMOJI;
+  const primaryMail = getPrimaryMailMessageRef(config);
+  const liveProvided = params.liveMatchType !== undefined || params.liveExpectedOutcome !== undefined;
+  const liveMatchesPosted = !liveProvided
+    ? true
+    : (config?.lastMatchType ?? null) === (params.liveMatchType ?? null) &&
+      (config?.lastExpectedOutcome ?? null) === (params.liveExpectedOutcome ?? null);
+  if (primaryMail) {
+    if (!liveMatchesPosted) return MAILBOX_NOT_SENT_EMOJI;
     if (
       params.warStartMs !== null &&
-      config.lastWarStartMs !== null &&
-      config.lastWarStartMs === params.warStartMs
+      config?.lastWarStartMs !== null &&
+      config?.lastWarStartMs === params.warStartMs
     ) {
       return MAILBOX_SENT_EMOJI;
     }
@@ -1318,8 +1342,7 @@ function getMailStatusEmojiForClan(params: {
     }
     if (
       params.warStartMs !== null &&
-      config.lastWarStartMs === null &&
-      config.messages.some((entry) => entry.messageType === "mail")
+      config?.lastWarStartMs === null
     ) {
       return MAILBOX_SENT_EMOJI;
     }
@@ -1361,9 +1384,10 @@ async function hasPostedMailMessage(params: {
   mailConfig: MatchMailConfig | null | undefined;
 }): Promise<boolean> {
   if (!params.client || !params.guildId || !params.mailConfig) return false;
-  const channelId = params.mailConfig.lastPostedChannelId;
-  const messageId = params.mailConfig.lastPostedMessageId;
-  if (!channelId || !messageId) return false;
+  const primary = getPrimaryMailMessageRef(params.mailConfig);
+  if (!primary) return false;
+  const channelId = primary.channelId;
+  const messageId = primary.messageId;
   const channel = await params.client.channels.fetch(channelId).catch(() => null);
   if (!channel || !channel.isTextBased()) return false;
   const message = await (channel as any).messages.fetch(messageId).catch(() => null);
@@ -1509,12 +1533,6 @@ function collectMailPostTargetsFromConfig(config: MatchMailConfig): MailPostTarg
     out.push(candidate);
   };
 
-  push(
-    config.lastPostedChannelId && config.lastPostedMessageId
-      ? { channelId: config.lastPostedChannelId, messageId: config.lastPostedMessageId }
-      : null
-  );
-
   for (const entry of config.messages) {
     if (entry.messageType !== "mail") continue;
     const fromUrl = parseDiscordMessageUrl(entry.messageUrl);
@@ -1522,6 +1540,12 @@ function collectMailPostTargetsFromConfig(config: MatchMailConfig): MailPostTarg
     const messageId = (entry.messageID ?? "").trim() || fromUrl?.messageId || "";
     push(channelId && messageId ? { channelId, messageId } : null);
   }
+
+  push(
+    config.lastPostedChannelId && config.lastPostedMessageId
+      ? { channelId: config.lastPostedChannelId, messageId: config.lastPostedMessageId }
+      : null
+  );
 
   const deduped = new Map<string, MailPostTarget>();
   for (const candidate of out) {
@@ -1614,13 +1638,14 @@ async function findWarMailTargetFromConfig(params: {
   });
   for (const row of rows) {
     const config = parseMatchMailConfig(row.mailConfig as Prisma.JsonValue | null | undefined);
-    if (!config.lastPostedChannelId || !config.lastPostedMessageId) continue;
-    if (config.lastPostedChannelId !== params.channelId) continue;
-    if (config.lastPostedMessageId !== params.messageId) continue;
+    const primary = getPrimaryMailMessageRef(config);
+    if (!primary) continue;
+    if (primary.channelId !== params.channelId) continue;
+    if (primary.messageId !== params.messageId) continue;
     return {
       tag: normalizeTag(row.clanTag),
-      channelId: config.lastPostedChannelId,
-      messageId: config.lastPostedMessageId,
+      channelId: primary.channelId,
+      messageId: primary.messageId,
     };
   }
   return null;
@@ -2966,8 +2991,8 @@ export async function handleFwaMailConfirmButton(interaction: ButtonInteraction)
           channelId: existingMailConfig.lastPostedChannelId,
           messageId: existingMailConfig.lastPostedMessageId,
           sentAtMs:
-            existingMailConfig.lastPostedAtUnix !== null
-              ? existingMailConfig.lastPostedAtUnix * 1000
+            existingMailConfig.lastDataChangedAtUnix !== null
+              ? existingMailConfig.lastDataChangedAtUnix * 1000
               : 0,
           matchType: existingMailConfig.lastMatchType ?? "UNKNOWN",
           expectedOutcome: existingMailConfig.lastExpectedOutcome ?? null,
@@ -4216,6 +4241,8 @@ async function buildTrackedMatchOverview(
       tag: clanTag,
       warStartMs: clanWarStartMs,
       mailConfig: parsedMailConfig,
+      liveMatchType: isMatchTypeValue(sub?.matchType) ? sub?.matchType : null,
+      liveExpectedOutcome: isExpectedOutcomeValue(sub?.outcome) ? sub?.outcome : null,
     });
     const postedMailExistsForStatus =
       baseMailStatusEmoji === MAILBOX_SENT_EMOJI
@@ -5015,7 +5042,6 @@ export async function runForceSyncMailCommand(
   if (parsedType.messageType === "mail") {
     next.lastPostedMessageId = messageID;
     next.lastPostedChannelId = interaction.channelId;
-    next.lastPostedAtUnix = nowUnix;
     next.lastDataChangedAtUnix = nowUnix;
   }
 
@@ -5489,6 +5515,8 @@ export const Fwa: Command = {
             tag,
             warStartMs: null,
             mailConfig: parsedMailConfig,
+            liveMatchType: isMatchTypeValue(subscription?.matchType) ? subscription?.matchType : null,
+            liveExpectedOutcome: isExpectedOutcomeValue(subscription?.outcome) ? subscription?.outcome : null,
           });
           const postedMailExistsForStatus =
             baseMailStatusEmoji === MAILBOX_SENT_EMOJI
