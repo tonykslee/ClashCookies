@@ -2342,7 +2342,7 @@ export async function handleFwaMatchSkipSyncConfirmButton(
         INSERT INTO "ClanWarHistory"
           ("warId","syncNumber","matchType","warStartTime","warEndTime","clanName","clanTag","opponentName","opponentTag","updatedAt")
         VALUES
-          (${skipWarId}, ${resolvedSyncNum}, ${"SKIP"}, ${skipWarStart}, NULL, ${clanName}, ${clanTagWithHash}, ${"SKIP"}, ${skipOpponentTagWithHash}, NOW())
+          (${skipWarId}, ${resolvedSyncNum}, CAST(${"SKIP"} AS "WarMatchType"), ${skipWarStart}, NULL, ${clanName}, ${clanTagWithHash}, ${"SKIP"}, ${skipOpponentTagWithHash}, NOW())
         ON CONFLICT ("warId")
         DO UPDATE SET
           "syncNumber" = EXCLUDED."syncNumber",
@@ -2365,7 +2365,7 @@ export async function handleFwaMatchSkipSyncConfirmButton(
         INSERT INTO "ClanWarHistory"
           ("syncNumber","matchType","warStartTime","warEndTime","clanName","clanTag","opponentName","opponentTag","updatedAt")
         VALUES
-          (${resolvedSyncNum}, ${"SKIP"}, ${skipWarStart}, NULL, ${clanName}, ${clanTagWithHash}, ${"SKIP"}, ${skipOpponentTagWithHash}, NOW())
+          (${resolvedSyncNum}, CAST(${"SKIP"} AS "WarMatchType"), ${skipWarStart}, NULL, ${clanName}, ${clanTagWithHash}, ${"SKIP"}, ${skipOpponentTagWithHash}, NOW())
         ON CONFLICT ("warStartTime","clanTag","opponentTag")
         DO UPDATE SET
           "syncNumber" = EXCLUDED."syncNumber",
