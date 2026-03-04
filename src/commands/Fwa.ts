@@ -59,6 +59,8 @@ const FWA_MATCH_TYPE_EDIT_PREFIX = "fwa-match-type-edit";
 const FWA_OUTCOME_ACTION_PREFIX = "fwa-outcome-action";
 const FWA_MATCH_SYNC_ACTION_PREFIX = "fwa-match-sync-action";
 const FWA_MATCH_SKIP_SYNC_ACTION_PREFIX = "fwa-match-skip-sync-action";
+const FWA_MATCH_SKIP_SYNC_CONFIRM_PREFIX = "fwa-match-skip-sync-confirm";
+const FWA_MATCH_SKIP_SYNC_UNDO_PREFIX = "fwa-match-skip-sync-undo";
 const FWA_MATCH_SELECT_PREFIX = "fwa-match-select";
 const FWA_MATCH_ALLIANCE_PREFIX = "fwa-match-alliance";
 const FWA_MAIL_CONFIRM_PREFIX = "fwa-mail-confirm";
@@ -217,6 +219,7 @@ type MatchView = {
   mailStatusEmoji?: string;
   mailAction?: { tag: string; enabled: boolean; reason: string | null };
   skipSyncAction?: { tag: string } | null;
+  undoSkipSyncAction?: { tag: string } | null;
 };
 
 type FwaMatchCopyPayload = {
@@ -266,6 +269,11 @@ type MatchMailConfig = {
   lastExpectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null;
   lastDataChangedAtUnix: number | null;
   messages: MatchMailMessageRef[];
+  skipSyncHistory: {
+    warId: number;
+    warStartUnix: number;
+    opponentTag: string;
+  } | null;
 };
 
 type ForceMailMessageType = {
@@ -282,6 +290,7 @@ const MATCH_MAIL_CONFIG_DEFAULT: MatchMailConfig = {
   lastExpectedOutcome: null,
   lastDataChangedAtUnix: null,
   messages: [],
+  skipSyncHistory: null,
 };
 
 function parseForceMailMessageType(value: string): ForceMailMessageType | null {
@@ -470,6 +479,42 @@ function parseMatchSkipSyncActionCustomId(customId: string): MatchSkipSyncAction
 
 export function isFwaMatchSkipSyncActionButtonCustomId(customId: string): boolean {
   return customId.startsWith(`${FWA_MATCH_SKIP_SYNC_ACTION_PREFIX}:`);
+}
+
+function buildMatchSkipSyncConfirmCustomId(params: MatchSkipSyncActionParams): string {
+  return `${FWA_MATCH_SKIP_SYNC_CONFIRM_PREFIX}:${params.userId}:${params.key}:${normalizeTag(params.tag)}`;
+}
+
+function parseMatchSkipSyncConfirmCustomId(customId: string): MatchSkipSyncActionParams | null {
+  const parts = customId.split(":");
+  if (parts.length !== 4 || parts[0] !== FWA_MATCH_SKIP_SYNC_CONFIRM_PREFIX) return null;
+  const userId = parts[1]?.trim() ?? "";
+  const key = parts[2]?.trim() ?? "";
+  const tag = normalizeTag(parts[3] ?? "");
+  if (!userId || !key || !tag) return null;
+  return { userId, key, tag };
+}
+
+export function isFwaMatchSkipSyncConfirmButtonCustomId(customId: string): boolean {
+  return customId.startsWith(`${FWA_MATCH_SKIP_SYNC_CONFIRM_PREFIX}:`);
+}
+
+function buildMatchSkipSyncUndoCustomId(params: MatchSkipSyncActionParams): string {
+  return `${FWA_MATCH_SKIP_SYNC_UNDO_PREFIX}:${params.userId}:${params.key}:${normalizeTag(params.tag)}`;
+}
+
+function parseMatchSkipSyncUndoCustomId(customId: string): MatchSkipSyncActionParams | null {
+  const parts = customId.split(":");
+  if (parts.length !== 4 || parts[0] !== FWA_MATCH_SKIP_SYNC_UNDO_PREFIX) return null;
+  const userId = parts[1]?.trim() ?? "";
+  const key = parts[2]?.trim() ?? "";
+  const tag = normalizeTag(parts[3] ?? "");
+  if (!userId || !key || !tag) return null;
+  return { userId, key, tag };
+}
+
+export function isFwaMatchSkipSyncUndoButtonCustomId(customId: string): boolean {
+  return customId.startsWith(`${FWA_MATCH_SKIP_SYNC_UNDO_PREFIX}:`);
 }
 
 export function isFwaMatchSelectCustomId(customId: string): boolean {
@@ -667,8 +712,8 @@ async function getTrackedClanMailConfig(tag: string): Promise<{
   };
 }
 
-function isMatchTypeValue(value: unknown): value is "FWA" | "BL" | "MM" | "UNKNOWN" {
-  return value === "FWA" || value === "BL" || value === "MM" || value === "UNKNOWN";
+function isMatchTypeValue(value: unknown): value is "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN" {
+  return value === "FWA" || value === "BL" || value === "MM" || value === "SKIP" || value === "UNKNOWN";
 }
 
 function isExpectedOutcomeValue(value: unknown): value is "WIN" | "LOSE" | "UNKNOWN" {
@@ -728,6 +773,30 @@ function parseMatchMailConfig(value: Prisma.JsonValue | null | undefined): Match
     typeof obj.lastDataChangedAtUnix === "number" && Number.isFinite(obj.lastDataChangedAtUnix)
       ? Math.trunc(obj.lastDataChangedAtUnix)
       : null;
+  const skipSyncRaw =
+    obj.skipSyncHistory && typeof obj.skipSyncHistory === "object" && !Array.isArray(obj.skipSyncHistory)
+      ? (obj.skipSyncHistory as Record<string, unknown>)
+      : null;
+  const skipSyncWarId =
+    skipSyncRaw && typeof skipSyncRaw.warId === "number" && Number.isFinite(skipSyncRaw.warId)
+      ? Math.trunc(skipSyncRaw.warId)
+      : null;
+  const skipSyncWarStartUnix =
+    skipSyncRaw && typeof skipSyncRaw.warStartUnix === "number" && Number.isFinite(skipSyncRaw.warStartUnix)
+      ? Math.trunc(skipSyncRaw.warStartUnix)
+      : null;
+  const skipSyncOpponentTag =
+    skipSyncRaw && typeof skipSyncRaw.opponentTag === "string"
+      ? normalizeTag(skipSyncRaw.opponentTag)
+      : "";
+  const skipSyncHistory =
+    skipSyncWarId !== null && skipSyncWarStartUnix !== null
+      ? {
+          warId: skipSyncWarId,
+          warStartUnix: skipSyncWarStartUnix,
+          opponentTag: skipSyncOpponentTag || "SKIP",
+        }
+      : null;
 
   return {
     lastPostedMessageId,
@@ -738,6 +807,7 @@ function parseMatchMailConfig(value: Prisma.JsonValue | null | undefined): Match
     lastExpectedOutcome,
     lastDataChangedAtUnix,
     messages,
+    skipSyncHistory,
   };
 }
 
@@ -797,7 +867,7 @@ async function recordMatchMailUpdated(params: {
   messageId: string;
   warStartMs: number | null;
   sentAtMs: number;
-  matchType: "FWA" | "BL" | "MM" | "UNKNOWN";
+  matchType: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN";
   expectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null;
 }): Promise<MatchMailConfig> {
   const current = await getCurrentWarMailConfig(params.guildId, params.tag);
@@ -1457,6 +1527,7 @@ function buildFwaMatchCopyComponents(
   const syncAction = view.syncAction ?? null;
   const mailAction = view.mailAction ?? null;
   const skipSyncAction = view.skipSyncAction ?? null;
+  const undoSkipSyncAction = view.undoSkipSyncAction ?? null;
   const toggleMode = showMode === "embed" ? "copy" : "embed";
   const toggleLabel = showMode === "embed" ? "Copy/Paste View" : "Embed View";
   const baseRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
@@ -1583,6 +1654,22 @@ function buildFwaMatchCopyComponents(
           )
           .setLabel("SKIP SYNC")
           .setStyle(ButtonStyle.Secondary)
+      )
+    );
+  }
+  if (undoSkipSyncAction) {
+    rows.push(
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setCustomId(
+            buildMatchSkipSyncUndoCustomId({
+              userId,
+              key,
+              tag: undoSkipSyncAction.tag,
+            })
+          )
+          .setLabel("UNDO")
+          .setStyle(ButtonStyle.Danger)
       )
     );
   }
@@ -2173,6 +2260,56 @@ export async function handleFwaMatchSkipSyncActionButton(
     });
     return;
   }
+  await interaction.reply({
+    ephemeral: true,
+    content:
+      "Confirm SKIP? This action writes a SKIP row to ClanWarHistory and can affect clan logs.",
+    components: [
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setCustomId(buildMatchSkipSyncConfirmCustomId(parsed))
+          .setLabel("Confirm SKIP")
+          .setStyle(ButtonStyle.Danger)
+      ),
+    ],
+  });
+}
+
+export async function handleFwaMatchSkipSyncConfirmButton(
+  interaction: ButtonInteraction
+): Promise<void> {
+  const parsed = parseMatchSkipSyncConfirmCustomId(interaction.customId);
+  if (!parsed) return;
+  if (interaction.user.id !== parsed.userId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Only the command requester can use this button.",
+    });
+    return;
+  }
+  if (!interaction.guildId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "This action can only be used in a server.",
+    });
+    return;
+  }
+  const payload = fwaMatchCopyPayloads.get(parsed.key);
+  if (!payload) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "This match view expired. Please run /fwa match again.",
+    });
+    return;
+  }
+  const view = payload.singleViews[parsed.tag];
+  if (!view?.skipSyncAction) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Skip sync is unavailable for this clan view.",
+    });
+    return;
+  }
 
   const tracked = await prisma.trackedClan.findFirst({
     where: { tag: { equals: `#${parsed.tag}`, mode: "insensitive" } },
@@ -2202,6 +2339,84 @@ export async function handleFwaMatchSkipSyncActionButton(
     }
   }
 
+  const existingCurrent = await prisma.currentWar.findUnique({
+    where: {
+      guildId_clanTag: {
+        guildId: interaction.guildId,
+        clanTag: `#${parsed.tag}`,
+      },
+    },
+    select: {
+      warId: true,
+      lastWarStartTime: true,
+      mailConfig: true,
+    },
+  });
+  const existingMailConfig = parseMatchMailConfig(
+    existingCurrent?.mailConfig as Prisma.JsonValue | null | undefined
+  );
+  const existingSkipHistory = existingMailConfig.skipSyncHistory;
+  const skipWarStart =
+    existingSkipHistory?.warStartUnix !== undefined && existingSkipHistory?.warStartUnix !== null
+      ? new Date(existingSkipHistory.warStartUnix * 1000)
+      : existingCurrent?.lastWarStartTime ??
+        new Date(Math.floor(Date.now() / (60 * 60 * 1000)) * 60 * 60 * 1000);
+  const skipOpponentTag = normalizeTag(existingSkipHistory?.opponentTag ?? "SKIP");
+  const skipOpponentTagWithHash = `#${skipOpponentTag}`;
+  const clanTagWithHash = `#${parsed.tag}`;
+  const clanName = tracked?.name ?? view.clanName ?? clanTagWithHash;
+
+  let skipWarId: number | null =
+    existingSkipHistory?.warId !== null &&
+    existingSkipHistory?.warId !== undefined &&
+    Number.isFinite(existingSkipHistory?.warId)
+      ? Math.trunc(existingSkipHistory.warId)
+      : null;
+  if (skipWarId !== null) {
+    const rows = await prisma.$queryRaw<Array<{ warId: number }>>(
+      Prisma.sql`
+        INSERT INTO "ClanWarHistory"
+          ("warId","syncNumber","matchType","warStartTime","warEndTime","clanName","clanTag","opponentName","opponentTag","updatedAt")
+        VALUES
+          (${skipWarId}, ${resolvedSyncNum}, ${"SKIP"}, ${skipWarStart}, NULL, ${clanName}, ${clanTagWithHash}, ${"SKIP"}, ${skipOpponentTagWithHash}, NOW())
+        ON CONFLICT ("warId")
+        DO UPDATE SET
+          "syncNumber" = EXCLUDED."syncNumber",
+          "matchType" = EXCLUDED."matchType",
+          "warStartTime" = EXCLUDED."warStartTime",
+          "warEndTime" = EXCLUDED."warEndTime",
+          "clanName" = EXCLUDED."clanName",
+          "clanTag" = EXCLUDED."clanTag",
+          "opponentName" = EXCLUDED."opponentName",
+          "opponentTag" = EXCLUDED."opponentTag",
+          "updatedAt" = NOW()
+        RETURNING "warId"
+      `
+    );
+    const returned = Number(rows[0]?.warId ?? NaN);
+    if (Number.isFinite(returned)) skipWarId = Math.trunc(returned);
+  } else {
+    const rows = await prisma.$queryRaw<Array<{ warId: number }>>(
+      Prisma.sql`
+        INSERT INTO "ClanWarHistory"
+          ("syncNumber","matchType","warStartTime","warEndTime","clanName","clanTag","opponentName","opponentTag","updatedAt")
+        VALUES
+          (${resolvedSyncNum}, ${"SKIP"}, ${skipWarStart}, NULL, ${clanName}, ${clanTagWithHash}, ${"SKIP"}, ${skipOpponentTagWithHash}, NOW())
+        ON CONFLICT ("warStartTime","clanTag","opponentTag")
+        DO UPDATE SET
+          "syncNumber" = EXCLUDED."syncNumber",
+          "matchType" = EXCLUDED."matchType",
+          "warEndTime" = EXCLUDED."warEndTime",
+          "clanName" = EXCLUDED."clanName",
+          "opponentName" = EXCLUDED."opponentName",
+          "updatedAt" = NOW()
+        RETURNING "warId"
+      `
+    );
+    const returned = Number(rows[0]?.warId ?? NaN);
+    skipWarId = Number.isFinite(returned) ? Math.trunc(returned) : null;
+  }
+
   await prisma.currentWar.upsert({
     where: {
       guildId_clanTag: {
@@ -2217,6 +2432,7 @@ export async function handleFwaMatchSkipSyncActionButton(
       matchType: "SKIP",
       inferredMatchType: false,
       currentSyncNum: resolvedSyncNum,
+      warId: skipWarId,
       lastState: "notInWar",
       clanName: tracked?.name ?? view.clanName ?? `#${parsed.tag}`,
     },
@@ -2225,9 +2441,27 @@ export async function handleFwaMatchSkipSyncActionButton(
       matchType: "SKIP",
       inferredMatchType: false,
       currentSyncNum: resolvedSyncNum ?? undefined,
+      warId: skipWarId,
       lastState: "notInWar",
       updatedAt: new Date(),
     },
+  });
+  const nextMailConfig: MatchMailConfig = {
+    ...existingMailConfig,
+    skipSyncHistory:
+      skipWarId !== null
+        ? {
+            warId: skipWarId,
+            warStartUnix: Math.floor(skipWarStart.getTime() / 1000),
+            opponentTag: skipOpponentTag,
+          }
+        : existingMailConfig.skipSyncHistory,
+  };
+  await saveCurrentWarMailConfig({
+    guildId: interaction.guildId,
+    tag: parsed.tag,
+    channelId: interaction.channelId,
+    mailConfig: nextMailConfig,
   });
 
   await markMatchLiveDataChanged({
@@ -2250,6 +2484,111 @@ export async function handleFwaMatchSkipSyncActionButton(
     await interaction.reply({
       ephemeral: true,
       content: "Skip sync applied, but clan view is unavailable now.",
+    });
+    return;
+  }
+  await interaction.update({
+    content: "SKIP confirmed. Clan logs updated.",
+    components: [],
+  });
+  await interaction.message.edit({
+    content: showMode === "copy" ? limitDiscordContent(nextView.copyText) : undefined,
+    embeds: showMode === "embed" ? [nextView.embed] : [],
+    components: buildFwaMatchCopyComponents(refreshed, refreshed.userId, parsed.key, showMode),
+  });
+}
+
+export async function handleFwaMatchSkipSyncUndoButton(
+  interaction: ButtonInteraction
+): Promise<void> {
+  const parsed = parseMatchSkipSyncUndoCustomId(interaction.customId);
+  if (!parsed) return;
+  if (interaction.user.id !== parsed.userId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Only the command requester can use this button.",
+    });
+    return;
+  }
+  if (!interaction.guildId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "This action can only be used in a server.",
+    });
+    return;
+  }
+  const payload = fwaMatchCopyPayloads.get(parsed.key);
+  if (!payload) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "This match view expired. Please run /fwa match again.",
+    });
+    return;
+  }
+  const view = payload.singleViews[parsed.tag];
+  if (!view?.undoSkipSyncAction) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Undo is unavailable for this clan view.",
+    });
+    return;
+  }
+  const current = await prisma.currentWar.findUnique({
+    where: {
+      guildId_clanTag: {
+        guildId: interaction.guildId,
+        clanTag: `#${parsed.tag}`,
+      },
+    },
+    select: { warId: true, mailConfig: true, channelId: true },
+  });
+  const existingMailConfig = parseMatchMailConfig(
+    current?.mailConfig as Prisma.JsonValue | null | undefined
+  );
+  const skipWarId = existingMailConfig.skipSyncHistory?.warId ?? current?.warId ?? null;
+  if (skipWarId !== null && Number.isFinite(skipWarId)) {
+    await prisma.clanWarHistory.deleteMany({
+      where: { warId: Math.trunc(skipWarId) },
+    });
+  }
+  await prisma.currentWar.updateMany({
+    where: {
+      guildId: interaction.guildId,
+      clanTag: `#${parsed.tag}`,
+    },
+    data: {
+      warId: null,
+      matchType: null,
+      inferredMatchType: true,
+      updatedAt: new Date(),
+    },
+  });
+  await saveCurrentWarMailConfig({
+    guildId: interaction.guildId,
+    tag: parsed.tag,
+    channelId: current?.channelId ?? interaction.channelId,
+    mailConfig: existingMailConfig,
+  });
+  await markMatchLiveDataChanged({
+    guildId: interaction.guildId,
+    tag: parsed.tag,
+    channelId: interaction.channelId,
+  });
+  const refreshed = await rebuildTrackedPayloadForTag(payload, interaction.guildId, parsed.tag);
+  if (!refreshed) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Undo applied, but this view could not be refreshed.",
+    });
+    return;
+  }
+  fwaMatchCopyPayloads.set(parsed.key, refreshed);
+  const showMode = interaction.message.embeds.length > 0 ? "embed" : "copy";
+  const nextView = refreshed.singleViews[parsed.tag];
+  if (!nextView) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Undo applied, but clan view is unavailable now.",
     });
     return;
   }
@@ -3643,7 +3982,8 @@ async function buildTrackedMatchOverview(
         clanName,
         clanTag,
         mailStatusEmoji,
-        skipSyncAction: { tag: clanTag },
+        skipSyncAction: sub?.matchType === "SKIP" ? null : { tag: clanTag },
+        undoSkipSyncAction: sub?.matchType === "SKIP" ? { tag: clanTag } : null,
       };
       continue;
     }
