@@ -293,6 +293,28 @@ const MATCH_MAIL_CONFIG_DEFAULT: MatchMailConfig = {
   skipSyncHistory: null,
 };
 
+function getPrimaryMailMessageRef(
+  config: MatchMailConfig | null | undefined
+): { channelId: string; messageId: string } | null {
+  if (!config) return null;
+  for (let i = config.messages.length - 1; i >= 0; i -= 1) {
+    const entry = config.messages[i];
+    if (!entry || entry.messageType !== "mail") continue;
+    const fromUrl = parseDiscordMessageUrl(entry.messageUrl);
+    const channelId = (entry.channelId ?? "").trim() || fromUrl?.channelId || "";
+    const messageId = (entry.messageID ?? "").trim() || fromUrl?.messageId || "";
+    if (/^\d+$/.test(channelId) && /^\d+$/.test(messageId)) {
+      return { channelId, messageId };
+    }
+  }
+  const fallbackChannelId = config.lastPostedChannelId?.trim() ?? "";
+  const fallbackMessageId = config.lastPostedMessageId?.trim() ?? "";
+  if (/^\d+$/.test(fallbackChannelId) && /^\d+$/.test(fallbackMessageId)) {
+    return { channelId: fallbackChannelId, messageId: fallbackMessageId };
+  }
+  return null;
+}
+
 function parseForceMailMessageType(value: string): ForceMailMessageType | null {
   const normalized = value.trim().toLowerCase();
   if (normalized === "mail") {
@@ -926,7 +948,7 @@ async function recordMatchMailUpdated(params: {
     ...current,
     lastPostedMessageId: params.messageId,
     lastPostedChannelId: params.channelId,
-    lastPostedAtUnix: Math.floor(params.sentAtMs / 1000),
+    lastPostedAtUnix: null,
     lastWarStartMs: params.warStartMs,
     lastMatchType: params.matchType,
     lastExpectedOutcome: params.expectedOutcome,
@@ -969,7 +991,7 @@ async function markMatchLiveDataChanged(params: {
   const next: MatchMailConfig = {
     ...current,
     lastDataChangedAtUnix: liveMatchesPosted
-      ? (current.lastPostedAtUnix ?? nowUnix)
+      ? (current.lastDataChangedAtUnix ?? nowUnix)
       : nowUnix,
   };
   await saveCurrentWarMailConfig({
@@ -1295,21 +1317,24 @@ function getMailStatusEmojiForClan(params: {
   tag: string;
   warStartMs: number | null;
   mailConfig?: MatchMailConfig | null;
+  liveMatchType?: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN" | null;
+  liveExpectedOutcome?: "WIN" | "LOSE" | "UNKNOWN" | null;
 }): string {
   if (!params.guildId) return MAILBOX_NOT_SENT_EMOJI;
   const config = params.mailConfig ?? null;
-  const postedAfterLatestChange =
-    config?.lastPostedAtUnix !== null &&
-    config?.lastPostedAtUnix !== undefined &&
-    (config.lastDataChangedAtUnix === null ||
-      config.lastDataChangedAtUnix === undefined ||
-      config.lastPostedAtUnix >= config.lastDataChangedAtUnix);
-  if (config?.lastPostedMessageId) {
-    if (!postedAfterLatestChange) return MAILBOX_NOT_SENT_EMOJI;
+  const primaryMail = getPrimaryMailMessageRef(config);
+  const liveMatchesPosted = isPostedMailCurrentForLiveState({
+    postedMatchType: config?.lastMatchType ?? null,
+    postedExpectedOutcome: config?.lastExpectedOutcome ?? null,
+    liveMatchType: params.liveMatchType,
+    liveExpectedOutcome: params.liveExpectedOutcome,
+  });
+  if (!liveMatchesPosted) return MAILBOX_NOT_SENT_EMOJI;
+  if (primaryMail) {
     if (
       params.warStartMs !== null &&
-      config.lastWarStartMs !== null &&
-      config.lastWarStartMs === params.warStartMs
+      config?.lastWarStartMs !== null &&
+      config?.lastWarStartMs === params.warStartMs
     ) {
       return MAILBOX_SENT_EMOJI;
     }
@@ -1318,8 +1343,7 @@ function getMailStatusEmojiForClan(params: {
     }
     if (
       params.warStartMs !== null &&
-      config.lastWarStartMs === null &&
-      config.messages.some((entry) => entry.messageType === "mail")
+      config?.lastWarStartMs === null
     ) {
       return MAILBOX_SENT_EMOJI;
     }
@@ -1342,6 +1366,24 @@ function getMailStatusEmojiForClan(params: {
   return sent ? MAILBOX_SENT_EMOJI : MAILBOX_NOT_SENT_EMOJI;
 }
 
+type PostedMailLiveStateParams = {
+  postedMatchType: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN" | null;
+  postedExpectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null;
+  liveMatchType?: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN" | null;
+  liveExpectedOutcome?: "WIN" | "LOSE" | "UNKNOWN" | null;
+};
+
+function isPostedMailCurrentForLiveState(params: PostedMailLiveStateParams): boolean {
+  const hasLive = params.liveMatchType !== undefined || params.liveExpectedOutcome !== undefined;
+  if (!hasLive) return true;
+  return (
+    (params.postedMatchType ?? null) === (params.liveMatchType ?? null) &&
+    (params.postedExpectedOutcome ?? null) === (params.liveExpectedOutcome ?? null)
+  );
+}
+
+export const isPostedMailCurrentForLiveStateForTest = isPostedMailCurrentForLiveState;
+
 function clearPostedMailTrackingForClan(params: {
   guildId: string;
   tag: string;
@@ -1361,9 +1403,10 @@ async function hasPostedMailMessage(params: {
   mailConfig: MatchMailConfig | null | undefined;
 }): Promise<boolean> {
   if (!params.client || !params.guildId || !params.mailConfig) return false;
-  const channelId = params.mailConfig.lastPostedChannelId;
-  const messageId = params.mailConfig.lastPostedMessageId;
-  if (!channelId || !messageId) return false;
+  const primary = getPrimaryMailMessageRef(params.mailConfig);
+  if (!primary) return false;
+  const channelId = primary.channelId;
+  const messageId = primary.messageId;
   const channel = await params.client.channels.fetch(channelId).catch(() => null);
   if (!channel || !channel.isTextBased()) return false;
   const message = await (channel as any).messages.fetch(messageId).catch(() => null);
@@ -1475,15 +1518,82 @@ function buildWarMailPostedComponents(key: string): Array<ActionRowBuilder<Butto
   ];
 }
 
-function buildNextRefreshRelativeLabel(intervalMs: number): string {
-  return `Next refresh <t:${Math.floor((Date.now() + intervalMs) / 1000)}:R>`;
+function buildNextRefreshRelativeLabel(intervalMs: number, nowMs = Date.now()): string {
+  return `Next refresh <t:${Math.floor((nowMs + intervalMs) / 1000)}:R>`;
 }
 
-function buildWarMailPostedContent(roleId?: string | null): string {
-  const nextRefresh = buildNextRefreshRelativeLabel(WAR_MAIL_REFRESH_MS);
+function buildWarMailPostedContent(roleId?: string | null, nowMs?: number): string {
+  const nextRefresh = buildNextRefreshRelativeLabel(WAR_MAIL_REFRESH_MS, nowMs);
   if (roleId) return `<@&${roleId}>\n${nextRefresh}`;
   return nextRefresh;
 }
+
+type MailPostTarget = {
+  channelId: string;
+  messageId: string;
+};
+
+function parseDiscordMessageUrl(url: string | null | undefined): MailPostTarget | null {
+  const raw = String(url ?? "").trim();
+  if (!raw) return null;
+  const match = raw.match(/\/channels\/\d+\/(\d+)\/(\d+)(?:$|[/?#])/i);
+  if (!match?.[1] || !match?.[2]) return null;
+  return {
+    channelId: match[1],
+    messageId: match[2],
+  };
+}
+
+function collectMailPostTargetsFromConfig(config: MatchMailConfig): MailPostTarget[] {
+  const out: MailPostTarget[] = [];
+  const push = (candidate: MailPostTarget | null) => {
+    if (!candidate?.channelId || !candidate?.messageId) return;
+    if (!/^\d+$/.test(candidate.channelId) || !/^\d+$/.test(candidate.messageId)) return;
+    out.push(candidate);
+  };
+
+  for (const entry of config.messages) {
+    if (entry.messageType !== "mail") continue;
+    const fromUrl = parseDiscordMessageUrl(entry.messageUrl);
+    const channelId = (entry.channelId ?? "").trim() || fromUrl?.channelId || "";
+    const messageId = (entry.messageID ?? "").trim() || fromUrl?.messageId || "";
+    push(channelId && messageId ? { channelId, messageId } : null);
+  }
+
+  push(
+    config.lastPostedChannelId && config.lastPostedMessageId
+      ? { channelId: config.lastPostedChannelId, messageId: config.lastPostedMessageId }
+      : null
+  );
+
+  const deduped = new Map<string, MailPostTarget>();
+  for (const candidate of out) {
+    deduped.set(`${candidate.channelId}:${candidate.messageId}`, candidate);
+  }
+  return [...deduped.values()];
+}
+
+function withRecoveredMailReference(
+  config: MatchMailConfig,
+  target: MailPostTarget,
+  guildId: string
+): MatchMailConfig {
+  const messages = config.messages.filter((entry) => entry.messageType !== "mail");
+  messages.push({
+    messageType: "mail",
+    messageID: target.messageId,
+    channelId: target.channelId,
+    messageUrl: buildDiscordMessageUrl(guildId, target.channelId, target.messageId),
+  });
+  return {
+    ...config,
+    lastPostedChannelId: target.channelId,
+    lastPostedMessageId: target.messageId,
+    messages,
+  };
+}
+export const buildWarMailPostedContentForTest = buildWarMailPostedContent;
+export const buildWarMailNextRefreshLabelForTest = buildNextRefreshRelativeLabel;
 
 async function refreshWarMailPost(client: Client, key: string): Promise<void> {
   const payload = fwaMailPostedPayloads.get(key);
@@ -1549,13 +1659,14 @@ async function findWarMailTargetFromConfig(params: {
   });
   for (const row of rows) {
     const config = parseMatchMailConfig(row.mailConfig as Prisma.JsonValue | null | undefined);
-    if (!config.lastPostedChannelId || !config.lastPostedMessageId) continue;
-    if (config.lastPostedChannelId !== params.channelId) continue;
-    if (config.lastPostedMessageId !== params.messageId) continue;
+    const primary = getPrimaryMailMessageRef(config);
+    if (!primary) continue;
+    if (primary.channelId !== params.channelId) continue;
+    if (primary.messageId !== params.messageId) continue;
     return {
       tag: normalizeTag(row.clanTag),
-      channelId: config.lastPostedChannelId,
-      messageId: config.lastPostedMessageId,
+      channelId: primary.channelId,
+      messageId: primary.messageId,
     };
   }
   return null;
@@ -2901,8 +3012,8 @@ export async function handleFwaMailConfirmButton(interaction: ButtonInteraction)
           channelId: existingMailConfig.lastPostedChannelId,
           messageId: existingMailConfig.lastPostedMessageId,
           sentAtMs:
-            existingMailConfig.lastPostedAtUnix !== null
-              ? existingMailConfig.lastPostedAtUnix * 1000
+            existingMailConfig.lastDataChangedAtUnix !== null
+              ? existingMailConfig.lastDataChangedAtUnix * 1000
               : 0,
           matchType: existingMailConfig.lastMatchType ?? "UNKNOWN",
           expectedOutcome: existingMailConfig.lastExpectedOutcome ?? null,
@@ -3065,23 +3176,46 @@ export async function refreshAllTrackedWarMailPosts(client: Client): Promise<voi
     const guildId = row.guildId?.trim() ?? "";
     if (!guildId) continue;
     const config = parseMatchMailConfig(row.mailConfig as Prisma.JsonValue | null | undefined);
-    const channelId = config.lastPostedChannelId?.trim() ?? "";
-    const messageId = config.lastPostedMessageId?.trim() ?? "";
-    if (!channelId || !messageId) continue;
+    const candidates = collectMailPostTargetsFromConfig(config);
+    if (candidates.length === 0) continue;
 
     const existingInMemory = findLatestPostedWarMailForClan({
       guildId,
       tag: row.clanTag,
     });
-    const refreshed = await refreshWarMailPostByResolvedTarget({
-      client,
-      guildId,
-      tag: row.clanTag,
-      channelId,
-      messageId,
-      key: existingInMemory?.key,
-    }).catch(() => false);
+    let resolved: MailPostTarget | null = null;
+    for (const candidate of candidates) {
+      const ok = await refreshWarMailPostByResolvedTarget({
+        client,
+        guildId,
+        tag: row.clanTag,
+        channelId: candidate.channelId,
+        messageId: candidate.messageId,
+        key: existingInMemory?.key,
+      }).catch(() => false);
+      if (ok) {
+        resolved = candidate;
+        break;
+      }
+    }
+    const refreshed = Boolean(resolved);
     if (!refreshed) continue;
+    const channelId = resolved?.channelId ?? "";
+    const messageId = resolved?.messageId ?? "";
+    if (!channelId || !messageId) continue;
+
+    if (
+      config.lastPostedChannelId !== channelId ||
+      config.lastPostedMessageId !== messageId
+    ) {
+      const next = withRecoveredMailReference(config, { channelId, messageId }, guildId);
+      await saveCurrentWarMailConfig({
+        guildId,
+        tag: row.clanTag,
+        channelId,
+        mailConfig: next,
+      });
+    }
 
     if (!existingInMemory) {
       const postKey = createTransientFwaKey();
@@ -3132,27 +3266,48 @@ export async function runForceMailUpdateCommand(
     select: { mailConfig: true },
   });
   const config = parseMatchMailConfig(current?.mailConfig as Prisma.JsonValue | null | undefined);
-  const channelId = config.lastPostedChannelId?.trim() ?? "";
-  const messageId = config.lastPostedMessageId?.trim() ?? "";
-  if (!channelId || !messageId) {
+  const candidates = collectMailPostTargetsFromConfig(config);
+  if (candidates.length === 0) {
     await interaction.editReply(
       `No active sent mail reference found for #${tag}. Send mail first or sync it via \`/force sync mail\`.`
     );
     return;
   }
 
-  const refreshed = await refreshWarMailPostByResolvedTarget({
-    client: interaction.client,
-    guildId: interaction.guildId,
-    tag,
-    channelId,
-    messageId,
-  }).catch(() => false);
-  if (!refreshed) {
+  let resolved: MailPostTarget | null = null;
+  for (const candidate of candidates) {
+    const ok = await refreshWarMailPostByResolvedTarget({
+      client: interaction.client,
+      guildId: interaction.guildId,
+      tag,
+      channelId: candidate.channelId,
+      messageId: candidate.messageId,
+    }).catch(() => false);
+    if (ok) {
+      resolved = candidate;
+      break;
+    }
+  }
+  if (!resolved) {
     await interaction.editReply(
-      `Could not refresh #${tag} mail in place. The referenced message may be missing or inaccessible.`
+      `Could not refresh #${tag} mail in place. Tried ${candidates.length} stored reference(s), but each message was missing or inaccessible.`
     );
     return;
+  }
+  const channelId = resolved.channelId;
+  const messageId = resolved.messageId;
+
+  if (
+    config.lastPostedChannelId !== channelId ||
+    config.lastPostedMessageId !== messageId
+  ) {
+    const next = withRecoveredMailReference(config, resolved, interaction.guildId);
+    await saveCurrentWarMailConfig({
+      guildId: interaction.guildId,
+      tag,
+      channelId,
+      mailConfig: next,
+    });
   }
 
   const existingInMemory = findLatestPostedWarMailForClan({
@@ -4107,6 +4262,8 @@ async function buildTrackedMatchOverview(
       tag: clanTag,
       warStartMs: clanWarStartMs,
       mailConfig: parsedMailConfig,
+      liveMatchType: isMatchTypeValue(sub?.matchType) ? sub?.matchType : null,
+      liveExpectedOutcome: isExpectedOutcomeValue(sub?.outcome) ? sub?.outcome : null,
     });
     const postedMailExistsForStatus =
       baseMailStatusEmoji === MAILBOX_SENT_EMOJI
@@ -4906,7 +5063,6 @@ export async function runForceSyncMailCommand(
   if (parsedType.messageType === "mail") {
     next.lastPostedMessageId = messageID;
     next.lastPostedChannelId = interaction.channelId;
-    next.lastPostedAtUnix = nowUnix;
     next.lastDataChangedAtUnix = nowUnix;
   }
 
@@ -5380,6 +5536,8 @@ export const Fwa: Command = {
             tag,
             warStartMs: null,
             mailConfig: parsedMailConfig,
+            liveMatchType: isMatchTypeValue(subscription?.matchType) ? subscription?.matchType : null,
+            liveExpectedOutcome: isExpectedOutcomeValue(subscription?.outcome) ? subscription?.outcome : null,
           });
           const postedMailExistsForStatus =
             baseMailStatusEmoji === MAILBOX_SENT_EMOJI
