@@ -218,12 +218,26 @@ export class WarEventHistoryService {
       where: { clanTag, lastWarStartTime: warStartTime },
       data: {
         warId,
-        currentSyncNum:
-          payload.syncNumber !== null && Number.isFinite(payload.syncNumber)
-            ? Math.trunc(payload.syncNumber)
-            : undefined,
       },
     });
+    const tracked = await prisma.trackedClan.findUnique({
+      where: { tag: clanTag },
+      select: { pointsScrape: true },
+    });
+    if (tracked?.pointsScrape && typeof tracked.pointsScrape === "object") {
+      const blob = tracked.pointsScrape as Record<string, unknown>;
+      await prisma.trackedClan.update({
+        where: { tag: clanTag },
+        data: {
+          pointsScrape: {
+            ...(blob as object),
+            pointsSiteUpToDate: false,
+            activeFwa: false,
+            fetchedAtMs: Date.now(),
+          },
+        },
+      });
+    }
 
     await prisma.$executeRaw(
       Prisma.sql`

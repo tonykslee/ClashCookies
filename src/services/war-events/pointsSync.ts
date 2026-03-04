@@ -1,5 +1,4 @@
 import { prisma } from "../../prisma";
-import { CoCService } from "../CoCService";
 import { PointsProjectionService } from "../PointsProjectionService";
 import { SettingsService } from "../SettingsService";
 import {
@@ -50,20 +49,33 @@ export type PointsSyncSubscriptionLike = {
 
 /** Purpose: manage previous sync recovery and war-start points-site retry jobs. */
 export class WarStartPointsSyncService {
-  static readonly PREVIOUS_SYNC_KEY = "previousSyncNum";
   private static readonly WAR_START_POINTS_JOB_PREFIX = "warStartPointsCheck";
   private static readonly WAR_START_POINTS_RECHECK_MS = 30 * 60 * 1000;
   private static readonly WAR_START_POINTS_MAX_ATTEMPTS = 10;
 
   /** Purpose: initialize points sync service dependencies. */
   constructor(
-    private readonly coc: CoCService,
     private readonly points: PointsProjectionService,
     private readonly settings: SettingsService
   ) {}
 
-  /** Purpose: read previous sync from settings or recover it from points site state. */
+  /** Purpose: read previous sync from tracked pointsScrape or ClanWarHistory fallback. */
   async getPreviousSyncNum(): Promise<number | null> {
+    const tracked = await prisma.trackedClan.findMany({
+      select: { pointsScrape: true },
+    });
+    const scrapeCandidates = tracked
+      .map((row) => {
+        const value = row.pointsScrape as Record<string, unknown> | null;
+        if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+        if (!value.pointsSiteUpToDate) return null;
+        const syncRaw = Number(value.syncNumber ?? NaN);
+        return Number.isFinite(syncRaw) ? Math.trunc(syncRaw) : null;
+      })
+      .filter((value): value is number => value !== null);
+    if (scrapeCandidates.length > 0) {
+      return Math.max(0, Math.max(...scrapeCandidates) - 1);
+    }
     const latestHistory = await prisma.clanWarHistory.findFirst({
       where: { syncNumber: { not: null } },
       orderBy: { warStartTime: "desc" },
@@ -71,12 +83,9 @@ export class WarStartPointsSyncService {
     });
     const latestSync = Number(latestHistory?.syncNumber ?? NaN);
     if (Number.isFinite(latestSync)) {
-      return Math.max(0, Math.trunc(latestSync) - 1);
+      return Math.max(0, Math.trunc(latestSync));
     }
-    const raw = await this.settings.get(WarStartPointsSyncService.PREVIOUS_SYNC_KEY);
-    const parsed = raw === null ? NaN : Number(raw);
-    if (Number.isFinite(parsed)) return Math.trunc(parsed);
-    return this.recoverPreviousSyncNumFromPoints();
+    return null;
   }
 
   /** Purpose: reset/start a new war-start points check job for a clan+opponent pair. */
@@ -213,36 +222,6 @@ export class WarStartPointsSyncService {
         lastCheckedAtMs: Date.now(),
       });
     }
-  }
-
-  /** Purpose: recover previous sync by comparing tracked clans and live points-site opponent linkage. */
-  private async recoverPreviousSyncNumFromPoints(): Promise<number | null> {
-    const tracked = await prisma.trackedClan.findMany({
-      orderBy: { createdAt: "asc" },
-      select: { tag: true },
-    });
-    for (const clan of tracked) {
-      const tag = normalizeTag(clan.tag);
-      const war = await this.coc.getCurrentWar(tag).catch(() => null);
-      const opponentTag = normalizeTag(war?.opponent?.tag ?? "");
-      if (!opponentTag) continue;
-
-      const snapshot = await this.points.fetchSnapshot(tag).catch(() => null);
-      if (!snapshot || snapshot.winnerBoxSync === null) continue;
-
-      const siteUpdated = snapshot.winnerBoxTags
-        .map((t) => normalizeTag(t))
-        .includes(opponentTag);
-      const recoveredPrevious = siteUpdated
-        ? snapshot.winnerBoxSync - 1
-        : snapshot.winnerBoxSync;
-      if (!Number.isFinite(recoveredPrevious) || recoveredPrevious < 0) continue;
-
-      const next = Math.trunc(recoveredPrevious);
-      await this.settings.set(WarStartPointsSyncService.PREVIOUS_SYNC_KEY, String(next));
-      return next;
-    }
-    return null;
   }
 
   /** Purpose: build the settings key used to store a clan's war-start sync-check job blob. */
