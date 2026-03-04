@@ -257,6 +257,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     details: [
       "`/force sync data` manually overwrites tracked clan points and/or sync number from points.fwafarm.",
       "`/force sync mail` upserts `CurrentWar.mailConfig` message references for posted mail/notify messages.",
+      "`/force mail update` refreshes an existing sent war-mail message in place and re-attaches it to the 20-minute refresh loop.",
       "`force sync` commands are admin-only by default.",
     ],
     examples: [
@@ -264,7 +265,17 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/force sync data tag:2QG2C08UP datapoint:points",
       "/force sync mail tag:2QG2C08UP message-type:mail message-id:1234567890123456789",
       "/force sync mail tag:2QG2C08UP message-type:notify:war start message-id:1234567890123456789",
+      "/force mail update tag:2QG2C08UP",
     ],
+  },
+  remaining: {
+    summary: "Show remaining time for a tracked clan's current war phase.",
+    details: [
+      "`/remaining war` reports whether the clan is in preparation or battle day.",
+      "Returns localized phase-end and relative remaining time from current CoC API state.",
+      "Tag supports autocomplete from tracked clans.",
+    ],
+    examples: ["/remaining war tag:2QG2C08UP"],
   },
   permission: {
     summary: "Control which roles can run each command target.",

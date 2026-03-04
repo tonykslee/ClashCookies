@@ -17,6 +17,7 @@ import {
   WarEventLogService,
   notifyWarBattleDayRefreshIntervalMs,
 } from "../services/WarEventLogService";
+import { refreshAllTrackedWarMailPosts } from "../commands/Fwa";
 
 const DEFAULT_OBSERVE_INTERVAL_MINUTES = 30;
 const RECRUITMENT_REMINDER_INTERVAL_MS = 5 * 60 * 1000;
@@ -318,6 +319,22 @@ export default (client: Client, cocService: CoCService): void => {
         }
       });
     };
+    const runWarMailRefresh = async () => {
+      await runFetchTelemetryBatch("war_mail_refresh_cycle", async () => {
+        try {
+          await refreshAllTrackedWarMailPosts(client);
+        } catch (err) {
+          console.error(`[fwa-mail] refresh loop failed: ${formatError(err)}`);
+        }
+      });
+    };
+    await runWarMailRefresh();
+    setInterval(() => {
+      runWarMailRefresh().catch((err) => {
+        console.error(`[fwa-mail] refresh interval failed: ${formatError(err)}`);
+      });
+    }, notifyWarBattleDayRefreshIntervalMs);
+    console.log("War mail refresh enabled (every 20 minute(s)).");
     setInterval(() => {
       runBattleDayRefresh().catch((err) => {
         console.error(`[war-events] battle-day refresh interval failed: ${formatError(err)}`);

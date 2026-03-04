@@ -8,6 +8,7 @@ import { Command } from "../Command";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
 import {
+  runForceMailUpdateCommand,
   runForceSyncDataCommand,
   runForceSyncMailCommand,
 } from "./Fwa";
@@ -83,6 +84,27 @@ export const Force: Command = {
         },
       ],
     },
+    {
+      name: "mail",
+      description: "Force operations for posted war mail",
+      type: ApplicationCommandOptionType.SubcommandGroup,
+      options: [
+        {
+          name: "update",
+          description: "Refresh existing sent mail embed in place and resume tracking",
+          type: ApplicationCommandOptionType.Subcommand,
+          options: [
+            {
+              name: "tag",
+              description: "Tracked clan tag (with or without #)",
+              type: ApplicationCommandOptionType.String,
+              required: true,
+              autocomplete: true,
+            },
+          ],
+        },
+      ],
+    },
   ],
   run: async (
     _client: Client,
@@ -98,6 +120,10 @@ export const Force: Command = {
     }
     if (subcommandGroup === "sync" && subcommand === "mail") {
       await runForceSyncMailCommand(interaction, cocService);
+      return;
+    }
+    if (subcommandGroup === "mail" && subcommand === "update") {
+      await runForceMailUpdateCommand(interaction);
       return;
     }
 
