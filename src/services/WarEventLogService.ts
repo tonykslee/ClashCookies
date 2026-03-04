@@ -41,9 +41,11 @@ const NOTIFY_WAR_REFRESH_PREFIX = "notify-war-refresh";
 const BATTLE_DAY_REFRESH_MS = 20 * 60 * 1000;
 const battleDayPostByGuildTag = new Map<string, { channelId: string; messageId: string }>();
 
-function buildNextRefreshRelativeLabel(intervalMs: number): string {
-  return `Next refresh <t:${Math.floor((Date.now() + intervalMs) / 1000)}:R>`;
+function buildNextRefreshRelativeLabel(intervalMs: number, nowMs = Date.now()): string {
+  return `Next refresh <t:${Math.floor((nowMs + intervalMs) / 1000)}:R>`;
 }
+
+export const buildNotifyNextRefreshLabelForTest = buildNextRefreshRelativeLabel;
 
 type TestSource = "current" | "last";
 
