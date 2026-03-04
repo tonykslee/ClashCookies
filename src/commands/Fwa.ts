@@ -4996,17 +4996,19 @@ export async function runForceSyncWarIdCommand(
       await tx.$executeRaw(
         Prisma.sql`
           UPDATE "CurrentWar" cw
-          SET "warId" = latest."warId"
-          FROM LATERAL (
-            SELECT h."warId"
+          SET "warId" = history_latest."warId"
+          FROM (
+            SELECT DISTINCT ON (UPPER(REPLACE(h."clanTag",'#','')))
+              UPPER(REPLACE(h."clanTag",'#','')) AS clan_norm,
+              h."warId"
             FROM "ClanWarHistory" h
             WHERE h."warId" IS NOT NULL
-              AND UPPER(REPLACE(h."clanTag",'#','')) = UPPER(REPLACE(cw."clanTag",'#',''))
-            ORDER BY h."warStartTime" DESC, h."warId" DESC
-            LIMIT 1
-          ) latest
+              ${tagFilterHistory}
+            ORDER BY UPPER(REPLACE(h."clanTag",'#','')), h."warStartTime" DESC, h."warId" DESC
+          ) history_latest
           WHERE cw."warId" IS NULL
-            AND latest."warId" IS NOT NULL
+            AND UPPER(REPLACE(cw."clanTag",'#','')) = history_latest.clan_norm
+            AND history_latest."warId" IS NOT NULL
             ${tagFilterCurrentAlias}
         `
       )
