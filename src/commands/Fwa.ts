@@ -1356,10 +1356,8 @@ async function hasPostedMailMessage(params: {
   mailConfig: MatchMailConfig | null | undefined;
 }): Promise<boolean> {
   if (!params.client || !params.guildId || !params.mailConfig) return false;
-  const mailRef =
-    params.mailConfig.messages.find((entry) => entry.messageType === "mail") ?? null;
-  const channelId = mailRef?.channelId ?? params.mailConfig.lastPostedChannelId;
-  const messageId = mailRef?.messageID ?? params.mailConfig.lastPostedMessageId;
+  const channelId = params.mailConfig.lastPostedChannelId;
+  const messageId = params.mailConfig.lastPostedMessageId;
   if (!channelId || !messageId) return false;
   const channel = await params.client.channels.fetch(channelId).catch(() => null);
   if (!channel || !channel.isTextBased()) return false;
