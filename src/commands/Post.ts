@@ -39,6 +39,7 @@ const IANA_TIMEZONE_HELP_URL =
   "https://en.wikipedia.org/wiki/List_of_tz_database_time_zones";
 const CUSTOM_EMOJI_PATTERN = /^<(a?):([A-Za-z0-9_]+):(\d+)>$/;
 const SHORTCODE_EMOJI_PATTERN = /^:([A-Za-z0-9_]+):$/;
+const SYNC_UNAVAILABLE_EMOJI = "💤";
 
 type SyncBadge = {
   code: string;
@@ -366,6 +367,7 @@ async function handleSyncStatusSubcommand(
 
   const claimedLines: string[] = [];
   const unclaimedLines: string[] = [];
+  const unavailableUsers: string[] = [];
 
   for (const badge of badges) {
     const reaction = [...message.reactions.cache.values()].find((r) =>
@@ -409,6 +411,19 @@ async function handleSyncStatusSubcommand(
     }
   }
 
+  const unavailableReaction = [...message.reactions.cache.values()].find(
+    (reaction) => !reaction.emoji.id && reaction.emoji.name === SYNC_UNAVAILABLE_EMOJI
+  );
+  if (unavailableReaction) {
+    const users = await unavailableReaction.users.fetch().catch(() => null);
+    if (users) {
+      for (const user of users.values()) {
+        if (user.bot) continue;
+        unavailableUsers.push(`<@${user.id}>`);
+      }
+    }
+  }
+
   const embed = new EmbedBuilder()
     .setTitle("Sync Claim Status")
     .setDescription(
@@ -422,6 +437,10 @@ async function handleSyncStatusSubcommand(
         })(),
         "",
         `Claimed: **${claimedLines.length}/${badges.length}**`,
+        `Unavailable (${SYNC_UNAVAILABLE_EMOJI}): **${[...new Set(unavailableUsers)].length}**`,
+        ...(unavailableUsers.length > 0
+          ? [`${SYNC_UNAVAILABLE_EMOJI} ${[...new Set(unavailableUsers)].join(", ")}`]
+          : []),
         "",
         "**Claimed Clans**",
         ...(claimedLines.length > 0 ? claimedLines : ["- None"]),
@@ -876,6 +895,18 @@ export async function handlePostModalSubmit(
         `Some clan badge reactions failed (${reactedCount}/${badgeEmojiIdentifiers.length}). Check bot \`Add Reactions\` and emoji access in this server.`
       );
     }
+  }
+  try {
+    await postedMessage.react(SYNC_UNAVAILABLE_EMOJI);
+  } catch (err) {
+    console.error(
+      `[post sync time] react failed guild=${interaction.guildId} channel=${interaction.channelId} message=${postedMessage.id} emoji=${SYNC_UNAVAILABLE_EMOJI} user=${interaction.user.id} error=${formatError(
+        err
+      )}`
+    );
+    notices.push(
+      "Could not add :zzz: reaction for unavailable users. Check bot `Add Reactions` permission."
+    );
   }
 
   try {
