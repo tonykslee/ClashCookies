@@ -8,6 +8,7 @@ import { Command } from "../Command";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
 import {
+  runForceSyncWarIdCommand,
   runForceMailUpdateCommand,
   runForceSyncDataCommand,
   runForceSyncMailCommand,
@@ -47,6 +48,20 @@ export const Force: Command = {
                 { name: "points", value: "points" },
                 { name: "syncNum", value: "syncNum" },
               ],
+            },
+          ],
+        },
+        {
+          name: "warid",
+          description: "Backfill missing warId values in war tables",
+          type: ApplicationCommandOptionType.Subcommand,
+          options: [
+            {
+              name: "tag",
+              description: "Optional tracked clan tag filter (with or without #)",
+              type: ApplicationCommandOptionType.String,
+              required: false,
+              autocomplete: true,
             },
           ],
         },
@@ -120,6 +135,10 @@ export const Force: Command = {
     }
     if (subcommandGroup === "sync" && subcommand === "mail") {
       await runForceSyncMailCommand(interaction, cocService);
+      return;
+    }
+    if (subcommandGroup === "sync" && subcommand === "warid") {
+      await runForceSyncWarIdCommand(interaction);
       return;
     }
     if (subcommandGroup === "mail" && subcommand === "update") {

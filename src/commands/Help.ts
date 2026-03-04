@@ -257,6 +257,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     details: [
       "`/force sync data` manually overwrites tracked clan points and/or sync number from points.fwafarm.",
       "`/force sync mail` upserts `CurrentWar.mailConfig` message references for posted mail/notify messages.",
+      "`/force sync warid` backfills missing `warId` values in `ClanWarHistory`, `WarAttacks`, and `CurrentWar` (DB-only).",
       "`/force mail update` refreshes an existing sent war-mail message in place and re-attaches it to the 20-minute refresh loop.",
       "`force sync` commands are admin-only by default.",
     ],
@@ -265,6 +266,8 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/force sync data tag:2QG2C08UP datapoint:points",
       "/force sync mail tag:2QG2C08UP message-type:mail message-id:1234567890123456789",
       "/force sync mail tag:2QG2C08UP message-type:notify:war start message-id:1234567890123456789",
+      "/force sync warid",
+      "/force sync warid tag:2QG2C08UP",
       "/force mail update tag:2QG2C08UP",
     ],
   },

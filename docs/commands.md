@@ -47,5 +47,6 @@
 - `/sync post status [message-id:<id>]` - Show claimed vs unclaimed clan badge reactions for the active sync-time post, or for a specific message in the channel.
 - `/force sync data tag:<trackedClanTag> [datapoint:points|syncNum]` - Manually force-sync tracked clan points and/or sync number from points.fwafarm.
 - `/force sync mail tag:<trackedClanTag> message-type:<mail|notify:war start|notify:battle start|notify:war end> message-id:<id>` - Upsert `CurrentWar.mailConfig` with current match configuration plus a posted message reference.
+- `/force sync warid [tag:<trackedClanTag>]` - Backfill missing war IDs in `ClanWarHistory`, `WarAttacks`, and `CurrentWar` (database-only flow; no external scrape/API calls).
 - `/force mail update tag:<trackedClanTag>` - Refresh an existing sent war-mail embed in place (no re-ping) and resume 20-minute refresh tracking.
 - `/remaining war tag:<trackedClanTag>` - Show localized phase-end time and remaining duration for the clan's current war phase (preparation or battle day).
