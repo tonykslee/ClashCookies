@@ -2758,20 +2758,37 @@ export async function handleFwaMailConfirmButton(interaction: ButtonInteraction)
     return;
   }
   await interaction.deferUpdate();
+  await interaction
+    .editReply({
+      content: "⏳ Sending war mail... please wait.",
+      embeds: [],
+      components: [],
+    })
+    .catch(() => undefined);
   const cocService = new CoCService();
   const rendered = await buildWarMailEmbedForTag(cocService, payload.guildId, payload.tag);
   if (!rendered.mailChannelId || rendered.unavailableReasons.length > 0) {
-    await interaction.followUp({
-      ephemeral: true,
+    await interaction.editReply({
       content: `Cannot send mail: ${rendered.unavailableReasons.join(" ") || "mail channel unavailable."}`,
+      embeds: [],
+      components: buildWarMailPreviewComponents({
+        userId: parsed.userId,
+        key: parsed.key,
+        enabled: true,
+      }),
     });
     return;
   }
   const channel = await interaction.client.channels.fetch(rendered.mailChannelId).catch(() => null);
   if (!channel || !channel.isTextBased()) {
-    await interaction.followUp({
-      ephemeral: true,
+    await interaction.editReply({
       content: "Configured mail channel is unavailable.",
+      embeds: [],
+      components: buildWarMailPreviewComponents({
+        userId: parsed.userId,
+        key: parsed.key,
+        enabled: true,
+      }),
     });
     return;
   }
