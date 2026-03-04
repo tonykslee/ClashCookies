@@ -1002,21 +1002,9 @@ export class WarEventLogService {
         select: { warId: true },
       })
       .catch(() => null);
-    if (currentWarId?.warId !== null && currentWarId?.warId !== undefined) {
-      return Number(currentWarId.warId);
-    }
-    return (
-      await prisma.clanWarHistory
-        .findFirst({
-          where: {
-            clanTag,
-            warStartTime,
-          },
-          orderBy: { warId: "desc" },
-          select: { warId: true },
-        })
-        .catch(() => null)
-    )?.warId ?? null;
+    return currentWarId?.warId !== null && currentWarId?.warId !== undefined
+      ? Number(currentWarId.warId)
+      : null;
   }
 
   private async emitEvent(
