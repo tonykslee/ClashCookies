@@ -662,14 +662,21 @@ function updateAllianceEmbedMatchType(
 async function rebuildTrackedPayloadForTag(
   payload: FwaMatchCopyPayload,
   guildId: string | null,
-  tag: string
+  tag: string,
+  client?: Client | null
 ): Promise<FwaMatchCopyPayload | null> {
   if (!guildId) return null;
   const settings = new SettingsService();
   const sourceSync = await getSourceOfTruthSync(settings, guildId);
   const cocService = new CoCService();
   const warLookupCache: WarLookupCache = new Map();
-  const overview = await buildTrackedMatchOverview(cocService, sourceSync, guildId, warLookupCache);
+  const overview = await buildTrackedMatchOverview(
+    cocService,
+    sourceSync,
+    guildId,
+    warLookupCache,
+    client ?? null
+  );
   const trackedSingleView = overview.singleViews[tag];
   if (!trackedSingleView) return null;
   return {
@@ -1343,6 +1350,23 @@ function clearPostedMailTrackingForClan(params: {
   }
 }
 
+async function hasPostedMailMessage(params: {
+  client: Client | null | undefined;
+  guildId: string | null;
+  mailConfig: MatchMailConfig | null | undefined;
+}): Promise<boolean> {
+  if (!params.client || !params.guildId || !params.mailConfig) return false;
+  const mailRef =
+    params.mailConfig.messages.find((entry) => entry.messageType === "mail") ?? null;
+  const channelId = mailRef?.channelId ?? params.mailConfig.lastPostedChannelId;
+  const messageId = mailRef?.messageID ?? params.mailConfig.lastPostedMessageId;
+  if (!channelId || !messageId) return false;
+  const channel = await params.client.channels.fetch(channelId).catch(() => null);
+  if (!channel || !channel.isTextBased()) return false;
+  const message = await (channel as any).messages.fetch(messageId).catch(() => null);
+  return Boolean(message);
+}
+
 function formatOutcomeForRevision(outcome: "WIN" | "LOSE" | "UNKNOWN" | null): string {
   return outcome ?? "N/A";
 }
@@ -1467,39 +1491,6 @@ async function refreshWarMailPost(client: Client, key: string): Promise<void> {
     embeds: [rendered.embed],
     components: buildWarMailPostedComponents(key),
   });
-}
-
-async function refreshLinkedMatchMessages(params: {
-  client: Client;
-  guildId: string;
-  tag: string;
-  fallbackChannelId: string;
-}): Promise<void> {
-  const config = await getCurrentWarMailConfig(params.guildId, params.tag);
-  if (!config.messages.length) return;
-
-  let renderedMail:
-    | Awaited<ReturnType<typeof buildWarMailEmbedForTag>>
-    | null = null;
-  for (const ref of config.messages) {
-    if (ref.messageType !== "mail") continue;
-    const channelId = ref.channelId ?? config.lastPostedChannelId ?? params.fallbackChannelId;
-    if (!channelId || !ref.messageID) continue;
-    const channel = await params.client.channels.fetch(channelId).catch(() => null);
-    if (!channel || !channel.isTextBased()) continue;
-    const message = await (channel as any).messages.fetch(ref.messageID).catch(() => null);
-    if (!message) continue;
-    if (!renderedMail) {
-      const cocService = new CoCService();
-      renderedMail = await buildWarMailEmbedForTag(cocService, params.guildId, params.tag).catch(
-        () => null
-      );
-      if (!renderedMail) return;
-    }
-    await message.edit({
-      embeds: [renderedMail.embed],
-    });
-  }
 }
 
 function startWarMailPolling(client: Client, key: string): void {
@@ -1875,12 +1866,6 @@ export async function handleFwaMatchTypeActionButton(interaction: ButtonInteract
       tag: parsed.tag,
       channelId: interaction.channelId,
     });
-    await refreshLinkedMatchMessages({
-      client: interaction.client,
-      guildId: interaction.guildId,
-      tag: parsed.tag,
-      fallbackChannelId: interaction.channelId,
-    });
   }
 
   for (const [key, payload] of fwaMatchCopyPayloads.entries()) {
@@ -1889,7 +1874,8 @@ export async function handleFwaMatchTypeActionButton(interaction: ButtonInteract
     const refreshed = await rebuildTrackedPayloadForTag(
       payload,
       interaction.guildId ?? null,
-      parsed.tag
+      parsed.tag,
+      interaction.client
     );
     const nextPayload = refreshed ?? payload;
     if (!refreshed) {
@@ -2030,12 +2016,6 @@ export async function handleFwaOutcomeActionButton(interaction: ButtonInteractio
     tag: parsed.tag,
     channelId: interaction.channelId,
   });
-  await refreshLinkedMatchMessages({
-    client: interaction.client,
-    guildId: interaction.guildId,
-    tag: parsed.tag,
-    fallbackChannelId: interaction.channelId,
-  });
 
   for (const [key, payload] of fwaMatchCopyPayloads.entries()) {
     if (payload.userId !== parsed.userId) continue;
@@ -2043,7 +2023,8 @@ export async function handleFwaOutcomeActionButton(interaction: ButtonInteractio
     const refreshed = await rebuildTrackedPayloadForTag(
       payload,
       interaction.guildId ?? null,
-      parsed.tag
+      parsed.tag,
+      interaction.client
     );
     const nextPayload = refreshed ?? payload;
     if (!refreshed) {
@@ -2176,17 +2157,12 @@ export async function handleFwaMatchSyncActionButton(
     tag: parsed.tag,
     channelId: interaction.channelId,
   });
-  await refreshLinkedMatchMessages({
-    client: interaction.client,
-    guildId: interaction.guildId,
-    tag: parsed.tag,
-    fallbackChannelId: interaction.channelId,
-  });
 
   const refreshed = await rebuildTrackedPayloadForTag(
     payload,
     interaction.guildId,
-    parsed.tag
+    parsed.tag,
+    interaction.client
   );
   if (!refreshed) {
     await interaction.reply({
@@ -2455,13 +2431,12 @@ export async function handleFwaMatchSkipSyncConfirmButton(
     tag: parsed.tag,
     channelId: interaction.channelId,
   });
-  await refreshLinkedMatchMessages({
-    client: interaction.client,
-    guildId: interaction.guildId,
-    tag: parsed.tag,
-    fallbackChannelId: interaction.channelId,
-  });
-  const refreshed = await rebuildTrackedPayloadForTag(payload, interaction.guildId, parsed.tag);
+  const refreshed = await rebuildTrackedPayloadForTag(
+    payload,
+    interaction.guildId,
+    parsed.tag,
+    interaction.client
+  );
   if (!refreshed) {
     await interaction.reply({
       ephemeral: true,
@@ -2566,13 +2541,12 @@ export async function handleFwaMatchSkipSyncUndoButton(
     tag: parsed.tag,
     channelId: interaction.channelId,
   });
-  await refreshLinkedMatchMessages({
-    client: interaction.client,
-    guildId: interaction.guildId,
-    tag: parsed.tag,
-    fallbackChannelId: interaction.channelId,
-  });
-  const refreshed = await rebuildTrackedPayloadForTag(payload, interaction.guildId, parsed.tag);
+  const refreshed = await rebuildTrackedPayloadForTag(
+    payload,
+    interaction.guildId,
+    parsed.tag,
+    interaction.client
+  );
   if (!refreshed) {
     await interaction.reply({
       ephemeral: true,
@@ -2715,7 +2689,8 @@ async function refreshSourceMatchMessageAfterMailSend(
   const refreshed = await rebuildTrackedPayloadForTag(
     existing,
     previewPayload.guildId,
-    normalizeTag(previewPayload.tag)
+    normalizeTag(previewPayload.tag),
+    interaction.client
   ).catch(() => null);
   if (!refreshed) return { refreshed: null, showMode, sourceUpdated: false };
   fwaMatchCopyPayloads.set(sourceKey, refreshed);
@@ -3799,7 +3774,8 @@ async function buildTrackedMatchOverview(
   cocService: CoCService,
   sourceSync: number | null,
   guildId: string | null,
-  warLookupCache?: WarLookupCache
+  warLookupCache?: WarLookupCache,
+  client?: Client | null
 ): Promise<{ embed: EmbedBuilder; copyText: string; singleViews: Record<string, MatchView> }> {
   const settings = new SettingsService();
   const actualByTag = await readActualSheetSnapshotByTag(settings).catch(() => new Map<string, ActualSheetClanSnapshot>());
@@ -3895,11 +3871,12 @@ async function buildTrackedMatchOverview(
     const clanTimeRemainingLine = getWarStateRemaining(war, warState);
     const clanWarStartMs = warStartMsByClanTag.get(clanTag) ?? null;
     const sub = subByTag.get(clanTag);
+    const parsedMailConfig = parseMatchMailConfig(sub?.mailConfig ?? null);
     const mailStatusEmoji = getMailStatusEmojiForClan({
       guildId,
       tag: clanTag,
       warStartMs: clanWarStartMs,
-      mailConfig: parseMatchMailConfig(sub?.mailConfig ?? null),
+      mailConfig: parsedMailConfig,
     });
     if (warState === "notInWar") {
       const trackedScrape = parseTrackedClanPointsScrape(clan.pointsScrape);
@@ -4222,11 +4199,23 @@ async function buildTrackedMatchOverview(
     const opponentCcUrl = buildCcVerifyUrl(opponentTag);
     const opponentPointsUrl = buildOfficialPointsUrl(opponentTag);
     const mailChannelId = mailChannelByTag.get(clanTag) ?? null;
+    const currentExpectedOutcomeForMail: "WIN" | "LOSE" | "UNKNOWN" | null =
+      matchType === "FWA" ? (effectiveOutcome ?? "UNKNOWN") : null;
+    const matchesLastPostedConfig =
+      parsedMailConfig.lastMatchType === matchType &&
+      (parsedMailConfig.lastExpectedOutcome ?? null) === currentExpectedOutcomeForMail;
+    const postedMailExists = await hasPostedMailMessage({
+      client: client ?? null,
+      guildId,
+      mailConfig: parsedMailConfig,
+    });
     const mailBlockedReason = inferredMatchType
       ? "Match type is inferred. Confirm match type before sending war mail."
       : !mailChannelId
         ? "Mail channel is not configured. Use /tracked-clan configure with a mail channel."
-        : null;
+        : postedMailExists && matchesLastPostedConfig
+          ? "Current mail is already up to date. Change match config before sending again."
+          : null;
 
     if (matchType === "FWA") {
       const warnSuffix = inferredMatchType ? ` :warning: ${verifyLink}` : "";
@@ -5033,7 +5022,8 @@ export const Fwa: Command = {
         cocService,
         sourceSync,
         interaction.guildId ?? null,
-        warLookupCache
+        warLookupCache,
+        interaction.client
       );
       const key = interaction.id;
       if (!tag) {
@@ -5154,6 +5144,7 @@ export const Fwa: Command = {
                 opponentFwaPoints: true,
                 warStartFwaPoints: true,
                 warEndFwaPoints: true,
+                mailConfig: true,
               },
             })
           : null;
@@ -5335,11 +5326,26 @@ export const Fwa: Command = {
         );
         const siteStatusLine = buildPointsSyncStatusLine(siteUpdated, hasMismatch);
         const trackedMailConfig = await getTrackedClanMailConfig(tag);
+        const parsedMailConfig = parseMatchMailConfig(
+          subscription?.mailConfig as Prisma.JsonValue | null | undefined
+        );
+        const currentExpectedOutcomeForMail: "WIN" | "LOSE" | "UNKNOWN" | null =
+          matchType === "FWA" ? (effectiveOutcome ?? "UNKNOWN") : null;
+        const matchesLastPostedConfig =
+          parsedMailConfig.lastMatchType === matchType &&
+          (parsedMailConfig.lastExpectedOutcome ?? null) === currentExpectedOutcomeForMail;
+        const postedMailExists = await hasPostedMailMessage({
+          client: interaction.client,
+          guildId: interaction.guildId ?? null,
+          mailConfig: parsedMailConfig,
+        });
         const mailBlockedReason = inferredMatchType
           ? "Match type is inferred. Confirm match type before sending war mail."
           : !trackedMailConfig?.mailChannelId
             ? "Mail channel is not configured. Use /tracked-clan configure with a mail channel."
-            : null;
+            : postedMailExists && matchesLastPostedConfig
+              ? "Current mail is already up to date. Change match config before sending again."
+              : null;
         const outcomeLine =
           matchType === "FWA"
             ? `${effectiveOutcome ?? "UNKNOWN"}`
