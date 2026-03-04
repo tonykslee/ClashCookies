@@ -27,12 +27,16 @@ import {
   handleFwaMatchTypeActionButton,
   handleFwaMatchSyncActionButton,
   handleFwaMatchSkipSyncActionButton,
+  handleFwaMatchSkipSyncConfirmButton,
+  handleFwaMatchSkipSyncUndoButton,
   handleFwaMailConfirmButton,
   handleFwaMailRefreshButton,
   handleFwaMatchSendMailButton,
   isFwaMatchAllianceButtonCustomId,
   isFwaMatchSyncActionButtonCustomId,
   isFwaMatchSkipSyncActionButtonCustomId,
+  isFwaMatchSkipSyncConfirmButtonCustomId,
+  isFwaMatchSkipSyncUndoButtonCustomId,
   isFwaMailConfirmButtonCustomId,
   isFwaMailRefreshButtonCustomId,
   isFwaMatchSendMailButtonCustomId,
@@ -366,6 +370,34 @@ const handleButtonInteraction = async (
         await interaction.reply({
           ephemeral: true,
           content: "Failed to apply skip-sync action.",
+        });
+      }
+    }
+  }
+
+  if (isFwaMatchSkipSyncConfirmButtonCustomId(interaction.customId)) {
+    try {
+      await handleFwaMatchSkipSyncConfirmButton(interaction);
+    } catch (err) {
+      console.error(`FWA match skip-sync confirm button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to confirm skip-sync action.",
+        });
+      }
+    }
+  }
+
+  if (isFwaMatchSkipSyncUndoButtonCustomId(interaction.customId)) {
+    try {
+      await handleFwaMatchSkipSyncUndoButton(interaction);
+    } catch (err) {
+      console.error(`FWA match skip-sync undo button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to undo skip-sync action.",
         });
       }
     }
