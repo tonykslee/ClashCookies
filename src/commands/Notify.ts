@@ -455,7 +455,7 @@ export const Notify: Command = {
     }
 
     const war = await cocService.getCurrentWar(clanTag).catch(() => null);
-    const lastState = deriveWarState(war?.state ?? "notInWar");
+    const state = deriveWarState(war?.state ?? "notInWar");
     const clanName =
       String(war?.clan?.name ?? (await cocService.getClanName(clanTag).catch(() => clanTag))).trim() ||
       clanTag;
@@ -490,9 +490,9 @@ export const Notify: Command = {
     await prisma.$executeRaw(
       Prisma.sql`
         INSERT INTO "CurrentWar"
-          ("guildId","clanTag","warId","channelId","notify","notifyRole","pingRole","lastState","prepStartTime","startTime","endTime","lastOpponentTag","lastOpponentName","clanName","createdAt","updatedAt")
+          ("guildId","clanTag","warId","channelId","notify","notifyRole","pingRole","state","prepStartTime","startTime","endTime","opponentTag","opponentName","clanName","createdAt","updatedAt")
         VALUES
-          (${interaction.guildId}, ${clanTag}, ${warId}, ${target.id}, true, ${notifyRole?.id ?? null}, ${rolePingEnabled}, ${lastState}, ${prepStartTime}, ${warStartTime}, ${warEndTime}, ${opponentTag}, ${opponentName}, ${clanName}, NOW(), NOW())
+          (${interaction.guildId}, ${clanTag}, ${warId}, ${target.id}, true, ${notifyRole?.id ?? null}, ${rolePingEnabled}, ${state}, ${prepStartTime}, ${warStartTime}, ${warEndTime}, ${opponentTag}, ${opponentName}, ${clanName}, NOW(), NOW())
         ON CONFLICT ("guildId","clanTag")
         DO UPDATE SET
           "warId" = EXCLUDED."warId",
@@ -500,12 +500,12 @@ export const Notify: Command = {
           "notify" = true,
           "notifyRole" = EXCLUDED."notifyRole",
           "pingRole" = EXCLUDED."pingRole",
-          "lastState" = EXCLUDED."lastState",
+          "state" = EXCLUDED."state",
           "prepStartTime" = EXCLUDED."prepStartTime",
           "startTime" = EXCLUDED."startTime",
           "endTime" = EXCLUDED."endTime",
-          "lastOpponentTag" = EXCLUDED."lastOpponentTag",
-          "lastOpponentName" = EXCLUDED."lastOpponentName",
+          "opponentTag" = EXCLUDED."opponentTag",
+          "opponentName" = EXCLUDED."opponentName",
           "clanName" = EXCLUDED."clanName",
           "updatedAt" = NOW()
       `
@@ -515,7 +515,7 @@ export const Notify: Command = {
       `Enabled war event logs for ${clanName} (${clanTag}) in <#${target.id}>.\n` +
         `Notify role: ${notifyRole ? `<@&${notifyRole.id}>` : "none"}\n` +
         `Role ping: ${rolePingEnabled ? "on" : "off"}\n` +
-        `Current state snapshot: \`${lastState}\``
+        `Current state snapshot: \`${state}\``
     );
   },
   autocomplete: async (interaction: AutocompleteInteraction) => {
@@ -552,4 +552,5 @@ export const Notify: Command = {
     await interaction.respond(choices);
   },
 };
+
 

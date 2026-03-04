@@ -2354,7 +2354,7 @@ export async function handleFwaMatchSkipSyncConfirmButton(
       matchType: "SKIP",
       inferredMatchType: false,
       warId: skipWarId,
-      lastState: "notInWar",
+      state: "notInWar",
       clanName: tracked?.name ?? view.clanName ?? `#${parsed.tag}`,
     },
     update: {
@@ -2362,7 +2362,7 @@ export async function handleFwaMatchSkipSyncConfirmButton(
       matchType: "SKIP",
       inferredMatchType: false,
       warId: skipWarId,
-      lastState: "notInWar",
+      state: "notInWar",
       updatedAt: new Date(),
     },
   });
@@ -2759,10 +2759,10 @@ export async function handleFwaMailConfirmButton(interaction: ButtonInteraction)
       clanTag: `#${normalizeTag(payload.tag)}`,
       channelId: channel.id,
       notify: false,
-      currentSyncNum: resolvedCurrentSyncNum,
+      syncNum: resolvedCurrentSyncNum,
     },
     update: {
-      currentSyncNum: resolvedCurrentSyncNum ?? undefined,
+      syncNum: resolvedCurrentSyncNum ?? undefined,
       updatedAt: new Date(),
     },
   });
@@ -3885,15 +3885,15 @@ async function buildLastWarMatchOverview(
       matchType: true,
       inferredMatchType: true,
       outcome: true,
-      lastClanStars: true,
-      lastOpponentStars: true,
+      clanStars: true,
+      opponentStars: true,
       warStartFwaPoints: true,
       warEndFwaPoints: true,
     },
   });
 
-  const clanStars = sub?.lastClanStars ?? clanStarsTracked;
-  const opponentStars = sub?.lastOpponentStars ?? null;
+  const clanStars = sub?.clanStars ?? clanStarsTracked;
+  const opponentStars = sub?.opponentStars ?? null;
   const actualOutcome =
     opponentStars === null
       ? "UNKNOWN"
@@ -4942,16 +4942,16 @@ export async function runForceSyncWarIdCommand(
               cw."id",
               cw."clanTag",
               cw."startTime" AS "warStartTime",
-              cw."currentSyncNum" AS "syncNumber",
-              cw."lastOpponentTag" AS "opponentTag",
+              cw."syncNum" AS "syncNumber",
+              cw."opponentTag" AS "opponentTag",
               cw."warId" AS "existingWarId",
               ROW_NUMBER() OVER (ORDER BY cw."id" ASC) AS rn
             FROM "CurrentWar" cw
             WHERE 1=1
               ${tag ? Prisma.sql`AND UPPER(REPLACE(cw."clanTag",'#','')) = ${tag}` : Prisma.empty}
               ${warStartTime ? Prisma.sql`AND cw."startTime" = ${warStartTime}` : Prisma.empty}
-              ${syncNumber !== null ? Prisma.sql`AND cw."currentSyncNum" = ${syncNumber}` : Prisma.empty}
-              ${opponentTag ? Prisma.sql`AND UPPER(REPLACE(cw."lastOpponentTag",'#','')) = ${opponentTag}` : Prisma.empty}
+              ${syncNumber !== null ? Prisma.sql`AND cw."syncNum" = ${syncNumber}` : Prisma.empty}
+              ${opponentTag ? Prisma.sql`AND UPPER(REPLACE(cw."opponentTag",'#','')) = ${opponentTag}` : Prisma.empty}
               ${filterWarId !== null ? Prisma.sql`AND cw."warId" = ${filterWarId}` : Prisma.empty}
               ${overwrite ? Prisma.empty : Prisma.sql`AND cw."warId" IS NULL`}
           )
@@ -5044,8 +5044,8 @@ export async function runForceSyncWarIdCommand(
               WHERE 1=1
                 ${tag ? Prisma.sql`AND UPPER(REPLACE(cw."clanTag",'#','')) = ${tag}` : Prisma.empty}
                 ${warStartTime ? Prisma.sql`AND cw."startTime" = ${warStartTime}` : Prisma.empty}
-                ${syncNumber !== null ? Prisma.sql`AND cw."currentSyncNum" = ${syncNumber}` : Prisma.empty}
-                ${opponentTag ? Prisma.sql`AND UPPER(REPLACE(cw."lastOpponentTag",'#','')) = ${opponentTag}` : Prisma.empty}
+                ${syncNumber !== null ? Prisma.sql`AND cw."syncNum" = ${syncNumber}` : Prisma.empty}
+                ${opponentTag ? Prisma.sql`AND UPPER(REPLACE(cw."opponentTag",'#','')) = ${opponentTag}` : Prisma.empty}
                 ${filterWarId !== null ? Prisma.sql`AND cw."warId" = ${filterWarId}` : Prisma.empty}
                 ${overwrite ? Prisma.empty : Prisma.sql`AND cw."warId" IS NULL`}
             ),
@@ -5337,8 +5337,8 @@ export async function runForceSyncWarIdCommand(
         SELECT
           cw."clanTag",
           cw."startTime" AS "warStartTime",
-          cw."currentSyncNum" AS "syncNumber",
-          cw."lastOpponentTag" AS "opponentTag",
+          cw."syncNum" AS "syncNumber",
+          cw."opponentTag" AS "opponentTag",
           COALESCE(h_exact."warId", history_latest."warId") AS "proposedWarId"
         FROM "CurrentWar" cw
         LEFT JOIN "ClanWarHistory" h_exact
@@ -5398,7 +5398,7 @@ export async function runForceSyncWarIdCommand(
         SELECT COUNT(*)::bigint AS count
         FROM "CurrentWar"
         WHERE "warId" IS NULL
-          AND "lastState" IN ('preparation','inWar')
+          AND "state" IN ('preparation','inWar')
           ${tagFilterCurrent}
       `
     );
@@ -5506,7 +5506,7 @@ export async function runForceSyncWarIdCommand(
         SELECT "id","clanTag","startTime"
         FROM "CurrentWar"
         WHERE "warId" IS NULL
-          AND "lastState" IN ('preparation','inWar')
+          AND "state" IN ('preparation','inWar')
           ${tagFilterCurrent}
       `
     );
@@ -6066,7 +6066,7 @@ export const Fwa: Command = {
                 },
               },
               select: {
-                lastState: true,
+                state: true,
                 matchType: true,
                 inferredMatchType: true,
                 outcome: true,
@@ -6079,7 +6079,7 @@ export const Fwa: Command = {
             })
           : null;
         opponentTag = normalizeTag(String(war?.opponent?.tag ?? ""));
-        if (warState === "notInWar" || !opponentTag || subscription?.lastState === "notInWar") {
+        if (warState === "notInWar" || !opponentTag || subscription?.state === "notInWar") {
           const trackedScrape = parseTrackedClanPointsScrape(trackedClanMeta?.pointsScrape ?? null);
           const clanProfile = await cocService.getClan(`#${tag}`).catch(() => null);
           const memberCount = Array.isArray(clanProfile?.members)
@@ -6737,6 +6737,7 @@ export const Fwa: Command = {
     await interaction.respond(choices);
   },
 };
+
 
 
 

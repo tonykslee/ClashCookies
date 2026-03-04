@@ -129,8 +129,8 @@ export class WarEventHistoryService {
     matchType: MatchType;
     warStartFwaPoints: number | null;
     warEndFwaPoints: number | null;
-    lastClanStars: number | null;
-    lastOpponentStars: number | null;
+    clanStars: number | null;
+    opponentStars: number | null;
     prepStartTime: Date | null;
     warStartTime: Date | null;
   }): Promise<void> {
@@ -152,8 +152,8 @@ export class WarEventHistoryService {
     const finalResult = await this.getWarEndResultSnapshot({
       clanTag: payload.clanTag,
       opponentTag: payload.opponentTag,
-      fallbackClanStars: payload.lastClanStars,
-      fallbackOpponentStars: payload.lastOpponentStars,
+      fallbackClanStars: payload.clanStars,
+      fallbackOpponentStars: payload.opponentStars,
       warStartTime,
     });
     const attacks = await prisma.warAttacks.findMany({
@@ -385,5 +385,6 @@ export class WarEventHistoryService {
     return computeWarPointsDeltaForTest(input);
   }
 }
+
 
 
