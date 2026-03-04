@@ -13,7 +13,6 @@ import { processRecruitmentCooldownReminders } from "../services/RecruitmentServ
 import { SettingsService } from "../services/SettingsService";
 import { PlayerLinkSyncService } from "../services/PlayerLinkSyncService";
 import { WarHistoryService } from "../services/WarHistoryService";
-import { SyncTimeRolloverService } from "../services/SyncTimeRolloverService";
 import {
   WarEventLogService,
   notifyWarBattleDayRefreshIntervalMs,
@@ -22,7 +21,6 @@ import {
 const DEFAULT_OBSERVE_INTERVAL_MINUTES = 30;
 const RECRUITMENT_REMINDER_INTERVAL_MS = 5 * 60 * 1000;
 const DEFAULT_WAR_EVENT_POLL_INTERVAL_MINUTES = 5;
-const SYNC_ROLLOVER_CHECK_INTERVAL_MS = 60 * 1000;
 const OBSERVE_LAST_RUN_AT_KEY = "activity_observe:last_run_at_ms";
 const VISIBILITY_OPTION = {
   name: "visibility",
@@ -144,7 +142,6 @@ export default (client: Client, cocService: CoCService): void => {
     const playerLinkSyncService = new PlayerLinkSyncService();
     const warEventLogService = new WarEventLogService(client, cocService);
     const settings = new SettingsService();
-    const syncRollover = new SyncTimeRolloverService(settings);
     let observeInProgress = false;
 
     const observeTrackedClans = async (): Promise<string[]> => {
@@ -327,28 +324,6 @@ export default (client: Client, cocService: CoCService): void => {
       });
     }, notifyWarBattleDayRefreshIntervalMs);
     console.log("War battle-day embed refresh enabled (every 20 minute(s)).");
-
-    const runSyncRolloverCheck = async () => {
-      try {
-        const result = await syncRollover.maybeApplyDueRollover();
-        if (result.applied) {
-          console.log(
-            `[sync-rollover] applied target=${result.targetEpoch} previousSync=${result.previousSync} nextPreviousSync=${result.nextPreviousSync}`
-          );
-        } else if (result.reason === "previous_sync_missing" && result.targetEpoch) {
-          console.warn(
-            `[sync-rollover] due but previousSyncNum missing target=${result.targetEpoch}`
-          );
-        }
-      } catch (err) {
-        console.error(`[sync-rollover] check failed: ${formatError(err)}`);
-      }
-    };
-    await runSyncRolloverCheck();
-    setInterval(() => {
-      runSyncRolloverCheck().catch(() => undefined);
-    }, SYNC_ROLLOVER_CHECK_INTERVAL_MS);
-    console.log("Sync rollover watcher enabled (every 1 minute).");
 
     console.log("ClashCookies is online");
   });
