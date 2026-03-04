@@ -5075,16 +5075,126 @@ export const Fwa: Command = {
         const warState = deriveWarState(war?.state);
         const warRemaining = getWarStateRemaining(war, warState);
         const currentSync = getCurrentSyncFromPrevious(sourceSync, warState);
+        const trackedClanMeta = await prisma.trackedClan.findFirst({
+          where: { tag: { equals: `#${tag}`, mode: "insensitive" } },
+          select: { name: true, pointsScrape: true },
+        });
+        const subscription = interaction.guildId
+          ? await prisma.currentWar.findUnique({
+              where: {
+                guildId_clanTag: {
+                  guildId: interaction.guildId,
+                  clanTag: `#${tag}`,
+                },
+              },
+              select: {
+                matchType: true,
+                inferredMatchType: true,
+                outcome: true,
+                fwaPoints: true,
+                opponentFwaPoints: true,
+                warStartFwaPoints: true,
+                warEndFwaPoints: true,
+                mailConfig: true,
+              },
+            })
+          : null;
         opponentTag = normalizeTag(String(war?.opponent?.tag ?? ""));
-        if (warState === "notInWar" || !opponentTag) {
+        if (warState === "notInWar") {
+          const trackedScrape = parseTrackedClanPointsScrape(trackedClanMeta?.pointsScrape ?? null);
+          const clanProfile = await cocService.getClan(`#${tag}`).catch(() => null);
+          const memberCount = Array.isArray(clanProfile?.members)
+            ? clanProfile.members.length
+            : Number.isFinite(Number(clanProfile?.members))
+              ? Number(clanProfile?.members)
+              : null;
+          const livePoints = await getClanPointsCached(
+            settings,
+            cocService,
+            tag,
+            sourceSync,
+            warLookupCache
+          ).catch(() => null);
+          const clanPoints =
+            trackedScrape?.pointBalance !== null && trackedScrape?.pointBalance !== undefined
+              ? trackedScrape.pointBalance
+              : livePoints?.balance ?? subscription?.fwaPoints ?? null;
+          const outOfSync =
+            !trackedScrape?.pointsSiteUpToDate ||
+            (subscription?.fwaPoints !== null &&
+              subscription?.fwaPoints !== undefined &&
+              trackedScrape?.pointBalance !== null &&
+              trackedScrape?.pointBalance !== undefined &&
+              Number(subscription.fwaPoints) !== Number(trackedScrape.pointBalance));
+          const actualByTag = await readActualSheetSnapshotByTag(settings).catch(
+            () => new Map<string, ActualSheetClanSnapshot>()
+          );
+          const actual = actualByTag.get(tag) ?? null;
+          const parsedMailConfig = parseMatchMailConfig(
+            subscription?.mailConfig as Prisma.JsonValue | null | undefined
+          );
+          const mailStatusEmoji = getMailStatusEmojiForClan({
+            guildId: interaction.guildId ?? null,
+            tag,
+            warStartMs: null,
+            mailConfig: parsedMailConfig,
+          });
+          const clanName = sanitizeClanName(trackedClanMeta?.name ?? "") ?? `#${tag}`;
+          const preWarHeader = `${mailStatusEmoji} | ${clanName} (#${tag})`;
+          const preWarLines = [
+            outOfSync
+              ? ":warning: out of sync with points site"
+              : ":white_check_mark: data in sync with points site",
+            `Clan points: **${clanPoints !== null && clanPoints !== undefined ? clanPoints : "unknown"}**`,
+            `Members: **${memberCount ?? "?"}/50**`,
+            `Total weight (ACTUAL): **${actual?.totalWeight ?? "unknown"}**`,
+            `Weight compo (ACTUAL): ${actual?.weightCompo ?? "unknown"}`,
+            `Weight deltas (ACTUAL): ${actual?.weightDeltas ?? "unknown"}`,
+            `Compo advice (ACTUAL): ${actual?.compoAdvice ?? "none"}`,
+            `War State: **${formatWarStateLabel(warState)}**`,
+            `Time Remaining: **${warRemaining}**`,
+            `Sync: **${withSyncModeLabel(getSyncDisplay(sourceSync, warState), sourceSync)}**`,
+          ];
+          const singleView: MatchView = {
+            embed: new EmbedBuilder().setTitle(preWarHeader).setDescription(preWarLines.join("\n")),
+            copyText: limitDiscordContent([`# ${preWarHeader}`, ...preWarLines].join("\n")),
+            matchTypeAction: null,
+            matchTypeCurrent:
+              (subscription?.matchType as "FWA" | "BL" | "MM" | "SKIP" | null | undefined) ?? null,
+            inferredMatchType: false,
+            outcomeAction: null,
+            syncAction: null,
+            clanName,
+            clanTag: tag,
+            mailStatusEmoji,
+            skipSyncAction: subscription?.matchType === "SKIP" ? null : { tag },
+            undoSkipSyncAction: subscription?.matchType === "SKIP" ? { tag } : null,
+          };
+          fwaMatchCopyPayloads.set(key, {
+            userId: interaction.user.id,
+            guildId: interaction.guildId ?? null,
+            includePostButton: !isPublic,
+            allianceView: { embed: overview.embed, copyText: overview.copyText, matchTypeAction: null },
+            singleViews: {
+              ...overview.singleViews,
+              [tag]: singleView,
+            },
+            currentScope: "single",
+            currentTag: tag,
+          });
+          const stored = fwaMatchCopyPayloads.get(key)!;
+          await editReplySafe(
+            "",
+            [singleView.embed],
+            buildFwaMatchCopyComponents(stored, interaction.user.id, key, "embed")
+          );
+          return;
+        }
+        if (!opponentTag) {
           await editReplySafe(`:face_palm: failed to start war`);
           return;
         }
 
-        const trackedClanMeta = await prisma.trackedClan.findFirst({
-          where: { tag: { equals: `#${tag}`, mode: "insensitive" } },
-          select: { pointsScrape: true },
-        });
         const trackedScrape = parseTrackedClanPointsScrape(trackedClanMeta?.pointsScrape ?? null);
         const scrapeIsCurrentOpponent = isPointsScrapeUpdatedForOpponent(trackedScrape, opponentTag);
         const primary = scrapeIsCurrentOpponent
@@ -5128,26 +5238,6 @@ export const Fwa: Command = {
             warLookupCache
           );
         }
-        const subscription = interaction.guildId
-          ? await prisma.currentWar.findUnique({
-              where: {
-                guildId_clanTag: {
-                  guildId: interaction.guildId,
-                  clanTag: `#${tag}`,
-                },
-              },
-              select: {
-                matchType: true,
-                inferredMatchType: true,
-                outcome: true,
-                fwaPoints: true,
-                opponentFwaPoints: true,
-                warStartFwaPoints: true,
-                warEndFwaPoints: true,
-                mailConfig: true,
-              },
-            })
-          : null;
         const matchTypeResolved = await resolveMatchTypeWithFallback({
           guildId: interaction.guildId ?? null,
           clanTag: tag,
