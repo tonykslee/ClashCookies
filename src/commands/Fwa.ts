@@ -66,6 +66,7 @@ const FWA_MATCH_ALLIANCE_PREFIX = "fwa-match-alliance";
 const FWA_MAIL_CONFIRM_PREFIX = "fwa-mail-confirm";
 const FWA_MAIL_REFRESH_PREFIX = "fwa-mail-refresh";
 const FWA_MATCH_SEND_MAIL_PREFIX = "fwa-match-send-mail";
+const WAR_MAIL_REFRESH_MS = 20 * 60 * 1000;
 const MAILBOX_SENT_EMOJI = "📬";
 const MAILBOX_NOT_SENT_EMOJI = "📭";
 const POINTS_REQUEST_HEADERS = {
@@ -1474,6 +1475,16 @@ function buildWarMailPostedComponents(key: string): Array<ActionRowBuilder<Butto
   ];
 }
 
+function buildNextRefreshRelativeLabel(intervalMs: number): string {
+  return `Next refresh <t:${Math.floor((Date.now() + intervalMs) / 1000)}:R>`;
+}
+
+function buildWarMailPostedContent(roleId?: string | null): string {
+  const nextRefresh = buildNextRefreshRelativeLabel(WAR_MAIL_REFRESH_MS);
+  if (roleId) return `<@&${roleId}>\n${nextRefresh}`;
+  return nextRefresh;
+}
+
 async function refreshWarMailPost(client: Client, key: string): Promise<void> {
   const payload = fwaMailPostedPayloads.get(key);
   if (!payload) return;
@@ -1490,6 +1501,7 @@ async function refreshWarMailPost(client: Client, key: string): Promise<void> {
   const message = await (channel as any).messages.fetch(payload.messageId).catch(() => null);
   if (!message) return;
   await message.edit({
+    content: buildWarMailPostedContent(),
     embeds: [rendered.embed],
     components: buildWarMailPostedComponents(key),
   });
@@ -1512,6 +1524,7 @@ async function refreshWarMailPostByResolvedTarget(params: {
   const cocService = new CoCService();
   const rendered = await buildWarMailEmbedForTag(cocService, params.guildId, normalizedTag);
   await message.edit({
+    content: buildWarMailPostedContent(),
     embeds: [rendered.embed],
     components: buildWarMailPostedComponents(params.key ?? createTransientFwaKey()),
   });
@@ -1552,7 +1565,7 @@ function startWarMailPolling(client: Client, key: string): void {
   stopWarMailPolling(key);
   const timer = setInterval(() => {
     refreshWarMailPost(client, key).catch(() => undefined);
-  }, 20 * 60 * 1000);
+  }, WAR_MAIL_REFRESH_MS);
   fwaMailPollers.set(key, timer);
 }
 
@@ -2838,7 +2851,7 @@ export async function handleFwaMailConfirmButton(interaction: ButtonInteraction)
   }
   const postKey = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
   const sent = await (channel as any).send({
-    content: rendered.clanRoleId ? `<@&${rendered.clanRoleId}>` : undefined,
+    content: buildWarMailPostedContent(rendered.clanRoleId),
     allowedMentions: rendered.clanRoleId ? { roles: [rendered.clanRoleId] } : undefined,
     embeds: [rendered.embed],
     components: buildWarMailPostedComponents(postKey),

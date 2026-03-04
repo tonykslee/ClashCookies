@@ -41,6 +41,10 @@ const NOTIFY_WAR_REFRESH_PREFIX = "notify-war-refresh";
 const BATTLE_DAY_REFRESH_MS = 20 * 60 * 1000;
 const battleDayPostByGuildTag = new Map<string, { channelId: string; messageId: string }>();
 
+function buildNextRefreshRelativeLabel(intervalMs: number): string {
+  return `Next refresh <t:${Math.floor((Date.now() + intervalMs) / 1000)}:R>`;
+}
+
 type TestSource = "current" | "last";
 
 type SubscriptionRow = {
@@ -663,6 +667,14 @@ export class WarEventLogService {
 
     const roleMention =
       includeRoleMention && payload.pingRole && payload.notifyRole ? `<@&${payload.notifyRole}>` : null;
+    const nextRefreshLabel =
+      payload.eventType === "battle_day" ? buildNextRefreshRelativeLabel(BATTLE_DAY_REFRESH_MS) : null;
+    const content =
+      payload.eventType === "battle_day"
+        ? roleMention
+          ? `${roleMention}\n${nextRefreshLabel}`
+          : (nextRefreshLabel ?? undefined)
+        : (roleMention ?? undefined);
     const components =
       includeEventComponents && payload.eventType === "battle_day" && guildId
         ? [
@@ -676,7 +688,7 @@ export class WarEventLogService {
         : [];
 
     return {
-      content: roleMention ?? undefined,
+      content,
       embeds: [embed],
       components,
       allowedMentions: roleMention ? { roles: [payload.notifyRole as string] } : undefined,
@@ -981,6 +993,18 @@ export class WarEventLogService {
     if (!warStartTime) return null;
     const clanTag = normalizeTag(clanTagInput);
     if (!clanTag) return null;
+    const currentWarId = await prisma.currentWar
+      .findFirst({
+        where: {
+          clanTag,
+          lastWarStartTime: warStartTime,
+        },
+        select: { warId: true },
+      })
+      .catch(() => null);
+    if (currentWarId?.warId !== null && currentWarId?.warId !== undefined) {
+      return Number(currentWarId.warId);
+    }
     return (
       await prisma.clanWarHistory
         .findFirst({
@@ -1436,6 +1460,7 @@ export class WarEventLogService {
     const embed = EmbedBuilder.from(message.embeds[0] ?? new EmbedBuilder());
     const next = await this.buildBattleDayRefreshEmbed(payload, warId, embed);
     await message.edit({
+      content: buildNextRefreshRelativeLabel(BATTLE_DAY_REFRESH_MS),
       embeds: [next],
       components: [
         new ActionRowBuilder<ButtonBuilder>().addComponents(
