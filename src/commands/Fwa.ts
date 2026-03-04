@@ -255,6 +255,7 @@ type MatchMailMessageRef = {
   messageType: "mail" | "notify";
   messageID: string;
   channelId?: string;
+  messageUrl?: string;
   notifyType?: "war_start" | "battle_start" | "war_end";
 };
 
@@ -760,6 +761,7 @@ function parseMatchMailConfig(value: Prisma.JsonValue | null | undefined): Match
     const messageType = item.messageType;
     const messageID = typeof item.messageID === "string" ? item.messageID.trim() : "";
     const channelId = typeof item.channelId === "string" ? item.channelId.trim() : "";
+    const messageUrl = typeof item.messageUrl === "string" ? item.messageUrl.trim() : "";
     const notifyTypeRaw = typeof item.notifyType === "string" ? item.notifyType.trim() : "";
     const notifyType =
       notifyTypeRaw === "war_start" ||
@@ -772,6 +774,7 @@ function parseMatchMailConfig(value: Prisma.JsonValue | null | undefined): Match
       messageType,
       messageID,
       channelId: channelId || undefined,
+      messageUrl: messageUrl || undefined,
       notifyType: messageType === "notify" ? notifyType : undefined,
     });
   }
@@ -892,6 +895,7 @@ async function recordMatchMailUpdated(params: {
   tag: string;
   channelId: string;
   messageId: string;
+  messageUrl?: string;
   warStartMs: number | null;
   sentAtMs: number;
   matchType: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN";
@@ -910,6 +914,7 @@ async function recordMatchMailUpdated(params: {
     messageType: "mail",
     messageID: params.messageId,
     channelId: params.channelId,
+    messageUrl: params.messageUrl,
   });
 
   const next: MatchMailConfig = {
@@ -957,26 +962,26 @@ function buildMatchStatusHeader(params: {
   opponentTag: string;
   matchType: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN";
   outcome: "WIN" | "LOSE" | "UNKNOWN" | null;
+  mailStatusEmoji?: string;
 }): string {
-  let mailbox = MAILBOX_NOT_SENT_EMOJI;
+  let mailbox = params.mailStatusEmoji ?? MAILBOX_NOT_SENT_EMOJI;
   let status = ":white_circle:";
   if (params.matchType === "BL") {
-    mailbox = MAILBOX_SENT_EMOJI;
     status = ":pirate_flag:";
   } else if (params.matchType === "MM") {
-    mailbox = MAILBOX_NOT_SENT_EMOJI;
     status = ":white_circle:";
   } else if (params.matchType === "SKIP") {
-    mailbox = MAILBOX_NOT_SENT_EMOJI;
     status = ":white_circle:";
   } else if (params.outcome === "LOSE") {
-    mailbox = MAILBOX_SENT_EMOJI;
     status = ":red_circle:";
   } else {
-    mailbox = MAILBOX_NOT_SENT_EMOJI;
     status = ":green_circle:";
   }
   return `${mailbox} | ${params.clanName} (#${params.clanTag}) vs ${params.opponentName} (#${params.opponentTag}) ${status}`;
+}
+
+function buildDiscordMessageUrl(guildId: string, channelId: string, messageId: string): string {
+  return `https://discord.com/channels/${guildId}/${channelId}/${messageId}`;
 }
 
 function mailStatusLabelForState(state: WarStateForSync): string {
@@ -1451,6 +1456,39 @@ async function refreshWarMailPost(client: Client, key: string): Promise<void> {
   });
 }
 
+async function refreshLinkedMatchMessages(params: {
+  client: Client;
+  guildId: string;
+  tag: string;
+  fallbackChannelId: string;
+}): Promise<void> {
+  const config = await getCurrentWarMailConfig(params.guildId, params.tag);
+  if (!config.messages.length) return;
+
+  let renderedMail:
+    | Awaited<ReturnType<typeof buildWarMailEmbedForTag>>
+    | null = null;
+  for (const ref of config.messages) {
+    if (ref.messageType !== "mail") continue;
+    const channelId = ref.channelId ?? config.lastPostedChannelId ?? params.fallbackChannelId;
+    if (!channelId || !ref.messageID) continue;
+    const channel = await params.client.channels.fetch(channelId).catch(() => null);
+    if (!channel || !channel.isTextBased()) continue;
+    const message = await (channel as any).messages.fetch(ref.messageID).catch(() => null);
+    if (!message) continue;
+    if (!renderedMail) {
+      const cocService = new CoCService();
+      renderedMail = await buildWarMailEmbedForTag(cocService, params.guildId, params.tag).catch(
+        () => null
+      );
+      if (!renderedMail) return;
+    }
+    await message.edit({
+      embeds: [renderedMail.embed],
+    });
+  }
+}
+
 function startWarMailPolling(client: Client, key: string): void {
   stopWarMailPolling(key);
   const timer = setInterval(() => {
@@ -1818,14 +1856,16 @@ export async function handleFwaMatchTypeActionButton(interaction: ButtonInteract
     },
   });
   if (didMatchTypeChange) {
-    clearPostedMailTrackingForClan({
-      guildId: interaction.guildId,
-      tag: parsed.tag,
-    });
     await markMatchLiveDataChanged({
       guildId: interaction.guildId,
       tag: parsed.tag,
       channelId: interaction.channelId,
+    });
+    await refreshLinkedMatchMessages({
+      client: interaction.client,
+      guildId: interaction.guildId,
+      tag: parsed.tag,
+      fallbackChannelId: interaction.channelId,
     });
   }
 
@@ -1971,14 +2011,16 @@ export async function handleFwaOutcomeActionButton(interaction: ButtonInteractio
       updatedAt: new Date(),
     },
   });
-  clearPostedMailTrackingForClan({
-    guildId: interaction.guildId,
-    tag: parsed.tag,
-  });
   await markMatchLiveDataChanged({
     guildId: interaction.guildId,
     tag: parsed.tag,
     channelId: interaction.channelId,
+  });
+  await refreshLinkedMatchMessages({
+    client: interaction.client,
+    guildId: interaction.guildId,
+    tag: parsed.tag,
+    fallbackChannelId: interaction.channelId,
   });
 
   for (const [key, payload] of fwaMatchCopyPayloads.entries()) {
@@ -2115,14 +2157,16 @@ export async function handleFwaMatchSyncActionButton(
     "sync_action_applied",
     `user=${interaction.user.id} tag=${parsed.tag} site_sync=${syncAction.siteSyncNumber ?? "unknown"} site_points=${syncAction.siteFwaPoints ?? "unknown"} opponent_points=${syncAction.siteOpponentFwaPoints ?? "unknown"}`
   );
-  clearPostedMailTrackingForClan({
-    guildId: interaction.guildId,
-    tag: parsed.tag,
-  });
   await markMatchLiveDataChanged({
     guildId: interaction.guildId,
     tag: parsed.tag,
     channelId: interaction.channelId,
+  });
+  await refreshLinkedMatchMessages({
+    client: interaction.client,
+    guildId: interaction.guildId,
+    tag: parsed.tag,
+    fallbackChannelId: interaction.channelId,
   });
 
   const refreshed = await rebuildTrackedPayloadForTag(
@@ -2397,6 +2441,12 @@ export async function handleFwaMatchSkipSyncConfirmButton(
     tag: parsed.tag,
     channelId: interaction.channelId,
   });
+  await refreshLinkedMatchMessages({
+    client: interaction.client,
+    guildId: interaction.guildId,
+    tag: parsed.tag,
+    fallbackChannelId: interaction.channelId,
+  });
   const refreshed = await rebuildTrackedPayloadForTag(payload, interaction.guildId, parsed.tag);
   if (!refreshed) {
     await interaction.reply({
@@ -2501,6 +2551,12 @@ export async function handleFwaMatchSkipSyncUndoButton(
     guildId: interaction.guildId,
     tag: parsed.tag,
     channelId: interaction.channelId,
+  });
+  await refreshLinkedMatchMessages({
+    client: interaction.client,
+    guildId: interaction.guildId,
+    tag: parsed.tag,
+    fallbackChannelId: interaction.channelId,
   });
   const refreshed = await rebuildTrackedPayloadForTag(payload, interaction.guildId, parsed.tag);
   if (!refreshed) {
@@ -2807,6 +2863,7 @@ export async function handleFwaMailConfirmButton(interaction: ButtonInteraction)
     tag: payload.tag,
     channelId: channel.id,
     messageId: sent.id,
+    messageUrl: buildDiscordMessageUrl(payload.guildId, channel.id, sent.id),
     warStartMs: rendered.warStartMs,
     sentAtMs: nowMs,
     matchType: rendered.matchType,
@@ -4149,6 +4206,7 @@ async function buildTrackedMatchOverview(
         opponentTag,
         matchType,
         outcome: effectiveOutcome ?? "UNKNOWN",
+        mailStatusEmoji,
       });
       embed.addFields({
         name: matchHeader,
@@ -4189,6 +4247,7 @@ async function buildTrackedMatchOverview(
         opponentTag,
         matchType,
         outcome: effectiveOutcome ?? "UNKNOWN",
+        mailStatusEmoji,
       });
       embed.addFields({
         name: matchHeader,
@@ -4234,7 +4293,6 @@ async function buildTrackedMatchOverview(
       `Match Type: **${matchType}${inferredMatchType ? " :warning:" : ""}**${
         inferredMatchType ? ` ${verifyLink}` : ""
       }`,
-      `Mail: ${mailStatusEmoji}`,
       matchType === "FWA" ? `Expected outcome: **${effectiveOutcome ?? "UNKNOWN"}**` : "",
       `War state: **${formatWarStateLabel(warState)}**`,
       `Time remaining: **${getWarStateRemaining(war, warState)}**`,
@@ -4265,6 +4323,7 @@ async function buildTrackedMatchOverview(
             opponentTag,
             matchType,
             outcome: effectiveOutcome ?? "UNKNOWN",
+            mailStatusEmoji,
           })
         )
         .setDescription(singleDescription)
@@ -4296,10 +4355,10 @@ async function buildTrackedMatchOverview(
             opponentTag,
             matchType,
             outcome: effectiveOutcome ?? "UNKNOWN",
+            mailStatusEmoji,
           })}`,
           inferredMatchType ? MATCHTYPE_WARNING_LEGEND : "",
           pointsSyncStatus,
-          `Mail: ${mailStatusEmoji}`,
           `Sync: ${clanSyncLine}`,
           `War State: ${clanWarStateLine}`,
           `Time Remaining: ${clanTimeRemainingLine}`,
@@ -4561,6 +4620,7 @@ export async function runForceSyncMailCommand(
     messageType: parsedType.messageType,
     messageID,
     channelId: interaction.channelId,
+    messageUrl: buildDiscordMessageUrl(interaction.guildId, interaction.channelId, messageID),
     notifyType: parsedType.messageType === "notify" ? parsedType.notifyType : undefined,
   });
 
