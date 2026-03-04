@@ -4992,12 +4992,56 @@ export async function runForceSyncWarIdCommand(
       }
     }
 
+    const currentWarUpdatedFromLatestHistory = Number(
+      await tx.$executeRaw(
+        Prisma.sql`
+          UPDATE "CurrentWar" cw
+          SET "warId" = latest."warId"
+          FROM LATERAL (
+            SELECT h."warId"
+            FROM "ClanWarHistory" h
+            WHERE h."warId" IS NOT NULL
+              AND UPPER(REPLACE(h."clanTag",'#','')) = UPPER(REPLACE(cw."clanTag",'#',''))
+            ORDER BY h."warStartTime" DESC, h."warId" DESC
+            LIMIT 1
+          ) latest
+          WHERE cw."warId" IS NULL
+            AND latest."warId" IS NOT NULL
+            ${tagFilterCurrentAlias}
+        `
+      )
+    );
+
+    const warAttacksUpdatedFromSingleHistoryClan = Number(
+      await tx.$executeRaw(
+        Prisma.sql`
+          WITH single_history AS (
+            SELECT
+              UPPER(REPLACE("clanTag",'#','')) AS clan_norm,
+              MIN("warId") AS warId
+            FROM "ClanWarHistory"
+            WHERE "warId" IS NOT NULL
+              ${tagFilterHistory}
+            GROUP BY 1
+            HAVING COUNT(DISTINCT "warId") = 1
+          )
+          UPDATE "WarAttacks" wa
+          SET "warId" = sh."warId"
+          FROM single_history sh
+          WHERE wa."warId" IS NULL
+            AND UPPER(REPLACE(wa."clanTag",'#','')) = sh.clan_norm
+        `
+      )
+    );
+
     return {
       historyAssigned,
       warAttacksUpdated,
       currentWarUpdated,
       currentWarAllocated,
       warAttacksFromCurrentAllocated,
+      currentWarUpdatedFromLatestHistory,
+      warAttacksUpdatedFromSingleHistoryClan,
     };
   });
 
@@ -5009,6 +5053,8 @@ export async function runForceSyncWarIdCommand(
       `CurrentWar warId updated: **${summary.currentWarUpdated}**`,
       `CurrentWar warId allocated (active wars): **${summary.currentWarAllocated}**`,
       `WarAttacks warId updated from CurrentWar allocation: **${summary.warAttacksFromCurrentAllocated}**`,
+      `CurrentWar warId updated from latest ClanWarHistory: **${summary.currentWarUpdatedFromLatestHistory}**`,
+      `WarAttacks warId updated from single-history clans: **${summary.warAttacksUpdatedFromSingleHistoryClan}**`,
       "Note: This command is DB-only (no external API scrape calls).",
     ].join("\n")
   );
