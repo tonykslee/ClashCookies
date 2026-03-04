@@ -29,6 +29,14 @@ function deriveWarState(raw: string | null | undefined): string {
   return "notInWar";
 }
 
+function parseCocTime(raw: string | null | undefined): Date | null {
+  const value = String(raw ?? "").trim();
+  const m = value.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})\.\d{3}Z$/);
+  if (!m) return null;
+  const [, y, mo, d, h, mi, s] = m;
+  return new Date(Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s)));
+}
+
 function normalizeClanTagInput(input: string): string {
   return input.trim().toUpperCase().replace(/^#/, "");
 }
@@ -461,6 +469,8 @@ export const Notify: Command = {
       const [, y, mo, d, h, mi, s] = m;
       return new Date(Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s)));
     })();
+    const prepStartTime = parseCocTime(war?.preparationStartTime ?? null);
+    const warEndTime = parseCocTime(war?.endTime ?? null);
     const warId =
       warStartTime && clanTag
         ? (
@@ -480,9 +490,9 @@ export const Notify: Command = {
     await prisma.$executeRaw(
       Prisma.sql`
         INSERT INTO "CurrentWar"
-          ("guildId","clanTag","warId","channelId","notify","notifyRole","pingRole","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName","createdAt","updatedAt")
+          ("guildId","clanTag","warId","channelId","notify","notifyRole","pingRole","lastState","prepStartTime","startTime","endTime","lastOpponentTag","lastOpponentName","clanName","createdAt","updatedAt")
         VALUES
-          (${interaction.guildId}, ${clanTag}, ${warId}, ${target.id}, true, ${notifyRole?.id ?? null}, ${rolePingEnabled}, ${lastState}, ${warStartTime}, ${opponentTag}, ${opponentName}, ${clanName}, NOW(), NOW())
+          (${interaction.guildId}, ${clanTag}, ${warId}, ${target.id}, true, ${notifyRole?.id ?? null}, ${rolePingEnabled}, ${lastState}, ${prepStartTime}, ${warStartTime}, ${warEndTime}, ${opponentTag}, ${opponentName}, ${clanName}, NOW(), NOW())
         ON CONFLICT ("guildId","clanTag")
         DO UPDATE SET
           "warId" = EXCLUDED."warId",
@@ -491,7 +501,9 @@ export const Notify: Command = {
           "notifyRole" = EXCLUDED."notifyRole",
           "pingRole" = EXCLUDED."pingRole",
           "lastState" = EXCLUDED."lastState",
-          "lastWarStartTime" = EXCLUDED."lastWarStartTime",
+          "prepStartTime" = EXCLUDED."prepStartTime",
+          "startTime" = EXCLUDED."startTime",
+          "endTime" = EXCLUDED."endTime",
           "lastOpponentTag" = EXCLUDED."lastOpponentTag",
           "lastOpponentName" = EXCLUDED."lastOpponentName",
           "clanName" = EXCLUDED."clanName",

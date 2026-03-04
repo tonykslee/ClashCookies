@@ -423,6 +423,38 @@ export const TrackedClan: Command = {
                 )
               )
             : null;
+          const prepStartTimeRaw = String(activeWar?.preparationStartTime ?? "");
+          const prepStartMatch = prepStartTimeRaw.match(
+            /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})\.\d{3}Z$/
+          );
+          const prepStartTime = prepStartMatch
+            ? new Date(
+                Date.UTC(
+                  Number(prepStartMatch[1]),
+                  Number(prepStartMatch[2]) - 1,
+                  Number(prepStartMatch[3]),
+                  Number(prepStartMatch[4]),
+                  Number(prepStartMatch[5]),
+                  Number(prepStartMatch[6])
+                )
+              )
+            : null;
+          const warEndTimeRaw = String(activeWar?.endTime ?? "");
+          const warEndMatch = warEndTimeRaw.match(
+            /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})\.\d{3}Z$/
+          );
+          const warEndTime = warEndMatch
+            ? new Date(
+                Date.UTC(
+                  Number(warEndMatch[1]),
+                  Number(warEndMatch[2]) - 1,
+                  Number(warEndMatch[3]),
+                  Number(warEndMatch[4]),
+                  Number(warEndMatch[5]),
+                  Number(warEndMatch[6])
+                )
+              )
+            : null;
           await prisma.currentWar.upsert({
             where: {
               guildId_clanTag: {
@@ -436,7 +468,9 @@ export const TrackedClan: Command = {
               channelId: interaction.channelId,
               notify: false,
               lastState,
-              lastWarStartTime: warStartTime,
+              prepStartTime,
+              startTime: warStartTime,
+              endTime: warEndTime,
               lastOpponentTag: opponentTag || null,
               lastOpponentName: opponentName,
               clanName: saved.name ?? null,
@@ -444,7 +478,9 @@ export const TrackedClan: Command = {
             update: {
               clanName: saved.name ?? null,
               lastState,
-              lastWarStartTime: warStartTime,
+              prepStartTime,
+              startTime: warStartTime,
+              endTime: warEndTime,
               lastOpponentTag: opponentTag || null,
               lastOpponentName: opponentName,
               updatedAt: new Date(),

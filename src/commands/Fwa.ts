@@ -978,7 +978,7 @@ async function buildWarMailEmbedForTag(
         clanTag: `#${normalizedTag}`,
       },
     },
-    select: { matchType: true, inferredMatchType: true, outcome: true, lastWarStartTime: true },
+    select: { matchType: true, inferredMatchType: true, outcome: true, startTime: true },
   });
 
   let inferredMatchType = Boolean(subscription?.inferredMatchType);
@@ -1040,11 +1040,11 @@ async function buildWarMailEmbedForTag(
     ].join("\n");
   }
 
-  const prepTargetMs = parseCocApiTime(war?.startTime);
+  const prepTargetMs = parseCocApiTime(war?.preparationStartTime);
   const battleTargetMs = parseCocApiTime(war?.endTime);
   const warStartMs = parseCocApiTime(war?.startTime);
-  const fallbackWarStartMs = subscription?.lastWarStartTime
-    ? subscription.lastWarStartTime.getTime()
+  const fallbackWarStartMs = subscription?.startTime
+    ? subscription.startTime.getTime()
     : null;
   const effectiveWarStartMs = warStartMs ?? fallbackWarStartMs;
   const expectedOutcome = matchType === "FWA" ? (outcome ?? "UNKNOWN") : null;
@@ -2270,7 +2270,7 @@ export async function handleFwaMatchSkipSyncConfirmButton(
     },
     select: {
       warId: true,
-      lastWarStartTime: true,
+      startTime: true,
       mailConfig: true,
     },
   });
@@ -2281,7 +2281,7 @@ export async function handleFwaMatchSkipSyncConfirmButton(
   const skipWarStart =
     existingSkipHistory?.warStartUnix !== undefined && existingSkipHistory?.warStartUnix !== null
       ? new Date(existingSkipHistory.warStartUnix * 1000)
-      : existingCurrent?.lastWarStartTime ??
+      : existingCurrent?.startTime ??
         new Date(Math.floor(Date.now() / (60 * 60 * 1000)) * 60 * 60 * 1000);
   const skipOpponentTag = normalizeTag(existingSkipHistory?.opponentTag ?? "SKIP");
   const skipOpponentTagWithHash = `#${skipOpponentTag}`;
@@ -4795,14 +4795,14 @@ export async function runForceSyncMailCommand(
     select: {
       matchType: true,
       outcome: true,
-      lastWarStartTime: true,
+      startTime: true,
       mailConfig: true,
     },
   });
   const currentWar = await getCurrentWarCached(cocService, tag).catch(() => null);
   const warStartMsFromApi = parseCocApiTime(currentWar?.startTime);
   const warStartMs =
-    existing?.lastWarStartTime?.getTime() ?? warStartMsFromApi ?? null;
+    existing?.startTime?.getTime() ?? warStartMsFromApi ?? null;
   const nowUnix = Math.floor(Date.now() / 1000);
   const current = parseMatchMailConfig(existing?.mailConfig as Prisma.JsonValue | null | undefined);
   const messages = current.messages.filter(
@@ -4941,7 +4941,7 @@ export async function runForceSyncWarIdCommand(
             SELECT
               cw."id",
               cw."clanTag",
-              cw."lastWarStartTime" AS "warStartTime",
+              cw."startTime" AS "warStartTime",
               cw."currentSyncNum" AS "syncNumber",
               cw."lastOpponentTag" AS "opponentTag",
               cw."warId" AS "existingWarId",
@@ -4949,7 +4949,7 @@ export async function runForceSyncWarIdCommand(
             FROM "CurrentWar" cw
             WHERE 1=1
               ${tag ? Prisma.sql`AND UPPER(REPLACE(cw."clanTag",'#','')) = ${tag}` : Prisma.empty}
-              ${warStartTime ? Prisma.sql`AND cw."lastWarStartTime" = ${warStartTime}` : Prisma.empty}
+              ${warStartTime ? Prisma.sql`AND cw."startTime" = ${warStartTime}` : Prisma.empty}
               ${syncNumber !== null ? Prisma.sql`AND cw."currentSyncNum" = ${syncNumber}` : Prisma.empty}
               ${opponentTag ? Prisma.sql`AND UPPER(REPLACE(cw."lastOpponentTag",'#','')) = ${opponentTag}` : Prisma.empty}
               ${filterWarId !== null ? Prisma.sql`AND cw."warId" = ${filterWarId}` : Prisma.empty}
@@ -5043,7 +5043,7 @@ export async function runForceSyncWarIdCommand(
               FROM "CurrentWar" cw
               WHERE 1=1
                 ${tag ? Prisma.sql`AND UPPER(REPLACE(cw."clanTag",'#','')) = ${tag}` : Prisma.empty}
-                ${warStartTime ? Prisma.sql`AND cw."lastWarStartTime" = ${warStartTime}` : Prisma.empty}
+                ${warStartTime ? Prisma.sql`AND cw."startTime" = ${warStartTime}` : Prisma.empty}
                 ${syncNumber !== null ? Prisma.sql`AND cw."currentSyncNum" = ${syncNumber}` : Prisma.empty}
                 ${opponentTag ? Prisma.sql`AND UPPER(REPLACE(cw."lastOpponentTag",'#','')) = ${opponentTag}` : Prisma.empty}
                 ${filterWarId !== null ? Prisma.sql`AND cw."warId" = ${filterWarId}` : Prisma.empty}
@@ -5181,7 +5181,7 @@ export async function runForceSyncWarIdCommand(
              AND h."warId" IS NOT NULL
             LEFT JOIN "CurrentWar" cw
               ON UPPER(REPLACE(wa."clanTag",'#','')) = UPPER(REPLACE(cw."clanTag",'#',''))
-             AND wa."warStartTime" = cw."lastWarStartTime"
+             AND wa."warStartTime" = cw."startTime"
              AND cw."warId" IS NOT NULL
             WHERE 1=1
               ${tag ? Prisma.sql`AND UPPER(REPLACE(wa."clanTag",'#','')) = ${tag}` : Prisma.empty}
@@ -5256,7 +5256,7 @@ export async function runForceSyncWarIdCommand(
                AND h."warId" IS NOT NULL
               LEFT JOIN "CurrentWar" cw
                 ON UPPER(REPLACE(wa."clanTag",'#','')) = UPPER(REPLACE(cw."clanTag",'#',''))
-               AND wa."warStartTime" = cw."lastWarStartTime"
+               AND wa."warStartTime" = cw."startTime"
                AND cw."warId" IS NOT NULL
               WHERE 1=1
                 ${tag ? Prisma.sql`AND UPPER(REPLACE(wa."clanTag",'#','')) = ${tag}` : Prisma.empty}
@@ -5336,14 +5336,14 @@ export async function runForceSyncWarIdCommand(
         )
         SELECT
           cw."clanTag",
-          cw."lastWarStartTime" AS "warStartTime",
+          cw."startTime" AS "warStartTime",
           cw."currentSyncNum" AS "syncNumber",
           cw."lastOpponentTag" AS "opponentTag",
           COALESCE(h_exact."warId", history_latest."warId") AS "proposedWarId"
         FROM "CurrentWar" cw
         LEFT JOIN "ClanWarHistory" h_exact
           ON UPPER(REPLACE(cw."clanTag",'#','')) = UPPER(REPLACE(h_exact."clanTag",'#',''))
-         AND cw."lastWarStartTime" = h_exact."warStartTime"
+         AND cw."startTime" = h_exact."warStartTime"
          AND h_exact."warId" IS NOT NULL
         LEFT JOIN history_latest
           ON UPPER(REPLACE(cw."clanTag",'#','')) = history_latest.clan_norm
@@ -5492,7 +5492,7 @@ export async function runForceSyncWarIdCommand(
           FROM "ClanWarHistory" h
           WHERE cw."warId" IS NULL
             AND UPPER(REPLACE(cw."clanTag",'#','')) = UPPER(REPLACE(h."clanTag",'#',''))
-            AND cw."lastWarStartTime" = h."warStartTime"
+            AND cw."startTime" = h."warStartTime"
             AND h."warId" IS NOT NULL
             ${tagFilterCurrentAlias}
         `
@@ -5500,10 +5500,10 @@ export async function runForceSyncWarIdCommand(
     );
 
     const currentWarRowsNeedingAllocation = await tx.$queryRaw<
-      Array<{ id: number; clanTag: string; lastWarStartTime: Date | null }>
+      Array<{ id: number; clanTag: string; startTime: Date | null }>
     >(
       Prisma.sql`
-        SELECT "id","clanTag","lastWarStartTime"
+        SELECT "id","clanTag","startTime"
         FROM "CurrentWar"
         WHERE "warId" IS NULL
           AND "lastState" IN ('preparation','inWar')
@@ -5534,7 +5534,7 @@ export async function runForceSyncWarIdCommand(
       );
       currentWarAllocated += updatedCurrent;
 
-      if (updatedCurrent > 0 && row.lastWarStartTime) {
+      if (updatedCurrent > 0 && row.startTime) {
         const updatedAttacks = Number(
           await tx.$executeRaw(
             Prisma.sql`
@@ -5550,7 +5550,7 @@ export async function runForceSyncWarIdCommand(
                 FROM "WarAttacks" wa
                 WHERE wa."warId" IS NULL
                   AND UPPER(REPLACE(wa."clanTag",'#','')) = UPPER(REPLACE(${row.clanTag},'#',''))
-                  AND wa."warStartTime" = ${row.lastWarStartTime}
+                  AND wa."warStartTime" = ${row.startTime}
               ),
               safe AS (
                 SELECT c."id"
