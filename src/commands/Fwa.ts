@@ -1323,13 +1323,14 @@ function getMailStatusEmojiForClan(params: {
   if (!params.guildId) return MAILBOX_NOT_SENT_EMOJI;
   const config = params.mailConfig ?? null;
   const primaryMail = getPrimaryMailMessageRef(config);
-  const liveProvided = params.liveMatchType !== undefined || params.liveExpectedOutcome !== undefined;
-  const liveMatchesPosted = !liveProvided
-    ? true
-    : (config?.lastMatchType ?? null) === (params.liveMatchType ?? null) &&
-      (config?.lastExpectedOutcome ?? null) === (params.liveExpectedOutcome ?? null);
+  const liveMatchesPosted = isPostedMailCurrentForLiveState({
+    postedMatchType: config?.lastMatchType ?? null,
+    postedExpectedOutcome: config?.lastExpectedOutcome ?? null,
+    liveMatchType: params.liveMatchType,
+    liveExpectedOutcome: params.liveExpectedOutcome,
+  });
+  if (!liveMatchesPosted) return MAILBOX_NOT_SENT_EMOJI;
   if (primaryMail) {
-    if (!liveMatchesPosted) return MAILBOX_NOT_SENT_EMOJI;
     if (
       params.warStartMs !== null &&
       config?.lastWarStartMs !== null &&
@@ -1364,6 +1365,24 @@ function getMailStatusEmojiForClan(params: {
     });
   return sent ? MAILBOX_SENT_EMOJI : MAILBOX_NOT_SENT_EMOJI;
 }
+
+type PostedMailLiveStateParams = {
+  postedMatchType: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN" | null;
+  postedExpectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null;
+  liveMatchType?: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN" | null;
+  liveExpectedOutcome?: "WIN" | "LOSE" | "UNKNOWN" | null;
+};
+
+function isPostedMailCurrentForLiveState(params: PostedMailLiveStateParams): boolean {
+  const hasLive = params.liveMatchType !== undefined || params.liveExpectedOutcome !== undefined;
+  if (!hasLive) return true;
+  return (
+    (params.postedMatchType ?? null) === (params.liveMatchType ?? null) &&
+    (params.postedExpectedOutcome ?? null) === (params.liveExpectedOutcome ?? null)
+  );
+}
+
+export const isPostedMailCurrentForLiveStateForTest = isPostedMailCurrentForLiveState;
 
 function clearPostedMailTrackingForClan(params: {
   guildId: string;
@@ -1499,12 +1518,12 @@ function buildWarMailPostedComponents(key: string): Array<ActionRowBuilder<Butto
   ];
 }
 
-function buildNextRefreshRelativeLabel(intervalMs: number): string {
-  return `Next refresh <t:${Math.floor((Date.now() + intervalMs) / 1000)}:R>`;
+function buildNextRefreshRelativeLabel(intervalMs: number, nowMs = Date.now()): string {
+  return `Next refresh <t:${Math.floor((nowMs + intervalMs) / 1000)}:R>`;
 }
 
-function buildWarMailPostedContent(roleId?: string | null): string {
-  const nextRefresh = buildNextRefreshRelativeLabel(WAR_MAIL_REFRESH_MS);
+function buildWarMailPostedContent(roleId?: string | null, nowMs?: number): string {
+  const nextRefresh = buildNextRefreshRelativeLabel(WAR_MAIL_REFRESH_MS, nowMs);
   if (roleId) return `<@&${roleId}>\n${nextRefresh}`;
   return nextRefresh;
 }
@@ -1573,6 +1592,8 @@ function withRecoveredMailReference(
     messages,
   };
 }
+export const buildWarMailPostedContentForTest = buildWarMailPostedContent;
+export const buildWarMailNextRefreshLabelForTest = buildNextRefreshRelativeLabel;
 
 async function refreshWarMailPost(client: Client, key: string): Promise<void> {
   const payload = fwaMailPostedPayloads.get(key);
