@@ -752,7 +752,10 @@ export class WarEventLogService {
     if (!sub) return false;
 
     const war = await this.coc.getCurrentWar(sub.clanTag).catch(() => null);
-    const currentState: WarState = war ? deriveState(String(war.state ?? "")) : "notInWar";
+    const resolvedState: WarState = war ? deriveState(String(war.state ?? "")) : "notInWar";
+    const resolvedOpponentTag = normalizeTag(war?.opponent?.tag ?? "");
+    const currentState: WarState =
+      resolvedState === "inWar" && !resolvedOpponentTag ? "notInWar" : resolvedState;
     const prevState: WarState = deriveState(sub.lastState ?? "notInWar");
     const nextClanName =
       String(war?.clan?.name ?? sub.clanName ?? sub.clanTag).trim() || sub.clanTag;
