@@ -63,6 +63,12 @@ export const Force: Command = {
               required: false,
               autocomplete: true,
             },
+            {
+              name: "confirm",
+              description: "Set true to execute writes. Default is preview-only.",
+              type: ApplicationCommandOptionType.Boolean,
+              required: false,
+            },
           ],
         },
         {
