@@ -1,5 +1,7 @@
 import {
   ActionRowBuilder,
+  ApplicationCommandOptionType,
+  AutocompleteInteraction,
   ButtonBuilder,
   ButtonStyle,
   ChatInputCommandInteraction,
@@ -163,8 +165,9 @@ export const LastSeen: Command = {
     {
       name: "tag",
       description: "Player tag (with or without #)",
-      type: 3,
+      type: ApplicationCommandOptionType.String,
       required: true,
+      autocomplete: true,
     },
   ],
   run: async (
@@ -295,5 +298,58 @@ export const LastSeen: Command = {
     });
 
     await renderWithBreakdownButtons(interaction, summary, breakdown);
+  },
+  autocomplete: async (interaction: AutocompleteInteraction) => {
+    const focused = interaction.options.getFocused(true);
+    if (focused.name !== "tag") {
+      await interaction.respond([]);
+      return;
+    }
+
+    const query = normalizePlayerTag(String(focused.value ?? "")).replace(/^#/, "");
+    const tracked = await prisma.trackedClan.findMany({
+      select: { tag: true },
+    });
+    const trackedTags = tracked
+      .map((row) => normalizePlayerTag(row.tag))
+      .filter((value) => value.length > 1);
+    if (trackedTags.length === 0) {
+      await interaction.respond([]);
+      return;
+    }
+
+    const rows = await prisma.playerActivity.findMany({
+      where: {
+        clanTag: { in: trackedTags },
+      },
+      orderBy: { updatedAt: "desc" },
+      take: 250,
+      select: {
+        tag: true,
+        name: true,
+        clanTag: true,
+        updatedAt: true,
+      },
+    });
+
+    const filtered = rows
+      .filter((row) => {
+        if (!query) return true;
+        const tagBare = normalizePlayerTag(row.tag).replace(/^#/, "");
+        const name = String(row.name ?? "").toLowerCase();
+        const clanBare = normalizePlayerTag(row.clanTag).replace(/^#/, "");
+        const q = query.toLowerCase();
+        return tagBare.includes(q) || name.includes(q) || clanBare.includes(q);
+      })
+      .slice(0, 25)
+      .map((row) => {
+        const tag = normalizePlayerTag(row.tag).replace(/^#/, "");
+        const name = String(row.name ?? "Unknown").trim() || "Unknown";
+        const clan = normalizePlayerTag(row.clanTag).replace(/^#/, "");
+        const label = `${name} (#${tag}) - #${clan}`.slice(0, 100);
+        return { name: label, value: tag };
+      });
+
+    await interaction.respond(filtered);
   },
 };
