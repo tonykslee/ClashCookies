@@ -4914,14 +4914,40 @@ export async function runForceSyncWarIdCommand(
     const warAttacksUpdated = Number(
       await tx.$executeRaw(
         Prisma.sql`
+          WITH candidate AS (
+            SELECT
+              wa."id",
+              wa."playerTag",
+              wa."attackNumber",
+              h."warId",
+              ROW_NUMBER() OVER (
+                PARTITION BY h."warId", wa."playerTag", wa."attackNumber"
+                ORDER BY wa."id" ASC
+              ) AS rn
+            FROM "WarAttacks" wa
+            JOIN "ClanWarHistory" h
+              ON UPPER(REPLACE(wa."clanTag",'#','')) = UPPER(REPLACE(h."clanTag",'#',''))
+             AND wa."warStartTime" = h."warStartTime"
+            WHERE wa."warId" IS NULL
+              AND h."warId" IS NOT NULL
+              ${tagFilterHistoryAlias}
+          ),
+          safe AS (
+            SELECT c."id", c."warId"
+            FROM candidate c
+            WHERE c.rn = 1
+              AND NOT EXISTS (
+                SELECT 1
+                FROM "WarAttacks" existing
+                WHERE existing."warId" = c."warId"
+                  AND existing."playerTag" = c."playerTag"
+                  AND existing."attackNumber" = c."attackNumber"
+              )
+          )
           UPDATE "WarAttacks" wa
-          SET "warId" = h."warId"
-          FROM "ClanWarHistory" h
-          WHERE wa."warId" IS NULL
-            AND UPPER(REPLACE(wa."clanTag",'#','')) = UPPER(REPLACE(h."clanTag",'#',''))
-            AND wa."warStartTime" = h."warStartTime"
-            AND h."warId" IS NOT NULL
-            ${tagFilterHistoryAlias}
+          SET "warId" = s."warId"
+          FROM safe s
+          WHERE wa."id" = s."id"
         `
       )
     );
@@ -4980,11 +5006,36 @@ export async function runForceSyncWarIdCommand(
         const updatedAttacks = Number(
           await tx.$executeRaw(
             Prisma.sql`
-              UPDATE "WarAttacks"
+              WITH candidate AS (
+                SELECT
+                  wa."id",
+                  wa."playerTag",
+                  wa."attackNumber",
+                  ROW_NUMBER() OVER (
+                    PARTITION BY wa."playerTag", wa."attackNumber"
+                    ORDER BY wa."id" ASC
+                  ) AS rn
+                FROM "WarAttacks" wa
+                WHERE wa."warId" IS NULL
+                  AND UPPER(REPLACE(wa."clanTag",'#','')) = UPPER(REPLACE(${row.clanTag},'#',''))
+                  AND wa."warStartTime" = ${row.lastWarStartTime}
+              ),
+              safe AS (
+                SELECT c."id"
+                FROM candidate c
+                WHERE c.rn = 1
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM "WarAttacks" existing
+                    WHERE existing."warId" = ${warId}
+                      AND existing."playerTag" = c."playerTag"
+                      AND existing."attackNumber" = c."attackNumber"
+                  )
+              )
+              UPDATE "WarAttacks" wa
               SET "warId" = ${warId}
-              WHERE "warId" IS NULL
-                AND UPPER(REPLACE("clanTag",'#','')) = UPPER(REPLACE(${row.clanTag},'#',''))
-                AND "warStartTime" = ${row.lastWarStartTime}
+              FROM safe s
+              WHERE wa."id" = s."id"
             `
           )
         );
@@ -5026,12 +5077,38 @@ export async function runForceSyncWarIdCommand(
               ${tagFilterHistory}
             GROUP BY 1
             HAVING COUNT(DISTINCT "warId") = 1
+          ),
+          candidate AS (
+            SELECT
+              wa."id",
+              wa."playerTag",
+              wa."attackNumber",
+              sh."warId",
+              ROW_NUMBER() OVER (
+                PARTITION BY sh."warId", wa."playerTag", wa."attackNumber"
+                ORDER BY wa."id" ASC
+              ) AS rn
+            FROM "WarAttacks" wa
+            JOIN single_history sh
+              ON UPPER(REPLACE(wa."clanTag",'#','')) = sh.clan_norm
+            WHERE wa."warId" IS NULL
+          ),
+          safe AS (
+            SELECT c."id", c."warId"
+            FROM candidate c
+            WHERE c.rn = 1
+              AND NOT EXISTS (
+                SELECT 1
+                FROM "WarAttacks" existing
+                WHERE existing."warId" = c."warId"
+                  AND existing."playerTag" = c."playerTag"
+                  AND existing."attackNumber" = c."attackNumber"
+              )
           )
           UPDATE "WarAttacks" wa
-          SET "warId" = sh."warId"
-          FROM single_history sh
-          WHERE wa."warId" IS NULL
-            AND UPPER(REPLACE(wa."clanTag",'#','')) = sh.clan_norm
+          SET "warId" = s."warId"
+          FROM safe s
+          WHERE wa."id" = s."id"
         `
       )
     );
