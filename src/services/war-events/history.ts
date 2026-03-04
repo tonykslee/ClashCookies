@@ -131,6 +131,7 @@ export class WarEventHistoryService {
     warEndFwaPoints: number | null;
     lastClanStars: number | null;
     lastOpponentStars: number | null;
+    prepStartTime: Date | null;
     warStartTime: Date | null;
   }): Promise<void> {
     if (payload.eventType !== "war_ended") return;
@@ -184,9 +185,9 @@ export class WarEventHistoryService {
     const row = await prisma.$queryRaw<Array<{ warId: number }>>(
       Prisma.sql`
         INSERT INTO "ClanWarHistory"
-          ("syncNumber","matchType","clanStars","clanDestruction","opponentStars","opponentDestruction","fwaPointsGained","expectedOutcome","actualOutcome","enemyPoints","warStartTime","warEndTime","clanName","clanTag","opponentName","opponentTag","updatedAt")
+          ("syncNumber","matchType","clanStars","clanDestruction","opponentStars","opponentDestruction","fwaPointsGained","expectedOutcome","actualOutcome","enemyPoints","prepStartTime","warStartTime","warEndTime","clanName","clanTag","opponentName","opponentTag","updatedAt")
         VALUES
-          (${payload.syncNumber}, ${payload.matchType}, ${finalResult.clanStars}, ${finalResult.clanDestruction}, ${finalResult.opponentStars}, ${finalResult.opponentDestruction}, ${pointsDelta}, ${payload.outcome}, ${finalResult.resultLabel}, ${enemyPoints}, ${warStartTime}, ${warEndTime}, ${payload.clanName}, ${clanTag}, ${payload.opponentName}, ${normalizeTag(payload.opponentTag) || null}, NOW())
+          (${payload.syncNumber}, ${payload.matchType}, ${finalResult.clanStars}, ${finalResult.clanDestruction}, ${finalResult.opponentStars}, ${finalResult.opponentDestruction}, ${pointsDelta}, ${payload.outcome}, ${finalResult.resultLabel}, ${enemyPoints}, ${payload.prepStartTime}, ${warStartTime}, ${warEndTime}, ${payload.clanName}, ${clanTag}, ${payload.opponentName}, ${normalizeTag(payload.opponentTag) || null}, NOW())
         ON CONFLICT ("warStartTime","clanTag","opponentTag")
         DO UPDATE SET
           "syncNumber" = EXCLUDED."syncNumber",
@@ -199,6 +200,7 @@ export class WarEventHistoryService {
           "expectedOutcome" = EXCLUDED."expectedOutcome",
           "actualOutcome" = EXCLUDED."actualOutcome",
           "enemyPoints" = EXCLUDED."enemyPoints",
+          "prepStartTime" = EXCLUDED."prepStartTime",
           "warEndTime" = EXCLUDED."warEndTime",
           "clanName" = EXCLUDED."clanName",
           "opponentName" = EXCLUDED."opponentName",
@@ -215,7 +217,7 @@ export class WarEventHistoryService {
       data: { warId },
     });
     await prisma.currentWar.updateMany({
-      where: { clanTag, lastWarStartTime: warStartTime },
+      where: { clanTag, startTime: warStartTime },
       data: {
         warId,
       },

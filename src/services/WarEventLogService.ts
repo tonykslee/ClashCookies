@@ -80,7 +80,9 @@ type SubscriptionRow = {
   lastClanStars: number | null;
   lastOpponentStars: number | null;
   lastState: string | null;
-  lastWarStartTime: Date | null;
+  prepStartTime: Date | null;
+  startTime: Date | null;
+  endTime: Date | null;
   lastOpponentTag: string | null;
   lastOpponentName: string | null;
   clanName: string | null;
@@ -120,6 +122,7 @@ type EventEmitPayload = {
   warEndFwaPoints: number | null;
   lastClanStars: number | null;
   lastOpponentStars: number | null;
+  prepStartTime: Date | null;
   warStartTime: Date | null;
   warEndTime: Date | null;
   clanAttacks: number | null;
@@ -243,7 +246,7 @@ export class WarEventLogService {
     const subs = await prisma.$queryRaw<SubscriptionRow[]>(
       Prisma.sql`
         SELECT
-          "id","guildId","clanTag","warId","currentSyncNum","channelId","notify","pingRole","inferredMatchType","notifyRole","fwaPoints","opponentFwaPoints","outcome","matchType","warStartFwaPoints","warEndFwaPoints","lastClanStars","lastOpponentStars","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName"
+          "id","guildId","clanTag","warId","currentSyncNum","channelId","notify","pingRole","inferredMatchType","notifyRole","fwaPoints","opponentFwaPoints","outcome","matchType","warStartFwaPoints","warEndFwaPoints","lastClanStars","lastOpponentStars","lastState","prepStartTime","startTime","endTime","lastOpponentTag","lastOpponentName","clanName"
         FROM "CurrentWar"
         ORDER BY "updatedAt" ASC
       `
@@ -371,8 +374,8 @@ export class WarEventLogService {
     const currentWarStartTime = parseCocTime(currentWar?.startTime ?? null);
     const testWarStartTime =
       params.source === "current"
-        ? currentWarStartTime ?? sub.lastWarStartTime
-        : lastWarRow?.warStartTime ?? sub.lastWarStartTime ?? currentWarStartTime;
+        ? currentWarStartTime ?? sub.startTime
+        : lastWarRow?.warStartTime ?? sub.startTime ?? currentWarStartTime;
     const currentClanStars = Number.isFinite(Number(currentWar?.clan?.stars))
       ? Number(currentWar?.clan?.stars)
       : sub.lastClanStars;
@@ -445,6 +448,7 @@ export class WarEventLogService {
           : Number.isFinite(Number(currentWar?.opponent?.stars))
             ? Number(currentWar?.opponent?.stars)
             : sub.lastOpponentStars,
+      prepStartTime: parseCocTime(currentWar?.preparationStartTime ?? null) ?? sub.prepStartTime,
       warStartTime: testWarStartTime,
       warEndTime: parseCocTime(currentWar?.endTime ?? null),
       clanAttacks: Number.isFinite(Number(currentWar?.clan?.attacks))
@@ -721,7 +725,7 @@ export class WarEventLogService {
     const rows = await prisma.$queryRaw<SubscriptionRow[]>(
       Prisma.sql`
         SELECT
-          "id","guildId","clanTag","warId","currentSyncNum","channelId","notify","pingRole","inferredMatchType","notifyRole","fwaPoints","opponentFwaPoints","outcome","matchType","warStartFwaPoints","warEndFwaPoints","lastClanStars","lastOpponentStars","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName"
+          "id","guildId","clanTag","warId","currentSyncNum","channelId","notify","pingRole","inferredMatchType","notifyRole","fwaPoints","opponentFwaPoints","outcome","matchType","warStartFwaPoints","warEndFwaPoints","lastClanStars","lastOpponentStars","lastState","prepStartTime","startTime","endTime","lastOpponentTag","lastOpponentName","clanName"
         FROM "CurrentWar"
         WHERE "guildId" = ${guildId} AND UPPER(REPLACE("clanTag",'#','')) = ${normalizeTagBare(clanTag)}
         LIMIT 1
@@ -775,8 +779,8 @@ export class WarEventLogService {
     if (
       params.sub.warId !== null &&
       params.sub.warId !== undefined &&
-      params.sub.lastWarStartTime &&
-      params.sub.lastWarStartTime.getTime() === params.warStartTime.getTime()
+      params.sub.startTime &&
+      params.sub.startTime.getTime() === params.warStartTime.getTime()
     ) {
       return params.sub.warId;
     }
@@ -784,7 +788,7 @@ export class WarEventLogService {
     const existing = await prisma.currentWar.findFirst({
       where: {
         clanTag: params.sub.clanTag,
-        lastWarStartTime: params.warStartTime,
+        startTime: params.warStartTime,
         warId: { not: null },
       },
       orderBy: { updatedAt: "desc" },
@@ -804,7 +808,7 @@ export class WarEventLogService {
     const rows = await prisma.$queryRaw<SubscriptionRow[]>(
       Prisma.sql`
         SELECT
-          "id","guildId","clanTag","warId","currentSyncNum","channelId","notify","pingRole","inferredMatchType","notifyRole","fwaPoints","opponentFwaPoints","outcome","matchType","warStartFwaPoints","warEndFwaPoints","lastClanStars","lastOpponentStars","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName"
+          "id","guildId","clanTag","warId","currentSyncNum","channelId","notify","pingRole","inferredMatchType","notifyRole","fwaPoints","opponentFwaPoints","outcome","matchType","warStartFwaPoints","warEndFwaPoints","lastClanStars","lastOpponentStars","lastState","prepStartTime","startTime","endTime","lastOpponentTag","lastOpponentName","clanName"
         FROM "CurrentWar"
         WHERE "id" = ${subscriptionId}
         LIMIT 1
@@ -825,17 +829,18 @@ export class WarEventLogService {
     const nextOpponentName = String(war?.opponent?.name ?? sub.lastOpponentName ?? "").trim() || null;
     const nextWarStartTime = (() => {
       const raw = war?.startTime;
-      if (!raw) return sub.lastWarStartTime;
+      if (!raw) return sub.startTime;
       const m = raw.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})\.\d{3}Z$/);
-      if (!m) return sub.lastWarStartTime;
+      if (!m) return sub.startTime;
       const [, y, mo, d, h, mi, s] = m;
       return new Date(Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s)));
     })();
+    const nextPrepStartTime = parseCocTime(war?.preparationStartTime ?? null) ?? sub.prepStartTime;
     const nextWarEndTime = parseCocTime(war?.endTime ?? null);
 
     const eventTypeRaw = shouldEmit(prevState, currentState);
     let eventType = eventTypeRaw;
-    if (!eventType && isNewWarCycle(sub.lastWarStartTime, nextWarStartTime)) {
+    if (!eventType && isNewWarCycle(sub.startTime, nextWarStartTime)) {
       if (currentState === "preparation") {
         eventType = "war_started";
       } else if (currentState === "inWar") {
@@ -843,14 +848,14 @@ export class WarEventLogService {
       }
     }
     if (eventType === "war_ended") {
-      if (!sub.lastWarStartTime) {
+      if (!sub.startTime) {
         console.log(
           `[war-events] war_ended suppressed guild=${sub.guildId} clan=${sub.clanTag} reason=no_last_war_start prev=${prevState} current=${currentState}`
         );
         eventType = null;
-      } else if (await this.hasWarEndRecorded(sub.clanTag, sub.lastWarStartTime)) {
+      } else if (await this.hasWarEndRecorded(sub.clanTag, sub.startTime)) {
         console.log(
-          `[war-events] war_ended suppressed guild=${sub.guildId} clan=${sub.clanTag} reason=already_recorded warStart=${sub.lastWarStartTime.toISOString()}`
+          `[war-events] war_ended suppressed guild=${sub.guildId} clan=${sub.clanTag} reason=already_recorded warStart=${sub.startTime.toISOString()}`
         );
         eventType = null;
       }
@@ -1005,6 +1010,7 @@ export class WarEventLogService {
         warEndFwaPoints: nextWarEndFwaPoints,
         lastClanStars: nextClanStars,
         lastOpponentStars: nextOpponentStars,
+        prepStartTime: nextPrepStartTime,
         warStartTime: nextWarStartTime,
         warEndTime: nextWarEndTime,
         clanAttacks: nextClanAttacks,
@@ -1044,7 +1050,9 @@ export class WarEventLogService {
         warEndFwaPoints: nextWarEndFwaPoints,
         lastClanStars: nextClanStars,
         lastOpponentStars: nextOpponentStars,
-        lastWarStartTime: currentState === "notInWar" ? null : nextWarStartTime,
+        prepStartTime: currentState === "notInWar" ? null : nextPrepStartTime,
+        startTime: currentState === "notInWar" ? null : nextWarStartTime,
+        endTime: currentState === "notInWar" ? null : nextWarEndTime,
         lastOpponentTag: nextOpponentTag || sub.lastOpponentTag,
         lastOpponentName: nextOpponentName || sub.lastOpponentName,
         clanName: nextClanName,
@@ -1062,7 +1070,7 @@ export class WarEventLogService {
       .findFirst({
         where: {
           clanTag,
-          lastWarStartTime: warStartTime,
+          startTime: warStartTime,
         },
         select: { warId: true },
       })
@@ -1091,6 +1099,7 @@ export class WarEventLogService {
       warEndFwaPoints: number | null;
       lastClanStars: number | null;
       lastOpponentStars: number | null;
+      prepStartTime: Date | null;
       warStartTime: Date | null;
       warEndTime: Date | null;
       clanAttacks: number | null;
@@ -1414,7 +1423,8 @@ export class WarEventLogService {
       return;
     }
 
-    const warStartTime = parseCocTime(war.startTime ?? null) ?? sub.lastWarStartTime ?? null;
+    const prepStartTime = parseCocTime(war.preparationStartTime ?? null) ?? sub.prepStartTime ?? null;
+    const warStartTime = parseCocTime(war.startTime ?? null) ?? sub.startTime ?? null;
     const warEndTime = parseCocTime(war.endTime ?? null);
     const nextClanName = String(war.clan?.name ?? sub.clanName ?? sub.clanTag).trim() || sub.clanTag;
     const nextOpponentTag = normalizeTag(war.opponent?.tag ?? sub.lastOpponentTag ?? "");
@@ -1436,7 +1446,9 @@ export class WarEventLogService {
       data: {
         warId: resolvedWarId,
         lastState: "inWar",
-        lastWarStartTime: warStartTime,
+        prepStartTime,
+        startTime: warStartTime,
+        endTime: warEndTime,
         lastOpponentTag: nextOpponentTag || sub.lastOpponentTag,
         lastOpponentName: nextOpponentName || sub.lastOpponentName,
         clanName: nextClanName,

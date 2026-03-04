@@ -200,7 +200,9 @@ model CurrentWar {
   lastClanStars     Int?
   lastOpponentStars Int?
   lastState         String?
-  lastWarStartTime  DateTime?
+  prepStartTime     DateTime?
+  startTime         DateTime?
+  endTime           DateTime?
   lastOpponentTag   String?
   lastOpponentName  String?
   clanName          String?
@@ -211,7 +213,7 @@ model CurrentWar {
   @@unique([guildId, clanTag])
   @@index([guildId, notify])
   @@index([warId])
-  @@index([lastWarStartTime, clanTag, lastOpponentTag])
+  @@index([startTime, clanTag, lastOpponentTag])
 }
 
 model ClanWarHistory {
@@ -226,6 +228,7 @@ model ClanWarHistory {
   expectedOutcome     String?
   actualOutcome       String?
   enemyPoints         Int?
+  prepStartTime       DateTime?
   warStartTime        DateTime
   warEndTime          DateTime?
   clanName            String?
