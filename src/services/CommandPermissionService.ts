@@ -35,6 +35,8 @@ export const COMMAND_PERMISSION_TARGETS = [
   "fwa:leader-role",
   "force:sync:data",
   "force:sync:mail",
+  "remaining",
+  "remaining:war",
   "recruitment:show",
   "recruitment:edit",
   "recruitment:dashboard",
