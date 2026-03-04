@@ -1822,6 +1822,7 @@ export async function handleFwaMatchTypeActionButton(interaction: ButtonInteract
     });
     return;
   }
+  await interaction.deferUpdate();
 
   const existingSub = await prisma.currentWar.findUnique({
     where: {
@@ -1898,7 +1899,7 @@ export async function handleFwaMatchTypeActionButton(interaction: ButtonInteract
     const showMode = interaction.message.embeds.length > 0 ? "embed" : "copy";
     const view = nextPayload.singleViews[parsed.tag];
     if (!view) continue;
-    await interaction.update({
+    await interaction.editReply({
       content: showMode === "copy" ? limitDiscordContent(view.copyText) : undefined,
       embeds: showMode === "embed" ? [view.embed] : [],
       components: buildFwaMatchCopyComponents(nextPayload, nextPayload.userId, key, showMode),
@@ -1906,7 +1907,7 @@ export async function handleFwaMatchTypeActionButton(interaction: ButtonInteract
     return;
   }
 
-  await interaction.reply({
+  await interaction.followUp({
     ephemeral: true,
     content: `Match type for #${parsed.tag} is now **${parsed.targetType}** (manual).`,
   });
