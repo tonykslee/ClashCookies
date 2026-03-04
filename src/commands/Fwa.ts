@@ -900,6 +900,7 @@ function formatWarPercent(input: unknown): string {
 }
 
 async function upsertCurrentWarHistoryAndGetWarId(params: {
+  guildId: string;
   normalizedTag: string;
   warStartMs: number | null;
   warEndMs: number | null;
@@ -916,32 +917,27 @@ async function upsertCurrentWarHistoryAndGetWarId(params: {
       ? params.warStartMs
       : parseCocApiTime(params.war?.startTime);
   return getCurrentWarIdForClan(
+    params.guildId,
     params.normalizedTag,
     resolvedWarStartMs !== null && Number.isFinite(resolvedWarStartMs) ? resolvedWarStartMs : null
   );
 }
 
 async function getCurrentWarIdForClan(
+  guildId: string,
   normalizedTag: string,
-  warStartMs: number | null
+  _warStartMs: number | null
 ): Promise<number | null> {
-  if (warStartMs !== null && Number.isFinite(warStartMs)) {
-    const exact = await prisma.clanWarHistory.findFirst({
-      where: {
+  const current = await prisma.currentWar.findUnique({
+    where: {
+      guildId_clanTag: {
+        guildId,
         clanTag: `#${normalizedTag}`,
-        warStartTime: new Date(warStartMs),
       },
-      orderBy: { warStartTime: "desc" },
-      select: { warId: true },
-    });
-    if (exact?.warId) return exact.warId;
-  }
-  const fallback = await prisma.clanWarHistory.findFirst({
-    where: { clanTag: `#${normalizedTag}` },
-    orderBy: { warStartTime: "desc" },
+    },
     select: { warId: true },
   });
-  return fallback?.warId ?? null;
+  return current?.warId ?? null;
 }
 
 async function buildWarMailEmbedForTag(
@@ -1056,6 +1052,7 @@ async function buildWarMailEmbedForTag(
   );
   const warId =
     (await upsertCurrentWarHistoryAndGetWarId({
+      guildId,
       normalizedTag,
       warStartMs: effectiveWarStartMs,
       warEndMs: battleTargetMs,
@@ -1066,7 +1063,7 @@ async function buildWarMailEmbedForTag(
       opponentName,
       opponentTag,
       war,
-    })) ?? (await getCurrentWarIdForClan(normalizedTag, effectiveWarStartMs));
+    })) ?? (await getCurrentWarIdForClan(guildId, normalizedTag, effectiveWarStartMs));
   const starsLeft = formatWarInt(war?.clan?.stars);
   const starsRight = formatWarInt(war?.opponent?.stars);
   const attacksPerMember = Number.isFinite(Number(war?.attacksPerMember))
