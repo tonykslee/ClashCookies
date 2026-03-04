@@ -5020,7 +5020,7 @@ export async function runForceSyncWarIdCommand(
           WITH single_history AS (
             SELECT
               UPPER(REPLACE("clanTag",'#','')) AS clan_norm,
-              MIN("warId") AS warId
+              MIN("warId") AS "warId"
             FROM "ClanWarHistory"
             WHERE "warId" IS NOT NULL
               ${tagFilterHistory}
