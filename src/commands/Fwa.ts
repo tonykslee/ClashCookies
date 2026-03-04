@@ -4860,6 +4860,10 @@ export async function runForceSyncMailCommand(
 export async function runForceSyncWarIdCommand(
   interaction: ChatInputCommandInteraction
 ): Promise<void> {
+  const visibility = interaction.options.getString("visibility", false) ?? "private";
+  const isPublic = visibility === "public";
+  await interaction.deferReply({ ephemeral: !isPublic });
+
   type WarIdTable = "currentwar" | "clanwarhistory" | "warattacks";
   const table = interaction.options.getString("table", false) as WarIdTable | null;
   if (table) {
@@ -5229,10 +5233,6 @@ export async function runForceSyncWarIdCommand(
     await interaction.editReply(`Unsupported table: ${table}`);
     return;
   }
-
-  const visibility = interaction.options.getString("visibility", false) ?? "private";
-  const isPublic = visibility === "public";
-  await interaction.deferReply({ ephemeral: !isPublic });
 
   const tagRaw = interaction.options.getString("tag", false);
   const tag = tagRaw ? normalizeTag(tagRaw) : null;
