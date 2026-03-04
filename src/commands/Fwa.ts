@@ -3087,6 +3087,90 @@ export async function refreshAllTrackedWarMailPosts(client: Client): Promise<voi
   }
 }
 
+export async function runForceMailUpdateCommand(
+  interaction: ChatInputCommandInteraction
+): Promise<void> {
+  const visibility = interaction.options.getString("visibility", false) ?? "private";
+  const isPublic = visibility === "public";
+  await interaction.deferReply({ ephemeral: !isPublic });
+
+  if (!interaction.guildId) {
+    await interaction.editReply("This command can only be used in a server.");
+    return;
+  }
+
+  const tag = normalizeTag(interaction.options.getString("tag", true));
+  const trackedClan = await prisma.trackedClan.findFirst({
+    where: { tag: { equals: `#${tag}`, mode: "insensitive" } },
+    select: { tag: true, name: true },
+  });
+  if (!trackedClan) {
+    await interaction.editReply(`Clan #${tag} is not in tracked clans.`);
+    return;
+  }
+
+  const current = await prisma.currentWar.findUnique({
+    where: {
+      guildId_clanTag: {
+        guildId: interaction.guildId,
+        clanTag: `#${tag}`,
+      },
+    },
+    select: { mailConfig: true },
+  });
+  const config = parseMatchMailConfig(current?.mailConfig as Prisma.JsonValue | null | undefined);
+  const channelId = config.lastPostedChannelId?.trim() ?? "";
+  const messageId = config.lastPostedMessageId?.trim() ?? "";
+  if (!channelId || !messageId) {
+    await interaction.editReply(
+      `No active sent mail reference found for #${tag}. Send mail first or sync it via \`/force sync mail\`.`
+    );
+    return;
+  }
+
+  const refreshed = await refreshWarMailPostByResolvedTarget({
+    client: interaction.client,
+    guildId: interaction.guildId,
+    tag,
+    channelId,
+    messageId,
+  }).catch(() => false);
+  if (!refreshed) {
+    await interaction.editReply(
+      `Could not refresh #${tag} mail in place. The referenced message may be missing or inaccessible.`
+    );
+    return;
+  }
+
+  const existingInMemory = findLatestPostedWarMailForClan({
+    guildId: interaction.guildId,
+    tag,
+  });
+  if (!existingInMemory) {
+    const postKey = createTransientFwaKey();
+    fwaMailPostedPayloads.set(postKey, {
+      guildId: interaction.guildId,
+      tag,
+      warStartMs: config.lastWarStartMs ?? null,
+      channelId,
+      messageId,
+      sentAtMs: Date.now(),
+      matchType: config.lastMatchType ?? "UNKNOWN",
+      expectedOutcome: config.lastExpectedOutcome ?? null,
+    });
+    startWarMailPolling(interaction.client, postKey);
+  }
+
+  await interaction.editReply(
+    [
+      `Force mail update complete for #${tag}.`,
+      "Updated existing message in place (no new ping).",
+      "20-minute refresh tracking is active for this post.",
+      `Message: https://discord.com/channels/${interaction.guildId}/${channelId}/${messageId}`,
+    ].join("\n")
+  );
+}
+
 export async function handlePointsPostButton(interaction: ButtonInteraction): Promise<void> {
   const parsed = parsePointsPostButtonCustomId(interaction.customId);
   if (!parsed) return;

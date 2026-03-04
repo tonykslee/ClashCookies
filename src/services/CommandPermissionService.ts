@@ -35,6 +35,7 @@ export const COMMAND_PERMISSION_TARGETS = [
   "fwa:leader-role",
   "force:sync:data",
   "force:sync:mail",
+  "force:mail:update",
   "remaining",
   "remaining:war",
   "recruitment:show",
@@ -70,6 +71,7 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "fwa:leader-role",
   "force:sync:data",
   "force:sync:mail",
+  "force:mail:update",
   `${MANAGE_COMMAND_ROLES_COMMAND}:add`,
   `${MANAGE_COMMAND_ROLES_COMMAND}:remove`,
 ]);
