@@ -4860,12 +4860,383 @@ export async function runForceSyncMailCommand(
 export async function runForceSyncWarIdCommand(
   interaction: ChatInputCommandInteraction
 ): Promise<void> {
+  type WarIdTable = "currentwar" | "clanwarhistory" | "warattacks";
+  const table = interaction.options.getString("table", false) as WarIdTable | null;
+  if (table) {
+    const tagRaw = interaction.options.getString("tag", false);
+    const tag = tagRaw ? normalizeTag(tagRaw) : null;
+    const confirm = interaction.options.getBoolean("confirm", false) ?? false;
+    const overwrite = interaction.options.getBoolean("overwrite", false) ?? false;
+    const setWarId = interaction.options.getInteger("set_war_id", false);
+    const filterWarId = interaction.options.getInteger("filter_war_id", false);
+    const syncNumber = interaction.options.getInteger("sync_number", false);
+    const attackNumber = interaction.options.getInteger("attack_number", false);
+    const opponentTagRaw = interaction.options.getString("opponent_tag", false);
+    const opponentTag = opponentTagRaw ? normalizeTag(opponentTagRaw) : null;
+    const playerTagRaw = interaction.options.getString("player_tag", false);
+    const playerTag = playerTagRaw ? normalizeTag(playerTagRaw) : null;
+    const warStartTimeRaw = interaction.options.getString("war_start_time", false)?.trim() ?? null;
+    const warStartTime = warStartTimeRaw ? new Date(warStartTimeRaw) : null;
+    if (warStartTime && Number.isNaN(warStartTime.getTime())) {
+      await interaction.editReply(
+        "Invalid `war_start_time`. Use ISO UTC, e.g. `2026-03-04T07:00:00.000Z`."
+      );
+      return;
+    }
+    if (setWarId !== null && setWarId <= 0) {
+      await interaction.editReply("`set_war_id` must be a positive integer.");
+      return;
+    }
+    if (filterWarId !== null && filterWarId <= 0) {
+      await interaction.editReply("`filter_war_id` must be a positive integer.");
+      return;
+    }
+    if (attackNumber !== null && attackNumber <= 0) {
+      await interaction.editReply("`attack_number` must be a positive integer.");
+      return;
+    }
+
+    if (table === "currentwar") {
+      const targetExpr =
+        setWarId !== null
+          ? Prisma.sql`${setWarId}`
+          : Prisma.sql`COALESCE(h_exact."warId", history_latest."warId")`;
+      const rows = await prisma.$queryRaw<
+        Array<{
+          id: number;
+          clanTag: string;
+          warStartTime: Date | null;
+          syncNumber: number | null;
+          opponentTag: string | null;
+          existingWarId: number | null;
+          targetWarId: number | null;
+        }>
+      >(
+        Prisma.sql`
+          WITH history_latest AS (
+            SELECT DISTINCT ON (UPPER(REPLACE(h."clanTag",'#','')))
+              UPPER(REPLACE(h."clanTag",'#','')) AS clan_norm,
+              h."warId"
+            FROM "ClanWarHistory" h
+            WHERE h."warId" IS NOT NULL
+            ORDER BY UPPER(REPLACE(h."clanTag",'#','')), h."warStartTime" DESC, h."warId" DESC
+          )
+          SELECT
+            cw."id",
+            cw."clanTag",
+            cw."lastWarStartTime" AS "warStartTime",
+            cw."currentSyncNum" AS "syncNumber",
+            cw."lastOpponentTag" AS "opponentTag",
+            cw."warId" AS "existingWarId",
+            ${targetExpr} AS "targetWarId"
+          FROM "CurrentWar" cw
+          LEFT JOIN "ClanWarHistory" h_exact
+            ON UPPER(REPLACE(cw."clanTag",'#','')) = UPPER(REPLACE(h_exact."clanTag",'#',''))
+           AND cw."lastWarStartTime" = h_exact."warStartTime"
+           AND h_exact."warId" IS NOT NULL
+          LEFT JOIN history_latest
+            ON UPPER(REPLACE(cw."clanTag",'#','')) = history_latest.clan_norm
+          WHERE 1=1
+            ${tag ? Prisma.sql`AND UPPER(REPLACE(cw."clanTag",'#','')) = ${tag}` : Prisma.empty}
+            ${warStartTime ? Prisma.sql`AND cw."lastWarStartTime" = ${warStartTime}` : Prisma.empty}
+            ${syncNumber !== null ? Prisma.sql`AND cw."currentSyncNum" = ${syncNumber}` : Prisma.empty}
+            ${opponentTag ? Prisma.sql`AND UPPER(REPLACE(cw."lastOpponentTag",'#','')) = ${opponentTag}` : Prisma.empty}
+            ${filterWarId !== null ? Prisma.sql`AND cw."warId" = ${filterWarId}` : Prisma.empty}
+            ${overwrite ? Prisma.empty : Prisma.sql`AND cw."warId" IS NULL`}
+            AND ${targetExpr} IS NOT NULL
+            AND cw."warId" IS DISTINCT FROM ${targetExpr}
+          ORDER BY cw."clanTag" ASC
+        `
+      );
+      const previewLines = rows.slice(0, 20).map((row) => {
+        const warStart = row.warStartTime ? row.warStartTime.toISOString() : "unknown";
+        const sync = row.syncNumber ?? "unknown";
+        const opp = row.opponentTag ? `#${normalizeTag(row.opponentTag)}` : "unknown";
+        return `CurrentWar row: warStartTime=${warStart}, syncNumber=${sync}, clanTag=#${normalizeTag(
+          row.clanTag
+        )}, opponentTag=${opp}, existingWarId=${row.existingWarId ?? "null"} -> targetWarId=${row.targetWarId}`;
+      });
+      const lines = [
+        "Table: CurrentWar",
+        `Matched rows: ${rows.length}`,
+        ...previewLines,
+        rows.length > 20 ? `...and ${rows.length - 20} more row(s).` : "",
+      ].filter(Boolean);
+      if (!confirm) {
+        lines.push("No writes executed. Re-run with `confirm:true` to apply.");
+        await interaction.editReply(truncateDiscordContent(lines.join("\n")));
+        return;
+      }
+      const updated = Number(
+        await prisma.$executeRaw(
+          Prisma.sql`
+            WITH history_latest AS (
+              SELECT DISTINCT ON (UPPER(REPLACE(h."clanTag",'#','')))
+                UPPER(REPLACE(h."clanTag",'#','')) AS clan_norm,
+                h."warId"
+              FROM "ClanWarHistory" h
+              WHERE h."warId" IS NOT NULL
+              ORDER BY UPPER(REPLACE(h."clanTag",'#','')), h."warStartTime" DESC, h."warId" DESC
+            ),
+            candidates AS (
+              SELECT cw."id", ${targetExpr} AS "targetWarId"
+              FROM "CurrentWar" cw
+              LEFT JOIN "ClanWarHistory" h_exact
+                ON UPPER(REPLACE(cw."clanTag",'#','')) = UPPER(REPLACE(h_exact."clanTag",'#',''))
+               AND cw."lastWarStartTime" = h_exact."warStartTime"
+               AND h_exact."warId" IS NOT NULL
+              LEFT JOIN history_latest
+                ON UPPER(REPLACE(cw."clanTag",'#','')) = history_latest.clan_norm
+              WHERE 1=1
+                ${tag ? Prisma.sql`AND UPPER(REPLACE(cw."clanTag",'#','')) = ${tag}` : Prisma.empty}
+                ${warStartTime ? Prisma.sql`AND cw."lastWarStartTime" = ${warStartTime}` : Prisma.empty}
+                ${syncNumber !== null ? Prisma.sql`AND cw."currentSyncNum" = ${syncNumber}` : Prisma.empty}
+                ${opponentTag ? Prisma.sql`AND UPPER(REPLACE(cw."lastOpponentTag",'#','')) = ${opponentTag}` : Prisma.empty}
+                ${filterWarId !== null ? Prisma.sql`AND cw."warId" = ${filterWarId}` : Prisma.empty}
+                ${overwrite ? Prisma.empty : Prisma.sql`AND cw."warId" IS NULL`}
+                AND ${targetExpr} IS NOT NULL
+                AND cw."warId" IS DISTINCT FROM ${targetExpr}
+            )
+            UPDATE "CurrentWar" cw
+            SET "warId" = c."targetWarId"
+            FROM candidates c
+            WHERE cw."id" = c."id"
+          `
+        )
+      );
+      lines.push(`Updated CurrentWar rows: **${updated}**`);
+      lines.push("Note: This command is DB-only (no external API scrape calls).");
+      await interaction.editReply(truncateDiscordContent(lines.join("\n")));
+      return;
+    }
+
+    if (table === "clanwarhistory") {
+      if (playerTag || attackNumber !== null) {
+        await interaction.editReply(
+          "`player_tag` and `attack_number` are only valid when `table=warattacks`."
+        );
+        return;
+      }
+      if (setWarId === null) {
+        await interaction.editReply(
+          "For `table=clanwarhistory`, provide `set_war_id` (explicit target warId)."
+        );
+        return;
+      }
+      const rows = await prisma.$queryRaw<
+        Array<{ clanTag: string; warStartTime: Date; syncNumber: number | null; opponentTag: string | null; warId: number }>
+      >(
+        Prisma.sql`
+          SELECT h."clanTag", h."warStartTime", h."syncNumber", h."opponentTag", h."warId"
+          FROM "ClanWarHistory" h
+          WHERE 1=1
+            ${tag ? Prisma.sql`AND UPPER(REPLACE(h."clanTag",'#','')) = ${tag}` : Prisma.empty}
+            ${warStartTime ? Prisma.sql`AND h."warStartTime" = ${warStartTime}` : Prisma.empty}
+            ${syncNumber !== null ? Prisma.sql`AND h."syncNumber" = ${syncNumber}` : Prisma.empty}
+            ${opponentTag ? Prisma.sql`AND UPPER(REPLACE(h."opponentTag",'#','')) = ${opponentTag}` : Prisma.empty}
+            ${filterWarId !== null ? Prisma.sql`AND h."warId" = ${filterWarId}` : Prisma.empty}
+            ${overwrite ? Prisma.empty : Prisma.sql`AND h."warId" IS DISTINCT FROM ${setWarId}`}
+          ORDER BY h."warStartTime" DESC
+        `
+      );
+      const lines = [
+        "Table: ClanWarHistory",
+        `Matched rows: ${rows.length}`,
+        ...rows.slice(0, 20).map((row) => {
+          const warStart = row.warStartTime ? row.warStartTime.toISOString() : "unknown";
+          const opp = row.opponentTag ? `#${normalizeTag(row.opponentTag)}` : "unknown";
+          return `ClanWarHistory row: warStartTime=${warStart}, syncNumber=${row.syncNumber ?? "unknown"}, clanTag=#${normalizeTag(
+            row.clanTag
+          )}, opponentTag=${opp}, existingWarId=${row.warId} -> targetWarId=${setWarId}`;
+        }),
+        rows.length > 20 ? `...and ${rows.length - 20} more row(s).` : "",
+      ].filter(Boolean);
+      if (!confirm) {
+        lines.push("No writes executed. Re-run with `confirm:true` to apply.");
+        await interaction.editReply(truncateDiscordContent(lines.join("\n")));
+        return;
+      }
+      if (rows.length !== 1) {
+        await interaction.editReply(
+          "For ClanWarHistory updates, filters must resolve to exactly 1 row."
+        );
+        return;
+      }
+      const updated = Number(
+        await prisma.$executeRaw(
+          Prisma.sql`
+            UPDATE "ClanWarHistory" h
+            SET "warId" = ${setWarId}
+            WHERE 1=1
+              ${tag ? Prisma.sql`AND UPPER(REPLACE(h."clanTag",'#','')) = ${tag}` : Prisma.empty}
+              ${warStartTime ? Prisma.sql`AND h."warStartTime" = ${warStartTime}` : Prisma.empty}
+              ${syncNumber !== null ? Prisma.sql`AND h."syncNumber" = ${syncNumber}` : Prisma.empty}
+              ${opponentTag ? Prisma.sql`AND UPPER(REPLACE(h."opponentTag",'#','')) = ${opponentTag}` : Prisma.empty}
+              ${filterWarId !== null ? Prisma.sql`AND h."warId" = ${filterWarId}` : Prisma.empty}
+          `
+        )
+      );
+      lines.push(`Updated ClanWarHistory rows: **${updated}**`);
+      lines.push("Note: This command is DB-only (no external API scrape calls).");
+      await interaction.editReply(truncateDiscordContent(lines.join("\n")));
+      return;
+    }
+
+    if (table === "warattacks") {
+      if (syncNumber !== null) {
+        await interaction.editReply("`sync_number` is not valid for `table=warattacks`.");
+        return;
+      }
+      const targetExpr =
+        setWarId !== null ? Prisma.sql`${setWarId}` : Prisma.sql`COALESCE(h."warId", cw."warId")`;
+      const grouped = await prisma.$queryRaw<
+        Array<{ clanTag: string; warStartTime: Date; opponentTag: string | null; targetWarId: number; rows: bigint | number }>
+      >(
+        Prisma.sql`
+          WITH candidate AS (
+            SELECT
+              wa."id",
+              wa."clanTag",
+              wa."warStartTime",
+              wa."opponentClanTag" AS "opponentTag",
+              wa."playerTag",
+              wa."attackNumber",
+              ${targetExpr} AS "targetWarId",
+              ROW_NUMBER() OVER (
+                PARTITION BY ${targetExpr}, wa."playerTag", wa."attackNumber"
+                ORDER BY wa."id" ASC
+              ) AS rn
+            FROM "WarAttacks" wa
+            LEFT JOIN "ClanWarHistory" h
+              ON UPPER(REPLACE(wa."clanTag",'#','')) = UPPER(REPLACE(h."clanTag",'#',''))
+             AND wa."warStartTime" = h."warStartTime"
+             AND h."warId" IS NOT NULL
+            LEFT JOIN "CurrentWar" cw
+              ON UPPER(REPLACE(wa."clanTag",'#','')) = UPPER(REPLACE(cw."clanTag",'#',''))
+             AND wa."warStartTime" = cw."lastWarStartTime"
+             AND cw."warId" IS NOT NULL
+            WHERE 1=1
+              ${tag ? Prisma.sql`AND UPPER(REPLACE(wa."clanTag",'#','')) = ${tag}` : Prisma.empty}
+              ${warStartTime ? Prisma.sql`AND wa."warStartTime" = ${warStartTime}` : Prisma.empty}
+              ${opponentTag ? Prisma.sql`AND UPPER(REPLACE(COALESCE(wa."opponentClanTag",''),'#','')) = ${opponentTag}` : Prisma.empty}
+              ${playerTag ? Prisma.sql`AND UPPER(REPLACE(wa."playerTag",'#','')) = ${playerTag}` : Prisma.empty}
+              ${attackNumber !== null ? Prisma.sql`AND wa."attackNumber" = ${attackNumber}` : Prisma.empty}
+              ${filterWarId !== null ? Prisma.sql`AND wa."warId" = ${filterWarId}` : Prisma.empty}
+              ${overwrite ? Prisma.empty : Prisma.sql`AND wa."warId" IS NULL`}
+              AND ${targetExpr} IS NOT NULL
+              AND wa."warId" IS DISTINCT FROM ${targetExpr}
+          ),
+          safe AS (
+            SELECT c.*
+            FROM candidate c
+            WHERE c.rn = 1
+              AND NOT EXISTS (
+                SELECT 1
+                FROM "WarAttacks" existing
+                WHERE existing."warId" = c."targetWarId"
+                  AND existing."playerTag" = c."playerTag"
+                  AND existing."attackNumber" = c."attackNumber"
+              )
+          )
+          SELECT
+            s."clanTag",
+            s."warStartTime",
+            s."opponentTag",
+            s."targetWarId",
+            COUNT(*)::bigint AS rows
+          FROM safe s
+          GROUP BY s."clanTag", s."warStartTime", s."opponentTag", s."targetWarId"
+          ORDER BY s."warStartTime" DESC, s."clanTag" ASC
+        `
+      );
+      const totalRows = grouped.reduce((sum, row) => sum + Number(row.rows ?? 0), 0);
+      const lines = [
+        "Table: WarAttacks",
+        `Grouped candidates: ${grouped.length}`,
+        `Total row updates: ${totalRows}`,
+        ...grouped.slice(0, 20).map((row) => {
+          const warStart = row.warStartTime ? row.warStartTime.toISOString() : "unknown";
+          const opp = row.opponentTag ? `#${normalizeTag(row.opponentTag)}` : "unknown";
+          return `WarAttacks rows: ${Number(row.rows)} where warStartTime=${warStart}, clanTag=#${normalizeTag(
+            row.clanTag
+          )}, opponentTag=${opp} -> warId=${row.targetWarId}`;
+        }),
+        grouped.length > 20 ? `...and ${grouped.length - 20} more group(s).` : "",
+      ].filter(Boolean);
+      if (!confirm) {
+        lines.push("No writes executed. Re-run with `confirm:true` to apply.");
+        await interaction.editReply(truncateDiscordContent(lines.join("\n")));
+        return;
+      }
+      const updated = Number(
+        await prisma.$executeRaw(
+          Prisma.sql`
+            WITH candidate AS (
+              SELECT
+                wa."id",
+                wa."playerTag",
+                wa."attackNumber",
+                ${targetExpr} AS "targetWarId",
+                ROW_NUMBER() OVER (
+                  PARTITION BY ${targetExpr}, wa."playerTag", wa."attackNumber"
+                  ORDER BY wa."id" ASC
+                ) AS rn
+              FROM "WarAttacks" wa
+              LEFT JOIN "ClanWarHistory" h
+                ON UPPER(REPLACE(wa."clanTag",'#','')) = UPPER(REPLACE(h."clanTag",'#',''))
+               AND wa."warStartTime" = h."warStartTime"
+               AND h."warId" IS NOT NULL
+              LEFT JOIN "CurrentWar" cw
+                ON UPPER(REPLACE(wa."clanTag",'#','')) = UPPER(REPLACE(cw."clanTag",'#',''))
+               AND wa."warStartTime" = cw."lastWarStartTime"
+               AND cw."warId" IS NOT NULL
+              WHERE 1=1
+                ${tag ? Prisma.sql`AND UPPER(REPLACE(wa."clanTag",'#','')) = ${tag}` : Prisma.empty}
+                ${warStartTime ? Prisma.sql`AND wa."warStartTime" = ${warStartTime}` : Prisma.empty}
+                ${opponentTag ? Prisma.sql`AND UPPER(REPLACE(COALESCE(wa."opponentClanTag",''),'#','')) = ${opponentTag}` : Prisma.empty}
+                ${playerTag ? Prisma.sql`AND UPPER(REPLACE(wa."playerTag",'#','')) = ${playerTag}` : Prisma.empty}
+                ${attackNumber !== null ? Prisma.sql`AND wa."attackNumber" = ${attackNumber}` : Prisma.empty}
+                ${filterWarId !== null ? Prisma.sql`AND wa."warId" = ${filterWarId}` : Prisma.empty}
+                ${overwrite ? Prisma.empty : Prisma.sql`AND wa."warId" IS NULL`}
+                AND ${targetExpr} IS NOT NULL
+                AND wa."warId" IS DISTINCT FROM ${targetExpr}
+            ),
+            safe AS (
+              SELECT c."id", c."targetWarId", c."playerTag", c."attackNumber"
+              FROM candidate c
+              WHERE c.rn = 1
+                AND NOT EXISTS (
+                  SELECT 1
+                  FROM "WarAttacks" existing
+                  WHERE existing."warId" = c."targetWarId"
+                    AND existing."playerTag" = c."playerTag"
+                    AND existing."attackNumber" = c."attackNumber"
+                )
+            )
+            UPDATE "WarAttacks" wa
+            SET "warId" = s."targetWarId"
+            FROM safe s
+            WHERE wa."id" = s."id"
+          `
+        )
+      );
+      lines.push(`Updated WarAttacks rows: **${updated}**`);
+      lines.push("Note: This command is DB-only (no external API scrape calls).");
+      await interaction.editReply(truncateDiscordContent(lines.join("\n")));
+      return;
+    }
+
+    await interaction.editReply(`Unsupported table: ${table}`);
+    return;
+  }
+
   const visibility = interaction.options.getString("visibility", false) ?? "private";
   const isPublic = visibility === "public";
   await interaction.deferReply({ ephemeral: !isPublic });
 
   const tagRaw = interaction.options.getString("tag", false);
   const tag = tagRaw ? normalizeTag(tagRaw) : null;
+  const confirm = interaction.options.getBoolean("confirm", false) ?? false;
   const tagFilterHistory = tag
     ? Prisma.sql`AND UPPER(REPLACE("clanTag",'#','')) = ${tag}`
     : Prisma.empty;
@@ -4878,6 +5249,103 @@ export async function runForceSyncWarIdCommand(
   const tagFilterCurrent = tag
     ? Prisma.sql`AND UPPER(REPLACE("clanTag",'#','')) = ${tag}`
     : Prisma.empty;
+
+  if (!confirm) {
+    const previewRows = await prisma.$queryRaw<
+      Array<{
+        clanTag: string;
+        warStartTime: Date | null;
+        syncNumber: number | null;
+        opponentTag: string | null;
+        proposedWarId: number | null;
+      }>
+    >(
+      Prisma.sql`
+        WITH history_latest AS (
+          SELECT DISTINCT ON (UPPER(REPLACE(h."clanTag",'#','')))
+            UPPER(REPLACE(h."clanTag",'#','')) AS clan_norm,
+            h."warId"
+          FROM "ClanWarHistory" h
+          WHERE h."warId" IS NOT NULL
+            ${tagFilterHistory}
+          ORDER BY UPPER(REPLACE(h."clanTag",'#','')), h."warStartTime" DESC, h."warId" DESC
+        )
+        SELECT
+          cw."clanTag",
+          cw."lastWarStartTime" AS "warStartTime",
+          cw."currentSyncNum" AS "syncNumber",
+          cw."lastOpponentTag" AS "opponentTag",
+          COALESCE(h_exact."warId", history_latest."warId") AS "proposedWarId"
+        FROM "CurrentWar" cw
+        LEFT JOIN "ClanWarHistory" h_exact
+          ON UPPER(REPLACE(cw."clanTag",'#','')) = UPPER(REPLACE(h_exact."clanTag",'#',''))
+         AND cw."lastWarStartTime" = h_exact."warStartTime"
+         AND h_exact."warId" IS NOT NULL
+        LEFT JOIN history_latest
+          ON UPPER(REPLACE(cw."clanTag",'#','')) = history_latest.clan_norm
+        WHERE cw."warId" IS NULL
+          ${tagFilterCurrentAlias}
+        ORDER BY cw."clanTag" ASC
+      `
+    );
+
+    const lines: string[] = [
+      `Preview mode only. No database writes were made.`,
+      `Re-run with \`/force sync warid${tag ? ` tag:${tag}` : ""} confirm:true\` to apply.`,
+      "",
+    ];
+
+    const deterministicRows = previewRows.filter((row) => row.proposedWarId !== null);
+    if (deterministicRows.length === 0) {
+      lines.push("No deterministic CurrentWar backfill rows found.");
+    }
+
+    for (const row of deterministicRows) {
+      const attacksCountRows = await prisma.$queryRaw<Array<{ count: bigint | number }>>(
+        Prisma.sql`
+          SELECT COUNT(*)::bigint AS count
+          FROM "WarAttacks" wa
+          WHERE wa."warId" IS NULL
+            AND UPPER(REPLACE(wa."clanTag",'#','')) = UPPER(REPLACE(${row.clanTag},'#',''))
+            AND wa."warStartTime" = ${row.warStartTime}
+        `
+      );
+      const attacksCount = Number(attacksCountRows[0]?.count ?? 0);
+      const warStartDisplay =
+        row.warStartTime instanceof Date ? row.warStartTime.toISOString() : "unknown";
+      const syncDisplay =
+        row.syncNumber !== null && Number.isFinite(row.syncNumber)
+          ? `#${Math.trunc(row.syncNumber)}`
+          : "unknown";
+      const clanDisplay = `#${normalizeTag(row.clanTag)}`;
+      const oppDisplay = row.opponentTag ? `#${normalizeTag(row.opponentTag)}` : "unknown";
+      const warIdDisplay = Math.trunc(Number(row.proposedWarId));
+      lines.push(
+        `CurrentWar row candidate: warStartTime=${warStartDisplay}, syncNumber=${syncDisplay}, clanTag=${clanDisplay} -> warId=${warIdDisplay}. Confirm?`
+      );
+      lines.push(
+        `WarAttacks row candidates: ${attacksCount} row(s) where warStartTime=${warStartDisplay}, clanTag=${clanDisplay}, opponentTag=${oppDisplay} -> warId=${warIdDisplay}. Confirm?`
+      );
+      lines.push("");
+    }
+
+    const allocationCandidatesRows = await prisma.$queryRaw<Array<{ count: bigint | number }>>(
+      Prisma.sql`
+        SELECT COUNT(*)::bigint AS count
+        FROM "CurrentWar"
+        WHERE "warId" IS NULL
+          AND "lastState" IN ('preparation','inWar')
+          ${tagFilterCurrent}
+      `
+    );
+    const allocationCandidates = Number(allocationCandidatesRows[0]?.count ?? 0);
+    lines.push(
+      `Active-war allocation candidates (new sequence warId at execution time): ${allocationCandidates}`
+    );
+
+    await interaction.editReply(truncateDiscordContent(lines.join("\n")));
+    return;
+  }
 
   const summary = await prisma.$transaction(async (tx) => {
     let historyAssigned = 0;
