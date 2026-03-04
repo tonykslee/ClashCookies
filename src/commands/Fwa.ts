@@ -5088,6 +5088,7 @@ export const Fwa: Command = {
                 },
               },
               select: {
+                lastState: true,
                 matchType: true,
                 inferredMatchType: true,
                 outcome: true,
@@ -5100,7 +5101,7 @@ export const Fwa: Command = {
             })
           : null;
         opponentTag = normalizeTag(String(war?.opponent?.tag ?? ""));
-        if (warState === "notInWar") {
+        if (warState === "notInWar" || !opponentTag || subscription?.lastState === "notInWar") {
           const trackedScrape = parseTrackedClanPointsScrape(trackedClanMeta?.pointsScrape ?? null);
           const clanProfile = await cocService.getClan(`#${tag}`).catch(() => null);
           const memberCount = Array.isArray(clanProfile?.members)
@@ -5188,10 +5189,6 @@ export const Fwa: Command = {
             [singleView.embed],
             buildFwaMatchCopyComponents(stored, interaction.user.id, key, "embed")
           );
-          return;
-        }
-        if (!opponentTag) {
-          await editReplySafe(`:face_palm: failed to start war`);
           return;
         }
 
