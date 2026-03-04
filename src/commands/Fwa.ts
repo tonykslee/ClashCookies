@@ -25,6 +25,7 @@ import {
   CommandPermissionService,
   FWA_LEADER_ROLE_SETTING_KEY,
 } from "../services/CommandPermissionService";
+import { GoogleSheetsService } from "../services/GoogleSheetsService";
 import { SettingsService } from "../services/SettingsService";
 import { WarEventHistoryService } from "../services/war-events/history";
 import {
@@ -57,6 +58,7 @@ const FWA_MATCH_TYPE_ACTION_PREFIX = "fwa-match-type-action";
 const FWA_MATCH_TYPE_EDIT_PREFIX = "fwa-match-type-edit";
 const FWA_OUTCOME_ACTION_PREFIX = "fwa-outcome-action";
 const FWA_MATCH_SYNC_ACTION_PREFIX = "fwa-match-sync-action";
+const FWA_MATCH_SKIP_SYNC_ACTION_PREFIX = "fwa-match-skip-sync-action";
 const FWA_MATCH_SELECT_PREFIX = "fwa-match-select";
 const FWA_MATCH_ALLIANCE_PREFIX = "fwa-match-alliance";
 const FWA_MAIL_CONFIRM_PREFIX = "fwa-mail-confirm";
@@ -199,7 +201,7 @@ type MatchView = {
   embed: EmbedBuilder;
   copyText: string;
   matchTypeAction?: { tag: string; currentType: "FWA" | "BL" | "MM" } | null;
-  matchTypeCurrent?: "FWA" | "BL" | "MM" | null;
+  matchTypeCurrent?: "FWA" | "BL" | "MM" | "SKIP" | null;
   inferredMatchType?: boolean;
   outcomeAction?: { tag: string; currentOutcome: "WIN" | "LOSE" } | null;
   syncAction?: {
@@ -214,6 +216,7 @@ type MatchView = {
   clanTag?: string;
   mailStatusEmoji?: string;
   mailAction?: { tag: string; enabled: boolean; reason: string | null };
+  skipSyncAction?: { tag: string } | null;
 };
 
 type FwaMatchCopyPayload = {
@@ -243,7 +246,7 @@ type FwaMailPostedPayload = {
   channelId: string;
   messageId: string;
   sentAtMs: number;
-  matchType: "FWA" | "BL" | "MM" | "UNKNOWN";
+  matchType: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN";
   expectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null;
 };
 
@@ -259,7 +262,7 @@ type MatchMailConfig = {
   lastPostedChannelId: string | null;
   lastPostedAtUnix: number | null;
   lastWarStartMs: number | null;
-  lastMatchType: "FWA" | "BL" | "MM" | "UNKNOWN" | null;
+  lastMatchType: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN" | null;
   lastExpectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null;
   lastDataChangedAtUnix: number | null;
   messages: MatchMailMessageRef[];
@@ -443,6 +446,30 @@ function parseMatchSyncActionCustomId(customId: string): MatchSyncActionParams |
 
 export function isFwaMatchSyncActionButtonCustomId(customId: string): boolean {
   return customId.startsWith(`${FWA_MATCH_SYNC_ACTION_PREFIX}:`);
+}
+
+type MatchSkipSyncActionParams = {
+  userId: string;
+  key: string;
+  tag: string;
+};
+
+function buildMatchSkipSyncActionCustomId(params: MatchSkipSyncActionParams): string {
+  return `${FWA_MATCH_SKIP_SYNC_ACTION_PREFIX}:${params.userId}:${params.key}:${normalizeTag(params.tag)}`;
+}
+
+function parseMatchSkipSyncActionCustomId(customId: string): MatchSkipSyncActionParams | null {
+  const parts = customId.split(":");
+  if (parts.length !== 4 || parts[0] !== FWA_MATCH_SKIP_SYNC_ACTION_PREFIX) return null;
+  const userId = parts[1]?.trim() ?? "";
+  const key = parts[2]?.trim() ?? "";
+  const tag = normalizeTag(parts[3] ?? "");
+  if (!userId || !key || !tag) return null;
+  return { userId, key, tag };
+}
+
+export function isFwaMatchSkipSyncActionButtonCustomId(customId: string): boolean {
+  return customId.startsWith(`${FWA_MATCH_SKIP_SYNC_ACTION_PREFIX}:`);
 }
 
 export function isFwaMatchSelectCustomId(customId: string): boolean {
@@ -831,7 +858,7 @@ function buildMatchStatusHeader(params: {
   clanTag: string;
   opponentName: string;
   opponentTag: string;
-  matchType: "FWA" | "BL" | "MM" | "UNKNOWN";
+  matchType: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN";
   outcome: "WIN" | "LOSE" | "UNKNOWN" | null;
 }): string {
   let mailbox = MAILBOX_NOT_SENT_EMOJI;
@@ -840,6 +867,9 @@ function buildMatchStatusHeader(params: {
     mailbox = MAILBOX_SENT_EMOJI;
     status = ":pirate_flag:";
   } else if (params.matchType === "MM") {
+    mailbox = MAILBOX_NOT_SENT_EMOJI;
+    status = ":white_circle:";
+  } else if (params.matchType === "SKIP") {
     mailbox = MAILBOX_NOT_SENT_EMOJI;
     status = ":white_circle:";
   } else if (params.outcome === "LOSE") {
@@ -1283,9 +1313,9 @@ function formatOutcomeForRevision(outcome: "WIN" | "LOSE" | "UNKNOWN" | null): s
 }
 
 function buildWarMailRevisionLines(params: {
-  previousMatchType: "FWA" | "BL" | "MM" | "UNKNOWN";
+  previousMatchType: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN";
   previousExpectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null;
-  nextMatchType: "FWA" | "BL" | "MM" | "UNKNOWN";
+  nextMatchType: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN";
   nextExpectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null;
 }): string[] {
   const lines: string[] = [];
@@ -1426,6 +1456,7 @@ function buildFwaMatchCopyComponents(
   const outcomeAction = view.outcomeAction ?? null;
   const syncAction = view.syncAction ?? null;
   const mailAction = view.mailAction ?? null;
+  const skipSyncAction = view.skipSyncAction ?? null;
   const toggleMode = showMode === "embed" ? "copy" : "embed";
   const toggleLabel = showMode === "embed" ? "Copy/Paste View" : "Embed View";
   const baseRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
@@ -1536,6 +1567,22 @@ function buildFwaMatchCopyComponents(
           )
           .setLabel("Sync Data")
           .setStyle(ButtonStyle.Danger)
+      )
+    );
+  }
+  if (skipSyncAction) {
+    rows.push(
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setCustomId(
+            buildMatchSkipSyncActionCustomId({
+              userId,
+              key,
+              tag: skipSyncAction.tag,
+            })
+          )
+          .setLabel("SKIP SYNC")
+          .setStyle(ButtonStyle.Secondary)
       )
     );
   }
@@ -1831,7 +1878,12 @@ export async function handleFwaMatchTypeEditButton(interaction: ButtonInteractio
   }
   payload.singleViews[tag] = {
     ...view,
-    matchTypeAction: { tag, currentType: view.matchTypeCurrent },
+    matchTypeAction:
+      view.matchTypeCurrent === "FWA" ||
+      view.matchTypeCurrent === "BL" ||
+      view.matchTypeCurrent === "MM"
+        ? { tag, currentType: view.matchTypeCurrent }
+        : null,
   };
   fwaMatchCopyPayloads.set(parsed.key, payload);
   await interaction.update({
@@ -2075,6 +2127,129 @@ export async function handleFwaMatchSyncActionButton(
     await interaction.reply({
       ephemeral: true,
       content: "Data synced, but clan view is unavailable now.",
+    });
+    return;
+  }
+  await interaction.update({
+    content: showMode === "copy" ? limitDiscordContent(nextView.copyText) : undefined,
+    embeds: showMode === "embed" ? [nextView.embed] : [],
+    components: buildFwaMatchCopyComponents(refreshed, refreshed.userId, parsed.key, showMode),
+  });
+}
+
+export async function handleFwaMatchSkipSyncActionButton(
+  interaction: ButtonInteraction
+): Promise<void> {
+  const parsed = parseMatchSkipSyncActionCustomId(interaction.customId);
+  if (!parsed) return;
+
+  if (interaction.user.id !== parsed.userId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Only the command requester can use this button.",
+    });
+    return;
+  }
+  if (!interaction.guildId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "This action can only be used in a server.",
+    });
+    return;
+  }
+  const payload = fwaMatchCopyPayloads.get(parsed.key);
+  if (!payload) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "This match view expired. Please run /fwa match again.",
+    });
+    return;
+  }
+  const view = payload.singleViews[parsed.tag];
+  if (!view?.skipSyncAction) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Skip sync is unavailable for this clan view.",
+    });
+    return;
+  }
+
+  const tracked = await prisma.trackedClan.findFirst({
+    where: { tag: { equals: `#${parsed.tag}`, mode: "insensitive" } },
+    select: { pointsScrape: true, name: true },
+  });
+  const trackedScrape = parseTrackedClanPointsScrape(tracked?.pointsScrape ?? null);
+  let resolvedSyncNum: number | null = null;
+  if (
+    trackedScrape?.pointsSiteUpToDate &&
+    trackedScrape.syncNumber !== null &&
+    Number.isFinite(trackedScrape.syncNumber)
+  ) {
+    resolvedSyncNum = Math.trunc(trackedScrape.syncNumber);
+  } else {
+    const lastHistory = await prisma.clanWarHistory.findFirst({
+      where: {
+        clanTag: parsed.tag,
+        syncNumber: { not: null },
+        matchType: { in: ["MM", "BL", "SKIP"] },
+      },
+      orderBy: { warStartTime: "desc" },
+      select: { syncNumber: true },
+    });
+    const previousSync = Number(lastHistory?.syncNumber ?? NaN);
+    if (Number.isFinite(previousSync)) {
+      resolvedSyncNum = Math.max(0, Math.trunc(previousSync) + 1);
+    }
+  }
+
+  await prisma.currentWar.upsert({
+    where: {
+      guildId_clanTag: {
+        guildId: interaction.guildId,
+        clanTag: `#${parsed.tag}`,
+      },
+    },
+    create: {
+      guildId: interaction.guildId,
+      clanTag: `#${parsed.tag}`,
+      channelId: interaction.channelId,
+      notify: false,
+      matchType: "SKIP",
+      inferredMatchType: false,
+      currentSyncNum: resolvedSyncNum,
+      lastState: "notInWar",
+      clanName: tracked?.name ?? view.clanName ?? `#${parsed.tag}`,
+    },
+    update: {
+      channelId: interaction.channelId,
+      matchType: "SKIP",
+      inferredMatchType: false,
+      currentSyncNum: resolvedSyncNum ?? undefined,
+      lastState: "notInWar",
+      updatedAt: new Date(),
+    },
+  });
+
+  await markMatchLiveDataChanged({
+    guildId: interaction.guildId,
+    tag: parsed.tag,
+    channelId: interaction.channelId,
+  });
+  const refreshed = await rebuildTrackedPayloadForTag(payload, interaction.guildId, parsed.tag);
+  if (!refreshed) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Skip sync applied, but this view could not be refreshed.",
+    });
+    return;
+  }
+  fwaMatchCopyPayloads.set(parsed.key, refreshed);
+  const showMode = interaction.message.embeds.length > 0 ? "embed" : "copy";
+  const nextView = refreshed.singleViews[parsed.tag];
+  if (!nextView) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Skip sync applied, but clan view is unavailable now.",
     });
     return;
   }
@@ -2602,8 +2777,8 @@ async function resolveMatchTypeWithFallback(params: {
   clanTag: string;
   opponentTag: string;
   warState: WarStateForSync;
-  existingMatchType: "FWA" | "BL" | "MM" | null | undefined;
-}): Promise<"FWA" | "BL" | "MM" | null> {
+  existingMatchType: "FWA" | "BL" | "MM" | "SKIP" | null | undefined;
+}): Promise<"FWA" | "BL" | "MM" | "SKIP" | null> {
   return params.existingMatchType ?? null;
 }
 
@@ -2716,6 +2891,65 @@ type TrackedClanPointsScrape = {
   matchup: string;
   pointsSiteUpToDate: boolean;
 };
+
+type ActualSheetClanSnapshot = {
+  totalWeight: string | null;
+  weightCompo: string | null;
+  weightDeltas: string | null;
+  compoAdvice: string | null;
+};
+
+const ACTUAL_FIXED_LAYOUT_RANGE = "AllianceDashboard!A6:BD500";
+const ACTUAL_COL_CLAN_TAG = 1; // B
+const ACTUAL_COL_TOTAL_WEIGHT = 3; // D
+const ACTUAL_COL_MISSING_WEIGHT = 20; // U
+const ACTUAL_COL_BUCKET_START = 21; // V
+const ACTUAL_COL_BUCKET_END = 26; // AA
+const ACTUAL_COL_ADJUSTMENT = 53; // BB
+const ACTUAL_COL_MODE = 55; // BD
+
+function normalizeTagBare(input: string): string {
+  return normalizeTag(input).replace(/^#/, "");
+}
+
+async function readActualSheetSnapshotByTag(
+  settings: SettingsService
+): Promise<Map<string, ActualSheetClanSnapshot>> {
+  const sheets = new GoogleSheetsService(settings);
+  const rows = await sheets.readLinkedValues(ACTUAL_FIXED_LAYOUT_RANGE, "actual");
+  const out = new Map<string, ActualSheetClanSnapshot>();
+  for (const row of rows) {
+    const mode = String(row[ACTUAL_COL_MODE] ?? "").trim().toUpperCase();
+    if (mode !== "ACTUAL") continue;
+    const clanTag = normalizeTagBare(String(row[ACTUAL_COL_CLAN_TAG] ?? ""));
+    if (!clanTag) continue;
+    const totalWeightRaw = String(row[ACTUAL_COL_TOTAL_WEIGHT] ?? "").trim();
+    const missingRaw = String(row[ACTUAL_COL_MISSING_WEIGHT] ?? "").trim();
+    const bucketValues = [
+      String(row[ACTUAL_COL_BUCKET_START] ?? "").trim(),
+      String(row[ACTUAL_COL_BUCKET_START + 1] ?? "").trim(),
+      String(row[ACTUAL_COL_BUCKET_START + 2] ?? "").trim(),
+      String(row[ACTUAL_COL_BUCKET_START + 3] ?? "").trim(),
+      String(row[ACTUAL_COL_BUCKET_START + 4] ?? "").trim(),
+      String(row[ACTUAL_COL_BUCKET_END] ?? "").trim(),
+    ];
+    const compoRaw = bucketValues
+      .map((value, index) => {
+        const label = ["TH18", "TH17", "TH16", "TH15", "TH14", "<=TH13"][index];
+        return `${label}:${value || "0"}`;
+      })
+      .join(" | ");
+    const weightDeltasRaw = `Missing:${missingRaw || "0"} | ${compoRaw}`;
+    const adviceRaw = String(row[ACTUAL_COL_ADJUSTMENT] ?? "").trim();
+    out.set(clanTag, {
+      totalWeight: totalWeightRaw || null,
+      weightCompo: compoRaw || null,
+      weightDeltas: weightDeltasRaw || null,
+      compoAdvice: adviceRaw || null,
+    });
+  }
+  return out;
+}
 
 function extractMatchupHeader(topText: string): MatchupHeader {
   const regex =
@@ -3243,6 +3477,7 @@ async function buildTrackedMatchOverview(
   warLookupCache?: WarLookupCache
 ): Promise<{ embed: EmbedBuilder; copyText: string; singleViews: Record<string, MatchView> }> {
   const settings = new SettingsService();
+  const actualByTag = await readActualSheetSnapshotByTag(settings).catch(() => new Map<string, ActualSheetClanSnapshot>());
   const tracked = await prisma.trackedClan.findMany({
     orderBy: { createdAt: "asc" },
     select: { tag: true, name: true, pointsScrape: true },
@@ -3334,34 +3569,87 @@ async function buildTrackedMatchOverview(
     const clanWarStateLine = formatWarStateLabel(warState);
     const clanTimeRemainingLine = getWarStateRemaining(war, warState);
     const clanWarStartMs = warStartMsByClanTag.get(clanTag) ?? null;
+    const sub = subByTag.get(clanTag);
     const mailStatusEmoji = getMailStatusEmojiForClan({
       guildId,
       tag: clanTag,
       warStartMs: clanWarStartMs,
-      mailConfig: parseMatchMailConfig(subByTag.get(clanTag)?.mailConfig ?? null),
+      mailConfig: parseMatchMailConfig(sub?.mailConfig ?? null),
     });
     if (warState === "notInWar") {
+      const trackedScrape = parseTrackedClanPointsScrape(clan.pointsScrape);
+      const clanProfile = await cocService.getClan(`#${clanTag}`).catch(() => null);
+      const memberCount = Number.isFinite(Number(clanProfile?.members))
+        ? Number(clanProfile?.members)
+        : null;
+      const livePoints = await getClanPointsCached(
+        settings,
+        cocService,
+        clanTag,
+        sourceSync,
+        warLookupCache
+      ).catch(() => null);
+      const clanPoints =
+        trackedScrape?.pointBalance !== null && trackedScrape?.pointBalance !== undefined
+          ? trackedScrape.pointBalance
+          : livePoints?.balance ?? sub?.fwaPoints ?? null;
+      const outOfSync =
+        !trackedScrape?.pointsSiteUpToDate ||
+        (sub?.fwaPoints !== null &&
+          sub?.fwaPoints !== undefined &&
+          trackedScrape?.pointBalance !== null &&
+          trackedScrape?.pointBalance !== undefined &&
+          Number(sub.fwaPoints) !== Number(trackedScrape.pointBalance));
+      const actual = actualByTag.get(clanTag) ?? null;
+      const preWarHeader = `${mailStatusEmoji} | ${clanName} (#${clanTag})`;
+      const preWarLines = [
+        outOfSync ? ":warning: out of sync with points site" : ":white_check_mark: data in sync with points site",
+        `Clan points: **${clanPoints !== null && clanPoints !== undefined ? clanPoints : "unknown"}**`,
+        `Members: **${memberCount ?? "?"}/50**`,
+        `Total weight (ACTUAL): **${actual?.totalWeight ?? "unknown"}**`,
+        `Weight compo (ACTUAL): ${actual?.weightCompo ?? "unknown"}`,
+        `Weight deltas (ACTUAL): ${actual?.weightDeltas ?? "unknown"}`,
+        `Compo advice (ACTUAL): ${actual?.compoAdvice ?? "none"}`,
+        `War State: **${clanWarStateLine}**`,
+        `Time Remaining: **${clanTimeRemainingLine}**`,
+        `Sync: **${clanSyncLine}**`,
+      ];
       embed.addFields({
-        name: `${mailStatusEmoji} | ${clanName} (#${clanTag})`,
-        value: [
-          ":face_palm: failed to start war",
-          `War State: **${clanWarStateLine}**`,
-          `Time Remaining: **${clanTimeRemainingLine}**`,
-        ].join("\n"),
+        name: preWarHeader,
+        value: preWarLines.join("\n"),
         inline: false,
       });
       copyLines.push(
-        `## ${mailStatusEmoji} | ${clanName} (#${clanTag})`,
-        ":face_palm: failed to start war",
+        `## ${preWarHeader}`,
+        outOfSync ? "WARNING: out of sync with points site" : "Data in sync with points site",
+        `Clan points: ${clanPoints !== null && clanPoints !== undefined ? clanPoints : "unknown"}`,
+        `Members: ${memberCount ?? "?"}/50`,
+        `Total weight (ACTUAL): ${actual?.totalWeight ?? "unknown"}`,
+        `Weight compo (ACTUAL): ${actual?.weightCompo ?? "unknown"}`,
+        `Weight deltas (ACTUAL): ${actual?.weightDeltas ?? "unknown"}`,
+        `Compo advice (ACTUAL): ${actual?.compoAdvice ?? "none"}`,
         `War State: ${clanWarStateLine}`,
-        `Time Remaining: ${clanTimeRemainingLine}`
+        `Time Remaining: ${clanTimeRemainingLine}`,
+        `Sync: ${clanSyncLine}`
       );
+      singleViews[clanTag] = {
+        embed: new EmbedBuilder().setTitle(preWarHeader).setDescription(preWarLines.join("\n")),
+        copyText: limitDiscordContent([`# ${preWarHeader}`, ...preWarLines].join("\n")),
+        matchTypeAction: null,
+        matchTypeCurrent: (sub?.matchType as "FWA" | "BL" | "MM" | "SKIP" | null | undefined) ?? null,
+        inferredMatchType: false,
+        outcomeAction: null,
+        syncAction: null,
+        clanName,
+        clanTag,
+        mailStatusEmoji,
+        skipSyncAction: { tag: clanTag },
+      };
       continue;
     }
 
     const opponentTag = normalizeTag(String(war?.opponent?.tag ?? ""));
     const opponentName = sanitizeClanName(String(war?.opponent?.name ?? "")) ?? "Unknown";
-    const sub = subByTag.get(clanTag);
     const matchTypeResolved = await resolveMatchTypeWithFallback({
       guildId,
       clanTag,

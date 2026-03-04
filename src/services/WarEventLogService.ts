@@ -241,7 +241,6 @@ export class WarEventLogService {
         SELECT
           "id","guildId","clanTag","warId","channelId","notify","pingRole","inferredMatchType","notifyRole","fwaPoints","opponentFwaPoints","outcome","matchType","warStartFwaPoints","warEndFwaPoints","lastClanStars","lastOpponentStars","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName"
         FROM "CurrentWar"
-        WHERE "notify" = true
         ORDER BY "updatedAt" ASC
       `
     );
@@ -760,7 +759,7 @@ export class WarEventLogService {
       `
     );
     const sub = rows[0] ?? null;
-    if (!sub || !sub.notify) return false;
+    if (!sub) return false;
 
     const war = await this.coc.getCurrentWar(sub.clanTag).catch(() => null);
     const currentState: WarState = war ? deriveState(String(war.state ?? "")) : "notInWar";
@@ -991,7 +990,9 @@ export class WarEventLogService {
       console.log(
         `[war-events] emit start guild=${sub.guildId} channel=${sub.channelId} clan=${eventPayload.clanTag} event=${eventPayload.eventType}`
       );
-      await this.emitEvent(sub.channelId, eventPayload);
+      if (sub.notify) {
+        await this.emitEvent(sub.channelId, eventPayload);
+      }
     }
 
     const resolvedWarId =
