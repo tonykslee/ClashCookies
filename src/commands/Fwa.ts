@@ -5090,6 +5090,105 @@ export async function runForceSyncMailCommand(
   );
 }
 
+export async function runForceSyncWarIdCommand(
+  interaction: ChatInputCommandInteraction
+): Promise<void> {
+  const visibility = interaction.options.getString("visibility", false) ?? "private";
+  const isPublic = visibility === "public";
+  await interaction.deferReply({ ephemeral: !isPublic });
+
+  const tagRaw = interaction.options.getString("tag", false);
+  const tag = tagRaw ? normalizeTag(tagRaw) : null;
+  const tagFilterHistory = tag
+    ? Prisma.sql`AND UPPER(REPLACE("clanTag",'#','')) = ${tag}`
+    : Prisma.empty;
+  const tagFilterHistoryAlias = tag
+    ? Prisma.sql`AND UPPER(REPLACE(h."clanTag",'#','')) = ${tag}`
+    : Prisma.empty;
+  const tagFilterCurrentAlias = tag
+    ? Prisma.sql`AND UPPER(REPLACE(cw."clanTag",'#','')) = ${tag}`
+    : Prisma.empty;
+
+  const summary = await prisma.$transaction(async (tx) => {
+    let historyAssigned = 0;
+
+    const historyNullRows = await tx.$queryRaw<Array<{ clanTag: string; warStartTime: Date }>>(
+      Prisma.sql`
+        SELECT "clanTag","warStartTime"
+        FROM "ClanWarHistory"
+        WHERE "warId" IS NULL
+        ${tagFilterHistory}
+        ORDER BY "warStartTime" ASC
+      `
+    );
+
+    for (const row of historyNullRows) {
+      const nextRows = await tx.$queryRaw<Array<{ warId: bigint | number }>>(
+        Prisma.sql`SELECT nextval(pg_get_serial_sequence('"ClanWarHistory"', 'warId')) AS "warId"`
+      );
+      const raw = nextRows[0]?.warId;
+      const nextWarId = raw === undefined || raw === null ? null : Number(raw);
+      if (nextWarId === null || !Number.isFinite(nextWarId)) continue;
+      const updated = await tx.$executeRaw(
+        Prisma.sql`
+          UPDATE "ClanWarHistory"
+          SET "warId" = ${Math.trunc(nextWarId)}
+          WHERE "warId" IS NULL
+            AND "clanTag" = ${row.clanTag}
+            AND "warStartTime" = ${row.warStartTime}
+        `
+      );
+      historyAssigned += Number(updated ?? 0);
+    }
+
+    const warAttacksUpdated = Number(
+      await tx.$executeRaw(
+        Prisma.sql`
+          UPDATE "WarAttacks" wa
+          SET "warId" = h."warId"
+          FROM "ClanWarHistory" h
+          WHERE wa."warId" IS NULL
+            AND wa."clanTag" = h."clanTag"
+            AND wa."warStartTime" = h."warStartTime"
+            AND h."warId" IS NOT NULL
+            ${tagFilterHistoryAlias}
+        `
+      )
+    );
+
+    const currentWarUpdated = Number(
+      await tx.$executeRaw(
+        Prisma.sql`
+          UPDATE "CurrentWar" cw
+          SET "warId" = h."warId"
+          FROM "ClanWarHistory" h
+          WHERE cw."warId" IS NULL
+            AND cw."clanTag" = h."clanTag"
+            AND cw."lastWarStartTime" = h."warStartTime"
+            AND h."warId" IS NOT NULL
+            ${tagFilterCurrentAlias}
+        `
+      )
+    );
+
+    return {
+      historyAssigned,
+      warAttacksUpdated,
+      currentWarUpdated,
+    };
+  });
+
+  await interaction.editReply(
+    [
+      `Force warId backfill complete${tag ? ` for #${tag}` : ""}.`,
+      `ClanWarHistory warId assigned: **${summary.historyAssigned}**`,
+      `WarAttacks warId updated: **${summary.warAttacksUpdated}**`,
+      `CurrentWar warId updated: **${summary.currentWarUpdated}**`,
+      "Note: This command is DB-only (no external API scrape calls).",
+    ].join("\n")
+  );
+}
+
 export const Fwa: Command = {
   name: "fwa",
   description: "FWA points and matchup tools",
