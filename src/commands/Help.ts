@@ -266,6 +266,15 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/force sync mail tag:2QG2C08UP message-type:notify:war start message-id:1234567890123456789",
     ],
   },
+  remaining: {
+    summary: "Show remaining time for a tracked clan's current war phase.",
+    details: [
+      "`/remaining war` reports whether the clan is in preparation or battle day.",
+      "Returns localized phase-end and relative remaining time from current CoC API state.",
+      "Tag supports autocomplete from tracked clans.",
+    ],
+    examples: ["/remaining war tag:2QG2C08UP"],
+  },
   permission: {
     summary: "Control which roles can run each command target.",
     details: [
