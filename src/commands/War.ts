@@ -48,10 +48,9 @@ type WarHistoryRow = {
   clanDestruction: number | null;
   opponentStars: number | null;
   opponentDestruction: number | null;
-  fwaPointsGained: number | null;
+  pointsAfterWar: number | null;
   expectedOutcome: string | null;
   actualOutcome: string | null;
-  enemyPoints: number | null;
   warStartTime: Date;
   warEndTime: Date | null;
   clanName: string | null;
@@ -119,7 +118,7 @@ export const War: Command = {
       const rows = await prisma.$queryRaw<WarHistoryRow[]>(
         Prisma.sql`
           SELECT
-            "warId","syncNumber","matchType","clanStars","clanDestruction","opponentStars","opponentDestruction","fwaPointsGained","expectedOutcome","actualOutcome","enemyPoints","warStartTime","warEndTime","clanName","clanTag","opponentName","opponentTag"
+            "warId","syncNumber","matchType","clanStars","clanDestruction","opponentStars","opponentDestruction","pointsAfterWar","expectedOutcome","actualOutcome","warStartTime","warEndTime","clanName","clanTag","opponentName","opponentTag"
           FROM "ClanWarHistory"
           WHERE UPPER(REPLACE("clanTag",'#','')) = ${tagBare}
           ORDER BY "warStartTime" DESC
@@ -147,7 +146,7 @@ export const War: Command = {
           value: [
             `${displayName} ${row.clanStars ?? "?"} (${formatPercent(row.clanDestruction)}) vs ${row.opponentName ?? "Unknown"} ${row.opponentStars ?? "?"} (${formatPercent(row.opponentDestruction)})`,
             `Expected: ${row.expectedOutcome ?? "UNKNOWN"} | Actual: ${row.actualOutcome ?? "UNKNOWN"}`,
-            `Points gained: ${row.fwaPointsGained ?? "unknown"}${row.enemyPoints !== null ? ` | Enemy points: ${row.enemyPoints}` : ""}`,
+            `Points after war: ${row.pointsAfterWar ?? "unknown"}`,
             `Start: <t:${startTs}:F>${endTs ? ` | End: <t:${endTs}:F>` : ""}`,
           ].join("\n"),
           inline: false,
