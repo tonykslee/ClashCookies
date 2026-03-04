@@ -402,6 +402,56 @@ export const TrackedClan: Command = {
           }
         }
 
+        if (interaction.guildId) {
+          const activeWar = await cocService.getCurrentWar(tag).catch(() => null);
+          const lastState = String(activeWar?.state ?? "notInWar");
+          const opponentTag = normalizeClanTag(String(activeWar?.opponent?.tag ?? ""));
+          const opponentName = String(activeWar?.opponent?.name ?? "").trim() || null;
+          const warStartTimeRaw = String(activeWar?.startTime ?? "");
+          const warStartMatch = warStartTimeRaw.match(
+            /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})\.\d{3}Z$/
+          );
+          const warStartTime = warStartMatch
+            ? new Date(
+                Date.UTC(
+                  Number(warStartMatch[1]),
+                  Number(warStartMatch[2]) - 1,
+                  Number(warStartMatch[3]),
+                  Number(warStartMatch[4]),
+                  Number(warStartMatch[5]),
+                  Number(warStartMatch[6])
+                )
+              )
+            : null;
+          await prisma.currentWar.upsert({
+            where: {
+              guildId_clanTag: {
+                guildId: interaction.guildId,
+                clanTag: tag,
+              },
+            },
+            create: {
+              guildId: interaction.guildId,
+              clanTag: tag,
+              channelId: interaction.channelId,
+              notify: false,
+              lastState,
+              lastWarStartTime: warStartTime,
+              lastOpponentTag: opponentTag || null,
+              lastOpponentName: opponentName,
+              clanName: saved.name ?? null,
+            },
+            update: {
+              clanName: saved.name ?? null,
+              lastState,
+              lastWarStartTime: warStartTime,
+              lastOpponentTag: opponentTag || null,
+              lastOpponentName: opponentName,
+              updatedAt: new Date(),
+            },
+          });
+        }
+
         const summary = [
           `lose-style: ${saved.loseStyle}`,
           `mailChannel: ${saved.mailChannelId ? `<#${saved.mailChannelId}>` : "not set"}`,
@@ -431,6 +481,15 @@ export const TrackedClan: Command = {
             content: `${tag} is not currently tracked.`,
           });
           return;
+        }
+
+        if (interaction.guildId) {
+          await prisma.currentWar.deleteMany({
+            where: {
+              guildId: interaction.guildId,
+              clanTag: tag,
+            },
+          });
         }
 
         await safeReply(interaction, {

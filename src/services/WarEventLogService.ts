@@ -48,6 +48,7 @@ type SubscriptionRow = {
   guildId: string;
   clanTag: string;
   warId: number | null;
+  currentSyncNum: number | null;
   channelId: string;
   notify: boolean;
   pingRole: boolean;
@@ -181,18 +182,6 @@ function formatWarPercent(input: unknown): string {
   return `${withPrecision.replace(/\.00$/, "")}%`;
 }
 
-function parseNullableInt(input: unknown): number | null {
-  const value = Number(input);
-  if (!Number.isFinite(value)) return null;
-  return Math.trunc(value);
-}
-
-function parseNullableFloat(input: unknown): number | null {
-  const value = Number(input);
-  if (!Number.isFinite(value)) return null;
-  return value;
-}
-
 function buildWarStatsLines(stats: EmbedWarStats): string[] {
   const starsLeft = formatWarInt(stats.clanStars);
   const starsRight = formatWarInt(stats.opponentStars);
@@ -217,15 +206,13 @@ function buildWarStatsLines(stats: EmbedWarStats): string[] {
 
 export class WarEventLogService {
   private readonly points: PointsProjectionService;
-  private readonly settings: SettingsService;
   private readonly pointsSync: WarStartPointsSyncService;
   private readonly history: WarEventHistoryService;
 
   /** Purpose: initialize service dependencies. */
   constructor(private readonly client: Client, private readonly coc: CoCService) {
     this.points = new PointsProjectionService(coc);
-    this.settings = new SettingsService();
-    this.pointsSync = new WarStartPointsSyncService(coc, this.points, this.settings);
+    this.pointsSync = new WarStartPointsSyncService(this.points, new SettingsService());
     this.history = new WarEventHistoryService(coc);
   }
 
@@ -239,29 +226,19 @@ export class WarEventLogService {
     const subs = await prisma.$queryRaw<SubscriptionRow[]>(
       Prisma.sql`
         SELECT
-          "id","guildId","clanTag","warId","channelId","notify","pingRole","inferredMatchType","notifyRole","fwaPoints","opponentFwaPoints","outcome","matchType","warStartFwaPoints","warEndFwaPoints","lastClanStars","lastOpponentStars","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName"
+          "id","guildId","clanTag","warId","currentSyncNum","channelId","notify","pingRole","inferredMatchType","notifyRole","fwaPoints","opponentFwaPoints","outcome","matchType","warStartFwaPoints","warEndFwaPoints","lastClanStars","lastOpponentStars","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName"
         FROM "CurrentWar"
-        WHERE "notify" = true
         ORDER BY "updatedAt" ASC
       `
     );
-    let sawWarEnded = false;
     for (const sub of subs) {
-      const ended = await this.processSubscription(sub.id, syncContext).catch((err) => {
+      await this.processSubscription(sub.id, syncContext).catch((err) => {
         console.error(
           `[war-events] process failed guild=${sub.guildId} clan=${sub.clanTag} error=${formatError(
             err
           )}`
         );
-        return false;
       });
-      sawWarEnded = sawWarEnded || ended;
-    }
-    if (sawWarEnded && syncContext.activeSync !== null) {
-      await this.settings.set(
-        WarStartPointsSyncService.PREVIOUS_SYNC_KEY,
-        String(syncContext.activeSync)
-      );
     }
   }
 
@@ -713,7 +690,7 @@ export class WarEventLogService {
     const rows = await prisma.$queryRaw<SubscriptionRow[]>(
       Prisma.sql`
         SELECT
-          "id","guildId","clanTag","warId","channelId","notify","pingRole","inferredMatchType","notifyRole","fwaPoints","opponentFwaPoints","outcome","matchType","warStartFwaPoints","warEndFwaPoints","lastClanStars","lastOpponentStars","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName"
+          "id","guildId","clanTag","warId","currentSyncNum","channelId","notify","pingRole","inferredMatchType","notifyRole","fwaPoints","opponentFwaPoints","outcome","matchType","warStartFwaPoints","warEndFwaPoints","lastClanStars","lastOpponentStars","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName"
         FROM "CurrentWar"
         WHERE "guildId" = ${guildId} AND UPPER(REPLACE("clanTag",'#','')) = ${normalizeTagBare(clanTag)}
         LIMIT 1
@@ -753,17 +730,20 @@ export class WarEventLogService {
     const rows = await prisma.$queryRaw<SubscriptionRow[]>(
       Prisma.sql`
         SELECT
-          "id","guildId","clanTag","warId","channelId","notify","pingRole","inferredMatchType","notifyRole","fwaPoints","opponentFwaPoints","outcome","matchType","warStartFwaPoints","warEndFwaPoints","lastClanStars","lastOpponentStars","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName"
+          "id","guildId","clanTag","warId","currentSyncNum","channelId","notify","pingRole","inferredMatchType","notifyRole","fwaPoints","opponentFwaPoints","outcome","matchType","warStartFwaPoints","warEndFwaPoints","lastClanStars","lastOpponentStars","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName"
         FROM "CurrentWar"
         WHERE "id" = ${subscriptionId}
         LIMIT 1
       `
     );
     const sub = rows[0] ?? null;
-    if (!sub || !sub.notify) return false;
+    if (!sub) return false;
 
     const war = await this.coc.getCurrentWar(sub.clanTag).catch(() => null);
-    const currentState: WarState = war ? deriveState(String(war.state ?? "")) : "notInWar";
+    const resolvedState: WarState = war ? deriveState(String(war.state ?? "")) : "notInWar";
+    const resolvedOpponentTag = normalizeTag(war?.opponent?.tag ?? "");
+    const currentState: WarState =
+      resolvedState === "inWar" && !resolvedOpponentTag ? "notInWar" : resolvedState;
     const prevState: WarState = deriveState(sub.lastState ?? "notInWar");
     const nextClanName =
       String(war?.clan?.name ?? sub.clanName ?? sub.clanTag).trim() || sub.clanTag;
@@ -803,7 +783,9 @@ export class WarEventLogService {
     }
     const syncNumberForEvent =
       eventType === "war_ended"
-        ? syncContext.activeSync
+        ? (sub.currentSyncNum !== null && Number.isFinite(Number(sub.currentSyncNum))
+            ? Math.trunc(Number(sub.currentSyncNum))
+            : syncContext.activeSync)
         : currentState === "notInWar"
           ? syncContext.previousSync
           : syncContext.activeSync;
@@ -922,34 +904,6 @@ export class WarEventLogService {
       }
     }
 
-    if (currentState !== "notInWar") {
-      await this.upsertCurrentWarHistory({
-        clanTag: sub.clanTag,
-        warStartTime: nextWarStartTime,
-        warEndTime: nextWarEndTime,
-        syncNumber: syncNumberForEvent,
-        matchType: nextMatchType,
-        expectedOutcome: normalizeOutcome(nextOutcome),
-        clanName: nextClanName,
-        opponentName: nextOpponentName || sub.lastOpponentName || "Unknown",
-        opponentTag: nextOpponentTag || normalizeTag(sub.lastOpponentTag ?? ""),
-        stats: {
-          clanStars: nextClanStars,
-          opponentStars: nextOpponentStars,
-          clanAttacks: nextClanAttacks,
-          opponentAttacks: nextOpponentAttacks,
-          teamSize: nextTeamSize,
-          attacksPerMember: nextAttacksPerMember,
-          clanDestruction: nextClanDestruction,
-          opponentDestruction: nextOpponentDestruction,
-        },
-      }).catch((err) => {
-        console.error(
-          `[war-events] current-war history upsert failed guild=${sub.guildId} clan=${sub.clanTag} error=${formatError(err)}`
-        );
-      });
-    }
-
     if (eventType) {
       console.log(
         `[war-events] transition detected guild=${sub.guildId} clan=${sub.clanTag} event=${eventType} prev=${prevState} current=${currentState} sync=${syncNumberForEvent ?? "unknown"} warStart=${nextWarStartTime?.toISOString() ?? "unknown"} warEnd=${nextWarEndTime?.toISOString() ?? "unknown"} opponent=${nextOpponentTag || normalizeTag(sub.lastOpponentTag ?? "") || "unknown"}`
@@ -991,7 +945,9 @@ export class WarEventLogService {
       console.log(
         `[war-events] emit start guild=${sub.guildId} channel=${sub.channelId} clan=${eventPayload.clanTag} event=${eventPayload.eventType}`
       );
-      await this.emitEvent(sub.channelId, eventPayload);
+      if (sub.notify) {
+        await this.emitEvent(sub.channelId, eventPayload);
+      }
     }
 
     const resolvedWarId =
@@ -1001,10 +957,6 @@ export class WarEventLogService {
       where: { id: sub.id },
       data: {
         warId: resolvedWarId,
-        currentSyncNum:
-          syncContext.activeSync !== null && Number.isFinite(syncContext.activeSync)
-            ? Math.trunc(syncContext.activeSync)
-            : undefined,
         lastState: currentState,
         fwaPoints: nextFwaPoints,
         opponentFwaPoints: nextOpponentFwaPoints,
@@ -1385,35 +1337,30 @@ export class WarEventLogService {
 
     const warStartTime = parseCocTime(war.startTime ?? null) ?? sub.lastWarStartTime ?? null;
     const warEndTime = parseCocTime(war.endTime ?? null);
-    await this.upsertCurrentWarHistory({
-      clanTag: sub.clanTag,
-      warStartTime,
-      warEndTime,
-      syncNumber: await this.pointsSync.getPreviousSyncNum(),
-      matchType: sub.matchType,
-      expectedOutcome: normalizeOutcome(sub.outcome),
-      clanName: String(war.clan?.name ?? sub.clanName ?? sub.clanTag).trim() || sub.clanTag,
-      opponentName: String(war.opponent?.name ?? sub.lastOpponentName ?? "Unknown").trim() || "Unknown",
-      opponentTag: normalizeTag(war.opponent?.tag ?? sub.lastOpponentTag ?? ""),
-      stats: {
-        clanStars: Number.isFinite(Number(war.clan?.stars)) ? Number(war.clan?.stars) : sub.lastClanStars,
-        opponentStars: Number.isFinite(Number(war.opponent?.stars))
-          ? Number(war.opponent?.stars)
-          : sub.lastOpponentStars,
-        clanAttacks: Number.isFinite(Number(war.clan?.attacks)) ? Number(war.clan?.attacks) : null,
-        opponentAttacks: Number.isFinite(Number(war.opponent?.attacks))
-          ? Number(war.opponent?.attacks)
-          : null,
-        teamSize: Number.isFinite(Number(war.teamSize)) ? Number(war.teamSize) : null,
-        attacksPerMember: Number.isFinite(Number(war.attacksPerMember))
-          ? Number(war.attacksPerMember)
-          : null,
-        clanDestruction: Number.isFinite(Number(war.clan?.destructionPercentage))
-          ? Number(war.clan?.destructionPercentage)
-          : null,
-        opponentDestruction: Number.isFinite(Number(war.opponent?.destructionPercentage))
-          ? Number(war.opponent?.destructionPercentage)
-          : null,
+    const nextClanName = String(war.clan?.name ?? sub.clanName ?? sub.clanTag).trim() || sub.clanTag;
+    const nextOpponentTag = normalizeTag(war.opponent?.tag ?? sub.lastOpponentTag ?? "");
+    const nextOpponentName =
+      String(war.opponent?.name ?? sub.lastOpponentName ?? "Unknown").trim() || "Unknown";
+    const nextClanStars = Number.isFinite(Number(war.clan?.stars))
+      ? Number(war.clan?.stars)
+      : sub.lastClanStars;
+    const nextOpponentStars = Number.isFinite(Number(war.opponent?.stars))
+      ? Number(war.opponent?.stars)
+      : sub.lastOpponentStars;
+    const resolvedWarId =
+      warStartTime === null ? null : await this.resolveWarId(sub.clanTag, warStartTime);
+    await prisma.currentWar.update({
+      where: { id: sub.id },
+      data: {
+        warId: resolvedWarId,
+        lastState: "inWar",
+        lastWarStartTime: warStartTime,
+        lastOpponentTag: nextOpponentTag || sub.lastOpponentTag,
+        lastOpponentName: nextOpponentName || sub.lastOpponentName,
+        clanName: nextClanName,
+        lastClanStars: nextClanStars,
+        lastOpponentStars: nextOpponentStars,
+        updatedAt: new Date(),
       },
     });
 
@@ -1498,55 +1445,6 @@ export class WarEventLogService {
             .setStyle(ButtonStyle.Secondary)
         ),
       ],
-    });
-  }
-
-  private async upsertCurrentWarHistory(input: {
-    clanTag: string;
-    warStartTime: Date | null;
-    warEndTime: Date | null;
-    syncNumber: number | null;
-    matchType: MatchType;
-    expectedOutcome: "WIN" | "LOSE" | null;
-    clanName: string;
-    opponentName: string;
-    opponentTag: string;
-    stats: EmbedWarStats;
-  }): Promise<void> {
-    const clanTag = normalizeTag(input.clanTag);
-    if (!clanTag || !input.warStartTime) return;
-    const opponentTag = normalizeTag(input.opponentTag) || null;
-    const upsertData = {
-      syncNumber: input.syncNumber,
-      matchType: input.matchType,
-      clanStars: parseNullableInt(input.stats.clanStars),
-      clanDestruction: parseNullableFloat(input.stats.clanDestruction),
-      opponentStars: parseNullableInt(input.stats.opponentStars),
-      opponentDestruction: parseNullableFloat(input.stats.opponentDestruction),
-      expectedOutcome: input.expectedOutcome,
-      warEndTime: input.warEndTime,
-      clanName: input.clanName,
-      opponentName: input.opponentName,
-      opponentTag,
-    };
-    const existing = await prisma.clanWarHistory.findFirst({
-      where: { clanTag, warStartTime: input.warStartTime, opponentTag },
-      orderBy: { warId: "desc" },
-      select: { warId: true },
-    });
-    if (existing?.warId) {
-      await prisma.clanWarHistory.update({
-        where: { warId: existing.warId },
-        data: upsertData,
-      });
-      return;
-    }
-    await prisma.clanWarHistory.create({
-      data: {
-        ...upsertData,
-        warStartTime: input.warStartTime,
-        clanTag,
-      },
     });
   }
 

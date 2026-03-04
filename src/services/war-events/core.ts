@@ -2,7 +2,7 @@
 
 export type WarState = "notInWar" | "preparation" | "inWar";
 export type EventType = "war_started" | "battle_day" | "war_ended";
-export type MatchType = "FWA" | "BL" | "MM" | null;
+export type MatchType = "FWA" | "BL" | "MM" | "SKIP" | null;
 export type FwaLoseStyle = "TRIPLE_TOP_30" | "TRADITIONAL";
 
 export type WarEndResultSnapshot = {

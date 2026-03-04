@@ -12,16 +12,21 @@ jobs:
         env:
           DISCORD_RELEASE_WEBHOOK_DEV: ${{ secrets.DISCORD_RELEASE_WEBHOOK_DEV }}
           DISCORD_RELEASE_WEBHOOK_PROD: ${{ secrets.DISCORD_RELEASE_WEBHOOK_PROD }}
+          DISCORD_RELEASE_ROLE_DEV: ${{ secrets.DISCORD_RELEASE_ROLE_DEV }}
+          DISCORD_RELEASE_ROLE_PROD: ${{ secrets.DISCORD_RELEASE_ROLE_PROD }}
           RELEASE_NAME: ${{ github.event.release.name }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
           RELEASE_BODY: ${{ github.event.release.body }}
         run: |
+          set -euo pipefail
+
           if [[ -z "$DISCORD_RELEASE_WEBHOOK_DEV" && -z "$DISCORD_RELEASE_WEBHOOK_PROD" ]]; then
             echo "Missing Discord webhook secrets. Set DISCORD_RELEASE_WEBHOOK_DEV and/or DISCORD_RELEASE_WEBHOOK_PROD."
             exit 1
           fi
 
-          HIGHLIGHTS="$(printf '%s' "$RELEASE_BODY" | awk '
+          RELEASE_BODY_CLEAN="$(printf '%s' "${RELEASE_BODY:-}" | tr -d '\r')"
+          HIGHLIGHTS="$(printf '%s' "$RELEASE_BODY_CLEAN" | awk '
             BEGIN { in_section = 0 }
             /^##[[:space:]]+Highlights[[:space:]]*$/ { in_section = 1; next }
             /^##[[:space:]]+/ { if (in_section) exit }
@@ -30,28 +35,50 @@ jobs:
           if [[ -z "$HIGHLIGHTS" ]]; then
             HIGHLIGHTS="No Highlights section found in release notes."
           fi
+          EMBED_DESCRIPTION=$(printf '## Highlights\n%s' "$HIGHLIGHTS")
+          if (( ${#EMBED_DESCRIPTION} > 4096 )); then
+            TRUNCATED_BODY_MAX=$((4096 - 28))
+            EMBED_DESCRIPTION="${EMBED_DESCRIPTION:0:${TRUNCATED_BODY_MAX}}"
+            EMBED_DESCRIPTION="${EMBED_DESCRIPTION}"$'\n'"... (truncated for Discord)"
+          fi
+          RELEASE_TITLE="New Release: ${RELEASE_NAME:-${RELEASE_TAG}}"
+          if (( ${#RELEASE_TITLE} > 256 )); then
+            RELEASE_TITLE="${RELEASE_TITLE:0:253}..."
+          fi
 
-          PAYLOAD="$(jq -n \
-            --arg role "1477488801478869196" \
-            --arg title "New Release: ${RELEASE_NAME}" \
-            --arg tag "${RELEASE_TAG}" \
-            --arg highlights "${HIGHLIGHTS}" \
-            '{
-              content: ("<@&" + $role + ">"),
-              allowed_mentions: { roles: [$role] },
-              username: "ClashCookies",
-              embeds: [{
-                title: $title,
-                description: ("## Highlights\n" + $highlights),
-                color: 5814783,
-                footer: { text: ("Version " + $tag) }
-              }]
-            }')"
+          TARGETS=(
+            "${DISCORD_RELEASE_WEBHOOK_DEV}|${DISCORD_RELEASE_ROLE_DEV}"
+            "${DISCORD_RELEASE_WEBHOOK_PROD}|${DISCORD_RELEASE_ROLE_PROD}"
+          )
 
-          for WEBHOOK_BASE in "$DISCORD_RELEASE_WEBHOOK_DEV" "$DISCORD_RELEASE_WEBHOOK_PROD"; do
+          for target in "${TARGETS[@]}"; do
+            IFS='|' read -r WEBHOOK_BASE ROLE_ID <<< "$target"
             if [[ -z "$WEBHOOK_BASE" ]]; then
               continue
             fi
+
+            PAYLOAD="$(jq -n \
+              --arg role "$ROLE_ID" \
+              --arg title "$RELEASE_TITLE" \
+              --arg tag "${RELEASE_TAG}" \
+              --arg description "${EMBED_DESCRIPTION}" \
+              '{
+                username: "ClashCookies",
+                embeds: [{
+                  title: $title,
+                  description: $description,
+                  color: 5814783,
+                  footer: { text: ("Version " + $tag) }
+                }]
+              }
+              + (if ($role | length) > 0
+                then {
+                  content: ("<@&" + $role + ">"),
+                  allowed_mentions: { roles: [$role] }
+                }
+                else {}
+                end)')"
+
             if [[ "$WEBHOOK_BASE" == *\?* ]]; then
               WEBHOOK_ENDPOINT="${WEBHOOK_BASE}&wait=true&with_components=true"
             else
