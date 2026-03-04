@@ -15,6 +15,7 @@ import { PointsProjectionService } from "./PointsProjectionService";
 import { SettingsService } from "./SettingsService";
 import { WarEventHistoryService } from "./war-events/history";
 import { WarStartPointsSyncService } from "./war-events/pointsSync";
+import { getNextNotifyRefreshAtMs } from "./refreshSchedule";
 import {
   type EventType,
   type MatchType,
@@ -41,8 +42,18 @@ const NOTIFY_WAR_REFRESH_PREFIX = "notify-war-refresh";
 const BATTLE_DAY_REFRESH_MS = 20 * 60 * 1000;
 const battleDayPostByGuildTag = new Map<string, { channelId: string; messageId: string }>();
 
-function buildNextRefreshRelativeLabel(intervalMs: number, nowMs = Date.now()): string {
-  return `Next refresh <t:${Math.floor((nowMs + intervalMs) / 1000)}:R>`;
+function buildNextRefreshRelativeLabel(
+  intervalMs: number,
+  nowMs = Date.now(),
+  nextScheduledAtMs?: number | null
+): string {
+  const nextAtMs =
+    nextScheduledAtMs !== null &&
+    nextScheduledAtMs !== undefined &&
+    Number.isFinite(nextScheduledAtMs)
+      ? Math.trunc(nextScheduledAtMs)
+      : Math.trunc(nowMs + intervalMs);
+  return `Next refresh <t:${Math.floor(nextAtMs / 1000)}:R>`;
 }
 
 export const buildNotifyNextRefreshLabelForTest = buildNextRefreshRelativeLabel;
@@ -670,7 +681,13 @@ export class WarEventLogService {
     const roleMention =
       includeRoleMention && payload.pingRole && payload.notifyRole ? `<@&${payload.notifyRole}>` : null;
     const nextRefreshLabel =
-      payload.eventType === "battle_day" ? buildNextRefreshRelativeLabel(BATTLE_DAY_REFRESH_MS) : null;
+      payload.eventType === "battle_day"
+        ? buildNextRefreshRelativeLabel(
+            BATTLE_DAY_REFRESH_MS,
+            Date.now(),
+            getNextNotifyRefreshAtMs()
+          )
+        : null;
     const content =
       payload.eventType === "battle_day"
         ? roleMention
@@ -1489,7 +1506,11 @@ export class WarEventLogService {
     const embed = EmbedBuilder.from(message.embeds[0] ?? new EmbedBuilder());
     const next = await this.buildBattleDayRefreshEmbed(payload, warId, embed);
     await message.edit({
-      content: buildNextRefreshRelativeLabel(BATTLE_DAY_REFRESH_MS),
+      content: buildNextRefreshRelativeLabel(
+        BATTLE_DAY_REFRESH_MS,
+        Date.now(),
+        getNextNotifyRefreshAtMs()
+      ),
       embeds: [next],
       components: [
         new ActionRowBuilder<ButtonBuilder>().addComponents(

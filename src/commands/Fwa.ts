@@ -27,6 +27,7 @@ import {
 } from "../services/CommandPermissionService";
 import { GoogleSheetsService } from "../services/GoogleSheetsService";
 import { SettingsService } from "../services/SettingsService";
+import { getNextWarMailRefreshAtMs } from "../services/refreshSchedule";
 import { WarEventHistoryService } from "../services/war-events/history";
 import {
   buildOutcomeMismatchWarning,
@@ -1346,12 +1347,26 @@ function buildWarMailPostedComponents(key: string): Array<ActionRowBuilder<Butto
   ];
 }
 
-function buildNextRefreshRelativeLabel(intervalMs: number, nowMs = Date.now()): string {
-  return `Next refresh <t:${Math.floor((nowMs + intervalMs) / 1000)}:R>`;
+function buildNextRefreshRelativeLabel(
+  intervalMs: number,
+  nowMs = Date.now(),
+  nextScheduledAtMs?: number | null
+): string {
+  const nextAtMs =
+    nextScheduledAtMs !== null &&
+    nextScheduledAtMs !== undefined &&
+    Number.isFinite(nextScheduledAtMs)
+      ? Math.trunc(nextScheduledAtMs)
+      : Math.trunc(nowMs + intervalMs);
+  return `Next refresh <t:${Math.floor(nextAtMs / 1000)}:R>`;
 }
 
 function buildWarMailPostedContent(roleId?: string | null, nowMs?: number): string {
-  const nextRefresh = buildNextRefreshRelativeLabel(WAR_MAIL_REFRESH_MS, nowMs);
+  const nextRefresh = buildNextRefreshRelativeLabel(
+    WAR_MAIL_REFRESH_MS,
+    nowMs,
+    getNextWarMailRefreshAtMs()
+  );
   if (roleId) return `<@&${roleId}>\n${nextRefresh}`;
   return nextRefresh;
 }
