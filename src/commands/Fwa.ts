@@ -5108,6 +5108,9 @@ export async function runForceSyncWarIdCommand(
   const tagFilterCurrentAlias = tag
     ? Prisma.sql`AND UPPER(REPLACE(cw."clanTag",'#','')) = ${tag}`
     : Prisma.empty;
+  const tagFilterCurrent = tag
+    ? Prisma.sql`AND UPPER(REPLACE("clanTag",'#','')) = ${tag}`
+    : Prisma.empty;
 
   const summary = await prisma.$transaction(async (tx) => {
     let historyAssigned = 0;
@@ -5148,7 +5151,7 @@ export async function runForceSyncWarIdCommand(
           SET "warId" = h."warId"
           FROM "ClanWarHistory" h
           WHERE wa."warId" IS NULL
-            AND wa."clanTag" = h."clanTag"
+            AND UPPER(REPLACE(wa."clanTag",'#','')) = UPPER(REPLACE(h."clanTag",'#',''))
             AND wa."warStartTime" = h."warStartTime"
             AND h."warId" IS NOT NULL
             ${tagFilterHistoryAlias}
@@ -5163,7 +5166,7 @@ export async function runForceSyncWarIdCommand(
           SET "warId" = h."warId"
           FROM "ClanWarHistory" h
           WHERE cw."warId" IS NULL
-            AND cw."clanTag" = h."clanTag"
+            AND UPPER(REPLACE(cw."clanTag",'#','')) = UPPER(REPLACE(h."clanTag",'#',''))
             AND cw."lastWarStartTime" = h."warStartTime"
             AND h."warId" IS NOT NULL
             ${tagFilterCurrentAlias}
@@ -5171,10 +5174,63 @@ export async function runForceSyncWarIdCommand(
       )
     );
 
+    const currentWarRowsNeedingAllocation = await tx.$queryRaw<
+      Array<{ id: number; clanTag: string; lastWarStartTime: Date | null }>
+    >(
+      Prisma.sql`
+        SELECT "id","clanTag","lastWarStartTime"
+        FROM "CurrentWar"
+        WHERE "warId" IS NULL
+          AND "lastState" IN ('preparation','inWar')
+          ${tagFilterCurrent}
+      `
+    );
+
+    let currentWarAllocated = 0;
+    let warAttacksFromCurrentAllocated = 0;
+    for (const row of currentWarRowsNeedingAllocation) {
+      const nextRows = await tx.$queryRaw<Array<{ warId: bigint | number }>>(
+        Prisma.sql`SELECT nextval(pg_get_serial_sequence('"ClanWarHistory"', 'warId')) AS "warId"`
+      );
+      const raw = nextRows[0]?.warId;
+      const nextWarId = raw === undefined || raw === null ? null : Number(raw);
+      if (nextWarId === null || !Number.isFinite(nextWarId)) continue;
+      const warId = Math.trunc(nextWarId);
+
+      const updatedCurrent = Number(
+        await tx.$executeRaw(
+          Prisma.sql`
+            UPDATE "CurrentWar"
+            SET "warId" = ${warId}
+            WHERE "id" = ${row.id}
+              AND "warId" IS NULL
+          `
+        )
+      );
+      currentWarAllocated += updatedCurrent;
+
+      if (updatedCurrent > 0 && row.lastWarStartTime) {
+        const updatedAttacks = Number(
+          await tx.$executeRaw(
+            Prisma.sql`
+              UPDATE "WarAttacks"
+              SET "warId" = ${warId}
+              WHERE "warId" IS NULL
+                AND UPPER(REPLACE("clanTag",'#','')) = UPPER(REPLACE(${row.clanTag},'#',''))
+                AND "warStartTime" = ${row.lastWarStartTime}
+            `
+          )
+        );
+        warAttacksFromCurrentAllocated += updatedAttacks;
+      }
+    }
+
     return {
       historyAssigned,
       warAttacksUpdated,
       currentWarUpdated,
+      currentWarAllocated,
+      warAttacksFromCurrentAllocated,
     };
   });
 
@@ -5184,6 +5240,8 @@ export async function runForceSyncWarIdCommand(
       `ClanWarHistory warId assigned: **${summary.historyAssigned}**`,
       `WarAttacks warId updated: **${summary.warAttacksUpdated}**`,
       `CurrentWar warId updated: **${summary.currentWarUpdated}**`,
+      `CurrentWar warId allocated (active wars): **${summary.currentWarAllocated}**`,
+      `WarAttacks warId updated from CurrentWar allocation: **${summary.warAttacksFromCurrentAllocated}**`,
       "Note: This command is DB-only (no external API scrape calls).",
     ].join("\n")
   );
