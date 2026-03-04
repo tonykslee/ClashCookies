@@ -902,14 +902,7 @@ async function recordMatchMailUpdated(params: {
   expectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null;
 }): Promise<MatchMailConfig> {
   const current = await getCurrentWarMailConfig(params.guildId, params.tag);
-  const deduped = current.messages.filter(
-    (entry) =>
-      !(
-        entry.messageType === "mail" &&
-        entry.messageID === params.messageId &&
-        (!entry.channelId || entry.channelId === params.channelId)
-      )
-  );
+  const deduped = current.messages.filter((entry) => entry.messageType !== "mail");
   deduped.push({
     messageType: "mail",
     messageID: params.messageId,
@@ -943,9 +936,29 @@ async function markMatchLiveDataChanged(params: {
   channelId: string;
 }): Promise<void> {
   const current = await getCurrentWarMailConfig(params.guildId, params.tag);
+  const live = await prisma.currentWar.findUnique({
+    where: {
+      guildId_clanTag: {
+        guildId: params.guildId,
+        clanTag: `#${normalizeTag(params.tag)}`,
+      },
+    },
+    select: { matchType: true, outcome: true },
+  });
+  const liveMatchType = isMatchTypeValue(live?.matchType) ? live.matchType : null;
+  const liveOutcome = isExpectedOutcomeValue(live?.outcome) ? live.outcome : null;
+  const liveMatchesPosted =
+    Boolean(current.lastPostedMessageId) &&
+    current.lastMatchType !== null &&
+    liveMatchType !== null &&
+    current.lastMatchType === liveMatchType &&
+    (current.lastExpectedOutcome ?? null) === liveOutcome;
+  const nowUnix = Math.floor(Date.now() / 1000);
   const next: MatchMailConfig = {
     ...current,
-    lastDataChangedAtUnix: Math.floor(Date.now() / 1000),
+    lastDataChangedAtUnix: liveMatchesPosted
+      ? (current.lastPostedAtUnix ?? nowUnix)
+      : nowUnix,
   };
   await saveCurrentWarMailConfig({
     guildId: params.guildId,
@@ -4634,6 +4647,11 @@ export async function runForceSyncMailCommand(
         (parsedType.messageType !== "notify" || entry.notifyType === parsedType.notifyType)
       )
   );
+  if (parsedType.messageType === "mail") {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      if (messages[i]?.messageType === "mail") messages.splice(i, 1);
+    }
+  }
   messages.push({
     messageType: parsedType.messageType,
     messageID,
