@@ -3870,12 +3870,23 @@ async function buildTrackedMatchOverview(
     const clanWarStartMs = warStartMsByClanTag.get(clanTag) ?? null;
     const sub = subByTag.get(clanTag);
     const parsedMailConfig = parseMatchMailConfig(sub?.mailConfig ?? null);
-    const mailStatusEmoji = getMailStatusEmojiForClan({
+    const baseMailStatusEmoji = getMailStatusEmojiForClan({
       guildId,
       tag: clanTag,
       warStartMs: clanWarStartMs,
       mailConfig: parsedMailConfig,
     });
+    const postedMailExistsForStatus =
+      baseMailStatusEmoji === MAILBOX_SENT_EMOJI
+        ? await hasPostedMailMessage({
+            client: client ?? null,
+            guildId,
+            mailConfig: parsedMailConfig,
+          })
+        : false;
+    const mailStatusEmoji = postedMailExistsForStatus
+      ? MAILBOX_SENT_EMOJI
+      : MAILBOX_NOT_SENT_EMOJI;
     if (warState === "notInWar") {
       const trackedScrape = parseTrackedClanPointsScrape(clan.pointsScrape);
       const clanProfile = await cocService.getClan(`#${clanTag}`).catch(() => null);
@@ -5132,12 +5143,23 @@ export const Fwa: Command = {
           const parsedMailConfig = parseMatchMailConfig(
             subscription?.mailConfig as Prisma.JsonValue | null | undefined
           );
-          const mailStatusEmoji = getMailStatusEmojiForClan({
+          const baseMailStatusEmoji = getMailStatusEmojiForClan({
             guildId: interaction.guildId ?? null,
             tag,
             warStartMs: null,
             mailConfig: parsedMailConfig,
           });
+          const postedMailExistsForStatus =
+            baseMailStatusEmoji === MAILBOX_SENT_EMOJI
+              ? await hasPostedMailMessage({
+                  client: interaction.client,
+                  guildId: interaction.guildId ?? null,
+                  mailConfig: parsedMailConfig,
+                })
+              : false;
+          const mailStatusEmoji = postedMailExistsForStatus
+            ? MAILBOX_SENT_EMOJI
+            : MAILBOX_NOT_SENT_EMOJI;
           const clanName = sanitizeClanName(trackedClanMeta?.name ?? "") ?? `#${tag}`;
           const preWarHeader = `${mailStatusEmoji} | ${clanName} (#${tag})`;
           const preWarLines = [
