@@ -314,6 +314,10 @@ const fwaMailPreviewPayloads = new Map<string, FwaMailPreviewPayload>();
 const fwaMailPostedPayloads = new Map<string, FwaMailPostedPayload>();
 const fwaMailPollers = new Map<string, ReturnType<typeof setInterval>>();
 
+function createTransientFwaKey(): string {
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+}
+
 function buildFwaMatchCopyCustomId(
   userId: string,
   key: string,
@@ -1489,6 +1493,59 @@ async function refreshWarMailPost(client: Client, key: string): Promise<void> {
     embeds: [rendered.embed],
     components: buildWarMailPostedComponents(key),
   });
+}
+
+async function refreshWarMailPostByResolvedTarget(params: {
+  client: Client;
+  guildId: string;
+  tag: string;
+  channelId: string;
+  messageId: string;
+  key?: string;
+}): Promise<boolean> {
+  const normalizedTag = normalizeTag(params.tag);
+  if (!normalizedTag) return false;
+  const channel = await params.client.channels.fetch(params.channelId).catch(() => null);
+  if (!channel || !channel.isTextBased()) return false;
+  const message = await (channel as any).messages.fetch(params.messageId).catch(() => null);
+  if (!message) return false;
+  const cocService = new CoCService();
+  const rendered = await buildWarMailEmbedForTag(cocService, params.guildId, normalizedTag);
+  await message.edit({
+    embeds: [rendered.embed],
+    components: buildWarMailPostedComponents(params.key ?? createTransientFwaKey()),
+  });
+  return true;
+}
+
+function extractWarMailTagFromMessage(message: ButtonInteraction["message"]): string | null {
+  const title = String(message.embeds?.[0]?.title ?? "");
+  const match = title.match(/\(#([A-Z0-9]+)\)\s*$/i);
+  if (!match?.[1]) return null;
+  return normalizeTag(match[1]);
+}
+
+async function findWarMailTargetFromConfig(params: {
+  guildId: string;
+  channelId: string;
+  messageId: string;
+}): Promise<{ tag: string; channelId: string; messageId: string } | null> {
+  const rows = await prisma.currentWar.findMany({
+    where: { guildId: params.guildId },
+    select: { clanTag: true, mailConfig: true },
+  });
+  for (const row of rows) {
+    const config = parseMatchMailConfig(row.mailConfig as Prisma.JsonValue | null | undefined);
+    if (!config.lastPostedChannelId || !config.lastPostedMessageId) continue;
+    if (config.lastPostedChannelId !== params.channelId) continue;
+    if (config.lastPostedMessageId !== params.messageId) continue;
+    return {
+      tag: normalizeTag(row.clanTag),
+      channelId: config.lastPostedChannelId,
+      messageId: config.lastPostedMessageId,
+    };
+  }
+  return null;
 }
 
 function startWarMailPolling(client: Client, key: string): void {
@@ -2938,18 +2995,96 @@ export async function handleFwaMailRefreshButton(interaction: ButtonInteraction)
   const parsed = parseFwaMailRefreshCustomId(interaction.customId);
   if (!parsed) return;
   const payload = fwaMailPostedPayloads.get(parsed.key);
-  if (!payload) {
+  if (payload) {
+    await refreshWarMailPost(interaction.client, parsed.key);
+    await interaction.reply({
+      ephemeral: true,
+      content: "War mail refreshed.",
+    });
+    return;
+  }
+  const guildId = interaction.guildId ?? "";
+  const fallbackTag = extractWarMailTagFromMessage(interaction.message);
+  const fallbackTarget =
+    guildId && fallbackTag
+      ? {
+          tag: fallbackTag,
+          channelId: interaction.channelId,
+          messageId: interaction.message.id,
+        }
+      : guildId
+        ? await findWarMailTargetFromConfig({
+            guildId,
+            channelId: interaction.channelId,
+            messageId: interaction.message.id,
+          })
+        : null;
+  if (!guildId || !fallbackTarget) {
     await interaction.reply({
       ephemeral: true,
       content: "This mail post can no longer be refreshed.",
     });
     return;
   }
-  await refreshWarMailPost(interaction.client, parsed.key);
+  const refreshed = await refreshWarMailPostByResolvedTarget({
+    client: interaction.client,
+    guildId,
+    tag: fallbackTarget.tag,
+    channelId: fallbackTarget.channelId,
+    messageId: fallbackTarget.messageId,
+  }).catch(() => false);
   await interaction.reply({
     ephemeral: true,
-    content: "War mail refreshed.",
+    content: refreshed ? "War mail refreshed." : "This mail post can no longer be refreshed.",
   });
+}
+
+export async function refreshAllTrackedWarMailPosts(client: Client): Promise<void> {
+  const rows = await prisma.currentWar.findMany({
+    select: {
+      guildId: true,
+      clanTag: true,
+      mailConfig: true,
+    },
+  });
+
+  for (const row of rows) {
+    const guildId = row.guildId?.trim() ?? "";
+    if (!guildId) continue;
+    const config = parseMatchMailConfig(row.mailConfig as Prisma.JsonValue | null | undefined);
+    const channelId = config.lastPostedChannelId?.trim() ?? "";
+    const messageId = config.lastPostedMessageId?.trim() ?? "";
+    if (!channelId || !messageId) continue;
+
+    const existingInMemory = findLatestPostedWarMailForClan({
+      guildId,
+      tag: row.clanTag,
+    });
+    const refreshed = await refreshWarMailPostByResolvedTarget({
+      client,
+      guildId,
+      tag: row.clanTag,
+      channelId,
+      messageId,
+      key: existingInMemory?.key,
+    }).catch(() => false);
+    if (!refreshed) continue;
+
+    if (!existingInMemory) {
+      const postKey = createTransientFwaKey();
+      fwaMailPostedPayloads.set(postKey, {
+        guildId,
+        tag: normalizeTag(row.clanTag),
+        warStartMs: config.lastWarStartMs ?? null,
+        channelId,
+        messageId,
+        sentAtMs: Date.now(),
+        matchType: config.lastMatchType ?? "UNKNOWN",
+        expectedOutcome: config.lastExpectedOutcome ?? null,
+      });
+      startWarMailPolling(client, postKey);
+    }
+  }
 }
 
 export async function handlePointsPostButton(interaction: ButtonInteraction): Promise<void> {
