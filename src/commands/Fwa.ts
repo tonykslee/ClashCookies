@@ -4901,10 +4901,12 @@ export async function runForceSyncWarIdCommand(
     }
 
     if (table === "currentwar") {
-      const targetExpr =
-        setWarId !== null
-          ? Prisma.sql`${setWarId}`
-          : Prisma.sql`COALESCE(h_exact."warId", history_latest."warId")`;
+      if (setWarId !== null && overwrite && (tag === null || warStartTime === null)) {
+        await interaction.editReply(
+          "For `table=currentwar` with `set_war_id`, include both `tag` and `war_start_time` so only one row is targeted."
+        );
+        return;
+      }
       const rows = await prisma.$queryRaw<
         Array<{
           id: number;
@@ -4917,41 +4919,82 @@ export async function runForceSyncWarIdCommand(
         }>
       >(
         Prisma.sql`
-          WITH history_latest AS (
-            SELECT DISTINCT ON (UPPER(REPLACE(h."clanTag",'#','')))
-              UPPER(REPLACE(h."clanTag",'#','')) AS clan_norm,
-              h."warId"
-            FROM "ClanWarHistory" h
-            WHERE h."warId" IS NOT NULL
-            ORDER BY UPPER(REPLACE(h."clanTag",'#','')), h."warStartTime" DESC, h."warId" DESC
+          WITH base_max AS (
+            SELECT GREATEST(
+              COALESCE((SELECT MAX("warId") FROM "ClanWarHistory"), 0),
+              COALESCE((SELECT MAX("warId") FROM "CurrentWar"), 0)
+            ) AS max_war_id
+          ),
+          candidates AS (
+            SELECT
+              cw."id",
+              cw."clanTag",
+              cw."lastWarStartTime" AS "warStartTime",
+              cw."currentSyncNum" AS "syncNumber",
+              cw."lastOpponentTag" AS "opponentTag",
+              cw."warId" AS "existingWarId",
+              ROW_NUMBER() OVER (ORDER BY cw."id" ASC) AS rn
+            FROM "CurrentWar" cw
+            WHERE 1=1
+              ${tag ? Prisma.sql`AND UPPER(REPLACE(cw."clanTag",'#','')) = ${tag}` : Prisma.empty}
+              ${warStartTime ? Prisma.sql`AND cw."lastWarStartTime" = ${warStartTime}` : Prisma.empty}
+              ${syncNumber !== null ? Prisma.sql`AND cw."currentSyncNum" = ${syncNumber}` : Prisma.empty}
+              ${opponentTag ? Prisma.sql`AND UPPER(REPLACE(cw."lastOpponentTag",'#','')) = ${opponentTag}` : Prisma.empty}
+              ${filterWarId !== null ? Prisma.sql`AND cw."warId" = ${filterWarId}` : Prisma.empty}
+              ${overwrite ? Prisma.empty : Prisma.sql`AND cw."warId" IS NULL`}
           )
           SELECT
-            cw."id",
-            cw."clanTag",
-            cw."lastWarStartTime" AS "warStartTime",
-            cw."currentSyncNum" AS "syncNumber",
-            cw."lastOpponentTag" AS "opponentTag",
-            cw."warId" AS "existingWarId",
-            ${targetExpr} AS "targetWarId"
-          FROM "CurrentWar" cw
-          LEFT JOIN "ClanWarHistory" h_exact
-            ON UPPER(REPLACE(cw."clanTag",'#','')) = UPPER(REPLACE(h_exact."clanTag",'#',''))
-           AND cw."lastWarStartTime" = h_exact."warStartTime"
-           AND h_exact."warId" IS NOT NULL
-          LEFT JOIN history_latest
-            ON UPPER(REPLACE(cw."clanTag",'#','')) = history_latest.clan_norm
-          WHERE 1=1
-            ${tag ? Prisma.sql`AND UPPER(REPLACE(cw."clanTag",'#','')) = ${tag}` : Prisma.empty}
-            ${warStartTime ? Prisma.sql`AND cw."lastWarStartTime" = ${warStartTime}` : Prisma.empty}
-            ${syncNumber !== null ? Prisma.sql`AND cw."currentSyncNum" = ${syncNumber}` : Prisma.empty}
-            ${opponentTag ? Prisma.sql`AND UPPER(REPLACE(cw."lastOpponentTag",'#','')) = ${opponentTag}` : Prisma.empty}
-            ${filterWarId !== null ? Prisma.sql`AND cw."warId" = ${filterWarId}` : Prisma.empty}
-            ${overwrite ? Prisma.empty : Prisma.sql`AND cw."warId" IS NULL`}
-            AND ${targetExpr} IS NOT NULL
-            AND cw."warId" IS DISTINCT FROM ${targetExpr}
-          ORDER BY cw."clanTag" ASC
+            c."id",
+            c."clanTag",
+            c."warStartTime",
+            c."syncNumber",
+            c."opponentTag",
+            c."existingWarId",
+            ${
+              setWarId !== null
+                ? Prisma.sql`${setWarId}`
+                : Prisma.sql`(b.max_war_id + c.rn)::int`
+            } AS "targetWarId"
+          FROM candidates c
+          CROSS JOIN base_max b
+          WHERE c."existingWarId" IS DISTINCT FROM ${
+            setWarId !== null
+              ? Prisma.sql`${setWarId}`
+              : Prisma.sql`(b.max_war_id + c.rn)::int`
+          }
+          ORDER BY c."clanTag" ASC
         `
       );
+      if (setWarId !== null && rows.length > 1) {
+        await interaction.editReply(
+          "Refusing to set one `set_war_id` across multiple CurrentWar rows. Add tighter filters."
+        );
+        return;
+      }
+      if (setWarId !== null && rows.length === 1) {
+        const existingWarIdRows = await prisma.$queryRaw<Array<{ count: bigint | number }>>(
+          Prisma.sql`
+            SELECT SUM(cnt)::bigint AS count
+            FROM (
+              SELECT COUNT(*)::bigint AS cnt
+              FROM "ClanWarHistory"
+              WHERE "warId" = ${setWarId}
+              UNION ALL
+              SELECT COUNT(*)::bigint AS cnt
+              FROM "CurrentWar"
+              WHERE "warId" = ${setWarId}
+                AND "id" <> ${rows[0].id}
+            ) s
+          `
+        );
+        const taken = Number(existingWarIdRows[0]?.count ?? 0);
+        if (taken > 0) {
+          await interaction.editReply(
+            `set_war_id=${setWarId} is already used in CurrentWar/ClanWarHistory. Choose a unique warId.`
+          );
+          return;
+        }
+      }
       const previewLines = rows.slice(0, 20).map((row) => {
         const warStart = row.warStartTime ? row.warStartTime.toISOString() : "unknown";
         const sync = row.syncNumber ?? "unknown";
@@ -4974,23 +5017,18 @@ export async function runForceSyncWarIdCommand(
       const updated = Number(
         await prisma.$executeRaw(
           Prisma.sql`
-            WITH history_latest AS (
-              SELECT DISTINCT ON (UPPER(REPLACE(h."clanTag",'#','')))
-                UPPER(REPLACE(h."clanTag",'#','')) AS clan_norm,
-                h."warId"
-              FROM "ClanWarHistory" h
-              WHERE h."warId" IS NOT NULL
-              ORDER BY UPPER(REPLACE(h."clanTag",'#','')), h."warStartTime" DESC, h."warId" DESC
+            WITH base_max AS (
+              SELECT GREATEST(
+                COALESCE((SELECT MAX("warId") FROM "ClanWarHistory"), 0),
+                COALESCE((SELECT MAX("warId") FROM "CurrentWar"), 0)
+              ) AS max_war_id
             ),
-            candidates AS (
-              SELECT cw."id", ${targetExpr} AS "targetWarId"
+            base_rows AS (
+              SELECT
+                cw."id",
+                cw."warId" AS "existingWarId",
+                ROW_NUMBER() OVER (ORDER BY cw."id" ASC) AS rn
               FROM "CurrentWar" cw
-              LEFT JOIN "ClanWarHistory" h_exact
-                ON UPPER(REPLACE(cw."clanTag",'#','')) = UPPER(REPLACE(h_exact."clanTag",'#',''))
-               AND cw."lastWarStartTime" = h_exact."warStartTime"
-               AND h_exact."warId" IS NOT NULL
-              LEFT JOIN history_latest
-                ON UPPER(REPLACE(cw."clanTag",'#','')) = history_latest.clan_norm
               WHERE 1=1
                 ${tag ? Prisma.sql`AND UPPER(REPLACE(cw."clanTag",'#','')) = ${tag}` : Prisma.empty}
                 ${warStartTime ? Prisma.sql`AND cw."lastWarStartTime" = ${warStartTime}` : Prisma.empty}
@@ -4998,8 +5036,22 @@ export async function runForceSyncWarIdCommand(
                 ${opponentTag ? Prisma.sql`AND UPPER(REPLACE(cw."lastOpponentTag",'#','')) = ${opponentTag}` : Prisma.empty}
                 ${filterWarId !== null ? Prisma.sql`AND cw."warId" = ${filterWarId}` : Prisma.empty}
                 ${overwrite ? Prisma.empty : Prisma.sql`AND cw."warId" IS NULL`}
-                AND ${targetExpr} IS NOT NULL
-                AND cw."warId" IS DISTINCT FROM ${targetExpr}
+            ),
+            candidates AS (
+              SELECT
+                br."id",
+                ${
+                  setWarId !== null
+                    ? Prisma.sql`${setWarId}`
+                    : Prisma.sql`(b.max_war_id + br.rn)::int`
+                } AS "targetWarId"
+              FROM base_rows br
+              CROSS JOIN base_max b
+              WHERE br."existingWarId" IS DISTINCT FROM ${
+                  setWarId !== null
+                    ? Prisma.sql`${setWarId}`
+                    : Prisma.sql`(b.max_war_id + br.rn)::int`
+                }
             )
             UPDATE "CurrentWar" cw
             SET "warId" = c."targetWarId"
