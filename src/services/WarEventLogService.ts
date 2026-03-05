@@ -61,7 +61,6 @@ export const buildNotifyNextRefreshLabelForTest = buildNextRefreshRelativeLabel;
 type TestSource = "current" | "last";
 
 type SubscriptionRow = {
-  id: number;
   guildId: string;
   clanTag: string;
   warId: number | null;
@@ -247,7 +246,7 @@ export class WarEventLogService {
     const subs = await prisma.$queryRaw<SubscriptionRow[]>(
       Prisma.sql`
         SELECT
-          cw."id",cw."guildId",cw."clanTag",cw."warId",cw."syncNum",
+          cw."guildId",cw."clanTag",cw."warId",cw."syncNum",
           COALESCE(cnc."channelId", tc."notifyChannelId") AS "channelId",
           COALESCE(cnc."embedEnabled", tc."notifyEnabled", false) AS "notify",
           COALESCE(cnc."pingEnabled", cw."pingRole", true) AS "pingRole",
@@ -266,7 +265,7 @@ export class WarEventLogService {
       `
     );
     for (const sub of subs) {
-      await this.processSubscription(sub.id, syncContext).catch((err) => {
+      await this.processSubscription(sub.guildId, sub.clanTag, syncContext).catch((err) => {
         console.error(
           `[war-events] process failed guild=${sub.guildId} clan=${sub.clanTag} error=${formatError(
             err
@@ -751,7 +750,7 @@ export class WarEventLogService {
     const rows = await prisma.$queryRaw<SubscriptionRow[]>(
       Prisma.sql`
         SELECT
-          cw."id",cw."guildId",cw."clanTag",cw."warId",cw."syncNum",
+          cw."guildId",cw."clanTag",cw."warId",cw."syncNum",
           COALESCE(cnc."channelId", tc."notifyChannelId") AS "channelId",
           COALESCE(cnc."embedEnabled", tc."notifyEnabled", false) AS "notify",
           COALESCE(cnc."pingEnabled", cw."pingRole", true) AS "pingRole",
@@ -841,13 +840,14 @@ export class WarEventLogService {
   }
 
   private async processSubscription(
-    subscriptionId: number,
+    guildId: string,
+    clanTag: string,
     syncContext: PollSyncContext
   ): Promise<boolean> {
     const rows = await prisma.$queryRaw<SubscriptionRow[]>(
       Prisma.sql`
         SELECT
-          cw."id",cw."guildId",cw."clanTag",cw."warId",cw."syncNum",
+          cw."guildId",cw."clanTag",cw."warId",cw."syncNum",
           COALESCE(cnc."channelId", tc."notifyChannelId") AS "channelId",
           COALESCE(cnc."embedEnabled", tc."notifyEnabled", false) AS "notify",
           COALESCE(cnc."pingEnabled", cw."pingRole", true) AS "pingRole",
@@ -862,7 +862,8 @@ export class WarEventLogService {
           ON UPPER(REPLACE(tc."tag",'#','')) = UPPER(REPLACE(cw."clanTag",'#',''))
         LEFT JOIN "ClanNotifyConfig" cnc
           ON cnc."guildId" = cw."guildId" AND UPPER(REPLACE(cnc."clanTag",'#','')) = UPPER(REPLACE(cw."clanTag",'#',''))
-        WHERE cw."id" = ${subscriptionId}
+        WHERE cw."guildId" = ${guildId}
+          AND UPPER(REPLACE(cw."clanTag",'#','')) = ${normalizeTagBare(clanTag)}
         LIMIT 1
       `
     );
@@ -1041,51 +1042,40 @@ export class WarEventLogService {
       currentState,
     });
 
-    if (eventType) {
-      console.log(
-        `[war-events] transition detected guild=${sub.guildId} clan=${sub.clanTag} event=${eventType} prev=${prevState} current=${currentState} sync=${syncNumberForEvent ?? "unknown"} warStart=${nextWarStartTime?.toISOString() ?? "unknown"} warEnd=${nextWarEndTime?.toISOString() ?? "unknown"} opponent=${nextOpponentTag || normalizeTag(sub.opponentTag ?? "") || "unknown"}`
-      );
-      const eventPayload = {
-        eventType,
-        clanTag: sub.clanTag,
-        clanName: nextClanName,
-        opponentTag: nextOpponentTag || normalizeTag(sub.opponentTag ?? ""),
-        opponentName: nextOpponentName || sub.opponentName || "Unknown",
-        syncNumber: syncNumberForEvent,
-        notifyRole: sub.notifyRole,
-        pingRole: sub.pingRole,
-        fwaPoints: nextFwaPoints,
-        opponentFwaPoints: nextOpponentFwaPoints,
-        outcome: normalizeOutcome(nextOutcome),
-        matchType: nextMatchType,
-        warStartFwaPoints: nextWarStartFwaPoints,
-        warEndFwaPoints: nextWarEndFwaPoints,
-        clanStars: nextClanStars,
-        opponentStars: nextOpponentStars,
-        prepStartTime: nextPrepStartTime,
-        warStartTime: nextWarStartTime,
-        warEndTime: nextWarEndTime,
-        clanAttacks: nextClanAttacks,
-        opponentAttacks: nextOpponentAttacks,
-        teamSize: nextTeamSize,
-        attacksPerMember: nextAttacksPerMember,
-        clanDestruction: nextClanDestruction,
-        opponentDestruction: nextOpponentDestruction,
-      } as const;
+    const detectedEventPayload = eventType
+      ? ({
+          eventType,
+          clanTag: sub.clanTag,
+          clanName: nextClanName,
+          opponentTag: nextOpponentTag || normalizeTag(sub.opponentTag ?? ""),
+          opponentName: nextOpponentName || sub.opponentName || "Unknown",
+          syncNumber: syncNumberForEvent,
+          notifyRole: sub.notifyRole,
+          pingRole: sub.pingRole,
+          fwaPoints: nextFwaPoints,
+          opponentFwaPoints: nextOpponentFwaPoints,
+          outcome: normalizeOutcome(nextOutcome),
+          matchType: nextMatchType,
+          warStartFwaPoints: nextWarStartFwaPoints,
+          warEndFwaPoints: nextWarEndFwaPoints,
+          clanStars: nextClanStars,
+          opponentStars: nextOpponentStars,
+          prepStartTime: nextPrepStartTime,
+          warStartTime: nextWarStartTime,
+          warEndTime: nextWarEndTime,
+          clanAttacks: nextClanAttacks,
+          opponentAttacks: nextOpponentAttacks,
+          teamSize: nextTeamSize,
+          attacksPerMember: nextAttacksPerMember,
+          clanDestruction: nextClanDestruction,
+          opponentDestruction: nextOpponentDestruction,
+        } as const)
+      : null;
 
-      if (eventType === "war_ended") {
-        await this.history.persistWarEndHistory(eventPayload).catch((err) => {
-          console.error(
-            `[war-events] persist war history failed guild=${sub.guildId} clan=${sub.clanTag} error=${formatError(err)}`
-          );
-        });
-      }
+    if (detectedEventPayload) {
       console.log(
-        `[war-events] emit start guild=${sub.guildId} channel=${sub.channelId} clan=${eventPayload.clanTag} event=${eventPayload.eventType}`
+        `[war-events] transition detected guild=${sub.guildId} clan=${sub.clanTag} event=${detectedEventPayload.eventType} prev=${prevState} current=${currentState} sync=${syncNumberForEvent ?? "unknown"} warStart=${nextWarStartTime?.toISOString() ?? "unknown"} warEnd=${nextWarEndTime?.toISOString() ?? "unknown"} opponent=${nextOpponentTag || normalizeTag(sub.opponentTag ?? "") || "unknown"}`
       );
-      if (sub.notify && sub.channelId) {
-        await this.emitEvent(sub.channelId, eventPayload, resolvedWarId);
-      }
     }
 
     await prisma.currentWar.update({
@@ -1111,7 +1101,33 @@ export class WarEventLogService {
         updatedAt: new Date(),
       },
     });
+    if (detectedEventPayload) {
+      await this.dispatchDetectedEvent({
+        sub,
+        payload: detectedEventPayload,
+        resolvedWarId,
+      });
+    }
     return eventType === "war_ended";
+  }
+
+  private async dispatchDetectedEvent(params: {
+    sub: SubscriptionRow;
+    payload: EventEmitPayload;
+    resolvedWarId: number | null;
+  }): Promise<void> {
+    if (params.payload.eventType === "war_ended") {
+      await this.history.persistWarEndHistory(params.payload).catch((err) => {
+        console.error(
+          `[war-events] persist war history failed guild=${params.sub.guildId} clan=${params.sub.clanTag} error=${formatError(err)}`
+        );
+      });
+    }
+    if (!params.sub.notify || !params.sub.channelId) return;
+    console.log(
+      `[war-events] emit start guild=${params.sub.guildId} channel=${params.sub.channelId} clan=${params.payload.clanTag} event=${params.payload.eventType}`
+    );
+    await this.emitEvent(params.sub.channelId, params.payload, params.resolvedWarId);
   }
 
   private async resolveWarId(clanTagInput: string, warStartTime: Date | null): Promise<number | null> {
