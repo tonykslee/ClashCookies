@@ -27,6 +27,7 @@ import {
 } from "../services/CommandPermissionService";
 import { GoogleSheetsService } from "../services/GoogleSheetsService";
 import { SettingsService } from "../services/SettingsService";
+import { WarEventLogService } from "../services/WarEventLogService";
 import { getNextWarMailRefreshAtMs } from "../services/refreshSchedule";
 import { WarEventHistoryService } from "../services/war-events/history";
 import {
@@ -2912,6 +2913,13 @@ export async function handleFwaMailConfirmButton(interaction: ButtonInteraction)
     matchType: rendered.matchType,
     expectedOutcome: rendered.expectedOutcome,
   });
+  await new WarEventLogService(interaction.client, cocService)
+    .refreshCurrentNotifyPost(payload.guildId, payload.tag)
+    .catch((err) => {
+      console.error(
+        `[fwa-mail] notify refresh after mail send failed guild=${payload.guildId} clan=#${normalizeTag(payload.tag)} error=${formatError(err)}`
+      );
+    });
   fwaMailPreviewPayloads.delete(parsed.key);
   const refreshedSource = await refreshSourceMatchMessageAfterMailSend(interaction, payload).catch(
     () => ({ refreshed: null, showMode: "embed" as const, sourceUpdated: false })
