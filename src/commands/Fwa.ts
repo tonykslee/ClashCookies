@@ -3333,6 +3333,11 @@ type TrackedClanPointsScrape = {
   pointsSiteUpToDate: boolean;
 };
 
+type VersionedJsonBlob = {
+  version?: number;
+  data?: unknown;
+};
+
 type ActualSheetClanSnapshot = {
   totalWeight: string | null;
   weightCompo: string | null;
@@ -3417,7 +3422,16 @@ function extractMatchupHeader(topText: string): MatchupHeader {
 
 function parseTrackedClanPointsScrape(value: unknown): TrackedClanPointsScrape | null {
   if (!value || typeof value !== "object") return null;
-  const obj = value as Record<string, unknown>;
+  const root = value as Record<string, unknown>;
+  const maybeVersioned = root as VersionedJsonBlob;
+  const payload =
+    typeof maybeVersioned.version === "number" &&
+    maybeVersioned.data &&
+    typeof maybeVersioned.data === "object" &&
+    !Array.isArray(maybeVersioned.data)
+      ? (maybeVersioned.data as Record<string, unknown>)
+      : root;
+  const obj = payload;
   const trackedClanTag = normalizeTag(String(obj.trackedClanTag ?? ""));
   if (!trackedClanTag) return null;
   const opponentClanTagRaw = String(obj.opponentClanTag ?? "").trim();
@@ -3446,6 +3460,15 @@ function parseTrackedClanPointsScrape(value: unknown): TrackedClanPointsScrape |
     matchup: String(obj.matchup ?? ""),
     pointsSiteUpToDate: Boolean(obj.pointsSiteUpToDate),
   };
+}
+
+function asVersionedPointsScrapeInputJson(
+  scrape: TrackedClanPointsScrape
+): Prisma.InputJsonValue {
+  return {
+    version: 1,
+    data: scrape,
+  } as Prisma.InputJsonValue;
 }
 
 function buildSnapshotFromTrackedScrape(
@@ -4697,7 +4720,7 @@ export async function runForceSyncDataCommand(
   };
   await prisma.trackedClan.update({
     where: { tag: `#${tag}` },
-    data: { pointsScrape },
+    data: { pointsScrape: asVersionedPointsScrapeInputJson(pointsScrape) },
   });
 
   await interaction.editReply(

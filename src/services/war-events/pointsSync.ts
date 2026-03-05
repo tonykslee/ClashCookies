@@ -42,6 +42,26 @@ type TrackedClanPointsScrape = {
   pointsSiteUpToDate: boolean;
 };
 
+type VersionedJsonBlob = {
+  version?: number;
+  data?: unknown;
+};
+
+function unwrapVersionedRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const root = value as Record<string, unknown>;
+  const maybeVersioned = root as VersionedJsonBlob;
+  if (
+    typeof maybeVersioned.version === "number" &&
+    maybeVersioned.data &&
+    typeof maybeVersioned.data === "object" &&
+    !Array.isArray(maybeVersioned.data)
+  ) {
+    return maybeVersioned.data as Record<string, unknown>;
+  }
+  return root;
+}
+
 export type PointsSyncSubscriptionLike = {
   clanTag: string;
   fwaPoints: number | null;
@@ -66,7 +86,7 @@ export class WarStartPointsSyncService {
     });
     const scrapeCandidates = tracked
       .map((row) => {
-        const value = row.pointsScrape as Record<string, unknown> | null;
+        const value = unwrapVersionedRecord(row.pointsScrape);
         if (!value || typeof value !== "object" || Array.isArray(value)) return null;
         if (!value.pointsSiteUpToDate) return null;
         const syncRaw = Number(value.syncNumber ?? NaN);
@@ -295,7 +315,12 @@ export class WarStartPointsSyncService {
 
     await prisma.trackedClan.updateMany({
       where: { tag: { equals: blob.trackedClanTag, mode: "insensitive" } },
-      data: { pointsScrape: blob },
+      data: {
+        pointsScrape: {
+          version: 1,
+          data: blob,
+        },
+      },
     });
   }
 

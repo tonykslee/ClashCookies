@@ -49,6 +49,8 @@ model BotSetting {
   value     String
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([updatedAt])
 }
 
 model PlayerLink {
@@ -129,11 +131,11 @@ model RecruitmentCooldown {
   @@unique([userId, clanTag, platform])
   @@index([userId, expiresAt])
   @@index([expiresAt, reminded])
+  @@index([expiresAt])
 }
 
 model WarAttacks {
-  id               Int       @id @default(autoincrement())
-  warId            Int?
+  warId            Int
   clanTag          String
   clanName         String?
   opponentClanTag  String?
@@ -157,7 +159,8 @@ model WarAttacks {
   updatedAt        DateTime  @updatedAt
   createdAt        DateTime  @default(now())
 
-  @@unique([warId, playerTag, attackNumber])
+  @@id([warId, playerTag, attackNumber])
+  @@unique([clanTag, warStartTime, playerTag, attackOrder])
   @@index([clanTag, warStartTime])
   @@index([playerTag, warStartTime])
   @@index([warId])
@@ -256,6 +259,6 @@ model WarEvent {
   payload   Json
 
   @@id([warId, clanTag, eventType])
-  @@index([clanTag, createdAt])
+  @@index([clanTag, createdAt(sort: Desc)])
 }
 

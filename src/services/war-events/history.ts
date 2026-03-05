@@ -13,6 +13,26 @@ import {
   parseCocTime,
 } from "./core";
 
+type VersionedJsonBlob = {
+  version?: number;
+  data?: unknown;
+};
+
+function unwrapVersionedRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const root = value as Record<string, unknown>;
+  const maybeVersioned = root as VersionedJsonBlob;
+  if (
+    typeof maybeVersioned.version === "number" &&
+    maybeVersioned.data &&
+    typeof maybeVersioned.data === "object" &&
+    !Array.isArray(maybeVersioned.data)
+  ) {
+    return maybeVersioned.data as Record<string, unknown>;
+  }
+  return root;
+}
+
 /** Purpose: encapsulate war-end history, compliance, and war-plan related logic. */
 export class WarEventHistoryService {
   /** Purpose: initialize war history service dependencies. */
@@ -220,7 +240,7 @@ export class WarEventHistoryService {
 
     // Normalize ended-war rows to carry resolved warId before archive/delete lifecycle.
     await prisma.warAttacks.updateMany({
-      where: { clanTag, warStartTime, warId: null },
+      where: { clanTag, warStartTime },
       data: { warId },
     });
     await prisma.currentWar.updateMany({
@@ -325,16 +345,19 @@ export class WarEventHistoryService {
       where: { tag: clanTag },
       select: { pointsScrape: true },
     });
-    if (tracked?.pointsScrape && typeof tracked.pointsScrape === "object") {
-      const blob = tracked.pointsScrape as Record<string, unknown>;
+    const trackedBlob = unwrapVersionedRecord(tracked?.pointsScrape);
+    if (trackedBlob) {
       await prisma.trackedClan.update({
         where: { tag: clanTag },
         data: {
           pointsScrape: {
-            ...(blob as object),
-            pointsSiteUpToDate: false,
-            activeFwa: false,
-            fetchedAtMs: Date.now(),
+            version: 1,
+            data: {
+              ...(trackedBlob as object),
+              pointsSiteUpToDate: false,
+              activeFwa: false,
+              fetchedAtMs: Date.now(),
+            },
           },
         },
       });

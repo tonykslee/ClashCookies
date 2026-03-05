@@ -46,6 +46,11 @@ export const MATCH_MAIL_CONFIG_DEFAULT: MatchMailConfig = {
   skipSyncHistory: null,
 };
 
+type VersionedBlob = {
+  version?: number;
+  data?: unknown;
+};
+
 function normalizeTag(input: string): string {
   return input.trim().toUpperCase().replace(/^#/, "");
 }
@@ -71,7 +76,16 @@ export function parseMatchMailConfig(value: Prisma.JsonValue | null | undefined)
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return { ...MATCH_MAIL_CONFIG_DEFAULT };
   }
-  const obj = value as Record<string, unknown>;
+  const root = value as Record<string, unknown>;
+  const maybeVersioned = root as VersionedBlob;
+  const payload =
+    typeof maybeVersioned.version === "number" &&
+    maybeVersioned.data &&
+    typeof maybeVersioned.data === "object" &&
+    !Array.isArray(maybeVersioned.data)
+      ? (maybeVersioned.data as Record<string, unknown>)
+      : root;
+  const obj = payload;
   const rawMessages = Array.isArray(obj.messages) ? obj.messages : [];
   const messages: MatchMailMessageRef[] = [];
   for (const entry of rawMessages) {
@@ -157,7 +171,10 @@ export function parseMatchMailConfig(value: Prisma.JsonValue | null | undefined)
 }
 
 export function asMailConfigInputJson(config: MatchMailConfig): Prisma.InputJsonValue {
-  return config as unknown as Prisma.InputJsonValue;
+  return {
+    version: 1,
+    data: config,
+  } as unknown as Prisma.InputJsonValue;
 }
 
 export function buildDiscordMessageUrl(guildId: string, channelId: string, messageId: string): string {
