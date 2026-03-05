@@ -1,5 +1,6 @@
 import axios from "axios";
 import { CoCService } from "./CoCService";
+import { recordFetchEvent } from "../helper/fetchTelemetry";
 
 const POINTS_BASE_URL = "https://points.fwafarm.com/clan?tag=";
 const TIEBREAK_ORDER = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
@@ -146,6 +147,12 @@ export class PointsProjectionService {
       responseType: "text",
       headers: POINTS_REQUEST_HEADERS,
       validateStatus: () => true,
+    });
+    recordFetchEvent({
+      namespace: "points",
+      operation: "projection_fetch",
+      source: "web",
+      detail: `tag=${normalizedTag} status=${response.status}`,
     });
     if (response.status >= 400) {
       return {
