@@ -1092,7 +1092,12 @@ export class WarEventLogService {
     }
 
     await prisma.currentWar.update({
-      where: { clanTag: sub.clanTag },
+      where: {
+        clanTag_guildId: {
+          guildId: sub.guildId,
+          clanTag: sub.clanTag,
+        },
+      },
       data: {
         warId: currentState === "notInWar" ? (sub.warId ?? null) : resolvedWarId,
         state: currentState,
@@ -1717,7 +1722,12 @@ export class WarEventLogService {
       currentState: "inWar",
     });
     await prisma.currentWar.update({
-      where: { clanTag: sub.clanTag },
+      where: {
+        clanTag_guildId: {
+          guildId: sub.guildId,
+          clanTag: sub.clanTag,
+        },
+      },
       data: {
         warId: resolvedWarId,
         state: "inWar",

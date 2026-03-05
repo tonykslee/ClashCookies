@@ -457,7 +457,7 @@ export const TrackedClan: Command = {
             : null;
           await prisma.currentWar.upsert({
             where: {
-              guildId_clanTag: {
+              clanTag_guildId: {
                 guildId: interaction.guildId,
                 clanTag: tag,
               },
