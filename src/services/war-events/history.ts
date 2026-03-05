@@ -218,6 +218,16 @@ export class WarEventHistoryService {
     const warId = Number(row[0]?.warId ?? NaN);
     if (!Number.isFinite(warId)) return;
 
+    // Normalize ended-war rows to carry resolved warId before archive/delete lifecycle.
+    await prisma.warAttacks.updateMany({
+      where: { clanTag, warStartTime, warId: null },
+      data: { warId },
+    });
+    await prisma.currentWar.updateMany({
+      where: { clanTag, startTime: warStartTime, warId: null },
+      data: { warId },
+    });
+
     const currentSnapshot = await prisma.currentWar.findFirst({
       where: { clanTag, startTime: warStartTime },
       select: {
@@ -344,8 +354,12 @@ export class WarEventHistoryService {
           "payload" = EXCLUDED."payload"
       `
     );
+    // Ephemeral lifecycle: archive complete, then clear active-war rows by warId.
     await prisma.warAttacks.deleteMany({
-      where: { clanTag, warStartTime },
+      where: { warId },
+    });
+    await prisma.currentWar.deleteMany({
+      where: { warId },
     });
   }
 
