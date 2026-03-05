@@ -34,20 +34,32 @@ function normalizeTag(input: string): string {
 export class PostedMessageService {
   async savePostedMessage(input: SavePostedMessageInput) {
     const clanTag = `#${normalizeTag(input.clanTag)}`;
-    const existing = await prisma.clanPostedMessage.findFirst({
-      where: {
-        guildId: input.guildId,
-        clanTag,
-        warId: input.warId ?? null,
-        type: input.type,
-        event: input.event ?? null,
-      },
-      orderBy: { createdAt: "desc" },
-    });
+    const existing =
+      input.type === "mail"
+        ? await prisma.clanPostedMessage.findFirst({
+            where: {
+              guildId: input.guildId,
+              clanTag,
+              type: "mail",
+              OR: [{ warId: input.warId ?? null }, { warId: null }],
+            },
+            orderBy: { createdAt: "desc" },
+          })
+        : await prisma.clanPostedMessage.findFirst({
+            where: {
+              guildId: input.guildId,
+              clanTag,
+              warId: input.warId ?? null,
+              type: input.type,
+              event: input.event ?? null,
+            },
+            orderBy: { createdAt: "desc" },
+          });
     if (existing) {
       return prisma.clanPostedMessage.update({
         where: { id: existing.id },
         data: {
+          warId: input.warId ?? existing.warId,
           channelId: input.channelId,
           messageId: input.messageId,
           messageUrl: input.messageUrl,
@@ -91,7 +103,7 @@ export class PostedMessageService {
         guildId: input.guildId,
         clanTag: `#${normalizeTag(input.clanTag)}`,
         type: "mail",
-        warId: input.warId ?? null,
+        OR: [{ warId: input.warId ?? null }, { warId: null }],
       },
       orderBy: { createdAt: "desc" },
     });
