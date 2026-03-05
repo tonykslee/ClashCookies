@@ -27,17 +27,20 @@ model PlayerActivity {
 }
 
 model TrackedClan {
-  id            Int       @id @default(autoincrement())
-  tag           String    @unique
-  name          String?
-  loseStyle     LoseStyle @default(TRIPLE_TOP_30)
-  mailChannelId String?
-  logChannelId  String?
-  clanRoleId    String?
-  clanBadge     String?
-  shortName     String?
-  pointsScrape  Json?
-  createdAt     DateTime  @default(now())
+  id              Int       @id @default(autoincrement())
+  tag             String    @unique
+  name            String?
+  loseStyle       LoseStyle @default(TRIPLE_TOP_30)
+  mailChannelId   String?
+  logChannelId    String?
+  clanRoleId      String?
+  clanBadge       String?
+  shortName       String?
+  pointsScrape    Json?
+  notifyChannelId String?
+  notifyRole      String?
+  notifyEnabled   Boolean   @default(false)
+  createdAt       DateTime  @default(now())
 }
 
 model BotSetting {
