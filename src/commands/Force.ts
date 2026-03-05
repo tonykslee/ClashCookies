@@ -12,10 +12,37 @@ import {
   runForceMailUpdateCommand,
   runForceSyncDataCommand,
   runForceSyncMailCommand,
+  refreshAllTrackedWarMailPosts,
 } from "./Fwa";
+import { runFetchTelemetryBatch } from "../helper/fetchTelemetry";
+import { WarEventLogService } from "../services/WarEventLogService";
+import { formatError } from "../helper/formatError";
 
 function normalizeTag(input: string): string {
   return input.trim().toUpperCase().replace(/^#/, "");
+}
+
+async function runForcePollWarEventsCommand(
+  client: Client,
+  interaction: ChatInputCommandInteraction,
+  cocService: CoCService
+): Promise<void> {
+  await interaction.deferReply({ ephemeral: true });
+
+  const warEventLogService = new WarEventLogService(client, cocService);
+  try {
+    await runFetchTelemetryBatch("war_event_poll_manual", async () => {
+      await warEventLogService.poll();
+      await warEventLogService.refreshBattleDayPosts();
+      await refreshAllTrackedWarMailPosts(client);
+    });
+    await interaction.editReply(
+      "Manual war-event poll + refresh completed successfully."
+    );
+  } catch (err) {
+    const message = formatError(err);
+    await interaction.editReply(`Manual war-event poll failed: ${message}`);
+  }
 }
 
 export const Force: Command = {
@@ -165,6 +192,18 @@ export const Force: Command = {
       ],
     },
     {
+      name: "poll",
+      description: "Manually trigger poll loops",
+      type: ApplicationCommandOptionType.SubcommandGroup,
+      options: [
+        {
+          name: "war-events",
+          description: "Run war event poll + refresh now",
+          type: ApplicationCommandOptionType.Subcommand,
+        },
+      ],
+    },
+    {
       name: "mail",
       description: "Force operations for posted war mail",
       type: ApplicationCommandOptionType.SubcommandGroup,
@@ -187,7 +226,7 @@ export const Force: Command = {
     },
   ],
   run: async (
-    _client: Client,
+    client: Client,
     interaction: ChatInputCommandInteraction,
     cocService: CoCService
   ) => {
@@ -208,6 +247,10 @@ export const Force: Command = {
     }
     if (subcommandGroup === "mail" && subcommand === "update") {
       await runForceMailUpdateCommand(interaction);
+      return;
+    }
+    if (subcommandGroup === "poll" && subcommand === "war-events") {
+      await runForcePollWarEventsCommand(client, interaction, cocService);
       return;
     }
 
