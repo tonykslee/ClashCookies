@@ -3306,8 +3306,10 @@ function extractPointBalance(html: string): number | null {
   return Number(textMatch[1]);
 }
 
-function extractActiveFwa(text: string): boolean | null {
-  const raw = extractField(text, "Active FWA");
+function extractActiveFwa(...texts: Array<string | null | undefined>): boolean | null {
+  const raw = texts
+    .map((text) => (text ? extractField(text, "Active FWA") : null))
+    .find((value) => value);
   if (!raw) return null;
   if (/^yes$/i.test(raw)) return true;
   if (/^no$/i.test(raw)) return false;
@@ -3939,7 +3941,7 @@ async function scrapeClanPoints(tag: string): Promise<PointsSnapshot> {
   const plain = toPlainText(html);
   const topSection = extractTopSectionText(html);
   const topHeader = extractMatchupHeader(topSection);
-  const activeFwa = extractActiveFwa(topSection || plain);
+  const activeFwa = extractActiveFwa(topSection, plain);
   const clanNameFromHeader =
     topHeader.primaryTag === normalizedTag
       ? topHeader.primaryName
