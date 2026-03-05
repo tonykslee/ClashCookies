@@ -56,6 +56,7 @@ import {
   parseMatchMailConfig,
 } from "./fwa/mailConfig";
 import { PostedMessageService } from "../services/PostedMessageService";
+import { PointsSyncService } from "../services/PointsSyncService";
 export { isMissedSyncClanForTest } from "./fwa/matchState";
 
 const POINTS_BASE_URL = "https://points.fwafarm.com/clan?tag=";
@@ -81,6 +82,7 @@ const WAR_MAIL_REFRESH_MS = 20 * 60 * 1000;
 const MAILBOX_SENT_EMOJI = "📬";
 const MAILBOX_NOT_SENT_EMOJI = "📭";
 const postedMessageService = new PostedMessageService();
+const pointsSyncService = new PointsSyncService();
 const POINTS_REQUEST_HEADERS = {
   "User-Agent":
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
@@ -111,6 +113,13 @@ type PointsSnapshot = {
   lastWarCheckAtMs: number;
   fetchedAtMs: number;
   refreshedForWarEndMs: number | null;
+};
+
+type SyncValidationState = {
+  siteCurrent: boolean;
+  syncRowMissing: boolean;
+  differences: string[];
+  statusLine: string;
 };
 
 
@@ -695,17 +704,9 @@ async function getTrackedClanMailConfig(tag: string): Promise<{
 
 async function resolveCurrentSyncNumForMailConfirm(tag: string): Promise<number | null> {
   const normalizedTag = normalizeTag(tag);
-  const tracked = await prisma.trackedClan.findFirst({
-    where: { tag: { equals: `#${normalizedTag}`, mode: "insensitive" } },
-    select: { pointsScrape: true },
-  });
-  const trackedScrape = parseTrackedClanPointsScrape(tracked?.pointsScrape ?? null);
-  if (
-    trackedScrape?.pointsSiteUpToDate &&
-    trackedScrape.syncNumber !== null &&
-    Number.isFinite(trackedScrape.syncNumber)
-  ) {
-    return Math.trunc(trackedScrape.syncNumber);
+  const latestSync = await pointsSyncService.findLatestSyncNum({ clanTag: normalizedTag });
+  if (latestSync !== null) {
+    return latestSync;
   }
   const lastHistory = await prisma.clanWarHistory.findFirst({
     where: {
@@ -2289,16 +2290,12 @@ export async function handleFwaMatchSkipSyncConfirmButton(
 
   const tracked = await prisma.trackedClan.findFirst({
     where: { tag: { equals: `#${parsed.tag}`, mode: "insensitive" } },
-    select: { pointsScrape: true, name: true },
+    select: { name: true },
   });
-  const trackedScrape = parseTrackedClanPointsScrape(tracked?.pointsScrape ?? null);
   let resolvedSyncNum: number | null = null;
-  if (
-    trackedScrape?.pointsSiteUpToDate &&
-    trackedScrape.syncNumber !== null &&
-    Number.isFinite(trackedScrape.syncNumber)
-  ) {
-    resolvedSyncNum = Math.trunc(trackedScrape.syncNumber);
+  const latestSync = await pointsSyncService.findLatestSyncNum({ clanTag: parsed.tag });
+  if (latestSync !== null) {
+    resolvedSyncNum = latestSync;
   } else {
     const lastHistory = await prisma.clanWarHistory.findFirst({
       where: {
@@ -3357,24 +3354,17 @@ async function getSourceOfTruthSync(
   _settings: SettingsService,
   _guildId?: string | null
 ): Promise<number | null> {
-  const tracked = await prisma.trackedClan.findMany({
-    select: { tag: true, pointsScrape: true },
+  const latestSync = await pointsSyncService.findLatestSyncNum({
+    guildId: _guildId ?? null,
   });
-  const trackedTags = new Set(tracked.map((row) => normalizeTag(row.tag)));
-  const scrapeSyncCandidates = tracked
-    .map((row) => parseTrackedClanPointsScrape(row.pointsScrape))
-    .filter(
-      (scrape): scrape is TrackedClanPointsScrape =>
-        Boolean(scrape && scrape.pointsSiteUpToDate && scrape.syncNumber !== null)
-    )
-    .map((scrape) => Number(scrape.syncNumber))
-    .filter((value) => Number.isFinite(value))
-    .map((value) => Math.trunc(value));
-  if (scrapeSyncCandidates.length > 0) {
-    const maxSync = Math.max(...scrapeSyncCandidates);
-    return Math.max(0, maxSync - 1);
+  if (latestSync !== null) {
+    return Math.max(0, latestSync - 1);
   }
 
+  const tracked = await prisma.trackedClan.findMany({
+    select: { tag: true },
+  });
+  const trackedTags = new Set(tracked.map((row) => normalizeTag(row.tag)));
   const trackedForHistory = [...trackedTags];
   const latestHistory = await prisma.clanWarHistory.findFirst({
     where: {
@@ -3384,12 +3374,132 @@ async function getSourceOfTruthSync(
     orderBy: { warStartTime: "desc" },
     select: { syncNumber: true },
   });
-  const latestSync = Number(latestHistory?.syncNumber ?? NaN);
-  if (Number.isFinite(latestSync)) {
-    return Math.max(0, Math.trunc(latestSync));
+  const latestHistorySync = Number(latestHistory?.syncNumber ?? NaN);
+  if (Number.isFinite(latestHistorySync)) {
+    return Math.max(0, Math.trunc(latestHistorySync));
   }
 
   return null;
+}
+
+function getWarStartDateForSync(
+  currentStartTime: Date | null | undefined,
+  war: { startTime?: string | null } | null | undefined
+): Date | null {
+  if (currentStartTime instanceof Date) return currentStartTime;
+  const startMs = parseCocApiTime(war?.startTime);
+  if (startMs === null || !Number.isFinite(startMs)) return null;
+  return new Date(startMs);
+}
+
+function buildSyncValidationState(input: {
+  syncRow: {
+    syncNum: number;
+    opponentTag: string;
+    clanPoints: number;
+    opponentPoints: number;
+    warStartTime: Date;
+  } | null;
+  currentWarStartTime: Date | null;
+  siteCurrent: boolean;
+  syncNum: number | null;
+  opponentTag: string;
+  clanPoints: number | null;
+  opponentPoints: number | null;
+}): SyncValidationState {
+  if (!input.siteCurrent) {
+    return {
+      siteCurrent: false,
+      syncRowMissing: input.syncRow === null,
+      differences: [],
+      statusLine: ":hourglass_flowing_sand: points.fwafarm is not updated for this matchup yet.",
+    };
+  }
+
+  const differences: string[] = [];
+  if (!input.syncRow) {
+    differences.push("• Missing sync row for this war");
+  } else {
+    if (
+      input.syncNum === null ||
+      !Number.isFinite(input.syncNum) ||
+      Math.trunc(input.syncNum) !== Math.trunc(input.syncRow.syncNum)
+    ) {
+      differences.push("• Sync number mismatch");
+    }
+    if (normalizeTag(input.syncRow.opponentTag) !== normalizeTag(input.opponentTag)) {
+      differences.push("• Opponent tag mismatch");
+    }
+    if (
+      input.clanPoints === null ||
+      !Number.isFinite(input.clanPoints) ||
+      Math.trunc(input.clanPoints) !== Math.trunc(input.syncRow.clanPoints)
+    ) {
+      differences.push("• Clan points mismatch");
+    }
+    if (
+      input.opponentPoints === null ||
+      !Number.isFinite(input.opponentPoints) ||
+      Math.trunc(input.opponentPoints) !== Math.trunc(input.syncRow.opponentPoints)
+    ) {
+      differences.push("• Opponent points mismatch");
+    }
+    if (
+      input.currentWarStartTime &&
+      input.syncRow.warStartTime.getTime() !== input.currentWarStartTime.getTime()
+    ) {
+      differences.push("• War start time mismatch");
+    }
+  }
+
+  return {
+    siteCurrent: true,
+    syncRowMissing: input.syncRow === null,
+    differences,
+    statusLine:
+      differences.length > 0
+        ? "⚠ Data not fully synced with points.fwafarm"
+        : "✅ Data is in sync with points.fwafarm",
+  };
+}
+
+async function persistClanPointsSyncIfCurrent(input: {
+  guildId: string | null | undefined;
+  clanTag: string;
+  warId: number | null | undefined;
+  warStartTime: Date | null;
+  siteCurrent: boolean;
+  syncNum: number | null;
+  opponentTag: string;
+  clanPoints: number | null;
+  opponentPoints: number | null;
+}): Promise<void> {
+  if (!input.guildId || !input.warStartTime || !input.siteCurrent) return;
+  if (
+    input.syncNum === null ||
+    !Number.isFinite(input.syncNum) ||
+    input.clanPoints === null ||
+    !Number.isFinite(input.clanPoints) ||
+    input.opponentPoints === null ||
+    !Number.isFinite(input.opponentPoints) ||
+    !input.opponentTag
+  ) {
+    return;
+  }
+
+  await pointsSyncService.upsertPointsSync({
+    guildId: input.guildId,
+    clanTag: input.clanTag,
+    warId:
+      input.warId !== null && input.warId !== undefined && Number.isFinite(input.warId)
+        ? String(Math.trunc(input.warId))
+        : null,
+    warStartTime: input.warStartTime,
+    syncNum: Math.trunc(input.syncNum),
+    opponentTag: input.opponentTag,
+    clanPoints: Math.trunc(input.clanPoints),
+    opponentPoints: Math.trunc(input.opponentPoints),
+  });
 }
 
 async function resolveMatchTypeWithFallback(params: {
@@ -3462,10 +3572,10 @@ type TrackedClanPointsScrape = {
   opponentClanTag: string | null;
   pointBalance: number | null;
   opponentPointBalance: number | null;
-  activeFwa: boolean;
-  syncNumber: number | null;
   matchup: string;
-  pointsSiteUpToDate: boolean;
+  activeFwa?: boolean;
+  syncNumber?: number | null;
+  pointsSiteUpToDate?: boolean;
 };
 
 type VersionedJsonBlob = {
@@ -3639,7 +3749,8 @@ function isPointsScrapeUpdatedForOpponent(
   scrape: TrackedClanPointsScrape | null,
   opponentTag: string
 ): boolean {
-  if (!scrape || !scrape.pointsSiteUpToDate) return false;
+  if (!scrape) return false;
+  if (scrape.pointsSiteUpToDate === false) return false;
   if (!scrape.opponentClanTag) return false;
   return normalizeTag(scrape.opponentClanTag) === normalizeTag(opponentTag);
 }
@@ -3861,7 +3972,6 @@ async function getClanPointsCached(
     const trackedScrape = parseTrackedClanPointsScrape(tracked?.pointsScrape ?? null);
     const useTrackedScrape =
       trackedScrape &&
-      trackedScrape.pointsSiteUpToDate &&
       (!requiredOpponentTag || isPointsScrapeUpdatedForOpponent(trackedScrape, requiredOpponentTag));
     if (trackedScrape && useTrackedScrape) {
       recordFetchEvent({
@@ -4100,6 +4210,9 @@ async function buildTrackedMatchOverview(
     where: guildId ? { guildId } : undefined,
     select: {
       clanTag: true,
+      warId: true,
+      startTime: true,
+      syncNum: true,
       matchType: true,
       inferredMatchType: true,
       outcome: true,
@@ -4480,6 +4593,36 @@ async function buildTrackedMatchOverview(
       scrapeIsCurrentOpponent ||
         (primaryPoints && isPointsSiteUpdatedForOpponent(primaryPoints, opponentTag, sourceSync))
     );
+    const warStartTimeForSync = getWarStartDateForSync(sub?.startTime ?? null, war);
+    await persistClanPointsSyncIfCurrent({
+      guildId,
+      clanTag,
+      warId: sub?.warId ?? null,
+      warStartTime: warStartTimeForSync,
+      siteCurrent: siteUpdatedForAlert,
+      syncNum: siteSyncObservedForWrite,
+      opponentTag,
+      clanPoints: primaryPoints?.balance ?? null,
+      opponentPoints: opponentPoints?.balance ?? null,
+    });
+    const syncRow = await pointsSyncService.findSyncRecord({
+      guildId: guildId ?? "",
+      clanTag,
+      warId:
+        sub?.warId !== null && sub?.warId !== undefined && Number.isFinite(sub?.warId)
+          ? String(Math.trunc(sub.warId))
+          : null,
+      warStartTime: warStartTimeForSync,
+    });
+    const validationState = buildSyncValidationState({
+      syncRow,
+      currentWarStartTime: warStartTimeForSync,
+      siteCurrent: siteUpdatedForAlert,
+      syncNum: siteSyncObservedForWrite,
+      opponentTag,
+      clanPoints: primaryPoints?.balance ?? null,
+      opponentPoints: opponentPoints?.balance ?? null,
+    });
     const primaryMismatch = siteUpdatedForAlert
       ? buildPointsMismatchWarning(
           clanName,
@@ -4506,11 +4649,24 @@ async function buildTrackedMatchOverview(
           derivedOutcome
         )
       : null;
-    const mismatchLines = [primaryMismatch, opponentMismatch, syncMismatch, outcomeMismatch]
+    const validationMismatchLines = validationState.differences.join("\n");
+    const mismatchLines = [
+      primaryMismatch,
+      opponentMismatch,
+      syncMismatch,
+      outcomeMismatch,
+      validationMismatchLines,
+    ]
       .filter(Boolean)
       .join("\n");
-    const hasMismatch = Boolean(primaryMismatch || opponentMismatch || syncMismatch || outcomeMismatch);
-    const pointsSyncStatus = buildPointsSyncStatusLine(siteUpdatedForAlert, hasMismatch);
+    const hasMismatch = Boolean(
+      primaryMismatch ||
+        opponentMismatch ||
+        syncMismatch ||
+        outcomeMismatch ||
+        validationState.differences.length > 0
+    );
+    const pointsSyncStatus = validationState.statusLine;
     const siteMatchType = hasOpponentPoints ? "FWA" : "MM";
     const opponentCcUrl = buildCcVerifyUrl(opponentTag);
     const opponentPointsUrl = buildOfficialPointsUrl(opponentTag);
@@ -4790,7 +4946,6 @@ export async function runForceSyncDataCommand(
   const tag = normalizeTag(rawTag);
   const datapoint = interaction.options.getString("datapoint", false) ?? "all";
   const shouldOverwritePoints = datapoint === "all" || datapoint === "points";
-  const shouldOverwriteSyncNum = datapoint === "all" || datapoint === "syncNum";
   const trackedClan = await prisma.trackedClan.findFirst({
     where: { tag: { equals: `#${tag}`, mode: "insensitive" } },
     select: { tag: true, name: true },
@@ -4840,9 +4995,6 @@ export async function runForceSyncDataCommand(
     pointBalance:
       fresh.balance !== null && Number.isFinite(fresh.balance) ? fresh.balance : null,
     opponentPointBalance: opponentBalance,
-    activeFwa: Boolean(opponentTag),
-    syncNumber:
-      siteSync !== null && Number.isFinite(siteSync) ? Math.trunc(siteSync) : null,
     matchup: buildPointsScrapeMatchupSummary(
       sanitizeClanName(trackedClan.name) ?? sanitizeClanName(fresh.clanName) ?? null,
       tag,
@@ -4853,12 +5005,52 @@ export async function runForceSyncDataCommand(
       siteSync !== null && Number.isFinite(siteSync) ? Math.trunc(siteSync) : null,
       Boolean(opponentTag)
     ),
-    pointsSiteUpToDate: siteUpdatedForOpponent,
   };
   await prisma.trackedClan.update({
     where: { tag: `#${tag}` },
     data: { pointsScrape: asVersionedPointsScrapeInputJson(pointsScrape) },
   });
+  let clanPointsSyncUpdated = false;
+  const currentWar = interaction.guildId
+    ? await prisma.currentWar.findUnique({
+        where: {
+          clanTag_guildId: {
+            guildId: interaction.guildId,
+            clanTag: `#${tag}`,
+          },
+        },
+        select: {
+          warId: true,
+          startTime: true,
+        },
+      })
+    : null;
+  if (
+    interaction.guildId &&
+    currentWar?.startTime &&
+    siteUpdatedForOpponent &&
+    siteSyncNum !== null &&
+    fresh.balance !== null &&
+    Number.isFinite(fresh.balance) &&
+    opponentBalance !== null &&
+    Number.isFinite(opponentBalance) &&
+    opponentTag
+  ) {
+    await pointsSyncService.upsertPointsSync({
+      guildId: interaction.guildId,
+      clanTag: tag,
+      warId:
+        currentWar.warId !== null && Number.isFinite(currentWar.warId)
+          ? String(Math.trunc(currentWar.warId))
+          : null,
+      warStartTime: currentWar.startTime,
+      syncNum: siteSyncNum,
+      opponentTag,
+      clanPoints: fresh.balance,
+      opponentPoints: opponentBalance,
+    });
+    clanPointsSyncUpdated = true;
+  }
 
   await interaction.editReply(
     [
@@ -4869,14 +5061,7 @@ export async function runForceSyncDataCommand(
           : "unavailable"
       }`,
       `Site sync #: ${siteSyncNum !== null ? `#${siteSyncNum}` : "unknown"}`,
-      `TrackedClan.pointsScrape.syncNumber: ${
-        shouldOverwriteSyncNum
-          ? siteSyncNum !== null
-            ? `set to #${siteSyncNum}`
-            : "set to unknown"
-          : "retained from fresh scrape"
-      }`,
-      `TrackedClan.pointsScrape.pointBalance: ${
+      `TrackedClan.pointsScrape point cache: ${
         shouldOverwritePoints
           ? fresh.balance !== null && Number.isFinite(fresh.balance)
             ? `set to ${formatPoints(fresh.balance)}`
@@ -4884,8 +5069,10 @@ export async function runForceSyncDataCommand(
           : "retained from fresh scrape"
       }`,
       siteUpdatedForOpponent
-        ? "pointsScrape marked in-sync with current opponent."
-        : "pointsScrape marked out-of-sync for current opponent.",
+        ? clanPointsSyncUpdated
+          ? "ClanPointsSync updated for current war."
+          : "points.fwafarm is current, but no active CurrentWar row was available for ClanPointsSync."
+        : "points.fwafarm is not current for the active opponent yet.",
     ].join("\n")
   );
 }
@@ -6200,6 +6387,9 @@ export const Fwa: Command = {
               },
               select: {
                 state: true,
+                warId: true,
+                startTime: true,
+                syncNum: true,
                 matchType: true,
                 inferredMatchType: true,
                 outcome: true,
@@ -6517,6 +6707,38 @@ export const Fwa: Command = {
               opponent.balance
             )
           : null;
+        const warStartTimeForSync = getWarStartDateForSync(subscription?.startTime ?? null, war);
+        await persistClanPointsSyncIfCurrent({
+          guildId: interaction.guildId,
+          clanTag: tag,
+          warId: subscription?.warId ?? null,
+          warStartTime: warStartTimeForSync,
+          siteCurrent: siteUpdated,
+          syncNum: siteSyncObservedForWrite,
+          opponentTag,
+          clanPoints: primary.balance,
+          opponentPoints: opponent.balance,
+        });
+        const syncRow = await pointsSyncService.findSyncRecord({
+          guildId: interaction.guildId ?? "",
+          clanTag: tag,
+          warId:
+            subscription?.warId !== null &&
+            subscription?.warId !== undefined &&
+            Number.isFinite(subscription?.warId)
+              ? String(Math.trunc(subscription.warId))
+              : null,
+          warStartTime: warStartTimeForSync,
+        });
+        const validationState = buildSyncValidationState({
+          syncRow,
+          currentWarStartTime: warStartTimeForSync,
+          siteCurrent: siteUpdated,
+          syncNum: siteSyncObservedForWrite,
+          opponentTag,
+          clanPoints: primary.balance,
+          opponentPoints: opponent.balance,
+        });
         const siteSyncObserved = scrapeIsCurrentOpponent
           ? trackedScrape?.syncNumber ?? null
           : primary.winnerBoxSync ?? null;
@@ -6529,13 +6751,24 @@ export const Fwa: Command = {
               derivedOutcome
             )
           : null;
-        const mismatchLines = [trackedMismatch, opponentMismatch, syncMismatch, outcomeMismatch]
+        const validationMismatchLines = validationState.differences.join("\n");
+        const mismatchLines = [
+          trackedMismatch,
+          opponentMismatch,
+          syncMismatch,
+          outcomeMismatch,
+          validationMismatchLines,
+        ]
           .filter(Boolean)
           .join("\n");
         const hasMismatch = Boolean(
-          trackedMismatch || opponentMismatch || syncMismatch || outcomeMismatch
+          trackedMismatch ||
+            opponentMismatch ||
+            syncMismatch ||
+            outcomeMismatch ||
+            validationState.differences.length > 0
         );
-        const siteStatusLine = buildPointsSyncStatusLine(siteUpdated, hasMismatch);
+        const siteStatusLine = validationState.statusLine;
         const trackedMailConfig = await getTrackedClanMailConfig(tag);
         const parsedMailConfig = await getCurrentWarMailConfig(
           interaction.guildId ?? "",
