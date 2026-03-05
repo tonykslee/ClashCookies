@@ -248,3 +248,14 @@ model WarLookup {
   @@index([clanTag, startTime])
 }
 
+model WarEvent {
+  warId     Int
+  clanTag   String
+  eventType String
+  createdAt DateTime @default(now())
+  payload   Json
+
+  @@id([warId, clanTag, eventType])
+  @@index([clanTag, createdAt])
+}
+
