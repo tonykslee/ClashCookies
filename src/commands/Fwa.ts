@@ -2749,7 +2749,7 @@ async function restoreSourceMatchMessageFromMailPreview(
 
   const currentView =
     refreshed.singleViews[normalizeTag(previewPayload.tag)] ?? refreshed.allianceView;
-  await interaction.update({
+  await interaction.editReply({
     content: showMode === "copy" ? limitDiscordContent(currentView.copyText) : undefined,
     embeds: showMode === "embed" ? [currentView.embed] : [],
     components: buildFwaMatchCopyComponents(refreshed, refreshed.userId, sourceKey, showMode),
@@ -2999,14 +2999,17 @@ export async function handleFwaMailBackButton(interaction: ButtonInteraction): P
     });
     return;
   }
+  await interaction.deferUpdate();
   const restored = await restoreSourceMatchMessageFromMailPreview(interaction, payload).catch(
     () => false
   );
   if (!restored) {
-    await interaction.reply({
-      ephemeral: true,
-      content: "Could not restore the match view. Please run /fwa match again.",
-    });
+    await interaction
+      .followUp({
+        ephemeral: true,
+        content: "Could not restore the match view. Please run /fwa match again.",
+      })
+      .catch(() => undefined);
     return;
   }
   fwaMailPreviewPayloads.delete(parsed.key);
