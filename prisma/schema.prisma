@@ -262,3 +262,9 @@ model WarEvent {
   @@index([clanTag, createdAt(sort: Desc)])
 }
 
+model ApiUsage {
+  endpoint String   @id
+  lastCall DateTime
+  callCount Int     @default(0)
+}
+

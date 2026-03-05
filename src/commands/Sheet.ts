@@ -6,6 +6,7 @@ import {
 } from "discord.js";
 import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
+import { recordFetchEvent } from "../helper/fetchTelemetry";
 import { safeReply } from "../helper/safeReply";
 import { CoCService } from "../services/CoCService";
 import { GoogleSheetsService } from "../services/GoogleSheetsService";
@@ -109,6 +110,12 @@ async function postRefreshWebhook(
 
   try {
     const response = await makeRequest();
+    recordFetchEvent({
+      namespace: "google_sheets",
+      operation: "apps_script_refresh",
+      source: "web",
+      detail: `action=${action} status=${response.status}`,
+    });
     return String(response.data ?? "").trim();
   } catch (firstErr) {
     const hint = formatError(firstErr).toLowerCase();
@@ -123,6 +130,12 @@ async function postRefreshWebhook(
     if (!retryable) throw firstErr;
 
     const second = await makeRequest();
+    recordFetchEvent({
+      namespace: "google_sheets",
+      operation: "apps_script_refresh",
+      source: "web",
+      detail: `action=${action} status=${second.status} retry=true`,
+    });
     return String(second.data ?? "").trim();
   }
 }

@@ -1,5 +1,6 @@
 import axios from "axios";
 import { createSign } from "crypto";
+import { recordFetchEvent } from "../helper/fetchTelemetry";
 import { SettingsService } from "./SettingsService";
 
 export const SHEET_SETTING_ID_KEY = "google_sheet_id";
@@ -110,14 +111,29 @@ export class GoogleSheetsService {
     const encodedSheetId = encodeURIComponent(sheetId);
     const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodedSheetId}/values/${encodedRange}`;
 
-    const response = await axios.get<{ values?: string[][] }>(url, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-      timeout: GOOGLE_API_TIMEOUT_MS,
-    });
-
-    return response.data.values ?? [];
+    try {
+      const response = await axios.get<{ values?: string[][] }>(url, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        timeout: GOOGLE_API_TIMEOUT_MS,
+      });
+      recordFetchEvent({
+        namespace: "google_sheets",
+        operation: "read_values",
+        source: "api",
+        detail: `sheet=${sheetId}`,
+      });
+      return response.data.values ?? [];
+    } catch (err) {
+      recordFetchEvent({
+        namespace: "google_sheets",
+        operation: "read_values",
+        source: "api",
+        detail: `sheet=${sheetId} result=error`,
+      });
+      throw err;
+    }
   }
 
   private async readValuesViaAppsScriptProxy(
@@ -146,6 +162,12 @@ export class GoogleSheetsService {
     });
 
     if (response.status >= 400) {
+      recordFetchEvent({
+        namespace: "google_sheets",
+        operation: "apps_script_proxy",
+        source: "web",
+        detail: `action=readValues status=${response.status}`,
+      });
       const message =
         typeof response.data?.error === "string"
           ? response.data.error
@@ -154,6 +176,12 @@ export class GoogleSheetsService {
             : `Apps Script proxy returned HTTP ${response.status}`;
       throw new Error(message);
     }
+    recordFetchEvent({
+      namespace: "google_sheets",
+      operation: "apps_script_proxy",
+      source: "web",
+      detail: `action=readValues status=${response.status}`,
+    });
 
     const rawValues =
       response.data?.values ??
@@ -200,7 +228,7 @@ export class GoogleSheetsService {
     const oauthRefreshToken = process.env.GOOGLE_OAUTH_REFRESH_TOKEN?.trim();
 
     if (oauthClientId && oauthClientSecret && oauthRefreshToken) {
-      return axios.post<{
+      const response = await axios.post<{
         access_token: string;
         expires_in: number;
         token_type: string;
@@ -217,10 +245,17 @@ export class GoogleSheetsService {
           timeout: GOOGLE_API_TIMEOUT_MS,
         }
       );
+      recordFetchEvent({
+        namespace: "google_oauth",
+        operation: "token_exchange",
+        source: "api",
+        detail: "grant=refresh_token",
+      });
+      return response;
     }
 
     const assertion = this.buildServiceAccountAssertion();
-    return axios.post<{
+    const response = await axios.post<{
       access_token: string;
       expires_in: number;
       token_type: string;
@@ -235,6 +270,13 @@ export class GoogleSheetsService {
         timeout: GOOGLE_API_TIMEOUT_MS,
       }
     );
+    recordFetchEvent({
+      namespace: "google_oauth",
+      operation: "token_exchange",
+      source: "api",
+      detail: "grant=jwt_bearer",
+    });
+    return response;
   }
 
   /** Purpose: build service account assertion. */
