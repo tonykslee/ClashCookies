@@ -273,7 +273,8 @@ export class WarEventLogService {
           ON UPPER(REPLACE(tc."tag",'#','')) = UPPER(REPLACE(cw."clanTag",'#',''))
         LEFT JOIN "ClanNotifyConfig" cnc
           ON cnc."guildId" = cw."guildId" AND UPPER(REPLACE(cnc."clanTag",'#','')) = UPPER(REPLACE(cw."clanTag",'#',''))
-        WHERE cw."endTime" > NOW() - INTERVAL '2 hours'
+        WHERE cw."state" = 'notInWar'
+           OR cw."endTime" > NOW() - INTERVAL '2 hours'
         ORDER BY cw."updatedAt" ASC
       `
     );
