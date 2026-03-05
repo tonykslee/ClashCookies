@@ -69,6 +69,7 @@ type SubscriptionRow = {
   channelId: string | null;
   notify: boolean;
   pingRole: boolean;
+  embedEnabled: boolean;
   inferredMatchType: boolean;
   notifyRole: string | null;
   fwaPoints: number | null;
@@ -247,16 +248,20 @@ export class WarEventLogService {
       Prisma.sql`
         SELECT
           cw."id",cw."guildId",cw."clanTag",cw."warId",cw."syncNum",
-          tc."notifyChannelId" AS "channelId",
-          COALESCE(tc."notifyEnabled", false) AS "notify",
-          cw."pingRole",cw."inferredMatchType",
-          tc."notifyRole" AS "notifyRole",
+          COALESCE(cnc."channelId", tc."notifyChannelId") AS "channelId",
+          COALESCE(cnc."embedEnabled", tc."notifyEnabled", false) AS "notify",
+          COALESCE(cnc."pingEnabled", cw."pingRole", true) AS "pingRole",
+          COALESCE(cnc."embedEnabled", true) AS "embedEnabled",
+          cw."inferredMatchType",
+          COALESCE(cnc."roleId", tc."notifyRole") AS "notifyRole",
           cw."fwaPoints",cw."opponentFwaPoints",cw."outcome",cw."matchType",cw."warStartFwaPoints",cw."warEndFwaPoints",
           cw."clanStars",cw."opponentStars",cw."state",cw."prepStartTime",cw."startTime",cw."endTime",
           cw."opponentTag",cw."opponentName",cw."clanName"
         FROM "CurrentWar" cw
         LEFT JOIN "TrackedClan" tc
           ON UPPER(REPLACE(tc."tag",'#','')) = UPPER(REPLACE(cw."clanTag",'#',''))
+        LEFT JOIN "ClanNotifyConfig" cnc
+          ON cnc."guildId" = cw."guildId" AND UPPER(REPLACE(cnc."clanTag",'#','')) = UPPER(REPLACE(cw."clanTag",'#',''))
         ORDER BY cw."updatedAt" ASC
       `
     );
@@ -292,9 +297,21 @@ export class WarEventLogService {
     eventType: EventType;
     source: TestSource;
   }): Promise<NotifyWarPreviewResult> {
+    // Get config from ClanNotifyConfig table
+    const config = await prisma.clanNotifyConfig.findUnique({
+      where: {
+        guildId_clanTag: {
+          guildId: params.guildId,
+          clanTag: normalizeTagBare(params.clanTag),
+        },
+      },
+    });
+    if (!config) return { ok: false, reason: "No notification configuration found for that guild+clan." };
+    if (!config.channelId) return { ok: false, reason: "Configuration has no channel set." };
+
+    // Get current war data for the payload
     const sub = await this.findSubscriptionByGuildAndTag(params.guildId, params.clanTag);
-    if (!sub) return { ok: false, reason: "No war event subscription found for that guild+clan." };
-    if (!sub.channelId) return { ok: false, reason: "Subscription has no configured channel." };
+    if (!sub) return { ok: false, reason: "No current war data found for that clan." };
 
     const payload = await this.buildTestEventPayload(sub, params);
     const warId = await this.resolveWarId(payload.clanTag, payload.warStartTime);
@@ -307,7 +324,7 @@ export class WarEventLogService {
       ok: true,
       clanName: payload.clanName,
       clanTag: payload.clanTag,
-      channelId: sub.channelId,
+      channelId: config.channelId,
       embeds: message.embeds,
     };
   }
@@ -735,16 +752,20 @@ export class WarEventLogService {
       Prisma.sql`
         SELECT
           cw."id",cw."guildId",cw."clanTag",cw."warId",cw."syncNum",
-          tc."notifyChannelId" AS "channelId",
-          COALESCE(tc."notifyEnabled", false) AS "notify",
-          cw."pingRole",cw."inferredMatchType",
-          tc."notifyRole" AS "notifyRole",
+          COALESCE(cnc."channelId", tc."notifyChannelId") AS "channelId",
+          COALESCE(cnc."embedEnabled", tc."notifyEnabled", false) AS "notify",
+          COALESCE(cnc."pingEnabled", cw."pingRole", true) AS "pingRole",
+          COALESCE(cnc."embedEnabled", true) AS "embedEnabled",
+          cw."inferredMatchType",
+          COALESCE(cnc."roleId", tc."notifyRole") AS "notifyRole",
           cw."fwaPoints",cw."opponentFwaPoints",cw."outcome",cw."matchType",cw."warStartFwaPoints",cw."warEndFwaPoints",
           cw."clanStars",cw."opponentStars",cw."state",cw."prepStartTime",cw."startTime",cw."endTime",
           cw."opponentTag",cw."opponentName",cw."clanName"
         FROM "CurrentWar" cw
         LEFT JOIN "TrackedClan" tc
           ON UPPER(REPLACE(tc."tag",'#','')) = UPPER(REPLACE(cw."clanTag",'#',''))
+        LEFT JOIN "ClanNotifyConfig" cnc
+          ON cnc."guildId" = cw."guildId" AND UPPER(REPLACE(cnc."clanTag",'#','')) = UPPER(REPLACE(cw."clanTag",'#',''))
         WHERE cw."guildId" = ${guildId} AND UPPER(REPLACE(cw."clanTag",'#','')) = ${normalizeTagBare(clanTag)}
         LIMIT 1
       `
@@ -827,16 +848,20 @@ export class WarEventLogService {
       Prisma.sql`
         SELECT
           cw."id",cw."guildId",cw."clanTag",cw."warId",cw."syncNum",
-          tc."notifyChannelId" AS "channelId",
-          COALESCE(tc."notifyEnabled", false) AS "notify",
-          cw."pingRole",cw."inferredMatchType",
-          tc."notifyRole" AS "notifyRole",
+          COALESCE(cnc."channelId", tc."notifyChannelId") AS "channelId",
+          COALESCE(cnc."embedEnabled", tc."notifyEnabled", false) AS "notify",
+          COALESCE(cnc."pingEnabled", cw."pingRole", true) AS "pingRole",
+          COALESCE(cnc."embedEnabled", true) AS "embedEnabled",
+          cw."inferredMatchType",
+          COALESCE(cnc."roleId", tc."notifyRole") AS "notifyRole",
           cw."fwaPoints",cw."opponentFwaPoints",cw."outcome",cw."matchType",cw."warStartFwaPoints",cw."warEndFwaPoints",
           cw."clanStars",cw."opponentStars",cw."state",cw."prepStartTime",cw."startTime",cw."endTime",
           cw."opponentTag",cw."opponentName",cw."clanName"
         FROM "CurrentWar" cw
         LEFT JOIN "TrackedClan" tc
           ON UPPER(REPLACE(tc."tag",'#','')) = UPPER(REPLACE(cw."clanTag",'#',''))
+        LEFT JOIN "ClanNotifyConfig" cnc
+          ON cnc."guildId" = cw."guildId" AND UPPER(REPLACE(cnc."clanTag",'#','')) = UPPER(REPLACE(cw."clanTag",'#',''))
         WHERE cw."id" = ${subscriptionId}
         LIMIT 1
       `
@@ -1064,7 +1089,7 @@ export class WarEventLogService {
     }
 
     await prisma.currentWar.update({
-      where: { id: sub.id },
+      where: { clanTag: sub.clanTag },
       data: {
         warId: currentState === "notInWar" ? (sub.warId ?? null) : resolvedWarId,
         state: currentState,
@@ -1469,7 +1494,7 @@ export class WarEventLogService {
       currentState: "inWar",
     });
     await prisma.currentWar.update({
-      where: { id: sub.id },
+      where: { clanTag: sub.clanTag },
       data: {
         warId: resolvedWarId,
         state: "inWar",

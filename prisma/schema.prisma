@@ -164,9 +164,8 @@ model WarAttacks {
 }
 
 model CurrentWar {
-  id                Int           @id @default(autoincrement())
   guildId           String
-  clanTag           String
+  clanTag           String        @id
   warId             Int?
   syncNum    Int?
   channelId         String
@@ -196,6 +195,20 @@ model CurrentWar {
   @@index([guildId, notify])
   @@index([warId])
   @@index([startTime, clanTag, opponentTag])
+}
+
+model ClanNotifyConfig {
+  clanTag     String
+  guildId     String
+  channelId   String
+  roleId      String?
+  pingEnabled Boolean @default(true)
+  embedEnabled Boolean @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([guildId, clanTag])
+  @@index([guildId])
 }
 
 model ClanWarHistory {
