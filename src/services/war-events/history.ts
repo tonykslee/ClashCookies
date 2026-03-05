@@ -218,16 +218,99 @@ export class WarEventHistoryService {
     const warId = Number(row[0]?.warId ?? NaN);
     if (!Number.isFinite(warId)) return;
 
-    await prisma.warAttacks.updateMany({
-      where: { clanTag, warStartTime },
-      data: { warId },
-    });
-    await prisma.currentWar.updateMany({
+    const currentSnapshot = await prisma.currentWar.findFirst({
       where: { clanTag, startTime: warStartTime },
-      data: {
-        warId,
+      select: {
+        inferredMatchType: true,
+        syncNum: true,
+        matchType: true,
+        state: true,
+        clanName: true,
+        opponentTag: true,
+        opponentName: true,
       },
     });
+    const participants = attacks.filter((a) => Number(a.attackOrder) === 0);
+    const teamSize = participants.length > 0 ? participants.length : null;
+    const pointsAwarded =
+      payload.warStartFwaPoints !== null &&
+      Number.isFinite(payload.warStartFwaPoints) &&
+      resolvedPointsAfterWar !== null &&
+      Number.isFinite(resolvedPointsAfterWar)
+        ? resolvedPointsAfterWar - payload.warStartFwaPoints
+        : pointsDelta;
+    const attacksPayload = attacks
+      .filter((a) => Number(a.attackOrder) > 0)
+      .map((a) => ({
+        attackerTag: a.playerTag,
+        defenderTag: a.defenderTag,
+        stars: a.stars,
+        destruction: a.destruction,
+        order: a.attackOrder,
+      }));
+    const mirrorHits = attacksPayload.filter((a) => {
+      const row = attacks.find(
+        (x) =>
+          x.playerTag === a.attackerTag &&
+          x.defenderTag === a.defenderTag &&
+          Number(x.attackOrder) === Number(a.order)
+      );
+      if (!row) return false;
+      return (
+        Number.isFinite(Number(row.playerPosition)) &&
+        Number.isFinite(Number(row.defenderPosition)) &&
+        Number(row.playerPosition) === Number(row.defenderPosition)
+      );
+    }).length;
+    const nonMirrorHits = Math.max(0, attacksPayload.length - mirrorHits);
+    const lookupPayload = {
+      warMeta: {
+        warId: String(warId),
+        clanTag,
+        opponentTag: normalizeTag(payload.opponentTag) || null,
+        state: "warEnded",
+        teamSize,
+        startTime: warStartTime.toISOString(),
+        endTime: warEndTime ? warEndTime.toISOString() : null,
+        result: resolvedActualOutcome.toLowerCase(),
+        synced: true,
+      },
+      score: {
+        clanStars: finalResult.clanStars,
+        opponentStars: finalResult.opponentStars,
+        clanDestruction: finalResult.clanDestruction,
+        opponentDestruction: finalResult.opponentDestruction,
+      },
+      fwa: {
+        syncNumber: payload.syncNumber ?? currentSnapshot?.syncNum ?? null,
+        pointsAwarded: pointsAwarded ?? null,
+        inferred: Boolean(currentSnapshot?.inferredMatchType),
+        mismatch: payload.matchType === "MM",
+        blacklist: payload.matchType === "BL",
+      },
+      clan: {
+        tag: clanTag,
+        name: payload.clanName ?? currentSnapshot?.clanName ?? clanTag,
+        members: participants.map((p) => ({
+          tag: p.playerTag,
+          name: p.playerName,
+          mapPosition: p.playerPosition,
+          townHall: null,
+        })),
+      },
+      opponent: {
+        tag: normalizeTag(payload.opponentTag) || currentSnapshot?.opponentTag || null,
+        name: payload.opponentName ?? currentSnapshot?.opponentName ?? null,
+        members: [],
+      },
+      attacks: attacksPayload,
+      compliance: {
+        mirrorHits,
+        nonMirrorHits,
+        lateHits: 0,
+        violations: [] as string[],
+      },
+    };
     const tracked = await prisma.trackedClan.findUnique({
       where: { tag: clanTag },
       select: { pointsScrape: true },
@@ -249,14 +332,21 @@ export class WarEventHistoryService {
 
     await prisma.$executeRaw(
       Prisma.sql`
-        INSERT INTO "WarLookup" ("warId","payload","updatedAt")
-        VALUES (${warId}, ${JSON.stringify(attacks)}::jsonb, NOW())
+        INSERT INTO "WarLookup" ("warId","clanTag","opponentTag","startTime","endTime","result","payload","createdAt")
+        VALUES (${String(warId)}, ${clanTag}, ${normalizeTag(payload.opponentTag) || null}, ${warStartTime}, ${warEndTime}, ${resolvedActualOutcome.toLowerCase()}, ${JSON.stringify(lookupPayload)}::jsonb, NOW())
         ON CONFLICT ("warId")
         DO UPDATE SET
-          "payload" = EXCLUDED."payload",
-          "updatedAt" = NOW()
+          "clanTag" = EXCLUDED."clanTag",
+          "opponentTag" = EXCLUDED."opponentTag",
+          "startTime" = EXCLUDED."startTime",
+          "endTime" = EXCLUDED."endTime",
+          "result" = EXCLUDED."result",
+          "payload" = EXCLUDED."payload"
       `
     );
+    await prisma.warAttacks.deleteMany({
+      where: { clanTag, warStartTime },
+    });
   }
 
   /** Purpose: resolve final result snapshot from war log with fallbacks. */

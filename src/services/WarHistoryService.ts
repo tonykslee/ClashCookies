@@ -57,7 +57,12 @@ export class WarHistoryService {
 
     try {
       const war = await this.coc.getCurrentWar(clanTag);
-      if (!war?.clan?.tag || !war?.startTime) return;
+      if (!war?.clan?.tag || !war?.startTime) {
+        await prisma.warAttacks.deleteMany({
+          where: { clanTag },
+        });
+        return;
+      }
 
       const ownClanTag = normalizeTag(war.clan.tag);
       const ownClanName = String(war.clan.name ?? ownClanTag).trim() || ownClanTag;
@@ -69,6 +74,13 @@ export class WarHistoryService {
       const warState = String(war.state ?? "").trim() || null;
       const observedAt = new Date();
       const warId = await this.resolveWarId(ownClanTag, warStartTime);
+      // Keep WarAttacks as current-war-only storage for each clan.
+      await prisma.warAttacks.deleteMany({
+        where: {
+          clanTag: ownClanTag,
+          warStartTime: { not: warStartTime },
+        },
+      });
 
       const opponentMembers = Array.isArray(war.opponent?.members) ? (war.opponent?.members as WarMember[]) : [];
       const opponentByTag = new Map<string, WarMember>();

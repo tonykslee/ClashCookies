@@ -127,27 +127,6 @@ model RecruitmentCooldown {
   @@index([expiresAt, reminded])
 }
 
-model WarHistoryParticipant {
-  id               Int       @id @default(autoincrement())
-  clanTag          String
-  clanName         String?
-  opponentClanTag  String?
-  opponentClanName String?
-  warStartTime     DateTime
-  warEndTime       DateTime?
-  warState         String?
-  playerTag        String
-  playerName       String?
-  playerPosition   Int?
-  attacksUsed      Int
-  updatedAt        DateTime  @updatedAt
-  createdAt        DateTime  @default(now())
-
-  @@unique([clanTag, warStartTime, playerTag])
-  @@index([clanTag, warStartTime])
-  @@index([playerTag, warStartTime])
-}
-
 model WarAttacks {
   id               Int       @id @default(autoincrement())
   warId            Int?
@@ -236,17 +215,20 @@ model ClanWarHistory {
   opponentTag         String?
   createdAt           DateTime      @default(now())
   updatedAt           DateTime      @updatedAt
-  lookup              WarLookup?
-
   @@unique([warStartTime, clanTag, opponentTag])
   @@index([clanTag, warEndTime])
 }
 
 model WarLookup {
-  warId      Int            @id
-  payload    Json
-  createdAt  DateTime       @default(now())
-  updatedAt  DateTime       @updatedAt
-  warHistory ClanWarHistory @relation(fields: [warId], references: [warId], onDelete: Cascade)
+  warId       String   @id
+  clanTag     String
+  opponentTag String?
+  startTime   DateTime
+  endTime     DateTime?
+  result      String?
+  payload     Json
+  createdAt   DateTime @default(now())
+
+  @@index([clanTag, startTime])
 }
 
