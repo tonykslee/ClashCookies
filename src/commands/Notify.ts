@@ -286,16 +286,23 @@ export const Notify: Command = {
       const subscriptions = await prisma.$queryRaw<
         Array<{
           clanTag: string;
-          channelId: string;
+          notifyChannelId: string | null;
           notifyRole: string | null;
-          notify: boolean;
+          notifyEnabled: boolean;
           pingRole: boolean;
         }>
       >(
         Prisma.sql`
-          SELECT "clanTag","channelId","notifyRole","notify","pingRole"
-          FROM "CurrentWar"
-          WHERE "guildId" = ${interaction.guildId}
+          SELECT
+            tc."tag" AS "clanTag",
+            tc."notifyChannelId",
+            tc."notifyRole",
+            tc."notifyEnabled",
+            COALESCE(cw."pingRole", true) AS "pingRole"
+          FROM "TrackedClan" tc
+          LEFT JOIN "CurrentWar" cw
+            ON UPPER(REPLACE(cw."clanTag",'#','')) = UPPER(REPLACE(tc."tag",'#',''))
+           AND cw."guildId" = ${interaction.guildId}
         `
       );
       const subByTag = new Map(
@@ -309,9 +316,9 @@ export const Notify: Command = {
           return {
             clanName: clan.name?.trim() || clanTag,
             clanTag,
-            channelId: subRow?.channelId ?? null,
+            channelId: subRow?.notifyChannelId ?? null,
             notifyRole: subRow?.notifyRole ?? null,
-            enabled: Boolean(subRow?.notify),
+            enabled: Boolean(subRow?.notifyEnabled),
             rolePingEnabled: subRow?.pingRole ?? true,
           };
         })
@@ -351,10 +358,9 @@ export const Notify: Command = {
         target === "war_embed"
           ? await prisma.$executeRaw(
               Prisma.sql`
-                UPDATE "CurrentWar"
-                SET "notify" = ${enabled}, "updatedAt" = NOW()
-                WHERE "guildId" = ${interaction.guildId}
-                  AND UPPER(REPLACE("clanTag",'#','')) = ${normalizeClanTagInput(clanTag)}
+                UPDATE "TrackedClan"
+                SET "notifyEnabled" = ${enabled}
+                WHERE UPPER(REPLACE("tag",'#','')) = ${normalizeClanTagInput(clanTag)}
               `
             )
           : await prisma.$executeRaw(
@@ -489,6 +495,16 @@ export const Notify: Command = {
 
     await prisma.$executeRaw(
       Prisma.sql`
+        UPDATE "TrackedClan"
+        SET "notifyChannelId" = ${target.id},
+            "notifyRole" = ${notifyRole?.id ?? null},
+            "notifyEnabled" = true
+        WHERE UPPER(REPLACE("tag",'#','')) = ${normalizeClanTagInput(clanTag)}
+      `
+    );
+
+    await prisma.$executeRaw(
+      Prisma.sql`
         INSERT INTO "CurrentWar"
           ("guildId","clanTag","warId","channelId","notify","notifyRole","pingRole","state","prepStartTime","startTime","endTime","opponentTag","opponentName","clanName","createdAt","updatedAt")
         VALUES
@@ -497,8 +513,6 @@ export const Notify: Command = {
         DO UPDATE SET
           "warId" = EXCLUDED."warId",
           "channelId" = EXCLUDED."channelId",
-          "notify" = true,
-          "notifyRole" = EXCLUDED."notifyRole",
           "pingRole" = EXCLUDED."pingRole",
           "state" = EXCLUDED."state",
           "prepStartTime" = EXCLUDED."prepStartTime",

@@ -90,8 +90,8 @@ export const War: Command = {
       options: [
         {
           name: "war-id",
-          description: "War ID (from /war history)",
-          type: ApplicationCommandOptionType.Integer,
+          description: "War ID (from /war history; text)",
+          type: ApplicationCommandOptionType.String,
           required: true,
         },
       ],
@@ -158,8 +158,8 @@ export const War: Command = {
     }
 
     if (sub === "war-id") {
-      const warId = interaction.options.getInteger("war-id", true);
-      if (!Number.isFinite(warId) || warId <= 0) {
+      const warId = String(interaction.options.getString("war-id", true) ?? "").trim();
+      if (!warId) {
         await interaction.editReply("Invalid war ID.");
         return;
       }
@@ -181,10 +181,22 @@ export const War: Command = {
       let attackRows: Array<Record<string, unknown>> = [];
       if (Array.isArray(payload)) {
         attackRows = payload as Array<Record<string, unknown>>;
+      } else if (payload && typeof payload === "object") {
+        const root = payload as Record<string, unknown>;
+        const attacks = root.attacks;
+        attackRows = Array.isArray(attacks) ? (attacks as Array<Record<string, unknown>>) : [];
       } else if (typeof payload === "string") {
         try {
           const parsed = JSON.parse(payload) as unknown;
-          attackRows = Array.isArray(parsed) ? (parsed as Array<Record<string, unknown>>) : [];
+          if (Array.isArray(parsed)) {
+            attackRows = parsed as Array<Record<string, unknown>>;
+          } else if (parsed && typeof parsed === "object") {
+            const root = parsed as Record<string, unknown>;
+            const attacks = root.attacks;
+            attackRows = Array.isArray(attacks) ? (attacks as Array<Record<string, unknown>>) : [];
+          } else {
+            attackRows = [];
+          }
         } catch {
           attackRows = [];
         }
@@ -196,28 +208,12 @@ export const War: Command = {
       }
 
       const headers = [
-        "id",
-        "clanTag",
-        "clanName",
-        "opponentClanTag",
-        "opponentClanName",
-        "warStartTime",
-        "warEndTime",
-        "warState",
-        "playerTag",
-        "playerName",
-        "playerPosition",
-        "attackOrder",
-        "attackNumber",
+        "attackerTag",
         "defenderTag",
-        "defenderName",
-        "defenderPosition",
         "stars",
-        "trueStars",
         "destruction",
-        "attackSeenAt",
-        "updatedAt",
-        "createdAt",
+        "order",
+        "duration",
       ];
 
       const csv = buildCsv(attackRows, headers);

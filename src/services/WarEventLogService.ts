@@ -66,7 +66,7 @@ type SubscriptionRow = {
   clanTag: string;
   warId: number | null;
   syncNum: number | null;
-  channelId: string;
+  channelId: string | null;
   notify: boolean;
   pingRole: boolean;
   inferredMatchType: boolean;
@@ -246,9 +246,18 @@ export class WarEventLogService {
     const subs = await prisma.$queryRaw<SubscriptionRow[]>(
       Prisma.sql`
         SELECT
-          "id","guildId","clanTag","warId","syncNum","channelId","notify","pingRole","inferredMatchType","notifyRole","fwaPoints","opponentFwaPoints","outcome","matchType","warStartFwaPoints","warEndFwaPoints","clanStars","opponentStars","state","prepStartTime","startTime","endTime","opponentTag","opponentName","clanName"
-        FROM "CurrentWar"
-        ORDER BY "updatedAt" ASC
+          cw."id",cw."guildId",cw."clanTag",cw."warId",cw."syncNum",
+          tc."notifyChannelId" AS "channelId",
+          COALESCE(tc."notifyEnabled", false) AS "notify",
+          cw."pingRole",cw."inferredMatchType",
+          tc."notifyRole" AS "notifyRole",
+          cw."fwaPoints",cw."opponentFwaPoints",cw."outcome",cw."matchType",cw."warStartFwaPoints",cw."warEndFwaPoints",
+          cw."clanStars",cw."opponentStars",cw."state",cw."prepStartTime",cw."startTime",cw."endTime",
+          cw."opponentTag",cw."opponentName",cw."clanName"
+        FROM "CurrentWar" cw
+        LEFT JOIN "TrackedClan" tc
+          ON UPPER(REPLACE(tc."tag",'#','')) = UPPER(REPLACE(cw."clanTag",'#',''))
+        ORDER BY cw."updatedAt" ASC
       `
     );
     for (const sub of subs) {
@@ -725,9 +734,18 @@ export class WarEventLogService {
     const rows = await prisma.$queryRaw<SubscriptionRow[]>(
       Prisma.sql`
         SELECT
-          "id","guildId","clanTag","warId","syncNum","channelId","notify","pingRole","inferredMatchType","notifyRole","fwaPoints","opponentFwaPoints","outcome","matchType","warStartFwaPoints","warEndFwaPoints","clanStars","opponentStars","state","prepStartTime","startTime","endTime","opponentTag","opponentName","clanName"
-        FROM "CurrentWar"
-        WHERE "guildId" = ${guildId} AND UPPER(REPLACE("clanTag",'#','')) = ${normalizeTagBare(clanTag)}
+          cw."id",cw."guildId",cw."clanTag",cw."warId",cw."syncNum",
+          tc."notifyChannelId" AS "channelId",
+          COALESCE(tc."notifyEnabled", false) AS "notify",
+          cw."pingRole",cw."inferredMatchType",
+          tc."notifyRole" AS "notifyRole",
+          cw."fwaPoints",cw."opponentFwaPoints",cw."outcome",cw."matchType",cw."warStartFwaPoints",cw."warEndFwaPoints",
+          cw."clanStars",cw."opponentStars",cw."state",cw."prepStartTime",cw."startTime",cw."endTime",
+          cw."opponentTag",cw."opponentName",cw."clanName"
+        FROM "CurrentWar" cw
+        LEFT JOIN "TrackedClan" tc
+          ON UPPER(REPLACE(tc."tag",'#','')) = UPPER(REPLACE(cw."clanTag",'#',''))
+        WHERE cw."guildId" = ${guildId} AND UPPER(REPLACE(cw."clanTag",'#','')) = ${normalizeTagBare(clanTag)}
         LIMIT 1
       `
     );
@@ -808,9 +826,18 @@ export class WarEventLogService {
     const rows = await prisma.$queryRaw<SubscriptionRow[]>(
       Prisma.sql`
         SELECT
-          "id","guildId","clanTag","warId","syncNum","channelId","notify","pingRole","inferredMatchType","notifyRole","fwaPoints","opponentFwaPoints","outcome","matchType","warStartFwaPoints","warEndFwaPoints","clanStars","opponentStars","state","prepStartTime","startTime","endTime","opponentTag","opponentName","clanName"
-        FROM "CurrentWar"
-        WHERE "id" = ${subscriptionId}
+          cw."id",cw."guildId",cw."clanTag",cw."warId",cw."syncNum",
+          tc."notifyChannelId" AS "channelId",
+          COALESCE(tc."notifyEnabled", false) AS "notify",
+          cw."pingRole",cw."inferredMatchType",
+          tc."notifyRole" AS "notifyRole",
+          cw."fwaPoints",cw."opponentFwaPoints",cw."outcome",cw."matchType",cw."warStartFwaPoints",cw."warEndFwaPoints",
+          cw."clanStars",cw."opponentStars",cw."state",cw."prepStartTime",cw."startTime",cw."endTime",
+          cw."opponentTag",cw."opponentName",cw."clanName"
+        FROM "CurrentWar" cw
+        LEFT JOIN "TrackedClan" tc
+          ON UPPER(REPLACE(tc."tag",'#','')) = UPPER(REPLACE(cw."clanTag",'#',''))
+        WHERE cw."id" = ${subscriptionId}
         LIMIT 1
       `
     );
@@ -1031,7 +1058,7 @@ export class WarEventLogService {
       console.log(
         `[war-events] emit start guild=${sub.guildId} channel=${sub.channelId} clan=${eventPayload.clanTag} event=${eventPayload.eventType}`
       );
-      if (sub.notify) {
+      if (sub.notify && sub.channelId) {
         await this.emitEvent(sub.channelId, eventPayload, resolvedWarId);
       }
     }
