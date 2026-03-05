@@ -175,6 +175,10 @@ export const LastSeen: Command = {
     interaction: ChatInputCommandInteraction,
     cocService: CoCService
   ) => {
+    if (!interaction.guildId) {
+      await interaction.reply({ ephemeral: true, content: "This command can only be used in a server." });
+      return;
+    }
     await interaction.deferReply({ ephemeral: true });
 
     const tag = normalizePlayerTag(interaction.options.getString("tag", true));
@@ -185,7 +189,12 @@ export const LastSeen: Command = {
 
     const signalService = new ActivitySignalService();
     const activity = await prisma.playerActivity.findUnique({
-      where: { tag },
+      where: {
+        guildId_tag: {
+          guildId: interaction.guildId,
+          tag,
+        },
+      },
     });
 
     if (!activity) {
@@ -214,13 +223,19 @@ export const LastSeen: Command = {
         }
 
         await prisma.playerActivity.upsert({
-          where: { tag },
+          where: {
+            guildId_tag: {
+              guildId: interaction.guildId,
+              tag,
+            },
+          },
           update: {
             name: player.name,
             clanTag: player.clan?.tag ?? "UNKNOWN",
             lastSeenAt: inferredAt,
           },
           create: {
+            guildId: interaction.guildId,
             tag,
             name: player.name,
             clanTag: player.clan?.tag ?? "UNKNOWN",
@@ -305,6 +320,10 @@ export const LastSeen: Command = {
       await interaction.respond([]);
       return;
     }
+    if (!interaction.guildId) {
+      await interaction.respond([]);
+      return;
+    }
 
     const query = normalizePlayerTag(String(focused.value ?? "")).replace(/^#/, "");
     const tracked = await prisma.trackedClan.findMany({
@@ -320,6 +339,7 @@ export const LastSeen: Command = {
 
     const rows = await prisma.playerActivity.findMany({
       where: {
+        guildId: interaction.guildId,
         clanTag: { in: trackedTags },
       },
       orderBy: { updatedAt: "desc" },

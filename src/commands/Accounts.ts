@@ -164,6 +164,10 @@ export const Accounts: Command = {
     interaction: ChatInputCommandInteraction,
     cocService: CoCService
   ) => {
+    if (!interaction.guildId) {
+      await interaction.reply({ ephemeral: true, content: "This command can only be used in a server." });
+      return;
+    }
     const visibility = interaction.options.getString("visibility", false) ?? "private";
     const isPublic = visibility === "public";
     await interaction.deferReply({ ephemeral: !isPublic });
@@ -249,7 +253,7 @@ export const Accounts: Command = {
       .filter((t) => Boolean(t));
     const uniqueTags = [...new Set(tags)];
     const activity = await prisma.playerActivity.findMany({
-      where: { tag: { in: uniqueTags } },
+      where: { guildId: interaction.guildId, tag: { in: uniqueTags } },
       select: { tag: true, name: true, clanTag: true },
     });
     const activityByTag = new Map(

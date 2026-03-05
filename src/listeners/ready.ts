@@ -168,7 +168,7 @@ export default (client: Client, cocService: CoCService): void => {
         const observedMemberTags = new Set<string>();
         for (const tag of trackedTags) {
           try {
-            const memberTags = await activityService.observeClan(tag);
+            const memberTags = await activityService.observeClan(guildId, tag);
             for (const memberTag of memberTags) {
               observedMemberTags.add(memberTag);
             }
@@ -266,7 +266,7 @@ export default (client: Client, cocService: CoCService): void => {
     const runRecruitmentReminders = async () => {
       await runFetchTelemetryBatch("recruitment_reminder_cycle", async () => {
         try {
-          await processRecruitmentCooldownReminders(client);
+          await processRecruitmentCooldownReminders(client, guildId);
         } catch (err) {
           console.error(`[recruitment] reminder loop failed: ${formatError(err)}`);
         }

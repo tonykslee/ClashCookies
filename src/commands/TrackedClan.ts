@@ -392,9 +392,9 @@ export const TrackedClan: Command = {
           },
         });
 
-        if (!existing) {
+        if (!existing && interaction.guildId) {
           try {
-            await activityService.observeClan(tag);
+            await activityService.observeClan(interaction.guildId, tag);
           } catch (observeErr) {
             console.error(
               `tracked-clan configure observe failed for ${tag}: ${formatError(observeErr)}`

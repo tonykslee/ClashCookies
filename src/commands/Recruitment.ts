@@ -221,6 +221,10 @@ async function handleShowSubcommand(
   interaction: ChatInputCommandInteraction,
   cocService: CoCService
 ): Promise<void> {
+  if (!interaction.guildId) {
+    await interaction.reply({ ephemeral: true, content: "This command can only be used in a server." });
+    return;
+  }
   await interaction.deferReply({ ephemeral: true });
 
   const platformRaw = interaction.options.getString("platform", true);
@@ -242,7 +246,7 @@ async function handleShowSubcommand(
     return;
   }
 
-  const template = await getRecruitmentTemplate(clanTag, platform);
+  const template = await getRecruitmentTemplate(interaction.guildId, clanTag, platform);
   if (!template) {
     await interaction.editReply(
       `No ${platform} recruitment template found for ${formatClanTag(
@@ -252,7 +256,7 @@ async function handleShowSubcommand(
     return;
   }
 
-  const cooldown = await getRecruitmentCooldown(interaction.user.id, clanTag, platform);
+  const cooldown = await getRecruitmentCooldown(interaction.guildId, interaction.user.id, clanTag, platform);
   const cooldownLine = buildCooldownLine(cooldown?.expiresAt ?? null);
   const clanName =
     trackedClan.name ??
@@ -294,6 +298,10 @@ async function handleEditSubcommand(
   interaction: ChatInputCommandInteraction,
   cocService: CoCService
 ): Promise<void> {
+  if (!interaction.guildId) {
+    await interaction.reply({ ephemeral: true, content: "This command can only be used in a server." });
+    return;
+  }
   const clanTag = normalizeClanTag(interaction.options.getString("clan", true));
   const platformRaw = interaction.options.getString("platform", true);
   const platform = parseRecruitmentPlatform(platformRaw);
@@ -315,7 +323,7 @@ async function handleEditSubcommand(
     return;
   }
 
-  const existing = await getRecruitmentTemplate(clanTag, platform);
+  const existing = await getRecruitmentTemplate(interaction.guildId, clanTag, platform);
   const modal = new ModalBuilder()
     .setCustomId(buildModalCustomId(interaction.user.id, clanTag, platform))
     .setTitle(`Edit ${formatPlatform(platform)} ${formatClanTag(clanTag)}`);
@@ -384,6 +392,10 @@ async function handleEditSubcommand(
 async function handleCountdownStartSubcommand(
   interaction: ChatInputCommandInteraction
 ): Promise<void> {
+  if (!interaction.guildId) {
+    await interaction.reply({ ephemeral: true, content: "This command can only be used in a server." });
+    return;
+  }
   await interaction.deferReply({ ephemeral: true });
 
   const platformRaw = interaction.options.getString("platform", true);
@@ -405,7 +417,7 @@ async function handleCountdownStartSubcommand(
     return;
   }
 
-  const existing = await getRecruitmentCooldown(interaction.user.id, clanTag, platform);
+  const existing = await getRecruitmentCooldown(interaction.guildId, interaction.user.id, clanTag, platform);
   const now = Date.now();
   if (existing && existing.expiresAt.getTime() > now) {
     const unix = toUnixSeconds(existing.expiresAt);
@@ -421,6 +433,7 @@ async function handleCountdownStartSubcommand(
   const startedAt = new Date(now);
   const expiresAt = new Date(now + getRecruitmentCooldownDurationMs(platform));
   await startOrResetRecruitmentCooldown({
+    guildId: interaction.guildId,
     userId: interaction.user.id,
     clanTag,
     platform,
@@ -440,9 +453,13 @@ async function handleCountdownStartSubcommand(
 async function handleCountdownStatusSubcommand(
   interaction: ChatInputCommandInteraction
 ): Promise<void> {
+  if (!interaction.guildId) {
+    await interaction.reply({ ephemeral: true, content: "This command can only be used in a server." });
+    return;
+  }
   await interaction.deferReply({ ephemeral: true });
 
-  const rows = await listRecruitmentCooldownsForUser(interaction.user.id);
+  const rows = await listRecruitmentCooldownsForUser(interaction.guildId, interaction.user.id);
   if (rows.length === 0) {
     await interaction.editReply("No active recruitment cooldowns.");
     return;
@@ -465,6 +482,10 @@ async function handleCountdownStatusSubcommand(
 }
 
 async function handleDashboardSubcommand(interaction: ChatInputCommandInteraction): Promise<void> {
+  if (!interaction.guildId) {
+    await interaction.reply({ ephemeral: true, content: "This command can only be used in a server." });
+    return;
+  }
   await interaction.deferReply({ ephemeral: true });
 
   const tracked = await prisma.trackedClan.findMany({
@@ -477,7 +498,11 @@ async function handleDashboardSubcommand(interaction: ChatInputCommandInteractio
   }
 
   const tags = tracked.map((row) => normalizeClanTag(row.tag));
-  const cooldowns = await listRecruitmentCooldownsForUserByClanTags(interaction.user.id, tags);
+  const cooldowns = await listRecruitmentCooldownsForUserByClanTags(
+    interaction.guildId,
+    interaction.user.id,
+    tags
+  );
   const cooldownMap = new Map<string, Date>();
   for (const row of cooldowns) {
     cooldownMap.set(`${normalizeClanTag(row.clanTag)}:${row.platform}`, row.expiresAt);
@@ -510,6 +535,10 @@ export function isRecruitmentModalCustomId(customId: string): boolean {
 export async function handleRecruitmentModalSubmit(
   interaction: ModalSubmitInteraction
 ): Promise<void> {
+  if (!interaction.guildId) {
+    await interaction.reply({ ephemeral: true, content: "This command can only be used in a server." });
+    return;
+  }
   const parsed = parseModalCustomId(interaction.customId);
   if (!parsed) return;
 
@@ -570,6 +599,7 @@ export async function handleRecruitmentModalSubmit(
   }
 
   await upsertRecruitmentTemplate({
+    guildId: interaction.guildId,
     clanTag: parsed.clanTag,
     platform: parsed.platform,
     subject,
