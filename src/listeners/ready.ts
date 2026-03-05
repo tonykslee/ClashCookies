@@ -12,10 +12,7 @@ import { prisma } from "../prisma";
 import { processRecruitmentCooldownReminders } from "../services/RecruitmentService";
 import { SettingsService } from "../services/SettingsService";
 import { PlayerLinkSyncService } from "../services/PlayerLinkSyncService";
-import {
-  WarEventLogService,
-  notifyWarBattleDayRefreshIntervalMs,
-} from "../services/WarEventLogService";
+import { WarEventLogService } from "../services/WarEventLogService";
 import { refreshAllTrackedWarMailPosts } from "../commands/Fwa";
 import {
   setNextNotifyRefreshAtMs,
@@ -297,55 +294,27 @@ export default (client: Client, cocService: CoCService): void => {
       await runFetchTelemetryBatch("war_event_poll_cycle", async () => {
         try {
           await warEventLogService.poll();
+          await warEventLogService.refreshBattleDayPosts();
+          await refreshAllTrackedWarMailPosts(client);
         } catch (err) {
           console.error(`[war-events] poll loop failed: ${formatError(err)}`);
         }
       });
     };
 
+    setNextNotifyRefreshAtMs(Date.now() + warEventPollMs);
+    setNextWarMailRefreshAtMs(Date.now() + warEventPollMs);
     await runWarEventPoll();
     setInterval(() => {
+      setNextNotifyRefreshAtMs(Date.now() + warEventPollMs);
+      setNextWarMailRefreshAtMs(Date.now() + warEventPollMs);
       runWarEventPoll().catch((err) => {
         console.error(`[war-events] poll interval failed: ${formatError(err)}`);
       });
     }, warEventPollMs);
-    console.log(`War event log listener enabled (every ${warEventPollMinutes} minute(s)).`);
-
-    const runBattleDayRefresh = async () => {
-      await runFetchTelemetryBatch("war_event_battle_day_refresh_cycle", async () => {
-        try {
-          await warEventLogService.refreshBattleDayPosts();
-        } catch (err) {
-          console.error(`[war-events] battle-day refresh loop failed: ${formatError(err)}`);
-        }
-      });
-    };
-    const runWarMailRefresh = async () => {
-      await runFetchTelemetryBatch("war_mail_refresh_cycle", async () => {
-        try {
-          await refreshAllTrackedWarMailPosts(client);
-        } catch (err) {
-          console.error(`[fwa-mail] refresh loop failed: ${formatError(err)}`);
-        }
-      });
-    };
-    await runWarMailRefresh();
-    setNextWarMailRefreshAtMs(Date.now() + notifyWarBattleDayRefreshIntervalMs);
-    setInterval(() => {
-      setNextWarMailRefreshAtMs(Date.now() + notifyWarBattleDayRefreshIntervalMs);
-      runWarMailRefresh().catch((err) => {
-        console.error(`[fwa-mail] refresh interval failed: ${formatError(err)}`);
-      });
-    }, notifyWarBattleDayRefreshIntervalMs);
-    console.log("War mail refresh enabled (every 20 minute(s)).");
-    setNextNotifyRefreshAtMs(Date.now() + notifyWarBattleDayRefreshIntervalMs);
-    setInterval(() => {
-      setNextNotifyRefreshAtMs(Date.now() + notifyWarBattleDayRefreshIntervalMs);
-      runBattleDayRefresh().catch((err) => {
-        console.error(`[war-events] battle-day refresh interval failed: ${formatError(err)}`);
-      });
-    }, notifyWarBattleDayRefreshIntervalMs);
-    console.log("War battle-day embed refresh enabled (every 20 minute(s)).");
+    console.log(
+      `War event poll + refresh loop enabled (every ${warEventPollMinutes} minute(s)).`
+    );
 
     console.log("ClashCookies is online");
   });
