@@ -3308,7 +3308,13 @@ function extractPointBalance(html: string): number | null {
 
 function extractActiveFwa(...texts: Array<string | null | undefined>): boolean | null {
   const raw = texts
-    .map((text) => (text ? extractField(text, "Active FWA") : null))
+    .map((text) =>
+      text
+        ? text.match(/Active FWA\s*:\s*(Yes|No)\b/i)?.[1] ??
+          extractField(text, "Active FWA")?.match(/^(Yes|No)\b/i)?.[1] ??
+          null
+        : null
+    )
     .find((value) => value);
   if (!raw) return null;
   if (/^yes$/i.test(raw)) return true;
