@@ -1611,7 +1611,7 @@ function buildFwaMatchCopyComponents(
           entries.map((tag) => {
             const viewForTag = payload.singleViews[tag];
             const clanName = (viewForTag?.clanName ?? `#${tag}`).trim();
-            const warningSuffix = viewForTag?.inferredMatchType ? " :warning:" : "";
+            const warningSuffix = viewForTag?.inferredMatchType ? " ⚠️" : "";
             const mailStatusEmoji = viewForTag?.mailStatusEmoji ?? MAILBOX_NOT_SENT_EMOJI;
             return {
               label: `${mailStatusEmoji} ${clanName}${warningSuffix}`.slice(0, 100),
