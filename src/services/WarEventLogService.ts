@@ -105,6 +105,18 @@ type EmbedWarStats = {
   opponentDestruction: number | null;
 };
 
+type WarMemberSnapshot = {
+  tag?: string;
+  name?: string;
+  mapPosition?: number;
+  attacks?: Array<{
+    order?: number;
+    stars?: number;
+    destructionPercentage?: number;
+    defenderTag?: string;
+  }> | null;
+};
+
 type EventEmitPayload = {
   eventType: EventType;
   clanTag: string;
@@ -1101,6 +1113,12 @@ export class WarEventLogService {
         updatedAt: new Date(),
       },
     });
+    await this.syncWarAttacksFromWarSnapshot({
+      war,
+      clanTag: sub.clanTag,
+      resolvedWarId,
+      fallbackWarStartTime: nextWarStartTime,
+    });
     if (detectedEventPayload) {
       await this.dispatchDetectedEvent({
         sub,
@@ -1109,6 +1127,136 @@ export class WarEventLogService {
       });
     }
     return eventType === "war_ended";
+  }
+
+  private async syncWarAttacksFromWarSnapshot(params: {
+    war: Awaited<ReturnType<CoCService["getCurrentWar"]>> | null;
+    clanTag: string;
+    resolvedWarId: number | null;
+    fallbackWarStartTime: Date | null;
+  }): Promise<void> {
+    const war = params.war;
+    const ownClanTag = normalizeTag(war?.clan?.tag ?? params.clanTag);
+    if (!ownClanTag) return;
+    if (!war?.clan?.tag || !war?.startTime) return;
+
+    const ownClanName = String(war.clan.name ?? ownClanTag).trim() || ownClanTag;
+    const opponentClanTag = normalizeTag(war.opponent?.tag ?? "");
+    const opponentClanName = String(war.opponent?.name ?? opponentClanTag).trim() || opponentClanTag;
+    const warStartTime = parseCocTime(war.startTime) ?? params.fallbackWarStartTime;
+    if (!warStartTime) return;
+    const warEndTime = parseCocTime(war.endTime ?? null);
+    const warState = String(war.state ?? "").trim() || null;
+    const observedAt = new Date();
+
+    // Keep WarAttacks as current-war-only storage for each clan.
+    await prisma.warAttacks.deleteMany({
+      where: {
+        clanTag: ownClanTag,
+        warStartTime: { not: warStartTime },
+      },
+    });
+
+    const opponentMembers = Array.isArray(war.opponent?.members)
+      ? (war.opponent?.members as WarMemberSnapshot[])
+      : [];
+    const opponentByTag = new Map<string, WarMemberSnapshot>();
+    for (const m of opponentMembers) {
+      const tag = normalizeTag(m.tag);
+      if (tag) opponentByTag.set(tag, m);
+    }
+
+    const ownMembers = Array.isArray(war.clan.members)
+      ? (war.clan.members as WarMemberSnapshot[])
+      : [];
+    for (const member of ownMembers) {
+      const playerTag = normalizeTag(member.tag);
+      if (!playerTag) continue;
+      const playerName = String(member.name ?? playerTag).trim() || playerTag;
+      const playerPosition = Number.isFinite(Number(member.mapPosition))
+        ? Number(member.mapPosition)
+        : null;
+      const attacks = Array.isArray(member.attacks) ? member.attacks : [];
+      const sortedAttacks = [...attacks].sort(
+        (a, b) =>
+          Number(a?.order ?? Number.MAX_SAFE_INTEGER) -
+          Number(b?.order ?? Number.MAX_SAFE_INTEGER)
+      );
+
+      await prisma.$executeRaw(
+        Prisma.sql`
+          INSERT INTO "WarAttacks"
+            ("warId","clanTag","clanName","opponentClanTag","opponentClanName","warStartTime","warEndTime","warState","playerTag","playerName","playerPosition","attacksUsed","attackOrder","attackNumber","defenderTag","defenderName","defenderPosition","stars","trueStars","destruction","attackSeenAt","createdAt","updatedAt")
+          VALUES
+            (${params.resolvedWarId}, ${ownClanTag}, ${ownClanName}, ${opponentClanTag || null}, ${opponentClanName || null}, ${warStartTime}, ${warEndTime}, ${warState}, ${playerTag}, ${playerName}, ${playerPosition}, ${sortedAttacks.length}, 0, 0, NULL, NULL, NULL, 0, 0, 0, ${observedAt}, NOW(), NOW())
+          ON CONFLICT ("clanTag","warStartTime","playerTag","attackOrder")
+          DO UPDATE SET
+            "warId" = EXCLUDED."warId",
+            "clanName" = EXCLUDED."clanName",
+            "opponentClanTag" = EXCLUDED."opponentClanTag",
+            "opponentClanName" = EXCLUDED."opponentClanName",
+            "warEndTime" = EXCLUDED."warEndTime",
+            "warState" = EXCLUDED."warState",
+            "playerName" = EXCLUDED."playerName",
+            "playerPosition" = EXCLUDED."playerPosition",
+            "attacksUsed" = EXCLUDED."attacksUsed",
+            "attackSeenAt" = EXCLUDED."attackSeenAt",
+            "updatedAt" = NOW()
+        `
+      );
+
+      let attackNum = 0;
+      const defenderBestStars = new Map<string, number>();
+      for (const attack of sortedAttacks) {
+        attackNum += 1;
+        const attackOrder = Number(attack?.order ?? attackNum);
+        const defenderTag = normalizeTag(attack?.defenderTag ?? "");
+        const defender = opponentByTag.get(defenderTag);
+        const defenderName = defender
+          ? String(defender.name ?? defenderTag).trim() || defenderTag
+          : null;
+        const defenderPosition =
+          defender && Number.isFinite(Number(defender.mapPosition))
+            ? Number(defender.mapPosition)
+            : null;
+        const stars = Math.max(0, Number(attack?.stars ?? 0));
+        const previousBest = defenderTag ? defenderBestStars.get(defenderTag) ?? 0 : 0;
+        const trueStars = Math.max(0, stars - previousBest);
+        if (defenderTag) {
+          defenderBestStars.set(defenderTag, Math.max(previousBest, stars));
+        }
+        const destruction = Number(attack?.destructionPercentage ?? 0);
+
+        await prisma.$executeRaw(
+          Prisma.sql`
+            INSERT INTO "WarAttacks"
+              ("warId","clanTag","clanName","opponentClanTag","opponentClanName","warStartTime","warEndTime","warState","playerTag","playerName","playerPosition","attacksUsed","attackOrder","attackNumber","defenderTag","defenderName","defenderPosition","stars","trueStars","destruction","attackSeenAt","createdAt","updatedAt")
+            VALUES
+              (${params.resolvedWarId}, ${ownClanTag}, ${ownClanName}, ${opponentClanTag || null}, ${opponentClanName || null}, ${warStartTime}, ${warEndTime}, ${warState}, ${playerTag}, ${playerName}, ${playerPosition}, ${sortedAttacks.length}, ${attackOrder}, ${attackNum}, ${defenderTag || null}, ${defenderName}, ${defenderPosition}, ${stars}, ${trueStars}, ${destruction}, ${observedAt}, NOW(), NOW())
+            ON CONFLICT ("clanTag","warStartTime","playerTag","attackOrder")
+            DO UPDATE SET
+              "warId" = EXCLUDED."warId",
+              "clanName" = EXCLUDED."clanName",
+              "opponentClanTag" = EXCLUDED."opponentClanTag",
+              "opponentClanName" = EXCLUDED."opponentClanName",
+              "warEndTime" = EXCLUDED."warEndTime",
+              "warState" = EXCLUDED."warState",
+              "playerName" = EXCLUDED."playerName",
+              "playerPosition" = EXCLUDED."playerPosition",
+              "attacksUsed" = EXCLUDED."attacksUsed",
+              "attackNumber" = EXCLUDED."attackNumber",
+              "defenderTag" = EXCLUDED."defenderTag",
+              "defenderName" = EXCLUDED."defenderName",
+              "defenderPosition" = EXCLUDED."defenderPosition",
+              "stars" = EXCLUDED."stars",
+              "trueStars" = EXCLUDED."trueStars",
+              "destruction" = EXCLUDED."destruction",
+              "attackSeenAt" = EXCLUDED."attackSeenAt",
+              "updatedAt" = NOW()
+          `
+        );
+      }
+    }
   }
 
   private async dispatchDetectedEvent(params: {
