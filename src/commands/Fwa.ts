@@ -720,13 +720,8 @@ async function getCurrentWarMailConfig(
   tag: string
 ): Promise<MatchMailConfig> {
   const normalizedTag = normalizeTag(tag);
-  const row = await prisma.currentWar.findUnique({
-    where: {
-      guildId_clanTag: {
-        guildId,
-        clanTag: `#${normalizedTag}`,
-      },
-    },
+  const row = await prisma.trackedClan.findUnique({
+    where: { tag: `#${normalizedTag}` },
     select: { mailConfig: true },
   });
   return parseMatchMailConfig(row?.mailConfig as Prisma.JsonValue | null | undefined);
@@ -739,23 +734,10 @@ async function saveCurrentWarMailConfig(params: {
   mailConfig: MatchMailConfig;
 }): Promise<void> {
   const normalizedTag = normalizeTag(params.tag);
-  await prisma.currentWar.upsert({
-    where: {
-      guildId_clanTag: {
-        guildId: params.guildId,
-        clanTag: `#${normalizedTag}`,
-      },
-    },
-    create: {
-      guildId: params.guildId,
-      clanTag: `#${normalizedTag}`,
-      channelId: params.channelId,
-      notify: false,
+  await prisma.trackedClan.update({
+    where: { tag: `#${normalizedTag}` },
+    data: {
       mailConfig: asMailConfigInputJson(params.mailConfig),
-    },
-    update: {
-      mailConfig: asMailConfigInputJson(params.mailConfig),
-      updatedAt: new Date(),
     },
   });
 }
@@ -1432,9 +1414,8 @@ async function findWarMailTargetFromConfig(params: {
   channelId: string;
   messageId: string;
 }): Promise<{ tag: string; channelId: string; messageId: string } | null> {
-  const rows = await prisma.currentWar.findMany({
-    where: { guildId: params.guildId },
-    select: { clanTag: true, mailConfig: true },
+  const rows = await prisma.trackedClan.findMany({
+    select: { tag: true, mailConfig: true },
   });
   for (const row of rows) {
     const config = parseMatchMailConfig(row.mailConfig as Prisma.JsonValue | null | undefined);
@@ -1443,7 +1424,7 @@ async function findWarMailTargetFromConfig(params: {
     if (primary.channelId !== params.channelId) continue;
     if (primary.messageId !== params.messageId) continue;
     return {
-      tag: normalizeTag(row.clanTag),
+      tag: normalizeTag(row.tag),
       channelId: primary.channelId,
       messageId: primary.messageId,
     };
@@ -2271,12 +2252,9 @@ export async function handleFwaMatchSkipSyncConfirmButton(
     select: {
       warId: true,
       startTime: true,
-      mailConfig: true,
     },
   });
-  const existingMailConfig = parseMatchMailConfig(
-    existingCurrent?.mailConfig as Prisma.JsonValue | null | undefined
-  );
+  const existingMailConfig = await getCurrentWarMailConfig(interaction.guildId, parsed.tag);
   const existingSkipHistory = existingMailConfig.skipSyncHistory;
   const skipWarStart =
     existingSkipHistory?.warStartUnix !== undefined && existingSkipHistory?.warStartUnix !== null
@@ -2465,11 +2443,9 @@ export async function handleFwaMatchSkipSyncUndoButton(
         clanTag: `#${parsed.tag}`,
       },
     },
-    select: { warId: true, mailConfig: true, channelId: true },
+    select: { warId: true, channelId: true },
   });
-  const existingMailConfig = parseMatchMailConfig(
-    current?.mailConfig as Prisma.JsonValue | null | undefined
-  );
+  const existingMailConfig = await getCurrentWarMailConfig(interaction.guildId, parsed.tag);
   const skipWarId = existingMailConfig.skipSyncHistory?.warId ?? current?.warId ?? null;
   if (skipWarId !== null && Number.isFinite(skipWarId)) {
     await prisma.clanWarHistory.deleteMany({
@@ -2947,14 +2923,13 @@ export async function refreshAllTrackedWarMailPosts(client: Client): Promise<voi
     select: {
       guildId: true,
       clanTag: true,
-      mailConfig: true,
     },
   });
 
   for (const row of rows) {
     const guildId = row.guildId?.trim() ?? "";
     if (!guildId) continue;
-    const config = parseMatchMailConfig(row.mailConfig as Prisma.JsonValue | null | undefined);
+    const config = await getCurrentWarMailConfig(guildId, normalizeTag(row.clanTag));
     const candidates = collectMailPostTargetsFromConfig(config);
     if (candidates.length === 0) continue;
 
@@ -3042,9 +3017,9 @@ export async function runForceMailUpdateCommand(
         clanTag: `#${tag}`,
       },
     },
-    select: { mailConfig: true },
+    select: { clanTag: true },
   });
-  const config = parseMatchMailConfig(current?.mailConfig as Prisma.JsonValue | null | undefined);
+  const config = await getCurrentWarMailConfig(interaction.guildId, tag);
   const candidates = collectMailPostTargetsFromConfig(config);
   if (candidates.length === 0) {
     await interaction.editReply(
@@ -3945,7 +3920,7 @@ async function buildTrackedMatchOverview(
   const actualByTag = await readActualSheetSnapshotByTag(settings).catch(() => new Map<string, ActualSheetClanSnapshot>());
   const tracked = await prisma.trackedClan.findMany({
     orderBy: { createdAt: "asc" },
-    select: { tag: true, name: true, pointsScrape: true },
+    select: { tag: true, name: true, pointsScrape: true, mailConfig: true },
   });
   const trackedMailRows = await prisma.$queryRaw<Array<{ tag: string; mailChannelId: string | null }>>(
     Prisma.sql`SELECT "tag","mailChannelId" FROM "TrackedClan"`
@@ -3972,9 +3947,14 @@ async function buildTrackedMatchOverview(
       outcome: true,
       fwaPoints: true,
       opponentFwaPoints: true,
-      mailConfig: true,
     },
   });
+  const trackedMailConfigByTag = new Map(
+    tracked.map((c) => [
+      normalizeTag(c.tag),
+      parseMatchMailConfig((c as { mailConfig?: Prisma.JsonValue | null }).mailConfig ?? null),
+    ])
+  );
   const subByTag = new Map(subscriptions.map((s) => [normalizeTag(s.clanTag), s]));
 
   const warByClanTag = new Map<string, CurrentWarResult | null>();
@@ -4035,7 +4015,7 @@ async function buildTrackedMatchOverview(
     const clanTimeRemainingLine = getWarStateRemaining(war, warState);
     const clanWarStartMs = warStartMsByClanTag.get(clanTag) ?? null;
     const sub = subByTag.get(clanTag);
-    const parsedMailConfig = parseMatchMailConfig(sub?.mailConfig ?? null);
+    const parsedMailConfig = trackedMailConfigByTag.get(clanTag) ?? parseMatchMailConfig(null);
     const baseMailStatusEmoji = getMailStatusEmojiForClan({
       guildId,
       tag: clanTag,
@@ -4796,7 +4776,6 @@ export async function runForceSyncMailCommand(
       matchType: true,
       outcome: true,
       startTime: true,
-      mailConfig: true,
     },
   });
   const currentWar = await getCurrentWarCached(cocService, tag).catch(() => null);
@@ -4804,7 +4783,7 @@ export async function runForceSyncMailCommand(
   const warStartMs =
     existing?.startTime?.getTime() ?? warStartMsFromApi ?? null;
   const nowUnix = Math.floor(Date.now() / 1000);
-  const current = parseMatchMailConfig(existing?.mailConfig as Prisma.JsonValue | null | undefined);
+  const current = await getCurrentWarMailConfig(interaction.guildId, tag);
   const messages = current.messages.filter(
     (entry) =>
       !(
@@ -6055,7 +6034,7 @@ export const Fwa: Command = {
         const currentSync = getCurrentSyncFromPrevious(sourceSync, warState);
         const trackedClanMeta = await prisma.trackedClan.findFirst({
           where: { tag: { equals: `#${tag}`, mode: "insensitive" } },
-          select: { name: true, pointsScrape: true },
+          select: { name: true, pointsScrape: true, mailConfig: true },
         });
         const subscription = interaction.guildId
           ? await prisma.currentWar.findUnique({
@@ -6074,7 +6053,6 @@ export const Fwa: Command = {
                 opponentFwaPoints: true,
                 warStartFwaPoints: true,
                 warEndFwaPoints: true,
-                mailConfig: true,
               },
             })
           : null;
@@ -6110,7 +6088,7 @@ export const Fwa: Command = {
           );
           const actual = actualByTag.get(tag) ?? null;
           const parsedMailConfig = parseMatchMailConfig(
-            subscription?.mailConfig as Prisma.JsonValue | null | undefined
+            trackedClanMeta?.mailConfig as Prisma.JsonValue | null | undefined
           );
           const baseMailStatusEmoji = getMailStatusEmojiForClan({
             guildId: interaction.guildId ?? null,
@@ -6404,8 +6382,9 @@ export const Fwa: Command = {
         );
         const siteStatusLine = buildPointsSyncStatusLine(siteUpdated, hasMismatch);
         const trackedMailConfig = await getTrackedClanMailConfig(tag);
-        const parsedMailConfig = parseMatchMailConfig(
-          subscription?.mailConfig as Prisma.JsonValue | null | undefined
+        const parsedMailConfig = await getCurrentWarMailConfig(
+          interaction.guildId ?? "",
+          tag
         );
         const currentExpectedOutcomeForMail: "WIN" | "LOSE" | "UNKNOWN" | null =
           matchType === "FWA" ? (effectiveOutcome ?? "UNKNOWN") : null;

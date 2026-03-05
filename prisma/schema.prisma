@@ -37,6 +37,7 @@ model TrackedClan {
   clanBadge       String?
   shortName       String?
   pointsScrape    Json?
+  mailConfig      Json?
   notifyChannelId String?
   notifyRole      String?
   notifyEnabled   Boolean   @default(false)
@@ -188,7 +189,6 @@ model CurrentWar {
   opponentTag   String?
   opponentName  String?
   clanName          String?
-  mailConfig        Json?
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
 

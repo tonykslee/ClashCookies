@@ -256,7 +256,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     summary: "Run manual force-sync actions for war data and MailConfig references.",
     details: [
       "`/force sync data` manually overwrites tracked clan points and/or sync number from points.fwafarm.",
-      "`/force sync mail` upserts `CurrentWar.mailConfig` message references for posted mail/notify messages.",
+      "`/force sync mail` upserts `TrackedClan.mailConfig` message references for posted mail/notify messages.",
       "`/force sync warid` backfills missing `warId` values in `ClanWarHistory`, `WarAttacks`, and `CurrentWar` (DB-only).",
       "`/force mail update` refreshes an existing sent war-mail message in place and re-attaches it to the 20-minute refresh loop.",
       "`force sync` commands are admin-only by default.",
