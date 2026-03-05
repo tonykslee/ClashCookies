@@ -1930,6 +1930,8 @@ export async function handleFwaOutcomeActionButton(interaction: ButtonInteractio
     return;
   }
 
+  await interaction.deferUpdate();
+
   const nextOutcome = parsed.currentOutcome === "WIN" ? "LOSE" : "WIN";
   await prisma.currentWar.upsert({
     where: {
@@ -2002,7 +2004,7 @@ export async function handleFwaOutcomeActionButton(interaction: ButtonInteractio
     const showMode = interaction.message.embeds.length > 0 ? "embed" : "copy";
     const view = nextPayload.singleViews[parsed.tag];
     if (!view) continue;
-    await interaction.update({
+    await interaction.editReply({
       content: showMode === "copy" ? limitDiscordContent(view.copyText) : undefined,
       embeds: showMode === "embed" ? [view.embed] : [],
       components: buildFwaMatchCopyComponents(nextPayload, nextPayload.userId, key, showMode),
@@ -2010,7 +2012,7 @@ export async function handleFwaOutcomeActionButton(interaction: ButtonInteractio
     return;
   }
 
-  await interaction.reply({
+  await interaction.followUp({
     ephemeral: true,
     content: `Expected outcome for #${parsed.tag} reversed to **${nextOutcome}**.`,
   });
@@ -2060,6 +2062,8 @@ export async function handleFwaMatchSyncActionButton(
     return;
   }
 
+  await interaction.deferUpdate();
+
   await prisma.currentWar.upsert({
     where: {
       clanTag_guildId: {
@@ -2104,7 +2108,7 @@ export async function handleFwaMatchSyncActionButton(
     interaction.client
   );
   if (!refreshed) {
-    await interaction.reply({
+    await interaction.followUp({
       ephemeral: true,
       content: "Data synced, but this view could not be refreshed.",
     });
@@ -2114,13 +2118,13 @@ export async function handleFwaMatchSyncActionButton(
   const showMode = interaction.message.embeds.length > 0 ? "embed" : "copy";
   const nextView = refreshed.singleViews[parsed.tag];
   if (!nextView) {
-    await interaction.reply({
+    await interaction.followUp({
       ephemeral: true,
       content: "Data synced, but clan view is unavailable now.",
     });
     return;
   }
-  await interaction.update({
+  await interaction.editReply({
     content: showMode === "copy" ? limitDiscordContent(nextView.copyText) : undefined,
     embeds: showMode === "embed" ? [nextView.embed] : [],
     components: buildFwaMatchCopyComponents(refreshed, refreshed.userId, parsed.key, showMode),
