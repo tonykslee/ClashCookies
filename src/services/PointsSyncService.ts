@@ -10,7 +10,7 @@ type UpsertPointsSyncInput = {
   clanPoints: number;
   opponentPoints: number;
   outcome?: string | null;
-  isFwa?: boolean | null;
+  isFwa: boolean;
 };
 
 type FindPointsSyncInput = {
@@ -43,7 +43,7 @@ export class PointsSyncService {
         clanPoints: Math.trunc(input.clanPoints),
         opponentPoints: Math.trunc(input.opponentPoints),
         outcome: input.outcome ?? null,
-        isFwa: input.isFwa ?? null,
+        isFwa: input.isFwa,
         syncedAt: new Date(),
       },
       create: {
@@ -56,7 +56,7 @@ export class PointsSyncService {
         clanPoints: Math.trunc(input.clanPoints),
         opponentPoints: Math.trunc(input.opponentPoints),
         outcome: input.outcome ?? null,
-        isFwa: input.isFwa ?? null,
+        isFwa: input.isFwa,
       },
     });
   }
