@@ -74,6 +74,7 @@ const FWA_MATCH_SKIP_SYNC_UNDO_PREFIX = "fwa-match-skip-sync-undo";
 const FWA_MATCH_SELECT_PREFIX = "fwa-match-select";
 const FWA_MATCH_ALLIANCE_PREFIX = "fwa-match-alliance";
 const FWA_MAIL_CONFIRM_PREFIX = "fwa-mail-confirm";
+const FWA_MAIL_BACK_PREFIX = "fwa-mail-back";
 const FWA_MAIL_REFRESH_PREFIX = "fwa-mail-refresh";
 const FWA_MATCH_SEND_MAIL_PREFIX = "fwa-match-send-mail";
 const WAR_MAIL_REFRESH_MS = 20 * 60 * 1000;
@@ -496,6 +497,23 @@ function parseFwaMailConfirmCustomId(customId: string): { userId: string; key: s
 
 export function isFwaMailConfirmButtonCustomId(customId: string): boolean {
   return customId.startsWith(`${FWA_MAIL_CONFIRM_PREFIX}:`);
+}
+
+function buildFwaMailBackCustomId(userId: string, key: string): string {
+  return `${FWA_MAIL_BACK_PREFIX}:${userId}:${key}`;
+}
+
+function parseFwaMailBackCustomId(customId: string): { userId: string; key: string } | null {
+  const parts = customId.split(":");
+  if (parts.length !== 3 || parts[0] !== FWA_MAIL_BACK_PREFIX) return null;
+  const userId = parts[1]?.trim() ?? "";
+  const key = parts[2]?.trim() ?? "";
+  if (!userId || !key) return null;
+  return { userId, key };
+}
+
+export function isFwaMailBackButtonCustomId(customId: string): boolean {
+  return customId.startsWith(`${FWA_MAIL_BACK_PREFIX}:`);
 }
 
 function buildFwaMailRefreshCustomId(key: string): string {
@@ -1349,16 +1367,24 @@ function buildWarMailPreviewComponents(params: {
   userId: string;
   key: string;
   enabled: boolean;
+  showBack?: boolean;
 }): Array<ActionRowBuilder<ButtonBuilder>> {
-  return [
-    new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder()
-        .setCustomId(buildFwaMailConfirmCustomId(params.userId, params.key))
-        .setLabel("Confirm and Send")
-        .setStyle(ButtonStyle.Primary)
-        .setDisabled(!params.enabled)
-    ),
+  const buttons = [
+    new ButtonBuilder()
+      .setCustomId(buildFwaMailConfirmCustomId(params.userId, params.key))
+      .setLabel("Confirm and Send")
+      .setStyle(ButtonStyle.Primary)
+      .setDisabled(!params.enabled),
   ];
+  if (params.showBack) {
+    buttons.push(
+      new ButtonBuilder()
+        .setCustomId(buildFwaMailBackCustomId(params.userId, params.key))
+        .setLabel("Back")
+        .setStyle(ButtonStyle.Secondary)
+    );
+  }
+  return [new ActionRowBuilder<ButtonBuilder>().addComponents(buttons)];
 }
 
 function buildWarMailPostedComponents(key: string): Array<ActionRowBuilder<ButtonBuilder>> {
@@ -2598,6 +2624,7 @@ async function showWarMailPreview(
         userId,
         key: previewKey,
         enabled,
+        showBack: Boolean(sourceMatchPayloadKey),
       }),
     });
     return;
@@ -2610,6 +2637,7 @@ async function showWarMailPreview(
       userId,
       key: previewKey,
       enabled,
+      showBack: Boolean(sourceMatchPayloadKey),
     }),
   });
 }
@@ -2698,6 +2726,37 @@ async function refreshSourceMatchMessageAfterMailSend(
     components: buildFwaMatchCopyComponents(refreshed, refreshed.userId, sourceKey, showMode),
   });
   return { refreshed, showMode, sourceUpdated: true };
+}
+
+async function restoreSourceMatchMessageFromMailPreview(
+  interaction: ButtonInteraction,
+  previewPayload: FwaMailPreviewPayload
+): Promise<boolean> {
+  const sourceKey = previewPayload.sourceMatchPayloadKey;
+  const showMode = previewPayload.sourceShowMode ?? "embed";
+  if (!sourceKey || !previewPayload.guildId) return false;
+
+  const existing = fwaMatchCopyPayloads.get(sourceKey);
+  if (!existing) return false;
+  const refreshed = await rebuildTrackedPayloadForTag(
+    existing,
+    previewPayload.guildId,
+    normalizeTag(previewPayload.tag),
+    interaction.client
+  ).catch(() => null);
+  if (!refreshed) return false;
+  refreshed.currentScope = "single";
+  refreshed.currentTag = normalizeTag(previewPayload.tag);
+  fwaMatchCopyPayloads.set(sourceKey, refreshed);
+
+  const currentView =
+    refreshed.singleViews[normalizeTag(previewPayload.tag)] ?? refreshed.allianceView;
+  await interaction.update({
+    content: showMode === "copy" ? limitDiscordContent(currentView.copyText) : undefined,
+    embeds: showMode === "embed" ? [currentView.embed] : [],
+    components: buildFwaMatchCopyComponents(refreshed, refreshed.userId, sourceKey, showMode),
+  });
+  return true;
 }
 
 export async function handleFwaMailConfirmButton(interaction: ButtonInteraction): Promise<void> {
@@ -2915,6 +2974,37 @@ export async function handleFwaMailConfirmButton(interaction: ButtonInteraction)
       ),
     });
   }
+}
+
+export async function handleFwaMailBackButton(interaction: ButtonInteraction): Promise<void> {
+  const parsed = parseFwaMailBackCustomId(interaction.customId);
+  if (!parsed) return;
+  if (interaction.user.id !== parsed.userId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Only the command requester can use this button.",
+    });
+    return;
+  }
+  const payload = fwaMailPreviewPayloads.get(parsed.key);
+  if (!payload) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "This mail preview expired. Please run /fwa match again.",
+    });
+    return;
+  }
+  const restored = await restoreSourceMatchMessageFromMailPreview(interaction, payload).catch(
+    () => false
+  );
+  if (!restored) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Could not restore the match view. Please run /fwa match again.",
+    });
+    return;
+  }
+  fwaMailPreviewPayloads.delete(parsed.key);
 }
 
 export async function handleFwaMailRefreshButton(interaction: ButtonInteraction): Promise<void> {

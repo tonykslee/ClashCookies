@@ -30,6 +30,7 @@ import {
   handleFwaMatchSkipSyncConfirmButton,
   handleFwaMatchSkipSyncUndoButton,
   handleFwaMailConfirmButton,
+  handleFwaMailBackButton,
   handleFwaMailRefreshButton,
   handleFwaMatchSendMailButton,
   isFwaMatchAllianceButtonCustomId,
@@ -38,6 +39,7 @@ import {
   isFwaMatchSkipSyncConfirmButtonCustomId,
   isFwaMatchSkipSyncUndoButtonCustomId,
   isFwaMailConfirmButtonCustomId,
+  isFwaMailBackButtonCustomId,
   isFwaMailRefreshButtonCustomId,
   isFwaMatchSendMailButtonCustomId,
   isFwaMatchTypeEditButtonCustomId,
@@ -443,6 +445,20 @@ const handleButtonInteraction = async (
         await interaction.reply({
           ephemeral: true,
           content: "Failed to send war mail.",
+        });
+      }
+    }
+  }
+
+  if (isFwaMailBackButtonCustomId(interaction.customId)) {
+    try {
+      await handleFwaMailBackButton(interaction);
+    } catch (err) {
+      console.error(`FWA mail back button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to restore the match view.",
         });
       }
     }
