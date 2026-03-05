@@ -272,6 +272,7 @@ export const KickList: Command = {
         (
           await prisma.playerActivity.findMany({
             where: {
+              guildId,
               tag: { in: memberTags },
               lastSeenAt: { lt: cutoff },
             },

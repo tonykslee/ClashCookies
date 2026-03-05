@@ -198,6 +198,10 @@ async function runDaysMode(
   cocService: CoCService,
   days: number
 ): Promise<void> {
+  if (!interaction.guildId) {
+    await interaction.editReply("This command can only be used in a server.");
+    return;
+  }
   const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
   const roster = await getRosterSnapshot(cocService);
 
@@ -217,6 +221,7 @@ async function runDaysMode(
   const liveMemberTagList = [...roster.liveMemberTags];
   const activitySnapshot = await prisma.playerActivity.aggregate({
     where: {
+      guildId: interaction.guildId,
       tag: { in: liveMemberTagList },
     },
     _max: { updatedAt: true },
@@ -241,6 +246,7 @@ async function runDaysMode(
 
   const freshObservedCount = await prisma.playerActivity.count({
     where: {
+      guildId: interaction.guildId,
       tag: { in: liveMemberTagList },
       updatedAt: { gte: staleCutoff },
     },
@@ -266,6 +272,7 @@ async function runDaysMode(
 
   const inactivePlayers = await prisma.playerActivity.findMany({
     where: {
+      guildId: interaction.guildId,
       lastSeenAt: { lt: cutoff },
       updatedAt: { gte: staleCutoff },
       tag: { in: liveMemberTagList },

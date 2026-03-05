@@ -6,6 +6,7 @@ import { prisma } from "../prisma";
 export type RecruitmentPlatform = "discord" | "reddit" | "band";
 
 export type RecruitmentTemplateRecord = {
+  guildId: string;
   clanTag: string;
   platform: RecruitmentPlatform;
   subject: string | null;
@@ -16,6 +17,7 @@ export type RecruitmentTemplateRecord = {
 
 export type RecruitmentCooldownRecord = {
   id: number;
+  guildId: string;
   userId: string;
   clanTag: string;
   platform: RecruitmentPlatform;
@@ -68,6 +70,7 @@ export function toImageUrlsCsv(imageUrls: string[]): string {
 
 /** Purpose: get recruitment template. */
 export async function getRecruitmentTemplate(
+  guildId: string,
   clanTag: string,
   platform: RecruitmentPlatform
 ): Promise<RecruitmentTemplateRecord | null> {
@@ -83,6 +86,8 @@ export async function getRecruitmentTemplate(
         "updatedAt"
       FROM "RecruitmentTemplate"
       WHERE
+        "guildId" = ${guildId}
+        AND
         "clanTag" = ${normalized}
         AND "platform" = ${platform}::"RecruitmentPlatform"
       LIMIT 1
@@ -93,6 +98,7 @@ export async function getRecruitmentTemplate(
 
 /** Purpose: upsert recruitment template. */
 export async function upsertRecruitmentTemplate(input: {
+  guildId: string;
   clanTag: string;
   platform: RecruitmentPlatform;
   subject?: string | null;
@@ -103,10 +109,10 @@ export async function upsertRecruitmentTemplate(input: {
   await prisma.$executeRaw(
     Prisma.sql`
       INSERT INTO "RecruitmentTemplate"
-        ("clanTag", "platform", "subject", "requiredTH", "focus", "body", "imageUrls", "createdAt", "updatedAt")
+        ("guildId", "clanTag", "platform", "subject", "requiredTH", "focus", "body", "imageUrls", "createdAt", "updatedAt")
       VALUES
-        (${normalized}, ${input.platform}::"RecruitmentPlatform", ${input.subject ?? null}, '', '', ${input.body}, ${input.imageUrls}::text[], NOW(), NOW())
-      ON CONFLICT ("clanTag", "platform")
+        (${input.guildId}, ${normalized}, ${input.platform}::"RecruitmentPlatform", ${input.subject ?? null}, '', '', ${input.body}, ${input.imageUrls}::text[], NOW(), NOW())
+      ON CONFLICT ("guildId", "clanTag", "platform")
       DO UPDATE SET
         "subject" = EXCLUDED."subject",
         "body" = EXCLUDED."body",
@@ -118,6 +124,7 @@ export async function upsertRecruitmentTemplate(input: {
 
 /** Purpose: get recruitment cooldown. */
 export async function getRecruitmentCooldown(
+  guildId: string,
   userId: string,
   clanTag: string,
   platform: RecruitmentPlatform
@@ -127,6 +134,7 @@ export async function getRecruitmentCooldown(
     Prisma.sql`
       SELECT
         "id",
+        "guildId",
         "userId",
         "clanTag",
         "platform",
@@ -135,7 +143,8 @@ export async function getRecruitmentCooldown(
         "reminded"
       FROM "RecruitmentCooldown"
       WHERE
-        "userId" = ${userId}
+        "guildId" = ${guildId}
+        AND "userId" = ${userId}
         AND "clanTag" = ${normalized}
         AND "platform" = ${platform}::"RecruitmentPlatform"
       LIMIT 1
@@ -146,6 +155,7 @@ export async function getRecruitmentCooldown(
 
 /** Purpose: start or reset recruitment cooldown. */
 export async function startOrResetRecruitmentCooldown(input: {
+  guildId: string;
   userId: string;
   clanTag: string;
   platform: RecruitmentPlatform;
@@ -156,10 +166,10 @@ export async function startOrResetRecruitmentCooldown(input: {
   await prisma.$executeRaw(
     Prisma.sql`
       INSERT INTO "RecruitmentCooldown"
-        ("userId", "clanTag", "platform", "startedAt", "expiresAt", "reminded", "createdAt", "updatedAt")
+        ("guildId", "userId", "clanTag", "platform", "startedAt", "expiresAt", "reminded", "createdAt", "updatedAt")
       VALUES
-        (${input.userId}, ${normalized}, ${input.platform}::"RecruitmentPlatform", ${input.startedAt}, ${input.expiresAt}, false, NOW(), NOW())
-      ON CONFLICT ("userId", "clanTag", "platform")
+        (${input.guildId}, ${input.userId}, ${normalized}, ${input.platform}::"RecruitmentPlatform", ${input.startedAt}, ${input.expiresAt}, false, NOW(), NOW())
+      ON CONFLICT ("guildId", "userId", "clanTag", "platform")
       DO UPDATE SET
         "startedAt" = EXCLUDED."startedAt",
         "expiresAt" = EXCLUDED."expiresAt",
@@ -171,12 +181,14 @@ export async function startOrResetRecruitmentCooldown(input: {
 
 /** Purpose: list recruitment cooldowns for user. */
 export async function listRecruitmentCooldownsForUser(
+  guildId: string,
   userId: string
 ): Promise<RecruitmentCooldownRecord[]> {
   return prisma.$queryRaw<RecruitmentCooldownRecord[]>(
     Prisma.sql`
       SELECT
         "id",
+        "guildId",
         "userId",
         "clanTag",
         "platform",
@@ -184,7 +196,7 @@ export async function listRecruitmentCooldownsForUser(
         "expiresAt",
         "reminded"
       FROM "RecruitmentCooldown"
-      WHERE "userId" = ${userId}
+      WHERE "guildId" = ${guildId} AND "userId" = ${userId}
       ORDER BY "expiresAt" ASC
     `
   );
@@ -192,6 +204,7 @@ export async function listRecruitmentCooldownsForUser(
 
 /** Purpose: list recruitment cooldowns for user by clan tags. */
 export async function listRecruitmentCooldownsForUserByClanTags(
+  guildId: string,
   userId: string,
   clanTags: string[]
 ): Promise<RecruitmentCooldownRecord[]> {
@@ -202,6 +215,7 @@ export async function listRecruitmentCooldownsForUserByClanTags(
     Prisma.sql`
       SELECT
         "id",
+        "guildId",
         "userId",
         "clanTag",
         "platform",
@@ -210,7 +224,8 @@ export async function listRecruitmentCooldownsForUserByClanTags(
         "reminded"
       FROM "RecruitmentCooldown"
       WHERE
-        "userId" = ${userId}
+        "guildId" = ${guildId}
+        AND "userId" = ${userId}
         AND "clanTag" = ANY (${normalized}::text[])
       ORDER BY "clanTag" ASC, "platform" ASC
     `
@@ -239,12 +254,16 @@ export async function getTrackedClanNameMapByTags(
 }
 
 /** Purpose: process recruitment cooldown reminders. */
-export async function processRecruitmentCooldownReminders(client: Client): Promise<void> {
+export async function processRecruitmentCooldownReminders(
+  client: Client,
+  guildId: string
+): Promise<void> {
   const now = new Date();
   const dueRows = await prisma.$queryRaw<RecruitmentCooldownRecord[]>(
     Prisma.sql`
       SELECT
         "id",
+        "guildId",
         "userId",
         "clanTag",
         "platform",
@@ -253,7 +272,8 @@ export async function processRecruitmentCooldownReminders(client: Client): Promi
         "reminded"
       FROM "RecruitmentCooldown"
       WHERE
-        "expiresAt" <= ${now}
+        "guildId" = ${guildId}
+        AND "expiresAt" <= ${now}
         AND "reminded" = false
       ORDER BY "expiresAt" ASC
     `

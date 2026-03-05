@@ -8,7 +8,8 @@ datasource db {
 }
 
 model PlayerActivity {
-  tag     String @id
+  guildId String
+  tag     String
   name    String
   clanTag String
 
@@ -24,6 +25,9 @@ model PlayerActivity {
 
   lastSeenAt DateTime
   updatedAt  DateTime @updatedAt
+
+  @@id([guildId, tag])
+  @@index([guildId, clanTag])
 }
 
 model TrackedClan {
@@ -103,6 +107,7 @@ model KickListEntry {
 
 model RecruitmentTemplate {
   id         Int                 @id @default(autoincrement())
+  guildId    String
   clanTag    String
   platform   RecruitmentPlatform
   subject    String?
@@ -113,12 +118,13 @@ model RecruitmentTemplate {
   createdAt  DateTime            @default(now())
   updatedAt  DateTime            @updatedAt
 
-  @@unique([clanTag, platform])
-  @@index([clanTag])
+  @@unique([guildId, clanTag, platform])
+  @@index([guildId, clanTag])
 }
 
 model RecruitmentCooldown {
   id        Int                 @id @default(autoincrement())
+  guildId   String
   userId    String
   clanTag   String
   platform  RecruitmentPlatform
@@ -128,10 +134,11 @@ model RecruitmentCooldown {
   createdAt DateTime            @default(now())
   updatedAt DateTime            @updatedAt
 
-  @@unique([userId, clanTag, platform])
-  @@index([userId, expiresAt])
+  @@unique([guildId, userId, clanTag, platform])
+  @@index([guildId, userId, expiresAt])
   @@index([expiresAt, reminded])
   @@index([expiresAt])
+  @@index([guildId, expiresAt, reminded])
 }
 
 model WarAttacks {
