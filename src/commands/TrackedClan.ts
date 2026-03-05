@@ -404,7 +404,7 @@ export const TrackedClan: Command = {
 
         if (interaction.guildId) {
           const activeWar = await cocService.getCurrentWar(tag).catch(() => null);
-          const lastState = String(activeWar?.state ?? "notInWar");
+          const state = String(activeWar?.state ?? "notInWar");
           const opponentTag = normalizeClanTag(String(activeWar?.opponent?.tag ?? ""));
           const opponentName = String(activeWar?.opponent?.name ?? "").trim() || null;
           const warStartTimeRaw = String(activeWar?.startTime ?? "");
@@ -467,22 +467,22 @@ export const TrackedClan: Command = {
               clanTag: tag,
               channelId: interaction.channelId,
               notify: false,
-              lastState,
+              state,
               prepStartTime,
               startTime: warStartTime,
               endTime: warEndTime,
-              lastOpponentTag: opponentTag || null,
-              lastOpponentName: opponentName,
+              opponentTag: opponentTag || null,
+              opponentName: opponentName,
               clanName: saved.name ?? null,
             },
             update: {
               clanName: saved.name ?? null,
-              lastState,
+              state,
               prepStartTime,
               startTime: warStartTime,
               endTime: warEndTime,
-              lastOpponentTag: opponentTag || null,
-              lastOpponentName: opponentName,
+              opponentTag: opponentTag || null,
+              opponentName: opponentName,
               updatedAt: new Date(),
             },
           });
@@ -568,3 +568,4 @@ export const TrackedClan: Command = {
     await interaction.respond(choices);
   },
 };
+

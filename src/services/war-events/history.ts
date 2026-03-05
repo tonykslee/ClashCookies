@@ -129,8 +129,8 @@ export class WarEventHistoryService {
     matchType: MatchType;
     warStartFwaPoints: number | null;
     warEndFwaPoints: number | null;
-    lastClanStars: number | null;
-    lastOpponentStars: number | null;
+    clanStars: number | null;
+    opponentStars: number | null;
     prepStartTime: Date | null;
     warStartTime: Date | null;
   }): Promise<void> {
@@ -152,8 +152,8 @@ export class WarEventHistoryService {
     const finalResult = await this.getWarEndResultSnapshot({
       clanTag: payload.clanTag,
       opponentTag: payload.opponentTag,
-      fallbackClanStars: payload.lastClanStars,
-      fallbackOpponentStars: payload.lastOpponentStars,
+      fallbackClanStars: payload.clanStars,
+      fallbackOpponentStars: payload.opponentStars,
       warStartTime,
     });
     const attacks = await prisma.warAttacks.findMany({
@@ -175,19 +175,26 @@ export class WarEventHistoryService {
       after: payload.warEndFwaPoints,
       finalResult,
     });
-    const enemyPoints =
-      payload.matchType === "FWA" &&
-      payload.opponentFwaPoints !== null &&
-      Number.isFinite(payload.opponentFwaPoints)
-        ? payload.opponentFwaPoints
-        : null;
+    const resolvedPointsAfterWar =
+      payload.warEndFwaPoints !== null && Number.isFinite(payload.warEndFwaPoints)
+        ? payload.warEndFwaPoints
+        : payload.warStartFwaPoints !== null &&
+            Number.isFinite(payload.warStartFwaPoints) &&
+            pointsDelta !== null &&
+            Number.isFinite(pointsDelta)
+          ? payload.warStartFwaPoints + pointsDelta
+          : null;
+    const resolvedActualOutcome: "WIN" | "LOSE" | "TIE" | "UNKNOWN" =
+      finalResult.resultLabel === "UNKNOWN" && payload.outcome
+        ? payload.outcome
+        : finalResult.resultLabel;
 
     const row = await prisma.$queryRaw<Array<{ warId: number }>>(
       Prisma.sql`
         INSERT INTO "ClanWarHistory"
-          ("syncNumber","matchType","clanStars","clanDestruction","opponentStars","opponentDestruction","fwaPointsGained","expectedOutcome","actualOutcome","enemyPoints","prepStartTime","warStartTime","warEndTime","clanName","clanTag","opponentName","opponentTag","updatedAt")
+          ("syncNumber","matchType","clanStars","clanDestruction","opponentStars","opponentDestruction","pointsAfterWar","expectedOutcome","actualOutcome","prepStartTime","warStartTime","warEndTime","clanName","clanTag","opponentName","opponentTag","updatedAt")
         VALUES
-          (${payload.syncNumber}, ${payload.matchType}, ${finalResult.clanStars}, ${finalResult.clanDestruction}, ${finalResult.opponentStars}, ${finalResult.opponentDestruction}, ${pointsDelta}, ${payload.outcome}, ${finalResult.resultLabel}, ${enemyPoints}, ${payload.prepStartTime}, ${warStartTime}, ${warEndTime}, ${payload.clanName}, ${clanTag}, ${payload.opponentName}, ${normalizeTag(payload.opponentTag) || null}, NOW())
+          (${payload.syncNumber}, ${payload.matchType}, ${finalResult.clanStars}, ${finalResult.clanDestruction}, ${finalResult.opponentStars}, ${finalResult.opponentDestruction}, ${resolvedPointsAfterWar}, ${payload.outcome}, ${resolvedActualOutcome}, ${payload.prepStartTime}, ${warStartTime}, ${warEndTime}, ${payload.clanName}, ${clanTag}, ${payload.opponentName}, ${normalizeTag(payload.opponentTag) || null}, NOW())
         ON CONFLICT ("warStartTime","clanTag","opponentTag")
         DO UPDATE SET
           "syncNumber" = EXCLUDED."syncNumber",
@@ -196,10 +203,9 @@ export class WarEventHistoryService {
           "clanDestruction" = EXCLUDED."clanDestruction",
           "opponentStars" = EXCLUDED."opponentStars",
           "opponentDestruction" = EXCLUDED."opponentDestruction",
-          "fwaPointsGained" = EXCLUDED."fwaPointsGained",
+          "pointsAfterWar" = EXCLUDED."pointsAfterWar",
           "expectedOutcome" = EXCLUDED."expectedOutcome",
-          "actualOutcome" = EXCLUDED."actualOutcome",
-          "enemyPoints" = EXCLUDED."enemyPoints",
+          "actualOutcome" = COALESCE(EXCLUDED."actualOutcome", "ClanWarHistory"."actualOutcome", EXCLUDED."expectedOutcome", 'UNKNOWN'),
           "prepStartTime" = EXCLUDED."prepStartTime",
           "warEndTime" = EXCLUDED."warEndTime",
           "clanName" = EXCLUDED."clanName",
@@ -385,5 +391,6 @@ export class WarEventHistoryService {
     return computeWarPointsDeltaForTest(input);
   }
 }
+
 
 
