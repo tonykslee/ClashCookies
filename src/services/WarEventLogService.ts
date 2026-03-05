@@ -1124,10 +1124,61 @@ export class WarEventLogService {
       });
     }
     if (!params.sub.notify || !params.sub.channelId) return;
+    if (
+      (params.payload.eventType === "battle_day" || params.payload.eventType === "war_ended") &&
+      !(await this.reserveEventDelivery(params))
+    ) {
+      return;
+    }
     console.log(
       `[war-events] emit start guild=${params.sub.guildId} channel=${params.sub.channelId} clan=${params.payload.clanTag} event=${params.payload.eventType}`
     );
     await this.emitEvent(params.sub.channelId, params.payload, params.resolvedWarId);
+  }
+
+  private async reserveEventDelivery(params: {
+    sub: SubscriptionRow;
+    payload: EventEmitPayload;
+    resolvedWarId: number | null;
+  }): Promise<boolean> {
+    const eventType = params.payload.eventType;
+    if (eventType !== "battle_day" && eventType !== "war_ended") return true;
+    const warId =
+      params.resolvedWarId ??
+      params.sub.warId ??
+      (await this.resolveWarId(params.payload.clanTag, params.payload.warStartTime));
+    if (warId === null || warId === undefined || !Number.isFinite(Number(warId))) {
+      console.warn(
+        `[war-events] emit skipped guild=${params.sub.guildId} clan=${params.sub.clanTag} event=${eventType} reason=missing_war_id_for_idempotency`
+      );
+      return false;
+    }
+    try {
+      await prisma.warEvent.create({
+        data: {
+          warId: Math.trunc(Number(warId)),
+          clanTag: normalizeTag(params.payload.clanTag),
+          eventType,
+          payload: {
+            guildId: params.sub.guildId,
+            channelId: params.sub.channelId,
+            opponentTag: normalizeTag(params.payload.opponentTag),
+            warStartTime: params.payload.warStartTime?.toISOString?.() ?? null,
+            warEndTime: params.payload.warEndTime?.toISOString?.() ?? null,
+            syncNumber: params.payload.syncNumber ?? null,
+          },
+        },
+      });
+      return true;
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+        console.log(
+          `[war-events] emit deduped guild=${params.sub.guildId} clan=${params.sub.clanTag} warId=${warId} event=${eventType}`
+        );
+        return false;
+      }
+      throw error;
+    }
   }
 
   private async resolveWarId(clanTagInput: string, warStartTime: Date | null): Promise<number | null> {
