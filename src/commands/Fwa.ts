@@ -6156,10 +6156,10 @@ export const Fwa: Command = {
       });
     };
 
+    await interaction.deferReply({ ephemeral: !isPublic });
     const settings = new SettingsService();
     const warLookupCache: WarLookupCache = new Map();
     const sourceSync = await getSourceOfTruthSync(settings, interaction.guildId ?? null);
-    await interaction.deferReply({ ephemeral: !isPublic });
     const rawTag = interaction.options.getString("tag", false);
     const tag = normalizeTag(rawTag ?? "");
     if (subcommand === "leader-role") {
