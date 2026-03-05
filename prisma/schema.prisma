@@ -269,6 +269,25 @@ model WarEvent {
   @@index([clanTag, createdAt(sort: Desc)])
 }
 
+model ClanPostedMessage {
+  id         String   @id @default(cuid())
+  guildId    String
+  clanTag    String
+  type       String
+  event      String?
+  channelId  String
+  messageId  String
+  messageUrl String
+  warId      String?
+  syncNum    Int?
+  configHash String?
+  createdAt  DateTime @default(now())
+
+  @@index([guildId, clanTag])
+  @@index([clanTag, warId])
+  @@unique([guildId, clanTag, warId, type, event])
+}
+
 model ApiUsage {
   endpoint String   @id
   lastCall DateTime
