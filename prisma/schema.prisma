@@ -164,9 +164,8 @@ model WarAttacks {
 }
 
 model CurrentWar {
-  id                Int           @id @default(autoincrement())
   guildId           String
-  clanTag           String
+  clanTag           String        @id
   warId             Int?
   syncNum    Int?
   channelId         String
