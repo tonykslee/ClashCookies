@@ -166,7 +166,24 @@ export default (client: Client, cocService: CoCService): void => {
     }
 
   if (interaction.isButton()) {
-    await handleButtonInteraction(interaction, cocService);
+    try {
+      await handleButtonInteraction(interaction, cocService);
+    } catch (err) {
+      console.error(`Button interaction failed: ${formatError(err)}`);
+      const code = getDiscordErrorCode(err);
+      if (code === 10062) {
+        console.warn("Button interaction expired before response (10062).");
+        return;
+      }
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction
+          .reply({
+            ephemeral: true,
+            content: "This interaction expired. Please run the command again.",
+          })
+          .catch(() => undefined);
+      }
+    }
     return;
   }
 
