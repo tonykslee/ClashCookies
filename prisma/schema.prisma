@@ -298,6 +298,8 @@ model ClanPointsSync {
   opponentTag    String
   clanPoints     Int
   opponentPoints Int
+  outcome        String?
+  isFwa          Boolean?
   syncedAt       DateTime @default(now())
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt

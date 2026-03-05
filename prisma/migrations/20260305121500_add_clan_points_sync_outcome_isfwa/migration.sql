@@ -1,0 +1,3 @@
+ALTER TABLE "ClanPointsSync"
+ADD COLUMN "outcome" TEXT,
+ADD COLUMN "isFwa" BOOLEAN;
