@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../../prisma";
 import { CoCService } from "../CoCService";
+import { PointsSyncService } from "../PointsSyncService";
 import {
   type EventType,
   type FwaLoseStyle,
@@ -13,30 +14,13 @@ import {
   parseCocTime,
 } from "./core";
 
-type VersionedJsonBlob = {
-  version?: number;
-  data?: unknown;
-};
-
-function unwrapVersionedRecord(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const root = value as Record<string, unknown>;
-  const maybeVersioned = root as VersionedJsonBlob;
-  if (
-    typeof maybeVersioned.version === "number" &&
-    maybeVersioned.data &&
-    typeof maybeVersioned.data === "object" &&
-    !Array.isArray(maybeVersioned.data)
-  ) {
-    return maybeVersioned.data as Record<string, unknown>;
-  }
-  return root;
-}
-
 /** Purpose: encapsulate war-end history, compliance, and war-plan related logic. */
 export class WarEventHistoryService {
   /** Purpose: initialize war history service dependencies. */
-  constructor(private readonly coc: CoCService) {}
+  constructor(
+    private readonly coc: CoCService,
+    private readonly pointsSync = new PointsSyncService()
+  ) {}
 
   /** Purpose: build the war-end points line text shown in event embeds. */
   buildWarEndPointsLine(
@@ -247,6 +231,11 @@ export class WarEventHistoryService {
       where: { clanTag, startTime: warStartTime, warId: null },
       data: { warId },
     });
+    await this.pointsSync.attachWarId({
+      clanTag,
+      warStartTime,
+      warId: String(warId),
+    });
 
     const currentSnapshot = await prisma.currentWar.findFirst({
       where: { clanTag, startTime: warStartTime },
@@ -341,28 +330,6 @@ export class WarEventHistoryService {
         violations: [] as string[],
       },
     };
-    const tracked = await prisma.trackedClan.findUnique({
-      where: { tag: clanTag },
-      select: { pointsScrape: true },
-    });
-    const trackedBlob = unwrapVersionedRecord(tracked?.pointsScrape);
-    if (trackedBlob) {
-      await prisma.trackedClan.update({
-        where: { tag: clanTag },
-        data: {
-          pointsScrape: {
-            version: 1,
-            data: {
-              ...(trackedBlob as object),
-              pointsSiteUpToDate: false,
-              activeFwa: false,
-              fetchedAtMs: Date.now(),
-            },
-          },
-        },
-      });
-    }
-
     await prisma.$executeRaw(
       Prisma.sql`
         INSERT INTO "WarLookup" ("warId","clanTag","opponentTag","startTime","endTime","result","payload","createdAt")

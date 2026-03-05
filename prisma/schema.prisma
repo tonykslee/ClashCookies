@@ -288,6 +288,26 @@ model ClanPostedMessage {
   @@unique([guildId, clanTag, warId, type, event])
 }
 
+model ClanPointsSync {
+  id             String   @id @default(cuid())
+  guildId        String
+  clanTag        String
+  warId          String?
+  warStartTime   DateTime
+  syncNum        Int
+  opponentTag    String
+  clanPoints     Int
+  opponentPoints Int
+  syncedAt       DateTime @default(now())
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([guildId, clanTag])
+  @@index([clanTag, warStartTime])
+  @@index([guildId, clanTag, warId])
+  @@unique([guildId, clanTag, warStartTime])
+}
+
 model ApiUsage {
   endpoint String   @id
   lastCall DateTime
