@@ -40,7 +40,6 @@ model TrackedClan {
   clanRoleId      String?
   clanBadge       String?
   shortName       String?
-  pointsScrape    Json?
   mailConfig      Json?
   notifyChannelId String?
   notifyRole      String?
@@ -299,7 +298,7 @@ model ClanPointsSync {
   clanPoints     Int
   opponentPoints Int
   outcome        String?
-  isFwa          Boolean?
+  isFwa          Boolean
   syncedAt       DateTime @default(now())
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
