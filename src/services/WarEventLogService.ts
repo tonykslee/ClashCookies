@@ -812,7 +812,25 @@ export class WarEventLogService {
 
   private async allocateNextWarId(): Promise<number | null> {
     const rows = await prisma.$queryRaw<Array<{ warId: bigint | number }>>(
-      Prisma.sql`SELECT nextval(pg_get_serial_sequence('"ClanWarHistory"', 'warId')) AS "warId"`
+      Prisma.sql`
+        SELECT
+          GREATEST(
+            COALESCE(
+              (
+                SELECT MAX(
+                  CASE
+                    WHEN "warId" ~ '^[0-9]+$' THEN "warId"::bigint
+                    ELSE NULL
+                  END
+                )
+                FROM "WarLookup"
+              ),
+              0
+            ),
+            COALESCE((SELECT MAX("warId")::bigint FROM "CurrentWar"), 0),
+            COALESCE((SELECT MAX("warId")::bigint FROM "WarAttacks"), 0)
+          ) + 1 AS "warId"
+      `
     );
     const raw = rows[0]?.warId;
     if (raw === null || raw === undefined) return null;
