@@ -1787,6 +1787,159 @@ export class WarEventLogService {
     await interaction.editReply({ content: "Battle day embed refreshed." });
   }
 
+  async refreshCurrentNotifyPost(guildId: string, clanTagInput: string): Promise<boolean> {
+    const clanTag = normalizeTag(clanTagInput);
+    if (!guildId || !clanTag) return false;
+
+    const sub = await this.findSubscriptionByGuildAndTag(guildId, clanTag);
+    if (!sub || !sub.notify) return false;
+
+    const war = await this.coc.getCurrentWar(sub.clanTag).catch(() => null);
+    if (!war) return false;
+
+    const state = deriveState(String(war.state ?? ""));
+    if (state !== "preparation" && state !== "inWar") return false;
+
+    const prepStartTime = parseCocTime(war.preparationStartTime ?? null) ?? sub.prepStartTime ?? null;
+    const warStartTime = parseCocTime(war.startTime ?? null) ?? sub.startTime ?? null;
+    const warEndTime = parseCocTime(war.endTime ?? null) ?? sub.endTime ?? null;
+    const nextClanName = String(war.clan?.name ?? sub.clanName ?? sub.clanTag).trim() || sub.clanTag;
+    const nextOpponentTag = normalizeTag(war.opponent?.tag ?? sub.opponentTag ?? "");
+    const nextOpponentName =
+      String(war.opponent?.name ?? sub.opponentName ?? "Unknown").trim() || "Unknown";
+    const nextClanStars = Number.isFinite(Number(war.clan?.stars))
+      ? Number(war.clan?.stars)
+      : sub.clanStars;
+    const nextOpponentStars = Number.isFinite(Number(war.opponent?.stars))
+      ? Number(war.opponent?.stars)
+      : sub.opponentStars;
+    const resolvedWarId = await this.ensureCurrentWarId({
+      sub,
+      warStartTime,
+      currentState: state,
+    });
+
+    await prisma.currentWar.update({
+      where: {
+        clanTag_guildId: {
+          guildId: sub.guildId,
+          clanTag: sub.clanTag,
+        },
+      },
+      data: {
+        warId: resolvedWarId,
+        state,
+        prepStartTime,
+        startTime: warStartTime,
+        endTime: warEndTime,
+        opponentTag: nextOpponentTag || sub.opponentTag,
+        opponentName: nextOpponentName || sub.opponentName,
+        clanName: nextClanName,
+        clanStars: nextClanStars,
+        opponentStars: nextOpponentStars,
+        updatedAt: new Date(),
+      },
+    });
+
+    const refreshedSub = await this.findSubscriptionByGuildAndTag(guildId, clanTag);
+    if (!refreshedSub) return false;
+
+    const warIdText =
+      resolvedWarId !== null && resolvedWarId !== undefined && Number.isFinite(Number(resolvedWarId))
+        ? String(Math.trunc(Number(resolvedWarId)))
+        : refreshedSub.warId !== null && refreshedSub.warId !== undefined
+          ? String(Math.trunc(Number(refreshedSub.warId)))
+          : null;
+    if (!warIdText) return false;
+
+    const eventType: EventType = state === "preparation" ? "war_started" : "battle_day";
+    const existingMessage = await this.postedMessages.findExistingMessage({
+      guildId,
+      clanTag,
+      warId: warIdText,
+      type: "notify",
+      event: eventType,
+    });
+    if (!existingMessage) return false;
+
+    const channel = await this.client.channels.fetch(existingMessage.channelId).catch(() => null);
+    if (!channel || !channel.isTextBased()) return false;
+    const message = await (channel as any).messages.fetch(existingMessage.messageId).catch(() => null);
+    if (!message) return false;
+
+    const basePayload = {
+      clanTag: refreshedSub.clanTag,
+      clanName: nextClanName,
+      opponentTag: nextOpponentTag,
+      opponentName: nextOpponentName,
+      syncNumber: await this.pointsSync.getPreviousSyncNum(),
+      notifyRole: refreshedSub.notifyRole,
+      pingRole: refreshedSub.pingRole,
+      fwaPoints: refreshedSub.fwaPoints,
+      opponentFwaPoints: refreshedSub.opponentFwaPoints,
+      outcome: normalizeOutcome(refreshedSub.outcome),
+      matchType: refreshedSub.matchType,
+      warStartFwaPoints: refreshedSub.warStartFwaPoints,
+      warEndFwaPoints: refreshedSub.warEndFwaPoints,
+      clanStars: nextClanStars,
+      opponentStars: nextOpponentStars,
+      prepStartTime,
+      warStartTime,
+      warEndTime,
+      clanAttacks: Number.isFinite(Number(war.clan?.attacks)) ? Number(war.clan?.attacks) : null,
+      opponentAttacks: Number.isFinite(Number(war.opponent?.attacks))
+        ? Number(war.opponent?.attacks)
+        : null,
+      teamSize: Number.isFinite(Number(war.teamSize)) ? Number(war.teamSize) : null,
+      attacksPerMember: Number.isFinite(Number(war.attacksPerMember))
+        ? Number(war.attacksPerMember)
+        : null,
+      clanDestruction: Number.isFinite(Number(war.clan?.destructionPercentage))
+        ? Number(war.clan?.destructionPercentage)
+        : null,
+      opponentDestruction: Number.isFinite(Number(war.opponent?.destructionPercentage))
+        ? Number(war.opponent?.destructionPercentage)
+        : null,
+    };
+
+    if (eventType === "battle_day") {
+      const payload = { ...basePayload, eventType: "battle_day" as const };
+      const key = makeBattleDayPostKey(guildId, clanTag);
+      battleDayPostByGuildTag.set(key, {
+        channelId: existingMessage.channelId,
+        messageId: existingMessage.messageId,
+      });
+      const embed = EmbedBuilder.from(message.embeds[0] ?? new EmbedBuilder());
+      const next = await this.buildBattleDayRefreshEmbed(payload, Number(warIdText), embed);
+      await message.edit({
+        content: buildNextRefreshRelativeLabel(
+          BATTLE_DAY_REFRESH_MS,
+          Date.now(),
+          getNextNotifyRefreshAtMs()
+        ),
+        embeds: [next],
+        components: [
+          new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder()
+              .setCustomId(buildNotifyWarRefreshCustomId(guildId, payload.clanTag))
+              .setLabel("Refresh")
+              .setStyle(ButtonStyle.Secondary)
+          ),
+        ],
+      });
+      return true;
+    }
+
+    const payload = { ...basePayload, eventType: "war_started" as const };
+    const next = await this.buildWarStartedRefreshEmbed(payload, Number(warIdText));
+    await message.edit({
+      content: message.content || undefined,
+      embeds: [next],
+      components: [],
+    });
+    return true;
+  }
+
   private async refreshBattleDayPostByKey(key: string): Promise<void> {
     const tracked = battleDayPostByGuildTag.get(key);
     if (!tracked) return;
@@ -2021,6 +2174,91 @@ export class WarEventLogService {
       }).join("\n"),
       inline: false,
     });
+    return embed;
+  }
+
+  private async buildWarStartedRefreshEmbed(
+    payload: {
+      eventType: "war_started";
+      clanTag: string;
+      clanName: string;
+      opponentTag: string;
+      opponentName: string;
+      syncNumber: number | null;
+      notifyRole: string | null;
+      pingRole: boolean;
+      fwaPoints: number | null;
+      opponentFwaPoints: number | null;
+      outcome: "WIN" | "LOSE" | null;
+      matchType: MatchType;
+      warStartFwaPoints: number | null;
+      warEndFwaPoints: number | null;
+      clanStars: number | null;
+      opponentStars: number | null;
+      prepStartTime: Date | null;
+      warStartTime: Date | null;
+      warEndTime: Date | null;
+      clanAttacks: number | null;
+      opponentAttacks: number | null;
+      teamSize: number | null;
+      attacksPerMember: number | null;
+      clanDestruction: number | null;
+      opponentDestruction: number | null;
+    },
+    warId: number | null
+  ): Promise<EmbedBuilder> {
+    const opponentTag = normalizeTag(payload.opponentTag);
+    const embed = new EmbedBuilder()
+      .setTitle(`Event: ${eventTitle(payload.eventType)} - ${payload.clanName}`)
+      .setColor(0x3498db)
+      .setFooter({ text: `War ID: ${warId ?? "unknown"}` })
+      .setTimestamp(new Date());
+    embed.addFields({
+      name: "Opponent",
+      value: `${payload.opponentName} (${opponentTag ? `#${opponentTag}` : "unknown"})`,
+      inline: false,
+    });
+    embed.addFields({
+      name: "Sync #",
+      value: payload.syncNumber ? `#${payload.syncNumber}` : "unknown",
+      inline: true,
+    });
+    embed.addFields({
+      name: "Prep Day Remaining",
+      value: toDiscordRelativeTime(payload.warStartTime),
+      inline: true,
+    });
+    embed.addFields({
+      name: "Match Type",
+      value: payload.matchType ?? "unknown",
+      inline: true,
+    });
+    if (payload.matchType !== "BL" && payload.matchType !== "MM") {
+      embed.addFields({
+        name: "War Plan",
+        value:
+          (await this.history.buildWarPlanText(
+            payload.matchType,
+            payload.outcome,
+            payload.clanTag,
+            payload.opponentName
+          )) ?? "N/A",
+        inline: false,
+      });
+    } else if (payload.matchType === "BL") {
+      embed.addFields({
+        name: "Message",
+        value:
+          "**Prep day has started. This is a blacklist war. Keep regular prep coordination and plan for battle day instructions.**",
+        inline: false,
+      });
+    } else {
+      embed.addFields({
+        name: "Message",
+        value: "Prep day has started. This is a mismatch war.",
+        inline: false,
+      });
+    }
     return embed;
   }
 
