@@ -273,6 +273,7 @@ export class WarEventLogService {
           ON UPPER(REPLACE(tc."tag",'#','')) = UPPER(REPLACE(cw."clanTag",'#',''))
         LEFT JOIN "ClanNotifyConfig" cnc
           ON cnc."guildId" = cw."guildId" AND UPPER(REPLACE(cnc."clanTag",'#','')) = UPPER(REPLACE(cw."clanTag",'#',''))
+        WHERE cw."endTime" > NOW() - INTERVAL '2 hours'
         ORDER BY cw."updatedAt" ASC
       `
     );
@@ -1135,6 +1136,13 @@ export class WarEventLogService {
     resolvedWarId: number | null;
     fallbackWarStartTime: Date | null;
   }): Promise<void> {
+    if (
+      params.resolvedWarId === null ||
+      params.resolvedWarId === undefined ||
+      !Number.isFinite(Number(params.resolvedWarId))
+    ) {
+      return;
+    }
     const war = params.war;
     const ownClanTag = normalizeTag(war?.clan?.tag ?? params.clanTag);
     if (!ownClanTag) return;
