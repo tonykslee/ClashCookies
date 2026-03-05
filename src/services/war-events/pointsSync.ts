@@ -4,6 +4,7 @@ import { PointsSyncService } from "../PointsSyncService";
 import { SettingsService } from "../SettingsService";
 import {
   compareTagsForTiebreak,
+  deriveExpectedOutcome,
   normalizeTag,
   normalizeTagBare,
   sanitizeClanName,
@@ -215,6 +216,14 @@ export class WarStartPointsSyncService {
             opponentTag,
             clanPoints: trackedSite,
             opponentPoints: opponentBalance,
+            outcome: deriveExpectedOutcome(
+              clanTag,
+              opponentTag,
+              trackedSite,
+              opponentBalance,
+              Math.trunc(primary.winnerBoxSync)
+            ),
+            isFwa: true,
           });
         }
         await this.persistTrackedClanPointsScrape({

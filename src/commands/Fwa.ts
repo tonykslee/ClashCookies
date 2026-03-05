@@ -99,6 +99,7 @@ type PointsSnapshot = {
   url: string;
   balance: number | null;
   clanName: string | null;
+  activeFwa: boolean | null;
   notFound: boolean;
   winnerBoxText: string | null;
   winnerBoxTags: string[];
@@ -3305,6 +3306,14 @@ function extractPointBalance(html: string): number | null {
   return Number(textMatch[1]);
 }
 
+function extractActiveFwa(text: string): boolean | null {
+  const raw = extractField(text, "Active FWA");
+  if (!raw) return null;
+  if (/^yes$/i.test(raw)) return true;
+  if (/^no$/i.test(raw)) return false;
+  return null;
+}
+
 function extractWinnerBoxText(html: string): string | null {
   const match = html.match(
     /<p[^>]*class=["'][^"']*winner-box[^"']*["'][^>]*>([\s\S]*?)<\/p>/i
@@ -3410,6 +3419,8 @@ function buildSyncValidationState(input: {
     clanPoints: number;
     opponentPoints: number;
     warStartTime: Date;
+    outcome: string | null;
+    isFwa: boolean | null;
   } | null;
   currentWarStartTime: Date | null;
   siteCurrent: boolean;
@@ -3417,6 +3428,8 @@ function buildSyncValidationState(input: {
   opponentTag: string;
   clanPoints: number | null;
   opponentPoints: number | null;
+  outcome: string | null;
+  isFwa: boolean | null;
 }): SyncValidationState {
   if (!input.siteCurrent) {
     return {
@@ -3461,6 +3474,12 @@ function buildSyncValidationState(input: {
     ) {
       differences.push("• War start time mismatch");
     }
+    if ((input.syncRow.outcome ?? null) !== (input.outcome ?? null)) {
+      differences.push("• Outcome mismatch");
+    }
+    if ((input.syncRow.isFwa ?? null) !== (input.isFwa ?? null)) {
+      differences.push("• Active FWA mismatch");
+    }
   }
 
   return {
@@ -3484,6 +3503,8 @@ async function persistClanPointsSyncIfCurrent(input: {
   opponentTag: string;
   clanPoints: number | null;
   opponentPoints: number | null;
+  outcome: string | null;
+  isFwa: boolean | null;
 }): Promise<void> {
   if (!input.guildId || !input.warStartTime || !input.siteCurrent) return;
   if (
@@ -3510,6 +3531,8 @@ async function persistClanPointsSyncIfCurrent(input: {
     opponentTag: input.opponentTag,
     clanPoints: Math.trunc(input.clanPoints),
     opponentPoints: Math.trunc(input.opponentPoints),
+    outcome: input.outcome ?? null,
+    isFwa: input.isFwa ?? null,
   });
 }
 
@@ -3738,6 +3761,7 @@ function buildSnapshotFromTrackedScrape(
     url: buildOfficialPointsUrl(normalizedTag),
     balance: scrape.pointBalance ?? null,
     clanName: scrape.trackedClanName ?? null,
+    activeFwa: scrape.activeFwa ?? null,
     notFound: false,
     winnerBoxText: scrape.matchup ?? null,
     winnerBoxTags: scrape.opponentClanTag ? [normalizeTag(scrape.opponentClanTag)] : [],
@@ -3915,6 +3939,7 @@ async function scrapeClanPoints(tag: string): Promise<PointsSnapshot> {
   const plain = toPlainText(html);
   const topSection = extractTopSectionText(html);
   const topHeader = extractMatchupHeader(topSection);
+  const activeFwa = extractActiveFwa(topSection || plain);
   const clanNameFromHeader =
     topHeader.primaryTag === normalizedTag
       ? topHeader.primaryName
@@ -3942,6 +3967,7 @@ async function scrapeClanPoints(tag: string): Promise<PointsSnapshot> {
     url,
     balance,
     clanName,
+    activeFwa,
     notFound,
     winnerBoxText,
     winnerBoxTags,
@@ -4615,6 +4641,8 @@ async function buildTrackedMatchOverview(
       opponentTag,
       clanPoints: primaryPoints?.balance ?? null,
       opponentPoints: opponentPoints?.balance ?? null,
+      outcome: derivedOutcome,
+      isFwa: primaryPoints?.activeFwa ?? null,
     });
     const syncRow = await pointsSyncService.findSyncRecord({
       guildId: guildId ?? "",
@@ -4633,6 +4661,8 @@ async function buildTrackedMatchOverview(
       opponentTag,
       clanPoints: primaryPoints?.balance ?? null,
       opponentPoints: opponentPoints?.balance ?? null,
+      outcome: derivedOutcome,
+      isFwa: primaryPoints?.activeFwa ?? null,
     });
     const primaryMismatch = siteUpdatedForAlert
       ? buildPointsMismatchWarning(
@@ -5059,6 +5089,8 @@ export async function runForceSyncDataCommand(
       opponentTag,
       clanPoints: fresh.balance,
       opponentPoints: opponentBalance,
+      outcome: deriveProjectedOutcome(tag, opponentTag, fresh.balance, opponentBalance, siteSyncNum),
+      isFwa: fresh.activeFwa ?? null,
     });
     clanPointsSyncUpdated = true;
   }
@@ -6729,6 +6761,8 @@ export const Fwa: Command = {
           opponentTag,
           clanPoints: primary.balance,
           opponentPoints: opponent.balance,
+          outcome: effectiveOutcome,
+          isFwa: primary.activeFwa ?? null,
         });
         const syncRow = await pointsSyncService.findSyncRecord({
           guildId: interaction.guildId ?? "",
@@ -6749,6 +6783,8 @@ export const Fwa: Command = {
           opponentTag,
           clanPoints: primary.balance,
           opponentPoints: opponent.balance,
+          outcome: effectiveOutcome,
+          isFwa: primary.activeFwa ?? null,
         });
         const siteSyncObserved = scrapeIsCurrentOpponent
           ? trackedScrape?.syncNumber ?? null
