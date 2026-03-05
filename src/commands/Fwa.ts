@@ -790,7 +790,7 @@ async function markMatchLiveDataChanged(params: {
   const current = await getCurrentWarMailConfig(params.guildId, params.tag);
   const live = await prisma.currentWar.findUnique({
     where: {
-      guildId_clanTag: {
+      clanTag_guildId: {
         guildId: params.guildId,
         clanTag: `#${normalizeTag(params.tag)}`,
       },
@@ -913,7 +913,7 @@ async function getCurrentWarIdForClan(
 ): Promise<number | null> {
   const current = await prisma.currentWar.findUnique({
     where: {
-      guildId_clanTag: {
+      clanTag_guildId: {
         guildId,
         clanTag: `#${normalizedTag}`,
       },
@@ -955,7 +955,7 @@ async function buildWarMailEmbedForTag(
 
   const subscription = await prisma.currentWar.findUnique({
     where: {
-      guildId_clanTag: {
+      clanTag_guildId: {
         guildId,
         clanTag: `#${normalizedTag}`,
       },
@@ -1769,7 +1769,7 @@ export async function handleFwaMatchTypeActionButton(interaction: ButtonInteract
 
   const existingSub = await prisma.currentWar.findUnique({
     where: {
-      guildId_clanTag: {
+      clanTag_guildId: {
         guildId: interaction.guildId,
         clanTag: `#${parsed.tag}`,
       },
@@ -1780,7 +1780,7 @@ export async function handleFwaMatchTypeActionButton(interaction: ButtonInteract
 
   await prisma.currentWar.upsert({
     where: {
-      guildId_clanTag: {
+      clanTag_guildId: {
         guildId: interaction.guildId,
         clanTag: `#${parsed.tag}`,
       },
@@ -1933,7 +1933,7 @@ export async function handleFwaOutcomeActionButton(interaction: ButtonInteractio
   const nextOutcome = parsed.currentOutcome === "WIN" ? "LOSE" : "WIN";
   await prisma.currentWar.upsert({
     where: {
-      guildId_clanTag: {
+      clanTag_guildId: {
         guildId: interaction.guildId,
         clanTag: `#${parsed.tag}`,
       },
@@ -2062,7 +2062,7 @@ export async function handleFwaMatchSyncActionButton(
 
   await prisma.currentWar.upsert({
     where: {
-      guildId_clanTag: {
+      clanTag_guildId: {
         guildId: interaction.guildId,
         clanTag: `#${parsed.tag}`,
       },
@@ -2244,7 +2244,7 @@ export async function handleFwaMatchSkipSyncConfirmButton(
 
   const existingCurrent = await prisma.currentWar.findUnique({
     where: {
-      guildId_clanTag: {
+      clanTag_guildId: {
         guildId: interaction.guildId,
         clanTag: `#${parsed.tag}`,
       },
@@ -2319,7 +2319,7 @@ export async function handleFwaMatchSkipSyncConfirmButton(
 
   await prisma.currentWar.upsert({
     where: {
-      guildId_clanTag: {
+      clanTag_guildId: {
         guildId: interaction.guildId,
         clanTag: `#${parsed.tag}`,
       },
@@ -2438,7 +2438,7 @@ export async function handleFwaMatchSkipSyncUndoButton(
   }
   const current = await prisma.currentWar.findUnique({
     where: {
-      guildId_clanTag: {
+      clanTag_guildId: {
         guildId: interaction.guildId,
         clanTag: `#${parsed.tag}`,
       },
@@ -2725,7 +2725,7 @@ export async function handleFwaMailConfirmButton(interaction: ButtonInteraction)
   const resolvedCurrentSyncNum = await resolveCurrentSyncNumForMailConfirm(payload.tag);
   await prisma.currentWar.upsert({
     where: {
-      guildId_clanTag: {
+      clanTag_guildId: {
         guildId: payload.guildId,
         clanTag: `#${normalizeTag(payload.tag)}`,
       },
@@ -3012,7 +3012,7 @@ export async function runForceMailUpdateCommand(
 
   const current = await prisma.currentWar.findUnique({
     where: {
-      guildId_clanTag: {
+      clanTag_guildId: {
         guildId: interaction.guildId,
         clanTag: `#${tag}`,
       },
@@ -4239,7 +4239,7 @@ async function buildTrackedMatchOverview(
     if (matchTypeResolved === null && inferredFromPointsType && guildId) {
       await prisma.currentWar.upsert({
         where: {
-          guildId_clanTag: {
+          clanTag_guildId: {
             guildId,
             clanTag: `#${clanTag}`,
           },
@@ -4288,7 +4288,7 @@ async function buildTrackedMatchOverview(
     } else if (guildId) {
       await prisma.currentWar.upsert({
         where: {
-          guildId_clanTag: {
+          clanTag_guildId: {
             guildId,
             clanTag: `#${clanTag}`,
           },
@@ -4790,7 +4790,7 @@ export async function runForceSyncMailCommand(
 
   const existing = await prisma.currentWar.findUnique({
     where: {
-      guildId_clanTag: {
+      clanTag_guildId: {
         guildId: interaction.guildId,
         clanTag: `#${tag}`,
       },
@@ -6062,7 +6062,7 @@ export const Fwa: Command = {
         const subscription = interaction.guildId
           ? await prisma.currentWar.findUnique({
               where: {
-                guildId_clanTag: {
+                clanTag_guildId: {
                   guildId: interaction.guildId,
                   clanTag: `#${tag}`,
                 },
@@ -6282,7 +6282,7 @@ export const Fwa: Command = {
         if (interaction.guildId) {
           await prisma.currentWar.upsert({
             where: {
-              guildId_clanTag: {
+              clanTag_guildId: {
                 guildId: interaction.guildId,
                 clanTag: `#${tag}`,
               },
@@ -6629,7 +6629,7 @@ export const Fwa: Command = {
         interaction.guildId
           ? await prisma.currentWar.findUnique({
               where: {
-                guildId_clanTag: {
+                clanTag_guildId: {
                   guildId: interaction.guildId,
                   clanTag: `#${tag}`,
                 },

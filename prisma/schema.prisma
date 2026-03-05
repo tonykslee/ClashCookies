@@ -175,7 +175,7 @@ model WarAttacks {
 
 model CurrentWar {
   guildId           String
-  clanTag           String        @id
+  clanTag           String
   warId             Int?
   syncNum    Int?
   channelId         String
@@ -201,7 +201,7 @@ model CurrentWar {
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
 
-  @@unique([guildId, clanTag])
+  @@id([clanTag, guildId])
   @@index([guildId, notify])
   @@index([warId])
   @@index([startTime, clanTag, opponentTag])
