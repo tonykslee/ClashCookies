@@ -1038,7 +1038,6 @@ async function buildWarMailEmbedForTag(
     ].join("\n");
   }
 
-  const prepTargetMs = parseCocApiTime(war?.preparationStartTime);
   const battleTargetMs = parseCocApiTime(war?.endTime);
   const warStartMs = parseCocApiTime(war?.startTime);
   const fallbackWarStartMs = subscription?.startTime
@@ -1047,7 +1046,7 @@ async function buildWarMailEmbedForTag(
   const effectiveWarStartMs = warStartMs ?? fallbackWarStartMs;
   const expectedOutcome = matchType === "FWA" ? (outcome ?? "UNKNOWN") : null;
   const remainingText = formatDiscordRelativeMs(
-    warState === "preparation" ? prepTargetMs : battleTargetMs
+    warState === "preparation" ? effectiveWarStartMs : battleTargetMs
   );
   const warId =
     (await upsertCurrentWarHistoryAndGetWarId({
