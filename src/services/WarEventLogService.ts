@@ -8,10 +8,12 @@ import {
   EmbedBuilder,
 } from "discord.js";
 import { Prisma } from "@prisma/client";
+import { hashMessageConfig } from "../helper/hashConfig";
 import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
 import { CoCService } from "./CoCService";
 import { PointsProjectionService } from "./PointsProjectionService";
+import { PostedMessageService } from "./PostedMessageService";
 import { SettingsService } from "./SettingsService";
 import { WarEventHistoryService } from "./war-events/history";
 import { WarStartPointsSyncService } from "./war-events/pointsSync";
@@ -240,12 +242,14 @@ export class WarEventLogService {
   private readonly points: PointsProjectionService;
   private readonly pointsSync: WarStartPointsSyncService;
   private readonly history: WarEventHistoryService;
+  private readonly postedMessages: PostedMessageService;
 
   /** Purpose: initialize service dependencies. */
   constructor(private readonly client: Client, private readonly coc: CoCService) {
     this.points = new PointsProjectionService(coc);
     this.pointsSync = new WarStartPointsSyncService(this.points, new SettingsService());
     this.history = new WarEventHistoryService(coc);
+    this.postedMessages = new PostedMessageService();
   }
 
   /** Purpose: poll. */
@@ -1304,25 +1308,81 @@ export class WarEventLogService {
       });
     }
     if (!params.sub.notify || !params.sub.channelId) return;
-    if (
-      (params.payload.eventType === "battle_day" || params.payload.eventType === "war_ended") &&
-      !(await this.reserveEventDelivery(params))
-    ) {
+    const reserved = await this.reserveEventDelivery(params);
+    if (!reserved.allowed) {
+      return;
+    }
+    if (reserved.existingMessage) {
+      console.log(
+        `[notify] existing message found guild=${params.sub.guildId} clan=${params.sub.clanTag} event=${params.payload.eventType} message=${reserved.existingMessage.messageId}`
+      );
+      if (params.payload.eventType === "battle_day") {
+        battleDayPostByGuildTag.set(makeBattleDayPostKey(params.sub.guildId, params.sub.clanTag), {
+          channelId: reserved.existingMessage.channelId,
+          messageId: reserved.existingMessage.messageId,
+        });
+      }
       return;
     }
     console.log(
       `[war-events] emit start guild=${params.sub.guildId} channel=${params.sub.channelId} clan=${params.payload.clanTag} event=${params.payload.eventType}`
     );
-    await this.emitEvent(params.sub.channelId, params.payload, params.resolvedWarId);
+    await this.emitEvent(
+      params.sub.channelId,
+      params.payload,
+      params.resolvedWarId,
+      params.sub
+    );
+  }
+
+  private async tryCreateEventGuard(
+    warId: string,
+    clanTag: string,
+    eventType: string
+  ): Promise<boolean> {
+    try {
+      await prisma.warEvent.create({
+        data: {
+          warId: Math.trunc(Number(warId)),
+          clanTag: normalizeTag(clanTag),
+          eventType,
+          payload: {},
+        },
+      });
+      return true;
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+        console.log(`[WarEvent] Duplicate ${eventType} skipped clan=#${normalizeTag(clanTag)} warId=${warId}`);
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  private buildNotifyConfigHash(sub: SubscriptionRow, eventType: EventType): string {
+    return hashMessageConfig({
+      type: "notify",
+      event: eventType,
+      channel: sub.channelId,
+      role: sub.notifyRole,
+      pingEnabled: sub.pingRole,
+      embedEnabled: sub.embedEnabled,
+    });
   }
 
   private async reserveEventDelivery(params: {
     sub: SubscriptionRow;
     payload: EventEmitPayload;
     resolvedWarId: number | null;
-  }): Promise<boolean> {
+  }): Promise<{
+    allowed: boolean;
+    existingMessage: {
+      channelId: string;
+      messageId: string;
+    } | null;
+    warId: string | null;
+  }> {
     const eventType = params.payload.eventType;
-    if (eventType !== "battle_day" && eventType !== "war_ended") return true;
     const warId =
       params.resolvedWarId ??
       params.sub.warId ??
@@ -1331,34 +1391,27 @@ export class WarEventLogService {
       console.warn(
         `[war-events] emit skipped guild=${params.sub.guildId} clan=${params.sub.clanTag} event=${eventType} reason=missing_war_id_for_idempotency`
       );
-      return false;
+      return { allowed: false, existingMessage: null, warId: null };
     }
-    try {
-      await prisma.warEvent.create({
-        data: {
-          warId: Math.trunc(Number(warId)),
-          clanTag: normalizeTag(params.payload.clanTag),
-          eventType,
-          payload: {
-            guildId: params.sub.guildId,
-            channelId: params.sub.channelId,
-            opponentTag: normalizeTag(params.payload.opponentTag),
-            warStartTime: params.payload.warStartTime?.toISOString?.() ?? null,
-            warEndTime: params.payload.warEndTime?.toISOString?.() ?? null,
-            syncNumber: params.payload.syncNumber ?? null,
-          },
-        },
-      });
-      return true;
-    } catch (error) {
-      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
-        console.log(
-          `[war-events] emit deduped guild=${params.sub.guildId} clan=${params.sub.clanTag} warId=${warId} event=${eventType}`
-        );
-        return false;
-      }
-      throw error;
+    const warIdText = String(Math.trunc(Number(warId)));
+    const allowed = await this.tryCreateEventGuard(warIdText, params.payload.clanTag, eventType);
+    if (!allowed) {
+      return { allowed: false, existingMessage: null, warId: warIdText };
     }
+    const existingMessage = await this.postedMessages.findExistingMessage({
+      guildId: params.sub.guildId,
+      clanTag: params.payload.clanTag,
+      warId: warIdText,
+      type: "notify",
+      event: eventType,
+    });
+    return {
+      allowed: true,
+      existingMessage: existingMessage
+        ? { channelId: existingMessage.channelId, messageId: existingMessage.messageId }
+        : null,
+      warId: warIdText,
+    };
   }
 
   private async resolveWarId(clanTagInput: string, warStartTime: Date | null): Promise<number | null> {
@@ -1409,7 +1462,8 @@ export class WarEventLogService {
       opponentDestruction: number | null;
       testFinalResultOverride?: WarEndResultSnapshot | null;
     },
-    resolvedWarIdOverride?: number | null
+    resolvedWarIdOverride?: number | null,
+    sub?: SubscriptionRow
   ): Promise<void> {
     const channel = await this.client.channels.fetch(channelId).catch(() => null);
     if (!channel) {
@@ -1668,6 +1722,20 @@ export class WarEventLogService {
       }
     }
     if (sent) {
+      if (guildId && sub && warId !== null && warId !== undefined) {
+        await this.postedMessages.savePostedMessage({
+          guildId,
+          clanTag: payload.clanTag,
+          type: "notify",
+          event: payload.eventType,
+          warId: String(warId),
+          syncNum: payload.syncNumber ?? null,
+          channelId,
+          messageId: sent.id,
+          messageUrl: `https://discord.com/channels/${guildId}/${channelId}/${sent.id}`,
+          configHash: this.buildNotifyConfigHash(sub, payload.eventType),
+        });
+      }
       console.log(
         `[war-events] emit success guild=${guildId ?? "unknown"} channel=${channelId} message=${sent.id} clan=${payload.clanTag} event=${payload.eventType}`
       );
@@ -1675,6 +1743,24 @@ export class WarEventLogService {
   }
 
   async refreshBattleDayPosts(): Promise<void> {
+    const storedPosts = await prisma.clanPostedMessage.findMany({
+      where: {
+        type: "notify",
+        event: "battle_day",
+      },
+      select: {
+        guildId: true,
+        clanTag: true,
+        channelId: true,
+        messageId: true,
+      },
+    });
+    for (const stored of storedPosts) {
+      battleDayPostByGuildTag.set(makeBattleDayPostKey(stored.guildId, stored.clanTag), {
+        channelId: stored.channelId,
+        messageId: stored.messageId,
+      });
+    }
     const keys = [...battleDayPostByGuildTag.keys()];
     for (const key of keys) {
       await this.refreshBattleDayPostByKey(key).catch((err) => {

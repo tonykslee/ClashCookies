@@ -50,15 +50,12 @@ import {
 import {
   asMailConfigInputJson,
   buildDiscordMessageUrl,
-  collectMailPostTargetsFromConfig,
   type ForceMailMessageType,
-  getPrimaryMailMessageRef,
-  type MailPostTarget,
   type MatchMailConfig,
   parseForceMailMessageType,
   parseMatchMailConfig,
-  withRecoveredMailReference,
 } from "./fwa/mailConfig";
+import { PostedMessageService } from "../services/PostedMessageService";
 export { isMissedSyncClanForTest } from "./fwa/matchState";
 
 const POINTS_BASE_URL = "https://points.fwafarm.com/clan?tag=";
@@ -82,6 +79,7 @@ const FWA_MATCH_SEND_MAIL_PREFIX = "fwa-match-send-mail";
 const WAR_MAIL_REFRESH_MS = 20 * 60 * 1000;
 const MAILBOX_SENT_EMOJI = "📬";
 const MAILBOX_NOT_SENT_EMOJI = "📭";
+const postedMessageService = new PostedMessageService();
 const POINTS_REQUEST_HEADERS = {
   "User-Agent":
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
@@ -754,12 +752,31 @@ async function recordMatchMailUpdated(params: {
   expectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null;
 }): Promise<MatchMailConfig> {
   const current = await getCurrentWarMailConfig(params.guildId, params.tag);
-  const deduped = current.messages.filter((entry) => entry.messageType !== "mail");
-  deduped.push({
-    messageType: "mail",
-    messageID: params.messageId,
+  const currentWar = await prisma.currentWar.findUnique({
+    where: {
+      clanTag_guildId: {
+        guildId: params.guildId,
+        clanTag: `#${normalizeTag(params.tag)}`,
+      },
+    },
+    select: { warId: true, syncNum: true },
+  });
+
+  await postedMessageService.savePostedMessage({
+    guildId: params.guildId,
+    clanTag: params.tag,
+    type: "mail",
+    event: null,
+    warId:
+      currentWar?.warId !== null && currentWar?.warId !== undefined
+        ? String(currentWar.warId)
+        : null,
+    syncNum: currentWar?.syncNum ?? null,
     channelId: params.channelId,
-    messageUrl: params.messageUrl,
+    messageId: params.messageId,
+    messageUrl:
+      params.messageUrl ?? buildDiscordMessageUrl(params.guildId, params.channelId, params.messageId),
+    configHash: null,
   });
 
   const next: MatchMailConfig = {
@@ -771,7 +788,6 @@ async function recordMatchMailUpdated(params: {
     lastMatchType: params.matchType,
     lastExpectedOutcome: params.expectedOutcome,
     lastDataChangedAtUnix: Math.floor(params.sentAtMs / 1000),
-    messages: deduped,
   };
   await saveCurrentWarMailConfig({
     guildId: params.guildId,
@@ -1123,17 +1139,34 @@ function findLatestPostedWarMailForClan(params: {
   return latest;
 }
 
-function getMailStatusEmojiForClan(params: {
+async function findStoredMailTarget(params: {
+  guildId: string;
+  tag: string;
+  warId?: string | null;
+}): Promise<{ channelId: string; messageId: string; messageUrl: string } | null> {
+  const existing = await postedMessageService.findMailMessage({
+    guildId: params.guildId,
+    clanTag: params.tag,
+    warId: params.warId ?? null,
+  });
+  if (!existing) return null;
+  return {
+    channelId: existing.channelId,
+    messageId: existing.messageId,
+    messageUrl: existing.messageUrl,
+  };
+}
+
+async function getMailStatusEmojiForClan(params: {
   guildId: string | null;
   tag: string;
   warStartMs: number | null;
   mailConfig?: MatchMailConfig | null;
   liveMatchType?: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN" | null;
   liveExpectedOutcome?: "WIN" | "LOSE" | "UNKNOWN" | null;
-}): string {
+}): Promise<string> {
   if (!params.guildId) return MAILBOX_NOT_SENT_EMOJI;
   const config = params.mailConfig ?? null;
-  const primaryMail = getPrimaryMailMessageRef(config);
   const liveMatchesPosted = isPostedMailCurrentForLiveState({
     postedMatchType: config?.lastMatchType ?? null,
     postedExpectedOutcome: config?.lastExpectedOutcome ?? null,
@@ -1141,7 +1174,11 @@ function getMailStatusEmojiForClan(params: {
     liveExpectedOutcome: params.liveExpectedOutcome,
   });
   if (!liveMatchesPosted) return MAILBOX_NOT_SENT_EMOJI;
-  if (primaryMail) {
+  const storedMail = await findStoredMailTarget({
+    guildId: params.guildId,
+    tag: params.tag,
+  });
+  if (storedMail || (config?.lastPostedChannelId && config?.lastPostedMessageId)) {
     if (
       params.warStartMs !== null &&
       config?.lastWarStartMs !== null &&
@@ -1211,13 +1248,20 @@ function clearPostedMailTrackingForClan(params: {
 async function hasPostedMailMessage(params: {
   client: Client | null | undefined;
   guildId: string | null;
+  tag?: string | null;
   mailConfig: MatchMailConfig | null | undefined;
 }): Promise<boolean> {
   if (!params.client || !params.guildId || !params.mailConfig) return false;
-  const primary = getPrimaryMailMessageRef(params.mailConfig);
-  if (!primary) return false;
-  const channelId = primary.channelId;
-  const messageId = primary.messageId;
+  const stored =
+    params.tag
+      ? await findStoredMailTarget({
+          guildId: params.guildId,
+          tag: params.tag,
+        })
+      : null;
+  const channelId = stored?.channelId ?? params.mailConfig.lastPostedChannelId ?? "";
+  const messageId = stored?.messageId ?? params.mailConfig.lastPostedMessageId ?? "";
+  if (!channelId || !messageId) return false;
   const channel = await params.client.channels.fetch(channelId).catch(() => null);
   if (!channel || !channel.isTextBased()) return false;
   const message = await (channel as any).messages.fetch(messageId).catch(() => null);
@@ -1414,22 +1458,22 @@ async function findWarMailTargetFromConfig(params: {
   channelId: string;
   messageId: string;
 }): Promise<{ tag: string; channelId: string; messageId: string } | null> {
-  const rows = await prisma.trackedClan.findMany({
-    select: { tag: true, mailConfig: true },
+  const row = await prisma.clanPostedMessage.findFirst({
+    where: {
+      guildId: params.guildId,
+      type: "mail",
+      channelId: params.channelId,
+      messageId: params.messageId,
+    },
+    orderBy: { createdAt: "desc" },
+    select: { clanTag: true, channelId: true, messageId: true },
   });
-  for (const row of rows) {
-    const config = parseMatchMailConfig(row.mailConfig as Prisma.JsonValue | null | undefined);
-    const primary = getPrimaryMailMessageRef(config);
-    if (!primary) continue;
-    if (primary.channelId !== params.channelId) continue;
-    if (primary.messageId !== params.messageId) continue;
-    return {
-      tag: normalizeTag(row.tag),
-      channelId: primary.channelId,
-      messageId: primary.messageId,
-    };
-  }
-  return null;
+  if (!row) return null;
+  return {
+    tag: normalizeTag(row.clanTag),
+    channelId: row.channelId,
+    messageId: row.messageId,
+  };
 }
 
 function startWarMailPolling(client: Client, key: string): void {
@@ -2934,39 +2978,37 @@ export async function refreshAllTrackedWarMailPosts(client: Client): Promise<voi
     const guildId = row.guildId?.trim() ?? "";
     if (!guildId) continue;
     const config = await getCurrentWarMailConfig(guildId, normalizeTag(row.clanTag));
-    const candidates = collectMailPostTargetsFromConfig(config);
-    if (candidates.length === 0) continue;
+    const stored = await findStoredMailTarget({
+      guildId,
+      tag: row.clanTag,
+    });
+    if (!stored) continue;
 
     const existingInMemory = findLatestPostedWarMailForClan({
       guildId,
       tag: row.clanTag,
     });
-    let resolved: MailPostTarget | null = null;
-    for (const candidate of candidates) {
-      const ok = await refreshWarMailPostByResolvedTarget({
-        client,
-        guildId,
-        tag: row.clanTag,
-        channelId: candidate.channelId,
-        messageId: candidate.messageId,
-        key: existingInMemory?.key,
-      }).catch(() => false);
-      if (ok) {
-        resolved = candidate;
-        break;
-      }
-    }
-    const refreshed = Boolean(resolved);
+    const refreshed = await refreshWarMailPostByResolvedTarget({
+      client,
+      guildId,
+      tag: row.clanTag,
+      channelId: stored.channelId,
+      messageId: stored.messageId,
+      key: existingInMemory?.key,
+    }).catch(() => false);
     if (!refreshed) continue;
-    const channelId = resolved?.channelId ?? "";
-    const messageId = resolved?.messageId ?? "";
-    if (!channelId || !messageId) continue;
+    const channelId = stored.channelId;
+    const messageId = stored.messageId;
 
     if (
       config.lastPostedChannelId !== channelId ||
       config.lastPostedMessageId !== messageId
     ) {
-      const next = withRecoveredMailReference(config, { channelId, messageId }, guildId);
+      const next = {
+        ...config,
+        lastPostedChannelId: channelId,
+        lastPostedMessageId: messageId,
+      };
       await saveCurrentWarMailConfig({
         guildId,
         tag: row.clanTag,
@@ -3024,42 +3066,42 @@ export async function runForceMailUpdateCommand(
     select: { clanTag: true },
   });
   const config = await getCurrentWarMailConfig(interaction.guildId, tag);
-  const candidates = collectMailPostTargetsFromConfig(config);
-  if (candidates.length === 0) {
+  const stored = await findStoredMailTarget({
+    guildId: interaction.guildId,
+    tag,
+  });
+  if (!stored) {
     await interaction.editReply(
       `No active sent mail reference found for #${tag}. Send mail first or sync it via \`/force sync mail\`.`
     );
     return;
   }
 
-  let resolved: MailPostTarget | null = null;
-  for (const candidate of candidates) {
-    const ok = await refreshWarMailPostByResolvedTarget({
-      client: interaction.client,
-      guildId: interaction.guildId,
-      tag,
-      channelId: candidate.channelId,
-      messageId: candidate.messageId,
-    }).catch(() => false);
-    if (ok) {
-      resolved = candidate;
-      break;
-    }
-  }
-  if (!resolved) {
+  const refreshed = await refreshWarMailPostByResolvedTarget({
+    client: interaction.client,
+    guildId: interaction.guildId,
+    tag,
+    channelId: stored.channelId,
+    messageId: stored.messageId,
+  }).catch(() => false);
+  if (!refreshed) {
     await interaction.editReply(
-      `Could not refresh #${tag} mail in place. Tried ${candidates.length} stored reference(s), but each message was missing or inaccessible.`
+      `Could not refresh #${tag} mail in place. The stored message was missing or inaccessible.`
     );
     return;
   }
-  const channelId = resolved.channelId;
-  const messageId = resolved.messageId;
+  const channelId = stored.channelId;
+  const messageId = stored.messageId;
 
   if (
     config.lastPostedChannelId !== channelId ||
     config.lastPostedMessageId !== messageId
   ) {
-    const next = withRecoveredMailReference(config, resolved, interaction.guildId);
+    const next = {
+      ...config,
+      lastPostedChannelId: channelId,
+      lastPostedMessageId: messageId,
+    };
     await saveCurrentWarMailConfig({
       guildId: interaction.guildId,
       tag,
@@ -4043,7 +4085,7 @@ async function buildTrackedMatchOverview(
     const clanWarStartMs = warStartMsByClanTag.get(clanTag) ?? null;
     const sub = subByTag.get(clanTag);
     const parsedMailConfig = trackedMailConfigByTag.get(clanTag) ?? parseMatchMailConfig(null);
-    const baseMailStatusEmoji = getMailStatusEmojiForClan({
+    const baseMailStatusEmoji = await getMailStatusEmojiForClan({
       guildId,
       tag: clanTag,
       warStartMs: clanWarStartMs,
@@ -4056,6 +4098,7 @@ async function buildTrackedMatchOverview(
         ? await hasPostedMailMessage({
             client: client ?? null,
             guildId,
+            tag: clanTag,
             mailConfig: parsedMailConfig,
           })
         : false;
@@ -4391,6 +4434,7 @@ async function buildTrackedMatchOverview(
     const postedMailExists = await hasPostedMailMessage({
       client: client ?? null,
       guildId,
+      tag: clanTag,
       mailConfig: parsedMailConfig,
     });
     const mailBlockedReason = inferredMatchType
@@ -4800,6 +4844,7 @@ export async function runForceSyncMailCommand(
       },
     },
     select: {
+      warId: true,
       matchType: true,
       outcome: true,
       startTime: true,
@@ -4811,27 +4856,6 @@ export async function runForceSyncMailCommand(
     existing?.startTime?.getTime() ?? warStartMsFromApi ?? null;
   const nowUnix = Math.floor(Date.now() / 1000);
   const current = await getCurrentWarMailConfig(interaction.guildId, tag);
-  const messages = current.messages.filter(
-    (entry) =>
-      !(
-        entry.messageID === messageID &&
-        entry.messageType === parsedType.messageType &&
-        (parsedType.messageType !== "notify" || entry.notifyType === parsedType.notifyType)
-      )
-  );
-  if (parsedType.messageType === "mail") {
-    for (let i = messages.length - 1; i >= 0; i -= 1) {
-      if (messages[i]?.messageType === "mail") messages.splice(i, 1);
-    }
-  }
-  messages.push({
-    messageType: parsedType.messageType,
-    messageID,
-    channelId: interaction.channelId,
-    messageUrl: buildDiscordMessageUrl(interaction.guildId, interaction.channelId, messageID),
-    notifyType: parsedType.messageType === "notify" ? parsedType.notifyType : undefined,
-  });
-
   const matchType = existing?.matchType ?? current.lastMatchType ?? "UNKNOWN";
   const expectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null =
     existing?.outcome === "WIN" || existing?.outcome === "LOSE"
@@ -4843,7 +4867,6 @@ export async function runForceSyncMailCommand(
     lastWarStartMs: warStartMs,
     lastMatchType: matchType,
     lastExpectedOutcome: expectedOutcome,
-    messages,
   };
   if (parsedType.messageType === "mail") {
     next.lastPostedMessageId = messageID;
@@ -4858,6 +4881,21 @@ export async function runForceSyncMailCommand(
     mailConfig: next,
   });
 
+  await postedMessageService.savePostedMessage({
+    guildId: interaction.guildId,
+    clanTag: tag,
+    type: parsedType.messageType,
+    event:
+      parsedType.messageType === "notify" ? parsedType.notifyType ?? null : null,
+    warId:
+      existing?.warId !== null && existing?.warId !== undefined ? String(existing.warId) : null,
+    syncNum: null,
+    channelId: interaction.channelId,
+    messageId: messageID,
+    messageUrl: buildDiscordMessageUrl(interaction.guildId, interaction.channelId, messageID),
+    configHash: null,
+  });
+
   const messageTypeLabel =
     parsedType.messageType === "mail"
       ? "mail"
@@ -4870,7 +4908,7 @@ export async function runForceSyncMailCommand(
       `War start: ${warStartMs !== null ? `<t:${Math.floor(warStartMs / 1000)}:F>` : "unknown"}`,
       `Match type: **${next.lastMatchType ?? "UNKNOWN"}**`,
       `Expected outcome: **${next.lastExpectedOutcome ?? "UNKNOWN"}**`,
-      `Tracked message refs: **${next.messages.length}**`,
+      `Posted message tracking saved in **ClanPostedMessage**.`,
     ].join("\n")
   );
 }
@@ -6117,7 +6155,7 @@ export const Fwa: Command = {
           const parsedMailConfig = parseMatchMailConfig(
             trackedClanMeta?.mailConfig as Prisma.JsonValue | null | undefined
           );
-          const baseMailStatusEmoji = getMailStatusEmojiForClan({
+          const baseMailStatusEmoji = await getMailStatusEmojiForClan({
             guildId: interaction.guildId ?? null,
             tag,
             warStartMs: null,
@@ -6130,6 +6168,7 @@ export const Fwa: Command = {
               ? await hasPostedMailMessage({
                   client: interaction.client,
                   guildId: interaction.guildId ?? null,
+                  tag,
                   mailConfig: parsedMailConfig,
                 })
               : false;
@@ -6421,6 +6460,7 @@ export const Fwa: Command = {
         const postedMailExists = await hasPostedMailMessage({
           client: interaction.client,
           guildId: interaction.guildId ?? null,
+          tag,
           mailConfig: parsedMailConfig,
         });
         const mailBlockedReason = inferredMatchType
