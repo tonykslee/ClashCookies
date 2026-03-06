@@ -108,7 +108,7 @@ export const WarPlan: Command = {
   options: [
     {
       name: "set",
-      description: "Set a custom prep or battle plan for a tracked clan",
+      description: "Set a custom prep plan, battle plan, or both for a tracked clan",
       type: ApplicationCommandOptionType.Subcommand,
       options: [
         {
@@ -122,7 +122,7 @@ export const WarPlan: Command = {
           name: "phase",
           description: "Plan phase to customize",
           type: ApplicationCommandOptionType.String,
-          required: true,
+          required: false,
           choices: [
             { name: "prep", value: "prep" },
             { name: "battle", value: "battle" },
@@ -200,7 +200,7 @@ export const WarPlan: Command = {
     }
 
     if (subcommand === "set") {
-      const phase = interaction.options.getString("phase", true) as "prep" | "battle";
+      const phase = interaction.options.getString("phase", false) as "prep" | "battle" | null;
       const outcome = interaction.options.getString("outcome", true) as "WIN" | "LOSE";
       const planTextInput = interaction.options.getString("plan-text", true);
       if (!planTextInput.length) {
@@ -220,14 +220,26 @@ export const WarPlan: Command = {
             clanTag,
           },
         },
-        update: phase === "prep" ? { prepPlan: planText } : { battlePlan: planText },
+        update:
+          phase === "prep"
+            ? { prepPlan: planText }
+            : phase === "battle"
+              ? { battlePlan: planText }
+              : { prepPlan: planText, battlePlan: planText },
         create: {
           guildId: interaction.guildId,
           clanTag,
-          prepPlan: phase === "prep" ? planText : null,
-          battlePlan: phase === "battle" ? planText : null,
+          prepPlan: phase === "battle" ? null : planText,
+          battlePlan: phase === "prep" ? null : planText,
         },
       });
+
+      if (!phase) {
+        await interaction.editReply(
+          `Saved PREP and BATTLE (${outcome}) plans for **${trackedClan.name ?? clanTag}** (${clanTag}).\nLength: ${Math.max(row.prepPlan?.length ?? 0, row.battlePlan?.length ?? 0)} chars each`
+        );
+        return;
+      }
 
       await interaction.editReply(
         `Saved ${phase.toUpperCase()} (${outcome}) plan for **${trackedClan.name ?? clanTag}** (${clanTag}).\nLength: ${phase === "prep" ? row.prepPlan?.length ?? 0 : row.battlePlan?.length ?? 0} chars`

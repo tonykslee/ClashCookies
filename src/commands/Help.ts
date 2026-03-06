@@ -172,11 +172,13 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
   warplan: {
     summary: "Manage custom prep and battle war plan text for tracked clans.",
     details: [
-      "`set` saves one phase-specific custom plan per tracked clan.",
+      "`set` saves one phase-specific custom plan, or sets both phases when `phase` is omitted.",
       "`show` displays the effective prep and battle plans, including defaults when no custom text exists.",
       "`reset` removes stored custom plan text for that clan.",
     ],
     examples: [
+      "/warplan set clan-tag:2QG2C08UP phase:prep outcome:lose plan-text:Swap to war base during prep.",
+      "/warplan set clan-tag:2QG2C08UP outcome:lose plan-text:Swap to war base and follow mail instructions.",
       "/warplan set clan-tag:2QG2C08UP phase:prep outcome:lose plan-text:Swap to war base during prep.",
       "/warplan show clan-tag:2QG2C08UP",
       "/warplan reset clan-tag:2QG2C08UP",
