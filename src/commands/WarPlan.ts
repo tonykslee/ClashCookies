@@ -119,16 +119,6 @@ export const WarPlan: Command = {
           autocomplete: true,
         },
         {
-          name: "phase",
-          description: "Plan phase to customize",
-          type: ApplicationCommandOptionType.String,
-          required: false,
-          choices: [
-            { name: "prep", value: "prep" },
-            { name: "battle", value: "battle" },
-          ],
-        },
-        {
           name: "outcome",
           description: "Expected outcome context for this plan",
           type: ApplicationCommandOptionType.String,
@@ -143,6 +133,16 @@ export const WarPlan: Command = {
           description: "Custom plan text (max 1500 chars)",
           type: ApplicationCommandOptionType.String,
           required: true,
+        },
+        {
+          name: "phase",
+          description: "Plan phase to customize",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          choices: [
+            { name: "prep", value: "prep" },
+            { name: "battle", value: "battle" },
+          ],
         },
       ],
     },
