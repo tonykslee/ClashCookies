@@ -1034,10 +1034,16 @@ async function buildWarMailEmbedForTag(
 
   const history = new WarEventHistoryService(cocService);
   let planText = "War plan unavailable.";
-  if (matchType === "FWA") {
-    planText =
-      (await history.buildWarPlanText("FWA", outcome, normalizedTag, opponentName)) ??
-      "War plan unavailable.";
+  const customOrDefaultPlan = await history.buildWarPlanText(
+    guildId,
+    matchType === "UNKNOWN" ? "FWA" : matchType,
+    outcome,
+    normalizedTag,
+    opponentName,
+    warState === "inWar" ? "battle" : "prep"
+  );
+  if (customOrDefaultPlan) {
+    planText = customOrDefaultPlan;
   } else if (matchType === "BL") {
     planText = [
       `**⚫️ BLACKLIST WAR 🆚 ${opponentName} 🏴‍☠️**`,
