@@ -15,9 +15,11 @@ npx prisma migrate deploy
 npm run build
 npm start
 ```
-
 ## Documentation
 - [Setup and Environment](docs/setup.md)
 - [Commands Reference](docs/commands.md)
 - [Command Access and Permissions](docs/permissions.md)
 - [Deployment and Install Links](docs/deployment.md)
+
+## Development
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines and architecture documentation.
