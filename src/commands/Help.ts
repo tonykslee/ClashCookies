@@ -177,7 +177,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`reset` removes stored custom plan text for that clan.",
     ],
     examples: [
-      "/warplan set clan-tag:2QG2C08UP phase:prep plan-text:Swap to war base during prep.",
+      "/warplan set clan-tag:2QG2C08UP phase:prep outcome:lose plan-text:Swap to war base during prep.",
       "/warplan show clan-tag:2QG2C08UP",
       "/warplan reset clan-tag:2QG2C08UP",
     ],
