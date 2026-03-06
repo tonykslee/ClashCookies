@@ -201,6 +201,7 @@ model CurrentWar {
   updatedAt         DateTime      @updatedAt
 
   @@id([clanTag, guildId])
+  @@index([clanTag])
   @@index([guildId, notify])
   @@index([warId])
   @@index([startTime, clanTag, opponentTag])
