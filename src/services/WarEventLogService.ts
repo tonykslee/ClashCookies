@@ -14,6 +14,7 @@ import { prisma } from "../prisma";
 import { CoCService } from "./CoCService";
 import { PointsProjectionService } from "./PointsProjectionService";
 import { PostedMessageService } from "./PostedMessageService";
+import { PointsSyncService } from "./PointsSyncService";
 import { SettingsService } from "./SettingsService";
 import { WarEventHistoryService } from "./war-events/history";
 import { WarStartPointsSyncService } from "./war-events/pointsSync";
@@ -252,6 +253,7 @@ function buildWarStatsLines(stats: EmbedWarStats): string[] {
 export class WarEventLogService {
   private readonly points: PointsProjectionService;
   private readonly pointsSync: WarStartPointsSyncService;
+  private readonly currentSyncs: PointsSyncService;
   private readonly history: WarEventHistoryService;
   private readonly postedMessages: PostedMessageService;
 
@@ -259,6 +261,7 @@ export class WarEventLogService {
   constructor(private readonly client: Client, private readonly coc: CoCService) {
     this.points = new PointsProjectionService(coc);
     this.pointsSync = new WarStartPointsSyncService(this.points, new SettingsService());
+    this.currentSyncs = new PointsSyncService();
     this.history = new WarEventHistoryService(coc);
     this.postedMessages = new PostedMessageService();
   }
@@ -1061,14 +1064,6 @@ export class WarEventLogService {
         eventType = null;
       }
     }
-    const syncNumberForEvent =
-      eventType === "war_ended"
-        ? (sub.syncNum !== null && Number.isFinite(Number(sub.syncNum))
-            ? Math.trunc(Number(sub.syncNum))
-            : syncContext.activeSync)
-        : currentState === "notInWar"
-          ? syncContext.previousSync
-          : syncContext.activeSync;
     if (eventType === "war_started" && nextOpponentTag) {
       await this.pointsSync.resetWarStartPointsJob(sub.clanTag, nextOpponentTag).catch(() => null);
     }
@@ -1080,6 +1075,13 @@ export class WarEventLogService {
         nextOpponentName
       ).catch(() => null);
     }
+
+    const fallbackSyncNumberForEvent =
+      eventType === "war_ended"
+        ? syncContext.activeSync
+        : currentState === "notInWar"
+          ? syncContext.previousSync
+          : syncContext.activeSync;
 
     let nextFwaPoints = sub.fwaPoints;
     let nextOpponentFwaPoints = sub.opponentFwaPoints;
@@ -1124,7 +1126,7 @@ export class WarEventLogService {
         projectionOpponentTag,
         a.balance,
         b.balance,
-        syncNumberForEvent
+        fallbackSyncNumberForEvent
       );
       if (eventType === "war_started") {
         nextWarStartFwaPoints = a.balance;
@@ -1189,6 +1191,23 @@ export class WarEventLogService {
       warStartTime: nextWarStartTime,
       currentState,
     });
+    const syncRow =
+      guildId && nextWarStartTime
+        ? await this.currentSyncs.getCurrentSyncForClan({
+            guildId,
+            clanTag: sub.clanTag,
+            warId:
+              resolvedWarId !== null && resolvedWarId !== undefined
+                ? String(Math.trunc(Number(resolvedWarId)))
+                : sub.warId !== null && sub.warId !== undefined
+                  ? String(Math.trunc(Number(sub.warId)))
+                  : null,
+            warStartTime: nextWarStartTime,
+          })
+        : null;
+    const syncNumberForEvent =
+      syncRow?.syncNum ??
+      fallbackSyncNumberForEvent;
 
     const detectedEventPayload = eventType
       ? ({
@@ -1984,7 +2003,15 @@ export class WarEventLogService {
       clanName: nextClanName,
       opponentTag: nextOpponentTag,
       opponentName: nextOpponentName,
-      syncNumber: await this.pointsSync.getPreviousSyncNum(),
+      syncNumber:
+        (
+          await this.currentSyncs.getCurrentSyncForClan({
+            guildId,
+            clanTag,
+            warId: warIdText,
+            warStartTime,
+          })
+        )?.syncNum ?? null,
       notifyRole: refreshedSub.notifyRole,
       pingRole: refreshedSub.pingRole,
       fwaPoints: refreshedSub.fwaPoints,
@@ -2137,7 +2164,20 @@ export class WarEventLogService {
       opponentTag: normalizeTag(war.opponent?.tag ?? refreshedSub.opponentTag ?? ""),
       opponentName:
         String(war.opponent?.name ?? refreshedSub.opponentName ?? "Unknown").trim() || "Unknown",
-      syncNumber: await this.pointsSync.getPreviousSyncNum(),
+      syncNumber:
+        (
+          await this.currentSyncs.getCurrentSyncForClan({
+            guildId,
+            clanTag,
+            warId:
+              resolvedWarId !== null && resolvedWarId !== undefined
+                ? String(Math.trunc(Number(resolvedWarId)))
+                : refreshedSub.warId !== null && refreshedSub.warId !== undefined
+                  ? String(Math.trunc(Number(refreshedSub.warId)))
+                  : null,
+            warStartTime,
+          })
+        )?.syncNum ?? null,
       notifyRole: refreshedSub.notifyRole,
       pingRole: refreshedSub.pingRole,
       fwaPoints: refreshedSub.fwaPoints,

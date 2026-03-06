@@ -242,7 +242,6 @@ export class WarEventHistoryService {
       select: {
         guildId: true,
         inferredMatchType: true,
-        syncNum: true,
         matchType: true,
         state: true,
         clanName: true,
@@ -252,6 +251,14 @@ export class WarEventHistoryService {
         endTime: true,
       },
     });
+    const syncRow = currentSnapshot?.guildId
+      ? await this.pointsSync.getCurrentSyncForClan({
+          guildId: currentSnapshot.guildId,
+          clanTag,
+          warId: String(warId),
+          warStartTime,
+        })
+      : null;
     const participants = attacks.filter((a) => Number(a.attackOrder) === 0);
     const teamSize = participants.length > 0 ? participants.length : null;
     const pointsAwarded =
@@ -306,7 +313,7 @@ export class WarEventHistoryService {
         opponentDestruction: finalResult.opponentDestruction,
       },
       fwa: {
-        syncNumber: payload.syncNumber ?? currentSnapshot?.syncNum ?? null,
+        syncNumber: payload.syncNumber ?? syncRow?.syncNum ?? null,
         pointsAwarded: pointsAwarded ?? null,
         inferred: Boolean(currentSnapshot?.inferredMatchType),
         mismatch: payload.matchType === "MM",
