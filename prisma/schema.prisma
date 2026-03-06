@@ -81,6 +81,11 @@ enum WarMatchType {
   SKIP
 }
 
+enum WarPlanScope {
+  CUSTOM
+  DEFAULT
+}
+
 enum LoseStyle {
   TRADITIONAL
   TRIPLE_TOP_30
@@ -344,6 +349,7 @@ model ClanWarPlan {
   id         String   @id @default(cuid())
   guildId    String
   clanTag    String
+  scope      WarPlanScope @default(CUSTOM)
   matchType  WarMatchType
   outcome    String
   loseStyle  String   @default("ANY")
@@ -351,8 +357,8 @@ model ClanWarPlan {
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
-  @@unique([guildId, clanTag, matchType, outcome, loseStyle])
-  @@index([guildId, clanTag, matchType])
+  @@unique([guildId, scope, clanTag, matchType, outcome, loseStyle])
+  @@index([guildId, scope, clanTag, matchType])
 }
 
 model ApiUsage {
