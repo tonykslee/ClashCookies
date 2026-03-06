@@ -734,6 +734,14 @@ function isExpectedOutcomeValue(value: unknown): value is "WIN" | "LOSE" | "UNKN
   return value === "WIN" || value === "LOSE" || value === "UNKNOWN";
 }
 
+function formatMailBlockedReason(reason: string | null | undefined): string | null {
+  if (!reason) return null;
+  if (reason === "Current mail is already up to date. Change match config before sending again.") {
+    return `:envelope_with_arrow: ${reason}`;
+  }
+  return `:warning: ${reason}`;
+}
+
 async function getCurrentWarMailConfig(
   guildId: string,
   tag: string
@@ -4580,6 +4588,7 @@ async function buildTrackedMatchOverview(
         : postedMailExists && matchesLastPostedConfig
           ? "Current mail is already up to date. Change match config before sending again."
           : null;
+    const mailBlockedReasonLine = formatMailBlockedReason(mailBlockedReason);
 
     if (matchType === "FWA") {
       const warnSuffix = inferredMatchType ? ` :warning: ${verifyLink}` : "";
@@ -4676,7 +4685,7 @@ async function buildTrackedMatchOverview(
       pointsSyncStatus,
       inferredMatchType ? MATCHTYPE_WARNING_LEGEND : "",
       inferredMatchType ? "\u200B" : "",
-      mailBlockedReason ? `:warning: ${mailBlockedReason}` : "",
+      mailBlockedReasonLine ?? "",
       `${projectionLineSingle}`,
       `Match Type: **${matchType}${inferredMatchType ? " :warning:" : ""}**${
         inferredMatchType ? ` ${verifyLink}` : ""
@@ -6646,6 +6655,7 @@ export const Fwa: Command = {
             : postedMailExists && matchesLastPostedConfig
               ? "Current mail is already up to date. Change match config before sending again."
               : null;
+        const mailBlockedReasonLine = formatMailBlockedReason(mailBlockedReason);
         const outcomeLine =
           matchType === "FWA"
             ? `${effectiveOutcome ?? "UNKNOWN"}`
@@ -6672,7 +6682,7 @@ export const Fwa: Command = {
             }${
               outcomeLine ? `\nExpected outcome: **${outcomeLine}**` : ""
             }\n${siteStatusLine}${
-              mailBlockedReason ? `\n:warning: ${mailBlockedReason}` : ""
+              mailBlockedReasonLine ? `\n${mailBlockedReasonLine}` : ""
             }\nWar state: **${formatWarStateLabel(warState)}**\nTime remaining: **${warRemaining}**\nSync: **${syncDisplay}**${
               mismatchLines ? `\n${mismatchLines}` : ""
             }`
@@ -6701,7 +6711,9 @@ export const Fwa: Command = {
             `# ${singleHeader}`,
             inferredMatchType ? MATCHTYPE_WARNING_LEGEND : "",
             siteStatusLine,
-            mailBlockedReason ? `Warning: ${mailBlockedReason}` : "",
+            mailBlockedReasonLine
+              ? `${mailBlockedReasonLine.replace(/^:warning: /, "Warning: ").replace(/^:envelope_with_arrow: /, "Mail: ")}`
+              : "",
             `Sync: ${syncDisplay}`,
             `War State: ${formatWarStateLabel(warState)}`,
             `Time Remaining: ${warRemaining}`,
