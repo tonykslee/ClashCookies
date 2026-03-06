@@ -2297,6 +2297,8 @@ export async function handleFwaMatchSkipSyncConfirmButton(
     return;
   }
 
+  await interaction.deferUpdate();
+
   const tracked = await prisma.trackedClan.findFirst({
     where: { tag: { equals: `#${parsed.tag}`, mode: "insensitive" } },
     select: { name: true },
@@ -2453,7 +2455,7 @@ export async function handleFwaMatchSkipSyncConfirmButton(
     interaction.client
   );
   if (!refreshed) {
-    await interaction.reply({
+    await interaction.followUp({
       ephemeral: true,
       content: "Skip sync applied, but this view could not be refreshed.",
     });
@@ -2463,20 +2465,20 @@ export async function handleFwaMatchSkipSyncConfirmButton(
   const showMode = interaction.message.embeds.length > 0 ? "embed" : "copy";
   const nextView = refreshed.singleViews[parsed.tag];
   if (!nextView) {
-    await interaction.reply({
+    await interaction.followUp({
       ephemeral: true,
       content: "Skip sync applied, but clan view is unavailable now.",
     });
     return;
   }
-  await interaction.update({
-    content: "SKIP confirmed. Clan logs updated.",
-    components: [],
-  });
   await interaction.message.edit({
     content: showMode === "copy" ? limitDiscordContent(nextView.copyText) : undefined,
     embeds: showMode === "embed" ? [nextView.embed] : [],
     components: buildFwaMatchCopyComponents(refreshed, refreshed.userId, parsed.key, showMode),
+  });
+  await interaction.followUp({
+    ephemeral: true,
+    content: "SKIP confirmed. Clan logs updated.",
   });
 }
 
@@ -2515,6 +2517,7 @@ export async function handleFwaMatchSkipSyncUndoButton(
     });
     return;
   }
+  await interaction.deferUpdate();
   const current = await prisma.currentWar.findUnique({
     where: {
       clanTag_guildId: {
@@ -2561,7 +2564,7 @@ export async function handleFwaMatchSkipSyncUndoButton(
     interaction.client
   );
   if (!refreshed) {
-    await interaction.reply({
+    await interaction.followUp({
       ephemeral: true,
       content: "Undo applied, but this view could not be refreshed.",
     });
@@ -2571,13 +2574,13 @@ export async function handleFwaMatchSkipSyncUndoButton(
   const showMode = interaction.message.embeds.length > 0 ? "embed" : "copy";
   const nextView = refreshed.singleViews[parsed.tag];
   if (!nextView) {
-    await interaction.reply({
+    await interaction.followUp({
       ephemeral: true,
       content: "Undo applied, but clan view is unavailable now.",
     });
     return;
   }
-  await interaction.update({
+  await interaction.message.edit({
     content: showMode === "copy" ? limitDiscordContent(nextView.copyText) : undefined,
     embeds: showMode === "embed" ? [nextView.embed] : [],
     components: buildFwaMatchCopyComponents(refreshed, refreshed.userId, parsed.key, showMode),
