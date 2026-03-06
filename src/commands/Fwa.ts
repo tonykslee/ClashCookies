@@ -3661,7 +3661,10 @@ function buildStoredSyncSummary(input: {
     (input.fallbackSyncNum !== null && Number.isFinite(input.fallbackSyncNum)
       ? Math.trunc(input.fallbackSyncNum)
       : null);
-  const syncLine = withSyncModeLabel(getSyncDisplay(syncNumber, input.warState), syncNumber);
+  const syncLine =
+    syncNumber !== null && Number.isFinite(syncNumber)
+      ? `#${Math.trunc(syncNumber)} (${Math.trunc(syncNumber) % 2 === 0 ? "High Sync" : "Low Sync"})`
+      : "unknown";
   const syncFetchedAtMs = input.syncRow?.syncFetchedAt?.getTime?.() ?? NaN;
   const updatedLine =
     Number.isFinite(syncFetchedAtMs) && syncFetchedAtMs > 0
