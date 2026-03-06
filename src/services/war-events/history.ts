@@ -240,6 +240,7 @@ export class WarEventHistoryService {
     const currentSnapshot = await prisma.currentWar.findFirst({
       where: { clanTag, startTime: warStartTime },
       select: {
+        guildId: true,
         inferredMatchType: true,
         syncNum: true,
         matchType: true,
@@ -247,6 +248,8 @@ export class WarEventHistoryService {
         clanName: true,
         opponentTag: true,
         opponentName: true,
+        startTime: true,
+        endTime: true,
       },
     });
     const participants = attacks.filter((a) => Number(a.attackOrder) === 0);
@@ -344,6 +347,17 @@ export class WarEventHistoryService {
           "payload" = EXCLUDED."payload"
       `
     );
+    await this.persistWarParticipationSnapshot({
+      guildId: currentSnapshot?.guildId ?? null,
+      warId: String(warId),
+      clanTag,
+      opponentTag: normalizeTag(payload.opponentTag) || currentSnapshot?.opponentTag || null,
+      warStartTime: currentSnapshot?.startTime ?? warStartTime,
+      warEndTime: currentSnapshot?.endTime ?? warEndTime,
+      matchType: currentSnapshot?.matchType ?? payload.matchType,
+      participantRows: participants,
+      attackRows: attacks.filter((a) => Number(a.attackOrder) > 0),
+    });
     // Ephemeral lifecycle: archive complete, then clear active-war rows by warId.
     await prisma.warAttacks.deleteMany({
       where: { warId },
@@ -483,6 +497,86 @@ export class WarEventHistoryService {
     finalResult: WarEndResultSnapshot;
   }): number | null {
     return computeWarPointsDeltaForTest(input);
+  }
+
+  /** Purpose: snapshot per-player war participation before current-war rows are deleted. */
+  private async persistWarParticipationSnapshot(input: {
+    guildId: string | null;
+    warId: string;
+    clanTag: string;
+    opponentTag: string | null;
+    warStartTime: Date;
+    warEndTime: Date | null;
+    matchType: MatchType | null;
+    participantRows: Array<{
+      playerTag: string;
+      playerName: string | null;
+      playerPosition: number | null;
+      attacksUsed: number;
+    }>;
+    attackRows: Array<{
+      playerTag: string;
+      playerName: string | null;
+      stars: number;
+      trueStars: number;
+      attackSeenAt: Date;
+    }>;
+  }): Promise<void> {
+    if (!input.guildId) return;
+    const guildId = input.guildId;
+
+    const battleDayStartMs = input.warStartTime.getTime();
+    const firstAttackWindowCloseMs = battleDayStartMs + 12 * 60 * 60 * 1000;
+    const attacksByPlayer = new Map<string, typeof input.attackRows>();
+    for (const row of input.attackRows) {
+      const rows = attacksByPlayer.get(row.playerTag) ?? [];
+      rows.push(row);
+      attacksByPlayer.set(row.playerTag, rows);
+    }
+
+    const rows = input.participantRows.map((player) => {
+      const attackRows = attacksByPlayer.get(player.playerTag) ?? [];
+      const attacksUsed = attackRows.length;
+      const firstAttackAt =
+        attackRows.length > 0
+          ? new Date(
+              Math.min(
+                ...attackRows.map((row) => row.attackSeenAt.getTime())
+              )
+            )
+          : null;
+      const attackDelayMinutes =
+        firstAttackAt !== null
+          ? Math.max(0, Math.floor((firstAttackAt.getTime() - battleDayStartMs) / 60000))
+          : null;
+      return {
+        guildId,
+        warId: input.warId,
+        clanTag: input.clanTag,
+        opponentTag: input.opponentTag,
+        playerTag: player.playerTag,
+        playerName: player.playerName?.trim() || attackRows[0]?.playerName?.trim() || player.playerTag,
+        townHall: null,
+        attacksUsed,
+        attacksMissed: Math.max(0, 2 - attacksUsed),
+        starsEarned: attackRows.reduce((sum, row) => sum + Number(row.stars || 0), 0),
+        trueStars: attackRows.reduce((sum, row) => sum + Number(row.trueStars || 0), 0),
+        missedBoth: attacksUsed === 0,
+        firstAttackAt,
+        attackDelayMinutes,
+        attackWindowMissed:
+          firstAttackAt !== null ? firstAttackAt.getTime() > firstAttackWindowCloseMs : null,
+        matchType: input.matchType ?? "FWA",
+        warStartTime: input.warStartTime,
+        warEndTime: input.warEndTime,
+      };
+    });
+    if (rows.length === 0) return;
+
+    await prisma.clanWarParticipation.createMany({
+      data: rows,
+      skipDuplicates: true,
+    });
   }
 }
 

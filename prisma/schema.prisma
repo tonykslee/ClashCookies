@@ -309,6 +309,35 @@ model ClanPointsSync {
   @@unique([guildId, clanTag, warStartTime])
 }
 
+model ClanWarParticipation {
+  id                String   @id @default(cuid())
+  guildId           String
+  warId             String
+  clanTag           String
+  opponentTag       String?
+  playerTag         String
+  playerName        String?
+  townHall          Int?
+  attacksUsed       Int
+  attacksMissed     Int
+  starsEarned       Int
+  trueStars         Int
+  missedBoth        Boolean
+  firstAttackAt     DateTime?
+  attackDelayMinutes Int?
+  attackWindowMissed Boolean?
+  matchType         String
+  warStartTime      DateTime
+  warEndTime        DateTime?
+  createdAt         DateTime @default(now())
+
+  @@unique([guildId, warId, playerTag])
+  @@index([guildId, clanTag, warStartTime])
+  @@index([guildId, playerTag])
+  @@index([warId])
+  @@index([guildId, clanTag, matchType, missedBoth, warStartTime])
+}
+
 model ApiUsage {
   endpoint String   @id
   lastCall DateTime
