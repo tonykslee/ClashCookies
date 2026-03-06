@@ -4150,8 +4150,9 @@ async function buildTrackedMatchOverview(
       : "unknown"
   }`;
 
-  for (const clan of includedTracked) {
+  for (const clan of tracked) {
     const clanTag = normalizeTag(clan.tag);
+    const includeInOverview = !missedSyncTags.has(clanTag);
     const clanName = sanitizeClanName(clan.name) ?? `#${clanTag}`;
     const war = warByClanTag.get(clanTag) ?? null;
     const warState = warStateByClanTag.get(clanTag) ?? deriveWarState(war?.state);
@@ -4214,24 +4215,26 @@ async function buildTrackedMatchOverview(
         `Time Remaining: **${clanTimeRemainingLine}**`,
         `Sync: **${clanSyncLine}**`,
       ];
-      embed.addFields({
-        name: preWarHeader,
-        value: preWarLines.join("\n"),
-        inline: false,
-      });
-      copyLines.push(
-        `## ${preWarHeader}`,
-        outOfSync ? "WARNING: out of sync with points site" : "Data in sync with points site",
-        `Clan points: ${clanPoints !== null && clanPoints !== undefined ? clanPoints : "unknown"}`,
-        `Members: ${memberCount ?? "?"}/50`,
-        `Total weight (ACTUAL): ${actual?.totalWeight ?? "unknown"}`,
-        `Weight compo (ACTUAL): ${actual?.weightCompo ?? "unknown"}`,
-        `Weight deltas (ACTUAL): ${actual?.weightDeltas ?? "unknown"}`,
-        `Compo advice (ACTUAL): ${actual?.compoAdvice ?? "none"}`,
-        `War State: ${clanWarStateLine}`,
-        `Time Remaining: ${clanTimeRemainingLine}`,
-        `Sync: ${clanSyncLine}`
-      );
+      if (includeInOverview) {
+        embed.addFields({
+          name: preWarHeader,
+          value: preWarLines.join("\n"),
+          inline: false,
+        });
+        copyLines.push(
+          `## ${preWarHeader}`,
+          outOfSync ? "WARNING: out of sync with points site" : "Data in sync with points site",
+          `Clan points: ${clanPoints !== null && clanPoints !== undefined ? clanPoints : "unknown"}`,
+          `Members: ${memberCount ?? "?"}/50`,
+          `Total weight (ACTUAL): ${actual?.totalWeight ?? "unknown"}`,
+          `Weight compo (ACTUAL): ${actual?.weightCompo ?? "unknown"}`,
+          `Weight deltas (ACTUAL): ${actual?.weightDeltas ?? "unknown"}`,
+          `Compo advice (ACTUAL): ${actual?.compoAdvice ?? "none"}`,
+          `War State: ${clanWarStateLine}`,
+          `Time Remaining: ${clanTimeRemainingLine}`,
+          `Sync: ${clanSyncLine}`
+        );
+      }
       singleViews[clanTag] = {
         embed: new EmbedBuilder().setTitle(preWarHeader).setDescription(preWarLines.join("\n")),
         copyText: limitDiscordContent([`# ${preWarHeader}`, ...preWarLines].join("\n")),
@@ -4260,21 +4263,23 @@ async function buildTrackedMatchOverview(
     });
 
     if (!opponentTag) {
-      embed.addFields({
-        name: `${mailStatusEmoji} | ${clanName} (#${clanTag}) vs Unknown`,
-        value: [
+      if (includeInOverview) {
+        embed.addFields({
+          name: `${mailStatusEmoji} | ${clanName} (#${clanTag}) vs Unknown`,
+          value: [
+            "No active war opponent",
+            `War State: **${clanWarStateLine}**`,
+            `Time Remaining: **${clanTimeRemainingLine}**`,
+          ].join("\n"),
+          inline: false,
+        });
+        copyLines.push(
+          `## ${mailStatusEmoji} | ${clanName} (#${clanTag})`,
           "No active war opponent",
-          `War State: **${clanWarStateLine}**`,
-          `Time Remaining: **${clanTimeRemainingLine}**`,
-        ].join("\n"),
-        inline: false,
-      });
-      copyLines.push(
-        `## ${mailStatusEmoji} | ${clanName} (#${clanTag})`,
-        "No active war opponent",
-        `War State: ${clanWarStateLine}`,
-        `Time Remaining: ${clanTimeRemainingLine}`
-      );
+          `War State: ${clanWarStateLine}`,
+          `Time Remaining: ${clanTimeRemainingLine}`
+        );
+      }
       continue;
     }
 
@@ -4566,36 +4571,38 @@ async function buildTrackedMatchOverview(
         outcome: effectiveOutcome ?? "UNKNOWN",
         mailStatusEmoji,
       });
-      embed.addFields({
-        name: matchHeader,
-        value: [
-          pointsLine,
+      if (includeInOverview) {
+        embed.addFields({
+          name: matchHeader,
+          value: [
+            pointsLine,
+            pointsSyncStatus,
+            `Match Type: **FWA${warnSuffix}**`,
+            `Outcome: **${effectiveOutcome ?? "UNKNOWN"}**`,
+            `War State: **${clanWarStateLine}**`,
+            `Time Remaining: **${clanTimeRemainingLine}**`,
+            mismatchLines,
+          ]
+            .filter(Boolean)
+            .join("\n"),
+          inline: false,
+        });
+        copyLines.push(
+          `## ${matchHeader}`,
+          `### Opponent Name`,
+          `\`${opponentName}\``,
+          `### Opponent Tag`,
+          `\`${opponentTag}\``,
+          `${pointsLine}`,
           pointsSyncStatus,
-          `Match Type: **FWA${warnSuffix}**`,
-          `Outcome: **${effectiveOutcome ?? "UNKNOWN"}**`,
-          `War State: **${clanWarStateLine}**`,
-          `Time Remaining: **${clanTimeRemainingLine}**`,
-          mismatchLines,
-        ]
-          .filter(Boolean)
-          .join("\n"),
-        inline: false,
-      });
-      copyLines.push(
-        `## ${matchHeader}`,
-        `### Opponent Name`,
-        `\`${opponentName}\``,
-        `### Opponent Tag`,
-        `\`${opponentTag}\``,
-        `${pointsLine}`,
-        pointsSyncStatus,
-        `Match Type: FWA${inferredMatchType ? " :warning:" : ""}`,
-        inferredMatchType ? `Verify: ${buildCcVerifyUrl(opponentTag)}` : "",
-        `Outcome: ${effectiveOutcome ?? "UNKNOWN"}`,
-        `War State: ${clanWarStateLine}`,
-        `Time Remaining: ${clanTimeRemainingLine}`,
-        mismatchLines
-      );
+          `Match Type: FWA${inferredMatchType ? " :warning:" : ""}`,
+          inferredMatchType ? `Verify: ${buildCcVerifyUrl(opponentTag)}` : "",
+          `Outcome: ${effectiveOutcome ?? "UNKNOWN"}`,
+          `War State: ${clanWarStateLine}`,
+          `Time Remaining: ${clanTimeRemainingLine}`,
+          mismatchLines
+        );
+      }
     } else {
       const warnSuffix = inferredMatchType ? ` :warning: ${verifyLink}` : "";
       const matchHeader = buildMatchStatusHeader({
@@ -4607,32 +4614,34 @@ async function buildTrackedMatchOverview(
         outcome: effectiveOutcome ?? "UNKNOWN",
         mailStatusEmoji,
       });
-      embed.addFields({
-        name: matchHeader,
-        value: [
+      if (includeInOverview) {
+        embed.addFields({
+          name: matchHeader,
+          value: [
+            pointsSyncStatus,
+            `Match Type: **${matchType}${warnSuffix}**`,
+            `War State: **${clanWarStateLine}**`,
+            `Time Remaining: **${clanTimeRemainingLine}**`,
+            mismatchLines,
+          ]
+            .filter(Boolean)
+            .join("\n"),
+          inline: false,
+        });
+        copyLines.push(
+          `## ${matchHeader}`,
+          `### Opponent Name`,
+          `\`${opponentName}\``,
+          `### Opponent Tag`,
+          `\`${opponentTag}\``,
           pointsSyncStatus,
-          `Match Type: **${matchType}${warnSuffix}**`,
-          `War State: **${clanWarStateLine}**`,
-          `Time Remaining: **${clanTimeRemainingLine}**`,
-          mismatchLines,
-        ]
-          .filter(Boolean)
-          .join("\n"),
-        inline: false,
-      });
-      copyLines.push(
-        `## ${matchHeader}`,
-        `### Opponent Name`,
-        `\`${opponentName}\``,
-        `### Opponent Tag`,
-        `\`${opponentTag}\``,
-        pointsSyncStatus,
-        `Match Type: ${matchType}${inferredMatchType ? " :warning:" : ""}`,
-        inferredMatchType ? `Verify: ${buildCcVerifyUrl(opponentTag)}` : "",
-        `War State: ${clanWarStateLine}`,
-        `Time Remaining: ${clanTimeRemainingLine}`,
-        mismatchLines
-      );
+          `Match Type: ${matchType}${inferredMatchType ? " :warning:" : ""}`,
+          inferredMatchType ? `Verify: ${buildCcVerifyUrl(opponentTag)}` : "",
+          `War State: ${clanWarStateLine}`,
+          `Time Remaining: ${clanTimeRemainingLine}`,
+          mismatchLines
+        );
+      }
     }
 
     const projectionLineSingle =
