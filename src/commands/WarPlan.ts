@@ -11,6 +11,7 @@ import { WarEventHistoryService } from "../services/war-events/history";
 
 type PlanMatchType = "FWA" | "BL" | "MM";
 type PlanOutcome = "WIN" | "LOSE" | "ANY";
+type PlanLoseStyle = "TRADITIONAL" | "TRIPLE_TOP_30" | "ANY";
 
 function normalizeMatchType(value: string | null): PlanMatchType {
   const upper = String(value ?? "").toUpperCase();
@@ -24,9 +25,16 @@ function normalizeOutcome(value: string | null): PlanOutcome | null {
   return null;
 }
 
-function labelFor(matchType: PlanMatchType, outcome: PlanOutcome): string {
-  if (matchType === "FWA" && (outcome === "WIN" || outcome === "LOSE")) {
-    return `FWA-${outcome}`;
+function normalizeLoseStyle(value: string | null): PlanLoseStyle | null {
+  const upper = String(value ?? "").toUpperCase();
+  if (upper === "TRADITIONAL" || upper === "TRIPLE_TOP_30" || upper === "ANY") return upper;
+  return null;
+}
+
+function formatKeyLabel(matchType: PlanMatchType, outcome: PlanOutcome, loseStyle: PlanLoseStyle): string {
+  if (matchType === "FWA") {
+    if (outcome === "LOSE" && loseStyle !== "ANY") return `FWA-LOSE-${loseStyle}`;
+    if (outcome === "WIN" || outcome === "LOSE") return `FWA-${outcome}`;
   }
   return matchType;
 }
@@ -35,32 +43,65 @@ async function getDefaultPlanText(
   history: WarEventHistoryService,
   guildId: string,
   matchType: PlanMatchType,
-  outcome: PlanOutcome
+  outcome: PlanOutcome,
+  loseStyle: PlanLoseStyle
 ): Promise<string> {
   if (matchType === "FWA" && (outcome === "WIN" || outcome === "LOSE")) {
+    const clanTagHint = loseStyle === "TRADITIONAL" ? "#LOSETRADITIONAL" : "#LOSETRIPLETOP30";
     return (
       (await history.buildWarPlanText(
         guildId,
         "FWA",
         outcome,
-        "#UNKNOWN",
-        "Unknown",
+        clanTagHint,
+        "{opponent}",
         "battle"
       )) ?? "FWA plan unavailable."
     );
   }
   if (matchType === "BL") {
     return [
-      "**BLACKLIST WAR PLAN**",
-      "Everyone switch to WAR BASES.",
-      "Hit mirror first, then follow leadership instructions.",
+      "\u26ab\ufe0f BLACKLIST WAR \ud83c\udd9a {opponent} \ud83c\udff4\u200d\u2620\ufe0f ",
+      "Everyone switch to WAR BASES!!",
+      "This is our opportunity to gain some extra FWA points!",
+      "\u2795 30+ people switch to war base = +1 point",
+      "\u2795 60% total destruction = +1 point",
+      "\u2795 win war = +1 point",
+      "---",
+      "If you need war base, check https://clashofclans-layouts.com/ or bases",
     ].join("\n");
   }
   return [
-    "**MISMATCHED WAR PLAN**",
-    "Keep war base active.",
-    "Attack what you can and follow leadership instructions.",
+    "\u26aa\ufe0f MISMATCHED WAR \ud83c\udd9a {opponent} :sob:",
+    "Keep WA base active, attack what you can!",
   ].join("\n");
+}
+
+function resolveRowKey(
+  matchType: PlanMatchType,
+  outcomeInput: PlanOutcome | null,
+  loseStyleInput: PlanLoseStyle | null
+): { outcome: PlanOutcome; loseStyle: PlanLoseStyle } | { error: string } {
+  if (matchType !== "FWA") {
+    if (outcomeInput || loseStyleInput) {
+      return { error: "`outcome` and `lose-style` can only be used when `match-type` is FWA." };
+    }
+    return { outcome: "ANY", loseStyle: "ANY" };
+  }
+
+  if (!outcomeInput) return { outcome: "ANY", loseStyle: "ANY" };
+
+  if (outcomeInput === "WIN") {
+    if (loseStyleInput) {
+      return { error: "`lose-style` can only be used with `outcome:LOSE`." };
+    }
+    return { outcome: "WIN", loseStyle: "ANY" };
+  }
+
+  if (!loseStyleInput || loseStyleInput === "ANY") {
+    return { error: "`lose-style` is required for `match-type:FWA outcome:LOSE`." };
+  }
+  return { outcome: "LOSE", loseStyle: loseStyleInput };
 }
 
 export const WarPlan: Command = {
@@ -69,7 +110,7 @@ export const WarPlan: Command = {
   options: [
     {
       name: "set",
-      description: "Set war plan text for match type (or FWA outcome)",
+      description: "Set war plan text for match type (or FWA outcome/lose-style)",
       type: ApplicationCommandOptionType.Subcommand,
       options: [
         {
@@ -85,13 +126,13 @@ export const WarPlan: Command = {
         },
         {
           name: "plan-text",
-          description: "Custom plan text (max 1500 chars)",
+          description: "Custom plan text (max 1500 chars). Supports {opponent} placeholder.",
           type: ApplicationCommandOptionType.String,
           required: true,
         },
         {
           name: "outcome",
-          description: "FWA outcome (optional; omit to set both WIN and LOSE)",
+          description: "FWA outcome (optional; omit to set both WIN and LOSE defaults)",
           type: ApplicationCommandOptionType.String,
           required: false,
           choices: [
@@ -99,11 +140,21 @@ export const WarPlan: Command = {
             { name: "LOSE", value: "LOSE" },
           ],
         },
+        {
+          name: "lose-style",
+          description: "Required for FWA LOSE plan",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          choices: [
+            { name: "TRIPLE_TOP_30", value: "TRIPLE_TOP_30" },
+            { name: "TRADITIONAL", value: "TRADITIONAL" },
+          ],
+        },
       ],
     },
     {
       name: "show",
-      description: "Show war plans by match type and outcome",
+      description: "Show war plans by match type/outcome/lose-style",
       type: ApplicationCommandOptionType.Subcommand,
       options: [
         {
@@ -125,6 +176,16 @@ export const WarPlan: Command = {
           choices: [
             { name: "WIN", value: "WIN" },
             { name: "LOSE", value: "LOSE" },
+          ],
+        },
+        {
+          name: "lose-style",
+          description: "Show FWA LOSE plan for specific lose style",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          choices: [
+            { name: "TRIPLE_TOP_30", value: "TRIPLE_TOP_30" },
+            { name: "TRADITIONAL", value: "TRADITIONAL" },
           ],
         },
       ],
@@ -155,6 +216,16 @@ export const WarPlan: Command = {
             { name: "LOSE", value: "LOSE" },
           ],
         },
+        {
+          name: "lose-style",
+          description: "Reset FWA LOSE plan for specific lose style",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          choices: [
+            { name: "TRIPLE_TOP_30", value: "TRIPLE_TOP_30" },
+            { name: "TRADITIONAL", value: "TRADITIONAL" },
+          ],
+        },
       ],
     },
   ],
@@ -164,7 +235,6 @@ export const WarPlan: Command = {
     cocService: CoCService
   ) => {
     await interaction.deferReply({ ephemeral: true });
-
     if (!interaction.guildId) {
       await interaction.editReply("This command can only be used in a server.");
       return;
@@ -174,9 +244,14 @@ export const WarPlan: Command = {
     const subcommand = interaction.options.getSubcommand(true);
     const history = new WarEventHistoryService(cocService);
 
+    const matchType = normalizeMatchType(interaction.options.getString("match-type", false));
+    const outcomeInput = normalizeOutcome(interaction.options.getString("outcome", false));
+    const loseStyleInput = normalizeLoseStyle(interaction.options.getString("lose-style", false));
+
     if (subcommand === "set") {
-      const matchType = normalizeMatchType(interaction.options.getString("match-type", true));
-      const outcome = normalizeOutcome(interaction.options.getString("outcome", false));
+      const requiredMatchType = normalizeMatchType(interaction.options.getString("match-type", true));
+      const requiredOutcome = normalizeOutcome(interaction.options.getString("outcome", false));
+      const requiredLoseStyle = normalizeLoseStyle(interaction.options.getString("lose-style", false));
       const planText = interaction.options.getString("plan-text", true);
 
       if (!planText.length) {
@@ -187,90 +262,149 @@ export const WarPlan: Command = {
         await interaction.editReply("Plan text must be 1500 characters or fewer.");
         return;
       }
-      if (matchType !== "FWA" && outcome) {
-        await interaction.editReply("`outcome` can only be used when `match-type` is FWA.");
-        return;
-      }
 
-      if (matchType === "FWA" && !outcome) {
+      if (requiredMatchType === "FWA" && !requiredOutcome) {
         await prisma.$transaction([
           prisma.clanWarPlan.upsert({
-            where: { guildId_matchType_outcome: { guildId, matchType: "FWA", outcome: "WIN" } },
+            where: {
+              guildId_matchType_outcome_loseStyle: {
+                guildId,
+                matchType: "FWA",
+                outcome: "WIN",
+                loseStyle: "ANY",
+              },
+            },
             update: { planText },
-            create: { guildId, matchType: "FWA", outcome: "WIN", planText },
+            create: { guildId, matchType: "FWA", outcome: "WIN", loseStyle: "ANY", planText },
           }),
           prisma.clanWarPlan.upsert({
-            where: { guildId_matchType_outcome: { guildId, matchType: "FWA", outcome: "LOSE" } },
+            where: {
+              guildId_matchType_outcome_loseStyle: {
+                guildId,
+                matchType: "FWA",
+                outcome: "LOSE",
+                loseStyle: "TRIPLE_TOP_30",
+              },
+            },
             update: { planText },
-            create: { guildId, matchType: "FWA", outcome: "LOSE", planText },
+            create: {
+              guildId,
+              matchType: "FWA",
+              outcome: "LOSE",
+              loseStyle: "TRIPLE_TOP_30",
+              planText,
+            },
+          }),
+          prisma.clanWarPlan.upsert({
+            where: {
+              guildId_matchType_outcome_loseStyle: {
+                guildId,
+                matchType: "FWA",
+                outcome: "LOSE",
+                loseStyle: "TRADITIONAL",
+              },
+            },
+            update: { planText },
+            create: {
+              guildId,
+              matchType: "FWA",
+              outcome: "LOSE",
+              loseStyle: "TRADITIONAL",
+              planText,
+            },
           }),
         ]);
-        await interaction.editReply(`Saved war plan for **FWA-WIN** and **FWA-LOSE**.\nLength: ${planText.length} chars each`);
+        await interaction.editReply(
+          `Saved war plan for **FWA-WIN**, **FWA-LOSE-TRIPLE_TOP_30**, and **FWA-LOSE-TRADITIONAL**.\nLength: ${planText.length} chars each`
+        );
         return;
       }
 
-      const rowOutcome: PlanOutcome = matchType === "FWA" ? (outcome as "WIN" | "LOSE") : "ANY";
+      const resolved = resolveRowKey(requiredMatchType, requiredOutcome, requiredLoseStyle);
+      if ("error" in resolved) {
+        await interaction.editReply(resolved.error);
+        return;
+      }
+
       await prisma.clanWarPlan.upsert({
-        where: { guildId_matchType_outcome: { guildId, matchType, outcome: rowOutcome } },
+        where: {
+          guildId_matchType_outcome_loseStyle: {
+            guildId,
+            matchType: requiredMatchType,
+            outcome: resolved.outcome,
+            loseStyle: resolved.loseStyle,
+          },
+        },
         update: { planText },
-        create: { guildId, matchType, outcome: rowOutcome, planText },
+        create: {
+          guildId,
+          matchType: requiredMatchType,
+          outcome: resolved.outcome,
+          loseStyle: resolved.loseStyle,
+          planText,
+        },
       });
 
-      await interaction.editReply(`Saved war plan for **${labelFor(matchType, rowOutcome)}**.\nLength: ${planText.length} chars`);
+      await interaction.editReply(
+        `Saved war plan for **${formatKeyLabel(requiredMatchType, resolved.outcome, resolved.loseStyle)}**.\nLength: ${planText.length} chars`
+      );
       return;
     }
 
     if (subcommand === "show") {
-      const requestedMatchType = interaction.options.getString("match-type", false);
-      const requestedOutcome = normalizeOutcome(interaction.options.getString("outcome", false));
-      const matchType = requestedMatchType ? normalizeMatchType(requestedMatchType) : null;
-
-      if (matchType !== "FWA" && requestedOutcome) {
-        await interaction.editReply("`outcome` can only be used when `match-type` is FWA.");
-        return;
-      }
-
-      const targets: Array<{ matchType: PlanMatchType; outcome: PlanOutcome }> = [];
-      if (!matchType) {
+      const targets: Array<{ matchType: PlanMatchType; outcome: PlanOutcome; loseStyle: PlanLoseStyle }> = [];
+      if (!interaction.options.getString("match-type", false)) {
         targets.push(
-          { matchType: "BL", outcome: "ANY" },
-          { matchType: "MM", outcome: "ANY" },
-          { matchType: "FWA", outcome: "WIN" },
-          { matchType: "FWA", outcome: "LOSE" }
+          { matchType: "BL", outcome: "ANY", loseStyle: "ANY" },
+          { matchType: "MM", outcome: "ANY", loseStyle: "ANY" },
+          { matchType: "FWA", outcome: "WIN", loseStyle: "ANY" },
+          { matchType: "FWA", outcome: "LOSE", loseStyle: "TRIPLE_TOP_30" },
+          { matchType: "FWA", outcome: "LOSE", loseStyle: "TRADITIONAL" }
         );
-      } else if (matchType === "FWA" && !requestedOutcome) {
-        targets.push({ matchType: "FWA", outcome: "WIN" }, { matchType: "FWA", outcome: "LOSE" });
+      } else if (matchType === "FWA" && !outcomeInput) {
+        targets.push(
+          { matchType: "FWA", outcome: "WIN", loseStyle: "ANY" },
+          { matchType: "FWA", outcome: "LOSE", loseStyle: "TRIPLE_TOP_30" },
+          { matchType: "FWA", outcome: "LOSE", loseStyle: "TRADITIONAL" }
+        );
       } else {
-        targets.push({
-          matchType,
-          outcome: matchType === "FWA" ? (requestedOutcome as "WIN" | "LOSE") : "ANY",
-        });
+        const resolved = resolveRowKey(matchType, outcomeInput, loseStyleInput);
+        if ("error" in resolved) {
+          await interaction.editReply(resolved.error);
+          return;
+        }
+        targets.push({ matchType, outcome: resolved.outcome, loseStyle: resolved.loseStyle });
       }
 
       const rows = await prisma.clanWarPlan.findMany({
         where: {
           guildId,
-          OR: targets.map((target) => ({ matchType: target.matchType, outcome: target.outcome })),
+          OR: targets.map((target) => ({
+            matchType: target.matchType,
+            outcome: target.outcome,
+            loseStyle: target.loseStyle,
+          })),
         },
         select: {
           matchType: true,
           outcome: true,
+          loseStyle: true,
           planText: true,
         },
       });
 
       const rowByKey = new Map<string, string>();
       for (const row of rows) {
-        rowByKey.set(`${row.matchType}:${row.outcome}`, row.planText);
+        rowByKey.set(`${row.matchType}:${row.outcome}:${row.loseStyle}`, row.planText);
       }
 
       const fields = [];
       for (const target of targets) {
-        const key = `${target.matchType}:${target.outcome}`;
+        const key = `${target.matchType}:${target.outcome}:${target.loseStyle}`;
         const custom = rowByKey.get(key);
-        const text = custom ?? (await getDefaultPlanText(history, guildId, target.matchType, target.outcome));
+        const text = custom ?? (await getDefaultPlanText(history, guildId, target.matchType, target.outcome, target.loseStyle));
         fields.push({
-          name: `${labelFor(target.matchType, target.outcome)} (${custom ? "Custom" : "Default"})`,
+          name: `${formatKeyLabel(target.matchType, target.outcome, target.loseStyle)} (${custom ? "Custom" : "Default"})`,
           value: text,
           inline: false,
         });
@@ -278,49 +412,57 @@ export const WarPlan: Command = {
 
       const embed = new EmbedBuilder()
         .setTitle("War Plans")
-        .setDescription("Plans by match type and outcome")
+        .setDescription("Plans by match type, outcome, and lose style")
         .addFields(fields)
         .setColor(0x3498db)
         .setTimestamp(new Date());
-
       await interaction.editReply({ embeds: [embed] });
       return;
     }
 
     if (subcommand === "reset") {
-      const requestedMatchType = interaction.options.getString("match-type", false);
-      const requestedOutcome = normalizeOutcome(interaction.options.getString("outcome", false));
-      const matchType = requestedMatchType ? normalizeMatchType(requestedMatchType) : null;
-
-      if (matchType !== "FWA" && requestedOutcome) {
-        await interaction.editReply("`outcome` can only be used when `match-type` is FWA.");
-        return;
-      }
-
-      if (!matchType) {
+      const hasMatchType = Boolean(interaction.options.getString("match-type", false));
+      if (!hasMatchType) {
         const result = await prisma.clanWarPlan.deleteMany({ where: { guildId } });
         await interaction.editReply(`Reset all war plans to defaults.\nRemoved entries: ${result.count}`);
         return;
       }
 
-      if (matchType !== "FWA") {
-        const result = await prisma.clanWarPlan.deleteMany({ where: { guildId, matchType, outcome: "ANY" } });
-        await interaction.editReply(`Reset **${matchType}** war plan to default.\nRemoved entries: ${result.count}`);
+      if (matchType === "FWA" && !outcomeInput) {
+        const result = await prisma.clanWarPlan.deleteMany({
+          where: {
+            guildId,
+            matchType: "FWA",
+            OR: [
+              { outcome: "WIN", loseStyle: "ANY" },
+              { outcome: "LOSE", loseStyle: "TRIPLE_TOP_30" },
+              { outcome: "LOSE", loseStyle: "TRADITIONAL" },
+            ],
+          },
+        });
+        await interaction.editReply(
+          `Reset **FWA-WIN**, **FWA-LOSE-TRIPLE_TOP_30**, and **FWA-LOSE-TRADITIONAL** plans to defaults.\nRemoved entries: ${result.count}`
+        );
         return;
       }
 
-      if (!requestedOutcome) {
-        const result = await prisma.clanWarPlan.deleteMany({
-          where: { guildId, matchType: "FWA", outcome: { in: ["WIN", "LOSE"] } },
-        });
-        await interaction.editReply(`Reset **FWA-WIN** and **FWA-LOSE** plans to defaults.\nRemoved entries: ${result.count}`);
+      const resolved = resolveRowKey(matchType, outcomeInput, loseStyleInput);
+      if ("error" in resolved) {
+        await interaction.editReply(resolved.error);
         return;
       }
 
       const result = await prisma.clanWarPlan.deleteMany({
-        where: { guildId, matchType: "FWA", outcome: requestedOutcome },
+        where: {
+          guildId,
+          matchType,
+          outcome: resolved.outcome,
+          loseStyle: resolved.loseStyle,
+        },
       });
-      await interaction.editReply(`Reset **FWA-${requestedOutcome}** plan to default.\nRemoved entries: ${result.count}`);
+      await interaction.editReply(
+        `Reset **${formatKeyLabel(matchType, resolved.outcome, resolved.loseStyle)}** plan to default.\nRemoved entries: ${result.count}`
+      );
       return;
     }
 

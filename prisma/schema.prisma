@@ -345,11 +345,12 @@ model ClanWarPlan {
   guildId    String
   matchType  WarMatchType
   outcome    String
+  loseStyle  String   @default("ANY")
   planText   String
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
-  @@unique([guildId, matchType, outcome])
+  @@unique([guildId, matchType, outcome, loseStyle])
   @@index([guildId, matchType])
 }
 

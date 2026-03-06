@@ -108,25 +108,45 @@ export class WarEventHistoryService {
     }
 
     const normalizedClanTag = normalizeTag(clanTag);
+    const opponentName = String(opponentNameInputResolved ?? "").trim() || "Unknown";
+    let loseStyleCache: FwaLoseStyle | null = null;
+    const getLoseStyle = async (): Promise<FwaLoseStyle> => {
+      if (!loseStyleCache) {
+        loseStyleCache = await this.getLoseStyleForClan(normalizedClanTag);
+      }
+      return loseStyleCache;
+    };
     if (guildId) {
       const matchTypeKey: "FWA" | "BL" | "MM" =
         matchType === "BL" || matchType === "MM" || matchType === "FWA" ? matchType : "FWA";
       const outcomeKey =
-        matchTypeKey === "FWA" ? (expectedOutcome === "WIN" || expectedOutcome === "LOSE" ? expectedOutcome : "ANY") : "ANY";
+        matchTypeKey === "FWA"
+          ? expectedOutcome === "WIN" || expectedOutcome === "LOSE"
+            ? expectedOutcome
+            : "ANY"
+          : "ANY";
+      const loseStyle =
+        matchTypeKey === "FWA" && outcomeKey === "LOSE" ? await getLoseStyle() : "ANY";
+      const loseStyleKey =
+        matchTypeKey === "FWA" && outcomeKey === "LOSE"
+          ? loseStyle
+          : "ANY";
       try {
-        const customPlan = await prisma.clanWarPlan.findUnique({
+        const customPlan = await prisma.clanWarPlan.findFirst({
           where: {
-            guildId_matchType_outcome: {
-              guildId,
-              matchType: matchTypeKey,
-              outcome: outcomeKey,
-            },
+            guildId,
+            matchType: matchTypeKey,
+            outcome: outcomeKey,
+            loseStyle: { in: [loseStyleKey, "ANY"] },
           },
+          orderBy: { loseStyle: "desc" },
           select: {
             planText: true,
           },
         });
-        if (customPlan?.planText && customPlan.planText.trim().length > 0) return customPlan.planText;
+        if (customPlan?.planText && customPlan.planText.trim().length > 0) {
+          return customPlan.planText.replace(/\{opponent\}/gi, opponentName);
+        }
       } catch (error) {
         if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2021") {
           throw error;
@@ -134,32 +154,51 @@ export class WarEventHistoryService {
       }
     }
 
+    if (matchType === "BL") {
+      return [
+        `\u26ab\ufe0f BLACKLIST WAR \ud83c\udd9a ${opponentName} \ud83c\udff4\u200d\u2620\ufe0f `,
+        "Everyone switch to WAR BASES!!",
+        "This is our opportunity to gain some extra FWA points!",
+        "\u2795 30+ people switch to war base = +1 point",
+        "\u2795 60% total destruction = +1 point",
+        "\u2795 win war = +1 point",
+        "---",
+        "If you need war base, check https://clashofclans-layouts.com/ or bases",
+      ].join("\n");
+    }
+
+    if (matchType === "MM") {
+      return [
+        `\u26aa\ufe0f MISMATCHED WAR \ud83c\udd9a ${opponentName} :sob:`,
+        "Keep WA base active, attack what you can!",
+      ].join("\n");
+    }
+
     if (matchType !== "FWA") return null;
-    const opponentName = String(opponentNameInputResolved ?? "").trim() || "Unknown";
     if (expectedOutcome === "WIN") {
       return [
-        `**💚 WIN WAR 🆚 ${opponentName} 🟢 **`,
-        "🗡️ 1st Attack: ★ ★ ★ -> Mirror",
-        "🗡️ 2nd Attack: ★ ★ ☆ -> any",
-        "⌛️ Only after 101+ stars -> Attack ANY base",
+        `**\ud83d\udc9a WIN WAR \ud83c\udd9a ${opponentName} \ud83d\udfe2 **`,
+        "\ud83d\udde1\ufe0f 1st Attack: \u2605 \u2605 \u2605 -> Mirror",
+        "\ud83d\udde1\ufe0f 2nd Attack: \u2605 \u2605 \u2606 -> any",
+        "\u231b\ufe0f Only after 101+ stars -> Attack ANY base",
       ].join("\n");
     }
     if (expectedOutcome === "LOSE") {
-      const loseStyle = await this.getLoseStyleForClan(normalizedClanTag);
+      const loseStyle = await getLoseStyle();
       if (loseStyle === "TRIPLE_TOP_30") {
         return [
-          `**❤️ LOSE WAR 🆚 ${opponentName} 🔴**`,
-          "🗡️ Attack any of the top 30 bases for 1-3 stars",
-          "🚫 Do NOT attack the bottom 20 bases",
-          "🎯 Goal is 90 stars (do not cross)",
+          `**\u2764\ufe0f LOSE WAR \ud83c\udd9a ${opponentName} \ud83d\udd34**`,
+          "\ud83d\udde1\ufe0f Attack any of the top 30 bases for 1-3 stars",
+          "\ud83d\udeab Do NOT attack the bottom 20 bases",
+          "\ud83c\udfaf Goal is 90 stars (do not cross)",
         ].join("\n");
       }
       return [
-        `**❤️ LOSE WAR 🆚 ${opponentName} 🔴**`,
-        "🗡️ 1st Attack: ★ ★ ☆ -> Mirror",
-        "🗡️ 2nd Attack: ★ ☆ ☆ -> any",
-        "⏳ Last 12hrs: ★ ★ ☆ -> any",
-        "🎯 Do NOT surpass 100 ★",
+        `**\u2764\ufe0f LOSE WAR \ud83c\udd9a ${opponentName} \ud83d\udd34**`,
+        "\ud83d\udde1\ufe0f 1st Attack: \u2605 \u2605 \u2606 -> Mirror",
+        "\ud83d\udde1\ufe0f 2nd Attack: \u2605 \u2606 \u2606 -> any",
+        "\u23f3 Last 12hrs: \u2605 \u2605 \u2606 -> any",
+        "\ud83c\udfaf Do NOT surpass 100 \u2605",
       ].join("\n");
     }
     return "FWA plan unavailable (expected outcome unknown).";
