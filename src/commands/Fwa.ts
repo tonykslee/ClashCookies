@@ -75,6 +75,7 @@ const FWA_MATCH_SKIP_SYNC_UNDO_PREFIX = "fwa-match-skip-sync-undo";
 const FWA_MATCH_SELECT_PREFIX = "fwa-match-select";
 const FWA_MATCH_ALLIANCE_PREFIX = "fwa-match-alliance";
 const FWA_MAIL_CONFIRM_PREFIX = "fwa-mail-confirm";
+const FWA_MAIL_CONFIRM_NO_PING_PREFIX = "fwa-mail-confirm-no-ping";
 const FWA_MAIL_BACK_PREFIX = "fwa-mail-back";
 const FWA_MAIL_REFRESH_PREFIX = "fwa-mail-refresh";
 const FWA_MATCH_SEND_MAIL_PREFIX = "fwa-match-send-mail";
@@ -507,6 +508,23 @@ function parseFwaMailConfirmCustomId(customId: string): { userId: string; key: s
 
 export function isFwaMailConfirmButtonCustomId(customId: string): boolean {
   return customId.startsWith(`${FWA_MAIL_CONFIRM_PREFIX}:`);
+}
+
+function buildFwaMailConfirmNoPingCustomId(userId: string, key: string): string {
+  return `${FWA_MAIL_CONFIRM_NO_PING_PREFIX}:${userId}:${key}`;
+}
+
+function parseFwaMailConfirmNoPingCustomId(customId: string): { userId: string; key: string } | null {
+  const parts = customId.split(":");
+  if (parts.length !== 3 || parts[0] !== FWA_MAIL_CONFIRM_NO_PING_PREFIX) return null;
+  const userId = parts[1]?.trim() ?? "";
+  const key = parts[2]?.trim() ?? "";
+  if (!userId || !key) return null;
+  return { userId, key };
+}
+
+export function isFwaMailConfirmNoPingButtonCustomId(customId: string): boolean {
+  return customId.startsWith(`${FWA_MAIL_CONFIRM_NO_PING_PREFIX}:`);
 }
 
 function buildFwaMailBackCustomId(userId: string, key: string): string {
@@ -1381,6 +1399,11 @@ function buildWarMailPreviewComponents(params: {
       .setLabel("Confirm and Send")
       .setStyle(ButtonStyle.Primary)
       .setDisabled(!params.enabled),
+    new ButtonBuilder()
+      .setCustomId(buildFwaMailConfirmNoPingCustomId(params.userId, params.key))
+      .setLabel("Send Without Ping")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(!params.enabled),
   ];
   if (params.showBack) {
     buttons.push(
@@ -1418,13 +1441,17 @@ function buildNextRefreshRelativeLabel(
   return `Next refresh <t:${Math.floor(nextAtMs / 1000)}:R>`;
 }
 
-function buildWarMailPostedContent(roleId?: string | null, nowMs?: number): string {
+function buildWarMailPostedContent(
+  roleId?: string | null,
+  nowMs?: number,
+  options?: { pingRole?: boolean }
+): string {
   const nextRefresh = buildNextRefreshRelativeLabel(
     WAR_MAIL_REFRESH_MS,
     nowMs,
     getNextWarMailRefreshAtMs()
   );
-  if (roleId) return `<@&${roleId}>\n${nextRefresh}`;
+  if (roleId && options?.pingRole !== false) return `<@&${roleId}>\n${nextRefresh}`;
   return nextRefresh;
 }
 
@@ -2764,8 +2791,13 @@ async function restoreSourceMatchMessageFromMailPreview(
   return true;
 }
 
-export async function handleFwaMailConfirmButton(interaction: ButtonInteraction): Promise<void> {
-  const parsed = parseFwaMailConfirmCustomId(interaction.customId);
+async function handleFwaMailConfirmAction(
+  interaction: ButtonInteraction,
+  options: { pingRole: boolean }
+): Promise<void> {
+  const parsed = options.pingRole
+    ? parseFwaMailConfirmCustomId(interaction.customId)
+    : parseFwaMailConfirmNoPingCustomId(interaction.customId);
   if (!parsed) return;
   if (interaction.user.id !== parsed.userId) {
     await interaction.reply({
@@ -2828,8 +2860,11 @@ export async function handleFwaMailConfirmButton(interaction: ButtonInteraction)
   }
   const postKey = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
   const sent = await (channel as any).send({
-    content: buildWarMailPostedContent(rendered.clanRoleId),
-    allowedMentions: rendered.clanRoleId ? { roles: [rendered.clanRoleId] } : undefined,
+    content: buildWarMailPostedContent(rendered.clanRoleId, undefined, {
+      pingRole: options.pingRole,
+    }),
+    allowedMentions:
+      options.pingRole && rendered.clanRoleId ? { roles: [rendered.clanRoleId] } : undefined,
     embeds: [rendered.embed],
     components: buildWarMailPostedComponents(postKey),
   });
@@ -2936,13 +2971,14 @@ export async function handleFwaMailConfirmButton(interaction: ButtonInteraction)
         sourcePayload.currentScope === "single" && sourcePayload.currentTag
           ? sourcePayload.singleViews[sourcePayload.currentTag] ?? sourcePayload.allianceView
           : sourcePayload.allianceView;
+      const deliveryText = options.pingRole ? "War mail sent" : "War mail sent without ping";
       await interaction.editReply({
         content:
           showMode === "copy"
             ? limitDiscordContent(currentView.copyText)
             : revisedPrevious
-              ? `War mail sent to <#${channel.id}>. Previous mail was updated with a revision log.`
-              : `War mail sent to <#${channel.id}>.`,
+              ? `${deliveryText} to <#${channel.id}>. Previous mail was updated with a revision log.`
+              : `${deliveryText} to <#${channel.id}>.`,
         embeds: showMode === "embed" ? [currentView.embed] : [],
         components: buildFwaMatchCopyComponents(
           sourcePayload,
@@ -2956,11 +2992,12 @@ export async function handleFwaMailConfirmButton(interaction: ButtonInteraction)
   }
 
   await interaction.deleteReply().catch(() => undefined);
+  const deliveryText = options.pingRole ? "War mail sent" : "War mail sent without ping";
   await interaction.followUp({
     ephemeral: true,
     content: revisedPrevious
-      ? `War mail sent to <#${channel.id}>. Previous mail was updated with a revision log.`
-      : `War mail sent to <#${channel.id}>.`,
+      ? `${deliveryText} to <#${channel.id}>. Previous mail was updated with a revision log.`
+      : `${deliveryText} to <#${channel.id}>.`,
   });
   if (!refreshedSource.sourceUpdated && refreshedSource.refreshed && payload.sourceMatchPayloadKey) {
     const currentView =
@@ -2983,6 +3020,16 @@ export async function handleFwaMailConfirmButton(interaction: ButtonInteraction)
       ),
     });
   }
+}
+
+export async function handleFwaMailConfirmButton(interaction: ButtonInteraction): Promise<void> {
+  await handleFwaMailConfirmAction(interaction, { pingRole: true });
+}
+
+export async function handleFwaMailConfirmNoPingButton(
+  interaction: ButtonInteraction
+): Promise<void> {
+  await handleFwaMailConfirmAction(interaction, { pingRole: false });
 }
 
 export async function handleFwaMailBackButton(interaction: ButtonInteraction): Promise<void> {
