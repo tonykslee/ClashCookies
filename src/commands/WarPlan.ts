@@ -38,6 +38,9 @@ const MATCH_SELECTOR_CHOICES = [
   { name: "FWA LOSE TRIPLE_TOP_30", value: "FWA_LOSE_TRIPLE_TOP_30" },
   { name: "FWA LOSE TRADITIONAL", value: "FWA_LOSE_TRADITIONAL" },
 ] as const;
+const MATCH_SELECTOR_CHOICES_SINGLE_TARGET = MATCH_SELECTOR_CHOICES.filter(
+  (choice) => choice.value !== "FWA"
+);
 
 const ALL_TARGETS: PlanTarget[] = [
   { matchType: "BL", outcome: "ANY", loseStyle: "ANY" },
@@ -181,7 +184,7 @@ export const WarPlan: Command = {
           description: "Plan set to edit",
           type: ApplicationCommandOptionType.String,
           required: true,
-          choices: [...MATCH_SELECTOR_CHOICES],
+          choices: [...MATCH_SELECTOR_CHOICES_SINGLE_TARGET],
         },
       ],
     },
@@ -237,7 +240,7 @@ export const WarPlan: Command = {
           description: "Default plan set to edit",
           type: ApplicationCommandOptionType.String,
           required: true,
-          choices: [...MATCH_SELECTOR_CHOICES],
+          choices: [...MATCH_SELECTOR_CHOICES_SINGLE_TARGET],
         },
       ],
     },
