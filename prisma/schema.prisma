@@ -343,13 +343,14 @@ model ClanWarParticipation {
 model ClanWarPlan {
   id         String   @id @default(cuid())
   guildId    String
-  clanTag    String
-  prepPlan   String?
-  battlePlan String?
+  matchType  WarMatchType
+  outcome    String
+  planText   String
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
-  @@unique([guildId, clanTag])
+  @@unique([guildId, matchType, outcome])
+  @@index([guildId, matchType])
 }
 
 model ApiUsage {
