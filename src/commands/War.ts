@@ -40,6 +40,13 @@ function buildCsv(rows: Array<Record<string, unknown>>, headers: string[]): stri
   return out.join("\r\n");
 }
 
+function formatEndedDaysAgo(value: Date | null): string {
+  if (!value) return "ended unknown days ago";
+  const diffMs = Date.now() - value.getTime();
+  const days = Math.max(0, Math.floor(diffMs / (24 * 60 * 60 * 1000)));
+  return `ended ${days} day${days === 1 ? "" : "s"} ago`;
+}
+
 type WarHistoryRow = {
   warId: number;
   syncNumber: number | null;
@@ -179,12 +186,36 @@ export const War: Command = {
       }
 
       let attackRows: Array<Record<string, unknown>> = [];
+      let clanMembersByTag = new Map<string, string>();
+      let opponentMembersByTag = new Map<string, string>();
       if (Array.isArray(payload)) {
         attackRows = payload as Array<Record<string, unknown>>;
       } else if (payload && typeof payload === "object") {
         const root = payload as Record<string, unknown>;
         const attacks = root.attacks;
         attackRows = Array.isArray(attacks) ? (attacks as Array<Record<string, unknown>>) : [];
+        const clanMembers = Array.isArray((root.clan as Record<string, unknown> | undefined)?.members)
+          ? (((root.clan as Record<string, unknown>).members as Array<Record<string, unknown>>)
+              .filter((member) => typeof member?.tag === "string"))
+          : [];
+        clanMembersByTag = new Map(
+          clanMembers.map((member) => [
+            String(member.tag ?? ""),
+            String(member.name ?? "").trim(),
+          ])
+        );
+        const opponentMembers = Array.isArray(
+          (root.opponent as Record<string, unknown> | undefined)?.members
+        )
+          ? (((root.opponent as Record<string, unknown>).members as Array<Record<string, unknown>>)
+              .filter((member) => typeof member?.tag === "string"))
+          : [];
+        opponentMembersByTag = new Map(
+          opponentMembers.map((member) => [
+            String(member.tag ?? ""),
+            String(member.name ?? "").trim(),
+          ])
+        );
       } else if (typeof payload === "string") {
         try {
           const parsed = JSON.parse(payload) as unknown;
@@ -194,6 +225,30 @@ export const War: Command = {
             const root = parsed as Record<string, unknown>;
             const attacks = root.attacks;
             attackRows = Array.isArray(attacks) ? (attacks as Array<Record<string, unknown>>) : [];
+            const clanMembers = Array.isArray(
+              (root.clan as Record<string, unknown> | undefined)?.members
+            )
+              ? (((root.clan as Record<string, unknown>).members as Array<Record<string, unknown>>)
+                  .filter((member) => typeof member?.tag === "string"))
+              : [];
+            clanMembersByTag = new Map(
+              clanMembers.map((member) => [
+                String(member.tag ?? ""),
+                String(member.name ?? "").trim(),
+              ])
+            );
+            const opponentMembers = Array.isArray(
+              (root.opponent as Record<string, unknown> | undefined)?.members
+            )
+              ? (((root.opponent as Record<string, unknown>).members as Array<Record<string, unknown>>)
+                  .filter((member) => typeof member?.tag === "string"))
+              : [];
+            opponentMembersByTag = new Map(
+              opponentMembers.map((member) => [
+                String(member.tag ?? ""),
+                String(member.name ?? "").trim(),
+              ])
+            );
           } else {
             attackRows = [];
           }
@@ -207,22 +262,43 @@ export const War: Command = {
         return;
       }
 
+      const csvRows = attackRows.map((row) => {
+        const attackerTag = String(row.attackerTag ?? "").trim();
+        const defenderTag = String(row.defenderTag ?? "").trim();
+        const attackerName =
+          String(row.attackerName ?? "").trim() || clanMembersByTag.get(attackerTag) || "";
+        const defenderName =
+          String(row.defenderName ?? "").trim() || opponentMembersByTag.get(defenderTag) || "";
+        return {
+          attackerTag,
+          attackerName,
+          defenderTag,
+          defenderName,
+          stars: row.stars ?? "",
+          destruction: row.destruction ?? "",
+          order: row.order ?? "",
+          duration: row.duration ?? "",
+        };
+      });
+
       const headers = [
         "attackerTag",
+        "attackerName",
         "defenderTag",
+        "defenderName",
         "stars",
         "destruction",
         "order",
         "duration",
       ];
 
-      const csv = buildCsv(attackRows, headers);
+      const csv = buildCsv(csvRows, headers);
       const file = new AttachmentBuilder(Buffer.from(csv, "utf8"), {
         name: `war-${warId}.csv`,
       });
 
       await interaction.editReply({
-        content: `Exported war ${warId} (${attackRows.length} rows).`,
+        content: `Exported war ${warId} (${csvRows.length} rows).`,
         files: [file],
       });
       return;
@@ -232,6 +308,27 @@ export const War: Command = {
   },
   autocomplete: async (interaction: AutocompleteInteraction) => {
     const focused = interaction.options.getFocused(true);
+    if (focused.name === "war-id") {
+      const query = String(focused.value ?? "").trim();
+      const rows = await prisma.$queryRaw<
+        Array<{ warId: string; endTime: Date | null }>
+      >(
+        Prisma.sql`
+          SELECT "warId", "endTime"
+          FROM "WarLookup"
+          WHERE ${query ? Prisma.sql`CAST("warId" AS text) ILIKE ${`%${query}%`}` : Prisma.sql`TRUE`}
+          ORDER BY COALESCE("endTime", "startTime") DESC
+          LIMIT 25
+        `
+      );
+      await interaction.respond(
+        rows.map((row) => ({
+          name: `${row.warId} - ${formatEndedDaysAgo(row.endTime)}`.slice(0, 100),
+          value: row.warId,
+        }))
+      );
+      return;
+    }
     if (focused.name !== "clan-tag") {
       await interaction.respond([]);
       return;
