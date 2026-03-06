@@ -59,7 +59,6 @@ import {
 import { PostedMessageService } from "../services/PostedMessageService";
 import { PointsSyncService } from "../services/PointsSyncService";
 export { isMissedSyncClanForTest } from "./fwa/matchState";
-
 const POINTS_BASE_URL = "https://points.fwafarm.com/clan?tag=";
 const TIEBREAK_ORDER = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 const DISCORD_CONTENT_MAX = 2000;
@@ -4534,17 +4533,18 @@ async function buildTrackedMatchOverview(
     const syncMismatch = siteUpdatedForAlert
       ? buildSyncMismatchWarning(currentSync, siteSyncObserved)
       : null;
-    const outcomeMismatch = siteUpdatedForAlert
-      ? buildOutcomeMismatchWarning(
-          (sub?.outcome as "WIN" | "LOSE" | null | undefined) ?? null,
-          derivedOutcome
-        )
-      : null;
+    const outcomeMismatch =
+      siteUpdatedForAlert && matchType === "FWA"
+        ? buildOutcomeMismatchWarning(
+            (sub?.outcome as "WIN" | "LOSE" | null | undefined) ?? null,
+            derivedOutcome
+          )
+        : null;
     const matchTypeVsFwaMismatch =
       siteUpdatedForAlert &&
       (matchType === "BL" || matchType === "MM") &&
       primaryPoints?.activeFwa === true
-        ? "⚠ Points site reports Active FWA: YES but match type is BL/MM"
+        ? ":warning: Points site reports Active FWA: YES but match type is BL/MM"
         : null;
     const validationMismatchLines = validationState.differences.join("\n");
     const mismatchLines = [
@@ -6600,18 +6600,19 @@ export const Fwa: Command = {
         const syncMismatch = siteUpdated
           ? buildSyncMismatchWarning(currentSync, siteSyncObserved)
           : null;
-        const outcomeMismatch = siteUpdated
-          ? buildOutcomeMismatchWarning(
-              (subscription?.outcome as "WIN" | "LOSE" | null | undefined) ?? null,
-              derivedOutcome
-            )
-          : null;
+        const outcomeMismatch =
+          siteUpdated && matchType === "FWA"
+            ? buildOutcomeMismatchWarning(
+                (subscription?.outcome as "WIN" | "LOSE" | null | undefined) ?? null,
+                derivedOutcome
+              )
+            : null;
         const validationMismatchLines = validationState.differences.join("\n");
         const matchTypeVsFwaMismatch =
           siteUpdated &&
           (matchType === "BL" || matchType === "MM") &&
           primary.activeFwa === true
-            ? "⚠ Points site reports Active FWA: YES but match type is BL/MM"
+            ? ":warning: Points site reports Active FWA: YES but match type is BL/MM"
             : null;
         const mismatchLines = [
           trackedMismatch,
@@ -6866,7 +6867,7 @@ export const Fwa: Command = {
                   clanTag: `#${tag}`,
                 },
               },
-              select: { fwaPoints: true, outcome: true },
+              select: { fwaPoints: true, outcome: true, matchType: true },
             })
           : null;
       const trueOpponentTag = normalizeTag(String(war?.opponent?.tag ?? ""));
@@ -6899,12 +6900,13 @@ export const Fwa: Command = {
             siteSyncObserved
           )
         : null;
-      const outcomeMismatch = siteUpdatedForCurrentWar
-        ? buildOutcomeMismatchWarning(
-            (subscription?.outcome as "WIN" | "LOSE" | null | undefined) ?? null,
-            siteOutcome
-          )
-        : null;
+      const outcomeMismatch =
+        siteUpdatedForCurrentWar && subscription?.matchType === "FWA"
+          ? buildOutcomeMismatchWarning(
+              (subscription?.outcome as "WIN" | "LOSE" | null | undefined) ?? null,
+              siteOutcome
+            )
+          : null;
       const mismatchLines = [pointsMismatch, syncMismatch, outcomeMismatch]
         .filter(Boolean)
         .join("\n");
@@ -6961,6 +6963,7 @@ export const Fwa: Command = {
     await interaction.respond(choices);
   },
 };
+
 
 
 
