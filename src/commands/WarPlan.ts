@@ -31,6 +31,11 @@ function normalizeLoseStyle(value: string | null): PlanLoseStyle | null {
   return null;
 }
 
+function normalizeClanTag(value: string | null): string {
+  const bare = String(value ?? "").trim().toUpperCase().replace(/^#/, "");
+  return bare;
+}
+
 function formatKeyLabel(matchType: PlanMatchType, outcome: PlanOutcome, loseStyle: PlanLoseStyle): string {
   if (matchType === "FWA") {
     if (outcome === "LOSE" && loseStyle !== "ANY") return `FWA-LOSE-${loseStyle}`;
@@ -106,13 +111,19 @@ function resolveRowKey(
 
 export const WarPlan: Command = {
   name: "warplan",
-  description: "Set, show, or reset war plans by match type and outcome",
+  description: "Set, show, or reset clan-scoped war plans by match type and outcome",
   options: [
     {
       name: "set",
       description: "Set war plan text for match type (or FWA outcome/lose-style)",
       type: ApplicationCommandOptionType.Subcommand,
       options: [
+        {
+          name: "clan-tag",
+          description: "Tracked clan tag",
+          type: ApplicationCommandOptionType.String,
+          required: true,
+        },
         {
           name: "match-type",
           description: "War match type",
@@ -158,6 +169,12 @@ export const WarPlan: Command = {
       type: ApplicationCommandOptionType.Subcommand,
       options: [
         {
+          name: "clan-tag",
+          description: "Tracked clan tag",
+          type: ApplicationCommandOptionType.String,
+          required: true,
+        },
+        {
           name: "match-type",
           description: "War match type (optional)",
           type: ApplicationCommandOptionType.String,
@@ -195,6 +212,12 @@ export const WarPlan: Command = {
       description: "Reset war plans to defaults",
       type: ApplicationCommandOptionType.Subcommand,
       options: [
+        {
+          name: "clan-tag",
+          description: "Tracked clan tag",
+          type: ApplicationCommandOptionType.String,
+          required: true,
+        },
         {
           name: "match-type",
           description: "War match type (optional; omit to reset all)",
@@ -243,6 +266,11 @@ export const WarPlan: Command = {
     const guildId = interaction.guildId;
     const subcommand = interaction.options.getSubcommand(true);
     const history = new WarEventHistoryService(cocService);
+    const clanTag = normalizeClanTag(interaction.options.getString("clan-tag", true));
+    if (!clanTag) {
+      await interaction.editReply("`clan-tag` is required.");
+      return;
+    }
 
     const matchType = normalizeMatchType(interaction.options.getString("match-type", false));
     const outcomeInput = normalizeOutcome(interaction.options.getString("outcome", false));
@@ -267,20 +295,22 @@ export const WarPlan: Command = {
         await prisma.$transaction([
           prisma.clanWarPlan.upsert({
             where: {
-              guildId_matchType_outcome_loseStyle: {
+              guildId_clanTag_matchType_outcome_loseStyle: {
                 guildId,
+                clanTag,
                 matchType: "FWA",
                 outcome: "WIN",
                 loseStyle: "ANY",
               },
             },
             update: { planText },
-            create: { guildId, matchType: "FWA", outcome: "WIN", loseStyle: "ANY", planText },
+            create: { guildId, clanTag, matchType: "FWA", outcome: "WIN", loseStyle: "ANY", planText },
           }),
           prisma.clanWarPlan.upsert({
             where: {
-              guildId_matchType_outcome_loseStyle: {
+              guildId_clanTag_matchType_outcome_loseStyle: {
                 guildId,
+                clanTag,
                 matchType: "FWA",
                 outcome: "LOSE",
                 loseStyle: "TRIPLE_TOP_30",
@@ -289,6 +319,7 @@ export const WarPlan: Command = {
             update: { planText },
             create: {
               guildId,
+              clanTag,
               matchType: "FWA",
               outcome: "LOSE",
               loseStyle: "TRIPLE_TOP_30",
@@ -297,8 +328,9 @@ export const WarPlan: Command = {
           }),
           prisma.clanWarPlan.upsert({
             where: {
-              guildId_matchType_outcome_loseStyle: {
+              guildId_clanTag_matchType_outcome_loseStyle: {
                 guildId,
+                clanTag,
                 matchType: "FWA",
                 outcome: "LOSE",
                 loseStyle: "TRADITIONAL",
@@ -307,6 +339,7 @@ export const WarPlan: Command = {
             update: { planText },
             create: {
               guildId,
+              clanTag,
               matchType: "FWA",
               outcome: "LOSE",
               loseStyle: "TRADITIONAL",
@@ -328,8 +361,9 @@ export const WarPlan: Command = {
 
       await prisma.clanWarPlan.upsert({
         where: {
-          guildId_matchType_outcome_loseStyle: {
+          guildId_clanTag_matchType_outcome_loseStyle: {
             guildId,
+            clanTag,
             matchType: requiredMatchType,
             outcome: resolved.outcome,
             loseStyle: resolved.loseStyle,
@@ -338,6 +372,7 @@ export const WarPlan: Command = {
         update: { planText },
         create: {
           guildId,
+          clanTag,
           matchType: requiredMatchType,
           outcome: resolved.outcome,
           loseStyle: resolved.loseStyle,
@@ -379,6 +414,7 @@ export const WarPlan: Command = {
       const rows = await prisma.clanWarPlan.findMany({
         where: {
           guildId,
+          clanTag,
           OR: targets.map((target) => ({
             matchType: target.matchType,
             outcome: target.outcome,
@@ -402,7 +438,15 @@ export const WarPlan: Command = {
       for (const target of targets) {
         const key = `${target.matchType}:${target.outcome}:${target.loseStyle}`;
         const custom = rowByKey.get(key);
-        const text = custom ?? (await getDefaultPlanText(history, guildId, target.matchType, target.outcome, target.loseStyle));
+        const text =
+          custom ??
+          (await getDefaultPlanText(
+            history,
+            guildId,
+            target.matchType,
+            target.outcome,
+            target.loseStyle
+          ));
         fields.push({
           name: `${formatKeyLabel(target.matchType, target.outcome, target.loseStyle)} (${custom ? "Custom" : "Default"})`,
           value: text,
@@ -423,7 +467,7 @@ export const WarPlan: Command = {
     if (subcommand === "reset") {
       const hasMatchType = Boolean(interaction.options.getString("match-type", false));
       if (!hasMatchType) {
-        const result = await prisma.clanWarPlan.deleteMany({ where: { guildId } });
+        const result = await prisma.clanWarPlan.deleteMany({ where: { guildId, clanTag } });
         await interaction.editReply(`Reset all war plans to defaults.\nRemoved entries: ${result.count}`);
         return;
       }
@@ -432,6 +476,7 @@ export const WarPlan: Command = {
         const result = await prisma.clanWarPlan.deleteMany({
           where: {
             guildId,
+            clanTag,
             matchType: "FWA",
             OR: [
               { outcome: "WIN", loseStyle: "ANY" },
@@ -455,6 +500,7 @@ export const WarPlan: Command = {
       const result = await prisma.clanWarPlan.deleteMany({
         where: {
           guildId,
+          clanTag,
           matchType,
           outcome: resolved.outcome,
           loseStyle: resolved.loseStyle,

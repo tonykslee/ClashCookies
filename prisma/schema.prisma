@@ -343,6 +343,7 @@ model ClanWarParticipation {
 model ClanWarPlan {
   id         String   @id @default(cuid())
   guildId    String
+  clanTag    String
   matchType  WarMatchType
   outcome    String
   loseStyle  String   @default("ANY")
@@ -350,8 +351,8 @@ model ClanWarPlan {
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
-  @@unique([guildId, matchType, outcome, loseStyle])
-  @@index([guildId, matchType])
+  @@unique([guildId, clanTag, matchType, outcome, loseStyle])
+  @@index([guildId, clanTag, matchType])
 }
 
 model ApiUsage {

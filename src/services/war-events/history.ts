@@ -135,11 +135,12 @@ export class WarEventHistoryService {
         const customPlan = await prisma.clanWarPlan.findFirst({
           where: {
             guildId,
+            clanTag: { in: [normalizedClanTag, ""] },
             matchType: matchTypeKey,
             outcome: outcomeKey,
             loseStyle: { in: [loseStyleKey, "ANY"] },
           },
-          orderBy: { loseStyle: "desc" },
+          orderBy: [{ clanTag: "desc" }, { loseStyle: "desc" }],
           select: {
             planText: true,
           },
