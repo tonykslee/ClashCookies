@@ -580,7 +580,8 @@ export const WarPlan: Command = {
       }
 
       const fields = [];
-      for (const target of targets) {
+      for (let i = 0; i < targets.length; i += 1) {
+        const target = targets[i];
         const key = `${target.matchType}:${target.outcome}:${target.loseStyle}`;
         const scopedText = rowByKey.get(key);
         const text = scopedText ?? (await getDefaultPlanText(history, guildId, target.matchType, target.outcome, target.loseStyle));
@@ -589,6 +590,13 @@ export const WarPlan: Command = {
           value: text,
           inline: false,
         });
+        if (i < targets.length - 1) {
+          fields.push({
+            name: "\u200b",
+            value: "──────────",
+            inline: false,
+          });
+        }
       }
 
       const embed = new EmbedBuilder()
