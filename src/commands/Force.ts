@@ -47,16 +47,16 @@ async function runForcePollWarEventsCommand(
 
 export const Force: Command = {
   name: "force",
-  description: "Manual force-sync utilities",
+  description: "Manual repair and refresh utilities",
   options: [
     {
       name: "sync",
-      description: "Force sync data and message references",
+      description: "Repair points, warId, and message tracking data",
       type: ApplicationCommandOptionType.SubcommandGroup,
       options: [
         {
           name: "data",
-          description: "Force-refresh points and sync number for a tracked clan",
+          description: "Force-refresh ClanPointsSync from points.fwafarm",
           type: ApplicationCommandOptionType.Subcommand,
           options: [
             {
@@ -68,7 +68,7 @@ export const Force: Command = {
             },
             {
               name: "datapoint",
-              description: "Choose which value to overwrite",
+              description: "Choose which live points-site values to refresh",
               type: ApplicationCommandOptionType.String,
               required: false,
               choices: [
@@ -80,18 +80,17 @@ export const Force: Command = {
         },
         {
           name: "warid",
-          description: "Backfill or repair warId values in one table at a time",
+          description: "Repair warId values in CurrentWar or ClanWarHistory",
           type: ApplicationCommandOptionType.Subcommand,
           options: [
             {
               name: "table",
-              description: "Table to update",
+              description: "Table to repair",
               type: ApplicationCommandOptionType.String,
               required: true,
               choices: [
                 { name: "CurrentWar", value: "currentwar" },
                 { name: "ClanWarHistory", value: "clanwarhistory" },
-                { name: "WarAttacks", value: "warattacks" },
               ],
             },
             {
@@ -143,23 +142,11 @@ export const Force: Command = {
               type: ApplicationCommandOptionType.String,
               required: false,
             },
-            {
-              name: "player_tag",
-              description: "Filter: player tag (WarAttacks only)",
-              type: ApplicationCommandOptionType.String,
-              required: false,
-            },
-            {
-              name: "attack_number",
-              description: "Filter: attack number (WarAttacks only)",
-              type: ApplicationCommandOptionType.Integer,
-              required: false,
-            },
           ],
         },
         {
           name: "mail",
-          description: "Upsert MailConfig for a tracked clan message",
+          description: "Repair tracked Discord message references for a clan",
           type: ApplicationCommandOptionType.Subcommand,
           options: [
             {
@@ -171,7 +158,7 @@ export const Force: Command = {
             },
             {
               name: "message_type",
-              description: "Message type to record in MailConfig",
+              description: "Message type to record in ClanPostedMessage",
               type: ApplicationCommandOptionType.String,
               required: true,
               choices: [
@@ -183,7 +170,7 @@ export const Force: Command = {
             },
             {
               name: "message_id",
-              description: "Discord message ID to store",
+              description: "Discord message ID to store as the tracked reference",
               type: ApplicationCommandOptionType.String,
               required: true,
             },
