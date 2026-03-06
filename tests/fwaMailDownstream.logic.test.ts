@@ -49,4 +49,9 @@ describe("fwa war-mail posted content", () => {
     const content = buildWarMailPostedContentForTest(null, 0);
     expect(content).toBe("Next refresh <t:1200:R>");
   });
+
+  it("omits the role mention when ping is explicitly disabled", () => {
+    const content = buildWarMailPostedContentForTest("123456789", 0, { pingRole: false });
+    expect(content).toBe("Next refresh <t:1200:R>");
+  });
 });

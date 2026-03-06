@@ -30,6 +30,7 @@ import {
   handleFwaMatchSkipSyncConfirmButton,
   handleFwaMatchSkipSyncUndoButton,
   handleFwaMailConfirmButton,
+  handleFwaMailConfirmNoPingButton,
   handleFwaMailBackButton,
   handleFwaMailRefreshButton,
   handleFwaMatchSendMailButton,
@@ -39,6 +40,7 @@ import {
   isFwaMatchSkipSyncConfirmButtonCustomId,
   isFwaMatchSkipSyncUndoButtonCustomId,
   isFwaMailConfirmButtonCustomId,
+  isFwaMailConfirmNoPingButtonCustomId,
   isFwaMailBackButtonCustomId,
   isFwaMailRefreshButtonCustomId,
   isFwaMatchSendMailButtonCustomId,
@@ -441,6 +443,20 @@ const handleButtonInteraction = async (
       await handleFwaMailConfirmButton(interaction);
     } catch (err) {
       console.error(`FWA mail confirm button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to send war mail.",
+        });
+      }
+    }
+  }
+
+  if (isFwaMailConfirmNoPingButtonCustomId(interaction.customId)) {
+    try {
+      await handleFwaMailConfirmNoPingButton(interaction);
+    } catch (err) {
+      console.error(`FWA mail confirm-no-ping button failed: ${formatError(err)}`);
       if (!interaction.replied && !interaction.deferred) {
         await interaction.reply({
           ephemeral: true,
