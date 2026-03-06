@@ -37,6 +37,23 @@ function normalizeLoseStyle(value: string | null): PlanLoseStyle | null {
   return null;
 }
 
+function normalizePlanTextInput(raw: string): string {
+  const decoded = raw
+    .replace(/\\r\\n/g, "\n")
+    .replace(/\\n/g, "\n")
+    .replace(/\\r/g, "\n")
+    .replace(/\\t/g, "\t")
+    .replace(/\\\\/g, "\\");
+  // Embed fields do not reliably render markdown headings, so convert to bold section titles.
+  return decoded
+    .split("\n")
+    .map((line) => {
+      const header = line.match(/^\s{0,3}#{1,6}\s+(.+?)\s*$/);
+      return header ? `**${header[1]}**` : line;
+    })
+    .join("\n");
+}
+
 function formatKeyLabel(matchType: PlanMatchType, outcome: PlanOutcome, loseStyle: PlanLoseStyle): string {
   if (matchType === "FWA") {
     if (outcome === "LOSE" && loseStyle !== "ANY") return `FWA-LOSE-${loseStyle}`;
@@ -165,7 +182,7 @@ export const WarPlan: Command = {
         },
         {
           name: "plan-text",
-          description: "Custom plan text (max 1500 chars). Supports {opponent} placeholder.",
+          description: "Custom plan text (max 1500 chars). Supports {opponent}, \\n, and # headers.",
           type: ApplicationCommandOptionType.String,
           required: true,
         },
@@ -299,7 +316,7 @@ export const WarPlan: Command = {
         },
         {
           name: "plan-text",
-          description: "Default plan text (max 1500 chars). Supports {opponent} placeholder.",
+          description: "Default plan text (max 1500 chars). Supports {opponent}, \\n, and # headers.",
           type: ApplicationCommandOptionType.String,
           required: true,
         },
@@ -430,7 +447,8 @@ export const WarPlan: Command = {
       const requiredMatchType = normalizeMatchType(interaction.options.getString("match-type", true));
       const requiredOutcome = normalizeOutcome(interaction.options.getString("outcome", false));
       const requiredLoseStyle = normalizeLoseStyle(interaction.options.getString("lose-style", false));
-      const planText = interaction.options.getString("plan-text", true);
+      const rawPlanText = interaction.options.getString("plan-text", true);
+      const planText = normalizePlanTextInput(rawPlanText);
 
       if (!planText.length) {
         await interaction.editReply("Plan text cannot be empty.");

@@ -177,6 +177,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`set-default/show-default/reset-default` manage editable guild defaults used when no clan custom plan exists.",
       "For `FWA outcome:LOSE`, `lose-style` is required (`TRIPLE_TOP_30` or `TRADITIONAL`).",
       "Custom/default plans support `{opponent}` placeholder and replace it with opponent clan name.",
+      "In `plan-text`, escaped `\\n` becomes a real new line; markdown-style `# Header` lines are converted to bold section headers.",
       "Precedence: clan custom -> editable guild default -> built-in fallback.",
     ],
     examples: [
