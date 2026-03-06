@@ -903,9 +903,21 @@ function mailStatusLabelForState(state: WarStateForSync): string {
   return "Not In War";
 }
 
+function formatWarResultLabel(result: "WIN" | "LOSE" | "TIE" | "UNKNOWN"): string {
+  if (result === "LOSE") return "LOSS";
+  if (result === "TIE") return "DRAW";
+  return result;
+}
+
 function formatDiscordRelativeMs(ms: number | null): string {
   if (ms === null || !Number.isFinite(ms)) return "unknown";
   return `<t:${Math.floor(ms / 1000)}:R>`;
+}
+
+function formatDiscordFullAndRelativeMs(ms: number | null): string {
+  if (ms === null || !Number.isFinite(ms)) return "unknown";
+  const seconds = Math.floor(ms / 1000);
+  return `<t:${seconds}:F> (<t:${seconds}:R>)`;
 }
 
 function formatWarStatCellLeft(value: string): string {
@@ -985,6 +997,7 @@ async function buildWarMailEmbedForTag(
   mailChannelId: string | null;
   clanRoleId: string | null;
   warStartMs: number | null;
+  freezeRefresh: boolean;
   unavailableReasons: string[];
   matchType: "FWA" | "BL" | "MM" | "UNKNOWN";
   expectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null;
@@ -1012,7 +1025,18 @@ async function buildWarMailEmbedForTag(
         clanTag: `#${normalizedTag}`,
       },
     },
-    select: { matchType: true, inferredMatchType: true, outcome: true, startTime: true },
+    select: {
+      matchType: true,
+      inferredMatchType: true,
+      outcome: true,
+      startTime: true,
+      state: true,
+      endTime: true,
+      opponentTag: true,
+      opponentName: true,
+      clanStars: true,
+      opponentStars: true,
+    },
   });
 
   let inferredMatchType = Boolean(subscription?.inferredMatchType);
@@ -1022,6 +1046,14 @@ async function buildWarMailEmbedForTag(
     | "MM"
     | null) ?? "UNKNOWN";
   let outcome = (subscription?.outcome as "WIN" | "LOSE" | null | undefined) ?? null;
+  const fallbackOpponentTag = normalizeTag(String(subscription?.opponentTag ?? ""));
+  const effectiveOpponentTag = opponentTag || fallbackOpponentTag;
+  const effectiveOpponentName =
+    opponentTag
+      ? opponentName
+      : sanitizeClanName(String(subscription?.opponentName ?? "")) ?? opponentName;
+  const hasLiveWar = warState !== "notInWar" && Boolean(opponentTag);
+  const freezeRefresh = !hasLiveWar && Boolean(subscription?.startTime) && Boolean(effectiveOpponentTag);
 
   const currentSync = getCurrentSyncFromPrevious(sourceSync, warState);
   let primaryBalance: number | null = null;
@@ -1057,8 +1089,8 @@ async function buildWarMailEmbedForTag(
     matchType === "UNKNOWN" ? "FWA" : matchType,
     outcome,
     normalizedTag,
-    opponentName,
-    warState === "inWar" ? "battle" : "prep"
+    effectiveOpponentName,
+    hasLiveWar && warState === "inWar" ? "battle" : "prep"
   );
   if (customOrDefaultPlan) {
     planText = customOrDefaultPlan;
@@ -1100,8 +1132,8 @@ async function buildWarMailEmbedForTag(
       matchType,
       expectedOutcome,
       clanName,
-      opponentName,
-      opponentTag,
+      opponentName: effectiveOpponentName,
+      opponentTag: effectiveOpponentTag,
       war,
     })) ?? (await getCurrentWarIdForClan(guildId, normalizedTag, effectiveWarStartMs));
   const starsLeft = formatWarInt(war?.clan?.stars);
@@ -1119,17 +1151,48 @@ async function buildWarMailEmbedForTag(
   const attacksRightText = totalAttacks > 0 ? `${attacksRight}/${totalAttacks}` : `${attacksRight}/?`;
   const destructionLeft = formatWarPercent(war?.clan?.destructionPercentage);
   const destructionRight = formatWarPercent(war?.opponent?.destructionPercentage);
-  const lines: string[] = [
-    planText,
-    "------",
-    `War Status: ${mailStatusLabelForState(warState)}`,
-    `Time remaining: ${remainingText}`,
-    "",
-    "War Stats",
-    formatWarStatLine(starsLeft, ":star:", starsRight),
-    formatWarStatLine(attacksLeftText, ":crossed_swords:", attacksRightText),
-    formatWarStatLine(destructionLeft, ":boom:", destructionRight),
-  ];
+  const lines: string[] = [];
+  if (freezeRefresh) {
+    const finalResult = await history.getWarEndResultSnapshot({
+      clanTag: normalizedTag,
+      opponentTag: effectiveOpponentTag,
+      fallbackClanStars: subscription?.clanStars ?? null,
+      fallbackOpponentStars: subscription?.opponentStars ?? null,
+      warStartTime: subscription?.startTime ?? null,
+    });
+    const endedAtMs =
+      finalResult.warEndTime?.getTime() ??
+      subscription?.endTime?.getTime() ??
+      battleTargetMs ??
+      null;
+    lines.push(
+      `War Status: War Ended`,
+      `Time ended: ${formatDiscordFullAndRelativeMs(endedAtMs)}`,
+      "",
+      `Actual outcome: **${formatWarResultLabel(finalResult.resultLabel)}**`,
+      "",
+      "War Stats",
+      formatWarStatLine(formatWarInt(finalResult.clanStars), ":star:", formatWarInt(finalResult.opponentStars)),
+      formatWarStatLine(attacksLeftText, ":crossed_swords:", attacksRightText),
+      formatWarStatLine(
+        formatWarPercent(finalResult.clanDestruction),
+        ":boom:",
+        formatWarPercent(finalResult.opponentDestruction)
+      )
+    );
+  } else {
+    lines.push(
+      planText,
+      "------",
+      `War Status: ${mailStatusLabelForState(warState)}`,
+      `Time remaining: ${remainingText}`,
+      "",
+      "War Stats",
+      formatWarStatLine(starsLeft, ":star:", starsRight),
+      formatWarStatLine(attacksLeftText, ":crossed_swords:", attacksRightText),
+      formatWarStatLine(destructionLeft, ":boom:", destructionRight)
+    );
+  }
 
   const unavailableReasons: string[] = [];
   if (!trackedConfig.mailChannelId) {
@@ -1154,6 +1217,7 @@ async function buildWarMailEmbedForTag(
     mailChannelId: trackedConfig.mailChannelId,
     clanRoleId: trackedConfig.clanRoleId,
     warStartMs: effectiveWarStartMs,
+    freezeRefresh,
     unavailableReasons,
     matchType,
     expectedOutcome,
@@ -1458,26 +1522,35 @@ function buildWarMailPostedContent(
 export const buildWarMailPostedContentForTest = buildWarMailPostedContent;
 export const buildWarMailNextRefreshLabelForTest = buildNextRefreshRelativeLabel;
 
-async function refreshWarMailPost(client: Client, key: string): Promise<void> {
+async function refreshWarMailPost(
+  client: Client,
+  key: string
+): Promise<"refreshed" | "frozen" | "missing"> {
   const payload = fwaMailPostedPayloads.get(key);
-  if (!payload) return;
+  if (!payload) return "missing";
   const cocService = new CoCService();
   const rendered = await buildWarMailEmbedForTag(cocService, payload.guildId, payload.tag);
+  const channel = await client.channels.fetch(payload.channelId).catch(() => null);
+  if (!channel || !channel.isTextBased()) return "missing";
+  const message = await (channel as any).messages.fetch(payload.messageId).catch(() => null);
+  if (!message) return "missing";
+  await message.edit({
+    content: rendered.freezeRefresh ? undefined : buildWarMailPostedContent(),
+    embeds: [rendered.embed],
+    components: rendered.freezeRefresh ? [] : buildWarMailPostedComponents(key),
+  });
+  if (rendered.freezeRefresh) {
+    stopWarMailPolling(key);
+    fwaMailPostedPayloads.delete(key);
+    return "frozen";
+  }
   fwaMailPostedPayloads.set(key, {
     ...payload,
     warStartMs: rendered.warStartMs,
     matchType: rendered.matchType,
     expectedOutcome: rendered.expectedOutcome,
   });
-  const channel = await client.channels.fetch(payload.channelId).catch(() => null);
-  if (!channel || !channel.isTextBased()) return;
-  const message = await (channel as any).messages.fetch(payload.messageId).catch(() => null);
-  if (!message) return;
-  await message.edit({
-    content: buildWarMailPostedContent(),
-    embeds: [rendered.embed],
-    components: buildWarMailPostedComponents(key),
-  });
+  return "refreshed";
 }
 
 async function refreshWarMailPostByResolvedTarget(params: {
@@ -1487,21 +1560,25 @@ async function refreshWarMailPostByResolvedTarget(params: {
   channelId: string;
   messageId: string;
   key?: string;
-}): Promise<boolean> {
+}): Promise<"refreshed" | "frozen" | "missing"> {
   const normalizedTag = normalizeTag(params.tag);
-  if (!normalizedTag) return false;
+  if (!normalizedTag) return "missing";
   const channel = await params.client.channels.fetch(params.channelId).catch(() => null);
-  if (!channel || !channel.isTextBased()) return false;
+  if (!channel || !channel.isTextBased()) return "missing";
   const message = await (channel as any).messages.fetch(params.messageId).catch(() => null);
-  if (!message) return false;
+  if (!message) return "missing";
   const cocService = new CoCService();
   const rendered = await buildWarMailEmbedForTag(cocService, params.guildId, normalizedTag);
   await message.edit({
-    content: buildWarMailPostedContent(),
+    content: rendered.freezeRefresh ? undefined : buildWarMailPostedContent(),
     embeds: [rendered.embed],
-    components: buildWarMailPostedComponents(params.key ?? createTransientFwaKey()),
+    components: rendered.freezeRefresh ? [] : buildWarMailPostedComponents(params.key ?? createTransientFwaKey()),
   });
-  return true;
+  if (rendered.freezeRefresh && params.key) {
+    stopWarMailPolling(params.key);
+    fwaMailPostedPayloads.delete(params.key);
+  }
+  return rendered.freezeRefresh ? "frozen" : "refreshed";
 }
 
 function extractWarMailTagFromMessage(message: ButtonInteraction["message"]): string | null {
@@ -2860,13 +2937,15 @@ async function handleFwaMailConfirmAction(
   }
   const postKey = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
   const sent = await (channel as any).send({
-    content: buildWarMailPostedContent(rendered.clanRoleId, undefined, {
-      pingRole: options.pingRole,
-    }),
+    content: rendered.freezeRefresh
+      ? undefined
+      : buildWarMailPostedContent(rendered.clanRoleId, undefined, {
+          pingRole: options.pingRole,
+        }),
     allowedMentions:
       options.pingRole && rendered.clanRoleId ? { roles: [rendered.clanRoleId] } : undefined,
     embeds: [rendered.embed],
-    components: buildWarMailPostedComponents(postKey),
+    components: rendered.freezeRefresh ? [] : buildWarMailPostedComponents(postKey),
   });
   await prisma.currentWar.upsert({
     where: {
@@ -2919,16 +2998,18 @@ async function handleFwaMailConfirmAction(
       };
     }
   }
-  fwaMailPostedPayloads.set(postKey, {
-    guildId: payload.guildId,
-    tag: payload.tag,
-    warStartMs: rendered.warStartMs,
-    channelId: channel.id,
-    messageId: sent.id,
-    sentAtMs: nowMs,
-    matchType: rendered.matchType,
-    expectedOutcome: rendered.expectedOutcome,
-  });
+  if (!rendered.freezeRefresh) {
+    fwaMailPostedPayloads.set(postKey, {
+      guildId: payload.guildId,
+      tag: payload.tag,
+      warStartMs: rendered.warStartMs,
+      channelId: channel.id,
+      messageId: sent.id,
+      sentAtMs: nowMs,
+      matchType: rendered.matchType,
+      expectedOutcome: rendered.expectedOutcome,
+    });
+  }
   let revisedPrevious = false;
   if (previous) {
     revisedPrevious = await annotatePreviousWarMailRevision({
@@ -2940,7 +3021,9 @@ async function handleFwaMailConfirmAction(
       changedAtMs: nowMs,
     }).catch(() => false);
   }
-  startWarMailPolling(interaction.client, postKey);
+  if (!rendered.freezeRefresh) {
+    startWarMailPolling(interaction.client, postKey);
+  }
   await recordMatchMailUpdated({
     guildId: payload.guildId,
     tag: payload.tag,
@@ -3071,10 +3154,15 @@ export async function handleFwaMailRefreshButton(interaction: ButtonInteraction)
   if (!parsed) return;
   const payload = fwaMailPostedPayloads.get(parsed.key);
   if (payload) {
-    await refreshWarMailPost(interaction.client, parsed.key);
+    const refreshed = await refreshWarMailPost(interaction.client, parsed.key);
     await interaction.reply({
       ephemeral: true,
-      content: "War mail refreshed.",
+      content:
+        refreshed === "missing"
+          ? "This mail post can no longer be refreshed."
+          : refreshed === "frozen"
+            ? "War mail frozen for the ended war."
+            : "War mail refreshed.",
     });
     return;
   }
@@ -3107,10 +3195,15 @@ export async function handleFwaMailRefreshButton(interaction: ButtonInteraction)
     tag: fallbackTarget.tag,
     channelId: fallbackTarget.channelId,
     messageId: fallbackTarget.messageId,
-  }).catch(() => false);
+  }).catch(() => "missing" as const);
   await interaction.reply({
     ephemeral: true,
-    content: refreshed ? "War mail refreshed." : "This mail post can no longer be refreshed.",
+    content:
+      refreshed === "missing"
+        ? "This mail post can no longer be refreshed."
+        : refreshed === "frozen"
+          ? "War mail frozen for the ended war."
+          : "War mail refreshed.",
   });
 }
 
@@ -3143,8 +3236,8 @@ export async function refreshAllTrackedWarMailPosts(client: Client): Promise<voi
       channelId: stored.channelId,
       messageId: stored.messageId,
       key: existingInMemory?.key,
-    }).catch(() => false);
-    if (!refreshed) continue;
+    }).catch(() => "missing" as const);
+    if (refreshed === "missing") continue;
     const channelId = stored.channelId;
     const messageId = stored.messageId;
 
@@ -3165,7 +3258,7 @@ export async function refreshAllTrackedWarMailPosts(client: Client): Promise<voi
       });
     }
 
-    if (!existingInMemory) {
+    if (!existingInMemory && refreshed === "refreshed") {
       const postKey = createTransientFwaKey();
       fwaMailPostedPayloads.set(postKey, {
         guildId,
@@ -3231,8 +3324,12 @@ export async function runForceMailUpdateCommand(
     tag,
     channelId: stored.channelId,
     messageId: stored.messageId,
-  }).catch(() => false);
-  if (!refreshed) {
+    key: findLatestPostedWarMailForClan({
+      guildId: interaction.guildId,
+      tag,
+    })?.key,
+  }).catch(() => "missing" as const);
+  if (refreshed === "missing") {
     await interaction.editReply(
       `Could not refresh #${tag} mail in place. The stored message was missing or inaccessible.`
     );
@@ -3262,7 +3359,7 @@ export async function runForceMailUpdateCommand(
     guildId: interaction.guildId,
     tag,
   });
-  if (!existingInMemory) {
+  if (!existingInMemory && refreshed === "refreshed") {
     const postKey = createTransientFwaKey();
     fwaMailPostedPayloads.set(postKey, {
       guildId: interaction.guildId,
@@ -3281,7 +3378,9 @@ export async function runForceMailUpdateCommand(
     [
       `Force mail update complete for #${tag}.`,
       "Updated existing message in place (no new ping).",
-      "20-minute refresh tracking is active for this post.",
+      refreshed === "frozen"
+        ? "Refresh tracking stopped because the war has ended."
+        : "20-minute refresh tracking is active for this post.",
       `Message: https://discord.com/channels/${interaction.guildId}/${channelId}/${messageId}`,
     ].join("\n")
   );
