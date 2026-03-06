@@ -63,6 +63,30 @@ function normalizePlanTextInput(raw: string): string {
     .replace(/\\\\/g, "\\");
 }
 
+async function resolveCustomEmojiShortcodes(
+  text: string,
+  interaction: ChatInputCommandInteraction
+): Promise<string> {
+  const guild = interaction.guild;
+  if (!guild) return text;
+
+  try {
+    await guild.emojis.fetch();
+  } catch {
+    return text;
+  }
+
+  return text.replace(
+    /(^|[\s([{"'])\:([a-zA-Z0-9_]{2,32})\:(?=$|[\s)\]}".,!?:;'"-])/g,
+    (full, prefix: string, emojiName: string) => {
+      const match = guild.emojis.cache.find((emoji) => emoji.name === emojiName);
+      if (!match) return full;
+      const token = `<${match.animated ? "a" : ""}:${match.name}:${match.id}>`;
+      return `${prefix}${token}`;
+    }
+  );
+}
+
 function formatKeyLabel(matchType: PlanMatchType, outcome: PlanOutcome, loseStyle: PlanLoseStyle): string {
   if (matchType === "FWA") {
     if (outcome === "LOSE" && loseStyle !== "ANY") return `FWA-LOSE-${loseStyle}`;
@@ -333,7 +357,9 @@ export const WarPlan: Command = {
         .setStyle(TextInputStyle.Paragraph)
         .setRequired(true)
         .setMaxLength(1500)
-        .setPlaceholder("Bold: **text** | Italic: *text* | Code: `text` | Block: ```text```")
+        .setPlaceholder(
+          "Bold: **text** | Italic: *text* | Code: `text` | Block: ```text``` | Emoji: :name: or <:name:id>"
+        )
         .setValue(prefill);
       modal.addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(input));
       await interaction.showModal(modal);
@@ -343,7 +369,10 @@ export const WarPlan: Command = {
           filter: (m) => m.customId === modalId && m.user.id === interaction.user.id,
           time: 10 * 60 * 1000,
         });
-        const planText = normalizePlanTextInput(submitted.fields.getTextInputValue(PLAN_MODAL_INPUT_ID));
+        const normalizedPlanText = normalizePlanTextInput(
+          submitted.fields.getTextInputValue(PLAN_MODAL_INPUT_ID)
+        );
+        const planText = await resolveCustomEmojiShortcodes(normalizedPlanText, interaction);
         if (!planText.length) {
           await submitted.reply({ ephemeral: true, content: "Plan text cannot be empty." });
           return;
