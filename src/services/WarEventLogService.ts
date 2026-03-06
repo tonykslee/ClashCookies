@@ -90,6 +90,17 @@ type SubscriptionRow = {
   clanName: string | null;
 };
 
+type PollTarget = {
+  guildId: string;
+  clanTag: string;
+  channelId: string | null;
+  notify: boolean;
+  pingRole: boolean;
+  inferredMatchType: boolean;
+  notifyRole: string | null;
+  clanName: string | null;
+};
+
 
 type PollSyncContext = {
   previousSync: number | null;
@@ -259,38 +270,139 @@ export class WarEventLogService {
       previousSync,
       activeSync: previousSync === null ? null : previousSync + 1,
     };
-    const subs = await prisma.$queryRaw<SubscriptionRow[]>(
-      Prisma.sql`
-        SELECT
-          cw."guildId",cw."clanTag",cw."warId",cw."syncNum",
-          COALESCE(cnc."channelId", tc."notifyChannelId") AS "channelId",
-          COALESCE(cnc."embedEnabled", tc."notifyEnabled", false) AS "notify",
-          COALESCE(cnc."pingEnabled", cw."pingRole", true) AS "pingRole",
-          COALESCE(cnc."embedEnabled", true) AS "embedEnabled",
-          cw."inferredMatchType",
-          COALESCE(cnc."roleId", tc."notifyRole") AS "notifyRole",
-          cw."fwaPoints",cw."opponentFwaPoints",cw."outcome",cw."matchType",cw."warStartFwaPoints",cw."warEndFwaPoints",
-          cw."clanStars",cw."opponentStars",cw."state",cw."prepStartTime",cw."startTime",cw."endTime",
-          cw."opponentTag",cw."opponentName",cw."clanName"
-        FROM "CurrentWar" cw
-        LEFT JOIN "TrackedClan" tc
-          ON UPPER(REPLACE(tc."tag",'#','')) = UPPER(REPLACE(cw."clanTag",'#',''))
-        LEFT JOIN "ClanNotifyConfig" cnc
-          ON cnc."guildId" = cw."guildId" AND UPPER(REPLACE(cnc."clanTag",'#','')) = UPPER(REPLACE(cw."clanTag",'#',''))
-        WHERE cw."state" = 'notInWar'
-           OR cw."endTime" > NOW() - INTERVAL '2 hours'
-        ORDER BY cw."updatedAt" ASC
-      `
-    );
-    for (const sub of subs) {
-      await this.processSubscription(sub.guildId, sub.clanTag, syncContext).catch((err) => {
+    const targets = await this.listPollTargets();
+    for (const target of targets) {
+      await this.ensureCurrentWarBaseline(target);
+      await this.processSubscription(target.guildId, target.clanTag, syncContext).catch((err) => {
         console.error(
-          `[war-events] process failed guild=${sub.guildId} clan=${sub.clanTag} error=${formatError(
+          `[war-events] process failed guild=${target.guildId} clan=${target.clanTag} error=${formatError(
             err
           )}`
         );
       });
     }
+  }
+
+  private async listPollTargets(): Promise<PollTarget[]> {
+    const [trackedClans, currentWars, notifyConfigs] = await Promise.all([
+      prisma.trackedClan.findMany({
+        orderBy: { createdAt: "asc" },
+        select: {
+          tag: true,
+          name: true,
+          notifyChannelId: true,
+          notifyRole: true,
+          notifyEnabled: true,
+          mailChannelId: true,
+          logChannelId: true,
+        },
+      }),
+      prisma.currentWar.findMany({
+        select: {
+          guildId: true,
+          clanTag: true,
+          channelId: true,
+          notify: true,
+          pingRole: true,
+          inferredMatchType: true,
+          notifyRole: true,
+          clanName: true,
+        },
+      }),
+      prisma.clanNotifyConfig.findMany({
+        select: {
+          guildId: true,
+          clanTag: true,
+          channelId: true,
+          roleId: true,
+          pingEnabled: true,
+          embedEnabled: true,
+        },
+      }),
+    ]);
+
+    const currentWarsByTag = new Map<string, typeof currentWars>();
+    for (const row of currentWars) {
+      const key = normalizeTag(row.clanTag);
+      const list = currentWarsByTag.get(key) ?? [];
+      list.push(row);
+      currentWarsByTag.set(key, list);
+    }
+
+    const notifyConfigsByTag = new Map<string, typeof notifyConfigs>();
+    for (const row of notifyConfigs) {
+      const key = normalizeTag(row.clanTag);
+      const list = notifyConfigsByTag.get(key) ?? [];
+      list.push(row);
+      notifyConfigsByTag.set(key, list);
+    }
+
+    const targets: PollTarget[] = [];
+    for (const tracked of trackedClans) {
+      const clanTag = normalizeTag(tracked.tag);
+      const configRows = notifyConfigsByTag.get(clanTag) ?? [];
+      const currentRows = currentWarsByTag.get(clanTag) ?? [];
+      const guildIds = new Set<string>();
+      for (const row of configRows) guildIds.add(row.guildId);
+      for (const row of currentRows) guildIds.add(row.guildId);
+      for (const guildId of guildIds) {
+        const config = configRows.find((row) => row.guildId === guildId) ?? null;
+        const current = currentRows.find((row) => row.guildId === guildId) ?? null;
+        targets.push({
+          guildId,
+          clanTag,
+          channelId:
+            config?.channelId ??
+            current?.channelId ??
+            tracked.notifyChannelId ??
+            tracked.mailChannelId ??
+            tracked.logChannelId ??
+            null,
+          notify: config?.embedEnabled ?? current?.notify ?? tracked.notifyEnabled ?? false,
+          pingRole: config?.pingEnabled ?? current?.pingRole ?? true,
+          inferredMatchType: current?.inferredMatchType ?? true,
+          notifyRole: config?.roleId ?? current?.notifyRole ?? tracked.notifyRole ?? null,
+          clanName: current?.clanName ?? tracked.name ?? null,
+        });
+      }
+    }
+
+    return targets.sort((a, b) =>
+      `${a.guildId}:${normalizeTagBare(a.clanTag)}`.localeCompare(
+        `${b.guildId}:${normalizeTagBare(b.clanTag)}`
+      )
+    );
+  }
+
+  private async ensureCurrentWarBaseline(target: PollTarget): Promise<void> {
+    if (!target.channelId) return;
+    await prisma.currentWar.upsert({
+      where: {
+        clanTag_guildId: {
+          clanTag: target.clanTag,
+          guildId: target.guildId,
+        },
+      },
+      update: {
+        channelId: target.channelId,
+        notify: target.notify,
+        pingRole: target.pingRole,
+        inferredMatchType: target.inferredMatchType,
+        notifyRole: target.notifyRole,
+        clanName: target.clanName,
+      },
+      create: {
+        guildId: target.guildId,
+        clanTag: target.clanTag,
+        channelId: target.channelId,
+        notify: target.notify,
+        pingRole: target.pingRole,
+        inferredMatchType: target.inferredMatchType,
+        notifyRole: target.notifyRole,
+        clanName: target.clanName,
+        state: "notInWar",
+      },
+    });
   }
 
   async emitTestEventForClan(params: {
