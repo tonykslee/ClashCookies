@@ -326,139 +326,147 @@ async function runDaysMode(
 
 async function runWarsMode(
   interaction: CommandInteraction,
-  cocService: CoCService,
   wars: number
 ): Promise<void> {
-  type WarParticipantRow = {
+  if (!interaction.guildId) {
+    await interaction.editReply("This command can only be used in a server.");
+    return;
+  }
+
+  type InactiveWarRow = {
     clanTag: string;
-    warStartTime: Date;
     playerTag: string;
-    playerName: string | null;
-    playerPosition: number | null;
-    attacksUsed: number;
+    playerName: string;
+    missedWars: number;
+    totalTrueStars: number;
+    avgAttackDelay: number | null;
+    lateAttacks: number;
+    warsAvailable: number;
   };
 
-  const roster = await getRosterSnapshot(cocService);
-  if (roster.trackedTags.length === 0) {
+  const trackedClans = await prisma.trackedClan.findMany({
+    orderBy: { createdAt: "asc" },
+    select: { tag: true, name: true },
+  });
+  if (trackedClans.length === 0) {
     await interaction.editReply(
       "No tracked clans configured. Configure at least one clan with `/tracked-clan configure` before using `/inactive`."
     );
     return;
   }
 
-  const results: Array<{
-    clanTag: string;
-    clanName: string;
-    playerTag: string;
-    playerName: string;
-    playerPosition: number | null;
-  }> = [];
-  const warnings: string[] = [];
-
-  for (const clanTag of roster.trackedTags) {
-    const selectedWars = await prisma.$queryRaw<Array<{ warStartTime: Date }>>(
-      Prisma.sql`
-        SELECT DISTINCT "warStartTime"
-        FROM "WarAttacks"
-        WHERE
-          "clanTag" = ${clanTag}
-          AND "attackOrder" = 0
-          AND (
-            "warState" = 'warEnded'
-            OR ("warEndTime" IS NOT NULL AND "warEndTime" <= NOW())
-          )
-        ORDER BY "warStartTime" DESC
-        LIMIT ${wars}
-      `
-    );
-
-    if (selectedWars.length < wars) {
-      warnings.push(
-        `${roster.trackedNameByTag.get(clanTag) ?? clanTag}: only ${selectedWars.length}/${wars} ended wars tracked`
-      );
-      continue;
-    }
-
-    const selectedStartTimes = selectedWars.map((w) => w.warStartTime);
-    const participants = await prisma.$queryRaw<WarParticipantRow[]>(
-      Prisma.sql`
+  const trackedTags = trackedClans.map((c) => c.tag);
+  const trackedNameByTag = new Map(trackedClans.map((c) => [c.tag, c.name?.trim() || c.tag]));
+  const results = await prisma.$queryRaw<InactiveWarRow[]>(
+    Prisma.sql`
+      WITH available AS (
         SELECT
-          "clanTag",
-          "warStartTime",
-          "playerTag",
-          "playerName",
-          "playerPosition",
-          "attacksUsed"
-        FROM "WarAttacks"
-        WHERE
-          "clanTag" = ${clanTag}
-          AND "attackOrder" = 0
-          AND "warStartTime" IN (${Prisma.join(selectedStartTimes)})
-      `
-    );
+          ended_wars."clanTag",
+          COUNT(*)::int AS "warsAvailable"
+        FROM (
+          SELECT DISTINCT "clanTag", "warId"
+          FROM "ClanWarParticipation"
+          WHERE "guildId" = ${interaction.guildId}
+            AND "clanTag" IN (${Prisma.join(trackedTags)})
+            AND "matchType" = 'FWA'
+        ) ended_wars
+        GROUP BY ended_wars."clanTag"
+      ),
+      ranked AS (
+        SELECT
+          cwp."clanTag",
+          cwp."playerTag",
+          FIRST_VALUE(COALESCE(NULLIF(BTRIM(cwp."playerName"), ''), cwp."playerTag"))
+            OVER (
+              PARTITION BY cwp."clanTag", cwp."playerTag"
+              ORDER BY cwp."warStartTime" DESC, cwp."createdAt" DESC
+            ) AS "playerName",
+          cwp."missedBoth",
+          cwp."trueStars",
+          cwp."attackDelayMinutes",
+          cwp."attackWindowMissed",
+          ROW_NUMBER() OVER (
+            PARTITION BY cwp."clanTag", cwp."playerTag"
+            ORDER BY cwp."warStartTime" DESC, cwp."createdAt" DESC
+          ) AS rn
+        FROM "ClanWarParticipation" cwp
+        WHERE cwp."guildId" = ${interaction.guildId}
+          AND cwp."clanTag" IN (${Prisma.join(trackedTags)})
+          AND cwp."matchType" = 'FWA'
+      ),
+      selected AS (
+        SELECT *
+        FROM ranked
+        WHERE rn <= ${wars}
+      )
+      SELECT
+        s."clanTag",
+        s."playerTag",
+        MAX(s."playerName") AS "playerName",
+        COUNT(*) FILTER (WHERE s."missedBoth" = true)::int AS "missedWars",
+        COALESCE(SUM(s."trueStars"), 0)::int AS "totalTrueStars",
+        AVG(s."attackDelayMinutes")::float8 AS "avgAttackDelay",
+        COUNT(*) FILTER (WHERE s."attackWindowMissed" = true)::int AS "lateAttacks",
+        COALESCE(MAX(a."warsAvailable"), 0)::int AS "warsAvailable"
+      FROM selected s
+      LEFT JOIN available a
+        ON a."clanTag" = s."clanTag"
+      GROUP BY s."clanTag", s."playerTag"
+      HAVING COUNT(*) FILTER (WHERE s."missedBoth" = true) > 0
+      ORDER BY s."clanTag" ASC, "missedWars" DESC, MAX(s."playerName") ASC
+    `
+  );
 
-    const statsByPlayer = new Map<
-      string,
-      { participated: number; missed: number; playerName: string; playerPosition: number | null }
-    >();
-    for (const row of participants) {
-      const stat = statsByPlayer.get(row.playerTag) ?? {
-        participated: 0,
-        missed: 0,
-        playerName: row.playerName?.trim() || row.playerTag,
-        playerPosition: row.playerPosition ?? null,
-      };
-      stat.participated += 1;
-      if (row.attacksUsed === 0) stat.missed += 1;
-      stat.playerName = row.playerName?.trim() || stat.playerName;
-      stat.playerPosition = row.playerPosition ?? stat.playerPosition;
-      statsByPlayer.set(row.playerTag, stat);
-    }
-
-    const clanName = roster.trackedNameByTag.get(clanTag) ?? clanTag;
-    const currentMembers = roster.liveMembersByClan.get(clanTag) ?? new Set<string>();
-    for (const memberTag of currentMembers) {
-      const stat = statsByPlayer.get(memberTag);
-      if (!stat) continue;
-      if (stat.participated === wars && stat.missed === wars) {
-        results.push({
-          clanTag,
-          clanName,
-          playerTag: memberTag,
-          playerName: stat.playerName,
-          playerPosition: stat.playerPosition,
-        });
-      }
-    }
-  }
+  const availableRows = await prisma.$queryRaw<Array<{ clanTag: string; warsAvailable: number }>>(
+    Prisma.sql`
+      SELECT
+        ended_wars."clanTag",
+        COUNT(*)::int AS "warsAvailable"
+      FROM (
+        SELECT DISTINCT "clanTag", "warId"
+        FROM "ClanWarParticipation"
+        WHERE "guildId" = ${interaction.guildId}
+          AND "clanTag" IN (${Prisma.join(trackedTags)})
+          AND "matchType" = 'FWA'
+      ) ended_wars
+      GROUP BY ended_wars."clanTag"
+    `
+  );
+  const availableByClan = new Map<string, number>(
+    availableRows.map((row) => [row.clanTag, row.warsAvailable])
+  );
+  const warnings = trackedTags
+    .map((clanTag) => {
+      const warsAvailable = availableByClan.get(clanTag) ?? 0;
+      return warsAvailable < wars
+        ? `${trackedNameByTag.get(clanTag) ?? clanTag}: only ${warsAvailable}/${wars} ended FWA wars tracked`
+        : null;
+    })
+    .filter((value): value is string => value !== null);
 
   if (results.length === 0) {
     const warningText = warnings.length > 0 ? `\n\nTracking note:\n- ${warnings.join("\n- ")}` : "";
     await interaction.editReply(
-      `No tracked members found with 0/2 attacks across the last ${wars} ended war(s).${warningText}`
+      `No players found who missed both attacks in the last ${wars} FWA war(s).${warningText}`
     );
     return;
   }
 
   const clanOrder = new Map<string, number>();
-  roster.trackedTags.forEach((tag, i) => clanOrder.set(tag, i));
+  trackedTags.forEach((tag, i) => clanOrder.set(tag, i));
   results.sort((a, b) => {
     const orderA = clanOrder.get(a.clanTag) ?? Number.MAX_SAFE_INTEGER;
     const orderB = clanOrder.get(b.clanTag) ?? Number.MAX_SAFE_INTEGER;
     if (orderA !== orderB) return orderA - orderB;
-    if (a.playerPosition !== null && b.playerPosition !== null && a.playerPosition !== b.playerPosition) {
-      return a.playerPosition - b.playerPosition;
-    }
+    if (a.missedWars !== b.missedWars) return b.missedWars - a.missedWars;
     return a.playerName.localeCompare(b.playerName);
   });
 
   const pages = buildGroupedPages(
     results,
-    (e) => e.clanName,
+    (e) => trackedNameByTag.get(e.clanTag) ?? e.clanTag,
     (e) =>
-      `- **${e.playerName}** (${e.playerTag}) - 0/2 in last ${wars} war(s)${
-        e.playerPosition ? `, pos ${e.playerPosition}` : ""
-      }`
+      `- **${e.playerName}** (${e.playerTag}) - missed both in ${e.missedWars}/${Math.min(wars, e.warsAvailable)} war(s), true stars ${e.totalTrueStars}, avg delay ${e.avgAttackDelay !== null ? `${Math.round(e.avgAttackDelay)}m` : "n/a"}, late attacks ${e.lateAttacks}`
   );
 
   const footerSuffix = warnings.length > 0 ? ` • Partial data: ${warnings.length} clan(s)` : "";
@@ -516,7 +524,7 @@ export const Inactive: Command = {
       await interaction.editReply("Wars must be greater than 0.");
       return;
     }
-    await runWarsMode(interaction, cocService, warsValue);
+    await runWarsMode(interaction, warsValue);
   },
 };
 
