@@ -135,12 +135,13 @@ export class WarEventHistoryService {
         const customPlan = await prisma.clanWarPlan.findFirst({
           where: {
             guildId,
-            clanTag: { in: [normalizedClanTag, ""] },
+            scope: "CUSTOM",
+            clanTag: normalizedClanTag,
             matchType: matchTypeKey,
             outcome: outcomeKey,
             loseStyle: { in: [loseStyleKey, "ANY"] },
           },
-          orderBy: [{ clanTag: "desc" }, { loseStyle: "desc" }],
+          orderBy: [{ loseStyle: "desc" }],
           select: {
             planText: true,
           },
@@ -148,8 +149,29 @@ export class WarEventHistoryService {
         if (customPlan?.planText && customPlan.planText.trim().length > 0) {
           return customPlan.planText.replace(/\{opponent\}/gi, opponentName);
         }
+
+        const defaultPlan = await prisma.clanWarPlan.findFirst({
+          where: {
+            guildId,
+            scope: "DEFAULT",
+            clanTag: "",
+            matchType: matchTypeKey,
+            outcome: outcomeKey,
+            loseStyle: { in: [loseStyleKey, "ANY"] },
+          },
+          orderBy: [{ loseStyle: "desc" }],
+          select: {
+            planText: true,
+          },
+        });
+        if (defaultPlan?.planText && defaultPlan.planText.trim().length > 0) {
+          return defaultPlan.planText.replace(/\{opponent\}/gi, opponentName);
+        }
       } catch (error) {
-        if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2021") {
+        if (
+          !(error instanceof Prisma.PrismaClientKnownRequestError) ||
+          (error.code !== "P2021" && error.code !== "P2022")
+        ) {
           throw error;
         }
       }
