@@ -129,6 +129,16 @@ export const WarPlan: Command = {
           ],
         },
         {
+          name: "outcome",
+          description: "Expected outcome context for this plan",
+          type: ApplicationCommandOptionType.String,
+          required: true,
+          choices: [
+            { name: "win", value: "WIN" },
+            { name: "lose", value: "LOSE" },
+          ],
+        },
+        {
           name: "plan-text",
           description: "Custom plan text (max 1500 chars)",
           type: ApplicationCommandOptionType.String,
@@ -191,6 +201,7 @@ export const WarPlan: Command = {
 
     if (subcommand === "set") {
       const phase = interaction.options.getString("phase", true) as "prep" | "battle";
+      const outcome = interaction.options.getString("outcome", true) as "WIN" | "LOSE";
       const planTextInput = interaction.options.getString("plan-text", true);
       if (!planTextInput.length) {
         await interaction.editReply("Plan text cannot be empty.");
@@ -219,7 +230,7 @@ export const WarPlan: Command = {
       });
 
       await interaction.editReply(
-        `Saved ${phase} plan for **${trackedClan.name ?? clanTag}** (${clanTag}).\nLength: ${phase === "prep" ? row.prepPlan?.length ?? 0 : row.battlePlan?.length ?? 0} chars`
+        `Saved ${phase.toUpperCase()} (${outcome}) plan for **${trackedClan.name ?? clanTag}** (${clanTag}).\nLength: ${phase === "prep" ? row.prepPlan?.length ?? 0 : row.battlePlan?.length ?? 0} chars`
       );
       return;
     }
