@@ -270,7 +270,7 @@ export const Force: Command = {
       await runForcePollWarEventsCommand(client, interaction, cocService);
       return;
     }
-    if (subcommandGroup === undefined && subcommand === "bootstrap-war-state") {
+    if (subcommandGroup == null && subcommand === "bootstrap-war-state") {
       await runForceBootstrapWarStateCommand(client, interaction, cocService);
       return;
     }
