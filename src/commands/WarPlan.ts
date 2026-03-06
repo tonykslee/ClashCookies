@@ -8,6 +8,8 @@ import {
 import { Command } from "../Command";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
+import { WarEventHistoryService } from "../services/war-events/history";
+import { MatchType, normalizeTag } from "../services/war-events/core";
 
 function normalizeClanTagInput(input: string): string {
   return input.trim().toUpperCase().replace(/^#/, "");
@@ -16,6 +18,88 @@ function normalizeClanTagInput(input: string): string {
 function normalizeClanTag(input: string): string {
   const normalized = normalizeClanTagInput(input);
   return normalized ? `#${normalized}` : "";
+}
+
+function normalizeMatchType(value: string | null | undefined): MatchType {
+  const upper = String(value ?? "").toUpperCase();
+  if (upper === "BL" || upper === "MM" || upper === "FWA") return upper;
+  return "FWA";
+}
+
+function normalizeOutcome(value: string | null | undefined): "WIN" | "LOSE" | null {
+  const upper = String(value ?? "").toUpperCase();
+  if (upper === "WIN" || upper === "LOSE") return upper;
+  return null;
+}
+
+function buildFallbackPlanText(
+  matchType: MatchType,
+  opponentName: string,
+  phase: "prep" | "battle"
+): string {
+  if (matchType === "BL") {
+    if (phase === "prep") {
+      return [
+        `BLACKLIST WAR vs ${opponentName}`,
+        "Everyone switch to WAR BASES!",
+        "This is an opportunity to gain extra FWA points.",
+      ].join("\n");
+    }
+    return [
+      `**⚫️ BLACKLIST WAR 🆚 ${opponentName} 🏴‍☠️**`,
+      "Everyone switch to WAR BASES!!",
+      "This is our opportunity to gain some extra FWA points!",
+      "➕ 30+ people switch to war base = +1 point",
+      "➕ 60% total destruction = +1 point",
+      "➕ win war = +1 point",
+      "---",
+      "If you need war base, check https://clashofclans-layouts.com/ or ⁠bases",
+    ].join("\n");
+  }
+
+  if (matchType === "MM") {
+    return phase === "prep"
+      ? [`MISMATCHED WAR vs ${opponentName}`, "Keep war base active and attack what you can."].join(
+          "\n"
+        )
+      : [`⚪️ MISMATCHED WAR 🆚 ${opponentName} :sob:`, "Keep WA base active, attack what you can!"].join(
+          "\n"
+        );
+  }
+
+  return "FWA plan unavailable (expected outcome unknown).";
+}
+
+async function resolveDisplayedPlan(params: {
+  history: WarEventHistoryService;
+  guildId: string;
+  clanTag: string;
+  currentWar: {
+    matchType: string | null;
+    outcome: string | null;
+    opponentName: string | null;
+  } | null;
+  customPlan: string | null | undefined;
+  phase: "prep" | "battle";
+}): Promise<{ text: string; source: "custom" | "default" }> {
+  if (params.customPlan && params.customPlan.trim().length > 0) {
+    return { text: params.customPlan, source: "custom" };
+  }
+
+  const matchType = normalizeMatchType(params.currentWar?.matchType);
+  const outcome = normalizeOutcome(params.currentWar?.outcome) ?? "LOSE";
+  const opponentName = String(params.currentWar?.opponentName ?? "").trim() || "Unknown";
+  const defaultPlan =
+    (await params.history.buildWarPlanText(
+      params.guildId,
+      matchType,
+      outcome,
+      normalizeTag(params.clanTag),
+      opponentName,
+      params.phase
+    )) ?? buildFallbackPlanText(matchType, opponentName, params.phase);
+
+  return { text: defaultPlan, source: "default" };
 }
 
 export const WarPlan: Command = {
@@ -84,7 +168,7 @@ export const WarPlan: Command = {
   run: async (
     _client: Client,
     interaction: ChatInputCommandInteraction,
-    _cocService: CoCService
+    cocService: CoCService
   ) => {
     await interaction.deferReply({ ephemeral: true });
 
@@ -141,6 +225,7 @@ export const WarPlan: Command = {
     }
 
     if (subcommand === "show") {
+      const history = new WarEventHistoryService(cocService);
       const row = await prisma.clanWarPlan.findUnique({
         where: {
           guildId_clanTag: {
@@ -148,6 +233,39 @@ export const WarPlan: Command = {
             clanTag,
           },
         },
+        select: {
+          prepPlan: true,
+          battlePlan: true,
+        },
+      });
+      const currentWar = await prisma.currentWar.findUnique({
+        where: {
+          clanTag_guildId: {
+            clanTag,
+            guildId: interaction.guildId,
+          },
+        },
+        select: {
+          matchType: true,
+          outcome: true,
+          opponentName: true,
+        },
+      });
+      const prep = await resolveDisplayedPlan({
+        history,
+        guildId: interaction.guildId,
+        clanTag,
+        currentWar,
+        customPlan: row?.prepPlan,
+        phase: "prep",
+      });
+      const battle = await resolveDisplayedPlan({
+        history,
+        guildId: interaction.guildId,
+        clanTag,
+        currentWar,
+        customPlan: row?.battlePlan,
+        phase: "battle",
       });
 
       const embed = new EmbedBuilder()
@@ -155,13 +273,13 @@ export const WarPlan: Command = {
         .setDescription(`Clan: ${clanTag}`)
         .addFields(
           {
-            name: "Prep Plan",
-            value: row?.prepPlan || "_No custom prep plan set._",
+            name: `Prep Plan (${prep.source === "custom" ? "Custom" : "Default"})`,
+            value: prep.text,
             inline: false,
           },
           {
-            name: "Battle Plan",
-            value: row?.battlePlan || "_No custom battle plan set._",
+            name: `Battle Plan (${battle.source === "custom" ? "Custom" : "Default"})`,
+            value: battle.text,
             inline: false,
           }
         )
