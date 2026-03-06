@@ -265,7 +265,9 @@ export class WarEventHistoryService {
       .filter((a) => Number(a.attackOrder) > 0)
       .map((a) => ({
         attackerTag: a.playerTag,
+        attackerName: a.playerName,
         defenderTag: a.defenderTag,
+        defenderName: a.defenderName,
         stars: a.stars,
         destruction: a.destruction,
         order: a.attackOrder,
@@ -323,7 +325,21 @@ export class WarEventHistoryService {
       opponent: {
         tag: normalizeTag(payload.opponentTag) || currentSnapshot?.opponentTag || null,
         name: payload.opponentName ?? currentSnapshot?.opponentName ?? null,
-        members: [],
+        members: Array.from(
+          new Map(
+            attacks
+              .filter((a) => Number(a.attackOrder) > 0 && a.defenderTag)
+              .map((a) => [
+                a.defenderTag,
+                {
+                  tag: a.defenderTag,
+                  name: a.defenderName,
+                  mapPosition: a.defenderPosition,
+                  townHall: null,
+                },
+              ])
+          ).values()
+        ),
       },
       attacks: attacksPayload,
       compliance: {
