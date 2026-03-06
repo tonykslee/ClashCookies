@@ -4263,23 +4263,44 @@ async function buildTrackedMatchOverview(
     });
 
     if (!opponentTag) {
+      const noOpponentHeader = `${mailStatusEmoji} | ${clanName} (#${clanTag}) vs Unknown`;
+      const noOpponentLines = [
+        "No active war opponent",
+        `War State: **${clanWarStateLine}**`,
+        `Time Remaining: **${clanTimeRemainingLine}**`,
+        `Sync: **${clanSyncLine}**`,
+      ];
       if (includeInOverview) {
         embed.addFields({
-          name: `${mailStatusEmoji} | ${clanName} (#${clanTag}) vs Unknown`,
-          value: [
-            "No active war opponent",
-            `War State: **${clanWarStateLine}**`,
-            `Time Remaining: **${clanTimeRemainingLine}**`,
-          ].join("\n"),
+          name: noOpponentHeader,
+          value: noOpponentLines.join("\n"),
           inline: false,
         });
         copyLines.push(
-          `## ${mailStatusEmoji} | ${clanName} (#${clanTag})`,
-          "No active war opponent",
-          `War State: ${clanWarStateLine}`,
-          `Time Remaining: ${clanTimeRemainingLine}`
+          `## ${noOpponentHeader}`,
+          ...noOpponentLines.map((line) => line.replace(/\*\*/g, ""))
         );
       }
+      singleViews[clanTag] = {
+        embed: new EmbedBuilder().setTitle(noOpponentHeader).setDescription(noOpponentLines.join("\n")),
+        copyText: limitDiscordContent([`# ${noOpponentHeader}`, ...noOpponentLines].join("\n")),
+        matchTypeAction: null,
+        matchTypeCurrent:
+          (sub?.matchType as "FWA" | "BL" | "MM" | "SKIP" | null | undefined) ?? null,
+        inferredMatchType: false,
+        outcomeAction: null,
+        syncAction: null,
+        clanName,
+        clanTag,
+        mailStatusEmoji,
+        mailAction: {
+          tag: clanTag,
+          enabled: false,
+          reason: "No active war opponent.",
+        },
+        skipSyncAction: sub?.matchType === "SKIP" ? null : { tag: clanTag },
+        undoSkipSyncAction: sub?.matchType === "SKIP" ? { tag: clanTag } : null,
+      };
       continue;
     }
 
