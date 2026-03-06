@@ -82,11 +82,31 @@ export class WarEventHistoryService {
 
   /** Purpose: build per-clan war-plan instruction text for start/battle embeds. */
   async buildWarPlanText(
+    guildId: string | null | undefined,
     matchType: MatchType,
     expectedOutcome: "WIN" | "LOSE" | null,
     clanTag: string,
-    opponentNameInput?: string | null
+    opponentNameInput?: string | null,
+    phase: "prep" | "battle" = "battle"
   ): Promise<string | null> {
+    const normalizedClanTag = normalizeTag(clanTag);
+    if (guildId) {
+      const customPlan = await prisma.clanWarPlan.findUnique({
+        where: {
+          guildId_clanTag: {
+            guildId,
+            clanTag: normalizedClanTag,
+          },
+        },
+        select: {
+          prepPlan: true,
+          battlePlan: true,
+        },
+      });
+      const phasePlan = phase === "prep" ? customPlan?.prepPlan : customPlan?.battlePlan;
+      if (phasePlan && phasePlan.trim().length > 0) return phasePlan;
+    }
+
     if (matchType !== "FWA") return null;
     const opponentName = String(opponentNameInput ?? "").trim() || "Unknown";
     if (expectedOutcome === "WIN") {
@@ -98,7 +118,7 @@ export class WarEventHistoryService {
       ].join("\n");
     }
     if (expectedOutcome === "LOSE") {
-      const loseStyle = await this.getLoseStyleForClan(normalizeTag(clanTag));
+      const loseStyle = await this.getLoseStyleForClan(normalizedClanTag);
       if (loseStyle === "TRIPLE_TOP_30") {
         return [
           `**❤️ LOSE WAR 🆚 ${opponentName} 🔴**`,

@@ -340,6 +340,18 @@ model ClanWarParticipation {
   @@index([guildId, clanTag, matchType, missedBoth, warStartTime])
 }
 
+model ClanWarPlan {
+  id         String   @id @default(cuid())
+  guildId    String
+  clanTag    String
+  prepPlan   String?
+  battlePlan String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([guildId, clanTag])
+}
+
 model ApiUsage {
   endpoint String   @id
   lastCall DateTime
