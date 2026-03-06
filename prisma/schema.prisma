@@ -8,7 +8,8 @@ datasource db {
 }
 
 model PlayerActivity {
-  tag     String @id
+  guildId String
+  tag     String
   name    String
   clanTag String
 
@@ -24,20 +25,26 @@ model PlayerActivity {
 
   lastSeenAt DateTime
   updatedAt  DateTime @updatedAt
+
+  @@id([guildId, tag])
+  @@index([guildId, clanTag])
 }
 
 model TrackedClan {
-  id            Int       @id @default(autoincrement())
-  tag           String    @unique
-  name          String?
-  loseStyle     LoseStyle @default(TRIPLE_TOP_30)
-  mailChannelId String?
-  logChannelId  String?
-  clanRoleId    String?
-  clanBadge     String?
-  shortName     String?
-  pointsScrape  Json?
-  createdAt     DateTime  @default(now())
+  id              Int       @id @default(autoincrement())
+  tag             String    @unique
+  name            String?
+  loseStyle       LoseStyle @default(TRIPLE_TOP_30)
+  mailChannelId   String?
+  logChannelId    String?
+  clanRoleId      String?
+  clanBadge       String?
+  shortName       String?
+  mailConfig      Json?
+  notifyChannelId String?
+  notifyRole      String?
+  notifyEnabled   Boolean   @default(false)
+  createdAt       DateTime  @default(now())
 }
 
 model BotSetting {
@@ -45,6 +52,8 @@ model BotSetting {
   value     String
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([updatedAt])
 }
 
 model PlayerLink {
@@ -97,6 +106,7 @@ model KickListEntry {
 
 model RecruitmentTemplate {
   id         Int                 @id @default(autoincrement())
+  guildId    String
   clanTag    String
   platform   RecruitmentPlatform
   subject    String?
@@ -107,12 +117,13 @@ model RecruitmentTemplate {
   createdAt  DateTime            @default(now())
   updatedAt  DateTime            @updatedAt
 
-  @@unique([clanTag, platform])
-  @@index([clanTag])
+  @@unique([guildId, clanTag, platform])
+  @@index([guildId, clanTag])
 }
 
 model RecruitmentCooldown {
   id        Int                 @id @default(autoincrement())
+  guildId   String
   userId    String
   clanTag   String
   platform  RecruitmentPlatform
@@ -122,35 +133,15 @@ model RecruitmentCooldown {
   createdAt DateTime            @default(now())
   updatedAt DateTime            @updatedAt
 
-  @@unique([userId, clanTag, platform])
-  @@index([userId, expiresAt])
+  @@unique([guildId, userId, clanTag, platform])
+  @@index([guildId, userId, expiresAt])
   @@index([expiresAt, reminded])
-}
-
-model WarHistoryParticipant {
-  id               Int       @id @default(autoincrement())
-  clanTag          String
-  clanName         String?
-  opponentClanTag  String?
-  opponentClanName String?
-  warStartTime     DateTime
-  warEndTime       DateTime?
-  warState         String?
-  playerTag        String
-  playerName       String?
-  playerPosition   Int?
-  attacksUsed      Int
-  updatedAt        DateTime  @updatedAt
-  createdAt        DateTime  @default(now())
-
-  @@unique([clanTag, warStartTime, playerTag])
-  @@index([clanTag, warStartTime])
-  @@index([playerTag, warStartTime])
+  @@index([expiresAt])
+  @@index([guildId, expiresAt, reminded])
 }
 
 model WarAttacks {
-  id               Int       @id @default(autoincrement())
-  warId            Int?
+  warId            Int
   clanTag          String
   clanName         String?
   opponentClanTag  String?
@@ -174,18 +165,18 @@ model WarAttacks {
   updatedAt        DateTime  @updatedAt
   createdAt        DateTime  @default(now())
 
-  @@unique([warId, playerTag, attackNumber])
+  @@id([warId, playerTag, attackNumber])
+  @@unique([clanTag, warStartTime, playerTag, attackOrder])
   @@index([clanTag, warStartTime])
   @@index([playerTag, warStartTime])
   @@index([warId])
 }
 
 model CurrentWar {
-  id                Int           @id @default(autoincrement())
   guildId           String
   clanTag           String
   warId             Int?
-  currentSyncNum    Int?
+  syncNum    Int?
   channelId         String
   notify            Boolean       @default(true)
   pingRole          Boolean       @default(true)
@@ -197,21 +188,36 @@ model CurrentWar {
   matchType         WarMatchType?
   warStartFwaPoints Int?
   warEndFwaPoints   Int?
-  lastClanStars     Int?
-  lastOpponentStars Int?
-  lastState         String?
-  lastWarStartTime  DateTime?
-  lastOpponentTag   String?
-  lastOpponentName  String?
+  clanStars     Int?
+  opponentStars Int?
+  state         String?
+  prepStartTime     DateTime?
+  startTime         DateTime?
+  endTime           DateTime?
+  opponentTag   String?
+  opponentName  String?
   clanName          String?
-  mailConfig        Json?
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
 
-  @@unique([guildId, clanTag])
+  @@id([clanTag, guildId])
   @@index([guildId, notify])
   @@index([warId])
-  @@index([lastWarStartTime, clanTag, lastOpponentTag])
+  @@index([startTime, clanTag, opponentTag])
+}
+
+model ClanNotifyConfig {
+  clanTag     String
+  guildId     String
+  channelId   String
+  roleId      String?
+  pingEnabled Boolean @default(true)
+  embedEnabled Boolean @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([guildId, clanTag])
+  @@index([guildId])
 }
 
 model ClanWarHistory {
@@ -222,10 +228,10 @@ model ClanWarHistory {
   clanDestruction     Float?
   opponentStars       Int?
   opponentDestruction Float?
-  fwaPointsGained     Int?
+  pointsAfterWar      Int?
   expectedOutcome     String?
   actualOutcome       String?
-  enemyPoints         Int?
+  prepStartTime       DateTime?
   warStartTime        DateTime
   warEndTime          DateTime?
   clanName            String?
@@ -234,16 +240,107 @@ model ClanWarHistory {
   opponentTag         String?
   createdAt           DateTime      @default(now())
   updatedAt           DateTime      @updatedAt
-  lookup              WarLookup?
-
   @@unique([warStartTime, clanTag, opponentTag])
   @@index([clanTag, warEndTime])
 }
 
 model WarLookup {
-  warId      Int            @id
-  payload    Json
-  createdAt  DateTime       @default(now())
-  updatedAt  DateTime       @updatedAt
-  warHistory ClanWarHistory @relation(fields: [warId], references: [warId], onDelete: Cascade)
+  warId       String   @id
+  clanTag     String
+  opponentTag String?
+  startTime   DateTime
+  endTime     DateTime?
+  result      String?
+  payload     Json
+  createdAt   DateTime @default(now())
+
+  @@index([clanTag, startTime])
 }
+
+model WarEvent {
+  warId     Int
+  clanTag   String
+  eventType String
+  createdAt DateTime @default(now())
+  payload   Json
+
+  @@id([warId, clanTag, eventType])
+  @@index([clanTag, createdAt(sort: Desc)])
+}
+
+model ClanPostedMessage {
+  id         String   @id @default(cuid())
+  guildId    String
+  clanTag    String
+  type       String
+  event      String?
+  channelId  String
+  messageId  String
+  messageUrl String
+  warId      String?
+  syncNum    Int?
+  configHash String?
+  createdAt  DateTime @default(now())
+
+  @@index([guildId, clanTag])
+  @@index([clanTag, warId])
+  @@unique([guildId, clanTag, warId, type, event])
+}
+
+model ClanPointsSync {
+  id             String   @id @default(cuid())
+  guildId        String
+  clanTag        String
+  warId          String?
+  warStartTime   DateTime
+  syncNum        Int
+  opponentTag    String
+  clanPoints     Int
+  opponentPoints Int
+  outcome        String?
+  isFwa          Boolean
+  syncedAt       DateTime @default(now())
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([guildId, clanTag])
+  @@index([clanTag, warStartTime])
+  @@index([guildId, clanTag, warId])
+  @@unique([guildId, clanTag, warStartTime])
+}
+
+model ClanWarParticipation {
+  id                String   @id @default(cuid())
+  guildId           String
+  warId             String
+  clanTag           String
+  opponentTag       String?
+  playerTag         String
+  playerName        String?
+  townHall          Int?
+  attacksUsed       Int
+  attacksMissed     Int
+  starsEarned       Int
+  trueStars         Int
+  missedBoth        Boolean
+  firstAttackAt     DateTime?
+  attackDelayMinutes Int?
+  attackWindowMissed Boolean?
+  matchType         String
+  warStartTime      DateTime
+  warEndTime        DateTime?
+  createdAt         DateTime @default(now())
+
+  @@unique([guildId, warId, playerTag])
+  @@index([guildId, clanTag, warStartTime])
+  @@index([guildId, playerTag])
+  @@index([warId])
+  @@index([guildId, clanTag, matchType, missedBoth, warStartTime])
+}
+
+model ApiUsage {
+  endpoint String   @id
+  lastCall DateTime
+  callCount Int     @default(0)
+}
+

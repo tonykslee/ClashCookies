@@ -11,7 +11,6 @@ import {
   Role,
 } from "discord.js";
 import { randomUUID } from "crypto";
-import { Prisma } from "@prisma/client";
 import { Command } from "../Command";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
@@ -20,13 +19,6 @@ import { WarEventLogService } from "../services/WarEventLogService";
 function normalizeClanTag(input: string): string {
   const raw = input.trim().toUpperCase().replace(/^#/, "");
   return raw ? `#${raw}` : "";
-}
-
-function deriveWarState(raw: string | null | undefined): string {
-  const value = String(raw ?? "").toLowerCase();
-  if (value.includes("preparation")) return "preparation";
-  if (value.includes("inwar")) return "inWar";
-  return "notInWar";
 }
 
 function normalizeClanTagInput(input: string): string {
@@ -77,7 +69,7 @@ export async function handleNotifyWarPreviewPostButton(
   if (!request) {
     await interaction.reply({
       ephemeral: true,
-      content: "This preview has expired. Run `/notify war-preview` again.",
+      content: "This preview has expired. Run `/notify preview` again.",
     });
     return;
   }
@@ -99,7 +91,7 @@ export async function handleNotifyWarPreviewPostButton(
     notifyWarPreviewRequests.delete(parsed.key);
     await interaction.reply({
       ephemeral: true,
-      content: "This preview has expired. Run `/notify war-preview` again.",
+      content: "This preview has expired. Run `/notify preview` again.",
     });
     return;
   }
@@ -140,32 +132,32 @@ export const Notify: Command = {
   description: "Configure notification features",
   options: [
     {
-      name: "war",
-      description: "Enable war event logs for a clan to a target channel",
+      name: "set",
+      description: "Creates or updates notification routing",
       type: ApplicationCommandOptionType.Subcommand,
       options: [
         {
-          name: "clan-tag",
+          name: "clan",
           description: "Clan tag (tracked or non-tracked)",
           type: ApplicationCommandOptionType.String,
           required: true,
           autocomplete: true,
         },
         {
-          name: "target-channel",
-          description: "Channel to post war start/battle/end logs",
+          name: "channel",
+          description: "Channel to post war event logs",
           type: ApplicationCommandOptionType.Channel,
           required: true,
         },
         {
           name: "role",
-          description: "Optional role to ping when war event logs are posted",
+          description: "Optional role to ping when war events are posted",
           type: ApplicationCommandOptionType.Role,
           required: false,
         },
         {
-          name: "role-ping",
-          description: "Whether to ping the configured role in war event logs (default: on)",
+          name: "ping",
+          description: "Whether to ping the configured role (default: true)",
           type: ApplicationCommandOptionType.Boolean,
           required: false,
         },
@@ -173,12 +165,12 @@ export const Notify: Command = {
     },
     {
       name: "toggle",
-      description: "Toggle war embed or ping on/off for an existing /notify war subscription",
+      description: "Toggle embed or ping on/off for an existing notification",
       type: ApplicationCommandOptionType.Subcommand,
       options: [
         {
-          name: "clan-tag",
-          description: "Clan tag already configured with /notify war",
+          name: "clan",
+          description: "Clan tag already configured with /notify set",
           type: ApplicationCommandOptionType.String,
           required: true,
           autocomplete: true,
@@ -189,12 +181,12 @@ export const Notify: Command = {
           type: ApplicationCommandOptionType.String,
           required: true,
           choices: [
-            { name: "war embed", value: "war_embed" },
+            { name: "embed", value: "embed" },
             { name: "ping", value: "ping" },
           ],
         },
         {
-          name: "toggle",
+          name: "state",
           description: "Enable or disable the selected target",
           type: ApplicationCommandOptionType.String,
           required: true,
@@ -206,13 +198,13 @@ export const Notify: Command = {
       ],
     },
     {
-      name: "war-preview",
+      name: "preview",
       description: "Preview a war event embed, then confirm posting publicly",
       type: ApplicationCommandOptionType.Subcommand,
       options: [
         {
-          name: "clan-tag",
-          description: "Clan tag (must already be configured with /notify war)",
+          name: "clan",
+          description: "Clan tag (must already be configured with /notify set)",
           type: ApplicationCommandOptionType.String,
           required: true,
           autocomplete: true,
@@ -246,7 +238,7 @@ export const Notify: Command = {
       type: ApplicationCommandOptionType.Subcommand,
       options: [
         {
-          name: "clan-tag",
+          name: "clan",
           description: "Optional clan tag to show a single clan config",
           type: ApplicationCommandOptionType.String,
           required: false,
@@ -268,43 +260,33 @@ export const Notify: Command = {
 
     const sub = interaction.options.getSubcommand(true);
     if (sub === "show") {
-      const rawTag = interaction.options.getString("clan-tag", false);
+      const rawTag = interaction.options.getString("clan", false);
       const normalizedFilter = rawTag ? normalizeClanTag(rawTag) : "";
 
       const tracked = await prisma.trackedClan.findMany({
         orderBy: { createdAt: "asc" },
         select: { name: true, tag: true },
       });
-      const subscriptions = await prisma.$queryRaw<
-        Array<{
-          clanTag: string;
-          channelId: string;
-          notifyRole: string | null;
-          notify: boolean;
-          pingRole: boolean;
-        }>
-      >(
-        Prisma.sql`
-          SELECT "clanTag","channelId","notifyRole","notify","pingRole"
-          FROM "CurrentWar"
-          WHERE "guildId" = ${interaction.guildId}
-        `
-      );
-      const subByTag = new Map(
-        subscriptions.map((s) => [normalizeClanTag(s.clanTag), s])
+      const configs = await prisma.clanNotifyConfig.findMany({
+        where: normalizedFilter ? { clanTag: normalizedFilter, guildId: interaction.guildId } : { guildId: interaction.guildId },
+        orderBy: { updatedAt: "asc" },
+      });
+
+      const configByTag = new Map(
+        configs.map((c) => [normalizeClanTag(c.clanTag), c])
       );
 
       const rows = tracked
         .map((clan) => {
           const clanTag = normalizeClanTag(clan.tag);
-          const subRow = subByTag.get(clanTag) ?? null;
+          const config = configByTag.get(clanTag);
           return {
             clanName: clan.name?.trim() || clanTag,
             clanTag,
-            channelId: subRow?.channelId ?? null,
-            notifyRole: subRow?.notifyRole ?? null,
-            enabled: Boolean(subRow?.notify),
-            rolePingEnabled: subRow?.pingRole ?? true,
+            channelId: config?.channelId ?? null,
+            roleId: config?.roleId ?? null,
+            embedEnabled: config?.embedEnabled ?? false,
+            pingEnabled: config?.pingEnabled ?? true,
           };
         })
         .filter((r) => (normalizedFilter ? r.clanTag === normalizedFilter : true));
@@ -320,10 +302,10 @@ export const Notify: Command = {
 
       const lines = rows.map((r) => {
         const channelText = r.channelId ? `<#${r.channelId}>` : "not configured";
-        const roleText = r.notifyRole ? `<@&${r.notifyRole}>` : "none";
-        const status = r.enabled ? "enabled" : "disabled";
-        const rolePing = r.rolePingEnabled ? "on" : "off";
-        return `- **${r.clanName}** (${r.clanTag})\n  Channel: ${channelText}\n  Role: ${roleText}\n  Role ping: ${rolePing}\n  Status: ${status}`;
+        const roleText = r.roleId ? `<@&${r.roleId}>` : "none";
+        const embedStatus = r.embedEnabled ? "enabled" : "disabled";
+        const pingStatus = r.pingEnabled ? "enabled" : "disabled";
+        return `- **${r.clanName}** (${r.clanTag})\n  Channel: ${channelText}\n  Role: ${roleText}\n  Embed: ${embedStatus}\n  Ping: ${pingStatus}`;
       });
 
       await interaction.editReply(lines.join("\n"));
@@ -331,44 +313,42 @@ export const Notify: Command = {
     }
 
     if (sub === "toggle") {
-      const clanTag = normalizeClanTag(interaction.options.getString("clan-tag", true));
+      const clanTag = normalizeClanTag(interaction.options.getString("clan", true));
       const target = interaction.options.getString("target", true);
-      const toggle = interaction.options.getString("toggle", true);
-      const enabled = toggle === "on";
-      if (target !== "war_embed" && target !== "ping") {
-        await interaction.editReply("Invalid target. Use `war embed` or `ping`.");
+      const state = interaction.options.getString("state", true);
+      const enabled = state === "on";
+      if (target !== "embed" && target !== "ping") {
+        await interaction.editReply("Invalid target. Use `embed` or `ping`.");
         return;
       }
       const updated =
-        target === "war_embed"
-          ? await prisma.$executeRaw(
-              Prisma.sql`
-                UPDATE "CurrentWar"
-                SET "notify" = ${enabled}, "updatedAt" = NOW()
-                WHERE "guildId" = ${interaction.guildId}
-                  AND UPPER(REPLACE("clanTag",'#','')) = ${normalizeClanTagInput(clanTag)}
-              `
-            )
-          : await prisma.$executeRaw(
-              Prisma.sql`
-                UPDATE "CurrentWar"
-                SET "pingRole" = ${enabled}, "updatedAt" = NOW()
-                WHERE "guildId" = ${interaction.guildId}
-                  AND UPPER(REPLACE("clanTag",'#','')) = ${normalizeClanTagInput(clanTag)}
-              `
-            );
-      if (updated === 0) {
-        await interaction.editReply(`No /notify war subscription found for ${clanTag}.`);
+        target === "embed"
+          ? await prisma.clanNotifyConfig.updateMany({
+              where: {
+                guildId: interaction.guildId,
+                clanTag: normalizeClanTagInput(clanTag),
+              },
+              data: { embedEnabled: enabled, updatedAt: new Date() },
+            })
+          : await prisma.clanNotifyConfig.updateMany({
+              where: {
+                guildId: interaction.guildId,
+                clanTag: normalizeClanTagInput(clanTag),
+              },
+              data: { pingEnabled: enabled, updatedAt: new Date() },
+            });
+      if (updated.count === 0) {
+        await interaction.editReply(`No /notify set configuration found for ${clanTag}.`);
         return;
       }
 
-      const targetLabel = target === "war_embed" ? "War embed" : "Ping";
+      const targetLabel = target === "embed" ? "Embed" : "Ping";
       await interaction.editReply(`${targetLabel} is now **${enabled ? "on" : "off"}** for ${clanTag}.`);
       return;
     }
 
-    if (sub === "war-preview") {
-      const clanTag = normalizeClanTag(interaction.options.getString("clan-tag", true));
+    if (sub === "preview") {
+      const clanTag = normalizeClanTag(interaction.options.getString("clan", true));
       const eventType = interaction.options.getString("event", true) as
         | "war_started"
         | "battle_day"
@@ -376,6 +356,20 @@ export const Notify: Command = {
       const source = (interaction.options.getString("source", false) ?? "current") as
         | "current"
         | "last";
+
+      // Check if clan is configured
+      const config = await prisma.clanNotifyConfig.findUnique({
+        where: {
+          guildId_clanTag: {
+            guildId: interaction.guildId,
+            clanTag: normalizeClanTagInput(clanTag),
+          },
+        },
+      });
+      if (!config) {
+        await interaction.editReply(`No notification configuration found for ${clanTag}. Use /notify set first.`);
+        return;
+      }
 
       const warEventService = new WarEventLogService(_client, cocService);
       const result = await warEventService.buildTestEventPreviewForClan({
@@ -424,91 +418,62 @@ export const Notify: Command = {
       return;
     }
 
-    if (sub !== "war") {
+    if (sub !== "set") {
       await interaction.editReply("Unknown notify option.");
       return;
     }
 
-    const clanTag = normalizeClanTag(interaction.options.getString("clan-tag", true));
+    const clanTag = normalizeClanTag(interaction.options.getString("clan", true));
     if (!clanTag) {
       await interaction.editReply("Invalid clan tag.");
       return;
     }
 
-    const target = interaction.options.getChannel("target-channel", true);
-    const notifyRole = interaction.options.getRole("role", false) as Role | null;
-    const rolePingEnabled = interaction.options.getBoolean("role-ping", false) ?? true;
+    const channel = interaction.options.getChannel("channel", true);
+    const role = interaction.options.getRole("role", false) as Role | null;
+    const pingEnabled = interaction.options.getBoolean("ping", false) ?? true;
+
     if (
-      target.type !== ChannelType.GuildText &&
-      target.type !== ChannelType.GuildAnnouncement
+      channel.type !== ChannelType.GuildText &&
+      channel.type !== ChannelType.GuildAnnouncement
     ) {
       await interaction.editReply("Target channel must be a server text or announcement channel.");
       return;
     }
 
-    const war = await cocService.getCurrentWar(clanTag).catch(() => null);
-    const lastState = deriveWarState(war?.state ?? "notInWar");
-    const clanName =
-      String(war?.clan?.name ?? (await cocService.getClanName(clanTag).catch(() => clanTag))).trim() ||
-      clanTag;
-    const opponentTag = String(war?.opponent?.tag ?? "").trim() || null;
-    const opponentName = String(war?.opponent?.name ?? "").trim() || null;
-    const warStartTime = (() => {
-      const raw = war?.startTime;
-      if (!raw) return null;
-      const m = raw.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})\.\d{3}Z$/);
-      if (!m) return null;
-      const [, y, mo, d, h, mi, s] = m;
-      return new Date(Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s)));
-    })();
-    const warId =
-      warStartTime && clanTag
-        ? (
-            await prisma.clanWarHistory
-              .findFirst({
-                where: {
-                  clanTag,
-                  warStartTime,
-                },
-                orderBy: { warId: "desc" },
-                select: { warId: true },
-              })
-              .catch(() => null)
-          )?.warId ?? null
-        : null;
-
-    await prisma.$executeRaw(
-      Prisma.sql`
-        INSERT INTO "CurrentWar"
-          ("guildId","clanTag","warId","channelId","notify","notifyRole","pingRole","lastState","lastWarStartTime","lastOpponentTag","lastOpponentName","clanName","createdAt","updatedAt")
-        VALUES
-          (${interaction.guildId}, ${clanTag}, ${warId}, ${target.id}, true, ${notifyRole?.id ?? null}, ${rolePingEnabled}, ${lastState}, ${warStartTime}, ${opponentTag}, ${opponentName}, ${clanName}, NOW(), NOW())
-        ON CONFLICT ("guildId","clanTag")
-        DO UPDATE SET
-          "warId" = EXCLUDED."warId",
-          "channelId" = EXCLUDED."channelId",
-          "notify" = true,
-          "notifyRole" = EXCLUDED."notifyRole",
-          "pingRole" = EXCLUDED."pingRole",
-          "lastState" = EXCLUDED."lastState",
-          "lastWarStartTime" = EXCLUDED."lastWarStartTime",
-          "lastOpponentTag" = EXCLUDED."lastOpponentTag",
-          "lastOpponentName" = EXCLUDED."lastOpponentName",
-          "clanName" = EXCLUDED."clanName",
-          "updatedAt" = NOW()
-      `
-    );
+    await prisma.clanNotifyConfig.upsert({
+      where: {
+        guildId_clanTag: {
+          guildId: interaction.guildId,
+          clanTag: normalizeClanTagInput(clanTag),
+        },
+      },
+      create: {
+        guildId: interaction.guildId,
+        clanTag: normalizeClanTagInput(clanTag),
+        channelId: channel.id,
+        roleId: role?.id ?? null,
+        pingEnabled,
+        embedEnabled: true,
+      },
+      update: {
+        channelId: channel.id,
+        roleId: role?.id ?? null,
+        pingEnabled,
+        embedEnabled: true,
+        updatedAt: new Date(),
+      },
+    });
 
     await interaction.editReply(
-      `Enabled war event logs for ${clanName} (${clanTag}) in <#${target.id}>.\n` +
-        `Notify role: ${notifyRole ? `<@&${notifyRole.id}>` : "none"}\n` +
-        `Role ping: ${rolePingEnabled ? "on" : "off"}\n` +
-        `Current state snapshot: \`${lastState}\``
+      `Notification routing set for ${clanTag} in <#${channel.id}>.\n` +
+        `Role: ${role ? `<@&${role.id}>` : "none"}\n` +
+        `Ping: ${pingEnabled ? "enabled" : "disabled"}`
     );
   },
   autocomplete: async (interaction: AutocompleteInteraction) => {
     const focused = interaction.options.getFocused(true);
-    if (focused.name !== "clan-tag") {
+    if (focused.name !== "clan") {
       await interaction.respond([]);
       return;
     }
@@ -540,4 +505,3 @@ export const Notify: Command = {
     await interaction.respond(choices);
   },
 };
-

@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { prisma } from "../prisma";
 
 type FetchSource = "api" | "web" | "cache_hit" | "cache_miss" | "fallback_cache";
 
@@ -49,6 +50,23 @@ function getOrCreateTotals(map: Map<string, Totals>, key: string): Totals {
   const created = makeEmptyTotals();
   map.set(key, created);
   return created;
+}
+
+function trackApiUsage(endpoint: string, incrementBy: number): void {
+  void prisma.apiUsage
+    .upsert({
+      where: { endpoint },
+      create: {
+        endpoint,
+        lastCall: new Date(),
+        callCount: incrementBy,
+      },
+      update: {
+        lastCall: new Date(),
+        callCount: { increment: incrementBy },
+      },
+    })
+    .catch(() => undefined);
 }
 
 export async function runFetchTelemetryBatch<T>(
@@ -105,6 +123,9 @@ export function recordFetchEvent(event: FetchEvent): void {
 
   const totals = getOrCreateTotals(operationTotals, opKey);
   totals[event.source] += incrementBy;
+  if (event.source === "api" || event.source === "web") {
+    trackApiUsage(`${event.namespace}:${event.operation}`, incrementBy);
+  }
 
   const batch = telemetryBatchStorage.getStore();
   if (batch) {

@@ -12,15 +12,15 @@ import { prisma } from "../prisma";
 import { processRecruitmentCooldownReminders } from "../services/RecruitmentService";
 import { SettingsService } from "../services/SettingsService";
 import { PlayerLinkSyncService } from "../services/PlayerLinkSyncService";
-import { WarHistoryService } from "../services/WarHistoryService";
-import {
-  WarEventLogService,
-  notifyWarBattleDayRefreshIntervalMs,
-} from "../services/WarEventLogService";
+import { WarEventLogService } from "../services/WarEventLogService";
 import { refreshAllTrackedWarMailPosts } from "../commands/Fwa";
+import {
+  setNextNotifyRefreshAtMs,
+  setNextWarMailRefreshAtMs,
+} from "../services/refreshSchedule";
 
 const DEFAULT_OBSERVE_INTERVAL_MINUTES = 30;
-const RECRUITMENT_REMINDER_INTERVAL_MS = 5 * 60 * 1000;
+const RECRUITMENT_REMINDER_INTERVAL_MS = 60 * 60 * 1000;
 const DEFAULT_WAR_EVENT_POLL_INTERVAL_MINUTES = 5;
 const OBSERVE_LAST_RUN_AT_KEY = "activity_observe:last_run_at_ms";
 const VISIBILITY_OPTION = {
@@ -139,7 +139,6 @@ export default (client: Client, cocService: CoCService): void => {
     console.log(`✅ Guild commands registered (${Commands.length})`);
 
     const activityService = new ActivityService(cocService);
-    const warHistoryService = new WarHistoryService(cocService);
     const playerLinkSyncService = new PlayerLinkSyncService();
     const warEventLogService = new WarEventLogService(client, cocService);
     const settings = new SettingsService();
@@ -169,11 +168,10 @@ export default (client: Client, cocService: CoCService): void => {
         const observedMemberTags = new Set<string>();
         for (const tag of trackedTags) {
           try {
-            const memberTags = await activityService.observeClan(tag);
+            const memberTags = await activityService.observeClan(guildId, tag);
             for (const memberTag of memberTags) {
               observedMemberTags.add(memberTag);
             }
-            await warHistoryService.observeClanWar(tag);
           } catch (err) {
             console.error(
               `observeClan failed for ${tag}: ${formatError(err)}`
@@ -268,7 +266,7 @@ export default (client: Client, cocService: CoCService): void => {
     const runRecruitmentReminders = async () => {
       await runFetchTelemetryBatch("recruitment_reminder_cycle", async () => {
         try {
-          await processRecruitmentCooldownReminders(client);
+          await processRecruitmentCooldownReminders(client, guildId);
         } catch (err) {
           console.error(`[recruitment] reminder loop failed: ${formatError(err)}`);
         }
@@ -281,7 +279,7 @@ export default (client: Client, cocService: CoCService): void => {
         console.error(`[recruitment] reminder interval failed: ${formatError(err)}`);
       });
     }, RECRUITMENT_REMINDER_INTERVAL_MS);
-    console.log("Recruitment reminder loop enabled (every 5 minute(s)).");
+    console.log("Recruitment reminder loop enabled (every 60 minute(s)).");
 
     const warEventPollMinutesRaw = Number(
       process.env.WAR_EVENT_LOG_POLL_INTERVAL_MINUTES ?? DEFAULT_WAR_EVENT_POLL_INTERVAL_MINUTES
@@ -296,51 +294,27 @@ export default (client: Client, cocService: CoCService): void => {
       await runFetchTelemetryBatch("war_event_poll_cycle", async () => {
         try {
           await warEventLogService.poll();
+          await warEventLogService.refreshBattleDayPosts();
+          await refreshAllTrackedWarMailPosts(client);
         } catch (err) {
           console.error(`[war-events] poll loop failed: ${formatError(err)}`);
         }
       });
     };
 
+    setNextNotifyRefreshAtMs(Date.now() + warEventPollMs);
+    setNextWarMailRefreshAtMs(Date.now() + warEventPollMs);
     await runWarEventPoll();
     setInterval(() => {
+      setNextNotifyRefreshAtMs(Date.now() + warEventPollMs);
+      setNextWarMailRefreshAtMs(Date.now() + warEventPollMs);
       runWarEventPoll().catch((err) => {
         console.error(`[war-events] poll interval failed: ${formatError(err)}`);
       });
     }, warEventPollMs);
-    console.log(`War event log listener enabled (every ${warEventPollMinutes} minute(s)).`);
-
-    const runBattleDayRefresh = async () => {
-      await runFetchTelemetryBatch("war_event_battle_day_refresh_cycle", async () => {
-        try {
-          await warEventLogService.refreshBattleDayPosts();
-        } catch (err) {
-          console.error(`[war-events] battle-day refresh loop failed: ${formatError(err)}`);
-        }
-      });
-    };
-    const runWarMailRefresh = async () => {
-      await runFetchTelemetryBatch("war_mail_refresh_cycle", async () => {
-        try {
-          await refreshAllTrackedWarMailPosts(client);
-        } catch (err) {
-          console.error(`[fwa-mail] refresh loop failed: ${formatError(err)}`);
-        }
-      });
-    };
-    await runWarMailRefresh();
-    setInterval(() => {
-      runWarMailRefresh().catch((err) => {
-        console.error(`[fwa-mail] refresh interval failed: ${formatError(err)}`);
-      });
-    }, notifyWarBattleDayRefreshIntervalMs);
-    console.log("War mail refresh enabled (every 20 minute(s)).");
-    setInterval(() => {
-      runBattleDayRefresh().catch((err) => {
-        console.error(`[war-events] battle-day refresh interval failed: ${formatError(err)}`);
-      });
-    }, notifyWarBattleDayRefreshIntervalMs);
-    console.log("War battle-day embed refresh enabled (every 20 minute(s)).");
+    console.log(
+      `War event poll + refresh loop enabled (every ${warEventPollMinutes} minute(s)).`
+    );
 
     console.log("ClashCookies is online");
   });

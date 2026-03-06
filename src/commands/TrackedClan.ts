@@ -392,9 +392,9 @@ export const TrackedClan: Command = {
           },
         });
 
-        if (!existing) {
+        if (!existing && interaction.guildId) {
           try {
-            await activityService.observeClan(tag);
+            await activityService.observeClan(interaction.guildId, tag);
           } catch (observeErr) {
             console.error(
               `tracked-clan configure observe failed for ${tag}: ${formatError(observeErr)}`
@@ -404,7 +404,7 @@ export const TrackedClan: Command = {
 
         if (interaction.guildId) {
           const activeWar = await cocService.getCurrentWar(tag).catch(() => null);
-          const lastState = String(activeWar?.state ?? "notInWar");
+          const state = String(activeWar?.state ?? "notInWar");
           const opponentTag = normalizeClanTag(String(activeWar?.opponent?.tag ?? ""));
           const opponentName = String(activeWar?.opponent?.name ?? "").trim() || null;
           const warStartTimeRaw = String(activeWar?.startTime ?? "");
@@ -423,9 +423,41 @@ export const TrackedClan: Command = {
                 )
               )
             : null;
+          const prepStartTimeRaw = String(activeWar?.preparationStartTime ?? "");
+          const prepStartMatch = prepStartTimeRaw.match(
+            /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})\.\d{3}Z$/
+          );
+          const prepStartTime = prepStartMatch
+            ? new Date(
+                Date.UTC(
+                  Number(prepStartMatch[1]),
+                  Number(prepStartMatch[2]) - 1,
+                  Number(prepStartMatch[3]),
+                  Number(prepStartMatch[4]),
+                  Number(prepStartMatch[5]),
+                  Number(prepStartMatch[6])
+                )
+              )
+            : null;
+          const warEndTimeRaw = String(activeWar?.endTime ?? "");
+          const warEndMatch = warEndTimeRaw.match(
+            /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})\.\d{3}Z$/
+          );
+          const warEndTime = warEndMatch
+            ? new Date(
+                Date.UTC(
+                  Number(warEndMatch[1]),
+                  Number(warEndMatch[2]) - 1,
+                  Number(warEndMatch[3]),
+                  Number(warEndMatch[4]),
+                  Number(warEndMatch[5]),
+                  Number(warEndMatch[6])
+                )
+              )
+            : null;
           await prisma.currentWar.upsert({
             where: {
-              guildId_clanTag: {
+              clanTag_guildId: {
                 guildId: interaction.guildId,
                 clanTag: tag,
               },
@@ -435,18 +467,22 @@ export const TrackedClan: Command = {
               clanTag: tag,
               channelId: interaction.channelId,
               notify: false,
-              lastState,
-              lastWarStartTime: warStartTime,
-              lastOpponentTag: opponentTag || null,
-              lastOpponentName: opponentName,
+              state,
+              prepStartTime,
+              startTime: warStartTime,
+              endTime: warEndTime,
+              opponentTag: opponentTag || null,
+              opponentName: opponentName,
               clanName: saved.name ?? null,
             },
             update: {
               clanName: saved.name ?? null,
-              lastState,
-              lastWarStartTime: warStartTime,
-              lastOpponentTag: opponentTag || null,
-              lastOpponentName: opponentName,
+              state,
+              prepStartTime,
+              startTime: warStartTime,
+              endTime: warEndTime,
+              opponentTag: opponentTag || null,
+              opponentName: opponentName,
               updatedAt: new Date(),
             },
           });
@@ -532,3 +568,4 @@ export const TrackedClan: Command = {
     await interaction.respond(choices);
   },
 };
+

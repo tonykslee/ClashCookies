@@ -12,7 +12,7 @@ export class ActivityService {
   /**
    * Observe all members of a clan and update activity signals.
    */
-  async observeClan(clanTag: string): Promise<string[]> {
+  async observeClan(guildId: string, clanTag: string): Promise<string[]> {
     const clan = await this.coc.getClan(clanTag);
     const now = new Date();
     let playerApiCalls = 0;
@@ -31,6 +31,7 @@ export class ActivityService {
       }
 
       await this.observePlayer({
+        guildId,
         tag: player.tag,
         name: player.name,
         clanTag: clan.tag,
@@ -71,6 +72,7 @@ export class ActivityService {
    * Update activity signals for a single player.
    */
   private async observePlayer(input: {
+    guildId: string;
     tag: string;
     name: string;
     clanTag: string;
@@ -93,7 +95,12 @@ export class ActivityService {
     now: Date;
   }) {
     const existing = await prisma.playerActivity.findUnique({
-      where: { tag: input.tag },
+      where: {
+        guildId_tag: {
+          guildId: input.guildId,
+          tag: input.tag,
+        },
+      },
     });
 
     const updates: any = {
@@ -161,9 +168,15 @@ export class ActivityService {
     }
 
     await prisma.playerActivity.upsert({
-      where: { tag: input.tag },
+      where: {
+        guildId_tag: {
+          guildId: input.guildId,
+          tag: input.tag,
+        },
+      },
       update: updates,
       create: {
+        guildId: input.guildId,
         tag: input.tag,
         ...updates,
       },

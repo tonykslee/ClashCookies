@@ -167,8 +167,20 @@ export class ClashKingService {
           "Content-Type": "application/json",
         },
       });
+      recordFetchEvent({
+        namespace: "clashking",
+        operation: "discord_links_fallback",
+        source: "api",
+        detail: `tag=${normalizeTag(playerTag)} status=${response.status}`,
+      });
       return extractDiscordUserId(response.data);
     } catch (err) {
+      recordFetchEvent({
+        namespace: "clashking",
+        operation: "discord_links_fallback",
+        source: "api",
+        detail: `tag=${normalizeTag(playerTag)} result=error`,
+      });
       console.warn(
         `[clashking] link lookup fallback failed tag=${normalizeTag(playerTag)} error=${formatError(err)}`
       );

@@ -8,27 +8,55 @@ import { Command } from "../Command";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
 import {
+  runForceSyncWarIdCommand,
   runForceMailUpdateCommand,
   runForceSyncDataCommand,
   runForceSyncMailCommand,
+  refreshAllTrackedWarMailPosts,
 } from "./Fwa";
+import { runFetchTelemetryBatch } from "../helper/fetchTelemetry";
+import { WarEventLogService } from "../services/WarEventLogService";
+import { formatError } from "../helper/formatError";
 
 function normalizeTag(input: string): string {
   return input.trim().toUpperCase().replace(/^#/, "");
 }
 
+async function runForcePollWarEventsCommand(
+  client: Client,
+  interaction: ChatInputCommandInteraction,
+  cocService: CoCService
+): Promise<void> {
+  await interaction.deferReply({ ephemeral: true });
+
+  const warEventLogService = new WarEventLogService(client, cocService);
+  try {
+    await runFetchTelemetryBatch("war_event_poll_manual", async () => {
+      await warEventLogService.poll();
+      await warEventLogService.refreshBattleDayPosts();
+      await refreshAllTrackedWarMailPosts(client);
+    });
+    await interaction.editReply(
+      "Manual war-event poll + refresh completed successfully."
+    );
+  } catch (err) {
+    const message = formatError(err);
+    await interaction.editReply(`Manual war-event poll failed: ${message}`);
+  }
+}
+
 export const Force: Command = {
   name: "force",
-  description: "Manual force-sync utilities",
+  description: "Manual repair and refresh utilities",
   options: [
     {
       name: "sync",
-      description: "Force sync data and message references",
+      description: "Repair points, warId, and message tracking data",
       type: ApplicationCommandOptionType.SubcommandGroup,
       options: [
         {
           name: "data",
-          description: "Force-refresh points and sync number for a tracked clan",
+          description: "Force-refresh ClanPointsSync from points.fwafarm",
           type: ApplicationCommandOptionType.Subcommand,
           options: [
             {
@@ -40,7 +68,7 @@ export const Force: Command = {
             },
             {
               name: "datapoint",
-              description: "Choose which value to overwrite",
+              description: "Choose which live points-site values to refresh",
               type: ApplicationCommandOptionType.String,
               required: false,
               choices: [
@@ -51,8 +79,74 @@ export const Force: Command = {
           ],
         },
         {
+          name: "warid",
+          description: "Repair warId values in CurrentWar or ClanWarHistory",
+          type: ApplicationCommandOptionType.Subcommand,
+          options: [
+            {
+              name: "table",
+              description: "Table to repair",
+              type: ApplicationCommandOptionType.String,
+              required: true,
+              choices: [
+                { name: "CurrentWar", value: "currentwar" },
+                { name: "ClanWarHistory", value: "clanwarhistory" },
+              ],
+            },
+            {
+              name: "tag",
+              description: "Filter: clan tag (with or without #)",
+              type: ApplicationCommandOptionType.String,
+              required: false,
+              autocomplete: true,
+            },
+            {
+              name: "confirm",
+              description: "Set true to execute writes. Default is preview-only.",
+              type: ApplicationCommandOptionType.Boolean,
+              required: false,
+            },
+            {
+              name: "overwrite",
+              description: "Allow updating non-null warId rows",
+              type: ApplicationCommandOptionType.Boolean,
+              required: false,
+            },
+            {
+              name: "set_war_id",
+              description: "Set this explicit warId instead of deriving",
+              type: ApplicationCommandOptionType.Integer,
+              required: false,
+            },
+            {
+              name: "filter_war_id",
+              description: "Filter by existing warId",
+              type: ApplicationCommandOptionType.Integer,
+              required: false,
+            },
+            {
+              name: "war_start_time",
+              description: "Filter: war start time (ISO 8601, UTC)",
+              type: ApplicationCommandOptionType.String,
+              required: false,
+            },
+            {
+              name: "sync_number",
+              description: "Filter: sync number",
+              type: ApplicationCommandOptionType.Integer,
+              required: false,
+            },
+            {
+              name: "opponent_tag",
+              description: "Filter: opponent tag (with or without #)",
+              type: ApplicationCommandOptionType.String,
+              required: false,
+            },
+          ],
+        },
+        {
           name: "mail",
-          description: "Upsert MailConfig for a tracked clan message",
+          description: "Repair tracked Discord message references for a clan",
           type: ApplicationCommandOptionType.Subcommand,
           options: [
             {
@@ -64,7 +158,7 @@ export const Force: Command = {
             },
             {
               name: "message_type",
-              description: "Message type to record in MailConfig",
+              description: "Message type to record in ClanPostedMessage",
               type: ApplicationCommandOptionType.String,
               required: true,
               choices: [
@@ -76,11 +170,23 @@ export const Force: Command = {
             },
             {
               name: "message_id",
-              description: "Discord message ID to store",
+              description: "Discord message ID to store as the tracked reference",
               type: ApplicationCommandOptionType.String,
               required: true,
             },
           ],
+        },
+      ],
+    },
+    {
+      name: "poll",
+      description: "Manually trigger poll loops",
+      type: ApplicationCommandOptionType.SubcommandGroup,
+      options: [
+        {
+          name: "war-events",
+          description: "Run war event poll + refresh now",
+          type: ApplicationCommandOptionType.Subcommand,
         },
       ],
     },
@@ -107,7 +213,7 @@ export const Force: Command = {
     },
   ],
   run: async (
-    _client: Client,
+    client: Client,
     interaction: ChatInputCommandInteraction,
     cocService: CoCService
   ) => {
@@ -122,8 +228,16 @@ export const Force: Command = {
       await runForceSyncMailCommand(interaction, cocService);
       return;
     }
+    if (subcommandGroup === "sync" && subcommand === "warid") {
+      await runForceSyncWarIdCommand(interaction);
+      return;
+    }
     if (subcommandGroup === "mail" && subcommand === "update") {
       await runForceMailUpdateCommand(interaction);
+      return;
+    }
+    if (subcommandGroup === "poll" && subcommand === "war-events") {
+      await runForcePollWarEventsCommand(client, interaction, cocService);
       return;
     }
 

@@ -30,6 +30,7 @@ import {
   handleFwaMatchSkipSyncConfirmButton,
   handleFwaMatchSkipSyncUndoButton,
   handleFwaMailConfirmButton,
+  handleFwaMailBackButton,
   handleFwaMailRefreshButton,
   handleFwaMatchSendMailButton,
   isFwaMatchAllianceButtonCustomId,
@@ -38,6 +39,7 @@ import {
   isFwaMatchSkipSyncConfirmButtonCustomId,
   isFwaMatchSkipSyncUndoButtonCustomId,
   isFwaMailConfirmButtonCustomId,
+  isFwaMailBackButtonCustomId,
   isFwaMailRefreshButtonCustomId,
   isFwaMatchSendMailButtonCustomId,
   isFwaMatchTypeEditButtonCustomId,
@@ -166,7 +168,24 @@ export default (client: Client, cocService: CoCService): void => {
     }
 
   if (interaction.isButton()) {
-    await handleButtonInteraction(interaction, cocService);
+    try {
+      await handleButtonInteraction(interaction, cocService);
+    } catch (err) {
+      console.error(`Button interaction failed: ${formatError(err)}`);
+      const code = getDiscordErrorCode(err);
+      if (code === 10062) {
+        console.warn("Button interaction expired before response (10062).");
+        return;
+      }
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction
+          .reply({
+            ephemeral: true,
+            content: "This interaction expired. Please run the command again.",
+          })
+          .catch(() => undefined);
+      }
+    }
     return;
   }
 
@@ -426,6 +445,20 @@ const handleButtonInteraction = async (
         await interaction.reply({
           ephemeral: true,
           content: "Failed to send war mail.",
+        });
+      }
+    }
+  }
+
+  if (isFwaMailBackButtonCustomId(interaction.customId)) {
+    try {
+      await handleFwaMailBackButton(interaction);
+    } catch (err) {
+      console.error(`FWA mail back button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to restore the match view.",
         });
       }
     }
