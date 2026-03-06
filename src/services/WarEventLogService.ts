@@ -14,6 +14,7 @@ import { prisma } from "../prisma";
 import { CoCService } from "./CoCService";
 import { PointsProjectionService } from "./PointsProjectionService";
 import { PostedMessageService } from "./PostedMessageService";
+import { PointsSyncService } from "./PointsSyncService";
 import { SettingsService } from "./SettingsService";
 import { WarEventHistoryService } from "./war-events/history";
 import { WarStartPointsSyncService } from "./war-events/pointsSync";
@@ -252,6 +253,7 @@ function buildWarStatsLines(stats: EmbedWarStats): string[] {
 export class WarEventLogService {
   private readonly points: PointsProjectionService;
   private readonly pointsSync: WarStartPointsSyncService;
+  private readonly currentSyncs: PointsSyncService;
   private readonly history: WarEventHistoryService;
   private readonly postedMessages: PostedMessageService;
 
@@ -259,6 +261,7 @@ export class WarEventLogService {
   constructor(private readonly client: Client, private readonly coc: CoCService) {
     this.points = new PointsProjectionService(coc);
     this.pointsSync = new WarStartPointsSyncService(this.points, new SettingsService());
+    this.currentSyncs = new PointsSyncService();
     this.history = new WarEventHistoryService(coc);
     this.postedMessages = new PostedMessageService();
   }
@@ -682,20 +685,21 @@ export class WarEventLogService {
           inline: true,
         }
       );
-      if (payload.matchType !== "BL" && payload.matchType !== "MM") {
+      const battlePlanText = await this.history.buildWarPlanText(
+        guildId,
+        payload.matchType,
+        payload.outcome,
+        payload.clanTag,
+        payload.opponentName,
+        "battle"
+      );
+      if (battlePlanText) {
         embed.addFields({
           name: "War Plan",
-          value:
-            (await this.history.buildWarPlanText(
-              payload.matchType,
-              payload.outcome,
-              payload.clanTag,
-              payload.opponentName
-            )) ?? "N/A",
+          value: battlePlanText,
           inline: false,
         });
-      }
-      if (payload.matchType === "BL") {
+      } else if (payload.matchType === "BL") {
         embed.addFields({
           name: "Message",
           value:
@@ -739,20 +743,21 @@ export class WarEventLogService {
           inline: true,
         }
       );
-      if (payload.matchType === "FWA") {
+      const prepPlanText = await this.history.buildWarPlanText(
+        guildId,
+        payload.matchType,
+        payload.outcome,
+        payload.clanTag,
+        payload.opponentName,
+        "prep"
+      );
+      if (prepPlanText) {
         embed.addFields({
           name: "War Plan",
-          value:
-            (await this.history.buildWarPlanText(
-              payload.matchType,
-              payload.outcome,
-              payload.clanTag,
-              payload.opponentName
-            )) ?? "N/A",
+          value: prepPlanText,
           inline: false,
         });
-      }
-      if (payload.matchType === "BL") {
+      } else if (payload.matchType === "BL") {
         embed.addFields({
           name: "Message",
           value: [
@@ -1061,14 +1066,6 @@ export class WarEventLogService {
         eventType = null;
       }
     }
-    const syncNumberForEvent =
-      eventType === "war_ended"
-        ? (sub.syncNum !== null && Number.isFinite(Number(sub.syncNum))
-            ? Math.trunc(Number(sub.syncNum))
-            : syncContext.activeSync)
-        : currentState === "notInWar"
-          ? syncContext.previousSync
-          : syncContext.activeSync;
     if (eventType === "war_started" && nextOpponentTag) {
       await this.pointsSync.resetWarStartPointsJob(sub.clanTag, nextOpponentTag).catch(() => null);
     }
@@ -1080,6 +1077,13 @@ export class WarEventLogService {
         nextOpponentName
       ).catch(() => null);
     }
+
+    const fallbackSyncNumberForEvent =
+      eventType === "war_ended"
+        ? syncContext.activeSync
+        : currentState === "notInWar"
+          ? syncContext.previousSync
+          : syncContext.activeSync;
 
     let nextFwaPoints = sub.fwaPoints;
     let nextOpponentFwaPoints = sub.opponentFwaPoints;
@@ -1124,7 +1128,7 @@ export class WarEventLogService {
         projectionOpponentTag,
         a.balance,
         b.balance,
-        syncNumberForEvent
+        fallbackSyncNumberForEvent
       );
       if (eventType === "war_started") {
         nextWarStartFwaPoints = a.balance;
@@ -1189,6 +1193,23 @@ export class WarEventLogService {
       warStartTime: nextWarStartTime,
       currentState,
     });
+    const syncRow =
+      guildId && nextWarStartTime
+        ? await this.currentSyncs.getCurrentSyncForClan({
+            guildId,
+            clanTag: sub.clanTag,
+            warId:
+              resolvedWarId !== null && resolvedWarId !== undefined
+                ? String(Math.trunc(Number(resolvedWarId)))
+                : sub.warId !== null && sub.warId !== undefined
+                  ? String(Math.trunc(Number(sub.warId)))
+                  : null,
+            warStartTime: nextWarStartTime,
+          })
+        : null;
+    const syncNumberForEvent =
+      syncRow?.syncNum ??
+      fallbackSyncNumberForEvent;
 
     const detectedEventPayload = eventType
       ? ({
@@ -1640,28 +1661,28 @@ export class WarEventLogService {
         value: payload.matchType ?? "unknown",
         inline: true,
       });
-      if (payload.matchType !== "BL" && payload.matchType !== "MM") {
+      const battlePlanText = await this.history.buildWarPlanText(
+        guildId,
+        payload.matchType,
+        payload.outcome,
+        payload.clanTag,
+        payload.opponentName,
+        "battle"
+      );
+      if (battlePlanText) {
         embed.addFields({
           name: "War Plan",
-          value:
-            (await this.history.buildWarPlanText(
-              payload.matchType,
-              payload.outcome,
-              payload.clanTag,
-              payload.opponentName
-            )) ?? "N/A",
+          value: battlePlanText,
           inline: false,
         });
-      }
-      if (payload.matchType === "BL") {
+      } else if (payload.matchType === "BL") {
         embed.addFields({
           name: "Message",
           value:
             "**Battle day has started! Thank you for your help swapping to war bases, please swap back to FWA bases asap!**",
           inline: false,
         });
-      }
-      if (payload.matchType === "MM") {
+      } else if (payload.matchType === "MM") {
         embed.addFields({
           name: "Message",
           value: "Attack whatever you want! Free for all! ⚔️",
@@ -1698,20 +1719,21 @@ export class WarEventLogService {
         value: payload.matchType ?? "unknown",
         inline: true,
       });
-      if (payload.matchType === "FWA") {
+      const prepPlanText = await this.history.buildWarPlanText(
+        guildId,
+        payload.matchType,
+        payload.outcome,
+        payload.clanTag,
+        payload.opponentName,
+        "prep"
+      );
+      if (prepPlanText) {
         embed.addFields({
           name: "War Plan",
-          value:
-            (await this.history.buildWarPlanText(
-              payload.matchType,
-              payload.outcome,
-              payload.clanTag,
-              payload.opponentName
-            )) ?? "N/A",
+          value: prepPlanText,
           inline: false,
         });
-      }
-      if (payload.matchType === "BL") {
+      } else if (payload.matchType === "BL") {
         embed.addFields({
           name: "Message",
           value: [
@@ -1984,7 +2006,15 @@ export class WarEventLogService {
       clanName: nextClanName,
       opponentTag: nextOpponentTag,
       opponentName: nextOpponentName,
-      syncNumber: await this.pointsSync.getPreviousSyncNum(),
+      syncNumber:
+        (
+          await this.currentSyncs.getCurrentSyncForClan({
+            guildId,
+            clanTag,
+            warId: warIdText,
+            warStartTime,
+          })
+        )?.syncNum ?? null,
       notifyRole: refreshedSub.notifyRole,
       pingRole: refreshedSub.pingRole,
       fwaPoints: refreshedSub.fwaPoints,
@@ -2022,7 +2052,7 @@ export class WarEventLogService {
         messageId: existingMessage.messageId,
       });
       const embed = EmbedBuilder.from(message.embeds[0] ?? new EmbedBuilder());
-      const next = await this.buildBattleDayRefreshEmbed(payload, Number(warIdText), embed);
+      const next = await this.buildBattleDayRefreshEmbed(payload, Number(warIdText), guildId, embed);
       await message.edit({
         content: buildNextRefreshRelativeLabel(
           BATTLE_DAY_REFRESH_MS,
@@ -2043,7 +2073,7 @@ export class WarEventLogService {
     }
 
     const payload = { ...basePayload, eventType: "war_started" as const };
-    const next = await this.buildWarStartedRefreshEmbed(payload, Number(warIdText));
+    const next = await this.buildWarStartedRefreshEmbed(payload, Number(warIdText), guildId);
     await message.edit({
       content: message.content || undefined,
       embeds: [next],
@@ -2137,7 +2167,20 @@ export class WarEventLogService {
       opponentTag: normalizeTag(war.opponent?.tag ?? refreshedSub.opponentTag ?? ""),
       opponentName:
         String(war.opponent?.name ?? refreshedSub.opponentName ?? "Unknown").trim() || "Unknown",
-      syncNumber: await this.pointsSync.getPreviousSyncNum(),
+      syncNumber:
+        (
+          await this.currentSyncs.getCurrentSyncForClan({
+            guildId,
+            clanTag,
+            warId:
+              resolvedWarId !== null && resolvedWarId !== undefined
+                ? String(Math.trunc(Number(resolvedWarId)))
+                : refreshedSub.warId !== null && refreshedSub.warId !== undefined
+                  ? String(Math.trunc(Number(refreshedSub.warId)))
+                  : null,
+            warStartTime,
+          })
+        )?.syncNum ?? null,
       notifyRole: refreshedSub.notifyRole,
       pingRole: refreshedSub.pingRole,
       fwaPoints: refreshedSub.fwaPoints,
@@ -2171,7 +2214,7 @@ export class WarEventLogService {
     };
     const warId = resolvedWarId ?? refreshedSub.warId ?? null;
     const embed = EmbedBuilder.from(message.embeds[0] ?? new EmbedBuilder());
-    const next = await this.buildBattleDayRefreshEmbed(payload, warId, embed);
+    const next = await this.buildBattleDayRefreshEmbed(payload, warId, guildId, embed);
     await message.edit({
       content: buildNextRefreshRelativeLabel(
         BATTLE_DAY_REFRESH_MS,
@@ -2218,6 +2261,7 @@ export class WarEventLogService {
       opponentDestruction: number | null;
     },
     warId: number | null,
+    guildId: string,
     _previous: EmbedBuilder
   ): Promise<EmbedBuilder> {
     const opponentTag = normalizeTag(payload.opponentTag);
@@ -2246,16 +2290,18 @@ export class WarEventLogService {
       value: payload.matchType ?? "unknown",
       inline: true,
     });
-    if (payload.matchType !== "BL" && payload.matchType !== "MM") {
+    const battlePlanText = await this.history.buildWarPlanText(
+      guildId,
+      payload.matchType,
+      payload.outcome,
+      payload.clanTag,
+      payload.opponentName,
+      "battle"
+    );
+    if (battlePlanText) {
       embed.addFields({
         name: "War Plan",
-        value:
-          (await this.history.buildWarPlanText(
-            payload.matchType,
-            payload.outcome,
-            payload.clanTag,
-            payload.opponentName
-          )) ?? "N/A",
+        value: battlePlanText,
         inline: false,
       });
     } else if (payload.matchType === "BL") {
@@ -2317,7 +2363,8 @@ export class WarEventLogService {
       clanDestruction: number | null;
       opponentDestruction: number | null;
     },
-    warId: number | null
+    warId: number | null,
+    guildId: string
   ): Promise<EmbedBuilder> {
     const opponentTag = normalizeTag(payload.opponentTag);
     const embed = new EmbedBuilder()
@@ -2345,16 +2392,18 @@ export class WarEventLogService {
       value: payload.matchType ?? "unknown",
       inline: true,
     });
-    if (payload.matchType !== "BL" && payload.matchType !== "MM") {
+    const prepPlanText = await this.history.buildWarPlanText(
+      guildId,
+      payload.matchType,
+      payload.outcome,
+      payload.clanTag,
+      payload.opponentName,
+      "prep"
+    );
+    if (prepPlanText) {
       embed.addFields({
         name: "War Plan",
-        value:
-          (await this.history.buildWarPlanText(
-            payload.matchType,
-            payload.outcome,
-            payload.clanTag,
-            payload.opponentName
-          )) ?? "N/A",
+        value: prepPlanText,
         inline: false,
       });
     } else if (payload.matchType === "BL") {

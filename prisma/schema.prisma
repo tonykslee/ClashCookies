@@ -300,13 +300,14 @@ model ClanPointsSync {
   opponentPoints Int
   outcome        String?
   isFwa          Boolean
-  syncedAt       DateTime @default(now())
+  syncFetchedAt  DateTime @default(now())
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
   @@index([guildId, clanTag])
   @@index([clanTag, warStartTime])
   @@index([guildId, clanTag, warId])
+  @@index([guildId, clanTag, warStartTime(sort: Desc)])
   @@unique([guildId, clanTag, warStartTime])
 }
 
@@ -337,6 +338,18 @@ model ClanWarParticipation {
   @@index([guildId, playerTag])
   @@index([warId])
   @@index([guildId, clanTag, matchType, missedBoth, warStartTime])
+}
+
+model ClanWarPlan {
+  id         String   @id @default(cuid())
+  guildId    String
+  clanTag    String
+  prepPlan   String?
+  battlePlan String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([guildId, clanTag])
 }
 
 model ApiUsage {

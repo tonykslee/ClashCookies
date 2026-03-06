@@ -703,28 +703,6 @@ async function getTrackedClanMailConfig(tag: string): Promise<{
   };
 }
 
-async function resolveCurrentSyncNumForMailConfirm(tag: string): Promise<number | null> {
-  const normalizedTag = normalizeTag(tag);
-  const latestSync = await pointsSyncService.findLatestSyncNum({ clanTag: normalizedTag });
-  if (latestSync !== null) {
-    return latestSync;
-  }
-  const lastHistory = await prisma.clanWarHistory.findFirst({
-    where: {
-      clanTag: normalizedTag,
-      syncNumber: { not: null },
-      matchType: { in: ["MM", "BL", "SKIP"] },
-    },
-    orderBy: { warStartTime: "desc" },
-    select: { syncNumber: true },
-  });
-  const previousSync = Number(lastHistory?.syncNumber ?? NaN);
-  if (Number.isFinite(previousSync)) {
-    return Math.max(0, Math.trunc(previousSync) + 1);
-  }
-  return null;
-}
-
 function isMatchTypeValue(value: unknown): value is "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN" {
   return value === "FWA" || value === "BL" || value === "MM" || value === "SKIP" || value === "UNKNOWN";
 }
@@ -787,8 +765,20 @@ async function recordMatchMailUpdated(params: {
         clanTag: `#${normalizeTag(params.tag)}`,
       },
     },
-    select: { warId: true, syncNum: true },
+    select: { warId: true, startTime: true },
   });
+  const syncRow =
+    currentWar?.startTime
+      ? await pointsSyncService.getCurrentSyncForClan({
+          guildId: params.guildId,
+          clanTag: params.tag,
+          warId:
+            currentWar.warId !== null && currentWar.warId !== undefined
+              ? String(Math.trunc(currentWar.warId))
+              : null,
+          warStartTime: currentWar.startTime,
+        })
+      : null;
 
   await postedMessageService.savePostedMessage({
     guildId: params.guildId,
@@ -799,7 +789,7 @@ async function recordMatchMailUpdated(params: {
       currentWar?.warId !== null && currentWar?.warId !== undefined
         ? String(currentWar.warId)
         : null,
-    syncNum: currentWar?.syncNum ?? null,
+    syncNum: syncRow?.syncNum ?? null,
     channelId: params.channelId,
     messageId: params.messageId,
     messageUrl:
@@ -1044,10 +1034,16 @@ async function buildWarMailEmbedForTag(
 
   const history = new WarEventHistoryService(cocService);
   let planText = "War plan unavailable.";
-  if (matchType === "FWA") {
-    planText =
-      (await history.buildWarPlanText("FWA", outcome, normalizedTag, opponentName)) ??
-      "War plan unavailable.";
+  const customOrDefaultPlan = await history.buildWarPlanText(
+    guildId,
+    matchType === "UNKNOWN" ? "FWA" : matchType,
+    outcome,
+    normalizedTag,
+    opponentName,
+    warState === "inWar" ? "battle" : "prep"
+  );
+  if (customOrDefaultPlan) {
+    planText = customOrDefaultPlan;
   } else if (matchType === "BL") {
     planText = [
       `**⚫️ BLACKLIST WAR 🆚 ${opponentName} 🏴‍☠️**`,
@@ -2837,7 +2833,6 @@ export async function handleFwaMailConfirmButton(interaction: ButtonInteraction)
     embeds: [rendered.embed],
     components: buildWarMailPostedComponents(postKey),
   });
-  const resolvedCurrentSyncNum = await resolveCurrentSyncNumForMailConfirm(payload.tag);
   await prisma.currentWar.upsert({
     where: {
       clanTag_guildId: {
@@ -2850,10 +2845,8 @@ export async function handleFwaMailConfirmButton(interaction: ButtonInteraction)
       clanTag: `#${normalizeTag(payload.tag)}`,
       channelId: channel.id,
       notify: false,
-      syncNum: resolvedCurrentSyncNum,
     },
     update: {
-      syncNum: resolvedCurrentSyncNum ?? undefined,
       updatedAt: new Date(),
     },
   });
@@ -3437,6 +3430,7 @@ function buildSyncValidationState(input: {
     clanPoints: number;
     opponentPoints: number;
     warStartTime: Date;
+    syncFetchedAt: Date;
     outcome: string | null;
     isFwa: boolean | null;
   } | null;
@@ -3509,6 +3503,25 @@ function buildSyncValidationState(input: {
         ? "⚠ Data not fully synced with points.fwafarm"
         : "✅ Data is in sync with points.fwafarm",
   };
+}
+
+function buildStoredSyncSummary(input: {
+  syncRow: { syncNum: number; syncFetchedAt: Date } | null;
+  fallbackSyncNum: number | null;
+  warState: WarStateForSync;
+}): { syncLine: string; updatedLine: string | null } {
+  const syncNumber =
+    input.syncRow?.syncNum ??
+    (input.fallbackSyncNum !== null && Number.isFinite(input.fallbackSyncNum)
+      ? Math.trunc(input.fallbackSyncNum)
+      : null);
+  const syncLine = withSyncModeLabel(getSyncDisplay(syncNumber, input.warState), syncNumber);
+  const syncFetchedAtMs = input.syncRow?.syncFetchedAt?.getTime?.() ?? NaN;
+  const updatedLine =
+    Number.isFinite(syncFetchedAtMs) && syncFetchedAtMs > 0
+      ? `<t:${Math.floor(syncFetchedAtMs / 1000)}:R>`
+      : null;
+  return { syncLine, updatedLine };
 }
 
 async function persistClanPointsSyncIfCurrent(input: {
@@ -4096,7 +4109,6 @@ async function buildTrackedMatchOverview(
       clanTag: true,
       warId: true,
       startTime: true,
-      syncNum: true,
       matchType: true,
       inferredMatchType: true,
       outcome: true,
@@ -4498,7 +4510,7 @@ async function buildTrackedMatchOverview(
       outcome: derivedOutcome,
       isFwa: primaryPoints?.activeFwa ?? false,
     });
-    const syncRow = await pointsSyncService.findSyncRecord({
+    const syncRow = await pointsSyncService.getCurrentSyncForClan({
       guildId: guildId ?? "",
       clanTag,
       warId:
@@ -4506,6 +4518,11 @@ async function buildTrackedMatchOverview(
           ? String(Math.trunc(sub.warId))
           : null,
       warStartTime: warStartTimeForSync,
+    });
+    const storedSyncSummary = buildStoredSyncSummary({
+      syncRow,
+      fallbackSyncNum: siteSyncObservedForWrite,
+      warState,
     });
     const validationState = buildSyncValidationState({
       syncRow,
@@ -4696,7 +4713,8 @@ async function buildTrackedMatchOverview(
       matchType === "FWA" ? `Expected outcome: **${effectiveOutcome ?? "UNKNOWN"}**` : "",
       `War state: **${formatWarStateLabel(warState)}**`,
       `Time remaining: **${getWarStateRemaining(war, warState)}**`,
-      `Sync: **${withSyncModeLabel(getSyncDisplay(sourceSync, warState), sourceSync)}**`,
+      `Sync #: **${storedSyncSummary.syncLine}**`,
+      storedSyncSummary.updatedLine ? `Updated: **${storedSyncSummary.updatedLine}**` : "",
       mismatchLines,
     ]
       .filter(Boolean)
@@ -6116,7 +6134,6 @@ export const Fwa: Command = {
                 state: true,
                 warId: true,
                 startTime: true,
-                syncNum: true,
                 matchType: true,
                 inferredMatchType: true,
                 outcome: true,
@@ -6397,7 +6414,6 @@ export const Fwa: Command = {
               .split("\n")[1]
               ?.trim() ?? "Projection unavailable."
           : `This is a ${matchType} match.`;
-        const syncDisplay = withSyncModeLabel(getSyncDisplay(sourceSync, warState), sourceSync);
         const leftName = resolvedPrimaryName ?? primaryNameFromApi ?? tag;
         const rightName = resolvedOpponentName ?? opponentNameFromApi ?? opponentTag;
         const trackedMismatch = siteUpdated
@@ -6428,7 +6444,7 @@ export const Fwa: Command = {
           outcome: effectiveOutcome,
           isFwa: primary.activeFwa ?? false,
         });
-        const syncRow = await pointsSyncService.findSyncRecord({
+        const syncRow = await pointsSyncService.getCurrentSyncForClan({
           guildId: interaction.guildId ?? "",
           clanTag: tag,
           warId:
@@ -6436,8 +6452,13 @@ export const Fwa: Command = {
             subscription?.warId !== undefined &&
             Number.isFinite(subscription?.warId)
               ? String(Math.trunc(subscription.warId))
-              : null,
+            : null,
           warStartTime: warStartTimeForSync,
+        });
+        const storedSyncSummary = buildStoredSyncSummary({
+          syncRow,
+          fallbackSyncNum: siteSyncObservedForWrite,
+          warState,
         });
         const validationState = buildSyncValidationState({
           syncRow,
@@ -6538,7 +6559,9 @@ export const Fwa: Command = {
               outcomeLine ? `\nExpected outcome: **${outcomeLine}**` : ""
             }\n${siteStatusLine}${
               mailBlockedReasonLine ? `\n${mailBlockedReasonLine}` : ""
-            }\nWar state: **${formatWarStateLabel(warState)}**\nTime remaining: **${warRemaining}**\nSync: **${syncDisplay}**${
+            }\nWar state: **${formatWarStateLabel(warState)}**\nTime remaining: **${warRemaining}**\nSync #: **${storedSyncSummary.syncLine}**${
+              storedSyncSummary.updatedLine ? `\nUpdated: **${storedSyncSummary.updatedLine}**` : ""
+            }${
               mismatchLines ? `\n${mismatchLines}` : ""
             }`
           )
@@ -6569,7 +6592,8 @@ export const Fwa: Command = {
             mailBlockedReasonLine
               ? `${mailBlockedReasonLine.replace(/^:warning: /, "Warning: ").replace(/^:envelope_with_arrow: /, "Mail: ")}`
               : "",
-            `Sync: ${syncDisplay}`,
+            `Sync #: ${storedSyncSummary.syncLine}`,
+            storedSyncSummary.updatedLine ? `Updated: ${storedSyncSummary.updatedLine}` : "",
             `War State: ${formatWarStateLabel(warState)}`,
             `Time Remaining: ${warRemaining}`,
             `## Opponent Name`,

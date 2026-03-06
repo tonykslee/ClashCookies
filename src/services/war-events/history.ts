@@ -82,13 +82,57 @@ export class WarEventHistoryService {
 
   /** Purpose: build per-clan war-plan instruction text for start/battle embeds. */
   async buildWarPlanText(
-    matchType: MatchType,
-    expectedOutcome: "WIN" | "LOSE" | null,
-    clanTag: string,
-    opponentNameInput?: string | null
+    guildIdOrMatchType: string | null | undefined,
+    matchTypeOrExpectedOutcome: MatchType | "WIN" | "LOSE" | null,
+    expectedOutcomeOrClanTag: "WIN" | "LOSE" | string | null,
+    clanTagOrOpponentName?: string | null,
+    opponentNameInput?: string | null,
+    phase: "prep" | "battle" = "battle"
   ): Promise<string | null> {
+    let guildId: string | null | undefined = guildIdOrMatchType;
+    let matchType = matchTypeOrExpectedOutcome as MatchType;
+    let expectedOutcome = expectedOutcomeOrClanTag as "WIN" | "LOSE" | null;
+    let clanTag = clanTagOrOpponentName ?? "";
+    let opponentNameInputResolved = opponentNameInput;
+
+    const legacyMatchType = String(guildIdOrMatchType ?? "").toUpperCase();
+    if (legacyMatchType === "FWA" || legacyMatchType === "BL" || legacyMatchType === "MM") {
+      guildId = null;
+      matchType = legacyMatchType as MatchType;
+      expectedOutcome =
+        matchTypeOrExpectedOutcome === "WIN" || matchTypeOrExpectedOutcome === "LOSE"
+          ? matchTypeOrExpectedOutcome
+          : null;
+      clanTag = String(expectedOutcomeOrClanTag ?? "");
+      opponentNameInputResolved = clanTagOrOpponentName ?? null;
+    }
+
+    const normalizedClanTag = normalizeTag(clanTag);
+    if (guildId) {
+      try {
+        const customPlan = await prisma.clanWarPlan.findUnique({
+          where: {
+            guildId_clanTag: {
+              guildId,
+              clanTag: normalizedClanTag,
+            },
+          },
+          select: {
+            prepPlan: true,
+            battlePlan: true,
+          },
+        });
+        const phasePlan = phase === "prep" ? customPlan?.prepPlan : customPlan?.battlePlan;
+        if (phasePlan && phasePlan.trim().length > 0) return phasePlan;
+      } catch (error) {
+        if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2021") {
+          throw error;
+        }
+      }
+    }
+
     if (matchType !== "FWA") return null;
-    const opponentName = String(opponentNameInput ?? "").trim() || "Unknown";
+    const opponentName = String(opponentNameInputResolved ?? "").trim() || "Unknown";
     if (expectedOutcome === "WIN") {
       return [
         `**💚 WIN WAR 🆚 ${opponentName} 🟢 **`,
@@ -98,7 +142,7 @@ export class WarEventHistoryService {
       ].join("\n");
     }
     if (expectedOutcome === "LOSE") {
-      const loseStyle = await this.getLoseStyleForClan(normalizeTag(clanTag));
+      const loseStyle = await this.getLoseStyleForClan(normalizedClanTag);
       if (loseStyle === "TRIPLE_TOP_30") {
         return [
           `**❤️ LOSE WAR 🆚 ${opponentName} 🔴**`,
@@ -242,7 +286,6 @@ export class WarEventHistoryService {
       select: {
         guildId: true,
         inferredMatchType: true,
-        syncNum: true,
         matchType: true,
         state: true,
         clanName: true,
@@ -252,6 +295,14 @@ export class WarEventHistoryService {
         endTime: true,
       },
     });
+    const syncRow = currentSnapshot?.guildId
+      ? await this.pointsSync.getCurrentSyncForClan({
+          guildId: currentSnapshot.guildId,
+          clanTag,
+          warId: String(warId),
+          warStartTime,
+        })
+      : null;
     const participants = attacks.filter((a) => Number(a.attackOrder) === 0);
     const teamSize = participants.length > 0 ? participants.length : null;
     const pointsAwarded =
@@ -306,7 +357,7 @@ export class WarEventHistoryService {
         opponentDestruction: finalResult.opponentDestruction,
       },
       fwa: {
-        syncNumber: payload.syncNumber ?? currentSnapshot?.syncNum ?? null,
+        syncNumber: payload.syncNumber ?? syncRow?.syncNum ?? null,
         pointsAwarded: pointsAwarded ?? null,
         inferred: Boolean(currentSnapshot?.inferredMatchType),
         mismatch: payload.matchType === "MM",
