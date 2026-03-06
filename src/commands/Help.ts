@@ -169,6 +169,19 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/war war-id war-id:1000001",
     ],
   },
+  warplan: {
+    summary: "Manage custom prep and battle war plan text for tracked clans.",
+    details: [
+      "`set` saves one phase-specific custom plan per tracked clan.",
+      "`show` displays the effective prep and battle plans, including defaults when no custom text exists.",
+      "`reset` removes stored custom plan text for that clan.",
+    ],
+    examples: [
+      "/warplan set clan-tag:2QG2C08UP phase:prep plan-text:Swap to war base during prep.",
+      "/warplan show clan-tag:2QG2C08UP",
+      "/warplan reset clan-tag:2QG2C08UP",
+    ],
+  },
   accounts: {
     summary: "List linked player accounts grouped by their current clan.",
     details: [

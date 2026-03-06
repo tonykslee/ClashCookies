@@ -82,33 +82,57 @@ export class WarEventHistoryService {
 
   /** Purpose: build per-clan war-plan instruction text for start/battle embeds. */
   async buildWarPlanText(
-    guildId: string | null | undefined,
-    matchType: MatchType,
-    expectedOutcome: "WIN" | "LOSE" | null,
-    clanTag: string,
+    guildIdOrMatchType: string | null | undefined,
+    matchTypeOrExpectedOutcome: MatchType | "WIN" | "LOSE" | null,
+    expectedOutcomeOrClanTag: "WIN" | "LOSE" | string | null,
+    clanTagOrOpponentName?: string | null,
     opponentNameInput?: string | null,
     phase: "prep" | "battle" = "battle"
   ): Promise<string | null> {
+    let guildId: string | null | undefined = guildIdOrMatchType;
+    let matchType = matchTypeOrExpectedOutcome as MatchType;
+    let expectedOutcome = expectedOutcomeOrClanTag as "WIN" | "LOSE" | null;
+    let clanTag = clanTagOrOpponentName ?? "";
+    let opponentNameInputResolved = opponentNameInput;
+
+    const legacyMatchType = String(guildIdOrMatchType ?? "").toUpperCase();
+    if (legacyMatchType === "FWA" || legacyMatchType === "BL" || legacyMatchType === "MM") {
+      guildId = null;
+      matchType = legacyMatchType as MatchType;
+      expectedOutcome =
+        matchTypeOrExpectedOutcome === "WIN" || matchTypeOrExpectedOutcome === "LOSE"
+          ? matchTypeOrExpectedOutcome
+          : null;
+      clanTag = String(expectedOutcomeOrClanTag ?? "");
+      opponentNameInputResolved = clanTagOrOpponentName ?? null;
+    }
+
     const normalizedClanTag = normalizeTag(clanTag);
     if (guildId) {
-      const customPlan = await prisma.clanWarPlan.findUnique({
-        where: {
-          guildId_clanTag: {
-            guildId,
-            clanTag: normalizedClanTag,
+      try {
+        const customPlan = await prisma.clanWarPlan.findUnique({
+          where: {
+            guildId_clanTag: {
+              guildId,
+              clanTag: normalizedClanTag,
+            },
           },
-        },
-        select: {
-          prepPlan: true,
-          battlePlan: true,
-        },
-      });
-      const phasePlan = phase === "prep" ? customPlan?.prepPlan : customPlan?.battlePlan;
-      if (phasePlan && phasePlan.trim().length > 0) return phasePlan;
+          select: {
+            prepPlan: true,
+            battlePlan: true,
+          },
+        });
+        const phasePlan = phase === "prep" ? customPlan?.prepPlan : customPlan?.battlePlan;
+        if (phasePlan && phasePlan.trim().length > 0) return phasePlan;
+      } catch (error) {
+        if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2021") {
+          throw error;
+        }
+      }
     }
 
     if (matchType !== "FWA") return null;
-    const opponentName = String(opponentNameInput ?? "").trim() || "Unknown";
+    const opponentName = String(opponentNameInputResolved ?? "").trim() || "Unknown";
     if (expectedOutcome === "WIN") {
       return [
         `**💚 WIN WAR 🆚 ${opponentName} 🟢 **`,
