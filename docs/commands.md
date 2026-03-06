@@ -22,12 +22,12 @@
 - `/cc clan tag:<tag>` - Build `https://cc.fwafarm.com/cc_n/clan.php?tag=<tag>`.
 - `/notify war clan-tag:<tag> target-channel:<channel> [role:<discordRole>]` - Enable war-state event logs (war start, battle day, war end) for a clan in a selected channel. Optional role is pinged when event logs are posted.
 - `/notify war-preview clan-tag:<tag> event:<war_started|battle_day|war_ended> [source:current|last]` - Show an ephemeral preview embed and confirm before posting publicly to the configured notify channel.
-- `/warplan set clan-tag:<tag> match-type:<FWA|BL|MM> plan-text:<text> [outcome:<WIN|LOSE>] [lose-style:<TRIPLE_TOP_30|TRADITIONAL>]` - Save clan custom war plan text. `clan-tag` supports autocomplete from tracked clans. For `FWA`, omitting `outcome` sets `WIN` and both `LOSE` lose-style plans. For `FWA outcome:LOSE`, `lose-style` is required. Supports `{opponent}` placeholder, escaped `\n` new lines, and `# Header` lines (rendered as section headers).
-- `/warplan show clan-tag:<tag> [match-type:<FWA|BL|MM>] [outcome:<WIN|LOSE>] [lose-style:<TRIPLE_TOP_30|TRADITIONAL>]` - Show effective clan plans. Precedence is clan custom -> editable guild default -> built-in fallback.
-- `/warplan reset clan-tag:<tag> [match-type:<FWA|BL|MM>] [outcome:<WIN|LOSE>] [lose-style:<TRIPLE_TOP_30|TRADITIONAL>]` - Reset clan custom plans. With no match-type, resets all custom plans for that clan.
-- `/warplan set-default match-type:<FWA|BL|MM> plan-text:<text> [outcome:<WIN|LOSE>] [lose-style:<TRIPLE_TOP_30|TRADITIONAL>]` - Set editable guild default plan text used when a clan has no custom plan. Supports escaped `\n` new lines and `# Header` lines.
-- `/warplan show-default [match-type:<FWA|BL|MM>] [outcome:<WIN|LOSE>] [lose-style:<TRIPLE_TOP_30|TRADITIONAL>]` - Show editable guild defaults and effective fallbacks.
-- `/warplan reset-default [match-type:<FWA|BL|MM>] [outcome:<WIN|LOSE>] [lose-style:<TRIPLE_TOP_30|TRADITIONAL>]` - Reset editable guild defaults back to built-in fallback text.
+- `/warplan set clan-tag:<tag> match-type:<BL|MM|FWA|FWA_WIN|FWA_LOSE_TRIPLE_TOP_30|FWA_LOSE_TRADITIONAL>` - Opens a modal to edit one clan custom plan. `clan-tag` supports autocomplete from tracked clans. Modal supports normal new lines plus markdown (bold/italic/code/code blocks).
+- `/warplan show clan-tag:<tag> [match-type:<BL|MM|FWA|FWA_WIN|FWA_LOSE_TRIPLE_TOP_30|FWA_LOSE_TRADITIONAL>]` - Show effective clan plans. Precedence is clan custom -> editable guild default -> built-in fallback.
+- `/warplan reset clan-tag:<tag> [match-type:<BL|MM|FWA|FWA_WIN|FWA_LOSE_TRIPLE_TOP_30|FWA_LOSE_TRADITIONAL>]` - Reset clan custom plans. With no match-type, resets all custom plans for that clan.
+- `/warplan set-default match-type:<BL|MM|FWA|FWA_WIN|FWA_LOSE_TRIPLE_TOP_30|FWA_LOSE_TRADITIONAL>` - Opens a modal to edit one guild default plan used when a clan has no custom plan.
+- `/warplan show-default [match-type:<BL|MM|FWA|FWA_WIN|FWA_LOSE_TRIPLE_TOP_30|FWA_LOSE_TRADITIONAL>]` - Show editable guild defaults and effective fallbacks.
+- `/warplan reset-default [match-type:<BL|MM|FWA|FWA_WIN|FWA_LOSE_TRIPLE_TOP_30|FWA_LOSE_TRADITIONAL>]` - Reset editable guild defaults back to built-in fallback text.
 - `/war history clan-tag:<tag> [limit:<number>]` - Show recent clan-level war history from stored war records.
 - `/war war-id war-id:<number>` - Export stored war lookup payload for one war ID as CSV.
 - `/accounts [visibility:private|public] [tag:<playerTag>] [discord-id:<snowflake>]` - List linked player accounts grouped by current clan. Default is your own account; provide exactly one of `tag` or `discord-id` to inspect a different linked user.
