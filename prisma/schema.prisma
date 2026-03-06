@@ -300,13 +300,14 @@ model ClanPointsSync {
   opponentPoints Int
   outcome        String?
   isFwa          Boolean
-  syncedAt       DateTime @default(now())
+  syncFetchedAt  DateTime @default(now())
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
   @@index([guildId, clanTag])
   @@index([clanTag, warStartTime])
   @@index([guildId, clanTag, warId])
+  @@index([guildId, clanTag, warStartTime(sort: Desc)])
   @@unique([guildId, clanTag, warStartTime])
 }
 

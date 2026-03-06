@@ -44,7 +44,7 @@ export class PointsSyncService {
         opponentPoints: Math.trunc(input.opponentPoints),
         outcome: input.outcome ?? null,
         isFwa: input.isFwa,
-        syncedAt: new Date(),
+        syncFetchedAt: new Date(),
       },
       create: {
         guildId: input.guildId,
@@ -57,11 +57,12 @@ export class PointsSyncService {
         opponentPoints: Math.trunc(input.opponentPoints),
         outcome: input.outcome ?? null,
         isFwa: input.isFwa,
+        syncFetchedAt: new Date(),
       },
     });
   }
 
-  async findSyncRecord(input: FindPointsSyncInput) {
+  async getCurrentSyncForClan(input: FindPointsSyncInput) {
     const clanTag = normalizeTag(input.clanTag);
     if (input.warId) {
       const byWarId = await prisma.clanPointsSync.findFirst({
@@ -70,20 +71,33 @@ export class PointsSyncService {
           clanTag,
           warId: String(input.warId),
         },
-        orderBy: [{ syncedAt: "desc" }, { updatedAt: "desc" }],
+        orderBy: [{ syncFetchedAt: "desc" }, { updatedAt: "desc" }],
       });
       if (byWarId) return byWarId;
     }
-    if (!input.warStartTime) return null;
-    return prisma.clanPointsSync.findUnique({
-      where: {
-        guildId_clanTag_warStartTime: {
-          guildId: input.guildId,
-          clanTag,
-          warStartTime: input.warStartTime,
+    if (input.warStartTime) {
+      const byWarStartTime = await prisma.clanPointsSync.findUnique({
+        where: {
+          guildId_clanTag_warStartTime: {
+            guildId: input.guildId,
+            clanTag,
+            warStartTime: input.warStartTime,
+          },
         },
+      });
+      if (byWarStartTime) return byWarStartTime;
+    }
+    return prisma.clanPointsSync.findFirst({
+      where: {
+        guildId: input.guildId,
+        clanTag,
       },
+      orderBy: [{ warStartTime: "desc" }, { syncFetchedAt: "desc" }, { updatedAt: "desc" }],
     });
+  }
+
+  async findSyncRecord(input: FindPointsSyncInput) {
+    return this.getCurrentSyncForClan(input);
   }
 
   async findLatestSyncNum(input?: {
@@ -95,7 +109,7 @@ export class PointsSyncService {
         ...(input?.guildId ? { guildId: input.guildId } : {}),
         ...(input?.clanTag ? { clanTag: normalizeTag(input.clanTag) } : {}),
       },
-      orderBy: [{ warStartTime: "desc" }, { syncedAt: "desc" }],
+      orderBy: [{ warStartTime: "desc" }, { syncFetchedAt: "desc" }],
       select: { syncNum: true },
     });
     const syncNum = Number(row?.syncNum ?? NaN);
@@ -117,7 +131,7 @@ export class PointsSyncService {
       },
       data: {
         warId: String(params.warId),
-        syncedAt: new Date(),
+        syncFetchedAt: new Date(),
       },
     });
   }
