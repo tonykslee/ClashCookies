@@ -45,6 +45,31 @@ async function runForcePollWarEventsCommand(
   }
 }
 
+async function runForceBootstrapWarStateCommand(
+  client: Client,
+  interaction: ChatInputCommandInteraction,
+  cocService: CoCService
+): Promise<void> {
+  await interaction.deferReply({ ephemeral: true });
+
+  const trackedClans = await prisma.trackedClan.findMany({
+    select: { tag: true },
+  });
+  const warEventLogService = new WarEventLogService(client, cocService);
+  try {
+    console.log(`[war-events] bootstrap requested tracked_clans=${trackedClans.length}`);
+    await runFetchTelemetryBatch("war_event_bootstrap_manual", async () => {
+      await warEventLogService.poll();
+    });
+    await interaction.editReply(
+      `War state bootstrap completed for ${trackedClans.length} tracked clan(s).`
+    );
+  } catch (err) {
+    const message = formatError(err);
+    await interaction.editReply(`War state bootstrap failed: ${message}`);
+  }
+}
+
 export const Force: Command = {
   name: "force",
   description: "Manual repair and refresh utilities",
@@ -191,6 +216,11 @@ export const Force: Command = {
       ],
     },
     {
+      name: "bootstrap-war-state",
+      description: "Rebuild CurrentWar state from tracked clans",
+      type: ApplicationCommandOptionType.Subcommand,
+    },
+    {
       name: "mail",
       description: "Force operations for posted war mail",
       type: ApplicationCommandOptionType.SubcommandGroup,
@@ -217,8 +247,8 @@ export const Force: Command = {
     interaction: ChatInputCommandInteraction,
     cocService: CoCService
   ) => {
-    const subcommandGroup = interaction.options.getSubcommandGroup(true);
     const subcommand = interaction.options.getSubcommand(true);
+    const subcommandGroup = interaction.options.getSubcommandGroup(false);
 
     if (subcommandGroup === "sync" && subcommand === "data") {
       await runForceSyncDataCommand(interaction, cocService);
@@ -238,6 +268,10 @@ export const Force: Command = {
     }
     if (subcommandGroup === "poll" && subcommand === "war-events") {
       await runForcePollWarEventsCommand(client, interaction, cocService);
+      return;
+    }
+    if (subcommandGroup == null && subcommand === "bootstrap-war-state") {
+      await runForceBootstrapWarStateCommand(client, interaction, cocService);
       return;
     }
 
