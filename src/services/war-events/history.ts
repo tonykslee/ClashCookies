@@ -109,21 +109,24 @@ export class WarEventHistoryService {
 
     const normalizedClanTag = normalizeTag(clanTag);
     if (guildId) {
+      const matchTypeKey: "FWA" | "BL" | "MM" =
+        matchType === "BL" || matchType === "MM" || matchType === "FWA" ? matchType : "FWA";
+      const outcomeKey =
+        matchTypeKey === "FWA" ? (expectedOutcome === "WIN" || expectedOutcome === "LOSE" ? expectedOutcome : "ANY") : "ANY";
       try {
         const customPlan = await prisma.clanWarPlan.findUnique({
           where: {
-            guildId_clanTag: {
+            guildId_matchType_outcome: {
               guildId,
-              clanTag: normalizedClanTag,
+              matchType: matchTypeKey,
+              outcome: outcomeKey,
             },
           },
           select: {
-            prepPlan: true,
-            battlePlan: true,
+            planText: true,
           },
         });
-        const phasePlan = phase === "prep" ? customPlan?.prepPlan : customPlan?.battlePlan;
-        if (phasePlan && phasePlan.trim().length > 0) return phasePlan;
+        if (customPlan?.planText && customPlan.planText.trim().length > 0) return customPlan.planText;
       } catch (error) {
         if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2021") {
           throw error;

@@ -1,6 +1,5 @@
 import {
   ApplicationCommandOptionType,
-  AutocompleteInteraction,
   ChatInputCommandInteraction,
   Client,
   EmbedBuilder,
@@ -9,123 +8,79 @@ import { Command } from "../Command";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
 import { WarEventHistoryService } from "../services/war-events/history";
-import { MatchType, normalizeTag } from "../services/war-events/core";
 
-function normalizeClanTagInput(input: string): string {
-  return input.trim().toUpperCase().replace(/^#/, "");
-}
+type PlanMatchType = "FWA" | "BL" | "MM";
+type PlanOutcome = "WIN" | "LOSE" | "ANY";
 
-function normalizeClanTag(input: string): string {
-  const normalized = normalizeClanTagInput(input);
-  return normalized ? `#${normalized}` : "";
-}
-
-function normalizeMatchType(value: string | null | undefined): MatchType {
+function normalizeMatchType(value: string | null): PlanMatchType {
   const upper = String(value ?? "").toUpperCase();
   if (upper === "BL" || upper === "MM" || upper === "FWA") return upper;
   return "FWA";
 }
 
-function normalizeOutcome(value: string | null | undefined): "WIN" | "LOSE" | null {
+function normalizeOutcome(value: string | null): PlanOutcome | null {
   const upper = String(value ?? "").toUpperCase();
-  if (upper === "WIN" || upper === "LOSE") return upper;
+  if (upper === "WIN" || upper === "LOSE" || upper === "ANY") return upper;
   return null;
 }
 
-function buildFallbackPlanText(
-  matchType: MatchType,
-  opponentName: string,
-  phase: "prep" | "battle"
-): string {
-  if (matchType === "BL") {
-    if (phase === "prep") {
-      return [
-        `BLACKLIST WAR vs ${opponentName}`,
-        "Everyone switch to WAR BASES!",
-        "This is an opportunity to gain extra FWA points.",
-      ].join("\n");
-    }
-    return [
-      `**⚫️ BLACKLIST WAR 🆚 ${opponentName} 🏴‍☠️**`,
-      "Everyone switch to WAR BASES!!",
-      "This is our opportunity to gain some extra FWA points!",
-      "➕ 30+ people switch to war base = +1 point",
-      "➕ 60% total destruction = +1 point",
-      "➕ win war = +1 point",
-      "---",
-      "If you need war base, check https://clashofclans-layouts.com/ or ⁠bases",
-    ].join("\n");
+function labelFor(matchType: PlanMatchType, outcome: PlanOutcome): string {
+  if (matchType === "FWA" && (outcome === "WIN" || outcome === "LOSE")) {
+    return `FWA-${outcome}`;
   }
-
-  if (matchType === "MM") {
-    return phase === "prep"
-      ? [`MISMATCHED WAR vs ${opponentName}`, "Keep war base active and attack what you can."].join(
-          "\n"
-        )
-      : [`⚪️ MISMATCHED WAR 🆚 ${opponentName} :sob:`, "Keep WA base active, attack what you can!"].join(
-          "\n"
-        );
-  }
-
-  return "FWA plan unavailable (expected outcome unknown).";
+  return matchType;
 }
 
-async function resolveDisplayedPlan(params: {
-  history: WarEventHistoryService;
-  guildId: string;
-  clanTag: string;
-  currentWar: {
-    matchType: string | null;
-    outcome: string | null;
-    opponentName: string | null;
-  } | null;
-  customPlan: string | null | undefined;
-  phase: "prep" | "battle";
-}): Promise<{ text: string; source: "custom" | "default" }> {
-  if (params.customPlan && params.customPlan.trim().length > 0) {
-    return { text: params.customPlan, source: "custom" };
+async function getDefaultPlanText(
+  history: WarEventHistoryService,
+  guildId: string,
+  matchType: PlanMatchType,
+  outcome: PlanOutcome
+): Promise<string> {
+  if (matchType === "FWA" && (outcome === "WIN" || outcome === "LOSE")) {
+    return (
+      (await history.buildWarPlanText(
+        guildId,
+        "FWA",
+        outcome,
+        "#UNKNOWN",
+        "Unknown",
+        "battle"
+      )) ?? "FWA plan unavailable."
+    );
   }
-
-  const matchType = normalizeMatchType(params.currentWar?.matchType);
-  const outcome = normalizeOutcome(params.currentWar?.outcome) ?? "LOSE";
-  const opponentName = String(params.currentWar?.opponentName ?? "").trim() || "Unknown";
-  const defaultPlan =
-    (await params.history.buildWarPlanText(
-      params.guildId,
-      matchType,
-      outcome,
-      normalizeTag(params.clanTag),
-      opponentName,
-      params.phase
-    )) ?? buildFallbackPlanText(matchType, opponentName, params.phase);
-
-  return { text: defaultPlan, source: "default" };
+  if (matchType === "BL") {
+    return [
+      "**BLACKLIST WAR PLAN**",
+      "Everyone switch to WAR BASES.",
+      "Hit mirror first, then follow leadership instructions.",
+    ].join("\n");
+  }
+  return [
+    "**MISMATCHED WAR PLAN**",
+    "Keep war base active.",
+    "Attack what you can and follow leadership instructions.",
+  ].join("\n");
 }
 
 export const WarPlan: Command = {
   name: "warplan",
-  description: "Set, show, or reset custom war plans for tracked clans",
+  description: "Set, show, or reset war plans by match type and outcome",
   options: [
     {
       name: "set",
-      description: "Set a custom prep plan, battle plan, or both for a tracked clan",
+      description: "Set war plan text for match type (or FWA outcome)",
       type: ApplicationCommandOptionType.Subcommand,
       options: [
         {
-          name: "clan-tag",
-          description: "Tracked clan tag",
-          type: ApplicationCommandOptionType.String,
-          required: true,
-          autocomplete: true,
-        },
-        {
-          name: "outcome",
-          description: "Expected outcome context for this plan",
+          name: "match-type",
+          description: "War match type",
           type: ApplicationCommandOptionType.String,
           required: true,
           choices: [
-            { name: "win", value: "WIN" },
-            { name: "lose", value: "LOSE" },
+            { name: "FWA", value: "FWA" },
+            { name: "BL", value: "BL" },
+            { name: "MM", value: "MM" },
           ],
         },
         {
@@ -135,42 +90,70 @@ export const WarPlan: Command = {
           required: true,
         },
         {
-          name: "phase",
-          description: "Plan phase to customize",
+          name: "outcome",
+          description: "FWA outcome (optional; omit to set both WIN and LOSE)",
           type: ApplicationCommandOptionType.String,
           required: false,
           choices: [
-            { name: "prep", value: "prep" },
-            { name: "battle", value: "battle" },
+            { name: "WIN", value: "WIN" },
+            { name: "LOSE", value: "LOSE" },
           ],
         },
       ],
     },
     {
       name: "show",
-      description: "Show the stored custom war plans for a tracked clan",
+      description: "Show war plans by match type and outcome",
       type: ApplicationCommandOptionType.Subcommand,
       options: [
         {
-          name: "clan-tag",
-          description: "Tracked clan tag",
+          name: "match-type",
+          description: "War match type (optional)",
           type: ApplicationCommandOptionType.String,
-          required: true,
-          autocomplete: true,
+          required: false,
+          choices: [
+            { name: "FWA", value: "FWA" },
+            { name: "BL", value: "BL" },
+            { name: "MM", value: "MM" },
+          ],
+        },
+        {
+          name: "outcome",
+          description: "FWA outcome (optional)",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          choices: [
+            { name: "WIN", value: "WIN" },
+            { name: "LOSE", value: "LOSE" },
+          ],
         },
       ],
     },
     {
       name: "reset",
-      description: "Delete all custom war plans for a tracked clan",
+      description: "Reset war plans to defaults",
       type: ApplicationCommandOptionType.Subcommand,
       options: [
         {
-          name: "clan-tag",
-          description: "Tracked clan tag",
+          name: "match-type",
+          description: "War match type (optional; omit to reset all)",
           type: ApplicationCommandOptionType.String,
-          required: true,
-          autocomplete: true,
+          required: false,
+          choices: [
+            { name: "FWA", value: "FWA" },
+            { name: "BL", value: "BL" },
+            { name: "MM", value: "MM" },
+          ],
+        },
+        {
+          name: "outcome",
+          description: "FWA outcome (optional)",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          choices: [
+            { name: "WIN", value: "WIN" },
+            { name: "LOSE", value: "LOSE" },
+          ],
         },
       ],
     },
@@ -187,125 +170,116 @@ export const WarPlan: Command = {
       return;
     }
 
+    const guildId = interaction.guildId;
     const subcommand = interaction.options.getSubcommand(true);
-    const clanTag = normalizeClanTag(interaction.options.getString("clan-tag", true));
-
-    const trackedClan = await prisma.trackedClan.findUnique({
-      where: { tag: clanTag },
-      select: { name: true, tag: true },
-    });
-    if (!trackedClan) {
-      await interaction.editReply(`Tracked clan ${clanTag} was not found.`);
-      return;
-    }
+    const history = new WarEventHistoryService(cocService);
 
     if (subcommand === "set") {
-      const phase = interaction.options.getString("phase", false) as "prep" | "battle" | null;
-      const outcome = interaction.options.getString("outcome", true) as "WIN" | "LOSE";
-      const planTextInput = interaction.options.getString("plan-text", true);
-      if (!planTextInput.length) {
+      const matchType = normalizeMatchType(interaction.options.getString("match-type", true));
+      const outcome = normalizeOutcome(interaction.options.getString("outcome", false));
+      const planText = interaction.options.getString("plan-text", true);
+
+      if (!planText.length) {
         await interaction.editReply("Plan text cannot be empty.");
         return;
       }
-      if (planTextInput.length > 1500) {
+      if (planText.length > 1500) {
         await interaction.editReply("Plan text must be 1500 characters or fewer.");
         return;
       }
-      const planText = planTextInput;
-
-      const row = await prisma.clanWarPlan.upsert({
-        where: {
-          guildId_clanTag: {
-            guildId: interaction.guildId,
-            clanTag,
-          },
-        },
-        update:
-          phase === "prep"
-            ? { prepPlan: planText }
-            : phase === "battle"
-              ? { battlePlan: planText }
-              : { prepPlan: planText, battlePlan: planText },
-        create: {
-          guildId: interaction.guildId,
-          clanTag,
-          prepPlan: phase === "battle" ? null : planText,
-          battlePlan: phase === "prep" ? null : planText,
-        },
-      });
-
-      if (!phase) {
-        await interaction.editReply(
-          `Saved PREP and BATTLE (${outcome}) plans for **${trackedClan.name ?? clanTag}** (${clanTag}).\nLength: ${Math.max(row.prepPlan?.length ?? 0, row.battlePlan?.length ?? 0)} chars each`
-        );
+      if (matchType !== "FWA" && outcome) {
+        await interaction.editReply("`outcome` can only be used when `match-type` is FWA.");
         return;
       }
 
-      await interaction.editReply(
-        `Saved ${phase.toUpperCase()} (${outcome}) plan for **${trackedClan.name ?? clanTag}** (${clanTag}).\nLength: ${phase === "prep" ? row.prepPlan?.length ?? 0 : row.battlePlan?.length ?? 0} chars`
-      );
+      if (matchType === "FWA" && !outcome) {
+        await prisma.$transaction([
+          prisma.clanWarPlan.upsert({
+            where: { guildId_matchType_outcome: { guildId, matchType: "FWA", outcome: "WIN" } },
+            update: { planText },
+            create: { guildId, matchType: "FWA", outcome: "WIN", planText },
+          }),
+          prisma.clanWarPlan.upsert({
+            where: { guildId_matchType_outcome: { guildId, matchType: "FWA", outcome: "LOSE" } },
+            update: { planText },
+            create: { guildId, matchType: "FWA", outcome: "LOSE", planText },
+          }),
+        ]);
+        await interaction.editReply(`Saved war plan for **FWA-WIN** and **FWA-LOSE**.\nLength: ${planText.length} chars each`);
+        return;
+      }
+
+      const rowOutcome: PlanOutcome = matchType === "FWA" ? (outcome as "WIN" | "LOSE") : "ANY";
+      await prisma.clanWarPlan.upsert({
+        where: { guildId_matchType_outcome: { guildId, matchType, outcome: rowOutcome } },
+        update: { planText },
+        create: { guildId, matchType, outcome: rowOutcome, planText },
+      });
+
+      await interaction.editReply(`Saved war plan for **${labelFor(matchType, rowOutcome)}**.\nLength: ${planText.length} chars`);
       return;
     }
 
     if (subcommand === "show") {
-      const history = new WarEventHistoryService(cocService);
-      const row = await prisma.clanWarPlan.findUnique({
+      const requestedMatchType = interaction.options.getString("match-type", false);
+      const requestedOutcome = normalizeOutcome(interaction.options.getString("outcome", false));
+      const matchType = requestedMatchType ? normalizeMatchType(requestedMatchType) : null;
+
+      if (matchType !== "FWA" && requestedOutcome) {
+        await interaction.editReply("`outcome` can only be used when `match-type` is FWA.");
+        return;
+      }
+
+      const targets: Array<{ matchType: PlanMatchType; outcome: PlanOutcome }> = [];
+      if (!matchType) {
+        targets.push(
+          { matchType: "BL", outcome: "ANY" },
+          { matchType: "MM", outcome: "ANY" },
+          { matchType: "FWA", outcome: "WIN" },
+          { matchType: "FWA", outcome: "LOSE" }
+        );
+      } else if (matchType === "FWA" && !requestedOutcome) {
+        targets.push({ matchType: "FWA", outcome: "WIN" }, { matchType: "FWA", outcome: "LOSE" });
+      } else {
+        targets.push({
+          matchType,
+          outcome: matchType === "FWA" ? (requestedOutcome as "WIN" | "LOSE") : "ANY",
+        });
+      }
+
+      const rows = await prisma.clanWarPlan.findMany({
         where: {
-          guildId_clanTag: {
-            guildId: interaction.guildId,
-            clanTag,
-          },
-        },
-        select: {
-          prepPlan: true,
-          battlePlan: true,
-        },
-      });
-      const currentWar = await prisma.currentWar.findUnique({
-        where: {
-          clanTag_guildId: {
-            clanTag,
-            guildId: interaction.guildId,
-          },
+          guildId,
+          OR: targets.map((target) => ({ matchType: target.matchType, outcome: target.outcome })),
         },
         select: {
           matchType: true,
           outcome: true,
-          opponentName: true,
+          planText: true,
         },
       });
-      const prep = await resolveDisplayedPlan({
-        history,
-        guildId: interaction.guildId,
-        clanTag,
-        currentWar,
-        customPlan: row?.prepPlan,
-        phase: "prep",
-      });
-      const battle = await resolveDisplayedPlan({
-        history,
-        guildId: interaction.guildId,
-        clanTag,
-        currentWar,
-        customPlan: row?.battlePlan,
-        phase: "battle",
-      });
+
+      const rowByKey = new Map<string, string>();
+      for (const row of rows) {
+        rowByKey.set(`${row.matchType}:${row.outcome}`, row.planText);
+      }
+
+      const fields = [];
+      for (const target of targets) {
+        const key = `${target.matchType}:${target.outcome}`;
+        const custom = rowByKey.get(key);
+        const text = custom ?? (await getDefaultPlanText(history, guildId, target.matchType, target.outcome));
+        fields.push({
+          name: `${labelFor(target.matchType, target.outcome)} (${custom ? "Custom" : "Default"})`,
+          value: text,
+          inline: false,
+        });
+      }
 
       const embed = new EmbedBuilder()
-        .setTitle(`War Plan - ${trackedClan.name ?? clanTag}`)
-        .setDescription(`Clan: ${clanTag}`)
-        .addFields(
-          {
-            name: `Prep Plan (${prep.source === "custom" ? "Custom" : "Default"})`,
-            value: prep.text,
-            inline: false,
-          },
-          {
-            name: `Battle Plan (${battle.source === "custom" ? "Custom" : "Default"})`,
-            value: battle.text,
-            inline: false,
-          }
-        )
+        .setTitle("War Plans")
+        .setDescription("Plans by match type and outcome")
+        .addFields(fields)
         .setColor(0x3498db)
         .setTimestamp(new Date());
 
@@ -314,42 +288,42 @@ export const WarPlan: Command = {
     }
 
     if (subcommand === "reset") {
-      await prisma.clanWarPlan.deleteMany({
-        where: {
-          guildId: interaction.guildId,
-          clanTag,
-        },
+      const requestedMatchType = interaction.options.getString("match-type", false);
+      const requestedOutcome = normalizeOutcome(interaction.options.getString("outcome", false));
+      const matchType = requestedMatchType ? normalizeMatchType(requestedMatchType) : null;
+
+      if (matchType !== "FWA" && requestedOutcome) {
+        await interaction.editReply("`outcome` can only be used when `match-type` is FWA.");
+        return;
+      }
+
+      if (!matchType) {
+        const result = await prisma.clanWarPlan.deleteMany({ where: { guildId } });
+        await interaction.editReply(`Reset all war plans to defaults.\nRemoved entries: ${result.count}`);
+        return;
+      }
+
+      if (matchType !== "FWA") {
+        const result = await prisma.clanWarPlan.deleteMany({ where: { guildId, matchType, outcome: "ANY" } });
+        await interaction.editReply(`Reset **${matchType}** war plan to default.\nRemoved entries: ${result.count}`);
+        return;
+      }
+
+      if (!requestedOutcome) {
+        const result = await prisma.clanWarPlan.deleteMany({
+          where: { guildId, matchType: "FWA", outcome: { in: ["WIN", "LOSE"] } },
+        });
+        await interaction.editReply(`Reset **FWA-WIN** and **FWA-LOSE** plans to defaults.\nRemoved entries: ${result.count}`);
+        return;
+      }
+
+      const result = await prisma.clanWarPlan.deleteMany({
+        where: { guildId, matchType: "FWA", outcome: requestedOutcome },
       });
-      await interaction.editReply(`Reset custom war plans for **${trackedClan.name ?? clanTag}** (${clanTag}).`);
+      await interaction.editReply(`Reset **FWA-${requestedOutcome}** plan to default.\nRemoved entries: ${result.count}`);
       return;
     }
 
     await interaction.editReply("Unsupported /warplan usage.");
-  },
-  autocomplete: async (interaction: AutocompleteInteraction) => {
-    const focused = interaction.options.getFocused(true);
-    if (focused.name !== "clan-tag") {
-      await interaction.respond([]);
-      return;
-    }
-
-    const query = normalizeClanTagInput(String(focused.value ?? "")).toLowerCase();
-    const tracked = await prisma.trackedClan.findMany({
-      orderBy: { createdAt: "asc" },
-      select: { name: true, tag: true },
-    });
-
-    const choices = tracked
-      .map((clan) => {
-        const tag = normalizeClanTagInput(clan.tag);
-        const label = clan.name?.trim() ? `${clan.name.trim()} (#${tag})` : `#${tag}`;
-        return { name: label.slice(0, 100), value: tag };
-      })
-      .filter((choice) =>
-        choice.name.toLowerCase().includes(query) || choice.value.toLowerCase().includes(query)
-      )
-      .slice(0, 25);
-
-    await interaction.respond(choices);
   },
 };
