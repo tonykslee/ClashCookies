@@ -138,8 +138,8 @@ export class WarEventHistoryService {
             guildId,
             scope: "CUSTOM",
             OR: [
-              { clanTag: normalizedClanTag },
-              { clanTag: normalizedClanTagHash },
+              { clanTag: { equals: normalizedClanTag, mode: "insensitive" } },
+              { clanTag: { equals: normalizedClanTagHash, mode: "insensitive" } },
             ],
             matchType: matchTypeKey,
             outcome: outcomeKey,
@@ -617,8 +617,8 @@ export class WarEventHistoryService {
     const row = await prisma.trackedClan.findFirst({
       where: {
         OR: [
-          { tag: `#${clanTag}` },
-          { tag: clanTag },
+          { tag: { equals: `#${clanTag}`, mode: "insensitive" } },
+          { tag: { equals: clanTag, mode: "insensitive" } },
         ],
       },
       select: { loseStyle: true },
