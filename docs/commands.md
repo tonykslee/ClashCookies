@@ -22,7 +22,7 @@
 - `/cc clan tag:<tag>` - Build `https://cc.fwafarm.com/cc_n/clan.php?tag=<tag>`.
 - `/notify war clan-tag:<tag> target-channel:<channel> [role:<discordRole>]` - Enable war-state event logs (war start, battle day, war end) for a clan in a selected channel. Optional role is pinged when event logs are posted.
 - `/notify war-preview clan-tag:<tag> event:<war_started|battle_day|war_ended> [source:current|last]` - Show an ephemeral preview embed and confirm before posting publicly to the configured notify channel.
-- `/warplan set clan-tag:<tag> match-type:<BL|MM|FWA|FWA_WIN|FWA_LOSE_TRIPLE_TOP_30|FWA_LOSE_TRADITIONAL>` - Opens a modal to edit one clan custom plan. `clan-tag` supports autocomplete from tracked clans. Modal supports normal new lines plus markdown (bold/italic/code/code blocks).
+- `/warplan set clan-tag:<tag> match-type:<BL|MM|FWA|FWA_WIN|FWA_LOSE_TRIPLE_TOP_30|FWA_LOSE_TRADITIONAL>` - Opens a modal to edit one clan custom plan. `clan-tag` supports autocomplete from tracked clans. Modal supports normal new lines, markdown (bold/italic/code/code blocks), emoji shortcodes, and direct image/GIF links.
 - `/warplan show clan-tag:<tag> [match-type:<BL|MM|FWA|FWA_WIN|FWA_LOSE_TRIPLE_TOP_30|FWA_LOSE_TRADITIONAL>]` - Show effective clan plans. Precedence is clan custom -> editable guild default -> built-in fallback.
 - `/warplan reset clan-tag:<tag> [match-type:<BL|MM|FWA|FWA_WIN|FWA_LOSE_TRIPLE_TOP_30|FWA_LOSE_TRADITIONAL>]` - Reset clan custom plans. With no match-type, resets all custom plans for that clan.
 - `/warplan set-default match-type:<BL|MM|FWA|FWA_WIN|FWA_LOSE_TRIPLE_TOP_30|FWA_LOSE_TRADITIONAL>` - Opens a modal to edit one guild default plan used when a clan has no custom plan.

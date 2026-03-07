@@ -67,21 +67,40 @@ async function resolveCustomEmojiShortcodes(
   text: string,
   interaction: ChatInputCommandInteraction
 ): Promise<string> {
-  const guild = interaction.guild;
-  if (!guild) return text;
+  const exact = new Map<string, string>();
+  const lowercase = new Map<string, string>();
+  const pushEmoji = (name: string | null | undefined, token: string): void => {
+    if (!name) return;
+    if (!exact.has(name)) {
+      exact.set(name, token);
+    }
+    const lowered = name.toLowerCase();
+    if (!lowercase.has(lowered)) {
+      lowercase.set(lowered, token);
+    }
+  };
 
-  try {
-    await guild.emojis.fetch();
-  } catch {
-    return text;
+  const guild = interaction.guild;
+  if (guild) {
+    try {
+      await guild.emojis.fetch();
+    } catch {
+      // Keep going; we can still use cached/global emojis.
+    }
+    for (const emoji of guild.emojis.cache.values()) {
+      pushEmoji(emoji.name, `<${emoji.animated ? "a" : ""}:${emoji.name}:${emoji.id}>`);
+    }
+  }
+
+  for (const emoji of interaction.client.emojis.cache.values()) {
+    pushEmoji(emoji.name, `<${emoji.animated ? "a" : ""}:${emoji.name}:${emoji.id}>`);
   }
 
   return text.replace(
     /(^|[\s([{"']):([a-zA-Z0-9_]{2,32}):(?=$|[\s)\]}".,!?:;'"-])/g,
     (full, prefix: string, emojiName: string) => {
-      const match = guild.emojis.cache.find((emoji) => emoji.name === emojiName);
-      if (!match) return full;
-      const token = `<${match.animated ? "a" : ""}:${match.name}:${match.id}>`;
+      const token = exact.get(emojiName) ?? lowercase.get(emojiName.toLowerCase());
+      if (!token) return full;
       return `${prefix}${token}`;
     }
   );
