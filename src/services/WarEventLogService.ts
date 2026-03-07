@@ -28,7 +28,6 @@ import {
   deriveState,
   eventTitle,
   formatList,
-  formatPercent,
   normalizeOutcome,
   normalizeTag,
   normalizeTagBare,

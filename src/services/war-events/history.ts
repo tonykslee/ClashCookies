@@ -87,7 +87,7 @@ export class WarEventHistoryService {
     expectedOutcomeOrClanTag: "WIN" | "LOSE" | string | null,
     clanTagOrOpponentName?: string | null,
     opponentNameInput?: string | null,
-    phase: "prep" | "battle" = "battle"
+    _phase: "prep" | "battle" = "battle"
   ): Promise<string | null> {
     let guildId: string | null | undefined = guildIdOrMatchType;
     let matchType = matchTypeOrExpectedOutcome as MatchType;

@@ -18,7 +18,6 @@ import { Command } from "../Command";
 import { truncateDiscordContent } from "../helper/discordContent";
 import { recordFetchEvent } from "../helper/fetchTelemetry";
 import { formatError } from "../helper/formatError";
-import { safeReply } from "../helper/safeReply";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
 import {
@@ -43,7 +42,6 @@ import {
   getSyncDisplay,
   getWarStateRemaining,
   isMissedSyncClan,
-  isMissedSyncClanForTest,
   isPointsSiteUpdatedForOpponent,
   type WarStateForSync,
   withSyncModeLabel,
@@ -51,7 +49,6 @@ import {
 import {
   asMailConfigInputJson,
   buildDiscordMessageUrl,
-  type ForceMailMessageType,
   type MatchMailConfig,
   parseForceMailMessageType,
   parseMatchMailConfig,
@@ -1337,7 +1334,7 @@ function isPostedMailCurrentForLiveState(params: PostedMailLiveStateParams): boo
 
 export const isPostedMailCurrentForLiveStateForTest = isPostedMailCurrentForLiveState;
 
-function clearPostedMailTrackingForClan(params: {
+function _clearPostedMailTrackingForClan(params: {
   guildId: string;
   tag: string;
 }): void {
@@ -3297,15 +3294,6 @@ export async function runForceMailUpdateCommand(
     return;
   }
 
-  const current = await prisma.currentWar.findUnique({
-    where: {
-      clanTag_guildId: {
-        guildId: interaction.guildId,
-        clanTag: `#${tag}`,
-      },
-    },
-    select: { clanTag: true },
-  });
   const config = await getCurrentWarMailConfig(interaction.guildId, tag);
   const stored = await findStoredMailTarget({
     guildId: interaction.guildId,
@@ -4024,7 +4012,7 @@ async function getClanPointsCached(
   tag: string,
   sourceSync: number | null,
   _warLookupCache?: WarLookupCache,
-  options?: {
+  _options?: {
     requiredOpponentTag?: string | null;
   }
 ): Promise<PointsSnapshot> {
@@ -4120,7 +4108,7 @@ function deriveProjectedOutcome(
   return wins ? "WIN" : "LOSE";
 }
 
-async function buildLastWarMatchOverview(
+async function _buildLastWarMatchOverview(
   clanTag: string,
   guildId: string | null,
   previousSync: number | null
@@ -4518,12 +4506,6 @@ async function buildTrackedMatchOverview(
       opponentPoints?.balance !== undefined &&
       !Number.isNaN(opponentPoints.balance);
     const siteSyncObservedForWrite = primaryPoints?.winnerBoxSync ?? null;
-    const syncNumberForWrite =
-      siteSyncObservedForWrite !== null && Number.isFinite(siteSyncObservedForWrite)
-        ? Math.trunc(siteSyncObservedForWrite)
-        : currentSync !== null && Number.isFinite(currentSync)
-          ? Math.trunc(currentSync)
-          : null;
     const inferredFromPointsType: "FWA" | "MM" | null = hasOpponentPoints ? "FWA" : "MM";
     const matchType = matchTypeResolved ?? inferredFromPointsType ?? "UNKNOWN";
     const inferredMatchType = Boolean(sub?.inferredMatchType) || (matchTypeResolved === null && inferredFromPointsType !== null);
@@ -5019,7 +5001,6 @@ export async function runForceSyncDataCommand(
   const rawTag = interaction.options.getString("tag", true);
   const tag = normalizeTag(rawTag);
   const datapoint = interaction.options.getString("datapoint", false) ?? "all";
-  const shouldOverwritePoints = datapoint === "all" || datapoint === "points";
   const trackedClan = await prisma.trackedClan.findFirst({
     where: { tag: { equals: `#${tag}`, mode: "insensitive" } },
     select: { tag: true, name: true },
@@ -5031,7 +5012,6 @@ export async function runForceSyncDataCommand(
 
   const war = await getCurrentWarCached(cocService, tag, warLookupCache).catch(() => null);
   const opponentTag = normalizeTag(String(war?.opponent?.tag ?? ""));
-  const opponentName = sanitizeClanName(String(war?.opponent?.name ?? "")) ?? null;
   const fresh = await scrapeClanPoints(tag);
 
   const siteSync = fresh.winnerBoxSync;
@@ -6441,12 +6421,6 @@ export const Fwa: Command = {
         const hasPrimaryPoints = primary.balance !== null && !Number.isNaN(primary.balance);
         const hasOpponentPoints = opponent.balance !== null && !Number.isNaN(opponent.balance);
         const siteSyncObservedForWrite = primary.winnerBoxSync ?? null;
-        const syncNumberForWrite =
-          siteSyncObservedForWrite !== null && Number.isFinite(siteSyncObservedForWrite)
-            ? Math.trunc(siteSyncObservedForWrite)
-            : currentSync !== null && Number.isFinite(currentSync)
-              ? Math.trunc(currentSync)
-              : null;
         if (!hasPrimaryPoints && hasOpponentPoints) {
           await editReplySafe(`Could not fetch point balance for #${tag}.`);
           return;

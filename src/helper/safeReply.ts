@@ -1,4 +1,4 @@
-import { ChatInputCommandInteraction, DiscordAPIError } from "discord.js";
+import { ChatInputCommandInteraction } from "discord.js";
 import { formatError } from "./formatError";
 import { truncateDiscordContent } from "./discordContent";
 

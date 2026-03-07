@@ -92,8 +92,8 @@ export class WarStartPointsSyncService {
   async maybeRunWarStartPointsCheck(
     sub: PointsSyncSubscriptionLike,
     opponentTagInput: string,
-    clanNameInput: string | null,
-    opponentNameInput: string | null
+    _clanNameInput: string | null,
+    _opponentNameInput: string | null
   ): Promise<void> {
     const clanTag = normalizeTag(sub.clanTag);
     const opponentTag = normalizeTag(opponentTagInput);
