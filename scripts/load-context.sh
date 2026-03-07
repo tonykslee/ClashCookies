@@ -10,3 +10,7 @@ cat docs/architecture-contract.md
 echo
 echo "=== CORE PRIORITIES ==="
 cat docs/core-priorities.md
+
+echo
+echo "=== COMMAND SYSTEM ==="
+cat docs/commands.md
