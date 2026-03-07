@@ -278,6 +278,8 @@ type FwaMailPreviewPayload = {
 type FwaMailPostedPayload = {
   guildId: string;
   tag: string;
+  warId: string | null;
+  opponentTag: string | null;
   warStartMs: number | null;
   channelId: string;
   messageId: string;
@@ -812,6 +814,7 @@ async function recordMatchMailUpdated(params: {
   messageId: string;
   messageUrl?: string;
   warStartMs: number | null;
+  opponentTag?: string | null;
   sentAtMs: number;
   matchType: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN";
   expectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null;
@@ -826,15 +829,17 @@ async function recordMatchMailUpdated(params: {
     },
     select: { warId: true, startTime: true },
   });
+  const warIdText =
+    currentWar?.warId !== null && currentWar?.warId !== undefined && Number.isFinite(currentWar.warId)
+      ? String(Math.trunc(currentWar.warId))
+      : null;
+  const normalizedOpponentTag = normalizeTag(String(params.opponentTag ?? ""));
   const syncRow =
     currentWar?.startTime
       ? await pointsSyncService.getCurrentSyncForClan({
           guildId: params.guildId,
           clanTag: params.tag,
-          warId:
-            currentWar.warId !== null && currentWar.warId !== undefined
-              ? String(Math.trunc(currentWar.warId))
-              : null,
+          warId: warIdText,
           warStartTime: currentWar.startTime,
         })
       : null;
@@ -844,10 +849,7 @@ async function recordMatchMailUpdated(params: {
     clanTag: params.tag,
     type: "mail",
     event: null,
-    warId:
-      currentWar?.warId !== null && currentWar?.warId !== undefined
-        ? String(currentWar.warId)
-        : null,
+    warId: warIdText,
     syncNum: syncRow?.syncNum ?? null,
     channelId: params.channelId,
     messageId: params.messageId,
@@ -862,6 +864,8 @@ async function recordMatchMailUpdated(params: {
     lastPostedChannelId: params.channelId,
     lastPostedAtUnix: null,
     lastWarStartMs: params.warStartMs,
+    lastWarId: warIdText,
+    lastOpponentTag: normalizedOpponentTag || null,
     lastMatchType: params.matchType,
     lastExpectedOutcome: params.expectedOutcome,
     lastDataChangedAtUnix: Math.floor(params.sentAtMs / 1000),
@@ -1080,6 +1084,8 @@ async function buildWarMailEmbedForTag(
   inferredMatchType: boolean;
   mailChannelId: string | null;
   clanRoleId: string | null;
+  warId: number | null;
+  opponentTag: string | null;
   warStartMs: number | null;
   freezeRefresh: boolean;
   unavailableReasons: string[];
@@ -1330,6 +1336,8 @@ async function buildWarMailEmbedForTag(
     inferredMatchType,
     mailChannelId: trackedConfig.mailChannelId,
     clanRoleId: trackedConfig.clanRoleId,
+    warId,
+    opponentTag: effectiveOpponentTag || null,
     warStartMs: effectiveWarStartMs,
     freezeRefresh,
     unavailableReasons,
@@ -1341,15 +1349,21 @@ async function buildWarMailEmbedForTag(
 function findLatestPostedWarMailForClan(params: {
   guildId: string;
   tag: string;
+  warId?: string | null;
+  strictWarId?: boolean;
   warStartMs?: number | null;
   strictWarStart?: boolean;
 }): { key: string; payload: FwaMailPostedPayload } | null {
   const normalizedTag = normalizeTag(params.tag);
+  const strictWarId = Boolean(params.strictWarId);
+  const expectedWarId =
+    typeof params.warId === "string" && params.warId.trim() ? params.warId.trim() : null;
   const strictWarStart = Boolean(params.strictWarStart);
   let latest: { key: string; payload: FwaMailPostedPayload } | null = null;
   for (const [key, payload] of fwaMailPostedPayloads.entries()) {
     if (payload.guildId !== params.guildId) continue;
     if (normalizeTag(payload.tag) !== normalizedTag) continue;
+    if (strictWarId && payload.warId !== expectedWarId) continue;
     if (strictWarStart && payload.warStartMs !== (params.warStartMs ?? null)) continue;
     if (!latest || payload.sentAtMs > latest.payload.sentAtMs) {
       latest = { key, payload };
@@ -1362,11 +1376,13 @@ async function findStoredMailTarget(params: {
   guildId: string;
   tag: string;
   warId?: string | null;
+  strictWarId?: boolean;
 }): Promise<{ channelId: string; messageId: string; messageUrl: string } | null> {
   const existing = await postedMessageService.findMailMessage({
     guildId: params.guildId,
     clanTag: params.tag,
     warId: params.warId ?? null,
+    strictWarId: params.strictWarId,
   });
   if (!existing) return null;
   return {
@@ -1379,7 +1395,9 @@ async function findStoredMailTarget(params: {
 async function getMailStatusEmojiForClan(params: {
   guildId: string | null;
   tag: string;
+  warId?: number | null;
   warStartMs: number | null;
+  liveOpponentTag?: string | null;
   mailConfig?: MatchMailConfig | null;
   liveMatchType?: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN" | null;
   liveExpectedOutcome?: "WIN" | "LOSE" | "UNKNOWN" | null;
@@ -1389,32 +1407,29 @@ async function getMailStatusEmojiForClan(params: {
   const liveMatchesPosted = isPostedMailCurrentForLiveState({
     postedMatchType: config?.lastMatchType ?? null,
     postedExpectedOutcome: config?.lastExpectedOutcome ?? null,
+    postedOpponentTag: config?.lastOpponentTag ?? null,
+    postedWarStartMs: config?.lastWarStartMs ?? null,
+    postedWarId: config?.lastWarId ?? null,
     liveMatchType: params.liveMatchType,
     liveExpectedOutcome: params.liveExpectedOutcome,
+    liveOpponentTag: params.liveOpponentTag,
+    liveWarStartMs: params.warStartMs,
+    liveWarId: params.warId ?? null,
   });
   if (!liveMatchesPosted) return MAILBOX_NOT_SENT_EMOJI;
+  const warIdText =
+    params.warId !== null && params.warId !== undefined && Number.isFinite(params.warId)
+      ? String(Math.trunc(params.warId))
+      : null;
   const storedMail = await findStoredMailTarget({
     guildId: params.guildId,
     tag: params.tag,
+    warId: warIdText,
+    strictWarId: warIdText !== null,
   });
-  if (storedMail || (config?.lastPostedChannelId && config?.lastPostedMessageId)) {
-    if (
-      params.warStartMs !== null &&
-      config?.lastWarStartMs !== null &&
-      config?.lastWarStartMs === params.warStartMs
-    ) {
-      return MAILBOX_SENT_EMOJI;
-    }
-    if (params.warStartMs === null) {
-      return MAILBOX_SENT_EMOJI;
-    }
-    if (
-      params.warStartMs !== null &&
-      config?.lastWarStartMs === null
-    ) {
-      return MAILBOX_SENT_EMOJI;
-    }
-  }
+  if (storedMail) return MAILBOX_SENT_EMOJI;
+  if (warIdText !== null) return MAILBOX_NOT_SENT_EMOJI;
+  if (config?.lastPostedChannelId && config?.lastPostedMessageId) return MAILBOX_SENT_EMOJI;
   const sentForSameWar =
     params.warStartMs !== null
       ? findLatestPostedWarMailForClan({
@@ -1436,17 +1451,64 @@ async function getMailStatusEmojiForClan(params: {
 type PostedMailLiveStateParams = {
   postedMatchType: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN" | null;
   postedExpectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null;
+  postedOpponentTag?: string | null;
+  postedWarStartMs?: number | null;
+  postedWarId?: string | null;
   liveMatchType?: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN" | null;
   liveExpectedOutcome?: "WIN" | "LOSE" | "UNKNOWN" | null;
+  liveOpponentTag?: string | null;
+  liveWarStartMs?: number | null;
+  liveWarId?: number | null;
 };
 
 function isPostedMailCurrentForLiveState(params: PostedMailLiveStateParams): boolean {
-  const hasLive = params.liveMatchType !== undefined || params.liveExpectedOutcome !== undefined;
+  const liveOpponent = normalizeTag(String(params.liveOpponentTag ?? ""));
+  const liveWarStartMsKnown =
+    typeof params.liveWarStartMs === "number" && Number.isFinite(params.liveWarStartMs);
+  const liveWarIdKnown =
+    params.liveWarId !== null && params.liveWarId !== undefined && Number.isFinite(params.liveWarId);
+  const hasLive =
+    params.liveMatchType !== undefined ||
+    params.liveExpectedOutcome !== undefined ||
+    Boolean(liveOpponent) ||
+    liveWarStartMsKnown ||
+    liveWarIdKnown;
   if (!hasLive) return true;
-  return (
-    (params.postedMatchType ?? null) === (params.liveMatchType ?? null) &&
-    (params.postedExpectedOutcome ?? null) === (params.liveExpectedOutcome ?? null)
-  );
+  if ((params.postedMatchType ?? null) !== (params.liveMatchType ?? null)) return false;
+  if ((params.postedExpectedOutcome ?? null) !== (params.liveExpectedOutcome ?? null)) return false;
+
+  if (liveOpponent) {
+    const postedOpponent = normalizeTag(String(params.postedOpponentTag ?? ""));
+    if (!postedOpponent || postedOpponent !== liveOpponent) return false;
+  }
+
+  const liveWarStartMs =
+    typeof params.liveWarStartMs === "number" && Number.isFinite(params.liveWarStartMs)
+      ? Math.trunc(params.liveWarStartMs)
+      : null;
+  if (liveWarStartMs !== null) {
+    const postedWarStartMs =
+      typeof params.postedWarStartMs === "number" && Number.isFinite(params.postedWarStartMs)
+        ? Math.trunc(params.postedWarStartMs)
+        : null;
+    if (postedWarStartMs === null || postedWarStartMs !== liveWarStartMs) return false;
+  }
+
+  const liveWarId =
+    params.liveWarId !== null &&
+    params.liveWarId !== undefined &&
+    Number.isFinite(params.liveWarId)
+      ? String(Math.trunc(params.liveWarId))
+      : null;
+  if (liveWarId !== null) {
+    const postedWarId =
+      typeof params.postedWarId === "string" && params.postedWarId.trim()
+        ? params.postedWarId.trim()
+        : null;
+    if (!postedWarId || postedWarId !== liveWarId) return false;
+  }
+
+  return true;
 }
 
 export const isPostedMailCurrentForLiveStateForTest = isPostedMailCurrentForLiveState;
@@ -1468,17 +1530,34 @@ async function hasPostedMailMessage(params: {
   client: Client | null | undefined;
   guildId: string | null;
   tag?: string | null;
+  warId?: number | null;
+  strictWarId?: boolean;
   mailConfig: MatchMailConfig | null | undefined;
 }): Promise<boolean> {
   if (!params.guildId || !params.mailConfig) return false;
+  const warIdText =
+    params.warId !== null && params.warId !== undefined && Number.isFinite(params.warId)
+      ? String(Math.trunc(params.warId))
+      : null;
+  const strictWarId = params.strictWarId ?? warIdText !== null;
   const stored =
     params.tag
       ? await findStoredMailTarget({
           guildId: params.guildId,
           tag: params.tag,
+          warId: warIdText,
+          strictWarId,
         })
       : null;
   if (stored?.channelId && stored.messageId) return true;
+  if (strictWarId) {
+    return Boolean(
+      params.mailConfig.lastPostedChannelId &&
+        params.mailConfig.lastPostedMessageId &&
+        params.mailConfig.lastWarId &&
+        params.mailConfig.lastWarId === warIdText
+    );
+  }
   return Boolean(params.mailConfig.lastPostedChannelId && params.mailConfig.lastPostedMessageId);
 }
 
@@ -1659,6 +1738,56 @@ function buildWarMailPostedContent(
 export const buildWarMailPostedContentForTest = buildWarMailPostedContent;
 export const buildWarMailNextRefreshLabelForTest = buildNextRefreshRelativeLabel;
 
+function hasWarIdentityShifted(params: {
+  postedWarId?: string | null;
+  postedWarStartMs?: number | null;
+  renderedWarId?: number | null;
+  renderedWarStartMs?: number | null;
+  expectedWarId?: string | null;
+  expectedWarStartMs?: number | null;
+}): boolean {
+  const postedWarId =
+    typeof params.postedWarId === "string" && params.postedWarId.trim()
+      ? params.postedWarId.trim()
+      : null;
+  const expectedWarId =
+    typeof params.expectedWarId === "string" && params.expectedWarId.trim()
+      ? params.expectedWarId.trim()
+      : null;
+  const identityWarId = expectedWarId ?? postedWarId;
+  const renderedWarId =
+    params.renderedWarId !== null &&
+    params.renderedWarId !== undefined &&
+    Number.isFinite(params.renderedWarId)
+      ? String(Math.trunc(params.renderedWarId))
+      : null;
+  if (identityWarId && renderedWarId && identityWarId !== renderedWarId) return true;
+
+  const postedWarStartMs =
+    typeof params.postedWarStartMs === "number" && Number.isFinite(params.postedWarStartMs)
+      ? Math.trunc(params.postedWarStartMs)
+      : null;
+  const expectedWarStartMs =
+    typeof params.expectedWarStartMs === "number" && Number.isFinite(params.expectedWarStartMs)
+      ? Math.trunc(params.expectedWarStartMs)
+      : null;
+  const identityWarStartMs = expectedWarStartMs ?? postedWarStartMs;
+  const renderedWarStartMs =
+    typeof params.renderedWarStartMs === "number" && Number.isFinite(params.renderedWarStartMs)
+      ? Math.trunc(params.renderedWarStartMs)
+      : null;
+  if (
+    identityWarStartMs !== null &&
+    renderedWarStartMs !== null &&
+    identityWarStartMs !== renderedWarStartMs
+  ) {
+    return true;
+  }
+  return false;
+}
+
+export const hasWarIdentityShiftedForTest = hasWarIdentityShifted;
+
 async function refreshWarMailPost(
   client: Client,
   key: string
@@ -1671,6 +1800,23 @@ async function refreshWarMailPost(
   if (!channel || !channel.isTextBased()) return "missing";
   const message = await (channel as any).messages.fetch(payload.messageId).catch(() => null);
   if (!message) return "missing";
+  if (
+    hasWarIdentityShifted({
+      postedWarId: payload.warId,
+      postedWarStartMs: payload.warStartMs,
+      renderedWarId: rendered.warId,
+      renderedWarStartMs: rendered.warStartMs,
+    })
+  ) {
+    await message
+      .edit({
+        components: [],
+      })
+      .catch(() => undefined);
+    stopWarMailPolling(key);
+    fwaMailPostedPayloads.delete(key);
+    return "frozen";
+  }
   await message.edit({
     content:
       rendered.freezeRefresh
@@ -1689,6 +1835,11 @@ async function refreshWarMailPost(
   }
   fwaMailPostedPayloads.set(key, {
     ...payload,
+    warId:
+      rendered.warId !== null && rendered.warId !== undefined && Number.isFinite(rendered.warId)
+        ? String(Math.trunc(rendered.warId))
+        : payload.warId,
+    opponentTag: rendered.opponentTag,
     warStartMs: rendered.warStartMs,
     matchType: rendered.matchType,
     expectedOutcome: rendered.expectedOutcome,
@@ -1703,6 +1854,8 @@ async function refreshWarMailPostByResolvedTarget(params: {
   channelId: string;
   messageId: string;
   key?: string;
+  expectedWarId?: string | null;
+  expectedWarStartMs?: number | null;
 }): Promise<"refreshed" | "frozen" | "missing"> {
   const normalizedTag = normalizeTag(params.tag);
   if (!normalizedTag) return "missing";
@@ -1712,6 +1865,25 @@ async function refreshWarMailPostByResolvedTarget(params: {
   if (!message) return "missing";
   const cocService = new CoCService();
   const rendered = await buildWarMailEmbedForTag(cocService, params.guildId, normalizedTag);
+  if (
+    hasWarIdentityShifted({
+      renderedWarId: rendered.warId,
+      renderedWarStartMs: rendered.warStartMs,
+      expectedWarId: params.expectedWarId,
+      expectedWarStartMs: params.expectedWarStartMs,
+    })
+  ) {
+    await message
+      .edit({
+        components: [],
+      })
+      .catch(() => undefined);
+    if (params.key) {
+      stopWarMailPolling(params.key);
+      fwaMailPostedPayloads.delete(params.key);
+    }
+    return "frozen";
+  }
   await message.edit({
     content:
       rendered.freezeRefresh
@@ -1737,11 +1909,18 @@ function extractWarMailTagFromMessage(message: ButtonInteraction["message"]): st
   return normalizeTag(match[1]);
 }
 
+function extractWarMailIdFromMessage(message: ButtonInteraction["message"]): string | null {
+  const footerText = String(message.embeds?.[0]?.footer?.text ?? "");
+  const match = footerText.match(/war\s*id:\s*(\d+)/i);
+  if (!match?.[1]) return null;
+  return match[1];
+}
+
 async function findWarMailTargetFromConfig(params: {
   guildId: string;
   channelId: string;
   messageId: string;
-}): Promise<{ tag: string; channelId: string; messageId: string } | null> {
+}): Promise<{ tag: string; warId: string | null; channelId: string; messageId: string } | null> {
   const row = await prisma.clanPostedMessage.findFirst({
     where: {
       guildId: params.guildId,
@@ -1750,11 +1929,12 @@ async function findWarMailTargetFromConfig(params: {
       messageId: params.messageId,
     },
     orderBy: { createdAt: "desc" },
-    select: { clanTag: true, channelId: true, messageId: true },
+    select: { clanTag: true, warId: true, channelId: true, messageId: true },
   });
   if (!row) return null;
   return {
     tag: normalizeTag(row.clanTag),
+    warId: row.warId ?? null,
     channelId: row.channelId,
     messageId: row.messageId,
   };
@@ -3175,9 +3355,15 @@ async function handleFwaMailConfirmAction(
     },
   });
   const nowMs = Date.now();
+  const renderedWarIdText =
+    rendered.warId !== null && rendered.warId !== undefined && Number.isFinite(rendered.warId)
+      ? String(Math.trunc(rendered.warId))
+      : null;
   let previous = findLatestPostedWarMailForClan({
     guildId: payload.guildId,
     tag: payload.tag,
+    warId: renderedWarIdText,
+    strictWarId: renderedWarIdText !== null,
     warStartMs: rendered.warStartMs,
     strictWarStart: rendered.warStartMs !== null,
   });
@@ -3195,6 +3381,8 @@ async function handleFwaMailConfirmAction(
         payload: {
           guildId: payload.guildId,
           tag: payload.tag,
+          warId: existingMailConfig.lastWarId ?? null,
+          opponentTag: existingMailConfig.lastOpponentTag ?? null,
           warStartMs: existingMailConfig.lastWarStartMs,
           channelId: existingMailConfig.lastPostedChannelId,
           messageId: existingMailConfig.lastPostedMessageId,
@@ -3212,6 +3400,8 @@ async function handleFwaMailConfirmAction(
     fwaMailPostedPayloads.set(postKey, {
       guildId: payload.guildId,
       tag: payload.tag,
+      warId: renderedWarIdText,
+      opponentTag: rendered.opponentTag ?? null,
       warStartMs: rendered.warStartMs,
       channelId: channel.id,
       messageId: sent.id,
@@ -3241,6 +3431,7 @@ async function handleFwaMailConfirmAction(
     messageId: sent.id,
     messageUrl: buildDiscordMessageUrl(payload.guildId, channel.id, sent.id),
     warStartMs: rendered.warStartMs,
+    opponentTag: rendered.opponentTag,
     sentAtMs: nowMs,
     matchType: rendered.matchType,
     expectedOutcome: rendered.expectedOutcome,
@@ -3378,10 +3569,12 @@ export async function handleFwaMailRefreshButton(interaction: ButtonInteraction)
   }
   const guildId = interaction.guildId ?? "";
   const fallbackTag = extractWarMailTagFromMessage(interaction.message);
+  const fallbackWarId = extractWarMailIdFromMessage(interaction.message);
   const fallbackTarget =
     guildId && fallbackTag
       ? {
           tag: fallbackTag,
+          warId: fallbackWarId,
           channelId: interaction.channelId,
           messageId: interaction.message.id,
         }
@@ -3405,6 +3598,7 @@ export async function handleFwaMailRefreshButton(interaction: ButtonInteraction)
     tag: fallbackTarget.tag,
     channelId: fallbackTarget.channelId,
     messageId: fallbackTarget.messageId,
+    expectedWarId: fallbackTarget.warId ?? null,
   }).catch(() => "missing" as const);
   await interaction.reply({
     ephemeral: true,
@@ -3422,6 +3616,9 @@ export async function refreshAllTrackedWarMailPosts(client: Client): Promise<voi
     select: {
       guildId: true,
       clanTag: true,
+      warId: true,
+      startTime: true,
+      opponentTag: true,
     },
   });
 
@@ -3429,27 +3626,55 @@ export async function refreshAllTrackedWarMailPosts(client: Client): Promise<voi
     const guildId = row.guildId?.trim() ?? "";
     if (!guildId) continue;
     const config = await getCurrentWarMailConfig(guildId, normalizeTag(row.clanTag));
-    const stored = await findStoredMailTarget({
-      guildId,
-      tag: row.clanTag,
-    });
-    if (!stored) continue;
+    const warIdText =
+      row.warId !== null && row.warId !== undefined && Number.isFinite(row.warId)
+        ? String(Math.trunc(row.warId))
+        : null;
+    const currentWarStartMs = row.startTime ? row.startTime.getTime() : null;
 
     const existingInMemory = findLatestPostedWarMailForClan({
       guildId,
       tag: row.clanTag,
+      warId: warIdText,
+      strictWarId: warIdText !== null,
+      warStartMs: currentWarStartMs,
+      strictWarStart: currentWarStartMs !== null,
     });
+    const stored = existingInMemory
+      ? {
+          channelId: existingInMemory.payload.channelId,
+          messageId: existingInMemory.payload.messageId,
+          messageUrl: "",
+        }
+      : warIdText
+        ? await findStoredMailTarget({
+            guildId,
+            tag: row.clanTag,
+            warId: warIdText,
+            strictWarId: true,
+          })
+        : null;
+    if (!stored) continue;
+
+    const targetChannelId = stored.channelId;
+    const targetMessageId = stored.messageId;
+    const targetWarId = warIdText ?? existingInMemory?.payload.warId ?? null;
+    const targetWarStartMs = currentWarStartMs ?? existingInMemory?.payload.warStartMs ?? null;
+    const targetOpponentTag =
+      normalizeTag(String(row.opponentTag ?? "")) || existingInMemory?.payload.opponentTag || null;
     const refreshed = await refreshWarMailPostByResolvedTarget({
       client,
       guildId,
       tag: row.clanTag,
-      channelId: stored.channelId,
-      messageId: stored.messageId,
+      channelId: targetChannelId,
+      messageId: targetMessageId,
       key: existingInMemory?.key,
+      expectedWarId: targetWarId,
+      expectedWarStartMs: targetWarStartMs,
     }).catch(() => "missing" as const);
     if (refreshed === "missing") continue;
-    const channelId = stored.channelId;
-    const messageId = stored.messageId;
+    const channelId = targetChannelId;
+    const messageId = targetMessageId;
 
     if (
       config.lastPostedChannelId !== channelId ||
@@ -3473,7 +3698,9 @@ export async function refreshAllTrackedWarMailPosts(client: Client): Promise<voi
       fwaMailPostedPayloads.set(postKey, {
         guildId,
         tag: normalizeTag(row.clanTag),
-        warStartMs: config.lastWarStartMs ?? null,
+        warId: targetWarId,
+        opponentTag: targetOpponentTag,
+        warStartMs: targetWarStartMs ?? config.lastWarStartMs ?? null,
         channelId,
         messageId,
         sentAtMs: Date.now(),
@@ -3508,10 +3735,48 @@ export async function runForceMailUpdateCommand(
   }
 
   const config = await getCurrentWarMailConfig(interaction.guildId, tag);
-  const stored = await findStoredMailTarget({
+  const currentWar = await prisma.currentWar.findUnique({
+    where: {
+      clanTag_guildId: {
+        guildId: interaction.guildId,
+        clanTag: `#${tag}`,
+      },
+    },
+    select: {
+      warId: true,
+      startTime: true,
+      opponentTag: true,
+    },
+  });
+  const currentWarIdText =
+    currentWar?.warId !== null &&
+    currentWar?.warId !== undefined &&
+    Number.isFinite(currentWar?.warId)
+      ? String(Math.trunc(currentWar.warId))
+      : null;
+  const currentWarStartMs = currentWar?.startTime ? currentWar.startTime.getTime() : null;
+  const existingInMemory = findLatestPostedWarMailForClan({
     guildId: interaction.guildId,
     tag,
+    warId: currentWarIdText,
+    strictWarId: currentWarIdText !== null,
+    warStartMs: currentWarStartMs,
+    strictWarStart: currentWarStartMs !== null,
   });
+  const stored = existingInMemory
+    ? {
+        channelId: existingInMemory.payload.channelId,
+        messageId: existingInMemory.payload.messageId,
+        messageUrl: "",
+      }
+    : currentWarIdText
+      ? await findStoredMailTarget({
+          guildId: interaction.guildId,
+          tag,
+          warId: currentWarIdText,
+          strictWarId: true,
+        })
+      : null;
   if (!stored) {
     await interaction.editReply(
       `No active sent mail reference found for #${tag}. Send mail first or sync it via \`/force sync mail\`.`
@@ -3525,10 +3790,9 @@ export async function runForceMailUpdateCommand(
     tag,
     channelId: stored.channelId,
     messageId: stored.messageId,
-    key: findLatestPostedWarMailForClan({
-      guildId: interaction.guildId,
-      tag,
-    })?.key,
+    key: existingInMemory?.key,
+    expectedWarId: currentWarIdText,
+    expectedWarStartMs: currentWarStartMs,
   }).catch(() => "missing" as const);
   if (refreshed === "missing") {
     await interaction.editReply(
@@ -3556,16 +3820,14 @@ export async function runForceMailUpdateCommand(
     });
   }
 
-  const existingInMemory = findLatestPostedWarMailForClan({
-    guildId: interaction.guildId,
-    tag,
-  });
   if (!existingInMemory && refreshed === "refreshed") {
     const postKey = createTransientFwaKey();
     fwaMailPostedPayloads.set(postKey, {
       guildId: interaction.guildId,
       tag,
-      warStartMs: config.lastWarStartMs ?? null,
+      warId: currentWarIdText,
+      opponentTag: normalizeTag(String(currentWar?.opponentTag ?? "")) || null,
+      warStartMs: currentWarStartMs ?? config.lastWarStartMs ?? null,
       channelId,
       messageId,
       sentAtMs: Date.now(),
@@ -4653,7 +4915,9 @@ async function buildTrackedMatchOverview(
     const baseMailStatusEmoji = await getMailStatusEmojiForClan({
       guildId,
       tag: clanTag,
+      warId: sub?.warId ?? null,
       warStartMs: clanWarStartMs,
+      liveOpponentTag: normalizeTag(String(war?.opponent?.tag ?? "")),
       mailConfig: parsedMailConfig,
       liveMatchType: isMatchTypeValue(sub?.matchType) ? sub?.matchType : null,
       liveExpectedOutcome: isExpectedOutcomeValue(sub?.outcome) ? sub?.outcome : null,
@@ -4664,6 +4928,8 @@ async function buildTrackedMatchOverview(
             client: client ?? null,
             guildId,
             tag: clanTag,
+            warId: sub?.warId ?? null,
+            strictWarId: (sub?.warId ?? null) !== null && (sub?.warId ?? null) !== undefined,
             mailConfig: parsedMailConfig,
           })
         : false;
@@ -5056,13 +5322,24 @@ async function buildTrackedMatchOverview(
     const mailChannelId = mailChannelByTag.get(clanTag) ?? null;
     const currentExpectedOutcomeForMail: "WIN" | "LOSE" | "UNKNOWN" | null =
       matchType === "FWA" ? (effectiveOutcome ?? "UNKNOWN") : null;
-    const matchesLastPostedConfig =
-      parsedMailConfig.lastMatchType === matchType &&
-      (parsedMailConfig.lastExpectedOutcome ?? null) === currentExpectedOutcomeForMail;
+    const matchesLastPostedConfig = isPostedMailCurrentForLiveState({
+      postedMatchType: parsedMailConfig.lastMatchType ?? null,
+      postedExpectedOutcome: parsedMailConfig.lastExpectedOutcome ?? null,
+      postedOpponentTag: parsedMailConfig.lastOpponentTag ?? null,
+      postedWarStartMs: parsedMailConfig.lastWarStartMs ?? null,
+      postedWarId: parsedMailConfig.lastWarId ?? null,
+      liveMatchType: matchType,
+      liveExpectedOutcome: currentExpectedOutcomeForMail,
+      liveOpponentTag: opponentTag,
+      liveWarStartMs: clanWarStartMs,
+      liveWarId: sub?.warId ?? null,
+    });
     const postedMailExists = await hasPostedMailMessage({
       client: client ?? null,
       guildId,
       tag: clanTag,
+      warId: sub?.warId ?? null,
+      strictWarId: (sub?.warId ?? null) !== null && (sub?.warId ?? null) !== undefined,
       mailConfig: parsedMailConfig,
     });
     const mailBlockedReason = inferredMatchType
@@ -5480,12 +5757,20 @@ export async function runForceSyncMailCommand(
       matchType: true,
       outcome: true,
       startTime: true,
+      opponentTag: true,
     },
   });
   const currentWar = await getCurrentWarCached(cocService, tag).catch(() => null);
+  const opponentTag =
+    normalizeTag(String(currentWar?.opponent?.tag ?? "")) ||
+    normalizeTag(String(existing?.opponentTag ?? ""));
   const warStartMsFromApi = parseCocApiTime(currentWar?.startTime);
   const warStartMs =
     existing?.startTime?.getTime() ?? warStartMsFromApi ?? null;
+  const warIdText =
+    existing?.warId !== null && existing?.warId !== undefined && Number.isFinite(existing.warId)
+      ? String(Math.trunc(existing.warId))
+      : null;
   const nowUnix = Math.floor(Date.now() / 1000);
   const current = await getCurrentWarMailConfig(interaction.guildId, tag);
   const matchType = existing?.matchType ?? current.lastMatchType ?? "UNKNOWN";
@@ -5497,6 +5782,8 @@ export async function runForceSyncMailCommand(
   const next: MatchMailConfig = {
     ...current,
     lastWarStartMs: warStartMs,
+    lastWarId: warIdText,
+    lastOpponentTag: opponentTag || null,
     lastMatchType: matchType,
     lastExpectedOutcome: expectedOutcome,
   };
@@ -5520,7 +5807,7 @@ export async function runForceSyncMailCommand(
     event:
       parsedType.messageType === "notify" ? parsedType.notifyType ?? null : null,
     warId:
-      existing?.warId !== null && existing?.warId !== undefined ? String(existing.warId) : null,
+      warIdText,
     syncNum: null,
     channelId: interaction.channelId,
     messageId: messageID,
@@ -6638,6 +6925,7 @@ export const Fwa: Command = {
           const baseMailStatusEmoji = await getMailStatusEmojiForClan({
             guildId: interaction.guildId ?? null,
             tag,
+            warId: subscription?.warId ?? null,
             warStartMs: null,
             mailConfig: parsedMailConfig,
             liveMatchType: isMatchTypeValue(subscription?.matchType) ? subscription?.matchType : null,
@@ -6649,6 +6937,9 @@ export const Fwa: Command = {
                   client: interaction.client,
                   guildId: interaction.guildId ?? null,
                   tag,
+                  warId: subscription?.warId ?? null,
+                  strictWarId:
+                    (subscription?.warId ?? null) !== null && (subscription?.warId ?? null) !== undefined,
                   mailConfig: parsedMailConfig,
                 })
               : false;
@@ -6962,15 +7253,30 @@ export const Fwa: Command = {
           interaction.guildId ?? "",
           tag
         );
+        const liveWarStartMs =
+          parseCocApiTime(war?.startTime) ??
+          (subscription?.startTime ? subscription.startTime.getTime() : null);
         const currentExpectedOutcomeForMail: "WIN" | "LOSE" | "UNKNOWN" | null =
           matchType === "FWA" ? (effectiveOutcome ?? "UNKNOWN") : null;
-        const matchesLastPostedConfig =
-          parsedMailConfig.lastMatchType === matchType &&
-          (parsedMailConfig.lastExpectedOutcome ?? null) === currentExpectedOutcomeForMail;
+        const matchesLastPostedConfig = isPostedMailCurrentForLiveState({
+          postedMatchType: parsedMailConfig.lastMatchType ?? null,
+          postedExpectedOutcome: parsedMailConfig.lastExpectedOutcome ?? null,
+          postedOpponentTag: parsedMailConfig.lastOpponentTag ?? null,
+          postedWarStartMs: parsedMailConfig.lastWarStartMs ?? null,
+          postedWarId: parsedMailConfig.lastWarId ?? null,
+          liveMatchType: matchType,
+          liveExpectedOutcome: currentExpectedOutcomeForMail,
+          liveOpponentTag: opponentTag,
+          liveWarStartMs,
+          liveWarId: subscription?.warId ?? null,
+        });
         const postedMailExists = await hasPostedMailMessage({
           client: interaction.client,
           guildId: interaction.guildId ?? null,
           tag,
+          warId: subscription?.warId ?? null,
+          strictWarId:
+            (subscription?.warId ?? null) !== null && (subscription?.warId ?? null) !== undefined,
           mailConfig: parsedMailConfig,
         });
         const mailBlockedReason = inferredMatchType
