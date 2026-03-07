@@ -12,6 +12,7 @@ import { hashMessageConfig } from "../helper/hashConfig";
 import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
 import { CoCService } from "./CoCService";
+import { FwaStatsService } from "./FwaStatsService";
 import { PointsProjectionService } from "./PointsProjectionService";
 import { PostedMessageService } from "./PostedMessageService";
 import { PointsSyncService } from "./PointsSyncService";
@@ -251,6 +252,7 @@ function buildWarStatsLines(stats: EmbedWarStats): string[] {
 
 export class WarEventLogService {
   private readonly points: PointsProjectionService;
+  private readonly fwaStats: FwaStatsService;
   private readonly pointsSync: WarStartPointsSyncService;
   private readonly currentSyncs: PointsSyncService;
   private readonly history: WarEventHistoryService;
@@ -259,6 +261,7 @@ export class WarEventLogService {
   /** Purpose: initialize service dependencies. */
   constructor(private readonly client: Client, private readonly coc: CoCService) {
     this.points = new PointsProjectionService(coc);
+    this.fwaStats = new FwaStatsService();
     this.pointsSync = new WarStartPointsSyncService(this.points, new SettingsService());
     this.currentSyncs = new PointsSyncService();
     this.history = new WarEventHistoryService(coc);
@@ -1076,6 +1079,12 @@ export class WarEventLogService {
         nextOpponentName
       ).catch(() => null);
     }
+    const fwaStatsValidated =
+      currentState !== "notInWar" && nextOpponentTag
+        ? await this.fwaStats
+            .isOpponentInActiveWars(sub.clanTag, nextOpponentTag)
+            .catch(() => null)
+        : null;
 
     const fallbackSyncNumberForEvent =
       eventType === "war_ended"
@@ -1138,6 +1147,10 @@ export class WarEventLogService {
     }
     let nextMatchType = sub.matchType;
     let nextInferredMatchType = sub.inferredMatchType;
+    if (fwaStatsValidated === true && (nextMatchType === null || nextInferredMatchType)) {
+      nextMatchType = "FWA";
+      nextInferredMatchType = false;
+    }
     if (eventType === "war_started") {
       if (
         nextMatchType === null &&
