@@ -32,7 +32,7 @@
 - `/war war-id war-id:<number>` - Export stored war lookup payload for one war ID as CSV.
 - `/accounts [visibility:private|public] [tag:<playerTag>] [discord-id:<snowflake>]` - List linked player accounts grouped by current clan. Default is your own account; provide exactly one of `tag` or `discord-id` to inspect a different linked user.
 - `/fwa points [visibility:private|public] [tag:<tag>]` - Fetch current point balance from `https://points.fwafarm.com/clan?tag=<tag-without-#>`. If `tag` is omitted, fetches all tracked clans.
-- `/fwa match [visibility:private|public] tag:<tag>` - Resolve current war opponent from CoC API, then return projected win/lose by points (or sync-based tiebreak on tie).
+- `/fwa match [visibility:private|public] tag:<tag>` - Resolve current war opponent from CoC API, render cached matchup state, and project win/lose by points (or sync-based tiebreak on tie). Slow in-message actions now show a processing notice while updates run.
 - `/fwa match-type [visibility:private|public] [tag:<trackedClanTag>] [type:FWA|BL|MM]` - Manually set or view per-clan match type override used by matchup output. If no args, lists overrides for all tracked clans.
 - `/fwa mail send tag:<trackedClanTag>` - Show ephemeral war mail preview with confirm-and-send to the tracked clan mail channel.
 - `/fwa match` single-clan view includes a `Send Mail` button that follows the same access policy as `/fwa mail send`.
