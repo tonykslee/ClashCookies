@@ -693,7 +693,8 @@ export class WarEventLogService {
         payload.outcome,
         payload.clanTag,
         payload.opponentName,
-        "battle"
+        "battle",
+        payload.clanName
       );
       if (battlePlanText) {
         embed.addFields({
@@ -751,7 +752,8 @@ export class WarEventLogService {
         payload.outcome,
         payload.clanTag,
         payload.opponentName,
-        "prep"
+        "prep",
+        payload.clanName
       );
       if (prepPlanText) {
         embed.addFields({
@@ -1679,7 +1681,8 @@ export class WarEventLogService {
         payload.outcome,
         payload.clanTag,
         payload.opponentName,
-        "battle"
+        "battle",
+        payload.clanName
       );
       if (battlePlanText) {
         embed.addFields({
@@ -1737,7 +1740,8 @@ export class WarEventLogService {
         payload.outcome,
         payload.clanTag,
         payload.opponentName,
-        "prep"
+        "prep",
+        payload.clanName
       );
       if (prepPlanText) {
         embed.addFields({
@@ -2321,7 +2325,8 @@ export class WarEventLogService {
       payload.outcome,
       payload.clanTag,
       payload.opponentName,
-      "battle"
+      "battle",
+      payload.clanName
     );
     if (battlePlanText) {
       embed.addFields({
@@ -2423,7 +2428,8 @@ export class WarEventLogService {
       payload.outcome,
       payload.clanTag,
       payload.opponentName,
-      "prep"
+      "prep",
+      payload.clanName
     );
     if (prepPlanText) {
       embed.addFields({

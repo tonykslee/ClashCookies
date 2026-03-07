@@ -182,6 +182,14 @@ function normalizeTag(input: string): string {
   return input.trim().toUpperCase().replace(/^#/, "");
 }
 
+/** Purpose: normalize stored role values to a raw Discord role ID. */
+function normalizeDiscordRoleId(input: string | null | undefined): string | null {
+  const raw = String(input ?? "").trim();
+  if (!raw) return null;
+  const idMatch = raw.match(/\d{5,}/);
+  return idMatch?.[0] ?? null;
+}
+
 function buildPointsUrl(tag: string): string {
   const normalizedTag = normalizeTag(tag);
   const proxyBase = (process.env.POINTS_PROXY_URL ?? "").trim();
@@ -750,7 +758,7 @@ async function getTrackedClanMailConfig(tag: string): Promise<{
     tag: normalizeTag(row.tag),
     name: sanitizeClanName(row.name ?? "") ?? null,
     mailChannelId: row.mailChannelId ?? null,
-    clanRoleId: row.clanRoleId ?? null,
+    clanRoleId: normalizeDiscordRoleId(row.clanRoleId ?? null),
   };
 }
 
@@ -1166,24 +1174,25 @@ async function buildWarMailEmbedForTag(
     outcome,
     normalizedTag,
     effectiveOpponentName,
-    hasLiveWar && warState === "inWar" ? "battle" : "prep"
+    hasLiveWar && warState === "inWar" ? "battle" : "prep",
+    clanName
   );
   if (customOrDefaultPlan) {
     planText = customOrDefaultPlan;
   } else if (matchType === "BL") {
     planText = [
-      `**⚫️ BLACKLIST WAR 🆚 ${opponentName} 🏴‍☠️**`,
+      `# ⚫ ${clanName} vs ${effectiveOpponentName} 🏴‍☠️`,
       "Everyone switch to WAR BASES!!",
       "This is our opportunity to gain some extra FWA points!",
       "➕ 30+ people switch to war base = +1 point",
       "➕ 60% total destruction = +1 point",
       "➕ win war = +1 point",
       "---",
-      "If you need war base, check https://clashofclans-layouts.com/ or ⁠bases",
+      "If you need war base, check https://clashofclans-layouts.com/ or bases",
     ].join("\n");
   } else if (matchType === "MM") {
     planText = [
-      `⚪️ MISMATCHED WAR 🆚 ${opponentName} :sob:`,
+      `# ⚪ ${clanName} vs ${effectiveOpponentName} :sob:`,
       "Keep WA base active, attack what you can!",
     ].join("\n");
   }
@@ -1618,23 +1627,32 @@ function buildNextRefreshRelativeLabel(
 function buildWarMailPostedContent(
   roleId?: string | null,
   nowMs?: number,
-  options?: { pingRole?: boolean; planText?: string }
+  options?: { pingRole?: boolean; planText?: string; includeNextRefresh?: boolean }
 ): string {
-  const nextRefresh = buildNextRefreshRelativeLabel(
-    WAR_MAIL_REFRESH_MS,
-    nowMs,
-    getNextWarMailRefreshAtMs()
-  );
+  const normalizedRoleId = normalizeDiscordRoleId(roleId);
+  const includeNextRefresh = options?.includeNextRefresh !== false;
+  const nextRefresh = includeNextRefresh
+    ? buildNextRefreshRelativeLabel(
+        WAR_MAIL_REFRESH_MS,
+        nowMs,
+        getNextWarMailRefreshAtMs()
+      )
+    : "";
   const planText = String(options?.planText ?? "").trim();
   if (!planText) {
-    if (roleId && options?.pingRole !== false) return `<@&${roleId}>\n${nextRefresh}`;
-    return nextRefresh;
+    if (normalizedRoleId && options?.pingRole !== false) {
+      return includeNextRefresh ? `<@&${normalizedRoleId}>\n${nextRefresh}` : `<@&${normalizedRoleId}>`;
+    }
+    return nextRefresh || "War plan unavailable.";
   }
   const sections: string[] = [];
-  if (roleId && options?.pingRole !== false) {
-    sections.push(`<@&${roleId}>`);
+  if (normalizedRoleId && options?.pingRole !== false) {
+    sections.push(`<@&${normalizedRoleId}>`);
   }
-  sections.push(planText, nextRefresh);
+  sections.push(planText);
+  if (nextRefresh) {
+    sections.push(nextRefresh);
+  }
   return limitDiscordContent(sections.join("\n\n"));
 }
 
@@ -3127,15 +3145,15 @@ async function handleFwaMailConfirmAction(
     return;
   }
   const postKey = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  const mentionRoleId = normalizeDiscordRoleId(rendered.clanRoleId);
   const sent = await (channel as any).send({
-    content: rendered.freezeRefresh
-      ? undefined
-      : buildWarMailPostedContent(rendered.clanRoleId, undefined, {
-          pingRole: options.pingRole,
-          planText: rendered.planText,
-        }),
+    content: buildWarMailPostedContent(mentionRoleId, undefined, {
+      pingRole: options.pingRole,
+      planText: rendered.planText,
+      includeNextRefresh: !rendered.freezeRefresh,
+    }),
     allowedMentions:
-      options.pingRole && rendered.clanRoleId ? { roles: [rendered.clanRoleId] } : undefined,
+      options.pingRole && mentionRoleId ? { roles: [mentionRoleId] } : undefined,
     embeds: [rendered.embed],
     components: rendered.freezeRefresh ? [] : buildWarMailPostedComponents(postKey),
   });
@@ -7272,9 +7290,4 @@ export const Fwa: Command = {
     await interaction.respond(choices);
   },
 };
-
-
-
-
-
 
