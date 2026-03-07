@@ -64,4 +64,21 @@ describe("fwa war-mail posted content", () => {
       "<@&123456789>\n\nCustom war mail line 1\nCustom war mail line 2\n\nNext refresh <t:1200:R>"
     );
   });
+
+  it("normalizes mention-style stored role ids before pinging", () => {
+    const content = buildWarMailPostedContentForTest("<@&123456789>", 0, {
+      pingRole: true,
+      planText: "Plan body",
+    });
+    expect(content).toBe("<@&123456789>\n\nPlan body\n\nNext refresh <t:1200:R>");
+  });
+
+  it("can omit next-refresh line for frozen mail posts", () => {
+    const content = buildWarMailPostedContentForTest("123456789", 0, {
+      pingRole: true,
+      planText: "Plan body",
+      includeNextRefresh: false,
+    });
+    expect(content).toBe("<@&123456789>\n\nPlan body");
+  });
 });

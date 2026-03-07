@@ -34,8 +34,8 @@
 - `/fwa points [visibility:private|public] [tag:<tag>]` - Fetch current point balance from `https://points.fwafarm.com/clan?tag=<tag-without-#>`. If `tag` is omitted, fetches all tracked clans.
 - `/fwa match [visibility:private|public] tag:<tag>` - Resolve current war opponent from CoC API, render cached matchup state, and project win/lose by points (or sync-based tiebreak on tie). Slow in-message actions now show a processing notice while updates run.
 - `/fwa match-type [visibility:private|public] [tag:<trackedClanTag>] [type:FWA|BL|MM]` - Manually set or view per-clan match type override used by matchup output. If no args, lists overrides for all tracked clans.
-- `/fwa mail send tag:<trackedClanTag>` - Show ephemeral war mail preview with confirm-and-send to the tracked clan mail channel.
-- `/fwa match` single-clan view includes a `Send Mail` button that follows the same access policy as `/fwa mail send`.
+- `/fwa mail send tag:<trackedClanTag>` - Show ephemeral war mail preview with confirm-and-send to the tracked clan mail channel. Confirm-and-send pings `TrackedClan.clanRoleId` when enabled.
+- `/fwa match` single-clan view includes a `Send Mail` button that follows the same access policy as `/fwa mail send` and uses the same role-ping behavior.
 - `/recruitment show platform:discord|reddit|band clan:<tag>` - Render platform-specific recruitment template output for a tracked clan.
 - `/recruitment edit platform:discord|reddit|band clan:<tag>` - Open platform-specific modal:
   - Discord: clan tag, body (max 1024), optional image URL(s)

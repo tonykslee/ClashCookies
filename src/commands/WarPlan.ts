@@ -145,35 +145,25 @@ async function getDefaultPlanText(
   outcome: PlanOutcome,
   loseStyle: PlanLoseStyle
 ): Promise<string> {
-  if (matchType === "FWA" && (outcome === "WIN" || outcome === "LOSE")) {
-    const clanTagHint = loseStyle === "TRADITIONAL" ? "#LOSETRADITIONAL" : "#LOSETRIPLETOP30";
-    return (
-      (await history.buildWarPlanText(
-        guildId,
-        "FWA",
-        outcome,
-        clanTagHint,
-        "{opponent}",
-        "battle"
-      )) ?? "FWA plan unavailable."
-    );
-  }
-  if (matchType === "BL") {
-    return [
-      "\u26ab\ufe0f BLACKLIST WAR \ud83c\udd9a {opponent} \ud83c\udff4\u200d\u2620\ufe0f ",
-      "Everyone switch to WAR BASES!!",
-      "This is our opportunity to gain some extra FWA points!",
-      "\u2795 30+ people switch to war base = +1 point",
-      "\u2795 60% total destruction = +1 point",
-      "\u2795 win war = +1 point",
-      "---",
-      "If you need war base, check https://clashofclans-layouts.com/ or bases",
-    ].join("\n");
-  }
-  return [
-    "\u26aa\ufe0f MISMATCHED WAR \ud83c\udd9a {opponent} :sob:",
-    "Keep WA base active, attack what you can!",
-  ].join("\n");
+  const clanTagHint =
+    matchType === "FWA" && outcome === "LOSE"
+      ? loseStyle === "TRADITIONAL"
+        ? "#LOSETRADITIONAL"
+        : "#LOSETRIPLETOP30"
+      : "#DEFAULT";
+  const expectedOutcome =
+    matchType === "FWA" && (outcome === "WIN" || outcome === "LOSE") ? outcome : null;
+  return (
+    (await history.buildWarPlanText(
+      guildId,
+      matchType,
+      expectedOutcome,
+      clanTagHint,
+      "{opponent}",
+      "battle",
+      "{clan}"
+    )) ?? `${matchType} plan unavailable.`
+  );
 }
 
 async function getCurrentOrDefaultPlanText(params: {
