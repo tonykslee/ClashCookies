@@ -46,7 +46,7 @@ function getModeRows(rows: string[][], mode: GoogleSheetMode): string[][] {
   return rows.filter((row) => String(row[COL_MODE] ?? "").trim().toUpperCase() === wanted);
 }
 
-function renderStateSvg(mode: GoogleSheetMode, rows: string[][]): Buffer {
+function _renderStateSvg(mode: GoogleSheetMode, rows: string[][]): Buffer {
   const tableRows = rows.length > 0 ? rows : [["(NO DATA)"]];
   const colCount = Math.max(...tableRows.map((row) => row.length), 1);
   const widths = Array.from({ length: colCount }, (_, col) =>
@@ -216,7 +216,7 @@ function abbreviateClan(value: string): string {
   return map[normalized] ?? value;
 }
 
-function padRows(rows: string[][], rowCount: number, colCount: number): string[][] {
+function _padRows(rows: string[][], rowCount: number, colCount: number): string[][] {
   const padded: string[][] = [];
   for (let r = 0; r < rowCount; r += 1) {
     const source = rows[r] ?? [];
@@ -229,7 +229,7 @@ function padRows(rows: string[][], rowCount: number, colCount: number): string[]
   return padded;
 }
 
-function mergeStateRows(
+function _mergeStateRows(
   left: string[][],
   middle: string[][],
   right: string[][],

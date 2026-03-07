@@ -9,7 +9,6 @@ import {
   TextInputBuilder,
   TextInputStyle,
 } from "discord.js";
-import { Prisma } from "@prisma/client";
 import { Command } from "../Command";
 import { truncateDiscordContent } from "../helper/discordContent";
 import { formatError } from "../helper/formatError";

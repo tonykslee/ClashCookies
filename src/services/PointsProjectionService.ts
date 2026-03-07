@@ -193,7 +193,6 @@ export class PointsProjectionService {
   /** Purpose: build projection. */
   buildProjection(primary: Snapshot, opponent: Snapshot): string {
     const primaryName = primary.clanName ?? primary.tag;
-    const opponentName = opponent.clanName ?? opponent.tag;
     const x = primary.balance ?? 0;
     const y = opponent.balance ?? 0;
 

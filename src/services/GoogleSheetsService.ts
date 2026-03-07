@@ -26,7 +26,7 @@ export class GoogleSheetsService {
   constructor(private settings: SettingsService) {}
 
   async getLinkedSheet(
-    mode?: GoogleSheetMode
+    _mode?: GoogleSheetMode
   ): Promise<{ sheetId: string; tabName: string | null }> {
     const sheetId = await this.settings.get(SHEET_SETTING_ID_KEY);
     const tabName = await this.settings.get(SHEET_SETTING_TAB_KEY);
