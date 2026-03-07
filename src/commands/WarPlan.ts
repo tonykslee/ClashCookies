@@ -77,7 +77,7 @@ async function resolveCustomEmojiShortcodes(
   }
 
   return text.replace(
-    /(^|[\s([{"'])\:([a-zA-Z0-9_]{2,32})\:(?=$|[\s)\]}".,!?:;'"-])/g,
+    /(^|[\s([{"']):([a-zA-Z0-9_]{2,32}):(?=$|[\s)\]}".,!?:;'"-])/g,
     (full, prefix: string, emojiName: string) => {
       const match = guild.emojis.cache.find((emoji) => emoji.name === emojiName);
       if (!match) return full;

@@ -108,6 +108,7 @@ export class WarEventHistoryService {
     }
 
     const normalizedClanTag = normalizeTag(clanTag);
+    const normalizedClanTagHash = normalizedClanTag ? `#${normalizedClanTag}` : "";
     const opponentName = String(opponentNameInputResolved ?? "").trim() || "Unknown";
     let loseStyleCache: FwaLoseStyle | null = null;
     const getLoseStyle = async (): Promise<FwaLoseStyle> => {
@@ -136,7 +137,10 @@ export class WarEventHistoryService {
           where: {
             guildId,
             scope: "CUSTOM",
-            clanTag: normalizedClanTag,
+            OR: [
+              { clanTag: normalizedClanTag },
+              { clanTag: normalizedClanTagHash },
+            ],
             matchType: matchTypeKey,
             outcome: outcomeKey,
             loseStyle: { in: [loseStyleKey, "ANY"] },
@@ -610,8 +614,13 @@ export class WarEventHistoryService {
   private async getLoseStyleForClan(clanTagInput: string): Promise<FwaLoseStyle> {
     const clanTag = normalizeTag(clanTagInput);
     if (!clanTag) return "TRIPLE_TOP_30";
-    const row = await prisma.trackedClan.findUnique({
-      where: { tag: clanTag },
+    const row = await prisma.trackedClan.findFirst({
+      where: {
+        OR: [
+          { tag: `#${clanTag}` },
+          { tag: clanTag },
+        ],
+      },
       select: { loseStyle: true },
     });
     const loseStyle = String(row?.loseStyle ?? "").toUpperCase();
