@@ -12,6 +12,7 @@ import { hashMessageConfig } from "../helper/hashConfig";
 import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
 import { CoCService } from "./CoCService";
+import { FwaStatsService } from "./FwaStatsService";
 import { PointsProjectionService } from "./PointsProjectionService";
 import { PostedMessageService } from "./PostedMessageService";
 import { PointsSyncService } from "./PointsSyncService";
@@ -28,7 +29,6 @@ import {
   deriveState,
   eventTitle,
   formatList,
-  formatPercent,
   normalizeOutcome,
   normalizeTag,
   normalizeTagBare,
@@ -252,6 +252,7 @@ function buildWarStatsLines(stats: EmbedWarStats): string[] {
 
 export class WarEventLogService {
   private readonly points: PointsProjectionService;
+  private readonly fwaStats: FwaStatsService;
   private readonly pointsSync: WarStartPointsSyncService;
   private readonly currentSyncs: PointsSyncService;
   private readonly history: WarEventHistoryService;
@@ -260,6 +261,7 @@ export class WarEventLogService {
   /** Purpose: initialize service dependencies. */
   constructor(private readonly client: Client, private readonly coc: CoCService) {
     this.points = new PointsProjectionService(coc);
+    this.fwaStats = new FwaStatsService();
     this.pointsSync = new WarStartPointsSyncService(this.points, new SettingsService());
     this.currentSyncs = new PointsSyncService();
     this.history = new WarEventHistoryService(coc);
@@ -675,7 +677,7 @@ export class WarEventLogService {
     if (payload.eventType === "battle_day") {
       embed.addFields(
         {
-          name: "Battle Day Remaining",
+          name: "Battle Day Ends",
           value: toDiscordRelativeTime(payload.warEndTime),
           inline: true,
         },
@@ -1077,6 +1079,12 @@ export class WarEventLogService {
         nextOpponentName
       ).catch(() => null);
     }
+    const fwaStatsValidated =
+      currentState !== "notInWar" && nextOpponentTag
+        ? await this.fwaStats
+            .isOpponentInActiveWars(sub.clanTag, nextOpponentTag)
+            .catch(() => null)
+        : null;
 
     const fallbackSyncNumberForEvent =
       eventType === "war_ended"
@@ -1139,6 +1147,10 @@ export class WarEventLogService {
     }
     let nextMatchType = sub.matchType;
     let nextInferredMatchType = sub.inferredMatchType;
+    if (fwaStatsValidated === true && (nextMatchType === null || nextInferredMatchType)) {
+      nextMatchType = "FWA";
+      nextInferredMatchType = false;
+    }
     if (eventType === "war_started") {
       if (
         nextMatchType === null &&
@@ -1917,8 +1929,15 @@ export class WarEventLogService {
       channelId: interaction.channelId,
       messageId: interaction.message.id,
     });
-    await this.refreshBattleDayPostByKey(key);
-    await interaction.editReply({ content: "Battle day embed refreshed." });
+    const result = await this.refreshBattleDayPostByKey(key);
+    await interaction.editReply({
+      content:
+        result === "missing"
+          ? "This battle day embed can no longer be refreshed."
+          : result === "frozen"
+            ? "Battle day embed frozen for the ended phase."
+            : "Battle day embed refreshed.",
+    });
   }
 
   async refreshCurrentNotifyPost(guildId: string, clanTagInput: string): Promise<boolean> {
@@ -2082,25 +2101,41 @@ export class WarEventLogService {
     return true;
   }
 
-  private async refreshBattleDayPostByKey(key: string): Promise<void> {
+  private async refreshBattleDayPostByKey(key: string): Promise<"refreshed" | "frozen" | "missing"> {
     const tracked = battleDayPostByGuildTag.get(key);
-    if (!tracked) return;
+    if (!tracked) return "missing";
     const [guildId, clanTag] = key.split(":");
     if (!guildId || !clanTag) {
       battleDayPostByGuildTag.delete(key);
-      return;
+      return "missing";
     }
 
     const sub = await this.findSubscriptionByGuildAndTag(guildId, clanTag);
     if (!sub || !sub.notify) {
       battleDayPostByGuildTag.delete(key);
-      return;
+      return "missing";
+    }
+
+    const channel = await this.client.channels.fetch(tracked.channelId).catch(() => null);
+    if (!channel || !channel.isTextBased()) {
+      battleDayPostByGuildTag.delete(key);
+      return "missing";
+    }
+    const message = await (channel as any).messages.fetch(tracked.messageId).catch(() => null);
+    if (!message) {
+      battleDayPostByGuildTag.delete(key);
+      return "missing";
     }
 
     const war = await this.coc.getCurrentWar(sub.clanTag).catch(() => null);
     if (!war || deriveState(String(war.state ?? "")) !== "inWar") {
+      await message.edit({
+        content: undefined,
+        embeds: message.embeds.map((embed: any) => EmbedBuilder.from(embed)),
+        components: [],
+      });
       battleDayPostByGuildTag.delete(key);
-      return;
+      return "frozen";
     }
 
     const prepStartTime = parseCocTime(war.preparationStartTime ?? null) ?? sub.prepStartTime ?? null;
@@ -2146,18 +2181,7 @@ export class WarEventLogService {
     const refreshedSub = await this.findSubscriptionByGuildAndTag(guildId, clanTag);
     if (!refreshedSub) {
       battleDayPostByGuildTag.delete(key);
-      return;
-    }
-
-    const channel = await this.client.channels.fetch(tracked.channelId).catch(() => null);
-    if (!channel || !channel.isTextBased()) {
-      battleDayPostByGuildTag.delete(key);
-      return;
-    }
-    const message = await (channel as any).messages.fetch(tracked.messageId).catch(() => null);
-    if (!message) {
-      battleDayPostByGuildTag.delete(key);
-      return;
+      return "missing";
     }
 
     const payload = {
@@ -2231,6 +2255,7 @@ export class WarEventLogService {
         ),
       ],
     });
+    return "refreshed";
   }
 
   private async buildBattleDayRefreshEmbed(
@@ -2281,7 +2306,7 @@ export class WarEventLogService {
       inline: true,
     });
     embed.addFields({
-      name: "Battle Day Remaining",
+      name: "Battle Day Ends",
       value: toDiscordRelativeTime(payload.warEndTime),
       inline: true,
     });

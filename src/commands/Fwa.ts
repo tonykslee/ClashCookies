@@ -18,7 +18,6 @@ import { Command } from "../Command";
 import { truncateDiscordContent } from "../helper/discordContent";
 import { recordFetchEvent } from "../helper/fetchTelemetry";
 import { formatError } from "../helper/formatError";
-import { safeReply } from "../helper/safeReply";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
 import {
@@ -43,7 +42,6 @@ import {
   getSyncDisplay,
   getWarStateRemaining,
   isMissedSyncClan,
-  isMissedSyncClanForTest,
   isPointsSiteUpdatedForOpponent,
   type WarStateForSync,
   withSyncModeLabel,
@@ -51,7 +49,6 @@ import {
 import {
   asMailConfigInputJson,
   buildDiscordMessageUrl,
-  type ForceMailMessageType,
   type MatchMailConfig,
   parseForceMailMessageType,
   parseMatchMailConfig,
@@ -63,6 +60,7 @@ const POINTS_BASE_URL = "https://points.fwafarm.com/clan?tag=";
 const TIEBREAK_ORDER = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 const DISCORD_CONTENT_MAX = 2000;
 const POINTS_CACHE_VERSION = 5;
+const POINTS_SNAPSHOT_CACHE_TTL_MS = 90 * 1000;
 const POINTS_POST_BUTTON_PREFIX = "points-post-channel";
 const FWA_MATCH_COPY_BUTTON_PREFIX = "fwa-match-copy";
 const FWA_MATCH_TYPE_ACTION_PREFIX = "fwa-match-type-action";
@@ -75,6 +73,7 @@ const FWA_MATCH_SKIP_SYNC_UNDO_PREFIX = "fwa-match-skip-sync-undo";
 const FWA_MATCH_SELECT_PREFIX = "fwa-match-select";
 const FWA_MATCH_ALLIANCE_PREFIX = "fwa-match-alliance";
 const FWA_MAIL_CONFIRM_PREFIX = "fwa-mail-confirm";
+const FWA_MAIL_CONFIRM_NO_PING_PREFIX = "fwa-mail-confirm-no-ping";
 const FWA_MAIL_BACK_PREFIX = "fwa-mail-back";
 const FWA_MAIL_REFRESH_PREFIX = "fwa-mail-refresh";
 const FWA_MATCH_SEND_MAIL_PREFIX = "fwa-match-send-mail";
@@ -114,6 +113,11 @@ type PointsSnapshot = {
   lastWarCheckAtMs: number;
   fetchedAtMs: number;
   refreshedForWarEndMs: number | null;
+};
+
+type PointsSnapshotCacheEntry = {
+  snapshot: PointsSnapshot;
+  expiresAtMs: number;
 };
 
 type SyncValidationState = {
@@ -278,6 +282,8 @@ const fwaMatchCopyPayloads = new Map<string, FwaMatchCopyPayload>();
 const fwaMailPreviewPayloads = new Map<string, FwaMailPreviewPayload>();
 const fwaMailPostedPayloads = new Map<string, FwaMailPostedPayload>();
 const fwaMailPollers = new Map<string, ReturnType<typeof setInterval>>();
+const pointsSnapshotCache = new Map<string, PointsSnapshotCacheEntry>();
+const pointsSnapshotInFlight = new Map<string, Promise<PointsSnapshot>>();
 
 function createTransientFwaKey(): string {
   return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
@@ -509,6 +515,23 @@ export function isFwaMailConfirmButtonCustomId(customId: string): boolean {
   return customId.startsWith(`${FWA_MAIL_CONFIRM_PREFIX}:`);
 }
 
+function buildFwaMailConfirmNoPingCustomId(userId: string, key: string): string {
+  return `${FWA_MAIL_CONFIRM_NO_PING_PREFIX}:${userId}:${key}`;
+}
+
+function parseFwaMailConfirmNoPingCustomId(customId: string): { userId: string; key: string } | null {
+  const parts = customId.split(":");
+  if (parts.length !== 3 || parts[0] !== FWA_MAIL_CONFIRM_NO_PING_PREFIX) return null;
+  const userId = parts[1]?.trim() ?? "";
+  const key = parts[2]?.trim() ?? "";
+  if (!userId || !key) return null;
+  return { userId, key };
+}
+
+export function isFwaMailConfirmNoPingButtonCustomId(customId: string): boolean {
+  return customId.startsWith(`${FWA_MAIL_CONFIRM_NO_PING_PREFIX}:`);
+}
+
 function buildFwaMailBackCustomId(userId: string, key: string): string {
   return `${FWA_MAIL_BACK_PREFIX}:${userId}:${key}`;
 }
@@ -656,21 +679,49 @@ async function rebuildTrackedPayloadForTag(
   const sourceSync = await getSourceOfTruthSync(settings, guildId);
   const cocService = new CoCService();
   const warLookupCache: WarLookupCache = new Map();
-  const overview = await buildTrackedMatchOverview(
+  const scopedOverview = await buildTrackedMatchOverview(
     cocService,
     sourceSync,
     guildId,
     warLookupCache,
-    client ?? null
+    client ?? null,
+    {
+      onlyClanTags: [tag],
+      includeActualSheet: false,
+    }
   );
-  const trackedSingleView = overview.singleViews[tag];
+  const trackedSingleView = scopedOverview.singleViews[tag];
   if (!trackedSingleView) return null;
+  const allianceFields = [...(payload.allianceView.embed.data.fields ?? [])];
+  const scopedField =
+    (scopedOverview.embed.data.fields ?? []).find((field) =>
+      String(field.name ?? "").includes(`(#${tag})`)
+    ) ?? (scopedOverview.embed.data.fields ?? [])[0];
+  if (scopedField) {
+    const index = allianceFields.findIndex((field) =>
+      String(field.name ?? "").includes(`(#${tag})`)
+    );
+    if (index >= 0) {
+      allianceFields[index] = scopedField;
+    } else {
+      allianceFields.push(scopedField);
+    }
+  }
+  const nextAllianceEmbed = EmbedBuilder.from(payload.allianceView.embed);
+  if (allianceFields.length > 0) {
+    nextAllianceEmbed.setFields(allianceFields);
+  }
   return {
-    userId: payload.userId,
+    ...payload,
     guildId,
-    includePostButton: payload.includePostButton,
-    allianceView: { embed: overview.embed, copyText: overview.copyText, matchTypeAction: null },
-    singleViews: overview.singleViews,
+    allianceView: {
+      ...payload.allianceView,
+      embed: nextAllianceEmbed,
+    },
+    singleViews: {
+      ...payload.singleViews,
+      [tag]: trackedSingleView,
+    },
     currentScope: "single",
     currentTag: tag,
   };
@@ -885,9 +936,21 @@ function mailStatusLabelForState(state: WarStateForSync): string {
   return "Not In War";
 }
 
+function formatWarResultLabel(result: "WIN" | "LOSE" | "TIE" | "UNKNOWN"): "WIN" | "LOSS" | "DRAW" | "UNKNOWN" {
+  if (result === "LOSE") return "LOSS";
+  if (result === "TIE") return "DRAW";
+  return result;
+}
+
 function formatDiscordRelativeMs(ms: number | null): string {
   if (ms === null || !Number.isFinite(ms)) return "unknown";
   return `<t:${Math.floor(ms / 1000)}:R>`;
+}
+
+function formatDiscordFullAndRelativeMs(ms: number | null): string {
+  if (ms === null || !Number.isFinite(ms)) return "unknown";
+  const seconds = Math.floor(ms / 1000);
+  return `<t:${seconds}:F> (<t:${seconds}:R>)`;
 }
 
 function formatWarStatCellLeft(value: string): string {
@@ -914,6 +977,48 @@ function formatWarPercent(input: unknown): string {
   const rounded = Math.round(value * 100) / 100;
   const withPrecision = Number.isInteger(rounded) ? `${rounded}` : `${rounded.toFixed(2)}`;
   return `${withPrecision.replace(/\.00$/, "")}%`;
+}
+
+function buildWarStatsLines(input: {
+  clanStars: unknown;
+  opponentStars: unknown;
+  clanAttacks: unknown;
+  opponentAttacks: unknown;
+  teamSize: unknown;
+  attacksPerMember: unknown;
+  clanDestruction: unknown;
+  opponentDestruction: unknown;
+}): string[] {
+  const starsLeft = formatWarInt(input.clanStars);
+  const starsRight = formatWarInt(input.opponentStars);
+  const attacksPerMember = Number.isFinite(Number(input.attacksPerMember))
+    ? Math.max(1, Math.trunc(Number(input.attacksPerMember)))
+    : 2;
+  const teamSize = Number.isFinite(Number(input.teamSize))
+    ? Math.max(1, Math.trunc(Number(input.teamSize)))
+    : 0;
+  const totalAttacks = teamSize > 0 ? teamSize * attacksPerMember : 0;
+  const attacksLeft = formatWarInt(input.clanAttacks);
+  const attacksRight = formatWarInt(input.opponentAttacks);
+  const attacksLeftText = totalAttacks > 0 ? `${attacksLeft}/${totalAttacks}` : `${attacksLeft}/?`;
+  const attacksRightText = totalAttacks > 0 ? `${attacksRight}/${totalAttacks}` : `${attacksRight}/?`;
+  return [
+    formatWarStatLine(starsLeft, ":star:", starsRight),
+    formatWarStatLine(attacksLeftText, ":crossed_swords:", attacksRightText),
+    formatWarStatLine(formatWarPercent(input.clanDestruction), ":boom:", formatWarPercent(input.opponentDestruction)),
+  ];
+}
+
+function mailStatusColorForState(state: WarStateForSync): number {
+  if (state === "preparation") return 0x3498db;
+  if (state === "inWar") return 0xf1c40f;
+  return 0x2ecc71;
+}
+
+function mailStatusTitleForState(state: WarStateForSync): string {
+  if (state === "preparation") return "War Started";
+  if (state === "inWar") return "Battle Day Started";
+  return "War Ended";
 }
 
 async function upsertCurrentWarHistoryAndGetWarId(params: {
@@ -963,10 +1068,12 @@ async function buildWarMailEmbedForTag(
   tag: string
 ): Promise<{
   embed: EmbedBuilder;
+  planText: string;
   inferredMatchType: boolean;
   mailChannelId: string | null;
   clanRoleId: string | null;
   warStartMs: number | null;
+  freezeRefresh: boolean;
   unavailableReasons: string[];
   matchType: "FWA" | "BL" | "MM" | "UNKNOWN";
   expectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null;
@@ -994,7 +1101,18 @@ async function buildWarMailEmbedForTag(
         clanTag: `#${normalizedTag}`,
       },
     },
-    select: { matchType: true, inferredMatchType: true, outcome: true, startTime: true },
+    select: {
+      matchType: true,
+      inferredMatchType: true,
+      outcome: true,
+      startTime: true,
+      state: true,
+      endTime: true,
+      opponentTag: true,
+      opponentName: true,
+      clanStars: true,
+      opponentStars: true,
+    },
   });
 
   let inferredMatchType = Boolean(subscription?.inferredMatchType);
@@ -1004,6 +1122,14 @@ async function buildWarMailEmbedForTag(
     | "MM"
     | null) ?? "UNKNOWN";
   let outcome = (subscription?.outcome as "WIN" | "LOSE" | null | undefined) ?? null;
+  const fallbackOpponentTag = normalizeTag(String(subscription?.opponentTag ?? ""));
+  const effectiveOpponentTag = opponentTag || fallbackOpponentTag;
+  const effectiveOpponentName =
+    opponentTag
+      ? opponentName
+      : sanitizeClanName(String(subscription?.opponentName ?? "")) ?? opponentName;
+  const hasLiveWar = warState !== "notInWar" && Boolean(opponentTag);
+  const freezeRefresh = !hasLiveWar && Boolean(subscription?.startTime) && Boolean(effectiveOpponentTag);
 
   const currentSync = getCurrentSyncFromPrevious(sourceSync, warState);
   let primaryBalance: number | null = null;
@@ -1039,8 +1165,8 @@ async function buildWarMailEmbedForTag(
     matchType === "UNKNOWN" ? "FWA" : matchType,
     outcome,
     normalizedTag,
-    opponentName,
-    warState === "inWar" ? "battle" : "prep"
+    effectiveOpponentName,
+    hasLiveWar && warState === "inWar" ? "battle" : "prep"
   );
   if (customOrDefaultPlan) {
     planText = customOrDefaultPlan;
@@ -1082,36 +1208,50 @@ async function buildWarMailEmbedForTag(
       matchType,
       expectedOutcome,
       clanName,
-      opponentName,
-      opponentTag,
+      opponentName: effectiveOpponentName,
+      opponentTag: effectiveOpponentTag,
       war,
     })) ?? (await getCurrentWarIdForClan(guildId, normalizedTag, effectiveWarStartMs));
-  const starsLeft = formatWarInt(war?.clan?.stars);
-  const starsRight = formatWarInt(war?.opponent?.stars);
-  const attacksPerMember = Number.isFinite(Number(war?.attacksPerMember))
-    ? Math.max(1, Math.trunc(Number(war?.attacksPerMember)))
-    : 2;
-  const teamSize = Number.isFinite(Number(war?.teamSize))
-    ? Math.max(1, Math.trunc(Number(war?.teamSize)))
-    : 0;
-  const totalAttacks = teamSize > 0 ? teamSize * attacksPerMember : 0;
-  const attacksLeft = formatWarInt(war?.clan?.attacks);
-  const attacksRight = formatWarInt(war?.opponent?.attacks);
-  const attacksLeftText = totalAttacks > 0 ? `${attacksLeft}/${totalAttacks}` : `${attacksLeft}/?`;
-  const attacksRightText = totalAttacks > 0 ? `${attacksRight}/${totalAttacks}` : `${attacksRight}/?`;
-  const destructionLeft = formatWarPercent(war?.clan?.destructionPercentage);
-  const destructionRight = formatWarPercent(war?.opponent?.destructionPercentage);
-  const lines: string[] = [
-    planText,
-    "------",
-    `War Status: ${mailStatusLabelForState(warState)}`,
-    `Time remaining: ${remainingText}`,
-    "",
-    "War Stats",
-    formatWarStatLine(starsLeft, ":star:", starsRight),
-    formatWarStatLine(attacksLeftText, ":crossed_swords:", attacksRightText),
-    formatWarStatLine(destructionLeft, ":boom:", destructionRight),
-  ];
+  let displayClanStars = war?.clan?.stars ?? null;
+  let displayOpponentStars = war?.opponent?.stars ?? null;
+  let displayClanDestruction = war?.clan?.destructionPercentage ?? null;
+  let displayOpponentDestruction = war?.opponent?.destructionPercentage ?? null;
+  let statusLabel = mailStatusLabelForState(warState);
+  let timeFieldName = warState === "preparation" ? "Prep Day Remaining" : "Battle Day Remaining";
+  let timeFieldValue = remainingText;
+  let finalOutcomeLabel: "WIN" | "LOSS" | "DRAW" | "UNKNOWN" | null = null;
+  if (freezeRefresh) {
+    const finalResult = await history.getWarEndResultSnapshot({
+      clanTag: normalizedTag,
+      opponentTag: effectiveOpponentTag,
+      fallbackClanStars: subscription?.clanStars ?? null,
+      fallbackOpponentStars: subscription?.opponentStars ?? null,
+      warStartTime: subscription?.startTime ?? null,
+    });
+    const endedAtMs =
+      finalResult.warEndTime?.getTime() ??
+      subscription?.endTime?.getTime() ??
+      battleTargetMs ??
+      null;
+    displayClanStars = finalResult.clanStars;
+    displayOpponentStars = finalResult.opponentStars;
+    displayClanDestruction = finalResult.clanDestruction;
+    displayOpponentDestruction = finalResult.opponentDestruction;
+    statusLabel = "War Ended";
+    timeFieldName = "Time Ended";
+    timeFieldValue = formatDiscordFullAndRelativeMs(endedAtMs);
+    finalOutcomeLabel = formatWarResultLabel(finalResult.resultLabel);
+  }
+  const warStatsLines = buildWarStatsLines({
+    clanStars: displayClanStars,
+    opponentStars: displayOpponentStars,
+    clanAttacks: war?.clan?.attacks ?? null,
+    opponentAttacks: war?.opponent?.attacks ?? null,
+    teamSize: war?.teamSize ?? null,
+    attacksPerMember: war?.attacksPerMember ?? null,
+    clanDestruction: displayClanDestruction,
+    opponentDestruction: displayOpponentDestruction,
+  });
 
   const unavailableReasons: string[] = [];
   if (!trackedConfig.mailChannelId) {
@@ -1120,22 +1260,69 @@ async function buildWarMailEmbedForTag(
   if (inferredMatchType) {
     unavailableReasons.push("Match type is inferred. Confirm match type before sending war mail.");
   }
-  if (unavailableReasons.length > 0) {
-    lines.push("", ...unavailableReasons.map((r) => `:warning: ${r}`));
-  }
 
   const embed = new EmbedBuilder()
-    .setTitle(`War Mail - ${clanName} (#${normalizedTag})`)
-    .setDescription(lines.join("\n"))
+    .setTitle(`Event: ${mailStatusTitleForState(warState)} - ${clanName} (#${normalizedTag})`)
+    .setColor(mailStatusColorForState(warState))
     .setFooter({ text: `War ID: ${warId ?? "unknown"}` })
     .setTimestamp(new Date());
+  embed.addFields(
+    {
+      name: "Opponent",
+      value: `${effectiveOpponentName} (${effectiveOpponentTag ? `#${effectiveOpponentTag}` : "unknown"})`,
+      inline: false,
+    },
+    {
+      name: "War Status",
+      value: statusLabel,
+      inline: true,
+    },
+    {
+      name: timeFieldName,
+      value: timeFieldValue,
+      inline: true,
+    },
+    {
+      name: "Match Type",
+      value: matchType,
+      inline: true,
+    }
+  );
+  if (matchType === "FWA" && expectedOutcome) {
+    embed.addFields({
+      name: "Expected Outcome",
+      value: expectedOutcome,
+      inline: true,
+    });
+  }
+  if (finalOutcomeLabel) {
+    embed.addFields({
+      name: "Final Result",
+      value: finalOutcomeLabel,
+      inline: true,
+    });
+  }
+  embed.addFields({
+    name: "War Stats",
+    value: warStatsLines.join("\n"),
+    inline: false,
+  });
+  if (unavailableReasons.length > 0) {
+    embed.addFields({
+      name: "Warnings",
+      value: unavailableReasons.map((reason) => `:warning: ${reason}`).join("\n"),
+      inline: false,
+    });
+  }
 
   return {
     embed,
+    planText,
     inferredMatchType,
     mailChannelId: trackedConfig.mailChannelId,
     clanRoleId: trackedConfig.clanRoleId,
     warStartMs: effectiveWarStartMs,
+    freezeRefresh,
     unavailableReasons,
     matchType,
     expectedOutcome,
@@ -1255,7 +1442,7 @@ function isPostedMailCurrentForLiveState(params: PostedMailLiveStateParams): boo
 
 export const isPostedMailCurrentForLiveStateForTest = isPostedMailCurrentForLiveState;
 
-function clearPostedMailTrackingForClan(params: {
+function _clearPostedMailTrackingForClan(params: {
   guildId: string;
   tag: string;
 }): void {
@@ -1274,7 +1461,7 @@ async function hasPostedMailMessage(params: {
   tag?: string | null;
   mailConfig: MatchMailConfig | null | undefined;
 }): Promise<boolean> {
-  if (!params.client || !params.guildId || !params.mailConfig) return false;
+  if (!params.guildId || !params.mailConfig) return false;
   const stored =
     params.tag
       ? await findStoredMailTarget({
@@ -1282,13 +1469,8 @@ async function hasPostedMailMessage(params: {
           tag: params.tag,
         })
       : null;
-  const channelId = stored?.channelId ?? params.mailConfig.lastPostedChannelId ?? "";
-  const messageId = stored?.messageId ?? params.mailConfig.lastPostedMessageId ?? "";
-  if (!channelId || !messageId) return false;
-  const channel = await params.client.channels.fetch(channelId).catch(() => null);
-  if (!channel || !channel.isTextBased()) return false;
-  const message = await (channel as any).messages.fetch(messageId).catch(() => null);
-  return Boolean(message);
+  if (stored?.channelId && stored.messageId) return true;
+  return Boolean(params.mailConfig.lastPostedChannelId && params.mailConfig.lastPostedMessageId);
 }
 
 function formatOutcomeForRevision(outcome: "WIN" | "LOSE" | "UNKNOWN" | null): string {
@@ -1325,6 +1507,13 @@ function buildSupersededWarMailDescription(params: {
 
 export const buildSupersededWarMailDescriptionForTest = buildSupersededWarMailDescription;
 
+function buildSupersededWarMailContent(params: {
+  changedAtMs: number;
+  revisionLines: string[];
+}): string {
+  return limitDiscordContent(`:warning: ${buildSupersededWarMailDescription(params)}`);
+}
+
 function stopWarMailPolling(key: string): void {
   const timer = fwaMailPollers.get(key);
   if (timer) {
@@ -1353,14 +1542,17 @@ async function annotatePreviousWarMailRevision(params: {
   if (!channel || !channel.isTextBased()) return false;
   const message = await (channel as any).messages.fetch(params.previous.messageId).catch(() => null);
   if (!message) return false;
+  const supersededSummary = buildSupersededWarMailDescription({
+    changedAtMs: params.changedAtMs,
+    revisionLines,
+  });
   const previousEmbed = message.embeds[0] ? EmbedBuilder.from(message.embeds[0]) : new EmbedBuilder();
-  previousEmbed.setDescription(
-    buildSupersededWarMailDescription({
+  previousEmbed.setDescription(supersededSummary.slice(0, 4096));
+  await message.edit({
+    content: buildSupersededWarMailContent({
       changedAtMs: params.changedAtMs,
       revisionLines,
-    }).slice(0, 4096)
-  );
-  await message.edit({
+    }),
     embeds: [previousEmbed],
     components: [],
   });
@@ -1380,6 +1572,11 @@ function buildWarMailPreviewComponents(params: {
       .setCustomId(buildFwaMailConfirmCustomId(params.userId, params.key))
       .setLabel("Confirm and Send")
       .setStyle(ButtonStyle.Primary)
+      .setDisabled(!params.enabled),
+    new ButtonBuilder()
+      .setCustomId(buildFwaMailConfirmNoPingCustomId(params.userId, params.key))
+      .setLabel("Send Without Ping")
+      .setStyle(ButtonStyle.Secondary)
       .setDisabled(!params.enabled),
   ];
   if (params.showBack) {
@@ -1418,39 +1615,67 @@ function buildNextRefreshRelativeLabel(
   return `Next refresh <t:${Math.floor(nextAtMs / 1000)}:R>`;
 }
 
-function buildWarMailPostedContent(roleId?: string | null, nowMs?: number): string {
+function buildWarMailPostedContent(
+  roleId?: string | null,
+  nowMs?: number,
+  options?: { pingRole?: boolean; planText?: string }
+): string {
   const nextRefresh = buildNextRefreshRelativeLabel(
     WAR_MAIL_REFRESH_MS,
     nowMs,
     getNextWarMailRefreshAtMs()
   );
-  if (roleId) return `<@&${roleId}>\n${nextRefresh}`;
-  return nextRefresh;
+  const planText = String(options?.planText ?? "").trim();
+  if (!planText) {
+    if (roleId && options?.pingRole !== false) return `<@&${roleId}>\n${nextRefresh}`;
+    return nextRefresh;
+  }
+  const sections: string[] = [];
+  if (roleId && options?.pingRole !== false) {
+    sections.push(`<@&${roleId}>`);
+  }
+  sections.push(planText, nextRefresh);
+  return limitDiscordContent(sections.join("\n\n"));
 }
 
 export const buildWarMailPostedContentForTest = buildWarMailPostedContent;
 export const buildWarMailNextRefreshLabelForTest = buildNextRefreshRelativeLabel;
 
-async function refreshWarMailPost(client: Client, key: string): Promise<void> {
+async function refreshWarMailPost(
+  client: Client,
+  key: string
+): Promise<"refreshed" | "frozen" | "missing"> {
   const payload = fwaMailPostedPayloads.get(key);
-  if (!payload) return;
+  if (!payload) return "missing";
   const cocService = new CoCService();
   const rendered = await buildWarMailEmbedForTag(cocService, payload.guildId, payload.tag);
+  const channel = await client.channels.fetch(payload.channelId).catch(() => null);
+  if (!channel || !channel.isTextBased()) return "missing";
+  const message = await (channel as any).messages.fetch(payload.messageId).catch(() => null);
+  if (!message) return "missing";
+  await message.edit({
+    content:
+      rendered.freezeRefresh
+        ? undefined
+        : buildWarMailPostedContent(undefined, undefined, {
+            pingRole: false,
+            planText: rendered.planText,
+          }),
+    embeds: [rendered.embed],
+    components: rendered.freezeRefresh ? [] : buildWarMailPostedComponents(key),
+  });
+  if (rendered.freezeRefresh) {
+    stopWarMailPolling(key);
+    fwaMailPostedPayloads.delete(key);
+    return "frozen";
+  }
   fwaMailPostedPayloads.set(key, {
     ...payload,
     warStartMs: rendered.warStartMs,
     matchType: rendered.matchType,
     expectedOutcome: rendered.expectedOutcome,
   });
-  const channel = await client.channels.fetch(payload.channelId).catch(() => null);
-  if (!channel || !channel.isTextBased()) return;
-  const message = await (channel as any).messages.fetch(payload.messageId).catch(() => null);
-  if (!message) return;
-  await message.edit({
-    content: buildWarMailPostedContent(),
-    embeds: [rendered.embed],
-    components: buildWarMailPostedComponents(key),
-  });
+  return "refreshed";
 }
 
 async function refreshWarMailPostByResolvedTarget(params: {
@@ -1460,21 +1685,31 @@ async function refreshWarMailPostByResolvedTarget(params: {
   channelId: string;
   messageId: string;
   key?: string;
-}): Promise<boolean> {
+}): Promise<"refreshed" | "frozen" | "missing"> {
   const normalizedTag = normalizeTag(params.tag);
-  if (!normalizedTag) return false;
+  if (!normalizedTag) return "missing";
   const channel = await params.client.channels.fetch(params.channelId).catch(() => null);
-  if (!channel || !channel.isTextBased()) return false;
+  if (!channel || !channel.isTextBased()) return "missing";
   const message = await (channel as any).messages.fetch(params.messageId).catch(() => null);
-  if (!message) return false;
+  if (!message) return "missing";
   const cocService = new CoCService();
   const rendered = await buildWarMailEmbedForTag(cocService, params.guildId, normalizedTag);
   await message.edit({
-    content: buildWarMailPostedContent(),
+    content:
+      rendered.freezeRefresh
+        ? undefined
+        : buildWarMailPostedContent(undefined, undefined, {
+            pingRole: false,
+            planText: rendered.planText,
+          }),
     embeds: [rendered.embed],
-    components: buildWarMailPostedComponents(params.key ?? createTransientFwaKey()),
+    components: rendered.freezeRefresh ? [] : buildWarMailPostedComponents(params.key ?? createTransientFwaKey()),
   });
-  return true;
+  if (rendered.freezeRefresh && params.key) {
+    stopWarMailPolling(params.key);
+    fwaMailPostedPayloads.delete(params.key);
+  }
+  return rendered.freezeRefresh ? "frozen" : "refreshed";
 }
 
 function extractWarMailTagFromMessage(message: ButtonInteraction["message"]): string | null {
@@ -1817,6 +2052,23 @@ export async function handleFwaMatchAllianceButton(
   });
 }
 
+/** Purpose: show a short-lived ephemeral processing notice for slow button actions. */
+async function showProcessingNotice(
+  interaction: ButtonInteraction,
+  content: string
+): Promise<() => Promise<void>> {
+  const notice = await interaction
+    .followUp({
+      ephemeral: true,
+      content,
+    })
+    .catch(() => null);
+  return async () => {
+    if (!notice) return;
+    await interaction.deleteReply(notice.id).catch(() => undefined);
+  };
+}
+
 export async function handleFwaMatchTypeActionButton(interaction: ButtonInteraction): Promise<void> {
   const parsed = parseMatchTypeActionCustomId(interaction.customId);
   if (!parsed) return;
@@ -1841,6 +2093,11 @@ export async function handleFwaMatchTypeActionButton(interaction: ButtonInteract
     return;
   }
   await interaction.deferUpdate();
+  const clearProcessing = await showProcessingNotice(
+    interaction,
+    "⏳ Updating match type..."
+  );
+  try {
 
   const existingSub = await prisma.currentWar.findUnique({
     where: {
@@ -1924,6 +2181,9 @@ export async function handleFwaMatchTypeActionButton(interaction: ButtonInteract
     ephemeral: true,
     content: `Match type for #${parsed.tag} is now **${parsed.targetType}** (manual).`,
   });
+  } finally {
+    await clearProcessing();
+  }
 }
 
 export async function handleFwaMatchTypeEditButton(interaction: ButtonInteraction): Promise<void> {
@@ -2006,6 +2266,11 @@ export async function handleFwaOutcomeActionButton(interaction: ButtonInteractio
   }
 
   await interaction.deferUpdate();
+  const clearProcessing = await showProcessingNotice(
+    interaction,
+    "⏳ Reversing outcome..."
+  );
+  try {
 
   const nextOutcome = parsed.currentOutcome === "WIN" ? "LOSE" : "WIN";
   await prisma.currentWar.upsert({
@@ -2091,6 +2356,9 @@ export async function handleFwaOutcomeActionButton(interaction: ButtonInteractio
     ephemeral: true,
     content: `Expected outcome for #${parsed.tag} reversed to **${nextOutcome}**.`,
   });
+  } finally {
+    await clearProcessing();
+  }
 }
 
 export async function handleFwaMatchSyncActionButton(
@@ -2138,6 +2406,11 @@ export async function handleFwaMatchSyncActionButton(
   }
 
   await interaction.deferUpdate();
+  const clearProcessing = await showProcessingNotice(
+    interaction,
+    "⏳ Syncing data..."
+  );
+  try {
 
   await prisma.currentWar.upsert({
     where: {
@@ -2204,6 +2477,9 @@ export async function handleFwaMatchSyncActionButton(
     embeds: showMode === "embed" ? [nextView.embed] : [],
     components: buildFwaMatchCopyComponents(refreshed, refreshed.userId, parsed.key, showMode),
   });
+  } finally {
+    await clearProcessing();
+  }
 }
 
 export async function handleFwaMatchSkipSyncActionButton(
@@ -2294,6 +2570,11 @@ export async function handleFwaMatchSkipSyncConfirmButton(
   }
 
   await interaction.deferUpdate();
+  const clearProcessing = await showProcessingNotice(
+    interaction,
+    "⏳ Applying SKIP sync..."
+  );
+  try {
 
   const tracked = await prisma.trackedClan.findFirst({
     where: { tag: { equals: `#${parsed.tag}`, mode: "insensitive" } },
@@ -2476,6 +2757,9 @@ export async function handleFwaMatchSkipSyncConfirmButton(
     ephemeral: true,
     content: "SKIP confirmed. Clan logs updated.",
   });
+  } finally {
+    await clearProcessing();
+  }
 }
 
 export async function handleFwaMatchSkipSyncUndoButton(
@@ -2514,6 +2798,11 @@ export async function handleFwaMatchSkipSyncUndoButton(
     return;
   }
   await interaction.deferUpdate();
+  const clearProcessing = await showProcessingNotice(
+    interaction,
+    "⏳ Undoing SKIP sync..."
+  );
+  try {
   const current = await prisma.currentWar.findUnique({
     where: {
       clanTag_guildId: {
@@ -2581,6 +2870,9 @@ export async function handleFwaMatchSkipSyncUndoButton(
     embeds: showMode === "embed" ? [nextView.embed] : [],
     components: buildFwaMatchCopyComponents(refreshed, refreshed.userId, parsed.key, showMode),
   });
+  } finally {
+    await clearProcessing();
+  }
 }
 
 async function showWarMailPreview(
@@ -2617,9 +2909,12 @@ async function showWarMailPreview(
     enabled || rendered.mailChannelId
       ? ""
       : "\n:warning: Tracked clan mail channel is missing or unavailable.";
-  const content = enabled
+  const previewSummary = enabled
     ? "Review mail preview and confirm send."
     : `Cannot send yet.${extraWarning}`;
+  const content = limitDiscordContent(
+    [previewSummary, "", "**Mail Text Preview**", rendered.planText].filter((part) => part.trim().length > 0).join("\n")
+  );
 
   if (interaction.isButton()) {
     await interaction.update({
@@ -2764,8 +3059,13 @@ async function restoreSourceMatchMessageFromMailPreview(
   return true;
 }
 
-export async function handleFwaMailConfirmButton(interaction: ButtonInteraction): Promise<void> {
-  const parsed = parseFwaMailConfirmCustomId(interaction.customId);
+async function handleFwaMailConfirmAction(
+  interaction: ButtonInteraction,
+  options: { pingRole: boolean }
+): Promise<void> {
+  const parsed = options.pingRole
+    ? parseFwaMailConfirmCustomId(interaction.customId)
+    : parseFwaMailConfirmNoPingCustomId(interaction.customId);
   if (!parsed) return;
   if (interaction.user.id !== parsed.userId) {
     await interaction.reply({
@@ -2828,10 +3128,16 @@ export async function handleFwaMailConfirmButton(interaction: ButtonInteraction)
   }
   const postKey = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
   const sent = await (channel as any).send({
-    content: buildWarMailPostedContent(rendered.clanRoleId),
-    allowedMentions: rendered.clanRoleId ? { roles: [rendered.clanRoleId] } : undefined,
+    content: rendered.freezeRefresh
+      ? undefined
+      : buildWarMailPostedContent(rendered.clanRoleId, undefined, {
+          pingRole: options.pingRole,
+          planText: rendered.planText,
+        }),
+    allowedMentions:
+      options.pingRole && rendered.clanRoleId ? { roles: [rendered.clanRoleId] } : undefined,
     embeds: [rendered.embed],
-    components: buildWarMailPostedComponents(postKey),
+    components: rendered.freezeRefresh ? [] : buildWarMailPostedComponents(postKey),
   });
   await prisma.currentWar.upsert({
     where: {
@@ -2884,16 +3190,18 @@ export async function handleFwaMailConfirmButton(interaction: ButtonInteraction)
       };
     }
   }
-  fwaMailPostedPayloads.set(postKey, {
-    guildId: payload.guildId,
-    tag: payload.tag,
-    warStartMs: rendered.warStartMs,
-    channelId: channel.id,
-    messageId: sent.id,
-    sentAtMs: nowMs,
-    matchType: rendered.matchType,
-    expectedOutcome: rendered.expectedOutcome,
-  });
+  if (!rendered.freezeRefresh) {
+    fwaMailPostedPayloads.set(postKey, {
+      guildId: payload.guildId,
+      tag: payload.tag,
+      warStartMs: rendered.warStartMs,
+      channelId: channel.id,
+      messageId: sent.id,
+      sentAtMs: nowMs,
+      matchType: rendered.matchType,
+      expectedOutcome: rendered.expectedOutcome,
+    });
+  }
   let revisedPrevious = false;
   if (previous) {
     revisedPrevious = await annotatePreviousWarMailRevision({
@@ -2905,7 +3213,9 @@ export async function handleFwaMailConfirmButton(interaction: ButtonInteraction)
       changedAtMs: nowMs,
     }).catch(() => false);
   }
-  startWarMailPolling(interaction.client, postKey);
+  if (!rendered.freezeRefresh) {
+    startWarMailPolling(interaction.client, postKey);
+  }
   await recordMatchMailUpdated({
     guildId: payload.guildId,
     tag: payload.tag,
@@ -2936,13 +3246,14 @@ export async function handleFwaMailConfirmButton(interaction: ButtonInteraction)
         sourcePayload.currentScope === "single" && sourcePayload.currentTag
           ? sourcePayload.singleViews[sourcePayload.currentTag] ?? sourcePayload.allianceView
           : sourcePayload.allianceView;
+      const deliveryText = options.pingRole ? "War mail sent" : "War mail sent without ping";
       await interaction.editReply({
         content:
           showMode === "copy"
             ? limitDiscordContent(currentView.copyText)
             : revisedPrevious
-              ? `War mail sent to <#${channel.id}>. Previous mail was updated with a revision log.`
-              : `War mail sent to <#${channel.id}>.`,
+              ? `${deliveryText} to <#${channel.id}>. Previous mail was updated with a revision log.`
+              : `${deliveryText} to <#${channel.id}>.`,
         embeds: showMode === "embed" ? [currentView.embed] : [],
         components: buildFwaMatchCopyComponents(
           sourcePayload,
@@ -2956,11 +3267,12 @@ export async function handleFwaMailConfirmButton(interaction: ButtonInteraction)
   }
 
   await interaction.deleteReply().catch(() => undefined);
+  const deliveryText = options.pingRole ? "War mail sent" : "War mail sent without ping";
   await interaction.followUp({
     ephemeral: true,
     content: revisedPrevious
-      ? `War mail sent to <#${channel.id}>. Previous mail was updated with a revision log.`
-      : `War mail sent to <#${channel.id}>.`,
+      ? `${deliveryText} to <#${channel.id}>. Previous mail was updated with a revision log.`
+      : `${deliveryText} to <#${channel.id}>.`,
   });
   if (!refreshedSource.sourceUpdated && refreshedSource.refreshed && payload.sourceMatchPayloadKey) {
     const currentView =
@@ -2983,6 +3295,16 @@ export async function handleFwaMailConfirmButton(interaction: ButtonInteraction)
       ),
     });
   }
+}
+
+export async function handleFwaMailConfirmButton(interaction: ButtonInteraction): Promise<void> {
+  await handleFwaMailConfirmAction(interaction, { pingRole: true });
+}
+
+export async function handleFwaMailConfirmNoPingButton(
+  interaction: ButtonInteraction
+): Promise<void> {
+  await handleFwaMailConfirmAction(interaction, { pingRole: false });
 }
 
 export async function handleFwaMailBackButton(interaction: ButtonInteraction): Promise<void> {
@@ -3024,10 +3346,15 @@ export async function handleFwaMailRefreshButton(interaction: ButtonInteraction)
   if (!parsed) return;
   const payload = fwaMailPostedPayloads.get(parsed.key);
   if (payload) {
-    await refreshWarMailPost(interaction.client, parsed.key);
+    const refreshed = await refreshWarMailPost(interaction.client, parsed.key);
     await interaction.reply({
       ephemeral: true,
-      content: "War mail refreshed.",
+      content:
+        refreshed === "missing"
+          ? "This mail post can no longer be refreshed."
+          : refreshed === "frozen"
+            ? "War mail frozen for the ended war."
+            : "War mail refreshed.",
     });
     return;
   }
@@ -3060,10 +3387,15 @@ export async function handleFwaMailRefreshButton(interaction: ButtonInteraction)
     tag: fallbackTarget.tag,
     channelId: fallbackTarget.channelId,
     messageId: fallbackTarget.messageId,
-  }).catch(() => false);
+  }).catch(() => "missing" as const);
   await interaction.reply({
     ephemeral: true,
-    content: refreshed ? "War mail refreshed." : "This mail post can no longer be refreshed.",
+    content:
+      refreshed === "missing"
+        ? "This mail post can no longer be refreshed."
+        : refreshed === "frozen"
+          ? "War mail frozen for the ended war."
+          : "War mail refreshed.",
   });
 }
 
@@ -3096,8 +3428,8 @@ export async function refreshAllTrackedWarMailPosts(client: Client): Promise<voi
       channelId: stored.channelId,
       messageId: stored.messageId,
       key: existingInMemory?.key,
-    }).catch(() => false);
-    if (!refreshed) continue;
+    }).catch(() => "missing" as const);
+    if (refreshed === "missing") continue;
     const channelId = stored.channelId;
     const messageId = stored.messageId;
 
@@ -3118,7 +3450,7 @@ export async function refreshAllTrackedWarMailPosts(client: Client): Promise<voi
       });
     }
 
-    if (!existingInMemory) {
+    if (!existingInMemory && refreshed === "refreshed") {
       const postKey = createTransientFwaKey();
       fwaMailPostedPayloads.set(postKey, {
         guildId,
@@ -3157,15 +3489,6 @@ export async function runForceMailUpdateCommand(
     return;
   }
 
-  const current = await prisma.currentWar.findUnique({
-    where: {
-      clanTag_guildId: {
-        guildId: interaction.guildId,
-        clanTag: `#${tag}`,
-      },
-    },
-    select: { clanTag: true },
-  });
   const config = await getCurrentWarMailConfig(interaction.guildId, tag);
   const stored = await findStoredMailTarget({
     guildId: interaction.guildId,
@@ -3184,8 +3507,12 @@ export async function runForceMailUpdateCommand(
     tag,
     channelId: stored.channelId,
     messageId: stored.messageId,
-  }).catch(() => false);
-  if (!refreshed) {
+    key: findLatestPostedWarMailForClan({
+      guildId: interaction.guildId,
+      tag,
+    })?.key,
+  }).catch(() => "missing" as const);
+  if (refreshed === "missing") {
     await interaction.editReply(
       `Could not refresh #${tag} mail in place. The stored message was missing or inaccessible.`
     );
@@ -3215,7 +3542,7 @@ export async function runForceMailUpdateCommand(
     guildId: interaction.guildId,
     tag,
   });
-  if (!existingInMemory) {
+  if (!existingInMemory && refreshed === "refreshed") {
     const postKey = createTransientFwaKey();
     fwaMailPostedPayloads.set(postKey, {
       guildId: interaction.guildId,
@@ -3234,7 +3561,9 @@ export async function runForceMailUpdateCommand(
     [
       `Force mail update complete for #${tag}.`,
       "Updated existing message in place (no new ping).",
-      "20-minute refresh tracking is active for this post.",
+      refreshed === "frozen"
+        ? "Refresh tracking stopped because the war has ended."
+        : "20-minute refresh tracking is active for this post.",
       `Message: https://discord.com/channels/${interaction.guildId}/${channelId}/${messageId}`,
     ].join("\n")
   );
@@ -3515,7 +3844,10 @@ function buildStoredSyncSummary(input: {
     (input.fallbackSyncNum !== null && Number.isFinite(input.fallbackSyncNum)
       ? Math.trunc(input.fallbackSyncNum)
       : null);
-  const syncLine = withSyncModeLabel(getSyncDisplay(syncNumber, input.warState), syncNumber);
+  const syncLine =
+    syncNumber !== null && Number.isFinite(syncNumber)
+      ? `#${Math.trunc(syncNumber)} (${Math.trunc(syncNumber) % 2 === 0 ? "High Sync" : "Low Sync"})`
+      : "unknown";
   const syncFetchedAtMs = input.syncRow?.syncFetchedAt?.getTime?.() ?? NaN;
   const updatedLine =
     Number.isFinite(syncFetchedAtMs) && syncFetchedAtMs > 0
@@ -3567,6 +3899,44 @@ async function persistClanPointsSyncIfCurrent(input: {
   });
 }
 
+/** Purpose: infer fallback match type from available points snapshots. */
+function inferMatchTypeFromPointsSnapshots(
+  primaryPoints: Pick<PointsSnapshot, "activeFwa"> | null,
+  opponentPoints: Pick<PointsSnapshot, "balance" | "activeFwa"> | null
+): "FWA" | "BL" | "MM" {
+  const hasOpponentPoints =
+    opponentPoints?.balance !== null &&
+    opponentPoints?.balance !== undefined &&
+    !Number.isNaN(opponentPoints.balance);
+  if (!hasOpponentPoints) return "MM";
+  if (opponentPoints?.activeFwa === false || primaryPoints?.activeFwa === false) {
+    return "BL";
+  }
+  return "FWA";
+}
+
+export const inferMatchTypeFromPointsSnapshotsForTest = inferMatchTypeFromPointsSnapshots;
+
+/** Purpose: resolve match type from persisted sync data when live state is unset. */
+async function resolveMatchTypeFromStoredSync(params: {
+  guildId: string | null;
+  clanTag: string;
+  opponentTag: string;
+  existingMatchType: "FWA" | "BL" | "MM" | "SKIP" | null | undefined;
+}): Promise<"FWA" | "BL" | "MM" | "SKIP" | null> {
+  if (params.existingMatchType) return params.existingMatchType;
+  if (!params.guildId || !params.opponentTag) return null;
+  const syncRow = await pointsSyncService.getCurrentSyncForClan({
+    guildId: params.guildId,
+    clanTag: params.clanTag,
+  });
+  if (!syncRow) return null;
+  const syncOpponent = normalizeTag(syncRow.opponentTag ?? "");
+  if (!syncOpponent || syncOpponent !== normalizeTag(params.opponentTag)) return null;
+  return syncRow.isFwa ? "FWA" : null;
+}
+
+/** Purpose: resolve match type with DB-backed fallback before live inference. */
 async function resolveMatchTypeWithFallback(params: {
   guildId: string | null;
   clanTag: string;
@@ -3574,9 +3944,11 @@ async function resolveMatchTypeWithFallback(params: {
   warState: WarStateForSync;
   existingMatchType: "FWA" | "BL" | "MM" | "SKIP" | null | undefined;
 }): Promise<"FWA" | "BL" | "MM" | "SKIP" | null> {
-  return params.existingMatchType ?? null;
+  if (params.warState === "notInWar") return params.existingMatchType ?? null;
+  return resolveMatchTypeFromStoredSync(params);
 }
 
+/** Purpose: apply source-of-truth sync number over a scraped points snapshot. */
 function applySourceSync(snapshot: PointsSnapshot, sourceSync: number | null): PointsSnapshot {
   if (sourceSync === null) return snapshot;
   return {
@@ -3642,6 +4014,11 @@ const ACTUAL_COL_BUCKET_START = 21; // V
 const ACTUAL_COL_BUCKET_END = 26; // AA
 const ACTUAL_COL_ADJUSTMENT = 53; // BB
 const ACTUAL_COL_MODE = 55; // BD
+const ACTUAL_SHEET_CACHE_TTL_MS = 60 * 1000;
+
+let actualSheetSnapshotCache:
+  | { snapshot: Map<string, ActualSheetClanSnapshot>; expiresAtMs: number }
+  | null = null;
 
 function normalizeTagBare(input: string): string {
   return normalizeTag(input).replace(/^#/, "");
@@ -3684,6 +4061,22 @@ async function readActualSheetSnapshotByTag(
     });
   }
   return out;
+}
+
+/** Purpose: cache ACTUAL sheet reads to keep /fwa match refreshes responsive. */
+async function getActualSheetSnapshotCached(
+  settings: SettingsService
+): Promise<Map<string, ActualSheetClanSnapshot>> {
+  const now = Date.now();
+  if (actualSheetSnapshotCache && actualSheetSnapshotCache.expiresAtMs > now) {
+    return actualSheetSnapshotCache.snapshot;
+  }
+  const snapshot = await readActualSheetSnapshotByTag(settings);
+  actualSheetSnapshotCache = {
+    snapshot,
+    expiresAtMs: now + ACTUAL_SHEET_CACHE_TTL_MS,
+  };
+  return snapshot;
 }
 
 function extractMatchupHeader(topText: string): MatchupHeader {
@@ -3871,23 +4264,58 @@ async function scrapeClanPoints(tag: string): Promise<PointsSnapshot> {
 
 async function getClanPointsCached(
   _settings: SettingsService,
-  cocService: CoCService,
+  _cocService: CoCService,
   tag: string,
   sourceSync: number | null,
   _warLookupCache?: WarLookupCache,
-  options?: {
+  _options?: {
     requiredOpponentTag?: string | null;
   }
 ): Promise<PointsSnapshot> {
   const normalizedTag = normalizeTag(tag);
+  const now = Date.now();
+  const cached = pointsSnapshotCache.get(normalizedTag);
+  if (cached && cached.expiresAtMs > now) {
+    recordFetchEvent({
+      namespace: "points",
+      operation: "clan_points_snapshot",
+      source: "cache_hit",
+      detail: `tag=${normalizedTag}`,
+    });
+    return applySourceSync(cached.snapshot, sourceSync);
+  }
+
+  const existingPending = pointsSnapshotInFlight.get(normalizedTag);
+  if (existingPending) {
+    recordFetchEvent({
+      namespace: "points",
+      operation: "clan_points_snapshot",
+      source: "fallback_cache",
+      detail: `tag=${normalizedTag}`,
+    });
+    const snapshot = await existingPending;
+    return applySourceSync(snapshot, sourceSync);
+  }
 
   recordFetchEvent({
     namespace: "points",
     operation: "clan_points_snapshot",
-    source: "web",
+    source: "cache_miss",
     detail: `tag=${normalizedTag}`,
   });
-  const snapshot = await scrapeClanPoints(normalizedTag);
+  const pending = scrapeClanPoints(normalizedTag)
+    .then((snapshot) => {
+      pointsSnapshotCache.set(normalizedTag, {
+        snapshot,
+        expiresAtMs: Date.now() + POINTS_SNAPSHOT_CACHE_TTL_MS,
+      });
+      return snapshot;
+    })
+    .finally(() => {
+      pointsSnapshotInFlight.delete(normalizedTag);
+    });
+  pointsSnapshotInFlight.set(normalizedTag, pending);
+  const snapshot = await pending;
   return applySourceSync(snapshot, sourceSync);
 }
 
@@ -3971,7 +4399,7 @@ function deriveProjectedOutcome(
   return wins ? "WIN" : "LOSE";
 }
 
-async function buildLastWarMatchOverview(
+async function _buildLastWarMatchOverview(
   clanTag: string,
   guildId: string | null,
   previousSync: number | null
@@ -4079,21 +4507,37 @@ async function buildTrackedMatchOverview(
   sourceSync: number | null,
   guildId: string | null,
   warLookupCache?: WarLookupCache,
-  client?: Client | null
+  client?: Client | null,
+  options?: {
+    onlyClanTags?: string[];
+    includeActualSheet?: boolean;
+  }
 ): Promise<{ embed: EmbedBuilder; copyText: string; singleViews: Record<string, MatchView> }> {
   const settings = new SettingsService();
-  const actualByTag = await readActualSheetSnapshotByTag(settings).catch(() => new Map<string, ActualSheetClanSnapshot>());
+  const includeActualSheet = options?.includeActualSheet ?? true;
+  const scopedTagSet =
+    options?.onlyClanTags && options.onlyClanTags.length > 0
+      ? new Set(options.onlyClanTags.map((tag) => normalizeTag(tag)))
+      : null;
+  const actualByTag = includeActualSheet
+    ? await getActualSheetSnapshotCached(settings).catch(
+        () => new Map<string, ActualSheetClanSnapshot>()
+      )
+    : new Map<string, ActualSheetClanSnapshot>();
   const tracked = await prisma.trackedClan.findMany({
     orderBy: { createdAt: "asc" },
     select: { tag: true, name: true, mailConfig: true },
   });
+  const scopedTracked = scopedTagSet
+    ? tracked.filter((clan) => scopedTagSet.has(normalizeTag(clan.tag)))
+    : tracked;
   const trackedMailRows = await prisma.$queryRaw<Array<{ tag: string; mailChannelId: string | null }>>(
     Prisma.sql`SELECT "tag","mailChannelId" FROM "TrackedClan"`
   );
   const mailChannelByTag = new Map(
     trackedMailRows.map((row) => [normalizeTag(row.tag), row.mailChannelId ?? null])
   );
-  if (tracked.length === 0) {
+  if (scopedTracked.length === 0) {
     return {
       embed: new EmbedBuilder()
       .setTitle("FWA Match Overview")
@@ -4117,7 +4561,7 @@ async function buildTrackedMatchOverview(
     },
   });
   const trackedMailConfigByTag = new Map(
-    tracked.map((c) => [
+    scopedTracked.map((c) => [
       normalizeTag(c.tag),
       parseMatchMailConfig((c as { mailConfig?: Prisma.JsonValue | null }).mailConfig ?? null),
     ])
@@ -4129,23 +4573,25 @@ async function buildTrackedMatchOverview(
   const warStartMsByClanTag = new Map<string, number | null>();
   const activeWarStarts: number[] = [];
 
-  for (const clan of tracked) {
-    const clanTag = normalizeTag(clan.tag);
-    const war = await getCurrentWarCached(cocService, clanTag, warLookupCache).catch(() => null);
-    const warState = deriveWarState(war?.state);
-    const warStartMs = parseCocApiTime(war?.startTime);
-    warByClanTag.set(clanTag, war);
-    warStateByClanTag.set(clanTag, warState);
-    warStartMsByClanTag.set(clanTag, warStartMs);
-    if (warState !== "notInWar" && warStartMs !== null && Number.isFinite(warStartMs)) {
-      activeWarStarts.push(warStartMs);
-    }
-  }
+  await Promise.all(
+    scopedTracked.map(async (clan) => {
+      const clanTag = normalizeTag(clan.tag);
+      const war = await getCurrentWarCached(cocService, clanTag, warLookupCache).catch(() => null);
+      const warState = deriveWarState(war?.state);
+      const warStartMs = parseCocApiTime(war?.startTime);
+      warByClanTag.set(clanTag, war);
+      warStateByClanTag.set(clanTag, warState);
+      warStartMsByClanTag.set(clanTag, warStartMs);
+      if (warState !== "notInWar" && warStartMs !== null && Number.isFinite(warStartMs)) {
+        activeWarStarts.push(warStartMs);
+      }
+    })
+  );
   const baselineWarStartMs =
     activeWarStarts.length > 0 ? Math.min(...activeWarStarts) : null;
   const nowMs = Date.now();
   const missedSyncTags = new Set<string>();
-  for (const clan of tracked) {
+  for (const clan of scopedTracked) {
     const clanTag = normalizeTag(clan.tag);
     const clanWarState = warStateByClanTag.get(clanTag) ?? "notInWar";
     const clanWarStartMs = warStartMsByClanTag.get(clanTag) ?? null;
@@ -4160,7 +4606,9 @@ async function buildTrackedMatchOverview(
       missedSyncTags.add(clanTag);
     }
   }
-  const includedTracked = tracked.filter((clan) => !missedSyncTags.has(normalizeTag(clan.tag)));
+  const includedTracked = scopedTracked.filter(
+    (clan) => !missedSyncTags.has(normalizeTag(clan.tag))
+  );
   const embed = new EmbedBuilder().setTitle(`FWA Match Overview (${includedTracked.length})`);
   const copyLines: string[] = [];
   const singleViews: Record<string, MatchView> = {};
@@ -4172,7 +4620,7 @@ async function buildTrackedMatchOverview(
       : "unknown"
   }`;
 
-  for (const clan of tracked) {
+  for (const clan of scopedTracked) {
     const clanTag = normalizeTag(clan.tag);
     const includeInOverview = !missedSyncTags.has(clanTag);
     const clanName = sanitizeClanName(clan.name) ?? `#${clanTag}`;
@@ -4347,6 +4795,7 @@ async function buildTrackedMatchOverview(
           tag: opponentTag,
           balance: opponentFromPrimary,
           clanName: opponentName,
+          activeFwa: null,
           winnerBoxHasTag: true,
         };
       }
@@ -4369,15 +4818,12 @@ async function buildTrackedMatchOverview(
       opponentPoints?.balance !== undefined &&
       !Number.isNaN(opponentPoints.balance);
     const siteSyncObservedForWrite = primaryPoints?.winnerBoxSync ?? null;
-    const syncNumberForWrite =
-      siteSyncObservedForWrite !== null && Number.isFinite(siteSyncObservedForWrite)
-        ? Math.trunc(siteSyncObservedForWrite)
-        : currentSync !== null && Number.isFinite(currentSync)
-          ? Math.trunc(currentSync)
-          : null;
-    const inferredFromPointsType: "FWA" | "MM" | null = hasOpponentPoints ? "FWA" : "MM";
-    const matchType = matchTypeResolved ?? inferredFromPointsType ?? "UNKNOWN";
-    const inferredMatchType = Boolean(sub?.inferredMatchType) || (matchTypeResolved === null && inferredFromPointsType !== null);
+    const inferredFromPointsType = inferMatchTypeFromPointsSnapshots(
+      primaryPoints,
+      opponentPoints
+    );
+    const matchType = matchTypeResolved ?? inferredFromPointsType;
+    const inferredMatchType = Boolean(sub?.inferredMatchType) || matchTypeResolved === null;
     if (inferredMatchType) hasAnyInferredMatchType = true;
     const derivedOutcome = deriveProjectedOutcome(
       clanTag,
@@ -4586,7 +5032,7 @@ async function buildTrackedMatchOverview(
         validationState.differences.length > 0
     );
     const pointsSyncStatus = validationState.statusLine;
-    const siteMatchType = hasOpponentPoints ? "FWA" : "MM";
+    const siteMatchType = inferredFromPointsType === "FWA" ? "FWA" : "MM";
     const opponentCcUrl = buildCcVerifyUrl(opponentTag);
     const opponentPointsUrl = buildOfficialPointsUrl(opponentTag);
     const mailChannelId = mailChannelByTag.get(clanTag) ?? null;
@@ -4801,10 +5247,10 @@ async function buildTrackedMatchOverview(
           .join("\n")
       ),
       matchTypeAction:
-        inferredMatchType
-          ? { tag: clanTag, currentType: matchType as "FWA" | "BL" | "MM" }
+        inferredMatchType && (matchType === "FWA" || matchType === "BL" || matchType === "MM")
+          ? { tag: clanTag, currentType: matchType }
           : null,
-      matchTypeCurrent: matchType as "FWA" | "BL" | "MM",
+      matchTypeCurrent: matchType as "FWA" | "BL" | "MM" | "SKIP",
       inferredMatchType,
       outcomeAction:
         matchType === "FWA" && (effectiveOutcome === "WIN" || effectiveOutcome === "LOSE")
@@ -4870,7 +5316,6 @@ export async function runForceSyncDataCommand(
   const rawTag = interaction.options.getString("tag", true);
   const tag = normalizeTag(rawTag);
   const datapoint = interaction.options.getString("datapoint", false) ?? "all";
-  const shouldOverwritePoints = datapoint === "all" || datapoint === "points";
   const trackedClan = await prisma.trackedClan.findFirst({
     where: { tag: { equals: `#${tag}`, mode: "insensitive" } },
     select: { tag: true, name: true },
@@ -4882,7 +5327,6 @@ export async function runForceSyncDataCommand(
 
   const war = await getCurrentWarCached(cocService, tag, warLookupCache).catch(() => null);
   const opponentTag = normalizeTag(String(war?.opponent?.tag ?? ""));
-  const opponentName = sanitizeClanName(String(war?.opponent?.name ?? "")) ?? null;
   const fresh = await scrapeClanPoints(tag);
 
   const siteSync = fresh.winnerBoxSync;
@@ -6166,7 +6610,7 @@ export const Fwa: Command = {
               livePoints?.balance !== null &&
               livePoints?.balance !== undefined &&
               Number(subscription.fwaPoints) !== Number(livePoints.balance);
-          const actualByTag = await readActualSheetSnapshotByTag(settings).catch(
+          const actualByTag = await getActualSheetSnapshotCached(settings).catch(
             () => new Map<string, ActualSheetClanSnapshot>()
           );
           const actual = actualByTag.get(tag) ?? null;
@@ -6264,6 +6708,7 @@ export const Fwa: Command = {
             tag: opponentTag,
             balance: opponentFromPrimary,
             clanName: sanitizeClanName(String(war?.opponent?.name ?? "")) ?? opponentTag,
+            activeFwa: null,
             winnerBoxHasTag: true,
           };
         } else {
@@ -6292,12 +6737,6 @@ export const Fwa: Command = {
         const hasPrimaryPoints = primary.balance !== null && !Number.isNaN(primary.balance);
         const hasOpponentPoints = opponent.balance !== null && !Number.isNaN(opponent.balance);
         const siteSyncObservedForWrite = primary.winnerBoxSync ?? null;
-        const syncNumberForWrite =
-          siteSyncObservedForWrite !== null && Number.isFinite(siteSyncObservedForWrite)
-            ? Math.trunc(siteSyncObservedForWrite)
-            : currentSync !== null && Number.isFinite(currentSync)
-              ? Math.trunc(currentSync)
-              : null;
         if (!hasPrimaryPoints && hasOpponentPoints) {
           await editReplySafe(`Could not fetch point balance for #${tag}.`);
           return;
@@ -6306,12 +6745,12 @@ export const Fwa: Command = {
           await editReplySafe(`Could not fetch point balance for #${opponentTag}.`);
           return;
         }
-        const inferredFromPointsType: "FWA" | "MM" | null = hasOpponentPoints ? "FWA" : "MM";
-        let matchType = (matchTypeResolved ?? inferredFromPointsType ?? "UNKNOWN") as
+        const inferredFromPointsType = inferMatchTypeFromPointsSnapshots(primary, opponent);
+        let matchType = (matchTypeResolved ?? inferredFromPointsType) as
           | "FWA"
           | "BL"
           | "MM"
-          | "UNKNOWN";
+          | "SKIP";
         const derivedOutcome = deriveProjectedOutcome(
           tag,
           opponentTag,
@@ -6321,7 +6760,7 @@ export const Fwa: Command = {
         );
         const inferredMatchType =
           Boolean(subscription?.inferredMatchType) ||
-          (matchTypeResolved === null && inferredFromPointsType !== null);
+          matchTypeResolved === null;
         const effectiveOutcome =
           (subscription?.outcome as "WIN" | "LOSE" | null | undefined) ??
           (matchType === "FWA" ? derivedOutcome : null);
@@ -6339,13 +6778,9 @@ export const Fwa: Command = {
               notify: false,
               channelId: interaction.channelId,
               matchType:
-                matchTypeResolved === null && inferredFromPointsType
-                  ? inferredFromPointsType
-                  : matchType === "UNKNOWN"
-                    ? null
-                    : matchType,
+                matchTypeResolved === null ? inferredFromPointsType : matchType,
               inferredMatchType:
-                matchTypeResolved === null && inferredFromPointsType ? true : inferredMatchType,
+                matchTypeResolved === null ? true : inferredMatchType,
               fwaPoints: primary.balance,
               opponentFwaPoints: opponent.balance,
               outcome: effectiveOutcome,
@@ -6354,13 +6789,9 @@ export const Fwa: Command = {
             },
             update: {
               matchType:
-                matchTypeResolved === null && inferredFromPointsType
-                  ? inferredFromPointsType
-                  : matchType === "UNKNOWN"
-                    ? undefined
-                    : matchType,
+                matchTypeResolved === null ? inferredFromPointsType : matchType,
               inferredMatchType:
-                matchTypeResolved === null && inferredFromPointsType ? true : inferredMatchType,
+                matchTypeResolved === null ? true : inferredMatchType,
               fwaPoints: primary.balance,
               opponentFwaPoints: opponent.balance,
               outcome: effectiveOutcome,
@@ -6369,7 +6800,7 @@ export const Fwa: Command = {
             },
           });
         }
-        if (matchTypeResolved === null && inferredFromPointsType) {
+        if (matchTypeResolved === null) {
           matchType = inferredFromPointsType;
         }
 
@@ -6622,10 +7053,10 @@ export const Fwa: Command = {
           embed,
           copyText,
           matchTypeAction:
-            inferredMatchType && matchType !== "UNKNOWN"
-              ? { tag, currentType: matchType as "FWA" | "BL" | "MM" }
+            inferredMatchType && (matchType === "FWA" || matchType === "BL" || matchType === "MM")
+              ? { tag, currentType: matchType }
               : null,
-          matchTypeCurrent: matchType === "UNKNOWN" ? null : (matchType as "FWA" | "BL" | "MM"),
+          matchTypeCurrent: matchType as "FWA" | "BL" | "MM" | "SKIP",
           inferredMatchType,
           outcomeAction:
             matchType === "FWA" && (effectiveOutcome === "WIN" || effectiveOutcome === "LOSE")
@@ -6635,7 +7066,7 @@ export const Fwa: Command = {
             siteUpdated && hasMismatch
               ? {
                   tag,
-                  siteMatchType: hasOpponentPoints ? "FWA" : "MM",
+                  siteMatchType: inferredFromPointsType === "FWA" ? "FWA" : "MM",
                   siteFwaPoints: primary.balance,
                   siteOpponentFwaPoints: opponent.balance,
                   siteOutcome: matchType === "FWA" ? derivedOutcome : null,

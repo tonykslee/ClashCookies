@@ -34,23 +34,75 @@ const VISIBILITY_OPTION = {
   ],
 };
 
+function createVisibilityOption(): typeof VISIBILITY_OPTION {
+  return {
+    ...VISIBILITY_OPTION,
+    choices: VISIBILITY_OPTION.choices.map((choice) => ({ ...choice })),
+  };
+}
+
 function hasVisibilityOption(options: any[] | undefined): boolean {
   if (!options) return false;
   return options.some((opt) => opt?.name === "visibility");
 }
 
-function withVisibilityOnSubcommand(sub: any): any {
-  const options = Array.isArray(sub.options) ? [...sub.options] : [];
-  if (!hasVisibilityOption(options)) {
-    options.push(VISIBILITY_OPTION);
+function sanitizeOption(option: any): any {
+  if (!option || typeof option !== "object") return option;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(option)) {
+    if (value === undefined) continue;
+    if (key === "options" && Array.isArray(value)) {
+      out.options = value.map((entry) => sanitizeOption(entry));
+      continue;
+    }
+    if (key === "choices" && Array.isArray(value)) {
+      out.choices = value.map((choice) => ({ ...choice }));
+      continue;
+    }
+    out[key] = value;
   }
-  return { ...sub, options };
+  return out;
+}
+
+function withVisibilityOnSubcommand(sub: any): any {
+  const cleanSub = sanitizeOption(sub);
+  const options = Array.isArray(cleanSub.options) ? [...cleanSub.options] : [];
+  if (!hasVisibilityOption(options)) {
+    options.push(createVisibilityOption());
+  }
+  return { ...cleanSub, options };
+}
+
+function toRegistrationCommand(command: any): any {
+  const out: Record<string, unknown> = {};
+  const allowedKeys = new Set([
+    "name",
+    "name_localizations",
+    "description",
+    "description_localizations",
+    "options",
+    "default_member_permissions",
+    "dm_permission",
+    "nsfw",
+    "type",
+  ]);
+  for (const [key, value] of Object.entries(command ?? {})) {
+    if (!allowedKeys.has(key)) continue;
+    if (value === undefined) continue;
+    if (key === "options" && Array.isArray(value)) {
+      out.options = value.map((entry) => sanitizeOption(entry));
+      continue;
+    }
+    out[key] = value;
+  }
+  return out;
 }
 
 function injectVisibilityOptions(command: any): any {
-  const options = Array.isArray(command.options) ? [...command.options] : [];
+  const registration = toRegistrationCommand(command);
+  const options = Array.isArray(registration.options) ? [...registration.options] : [];
   if (options.length === 0) {
-    return { ...command, options: [VISIBILITY_OPTION] };
+    return { ...registration, options: [createVisibilityOption()] };
   }
 
   const hasSubcommands = options.some(
@@ -61,9 +113,9 @@ function injectVisibilityOptions(command: any): any {
 
   if (!hasSubcommands) {
     if (!hasVisibilityOption(options)) {
-      options.push(VISIBILITY_OPTION);
+      options.push(createVisibilityOption());
     }
-    return { ...command, options };
+    return { ...registration, options };
   }
 
   const nextOptions = options.map((opt) => {
@@ -84,7 +136,7 @@ function injectVisibilityOptions(command: any): any {
     return opt;
   });
 
-  return { ...command, options: nextOptions };
+  return { ...registration, options: nextOptions };
 }
 
 export default (client: Client, cocService: CoCService): void => {
