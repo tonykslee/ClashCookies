@@ -900,7 +900,7 @@ function mailStatusLabelForState(state: WarStateForSync): string {
   return "Not In War";
 }
 
-function formatWarResultLabel(result: "WIN" | "LOSE" | "TIE" | "UNKNOWN"): string {
+function formatWarResultLabel(result: "WIN" | "LOSE" | "TIE" | "UNKNOWN"): "WIN" | "LOSS" | "DRAW" | "UNKNOWN" {
   if (result === "LOSE") return "LOSS";
   if (result === "TIE") return "DRAW";
   return result;
@@ -941,6 +941,48 @@ function formatWarPercent(input: unknown): string {
   const rounded = Math.round(value * 100) / 100;
   const withPrecision = Number.isInteger(rounded) ? `${rounded}` : `${rounded.toFixed(2)}`;
   return `${withPrecision.replace(/\.00$/, "")}%`;
+}
+
+function buildWarStatsLines(input: {
+  clanStars: unknown;
+  opponentStars: unknown;
+  clanAttacks: unknown;
+  opponentAttacks: unknown;
+  teamSize: unknown;
+  attacksPerMember: unknown;
+  clanDestruction: unknown;
+  opponentDestruction: unknown;
+}): string[] {
+  const starsLeft = formatWarInt(input.clanStars);
+  const starsRight = formatWarInt(input.opponentStars);
+  const attacksPerMember = Number.isFinite(Number(input.attacksPerMember))
+    ? Math.max(1, Math.trunc(Number(input.attacksPerMember)))
+    : 2;
+  const teamSize = Number.isFinite(Number(input.teamSize))
+    ? Math.max(1, Math.trunc(Number(input.teamSize)))
+    : 0;
+  const totalAttacks = teamSize > 0 ? teamSize * attacksPerMember : 0;
+  const attacksLeft = formatWarInt(input.clanAttacks);
+  const attacksRight = formatWarInt(input.opponentAttacks);
+  const attacksLeftText = totalAttacks > 0 ? `${attacksLeft}/${totalAttacks}` : `${attacksLeft}/?`;
+  const attacksRightText = totalAttacks > 0 ? `${attacksRight}/${totalAttacks}` : `${attacksRight}/?`;
+  return [
+    formatWarStatLine(starsLeft, ":star:", starsRight),
+    formatWarStatLine(attacksLeftText, ":crossed_swords:", attacksRightText),
+    formatWarStatLine(formatWarPercent(input.clanDestruction), ":boom:", formatWarPercent(input.opponentDestruction)),
+  ];
+}
+
+function mailStatusColorForState(state: WarStateForSync): number {
+  if (state === "preparation") return 0x3498db;
+  if (state === "inWar") return 0xf1c40f;
+  return 0x2ecc71;
+}
+
+function mailStatusTitleForState(state: WarStateForSync): string {
+  if (state === "preparation") return "War Started";
+  if (state === "inWar") return "Battle Day Started";
+  return "War Ended";
 }
 
 async function upsertCurrentWarHistoryAndGetWarId(params: {
@@ -990,6 +1032,7 @@ async function buildWarMailEmbedForTag(
   tag: string
 ): Promise<{
   embed: EmbedBuilder;
+  planText: string;
   inferredMatchType: boolean;
   mailChannelId: string | null;
   clanRoleId: string | null;
@@ -1133,22 +1176,14 @@ async function buildWarMailEmbedForTag(
       opponentTag: effectiveOpponentTag,
       war,
     })) ?? (await getCurrentWarIdForClan(guildId, normalizedTag, effectiveWarStartMs));
-  const starsLeft = formatWarInt(war?.clan?.stars);
-  const starsRight = formatWarInt(war?.opponent?.stars);
-  const attacksPerMember = Number.isFinite(Number(war?.attacksPerMember))
-    ? Math.max(1, Math.trunc(Number(war?.attacksPerMember)))
-    : 2;
-  const teamSize = Number.isFinite(Number(war?.teamSize))
-    ? Math.max(1, Math.trunc(Number(war?.teamSize)))
-    : 0;
-  const totalAttacks = teamSize > 0 ? teamSize * attacksPerMember : 0;
-  const attacksLeft = formatWarInt(war?.clan?.attacks);
-  const attacksRight = formatWarInt(war?.opponent?.attacks);
-  const attacksLeftText = totalAttacks > 0 ? `${attacksLeft}/${totalAttacks}` : `${attacksLeft}/?`;
-  const attacksRightText = totalAttacks > 0 ? `${attacksRight}/${totalAttacks}` : `${attacksRight}/?`;
-  const destructionLeft = formatWarPercent(war?.clan?.destructionPercentage);
-  const destructionRight = formatWarPercent(war?.opponent?.destructionPercentage);
-  const lines: string[] = [];
+  let displayClanStars = war?.clan?.stars ?? null;
+  let displayOpponentStars = war?.opponent?.stars ?? null;
+  let displayClanDestruction = war?.clan?.destructionPercentage ?? null;
+  let displayOpponentDestruction = war?.opponent?.destructionPercentage ?? null;
+  let statusLabel = mailStatusLabelForState(warState);
+  let timeFieldName = warState === "preparation" ? "Prep Day Remaining" : "Battle Day Remaining";
+  let timeFieldValue = remainingText;
+  let finalOutcomeLabel: "WIN" | "LOSS" | "DRAW" | "UNKNOWN" | null = null;
   if (freezeRefresh) {
     const finalResult = await history.getWarEndResultSnapshot({
       clanTag: normalizedTag,
@@ -1162,34 +1197,25 @@ async function buildWarMailEmbedForTag(
       subscription?.endTime?.getTime() ??
       battleTargetMs ??
       null;
-    lines.push(
-      `War Status: War Ended`,
-      `Time ended: ${formatDiscordFullAndRelativeMs(endedAtMs)}`,
-      "",
-      `Actual outcome: **${formatWarResultLabel(finalResult.resultLabel)}**`,
-      "",
-      "War Stats",
-      formatWarStatLine(formatWarInt(finalResult.clanStars), ":star:", formatWarInt(finalResult.opponentStars)),
-      formatWarStatLine(attacksLeftText, ":crossed_swords:", attacksRightText),
-      formatWarStatLine(
-        formatWarPercent(finalResult.clanDestruction),
-        ":boom:",
-        formatWarPercent(finalResult.opponentDestruction)
-      )
-    );
-  } else {
-    lines.push(
-      planText,
-      "------",
-      `War Status: ${mailStatusLabelForState(warState)}`,
-      `Time remaining: ${remainingText}`,
-      "",
-      "War Stats",
-      formatWarStatLine(starsLeft, ":star:", starsRight),
-      formatWarStatLine(attacksLeftText, ":crossed_swords:", attacksRightText),
-      formatWarStatLine(destructionLeft, ":boom:", destructionRight)
-    );
+    displayClanStars = finalResult.clanStars;
+    displayOpponentStars = finalResult.opponentStars;
+    displayClanDestruction = finalResult.clanDestruction;
+    displayOpponentDestruction = finalResult.opponentDestruction;
+    statusLabel = "War Ended";
+    timeFieldName = "Time Ended";
+    timeFieldValue = formatDiscordFullAndRelativeMs(endedAtMs);
+    finalOutcomeLabel = formatWarResultLabel(finalResult.resultLabel);
   }
+  const warStatsLines = buildWarStatsLines({
+    clanStars: displayClanStars,
+    opponentStars: displayOpponentStars,
+    clanAttacks: war?.clan?.attacks ?? null,
+    opponentAttacks: war?.opponent?.attacks ?? null,
+    teamSize: war?.teamSize ?? null,
+    attacksPerMember: war?.attacksPerMember ?? null,
+    clanDestruction: displayClanDestruction,
+    opponentDestruction: displayOpponentDestruction,
+  });
 
   const unavailableReasons: string[] = [];
   if (!trackedConfig.mailChannelId) {
@@ -1198,18 +1224,64 @@ async function buildWarMailEmbedForTag(
   if (inferredMatchType) {
     unavailableReasons.push("Match type is inferred. Confirm match type before sending war mail.");
   }
-  if (unavailableReasons.length > 0) {
-    lines.push("", ...unavailableReasons.map((r) => `:warning: ${r}`));
-  }
 
   const embed = new EmbedBuilder()
-    .setTitle(`War Mail - ${clanName} (#${normalizedTag})`)
-    .setDescription(lines.join("\n"))
+    .setTitle(`Event: ${mailStatusTitleForState(warState)} - ${clanName} (#${normalizedTag})`)
+    .setColor(mailStatusColorForState(warState))
     .setFooter({ text: `War ID: ${warId ?? "unknown"}` })
     .setTimestamp(new Date());
+  embed.addFields(
+    {
+      name: "Opponent",
+      value: `${effectiveOpponentName} (${effectiveOpponentTag ? `#${effectiveOpponentTag}` : "unknown"})`,
+      inline: false,
+    },
+    {
+      name: "War Status",
+      value: statusLabel,
+      inline: true,
+    },
+    {
+      name: timeFieldName,
+      value: timeFieldValue,
+      inline: true,
+    },
+    {
+      name: "Match Type",
+      value: matchType,
+      inline: true,
+    }
+  );
+  if (matchType === "FWA" && expectedOutcome) {
+    embed.addFields({
+      name: "Expected Outcome",
+      value: expectedOutcome,
+      inline: true,
+    });
+  }
+  if (finalOutcomeLabel) {
+    embed.addFields({
+      name: "Final Result",
+      value: finalOutcomeLabel,
+      inline: true,
+    });
+  }
+  embed.addFields({
+    name: "War Stats",
+    value: warStatsLines.join("\n"),
+    inline: false,
+  });
+  if (unavailableReasons.length > 0) {
+    embed.addFields({
+      name: "Warnings",
+      value: unavailableReasons.map((reason) => `:warning: ${reason}`).join("\n"),
+      inline: false,
+    });
+  }
 
   return {
     embed,
+    planText,
     inferredMatchType,
     mailChannelId: trackedConfig.mailChannelId,
     clanRoleId: trackedConfig.clanRoleId,
@@ -1404,6 +1476,13 @@ function buildSupersededWarMailDescription(params: {
 
 export const buildSupersededWarMailDescriptionForTest = buildSupersededWarMailDescription;
 
+function buildSupersededWarMailContent(params: {
+  changedAtMs: number;
+  revisionLines: string[];
+}): string {
+  return limitDiscordContent(`:warning: ${buildSupersededWarMailDescription(params)}`);
+}
+
 function stopWarMailPolling(key: string): void {
   const timer = fwaMailPollers.get(key);
   if (timer) {
@@ -1432,14 +1511,17 @@ async function annotatePreviousWarMailRevision(params: {
   if (!channel || !channel.isTextBased()) return false;
   const message = await (channel as any).messages.fetch(params.previous.messageId).catch(() => null);
   if (!message) return false;
+  const supersededSummary = buildSupersededWarMailDescription({
+    changedAtMs: params.changedAtMs,
+    revisionLines,
+  });
   const previousEmbed = message.embeds[0] ? EmbedBuilder.from(message.embeds[0]) : new EmbedBuilder();
-  previousEmbed.setDescription(
-    buildSupersededWarMailDescription({
+  previousEmbed.setDescription(supersededSummary.slice(0, 4096));
+  await message.edit({
+    content: buildSupersededWarMailContent({
       changedAtMs: params.changedAtMs,
       revisionLines,
-    }).slice(0, 4096)
-  );
-  await message.edit({
+    }),
     embeds: [previousEmbed],
     components: [],
   });
@@ -1505,15 +1587,24 @@ function buildNextRefreshRelativeLabel(
 function buildWarMailPostedContent(
   roleId?: string | null,
   nowMs?: number,
-  options?: { pingRole?: boolean }
+  options?: { pingRole?: boolean; planText?: string }
 ): string {
   const nextRefresh = buildNextRefreshRelativeLabel(
     WAR_MAIL_REFRESH_MS,
     nowMs,
     getNextWarMailRefreshAtMs()
   );
-  if (roleId && options?.pingRole !== false) return `<@&${roleId}>\n${nextRefresh}`;
-  return nextRefresh;
+  const planText = String(options?.planText ?? "").trim();
+  if (!planText) {
+    if (roleId && options?.pingRole !== false) return `<@&${roleId}>\n${nextRefresh}`;
+    return nextRefresh;
+  }
+  const sections: string[] = [];
+  if (roleId && options?.pingRole !== false) {
+    sections.push(`<@&${roleId}>`);
+  }
+  sections.push(planText, nextRefresh);
+  return limitDiscordContent(sections.join("\n\n"));
 }
 
 export const buildWarMailPostedContentForTest = buildWarMailPostedContent;
@@ -1532,7 +1623,13 @@ async function refreshWarMailPost(
   const message = await (channel as any).messages.fetch(payload.messageId).catch(() => null);
   if (!message) return "missing";
   await message.edit({
-    content: rendered.freezeRefresh ? undefined : buildWarMailPostedContent(),
+    content:
+      rendered.freezeRefresh
+        ? undefined
+        : buildWarMailPostedContent(undefined, undefined, {
+            pingRole: false,
+            planText: rendered.planText,
+          }),
     embeds: [rendered.embed],
     components: rendered.freezeRefresh ? [] : buildWarMailPostedComponents(key),
   });
@@ -1567,7 +1664,13 @@ async function refreshWarMailPostByResolvedTarget(params: {
   const cocService = new CoCService();
   const rendered = await buildWarMailEmbedForTag(cocService, params.guildId, normalizedTag);
   await message.edit({
-    content: rendered.freezeRefresh ? undefined : buildWarMailPostedContent(),
+    content:
+      rendered.freezeRefresh
+        ? undefined
+        : buildWarMailPostedContent(undefined, undefined, {
+            pingRole: false,
+            planText: rendered.planText,
+          }),
     embeds: [rendered.embed],
     components: rendered.freezeRefresh ? [] : buildWarMailPostedComponents(params.key ?? createTransientFwaKey()),
   });
@@ -2718,9 +2821,12 @@ async function showWarMailPreview(
     enabled || rendered.mailChannelId
       ? ""
       : "\n:warning: Tracked clan mail channel is missing or unavailable.";
-  const content = enabled
+  const previewSummary = enabled
     ? "Review mail preview and confirm send."
     : `Cannot send yet.${extraWarning}`;
+  const content = limitDiscordContent(
+    [previewSummary, "", "**Mail Text Preview**", rendered.planText].filter((part) => part.trim().length > 0).join("\n")
+  );
 
   if (interaction.isButton()) {
     await interaction.update({
@@ -2938,6 +3044,7 @@ async function handleFwaMailConfirmAction(
       ? undefined
       : buildWarMailPostedContent(rendered.clanRoleId, undefined, {
           pingRole: options.pingRole,
+          planText: rendered.planText,
         }),
     allowedMentions:
       options.pingRole && rendered.clanRoleId ? { roles: [rendered.clanRoleId] } : undefined,

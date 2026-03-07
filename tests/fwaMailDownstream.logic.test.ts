@@ -54,4 +54,14 @@ describe("fwa war-mail posted content", () => {
     const content = buildWarMailPostedContentForTest("123456789", 0, { pingRole: false });
     expect(content).toBe("Next refresh <t:1200:R>");
   });
+
+  it("keeps custom mail text in posted content", () => {
+    const content = buildWarMailPostedContentForTest("123456789", 0, {
+      pingRole: true,
+      planText: "Custom war mail line 1\nCustom war mail line 2",
+    });
+    expect(content).toBe(
+      "<@&123456789>\n\nCustom war mail line 1\nCustom war mail line 2\n\nNext refresh <t:1200:R>"
+    );
+  });
 });
