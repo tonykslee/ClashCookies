@@ -5,6 +5,8 @@ export type MatchMailConfig = {
   lastPostedChannelId: string | null;
   lastPostedAtUnix: number | null;
   lastWarStartMs: number | null;
+  lastWarId: string | null;
+  lastOpponentTag: string | null;
   lastMatchType: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN" | null;
   lastExpectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null;
   lastDataChangedAtUnix: number | null;
@@ -30,6 +32,8 @@ export const MATCH_MAIL_CONFIG_DEFAULT: MatchMailConfig = {
   lastPostedChannelId: null,
   lastPostedAtUnix: null,
   lastWarStartMs: null,
+  lastWarId: null,
+  lastOpponentTag: null,
   lastMatchType: null,
   lastExpectedOutcome: null,
   lastDataChangedAtUnix: null,
@@ -92,6 +96,14 @@ export function parseMatchMailConfig(value: Prisma.JsonValue | null | undefined)
     typeof obj.lastWarStartMs === "number" && Number.isFinite(obj.lastWarStartMs)
       ? Math.trunc(obj.lastWarStartMs)
       : null;
+  const lastWarId =
+    typeof obj.lastWarId === "string" && obj.lastWarId.trim()
+      ? obj.lastWarId.trim()
+      : null;
+  const lastOpponentTag =
+    typeof obj.lastOpponentTag === "string" && obj.lastOpponentTag.trim()
+      ? normalizeTag(obj.lastOpponentTag)
+      : null;
   const lastMatchType = isMatchTypeValue(obj.lastMatchType) ? obj.lastMatchType : null;
   const lastExpectedOutcome = isExpectedOutcomeValue(obj.lastExpectedOutcome)
     ? obj.lastExpectedOutcome
@@ -128,6 +140,8 @@ export function parseMatchMailConfig(value: Prisma.JsonValue | null | undefined)
     lastPostedChannelId,
     lastPostedAtUnix,
     lastWarStartMs,
+    lastWarId,
+    lastOpponentTag,
     lastMatchType,
     lastExpectedOutcome,
     lastDataChangedAtUnix,
