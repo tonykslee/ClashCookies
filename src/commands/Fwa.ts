@@ -4194,6 +4194,7 @@ async function scrapeClanPoints(
 ): Promise<PointsSnapshot> {
   const normalizedTag = normalizeTag(tag);
   const url = buildPointsUrl(normalizedTag);
+  const startedAtMs = Date.now();
   const response = await axios.get<string>(url, {
     timeout: 15000,
     responseType: "text",
@@ -4206,11 +4207,25 @@ async function scrapeClanPoints(
       operation: "clan_points_fetch",
       source: "web",
       detail: `tag=${normalizedTag} status=403 blocked=true reason=${reason}`,
+      durationMs: Date.now() - startedAtMs,
+      status: "failure",
+      errorCategory: "permission",
+      errorCode: "HTTP_403",
     });
     console.info(`[points-fetch] source=web tag=${normalizedTag} reason=${reason} status=403`);
     throw { status: 403, message: "points site returned 403" };
   }
   if (response.status >= 400) {
+    recordFetchEvent({
+      namespace: "points",
+      operation: "clan_points_fetch",
+      source: "web",
+      detail: `tag=${normalizedTag} status=${response.status} reason=${reason}`,
+      durationMs: Date.now() - startedAtMs,
+      status: "failure",
+      errorCategory: response.status >= 500 ? "upstream_api" : "validation",
+      errorCode: `HTTP_${response.status}`,
+    });
     console.info(
       `[points-fetch] source=web tag=${normalizedTag} reason=${reason} status=${response.status}`
     );
@@ -4221,6 +4236,8 @@ async function scrapeClanPoints(
     operation: "clan_points_fetch",
     source: "web",
     detail: `tag=${normalizedTag} status=${response.status} reason=${reason}`,
+    durationMs: Date.now() - startedAtMs,
+    status: "success",
   });
   console.info(
     `[points-fetch] source=web tag=${normalizedTag} reason=${reason} status=${response.status}`
