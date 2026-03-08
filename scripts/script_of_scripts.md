@@ -80,11 +80,19 @@ Example:
 
 feat(sync): implement ClanPointsSync war validation
 
+Optional body (recommended for PR context):
+
+feat(sync): implement ClanPointsSync war validation
+
+- add lifecycle-based fetch gating after clan-mail confirmation
+- add reason-coded points API call logging
+- add tests for validation triggers and timestamp ownership
+
 Rules:
 
 * Use feat / fix / refactor / test / docs when appropriate
 * Keep summary under 72 characters
-* Include short description if necessary
+* You may include a blank line plus bullet-point body details
 
 Save the commit message to:
 
