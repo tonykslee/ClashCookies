@@ -1,6 +1,7 @@
 import axios from "axios";
 import { CoCService } from "./CoCService";
 import { recordFetchEvent } from "../helper/fetchTelemetry";
+import type { PointsApiFetchReason } from "./PointsFetchPolicyService";
 
 const POINTS_BASE_URL = "https://points.fwafarm.com/clan?tag=";
 const TIEBREAK_ORDER = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
@@ -21,6 +22,7 @@ type Snapshot = {
   syncMode: "low" | "high" | null;
   winnerBoxSync: number | null;
   winnerBoxTags: string[];
+  fetchedAtMs: number;
 };
 
 /** Purpose: normalize tag. */
@@ -139,9 +141,13 @@ export class PointsProjectionService {
   constructor(private readonly cocService: CoCService) {}
 
   /** Purpose: fetch snapshot. */
-  async fetchSnapshot(tag: string): Promise<Snapshot> {
+  async fetchSnapshot(
+    tag: string,
+    options?: { reason?: PointsApiFetchReason }
+  ): Promise<Snapshot> {
     const normalizedTag = normalizeTag(tag);
     const url = buildPointsUrl(normalizedTag);
+    const reason = options?.reason ?? "war_event_projection";
     const response = await axios.get<string>(url, {
       timeout: 15000,
       responseType: "text",
@@ -152,8 +158,10 @@ export class PointsProjectionService {
       namespace: "points",
       operation: "projection_fetch",
       source: "web",
-      detail: `tag=${normalizedTag} status=${response.status}`,
+      detail: `tag=${normalizedTag} status=${response.status} reason=${reason}`,
     });
+    console.info(`[points-fetch] source=web tag=${normalizedTag} reason=${reason} status=${response.status}`);
+    const fetchedAtMs = Date.now();
     if (response.status >= 400) {
       return {
         tag: normalizedTag,
@@ -163,6 +171,7 @@ export class PointsProjectionService {
         syncMode: null,
         winnerBoxSync: null,
         winnerBoxTags: [],
+        fetchedAtMs,
       };
     }
 
@@ -187,6 +196,7 @@ export class PointsProjectionService {
       syncMode: getSyncMode(effectiveSync),
       winnerBoxSync,
       winnerBoxTags,
+      fetchedAtMs,
     };
   }
 
