@@ -25,6 +25,7 @@ type FindMailMessageInput = {
   guildId: string;
   clanTag: string;
   warId?: string | null;
+  strictWarId?: boolean;
 };
 
 function normalizeTag(input: string): string {
@@ -98,12 +99,15 @@ export class PostedMessageService {
   }
 
   async findMailMessage(input: FindMailMessageInput) {
+    const strictWarId = Boolean(input.strictWarId);
     return prisma.clanPostedMessage.findFirst({
       where: {
         guildId: input.guildId,
         clanTag: `#${normalizeTag(input.clanTag)}`,
         type: "mail",
-        OR: [{ warId: input.warId ?? null }, { warId: null }],
+        ...(strictWarId
+          ? { warId: input.warId ?? null }
+          : { OR: [{ warId: input.warId ?? null }, { warId: null }] }),
       },
       orderBy: { createdAt: "desc" },
     });

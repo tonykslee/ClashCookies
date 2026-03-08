@@ -220,6 +220,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`/fwa mail send` opens an ephemeral war mail preview with confirm/send.",
       "Confirm-and-send pings the tracked clan role (`TrackedClan.clanRoleId`) when pinging is enabled.",
       "The `/fwa match` single-clan `Send Mail` button uses the same permissions as `/fwa mail send`.",
+      "The 'Current mail is already up to date' state is scoped to the current war identity (war/opponent/config), so new wars reset to unsent.",
       "Default access for `/fwa mail send` is FWA leader role + Administrator (or override via `/permission add command:fwa:mail:send`).",
       "`/fwa leader-role` sets the default FWA leader role used by leader-only commands.",
       "Tag supports autocomplete from tracked clans.",

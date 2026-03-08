@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildWarMailPostedContentForTest,
+  hasWarIdentityShiftedForTest,
   isPostedMailCurrentForLiveStateForTest,
 } from "../src/commands/Fwa";
 
@@ -36,6 +37,73 @@ describe("fwa mail downstream update gating", () => {
     });
 
     expect(isCurrent).toBe(true);
+  });
+
+  it("treats posted mail as stale when live opponent changes", () => {
+    const isCurrent = isPostedMailCurrentForLiveStateForTest({
+      postedMatchType: "FWA",
+      postedExpectedOutcome: "WIN",
+      postedOpponentTag: "AAA111",
+      liveMatchType: "FWA",
+      liveExpectedOutcome: "WIN",
+      liveOpponentTag: "BBB222",
+    });
+
+    expect(isCurrent).toBe(false);
+  });
+
+  it("treats posted mail as stale when war start changes", () => {
+    const isCurrent = isPostedMailCurrentForLiveStateForTest({
+      postedMatchType: "FWA",
+      postedExpectedOutcome: "WIN",
+      postedWarStartMs: 1000,
+      liveMatchType: "FWA",
+      liveExpectedOutcome: "WIN",
+      liveWarStartMs: 2000,
+    });
+
+    expect(isCurrent).toBe(false);
+  });
+
+  it("treats posted mail as stale when war id changes", () => {
+    const isCurrent = isPostedMailCurrentForLiveStateForTest({
+      postedMatchType: "FWA",
+      postedExpectedOutcome: "WIN",
+      postedWarId: "101",
+      liveMatchType: "FWA",
+      liveExpectedOutcome: "WIN",
+      liveWarId: 202,
+    });
+
+    expect(isCurrent).toBe(false);
+  });
+});
+
+describe("fwa war-mail war identity shift detection", () => {
+  it("detects war-id transitions for previously posted mail", () => {
+    const shifted = hasWarIdentityShiftedForTest({
+      postedWarId: "1001",
+      renderedWarId: 2002,
+    });
+    expect(shifted).toBe(true);
+  });
+
+  it("detects war-start transitions when war id is unavailable", () => {
+    const shifted = hasWarIdentityShiftedForTest({
+      postedWarStartMs: 1_700_000_000_000,
+      renderedWarStartMs: 1_700_086_400_000,
+    });
+    expect(shifted).toBe(true);
+  });
+
+  it("does not flag identity shift when war id and start are unchanged", () => {
+    const shifted = hasWarIdentityShiftedForTest({
+      postedWarId: "1001",
+      postedWarStartMs: 1_700_000_000_000,
+      renderedWarId: 1001,
+      renderedWarStartMs: 1_700_000_000_000,
+    });
+    expect(shifted).toBe(false);
   });
 });
 
