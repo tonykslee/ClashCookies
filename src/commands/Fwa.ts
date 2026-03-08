@@ -121,6 +121,10 @@ import {
   hasRenderedOutcomeMismatch,
 } from "./fwa/syncAction";
 import { buildActionableSyncStateLine } from "./fwa/syncDisplay";
+import {
+  selectWarScopedReuseRow,
+  type WarScopedSyncReuseRow,
+} from "./fwa/warScopedReuse";
 export { isMissedSyncClanForTest } from "./fwa/matchState";
 export {
   isFwaMailBackButtonCustomId,
@@ -4312,7 +4316,100 @@ async function scrapeClanPoints(
 type ClanPointsFetchOptions = {
   requiredOpponentTag?: string | null;
   fetchReason?: PointsApiFetchReason;
+  warScopedSnapshot?: PointsSnapshot | null;
 };
+
+type WarScopedSyncReuseDbRow = WarScopedSyncReuseRow & {
+  clanTag: string;
+};
+
+/** Purpose: bucket reusable sync rows by clan for O(1) lookup in match rendering loops. */
+function groupWarScopedSyncRowsByClanTag(
+  rows: WarScopedSyncReuseDbRow[]
+): Map<string, WarScopedSyncReuseRow[]> {
+  const grouped = new Map<string, WarScopedSyncReuseRow[]>();
+  for (const row of rows) {
+    const tag = normalizeTag(row.clanTag);
+    const list = grouped.get(tag) ?? [];
+    list.push({
+      warId: row.warId ?? null,
+      warStartTime: row.warStartTime,
+      syncNum: row.syncNum,
+      opponentTag: row.opponentTag,
+      clanPoints: row.clanPoints,
+      opponentPoints: row.opponentPoints,
+      isFwa: row.isFwa ?? null,
+      needsValidation: row.needsValidation,
+      lastSuccessfulPointsApiFetchAt: row.lastSuccessfulPointsApiFetchAt ?? null,
+      syncFetchedAt: row.syncFetchedAt,
+    });
+    grouped.set(tag, list);
+  }
+  return grouped;
+}
+
+/** Purpose: build a synthetic points snapshot from a validated war-scoped ClanPointsSync row. */
+function buildPointsSnapshotFromWarScopedSyncRow(input: {
+  clanTag: string;
+  row: WarScopedSyncReuseRow;
+}): PointsSnapshot {
+  const clanTag = normalizeTag(input.clanTag);
+  const opponentTag = normalizeTag(input.row.opponentTag);
+  const fetchedAtMs =
+    input.row.lastSuccessfulPointsApiFetchAt?.getTime?.() ??
+    input.row.syncFetchedAt?.getTime?.() ??
+    Date.now();
+  const resolvedFetchedAtMs =
+    Number.isFinite(fetchedAtMs) && fetchedAtMs > 0 ? Math.trunc(fetchedAtMs) : Date.now();
+  return {
+    version: POINTS_CACHE_VERSION,
+    tag: clanTag,
+    url: buildPointsUrl(clanTag),
+    balance: Math.trunc(input.row.clanPoints),
+    clanName: null,
+    activeFwa: input.row.isFwa ?? null,
+    notFound: false,
+    winnerBoxText: null,
+    winnerBoxTags: [opponentTag, clanTag],
+    winnerBoxSync: Math.trunc(input.row.syncNum),
+    effectiveSync: Math.trunc(input.row.syncNum),
+    syncMode: getSyncMode(Math.trunc(input.row.syncNum)),
+    winnerBoxHasTag: true,
+    headerPrimaryTag: clanTag,
+    headerOpponentTag: opponentTag,
+    headerPrimaryBalance: Math.trunc(input.row.clanPoints),
+    headerOpponentBalance: Math.trunc(input.row.opponentPoints),
+    warEndMs: null,
+    lastWarCheckAtMs: resolvedFetchedAtMs,
+    fetchedAtMs: resolvedFetchedAtMs,
+    refreshedForWarEndMs: null,
+  };
+}
+
+/** Purpose: select and materialize war-scoped persisted points for a clan, when eligible. */
+function resolveWarScopedSnapshotForMatch(input: {
+  rows: WarScopedSyncReuseRow[];
+  clanTag: string;
+  warId: string | null;
+  warStartTime: Date | null;
+  opponentTag: string;
+  currentSyncNumber: number | null;
+  sourceSyncNumber: number | null;
+}): PointsSnapshot | null {
+  const reusableRow = selectWarScopedReuseRow({
+    rows: input.rows,
+    warId: input.warId,
+    warStartTime: input.warStartTime,
+    opponentTag: input.opponentTag,
+    currentSyncNumber: input.currentSyncNumber,
+    sourceSyncNumber: input.sourceSyncNumber,
+  });
+  if (!reusableRow) return null;
+  return buildPointsSnapshotFromWarScopedSyncRow({
+    clanTag: input.clanTag,
+    row: reusableRow,
+  });
+}
 
 async function getClanPointsCached(
   _settings: SettingsService,
@@ -4334,6 +4431,31 @@ async function getClanPointsCached(
       detail: `tag=${normalizedTag} reason=${reason}`,
     });
     return applySourceSync(cached.snapshot, sourceSync);
+  }
+
+  const warScopedSnapshotRaw = options?.warScopedSnapshot ?? null;
+  const requiredOpponentTag = normalizeTag(String(options?.requiredOpponentTag ?? ""));
+  const warScopedSnapshot =
+    warScopedSnapshotRaw &&
+    (!requiredOpponentTag ||
+      normalizeTag(String(warScopedSnapshotRaw.headerOpponentTag ?? "")) === requiredOpponentTag)
+      ? warScopedSnapshotRaw
+      : null;
+  if (warScopedSnapshot) {
+    recordFetchEvent({
+      namespace: "points",
+      operation: "clan_points_snapshot",
+      source: "cache_hit",
+      detail: `tag=${normalizedTag} reason=${reason} reuse=war_scoped_persisted`,
+    });
+    pointsSnapshotCache.set(normalizedTag, {
+      snapshot: warScopedSnapshot,
+      expiresAtMs: now + POINTS_SNAPSHOT_CACHE_TTL_MS,
+    });
+    console.info(
+      `[points-fetch] source=persisted tag=${normalizedTag} reason=${reason} reuse=war_scoped_persisted`
+    );
+    return applySourceSync(warScopedSnapshot, sourceSync);
   }
 
   const existingPending = pointsSnapshotInFlight.get(normalizedTag);
@@ -4618,6 +4740,55 @@ async function buildTrackedMatchOverview(
     ])
   );
   const subByTag = new Map(subscriptions.map((s) => [normalizeTag(s.clanTag), s]));
+  const subscriptionWarIds = [...new Set(
+    subscriptions
+      .map((sub) =>
+        sub.warId !== null && sub.warId !== undefined && Number.isFinite(sub.warId)
+          ? String(Math.trunc(sub.warId))
+          : null
+      )
+      .filter((value): value is string => Boolean(value))
+  )];
+  const subscriptionWarStarts = [...new Set(
+    subscriptions
+      .map((sub) => (sub.startTime instanceof Date ? sub.startTime.toISOString() : null))
+      .filter((value): value is string => Boolean(value))
+  )].map((iso) => new Date(iso));
+  const scopedTrackedTags = scopedTracked.map((clan) => `#${normalizeTag(clan.tag)}`);
+  const reuseIdentityFilters = [
+    subscriptionWarIds.length > 0 ? { warId: { in: subscriptionWarIds } } : null,
+    subscriptionWarStarts.length > 0 ? { warStartTime: { in: subscriptionWarStarts } } : null,
+  ].filter((clause): clause is NonNullable<typeof clause> => clause !== null);
+  const warScopedSyncRows =
+    guildId && scopedTrackedTags.length > 0 && reuseIdentityFilters.length > 0
+    ? await prisma.clanPointsSync.findMany({
+        where: {
+          guildId,
+          clanTag: { in: scopedTrackedTags },
+          needsValidation: false,
+          OR: reuseIdentityFilters,
+        },
+        select: {
+          clanTag: true,
+          warId: true,
+          warStartTime: true,
+          syncNum: true,
+          opponentTag: true,
+          clanPoints: true,
+          opponentPoints: true,
+          isFwa: true,
+          needsValidation: true,
+          lastSuccessfulPointsApiFetchAt: true,
+          syncFetchedAt: true,
+        },
+        orderBy: [
+          { warStartTime: "desc" },
+          { syncFetchedAt: "desc" },
+          { updatedAt: "desc" },
+        ],
+      })
+    : [];
+  const warScopedSyncRowsByClanTag = groupWarScopedSyncRowsByClanTag(warScopedSyncRows);
 
   const warByClanTag = new Map<string, CurrentWarResult | null>();
   const warStateByClanTag = new Map<string, WarStateForSync>();
@@ -4830,13 +5001,31 @@ async function buildTrackedMatchOverview(
     }
 
     const currentSync = getCurrentSyncFromPrevious(sourceSync, warState);
+    const warIdForReuse =
+      sub?.warId !== null && sub?.warId !== undefined && Number.isFinite(sub?.warId)
+        ? String(Math.trunc(sub.warId))
+        : null;
+    const warStartTimeForReuse = getWarStartDateForSync(sub?.startTime ?? null, war);
+    const warScopedSnapshot = resolveWarScopedSnapshotForMatch({
+      rows: warScopedSyncRowsByClanTag.get(clanTag) ?? [],
+      clanTag,
+      warId: warIdForReuse,
+      warStartTime: warStartTimeForReuse,
+      opponentTag,
+      currentSyncNumber: currentSync,
+      sourceSyncNumber: sourceSync,
+    });
     const primaryPoints = await getClanPointsCached(
       settings,
       cocService,
       clanTag,
       currentSync,
       warLookupCache,
-      { requiredOpponentTag: opponentTag }
+      {
+        requiredOpponentTag: opponentTag,
+        fetchReason: "match_render",
+        warScopedSnapshot,
+      }
     ).catch(() => null);
     let opponentPoints: PointsSnapshot | null = null;
     if (primaryPoints) {
@@ -4997,7 +5186,7 @@ async function buildTrackedMatchOverview(
     const siteUpdatedForAlert = Boolean(
       primaryPoints && isPointsSiteUpdatedForOpponent(primaryPoints, opponentTag, sourceSync)
     );
-    const warStartTimeForSync = getWarStartDateForSync(sub?.startTime ?? null, war);
+    const warStartTimeForSync = warStartTimeForReuse;
     await persistClanPointsSyncIfCurrent({
       guildId,
       clanTag,
@@ -6722,6 +6911,47 @@ export const Fwa: Command = {
             })
           : null;
         opponentTag = normalizeTag(String(war?.opponent?.tag ?? ""));
+        const warIdForReuse =
+          subscription?.warId !== null &&
+          subscription?.warId !== undefined &&
+          Number.isFinite(subscription?.warId)
+            ? String(Math.trunc(subscription.warId))
+            : null;
+        const warStartTimeForReuse = getWarStartDateForSync(subscription?.startTime ?? null, war);
+        const warScopedIdentityFilters = [
+          warIdForReuse ? { warId: warIdForReuse } : null,
+          warStartTimeForReuse ? { warStartTime: warStartTimeForReuse } : null,
+        ].filter((clause): clause is NonNullable<typeof clause> => clause !== null);
+        const warScopedSyncRows =
+          interaction.guildId && warScopedIdentityFilters.length > 0
+          ? await prisma.clanPointsSync.findMany({
+              where: {
+                guildId: interaction.guildId,
+                clanTag: `#${tag}`,
+                needsValidation: false,
+                OR: warScopedIdentityFilters,
+              },
+              select: {
+                clanTag: true,
+                warId: true,
+                warStartTime: true,
+                syncNum: true,
+                opponentTag: true,
+                clanPoints: true,
+                opponentPoints: true,
+                isFwa: true,
+                needsValidation: true,
+                lastSuccessfulPointsApiFetchAt: true,
+                syncFetchedAt: true,
+              },
+              orderBy: [
+                { warStartTime: "desc" },
+                { syncFetchedAt: "desc" },
+                { updatedAt: "desc" },
+              ],
+            })
+          : [];
+        const warScopedSyncRowsByClanTag = groupWarScopedSyncRowsByClanTag(warScopedSyncRows);
         if (warState === "notInWar" || !opponentTag || subscription?.state === "notInWar") {
           const clanProfile = await cocService.getClan(`#${tag}`).catch(() => null);
           const memberCount = Array.isArray(clanProfile?.members)
@@ -6826,13 +7056,26 @@ export const Fwa: Command = {
           return;
         }
 
+        const warScopedSnapshot = resolveWarScopedSnapshotForMatch({
+          rows: warScopedSyncRowsByClanTag.get(tag) ?? [],
+          clanTag: tag,
+          warId: warIdForReuse,
+          warStartTime: warStartTimeForReuse,
+          opponentTag,
+          currentSyncNumber: currentSync,
+          sourceSyncNumber: sourceSync,
+        });
         const primary = await getClanPointsCached(
           settings,
           cocService,
           tag,
           currentSync,
           warLookupCache,
-          { requiredOpponentTag: opponentTag }
+          {
+            requiredOpponentTag: opponentTag,
+            fetchReason: "match_render",
+            warScopedSnapshot,
+          }
         );
         let opponent: PointsSnapshot;
         const siteUpdated = isPointsSiteUpdatedForOpponent(primary, opponentTag, sourceSync);

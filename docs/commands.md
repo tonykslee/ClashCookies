@@ -37,7 +37,7 @@
 - `/war war-id war-id:<number>` - Export stored war lookup payload for one war ID as CSV.
 - `/accounts [visibility:private|public] [tag:<playerTag>] [discord-id:<snowflake>]` - List linked player accounts grouped by current clan. Default is your own account; provide exactly one of `tag` or `discord-id` to inspect a different linked user.
 - `/fwa points [visibility:private|public] [tag:<tag>]` - Fetch current point balance from `https://points.fwafarm.com/clan?tag=<tag-without-#>`. If `tag` is omitted, fetches all tracked clans.
-- `/fwa match [visibility:private|public] tag:<tag>` - Resolve current war opponent from CoC API, render cached matchup state, and project win/lose by points (or sync-based tiebreak on tie). Slow in-message actions now show a processing notice while updates run. Sync state output is actionable-only (`Needs validation` or `Confirmed and current`) and hides internal lifecycle debug fields. "Current mail is up to date" now requires the same current-war identity (war/opponent/config), so new wars do not inherit prior mail-sent state.
+- `/fwa match [visibility:private|public] tag:<tag>` - Resolve current war opponent from CoC API, render cached matchup state, and project win/lose by points (or sync-based tiebreak on tie). Slow in-message actions now show a processing notice while updates run. After a war snapshot is verified current, match rendering reuses war-scoped persisted sync data instead of short-TTL re-scrapes. Sync state output is actionable-only (`Needs validation` or `Confirmed and current`) and hides internal lifecycle debug fields. "Current mail is up to date" now requires the same current-war identity (war/opponent/config), so new wars do not inherit prior mail-sent state.
 - `/fwa match-type [visibility:private|public] [tag:<trackedClanTag>] [type:FWA|BL|MM]` - Manually set or view per-clan match type override used by matchup output. If no args, lists overrides for all tracked clans.
 - `/fwa mail send tag:<trackedClanTag>` - Show ephemeral war mail preview with confirm-and-send to the tracked clan mail channel. Confirm-and-send pings `TrackedClan.clanRoleId` when enabled.
 - `/fwa match` single-clan view includes a `Send Mail` button that follows the same access policy as `/fwa mail send` and uses the same role-ping behavior.
@@ -56,7 +56,7 @@
 - `/kick-list clear [mode:all|auto|manual]` - Clear kick-list entries.
 - `/sync time post [role:<discordRole>]` - Open modal, compose sync-time message, post it, and pin it.
 - `/sync post status [message-id:<id>]` - Show claimed vs unclaimed clan badge reactions for the active sync-time post, or for a specific message in the channel.
-- `/force sync data tag:<trackedClanTag> [datapoint:points|syncNum]` - Manually force-sync tracked clan points and/or sync number from points.fwafarm.
+- `/force sync data tag:<trackedClanTag> [datapoint:points|syncNum]` - Manually force-sync tracked clan points and/or sync number from points.fwafarm (explicitly bypasses normal war-scoped reuse).
 - `/force sync mail tag:<trackedClanTag> message-type:<mail|notify:war start|notify:battle start|notify:war end> message-id:<id>` - Upsert `CurrentWar.mailConfig` with current match configuration plus a posted message reference.
 - `/force sync warid [tag:<trackedClanTag>]` - Backfill missing war IDs in `ClanWarHistory`, `WarAttacks`, and `CurrentWar` (database-only flow; no external scrape/API calls).
 - `/force mail update tag:<trackedClanTag>` - Refresh an existing sent war-mail embed in place (no re-ping) and resume 20-minute refresh tracking.
