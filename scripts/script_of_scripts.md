@@ -97,3 +97,7 @@ Save the commit message to:
 After the commit message file is created, run:
 
 ./scripts/commit-feature.sh
+
+Notes:
+- `commit-feature.sh` now auto-generates `.git/AI_PR_BODY.md` from branch commits/files.
+- If GitHub CLI (`gh`) is available and authenticated, it will create/update the PR description automatically.
