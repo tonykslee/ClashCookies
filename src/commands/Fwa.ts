@@ -112,6 +112,7 @@ import {
   buildLimitedMessage,
   compareTagsForTiebreak,
   formatPoints,
+  getWinnerMarkerForSide,
   getSyncMode,
   limitDiscordContent,
 } from "./fwa/matchUtils";
@@ -5332,10 +5333,6 @@ async function buildTrackedMatchOverview(
             pointsLine,
             pointsSyncStatus,
             storedSyncSummary.stateLine,
-            `Sync #: **${storedSyncSummary.syncLine}**`,
-            storedSyncSummary.updatedLine
-              ? `Last points fetch: **${storedSyncSummary.updatedLine}**`
-              : "",
             `Match Type: **FWA${warnSuffix}**`,
             `Outcome: **${effectiveOutcome ?? "UNKNOWN"}**`,
             `War State: **${clanWarStateLine}**`,
@@ -5355,8 +5352,6 @@ async function buildTrackedMatchOverview(
           `${pointsLine}`,
           pointsSyncStatus,
           storedSyncSummary.stateLine,
-          `Sync #: ${storedSyncSummary.syncLine}`,
-          storedSyncSummary.updatedLine ? `Last points fetch: ${storedSyncSummary.updatedLine}` : "",
           `Match Type: FWA${inferredMatchType ? " :warning:" : ""}`,
           inferredMatchType ? `Verify: ${buildCcVerifyUrl(opponentTag)}` : "",
           `Outcome: ${effectiveOutcome ?? "UNKNOWN"}`,
@@ -5382,10 +5377,6 @@ async function buildTrackedMatchOverview(
           value: [
             pointsSyncStatus,
             storedSyncSummary.stateLine,
-            `Sync #: **${storedSyncSummary.syncLine}**`,
-            storedSyncSummary.updatedLine
-              ? `Last points fetch: **${storedSyncSummary.updatedLine}**`
-              : "",
             `Match Type: **${matchType}${warnSuffix}**`,
             `War State: **${clanWarStateLine}**`,
             `Time Remaining: **${clanTimeRemainingLine}**`,
@@ -5403,8 +5394,6 @@ async function buildTrackedMatchOverview(
           `\`${opponentTag}\``,
           pointsSyncStatus,
           storedSyncSummary.stateLine,
-          `Sync #: ${storedSyncSummary.syncLine}`,
-          storedSyncSummary.updatedLine ? `Last points fetch: ${storedSyncSummary.updatedLine}` : "",
           `Match Type: ${matchType}${inferredMatchType ? " :warning:" : ""}`,
           inferredMatchType ? `Verify: ${buildCcVerifyUrl(opponentTag)}` : "",
           `War State: ${clanWarStateLine}`,
@@ -5414,20 +5403,14 @@ async function buildTrackedMatchOverview(
       }
     }
 
-    const projectionLineSingle =
-      matchType === "FWA" && hasPrimaryPoints && hasOpponentPoints
-        ? (buildMatchupMessage(primaryPoints as PointsSnapshot, opponentPoints as PointsSnapshot, {
-            primaryName: clanName,
-            opponentName,
-          }).split("\n")[1] ?? "Projection unavailable.")
-        : `This is a ${matchType} match.`;
+    const clanWinnerMarker = getWinnerMarkerForSide(effectiveOutcome ?? null, "clan");
+    const opponentWinnerMarker = getWinnerMarkerForSide(effectiveOutcome ?? null, "opponent");
     const singleDescription = [
       pointsSyncStatus,
       storedSyncSummary.stateLine,
       inferredMatchType ? MATCHTYPE_WARNING_LEGEND : "",
       inferredMatchType ? "\u200B" : "",
       mailBlockedReasonLine ?? "",
-      `${projectionLineSingle}`,
       `Match Type: **${matchType}${inferredMatchType ? " :warning:" : ""}**${
         inferredMatchType ? ` ${verifyLink}` : ""
       }`,
@@ -5478,7 +5461,7 @@ async function buildTrackedMatchOverview(
             value:
               matchType === "FWA"
                 ? hasPrimaryPoints && hasOpponentPoints
-                  ? `${clanName}: **${primaryPoints!.balance}**\n${opponentName}: **${opponentPoints!.balance}**`
+                  ? `${clanName}: **${primaryPoints!.balance}**${clanWinnerMarker}\n${opponentName}: **${opponentPoints!.balance}**${opponentWinnerMarker}`
                   : "Unavailable on both clans."
                 : hasPrimaryPoints
                   ? `${clanName}: **${primaryPoints!.balance}**`
@@ -5519,9 +5502,11 @@ async function buildTrackedMatchOverview(
           `CC: ${opponentCcUrl}`,
           `Points: ${opponentPointsUrl}`,
           `## Points`,
-          hasPrimaryPoints && hasOpponentPoints ? `${clanName}: ${primaryPoints!.balance}` : "Unavailable",
+          hasPrimaryPoints && hasOpponentPoints
+            ? `${clanName}: ${primaryPoints!.balance}${clanWinnerMarker}`
+            : "Unavailable",
           matchType === "FWA" && hasPrimaryPoints && hasOpponentPoints
-            ? `${opponentName}: ${opponentPoints!.balance}`
+            ? `${opponentName}: ${opponentPoints!.balance}${opponentWinnerMarker}`
             : "",
           `## Match Type`,
           `${matchType}${inferredMatchType ? " :warning:" : ""}`,
@@ -7214,17 +7199,6 @@ export const Fwa: Command = {
                 .catch(() => null),
         ]);
 
-        const projectionLine =
-          matchType === "FWA" && hasPrimaryPoints && hasOpponentPoints
-          ? limitDiscordContent(
-              buildMatchupMessage(primary, opponent, {
-                primaryName: resolvedPrimaryName ?? primaryNameFromApi,
-                opponentName: resolvedOpponentName ?? opponentNameFromApi,
-              })
-            )
-              .split("\n")[1]
-              ?.trim() ?? "Projection unavailable."
-          : `This is a ${matchType} match.`;
         const leftName = resolvedPrimaryName ?? primaryNameFromApi ?? tag;
         const rightName = resolvedOpponentName ?? opponentNameFromApi ?? opponentTag;
         const trackedMismatch = siteUpdated
@@ -7379,30 +7353,35 @@ export const Fwa: Command = {
           matchType,
           outcome: effectiveOutcome ?? "UNKNOWN",
         });
+        const leftWinnerMarker = getWinnerMarkerForSide(effectiveOutcome ?? null, "clan");
+        const rightWinnerMarker = getWinnerMarkerForSide(effectiveOutcome ?? null, "opponent");
+        const singleDescription = [
+          inferredMatchType ? `${MATCHTYPE_WARNING_LEGEND}\n\u200B` : "",
+          `Match Type: **${matchTypeText}**${verifyLink ? ` ${verifyLink}` : ""}`,
+          outcomeLine ? `Expected outcome: **${outcomeLine}**` : "",
+          siteStatusLine,
+          storedSyncSummary.stateLine,
+          mailBlockedReasonLine ?? "",
+          `War state: **${formatWarStateLabel(warState)}**`,
+          `Time remaining: **${warRemaining}**`,
+          `Sync #: **${storedSyncSummary.syncLine}**`,
+          storedSyncSummary.updatedLine
+            ? `Last points fetch: **${storedSyncSummary.updatedLine}**`
+            : "",
+          mismatchLines,
+        ]
+          .filter(Boolean)
+          .join("\n");
         const embed = new EmbedBuilder()
           .setTitle(singleHeader)
-          .setDescription(
-            `${inferredMatchType ? `${MATCHTYPE_WARNING_LEGEND}\n\u200B\n` : ""}${projectionLine}\nMatch Type: **${matchTypeText}**${
-              verifyLink ? ` ${verifyLink}` : ""
-            }${
-              outcomeLine ? `\nExpected outcome: **${outcomeLine}**` : ""
-            }\n${siteStatusLine}\n${storedSyncSummary.stateLine}${
-              mailBlockedReasonLine ? `\n${mailBlockedReasonLine}` : ""
-            }\nWar state: **${formatWarStateLabel(warState)}**\nTime remaining: **${warRemaining}**\nSync #: **${storedSyncSummary.syncLine}**${
-              storedSyncSummary.updatedLine
-                ? `\nLast points fetch: **${storedSyncSummary.updatedLine}**`
-                : ""
-            }${
-              mismatchLines ? `\n${mismatchLines}` : ""
-            }`
-          )
+          .setDescription(singleDescription)
             .addFields(
               {
                 name: "Points",
                 value:
                   matchType === "FWA"
                     ? hasPrimaryPoints && hasOpponentPoints
-                      ? `${leftName}: **${primary.balance}**\n${rightName}: **${opponent.balance}**`
+                      ? `${leftName}: **${primary.balance}**${leftWinnerMarker}\n${rightName}: **${opponent.balance}**${rightWinnerMarker}`
                       : "Unavailable on both clans."
                     : hasPrimaryPoints
                       ? `${leftName}: **${primary.balance}**`
@@ -7437,12 +7416,12 @@ export const Fwa: Command = {
             `CC: ${opponentCcUrl}`,
             `Points: ${opponentPointsUrl}`,
             `## Points`,
-            hasPrimaryPoints && hasOpponentPoints ? `${leftName}: ${primary.balance}` : "Unavailable",
+            hasPrimaryPoints && hasOpponentPoints
+              ? `${leftName}: ${primary.balance}${leftWinnerMarker}`
+              : "Unavailable",
             matchType === "FWA" && hasPrimaryPoints && hasOpponentPoints
-              ? `${rightName}: ${opponent.balance}`
+              ? `${rightName}: ${opponent.balance}${rightWinnerMarker}`
               : "",
-            `## Projection`,
-            projectionLine,
             `Match Type: ${matchTypeText}`,
             verifyLink ? `Verify: ${buildCcVerifyUrl(opponentTag)}` : "",
             outcomeLine ? `Expected outcome: ${outcomeLine}` : "",

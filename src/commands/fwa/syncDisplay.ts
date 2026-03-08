@@ -8,5 +8,5 @@ export function buildActionableSyncStateLine(input: {
     input.syncRow === null ||
     input.syncRow.needsValidation ||
     (input.siteCurrent && input.differenceCount > 0);
-  return requiresValidation ? "State: Needs validation" : "State: Confirmed and current";
+  return requiresValidation ? "State: Needs validation" : "";
 }
