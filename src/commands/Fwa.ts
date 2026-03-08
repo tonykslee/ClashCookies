@@ -115,6 +115,11 @@ import {
   getSyncMode,
   limitDiscordContent,
 } from "./fwa/matchUtils";
+import {
+  deriveSyncActionSiteOutcome,
+  evaluatePostSyncValidation,
+  hasRenderedOutcomeMismatch,
+} from "./fwa/syncAction";
 export { isMissedSyncClanForTest } from "./fwa/matchState";
 export {
   isFwaMailBackButtonCustomId,
@@ -2458,36 +2463,66 @@ export async function handleFwaMatchSyncActionButton(
   );
   try {
 
-  await prisma.currentWar.upsert({
-    where: {
-      clanTag_guildId: {
-        guildId: interaction.guildId,
-        clanTag: `#${parsed.tag}`,
+  const persistedAfterApply = await prisma.$transaction(async (tx) => {
+    await tx.currentWar.upsert({
+      where: {
+        clanTag_guildId: {
+          guildId: interaction.guildId!,
+          clanTag: `#${parsed.tag}`,
+        },
       },
-    },
-    create: {
-      guildId: interaction.guildId,
-      clanTag: `#${parsed.tag}`,
-      channelId: interaction.channelId,
-      notify: false,
-      fwaPoints: syncAction.siteFwaPoints,
-      opponentFwaPoints: syncAction.siteOpponentFwaPoints,
-      matchType: syncAction.siteMatchType ?? undefined,
-      inferredMatchType: syncAction.siteMatchType === "MM",
-      outcome: syncAction.siteOutcome,
-    },
-    update: {
-      fwaPoints: syncAction.siteFwaPoints,
-      opponentFwaPoints: syncAction.siteOpponentFwaPoints,
-      matchType: syncAction.siteMatchType ?? undefined,
-      inferredMatchType: syncAction.siteMatchType === "MM",
-      outcome: syncAction.siteOutcome,
-      updatedAt: new Date(),
-    },
+      create: {
+        guildId: interaction.guildId!,
+        clanTag: `#${parsed.tag}`,
+        channelId: interaction.channelId,
+        notify: false,
+        fwaPoints: syncAction.siteFwaPoints,
+        opponentFwaPoints: syncAction.siteOpponentFwaPoints,
+        matchType: syncAction.siteMatchType ?? undefined,
+        inferredMatchType: syncAction.siteMatchType === "MM",
+        outcome: syncAction.siteOutcome,
+      },
+      update: {
+        fwaPoints: syncAction.siteFwaPoints,
+        opponentFwaPoints: syncAction.siteOpponentFwaPoints,
+        matchType: syncAction.siteMatchType ?? undefined,
+        inferredMatchType: syncAction.siteMatchType === "MM",
+        outcome: syncAction.siteOutcome,
+        updatedAt: new Date(),
+      },
+    });
+    return tx.currentWar.findUnique({
+      where: {
+        clanTag_guildId: {
+          guildId: interaction.guildId!,
+          clanTag: `#${parsed.tag}`,
+        },
+      },
+      select: {
+        matchType: true,
+        outcome: true,
+        fwaPoints: true,
+        opponentFwaPoints: true,
+      },
+    });
   });
   logFwaMatchTelemetry(
     "sync_action_applied",
-    `user=${interaction.user.id} tag=${parsed.tag} site_sync=${syncAction.siteSyncNumber ?? "unknown"} site_points=${syncAction.siteFwaPoints ?? "unknown"} opponent_points=${syncAction.siteOpponentFwaPoints ?? "unknown"}`
+    `user=${interaction.user.id} tag=${parsed.tag} site_sync=${syncAction.siteSyncNumber ?? "unknown"} site_match_type=${syncAction.siteMatchType ?? "unknown"} site_outcome=${syncAction.siteOutcome ?? "UNKNOWN"} site_points=${syncAction.siteFwaPoints ?? "unknown"} opponent_points=${syncAction.siteOpponentFwaPoints ?? "unknown"}`
+  );
+  const postSyncValidation = evaluatePostSyncValidation({
+    persistedMatchType: persistedAfterApply?.matchType ?? null,
+    persistedOutcome: persistedAfterApply?.outcome ?? null,
+    persistedFwaPoints: persistedAfterApply?.fwaPoints ?? null,
+    persistedOpponentFwaPoints: persistedAfterApply?.opponentFwaPoints ?? null,
+    siteMatchType: syncAction.siteMatchType,
+    siteOutcome: syncAction.siteOutcome,
+    siteFwaPoints: syncAction.siteFwaPoints,
+    siteOpponentFwaPoints: syncAction.siteOpponentFwaPoints,
+  });
+  logFwaMatchTelemetry(
+    "post_sync_validation",
+    `user=${interaction.user.id} tag=${parsed.tag} fully_aligned=${postSyncValidation.fullyAligned ? 1 : 0} match_type_aligned=${postSyncValidation.matchTypeAligned ? 1 : 0} outcome_aligned=${postSyncValidation.outcomeAligned ? 1 : 0} points_aligned=${postSyncValidation.pointsAligned ? 1 : 0} persisted_match_type=${persistedAfterApply?.matchType ?? "unknown"} persisted_outcome=${persistedAfterApply?.outcome ?? "UNKNOWN"}`
   );
   await markMatchLiveDataChanged({
     guildId: interaction.guildId,
@@ -2502,6 +2537,10 @@ export async function handleFwaMatchSyncActionButton(
     interaction.client
   );
   if (!refreshed) {
+    logFwaMatchTelemetry(
+      "post_sync_render_state",
+      `user=${interaction.user.id} tag=${parsed.tag} status=refresh_failed`
+    );
     await interaction.followUp({
       ephemeral: true,
       content: "Data synced, but this view could not be refreshed.",
@@ -2512,12 +2551,21 @@ export async function handleFwaMatchSyncActionButton(
   const showMode = interaction.message.embeds.length > 0 ? "embed" : "copy";
   const nextView = refreshed.singleViews[parsed.tag];
   if (!nextView) {
+    logFwaMatchTelemetry(
+      "post_sync_render_state",
+      `user=${interaction.user.id} tag=${parsed.tag} status=view_missing`
+    );
     await interaction.followUp({
       ephemeral: true,
       content: "Data synced, but clan view is unavailable now.",
     });
     return;
   }
+  const renderedDescription = String(nextView.embed.data.description ?? "");
+  logFwaMatchTelemetry(
+    "post_sync_render_state",
+    `user=${interaction.user.id} tag=${parsed.tag} status=render_ready sync_action_visible=${nextView.syncAction ? 1 : 0} outcome_mismatch=${hasRenderedOutcomeMismatch(renderedDescription) ? 1 : 0}`
+  );
   await interaction.editReply({
     content: showMode === "copy" ? limitDiscordContent(nextView.copyText) : undefined,
     embeds: showMode === "embed" ? [nextView.embed] : [],
@@ -5250,6 +5298,10 @@ async function buildTrackedMatchOverview(
     ]
       .filter(Boolean)
       .join("\n");
+    const syncActionSiteOutcome = deriveSyncActionSiteOutcome({
+      siteMatchType,
+      projectedOutcome: derivedOutcome,
+    });
     const syncAction: MatchView["syncAction"] =
       siteUpdatedForAlert && hasMismatch
         ? {
@@ -5257,7 +5309,7 @@ async function buildTrackedMatchOverview(
             siteMatchType,
             siteFwaPoints: primaryPoints?.balance ?? null,
             siteOpponentFwaPoints: opponentPoints?.balance ?? null,
-            siteOutcome: matchType === "FWA" ? derivedOutcome : null,
+            siteOutcome: syncActionSiteOutcome,
             siteSyncNumber: siteSyncObserved,
           }
         : null;
@@ -7210,6 +7262,11 @@ export const Fwa: Command = {
             .join("\n")
         );
         let alliance = overview;
+        const syncActionSiteMatchType = inferredFromPointsType === "FWA" ? "FWA" : "MM";
+        const syncActionSiteOutcome = deriveSyncActionSiteOutcome({
+          siteMatchType: syncActionSiteMatchType,
+          projectedOutcome: derivedOutcome,
+        });
         const singleView: MatchView = {
           embed,
           copyText,
@@ -7227,10 +7284,10 @@ export const Fwa: Command = {
             siteUpdated && hasMismatch
               ? {
                   tag,
-                  siteMatchType: inferredFromPointsType === "FWA" ? "FWA" : "MM",
+                  siteMatchType: syncActionSiteMatchType,
                   siteFwaPoints: primary.balance,
                   siteOpponentFwaPoints: opponent.balance,
-                  siteOutcome: matchType === "FWA" ? derivedOutcome : null,
+                  siteOutcome: syncActionSiteOutcome,
                   siteSyncNumber: siteSyncObserved,
                 }
               : null,
