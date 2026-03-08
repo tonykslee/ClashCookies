@@ -30,3 +30,4 @@ npm start
 
 ## Development
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines and architecture documentation.
+FWA command internals are split under `src/commands/fwa/` helper modules to keep `Fwa.ts` orchestration-focused and unit-testable.

@@ -59,28 +59,84 @@ import {
   type PointsApiFetchReason,
 } from "../services/PointsFetchPolicyService";
 import { PointsSyncService } from "../services/PointsSyncService";
+import {
+  buildFwaMailBackCustomId,
+  buildFwaMailConfirmCustomId,
+  buildFwaMailConfirmNoPingCustomId,
+  buildFwaMailRefreshCustomId,
+  buildFwaMatchAllianceCustomId,
+  buildFwaMatchCopyCustomId,
+  buildFwaMatchSelectCustomId,
+  buildFwaMatchSendMailCustomId,
+  buildMatchSkipSyncActionCustomId,
+  buildMatchSkipSyncConfirmCustomId,
+  buildMatchSkipSyncUndoCustomId,
+  buildMatchSyncActionCustomId,
+  buildMatchTypeActionCustomId,
+  buildMatchTypeEditCustomId,
+  buildOutcomeActionCustomId,
+  buildPointsPostButtonCustomId,
+  createTransientFwaKey,
+  parseFwaMailBackCustomId,
+  parseFwaMailConfirmCustomId,
+  parseFwaMailConfirmNoPingCustomId,
+  parseFwaMailRefreshCustomId,
+  parseFwaMatchAllianceCustomId,
+  parseFwaMatchCopyCustomId,
+  parseFwaMatchSelectCustomId,
+  parseFwaMatchSendMailCustomId,
+  parseMatchSkipSyncActionCustomId,
+  parseMatchSkipSyncConfirmCustomId,
+  parseMatchSkipSyncUndoCustomId,
+  parseMatchSyncActionCustomId,
+  parseMatchTypeActionCustomId,
+  parseMatchTypeEditCustomId,
+  parseOutcomeActionCustomId,
+  parsePointsPostButtonCustomId,
+} from "./fwa/customIds";
+import {
+  extractActiveFwa,
+  extractField,
+  extractMatchupBalances,
+  extractMatchupHeader,
+  extractPointBalance,
+  extractSyncNumber,
+  extractTagsFromText,
+  extractTopSectionText,
+  extractWinnerBoxText,
+  parseCocApiTime,
+  sanitizeClanName,
+  toPlainText,
+} from "./fwa/dataParsers";
+import {
+  buildLimitedMessage,
+  compareTagsForTiebreak,
+  formatPoints,
+  getSyncMode,
+  limitDiscordContent,
+} from "./fwa/matchUtils";
 export { isMissedSyncClanForTest } from "./fwa/matchState";
+export {
+  isFwaMailBackButtonCustomId,
+  isFwaMailConfirmButtonCustomId,
+  isFwaMailConfirmNoPingButtonCustomId,
+  isFwaMailRefreshButtonCustomId,
+  isFwaMatchAllianceButtonCustomId,
+  isFwaMatchCopyButtonCustomId,
+  isFwaMatchSelectCustomId,
+  isFwaMatchSendMailButtonCustomId,
+  isFwaMatchSkipSyncActionButtonCustomId,
+  isFwaMatchSkipSyncConfirmButtonCustomId,
+  isFwaMatchSkipSyncUndoButtonCustomId,
+  isFwaMatchSyncActionButtonCustomId,
+  isFwaMatchTypeActionButtonCustomId,
+  isFwaMatchTypeEditButtonCustomId,
+  isFwaOutcomeActionButtonCustomId,
+  isPointsPostButtonCustomId,
+} from "./fwa/customIds";
 const POINTS_BASE_URL = "https://points.fwafarm.com/clan?tag=";
-const TIEBREAK_ORDER = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-const DISCORD_CONTENT_MAX = 2000;
 const POINTS_CACHE_VERSION = 5;
 const POINTS_SNAPSHOT_CACHE_TTL_MS = 90 * 1000;
-const POINTS_POST_BUTTON_PREFIX = "points-post-channel";
-const FWA_MATCH_COPY_BUTTON_PREFIX = "fwa-match-copy";
-const FWA_MATCH_TYPE_ACTION_PREFIX = "fwa-match-type-action";
-const FWA_MATCH_TYPE_EDIT_PREFIX = "fwa-match-type-edit";
-const FWA_OUTCOME_ACTION_PREFIX = "fwa-outcome-action";
-const FWA_MATCH_SYNC_ACTION_PREFIX = "fwa-match-sync-action";
-const FWA_MATCH_SKIP_SYNC_ACTION_PREFIX = "fwa-match-skip-sync-action";
-const FWA_MATCH_SKIP_SYNC_CONFIRM_PREFIX = "fwa-match-skip-sync-confirm";
-const FWA_MATCH_SKIP_SYNC_UNDO_PREFIX = "fwa-match-skip-sync-undo";
-const FWA_MATCH_SELECT_PREFIX = "fwa-match-select";
-const FWA_MATCH_ALLIANCE_PREFIX = "fwa-match-alliance";
-const FWA_MAIL_CONFIRM_PREFIX = "fwa-mail-confirm";
-const FWA_MAIL_CONFIRM_NO_PING_PREFIX = "fwa-mail-confirm-no-ping";
-const FWA_MAIL_BACK_PREFIX = "fwa-mail-back";
-const FWA_MAIL_REFRESH_PREFIX = "fwa-mail-refresh";
-const FWA_MATCH_SEND_MAIL_PREFIX = "fwa-match-send-mail";
 const WAR_MAIL_REFRESH_MS = 20 * 60 * 1000;
 const MAILBOX_SENT_EMOJI = "📬";
 const MAILBOX_NOT_SENT_EMOJI = "📭";
@@ -222,21 +278,6 @@ function logFwaMatchTelemetry(event: string, detail: string): void {
   console.log(`[telemetry-fwa-match] event=${event} ${detail}`);
 }
 
-function buildPointsPostButtonCustomId(userId: string): string {
-  return `${POINTS_POST_BUTTON_PREFIX}:${userId}`;
-}
-
-function parsePointsPostButtonCustomId(customId: string): { userId: string } | null {
-  const parts = customId.split(":");
-  if (parts.length !== 2 || parts[0] !== POINTS_POST_BUTTON_PREFIX) return null;
-  const userId = parts[1]?.trim() ?? "";
-  return userId ? { userId } : null;
-}
-
-export function isPointsPostButtonCustomId(customId: string): boolean {
-  return customId.startsWith(`${POINTS_POST_BUTTON_PREFIX}:`);
-}
-
 type MatchView = {
   embed: EmbedBuilder;
   copyText: string;
@@ -299,306 +340,6 @@ const fwaMailPostedPayloads = new Map<string, FwaMailPostedPayload>();
 const fwaMailPollers = new Map<string, ReturnType<typeof setInterval>>();
 const pointsSnapshotCache = new Map<string, PointsSnapshotCacheEntry>();
 const pointsSnapshotInFlight = new Map<string, Promise<PointsSnapshot>>();
-
-function createTransientFwaKey(): string {
-  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function buildFwaMatchCopyCustomId(
-  userId: string,
-  key: string,
-  mode: "copy" | "embed"
-): string {
-  return `${FWA_MATCH_COPY_BUTTON_PREFIX}:${userId}:${key}:${mode}`;
-}
-
-function buildFwaMatchSelectCustomId(userId: string, key: string): string {
-  return `${FWA_MATCH_SELECT_PREFIX}:${userId}:${key}`;
-}
-
-function parseFwaMatchSelectCustomId(customId: string): { userId: string; key: string } | null {
-  const parts = customId.split(":");
-  if (parts.length !== 3 || parts[0] !== FWA_MATCH_SELECT_PREFIX) return null;
-  const userId = parts[1]?.trim() ?? "";
-  const key = parts[2]?.trim() ?? "";
-  if (!userId || !key) return null;
-  return { userId, key };
-}
-
-function buildFwaMatchAllianceCustomId(userId: string, key: string): string {
-  return `${FWA_MATCH_ALLIANCE_PREFIX}:${userId}:${key}`;
-}
-
-function parseFwaMatchAllianceCustomId(customId: string): { userId: string; key: string } | null {
-  const parts = customId.split(":");
-  if (parts.length !== 3 || parts[0] !== FWA_MATCH_ALLIANCE_PREFIX) return null;
-  const userId = parts[1]?.trim() ?? "";
-  const key = parts[2]?.trim() ?? "";
-  if (!userId || !key) return null;
-  return { userId, key };
-}
-
-function parseFwaMatchCopyCustomId(
-  customId: string
-): { userId: string; key: string; mode: "copy" | "embed" } | null {
-  const parts = customId.split(":");
-  if (parts.length !== 4 || parts[0] !== FWA_MATCH_COPY_BUTTON_PREFIX) return null;
-  const userId = parts[1]?.trim() ?? "";
-  const key = parts[2]?.trim() ?? "";
-  const mode = parts[3] === "copy" || parts[3] === "embed" ? parts[3] : null;
-  if (!userId || !key || !mode) return null;
-  return { userId, key, mode };
-}
-
-export function isFwaMatchCopyButtonCustomId(customId: string): boolean {
-  return customId.startsWith(`${FWA_MATCH_COPY_BUTTON_PREFIX}:`);
-}
-
-type MatchTypeActionParams = {
-  userId: string;
-  tag: string;
-  targetType: "FWA" | "BL" | "MM";
-};
-
-function buildMatchTypeActionCustomId(params: MatchTypeActionParams): string {
-  return `${FWA_MATCH_TYPE_ACTION_PREFIX}:${params.userId}:${normalizeTag(params.tag)}:${params.targetType}`;
-}
-
-function parseMatchTypeActionCustomId(customId: string): MatchTypeActionParams | null {
-  const parts = customId.split(":");
-  if (parts.length !== 4 || parts[0] !== FWA_MATCH_TYPE_ACTION_PREFIX) return null;
-  const userId = parts[1]?.trim() ?? "";
-  const tag = normalizeTag(parts[2] ?? "");
-  const targetType = parts[3] === "FWA" || parts[3] === "BL" || parts[3] === "MM" ? parts[3] : null;
-  if (!userId || !tag || !targetType) return null;
-  return { userId, tag, targetType };
-}
-
-export function isFwaMatchTypeActionButtonCustomId(customId: string): boolean {
-  return customId.startsWith(`${FWA_MATCH_TYPE_ACTION_PREFIX}:`);
-}
-
-type MatchTypeEditParams = { userId: string; key: string };
-
-function buildMatchTypeEditCustomId(params: MatchTypeEditParams): string {
-  return `${FWA_MATCH_TYPE_EDIT_PREFIX}:${params.userId}:${params.key}`;
-}
-
-function parseMatchTypeEditCustomId(customId: string): MatchTypeEditParams | null {
-  const parts = customId.split(":");
-  if (parts.length !== 3 || parts[0] !== FWA_MATCH_TYPE_EDIT_PREFIX) return null;
-  const userId = parts[1]?.trim() ?? "";
-  const key = parts[2]?.trim() ?? "";
-  if (!userId || !key) return null;
-  return { userId, key };
-}
-
-export function isFwaMatchTypeEditButtonCustomId(customId: string): boolean {
-  return customId.startsWith(`${FWA_MATCH_TYPE_EDIT_PREFIX}:`);
-}
-
-type OutcomeActionParams = {
-  userId: string;
-  tag: string;
-  currentOutcome: "WIN" | "LOSE";
-};
-
-function buildOutcomeActionCustomId(params: OutcomeActionParams): string {
-  return `${FWA_OUTCOME_ACTION_PREFIX}:${params.userId}:${normalizeTag(params.tag)}:${params.currentOutcome}`;
-}
-
-function parseOutcomeActionCustomId(customId: string): OutcomeActionParams | null {
-  const parts = customId.split(":");
-  if (parts.length !== 4 || parts[0] !== FWA_OUTCOME_ACTION_PREFIX) return null;
-  const userId = parts[1]?.trim() ?? "";
-  const tag = normalizeTag(parts[2] ?? "");
-  const currentOutcome = parts[3] === "WIN" || parts[3] === "LOSE" ? parts[3] : null;
-  if (!userId || !tag || !currentOutcome) return null;
-  return { userId, tag, currentOutcome };
-}
-
-export function isFwaOutcomeActionButtonCustomId(customId: string): boolean {
-  return customId.startsWith(`${FWA_OUTCOME_ACTION_PREFIX}:`);
-}
-
-type MatchSyncActionParams = {
-  userId: string;
-  key: string;
-  tag: string;
-};
-
-function buildMatchSyncActionCustomId(params: MatchSyncActionParams): string {
-  return `${FWA_MATCH_SYNC_ACTION_PREFIX}:${params.userId}:${params.key}:${normalizeTag(params.tag)}`;
-}
-
-function parseMatchSyncActionCustomId(customId: string): MatchSyncActionParams | null {
-  const parts = customId.split(":");
-  if (parts.length !== 4 || parts[0] !== FWA_MATCH_SYNC_ACTION_PREFIX) return null;
-  const userId = parts[1]?.trim() ?? "";
-  const key = parts[2]?.trim() ?? "";
-  const tag = normalizeTag(parts[3] ?? "");
-  if (!userId || !key || !tag) return null;
-  return { userId, key, tag };
-}
-
-export function isFwaMatchSyncActionButtonCustomId(customId: string): boolean {
-  return customId.startsWith(`${FWA_MATCH_SYNC_ACTION_PREFIX}:`);
-}
-
-type MatchSkipSyncActionParams = {
-  userId: string;
-  key: string;
-  tag: string;
-};
-
-function buildMatchSkipSyncActionCustomId(params: MatchSkipSyncActionParams): string {
-  return `${FWA_MATCH_SKIP_SYNC_ACTION_PREFIX}:${params.userId}:${params.key}:${normalizeTag(params.tag)}`;
-}
-
-function parseMatchSkipSyncActionCustomId(customId: string): MatchSkipSyncActionParams | null {
-  const parts = customId.split(":");
-  if (parts.length !== 4 || parts[0] !== FWA_MATCH_SKIP_SYNC_ACTION_PREFIX) return null;
-  const userId = parts[1]?.trim() ?? "";
-  const key = parts[2]?.trim() ?? "";
-  const tag = normalizeTag(parts[3] ?? "");
-  if (!userId || !key || !tag) return null;
-  return { userId, key, tag };
-}
-
-export function isFwaMatchSkipSyncActionButtonCustomId(customId: string): boolean {
-  return customId.startsWith(`${FWA_MATCH_SKIP_SYNC_ACTION_PREFIX}:`);
-}
-
-function buildMatchSkipSyncConfirmCustomId(params: MatchSkipSyncActionParams): string {
-  return `${FWA_MATCH_SKIP_SYNC_CONFIRM_PREFIX}:${params.userId}:${params.key}:${normalizeTag(params.tag)}`;
-}
-
-function parseMatchSkipSyncConfirmCustomId(customId: string): MatchSkipSyncActionParams | null {
-  const parts = customId.split(":");
-  if (parts.length !== 4 || parts[0] !== FWA_MATCH_SKIP_SYNC_CONFIRM_PREFIX) return null;
-  const userId = parts[1]?.trim() ?? "";
-  const key = parts[2]?.trim() ?? "";
-  const tag = normalizeTag(parts[3] ?? "");
-  if (!userId || !key || !tag) return null;
-  return { userId, key, tag };
-}
-
-export function isFwaMatchSkipSyncConfirmButtonCustomId(customId: string): boolean {
-  return customId.startsWith(`${FWA_MATCH_SKIP_SYNC_CONFIRM_PREFIX}:`);
-}
-
-function buildMatchSkipSyncUndoCustomId(params: MatchSkipSyncActionParams): string {
-  return `${FWA_MATCH_SKIP_SYNC_UNDO_PREFIX}:${params.userId}:${params.key}:${normalizeTag(params.tag)}`;
-}
-
-function parseMatchSkipSyncUndoCustomId(customId: string): MatchSkipSyncActionParams | null {
-  const parts = customId.split(":");
-  if (parts.length !== 4 || parts[0] !== FWA_MATCH_SKIP_SYNC_UNDO_PREFIX) return null;
-  const userId = parts[1]?.trim() ?? "";
-  const key = parts[2]?.trim() ?? "";
-  const tag = normalizeTag(parts[3] ?? "");
-  if (!userId || !key || !tag) return null;
-  return { userId, key, tag };
-}
-
-export function isFwaMatchSkipSyncUndoButtonCustomId(customId: string): boolean {
-  return customId.startsWith(`${FWA_MATCH_SKIP_SYNC_UNDO_PREFIX}:`);
-}
-
-export function isFwaMatchSelectCustomId(customId: string): boolean {
-  return customId.startsWith(`${FWA_MATCH_SELECT_PREFIX}:`);
-}
-
-export function isFwaMatchAllianceButtonCustomId(customId: string): boolean {
-  return customId.startsWith(`${FWA_MATCH_ALLIANCE_PREFIX}:`);
-}
-
-function buildFwaMailConfirmCustomId(userId: string, key: string): string {
-  return `${FWA_MAIL_CONFIRM_PREFIX}:${userId}:${key}`;
-}
-
-function parseFwaMailConfirmCustomId(customId: string): { userId: string; key: string } | null {
-  const parts = customId.split(":");
-  if (parts.length !== 3 || parts[0] !== FWA_MAIL_CONFIRM_PREFIX) return null;
-  const userId = parts[1]?.trim() ?? "";
-  const key = parts[2]?.trim() ?? "";
-  if (!userId || !key) return null;
-  return { userId, key };
-}
-
-export function isFwaMailConfirmButtonCustomId(customId: string): boolean {
-  return customId.startsWith(`${FWA_MAIL_CONFIRM_PREFIX}:`);
-}
-
-function buildFwaMailConfirmNoPingCustomId(userId: string, key: string): string {
-  return `${FWA_MAIL_CONFIRM_NO_PING_PREFIX}:${userId}:${key}`;
-}
-
-function parseFwaMailConfirmNoPingCustomId(customId: string): { userId: string; key: string } | null {
-  const parts = customId.split(":");
-  if (parts.length !== 3 || parts[0] !== FWA_MAIL_CONFIRM_NO_PING_PREFIX) return null;
-  const userId = parts[1]?.trim() ?? "";
-  const key = parts[2]?.trim() ?? "";
-  if (!userId || !key) return null;
-  return { userId, key };
-}
-
-export function isFwaMailConfirmNoPingButtonCustomId(customId: string): boolean {
-  return customId.startsWith(`${FWA_MAIL_CONFIRM_NO_PING_PREFIX}:`);
-}
-
-function buildFwaMailBackCustomId(userId: string, key: string): string {
-  return `${FWA_MAIL_BACK_PREFIX}:${userId}:${key}`;
-}
-
-function parseFwaMailBackCustomId(customId: string): { userId: string; key: string } | null {
-  const parts = customId.split(":");
-  if (parts.length !== 3 || parts[0] !== FWA_MAIL_BACK_PREFIX) return null;
-  const userId = parts[1]?.trim() ?? "";
-  const key = parts[2]?.trim() ?? "";
-  if (!userId || !key) return null;
-  return { userId, key };
-}
-
-export function isFwaMailBackButtonCustomId(customId: string): boolean {
-  return customId.startsWith(`${FWA_MAIL_BACK_PREFIX}:`);
-}
-
-function buildFwaMailRefreshCustomId(key: string): string {
-  return `${FWA_MAIL_REFRESH_PREFIX}:${key}`;
-}
-
-function parseFwaMailRefreshCustomId(customId: string): { key: string } | null {
-  const parts = customId.split(":");
-  if (parts.length !== 2 || parts[0] !== FWA_MAIL_REFRESH_PREFIX) return null;
-  const key = parts[1]?.trim() ?? "";
-  if (!key) return null;
-  return { key };
-}
-
-export function isFwaMailRefreshButtonCustomId(customId: string): boolean {
-  return customId.startsWith(`${FWA_MAIL_REFRESH_PREFIX}:`);
-}
-
-function buildFwaMatchSendMailCustomId(userId: string, key: string, tag: string): string {
-  return `${FWA_MATCH_SEND_MAIL_PREFIX}:${userId}:${key}:${tag}`;
-}
-
-function parseFwaMatchSendMailCustomId(
-  customId: string
-): { userId: string; key: string; tag: string } | null {
-  const parts = customId.split(":");
-  if (parts.length !== 4 || parts[0] !== FWA_MATCH_SEND_MAIL_PREFIX) return null;
-  const userId = parts[1]?.trim() ?? "";
-  const key = parts[2]?.trim() ?? "";
-  const tag = normalizeTag(parts[3] ?? "");
-  if (!userId || !key || !tag) return null;
-  return { userId, key, tag };
-}
-
-export function isFwaMatchSendMailButtonCustomId(customId: string): boolean {
-  return customId.startsWith(`${FWA_MATCH_SEND_MAIL_PREFIX}:`);
-}
 
 function updateSingleViewMatchType(
   view: MatchView,
@@ -4030,109 +3771,6 @@ export async function handlePointsPostButton(interaction: ButtonInteraction): Pr
   }
 }
 
-function toPlainText(html: string): string {
-  return html
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function extractField(text: string, label: string): string | null {
-  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const regex = new RegExp(
-    `${escaped}\\s*:\\s*(.+?)(?=\\s+[A-Za-z][A-Za-z0-9\\s]{1,40}:|$)`,
-    "i"
-  );
-  const match = text.match(regex);
-  if (!match?.[1]) return null;
-  return match[1].trim().slice(0, 120);
-}
-
-function extractPointBalance(html: string): number | null {
-  const directMatch = html.match(/(?:Point Balance|Current Point Balance)\s*:\s*([+-]?\d+)/i);
-  if (directMatch?.[1]) return Number(directMatch[1]);
-
-  const plain = toPlainText(html);
-  const textMatch = plain.match(/(?:Point Balance|Current Point Balance)\s*:\s*([+-]?\d+)/i);
-  if (!textMatch?.[1]) return null;
-  return Number(textMatch[1]);
-}
-
-function extractActiveFwa(...texts: Array<string | null | undefined>): boolean | null {
-  const raw = texts
-    .map((text) =>
-      text
-        ? text.match(/Active FWA\s*:\s*(Yes|No)\b/i)?.[1] ??
-          extractField(text, "Active FWA")?.match(/^(Yes|No)\b/i)?.[1] ??
-          null
-        : null
-    )
-    .find((value) => value);
-  if (!raw) return null;
-  if (/^yes$/i.test(raw)) return true;
-  if (/^no$/i.test(raw)) return false;
-  return null;
-}
-
-function extractWinnerBoxText(html: string): string | null {
-  const match = html.match(
-    /<p[^>]*class=["'][^"']*winner-box[^"']*["'][^>]*>([\s\S]*?)<\/p>/i
-  );
-  if (!match?.[1]) return null;
-  return toPlainText(match[1]);
-}
-
-function extractTopSectionText(html: string): string {
-  const plain = toPlainText(html);
-  const marker = plain.search(/Last Known War State\s*:/i);
-  if (marker < 0) return plain;
-  return plain.slice(0, marker).trim();
-}
-
-function extractTagsFromText(text: string): string[] {
-  const tags = new Set<string>();
-  const hashMatches = text.matchAll(/#([0-9A-Z]{4,})/gi);
-  for (const match of hashMatches) {
-    if (match[1]) tags.add(normalizeTag(match[1]));
-  }
-  const parenMatches = text.matchAll(/\(\s*([0-9A-Z]{4,})\s*\)/gi);
-  for (const match of parenMatches) {
-    if (match[1]) tags.add(normalizeTag(match[1]));
-  }
-  return [...tags];
-}
-
-function extractSyncNumber(text: string): number | null {
-  const match = text.match(/sync\s*#\s*(\d+)/i);
-  if (!match?.[1]) return null;
-  const value = Number(match[1]);
-  return Number.isFinite(value) ? value : null;
-}
-
-function extractMatchupBalances(text: string): {
-  primaryBalance: number | null;
-  opponentBalance: number | null;
-} {
-  const match = text.match(/\(\s*([+-]?\d+)\s*([<>=])\s*([+-]?\d+)(?:,|\))/i);
-  if (!match?.[1] || !match?.[3]) {
-    return { primaryBalance: null, opponentBalance: null };
-  }
-  const primary = Number(match[1]);
-  const opponent = Number(match[3]);
-  return {
-    primaryBalance: Number.isFinite(primary) ? primary : null,
-    opponentBalance: Number.isFinite(opponent) ? opponent : null,
-  };
-}
-
-function getSyncMode(syncNumber: number | null): "low" | "high" | null {
-  if (syncNumber === null) return null;
-  return syncNumber % 2 === 0 ? "high" : "low";
-}
-
 async function getSourceOfTruthSync(
   _settings: SettingsService,
   _guildId?: string | null
@@ -4446,47 +4084,6 @@ function applySourceSync(snapshot: PointsSnapshot, sourceSync: number | null): P
   };
 }
 
-function rankChar(ch: string): number {
-  const idx = TIEBREAK_ORDER.indexOf(ch);
-  return idx >= 0 ? idx : Number.MAX_SAFE_INTEGER;
-}
-
-function compareTagsForTiebreak(primaryTag: string, opponentTag: string): number {
-  const a = normalizeTag(primaryTag);
-  const b = normalizeTag(opponentTag);
-  const maxLen = Math.max(a.length, b.length);
-
-  for (let i = 0; i < maxLen; i += 1) {
-    const ra = rankChar(a[i] ?? "");
-    const rb = rankChar(b[i] ?? "");
-    if (ra === rb) continue;
-    return ra - rb;
-  }
-
-  return 0;
-}
-
-function formatPoints(value: number): string {
-  return Intl.NumberFormat("en-US").format(value);
-}
-
-function sanitizeClanName(input: string | null | undefined): string | null {
-  if (!input) return null;
-  const trimmed = input.trim();
-  if (!trimmed) return null;
-  if (trimmed.length > 80) return null;
-  if (/Clan Tag|Point Balance|Sync #|Winner|War State/i.test(trimmed)) return null;
-  return trimmed;
-}
-
-type MatchupHeader = {
-  syncNumber: number | null;
-  primaryName: string | null;
-  primaryTag: string | null;
-  opponentName: string | null;
-  opponentTag: string | null;
-};
-
 type ActualSheetClanSnapshot = {
   totalWeight: string | null;
   weightCompo: string | null;
@@ -4567,90 +4164,11 @@ async function getActualSheetSnapshotCached(
   return snapshot;
 }
 
-function extractMatchupHeader(topText: string): MatchupHeader {
-  const regex =
-    /Sync\s*#\s*(\d+)\s+(.+?)\s*\(\s*([0-9A-Z]{4,})\s*\)\s+vs\.\s+(.+?)\s*\(\s*([0-9A-Z]{4,})\s*\)/i;
-  const match = topText.match(regex);
-  if (!match) {
-    return {
-      syncNumber: extractSyncNumber(topText),
-      primaryName: null,
-      primaryTag: null,
-      opponentName: null,
-      opponentTag: null,
-    };
-  }
-
-  return {
-    syncNumber: Number(match[1]),
-    primaryName: sanitizeClanName(match[2]) ?? null,
-    primaryTag: normalizeTag(match[3]),
-    opponentName: sanitizeClanName(match[4]) ?? null,
-    opponentTag: normalizeTag(match[5]),
-  };
-}
-
-
-function limitDiscordContent(content: string): string {
-  return truncateDiscordContent(content, DISCORD_CONTENT_MAX);
-}
-
-function buildLimitedMessage(header: string, lines: string[], summary: string): string {
-  let message = `${header}\n\n`;
-  let included = 0;
-
-  for (const line of lines) {
-    const candidate = `${message}${line}\n`;
-    if ((candidate + summary).length > DISCORD_CONTENT_MAX) break;
-    message = candidate;
-    included += 1;
-  }
-
-  if (included < lines.length) {
-    const omittedNote = `\n...and ${lines.length - included} more clan(s).`;
-    if ((message + omittedNote + summary).length <= DISCORD_CONTENT_MAX) {
-      message += omittedNote;
-    }
-  }
-
-  // If the first line alone is too long, still show a shortened version.
-  if (included === 0 && lines.length > 0) {
-    const firstLineBudget = Math.max(0, DISCORD_CONTENT_MAX - message.length - summary.length - 40);
-    const shortened = firstLineBudget > 0 ? `${lines[0].slice(0, firstLineBudget)}...` : "";
-    if (shortened) {
-      message += `${shortened}\n`;
-      if (lines.length > 1) {
-        const omittedNote = `...and ${lines.length - 1} more clan(s).`;
-        if ((message + omittedNote + summary).length <= DISCORD_CONTENT_MAX) {
-          message += omittedNote;
-        }
-      }
-    }
-  }
-
-  if ((message + summary).length > DISCORD_CONTENT_MAX) {
-    const allowed = Math.max(0, DISCORD_CONTENT_MAX - message.length);
-    return `${message}${summary.slice(0, allowed)}`;
-  }
-
-  return `${message}${summary}`;
-}
-
 function getHttpStatus(err: unknown): number | null {
   const status =
     (err as { status?: number } | null | undefined)?.status ??
     (err as { response?: { status?: number } } | null | undefined)?.response?.status;
   return typeof status === "number" ? status : null;
-}
-
-function parseCocApiTime(input: string | null | undefined): number | null {
-  if (!input) return null;
-  const match = input.match(
-    /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})\.\d{3}Z$/
-  );
-  if (!match) return null;
-  const [, y, m, d, hh, mm, ss] = match;
-  return Date.UTC(Number(y), Number(m) - 1, Number(d), Number(hh), Number(mm), Number(ss));
 }
 
 type CurrentWarResult = Awaited<ReturnType<CoCService["getCurrentWar"]>>;
