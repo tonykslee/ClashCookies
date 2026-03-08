@@ -120,6 +120,7 @@ import {
   evaluatePostSyncValidation,
   hasRenderedOutcomeMismatch,
 } from "./fwa/syncAction";
+import { buildActionableSyncStateLine } from "./fwa/syncDisplay";
 export { isMissedSyncClanForTest } from "./fwa/matchState";
 export {
   isFwaMailBackButtonCustomId,
@@ -3948,22 +3949,14 @@ function buildStoredSyncSummary(input: {
     syncNum: number;
     syncFetchedAt: Date;
     lastSuccessfulPointsApiFetchAt: Date | null;
-    lastFetchReason: string | null;
-    confirmedByClanMail: boolean;
     needsValidation: boolean;
-    lastKnownPoints: number | null;
-    lastKnownMatchType: string | null;
-    lastKnownOutcome: string | null;
-    lastKnownSyncNumber: number | null;
   } | null;
   fallbackSyncNum: number | null;
-  warState: WarStateForSync;
+  validationState: SyncValidationState;
 }): {
   syncLine: string;
   updatedLine: string | null;
   stateLine: string;
-  reasonLine: string | null;
-  checkpointLine: string | null;
 } {
   const syncNumber =
     input.syncRow?.syncNum ??
@@ -3982,40 +3975,12 @@ function buildStoredSyncSummary(input: {
     Number.isFinite(syncFetchedAtMs) && syncFetchedAtMs > 0
       ? `<t:${Math.floor(syncFetchedAtMs / 1000)}:R>`
       : null;
-  const stateLine = !input.syncRow
-    ? "State: Needs validation (no sync checkpoint)"
-    : input.syncRow.needsValidation
-      ? "State: Needs validation"
-      : input.syncRow.confirmedByClanMail
-        ? "State: Confirmed by clan mail (routine polling paused)"
-        : "State: Reconciled (pre-confirmation)";
-  const reasonLine = input.syncRow?.lastFetchReason
-    ? `Last fetch reason: \`${input.syncRow.lastFetchReason}\``
-    : null;
-  const checkpointParts: string[] = [];
-  if (
-    input.syncRow?.lastKnownPoints !== null &&
-    input.syncRow?.lastKnownPoints !== undefined &&
-    Number.isFinite(input.syncRow.lastKnownPoints)
-  ) {
-    checkpointParts.push(`points ${Math.trunc(input.syncRow.lastKnownPoints)}`);
-  }
-  if (input.syncRow?.lastKnownMatchType) {
-    checkpointParts.push(`match ${input.syncRow.lastKnownMatchType}`);
-  }
-  if (input.syncRow?.lastKnownOutcome) {
-    checkpointParts.push(`outcome ${input.syncRow.lastKnownOutcome}`);
-  }
-  if (
-    input.syncRow?.lastKnownSyncNumber !== null &&
-    input.syncRow?.lastKnownSyncNumber !== undefined &&
-    Number.isFinite(input.syncRow.lastKnownSyncNumber)
-  ) {
-    checkpointParts.push(`sync #${Math.trunc(input.syncRow.lastKnownSyncNumber)}`);
-  }
-  const checkpointLine =
-    checkpointParts.length > 0 ? `Checkpoint: ${checkpointParts.join(" | ")}` : null;
-  return { syncLine, updatedLine, stateLine, reasonLine, checkpointLine };
+  const stateLine = buildActionableSyncStateLine({
+    syncRow: input.syncRow ? { needsValidation: input.syncRow.needsValidation } : null,
+    siteCurrent: input.validationState.siteCurrent,
+    differenceCount: input.validationState.differences.length,
+  });
+  return { syncLine, updatedLine, stateLine };
 }
 
 async function persistClanPointsSyncIfCurrent(input: {
@@ -5058,11 +5023,6 @@ async function buildTrackedMatchOverview(
           : null,
       warStartTime: warStartTimeForSync,
     });
-    const storedSyncSummary = buildStoredSyncSummary({
-      syncRow,
-      fallbackSyncNum: siteSyncObservedForWrite,
-      warState,
-    });
     const validationState = buildSyncValidationState({
       syncRow,
       currentWarStartTime: warStartTimeForSync,
@@ -5073,6 +5033,11 @@ async function buildTrackedMatchOverview(
       opponentPoints: opponentPoints?.balance ?? null,
       outcome: derivedOutcome,
       isFwa: primaryPoints?.activeFwa ?? false,
+    });
+    const storedSyncSummary = buildStoredSyncSummary({
+      syncRow,
+      fallbackSyncNum: siteSyncObservedForWrite,
+      validationState,
     });
     const primaryMismatch = siteUpdatedForAlert
       ? buildPointsMismatchWarning(
@@ -5178,8 +5143,6 @@ async function buildTrackedMatchOverview(
             pointsLine,
             pointsSyncStatus,
             storedSyncSummary.stateLine,
-            storedSyncSummary.reasonLine,
-            storedSyncSummary.checkpointLine,
             `Sync #: **${storedSyncSummary.syncLine}**`,
             storedSyncSummary.updatedLine
               ? `Last points fetch: **${storedSyncSummary.updatedLine}**`
@@ -5203,8 +5166,6 @@ async function buildTrackedMatchOverview(
           `${pointsLine}`,
           pointsSyncStatus,
           storedSyncSummary.stateLine,
-          storedSyncSummary.reasonLine ?? "",
-          storedSyncSummary.checkpointLine ?? "",
           `Sync #: ${storedSyncSummary.syncLine}`,
           storedSyncSummary.updatedLine ? `Last points fetch: ${storedSyncSummary.updatedLine}` : "",
           `Match Type: FWA${inferredMatchType ? " :warning:" : ""}`,
@@ -5232,8 +5193,6 @@ async function buildTrackedMatchOverview(
           value: [
             pointsSyncStatus,
             storedSyncSummary.stateLine,
-            storedSyncSummary.reasonLine,
-            storedSyncSummary.checkpointLine,
             `Sync #: **${storedSyncSummary.syncLine}**`,
             storedSyncSummary.updatedLine
               ? `Last points fetch: **${storedSyncSummary.updatedLine}**`
@@ -5255,8 +5214,6 @@ async function buildTrackedMatchOverview(
           `\`${opponentTag}\``,
           pointsSyncStatus,
           storedSyncSummary.stateLine,
-          storedSyncSummary.reasonLine ?? "",
-          storedSyncSummary.checkpointLine ?? "",
           `Sync #: ${storedSyncSummary.syncLine}`,
           storedSyncSummary.updatedLine ? `Last points fetch: ${storedSyncSummary.updatedLine}` : "",
           `Match Type: ${matchType}${inferredMatchType ? " :warning:" : ""}`,
@@ -5278,8 +5235,6 @@ async function buildTrackedMatchOverview(
     const singleDescription = [
       pointsSyncStatus,
       storedSyncSummary.stateLine,
-      storedSyncSummary.reasonLine ?? "",
-      storedSyncSummary.checkpointLine ?? "",
       inferredMatchType ? MATCHTYPE_WARNING_LEGEND : "",
       inferredMatchType ? "\u200B" : "",
       mailBlockedReasonLine ?? "",
@@ -5361,8 +5316,6 @@ async function buildTrackedMatchOverview(
           inferredMatchType ? MATCHTYPE_WARNING_LEGEND : "",
           pointsSyncStatus,
           storedSyncSummary.stateLine,
-          storedSyncSummary.reasonLine ?? "",
-          storedSyncSummary.checkpointLine ?? "",
           `Sync: ${clanSyncLine}`,
           `Sync #: ${storedSyncSummary.syncLine}`,
           storedSyncSummary.updatedLine
@@ -7073,11 +7026,6 @@ export const Fwa: Command = {
             : null,
           warStartTime: warStartTimeForSync,
         });
-        const storedSyncSummary = buildStoredSyncSummary({
-          syncRow,
-          fallbackSyncNum: siteSyncObservedForWrite,
-          warState,
-        });
         const validationState = buildSyncValidationState({
           syncRow,
           currentWarStartTime: warStartTimeForSync,
@@ -7088,6 +7036,11 @@ export const Fwa: Command = {
           opponentPoints: opponent.balance,
           outcome: effectiveOutcome,
           isFwa: primary.activeFwa ?? false,
+        });
+        const storedSyncSummary = buildStoredSyncSummary({
+          syncRow,
+          fallbackSyncNum: siteSyncObservedForWrite,
+          validationState,
         });
         const siteSyncObserved = primary.winnerBoxSync ?? null;
         const syncMismatch = siteUpdated
@@ -7191,10 +7144,6 @@ export const Fwa: Command = {
             }${
               outcomeLine ? `\nExpected outcome: **${outcomeLine}**` : ""
             }\n${siteStatusLine}\n${storedSyncSummary.stateLine}${
-              storedSyncSummary.reasonLine ? `\n${storedSyncSummary.reasonLine}` : ""
-            }${
-              storedSyncSummary.checkpointLine ? `\n${storedSyncSummary.checkpointLine}` : ""
-            }${
               mailBlockedReasonLine ? `\n${mailBlockedReasonLine}` : ""
             }\nWar state: **${formatWarStateLabel(warState)}**\nTime remaining: **${warRemaining}**\nSync #: **${storedSyncSummary.syncLine}**${
               storedSyncSummary.updatedLine
@@ -7229,8 +7178,6 @@ export const Fwa: Command = {
             inferredMatchType ? MATCHTYPE_WARNING_LEGEND : "",
             siteStatusLine,
             storedSyncSummary.stateLine,
-            storedSyncSummary.reasonLine ?? "",
-            storedSyncSummary.checkpointLine ?? "",
             mailBlockedReasonLine
               ? `${mailBlockedReasonLine.replace(/^:warning: /, "Warning: ").replace(/^:envelope_with_arrow: /, "Mail: ")}`
               : "",
