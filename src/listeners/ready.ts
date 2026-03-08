@@ -13,6 +13,8 @@ import { processRecruitmentCooldownReminders } from "../services/RecruitmentServ
 import { SettingsService } from "../services/SettingsService";
 import { PlayerLinkSyncService } from "../services/PlayerLinkSyncService";
 import { WarEventLogService } from "../services/WarEventLogService";
+import { TelemetryIngestService } from "../services/telemetry/ingest";
+import { startTelemetryScheduleLoop } from "../services/telemetry/schedule";
 import { refreshAllTrackedWarMailPosts } from "../commands/Fwa";
 import {
   setNextNotifyRefreshAtMs,
@@ -189,6 +191,9 @@ export default (client: Client, cocService: CoCService): void => {
       throw err;
     }
     console.log(`✅ Guild commands registered (${Commands.length})`);
+    TelemetryIngestService.getInstance().startAutoFlush();
+    startTelemetryScheduleLoop(client);
+    console.log("Telemetry ingest + schedule loops enabled.");
 
     const activityService = new ActivityService(cocService);
     const playerLinkSyncService = new PlayerLinkSyncService();

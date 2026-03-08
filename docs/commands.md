@@ -1,6 +1,11 @@
 # Commands Reference
 
 - `/help [command:<name>] [visibility:private|public]` - List command docs/examples. Default visibility is private.
+- `/telemetry report [period:24h|7d|30d] [timezone:<ianaTz>]` - Show aggregate telemetry report (usage, latency, failures, API health) for the selected window.
+- `/telemetry schedule set target-channel:<channel> cadence-hours:<n> [timezone:<ianaTz>] [enabled:true|false]` - Configure scheduled telemetry report posting.
+- `/telemetry schedule show` - Show current telemetry schedule config and last posted window.
+- `/telemetry schedule disable` - Disable scheduled telemetry report posting.
+- `/telemetry schedule run-now` - Post one report for the current completed schedule window (idempotent per window).
 - `/permission add command:<name> role:<discordRole> [role2] [role3] [role4] [role5]` - Allow one or more roles to use a command.
 - `/permission remove command:<name> role:<discordRole>` - Remove a role from a command whitelist.
 - `/permission list [command:<name>]` - List role policy for one command target, or all if omitted.

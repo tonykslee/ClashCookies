@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { prisma } from "../prisma";
+import { TelemetryIngestService } from "../services/telemetry/ingest";
 
 type FetchSource = "api" | "web" | "cache_hit" | "cache_miss" | "fallback_cache";
 
@@ -9,12 +10,18 @@ type FetchEvent = {
   source: FetchSource;
   detail?: string;
   incrementBy?: number;
+  durationMs?: number;
+  status?: "success" | "failure";
+  errorCategory?: string;
+  errorCode?: string;
+  timeout?: boolean;
 };
 
 type Totals = Record<FetchSource, number>;
 
 const eventCounts = new Map<string, number>();
 const operationTotals = new Map<string, Totals>();
+const fetchLogEveryN = Math.max(1, Number(process.env.FETCH_TELEMETRY_LOG_EVERY_N ?? 25));
 const telemetryBatchStorage = new AsyncLocalStorage<{
   job: string;
   startedAtMs: number;
@@ -117,6 +124,11 @@ export function recordFetchEvent(event: FetchEvent): void {
   const incrementBy = Math.max(1, Math.trunc(event.incrementBy ?? 1));
   const eventKey = `${event.namespace}:${event.operation}:${event.source}`;
   const opKey = `${event.namespace}:${event.operation}`;
+  const isFailure =
+    event.status === "failure" ||
+    !!event.errorCategory ||
+    !!event.errorCode ||
+    !!event.timeout;
 
   const nextEventCount = (eventCounts.get(eventKey) ?? 0) + incrementBy;
   eventCounts.set(eventKey, nextEventCount);
@@ -126,6 +138,18 @@ export function recordFetchEvent(event: FetchEvent): void {
   if (event.source === "api" || event.source === "web") {
     trackApiUsage(`${event.namespace}:${event.operation}`, incrementBy);
   }
+  const ingest = TelemetryIngestService.getInstance();
+  ingest.recordFetchEventTelemetry({
+    namespace: event.namespace,
+    operation: event.operation,
+    source: event.source,
+    detail: event.detail,
+    durationMs: event.durationMs,
+    status: event.status,
+    errorCategory: event.errorCategory,
+    errorCode: event.errorCode,
+    timeout: event.timeout,
+  });
 
   const batch = telemetryBatchStorage.getStore();
   if (batch) {
@@ -134,6 +158,9 @@ export function recordFetchEvent(event: FetchEvent): void {
     return;
   }
 
+  if (!isFailure && nextEventCount % fetchLogEveryN !== 0) {
+    return;
+  }
   const savedCalls = totals.cache_hit + totals.fallback_cache;
   const suffix = event.detail ? ` ${event.detail}` : "";
   console.info(

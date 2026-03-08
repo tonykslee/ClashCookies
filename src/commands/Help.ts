@@ -35,6 +35,7 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "notify:war",
   "permission:add",
   "permission:remove",
+  "telemetry",
 ]);
 
 type CommandDoc = {
@@ -306,6 +307,21 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "Aggregate mode reports dominant-cluster mean, spread (max-min), and outlier clans with divergent remaining times.",
     ],
     examples: ["/remaining war", "/remaining war tag:2QG2C08UP"],
+  },
+  telemetry: {
+    summary: "View telemetry reports and manage scheduled report posts.",
+    details: [
+      "`/telemetry report` shows usage, latency, failures, and API health from persisted telemetry aggregates.",
+      "`/telemetry schedule set` configures cadence/channel/timezone for automated Discord report posts.",
+      "`/telemetry schedule run-now` posts one report for the current completed schedule window with idempotent window guards.",
+      "Telemetry/report access is admin-only by default unless overridden with `/permission add`.",
+    ],
+    examples: [
+      "/telemetry report period:24h timezone:America/Los_Angeles",
+      "/telemetry schedule set target-channel:#ops cadence-hours:24 timezone:America/Los_Angeles enabled:true",
+      "/telemetry schedule show",
+      "/telemetry schedule run-now",
+    ],
   },
   permission: {
     summary: "Control which roles can run each command target.",

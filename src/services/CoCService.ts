@@ -8,6 +8,7 @@ import {
   PlayersApi,
 } from "../generated/coc-api";
 import { recordFetchEvent } from "../helper/fetchTelemetry";
+import { toFailureTelemetry } from "./telemetry/ingest";
 
 export class CoCService {
   private clansApi: ClansApi;
@@ -30,6 +31,7 @@ export class CoCService {
   /** Purpose: get clan. */
   async getClan(tag: string): Promise<any> {
     const clanTag = tag.startsWith("#") ? tag : `#${tag}`;
+    const startedAtMs = Date.now();
     try {
       const { data } = await this.clansApi.getClan(clanTag);
       recordFetchEvent({
@@ -37,6 +39,8 @@ export class CoCService {
         operation: "getClan",
         source: "api",
         detail: `tag=${clanTag}`,
+        durationMs: Date.now() - startedAtMs,
+        status: "success",
       });
 
       // Preserve existing call sites that expect `clan.members`.
@@ -47,11 +51,17 @@ export class CoCService {
         members: data.memberList ?? [],
       };
     } catch (err) {
+      const failure = toFailureTelemetry(err);
       recordFetchEvent({
         namespace: "coc",
         operation: "getClan",
         source: "api",
         detail: `tag=${clanTag} result=error`,
+        durationMs: Date.now() - startedAtMs,
+        status: "failure",
+        errorCategory: failure.errorCategory,
+        errorCode: failure.errorCode,
+        timeout: failure.timeout,
       });
       throw err;
     }
@@ -66,6 +76,7 @@ export class CoCService {
   /** Purpose: get current war. */
   async getCurrentWar(tag: string): Promise<ClanWar | null> {
     const clanTag = tag.startsWith("#") ? tag : `#${tag}`;
+    const startedAtMs = Date.now();
     try {
       const { data } = await this.clansApi.getCurrentWar(clanTag);
       recordFetchEvent({
@@ -73,16 +84,23 @@ export class CoCService {
         operation: "getCurrentWar",
         source: "api",
         detail: `tag=${clanTag}`,
+        durationMs: Date.now() - startedAtMs,
+        status: "success",
       });
       return data;
     } catch (err) {
       const status = (err as AxiosError)?.response?.status;
+      const failure = toFailureTelemetry(err);
       if (status === 404) {
         recordFetchEvent({
           namespace: "coc",
           operation: "getCurrentWar",
           source: "api",
           detail: `tag=${clanTag} status=404`,
+          durationMs: Date.now() - startedAtMs,
+          status: "failure",
+          errorCategory: "validation",
+          errorCode: "HTTP_404",
         });
         return null;
       }
@@ -91,6 +109,11 @@ export class CoCService {
         operation: "getCurrentWar",
         source: "api",
         detail: `tag=${clanTag} status=${status ?? "unknown"} result=error`,
+        durationMs: Date.now() - startedAtMs,
+        status: "failure",
+        errorCategory: failure.errorCategory,
+        errorCode: failure.errorCode,
+        timeout: failure.timeout,
       });
       if (status) throw new Error(`CoC API error ${status}`);
       throw err;
@@ -100,6 +123,7 @@ export class CoCService {
   /** Purpose: get clan war log. */
   async getClanWarLog(tag: string, limit = 10): Promise<ClanWarLogEntry[]> {
     const clanTag = tag.startsWith("#") ? tag : `#${tag}`;
+    const startedAtMs = Date.now();
     try {
       const { data } = await this.clansApi.getClanWarLog(clanTag, limit);
       recordFetchEvent({
@@ -107,15 +131,23 @@ export class CoCService {
         operation: "getClanWarLog",
         source: "api",
         detail: `tag=${clanTag} limit=${limit}`,
+        durationMs: Date.now() - startedAtMs,
+        status: "success",
       });
       return Array.isArray(data.items) ? data.items : [];
     } catch (err) {
       const status = (err as AxiosError)?.response?.status;
+      const failure = toFailureTelemetry(err);
       recordFetchEvent({
         namespace: "coc",
         operation: "getClanWarLog",
         source: "api",
         detail: `tag=${clanTag} status=${status ?? "unknown"} result=error`,
+        durationMs: Date.now() - startedAtMs,
+        status: "failure",
+        errorCategory: failure.errorCategory,
+        errorCode: failure.errorCode,
+        timeout: failure.timeout,
       });
       return [];
     }
@@ -127,6 +159,7 @@ export class CoCService {
   ): Promise<any> {
     if (!tag) return null;
     const playerTag = tag.startsWith("#") ? tag : `#${tag}`;
+    const startedAtMs = Date.now();
 
     try {
       const { data } = await this.playersApi.getPlayer(playerTag);
@@ -136,11 +169,14 @@ export class CoCService {
           operation: "getPlayerRaw",
           source: "api",
           detail: `tag=${playerTag}`,
+          durationMs: Date.now() - startedAtMs,
+          status: "success",
         });
       }
       return this.normalizePlayer(data);
     } catch (err) {
       const status = (err as AxiosError)?.response?.status;
+      const failure = toFailureTelemetry(err);
       if (status === 404) {
         if (!options?.suppressTelemetry) {
           recordFetchEvent({
@@ -148,6 +184,10 @@ export class CoCService {
             operation: "getPlayerRaw",
             source: "api",
             detail: `tag=${playerTag} status=404`,
+            durationMs: Date.now() - startedAtMs,
+            status: "failure",
+            errorCategory: "validation",
+            errorCode: "HTTP_404",
           });
         }
         return null;
@@ -158,6 +198,11 @@ export class CoCService {
           operation: "getPlayerRaw",
           source: "api",
           detail: `tag=${playerTag} status=${status ?? "unknown"} result=error`,
+          durationMs: Date.now() - startedAtMs,
+          status: "failure",
+          errorCategory: failure.errorCategory,
+          errorCode: failure.errorCode,
+          timeout: failure.timeout,
         });
       }
       if (status) throw new Error(`CoC API error ${status}`);

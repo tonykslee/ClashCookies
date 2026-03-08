@@ -17,6 +17,7 @@ import { War } from "./commands/War";
 import { Force } from "./commands/Force";
 import { Remaining } from "./commands/Remaining";
 import { WarPlan } from "./commands/WarPlan";
+import { Telemetry } from "./commands/Telemetry";
 
 // ...existing code...
 export const Commands = [
@@ -36,6 +37,7 @@ export const Commands = [
   Remaining,
   Recruitment,
   KickList,
+  Telemetry,
   Force,
   Post,
   CommandRole,
