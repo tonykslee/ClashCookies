@@ -299,13 +299,13 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     ],
   },
   remaining: {
-    summary: "Show remaining time for a tracked clan's current war phase.",
+    summary: "Show remaining war timing for one tracked clan or alliance-wide active wars.",
     details: [
-      "`/remaining war` reports whether the clan is in preparation or battle day.",
-      "Returns localized phase-end and relative remaining time from current CoC API state.",
-      "Tag supports autocomplete from tracked clans.",
+      "`/remaining war tag:<tag>` returns one tracked clan's current phase end and relative remaining time.",
+      "`/remaining war` (no tag) summarizes all tracked clans currently in active war using a 10-minute dominant-time cluster.",
+      "Aggregate mode reports dominant-cluster mean, spread (max-min), and outlier clans with divergent remaining times.",
     ],
-    examples: ["/remaining war tag:2QG2C08UP"],
+    examples: ["/remaining war", "/remaining war tag:2QG2C08UP"],
   },
   permission: {
     summary: "Control which roles can run each command target.",
