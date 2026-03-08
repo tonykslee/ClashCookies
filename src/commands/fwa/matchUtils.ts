@@ -2,6 +2,7 @@ import { truncateDiscordContent } from "../../helper/discordContent";
 
 const TIEBREAK_ORDER = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 const DISCORD_CONTENT_MAX = 2000;
+type ExpectedOutcome = "WIN" | "LOSE" | "UNKNOWN" | null | undefined;
 
 /** Purpose: normalize incoming clan tags to the internal uppercase/hashless form. */
 function normalizeTag(input: string): string {
@@ -39,6 +40,16 @@ export function compareTagsForTiebreak(primaryTag: string, opponentTag: string):
 /** Purpose: format numeric points using Discord-friendly U.S. grouping. */
 export function formatPoints(value: number): string {
   return Intl.NumberFormat("en-US").format(value);
+}
+
+/** Purpose: mark the expected winner line in points blocks for quick visual scanning. */
+export function getWinnerMarkerForSide(
+  expectedOutcome: ExpectedOutcome,
+  side: "clan" | "opponent"
+): string {
+  if (expectedOutcome === "WIN" && side === "clan") return " :trophy:";
+  if (expectedOutcome === "LOSE" && side === "opponent") return " :trophy:";
+  return "";
 }
 
 /** Purpose: enforce Discord message limit with shared truncation behavior. */

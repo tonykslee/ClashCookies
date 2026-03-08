@@ -3,6 +3,7 @@ import {
   buildLimitedMessage,
   compareTagsForTiebreak,
   formatPoints,
+  getWinnerMarkerForSide,
   getSyncMode,
 } from "../src/commands/fwa/matchUtils";
 
@@ -21,6 +22,14 @@ describe("fwa match utils", () => {
 
   it("formats points for display", () => {
     expect(formatPoints(1234567)).toBe("1,234,567");
+  });
+
+  it("adds winner marker only to the expected winner side", () => {
+    expect(getWinnerMarkerForSide("WIN", "clan")).toBe(" :trophy:");
+    expect(getWinnerMarkerForSide("WIN", "opponent")).toBe("");
+    expect(getWinnerMarkerForSide("LOSE", "opponent")).toBe(" :trophy:");
+    expect(getWinnerMarkerForSide("LOSE", "clan")).toBe("");
+    expect(getWinnerMarkerForSide("UNKNOWN", "clan")).toBe("");
   });
 
   it("builds bounded messages and adds omitted-count note when truncated", () => {

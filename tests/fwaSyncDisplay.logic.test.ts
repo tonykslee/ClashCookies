@@ -32,24 +32,24 @@ describe("fwa sync display state mapping", () => {
     expect(line).toBe("State: Needs validation");
   });
 
-  it("shows confirmed/current for reconciled and in-sync data", () => {
+  it("hides sync state text for reconciled and in-sync data", () => {
     const line = buildActionableSyncStateLine({
       syncRow: { needsValidation: false },
       siteCurrent: true,
       differenceCount: 0,
     });
 
-    expect(line).toBe("State: Confirmed and current");
+    expect(line).toBe("");
     expect(line.includes("Reconciled")).toBe(false);
   });
 
-  it("keeps confirmed/current when site has not published next snapshot yet", () => {
+  it("keeps sync state text hidden when site has not published next snapshot yet", () => {
     const line = buildActionableSyncStateLine({
       syncRow: { needsValidation: false },
       siteCurrent: false,
       differenceCount: 0,
     });
 
-    expect(line).toBe("State: Confirmed and current");
+    expect(line).toBe("");
   });
 });
