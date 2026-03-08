@@ -215,6 +215,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     details: [
       "`/fwa points` returns point balances (single clan tag or all tracked if tag omitted).",
       "`/fwa match` auto-resolves current war opponent from CoC API and evaluates win/lose/tiebreak using cached points + persisted sync state.",
+      "`/fwa match` shows actionable sync status only (`State: Needs validation` or `State: Confirmed and current`) and hides internal lifecycle debug fields.",
       "When available, fwastats active-war validation is used by the war poller to promote inferred FWA matches to confirmed FWA.",
       "If match type is inferred, `/fwa match` shows a warning and quick verify link, with action buttons to confirm FWA/BL/MM.",
       "Tracked clan mail channel is configured via `/tracked-clan configure ... mail-channel`.",
