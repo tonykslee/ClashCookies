@@ -306,6 +306,14 @@ model ClanPointsSync {
   outcome        String?
   isFwa          Boolean
   syncFetchedAt  DateTime @default(now())
+  lastSuccessfulPointsApiFetchAt DateTime?
+  lastFetchReason                String?
+  confirmedByClanMail            Boolean  @default(false)
+  needsValidation                Boolean  @default(true)
+  lastKnownPoints                Int?
+  lastKnownMatchType             String?
+  lastKnownOutcome               String?
+  lastKnownSyncNumber            Int?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 

@@ -109,7 +109,9 @@ export class WarStartPointsSyncService {
 
     const nextAttempt = job.attempts + 1;
     try {
-      const primary = await this.points.fetchSnapshot(clanTag);
+      const primary = await this.points.fetchSnapshot(clanTag, {
+        reason: "post_war_reconciliation",
+      });
       const siteUpdated = primary.winnerBoxTags.map((t) => normalizeTag(t)).includes(opponentTag);
       const trackedDb = sub.fwaPoints ?? null;
       const trackedSite =
@@ -119,7 +121,9 @@ export class WarStartPointsSyncService {
       let opponentChecked = job.opponentChecked;
       let opponentBalance = job.siteOpponentBalance;
       if (!opponentChecked) {
-        const opp = await this.points.fetchSnapshot(opponentTag).catch(() => null);
+        const opp = await this.points
+          .fetchSnapshot(opponentTag, { reason: "post_war_reconciliation" })
+          .catch(() => null);
         opponentChecked = true;
         inferredOpponentIsFwa =
           opp?.balance !== null && opp?.balance !== undefined && Number.isFinite(opp.balance);
@@ -209,6 +213,10 @@ export class WarStartPointsSyncService {
               Math.trunc(primary.winnerBoxSync)
             ),
             isFwa: true,
+            fetchedAt: new Date(primary.fetchedAtMs),
+            fetchReason: "post_war_reconciliation",
+            matchType: "FWA",
+            needsValidation: false,
           });
         }
       }

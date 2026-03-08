@@ -54,6 +54,10 @@ import {
   parseMatchMailConfig,
 } from "./fwa/mailConfig";
 import { PostedMessageService } from "../services/PostedMessageService";
+import {
+  PointsFetchPolicyService,
+  type PointsApiFetchReason,
+} from "../services/PointsFetchPolicyService";
 import { PointsSyncService } from "../services/PointsSyncService";
 export { isMissedSyncClanForTest } from "./fwa/matchState";
 const POINTS_BASE_URL = "https://points.fwafarm.com/clan?tag=";
@@ -82,6 +86,7 @@ const MAILBOX_SENT_EMOJI = "📬";
 const MAILBOX_NOT_SENT_EMOJI = "📭";
 const postedMessageService = new PostedMessageService();
 const pointsSyncService = new PointsSyncService();
+const pointsFetchPolicy = new PointsFetchPolicyService();
 const POINTS_REQUEST_HEADERS = {
   "User-Agent":
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
@@ -892,7 +897,7 @@ async function markMatchLiveDataChanged(params: {
         clanTag: `#${normalizeTag(params.tag)}`,
       },
     },
-    select: { matchType: true, outcome: true },
+    select: { matchType: true, outcome: true, warId: true, startTime: true },
   });
   const liveMatchType = isMatchTypeValue(live?.matchType) ? live.matchType : null;
   const liveOutcome = isExpectedOutcomeValue(live?.outcome) ? live.outcome : null;
@@ -915,6 +920,14 @@ async function markMatchLiveDataChanged(params: {
     channelId: params.channelId,
     mailConfig: next,
   });
+  await pointsSyncService
+    .markNeedsValidation({
+      guildId: params.guildId,
+      clanTag: params.tag,
+      warId: live?.warId ?? null,
+      warStartTime: live?.startTime ?? null,
+    })
+    .catch(() => undefined);
 }
 
 function buildMatchStatusHeader(params: {
@@ -1077,7 +1090,11 @@ async function getCurrentWarIdForClan(
 async function buildWarMailEmbedForTag(
   cocService: CoCService,
   guildId: string,
-  tag: string
+  tag: string,
+  options?: {
+    fetchReason?: PointsApiFetchReason;
+    routine?: boolean;
+  }
 ): Promise<{
   embed: EmbedBuilder;
   planText: string;
@@ -1116,9 +1133,12 @@ async function buildWarMailEmbedForTag(
       },
     },
     select: {
+      warId: true,
       matchType: true,
       inferredMatchType: true,
       outcome: true,
+      fwaPoints: true,
+      opponentFwaPoints: true,
       startTime: true,
       state: true,
       endTime: true,
@@ -1146,17 +1166,76 @@ async function buildWarMailEmbedForTag(
   const freezeRefresh = !hasLiveWar && Boolean(subscription?.startTime) && Boolean(effectiveOpponentTag);
 
   const currentSync = getCurrentSyncFromPrevious(sourceSync, warState);
+  const warIdForSync =
+    subscription?.warId !== null &&
+    subscription?.warId !== undefined &&
+    Number.isFinite(subscription.warId)
+      ? String(Math.trunc(subscription.warId))
+      : null;
+  const syncRow = await pointsSyncService
+    .getCurrentSyncForClan({
+      guildId,
+      clanTag: normalizedTag,
+      warId: warIdForSync,
+      warStartTime: subscription?.startTime ?? null,
+    })
+    .catch(() => null);
+  const lifecycle =
+    syncRow === null
+      ? null
+      : {
+          confirmedByClanMail: Boolean(syncRow.confirmedByClanMail),
+          needsValidation: Boolean(syncRow.needsValidation),
+          lastSuccessfulPointsApiFetchAt: syncRow.lastSuccessfulPointsApiFetchAt ?? null,
+          lastKnownSyncNumber:
+            syncRow.lastKnownSyncNumber !== null &&
+            syncRow.lastKnownSyncNumber !== undefined &&
+            Number.isFinite(syncRow.lastKnownSyncNumber)
+              ? Math.trunc(syncRow.lastKnownSyncNumber)
+              : null,
+        };
+  const routineDecision = options?.routine
+    ? pointsFetchPolicy.shouldFetchForRoutine({
+        warState,
+        warStartTime: subscription?.startTime ?? null,
+        warEndTime: subscription?.endTime ?? null,
+        currentSyncNumber: currentSync,
+        lifecycle,
+      })
+    : {
+        shouldFetch: true,
+        reason: options?.fetchReason ?? ("mail_preview" as const),
+        skipReason: null,
+        optimized: true,
+      };
+  const fetchReason =
+    options?.fetchReason ??
+    routineDecision.reason ??
+    (options?.routine ? "mail_refresh" : "mail_preview");
+  if (options?.routine && !routineDecision.shouldFetch) {
+    console.info(
+      `[fwa-mail] points fetch skipped guild=${guildId} clan=#${normalizedTag} reason=${routineDecision.skipReason ?? "policy_skip"}`
+    );
+  }
+
   let primaryBalance: number | null = null;
   let opponentBalance: number | null = null;
+  let primarySnapshot: PointsSnapshot | null = null;
+  let opponentSnapshot: PointsSnapshot | null = null;
+  if (opponentTag && routineDecision.shouldFetch) {
+    primarySnapshot = await getClanPointsCached(settings, cocService, normalizedTag, currentSync, undefined, {
+      fetchReason,
+    }).catch(() => null);
+    opponentSnapshot = await getClanPointsCached(settings, cocService, opponentTag, currentSync, undefined, {
+      fetchReason,
+    }).catch(() => null);
+    primaryBalance = primarySnapshot?.balance ?? null;
+    opponentBalance = opponentSnapshot?.balance ?? null;
+  } else {
+    primaryBalance = subscription?.fwaPoints ?? syncRow?.clanPoints ?? null;
+    opponentBalance = subscription?.opponentFwaPoints ?? syncRow?.opponentPoints ?? null;
+  }
   if (opponentTag) {
-    const primary = await getClanPointsCached(settings, cocService, normalizedTag, currentSync).catch(
-      () => null
-    );
-    const opponent = await getClanPointsCached(settings, cocService, opponentTag, currentSync).catch(
-      () => null
-    );
-    primaryBalance = primary?.balance ?? null;
-    opponentBalance = opponent?.balance ?? null;
     if (matchType === "UNKNOWN") {
       matchType = opponentBalance !== null && !Number.isNaN(opponentBalance) ? "FWA" : "MM";
       inferredMatchType = true;
@@ -1170,6 +1249,26 @@ async function buildWarMailEmbedForTag(
         currentSync
       );
     }
+    const warStartTimeForSync = getWarStartDateForSync(subscription?.startTime ?? null, war);
+    const siteCurrent =
+      primarySnapshot !== null &&
+      isPointsSiteUpdatedForOpponent(primarySnapshot, opponentTag, sourceSync);
+    await persistClanPointsSyncIfCurrent({
+      guildId,
+      clanTag: normalizedTag,
+      warId: subscription?.warId ?? null,
+      warStartTime: warStartTimeForSync,
+      siteCurrent,
+      syncNum: primarySnapshot?.winnerBoxSync ?? null,
+      opponentTag,
+      clanPoints: primarySnapshot?.balance ?? null,
+      opponentPoints: opponentSnapshot?.balance ?? null,
+      outcome: matchType === "FWA" ? outcome : null,
+      isFwa: primarySnapshot?.activeFwa ?? false,
+      fetchedAtMs: primarySnapshot?.fetchedAtMs ?? null,
+      fetchReason,
+      matchType,
+    });
   }
 
   const history = new WarEventHistoryService(cocService);
@@ -1795,7 +1894,10 @@ async function refreshWarMailPost(
   const payload = fwaMailPostedPayloads.get(key);
   if (!payload) return "missing";
   const cocService = new CoCService();
-  const rendered = await buildWarMailEmbedForTag(cocService, payload.guildId, payload.tag);
+  const rendered = await buildWarMailEmbedForTag(cocService, payload.guildId, payload.tag, {
+    routine: true,
+    fetchReason: "mail_refresh",
+  });
   const channel = await client.channels.fetch(payload.channelId).catch(() => null);
   if (!channel || !channel.isTextBased()) return "missing";
   const message = await (channel as any).messages.fetch(payload.messageId).catch(() => null);
@@ -1856,6 +1958,8 @@ async function refreshWarMailPostByResolvedTarget(params: {
   key?: string;
   expectedWarId?: string | null;
   expectedWarStartMs?: number | null;
+  fetchReason?: PointsApiFetchReason;
+  routine?: boolean;
 }): Promise<"refreshed" | "frozen" | "missing"> {
   const normalizedTag = normalizeTag(params.tag);
   if (!normalizedTag) return "missing";
@@ -1864,7 +1968,10 @@ async function refreshWarMailPostByResolvedTarget(params: {
   const message = await (channel as any).messages.fetch(params.messageId).catch(() => null);
   if (!message) return "missing";
   const cocService = new CoCService();
-  const rendered = await buildWarMailEmbedForTag(cocService, params.guildId, normalizedTag);
+  const rendered = await buildWarMailEmbedForTag(cocService, params.guildId, normalizedTag, {
+    fetchReason: params.fetchReason,
+    routine: params.routine,
+  });
   if (
     hasWarIdentityShifted({
       renderedWarId: rendered.warId,
@@ -3081,7 +3188,9 @@ async function showWarMailPreview(
   cocService: CoCService,
   sourceMatchPayloadKey?: string
 ): Promise<void> {
-  const rendered = await buildWarMailEmbedForTag(cocService, guildId, tag);
+  const rendered = await buildWarMailEmbedForTag(cocService, guildId, tag, {
+    fetchReason: "pre_fwa_validation",
+  });
   const previewKey = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
   const sourceShowMode =
     interaction.isButton() && interaction.message.embeds.length > 0 ? "embed" : "copy";
@@ -3298,7 +3407,9 @@ async function handleFwaMailConfirmAction(
     })
     .catch(() => undefined);
   const cocService = new CoCService();
-  const rendered = await buildWarMailEmbedForTag(cocService, payload.guildId, payload.tag);
+  const rendered = await buildWarMailEmbedForTag(cocService, payload.guildId, payload.tag, {
+    fetchReason: "pre_fwa_validation",
+  });
   if (!rendered.mailChannelId || rendered.unavailableReasons.length > 0) {
     await interaction.editReply({
       content: `Cannot send mail: ${rendered.unavailableReasons.join(" ") || "mail channel unavailable."}`,
@@ -3436,6 +3547,32 @@ async function handleFwaMailConfirmAction(
     matchType: rendered.matchType,
     expectedOutcome: rendered.expectedOutcome,
   });
+  const checkpointWarStartTime =
+    rendered.warStartMs !== null &&
+    rendered.warStartMs !== undefined &&
+    Number.isFinite(rendered.warStartMs)
+      ? new Date(Math.trunc(rendered.warStartMs))
+      : null;
+  const checkpointSyncRow = await pointsSyncService
+    .getCurrentSyncForClan({
+      guildId: payload.guildId,
+      clanTag: payload.tag,
+      warId: renderedWarIdText,
+      warStartTime: checkpointWarStartTime,
+    })
+    .catch(() => null);
+  await pointsSyncService
+    .markConfirmedByClanMail({
+      guildId: payload.guildId,
+      clanTag: payload.tag,
+      warId: renderedWarIdText,
+      warStartTime: checkpointWarStartTime,
+      matchType: rendered.matchType,
+      outcome: rendered.expectedOutcome,
+      syncNum: checkpointSyncRow?.syncNum ?? null,
+      points: checkpointSyncRow?.clanPoints ?? null,
+    })
+    .catch(() => undefined);
   await new WarEventLogService(interaction.client, cocService)
     .refreshCurrentNotifyPost(payload.guildId, payload.tag)
     .catch((err) => {
@@ -3599,6 +3736,8 @@ export async function handleFwaMailRefreshButton(interaction: ButtonInteraction)
     channelId: fallbackTarget.channelId,
     messageId: fallbackTarget.messageId,
     expectedWarId: fallbackTarget.warId ?? null,
+    fetchReason: "mail_refresh",
+    routine: true,
   }).catch(() => "missing" as const);
   await interaction.reply({
     ephemeral: true,
@@ -3671,6 +3810,8 @@ export async function refreshAllTrackedWarMailPosts(client: Client): Promise<voi
       key: existingInMemory?.key,
       expectedWarId: targetWarId,
       expectedWarStartMs: targetWarStartMs,
+      fetchReason: "mail_refresh",
+      routine: true,
     }).catch(() => "missing" as const);
     if (refreshed === "missing") continue;
     const channelId = targetChannelId;
@@ -3793,6 +3934,8 @@ export async function runForceMailUpdateCommand(
     key: existingInMemory?.key,
     expectedWarId: currentWarIdText,
     expectedWarStartMs: currentWarStartMs,
+    fetchReason: "manual_refresh",
+    routine: false,
   }).catch(() => "missing" as const);
   if (refreshed === "missing") {
     await interaction.editReply(
@@ -4115,10 +4258,27 @@ function buildSyncValidationState(input: {
 }
 
 function buildStoredSyncSummary(input: {
-  syncRow: { syncNum: number; syncFetchedAt: Date } | null;
+  syncRow: {
+    syncNum: number;
+    syncFetchedAt: Date;
+    lastSuccessfulPointsApiFetchAt: Date | null;
+    lastFetchReason: string | null;
+    confirmedByClanMail: boolean;
+    needsValidation: boolean;
+    lastKnownPoints: number | null;
+    lastKnownMatchType: string | null;
+    lastKnownOutcome: string | null;
+    lastKnownSyncNumber: number | null;
+  } | null;
   fallbackSyncNum: number | null;
   warState: WarStateForSync;
-}): { syncLine: string; updatedLine: string | null } {
+}): {
+  syncLine: string;
+  updatedLine: string | null;
+  stateLine: string;
+  reasonLine: string | null;
+  checkpointLine: string | null;
+} {
   const syncNumber =
     input.syncRow?.syncNum ??
     (input.fallbackSyncNum !== null && Number.isFinite(input.fallbackSyncNum)
@@ -4128,12 +4288,48 @@ function buildStoredSyncSummary(input: {
     syncNumber !== null && Number.isFinite(syncNumber)
       ? `#${Math.trunc(syncNumber)} (${Math.trunc(syncNumber) % 2 === 0 ? "High Sync" : "Low Sync"})`
       : "unknown";
-  const syncFetchedAtMs = input.syncRow?.syncFetchedAt?.getTime?.() ?? NaN;
+  const syncFetchedAtMs =
+    input.syncRow?.lastSuccessfulPointsApiFetchAt?.getTime?.() ??
+    input.syncRow?.syncFetchedAt?.getTime?.() ??
+    NaN;
   const updatedLine =
     Number.isFinite(syncFetchedAtMs) && syncFetchedAtMs > 0
       ? `<t:${Math.floor(syncFetchedAtMs / 1000)}:R>`
       : null;
-  return { syncLine, updatedLine };
+  const stateLine = !input.syncRow
+    ? "State: Needs validation (no sync checkpoint)"
+    : input.syncRow.needsValidation
+      ? "State: Needs validation"
+      : input.syncRow.confirmedByClanMail
+        ? "State: Confirmed by clan mail (routine polling paused)"
+        : "State: Reconciled (pre-confirmation)";
+  const reasonLine = input.syncRow?.lastFetchReason
+    ? `Last fetch reason: \`${input.syncRow.lastFetchReason}\``
+    : null;
+  const checkpointParts: string[] = [];
+  if (
+    input.syncRow?.lastKnownPoints !== null &&
+    input.syncRow?.lastKnownPoints !== undefined &&
+    Number.isFinite(input.syncRow.lastKnownPoints)
+  ) {
+    checkpointParts.push(`points ${Math.trunc(input.syncRow.lastKnownPoints)}`);
+  }
+  if (input.syncRow?.lastKnownMatchType) {
+    checkpointParts.push(`match ${input.syncRow.lastKnownMatchType}`);
+  }
+  if (input.syncRow?.lastKnownOutcome) {
+    checkpointParts.push(`outcome ${input.syncRow.lastKnownOutcome}`);
+  }
+  if (
+    input.syncRow?.lastKnownSyncNumber !== null &&
+    input.syncRow?.lastKnownSyncNumber !== undefined &&
+    Number.isFinite(input.syncRow.lastKnownSyncNumber)
+  ) {
+    checkpointParts.push(`sync #${Math.trunc(input.syncRow.lastKnownSyncNumber)}`);
+  }
+  const checkpointLine =
+    checkpointParts.length > 0 ? `Checkpoint: ${checkpointParts.join(" | ")}` : null;
+  return { syncLine, updatedLine, stateLine, reasonLine, checkpointLine };
 }
 
 async function persistClanPointsSyncIfCurrent(input: {
@@ -4148,6 +4344,9 @@ async function persistClanPointsSyncIfCurrent(input: {
   opponentPoints: number | null;
   outcome: string | null;
   isFwa: boolean | null;
+  fetchedAtMs?: number | null;
+  fetchReason?: PointsApiFetchReason;
+  matchType?: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN" | null;
 }): Promise<void> {
   if (!input.guildId || !input.warStartTime || !input.siteCurrent) return;
   if (
@@ -4176,6 +4375,15 @@ async function persistClanPointsSyncIfCurrent(input: {
     opponentPoints: Math.trunc(input.opponentPoints),
     outcome: input.outcome ?? null,
     isFwa: input.isFwa ?? false,
+    fetchedAt:
+      input.fetchedAtMs !== null &&
+      input.fetchedAtMs !== undefined &&
+      Number.isFinite(input.fetchedAtMs)
+        ? new Date(Math.trunc(input.fetchedAtMs))
+        : undefined,
+    fetchReason: input.fetchReason ?? "match_render",
+    matchType: input.matchType ?? null,
+    needsValidation: false,
   });
 }
 
@@ -4462,7 +4670,10 @@ function getCurrentWarCached(
   return pending;
 }
 
-async function scrapeClanPoints(tag: string): Promise<PointsSnapshot> {
+async function scrapeClanPoints(
+  tag: string,
+  reason: PointsApiFetchReason = "match_render"
+): Promise<PointsSnapshot> {
   const normalizedTag = normalizeTag(tag);
   const url = buildPointsUrl(normalizedTag);
   const response = await axios.get<string>(url, {
@@ -4476,19 +4687,26 @@ async function scrapeClanPoints(tag: string): Promise<PointsSnapshot> {
       namespace: "points",
       operation: "clan_points_fetch",
       source: "web",
-      detail: `tag=${normalizedTag} status=403 blocked=true`,
+      detail: `tag=${normalizedTag} status=403 blocked=true reason=${reason}`,
     });
+    console.info(`[points-fetch] source=web tag=${normalizedTag} reason=${reason} status=403`);
     throw { status: 403, message: "points site returned 403" };
   }
   if (response.status >= 400) {
+    console.info(
+      `[points-fetch] source=web tag=${normalizedTag} reason=${reason} status=${response.status}`
+    );
     throw { status: response.status, message: `points site returned ${response.status}` };
   }
   recordFetchEvent({
     namespace: "points",
     operation: "clan_points_fetch",
     source: "web",
-    detail: `tag=${normalizedTag} status=${response.status}`,
+    detail: `tag=${normalizedTag} status=${response.status} reason=${reason}`,
   });
+  console.info(
+    `[points-fetch] source=web tag=${normalizedTag} reason=${reason} status=${response.status}`
+  );
 
   const html = String(response.data ?? "");
   const balance = extractPointBalance(html);
@@ -4517,6 +4735,7 @@ async function scrapeClanPoints(tag: string): Promise<PointsSnapshot> {
     winnerBoxSync === null ? null : winnerBoxHasTag ? winnerBoxSync : winnerBoxSync + 1;
   const syncMode = getSyncMode(effectiveSync);
 
+  const fetchedAtMs = Date.now();
   return {
     version: POINTS_CACHE_VERSION,
     tag: normalizedTag,
@@ -4536,11 +4755,16 @@ async function scrapeClanPoints(tag: string): Promise<PointsSnapshot> {
     headerPrimaryBalance: matchupBalances.primaryBalance,
     headerOpponentBalance: matchupBalances.opponentBalance,
     warEndMs: null,
-    lastWarCheckAtMs: Date.now(),
-    fetchedAtMs: Date.now(),
+    lastWarCheckAtMs: fetchedAtMs,
+    fetchedAtMs,
     refreshedForWarEndMs: null,
   };
 }
+
+type ClanPointsFetchOptions = {
+  requiredOpponentTag?: string | null;
+  fetchReason?: PointsApiFetchReason;
+};
 
 async function getClanPointsCached(
   _settings: SettingsService,
@@ -4548,11 +4772,10 @@ async function getClanPointsCached(
   tag: string,
   sourceSync: number | null,
   _warLookupCache?: WarLookupCache,
-  _options?: {
-    requiredOpponentTag?: string | null;
-  }
+  options?: ClanPointsFetchOptions
 ): Promise<PointsSnapshot> {
   const normalizedTag = normalizeTag(tag);
+  const reason = options?.fetchReason ?? "match_render";
   const now = Date.now();
   const cached = pointsSnapshotCache.get(normalizedTag);
   if (cached && cached.expiresAtMs > now) {
@@ -4560,7 +4783,7 @@ async function getClanPointsCached(
       namespace: "points",
       operation: "clan_points_snapshot",
       source: "cache_hit",
-      detail: `tag=${normalizedTag}`,
+      detail: `tag=${normalizedTag} reason=${reason}`,
     });
     return applySourceSync(cached.snapshot, sourceSync);
   }
@@ -4571,7 +4794,7 @@ async function getClanPointsCached(
       namespace: "points",
       operation: "clan_points_snapshot",
       source: "fallback_cache",
-      detail: `tag=${normalizedTag}`,
+      detail: `tag=${normalizedTag} reason=${reason}`,
     });
     const snapshot = await existingPending;
     return applySourceSync(snapshot, sourceSync);
@@ -4581,9 +4804,9 @@ async function getClanPointsCached(
     namespace: "points",
     operation: "clan_points_snapshot",
     source: "cache_miss",
-    detail: `tag=${normalizedTag}`,
+    detail: `tag=${normalizedTag} reason=${reason}`,
   });
-  const pending = scrapeClanPoints(normalizedTag)
+  const pending = scrapeClanPoints(normalizedTag, reason)
     .then((snapshot) => {
       pointsSnapshotCache.set(normalizedTag, {
         snapshot,
@@ -5239,6 +5462,9 @@ async function buildTrackedMatchOverview(
       opponentPoints: opponentPoints?.balance ?? null,
       outcome: derivedOutcome,
       isFwa: primaryPoints?.activeFwa ?? false,
+      fetchedAtMs: primaryPoints?.fetchedAtMs ?? null,
+      fetchReason: "match_render",
+      matchType,
     });
     const syncRow = await pointsSyncService.getCurrentSyncForClan({
       guildId: guildId ?? "",
@@ -5368,6 +5594,13 @@ async function buildTrackedMatchOverview(
           value: [
             pointsLine,
             pointsSyncStatus,
+            storedSyncSummary.stateLine,
+            storedSyncSummary.reasonLine,
+            storedSyncSummary.checkpointLine,
+            `Sync #: **${storedSyncSummary.syncLine}**`,
+            storedSyncSummary.updatedLine
+              ? `Last points fetch: **${storedSyncSummary.updatedLine}**`
+              : "",
             `Match Type: **FWA${warnSuffix}**`,
             `Outcome: **${effectiveOutcome ?? "UNKNOWN"}**`,
             `War State: **${clanWarStateLine}**`,
@@ -5386,6 +5619,11 @@ async function buildTrackedMatchOverview(
           `\`${opponentTag}\``,
           `${pointsLine}`,
           pointsSyncStatus,
+          storedSyncSummary.stateLine,
+          storedSyncSummary.reasonLine ?? "",
+          storedSyncSummary.checkpointLine ?? "",
+          `Sync #: ${storedSyncSummary.syncLine}`,
+          storedSyncSummary.updatedLine ? `Last points fetch: ${storedSyncSummary.updatedLine}` : "",
           `Match Type: FWA${inferredMatchType ? " :warning:" : ""}`,
           inferredMatchType ? `Verify: ${buildCcVerifyUrl(opponentTag)}` : "",
           `Outcome: ${effectiveOutcome ?? "UNKNOWN"}`,
@@ -5410,6 +5648,13 @@ async function buildTrackedMatchOverview(
           name: matchHeader,
           value: [
             pointsSyncStatus,
+            storedSyncSummary.stateLine,
+            storedSyncSummary.reasonLine,
+            storedSyncSummary.checkpointLine,
+            `Sync #: **${storedSyncSummary.syncLine}**`,
+            storedSyncSummary.updatedLine
+              ? `Last points fetch: **${storedSyncSummary.updatedLine}**`
+              : "",
             `Match Type: **${matchType}${warnSuffix}**`,
             `War State: **${clanWarStateLine}**`,
             `Time Remaining: **${clanTimeRemainingLine}**`,
@@ -5426,6 +5671,11 @@ async function buildTrackedMatchOverview(
           `### Opponent Tag`,
           `\`${opponentTag}\``,
           pointsSyncStatus,
+          storedSyncSummary.stateLine,
+          storedSyncSummary.reasonLine ?? "",
+          storedSyncSummary.checkpointLine ?? "",
+          `Sync #: ${storedSyncSummary.syncLine}`,
+          storedSyncSummary.updatedLine ? `Last points fetch: ${storedSyncSummary.updatedLine}` : "",
           `Match Type: ${matchType}${inferredMatchType ? " :warning:" : ""}`,
           inferredMatchType ? `Verify: ${buildCcVerifyUrl(opponentTag)}` : "",
           `War State: ${clanWarStateLine}`,
@@ -5444,6 +5694,9 @@ async function buildTrackedMatchOverview(
         : `This is a ${matchType} match.`;
     const singleDescription = [
       pointsSyncStatus,
+      storedSyncSummary.stateLine,
+      storedSyncSummary.reasonLine ?? "",
+      storedSyncSummary.checkpointLine ?? "",
       inferredMatchType ? MATCHTYPE_WARNING_LEGEND : "",
       inferredMatchType ? "\u200B" : "",
       mailBlockedReasonLine ?? "",
@@ -5455,7 +5708,9 @@ async function buildTrackedMatchOverview(
       `War state: **${formatWarStateLabel(warState)}**`,
       `Time remaining: **${getWarStateRemaining(war, warState)}**`,
       `Sync #: **${storedSyncSummary.syncLine}**`,
-      storedSyncSummary.updatedLine ? `Updated: **${storedSyncSummary.updatedLine}**` : "",
+      storedSyncSummary.updatedLine
+        ? `Last points fetch: **${storedSyncSummary.updatedLine}**`
+        : "",
       mismatchLines,
     ]
       .filter(Boolean)
@@ -5518,7 +5773,14 @@ async function buildTrackedMatchOverview(
           })}`,
           inferredMatchType ? MATCHTYPE_WARNING_LEGEND : "",
           pointsSyncStatus,
+          storedSyncSummary.stateLine,
+          storedSyncSummary.reasonLine ?? "",
+          storedSyncSummary.checkpointLine ?? "",
           `Sync: ${clanSyncLine}`,
+          `Sync #: ${storedSyncSummary.syncLine}`,
+          storedSyncSummary.updatedLine
+            ? `Last points fetch: ${storedSyncSummary.updatedLine}`
+            : "",
           `War State: ${clanWarStateLine}`,
           `Time Remaining: ${clanTimeRemainingLine}`,
           `## Opponent Name`,
@@ -5622,7 +5884,7 @@ export async function runForceSyncDataCommand(
 
   const war = await getCurrentWarCached(cocService, tag, warLookupCache).catch(() => null);
   const opponentTag = normalizeTag(String(war?.opponent?.tag ?? ""));
-  const fresh = await scrapeClanPoints(tag);
+  const fresh = await scrapeClanPoints(tag, "manual_refresh");
 
   const siteSync = fresh.winnerBoxSync;
   const siteSyncNum =
@@ -5638,7 +5900,7 @@ export async function runForceSyncDataCommand(
     if (fromPrimary !== null && Number.isFinite(fromPrimary)) {
       opponentBalance = fromPrimary;
     } else if (opponentTag) {
-      opponentSnapshot = await scrapeClanPoints(opponentTag).catch(() => null);
+      opponentSnapshot = await scrapeClanPoints(opponentTag, "manual_refresh").catch(() => null);
       opponentBalance =
         opponentSnapshot?.balance !== null &&
         opponentSnapshot?.balance !== undefined &&
@@ -5687,6 +5949,9 @@ export async function runForceSyncDataCommand(
       opponentPoints: opponentBalance,
       outcome: deriveProjectedOutcome(tag, opponentTag, fresh.balance, opponentBalance, siteSyncNum),
       isFwa: fresh.activeFwa ?? false,
+      fetchedAt: new Date(fresh.fetchedAtMs),
+      fetchReason: "manual_refresh",
+      needsValidation: false,
     });
     clanPointsSyncUpdated = true;
   }
@@ -5814,6 +6079,28 @@ export async function runForceSyncMailCommand(
     messageUrl: buildDiscordMessageUrl(interaction.guildId, interaction.channelId, messageID),
     configHash: null,
   });
+  if (parsedType.messageType === "mail") {
+    const checkpointSyncRow = await pointsSyncService
+      .getCurrentSyncForClan({
+        guildId: interaction.guildId,
+        clanTag: tag,
+        warId: warIdText,
+        warStartTime: existing?.startTime ?? null,
+      })
+      .catch(() => null);
+    await pointsSyncService
+      .markConfirmedByClanMail({
+        guildId: interaction.guildId,
+        clanTag: tag,
+        warId: warIdText,
+        warStartTime: existing?.startTime ?? null,
+        matchType: next.lastMatchType ?? null,
+        outcome: next.lastExpectedOutcome ?? null,
+        syncNum: checkpointSyncRow?.syncNum ?? null,
+        points: checkpointSyncRow?.clanPoints ?? null,
+      })
+      .catch(() => undefined);
+  }
 
   const messageTypeLabel =
     parsedType.messageType === "mail"
@@ -6739,7 +7026,8 @@ export const Fwa: Command = {
             cocService,
             trackedTag,
             currentSync,
-            warLookupCache
+            warLookupCache,
+            { fetchReason: "points_command" }
           );
           if (result.balance === null || Number.isNaN(result.balance)) {
             failedCount += 1;
@@ -7183,6 +7471,9 @@ export const Fwa: Command = {
           opponentPoints: opponent.balance,
           outcome: effectiveOutcome,
           isFwa: primary.activeFwa ?? false,
+          fetchedAtMs: primary.fetchedAtMs,
+          fetchReason: "match_render",
+          matchType,
         });
         const syncRow = await pointsSyncService.getCurrentSyncForClan({
           guildId: interaction.guildId ?? "",
@@ -7312,10 +7603,16 @@ export const Fwa: Command = {
               verifyLink ? ` ${verifyLink}` : ""
             }${
               outcomeLine ? `\nExpected outcome: **${outcomeLine}**` : ""
-            }\n${siteStatusLine}${
+            }\n${siteStatusLine}\n${storedSyncSummary.stateLine}${
+              storedSyncSummary.reasonLine ? `\n${storedSyncSummary.reasonLine}` : ""
+            }${
+              storedSyncSummary.checkpointLine ? `\n${storedSyncSummary.checkpointLine}` : ""
+            }${
               mailBlockedReasonLine ? `\n${mailBlockedReasonLine}` : ""
             }\nWar state: **${formatWarStateLabel(warState)}**\nTime remaining: **${warRemaining}**\nSync #: **${storedSyncSummary.syncLine}**${
-              storedSyncSummary.updatedLine ? `\nUpdated: **${storedSyncSummary.updatedLine}**` : ""
+              storedSyncSummary.updatedLine
+                ? `\nLast points fetch: **${storedSyncSummary.updatedLine}**`
+                : ""
             }${
               mismatchLines ? `\n${mismatchLines}` : ""
             }`
@@ -7344,11 +7641,16 @@ export const Fwa: Command = {
             `# ${singleHeader}`,
             inferredMatchType ? MATCHTYPE_WARNING_LEGEND : "",
             siteStatusLine,
+            storedSyncSummary.stateLine,
+            storedSyncSummary.reasonLine ?? "",
+            storedSyncSummary.checkpointLine ?? "",
             mailBlockedReasonLine
               ? `${mailBlockedReasonLine.replace(/^:warning: /, "Warning: ").replace(/^:envelope_with_arrow: /, "Mail: ")}`
               : "",
             `Sync #: ${storedSyncSummary.syncLine}`,
-            storedSyncSummary.updatedLine ? `Updated: ${storedSyncSummary.updatedLine}` : "",
+            storedSyncSummary.updatedLine
+              ? `Last points fetch: ${storedSyncSummary.updatedLine}`
+              : "",
             `War State: ${formatWarStateLabel(warState)}`,
             `Time Remaining: ${warRemaining}`,
             `## Opponent Name`,
@@ -7455,7 +7757,8 @@ export const Fwa: Command = {
         cocService,
         tag,
         currentSync,
-        warLookupCache
+        warLookupCache,
+        { fetchReason: "points_command" }
       );
       const balance = result.balance;
       if (balance === null || Number.isNaN(balance)) {

@@ -28,6 +28,17 @@ Behavior:
 ## Optional War Event Poll Setting
 - `WAR_EVENT_LOG_POLL_INTERVAL_MINUTES` - interval for war-state event listener polling (default: `5` minutes).
 
+## Optional Optimized Points Polling
+- `FWA_OPTIMIZED_POINTS_POLLING` - enable lifecycle-based routine fetch gating for points checks (default: `true`).
+- `FWA_POST_WAR_CHECK_WINDOW_MINUTES` - how long post-war delayed-update checks may run after war end (default: `240`).
+- `FWA_POST_WAR_CHECK_INTERVAL_MINUTES` - minimum interval between post-war delayed-update checks (default: `30`).
+- `FWA_ADMIN_ADJUSTMENT_CHECK_INTERVAL_MINUTES` - routine recheck interval for possible manual admin adjustments (default: `360`).
+- `FWA_PRE_FWA_VALIDATION_WINDOW_MINUTES` - preparation-window size for pre-FWA validation checks (default: `90`).
+- `FWA_PRE_FWA_VALIDATION_INTERVAL_MINUTES` - minimum interval between pre-FWA validation checks while in the window (default: `20`).
+
+Notes:
+- The FWA-vs-FWA auto-adjust timing is still treated as unverified; the default policy keeps conservative periodic validation checks.
+
 ## Google Sheets (OAuth)
 This project is currently set up to use OAuth refresh token auth.
 
