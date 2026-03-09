@@ -4696,51 +4696,6 @@ export async function getPointsSnapshotForClan(
   return getClanPointsCached(settings, cocService, tag, sourceSync);
 }
 
-function buildMatchupMessage(
-  primary: PointsSnapshot,
-  opponent: PointsSnapshot,
-  nameOverrides?: { primaryName?: string | null; opponentName?: string | null }
-): string {
-  const primaryTag = normalizeTag(primary.tag);
-  const opponentTag = normalizeTag(opponent.tag);
-  const primaryName =
-    sanitizeClanName(nameOverrides?.primaryName) ??
-    sanitizeClanName(primary.clanName) ??
-    primaryTag;
-  const opponentName =
-    sanitizeClanName(nameOverrides?.opponentName) ??
-    sanitizeClanName(opponent.clanName) ??
-    opponentTag;
-  const primaryBalance = primary.balance ?? 0;
-  const opponentBalance = opponent.balance ?? 0;
-
-  let outcome = "";
-  if (primaryBalance > opponentBalance) {
-    outcome = `**${primaryName}** should win by points (${primaryBalance} > ${opponentBalance})`;
-  } else if (primaryBalance < opponentBalance) {
-    outcome = `**${primaryName}** should lose by points (${primaryBalance} < ${opponentBalance})`;
-  } else {
-    const syncMode = primary.syncMode ?? opponent.syncMode;
-    if (!syncMode) {
-      outcome = `Points are tied (${primaryBalance} = ${opponentBalance}) but sync number was not found, so tiebreak cannot be determined.`;
-    } else {
-      const tiebreakCmp = compareTagsForTiebreak(primaryTag, opponentTag);
-      if (tiebreakCmp === 0) {
-        outcome = `Points are tied (${primaryBalance} = ${opponentBalance}) and tags are identical for tiebreak ordering.`;
-      } else {
-        const primaryWinsTiebreak = syncMode === "low" ? tiebreakCmp < 0 : tiebreakCmp > 0;
-        outcome = primaryWinsTiebreak
-          ? `**${primaryName}** should win by tiebreak (${primaryBalance} = ${opponentBalance}, ${syncMode} sync)`
-          : `**${primaryName}** should lose by tiebreak (${primaryBalance} = ${opponentBalance}, ${syncMode} sync)`;
-      }
-    }
-  }
-
-  return limitDiscordContent(
-    `${primaryName} (${primaryTag}) vs. ${opponentName} (${opponentTag}):\n${outcome}`
-  );
-}
-
 function deriveProjectedOutcome(
   clanTag: string,
   opponentTag: string,

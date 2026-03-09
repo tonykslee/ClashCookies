@@ -306,8 +306,8 @@ export class PointsFetchPolicyService {
 
     const lockCandidate =
       activeWar &&
-      Boolean(lifecycle?.confirmedByClanMail) &&
-      !Boolean(lifecycle?.needsValidation);
+      lifecycle?.confirmedByClanMail &&
+      !lifecycle?.needsValidation;
     if (lockCandidate && identityChanged) {
       const decision = this.buildPollerDecision({
         allowed: true,
