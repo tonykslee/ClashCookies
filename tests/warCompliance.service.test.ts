@@ -86,6 +86,169 @@ describe("WarComplianceService", () => {
     expect(report).toBeNull();
     expect(findFirstSpy).not.toHaveBeenCalled();
   });
+
+  it("defaults to current-war scope and matches explicit war-id:current behavior", async () => {
+    const warStartTime = new Date("2026-02-01T00:00:00.000Z");
+    const warEndTime = new Date("2026-02-02T00:00:00.000Z");
+    const currentRow = {
+      warId: 1001,
+      startTime: warStartTime,
+      endTime: warEndTime,
+      matchType: "FWA",
+      outcome: "WIN",
+    };
+    const participants = [
+      { playerName: "Alice", playerTag: "#A", attacksUsed: 2, playerPosition: 1, warStartTime },
+      { playerName: "Bob", playerTag: "#B", attacksUsed: 0, playerPosition: 2, warStartTime },
+    ];
+    const attacks = [
+      {
+        playerTag: "#A",
+        playerName: "Alice",
+        playerPosition: 1,
+        defenderPosition: 2,
+        stars: 3,
+        trueStars: 3,
+        attackSeenAt: new Date("2026-02-01T02:00:00.000Z"),
+        warEndTime,
+        attackOrder: 1,
+        warStartTime,
+      },
+    ];
+
+    vi.spyOn(prisma.currentWar, "findFirst").mockResolvedValue(currentRow as any);
+    vi.spyOn(prisma.warAttacks, "findMany").mockImplementation(async (args: any) => {
+      if (args?.where?.attackOrder === 0) return participants as any;
+      if (typeof args?.where?.attackOrder === "object") return attacks as any;
+      return [] as any;
+    });
+    vi.spyOn(prisma.trackedClan, "findFirst").mockResolvedValue({
+      loseStyle: "TRADITIONAL",
+    } as any);
+
+    const service = new WarComplianceService();
+    const defaultScope = await service.evaluateComplianceForCommand({
+      guildId: "guild-1",
+      clanTag: "#TEST",
+    });
+    const explicitCurrent = await service.evaluateComplianceForCommand({
+      guildId: "guild-1",
+      clanTag: "#TEST",
+      scope: "current",
+    });
+
+    expect(defaultScope.status).toBe("ok");
+    expect(explicitCurrent.status).toBe("ok");
+    expect(defaultScope.scope).toBe("current");
+    expect(explicitCurrent.scope).toBe("current");
+    expect(defaultScope.warId).toBe(explicitCurrent.warId);
+    expect(defaultScope.report?.missedBoth).toEqual(explicitCurrent.report?.missedBoth);
+    expect(defaultScope.report?.notFollowingPlan).toEqual(explicitCurrent.report?.notFollowingPlan);
+  });
+
+  it("evaluates numeric war-id from WarLookup + ClanWarParticipation without WarAttacks", async () => {
+    const warStartTime = new Date("2026-02-01T00:00:00.000Z");
+    const warEndTime = new Date("2026-02-02T00:00:00.000Z");
+    const warAttacksSpy = vi.spyOn(prisma.warAttacks, "findMany");
+    vi.spyOn(prisma.clanWarHistory, "findFirst").mockResolvedValue({
+      warId: 5555,
+      warStartTime,
+      warEndTime,
+      matchType: "FWA",
+      expectedOutcome: "WIN",
+    } as any);
+    vi.spyOn(prisma.warLookup, "findUnique").mockResolvedValue({
+      payload: {
+        warMeta: {
+          endTime: warEndTime.toISOString(),
+        },
+        clan: {
+          members: [
+            { tag: "#A", name: "Alice", mapPosition: 1 },
+            { tag: "#B", name: "Bob", mapPosition: 2 },
+          ],
+        },
+        opponent: {
+          members: [{ tag: "#X", name: "Opp1", mapPosition: 1 }, { tag: "#Y", name: "Opp2", mapPosition: 2 }],
+        },
+        attacks: [
+          {
+            attackerTag: "#A",
+            attackerName: "Alice",
+            defenderTag: "#Y",
+            defenderName: "Opp2",
+            stars: 3,
+            order: 1,
+            attackSeenAt: "2026-02-01T02:00:00.000Z",
+          },
+        ],
+      },
+      endTime: warEndTime,
+    } as any);
+    vi.spyOn(prisma.clanWarParticipation, "findMany").mockResolvedValue([
+      { playerTag: "#A", playerName: "Alice", attacksUsed: 1, firstAttackAt: new Date("2026-02-01T02:00:00.000Z") },
+      { playerTag: "#B", playerName: "Bob", attacksUsed: 0, firstAttackAt: null },
+    ] as any);
+    vi.spyOn(prisma.trackedClan, "findFirst").mockResolvedValue({
+      loseStyle: "TRADITIONAL",
+    } as any);
+
+    const service = new WarComplianceService();
+    const result = await service.evaluateComplianceForCommand({
+      guildId: "guild-1",
+      clanTag: "#TEST",
+      scope: "war_id",
+      warId: 5555,
+    });
+
+    expect(result.status).toBe("ok");
+    expect(result.source).toBe("war_lookup");
+    expect(result.warResolutionSource).toBe("clan_war_history");
+    expect(result.report?.notFollowingPlan.length).toBeGreaterThan(0);
+    expect(warAttacksSpy).not.toHaveBeenCalled();
+  });
+
+  it("returns no_active_war when no current war is available", async () => {
+    vi.spyOn(prisma.currentWar, "findFirst").mockResolvedValue(null);
+    const service = new WarComplianceService();
+
+    const result = await service.evaluateComplianceForCommand({
+      guildId: "guild-1",
+      clanTag: "#TEST",
+    });
+
+    expect(result.status).toBe("no_active_war");
+  });
+
+  it("returns insufficient_data when historical participation implies attacks but no attack rows exist", async () => {
+    const warStartTime = new Date("2026-02-01T00:00:00.000Z");
+    const warEndTime = new Date("2026-02-02T00:00:00.000Z");
+    vi.spyOn(prisma.clanWarHistory, "findFirst").mockResolvedValue({
+      warId: 7777,
+      warStartTime,
+      warEndTime,
+      matchType: "FWA",
+      expectedOutcome: "LOSE",
+    } as any);
+    vi.spyOn(prisma.warLookup, "findUnique").mockResolvedValue({
+      payload: { attacks: [] },
+      endTime: warEndTime,
+    } as any);
+    vi.spyOn(prisma.clanWarParticipation, "findMany").mockResolvedValue([
+      { playerTag: "#A", playerName: "Alice", attacksUsed: 1, firstAttackAt: new Date("2026-02-01T03:00:00.000Z") },
+    ] as any);
+
+    const service = new WarComplianceService();
+    const result = await service.evaluateComplianceForCommand({
+      guildId: "guild-1",
+      clanTag: "#TEST",
+      scope: "war_id",
+      warId: 7777,
+    });
+
+    expect(result.status).toBe("insufficient_data");
+    expect(result.source).toBe("war_lookup");
+  });
 });
 
 describe("WarEventHistoryService.getWarComplianceSnapshot", () => {

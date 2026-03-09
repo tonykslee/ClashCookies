@@ -267,11 +267,35 @@ function normalizeTag(input: string): string {
   return input.trim().toUpperCase().replace(/^#/, "");
 }
 
-/** Purpose: normalize persisted expected-outcome text to command-safe WIN/LOSE/null. */
-function normalizeExpectedOutcome(input: string | null | undefined): "WIN" | "LOSE" | null {
-  const value = String(input ?? "").trim().toUpperCase();
-  if (value === "WIN" || value === "LOSE") return value;
-  return null;
+type ComplianceWarTarget =
+  | { scope: "current"; warId: null; requested: "default" | "current" }
+  | { scope: "war_id"; warId: number; requested: "war_id" };
+
+/** Purpose: parse `/fwa compliance war-id` text into deterministic scope selection. */
+function parseComplianceWarTarget(input: string | null | undefined):
+  | { ok: true; value: ComplianceWarTarget }
+  | { ok: false; error: string } {
+  const raw = String(input ?? "").trim();
+  if (!raw) {
+    return { ok: true, value: { scope: "current", warId: null, requested: "default" } };
+  }
+  const lowered = raw.toLowerCase();
+  if (lowered === "current") {
+    return { ok: true, value: { scope: "current", warId: null, requested: "current" } };
+  }
+  if (/^\d+$/.test(raw)) {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return {
+        ok: true,
+        value: { scope: "war_id", warId: Math.trunc(parsed), requested: "war_id" },
+      };
+    }
+  }
+  return {
+    ok: false,
+    error: "Invalid `war-id`. Use `current` or a numeric war ID.",
+  };
 }
 
 /** Purpose: normalize stored role values to a raw Discord role ID. */
@@ -6571,8 +6595,8 @@ export const Fwa: Command = {
         },
         {
           name: "war-id",
-          description: "Optional ClanWarHistory war ID (defaults to latest ended war)",
-          type: ApplicationCommandOptionType.Integer,
+          description: "Optional war target: `current` or numeric ended war ID (defaults to current)",
+          type: ApplicationCommandOptionType.String,
           required: false,
         },
         {
@@ -6819,13 +6843,18 @@ export const Fwa: Command = {
 
     if (subcommand === "compliance") {
       const startedAtMs = Date.now();
-      const requestedWarId = interaction.options.getInteger("war-id", false);
+      const parsedWarTarget = parseComplianceWarTarget(
+        interaction.options.getString("war-id", false)
+      );
+      if (!parsedWarTarget.ok) {
+        await editReplySafe(parsedWarTarget.error);
+        return;
+      }
+      const selectedWarTarget = parsedWarTarget.value;
       const warIdForLog =
-        requestedWarId !== null && requestedWarId !== undefined
-          ? Math.trunc(requestedWarId)
-          : "latest";
+        selectedWarTarget.scope === "war_id" ? selectedWarTarget.warId : "current";
       console.info(
-        `[fwa-compliance] event=start guild=${interaction.guildId ?? "dm"} user=${interaction.user.id} clan=#${tag || "unknown"} war_id=${warIdForLog}`
+        `[fwa-compliance] event=start guild=${interaction.guildId ?? "dm"} user=${interaction.user.id} clan=#${tag || "unknown"} scope=${selectedWarTarget.scope} requested=${selectedWarTarget.requested} war_id=${warIdForLog}`
       );
       if (!interaction.inGuild() || !interaction.guildId) {
         await editReplySafe("This command can only be used in a server.");
@@ -6850,94 +6879,87 @@ export const Fwa: Command = {
         return;
       }
 
-      const historyRow = await prisma.clanWarHistory.findFirst({
-        where: {
-          OR: [
-            { clanTag: { equals: `#${tag}`, mode: "insensitive" } },
-            { clanTag: { equals: tag, mode: "insensitive" } },
-          ],
-          warEndTime: { not: null },
-          ...(requestedWarId !== null && requestedWarId !== undefined
-            ? { warId: Math.trunc(requestedWarId) }
-            : {}),
-        },
-        orderBy:
-          requestedWarId !== null && requestedWarId !== undefined
-            ? undefined
-            : [{ warStartTime: "desc" }],
-        select: {
-          warId: true,
-          warStartTime: true,
-          warEndTime: true,
-          matchType: true,
-          expectedOutcome: true,
-        },
+      const evaluation = await warComplianceService.evaluateComplianceForCommand({
+        guildId: interaction.guildId,
+        clanTag: tag,
+        scope: selectedWarTarget.scope,
+        warId: selectedWarTarget.scope === "war_id" ? selectedWarTarget.warId : null,
       });
-      if (!historyRow) {
+      const clanDisplayName = trackedClan.name?.trim() || `#${tag}`;
+      const startedLabel =
+        evaluation.warStartTime instanceof Date
+          ? `<t:${Math.floor(evaluation.warStartTime.getTime() / 1000)}:f>`
+          : "unknown";
+      const endedLabel =
+        evaluation.warEndTime instanceof Date
+          ? `<t:${Math.floor(evaluation.warEndTime.getTime() / 1000)}:R>`
+          : "unknown";
+
+      if (evaluation.status === "no_active_war") {
         await editReplySafe(
-          requestedWarId !== null && requestedWarId !== undefined
-            ? `No ended war found for #${tag} with war ID ${Math.trunc(requestedWarId)}.`
-            : `No ended wars found for #${tag}.`
+          [
+            `War compliance for **${clanDisplayName}** (#${tag})`,
+            "No active war to evaluate.",
+          ].join("\n")
+        );
+        console.info(
+          `[fwa-compliance] event=complete guild=${interaction.guildId} user=${interaction.user.id} clan=#${tag} scope=${evaluation.scope} source=${evaluation.source ?? "none"} war_resolution_source=${evaluation.warResolutionSource ?? "none"} war_id=${evaluation.warId ?? "unknown"} status=no_active_war duration_ms=${Date.now() - startedAtMs}`
         );
         return;
       }
 
-      const matchType = historyRow.matchType as "FWA" | "BL" | "MM" | "SKIP" | null;
-      const expectedOutcome = normalizeExpectedOutcome(historyRow.expectedOutcome);
-      if (matchType !== "FWA") {
-        const started = Math.floor(historyRow.warStartTime.getTime() / 1000);
-        const ended =
-          historyRow.warEndTime instanceof Date
-            ? `<t:${Math.floor(historyRow.warEndTime.getTime() / 1000)}:R>`
-            : "unknown";
+      if (evaluation.status === "war_not_found") {
+        const requestedWarId =
+          selectedWarTarget.scope === "war_id" ? String(selectedWarTarget.warId) : "unknown";
         await editReplySafe(
           [
-            `War compliance for **${trackedClan.name?.trim() || `#${tag}`}** (#${tag})`,
-            `War: **${historyRow.warId}** | Started <t:${started}:f> | Ended ${ended}`,
-            `Match type: **${matchType ?? "UNKNOWN"}** | Expected outcome: **${expectedOutcome ?? "UNKNOWN"}**`,
+            `War compliance for **${clanDisplayName}** (#${tag})`,
+            `No ended war found for #${tag} with war ID ${requestedWarId}.`,
+          ].join("\n")
+        );
+        console.info(
+          `[fwa-compliance] event=complete guild=${interaction.guildId} user=${interaction.user.id} clan=#${tag} scope=${evaluation.scope} source=${evaluation.source ?? "none"} war_resolution_source=${evaluation.warResolutionSource ?? "none"} war_id=${selectedWarTarget.scope === "war_id" ? selectedWarTarget.warId : "unknown"} status=war_not_found duration_ms=${Date.now() - startedAtMs}`
+        );
+        return;
+      }
+
+      if (evaluation.status === "not_applicable") {
+        await editReplySafe(
+          [
+            `War compliance for **${clanDisplayName}** (#${tag})`,
+            `War: **${evaluation.warId ?? "unknown"}** | Started ${startedLabel} | Ended ${endedLabel}`,
+            `Match type: **${evaluation.matchType ?? "UNKNOWN"}** | Expected outcome: **${evaluation.expectedOutcome ?? "UNKNOWN"}**`,
             "War-plan compliance checks are only enforced for FWA wars.",
           ].join("\n")
         );
         console.info(
-          `[fwa-compliance] event=complete guild=${interaction.guildId} user=${interaction.user.id} clan=#${tag} war_id=${historyRow.warId} status=not_applicable match_type=${matchType ?? "UNKNOWN"} duration_ms=${Date.now() - startedAtMs}`
+          `[fwa-compliance] event=complete guild=${interaction.guildId} user=${interaction.user.id} clan=#${tag} scope=${evaluation.scope} source=${evaluation.source ?? "none"} war_resolution_source=${evaluation.warResolutionSource ?? "none"} war_id=${evaluation.warId ?? "unknown"} status=not_applicable match_type=${evaluation.matchType ?? "UNKNOWN"} duration_ms=${Date.now() - startedAtMs}`
         );
         return;
       }
 
-      const report = await warComplianceService.getComplianceReport({
-        clanTag: tag,
-        preferredWarStartTime: historyRow.warStartTime,
-        warId: historyRow.warId,
-        matchType,
-        expectedOutcome,
-      });
-      if (!report) {
-        const started = Math.floor(historyRow.warStartTime.getTime() / 1000);
-        const ended =
-          historyRow.warEndTime instanceof Date
-            ? `<t:${Math.floor(historyRow.warEndTime.getTime() / 1000)}:R>`
-            : "unknown";
+      if (evaluation.status === "insufficient_data" || !evaluation.report) {
         await editReplySafe(
           [
-            `War compliance for **${trackedClan.name?.trim() || `#${tag}`}** (#${tag})`,
-            `War: **${historyRow.warId}** | Started <t:${started}:f> | Ended ${ended}`,
-            "No detailed attack data is available to run compliance checks for this war.",
+            `War compliance for **${clanDisplayName}** (#${tag})`,
+            `War: **${evaluation.warId ?? "unknown"}** | Started ${startedLabel} | Ended ${endedLabel}`,
+            "Insufficient data to evaluate compliance for this war.",
           ].join("\n")
         );
         console.info(
-          `[fwa-compliance] event=complete guild=${interaction.guildId} user=${interaction.user.id} clan=#${tag} war_id=${historyRow.warId} status=no_data duration_ms=${Date.now() - startedAtMs}`
+          `[fwa-compliance] event=complete guild=${interaction.guildId} user=${interaction.user.id} clan=#${tag} scope=${evaluation.scope} source=${evaluation.source ?? "none"} war_resolution_source=${evaluation.warResolutionSource ?? "none"} war_id=${evaluation.warId ?? "unknown"} status=insufficient_data participants=${evaluation.participantsCount} attacks=${evaluation.attacksCount} duration_ms=${Date.now() - startedAtMs}`
         );
         return;
       }
 
       const lines = buildWarComplianceReportLines({
-        clanName: trackedClan.name?.trim() || `#${tag}`,
+        clanName: clanDisplayName,
         clanTag: tag,
-        report,
+        report: evaluation.report,
       });
       await editReplySafe(lines.join("\n"));
       console.info(
-        `[fwa-compliance] event=complete guild=${interaction.guildId} user=${interaction.user.id} clan=#${tag} war_id=${report.warId ?? historyRow.warId} status=ok missed_both=${report.missedBoth.length} not_following=${report.notFollowingPlan.length} participants=${report.participantsCount} attacks=${report.attacksCount} duration_ms=${Date.now() - startedAtMs}`
+        `[fwa-compliance] event=complete guild=${interaction.guildId} user=${interaction.user.id} clan=#${tag} scope=${evaluation.scope} source=${evaluation.source ?? "none"} war_resolution_source=${evaluation.warResolutionSource ?? "none"} war_id=${evaluation.report.warId ?? evaluation.warId ?? "unknown"} status=ok missed_both=${evaluation.report.missedBoth.length} not_following=${evaluation.report.notFollowingPlan.length} participants=${evaluation.report.participantsCount} attacks=${evaluation.report.attacksCount} war_end_time=${evaluation.timingInputs.warEndTimeIso ?? "unknown"} first_attack_seen_at=${evaluation.timingInputs.firstAttackSeenAtIso ?? "unknown"} last_attack_seen_at=${evaluation.timingInputs.lastAttackSeenAtIso ?? "unknown"} duration_ms=${Date.now() - startedAtMs}`
       );
       return;
     }

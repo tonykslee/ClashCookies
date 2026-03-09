@@ -225,7 +225,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     details: [
       "`/fwa points` returns point balances (single clan tag or all tracked if tag omitted).",
       "`/fwa match` auto-resolves current war opponent from CoC API and evaluates win/lose/tiebreak using cached points + persisted sync state.",
-      "`/fwa compliance` runs war-plan compliance checks on demand for a tracked clan (defaults to latest ended war, optional `war-id` override).",
+      "`/fwa compliance` runs war-plan compliance checks on demand for a tracked clan (defaults to current active war; use `war-id:current` or numeric `war-id` for historical checks).",
       "`/fwa weight-age` scrapes the fwastats weight page and reports last submitted weight age (single clan or all tracked clans).",
       "`/fwa weight-link` returns fwastats weight page URL(s) for one clan or all tracked clans.",
       "`/fwa weight-health` summarizes all tracked clans and flags stale weight submissions (outdated >7d, severe >=30d).",
@@ -251,6 +251,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/fwa points",
       "/fwa match tag:2QG2C08UP",
       "/fwa compliance tag:2QG2C08UP",
+      "/fwa compliance tag:2QG2C08UP war-id:current",
       "/fwa compliance tag:2QG2C08UP war-id:12345",
       "/fwa weight-age tag:2QG2C08UP",
       "/fwa weight-age",

@@ -391,11 +391,15 @@ export class WarEventHistoryService {
       .map((a) => ({
         attackerTag: a.playerTag,
         attackerName: a.playerName,
+        attackerPosition: a.playerPosition,
         defenderTag: a.defenderTag,
         defenderName: a.defenderName,
+        defenderPosition: a.defenderPosition,
         stars: a.stars,
+        trueStars: a.trueStars,
         destruction: a.destruction,
         order: a.attackOrder,
+        attackSeenAt: a.attackSeenAt instanceof Date ? a.attackSeenAt.toISOString() : null,
       }));
     const mirrorHits = attacksPayload.filter((a) => {
       const row = attacks.find(
