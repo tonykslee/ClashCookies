@@ -111,6 +111,7 @@ describe("weight view helpers", () => {
     expect(buildWeightAuthFailureNote([noCookie])).toContain("Recovery steps:");
     expect(buildWeightAuthFailureNote([noCookie])).toContain("/fwa weight-cookie");
     expect(buildWeightAuthFailureNote([rejected])).toContain("rejected or expired");
+    expect(buildWeightAuthFailureNote([rejected])).toContain("https://i.imgur.com/HFzGNQD.png");
     expect(buildWeightAuthFailureNote([loginDetected])).toContain("login page");
     expect(buildWeightAuthFailureNote([makeResult({})])).toBeNull();
   });

@@ -102,6 +102,7 @@ describe("/fwa weight command output", () => {
     expect(content).toContain("unavailable (auth cookie rejected/expired)");
     expect(content).toContain("Recovery steps:");
     expect(content).toContain("/fwa weight-cookie");
+    expect(content).toContain("https://i.imgur.com/HFzGNQD.png");
   });
 
   it("renders /fwa weight-health rows with auth note and healthy row", async () => {

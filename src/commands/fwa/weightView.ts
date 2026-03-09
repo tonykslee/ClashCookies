@@ -72,16 +72,21 @@ export function buildWeightAuthFailureNote(results: FwaStatsWeightAge[]): string
       : detectedLoginPage
         ? "Detected: fwastats returned a login page."
         : "Detected: fwastats auth failed.";
+  const visualGuideLine = detectedExpired
+    ? "Visual guide: https://i.imgur.com/HFzGNQD.png"
+    : null;
 
-  return [
+  const lines = [
     "Auth required for fwastats weight scraping.",
     summary,
+    ...(visualGuideLine ? [visualGuideLine] : []),
     "Recovery steps:",
     "1. Go to https://fwastats.com and sign in.",
     "2. Press F12, open the Network tab, and refresh.",
     "3. Copy the two AspNetCore cookie pairs (name=value).",
     "4. Run `/fwa weight-cookie application-cookie:<cookie-1> antiforgery-cookie:<cookie-2>`.",
-  ].join("\n");
+  ];
+  return lines.join("\n");
 }
 
 /** Purpose: render one clan row for `/fwa weight-health` output including status emoji. */
