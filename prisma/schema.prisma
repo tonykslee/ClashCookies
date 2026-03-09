@@ -306,6 +306,14 @@ model ClanPointsSync {
   outcome        String?
   isFwa          Boolean
   syncFetchedAt  DateTime @default(now())
+  lastSuccessfulPointsApiFetchAt DateTime?
+  lastFetchReason                String?
+  confirmedByClanMail            Boolean  @default(false)
+  needsValidation                Boolean  @default(true)
+  lastKnownPoints                Int?
+  lastKnownMatchType             String?
+  lastKnownOutcome               String?
+  lastKnownSyncNumber            Int?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
@@ -365,5 +373,132 @@ model ApiUsage {
   endpoint String   @id
   lastCall DateTime
   callCount Int     @default(0)
+}
+
+model TelemetryCommandAggregate {
+  id              String   @id @default(cuid())
+  bucketStart     DateTime
+  guildId         String
+  commandName     String
+  subcommand      String   @default("")
+  status          String
+  count           Int      @default(0)
+  errorCount      Int      @default(0)
+  timeoutCount    Int      @default(0)
+  totalDurationMs BigInt   @default(0)
+  maxDurationMs   Int      @default(0)
+  minDurationMs   Int?
+  latencyLt250    Int      @default(0)
+  latencyLt1000   Int      @default(0)
+  latencyLt3000   Int      @default(0)
+  latencyLt10000  Int      @default(0)
+  latencyGte10000 Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([bucketStart, guildId, commandName, subcommand, status])
+  @@index([guildId, bucketStart])
+  @@index([commandName, bucketStart])
+}
+
+model TelemetryUserCommandAggregate {
+  id              String   @id @default(cuid())
+  bucketStart     DateTime
+  guildId         String
+  userId          String
+  commandName     String
+  subcommand      String   @default("")
+  count           Int      @default(0)
+  failureCount    Int      @default(0)
+  timeoutCount    Int      @default(0)
+  totalDurationMs BigInt   @default(0)
+  maxDurationMs   Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([bucketStart, guildId, userId, commandName, subcommand])
+  @@index([guildId, bucketStart])
+  @@index([guildId, userId, bucketStart])
+}
+
+model TelemetryApiAggregate {
+  id              String   @id @default(cuid())
+  bucketStart     DateTime
+  guildId         String
+  commandName     String   @default("")
+  namespace       String
+  operation       String
+  source          String
+  status          String
+  errorCategory   String   @default("")
+  errorCode       String   @default("")
+  count           Int      @default(0)
+  errorCount      Int      @default(0)
+  timeoutCount    Int      @default(0)
+  totalDurationMs BigInt   @default(0)
+  maxDurationMs   Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([bucketStart, guildId, commandName, namespace, operation, source, status, errorCategory, errorCode])
+  @@index([guildId, bucketStart])
+  @@index([namespace, operation, bucketStart])
+}
+
+model TelemetryStageAggregate {
+  id              String   @id @default(cuid())
+  bucketStart     DateTime
+  guildId         String
+  commandName     String
+  subcommand      String   @default("")
+  stage           String
+  status          String
+  count           Int      @default(0)
+  totalDurationMs BigInt   @default(0)
+  maxDurationMs   Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([bucketStart, guildId, commandName, subcommand, stage, status])
+  @@index([guildId, bucketStart])
+  @@index([commandName, stage, bucketStart])
+}
+
+model TelemetryReportSchedule {
+  id                   String   @id @default(cuid())
+  guildId              String   @unique
+  channelId            String
+  cadenceHours         Int      @default(24)
+  timezone             String   @default("UTC")
+  enabled              Boolean  @default(true)
+  lastPostedWindowStart DateTime?
+  lastPostedWindowEnd   DateTime?
+  lastPostedAt         DateTime?
+  lastMessageId        String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@index([enabled, updatedAt])
+}
+
+model TelemetryReportRun {
+  id           String   @id @default(cuid())
+  guildId      String
+  channelId    String
+  windowStart  DateTime
+  windowEnd    DateTime
+  cadenceHours Int
+  timezone     String
+  status       String
+  messageId    String?
+  errorCode    String?
+  errorMessage String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  postedAt     DateTime?
+
+  @@unique([guildId, windowStart, windowEnd])
+  @@index([guildId, status, createdAt])
+  @@index([status, createdAt])
 }
 

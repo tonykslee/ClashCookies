@@ -1,6 +1,7 @@
 import axios from "axios";
 import { createSign } from "crypto";
 import { recordFetchEvent } from "../helper/fetchTelemetry";
+import { toFailureTelemetry } from "./telemetry/ingest";
 import { SettingsService } from "./SettingsService";
 
 export const SHEET_SETTING_ID_KEY = "google_sheet_id";
@@ -106,6 +107,7 @@ export class GoogleSheetsService {
       return this.readValuesViaAppsScriptProxy(proxyUrl, sheetId, range);
     }
 
+    const startedAtMs = Date.now();
     const token = await this.getAccessToken();
     const encodedRange = encodeURIComponent(range);
     const encodedSheetId = encodeURIComponent(sheetId);
@@ -123,14 +125,22 @@ export class GoogleSheetsService {
         operation: "read_values",
         source: "api",
         detail: `sheet=${sheetId}`,
+        durationMs: Date.now() - startedAtMs,
+        status: "success",
       });
       return response.data.values ?? [];
     } catch (err) {
+      const failure = toFailureTelemetry(err);
       recordFetchEvent({
         namespace: "google_sheets",
         operation: "read_values",
         source: "api",
         detail: `sheet=${sheetId} result=error`,
+        durationMs: Date.now() - startedAtMs,
+        status: "failure",
+        errorCategory: failure.errorCategory,
+        errorCode: failure.errorCode,
+        timeout: failure.timeout,
       });
       throw err;
     }
@@ -141,6 +151,7 @@ export class GoogleSheetsService {
     sheetId: string,
     range: string
   ): Promise<string[][]> {
+    const startedAtMs = Date.now();
     const token = process.env.GS_WEBHOOK_SHARED_SECRET?.trim();
     const payload: Record<string, string> = {
       action: "readValues",
@@ -167,6 +178,10 @@ export class GoogleSheetsService {
         operation: "apps_script_proxy",
         source: "web",
         detail: `action=readValues status=${response.status}`,
+        durationMs: Date.now() - startedAtMs,
+        status: "failure",
+        errorCategory: response.status >= 500 ? "upstream_api" : "validation",
+        errorCode: `HTTP_${response.status}`,
       });
       const message =
         typeof response.data?.error === "string"
@@ -181,6 +196,8 @@ export class GoogleSheetsService {
       operation: "apps_script_proxy",
       source: "web",
       detail: `action=readValues status=${response.status}`,
+      durationMs: Date.now() - startedAtMs,
+      status: "success",
     });
 
     const rawValues =
@@ -223,11 +240,58 @@ export class GoogleSheetsService {
       token_type: string;
     };
   }> {
+    const startedAtMs = Date.now();
     const oauthClientId = process.env.GOOGLE_OAUTH_CLIENT_ID?.trim();
     const oauthClientSecret = process.env.GOOGLE_OAUTH_CLIENT_SECRET?.trim();
     const oauthRefreshToken = process.env.GOOGLE_OAUTH_REFRESH_TOKEN?.trim();
 
     if (oauthClientId && oauthClientSecret && oauthRefreshToken) {
+      try {
+        const response = await axios.post<{
+          access_token: string;
+          expires_in: number;
+          token_type: string;
+        }>(
+          "https://oauth2.googleapis.com/token",
+          new URLSearchParams({
+            grant_type: "refresh_token",
+            client_id: oauthClientId,
+            client_secret: oauthClientSecret,
+            refresh_token: oauthRefreshToken,
+          }).toString(),
+          {
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            timeout: GOOGLE_API_TIMEOUT_MS,
+          }
+        );
+        recordFetchEvent({
+          namespace: "google_oauth",
+          operation: "token_exchange",
+          source: "api",
+          detail: "grant=refresh_token",
+          durationMs: Date.now() - startedAtMs,
+          status: "success",
+        });
+        return response;
+      } catch (err) {
+        const failure = toFailureTelemetry(err);
+        recordFetchEvent({
+          namespace: "google_oauth",
+          operation: "token_exchange",
+          source: "api",
+          detail: "grant=refresh_token result=error",
+          durationMs: Date.now() - startedAtMs,
+          status: "failure",
+          errorCategory: failure.errorCategory,
+          errorCode: failure.errorCode,
+          timeout: failure.timeout,
+        });
+        throw err;
+      }
+    }
+
+    const assertion = this.buildServiceAccountAssertion();
+    try {
       const response = await axios.post<{
         access_token: string;
         expires_in: number;
@@ -235,10 +299,8 @@ export class GoogleSheetsService {
       }>(
         "https://oauth2.googleapis.com/token",
         new URLSearchParams({
-          grant_type: "refresh_token",
-          client_id: oauthClientId,
-          client_secret: oauthClientSecret,
-          refresh_token: oauthRefreshToken,
+          grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+          assertion,
         }).toString(),
         {
           headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -249,34 +311,26 @@ export class GoogleSheetsService {
         namespace: "google_oauth",
         operation: "token_exchange",
         source: "api",
-        detail: "grant=refresh_token",
+        detail: "grant=jwt_bearer",
+        durationMs: Date.now() - startedAtMs,
+        status: "success",
       });
       return response;
+    } catch (err) {
+      const failure = toFailureTelemetry(err);
+      recordFetchEvent({
+        namespace: "google_oauth",
+        operation: "token_exchange",
+        source: "api",
+        detail: "grant=jwt_bearer result=error",
+        durationMs: Date.now() - startedAtMs,
+        status: "failure",
+        errorCategory: failure.errorCategory,
+        errorCode: failure.errorCode,
+        timeout: failure.timeout,
+      });
+      throw err;
     }
-
-    const assertion = this.buildServiceAccountAssertion();
-    const response = await axios.post<{
-      access_token: string;
-      expires_in: number;
-      token_type: string;
-    }>(
-      "https://oauth2.googleapis.com/token",
-      new URLSearchParams({
-        grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
-        assertion,
-      }).toString(),
-      {
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        timeout: GOOGLE_API_TIMEOUT_MS,
-      }
-    );
-    recordFetchEvent({
-      namespace: "google_oauth",
-      operation: "token_exchange",
-      source: "api",
-      detail: "grant=jwt_bearer",
-    });
-    return response;
   }
 
   /** Purpose: build service account assertion. */

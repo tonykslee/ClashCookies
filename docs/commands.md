@@ -1,12 +1,18 @@
 # Commands Reference
 
 - `/help [command:<name>] [visibility:private|public]` - List command docs/examples. Default visibility is private.
+- `/telemetry report [period:24h|7d|30d] [timezone:<ianaTz>]` - Show aggregate telemetry report (usage, latency, failures, API health) for the selected window.
+- `/telemetry schedule set target-channel:<channel> cadence-hours:<n> [timezone:<ianaTz>] [enabled:true|false]` - Configure scheduled telemetry report posting.
+- `/telemetry schedule show` - Show current telemetry schedule config and last posted window.
+- `/telemetry schedule disable` - Disable scheduled telemetry report posting.
+- `/telemetry schedule run-now` - Post one report for the current completed schedule window (idempotent per window).
 - `/permission add command:<name> role:<discordRole> [role2] [role3] [role4] [role5]` - Allow one or more roles to use a command.
 - `/permission remove command:<name> role:<discordRole>` - Remove a role from a command whitelist.
 - `/permission list [command:<name>]` - List role policy for one command target, or all if omitted.
 - `/lastseen tag:<playerTag>` - Show a player's last seen activity, with drill-down button for tracked signal timestamps.
 - `/inactive days:<number>` - List players inactive for N days.
 - `/inactive wars:<number>` - List tracked-clan members who used 0/2 attacks in each of the last N ended wars (requires war-history tracking window).
+- `/clan-health [visibility:private|public] tag:<trackedClanTag>` - Leadership snapshot from persisted data only: match rate and win rate (last 30 ended wars), inactive counts (missed-both in last 3 ended FWA wars + last-seen >=7d), and missing Discord links among observed members.
 - `/role-users role:<discordRole>` - List users in a role with pagination.
 - `/tracked-clan configure tag:<tag> [lose-style:triple-top-30|traditional] [mail-channel:<discordChannel>] [log-channel:<discordChannel>] [clan-role:<discordRole>] [clan-badge:<emoji>] [short-name:<abbr>]` - Add/update tracked clan settings.
 - `/tracked-clan remove tag:<tag>` - Remove tracked clan.
@@ -31,10 +37,15 @@
 - `/war history clan-tag:<tag> [limit:<number>]` - Show recent clan-level war history from stored war records.
 - `/war war-id war-id:<number>` - Export stored war lookup payload for one war ID as CSV.
 - `/accounts [visibility:private|public] [tag:<playerTag>] [discord-id:<snowflake>]` - List linked player accounts grouped by current clan. Default is your own account; provide exactly one of `tag` or `discord-id` to inspect a different linked user.
-- `/fwa points [visibility:private|public] [tag:<tag>]` - Fetch current point balance from `https://points.fwafarm.com/clan?tag=<tag-without-#>`. If `tag` is omitted, fetches all tracked clans.
-- `/fwa match [visibility:private|public] tag:<tag>` - Resolve current war opponent from CoC API, render cached matchup state, and project win/lose by points (or sync-based tiebreak on tie). Slow in-message actions now show a processing notice while updates run. "Current mail is up to date" now requires the same current-war identity (war/opponent/config), so new wars do not inherit prior mail-sent state.
+- `/fwa points [visibility:private|public] [tag:<tag>]` - Fetch point balance from `https://points.fwafarm.com/clan?tag=<tag-without-#>` when lock policy allows direct fetch; otherwise serves persisted/cache fallback for tracked clans.
+- `/fwa match [visibility:private|public] tag:<tag>` - Resolve current war opponent from CoC API, render cached matchup state, and show actionable matchup/sync status. Slow in-message actions show a processing notice while updates run. Points lock is lifecycle-driven: when locked, `/fwa match` uses persisted/cache data only and does not directly scrape points.fwafarm. Sync state text is shown only when validation is needed; non-actionable lifecycle/debug lines are hidden. "Current mail is up to date" now requires the same current-war identity (war/opponent/config), so new wars do not inherit prior mail-sent state.
+- `/fwa compliance tag:<trackedClanTag> [war-id:current|<clanWarHistoryWarId>] [visibility:private|public]` - Run war-plan compliance checks on demand using the shared war-end compliance engine. Defaults to the active current war; set `war-id:current` explicitly for active-war checks, or provide a numeric ended war ID for historical evaluation.
+- `/fwa weight-age [visibility:private|public] [tag:<tag>]` - Scrape `https://fwastats.com/Clan/<tag>/Weight` and report last submitted weight age for one clan or all tracked clans. Uses `FWASTATS_WEIGHT_COOKIE` when configured.
+- `/fwa weight-link [visibility:private|public] [tag:<tag>]` - Return FWA Stats weight page link(s) for one clan or all tracked clans.
+- `/fwa weight-health [visibility:private|public] [tag:<tag>]` - Show stale-weight health summary (recent/outdated/severe) using fetched weight-age data; defaults to all tracked clans and shares the same auth flow as `weight-age`.
+- `/fwa weight-cookie [visibility:private|public] [application-cookie:<name=value>] [antiforgery-cookie:<name=value>]` - Set or inspect fwastats auth cookies used by weight scraping. With no cookie args, returns cookie status/expiry metadata; with both args, securely saves cookie pairs for `/fwa weight-age` and `/fwa weight-health`.
 - `/fwa match-type [visibility:private|public] [tag:<trackedClanTag>] [type:FWA|BL|MM]` - Manually set or view per-clan match type override used by matchup output. If no args, lists overrides for all tracked clans.
-- `/fwa mail send tag:<trackedClanTag>` - Show ephemeral war mail preview with confirm-and-send to the tracked clan mail channel. Confirm-and-send pings `TrackedClan.clanRoleId` when enabled.
+- `/fwa mail send tag:<trackedClanTag>` - Show ephemeral war mail preview with confirm-and-send to the tracked clan mail channel. Confirm-and-send pings `TrackedClan.clanRoleId` when enabled. War-mail embed sidebar colors are mapped by effective match state only: BL=black, MM=white, FWA WIN=green, FWA LOSE=red, unresolved=gray.
 - `/fwa match` single-clan view includes a `Send Mail` button that follows the same access policy as `/fwa mail send` and uses the same role-ping behavior.
 - `/recruitment show platform:discord|reddit|band clan:<tag>` - Render platform-specific recruitment template output for a tracked clan.
 - `/recruitment edit platform:discord|reddit|band clan:<tag>` - Open platform-specific modal:
@@ -51,8 +62,8 @@
 - `/kick-list clear [mode:all|auto|manual]` - Clear kick-list entries.
 - `/sync time post [role:<discordRole>]` - Open modal, compose sync-time message, post it, and pin it.
 - `/sync post status [message-id:<id>]` - Show claimed vs unclaimed clan badge reactions for the active sync-time post, or for a specific message in the channel.
-- `/force sync data tag:<trackedClanTag> [datapoint:points|syncNum]` - Manually force-sync tracked clan points and/or sync number from points.fwafarm.
+- `/force sync data tag:<trackedClanTag> [datapoint:points|syncNum]` - Manually force-sync tracked clan points and/or sync number from points.fwafarm (explicitly bypasses points lock and war-scoped reuse).
 - `/force sync mail tag:<trackedClanTag> message-type:<mail|notify:war start|notify:battle start|notify:war end> message-id:<id>` - Upsert `CurrentWar.mailConfig` with current match configuration plus a posted message reference.
 - `/force sync warid [tag:<trackedClanTag>]` - Backfill missing war IDs in `ClanWarHistory`, `WarAttacks`, and `CurrentWar` (database-only flow; no external scrape/API calls).
 - `/force mail update tag:<trackedClanTag>` - Refresh an existing sent war-mail embed in place (no re-ping) and resume 20-minute refresh tracking.
-- `/remaining war tag:<trackedClanTag>` - Show localized phase-end time and remaining duration for the clan's current war phase (preparation or battle day).
+- `/remaining war [tag:<trackedClanTag>]` - With `tag`, show one tracked clan's phase-end and remaining duration. Without `tag`, summarize alliance-wide active-war timing using a 10-minute dominant cluster (mean + spread) and list outlier clans.

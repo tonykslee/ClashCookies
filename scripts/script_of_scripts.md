@@ -64,6 +64,14 @@ When making changes:
 
 If necessary, refactor existing code to support the new feature.
 
+<<<<<<< Updated upstream
+=======
+Before considering the task complete:
+* Run relevant validation commands (lint/tests) for the affected scope
+* Fix CI-blocking lint errors
+* Do not leave touched files with avoidable lint issues
+
+>>>>>>> Stashed changes
 ---
 
 # Step 5 — Generate Conventional Commit Message
@@ -80,11 +88,19 @@ Example:
 
 feat(sync): implement ClanPointsSync war validation
 
+Optional body (recommended for PR context):
+
+feat(sync): implement ClanPointsSync war validation
+
+- add lifecycle-based fetch gating after clan-mail confirmation
+- add reason-coded points API call logging
+- add tests for validation triggers and timestamp ownership
+
 Rules:
 
 * Use feat / fix / refactor / test / docs when appropriate
 * Keep summary under 72 characters
-* Include short description if necessary
+* You may include a blank line plus bullet-point body details
 
 Save the commit message to:
 
@@ -97,3 +113,7 @@ Save the commit message to:
 After the commit message file is created, run:
 
 ./scripts/commit-feature.sh
+
+Notes:
+- `commit-feature.sh` now auto-generates `.git/AI_PR_BODY.md` from branch commits/files.
+- If GitHub CLI (`gh`) is available and authenticated, it will create/update the PR description automatically.

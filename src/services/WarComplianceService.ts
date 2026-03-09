@@ -1,0 +1,1062 @@
+import { prisma } from "../prisma";
+import {
+  type FwaLoseStyle,
+  type MatchType,
+  type WarComplianceAttack,
+  type WarComplianceParticipant,
+  type WarComplianceSnapshot,
+  computeWarComplianceForTest,
+  normalizeTagBare,
+  normalizeOutcome,
+  normalizeTag,
+} from "./war-events/core";
+
+export type WarComplianceIssue = {
+  playerTag: string;
+  playerName: string;
+  ruleType: "missed_both" | "not_following_plan";
+  expectedBehavior: string;
+  actualBehavior: string;
+};
+
+export type WarComplianceReport = {
+  clanTag: string;
+  warId: number | null;
+  warStartTime: Date;
+  warEndTime: Date | null;
+  matchType: MatchType;
+  expectedOutcome: "WIN" | "LOSE" | null;
+  loseStyle: FwaLoseStyle;
+  missedBoth: WarComplianceIssue[];
+  notFollowingPlan: WarComplianceIssue[];
+  participantsCount: number;
+  attacksCount: number;
+};
+
+export type WarComplianceCommandScope = "current" | "war_id";
+export type WarComplianceDataSource = "war_attacks" | "war_lookup";
+export type WarComplianceResolutionSource = "current_war" | "clan_war_history";
+export type WarComplianceEvaluationStatus =
+  | "ok"
+  | "not_applicable"
+  | "insufficient_data"
+  | "no_active_war"
+  | "war_not_found";
+
+export type WarComplianceEvaluation = {
+  status: WarComplianceEvaluationStatus;
+  scope: WarComplianceCommandScope;
+  source: WarComplianceDataSource | null;
+  warResolutionSource: WarComplianceResolutionSource | null;
+  clanTag: string;
+  warId: number | null;
+  warStartTime: Date | null;
+  warEndTime: Date | null;
+  matchType: MatchType;
+  expectedOutcome: "WIN" | "LOSE" | null;
+  report: WarComplianceReport | null;
+  participantsCount: number;
+  attacksCount: number;
+  timingInputs: {
+    warEndTimeIso: string | null;
+    firstAttackSeenAtIso: string | null;
+    lastAttackSeenAtIso: string | null;
+  };
+};
+
+type WarSeedRow = {
+  warStartTime: Date;
+  warId: number;
+  warEndTime: Date | null;
+};
+
+type ComplianceContext = {
+  clanTag: string;
+  warId: number | null;
+  warStartTime: Date;
+  warEndTime: Date | null;
+  matchType: MatchType;
+  expectedOutcome: "WIN" | "LOSE" | null;
+  participants: WarComplianceParticipant[];
+  attacks: WarComplianceAttack[];
+  source: WarComplianceDataSource;
+  warResolutionSource: WarComplianceResolutionSource;
+};
+
+type WarLookupMember = {
+  tag: string;
+  name: string | null;
+  mapPosition: number | null;
+};
+
+type ParsedWarLookupPayload = {
+  clanMembers: Map<string, WarLookupMember>;
+  opponentMembers: Map<string, WarLookupMember>;
+  attacks: Array<Record<string, unknown>>;
+  payloadEndTime: Date | null;
+};
+
+/** Purpose: produce a reusable clan-tag OR filter that supports stored with/without `#`. */
+function buildClanTagWhere(tagInput: string): { OR: Array<{ clanTag: string }> } {
+  const normalized = normalizeTag(tagInput);
+  const bare = normalizeTagBare(tagInput);
+  if (!bare) {
+    return { OR: [{ clanTag: normalized }] };
+  }
+  if (normalized === bare) {
+    return { OR: [{ clanTag: normalized }] };
+  }
+  return { OR: [{ clanTag: normalized }, { clanTag: bare }] };
+}
+
+/** Purpose: produce a reusable tracked-clan tag OR filter that supports stored with/without `#`. */
+function buildTrackedClanTagWhere(tagInput: string): {
+  OR: Array<{ tag: { equals: string; mode: "insensitive" } }>;
+} {
+  const normalized = normalizeTag(tagInput);
+  const bare = normalizeTagBare(tagInput);
+  const values = normalized === bare ? [normalized] : [normalized, bare];
+  return {
+    OR: values.map((value) => ({ tag: { equals: value, mode: "insensitive" } })),
+  };
+}
+
+/** Purpose: build a stable participant label from known name/tag fields. */
+function getParticipantLabel(input: { playerName: string | null; playerTag: string }): string {
+  const name = String(input.playerName ?? "").trim();
+  return name || input.playerTag;
+}
+
+/** Purpose: describe expected plan behavior for actionable compliance output lines. */
+function describeExpectedPlanBehavior(input: {
+  matchType: MatchType;
+  expectedOutcome: "WIN" | "LOSE" | null;
+  loseStyle: FwaLoseStyle;
+}): string {
+  if (input.matchType === "BL" || input.matchType === "MM") {
+    return "War-plan compliance enforcement is disabled for BL/MM wars.";
+  }
+  if (input.matchType === "FWA" && input.expectedOutcome === "WIN") {
+    return "Mirror triple in strict window; avoid off-mirror triples/zeros.";
+  }
+  if (input.matchType === "FWA" && input.expectedOutcome === "LOSE") {
+    return input.loseStyle === "TRIPLE_TOP_30"
+      ? "Lose style TRIPLE_TOP_30: attack top-30 bases only."
+      : "Lose style TRADITIONAL: controlled 1-2 star flow and late-window constraints.";
+  }
+  return "Mirror-based fallback plan applies when expected outcome is unknown.";
+}
+
+/** Purpose: summarize observed attack behavior for one player in command output. */
+function describeActualBehaviorForPlayer(
+  playerTag: string,
+  attacksByPlayerTag: Map<string, WarComplianceAttack[]>,
+  attacksUsedByPlayerTag: Map<string, number>
+): string {
+  const normalizedTag = normalizeTag(playerTag);
+  const attacksUsed = attacksUsedByPlayerTag.get(normalizedTag) ?? 0;
+  const playerAttacks = attacksByPlayerTag.get(normalizedTag) ?? [];
+  if (playerAttacks.length === 0) {
+    return `Attacks used: ${attacksUsed}. No attack rows recorded.`;
+  }
+  const attackSummaries = playerAttacks
+    .slice()
+    .sort((a, b) => {
+      const orderDelta = Number(a.attackOrder ?? 0) - Number(b.attackOrder ?? 0);
+      if (orderDelta !== 0) return orderDelta;
+      return a.attackSeenAt.getTime() - b.attackSeenAt.getTime();
+    })
+    .map((row) => `#${row.defenderPosition ?? "?"} (${row.stars ?? 0}*)`);
+  return `Attacks used: ${attacksUsed}. Targets: ${attackSummaries.join(", ")}.`;
+}
+
+/** Purpose: map rule-engine name output into detailed issues for user-facing command output. */
+function mapNamesToIssues(input: {
+  names: string[];
+  ruleType: "missed_both" | "not_following_plan";
+  expectedBehavior: string;
+  participantByLabel: Map<string, WarComplianceParticipant>;
+  attacksByPlayerTag: Map<string, WarComplianceAttack[]>;
+  attacksUsedByPlayerTag: Map<string, number>;
+}): WarComplianceIssue[] {
+  return input.names.map((name) => {
+    const participant = input.participantByLabel.get(name) ?? null;
+    const playerTag = normalizeTag(participant?.playerTag ?? "") || "UNKNOWN";
+    const actualBehavior =
+      input.ruleType === "missed_both"
+        ? `Attacks used: ${participant?.attacksUsed ?? 0}.`
+        : describeActualBehaviorForPlayer(
+            playerTag,
+            input.attacksByPlayerTag,
+            input.attacksUsedByPlayerTag
+          );
+    return {
+      playerTag,
+      playerName: name,
+      ruleType: input.ruleType,
+      expectedBehavior: input.expectedBehavior,
+      actualBehavior,
+    };
+  });
+}
+
+/** Purpose: normalize persisted match-type text to command-safe enum values. */
+function normalizeMatchType(input: string | null | undefined): MatchType {
+  const value = String(input ?? "").trim().toUpperCase();
+  if (value === "FWA" || value === "BL" || value === "MM" || value === "SKIP") {
+    return value;
+  }
+  return null;
+}
+
+/** Purpose: safely parse unknown values into finite integer numbers. */
+function toInt(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.trunc(value);
+  }
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return Math.trunc(parsed);
+  }
+  return null;
+}
+
+/** Purpose: safely parse unknown values into Date objects. */
+function parseDateLike(value: unknown): Date | null {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
+  if (typeof value === "string" || typeof value === "number") {
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) return parsed;
+  }
+  return null;
+}
+
+/** Purpose: narrow unknown values to object records. */
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+/** Purpose: build a normalized member map from payload member arrays. */
+function buildMemberMap(rawMembers: unknown): Map<string, WarLookupMember> {
+  const result = new Map<string, WarLookupMember>();
+  if (!Array.isArray(rawMembers)) return result;
+  for (const raw of rawMembers) {
+    const row = asRecord(raw);
+    if (!row) continue;
+    const tag = normalizeTag(String(row.tag ?? ""));
+    if (!tag) continue;
+    const nameRaw = String(row.name ?? "").trim();
+    result.set(tag, {
+      tag,
+      name: nameRaw || null,
+      mapPosition: toInt(row.mapPosition),
+    });
+  }
+  return result;
+}
+
+/** Purpose: parse war lookup payload into normalized attack/member maps. */
+function parseWarLookupPayload(payload: unknown): ParsedWarLookupPayload {
+  let parsedPayload: unknown = payload;
+  if (typeof parsedPayload === "string") {
+    try {
+      parsedPayload = JSON.parse(parsedPayload);
+    } catch {
+      parsedPayload = null;
+    }
+  }
+
+  if (Array.isArray(parsedPayload)) {
+    return {
+      clanMembers: new Map(),
+      opponentMembers: new Map(),
+      attacks: parsedPayload.filter((row) => Boolean(asRecord(row))) as Array<Record<string, unknown>>,
+      payloadEndTime: null,
+    };
+  }
+
+  const root = asRecord(parsedPayload);
+  if (!root) {
+    return {
+      clanMembers: new Map(),
+      opponentMembers: new Map(),
+      attacks: [],
+      payloadEndTime: null,
+    };
+  }
+
+  const warMeta = asRecord(root.warMeta);
+  const clan = asRecord(root.clan);
+  const opponent = asRecord(root.opponent);
+  const attackRows = Array.isArray(root.attacks)
+    ? root.attacks.filter((row) => Boolean(asRecord(row)))
+    : [];
+
+  return {
+    clanMembers: buildMemberMap(clan?.members),
+    opponentMembers: buildMemberMap(opponent?.members),
+    attacks: attackRows as Array<Record<string, unknown>>,
+    payloadEndTime: parseDateLike(warMeta?.endTime ?? root.endTime ?? null),
+  };
+}
+
+/** Purpose: derive deterministic timing inputs for telemetry/debug output. */
+function buildTimingInputs(input: {
+  warEndTime: Date | null;
+  attacks: WarComplianceAttack[];
+}): WarComplianceEvaluation["timingInputs"] {
+  const orderedAttackTimes = input.attacks
+    .map((row) => row.attackSeenAt)
+    .filter((value): value is Date => value instanceof Date && !Number.isNaN(value.getTime()))
+    .sort((a, b) => a.getTime() - b.getTime());
+  return {
+    warEndTimeIso: input.warEndTime instanceof Date ? input.warEndTime.toISOString() : null,
+    firstAttackSeenAtIso:
+      orderedAttackTimes.length > 0 ? orderedAttackTimes[0].toISOString() : null,
+    lastAttackSeenAtIso:
+      orderedAttackTimes.length > 0
+        ? orderedAttackTimes[orderedAttackTimes.length - 1].toISOString()
+        : null,
+  };
+}
+
+/** Purpose: identify incomplete contexts that should be reported as insufficient data. */
+function hasInsufficientData(context: ComplianceContext): boolean {
+  if (context.participants.length <= 0) return true;
+  const anyAttacksUsed = context.participants.some((row) => Number(row.attacksUsed ?? 0) > 0);
+  if (anyAttacksUsed && context.attacks.length <= 0) return true;
+  return false;
+}
+
+/** Purpose: resolve lose-style configuration for a tracked clan with safe fallback. */
+async function getLoseStyleForClan(clanTagInput: string): Promise<FwaLoseStyle> {
+  const clanTag = normalizeTag(clanTagInput);
+  if (!clanTag) return "TRIPLE_TOP_30";
+  const row = await prisma.trackedClan.findFirst({
+    where: buildTrackedClanTagWhere(clanTag),
+    select: { loseStyle: true },
+  });
+  const loseStyle = String(row?.loseStyle ?? "").toUpperCase();
+  if (loseStyle === "TRADITIONAL" || loseStyle === "TRIPLE_TOP_30") {
+    return loseStyle;
+  }
+  return "TRIPLE_TOP_30";
+}
+
+/** Purpose: resolve ended-war seed row using explicit or latest war selection rules. */
+async function getWarSeed(input: {
+  clanTag: string;
+  preferredWarStartTime?: Date | null;
+  warId?: number | null;
+}): Promise<WarSeedRow | null> {
+  const clanTagWhere = buildClanTagWhere(input.clanTag);
+  if (input.preferredWarStartTime instanceof Date) {
+    const row = await prisma.warAttacks.findFirst({
+      where: {
+        ...clanTagWhere,
+        warStartTime: input.preferredWarStartTime,
+        warEndTime: { not: null },
+        attackOrder: 0,
+      },
+      orderBy: [{ warStartTime: "desc" }],
+      select: { warStartTime: true, warId: true, warEndTime: true },
+    });
+    if (!row) return null;
+    return {
+      warStartTime: row.warStartTime,
+      warId: Number.isFinite(Number(row.warId)) ? Math.trunc(Number(row.warId)) : 0,
+      warEndTime: row.warEndTime ?? null,
+    };
+  }
+  if (
+    input.warId !== null &&
+    input.warId !== undefined &&
+    Number.isFinite(input.warId)
+  ) {
+    const row = await prisma.warAttacks.findFirst({
+      where: {
+        ...clanTagWhere,
+        warId: Math.trunc(input.warId),
+        warEndTime: { not: null },
+        attackOrder: 0,
+      },
+      orderBy: [{ warStartTime: "desc" }],
+      select: { warStartTime: true, warId: true, warEndTime: true },
+    });
+    if (!row) return null;
+    return {
+      warStartTime: row.warStartTime,
+      warId: Number.isFinite(Number(row.warId)) ? Math.trunc(Number(row.warId)) : 0,
+      warEndTime: row.warEndTime ?? null,
+    };
+  }
+  const row = await prisma.warAttacks.findFirst({
+    where: {
+      ...clanTagWhere,
+      warEndTime: { not: null },
+      attackOrder: 0,
+    },
+    orderBy: [{ warStartTime: "desc" }],
+    select: { warStartTime: true, warId: true, warEndTime: true },
+  });
+  if (!row) return null;
+  return {
+    warStartTime: row.warStartTime,
+    warId: Number.isFinite(Number(row.warId)) ? Math.trunc(Number(row.warId)) : 0,
+    warEndTime: row.warEndTime ?? null,
+  };
+}
+
+/** Purpose: centralize DB-backed compliance evaluation shared by events and user commands. */
+export class WarComplianceService {
+  /** Purpose: resolve compliance snapshot names for a clan+war context without extra command logic. */
+  async getComplianceSnapshot(input: {
+    clanTag: string;
+    preferredWarStartTime?: Date | null;
+    warId?: number | null;
+    matchType: MatchType;
+    expectedOutcome: "WIN" | "LOSE" | null;
+  }): Promise<WarComplianceSnapshot> {
+    const report = await this.getComplianceReport(input);
+    if (!report) return { missedBoth: [], notFollowingPlan: [] };
+    return {
+      missedBoth: report.missedBoth.map((row) => row.playerName),
+      notFollowingPlan: report.notFollowingPlan.map((row) => row.playerName),
+    };
+  }
+
+  /** Purpose: evaluate compliance from command-driven war scope selection with deterministic result states. */
+  async evaluateComplianceForCommand(input: {
+    guildId: string;
+    clanTag: string;
+    scope?: WarComplianceCommandScope;
+    warId?: number | null;
+  }): Promise<WarComplianceEvaluation> {
+    const startedAtMs = Date.now();
+    const scope: WarComplianceCommandScope = input.scope === "war_id" ? "war_id" : "current";
+    const clanTag = normalizeTag(input.clanTag);
+
+    const buildResult = (params: {
+      status: WarComplianceEvaluationStatus;
+      source?: WarComplianceDataSource | null;
+      warResolutionSource?: WarComplianceResolutionSource | null;
+      warId?: number | null;
+      warStartTime?: Date | null;
+      warEndTime?: Date | null;
+      matchType?: MatchType;
+      expectedOutcome?: "WIN" | "LOSE" | null;
+      report?: WarComplianceReport | null;
+      participantsCount?: number;
+      attacksCount?: number;
+      timingInputs?: WarComplianceEvaluation["timingInputs"];
+    }): WarComplianceEvaluation => {
+      const result: WarComplianceEvaluation = {
+        status: params.status,
+        scope,
+        source: params.source ?? null,
+        warResolutionSource: params.warResolutionSource ?? null,
+        clanTag,
+        warId: params.warId ?? null,
+        warStartTime: params.warStartTime ?? null,
+        warEndTime: params.warEndTime ?? null,
+        matchType: params.matchType ?? null,
+        expectedOutcome: params.expectedOutcome ?? null,
+        report: params.report ?? null,
+        participantsCount: Number(params.participantsCount ?? 0),
+        attacksCount: Number(params.attacksCount ?? 0),
+        timingInputs:
+          params.timingInputs ??
+          { warEndTimeIso: null, firstAttackSeenAtIso: null, lastAttackSeenAtIso: null },
+      };
+
+      const durationMs = Date.now() - startedAtMs;
+      const missedBoth = result.report?.missedBoth.length ?? 0;
+      const notFollowing = result.report?.notFollowingPlan.length ?? 0;
+      console.info(
+        [
+          `[fwa-compliance] event=evaluated`,
+          `scope=${result.scope}`,
+          `source=${result.source ?? "none"}`,
+          `war_resolution_source=${result.warResolutionSource ?? "none"}`,
+          `war_id=${result.warId ?? "unknown"}`,
+          `status=${result.status}`,
+          `participants=${result.participantsCount}`,
+          `attacks=${result.attacksCount}`,
+          `missed_both=${missedBoth}`,
+          `not_following=${notFollowing}`,
+          `war_end_time=${result.timingInputs.warEndTimeIso ?? "unknown"}`,
+          `first_attack_seen_at=${result.timingInputs.firstAttackSeenAtIso ?? "unknown"}`,
+          `last_attack_seen_at=${result.timingInputs.lastAttackSeenAtIso ?? "unknown"}`,
+          `duration_ms=${durationMs}`,
+        ].join(" ")
+      );
+
+      return result;
+    };
+
+    if (!normalizeTagBare(clanTag)) {
+      return buildResult({ status: "insufficient_data" });
+    }
+
+    let context: ComplianceContext | null = null;
+    if (scope === "war_id") {
+      if (
+        input.warId === null ||
+        input.warId === undefined ||
+        !Number.isFinite(Number(input.warId)) ||
+        Math.trunc(Number(input.warId)) <= 0
+      ) {
+        return buildResult({
+          status: "war_not_found",
+          warResolutionSource: "clan_war_history",
+        });
+      }
+      context = await this.loadHistoricalComplianceContext({
+        guildId: input.guildId,
+        clanTag,
+        warId: Math.trunc(Number(input.warId)),
+      });
+      if (!context) {
+        return buildResult({
+          status: "war_not_found",
+          source: "war_lookup",
+          warResolutionSource: "clan_war_history",
+          warId: Math.trunc(Number(input.warId)),
+        });
+      }
+    } else {
+      context = await this.loadCurrentComplianceContext({
+        guildId: input.guildId,
+        clanTag,
+      });
+      if (!context) {
+        return buildResult({
+          status: "no_active_war",
+          source: "war_attacks",
+          warResolutionSource: "current_war",
+        });
+      }
+    }
+
+    const timingInputs = buildTimingInputs({
+      warEndTime: context.warEndTime,
+      attacks: context.attacks,
+    });
+
+    if (context.matchType !== "FWA") {
+      return buildResult({
+        status: "not_applicable",
+        source: context.source,
+        warResolutionSource: context.warResolutionSource,
+        warId: context.warId,
+        warStartTime: context.warStartTime,
+        warEndTime: context.warEndTime,
+        matchType: context.matchType,
+        expectedOutcome: context.expectedOutcome,
+        participantsCount: context.participants.length,
+        attacksCount: context.attacks.length,
+        timingInputs,
+      });
+    }
+
+    if (hasInsufficientData(context)) {
+      return buildResult({
+        status: "insufficient_data",
+        source: context.source,
+        warResolutionSource: context.warResolutionSource,
+        warId: context.warId,
+        warStartTime: context.warStartTime,
+        warEndTime: context.warEndTime,
+        matchType: context.matchType,
+        expectedOutcome: context.expectedOutcome,
+        participantsCount: context.participants.length,
+        attacksCount: context.attacks.length,
+        timingInputs,
+      });
+    }
+
+    const report = await this.buildReportFromContext(context);
+    if (!report) {
+      return buildResult({
+        status: "insufficient_data",
+        source: context.source,
+        warResolutionSource: context.warResolutionSource,
+        warId: context.warId,
+        warStartTime: context.warStartTime,
+        warEndTime: context.warEndTime,
+        matchType: context.matchType,
+        expectedOutcome: context.expectedOutcome,
+        participantsCount: context.participants.length,
+        attacksCount: context.attacks.length,
+        timingInputs,
+      });
+    }
+
+    return buildResult({
+      status: "ok",
+      source: context.source,
+      warResolutionSource: context.warResolutionSource,
+      warId: context.warId,
+      warStartTime: context.warStartTime,
+      warEndTime: context.warEndTime,
+      matchType: context.matchType,
+      expectedOutcome: context.expectedOutcome,
+      participantsCount: context.participants.length,
+      attacksCount: context.attacks.length,
+      report,
+      timingInputs,
+    });
+  }
+
+  /** Purpose: produce detailed compliance issues for leadership-facing command responses. */
+  async getComplianceReport(input: {
+    clanTag: string;
+    preferredWarStartTime?: Date | null;
+    warId?: number | null;
+    matchType: MatchType;
+    expectedOutcome: "WIN" | "LOSE" | null;
+  }): Promise<WarComplianceReport | null> {
+    const clanTag = normalizeTag(input.clanTag);
+    if (!normalizeTagBare(clanTag)) return null;
+    if (input.matchType === "BL" || input.matchType === "MM") {
+      return null;
+    }
+
+    const warSeed = await getWarSeed({
+      clanTag,
+      preferredWarStartTime: input.preferredWarStartTime ?? null,
+      warId: input.warId ?? null,
+    });
+    if (!warSeed) return null;
+    const clanTagWhere = buildClanTagWhere(clanTag);
+    const participants = await prisma.warAttacks.findMany({
+      where: { ...clanTagWhere, warStartTime: warSeed.warStartTime, attackOrder: 0 },
+      select: { playerName: true, playerTag: true, attacksUsed: true, playerPosition: true },
+      orderBy: [{ playerPosition: "asc" }, { playerName: "asc" }],
+    });
+    const attacks = await prisma.warAttacks.findMany({
+      where: { ...clanTagWhere, warStartTime: warSeed.warStartTime, attackOrder: { gt: 0 } },
+      select: {
+        playerTag: true,
+        playerName: true,
+        playerPosition: true,
+        defenderPosition: true,
+        stars: true,
+        trueStars: true,
+        attackSeenAt: true,
+        warEndTime: true,
+        attackOrder: true,
+      },
+      orderBy: [{ attackSeenAt: "asc" }, { attackOrder: "asc" }, { playerTag: "asc" }],
+    });
+
+    const context: ComplianceContext = {
+      clanTag,
+      warId: Number.isFinite(Number(warSeed.warId)) ? Math.trunc(Number(warSeed.warId)) : null,
+      warStartTime: warSeed.warStartTime,
+      warEndTime: warSeed.warEndTime,
+      matchType: normalizeMatchType(input.matchType),
+      expectedOutcome: normalizeOutcome(input.expectedOutcome),
+      participants: participants as WarComplianceParticipant[],
+      attacks: attacks as WarComplianceAttack[],
+      source: "war_attacks",
+      warResolutionSource: "current_war",
+    };
+
+    if (hasInsufficientData(context)) return null;
+    return this.buildReportFromContext(context);
+  }
+
+  /** Purpose: load command-targeted active-war context from CurrentWar + WarAttacks. */
+  private async loadCurrentComplianceContext(input: {
+    guildId: string;
+    clanTag: string;
+  }): Promise<ComplianceContext | null> {
+    const clanTagWhere = buildClanTagWhere(input.clanTag);
+    const stateWhere = {
+      OR: [
+        { state: { equals: "preparation", mode: "insensitive" as const } },
+        { state: { equals: "inWar", mode: "insensitive" as const } },
+      ],
+    };
+    const current = await prisma.currentWar.findFirst({
+      where: {
+        guildId: input.guildId,
+        AND: [clanTagWhere, stateWhere],
+      },
+      orderBy: [{ updatedAt: "desc" }],
+      select: {
+        warId: true,
+        startTime: true,
+        endTime: true,
+        matchType: true,
+        outcome: true,
+      },
+    });
+    if (!current) return null;
+
+    const resolvedWarId =
+      current.warId !== null && current.warId !== undefined && Number.isFinite(Number(current.warId))
+        ? Math.trunc(Number(current.warId))
+        : null;
+    const warAttacksWhere: Record<string, unknown> = {
+      ...clanTagWhere,
+    };
+    if (resolvedWarId !== null) {
+      warAttacksWhere.warId = resolvedWarId;
+    } else if (current.startTime instanceof Date) {
+      warAttacksWhere.warStartTime = current.startTime;
+    } else {
+      return null;
+    }
+
+    const [participants, attacks] = await Promise.all([
+      prisma.warAttacks.findMany({
+        where: {
+          ...(warAttacksWhere as any),
+          attackOrder: 0,
+        },
+        select: {
+          playerName: true,
+          playerTag: true,
+          attacksUsed: true,
+          playerPosition: true,
+          warStartTime: true,
+        },
+        orderBy: [{ playerPosition: "asc" }, { playerName: "asc" }],
+      }),
+      prisma.warAttacks.findMany({
+        where: {
+          ...(warAttacksWhere as any),
+          attackOrder: { gt: 0 },
+        },
+        select: {
+          playerTag: true,
+          playerName: true,
+          playerPosition: true,
+          defenderPosition: true,
+          stars: true,
+          trueStars: true,
+          attackSeenAt: true,
+          warEndTime: true,
+          attackOrder: true,
+          warStartTime: true,
+        },
+        orderBy: [{ attackSeenAt: "asc" }, { attackOrder: "asc" }, { playerTag: "asc" }],
+      }),
+    ]);
+
+    const warStartTime =
+      (current.startTime instanceof Date ? current.startTime : null) ??
+      participants[0]?.warStartTime ??
+      attacks[0]?.warStartTime ??
+      null;
+    if (!(warStartTime instanceof Date)) return null;
+
+    const warEndTime =
+      (current.endTime instanceof Date ? current.endTime : null) ?? attacks[0]?.warEndTime ?? null;
+
+    return {
+      clanTag: normalizeTag(input.clanTag),
+      warId: resolvedWarId,
+      warStartTime,
+      warEndTime,
+      matchType: normalizeMatchType(current.matchType as string | null),
+      expectedOutcome: normalizeOutcome(current.outcome),
+      participants: participants as WarComplianceParticipant[],
+      attacks: attacks as WarComplianceAttack[],
+      source: "war_attacks",
+      warResolutionSource: "current_war",
+    };
+  }
+
+  /** Purpose: load ended-war command context from ClanWarHistory + WarLookup + ClanWarParticipation. */
+  private async loadHistoricalComplianceContext(input: {
+    guildId: string;
+    clanTag: string;
+    warId: number;
+  }): Promise<ComplianceContext | null> {
+    const clanTagWhere = buildClanTagWhere(input.clanTag);
+    const historyRow = await prisma.clanWarHistory.findFirst({
+      where: {
+        ...clanTagWhere,
+        warId: Math.trunc(input.warId),
+      },
+      select: {
+        warId: true,
+        warStartTime: true,
+        warEndTime: true,
+        matchType: true,
+        expectedOutcome: true,
+      },
+    });
+    if (!historyRow) return null;
+
+    const [lookupRow, participationRows] = await Promise.all([
+      prisma.warLookup.findUnique({
+        where: { warId: String(historyRow.warId) },
+        select: { payload: true, endTime: true },
+      }),
+      prisma.clanWarParticipation.findMany({
+        where: {
+          guildId: input.guildId,
+          warId: String(historyRow.warId),
+          ...clanTagWhere,
+        },
+        select: {
+          playerTag: true,
+          playerName: true,
+          attacksUsed: true,
+          firstAttackAt: true,
+        },
+        orderBy: [{ playerName: "asc" }],
+      }),
+    ]);
+
+    const parsedLookup = parseWarLookupPayload(lookupRow?.payload ?? null);
+    const firstAttackAtByPlayerTag = new Map<string, Date>();
+    for (const row of participationRows) {
+      const playerTag = normalizeTag(row.playerTag);
+      if (!playerTag || !(row.firstAttackAt instanceof Date)) continue;
+      firstAttackAtByPlayerTag.set(playerTag, row.firstAttackAt);
+    }
+
+    const warEndTime =
+      (historyRow.warEndTime instanceof Date ? historyRow.warEndTime : null) ??
+      parsedLookup.payloadEndTime ??
+      (lookupRow?.endTime instanceof Date ? lookupRow.endTime : null) ??
+      null;
+
+    const attacks = this.mapHistoricalAttacks({
+      warStartTime: historyRow.warStartTime,
+      warEndTime,
+      attackRows: parsedLookup.attacks,
+      clanMembersByTag: parsedLookup.clanMembers,
+      opponentMembersByTag: parsedLookup.opponentMembers,
+      firstAttackAtByPlayerTag,
+    });
+
+    const participants = this.mapHistoricalParticipants({
+      participationRows,
+      clanMembersByTag: parsedLookup.clanMembers,
+      attacks,
+    });
+
+    return {
+      clanTag: normalizeTag(input.clanTag),
+      warId: Number.isFinite(Number(historyRow.warId))
+        ? Math.trunc(Number(historyRow.warId))
+        : null,
+      warStartTime: historyRow.warStartTime,
+      warEndTime,
+      matchType: normalizeMatchType(historyRow.matchType as string | null),
+      expectedOutcome: normalizeOutcome(historyRow.expectedOutcome),
+      participants,
+      attacks,
+      source: "war_lookup",
+      warResolutionSource: "clan_war_history",
+    };
+  }
+
+  /** Purpose: map historical lookup payload attacks into compliance attack rows. */
+  private mapHistoricalAttacks(input: {
+    warStartTime: Date;
+    warEndTime: Date | null;
+    attackRows: Array<Record<string, unknown>>;
+    clanMembersByTag: Map<string, WarLookupMember>;
+    opponentMembersByTag: Map<string, WarLookupMember>;
+    firstAttackAtByPlayerTag: Map<string, Date>;
+  }): WarComplianceAttack[] {
+    const orderedRows = input.attackRows
+      .map((row, idx) => ({
+        row,
+        idx,
+        order: toInt(row.order) ?? toInt(row.attackOrder) ?? idx + 1,
+      }))
+      .sort((a, b) => a.order - b.order || a.idx - b.idx);
+
+    const defenderBestStars = new Map<string, number>();
+    const fallbackSeenAt = input.warEndTime ?? input.warStartTime;
+    const attacks: WarComplianceAttack[] = [];
+
+    for (const wrapped of orderedRows) {
+      const row = wrapped.row;
+      const attackerTag = normalizeTag(String(row.attackerTag ?? row.playerTag ?? ""));
+      if (!attackerTag) continue;
+      const defenderTag = normalizeTag(String(row.defenderTag ?? ""));
+
+      const stars = Math.max(0, toInt(row.stars) ?? 0);
+      const explicitTrueStars = toInt(row.trueStars);
+      const previousBest = defenderTag ? defenderBestStars.get(defenderTag) ?? 0 : 0;
+      const trueStars =
+        explicitTrueStars !== null ? Math.max(0, explicitTrueStars) : Math.max(0, stars - previousBest);
+      if (defenderTag) {
+        defenderBestStars.set(defenderTag, Math.max(previousBest, stars));
+      }
+
+      const attackerMember = input.clanMembersByTag.get(attackerTag);
+      const defenderMember = input.opponentMembersByTag.get(defenderTag);
+      const playerName =
+        String(row.attackerName ?? "").trim() ||
+        String(attackerMember?.name ?? "").trim() ||
+        attackerTag;
+      const defenderPosition = toInt(row.defenderPosition) ?? defenderMember?.mapPosition ?? null;
+      const playerPosition = toInt(row.attackerPosition) ?? attackerMember?.mapPosition ?? null;
+      const attackSeenAt =
+        parseDateLike(row.attackSeenAt ?? row.attackedAt ?? row.attackTime ?? row.seenAt) ??
+        input.firstAttackAtByPlayerTag.get(attackerTag) ??
+        fallbackSeenAt;
+
+      attacks.push({
+        playerTag: attackerTag,
+        playerName,
+        playerPosition,
+        defenderPosition,
+        stars,
+        trueStars,
+        attackSeenAt,
+        warEndTime: input.warEndTime,
+        attackOrder: wrapped.order,
+      });
+    }
+
+    return attacks;
+  }
+
+  /** Purpose: map historical participation + payload members into compliance participant rows. */
+  private mapHistoricalParticipants(input: {
+    participationRows: Array<{
+      playerTag: string;
+      playerName: string | null;
+      attacksUsed: number;
+      firstAttackAt: Date | null;
+    }>;
+    clanMembersByTag: Map<string, WarLookupMember>;
+    attacks: WarComplianceAttack[];
+  }): WarComplianceParticipant[] {
+    const attacksUsedByTag = new Map<string, number>();
+    for (const attack of input.attacks) {
+      const tag = normalizeTag(attack.playerTag);
+      attacksUsedByTag.set(tag, (attacksUsedByTag.get(tag) ?? 0) + 1);
+    }
+
+    const byTag = new Map<string, WarComplianceParticipant>();
+    for (const row of input.participationRows) {
+      const playerTag = normalizeTag(row.playerTag);
+      if (!playerTag) continue;
+      const member = input.clanMembersByTag.get(playerTag);
+      byTag.set(playerTag, {
+        playerTag,
+        playerName:
+          String(row.playerName ?? "").trim() || String(member?.name ?? "").trim() || playerTag,
+        attacksUsed: Number.isFinite(Number(row.attacksUsed))
+          ? Math.max(0, Math.trunc(Number(row.attacksUsed)))
+          : attacksUsedByTag.get(playerTag) ?? 0,
+        playerPosition: member?.mapPosition ?? null,
+      });
+    }
+
+    if (byTag.size === 0) {
+      for (const member of input.clanMembersByTag.values()) {
+        byTag.set(member.tag, {
+          playerTag: member.tag,
+          playerName: member.name ?? member.tag,
+          attacksUsed: attacksUsedByTag.get(member.tag) ?? 0,
+          playerPosition: member.mapPosition,
+        });
+      }
+    }
+
+    for (const attack of input.attacks) {
+      const playerTag = normalizeTag(attack.playerTag);
+      if (!playerTag || byTag.has(playerTag)) continue;
+      byTag.set(playerTag, {
+        playerTag,
+        playerName: String(attack.playerName ?? "").trim() || playerTag,
+        attacksUsed: attacksUsedByTag.get(playerTag) ?? 1,
+        playerPosition: attack.playerPosition ?? null,
+      });
+    }
+
+    return [...byTag.values()].sort((a, b) => {
+      const posA = Number.isFinite(Number(a.playerPosition))
+        ? Number(a.playerPosition)
+        : Number.MAX_SAFE_INTEGER;
+      const posB = Number.isFinite(Number(b.playerPosition))
+        ? Number(b.playerPosition)
+        : Number.MAX_SAFE_INTEGER;
+      if (posA !== posB) return posA - posB;
+      return String(a.playerName ?? a.playerTag).localeCompare(String(b.playerName ?? b.playerTag));
+    });
+  }
+
+  /** Purpose: build a detailed compliance report from a source-agnostic context model. */
+  private async buildReportFromContext(context: ComplianceContext): Promise<WarComplianceReport | null> {
+    const loseStyle = await getLoseStyleForClan(context.clanTag);
+    const snapshot = computeWarComplianceForTest({
+      clanTag: context.clanTag,
+      participants: context.participants,
+      attacks: context.attacks,
+      matchType: context.matchType,
+      expectedOutcome: context.expectedOutcome,
+      loseStyle,
+    });
+
+    const participantByLabel = new Map<string, WarComplianceParticipant>();
+    const attacksByPlayerTag = new Map<string, WarComplianceAttack[]>();
+    const attacksUsedByPlayerTag = new Map<string, number>();
+
+    for (const participant of context.participants) {
+      const label = getParticipantLabel({
+        playerName: participant.playerName,
+        playerTag: participant.playerTag,
+      });
+      participantByLabel.set(label, participant);
+      attacksUsedByPlayerTag.set(
+        normalizeTag(participant.playerTag),
+        Number(participant.attacksUsed ?? 0)
+      );
+    }
+    for (const attack of context.attacks) {
+      const tag = normalizeTag(attack.playerTag);
+      const rows = attacksByPlayerTag.get(tag) ?? [];
+      rows.push(attack);
+      attacksByPlayerTag.set(tag, rows);
+    }
+
+    const expectedPlanBehavior = describeExpectedPlanBehavior({
+      matchType: context.matchType,
+      expectedOutcome: context.expectedOutcome,
+      loseStyle,
+    });
+
+    return {
+      clanTag: context.clanTag,
+      warId: context.warId,
+      warStartTime: context.warStartTime,
+      warEndTime: context.warEndTime,
+      matchType: context.matchType,
+      expectedOutcome: context.expectedOutcome,
+      loseStyle,
+      missedBoth: mapNamesToIssues({
+        names: snapshot.missedBoth,
+        ruleType: "missed_both",
+        expectedBehavior: "Use both attacks for the war.",
+        participantByLabel,
+        attacksByPlayerTag,
+        attacksUsedByPlayerTag,
+      }),
+      notFollowingPlan: mapNamesToIssues({
+        names: snapshot.notFollowingPlan,
+        ruleType: "not_following_plan",
+        expectedBehavior: expectedPlanBehavior,
+        participantByLabel,
+        attacksByPlayerTag,
+        attacksUsedByPlayerTag,
+      }),
+      participantsCount: context.participants.length,
+      attacksCount: context.attacks.length,
+    };
+  }
+}

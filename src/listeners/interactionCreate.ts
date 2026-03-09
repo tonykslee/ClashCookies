@@ -56,6 +56,8 @@ import {
   CommandPermissionService,
   getCommandTargetsFromInteraction,
 } from "../services/CommandPermissionService";
+import { runWithTelemetryContext } from "../services/telemetry/context";
+import { TelemetryIngestService, toFailureTelemetry } from "../services/telemetry/ingest";
 import {
   handleNotifyWarPreviewPostButton,
   isNotifyWarPreviewPostButtonCustomId,
@@ -70,6 +72,7 @@ const GLOBAL_POST_BUTTON_PREFIX = "post-channel";
 const COMMANDS_WITH_CUSTOM_VISIBILITY = new Set(["help", "fwa"]);
 
 let isRegistered = false;
+const telemetryIngest = TelemetryIngestService.getInstance();
 
 function isMissingBotPermissionsError(err: unknown): boolean {
   const code = (err as { code?: number } | null | undefined)?.code;
@@ -92,6 +95,14 @@ function getRequestedVisibility(interaction: ChatInputCommandInteraction): "priv
   } catch {
     return "private";
   }
+}
+
+function getInteractionSubcommandPath(interaction: ChatInputCommandInteraction): string {
+  const group = interaction.options.getSubcommandGroup(false);
+  const sub = interaction.options.getSubcommand(false);
+  if (group && sub) return `${group}:${sub}`;
+  if (sub) return sub;
+  return "";
 }
 
 function buildGlobalPostButton(userId: string): ActionRowBuilder<ButtonBuilder> {
@@ -614,69 +625,188 @@ const handleSlashCommand = async (
     return;
   }
 
+  const commandName = interaction.commandName;
+  const subcommand = getInteractionSubcommandPath(interaction);
+  const runId = `${interaction.id}:${Date.now().toString(36)}`;
+  const startedAtMs = Date.now();
+  let lifecycleFinalized = false;
+
+  const recordSuccess = () => {
+    if (lifecycleFinalized) return;
+    lifecycleFinalized = true;
+    telemetryIngest.recordCommandLifecycle({
+      status: "success",
+      guildId: interaction.guildId ?? "global",
+      userId: interaction.user.id,
+      commandName,
+      subcommand,
+      runId,
+      interactionId: interaction.id,
+      durationMs: Date.now() - startedAtMs,
+    });
+  };
+
+  const recordFailure = (input: {
+    errorCategory: string;
+    errorCode: string;
+    timeout: boolean;
+  }) => {
+    if (lifecycleFinalized) return;
+    lifecycleFinalized = true;
+    telemetryIngest.recordCommandLifecycle({
+      status: "failure",
+      guildId: interaction.guildId ?? "global",
+      userId: interaction.user.id,
+      commandName,
+      subcommand,
+      runId,
+      interactionId: interaction.id,
+      durationMs: Date.now() - startedAtMs,
+      errorCategory: input.errorCategory,
+      errorCode: input.errorCode,
+      timeout: input.timeout,
+    });
+  };
+
+  telemetryIngest.recordCommandLifecycle({
+    status: "start",
+    guildId: interaction.guildId ?? "global",
+    userId: interaction.user.id,
+    commandName,
+    subcommand,
+    runId,
+    interactionId: interaction.id,
+  });
+
   try {
-    const targets = getCommandTargetsFromInteraction(interaction);
-    const allowed = await commandPermissionService.canUseAnyTarget(
-      targets,
-      interaction
-    );
-    if (!allowed) {
-      await interaction.reply({
-        content: `You do not have permission to use /${interaction.commandName}.`,
-        ephemeral: true,
-      });
-      return;
-    }
-
-    const autoVisibilityEnabled = !COMMANDS_WITH_CUSTOM_VISIBILITY.has(
-      interaction.commandName
-    );
-    if (autoVisibilityEnabled) {
-      const visibility = getRequestedVisibility(interaction);
-      const isPublic = visibility === "public";
-      const originalDeferReply = interaction.deferReply.bind(interaction);
-      const originalReply = interaction.reply.bind(interaction);
-      const originalEditReply = interaction.editReply.bind(interaction);
-      const originalFollowUp = interaction.followUp.bind(interaction);
-
-      (interaction as any).deferReply = async (options?: Record<string, unknown>) =>
-        originalDeferReply({
-          ...(options ?? {}),
-          ephemeral: !isPublic,
+    await runWithTelemetryContext(
+      {
+        runId,
+        guildId: interaction.guildId ?? "global",
+        userId: interaction.user.id,
+        commandName,
+        subcommand,
+        interactionId: interaction.id,
+      },
+      async () => {
+        const permissionStartedAtMs = Date.now();
+        const targets = getCommandTargetsFromInteraction(interaction);
+        const allowed = await commandPermissionService.canUseAnyTarget(
+          targets,
+          interaction
+        );
+        telemetryIngest.recordStageTiming({
+          stage: "permission_check",
+          status: allowed ? "success" : "failure",
+          guildId: interaction.guildId ?? "global",
+          commandName,
+          subcommand,
+          runId,
+          durationMs: Date.now() - permissionStartedAtMs,
         });
 
-      (interaction as any).reply = async (options: unknown) =>
-        originalReply(
-          maybeAttachPostButton(
-            coerceInteractionResponseVisibility(options, isPublic),
-            interaction.user.id,
-            isPublic
-          ) as
-            | string
-            | Record<string, unknown>
-        );
+        if (!allowed) {
+          recordFailure({
+            errorCategory: "permission",
+            errorCode: "PERMISSION_DENIED",
+            timeout: false,
+          });
+          await interaction.reply({
+            content: `You do not have permission to use /${interaction.commandName}.`,
+            ephemeral: true,
+          });
+          return;
+        }
 
-      (interaction as any).editReply = async (options: unknown) =>
-        originalEditReply(
-          maybeAttachPostButton(options, interaction.user.id, isPublic) as
-            | string
-            | Record<string, unknown>
+        const autoVisibilityEnabled = !COMMANDS_WITH_CUSTOM_VISIBILITY.has(
+          interaction.commandName
         );
+        if (autoVisibilityEnabled) {
+          const visibility = getRequestedVisibility(interaction);
+          const isPublic = visibility === "public";
+          const originalDeferReply = interaction.deferReply.bind(interaction);
+          const originalReply = interaction.reply.bind(interaction);
+          const originalEditReply = interaction.editReply.bind(interaction);
+          const originalFollowUp = interaction.followUp.bind(interaction);
 
-      (interaction as any).followUp = async (options: unknown) =>
-        originalFollowUp(
-          maybeAttachPostButton(
-            coerceInteractionResponseVisibility(options, isPublic),
-            interaction.user.id,
-            isPublic
-          ) as
-            | string
-            | Record<string, unknown>
-        );
-    }
+          (interaction as any).deferReply = async (options?: Record<string, unknown>) =>
+            originalDeferReply({
+              ...(options ?? {}),
+              ephemeral: !isPublic,
+            });
 
-    await slashCommand.run(client, interaction, cocService);
+          (interaction as any).reply = async (options: unknown) =>
+            originalReply(
+              maybeAttachPostButton(
+                coerceInteractionResponseVisibility(options, isPublic),
+                interaction.user.id,
+                isPublic
+              ) as
+                | string
+                | Record<string, unknown>
+            );
+
+          (interaction as any).editReply = async (options: unknown) =>
+            originalEditReply(
+              maybeAttachPostButton(options, interaction.user.id, isPublic) as
+                | string
+                | Record<string, unknown>
+            );
+
+          (interaction as any).followUp = async (options: unknown) =>
+            originalFollowUp(
+              maybeAttachPostButton(
+                coerceInteractionResponseVisibility(options, isPublic),
+                interaction.user.id,
+                isPublic
+              ) as
+                | string
+                | Record<string, unknown>
+            );
+        }
+
+        const executionStartedAtMs = Date.now();
+        try {
+          await slashCommand.run(client, interaction, cocService);
+          telemetryIngest.recordStageTiming({
+            stage: "command_execute",
+            status: "success",
+            guildId: interaction.guildId ?? "global",
+            commandName,
+            subcommand,
+            runId,
+            durationMs: Date.now() - executionStartedAtMs,
+          });
+          recordSuccess();
+        } catch (err) {
+          telemetryIngest.recordStageTiming({
+            stage: "command_execute",
+            status: "failure",
+            guildId: interaction.guildId ?? "global",
+            commandName,
+            subcommand,
+            runId,
+            durationMs: Date.now() - executionStartedAtMs,
+          });
+          const failure = toFailureTelemetry(err);
+          recordFailure({
+            errorCategory: failure.errorCategory,
+            errorCode: failure.errorCode,
+            timeout: failure.timeout,
+          });
+          throw err;
+        }
+      }
+    );
   } catch (err) {
+    if (!lifecycleFinalized) {
+      const failure = toFailureTelemetry(err);
+      recordFailure({
+        errorCategory: failure.errorCategory,
+        errorCode: failure.errorCode,
+        timeout: failure.timeout,
+      });
+    }
     console.error(`Command failed: ${formatError(err)}`);
     const message = isMissingBotPermissionsError(err)
       ? missingPermissionMessage(`/${interaction.commandName}`)

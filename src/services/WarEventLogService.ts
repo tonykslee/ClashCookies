@@ -16,6 +16,7 @@ import { FwaStatsService } from "./FwaStatsService";
 import { PointsProjectionService } from "./PointsProjectionService";
 import { PostedMessageService } from "./PostedMessageService";
 import { PointsSyncService } from "./PointsSyncService";
+import { PointsFetchPolicyService } from "./PointsFetchPolicyService";
 import { SettingsService } from "./SettingsService";
 import { WarEventHistoryService } from "./war-events/history";
 import { WarStartPointsSyncService } from "./war-events/pointsSync";
@@ -61,6 +62,13 @@ function buildNextRefreshRelativeLabel(
 
 export const buildNotifyNextRefreshLabelForTest = buildNextRefreshRelativeLabel;
 
+/** Purpose: keep notify-event embed colors stable and centralized across render paths. */
+export function resolveNotifyEventEmbedColor(eventType: EventType): number {
+  if (eventType === "war_started") return 0x3498db;
+  if (eventType === "battle_day") return 0xf1c40f;
+  return 0x2ecc71;
+}
+
 type TestSource = "current" | "last";
 
 type SubscriptionRow = {
@@ -89,6 +97,16 @@ type SubscriptionRow = {
   opponentTag: string | null;
   opponentName: string | null;
   clanName: string | null;
+  pointsConfirmedByClanMail: boolean | null;
+  pointsNeedsValidation: boolean | null;
+  pointsLastSuccessfulFetchAt: Date | null;
+  pointsLastKnownSyncNumber: number | null;
+  pointsLastKnownPoints: number | null;
+  pointsLastKnownMatchType: string | null;
+  pointsLastKnownOutcome: string | null;
+  pointsWarId: string | null;
+  pointsOpponentTag: string | null;
+  pointsWarStartTime: Date | null;
 };
 
 type PollTarget = {
@@ -255,6 +273,7 @@ export class WarEventLogService {
   private readonly fwaStats: FwaStatsService;
   private readonly pointsSync: WarStartPointsSyncService;
   private readonly currentSyncs: PointsSyncService;
+  private readonly pointsPolicy: PointsFetchPolicyService;
   private readonly history: WarEventHistoryService;
   private readonly postedMessages: PostedMessageService;
 
@@ -264,6 +283,7 @@ export class WarEventLogService {
     this.fwaStats = new FwaStatsService();
     this.pointsSync = new WarStartPointsSyncService(this.points, new SettingsService());
     this.currentSyncs = new PointsSyncService();
+    this.pointsPolicy = new PointsFetchPolicyService();
     this.history = new WarEventHistoryService(coc);
     this.postedMessages = new PostedMessageService();
   }
@@ -523,8 +543,8 @@ export class WarEventLogService {
     let outcome = normalizeOutcome(sub.outcome);
     if (params.source === "current" && opponentTag) {
       const [a, b] = await Promise.all([
-        this.points.fetchSnapshot(clanTag),
-        this.points.fetchSnapshot(opponentTag),
+        this.points.fetchSnapshot(clanTag, { reason: "manual_refresh" }),
+        this.points.fetchSnapshot(opponentTag, { reason: "manual_refresh" }),
       ]);
       fwaPoints = a.balance;
       opponentFwaPoints = b.balance;
@@ -651,13 +671,7 @@ export class WarEventLogService {
     const opponentTag = normalizeTag(payload.opponentTag);
     const embed = new EmbedBuilder()
       .setTitle(`Event: ${eventTitle(payload.eventType)} - ${payload.clanName}`)
-      .setColor(
-        payload.eventType === "war_started"
-          ? 0x3498db
-          : payload.eventType === "battle_day"
-            ? 0xf1c40f
-            : 0x2ecc71
-      )
+      .setColor(resolveNotifyEventEmbedColor(payload.eventType))
       .setFooter({ text: `War ID: ${warId ?? "unknown"}` })
       .setTimestamp(new Date());
 
@@ -898,12 +912,26 @@ export class WarEventLogService {
           COALESCE(cnc."roleId", tc."notifyRole") AS "notifyRole",
           cw."fwaPoints",cw."opponentFwaPoints",cw."outcome",cw."matchType",cw."warStartFwaPoints",cw."warEndFwaPoints",
           cw."clanStars",cw."opponentStars",cw."state",cw."prepStartTime",cw."startTime",cw."endTime",
-          cw."opponentTag",cw."opponentName",cw."clanName"
+          cw."opponentTag",cw."opponentName",cw."clanName",
+          cps."confirmedByClanMail" AS "pointsConfirmedByClanMail",
+          cps."needsValidation" AS "pointsNeedsValidation",
+          cps."lastSuccessfulPointsApiFetchAt" AS "pointsLastSuccessfulFetchAt",
+          cps."lastKnownSyncNumber" AS "pointsLastKnownSyncNumber",
+          cps."lastKnownPoints" AS "pointsLastKnownPoints",
+          cps."lastKnownMatchType" AS "pointsLastKnownMatchType",
+          cps."lastKnownOutcome" AS "pointsLastKnownOutcome",
+          cps."warId" AS "pointsWarId",
+          cps."opponentTag" AS "pointsOpponentTag",
+          cps."warStartTime" AS "pointsWarStartTime"
         FROM "CurrentWar" cw
         LEFT JOIN "TrackedClan" tc
           ON UPPER(REPLACE(tc."tag",'#','')) = UPPER(REPLACE(cw."clanTag",'#',''))
         LEFT JOIN "ClanNotifyConfig" cnc
           ON cnc."guildId" = cw."guildId" AND UPPER(REPLACE(cnc."clanTag",'#','')) = UPPER(REPLACE(cw."clanTag",'#',''))
+        LEFT JOIN "ClanPointsSync" cps
+          ON cps."guildId" = cw."guildId"
+          AND UPPER(REPLACE(cps."clanTag",'#','')) = UPPER(REPLACE(cw."clanTag",'#',''))
+          AND cps."warStartTime" = cw."startTime"
         WHERE cw."guildId" = ${guildId} AND UPPER(REPLACE(cw."clanTag",'#','')) = ${normalizeTagBare(clanTag)}
         LIMIT 1
       `
@@ -1013,12 +1041,26 @@ export class WarEventLogService {
           COALESCE(cnc."roleId", tc."notifyRole") AS "notifyRole",
           cw."fwaPoints",cw."opponentFwaPoints",cw."outcome",cw."matchType",cw."warStartFwaPoints",cw."warEndFwaPoints",
           cw."clanStars",cw."opponentStars",cw."state",cw."prepStartTime",cw."startTime",cw."endTime",
-          cw."opponentTag",cw."opponentName",cw."clanName"
+          cw."opponentTag",cw."opponentName",cw."clanName",
+          cps."confirmedByClanMail" AS "pointsConfirmedByClanMail",
+          cps."needsValidation" AS "pointsNeedsValidation",
+          cps."lastSuccessfulPointsApiFetchAt" AS "pointsLastSuccessfulFetchAt",
+          cps."lastKnownSyncNumber" AS "pointsLastKnownSyncNumber",
+          cps."lastKnownPoints" AS "pointsLastKnownPoints",
+          cps."lastKnownMatchType" AS "pointsLastKnownMatchType",
+          cps."lastKnownOutcome" AS "pointsLastKnownOutcome",
+          cps."warId" AS "pointsWarId",
+          cps."opponentTag" AS "pointsOpponentTag",
+          cps."warStartTime" AS "pointsWarStartTime"
         FROM "CurrentWar" cw
         LEFT JOIN "TrackedClan" tc
           ON UPPER(REPLACE(tc."tag",'#','')) = UPPER(REPLACE(cw."clanTag",'#',''))
         LEFT JOIN "ClanNotifyConfig" cnc
           ON cnc."guildId" = cw."guildId" AND UPPER(REPLACE(cnc."clanTag",'#','')) = UPPER(REPLACE(cw."clanTag",'#',''))
+        LEFT JOIN "ClanPointsSync" cps
+          ON cps."guildId" = cw."guildId"
+          AND UPPER(REPLACE(cps."clanTag",'#','')) = UPPER(REPLACE(cw."clanTag",'#',''))
+          AND cps."warStartTime" = cw."startTime"
         WHERE cw."guildId" = ${guildId}
           AND UPPER(REPLACE(cw."clanTag",'#','')) = ${normalizeTagBare(clanTag)}
         LIMIT 1
@@ -1070,10 +1112,58 @@ export class WarEventLogService {
         eventType = null;
       }
     }
+    if ((eventType === "war_started" || eventType === "war_ended") && nextWarStartTime) {
+      await this.currentSyncs
+        .markNeedsValidation({
+          guildId: sub.guildId,
+          clanTag: sub.clanTag,
+          warStartTime: nextWarStartTime,
+        })
+        .catch(() => null);
+    }
+    const lifecycleState =
+      sub.pointsConfirmedByClanMail === null &&
+      sub.pointsNeedsValidation === null &&
+      !sub.pointsLastSuccessfulFetchAt &&
+      sub.pointsLastKnownSyncNumber === null
+        ? null
+        : {
+            confirmedByClanMail: Boolean(sub.pointsConfirmedByClanMail),
+            needsValidation:
+              eventType === "war_started" || eventType === "war_ended"
+                ? true
+                : Boolean(sub.pointsNeedsValidation),
+            lastSuccessfulPointsApiFetchAt: sub.pointsLastSuccessfulFetchAt ?? null,
+            lastKnownSyncNumber:
+              sub.pointsLastKnownSyncNumber !== null &&
+              sub.pointsLastKnownSyncNumber !== undefined &&
+              Number.isFinite(sub.pointsLastKnownSyncNumber)
+                ? Math.trunc(sub.pointsLastKnownSyncNumber)
+                : null,
+            warId: sub.pointsWarId ?? null,
+            opponentTag: sub.pointsOpponentTag ?? null,
+            warStartTime: sub.pointsWarStartTime ?? null,
+          };
+    const gateDecision = this.pointsPolicy.evaluatePollerFetch({
+      guildId: sub.guildId,
+      clanTag: sub.clanTag,
+      pollerSource: "war_event_poll_cycle",
+      requestedReason: "post_war_reconciliation",
+      warState: currentState,
+      warStartTime: nextWarStartTime,
+      warEndTime: nextWarEndTime ?? sub.endTime ?? null,
+      currentSyncNumber: syncContext.activeSync,
+      lifecycle: lifecycleState,
+      activeWarId:
+        sub.warId !== null && sub.warId !== undefined && Number.isFinite(sub.warId)
+          ? String(Math.trunc(sub.warId))
+          : null,
+      activeOpponentTag: nextOpponentTag || normalizeTag(sub.opponentTag ?? ""),
+    });
     if (eventType === "war_started" && nextOpponentTag) {
       await this.pointsSync.resetWarStartPointsJob(sub.clanTag, nextOpponentTag).catch(() => null);
     }
-    if (currentState !== "notInWar" && nextOpponentTag) {
+    if (gateDecision.allowed && currentState !== "notInWar" && nextOpponentTag) {
       await this.pointsSync.maybeRunWarStartPointsCheck(
         sub,
         nextOpponentTag,
@@ -1124,12 +1214,13 @@ export class WarEventLogService {
     const nextOpponentDestruction = Number.isFinite(Number(war?.opponent?.destructionPercentage))
       ? Number(war?.opponent?.destructionPercentage)
       : null;
-    if (nextOpponentTag || normalizeTag(sub.opponentTag ?? "")) {
+    if (gateDecision.allowed && (nextOpponentTag || normalizeTag(sub.opponentTag ?? ""))) {
       const projectionClanTag = sub.clanTag;
       const projectionOpponentTag = nextOpponentTag || normalizeTag(sub.opponentTag ?? "");
+      const projectionReason = gateDecision.fetchReason ?? "war_event_projection";
       const [a, b] = await Promise.all([
-        this.points.fetchSnapshot(projectionClanTag),
-        this.points.fetchSnapshot(projectionOpponentTag),
+        this.points.fetchSnapshot(projectionClanTag, { reason: projectionReason }),
+        this.points.fetchSnapshot(projectionOpponentTag, { reason: projectionReason }),
       ]);
       nextFwaPoints = a.balance;
       nextOpponentFwaPoints = b.balance;
@@ -1140,6 +1231,50 @@ export class WarEventLogService {
         b.balance,
         fallbackSyncNumberForEvent
       );
+      const siteCurrent = a.winnerBoxTags.map((t) => normalizeTag(t)).includes(projectionOpponentTag);
+      const observedSync =
+        a.effectiveSync !== null && Number.isFinite(a.effectiveSync)
+          ? Math.trunc(a.effectiveSync)
+          : fallbackSyncNumberForEvent;
+      if (
+        siteCurrent &&
+        sub.guildId &&
+        nextWarStartTime &&
+        observedSync !== null &&
+        Number.isFinite(observedSync) &&
+        a.balance !== null &&
+        Number.isFinite(a.balance) &&
+        b.balance !== null &&
+        Number.isFinite(b.balance)
+      ) {
+        await this.currentSyncs
+          .upsertPointsSync({
+            guildId: sub.guildId,
+            clanTag: projectionClanTag,
+            warId:
+              sub.warId !== null && sub.warId !== undefined && Number.isFinite(sub.warId)
+                ? String(Math.trunc(sub.warId))
+                : null,
+            warStartTime: nextWarStartTime,
+            syncNum: observedSync,
+            opponentTag: projectionOpponentTag,
+            clanPoints: a.balance,
+            opponentPoints: b.balance,
+            outcome: deriveExpectedOutcome(
+              projectionClanTag,
+              projectionOpponentTag,
+              a.balance,
+              b.balance,
+              observedSync
+            ),
+            isFwa: true,
+            fetchedAt: new Date(a.fetchedAtMs),
+            fetchReason: projectionReason,
+            matchType: sub.matchType ?? null,
+            needsValidation: false,
+          })
+          .catch(() => null);
+      }
       if (eventType === "war_started") {
         nextWarStartFwaPoints = a.balance;
       }
@@ -1383,7 +1518,7 @@ export class WarEventLogService {
             "playerName" = EXCLUDED."playerName",
             "playerPosition" = EXCLUDED."playerPosition",
             "attacksUsed" = EXCLUDED."attacksUsed",
-            "attackSeenAt" = EXCLUDED."attackSeenAt",
+            "attackSeenAt" = LEAST("WarAttacks"."attackSeenAt", EXCLUDED."attackSeenAt"),
             "updatedAt" = NOW()
         `
       );
@@ -1434,7 +1569,7 @@ export class WarEventLogService {
               "stars" = EXCLUDED."stars",
               "trueStars" = EXCLUDED."trueStars",
               "destruction" = EXCLUDED."destruction",
-              "attackSeenAt" = EXCLUDED."attackSeenAt",
+              "attackSeenAt" = LEAST("WarAttacks"."attackSeenAt", EXCLUDED."attackSeenAt"),
               "updatedAt" = NOW()
           `
         );
@@ -1643,13 +1778,7 @@ export class WarEventLogService {
     const opponentTag = normalizeTag(payload.opponentTag);
     const embed = new EmbedBuilder()
       .setTitle(`Event: ${eventTitle(payload.eventType)} - ${payload.clanName}`)
-      .setColor(
-        payload.eventType === "war_started"
-          ? 0x3498db
-          : payload.eventType === "battle_day"
-            ? 0xf1c40f
-            : 0x2ecc71
-      )
+      .setColor(resolveNotifyEventEmbedColor(payload.eventType))
       .setFooter({ text: `War ID: ${warId ?? "unknown"}` })
       .setTimestamp(new Date());
 

@@ -1,4 +1,5 @@
 import { prisma } from "../prisma";
+import type { PointsApiFetchReason } from "./PointsFetchPolicyService";
 
 type UpsertPointsSyncInput = {
   guildId: string;
@@ -11,6 +12,11 @@ type UpsertPointsSyncInput = {
   opponentPoints: number;
   outcome?: string | null;
   isFwa: boolean;
+  fetchedAt?: Date | null;
+  fetchReason?: PointsApiFetchReason | null;
+  matchType?: string | null;
+  needsValidation?: boolean;
+  confirmedByClanMail?: boolean;
 };
 
 type FindPointsSyncInput = {
@@ -24,10 +30,46 @@ function normalizeTag(input: string): string {
   return `#${input.trim().toUpperCase().replace(/^#/, "")}`;
 }
 
+/** Purpose: convert nullable timestamps to valid Date values or null. */
+function normalizeDate(input: Date | null | undefined): Date | null {
+  if (!(input instanceof Date)) return null;
+  return Number.isFinite(input.getTime()) ? input : null;
+}
+
+/** Purpose: normalize optional numeric values for lifecycle checkpoints. */
+function normalizeOptionalInt(input: number | null | undefined): number | null {
+  return input !== null && input !== undefined && Number.isFinite(input)
+    ? Math.trunc(input)
+    : null;
+}
+
 export class PointsSyncService {
+  /** Purpose: upsert current-war points sync state and lifecycle metadata. */
   async upsertPointsSync(input: UpsertPointsSyncInput) {
     const clanTag = normalizeTag(input.clanTag);
     const opponentTag = normalizeTag(input.opponentTag);
+    const fetchedAt = normalizeDate(input.fetchedAt) ?? new Date();
+    const matchType = (input.matchType ?? "").trim().toUpperCase() || null;
+    const data = {
+      warId: input.warId ?? null,
+      syncNum: Math.trunc(input.syncNum),
+      opponentTag,
+      clanPoints: Math.trunc(input.clanPoints),
+      opponentPoints: Math.trunc(input.opponentPoints),
+      outcome: input.outcome ?? null,
+      isFwa: input.isFwa,
+      syncFetchedAt: fetchedAt,
+      lastSuccessfulPointsApiFetchAt: fetchedAt,
+      lastFetchReason: input.fetchReason ?? null,
+      lastKnownPoints: Math.trunc(input.clanPoints),
+      lastKnownMatchType: matchType,
+      lastKnownOutcome: input.outcome ?? null,
+      lastKnownSyncNumber: Math.trunc(input.syncNum),
+      needsValidation: input.needsValidation ?? false,
+      ...(input.confirmedByClanMail !== undefined
+        ? { confirmedByClanMail: Boolean(input.confirmedByClanMail) }
+        : {}),
+    };
     return prisma.clanPointsSync.upsert({
       where: {
         guildId_clanTag_warStartTime: {
@@ -36,32 +78,18 @@ export class PointsSyncService {
           warStartTime: input.warStartTime,
         },
       },
-      update: {
-        warId: input.warId ?? null,
-        syncNum: Math.trunc(input.syncNum),
-        opponentTag,
-        clanPoints: Math.trunc(input.clanPoints),
-        opponentPoints: Math.trunc(input.opponentPoints),
-        outcome: input.outcome ?? null,
-        isFwa: input.isFwa,
-        syncFetchedAt: new Date(),
-      },
+      update: data,
       create: {
         guildId: input.guildId,
         clanTag,
-        warId: input.warId ?? null,
+        ...data,
         warStartTime: input.warStartTime,
-        syncNum: Math.trunc(input.syncNum),
-        opponentTag,
-        clanPoints: Math.trunc(input.clanPoints),
-        opponentPoints: Math.trunc(input.opponentPoints),
-        outcome: input.outcome ?? null,
-        isFwa: input.isFwa,
-        syncFetchedAt: new Date(),
+        confirmedByClanMail: Boolean(input.confirmedByClanMail ?? false),
       },
     });
   }
 
+  /** Purpose: read best-matching ClanPointsSync row for current war context. */
   async getCurrentSyncForClan(input: FindPointsSyncInput) {
     const clanTag = normalizeTag(input.clanTag);
     if (input.warId) {
@@ -71,7 +99,11 @@ export class PointsSyncService {
           clanTag,
           warId: String(input.warId),
         },
-        orderBy: [{ syncFetchedAt: "desc" }, { updatedAt: "desc" }],
+        orderBy: [
+          { syncFetchedAt: "desc" },
+          { lastSuccessfulPointsApiFetchAt: "desc" },
+          { updatedAt: "desc" },
+        ],
       });
       if (byWarId) return byWarId;
     }
@@ -92,14 +124,21 @@ export class PointsSyncService {
         guildId: input.guildId,
         clanTag,
       },
-      orderBy: [{ warStartTime: "desc" }, { syncFetchedAt: "desc" }, { updatedAt: "desc" }],
+      orderBy: [
+        { warStartTime: "desc" },
+        { syncFetchedAt: "desc" },
+        { lastSuccessfulPointsApiFetchAt: "desc" },
+        { updatedAt: "desc" },
+      ],
     });
   }
 
+  /** Purpose: compatibility helper for older callers of sync lookup. */
   async findSyncRecord(input: FindPointsSyncInput) {
     return this.getCurrentSyncForClan(input);
   }
 
+  /** Purpose: find latest observed sync number from points-sync records. */
   async findLatestSyncNum(input?: {
     guildId?: string | null;
     clanTag?: string | null;
@@ -109,13 +148,18 @@ export class PointsSyncService {
         ...(input?.guildId ? { guildId: input.guildId } : {}),
         ...(input?.clanTag ? { clanTag: normalizeTag(input.clanTag) } : {}),
       },
-      orderBy: [{ warStartTime: "desc" }, { syncFetchedAt: "desc" }],
+      orderBy: [
+        { warStartTime: "desc" },
+        { syncFetchedAt: "desc" },
+        { lastSuccessfulPointsApiFetchAt: "desc" },
+      ],
       select: { syncNum: true },
     });
     const syncNum = Number(row?.syncNum ?? NaN);
     return Number.isFinite(syncNum) ? Math.trunc(syncNum) : null;
   }
 
+  /** Purpose: attach resolved war IDs without mutating API-fetch timestamps. */
   async attachWarId(params: {
     clanTag: string;
     warStartTime: Date;
@@ -131,8 +175,110 @@ export class PointsSyncService {
       },
       data: {
         warId: String(params.warId),
-        syncFetchedAt: new Date(),
       },
     });
+  }
+
+  /** Purpose: mark lifecycle as needing a revalidation fetch for a targeted war row. */
+  async markNeedsValidation(params: {
+    guildId: string;
+    clanTag: string;
+    warId?: string | number | null;
+    warStartTime?: Date | null;
+  }): Promise<boolean> {
+    const clanTag = normalizeTag(params.clanTag);
+    if (params.warStartTime) {
+      const updated = await prisma.clanPointsSync.updateMany({
+        where: {
+          guildId: params.guildId,
+          clanTag,
+          warStartTime: params.warStartTime,
+        },
+        data: { needsValidation: true },
+      });
+      return updated.count > 0;
+    }
+    if (params.warId !== null && params.warId !== undefined) {
+      const updated = await prisma.clanPointsSync.updateMany({
+        where: {
+          guildId: params.guildId,
+          clanTag,
+          warId: String(params.warId),
+        },
+        data: { needsValidation: true },
+      });
+      return updated.count > 0;
+    }
+    const latest = await prisma.clanPointsSync.findFirst({
+      where: { guildId: params.guildId, clanTag },
+      orderBy: [{ warStartTime: "desc" }, { updatedAt: "desc" }],
+      select: { id: true },
+    });
+    if (!latest?.id) return false;
+    await prisma.clanPointsSync.update({
+      where: { id: latest.id },
+      data: { needsValidation: true },
+    });
+    return true;
+  }
+
+  /** Purpose: checkpoint clan-mail confirmation and freeze routine polling by default. */
+  async markConfirmedByClanMail(params: {
+    guildId: string;
+    clanTag: string;
+    warId?: string | number | null;
+    warStartTime?: Date | null;
+    matchType?: string | null;
+    outcome?: string | null;
+    syncNum?: number | null;
+    points?: number | null;
+  }): Promise<boolean> {
+    const clanTag = normalizeTag(params.clanTag);
+    const matchType = (params.matchType ?? "").trim().toUpperCase() || null;
+    const payload = {
+      confirmedByClanMail: true,
+      needsValidation: false,
+      ...(matchType ? { lastKnownMatchType: matchType } : {}),
+      ...(params.outcome !== undefined ? { lastKnownOutcome: params.outcome ?? null } : {}),
+      ...(normalizeOptionalInt(params.syncNum) !== null
+        ? { lastKnownSyncNumber: normalizeOptionalInt(params.syncNum) }
+        : {}),
+      ...(normalizeOptionalInt(params.points) !== null
+        ? { lastKnownPoints: normalizeOptionalInt(params.points) }
+        : {}),
+    };
+    if (params.warStartTime) {
+      const updated = await prisma.clanPointsSync.updateMany({
+        where: {
+          guildId: params.guildId,
+          clanTag,
+          warStartTime: params.warStartTime,
+        },
+        data: payload,
+      });
+      return updated.count > 0;
+    }
+    if (params.warId !== null && params.warId !== undefined) {
+      const updated = await prisma.clanPointsSync.updateMany({
+        where: {
+          guildId: params.guildId,
+          clanTag,
+          warId: String(params.warId),
+        },
+        data: payload,
+      });
+      return updated.count > 0;
+    }
+    const latest = await prisma.clanPointsSync.findFirst({
+      where: { guildId: params.guildId, clanTag },
+      orderBy: [{ warStartTime: "desc" }, { updatedAt: "desc" }],
+      select: { id: true },
+    });
+    if (!latest?.id) return false;
+    await prisma.clanPointsSync.update({
+      where: { id: latest.id },
+      data: payload,
+    });
+    return true;
   }
 }
