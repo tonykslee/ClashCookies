@@ -113,7 +113,7 @@ describe("fwa mail send gating", () => {
     const reason = getMailBlockedReasonFromStatusForTest({
       inferredMatchType: true,
       hasMailChannel: true,
-      mailStatus: "no_post_tracked",
+      mailStatus: "not_posted",
     });
 
     expect(reason).toBe("Match type is inferred. Confirm match type before sending war mail.");

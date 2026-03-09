@@ -12,19 +12,18 @@ describe("fwa match mail-status debug snapshot", () => {
         channelId: "1234567890",
         messageId: "99887766",
         warId: "1001324",
-        warStartMs: 1700000000000,
-        source: "stored_message",
+        source: "war_mail_lifecycle",
       },
       matchesCurrentMailConfig: true,
-      status: "live_matching_post_exists",
+      status: "posted",
       reconciliationOutcome: "exists",
     });
 
-    expect(debug.winningSource).toBe("ClanPostedMessage");
+    expect(debug.winningSource).toBe("WarMailLifecycle");
     expect(debug.trackedMessageExists).toBe("yes");
     expect(debug.reconciliationCertainty).toBe("definitive");
     expect(debug.environmentMismatchSignal).toBe(false);
-    expect(debug.finalNormalizedStatus).toBe("live_matching_post_exists");
+    expect(debug.finalNormalizedStatus).toBe("posted");
   });
 
   it("flags war-id mismatch and mismatch diagnosis for stale tracked config", () => {
@@ -34,17 +33,16 @@ describe("fwa match mail-status debug snapshot", () => {
         channelId: "222",
         messageId: "333",
         warId: "1001324",
-        warStartMs: 1700000000000,
-        source: "mail_config",
+        source: "war_mail_lifecycle",
       },
       matchesCurrentMailConfig: false,
-      status: "tracked_post_mismatch",
+      status: "not_posted",
       reconciliationOutcome: "not_checked",
     });
 
-    expect(debug.winningSource).toBe("mailConfig");
+    expect(debug.winningSource).toBe("WarMailLifecycle");
     expect(debug.trackedMessageExists).toBe("unknown");
-    expect(debug.debugReasonCode).toBe("tracked_post_mismatch");
+    expect(debug.debugReasonCode).toBe("no_post_tracked");
     expect(debug.environmentMismatchSignal).toBe(true);
   });
 
@@ -55,11 +53,10 @@ describe("fwa match mail-status debug snapshot", () => {
         channelId: "222",
         messageId: "333",
         warId: "1001324",
-        warStartMs: 1700000000000,
-        source: "mail_config",
+        source: "war_mail_lifecycle",
       },
       matchesCurrentMailConfig: true,
-      status: "tracked_post_missing",
+      status: "deleted",
       reconciliationOutcome: "message_missing_confirmed",
     });
 
@@ -78,11 +75,10 @@ describe("fwa match mail-status debug lines", () => {
         channelId: "111",
         messageId: "222",
         warId: "1001324",
-        warStartMs: 1700000000000,
-        source: "stored_message",
+        source: "war_mail_lifecycle",
       },
       matchesCurrentMailConfig: true,
-      status: "live_matching_post_exists",
+      status: "posted",
       reconciliationOutcome: "exists",
     });
 
@@ -93,7 +89,7 @@ describe("fwa match mail-status debug lines", () => {
     expect(lines).toContain("Tracked message id: 222");
     expect(lines).toContain("Tracked message exists: yes");
     expect(lines).toContain("Current war/config matches tracked: yes");
-    expect(lines).toContain("Winning source: ClanPostedMessage");
-    expect(lines).toContain("Final normalized status: live_matching_post_exists");
+    expect(lines).toContain("Winning source: WarMailLifecycle");
+    expect(lines).toContain("Final normalized status: posted");
   });
 });

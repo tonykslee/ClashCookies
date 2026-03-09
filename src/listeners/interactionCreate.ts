@@ -226,6 +226,12 @@ export default (client: Client, cocService: CoCService): void => {
       `[cmd] user=${user} guild=${guild} command=/${interaction.commandName}` +
         (options ? ` options={${options}}` : "")
     );
+    if (interaction.commandName === "compo") {
+      const sub = interaction.options.getSubcommand(false) ?? "unknown";
+      console.log(
+        `[compo-command] stage=interaction_received command=compo subcommand=${sub} guild=${interaction.guildId ?? "DM"} user=${interaction.user.id}`
+      );
+    }
 
     await handleSlashCommand(client, interaction, cocService);
   });
@@ -623,6 +629,12 @@ const handleSlashCommand = async (
       // no-op
     }
     return;
+  }
+  if (interaction.commandName === "compo") {
+    const sub = interaction.options.getSubcommand(false) ?? "unknown";
+    console.log(
+      `[compo-command] stage=handler_resolved command=compo subcommand=${sub} handler=${slashCommand.name}.run`
+    );
   }
 
   const commandName = interaction.commandName;
