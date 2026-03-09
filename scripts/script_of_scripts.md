@@ -64,6 +64,14 @@ When making changes:
 
 If necessary, refactor existing code to support the new feature.
 
+<<<<<<< Updated upstream
+=======
+Before considering the task complete:
+* Run relevant validation commands (lint/tests) for the affected scope
+* Fix CI-blocking lint errors
+* Do not leave touched files with avoidable lint issues
+
+>>>>>>> Stashed changes
 ---
 
 # Step 5 — Generate Conventional Commit Message
