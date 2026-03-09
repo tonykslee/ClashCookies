@@ -18,6 +18,9 @@ export type PointsLifecycleState = {
   needsValidation: boolean;
   lastSuccessfulPointsApiFetchAt: Date | null;
   lastKnownSyncNumber: number | null;
+  warId?: string | null;
+  opponentTag?: string | null;
+  warStartTime?: Date | null;
 };
 
 type RoutinePointsFetchInput = {
@@ -27,6 +30,45 @@ type RoutinePointsFetchInput = {
   currentSyncNumber: number | null;
   lifecycle: PointsLifecycleState | null;
   nowMs?: number;
+};
+
+export type PollerPointsFetchSource = "war_event_poll_cycle" | "mail_refresh_loop";
+
+export type PollerPointsFetchOutcome = "allowed" | "blocked" | "not_applicable";
+
+export type PollerPointsFetchDecisionCode =
+  | "manual_override"
+  | "optimized_polling_disabled"
+  | "no_active_opponent"
+  | "inactive_war_for_mail_refresh"
+  | "validation_required"
+  | "sync_number_changed"
+  | "war_identity_changed"
+  | "war_identity_unverifiable"
+  | "locked_mail_confirmed"
+  | "policy_allowed"
+  | "policy_blocked";
+
+export type PollerPointsFetchDecision = {
+  allowed: boolean;
+  outcome: PollerPointsFetchOutcome;
+  decisionCode: PollerPointsFetchDecisionCode;
+  reason: string;
+  fetchReason: PointsApiFetchReason | null;
+  policyReason: PointsApiFetchReason | null;
+  mailConfirmedLockActive: boolean;
+  optimized: boolean;
+};
+
+export type PollerPointsFetchInput = RoutinePointsFetchInput & {
+  guildId: string;
+  clanTag: string;
+  pollerSource: PollerPointsFetchSource;
+  requestedReason: PointsApiFetchReason;
+  preferredAllowedReason?: PointsApiFetchReason | null;
+  activeOpponentTag?: string | null;
+  activeWarId?: string | number | null;
+  manualOverride?: boolean;
 };
 
 type PointsFetchPolicyConfig = {
@@ -78,6 +120,18 @@ function toEpochMs(value: Date | null): number | null {
   return Number.isFinite(ms) ? ms : null;
 }
 
+/** Purpose: normalize clan tags for stable policy comparisons. */
+function normalizeTag(input: string | null | undefined): string | null {
+  const raw = String(input ?? "").trim().toUpperCase().replace(/^#/, "");
+  return raw ? `#${raw}` : null;
+}
+
+/** Purpose: normalize optional war IDs for stable policy comparisons. */
+function normalizeWarId(input: string | number | null | undefined): string | null {
+  const raw = String(input ?? "").trim();
+  return raw ? raw : null;
+}
+
 /** Purpose: build config from defaults + environment overrides. */
 function resolveConfig(overrides?: Partial<PointsFetchPolicyConfig>): PointsFetchPolicyConfig {
   return {
@@ -109,6 +163,7 @@ function resolveConfig(overrides?: Partial<PointsFetchPolicyConfig>): PointsFetc
 }
 
 export class PointsFetchPolicyService {
+  private static readonly pollerDecisionRollups = new Map<string, number>();
   private readonly config: PointsFetchPolicyConfig;
 
   /** Purpose: initialize policy config from env + optional overrides. */
@@ -123,6 +178,240 @@ export class PointsFetchPolicyService {
 
   /** Purpose: decide if routine/background flows should fetch points right now. */
   shouldFetchForRoutine(input: RoutinePointsFetchInput): RoutinePointsFetchDecision {
+    return this.evaluateRoutineDecision(input);
+  }
+
+  /** Purpose: decide poller-side points fetch behavior with explicit lock/identity semantics and audit metadata. */
+  evaluatePollerFetch(input: PollerPointsFetchInput): PollerPointsFetchDecision {
+    const nowMs = input.nowMs ?? Date.now();
+    const lifecycle = input.lifecycle;
+    const activeWar = input.warState !== "notInWar";
+    const activeOpponentTag = normalizeTag(input.activeOpponentTag);
+    const lifecycleOpponentTag = normalizeTag(lifecycle?.opponentTag ?? null);
+    const activeWarId = normalizeWarId(input.activeWarId);
+    const lifecycleWarId = normalizeWarId(lifecycle?.warId ?? null);
+    const activeWarStartMs = toEpochMs(input.warStartTime);
+    const lifecycleWarStartMs = toEpochMs(lifecycle?.warStartTime ?? null);
+    const hasIdentitySignals =
+      (activeWarId !== null && lifecycleWarId !== null) ||
+      (activeOpponentTag !== null && lifecycleOpponentTag !== null) ||
+      (activeWarStartMs !== null && lifecycleWarStartMs !== null);
+    const identityChanged =
+      (activeWarId !== null && lifecycleWarId !== null && activeWarId !== lifecycleWarId) ||
+      (activeOpponentTag !== null &&
+        lifecycleOpponentTag !== null &&
+        activeOpponentTag !== lifecycleOpponentTag) ||
+      (activeWarStartMs !== null &&
+        lifecycleWarStartMs !== null &&
+        activeWarStartMs !== lifecycleWarStartMs);
+
+    if (input.manualOverride) {
+      const decision = this.buildPollerDecision({
+        allowed: true,
+        outcome: "allowed",
+        decisionCode: "manual_override",
+        reason: "Manual override bypasses routine poller lock checks.",
+        fetchReason: input.preferredAllowedReason ?? input.requestedReason,
+        policyReason: null,
+        mailConfirmedLockActive: false,
+        optimized: this.config.optimizedPollingEnabled,
+      });
+      this.logPollerDecision(input, decision);
+      return decision;
+    }
+
+    if (!this.config.optimizedPollingEnabled) {
+      const decision = this.buildPollerDecision({
+        allowed: true,
+        outcome: "allowed",
+        decisionCode: "optimized_polling_disabled",
+        reason: "Optimized polling disabled; routine poller fetches are allowed.",
+        fetchReason: input.preferredAllowedReason ?? input.requestedReason,
+        policyReason: null,
+        mailConfirmedLockActive: false,
+        optimized: false,
+      });
+      this.logPollerDecision(input, decision);
+      return decision;
+    }
+
+    if (input.requestedReason === "mail_refresh" && !activeWar) {
+      const decision = this.buildPollerDecision({
+        allowed: false,
+        outcome: "not_applicable",
+        decisionCode: "inactive_war_for_mail_refresh",
+        reason: "Mail refresh points fetch applies only to active wars.",
+        fetchReason: null,
+        policyReason: null,
+        mailConfirmedLockActive: false,
+        optimized: true,
+      });
+      this.logPollerDecision(input, decision);
+      return decision;
+    }
+
+    if (activeWar && activeOpponentTag === null) {
+      const decision = this.buildPollerDecision({
+        allowed: false,
+        outcome: "not_applicable",
+        decisionCode: "no_active_opponent",
+        reason: "Active war has no resolved opponent tag.",
+        fetchReason: null,
+        policyReason: null,
+        mailConfirmedLockActive: false,
+        optimized: true,
+      });
+      this.logPollerDecision(input, decision);
+      return decision;
+    }
+
+    if (
+      activeWar &&
+      lifecycle &&
+      lifecycle.lastKnownSyncNumber !== null &&
+      input.currentSyncNumber !== null &&
+      Math.trunc(lifecycle.lastKnownSyncNumber) !== Math.trunc(input.currentSyncNumber)
+    ) {
+      const decision = this.buildPollerDecision({
+        allowed: true,
+        outcome: "allowed",
+        decisionCode: "sync_number_changed",
+        reason: "Active sync number changed since last checkpoint; revalidation is required.",
+        fetchReason: input.preferredAllowedReason ?? "pre_fwa_validation",
+        policyReason: "pre_fwa_validation",
+        mailConfirmedLockActive: false,
+        optimized: true,
+      });
+      this.logPollerDecision(input, decision);
+      return decision;
+    }
+
+    if (activeWar && lifecycle?.needsValidation) {
+      const decision = this.buildPollerDecision({
+        allowed: true,
+        outcome: "allowed",
+        decisionCode: "validation_required",
+        reason: "Lifecycle requires validation; routine fetch is re-enabled.",
+        fetchReason:
+          input.preferredAllowedReason ??
+          (input.warState === "preparation" ? "pre_fwa_validation" : input.requestedReason),
+        policyReason: input.warState === "preparation" ? "pre_fwa_validation" : null,
+        mailConfirmedLockActive: false,
+        optimized: true,
+      });
+      this.logPollerDecision(input, decision);
+      return decision;
+    }
+
+    const lockCandidate =
+      activeWar &&
+      Boolean(lifecycle?.confirmedByClanMail) &&
+      !Boolean(lifecycle?.needsValidation);
+    if (lockCandidate && identityChanged) {
+      const decision = this.buildPollerDecision({
+        allowed: true,
+        outcome: "allowed",
+        decisionCode: "war_identity_changed",
+        reason: "War identity changed since mail confirmation; routine fetch is re-enabled.",
+        fetchReason: input.preferredAllowedReason ?? input.requestedReason,
+        policyReason: null,
+        mailConfirmedLockActive: false,
+        optimized: true,
+      });
+      this.logPollerDecision(input, decision);
+      return decision;
+    }
+
+    if (lockCandidate && !hasIdentitySignals) {
+      const decision = this.buildPollerDecision({
+        allowed: true,
+        outcome: "allowed",
+        decisionCode: "war_identity_unverifiable",
+        reason: "War identity could not be verified; lock is not enforced conservatively.",
+        fetchReason: input.preferredAllowedReason ?? input.requestedReason,
+        policyReason: null,
+        mailConfirmedLockActive: false,
+        optimized: true,
+      });
+      this.logPollerDecision(input, decision);
+      return decision;
+    }
+
+    if (lockCandidate) {
+      const decision = this.buildPollerDecision({
+        allowed: false,
+        outcome: "blocked",
+        decisionCode: "locked_mail_confirmed",
+        reason:
+          "Active war mail-confirmed lock is active; routine poller points fetch is suppressed.",
+        fetchReason: null,
+        policyReason: null,
+        mailConfirmedLockActive: true,
+        optimized: true,
+      });
+      this.logPollerDecision(input, decision);
+      return decision;
+    }
+
+    const policyDecision = this.evaluateRoutineDecision({
+      ...input,
+      nowMs,
+    });
+    if (!policyDecision.shouldFetch) {
+      const decision = this.buildPollerDecision({
+        allowed: false,
+        outcome: "blocked",
+        decisionCode: "policy_blocked",
+        reason: policyDecision.skipReason ?? "Routine policy did not trigger a fetch.",
+        fetchReason: null,
+        policyReason: policyDecision.reason,
+        mailConfirmedLockActive: false,
+        optimized: policyDecision.optimized,
+      });
+      this.logPollerDecision(input, decision);
+      return decision;
+    }
+
+    const decision = this.buildPollerDecision({
+      allowed: true,
+      outcome: "allowed",
+      decisionCode: "policy_allowed",
+      reason: "Routine policy trigger allowed poller points fetch.",
+      fetchReason: input.preferredAllowedReason ?? policyDecision.reason ?? input.requestedReason,
+      policyReason: policyDecision.reason,
+      mailConfirmedLockActive: false,
+      optimized: policyDecision.optimized,
+    });
+    this.logPollerDecision(input, decision);
+    return decision;
+  }
+
+  /** Purpose: build a normalized poller decision payload. */
+  private buildPollerDecision(input: PollerPointsFetchDecision): PollerPointsFetchDecision {
+    return {
+      ...input,
+      allowed: Boolean(input.allowed),
+    };
+  }
+
+  /** Purpose: emit standardized decision logs and in-memory rollups for poller points gate behavior. */
+  private logPollerDecision(
+    input: PollerPointsFetchInput,
+    decision: PollerPointsFetchDecision
+  ): void {
+    const normalizedClanTag = normalizeTag(input.clanTag) ?? input.clanTag;
+    const rollupKey = `${input.pollerSource}:${input.requestedReason}:${decision.outcome}`;
+    const nextCount = (PointsFetchPolicyService.pollerDecisionRollups.get(rollupKey) ?? 0) + 1;
+    PointsFetchPolicyService.pollerDecisionRollups.set(rollupKey, nextCount);
+    const activeWarStartMs = toEpochMs(input.warStartTime);
+    const lifecycleWarStartMs = toEpochMs(input.lifecycle?.warStartTime ?? null);
+    console.info(
+      `[points-gate] source=${input.pollerSource} guild=${input.guildId} clan=${normalizedClanTag} requested_reason=${input.requestedReason} outcome=${decision.outcome} code=${decision.decisionCode} allowed=${decision.allowed ? 1 : 0} lock_active=${decision.mailConfirmedLockActive ? 1 : 0} active_war=${input.warState !== "notInWar" ? 1 : 0} fetch_reason=${decision.fetchReason ?? "none"} active_war_id=${normalizeWarId(input.activeWarId) ?? "none"} active_war_start_ms=${activeWarStartMs ?? "none"} active_opponent=${normalizeTag(input.activeOpponentTag) ?? "none"} lifecycle_war_id=${normalizeWarId(input.lifecycle?.warId ?? null) ?? "none"} lifecycle_war_start_ms=${lifecycleWarStartMs ?? "none"} lifecycle_opponent=${normalizeTag(input.lifecycle?.opponentTag ?? null) ?? "none"} rollup=${nextCount} reason=${decision.reason}`
+    );
+  }
+
+  /** Purpose: evaluate base routine triggers independent of poller identity-lock semantics. */
+  private evaluateRoutineDecision(input: RoutinePointsFetchInput): RoutinePointsFetchDecision {
     const nowMs = input.nowMs ?? Date.now();
     if (!this.config.optimizedPollingEnabled) {
       return {

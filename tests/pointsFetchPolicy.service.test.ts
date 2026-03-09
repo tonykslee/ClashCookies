@@ -99,4 +99,175 @@ describe("PointsFetchPolicyService", () => {
     expect(decision.shouldFetch).toBe(true);
     expect(decision.reason).toBe("post_war_check");
   });
+
+  it("blocks post_war_reconciliation under active mail-confirmed lock", () => {
+    const service = new PointsFetchPolicyService();
+    const decision = service.evaluatePollerFetch({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+      pollerSource: "war_event_poll_cycle",
+      requestedReason: "post_war_reconciliation",
+      warState: "inWar",
+      warStartTime: new Date("2026-03-08T07:00:00.000Z"),
+      warEndTime: new Date("2026-03-09T07:00:00.000Z"),
+      currentSyncNumber: 2001,
+      activeWarId: "777",
+      activeOpponentTag: "#OPP999",
+      lifecycle: {
+        confirmedByClanMail: true,
+        needsValidation: false,
+        lastSuccessfulPointsApiFetchAt: new Date("2026-03-08T07:40:00.000Z"),
+        lastKnownSyncNumber: 2001,
+        warId: "777",
+        opponentTag: "#OPP999",
+        warStartTime: new Date("2026-03-08T07:00:00.000Z"),
+      },
+      nowMs: new Date("2026-03-08T08:00:00.000Z").getTime(),
+    });
+
+    expect(decision.allowed).toBe(false);
+    expect(decision.outcome).toBe("blocked");
+    expect(decision.decisionCode).toBe("locked_mail_confirmed");
+  });
+
+  it("blocks mail_refresh under active mail-confirmed lock", () => {
+    const service = new PointsFetchPolicyService();
+    const decision = service.evaluatePollerFetch({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+      pollerSource: "mail_refresh_loop",
+      requestedReason: "mail_refresh",
+      preferredAllowedReason: "mail_refresh",
+      warState: "inWar",
+      warStartTime: new Date("2026-03-08T07:00:00.000Z"),
+      warEndTime: new Date("2026-03-09T07:00:00.000Z"),
+      currentSyncNumber: 2001,
+      activeWarId: "777",
+      activeOpponentTag: "#OPP999",
+      lifecycle: {
+        confirmedByClanMail: true,
+        needsValidation: false,
+        lastSuccessfulPointsApiFetchAt: new Date("2026-03-08T07:40:00.000Z"),
+        lastKnownSyncNumber: 2001,
+        warId: "777",
+        opponentTag: "#OPP999",
+        warStartTime: new Date("2026-03-08T07:00:00.000Z"),
+      },
+      nowMs: new Date("2026-03-08T08:00:00.000Z").getTime(),
+    });
+
+    expect(decision.allowed).toBe(false);
+    expect(decision.decisionCode).toBe("locked_mail_confirmed");
+  });
+
+  it("unlocks routine fetch when war identity changed", () => {
+    const service = new PointsFetchPolicyService();
+    const decision = service.evaluatePollerFetch({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+      pollerSource: "war_event_poll_cycle",
+      requestedReason: "post_war_reconciliation",
+      warState: "inWar",
+      warStartTime: new Date("2026-03-08T07:00:00.000Z"),
+      warEndTime: new Date("2026-03-09T07:00:00.000Z"),
+      currentSyncNumber: 2001,
+      activeWarId: "888",
+      activeOpponentTag: "#NEW123",
+      lifecycle: {
+        confirmedByClanMail: true,
+        needsValidation: false,
+        lastSuccessfulPointsApiFetchAt: new Date("2026-03-08T07:40:00.000Z"),
+        lastKnownSyncNumber: 2001,
+        warId: "777",
+        opponentTag: "#OLD123",
+        warStartTime: new Date("2026-03-08T07:00:00.000Z"),
+      },
+      nowMs: new Date("2026-03-08T08:00:00.000Z").getTime(),
+    });
+
+    expect(decision.allowed).toBe(true);
+    expect(decision.decisionCode).toBe("war_identity_changed");
+  });
+
+  it("unlocks routine fetch when validation is required", () => {
+    const service = new PointsFetchPolicyService();
+    const decision = service.evaluatePollerFetch({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+      pollerSource: "war_event_poll_cycle",
+      requestedReason: "post_war_reconciliation",
+      warState: "inWar",
+      warStartTime: new Date("2026-03-08T07:00:00.000Z"),
+      warEndTime: new Date("2026-03-09T07:00:00.000Z"),
+      currentSyncNumber: 2001,
+      activeWarId: "777",
+      activeOpponentTag: "#OPP999",
+      lifecycle: {
+        confirmedByClanMail: true,
+        needsValidation: true,
+        lastSuccessfulPointsApiFetchAt: new Date("2026-03-08T07:40:00.000Z"),
+        lastKnownSyncNumber: 2001,
+        warId: "777",
+        opponentTag: "#OPP999",
+        warStartTime: new Date("2026-03-08T07:00:00.000Z"),
+      },
+      nowMs: new Date("2026-03-08T08:00:00.000Z").getTime(),
+    });
+
+    expect(decision.allowed).toBe(true);
+    expect(decision.decisionCode).toBe("validation_required");
+  });
+
+  it("allows manual override even when lock would otherwise block", () => {
+    const service = new PointsFetchPolicyService();
+    const decision = service.evaluatePollerFetch({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+      pollerSource: "war_event_poll_cycle",
+      requestedReason: "post_war_reconciliation",
+      warState: "inWar",
+      warStartTime: new Date("2026-03-08T07:00:00.000Z"),
+      warEndTime: new Date("2026-03-09T07:00:00.000Z"),
+      currentSyncNumber: 2001,
+      activeWarId: "777",
+      activeOpponentTag: "#OPP999",
+      manualOverride: true,
+      lifecycle: {
+        confirmedByClanMail: true,
+        needsValidation: false,
+        lastSuccessfulPointsApiFetchAt: new Date("2026-03-08T07:40:00.000Z"),
+        lastKnownSyncNumber: 2001,
+        warId: "777",
+        opponentTag: "#OPP999",
+        warStartTime: new Date("2026-03-08T07:00:00.000Z"),
+      },
+      nowMs: new Date("2026-03-08T08:00:00.000Z").getTime(),
+    });
+
+    expect(decision.allowed).toBe(true);
+    expect(decision.decisionCode).toBe("manual_override");
+  });
+
+  it("returns not_applicable for mail_refresh when no active war exists", () => {
+    const service = new PointsFetchPolicyService();
+    const decision = service.evaluatePollerFetch({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+      pollerSource: "mail_refresh_loop",
+      requestedReason: "mail_refresh",
+      preferredAllowedReason: "mail_refresh",
+      warState: "notInWar",
+      warStartTime: null,
+      warEndTime: null,
+      currentSyncNumber: 2001,
+      activeWarId: null,
+      activeOpponentTag: null,
+      lifecycle: null,
+      nowMs: new Date("2026-03-08T08:00:00.000Z").getTime(),
+    });
+
+    expect(decision.allowed).toBe(false);
+    expect(decision.outcome).toBe("not_applicable");
+    expect(decision.decisionCode).toBe("inactive_war_for_mail_refresh");
+  });
 });

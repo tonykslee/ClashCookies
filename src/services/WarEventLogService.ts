@@ -104,6 +104,9 @@ type SubscriptionRow = {
   pointsLastKnownPoints: number | null;
   pointsLastKnownMatchType: string | null;
   pointsLastKnownOutcome: string | null;
+  pointsWarId: string | null;
+  pointsOpponentTag: string | null;
+  pointsWarStartTime: Date | null;
 };
 
 type PollTarget = {
@@ -916,7 +919,10 @@ export class WarEventLogService {
           cps."lastKnownSyncNumber" AS "pointsLastKnownSyncNumber",
           cps."lastKnownPoints" AS "pointsLastKnownPoints",
           cps."lastKnownMatchType" AS "pointsLastKnownMatchType",
-          cps."lastKnownOutcome" AS "pointsLastKnownOutcome"
+          cps."lastKnownOutcome" AS "pointsLastKnownOutcome",
+          cps."warId" AS "pointsWarId",
+          cps."opponentTag" AS "pointsOpponentTag",
+          cps."warStartTime" AS "pointsWarStartTime"
         FROM "CurrentWar" cw
         LEFT JOIN "TrackedClan" tc
           ON UPPER(REPLACE(tc."tag",'#','')) = UPPER(REPLACE(cw."clanTag",'#',''))
@@ -1042,7 +1048,10 @@ export class WarEventLogService {
           cps."lastKnownSyncNumber" AS "pointsLastKnownSyncNumber",
           cps."lastKnownPoints" AS "pointsLastKnownPoints",
           cps."lastKnownMatchType" AS "pointsLastKnownMatchType",
-          cps."lastKnownOutcome" AS "pointsLastKnownOutcome"
+          cps."lastKnownOutcome" AS "pointsLastKnownOutcome",
+          cps."warId" AS "pointsWarId",
+          cps."opponentTag" AS "pointsOpponentTag",
+          cps."warStartTime" AS "pointsWarStartTime"
         FROM "CurrentWar" cw
         LEFT JOIN "TrackedClan" tc
           ON UPPER(REPLACE(tc."tag",'#','')) = UPPER(REPLACE(cw."clanTag",'#',''))
@@ -1131,23 +1140,30 @@ export class WarEventLogService {
               Number.isFinite(sub.pointsLastKnownSyncNumber)
                 ? Math.trunc(sub.pointsLastKnownSyncNumber)
                 : null,
+            warId: sub.pointsWarId ?? null,
+            opponentTag: sub.pointsOpponentTag ?? null,
+            warStartTime: sub.pointsWarStartTime ?? null,
           };
-    const policyDecision = this.pointsPolicy.shouldFetchForRoutine({
+    const gateDecision = this.pointsPolicy.evaluatePollerFetch({
+      guildId: sub.guildId,
+      clanTag: sub.clanTag,
+      pollerSource: "war_event_poll_cycle",
+      requestedReason: "post_war_reconciliation",
       warState: currentState,
       warStartTime: nextWarStartTime,
       warEndTime: nextWarEndTime ?? sub.endTime ?? null,
       currentSyncNumber: syncContext.activeSync,
       lifecycle: lifecycleState,
+      activeWarId:
+        sub.warId !== null && sub.warId !== undefined && Number.isFinite(sub.warId)
+          ? String(Math.trunc(sub.warId))
+          : null,
+      activeOpponentTag: nextOpponentTag || normalizeTag(sub.opponentTag ?? ""),
     });
-    if (!policyDecision.shouldFetch) {
-      console.info(
-        `[war-events] points fetch skipped guild=${sub.guildId} clan=${sub.clanTag} reason=${policyDecision.skipReason ?? "policy_skip"} confirmed=${lifecycleState?.confirmedByClanMail ? 1 : 0} needsValidation=${lifecycleState?.needsValidation ? 1 : 0}`
-      );
-    }
     if (eventType === "war_started" && nextOpponentTag) {
       await this.pointsSync.resetWarStartPointsJob(sub.clanTag, nextOpponentTag).catch(() => null);
     }
-    if (policyDecision.shouldFetch && currentState !== "notInWar" && nextOpponentTag) {
+    if (gateDecision.allowed && currentState !== "notInWar" && nextOpponentTag) {
       await this.pointsSync.maybeRunWarStartPointsCheck(
         sub,
         nextOpponentTag,
@@ -1198,10 +1214,10 @@ export class WarEventLogService {
     const nextOpponentDestruction = Number.isFinite(Number(war?.opponent?.destructionPercentage))
       ? Number(war?.opponent?.destructionPercentage)
       : null;
-    if (policyDecision.shouldFetch && (nextOpponentTag || normalizeTag(sub.opponentTag ?? ""))) {
+    if (gateDecision.allowed && (nextOpponentTag || normalizeTag(sub.opponentTag ?? ""))) {
       const projectionClanTag = sub.clanTag;
       const projectionOpponentTag = nextOpponentTag || normalizeTag(sub.opponentTag ?? "");
-      const projectionReason = policyDecision.reason ?? "war_event_projection";
+      const projectionReason = gateDecision.fetchReason ?? "war_event_projection";
       const [a, b] = await Promise.all([
         this.points.fetchSnapshot(projectionClanTag, { reason: projectionReason }),
         this.points.fetchSnapshot(projectionOpponentTag, { reason: projectionReason }),

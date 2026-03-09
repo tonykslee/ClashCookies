@@ -12,6 +12,7 @@ Discord bot for Clash of Clans activity tooling.
 - `/fwa match` mail status now scopes "already sent" to the current war identity (war/opponent/config), so new wars start unsent and old posts stop refreshing into new wars.
 - Supports configurable war plans by match type/outcome via `/warplan set|show|reset`; these templates are used in posted war mail content (including line breaks, emoji, and media links).
 - Optimized points polling now tracks lifecycle state in `ClanPointsSync` (`confirmedByClanMail`, `needsValidation`, last-known values) and reduces routine `points.fwafarm` calls after clan-mail confirmation.
+- Poller-side points fetches now use a shared gate that enforces an active-war mail-confirmed lock (`confirmedByClanMail=true`, `needsValidation=false`, matching war identity), blocking routine `post_war_reconciliation`/`mail_refresh` calls until an explicit unlock trigger.
 - `/fwa match` now shows actionable sync status only when validation is needed, keeps single-clan sync/fetch timing details, and hides non-actionable lifecycle/debug lines from user-facing output.
 - `/fwa match` now reuses war-scoped verified points snapshots from persisted sync data for the active war, and `/force sync data` remains the explicit refresh-scrape path.
 - War-mail embeds now use state-coded sidebars (BL=black, MM=white, FWA WIN=green, FWA LOSE=red, unresolved=gray) and refresh/update paths keep color aligned with current match type/outcome.
