@@ -7,6 +7,7 @@ import {
   parseWeightAgeDays,
 } from "../src/services/FwaStatsWeightService";
 import { FwaStatsWeightCookieService } from "../src/services/FwaStatsWeightCookieService";
+import { SettingsService } from "../src/services/SettingsService";
 
 vi.mock("axios", () => ({
   default: {
@@ -47,8 +48,10 @@ describe("FwaStatsWeightService", () => {
   const originalCookie = process.env.FWASTATS_WEIGHT_COOKIE;
 
   beforeEach(() => {
+    vi.restoreAllMocks();
     mockedAxios.get.mockReset();
     delete process.env.FWASTATS_WEIGHT_COOKIE;
+    vi.spyOn(SettingsService.prototype, "get").mockResolvedValue(null);
   });
 
   afterEach(() => {
