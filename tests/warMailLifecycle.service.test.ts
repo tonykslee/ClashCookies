@@ -8,7 +8,11 @@ function buildClient(params: {
   channelError?: unknown;
   messageResult?: unknown;
   messageError?: unknown;
-}): Client {
+}): {
+  client: Client;
+  fetchMessage: ReturnType<typeof vi.fn>;
+  fetchChannel: ReturnType<typeof vi.fn>;
+} {
   const fetchMessage = vi.fn();
   if (params.messageError) {
     fetchMessage.mockRejectedValue(params.messageError);
@@ -30,11 +34,16 @@ function buildClient(params: {
     fetchChannel.mockResolvedValue(params.channelResult ?? channelObject);
   }
 
-  return {
+  const client = {
     channels: {
       fetch: fetchChannel,
     },
   } as unknown as Client;
+  return {
+    client,
+    fetchMessage,
+    fetchChannel,
+  };
 }
 
 describe("WarMailLifecycleService", () => {
@@ -45,9 +54,10 @@ describe("WarMailLifecycleService", () => {
   it("returns not_posted when no lifecycle row exists for current war", async () => {
     vi.spyOn(prisma.warMailLifecycle, "findUnique").mockResolvedValueOnce(null as never);
     const service = new WarMailLifecycleService();
+    const { client } = buildClient({});
 
     const result = await service.resolveStatusForCurrentWar({
-      client: buildClient({}),
+      client,
       guildId: "guild-1",
       clanTag: "AAA111",
       warId: 1001,
@@ -74,9 +84,10 @@ describe("WarMailLifecycleService", () => {
       updatedAt: new Date(),
     } as never);
     const service = new WarMailLifecycleService();
+    const { client, fetchMessage } = buildClient({});
 
     const result = await service.resolveStatusForCurrentWar({
-      client: buildClient({}),
+      client,
       guildId: "guild-1",
       clanTag: "AAA111",
       warId: 1001,
@@ -87,6 +98,7 @@ describe("WarMailLifecycleService", () => {
     expect(result.status).toBe("posted");
     expect(result.mailStatusEmoji).toBe("S");
     expect(result.debug.reconciliationOutcome).toBe("exists");
+    expect(fetchMessage).toHaveBeenCalledWith("456", { force: true });
   });
 
   it("marks lifecycle deleted when tracked message is definitively missing", async () => {
@@ -106,11 +118,12 @@ describe("WarMailLifecycleService", () => {
       .spyOn(prisma.warMailLifecycle, "updateMany")
       .mockResolvedValueOnce({ count: 1 } as never);
     const service = new WarMailLifecycleService();
+    const { client, fetchMessage } = buildClient({
+      messageError: { code: 10008, message: "Unknown Message" },
+    });
 
     const result = await service.resolveStatusForCurrentWar({
-      client: buildClient({
-        messageError: { code: 10008, message: "Unknown Message" },
-      }),
+      client,
       guildId: "guild-1",
       clanTag: "AAA111",
       warId: 1001,
@@ -123,6 +136,7 @@ describe("WarMailLifecycleService", () => {
     expect(result.status).toBe("deleted");
     expect(result.debug.trackingCleared).toBe(true);
     expect(result.debug.reconciliationOutcome).toBe("message_missing_confirmed");
+    expect(fetchMessage).toHaveBeenCalledWith("456", { force: true });
   });
 
   it("keeps lifecycle posted on channel-inaccessible failures", async () => {
@@ -140,11 +154,12 @@ describe("WarMailLifecycleService", () => {
     } as never);
     const updateManySpy = vi.spyOn(prisma.warMailLifecycle, "updateMany");
     const service = new WarMailLifecycleService();
+    const { client } = buildClient({
+      channelError: { code: 50001, message: "Missing Access" },
+    });
 
     const result = await service.resolveStatusForCurrentWar({
-      client: buildClient({
-        channelError: { code: 50001, message: "Missing Access" },
-      }),
+      client,
       guildId: "guild-1",
       clanTag: "AAA111",
       warId: 1001,

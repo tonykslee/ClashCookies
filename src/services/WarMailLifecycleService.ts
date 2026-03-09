@@ -88,19 +88,6 @@ function normalizeTag(input: string): string {
   return `#${input.trim().toUpperCase().replace(/^#/, "")}`;
 }
 
-/** Purpose: detect likely transient network or Discord failures. */
-function isLikelyTransientDiscordError(err: unknown): boolean {
-  const message = String((err as { message?: unknown } | null | undefined)?.message ?? "").toLowerCase();
-  return (
-    message.includes("timeout") ||
-    message.includes("timed out") ||
-    message.includes("econnreset") ||
-    message.includes("eai_again") ||
-    message.includes("enotfound") ||
-    message.includes("network")
-  );
-}
-
 /** Purpose: read numeric Discord API error codes from unknown thrown values. */
 function getDiscordErrorCode(err: unknown): number | null {
   const code = (err as { code?: unknown } | null | undefined)?.code;
@@ -412,36 +399,95 @@ export class WarMailLifecycleService {
     channelId: string;
     messageId: string;
   }): Promise<WarMailLifecycleReconciliationOutcome> {
-    if (!input.client) return "transient_error";
+    if (!input.client) {
+      this.logMessageExistenceCheck({
+        channelId: input.channelId,
+        messageId: input.messageId,
+        via: "none",
+        outcome: "transient_error",
+      });
+      return "transient_error";
+    }
     let channel: unknown;
     try {
       channel = await input.client.channels.fetch(input.channelId);
     } catch (err) {
       const code = getDiscordErrorCode(err);
-      if (code === 10003) return "channel_missing_confirmed";
-      if (code === 50001 || code === 50013) return "channel_inaccessible";
-      return isLikelyTransientDiscordError(err) ? "transient_error" : "transient_error";
+      const outcome: WarMailLifecycleReconciliationOutcome =
+        code === 10003
+          ? "channel_missing_confirmed"
+          : code === 50001 || code === 50013
+            ? "channel_inaccessible"
+            : "transient_error";
+      this.logMessageExistenceCheck({
+        channelId: input.channelId,
+        messageId: input.messageId,
+        via: "none",
+        outcome,
+      });
+      return outcome;
     }
-    if (!channel) return "channel_missing_confirmed";
+    if (!channel) {
+      this.logMessageExistenceCheck({
+        channelId: input.channelId,
+        messageId: input.messageId,
+        via: "none",
+        outcome: "channel_missing_confirmed",
+      });
+      return "channel_missing_confirmed";
+    }
     const maybeTextChannel = channel as {
       isTextBased?: () => boolean;
-      messages?: { fetch: (messageId: string) => Promise<unknown> };
+      messages?: { fetch: (messageId: string, options?: { force?: boolean }) => Promise<unknown> };
     };
     if (!maybeTextChannel.isTextBased || !maybeTextChannel.isTextBased()) {
+      this.logMessageExistenceCheck({
+        channelId: input.channelId,
+        messageId: input.messageId,
+        via: "none",
+        outcome: "channel_inaccessible",
+      });
       return "channel_inaccessible";
     }
     if (!maybeTextChannel.messages || typeof maybeTextChannel.messages.fetch !== "function") {
+      this.logMessageExistenceCheck({
+        channelId: input.channelId,
+        messageId: input.messageId,
+        via: "none",
+        outcome: "transient_error",
+      });
       return "transient_error";
     }
     try {
-      const message = await maybeTextChannel.messages.fetch(input.messageId);
-      return message ? "exists" : "message_missing_confirmed";
+      // Force REST validation to avoid stale cached-message false positives.
+      const message = await maybeTextChannel.messages.fetch(input.messageId, { force: true });
+      const outcome: WarMailLifecycleReconciliationOutcome = message
+        ? "exists"
+        : "message_missing_confirmed";
+      this.logMessageExistenceCheck({
+        channelId: input.channelId,
+        messageId: input.messageId,
+        via: "rest_forced",
+        outcome,
+      });
+      return outcome;
     } catch (err) {
       const code = getDiscordErrorCode(err);
-      if (code === 10008) return "message_missing_confirmed";
-      if (code === 10003) return "channel_missing_confirmed";
-      if (code === 50001 || code === 50013) return "channel_inaccessible";
-      return isLikelyTransientDiscordError(err) ? "transient_error" : "transient_error";
+      const outcome: WarMailLifecycleReconciliationOutcome =
+        code === 10008
+          ? "message_missing_confirmed"
+          : code === 10003
+            ? "channel_missing_confirmed"
+            : code === 50001 || code === 50013
+              ? "channel_inaccessible"
+              : "transient_error";
+      this.logMessageExistenceCheck({
+        channelId: input.channelId,
+        messageId: input.messageId,
+        via: "rest_forced",
+        outcome,
+      });
+      return outcome;
     }
   }
 
@@ -512,6 +558,18 @@ export class WarMailLifecycleService {
           : "unknown";
     console.info(
       `[mail-lifecycle-reconcile] guild=${input.guildId} clan=${input.clanTag} war_id=${input.warId} message_exists=${messageExists} outcome=${input.outcome} action=${input.action}`
+    );
+  }
+
+  /** Purpose: emit per-check telemetry that records forced-REST usage and final outcome. */
+  private logMessageExistenceCheck(input: {
+    channelId: string;
+    messageId: string;
+    via: "rest_forced" | "none";
+    outcome: WarMailLifecycleReconciliationOutcome;
+  }): void {
+    console.info(
+      `[mail-lifecycle-message-check] channel_id=${input.channelId} message_id=${input.messageId} via=${input.via} outcome=${input.outcome}`
     );
   }
 }
