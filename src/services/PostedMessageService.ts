@@ -28,11 +28,21 @@ type FindMailMessageInput = {
   strictWarId?: boolean;
 };
 
+type DeleteMailMessageInput = {
+  guildId: string;
+  clanTag: string;
+  channelId: string;
+  messageId: string;
+  warId?: string | null;
+  strictWarId?: boolean;
+};
+
 function normalizeTag(input: string): string {
   return input.trim().toUpperCase().replace(/^#/, "");
 }
 
 export class PostedMessageService {
+  /** Purpose: upsert tracked posted-message metadata for idempotent edit/update flows. */
   async savePostedMessage(input: SavePostedMessageInput) {
     const clanTag = `#${normalizeTag(input.clanTag)}`;
     const existing =
@@ -85,6 +95,7 @@ export class PostedMessageService {
     });
   }
 
+  /** Purpose: find one posted-message tracking row for a deterministic message target. */
   async findExistingMessage(input: FindExistingMessageInput) {
     return prisma.clanPostedMessage.findFirst({
       where: {
@@ -98,6 +109,7 @@ export class PostedMessageService {
     });
   }
 
+  /** Purpose: resolve latest tracked war-mail message for clan/war identity. */
   async findMailMessage(input: FindMailMessageInput) {
     const strictWarId = Boolean(input.strictWarId);
     return prisma.clanPostedMessage.findFirst({
@@ -111,5 +123,23 @@ export class PostedMessageService {
       },
       orderBy: { createdAt: "desc" },
     });
+  }
+
+  /** Purpose: delete stale tracked war-mail rows for a specific posted Discord message target. */
+  async deleteMailMessage(input: DeleteMailMessageInput): Promise<number> {
+    const strictWarId = Boolean(input.strictWarId);
+    const result = await prisma.clanPostedMessage.deleteMany({
+      where: {
+        guildId: input.guildId,
+        clanTag: `#${normalizeTag(input.clanTag)}`,
+        type: "mail",
+        channelId: input.channelId,
+        messageId: input.messageId,
+        ...(strictWarId
+          ? { warId: input.warId ?? null }
+          : { OR: [{ warId: input.warId ?? null }, { warId: null }] }),
+      },
+    });
+    return result.count;
   }
 }

@@ -58,6 +58,11 @@ import {
 } from "./fwa/mailConfig";
 import { PostedMessageService } from "../services/PostedMessageService";
 import {
+  WarMailStatusService,
+  type WarMailNormalizedStatus,
+  type WarMailTrackedTarget,
+} from "../services/WarMailStatusService";
+import {
   PointsFetchPolicyService,
   type PointsApiFetchReason,
 } from "../services/PointsFetchPolicyService";
@@ -171,6 +176,7 @@ const WAR_MAIL_REFRESH_MS = 20 * 60 * 1000;
 const MAILBOX_SENT_EMOJI = "📬";
 const MAILBOX_NOT_SENT_EMOJI = "📭";
 const postedMessageService = new PostedMessageService();
+const warMailStatusService = new WarMailStatusService();
 const pointsSyncService = new PointsSyncService();
 const warComplianceService = new WarComplianceService();
 const fwaStatsWeightService = new FwaStatsWeightService();
@@ -1295,6 +1301,27 @@ function findLatestPostedWarMailForClan(params: {
   return latest;
 }
 
+/** Purpose: clear in-memory posted-mail tracking for one concrete Discord message target. */
+function clearPostedMailTrackingForTarget(params: {
+  guildId: string;
+  tag: string;
+  channelId: string;
+  messageId: string;
+}): number {
+  const normalizedTag = normalizeTag(params.tag);
+  let cleared = 0;
+  for (const [key, posted] of fwaMailPostedPayloads.entries()) {
+    if (posted.guildId !== params.guildId) continue;
+    if (normalizeTag(posted.tag) !== normalizedTag) continue;
+    if (posted.channelId !== params.channelId) continue;
+    if (posted.messageId !== params.messageId) continue;
+    stopWarMailPolling(key);
+    fwaMailPostedPayloads.delete(key);
+    cleared += 1;
+  }
+  return cleared;
+}
+
 async function findStoredMailTarget(params: {
   guildId: string;
   tag: string;
@@ -1315,52 +1342,49 @@ async function findStoredMailTarget(params: {
   };
 }
 
-async function getMailStatusEmojiForClan(params: {
-  guildId: string | null;
+/** Purpose: resolve the strongest tracked posted-mail target candidate for reconciliation. */
+async function resolveTrackedMailTarget(params: {
+  guildId: string;
   tag: string;
-  warId?: number | null;
+  warIdText: string | null;
   warStartMs: number | null;
-  liveOpponentTag?: string | null;
-  mailConfig?: MatchMailConfig | null;
-  liveMatchType?: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN" | null;
-  liveExpectedOutcome?: "WIN" | "LOSE" | "UNKNOWN" | null;
-}): Promise<string> {
-  if (!params.guildId) return MAILBOX_NOT_SENT_EMOJI;
-  const config = params.mailConfig ?? null;
-  const liveMatchesPosted = isPostedMailCurrentForLiveState({
-    postedMatchType: config?.lastMatchType ?? null,
-    postedExpectedOutcome: config?.lastExpectedOutcome ?? null,
-    postedOpponentTag: config?.lastOpponentTag ?? null,
-    postedWarStartMs: config?.lastWarStartMs ?? null,
-    postedWarId: config?.lastWarId ?? null,
-    liveMatchType: params.liveMatchType,
-    liveExpectedOutcome: params.liveExpectedOutcome,
-    liveOpponentTag: params.liveOpponentTag,
-    liveWarStartMs: params.warStartMs,
-    liveWarId: params.warId ?? null,
-  });
-  if (!liveMatchesPosted) return MAILBOX_NOT_SENT_EMOJI;
-  const warIdText =
-    params.warId !== null && params.warId !== undefined && Number.isFinite(params.warId)
-      ? String(Math.trunc(params.warId))
-      : null;
+  mailConfig: MatchMailConfig | null;
+}): Promise<WarMailTrackedTarget | null> {
   const storedMail = await findStoredMailTarget({
     guildId: params.guildId,
     tag: params.tag,
-    warId: warIdText,
-    strictWarId: warIdText !== null,
+    warId: params.warIdText,
+    strictWarId: params.warIdText !== null,
   });
-  if (storedMail) return MAILBOX_SENT_EMOJI;
-  if (warIdText !== null) return MAILBOX_NOT_SENT_EMOJI;
-  if (config?.lastPostedChannelId && config?.lastPostedMessageId) return MAILBOX_SENT_EMOJI;
+  if (storedMail) {
+    return {
+      channelId: storedMail.channelId,
+      messageId: storedMail.messageId,
+      warId: params.warIdText,
+      warStartMs: params.warStartMs,
+      source: "stored_message",
+    };
+  }
+  if (
+    params.mailConfig?.lastPostedChannelId &&
+    params.mailConfig?.lastPostedMessageId
+  ) {
+    return {
+      channelId: params.mailConfig.lastPostedChannelId,
+      messageId: params.mailConfig.lastPostedMessageId,
+      warId: params.mailConfig.lastWarId ?? null,
+      warStartMs: params.mailConfig.lastWarStartMs ?? null,
+      source: "mail_config",
+    };
+  }
   const sentForSameWar =
     params.warStartMs !== null
       ? findLatestPostedWarMailForClan({
-          guildId: params.guildId,
-          tag: params.tag,
-          warStartMs: params.warStartMs,
-          strictWarStart: true,
-        })
+        guildId: params.guildId,
+        tag: params.tag,
+        warStartMs: params.warStartMs,
+        strictWarStart: true,
+      })
       : null;
   const sent =
     sentForSameWar ??
@@ -1368,7 +1392,14 @@ async function getMailStatusEmojiForClan(params: {
       guildId: params.guildId,
       tag: params.tag,
     });
-  return sent ? MAILBOX_SENT_EMOJI : MAILBOX_NOT_SENT_EMOJI;
+  if (!sent) return null;
+  return {
+    channelId: sent.payload.channelId,
+    messageId: sent.payload.messageId,
+    warId: sent.payload.warId ?? null,
+    warStartMs: sent.payload.warStartMs ?? null,
+    source: "in_memory",
+  };
 }
 
 type PostedMailLiveStateParams = {
@@ -1436,52 +1467,189 @@ function isPostedMailCurrentForLiveState(params: PostedMailLiveStateParams): boo
 
 export const isPostedMailCurrentForLiveStateForTest = isPostedMailCurrentForLiveState;
 
-function _clearPostedMailTrackingForClan(params: {
+/** Purpose: remove stale persisted/in-memory mail tracking once message deletion is definitively confirmed. */
+async function clearStaleTrackedMailState(params: {
   guildId: string;
   tag: string;
-}): void {
-  const normalizedTag = normalizeTag(params.tag);
-  for (const [key, posted] of fwaMailPostedPayloads.entries()) {
-    if (posted.guildId !== params.guildId) continue;
-    if (normalizeTag(posted.tag) !== normalizedTag) continue;
-    stopWarMailPolling(key);
-    fwaMailPostedPayloads.delete(key);
+  target: WarMailTrackedTarget;
+  warIdText: string | null;
+  warStartMs: number | null;
+  reconciliationOutcome: "message_missing_confirmed" | "channel_missing_confirmed";
+}): Promise<boolean> {
+  const effectiveWarId = params.warIdText ?? params.target.warId ?? null;
+  const strictWarId = effectiveWarId !== null;
+  const deletedPostedRows = await postedMessageService
+    .deleteMailMessage({
+      guildId: params.guildId,
+      clanTag: params.tag,
+      channelId: params.target.channelId,
+      messageId: params.target.messageId,
+      warId: effectiveWarId,
+      strictWarId,
+    })
+    .catch(() => 0);
+  const inMemoryCleared = clearPostedMailTrackingForTarget({
+    guildId: params.guildId,
+    tag: params.tag,
+    channelId: params.target.channelId,
+    messageId: params.target.messageId,
+  });
+
+  let configCleared = false;
+  const currentConfig = await getCurrentWarMailConfig(params.guildId, params.tag);
+  const messageMatchesConfig =
+    currentConfig.lastPostedChannelId === params.target.channelId &&
+    currentConfig.lastPostedMessageId === params.target.messageId;
+  const warIdMatchesConfig =
+    params.warIdText === null ||
+    currentConfig.lastWarId === null ||
+    currentConfig.lastWarId === params.warIdText;
+  const warStartMatchesConfig =
+    params.warStartMs === null ||
+    currentConfig.lastWarStartMs === null ||
+    currentConfig.lastWarStartMs === params.warStartMs;
+  if (messageMatchesConfig && warIdMatchesConfig && warStartMatchesConfig) {
+    const next: MatchMailConfig = {
+      ...currentConfig,
+      lastPostedMessageId: null,
+      lastPostedChannelId: null,
+      lastPostedAtUnix: null,
+      lastWarStartMs: null,
+      lastWarId: null,
+      lastOpponentTag: null,
+      lastMatchType: null,
+      lastExpectedOutcome: null,
+      lastDataChangedAtUnix: null,
+    };
+    await saveCurrentWarMailConfig({
+      guildId: params.guildId,
+      tag: params.tag,
+      channelId: params.target.channelId,
+      mailConfig: next,
+    });
+    configCleared = true;
   }
+
+  const cleared = deletedPostedRows > 0 || inMemoryCleared > 0 || configCleared;
+  console.log(
+    `[fwa-mail-status] guild=${params.guildId} clan=#${normalizeTag(params.tag)} outcome=${params.reconciliationOutcome} source=${params.target.source} cleared=${cleared} posted_rows_deleted=${deletedPostedRows} in_memory_cleared=${inMemoryCleared} config_cleared=${configCleared}`
+  );
+  return cleared;
 }
 
-async function hasPostedMailMessage(params: {
+type ResolveLiveWarMailStatusParams = {
   client: Client | null | undefined;
   guildId: string | null;
-  tag?: string | null;
+  tag: string;
   warId?: number | null;
-  strictWarId?: boolean;
+  warStartMs: number | null;
+  liveOpponentTag?: string | null;
+  liveMatchType?: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN" | null;
+  liveExpectedOutcome?: "WIN" | "LOSE" | "UNKNOWN" | null;
   mailConfig: MatchMailConfig | null | undefined;
-}): Promise<boolean> {
-  if (!params.guildId || !params.mailConfig) return false;
+};
+
+type ResolvedLiveWarMailStatus = {
+  status: WarMailNormalizedStatus;
+  mailStatusEmoji: string;
+};
+
+/** Purpose: reconcile tracked war-mail state with live Discord message existence and return normalized status. */
+async function resolveLiveWarMailStatus(
+  params: ResolveLiveWarMailStatusParams
+): Promise<ResolvedLiveWarMailStatus> {
+  if (!params.guildId) {
+    return {
+      status: "no_post_tracked",
+      mailStatusEmoji: MAILBOX_NOT_SENT_EMOJI,
+    };
+  }
+  const config = params.mailConfig ?? null;
+  const matchesCurrentMailConfig = isPostedMailCurrentForLiveState({
+    postedMatchType: config?.lastMatchType ?? null,
+    postedExpectedOutcome: config?.lastExpectedOutcome ?? null,
+    postedOpponentTag: config?.lastOpponentTag ?? null,
+    postedWarStartMs: config?.lastWarStartMs ?? null,
+    postedWarId: config?.lastWarId ?? null,
+    liveMatchType: params.liveMatchType,
+    liveExpectedOutcome: params.liveExpectedOutcome,
+    liveOpponentTag: params.liveOpponentTag,
+    liveWarStartMs: params.warStartMs,
+    liveWarId: params.warId ?? null,
+  });
   const warIdText =
     params.warId !== null && params.warId !== undefined && Number.isFinite(params.warId)
       ? String(Math.trunc(params.warId))
       : null;
-  const strictWarId = params.strictWarId ?? warIdText !== null;
-  const stored =
-    params.tag
-      ? await findStoredMailTarget({
-          guildId: params.guildId,
-          tag: params.tag,
-          warId: warIdText,
-          strictWarId,
-        })
+
+  const trackedTarget = matchesCurrentMailConfig
+    ? await resolveTrackedMailTarget({
+      guildId: params.guildId,
+      tag: params.tag,
+      warIdText,
+      warStartMs: params.warStartMs,
+      mailConfig: config,
+    })
+    : config?.lastPostedChannelId && config?.lastPostedMessageId
+      ? {
+        channelId: config.lastPostedChannelId,
+        messageId: config.lastPostedMessageId,
+        warId: config.lastWarId ?? null,
+        warStartMs: config.lastWarStartMs ?? null,
+        source: "mail_config" as const,
+      }
       : null;
-  if (stored?.channelId && stored.messageId) return true;
-  if (strictWarId) {
-    return Boolean(
-      params.mailConfig.lastPostedChannelId &&
-        params.mailConfig.lastPostedMessageId &&
-        params.mailConfig.lastWarId &&
-        params.mailConfig.lastWarId === warIdText
-    );
+
+  const statusResult = await warMailStatusService.resolveStatus({
+    client: params.client,
+    guildId: params.guildId,
+    clanTag: params.tag,
+    matchesCurrentMailConfig,
+    trackedTarget,
+    onDefinitiveMissing: async (cleanupParams) =>
+      clearStaleTrackedMailState({
+        guildId: cleanupParams.guildId,
+        tag: cleanupParams.clanTag,
+        target: cleanupParams.target,
+        warIdText,
+        warStartMs: params.warStartMs,
+        reconciliationOutcome: cleanupParams.outcome,
+      }),
+  });
+
+  console.log(
+    `[fwa-mail-status] guild=${params.guildId} clan=#${normalizeTag(params.tag)} war_id=${warIdText ?? "unknown"} status=${statusResult.status} reconciliation=${statusResult.reconciliationOutcome} target=${trackedTarget ? "yes" : "no"}`
+  );
+  const mailStatusEmoji =
+    statusResult.status === "live_matching_post_exists" ||
+      statusResult.status === "transient_unverified"
+      ? MAILBOX_SENT_EMOJI
+      : MAILBOX_NOT_SENT_EMOJI;
+  return {
+    status: statusResult.status,
+    mailStatusEmoji,
+  };
+}
+
+/** Purpose: derive Send Mail blocking reason from normalized mail-status and command prerequisites. */
+function getMailBlockedReasonFromStatus(params: {
+  inferredMatchType: boolean;
+  hasMailChannel: boolean;
+  mailStatus: WarMailNormalizedStatus;
+}): string | null {
+  if (params.inferredMatchType) {
+    return "Match type is inferred. Confirm match type before sending war mail.";
   }
-  return Boolean(params.mailConfig.lastPostedChannelId && params.mailConfig.lastPostedMessageId);
+  if (!params.hasMailChannel) {
+    return "Mail channel is not configured. Use /tracked-clan configure with a mail channel.";
+  }
+  if (params.mailStatus === "live_matching_post_exists") {
+    return "Current mail is already up to date. Change match config before sending again.";
+  }
+  if (params.mailStatus === "transient_unverified") {
+    return "Could not verify existing mail due to Discord access/transient errors. Retry shortly.";
+  }
+  return null;
 }
 
 function formatOutcomeForRevision(outcome: "WIN" | "LOSE" | "UNKNOWN" | null): string {
@@ -5004,31 +5172,19 @@ async function buildTrackedMatchOverview(
     const clanWarStartMs = warStartMsByClanTag.get(clanTag) ?? null;
     const sub = subByTag.get(clanTag);
     const parsedMailConfig = trackedMailConfigByTag.get(clanTag) ?? parseMatchMailConfig(null);
-    const baseMailStatusEmoji = await getMailStatusEmojiForClan({
-      guildId,
-      tag: clanTag,
-      warId: sub?.warId ?? null,
-      warStartMs: clanWarStartMs,
-      liveOpponentTag: normalizeTag(String(war?.opponent?.tag ?? "")),
-      mailConfig: parsedMailConfig,
-      liveMatchType: isMatchTypeValue(sub?.matchType) ? sub?.matchType : null,
-      liveExpectedOutcome: isExpectedOutcomeValue(sub?.outcome) ? sub?.outcome : null,
-    });
-    const postedMailExistsForStatus =
-      baseMailStatusEmoji === MAILBOX_SENT_EMOJI
-        ? await hasPostedMailMessage({
-            client: client ?? null,
-            guildId,
-            tag: clanTag,
-            warId: sub?.warId ?? null,
-            strictWarId: (sub?.warId ?? null) !== null && (sub?.warId ?? null) !== undefined,
-            mailConfig: parsedMailConfig,
-          })
-        : false;
-    const mailStatusEmoji = postedMailExistsForStatus
-      ? MAILBOX_SENT_EMOJI
-      : MAILBOX_NOT_SENT_EMOJI;
     if (warState === "notInWar") {
+      const preWarMailStatus = await resolveLiveWarMailStatus({
+        client: client ?? null,
+        guildId,
+        tag: clanTag,
+        warId: sub?.warId ?? null,
+        warStartMs: clanWarStartMs,
+        liveOpponentTag: normalizeTag(String(war?.opponent?.tag ?? "")),
+        mailConfig: parsedMailConfig,
+        liveMatchType: isMatchTypeValue(sub?.matchType) ? sub?.matchType : null,
+        liveExpectedOutcome: isExpectedOutcomeValue(sub?.outcome) ? sub?.outcome : null,
+      });
+      const mailStatusEmoji = preWarMailStatus.mailStatusEmoji;
       const clanProfile = await cocService.getClan(`#${clanTag}`).catch(() => null);
       const memberCount = Number.isFinite(Number(clanProfile?.members))
         ? Number(clanProfile?.members)
@@ -5109,6 +5265,18 @@ async function buildTrackedMatchOverview(
     });
 
     if (!opponentTag) {
+      const noOpponentMailStatus = await resolveLiveWarMailStatus({
+        client: client ?? null,
+        guildId,
+        tag: clanTag,
+        warId: sub?.warId ?? null,
+        warStartMs: clanWarStartMs,
+        liveOpponentTag: null,
+        mailConfig: parsedMailConfig,
+        liveMatchType: isMatchTypeValue(sub?.matchType) ? sub?.matchType : null,
+        liveExpectedOutcome: isExpectedOutcomeValue(sub?.outcome) ? sub?.outcome : null,
+      });
+      const mailStatusEmoji = noOpponentMailStatus.mailStatusEmoji;
       const noOpponentHeader = `${mailStatusEmoji} | ${clanName} (#${clanTag}) vs Unknown`;
       const noOpponentLines = [
         "No active war opponent",
@@ -5435,33 +5603,23 @@ async function buildTrackedMatchOverview(
     const mailChannelId = mailChannelByTag.get(clanTag) ?? null;
     const currentExpectedOutcomeForMail: "WIN" | "LOSE" | "UNKNOWN" | null =
       matchType === "FWA" ? (effectiveOutcome ?? "UNKNOWN") : null;
-    const matchesLastPostedConfig = isPostedMailCurrentForLiveState({
-      postedMatchType: parsedMailConfig.lastMatchType ?? null,
-      postedExpectedOutcome: parsedMailConfig.lastExpectedOutcome ?? null,
-      postedOpponentTag: parsedMailConfig.lastOpponentTag ?? null,
-      postedWarStartMs: parsedMailConfig.lastWarStartMs ?? null,
-      postedWarId: parsedMailConfig.lastWarId ?? null,
-      liveMatchType: matchType,
-      liveExpectedOutcome: currentExpectedOutcomeForMail,
-      liveOpponentTag: opponentTag,
-      liveWarStartMs: clanWarStartMs,
-      liveWarId: sub?.warId ?? null,
-    });
-    const postedMailExists = await hasPostedMailMessage({
+    const liveMailStatus = await resolveLiveWarMailStatus({
       client: client ?? null,
       guildId,
       tag: clanTag,
       warId: sub?.warId ?? null,
-      strictWarId: (sub?.warId ?? null) !== null && (sub?.warId ?? null) !== undefined,
+      warStartMs: clanWarStartMs,
+      liveOpponentTag: opponentTag,
+      liveMatchType: matchType,
+      liveExpectedOutcome: currentExpectedOutcomeForMail,
       mailConfig: parsedMailConfig,
     });
-    const mailBlockedReason = inferredMatchType
-      ? "Match type is inferred. Confirm match type before sending war mail."
-      : !mailChannelId
-        ? "Mail channel is not configured. Use /tracked-clan configure with a mail channel."
-        : postedMailExists && matchesLastPostedConfig
-          ? "Current mail is already up to date. Change match config before sending again."
-          : null;
+    const mailStatusEmoji = liveMailStatus.mailStatusEmoji;
+    const mailBlockedReason = getMailBlockedReasonFromStatus({
+      inferredMatchType,
+      hasMailChannel: Boolean(mailChannelId),
+      mailStatus: liveMailStatus.status,
+    });
     const mailBlockedReasonLine = formatMailBlockedReason(mailBlockedReason);
 
     if (matchType === "FWA") {
@@ -7685,30 +7843,18 @@ export const Fwa: Command = {
           const parsedMailConfig = parseMatchMailConfig(
             trackedClanMeta?.mailConfig as Prisma.JsonValue | null | undefined
           );
-          const baseMailStatusEmoji = await getMailStatusEmojiForClan({
+          const preWarMailStatus = await resolveLiveWarMailStatus({
+            client: interaction.client,
             guildId: interaction.guildId ?? null,
             tag,
             warId: subscription?.warId ?? null,
             warStartMs: null,
+            liveOpponentTag: null,
             mailConfig: parsedMailConfig,
             liveMatchType: isMatchTypeValue(subscription?.matchType) ? subscription?.matchType : null,
             liveExpectedOutcome: isExpectedOutcomeValue(subscription?.outcome) ? subscription?.outcome : null,
           });
-          const postedMailExistsForStatus =
-            baseMailStatusEmoji === MAILBOX_SENT_EMOJI
-              ? await hasPostedMailMessage({
-                  client: interaction.client,
-                  guildId: interaction.guildId ?? null,
-                  tag,
-                  warId: subscription?.warId ?? null,
-                  strictWarId:
-                    (subscription?.warId ?? null) !== null && (subscription?.warId ?? null) !== undefined,
-                  mailConfig: parsedMailConfig,
-                })
-              : false;
-          const mailStatusEmoji = postedMailExistsForStatus
-            ? MAILBOX_SENT_EMOJI
-            : MAILBOX_NOT_SENT_EMOJI;
+          const mailStatusEmoji = preWarMailStatus.mailStatusEmoji;
           const clanName = sanitizeClanName(trackedClanMeta?.name ?? "") ?? `#${tag}`;
           const preWarHeader = `${mailStatusEmoji} | ${clanName} (#${tag})`;
           const preWarLines = [
@@ -8026,34 +8172,22 @@ export const Fwa: Command = {
           (subscription?.startTime ? subscription.startTime.getTime() : null);
         const currentExpectedOutcomeForMail: "WIN" | "LOSE" | "UNKNOWN" | null =
           matchType === "FWA" ? (effectiveOutcome ?? "UNKNOWN") : null;
-        const matchesLastPostedConfig = isPostedMailCurrentForLiveState({
-          postedMatchType: parsedMailConfig.lastMatchType ?? null,
-          postedExpectedOutcome: parsedMailConfig.lastExpectedOutcome ?? null,
-          postedOpponentTag: parsedMailConfig.lastOpponentTag ?? null,
-          postedWarStartMs: parsedMailConfig.lastWarStartMs ?? null,
-          postedWarId: parsedMailConfig.lastWarId ?? null,
-          liveMatchType: matchType,
-          liveExpectedOutcome: currentExpectedOutcomeForMail,
-          liveOpponentTag: opponentTag,
-          liveWarStartMs,
-          liveWarId: subscription?.warId ?? null,
-        });
-        const postedMailExists = await hasPostedMailMessage({
+        const liveMailStatus = await resolveLiveWarMailStatus({
           client: interaction.client,
           guildId: interaction.guildId ?? null,
           tag,
           warId: subscription?.warId ?? null,
-          strictWarId:
-            (subscription?.warId ?? null) !== null && (subscription?.warId ?? null) !== undefined,
+          warStartMs: liveWarStartMs,
+          liveOpponentTag: opponentTag,
+          liveMatchType: matchType,
+          liveExpectedOutcome: currentExpectedOutcomeForMail,
           mailConfig: parsedMailConfig,
         });
-        const mailBlockedReason = inferredMatchType
-          ? "Match type is inferred. Confirm match type before sending war mail."
-          : !trackedMailConfig?.mailChannelId
-            ? "Mail channel is not configured. Use /tracked-clan configure with a mail channel."
-            : postedMailExists && matchesLastPostedConfig
-              ? "Current mail is already up to date. Change match config before sending again."
-              : null;
+        const mailBlockedReason = getMailBlockedReasonFromStatus({
+          inferredMatchType,
+          hasMailChannel: Boolean(trackedMailConfig?.mailChannelId),
+          mailStatus: liveMailStatus.status,
+        });
         const mailBlockedReasonLine = formatMailBlockedReason(mailBlockedReason);
         const outcomeLine =
           matchType === "FWA"
@@ -8072,6 +8206,7 @@ export const Fwa: Command = {
           opponentTag,
           matchType,
           outcome: effectiveOutcome ?? "UNKNOWN",
+          mailStatusEmoji: liveMailStatus.mailStatusEmoji,
         });
         const leftWinnerMarker = getWinnerMarkerForSide(effectiveOutcome ?? null, "clan");
         const rightWinnerMarker = getWinnerMarkerForSide(effectiveOutcome ?? null, "opponent");
