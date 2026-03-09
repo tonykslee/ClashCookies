@@ -62,6 +62,13 @@ function buildNextRefreshRelativeLabel(
 
 export const buildNotifyNextRefreshLabelForTest = buildNextRefreshRelativeLabel;
 
+/** Purpose: keep notify-event embed colors stable and centralized across render paths. */
+export function resolveNotifyEventEmbedColor(eventType: EventType): number {
+  if (eventType === "war_started") return 0x3498db;
+  if (eventType === "battle_day") return 0xf1c40f;
+  return 0x2ecc71;
+}
+
 type TestSource = "current" | "last";
 
 type SubscriptionRow = {
@@ -661,13 +668,7 @@ export class WarEventLogService {
     const opponentTag = normalizeTag(payload.opponentTag);
     const embed = new EmbedBuilder()
       .setTitle(`Event: ${eventTitle(payload.eventType)} - ${payload.clanName}`)
-      .setColor(
-        payload.eventType === "war_started"
-          ? 0x3498db
-          : payload.eventType === "battle_day"
-            ? 0xf1c40f
-            : 0x2ecc71
-      )
+      .setColor(resolveNotifyEventEmbedColor(payload.eventType))
       .setFooter({ text: `War ID: ${warId ?? "unknown"}` })
       .setTimestamp(new Date());
 
@@ -1761,13 +1762,7 @@ export class WarEventLogService {
     const opponentTag = normalizeTag(payload.opponentTag);
     const embed = new EmbedBuilder()
       .setTitle(`Event: ${eventTitle(payload.eventType)} - ${payload.clanName}`)
-      .setColor(
-        payload.eventType === "war_started"
-          ? 0x3498db
-          : payload.eventType === "battle_day"
-            ? 0xf1c40f
-            : 0x2ecc71
-      )
+      .setColor(resolveNotifyEventEmbedColor(payload.eventType))
       .setFooter({ text: `War ID: ${warId ?? "unknown"}` })
       .setTimestamp(new Date());
 

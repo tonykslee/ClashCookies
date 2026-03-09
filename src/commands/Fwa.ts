@@ -116,6 +116,7 @@ import {
   getSyncMode,
   limitDiscordContent,
 } from "./fwa/matchUtils";
+import { resolveWarMailEmbedColor } from "./fwa/mailEmbedColor";
 import {
   deriveSyncActionSiteOutcome,
   evaluatePostSyncValidation,
@@ -786,12 +787,6 @@ function buildWarStatsLines(input: {
   ];
 }
 
-function mailStatusColorForState(state: WarStateForSync): number {
-  if (state === "preparation") return 0x3498db;
-  if (state === "inWar") return 0xf1c40f;
-  return 0x2ecc71;
-}
-
 function mailStatusTitleForState(state: WarStateForSync): string {
   if (state === "preparation") return "War Started";
   if (state === "inWar") return "Battle Day Started";
@@ -1129,7 +1124,12 @@ async function buildWarMailEmbedForTag(
 
   const embed = new EmbedBuilder()
     .setTitle(`Event: ${mailStatusTitleForState(warState)} - ${clanName} (#${normalizedTag})`)
-    .setColor(mailStatusColorForState(warState))
+    .setColor(
+      resolveWarMailEmbedColor({
+        matchType,
+        expectedOutcome,
+      })
+    )
     .setFooter({ text: `War ID: ${warId ?? "unknown"}` })
     .setTimestamp(new Date());
   embed.addFields(
