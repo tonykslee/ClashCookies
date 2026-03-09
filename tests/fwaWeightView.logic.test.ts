@@ -19,6 +19,7 @@ function makeResult(input: Partial<FwaStatsWeightAge>): FwaStatsWeightAge {
     httpStatus: 200,
     fromCache: false,
     error: null,
+    authErrorCode: null,
     ...input,
   };
 }
@@ -86,19 +87,32 @@ describe("weight view helpers", () => {
   });
 
   it("returns auth note when auth failures are present", () => {
-    const noCookie = makeResult({ status: "login_required_no_cookie", ageText: null, ageDays: null });
+    const noCookie = makeResult({
+      status: "login_required_no_cookie",
+      ageText: null,
+      ageDays: null,
+      authErrorCode: "FWASTATS_AUTH_REQUIRED",
+    });
     const rejected = makeResult({
       status: "login_required_cookie_rejected",
       ageText: null,
       ageDays: null,
+      authErrorCode: "FWASTATS_AUTH_EXPIRED",
+    });
+    const loginDetected = makeResult({
+      status: "login_required_cookie_rejected",
+      ageText: null,
+      ageDays: null,
+      authErrorCode: "FWASTATS_LOGIN_PAGE_DETECTED",
     });
 
     expect(isWeightAuthFailureStatus(noCookie.status)).toBe(true);
     expect(isWeightAuthFailureStatus("parse_error")).toBe(false);
-    expect(buildWeightAuthFailureNote([noCookie])).toContain("set `FWASTATS_WEIGHT_COOKIE`");
-    expect(buildWeightAuthFailureNote([rejected])).toContain(
-      "rejected `FWASTATS_WEIGHT_COOKIE`"
-    );
+    expect(buildWeightAuthFailureNote([noCookie])).toContain("Recovery steps:");
+    expect(buildWeightAuthFailureNote([noCookie])).toContain("/fwa weight-cookie");
+    expect(buildWeightAuthFailureNote([rejected])).toContain("rejected or expired");
+    expect(buildWeightAuthFailureNote([rejected])).toContain("https://i.imgur.com/HFzGNQD.png");
+    expect(buildWeightAuthFailureNote([loginDetected])).toContain("login page");
     expect(buildWeightAuthFailureNote([makeResult({})])).toBeNull();
   });
 });

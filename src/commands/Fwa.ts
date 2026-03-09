@@ -29,6 +29,7 @@ import { SettingsService } from "../services/SettingsService";
 import { WarComplianceService } from "../services/WarComplianceService";
 import { WarEventLogService } from "../services/WarEventLogService";
 import { FwaStatsWeightService } from "../services/FwaStatsWeightService";
+import { FwaStatsWeightCookieService } from "../services/FwaStatsWeightCookieService";
 import { getNextWarMailRefreshAtMs } from "../services/refreshSchedule";
 import { WarEventHistoryService } from "../services/war-events/history";
 import {
@@ -167,6 +168,7 @@ const postedMessageService = new PostedMessageService();
 const pointsSyncService = new PointsSyncService();
 const warComplianceService = new WarComplianceService();
 const fwaStatsWeightService = new FwaStatsWeightService();
+const fwaStatsWeightCookieService = new FwaStatsWeightCookieService();
 const pointsFetchPolicy = new PointsFetchPolicyService();
 const POINTS_REQUEST_HEADERS = {
   "User-Agent":
@@ -6704,6 +6706,35 @@ export const Fwa: Command = {
       ],
     },
     {
+      name: "weight-cookie",
+      description: "Set or check fwastats cookie auth used by weight commands",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "visibility",
+          description: "Response visibility",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          choices: [
+            { name: "private", value: "private" },
+            { name: "public", value: "public" },
+          ],
+        },
+        {
+          name: "application-cookie",
+          description: "AspNetCore application cookie pair in name=value format",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+        },
+        {
+          name: "antiforgery-cookie",
+          description: "AspNetCore antiforgery cookie pair in name=value format",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+        },
+      ],
+    },
+    {
       name: "leader-role",
       description: "Set the default FWA leader role",
       type: ApplicationCommandOptionType.Subcommand,
@@ -6997,6 +7028,164 @@ export const Fwa: Command = {
       await editReplySafe(
         buildLimitedMessage(`FWA Stats Weight Links (${targets.length})`, lines, "")
       );
+      return;
+    }
+
+    if (subcommand === "weight-cookie") {
+      if (!interaction.inGuild() || !interaction.guildId) {
+        await editReplySafe("This command can only be used in a server.");
+        return;
+      }
+      const cookiePermissionService = new CommandPermissionService();
+      const canManageWeightCookie = await cookiePermissionService.canUseCommand(
+        "fwa:weight-cookie",
+        interaction
+      );
+      if (!canManageWeightCookie) {
+        await editReplySafe(
+          "You do not have permission to manage fwastats weight cookies in this server."
+        );
+        recordFetchEvent({
+          namespace: "fwastats_weight",
+          operation: "weight_cookie_update",
+          source: "api",
+          status: "failure",
+          errorCategory: "permission",
+          errorCode: "weight_cookie_forbidden",
+          detail: `guild=${interaction.guildId} user=${interaction.user.id}`,
+        });
+        return;
+      }
+
+      const applicationCookieRaw = interaction.options.getString("application-cookie", false);
+      const antiforgeryCookieRaw = interaction.options.getString("antiforgery-cookie", false);
+      const hasApplicationArg = applicationCookieRaw !== null;
+      const hasAntiforgeryArg = antiforgeryCookieRaw !== null;
+
+      if (!hasApplicationArg && !hasAntiforgeryArg) {
+        const status = await fwaStatsWeightCookieService.getCookieStatus();
+        const updatedAtText =
+          status.updatedAt && Number.isFinite(status.updatedAt.getTime())
+            ? `<t:${Math.floor(status.updatedAt.getTime() / 1000)}:F>`
+            : "unknown";
+        const expiryText =
+          status.applicationCookieExpiresAt &&
+          Number.isFinite(status.applicationCookieExpiresAt.getTime())
+            ? `<t:${Math.floor(status.applicationCookieExpiresAt.getTime() / 1000)}:F>`
+            : "expiration unknown";
+        const lines = [
+          "FWA Stats Weight Cookie Status",
+          `- Application cookie: ${status.applicationCookiePresent ? "present" : "missing"}`,
+          `- Antiforgery cookie: ${status.antiforgeryCookiePresent ? "present" : "missing"}`,
+          `- Application cookie expiry: ${expiryText}`,
+          `- Last updated: ${updatedAtText}`,
+          `- Runtime auth source: ${status.runtimeCookieSource}`,
+        ];
+        recordFetchEvent({
+          namespace: "fwastats_weight",
+          operation: "weight_cookie_status",
+          source: "api",
+          status: "success",
+          detail: `guild=${interaction.guildId} user=${interaction.user.id} app_present=${status.applicationCookiePresent ? 1 : 0} anti_present=${status.antiforgeryCookiePresent ? 1 : 0} source=${status.runtimeCookieSource}`,
+        });
+        await editReplySafe(lines.join("\n"), [], []);
+        return;
+      }
+
+      if (hasApplicationArg !== hasAntiforgeryArg) {
+        await editReplySafe(
+          "Provide both `application-cookie` and `antiforgery-cookie`, or omit both to view status.",
+          [],
+          []
+        );
+        recordFetchEvent({
+          namespace: "fwastats_weight",
+          operation: "weight_cookie_update",
+          source: "api",
+          status: "failure",
+          errorCategory: "validation",
+          errorCode: "weight_cookie_partial_input",
+          detail: `guild=${interaction.guildId} user=${interaction.user.id}`,
+        });
+        return;
+      }
+
+      const applicationCookie = String(applicationCookieRaw ?? "").trim();
+      const antiforgeryCookie = String(antiforgeryCookieRaw ?? "").trim();
+      if (!applicationCookie || !antiforgeryCookie) {
+        await editReplySafe(
+          "Cookie values cannot be empty. Paste both cookie pairs in `name=value` format.",
+          [],
+          []
+        );
+        recordFetchEvent({
+          namespace: "fwastats_weight",
+          operation: "weight_cookie_update",
+          source: "api",
+          status: "failure",
+          errorCategory: "validation",
+          errorCode: "weight_cookie_empty_input",
+          detail: `guild=${interaction.guildId} user=${interaction.user.id}`,
+        });
+        return;
+      }
+
+      recordFetchEvent({
+        namespace: "fwastats_weight",
+        operation: "weight_cookie_update",
+        source: "api",
+        detail: `guild=${interaction.guildId} user=${interaction.user.id} event=attempt`,
+      });
+      try {
+        const saved = await fwaStatsWeightCookieService.setCookies({
+          applicationCookieRaw: applicationCookie,
+          antiforgeryCookieRaw: antiforgeryCookie,
+          guildId: interaction.guildId,
+          userId: interaction.user.id,
+        });
+        fwaStatsWeightService.clearCache();
+        const savedAtText = `<t:${Math.floor(saved.savedAt.getTime() / 1000)}:F>`;
+        const expiryText =
+          saved.applicationCookieExpiresAt &&
+          Number.isFinite(saved.applicationCookieExpiresAt.getTime())
+            ? `<t:${Math.floor(saved.applicationCookieExpiresAt.getTime() / 1000)}:F>`
+            : "expiration unknown";
+        await editReplySafe(
+          [
+            "FWA Stats weight cookies saved.",
+            `- Application cookie name: \`${saved.applicationCookieName}\``,
+            `- Antiforgery cookie name: \`${saved.antiforgeryCookieName}\``,
+            `- Application cookie expiry: ${expiryText}`,
+            `- Saved at: ${savedAtText}`,
+            "Saved but not yet verified. Run `/fwa weight-age` to validate live access.",
+          ].join("\n"),
+          [],
+          []
+        );
+        recordFetchEvent({
+          namespace: "fwastats_weight",
+          operation: "weight_cookie_update",
+          source: "api",
+          status: "success",
+          detail: `guild=${interaction.guildId} user=${interaction.user.id} event=saved`,
+        });
+      } catch (err) {
+        const safeMessage = String((err as Error)?.message ?? "Invalid cookie input.");
+        await editReplySafe(
+          `Could not save fwastats cookies. ${safeMessage}`,
+          [],
+          []
+        );
+        recordFetchEvent({
+          namespace: "fwastats_weight",
+          operation: "weight_cookie_update",
+          source: "api",
+          status: "failure",
+          errorCategory: "validation",
+          errorCode: "weight_cookie_save_failed",
+          detail: `guild=${interaction.guildId} user=${interaction.user.id}`,
+        });
+      }
       return;
     }
 
