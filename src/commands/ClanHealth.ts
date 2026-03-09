@@ -77,6 +77,13 @@ export const ClanHealth: Command = {
   description: "Leadership snapshot: rates, inactivity, and missing Discord links",
   options: [
     {
+      name: "tag",
+      description: "Tracked clan tag (with or without #)",
+      type: ApplicationCommandOptionType.String,
+      required: true,
+      autocomplete: true,
+    },
+    {
       name: "visibility",
       description: "Response visibility",
       type: ApplicationCommandOptionType.String,
@@ -85,13 +92,6 @@ export const ClanHealth: Command = {
         { name: "private", value: "private" },
         { name: "public", value: "public" },
       ],
-    },
-    {
-      name: "tag",
-      description: "Tracked clan tag (with or without #)",
-      type: ApplicationCommandOptionType.String,
-      required: true,
-      autocomplete: true,
     },
   ],
   run: async (
