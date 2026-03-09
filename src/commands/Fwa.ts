@@ -28,6 +28,7 @@ import { GoogleSheetsService } from "../services/GoogleSheetsService";
 import { SettingsService } from "../services/SettingsService";
 import { WarComplianceService } from "../services/WarComplianceService";
 import { WarEventLogService } from "../services/WarEventLogService";
+import { FwaStatsWeightService } from "../services/FwaStatsWeightService";
 import { getNextWarMailRefreshAtMs } from "../services/refreshSchedule";
 import { WarEventHistoryService } from "../services/war-events/history";
 import {
@@ -120,6 +121,13 @@ import {
 import { resolveWarMailEmbedColor } from "./fwa/mailEmbedColor";
 import { buildWarComplianceReportLines } from "./fwa/complianceView";
 import {
+  WEIGHT_SEVERE_STALE_DAYS,
+  WEIGHT_STALE_DAYS,
+  formatWeightAgeLine,
+  formatWeightHealthLine,
+  getWeightHealthState,
+} from "./fwa/weightView";
+import {
   deriveSyncActionSiteOutcome,
   evaluatePostSyncValidation,
   hasRenderedOutcomeMismatch,
@@ -157,6 +165,7 @@ const MAILBOX_NOT_SENT_EMOJI = "📭";
 const postedMessageService = new PostedMessageService();
 const pointsSyncService = new PointsSyncService();
 const warComplianceService = new WarComplianceService();
+const fwaStatsWeightService = new FwaStatsWeightService();
 const pointsFetchPolicy = new PointsFetchPolicyService();
 const POINTS_REQUEST_HEADERS = {
   "User-Agent":
@@ -6579,6 +6588,78 @@ export const Fwa: Command = {
       ],
     },
     {
+      name: "weight-age",
+      description: "Check last submitted FWA Stats weight age",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "visibility",
+          description: "Response visibility",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          choices: [
+            { name: "private", value: "private" },
+            { name: "public", value: "public" },
+          ],
+        },
+        {
+          name: "tag",
+          description: "Clan tag (with or without #). Leave blank for all tracked clans.",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          autocomplete: true,
+        },
+      ],
+    },
+    {
+      name: "weight-link",
+      description: "Return FWA Stats weight page links",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "visibility",
+          description: "Response visibility",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          choices: [
+            { name: "private", value: "private" },
+            { name: "public", value: "public" },
+          ],
+        },
+        {
+          name: "tag",
+          description: "Clan tag (with or without #). Leave blank for all tracked clans.",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          autocomplete: true,
+        },
+      ],
+    },
+    {
+      name: "weight-health",
+      description: "Show stale FWA Stats weight submissions",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "visibility",
+          description: "Response visibility",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          choices: [
+            { name: "private", value: "private" },
+            { name: "public", value: "public" },
+          ],
+        },
+        {
+          name: "tag",
+          description: "Clan tag (with or without #). Leave blank for all tracked clans.",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          autocomplete: true,
+        },
+      ],
+    },
+    {
       name: "leader-role",
       description: "Set the default FWA leader role",
       type: ApplicationCommandOptionType.Subcommand,
@@ -6654,6 +6735,41 @@ export const Fwa: Command = {
     const sourceSync = await getSourceOfTruthSync(settings, interaction.guildId ?? null);
     const rawTag = interaction.options.getString("tag", false);
     const tag = normalizeTag(rawTag ?? "");
+    const resolveWeightTargets = async (): Promise<Array<{ tag: string; clanName: string }>> => {
+      if (tag) {
+        const trackedRow = interaction.guildId
+          ? await prisma.trackedClan.findFirst({
+              where: {
+                OR: [
+                  { tag: { equals: `#${tag}`, mode: "insensitive" } },
+                  { tag: { equals: tag, mode: "insensitive" } },
+                ],
+              },
+              select: { name: true },
+            })
+          : null;
+        return [
+          {
+            tag,
+            clanName: sanitizeClanName(trackedRow?.name) ?? `#${tag}`,
+          },
+        ];
+      }
+
+      if (!interaction.guildId) return [];
+      const tracked = await prisma.trackedClan.findMany({
+        orderBy: { createdAt: "asc" },
+        select: { tag: true, name: true },
+      });
+      return tracked.map((row) => {
+        const normalizedTag = normalizeTag(row.tag);
+        return {
+          tag: normalizedTag,
+          clanName: sanitizeClanName(row.name) ?? `#${normalizedTag}`,
+        };
+      });
+    };
+
     if (subcommand === "leader-role") {
       if (!interaction.inGuild()) {
         await editReplySafe("This command can only be used in a server.");
@@ -6822,6 +6938,116 @@ export const Fwa: Command = {
       await editReplySafe(lines.join("\n"));
       console.info(
         `[fwa-compliance] event=complete guild=${interaction.guildId} user=${interaction.user.id} clan=#${tag} war_id=${report.warId ?? historyRow.warId} status=ok missed_both=${report.missedBoth.length} not_following=${report.notFollowingPlan.length} participants=${report.participantsCount} attacks=${report.attacksCount} duration_ms=${Date.now() - startedAtMs}`
+      );
+      return;
+    }
+
+    if (subcommand === "weight-link") {
+      const targets = await resolveWeightTargets();
+      if (targets.length === 0) {
+        await editReplySafe("No tracked clans configured. Provide `tag` or configure tracked clans first.");
+        return;
+      }
+      const lines = targets.map(
+        (target) =>
+          `${target.clanName} (#${target.tag})\nhttps://fwastats.com/Clan/${target.tag}/Weight`
+      );
+      await editReplySafe(
+        buildLimitedMessage(`FWA Stats Weight Links (${targets.length})`, lines, "")
+      );
+      return;
+    }
+
+    if (subcommand === "weight-age" || subcommand === "weight-health") {
+      const targets = await resolveWeightTargets();
+      if (targets.length === 0) {
+        await editReplySafe("No tracked clans configured. Provide `tag` or configure tracked clans first.");
+        return;
+      }
+
+      console.info(
+        `[fwa-weight] event=command_start cmd=${subcommand} guild=${interaction.guildId ?? "dm"} user=${interaction.user.id} clans=${targets.length}`
+      );
+      const startedAtMs = Date.now();
+      const results = await fwaStatsWeightService.getWeightAges(
+        targets.map((target) => target.tag)
+      );
+      const byTag = new Map(results.map((result) => [normalizeTag(result.clanTag), result]));
+
+      if (subcommand === "weight-age") {
+        const lines = targets.map((target) => {
+          const result = byTag.get(target.tag);
+          if (!result) {
+            return `${target.clanName} (#${target.tag}) — unavailable (missing result)`;
+          }
+          return formatWeightAgeLine({
+            clanName: target.clanName,
+            clanTag: target.tag,
+            result,
+          });
+        });
+        const okCount = results.filter((row) => row.status === "ok").length;
+        const cacheHits = results.filter((row) => row.fromCache).length;
+        await editReplySafe(
+          buildLimitedMessage(
+            `FWA Weight Age (${targets.length})`,
+            lines,
+            `\nSuccessful: ${okCount}/${targets.length}\nCache hits: ${cacheHits}/${targets.length}`
+          )
+        );
+        console.info(
+          `[fwa-weight] event=command_complete cmd=weight-age guild=${interaction.guildId ?? "dm"} user=${interaction.user.id} clans=${targets.length} ok=${okCount} cache_hits=${cacheHits} duration_ms=${Date.now() - startedAtMs}`
+        );
+        return;
+      }
+
+      const lines = targets.map((target) => {
+        const result = byTag.get(target.tag);
+        if (!result) {
+          return `${target.clanName} (#${target.tag}) — unavailable ❓`;
+        }
+        return formatWeightHealthLine({
+          clanName: target.clanName,
+          clanTag: target.tag,
+          result,
+          staleThresholdDays: WEIGHT_STALE_DAYS,
+          severeThresholdDays: WEIGHT_SEVERE_STALE_DAYS,
+        });
+      });
+      const okResults = results.filter((row) => row.status === "ok");
+      const recentCount = okResults.filter(
+        (row) =>
+          getWeightHealthState(row.ageDays, WEIGHT_STALE_DAYS, WEIGHT_SEVERE_STALE_DAYS) === "recent"
+      ).length;
+      const outdatedCount = okResults.filter(
+        (row) =>
+          getWeightHealthState(row.ageDays, WEIGHT_STALE_DAYS, WEIGHT_SEVERE_STALE_DAYS) ===
+          "outdated"
+      ).length;
+      const severeCount = okResults.filter(
+        (row) =>
+          getWeightHealthState(row.ageDays, WEIGHT_STALE_DAYS, WEIGHT_SEVERE_STALE_DAYS) ===
+          "severely_outdated"
+      ).length;
+      const unknownCount = results.length - (recentCount + outdatedCount + severeCount);
+      await editReplySafe(
+        buildLimitedMessage(
+          `FWA Weight Health (${targets.length})`,
+          lines,
+          [
+            "",
+            "Legend:",
+            "✅ recent",
+            "⚠️ outdated",
+            "❌ severely outdated",
+            "❓ unavailable/unknown",
+            `Thresholds: outdated > ${WEIGHT_STALE_DAYS}d, severe >= ${WEIGHT_SEVERE_STALE_DAYS}d`,
+            `Summary: recent=${recentCount}, outdated=${outdatedCount}, severe=${severeCount}, unknown=${unknownCount}`,
+          ].join("\n")
+        )
+      );
+      console.info(
+        `[fwa-weight] event=command_complete cmd=weight-health guild=${interaction.guildId ?? "dm"} user=${interaction.user.id} clans=${targets.length} recent=${recentCount} outdated=${outdatedCount} severe=${severeCount} unknown=${unknownCount} duration_ms=${Date.now() - startedAtMs}`
       );
       return;
     }
