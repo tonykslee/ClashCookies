@@ -40,6 +40,7 @@ export const COMMAND_PERMISSION_TARGETS = [
   "force:mail:update",
   "remaining",
   "remaining:war",
+  "clan-health",
   "telemetry",
   "telemetry:report",
   "telemetry:schedule:set",
@@ -108,6 +109,7 @@ const FWA_LEADER_DEFAULT_TARGETS = new Set<string>([
   "sync:time:post",
   "sync:post:status",
   "inactive",
+  "clan-health",
 ]);
 
 /** Purpose: command roles key. */
