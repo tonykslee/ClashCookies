@@ -3,6 +3,7 @@ import {
   AutocompleteInteraction,
   ChatInputCommandInteraction,
   Client,
+  EmbedBuilder,
 } from "discord.js";
 import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
@@ -279,11 +280,22 @@ function _mergeStateRows(
 
 type PlacementCandidate = {
   clanName: string;
+  clanTag: string;
   totalWeight: number;
   targetBand: number;
   missingCount: number;
   remainingToTarget: number;
   bucketDeltaByHeader: Record<string, number>;
+};
+
+type PlacementCandidateWithVacancy = PlacementCandidate & {
+  liveMemberCount: number | null;
+  vacancySlots: number;
+  hasVacancy: boolean;
+};
+
+type PlacementCandidateWithDelta = PlacementCandidateWithVacancy & {
+  delta: number;
 };
 
 /** Purpose: find the row that contains composition delta headers in the U:AA block. */
@@ -296,6 +308,7 @@ function findDeltaHeaderRowIndex(rightBlock: string[][]): number {
 
 function readPlacementCandidates(
   clanCol: string[][],
+  clanTagCol: string[][],
   totalCol: string[][],
   targetBandCol: string[][],
   rightBlock: string[][]
@@ -310,6 +323,7 @@ function readPlacementCandidates(
   for (let i = 1; i < 9; i += 1) {
     const clanName = (clanCol[i]?.[0] ?? "").trim();
     if (!clanName) continue;
+    const clanTag = normalizeTag(clanTagCol[i]?.[0] ?? "");
 
     const rightRow = rightBlock[i + headerRowIndex] ?? rightBlock[i] ?? [];
     const totalWeight = parseNumber(totalCol[i]?.[0]);
@@ -326,6 +340,7 @@ function readPlacementCandidates(
 
     candidates.push({
       clanName,
+      clanTag,
       totalWeight,
       targetBand,
       missingCount,
@@ -335,6 +350,88 @@ function readPlacementCandidates(
   }
 
   return candidates;
+}
+
+/** Purpose: resolve live member counts from CoC API and mark vacancy from current clan size. */
+async function enrichCandidatesWithLiveVacancy(
+  candidates: PlacementCandidate[],
+  cocService: CoCService
+): Promise<PlacementCandidateWithVacancy[]> {
+  return Promise.all(
+    candidates.map(async (candidate) => {
+      if (!candidate.clanTag) {
+        return {
+          ...candidate,
+          liveMemberCount: null,
+          vacancySlots: 0,
+          hasVacancy: false,
+        };
+      }
+
+      const clan = await cocService
+        .getClan(`#${candidate.clanTag}`)
+        .catch(() => null);
+      const liveMemberCount = (() => {
+        if (Array.isArray(clan?.memberList)) return clan.memberList.length;
+        if (Array.isArray(clan?.members)) return clan.members.length;
+        return null;
+      })();
+      const safeCount =
+        liveMemberCount !== null && Number.isFinite(liveMemberCount)
+          ? Math.max(0, Math.min(50, Math.trunc(liveMemberCount)))
+          : null;
+      const vacancySlots =
+        safeCount !== null ? Math.max(0, 50 - safeCount) : 0;
+
+      return {
+        ...candidate,
+        liveMemberCount: safeCount,
+        vacancySlots,
+        hasVacancy: safeCount !== null && safeCount < 50,
+      };
+    })
+  );
+}
+
+/** Purpose: format one field row per clan for compact placement embed sections. */
+function formatPlacementRows(lines: string[]): string {
+  return lines.length > 0 ? lines.join("\n") : "None";
+}
+
+/** Purpose: build `/compo place` embed output with clear sections. */
+function buildCompoPlaceEmbed(params: {
+  inputWeight: number;
+  bucket: WeightBucket;
+  recommended: PlacementCandidateWithDelta[];
+  vacancyList: PlacementCandidateWithVacancy[];
+  compositionList: PlacementCandidateWithDelta[];
+  refreshLine: string;
+}): EmbedBuilder {
+  const recommendedRows = params.recommended.map(
+    (c) => `${abbreviateClan(c.clanName)} — needs ${Math.abs(c.delta)} ${params.bucket}`
+  );
+  const vacancyRows = params.vacancyList.map(
+    (c) =>
+      `${abbreviateClan(c.clanName)} — ${
+        c.liveMemberCount !== null ? `${c.liveMemberCount}/50` : "unknown/50"
+      }`
+  );
+  const compositionRows = params.compositionList.map(
+    (c) => `${abbreviateClan(c.clanName)} — ${c.delta}`
+  );
+
+  return new EmbedBuilder()
+    .setTitle("Compo Placement Suggestions")
+    .setDescription(
+      `Weight: **${params.inputWeight.toLocaleString()}**\n` +
+        `Bucket: **${params.bucket}**\n` +
+        params.refreshLine
+    )
+    .addFields(
+      { name: "Recommended", value: formatPlacementRows(recommendedRows), inline: false },
+      { name: "Vacancy", value: formatPlacementRows(vacancyRows), inline: false },
+      { name: "Composition", value: formatPlacementRows(compositionRows), inline: false }
+    );
 }
 
 const GLYPHS: Record<string, string[]> = {
@@ -544,7 +641,7 @@ export const Compo: Command = {
   run: async (
     _client: Client,
     interaction: ChatInputCommandInteraction,
-    _cocService: CoCService
+    cocService: CoCService
   ) => {
     try {
       logCompoStage(interaction, "handler_enter");
@@ -746,8 +843,10 @@ export const Compo: Command = {
           sheetIdPresent: Boolean(linked.sheetId),
         });
 
-        const [clanCol, totalCol, targetBandCol, rightBlock, refreshCell] = await Promise.all([
+        const [clanCol, clanTagCol, totalCol, targetBandCol, rightBlock, refreshCell] =
+          await Promise.all([
           sheets.readLinkedValues("AllianceDashboard!A1:A9", stateMode),
+          sheets.readLinkedValues("AllianceDashboard!B1:B9", stateMode),
           sheets.readLinkedValues("AllianceDashboard!D1:D9", stateMode),
           sheets.readLinkedValues("AllianceDashboard!AW1:AW9", stateMode),
           sheets.readLinkedValues("AllianceDashboard!U1:AA9", stateMode),
@@ -762,6 +861,7 @@ export const Compo: Command = {
 
         const candidates = readPlacementCandidates(
           clanCol,
+          clanTagCol,
           totalCol,
           targetBandCol,
           rightBlock
@@ -782,14 +882,19 @@ export const Compo: Command = {
           return;
         }
 
-        const vacancyChoice = candidates
-          .filter((c) => c.missingCount > 0)
+        const candidatesWithLiveVacancy = await enrichCandidatesWithLiveVacancy(
+          candidates,
+          cocService
+        );
+        const vacancyChoice = candidatesWithLiveVacancy
+          .filter((c) => c.hasVacancy)
           .sort((a, b) => {
-            if (b.missingCount !== a.missingCount) return b.missingCount - a.missingCount;
+            if (b.vacancySlots !== a.vacancySlots)
+              return b.vacancySlots - a.vacancySlots;
             return Math.abs(a.remainingToTarget - inputWeight) - Math.abs(b.remainingToTarget - inputWeight);
           });
 
-        const compositionNeeds = candidates
+        const compositionNeeds = candidatesWithLiveVacancy
           .map((c) => {
             const key = normalize(`${bucket}-delta`);
             const delta = c.bucketDeltaByHeader[key] ?? 0;
@@ -801,33 +906,9 @@ export const Compo: Command = {
             return b.missingCount - a.missingCount;
           });
 
-        const recommended = compositionNeeds.filter((c) => c.missingCount > 0);
+        const recommended = compositionNeeds.filter((c) => c.hasVacancy);
         const vacancyList = vacancyChoice;
         const compositionList = compositionNeeds;
-
-        const recommendedText =
-          recommended.length > 0
-            ? recommended
-                .map(
-                  (c) =>
-                    `${abbreviateClan(c.clanName)} (Missing ${c.missingCount}, ${bucket.toLowerCase()}-delta: ${c.delta})`
-                )
-                .join(", ")
-            : "None";
-
-        const vacancyText =
-          vacancyList.length > 0
-            ? vacancyList
-                .map((c) => `${abbreviateClan(c.clanName)} (${c.missingCount})`)
-                .join(", ")
-            : "None";
-
-        const compositionText =
-          compositionList.length > 0
-            ? compositionList
-                .map((c) => `${abbreviateClan(c.clanName)} (${c.delta})`)
-                .join(", ")
-            : "None";
         const rawRefresh = refreshCell[0]?.[0]?.trim();
         const refreshLine =
           rawRefresh && /^\d+$/.test(rawRefresh)
@@ -840,14 +921,17 @@ export const Compo: Command = {
           vacancy: vacancyList.length,
           composition: compositionList.length,
         });
-        await safeReply(interaction, {
-          ephemeral: true,
-          content:
-            `ACTUAL placement suggestions for weight **${inputWeight.toLocaleString()}** (${bucket} bucket):\n` +
-            `- Recommended: ${recommendedText}\n` +
-            `- Vacancy: ${vacancyText}\n` +
-            `- Composition: ${compositionText}\n` +
-            refreshLine,
+        const embed = buildCompoPlaceEmbed({
+          inputWeight,
+          bucket,
+          recommended,
+          vacancyList,
+          compositionList,
+          refreshLine,
+        });
+        await interaction.editReply({
+          content: "",
+          embeds: [embed],
         });
         logCompoStage(interaction, "response_sent", { reason: "placement_result" });
         return;
@@ -908,3 +992,4 @@ export const Compo: Command = {
 };
 
 export const readPlacementCandidatesForTest = readPlacementCandidates;
+export const buildCompoPlaceEmbedForTest = buildCompoPlaceEmbed;
