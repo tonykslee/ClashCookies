@@ -123,6 +123,7 @@ import { buildWarComplianceReportLines } from "./fwa/complianceView";
 import {
   WEIGHT_SEVERE_STALE_DAYS,
   WEIGHT_STALE_DAYS,
+  buildWeightAuthFailureNote,
   formatWeightAgeLine,
   formatWeightHealthLine,
   getWeightHealthState,
@@ -7010,11 +7011,17 @@ export const Fwa: Command = {
         });
         const okCount = results.filter((row) => row.status === "ok").length;
         const cacheHits = results.filter((row) => row.fromCache).length;
+        const authNote = buildWeightAuthFailureNote(results);
         await editReplySafe(
           buildLimitedMessage(
             `FWA Weight Age (${targets.length})`,
             lines,
-            `\nSuccessful: ${okCount}/${targets.length}\nCache hits: ${cacheHits}/${targets.length}`
+            [
+              "",
+              `Successful: ${okCount}/${targets.length}`,
+              `Cache hits: ${cacheHits}/${targets.length}`,
+              ...(authNote ? [authNote] : []),
+            ].join("\n")
           )
         );
         console.info(
@@ -7052,6 +7059,7 @@ export const Fwa: Command = {
           "severely_outdated"
       ).length;
       const unknownCount = results.length - (recentCount + outdatedCount + severeCount);
+      const authNote = buildWeightAuthFailureNote(results);
       await editReplySafe(
         buildLimitedMessage(
           `FWA Weight Health (${targets.length})`,
@@ -7065,6 +7073,7 @@ export const Fwa: Command = {
             "❓ unavailable/unknown",
             `Thresholds: outdated > ${WEIGHT_STALE_DAYS}d, severe >= ${WEIGHT_SEVERE_STALE_DAYS}d`,
             `Summary: recent=${recentCount}, outdated=${outdatedCount}, severe=${severeCount}, unknown=${unknownCount}`,
+            ...(authNote ? [authNote] : []),
           ].join("\n")
         )
       );

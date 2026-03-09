@@ -39,6 +39,15 @@ Behavior:
 Notes:
 - The FWA-vs-FWA auto-adjust timing is still treated as unverified; the default policy keeps conservative periodic validation checks.
 
+## Optional FWA Stats Weight Auth
+- `FWASTATS_WEIGHT_COOKIE` - authenticated cookie value used for scraping `https://fwastats.com/Clan/<tag>/Weight` in `/fwa weight-age` and `/fwa weight-health`.
+
+Operational notes:
+- Store this value only in your secret manager (for Railway: service variable/secret), never in git-tracked files.
+- Rotate the cookie when telemetry reports `login_required_cookie_rejected`.
+- If telemetry reports `login_required_no_cookie`, the secret is missing in the runtime environment.
+- Auth failures are intentionally not cached for long so recovery is fast after cookie updates.
+
 ## Google Sheets (OAuth)
 This project is currently set up to use OAuth refresh token auth.
 

@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildWeightAuthFailureNote,
   formatWeightAgeLine,
   formatWeightHealthLine,
   getWeightHealthState,
+  isWeightAuthFailureStatus,
 } from "../src/commands/fwa/weightView";
 import { type FwaStatsWeightAge } from "../src/services/FwaStatsWeightService";
 
@@ -29,20 +31,30 @@ describe("weight view helpers", () => {
     expect(getWeightHealthState(null)).toBe("unknown");
   });
 
-  it("formats weight-age lines for success and failure", () => {
+  it("formats weight-age lines for success and auth failures", () => {
     const success = formatWeightAgeLine({
       clanName: "Alpha",
       clanTag: "ABC123",
       result: makeResult({}),
     });
-    const failed = formatWeightAgeLine({
+    const missingCookie = formatWeightAgeLine({
       clanName: "Alpha",
       clanTag: "ABC123",
-      result: makeResult({ status: "login_required", ageText: null, ageDays: null }),
+      result: makeResult({ status: "login_required_no_cookie", ageText: null, ageDays: null }),
+    });
+    const rejectedCookie = formatWeightAgeLine({
+      clanName: "Alpha",
+      clanTag: "ABC123",
+      result: makeResult({
+        status: "login_required_cookie_rejected",
+        ageText: null,
+        ageDays: null,
+      }),
     });
 
     expect(success).toContain("Alpha (#ABC123) — 2d ago");
-    expect(failed).toContain("unavailable (login required)");
+    expect(missingCookie).toContain("unavailable (auth cookie missing)");
+    expect(rejectedCookie).toContain("unavailable (auth cookie rejected/expired)");
   });
 
   it("formats health lines with legend emojis", () => {
@@ -72,5 +84,21 @@ describe("weight view helpers", () => {
     expect(severe).toContain("❌");
     expect(unavailable).toContain("❓");
   });
-});
 
+  it("returns auth note when auth failures are present", () => {
+    const noCookie = makeResult({ status: "login_required_no_cookie", ageText: null, ageDays: null });
+    const rejected = makeResult({
+      status: "login_required_cookie_rejected",
+      ageText: null,
+      ageDays: null,
+    });
+
+    expect(isWeightAuthFailureStatus(noCookie.status)).toBe(true);
+    expect(isWeightAuthFailureStatus("parse_error")).toBe(false);
+    expect(buildWeightAuthFailureNote([noCookie])).toContain("set `FWASTATS_WEIGHT_COOKIE`");
+    expect(buildWeightAuthFailureNote([rejected])).toContain(
+      "rejected `FWASTATS_WEIGHT_COOKIE`"
+    );
+    expect(buildWeightAuthFailureNote([makeResult({})])).toBeNull();
+  });
+});
