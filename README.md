@@ -15,6 +15,7 @@ Discord bot for Clash of Clans activity tooling.
 - Poller-side points fetches now use a shared gate that enforces an active-war mail-confirmed lock (`confirmedByClanMail=true`, `needsValidation=false`, matching war identity), blocking routine `post_war_reconciliation`/`mail_refresh` calls until an explicit unlock trigger.
 - `/fwa match` now shows actionable sync status only when validation is needed, keeps single-clan sync/fetch timing details, and hides non-actionable lifecycle/debug lines from user-facing output.
 - `/fwa match` now reuses war-scoped verified points snapshots from persisted sync data for the active war, and `/force sync data` remains the explicit refresh-scrape path.
+- `/fwa match` now applies deterministic opponent signal inference (`Clan not found` -> MM, `Active FWA: No` -> BL, `Active FWA: Yes` -> inferred FWA), persists the inferred Active FWA signal for sync fallback, and requires explicit match-type confirmation before Send Mail for all inferred match types.
 - War-mail embeds now use state-coded sidebars (BL=black, MM=white, FWA WIN=green, FWA LOSE=red, unresolved=gray) and refresh/update paths keep color aligned with current match type/outcome.
 - `/remaining war` now supports alliance-wide aggregate mode (no tag) with dominant-cluster mean remaining time, spread, and outlier clan reporting.
 - Telemetry now records command lifecycle/API/stage aggregates and supports `/telemetry report` plus scheduled Discord report posting.

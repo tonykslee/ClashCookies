@@ -24,6 +24,15 @@ describe("fwa sync action helpers", () => {
     expect(siteOutcome).toBeNull();
   });
 
+  it("keeps site outcome null for BL site matches", () => {
+    const siteOutcome = deriveSyncActionSiteOutcome({
+      siteMatchType: "BL",
+      projectedOutcome: "WIN",
+    });
+
+    expect(siteOutcome).toBeNull();
+  });
+
   it("keeps site outcome null when projected site outcome is unknown", () => {
     const siteOutcome = deriveSyncActionSiteOutcome({
       siteMatchType: "FWA",
@@ -74,6 +83,24 @@ describe("fwa sync action helpers", () => {
       persistedFwaPoints: 1000,
       persistedOpponentFwaPoints: 900,
       siteMatchType: "MM",
+      siteOutcome: null,
+      siteFwaPoints: 1000,
+      siteOpponentFwaPoints: 900,
+    });
+
+    expect(result.matchTypeAligned).toBe(true);
+    expect(result.outcomeAligned).toBe(true);
+    expect(result.pointsAligned).toBe(true);
+    expect(result.fullyAligned).toBe(true);
+  });
+
+  it("aligns BL post-sync payload when persisted match type is BL", () => {
+    const result = evaluatePostSyncValidation({
+      persistedMatchType: "BL",
+      persistedOutcome: "UNKNOWN",
+      persistedFwaPoints: 1000,
+      persistedOpponentFwaPoints: 900,
+      siteMatchType: "BL",
       siteOutcome: null,
       siteFwaPoints: 1000,
       siteOpponentFwaPoints: 900,
