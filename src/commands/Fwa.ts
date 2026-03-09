@@ -59,6 +59,7 @@ import {
 import { PostedMessageService } from "../services/PostedMessageService";
 import {
   WarMailStatusService,
+  type WarMailReconciliationOutcome,
   type WarMailNormalizedStatus,
   type WarMailTrackedTarget,
 } from "../services/WarMailStatusService";
@@ -285,6 +286,15 @@ async function canUseFwaMailSendFromButton(interaction: ButtonInteraction): Prom
     (await new SettingsService().get(`${FWA_LEADER_ROLE_SETTING_KEY}:${interaction.guildId}`));
   if (!leaderRoleId) return false;
   return userRoles.includes(leaderRoleId);
+}
+
+/** Purpose: gate `/fwa match` mail debug details to the same leadership/admin policy as mail send. */
+async function canViewFwaMatchMailDebug(
+  interaction: ChatInputCommandInteraction
+): Promise<boolean> {
+  if (!interaction.inGuild() || !interaction.guildId) return false;
+  const permissionService = new CommandPermissionService();
+  return permissionService.canUseCommand("fwa:mail:send", interaction);
 }
 
 function normalizeTag(input: string): string {
@@ -1623,21 +1633,217 @@ type ResolveLiveWarMailStatusParams = {
   liveMatchType?: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN" | null;
   liveExpectedOutcome?: "WIN" | "LOSE" | "UNKNOWN" | null;
   mailConfig: MatchMailConfig | null | undefined;
+  emitDebugLog?: boolean;
+};
+
+type WarMailDebugWinningSource = "ClanPostedMessage" | "mailConfig" | "inMemory" | "none";
+type WarMailTrackedMessageExists = "yes" | "no" | "unknown";
+type WarMailReconciliationCertainty = "definitive" | "uncertain" | "not_checked";
+type WarMailDebugReasonCode =
+  | "live_matching_post_exists"
+  | "tracked_post_missing_message"
+  | "tracked_post_missing_channel"
+  | "tracked_post_mismatch"
+  | "transient_channel_inaccessible"
+  | "transient_unverified"
+  | "no_post_tracked";
+
+type LiveWarMailStatusDebugInfo = {
+  currentWarId: string | null;
+  trackedMailWarId: string | null;
+  trackedChannelId: string | null;
+  trackedMessageId: string | null;
+  trackedMessageExists: WarMailTrackedMessageExists;
+  currentWarConfigMatchesTrackedMessage: boolean;
+  winningSource: WarMailDebugWinningSource;
+  finalNormalizedStatus: WarMailNormalizedStatus;
+  reconciliationOutcome: WarMailReconciliationOutcome;
+  reconciliationCertainty: WarMailReconciliationCertainty;
+  debugReasonCode: WarMailDebugReasonCode;
+  debugReason: string;
+  environmentMismatchSignal: boolean;
 };
 
 type ResolvedLiveWarMailStatus = {
   status: WarMailNormalizedStatus;
   mailStatusEmoji: string;
+  debug: LiveWarMailStatusDebugInfo;
 };
+
+/** Purpose: normalize tracked-target source into operator-facing winner label. */
+function mapMailDebugWinningSource(
+  source: WarMailTrackedTarget["source"] | null | undefined
+): WarMailDebugWinningSource {
+  if (source === "stored_message") return "ClanPostedMessage";
+  if (source === "mail_config") return "mailConfig";
+  if (source === "in_memory") return "inMemory";
+  return "none";
+}
+
+/** Purpose: derive whether tracked Discord message existence is definitive/unknown. */
+function deriveTrackedMessageExists(
+  reconciliationOutcome: WarMailReconciliationOutcome
+): WarMailTrackedMessageExists {
+  if (reconciliationOutcome === "exists") return "yes";
+  if (
+    reconciliationOutcome === "message_missing_confirmed" ||
+    reconciliationOutcome === "channel_missing_confirmed"
+  ) {
+    return "no";
+  }
+  return "unknown";
+}
+
+/** Purpose: classify reconciliation certainty for safe debug interpretation. */
+function deriveReconciliationCertainty(
+  reconciliationOutcome: WarMailReconciliationOutcome
+): WarMailReconciliationCertainty {
+  if (reconciliationOutcome === "not_checked") return "not_checked";
+  if (
+    reconciliationOutcome === "exists" ||
+    reconciliationOutcome === "message_missing_confirmed" ||
+    reconciliationOutcome === "channel_missing_confirmed"
+  ) {
+    return "definitive";
+  }
+  return "uncertain";
+}
+
+/** Purpose: produce concise diagnosis code/text for mail-status troubleshooting. */
+function deriveMailStatusDebugReason(params: {
+  status: WarMailNormalizedStatus;
+  reconciliationOutcome: WarMailReconciliationOutcome;
+}): { code: WarMailDebugReasonCode; reason: string } {
+  if (params.status === "live_matching_post_exists") {
+    return {
+      code: "live_matching_post_exists",
+      reason: "Tracked message exists and matches current war/config.",
+    };
+  }
+  if (params.status === "tracked_post_mismatch") {
+    return {
+      code: "tracked_post_mismatch",
+      reason: "Tracked post exists but does not match current war/config.",
+    };
+  }
+  if (
+    params.status === "tracked_post_missing" &&
+    params.reconciliationOutcome === "message_missing_confirmed"
+  ) {
+    return {
+      code: "tracked_post_missing_message",
+      reason: "Tracked message is definitively missing (deleted/stale tracking).",
+    };
+  }
+  if (
+    params.status === "tracked_post_missing" &&
+    params.reconciliationOutcome === "channel_missing_confirmed"
+  ) {
+    return {
+      code: "tracked_post_missing_channel",
+      reason: "Tracked channel is definitively missing (stale target/environment mismatch).",
+    };
+  }
+  if (
+    params.status === "transient_unverified" &&
+    params.reconciliationOutcome === "channel_inaccessible"
+  ) {
+    return {
+      code: "transient_channel_inaccessible",
+      reason: "Tracked channel is inaccessible (permissions/environment mismatch); no destructive cleanup applied.",
+    };
+  }
+  if (params.status === "transient_unverified") {
+    return {
+      code: "transient_unverified",
+      reason: "Tracked target could not be verified due to transient/ambiguous Discord fetch failure.",
+    };
+  }
+  return {
+    code: "no_post_tracked",
+    reason: "No authoritative tracked post exists for the current war/config.",
+  };
+}
+
+/** Purpose: materialize structured mail-status debug snapshot for command rendering/logging. */
+function buildWarMailStatusDebugSnapshot(params: {
+  currentWarId: string | null;
+  trackedTarget: WarMailTrackedTarget | null;
+  matchesCurrentMailConfig: boolean;
+  status: WarMailNormalizedStatus;
+  reconciliationOutcome: WarMailReconciliationOutcome;
+}): LiveWarMailStatusDebugInfo {
+  const trackedMailWarId =
+    params.trackedTarget?.warId && params.trackedTarget.warId.trim()
+      ? params.trackedTarget.warId.trim()
+      : null;
+  const debugReason = deriveMailStatusDebugReason({
+    status: params.status,
+    reconciliationOutcome: params.reconciliationOutcome,
+  });
+  return {
+    currentWarId: params.currentWarId,
+    trackedMailWarId,
+    trackedChannelId: params.trackedTarget?.channelId ?? null,
+    trackedMessageId: params.trackedTarget?.messageId ?? null,
+    trackedMessageExists: deriveTrackedMessageExists(params.reconciliationOutcome),
+    currentWarConfigMatchesTrackedMessage: params.matchesCurrentMailConfig,
+    winningSource: mapMailDebugWinningSource(params.trackedTarget?.source),
+    finalNormalizedStatus: params.status,
+    reconciliationOutcome: params.reconciliationOutcome,
+    reconciliationCertainty: deriveReconciliationCertainty(params.reconciliationOutcome),
+    debugReasonCode: debugReason.code,
+    debugReason: debugReason.reason,
+    environmentMismatchSignal:
+      Boolean(params.currentWarId) &&
+      Boolean(trackedMailWarId) &&
+      params.currentWarId !== trackedMailWarId,
+  };
+}
+
+/** Purpose: render operator-focused lines that explain authoritative tracked mail status. */
+function buildMailStatusDebugLines(debug: LiveWarMailStatusDebugInfo): string[] {
+  const trackedExistsText =
+    debug.trackedMessageExists === "yes"
+      ? "yes"
+      : debug.trackedMessageExists === "no"
+        ? "no"
+        : "unknown";
+  const lines = [
+    "`[MAIL DEBUG]`",
+    `- Current war id: ${debug.currentWarId ?? "unknown"}`,
+    `- Tracked mail war id: ${debug.trackedMailWarId ?? "none"}`,
+    `- Tracked channel id: ${debug.trackedChannelId ?? "none"}`,
+    `- Tracked message id: ${debug.trackedMessageId ?? "none"}`,
+    `- Tracked message exists: ${trackedExistsText}`,
+    `- Current war/config matches tracked: ${debug.currentWarConfigMatchesTrackedMessage ? "yes" : "no"}`,
+    `- Winning source: ${debug.winningSource}`,
+    `- Reconciliation outcome: ${debug.reconciliationOutcome} (${debug.reconciliationCertainty})`,
+    `- Final normalized status: ${debug.finalNormalizedStatus}`,
+    `- Diagnosis: ${debug.debugReason}`,
+  ];
+  if (debug.environmentMismatchSignal) {
+    lines.push("- Environment mismatch signal: current war id differs from tracked mail war id.");
+  }
+  return lines;
+}
 
 /** Purpose: reconcile tracked war-mail state with live Discord message existence and return normalized status. */
 async function resolveLiveWarMailStatus(
   params: ResolveLiveWarMailStatusParams
 ): Promise<ResolvedLiveWarMailStatus> {
   if (!params.guildId) {
+    const debug = buildWarMailStatusDebugSnapshot({
+      currentWarId: null,
+      trackedTarget: null,
+      matchesCurrentMailConfig: false,
+      status: "no_post_tracked",
+      reconciliationOutcome: "not_checked",
+    });
     return {
       status: "no_post_tracked",
       mailStatusEmoji: MAILBOX_NOT_SENT_EMOJI,
+      debug,
     };
   }
   const config = params.mailConfig ?? null;
@@ -1696,6 +1902,18 @@ async function resolveLiveWarMailStatus(
   console.log(
     `[fwa-mail-status] guild=${params.guildId} clan=#${normalizeTag(params.tag)} war_id=${warIdText ?? "unknown"} status=${statusResult.status} reconciliation=${statusResult.reconciliationOutcome} target=${trackedTarget ? "yes" : "no"}`
   );
+  const debug = buildWarMailStatusDebugSnapshot({
+    currentWarId: warIdText,
+    trackedTarget,
+    matchesCurrentMailConfig,
+    status: statusResult.status,
+    reconciliationOutcome: statusResult.reconciliationOutcome,
+  });
+  if (params.emitDebugLog) {
+    console.info(
+      `[fwa-mail-status-debug] guild=${params.guildId} clan=#${normalizeTag(params.tag)} current_war_id=${debug.currentWarId ?? "unknown"} tracked_war_id=${debug.trackedMailWarId ?? "none"} tracked_channel_id=${debug.trackedChannelId ?? "none"} tracked_message_id=${debug.trackedMessageId ?? "none"} tracked_exists=${debug.trackedMessageExists} config_match=${debug.currentWarConfigMatchesTrackedMessage ? "1" : "0"} source=${debug.winningSource} normalized_status=${debug.finalNormalizedStatus} reconciliation=${debug.reconciliationOutcome} reason_code=${debug.debugReasonCode} env_mismatch=${debug.environmentMismatchSignal ? "1" : "0"}`
+    );
+  }
   const mailStatusEmoji =
     statusResult.status === "live_matching_post_exists" ||
       statusResult.status === "transient_unverified"
@@ -1704,6 +1922,7 @@ async function resolveLiveWarMailStatus(
   return {
     status: statusResult.status,
     mailStatusEmoji,
+    debug,
   };
 }
 
@@ -4366,6 +4585,8 @@ type MatchTypeFallbackResolution = {
 };
 
 export const getMailBlockedReasonFromStatusForTest = getMailBlockedReasonFromStatus;
+export const buildWarMailStatusDebugSnapshotForTest = buildWarMailStatusDebugSnapshot;
+export const buildMailStatusDebugLinesForTest = buildMailStatusDebugLines;
 
 export const resolveMatchTypeFromStoredSyncRowForTest = resolveMatchTypeFromStoredSyncRow;
 
@@ -5127,10 +5348,12 @@ async function buildTrackedMatchOverview(
   options?: {
     onlyClanTags?: string[];
     includeActualSheet?: boolean;
+    mailStatusDebugEnabled?: boolean;
   }
 ): Promise<{ embed: EmbedBuilder; copyText: string; singleViews: Record<string, MatchView> }> {
   const settings = new SettingsService();
   const includeActualSheet = options?.includeActualSheet ?? true;
+  const mailStatusDebugEnabled = options?.mailStatusDebugEnabled ?? false;
   const scopedTagSet =
     options?.onlyClanTags && options.onlyClanTags.length > 0
       ? new Set(options.onlyClanTags.map((tag) => normalizeTag(tag)))
@@ -5308,8 +5531,11 @@ async function buildTrackedMatchOverview(
         mailConfig: parsedMailConfig,
         liveMatchType: isMatchTypeValue(sub?.matchType) ? sub?.matchType : null,
         liveExpectedOutcome: isExpectedOutcomeValue(sub?.outcome) ? sub?.outcome : null,
+        emitDebugLog: mailStatusDebugEnabled,
       });
       const mailStatusEmoji = preWarMailStatus.mailStatusEmoji;
+      const preWarMailDebugLines =
+        mailStatusDebugEnabled ? buildMailStatusDebugLines(preWarMailStatus.debug) : [];
       const clanProfile = await cocService.getClan(`#${clanTag}`).catch(() => null);
       const memberCount = Number.isFinite(Number(clanProfile?.members))
         ? Number(clanProfile?.members)
@@ -5341,6 +5567,7 @@ async function buildTrackedMatchOverview(
         `War State: **${clanWarStateLine}**`,
         `Time Remaining: **${clanTimeRemainingLine}**`,
         `Sync: **${clanSyncLine}**`,
+        ...preWarMailDebugLines,
       ];
       if (includeInOverview) {
         embed.addFields({
@@ -5359,7 +5586,8 @@ async function buildTrackedMatchOverview(
           `Compo advice (ACTUAL): ${actual?.compoAdvice ?? "none"}`,
           `War State: ${clanWarStateLine}`,
           `Time Remaining: ${clanTimeRemainingLine}`,
-          `Sync: ${clanSyncLine}`
+          `Sync: ${clanSyncLine}`,
+          ...preWarMailDebugLines,
         );
       }
       singleViews[clanTag] = {
@@ -5403,14 +5631,18 @@ async function buildTrackedMatchOverview(
         mailConfig: parsedMailConfig,
         liveMatchType: isMatchTypeValue(sub?.matchType) ? sub?.matchType : null,
         liveExpectedOutcome: isExpectedOutcomeValue(sub?.outcome) ? sub?.outcome : null,
+        emitDebugLog: mailStatusDebugEnabled,
       });
       const mailStatusEmoji = noOpponentMailStatus.mailStatusEmoji;
+      const noOpponentMailDebugLines =
+        mailStatusDebugEnabled ? buildMailStatusDebugLines(noOpponentMailStatus.debug) : [];
       const noOpponentHeader = `${mailStatusEmoji} | ${clanName} (#${clanTag}) vs Unknown`;
       const noOpponentLines = [
         "No active war opponent",
         `War State: **${clanWarStateLine}**`,
         `Time Remaining: **${clanTimeRemainingLine}**`,
         `Sync: **${clanSyncLine}**`,
+        ...noOpponentMailDebugLines,
       ];
       if (includeInOverview) {
         embed.addFields({
@@ -5420,7 +5652,7 @@ async function buildTrackedMatchOverview(
         });
         copyLines.push(
           `## ${noOpponentHeader}`,
-          ...noOpponentLines.map((line) => line.replace(/\*\*/g, ""))
+          ...noOpponentLines.map((line) => line.replace(/\*\*/g, "")),
         );
       }
       singleViews[clanTag] = {
@@ -5725,6 +5957,7 @@ async function buildTrackedMatchOverview(
       liveMatchType: matchType,
       liveExpectedOutcome: currentExpectedOutcomeForMail,
       mailConfig: parsedMailConfig,
+      emitDebugLog: mailStatusDebugEnabled,
     });
     const mailStatusEmoji = liveMailStatus.mailStatusEmoji;
     const mailBlockedReason = getMailBlockedReasonFromStatus({
@@ -5733,6 +5966,9 @@ async function buildTrackedMatchOverview(
       mailStatus: liveMailStatus.status,
     });
     const mailBlockedReasonLine = formatMailBlockedReason(mailBlockedReason);
+    const mailDebugLines = mailStatusDebugEnabled
+      ? buildMailStatusDebugLines(liveMailStatus.debug)
+      : [];
 
     if (matchType === "FWA") {
       const warnSuffix = inferredMatchType ? ` :warning: ${verifyLink}` : "";
@@ -5757,6 +5993,7 @@ async function buildTrackedMatchOverview(
             `War State: **${clanWarStateLine}**`,
             `Time Remaining: **${clanTimeRemainingLine}**`,
             mismatchLines,
+            ...mailDebugLines,
           ]
             .filter(Boolean)
             .join("\n"),
@@ -5776,7 +6013,8 @@ async function buildTrackedMatchOverview(
           `Outcome: ${effectiveOutcome ?? "UNKNOWN"}`,
           `War State: ${clanWarStateLine}`,
           `Time Remaining: ${clanTimeRemainingLine}`,
-          mismatchLines
+          mismatchLines,
+          ...mailDebugLines,
         );
       }
     } else {
@@ -5800,6 +6038,7 @@ async function buildTrackedMatchOverview(
             `War State: **${clanWarStateLine}**`,
             `Time Remaining: **${clanTimeRemainingLine}**`,
             mismatchLines,
+            ...mailDebugLines,
           ]
             .filter(Boolean)
             .join("\n"),
@@ -5817,7 +6056,8 @@ async function buildTrackedMatchOverview(
           inferredMatchType ? `Verify: ${buildCcVerifyUrl(opponentTag)}` : "",
           `War State: ${clanWarStateLine}`,
           `Time Remaining: ${clanTimeRemainingLine}`,
-          mismatchLines
+          mismatchLines,
+          ...mailDebugLines,
         );
       }
     }
@@ -5841,6 +6081,7 @@ async function buildTrackedMatchOverview(
         ? `Last points fetch: **${storedSyncSummary.updatedLine}**`
         : "",
       mismatchLines,
+      ...mailDebugLines,
     ]
       .filter(Boolean)
       .join("\n");
@@ -5932,6 +6173,7 @@ async function buildTrackedMatchOverview(
           inferredMatchType ? `Verify: ${buildCcVerifyUrl(opponentTag)}` : "",
           matchType === "FWA" ? `Expected outcome: ${effectiveOutcome ?? "UNKNOWN"}` : "",
           mismatchLines,
+          ...mailDebugLines,
         ]
           .filter(Boolean)
           .join("\n")
@@ -6961,6 +7203,12 @@ export const Fwa: Command = {
             { name: "public", value: "public" },
           ],
         },
+        {
+          name: "debug-mail-status",
+          description: "Show admin-only mail status diagnostics for tracked Discord post state",
+          type: ApplicationCommandOptionType.Boolean,
+          required: false,
+        },
       ],
     },
     {
@@ -7170,6 +7418,19 @@ export const Fwa: Command = {
     const sourceSync = await getSourceOfTruthSync(settings, interaction.guildId ?? null);
     const rawTag = interaction.options.getString("tag", false);
     const tag = normalizeTag(rawTag ?? "");
+    const debugMailStatusRequested =
+      subcommand === "match"
+        ? interaction.options.getBoolean("debug-mail-status", false) ?? false
+        : false;
+    const debugMailStatusAllowed = debugMailStatusRequested
+      ? await canViewFwaMatchMailDebug(interaction)
+      : false;
+    const matchMailStatusDebugEnabled = debugMailStatusRequested && debugMailStatusAllowed;
+    if (debugMailStatusRequested) {
+      console.info(
+        `[fwa-mail-status-debug] event=invocation guild=${interaction.guildId ?? "dm"} user=${interaction.user.id} scope=${tag ? "single" : "alliance"} clan=${tag ? `#${tag}` : "all"} allowed=${matchMailStatusDebugEnabled ? "1" : "0"}`
+      );
+    }
     const resolveWeightTargets = async (): Promise<Array<{ tag: string; clanName: string }>> => {
       if (tag) {
         const trackedRow = interaction.guildId
@@ -7807,7 +8068,10 @@ export const Fwa: Command = {
         sourceSync,
         interaction.guildId ?? null,
         warLookupCache,
-        interaction.client
+        interaction.client,
+        {
+          mailStatusDebugEnabled: matchMailStatusDebugEnabled,
+        }
       );
       const key = interaction.id;
       if (!tag) {
@@ -7965,8 +8229,12 @@ export const Fwa: Command = {
             mailConfig: parsedMailConfig,
             liveMatchType: isMatchTypeValue(subscription?.matchType) ? subscription?.matchType : null,
             liveExpectedOutcome: isExpectedOutcomeValue(subscription?.outcome) ? subscription?.outcome : null,
+            emitDebugLog: matchMailStatusDebugEnabled,
           });
           const mailStatusEmoji = preWarMailStatus.mailStatusEmoji;
+          const preWarMailDebugLines = matchMailStatusDebugEnabled
+            ? buildMailStatusDebugLines(preWarMailStatus.debug)
+            : [];
           const clanName = sanitizeClanName(trackedClanMeta?.name ?? "") ?? `#${tag}`;
           const preWarHeader = `${mailStatusEmoji} | ${clanName} (#${tag})`;
           const preWarLines = [
@@ -7982,6 +8250,7 @@ export const Fwa: Command = {
             `War State: **${formatWarStateLabel(warState)}**`,
             `Time Remaining: **${warRemaining}**`,
             `Sync: **${withSyncModeLabel(getSyncDisplay(sourceSync, warState), sourceSync)}**`,
+            ...preWarMailDebugLines,
           ];
           const singleView: MatchView = {
             embed: new EmbedBuilder().setTitle(preWarHeader).setDescription(preWarLines.join("\n")),
@@ -8334,6 +8603,7 @@ export const Fwa: Command = {
           liveMatchType: matchType,
           liveExpectedOutcome: currentExpectedOutcomeForMail,
           mailConfig: parsedMailConfig,
+          emitDebugLog: matchMailStatusDebugEnabled,
         });
         const mailBlockedReason = getMailBlockedReasonFromStatus({
           inferredMatchType,
@@ -8341,6 +8611,9 @@ export const Fwa: Command = {
           mailStatus: liveMailStatus.status,
         });
         const mailBlockedReasonLine = formatMailBlockedReason(mailBlockedReason);
+        const mailDebugLines = matchMailStatusDebugEnabled
+          ? buildMailStatusDebugLines(liveMailStatus.debug)
+          : [];
         const outcomeLine =
           matchType === "FWA"
             ? `${effectiveOutcome ?? "UNKNOWN"}`
@@ -8376,6 +8649,7 @@ export const Fwa: Command = {
             ? `Last points fetch: **${storedSyncSummary.updatedLine}**`
             : "",
           mismatchLines,
+          ...mailDebugLines,
         ]
           .filter(Boolean)
           .join("\n");
@@ -8433,6 +8707,7 @@ export const Fwa: Command = {
             verifyLink ? `Verify: ${buildCcVerifyUrl(opponentTag)}` : "",
             outcomeLine ? `Expected outcome: ${outcomeLine}` : "",
             mismatchLines,
+            ...mailDebugLines,
           ]
             .filter(Boolean)
             .join("\n")
