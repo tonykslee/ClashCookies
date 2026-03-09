@@ -23,6 +23,8 @@ type Snapshot = {
   tag: string;
   clanName: string | null;
   balance: number | null;
+  activeFwa: boolean | null;
+  notFound: boolean;
   effectiveSync: number | null;
   syncMode: "low" | "high" | null;
   winnerBoxSync: number | null;
@@ -74,6 +76,23 @@ function extractField(text: string, label: string): string | null {
   );
   const match = text.match(regex);
   return match?.[1] ? match[1].trim().slice(0, 120) : null;
+}
+
+/** Purpose: parse Active FWA Yes/No from raw or normalized text. */
+function extractActiveFwa(...texts: Array<string | null | undefined>): boolean | null {
+  const raw = texts
+    .map((text) =>
+      text
+        ? text.match(/Active FWA\s*:\s*(Yes|No)\b/i)?.[1] ??
+          extractField(text, "Active FWA")?.match(/^(Yes|No)\b/i)?.[1] ??
+          null
+        : null
+    )
+    .find((value) => value);
+  if (!raw) return null;
+  if (/^yes$/i.test(raw)) return true;
+  if (/^no$/i.test(raw)) return false;
+  return null;
 }
 
 /** Purpose: extract winner box text. */
@@ -190,6 +209,8 @@ export class PointsProjectionService {
         tag: normalizedTag,
         clanName: null,
         balance: null,
+        activeFwa: null,
+        notFound: false,
         effectiveSync: null,
         syncMode: null,
         winnerBoxSync: null,
@@ -218,6 +239,8 @@ export class PointsProjectionService {
         tag: normalizedTag,
         clanName: await this.cocService.getClanName(normalizedTag).catch(() => null),
         balance: null,
+        activeFwa: null,
+        notFound: false,
         effectiveSync: null,
         syncMode: null,
         winnerBoxSync: null,
@@ -230,6 +253,8 @@ export class PointsProjectionService {
     const topSection = extractTopSectionText(html);
     const plain = toPlainText(html);
     const winnerBoxText = extractWinnerBoxText(html);
+    const activeFwa = extractActiveFwa(topSection, plain);
+    const notFound = /not found|unknown clan|no clan/i.test(topSection || plain);
     const winnerBoxTags = extractTagsFromText(topSection || winnerBoxText || "");
     const winnerBoxSync = extractSyncNumber(topSection || winnerBoxText || "");
     const winnerBoxHasTag = winnerBoxTags.includes(normalizedTag);
@@ -251,6 +276,8 @@ export class PointsProjectionService {
         extractField(plain, "Clan Name") ??
         (await this.cocService.getClanName(normalizedTag).catch(() => null)),
       balance,
+      activeFwa,
+      notFound,
       effectiveSync,
       syncMode: getSyncMode(effectiveSync),
       winnerBoxSync,
@@ -281,6 +308,8 @@ export class PointsProjectionService {
       tag: normalizedTag,
       clanName: null,
       balance: Number.isFinite(row.clanPoints) ? Math.trunc(row.clanPoints) : null,
+      activeFwa: null,
+      notFound: false,
       effectiveSync: Number.isFinite(row.syncNum) ? Math.trunc(row.syncNum) : null,
       syncMode: getSyncMode(Number.isFinite(row.syncNum) ? Math.trunc(row.syncNum) : null),
       winnerBoxSync: Number.isFinite(row.syncNum) ? Math.trunc(row.syncNum) : null,

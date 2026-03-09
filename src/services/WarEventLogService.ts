@@ -12,12 +12,18 @@ import { hashMessageConfig } from "../helper/hashConfig";
 import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
 import { CoCService } from "./CoCService";
-import { FwaStatsService } from "./FwaStatsService";
 import { PointsProjectionService } from "./PointsProjectionService";
 import { PostedMessageService } from "./PostedMessageService";
 import { PointsSyncService } from "./PointsSyncService";
 import { PointsFetchPolicyService } from "./PointsFetchPolicyService";
 import { SettingsService } from "./SettingsService";
+import {
+  chooseMatchTypeResolution,
+  inferMatchTypeFromOpponentPoints,
+  resolveCurrentWarMatchTypeSignal,
+  toSyncIsFwa,
+  type MatchTypeResolution,
+} from "./MatchTypeResolutionService";
 import { WarEventHistoryService } from "./war-events/history";
 import { WarStartPointsSyncService } from "./war-events/pointsSync";
 import { getNextNotifyRefreshAtMs } from "./refreshSchedule";
@@ -270,7 +276,6 @@ function buildWarStatsLines(stats: EmbedWarStats): string[] {
 
 export class WarEventLogService {
   private readonly points: PointsProjectionService;
-  private readonly fwaStats: FwaStatsService;
   private readonly pointsSync: WarStartPointsSyncService;
   private readonly currentSyncs: PointsSyncService;
   private readonly pointsPolicy: PointsFetchPolicyService;
@@ -280,7 +285,6 @@ export class WarEventLogService {
   /** Purpose: initialize service dependencies. */
   constructor(private readonly client: Client, private readonly coc: CoCService) {
     this.points = new PointsProjectionService(coc);
-    this.fwaStats = new FwaStatsService();
     this.pointsSync = new WarStartPointsSyncService(this.points, new SettingsService());
     this.currentSyncs = new PointsSyncService();
     this.pointsPolicy = new PointsFetchPolicyService();
@@ -1171,19 +1175,18 @@ export class WarEventLogService {
         nextOpponentName
       ).catch(() => null);
     }
-    const fwaStatsValidated =
-      currentState !== "notInWar" && nextOpponentTag
-        ? await this.fwaStats
-            .isOpponentInActiveWars(sub.clanTag, nextOpponentTag)
-            .catch(() => null)
-        : null;
-
     const fallbackSyncNumberForEvent =
       eventType === "war_ended"
         ? syncContext.activeSync
         : currentState === "notInWar"
           ? syncContext.previousSync
           : syncContext.activeSync;
+
+    const currentWarResolution = resolveCurrentWarMatchTypeSignal({
+      matchType: sub.matchType,
+      inferredMatchType: sub.inferredMatchType,
+    });
+    let liveOpponentResolution: MatchTypeResolution | null = null;
 
     let nextFwaPoints = sub.fwaPoints;
     let nextOpponentFwaPoints = sub.opponentFwaPoints;
@@ -1222,6 +1225,12 @@ export class WarEventLogService {
         this.points.fetchSnapshot(projectionClanTag, { reason: projectionReason }),
         this.points.fetchSnapshot(projectionOpponentTag, { reason: projectionReason }),
       ]);
+      liveOpponentResolution = inferMatchTypeFromOpponentPoints({
+        available: true,
+        balance: b.balance,
+        activeFwa: b.activeFwa,
+        notFound: b.notFound,
+      });
       nextFwaPoints = a.balance;
       nextOpponentFwaPoints = b.balance;
       nextOutcome = deriveExpectedOutcome(
@@ -1247,6 +1256,14 @@ export class WarEventLogService {
         b.balance !== null &&
         Number.isFinite(b.balance)
       ) {
+        const syncResolution = chooseMatchTypeResolution({
+          confirmedCurrent: currentWarResolution.confirmed,
+          liveOpponent: liveOpponentResolution,
+          storedSync: null,
+          unconfirmedCurrent: currentWarResolution.unconfirmed,
+        });
+        const syncMatchType = syncResolution?.matchType ?? sub.matchType ?? null;
+        const syncIsFwa = syncResolution?.syncIsFwa ?? toSyncIsFwa(syncMatchType) ?? false;
         await this.currentSyncs
           .upsertPointsSync({
             guildId: sub.guildId,
@@ -1267,10 +1284,10 @@ export class WarEventLogService {
               b.balance,
               observedSync
             ),
-            isFwa: true,
+            isFwa: syncIsFwa,
             fetchedAt: new Date(a.fetchedAtMs),
             fetchReason: projectionReason,
-            matchType: sub.matchType ?? null,
+            matchType: syncMatchType,
             needsValidation: false,
           })
           .catch(() => null);
@@ -1282,38 +1299,14 @@ export class WarEventLogService {
         nextWarEndFwaPoints = a.balance;
       }
     }
-    let nextMatchType = sub.matchType;
-    let nextInferredMatchType = sub.inferredMatchType;
-    if (fwaStatsValidated === true && (nextMatchType === null || nextInferredMatchType)) {
-      nextMatchType = "FWA";
-      nextInferredMatchType = false;
-    }
-    if (eventType === "war_started") {
-      if (
-        nextMatchType === null &&
-        nextOpponentFwaPoints !== null &&
-        Number.isFinite(nextOpponentFwaPoints)
-      ) {
-        nextMatchType = "FWA";
-        nextInferredMatchType = true;
-      } else if (
-        nextMatchType === null &&
-        (nextOpponentFwaPoints === null || !Number.isFinite(nextOpponentFwaPoints))
-      ) {
-        nextMatchType = "MM";
-        nextInferredMatchType = true;
-      }
-    }
-    if (
-      eventType === "war_ended" &&
-      nextMatchType === null &&
-      nextInferredMatchType
-    ) {
-      nextMatchType =
-        nextOpponentFwaPoints !== null && Number.isFinite(nextOpponentFwaPoints)
-          ? "FWA"
-          : "MM";
-    }
+    const resolvedMatchType = chooseMatchTypeResolution({
+      confirmedCurrent: currentWarResolution.confirmed,
+      liveOpponent: liveOpponentResolution,
+      storedSync: null,
+      unconfirmedCurrent: currentWarResolution.unconfirmed,
+    });
+    let nextMatchType = resolvedMatchType?.matchType ?? sub.matchType;
+    let nextInferredMatchType = resolvedMatchType?.inferred ?? sub.inferredMatchType;
 
     if (eventType === "war_ended" && nextMatchType === "BL") {
       const finalResult = await this.history.getWarEndResultSnapshot({

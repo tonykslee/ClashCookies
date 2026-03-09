@@ -68,6 +68,14 @@ import {
 } from "../services/PointsFetchPolicyService";
 import { PointsSyncService } from "../services/PointsSyncService";
 import {
+  chooseMatchTypeResolution,
+  inferMatchTypeFromOpponentPoints,
+  resolveCurrentWarMatchTypeSignal,
+  resolveMatchTypeFromStoredSyncRow,
+  type MatchTypeResolution,
+  type MatchTypeResolutionSource,
+} from "../services/MatchTypeResolutionService";
+import {
   PointsDirectFetchGateService,
   type PointsDirectFetchCaller,
   PointsDirectFetchBlockedError,
@@ -348,15 +356,6 @@ const MATCHTYPE_WARNING_LEGEND =
 function logFwaMatchTelemetry(event: string, detail: string): void {
   console.log(`[telemetry-fwa-match] event=${event} ${detail}`);
 }
-
-type MatchTypeResolutionSource =
-  | "current_war"
-  | "stored_sync"
-  | "points_clan_not_found"
-  | "points_active_fwa_yes"
-  | "points_active_fwa_no"
-  | "points_missing_opponent"
-  | "points_unknown_signal";
 
 /** Purpose: emit structured logs for match-type source/inference/confirmation decisions. */
 function logMatchTypeResolution(params: {
@@ -996,11 +995,17 @@ async function buildWarMailEmbedForTag(
       (subscription?.matchType as "FWA" | "BL" | "MM" | "SKIP" | null | undefined) ?? null,
     existingInferredMatchType: subscription?.inferredMatchType ?? null,
   });
-  let inferredMatchType = fallbackResolution?.inferred ?? Boolean(subscription?.inferredMatchType);
+  let appliedResolution = chooseMatchTypeResolution({
+    confirmedCurrent: fallbackResolution.confirmedCurrent,
+    liveOpponent: null,
+    storedSync: fallbackResolution.storedSync,
+    unconfirmedCurrent: fallbackResolution.unconfirmedCurrent,
+  });
+  let inferredMatchType = appliedResolution?.inferred ?? Boolean(subscription?.inferredMatchType);
   let matchType: "FWA" | "BL" | "MM" | "UNKNOWN" =
-    fallbackResolution?.matchType === "SKIP"
+    appliedResolution?.matchType === "SKIP"
       ? "UNKNOWN"
-      : (fallbackResolution?.matchType ?? "UNKNOWN");
+      : (appliedResolution?.matchType ?? "UNKNOWN");
   let outcome = (subscription?.outcome as "WIN" | "LOSE" | null | undefined) ?? null;
   const fallbackOpponentTag = normalizeTag(String(subscription?.opponentTag ?? ""));
   const effectiveOpponentTag = opponentTag || fallbackOpponentTag;
@@ -1087,7 +1092,7 @@ async function buildWarMailEmbedForTag(
   let opponentBalance: number | null = null;
   let primarySnapshot: PointsSnapshot | null = null;
   let opponentSnapshot: PointsSnapshot | null = null;
-  let pointsInference: PointsInferredMatchType | null = null;
+  let pointsInference: MatchTypeResolution | null = null;
   if (opponentTag && routineDecision.allowed) {
     primarySnapshot = await getClanPointsCached(settings, cocService, normalizedTag, currentSync, undefined, {
       fetchReason,
@@ -1102,22 +1107,20 @@ async function buildWarMailEmbedForTag(
     opponentBalance = subscription?.opponentFwaPoints ?? syncRow?.opponentPoints ?? null;
   }
   if (opponentTag) {
-    if (matchType === "UNKNOWN") {
-      pointsInference = inferMatchTypeFromPointsSnapshots(primarySnapshot, opponentSnapshot);
-      matchType = pointsInference.matchType;
-      inferredMatchType = true;
-    }
-    const appliedResolution = fallbackResolution ?? (
-      pointsInference
-        ? {
-          matchType: pointsInference.matchType,
-          source: pointsInference.source,
-          inferred: true,
-          confirmed: false,
-          syncIsFwa: pointsInference.syncIsFwa,
-        }
-        : null
+    pointsInference = toMatchTypeResolutionFromPointsInference(
+      inferMatchTypeFromPointsSnapshots(primarySnapshot, opponentSnapshot)
     );
+    appliedResolution = chooseMatchTypeResolution({
+      confirmedCurrent: fallbackResolution.confirmedCurrent,
+      liveOpponent: pointsInference,
+      storedSync: fallbackResolution.storedSync,
+      unconfirmedCurrent: fallbackResolution.unconfirmedCurrent,
+    });
+    inferredMatchType = appliedResolution?.inferred ?? Boolean(subscription?.inferredMatchType);
+    matchType =
+      appliedResolution?.matchType === "SKIP"
+        ? "UNKNOWN"
+        : (appliedResolution?.matchType ?? "UNKNOWN");
     if (appliedResolution) {
       logMatchTypeResolution({
         stage: "mail_embed",
@@ -1135,7 +1138,7 @@ async function buildWarMailEmbedForTag(
       (matchType === "FWA" ? true : matchType === "BL" ? false : false);
     if (opponentSnapshot) {
       console.info(
-        `[fwa-matchtype] stage=mail_embed_active_fwa clan=#${normalizedTag} opponent=#${opponentTag} parsed_active_fwa=${opponentSnapshot.activeFwa === null ? "unknown" : opponentSnapshot.activeFwa ? "yes" : "no"} not_found=${opponentSnapshot.notFound ? "1" : "0"} source=${appliedResolution?.source ?? "points_unknown_signal"} sync_is_fwa=${syncIsFwaSignal ? "1" : "0"}`
+        `[fwa-matchtype] stage=mail_embed_active_fwa clan=#${normalizedTag} opponent=#${opponentTag} parsed_active_fwa=${opponentSnapshot.activeFwa === null ? "unknown" : opponentSnapshot.activeFwa ? "yes" : "no"} not_found=${opponentSnapshot.notFound ? "1" : "0"} source=${appliedResolution?.source ?? "none"} sync_is_fwa=${syncIsFwaSignal ? "1" : "0"}`
       );
     }
     if (matchType === "FWA" && !outcome) {
@@ -4356,76 +4359,11 @@ async function persistClanPointsSyncIfCurrent(input: {
   });
 }
 
-type MatchTypeResolution = {
-  matchType: "FWA" | "BL" | "MM" | "SKIP";
-  source: MatchTypeResolutionSource;
-  inferred: boolean;
-  confirmed: boolean;
-  syncIsFwa: boolean | null;
+type MatchTypeFallbackResolution = {
+  confirmedCurrent: MatchTypeResolution | null;
+  storedSync: MatchTypeResolution | null;
+  unconfirmedCurrent: MatchTypeResolution | null;
 };
-
-type PointsInferredMatchType = {
-  matchType: "FWA" | "BL" | "MM";
-  source: MatchTypeResolutionSource;
-  syncIsFwa: boolean;
-  parsedActiveFwa: boolean | null;
-};
-
-type StoredSyncMatchTypeRow = {
-  opponentTag: string;
-  isFwa: boolean | null;
-  lastKnownMatchType: string | null;
-};
-
-/** Purpose: normalize persisted match-type strings into known command-domain values. */
-function normalizeStoredMatchType(
-  raw: string | null | undefined
-): "FWA" | "BL" | "MM" | "SKIP" | null {
-  const value = String(raw ?? "").trim().toUpperCase();
-  if (value === "FWA" || value === "BL" || value === "MM" || value === "SKIP") return value;
-  return null;
-}
-
-/** Purpose: map stored sync metadata to fallback match-type when war/opponent context matches. */
-function resolveMatchTypeFromStoredSyncRow(params: {
-  syncRow: StoredSyncMatchTypeRow | null;
-  opponentTag: string;
-}): MatchTypeResolution | null {
-  if (!params.syncRow) return null;
-  const syncOpponent = normalizeTag(params.syncRow.opponentTag ?? "");
-  const requestedOpponent = normalizeTag(params.opponentTag);
-  if (!syncOpponent || syncOpponent !== requestedOpponent) return null;
-
-  const storedType = normalizeStoredMatchType(params.syncRow.lastKnownMatchType);
-  if (storedType) {
-    return {
-      matchType: storedType,
-      source: "stored_sync",
-      inferred: true,
-      confirmed: false,
-      syncIsFwa: params.syncRow.isFwa ?? null,
-    };
-  }
-  if (params.syncRow.isFwa === true) {
-    return {
-      matchType: "FWA",
-      source: "stored_sync",
-      inferred: true,
-      confirmed: false,
-      syncIsFwa: true,
-    };
-  }
-  if (params.syncRow.isFwa === false) {
-    return {
-      matchType: "BL",
-      source: "stored_sync",
-      inferred: true,
-      confirmed: false,
-      syncIsFwa: false,
-    };
-  }
-  return null;
-}
 
 export const getMailBlockedReasonFromStatusForTest = getMailBlockedReasonFromStatus;
 
@@ -4435,64 +4373,22 @@ export const resolveMatchTypeFromStoredSyncRowForTest = resolveMatchTypeFromStor
 function inferMatchTypeFromPointsSnapshots(
   _primaryPoints: Pick<PointsSnapshot, "activeFwa"> | null,
   opponentPoints: Pick<PointsSnapshot, "balance" | "activeFwa" | "notFound"> | null
-): PointsInferredMatchType {
-  if (opponentPoints?.notFound === true) {
-    return {
-      matchType: "MM",
-      source: "points_clan_not_found",
-      syncIsFwa: false,
-      parsedActiveFwa: opponentPoints.activeFwa ?? null,
-    };
-  }
-  const hasOpponentPoints =
-    opponentPoints?.balance !== null &&
-    opponentPoints?.balance !== undefined &&
-    !Number.isNaN(opponentPoints.balance);
-  if (!hasOpponentPoints) {
-    return {
-      matchType: "MM",
-      source: "points_missing_opponent",
-      syncIsFwa: false,
-      parsedActiveFwa: opponentPoints?.activeFwa ?? null,
-    };
-  }
-  if (opponentPoints?.activeFwa === false) {
-    return {
-      matchType: "BL",
-      source: "points_active_fwa_no",
-      syncIsFwa: false,
-      parsedActiveFwa: false,
-    };
-  }
-  if (opponentPoints?.activeFwa === true) {
-    return {
-      matchType: "FWA",
-      source: "points_active_fwa_yes",
-      syncIsFwa: true,
-      parsedActiveFwa: true,
-    };
-  }
-  return {
-    matchType: "FWA",
-    source: "points_unknown_signal",
-    syncIsFwa: true,
-    parsedActiveFwa: null,
-  };
+): MatchTypeResolution | null {
+  return inferMatchTypeFromOpponentPoints({
+    available: opponentPoints !== null,
+    balance: opponentPoints?.balance ?? null,
+    activeFwa: opponentPoints?.activeFwa ?? null,
+    notFound: opponentPoints?.notFound ?? false,
+  });
 }
 
 export const inferMatchTypeFromPointsSnapshotsForTest = inferMatchTypeFromPointsSnapshots;
 
 /** Purpose: normalize points-based inference into the shared resolution shape. */
 function toMatchTypeResolutionFromPointsInference(
-  pointsInference: PointsInferredMatchType
-): MatchTypeResolution {
-  return {
-    matchType: pointsInference.matchType,
-    source: pointsInference.source,
-    inferred: true,
-    confirmed: false,
-    syncIsFwa: pointsInference.syncIsFwa,
-  };
+  pointsInference: MatchTypeResolution | null
+): MatchTypeResolution | null {
+  return pointsInference;
 }
 
 /** Purpose: resolve match type from persisted sync data when live state is unset. */
@@ -4502,19 +4398,7 @@ async function resolveMatchTypeFromStoredSync(params: {
   opponentTag: string;
   warId?: number | null;
   warStartTime?: Date | null;
-  existingMatchType: "FWA" | "BL" | "MM" | "SKIP" | null | undefined;
-  existingInferredMatchType?: boolean | null | undefined;
 }): Promise<MatchTypeResolution | null> {
-  if (params.existingMatchType) {
-    const inferred = Boolean(params.existingInferredMatchType);
-    return {
-      matchType: params.existingMatchType,
-      source: "current_war",
-      inferred,
-      confirmed: !inferred,
-      syncIsFwa: params.existingMatchType === "FWA" ? true : params.existingMatchType === "BL" ? false : null,
-    };
-  }
   if (!params.guildId || !params.opponentTag) return null;
   const warIdText =
     params.warId !== null && params.warId !== undefined && Number.isFinite(params.warId)
@@ -4548,24 +4432,29 @@ async function resolveMatchTypeWithFallback(params: {
   warStartTime?: Date | null;
   existingMatchType: "FWA" | "BL" | "MM" | "SKIP" | null | undefined;
   existingInferredMatchType?: boolean | null | undefined;
-}): Promise<MatchTypeResolution | null> {
+}): Promise<MatchTypeFallbackResolution> {
+  const currentResolution = resolveCurrentWarMatchTypeSignal({
+    matchType: params.existingMatchType ?? null,
+    inferredMatchType: params.existingInferredMatchType ?? true,
+  });
   if (params.warState === "notInWar") {
-    if (!params.existingMatchType) return null;
-    const inferred = Boolean(params.existingInferredMatchType);
     return {
-      matchType: params.existingMatchType,
-      source: "current_war",
-      inferred,
-      confirmed: !inferred,
-      syncIsFwa:
-        params.existingMatchType === "FWA"
-          ? true
-          : params.existingMatchType === "BL"
-            ? false
-            : null,
+      confirmedCurrent: currentResolution.confirmed,
+      storedSync: null,
+      unconfirmedCurrent: currentResolution.unconfirmed,
     };
   }
-  return resolveMatchTypeFromStoredSync(params);
+  return {
+    confirmedCurrent: currentResolution.confirmed,
+    storedSync: await resolveMatchTypeFromStoredSync({
+      guildId: params.guildId,
+      clanTag: params.clanTag,
+      opponentTag: params.opponentTag,
+      warId: params.warId,
+      warStartTime: params.warStartTime,
+    }),
+    unconfirmedCurrent: currentResolution.unconfirmed,
+  };
 }
 
 /** Purpose: apply source-of-truth sync number over a scraped points snapshot. */
@@ -5492,7 +5381,7 @@ async function buildTrackedMatchOverview(
 
     const opponentTag = normalizeTag(String(war?.opponent?.tag ?? ""));
     const opponentName = sanitizeClanName(String(war?.opponent?.name ?? "")) ?? "Unknown";
-    const matchTypeResolved = await resolveMatchTypeWithFallback({
+    const fallbackResolution = await resolveMatchTypeWithFallback({
       guildId,
       clanTag,
       opponentTag,
@@ -5553,7 +5442,7 @@ async function buildTrackedMatchOverview(
         },
         skipSyncAction: sub?.matchType === "SKIP" ? null : { tag: clanTag },
         undoSkipSyncAction: sub?.matchType === "SKIP" ? { tag: clanTag } : null,
-      };
+        };
       continue;
     }
 
@@ -5601,7 +5490,8 @@ async function buildTrackedMatchOverview(
         };
       }
     }
-    if (!opponentPoints || matchTypeResolved === null) {
+    const needsLiveOpponentResolution = fallbackResolution.confirmedCurrent === null;
+    if (!opponentPoints || needsLiveOpponentResolution) {
       opponentPoints = await getClanPointsCached(
         settings,
         cocService,
@@ -5624,7 +5514,15 @@ async function buildTrackedMatchOverview(
       opponentPoints
     );
     const pointsResolution = toMatchTypeResolutionFromPointsInference(inferredFromPointsType);
-    const appliedResolution = matchTypeResolved ?? pointsResolution;
+    const appliedResolution = chooseMatchTypeResolution({
+      confirmedCurrent: fallbackResolution.confirmedCurrent,
+      liveOpponent: pointsResolution,
+      storedSync: fallbackResolution.storedSync,
+      unconfirmedCurrent: fallbackResolution.unconfirmedCurrent,
+    });
+    if (!appliedResolution) {
+      continue;
+    }
     const matchType = appliedResolution.matchType;
     const inferredMatchType = appliedResolution.inferred;
     const syncIsFwaSignal =
@@ -5805,7 +5703,13 @@ async function buildTrackedMatchOverview(
         validationState.differences.length > 0
     );
     const pointsSyncStatus = validationState.statusLine;
-    const siteMatchType = inferredFromPointsType.matchType;
+    const siteMatchType: "FWA" | "BL" | "MM" | null =
+      inferredFromPointsType &&
+      (inferredFromPointsType.matchType === "FWA" ||
+        inferredFromPointsType.matchType === "BL" ||
+        inferredFromPointsType.matchType === "MM")
+        ? inferredFromPointsType.matchType
+        : null;
     const opponentCcUrl = buildCcVerifyUrl(opponentTag);
     const opponentPointsUrl = buildOfficialPointsUrl(opponentTag);
     const mailChannelId = mailChannelByTag.get(clanTag) ?? null;
@@ -8159,7 +8063,7 @@ export const Fwa: Command = {
             warLookupCache
           );
         }
-        const matchTypeResolved = await resolveMatchTypeWithFallback({
+        const fallbackResolution = await resolveMatchTypeWithFallback({
           guildId: interaction.guildId ?? null,
           clanTag: tag,
           opponentTag,
@@ -8169,7 +8073,7 @@ export const Fwa: Command = {
           existingMatchType: subscription?.matchType ?? null,
           existingInferredMatchType: subscription?.inferredMatchType ?? null,
         });
-        if (matchTypeResolved === null) {
+        if (fallbackResolution.confirmedCurrent === null) {
           const opponentForInference = await getClanPointsCached(
             settings,
             cocService,
@@ -8212,7 +8116,16 @@ export const Fwa: Command = {
         }
         const inferredFromPointsType = inferMatchTypeFromPointsSnapshots(primary, opponent);
         const pointsResolution = toMatchTypeResolutionFromPointsInference(inferredFromPointsType);
-        const appliedResolution = matchTypeResolved ?? pointsResolution;
+        const appliedResolution = chooseMatchTypeResolution({
+          confirmedCurrent: fallbackResolution.confirmedCurrent,
+          liveOpponent: pointsResolution,
+          storedSync: fallbackResolution.storedSync,
+          unconfirmedCurrent: fallbackResolution.unconfirmedCurrent,
+        });
+        if (!appliedResolution) {
+          await editReplySafe("Unable to resolve match type from current data.");
+          return;
+        }
         const matchType = appliedResolution.matchType;
         const syncIsFwaSignal =
           appliedResolution.syncIsFwa ??
@@ -8525,7 +8438,13 @@ export const Fwa: Command = {
             .join("\n")
         );
         let alliance = overview;
-        const syncActionSiteMatchType = inferredFromPointsType.matchType;
+        const syncActionSiteMatchType: "FWA" | "BL" | "MM" | null =
+          inferredFromPointsType &&
+          (inferredFromPointsType.matchType === "FWA" ||
+            inferredFromPointsType.matchType === "BL" ||
+            inferredFromPointsType.matchType === "MM")
+            ? inferredFromPointsType.matchType
+            : null;
         const syncActionSiteOutcome = deriveSyncActionSiteOutcome({
           siteMatchType: syncActionSiteMatchType,
           projectedOutcome: derivedOutcome,
