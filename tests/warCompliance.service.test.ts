@@ -146,6 +146,96 @@ describe("WarComplianceService", () => {
     expect(defaultScope.report?.notFollowingPlan).toEqual(explicitCurrent.report?.notFollowingPlan);
   });
 
+  it("resolves the requested clan current war when another clan row is newer", async () => {
+    const requestedClanTag = "#2RVV0L0VP";
+    const requestedWarId = 1001324;
+    const requestedWarStartTime = new Date("2026-02-10T00:00:00.000Z");
+    const requestedWarEndTime = new Date("2026-02-11T00:00:00.000Z");
+    const requestedCurrentRow = {
+      warId: requestedWarId,
+      startTime: requestedWarStartTime,
+      endTime: requestedWarEndTime,
+      matchType: "FWA",
+      outcome: "WIN",
+      updatedAt: new Date("2026-02-10T01:00:00.000Z"),
+    };
+    const otherClanCurrentRow = {
+      warId: 1001329,
+      startTime: requestedWarStartTime,
+      endTime: requestedWarEndTime,
+      matchType: "FWA",
+      outcome: "WIN",
+      updatedAt: new Date("2026-02-10T02:00:00.000Z"),
+    };
+    const currentWarSpy = vi.spyOn(prisma.currentWar, "findFirst").mockImplementation(async (args: any) => {
+      const andClauses = Array.isArray(args?.where?.AND) ? args.where.AND : [];
+      const hasClanFilter = andClauses.some((clause: any) => {
+        const orClauses = Array.isArray(clause?.OR) ? clause.OR : [];
+        return orClauses.some(
+          (entry: any) => entry?.clanTag === requestedClanTag || entry?.clanTag === "2RVV0L0VP"
+        );
+      });
+      const hasStateFilter = andClauses.some((clause: any) => {
+        const orClauses = Array.isArray(clause?.OR) ? clause.OR : [];
+        return orClauses.some((entry: any) => {
+          const stateValue = String(entry?.state?.equals ?? "").toLowerCase();
+          return stateValue === "preparation" || stateValue === "inwar";
+        });
+      });
+      return (hasClanFilter && hasStateFilter ? requestedCurrentRow : otherClanCurrentRow) as any;
+    });
+
+    const participants = [
+      {
+        playerName: "Lead",
+        playerTag: "#P88QVY8JG",
+        attacksUsed: 1,
+        playerPosition: 1,
+        warStartTime: requestedWarStartTime,
+      },
+    ];
+    const attacks = [
+      {
+        playerTag: "#P88QVY8JG",
+        playerName: "Lead",
+        playerPosition: 1,
+        defenderPosition: 2,
+        stars: 3,
+        trueStars: 3,
+        attackSeenAt: new Date("2026-02-10T03:00:00.000Z"),
+        warEndTime: requestedWarEndTime,
+        attackOrder: 1,
+      },
+    ];
+    const warAttacksSpy = vi.spyOn(prisma.warAttacks, "findMany").mockImplementation(async (args: any) => {
+      if (args?.where?.warId !== requestedWarId) return [] as any;
+      if (args?.where?.attackOrder === 0) return participants as any;
+      if (typeof args?.where?.attackOrder === "object" && args?.where?.attackOrder?.gt === 0) {
+        return attacks as any;
+      }
+      return [] as any;
+    });
+    vi.spyOn(prisma.trackedClan, "findFirst").mockResolvedValue({
+      loseStyle: "TRADITIONAL",
+    } as any);
+
+    const service = new WarComplianceService();
+    const result = await service.evaluateComplianceForCommand({
+      guildId: "guild-1",
+      clanTag: requestedClanTag,
+    });
+
+    expect(result.status).toBe("ok");
+    expect(result.warId).toBe(requestedWarId);
+    expect(Array.isArray((currentWarSpy.mock.calls[0]?.[0] as any)?.where?.AND)).toBe(true);
+    const participantsQuery = warAttacksSpy.mock.calls
+      .map((call) => call[0] as any)
+      .find((query) => query?.where?.attackOrder === 0);
+    expect(participantsQuery?.where?.warId).toBe(requestedWarId);
+    expect(result.participantsCount).toBe(1);
+    expect(result.attacksCount).toBe(1);
+  });
+
   it("evaluates numeric war-id from WarLookup + ClanWarParticipation without WarAttacks", async () => {
     const warStartTime = new Date("2026-02-01T00:00:00.000Z");
     const warEndTime = new Date("2026-02-02T00:00:00.000Z");
