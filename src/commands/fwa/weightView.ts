@@ -28,16 +28,36 @@ export function formatWeightAgeLine(input: {
   }
 
   const errorText =
-    input.result.status === "login_required"
-      ? "login required"
-      : input.result.status === "timeout"
-        ? "timeout"
-        : input.result.status === "parse_error"
-          ? "parse failed"
-          : input.result.status === "http_error"
-            ? `http ${input.result.httpStatus ?? "error"}`
-            : "network error";
+    input.result.status === "login_required_no_cookie"
+      ? "auth cookie missing"
+      : input.result.status === "login_required_cookie_rejected"
+        ? "auth cookie rejected/expired"
+        : input.result.status === "timeout"
+          ? "timeout"
+          : input.result.status === "parse_error"
+            ? "parse failed"
+            : input.result.status === "http_error"
+              ? `http ${input.result.httpStatus ?? "error"}`
+              : "network error";
   return `${input.clanName} (#${input.clanTag}) — unavailable (${errorText})`;
+}
+
+/** Purpose: identify auth-specific fwastats failure statuses. */
+export function isWeightAuthFailureStatus(status: FwaStatsWeightAge["status"]): boolean {
+  return status === "login_required_no_cookie" || status === "login_required_cookie_rejected";
+}
+
+/** Purpose: build operator-facing auth troubleshooting note for weight command outputs. */
+export function buildWeightAuthFailureNote(results: FwaStatsWeightAge[]): string | null {
+  const noCookieCount = results.filter((row) => row.status === "login_required_no_cookie").length;
+  const rejectedCookieCount = results.filter(
+    (row) => row.status === "login_required_cookie_rejected"
+  ).length;
+  if (noCookieCount <= 0 && rejectedCookieCount <= 0) return null;
+  if (rejectedCookieCount > 0) {
+    return "Auth required: fwastats rejected `FWASTATS_WEIGHT_COOKIE`. Rotate/check secret and retry.";
+  }
+  return "Auth required: set `FWASTATS_WEIGHT_COOKIE` in secrets, then retry.";
 }
 
 /** Purpose: render one clan row for `/fwa weight-health` output including status emoji. */
@@ -71,4 +91,3 @@ export function formatWeightHealthLine(input: {
   }
   return `${input.clanName} (#${input.clanTag}) — ${input.result.ageText ?? "unknown"} ❓`;
 }
-
