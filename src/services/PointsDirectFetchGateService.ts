@@ -19,6 +19,7 @@ export type PointsDirectFetchCaller = "command" | "poller" | "service";
 
 export type PointsDirectFetchDecisionCode =
   | "manual_force_bypass"
+  | "reused_war_snapshot"
   | "not_tracked"
   | "locked_active_war"
   | "locked_between_wars_until_presync"
@@ -58,6 +59,7 @@ type PointsLockRuntimeSnapshot = {
   lifecycle: PointsLifecycleState | null;
   latestKnownPoints: number | null;
   postedSyncAtMs: number | null;
+  hasReusableWarSnapshot: boolean;
 };
 
 export type EvaluatePointsDirectFetchInput = {
@@ -503,6 +505,23 @@ function buildDecisionFromState(input: {
     };
   }
 
+  if (input.runtime.hasReusableWarSnapshot) {
+    return {
+      allowed: false,
+      outcome: "blocked",
+      decisionCode: "reused_war_snapshot",
+      reason: "Current-war snapshot already exists; reuse persisted sync data instead of direct fetch.",
+      clanTag: input.runtime.clanTag,
+      guildId: input.runtime.guildId,
+      fetchReason: input.fetchReason,
+      caller: input.caller,
+      lockState: input.state.lifecycleState,
+      lockUntilMs: input.state.lockUntilMs,
+      postedSyncAtMs: input.state.postedSyncAtMs,
+      manualForceBypass: false,
+    };
+  }
+
   if (!input.runtime.tracked) {
     return {
       allowed: true,
@@ -777,6 +796,13 @@ export class PointsDirectFetchGateService {
             ],
           })
         : null;
+    const hasReusableWarSnapshot = Boolean(
+      syncRow &&
+        syncRow.needsValidation === false &&
+        Number.isFinite(syncRow.clanPoints) &&
+        Number.isFinite(syncRow.opponentPoints) &&
+        (warId !== null || warStartTime !== null)
+    );
     const mailLifecycleRow =
       guildId !== null && warId !== null
         ? await prisma.warMailLifecycle.findUnique({
@@ -847,6 +873,7 @@ export class PointsDirectFetchGateService {
         previousBaseline: null,
       }),
       postedSyncAtMs,
+      hasReusableWarSnapshot,
     };
   }
 

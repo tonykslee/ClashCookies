@@ -547,8 +547,16 @@ export class WarEventLogService {
     let outcome = normalizeOutcome(sub.outcome);
     if (params.source === "current" && opponentTag) {
       const [a, b] = await Promise.all([
-        this.points.fetchSnapshot(clanTag, { reason: "manual_refresh" }),
-        this.points.fetchSnapshot(opponentTag, { reason: "manual_refresh" }),
+        this.points.fetchSnapshot(clanTag, {
+          reason: "manual_refresh",
+          caller: "command",
+          manualForceBypass: true,
+        }),
+        this.points.fetchSnapshot(opponentTag, {
+          reason: "manual_refresh",
+          caller: "command",
+          manualForceBypass: true,
+        }),
       ]);
       fwaPoints = a.balance;
       opponentFwaPoints = b.balance;
@@ -1222,8 +1230,14 @@ export class WarEventLogService {
       const projectionOpponentTag = nextOpponentTag || normalizeTag(sub.opponentTag ?? "");
       const projectionReason = gateDecision.fetchReason ?? "war_event_projection";
       const [a, b] = await Promise.all([
-        this.points.fetchSnapshot(projectionClanTag, { reason: projectionReason }),
-        this.points.fetchSnapshot(projectionOpponentTag, { reason: projectionReason }),
+        this.points.fetchSnapshot(projectionClanTag, {
+          reason: projectionReason,
+          caller: "poller",
+        }),
+        this.points.fetchSnapshot(projectionOpponentTag, {
+          reason: projectionReason,
+          caller: "poller",
+        }),
       ]);
       liveOpponentResolution = inferMatchTypeFromOpponentPoints({
         available: true,
