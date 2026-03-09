@@ -1,5 +1,9 @@
 import axios from "axios";
 import { recordFetchEvent } from "../helper/fetchTelemetry";
+import {
+  FwaStatsWeightCookieService,
+  type FwaStatsWeightAuthErrorCode,
+} from "./FwaStatsWeightCookieService";
 
 export type FwaStatsWeightFetchStatus =
   | "ok"
@@ -20,6 +24,7 @@ export type FwaStatsWeightAge = {
   httpStatus: number | null;
   fromCache: boolean;
   error: string | null;
+  authErrorCode: FwaStatsWeightAuthErrorCode | null;
 };
 
 type WeightCacheEntry = {
@@ -129,12 +134,6 @@ function getCacheTtlMsForStatus(status: FwaStatsWeightFetchStatus): number {
   return 0;
 }
 
-/** Purpose: read fwastats auth cookie from environment without logging secret content. */
-function getFwaStatsWeightCookie(): string | null {
-  const raw = String(process.env.FWASTATS_WEIGHT_COOKIE ?? "").trim();
-  return raw ? raw : null;
-}
-
 /** Purpose: scrape + cache FWA Stats weight submission ages for one or more clans. */
 export class FwaStatsWeightService {
   private static readonly REQUEST_TIMEOUT_MS = 5_000;
@@ -143,6 +142,7 @@ export class FwaStatsWeightService {
 
   private readonly cache = new Map<string, WeightCacheEntry>();
   private readonly inFlight = new Map<string, Promise<FwaStatsWeightAge>>();
+  private readonly cookieService = new FwaStatsWeightCookieService();
 
   /** Purpose: clear in-memory cache (tests/maintenance). */
   clearCache(): void {
@@ -165,6 +165,7 @@ export class FwaStatsWeightService {
         httpStatus: null,
         fromCache: false,
         error: "Invalid clan tag.",
+        authErrorCode: null,
       };
     }
 
@@ -243,7 +244,8 @@ export class FwaStatsWeightService {
   private async fetchWeightAge(clanTag: string): Promise<FwaStatsWeightAge> {
     const sourceUrl = buildFwaWeightPageUrl(clanTag);
     const startedAtMs = Date.now();
-    const authCookie = getFwaStatsWeightCookie();
+    const authContext = await this.cookieService.getCookieHeaderContext();
+    const authCookie = authContext.cookieHeader;
     const usedAuthCookie = Boolean(authCookie);
 
     for (let attempt = 1; attempt <= FwaStatsWeightService.MAX_ATTEMPTS; attempt += 1) {
@@ -278,6 +280,7 @@ export class FwaStatsWeightService {
             httpStatus: response.status,
             fromCache: false,
             error: `fwastats returned ${response.status}`,
+            authErrorCode: null,
           };
           recordFetchEvent({
             namespace: "fwastats_weight",
@@ -294,6 +297,12 @@ export class FwaStatsWeightService {
 
         const html = String(response.data ?? "");
         if (isFwaStatsLoginPage(html)) {
+          const normalizedAuthCode: FwaStatsWeightAuthErrorCode =
+            authContext.source === "none"
+              ? "FWASTATS_AUTH_REQUIRED"
+              : authContext.source === "settings"
+                ? "FWASTATS_AUTH_EXPIRED"
+                : "FWASTATS_LOGIN_PAGE_DETECTED";
           const authStatus: FwaStatsWeightFetchStatus = usedAuthCookie
             ? "login_required_cookie_rejected"
             : "login_required_no_cookie";
@@ -309,6 +318,7 @@ export class FwaStatsWeightService {
             error: usedAuthCookie
               ? "FWA Stats rejected the configured auth cookie."
               : "FWA Stats auth cookie is missing.",
+            authErrorCode: normalizedAuthCode,
           };
           recordFetchEvent({
             namespace: "fwastats_weight",
@@ -316,8 +326,8 @@ export class FwaStatsWeightService {
             source: "web",
             status: "failure",
             errorCategory: "auth",
-            errorCode: authStatus,
-            detail: `tag=${clanTag} status=${authStatus}`,
+            errorCode: normalizedAuthCode,
+            detail: `tag=${clanTag} status=${authStatus} auth_code=${normalizedAuthCode} login_page_detected=1 cookie_source=${authContext.source}`,
             durationMs: Date.now() - startedAtMs,
           });
           return result;
@@ -335,6 +345,7 @@ export class FwaStatsWeightService {
             httpStatus: response.status,
             fromCache: false,
             error: "Could not find 'Clan weight submitted ... ago' in page HTML.",
+            authErrorCode: null,
           };
           recordFetchEvent({
             namespace: "fwastats_weight",
@@ -359,6 +370,7 @@ export class FwaStatsWeightService {
           httpStatus: response.status,
           fromCache: false,
           error: null,
+          authErrorCode: null,
         };
         recordFetchEvent({
           namespace: "fwastats_weight",
@@ -385,6 +397,7 @@ export class FwaStatsWeightService {
           httpStatus: null,
           fromCache: false,
           error: String((error as { message?: string } | null)?.message ?? "Network failure."),
+          authErrorCode: null,
         };
         recordFetchEvent({
           namespace: "fwastats_weight",
@@ -411,6 +424,7 @@ export class FwaStatsWeightService {
       httpStatus: null,
       fromCache: false,
       error: "Unknown fetch failure.",
+      authErrorCode: null,
     };
   }
 }

@@ -6,6 +6,7 @@ import {
   isFwaStatsLoginPage,
   parseWeightAgeDays,
 } from "../src/services/FwaStatsWeightService";
+import { FwaStatsWeightCookieService } from "../src/services/FwaStatsWeightCookieService";
 
 vi.mock("axios", () => ({
   default: {
@@ -110,6 +111,7 @@ describe("FwaStatsWeightService", () => {
     const result = await service.getWeightAge("#ABC123");
 
     expect(result.status).toBe("login_required_no_cookie");
+    expect(result.authErrorCode).toBe("FWASTATS_AUTH_REQUIRED");
     expect(result.ageText).toBeNull();
   });
 
@@ -124,7 +126,32 @@ describe("FwaStatsWeightService", () => {
     const result = await service.getWeightAge("#ABC123");
 
     expect(result.status).toBe("login_required_cookie_rejected");
+    expect(result.authErrorCode).toBe("FWASTATS_LOGIN_PAGE_DETECTED");
     expect(result.ageText).toBeNull();
+  });
+
+  it("maps login-page response to FWASTATS_AUTH_EXPIRED when settings cookie is rejected", async () => {
+    const cookieSpy = vi
+      .spyOn(FwaStatsWeightCookieService.prototype, "getCookieHeaderContext")
+      .mockResolvedValue({
+        cookieHeader: ".AspNetCore.Identity.Application=stored-cookie",
+        source: "settings",
+      });
+    try {
+      mockedAxios.get.mockResolvedValue({
+        status: 200,
+        data: "<title>Login FWA Stats</title>",
+      });
+      const service = new FwaStatsWeightService();
+
+      const result = await service.getWeightAge("#ABC123");
+
+      expect(result.status).toBe("login_required_cookie_rejected");
+      expect(result.authErrorCode).toBe("FWASTATS_AUTH_EXPIRED");
+      expect(result.ageText).toBeNull();
+    } finally {
+      cookieSpy.mockRestore();
+    }
   });
 
   it("does not cache auth failures, allowing quick recovery after cookie fix", async () => {

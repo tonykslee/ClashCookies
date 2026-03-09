@@ -1,4 +1,5 @@
 import { type FwaStatsWeightAge } from "../../services/FwaStatsWeightService";
+import { type FwaStatsWeightAuthErrorCode } from "../../services/FwaStatsWeightCookieService";
 
 export const WEIGHT_STALE_DAYS = 7;
 export const WEIGHT_SEVERE_STALE_DAYS = 30;
@@ -47,17 +48,40 @@ export function isWeightAuthFailureStatus(status: FwaStatsWeightAge["status"]): 
   return status === "login_required_no_cookie" || status === "login_required_cookie_rejected";
 }
 
-/** Purpose: build operator-facing auth troubleshooting note for weight command outputs. */
+/** Purpose: extract normalized fwastats auth error codes from one result row. */
+export function getWeightAuthErrorCode(
+  result: FwaStatsWeightAge
+): FwaStatsWeightAuthErrorCode | null {
+  return result.authErrorCode ?? null;
+}
+
+/** Purpose: build operator-facing auth troubleshooting guidance for weight command outputs. */
 export function buildWeightAuthFailureNote(results: FwaStatsWeightAge[]): string | null {
-  const noCookieCount = results.filter((row) => row.status === "login_required_no_cookie").length;
-  const rejectedCookieCount = results.filter(
-    (row) => row.status === "login_required_cookie_rejected"
-  ).length;
-  if (noCookieCount <= 0 && rejectedCookieCount <= 0) return null;
-  if (rejectedCookieCount > 0) {
-    return "Auth required: fwastats rejected `FWASTATS_WEIGHT_COOKIE`. Rotate/check secret and retry.";
-  }
-  return "Auth required: set `FWASTATS_WEIGHT_COOKIE` in secrets, then retry.";
+  const authCodes = new Set(
+    results.map((row) => getWeightAuthErrorCode(row)).filter(Boolean) as FwaStatsWeightAuthErrorCode[]
+  );
+  if (authCodes.size <= 0) return null;
+
+  const detectedExpired = authCodes.has("FWASTATS_AUTH_EXPIRED");
+  const detectedRequired = authCodes.has("FWASTATS_AUTH_REQUIRED");
+  const detectedLoginPage = authCodes.has("FWASTATS_LOGIN_PAGE_DETECTED");
+  const summary = detectedExpired
+    ? "Detected: stored fwastats cookies were rejected or expired."
+    : detectedRequired
+      ? "Detected: fwastats cookies are missing."
+      : detectedLoginPage
+        ? "Detected: fwastats returned a login page."
+        : "Detected: fwastats auth failed.";
+
+  return [
+    "Auth required for fwastats weight scraping.",
+    summary,
+    "Recovery steps:",
+    "1. Go to https://fwastats.com and sign in.",
+    "2. Press F12, open the Network tab, and refresh.",
+    "3. Copy the two AspNetCore cookie pairs (name=value).",
+    "4. Run `/fwa weight-cookie application-cookie:<cookie-1> antiforgery-cookie:<cookie-2>`.",
+  ].join("\n");
 }
 
 /** Purpose: render one clan row for `/fwa weight-health` output including status emoji. */
