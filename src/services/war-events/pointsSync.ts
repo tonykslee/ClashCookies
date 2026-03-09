@@ -121,6 +121,7 @@ export class WarStartPointsSyncService {
     try {
       const primary = await this.points.fetchSnapshot(clanTag, {
         reason: "post_war_reconciliation",
+        caller: "service",
       });
       const siteUpdated = primary.winnerBoxTags.map((t) => normalizeTag(t)).includes(opponentTag);
       const trackedDb = sub.fwaPoints ?? null;
@@ -134,7 +135,7 @@ export class WarStartPointsSyncService {
       let opponentNotFound = job.siteOpponentNotFound;
       if (!opponentChecked) {
         const opp = await this.points
-          .fetchSnapshot(opponentTag, { reason: "post_war_reconciliation" })
+          .fetchSnapshot(opponentTag, { reason: "post_war_reconciliation", caller: "service" })
           .catch(() => null);
         opponentChecked = true;
         const liveResolution = inferMatchTypeFromOpponentPoints({

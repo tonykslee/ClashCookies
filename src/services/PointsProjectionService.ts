@@ -32,6 +32,24 @@ type Snapshot = {
   fetchedAtMs: number;
 };
 
+type CurrentWarContext = {
+  guildId: string;
+  clanTag: string;
+  opponentTag: string | null;
+  warId: string | null;
+  warStartTime: Date;
+};
+
+type WarScopedSyncRow = {
+  syncNum: number;
+  clanPoints: number;
+  opponentPoints: number;
+  isFwa: boolean;
+  opponentTag: string;
+  syncFetchedAt: Date;
+  lastSuccessfulPointsApiFetchAt: Date | null;
+};
+
 /** Purpose: normalize tag. */
 function normalizeTag(input: string): string {
   return input.trim().toUpperCase().replace(/^#/, "");
@@ -160,6 +178,11 @@ function formatPoints(value: number | null): string {
   return Intl.NumberFormat("en-US").format(value);
 }
 
+/** Purpose: normalize optional integers for persisted snapshot materialization. */
+function toOptionalInt(value: number | null | undefined): number | null {
+  return value !== null && value !== undefined && Number.isFinite(value) ? Math.trunc(value) : null;
+}
+
 export class PointsProjectionService {
   /** Purpose: initialize service dependencies. */
   constructor(
@@ -179,11 +202,29 @@ export class PointsProjectionService {
     const normalizedTag = normalizeTag(tag);
     const reason = options?.reason ?? "war_event_projection";
     const caller = options?.caller ?? "poller";
+    const manualForceBypass = options?.manualForceBypass ?? false;
+
+    if (!manualForceBypass) {
+      const warScopedPersisted = await this.getWarScopedPersistedSnapshot(normalizedTag);
+      if (warScopedPersisted) {
+        recordFetchEvent({
+          namespace: "points",
+          operation: "projection_fetch",
+          source: "cache_hit",
+          detail: `tag=${normalizedTag} reason=${reason} caller=${caller} reuse=war_scoped_persisted`,
+        });
+        console.info(
+          `[points-fetch] source=persisted tag=${normalizedTag} reason=${reason} reuse=war_scoped_persisted`
+        );
+        return warScopedPersisted;
+      }
+    }
+
     const gateDecision = await this.directFetchGate.evaluateFetchAccess({
       clanTag: normalizedTag,
       fetchReason: reason,
       caller,
-      manualForceBypass: options?.manualForceBypass ?? false,
+      manualForceBypass,
     });
     if (!gateDecision.allowed) {
       recordFetchEvent({
@@ -283,6 +324,174 @@ export class PointsProjectionService {
       winnerBoxSync,
       winnerBoxTags,
       fetchedAtMs,
+    };
+  }
+
+  /** Purpose: reuse war-scoped persisted sync data before web fetches during active wars. */
+  private async getWarScopedPersistedSnapshot(tag: string): Promise<Snapshot | null> {
+    const normalizedTag = normalizeTag(tag);
+
+    const directContext = await this.findCurrentWarContextByClanTag(normalizedTag);
+    if (directContext) {
+      const row = await this.findWarScopedSyncRow(directContext);
+      if (row) {
+        return this.buildSnapshotFromWarScopedSyncRow({
+          requestedTag: normalizedTag,
+          context: directContext,
+          row,
+          perspective: "primary",
+        });
+      }
+    }
+
+    const inverseContext = await this.findCurrentWarContextByOpponentTag(normalizedTag);
+    if (inverseContext) {
+      const row = await this.findWarScopedSyncRow(inverseContext);
+      if (row) {
+        return this.buildSnapshotFromWarScopedSyncRow({
+          requestedTag: normalizedTag,
+          context: inverseContext,
+          row,
+          perspective: "opponent",
+        });
+      }
+    }
+
+    return null;
+  }
+
+  /** Purpose: resolve current-war context for a tracked clan tag. */
+  private async findCurrentWarContextByClanTag(tag: string): Promise<CurrentWarContext | null> {
+    const row = await prisma.currentWar.findFirst({
+      where: {
+        clanTag: `#${normalizeTag(tag)}`,
+        startTime: { not: null },
+        state: { in: ["preparation", "inWar"] },
+      },
+      orderBy: { updatedAt: "desc" },
+      select: {
+        guildId: true,
+        clanTag: true,
+        opponentTag: true,
+        warId: true,
+        startTime: true,
+      },
+    });
+    if (!row?.startTime) return null;
+    const normalizedOpponentTag = normalizeTag(row.opponentTag ?? "");
+    return {
+      guildId: row.guildId,
+      clanTag: normalizeTag(row.clanTag),
+      opponentTag: normalizedOpponentTag || null,
+      warId: row.warId !== null && row.warId !== undefined ? String(Math.trunc(row.warId)) : null,
+      warStartTime: row.startTime,
+    };
+  }
+
+  /** Purpose: resolve current-war context by matching a tag as the active opponent. */
+  private async findCurrentWarContextByOpponentTag(tag: string): Promise<CurrentWarContext | null> {
+    const row = await prisma.currentWar.findFirst({
+      where: {
+        opponentTag: `#${normalizeTag(tag)}`,
+        startTime: { not: null },
+        state: { in: ["preparation", "inWar"] },
+      },
+      orderBy: { updatedAt: "desc" },
+      select: {
+        guildId: true,
+        clanTag: true,
+        opponentTag: true,
+        warId: true,
+        startTime: true,
+      },
+    });
+    if (!row?.startTime) return null;
+    const normalizedOpponentTag = normalizeTag(row.opponentTag ?? "");
+    return {
+      guildId: row.guildId,
+      clanTag: normalizeTag(row.clanTag),
+      opponentTag: normalizedOpponentTag || null,
+      warId: row.warId !== null && row.warId !== undefined ? String(Math.trunc(row.warId)) : null,
+      warStartTime: row.startTime,
+    };
+  }
+
+  /** Purpose: load war-scoped sync row used to materialize persisted snapshots. */
+  private async findWarScopedSyncRow(context: CurrentWarContext): Promise<WarScopedSyncRow | null> {
+    const warIdentity = [
+      ...(context.warId ? [{ warId: context.warId }] : []),
+      { warStartTime: context.warStartTime },
+    ];
+    const row = await prisma.clanPointsSync.findFirst({
+      where: {
+        guildId: context.guildId,
+        clanTag: `#${context.clanTag}`,
+        needsValidation: false,
+        OR: warIdentity,
+      },
+      select: {
+        syncNum: true,
+        clanPoints: true,
+        opponentPoints: true,
+        isFwa: true,
+        opponentTag: true,
+        syncFetchedAt: true,
+        lastSuccessfulPointsApiFetchAt: true,
+      },
+      orderBy: [
+        { syncFetchedAt: "desc" },
+        { lastSuccessfulPointsApiFetchAt: "desc" },
+        { updatedAt: "desc" },
+      ],
+    });
+    if (!row) return null;
+    if (
+      !Number.isFinite(row.syncNum) ||
+      !Number.isFinite(row.clanPoints) ||
+      !Number.isFinite(row.opponentPoints)
+    ) {
+      return null;
+    }
+    return {
+      syncNum: Math.trunc(row.syncNum),
+      clanPoints: Math.trunc(row.clanPoints),
+      opponentPoints: Math.trunc(row.opponentPoints),
+      isFwa: Boolean(row.isFwa),
+      opponentTag: normalizeTag(row.opponentTag),
+      syncFetchedAt: row.syncFetchedAt,
+      lastSuccessfulPointsApiFetchAt: row.lastSuccessfulPointsApiFetchAt ?? null,
+    };
+  }
+
+  /** Purpose: convert a war-scoped sync row into a projection snapshot shape. */
+  private buildSnapshotFromWarScopedSyncRow(input: {
+    requestedTag: string;
+    context: CurrentWarContext;
+    row: WarScopedSyncRow;
+    perspective: "primary" | "opponent";
+  }): Snapshot {
+    const fetchedAtMs =
+      toOptionalInt(input.row.lastSuccessfulPointsApiFetchAt?.getTime()) ??
+      toOptionalInt(input.row.syncFetchedAt.getTime()) ??
+      Date.now();
+    const winnerTags = [input.context.clanTag];
+    if (input.context.opponentTag) winnerTags.push(input.context.opponentTag);
+
+    const balance =
+      input.perspective === "primary"
+        ? toOptionalInt(input.row.clanPoints)
+        : toOptionalInt(input.row.opponentPoints);
+    return {
+      tag: normalizeTag(input.requestedTag),
+      clanName: null,
+      balance,
+      activeFwa: input.row.isFwa,
+      notFound: false,
+      effectiveSync: toOptionalInt(input.row.syncNum),
+      syncMode: getSyncMode(toOptionalInt(input.row.syncNum)),
+      winnerBoxSync: toOptionalInt(input.row.syncNum),
+      winnerBoxTags: winnerTags,
+      fetchedAtMs: fetchedAtMs ?? Date.now(),
     };
   }
 

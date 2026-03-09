@@ -30,6 +30,7 @@ function buildRuntime(overrides?: Record<string, unknown>) {
     },
     latestKnownPoints: 1200,
     postedSyncAtMs: null,
+    hasReusableWarSnapshot: false,
     ...overrides,
   };
 }
@@ -81,6 +82,24 @@ describe("PointsDirectFetchGate lifecycle", () => {
     expect(blocked.decisionCode).toBe("locked_active_war");
     expect(bypass.allowed).toBe(true);
     expect(bypass.decisionCode).toBe("manual_force_bypass");
+  });
+
+  it("blocks routine direct fetches when a reusable war snapshot already exists", () => {
+    const runtime = buildRuntime({
+      warState: "inWar",
+      hasReusableWarSnapshot: true,
+    });
+    const state = buildState({ lifecycleState: "unlocked" });
+    const decision = buildPointsDirectFetchDecisionForTest({
+      runtime,
+      state,
+      caller: "poller",
+      fetchReason: "post_war_reconciliation",
+      manualForceBypass: false,
+    });
+
+    expect(decision.allowed).toBe(false);
+    expect(decision.decisionCode).toBe("reused_war_snapshot");
   });
 
   it("re-locks non-MM between wars after point value changes when posted sync exists", () => {
