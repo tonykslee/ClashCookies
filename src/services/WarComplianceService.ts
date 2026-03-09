@@ -674,14 +674,16 @@ export class WarComplianceService {
     clanTag: string;
   }): Promise<ComplianceContext | null> {
     const clanTagWhere = buildClanTagWhere(input.clanTag);
+    const stateWhere = {
+      OR: [
+        { state: { equals: "preparation", mode: "insensitive" as const } },
+        { state: { equals: "inWar", mode: "insensitive" as const } },
+      ],
+    };
     const current = await prisma.currentWar.findFirst({
       where: {
         guildId: input.guildId,
-        ...clanTagWhere,
-        OR: [
-          { state: { equals: "preparation", mode: "insensitive" } },
-          { state: { equals: "inWar", mode: "insensitive" } },
-        ],
+        AND: [clanTagWhere, stateWhere],
       },
       orderBy: [{ updatedAt: "desc" }],
       select: {
