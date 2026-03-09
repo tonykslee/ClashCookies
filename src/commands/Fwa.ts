@@ -1338,6 +1338,14 @@ type ResolvedLiveWarMailStatus = {
   debug: WarMailLifecycleStatusDebugInfo;
 };
 
+type FwaMatchMailStatusDebugRow = {
+  clanTag: string;
+  clanName: string;
+  warId: number | null;
+  status: WarMailLifecycleNormalizedStatus;
+  debug: WarMailLifecycleStatusDebugInfo;
+};
+
 type WarMailDebugTrackedTarget = {
   warId: string | null;
   channelId: string;
@@ -1446,6 +1454,83 @@ function buildMailStatusDebugLines(debug: WarMailLifecycleStatusDebugInfo): stri
   return lines;
 }
 
+/** Purpose: collect lifecycle-only debug rows for `/fwa match debug-mail-status` without running heavy match flows. */
+async function collectFwaMatchMailStatusDebugRows(params: {
+  client: Client | null | undefined;
+  guildId: string;
+  tag: string;
+}): Promise<FwaMatchMailStatusDebugRow[]> {
+  const tracked = await prisma.trackedClan.findMany({
+    where: params.tag
+      ? {
+          OR: [
+            { tag: { equals: `#${params.tag}`, mode: "insensitive" } },
+            { tag: { equals: params.tag, mode: "insensitive" } },
+          ],
+        }
+      : undefined,
+    orderBy: { createdAt: "asc" },
+    select: { tag: true, name: true },
+  });
+  if (tracked.length === 0) return [];
+  const normalizedTags = tracked.map((row) => normalizeTag(row.tag));
+  const currentWars = await prisma.currentWar.findMany({
+    where: {
+      guildId: params.guildId,
+      clanTag: { in: normalizedTags.map((tag) => `#${tag}`) },
+    },
+    select: { clanTag: true, warId: true },
+  });
+  const warIdByTag = new Map(
+    currentWars.map((row) => [
+      normalizeTag(row.clanTag),
+      row.warId !== null && row.warId !== undefined && Number.isFinite(row.warId)
+        ? Math.trunc(row.warId)
+        : null,
+    ])
+  );
+
+  const rows = await Promise.all(
+    tracked.map(async (row) => {
+      const normalizedTag = normalizeTag(row.tag);
+      const warId = warIdByTag.get(normalizedTag) ?? null;
+      const resolved = await resolveLiveWarMailStatus({
+        client: params.client,
+        guildId: params.guildId,
+        tag: normalizedTag,
+        warId,
+        emitDebugLog: true,
+      });
+      return {
+        clanTag: normalizedTag,
+        clanName: sanitizeClanName(row.name) ?? `#${normalizedTag}`,
+        warId,
+        status: resolved.status,
+        debug: resolved.debug,
+      };
+    })
+  );
+
+  return rows;
+}
+
+/** Purpose: render concise lifecycle diagnostics for `/fwa match debug-mail-status`. */
+function buildFwaMatchMailStatusDebugSummaryLines(
+  rows: FwaMatchMailStatusDebugRow[]
+): string[] {
+  return rows.flatMap((row) => [
+    `${row.clanName} (#${row.clanTag})`,
+    `- war_id=${row.warId ?? "none"}`,
+    `- status=${row.status}`,
+    `- message_id=${row.debug.trackedMessageId ?? "none"}`,
+    `- channel_id=${row.debug.trackedChannelId ?? "none"}`,
+    `- message_exists=${row.debug.trackedMessageExists}`,
+    `- reconciliation=${row.debug.reconciliationOutcome}`,
+    `- action=${row.debug.trackingCleared ? "mark_deleted" : "no_change"}`,
+    "",
+  ]);
+}
+
 /** Purpose: reconcile tracked war-mail state with live Discord message existence and return normalized status. */
 async function resolveLiveWarMailStatus(
   params: ResolveLiveWarMailStatusParams
@@ -1517,6 +1602,8 @@ function buildWarMailRevisionLines(params: {
 }
 
 export const buildWarMailRevisionLinesForTest = buildWarMailRevisionLines;
+export const buildFwaMatchMailStatusDebugSummaryLinesForTest =
+  buildFwaMatchMailStatusDebugSummaryLines;
 
 function buildSupersededWarMailDescription(params: {
   changedAtMs: number;
@@ -7551,6 +7638,42 @@ export const Fwa: Command = {
           return;
         }
       }
+      if (debugMailStatusRequested) {
+        if (!matchMailStatusDebugEnabled) {
+          await editReplySafe(
+            "You do not have permission to use `/fwa match debug-mail-status` in this server."
+          );
+          return;
+        }
+        if (!interaction.inGuild() || !interaction.guildId) {
+          await editReplySafe("This command can only be used in a server.");
+          return;
+        }
+        const debugRows = await collectFwaMatchMailStatusDebugRows({
+          client: interaction.client,
+          guildId: interaction.guildId,
+          tag,
+        });
+        if (debugRows.length === 0) {
+          await editReplySafe(
+            tag
+              ? `Clan #${tag} is not in tracked clans.`
+              : "No tracked clans configured. Use `/tracked-clan configure` first."
+          );
+          return;
+        }
+        const debugLines = buildFwaMatchMailStatusDebugSummaryLines(debugRows);
+        await editReplySafe(
+          buildLimitedMessage(
+            `FWA Mail Lifecycle Debug (${debugRows.length})`,
+            debugLines,
+            "Lifecycle-only diagnostics (no points/war API fetches)."
+          ),
+          [],
+          []
+        );
+        return;
+      }
       logFwaMatchTelemetry(
         "command",
         `user=${interaction.user.id} guild=${interaction.guildId ?? "dm"} scope=${tag ? "single" : "alliance"} tag=${tag ?? "all"} visibility=${isPublic ? "public" : "private"} source_sync=${sourceSync ?? "unknown"}`
@@ -7562,6 +7685,7 @@ export const Fwa: Command = {
         warLookupCache,
         interaction.client,
         {
+          onlyClanTags: tag ? [tag] : undefined,
           mailStatusDebugEnabled: matchMailStatusDebugEnabled,
         }
       );
