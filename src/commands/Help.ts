@@ -79,6 +79,16 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     ],
     examples: ["/inactive days:7", "/inactive days:30", "/inactive wars:3"],
   },
+  "clan-health": {
+    summary: "Leadership snapshot for one tracked clan using persisted data only.",
+    details: [
+      "Shows match rate and win rate from the last 30 ended wars.",
+      "Shows inactivity counts from two signals: missed both attacks in last 3 ended FWA wars, and last-seen inactivity >= 7 days.",
+      "Shows missing Discord links among observed clan members updated within the configured stale window.",
+      "Command path is DB-only (no live CoC/points HTTP calls).",
+    ],
+    examples: ["/clan-health tag:2QG2C08UP", "/clan-health tag:2QG2C08UP visibility:public"],
+  },
   "role-users": {
     summary: "Show members in a role with paging controls.",
     details: [
