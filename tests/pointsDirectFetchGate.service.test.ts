@@ -17,6 +17,7 @@ function buildRuntime(overrides?: Record<string, unknown>) {
     activeWarStartMs: new Date("2026-03-08T07:00:00.000Z").getTime(),
     activeWarEndMs: new Date("2026-03-09T07:00:00.000Z").getTime(),
     activeOpponentTag: "#OPP999",
+    mailLifecycleStatus: "POSTED",
     lifecycle: {
       confirmedByClanMail: true,
       needsValidation: false,

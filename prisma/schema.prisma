@@ -86,6 +86,12 @@ enum WarPlanScope {
   DEFAULT
 }
 
+enum WarMailLifecycleStatus {
+  NOT_POSTED
+  POSTED
+  DELETED
+}
+
 enum LoseStyle {
   TRADITIONAL
   TRIPLE_TOP_30
@@ -291,6 +297,23 @@ model ClanPostedMessage {
   @@index([guildId, clanTag])
   @@index([clanTag, warId])
   @@unique([guildId, clanTag, warId, type, event])
+}
+
+model WarMailLifecycle {
+  guildId   String
+  clanTag   String
+  warId     Int
+  status    WarMailLifecycleStatus @default(NOT_POSTED)
+  messageId String?
+  channelId String?
+  postedAt  DateTime?
+  deletedAt DateTime?
+  createdAt DateTime              @default(now())
+  updatedAt DateTime              @updatedAt
+
+  @@id([guildId, clanTag, warId])
+  @@index([guildId, clanTag, status])
+  @@index([clanTag, warId])
 }
 
 model ClanPointsSync {

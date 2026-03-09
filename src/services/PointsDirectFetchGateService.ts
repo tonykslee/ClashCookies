@@ -1,3 +1,4 @@
+import { WarMailLifecycleStatus } from "@prisma/client";
 import { prisma } from "../prisma";
 import { SettingsService } from "./SettingsService";
 import type { PointsApiFetchReason, PointsLifecycleState } from "./PointsFetchPolicyService";
@@ -53,6 +54,7 @@ type PointsLockRuntimeSnapshot = {
   activeWarStartMs: number | null;
   activeWarEndMs: number | null;
   activeOpponentTag: string | null;
+  mailLifecycleStatus: WarMailLifecycleStatus | null;
   lifecycle: PointsLifecycleState | null;
   latestKnownPoints: number | null;
   postedSyncAtMs: number | null;
@@ -149,40 +151,13 @@ function resolveLatestKnownPoints(input: {
   );
 }
 
-/** Purpose: ensure at least one identity signal matches and none conflict. */
-function isSameWarIdentity(runtime: PointsLockRuntimeSnapshot): boolean {
-  const lifecycle = runtime.lifecycle;
-  if (!lifecycle) return false;
-  const runtimeWarId = normalizeWarId(runtime.activeWarId);
-  const lifecycleWarId = normalizeWarId(lifecycle.warId ?? null);
-  const runtimeOpponentTag = normalizeTag(runtime.activeOpponentTag);
-  const lifecycleOpponentTag = normalizeTag(lifecycle.opponentTag ?? null);
-  const runtimeWarStartMs = toOptionalInt(runtime.activeWarStartMs);
-  const lifecycleWarStartMs = toEpochMs(lifecycle.warStartTime ?? null);
-
-  let comparableSignals = 0;
-  if (runtimeWarId && lifecycleWarId) {
-    comparableSignals += 1;
-    if (runtimeWarId !== lifecycleWarId) return false;
-  }
-  if (runtimeOpponentTag && lifecycleOpponentTag) {
-    comparableSignals += 1;
-    if (runtimeOpponentTag !== lifecycleOpponentTag) return false;
-  }
-  if (runtimeWarStartMs !== null && lifecycleWarStartMs !== null) {
-    comparableSignals += 1;
-    if (runtimeWarStartMs !== lifecycleWarStartMs) return false;
-  }
-  return comparableSignals > 0;
-}
-
 /** Purpose: determine whether active-war mail-confirmed lock should be applied. */
 function hasActiveWarMailLock(runtime: PointsLockRuntimeSnapshot): boolean {
   if (runtime.warState === "notInWar") return false;
+  if (runtime.mailLifecycleStatus !== WarMailLifecycleStatus.POSTED) return false;
   if (!runtime.lifecycle) return false;
-  if (!runtime.lifecycle.confirmedByClanMail) return false;
   if (runtime.lifecycle.needsValidation) return false;
-  return isSameWarIdentity(runtime);
+  return true;
 }
 
 /** Purpose: build a baseline unlocked lock-state record from runtime context. */
@@ -802,6 +777,19 @@ export class PointsDirectFetchGateService {
             ],
           })
         : null;
+    const mailLifecycleRow =
+      guildId !== null && warId !== null
+        ? await prisma.warMailLifecycle.findUnique({
+            where: {
+              guildId_clanTag_warId: {
+                guildId,
+                clanTag: normalizedTag,
+                warId: Number(warId),
+              },
+            },
+            select: { status: true },
+          })
+        : null;
     const latestSync =
       syncRow ??
       (await prisma.clanPointsSync.findFirst({
@@ -850,6 +838,7 @@ export class PointsDirectFetchGateService {
       activeWarStartMs: toEpochMs(currentWar?.startTime ?? null),
       activeWarEndMs: toEpochMs(currentWar?.endTime ?? null),
       activeOpponentTag: normalizeTag(currentWar?.opponentTag ?? null),
+      mailLifecycleStatus: mailLifecycleRow?.status ?? null,
       lifecycle,
       latestKnownPoints: resolveLatestKnownPoints({
         lifecycle,

@@ -16,6 +16,33 @@ function normalize(value: string): string {
   return value.trim().toLowerCase();
 }
 
+function getSubcommandSafe(interaction: ChatInputCommandInteraction): string {
+  try {
+    return interaction.options.getSubcommand(false) ?? "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+function logCompoStage(
+  interaction: ChatInputCommandInteraction,
+  stage: string,
+  detail: Record<string, string | number | boolean | null | undefined> = {}
+): void {
+  const base = {
+    stage,
+    command: "compo",
+    subcommand: getSubcommandSafe(interaction),
+    guild: interaction.guildId ?? "DM",
+    user: interaction.user.id,
+  };
+  const fields = { ...base, ...detail };
+  const serialized = Object.entries(fields)
+    .map(([k, v]) => `${k}=${String(v ?? "")}`)
+    .join(" ");
+  console.log(`[compo-command] ${serialized}`);
+}
+
 const COMPO_MODE_CHOICES = [
   { name: "Actual Roster", value: "actual" },
   { name: "War Roster", value: "war" },
@@ -511,25 +538,49 @@ export const Compo: Command = {
     _cocService: CoCService
   ) => {
     try {
+      logCompoStage(interaction, "handler_enter");
       await interaction.deferReply({ ephemeral: true });
+      logCompoStage(interaction, "defer_reply_ok");
 
       const subcommand = interaction.options.getSubcommand(true);
       const mode = readMode(interaction);
+      logCompoStage(interaction, "options_parsed", {
+        mode,
+        tag: interaction.options.getString("tag", false) ?? "",
+        weight: interaction.options.getString("weight", false) ?? "",
+      });
 
       if (subcommand === "advice") {
         const tagInput = interaction.options.getString("tag", true);
         const targetTag = normalizeTag(tagInput);
+        logCompoStage(interaction, "computation_start", { targetTag, mode });
 
         const settings = new SettingsService();
         const sheets = new GoogleSheetsService(settings);
+        const linked = await sheets.getLinkedSheet(mode);
+        logCompoStage(interaction, "db_fetch", {
+          entity: "sheet_link",
+          mode,
+          result: linked.sheetId ? "found" : "missing",
+          sheetIdPresent: Boolean(linked.sheetId),
+        });
         const rows = await sheets.readLinkedValues(FIXED_LAYOUT_RANGE);
         const modeRows = getModeRows(rows, mode);
+        logCompoStage(interaction, "db_fetch", {
+          entity: "sheet_rows",
+          mode,
+          result: rows.length > 0 ? "found" : "missing",
+          totalRows: rows.length,
+          modeRows: modeRows.length,
+        });
 
         if (modeRows.length === 0) {
+          logCompoStage(interaction, "response_build", { reason: "no_mode_rows" });
           await safeReply(interaction, {
             ephemeral: true,
             content: `No ${mode.toUpperCase()} rows found in ${FIXED_LAYOUT_RANGE}.`,
           });
+          logCompoStage(interaction, "response_sent", { reason: "no_mode_rows" });
           return;
         }
 
@@ -540,6 +591,11 @@ export const Compo: Command = {
           if (!clanName || !clanTag) continue;
 
           if (clanTag === targetTag) {
+            logCompoStage(interaction, "computation_complete", {
+              result: "target_found",
+              clanTag,
+            });
+            logCompoStage(interaction, "response_build", { reason: "target_found" });
             await safeReply(interaction, {
               ephemeral: true,
               content:
@@ -547,6 +603,7 @@ export const Compo: Command = {
                   ? `Mode: **${mode.toUpperCase()}**\n**${clanName}** (\`#${clanTag}\`) adjustment:\n${advice}`
                   : `Mode: **${mode.toUpperCase()}**\nFound **${clanName}** (\`#${clanTag}\`), but there is no adjustment text in column BB.`,
             });
+            logCompoStage(interaction, "response_sent", { reason: "target_found" });
             return;
           }
         }
@@ -554,7 +611,12 @@ export const Compo: Command = {
         const knownTags = modeRows
           .map((row) => normalizeTag(String(row[COL_CLAN_TAG] ?? "")))
           .filter((tag): tag is string => Boolean(tag));
+        logCompoStage(interaction, "computation_complete", {
+          result: "target_missing",
+          knownTags: knownTags.length,
+        });
 
+        logCompoStage(interaction, "response_build", { reason: "target_missing" });
         await safeReply(interaction, {
           ephemeral: true,
           content:
@@ -562,17 +624,33 @@ export const Compo: Command = {
               ? `Mode: **${mode.toUpperCase()}**\nNo adjustment mapping found for tag \`#${targetTag}\`. Known tags in this mode: ${knownTags.map((t) => `#${t}`).join(", ")}`
               : `Mode: **${mode.toUpperCase()}**\nNo adjustment mapping found for tag \`#${targetTag}\`.`,
         });
+        logCompoStage(interaction, "response_sent", { reason: "target_missing" });
         return;
       }
 
       if (subcommand === "state") {
+        logCompoStage(interaction, "computation_start", { mode });
         const settings = new SettingsService();
         const sheets = new GoogleSheetsService(settings);
+        const linked = await sheets.getLinkedSheet(mode);
+        logCompoStage(interaction, "db_fetch", {
+          entity: "sheet_link",
+          mode,
+          result: linked.sheetId ? "found" : "missing",
+          sheetIdPresent: Boolean(linked.sheetId),
+        });
         const [rows, refreshCell] = await Promise.all([
           sheets.readLinkedValues(FIXED_LAYOUT_RANGE),
           sheets.readLinkedValues("Lookup!B10:B10"),
         ]);
         const modeRows = getModeRows(rows, mode);
+        logCompoStage(interaction, "db_fetch", {
+          entity: "sheet_rows",
+          mode,
+          result: rows.length > 0 ? "found" : "missing",
+          totalRows: rows.length,
+          modeRows: modeRows.length,
+        });
         const stateRows = [
           STATE_HEADERS,
           ...modeRows.map((row) => [
@@ -594,9 +672,14 @@ export const Compo: Command = {
             ? `RAW Data last refreshed: <t:${rawRefresh}:F>`
             : "RAW Data last refreshed: (not available)";
 
+        logCompoStage(interaction, "computation_complete", {
+          result: "state_rendered",
+          modeRows: modeRows.length,
+        });
         const content = [`Mode Displayed: **${mode.toUpperCase()}**`, refreshLine].join("\n");
         const png = renderStatePng(mode, stateRows);
 
+        logCompoStage(interaction, "response_build", { reason: "state_png" });
         await interaction.editReply({
           content,
           files: [
@@ -606,34 +689,53 @@ export const Compo: Command = {
             },
           ],
         });
+        logCompoStage(interaction, "response_sent", { reason: "state_png" });
         return;
       }
 
       if (subcommand === "place") {
         const rawWeight = interaction.options.getString("weight", true);
         const inputWeight = parseWeightInput(rawWeight);
+        logCompoStage(interaction, "computation_start", {
+          weightInput: rawWeight,
+          parsedWeight: inputWeight ?? "",
+        });
         if (!inputWeight || inputWeight <= 0) {
+          logCompoStage(interaction, "response_build", { reason: "invalid_weight" });
           await safeReply(interaction, {
             ephemeral: true,
             content:
               "Invalid weight. Use formats like `145000`, `145,000`, or `145k`.",
           });
+          logCompoStage(interaction, "response_sent", { reason: "invalid_weight" });
           return;
         }
 
         const bucket = getWeightBucket(inputWeight);
         if (!bucket) {
+          logCompoStage(interaction, "response_build", {
+            reason: "weight_out_of_range",
+            parsedWeight: inputWeight,
+          });
           await safeReply(interaction, {
             ephemeral: true,
             content:
               "Weight is outside supported ranges (121,000 to 180,000).",
           });
+          logCompoStage(interaction, "response_sent", { reason: "weight_out_of_range" });
           return;
         }
 
         const stateMode: GoogleSheetMode = "actual";
         const settings = new SettingsService();
         const sheets = new GoogleSheetsService(settings);
+        const linked = await sheets.getLinkedSheet(stateMode);
+        logCompoStage(interaction, "db_fetch", {
+          entity: "sheet_link",
+          mode: stateMode,
+          result: linked.sheetId ? "found" : "missing",
+          sheetIdPresent: Boolean(linked.sheetId),
+        });
 
         const [clanCol, totalCol, targetBandCol, rightBlock, refreshCell] = await Promise.all([
           sheets.readLinkedValues("AllianceDashboard!A1:A9", stateMode),
@@ -642,6 +744,12 @@ export const Compo: Command = {
           sheets.readLinkedValues("AllianceDashboard!U1:AA9", stateMode),
           sheets.readLinkedValues("Lookup!B10:B10", stateMode),
         ]);
+        logCompoStage(interaction, "db_fetch", {
+          entity: "sheet_rows",
+          mode: stateMode,
+          result: clanCol.length > 0 ? "found" : "missing",
+          clanRows: clanCol.length,
+        });
 
         const candidates = readPlacementCandidates(
           clanCol,
@@ -649,12 +757,19 @@ export const Compo: Command = {
           targetBandCol,
           rightBlock
         );
+        logCompoStage(interaction, "computation_complete", {
+          result: "placement_candidates",
+          candidates: candidates.length,
+          bucket,
+        });
 
         if (candidates.length === 0) {
+          logCompoStage(interaction, "response_build", { reason: "no_candidates" });
           await safeReply(interaction, {
             ephemeral: true,
             content: "No placement data found in ACTUAL state ranges.",
           });
+          logCompoStage(interaction, "response_sent", { reason: "no_candidates" });
           return;
         }
 
@@ -710,6 +825,12 @@ export const Compo: Command = {
             ? `RAW Data last refreshed: <t:${rawRefresh}:F>`
             : "RAW Data last refreshed: (not available)";
 
+        logCompoStage(interaction, "response_build", {
+          reason: "placement_result",
+          recommended: recommended.length,
+          vacancy: vacancyList.length,
+          composition: compositionList.length,
+        });
         await safeReply(interaction, {
           ephemeral: true,
           content:
@@ -719,21 +840,29 @@ export const Compo: Command = {
             `- Composition: ${compositionText}\n` +
             refreshLine,
         });
+        logCompoStage(interaction, "response_sent", { reason: "placement_result" });
         return;
       }
 
+      logCompoStage(interaction, "response_build", { reason: "unknown_subcommand" });
       await safeReply(interaction, {
         ephemeral: true,
         content: "Unknown subcommand.",
       });
+      logCompoStage(interaction, "response_sent", { reason: "unknown_subcommand" });
       return;
     } catch (err) {
       console.error(`compo command failed: ${formatError(err)}`);
+      console.error(
+        `[compo-command-error] stage=run_catch subcommand=${getSubcommandSafe(interaction)} error=${formatError(err)}`
+      );
+      logCompoStage(interaction, "response_build", { reason: "run_catch" });
       await safeReply(interaction, {
         ephemeral: true,
         content:
           "Failed to read compo sheet data. Check linked sheet access for the selected mode and AllianceDashboard layout.",
       });
+      logCompoStage(interaction, "response_sent", { reason: "run_catch" });
     }
   },
   autocomplete: async (interaction: AutocompleteInteraction) => {

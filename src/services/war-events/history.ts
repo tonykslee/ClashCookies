@@ -110,9 +110,10 @@ export class WarEventHistoryService {
     }
 
     const normalizedClanTag = normalizeTag(clanTag);
-    const normalizedClanTagHash = normalizedClanTag || "";
+    const normalizedClanTagWithHash = normalizedClanTag || "";
+    const normalizedClanTagBare = normalizedClanTag.replace(/^#/, "");
     const opponentName = String(opponentNameInputResolved ?? "").trim() || "Unknown";
-    const clanName = String(clanNameInput ?? "").trim() || normalizedClanTagHash || "Our Clan";
+    const clanName = String(clanNameInput ?? "").trim() || normalizedClanTagWithHash || "Our Clan";
     const applyPlaceholders = (planText: string): string =>
       planText.replace(/\{opponent\}/gi, opponentName).replace(/\{clan\}/gi, clanName);
     let loseStyleCache: FwaLoseStyle | null = null;
@@ -143,8 +144,8 @@ export class WarEventHistoryService {
             guildId,
             scope: "CUSTOM",
             OR: [
-              { clanTag: { equals: normalizedClanTag, mode: "insensitive" } },
-              { clanTag: { equals: normalizedClanTagHash, mode: "insensitive" } },
+              { clanTag: { equals: normalizedClanTagWithHash, mode: "insensitive" } },
+              { clanTag: { equals: normalizedClanTagBare, mode: "insensitive" } },
             ],
             matchType: matchTypeKey,
             outcome: outcomeKey,
