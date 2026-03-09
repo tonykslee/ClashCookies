@@ -4,20 +4,19 @@ import {
   inferMatchTypeFromPointsSnapshotsForTest,
   resolveMatchTypeFromStoredSyncRowForTest,
 } from "../src/commands/Fwa";
+import {
+  chooseMatchTypeResolution,
+  resolveCurrentWarMatchTypeSignal,
+} from "../src/services/MatchTypeResolutionService";
 
 describe("fwa match inference from points snapshots", () => {
-  it("infers MM when opponent points are unavailable", () => {
+  it("returns null when opponent evidence is unavailable", () => {
     const inferred = inferMatchTypeFromPointsSnapshotsForTest(
       { activeFwa: true },
       { balance: null, activeFwa: null }
     );
 
-    expect(inferred).toMatchObject({
-      matchType: "MM",
-      source: "points_missing_opponent",
-      syncIsFwa: false,
-      parsedActiveFwa: null,
-    });
+    expect(inferred).toBeNull();
   });
 
   it("infers BL when opponent points exist but Active FWA is NO", () => {
@@ -28,9 +27,8 @@ describe("fwa match inference from points snapshots", () => {
 
     expect(inferred).toMatchObject({
       matchType: "BL",
-      source: "points_active_fwa_no",
+      source: "live_points_active_fwa_no",
       syncIsFwa: false,
-      parsedActiveFwa: false,
     });
   });
 
@@ -42,9 +40,8 @@ describe("fwa match inference from points snapshots", () => {
 
     expect(inferred).toMatchObject({
       matchType: "FWA",
-      source: "points_active_fwa_yes",
+      source: "live_points_active_fwa_yes",
       syncIsFwa: true,
-      parsedActiveFwa: true,
     });
   });
 
@@ -56,24 +53,18 @@ describe("fwa match inference from points snapshots", () => {
 
     expect(inferred).toMatchObject({
       matchType: "MM",
-      source: "points_clan_not_found",
+      source: "live_points_clan_not_found",
       syncIsFwa: false,
-      parsedActiveFwa: null,
     });
   });
 
-  it("infers FWA when opponent points exist and Active FWA signal is missing", () => {
+  it("returns null when Active FWA signal is missing", () => {
     const inferred = inferMatchTypeFromPointsSnapshotsForTest(
       { activeFwa: true },
       { balance: 1234, activeFwa: null }
     );
 
-    expect(inferred).toMatchObject({
-      matchType: "FWA",
-      source: "points_unknown_signal",
-      syncIsFwa: true,
-      parsedActiveFwa: null,
-    });
+    expect(inferred).toBeNull();
   });
 });
 
@@ -126,6 +117,41 @@ describe("fwa mail send gating", () => {
     });
 
     expect(reason).toBe("Match type is inferred. Confirm match type before sending war mail.");
+  });
+});
+
+describe("fwa match precedence", () => {
+  it("lets live BL evidence override unconfirmed current/stored FWA", () => {
+    const current = resolveCurrentWarMatchTypeSignal({
+      matchType: "FWA",
+      inferredMatchType: true,
+    });
+    const stored = resolveMatchTypeFromStoredSyncRowForTest({
+      syncRow: {
+        opponentTag: "#2Q80R9PYU",
+        isFwa: true,
+        lastKnownMatchType: "FWA",
+      },
+      opponentTag: "#2Q80R9PYU",
+    });
+    const live = inferMatchTypeFromPointsSnapshotsForTest(
+      { activeFwa: true },
+      { balance: 2, activeFwa: false, notFound: false }
+    );
+    const resolved = chooseMatchTypeResolution({
+      confirmedCurrent: current.confirmed,
+      liveOpponent: live,
+      storedSync: stored,
+      unconfirmedCurrent: current.unconfirmed,
+    });
+
+    expect(resolved).toMatchObject({
+      matchType: "BL",
+      source: "live_points_active_fwa_no",
+      inferred: true,
+      confirmed: false,
+      syncIsFwa: false,
+    });
   });
 });
 
