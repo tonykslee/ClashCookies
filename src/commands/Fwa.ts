@@ -26,6 +26,7 @@ import {
 } from "../services/CommandPermissionService";
 import { GoogleSheetsService } from "../services/GoogleSheetsService";
 import { SettingsService } from "../services/SettingsService";
+import { WarComplianceService } from "../services/WarComplianceService";
 import { WarEventLogService } from "../services/WarEventLogService";
 import { getNextWarMailRefreshAtMs } from "../services/refreshSchedule";
 import { WarEventHistoryService } from "../services/war-events/history";
@@ -117,6 +118,7 @@ import {
   limitDiscordContent,
 } from "./fwa/matchUtils";
 import { resolveWarMailEmbedColor } from "./fwa/mailEmbedColor";
+import { buildWarComplianceReportLines } from "./fwa/complianceView";
 import {
   deriveSyncActionSiteOutcome,
   evaluatePostSyncValidation,
@@ -154,6 +156,7 @@ const MAILBOX_SENT_EMOJI = "📬";
 const MAILBOX_NOT_SENT_EMOJI = "📭";
 const postedMessageService = new PostedMessageService();
 const pointsSyncService = new PointsSyncService();
+const warComplianceService = new WarComplianceService();
 const pointsFetchPolicy = new PointsFetchPolicyService();
 const POINTS_REQUEST_HEADERS = {
   "User-Agent":
@@ -253,6 +256,13 @@ async function canUseFwaMailSendFromButton(interaction: ButtonInteraction): Prom
 
 function normalizeTag(input: string): string {
   return input.trim().toUpperCase().replace(/^#/, "");
+}
+
+/** Purpose: normalize persisted expected-outcome text to command-safe WIN/LOSE/null. */
+function normalizeExpectedOutcome(input: string | null | undefined): "WIN" | "LOSE" | null {
+  const value = String(input ?? "").trim().toUpperCase();
+  if (value === "WIN" || value === "LOSE") return value;
+  return null;
 }
 
 /** Purpose: normalize stored role values to a raw Discord role ID. */
@@ -6539,6 +6549,36 @@ export const Fwa: Command = {
       ],
     },
     {
+      name: "compliance",
+      description: "Review war-plan compliance for a tracked clan",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "tag",
+          description: "Tracked clan tag (with or without #)",
+          type: ApplicationCommandOptionType.String,
+          required: true,
+          autocomplete: true,
+        },
+        {
+          name: "war-id",
+          description: "Optional ClanWarHistory war ID (defaults to latest ended war)",
+          type: ApplicationCommandOptionType.Integer,
+          required: false,
+        },
+        {
+          name: "visibility",
+          description: "Response visibility",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          choices: [
+            { name: "private", value: "private" },
+            { name: "public", value: "public" },
+          ],
+        },
+      ],
+    },
+    {
       name: "leader-role",
       description: "Set the default FWA leader role",
       type: ApplicationCommandOptionType.Subcommand,
@@ -6658,6 +6698,131 @@ export const Fwa: Command = {
         return;
       }
       await showWarMailPreview(interaction, interaction.guildId, interaction.user.id, tag, cocService);
+      return;
+    }
+
+    if (subcommand === "compliance") {
+      const startedAtMs = Date.now();
+      const requestedWarId = interaction.options.getInteger("war-id", false);
+      const warIdForLog =
+        requestedWarId !== null && requestedWarId !== undefined
+          ? Math.trunc(requestedWarId)
+          : "latest";
+      console.info(
+        `[fwa-compliance] event=start guild=${interaction.guildId ?? "dm"} user=${interaction.user.id} clan=#${tag || "unknown"} war_id=${warIdForLog}`
+      );
+      if (!interaction.inGuild() || !interaction.guildId) {
+        await editReplySafe("This command can only be used in a server.");
+        return;
+      }
+      if (!tag) {
+        await editReplySafe("Please provide `tag`.");
+        return;
+      }
+
+      const trackedClan = await prisma.trackedClan.findFirst({
+        where: {
+          OR: [
+            { tag: { equals: `#${tag}`, mode: "insensitive" } },
+            { tag: { equals: tag, mode: "insensitive" } },
+          ],
+        },
+        select: { name: true, tag: true },
+      });
+      if (!trackedClan) {
+        await editReplySafe(`Clan #${tag} is not in tracked clans.`);
+        return;
+      }
+
+      const historyRow = await prisma.clanWarHistory.findFirst({
+        where: {
+          OR: [
+            { clanTag: { equals: `#${tag}`, mode: "insensitive" } },
+            { clanTag: { equals: tag, mode: "insensitive" } },
+          ],
+          warEndTime: { not: null },
+          ...(requestedWarId !== null && requestedWarId !== undefined
+            ? { warId: Math.trunc(requestedWarId) }
+            : {}),
+        },
+        orderBy:
+          requestedWarId !== null && requestedWarId !== undefined
+            ? undefined
+            : [{ warStartTime: "desc" }],
+        select: {
+          warId: true,
+          warStartTime: true,
+          warEndTime: true,
+          matchType: true,
+          expectedOutcome: true,
+        },
+      });
+      if (!historyRow) {
+        await editReplySafe(
+          requestedWarId !== null && requestedWarId !== undefined
+            ? `No ended war found for #${tag} with war ID ${Math.trunc(requestedWarId)}.`
+            : `No ended wars found for #${tag}.`
+        );
+        return;
+      }
+
+      const matchType = historyRow.matchType as "FWA" | "BL" | "MM" | "SKIP" | null;
+      const expectedOutcome = normalizeExpectedOutcome(historyRow.expectedOutcome);
+      if (matchType !== "FWA") {
+        const started = Math.floor(historyRow.warStartTime.getTime() / 1000);
+        const ended =
+          historyRow.warEndTime instanceof Date
+            ? `<t:${Math.floor(historyRow.warEndTime.getTime() / 1000)}:R>`
+            : "unknown";
+        await editReplySafe(
+          [
+            `War compliance for **${trackedClan.name?.trim() || `#${tag}`}** (#${tag})`,
+            `War: **${historyRow.warId}** | Started <t:${started}:f> | Ended ${ended}`,
+            `Match type: **${matchType ?? "UNKNOWN"}** | Expected outcome: **${expectedOutcome ?? "UNKNOWN"}**`,
+            "War-plan compliance checks are only enforced for FWA wars.",
+          ].join("\n")
+        );
+        console.info(
+          `[fwa-compliance] event=complete guild=${interaction.guildId} user=${interaction.user.id} clan=#${tag} war_id=${historyRow.warId} status=not_applicable match_type=${matchType ?? "UNKNOWN"} duration_ms=${Date.now() - startedAtMs}`
+        );
+        return;
+      }
+
+      const report = await warComplianceService.getComplianceReport({
+        clanTag: tag,
+        preferredWarStartTime: historyRow.warStartTime,
+        warId: historyRow.warId,
+        matchType,
+        expectedOutcome,
+      });
+      if (!report) {
+        const started = Math.floor(historyRow.warStartTime.getTime() / 1000);
+        const ended =
+          historyRow.warEndTime instanceof Date
+            ? `<t:${Math.floor(historyRow.warEndTime.getTime() / 1000)}:R>`
+            : "unknown";
+        await editReplySafe(
+          [
+            `War compliance for **${trackedClan.name?.trim() || `#${tag}`}** (#${tag})`,
+            `War: **${historyRow.warId}** | Started <t:${started}:f> | Ended ${ended}`,
+            "No detailed attack data is available to run compliance checks for this war.",
+          ].join("\n")
+        );
+        console.info(
+          `[fwa-compliance] event=complete guild=${interaction.guildId} user=${interaction.user.id} clan=#${tag} war_id=${historyRow.warId} status=no_data duration_ms=${Date.now() - startedAtMs}`
+        );
+        return;
+      }
+
+      const lines = buildWarComplianceReportLines({
+        clanName: trackedClan.name?.trim() || `#${tag}`,
+        clanTag: tag,
+        report,
+      });
+      await editReplySafe(lines.join("\n"));
+      console.info(
+        `[fwa-compliance] event=complete guild=${interaction.guildId} user=${interaction.user.id} clan=#${tag} war_id=${report.warId ?? historyRow.warId} status=ok missed_both=${report.missedBoth.length} not_following=${report.notFollowingPlan.length} participants=${report.participantsCount} attacks=${report.attacksCount} duration_ms=${Date.now() - startedAtMs}`
+      );
       return;
     }
 
