@@ -315,11 +315,18 @@ export class WarMailLifecycleService {
     }
 
     if (!row.channelId || !row.messageId) {
-      await this.markDeleted({
+      const trackingCleared = await this.markDeleted({
         guildId: params.guildId,
         clanTag: normalizedTag,
         warId,
-      }).catch(() => undefined);
+      }).catch(() => false);
+      this.logReconcile({
+        guildId: params.guildId,
+        clanTag: normalizedTag,
+        warId,
+        outcome: "message_missing_confirmed",
+        action: trackingCleared ? "mark_deleted" : "no_change",
+      });
       const debug = this.buildDebugInfo({
         currentWarId: String(warId),
         trackedWarId: String(row.warId),
@@ -327,7 +334,7 @@ export class WarMailLifecycleService {
         messageId: row.messageId ?? null,
         status: "deleted",
         outcome: "message_missing_confirmed",
-        trackingCleared: true,
+        trackingCleared,
       });
       this.logDebug(params, normalizedTag, debug);
       return {
@@ -351,6 +358,13 @@ export class WarMailLifecycleService {
         clanTag: normalizedTag,
         warId,
       }).catch(() => false);
+      this.logReconcile({
+        guildId: params.guildId,
+        clanTag: normalizedTag,
+        warId,
+        outcome: reconciliation,
+        action: trackingCleared ? "mark_deleted" : "no_change",
+      });
       const debug = this.buildDebugInfo({
         currentWarId: String(warId),
         trackedWarId: String(row.warId),
@@ -376,6 +390,13 @@ export class WarMailLifecycleService {
       status: "posted",
       outcome: reconciliation,
       trackingCleared: false,
+    });
+    this.logReconcile({
+      guildId: params.guildId,
+      clanTag: normalizedTag,
+      warId,
+      outcome: reconciliation,
+      action: "no_change",
     });
     this.logDebug(params, normalizedTag, debug);
     return {
@@ -471,6 +492,26 @@ export class WarMailLifecycleService {
     if (!params.emitDebugLog || !params.guildId) return;
     console.info(
       `[fwa-mail-status-debug] guild=${params.guildId} clan=${normalizedTag} current_war_id=${debug.currentWarId ?? "unknown"} tracked_war_id=${debug.trackedMailWarId ?? "none"} tracked_channel_id=${debug.trackedChannelId ?? "none"} tracked_message_id=${debug.trackedMessageId ?? "none"} tracked_exists=${debug.trackedMessageExists} source=${debug.winningSource} normalized_status=${debug.finalNormalizedStatus} reconciliation=${debug.reconciliationOutcome} certainty=${debug.reconciliationCertainty} reason_code=${debug.debugReasonCode} tracking_cleared=${debug.trackingCleared ? "1" : "0"}`
+    );
+  }
+
+  /** Purpose: emit lightweight reconciliation telemetry for POSTED lifecycle checks. */
+  private logReconcile(input: {
+    guildId: string;
+    clanTag: string;
+    warId: number;
+    outcome: WarMailLifecycleReconciliationOutcome;
+    action: "mark_deleted" | "no_change";
+  }): void {
+    const messageExists =
+      input.outcome === "exists"
+        ? "true"
+        : input.outcome === "message_missing_confirmed" ||
+            input.outcome === "channel_missing_confirmed"
+          ? "false"
+          : "unknown";
+    console.info(
+      `[mail-lifecycle-reconcile] guild=${input.guildId} clan=${input.clanTag} war_id=${input.warId} message_exists=${messageExists} outcome=${input.outcome} action=${input.action}`
     );
   }
 }
