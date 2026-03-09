@@ -2,13 +2,13 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "../../prisma";
 import { CoCService } from "../CoCService";
 import { PointsSyncService } from "../PointsSyncService";
+import { WarComplianceService } from "../WarComplianceService";
 import {
   type EventType,
   type FwaLoseStyle,
   type MatchType,
   type WarComplianceSnapshot,
   type WarEndResultSnapshot,
-  computeWarComplianceForTest,
   computeWarPointsDeltaForTest,
   normalizeTag,
   parseCocTime,
@@ -19,7 +19,8 @@ export class WarEventHistoryService {
   /** Purpose: initialize war history service dependencies. */
   constructor(
     private readonly coc: CoCService,
-    private readonly pointsSync = new PointsSyncService()
+    private readonly pointsSync = new PointsSyncService(),
+    private readonly compliance = new WarComplianceService()
   ) {}
 
   /** Purpose: build the war-end points line text shown in event embeds. */
@@ -566,51 +567,11 @@ export class WarEventHistoryService {
     matchType: MatchType,
     expectedOutcome: "WIN" | "LOSE" | null
   ): Promise<WarComplianceSnapshot> {
-    if (matchType === "BL" || matchType === "MM") {
-      return { missedBoth: [], notFollowingPlan: [] };
-    }
-    const clanTag = normalizeTag(clanTagInput);
-    const warStartTime = preferredWarStartTime
-      ? preferredWarStartTime
-      : (
-          await prisma.warAttacks.findFirst({
-            where: { clanTag, warEndTime: { not: null }, attackOrder: 0 },
-            orderBy: { warStartTime: "desc" },
-            select: { warStartTime: true },
-          })
-        )?.warStartTime ?? null;
-    if (!warStartTime) {
-      return { missedBoth: [], notFollowingPlan: [] };
-    }
-
-    const participants = await prisma.warAttacks.findMany({
-      where: { clanTag, warStartTime, attackOrder: 0 },
-      select: { playerName: true, playerTag: true, attacksUsed: true, playerPosition: true },
-      orderBy: [{ playerPosition: "asc" }, { playerName: "asc" }],
-    });
-    const attacks = await prisma.warAttacks.findMany({
-      where: { clanTag, warStartTime },
-      select: {
-        playerTag: true,
-        playerName: true,
-        playerPosition: true,
-        defenderPosition: true,
-        stars: true,
-        trueStars: true,
-        attackSeenAt: true,
-        warEndTime: true,
-        attackOrder: true,
-      },
-      orderBy: [{ attackSeenAt: "asc" }, { attackOrder: "asc" }, { playerTag: "asc" }],
-    });
-    const loseStyle = await this.getLoseStyleForClan(clanTag);
-    return computeWarComplianceForTest({
-      clanTag,
-      participants,
-      attacks,
+    return this.compliance.getComplianceSnapshot({
+      clanTag: clanTagInput,
+      preferredWarStartTime,
       matchType,
       expectedOutcome,
-      loseStyle,
     });
   }
 
