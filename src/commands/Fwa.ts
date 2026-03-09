@@ -984,28 +984,47 @@ async function buildWarMailEmbedForTag(
             Number.isFinite(syncRow.lastKnownSyncNumber)
               ? Math.trunc(syncRow.lastKnownSyncNumber)
               : null,
+          warId: syncRow.warId ?? null,
+          opponentTag: syncRow.opponentTag ?? null,
+          warStartTime: syncRow.warStartTime ?? null,
         };
   const routineDecision = options?.routine
-    ? pointsFetchPolicy.shouldFetchForRoutine({
+    ? pointsFetchPolicy.evaluatePollerFetch({
+        guildId,
+        clanTag: normalizedTag,
+        pollerSource: "mail_refresh_loop",
+        requestedReason: options?.fetchReason ?? "mail_refresh",
+        preferredAllowedReason: options?.fetchReason ?? "mail_refresh",
         warState,
         warStartTime: subscription?.startTime ?? null,
         warEndTime: subscription?.endTime ?? null,
         currentSyncNumber: currentSync,
         lifecycle,
+        activeWarId:
+          subscription?.warId !== null &&
+          subscription?.warId !== undefined &&
+          Number.isFinite(subscription.warId)
+            ? String(Math.trunc(subscription.warId))
+            : null,
+        activeOpponentTag: effectiveOpponentTag || null,
       })
     : {
-        shouldFetch: true,
-        reason: options?.fetchReason ?? ("mail_preview" as const),
-        skipReason: null,
+        allowed: true,
+        outcome: "allowed" as const,
+        decisionCode: "manual_override" as const,
+        reason: "Manual mail preview fetch.",
+        fetchReason: options?.fetchReason ?? ("mail_preview" as const),
+        policyReason: null,
+        mailConfirmedLockActive: false,
         optimized: true,
       };
   const fetchReason =
     options?.fetchReason ??
-    routineDecision.reason ??
+    routineDecision.fetchReason ??
     (options?.routine ? "mail_refresh" : "mail_preview");
-  if (options?.routine && !routineDecision.shouldFetch) {
+  if (options?.routine && !routineDecision.allowed) {
     console.info(
-      `[fwa-mail] points fetch skipped guild=${guildId} clan=#${normalizedTag} reason=${routineDecision.skipReason ?? "policy_skip"}`
+      `[fwa-mail] points fetch skipped guild=${guildId} clan=#${normalizedTag} outcome=${routineDecision.outcome} code=${routineDecision.decisionCode} reason=${routineDecision.reason}`
     );
   }
 
@@ -1013,7 +1032,7 @@ async function buildWarMailEmbedForTag(
   let opponentBalance: number | null = null;
   let primarySnapshot: PointsSnapshot | null = null;
   let opponentSnapshot: PointsSnapshot | null = null;
-  if (opponentTag && routineDecision.shouldFetch) {
+  if (opponentTag && routineDecision.allowed) {
     primarySnapshot = await getClanPointsCached(settings, cocService, normalizedTag, currentSync, undefined, {
       fetchReason,
     }).catch(() => null);
