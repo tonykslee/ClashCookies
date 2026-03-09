@@ -286,13 +286,22 @@ type PlacementCandidate = {
   bucketDeltaByHeader: Record<string, number>;
 };
 
+/** Purpose: find the row that contains composition delta headers in the U:AA block. */
+function findDeltaHeaderRowIndex(rightBlock: string[][]): number {
+  const index = rightBlock.findIndex((row) =>
+    row.some((cell) => normalize(cell).includes("delta"))
+  );
+  return index >= 0 ? index : 0;
+}
+
 function readPlacementCandidates(
   clanCol: string[][],
   totalCol: string[][],
   targetBandCol: string[][],
   rightBlock: string[][]
 ): PlacementCandidate[] {
-  const missingHeaderRow = rightBlock[0] ?? [];
+  const headerRowIndex = findDeltaHeaderRowIndex(rightBlock);
+  const missingHeaderRow = rightBlock[headerRowIndex] ?? [];
   const missingIndex = missingHeaderRow.findIndex((v) =>
     normalize(v).includes("missing")
   );
@@ -302,17 +311,17 @@ function readPlacementCandidates(
     const clanName = (clanCol[i]?.[0] ?? "").trim();
     if (!clanName) continue;
 
+    const rightRow = rightBlock[i + headerRowIndex] ?? rightBlock[i] ?? [];
     const totalWeight = parseNumber(totalCol[i]?.[0]);
     const targetBand = parseNumber(targetBandCol[i]?.[0]);
-    const missingRaw =
-      missingIndex >= 0 ? rightBlock[i]?.[missingIndex] : rightBlock[i]?.[0];
+    const missingRaw = missingIndex >= 0 ? rightRow[missingIndex] : rightRow[0];
     const missingCount = parseNumber(missingRaw);
     const remainingToTarget = targetBand - totalWeight;
     const bucketDeltaByHeader: Record<string, number> = {};
     for (let c = 0; c < missingHeaderRow.length; c += 1) {
       const key = normalize(missingHeaderRow[c] ?? "");
       if (!key) continue;
-      bucketDeltaByHeader[key] = parseNumber(rightBlock[i]?.[c]);
+      bucketDeltaByHeader[key] = parseNumber(rightRow[c]);
     }
 
     candidates.push({
@@ -897,3 +906,5 @@ export const Compo: Command = {
     await interaction.respond(filtered);
   },
 };
+
+export const readPlacementCandidatesForTest = readPlacementCandidates;
