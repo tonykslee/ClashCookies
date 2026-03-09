@@ -63,6 +63,12 @@ import {
 } from "../services/PointsFetchPolicyService";
 import { PointsSyncService } from "../services/PointsSyncService";
 import {
+  PointsDirectFetchGateService,
+  type PointsDirectFetchCaller,
+  PointsDirectFetchBlockedError,
+  isPointsDirectFetchBlockedError,
+} from "../services/PointsDirectFetchGateService";
+import {
   buildFwaMailBackCustomId,
   buildFwaMailConfirmCustomId,
   buildFwaMailConfirmNoPingCustomId,
@@ -170,6 +176,7 @@ const warComplianceService = new WarComplianceService();
 const fwaStatsWeightService = new FwaStatsWeightService();
 const fwaStatsWeightCookieService = new FwaStatsWeightCookieService();
 const pointsFetchPolicy = new PointsFetchPolicyService();
+const pointsDirectFetchGate = new PointsDirectFetchGateService();
 const POINTS_REQUEST_HEADERS = {
   "User-Agent":
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
@@ -4273,9 +4280,32 @@ function getCurrentWarCached(
 
 async function scrapeClanPoints(
   tag: string,
-  reason: PointsApiFetchReason = "match_render"
+  reason: PointsApiFetchReason = "match_render",
+  options?: {
+    manualForceBypass?: boolean;
+    caller?: PointsDirectFetchCaller;
+  }
 ): Promise<PointsSnapshot> {
   const normalizedTag = normalizeTag(tag);
+  const caller: PointsDirectFetchCaller = options?.caller ?? "command";
+  const gateDecision = await pointsDirectFetchGate.evaluateFetchAccess({
+    clanTag: normalizedTag,
+    fetchReason: reason,
+    caller,
+    manualForceBypass: options?.manualForceBypass ?? false,
+  });
+  if (!gateDecision.allowed) {
+    recordFetchEvent({
+      namespace: "points",
+      operation: "clan_points_fetch",
+      source: "fallback_cache",
+      detail: `tag=${normalizedTag} blocked=1 code=${gateDecision.decisionCode} reason=${reason} caller=${caller}`,
+      status: "failure",
+      errorCategory: "validation",
+      errorCode: gateDecision.decisionCode,
+    });
+    throw new PointsDirectFetchBlockedError(gateDecision);
+  }
   const url = buildPointsUrl(normalizedTag);
   const startedAtMs = Date.now();
   const response = await axios.get<string>(url, {
@@ -4354,6 +4384,13 @@ async function scrapeClanPoints(
   const syncMode = getSyncMode(effectiveSync);
 
   const fetchedAtMs = Date.now();
+  await pointsDirectFetchGate
+    .recordObservedPointValue({
+      clanTag: normalizedTag,
+      observedPoints: balance,
+      nowMs: fetchedAtMs,
+    })
+    .catch(() => undefined);
   return {
     version: POINTS_CACHE_VERSION,
     tag: normalizedTag,
@@ -4477,6 +4514,51 @@ function resolveWarScopedSnapshotForMatch(input: {
   });
 }
 
+/** Purpose: load latest reusable persisted points snapshot for lock-blocked fetch fallbacks. */
+async function getPersistedPointsSnapshotFallback(
+  clanTag: string,
+  requiredOpponentTag?: string | null
+): Promise<PointsSnapshot | null> {
+  const normalizedTag = normalizeTag(clanTag);
+  const normalizedOpponentTag = normalizeTag(String(requiredOpponentTag ?? ""));
+  const row = await prisma.clanPointsSync.findFirst({
+    where: {
+      clanTag: `#${normalizedTag}`,
+      needsValidation: false,
+      ...(normalizedOpponentTag ? { opponentTag: `#${normalizedOpponentTag}` } : {}),
+    },
+    select: {
+      warId: true,
+      warStartTime: true,
+      syncNum: true,
+      opponentTag: true,
+      clanPoints: true,
+      opponentPoints: true,
+      isFwa: true,
+      needsValidation: true,
+      lastSuccessfulPointsApiFetchAt: true,
+      syncFetchedAt: true,
+    },
+    orderBy: [{ warStartTime: "desc" }, { syncFetchedAt: "desc" }, { updatedAt: "desc" }],
+  });
+  if (!row) return null;
+  return buildPointsSnapshotFromWarScopedSyncRow({
+    clanTag: normalizedTag,
+    row: {
+      warId: row.warId ?? null,
+      warStartTime: row.warStartTime,
+      syncNum: row.syncNum,
+      opponentTag: row.opponentTag,
+      clanPoints: row.clanPoints,
+      opponentPoints: row.opponentPoints,
+      isFwa: row.isFwa ?? null,
+      needsValidation: row.needsValidation,
+      lastSuccessfulPointsApiFetchAt: row.lastSuccessfulPointsApiFetchAt ?? null,
+      syncFetchedAt: row.syncFetchedAt,
+    },
+  });
+}
+
 async function getClanPointsCached(
   _settings: SettingsService,
   _cocService: CoCService,
@@ -4549,6 +4631,53 @@ async function getClanPointsCached(
         expiresAtMs: Date.now() + POINTS_SNAPSHOT_CACHE_TTL_MS,
       });
       return snapshot;
+    })
+    .catch(async (err) => {
+      if (!isPointsDirectFetchBlockedError(err)) throw err;
+
+      const staleSnapshot = pointsSnapshotCache.get(normalizedTag)?.snapshot ?? null;
+      if (staleSnapshot) {
+        pointsSnapshotCache.set(normalizedTag, {
+          snapshot: staleSnapshot,
+          expiresAtMs: Date.now() + POINTS_SNAPSHOT_CACHE_TTL_MS,
+        });
+        recordFetchEvent({
+          namespace: "points",
+          operation: "clan_points_snapshot",
+          source: "fallback_cache",
+          detail: `tag=${normalizedTag} reason=${reason} fallback=stale_cache code=${err.decision.decisionCode}`,
+        });
+        console.info(
+          `[points-lock] fallback_used clan=#${normalizedTag} reason=${reason} fallback=stale_cache code=${err.decision.decisionCode}`
+        );
+        return staleSnapshot;
+      }
+
+      const persistedSnapshot = await getPersistedPointsSnapshotFallback(
+        normalizedTag,
+        requiredOpponentTag || null
+      );
+      if (persistedSnapshot) {
+        pointsSnapshotCache.set(normalizedTag, {
+          snapshot: persistedSnapshot,
+          expiresAtMs: Date.now() + POINTS_SNAPSHOT_CACHE_TTL_MS,
+        });
+        recordFetchEvent({
+          namespace: "points",
+          operation: "clan_points_snapshot",
+          source: "fallback_cache",
+          detail: `tag=${normalizedTag} reason=${reason} fallback=persisted_sync code=${err.decision.decisionCode}`,
+        });
+        console.info(
+          `[points-lock] fallback_used clan=#${normalizedTag} reason=${reason} fallback=persisted_sync code=${err.decision.decisionCode}`
+        );
+        return persistedSnapshot;
+      }
+
+      console.info(
+        `[points-lock] fallback_miss clan=#${normalizedTag} reason=${reason} code=${err.decision.decisionCode}`
+      );
+      throw err;
     })
     .finally(() => {
       pointsSnapshotInFlight.delete(normalizedTag);
@@ -5663,7 +5792,10 @@ export async function runForceSyncDataCommand(
 
   const war = await getCurrentWarCached(cocService, tag, warLookupCache).catch(() => null);
   const opponentTag = normalizeTag(String(war?.opponent?.tag ?? ""));
-  const fresh = await scrapeClanPoints(tag, "manual_refresh");
+  const fresh = await scrapeClanPoints(tag, "manual_refresh", {
+    manualForceBypass: true,
+    caller: "command",
+  });
 
   const siteSync = fresh.winnerBoxSync;
   const siteSyncNum =
@@ -5679,7 +5811,10 @@ export async function runForceSyncDataCommand(
     if (fromPrimary !== null && Number.isFinite(fromPrimary)) {
       opponentBalance = fromPrimary;
     } else if (opponentTag) {
-      opponentSnapshot = await scrapeClanPoints(opponentTag, "manual_refresh").catch(() => null);
+      opponentSnapshot = await scrapeClanPoints(opponentTag, "manual_refresh", {
+        manualForceBypass: true,
+        caller: "command",
+      }).catch(() => null);
       opponentBalance =
         opponentSnapshot?.balance !== null &&
         opponentSnapshot?.balance !== undefined &&
