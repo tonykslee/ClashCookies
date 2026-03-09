@@ -231,7 +231,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`/fwa weight-health` summarizes all tracked clans and flags stale weight submissions (outdated >7d, severe >=30d) using the same auth flow as `weight-age`.",
       "`/fwa weight-cookie` sets or checks fwastats auth cookies used by weight scraping. With no cookie args it shows status; with both cookie args it saves updated values.",
       "When fwastats auth expires, weight commands return recovery steps that point to `/fwa weight-cookie`.",
-      "After a war's points snapshot is verified current, `/fwa match` reuses war-scoped persisted sync data instead of re-scraping by short TTL; use `/force sync data` for explicit refresh.",
+      "Points fetch lock is lifecycle-driven: when locked, command/poller paths use persisted/cache data only; `/force sync data` is the only direct points.fwafarm bypass.",
       "`/fwa match` only shows sync state text when validation is needed, and hides non-actionable confirmation/lifecycle debug fields when current.",
       "When available, fwastats active-war validation is used by the war poller to promote inferred FWA matches to confirmed FWA.",
       "If match type is inferred, `/fwa match` shows a warning and quick verify link, with action buttons to confirm FWA/BL/MM.",

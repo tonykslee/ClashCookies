@@ -18,6 +18,7 @@ export type PointsLifecycleState = {
   needsValidation: boolean;
   lastSuccessfulPointsApiFetchAt: Date | null;
   lastKnownSyncNumber: number | null;
+  lastKnownPoints?: number | null;
   warId?: string | null;
   opponentTag?: string | null;
   warStartTime?: Date | null;

@@ -2,6 +2,11 @@ import axios from "axios";
 import { CoCService } from "./CoCService";
 import { recordFetchEvent } from "../helper/fetchTelemetry";
 import type { PointsApiFetchReason } from "./PointsFetchPolicyService";
+import { prisma } from "../prisma";
+import {
+  PointsDirectFetchGateService,
+  type PointsDirectFetchCaller,
+} from "./PointsDirectFetchGateService";
 
 const POINTS_BASE_URL = "https://points.fwafarm.com/clan?tag=";
 const TIEBREAK_ORDER = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
@@ -138,16 +143,62 @@ function formatPoints(value: number | null): string {
 
 export class PointsProjectionService {
   /** Purpose: initialize service dependencies. */
-  constructor(private readonly cocService: CoCService) {}
+  constructor(
+    private readonly cocService: CoCService,
+    private readonly directFetchGate = new PointsDirectFetchGateService()
+  ) {}
 
   /** Purpose: fetch snapshot. */
   async fetchSnapshot(
     tag: string,
-    options?: { reason?: PointsApiFetchReason }
+    options?: {
+      reason?: PointsApiFetchReason;
+      caller?: PointsDirectFetchCaller;
+      manualForceBypass?: boolean;
+    }
   ): Promise<Snapshot> {
     const normalizedTag = normalizeTag(tag);
-    const url = buildPointsUrl(normalizedTag);
     const reason = options?.reason ?? "war_event_projection";
+    const caller = options?.caller ?? "poller";
+    const gateDecision = await this.directFetchGate.evaluateFetchAccess({
+      clanTag: normalizedTag,
+      fetchReason: reason,
+      caller,
+      manualForceBypass: options?.manualForceBypass ?? false,
+    });
+    if (!gateDecision.allowed) {
+      recordFetchEvent({
+        namespace: "points",
+        operation: "projection_fetch",
+        source: "fallback_cache",
+        detail: `tag=${normalizedTag} blocked=1 code=${gateDecision.decisionCode} reason=${reason} caller=${caller}`,
+        status: "failure",
+        errorCategory: "validation",
+        errorCode: gateDecision.decisionCode,
+      });
+      const persistedFallback = await this.buildPersistedFallbackSnapshot(normalizedTag);
+      if (persistedFallback) {
+        console.info(
+          `[points-lock] fallback_used clan=#${normalizedTag} reason=${reason} caller=${caller} fallback=persisted_sync code=${gateDecision.decisionCode}`
+        );
+        return persistedFallback;
+      }
+      console.info(
+        `[points-lock] fallback_miss clan=#${normalizedTag} reason=${reason} caller=${caller} code=${gateDecision.decisionCode}`
+      );
+      return {
+        tag: normalizedTag,
+        clanName: null,
+        balance: null,
+        effectiveSync: null,
+        syncMode: null,
+        winnerBoxSync: null,
+        winnerBoxTags: [],
+        fetchedAtMs: Date.now(),
+      };
+    }
+
+    const url = buildPointsUrl(normalizedTag);
     const response = await axios.get<string>(url, {
       timeout: 15000,
       responseType: "text",
@@ -184,6 +235,14 @@ export class PointsProjectionService {
     const winnerBoxHasTag = winnerBoxTags.includes(normalizedTag);
     const effectiveSync =
       winnerBoxSync === null ? null : winnerBoxHasTag ? winnerBoxSync : winnerBoxSync + 1;
+    const balance = extractPointBalance(html);
+    await this.directFetchGate
+      .recordObservedPointValue({
+        clanTag: normalizedTag,
+        observedPoints: balance,
+        nowMs: fetchedAtMs,
+      })
+      .catch(() => undefined);
 
     return {
       tag: normalizedTag,
@@ -191,12 +250,42 @@ export class PointsProjectionService {
         extractField(topSection, "Clan Name") ??
         extractField(plain, "Clan Name") ??
         (await this.cocService.getClanName(normalizedTag).catch(() => null)),
-      balance: extractPointBalance(html),
+      balance,
       effectiveSync,
       syncMode: getSyncMode(effectiveSync),
       winnerBoxSync,
       winnerBoxTags,
       fetchedAtMs,
+    };
+  }
+
+  /** Purpose: return latest persisted sync values as fallback when direct fetch is lock-blocked. */
+  private async buildPersistedFallbackSnapshot(tag: string): Promise<Snapshot | null> {
+    const row = await prisma.clanPointsSync.findFirst({
+      where: { clanTag: `#${normalizeTag(tag)}`, needsValidation: false },
+      select: {
+        syncNum: true,
+        clanPoints: true,
+        opponentTag: true,
+        lastSuccessfulPointsApiFetchAt: true,
+        syncFetchedAt: true,
+      },
+      orderBy: [{ warStartTime: "desc" }, { syncFetchedAt: "desc" }, { updatedAt: "desc" }],
+    });
+    if (!row) return null;
+    const fetchedAtMs =
+      row.lastSuccessfulPointsApiFetchAt?.getTime() ?? row.syncFetchedAt.getTime() ?? Date.now();
+    const normalizedTag = normalizeTag(tag);
+    const opponentTag = normalizeTag(row.opponentTag);
+    return {
+      tag: normalizedTag,
+      clanName: null,
+      balance: Number.isFinite(row.clanPoints) ? Math.trunc(row.clanPoints) : null,
+      effectiveSync: Number.isFinite(row.syncNum) ? Math.trunc(row.syncNum) : null,
+      syncMode: getSyncMode(Number.isFinite(row.syncNum) ? Math.trunc(row.syncNum) : null),
+      winnerBoxSync: Number.isFinite(row.syncNum) ? Math.trunc(row.syncNum) : null,
+      winnerBoxTags: opponentTag ? [opponentTag, normalizedTag] : [normalizedTag],
+      fetchedAtMs: Number.isFinite(fetchedAtMs) ? Math.trunc(fetchedAtMs) : Date.now(),
     };
   }
 

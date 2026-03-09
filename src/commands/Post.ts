@@ -863,6 +863,7 @@ export async function handlePostModalSubmit(
     JSON.stringify({
       channelId: postedMessage.channelId,
       messageId: postedMessage.id,
+      epochSeconds,
     })
   );
   if (!mentionWillNotify) {
