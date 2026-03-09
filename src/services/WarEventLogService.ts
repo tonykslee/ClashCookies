@@ -1502,7 +1502,7 @@ export class WarEventLogService {
             "playerName" = EXCLUDED."playerName",
             "playerPosition" = EXCLUDED."playerPosition",
             "attacksUsed" = EXCLUDED."attacksUsed",
-            "attackSeenAt" = EXCLUDED."attackSeenAt",
+            "attackSeenAt" = LEAST("WarAttacks"."attackSeenAt", EXCLUDED."attackSeenAt"),
             "updatedAt" = NOW()
         `
       );
@@ -1553,7 +1553,7 @@ export class WarEventLogService {
               "stars" = EXCLUDED."stars",
               "trueStars" = EXCLUDED."trueStars",
               "destruction" = EXCLUDED."destruction",
-              "attackSeenAt" = EXCLUDED."attackSeenAt",
+              "attackSeenAt" = LEAST("WarAttacks"."attackSeenAt", EXCLUDED."attackSeenAt"),
               "updatedAt" = NOW()
           `
         );
