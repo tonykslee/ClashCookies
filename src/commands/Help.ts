@@ -239,6 +239,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`/fwa mail send` opens an ephemeral war mail preview with confirm/send.",
       "War mail embed sidebar colors are state-coded: BL=black, MM=white, FWA WIN=green, FWA LOSE=red, unresolved=gray.",
       "Single-clan `/fwa match` embed sidebar color follows the same state mapping from the currently displayed effective state, including draft revisions.",
+      "`/fwa match` mismatch warnings now use opponent/current-war evidence (not tracked-clan Active FWA), and alliance low-confidence states show only one sync warning line.",
       "Confirm-and-send pings the tracked clan role (`TrackedClan.clanRoleId`) when pinging is enabled.",
       "The `/fwa match` single-clan `Send Mail` button uses the same permissions as `/fwa mail send`.",
       "The 'Current mail is already up to date' state is scoped to the current war identity (war/opponent/config), so new wars reset to unsent.",
