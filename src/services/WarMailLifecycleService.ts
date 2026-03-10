@@ -438,7 +438,7 @@ export class WarMailLifecycleService {
     }
     const maybeTextChannel = channel as {
       isTextBased?: () => boolean;
-      messages?: { fetch: (messageId: string, options?: { force?: boolean }) => Promise<unknown> };
+      messages?: { fetch: (options: { message: string; force?: boolean }) => Promise<unknown> };
     };
     if (!maybeTextChannel.isTextBased || !maybeTextChannel.isTextBased()) {
       this.logMessageExistenceCheck({
@@ -460,7 +460,10 @@ export class WarMailLifecycleService {
     }
     try {
       // Force REST validation to avoid stale cached-message false positives.
-      const message = await maybeTextChannel.messages.fetch(input.messageId, { force: true });
+      const message = await maybeTextChannel.messages.fetch({
+        message: input.messageId,
+        force: true,
+      });
       const outcome: WarMailLifecycleReconciliationOutcome = message
         ? "exists"
         : "message_missing_confirmed";
