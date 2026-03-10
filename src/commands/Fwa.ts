@@ -415,6 +415,7 @@ type MatchView = {
   effectiveRevisionFields?: MatchRevisionFields | null;
   appliedDraftRevision?: MatchRevisionFields | null;
   draftDiffersFromBaseline?: boolean;
+  projectedFwaOutcome?: "WIN" | "LOSE" | null;
 };
 
 type MatchRevisionFields = {
@@ -635,6 +636,63 @@ function getEffectiveRevisionForView(view: MatchView): MatchRevisionFields | nul
     getRevisionBaselineForView(view);
 }
 
+/** Purpose: normalize outcome-like values to WIN/LOSE only for FWA-effective comparisons. */
+function toWinLoseOutcome(
+  value: "WIN" | "LOSE" | "UNKNOWN" | null | undefined
+): "WIN" | "LOSE" | null {
+  if (value === "WIN" || value === "LOSE") return value;
+  return null;
+}
+
+/** Purpose: resolve displayed FWA expected outcome with draft-explicit precedence and projection fallback. */
+function resolveEffectiveFwaOutcome(params: {
+  matchType: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN" | null | undefined;
+  explicitOutcome: "WIN" | "LOSE" | "UNKNOWN" | null | undefined;
+  projectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null | undefined;
+}): "WIN" | "LOSE" | "UNKNOWN" | null {
+  if (params.matchType !== "FWA") return null;
+  return (
+    toWinLoseOutcome(params.explicitOutcome) ??
+    toWinLoseOutcome(params.projectedOutcome) ??
+    "UNKNOWN"
+  );
+}
+
+/** Purpose: evaluate mismatch warnings from the effective state currently shown in the view. */
+function buildEffectiveMatchMismatchWarnings(params: {
+  siteUpdated: boolean;
+  effectiveMatchType: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN" | null | undefined;
+  effectiveExpectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null | undefined;
+  projectedOutcome: "WIN" | "LOSE" | null | undefined;
+  siteActiveFwa: boolean | null | undefined;
+}): { outcomeMismatch: string | null; matchTypeVsFwaMismatch: string | null } {
+  if (!params.siteUpdated) {
+    return { outcomeMismatch: null, matchTypeVsFwaMismatch: null };
+  }
+  const effectiveMatchType =
+    params.effectiveMatchType === "FWA" ||
+    params.effectiveMatchType === "BL" ||
+    params.effectiveMatchType === "MM"
+      ? params.effectiveMatchType
+      : null;
+  if (!effectiveMatchType) {
+    return { outcomeMismatch: null, matchTypeVsFwaMismatch: null };
+  }
+  const outcomeMismatch =
+    effectiveMatchType === "FWA"
+      ? buildOutcomeMismatchWarning(
+          toWinLoseOutcome(params.effectiveExpectedOutcome),
+          toWinLoseOutcome(params.projectedOutcome)
+        )
+      : null;
+  const matchTypeVsFwaMismatch =
+    (effectiveMatchType === "BL" || effectiveMatchType === "MM") &&
+    params.siteActiveFwa === true
+      ? ":warning: Points site reports Active FWA: YES but match type is BL/MM"
+      : null;
+  return { outcomeMismatch, matchTypeVsFwaMismatch };
+}
+
 /** Purpose: build next draft when a user chooses a different match type. */
 function buildDraftFromMatchTypeSelection(params: {
   view: MatchView;
@@ -646,12 +704,11 @@ function buildDraftFromMatchTypeSelection(params: {
   const nextDraft = normalizeRevisionFields({
     ...effective,
     matchType: params.targetType,
-    expectedOutcome:
-      params.targetType === "FWA"
-        ? effective.expectedOutcome === "WIN" || effective.expectedOutcome === "LOSE"
-          ? effective.expectedOutcome
-          : "UNKNOWN"
-        : null,
+    expectedOutcome: resolveEffectiveFwaOutcome({
+      matchType: params.targetType,
+      explicitOutcome: effective.expectedOutcome,
+      projectedOutcome: params.view.projectedFwaOutcome ?? null,
+    }),
   });
   if (!nextDraft || areRevisionFieldsEqual(nextDraft, baseline)) return null;
   return nextDraft;
@@ -4363,6 +4420,9 @@ export const buildMailStatusDebugLinesForTest = buildMailStatusDebugLines;
 export const resolveScopedDraftRevisionForTest = resolveScopedDraftRevision;
 export const resolveEffectiveRevisionStateForTest = resolveEffectiveRevisionState;
 export const resolveConfirmedRevisionBaselineForTest = resolveConfirmedRevisionBaseline;
+export const buildDraftFromMatchTypeSelectionForTest = buildDraftFromMatchTypeSelection;
+export const resolveEffectiveFwaOutcomeForTest = resolveEffectiveFwaOutcome;
+export const buildEffectiveMatchMismatchWarningsForTest = buildEffectiveMatchMismatchWarnings;
 
 export const resolveMatchTypeFromStoredSyncRowForTest = resolveMatchTypeFromStoredSyncRow;
 
@@ -5666,38 +5726,6 @@ async function buildTrackedMatchOverview(
     const syncMismatch = siteUpdatedForAlert
       ? buildSyncMismatchWarning(currentSync, siteSyncObserved)
       : null;
-    const outcomeMismatch =
-      siteUpdatedForAlert && matchType === "FWA"
-        ? buildOutcomeMismatchWarning(
-            (sub?.outcome as "WIN" | "LOSE" | null | undefined) ?? null,
-            derivedOutcome
-          )
-        : null;
-    const matchTypeVsFwaMismatch =
-      siteUpdatedForAlert &&
-      (matchType === "BL" || matchType === "MM") &&
-      primaryPoints?.activeFwa === true
-        ? ":warning: Points site reports Active FWA: YES but match type is BL/MM"
-        : null;
-    const validationMismatchLines = validationState.differences.join("\n");
-    const mismatchLines = [
-      primaryMismatch,
-      opponentMismatch,
-      syncMismatch,
-      outcomeMismatch,
-      matchTypeVsFwaMismatch,
-      validationMismatchLines,
-    ]
-      .filter(Boolean)
-      .join("\n");
-    const hasMismatch = Boolean(
-      primaryMismatch ||
-        opponentMismatch ||
-        syncMismatch ||
-        outcomeMismatch ||
-        matchTypeVsFwaMismatch ||
-        validationState.differences.length > 0
-    );
     const pointsSyncStatus = validationState.statusLine;
     const siteMatchType: "FWA" | "BL" | "MM" | null =
       inferredFromPointsType &&
@@ -5744,10 +5772,39 @@ async function buildTrackedMatchOverview(
       revisionState.effective?.matchType === "MM"
         ? revisionState.effective.matchType
         : matchType;
-    const effectiveExpectedOutcome =
-      effectiveMatchType === "FWA"
-        ? revisionState.effective?.expectedOutcome ?? liveExpectedOutcome ?? "UNKNOWN"
-        : null;
+    const projectedFwaOutcome =
+      toWinLoseOutcome(liveExpectedOutcome) ?? toWinLoseOutcome(derivedOutcome);
+    const effectiveExpectedOutcome = resolveEffectiveFwaOutcome({
+      matchType: effectiveMatchType,
+      explicitOutcome: revisionState.effective?.expectedOutcome ?? null,
+      projectedOutcome: projectedFwaOutcome,
+    });
+    const effectiveMismatchWarnings = buildEffectiveMatchMismatchWarnings({
+      siteUpdated: siteUpdatedForAlert,
+      effectiveMatchType,
+      effectiveExpectedOutcome,
+      projectedOutcome: derivedOutcome,
+      siteActiveFwa: primaryPoints?.activeFwa,
+    });
+    const validationMismatchLines = validationState.differences.join("\n");
+    const mismatchLines = [
+      primaryMismatch,
+      opponentMismatch,
+      syncMismatch,
+      effectiveMismatchWarnings.outcomeMismatch,
+      effectiveMismatchWarnings.matchTypeVsFwaMismatch,
+      validationMismatchLines,
+    ]
+      .filter(Boolean)
+      .join("\n");
+    const hasMismatch = Boolean(
+      primaryMismatch ||
+        opponentMismatch ||
+        syncMismatch ||
+        effectiveMismatchWarnings.outcomeMismatch ||
+        effectiveMismatchWarnings.matchTypeVsFwaMismatch ||
+        validationState.differences.length > 0
+    );
     const effectiveInferredMatchType = Boolean(
       revisionState.appliedDraft || revisionState.baseline ? false : inferredMatchType
     );
@@ -5832,7 +5889,7 @@ async function buildTrackedMatchOverview(
             pointsSyncStatus,
             storedSyncSummary.stateLine,
             formatMailLifecycleStatusLine(liveMailStatus.status),
-            `Match Type: **${matchType}${warnSuffix}**`,
+            `Match Type: **${effectiveMatchType}${warnSuffix}**`,
             `War State: **${clanWarStateLine}**`,
             `Time Remaining: **${clanTimeRemainingLine}**`,
             mismatchLines,
@@ -6009,6 +6066,7 @@ async function buildTrackedMatchOverview(
       effectiveRevisionFields: revisionState.effective,
       appliedDraftRevision: revisionState.appliedDraft,
       draftDiffersFromBaseline: revisionState.draftDiffersFromBaseline,
+      projectedFwaOutcome,
       mailAction: {
         tag: clanTag,
         enabled: !mailBlockedReason,
@@ -8286,6 +8344,11 @@ export const Fwa: Command = {
         const effectiveOutcome =
           (subscription?.outcome as "WIN" | "LOSE" | null | undefined) ??
           (matchType === "FWA" ? derivedOutcome : null);
+        const effectiveExpectedOutcome = resolveEffectiveFwaOutcome({
+          matchType,
+          explicitOutcome: effectiveOutcome,
+          projectedOutcome: derivedOutcome,
+        });
         if (interaction.guildId) {
           await prisma.currentWar.upsert({
             where: {
@@ -8413,26 +8476,20 @@ export const Fwa: Command = {
         const syncMismatch = siteUpdated
           ? buildSyncMismatchWarning(currentSync, siteSyncObserved)
           : null;
-        const outcomeMismatch =
-          siteUpdated && matchType === "FWA"
-            ? buildOutcomeMismatchWarning(
-                (subscription?.outcome as "WIN" | "LOSE" | null | undefined) ?? null,
-                derivedOutcome
-              )
-            : null;
+        const effectiveMismatchWarnings = buildEffectiveMatchMismatchWarnings({
+          siteUpdated,
+          effectiveMatchType: matchType,
+          effectiveExpectedOutcome,
+          projectedOutcome: derivedOutcome,
+          siteActiveFwa: primary.activeFwa,
+        });
         const validationMismatchLines = validationState.differences.join("\n");
-        const matchTypeVsFwaMismatch =
-          siteUpdated &&
-          (matchType === "BL" || matchType === "MM") &&
-          primary.activeFwa === true
-            ? ":warning: Points site reports Active FWA: YES but match type is BL/MM"
-            : null;
         const mismatchLines = [
           trackedMismatch,
           opponentMismatch,
           syncMismatch,
-          outcomeMismatch,
-          matchTypeVsFwaMismatch,
+          effectiveMismatchWarnings.outcomeMismatch,
+          effectiveMismatchWarnings.matchTypeVsFwaMismatch,
           validationMismatchLines,
         ]
           .filter(Boolean)
@@ -8441,8 +8498,8 @@ export const Fwa: Command = {
           trackedMismatch ||
             opponentMismatch ||
             syncMismatch ||
-            outcomeMismatch ||
-            matchTypeVsFwaMismatch ||
+            effectiveMismatchWarnings.outcomeMismatch ||
+            effectiveMismatchWarnings.matchTypeVsFwaMismatch ||
             validationState.differences.length > 0
         );
         const siteStatusLine = validationState.statusLine;
@@ -8464,9 +8521,7 @@ export const Fwa: Command = {
           ? buildMailStatusDebugLines(liveMailStatus.debug)
           : [];
         const outcomeLine =
-          matchType === "FWA"
-            ? `${effectiveOutcome ?? "UNKNOWN"}`
-            : "";
+          matchType === "FWA" ? `${effectiveExpectedOutcome ?? "UNKNOWN"}` : "";
         const matchTypeText = `${matchType}${inferredMatchType ? " :warning:" : ""}`;
         const verifyLink = inferredMatchType
           ? `[cc:${opponentTag}](${buildCcVerifyUrl(opponentTag)})`
@@ -8479,11 +8534,14 @@ export const Fwa: Command = {
           opponentName: rightName,
           opponentTag,
           matchType,
-          outcome: effectiveOutcome ?? "UNKNOWN",
+          outcome: effectiveExpectedOutcome ?? "UNKNOWN",
           mailStatusEmoji: liveMailStatus.mailStatusEmoji,
         });
-        const leftWinnerMarker = getWinnerMarkerForSide(effectiveOutcome ?? null, "clan");
-        const rightWinnerMarker = getWinnerMarkerForSide(effectiveOutcome ?? null, "opponent");
+        const leftWinnerMarker = getWinnerMarkerForSide(effectiveExpectedOutcome ?? null, "clan");
+        const rightWinnerMarker = getWinnerMarkerForSide(
+          effectiveExpectedOutcome ?? null,
+          "opponent"
+        );
         const singleDescription = [
           inferredMatchType ? `${MATCHTYPE_WARNING_LEGEND}\n\u200B` : "",
           `Match Type: **${matchTypeText}**${verifyLink ? ` ${verifyLink}` : ""}`,
@@ -8585,8 +8643,9 @@ export const Fwa: Command = {
           matchTypeCurrent: matchType as "FWA" | "BL" | "MM" | "SKIP",
           inferredMatchType,
           outcomeAction:
-            matchType === "FWA" && (effectiveOutcome === "WIN" || effectiveOutcome === "LOSE")
-              ? { tag, currentOutcome: effectiveOutcome }
+            matchType === "FWA" &&
+            (effectiveExpectedOutcome === "WIN" || effectiveExpectedOutcome === "LOSE")
+              ? { tag, currentOutcome: effectiveExpectedOutcome }
               : null,
           syncAction:
             siteUpdated && hasMismatch

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildDraftFromMatchTypeSelectionForTest,
+  buildEffectiveMatchMismatchWarningsForTest,
   getMailBlockedReasonFromRevisionStateForTest,
+  resolveEffectiveFwaOutcomeForTest,
   resolveConfirmedRevisionBaselineForTest,
   resolveEffectiveRevisionStateForTest,
   resolveScopedDraftRevisionForTest,
@@ -161,5 +164,127 @@ describe("fwa match posted mail gating with revisions", () => {
     });
 
     expect(reason).toBeNull();
+  });
+});
+
+describe("fwa match draft initialization for BL/MM -> FWA", () => {
+  it("seeds BL -> FWA draft with projected WIN when available", () => {
+    const draft = buildDraftFromMatchTypeSelectionForTest({
+      view: {
+        embed: {} as never,
+        copyText: "",
+        confirmedRevisionBaseline: {
+          warId: "1001",
+          opponentTag: "2TAG",
+          matchType: "BL",
+          expectedOutcome: null,
+        },
+        effectiveRevisionFields: {
+          warId: "1001",
+          opponentTag: "2TAG",
+          matchType: "BL",
+          expectedOutcome: null,
+        },
+        projectedFwaOutcome: "WIN",
+      },
+      targetType: "FWA",
+    });
+
+    expect(draft).toEqual({
+      warId: "1001",
+      opponentTag: "2TAG",
+      matchType: "FWA",
+      expectedOutcome: "WIN",
+    });
+  });
+
+  it("seeds MM -> FWA draft with projected LOSE when available", () => {
+    const draft = buildDraftFromMatchTypeSelectionForTest({
+      view: {
+        embed: {} as never,
+        copyText: "",
+        confirmedRevisionBaseline: {
+          warId: "2002",
+          opponentTag: "2TAG",
+          matchType: "MM",
+          expectedOutcome: null,
+        },
+        effectiveRevisionFields: {
+          warId: "2002",
+          opponentTag: "2TAG",
+          matchType: "MM",
+          expectedOutcome: null,
+        },
+        projectedFwaOutcome: "LOSE",
+      },
+      targetType: "FWA",
+    });
+
+    expect(draft).toEqual({
+      warId: "2002",
+      opponentTag: "2TAG",
+      matchType: "FWA",
+      expectedOutcome: "LOSE",
+    });
+  });
+});
+
+describe("fwa effective outcome resolution for FWA drafts", () => {
+  it("keeps explicit draft WIN/LOSE over projected fallback", () => {
+    const resolved = resolveEffectiveFwaOutcomeForTest({
+      matchType: "FWA",
+      explicitOutcome: "WIN",
+      projectedOutcome: "LOSE",
+    });
+
+    expect(resolved).toBe("WIN");
+  });
+
+  it("uses projected outcome when draft value is UNKNOWN", () => {
+    const resolved = resolveEffectiveFwaOutcomeForTest({
+      matchType: "FWA",
+      explicitOutcome: "UNKNOWN",
+      projectedOutcome: "LOSE",
+    });
+
+    expect(resolved).toBe("LOSE");
+  });
+
+  it("stays UNKNOWN only when projected outcome is unavailable", () => {
+    const resolved = resolveEffectiveFwaOutcomeForTest({
+      matchType: "FWA",
+      explicitOutcome: "UNKNOWN",
+      projectedOutcome: null,
+    });
+
+    expect(resolved).toBe("UNKNOWN");
+  });
+});
+
+describe("fwa effective-state mismatch gating", () => {
+  it("evaluates mismatch from effective FWA state instead of BL/MM warning path", () => {
+    const mismatch = buildEffectiveMatchMismatchWarningsForTest({
+      siteUpdated: true,
+      effectiveMatchType: "FWA",
+      effectiveExpectedOutcome: "UNKNOWN",
+      projectedOutcome: "WIN",
+      siteActiveFwa: true,
+    });
+
+    expect(mismatch.outcomeMismatch).toContain("Outcome mismatch");
+    expect(mismatch.matchTypeVsFwaMismatch).toBeNull();
+  });
+
+  it("keeps BL/MM active-fwa warning when effective state remains BL/MM", () => {
+    const mismatch = buildEffectiveMatchMismatchWarningsForTest({
+      siteUpdated: true,
+      effectiveMatchType: "BL",
+      effectiveExpectedOutcome: null,
+      projectedOutcome: "WIN",
+      siteActiveFwa: true,
+    });
+
+    expect(mismatch.outcomeMismatch).toBeNull();
+    expect(mismatch.matchTypeVsFwaMismatch).toContain("Active FWA: YES");
   });
 });
