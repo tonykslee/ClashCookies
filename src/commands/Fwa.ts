@@ -815,6 +815,64 @@ function buildDraftFromMatchTypeSelection(params: {
   return nextDraft;
 }
 
+type ActiveWarMatchInferenceOptions = {
+  currentWarState?: "preparation" | "inWar" | "notInWar" | null;
+  currentWarClanAttacksUsed?: number | null;
+  currentWarClanStars?: number | null;
+  currentWarOpponentStars?: number | null;
+};
+
+/** Purpose: pass only battle-relevant active-war evidence into shared BL/MM inference. */
+function buildActiveWarMatchInferenceOptions(params: {
+  warState: WarStateForSync | null | undefined;
+  clanAttacksUsed?: number | null | undefined;
+  clanStars?: number | null | undefined;
+  opponentStars?: number | null | undefined;
+}): ActiveWarMatchInferenceOptions {
+  const normalizeFiniteInt = (value: number | null | undefined): number | null =>
+    value !== null && value !== undefined && Number.isFinite(value) ? Math.trunc(value) : null;
+  return {
+    currentWarState: params.warState ?? null,
+    currentWarClanAttacksUsed: normalizeFiniteInt(params.clanAttacksUsed),
+    currentWarClanStars: normalizeFiniteInt(params.clanStars),
+    currentWarOpponentStars: normalizeFiniteInt(params.opponentStars),
+  };
+}
+
+type MatchTypeSelectionResolution = {
+  draft: MatchRevisionFields | null;
+  explicitConfirmation:
+    | {
+        matchType: "FWA" | "BL" | "MM";
+        expectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null;
+      }
+    | null;
+};
+
+/** Purpose: distinguish draft changes from explicit same-type confirmation of an inferred value. */
+function resolveMatchTypeSelection(params: {
+  view: MatchView;
+  targetType: "FWA" | "BL" | "MM";
+}): MatchTypeSelectionResolution {
+  const draft = buildDraftFromMatchTypeSelection(params);
+  if (draft) {
+    return { draft, explicitConfirmation: null };
+  }
+  const currentType = params.view.matchTypeCurrent;
+  const effective = getEffectiveRevisionForView(params.view);
+  if (!params.view.inferredMatchType || currentType !== params.targetType) {
+    return { draft: null, explicitConfirmation: null };
+  }
+  return {
+    draft: null,
+    explicitConfirmation: {
+      matchType: params.targetType,
+      expectedOutcome:
+        params.targetType === "FWA" ? effective?.expectedOutcome ?? "UNKNOWN" : null,
+    },
+  };
+}
+
 /** Purpose: build next draft when a user toggles expected outcome for an FWA revision. */
 function buildDraftFromOutcomeToggle(params: {
   view: MatchView;
@@ -1279,7 +1337,7 @@ async function buildWarMailEmbedForTag(
     opponentTag,
     warState,
     warId: subscription?.warId ?? null,
-    warStartTime: subscription?.startTime ?? null,
+    warStartTime: getWarStartDateForSync(subscription?.startTime ?? null, war),
     existingMatchType:
       (subscription?.matchType as "FWA" | "BL" | "MM" | "SKIP" | null | undefined) ?? null,
     existingInferredMatchType: subscription?.inferredMatchType ?? null,
@@ -1312,12 +1370,13 @@ async function buildWarMailEmbedForTag(
     Number.isFinite(subscription.warId)
       ? String(Math.trunc(subscription.warId))
       : null;
+  const warStartTimeForSync = getWarStartDateForSync(subscription?.startTime ?? null, war);
   const syncRow = await pointsSyncService
     .getCurrentSyncForClan({
       guildId,
       clanTag: normalizedTag,
       warId: warIdForSync,
-      warStartTime: subscription?.startTime ?? null,
+      warStartTime: warStartTimeForSync,
     })
     .catch(() => null);
   const lifecycle =
@@ -1396,9 +1455,40 @@ async function buildWarMailEmbedForTag(
     primaryBalance = subscription?.fwaPoints ?? syncRow?.clanPoints ?? null;
     opponentBalance = subscription?.opponentFwaPoints ?? syncRow?.opponentPoints ?? null;
   }
+  const siteCurrentFromPrimary = Boolean(
+    opponentTag &&
+      primarySnapshot !== null &&
+      isPointsSiteUpdatedForOpponent(primarySnapshot, opponentTag, sourceSync)
+  );
+  const siteCurrent =
+    opponentTag
+      ? isPointsValidationCurrentForMatchup({
+          primarySnapshot,
+          opponentSnapshot,
+          opponentTag,
+          sourceSync,
+        })
+      : false;
   if (opponentTag) {
+    const winnerBoxNotMarkedFwa = hasWinnerBoxNotMarkedFwaSignal(
+      primarySnapshot?.winnerBoxText ?? null
+    );
+    const strongOpponentEvidencePresent =
+      opponentSnapshot?.notFound === true ||
+      opponentSnapshot?.activeFwa === true ||
+      opponentSnapshot?.activeFwa === false;
+    const activeWarInference = buildActiveWarMatchInferenceOptions({
+      warState,
+      clanAttacksUsed: war?.clan?.attacks ?? null,
+      clanStars: war?.clan?.stars ?? subscription?.clanStars ?? null,
+      opponentStars: war?.opponent?.stars ?? subscription?.opponentStars ?? null,
+    });
     pointsInference = toMatchTypeResolutionFromPointsInference(
-      inferMatchTypeFromPointsSnapshots(primarySnapshot, opponentSnapshot)
+      inferMatchTypeFromPointsSnapshots(primarySnapshot, opponentSnapshot, {
+        winnerBoxNotMarkedFwa,
+        opponentEvidenceMissingOrNotCurrent: !siteCurrent || !strongOpponentEvidencePresent,
+        ...activeWarInference,
+      })
     );
     appliedResolution = chooseMatchTypeResolution({
       confirmedCurrent: fallbackResolution.confirmedCurrent,
@@ -1440,16 +1530,6 @@ async function buildWarMailEmbedForTag(
         currentSync
       );
     }
-    const warStartTimeForSync = getWarStartDateForSync(subscription?.startTime ?? null, war);
-    const siteCurrentFromPrimary =
-      primarySnapshot !== null &&
-      isPointsSiteUpdatedForOpponent(primarySnapshot, opponentTag, sourceSync);
-    const siteCurrent = isPointsValidationCurrentForMatchup({
-      primarySnapshot,
-      opponentSnapshot,
-      opponentTag,
-      sourceSync,
-    });
     if (
       siteCurrent &&
       !siteCurrentFromPrimary &&
@@ -2769,15 +2849,55 @@ export async function handleFwaMatchTypeActionButton(interaction: ButtonInteract
       const currentView = payload.singleViews[parsed.tag];
       if (!currentView) continue;
 
-      const nextDraft = buildDraftFromMatchTypeSelection({
+      const selection = resolveMatchTypeSelection({
         view: currentView,
         targetType: parsed.targetType,
       });
       const nextDraftByTag = { ...payload.revisionDraftByTag };
-      if (nextDraft) {
-        nextDraftByTag[parsed.tag] = nextDraft;
+      if (selection.draft) {
+        nextDraftByTag[parsed.tag] = selection.draft;
       } else {
         delete nextDraftByTag[parsed.tag];
+      }
+      if (selection.explicitConfirmation) {
+        await prisma.currentWar.upsert({
+          where: {
+            clanTag_guildId: {
+              guildId: interaction.guildId,
+              clanTag: `#${parsed.tag}`,
+            },
+          },
+          create: {
+            guildId: interaction.guildId,
+            clanTag: `#${parsed.tag}`,
+            channelId: interaction.channelId,
+            notify: false,
+            matchType: selection.explicitConfirmation.matchType,
+            inferredMatchType: false,
+            outcome:
+              selection.explicitConfirmation.matchType === "FWA" &&
+              (selection.explicitConfirmation.expectedOutcome === "WIN" ||
+                selection.explicitConfirmation.expectedOutcome === "LOSE")
+                ? selection.explicitConfirmation.expectedOutcome
+                : null,
+          },
+          update: {
+            matchType: selection.explicitConfirmation.matchType,
+            inferredMatchType: false,
+            outcome:
+              selection.explicitConfirmation.matchType === "FWA" &&
+              (selection.explicitConfirmation.expectedOutcome === "WIN" ||
+                selection.explicitConfirmation.expectedOutcome === "LOSE")
+                ? selection.explicitConfirmation.expectedOutcome
+                : null,
+            updatedAt: new Date(),
+          },
+        });
+        await markMatchLiveDataChanged({
+          guildId: interaction.guildId,
+          tag: parsed.tag,
+          channelId: interaction.channelId,
+        });
       }
       const draftPayload: FwaMatchCopyPayload = {
         ...payload,
@@ -4666,6 +4786,7 @@ export const resolveScopedDraftRevisionForTest = resolveScopedDraftRevision;
 export const resolveEffectiveRevisionStateForTest = resolveEffectiveRevisionState;
 export const resolveConfirmedRevisionBaselineForTest = resolveConfirmedRevisionBaseline;
 export const buildDraftFromMatchTypeSelectionForTest = buildDraftFromMatchTypeSelection;
+export const resolveMatchTypeSelectionForTest = resolveMatchTypeSelection;
 export const buildDraftFromOutcomeToggleForTest = buildDraftFromOutcomeToggle;
 export const resolveEffectiveFwaOutcomeForTest = resolveEffectiveFwaOutcome;
 export const buildEffectiveMatchMismatchWarningsForTest = buildEffectiveMatchMismatchWarnings;
@@ -4688,6 +4809,10 @@ function inferMatchTypeFromPointsSnapshots(
   options?: {
     winnerBoxNotMarkedFwa?: boolean | null;
     opponentEvidenceMissingOrNotCurrent?: boolean | null;
+    currentWarState?: "preparation" | "inWar" | "notInWar" | null;
+    currentWarClanAttacksUsed?: number | null;
+    currentWarClanStars?: number | null;
+    currentWarOpponentStars?: number | null;
   }
 ): MatchTypeResolution | null {
   return inferMatchTypeFromOpponentPoints({
@@ -4697,6 +4822,10 @@ function inferMatchTypeFromPointsSnapshots(
     notFound: opponentPoints?.notFound ?? false,
     winnerBoxNotMarkedFwa: options?.winnerBoxNotMarkedFwa ?? false,
     opponentEvidenceMissingOrNotCurrent: options?.opponentEvidenceMissingOrNotCurrent ?? false,
+    currentWarState: options?.currentWarState ?? null,
+    currentWarClanAttacksUsed: options?.currentWarClanAttacksUsed ?? null,
+    currentWarClanStars: options?.currentWarClanStars ?? null,
+    currentWarOpponentStars: options?.currentWarOpponentStars ?? null,
   });
 }
 
@@ -4722,11 +4851,13 @@ async function resolveMatchTypeFromStoredSync(params: {
     params.warId !== null && params.warId !== undefined && Number.isFinite(params.warId)
       ? String(Math.trunc(params.warId))
       : null;
+  const warStartTime = params.warStartTime instanceof Date ? params.warStartTime : null;
+  if (!warIdText && !warStartTime) return null;
   const syncRow = await pointsSyncService.getCurrentSyncForClan({
     guildId: params.guildId,
     clanTag: params.clanTag,
     warId: warIdText,
-    warStartTime: params.warStartTime ?? null,
+    warStartTime,
   });
   return resolveMatchTypeFromStoredSyncRow({
     syncRow: syncRow
@@ -4762,15 +4893,20 @@ async function resolveMatchTypeWithFallback(params: {
       unconfirmedCurrent: currentResolution.unconfirmed,
     };
   }
+  const hasWarIdentity =
+    (params.warId !== null && params.warId !== undefined && Number.isFinite(params.warId)) ||
+    params.warStartTime instanceof Date;
   return {
     confirmedCurrent: currentResolution.confirmed,
-    storedSync: await resolveMatchTypeFromStoredSync({
-      guildId: params.guildId,
-      clanTag: params.clanTag,
-      opponentTag: params.opponentTag,
-      warId: params.warId,
-      warStartTime: params.warStartTime,
-    }),
+    storedSync: hasWarIdentity
+      ? await resolveMatchTypeFromStoredSync({
+          guildId: params.guildId,
+          clanTag: params.clanTag,
+          opponentTag: params.opponentTag,
+          warId: params.warId,
+          warStartTime: params.warStartTime,
+        })
+      : null,
     unconfirmedCurrent: currentResolution.unconfirmed,
   };
 }
@@ -5869,7 +6005,7 @@ async function buildTrackedMatchOverview(
       opponentTag,
       warState,
       warId: sub?.warId ?? null,
-      warStartTime: sub?.startTime ?? null,
+      warStartTime: getWarStartDateForSync(sub?.startTime ?? null, war),
       existingMatchType: sub?.matchType ?? null,
       existingInferredMatchType: sub?.inferredMatchType ?? null,
     });
@@ -6030,6 +6166,12 @@ async function buildTrackedMatchOverview(
       opponentPoints?.notFound === true ||
       opponentPoints?.activeFwa === true ||
       opponentPoints?.activeFwa === false;
+    const activeWarInference = buildActiveWarMatchInferenceOptions({
+      warState,
+      clanAttacksUsed: war?.clan?.attacks ?? null,
+      clanStars: war?.clan?.stars ?? null,
+      opponentStars: war?.opponent?.stars ?? null,
+    });
     const inferredFromPointsType = inferMatchTypeFromPointsSnapshots(
       primaryPoints,
       opponentPoints,
@@ -6037,6 +6179,7 @@ async function buildTrackedMatchOverview(
         winnerBoxNotMarkedFwa,
         opponentEvidenceMissingOrNotCurrent:
           !siteUpdatedForAlert || !strongOpponentEvidencePresent,
+        ...activeWarInference,
       }
     );
     const pointsResolution = toMatchTypeResolutionFromPointsInference(inferredFromPointsType);
@@ -8830,7 +8973,7 @@ export const Fwa: Command = {
           opponentTag,
           warState,
           warId: subscription?.warId ?? null,
-          warStartTime: subscription?.startTime ?? null,
+          warStartTime: warStartTimeForReuse,
           existingMatchType: subscription?.matchType ?? null,
           existingInferredMatchType: subscription?.inferredMatchType ?? null,
         });
@@ -8891,6 +9034,12 @@ export const Fwa: Command = {
           opponent.notFound === true ||
           opponent.activeFwa === true ||
           opponent.activeFwa === false;
+        const activeWarInference = buildActiveWarMatchInferenceOptions({
+          warState,
+          clanAttacksUsed: war?.clan?.attacks ?? null,
+          clanStars: war?.clan?.stars ?? null,
+          opponentStars: war?.opponent?.stars ?? null,
+        });
         if (!hasPrimaryPoints && hasOpponentPoints) {
           await editReplySafe(`Could not fetch point balance for #${tag}.`);
           return;
@@ -8902,6 +9051,7 @@ export const Fwa: Command = {
         const inferredFromPointsType = inferMatchTypeFromPointsSnapshots(primary, opponent, {
           winnerBoxNotMarkedFwa,
           opponentEvidenceMissingOrNotCurrent: !siteUpdated || !strongOpponentEvidencePresent,
+          ...activeWarInference,
         });
         const pointsResolution = toMatchTypeResolutionFromPointsInference(inferredFromPointsType);
         const appliedResolution = chooseMatchTypeResolution({

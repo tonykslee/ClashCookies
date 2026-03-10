@@ -556,6 +556,7 @@ export class WarEventLogService {
           reason: "manual_refresh",
           caller: "command",
           manualForceBypass: true,
+          fallbackTrackedClanTag: clanTag,
         }),
       ]);
       fwaPoints = a.balance;
@@ -1237,13 +1238,26 @@ export class WarEventLogService {
         this.points.fetchSnapshot(projectionOpponentTag, {
           reason: projectionReason,
           caller: "poller",
+          fallbackTrackedClanTag: projectionClanTag,
         }),
       ]);
+      const siteCurrent = a.winnerBoxTags.map((t) => normalizeTag(t)).includes(projectionOpponentTag);
+      const winnerBoxNotMarkedFwa = /not marked as an fwa match/i.test(
+        String(a.winnerBoxText ?? "")
+      );
+      const strongOpponentEvidencePresent =
+        b.notFound === true || b.activeFwa === true || b.activeFwa === false;
       liveOpponentResolution = inferMatchTypeFromOpponentPoints({
         available: true,
         balance: b.balance,
         activeFwa: b.activeFwa,
         notFound: b.notFound,
+        winnerBoxNotMarkedFwa,
+        opponentEvidenceMissingOrNotCurrent: !siteCurrent || !strongOpponentEvidencePresent,
+        currentWarState: currentState,
+        currentWarClanAttacksUsed: nextClanAttacks,
+        currentWarClanStars: nextClanStars,
+        currentWarOpponentStars: nextOpponentStars,
       });
       nextFwaPoints = a.balance;
       nextOpponentFwaPoints = b.balance;
@@ -1254,7 +1268,6 @@ export class WarEventLogService {
         b.balance,
         fallbackSyncNumberForEvent
       );
-      const siteCurrent = a.winnerBoxTags.map((t) => normalizeTag(t)).includes(projectionOpponentTag);
       const observedSync =
         a.effectiveSync !== null && Number.isFinite(a.effectiveSync)
           ? Math.trunc(a.effectiveSync)

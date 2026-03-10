@@ -45,17 +45,13 @@ describe("fwa match inference from points snapshots", () => {
     });
   });
 
-  it("infers MM when points site reports clan not found", () => {
+  it("returns null when points site reports clan not found without active-war evidence", () => {
     const inferred = inferMatchTypeFromPointsSnapshotsForTest(
       { activeFwa: true },
       { balance: null, activeFwa: null, notFound: true }
     );
 
-    expect(inferred).toMatchObject({
-      matchType: "MM",
-      source: "live_points_clan_not_found",
-      syncIsFwa: false,
-    });
+    expect(inferred).toBeNull();
   });
 
   it("returns null when Active FWA signal is missing", () => {
@@ -67,7 +63,7 @@ describe("fwa match inference from points snapshots", () => {
     expect(inferred).toBeNull();
   });
 
-  it("infers MM from winner-box fallback when opponent evidence is missing/not current", () => {
+  it("returns null from winner-box fallback when battle evidence is still insufficient", () => {
     const inferred = inferMatchTypeFromPointsSnapshotsForTest(
       { activeFwa: true },
       null,
@@ -77,9 +73,47 @@ describe("fwa match inference from points snapshots", () => {
       }
     );
 
+    expect(inferred).toBeNull();
+  });
+
+  it("infers MM from opponent-missing non-FWA evidence when the tracked clan has used attacks", () => {
+    const inferred = inferMatchTypeFromPointsSnapshotsForTest(
+      { activeFwa: true },
+      { balance: null, activeFwa: null, notFound: true },
+      {
+        winnerBoxNotMarkedFwa: true,
+        opponentEvidenceMissingOrNotCurrent: true,
+        currentWarState: "inWar",
+        currentWarClanAttacksUsed: 3,
+        currentWarClanStars: 6,
+        currentWarOpponentStars: 2,
+      }
+    );
+
     expect(inferred).toMatchObject({
       matchType: "MM",
-      source: "live_points_winner_box_not_marked_fwa",
+      source: "active_war_non_fwa_mismatch",
+      syncIsFwa: false,
+    });
+  });
+
+  it("infers BL from opponent-missing non-FWA evidence when the tracked clan has zero attacks in battle day", () => {
+    const inferred = inferMatchTypeFromPointsSnapshotsForTest(
+      { activeFwa: true },
+      null,
+      {
+        winnerBoxNotMarkedFwa: true,
+        opponentEvidenceMissingOrNotCurrent: true,
+        currentWarState: "inWar",
+        currentWarClanAttacksUsed: 0,
+        currentWarClanStars: 0,
+        currentWarOpponentStars: 2,
+      }
+    );
+
+    expect(inferred).toMatchObject({
+      matchType: "BL",
+      source: "active_war_non_fwa_blacklist",
       syncIsFwa: false,
     });
   });
