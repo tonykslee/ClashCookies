@@ -1,80 +1,100 @@
 import { describe, expect, it } from "vitest";
 import {
   buildCompoPlaceEmbedForTest,
+  getAbsoluteSheetRowNumberForTest,
+  getModeRowsForTest,
   readPlacementCandidatesForTest,
 } from "../src/commands/Compo";
 
-function blankRows(count: number, cols: number): string[][] {
+function blankRows(count: number, cols = 56): string[][] {
   return Array.from({ length: count }, () => Array.from({ length: cols }, () => ""));
 }
 
+function makeRow(cells: Record<number, string>, cols = 56): string[] {
+  const row = Array.from({ length: cols }, () => "");
+  for (const [col, value] of Object.entries(cells)) {
+    row[Number(col)] = value;
+  }
+  return row;
+}
+
 describe("/compo place candidate parsing", () => {
-  it("detects delta headers when the right-block header row is not the first row", () => {
-    const clanCol = [["Clan"], ["Red Riders"], ...blankRows(7, 1)];
-    const clanTagCol = [["Clan Tag"], ["#R8R8"], ...blankRows(7, 1)];
-    const totalCol = [["TotalWeight"], ["1,500,000"], ...blankRows(7, 1)];
-    const targetBandCol = [["Target"], ["1,520,000"], ...blankRows(7, 1)];
-    const rightBlock = [
-      ["", "", "", "", "", "", ""],
-      [
-        "Missing Weights",
-        "TH18-delta",
-        "TH17-delta",
-        "TH16-delta",
-        "TH15-delta",
-        "TH14-delta",
-        "<=TH13-delta",
-      ],
-      ["0", "0", "-1", "-2", "0", "0", "-3"],
-      ...blankRows(6, 7),
-    ];
+  it("maps fixed-range indexes to absolute sheet rows and selects ACTUAL rows from layout", () => {
+    expect(getAbsoluteSheetRowNumberForTest(0)).toBe(6);
+    expect(getAbsoluteSheetRowNumberForTest(1)).toBe(7);
+    expect(getAbsoluteSheetRowNumberForTest(4)).toBe(10);
 
-    const candidates = readPlacementCandidatesForTest(
-      clanCol,
-      clanTagCol,
-      totalCol,
-      targetBandCol,
-      rightBlock
-    );
+    const rows = blankRows(7).map((row, index) => {
+      row[0] = `row-${getAbsoluteSheetRowNumberForTest(index)}`;
+      return row;
+    });
 
-    expect(candidates).toHaveLength(1);
-    expect(candidates[0].clanTag).toBe("R8R8");
-    expect(candidates[0].missingCount).toBe(0);
-    expect(candidates[0].bucketDeltaByHeader["th16-delta"]).toBe(-2);
-    expect(candidates[0].bucketDeltaByHeader["<=th13-delta"]).toBe(-3);
+    const actualRows = getModeRowsForTest(rows, "actual");
+    const warRows = getModeRowsForTest(rows, "war");
+
+    expect(actualRows.map((entry) => entry.sheetRowNumber)).toEqual([7, 10]);
+    expect(actualRows.map((entry) => entry.row[0])).toEqual(["row-7", "row-10"]);
+    expect(warRows.map((entry) => entry.sheetRowNumber)).toEqual([8, 11]);
   });
 
-  it("keeps existing behavior when headers are already on the first row", () => {
-    const clanCol = [["Clan"], ["Zero Gravity"], ...blankRows(7, 1)];
-    const clanTagCol = [["Clan Tag"], ["#ZG99"], ...blankRows(7, 1)];
-    const totalCol = [["TotalWeight"], ["1,430,000"], ...blankRows(7, 1)];
-    const targetBandCol = [["Target"], ["1,470,000"], ...blankRows(7, 1)];
-    const rightBlock = [
-      [
-        "Missing Weights",
-        "TH18-delta",
-        "TH17-delta",
-        "TH16-delta",
-        "TH15-delta",
-        "TH14-delta",
-        "<=TH13-delta",
-      ],
-      ["2", "0", "0", "-1", "-2", "0", "0"],
-      ...blankRows(7, 7),
-    ];
+  it("builds ACTUAL placement candidates only from ACTUAL rows and prevents duplicate clans", () => {
+    const rows = blankRows(8);
+    rows[1] = makeRow({
+      0: "RISING DAWN",
+      1: "#RD111",
+      3: "1,500,000",
+      20: "2",
+      21: "0",
+      22: "0",
+      23: "-1",
+      24: "-2",
+      25: "0",
+      26: "0",
+      48: "1,520,000",
+      55: "WAR",
+    });
+    rows[2] = makeRow({
+      0: "RISING DAWN-war",
+      1: "#RDWAR",
+      3: "1,490,000",
+      20: "3",
+      23: "-9",
+      48: "1,520,000",
+      55: "ACTUAL",
+    });
+    rows[4] = makeRow({
+      0: "RISING DAWN",
+      1: "#RD111",
+      3: "1,510,000",
+      20: "5",
+      23: "-7",
+      48: "1,520,000",
+    });
+    rows[7] = makeRow({
+      0: "DARK EMPIRE\u2122!-actual",
+      1: "#DE222",
+      3: "1,470,000",
+      20: "1",
+      24: "-3",
+      48: "1,500,000",
+    });
 
-    const candidates = readPlacementCandidatesForTest(
-      clanCol,
-      clanTagCol,
-      totalCol,
-      targetBandCol,
-      rightBlock
-    );
+    const actualRows = getModeRowsForTest(rows, "actual");
+    const candidates = readPlacementCandidatesForTest(actualRows);
 
-    expect(candidates).toHaveLength(1);
-    expect(candidates[0].missingCount).toBe(2);
-    expect(candidates[0].bucketDeltaByHeader["th16-delta"]).toBe(-1);
-    expect(candidates[0].bucketDeltaByHeader["th15-delta"]).toBe(-2);
+    expect(actualRows.map((entry) => entry.sheetRowNumber)).toEqual([7, 10, 13]);
+    expect(candidates).toHaveLength(2);
+    expect(candidates.map((candidate) => candidate.clanTag)).toEqual(["RD111", "DE222"]);
+    expect(candidates.map((candidate) => candidate.clanName)).not.toContain("RISING DAWN-war");
+
+    const rd = candidates.find((candidate) => candidate.clanTag === "RD111");
+    expect(rd).toBeDefined();
+    expect(rd?.missingCount).toBe(2);
+    expect(rd?.bucketDeltaByHeader["th16-delta"]).toBe(-1);
+    expect(rd?.bucketDeltaByHeader["th15-delta"]).toBe(-2);
+
+    const uniqueTags = new Set(candidates.map((candidate) => candidate.clanTag));
+    expect(uniqueTags.size).toBe(candidates.length);
   });
 
   it("builds an embed with recommended, vacancy, and composition sections", () => {
