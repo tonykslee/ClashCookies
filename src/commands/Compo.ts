@@ -7,6 +7,7 @@ import {
 } from "discord.js";
 import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
+import { normalizeCompoClanDisplayName } from "../helper/compoDisplay";
 import { prisma } from "../prisma";
 import { safeReply } from "../helper/safeReply";
 import { CoCService } from "../services/CoCService";
@@ -314,13 +315,30 @@ function _mergeStateRows(
     const targetBandValue = (targetBand[i] ?? [""])[0] ?? "";
 
     out.push([
-      abbreviateClan((left[i] ?? [""])[0] ?? ""),
+      abbreviateClan(normalizeCompoClanDisplayName((left[i] ?? [""])[0] ?? "")),
       (middle[i] ?? ["", ""])[0] ?? "",
       targetBandValue,
       ...rightRow,
     ]);
   }
   return out;
+}
+
+function buildCompoStateRows(modeRows: SheetIndexedRow[]): string[][] {
+  return [
+    STATE_HEADERS,
+    ...modeRows.map((modeRow) => [
+      clampCell(normalizeCompoClanDisplayName(String(modeRow.row[COL_CLAN_NAME] ?? ""))),
+      clampCell(String(modeRow.row[COL_TOTAL_WEIGHT] ?? "")),
+      clampCell(String(modeRow.row[COL_MISSING_WEIGHT] ?? "")),
+      clampCell(String(modeRow.row[COL_BUCKET_START] ?? "")),
+      clampCell(String(modeRow.row[COL_BUCKET_START + 1] ?? "")),
+      clampCell(String(modeRow.row[COL_BUCKET_START + 2] ?? "")),
+      clampCell(String(modeRow.row[COL_BUCKET_START + 3] ?? "")),
+      clampCell(String(modeRow.row[COL_BUCKET_START + 4] ?? "")),
+      clampCell(String(modeRow.row[COL_BUCKET_END] ?? "")),
+    ]),
+  ];
 }
 
 type PlacementCandidate = {
@@ -438,16 +456,16 @@ function buildCompoPlaceEmbed(params: {
   refreshLine: string;
 }): EmbedBuilder {
   const recommendedRows = params.recommended.map(
-    (c) => `${abbreviateClan(c.clanName)} — needs ${Math.abs(c.delta)} ${params.bucket}`
+    (c) => `${abbreviateClan(normalizeCompoClanDisplayName(c.clanName))} — needs ${Math.abs(c.delta)} ${params.bucket}`
   );
   const vacancyRows = params.vacancyList.map(
     (c) =>
-      `${abbreviateClan(c.clanName)} — ${
+      `${abbreviateClan(normalizeCompoClanDisplayName(c.clanName))} — ${
         c.liveMemberCount !== null ? `${c.liveMemberCount}/50` : "unknown/50"
       }`
   );
   const compositionRows = params.compositionList.map(
-    (c) => `${abbreviateClan(c.clanName)} — ${c.delta}`
+    (c) => `${abbreviateClan(normalizeCompoClanDisplayName(c.clanName))} — ${c.delta}`
   );
 
   return new EmbedBuilder()
@@ -728,6 +746,7 @@ export const Compo: Command = {
         for (const modeRow of modeRows) {
           const row = modeRow.row;
           const clanName = String(row[COL_CLAN_NAME] ?? "").trim();
+          const displayClanName = normalizeCompoClanDisplayName(clanName);
           const clanTag = normalizeTag(String(row[COL_CLAN_TAG] ?? ""));
           const advice = String(row[COL_ADJUSTMENT] ?? "").trim();
           if (!clanName || !clanTag) continue;
@@ -742,8 +761,8 @@ export const Compo: Command = {
               ephemeral: true,
               content:
                 advice && advice.length > 0
-                  ? `Mode: **${mode.toUpperCase()}**\n**${clanName}** (\`#${clanTag}\`) adjustment:\n${advice}`
-                  : `Mode: **${mode.toUpperCase()}**\nFound **${clanName}** (\`#${clanTag}\`), but there is no adjustment text in column BB.`,
+                  ? `Mode: **${mode.toUpperCase()}**\n**${displayClanName}** (\`#${clanTag}\`) adjustment:\n${advice}`
+                  : `Mode: **${mode.toUpperCase()}**\nFound **${displayClanName}** (\`#${clanTag}\`), but there is no adjustment text in column BB.`,
             });
             logCompoStage(interaction, "response_sent", { reason: "target_found" });
             return;
@@ -802,20 +821,7 @@ export const Compo: Command = {
           totalRows: rows.length,
           modeRows: modeRows.length,
         });
-        const stateRows = [
-          STATE_HEADERS,
-          ...modeRows.map((modeRow) => [
-            clampCell(String(modeRow.row[COL_CLAN_NAME] ?? "")),
-            clampCell(String(modeRow.row[COL_TOTAL_WEIGHT] ?? "")),
-            clampCell(String(modeRow.row[COL_MISSING_WEIGHT] ?? "")),
-            clampCell(String(modeRow.row[COL_BUCKET_START] ?? "")),
-            clampCell(String(modeRow.row[COL_BUCKET_START + 1] ?? "")),
-            clampCell(String(modeRow.row[COL_BUCKET_START + 2] ?? "")),
-            clampCell(String(modeRow.row[COL_BUCKET_START + 3] ?? "")),
-            clampCell(String(modeRow.row[COL_BUCKET_START + 4] ?? "")),
-            clampCell(String(modeRow.row[COL_BUCKET_END] ?? "")),
-          ]),
-        ];
+        const stateRows = buildCompoStateRows(modeRows);
 
         const rawRefresh = refreshCell[0]?.[0]?.trim();
         const refreshLine =
@@ -1044,6 +1050,8 @@ export const Compo: Command = {
 
 export const readPlacementCandidatesForTest = readPlacementCandidates;
 export const buildCompoPlaceEmbedForTest = buildCompoPlaceEmbed;
+export const buildCompoStateRowsForTest = buildCompoStateRows;
 export const getModeRowsForTest = getModeRows;
 export const getAbsoluteSheetRowNumberForTest = getAbsoluteSheetRowNumber;
 export const mapCompoSheetErrorToMessageForTest = mapCompoSheetErrorToMessage;
+
