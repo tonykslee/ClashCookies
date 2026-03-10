@@ -57,21 +57,42 @@ function readMode(interaction: ChatInputCommandInteraction): GoogleSheetMode {
 const COL_CLAN_NAME = 0; // A
 const COL_CLAN_TAG = 1; // B
 const COL_TOTAL_WEIGHT = 3; // D
+const COL_TARGET_BAND = 48; // AW
 const COL_MISSING_WEIGHT = 20; // U
 const COL_BUCKET_START = 21; // V
 const COL_BUCKET_END = 26; // AA
 const COL_ADJUSTMENT = 53; // BB
-const COL_MODE = 55; // BD
 const FIXED_LAYOUT_RANGE = "AllianceDashboard!A6:BD500";
+const FIXED_LAYOUT_RANGE_START_ROW = 6;
 const STATE_HEADERS = ["Clan", "Total", "Missing", "TH18", "TH17", "TH16", "TH15", "TH14", "<=TH13"];
 
 function normalizeTag(value: string): string {
   return value.trim().toUpperCase().replace(/^#/, "");
 }
 
-function getModeRows(rows: string[][], mode: GoogleSheetMode): string[][] {
-  const wanted = mode.toUpperCase();
-  return rows.filter((row) => String(row[COL_MODE] ?? "").trim().toUpperCase() === wanted);
+type SheetIndexedRow = {
+  row: string[];
+  sheetRowNumber: number;
+};
+
+function getAbsoluteSheetRowNumber(rangeRelativeIndex: number): number {
+  return FIXED_LAYOUT_RANGE_START_ROW + rangeRelativeIndex;
+}
+
+function isActualSheetRow(sheetRowNumber: number): boolean {
+  return sheetRowNumber >= 7 && sheetRowNumber % 3 === 1;
+}
+
+function isWarSheetRow(sheetRowNumber: number): boolean {
+  return sheetRowNumber >= 8 && sheetRowNumber % 3 === 2;
+}
+
+function getModeRows(rows: string[][], mode: GoogleSheetMode): SheetIndexedRow[] {
+  return rows.flatMap((row, index) => {
+    const sheetRowNumber = getAbsoluteSheetRowNumber(index);
+    const include = mode === "actual" ? isActualSheetRow(sheetRowNumber) : isWarSheetRow(sheetRowNumber);
+    return include ? [{ row, sheetRowNumber }] : [];
+  });
 }
 
 function _renderStateSvg(mode: GoogleSheetMode, rows: string[][]): Buffer {
@@ -298,45 +319,30 @@ type PlacementCandidateWithDelta = PlacementCandidateWithVacancy & {
   delta: number;
 };
 
-/** Purpose: find the row that contains composition delta headers in the U:AA block. */
-function findDeltaHeaderRowIndex(rightBlock: string[][]): number {
-  const index = rightBlock.findIndex((row) =>
-    row.some((cell) => normalize(cell).includes("delta"))
-  );
-  return index >= 0 ? index : 0;
-}
-
 function readPlacementCandidates(
-  clanCol: string[][],
-  clanTagCol: string[][],
-  totalCol: string[][],
-  targetBandCol: string[][],
-  rightBlock: string[][]
+  modeRows: SheetIndexedRow[]
 ): PlacementCandidate[] {
-  const headerRowIndex = findDeltaHeaderRowIndex(rightBlock);
-  const missingHeaderRow = rightBlock[headerRowIndex] ?? [];
-  const missingIndex = missingHeaderRow.findIndex((v) =>
-    normalize(v).includes("missing")
-  );
-
   const candidates: PlacementCandidate[] = [];
-  for (let i = 1; i < 9; i += 1) {
-    const clanName = (clanCol[i]?.[0] ?? "").trim();
+  const seenKeys = new Set<string>();
+  for (const { row } of modeRows) {
+    const clanName = String(row[COL_CLAN_NAME] ?? "").trim();
     if (!clanName) continue;
-    const clanTag = normalizeTag(clanTagCol[i]?.[0] ?? "");
+    const clanTag = normalizeTag(String(row[COL_CLAN_TAG] ?? ""));
+    const key = clanTag ? `tag:${clanTag}` : `name:${normalize(clanName)}`;
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
 
-    const rightRow = rightBlock[i + headerRowIndex] ?? rightBlock[i] ?? [];
-    const totalWeight = parseNumber(totalCol[i]?.[0]);
-    const targetBand = parseNumber(targetBandCol[i]?.[0]);
-    const missingRaw = missingIndex >= 0 ? rightRow[missingIndex] : rightRow[0];
-    const missingCount = parseNumber(missingRaw);
+    const totalWeight = parseNumber(row[COL_TOTAL_WEIGHT]);
+    const targetBand = parseNumber(row[COL_TARGET_BAND]);
+    const missingCount = parseNumber(row[COL_MISSING_WEIGHT]);
     const remainingToTarget = targetBand - totalWeight;
     const bucketDeltaByHeader: Record<string, number> = {};
-    for (let c = 0; c < missingHeaderRow.length; c += 1) {
-      const key = normalize(missingHeaderRow[c] ?? "");
-      if (!key) continue;
-      bucketDeltaByHeader[key] = parseNumber(rightRow[c]);
-    }
+    bucketDeltaByHeader[normalize("TH18-delta")] = parseNumber(row[COL_BUCKET_START]);
+    bucketDeltaByHeader[normalize("TH17-delta")] = parseNumber(row[COL_BUCKET_START + 1]);
+    bucketDeltaByHeader[normalize("TH16-delta")] = parseNumber(row[COL_BUCKET_START + 2]);
+    bucketDeltaByHeader[normalize("TH15-delta")] = parseNumber(row[COL_BUCKET_START + 3]);
+    bucketDeltaByHeader[normalize("TH14-delta")] = parseNumber(row[COL_BUCKET_START + 4]);
+    bucketDeltaByHeader[normalize("<=TH13-delta")] = parseNumber(row[COL_BUCKET_END]);
 
     candidates.push({
       clanName,
@@ -663,7 +669,7 @@ export const Compo: Command = {
 
         const settings = new SettingsService();
         const sheets = new GoogleSheetsService(settings);
-        const linked = await sheets.getLinkedSheet(mode);
+        const linked = await sheets.getLinkedSheet();
         logCompoStage(interaction, "db_fetch", {
           entity: "sheet_link",
           mode,
@@ -690,7 +696,8 @@ export const Compo: Command = {
           return;
         }
 
-        for (const row of modeRows) {
+        for (const modeRow of modeRows) {
+          const row = modeRow.row;
           const clanName = String(row[COL_CLAN_NAME] ?? "").trim();
           const clanTag = normalizeTag(String(row[COL_CLAN_TAG] ?? ""));
           const advice = String(row[COL_ADJUSTMENT] ?? "").trim();
@@ -715,7 +722,7 @@ export const Compo: Command = {
         }
 
         const knownTags = modeRows
-          .map((row) => normalizeTag(String(row[COL_CLAN_TAG] ?? "")))
+          .map((modeRow) => normalizeTag(String(modeRow.row[COL_CLAN_TAG] ?? "")))
           .filter((tag): tag is string => Boolean(tag));
         logCompoStage(interaction, "computation_complete", {
           result: "target_missing",
@@ -738,7 +745,7 @@ export const Compo: Command = {
         logCompoStage(interaction, "computation_start", { mode });
         const settings = new SettingsService();
         const sheets = new GoogleSheetsService(settings);
-        const linked = await sheets.getLinkedSheet(mode);
+        const linked = await sheets.getLinkedSheet();
         logCompoStage(interaction, "db_fetch", {
           entity: "sheet_link",
           mode,
@@ -759,16 +766,16 @@ export const Compo: Command = {
         });
         const stateRows = [
           STATE_HEADERS,
-          ...modeRows.map((row) => [
-            clampCell(String(row[COL_CLAN_NAME] ?? "")),
-            clampCell(String(row[COL_TOTAL_WEIGHT] ?? "")),
-            clampCell(String(row[COL_MISSING_WEIGHT] ?? "")),
-            clampCell(String(row[COL_BUCKET_START] ?? "")),
-            clampCell(String(row[COL_BUCKET_START + 1] ?? "")),
-            clampCell(String(row[COL_BUCKET_START + 2] ?? "")),
-            clampCell(String(row[COL_BUCKET_START + 3] ?? "")),
-            clampCell(String(row[COL_BUCKET_START + 4] ?? "")),
-            clampCell(String(row[COL_BUCKET_END] ?? "")),
+          ...modeRows.map((modeRow) => [
+            clampCell(String(modeRow.row[COL_CLAN_NAME] ?? "")),
+            clampCell(String(modeRow.row[COL_TOTAL_WEIGHT] ?? "")),
+            clampCell(String(modeRow.row[COL_MISSING_WEIGHT] ?? "")),
+            clampCell(String(modeRow.row[COL_BUCKET_START] ?? "")),
+            clampCell(String(modeRow.row[COL_BUCKET_START + 1] ?? "")),
+            clampCell(String(modeRow.row[COL_BUCKET_START + 2] ?? "")),
+            clampCell(String(modeRow.row[COL_BUCKET_START + 3] ?? "")),
+            clampCell(String(modeRow.row[COL_BUCKET_START + 4] ?? "")),
+            clampCell(String(modeRow.row[COL_BUCKET_END] ?? "")),
           ]),
         ];
 
@@ -835,7 +842,7 @@ export const Compo: Command = {
         const stateMode: GoogleSheetMode = "actual";
         const settings = new SettingsService();
         const sheets = new GoogleSheetsService(settings);
-        const linked = await sheets.getLinkedSheet(stateMode);
+        const linked = await sheets.getLinkedSheet();
         logCompoStage(interaction, "db_fetch", {
           entity: "sheet_link",
           mode: stateMode,
@@ -843,29 +850,20 @@ export const Compo: Command = {
           sheetIdPresent: Boolean(linked.sheetId),
         });
 
-        const [clanCol, clanTagCol, totalCol, targetBandCol, rightBlock, refreshCell] =
-          await Promise.all([
-          sheets.readLinkedValues("AllianceDashboard!A1:A9", stateMode),
-          sheets.readLinkedValues("AllianceDashboard!B1:B9", stateMode),
-          sheets.readLinkedValues("AllianceDashboard!D1:D9", stateMode),
-          sheets.readLinkedValues("AllianceDashboard!AW1:AW9", stateMode),
-          sheets.readLinkedValues("AllianceDashboard!U1:AA9", stateMode),
-          sheets.readLinkedValues("Lookup!B10:B10", stateMode),
+        const [rows, refreshCell] = await Promise.all([
+          sheets.readLinkedValues(FIXED_LAYOUT_RANGE),
+          sheets.readLinkedValues("Lookup!B10:B10"),
         ]);
+        const actualRows = getModeRows(rows, stateMode);
         logCompoStage(interaction, "db_fetch", {
           entity: "sheet_rows",
           mode: stateMode,
-          result: clanCol.length > 0 ? "found" : "missing",
-          clanRows: clanCol.length,
+          result: rows.length > 0 ? "found" : "missing",
+          totalRows: rows.length,
+          modeRows: actualRows.length,
         });
 
-        const candidates = readPlacementCandidates(
-          clanCol,
-          clanTagCol,
-          totalCol,
-          targetBandCol,
-          rightBlock
-        );
+        const candidates = readPlacementCandidates(actualRows);
         logCompoStage(interaction, "computation_complete", {
           result: "placement_candidates",
           candidates: candidates.length,
@@ -876,7 +874,7 @@ export const Compo: Command = {
           logCompoStage(interaction, "response_build", { reason: "no_candidates" });
           await safeReply(interaction, {
             ephemeral: true,
-            content: "No placement data found in ACTUAL state ranges.",
+            content: "No placement data found in ACTUAL rows from AllianceDashboard!A6:BD500.",
           });
           logCompoStage(interaction, "response_sent", { reason: "no_candidates" });
           return;
@@ -993,3 +991,5 @@ export const Compo: Command = {
 
 export const readPlacementCandidatesForTest = readPlacementCandidates;
 export const buildCompoPlaceEmbedForTest = buildCompoPlaceEmbed;
+export const getModeRowsForTest = getModeRows;
+export const getAbsoluteSheetRowNumberForTest = getAbsoluteSheetRowNumber;
