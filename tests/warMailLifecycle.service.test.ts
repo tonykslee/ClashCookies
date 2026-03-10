@@ -98,7 +98,7 @@ describe("WarMailLifecycleService", () => {
     expect(result.status).toBe("posted");
     expect(result.mailStatusEmoji).toBe("S");
     expect(result.debug.reconciliationOutcome).toBe("exists");
-    expect(fetchMessage).toHaveBeenCalledWith("456", { force: true });
+    expect(fetchMessage).toHaveBeenCalledWith({ message: "456", force: true });
   });
 
   it("marks lifecycle deleted when tracked message is definitively missing", async () => {
@@ -136,7 +136,7 @@ describe("WarMailLifecycleService", () => {
     expect(result.status).toBe("deleted");
     expect(result.debug.trackingCleared).toBe(true);
     expect(result.debug.reconciliationOutcome).toBe("message_missing_confirmed");
-    expect(fetchMessage).toHaveBeenCalledWith("456", { force: true });
+    expect(fetchMessage).toHaveBeenCalledWith({ message: "456", force: true });
   });
 
   it("keeps lifecycle posted on channel-inaccessible failures", async () => {

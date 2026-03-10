@@ -1899,8 +1899,14 @@ async function refreshWarMailPostByResolvedTarget(params: {
   }
   if (!channel || !channel.isTextBased()) return "missing";
   let message: any = null;
+  let messageVerifiedViaRest = false;
   try {
-    message = await (channel as any).messages.fetch(params.messageId);
+    // Force REST validation so deleted-message checks cannot be satisfied by stale cache.
+    message = await (channel as any).messages.fetch({
+      message: params.messageId,
+      force: true,
+    });
+    messageVerifiedViaRest = true;
   } catch (err) {
     const code = Number((err as { code?: unknown } | null | undefined)?.code ?? NaN);
     if ((code === 10003 || code === 10008) && params.expectedWarId) {
@@ -1970,6 +1976,7 @@ async function refreshWarMailPostByResolvedTarget(params: {
     components: rendered.freezeRefresh ? [] : buildWarMailPostedComponents(refreshKey),
   });
   if (
+    messageVerifiedViaRest &&
     nextWarIdText &&
     Number.isFinite(Number(nextWarIdText)) &&
     params.channelId &&
