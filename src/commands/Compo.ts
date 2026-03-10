@@ -10,7 +10,12 @@ import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
 import { safeReply } from "../helper/safeReply";
 import { CoCService } from "../services/CoCService";
-import { GoogleSheetMode, GoogleSheetsService } from "../services/GoogleSheetsService";
+import {
+  GoogleSheetMode,
+  GoogleSheetReadError,
+  GoogleSheetReadErrorCode,
+  GoogleSheetsService,
+} from "../services/GoogleSheetsService";
 import { SettingsService } from "../services/SettingsService";
 
 function normalize(value: string): string {
@@ -65,6 +70,18 @@ const COL_ADJUSTMENT = 53; // BB
 const FIXED_LAYOUT_RANGE = "AllianceDashboard!A6:BD500";
 const FIXED_LAYOUT_RANGE_START_ROW = 6;
 const STATE_HEADERS = ["Clan", "Total", "Missing", "TH18", "TH17", "TH16", "TH15", "TH14", "<=TH13"];
+const LOOKUP_REFRESH_RANGE = "Lookup!B10:B10";
+const COMPO_ERROR_MESSAGE_BY_CODE: Record<GoogleSheetReadErrorCode, string> = {
+  SHEET_LINK_MISSING: "No compo sheet is linked for this server.",
+  SHEET_PROXY_UNAUTHORIZED:
+    "The linked compo sheet could not be accessed because the sheet proxy is not authorized.",
+  SHEET_ACCESS_DENIED:
+    "The linked compo sheet exists, but this bot does not currently have access to read it.",
+  SHEET_RANGE_INVALID:
+    "The linked compo sheet does not contain the expected AllianceDashboard layout.",
+  SHEET_READ_FAILURE:
+    "The compo sheet could not be read due to a sheet service error.",
+};
 
 function normalizeTag(value: string): string {
   return value.trim().toUpperCase().replace(/^#/, "");
@@ -77,6 +94,13 @@ type SheetIndexedRow = {
 
 function getAbsoluteSheetRowNumber(rangeRelativeIndex: number): number {
   return FIXED_LAYOUT_RANGE_START_ROW + rangeRelativeIndex;
+}
+
+function mapCompoSheetErrorToMessage(err: unknown): string {
+  if (err instanceof GoogleSheetReadError) {
+    return COMPO_ERROR_MESSAGE_BY_CODE[err.code] ?? COMPO_ERROR_MESSAGE_BY_CODE.SHEET_READ_FAILURE;
+  }
+  return COMPO_ERROR_MESSAGE_BY_CODE.SHEET_READ_FAILURE;
 }
 
 function isActualSheetRow(sheetRowNumber: number): boolean {
@@ -669,14 +693,19 @@ export const Compo: Command = {
 
         const settings = new SettingsService();
         const sheets = new GoogleSheetsService(settings);
-        const linked = await sheets.getLinkedSheet();
+        const linked = await sheets.getCompoLinkedSheet(FIXED_LAYOUT_RANGE);
         logCompoStage(interaction, "db_fetch", {
           entity: "sheet_link",
           mode,
           result: linked.sheetId ? "found" : "missing",
           sheetIdPresent: Boolean(linked.sheetId),
+          resolutionSource: linked.source,
         });
-        const rows = await sheets.readLinkedValues(FIXED_LAYOUT_RANGE);
+        logCompoStage(interaction, "read_dispatch", {
+          range: FIXED_LAYOUT_RANGE,
+          resolutionSource: linked.source,
+        });
+        const rows = await sheets.readCompoLinkedValues(FIXED_LAYOUT_RANGE, linked);
         const modeRows = getModeRows(rows, mode);
         logCompoStage(interaction, "db_fetch", {
           entity: "sheet_rows",
@@ -745,16 +774,25 @@ export const Compo: Command = {
         logCompoStage(interaction, "computation_start", { mode });
         const settings = new SettingsService();
         const sheets = new GoogleSheetsService(settings);
-        const linked = await sheets.getLinkedSheet();
+        const linked = await sheets.getCompoLinkedSheet(FIXED_LAYOUT_RANGE);
         logCompoStage(interaction, "db_fetch", {
           entity: "sheet_link",
           mode,
           result: linked.sheetId ? "found" : "missing",
           sheetIdPresent: Boolean(linked.sheetId),
+          resolutionSource: linked.source,
+        });
+        logCompoStage(interaction, "read_dispatch", {
+          range: FIXED_LAYOUT_RANGE,
+          resolutionSource: linked.source,
+        });
+        logCompoStage(interaction, "read_dispatch", {
+          range: LOOKUP_REFRESH_RANGE,
+          resolutionSource: linked.source,
         });
         const [rows, refreshCell] = await Promise.all([
-          sheets.readLinkedValues(FIXED_LAYOUT_RANGE),
-          sheets.readLinkedValues("Lookup!B10:B10"),
+          sheets.readCompoLinkedValues(FIXED_LAYOUT_RANGE, linked),
+          sheets.readCompoLinkedValues(LOOKUP_REFRESH_RANGE, linked),
         ]);
         const modeRows = getModeRows(rows, mode);
         logCompoStage(interaction, "db_fetch", {
@@ -842,17 +880,26 @@ export const Compo: Command = {
         const stateMode: GoogleSheetMode = "actual";
         const settings = new SettingsService();
         const sheets = new GoogleSheetsService(settings);
-        const linked = await sheets.getLinkedSheet();
+        const linked = await sheets.getCompoLinkedSheet(FIXED_LAYOUT_RANGE);
         logCompoStage(interaction, "db_fetch", {
           entity: "sheet_link",
           mode: stateMode,
           result: linked.sheetId ? "found" : "missing",
           sheetIdPresent: Boolean(linked.sheetId),
+          resolutionSource: linked.source,
+        });
+        logCompoStage(interaction, "read_dispatch", {
+          range: FIXED_LAYOUT_RANGE,
+          resolutionSource: linked.source,
+        });
+        logCompoStage(interaction, "read_dispatch", {
+          range: LOOKUP_REFRESH_RANGE,
+          resolutionSource: linked.source,
         });
 
         const [rows, refreshCell] = await Promise.all([
-          sheets.readLinkedValues(FIXED_LAYOUT_RANGE),
-          sheets.readLinkedValues("Lookup!B10:B10"),
+          sheets.readCompoLinkedValues(FIXED_LAYOUT_RANGE, linked),
+          sheets.readCompoLinkedValues(LOOKUP_REFRESH_RANGE, linked),
         ]);
         const actualRows = getModeRows(rows, stateMode);
         logCompoStage(interaction, "db_fetch", {
@@ -947,11 +994,17 @@ export const Compo: Command = {
       console.error(
         `[compo-command-error] stage=run_catch subcommand=${getSubcommandSafe(interaction)} error=${formatError(err)}`
       );
-      logCompoStage(interaction, "response_build", { reason: "run_catch" });
+      logCompoStage(interaction, "response_build", {
+        reason: "run_catch",
+        normalizedCode: err instanceof GoogleSheetReadError ? err.code : "",
+        normalizedStatus: err instanceof GoogleSheetReadError ? err.meta.httpStatus ?? "" : "",
+        normalizedRange: err instanceof GoogleSheetReadError ? err.meta.range : "",
+        resolutionSource:
+          err instanceof GoogleSheetReadError ? err.meta.resolutionSource ?? "" : "",
+      });
       await safeReply(interaction, {
         ephemeral: true,
-        content:
-          "Failed to read compo sheet data. Check linked sheet access for the selected mode and AllianceDashboard layout.",
+        content: mapCompoSheetErrorToMessage(err),
       });
       logCompoStage(interaction, "response_sent", { reason: "run_catch" });
     }
@@ -993,3 +1046,4 @@ export const readPlacementCandidatesForTest = readPlacementCandidates;
 export const buildCompoPlaceEmbedForTest = buildCompoPlaceEmbed;
 export const getModeRowsForTest = getModeRows;
 export const getAbsoluteSheetRowNumberForTest = getAbsoluteSheetRowNumber;
+export const mapCompoSheetErrorToMessageForTest = mapCompoSheetErrorToMessage;

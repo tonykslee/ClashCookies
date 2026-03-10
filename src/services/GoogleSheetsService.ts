@@ -12,8 +12,85 @@ export const SHEET_SETTING_WAR_ID_KEY = "google_sheet_war_id";
 export const SHEET_SETTING_WAR_TAB_KEY = "google_sheet_war_tab";
 const GOOGLE_API_TIMEOUT_MS = 20000;
 const APPS_SCRIPT_PROXY_TIMEOUT_MS = 30000;
+const PROXY_UNAUTHORIZED_SIGNALS = [
+  "unauthorized",
+  "forbidden",
+  "invalid signature",
+  "bad secret",
+  "shared secret",
+  "token",
+];
+const ACCESS_DENIED_SIGNALS = [
+  "permission",
+  "access denied",
+  "not shared",
+  "cannot open spreadsheet",
+  "spreadsheet access",
+  "insufficient permissions",
+];
+const RANGE_INVALID_SIGNALS = [
+  "unable to parse range",
+  "invalid range",
+  "range not found",
+  "cannot find range",
+  "requested entity was not found",
+  "exceeds grid limits",
+  "cannot find sheet",
+  "no grid with id",
+  "alliancedashboard",
+];
 
 export type GoogleSheetMode = "actual" | "war";
+export type GoogleSheetReadErrorCode =
+  | "SHEET_LINK_MISSING"
+  | "SHEET_PROXY_UNAUTHORIZED"
+  | "SHEET_ACCESS_DENIED"
+  | "SHEET_RANGE_INVALID"
+  | "SHEET_READ_FAILURE";
+
+export type GoogleSheetReadErrorMeta = {
+  action: "readValues";
+  range: string;
+  resolutionSource?: "google_sheet_id";
+  sheetId?: string;
+  source?: "proxy" | "api";
+  httpStatus?: number;
+  details?: string;
+};
+
+export class GoogleSheetReadError extends Error {
+  readonly code: GoogleSheetReadErrorCode;
+  readonly meta: GoogleSheetReadErrorMeta;
+
+  constructor(code: GoogleSheetReadErrorCode, message: string, meta: GoogleSheetReadErrorMeta) {
+    super(message);
+    this.name = "GoogleSheetReadError";
+    this.code = code;
+    this.meta = meta;
+  }
+}
+
+type GoogleSheetTransportErrorMeta = {
+  source: "proxy" | "api";
+  status?: number;
+  responseText?: string;
+};
+
+class GoogleSheetTransportError extends Error {
+  readonly meta: GoogleSheetTransportErrorMeta;
+
+  constructor(message: string, meta: GoogleSheetTransportErrorMeta) {
+    super(message);
+    this.name = "GoogleSheetTransportError";
+    this.meta = meta;
+  }
+}
+
+export type CompoLinkedSheet = {
+  sheetId: string;
+  tabName: string | null;
+  source: "google_sheet_id";
+};
 
 type AccessTokenCache = {
   token: string;
@@ -100,6 +177,47 @@ export class GoogleSheetsService {
     return this.readValues(sheetId, effectiveRange);
   }
 
+  async getCompoLinkedSheet(range: string): Promise<CompoLinkedSheet> {
+    const sheetId = await this.settings.get(SHEET_SETTING_ID_KEY);
+    const tabName = await this.settings.get(SHEET_SETTING_TAB_KEY);
+    if (!sheetId || !sheetId.trim()) {
+      throw new GoogleSheetReadError(
+        "SHEET_LINK_MISSING",
+        "No compo sheet is linked for this server.",
+        {
+          action: "readValues",
+          range,
+          resolutionSource: "google_sheet_id",
+          source: this.getReadSource(),
+        }
+      );
+    }
+
+    return {
+      sheetId: sheetId.trim(),
+      tabName,
+      source: "google_sheet_id",
+    };
+  }
+
+  async readCompoLinkedValues(
+    range: string,
+    linkedSheet?: CompoLinkedSheet
+  ): Promise<string[][]> {
+    const linked = linkedSheet ?? (await this.getCompoLinkedSheet(range));
+    try {
+      return await this.readValues(linked.sheetId, range);
+    } catch (err) {
+      throw this.normalizeCompoReadError(err, {
+        action: "readValues",
+        range,
+        resolutionSource: linked.source,
+        sheetId: linked.sheetId,
+        source: this.getReadSource(),
+      });
+    }
+  }
+
   /** Purpose: read values. */
   async readValues(sheetId: string, range: string): Promise<string[][]> {
     const proxyUrl = process.env.GS_WEBHOOK_URL?.trim();
@@ -142,7 +260,14 @@ export class GoogleSheetsService {
         errorCode: failure.errorCode,
         timeout: failure.timeout,
       });
-      throw err;
+      throw new GoogleSheetTransportError(
+        this.errorMessageFromUnknown(err, "Google Sheets API request failed."),
+        {
+          source: "api",
+          status: this.readStatusFromUnknown(err),
+          responseText: this.errorTextFromUnknown(err),
+        }
+      );
     }
   }
 
@@ -159,18 +284,50 @@ export class GoogleSheetsService {
       range,
     };
     if (token) payload.token = token;
-
-    const response = await axios.post<{
-      values?: unknown;
-      ok?: boolean;
-      error?: unknown;
-      message?: unknown;
-      result?: { values?: unknown };
-    }>(url, payload, {
-      headers: { "Content-Type": "application/json" },
-      timeout: APPS_SCRIPT_PROXY_TIMEOUT_MS,
-      validateStatus: () => true,
-    });
+    let response: {
+      status: number;
+      data?: {
+        values?: unknown;
+        ok?: boolean;
+        error?: unknown;
+        message?: unknown;
+        result?: { values?: unknown };
+      };
+    };
+    try {
+      response = await axios.post<{
+        values?: unknown;
+        ok?: boolean;
+        error?: unknown;
+        message?: unknown;
+        result?: { values?: unknown };
+      }>(url, payload, {
+        headers: { "Content-Type": "application/json" },
+        timeout: APPS_SCRIPT_PROXY_TIMEOUT_MS,
+        validateStatus: () => true,
+      });
+    } catch (err) {
+      const failure = toFailureTelemetry(err);
+      recordFetchEvent({
+        namespace: "google_sheets",
+        operation: "apps_script_proxy",
+        source: "web",
+        detail: "action=readValues status=request_error",
+        durationMs: Date.now() - startedAtMs,
+        status: "failure",
+        errorCategory: failure.errorCategory,
+        errorCode: failure.errorCode,
+        timeout: failure.timeout,
+      });
+      throw new GoogleSheetTransportError(
+        this.errorMessageFromUnknown(err, "Apps Script proxy request failed."),
+        {
+          source: "proxy",
+          status: this.readStatusFromUnknown(err),
+          responseText: this.errorTextFromUnknown(err),
+        }
+      );
+    }
 
     if (response.status >= 400) {
       recordFetchEvent({
@@ -189,7 +346,11 @@ export class GoogleSheetsService {
           : typeof response.data?.message === "string"
             ? response.data.message
             : `Apps Script proxy returned HTTP ${response.status}`;
-      throw new Error(message);
+      throw new GoogleSheetTransportError(message, {
+        source: "proxy",
+        status: response.status,
+        responseText: this.compactUnknown(response.data),
+      });
     }
     recordFetchEvent({
       namespace: "google_sheets",
@@ -210,6 +371,124 @@ export class GoogleSheetsService {
       if (!Array.isArray(row)) return [];
       return row.map((cell) => String(cell ?? ""));
     });
+  }
+
+  private getReadSource(): "proxy" | "api" {
+    return process.env.GS_WEBHOOK_URL?.trim() ? "proxy" : "api";
+  }
+
+  private normalizeCompoReadError(
+    err: unknown,
+    meta: GoogleSheetReadErrorMeta
+  ): GoogleSheetReadError {
+    if (err instanceof GoogleSheetReadError) return err;
+
+    const transportMeta =
+      err instanceof GoogleSheetTransportError
+        ? err.meta
+        : {
+            source: meta.source,
+            status: this.readStatusFromUnknown(err),
+            responseText: this.errorTextFromUnknown(err),
+          };
+
+    const mergedMeta: GoogleSheetReadErrorMeta = {
+      ...meta,
+      source: transportMeta.source ?? meta.source,
+      httpStatus: transportMeta.status,
+      details: transportMeta.responseText,
+    };
+    const code = this.classifyCompoReadErrorCode(mergedMeta);
+    const message = this.errorMessageForCode(code);
+    return new GoogleSheetReadError(code, message, mergedMeta);
+  }
+
+  private classifyCompoReadErrorCode(
+    meta: GoogleSheetReadErrorMeta
+  ): GoogleSheetReadErrorCode {
+    const source = meta.source ?? "api";
+    const status = meta.httpStatus;
+    const details = String(meta.details ?? "").toLowerCase();
+
+    if (this.containsSignal(details, RANGE_INVALID_SIGNALS)) {
+      return "SHEET_RANGE_INVALID";
+    }
+
+    if (source === "proxy") {
+      if (status === 401) return "SHEET_PROXY_UNAUTHORIZED";
+      if (status === 403) {
+        if (this.containsSignal(details, PROXY_UNAUTHORIZED_SIGNALS)) {
+          return "SHEET_PROXY_UNAUTHORIZED";
+        }
+        if (this.containsSignal(details, ACCESS_DENIED_SIGNALS)) {
+          return "SHEET_ACCESS_DENIED";
+        }
+        return "SHEET_READ_FAILURE";
+      }
+    }
+
+    if (source === "api") {
+      if (status === 403) {
+        if (
+          this.containsSignal(details, ACCESS_DENIED_SIGNALS) ||
+          !this.containsSignal(details, PROXY_UNAUTHORIZED_SIGNALS)
+        ) {
+          return "SHEET_ACCESS_DENIED";
+        }
+      }
+    }
+
+    return "SHEET_READ_FAILURE";
+  }
+
+  private containsSignal(input: string, signals: string[]): boolean {
+    return signals.some((signal) => input.includes(signal));
+  }
+
+  private errorMessageForCode(code: GoogleSheetReadErrorCode): string {
+    switch (code) {
+      case "SHEET_LINK_MISSING":
+        return "No compo sheet is linked for this server.";
+      case "SHEET_PROXY_UNAUTHORIZED":
+        return "Sheet proxy authorization failed while reading compo data.";
+      case "SHEET_ACCESS_DENIED":
+        return "The linked sheet could not be accessed.";
+      case "SHEET_RANGE_INVALID":
+        return "The linked sheet does not contain the expected AllianceDashboard layout.";
+      default:
+        return "The compo sheet could not be read due to a sheet service error.";
+    }
+  }
+
+  private readStatusFromUnknown(err: unknown): number | undefined {
+    const status = (err as { response?: { status?: unknown } })?.response?.status;
+    return typeof status === "number" ? status : undefined;
+  }
+
+  private errorMessageFromUnknown(err: unknown, fallback: string): string {
+    if (typeof err === "string" && err.trim()) return err.trim();
+    if (err instanceof Error && err.message.trim()) return err.message.trim();
+    return fallback;
+  }
+
+  private errorTextFromUnknown(err: unknown): string | undefined {
+    const responseData = (err as { response?: { data?: unknown } })?.response?.data;
+    const compactResponse = this.compactUnknown(responseData);
+    if (compactResponse) return compactResponse;
+    if (typeof err === "string" && err.trim()) return err.trim();
+    if (err instanceof Error && err.message.trim()) return err.message.trim();
+    return undefined;
+  }
+
+  private compactUnknown(value: unknown): string | undefined {
+    if (value === null || value === undefined) return undefined;
+    if (typeof value === "string") return value.trim() || undefined;
+    try {
+      const text = JSON.stringify(value);
+      return text && text.length > 0 ? text : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   /** Purpose: get access token. */
