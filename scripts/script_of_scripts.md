@@ -19,8 +19,6 @@ Follow these rules while implementing the task.
 
 (Write the implementation request here)
 
----
-
 GOAL
 WHAT EXISTS TODAY
 WHAT NEEDS TO CHANGE
@@ -32,69 +30,21 @@ Important constraints:
 
 * Follow the architecture rules defined in the loaded context
 * Avoid monolithic files
-* Extract reusable services when possible
+* Prefer reusing existing helpers/services before adding command-level logic
+* Extract reusable services when it cleanly reduces duplication
+* Keep files small and focused
 * New features should be designed to support unit testing
+* Keep database logic separated from command logic
 * Do not break existing commands
+* Do not introduce new state owners unless the task explicitly requires it
+* Preserve hot-path performance and determinism where relevant
 
----
+If the task changes command behavior, also update any affected:
 
-STATE SEPARATION GUARDRAILS
-
-For any feature that mixes interactive UI state with persisted/runtime
-state, the implementation must explicitly define these layers before
-writing code:
-
-1) Authoritative live state
-2) Confirmed persisted baseline
-3) Temporary draft / interaction-only state
-
-For each layer, the implementation must state:
-
-* owner
-* storage location
-* allowed writers
-* allowed readers
-* when the state is created
-* when the state is discarded
-
-Additional required guardrails:
-
-* UI-only draft state must never be written into authoritative tables
-  or persisted message tracking before explicit confirmation.
-* Background refresh flows, pollers, reopened commands, and event/log
-  refresh buttons must reconstruct from authoritative persisted owners,
-  never from ephemeral in-memory interaction payloads.
-* If the feature compares "draft vs confirmed" to enable actions,
-  the comparison key must be explicitly defined and limited to
-  business-defining fields only.
-* Dynamic/render-only fields such as timers, counters, points, sync
-  values, and live stats must not be used as draft/confirmed equality
-  inputs unless the task explicitly requires it.
-* Any draft state must be scoped to the correct lifecycle identity
-  (for example warId/opponentTag/startTime). If that identity changes,
-  the draft must be discarded.
-* A new lifecycle instance must never inherit a prior draft as an
-  editable baseline.
-* If a feature includes "confirm" behavior, the prompt must state
-  exactly which persistence writes are allowed before confirm and which
-  are allowed only after confirm.
-* If a feature includes refresh behavior, the prompt must state whether
-  refresh uses live state, confirmed baseline, or both, and for which
-  fields.
-
-Required tests for this class of change:
-
-* draft state does not persist across exit/dismiss/reopen
-* refresh flows ignore unconfirmed draft state
-* confirm action promotes draft state to confirmed state correctly
-* deleted/superseded lifecycle behavior still works
-* lifecycle identity changes discard stale draft state
-* authoritative tables are unchanged until confirm
-* action enablement/disablement keys off only the intended comparison
-  fields
-
-If these boundaries cannot be stated clearly, stop and resolve the
-state ownership model before implementing.
+* `/help` docs/examples
+* `docs/commands.md`
+* command coverage/tests
+* `/permission` targets where applicable
 
 ---
 
@@ -116,15 +66,16 @@ Implement the task described above.
 
 When making changes:
 
-* Prefer reusable services over command-level logic
-* Keep files small and focused
 * Follow existing architectural patterns
+* Prefer reusable services over command-level logic
 * Avoid code duplication
+* Keep files small and focused
 * Keep database logic separated from command logic
-
-If necessary, refactor existing code to support the new feature.
+* Refactor only where needed to support the feature cleanly
+* Preserve existing behavior outside the defined task scope
 
 Before considering the task complete:
+
 * Run relevant validation commands (lint/tests) for the affected scope
 * Fix CI-blocking lint errors
 * Do not leave touched files with avoidable lint issues
@@ -135,7 +86,7 @@ Before considering the task complete:
 
 After implementing the changes:
 
-Generate a **Conventional Commit message** summarizing the changes.
+Generate a Conventional Commit message summarizing the changes.
 
 Format:
 
@@ -172,5 +123,6 @@ After the commit message file is created, run:
 ./scripts/commit-feature.sh
 
 Notes:
-- `commit-feature.sh` now auto-generates `.git/AI_PR_BODY.md` from branch commits/files.
-- If GitHub CLI (`gh`) is available and authenticated, it will create/update the PR description automatically.
+
+- `commit-feature.sh` auto-generates `.git/AI_PR_BODY.md` from branch commits/files.
+- If GitHub CLI (`gh`) is available and authenticated, it may create/update the PR description automatically.
