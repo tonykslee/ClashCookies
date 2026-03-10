@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildOpponentSnapshotFromTrackedClanFallbackForTest,
   buildSyncValidationStateForTest,
   buildDraftFromOutcomeToggleForTest,
   buildDraftFromMatchTypeSelectionForTest,
@@ -390,6 +391,153 @@ describe("fwa sync validation status copy", () => {
     });
 
     expect(state.statusLine).toBe(":warning: Data not fully synced with points.fwafarm");
+  });
+
+  it("returns concise field-specific differences for war-changing validation", () => {
+    const state = buildSyncValidationStateForTest({
+      syncRow: {
+        syncNum: 475,
+        opponentTag: "#2OLDTAG",
+        clanPoints: 10,
+        opponentPoints: 10,
+        warStartTime: new Date("2026-03-10T00:00:00.000Z"),
+        syncFetchedAt: new Date("2026-03-10T00:00:00.000Z"),
+        outcome: "LOSE",
+        isFwa: true,
+        lastKnownMatchType: "FWA",
+      },
+      currentWarStartTime: new Date("2026-03-10T00:00:00.000Z"),
+      siteCurrent: true,
+      syncNum: 476,
+      opponentTag: "2NEWTAG",
+      clanPoints: 10,
+      opponentPoints: 10,
+      outcome: null,
+      isFwa: false,
+      effectiveMatchType: "BL",
+      effectiveExpectedOutcome: null,
+    });
+
+    expect(state.differences).toEqual([
+      "- Sync # mismatch: current #476, persisted #475",
+      "- Opponent mismatch: current #2NEWTAG, persisted #2OLDTAG",
+      "- Match type mismatch: current BL, persisted FWA",
+      "- Outcome mismatch: current N/A, persisted LOSE",
+    ]);
+    expect(state.differences.some((line) => line.includes("points mismatch"))).toBe(false);
+  });
+
+  it("shows no mismatch lines when persisted validation matches effective display state", () => {
+    const state = buildSyncValidationStateForTest({
+      syncRow: {
+        syncNum: 476,
+        opponentTag: "#2TAG",
+        clanPoints: 10,
+        opponentPoints: 10,
+        warStartTime: new Date("2026-03-10T00:00:00.000Z"),
+        syncFetchedAt: new Date("2026-03-10T00:00:00.000Z"),
+        outcome: "WIN",
+        isFwa: true,
+        lastKnownMatchType: "FWA",
+      },
+      currentWarStartTime: new Date("2026-03-10T00:00:00.000Z"),
+      siteCurrent: true,
+      syncNum: 476,
+      opponentTag: "2TAG",
+      clanPoints: 10,
+      opponentPoints: 10,
+      outcome: "WIN",
+      isFwa: true,
+      effectiveMatchType: "FWA",
+      effectiveExpectedOutcome: "WIN",
+    });
+
+    expect(state.differences).toEqual([]);
+    expect(state.statusLine).toBe("✅ Data is in sync with points.fwafarm");
+  });
+
+  it("uses clan-not-found warning copy for opponent not-found validation mismatches", () => {
+    const state = buildSyncValidationStateForTest({
+      syncRow: {
+        syncNum: 475,
+        opponentTag: "#2TAG",
+        clanPoints: 10,
+        opponentPoints: 10,
+        warStartTime: new Date("2026-03-10T00:00:00.000Z"),
+        syncFetchedAt: new Date("2026-03-10T00:00:00.000Z"),
+        outcome: null,
+        isFwa: false,
+        lastKnownMatchType: "MM",
+      },
+      currentWarStartTime: new Date("2026-03-10T00:00:00.000Z"),
+      siteCurrent: true,
+      syncNum: 476,
+      opponentTag: "2TAG",
+      clanPoints: 10,
+      opponentPoints: 10,
+      outcome: null,
+      isFwa: false,
+      effectiveMatchType: "MM",
+      effectiveExpectedOutcome: null,
+      opponentNotFound: true,
+    });
+
+    expect(state.statusLine).toBe(":warning: clan not found in points.fwafarm");
+  });
+});
+
+describe("fwa tracked-clan fallback snapshot", () => {
+  const trackedSnapshot = {
+    version: 5,
+    tag: "2TRACK",
+    url: "https://points.fwafarm.com/clan?tag=2TRACK",
+    balance: 1200,
+    clanName: "Tracked Clan",
+    activeFwa: false,
+    notFound: false,
+    winnerBoxText: "Not marked as an FWA match",
+    winnerBoxTags: ["2TRACK", "2OPP"],
+    winnerBoxSync: 476,
+    effectiveSync: 476,
+    syncMode: "high" as const,
+    winnerBoxHasTag: true,
+    headerPrimaryName: "Tracked Clan",
+    headerOpponentName: "Opponent Clan",
+    headerPrimaryTag: "2TRACK",
+    headerOpponentTag: "2OPP",
+    headerPrimaryBalance: 1200,
+    headerOpponentBalance: 980,
+    warEndMs: null,
+    lastWarCheckAtMs: 0,
+    fetchedAtMs: 0,
+    refreshedForWarEndMs: null,
+  };
+
+  it("applies tracked-page fallback when extracted opponent matches current war opponent", () => {
+    const resolved = buildOpponentSnapshotFromTrackedClanFallbackForTest({
+      requestedOpponentTag: "2OPP",
+      trackedClanTag: "2TRACK",
+      trackedSnapshot,
+    });
+
+    expect(resolved.currentForWar).toBe(true);
+    expect(resolved.extractedOpponentTag).toBe("2OPP");
+    expect(resolved.snapshot?.tag).toBe("2OPP");
+    expect(resolved.snapshot?.balance).toBe(980);
+    expect(resolved.snapshot?.clanName).toBe("Opponent Clan");
+    expect(resolved.snapshot?.winnerBoxText).toBe("Not marked as an FWA match.");
+  });
+
+  it("does not apply fallback when tracked-page opponent does not match current war opponent", () => {
+    const resolved = buildOpponentSnapshotFromTrackedClanFallbackForTest({
+      requestedOpponentTag: "2NEWOPP",
+      trackedClanTag: "2TRACK",
+      trackedSnapshot,
+    });
+
+    expect(resolved.currentForWar).toBe(false);
+    expect(resolved.extractedOpponentTag).toBe("2OPP");
+    expect(resolved.snapshot).toBeNull();
   });
 });
 

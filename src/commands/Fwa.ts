@@ -219,6 +219,8 @@ type PointsSnapshot = {
   effectiveSync: number | null;
   syncMode: "low" | "high" | null;
   winnerBoxHasTag: boolean;
+  headerPrimaryName?: string | null;
+  headerOpponentName?: string | null;
   headerPrimaryTag: string | null;
   headerOpponentTag: string | null;
   headerPrimaryBalance: number | null;
@@ -1349,6 +1351,7 @@ async function buildWarMailEmbedForTag(
     }).catch(() => null);
     opponentSnapshot = await getClanPointsCached(settings, cocService, opponentTag, currentSync, undefined, {
       fetchReason,
+      fallbackTrackedClanTag: normalizedTag,
     }).catch(() => null);
     primaryBalance = primarySnapshot?.balance ?? null;
     opponentBalance = opponentSnapshot?.balance ?? null;
@@ -4275,6 +4278,46 @@ function getWarStartDateForSync(
   return new Date(startMs);
 }
 
+function normalizeFwaOutcomeForValidation(
+  value: string | null | undefined
+): "WIN" | "LOSE" | "UNKNOWN" | null {
+  const normalized = String(value ?? "").trim().toUpperCase();
+  if (normalized === "WIN" || normalized === "LOSE" || normalized === "UNKNOWN") {
+    return normalized;
+  }
+  return null;
+}
+
+function normalizeDisplayMatchTypeForValidation(
+  value: string | null | undefined
+): "FWA" | "BL" | "MM" | null {
+  const normalized = String(value ?? "").trim().toUpperCase();
+  if (normalized === "FWA" || normalized === "BL" || normalized === "MM") return normalized;
+  return null;
+}
+
+function resolvePersistedMatchTypeForValidation(input: {
+  lastKnownMatchType: string | null | undefined;
+  isFwa: boolean | null | undefined;
+}): "FWA" | "BL" | "MM" | "BL/MM" | null {
+  const stored = normalizeDisplayMatchTypeForValidation(input.lastKnownMatchType);
+  if (stored) return stored;
+  if (input.isFwa === true) return "FWA";
+  if (input.isFwa === false) return "BL/MM";
+  return null;
+}
+
+function isMatchTypeValidationAligned(
+  currentMatchType: "FWA" | "BL" | "MM" | null,
+  persistedMatchType: "FWA" | "BL" | "MM" | "BL/MM" | null
+): boolean {
+  if (!currentMatchType || !persistedMatchType) return currentMatchType === persistedMatchType;
+  if (persistedMatchType === "BL/MM") {
+    return currentMatchType === "BL" || currentMatchType === "MM";
+  }
+  return currentMatchType === persistedMatchType;
+}
+
 function buildSyncValidationState(input: {
   syncRow: {
     syncNum: number;
@@ -4285,6 +4328,7 @@ function buildSyncValidationState(input: {
     syncFetchedAt: Date;
     outcome: string | null;
     isFwa: boolean | null;
+    lastKnownMatchType?: string | null;
   } | null;
   currentWarStartTime: Date | null;
   siteCurrent: boolean;
@@ -4294,6 +4338,9 @@ function buildSyncValidationState(input: {
   opponentPoints: number | null;
   outcome: string | null;
   isFwa: boolean | null;
+  effectiveMatchType?: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN" | null;
+  effectiveExpectedOutcome?: "WIN" | "LOSE" | "UNKNOWN" | null;
+  opponentNotFound?: boolean;
 }): SyncValidationState {
   if (!input.siteCurrent) {
     return {
@@ -4306,57 +4353,83 @@ function buildSyncValidationState(input: {
 
   const differences: string[] = [];
   if (!input.syncRow) {
-    differences.push("• Missing sync row for this war");
+    differences.push("- Missing persisted sync validation row for this war");
   } else {
+    const currentSyncLabel =
+      input.syncNum !== null && Number.isFinite(input.syncNum)
+        ? "#" + String(Math.trunc(input.syncNum))
+        : "unknown";
+    const persistedSyncLabel = "#" + String(Math.trunc(input.syncRow.syncNum));
     if (
       input.syncNum === null ||
       !Number.isFinite(input.syncNum) ||
       Math.trunc(input.syncNum) !== Math.trunc(input.syncRow.syncNum)
     ) {
-      differences.push("• Sync number mismatch");
+      differences.push(
+        "- Sync # mismatch: current " + currentSyncLabel + ", persisted " + persistedSyncLabel
+      );
     }
-    if (normalizeTag(input.syncRow.opponentTag) !== normalizeTag(input.opponentTag)) {
-      differences.push("• Opponent tag mismatch");
+    const currentOpponentTag = normalizeTag(input.opponentTag);
+    const persistedOpponentTag = normalizeTag(input.syncRow.opponentTag);
+    if (persistedOpponentTag !== currentOpponentTag) {
+      differences.push(
+        "- Opponent mismatch: current #" +
+          (currentOpponentTag || "unknown") +
+          ", persisted #" +
+          (persistedOpponentTag || "unknown")
+      );
     }
-    if (
-      input.clanPoints === null ||
-      !Number.isFinite(input.clanPoints) ||
-      Math.trunc(input.clanPoints) !== Math.trunc(input.syncRow.clanPoints)
-    ) {
-      differences.push("• Clan points mismatch");
+
+    const currentMatchType =
+      normalizeDisplayMatchTypeForValidation(input.effectiveMatchType ?? null) ??
+      (input.isFwa === true ? "FWA" : input.isFwa === false ? "BL" : null);
+    const persistedMatchType = resolvePersistedMatchTypeForValidation({
+      lastKnownMatchType: input.syncRow.lastKnownMatchType ?? null,
+      isFwa: input.syncRow.isFwa ?? null,
+    });
+    if (!isMatchTypeValidationAligned(currentMatchType, persistedMatchType)) {
+      differences.push(
+        "- Match type mismatch: current " +
+          (currentMatchType ?? "UNKNOWN") +
+          ", persisted " +
+          (persistedMatchType ?? "UNKNOWN")
+      );
     }
-    if (
-      input.opponentPoints === null ||
-      !Number.isFinite(input.opponentPoints) ||
-      Math.trunc(input.opponentPoints) !== Math.trunc(input.syncRow.opponentPoints)
-    ) {
-      differences.push("• Opponent points mismatch");
-    }
-    if (
-      input.currentWarStartTime &&
-      input.syncRow.warStartTime.getTime() !== input.currentWarStartTime.getTime()
-    ) {
-      differences.push("• War start time mismatch");
-    }
-    if ((input.syncRow.outcome ?? null) !== (input.outcome ?? null)) {
-      differences.push("• Outcome mismatch");
-    }
-    if ((input.syncRow.isFwa ?? null) !== (input.isFwa ?? null)) {
-      differences.push("• Active FWA mismatch");
+
+    const currentOutcome =
+      currentMatchType === "FWA"
+        ? normalizeFwaOutcomeForValidation(input.effectiveExpectedOutcome ?? input.outcome) ??
+          "UNKNOWN"
+        : null;
+    const persistedOutcome =
+      persistedMatchType === "FWA"
+        ? normalizeFwaOutcomeForValidation(input.syncRow.outcome) ?? "UNKNOWN"
+        : null;
+    if (currentOutcome !== persistedOutcome) {
+      differences.push(
+        "- Outcome mismatch: current " +
+          (currentOutcome ?? "N/A") +
+          ", persisted " +
+          (persistedOutcome ?? "N/A")
+      );
     }
   }
 
+  const showNotFoundStatus = Boolean(
+    input.opponentNotFound === true && differences.length > 0
+  );
   return {
     siteCurrent: true,
     syncRowMissing: input.syncRow === null,
     differences,
     statusLine:
       differences.length > 0
-        ? ":warning: Data not fully synced with points.fwafarm"
+        ? showNotFoundStatus
+          ? ":warning: clan not found in points.fwafarm"
+          : ":warning: Data not fully synced with points.fwafarm"
         : "✅ Data is in sync with points.fwafarm",
   };
 }
-
 function buildStoredSyncSummary(input: {
   syncRow: {
     syncNum: number;
@@ -4472,6 +4545,8 @@ export const resolveOpponentActiveFwaEvidenceForTest = resolveOpponentActiveFwaE
 export const isLowConfidenceAllianceMismatchScenarioForTest =
   isLowConfidenceAllianceMismatchScenario;
 export const resolveSingleClanMatchEmbedColorForTest = resolveSingleClanMatchEmbedColor;
+export const buildOpponentSnapshotFromTrackedClanFallbackForTest =
+  buildOpponentSnapshotFromTrackedClanFallback;
 
 export const resolveMatchTypeFromStoredSyncRowForTest = resolveMatchTypeFromStoredSyncRow;
 export const buildSyncValidationStateForTest = buildSyncValidationState;
@@ -4577,6 +4652,112 @@ function applySourceSync(snapshot: PointsSnapshot, sourceSync: number | null): P
     ...snapshot,
     effectiveSync: sourceSync,
     syncMode: getSyncMode(sourceSync),
+  };
+}
+
+type TrackedClanOpponentFallbackResult = {
+  snapshot: PointsSnapshot | null;
+  extractedOpponentTag: string | null;
+  extractedOpponentName: string | null;
+  currentForWar: boolean;
+  normalizedWinnerBoxText: string | null;
+};
+
+function normalizeTrackedFallbackWinnerBoxText(text: string | null | undefined): string | null {
+  if (!text) return null;
+  if (hasWinnerBoxNotMarkedFwaSignal(text)) {
+    return "Not marked as an FWA match.";
+  }
+  const normalized = text.trim();
+  return normalized || null;
+}
+
+/** Purpose: materialize opponent validation snapshot from tracked-clan points page when opponent page is missing. */
+function buildOpponentSnapshotFromTrackedClanFallback(params: {
+  requestedOpponentTag: string;
+  trackedClanTag: string;
+  trackedSnapshot: PointsSnapshot | null;
+}): TrackedClanOpponentFallbackResult {
+  const requestedOpponentTag = normalizeTag(params.requestedOpponentTag);
+  const trackedClanTag = normalizeTag(params.trackedClanTag);
+  const trackedSnapshot = params.trackedSnapshot;
+  const normalizedWinnerBoxText = normalizeTrackedFallbackWinnerBoxText(
+    trackedSnapshot?.winnerBoxText ?? null
+  );
+
+  if (!requestedOpponentTag || !trackedClanTag || !trackedSnapshot) {
+    return {
+      snapshot: null,
+      extractedOpponentTag: null,
+      extractedOpponentName: null,
+      currentForWar: false,
+      normalizedWinnerBoxText,
+    };
+  }
+
+  const headerPrimaryTag = normalizeTag(String(trackedSnapshot.headerPrimaryTag ?? ""));
+  const headerOpponentTag = normalizeTag(String(trackedSnapshot.headerOpponentTag ?? ""));
+  let extractedOpponentTag: string | null = null;
+  let extractedOpponentName: string | null = null;
+
+  if (headerPrimaryTag && headerPrimaryTag === trackedClanTag && headerOpponentTag) {
+    extractedOpponentTag = headerOpponentTag;
+    extractedOpponentName = sanitizeClanName(trackedSnapshot.headerOpponentName ?? null);
+  } else if (headerOpponentTag && headerOpponentTag === trackedClanTag && headerPrimaryTag) {
+    extractedOpponentTag = headerPrimaryTag;
+    extractedOpponentName = sanitizeClanName(trackedSnapshot.headerPrimaryName ?? null);
+  }
+
+  if (!extractedOpponentTag) {
+    const winnerBoxTags = trackedSnapshot.winnerBoxTags
+      .map((value) => normalizeTag(value))
+      .filter((value): value is string => Boolean(value));
+    const nonTrackedTag = winnerBoxTags.find((value) => value !== trackedClanTag) ?? null;
+    if (nonTrackedTag) {
+      extractedOpponentTag = nonTrackedTag;
+    }
+  }
+
+  const currentForWar = extractedOpponentTag === requestedOpponentTag;
+  const opponentBalance = deriveOpponentBalanceFromPrimarySnapshot(
+    trackedSnapshot,
+    trackedClanTag,
+    requestedOpponentTag
+  );
+  if (!currentForWar || opponentBalance === null || !Number.isFinite(opponentBalance)) {
+    return {
+      snapshot: null,
+      extractedOpponentTag,
+      extractedOpponentName,
+      currentForWar,
+      normalizedWinnerBoxText,
+    };
+  }
+
+  const winnerBoxTags = Array.from(
+    new Set([
+      ...trackedSnapshot.winnerBoxTags.map((value) => normalizeTag(value)).filter(Boolean),
+      trackedClanTag,
+      requestedOpponentTag,
+    ])
+  );
+
+  return {
+    snapshot: {
+      ...trackedSnapshot,
+      tag: requestedOpponentTag,
+      clanName: extractedOpponentName ?? trackedSnapshot.clanName ?? null,
+      balance: Math.trunc(opponentBalance),
+      activeFwa: null,
+      notFound: false,
+      winnerBoxText: normalizedWinnerBoxText,
+      winnerBoxTags,
+      winnerBoxHasTag: true,
+    },
+    extractedOpponentTag,
+    extractedOpponentName,
+    currentForWar,
+    normalizedWinnerBoxText,
   };
 }
 
@@ -4811,6 +4992,8 @@ async function scrapeClanPoints(
     effectiveSync,
     syncMode,
     winnerBoxHasTag,
+    headerPrimaryName: topHeader.primaryName,
+    headerOpponentName: topHeader.opponentName,
     headerPrimaryTag: topHeader.primaryTag,
     headerOpponentTag: topHeader.opponentTag,
     headerPrimaryBalance: matchupBalances.primaryBalance,
@@ -4826,6 +5009,7 @@ type ClanPointsFetchOptions = {
   requiredOpponentTag?: string | null;
   fetchReason?: PointsApiFetchReason;
   warScopedSnapshot?: PointsSnapshot | null;
+  fallbackTrackedClanTag?: string | null;
 };
 
 type WarScopedSyncReuseDbRow = WarScopedSyncReuseRow & {
@@ -5089,7 +5273,50 @@ async function getClanPointsCached(
       pointsSnapshotInFlight.delete(normalizedTag);
     });
   pointsSnapshotInFlight.set(normalizedTag, pending);
-  const snapshot = await pending;
+  let snapshot = await pending;
+  const fallbackTrackedClanTag = normalizeTag(
+    String(options?.fallbackTrackedClanTag ?? "")
+  );
+  if (snapshot.notFound && fallbackTrackedClanTag && fallbackTrackedClanTag !== normalizedTag) {
+    const trackedSnapshot = await getClanPointsCached(
+      _settings,
+      _cocService,
+      fallbackTrackedClanTag,
+      sourceSync,
+      _warLookupCache,
+      {
+        fetchReason: reason,
+      }
+    ).catch(() => null);
+    const fallback = buildOpponentSnapshotFromTrackedClanFallback({
+      requestedOpponentTag: normalizedTag,
+      trackedClanTag: fallbackTrackedClanTag,
+      trackedSnapshot,
+    });
+    console.info(
+      `[fwa-points-fallback] path=tracked_clan_page requested=#${normalizedTag} tracked=#${fallbackTrackedClanTag} extracted_opponent=${fallback.extractedOpponentTag ? `#${fallback.extractedOpponentTag}` : "unknown"} current=${fallback.currentForWar ? "1" : "0"} applied=${fallback.snapshot ? "1" : "0"}`
+    );
+    if (fallback.snapshot) {
+      snapshot = fallback.snapshot;
+      pointsSnapshotCache.set(normalizedTag, {
+        snapshot,
+        expiresAtMs: Date.now() + POINTS_SNAPSHOT_CACHE_TTL_MS,
+      });
+      recordFetchEvent({
+        namespace: "points",
+        operation: "clan_points_snapshot",
+        source: "fallback_cache",
+        detail: `tag=${normalizedTag} reason=${reason} fallback=tracked_clan_page current=1`,
+      });
+    } else {
+      recordFetchEvent({
+        namespace: "points",
+        operation: "clan_points_snapshot",
+        source: "fallback_cache",
+        detail: `tag=${normalizedTag} reason=${reason} fallback=tracked_clan_page current=0`,
+      });
+    }
+  }
   return applySourceSync(snapshot, sourceSync);
 }
 
@@ -5630,7 +5857,11 @@ async function buildTrackedMatchOverview(
         cocService,
         opponentTag,
         currentSync,
-        warLookupCache
+        warLookupCache,
+        {
+          fetchReason: "match_render",
+          fallbackTrackedClanTag: clanTag,
+        }
       ).catch(() => null);
     }
     const hasPrimaryPoints =
@@ -5780,22 +6011,6 @@ async function buildTrackedMatchOverview(
           : null,
       warStartTime: warStartTimeForSync,
     });
-    const validationState = buildSyncValidationState({
-      syncRow,
-      currentWarStartTime: warStartTimeForSync,
-      siteCurrent: siteUpdatedForAlert,
-      syncNum: siteSyncObservedForWrite,
-      opponentTag,
-      clanPoints: primaryPoints?.balance ?? null,
-      opponentPoints: opponentPoints?.balance ?? null,
-      outcome: derivedOutcome,
-      isFwa: syncIsFwaSignal,
-    });
-    const storedSyncSummary = buildStoredSyncSummary({
-      syncRow,
-      fallbackSyncNum: siteSyncObservedForWrite,
-      validationState,
-    });
     const primaryMismatch = siteUpdatedForAlert
       ? buildPointsMismatchWarning(
           clanName,
@@ -5814,7 +6029,6 @@ async function buildTrackedMatchOverview(
     const syncMismatch = siteUpdatedForAlert
       ? buildSyncMismatchWarning(currentSync, siteSyncObserved)
       : null;
-    const pointsSyncStatus = validationState.statusLine;
     const siteMatchType: "FWA" | "BL" | "MM" | null =
       inferredFromPointsType &&
       (inferredFromPointsType.matchType === "FWA" ||
@@ -5867,6 +6081,26 @@ async function buildTrackedMatchOverview(
       explicitOutcome: revisionState.effective?.expectedOutcome ?? null,
       projectedOutcome: projectedFwaOutcome,
     });
+    const validationState = buildSyncValidationState({
+      syncRow,
+      currentWarStartTime: warStartTimeForSync,
+      siteCurrent: siteUpdatedForAlert,
+      syncNum: siteSyncObservedForWrite,
+      opponentTag,
+      clanPoints: primaryPoints?.balance ?? null,
+      opponentPoints: opponentPoints?.balance ?? null,
+      outcome: derivedOutcome,
+      isFwa: syncIsFwaSignal,
+      effectiveMatchType,
+      effectiveExpectedOutcome,
+      opponentNotFound: opponentPoints?.notFound ?? false,
+    });
+    const pointsSyncStatus = validationState.statusLine;
+    const storedSyncSummary = buildStoredSyncSummary({
+      syncRow,
+      fallbackSyncNum: siteSyncObservedForWrite,
+      validationState,
+    });
     const opponentActiveFwaEvidence = resolveOpponentActiveFwaEvidence({
       opponentActiveFwa: opponentPoints?.activeFwa,
       opponentNotFound: opponentPoints?.notFound ?? false,
@@ -5879,25 +6113,30 @@ async function buildTrackedMatchOverview(
       projectedOutcome: derivedOutcome,
       opponentActiveFwaEvidence,
     });
-    const validationMismatchLines = validationState.differences.join("\n");
+    const validationMismatchLines = storedSyncSummary.stateLine
+      ? validationState.differences.join("\n")
+      : "";
     const allianceLowConfidenceMismatchEvidence = isLowConfidenceAllianceMismatchScenario({
       siteUpdated: siteUpdatedForAlert,
       opponentNotFound: opponentPoints?.notFound ?? false,
       opponentActiveFwaEvidence,
       resolutionSource: appliedResolution.source,
     });
+    const isWarChangingState = Boolean(storedSyncSummary.stateLine);
     const mismatchLines = allianceLowConfidenceMismatchEvidence
       ? ""
-      : [
-          primaryMismatch,
-          opponentMismatch,
-          syncMismatch,
-          effectiveMismatchWarnings.outcomeMismatch,
-          effectiveMismatchWarnings.matchTypeVsFwaMismatch,
-          validationMismatchLines,
-        ]
-          .filter(Boolean)
-          .join("\n");
+      : isWarChangingState
+        ? validationMismatchLines
+        : [
+            primaryMismatch,
+            opponentMismatch,
+            syncMismatch,
+            effectiveMismatchWarnings.outcomeMismatch,
+            effectiveMismatchWarnings.matchTypeVsFwaMismatch,
+            validationMismatchLines,
+          ]
+            .filter(Boolean)
+            .join("\n");
     const hasMismatch = Boolean(
       primaryMismatch ||
         opponentMismatch ||
@@ -8373,7 +8612,11 @@ export const Fwa: Command = {
             cocService,
             opponentTag,
             currentSync,
-            warLookupCache
+            warLookupCache,
+            {
+              fetchReason: "match_render",
+              fallbackTrackedClanTag: tag,
+            }
           );
         }
         const fallbackResolution = await resolveMatchTypeWithFallback({
@@ -8392,7 +8635,11 @@ export const Fwa: Command = {
             cocService,
             opponentTag,
             currentSync,
-            warLookupCache
+            warLookupCache,
+            {
+              fetchReason: "match_render",
+              fallbackTrackedClanTag: tag,
+            }
           ).catch(() => null);
           if (opponentForInference) {
             const hasDerivedOpponentBalance =
@@ -8597,6 +8844,9 @@ export const Fwa: Command = {
           opponentPoints: opponent.balance,
           outcome: effectiveOutcome,
           isFwa: syncIsFwaSignal,
+          effectiveMatchType: matchType,
+          effectiveExpectedOutcome,
+          opponentNotFound: opponent.notFound,
         });
         const storedSyncSummary = buildStoredSyncSummary({
           syncRow,
@@ -8618,17 +8868,22 @@ export const Fwa: Command = {
             resolutionSource: appliedResolution.source,
           }),
         });
-        const validationMismatchLines = validationState.differences.join("\n");
-        const mismatchLines = [
-          trackedMismatch,
-          opponentMismatch,
-          syncMismatch,
-          effectiveMismatchWarnings.outcomeMismatch,
-          effectiveMismatchWarnings.matchTypeVsFwaMismatch,
-          validationMismatchLines,
-        ]
-          .filter(Boolean)
-          .join("\n");
+        const validationMismatchLines = storedSyncSummary.stateLine
+          ? validationState.differences.join("\n")
+          : "";
+        const isWarChangingState = Boolean(storedSyncSummary.stateLine);
+        const mismatchLines = isWarChangingState
+          ? validationMismatchLines
+          : [
+              trackedMismatch,
+              opponentMismatch,
+              syncMismatch,
+              effectiveMismatchWarnings.outcomeMismatch,
+              effectiveMismatchWarnings.matchTypeVsFwaMismatch,
+              validationMismatchLines,
+            ]
+              .filter(Boolean)
+              .join("\n");
         const hasMismatch = Boolean(
           trackedMismatch ||
             opponentMismatch ||
