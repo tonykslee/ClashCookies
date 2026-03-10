@@ -6,6 +6,8 @@ export type MatchTypeResolutionSource =
   | "stored_sync"
   | "live_points_clan_not_found"
   | "live_points_winner_box_not_marked_fwa"
+  | "active_war_non_fwa_blacklist"
+  | "active_war_non_fwa_mismatch"
   | "live_points_active_fwa_yes"
   | "live_points_active_fwa_no";
 
@@ -30,6 +32,10 @@ export type OpponentPointsMatchTypeSignal = {
   notFound?: boolean | null | undefined;
   winnerBoxNotMarkedFwa?: boolean | null | undefined;
   opponentEvidenceMissingOrNotCurrent?: boolean | null | undefined;
+  currentWarState?: "preparation" | "inWar" | "notInWar" | null | undefined;
+  currentWarClanAttacksUsed?: number | null | undefined;
+  currentWarClanStars?: number | null | undefined;
+  currentWarOpponentStars?: number | null | undefined;
 };
 
 type CurrentWarMatchTypeSignal = {
@@ -138,15 +144,6 @@ export function inferMatchTypeFromOpponentPoints(
   const winnerBoxFallback =
     signal.winnerBoxNotMarkedFwa === true &&
     signal.opponentEvidenceMissingOrNotCurrent === true;
-  if (signal.notFound === true) {
-    return {
-      matchType: "MM",
-      source: "live_points_clan_not_found",
-      inferred: true,
-      confirmed: false,
-      syncIsFwa: false,
-    };
-  }
   if (signal.available) {
     const hasOpponentPoints =
       signal.balance !== null &&
@@ -174,10 +171,71 @@ export function inferMatchTypeFromOpponentPoints(
       }
     }
   }
+  const activeWarNonFwaResolution = resolveNonFwaMatchTypeFromActiveWarEvidence({
+    nonFwaEvidencePresent: winnerBoxFallback || signal.notFound === true,
+    currentWarState: signal.currentWarState ?? null,
+    currentWarClanAttacksUsed: signal.currentWarClanAttacksUsed ?? null,
+    currentWarClanStars: signal.currentWarClanStars ?? null,
+    currentWarOpponentStars: signal.currentWarOpponentStars ?? null,
+  });
+  if (activeWarNonFwaResolution) {
+    return activeWarNonFwaResolution;
+  }
   if (winnerBoxFallback) {
+    return null;
+  }
+  if (signal.notFound === true) {
+    return null;
+  }
+  return null;
+}
+
+/** Purpose: resolve opponent-missing non-FWA BL/MM from explicit active-war battle evidence only. */
+export function resolveNonFwaMatchTypeFromActiveWarEvidence(input: {
+  nonFwaEvidencePresent: boolean;
+  currentWarState: "preparation" | "inWar" | "notInWar" | null;
+  currentWarClanAttacksUsed: number | null;
+  currentWarClanStars: number | null;
+  currentWarOpponentStars: number | null;
+}): MatchTypeResolution | null {
+  if (!input.nonFwaEvidencePresent) return null;
+  const clanAttacksUsed =
+    input.currentWarClanAttacksUsed !== null &&
+    input.currentWarClanAttacksUsed !== undefined &&
+    Number.isFinite(input.currentWarClanAttacksUsed)
+      ? Math.trunc(input.currentWarClanAttacksUsed)
+      : null;
+  const clanStars =
+    input.currentWarClanStars !== null &&
+    input.currentWarClanStars !== undefined &&
+    Number.isFinite(input.currentWarClanStars)
+      ? Math.trunc(input.currentWarClanStars)
+      : null;
+  const opponentStars =
+    input.currentWarOpponentStars !== null &&
+    input.currentWarOpponentStars !== undefined &&
+    Number.isFinite(input.currentWarOpponentStars)
+      ? Math.trunc(input.currentWarOpponentStars)
+      : null;
+
+  if ((clanAttacksUsed !== null && clanAttacksUsed > 0) || (clanStars !== null && clanStars > 0)) {
     return {
       matchType: "MM",
-      source: "live_points_winner_box_not_marked_fwa",
+      source: "active_war_non_fwa_mismatch",
+      inferred: true,
+      confirmed: false,
+      syncIsFwa: false,
+    };
+  }
+  if (
+    input.currentWarState === "inWar" &&
+    clanAttacksUsed === 0 &&
+    opponentStars !== null &&
+    opponentStars > 0
+  ) {
+    return {
+      matchType: "BL",
+      source: "active_war_non_fwa_blacklist",
       inferred: true,
       confirmed: false,
       syncIsFwa: false,

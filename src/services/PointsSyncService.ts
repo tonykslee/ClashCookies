@@ -92,6 +92,11 @@ export class PointsSyncService {
   /** Purpose: read best-matching ClanPointsSync row for current war context. */
   async getCurrentSyncForClan(input: FindPointsSyncInput) {
     const clanTag = normalizeTag(input.clanTag);
+    const requestedWarId =
+      input.warId !== null && input.warId !== undefined && String(input.warId).trim().length > 0
+        ? String(input.warId)
+        : null;
+    const requestedWarStartTime = normalizeDate(input.warStartTime);
     if (input.warId) {
       const byWarId = await prisma.clanPointsSync.findFirst({
         where: {
@@ -119,6 +124,9 @@ export class PointsSyncService {
       });
       if (byWarStartTime) return byWarStartTime;
     }
+    if (requestedWarId || requestedWarStartTime) {
+      return null;
+    }
     return prisma.clanPointsSync.findFirst({
       where: {
         guildId: input.guildId,
@@ -136,6 +144,23 @@ export class PointsSyncService {
   /** Purpose: compatibility helper for older callers of sync lookup. */
   async findSyncRecord(input: FindPointsSyncInput) {
     return this.getCurrentSyncForClan(input);
+  }
+
+  /** Purpose: read the latest ClanPointsSync row when no war-scoped identity is required. */
+  async getLatestSyncForClan(input: { guildId: string; clanTag: string }) {
+    const clanTag = normalizeTag(input.clanTag);
+    return prisma.clanPointsSync.findFirst({
+      where: {
+        guildId: input.guildId,
+        clanTag,
+      },
+      orderBy: [
+        { warStartTime: "desc" },
+        { syncFetchedAt: "desc" },
+        { lastSuccessfulPointsApiFetchAt: "desc" },
+        { updatedAt: "desc" },
+      ],
+    });
   }
 
   /** Purpose: find latest observed sync number from points-sync records. */

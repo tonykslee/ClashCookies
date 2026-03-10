@@ -29,6 +29,16 @@ type Snapshot = {
   syncMode: "low" | "high" | null;
   winnerBoxSync: number | null;
   winnerBoxTags: string[];
+  winnerBoxText: string | null;
+  headerPrimaryName: string | null;
+  headerPrimaryTag: string | null;
+  headerPrimaryBalance: number | null;
+  headerOpponentName: string | null;
+  headerOpponentTag: string | null;
+  headerOpponentBalance: number | null;
+  snapshotSource: "direct" | "tracked_clan_fallback" | "persisted_fallback";
+  fallbackCurrentForWar?: boolean;
+  fallbackExtractedOpponentTag?: string | null;
   fetchedAtMs: number;
 };
 
@@ -146,6 +156,161 @@ function extractSyncNumber(text: string): number | null {
   return match?.[1] ? Number(match[1]) : null;
 }
 
+/** Purpose: sanitize scraped clan labels before surfacing them in derived snapshots. */
+function sanitizeClanName(input: string | null | undefined): string | null {
+  if (!input) return null;
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+  if (trimmed.length > 80) return null;
+  if (/Clan Tag|Point Balance|Sync #|Winner|War State/i.test(trimmed)) return null;
+  return trimmed;
+}
+
+/** Purpose: detect the tracked-clan winner-box text used for non-FWA fallback proof. */
+function hasWinnerBoxNotMarkedFwaSignal(text: string | null | undefined): boolean {
+  if (!text) return false;
+  return /not marked as an fwa match/i.test(text);
+}
+
+type MatchupHeader = {
+  syncNumber: number | null;
+  primaryName: string | null;
+  primaryTag: string | null;
+  opponentName: string | null;
+  opponentTag: string | null;
+};
+
+/** Purpose: parse matchup header row from points top-section text. */
+function extractMatchupHeader(topText: string): MatchupHeader {
+  const regex =
+    /Sync\s*#\s*(\d+)\s+(.+?)\s*\(\s*([0-9A-Z]{4,})\s*\)\s+vs\.\s+(.+?)\s*\(\s*([0-9A-Z]{4,})\s*\)/i;
+  const match = topText.match(regex);
+  if (!match) {
+    return {
+      syncNumber: extractSyncNumber(topText),
+      primaryName: null,
+      primaryTag: null,
+      opponentName: null,
+      opponentTag: null,
+    };
+  }
+  return {
+    syncNumber: Number(match[1]),
+    primaryName: sanitizeClanName(match[2]) ?? null,
+    primaryTag: normalizeTag(match[3]),
+    opponentName: sanitizeClanName(match[4]) ?? null,
+    opponentTag: normalizeTag(match[5]),
+  };
+}
+
+/** Purpose: parse matchup header balances from points summary text. */
+function extractMatchupBalances(text: string): {
+  primaryBalance: number | null;
+  opponentBalance: number | null;
+} {
+  const match = text.match(/\(\s*([+-]?\d+)\s*([<>=])\s*([+-]?\d+)(?:,|\))/i);
+  if (!match?.[1] || !match?.[3]) {
+    return { primaryBalance: null, opponentBalance: null };
+  }
+  const primary = Number(match[1]);
+  const opponent = Number(match[3]);
+  return {
+    primaryBalance: Number.isFinite(primary) ? primary : null,
+    opponentBalance: Number.isFinite(opponent) ? opponent : null,
+  };
+}
+
+/** Purpose: derive opponent points from a tracked-clan snapshot when the opponent page is missing. */
+function deriveOpponentBalanceFromTrackedSnapshot(params: {
+  trackedSnapshot: Snapshot;
+  trackedClanTag: string;
+  requestedOpponentTag: string;
+}): number | null {
+  const trackedClanTag = normalizeTag(params.trackedClanTag);
+  const requestedOpponentTag = normalizeTag(params.requestedOpponentTag);
+  if (
+    params.trackedSnapshot.headerPrimaryTag === trackedClanTag &&
+    params.trackedSnapshot.headerOpponentTag === requestedOpponentTag
+  ) {
+    return params.trackedSnapshot.headerOpponentBalance;
+  }
+  if (
+    params.trackedSnapshot.headerPrimaryTag === requestedOpponentTag &&
+    params.trackedSnapshot.headerOpponentTag === trackedClanTag
+  ) {
+    return params.trackedSnapshot.headerPrimaryBalance;
+  }
+  return null;
+}
+
+/** Purpose: build tracked-clan fallback snapshot when the tracked page proves the same active opponent. */
+function buildTrackedClanFallbackSnapshot(params: {
+  requestedOpponentTag: string;
+  trackedClanTag: string;
+  trackedSnapshot: Snapshot | null;
+}): Snapshot | null {
+  const requestedOpponentTag = normalizeTag(params.requestedOpponentTag);
+  const trackedClanTag = normalizeTag(params.trackedClanTag);
+  const trackedSnapshot = params.trackedSnapshot;
+  if (!requestedOpponentTag || !trackedClanTag || !trackedSnapshot) return null;
+
+  const normalizedWinnerBoxText = hasWinnerBoxNotMarkedFwaSignal(trackedSnapshot.winnerBoxText)
+    ? "Not marked as an FWA match."
+    : trackedSnapshot.winnerBoxText ?? null;
+  const headerPrimaryTag = normalizeTag(String(trackedSnapshot.headerPrimaryTag ?? ""));
+  const headerOpponentTag = normalizeTag(String(trackedSnapshot.headerOpponentTag ?? ""));
+  let extractedOpponentTag: string | null = null;
+  let extractedOpponentName: string | null = null;
+
+  if (headerPrimaryTag && headerPrimaryTag === trackedClanTag && headerOpponentTag) {
+    extractedOpponentTag = headerOpponentTag;
+    extractedOpponentName = sanitizeClanName(trackedSnapshot.headerOpponentName ?? null);
+  } else if (headerOpponentTag && headerOpponentTag === trackedClanTag && headerPrimaryTag) {
+    extractedOpponentTag = headerPrimaryTag;
+    extractedOpponentName = sanitizeClanName(trackedSnapshot.headerPrimaryName ?? null);
+  }
+
+  if (!extractedOpponentTag) {
+    const nonTrackedTag =
+      trackedSnapshot.winnerBoxTags.find((tag) => normalizeTag(tag) !== trackedClanTag) ?? null;
+    extractedOpponentTag = nonTrackedTag ? normalizeTag(nonTrackedTag) : null;
+  }
+  if (extractedOpponentTag !== requestedOpponentTag) return null;
+
+  const opponentBalance = deriveOpponentBalanceFromTrackedSnapshot({
+    trackedSnapshot,
+    trackedClanTag,
+    requestedOpponentTag,
+  });
+  if (opponentBalance === null || !Number.isFinite(opponentBalance)) return null;
+
+  return {
+    ...trackedSnapshot,
+    tag: requestedOpponentTag,
+    clanName: extractedOpponentName ?? trackedSnapshot.clanName ?? null,
+    balance: Math.trunc(opponentBalance),
+    activeFwa: null,
+    notFound: false,
+    winnerBoxText: normalizedWinnerBoxText,
+    winnerBoxTags: Array.from(
+      new Set([
+        ...trackedSnapshot.winnerBoxTags.map((value) => normalizeTag(value)).filter(Boolean),
+        trackedClanTag,
+        requestedOpponentTag,
+      ])
+    ),
+    headerPrimaryName: trackedSnapshot.headerPrimaryName,
+    headerPrimaryTag: trackedSnapshot.headerPrimaryTag,
+    headerPrimaryBalance: trackedSnapshot.headerPrimaryBalance,
+    headerOpponentName: trackedSnapshot.headerOpponentName,
+    headerOpponentTag: trackedSnapshot.headerOpponentTag,
+    headerOpponentBalance: trackedSnapshot.headerOpponentBalance,
+    snapshotSource: "tracked_clan_fallback",
+    fallbackCurrentForWar: true,
+    fallbackExtractedOpponentTag: extractedOpponentTag,
+  };
+}
+
 /** Purpose: get sync mode. */
 function getSyncMode(syncNumber: number | null): "low" | "high" | null {
   if (syncNumber === null) return null;
@@ -197,6 +362,7 @@ export class PointsProjectionService {
       reason?: PointsApiFetchReason;
       caller?: PointsDirectFetchCaller;
       manualForceBypass?: boolean;
+      fallbackTrackedClanTag?: string | null;
     }
   ): Promise<Snapshot> {
     const normalizedTag = normalizeTag(tag);
@@ -256,6 +422,14 @@ export class PointsProjectionService {
         syncMode: null,
         winnerBoxSync: null,
         winnerBoxTags: [],
+        winnerBoxText: null,
+        headerPrimaryName: null,
+        headerPrimaryTag: null,
+        headerPrimaryBalance: null,
+        headerOpponentName: null,
+        headerOpponentTag: null,
+        headerOpponentBalance: null,
+        snapshotSource: "persisted_fallback",
         fetchedAtMs: Date.now(),
       };
     }
@@ -278,7 +452,7 @@ export class PointsProjectionService {
     if (response.status >= 400) {
       return {
         tag: normalizedTag,
-        clanName: await this.cocService.getClanName(normalizedTag).catch(() => null),
+        clanName: sanitizeClanName(await this.cocService.getClanName(normalizedTag).catch(() => null)),
         balance: null,
         activeFwa: null,
         notFound: false,
@@ -286,6 +460,14 @@ export class PointsProjectionService {
         syncMode: null,
         winnerBoxSync: null,
         winnerBoxTags: [],
+        winnerBoxText: null,
+        headerPrimaryName: null,
+        headerPrimaryTag: null,
+        headerPrimaryBalance: null,
+        headerOpponentName: null,
+        headerOpponentTag: null,
+        headerOpponentBalance: null,
+        snapshotSource: "direct",
         fetchedAtMs,
       };
     }
@@ -294,10 +476,13 @@ export class PointsProjectionService {
     const topSection = extractTopSectionText(html);
     const plain = toPlainText(html);
     const winnerBoxText = extractWinnerBoxText(html);
+    const matchupHeader = extractMatchupHeader(topSection);
+    const matchupBalances = extractMatchupBalances(topSection || winnerBoxText || "");
     const activeFwa = extractActiveFwa(topSection, plain);
     const notFound = /not found|unknown clan|no clan/i.test(topSection || plain);
     const winnerBoxTags = extractTagsFromText(topSection || winnerBoxText || "");
-    const winnerBoxSync = extractSyncNumber(topSection || winnerBoxText || "");
+    const winnerBoxSync =
+      matchupHeader.syncNumber ?? extractSyncNumber(topSection || winnerBoxText || "");
     const winnerBoxHasTag = winnerBoxTags.includes(normalizedTag);
     const effectiveSync =
       winnerBoxSync === null ? null : winnerBoxHasTag ? winnerBoxSync : winnerBoxSync + 1;
@@ -310,12 +495,19 @@ export class PointsProjectionService {
       })
       .catch(() => undefined);
 
-    return {
+    let snapshot: Snapshot = {
       tag: normalizedTag,
       clanName:
-        extractField(topSection, "Clan Name") ??
-        extractField(plain, "Clan Name") ??
-        (await this.cocService.getClanName(normalizedTag).catch(() => null)),
+        sanitizeClanName(
+          (matchupHeader.primaryTag === normalizedTag
+            ? matchupHeader.primaryName
+            : matchupHeader.opponentTag === normalizedTag
+              ? matchupHeader.opponentName
+              : null) ??
+            extractField(topSection, "Clan Name") ??
+            extractField(plain, "Clan Name") ??
+            (await this.cocService.getClanName(normalizedTag).catch(() => null))
+        ) ?? null,
       balance,
       activeFwa,
       notFound,
@@ -323,8 +515,36 @@ export class PointsProjectionService {
       syncMode: getSyncMode(effectiveSync),
       winnerBoxSync,
       winnerBoxTags,
+      winnerBoxText,
+      headerPrimaryName: matchupHeader.primaryName,
+      headerPrimaryTag: matchupHeader.primaryTag,
+      headerPrimaryBalance: matchupBalances.primaryBalance,
+      headerOpponentName: matchupHeader.opponentName,
+      headerOpponentTag: matchupHeader.opponentTag,
+      headerOpponentBalance: matchupBalances.opponentBalance,
+      snapshotSource: "direct",
       fetchedAtMs,
     };
+    const fallbackTrackedClanTag = normalizeTag(String(options?.fallbackTrackedClanTag ?? ""));
+    if (snapshot.notFound && fallbackTrackedClanTag && fallbackTrackedClanTag !== normalizedTag) {
+      const trackedSnapshot = await this.fetchSnapshot(fallbackTrackedClanTag, {
+        reason,
+        caller,
+        manualForceBypass,
+      }).catch(() => null);
+      const fallback = buildTrackedClanFallbackSnapshot({
+        requestedOpponentTag: normalizedTag,
+        trackedClanTag: fallbackTrackedClanTag,
+        trackedSnapshot,
+      });
+      console.info(
+        `[points-fetch] source=fallback requested=#${normalizedTag} tracked=#${fallbackTrackedClanTag} current=${fallback ? "1" : "0"}`
+      );
+      if (fallback) {
+        snapshot = fallback;
+      }
+    }
+    return snapshot;
   }
 
   /** Purpose: reuse war-scoped persisted sync data before web fetches during active wars. */
@@ -491,14 +711,37 @@ export class PointsProjectionService {
       syncMode: getSyncMode(toOptionalInt(input.row.syncNum)),
       winnerBoxSync: toOptionalInt(input.row.syncNum),
       winnerBoxTags: winnerTags,
+      winnerBoxText: null,
+      headerPrimaryName: null,
+      headerPrimaryTag: input.context.clanTag,
+      headerPrimaryBalance:
+        input.perspective === "primary"
+          ? toOptionalInt(input.row.clanPoints)
+          : toOptionalInt(input.row.opponentPoints),
+      headerOpponentName: null,
+      headerOpponentTag: input.context.opponentTag,
+      headerOpponentBalance:
+        input.perspective === "primary"
+          ? toOptionalInt(input.row.opponentPoints)
+          : toOptionalInt(input.row.clanPoints),
+      snapshotSource: "persisted_fallback",
       fetchedAtMs: fetchedAtMs ?? Date.now(),
     };
   }
 
   /** Purpose: return latest persisted sync values as fallback when direct fetch is lock-blocked. */
   private async buildPersistedFallbackSnapshot(tag: string): Promise<Snapshot | null> {
+    const normalizedTag = normalizeTag(tag);
+    const hasActiveWarContext = Boolean(
+      (await this.findCurrentWarContextByClanTag(normalizedTag)) ||
+        (await this.findCurrentWarContextByOpponentTag(normalizedTag))
+    );
+    if (hasActiveWarContext) {
+      return null;
+    }
+
     const row = await prisma.clanPointsSync.findFirst({
-      where: { clanTag: `#${normalizeTag(tag)}`, needsValidation: false },
+      where: { clanTag: `#${normalizedTag}`, needsValidation: false },
       select: {
         syncNum: true,
         clanPoints: true,
@@ -511,7 +754,6 @@ export class PointsProjectionService {
     if (!row) return null;
     const fetchedAtMs =
       row.lastSuccessfulPointsApiFetchAt?.getTime() ?? row.syncFetchedAt.getTime() ?? Date.now();
-    const normalizedTag = normalizeTag(tag);
     const opponentTag = normalizeTag(row.opponentTag);
     return {
       tag: normalizedTag,
@@ -523,6 +765,14 @@ export class PointsProjectionService {
       syncMode: getSyncMode(Number.isFinite(row.syncNum) ? Math.trunc(row.syncNum) : null),
       winnerBoxSync: Number.isFinite(row.syncNum) ? Math.trunc(row.syncNum) : null,
       winnerBoxTags: opponentTag ? [opponentTag, normalizedTag] : [normalizedTag],
+      winnerBoxText: null,
+      headerPrimaryName: null,
+      headerPrimaryTag: normalizedTag,
+      headerPrimaryBalance: Number.isFinite(row.clanPoints) ? Math.trunc(row.clanPoints) : null,
+      headerOpponentName: null,
+      headerOpponentTag: opponentTag || null,
+      headerOpponentBalance: null,
+      snapshotSource: "persisted_fallback",
       fetchedAtMs: Number.isFinite(fetchedAtMs) ? Math.trunc(fetchedAtMs) : Date.now(),
     };
   }

@@ -8,6 +8,7 @@ import {
   getMailBlockedReasonFromRevisionStateForTest,
   isPointsValidationCurrentForMatchupForTest,
   isLowConfidenceAllianceMismatchScenarioForTest,
+  resolveMatchTypeSelectionForTest,
   resolveOpponentActiveFwaEvidenceForTest,
   resolveSingleClanMatchEmbedColorForTest,
   shouldHydrateAlliancePayloadForTest,
@@ -253,6 +254,69 @@ describe("fwa match draft initialization for BL/MM -> FWA", () => {
       opponentTag: "2TAG",
       matchType: "FWA",
       expectedOutcome: "LOSE",
+    });
+  });
+});
+
+describe("fwa explicit match-type confirmation", () => {
+  it("treats selecting the same inferred visible type as an explicit confirmation", () => {
+    const selection = resolveMatchTypeSelectionForTest({
+      view: {
+        embed: {} as never,
+        copyText: "",
+        matchTypeCurrent: "MM",
+        inferredMatchType: true,
+        confirmedRevisionBaseline: {
+          warId: "2002",
+          opponentTag: "2TAG",
+          matchType: "MM",
+          expectedOutcome: null,
+        },
+        effectiveRevisionFields: {
+          warId: "2002",
+          opponentTag: "2TAG",
+          matchType: "MM",
+          expectedOutcome: null,
+        },
+      },
+      targetType: "MM",
+    });
+
+    expect(selection).toEqual({
+      draft: null,
+      explicitConfirmation: {
+        matchType: "MM",
+        expectedOutcome: null,
+      },
+    });
+  });
+
+  it("keeps same-type selection as a no-op when the visible type is already confirmed", () => {
+    const selection = resolveMatchTypeSelectionForTest({
+      view: {
+        embed: {} as never,
+        copyText: "",
+        matchTypeCurrent: "MM",
+        inferredMatchType: false,
+        confirmedRevisionBaseline: {
+          warId: "2002",
+          opponentTag: "2TAG",
+          matchType: "MM",
+          expectedOutcome: null,
+        },
+        effectiveRevisionFields: {
+          warId: "2002",
+          opponentTag: "2TAG",
+          matchType: "MM",
+          expectedOutcome: null,
+        },
+      },
+      targetType: "MM",
+    });
+
+    expect(selection).toEqual({
+      draft: null,
+      explicitConfirmation: null,
     });
   });
 });

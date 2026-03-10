@@ -124,6 +124,9 @@ export class WarStartPointsSyncService {
         caller: "service",
       });
       const siteUpdated = primary.winnerBoxTags.map((t) => normalizeTag(t)).includes(opponentTag);
+      const winnerBoxNotMarkedFwa = /not marked as an fwa match/i.test(
+        String(primary.winnerBoxText ?? "")
+      );
       const trackedDb = sub.fwaPoints ?? null;
       const trackedSite =
         primary.balance !== null && Number.isFinite(primary.balance) ? primary.balance : null;
@@ -135,14 +138,22 @@ export class WarStartPointsSyncService {
       let opponentNotFound = job.siteOpponentNotFound;
       if (!opponentChecked) {
         const opp = await this.points
-          .fetchSnapshot(opponentTag, { reason: "post_war_reconciliation", caller: "service" })
+          .fetchSnapshot(opponentTag, {
+            reason: "post_war_reconciliation",
+            caller: "service",
+            fallbackTrackedClanTag: clanTag,
+          })
           .catch(() => null);
         opponentChecked = true;
+        const strongOpponentEvidencePresent =
+          opp?.notFound === true || opp?.activeFwa === true || opp?.activeFwa === false;
         const liveResolution = inferMatchTypeFromOpponentPoints({
           available: opp !== null,
           balance: opp?.balance ?? null,
           activeFwa: opp?.activeFwa ?? null,
           notFound: opp?.notFound ?? false,
+          winnerBoxNotMarkedFwa,
+          opponentEvidenceMissingOrNotCurrent: !siteUpdated || !strongOpponentEvidencePresent,
         });
         inferredOpponentIsFwa = liveResolution?.syncIsFwa ?? null;
         opponentBalance =
@@ -205,8 +216,11 @@ export class WarStartPointsSyncService {
             guildId: true,
             warId: true,
             startTime: true,
+            state: true,
             matchType: true,
             inferredMatchType: true,
+            clanStars: true,
+            opponentStars: true,
           },
         });
         if (
@@ -217,11 +231,24 @@ export class WarStartPointsSyncService {
           primary.winnerBoxSync !== null &&
           Number.isFinite(primary.winnerBoxSync)
         ) {
+          const strongOpponentEvidencePresent =
+            opponentNotFound === true ||
+            opponentActiveFwa === true ||
+            opponentActiveFwa === false;
           const liveResolution = inferMatchTypeFromOpponentPoints({
             available: opponentChecked,
             balance: opponentBalance,
             activeFwa: opponentActiveFwa,
             notFound: opponentNotFound,
+            winnerBoxNotMarkedFwa,
+            opponentEvidenceMissingOrNotCurrent:
+              !siteUpdated || !strongOpponentEvidencePresent,
+            currentWarState:
+              currentWar.state === "inWar" || currentWar.state === "preparation"
+                ? currentWar.state
+                : null,
+            currentWarClanStars: currentWar.clanStars ?? null,
+            currentWarOpponentStars: currentWar.opponentStars ?? null,
           });
           const currentResolution = resolveCurrentWarMatchTypeSignal({
             matchType: currentWar.matchType ?? null,
