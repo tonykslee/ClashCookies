@@ -5,6 +5,7 @@ export type MatchTypeResolutionSource =
   | "unconfirmed_current_war"
   | "stored_sync"
   | "live_points_clan_not_found"
+  | "live_points_winner_box_not_marked_fwa"
   | "live_points_active_fwa_yes"
   | "live_points_active_fwa_no";
 
@@ -27,6 +28,8 @@ export type OpponentPointsMatchTypeSignal = {
   balance: number | null | undefined;
   activeFwa: boolean | null | undefined;
   notFound?: boolean | null | undefined;
+  winnerBoxNotMarkedFwa?: boolean | null | undefined;
+  opponentEvidenceMissingOrNotCurrent?: boolean | null | undefined;
 };
 
 type CurrentWarMatchTypeSignal = {
@@ -132,7 +135,9 @@ export function resolveMatchTypeFromStoredSyncRow(params: {
 export function inferMatchTypeFromOpponentPoints(
   signal: OpponentPointsMatchTypeSignal
 ): MatchTypeResolution | null {
-  if (!signal.available) return null;
+  const winnerBoxFallback =
+    signal.winnerBoxNotMarkedFwa === true &&
+    signal.opponentEvidenceMissingOrNotCurrent === true;
   if (signal.notFound === true) {
     return {
       matchType: "MM",
@@ -142,28 +147,40 @@ export function inferMatchTypeFromOpponentPoints(
       syncIsFwa: false,
     };
   }
-  const hasOpponentPoints =
-    signal.balance !== null &&
-    signal.balance !== undefined &&
-    !Number.isNaN(Number(signal.balance)) &&
-    Number.isFinite(Number(signal.balance));
-  if (!hasOpponentPoints) return null;
-  if (signal.activeFwa === false) {
+  if (signal.available) {
+    const hasOpponentPoints =
+      signal.balance !== null &&
+      signal.balance !== undefined &&
+      !Number.isNaN(Number(signal.balance)) &&
+      Number.isFinite(Number(signal.balance));
+    if (hasOpponentPoints) {
+      if (signal.activeFwa === false) {
+        return {
+          matchType: "BL",
+          source: "live_points_active_fwa_no",
+          inferred: true,
+          confirmed: false,
+          syncIsFwa: false,
+        };
+      }
+      if (signal.activeFwa === true) {
+        return {
+          matchType: "FWA",
+          source: "live_points_active_fwa_yes",
+          inferred: true,
+          confirmed: false,
+          syncIsFwa: true,
+        };
+      }
+    }
+  }
+  if (winnerBoxFallback) {
     return {
-      matchType: "BL",
-      source: "live_points_active_fwa_no",
+      matchType: "MM",
+      source: "live_points_winner_box_not_marked_fwa",
       inferred: true,
       confirmed: false,
       syncIsFwa: false,
-    };
-  }
-  if (signal.activeFwa === true) {
-    return {
-      matchType: "FWA",
-      source: "live_points_active_fwa_yes",
-      inferred: true,
-      confirmed: false,
-      syncIsFwa: true,
     };
   }
   return null;

@@ -126,6 +126,7 @@ import {
   extractTagsFromText,
   extractTopSectionText,
   extractWinnerBoxText,
+  hasWinnerBoxNotMarkedFwaSignal,
   parseCocApiTime,
   sanitizeClanName,
   toPlainText,
@@ -679,7 +680,7 @@ function buildEffectiveMatchMismatchWarnings(params: {
   effectiveMatchType: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN" | null | undefined;
   effectiveExpectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null | undefined;
   projectedOutcome: "WIN" | "LOSE" | null | undefined;
-  siteActiveFwa: boolean | null | undefined;
+  opponentActiveFwaEvidence: boolean | null | undefined;
 }): { outcomeMismatch: string | null; matchTypeVsFwaMismatch: string | null } {
   if (!params.siteUpdated) {
     return { outcomeMismatch: null, matchTypeVsFwaMismatch: null };
@@ -702,10 +703,38 @@ function buildEffectiveMatchMismatchWarnings(params: {
       : null;
   const matchTypeVsFwaMismatch =
     (effectiveMatchType === "BL" || effectiveMatchType === "MM") &&
-    params.siteActiveFwa === true
+    params.opponentActiveFwaEvidence === true
       ? ":warning: Points site reports Active FWA: YES but match type is BL/MM"
       : null;
   return { outcomeMismatch, matchTypeVsFwaMismatch };
+}
+
+/** Purpose: resolve whether current-war opponent evidence explicitly reports Active FWA yes/no. */
+function resolveOpponentActiveFwaEvidence(params: {
+  opponentActiveFwa: boolean | null | undefined;
+  opponentNotFound: boolean | null | undefined;
+  resolutionSource: MatchTypeResolutionSource | null | undefined;
+}): boolean | null {
+  if (params.opponentNotFound === true) return null;
+  if (params.resolutionSource === "live_points_active_fwa_yes") return true;
+  if (params.resolutionSource === "live_points_active_fwa_no") return false;
+  if (params.opponentActiveFwa === true || params.opponentActiveFwa === false) {
+    return params.opponentActiveFwa;
+  }
+  return null;
+}
+
+/** Purpose: detect alliance-only low-confidence evidence scenarios where mismatch bullets should be hidden. */
+function isLowConfidenceAllianceMismatchScenario(params: {
+  siteUpdated: boolean;
+  opponentNotFound: boolean;
+  opponentActiveFwaEvidence: boolean | null | undefined;
+  resolutionSource: MatchTypeResolutionSource | null | undefined;
+}): boolean {
+  if (!params.siteUpdated) return true;
+  if (params.opponentNotFound) return true;
+  if (params.resolutionSource === "live_points_winner_box_not_marked_fwa") return true;
+  return params.opponentActiveFwaEvidence !== true && params.opponentActiveFwaEvidence !== false;
 }
 
 /** Purpose: build next draft when a user chooses a different match type. */
@@ -4323,7 +4352,7 @@ function buildSyncValidationState(input: {
     differences,
     statusLine:
       differences.length > 0
-        ? "⚠ Data not fully synced with points.fwafarm"
+        ? ":warning: Data not fully synced with points.fwafarm"
         : "✅ Data is in sync with points.fwafarm",
   };
 }
@@ -4439,20 +4468,30 @@ export const buildDraftFromMatchTypeSelectionForTest = buildDraftFromMatchTypeSe
 export const buildDraftFromOutcomeToggleForTest = buildDraftFromOutcomeToggle;
 export const resolveEffectiveFwaOutcomeForTest = resolveEffectiveFwaOutcome;
 export const buildEffectiveMatchMismatchWarningsForTest = buildEffectiveMatchMismatchWarnings;
+export const resolveOpponentActiveFwaEvidenceForTest = resolveOpponentActiveFwaEvidence;
+export const isLowConfidenceAllianceMismatchScenarioForTest =
+  isLowConfidenceAllianceMismatchScenario;
 export const resolveSingleClanMatchEmbedColorForTest = resolveSingleClanMatchEmbedColor;
 
 export const resolveMatchTypeFromStoredSyncRowForTest = resolveMatchTypeFromStoredSyncRow;
+export const buildSyncValidationStateForTest = buildSyncValidationState;
 
 /** Purpose: infer match type strictly from opponent points-site signals. */
 function inferMatchTypeFromPointsSnapshots(
   _primaryPoints: Pick<PointsSnapshot, "activeFwa"> | null,
-  opponentPoints: Pick<PointsSnapshot, "balance" | "activeFwa" | "notFound"> | null
+  opponentPoints: Pick<PointsSnapshot, "balance" | "activeFwa" | "notFound"> | null,
+  options?: {
+    winnerBoxNotMarkedFwa?: boolean | null;
+    opponentEvidenceMissingOrNotCurrent?: boolean | null;
+  }
 ): MatchTypeResolution | null {
   return inferMatchTypeFromOpponentPoints({
     available: opponentPoints !== null,
     balance: opponentPoints?.balance ?? null,
     activeFwa: opponentPoints?.activeFwa ?? null,
     notFound: opponentPoints?.notFound ?? false,
+    winnerBoxNotMarkedFwa: options?.winnerBoxNotMarkedFwa ?? false,
+    opponentEvidenceMissingOrNotCurrent: options?.opponentEvidenceMissingOrNotCurrent ?? false,
   });
 }
 
@@ -5603,9 +5642,24 @@ async function buildTrackedMatchOverview(
       opponentPoints?.balance !== undefined &&
       !Number.isNaN(opponentPoints.balance);
     const siteSyncObservedForWrite = primaryPoints?.winnerBoxSync ?? null;
+    const siteUpdatedForAlert = Boolean(
+      primaryPoints && isPointsSiteUpdatedForOpponent(primaryPoints, opponentTag, sourceSync)
+    );
+    const winnerBoxNotMarkedFwa = hasWinnerBoxNotMarkedFwaSignal(
+      primaryPoints?.winnerBoxText ?? null
+    );
+    const strongOpponentEvidencePresent =
+      opponentPoints?.notFound === true ||
+      opponentPoints?.activeFwa === true ||
+      opponentPoints?.activeFwa === false;
     const inferredFromPointsType = inferMatchTypeFromPointsSnapshots(
       primaryPoints,
-      opponentPoints
+      opponentPoints,
+      {
+        winnerBoxNotMarkedFwa,
+        opponentEvidenceMissingOrNotCurrent:
+          !siteUpdatedForAlert || !strongOpponentEvidencePresent,
+      }
     );
     const pointsResolution = toMatchTypeResolutionFromPointsInference(inferredFromPointsType);
     const appliedResolution = chooseMatchTypeResolution({
@@ -5700,9 +5754,6 @@ async function buildTrackedMatchOverview(
         ? `Points: ${primaryPoints.balance} - ${opponentPoints!.balance}`
         : "Points: unavailable";
     const verifyLink = `[cc:${opponentTag}](${buildCcVerifyUrl(opponentTag)})`;
-    const siteUpdatedForAlert = Boolean(
-      primaryPoints && isPointsSiteUpdatedForOpponent(primaryPoints, opponentTag, sourceSync)
-    );
     const warStartTimeForSync = warStartTimeForReuse;
     await persistClanPointsSyncIfCurrent({
       guildId,
@@ -5816,24 +5867,37 @@ async function buildTrackedMatchOverview(
       explicitOutcome: revisionState.effective?.expectedOutcome ?? null,
       projectedOutcome: projectedFwaOutcome,
     });
+    const opponentActiveFwaEvidence = resolveOpponentActiveFwaEvidence({
+      opponentActiveFwa: opponentPoints?.activeFwa,
+      opponentNotFound: opponentPoints?.notFound ?? false,
+      resolutionSource: appliedResolution.source,
+    });
     const effectiveMismatchWarnings = buildEffectiveMatchMismatchWarnings({
       siteUpdated: siteUpdatedForAlert,
       effectiveMatchType,
       effectiveExpectedOutcome,
       projectedOutcome: derivedOutcome,
-      siteActiveFwa: primaryPoints?.activeFwa,
+      opponentActiveFwaEvidence,
     });
     const validationMismatchLines = validationState.differences.join("\n");
-    const mismatchLines = [
-      primaryMismatch,
-      opponentMismatch,
-      syncMismatch,
-      effectiveMismatchWarnings.outcomeMismatch,
-      effectiveMismatchWarnings.matchTypeVsFwaMismatch,
-      validationMismatchLines,
-    ]
-      .filter(Boolean)
-      .join("\n");
+    const allianceLowConfidenceMismatchEvidence = isLowConfidenceAllianceMismatchScenario({
+      siteUpdated: siteUpdatedForAlert,
+      opponentNotFound: opponentPoints?.notFound ?? false,
+      opponentActiveFwaEvidence,
+      resolutionSource: appliedResolution.source,
+    });
+    const mismatchLines = allianceLowConfidenceMismatchEvidence
+      ? ""
+      : [
+          primaryMismatch,
+          opponentMismatch,
+          syncMismatch,
+          effectiveMismatchWarnings.outcomeMismatch,
+          effectiveMismatchWarnings.matchTypeVsFwaMismatch,
+          validationMismatchLines,
+        ]
+          .filter(Boolean)
+          .join("\n");
     const hasMismatch = Boolean(
       primaryMismatch ||
         opponentMismatch ||
@@ -8355,6 +8419,11 @@ export const Fwa: Command = {
         const hasPrimaryPoints = primary.balance !== null && !Number.isNaN(primary.balance);
         const hasOpponentPoints = opponent.balance !== null && !Number.isNaN(opponent.balance);
         const siteSyncObservedForWrite = primary.winnerBoxSync ?? null;
+        const winnerBoxNotMarkedFwa = hasWinnerBoxNotMarkedFwaSignal(primary.winnerBoxText ?? null);
+        const strongOpponentEvidencePresent =
+          opponent.notFound === true ||
+          opponent.activeFwa === true ||
+          opponent.activeFwa === false;
         if (!hasPrimaryPoints && hasOpponentPoints) {
           await editReplySafe(`Could not fetch point balance for #${tag}.`);
           return;
@@ -8363,7 +8432,10 @@ export const Fwa: Command = {
           await editReplySafe(`Could not fetch point balance for #${opponentTag}.`);
           return;
         }
-        const inferredFromPointsType = inferMatchTypeFromPointsSnapshots(primary, opponent);
+        const inferredFromPointsType = inferMatchTypeFromPointsSnapshots(primary, opponent, {
+          winnerBoxNotMarkedFwa,
+          opponentEvidenceMissingOrNotCurrent: !siteUpdated || !strongOpponentEvidencePresent,
+        });
         const pointsResolution = toMatchTypeResolutionFromPointsInference(inferredFromPointsType);
         const appliedResolution = chooseMatchTypeResolution({
           confirmedCurrent: fallbackResolution.confirmedCurrent,
@@ -8540,7 +8612,11 @@ export const Fwa: Command = {
           effectiveMatchType: matchType,
           effectiveExpectedOutcome,
           projectedOutcome: derivedOutcome,
-          siteActiveFwa: primary.activeFwa,
+          opponentActiveFwaEvidence: resolveOpponentActiveFwaEvidence({
+            opponentActiveFwa: opponent.activeFwa,
+            opponentNotFound: opponent.notFound,
+            resolutionSource: appliedResolution.source,
+          }),
         });
         const validationMismatchLines = validationState.differences.join("\n");
         const mismatchLines = [

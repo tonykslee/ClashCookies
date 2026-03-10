@@ -66,6 +66,57 @@ describe("fwa match inference from points snapshots", () => {
 
     expect(inferred).toBeNull();
   });
+
+  it("infers MM from winner-box fallback when opponent evidence is missing/not current", () => {
+    const inferred = inferMatchTypeFromPointsSnapshotsForTest(
+      { activeFwa: true },
+      null,
+      {
+        winnerBoxNotMarkedFwa: true,
+        opponentEvidenceMissingOrNotCurrent: true,
+      }
+    );
+
+    expect(inferred).toMatchObject({
+      matchType: "MM",
+      source: "live_points_winner_box_not_marked_fwa",
+      syncIsFwa: false,
+    });
+  });
+
+  it("lets Active FWA YES evidence override winner-box fallback", () => {
+    const inferred = inferMatchTypeFromPointsSnapshotsForTest(
+      { activeFwa: true },
+      { balance: 1234, activeFwa: true, notFound: false },
+      {
+        winnerBoxNotMarkedFwa: true,
+        opponentEvidenceMissingOrNotCurrent: true,
+      }
+    );
+
+    expect(inferred).toMatchObject({
+      matchType: "FWA",
+      source: "live_points_active_fwa_yes",
+      syncIsFwa: true,
+    });
+  });
+
+  it("lets Active FWA NO evidence override winner-box fallback", () => {
+    const inferred = inferMatchTypeFromPointsSnapshotsForTest(
+      { activeFwa: true },
+      { balance: 1234, activeFwa: false, notFound: false },
+      {
+        winnerBoxNotMarkedFwa: true,
+        opponentEvidenceMissingOrNotCurrent: true,
+      }
+    );
+
+    expect(inferred).toMatchObject({
+      matchType: "BL",
+      source: "live_points_active_fwa_no",
+      syncIsFwa: false,
+    });
+  });
 });
 
 describe("fwa match stored sync fallback", () => {

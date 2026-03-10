@@ -63,6 +63,12 @@ export function extractWinnerBoxText(html: string): string | null {
   return toPlainText(match[1]);
 }
 
+/** Purpose: detect winner-box fallback signal indicating the matchup is not marked as FWA. */
+export function hasWinnerBoxNotMarkedFwaSignal(text: string | null | undefined): boolean {
+  if (!text) return false;
+  return /not marked as an fwa match/i.test(text);
+}
+
 /** Purpose: isolate top section text before the Last Known War State block. */
 export function extractTopSectionText(html: string): string {
   const plain = toPlainText(html);

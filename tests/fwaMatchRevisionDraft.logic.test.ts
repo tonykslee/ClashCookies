@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildSyncValidationStateForTest,
   buildDraftFromOutcomeToggleForTest,
   buildDraftFromMatchTypeSelectionForTest,
   buildEffectiveMatchMismatchWarningsForTest,
   getMailBlockedReasonFromRevisionStateForTest,
+  isLowConfidenceAllianceMismatchScenarioForTest,
+  resolveOpponentActiveFwaEvidenceForTest,
   resolveSingleClanMatchEmbedColorForTest,
   resolveEffectiveFwaOutcomeForTest,
   resolveConfirmedRevisionBaselineForTest,
@@ -278,7 +281,7 @@ describe("fwa effective-state mismatch gating", () => {
       effectiveMatchType: "FWA",
       effectiveExpectedOutcome: "UNKNOWN",
       projectedOutcome: "WIN",
-      siteActiveFwa: true,
+      opponentActiveFwaEvidence: true,
     });
 
     expect(mismatch.outcomeMismatch).toContain("Outcome mismatch");
@@ -291,11 +294,102 @@ describe("fwa effective-state mismatch gating", () => {
       effectiveMatchType: "BL",
       effectiveExpectedOutcome: null,
       projectedOutcome: "WIN",
-      siteActiveFwa: true,
+      opponentActiveFwaEvidence: true,
     });
 
     expect(mismatch.outcomeMismatch).toBeNull();
     expect(mismatch.matchTypeVsFwaMismatch).toContain("Active FWA: YES");
+  });
+
+  it("does not show BL/MM active-fwa warning when evidence is NO", () => {
+    const mismatch = buildEffectiveMatchMismatchWarningsForTest({
+      siteUpdated: true,
+      effectiveMatchType: "MM",
+      effectiveExpectedOutcome: null,
+      projectedOutcome: "LOSE",
+      opponentActiveFwaEvidence: false,
+    });
+
+    expect(mismatch.matchTypeVsFwaMismatch).toBeNull();
+  });
+});
+
+describe("fwa warning evidence helpers", () => {
+  it("resolves active-fwa evidence from live_points source over null snapshot", () => {
+    const yesEvidence = resolveOpponentActiveFwaEvidenceForTest({
+      opponentActiveFwa: null,
+      opponentNotFound: false,
+      resolutionSource: "live_points_active_fwa_yes",
+    });
+    const noEvidence = resolveOpponentActiveFwaEvidenceForTest({
+      opponentActiveFwa: null,
+      opponentNotFound: false,
+      resolutionSource: "live_points_active_fwa_no",
+    });
+
+    expect(yesEvidence).toBe(true);
+    expect(noEvidence).toBe(false);
+  });
+
+  it("treats clan-not-found as non-YES evidence", () => {
+    const evidence = resolveOpponentActiveFwaEvidenceForTest({
+      opponentActiveFwa: true,
+      opponentNotFound: true,
+      resolutionSource: "live_points_clan_not_found",
+    });
+
+    expect(evidence).toBeNull();
+  });
+});
+
+describe("fwa alliance low-confidence mismatch suppression", () => {
+  it("marks clan-not-found evidence as low confidence", () => {
+    const suppress = isLowConfidenceAllianceMismatchScenarioForTest({
+      siteUpdated: true,
+      opponentNotFound: true,
+      opponentActiveFwaEvidence: null,
+      resolutionSource: "live_points_clan_not_found",
+    });
+
+    expect(suppress).toBe(true);
+  });
+
+  it("marks explicit active-fwa evidence as high confidence", () => {
+    const suppress = isLowConfidenceAllianceMismatchScenarioForTest({
+      siteUpdated: true,
+      opponentNotFound: false,
+      opponentActiveFwaEvidence: false,
+      resolutionSource: "live_points_active_fwa_no",
+    });
+
+    expect(suppress).toBe(false);
+  });
+});
+
+describe("fwa sync validation status copy", () => {
+  it("uses :warning: token for out-of-sync status", () => {
+    const state = buildSyncValidationStateForTest({
+      syncRow: {
+        syncNum: 475,
+        opponentTag: "#2TAG",
+        clanPoints: 10,
+        opponentPoints: 10,
+        warStartTime: new Date("2026-03-10T00:00:00.000Z"),
+        syncFetchedAt: new Date("2026-03-10T00:00:00.000Z"),
+        outcome: null,
+        isFwa: false,
+      },
+      currentWarStartTime: new Date("2026-03-10T00:00:00.000Z"),
+      siteCurrent: true,
+      syncNum: 476,
+      opponentTag: "2TAG",
+      clanPoints: 10,
+      opponentPoints: 10,
+      outcome: null,
+      isFwa: false,
+    });
+
+    expect(state.statusLine).toBe(":warning: Data not fully synced with points.fwafarm");
   });
 });
 
