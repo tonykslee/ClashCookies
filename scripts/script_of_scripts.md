@@ -40,61 +40,26 @@ Important constraints:
 
 STATE SEPARATION GUARDRAILS
 
-For any feature that mixes interactive UI state with persisted/runtime
-state, the implementation must explicitly define these layers before
-writing code:
+This feature must not redesign or extend the existing draft/confirm/refresh lifecycle; it must only consume the existing effective displayed state for embed color rendering.
 
-1) Authoritative live state
-2) Confirmed persisted baseline
-3) Temporary draft / interaction-only state
+The implementation must preserve the existing separation between:
 
-For each layer, the implementation must state:
-
-* owner
-* storage location
-* allowed writers
-* allowed readers
-* when the state is created
-* when the state is discarded
+1. authoritative live state
+2. confirmed persisted baseline
+3. temporary draft / interaction-only state
 
 Additional required guardrails:
 
-* UI-only draft state must never be written into authoritative tables
-  or persisted message tracking before explicit confirmation.
-* Background refresh flows, pollers, reopened commands, and event/log
-  refresh buttons must reconstruct from authoritative persisted owners,
-  never from ephemeral in-memory interaction payloads.
-* If the feature compares "draft vs confirmed" to enable actions,
-  the comparison key must be explicitly defined and limited to
-  business-defining fields only.
-* Dynamic/render-only fields such as timers, counters, points, sync
-  values, and live stats must not be used as draft/confirmed equality
-  inputs unless the task explicitly requires it.
-* Any draft state must be scoped to the correct lifecycle identity
-  (for example warId/opponentTag/startTime). If that identity changes,
-  the draft must be discarded.
-* A new lifecycle instance must never inherit a prior draft as an
-  editable baseline.
-* If a feature includes "confirm" behavior, the prompt must state
-  exactly which persistence writes are allowed before confirm and which
-  are allowed only after confirm.
-* If a feature includes refresh behavior, the prompt must state whether
-  refresh uses live state, confirmed baseline, or both, and for which
-  fields.
+* UI-only draft state must never be written into authoritative tables or persisted message tracking before explicit confirmation.
+* Background refresh flows, pollers, reopened commands, and event/log refresh buttons must continue reconstructing from authoritative persisted owners, not ephemeral interaction payloads.
+* If action enablement depends on draft-vs-confirmed comparison, it must continue to key off only the intended business-defining fields.
+* Dynamic/render-only fields must not become draft/confirmed equality inputs unless the implementation already requires them.
+* If lifecycle identity changes, any old draft state must not be treated as the editable baseline for the new lifecycle.
 
-Required tests for this class of change:
+Regression-test expectation for this task:
 
-* draft state does not persist across exit/dismiss/reopen
-* refresh flows ignore unconfirmed draft state
-* confirm action promotes draft state to confirmed state correctly
-* deleted/superseded lifecycle behavior still works
-* lifecycle identity changes discard stale draft state
-* authoritative tables are unchanged until confirm
-* action enablement/disablement keys off only the intended comparison
-  fields
-
-If these boundaries cannot be stated clearly, stop and resolve the
-state ownership model before implementing.
+* No new tests are required for draft persistence, refresh, confirm-promotion, supersede/delete lifecycle, or lifecycle-identity discard behavior unless the implementation touches those paths.
+* If the implementation touches any of those lifecycle paths, add regression coverage for the affected behavior and prove authoritative tables remain unchanged until confirm where applicable.
 
 ---
 
