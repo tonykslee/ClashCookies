@@ -6,15 +6,16 @@ import {
   buildDraftFromMatchTypeSelectionForTest,
   buildEffectiveMatchMismatchWarningsForTest,
   getMailBlockedReasonFromRevisionStateForTest,
+  isPointsValidationCurrentForMatchupForTest,
   isLowConfidenceAllianceMismatchScenarioForTest,
   resolveOpponentActiveFwaEvidenceForTest,
   resolveSingleClanMatchEmbedColorForTest,
+  shouldHydrateAlliancePayloadForTest,
   resolveEffectiveFwaOutcomeForTest,
   resolveConfirmedRevisionBaselineForTest,
   resolveEffectiveRevisionStateForTest,
   resolveScopedDraftRevisionForTest,
 } from "../src/commands/Fwa";
-import { MATCH_MAIL_CONFIG_DEFAULT } from "../src/commands/fwa/mailConfig";
 import {
   WAR_MAIL_COLOR_BL,
   WAR_MAIL_COLOR_FALLBACK,
@@ -25,14 +26,15 @@ import {
 } from "../src/commands/fwa/mailEmbedColor";
 
 describe("fwa match revision baseline resolution", () => {
-  it("uses persisted confirmed baseline when war identity matches", () => {
+  it("uses confirmed ClanPointsSync baseline when war identity matches", () => {
     const baseline = resolveConfirmedRevisionBaselineForTest({
-      mailConfig: {
-        ...MATCH_MAIL_CONFIG_DEFAULT,
-        lastWarId: "123",
-        lastOpponentTag: "#2Q80R9PYU",
-        lastMatchType: "BL",
-        lastExpectedOutcome: null,
+      syncRow: {
+        warId: "123",
+        opponentTag: "#2Q80R9PYU",
+        lastKnownMatchType: "BL",
+        lastKnownOutcome: null,
+        isFwa: false,
+        confirmedByClanMail: true,
       },
       liveFields: {
         warId: "123",
@@ -51,14 +53,15 @@ describe("fwa match revision baseline resolution", () => {
     });
   });
 
-  it("falls back to live fields for posted state when baseline is missing", () => {
+  it("returns null for posted state when confirmed baseline is unavailable", () => {
     const baseline = resolveConfirmedRevisionBaselineForTest({
-      mailConfig: {
-        ...MATCH_MAIL_CONFIG_DEFAULT,
-        lastWarId: "999",
-        lastOpponentTag: "#ABC",
-        lastMatchType: "MM",
-        lastExpectedOutcome: null,
+      syncRow: {
+        warId: "999",
+        opponentTag: "#ABC",
+        lastKnownMatchType: "MM",
+        lastKnownOutcome: null,
+        isFwa: false,
+        confirmedByClanMail: true,
       },
       liveFields: {
         warId: "123",
@@ -69,12 +72,7 @@ describe("fwa match revision baseline resolution", () => {
       lifecycleStatus: "posted",
     });
 
-    expect(baseline).toEqual({
-      warId: "123",
-      opponentTag: "2Q80R9PYU",
-      matchType: "FWA",
-      expectedOutcome: "LOSE",
-    });
+    expect(baseline).toBeNull();
   });
 });
 
@@ -139,6 +137,7 @@ describe("fwa match posted mail gating with revisions", () => {
       mailStatus: "posted",
       appliedDraft: null,
       draftDiffersFromBaseline: false,
+      hasConfirmedBaseline: true,
     });
 
     expect(reason).toBe(
@@ -158,6 +157,20 @@ describe("fwa match posted mail gating with revisions", () => {
         expectedOutcome: null,
       },
       draftDiffersFromBaseline: true,
+      hasConfirmedBaseline: true,
+    });
+
+    expect(reason).toBeNull();
+  });
+
+  it("does not block posted state when confirmed baseline is unavailable", () => {
+    const reason = getMailBlockedReasonFromRevisionStateForTest({
+      inferredMatchType: false,
+      hasMailChannel: true,
+      mailStatus: "posted",
+      appliedDraft: null,
+      draftDiffersFromBaseline: false,
+      hasConfirmedBaseline: false,
     });
 
     expect(reason).toBeNull();
@@ -175,6 +188,7 @@ describe("fwa match posted mail gating with revisions", () => {
         expectedOutcome: "LOSE",
       },
       draftDiffersFromBaseline: true,
+      hasConfirmedBaseline: false,
     });
 
     expect(reason).toBeNull();
@@ -538,6 +552,66 @@ describe("fwa tracked-clan fallback snapshot", () => {
     expect(resolved.currentForWar).toBe(false);
     expect(resolved.extractedOpponentTag).toBe("2OPP");
     expect(resolved.snapshot).toBeNull();
+  });
+});
+
+describe("fwa points validation current classification", () => {
+  it("treats tracked-clan fallback as current when it proves the same opponent and newer sync", () => {
+    const current = isPointsValidationCurrentForMatchupForTest({
+      primarySnapshot: {
+        winnerBoxTags: [],
+        winnerBoxSync: 474,
+      },
+      opponentSnapshot: {
+        snapshotSource: "tracked_clan_fallback",
+        fallbackCurrentForWar: true,
+        fallbackExtractedOpponentTag: "2OPP",
+        winnerBoxSync: 475,
+      },
+      opponentTag: "2OPP",
+      sourceSync: 474,
+    });
+
+    expect(current).toBe(true);
+  });
+
+  it("does not treat fallback as current when fallback sync is not newer than source sync", () => {
+    const current = isPointsValidationCurrentForMatchupForTest({
+      primarySnapshot: {
+        winnerBoxTags: [],
+        winnerBoxSync: 474,
+      },
+      opponentSnapshot: {
+        snapshotSource: "tracked_clan_fallback",
+        fallbackCurrentForWar: true,
+        fallbackExtractedOpponentTag: "2OPP",
+        winnerBoxSync: 474,
+      },
+      opponentTag: "2OPP",
+      sourceSync: 474,
+    });
+
+    expect(current).toBe(false);
+  });
+});
+
+describe("fwa alliance payload hydration flag", () => {
+  it("requires hydration for scoped payloads with guild context", () => {
+    expect(
+      shouldHydrateAlliancePayloadForTest({
+        allianceViewIsScoped: true,
+        guildId: "123",
+      })
+    ).toBe(true);
+  });
+
+  it("skips hydration when payload already has full alliance view", () => {
+    expect(
+      shouldHydrateAlliancePayloadForTest({
+        allianceViewIsScoped: false,
+        guildId: "123",
+      })
+    ).toBe(false);
   });
 });
 

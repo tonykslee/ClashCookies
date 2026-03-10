@@ -43,6 +43,7 @@
 - `/fwa match` war-changing state now shows field-specific mismatch lines (opponent, sync #, outcome, match type) against persisted points validation.
 - `/fwa match` uses `:warning: clan not found in points.fwafarm` when opponent-page-not-found is the validation issue, and alliance low-confidence views still collapse mismatch detail to one sync warning line.
 - `/fwa match` can validate MM/BL no-opponent-page wars via tracked-clan points-page fallback in the shared snapshot path.
+- `/fwa match tag:<clan>` now returns to the full alliance overview when `Alliance View` is pressed from a direct single-clan card.
 - `/fwa compliance tag:<trackedClanTag> [war-id:current|<clanWarHistoryWarId>] [visibility:private|public]` - Run war-plan compliance checks on demand using the shared war-end compliance engine. Defaults to the active current war; set `war-id:current` explicitly for active-war checks, or provide a numeric ended war ID for historical evaluation.
 - `/fwa weight-age [visibility:private|public] [tag:<tag>]` - Scrape `https://fwastats.com/Clan/<tag>/Weight` and report last submitted weight age for one clan or all tracked clans. Uses `FWASTATS_WEIGHT_COOKIE` when configured.
 - `/fwa weight-link [visibility:private|public] [tag:<tag>]` - Return FWA Stats weight page link(s) for one clan or all tracked clans.
