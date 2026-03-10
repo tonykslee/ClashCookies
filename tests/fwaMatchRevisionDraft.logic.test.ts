@@ -1,14 +1,24 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildDraftFromOutcomeToggleForTest,
   buildDraftFromMatchTypeSelectionForTest,
   buildEffectiveMatchMismatchWarningsForTest,
   getMailBlockedReasonFromRevisionStateForTest,
+  resolveSingleClanMatchEmbedColorForTest,
   resolveEffectiveFwaOutcomeForTest,
   resolveConfirmedRevisionBaselineForTest,
   resolveEffectiveRevisionStateForTest,
   resolveScopedDraftRevisionForTest,
 } from "../src/commands/Fwa";
 import { MATCH_MAIL_CONFIG_DEFAULT } from "../src/commands/fwa/mailConfig";
+import {
+  WAR_MAIL_COLOR_BL,
+  WAR_MAIL_COLOR_FALLBACK,
+  WAR_MAIL_COLOR_FWA_LOSE,
+  WAR_MAIL_COLOR_FWA_WIN,
+  WAR_MAIL_COLOR_MM,
+  resolveWarMailEmbedColor,
+} from "../src/commands/fwa/mailEmbedColor";
 
 describe("fwa match revision baseline resolution", () => {
   it("uses persisted confirmed baseline when war identity matches", () => {
@@ -286,5 +296,125 @@ describe("fwa effective-state mismatch gating", () => {
 
     expect(mismatch.outcomeMismatch).toBeNull();
     expect(mismatch.matchTypeVsFwaMismatch).toContain("Active FWA: YES");
+  });
+});
+
+describe("fwa single-clan match embed color", () => {
+  it("reuses shared war-mail color semantics for effective displayed state", () => {
+    const cases: Array<{
+      matchType: "FWA" | "BL" | "MM" | "UNKNOWN";
+      expectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null;
+      expectedColor: number;
+    }> = [
+      { matchType: "BL", expectedOutcome: null, expectedColor: WAR_MAIL_COLOR_BL },
+      { matchType: "MM", expectedOutcome: null, expectedColor: WAR_MAIL_COLOR_MM },
+      { matchType: "FWA", expectedOutcome: "WIN", expectedColor: WAR_MAIL_COLOR_FWA_WIN },
+      { matchType: "FWA", expectedOutcome: "LOSE", expectedColor: WAR_MAIL_COLOR_FWA_LOSE },
+      { matchType: "FWA", expectedOutcome: "UNKNOWN", expectedColor: WAR_MAIL_COLOR_FALLBACK },
+      { matchType: "UNKNOWN", expectedOutcome: null, expectedColor: WAR_MAIL_COLOR_FALLBACK },
+    ];
+
+    for (const testCase of cases) {
+      const resolved = resolveSingleClanMatchEmbedColorForTest({
+        effectiveMatchType: testCase.matchType,
+        effectiveExpectedOutcome: testCase.expectedOutcome,
+      });
+      expect(resolved).toBe(testCase.expectedColor);
+      expect(resolved).toBe(
+        resolveWarMailEmbedColor({
+          matchType: testCase.matchType,
+          expectedOutcome: testCase.expectedOutcome,
+        })
+      );
+    }
+  });
+
+  it("updates color for BL -> FWA draft transition using projected outcome", () => {
+    const draft = buildDraftFromMatchTypeSelectionForTest({
+      view: {
+        embed: {} as never,
+        copyText: "",
+        confirmedRevisionBaseline: {
+          warId: "1001",
+          opponentTag: "2TAG",
+          matchType: "BL",
+          expectedOutcome: null,
+        },
+        effectiveRevisionFields: {
+          warId: "1001",
+          opponentTag: "2TAG",
+          matchType: "BL",
+          expectedOutcome: null,
+        },
+        projectedFwaOutcome: "WIN",
+      },
+      targetType: "FWA",
+    });
+
+    expect(draft?.expectedOutcome).toBe("WIN");
+    const nextColor = resolveSingleClanMatchEmbedColorForTest({
+      effectiveMatchType: draft?.matchType ?? "UNKNOWN",
+      effectiveExpectedOutcome: draft?.expectedOutcome ?? null,
+    });
+    expect(nextColor).toBe(WAR_MAIL_COLOR_FWA_WIN);
+  });
+
+  it("updates color for MM -> FWA draft transition using projected outcome", () => {
+    const draft = buildDraftFromMatchTypeSelectionForTest({
+      view: {
+        embed: {} as never,
+        copyText: "",
+        confirmedRevisionBaseline: {
+          warId: "2002",
+          opponentTag: "2TAG",
+          matchType: "MM",
+          expectedOutcome: null,
+        },
+        effectiveRevisionFields: {
+          warId: "2002",
+          opponentTag: "2TAG",
+          matchType: "MM",
+          expectedOutcome: null,
+        },
+        projectedFwaOutcome: "LOSE",
+      },
+      targetType: "FWA",
+    });
+
+    expect(draft?.expectedOutcome).toBe("LOSE");
+    const nextColor = resolveSingleClanMatchEmbedColorForTest({
+      effectiveMatchType: draft?.matchType ?? "UNKNOWN",
+      effectiveExpectedOutcome: draft?.expectedOutcome ?? null,
+    });
+    expect(nextColor).toBe(WAR_MAIL_COLOR_FWA_LOSE);
+  });
+
+  it("updates color immediately when FWA draft outcome is reversed", () => {
+    const nextDraft = buildDraftFromOutcomeToggleForTest({
+      view: {
+        embed: {} as never,
+        copyText: "",
+        confirmedRevisionBaseline: {
+          warId: "3003",
+          opponentTag: "2TAG",
+          matchType: "FWA",
+          expectedOutcome: "WIN",
+        },
+        effectiveRevisionFields: {
+          warId: "3003",
+          opponentTag: "2TAG",
+          matchType: "FWA",
+          expectedOutcome: "WIN",
+        },
+      },
+      currentOutcome: "WIN",
+    });
+
+    expect(nextDraft?.expectedOutcome).toBe("LOSE");
+    const nextColor = resolveSingleClanMatchEmbedColorForTest({
+      effectiveMatchType: nextDraft?.matchType ?? "UNKNOWN",
+      effectiveExpectedOutcome: nextDraft?.expectedOutcome ?? null,
+    });
+    expect(nextColor).toBe(WAR_MAIL_COLOR_FWA_LOSE);
   });
 });
