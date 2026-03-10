@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildCompoPlaceEmbedForTest,
+  buildCompoStateRowsForTest,
   getAbsoluteSheetRowNumberForTest,
   getModeRowsForTest,
   readPlacementCandidatesForTest,
@@ -103,7 +104,7 @@ describe("/compo place candidate parsing", () => {
       bucket: "TH16",
       recommended: [
         {
-          clanName: "Red Riders",
+          clanName: "Red Riders-actual",
           clanTag: "R8R8",
           totalWeight: 0,
           targetBand: 0,
@@ -118,7 +119,7 @@ describe("/compo place candidate parsing", () => {
       ],
       vacancyList: [
         {
-          clanName: "Zero Gravity",
+          clanName: "Zero Gravity-actual",
           clanTag: "ZG99",
           totalWeight: 0,
           targetBand: 0,
@@ -132,7 +133,7 @@ describe("/compo place candidate parsing", () => {
       ],
       compositionList: [
         {
-          clanName: "The Winners Club",
+          clanName: "The Winners Club-actual",
           clanTag: "TWC1",
           totalWeight: 0,
           targetBand: 0,
@@ -157,11 +158,37 @@ describe("/compo place candidate parsing", () => {
       "Composition",
     ]);
     expect(embed.fields?.[0]?.value).toContain("Red Riders");
+    expect(embed.fields?.[0]?.value).not.toContain("-actual");
     expect(embed.fields?.[0]?.value).toContain("needs 2 TH16");
     expect(embed.fields?.[1]?.value).toContain("ZG");
     expect(embed.fields?.[1]?.value).toContain("47/50");
     expect(embed.fields?.[2]?.value).toContain("The Winners Club");
+    expect(embed.fields?.[2]?.value).not.toContain("-actual");
     expect(embed.fields?.[2]?.value).toContain("-4");
+  });
+
+  it("sanitizes clan names in state table rows for display-only rendering", () => {
+    const modeRows = [
+      {
+        row: makeRow({
+          0: "Dark Empire-actual",
+          3: "1,470,000",
+          20: "1",
+          21: "0",
+          22: "0",
+          23: "-1",
+          24: "0",
+          25: "0",
+          26: "0",
+        }),
+        sheetRowNumber: 7,
+      },
+    ];
+
+    const stateRows = buildCompoStateRowsForTest(modeRows);
+    expect(stateRows[0][0]).toBe("Clan");
+    expect(stateRows[1][0]).toBe("Dark Empire");
+    expect(stateRows[1][0]).not.toContain("-actual");
   });
 });
 

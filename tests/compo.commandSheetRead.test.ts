@@ -27,6 +27,12 @@ function makeRows(): string[][] {
   return rows;
 }
 
+function makeRowsWithActualSuffix(): string[][] {
+  const rows = makeRows();
+  rows[1][0] = "DARK EMPIRE-actual";
+  return rows;
+}
+
 function makeInteraction(params: {
   subcommand: "advice" | "state" | "place";
   tag?: string;
@@ -147,6 +153,30 @@ describe("/compo strict sheet read path", () => {
       );
     }
   );
+
+  it("sanitizes trailing -actual suffix in /compo advice display output", async () => {
+    vi.spyOn(GoogleSheetsService.prototype, "getCompoLinkedSheet").mockResolvedValue(
+      linkedSheet
+    );
+    vi.spyOn(GoogleSheetsService.prototype, "readCompoLinkedValues").mockImplementation(
+      async (range: string) => {
+        if (range === LOOKUP_REFRESH_RANGE) return [["1709900000"]];
+        return makeRowsWithActualSuffix();
+      }
+    );
+
+    const interaction = makeInteraction({
+      subcommand: "advice",
+      tag: "#LQQ99UV8",
+    });
+    const cocService = { getClan: vi.fn() };
+
+    await Compo.run({} as any, interaction as any, cocService as any);
+
+    const payload = interaction.editReply.mock.calls.at(-1)?.[0];
+    expect(String(payload?.content ?? "")).toContain("**DARK EMPIRE** (`#LQQ99UV8`)");
+    expect(String(payload?.content ?? "")).not.toContain("-actual");
+  });
 });
 
 describe("/compo error message mapping", () => {
