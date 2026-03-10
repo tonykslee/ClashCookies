@@ -138,7 +138,11 @@ import {
   getSyncMode,
   limitDiscordContent,
 } from "./fwa/matchUtils";
-import { resolveWarMailEmbedColor } from "./fwa/mailEmbedColor";
+import {
+  resolveWarMailEmbedColor,
+  type WarMailExpectedOutcome,
+  type WarMailMatchType,
+} from "./fwa/mailEmbedColor";
 import { buildWarComplianceReportLines } from "./fwa/complianceView";
 import {
   WEIGHT_SEVERE_STALE_DAYS,
@@ -656,6 +660,17 @@ function resolveEffectiveFwaOutcome(params: {
     toWinLoseOutcome(params.projectedOutcome) ??
     "UNKNOWN"
   );
+}
+
+/** Purpose: keep single-clan `/fwa match` color aligned to the exact effective state shown in the card. */
+function resolveSingleClanMatchEmbedColor(params: {
+  effectiveMatchType: WarMailMatchType;
+  effectiveExpectedOutcome: WarMailExpectedOutcome;
+}): number {
+  return resolveWarMailEmbedColor({
+    matchType: params.effectiveMatchType,
+    expectedOutcome: params.effectiveExpectedOutcome,
+  });
 }
 
 /** Purpose: evaluate mismatch warnings from the effective state currently shown in the view. */
@@ -4421,8 +4436,10 @@ export const resolveScopedDraftRevisionForTest = resolveScopedDraftRevision;
 export const resolveEffectiveRevisionStateForTest = resolveEffectiveRevisionState;
 export const resolveConfirmedRevisionBaselineForTest = resolveConfirmedRevisionBaseline;
 export const buildDraftFromMatchTypeSelectionForTest = buildDraftFromMatchTypeSelection;
+export const buildDraftFromOutcomeToggleForTest = buildDraftFromOutcomeToggle;
 export const resolveEffectiveFwaOutcomeForTest = resolveEffectiveFwaOutcome;
 export const buildEffectiveMatchMismatchWarningsForTest = buildEffectiveMatchMismatchWarnings;
+export const resolveSingleClanMatchEmbedColorForTest = resolveSingleClanMatchEmbedColor;
 
 export const resolveMatchTypeFromStoredSyncRowForTest = resolveMatchTypeFromStoredSyncRow;
 
@@ -5420,7 +5437,17 @@ async function buildTrackedMatchOverview(
         );
       }
       singleViews[clanTag] = {
-        embed: new EmbedBuilder().setTitle(preWarHeader).setDescription(preWarLines.join("\n")),
+        embed: new EmbedBuilder()
+          .setTitle(preWarHeader)
+          .setDescription(preWarLines.join("\n"))
+          .setColor(
+            resolveSingleClanMatchEmbedColor({
+              effectiveMatchType:
+                (sub?.matchType as "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN" | null | undefined) ??
+                "UNKNOWN",
+              effectiveExpectedOutcome: null,
+            })
+          ),
         copyText: limitDiscordContent([`# ${preWarHeader}`, ...preWarLines].join("\n")),
         matchTypeAction: null,
         matchTypeCurrent: (sub?.matchType as "FWA" | "BL" | "MM" | "SKIP" | null | undefined) ?? null,
@@ -5481,7 +5508,17 @@ async function buildTrackedMatchOverview(
         );
       }
       singleViews[clanTag] = {
-        embed: new EmbedBuilder().setTitle(noOpponentHeader).setDescription(noOpponentLines.join("\n")),
+        embed: new EmbedBuilder()
+          .setTitle(noOpponentHeader)
+          .setDescription(noOpponentLines.join("\n"))
+          .setColor(
+            resolveSingleClanMatchEmbedColor({
+              effectiveMatchType:
+                (sub?.matchType as "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN" | null | undefined) ??
+                "UNKNOWN",
+              effectiveExpectedOutcome: null,
+            })
+          ),
         copyText: limitDiscordContent([`# ${noOpponentHeader}`, ...noOpponentLines].join("\n")),
         matchTypeAction: null,
         matchTypeCurrent:
@@ -5977,6 +6014,12 @@ async function buildTrackedMatchOverview(
           })
         )
         .setDescription(singleDescription)
+        .setColor(
+          resolveSingleClanMatchEmbedColor({
+            effectiveMatchType,
+            effectiveExpectedOutcome,
+          })
+        )
         .addFields(
           {
             name: "Points",
@@ -8173,7 +8216,23 @@ export const Fwa: Command = {
             ...preWarMailDebugLines,
           ];
           const singleView: MatchView = {
-            embed: new EmbedBuilder().setTitle(preWarHeader).setDescription(preWarLines.join("\n")),
+            embed: new EmbedBuilder()
+              .setTitle(preWarHeader)
+              .setDescription(preWarLines.join("\n"))
+              .setColor(
+                resolveSingleClanMatchEmbedColor({
+                  effectiveMatchType:
+                    (subscription?.matchType as
+                      | "FWA"
+                      | "BL"
+                      | "MM"
+                      | "SKIP"
+                      | "UNKNOWN"
+                      | null
+                      | undefined) ?? "UNKNOWN",
+                  effectiveExpectedOutcome: null,
+                })
+              ),
             copyText: limitDiscordContent([`# ${preWarHeader}`, ...preWarLines].join("\n")),
             matchTypeAction: null,
             matchTypeCurrent:
@@ -8564,6 +8623,12 @@ export const Fwa: Command = {
         const embed = new EmbedBuilder()
           .setTitle(singleHeader)
           .setDescription(singleDescription)
+          .setColor(
+            resolveSingleClanMatchEmbedColor({
+              effectiveMatchType: matchType,
+              effectiveExpectedOutcome,
+            })
+          )
             .addFields(
               {
                 name: "Points",

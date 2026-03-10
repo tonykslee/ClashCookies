@@ -238,6 +238,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "Tracked clan mail channel is configured via `/tracked-clan configure ... mail-channel`.",
       "`/fwa mail send` opens an ephemeral war mail preview with confirm/send.",
       "War mail embed sidebar colors are state-coded: BL=black, MM=white, FWA WIN=green, FWA LOSE=red, unresolved=gray.",
+      "Single-clan `/fwa match` embed sidebar color follows the same state mapping from the currently displayed effective state, including draft revisions.",
       "Confirm-and-send pings the tracked clan role (`TrackedClan.clanRoleId`) when pinging is enabled.",
       "The `/fwa match` single-clan `Send Mail` button uses the same permissions as `/fwa mail send`.",
       "The 'Current mail is already up to date' state is scoped to the current war identity (war/opponent/config), so new wars reset to unsent.",
