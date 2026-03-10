@@ -373,7 +373,7 @@ const handleButtonInteraction = async (
 
   if (isFwaMatchAllianceButtonCustomId(interaction.customId)) {
     try {
-      await handleFwaMatchAllianceButton(interaction);
+      await handleFwaMatchAllianceButton(interaction, cocService);
     } catch (err) {
       console.error(`FWA match alliance button failed: ${formatError(err)}`);
       if (!interaction.replied && !interaction.deferred) {

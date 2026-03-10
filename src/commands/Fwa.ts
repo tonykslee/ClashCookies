@@ -209,6 +209,7 @@ type PointsSnapshot = {
   version: number;
   tag: string;
   url: string;
+  snapshotSource: "direct" | "tracked_clan_fallback";
   balance: number | null;
   clanName: string | null;
   activeFwa: boolean | null;
@@ -221,6 +222,8 @@ type PointsSnapshot = {
   winnerBoxHasTag: boolean;
   headerPrimaryName?: string | null;
   headerOpponentName?: string | null;
+  fallbackCurrentForWar?: boolean;
+  fallbackExtractedOpponentTag?: string | null;
   headerPrimaryTag: string | null;
   headerOpponentTag: string | null;
   headerPrimaryBalance: number | null;
@@ -437,6 +440,7 @@ type FwaMatchCopyPayload = {
   guildId: string | null;
   includePostButton: boolean;
   allianceView: MatchView;
+  allianceViewIsScoped: boolean;
   singleViews: Record<string, MatchView>;
   currentScope: "alliance" | "single";
   currentTag: string | null;
@@ -548,36 +552,85 @@ function buildLiveRevisionFields(params: {
   });
 }
 
-/** Purpose: derive confirmed baseline for the active war from persisted mail config, with safe posted fallback. */
+/** Purpose: derive confirmed active-war revision baseline from persisted sync/lifecycle owners. */
 function resolveConfirmedRevisionBaseline(params: {
-  mailConfig: MatchMailConfig;
+  syncRow:
+    | {
+        warId: string | null;
+        opponentTag: string;
+        lastKnownMatchType: string | null;
+        lastKnownOutcome: string | null;
+        isFwa: boolean | null;
+        confirmedByClanMail: boolean;
+      }
+    | null;
   liveFields: MatchRevisionFields | null;
   lifecycleStatus: WarMailLifecycleNormalizedStatus;
 }): MatchRevisionFields | null {
   const normalizedLive = normalizeRevisionFields(params.liveFields);
   if (!normalizedLive) return null;
-  const configCandidate = normalizeRevisionFields({
-    warId: params.mailConfig.lastWarId,
-    opponentTag: params.mailConfig.lastOpponentTag,
-    matchType:
-      params.mailConfig.lastMatchType === "FWA" ||
-      params.mailConfig.lastMatchType === "BL" ||
-      params.mailConfig.lastMatchType === "MM"
-        ? params.mailConfig.lastMatchType
-        : "UNKNOWN",
-    expectedOutcome: params.mailConfig.lastExpectedOutcome ?? null,
-  });
-  if (
-    configCandidate &&
-    configCandidate.warId === normalizedLive.warId &&
-    configCandidate.opponentTag === normalizedLive.opponentTag
-  ) {
-    return configCandidate;
+  if (params.syncRow?.confirmedByClanMail) {
+    const matchType =
+      params.syncRow.lastKnownMatchType === "FWA" ||
+      params.syncRow.lastKnownMatchType === "BL" ||
+      params.syncRow.lastKnownMatchType === "MM"
+        ? params.syncRow.lastKnownMatchType
+        : params.syncRow.isFwa === true
+          ? "FWA"
+          : "UNKNOWN";
+    const knownOutcome =
+      params.syncRow.lastKnownOutcome === "WIN" ||
+      params.syncRow.lastKnownOutcome === "LOSE" ||
+      params.syncRow.lastKnownOutcome === "UNKNOWN"
+        ? params.syncRow.lastKnownOutcome
+        : null;
+    const syncCandidate = normalizeRevisionFields({
+      warId: normalizeWarIdText(params.syncRow.warId) ?? normalizedLive.warId,
+      opponentTag: params.syncRow.opponentTag,
+      matchType,
+      expectedOutcome: knownOutcome,
+    });
+    if (
+      syncCandidate &&
+      syncCandidate.warId === normalizedLive.warId &&
+      syncCandidate.opponentTag === normalizedLive.opponentTag
+    ) {
+      return syncCandidate;
+    }
   }
-  if (params.lifecycleStatus === "posted") {
-    return normalizedLive;
-  }
+  if (params.lifecycleStatus === "posted") return null;
   return null;
+}
+
+/** Purpose: normalize posted mail-defining fields from a ClanPointsSync row. */
+function resolvePostedRevisionFromSyncRow(
+  syncRow:
+    | {
+        lastKnownMatchType: string | null;
+        lastKnownOutcome: string | null;
+        isFwa: boolean | null;
+      }
+    | null
+): {
+  matchType: "FWA" | "BL" | "MM" | "UNKNOWN";
+  expectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null;
+} | null {
+  if (!syncRow) return null;
+  const matchType =
+    syncRow.lastKnownMatchType === "FWA" ||
+    syncRow.lastKnownMatchType === "BL" ||
+    syncRow.lastKnownMatchType === "MM"
+      ? syncRow.lastKnownMatchType
+      : syncRow.isFwa === true
+        ? "FWA"
+        : "UNKNOWN";
+  const expectedOutcome =
+    matchType === "FWA"
+      ? syncRow.lastKnownOutcome === "WIN" || syncRow.lastKnownOutcome === "LOSE"
+        ? syncRow.lastKnownOutcome
+        : "UNKNOWN"
+      : null;
+  return { matchType, expectedOutcome };
 }
 
 /** Purpose: compute effective revision state using draft-over-baseline precedence. */
@@ -616,11 +669,13 @@ function getMailBlockedReasonFromRevisionState(params: {
   mailStatus: WarMailLifecycleNormalizedStatus;
   appliedDraft: MatchRevisionFields | null;
   draftDiffersFromBaseline: boolean;
+  hasConfirmedBaseline: boolean;
 }): string | null {
   if (!params.hasMailChannel) {
     return "Mail channel is not configured. Use /tracked-clan configure with a mail channel.";
   }
   if (params.mailStatus === "posted") {
+    if (!params.hasConfirmedBaseline) return null;
     if (params.appliedDraft && params.draftDiffersFromBaseline) return null;
     return "Current mail is already up to date. Change match config before sending again.";
   }
@@ -845,6 +900,55 @@ async function rebuildTrackedPayloadForTag(
   };
 }
 
+/** Purpose: hydrate a scoped-alliance payload to full alliance data when user requests Alliance View. */
+async function hydrateAlliancePayloadIfScoped(
+  payload: FwaMatchCopyPayload,
+  cocService: CoCService,
+  client?: Client | null
+): Promise<FwaMatchCopyPayload> {
+  if (!payload.allianceViewIsScoped || !payload.guildId) return payload;
+  const settings = new SettingsService();
+  const sourceSync = await getSourceOfTruthSync(settings, payload.guildId);
+  const warLookupCache: WarLookupCache = new Map();
+  const fullOverview = await buildTrackedMatchOverview(
+    cocService,
+    sourceSync,
+    payload.guildId,
+    warLookupCache,
+    client ?? null,
+    {
+      revisionDraftByTag: payload.revisionDraftByTag,
+    }
+  );
+  const mergedSingleViews = {
+    ...fullOverview.singleViews,
+    ...Object.fromEntries(
+      Object.entries(payload.singleViews).filter(([tag]) => !fullOverview.singleViews[tag])
+    ),
+  };
+  console.info(
+    `[fwa-match-payload] stage=alliance_hydrate scope=scoped_to_full guild=${payload.guildId} single_count_before=${Object.keys(payload.singleViews).length} single_count_after=${Object.keys(mergedSingleViews).length}`
+  );
+  return {
+    ...payload,
+    allianceView: {
+      embed: fullOverview.embed,
+      copyText: fullOverview.copyText,
+      matchTypeAction: null,
+    },
+    allianceViewIsScoped: false,
+    singleViews: mergedSingleViews,
+  };
+}
+
+/** Purpose: decide if Alliance View click must rebuild a full overview from a scoped payload. */
+function shouldHydrateAlliancePayload(payload: {
+  allianceViewIsScoped: boolean;
+  guildId: string | null;
+}): boolean {
+  return payload.allianceViewIsScoped && Boolean(payload.guildId);
+}
+
 async function getTrackedClanMailConfig(tag: string): Promise<{
   tag: string;
   name: string | null;
@@ -913,73 +1017,6 @@ async function saveCurrentWarMailConfig(params: {
       mailConfig: asMailConfigInputJson(params.mailConfig),
     },
   });
-}
-
-async function recordMatchMailUpdated(params: {
-  guildId: string;
-  tag: string;
-  channelId: string;
-  messageId: string;
-  messageUrl?: string;
-  warStartMs: number | null;
-  opponentTag?: string | null;
-  sentAtMs: number;
-  matchType: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN";
-  expectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null;
-}): Promise<MatchMailConfig> {
-  const current = await getCurrentWarMailConfig(params.guildId, params.tag);
-  const currentWar = await prisma.currentWar.findUnique({
-    where: {
-      clanTag_guildId: {
-        guildId: params.guildId,
-        clanTag: `#${normalizeTag(params.tag)}`,
-      },
-    },
-    select: { warId: true, startTime: true },
-  });
-  const warIdText =
-    currentWar?.warId !== null && currentWar?.warId !== undefined && Number.isFinite(currentWar.warId)
-      ? String(Math.trunc(currentWar.warId))
-      : null;
-
-  if (!warIdText || !Number.isFinite(Number(warIdText))) {
-    throw new Error(
-      `Cannot persist war mail lifecycle without resolved warId (guild=${params.guildId}, clan=#${normalizeTag(params.tag)}).`
-    );
-  }
-  await warMailLifecycleService.markPosted({
-    guildId: params.guildId,
-    clanTag: params.tag,
-    warId: Math.trunc(Number(warIdText)),
-    channelId: params.channelId,
-    messageId: params.messageId,
-    postedAt: new Date(params.sentAtMs),
-  });
-
-  const next: MatchMailConfig = {
-    ...current,
-    lastPostedMessageId: params.messageId,
-    lastPostedChannelId: params.channelId,
-    lastPostedAtUnix: Math.floor(params.sentAtMs / 1000),
-    lastWarStartMs:
-      params.warStartMs !== null && params.warStartMs !== undefined && Number.isFinite(params.warStartMs)
-        ? Math.trunc(params.warStartMs)
-        : currentWar?.startTime
-          ? currentWar.startTime.getTime()
-          : null,
-    lastWarId: warIdText,
-    lastOpponentTag: normalizeTag(String(params.opponentTag ?? "")) || null,
-    lastMatchType: params.matchType,
-    lastExpectedOutcome: params.expectedOutcome,
-    lastDataChangedAtUnix: Math.floor(params.sentAtMs / 1000),
-  };
-  await saveCurrentWarMailConfig({
-    guildId: params.guildId,
-    tag: params.tag,
-    channelId: params.channelId,
-    mailConfig: next,
-  });
-  return next;
 }
 
 async function markMatchLiveDataChanged(params: {
@@ -1404,9 +1441,24 @@ async function buildWarMailEmbedForTag(
       );
     }
     const warStartTimeForSync = getWarStartDateForSync(subscription?.startTime ?? null, war);
-    const siteCurrent =
+    const siteCurrentFromPrimary =
       primarySnapshot !== null &&
       isPointsSiteUpdatedForOpponent(primarySnapshot, opponentTag, sourceSync);
+    const siteCurrent = isPointsValidationCurrentForMatchup({
+      primarySnapshot,
+      opponentSnapshot,
+      opponentTag,
+      sourceSync,
+    });
+    if (
+      siteCurrent &&
+      !siteCurrentFromPrimary &&
+      opponentSnapshot?.snapshotSource === "tracked_clan_fallback"
+    ) {
+      console.info(
+        `[fwa-sync-validation] stage=mail_embed proof=tracked_fallback clan=#${normalizedTag} opponent=#${opponentTag} sync=${primarySnapshot?.winnerBoxSync ?? "unknown"}`
+      );
+    }
     await persistClanPointsSyncIfCurrent({
       guildId,
       clanTag: normalizedTag,
@@ -1861,6 +1913,7 @@ function getMailBlockedReasonFromStatus(params: {
     mailStatus: params.mailStatus,
     appliedDraft: null,
     draftDiffersFromBaseline: false,
+    hasConfirmedBaseline: false,
   });
 }
 
@@ -2606,7 +2659,8 @@ export async function handleFwaMatchSelectMenu(
 }
 
 export async function handleFwaMatchAllianceButton(
-  interaction: ButtonInteraction
+  interaction: ButtonInteraction,
+  cocService?: CoCService
 ): Promise<void> {
   const parsed = parseFwaMatchAllianceCustomId(interaction.customId);
   if (!parsed) return;
@@ -2624,6 +2678,33 @@ export async function handleFwaMatchAllianceButton(
       ephemeral: true,
       content: "This match view expired. Please run /fwa match again.",
     });
+    return;
+  }
+  if (shouldHydrateAlliancePayload(payload)) {
+    await interaction.deferUpdate();
+    const clearProcessing = await showProcessingNotice(interaction, "Loading alliance view...");
+    try {
+      const hydrated = await hydrateAlliancePayloadIfScoped(
+        payload,
+        cocService ?? new CoCService(),
+        interaction.client
+      );
+      hydrated.currentScope = "alliance";
+      hydrated.currentTag = null;
+      fwaMatchCopyPayloads.set(parsed.key, hydrated);
+      await interaction.message.edit({
+        content: undefined,
+        embeds: [hydrated.allianceView.embed],
+        components: buildFwaMatchCopyComponents(
+          hydrated,
+          hydrated.userId,
+          parsed.key,
+          "embed"
+        ),
+      });
+    } finally {
+      await clearProcessing();
+    }
     return;
   }
   payload.currentScope = "alliance";
@@ -3784,7 +3865,29 @@ async function handleFwaMailConfirmAction(
   });
   const nowMs = Date.now();
   const renderedWarIdText = renderedWarIdNumber !== null ? String(renderedWarIdNumber) : null;
-  const existingMailConfig = await getCurrentWarMailConfig(payload.guildId, payload.tag);
+  const checkpointWarStartTime =
+    rendered.warStartMs !== null &&
+    rendered.warStartMs !== undefined &&
+    Number.isFinite(rendered.warStartMs)
+      ? new Date(Math.trunc(rendered.warStartMs))
+      : null;
+  const checkpointSyncRow = await pointsSyncService
+    .getCurrentSyncForClan({
+      guildId: payload.guildId,
+      clanTag: payload.tag,
+      warId: renderedWarIdText,
+      warStartTime: checkpointWarStartTime,
+    })
+    .catch(() => null);
+  const previousRevision = resolvePostedRevisionFromSyncRow(
+    checkpointSyncRow
+      ? {
+          lastKnownMatchType: checkpointSyncRow.lastKnownMatchType ?? null,
+          lastKnownOutcome: checkpointSyncRow.lastKnownOutcome ?? null,
+          isFwa: checkpointSyncRow.isFwa ?? null,
+        }
+      : null
+  );
   const previousLifecycle =
     renderedWarIdNumber !== null
       ? await warMailLifecycleService
@@ -3802,8 +3905,8 @@ async function handleFwaMailConfirmAction(
       ? {
           channelId: previousLifecycle.channelId,
           messageId: previousLifecycle.messageId,
-          matchType: existingMailConfig.lastMatchType ?? "UNKNOWN",
-          expectedOutcome: existingMailConfig.lastExpectedOutcome ?? null,
+          matchType: previousRevision?.matchType ?? "UNKNOWN",
+          expectedOutcome: previousRevision?.expectedOutcome ?? null,
         }
       : null;
   let revisedPrevious = false;
@@ -3819,32 +3922,14 @@ async function handleFwaMailConfirmAction(
   if (!rendered.freezeRefresh) {
     startWarMailPolling(interaction.client, postKey);
   }
-  await recordMatchMailUpdated({
+  await warMailLifecycleService.markPosted({
     guildId: payload.guildId,
-    tag: payload.tag,
+    clanTag: payload.tag,
+    warId: Number(renderedWarIdNumber),
     channelId: channel.id,
     messageId: sent.id,
-    messageUrl: buildDiscordMessageUrl(payload.guildId, channel.id, sent.id),
-    warStartMs: rendered.warStartMs,
-    opponentTag: rendered.opponentTag,
-    sentAtMs: nowMs,
-    matchType: rendered.matchType,
-    expectedOutcome: rendered.expectedOutcome,
+    postedAt: new Date(nowMs),
   });
-  const checkpointWarStartTime =
-    rendered.warStartMs !== null &&
-    rendered.warStartMs !== undefined &&
-    Number.isFinite(rendered.warStartMs)
-      ? new Date(Math.trunc(rendered.warStartMs))
-      : null;
-  const checkpointSyncRow = await pointsSyncService
-    .getCurrentSyncForClan({
-      guildId: payload.guildId,
-      clanTag: payload.tag,
-      warId: renderedWarIdText,
-      warStartTime: checkpointWarStartTime,
-    })
-    .catch(() => null);
   await pointsSyncService
     .markConfirmedByClanMail({
       guildId: payload.guildId,
@@ -4469,6 +4554,49 @@ function buildStoredSyncSummary(input: {
   return { syncLine, updatedLine, stateLine };
 }
 
+/** Purpose: classify whether points-site data is current for this matchup, including tracked-clan fallback proof. */
+function isPointsValidationCurrentForMatchup(input: {
+  primarySnapshot: Pick<PointsSnapshot, "winnerBoxTags" | "winnerBoxSync"> | null;
+  opponentSnapshot: Pick<
+    PointsSnapshot,
+    "snapshotSource" | "fallbackCurrentForWar" | "fallbackExtractedOpponentTag" | "winnerBoxSync"
+  > | null;
+  opponentTag: string;
+  sourceSync: number | null;
+}): boolean {
+  const normalizedOpponentTag = normalizeTag(input.opponentTag);
+  const primaryCurrent =
+    input.primarySnapshot !== null &&
+    input.primarySnapshot.winnerBoxTags
+      .map((tag) => normalizeTag(tag))
+      .includes(normalizedOpponentTag) &&
+    !(
+      input.sourceSync !== null &&
+      input.primarySnapshot.winnerBoxSync !== null &&
+      Number.isFinite(input.primarySnapshot.winnerBoxSync) &&
+      Math.trunc(input.primarySnapshot.winnerBoxSync) <= Math.trunc(input.sourceSync)
+    );
+  if (primaryCurrent) return true;
+
+  if (!input.opponentSnapshot) return false;
+  if (input.opponentSnapshot.snapshotSource !== "tracked_clan_fallback") return false;
+  if (!input.opponentSnapshot.fallbackCurrentForWar) return false;
+  const fallbackOpponentTag = normalizeTag(
+    String(input.opponentSnapshot.fallbackExtractedOpponentTag ?? "")
+  );
+  if (fallbackOpponentTag !== normalizedOpponentTag) return false;
+  const fallbackSync = input.opponentSnapshot.winnerBoxSync;
+  if (
+    input.sourceSync !== null &&
+    fallbackSync !== null &&
+    Number.isFinite(fallbackSync) &&
+    Math.trunc(fallbackSync) <= Math.trunc(input.sourceSync)
+  ) {
+    return false;
+  }
+  return true;
+}
+
 async function persistClanPointsSyncIfCurrent(input: {
   guildId: string | null | undefined;
   clanTag: string;
@@ -4547,6 +4675,8 @@ export const isLowConfidenceAllianceMismatchScenarioForTest =
 export const resolveSingleClanMatchEmbedColorForTest = resolveSingleClanMatchEmbedColor;
 export const buildOpponentSnapshotFromTrackedClanFallbackForTest =
   buildOpponentSnapshotFromTrackedClanFallback;
+export const isPointsValidationCurrentForMatchupForTest = isPointsValidationCurrentForMatchup;
+export const shouldHydrateAlliancePayloadForTest = shouldHydrateAlliancePayload;
 
 export const resolveMatchTypeFromStoredSyncRowForTest = resolveMatchTypeFromStoredSyncRow;
 export const buildSyncValidationStateForTest = buildSyncValidationState;
@@ -4746,10 +4876,13 @@ function buildOpponentSnapshotFromTrackedClanFallback(params: {
     snapshot: {
       ...trackedSnapshot,
       tag: requestedOpponentTag,
+      snapshotSource: "tracked_clan_fallback",
       clanName: extractedOpponentName ?? trackedSnapshot.clanName ?? null,
       balance: Math.trunc(opponentBalance),
       activeFwa: null,
       notFound: false,
+      fallbackCurrentForWar: true,
+      fallbackExtractedOpponentTag: extractedOpponentTag,
       winnerBoxText: normalizedWinnerBoxText,
       winnerBoxTags,
       winnerBoxHasTag: true,
@@ -4982,6 +5115,7 @@ async function scrapeClanPoints(
     version: POINTS_CACHE_VERSION,
     tag: normalizedTag,
     url,
+    snapshotSource: "direct",
     balance,
     clanName,
     activeFwa,
@@ -5058,6 +5192,7 @@ function buildPointsSnapshotFromWarScopedSyncRow(input: {
     version: POINTS_CACHE_VERSION,
     tag: clanTag,
     url: buildPointsUrl(clanTag),
+    snapshotSource: "direct",
     balance: Math.trunc(input.row.clanPoints),
     clanName: null,
     activeFwa: input.row.isFwa ?? null,
@@ -5486,7 +5621,7 @@ async function buildTrackedMatchOverview(
     : new Map<string, ActualSheetClanSnapshot>();
   const tracked = await prisma.trackedClan.findMany({
     orderBy: { createdAt: "asc" },
-    select: { tag: true, name: true, mailConfig: true },
+    select: { tag: true, name: true },
   });
   const scopedTracked = scopedTagSet
     ? tracked.filter((clan) => scopedTagSet.has(normalizeTag(clan.tag)))
@@ -5627,9 +5762,6 @@ async function buildTrackedMatchOverview(
     const clanTag = normalizeTag(clan.tag);
     const includeInOverview = !missedSyncTags.has(clanTag);
     const clanName = sanitizeClanName(clan.name) ?? `#${clanTag}`;
-    const clanMailConfig = parseMatchMailConfig(
-      clan.mailConfig as Prisma.JsonValue | null | undefined
-    );
     const war = warByClanTag.get(clanTag) ?? null;
     const warState = warStateByClanTag.get(clanTag) ?? deriveWarState(war?.state);
     const clanSyncLine = withSyncModeLabel(getSyncDisplay(sourceSync, warState), sourceSync);
@@ -5873,9 +6005,24 @@ async function buildTrackedMatchOverview(
       opponentPoints?.balance !== undefined &&
       !Number.isNaN(opponentPoints.balance);
     const siteSyncObservedForWrite = primaryPoints?.winnerBoxSync ?? null;
-    const siteUpdatedForAlert = Boolean(
+    const siteUpdatedFromPrimaryEvidence = Boolean(
       primaryPoints && isPointsSiteUpdatedForOpponent(primaryPoints, opponentTag, sourceSync)
     );
+    const siteUpdatedForAlert = isPointsValidationCurrentForMatchup({
+      primarySnapshot: primaryPoints,
+      opponentSnapshot: opponentPoints,
+      opponentTag,
+      sourceSync,
+    });
+    if (
+      siteUpdatedForAlert &&
+      !siteUpdatedFromPrimaryEvidence &&
+      opponentPoints?.snapshotSource === "tracked_clan_fallback"
+    ) {
+      console.info(
+        `[fwa-sync-validation] stage=alliance_view proof=tracked_fallback clan=#${clanTag} opponent=#${opponentTag} sync=${siteSyncObservedForWrite ?? "unknown"}`
+      );
+    }
     const winnerBoxNotMarkedFwa = hasWinnerBoxNotMarkedFwaSignal(
       primaryPoints?.winnerBoxText ?? null
     );
@@ -6059,10 +6206,31 @@ async function buildTrackedMatchOverview(
       expectedOutcome: matchType === "FWA" ? liveExpectedOutcome ?? "UNKNOWN" : null,
     });
     const confirmedRevisionBaseline = resolveConfirmedRevisionBaseline({
-      mailConfig: clanMailConfig,
+      syncRow: syncRow
+        ? {
+            warId: syncRow.warId ?? null,
+            opponentTag: syncRow.opponentTag,
+            lastKnownMatchType: syncRow.lastKnownMatchType ?? null,
+            lastKnownOutcome: syncRow.lastKnownOutcome ?? null,
+            isFwa: syncRow.isFwa ?? null,
+            confirmedByClanMail: Boolean(syncRow.confirmedByClanMail),
+          }
+        : null,
       liveFields: liveRevisionFields,
       lifecycleStatus: liveMailStatus.status,
     });
+    console.info(
+      `[fwa-mail-baseline] stage=alliance_view clan=#${clanTag} owner=${confirmedRevisionBaseline ? "ClanPointsSync" : "none"} lifecycle=${liveMailStatus.status} war_id=${revisionWarId ?? "unknown"} opponent=#${opponentTag}`
+    );
+    if (
+      confirmedRevisionBaseline &&
+      liveRevisionFields &&
+      !areRevisionFieldsEqual(confirmedRevisionBaseline, liveRevisionFields)
+    ) {
+      console.info(
+        `[fwa-mail-baseline] stage=alliance_view mismatch=1 clan=#${clanTag} baseline_match_type=${confirmedRevisionBaseline.matchType} live_match_type=${liveRevisionFields.matchType} baseline_outcome=${confirmedRevisionBaseline.expectedOutcome ?? "N/A"} live_outcome=${liveRevisionFields.expectedOutcome ?? "N/A"}`
+      );
+    }
     const revisionState = resolveEffectiveRevisionState({
       liveFields: liveRevisionFields,
       confirmedBaseline: confirmedRevisionBaseline,
@@ -6156,6 +6324,7 @@ async function buildTrackedMatchOverview(
       mailStatus: liveMailStatus.status,
       appliedDraft: revisionState.appliedDraft,
       draftDiffersFromBaseline: revisionState.draftDiffersFromBaseline,
+      hasConfirmedBaseline: Boolean(confirmedRevisionBaseline),
     });
     const mailBlockedReasonLine = formatMailBlockedReason(mailBlockedReason);
     const mailDebugLines = mailStatusDebugEnabled
@@ -6639,12 +6808,32 @@ export async function runForceSyncMailCommand(
       ? String(Math.trunc(existing.warId))
       : null;
   const nowUnix = Math.floor(Date.now() / 1000);
+  const syncBaselineRow = await pointsSyncService
+    .getCurrentSyncForClan({
+      guildId: interaction.guildId,
+      clanTag: tag,
+      warId: warIdText,
+      warStartTime:
+        warStartMs !== null && Number.isFinite(warStartMs)
+          ? new Date(Math.trunc(warStartMs))
+          : null,
+    })
+    .catch(() => null);
+  const syncBaseline = resolvePostedRevisionFromSyncRow(
+    syncBaselineRow
+      ? {
+          lastKnownMatchType: syncBaselineRow.lastKnownMatchType ?? null,
+          lastKnownOutcome: syncBaselineRow.lastKnownOutcome ?? null,
+          isFwa: syncBaselineRow.isFwa ?? null,
+        }
+      : null
+  );
   const current = await getCurrentWarMailConfig(interaction.guildId, tag);
-  const matchType = existing?.matchType ?? current.lastMatchType ?? "UNKNOWN";
+  const matchType = existing?.matchType ?? syncBaseline?.matchType ?? "UNKNOWN";
   const expectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null =
     existing?.outcome === "WIN" || existing?.outcome === "LOSE"
       ? existing.outcome
-      : current.lastExpectedOutcome ?? "UNKNOWN";
+      : syncBaseline?.expectedOutcome ?? "UNKNOWN";
 
   const next: MatchMailConfig = {
     ...current,
@@ -8346,11 +8535,15 @@ export const Fwa: Command = {
       );
       const key = interaction.id;
       if (!tag) {
+        console.info(
+          `[fwa-match-payload] stage=command_build scope=full guild=${interaction.guildId ?? "none"} source=alliance`
+        );
         fwaMatchCopyPayloads.set(key, {
           userId: interaction.user.id,
           guildId: interaction.guildId ?? null,
           includePostButton: !isPublic,
           allianceView: { embed: overview.embed, copyText: overview.copyText, matchTypeAction: null },
+          allianceViewIsScoped: false,
           singleViews: overview.singleViews,
           currentScope: "alliance",
           currentTag: null,
@@ -8371,11 +8564,15 @@ export const Fwa: Command = {
 
       const trackedSingleView = overview.singleViews[tag];
       if (trackedSingleView) {
+        console.info(
+          `[fwa-match-payload] stage=command_build scope=scoped guild=${interaction.guildId ?? "none"} source=single_tag tag=#${tag}`
+        );
         fwaMatchCopyPayloads.set(key, {
           userId: interaction.user.id,
           guildId: interaction.guildId ?? null,
           includePostButton: !isPublic,
           allianceView: { embed: overview.embed, copyText: overview.copyText, matchTypeAction: null },
+          allianceViewIsScoped: true,
           singleViews: overview.singleViews,
           currentScope: "single",
           currentTag: tag,
@@ -8398,7 +8595,7 @@ export const Fwa: Command = {
         const currentSync = getCurrentSyncFromPrevious(sourceSync, warState);
         const trackedClanMeta = await prisma.trackedClan.findFirst({
           where: { tag: { equals: `#${tag}`, mode: "insensitive" } },
-          select: { name: true, mailConfig: true },
+          select: { name: true },
         });
         const subscription = interaction.guildId
           ? await prisma.currentWar.findUnique({
@@ -8549,11 +8746,15 @@ export const Fwa: Command = {
             skipSyncAction: subscription?.matchType === "SKIP" ? null : { tag },
             undoSkipSyncAction: subscription?.matchType === "SKIP" ? { tag } : null,
           };
+          console.info(
+            `[fwa-match-payload] stage=command_build scope=scoped guild=${interaction.guildId ?? "none"} source=single_tag_prewar tag=#${tag}`
+          );
           fwaMatchCopyPayloads.set(key, {
             userId: interaction.user.id,
             guildId: interaction.guildId ?? null,
             includePostButton: !isPublic,
             allianceView: { embed: overview.embed, copyText: overview.copyText, matchTypeAction: null },
+            allianceViewIsScoped: true,
             singleViews: {
               ...overview.singleViews,
               [tag]: singleView,
@@ -8593,8 +8794,12 @@ export const Fwa: Command = {
           }
         );
         let opponent: PointsSnapshot;
-        const siteUpdated = isPointsSiteUpdatedForOpponent(primary, opponentTag, sourceSync);
-        const opponentFromPrimary = siteUpdated
+        const siteUpdatedFromPrimary = isPointsSiteUpdatedForOpponent(
+          primary,
+          opponentTag,
+          sourceSync
+        );
+        const opponentFromPrimary = siteUpdatedFromPrimary
           ? deriveOpponentBalanceFromPrimarySnapshot(primary, tag, opponentTag)
           : null;
         if (opponentFromPrimary !== null && !Number.isNaN(opponentFromPrimary)) {
@@ -8665,6 +8870,21 @@ export const Fwa: Command = {
 
         const hasPrimaryPoints = primary.balance !== null && !Number.isNaN(primary.balance);
         const hasOpponentPoints = opponent.balance !== null && !Number.isNaN(opponent.balance);
+        const siteUpdated = isPointsValidationCurrentForMatchup({
+          primarySnapshot: primary,
+          opponentSnapshot: opponent,
+          opponentTag,
+          sourceSync,
+        });
+        if (
+          siteUpdated &&
+          !siteUpdatedFromPrimary &&
+          opponent.snapshotSource === "tracked_clan_fallback"
+        ) {
+          console.info(
+            `[fwa-sync-validation] stage=single_view proof=tracked_fallback clan=#${tag} opponent=#${opponentTag} sync=${primary.winnerBoxSync ?? "unknown"}`
+          );
+        }
         const siteSyncObservedForWrite = primary.winnerBoxSync ?? null;
         const winnerBoxNotMarkedFwa = hasWinnerBoxNotMarkedFwaSignal(primary.winnerBoxText ?? null);
         const strongOpponentEvidencePresent =
@@ -9067,11 +9287,15 @@ export const Fwa: Command = {
             [tag]: singleView,
           },
         };
+        console.info(
+          `[fwa-match-payload] stage=command_build scope=scoped guild=${interaction.guildId ?? "none"} source=single_tag_live tag=#${tag}`
+        );
         fwaMatchCopyPayloads.set(key, {
           userId: interaction.user.id,
           guildId: interaction.guildId ?? null,
           includePostButton: !isPublic,
           allianceView: { embed: alliance.embed, copyText: alliance.copyText, matchTypeAction: null },
+          allianceViewIsScoped: true,
           singleViews: alliance.singleViews,
           currentScope: "single",
           currentTag: tag,
