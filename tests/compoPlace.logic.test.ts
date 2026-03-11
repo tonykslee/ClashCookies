@@ -190,5 +190,75 @@ describe("/compo place candidate parsing", () => {
     expect(stateRows[1][0]).toBe("Dark Empire");
     expect(stateRows[1][0]).not.toContain("-actual");
   });
+
+  it("omits blank fixed-grid slots and keeps clan row order in /compo state output", () => {
+    const modeRows = [
+      {
+        row: makeRow({
+          0: "Alpha Clan-actual",
+          3: "1,500,000",
+          20: "2",
+          21: "1",
+          22: "0",
+          23: "0",
+          24: "-1",
+          25: "0",
+          26: "0",
+        }),
+        sheetRowNumber: 7,
+      },
+      {
+        row: makeRow({
+          0: "",
+          3: "1,490,000",
+          20: "5",
+          21: "0",
+          22: "0",
+          23: "-3",
+          24: "0",
+          25: "0",
+          26: "0",
+        }),
+        sheetRowNumber: 10,
+      },
+      {
+        row: makeRow({
+          0: "Bravo Clan",
+          3: "1,480,000",
+          20: "1",
+          21: "0",
+          22: "1",
+          23: "0",
+          24: "0",
+          25: "-1",
+          26: "0",
+        }),
+        sheetRowNumber: 13,
+      },
+      {
+        row: makeRow({
+          0: "   ",
+          3: "1,470,000",
+          20: "4",
+          21: "0",
+          22: "0",
+          23: "0",
+          24: "0",
+          25: "0",
+          26: "-4",
+        }),
+        sheetRowNumber: 16,
+      },
+    ];
+
+    const stateRows = buildCompoStateRowsForTest(modeRows);
+
+    expect(stateRows).toHaveLength(3);
+    expect(stateRows[0]).toEqual(["Clan", "Total", "Missing", "TH18", "TH17", "TH16", "TH15", "TH14", "<=TH13"]);
+    expect(stateRows[1][0]).toBe("Alpha Clan");
+    expect(stateRows[1][1]).toBe("1,500,000");
+    expect(stateRows[2][0]).toBe("Bravo Clan");
+    expect(stateRows[2][1]).toBe("1,480,000");
+  });
 });
 
