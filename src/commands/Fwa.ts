@@ -1616,6 +1616,7 @@ async function buildWarMailEmbedForTag(
       fetchedAtMs: primarySnapshot?.fetchedAtMs ?? null,
       fetchReason,
       matchType,
+      opponentNotFound: opponentSnapshot?.notFound ?? false,
     });
   }
 
@@ -5031,22 +5032,24 @@ function buildSyncValidationState(input: {
 function buildStoredSyncSummary(input: {
   syncRow: {
     syncNum: number;
+    lastKnownSyncNumber: number | null;
+    warId: string | null;
+    warStartTime: Date;
     syncFetchedAt: Date;
     lastSuccessfulPointsApiFetchAt: Date | null;
     needsValidation: boolean;
   } | null;
   fallbackSyncNum: number | null;
+  warId: string | number | null | undefined;
+  warStartTime: Date | null;
+  opponentNotFound: boolean;
   validationState: SyncValidationState;
 }): {
   syncLine: string;
   updatedLine: string | null;
   stateLine: string;
 } {
-  const syncNumber =
-    input.syncRow?.syncNum ??
-    (input.fallbackSyncNum !== null && Number.isFinite(input.fallbackSyncNum)
-      ? Math.trunc(input.fallbackSyncNum)
-      : null);
+  const syncNumber = resolveRenderedSyncNumberForStoredSummary(input);
   const syncLine =
     syncNumber !== null && Number.isFinite(syncNumber)
       ? `#${Math.trunc(syncNumber)} (${Math.trunc(syncNumber) % 2 === 0 ? "High Sync" : "Low Sync"})`
@@ -5065,6 +5068,88 @@ function buildStoredSyncSummary(input: {
     differenceCount: input.validationState.differences.length,
   });
   return { syncLine, updatedLine, stateLine };
+}
+
+/** Purpose: normalize optional sync values into comparable integers. */
+function toComparableSyncNumber(value: number | null | undefined): number | null {
+  if (value === null || value === undefined || !Number.isFinite(value)) return null;
+  return Math.trunc(value);
+}
+
+/** Purpose: normalize optional war-start timestamps to epoch milliseconds for identity matching. */
+function toWarStartMs(value: Date | null | undefined): number | null {
+  if (!(value instanceof Date)) return null;
+  const ms = value.getTime();
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/** Purpose: compare persisted and active war identities with warId-first precedence. */
+function isSameWarIdentityForSyncSummary(input: {
+  rowWarId: string | null | undefined;
+  rowWarStartTime: Date | null | undefined;
+  activeWarId: string | number | null | undefined;
+  activeWarStartTime: Date | null | undefined;
+}): boolean {
+  const activeWarId = normalizeWarIdText(input.activeWarId);
+  const rowWarId = normalizeWarIdText(input.rowWarId);
+  if (activeWarId) {
+    return rowWarId === activeWarId;
+  }
+  const activeWarStartMs = toWarStartMs(input.activeWarStartTime);
+  const rowWarStartMs = toWarStartMs(input.rowWarStartTime);
+  return (
+    activeWarStartMs !== null &&
+    rowWarStartMs !== null &&
+    Math.trunc(activeWarStartMs) === Math.trunc(rowWarStartMs)
+  );
+}
+
+/** Purpose: resolve sync number rendering with same-war fallback precedence for explicit opponent-not-found cases. */
+function resolveRenderedSyncNumberForStoredSummary(input: {
+  syncRow: {
+    syncNum: number;
+    lastKnownSyncNumber: number | null;
+    warId: string | null;
+    warStartTime: Date;
+  } | null;
+  fallbackSyncNum: number | null;
+  warId: string | number | null | undefined;
+  warStartTime: Date | null;
+  opponentNotFound: boolean;
+  validationState: SyncValidationState;
+}): number | null {
+  const persistedSyncNum = toComparableSyncNumber(input.syncRow?.syncNum);
+  const fallbackSyncNum = toComparableSyncNumber(input.fallbackSyncNum);
+  if (
+    !input.opponentNotFound ||
+    !input.validationState.siteCurrent ||
+    (!normalizeWarIdText(input.warId) && toWarStartMs(input.warStartTime) === null)
+  ) {
+    return persistedSyncNum ?? fallbackSyncNum;
+  }
+
+  const rowMatchesActiveWar =
+    input.syncRow === null
+      ? false
+      : isSameWarIdentityForSyncSummary({
+          rowWarId: input.syncRow.warId ?? null,
+          rowWarStartTime: input.syncRow.warStartTime ?? null,
+          activeWarId: input.warId,
+          activeWarStartTime: input.warStartTime,
+        });
+  if (input.syncRow !== null && !rowMatchesActiveWar) {
+    return fallbackSyncNum ?? persistedSyncNum;
+  }
+
+  const checkpointSyncNum = toComparableSyncNumber(input.syncRow?.lastKnownSyncNumber ?? null);
+  const persistedBestSync = Math.max(persistedSyncNum ?? -1, checkpointSyncNum ?? -1);
+  if (persistedBestSync < 0) {
+    return fallbackSyncNum;
+  }
+  if (fallbackSyncNum === null) {
+    return persistedBestSync;
+  }
+  return fallbackSyncNum > persistedBestSync ? fallbackSyncNum : persistedBestSync;
 }
 
 /** Purpose: classify whether points-site data is current for this matchup, including tracked-clan fallback proof. */
@@ -5125,21 +5210,60 @@ async function persistClanPointsSyncIfCurrent(input: {
   fetchedAtMs?: number | null;
   fetchReason?: PointsApiFetchReason;
   matchType?: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN" | null;
+  opponentNotFound?: boolean;
 }): Promise<void> {
-  if (!input.guildId || !input.warStartTime || !input.siteCurrent) return;
+  if (!input.guildId || !input.siteCurrent) return;
   if (
-    input.syncNum === null ||
-    !Number.isFinite(input.syncNum) ||
-    input.clanPoints === null ||
-    !Number.isFinite(input.clanPoints) ||
-    input.opponentPoints === null ||
-    !Number.isFinite(input.opponentPoints) ||
-    !input.opponentTag
+    input.warStartTime &&
+    input.syncNum !== null &&
+    Number.isFinite(input.syncNum) &&
+    input.clanPoints !== null &&
+    Number.isFinite(input.clanPoints) &&
+    input.opponentPoints !== null &&
+    Number.isFinite(input.opponentPoints) &&
+    Boolean(input.opponentTag)
   ) {
+    await pointsSyncService.upsertPointsSync({
+      guildId: input.guildId,
+      clanTag: input.clanTag,
+      warId:
+        input.warId !== null && input.warId !== undefined && Number.isFinite(input.warId)
+          ? String(Math.trunc(input.warId))
+          : null,
+      warStartTime: input.warStartTime,
+      syncNum: Math.trunc(input.syncNum),
+      opponentTag: input.opponentTag,
+      clanPoints: Math.trunc(input.clanPoints),
+      opponentPoints: Math.trunc(input.opponentPoints),
+      outcome: input.outcome ?? null,
+      isFwa: input.isFwa ?? false,
+      fetchedAt:
+        input.fetchedAtMs !== null &&
+        input.fetchedAtMs !== undefined &&
+        Number.isFinite(input.fetchedAtMs)
+          ? new Date(Math.trunc(input.fetchedAtMs))
+          : undefined,
+      fetchReason: input.fetchReason ?? "match_render",
+      matchType: input.matchType ?? null,
+      needsValidation: false,
+    });
     return;
   }
 
-  await pointsSyncService.upsertPointsSync({
+  const hasWarIdentity =
+    (input.warId !== null && input.warId !== undefined && Number.isFinite(input.warId)) ||
+    input.warStartTime instanceof Date;
+  const canCheckpointSync =
+    input.opponentNotFound === true &&
+    hasWarIdentity &&
+    input.syncNum !== null &&
+    Number.isFinite(input.syncNum) &&
+    (input.opponentPoints === null || !Number.isFinite(input.opponentPoints));
+  if (!canCheckpointSync) return;
+  const checkpointSyncNum = toComparableSyncNumber(input.syncNum);
+  if (checkpointSyncNum === null) return;
+
+  await pointsSyncService.checkpointCurrentWarSync({
     guildId: input.guildId,
     clanTag: input.clanTag,
     warId:
@@ -5147,12 +5271,7 @@ async function persistClanPointsSyncIfCurrent(input: {
         ? String(Math.trunc(input.warId))
         : null,
     warStartTime: input.warStartTime,
-    syncNum: Math.trunc(input.syncNum),
-    opponentTag: input.opponentTag,
-    clanPoints: Math.trunc(input.clanPoints),
-    opponentPoints: Math.trunc(input.opponentPoints),
-    outcome: input.outcome ?? null,
-    isFwa: input.isFwa ?? false,
+    syncNum: checkpointSyncNum,
     fetchedAt:
       input.fetchedAtMs !== null &&
       input.fetchedAtMs !== undefined &&
@@ -5160,8 +5279,6 @@ async function persistClanPointsSyncIfCurrent(input: {
         ? new Date(Math.trunc(input.fetchedAtMs))
         : undefined,
     fetchReason: input.fetchReason ?? "match_render",
-    matchType: input.matchType ?? null,
-    needsValidation: false,
   });
 }
 
@@ -5198,6 +5315,7 @@ export const shouldHydrateAlliancePayloadForTest = shouldHydrateAlliancePayload;
 
 export const resolveMatchTypeFromStoredSyncRowForTest = resolveMatchTypeFromStoredSyncRow;
 export const buildSyncValidationStateForTest = buildSyncValidationState;
+export const resolveRenderedSyncNumberForStoredSummaryForTest = resolveRenderedSyncNumberForStoredSummary;
 
 /** Purpose: infer match type strictly from opponent points-site signals. */
 function inferMatchTypeFromPointsSnapshots(
@@ -6698,6 +6816,7 @@ async function buildTrackedMatchOverview(
       fetchedAtMs: primaryPoints?.fetchedAtMs ?? null,
       fetchReason: "match_render",
       matchType,
+      opponentNotFound: opponentPoints?.notFound ?? false,
     });
     const syncRow = await pointsSyncService.getCurrentSyncForClan({
       guildId: guildId ?? "",
@@ -6826,6 +6945,9 @@ async function buildTrackedMatchOverview(
     const storedSyncSummary = buildStoredSyncSummary({
       syncRow,
       fallbackSyncNum: siteSyncObservedForWrite,
+      warId: sub?.warId ?? null,
+      warStartTime: warStartTimeForSync,
+      opponentNotFound: opponentPoints?.notFound ?? false,
       validationState,
     });
     const opponentActiveFwaEvidence = resolveOpponentActiveFwaEvidence({
@@ -9616,6 +9738,7 @@ export const Fwa: Command = {
           fetchedAtMs: primary.fetchedAtMs,
           fetchReason: "match_render",
           matchType,
+          opponentNotFound: opponent.notFound,
         });
         const syncRow = await pointsSyncService.getCurrentSyncForClan({
           guildId: interaction.guildId ?? "",
@@ -9645,6 +9768,9 @@ export const Fwa: Command = {
         const storedSyncSummary = buildStoredSyncSummary({
           syncRow,
           fallbackSyncNum: siteSyncObservedForWrite,
+          warId: subscription?.warId ?? null,
+          warStartTime: warStartTimeForSync,
+          opponentNotFound: opponent.notFound,
           validationState,
         });
         const siteSyncObserved = resolveObservedSyncNumberForMatchup({
