@@ -8,9 +8,11 @@ import {
   getMailBlockedReasonFromRevisionStateForTest,
   isPointsValidationCurrentForMatchupForTest,
   isLowConfidenceAllianceMismatchScenarioForTest,
+  resolveObservedSyncNumberForMatchupForTest,
   resolveMatchTypeSelectionForTest,
   resolveOpponentActiveFwaEvidenceForTest,
   resolveSingleClanMatchEmbedColorForTest,
+  shouldDisplayInferredMatchTypeForTest,
   shouldHydrateAlliancePayloadForTest,
   resolveEffectiveFwaOutcomeForTest,
   resolveConfirmedRevisionBaselineForTest,
@@ -127,6 +129,31 @@ describe("fwa match revision draft scoping", () => {
       expectedOutcome: null,
     });
     expect(resolved.effective?.matchType).toBe("BL");
+  });
+});
+
+describe("fwa inferred warning visibility", () => {
+  it("keeps the warning visible while the view is still inferred and no draft is applied", () => {
+    expect(
+      shouldDisplayInferredMatchTypeForTest({
+        inferredMatchType: true,
+        appliedDraft: null,
+      })
+    ).toBe(true);
+  });
+
+  it("clears the warning after a draft/confirmation is applied", () => {
+    expect(
+      shouldDisplayInferredMatchTypeForTest({
+        inferredMatchType: true,
+        appliedDraft: {
+          warId: "1001",
+          opponentTag: "2TAG",
+          matchType: "BL",
+          expectedOutcome: null,
+        },
+      })
+    ).toBe(false);
   });
 });
 
@@ -560,7 +587,24 @@ describe("fwa sync validation status copy", () => {
       opponentNotFound: true,
     });
 
-    expect(state.statusLine).toBe(":warning: clan not found in points.fwafarm");
+    expect(state.statusLine).toBe(":interrobang: Clan not found on points.fwafarm");
+  });
+
+  it("uses clan-not-found copy before validation becomes current when the opponent page is missing", () => {
+    const state = buildSyncValidationStateForTest({
+      syncRow: null,
+      currentWarStartTime: new Date("2026-03-10T00:00:00.000Z"),
+      siteCurrent: false,
+      syncNum: 476,
+      opponentTag: "2TAG",
+      clanPoints: 10,
+      opponentPoints: null,
+      outcome: null,
+      isFwa: false,
+      opponentNotFound: true,
+    });
+
+    expect(state.statusLine).toBe(":interrobang: Clan not found on points.fwafarm");
   });
 });
 
@@ -656,6 +700,52 @@ describe("fwa points validation current classification", () => {
     });
 
     expect(current).toBe(false);
+  });
+});
+
+describe("fwa observed sync resolution", () => {
+  it("prefers tracked-clan fallback sync when it proves the current war", () => {
+    const sync = resolveObservedSyncNumberForMatchupForTest({
+      primarySnapshot: {
+        effectiveSync: 474,
+      },
+      opponentSnapshot: {
+        snapshotSource: "tracked_clan_fallback",
+        fallbackCurrentForWar: true,
+        effectiveSync: 476,
+      },
+    });
+
+    expect(sync).toBe(476);
+  });
+
+  it("prefers tracked fallback winner-box sync when effective sync is stale/overlaid", () => {
+    const sync = resolveObservedSyncNumberForMatchupForTest({
+      primarySnapshot: {
+        effectiveSync: 474,
+      },
+      opponentSnapshot: {
+        snapshotSource: "tracked_clan_fallback",
+        fallbackCurrentForWar: true,
+        effectiveSync: 474,
+        winnerBoxSync: 476,
+      },
+    });
+
+    expect(sync).toBe(476);
+  });
+
+  it("prefers primary winner-box sync when the page proves the tracked clan tag", () => {
+    const sync = resolveObservedSyncNumberForMatchupForTest({
+      primarySnapshot: {
+        effectiveSync: 474,
+        winnerBoxSync: 476,
+        winnerBoxHasTag: true,
+      },
+      opponentSnapshot: null,
+    });
+
+    expect(sync).toBe(476);
   });
 });
 

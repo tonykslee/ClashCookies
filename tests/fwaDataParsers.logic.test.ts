@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  classifyPointsLookupState,
   extractActiveFwa,
   extractMatchupBalances,
   extractMatchupHeader,
@@ -50,5 +51,10 @@ describe("fwa data parsers", () => {
   it("sanitizes noisy clan names", () => {
     expect(sanitizeClanName("Clan Tag: #ABC")).toBeNull();
     expect(sanitizeClanName("  Legit Clan  ")).toBe("Legit Clan");
+  });
+
+  it("classifies explicit clan-not-found responses as a distinct lookup state", () => {
+    expect(classifyPointsLookupState("Clan not found.")).toBe("clan_not_found");
+    expect(classifyPointsLookupState("Current Point Balance: 1234")).toBe("ok");
   });
 });

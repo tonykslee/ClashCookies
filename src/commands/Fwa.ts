@@ -117,6 +117,7 @@ import {
   parsePointsPostButtonCustomId,
 } from "./fwa/customIds";
 import {
+  classifyPointsLookupState,
   extractActiveFwa,
   extractField,
   extractMatchupBalances,
@@ -128,6 +129,7 @@ import {
   extractWinnerBoxText,
   hasWinnerBoxNotMarkedFwaSignal,
   parseCocApiTime,
+  type PointsLookupState,
   sanitizeClanName,
   toPlainText,
 } from "./fwa/dataParsers";
@@ -210,6 +212,7 @@ type PointsSnapshot = {
   tag: string;
   url: string;
   snapshotSource: "direct" | "tracked_clan_fallback";
+  lookupState: PointsLookupState;
   balance: number | null;
   clanName: string | null;
   activeFwa: boolean | null;
@@ -370,7 +373,8 @@ function buildCcVerifyUrl(tag: string): string {
 }
 
 const MATCHTYPE_WARNING_LEGEND =
-  ":warning: indicates inferred match type. Verify opponent association before confirming.";
+  ":warning: Match type is inferred. Confirm match type before sending war mail.";
+const POINTS_CLAN_NOT_FOUND_STATUS_LINE = ":interrobang: Clan not found on points.fwafarm";
 
 function logFwaMatchTelemetry(event: string, detail: string): void {
   console.log(`[telemetry-fwa-match] event=${event} ${detail}`);
@@ -679,10 +683,15 @@ function getMailBlockedReasonFromRevisionState(params: {
     if (params.appliedDraft && params.draftDiffersFromBaseline) return null;
     return "Current mail is already up to date. Change match config before sending again.";
   }
-  if (params.inferredMatchType && !params.appliedDraft) {
-    return "Match type is inferred. Confirm match type before sending war mail.";
-  }
   return null;
+}
+
+/** Purpose: keep inferred-match warnings visible until the user explicitly applies a draft/confirmation. */
+function shouldDisplayInferredMatchType(params: {
+  inferredMatchType: boolean;
+  appliedDraft: MatchRevisionFields | null | undefined;
+}): boolean {
+  return Boolean(params.inferredMatchType && !normalizeRevisionFields(params.appliedDraft));
 }
 
 /** Purpose: return the persisted baseline used when evaluating whether a draft is a true revision. */
@@ -1530,13 +1539,17 @@ async function buildWarMailEmbedForTag(
         currentSync
       );
     }
+    const siteSyncObservedForWrite = resolveObservedSyncNumberForMatchup({
+      primarySnapshot,
+      opponentSnapshot,
+    });
     if (
       siteCurrent &&
       !siteCurrentFromPrimary &&
       opponentSnapshot?.snapshotSource === "tracked_clan_fallback"
     ) {
       console.info(
-        `[fwa-sync-validation] stage=mail_embed proof=tracked_fallback clan=#${normalizedTag} opponent=#${opponentTag} sync=${primarySnapshot?.winnerBoxSync ?? "unknown"}`
+        `[fwa-sync-validation] stage=mail_embed proof=tracked_fallback clan=#${normalizedTag} opponent=#${opponentTag} sync=${siteSyncObservedForWrite ?? "unknown"}`
       );
     }
     await persistClanPointsSyncIfCurrent({
@@ -1545,7 +1558,7 @@ async function buildWarMailEmbedForTag(
       warId: subscription?.warId ?? null,
       warStartTime: warStartTimeForSync,
       siteCurrent,
-      syncNum: primarySnapshot?.winnerBoxSync ?? null,
+      syncNum: siteSyncObservedForWrite,
       opponentTag,
       clanPoints: primarySnapshot?.balance ?? null,
       opponentPoints: opponentSnapshot?.balance ?? null,
@@ -1675,9 +1688,6 @@ async function buildWarMailEmbedForTag(
   const unavailableReasons: string[] = [];
   if (!trackedConfig.mailChannelId) {
     unavailableReasons.push("Tracked clan mail channel is not configured.");
-  }
-  if (mailInferredMatchType) {
-    unavailableReasons.push("Match type is inferred. Confirm match type before sending war mail.");
   }
 
   const embed = new EmbedBuilder()
@@ -2127,6 +2137,57 @@ function buildWarMailPreviewComponents(params: {
     );
   }
   return [new ActionRowBuilder<ButtonBuilder>().addComponents(buttons)];
+}
+
+/** Purpose: prefer tracked-clan fallback sync when it is the proof source for current-war validation. */
+function resolveObservedSyncNumberForMatchup(params: {
+  primarySnapshot: {
+    effectiveSync: number | null;
+    winnerBoxSync?: number | null;
+    winnerBoxHasTag?: boolean;
+  } | null;
+  opponentSnapshot: {
+    snapshotSource: PointsSnapshot["snapshotSource"];
+    fallbackCurrentForWar?: boolean;
+    effectiveSync: number | null;
+    winnerBoxSync?: number | null;
+    winnerBoxHasTag?: boolean;
+  } | null;
+}): number | null {
+  const resolveSnapshotSync = (snapshot: {
+    effectiveSync: number | null;
+    winnerBoxSync?: number | null;
+    winnerBoxHasTag?: boolean;
+  }): number | null => {
+    const winnerBoxSync = snapshot.winnerBoxSync;
+    if (
+      winnerBoxSync !== null &&
+      winnerBoxSync !== undefined &&
+      Number.isFinite(winnerBoxSync) &&
+      snapshot.winnerBoxHasTag !== false
+    ) {
+      return Math.trunc(winnerBoxSync);
+    }
+    const effectiveSync = snapshot.effectiveSync;
+    if (effectiveSync !== null && effectiveSync !== undefined && Number.isFinite(effectiveSync)) {
+      return Math.trunc(effectiveSync);
+    }
+    return winnerBoxSync !== null &&
+      winnerBoxSync !== undefined &&
+      Number.isFinite(winnerBoxSync)
+      ? Math.trunc(winnerBoxSync)
+      : null;
+  };
+  const fallbackSync =
+    params.opponentSnapshot?.snapshotSource === "tracked_clan_fallback" &&
+    params.opponentSnapshot.fallbackCurrentForWar
+      ? resolveSnapshotSync(params.opponentSnapshot)
+      : null;
+  if (fallbackSync !== null) {
+    return fallbackSync;
+  }
+  if (!params.primarySnapshot) return null;
+  return resolveSnapshotSync(params.primarySnapshot);
 }
 
 function buildWarMailPostedComponents(key: string): Array<ActionRowBuilder<ButtonBuilder>> {
@@ -2642,7 +2703,11 @@ function buildFwaMatchCopyComponents(
             const mailStatusEmoji = viewForTag?.mailStatusEmoji ?? MAILBOX_NOT_SENT_EMOJI;
             return {
               label: `${mailStatusEmoji} ${clanName}${warningSuffix}`.slice(0, 100),
-              description: `#${tag}`.slice(0, 100),
+              description: (
+                viewForTag?.inferredMatchType
+                  ? `#${tag} | Match type is inferred`
+                  : `#${tag}`
+              ).slice(0, 100),
               value: tag,
             };
           })
@@ -4552,7 +4617,10 @@ function buildSyncValidationState(input: {
       siteCurrent: false,
       syncRowMissing: input.syncRow === null,
       differences: [],
-      statusLine: ":hourglass_flowing_sand: points.fwafarm is not updated for this matchup yet.",
+      statusLine:
+        input.opponentNotFound === true
+          ? POINTS_CLAN_NOT_FOUND_STATUS_LINE
+          : ":hourglass_flowing_sand: points.fwafarm is not updated for this matchup yet.",
     };
   }
 
@@ -4620,9 +4688,7 @@ function buildSyncValidationState(input: {
     }
   }
 
-  const showNotFoundStatus = Boolean(
-    input.opponentNotFound === true && differences.length > 0
-  );
+  const showNotFoundStatus = input.opponentNotFound === true;
   return {
     siteCurrent: true,
     syncRowMissing: input.syncRow === null,
@@ -4630,7 +4696,7 @@ function buildSyncValidationState(input: {
     statusLine:
       differences.length > 0
         ? showNotFoundStatus
-          ? ":warning: clan not found in points.fwafarm"
+          ? POINTS_CLAN_NOT_FOUND_STATUS_LINE
           : ":warning: Data not fully synced with points.fwafarm"
         : "✅ Data is in sync with points.fwafarm",
   };
@@ -4785,6 +4851,8 @@ export const buildMailStatusDebugLinesForTest = buildMailStatusDebugLines;
 export const resolveScopedDraftRevisionForTest = resolveScopedDraftRevision;
 export const resolveEffectiveRevisionStateForTest = resolveEffectiveRevisionState;
 export const resolveConfirmedRevisionBaselineForTest = resolveConfirmedRevisionBaseline;
+export const shouldDisplayInferredMatchTypeForTest = shouldDisplayInferredMatchType;
+export const resolveObservedSyncNumberForMatchupForTest = resolveObservedSyncNumberForMatchup;
 export const buildDraftFromMatchTypeSelectionForTest = buildDraftFromMatchTypeSelection;
 export const resolveMatchTypeSelectionForTest = resolveMatchTypeSelection;
 export const buildDraftFromOutcomeToggleForTest = buildDraftFromOutcomeToggle;
@@ -5013,6 +5081,7 @@ function buildOpponentSnapshotFromTrackedClanFallback(params: {
       ...trackedSnapshot,
       tag: requestedOpponentTag,
       snapshotSource: "tracked_clan_fallback",
+      lookupState: "ok",
       clanName: extractedOpponentName ?? trackedSnapshot.clanName ?? null,
       balance: Math.trunc(opponentBalance),
       activeFwa: null,
@@ -5228,7 +5297,8 @@ async function scrapeClanPoints(
     clanNameFromHeader ??
     extractField(topSection, "Clan Name") ??
     extractField(plain, "Clan Name");
-  const notFound = /not found|unknown clan|no clan/i.test(topSection || plain);
+  const lookupState = classifyPointsLookupState(topSection, plain);
+  const notFound = lookupState === "clan_not_found";
   const winnerBoxText = extractWinnerBoxText(html);
   const winnerBoxTags = extractTagsFromText(topSection || winnerBoxText || "");
   const winnerBoxSync =
@@ -5252,6 +5322,7 @@ async function scrapeClanPoints(
     tag: normalizedTag,
     url,
     snapshotSource: "direct",
+    lookupState,
     balance,
     clanName,
     activeFwa,
@@ -5329,6 +5400,7 @@ function buildPointsSnapshotFromWarScopedSyncRow(input: {
     tag: clanTag,
     url: buildPointsUrl(clanTag),
     snapshotSource: "direct",
+    lookupState: "ok",
     balance: Math.trunc(input.row.clanPoints),
     clanName: null,
     activeFwa: input.row.isFwa ?? null,
@@ -6140,7 +6212,10 @@ async function buildTrackedMatchOverview(
       opponentPoints?.balance !== null &&
       opponentPoints?.balance !== undefined &&
       !Number.isNaN(opponentPoints.balance);
-    const siteSyncObservedForWrite = primaryPoints?.winnerBoxSync ?? null;
+    const siteSyncObservedForWrite = resolveObservedSyncNumberForMatchup({
+      primarySnapshot: primaryPoints,
+      opponentSnapshot: opponentPoints,
+    });
     const siteUpdatedFromPrimaryEvidence = Boolean(
       primaryPoints && isPointsSiteUpdatedForOpponent(primaryPoints, opponentTag, sourceSync)
     );
@@ -6315,7 +6390,10 @@ async function buildTrackedMatchOverview(
           opponentPoints?.balance ?? null
         )
       : null;
-    const siteSyncObserved = primaryPoints?.winnerBoxSync ?? null;
+    const siteSyncObserved = resolveObservedSyncNumberForMatchup({
+      primarySnapshot: primaryPoints,
+      opponentSnapshot: opponentPoints,
+    });
     const syncMismatch = siteUpdatedForAlert
       ? buildSyncMismatchWarning(currentSync, siteSyncObserved)
       : null;
@@ -6456,9 +6534,10 @@ async function buildTrackedMatchOverview(
         effectiveMismatchWarnings.matchTypeVsFwaMismatch ||
         validationState.differences.length > 0
     );
-    const effectiveInferredMatchType = Boolean(
-      revisionState.appliedDraft || revisionState.baseline ? false : inferredMatchType
-    );
+    const effectiveInferredMatchType = shouldDisplayInferredMatchType({
+      inferredMatchType,
+      appliedDraft: revisionState.appliedDraft,
+    });
     if (effectiveInferredMatchType) hasAnyInferredMatchType = true;
     const mailStatusEmoji = liveMailStatus.mailStatusEmoji;
     const mailBlockedReason = getMailBlockedReasonFromRevisionState({
@@ -9019,16 +9098,19 @@ export const Fwa: Command = {
           opponentTag,
           sourceSync,
         });
+        const siteSyncObservedForWrite = resolveObservedSyncNumberForMatchup({
+          primarySnapshot: primary,
+          opponentSnapshot: opponent,
+        });
         if (
           siteUpdated &&
           !siteUpdatedFromPrimary &&
           opponent.snapshotSource === "tracked_clan_fallback"
         ) {
           console.info(
-            `[fwa-sync-validation] stage=single_view proof=tracked_fallback clan=#${tag} opponent=#${opponentTag} sync=${primary.winnerBoxSync ?? "unknown"}`
+            `[fwa-sync-validation] stage=single_view proof=tracked_fallback clan=#${tag} opponent=#${opponentTag} sync=${siteSyncObservedForWrite ?? "unknown"}`
           );
         }
-        const siteSyncObservedForWrite = primary.winnerBoxSync ?? null;
         const winnerBoxNotMarkedFwa = hasWinnerBoxNotMarkedFwaSignal(primary.winnerBoxText ?? null);
         const strongOpponentEvidencePresent =
           opponent.notFound === true ||
@@ -9223,7 +9305,10 @@ export const Fwa: Command = {
           fallbackSyncNum: siteSyncObservedForWrite,
           validationState,
         });
-        const siteSyncObserved = primary.winnerBoxSync ?? null;
+        const siteSyncObserved = resolveObservedSyncNumberForMatchup({
+          primarySnapshot: primary,
+          opponentSnapshot: opponent,
+        });
         const syncMismatch = siteUpdated
           ? buildSyncMismatchWarning(currentSync, siteSyncObserved)
           : null;
