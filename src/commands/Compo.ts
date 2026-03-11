@@ -3,17 +3,51 @@ import {
   AutocompleteInteraction,
   ChatInputCommandInteraction,
   Client,
+  EmbedBuilder,
 } from "discord.js";
 import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
+import { normalizeCompoClanDisplayName } from "../helper/compoDisplay";
 import { prisma } from "../prisma";
 import { safeReply } from "../helper/safeReply";
 import { CoCService } from "../services/CoCService";
-import { GoogleSheetMode, GoogleSheetsService } from "../services/GoogleSheetsService";
+import {
+  GoogleSheetMode,
+  GoogleSheetReadError,
+  GoogleSheetReadErrorCode,
+  GoogleSheetsService,
+} from "../services/GoogleSheetsService";
 import { SettingsService } from "../services/SettingsService";
 
 function normalize(value: string): string {
   return value.trim().toLowerCase();
+}
+
+function getSubcommandSafe(interaction: ChatInputCommandInteraction): string {
+  try {
+    return interaction.options.getSubcommand(false) ?? "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+function logCompoStage(
+  interaction: ChatInputCommandInteraction,
+  stage: string,
+  detail: Record<string, string | number | boolean | null | undefined> = {}
+): void {
+  const base = {
+    stage,
+    command: "compo",
+    subcommand: getSubcommandSafe(interaction),
+    guild: interaction.guildId ?? "DM",
+    user: interaction.user.id,
+  };
+  const fields = { ...base, ...detail };
+  const serialized = Object.entries(fields)
+    .map(([k, v]) => `${k}=${String(v ?? "")}`)
+    .join(" ");
+  console.log(`[compo-command] ${serialized}`);
 }
 
 const COMPO_MODE_CHOICES = [
@@ -29,21 +63,61 @@ function readMode(interaction: ChatInputCommandInteraction): GoogleSheetMode {
 const COL_CLAN_NAME = 0; // A
 const COL_CLAN_TAG = 1; // B
 const COL_TOTAL_WEIGHT = 3; // D
+const COL_TARGET_BAND = 48; // AW
 const COL_MISSING_WEIGHT = 20; // U
 const COL_BUCKET_START = 21; // V
 const COL_BUCKET_END = 26; // AA
 const COL_ADJUSTMENT = 53; // BB
-const COL_MODE = 55; // BD
 const FIXED_LAYOUT_RANGE = "AllianceDashboard!A6:BD500";
+const FIXED_LAYOUT_RANGE_START_ROW = 6;
 const STATE_HEADERS = ["Clan", "Total", "Missing", "TH18", "TH17", "TH16", "TH15", "TH14", "<=TH13"];
+const LOOKUP_REFRESH_RANGE = "Lookup!B10:B10";
+const COMPO_ERROR_MESSAGE_BY_CODE: Record<GoogleSheetReadErrorCode, string> = {
+  SHEET_LINK_MISSING: "No compo sheet is linked for this server.",
+  SHEET_PROXY_UNAUTHORIZED:
+    "The linked compo sheet could not be accessed because the sheet proxy is not authorized.",
+  SHEET_ACCESS_DENIED:
+    "The linked compo sheet exists, but this bot does not currently have access to read it.",
+  SHEET_RANGE_INVALID:
+    "The linked compo sheet does not contain the expected AllianceDashboard layout.",
+  SHEET_READ_FAILURE:
+    "The compo sheet could not be read due to a sheet service error.",
+};
 
 function normalizeTag(value: string): string {
   return value.trim().toUpperCase().replace(/^#/, "");
 }
 
-function getModeRows(rows: string[][], mode: GoogleSheetMode): string[][] {
-  const wanted = mode.toUpperCase();
-  return rows.filter((row) => String(row[COL_MODE] ?? "").trim().toUpperCase() === wanted);
+type SheetIndexedRow = {
+  row: string[];
+  sheetRowNumber: number;
+};
+
+function getAbsoluteSheetRowNumber(rangeRelativeIndex: number): number {
+  return FIXED_LAYOUT_RANGE_START_ROW + rangeRelativeIndex;
+}
+
+function mapCompoSheetErrorToMessage(err: unknown): string {
+  if (err instanceof GoogleSheetReadError) {
+    return COMPO_ERROR_MESSAGE_BY_CODE[err.code] ?? COMPO_ERROR_MESSAGE_BY_CODE.SHEET_READ_FAILURE;
+  }
+  return COMPO_ERROR_MESSAGE_BY_CODE.SHEET_READ_FAILURE;
+}
+
+function isActualSheetRow(sheetRowNumber: number): boolean {
+  return sheetRowNumber >= 7 && sheetRowNumber % 3 === 1;
+}
+
+function isWarSheetRow(sheetRowNumber: number): boolean {
+  return sheetRowNumber >= 8 && sheetRowNumber % 3 === 2;
+}
+
+function getModeRows(rows: string[][], mode: GoogleSheetMode): SheetIndexedRow[] {
+  return rows.flatMap((row, index) => {
+    const sheetRowNumber = getAbsoluteSheetRowNumber(index);
+    const include = mode === "actual" ? isActualSheetRow(sheetRowNumber) : isWarSheetRow(sheetRowNumber);
+    return include ? [{ row, sheetRowNumber }] : [];
+  });
 }
 
 function _renderStateSvg(mode: GoogleSheetMode, rows: string[][]): Buffer {
@@ -241,7 +315,7 @@ function _mergeStateRows(
     const targetBandValue = (targetBand[i] ?? [""])[0] ?? "";
 
     out.push([
-      abbreviateClan((left[i] ?? [""])[0] ?? ""),
+      abbreviateClan(normalizeCompoClanDisplayName((left[i] ?? [""])[0] ?? "")),
       (middle[i] ?? ["", ""])[0] ?? "",
       targetBandValue,
       ...rightRow,
@@ -250,8 +324,26 @@ function _mergeStateRows(
   return out;
 }
 
+function buildCompoStateRows(modeRows: SheetIndexedRow[]): string[][] {
+  return [
+    STATE_HEADERS,
+    ...modeRows.map((modeRow) => [
+      clampCell(normalizeCompoClanDisplayName(String(modeRow.row[COL_CLAN_NAME] ?? ""))),
+      clampCell(String(modeRow.row[COL_TOTAL_WEIGHT] ?? "")),
+      clampCell(String(modeRow.row[COL_MISSING_WEIGHT] ?? "")),
+      clampCell(String(modeRow.row[COL_BUCKET_START] ?? "")),
+      clampCell(String(modeRow.row[COL_BUCKET_START + 1] ?? "")),
+      clampCell(String(modeRow.row[COL_BUCKET_START + 2] ?? "")),
+      clampCell(String(modeRow.row[COL_BUCKET_START + 3] ?? "")),
+      clampCell(String(modeRow.row[COL_BUCKET_START + 4] ?? "")),
+      clampCell(String(modeRow.row[COL_BUCKET_END] ?? "")),
+    ]),
+  ];
+}
+
 type PlacementCandidate = {
   clanName: string;
+  clanTag: string;
   totalWeight: number;
   targetBand: number;
   missingCount: number;
@@ -259,37 +351,44 @@ type PlacementCandidate = {
   bucketDeltaByHeader: Record<string, number>;
 };
 
+type PlacementCandidateWithVacancy = PlacementCandidate & {
+  liveMemberCount: number | null;
+  vacancySlots: number;
+  hasVacancy: boolean;
+};
+
+type PlacementCandidateWithDelta = PlacementCandidateWithVacancy & {
+  delta: number;
+};
+
 function readPlacementCandidates(
-  clanCol: string[][],
-  totalCol: string[][],
-  targetBandCol: string[][],
-  rightBlock: string[][]
+  modeRows: SheetIndexedRow[]
 ): PlacementCandidate[] {
-  const missingHeaderRow = rightBlock[0] ?? [];
-  const missingIndex = missingHeaderRow.findIndex((v) =>
-    normalize(v).includes("missing")
-  );
-
   const candidates: PlacementCandidate[] = [];
-  for (let i = 1; i < 9; i += 1) {
-    const clanName = (clanCol[i]?.[0] ?? "").trim();
+  const seenKeys = new Set<string>();
+  for (const { row } of modeRows) {
+    const clanName = String(row[COL_CLAN_NAME] ?? "").trim();
     if (!clanName) continue;
+    const clanTag = normalizeTag(String(row[COL_CLAN_TAG] ?? ""));
+    const key = clanTag ? `tag:${clanTag}` : `name:${normalize(clanName)}`;
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
 
-    const totalWeight = parseNumber(totalCol[i]?.[0]);
-    const targetBand = parseNumber(targetBandCol[i]?.[0]);
-    const missingRaw =
-      missingIndex >= 0 ? rightBlock[i]?.[missingIndex] : rightBlock[i]?.[0];
-    const missingCount = parseNumber(missingRaw);
+    const totalWeight = parseNumber(row[COL_TOTAL_WEIGHT]);
+    const targetBand = parseNumber(row[COL_TARGET_BAND]);
+    const missingCount = parseNumber(row[COL_MISSING_WEIGHT]);
     const remainingToTarget = targetBand - totalWeight;
     const bucketDeltaByHeader: Record<string, number> = {};
-    for (let c = 0; c < missingHeaderRow.length; c += 1) {
-      const key = normalize(missingHeaderRow[c] ?? "");
-      if (!key) continue;
-      bucketDeltaByHeader[key] = parseNumber(rightBlock[i]?.[c]);
-    }
+    bucketDeltaByHeader[normalize("TH18-delta")] = parseNumber(row[COL_BUCKET_START]);
+    bucketDeltaByHeader[normalize("TH17-delta")] = parseNumber(row[COL_BUCKET_START + 1]);
+    bucketDeltaByHeader[normalize("TH16-delta")] = parseNumber(row[COL_BUCKET_START + 2]);
+    bucketDeltaByHeader[normalize("TH15-delta")] = parseNumber(row[COL_BUCKET_START + 3]);
+    bucketDeltaByHeader[normalize("TH14-delta")] = parseNumber(row[COL_BUCKET_START + 4]);
+    bucketDeltaByHeader[normalize("<=TH13-delta")] = parseNumber(row[COL_BUCKET_END]);
 
     candidates.push({
       clanName,
+      clanTag,
       totalWeight,
       targetBand,
       missingCount,
@@ -299,6 +398,88 @@ function readPlacementCandidates(
   }
 
   return candidates;
+}
+
+/** Purpose: resolve live member counts from CoC API and mark vacancy from current clan size. */
+async function enrichCandidatesWithLiveVacancy(
+  candidates: PlacementCandidate[],
+  cocService: CoCService
+): Promise<PlacementCandidateWithVacancy[]> {
+  return Promise.all(
+    candidates.map(async (candidate) => {
+      if (!candidate.clanTag) {
+        return {
+          ...candidate,
+          liveMemberCount: null,
+          vacancySlots: 0,
+          hasVacancy: false,
+        };
+      }
+
+      const clan = await cocService
+        .getClan(`#${candidate.clanTag}`)
+        .catch(() => null);
+      const liveMemberCount = (() => {
+        if (Array.isArray(clan?.memberList)) return clan.memberList.length;
+        if (Array.isArray(clan?.members)) return clan.members.length;
+        return null;
+      })();
+      const safeCount =
+        liveMemberCount !== null && Number.isFinite(liveMemberCount)
+          ? Math.max(0, Math.min(50, Math.trunc(liveMemberCount)))
+          : null;
+      const vacancySlots =
+        safeCount !== null ? Math.max(0, 50 - safeCount) : 0;
+
+      return {
+        ...candidate,
+        liveMemberCount: safeCount,
+        vacancySlots,
+        hasVacancy: safeCount !== null && safeCount < 50,
+      };
+    })
+  );
+}
+
+/** Purpose: format one field row per clan for compact placement embed sections. */
+function formatPlacementRows(lines: string[]): string {
+  return lines.length > 0 ? lines.join("\n") : "None";
+}
+
+/** Purpose: build `/compo place` embed output with clear sections. */
+function buildCompoPlaceEmbed(params: {
+  inputWeight: number;
+  bucket: WeightBucket;
+  recommended: PlacementCandidateWithDelta[];
+  vacancyList: PlacementCandidateWithVacancy[];
+  compositionList: PlacementCandidateWithDelta[];
+  refreshLine: string;
+}): EmbedBuilder {
+  const recommendedRows = params.recommended.map(
+    (c) => `${abbreviateClan(normalizeCompoClanDisplayName(c.clanName))} — needs ${Math.abs(c.delta)} ${params.bucket}`
+  );
+  const vacancyRows = params.vacancyList.map(
+    (c) =>
+      `${abbreviateClan(normalizeCompoClanDisplayName(c.clanName))} — ${
+        c.liveMemberCount !== null ? `${c.liveMemberCount}/50` : "unknown/50"
+      }`
+  );
+  const compositionRows = params.compositionList.map(
+    (c) => `${abbreviateClan(normalizeCompoClanDisplayName(c.clanName))} — ${c.delta}`
+  );
+
+  return new EmbedBuilder()
+    .setTitle("Compo Placement Suggestions")
+    .setDescription(
+      `Weight: **${params.inputWeight.toLocaleString()}**\n` +
+        `Bucket: **${params.bucket}**\n` +
+        params.refreshLine
+    )
+    .addFields(
+      { name: "Recommended", value: formatPlacementRows(recommendedRows), inline: false },
+      { name: "Vacancy", value: formatPlacementRows(vacancyRows), inline: false },
+      { name: "Composition", value: formatPlacementRows(compositionRows), inline: false }
+    );
 }
 
 const GLYPHS: Record<string, string[]> = {
@@ -508,53 +689,95 @@ export const Compo: Command = {
   run: async (
     _client: Client,
     interaction: ChatInputCommandInteraction,
-    _cocService: CoCService
+    cocService: CoCService
   ) => {
     try {
+      logCompoStage(interaction, "handler_enter");
       await interaction.deferReply({ ephemeral: true });
+      logCompoStage(interaction, "defer_reply_ok");
 
       const subcommand = interaction.options.getSubcommand(true);
       const mode = readMode(interaction);
+      logCompoStage(interaction, "options_parsed", {
+        mode,
+        tag: interaction.options.getString("tag", false) ?? "",
+        weight: interaction.options.getString("weight", false) ?? "",
+      });
 
       if (subcommand === "advice") {
         const tagInput = interaction.options.getString("tag", true);
         const targetTag = normalizeTag(tagInput);
+        logCompoStage(interaction, "computation_start", { targetTag, mode });
 
         const settings = new SettingsService();
         const sheets = new GoogleSheetsService(settings);
-        const rows = await sheets.readLinkedValues(FIXED_LAYOUT_RANGE);
+        const linked = await sheets.getCompoLinkedSheet(FIXED_LAYOUT_RANGE);
+        logCompoStage(interaction, "db_fetch", {
+          entity: "sheet_link",
+          mode,
+          result: linked.sheetId ? "found" : "missing",
+          sheetIdPresent: Boolean(linked.sheetId),
+          resolutionSource: linked.source,
+        });
+        logCompoStage(interaction, "read_dispatch", {
+          range: FIXED_LAYOUT_RANGE,
+          resolutionSource: linked.source,
+        });
+        const rows = await sheets.readCompoLinkedValues(FIXED_LAYOUT_RANGE, linked);
         const modeRows = getModeRows(rows, mode);
+        logCompoStage(interaction, "db_fetch", {
+          entity: "sheet_rows",
+          mode,
+          result: rows.length > 0 ? "found" : "missing",
+          totalRows: rows.length,
+          modeRows: modeRows.length,
+        });
 
         if (modeRows.length === 0) {
+          logCompoStage(interaction, "response_build", { reason: "no_mode_rows" });
           await safeReply(interaction, {
             ephemeral: true,
             content: `No ${mode.toUpperCase()} rows found in ${FIXED_LAYOUT_RANGE}.`,
           });
+          logCompoStage(interaction, "response_sent", { reason: "no_mode_rows" });
           return;
         }
 
-        for (const row of modeRows) {
+        for (const modeRow of modeRows) {
+          const row = modeRow.row;
           const clanName = String(row[COL_CLAN_NAME] ?? "").trim();
+          const displayClanName = normalizeCompoClanDisplayName(clanName);
           const clanTag = normalizeTag(String(row[COL_CLAN_TAG] ?? ""));
           const advice = String(row[COL_ADJUSTMENT] ?? "").trim();
           if (!clanName || !clanTag) continue;
 
           if (clanTag === targetTag) {
+            logCompoStage(interaction, "computation_complete", {
+              result: "target_found",
+              clanTag,
+            });
+            logCompoStage(interaction, "response_build", { reason: "target_found" });
             await safeReply(interaction, {
               ephemeral: true,
               content:
                 advice && advice.length > 0
-                  ? `Mode: **${mode.toUpperCase()}**\n**${clanName}** (\`#${clanTag}\`) adjustment:\n${advice}`
-                  : `Mode: **${mode.toUpperCase()}**\nFound **${clanName}** (\`#${clanTag}\`), but there is no adjustment text in column BB.`,
+                  ? `Mode: **${mode.toUpperCase()}**\n**${displayClanName}** (\`#${clanTag}\`) adjustment:\n${advice}`
+                  : `Mode: **${mode.toUpperCase()}**\nFound **${displayClanName}** (\`#${clanTag}\`), but there is no adjustment text in column BB.`,
             });
+            logCompoStage(interaction, "response_sent", { reason: "target_found" });
             return;
           }
         }
 
         const knownTags = modeRows
-          .map((row) => normalizeTag(String(row[COL_CLAN_TAG] ?? "")))
+          .map((modeRow) => normalizeTag(String(modeRow.row[COL_CLAN_TAG] ?? "")))
           .filter((tag): tag is string => Boolean(tag));
+        logCompoStage(interaction, "computation_complete", {
+          result: "target_missing",
+          knownTags: knownTags.length,
+        });
 
+        logCompoStage(interaction, "response_build", { reason: "target_missing" });
         await safeReply(interaction, {
           ephemeral: true,
           content:
@@ -562,31 +785,43 @@ export const Compo: Command = {
               ? `Mode: **${mode.toUpperCase()}**\nNo adjustment mapping found for tag \`#${targetTag}\`. Known tags in this mode: ${knownTags.map((t) => `#${t}`).join(", ")}`
               : `Mode: **${mode.toUpperCase()}**\nNo adjustment mapping found for tag \`#${targetTag}\`.`,
         });
+        logCompoStage(interaction, "response_sent", { reason: "target_missing" });
         return;
       }
 
       if (subcommand === "state") {
+        logCompoStage(interaction, "computation_start", { mode });
         const settings = new SettingsService();
         const sheets = new GoogleSheetsService(settings);
+        const linked = await sheets.getCompoLinkedSheet(FIXED_LAYOUT_RANGE);
+        logCompoStage(interaction, "db_fetch", {
+          entity: "sheet_link",
+          mode,
+          result: linked.sheetId ? "found" : "missing",
+          sheetIdPresent: Boolean(linked.sheetId),
+          resolutionSource: linked.source,
+        });
+        logCompoStage(interaction, "read_dispatch", {
+          range: FIXED_LAYOUT_RANGE,
+          resolutionSource: linked.source,
+        });
+        logCompoStage(interaction, "read_dispatch", {
+          range: LOOKUP_REFRESH_RANGE,
+          resolutionSource: linked.source,
+        });
         const [rows, refreshCell] = await Promise.all([
-          sheets.readLinkedValues(FIXED_LAYOUT_RANGE),
-          sheets.readLinkedValues("Lookup!B10:B10"),
+          sheets.readCompoLinkedValues(FIXED_LAYOUT_RANGE, linked),
+          sheets.readCompoLinkedValues(LOOKUP_REFRESH_RANGE, linked),
         ]);
         const modeRows = getModeRows(rows, mode);
-        const stateRows = [
-          STATE_HEADERS,
-          ...modeRows.map((row) => [
-            clampCell(String(row[COL_CLAN_NAME] ?? "")),
-            clampCell(String(row[COL_TOTAL_WEIGHT] ?? "")),
-            clampCell(String(row[COL_MISSING_WEIGHT] ?? "")),
-            clampCell(String(row[COL_BUCKET_START] ?? "")),
-            clampCell(String(row[COL_BUCKET_START + 1] ?? "")),
-            clampCell(String(row[COL_BUCKET_START + 2] ?? "")),
-            clampCell(String(row[COL_BUCKET_START + 3] ?? "")),
-            clampCell(String(row[COL_BUCKET_START + 4] ?? "")),
-            clampCell(String(row[COL_BUCKET_END] ?? "")),
-          ]),
-        ];
+        logCompoStage(interaction, "db_fetch", {
+          entity: "sheet_rows",
+          mode,
+          result: rows.length > 0 ? "found" : "missing",
+          totalRows: rows.length,
+          modeRows: modeRows.length,
+        });
+        const stateRows = buildCompoStateRows(modeRows);
 
         const rawRefresh = refreshCell[0]?.[0]?.trim();
         const refreshLine =
@@ -594,9 +829,14 @@ export const Compo: Command = {
             ? `RAW Data last refreshed: <t:${rawRefresh}:F>`
             : "RAW Data last refreshed: (not available)";
 
+        logCompoStage(interaction, "computation_complete", {
+          result: "state_rendered",
+          modeRows: modeRows.length,
+        });
         const content = [`Mode Displayed: **${mode.toUpperCase()}**`, refreshLine].join("\n");
         const png = renderStatePng(mode, stateRows);
 
+        logCompoStage(interaction, "response_build", { reason: "state_png" });
         await interaction.editReply({
           content,
           files: [
@@ -606,66 +846,106 @@ export const Compo: Command = {
             },
           ],
         });
+        logCompoStage(interaction, "response_sent", { reason: "state_png" });
         return;
       }
 
       if (subcommand === "place") {
         const rawWeight = interaction.options.getString("weight", true);
         const inputWeight = parseWeightInput(rawWeight);
+        logCompoStage(interaction, "computation_start", {
+          weightInput: rawWeight,
+          parsedWeight: inputWeight ?? "",
+        });
         if (!inputWeight || inputWeight <= 0) {
+          logCompoStage(interaction, "response_build", { reason: "invalid_weight" });
           await safeReply(interaction, {
             ephemeral: true,
             content:
               "Invalid weight. Use formats like `145000`, `145,000`, or `145k`.",
           });
+          logCompoStage(interaction, "response_sent", { reason: "invalid_weight" });
           return;
         }
 
         const bucket = getWeightBucket(inputWeight);
         if (!bucket) {
+          logCompoStage(interaction, "response_build", {
+            reason: "weight_out_of_range",
+            parsedWeight: inputWeight,
+          });
           await safeReply(interaction, {
             ephemeral: true,
             content:
               "Weight is outside supported ranges (121,000 to 180,000).",
           });
+          logCompoStage(interaction, "response_sent", { reason: "weight_out_of_range" });
           return;
         }
 
         const stateMode: GoogleSheetMode = "actual";
         const settings = new SettingsService();
         const sheets = new GoogleSheetsService(settings);
+        const linked = await sheets.getCompoLinkedSheet(FIXED_LAYOUT_RANGE);
+        logCompoStage(interaction, "db_fetch", {
+          entity: "sheet_link",
+          mode: stateMode,
+          result: linked.sheetId ? "found" : "missing",
+          sheetIdPresent: Boolean(linked.sheetId),
+          resolutionSource: linked.source,
+        });
+        logCompoStage(interaction, "read_dispatch", {
+          range: FIXED_LAYOUT_RANGE,
+          resolutionSource: linked.source,
+        });
+        logCompoStage(interaction, "read_dispatch", {
+          range: LOOKUP_REFRESH_RANGE,
+          resolutionSource: linked.source,
+        });
 
-        const [clanCol, totalCol, targetBandCol, rightBlock, refreshCell] = await Promise.all([
-          sheets.readLinkedValues("AllianceDashboard!A1:A9", stateMode),
-          sheets.readLinkedValues("AllianceDashboard!D1:D9", stateMode),
-          sheets.readLinkedValues("AllianceDashboard!AW1:AW9", stateMode),
-          sheets.readLinkedValues("AllianceDashboard!U1:AA9", stateMode),
-          sheets.readLinkedValues("Lookup!B10:B10", stateMode),
+        const [rows, refreshCell] = await Promise.all([
+          sheets.readCompoLinkedValues(FIXED_LAYOUT_RANGE, linked),
+          sheets.readCompoLinkedValues(LOOKUP_REFRESH_RANGE, linked),
         ]);
+        const actualRows = getModeRows(rows, stateMode);
+        logCompoStage(interaction, "db_fetch", {
+          entity: "sheet_rows",
+          mode: stateMode,
+          result: rows.length > 0 ? "found" : "missing",
+          totalRows: rows.length,
+          modeRows: actualRows.length,
+        });
 
-        const candidates = readPlacementCandidates(
-          clanCol,
-          totalCol,
-          targetBandCol,
-          rightBlock
-        );
+        const candidates = readPlacementCandidates(actualRows);
+        logCompoStage(interaction, "computation_complete", {
+          result: "placement_candidates",
+          candidates: candidates.length,
+          bucket,
+        });
 
         if (candidates.length === 0) {
+          logCompoStage(interaction, "response_build", { reason: "no_candidates" });
           await safeReply(interaction, {
             ephemeral: true,
-            content: "No placement data found in ACTUAL state ranges.",
+            content: "No placement data found in ACTUAL rows from AllianceDashboard!A6:BD500.",
           });
+          logCompoStage(interaction, "response_sent", { reason: "no_candidates" });
           return;
         }
 
-        const vacancyChoice = candidates
-          .filter((c) => c.missingCount > 0)
+        const candidatesWithLiveVacancy = await enrichCandidatesWithLiveVacancy(
+          candidates,
+          cocService
+        );
+        const vacancyChoice = candidatesWithLiveVacancy
+          .filter((c) => c.hasVacancy)
           .sort((a, b) => {
-            if (b.missingCount !== a.missingCount) return b.missingCount - a.missingCount;
+            if (b.vacancySlots !== a.vacancySlots)
+              return b.vacancySlots - a.vacancySlots;
             return Math.abs(a.remainingToTarget - inputWeight) - Math.abs(b.remainingToTarget - inputWeight);
           });
 
-        const compositionNeeds = candidates
+        const compositionNeeds = candidatesWithLiveVacancy
           .map((c) => {
             const key = normalize(`${bucket}-delta`);
             const delta = c.bucketDeltaByHeader[key] ?? 0;
@@ -677,63 +957,62 @@ export const Compo: Command = {
             return b.missingCount - a.missingCount;
           });
 
-        const recommended = compositionNeeds.filter((c) => c.missingCount > 0);
+        const recommended = compositionNeeds.filter((c) => c.hasVacancy);
         const vacancyList = vacancyChoice;
         const compositionList = compositionNeeds;
-
-        const recommendedText =
-          recommended.length > 0
-            ? recommended
-                .map(
-                  (c) =>
-                    `${abbreviateClan(c.clanName)} (Missing ${c.missingCount}, ${bucket.toLowerCase()}-delta: ${c.delta})`
-                )
-                .join(", ")
-            : "None";
-
-        const vacancyText =
-          vacancyList.length > 0
-            ? vacancyList
-                .map((c) => `${abbreviateClan(c.clanName)} (${c.missingCount})`)
-                .join(", ")
-            : "None";
-
-        const compositionText =
-          compositionList.length > 0
-            ? compositionList
-                .map((c) => `${abbreviateClan(c.clanName)} (${c.delta})`)
-                .join(", ")
-            : "None";
         const rawRefresh = refreshCell[0]?.[0]?.trim();
         const refreshLine =
           rawRefresh && /^\d+$/.test(rawRefresh)
             ? `RAW Data last refreshed: <t:${rawRefresh}:F>`
             : "RAW Data last refreshed: (not available)";
 
-        await safeReply(interaction, {
-          ephemeral: true,
-          content:
-            `ACTUAL placement suggestions for weight **${inputWeight.toLocaleString()}** (${bucket} bucket):\n` +
-            `- Recommended: ${recommendedText}\n` +
-            `- Vacancy: ${vacancyText}\n` +
-            `- Composition: ${compositionText}\n` +
-            refreshLine,
+        logCompoStage(interaction, "response_build", {
+          reason: "placement_result",
+          recommended: recommended.length,
+          vacancy: vacancyList.length,
+          composition: compositionList.length,
         });
+        const embed = buildCompoPlaceEmbed({
+          inputWeight,
+          bucket,
+          recommended,
+          vacancyList,
+          compositionList,
+          refreshLine,
+        });
+        await interaction.editReply({
+          content: "",
+          embeds: [embed],
+        });
+        logCompoStage(interaction, "response_sent", { reason: "placement_result" });
         return;
       }
 
+      logCompoStage(interaction, "response_build", { reason: "unknown_subcommand" });
       await safeReply(interaction, {
         ephemeral: true,
         content: "Unknown subcommand.",
       });
+      logCompoStage(interaction, "response_sent", { reason: "unknown_subcommand" });
       return;
     } catch (err) {
       console.error(`compo command failed: ${formatError(err)}`);
+      console.error(
+        `[compo-command-error] stage=run_catch subcommand=${getSubcommandSafe(interaction)} error=${formatError(err)}`
+      );
+      logCompoStage(interaction, "response_build", {
+        reason: "run_catch",
+        normalizedCode: err instanceof GoogleSheetReadError ? err.code : "",
+        normalizedStatus: err instanceof GoogleSheetReadError ? err.meta.httpStatus ?? "" : "",
+        normalizedRange: err instanceof GoogleSheetReadError ? err.meta.range : "",
+        resolutionSource:
+          err instanceof GoogleSheetReadError ? err.meta.resolutionSource ?? "" : "",
+      });
       await safeReply(interaction, {
         ephemeral: true,
-        content:
-          "Failed to read compo sheet data. Check linked sheet access for the selected mode and AllianceDashboard layout.",
+        content: mapCompoSheetErrorToMessage(err),
       });
+      logCompoStage(interaction, "response_sent", { reason: "run_catch" });
     }
   },
   autocomplete: async (interaction: AutocompleteInteraction) => {
@@ -768,3 +1047,11 @@ export const Compo: Command = {
     await interaction.respond(filtered);
   },
 };
+
+export const readPlacementCandidatesForTest = readPlacementCandidates;
+export const buildCompoPlaceEmbedForTest = buildCompoPlaceEmbed;
+export const buildCompoStateRowsForTest = buildCompoStateRows;
+export const getModeRowsForTest = getModeRows;
+export const getAbsoluteSheetRowNumberForTest = getAbsoluteSheetRowNumber;
+export const mapCompoSheetErrorToMessageForTest = mapCompoSheetErrorToMessage;
+

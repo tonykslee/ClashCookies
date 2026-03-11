@@ -14,6 +14,24 @@ export function toPlainText(html: string): string {
     .trim();
 }
 
+export type PointsLookupState = "ok" | "clan_not_found";
+
+/** Purpose: classify points-site lookup state so explicit not-found results are handled as first-class state. */
+export function classifyPointsLookupState(
+  ...texts: Array<string | null | undefined>
+): PointsLookupState {
+  const combined = texts
+    .map((text) => (typeof text === "string" ? text.trim() : ""))
+    .filter((text) => text.length > 0)
+    .join(" ");
+  if (!combined) return "ok";
+  if (/\bclan\s+not\s+found\.?\b/i.test(combined)) return "clan_not_found";
+  if (/\bunknown\s+clan\b/i.test(combined)) return "clan_not_found";
+  if (/\bno\s+clan\b/i.test(combined)) return "clan_not_found";
+  if (/\bnot\s+found\b/i.test(combined)) return "clan_not_found";
+  return "ok";
+}
+
 /** Purpose: extract a labeled field from flattened text content. */
 export function extractField(text: string, label: string): string | null {
   const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -61,6 +79,12 @@ export function extractWinnerBoxText(html: string): string | null {
   );
   if (!match?.[1]) return null;
   return toPlainText(match[1]);
+}
+
+/** Purpose: detect winner-box fallback signal indicating the matchup is not marked as FWA. */
+export function hasWinnerBoxNotMarkedFwaSignal(text: string | null | undefined): boolean {
+  if (!text) return false;
+  return /not marked as an fwa match/i.test(text);
 }
 
 /** Purpose: isolate top section text before the Last Known War State block. */

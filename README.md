@@ -9,13 +9,19 @@ Discord bot for Clash of Clans activity tooling.
 - Uses cached `/fwa match` rendering with processing indicators for faster button interactions.
 - Supports tracked-clan mail channel config via `/tracked-clan configure` and send-preview flow via `/fwa mail send`.
 - War mail send paths now mention the tracked clan role (`TrackedClan.clanRoleId`) when pinging is enabled.
-- `/fwa match` mail status now scopes "already sent" to the current war identity (war/opponent/config), so new wars start unsent and old posts stop refreshing into new wars.
+- `/fwa match` and `/fwa mail send` now share active-war mail freshness gating: sent state is scoped to current war identity, shows explicit up-to-date/out-of-date status, disables resend when matchType/outcome are unchanged, and re-enables resend when those fields change.
 - Supports configurable war plans by match type/outcome via `/warplan set|show|reset`; these templates are used in posted war mail content (including line breaks, emoji, and media links).
 - Optimized points polling now tracks lifecycle state in `ClanPointsSync` (`confirmedByClanMail`, `needsValidation`, last-known values) and reduces routine `points.fwafarm` calls after clan-mail confirmation.
 - Poller-side points fetches now use a shared gate that enforces an active-war mail-confirmed lock (`confirmedByClanMail=true`, `needsValidation=false`, matching war identity), blocking routine `post_war_reconciliation`/`mail_refresh` calls until an explicit unlock trigger.
 - `/fwa match` now shows actionable sync status only when validation is needed, keeps single-clan sync/fetch timing details, and hides non-actionable lifecycle/debug lines from user-facing output.
 - `/fwa match` now reuses war-scoped verified points snapshots from persisted sync data for the active war, and `/force sync data` remains the explicit refresh-scrape path.
+- `/fwa match` now applies deterministic active-war opponent inference (`Active FWA: No` -> BL, `Active FWA: Yes` -> inferred FWA, opponent-missing non-FWA wars resolve BL/MM only from owned active-war evidence or explicit confirmation), keeps active-war sync lookup war-scoped, keeps inferred states visibly flagged until confirmed, and still allows war-mail preview/send while that warning is present.
+- Final `Send Mail` confirmation now persists explicit match confirmation for the same active war identity, so rerender/refresh does not regress confirmed BL/MM/FWA back to inference fallback.
+- In `/fwa match` war-changing state, mismatch output now shows field-specific differences (opponent, sync #, outcome, match type) against persisted validation, uses `:interrobang: Clan not found on points.fwafarm` for opponent-page-missing validation, and supports MM/BL no-opponent-page sync advancement via tracked-clan page fallback in the shared points snapshot path.
+- Direct `/fwa match tag:<clan>` cards now return to the full alliance overview when `Alliance View` is pressed, while keeping fast initial single-clan render behavior.
+- Prisma client bootstrap is now lazy and test-safe: importing persistence-backed modules no longer initializes the Prisma engine until first real DB use, which keeps CI/unit tests independent from live DB runtime.
 - War-mail embeds now use state-coded sidebars (BL=black, MM=white, FWA WIN=green, FWA LOSE=red, unresolved=gray) and refresh/update paths keep color aligned with current match type/outcome.
+- Single-clan `/fwa match` embeds now use the same state-coded sidebar mapping from the currently displayed effective state (including draft revisions), without changing confirmation/persistence semantics.
 - `/remaining war` now supports alliance-wide aggregate mode (no tag) with dominant-cluster mean remaining time, spread, and outlier clan reporting.
 - Telemetry now records command lifecycle/API/stage aggregates and supports `/telemetry report` plus scheduled Discord report posting.
 - `/clan-health` now provides a DB-only leadership snapshot per tracked clan (last-30 match/win rates, inactivity counts, and missing Discord links).

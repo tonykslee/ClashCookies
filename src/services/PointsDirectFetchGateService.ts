@@ -1,3 +1,4 @@
+import { WarMailLifecycleStatus } from "@prisma/client";
 import { prisma } from "../prisma";
 import { SettingsService } from "./SettingsService";
 import type { PointsApiFetchReason, PointsLifecycleState } from "./PointsFetchPolicyService";
@@ -18,6 +19,7 @@ export type PointsDirectFetchCaller = "command" | "poller" | "service";
 
 export type PointsDirectFetchDecisionCode =
   | "manual_force_bypass"
+  | "reused_war_snapshot"
   | "not_tracked"
   | "locked_active_war"
   | "locked_between_wars_until_presync"
@@ -53,9 +55,11 @@ type PointsLockRuntimeSnapshot = {
   activeWarStartMs: number | null;
   activeWarEndMs: number | null;
   activeOpponentTag: string | null;
+  mailLifecycleStatus: WarMailLifecycleStatus | null;
   lifecycle: PointsLifecycleState | null;
   latestKnownPoints: number | null;
   postedSyncAtMs: number | null;
+  hasReusableWarSnapshot: boolean;
 };
 
 export type EvaluatePointsDirectFetchInput = {
@@ -149,40 +153,13 @@ function resolveLatestKnownPoints(input: {
   );
 }
 
-/** Purpose: ensure at least one identity signal matches and none conflict. */
-function isSameWarIdentity(runtime: PointsLockRuntimeSnapshot): boolean {
-  const lifecycle = runtime.lifecycle;
-  if (!lifecycle) return false;
-  const runtimeWarId = normalizeWarId(runtime.activeWarId);
-  const lifecycleWarId = normalizeWarId(lifecycle.warId ?? null);
-  const runtimeOpponentTag = normalizeTag(runtime.activeOpponentTag);
-  const lifecycleOpponentTag = normalizeTag(lifecycle.opponentTag ?? null);
-  const runtimeWarStartMs = toOptionalInt(runtime.activeWarStartMs);
-  const lifecycleWarStartMs = toEpochMs(lifecycle.warStartTime ?? null);
-
-  let comparableSignals = 0;
-  if (runtimeWarId && lifecycleWarId) {
-    comparableSignals += 1;
-    if (runtimeWarId !== lifecycleWarId) return false;
-  }
-  if (runtimeOpponentTag && lifecycleOpponentTag) {
-    comparableSignals += 1;
-    if (runtimeOpponentTag !== lifecycleOpponentTag) return false;
-  }
-  if (runtimeWarStartMs !== null && lifecycleWarStartMs !== null) {
-    comparableSignals += 1;
-    if (runtimeWarStartMs !== lifecycleWarStartMs) return false;
-  }
-  return comparableSignals > 0;
-}
-
 /** Purpose: determine whether active-war mail-confirmed lock should be applied. */
 function hasActiveWarMailLock(runtime: PointsLockRuntimeSnapshot): boolean {
   if (runtime.warState === "notInWar") return false;
+  if (runtime.mailLifecycleStatus !== WarMailLifecycleStatus.POSTED) return false;
   if (!runtime.lifecycle) return false;
-  if (!runtime.lifecycle.confirmedByClanMail) return false;
   if (runtime.lifecycle.needsValidation) return false;
-  return isSameWarIdentity(runtime);
+  return true;
 }
 
 /** Purpose: build a baseline unlocked lock-state record from runtime context. */
@@ -528,6 +505,23 @@ function buildDecisionFromState(input: {
     };
   }
 
+  if (input.runtime.hasReusableWarSnapshot) {
+    return {
+      allowed: false,
+      outcome: "blocked",
+      decisionCode: "reused_war_snapshot",
+      reason: "Current-war snapshot already exists; reuse persisted sync data instead of direct fetch.",
+      clanTag: input.runtime.clanTag,
+      guildId: input.runtime.guildId,
+      fetchReason: input.fetchReason,
+      caller: input.caller,
+      lockState: input.state.lifecycleState,
+      lockUntilMs: input.state.lockUntilMs,
+      postedSyncAtMs: input.state.postedSyncAtMs,
+      manualForceBypass: false,
+    };
+  }
+
   if (!input.runtime.tracked) {
     return {
       allowed: true,
@@ -802,6 +796,26 @@ export class PointsDirectFetchGateService {
             ],
           })
         : null;
+    const hasReusableWarSnapshot = Boolean(
+      syncRow &&
+        syncRow.needsValidation === false &&
+        Number.isFinite(syncRow.clanPoints) &&
+        Number.isFinite(syncRow.opponentPoints) &&
+        (warId !== null || warStartTime !== null)
+    );
+    const mailLifecycleRow =
+      guildId !== null && warId !== null
+        ? await prisma.warMailLifecycle.findUnique({
+            where: {
+              guildId_clanTag_warId: {
+                guildId,
+                clanTag: normalizedTag,
+                warId: Number(warId),
+              },
+            },
+            select: { status: true },
+          })
+        : null;
     const latestSync =
       syncRow ??
       (await prisma.clanPointsSync.findFirst({
@@ -850,6 +864,7 @@ export class PointsDirectFetchGateService {
       activeWarStartMs: toEpochMs(currentWar?.startTime ?? null),
       activeWarEndMs: toEpochMs(currentWar?.endTime ?? null),
       activeOpponentTag: normalizeTag(currentWar?.opponentTag ?? null),
+      mailLifecycleStatus: mailLifecycleRow?.status ?? null,
       lifecycle,
       latestKnownPoints: resolveLatestKnownPoints({
         lifecycle,
@@ -858,6 +873,7 @@ export class PointsDirectFetchGateService {
         previousBaseline: null,
       }),
       postedSyncAtMs,
+      hasReusableWarSnapshot,
     };
   }
 

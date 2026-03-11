@@ -1,4 +1,4 @@
-export type SyncActionSiteMatchType = "FWA" | "MM" | null;
+export type SyncActionSiteMatchType = "FWA" | "BL" | "MM" | null;
 export type SyncActionOutcome = "WIN" | "LOSE" | null;
 
 function normalizeMatchType(value: string | null | undefined): "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN" | null {

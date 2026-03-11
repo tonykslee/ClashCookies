@@ -226,6 +226,12 @@ export default (client: Client, cocService: CoCService): void => {
       `[cmd] user=${user} guild=${guild} command=/${interaction.commandName}` +
         (options ? ` options={${options}}` : "")
     );
+    if (interaction.commandName === "compo") {
+      const sub = interaction.options.getSubcommand(false) ?? "unknown";
+      console.log(
+        `[compo-command] stage=interaction_received command=compo subcommand=${sub} guild=${interaction.guildId ?? "DM"} user=${interaction.user.id}`
+      );
+    }
 
     await handleSlashCommand(client, interaction, cocService);
   });
@@ -367,7 +373,7 @@ const handleButtonInteraction = async (
 
   if (isFwaMatchAllianceButtonCustomId(interaction.customId)) {
     try {
-      await handleFwaMatchAllianceButton(interaction);
+      await handleFwaMatchAllianceButton(interaction, cocService);
     } catch (err) {
       console.error(`FWA match alliance button failed: ${formatError(err)}`);
       if (!interaction.replied && !interaction.deferred) {
@@ -623,6 +629,12 @@ const handleSlashCommand = async (
       // no-op
     }
     return;
+  }
+  if (interaction.commandName === "compo") {
+    const sub = interaction.options.getSubcommand(false) ?? "unknown";
+    console.log(
+      `[compo-command] stage=handler_resolved command=compo subcommand=${sub} handler=${slashCommand.name}.run`
+    );
   }
 
   const commandName = interaction.commandName;

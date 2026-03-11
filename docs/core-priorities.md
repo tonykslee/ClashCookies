@@ -1,4 +1,4 @@
-Project handoff and priorities for this repo (`Dusk bot`):
+Project handoff and priorities for this repo (`ClashCookies`):
 
 1) Git workflow and commit standards
 - Always create a feature branch before edits using:

@@ -1,4 +1,10 @@
 import { prisma } from "../../prisma";
+import {
+  chooseMatchTypeResolution,
+  inferMatchTypeFromOpponentPoints,
+  resolveCurrentWarMatchTypeSignal,
+  toSyncIsFwa,
+} from "../MatchTypeResolutionService";
 import { PointsProjectionService } from "../PointsProjectionService";
 import { PointsSyncService } from "../PointsSyncService";
 import { SettingsService } from "../SettingsService";
@@ -21,6 +27,8 @@ type WarStartPointsCheckJob = {
   siteSyncNumber: number | null;
   siteOpponentTag: string | null;
   siteOpponentBalance: number | null;
+  siteOpponentActiveFwa: boolean | null;
+  siteOpponentNotFound: boolean | null;
   inferredOpponentIsFwa: boolean | null;
   opponentChecked: boolean;
   lastCheckedAtMs: number | null;
@@ -81,6 +89,8 @@ export class WarStartPointsSyncService {
       siteSyncNumber: null,
       siteOpponentTag: null,
       siteOpponentBalance: null,
+      siteOpponentActiveFwa: null,
+      siteOpponentNotFound: null,
       inferredOpponentIsFwa: null,
       opponentChecked: false,
       lastCheckedAtMs: null,
@@ -111,8 +121,12 @@ export class WarStartPointsSyncService {
     try {
       const primary = await this.points.fetchSnapshot(clanTag, {
         reason: "post_war_reconciliation",
+        caller: "service",
       });
       const siteUpdated = primary.winnerBoxTags.map((t) => normalizeTag(t)).includes(opponentTag);
+      const winnerBoxNotMarkedFwa = /not marked as an fwa match/i.test(
+        String(primary.winnerBoxText ?? "")
+      );
       const trackedDb = sub.fwaPoints ?? null;
       const trackedSite =
         primary.balance !== null && Number.isFinite(primary.balance) ? primary.balance : null;
@@ -120,17 +134,34 @@ export class WarStartPointsSyncService {
       let inferredOpponentIsFwa = job.inferredOpponentIsFwa;
       let opponentChecked = job.opponentChecked;
       let opponentBalance = job.siteOpponentBalance;
+      let opponentActiveFwa = job.siteOpponentActiveFwa;
+      let opponentNotFound = job.siteOpponentNotFound;
       if (!opponentChecked) {
         const opp = await this.points
-          .fetchSnapshot(opponentTag, { reason: "post_war_reconciliation" })
+          .fetchSnapshot(opponentTag, {
+            reason: "post_war_reconciliation",
+            caller: "service",
+            fallbackTrackedClanTag: clanTag,
+          })
           .catch(() => null);
         opponentChecked = true;
-        inferredOpponentIsFwa =
-          opp?.balance !== null && opp?.balance !== undefined && Number.isFinite(opp.balance);
+        const strongOpponentEvidencePresent =
+          opp?.notFound === true || opp?.activeFwa === true || opp?.activeFwa === false;
+        const liveResolution = inferMatchTypeFromOpponentPoints({
+          available: opp !== null,
+          balance: opp?.balance ?? null,
+          activeFwa: opp?.activeFwa ?? null,
+          notFound: opp?.notFound ?? false,
+          winnerBoxNotMarkedFwa,
+          opponentEvidenceMissingOrNotCurrent: !siteUpdated || !strongOpponentEvidencePresent,
+        });
+        inferredOpponentIsFwa = liveResolution?.syncIsFwa ?? null;
         opponentBalance =
           opp?.balance !== null && opp?.balance !== undefined && Number.isFinite(opp.balance)
             ? opp.balance
             : null;
+        opponentActiveFwa = opp?.activeFwa ?? null;
+        opponentNotFound = opp?.notFound ?? null;
       }
 
       const mismatch =
@@ -167,6 +198,8 @@ export class WarStartPointsSyncService {
             : null,
         siteOpponentTag: siteUpdated ? opponentTag : null,
         siteOpponentBalance: opponentBalance,
+        siteOpponentActiveFwa: opponentActiveFwa,
+        siteOpponentNotFound: opponentNotFound,
         inferredOpponentIsFwa,
         opponentChecked,
         lastCheckedAtMs: Date.now(),
@@ -183,6 +216,11 @@ export class WarStartPointsSyncService {
             guildId: true,
             warId: true,
             startTime: true,
+            state: true,
+            matchType: true,
+            inferredMatchType: true,
+            clanStars: true,
+            opponentStars: true,
           },
         });
         if (
@@ -193,6 +231,37 @@ export class WarStartPointsSyncService {
           primary.winnerBoxSync !== null &&
           Number.isFinite(primary.winnerBoxSync)
         ) {
+          const strongOpponentEvidencePresent =
+            opponentNotFound === true ||
+            opponentActiveFwa === true ||
+            opponentActiveFwa === false;
+          const liveResolution = inferMatchTypeFromOpponentPoints({
+            available: opponentChecked,
+            balance: opponentBalance,
+            activeFwa: opponentActiveFwa,
+            notFound: opponentNotFound,
+            winnerBoxNotMarkedFwa,
+            opponentEvidenceMissingOrNotCurrent:
+              !siteUpdated || !strongOpponentEvidencePresent,
+            currentWarState:
+              currentWar.state === "inWar" || currentWar.state === "preparation"
+                ? currentWar.state
+                : null,
+            currentWarClanStars: currentWar.clanStars ?? null,
+            currentWarOpponentStars: currentWar.opponentStars ?? null,
+          });
+          const currentResolution = resolveCurrentWarMatchTypeSignal({
+            matchType: currentWar.matchType ?? null,
+            inferredMatchType: currentWar.inferredMatchType ?? true,
+          });
+          const appliedResolution = chooseMatchTypeResolution({
+            confirmedCurrent: currentResolution.confirmed,
+            liveOpponent: liveResolution,
+            storedSync: null,
+            unconfirmedCurrent: currentResolution.unconfirmed,
+          });
+          const syncMatchType = appliedResolution?.matchType ?? currentWar.matchType ?? null;
+          const syncIsFwa = appliedResolution?.syncIsFwa ?? toSyncIsFwa(syncMatchType) ?? false;
           await this.pointsSync.upsertPointsSync({
             guildId: currentWar.guildId,
             clanTag,
@@ -212,10 +281,10 @@ export class WarStartPointsSyncService {
               opponentBalance,
               Math.trunc(primary.winnerBoxSync)
             ),
-            isFwa: true,
+            isFwa: syncIsFwa,
             fetchedAt: new Date(primary.fetchedAtMs),
             fetchReason: "post_war_reconciliation",
-            matchType: "FWA",
+            matchType: syncMatchType,
             needsValidation: false,
           });
         }

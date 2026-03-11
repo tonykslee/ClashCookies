@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  advanceCocWarOutageStateForTest,
+  applyWarEndedMaintenanceGuardForTest,
   computeWarComplianceForTest,
   computeWarPointsDeltaForTest,
+  resolveActiveWarTimingForTest,
+  sanitizeWarPlanForEmbedForTest,
 } from "../src/services/WarEventLogService";
 import { WarEventHistoryService } from "../src/services/war-events/history";
 
@@ -385,5 +389,222 @@ describe("WarEventLogService.computeWarComplianceForTest", () => {
       loseStyle: "TRADITIONAL",
     });
     expect(result.notFollowingPlan).toEqual(["Alice", "Bob"]);
+  });
+});
+
+describe("WarEventLogService.sanitizeWarPlanForEmbedForTest", () => {
+  it("omits heading-style lines and keeps non-heading lines in order", () => {
+    const text = [
+      "# Title",
+      "Line 1",
+      "  ## Subtitle",
+      "",
+      "  - Keep this",
+      "   ### Internal Header",
+      "Line 2",
+    ].join("\n");
+
+    const sanitized = sanitizeWarPlanForEmbedForTest(text);
+
+    expect(sanitized?.split("\n")).toEqual(["Line 1", "", "  - Keep this", "Line 2"]);
+  });
+
+  it("keeps plans without heading lines unchanged", () => {
+    const text = ["Line 1", "  - Keep this", "", "Line 2"].join("\n");
+
+    const sanitized = sanitizeWarPlanForEmbedForTest(text);
+
+    expect(sanitized).toBe(text);
+  });
+
+  it("returns null when all lines are heading-style lines", () => {
+    const text = ["# Title", "  ## Subtitle", "   ### More"].join("\n");
+
+    expect(sanitizeWarPlanForEmbedForTest(text)).toBeNull();
+  });
+});
+
+describe("WarEventLogService.applyWarEndedMaintenanceGuardForTest", () => {
+  const now = new Date("2026-03-11T08:33:49.914Z");
+
+  it("suppresses war_ended when before known war end time", () => {
+    const decision = applyWarEndedMaintenanceGuardForTest({
+      eventType: "war_ended",
+      previousState: "inWar",
+      candidateState: "notInWar",
+      warFetchFailed: false,
+      maintenanceSuspected: false,
+      knownWarEndTime: new Date("2026-03-11T14:21:56.000Z"),
+      now,
+    });
+
+    expect(decision).toEqual({
+      eventType: null,
+      state: "inWar",
+      suppressReason: "before_known_war_end_time",
+    });
+  });
+
+  it("suppresses war_ended on transient upstream fetch failure", () => {
+    const decision = applyWarEndedMaintenanceGuardForTest({
+      eventType: "war_ended",
+      previousState: "preparation",
+      candidateState: "notInWar",
+      warFetchFailed: true,
+      maintenanceSuspected: false,
+      knownWarEndTime: new Date("2026-03-11T14:21:56.000Z"),
+      now,
+    });
+
+    expect(decision).toEqual({
+      eventType: null,
+      state: "preparation",
+      suppressReason: "upstream_unavailable",
+    });
+  });
+
+  it("suppresses war_ended while maintenance is suspected without end-time proof", () => {
+    const decision = applyWarEndedMaintenanceGuardForTest({
+      eventType: "war_ended",
+      previousState: "inWar",
+      candidateState: "notInWar",
+      warFetchFailed: false,
+      maintenanceSuspected: true,
+      knownWarEndTime: null,
+      now,
+    });
+
+    expect(decision).toEqual({
+      eventType: null,
+      state: "inWar",
+      suppressReason: "maintenance_suspected",
+    });
+  });
+
+  it("allows real post-end war_ended transitions", () => {
+    const decision = applyWarEndedMaintenanceGuardForTest({
+      eventType: "war_ended",
+      previousState: "inWar",
+      candidateState: "notInWar",
+      warFetchFailed: false,
+      maintenanceSuspected: false,
+      knownWarEndTime: new Date("2026-03-11T08:30:00.000Z"),
+      now,
+    });
+
+    expect(decision).toEqual({
+      eventType: "war_ended",
+      state: "notInWar",
+      suppressReason: null,
+    });
+  });
+
+  it("keeps non-war-ended transitions unchanged", () => {
+    const decision = applyWarEndedMaintenanceGuardForTest({
+      eventType: "battle_day",
+      previousState: "preparation",
+      candidateState: "inWar",
+      warFetchFailed: false,
+      maintenanceSuspected: true,
+      knownWarEndTime: null,
+      now,
+    });
+
+    expect(decision).toEqual({
+      eventType: "battle_day",
+      state: "inWar",
+      suppressReason: null,
+    });
+  });
+});
+
+describe("WarEventLogService.advanceCocWarOutageStateForTest", () => {
+  it("marks outage suspected after repeated mixed 503/500 failures", () => {
+    const t1 = new Date("2026-03-11T08:00:00.000Z");
+    const t2 = new Date("2026-03-11T08:02:00.000Z");
+    const first = advanceCocWarOutageStateForTest(
+      null,
+      { kind: "failure", statusCode: 503 },
+      t1
+    );
+    const second = advanceCocWarOutageStateForTest(
+      first,
+      { kind: "failure", statusCode: 500 },
+      t2
+    );
+
+    expect(first.suspected).toBe(false);
+    expect(second.suspected).toBe(true);
+    expect(second.failureStreak).toBe(2);
+    expect(second.lastFailureStatusCode).toBe(500);
+  });
+
+  it("clears outage suspicion only after sustained recovery", () => {
+    const base = advanceCocWarOutageStateForTest(
+      advanceCocWarOutageStateForTest(
+        null,
+        { kind: "failure", statusCode: 503 },
+        new Date("2026-03-11T08:00:00.000Z")
+      ),
+      { kind: "failure", statusCode: 503 },
+      new Date("2026-03-11T08:01:00.000Z")
+    );
+
+    const oneRecovery = advanceCocWarOutageStateForTest(
+      base,
+      { kind: "success" },
+      new Date("2026-03-11T08:02:00.000Z")
+    );
+    const twoRecovery = advanceCocWarOutageStateForTest(
+      oneRecovery,
+      { kind: "success" },
+      new Date("2026-03-11T08:03:00.000Z")
+    );
+
+    expect(oneRecovery.suspected).toBe(true);
+    expect(twoRecovery.suspected).toBe(false);
+    expect(twoRecovery.failureStreak).toBe(0);
+  });
+});
+
+describe("WarEventLogService.resolveActiveWarTimingForTest", () => {
+  it("updates endTime when same war identity reports a changed endTime", () => {
+    const start = new Date("2026-03-10T20:00:00.000Z");
+    const result = resolveActiveWarTimingForTest({
+      observedWarStartTime: start,
+      observedWarEndTime: new Date("2026-03-11T14:21:56.000Z"),
+      previousWarStartTime: start,
+      previousWarEndTime: new Date("2026-03-11T13:00:00.000Z"),
+    });
+
+    expect(result.sameWarIdentity).toBe(true);
+    expect(result.warEndTime?.toISOString()).toBe("2026-03-11T14:21:56.000Z");
+  });
+
+  it("preserves same-war endTime on transient snapshots with no observed timing", () => {
+    const start = new Date("2026-03-10T20:00:00.000Z");
+    const end = new Date("2026-03-11T14:21:56.000Z");
+    const result = resolveActiveWarTimingForTest({
+      observedWarStartTime: null,
+      observedWarEndTime: null,
+      previousWarStartTime: start,
+      previousWarEndTime: end,
+    });
+
+    expect(result.sameWarIdentity).toBe(true);
+    expect(result.warStartTime?.toISOString()).toBe(start.toISOString());
+    expect(result.warEndTime?.toISOString()).toBe(end.toISOString());
+  });
+
+  it("does not carry prior-war endTime into a new war identity", () => {
+    const result = resolveActiveWarTimingForTest({
+      observedWarStartTime: new Date("2026-03-12T20:00:00.000Z"),
+      observedWarEndTime: null,
+      previousWarStartTime: new Date("2026-03-10T20:00:00.000Z"),
+      previousWarEndTime: new Date("2026-03-11T14:21:56.000Z"),
+    });
+
+    expect(result.sameWarIdentity).toBe(false);
+    expect(result.warEndTime).toBeNull();
   });
 });
