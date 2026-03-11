@@ -719,6 +719,14 @@ const handleSlashCommand = async (
         interactionId: interaction.id,
       },
       async () => {
+        if (
+          interaction.commandName === "compo" &&
+          !interaction.deferred &&
+          !interaction.replied
+        ) {
+          await interaction.deferReply({ ephemeral: true });
+        }
+
         const permissionStartedAtMs = Date.now();
         const targets = getCommandTargetsFromInteraction(interaction);
         const allowed = await commandPermissionService.canUseAnyTarget(
@@ -741,10 +749,17 @@ const handleSlashCommand = async (
             errorCode: "PERMISSION_DENIED",
             timeout: false,
           });
-          await interaction.reply({
-            content: `You do not have permission to use /${interaction.commandName}.`,
-            ephemeral: true,
-          });
+          const permissionMessage = `You do not have permission to use /${interaction.commandName}.`;
+          if (interaction.deferred || interaction.replied) {
+            await interaction.editReply({
+              content: permissionMessage,
+            });
+          } else {
+            await interaction.reply({
+              content: permissionMessage,
+              ephemeral: true,
+            });
+          }
           return;
         }
 
