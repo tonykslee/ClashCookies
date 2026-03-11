@@ -4,7 +4,7 @@ Before implementing any code changes, read:
 - architecture-contract.md
 - core-priorities.md
 
-# Dusk Bot – Project Brain
+# ClashCookies – Project Brain
 
 This file defines the architectural context for the project.
 All AI tasks should read this file before making changes.
