@@ -236,6 +236,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "When available, fwastats active-war validation is used by the war poller to promote inferred FWA matches to confirmed FWA.",
       "If match type is inferred, `/fwa match` shows a warning and quick verify link, with action buttons to confirm FWA/BL/MM.",
       "Selecting the same inferred match type again counts as explicit confirmation for that active war.",
+      "Final mail confirm/send persists explicit match confirmation for that same active war identity, so rerender/refresh does not regress to inferred fallback.",
       "Tracked clan mail channel is configured via `/tracked-clan configure ... mail-channel`.",
       "`/fwa mail send` opens an ephemeral war mail preview with confirm/send.",
       "War mail embed sidebar colors are state-coded: BL=black, MM=white, FWA WIN=green, FWA LOSE=red, unresolved=gray.",

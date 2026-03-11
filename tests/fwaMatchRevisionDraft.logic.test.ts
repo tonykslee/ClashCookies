@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildOpponentSnapshotFromTrackedClanFallbackForTest,
+  buildCurrentWarConfirmedStateForTest,
   buildSyncValidationStateForTest,
   buildDraftFromOutcomeToggleForTest,
   buildDraftFromMatchTypeSelectionForTest,
@@ -220,6 +221,41 @@ describe("fwa match posted mail gating with revisions", () => {
     });
 
     expect(reason).toBeNull();
+  });
+});
+
+describe("fwa post-send current-war confirmation persistence", () => {
+  it("builds canonical current-war confirmed BL state for same-war rerenders", () => {
+    const state = buildCurrentWarConfirmedStateForTest({
+      warId: 12345,
+      warStartMs: Date.parse("2026-03-11T10:00:00.000Z"),
+      opponentTag: "2Y2U9VRCR",
+      matchType: "BL",
+      expectedOutcome: null,
+    });
+
+    expect(state).toEqual({
+      warId: 12345,
+      startTime: new Date("2026-03-11T10:00:00.000Z"),
+      opponentTag: "#2Y2U9VRCR",
+      matchType: "BL",
+      inferredMatchType: false,
+      outcome: null,
+    });
+  });
+
+  it("stores WIN/LOSE only for confirmed FWA outcomes", () => {
+    const state = buildCurrentWarConfirmedStateForTest({
+      warId: 555,
+      warStartMs: Date.parse("2026-03-11T12:00:00.000Z"),
+      opponentTag: "2OPP",
+      matchType: "FWA",
+      expectedOutcome: "WIN",
+    });
+
+    expect(state?.matchType).toBe("FWA");
+    expect(state?.inferredMatchType).toBe(false);
+    expect(state?.outcome).toBe("WIN");
   });
 });
 
