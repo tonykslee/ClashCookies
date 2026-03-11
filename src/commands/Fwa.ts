@@ -2450,6 +2450,41 @@ function buildWarMailPostedContent(
 export const buildWarMailPostedContentForTest = buildWarMailPostedContent;
 export const buildWarMailNextRefreshLabelForTest = buildNextRefreshRelativeLabel;
 
+/** Purpose: keep an already-visible role mention on refresh edits without deriving new mention state. */
+function extractPostedWarMailMentionRoleId(
+  existingPostedContent: string | null | undefined
+): string | null {
+  const lines = String(existingPostedContent ?? "").split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const match = trimmed.match(/^<@&(\d{5,})>$/);
+    if (!match?.[1]) return null;
+    return normalizeDiscordRoleId(match[1]);
+  }
+  return null;
+}
+
+/** Purpose: build refresh edit payload while preserving visible mention text and suppressing re-pings. */
+function buildWarMailRefreshEditPayload(
+  existingPostedContent: string | null | undefined,
+  planText: string | null | undefined,
+  nowMs?: number
+): {
+  content: string;
+  allowedMentions: { parse: [] };
+} {
+  const persistedMentionRoleId = extractPostedWarMailMentionRoleId(existingPostedContent);
+  return {
+    content: buildWarMailPostedContent(persistedMentionRoleId, nowMs, {
+      planText: String(planText ?? ""),
+    }),
+    allowedMentions: { parse: [] },
+  };
+}
+
+export const buildWarMailRefreshEditPayloadForTest = buildWarMailRefreshEditPayload;
+
 function hasWarIdentityShifted(params: {
   postedWarId?: string | null;
   postedWarStartMs?: number | null;
@@ -2634,14 +2669,12 @@ async function refreshWarMailPostByResolvedTarget(params: {
       normalizedTag,
       nextWarIdText && Number.isFinite(Number(nextWarIdText)) ? Number(nextWarIdText) : null
     );
+  const refreshEditPayload = rendered.freezeRefresh
+    ? null
+    : buildWarMailRefreshEditPayload(String(message?.content ?? ""), rendered.planText);
   await message.edit({
-    content:
-      rendered.freezeRefresh
-        ? undefined
-        : buildWarMailPostedContent(undefined, undefined, {
-            pingRole: false,
-            planText: rendered.planText,
-          }),
+    content: rendered.freezeRefresh ? undefined : refreshEditPayload?.content,
+    allowedMentions: rendered.freezeRefresh ? undefined : refreshEditPayload?.allowedMentions,
     embeds: [rendered.embed],
     components: rendered.freezeRefresh ? [] : buildWarMailPostedComponents(refreshKey),
   });
