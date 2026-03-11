@@ -63,6 +63,10 @@ import {
   isNotifyWarPreviewPostButtonCustomId,
 } from "../commands/Notify";
 import {
+  handleCompoRefreshButton,
+  isCompoRefreshButtonCustomId,
+} from "../commands/Compo";
+import {
   handleNotifyWarRefreshButton,
   isNotifyWarRefreshButtonCustomId,
 } from "../services/WarEventLogService";
@@ -534,6 +538,20 @@ const handleButtonInteraction = async (
         await interaction.reply({
           ephemeral: true,
           content: "Failed to post previewed war embed.",
+        });
+      }
+    }
+  }
+
+  if (isCompoRefreshButtonCustomId(interaction.customId)) {
+    try {
+      await handleCompoRefreshButton(interaction, cocService);
+    } catch (err) {
+      console.error(`Compo refresh button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to refresh compo output.",
         });
       }
     }

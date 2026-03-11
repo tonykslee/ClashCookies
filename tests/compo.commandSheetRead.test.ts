@@ -73,6 +73,32 @@ function makeReadError(code: GoogleSheetReadErrorCode): GoogleSheetReadError {
   });
 }
 
+function getComponentCustomIds(payload: unknown): string[] {
+  if (!payload || typeof payload !== "object") return [];
+  const rows = Array.isArray((payload as { components?: unknown[] }).components)
+    ? ((payload as { components: unknown[] }).components as unknown[])
+    : [];
+  return rows.flatMap((row) => {
+    const normalized =
+      row && typeof (row as { toJSON?: () => unknown }).toJSON === "function"
+        ? (row as { toJSON: () => unknown }).toJSON()
+        : row;
+    if (!normalized || typeof normalized !== "object") return [];
+    const components = Array.isArray((normalized as { components?: unknown[] }).components)
+      ? ((normalized as { components: unknown[] }).components as unknown[])
+      : [];
+    return components
+      .map((component) =>
+        String(
+          (component as { custom_id?: unknown; customId?: unknown }).custom_id ??
+            (component as { custom_id?: unknown; customId?: unknown }).customId ??
+            ""
+        )
+      )
+      .filter((value) => value.length > 0);
+  });
+}
+
 describe("/compo strict sheet read path", () => {
   const linkedSheet = {
     sheetId: "sheet-1",
@@ -176,6 +202,38 @@ describe("/compo strict sheet read path", () => {
     const payload = interaction.editReply.mock.calls.at(-1)?.[0];
     expect(String(payload?.content ?? "")).toContain("**DARK EMPIRE** (`#LQQ99UV8`)");
     expect(String(payload?.content ?? "")).not.toContain("-actual");
+  });
+
+  it("adds inline refresh buttons for /compo state and /compo place outputs", async () => {
+    vi.spyOn(GoogleSheetsService.prototype, "getCompoLinkedSheet").mockResolvedValue(linkedSheet);
+    vi.spyOn(GoogleSheetsService.prototype, "readCompoLinkedValues").mockImplementation(
+      async (range: string) => {
+        if (range === LOOKUP_REFRESH_RANGE) return [["1709900000"]];
+        return makeRows();
+      }
+    );
+
+    const stateInteraction = makeInteraction({ subcommand: "state", mode: "war" });
+    await Compo.run({} as any, stateInteraction as any, {
+      getClan: vi.fn().mockResolvedValue({
+        memberList: Array.from({ length: 49 }, () => ({ tag: "#P" })),
+      }),
+    } as any);
+    const statePayload = stateInteraction.editReply.mock.calls.at(-1)?.[0];
+    expect(getComponentCustomIds(statePayload).some((id) => id.startsWith("compo-refresh:state:"))).toBe(
+      true
+    );
+
+    const placeInteraction = makeInteraction({ subcommand: "place", weight: "151k" });
+    await Compo.run({} as any, placeInteraction as any, {
+      getClan: vi.fn().mockResolvedValue({
+        memberList: Array.from({ length: 47 }, () => ({ tag: "#P" })),
+      }),
+    } as any);
+    const placePayload = placeInteraction.editReply.mock.calls.at(-1)?.[0];
+    expect(getComponentCustomIds(placePayload).some((id) => id.startsWith("compo-refresh:place:"))).toBe(
+      true
+    );
   });
 });
 
