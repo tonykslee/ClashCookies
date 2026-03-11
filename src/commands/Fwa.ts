@@ -1230,7 +1230,7 @@ async function buildWarMailEmbedForTag(
       ? String(Math.trunc(subscription.warId))
       : null;
   const syncRow = await pointsSyncService
-    .getCurrentSyncForClan({
+    .getWarScopedSyncForClan({
       guildId,
       clanTag: normalizedTag,
       warId: warIdForSync,
@@ -4425,6 +4425,7 @@ export const resolveEffectiveFwaOutcomeForTest = resolveEffectiveFwaOutcome;
 export const buildEffectiveMatchMismatchWarningsForTest = buildEffectiveMatchMismatchWarnings;
 
 export const resolveMatchTypeFromStoredSyncRowForTest = resolveMatchTypeFromStoredSyncRow;
+export const resolveMatchTypeFromStoredSyncForTest = resolveMatchTypeFromStoredSync;
 
 /** Purpose: infer match type strictly from opponent points-site signals. */
 function inferMatchTypeFromPointsSnapshots(
@@ -4461,7 +4462,7 @@ async function resolveMatchTypeFromStoredSync(params: {
     params.warId !== null && params.warId !== undefined && Number.isFinite(params.warId)
       ? String(Math.trunc(params.warId))
       : null;
-  const syncRow = await pointsSyncService.getCurrentSyncForClan({
+  const syncRow = await pointsSyncService.getWarScopedSyncForClan({
     guildId: params.guildId,
     clanTag: params.clanTag,
     warId: warIdText,
@@ -5683,7 +5684,7 @@ async function buildTrackedMatchOverview(
       fetchReason: "match_render",
       matchType,
     });
-    const syncRow = await pointsSyncService.getCurrentSyncForClan({
+    const syncRow = await pointsSyncService.getWarScopedSyncForClan({
       guildId: guildId ?? "",
       clanTag,
       warId:
@@ -8445,7 +8446,7 @@ export const Fwa: Command = {
           fetchReason: "match_render",
           matchType,
         });
-        const syncRow = await pointsSyncService.getCurrentSyncForClan({
+        const syncRow = await pointsSyncService.getWarScopedSyncForClan({
           guildId: interaction.guildId ?? "",
           clanTag: tag,
           warId:

@@ -1,13 +1,19 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   getMailBlockedReasonFromStatusForTest,
   inferMatchTypeFromPointsSnapshotsForTest,
+  resolveMatchTypeFromStoredSyncForTest,
   resolveMatchTypeFromStoredSyncRowForTest,
 } from "../src/commands/Fwa";
 import {
   chooseMatchTypeResolution,
   resolveCurrentWarMatchTypeSignal,
 } from "../src/services/MatchTypeResolutionService";
+import { PointsSyncService } from "../src/services/PointsSyncService";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe("fwa match inference from points snapshots", () => {
   it("returns null when opponent evidence is unavailable", () => {
@@ -105,6 +111,31 @@ describe("fwa match stored sync fallback", () => {
       confirmed: false,
       syncIsFwa: true,
     });
+  });
+
+  it("returns null when the current war has no persisted sync row", async () => {
+    const scopedSpy = vi
+      .spyOn(PointsSyncService.prototype, "getWarScopedSyncForClan")
+      .mockResolvedValue(null);
+    const legacySpy = vi
+      .spyOn(PointsSyncService.prototype, "getCurrentSyncForClan")
+      .mockResolvedValue({
+        opponentTag: "#2ABC",
+        isFwa: true,
+        lastKnownMatchType: "FWA",
+      } as any);
+
+    const resolved = await resolveMatchTypeFromStoredSyncForTest({
+      guildId: "guild-1",
+      clanTag: "AAA111",
+      opponentTag: "#2ABC",
+      warId: 475,
+      warStartTime: new Date("2026-03-10T00:00:00.000Z"),
+    });
+
+    expect(resolved).toBeNull();
+    expect(scopedSpy).toHaveBeenCalledTimes(1);
+    expect(legacySpy).not.toHaveBeenCalled();
   });
 });
 
