@@ -3932,6 +3932,56 @@ async function restoreSourceMatchMessageFromMailPreview(
   return true;
 }
 
+type CurrentWarConfirmedState = {
+  warId: number;
+  startTime: Date | null;
+  opponentTag: string | null;
+  matchType: "FWA" | "BL" | "MM" | null;
+  inferredMatchType: boolean;
+  outcome: "WIN" | "LOSE" | null;
+};
+
+/** Purpose: derive canonical current-war fields from final mail confirmation so rerenders keep explicit match confirmation. */
+function buildCurrentWarConfirmedState(input: {
+  warId: number | null | undefined;
+  warStartMs: number | null | undefined;
+  opponentTag: string | null | undefined;
+  matchType: WarMailMatchType;
+  expectedOutcome: WarMailExpectedOutcome;
+}): CurrentWarConfirmedState | null {
+  const warId =
+    input.warId !== null && input.warId !== undefined && Number.isFinite(input.warId)
+      ? Math.trunc(input.warId)
+      : null;
+  if (warId === null || warId <= 0) return null;
+
+  const matchType =
+    input.matchType === "FWA" || input.matchType === "BL" || input.matchType === "MM"
+      ? input.matchType
+      : null;
+  const inferredMatchType = matchType ? false : true;
+  const outcome =
+    matchType === "FWA" && (input.expectedOutcome === "WIN" || input.expectedOutcome === "LOSE")
+      ? input.expectedOutcome
+      : null;
+  const opponentTag = normalizeTag(String(input.opponentTag ?? ""));
+  return {
+    warId,
+    startTime:
+      input.warStartMs !== null &&
+      input.warStartMs !== undefined &&
+      Number.isFinite(input.warStartMs)
+        ? new Date(Math.trunc(input.warStartMs))
+        : null,
+    opponentTag: opponentTag ? `#${opponentTag}` : null,
+    matchType,
+    inferredMatchType,
+    outcome,
+  };
+}
+
+export const buildCurrentWarConfirmedStateForTest = buildCurrentWarConfirmedState;
+
 async function handleFwaMailConfirmAction(
   interaction: ButtonInteraction,
   options: { pingRole: boolean }
@@ -4031,6 +4081,13 @@ async function handleFwaMailConfirmAction(
     embeds: [rendered.embed],
     components: rendered.freezeRefresh ? [] : buildWarMailPostedComponents(postKey),
   });
+  const confirmedCurrentWarState = buildCurrentWarConfirmedState({
+    warId: renderedWarIdNumber,
+    warStartMs: rendered.warStartMs ?? null,
+    opponentTag: rendered.opponentTag ?? null,
+    matchType: rendered.matchType,
+    expectedOutcome: rendered.expectedOutcome,
+  });
   await prisma.currentWar.upsert({
     where: {
       clanTag_guildId: {
@@ -4043,8 +4100,25 @@ async function handleFwaMailConfirmAction(
       clanTag: `#${normalizeTag(payload.tag)}`,
       channelId: channel.id,
       notify: false,
+      warId: confirmedCurrentWarState?.warId ?? renderedWarIdNumber ?? null,
+      ...(confirmedCurrentWarState?.startTime ? { startTime: confirmedCurrentWarState.startTime } : {}),
+      ...(confirmedCurrentWarState?.opponentTag
+        ? { opponentTag: confirmedCurrentWarState.opponentTag }
+        : {}),
+      ...(confirmedCurrentWarState?.matchType ? { matchType: confirmedCurrentWarState.matchType } : {}),
+      inferredMatchType: confirmedCurrentWarState?.inferredMatchType ?? true,
+      outcome: confirmedCurrentWarState?.outcome ?? null,
     },
     update: {
+      channelId: channel.id,
+      warId: confirmedCurrentWarState?.warId ?? renderedWarIdNumber ?? null,
+      ...(confirmedCurrentWarState?.startTime ? { startTime: confirmedCurrentWarState.startTime } : {}),
+      ...(confirmedCurrentWarState?.opponentTag
+        ? { opponentTag: confirmedCurrentWarState.opponentTag }
+        : {}),
+      ...(confirmedCurrentWarState?.matchType ? { matchType: confirmedCurrentWarState.matchType } : {}),
+      inferredMatchType: confirmedCurrentWarState?.inferredMatchType ?? true,
+      outcome: confirmedCurrentWarState?.outcome ?? null,
       updatedAt: new Date(),
     },
   });

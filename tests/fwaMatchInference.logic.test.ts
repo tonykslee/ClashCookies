@@ -238,5 +238,51 @@ describe("fwa match precedence", () => {
       syncIsFwa: false,
     });
   });
+
+  it("keeps confirmed current-war BL over inferred MM fallback after send", () => {
+    const current = resolveCurrentWarMatchTypeSignal({
+      matchType: "BL",
+      inferredMatchType: false,
+    });
+    const live = inferMatchTypeFromPointsSnapshotsForTest(
+      { activeFwa: true },
+      { balance: null, activeFwa: null, notFound: true },
+      {
+        winnerBoxNotMarkedFwa: true,
+        opponentEvidenceMissingOrNotCurrent: true,
+        currentWarState: "inWar",
+        currentWarClanAttacksUsed: 4,
+        currentWarClanStars: 8,
+        currentWarOpponentStars: 2,
+      }
+    );
+    const resolved = chooseMatchTypeResolution({
+      confirmedCurrent: current.confirmed,
+      liveOpponent: live,
+      storedSync: null,
+      unconfirmedCurrent: current.unconfirmed,
+    });
+    const resolvedAfterRefresh = chooseMatchTypeResolution({
+      confirmedCurrent: current.confirmed,
+      liveOpponent: live,
+      storedSync: null,
+      unconfirmedCurrent: current.unconfirmed,
+    });
+
+    expect(resolved).toMatchObject({
+      matchType: "BL",
+      source: "confirmed_current_war",
+      inferred: false,
+      confirmed: true,
+      syncIsFwa: false,
+    });
+    expect(resolvedAfterRefresh).toMatchObject({
+      matchType: "BL",
+      source: "confirmed_current_war",
+      inferred: false,
+      confirmed: true,
+      syncIsFwa: false,
+    });
+  });
 });
 
