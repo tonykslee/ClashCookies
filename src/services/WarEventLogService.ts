@@ -274,6 +274,16 @@ function buildWarStatsLines(stats: EmbedWarStats): string[] {
   ];
 }
 
+/** Purpose: omit markdown heading lines from war-plan text for embed rendering only. */
+function sanitizeWarPlanForEmbed(planText: string | null | undefined): string | null {
+  if (!planText) return null;
+  const filtered = planText.split(/\r?\n/).filter((line) => !/^\s*#/.test(line));
+  if (filtered.length === 0) return null;
+  return filtered.join("\n");
+}
+
+export const sanitizeWarPlanForEmbedForTest = sanitizeWarPlanForEmbed;
+
 export class WarEventLogService {
   private readonly points: PointsProjectionService;
   private readonly pointsSync: WarStartPointsSyncService;
@@ -714,7 +724,7 @@ export class WarEventLogService {
           inline: true,
         }
       );
-      const battlePlanText = await this.history.buildWarPlanText(
+      const battlePlanTextRaw = await this.history.buildWarPlanText(
         guildId,
         payload.matchType,
         payload.outcome,
@@ -723,13 +733,14 @@ export class WarEventLogService {
         "battle",
         payload.clanName
       );
+      const battlePlanText = sanitizeWarPlanForEmbed(battlePlanTextRaw);
       if (battlePlanText) {
         embed.addFields({
           name: "War Plan",
           value: battlePlanText,
           inline: false,
         });
-      } else if (payload.matchType === "BL") {
+      } else if (!battlePlanTextRaw && payload.matchType === "BL") {
         embed.addFields({
           name: "Message",
           value:
@@ -773,7 +784,7 @@ export class WarEventLogService {
           inline: true,
         }
       );
-      const prepPlanText = await this.history.buildWarPlanText(
+      const prepPlanTextRaw = await this.history.buildWarPlanText(
         guildId,
         payload.matchType,
         payload.outcome,
@@ -782,13 +793,14 @@ export class WarEventLogService {
         "prep",
         payload.clanName
       );
+      const prepPlanText = sanitizeWarPlanForEmbed(prepPlanTextRaw);
       if (prepPlanText) {
         embed.addFields({
           name: "War Plan",
           value: prepPlanText,
           inline: false,
         });
-      } else if (payload.matchType === "BL") {
+      } else if (!prepPlanTextRaw && payload.matchType === "BL") {
         embed.addFields({
           name: "Message",
           value: [
@@ -1824,7 +1836,7 @@ export class WarEventLogService {
         value: payload.matchType ?? "unknown",
         inline: true,
       });
-      const battlePlanText = await this.history.buildWarPlanText(
+      const battlePlanTextRaw = await this.history.buildWarPlanText(
         guildId,
         payload.matchType,
         payload.outcome,
@@ -1833,20 +1845,21 @@ export class WarEventLogService {
         "battle",
         payload.clanName
       );
+      const battlePlanText = sanitizeWarPlanForEmbed(battlePlanTextRaw);
       if (battlePlanText) {
         embed.addFields({
           name: "War Plan",
           value: battlePlanText,
           inline: false,
         });
-      } else if (payload.matchType === "BL") {
+      } else if (!battlePlanTextRaw && payload.matchType === "BL") {
         embed.addFields({
           name: "Message",
           value:
             "**Battle day has started! Thank you for your help swapping to war bases, please swap back to FWA bases asap!**",
           inline: false,
         });
-      } else if (payload.matchType === "MM") {
+      } else if (!battlePlanTextRaw && payload.matchType === "MM") {
         embed.addFields({
           name: "Message",
           value: "Attack whatever you want! Free for all! ⚔️",
@@ -1883,7 +1896,7 @@ export class WarEventLogService {
         value: payload.matchType ?? "unknown",
         inline: true,
       });
-      const prepPlanText = await this.history.buildWarPlanText(
+      const prepPlanTextRaw = await this.history.buildWarPlanText(
         guildId,
         payload.matchType,
         payload.outcome,
@@ -1892,13 +1905,14 @@ export class WarEventLogService {
         "prep",
         payload.clanName
       );
+      const prepPlanText = sanitizeWarPlanForEmbed(prepPlanTextRaw);
       if (prepPlanText) {
         embed.addFields({
           name: "War Plan",
           value: prepPlanText,
           inline: false,
         });
-      } else if (payload.matchType === "BL") {
+      } else if (!prepPlanTextRaw && payload.matchType === "BL") {
         embed.addFields({
           name: "Message",
           value: [
@@ -2468,7 +2482,7 @@ export class WarEventLogService {
       value: payload.matchType ?? "unknown",
       inline: true,
     });
-    const battlePlanText = await this.history.buildWarPlanText(
+    const battlePlanTextRaw = await this.history.buildWarPlanText(
       guildId,
       payload.matchType,
       payload.outcome,
@@ -2477,20 +2491,21 @@ export class WarEventLogService {
       "battle",
       payload.clanName
     );
+    const battlePlanText = sanitizeWarPlanForEmbed(battlePlanTextRaw);
     if (battlePlanText) {
       embed.addFields({
         name: "War Plan",
         value: battlePlanText,
         inline: false,
       });
-    } else if (payload.matchType === "BL") {
+    } else if (!battlePlanTextRaw && payload.matchType === "BL") {
       embed.addFields({
         name: "Message",
         value:
           "**Battle day has started! Thank you for your help swapping to war bases, please swap back to FWA bases asap!**",
         inline: false,
       });
-    } else {
+    } else if (!battlePlanTextRaw) {
       embed.addFields({
         name: "Message",
         value: "Attack whatever you want! Free for all! ⚔️",
@@ -2571,7 +2586,7 @@ export class WarEventLogService {
       value: payload.matchType ?? "unknown",
       inline: true,
     });
-    const prepPlanText = await this.history.buildWarPlanText(
+    const prepPlanTextRaw = await this.history.buildWarPlanText(
       guildId,
       payload.matchType,
       payload.outcome,
@@ -2580,20 +2595,21 @@ export class WarEventLogService {
       "prep",
       payload.clanName
     );
+    const prepPlanText = sanitizeWarPlanForEmbed(prepPlanTextRaw);
     if (prepPlanText) {
       embed.addFields({
         name: "War Plan",
         value: prepPlanText,
         inline: false,
       });
-    } else if (payload.matchType === "BL") {
+    } else if (!prepPlanTextRaw && payload.matchType === "BL") {
       embed.addFields({
         name: "Message",
         value:
           "**Prep day has started. This is a blacklist war. Keep regular prep coordination and plan for battle day instructions.**",
         inline: false,
       });
-    } else {
+    } else if (!prepPlanTextRaw) {
       embed.addFields({
         name: "Message",
         value: "Prep day has started. This is a mismatch war.",
@@ -2629,5 +2645,3 @@ export async function handleNotifyWarRefreshButton(
 }
 
 export const notifyWarBattleDayRefreshIntervalMs = BATTLE_DAY_REFRESH_MS;
-
-

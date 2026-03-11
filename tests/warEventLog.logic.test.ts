@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   computeWarComplianceForTest,
   computeWarPointsDeltaForTest,
+  sanitizeWarPlanForEmbedForTest,
 } from "../src/services/WarEventLogService";
 import { WarEventHistoryService } from "../src/services/war-events/history";
 
@@ -385,5 +386,37 @@ describe("WarEventLogService.computeWarComplianceForTest", () => {
       loseStyle: "TRADITIONAL",
     });
     expect(result.notFollowingPlan).toEqual(["Alice", "Bob"]);
+  });
+});
+
+describe("WarEventLogService.sanitizeWarPlanForEmbedForTest", () => {
+  it("omits heading-style lines and keeps non-heading lines in order", () => {
+    const text = [
+      "# Title",
+      "Line 1",
+      "  ## Subtitle",
+      "",
+      "  - Keep this",
+      "   ### Internal Header",
+      "Line 2",
+    ].join("\n");
+
+    const sanitized = sanitizeWarPlanForEmbedForTest(text);
+
+    expect(sanitized?.split("\n")).toEqual(["Line 1", "", "  - Keep this", "Line 2"]);
+  });
+
+  it("keeps plans without heading lines unchanged", () => {
+    const text = ["Line 1", "  - Keep this", "", "Line 2"].join("\n");
+
+    const sanitized = sanitizeWarPlanForEmbedForTest(text);
+
+    expect(sanitized).toBe(text);
+  });
+
+  it("returns null when all lines are heading-style lines", () => {
+    const text = ["# Title", "  ## Subtitle", "   ### More"].join("\n");
+
+    expect(sanitizeWarPlanForEmbedForTest(text)).toBeNull();
   });
 });
