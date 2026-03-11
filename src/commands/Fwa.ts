@@ -4928,6 +4928,7 @@ function buildSyncValidationState(input: {
     isFwa: boolean | null;
     lastKnownMatchType?: string | null;
   } | null;
+  currentWarId?: string | number | null;
   currentWarStartTime: Date | null;
   siteCurrent: boolean;
   syncNum: number | null;
@@ -4952,9 +4953,20 @@ function buildSyncValidationState(input: {
     };
   }
 
+  const suppressMissingPersistedRowDifference =
+    input.syncRow === null &&
+    input.opponentNotFound === true &&
+    input.syncNum !== null &&
+    Number.isFinite(input.syncNum) &&
+    (input.opponentPoints === null || !Number.isFinite(input.opponentPoints)) &&
+    (normalizeWarIdText(input.currentWarId) !== null ||
+      (input.currentWarStartTime instanceof Date &&
+        Number.isFinite(input.currentWarStartTime.getTime())));
   const differences: string[] = [];
   if (!input.syncRow) {
-    differences.push("- Missing persisted sync validation row for this war");
+    if (!suppressMissingPersistedRowDifference) {
+      differences.push("- Missing persisted sync validation row for this war");
+    }
   } else {
     const currentSyncLabel =
       input.syncNum !== null && Number.isFinite(input.syncNum)
@@ -5022,11 +5034,11 @@ function buildSyncValidationState(input: {
     syncRowMissing: input.syncRow === null,
     differences,
     statusLine:
-      differences.length > 0
-        ? showNotFoundStatus
-          ? POINTS_CLAN_NOT_FOUND_STATUS_LINE
-          : ":warning: Data not fully synced with points.fwafarm"
-        : "✅ Data is in sync with points.fwafarm",
+      showNotFoundStatus && (differences.length > 0 || suppressMissingPersistedRowDifference)
+        ? POINTS_CLAN_NOT_FOUND_STATUS_LINE
+        : differences.length > 0
+          ? ":warning: Data not fully synced with points.fwafarm"
+          : "✅ Data is in sync with points.fwafarm",
   };
 }
 function buildStoredSyncSummary(input: {
@@ -6929,6 +6941,7 @@ async function buildTrackedMatchOverview(
     });
     const validationState = buildSyncValidationState({
       syncRow,
+      currentWarId: sub?.warId ?? null,
       currentWarStartTime: warStartTimeForSync,
       siteCurrent: siteUpdatedForAlert,
       syncNum: siteSyncObservedForWrite,
@@ -9753,6 +9766,7 @@ export const Fwa: Command = {
         });
         const validationState = buildSyncValidationState({
           syncRow,
+          currentWarId: subscription?.warId ?? null,
           currentWarStartTime: warStartTimeForSync,
           siteCurrent: siteUpdated,
           syncNum: siteSyncObservedForWrite,
