@@ -241,7 +241,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "War mail embed sidebar colors are state-coded: BL=black, MM=white, FWA WIN=green, FWA LOSE=red, unresolved=gray.",
       "Single-clan `/fwa match` embed sidebar color follows the same state mapping from the currently displayed effective state, including draft revisions.",
       "`/fwa match` war-changing state now shows field-specific mismatch lines (opponent, sync #, outcome, match type) against persisted points validation.",
-      "When opponent points pages are missing, `/fwa match` uses `:warning: clan not found in points.fwafarm`, and alliance low-confidence states still collapse to one sync warning line.",
+      "When opponent points pages are missing, `/fwa match` uses `:interrobang: Clan not found on points.fwafarm`, and alliance low-confidence states still collapse to one sync warning line.",
       "MM/BL no-opponent-page validation can now reuse tracked-clan points-page fallback through the shared snapshot path (without changing confirmation semantics).",
       "Running `/fwa match tag:<clan>` and then pressing `Alliance View` restores the full alliance overview (not a one-clan scoped view).",
       "Confirm-and-send pings the tracked clan role (`TrackedClan.clanRoleId`) when pinging is enabled.",
