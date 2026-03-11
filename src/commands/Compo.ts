@@ -1036,8 +1036,10 @@ export const Compo: Command = {
   ) => {
     try {
       logCompoStage(interaction, "handler_enter");
-      await interaction.deferReply({ ephemeral: true });
-      logCompoStage(interaction, "defer_reply_ok");
+      if (!interaction.deferred && !interaction.replied) {
+        await interaction.deferReply({ ephemeral: true });
+        logCompoStage(interaction, "defer_reply_ok");
+      }
 
       const subcommand = interaction.options.getSubcommand(true);
       const mode = readMode(interaction);

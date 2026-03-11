@@ -235,6 +235,28 @@ describe("/compo strict sheet read path", () => {
       true
     );
   });
+
+  it("does not attempt a second defer when /compo is already acknowledged", async () => {
+    vi.spyOn(GoogleSheetsService.prototype, "getCompoLinkedSheet").mockResolvedValue(linkedSheet);
+    vi.spyOn(GoogleSheetsService.prototype, "readCompoLinkedValues").mockImplementation(
+      async (range: string) => {
+        if (range === LOOKUP_REFRESH_RANGE) return [["1709900000"]];
+        return makeRows();
+      }
+    );
+
+    const interaction = makeInteraction({ subcommand: "state" });
+    interaction.deferred = true;
+
+    await Compo.run({} as any, interaction as any, {
+      getClan: vi.fn().mockResolvedValue({
+        memberList: Array.from({ length: 49 }, () => ({ tag: "#P" })),
+      }),
+    } as any);
+
+    expect(interaction.deferReply).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalled();
+  });
 });
 
 describe("/compo error message mapping", () => {
