@@ -5267,8 +5267,8 @@ async function persistClanPointsSyncIfCurrent(input: {
   fetchReason?: PointsApiFetchReason;
   matchType?: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN" | null;
   opponentNotFound?: boolean;
-}): Promise<void> {
-  if (!input.guildId || !input.siteCurrent) return;
+}): Promise<"none" | "full" | "checkpoint"> {
+  if (!input.guildId || !input.siteCurrent) return "none";
   if (
     input.warStartTime &&
     input.syncNum !== null &&
@@ -5303,7 +5303,7 @@ async function persistClanPointsSyncIfCurrent(input: {
       matchType: input.matchType ?? null,
       needsValidation: false,
     });
-    return;
+    return "full";
   }
 
   const hasWarIdentity =
@@ -5315,11 +5315,11 @@ async function persistClanPointsSyncIfCurrent(input: {
     input.syncNum !== null &&
     Number.isFinite(input.syncNum) &&
     (input.opponentPoints === null || !Number.isFinite(input.opponentPoints));
-  if (!canCheckpointSync) return;
+  if (!canCheckpointSync) return "none";
   const checkpointSyncNum = toComparableSyncNumber(input.syncNum);
-  if (checkpointSyncNum === null) return;
+  if (checkpointSyncNum === null) return "none";
 
-  await pointsSyncService.checkpointCurrentWarSync({
+  const checkpointed = await pointsSyncService.checkpointCurrentWarSync({
     guildId: input.guildId,
     clanTag: input.clanTag,
     warId:
@@ -5336,6 +5336,7 @@ async function persistClanPointsSyncIfCurrent(input: {
         : undefined,
     fetchReason: input.fetchReason ?? "match_render",
   });
+  return checkpointed ? "checkpoint" : "none";
 }
 
 type MatchTypeFallbackResolution = {
@@ -5416,6 +5417,7 @@ export const isLowConfidenceAllianceMismatchScenarioForTest =
 export const resolveSingleClanMatchEmbedColorForTest = resolveSingleClanMatchEmbedColor;
 export const buildOpponentSnapshotFromTrackedClanFallbackForTest =
   buildOpponentSnapshotFromTrackedClanFallback;
+export const resolveForceSyncMatchupEvidenceForTest = resolveForceSyncMatchupEvidence;
 export const isPointsValidationCurrentForMatchupForTest = isPointsValidationCurrentForMatchup;
 export const shouldHydrateAlliancePayloadForTest = shouldHydrateAlliancePayload;
 
@@ -5652,6 +5654,77 @@ function buildOpponentSnapshotFromTrackedClanFallback(params: {
     extractedOpponentName,
     currentForWar,
     normalizedWinnerBoxText,
+  };
+}
+
+/** Purpose: align force-sync matchup-current evidence selection with /fwa match contract, including tracked fallback proof. */
+function resolveForceSyncMatchupEvidence(input: {
+  trackedClanTag: string;
+  opponentTag: string;
+  sourceSync: number | null;
+  primarySnapshot: PointsSnapshot | null;
+  directOpponentSnapshot: PointsSnapshot | null;
+}): {
+  opponentSnapshot: PointsSnapshot | null;
+  siteCurrent: boolean;
+  siteCurrentFromPrimary: boolean;
+  usedTrackedFallback: boolean;
+} {
+  const normalizedOpponentTag = normalizeTag(input.opponentTag);
+  if (!normalizedOpponentTag) {
+    return {
+      opponentSnapshot: input.directOpponentSnapshot ?? null,
+      siteCurrent: false,
+      siteCurrentFromPrimary: false,
+      usedTrackedFallback: false,
+    };
+  }
+
+  const siteCurrentFromPrimary = Boolean(
+    input.primarySnapshot &&
+      isPointsSiteUpdatedForOpponent(input.primarySnapshot, normalizedOpponentTag, input.sourceSync)
+  );
+  const directSiteCurrent = isPointsValidationCurrentForMatchup({
+    primarySnapshot: input.primarySnapshot,
+    opponentSnapshot: input.directOpponentSnapshot,
+    opponentTag: normalizedOpponentTag,
+    sourceSync: input.sourceSync,
+  });
+  if (directSiteCurrent) {
+    return {
+      opponentSnapshot: input.directOpponentSnapshot ?? null,
+      siteCurrent: true,
+      siteCurrentFromPrimary,
+      usedTrackedFallback: false,
+    };
+  }
+
+  const trackedFallback = buildOpponentSnapshotFromTrackedClanFallback({
+    requestedOpponentTag: normalizedOpponentTag,
+    trackedClanTag: input.trackedClanTag,
+    trackedSnapshot: input.primarySnapshot,
+  });
+  const fallbackSnapshot = trackedFallback.snapshot;
+  const fallbackSiteCurrent = isPointsValidationCurrentForMatchup({
+    primarySnapshot: input.primarySnapshot,
+    opponentSnapshot: fallbackSnapshot,
+    opponentTag: normalizedOpponentTag,
+    sourceSync: input.sourceSync,
+  });
+  if (fallbackSnapshot && fallbackSiteCurrent) {
+    return {
+      opponentSnapshot: fallbackSnapshot,
+      siteCurrent: true,
+      siteCurrentFromPrimary,
+      usedTrackedFallback: true,
+    };
+  }
+
+  return {
+    opponentSnapshot: fallbackSnapshot ?? input.directOpponentSnapshot ?? null,
+    siteCurrent: false,
+    siteCurrentFromPrimary,
+    usedTrackedFallback: false,
   };
 }
 
@@ -7455,40 +7528,47 @@ export async function runForceSyncDataCommand(
     return;
   }
 
+  const settings = new SettingsService();
+  const sourceSync = await getSourceOfTruthSync(settings, interaction.guildId ?? null);
   const war = await getCurrentWarCached(cocService, tag, warLookupCache).catch(() => null);
   const opponentTag = normalizeTag(String(war?.opponent?.tag ?? ""));
   const fresh = await scrapeClanPoints(tag, "manual_refresh", {
     manualForceBypass: true,
     caller: "command",
   });
-
-  const siteSync = fresh.winnerBoxSync;
-  const siteSyncNum =
-    siteSync !== null && Number.isFinite(siteSync) ? Math.trunc(siteSync) : null;
-  const siteUpdatedForOpponent = Boolean(
-    opponentTag && isPointsSiteUpdatedForOpponent(fresh, opponentTag, null)
-  );
-
-  let opponentSnapshot: PointsSnapshot | null = null;
-  let opponentBalance: number | null = null;
-  if (siteUpdatedForOpponent) {
-    const fromPrimary = deriveOpponentBalanceFromPrimarySnapshot(fresh, tag, opponentTag);
-    if (fromPrimary !== null && Number.isFinite(fromPrimary)) {
-      opponentBalance = fromPrimary;
-    } else if (opponentTag) {
-      opponentSnapshot = await scrapeClanPoints(opponentTag, "manual_refresh", {
+  const directOpponentSnapshot = opponentTag
+    ? await scrapeClanPoints(opponentTag, "manual_refresh", {
         manualForceBypass: true,
         caller: "command",
-      }).catch(() => null);
-      opponentBalance =
-        opponentSnapshot?.balance !== null &&
-        opponentSnapshot?.balance !== undefined &&
-        Number.isFinite(opponentSnapshot.balance)
-          ? opponentSnapshot.balance
-          : null;
-    }
-  }
-  let clanPointsSyncUpdated = false;
+      }).catch(() => null)
+    : null;
+  const matchupEvidence = resolveForceSyncMatchupEvidence({
+    trackedClanTag: tag,
+    opponentTag,
+    sourceSync,
+    primarySnapshot: fresh,
+    directOpponentSnapshot,
+  });
+  const opponentSnapshot = matchupEvidence.opponentSnapshot;
+  const siteCurrent = matchupEvidence.siteCurrent;
+  const siteSyncNum = resolveObservedSyncNumberForMatchup({
+    primarySnapshot: fresh,
+    opponentSnapshot,
+  });
+  const opponentBalanceFromSnapshot =
+    opponentSnapshot?.balance !== null &&
+    opponentSnapshot?.balance !== undefined &&
+    Number.isFinite(opponentSnapshot.balance)
+      ? Math.trunc(opponentSnapshot.balance)
+      : null;
+  const opponentBalanceFromPrimary = opponentTag
+    ? deriveOpponentBalanceFromPrimarySnapshot(fresh, tag, opponentTag)
+    : null;
+  const opponentBalance =
+    opponentBalanceFromSnapshot ??
+    (opponentBalanceFromPrimary !== null && Number.isFinite(opponentBalanceFromPrimary)
+      ? Math.trunc(opponentBalanceFromPrimary)
+      : null);
   const currentWar = interaction.guildId
     ? await prisma.currentWar.findUnique({
         where: {
@@ -7503,37 +7583,58 @@ export async function runForceSyncDataCommand(
         },
       })
     : null;
-  if (
-    interaction.guildId &&
-    currentWar?.startTime &&
-    siteUpdatedForOpponent &&
-    siteSyncNum !== null &&
+  const warStartTimeForSync = getWarStartDateForSync(currentWar?.startTime ?? null, war);
+  const projectedOutcome =
+    opponentTag &&
     fresh.balance !== null &&
     Number.isFinite(fresh.balance) &&
     opponentBalance !== null &&
-    Number.isFinite(opponentBalance) &&
-    opponentTag
-  ) {
-    await pointsSyncService.upsertPointsSync({
-      guildId: interaction.guildId,
-      clanTag: tag,
-      warId:
-        currentWar.warId !== null && Number.isFinite(currentWar.warId)
-          ? String(Math.trunc(currentWar.warId))
-          : null,
-      warStartTime: currentWar.startTime,
-      syncNum: siteSyncNum,
-      opponentTag,
-      clanPoints: fresh.balance,
-      opponentPoints: opponentBalance,
-      outcome: deriveProjectedOutcome(tag, opponentTag, fresh.balance, opponentBalance, siteSyncNum),
-      isFwa: fresh.activeFwa ?? false,
-      fetchedAt: new Date(fresh.fetchedAtMs),
-      fetchReason: "manual_refresh",
-      needsValidation: false,
-    });
-    clanPointsSyncUpdated = true;
-  }
+    Number.isFinite(opponentBalance)
+      ? deriveProjectedOutcome(tag, opponentTag, fresh.balance, opponentBalance, siteSyncNum)
+      : null;
+  const persistenceOutcome = await persistClanPointsSyncIfCurrent({
+    guildId: interaction.guildId,
+    clanTag: tag,
+    warId: currentWar?.warId ?? null,
+    warStartTime: warStartTimeForSync,
+    siteCurrent,
+    syncNum: siteSyncNum,
+    opponentTag,
+    clanPoints:
+      fresh.balance !== null && Number.isFinite(fresh.balance) ? Math.trunc(fresh.balance) : null,
+    opponentPoints: opponentBalance,
+    outcome: projectedOutcome,
+    isFwa: fresh.activeFwa,
+    fetchedAtMs: fresh.fetchedAtMs,
+    fetchReason: "manual_refresh",
+    opponentNotFound: opponentSnapshot?.notFound ?? false,
+  });
+  const currentnessLine = !opponentTag
+    ? "Current-matchup proof: unavailable (no active war opponent)."
+    : siteCurrent
+      ? matchupEvidence.usedTrackedFallback && !matchupEvidence.siteCurrentFromPrimary
+        ? "Current-matchup proof: established via tracked-clan fallback evidence."
+        : matchupEvidence.siteCurrentFromPrimary
+          ? "Current-matchup proof: established via primary winner-box evidence."
+          : "Current-matchup proof: established via direct opponent evidence."
+      : "Current-matchup proof: not established from primary/direct/fallback evidence for the active opponent.";
+  const hasWarIdentity =
+    (currentWar?.warId !== null &&
+      currentWar?.warId !== undefined &&
+      Number.isFinite(currentWar.warId)) ||
+    warStartTimeForSync instanceof Date;
+  const persistenceLine =
+    persistenceOutcome === "full"
+      ? "ClanPointsSync updated for current war."
+      : persistenceOutcome === "checkpoint"
+        ? "ClanPointsSync sync checkpoint updated for current war."
+        : !interaction.guildId
+          ? "ClanPointsSync not updated (server context required)."
+          : !siteCurrent
+            ? "ClanPointsSync not updated because current-matchup proof is still missing."
+            : !hasWarIdentity
+              ? "ClanPointsSync not updated because active-war identity could not be resolved."
+              : "ClanPointsSync not updated (no eligible same-war row for checkpoint-only write).";
 
   await interaction.editReply(
     [
@@ -7545,11 +7646,8 @@ export async function runForceSyncDataCommand(
       }`,
       `Site sync #: ${siteSyncNum !== null ? `#${siteSyncNum}` : "unknown"}`,
       `Active FWA: ${fresh.activeFwa === null ? "unknown" : fresh.activeFwa ? "YES" : "NO"}`,
-      siteUpdatedForOpponent
-        ? clanPointsSyncUpdated
-          ? "ClanPointsSync updated for current war."
-          : "points.fwafarm is current, but no active CurrentWar row was available for ClanPointsSync."
-        : "points.fwafarm is not current for the active opponent yet.",
+      currentnessLine,
+      persistenceLine,
     ].join("\n")
   );
 }
