@@ -14,6 +14,7 @@ import {
   resolveObservedSyncNumberForMatchupForTest,
   resolveMatchTypeSelectionForTest,
   resolveOpponentActiveFwaEvidenceForTest,
+  resolveForceSyncMatchupEvidenceForTest,
   resolveSingleClanMatchEmbedColorForTest,
   shouldDisplayInferredMatchTypeForTest,
   shouldHydrateAlliancePayloadForTest,
@@ -815,6 +816,150 @@ describe("fwa points validation current classification", () => {
     });
 
     expect(current).toBe(false);
+  });
+});
+
+describe("force sync matchup current evidence contract", () => {
+  it("accepts primary winner-box proof as current for the active opponent", () => {
+    const resolved = resolveForceSyncMatchupEvidenceForTest({
+      trackedClanTag: "2TRACK",
+      opponentTag: "2OPP",
+      sourceSync: 474,
+      primarySnapshot: {
+        version: 5,
+        tag: "2TRACK",
+        url: "https://points.fwafarm.com/clan?tag=2TRACK",
+        snapshotSource: "direct",
+        lookupState: "ok",
+        balance: 1200,
+        clanName: "Tracked Clan",
+        activeFwa: true,
+        notFound: false,
+        winnerBoxText: "Winner Box",
+        winnerBoxTags: ["2TRACK", "2OPP"],
+        winnerBoxSync: 475,
+        effectiveSync: 475,
+        syncMode: "high",
+        winnerBoxHasTag: true,
+        headerPrimaryTag: "2TRACK",
+        headerOpponentTag: "2OPP",
+        headerPrimaryBalance: 1200,
+        headerOpponentBalance: 980,
+        warEndMs: null,
+        lastWarCheckAtMs: 0,
+        fetchedAtMs: 0,
+        refreshedForWarEndMs: null,
+      },
+      directOpponentSnapshot: null,
+    });
+
+    expect(resolved.siteCurrent).toBe(true);
+    expect(resolved.siteCurrentFromPrimary).toBe(true);
+    expect(resolved.usedTrackedFallback).toBe(false);
+  });
+
+  it("uses tracked-clan fallback proof when direct opponent evidence is unavailable", () => {
+    const resolved = resolveForceSyncMatchupEvidenceForTest({
+      trackedClanTag: "2TRACK",
+      opponentTag: "2OPP",
+      sourceSync: 474,
+      primarySnapshot: {
+        version: 5,
+        tag: "2TRACK",
+        url: "https://points.fwafarm.com/clan?tag=2TRACK",
+        snapshotSource: "direct",
+        lookupState: "ok",
+        balance: 1200,
+        clanName: "Tracked Clan",
+        activeFwa: true,
+        notFound: false,
+        winnerBoxText: "Winner Box",
+        winnerBoxTags: ["2TRACK"],
+        winnerBoxSync: 475,
+        effectiveSync: 475,
+        syncMode: "high",
+        winnerBoxHasTag: true,
+        headerPrimaryName: "Tracked Clan",
+        headerOpponentName: "Opponent Clan",
+        headerPrimaryTag: "2TRACK",
+        headerOpponentTag: "2OPP",
+        headerPrimaryBalance: 1200,
+        headerOpponentBalance: 980,
+        warEndMs: null,
+        lastWarCheckAtMs: 0,
+        fetchedAtMs: 0,
+        refreshedForWarEndMs: null,
+      },
+      directOpponentSnapshot: {
+        version: 5,
+        tag: "2OPP",
+        url: "https://points.fwafarm.com/clan?tag=2OPP",
+        snapshotSource: "direct",
+        lookupState: "clan_not_found",
+        balance: null,
+        clanName: null,
+        activeFwa: null,
+        notFound: true,
+        winnerBoxText: "Clan not found.",
+        winnerBoxTags: [],
+        winnerBoxSync: null,
+        effectiveSync: null,
+        syncMode: null,
+        winnerBoxHasTag: false,
+        headerPrimaryTag: null,
+        headerOpponentTag: null,
+        headerPrimaryBalance: null,
+        headerOpponentBalance: null,
+        warEndMs: null,
+        lastWarCheckAtMs: 0,
+        fetchedAtMs: 0,
+        refreshedForWarEndMs: null,
+      },
+    });
+
+    expect(resolved.siteCurrent).toBe(true);
+    expect(resolved.usedTrackedFallback).toBe(true);
+    expect(resolved.opponentSnapshot?.snapshotSource).toBe("tracked_clan_fallback");
+    expect(resolved.opponentSnapshot?.notFound).toBe(true);
+  });
+
+  it("stays not-current when neither primary nor fallback can prove the active matchup", () => {
+    const resolved = resolveForceSyncMatchupEvidenceForTest({
+      trackedClanTag: "2TRACK",
+      opponentTag: "2OPP",
+      sourceSync: 475,
+      primarySnapshot: {
+        version: 5,
+        tag: "2TRACK",
+        url: "https://points.fwafarm.com/clan?tag=2TRACK",
+        snapshotSource: "direct",
+        lookupState: "ok",
+        balance: 1200,
+        clanName: "Tracked Clan",
+        activeFwa: true,
+        notFound: false,
+        winnerBoxText: "Winner Box",
+        winnerBoxTags: ["2TRACK", "2OLD"],
+        winnerBoxSync: 475,
+        effectiveSync: 475,
+        syncMode: "high",
+        winnerBoxHasTag: true,
+        headerPrimaryName: "Tracked Clan",
+        headerOpponentName: "Different Opponent",
+        headerPrimaryTag: "2TRACK",
+        headerOpponentTag: "2OLD",
+        headerPrimaryBalance: 1200,
+        headerOpponentBalance: 980,
+        warEndMs: null,
+        lastWarCheckAtMs: 0,
+        fetchedAtMs: 0,
+        refreshedForWarEndMs: null,
+      },
+      directOpponentSnapshot: null,
+    });
+
+    expect(resolved.siteCurrent).toBe(false);
+    expect(resolved.usedTrackedFallback).toBe(false);
   });
 });
 
