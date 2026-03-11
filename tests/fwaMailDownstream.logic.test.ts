@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildWarMailPostedContentForTest,
+  buildWarMailRefreshEditPayloadForTest,
   hasWarIdentityShiftedForTest,
 } from "../src/commands/Fwa";
 
@@ -73,5 +74,37 @@ describe("fwa war-mail posted content", () => {
       includeNextRefresh: false,
     });
     expect(content).toBe("<@&123456789>\n\nPlan body");
+  });
+});
+
+describe("fwa war-mail refresh edit payload", () => {
+  it("preserves existing visible role mention in refreshed content", () => {
+    const payload = buildWarMailRefreshEditPayloadForTest(
+      "<@&123456789>\n\nOld plan\n\nNext refresh <t:999:R>",
+      "New plan",
+      0
+    );
+
+    expect(payload.content).toBe("<@&123456789>\n\nNew plan\n\nNext refresh <t:1200:R>");
+  });
+
+  it("uses non-pinging allowedMentions on refresh edits", () => {
+    const payload = buildWarMailRefreshEditPayloadForTest(
+      "<@&123456789>\n\nOld plan\n\nNext refresh <t:999:R>",
+      "New plan",
+      0
+    );
+
+    expect(payload.allowedMentions).toEqual({ parse: [] });
+  });
+
+  it("does not add a role mention when existing posted message has none", () => {
+    const payload = buildWarMailRefreshEditPayloadForTest(
+      "Old plan\n\nNext refresh <t:999:R>",
+      "New plan",
+      0
+    );
+
+    expect(payload.content).toBe("New plan\n\nNext refresh <t:1200:R>");
   });
 });
