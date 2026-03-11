@@ -325,10 +325,11 @@ function _mergeStateRows(
 }
 
 function buildCompoStateRows(modeRows: SheetIndexedRow[]): string[][] {
-  return [
-    STATE_HEADERS,
-    ...modeRows.map((modeRow) => [
-      clampCell(normalizeCompoClanDisplayName(String(modeRow.row[COL_CLAN_NAME] ?? ""))),
+  const contentRows = modeRows.flatMap((modeRow) => {
+    const clanName = clampCell(normalizeCompoClanDisplayName(String(modeRow.row[COL_CLAN_NAME] ?? "")));
+    if (!clanName) return [];
+    return [[
+      clanName,
       clampCell(String(modeRow.row[COL_TOTAL_WEIGHT] ?? "")),
       clampCell(String(modeRow.row[COL_MISSING_WEIGHT] ?? "")),
       clampCell(String(modeRow.row[COL_BUCKET_START] ?? "")),
@@ -337,7 +338,11 @@ function buildCompoStateRows(modeRows: SheetIndexedRow[]): string[][] {
       clampCell(String(modeRow.row[COL_BUCKET_START + 3] ?? "")),
       clampCell(String(modeRow.row[COL_BUCKET_START + 4] ?? "")),
       clampCell(String(modeRow.row[COL_BUCKET_END] ?? "")),
-    ]),
+    ]];
+  });
+  return [
+    STATE_HEADERS,
+    ...contentRows,
   ];
 }
 
