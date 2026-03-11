@@ -1,8 +1,15 @@
 import {
+  ActionRowBuilder,
+  APIActionRowComponent,
+  APIMessageActionRowComponent,
   ApplicationCommandOptionType,
   AutocompleteInteraction,
+  ButtonBuilder,
+  ButtonInteraction,
+  ButtonStyle,
   ChatInputCommandInteraction,
   Client,
+  ComponentType,
   EmbedBuilder,
 } from "discord.js";
 import { Command } from "../Command";
@@ -11,6 +18,12 @@ import { normalizeCompoClanDisplayName } from "../helper/compoDisplay";
 import { prisma } from "../prisma";
 import { safeReply } from "../helper/safeReply";
 import { CoCService } from "../services/CoCService";
+import {
+  getSheetRefreshErrorHint,
+  mapSheetRefreshFlowErrorToMessage,
+  SheetRefreshFlowError,
+  triggerSharedSheetRefresh,
+} from "../services/SheetRefreshService";
 import {
   GoogleSheetMode,
   GoogleSheetReadError,
@@ -72,6 +85,9 @@ const FIXED_LAYOUT_RANGE = "AllianceDashboard!A6:BD500";
 const FIXED_LAYOUT_RANGE_START_ROW = 6;
 const STATE_HEADERS = ["Clan", "Total", "Missing", "TH18", "TH17", "TH16", "TH15", "TH14", "<=TH13"];
 const LOOKUP_REFRESH_RANGE = "Lookup!B10:B10";
+const COMPO_REFRESH_PREFIX = "compo-refresh";
+const COMPO_REFRESH_LABEL = "Refresh Data";
+const COMPO_REFRESH_LOADING_LABEL = "Refreshing...";
 const COMPO_ERROR_MESSAGE_BY_CODE: Record<GoogleSheetReadErrorCode, string> = {
   SHEET_LINK_MISSING: "No compo sheet is linked for this server.",
   SHEET_PROXY_UNAUTHORIZED:
@@ -83,6 +99,92 @@ const COMPO_ERROR_MESSAGE_BY_CODE: Record<GoogleSheetReadErrorCode, string> = {
   SHEET_READ_FAILURE:
     "The compo sheet could not be read due to a sheet service error.",
 };
+
+type CompoRefreshPayload =
+  | {
+      kind: "state";
+      userId: string;
+      mode: GoogleSheetMode;
+    }
+  | {
+      kind: "place";
+      userId: string;
+      weight: number;
+    };
+
+function buildCompoRefreshCustomId(payload: CompoRefreshPayload): string {
+  if (payload.kind === "state") {
+    return `${COMPO_REFRESH_PREFIX}:state:${payload.userId}:${payload.mode}`;
+  }
+  return `${COMPO_REFRESH_PREFIX}:place:${payload.userId}:${Math.trunc(payload.weight)}`;
+}
+
+function parseCompoRefreshCustomId(customId: string): CompoRefreshPayload | null {
+  const parts = String(customId ?? "").split(":");
+  if (parts.length !== 4 || parts[0] !== COMPO_REFRESH_PREFIX) return null;
+  const [, kind, userId, value] = parts;
+  if (!userId || !value) return null;
+  if (kind === "state") {
+    if (value !== "actual" && value !== "war") return null;
+    return {
+      kind: "state",
+      userId,
+      mode: value,
+    };
+  }
+  if (kind === "place") {
+    const weight = Number(value);
+    if (!Number.isFinite(weight) || weight <= 0) return null;
+    return {
+      kind: "place",
+      userId,
+      weight: Math.trunc(weight),
+    };
+  }
+  return null;
+}
+
+export function isCompoRefreshButtonCustomId(customId: string): boolean {
+  return String(customId ?? "").startsWith(`${COMPO_REFRESH_PREFIX}:`);
+}
+
+function buildCompoRefreshActionRow(
+  customId: string,
+  options?: { loading?: boolean }
+): ActionRowBuilder<ButtonBuilder> {
+  const loading = options?.loading ?? false;
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(customId)
+      .setLabel(loading ? COMPO_REFRESH_LOADING_LABEL : COMPO_REFRESH_LABEL)
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(loading)
+  );
+}
+
+function extractSupplementalRowsFromMessage(
+  interaction: ButtonInteraction
+): Array<APIActionRowComponent<APIMessageActionRowComponent>> {
+  return interaction.message.components
+    .map((row) => row.toJSON() as APIActionRowComponent<APIMessageActionRowComponent>)
+    .filter(
+      (row) =>
+        !row.components.some(
+          (component) =>
+            component.type === ComponentType.Button &&
+            "custom_id" in component &&
+            typeof component.custom_id === "string" &&
+            isCompoRefreshButtonCustomId(component.custom_id)
+        )
+    );
+}
+
+function buildRefreshLine(refreshCell: string[][]): string {
+  const rawRefresh = refreshCell[0]?.[0]?.trim();
+  return rawRefresh && /^\d+$/.test(rawRefresh)
+    ? `RAW Data last refreshed: <t:${rawRefresh}:F>`
+    : "RAW Data last refreshed: (not available)";
+}
 
 function normalizeTag(value: string): string {
   return value.trim().toUpperCase().replace(/^#/, "");
@@ -325,10 +427,11 @@ function _mergeStateRows(
 }
 
 function buildCompoStateRows(modeRows: SheetIndexedRow[]): string[][] {
-  return [
-    STATE_HEADERS,
-    ...modeRows.map((modeRow) => [
-      clampCell(normalizeCompoClanDisplayName(String(modeRow.row[COL_CLAN_NAME] ?? ""))),
+  const contentRows = modeRows.flatMap((modeRow) => {
+    const clanName = clampCell(normalizeCompoClanDisplayName(String(modeRow.row[COL_CLAN_NAME] ?? "")));
+    if (!clanName) return [];
+    return [[
+      clanName,
       clampCell(String(modeRow.row[COL_TOTAL_WEIGHT] ?? "")),
       clampCell(String(modeRow.row[COL_MISSING_WEIGHT] ?? "")),
       clampCell(String(modeRow.row[COL_BUCKET_START] ?? "")),
@@ -337,8 +440,134 @@ function buildCompoStateRows(modeRows: SheetIndexedRow[]): string[][] {
       clampCell(String(modeRow.row[COL_BUCKET_START + 3] ?? "")),
       clampCell(String(modeRow.row[COL_BUCKET_START + 4] ?? "")),
       clampCell(String(modeRow.row[COL_BUCKET_END] ?? "")),
-    ]),
+    ]];
+  });
+  return [
+    STATE_HEADERS,
+    ...contentRows,
   ];
+}
+
+type CompoRenderPayload = {
+  content?: string;
+  embeds?: EmbedBuilder[];
+  files?: Array<{
+    attachment: Buffer;
+    name: string;
+  }>;
+};
+
+type CompoSheetSnapshot = {
+  linked: Awaited<ReturnType<GoogleSheetsService["getCompoLinkedSheet"]>>;
+  rows: string[][];
+  modeRows: SheetIndexedRow[];
+  refreshLine: string;
+};
+
+async function readCompoSheetSnapshot(mode: GoogleSheetMode): Promise<CompoSheetSnapshot> {
+  const settings = new SettingsService();
+  const sheets = new GoogleSheetsService(settings);
+  const linked = await sheets.getCompoLinkedSheet(FIXED_LAYOUT_RANGE);
+  const [rows, refreshCell] = await Promise.all([
+    sheets.readCompoLinkedValues(FIXED_LAYOUT_RANGE, linked),
+    sheets.readCompoLinkedValues(LOOKUP_REFRESH_RANGE, linked),
+  ]);
+  return {
+    linked,
+    rows,
+    modeRows: getModeRows(rows, mode),
+    refreshLine: buildRefreshLine(refreshCell),
+  };
+}
+
+function buildCompoStatePayload(input: {
+  mode: GoogleSheetMode;
+  modeRows: SheetIndexedRow[];
+  refreshLine: string;
+}): CompoRenderPayload {
+  const stateRows = buildCompoStateRows(input.modeRows);
+  return {
+    content: [`Mode Displayed: **${input.mode.toUpperCase()}**`, input.refreshLine].join("\n"),
+    files: [
+      {
+        attachment: renderStatePng(input.mode, stateRows),
+        name: `compo-state-${input.mode}.png`,
+      },
+    ],
+  };
+}
+
+async function buildCompoPlacePayload(input: {
+  inputWeight: number;
+  bucket: WeightBucket;
+  actualRows: SheetIndexedRow[];
+  cocService: CoCService;
+  refreshLine: string;
+}): Promise<{
+  payload: CompoRenderPayload;
+  candidateCount: number;
+  recommendedCount: number;
+  vacancyCount: number;
+  compositionCount: number;
+}> {
+  const candidates = readPlacementCandidates(input.actualRows);
+  if (candidates.length === 0) {
+    return {
+      payload: {
+        content: "No placement data found in ACTUAL rows from AllianceDashboard!A6:BD500.",
+      },
+      candidateCount: 0,
+      recommendedCount: 0,
+      vacancyCount: 0,
+      compositionCount: 0,
+    };
+  }
+
+  const candidatesWithLiveVacancy = await enrichCandidatesWithLiveVacancy(
+    candidates,
+    input.cocService
+  );
+  const vacancyChoice = candidatesWithLiveVacancy
+    .filter((c) => c.hasVacancy)
+    .sort((a, b) => {
+      if (b.vacancySlots !== a.vacancySlots)
+        return b.vacancySlots - a.vacancySlots;
+      return Math.abs(a.remainingToTarget - input.inputWeight) - Math.abs(b.remainingToTarget - input.inputWeight);
+    });
+
+  const compositionNeeds = candidatesWithLiveVacancy
+    .map((c) => {
+      const key = normalize(`${input.bucket}-delta`);
+      const delta = c.bucketDeltaByHeader[key] ?? 0;
+      return { ...c, delta };
+    })
+    .filter((c) => c.delta < 0)
+    .sort((a, b) => {
+      if (a.delta !== b.delta) return a.delta - b.delta;
+      return b.missingCount - a.missingCount;
+    });
+
+  const recommended = compositionNeeds.filter((c) => c.hasVacancy);
+  const vacancyList = vacancyChoice;
+  const compositionList = compositionNeeds;
+  const embed = buildCompoPlaceEmbed({
+    inputWeight: input.inputWeight,
+    bucket: input.bucket,
+    recommended,
+    vacancyList,
+    compositionList,
+    refreshLine: input.refreshLine,
+  });
+  return {
+    payload: {
+      content: "",
+      embeds: [embed],
+    },
+    candidateCount: candidates.length,
+    recommendedCount: recommended.length,
+    vacancyCount: vacancyList.length,
+    compositionCount: compositionList.length,
+  };
 }
 
 type PlacementCandidate = {
@@ -633,6 +862,120 @@ function renderStatePng(mode: GoogleSheetMode, rows: string[][]): Buffer {
   return PNG.sync.write(png);
 }
 
+function buildCompoRefreshComponents(input: {
+  customId: string;
+  loading: boolean;
+  supplementalRows?: Array<APIActionRowComponent<APIMessageActionRowComponent>>;
+}): Array<ActionRowBuilder<ButtonBuilder> | APIActionRowComponent<APIMessageActionRowComponent>> {
+  const components: Array<ActionRowBuilder<ButtonBuilder> | APIActionRowComponent<APIMessageActionRowComponent>> = [
+    buildCompoRefreshActionRow(input.customId, { loading: input.loading }),
+  ];
+  if (input.supplementalRows && input.supplementalRows.length > 0) {
+    components.push(...input.supplementalRows);
+  }
+  return components.slice(0, 5);
+}
+
+function mapCompoRefreshErrorToMessage(err: unknown): string {
+  if (err instanceof SheetRefreshFlowError) {
+    return mapSheetRefreshFlowErrorToMessage(err);
+  }
+  if (err instanceof GoogleSheetReadError) {
+    return mapCompoSheetErrorToMessage(err);
+  }
+  const refreshHint = getSheetRefreshErrorHint(err);
+  return `Failed to refresh compo view. ${refreshHint}`;
+}
+
+export async function handleCompoRefreshButton(
+  interaction: ButtonInteraction,
+  cocService: CoCService
+): Promise<void> {
+  const parsed = parseCompoRefreshCustomId(interaction.customId);
+  if (!parsed) {
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.reply({ ephemeral: true, content: "Invalid refresh action." });
+    }
+    return;
+  }
+  if (interaction.user.id !== parsed.userId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Only the command requester can use this refresh button.",
+    });
+    return;
+  }
+
+  const supplementalRows = extractSupplementalRowsFromMessage(interaction);
+  await interaction.update({
+    components: buildCompoRefreshComponents({
+      customId: interaction.customId,
+      loading: true,
+      supplementalRows,
+    }),
+  });
+
+  try {
+    const refreshMode = parsed.kind === "state" ? parsed.mode : "actual";
+    await triggerSharedSheetRefresh({
+      guildId: interaction.guildId ?? null,
+      mode: refreshMode,
+    });
+
+    if (parsed.kind === "state") {
+      const snapshot = await readCompoSheetSnapshot(parsed.mode);
+      const payload = buildCompoStatePayload({
+        mode: parsed.mode,
+        modeRows: snapshot.modeRows,
+        refreshLine: snapshot.refreshLine,
+      });
+      await interaction.editReply({
+        ...payload,
+        components: buildCompoRefreshComponents({
+          customId: interaction.customId,
+          loading: false,
+          supplementalRows,
+        }),
+      });
+      return;
+    }
+
+    const bucket = getWeightBucket(parsed.weight);
+    if (!bucket) {
+      throw new Error("Invalid placement bucket for refresh.");
+    }
+    const snapshot = await readCompoSheetSnapshot("actual");
+    const placeResult = await buildCompoPlacePayload({
+      inputWeight: parsed.weight,
+      bucket,
+      actualRows: snapshot.modeRows,
+      cocService,
+      refreshLine: snapshot.refreshLine,
+    });
+    await interaction.editReply({
+      ...placeResult.payload,
+      components: buildCompoRefreshComponents({
+        customId: interaction.customId,
+        loading: false,
+        supplementalRows,
+      }),
+    });
+  } catch (err) {
+    console.error(`compo refresh button failed: ${formatError(err)}`);
+    await interaction.editReply({
+      components: buildCompoRefreshComponents({
+        customId: interaction.customId,
+        loading: false,
+        supplementalRows,
+      }),
+    });
+    await interaction.followUp({
+      ephemeral: true,
+      content: mapCompoRefreshErrorToMessage(err),
+    });
+  }
+}
+
 export const Compo: Command = {
   name: "compo",
   description: "Composition tools",
@@ -693,8 +1036,10 @@ export const Compo: Command = {
   ) => {
     try {
       logCompoStage(interaction, "handler_enter");
-      await interaction.deferReply({ ephemeral: true });
-      logCompoStage(interaction, "defer_reply_ok");
+      if (!interaction.deferred && !interaction.replied) {
+        await interaction.deferReply({ ephemeral: true });
+        logCompoStage(interaction, "defer_reply_ok");
+      }
 
       const subcommand = interaction.options.getSubcommand(true);
       const mode = readMode(interaction);
@@ -791,60 +1136,51 @@ export const Compo: Command = {
 
       if (subcommand === "state") {
         logCompoStage(interaction, "computation_start", { mode });
-        const settings = new SettingsService();
-        const sheets = new GoogleSheetsService(settings);
-        const linked = await sheets.getCompoLinkedSheet(FIXED_LAYOUT_RANGE);
+        const snapshot = await readCompoSheetSnapshot(mode);
         logCompoStage(interaction, "db_fetch", {
           entity: "sheet_link",
           mode,
-          result: linked.sheetId ? "found" : "missing",
-          sheetIdPresent: Boolean(linked.sheetId),
-          resolutionSource: linked.source,
+          result: snapshot.linked.sheetId ? "found" : "missing",
+          sheetIdPresent: Boolean(snapshot.linked.sheetId),
+          resolutionSource: snapshot.linked.source,
         });
         logCompoStage(interaction, "read_dispatch", {
           range: FIXED_LAYOUT_RANGE,
-          resolutionSource: linked.source,
+          resolutionSource: snapshot.linked.source,
         });
         logCompoStage(interaction, "read_dispatch", {
           range: LOOKUP_REFRESH_RANGE,
-          resolutionSource: linked.source,
+          resolutionSource: snapshot.linked.source,
         });
-        const [rows, refreshCell] = await Promise.all([
-          sheets.readCompoLinkedValues(FIXED_LAYOUT_RANGE, linked),
-          sheets.readCompoLinkedValues(LOOKUP_REFRESH_RANGE, linked),
-        ]);
-        const modeRows = getModeRows(rows, mode);
         logCompoStage(interaction, "db_fetch", {
           entity: "sheet_rows",
           mode,
-          result: rows.length > 0 ? "found" : "missing",
-          totalRows: rows.length,
-          modeRows: modeRows.length,
+          result: snapshot.rows.length > 0 ? "found" : "missing",
+          totalRows: snapshot.rows.length,
+          modeRows: snapshot.modeRows.length,
         });
-        const stateRows = buildCompoStateRows(modeRows);
-
-        const rawRefresh = refreshCell[0]?.[0]?.trim();
-        const refreshLine =
-          rawRefresh && /^\d+$/.test(rawRefresh)
-            ? `RAW Data last refreshed: <t:${rawRefresh}:F>`
-            : "RAW Data last refreshed: (not available)";
+        const payload = buildCompoStatePayload({
+          mode,
+          modeRows: snapshot.modeRows,
+          refreshLine: snapshot.refreshLine,
+        });
+        const refreshCustomId = buildCompoRefreshCustomId({
+          kind: "state",
+          userId: interaction.user.id,
+          mode,
+        });
 
         logCompoStage(interaction, "computation_complete", {
           result: "state_rendered",
-          modeRows: modeRows.length,
+          modeRows: snapshot.modeRows.length,
         });
-        const content = [`Mode Displayed: **${mode.toUpperCase()}**`, refreshLine].join("\n");
-        const png = renderStatePng(mode, stateRows);
-
         logCompoStage(interaction, "response_build", { reason: "state_png" });
         await interaction.editReply({
-          content,
-          files: [
-            {
-              attachment: png,
-              name: `compo-state-${mode}.png`,
-            },
-          ],
+          ...payload,
+          components: buildCompoRefreshComponents({
+            customId: refreshCustomId,
+            loading: false,
+          }),
         });
         logCompoStage(interaction, "response_sent", { reason: "state_png" });
         return;
@@ -884,107 +1220,64 @@ export const Compo: Command = {
         }
 
         const stateMode: GoogleSheetMode = "actual";
-        const settings = new SettingsService();
-        const sheets = new GoogleSheetsService(settings);
-        const linked = await sheets.getCompoLinkedSheet(FIXED_LAYOUT_RANGE);
+        const snapshot = await readCompoSheetSnapshot(stateMode);
         logCompoStage(interaction, "db_fetch", {
           entity: "sheet_link",
           mode: stateMode,
-          result: linked.sheetId ? "found" : "missing",
-          sheetIdPresent: Boolean(linked.sheetId),
-          resolutionSource: linked.source,
+          result: snapshot.linked.sheetId ? "found" : "missing",
+          sheetIdPresent: Boolean(snapshot.linked.sheetId),
+          resolutionSource: snapshot.linked.source,
         });
         logCompoStage(interaction, "read_dispatch", {
           range: FIXED_LAYOUT_RANGE,
-          resolutionSource: linked.source,
+          resolutionSource: snapshot.linked.source,
         });
         logCompoStage(interaction, "read_dispatch", {
           range: LOOKUP_REFRESH_RANGE,
-          resolutionSource: linked.source,
+          resolutionSource: snapshot.linked.source,
         });
-
-        const [rows, refreshCell] = await Promise.all([
-          sheets.readCompoLinkedValues(FIXED_LAYOUT_RANGE, linked),
-          sheets.readCompoLinkedValues(LOOKUP_REFRESH_RANGE, linked),
-        ]);
-        const actualRows = getModeRows(rows, stateMode);
         logCompoStage(interaction, "db_fetch", {
           entity: "sheet_rows",
           mode: stateMode,
-          result: rows.length > 0 ? "found" : "missing",
-          totalRows: rows.length,
-          modeRows: actualRows.length,
+          result: snapshot.rows.length > 0 ? "found" : "missing",
+          totalRows: snapshot.rows.length,
+          modeRows: snapshot.modeRows.length,
         });
 
-        const candidates = readPlacementCandidates(actualRows);
-        logCompoStage(interaction, "computation_complete", {
-          result: "placement_candidates",
-          candidates: candidates.length,
-          bucket,
-        });
-
-        if (candidates.length === 0) {
-          logCompoStage(interaction, "response_build", { reason: "no_candidates" });
-          await safeReply(interaction, {
-            ephemeral: true,
-            content: "No placement data found in ACTUAL rows from AllianceDashboard!A6:BD500.",
-          });
-          logCompoStage(interaction, "response_sent", { reason: "no_candidates" });
-          return;
-        }
-
-        const candidatesWithLiveVacancy = await enrichCandidatesWithLiveVacancy(
-          candidates,
-          cocService
-        );
-        const vacancyChoice = candidatesWithLiveVacancy
-          .filter((c) => c.hasVacancy)
-          .sort((a, b) => {
-            if (b.vacancySlots !== a.vacancySlots)
-              return b.vacancySlots - a.vacancySlots;
-            return Math.abs(a.remainingToTarget - inputWeight) - Math.abs(b.remainingToTarget - inputWeight);
-          });
-
-        const compositionNeeds = candidatesWithLiveVacancy
-          .map((c) => {
-            const key = normalize(`${bucket}-delta`);
-            const delta = c.bucketDeltaByHeader[key] ?? 0;
-            return { ...c, delta };
-          })
-          .filter((c) => c.delta < 0)
-          .sort((a, b) => {
-            if (a.delta !== b.delta) return a.delta - b.delta;
-            return b.missingCount - a.missingCount;
-          });
-
-        const recommended = compositionNeeds.filter((c) => c.hasVacancy);
-        const vacancyList = vacancyChoice;
-        const compositionList = compositionNeeds;
-        const rawRefresh = refreshCell[0]?.[0]?.trim();
-        const refreshLine =
-          rawRefresh && /^\d+$/.test(rawRefresh)
-            ? `RAW Data last refreshed: <t:${rawRefresh}:F>`
-            : "RAW Data last refreshed: (not available)";
-
-        logCompoStage(interaction, "response_build", {
-          reason: "placement_result",
-          recommended: recommended.length,
-          vacancy: vacancyList.length,
-          composition: compositionList.length,
-        });
-        const embed = buildCompoPlaceEmbed({
+        const placeResult = await buildCompoPlacePayload({
           inputWeight,
           bucket,
-          recommended,
-          vacancyList,
-          compositionList,
-          refreshLine,
+          actualRows: snapshot.modeRows,
+          cocService,
+          refreshLine: snapshot.refreshLine,
+        });
+        logCompoStage(interaction, "computation_complete", {
+          result: "placement_candidates",
+          candidates: placeResult.candidateCount,
+          bucket,
+        });
+
+        const refreshCustomId = buildCompoRefreshCustomId({
+          kind: "place",
+          userId: interaction.user.id,
+          weight: inputWeight,
+        });
+        logCompoStage(interaction, "response_build", {
+          reason: placeResult.candidateCount === 0 ? "no_candidates" : "placement_result",
+          recommended: placeResult.recommendedCount,
+          vacancy: placeResult.vacancyCount,
+          composition: placeResult.compositionCount,
         });
         await interaction.editReply({
-          content: "",
-          embeds: [embed],
+          ...placeResult.payload,
+          components: buildCompoRefreshComponents({
+            customId: refreshCustomId,
+            loading: false,
+          }),
         });
-        logCompoStage(interaction, "response_sent", { reason: "placement_result" });
+        logCompoStage(interaction, "response_sent", {
+          reason: placeResult.candidateCount === 0 ? "no_candidates" : "placement_result",
+        });
         return;
       }
 
@@ -1054,4 +1347,6 @@ export const buildCompoStateRowsForTest = buildCompoStateRows;
 export const getModeRowsForTest = getModeRows;
 export const getAbsoluteSheetRowNumberForTest = getAbsoluteSheetRowNumber;
 export const mapCompoSheetErrorToMessageForTest = mapCompoSheetErrorToMessage;
+export const buildCompoRefreshCustomIdForTest = buildCompoRefreshCustomId;
+export const parseCompoRefreshCustomIdForTest = parseCompoRefreshCustomId;
 

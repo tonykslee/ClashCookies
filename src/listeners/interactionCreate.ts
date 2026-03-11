@@ -63,6 +63,10 @@ import {
   isNotifyWarPreviewPostButtonCustomId,
 } from "../commands/Notify";
 import {
+  handleCompoRefreshButton,
+  isCompoRefreshButtonCustomId,
+} from "../commands/Compo";
+import {
   handleNotifyWarRefreshButton,
   isNotifyWarRefreshButtonCustomId,
 } from "../services/WarEventLogService";
@@ -538,6 +542,20 @@ const handleButtonInteraction = async (
       }
     }
   }
+
+  if (isCompoRefreshButtonCustomId(interaction.customId)) {
+    try {
+      await handleCompoRefreshButton(interaction, cocService);
+    } catch (err) {
+      console.error(`Compo refresh button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to refresh compo output.",
+        });
+      }
+    }
+  }
 };
 
 const handleModalSubmit = async (
@@ -701,6 +719,14 @@ const handleSlashCommand = async (
         interactionId: interaction.id,
       },
       async () => {
+        if (
+          interaction.commandName === "compo" &&
+          !interaction.deferred &&
+          !interaction.replied
+        ) {
+          await interaction.deferReply({ ephemeral: true });
+        }
+
         const permissionStartedAtMs = Date.now();
         const targets = getCommandTargetsFromInteraction(interaction);
         const allowed = await commandPermissionService.canUseAnyTarget(
@@ -723,10 +749,17 @@ const handleSlashCommand = async (
             errorCode: "PERMISSION_DENIED",
             timeout: false,
           });
-          await interaction.reply({
-            content: `You do not have permission to use /${interaction.commandName}.`,
-            ephemeral: true,
-          });
+          const permissionMessage = `You do not have permission to use /${interaction.commandName}.`;
+          if (interaction.deferred || interaction.replied) {
+            await interaction.editReply({
+              content: permissionMessage,
+            });
+          } else {
+            await interaction.reply({
+              content: permissionMessage,
+              ephemeral: true,
+            });
+          }
           return;
         }
 

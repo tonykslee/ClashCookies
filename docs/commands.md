@@ -22,8 +22,8 @@
 - `/sheet unlink [mode:actual|war]` - Remove one mode link or all links.
 - `/sheet refresh mode:actual|war` - Trigger mode-specific Apps Script raw feed refresh.
 - `/compo advice clan:<tracked-clan> [mode:actual|war]` - Pull advice using mode-specific sheet link.
-- `/compo state [mode:actual|war]` - Render AllianceDashboard state as an attached PNG image with mode label.
-- `/compo place weight:<value>` - Suggest placement options from ACTUAL state (vacancy + composition fit). Accepts formats like `145000`, `145,000`, or `145k` and maps to TH weight buckets.
+- `/compo state [mode:actual|war]` - Render AllianceDashboard state as an attached PNG image with mode label. Includes an inline `Refresh Data` button that triggers the shared sheet-refresh flow and rerenders in place.
+- `/compo place weight:<value>` - Suggest placement options from ACTUAL state (vacancy + composition fit). Accepts formats like `145000`, `145,000`, or `145k` and maps to TH weight buckets. Includes an inline `Refresh Data` button that triggers the shared sheet-refresh flow and rerenders in place.
 - `/cc player tag:<tag>` - Build `https://cc.fwafarm.com/cc_n/member.php?tag=<tag>`.
 - `/cc clan tag:<tag>` - Build `https://cc.fwafarm.com/cc_n/clan.php?tag=<tag>`.
 - `/notify war clan-tag:<tag> target-channel:<channel> [role:<discordRole>]` - Enable war-state event logs (war start, battle day, war end) for a clan in a selected channel. Optional role is pinged when event logs are posted.
