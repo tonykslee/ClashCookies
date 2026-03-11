@@ -247,7 +247,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "Running `/fwa match tag:<clan>` and then pressing `Alliance View` restores the full alliance overview (not a one-clan scoped view).",
       "Confirm-and-send pings the tracked clan role (`TrackedClan.clanRoleId`) when pinging is enabled.",
       "The `/fwa match` single-clan `Send Mail` button uses the same permissions as `/fwa mail send`.",
-      "The 'Current mail is already up to date' state is scoped to the current war identity (war/opponent/config), so new wars reset to unsent.",
+      "Mail freshness is scoped to the current war identity (war/opponent/config): sent/up-to-date disables resend, sent/out-of-date re-enables resend on matchType/outcome change, and new wars reset to unsent across both `/fwa match` and `/fwa mail send`.",
       "Default access for `/fwa mail send` is FWA leader role + Administrator (or override via `/permission add command:fwa:mail:send`).",
       "Default access for `/fwa compliance` is FWA leader role + Administrator (or override via `/permission add command:fwa:compliance`).",
       "Default access for `/fwa weight-age`, `/fwa weight-link`, `/fwa weight-health`, and `/fwa weight-cookie` is FWA leader role + Administrator (or override via `/permission add`).",

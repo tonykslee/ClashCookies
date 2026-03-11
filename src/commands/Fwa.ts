@@ -568,6 +568,12 @@ function resolveConfirmedRevisionBaseline(params: {
         confirmedByClanMail: boolean;
       }
     | null;
+  mailConfig:
+    | Pick<
+        MatchMailConfig,
+        "lastWarId" | "lastOpponentTag" | "lastMatchType" | "lastExpectedOutcome"
+      >
+    | null;
   liveFields: MatchRevisionFields | null;
   lifecycleStatus: WarMailLifecycleNormalizedStatus;
 }): MatchRevisionFields | null {
@@ -598,12 +604,55 @@ function resolveConfirmedRevisionBaseline(params: {
       syncCandidate &&
       syncCandidate.warId === normalizedLive.warId &&
       syncCandidate.opponentTag === normalizedLive.opponentTag
+      ) {
+        return syncCandidate;
+      }
+  }
+
+  if (params.lifecycleStatus === "posted") {
+    const mailConfigCandidate = resolveRevisionBaselineFromMailConfig(params.mailConfig);
+    if (
+      mailConfigCandidate &&
+      mailConfigCandidate.warId === normalizedLive.warId &&
+      mailConfigCandidate.opponentTag === normalizedLive.opponentTag
     ) {
-      return syncCandidate;
+      return mailConfigCandidate;
     }
   }
-  if (params.lifecycleStatus === "posted") return null;
   return null;
+}
+
+/** Purpose: normalize tracked-clan mail-config baseline as a fallback when no sync checkpoint exists. */
+function resolveRevisionBaselineFromMailConfig(
+  mailConfig:
+    | Pick<
+        MatchMailConfig,
+        "lastWarId" | "lastOpponentTag" | "lastMatchType" | "lastExpectedOutcome"
+      >
+    | null
+    | undefined
+): MatchRevisionFields | null {
+  const warId = normalizeWarIdText(mailConfig?.lastWarId ?? null);
+  const opponentTag = normalizeTag(String(mailConfig?.lastOpponentTag ?? ""));
+  if (!warId || !opponentTag) return null;
+  const matchType =
+    mailConfig?.lastMatchType === "FWA" ||
+    mailConfig?.lastMatchType === "BL" ||
+    mailConfig?.lastMatchType === "MM"
+      ? mailConfig.lastMatchType
+      : "UNKNOWN";
+  const expectedOutcome =
+    matchType === "FWA"
+      ? mailConfig?.lastExpectedOutcome === "WIN" || mailConfig?.lastExpectedOutcome === "LOSE"
+        ? mailConfig.lastExpectedOutcome
+        : "UNKNOWN"
+      : null;
+  return normalizeRevisionFields({
+    warId,
+    opponentTag,
+    matchType,
+    expectedOutcome,
+  });
 }
 
 /** Purpose: normalize posted mail-defining fields from a ClanPointsSync row. */
@@ -2007,15 +2056,145 @@ function getMailBlockedReasonFromStatus(params: {
   });
 }
 
-/** Purpose: render simplified lifecycle-driven mail status for `/fwa match` cards. */
-function formatMailLifecycleStatusLine(status: WarMailLifecycleNormalizedStatus): string {
-  if (status === "posted") {
-    return "Mail status: **Mail Sent**";
+type WarMailFreshnessStatus =
+  | "unsent"
+  | "sent_up_to_date"
+  | "sent_out_of_date"
+  | "deleted";
+
+/** Purpose: classify active-war mail freshness from lifecycle + baseline revision drift. */
+function resolveWarMailFreshnessStatus(params: {
+  lifecycleStatus: WarMailLifecycleNormalizedStatus;
+  hasConfirmedBaseline: boolean;
+  draftDiffersFromBaseline: boolean;
+}): WarMailFreshnessStatus {
+  if (params.lifecycleStatus === "deleted") return "deleted";
+  if (params.lifecycleStatus !== "posted") return "unsent";
+  if (!params.hasConfirmedBaseline || params.draftDiffersFromBaseline) {
+    return "sent_out_of_date";
   }
-  if (status === "deleted") {
+  return "sent_up_to_date";
+}
+
+/** Purpose: render lifecycle + freshness-aware mail status copy for `/fwa match` cards. */
+function formatMailLifecycleStatusLine(
+  status: WarMailLifecycleNormalizedStatus,
+  options?: {
+    hasConfirmedBaseline?: boolean;
+    draftDiffersFromBaseline?: boolean;
+  }
+): string {
+  if (!options) {
+    if (status === "posted") return "Mail status: **Mail Sent**";
+    if (status === "deleted") return "Mail status: **Mail Deleted / Resend Available**";
+    return "Mail status: **Send Mail Available**";
+  }
+  const freshness = resolveWarMailFreshnessStatus({
+    lifecycleStatus: status,
+    hasConfirmedBaseline: Boolean(options?.hasConfirmedBaseline),
+    draftDiffersFromBaseline: Boolean(options?.draftDiffersFromBaseline),
+  });
+  if (freshness === "sent_up_to_date") {
+    return "Mail status: **Mail Sent (Up to Date)**";
+  }
+  if (freshness === "sent_out_of_date") {
+    return "Mail status: **Mail Sent (Out of Date)**";
+  }
+  if (freshness === "deleted") {
     return "Mail status: **Mail Deleted / Resend Available**";
   }
   return "Mail status: **Send Mail Available**";
+}
+
+/** Purpose: compute shared mail-send gating from lifecycle status + persisted baseline for one rendered war state. */
+async function resolveMailSendGateForRenderedState(params: {
+  client: Client | null | undefined;
+  guildId: string;
+  tag: string;
+  hasMailChannel: boolean;
+  inferredMatchType: boolean;
+  emitDebugLog?: boolean;
+  warId: number | null | undefined;
+  warStartMs: number | null | undefined;
+  opponentTag: string | null | undefined;
+  matchType: "FWA" | "BL" | "MM" | "UNKNOWN";
+  expectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null;
+}): Promise<{
+  mailStatus: ResolvedLiveWarMailStatus;
+  liveRevisionFields: MatchRevisionFields | null;
+  confirmedRevisionBaseline: MatchRevisionFields | null;
+  draftDiffersFromBaseline: boolean;
+  mailBlockedReason: string | null;
+}> {
+  const mailStatus = await resolveLiveWarMailStatus({
+    client: params.client,
+    guildId: params.guildId,
+    tag: params.tag,
+    warId: params.warId ?? null,
+    emitDebugLog: params.emitDebugLog,
+  });
+  const warIdText = normalizeWarIdText(params.warId ?? null);
+  const warStartTime =
+    params.warStartMs !== null &&
+    params.warStartMs !== undefined &&
+    Number.isFinite(params.warStartMs)
+      ? new Date(Math.trunc(params.warStartMs))
+      : null;
+  const syncRow = await pointsSyncService
+    .getCurrentSyncForClan({
+      guildId: params.guildId,
+      clanTag: params.tag,
+      warId: warIdText,
+      warStartTime,
+    })
+    .catch(() => null);
+  const mailConfig = await getCurrentWarMailConfig(params.guildId, params.tag);
+  const liveRevisionFields = buildLiveRevisionFields({
+    warId: warIdText ?? normalizeWarIdText(mailStatus.debug.currentWarId),
+    opponentTag: params.opponentTag ?? "",
+    matchType: params.matchType,
+    expectedOutcome: params.matchType === "FWA" ? params.expectedOutcome ?? "UNKNOWN" : null,
+  });
+  const confirmedRevisionBaseline = resolveConfirmedRevisionBaseline({
+    syncRow: syncRow
+      ? {
+          warId: syncRow.warId ?? null,
+          opponentTag: syncRow.opponentTag,
+          lastKnownMatchType: syncRow.lastKnownMatchType ?? null,
+          lastKnownOutcome: syncRow.lastKnownOutcome ?? null,
+          isFwa: syncRow.isFwa ?? null,
+          confirmedByClanMail: Boolean(syncRow.confirmedByClanMail),
+        }
+      : null,
+    mailConfig: {
+      lastWarId: mailConfig.lastWarId,
+      lastOpponentTag: mailConfig.lastOpponentTag,
+      lastMatchType: mailConfig.lastMatchType,
+      lastExpectedOutcome: mailConfig.lastExpectedOutcome,
+    },
+    liveFields: liveRevisionFields,
+    lifecycleStatus: mailStatus.status,
+  });
+  const draftDiffersFromBaseline = Boolean(
+    confirmedRevisionBaseline &&
+      liveRevisionFields &&
+      !areRevisionFieldsEqual(confirmedRevisionBaseline, liveRevisionFields)
+  );
+  const mailBlockedReason = getMailBlockedReasonFromRevisionState({
+    inferredMatchType: params.inferredMatchType,
+    hasMailChannel: params.hasMailChannel,
+    mailStatus: mailStatus.status,
+    appliedDraft: draftDiffersFromBaseline ? liveRevisionFields : null,
+    draftDiffersFromBaseline,
+    hasConfirmedBaseline: Boolean(confirmedRevisionBaseline),
+  });
+  return {
+    mailStatus,
+    liveRevisionFields,
+    confirmedRevisionBaseline,
+    draftDiffersFromBaseline,
+    mailBlockedReason,
+  };
 }
 
 function formatOutcomeForRevision(outcome: "WIN" | "LOSE" | "UNKNOWN" | null): string {
@@ -3743,20 +3922,37 @@ async function showWarMailPreview(
     revisionOverride: revisionOverride ?? null,
   });
 
-  let enabled = rendered.unavailableReasons.length === 0;
-  if (enabled && rendered.mailChannelId) {
-    const channel = await interaction.client.channels.fetch(rendered.mailChannelId).catch(() => null);
-    if (!channel || !channel.isTextBased()) {
-      enabled = false;
-    }
-  }
-  const extraWarning =
-    enabled || rendered.mailChannelId
-      ? ""
-      : "\n:warning: Tracked clan mail channel is missing or unavailable.";
+  const mailSendGate = await resolveMailSendGateForRenderedState({
+    client: interaction.client,
+    guildId,
+    tag,
+    hasMailChannel: Boolean(rendered.mailChannelId),
+    inferredMatchType: rendered.inferredMatchType,
+    warId: rendered.warId,
+    warStartMs: rendered.warStartMs,
+    opponentTag: rendered.opponentTag,
+    matchType: rendered.matchType,
+    expectedOutcome: rendered.expectedOutcome,
+  });
+  const channel =
+    rendered.mailChannelId
+      ? await interaction.client.channels.fetch(rendered.mailChannelId).catch(() => null)
+      : null;
+  const channelAvailable = Boolean(channel && channel.isTextBased());
+  const warnings = [...new Set([
+    ...rendered.unavailableReasons.map((reason) => `:warning: ${reason}`),
+    rendered.mailChannelId && !channelAvailable
+      ? ":warning: Configured mail channel is unavailable."
+      : "",
+    formatMailBlockedReason(mailSendGate.mailBlockedReason) ?? "",
+  ])].filter((line) => line.length > 0);
+  const enabled =
+    rendered.unavailableReasons.length === 0 &&
+    channelAvailable &&
+    mailSendGate.mailBlockedReason === null;
   const previewSummary = enabled
     ? "Review mail preview and confirm send."
-    : `Cannot send yet.${extraWarning}`;
+    : ["Cannot send yet.", ...warnings].join("\n");
   const content = limitDiscordContent(
     [previewSummary, "", "**Mail Text Preview**", rendered.planText].filter((part) => part.trim().length > 0).join("\n")
   );
@@ -4064,6 +4260,33 @@ async function handleFwaMailConfirmAction(
     });
     return;
   }
+  const mailSendGate = await resolveMailSendGateForRenderedState({
+    client: interaction.client,
+    guildId: payload.guildId,
+    tag: payload.tag,
+    hasMailChannel: true,
+    inferredMatchType: rendered.inferredMatchType,
+    warId: rendered.warId,
+    warStartMs: rendered.warStartMs,
+    opponentTag: rendered.opponentTag,
+    matchType: rendered.matchType,
+    expectedOutcome: rendered.expectedOutcome,
+  });
+  if (mailSendGate.mailBlockedReason) {
+    await interaction.editReply({
+      content: `Cannot send mail: ${
+        formatMailBlockedReason(mailSendGate.mailBlockedReason) ?? mailSendGate.mailBlockedReason
+      }`,
+      embeds: [],
+      components: buildWarMailPreviewComponents({
+        userId: parsed.userId,
+        key: parsed.key,
+        enabled: false,
+        showBack: Boolean(payload.sourceMatchPayloadKey),
+      }),
+    });
+    return;
+  }
   const renderedWarIdNumber =
     rendered.warId !== null && rendered.warId !== undefined && Number.isFinite(rendered.warId)
       ? Math.trunc(rendered.warId)
@@ -4201,6 +4424,36 @@ async function handleFwaMailConfirmAction(
       points: checkpointSyncRow?.clanPoints ?? null,
     })
     .catch(() => undefined);
+  const existingMailConfig = await getCurrentWarMailConfig(payload.guildId, payload.tag);
+  const nextMailConfig: MatchMailConfig = {
+    ...existingMailConfig,
+    lastPostedMessageId: sent.id,
+    lastPostedChannelId: channel.id,
+    lastPostedAtUnix: Math.floor(nowMs / 1000),
+    lastWarStartMs:
+      rendered.warStartMs !== null &&
+      rendered.warStartMs !== undefined &&
+      Number.isFinite(rendered.warStartMs)
+        ? Math.trunc(rendered.warStartMs)
+        : null,
+    lastWarId: renderedWarIdText,
+    lastOpponentTag: normalizeTag(String(rendered.opponentTag ?? "")) || null,
+    lastMatchType: rendered.matchType,
+    lastExpectedOutcome:
+      rendered.matchType === "FWA"
+        ? rendered.expectedOutcome === "WIN" ||
+          rendered.expectedOutcome === "LOSE" ||
+          rendered.expectedOutcome === "UNKNOWN"
+          ? rendered.expectedOutcome
+          : "UNKNOWN"
+        : null,
+  };
+  await saveCurrentWarMailConfig({
+    guildId: payload.guildId,
+    tag: payload.tag,
+    channelId: channel.id,
+    mailConfig: nextMailConfig,
+  });
   await new WarEventLogService(interaction.client, cocService)
     .refreshCurrentNotifyPost(payload.guildId, payload.tag)
     .catch((err) => {
@@ -4920,6 +5173,8 @@ type MatchTypeFallbackResolution = {
 
 export const getMailBlockedReasonFromStatusForTest = getMailBlockedReasonFromStatus;
 export const getMailBlockedReasonFromRevisionStateForTest = getMailBlockedReasonFromRevisionState;
+export const resolveWarMailFreshnessStatusForTest = resolveWarMailFreshnessStatus;
+export const formatMailLifecycleStatusLineForTest = formatMailLifecycleStatusLine;
 export const buildWarMailStatusDebugSnapshotForTest = buildWarMailStatusDebugSnapshot;
 export const buildMailStatusDebugLinesForTest = buildMailStatusDebugLines;
 export const resolveScopedDraftRevisionForTest = resolveScopedDraftRevision;
@@ -5903,16 +6158,19 @@ async function buildTrackedMatchOverview(
     : new Map<string, ActualSheetClanSnapshot>();
   const tracked = await prisma.trackedClan.findMany({
     orderBy: { createdAt: "asc" },
-    select: { tag: true, name: true },
+    select: { tag: true, name: true, mailChannelId: true, mailConfig: true },
   });
   const scopedTracked = scopedTagSet
     ? tracked.filter((clan) => scopedTagSet.has(normalizeTag(clan.tag)))
     : tracked;
-  const trackedMailRows = await prisma.$queryRaw<Array<{ tag: string; mailChannelId: string | null }>>(
-    Prisma.sql`SELECT "tag","mailChannelId" FROM "TrackedClan"`
-  );
   const mailChannelByTag = new Map(
-    trackedMailRows.map((row) => [normalizeTag(row.tag), row.mailChannelId ?? null])
+    scopedTracked.map((row) => [normalizeTag(row.tag), row.mailChannelId ?? null])
+  );
+  const mailConfigByTag = new Map(
+    scopedTracked.map((row) => [
+      normalizeTag(row.tag),
+      parseMatchMailConfig(row.mailConfig as Prisma.JsonValue | null | undefined),
+    ])
   );
   if (scopedTracked.length === 0) {
     return {
@@ -6511,6 +6769,12 @@ async function buildTrackedMatchOverview(
             confirmedByClanMail: Boolean(syncRow.confirmedByClanMail),
           }
         : null,
+      mailConfig: {
+        lastWarId: mailConfigByTag.get(clanTag)?.lastWarId ?? null,
+        lastOpponentTag: mailConfigByTag.get(clanTag)?.lastOpponentTag ?? null,
+        lastMatchType: mailConfigByTag.get(clanTag)?.lastMatchType ?? null,
+        lastExpectedOutcome: mailConfigByTag.get(clanTag)?.lastExpectedOutcome ?? null,
+      },
       liveFields: liveRevisionFields,
       lifecycleStatus: liveMailStatus.status,
     });
@@ -6623,6 +6887,10 @@ async function buildTrackedMatchOverview(
       hasConfirmedBaseline: Boolean(confirmedRevisionBaseline),
     });
     const mailBlockedReasonLine = formatMailBlockedReason(mailBlockedReason);
+    const mailLifecycleStatusLine = formatMailLifecycleStatusLine(liveMailStatus.status, {
+      hasConfirmedBaseline: Boolean(confirmedRevisionBaseline),
+      draftDiffersFromBaseline: revisionState.draftDiffersFromBaseline,
+    });
     const mailDebugLines = mailStatusDebugEnabled
       ? buildMailStatusDebugLines(liveMailStatus.debug)
       : [];
@@ -6645,7 +6913,7 @@ async function buildTrackedMatchOverview(
             pointsLine,
             pointsSyncStatus,
             storedSyncSummary.stateLine,
-            formatMailLifecycleStatusLine(liveMailStatus.status),
+            mailLifecycleStatusLine,
             `Match Type: **FWA${warnSuffix}**`,
             `Outcome: **${effectiveExpectedOutcome ?? "UNKNOWN"}**`,
             `War State: **${clanWarStateLine}**`,
@@ -6666,7 +6934,7 @@ async function buildTrackedMatchOverview(
           `${pointsLine}`,
           pointsSyncStatus,
           storedSyncSummary.stateLine,
-          formatMailLifecycleStatusLine(liveMailStatus.status).replace(/\*\*/g, ""),
+          mailLifecycleStatusLine.replace(/\*\*/g, ""),
           `Match Type: FWA${effectiveInferredMatchType ? " :warning:" : ""}`,
           effectiveInferredMatchType ? `Verify: ${buildCcVerifyUrl(opponentTag)}` : "",
           `Outcome: ${effectiveExpectedOutcome ?? "UNKNOWN"}`,
@@ -6693,7 +6961,7 @@ async function buildTrackedMatchOverview(
           value: [
             pointsSyncStatus,
             storedSyncSummary.stateLine,
-            formatMailLifecycleStatusLine(liveMailStatus.status),
+            mailLifecycleStatusLine,
             `Match Type: **${effectiveMatchType}${warnSuffix}**`,
             `War State: **${clanWarStateLine}**`,
             `Time Remaining: **${clanTimeRemainingLine}**`,
@@ -6712,7 +6980,7 @@ async function buildTrackedMatchOverview(
           `\`${opponentTag}\``,
           pointsSyncStatus,
           storedSyncSummary.stateLine,
-          formatMailLifecycleStatusLine(liveMailStatus.status).replace(/\*\*/g, ""),
+          mailLifecycleStatusLine.replace(/\*\*/g, ""),
           `Match Type: ${effectiveMatchType}${effectiveInferredMatchType ? " :warning:" : ""}`,
           effectiveInferredMatchType ? `Verify: ${buildCcVerifyUrl(opponentTag)}` : "",
           `War State: ${clanWarStateLine}`,
@@ -6734,7 +7002,7 @@ async function buildTrackedMatchOverview(
       effectiveInferredMatchType ? MATCHTYPE_WARNING_LEGEND : "",
       effectiveInferredMatchType ? "\u200B" : "",
       mailBlockedReasonLine ?? "",
-      formatMailLifecycleStatusLine(liveMailStatus.status),
+      mailLifecycleStatusLine,
       `Match Type: **${effectiveMatchType}${effectiveInferredMatchType ? " :warning:" : ""}**${
         effectiveInferredMatchType ? ` ${verifyLink}` : ""
       }`,
@@ -6821,7 +7089,7 @@ async function buildTrackedMatchOverview(
           effectiveInferredMatchType ? MATCHTYPE_WARNING_LEGEND : "",
           pointsSyncStatus,
           storedSyncSummary.stateLine,
-          formatMailLifecycleStatusLine(liveMailStatus.status).replace(/\*\*/g, ""),
+          mailLifecycleStatusLine.replace(/\*\*/g, ""),
           `Sync: ${clanSyncLine}`,
           `Sync #: ${storedSyncSummary.syncLine}`,
           storedSyncSummary.updatedLine
@@ -9423,17 +9691,29 @@ export const Fwa: Command = {
         );
         const siteStatusLine = validationState.statusLine;
         const trackedMailConfig = await getTrackedClanMailConfig(tag);
-        const liveMailStatus = await resolveLiveWarMailStatus({
+        const renderedMatchTypeForMailGate =
+          matchType === "FWA" || matchType === "BL" || matchType === "MM"
+            ? matchType
+            : "UNKNOWN";
+        const mailSendGate = await resolveMailSendGateForRenderedState({
           client: interaction.client,
-          guildId: interaction.guildId ?? null,
+          guildId: interaction.guildId ?? "",
           tag,
-          warId: subscription?.warId ?? null,
-          emitDebugLog: matchMailStatusDebugEnabled,
-        });
-        const mailBlockedReason = getMailBlockedReasonFromStatus({
-          inferredMatchType,
           hasMailChannel: Boolean(trackedMailConfig?.mailChannelId),
-          mailStatus: liveMailStatus.status,
+          inferredMatchType,
+          emitDebugLog: matchMailStatusDebugEnabled,
+          warId: subscription?.warId ?? null,
+          warStartMs: warStartTimeForSync?.getTime?.() ?? null,
+          opponentTag,
+          matchType: renderedMatchTypeForMailGate,
+          expectedOutcome:
+            renderedMatchTypeForMailGate === "FWA" ? effectiveExpectedOutcome ?? "UNKNOWN" : null,
+        });
+        const liveMailStatus = mailSendGate.mailStatus;
+        const mailBlockedReason = mailSendGate.mailBlockedReason;
+        const mailStatusLine = formatMailLifecycleStatusLine(mailSendGate.mailStatus.status, {
+          hasConfirmedBaseline: Boolean(mailSendGate.confirmedRevisionBaseline),
+          draftDiffersFromBaseline: mailSendGate.draftDiffersFromBaseline,
         });
         const mailBlockedReasonLine = formatMailBlockedReason(mailBlockedReason);
         const mailDebugLines = matchMailStatusDebugEnabled
@@ -9467,7 +9747,7 @@ export const Fwa: Command = {
           outcomeLine ? `Expected outcome: **${outcomeLine}**` : "",
           siteStatusLine,
           storedSyncSummary.stateLine,
-          formatMailLifecycleStatusLine(liveMailStatus.status),
+          mailStatusLine,
           mailBlockedReasonLine ?? "",
           `War state: **${formatWarStateLabel(warState)}**`,
           `Time remaining: **${warRemaining}**`,
@@ -9514,7 +9794,7 @@ export const Fwa: Command = {
             inferredMatchType ? MATCHTYPE_WARNING_LEGEND : "",
             siteStatusLine,
             storedSyncSummary.stateLine,
-            formatMailLifecycleStatusLine(liveMailStatus.status).replace(/\*\*/g, ""),
+            mailStatusLine.replace(/\*\*/g, ""),
             mailBlockedReasonLine
               ? `${mailBlockedReasonLine.replace(/^:warning: /, "Warning: ").replace(/^:envelope_with_arrow: /, "Mail: ")}`
               : "",
