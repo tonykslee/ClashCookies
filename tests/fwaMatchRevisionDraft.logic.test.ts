@@ -6,9 +6,11 @@ import {
   buildDraftFromOutcomeToggleForTest,
   buildDraftFromMatchTypeSelectionForTest,
   buildEffectiveMatchMismatchWarningsForTest,
+  formatMailLifecycleStatusLineForTest,
   getMailBlockedReasonFromRevisionStateForTest,
   isPointsValidationCurrentForMatchupForTest,
   isLowConfidenceAllianceMismatchScenarioForTest,
+  resolveWarMailFreshnessStatusForTest,
   resolveObservedSyncNumberForMatchupForTest,
   resolveMatchTypeSelectionForTest,
   resolveOpponentActiveFwaEvidenceForTest,
@@ -40,6 +42,7 @@ describe("fwa match revision baseline resolution", () => {
         isFwa: false,
         confirmedByClanMail: true,
       },
+      mailConfig: null,
       liveFields: {
         warId: "123",
         opponentTag: "2Q80R9PYU",
@@ -67,6 +70,7 @@ describe("fwa match revision baseline resolution", () => {
         isFwa: false,
         confirmedByClanMail: true,
       },
+      mailConfig: null,
       liveFields: {
         warId: "123",
         opponentTag: "2Q80R9PYU",
@@ -77,6 +81,32 @@ describe("fwa match revision baseline resolution", () => {
     });
 
     expect(baseline).toBeNull();
+  });
+
+  it("falls back to tracked mail-config baseline when posted sync checkpoint is unavailable", () => {
+    const baseline = resolveConfirmedRevisionBaselineForTest({
+      syncRow: null,
+      mailConfig: {
+        lastWarId: "123",
+        lastOpponentTag: "#2Q80R9PYU",
+        lastMatchType: "BL",
+        lastExpectedOutcome: null,
+      },
+      liveFields: {
+        warId: "123",
+        opponentTag: "2Q80R9PYU",
+        matchType: "FWA",
+        expectedOutcome: "LOSE",
+      },
+      lifecycleStatus: "posted",
+    });
+
+    expect(baseline).toEqual({
+      warId: "123",
+      opponentTag: "2Q80R9PYU",
+      matchType: "BL",
+      expectedOutcome: null,
+    });
   });
 });
 
@@ -221,6 +251,53 @@ describe("fwa match posted mail gating with revisions", () => {
     });
 
     expect(reason).toBeNull();
+  });
+});
+
+describe("fwa mail freshness status mapping", () => {
+  it("maps posted + baseline match to sent/up-to-date", () => {
+    const freshness = resolveWarMailFreshnessStatusForTest({
+      lifecycleStatus: "posted",
+      hasConfirmedBaseline: true,
+      draftDiffersFromBaseline: false,
+    });
+    const line = formatMailLifecycleStatusLineForTest("posted", {
+      hasConfirmedBaseline: true,
+      draftDiffersFromBaseline: false,
+    });
+
+    expect(freshness).toBe("sent_up_to_date");
+    expect(line).toBe("Mail status: **Mail Sent (Up to Date)**");
+  });
+
+  it("maps posted + effective drift to sent/out-of-date", () => {
+    const freshness = resolveWarMailFreshnessStatusForTest({
+      lifecycleStatus: "posted",
+      hasConfirmedBaseline: true,
+      draftDiffersFromBaseline: true,
+    });
+    const line = formatMailLifecycleStatusLineForTest("posted", {
+      hasConfirmedBaseline: true,
+      draftDiffersFromBaseline: true,
+    });
+
+    expect(freshness).toBe("sent_out_of_date");
+    expect(line).toBe("Mail status: **Mail Sent (Out of Date)**");
+  });
+
+  it("maps not-posted lifecycle to unsent for new war identities", () => {
+    const freshness = resolveWarMailFreshnessStatusForTest({
+      lifecycleStatus: "not_posted",
+      hasConfirmedBaseline: false,
+      draftDiffersFromBaseline: false,
+    });
+    const line = formatMailLifecycleStatusLineForTest("not_posted", {
+      hasConfirmedBaseline: false,
+      draftDiffersFromBaseline: false,
+    });
+
+    expect(freshness).toBe("unsent");
+    expect(line).toBe("Mail status: **Send Mail Available**");
   });
 });
 

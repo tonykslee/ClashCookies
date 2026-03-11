@@ -2,14 +2,14 @@ import { describe, expect, it } from "vitest";
 import { buildActionableSyncStateLine } from "../src/commands/fwa/syncDisplay";
 
 describe("fwa sync display state mapping", () => {
-  it("shows needs validation when no sync checkpoint exists", () => {
+  it("hides needs-validation state when no checkpoint exists but no unresolved mismatch exists", () => {
     const line = buildActionableSyncStateLine({
       syncRow: null,
       siteCurrent: true,
       differenceCount: 0,
     });
 
-    expect(line).toBe("State: Needs validation");
+    expect(line).toBe("");
   });
 
   it("shows needs validation when lifecycle requires validation", () => {
