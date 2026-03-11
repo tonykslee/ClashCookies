@@ -1,3 +1,6 @@
+Run this first and read the output before responding:
+./scripts/codex-task.sh
+
 TASK
 Use the ISSUE BLOCK below as the only starting input. It may contain a few sentences, bullets, stack traces, logs, or mixed notes about a regression or bug.
 
