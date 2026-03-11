@@ -1548,11 +1548,22 @@ async function buildWarMailEmbedForTag(
         ...activeWarInference,
       })
     );
+    const guardedFallbackResolution = applyExplicitOpponentNotFoundFallbackGuard({
+      fallbackResolution,
+      opponentNotFoundExplicitly: opponentSnapshot?.notFound === true,
+      hasSameWarExplicitFwaConfirmation: hasSameWarExplicitFwaConfirmation({
+        fallbackResolution,
+        currentWarStartTime: subscription?.startTime ?? null,
+        currentWarOpponentTag: subscription?.opponentTag ?? null,
+        activeWarStartTime: getWarStartDateForSync(null, war),
+        activeOpponentTag: opponentTag,
+      }),
+    });
     appliedResolution = chooseMatchTypeResolution({
-      confirmedCurrent: fallbackResolution.confirmedCurrent,
+      confirmedCurrent: guardedFallbackResolution.confirmedCurrent,
       liveOpponent: pointsInference,
-      storedSync: fallbackResolution.storedSync,
-      unconfirmedCurrent: fallbackResolution.unconfirmedCurrent,
+      storedSync: guardedFallbackResolution.storedSync,
+      unconfirmedCurrent: guardedFallbackResolution.unconfirmedCurrent,
     });
     inferredMatchType = appliedResolution?.inferred ?? Boolean(subscription?.inferredMatchType);
     matchType =
@@ -5333,6 +5344,56 @@ type MatchTypeFallbackResolution = {
   unconfirmedCurrent: MatchTypeResolution | null;
 };
 
+/** Purpose: verify confirmed FWA fallback comes from the same live-war identity. */
+function hasSameWarExplicitFwaConfirmation(input: {
+  fallbackResolution: MatchTypeFallbackResolution;
+  currentWarStartTime: Date | null | undefined;
+  currentWarOpponentTag: string | null | undefined;
+  activeWarStartTime: Date | null | undefined;
+  activeOpponentTag: string | null | undefined;
+}): boolean {
+  const confirmed = input.fallbackResolution.confirmedCurrent;
+  if (!confirmed || confirmed.matchType !== "FWA" || confirmed.confirmed !== true) return false;
+  const persistedOpponentTag = normalizeTag(String(input.currentWarOpponentTag ?? ""));
+  const activeOpponentTag = normalizeTag(String(input.activeOpponentTag ?? ""));
+  if (!persistedOpponentTag || !activeOpponentTag || persistedOpponentTag !== activeOpponentTag) {
+    return false;
+  }
+  const persistedWarStartMs =
+    input.currentWarStartTime instanceof Date && Number.isFinite(input.currentWarStartTime.getTime())
+      ? input.currentWarStartTime.getTime()
+      : null;
+  const activeWarStartMs =
+    input.activeWarStartTime instanceof Date && Number.isFinite(input.activeWarStartTime.getTime())
+      ? input.activeWarStartTime.getTime()
+      : null;
+  if (persistedWarStartMs === null || activeWarStartMs === null) return false;
+  return persistedWarStartMs === activeWarStartMs;
+}
+
+/** Purpose: block fallback FWA-family auto-selection on explicit opponent not-found unless same-war confirmation exists. */
+function applyExplicitOpponentNotFoundFallbackGuard(input: {
+  fallbackResolution: MatchTypeFallbackResolution;
+  opponentNotFoundExplicitly: boolean;
+  hasSameWarExplicitFwaConfirmation: boolean;
+}): MatchTypeFallbackResolution {
+  if (!input.opponentNotFoundExplicitly || input.hasSameWarExplicitFwaConfirmation) {
+    return input.fallbackResolution;
+  }
+  const dropFallbackFwa = (
+    resolution: MatchTypeResolution | null
+  ): MatchTypeResolution | null => {
+    if (!resolution) return null;
+    if (resolution.matchType !== "FWA") return resolution;
+    return null;
+  };
+  return {
+    confirmedCurrent: dropFallbackFwa(input.fallbackResolution.confirmedCurrent),
+    storedSync: dropFallbackFwa(input.fallbackResolution.storedSync),
+    unconfirmedCurrent: dropFallbackFwa(input.fallbackResolution.unconfirmedCurrent),
+  };
+}
+
 export const getMailBlockedReasonFromStatusForTest = getMailBlockedReasonFromStatus;
 export const getMailBlockedReasonFromRevisionStateForTest = getMailBlockedReasonFromRevisionState;
 export const resolveWarMailFreshnessStatusForTest = resolveWarMailFreshnessStatus;
@@ -5361,6 +5422,9 @@ export const shouldHydrateAlliancePayloadForTest = shouldHydrateAlliancePayload;
 export const resolveMatchTypeFromStoredSyncRowForTest = resolveMatchTypeFromStoredSyncRow;
 export const buildSyncValidationStateForTest = buildSyncValidationState;
 export const resolveRenderedSyncNumberForStoredSummaryForTest = resolveRenderedSyncNumberForStoredSummary;
+export const hasSameWarExplicitFwaConfirmationForTest = hasSameWarExplicitFwaConfirmation;
+export const applyExplicitOpponentNotFoundFallbackGuardForTest =
+  applyExplicitOpponentNotFoundFallbackGuard;
 
 /** Purpose: infer match type strictly from opponent points-site signals. */
 function inferMatchTypeFromPointsSnapshots(
@@ -5573,11 +5637,11 @@ function buildOpponentSnapshotFromTrackedClanFallback(params: {
       ...trackedSnapshot,
       tag: requestedOpponentTag,
       snapshotSource: "tracked_clan_fallback",
-      lookupState: "ok",
+      lookupState: "clan_not_found",
       clanName: extractedOpponentName ?? trackedSnapshot.clanName ?? null,
       balance: Math.trunc(opponentBalance),
       activeFwa: null,
-      notFound: false,
+      notFound: true,
       fallbackCurrentForWar: true,
       fallbackExtractedOpponentTag: extractedOpponentTag,
       winnerBoxText: normalizedWinnerBoxText,
@@ -6351,6 +6415,7 @@ async function buildTrackedMatchOverview(
       clanTag: true,
       warId: true,
       startTime: true,
+      opponentTag: true,
       matchType: true,
       inferredMatchType: true,
       outcome: true,
@@ -6753,11 +6818,22 @@ async function buildTrackedMatchOverview(
       }
     );
     const pointsResolution = toMatchTypeResolutionFromPointsInference(inferredFromPointsType);
+    const guardedFallbackResolution = applyExplicitOpponentNotFoundFallbackGuard({
+      fallbackResolution,
+      opponentNotFoundExplicitly: opponentPoints?.notFound === true,
+      hasSameWarExplicitFwaConfirmation: hasSameWarExplicitFwaConfirmation({
+        fallbackResolution,
+        currentWarStartTime: sub?.startTime ?? null,
+        currentWarOpponentTag: sub?.opponentTag ?? null,
+        activeWarStartTime: getWarStartDateForSync(null, war),
+        activeOpponentTag: opponentTag,
+      }),
+    });
     const appliedResolution = chooseMatchTypeResolution({
-      confirmedCurrent: fallbackResolution.confirmedCurrent,
+      confirmedCurrent: guardedFallbackResolution.confirmedCurrent,
       liveOpponent: pointsResolution,
-      storedSync: fallbackResolution.storedSync,
-      unconfirmedCurrent: fallbackResolution.unconfirmedCurrent,
+      storedSync: guardedFallbackResolution.storedSync,
+      unconfirmedCurrent: guardedFallbackResolution.unconfirmedCurrent,
     });
     if (!appliedResolution) {
       continue;
@@ -9341,6 +9417,7 @@ export const Fwa: Command = {
                 state: true,
                 warId: true,
                 startTime: true,
+                opponentTag: true,
                 matchType: true,
                 inferredMatchType: true,
                 outcome: true,
@@ -9646,11 +9723,22 @@ export const Fwa: Command = {
           ...activeWarInference,
         });
         const pointsResolution = toMatchTypeResolutionFromPointsInference(inferredFromPointsType);
+        const guardedFallbackResolution = applyExplicitOpponentNotFoundFallbackGuard({
+          fallbackResolution,
+          opponentNotFoundExplicitly: opponent.notFound === true,
+          hasSameWarExplicitFwaConfirmation: hasSameWarExplicitFwaConfirmation({
+            fallbackResolution,
+            currentWarStartTime: subscription?.startTime ?? null,
+            currentWarOpponentTag: subscription?.opponentTag ?? null,
+            activeWarStartTime: getWarStartDateForSync(null, war),
+            activeOpponentTag: opponentTag,
+          }),
+        });
         const appliedResolution = chooseMatchTypeResolution({
-          confirmedCurrent: fallbackResolution.confirmedCurrent,
+          confirmedCurrent: guardedFallbackResolution.confirmedCurrent,
           liveOpponent: pointsResolution,
-          storedSync: fallbackResolution.storedSync,
-          unconfirmedCurrent: fallbackResolution.unconfirmedCurrent,
+          storedSync: guardedFallbackResolution.storedSync,
+          unconfirmedCurrent: guardedFallbackResolution.unconfirmedCurrent,
         });
         if (!appliedResolution) {
           await editReplySafe("Unable to resolve match type from current data.");

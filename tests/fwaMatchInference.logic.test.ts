@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyExplicitOpponentNotFoundFallbackGuardForTest,
+  hasSameWarExplicitFwaConfirmationForTest,
   getMailBlockedReasonFromStatusForTest,
   inferMatchTypeFromPointsSnapshotsForTest,
   resolveMatchTypeFromStoredSyncRowForTest,
@@ -282,6 +284,152 @@ describe("fwa match precedence", () => {
       inferred: false,
       confirmed: true,
       syncIsFwa: false,
+    });
+  });
+});
+
+describe("fwa explicit opponent-not-found fallback guard", () => {
+  it("drops fallback FWA current-war resolution when explicit not-found has no same-war confirmation", () => {
+    const current = resolveCurrentWarMatchTypeSignal({
+      matchType: "FWA",
+      inferredMatchType: false,
+    });
+    const fallback = {
+      confirmedCurrent: current.confirmed,
+      storedSync: null,
+      unconfirmedCurrent: current.unconfirmed,
+    };
+    const sameWarConfirmed = hasSameWarExplicitFwaConfirmationForTest({
+      fallbackResolution: fallback,
+      currentWarStartTime: new Date("2026-03-10T01:00:00.000Z"),
+      currentWarOpponentTag: "#2Y2U9VRCR",
+      activeWarStartTime: new Date("2026-03-11T01:00:00.000Z"),
+      activeOpponentTag: "#2Y2U9VRCR",
+    });
+    const guarded = applyExplicitOpponentNotFoundFallbackGuardForTest({
+      fallbackResolution: fallback,
+      opponentNotFoundExplicitly: true,
+      hasSameWarExplicitFwaConfirmation: sameWarConfirmed,
+    });
+    const resolved = chooseMatchTypeResolution({
+      confirmedCurrent: guarded.confirmedCurrent,
+      liveOpponent: null,
+      storedSync: guarded.storedSync,
+      unconfirmedCurrent: guarded.unconfirmedCurrent,
+    });
+
+    expect(sameWarConfirmed).toBe(false);
+    expect(resolved).toBeNull();
+  });
+
+  it("keeps same-war explicit FWA confirmation when intentionally confirmed", () => {
+    const current = resolveCurrentWarMatchTypeSignal({
+      matchType: "FWA",
+      inferredMatchType: false,
+    });
+    const fallback = {
+      confirmedCurrent: current.confirmed,
+      storedSync: null,
+      unconfirmedCurrent: current.unconfirmed,
+    };
+    const sameWarConfirmed = hasSameWarExplicitFwaConfirmationForTest({
+      fallbackResolution: fallback,
+      currentWarStartTime: new Date("2026-03-11T01:00:00.000Z"),
+      currentWarOpponentTag: "#2Y2U9VRCR",
+      activeWarStartTime: new Date("2026-03-11T01:00:00.000Z"),
+      activeOpponentTag: "#2Y2U9VRCR",
+    });
+    const guarded = applyExplicitOpponentNotFoundFallbackGuardForTest({
+      fallbackResolution: fallback,
+      opponentNotFoundExplicitly: true,
+      hasSameWarExplicitFwaConfirmation: sameWarConfirmed,
+    });
+    const resolved = chooseMatchTypeResolution({
+      confirmedCurrent: guarded.confirmedCurrent,
+      liveOpponent: null,
+      storedSync: guarded.storedSync,
+      unconfirmedCurrent: guarded.unconfirmedCurrent,
+    });
+
+    expect(sameWarConfirmed).toBe(true);
+    expect(resolved).toMatchObject({
+      matchType: "FWA",
+      source: "confirmed_current_war",
+      inferred: false,
+      confirmed: true,
+      syncIsFwa: true,
+    });
+  });
+
+  it("still allows MM/BL non-FWA inference when battle evidence supports it", () => {
+    const current = resolveCurrentWarMatchTypeSignal({
+      matchType: "FWA",
+      inferredMatchType: false,
+    });
+    const fallback = {
+      confirmedCurrent: current.confirmed,
+      storedSync: null,
+      unconfirmedCurrent: current.unconfirmed,
+    };
+    const guarded = applyExplicitOpponentNotFoundFallbackGuardForTest({
+      fallbackResolution: fallback,
+      opponentNotFoundExplicitly: true,
+      hasSameWarExplicitFwaConfirmation: false,
+    });
+    const live = inferMatchTypeFromPointsSnapshotsForTest(
+      { activeFwa: true },
+      { balance: null, activeFwa: null, notFound: true },
+      {
+        currentWarState: "inWar",
+        currentWarClanAttacksUsed: 4,
+        currentWarClanStars: 9,
+        currentWarOpponentStars: 3,
+      }
+    );
+    const resolved = chooseMatchTypeResolution({
+      confirmedCurrent: guarded.confirmedCurrent,
+      liveOpponent: live,
+      storedSync: guarded.storedSync,
+      unconfirmedCurrent: guarded.unconfirmedCurrent,
+    });
+
+    expect(resolved).toMatchObject({
+      matchType: "MM",
+      source: "active_war_non_fwa_mismatch",
+      inferred: true,
+      confirmed: false,
+      syncIsFwa: false,
+    });
+  });
+
+  it("leaves normal opponent-page-present flows unchanged", () => {
+    const current = resolveCurrentWarMatchTypeSignal({
+      matchType: "FWA",
+      inferredMatchType: false,
+    });
+    const fallback = {
+      confirmedCurrent: current.confirmed,
+      storedSync: null,
+      unconfirmedCurrent: current.unconfirmed,
+    };
+    const guarded = applyExplicitOpponentNotFoundFallbackGuardForTest({
+      fallbackResolution: fallback,
+      opponentNotFoundExplicitly: false,
+      hasSameWarExplicitFwaConfirmation: false,
+    });
+    const resolved = chooseMatchTypeResolution({
+      confirmedCurrent: guarded.confirmedCurrent,
+      liveOpponent: null,
+      storedSync: guarded.storedSync,
+      unconfirmedCurrent: guarded.unconfirmedCurrent,
+    });
+
+    expect(resolved).toMatchObject({
+      matchType: "FWA",
+      source: "confirmed_current_war",
+      inferred: false,
+      confirmed: true,
+      syncIsFwa: true,
     });
   });
 });

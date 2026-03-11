@@ -760,6 +760,8 @@ describe("fwa tracked-clan fallback snapshot", () => {
     expect(resolved.snapshot?.tag).toBe("2OPP");
     expect(resolved.snapshot?.balance).toBe(980);
     expect(resolved.snapshot?.clanName).toBe("Opponent Clan");
+    expect(resolved.snapshot?.lookupState).toBe("clan_not_found");
+    expect(resolved.snapshot?.notFound).toBe(true);
     expect(resolved.snapshot?.winnerBoxText).toBe("Not marked as an FWA match.");
   });
 
