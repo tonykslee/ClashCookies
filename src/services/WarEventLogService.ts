@@ -50,6 +50,8 @@ export {
 
 const NOTIFY_WAR_REFRESH_PREFIX = "notify-war-refresh";
 const BATTLE_DAY_REFRESH_MS = 20 * 60 * 1000;
+const COC_WAR_OUTAGE_FAILURE_THRESHOLD = 2;
+const COC_WAR_OUTAGE_RECOVERY_THRESHOLD = 2;
 const battleDayPostByGuildTag = new Map<string, { channelId: string; messageId: string }>();
 
 function buildNextRefreshRelativeLabel(
@@ -131,6 +133,23 @@ type PollSyncContext = {
   previousSync: number | null;
   activeSync: number | null;
 };
+
+type CocWarOutageState = {
+  failureStreak: number;
+  recoveryStreak: number;
+  suspected: boolean;
+  lastFailureStatusCode: number | null;
+  updatedAt: Date;
+};
+
+type CocWarFetchObservation =
+  | {
+      kind: "success";
+    }
+  | {
+      kind: "failure";
+      statusCode: number | null;
+    };
 
 type EmbedWarStats = {
   clanStars: number | null;
@@ -284,6 +303,145 @@ function sanitizeWarPlanForEmbed(planText: string | null | undefined): string | 
 
 export const sanitizeWarPlanForEmbedForTest = sanitizeWarPlanForEmbed;
 
+/** Purpose: extract a numeric HTTP status code from CoC API errors. */
+function parseCocApiStatusCode(error: unknown): number | null {
+  const responseStatus = Number(
+    (error as { response?: { status?: unknown } } | null | undefined)?.response?.status
+  );
+  if (Number.isFinite(responseStatus) && responseStatus >= 100 && responseStatus <= 599) {
+    return Math.trunc(responseStatus);
+  }
+  const message = String((error as { message?: unknown } | null | undefined)?.message ?? "");
+  const match = message.match(/CoC API error (\d{3})/i);
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) ? Math.trunc(parsed) : null;
+}
+
+/** Purpose: advance outage suspicion state from the latest CoC poll observation. */
+function advanceCocWarOutageState(
+  previous: CocWarOutageState | null,
+  observation: CocWarFetchObservation,
+  now: Date
+): CocWarOutageState {
+  const base: CocWarOutageState =
+    previous ?? {
+      failureStreak: 0,
+      recoveryStreak: 0,
+      suspected: false,
+      lastFailureStatusCode: null,
+      updatedAt: now,
+    };
+
+  if (observation.kind === "failure") {
+    const failureStreak = base.failureStreak + 1;
+    return {
+      failureStreak,
+      recoveryStreak: 0,
+      suspected: base.suspected || failureStreak >= COC_WAR_OUTAGE_FAILURE_THRESHOLD,
+      lastFailureStatusCode: observation.statusCode,
+      updatedAt: now,
+    };
+  }
+
+  const recoveryStreak = base.recoveryStreak + 1;
+  return {
+    failureStreak: 0,
+    recoveryStreak,
+    suspected: base.suspected && recoveryStreak < COC_WAR_OUTAGE_RECOVERY_THRESHOLD,
+    lastFailureStatusCode: base.lastFailureStatusCode,
+    updatedAt: now,
+  };
+}
+
+/** Purpose: resolve same-war timing while preventing prior-war end-time bleed. */
+function resolveActiveWarTiming(input: {
+  observedWarStartTime: Date | null;
+  observedWarEndTime: Date | null;
+  previousWarStartTime: Date | null;
+  previousWarEndTime: Date | null;
+}): {
+  warStartTime: Date | null;
+  warEndTime: Date | null;
+  sameWarIdentity: boolean;
+} {
+  const warStartTime = input.observedWarStartTime ?? input.previousWarStartTime;
+  const sameWarIdentity = Boolean(
+    warStartTime &&
+      input.previousWarStartTime &&
+      warStartTime.getTime() === input.previousWarStartTime.getTime()
+  );
+  const warEndTime =
+    input.observedWarEndTime ?? (sameWarIdentity ? input.previousWarEndTime ?? null : null);
+  return {
+    warStartTime,
+    warEndTime,
+    sameWarIdentity,
+  };
+}
+
+/** Purpose: gate uncertain war-ended transitions so transient snapshots cannot close active wars. */
+function applyWarEndedMaintenanceGuard(input: {
+  eventType: EventType | null;
+  previousState: WarState;
+  candidateState: WarState;
+  warFetchFailed: boolean;
+  maintenanceSuspected: boolean;
+  knownWarEndTime: Date | null;
+  now: Date;
+}): {
+  eventType: EventType | null;
+  state: WarState;
+  suppressReason: string | null;
+} {
+  if (input.eventType !== "war_ended") {
+    return {
+      eventType: input.eventType,
+      state: input.candidateState,
+      suppressReason: null,
+    };
+  }
+
+  const knownEndMs = input.knownWarEndTime instanceof Date ? input.knownWarEndTime.getTime() : NaN;
+  const nowMs = input.now.getTime();
+  const hasKnownEnd = Number.isFinite(knownEndMs);
+  const beforeKnownEnd = hasKnownEnd && nowMs < knownEndMs;
+  const maintenanceBlocksTransition =
+    input.maintenanceSuspected && (!hasKnownEnd || beforeKnownEnd);
+
+  if (input.warFetchFailed) {
+    return {
+      eventType: null,
+      state: input.previousState,
+      suppressReason: "upstream_unavailable",
+    };
+  }
+  if (beforeKnownEnd) {
+    return {
+      eventType: null,
+      state: input.previousState,
+      suppressReason: "before_known_war_end_time",
+    };
+  }
+  if (maintenanceBlocksTransition) {
+    return {
+      eventType: null,
+      state: input.previousState,
+      suppressReason: "maintenance_suspected",
+    };
+  }
+
+  return {
+    eventType: input.eventType,
+    state: input.candidateState,
+    suppressReason: null,
+  };
+}
+
+export const advanceCocWarOutageStateForTest = advanceCocWarOutageState;
+export const resolveActiveWarTimingForTest = resolveActiveWarTiming;
+export const applyWarEndedMaintenanceGuardForTest = applyWarEndedMaintenanceGuard;
+
 export class WarEventLogService {
   private readonly points: PointsProjectionService;
   private readonly pointsSync: WarStartPointsSyncService;
@@ -291,6 +449,7 @@ export class WarEventLogService {
   private readonly pointsPolicy: PointsFetchPolicyService;
   private readonly history: WarEventHistoryService;
   private readonly postedMessages: PostedMessageService;
+  private readonly cocWarOutageByClanTag = new Map<string, CocWarOutageState>();
 
   /** Purpose: initialize service dependencies. */
   constructor(private readonly client: Client, private readonly coc: CoCService) {
@@ -988,6 +1147,37 @@ export class WarEventLogService {
     return 0;
   }
 
+  /** Purpose: fetch current war while preserving upstream-failure classification. */
+  private async getCurrentWarSnapshot(clanTag: string): Promise<{
+    war: Awaited<ReturnType<CoCService["getCurrentWar"]>> | null;
+    observation: CocWarFetchObservation;
+  }> {
+    try {
+      const war = await this.coc.getCurrentWar(clanTag);
+      return { war, observation: { kind: "success" } };
+    } catch (error) {
+      return {
+        war: null,
+        observation: {
+          kind: "failure",
+          statusCode: parseCocApiStatusCode(error),
+        },
+      };
+    }
+  }
+
+  /** Purpose: update per-clan outage suspicion state from latest CoC fetch observation. */
+  private recordCocWarObservation(
+    clanTagInput: string,
+    observation: CocWarFetchObservation
+  ): CocWarOutageState {
+    const key = normalizeTag(clanTagInput);
+    const previous = this.cocWarOutageByClanTag.get(key) ?? null;
+    const next = advanceCocWarOutageState(previous, observation, new Date());
+    this.cocWarOutageByClanTag.set(key, next);
+    return next;
+  }
+
   private async allocateNextWarId(): Promise<number | null> {
     const rows = await prisma.$queryRaw<Array<{ warId: bigint | number }>>(
       Prisma.sql`
@@ -1094,35 +1284,52 @@ export class WarEventLogService {
     const sub = rows[0] ?? null;
     if (!sub) return false;
 
-    const war = await this.coc.getCurrentWar(sub.clanTag).catch(() => null);
+    const warSnapshot = await this.getCurrentWarSnapshot(sub.clanTag);
+    const war = warSnapshot.war;
+    const outageState = this.recordCocWarObservation(sub.clanTag, warSnapshot.observation);
     const resolvedState: WarState = war ? deriveState(String(war.state ?? "")) : "notInWar";
     const resolvedOpponentTag = normalizeTag(war?.opponent?.tag ?? "");
-    const currentState: WarState =
+    const candidateState: WarState =
       resolvedState === "inWar" && !resolvedOpponentTag ? "notInWar" : resolvedState;
     const prevState: WarState = deriveState(sub.state ?? "notInWar");
     const nextClanName =
       String(war?.clan?.name ?? sub.clanName ?? sub.clanTag).trim() || sub.clanTag;
     const nextOpponentTag = normalizeTag(war?.opponent?.tag ?? sub.opponentTag ?? "");
     const nextOpponentName = String(war?.opponent?.name ?? sub.opponentName ?? "").trim() || null;
-    const nextWarStartTime = (() => {
-      const raw = war?.startTime;
-      if (!raw) return sub.startTime;
-      const m = raw.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})\.\d{3}Z$/);
-      if (!m) return sub.startTime;
-      const [, y, mo, d, h, mi, s] = m;
-      return new Date(Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s)));
-    })();
+    const timing = resolveActiveWarTiming({
+      observedWarStartTime: parseCocTime(war?.startTime ?? null),
+      observedWarEndTime: parseCocTime(war?.endTime ?? null),
+      previousWarStartTime: sub.startTime ?? null,
+      previousWarEndTime: sub.endTime ?? null,
+    });
+    const nextWarStartTime = timing.warStartTime;
+    const nextWarEndTime = timing.warEndTime;
     const nextPrepStartTime = parseCocTime(war?.preparationStartTime ?? null) ?? sub.prepStartTime;
-    const nextWarEndTime = parseCocTime(war?.endTime ?? null);
 
-    const eventTypeRaw = shouldEmit(prevState, currentState);
+    const eventTypeRaw = shouldEmit(prevState, candidateState);
     let eventType = eventTypeRaw;
     if (!eventType && isNewWarCycle(sub.startTime, nextWarStartTime)) {
-      if (currentState === "preparation") {
+      if (candidateState === "preparation") {
         eventType = "war_started";
-      } else if (currentState === "inWar") {
+      } else if (candidateState === "inWar") {
         eventType = "battle_day";
       }
+    }
+    const warEndedGuard = applyWarEndedMaintenanceGuard({
+      eventType,
+      previousState: prevState,
+      candidateState,
+      warFetchFailed: warSnapshot.observation.kind === "failure",
+      maintenanceSuspected: outageState.suspected,
+      knownWarEndTime: nextWarEndTime,
+      now: new Date(),
+    });
+    let currentState: WarState = warEndedGuard.state;
+    eventType = warEndedGuard.eventType;
+    if (warEndedGuard.suppressReason) {
+      console.log(
+        `[war-events] war_ended suppressed guild=${sub.guildId} clan=${sub.clanTag} reason=${warEndedGuard.suppressReason} prev=${prevState} current=${candidateState} knownEnd=${nextWarEndTime?.toISOString() ?? "unknown"} maintenanceSuspected=${outageState.suspected} failureStreak=${outageState.failureStreak}${outageState.lastFailureStatusCode ? ` status=${outageState.lastFailureStatusCode}` : ""}`
+      );
     }
     if (eventType === "war_ended") {
       if (!sub.startTime) {
@@ -1176,7 +1383,7 @@ export class WarEventLogService {
       requestedReason: "post_war_reconciliation",
       warState: currentState,
       warStartTime: nextWarStartTime,
-      warEndTime: nextWarEndTime ?? sub.endTime ?? null,
+      warEndTime: nextWarEndTime,
       currentSyncNumber: syncContext.activeSync,
       lifecycle: lifecycleState,
       activeWarId:
