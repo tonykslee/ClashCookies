@@ -130,8 +130,8 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     summary: "Composition tools backed by the AllianceDashboard sheet.",
     details: [
       "`advice`: fetch clan-specific adjustment notes.",
-      "`state`: render state table as an image.",
-      "`place`: suggest placement by war weight.",
+      "`state`: render state table as an image (with inline refresh button).",
+      "`place`: suggest placement by war weight (with inline refresh button).",
     ],
     examples: [
       "/compo advice tag:#2QG2C08UP mode:actual",

@@ -1,4 +1,3 @@
-import axios from "axios";
 import {
   ApplicationCommandOptionType,
   ChatInputCommandInteraction,
@@ -6,10 +5,15 @@ import {
 } from "discord.js";
 import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
-import { recordFetchEvent } from "../helper/fetchTelemetry";
 import { safeReply } from "../helper/safeReply";
 import { CoCService } from "../services/CoCService";
 import { GoogleSheetsService } from "../services/GoogleSheetsService";
+import {
+  getSheetRefreshErrorHint,
+  mapSheetRefreshFlowErrorToMessage,
+  SheetRefreshFlowError,
+  triggerSharedSheetRefresh,
+} from "../services/SheetRefreshService";
 import { SettingsService } from "../services/SettingsService";
 
 function extractSheetId(input: string): string {
@@ -54,34 +58,10 @@ function getSheetErrorHint(err: unknown): string {
   return "Check credentials, sharing, sheet ID, and optional tab/range.";
 }
 
-function getRefreshErrorHint(err: unknown): string {
-  const message = formatError(err).toLowerCase();
-  if (message.includes("econnaborted") || message.includes("timeout")) {
-    return "Apps Script refresh timed out. The refresh may still be running; try again in a few minutes.";
-  }
-  if (message.includes("unauthorized") || message.includes("401")) {
-    return "Apps Script rejected the shared secret/token. Re-check *_APPS_SCRIPT_SHARED_SECRET.";
-  }
-  if (message.includes("403")) {
-    return "Apps Script endpoint denied access. Re-check web app deployment access and secret.";
-  }
-  if (message.includes("404")) {
-    return "Apps Script webhook URL was not found. Re-check GS_WEBHOOK_URL.";
-  }
-  if (message.includes("500")) {
-    return "Apps Script returned a server error. Check Apps Script execution logs.";
-  }
-
-  return "Could not trigger Apps Script refresh. Check webhook URL, shared secret, deployment access, and Apps Script logs.";
-}
-
 const SHEET_REFRESH_MODE_CHOICES = [
   { name: "Actual", value: "actual" },
   { name: "War", value: "war" },
 ];
-const SHEET_REFRESH_COOLDOWN_MS = 5 * 60 * 1000;
-const SHEET_REFRESH_TIMEOUT_MS = 120000;
-const lastRefreshAtMsByGuild = new Map<string, number>();
 const SHEET_LINK_PREREQUISITES = [
   "Prerequisites:",
   "1. Share the sheet with Google service account as Editor: `clashcookies-serviceaccount@project-61d5243b-bd8a-4eae-b4f.iam.gserviceaccount.com`",
@@ -89,56 +69,6 @@ const SHEET_LINK_PREREQUISITES = [
   "3. Set that same key in bot env var `GS_WEBHOOK_SHARED_SECRET`.",
   "4. In Apps Script, deploy a Web App and set its URL in bot env var `GS_WEBHOOK_URL`.",
 ].join("\n");
-
-async function postRefreshWebhook(
-  url: string,
-  token: string | null,
-  action: "refreshMembers" | "refreshWar"
-): Promise<string> {
-  const payload: Record<string, string> = { action };
-  if (token) payload.token = token;
-  const makeRequest = () =>
-    axios.post<string>(
-      url,
-      payload,
-      {
-        headers: { "Content-Type": "application/json" },
-        timeout: SHEET_REFRESH_TIMEOUT_MS,
-        responseType: "text",
-      }
-    );
-
-  try {
-    const response = await makeRequest();
-    recordFetchEvent({
-      namespace: "google_sheets",
-      operation: "apps_script_refresh",
-      source: "web",
-      detail: `action=${action} status=${response.status}`,
-    });
-    return String(response.data ?? "").trim();
-  } catch (firstErr) {
-    const hint = formatError(firstErr).toLowerCase();
-    const retryable =
-      hint.includes("timeout") ||
-      hint.includes("econnaborted") ||
-      hint.includes("socket hang up") ||
-      hint.includes("502") ||
-      hint.includes("503") ||
-      hint.includes("504");
-
-    if (!retryable) throw firstErr;
-
-    const second = await makeRequest();
-    recordFetchEvent({
-      namespace: "google_sheets",
-      operation: "apps_script_refresh",
-      source: "web",
-      detail: `action=${action} status=${second.status} retry=true`,
-    });
-    return String(second.data ?? "").trim();
-  }
-}
 
 export const Sheet: Command = {
   name: "sheet",
@@ -250,52 +180,31 @@ export const Sheet: Command = {
           return;
         }
 
-        const guildKey = `${interaction.guildId ?? "dm"}`;
-        const now = Date.now();
-        const lastRun = lastRefreshAtMsByGuild.get(guildKey);
-        if (lastRun && now - lastRun < SHEET_REFRESH_COOLDOWN_MS) {
-          const availableAt = Math.floor(
-            (lastRun + SHEET_REFRESH_COOLDOWN_MS) / 1000
-          );
-          await safeReply(interaction, {
-            ephemeral: true,
-            content: `Refresh cooldown active. Try again <t:${availableAt}:R>.`,
+        let refreshResult: Awaited<
+          ReturnType<typeof triggerSharedSheetRefresh>
+        >;
+        try {
+          refreshResult = await triggerSharedSheetRefresh({
+            guildId: interaction.guildId ?? null,
+            mode: refreshMode,
           });
-          return;
+        } catch (err) {
+          if (err instanceof SheetRefreshFlowError) {
+            await safeReply(interaction, {
+              ephemeral: true,
+              content: mapSheetRefreshFlowErrorToMessage(err),
+            });
+            return;
+          }
+          throw err;
         }
 
-        const config = {
-          url: process.env.GS_WEBHOOK_URL?.trim(),
-          token: process.env.GS_WEBHOOK_SHARED_SECRET?.trim() ?? null,
-          action: refreshMode === "actual" ? "refreshMembers" : "refreshWar",
-        } as const;
-
-        if (!config.url) {
-          await safeReply(interaction, {
-            ephemeral: true,
-            content: "Missing GS_WEBHOOK_URL.",
-          });
-          return;
-        }
-
-        const refreshStartedAtMs = Date.now();
-        const resultText = await postRefreshWebhook(
-          config.url,
-          config.token,
-          config.action as "refreshMembers" | "refreshWar"
-        );
-        const refreshDurationSeconds = (
-          (Date.now() - refreshStartedAtMs) /
-          1000
-        ).toFixed(2);
-
-        lastRefreshAtMsByGuild.set(guildKey, now);
         await safeReply(interaction, {
           ephemeral: true,
           content:
-            resultText.length > 0
-              ? `Refresh triggered for **${refreshMode.toUpperCase()}** mode in **${refreshDurationSeconds}s**.\n${resultText}`
-              : `Refresh triggered for **${refreshMode.toUpperCase()}** mode in **${refreshDurationSeconds}s**.`,
+            refreshResult.resultText.length > 0
+              ? `Refresh triggered for **${refreshMode.toUpperCase()}** mode in **${refreshResult.durationSeconds}s**.\n${refreshResult.resultText}`
+              : `Refresh triggered for **${refreshMode.toUpperCase()}** mode in **${refreshResult.durationSeconds}s**.`,
         });
         return;
       }
@@ -309,7 +218,7 @@ export const Sheet: Command = {
       console.error(`sheet command failed: ${formatError(err)}`);
       const hint =
         subcommand === "refresh"
-          ? getRefreshErrorHint(err)
+          ? getSheetRefreshErrorHint(err)
           : getSheetErrorHint(err);
       await safeReply(interaction, {
         ephemeral: true,
