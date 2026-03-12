@@ -53,6 +53,7 @@ const BATTLE_DAY_REFRESH_MS = 20 * 60 * 1000;
 const COC_WAR_OUTAGE_FAILURE_THRESHOLD = 2;
 const COC_WAR_OUTAGE_RECOVERY_THRESHOLD = 2;
 const battleDayPostByGuildTag = new Map<string, { channelId: string; messageId: string }>();
+const NOTIFY_UNKNOWN_OPPONENT = "Unknown Opponent";
 
 function buildNextRefreshRelativeLabel(
   intervalMs: number,
@@ -69,6 +70,82 @@ function buildNextRefreshRelativeLabel(
 }
 
 export const buildNotifyNextRefreshLabelForTest = buildNextRefreshRelativeLabel;
+
+function normalizeNotifyRoleId(roleId: string | null | undefined): string | null {
+  const raw = String(roleId ?? "").trim();
+  if (!raw) return null;
+  const mentionMatch = raw.match(/^<@&(\d{5,})>$/);
+  if (mentionMatch?.[1]) return mentionMatch[1];
+  const idMatch = raw.match(/^(\d{5,})$/);
+  if (idMatch?.[1]) return idMatch[1];
+  return null;
+}
+
+function buildNotifyEventContextLine(eventType: EventType, opponentNameInput: string | null | undefined): string {
+  const opponentName = String(opponentNameInput ?? "").trim() || NOTIFY_UNKNOWN_OPPONENT;
+  if (eventType === "war_started") return `War declared against ${opponentName}`;
+  if (eventType === "battle_day") return `War started against ${opponentName}`;
+  return `War ended against ${opponentName}`;
+}
+
+function buildNotifyEventPostedContent(params: {
+  eventType: EventType;
+  opponentName: string | null | undefined;
+  notifyRoleId?: string | null;
+  includeRoleMention?: boolean;
+  nowMs?: number;
+  nextScheduledRefreshAtMs?: number | null;
+}): string {
+  const sections: string[] = [buildNotifyEventContextLine(params.eventType, params.opponentName)];
+  const normalizedRoleId = normalizeNotifyRoleId(params.notifyRoleId);
+  if (params.includeRoleMention !== false && normalizedRoleId) {
+    sections.push(`<@&${normalizedRoleId}>`);
+  }
+  if (params.eventType === "battle_day") {
+    sections.push(
+      buildNextRefreshRelativeLabel(
+        BATTLE_DAY_REFRESH_MS,
+        params.nowMs,
+        params.nextScheduledRefreshAtMs
+      )
+    );
+  }
+  return sections.join("\n");
+}
+
+export const buildNotifyEventPostedContentForTest = buildNotifyEventPostedContent;
+
+function extractPostedNotifyMentionRoleId(existingPostedContent: string | null | undefined): string | null {
+  const lines = String(existingPostedContent ?? "").split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const match = trimmed.match(/^<@&(\d{5,})>$/);
+    if (match?.[1]) return match[1];
+  }
+  return null;
+}
+
+function buildBattleDayRefreshEditPayload(
+  existingPostedContent: string | null | undefined,
+  opponentName: string | null | undefined,
+  nowMs?: number
+): { content: string; allowedMentions: { parse: [] } } {
+  const persistedMentionRoleId = extractPostedNotifyMentionRoleId(existingPostedContent);
+  return {
+    content: buildNotifyEventPostedContent({
+      eventType: "battle_day",
+      opponentName,
+      notifyRoleId: persistedMentionRoleId,
+      includeRoleMention: Boolean(persistedMentionRoleId),
+      nowMs,
+      nextScheduledRefreshAtMs: getNextNotifyRefreshAtMs(),
+    }),
+    allowedMentions: { parse: [] },
+  };
+}
+
+export const buildBattleDayRefreshEditPayloadForTest = buildBattleDayRefreshEditPayload;
 
 /** Purpose: keep notify-event embed colors stable and centralized across render paths. */
 export function resolveNotifyEventEmbedColor(eventType: EventType): number {
@@ -1044,22 +1121,16 @@ export class WarEventLogService {
       );
     }
 
-    const roleMention =
-      includeRoleMention && payload.pingRole && payload.notifyRole ? `<@&${payload.notifyRole}>` : null;
-    const nextRefreshLabel =
-      payload.eventType === "battle_day"
-        ? buildNextRefreshRelativeLabel(
-            BATTLE_DAY_REFRESH_MS,
-            Date.now(),
-            getNextNotifyRefreshAtMs()
-          )
-        : null;
-    const content =
-      payload.eventType === "battle_day"
-        ? roleMention
-          ? `${roleMention}\n${nextRefreshLabel}`
-          : (nextRefreshLabel ?? undefined)
-        : (roleMention ?? undefined);
+    const roleId = normalizeNotifyRoleId(payload.notifyRole);
+    const includeRoleMentionForPost = includeRoleMention && payload.pingRole;
+    const content = buildNotifyEventPostedContent({
+      eventType: payload.eventType,
+      opponentName: payload.opponentName,
+      notifyRoleId: roleId,
+      includeRoleMention: includeRoleMentionForPost,
+      nowMs: Date.now(),
+      nextScheduledRefreshAtMs: getNextNotifyRefreshAtMs(),
+    });
     const components =
       includeEventComponents && payload.eventType === "battle_day" && guildId
         ? [
@@ -1076,7 +1147,8 @@ export class WarEventLogService {
       content,
       embeds: [embed],
       components,
-      allowedMentions: roleMention ? { roles: [payload.notifyRole as string] } : undefined,
+      allowedMentions:
+        includeRoleMentionForPost && roleId ? { roles: [roleId] } : undefined,
     };
   }
 
@@ -2207,8 +2279,8 @@ export class WarEventLogService {
       });
     }
 
-    const roleMention =
-      payload.pingRole && payload.notifyRole ? `<@&${payload.notifyRole}>` : null;
+    const roleId = normalizeNotifyRoleId(payload.notifyRole);
+    const includeRoleMentionForPost = payload.pingRole;
     const components =
       payload.eventType === "battle_day" && guildId
         ? [
@@ -2222,10 +2294,18 @@ export class WarEventLogService {
         : [];
     const sent = await channel
       .send({
-        content: roleMention ?? undefined,
+        content: buildNotifyEventPostedContent({
+          eventType: payload.eventType,
+          opponentName: payload.opponentName,
+          notifyRoleId: roleId,
+          includeRoleMention: includeRoleMentionForPost,
+          nowMs: Date.now(),
+          nextScheduledRefreshAtMs: getNextNotifyRefreshAtMs(),
+        }),
         embeds: [embed],
         components,
-        allowedMentions: roleMention ? { roles: [payload.notifyRole as string] } : undefined,
+        allowedMentions:
+          includeRoleMentionForPost && roleId ? { roles: [roleId] } : undefined,
       })
       .catch((err) => {
         console.error(
@@ -2446,12 +2526,14 @@ export class WarEventLogService {
       });
       const embed = EmbedBuilder.from(message.embeds[0] ?? new EmbedBuilder());
       const next = await this.buildBattleDayRefreshEmbed(payload, Number(warIdText), guildId, embed);
+      const refreshEditPayload = buildBattleDayRefreshEditPayload(
+        String(message.content ?? ""),
+        payload.opponentName,
+        Date.now()
+      );
       await message.edit({
-        content: buildNextRefreshRelativeLabel(
-          BATTLE_DAY_REFRESH_MS,
-          Date.now(),
-          getNextNotifyRefreshAtMs()
-        ),
+        content: refreshEditPayload.content,
+        allowedMentions: refreshEditPayload.allowedMentions,
         embeds: [next],
         components: [
           new ActionRowBuilder<ButtonBuilder>().addComponents(
@@ -2613,12 +2695,14 @@ export class WarEventLogService {
     const warId = resolvedWarId ?? refreshedSub.warId ?? null;
     const embed = EmbedBuilder.from(message.embeds[0] ?? new EmbedBuilder());
     const next = await this.buildBattleDayRefreshEmbed(payload, warId, guildId, embed);
+    const refreshEditPayload = buildBattleDayRefreshEditPayload(
+      String(message.content ?? ""),
+      payload.opponentName,
+      Date.now()
+    );
     await message.edit({
-      content: buildNextRefreshRelativeLabel(
-        BATTLE_DAY_REFRESH_MS,
-        Date.now(),
-        getNextNotifyRefreshAtMs()
-      ),
+      content: refreshEditPayload.content,
+      allowedMentions: refreshEditPayload.allowedMentions,
       embeds: [next],
       components: [
         new ActionRowBuilder<ButtonBuilder>().addComponents(
