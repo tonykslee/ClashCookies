@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clashcookies.local/schemas/phase2-staged-correction.schema.json",
+  "title": "Phase2StagedCorrectionFile",
+  "description": "Staged authoritative correction rows for Phase 2 archive/history repair.",
+  "type": "array",
+  "minItems": 8,
+  "maxItems": 8,
+  "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "archiveWarId",
+      "clanTag",
+      "opponentTag",
+      "warStartTime",
+      "warEndTime",
+      "clanStars",
+      "opponentStars",
+      "clanDestruction",
+      "opponentDestruction",
+      "actualOutcome",
+      "warLookupResult"
+    ],
+    "properties": {
+      "archiveWarId": {
+        "type": "integer",
+        "enum": [
+          1001293,
+          1001295,
+          1001296,
+          1001297,
+          1001298,
+          1001299,
+          1001300,
+          1001301
+        ]
+      },
+      "clanTag": {
+        "type": "string",
+        "pattern": "^#[A-Z0-9]+$"
+      },
+      "opponentTag": {
+        "type": "string",
+        "pattern": "^#[A-Z0-9]+$"
+      },
+      "warStartTime": {
+        "type": "string",
+        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+      },
+      "warEndTime": {
+        "type": "string",
+        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+      },
+      "clanStars": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 150
+      },
+      "opponentStars": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 150
+      },
+      "clanDestruction": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 100
+      },
+      "opponentDestruction": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 100
+      },
+      "actualOutcome": {
+        "type": "string",
+        "enum": [
+          "WIN",
+          "LOSE",
+          "TIE",
+          "UNKNOWN"
+        ]
+      },
+      "warLookupResult": {
+        "type": "string",
+        "enum": [
+          "win",
+          "lose",
+          "tie",
+          "unknown"
+        ]
+      }
+    }
+  }
+}
