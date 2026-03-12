@@ -8,13 +8,25 @@ function formatMemberLabel(issue: WarComplianceIssue): string {
   return `${name} (${tag})`;
 }
 
+/** Purpose: build compact not-following labels with participant position and no tag. */
+function formatNotFollowingLabel(issue: WarComplianceIssue): string {
+  const name = String(issue.playerName ?? "").trim() || "Unknown member";
+  const posRaw = Number(issue.playerPosition ?? NaN);
+  if (Number.isFinite(posRaw) && posRaw > 0) {
+    return `#${Math.trunc(posRaw)}. ${name}`;
+  }
+  return name;
+}
+
 /** Purpose: format compliance issues into bounded output lines for Discord replies. */
 function formatIssueLines(issues: WarComplianceIssue[], limit = 12): string[] {
   const visible = issues.slice(0, limit);
   const lines = visible.map((issue) => {
-    const member = formatMemberLabel(issue);
     const actual = String(issue.actualBehavior ?? "").trim() || "No details available.";
-    return `- ${member}: ${actual}`;
+    if (issue.ruleType === "not_following_plan") {
+      return `- ${formatNotFollowingLabel(issue)} --> ${actual}`;
+    }
+    return `- ${formatMemberLabel(issue)}: ${actual}`;
   });
   const hidden = issues.length - visible.length;
   if (hidden > 0) {
