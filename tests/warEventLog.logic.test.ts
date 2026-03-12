@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   advanceCocWarOutageStateForTest,
   applyWarEndedMaintenanceGuardForTest,
+  buildBattleDayRefreshEditPayloadForTest,
+  buildNotifyEventPostedContentForTest,
   computeWarComplianceForTest,
   computeWarPointsDeltaForTest,
   resolveActiveWarTimingForTest,
@@ -421,6 +423,84 @@ describe("WarEventLogService.sanitizeWarPlanForEmbedForTest", () => {
     const text = ["# Title", "  ## Subtitle", "   ### More"].join("\n");
 
     expect(sanitizeWarPlanForEmbedForTest(text)).toBeNull();
+  });
+});
+
+describe("WarEventLogService notify event posted content", () => {
+  it("places prep-day context line above role mention", () => {
+    const content = buildNotifyEventPostedContentForTest({
+      eventType: "war_started",
+      opponentName: "Enemy Clan",
+      notifyRoleId: "123456789",
+      includeRoleMention: true,
+      nowMs: 0,
+    });
+    expect(content).toBe("War declared against Enemy Clan\n<@&123456789>");
+  });
+
+  it("places battle-day context above mention and refresh line", () => {
+    const content = buildNotifyEventPostedContentForTest({
+      eventType: "battle_day",
+      opponentName: "Enemy Clan",
+      notifyRoleId: "123456789",
+      includeRoleMention: true,
+      nowMs: 0,
+      nextScheduledRefreshAtMs: 1_200_000,
+    });
+    expect(content).toBe("War started against Enemy Clan\n<@&123456789>\nNext refresh <t:1200:R>");
+  });
+
+  it("places war-ended context line above role mention", () => {
+    const content = buildNotifyEventPostedContentForTest({
+      eventType: "war_ended",
+      opponentName: "Enemy Clan",
+      notifyRoleId: "123456789",
+      includeRoleMention: true,
+      nowMs: 0,
+    });
+    expect(content).toBe("War ended against Enemy Clan\n<@&123456789>");
+  });
+
+  it("uses fallback opponent label when name is unavailable", () => {
+    const content = buildNotifyEventPostedContentForTest({
+      eventType: "war_started",
+      opponentName: " ",
+      notifyRoleId: "123456789",
+      includeRoleMention: true,
+      nowMs: 0,
+    });
+    expect(content).toBe("War declared against Unknown Opponent\n<@&123456789>");
+  });
+});
+
+describe("WarEventLogService battle-day refresh content", () => {
+  it("preserves visible role mention with context-first order", () => {
+    const payload = buildBattleDayRefreshEditPayloadForTest(
+      "War started against Enemy Clan\n<@&123456789>\nNext refresh <t:999:R>",
+      "Enemy Clan",
+      0
+    );
+    expect(payload.content).toContain("War started against Enemy Clan\n<@&123456789>\nNext refresh <t:");
+    expect(payload.allowedMentions).toEqual({ parse: [] });
+  });
+
+  it("preserves mention for legacy mention-first posts", () => {
+    const payload = buildBattleDayRefreshEditPayloadForTest(
+      "<@&123456789>\nNext refresh <t:999:R>",
+      "Enemy Clan",
+      0
+    );
+    expect(payload.content).toContain("War started against Enemy Clan\n<@&123456789>\nNext refresh <t:");
+  });
+
+  it("does not add mention if original message had none", () => {
+    const payload = buildBattleDayRefreshEditPayloadForTest(
+      "War started against Enemy Clan\nNext refresh <t:999:R>",
+      "Enemy Clan",
+      0
+    );
+    expect(payload.content).toContain("War started against Enemy Clan\nNext refresh <t:");
+    expect(payload.content).not.toContain("<@&");
   });
 });
 
