@@ -370,12 +370,18 @@ function buildWarStatsLines(stats: EmbedWarStats): string[] {
   ];
 }
 
-/** Purpose: omit markdown heading lines from war-plan text for embed rendering only. */
+/** Purpose: normalize markdown heading prefixes from war-plan text for embed rendering only. */
 function sanitizeWarPlanForEmbed(planText: string | null | undefined): string | null {
   if (!planText) return null;
-  const filtered = planText.split(/\r?\n/).filter((line) => !/^\s*#/.test(line));
-  if (filtered.length === 0) return null;
-  return filtered.join("\n");
+  const normalized = planText.split(/\r?\n/).map((line) => {
+    const headingMatch = line.match(/^(\s*)#{1,6}(?:\s+|$)(.*)$/);
+    if (!headingMatch) return line;
+    const leading = headingMatch[1] ?? "";
+    const remainder = headingMatch[2] ?? "";
+    return `${leading}${remainder}`;
+  });
+  if (!normalized.some((line) => line.trim().length > 0)) return null;
+  return normalized.join("\n");
 }
 
 export const sanitizeWarPlanForEmbedForTest = sanitizeWarPlanForEmbed;
