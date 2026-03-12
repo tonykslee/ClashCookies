@@ -89,7 +89,8 @@ export class WarEventHistoryService {
     clanTagOrOpponentName?: string | null,
     opponentNameInput?: string | null,
     _phase: "prep" | "battle" = "battle",
-    clanNameInput?: string | null
+    clanNameInput?: string | null,
+    options?: { forcedLoseStyle?: FwaLoseStyle | null }
   ): Promise<string | null> {
     let guildId: string | null | undefined = guildIdOrMatchType;
     let matchType = matchTypeOrExpectedOutcome as MatchType;
@@ -116,8 +117,13 @@ export class WarEventHistoryService {
     const clanName = String(clanNameInput ?? "").trim() || normalizedClanTagWithHash || "Our Clan";
     const applyPlaceholders = (planText: string): string =>
       planText.replace(/\{opponent\}/gi, opponentName).replace(/\{clan\}/gi, clanName);
+    const forcedLoseStyle =
+      options?.forcedLoseStyle === "TRADITIONAL" || options?.forcedLoseStyle === "TRIPLE_TOP_30"
+        ? options.forcedLoseStyle
+        : null;
     let loseStyleCache: FwaLoseStyle | null = null;
     const getLoseStyle = async (): Promise<FwaLoseStyle> => {
+      if (forcedLoseStyle) return forcedLoseStyle;
       if (!loseStyleCache) {
         loseStyleCache = await this.getLoseStyleForClan(normalizedClanTag);
       }

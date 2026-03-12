@@ -161,4 +161,110 @@ describe("WarEventHistoryService.buildWarPlanText", () => {
       })
     );
   });
+
+  it("uses forced traditional lose style for editable default lookup", async () => {
+    const svc = new WarEventHistoryService({} as never);
+    const planSpy = vi.spyOn(prisma.clanWarPlan, "findFirst");
+    planSpy
+      .mockResolvedValueOnce(null as any)
+      .mockResolvedValueOnce({ planText: "Traditional default {clan} vs {opponent}" } as any);
+
+    const out = await svc.buildWarPlanText(
+      "123456789012345678",
+      "FWA",
+      "LOSE",
+      "",
+      "OPPONENT_NAME",
+      "battle",
+      "CLAN_NAME",
+      { forcedLoseStyle: "TRADITIONAL" }
+    );
+
+    expect(out).toBe("Traditional default CLAN_NAME vs OPPONENT_NAME");
+    expect(planSpy).toHaveBeenCalledTimes(2);
+    expect(planSpy.mock.calls[1]?.[0]).toEqual(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          guildId: "123456789012345678",
+          scope: "DEFAULT",
+          matchType: "FWA",
+          outcome: "LOSE",
+          loseStyle: { in: ["TRADITIONAL", "ANY"] },
+        }),
+      })
+    );
+  });
+
+  it("uses forced triple-top-30 lose style for editable default lookup", async () => {
+    const svc = new WarEventHistoryService({} as never);
+    const planSpy = vi.spyOn(prisma.clanWarPlan, "findFirst");
+    planSpy
+      .mockResolvedValueOnce(null as any)
+      .mockResolvedValueOnce({ planText: "Triple default {clan} vs {opponent}" } as any);
+
+    const out = await svc.buildWarPlanText(
+      "123456789012345678",
+      "FWA",
+      "LOSE",
+      "",
+      "OPPONENT_NAME",
+      "battle",
+      "CLAN_NAME",
+      { forcedLoseStyle: "TRIPLE_TOP_30" }
+    );
+
+    expect(out).toBe("Triple default CLAN_NAME vs OPPONENT_NAME");
+    expect(planSpy).toHaveBeenCalledTimes(2);
+    expect(planSpy.mock.calls[1]?.[0]).toEqual(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          guildId: "123456789012345678",
+          scope: "DEFAULT",
+          matchType: "FWA",
+          outcome: "LOSE",
+          loseStyle: { in: ["TRIPLE_TOP_30", "ANY"] },
+        }),
+      })
+    );
+  });
+
+  it("uses forced traditional lose style for built-in fallback when no db plan exists", async () => {
+    const svc = new WarEventHistoryService({} as never);
+    const planSpy = vi.spyOn(prisma.clanWarPlan, "findFirst");
+    planSpy.mockResolvedValueOnce(null as any).mockResolvedValueOnce(null as any);
+
+    const out = await svc.buildWarPlanText(
+      "123456789012345678",
+      "FWA",
+      "LOSE",
+      "",
+      "OPPONENT_NAME",
+      "battle",
+      "CLAN_NAME",
+      { forcedLoseStyle: "TRADITIONAL" }
+    );
+
+    expect(out).toContain("Last 12hrs");
+    expect(out).toContain("Do NOT surpass 100");
+  });
+
+  it("uses forced triple-top-30 lose style for built-in fallback when no db plan exists", async () => {
+    const svc = new WarEventHistoryService({} as never);
+    const planSpy = vi.spyOn(prisma.clanWarPlan, "findFirst");
+    planSpy.mockResolvedValueOnce(null as any).mockResolvedValueOnce(null as any);
+
+    const out = await svc.buildWarPlanText(
+      "123456789012345678",
+      "FWA",
+      "LOSE",
+      "",
+      "OPPONENT_NAME",
+      "battle",
+      "CLAN_NAME",
+      { forcedLoseStyle: "TRIPLE_TOP_30" }
+    );
+
+    expect(out).toContain("top 30");
+    expect(out).toContain("Do NOT attack the bottom 20 bases");
+  });
 });
