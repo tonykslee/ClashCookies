@@ -395,7 +395,7 @@ describe("WarEventLogService.computeWarComplianceForTest", () => {
 });
 
 describe("WarEventLogService.sanitizeWarPlanForEmbedForTest", () => {
-  it("omits heading-style lines and keeps non-heading lines in order", () => {
+  it("normalizes heading-style prefixes and keeps line order", () => {
     const text = [
       "# Title",
       "Line 1",
@@ -408,7 +408,15 @@ describe("WarEventLogService.sanitizeWarPlanForEmbedForTest", () => {
 
     const sanitized = sanitizeWarPlanForEmbedForTest(text);
 
-    expect(sanitized?.split("\n")).toEqual(["Line 1", "", "  - Keep this", "Line 2"]);
+    expect(sanitized?.split("\n")).toEqual([
+      "Title",
+      "Line 1",
+      "  Subtitle",
+      "",
+      "  - Keep this",
+      "   Internal Header",
+      "Line 2",
+    ]);
   });
 
   it("keeps plans without heading lines unchanged", () => {
@@ -419,10 +427,16 @@ describe("WarEventLogService.sanitizeWarPlanForEmbedForTest", () => {
     expect(sanitized).toBe(text);
   });
 
-  it("returns null when all lines are heading-style lines", () => {
-    const text = ["# Title", "  ## Subtitle", "   ### More"].join("\n");
+  it("returns null when heading-only lines sanitize to empty content", () => {
+    const text = ["#   ", "  ##   ", "   ###"].join("\n");
 
     expect(sanitizeWarPlanForEmbedForTest(text)).toBeNull();
+  });
+
+  it("does not alter # characters that are not markdown heading prefixes", () => {
+    const text = ["Line #1", "  - # keep", "#not-a-heading", "foo #bar baz"].join("\n");
+    const sanitized = sanitizeWarPlanForEmbedForTest(text);
+    expect(sanitized).toBe(text);
   });
 });
 
