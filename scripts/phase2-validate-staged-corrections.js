@@ -10,16 +10,10 @@
 const fs = require("fs");
 const path = require("path");
 
-const EXPECTED_ARCHIVE_WAR_IDS = [
-  1001293,
-  1001295,
-  1001296,
-  1001297,
-  1001298,
-  1001299,
-  1001300,
-  1001301,
-];
+const DEFAULT_TARGET_FILE = path.resolve(
+  process.cwd(),
+  "scripts/phase2-targets-staging.json"
+);
 
 const REQUIRED_FIELDS = [
   "archiveWarId",
@@ -49,7 +43,12 @@ const IDENTITY_PROTECTED_FIELDS = [
 function parseArgs(argv) {
   const out = {
     file: null,
-    schemaFile: path.resolve(process.cwd(), "scripts/phase2-staged-correction.schema.json"),
+    schemaFile: path.resolve(
+      process.cwd(),
+      "scripts/phase2-staged-correction.schema.json"
+    ),
+    targetFile: null,
+    targetWarIds: null,
     help: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -61,6 +60,16 @@ function parseArgs(argv) {
     }
     if (token === "--schema-file") {
       out.schemaFile = path.resolve(process.cwd(), argv[i + 1] ?? "");
+      i += 1;
+      continue;
+    }
+    if (token === "--target-file") {
+      out.targetFile = argv[i + 1] ?? null;
+      i += 1;
+      continue;
+    }
+    if (token === "--target-war-ids") {
+      out.targetWarIds = argv[i + 1] ?? null;
       i += 1;
       continue;
     }
@@ -76,10 +85,15 @@ function parseArgs(argv) {
 function usage() {
   return [
     "Usage:",
-    "  node scripts/phase2-validate-staged-corrections.js --file <staged-corrections.json>",
+    "  node scripts/phase2-validate-staged-corrections.js --file <staged-corrections.json> [target options]",
     "",
-    "Optional:",
-    "  --schema-file <path>   Override schema path (default: scripts/phase2-staged-correction.schema.json)",
+    "Target options (choose one):",
+    "  --target-file <path>          JSON config with archive target IDs",
+    "  --target-war-ids <csv>        Inline CSV IDs, e.g. 1000026,1000027,...",
+    "",
+    "Defaults:",
+    `  --target-file ${DEFAULT_TARGET_FILE}`,
+    "  --schema-file scripts/phase2-staged-correction.schema.json",
   ].join("\n");
 }
 
@@ -87,11 +101,86 @@ function line() {
   console.log("=".repeat(96));
 }
 
-function loadJsonFile(filePath, label) {
+function loadJsonFile(filePath) {
   const fullPath = path.resolve(process.cwd(), filePath);
   const raw = fs.readFileSync(fullPath, "utf8");
   const parsed = JSON.parse(raw);
-  return { fullPath, parsed, raw };
+  return { fullPath, parsed };
+}
+
+function parseTargetWarIdsCsv(input) {
+  if (typeof input !== "string" || !input.trim()) {
+    throw new Error("--target-war-ids must be a non-empty CSV string.");
+  }
+  const tokens = input
+    .split(",")
+    .map((x) => x.trim())
+    .filter(Boolean);
+  if (tokens.length === 0) {
+    throw new Error("--target-war-ids did not contain any IDs.");
+  }
+  const ids = tokens.map((token) => Number.parseInt(token, 10));
+  if (ids.some((id) => !Number.isInteger(id) || id <= 0)) {
+    throw new Error(
+      `--target-war-ids contains invalid IDs: ${input}`
+    );
+  }
+  return ids;
+}
+
+function parseTargetWarIdsFromConfig(config, sourceLabel) {
+  if (!config || typeof config !== "object" || Array.isArray(config)) {
+    throw new Error(`Target config must be a JSON object: ${sourceLabel}`);
+  }
+  const idsRaw =
+    config.archiveWarIds ??
+    config.targetArchiveWarIds ??
+    config.targetWarIds;
+  if (!Array.isArray(idsRaw)) {
+    throw new Error(
+      `Target config must contain an array field: archiveWarIds (or targetArchiveWarIds/targetWarIds) in ${sourceLabel}`
+    );
+  }
+  const ids = idsRaw.map((v) => Number(v));
+  if (ids.some((id) => !Number.isInteger(id) || id <= 0)) {
+    throw new Error(`Target config has invalid archive IDs in ${sourceLabel}`);
+  }
+  return ids;
+}
+
+function buildTargetSpec(args) {
+  if (args.targetFile && args.targetWarIds) {
+    throw new Error("Provide only one of --target-file or --target-war-ids.");
+  }
+
+  let warIds;
+  let source;
+  if (args.targetWarIds) {
+    warIds = parseTargetWarIdsCsv(args.targetWarIds);
+    source = "cli:--target-war-ids";
+  } else {
+    const targetFilePath = args.targetFile
+      ? path.resolve(process.cwd(), args.targetFile)
+      : DEFAULT_TARGET_FILE;
+    const cfg = loadJsonFile(targetFilePath);
+    warIds = parseTargetWarIdsFromConfig(cfg.parsed, cfg.fullPath);
+    source = `file:${cfg.fullPath}`;
+  }
+
+  const seen = new Set();
+  const duplicates = [];
+  for (const id of warIds) {
+    if (seen.has(id)) duplicates.push(id);
+    seen.add(id);
+  }
+  if (duplicates.length > 0) {
+    throw new Error(`Duplicate target archiveWarId(s): ${[...new Set(duplicates)].join(", ")}`);
+  }
+  if (warIds.length === 0) {
+    throw new Error("Target archive war ID set cannot be empty.");
+  }
+
+  return { source, warIds, warIdSet: new Set(warIds) };
 }
 
 function isObject(value) {
@@ -113,7 +202,7 @@ function isIsoUtc(value) {
   return !Number.isNaN(d.getTime());
 }
 
-function validateRow(row, index) {
+function validateRow(row, index, targetSpec) {
   const errors = [];
   const warnings = [];
 
@@ -136,8 +225,8 @@ function validateRow(row, index) {
   const archiveWarId = row.archiveWarId;
   if (!Number.isInteger(archiveWarId)) {
     errors.push("archiveWarId must be an integer");
-  } else if (!EXPECTED_ARCHIVE_WAR_IDS.includes(archiveWarId)) {
-    errors.push(`archiveWarId ${archiveWarId} is not in approved set`);
+  } else if (!targetSpec.warIdSet.has(archiveWarId)) {
+    errors.push(`archiveWarId ${archiveWarId} is not in approved target set`);
   }
 
   if (!isUppercaseClanTag(row.clanTag)) {
@@ -189,7 +278,10 @@ function validateRow(row, index) {
   }
 
   if (!ACTUAL_OUTCOME_ENUM.has(row.actualOutcome)) {
-    if (typeof row.actualOutcome === "string" && ACTUAL_OUTCOME_ENUM.has(row.actualOutcome.toUpperCase())) {
+    if (
+      typeof row.actualOutcome === "string" &&
+      ACTUAL_OUTCOME_ENUM.has(row.actualOutcome.toUpperCase())
+    ) {
       errors.push(
         `actualOutcome has invalid casing: "${row.actualOutcome}" (must be uppercase WIN|LOSE|TIE|UNKNOWN)`
       );
@@ -233,12 +325,12 @@ function validateRow(row, index) {
   };
 }
 
-function buildMembershipChecks(rows) {
+function buildMembershipChecks(rows, targetSpec) {
   const errors = [];
   const diagnostics = {
     rowCount: rows.length,
-    expectedRowCount: EXPECTED_ARCHIVE_WAR_IDS.length,
-    rowCountOk: rows.length === EXPECTED_ARCHIVE_WAR_IDS.length,
+    expectedRowCount: targetSpec.warIds.length,
+    rowCountOk: rows.length === targetSpec.warIds.length,
     duplicates: [],
     missingWarIds: [],
     extraWarIds: [],
@@ -256,8 +348,8 @@ function buildMembershipChecks(rows) {
     .map(([archiveWarId, count]) => ({ archiveWarId, count }));
 
   const present = new Set([...counts.keys()]);
-  diagnostics.missingWarIds = EXPECTED_ARCHIVE_WAR_IDS.filter((id) => !present.has(id));
-  diagnostics.extraWarIds = [...present.values()].filter((id) => !EXPECTED_ARCHIVE_WAR_IDS.includes(id));
+  diagnostics.missingWarIds = targetSpec.warIds.filter((id) => !present.has(id));
+  diagnostics.extraWarIds = [...present.values()].filter((id) => !targetSpec.warIdSet.has(id));
   diagnostics.exactMembershipOk =
     diagnostics.rowCountOk &&
     diagnostics.duplicates.length === 0 &&
@@ -328,13 +420,16 @@ function main() {
     throw new Error(`Missing required --file argument.\n\n${usage()}`);
   }
 
-  const schema = loadJsonFile(args.schemaFile, "schema");
-  const staged = loadJsonFile(args.file, "staged correction file");
+  const targetSpec = buildTargetSpec(args);
+  const schema = loadJsonFile(args.schemaFile);
+  const staged = loadJsonFile(args.file);
 
   line();
   console.log("PHASE 2 STAGED CORRECTION VALIDATOR (DRY-RUN ONLY)");
   console.log(`schemaFile: ${schema.fullPath}`);
   console.log(`stagedFile: ${staged.fullPath}`);
+  console.log(`targetSource: ${targetSpec.source}`);
+  console.log(`targetWarIds: ${targetSpec.warIds.join(", ")}`);
   line();
 
   if (!Array.isArray(staged.parsed)) {
@@ -343,8 +438,10 @@ function main() {
     process.exit(2);
   }
 
-  const rowResults = staged.parsed.map((row, index) => validateRow(row, index));
-  const membership = buildMembershipChecks(staged.parsed);
+  const rowResults = staged.parsed.map((row, index) =>
+    validateRow(row, index, targetSpec)
+  );
+  const membership = buildMembershipChecks(staged.parsed, targetSpec);
 
   line();
   console.log("ROWCOUNT AND MEMBERSHIP CHECK");
@@ -358,7 +455,7 @@ function main() {
     {
       check: "exact_membership",
       pass: membership.diagnostics.exactMembershipOk,
-      expected: EXPECTED_ARCHIVE_WAR_IDS.join(", "),
+      expected: targetSpec.warIds.join(", "),
       actual: staged.parsed
         .map((row) => (Number.isInteger(row.archiveWarId) ? row.archiveWarId : "invalid"))
         .join(", "),
@@ -392,6 +489,7 @@ function main() {
   line();
   console.log("OVERALL SUMMARY");
   console.table([
+    { metric: "target_rows_expected", value: targetSpec.warIds.length },
     { metric: "rows_checked", value: rowResults.length },
     { metric: "row_errors", value: rowErrors },
     { metric: "row_warnings", value: rowWarnings },

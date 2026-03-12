@@ -4,8 +4,8 @@
  * Phase 2 archive/history correction apply script.
  *
  * Scope (and only scope):
- * - ClanWarHistory (8 target warIds)
- * - WarLookup (8 target warIds)
+ * - ClanWarHistory (target warIds)
+ * - WarLookup (target warIds)
  *
  * Defaults to dry-run. Writes require explicit --apply.
  */
@@ -17,18 +17,11 @@ require("dotenv").config();
 
 const prisma = new PrismaClient();
 
-const TARGET_WAR_IDS = [
-  1001293,
-  1001295,
-  1001296,
-  1001297,
-  1001298,
-  1001299,
-  1001300,
-  1001301,
-];
+const DEFAULT_TARGET_FILE = path.resolve(
+  process.cwd(),
+  "scripts/phase2-targets-staging.json"
+);
 
-const TARGET_WAR_ID_SET = new Set(TARGET_WAR_IDS);
 const REQUIRED_FIELDS = [
   "archiveWarId",
   "clanTag",
@@ -72,9 +65,84 @@ function readJson(filePath) {
   return { fullPath, parsed: JSON.parse(raw) };
 }
 
+function parseTargetWarIdsCsv(input) {
+  if (typeof input !== "string" || !input.trim()) {
+    throw new Error("--target-war-ids must be a non-empty CSV string.");
+  }
+  const tokens = input
+    .split(",")
+    .map((x) => x.trim())
+    .filter(Boolean);
+  if (tokens.length === 0) {
+    throw new Error("--target-war-ids did not contain any IDs.");
+  }
+  const ids = tokens.map((token) => Number.parseInt(token, 10));
+  if (ids.some((id) => !Number.isInteger(id) || id <= 0)) {
+    throw new Error(`--target-war-ids contains invalid IDs: ${input}`);
+  }
+  return ids;
+}
+
+function parseTargetWarIdsFromConfig(config, sourceLabel) {
+  if (!config || typeof config !== "object" || Array.isArray(config)) {
+    throw new Error(`Target config must be a JSON object: ${sourceLabel}`);
+  }
+  const idsRaw =
+    config.archiveWarIds ??
+    config.targetArchiveWarIds ??
+    config.targetWarIds;
+  if (!Array.isArray(idsRaw)) {
+    throw new Error(
+      `Target config must contain an array field: archiveWarIds (or targetArchiveWarIds/targetWarIds) in ${sourceLabel}`
+    );
+  }
+  const ids = idsRaw.map((v) => Number(v));
+  if (ids.some((id) => !Number.isInteger(id) || id <= 0)) {
+    throw new Error(`Target config has invalid archive IDs in ${sourceLabel}`);
+  }
+  return ids;
+}
+
+function buildTargetSpec(args) {
+  if (args.targetFile && args.targetWarIds) {
+    throw new Error("Provide only one of --target-file or --target-war-ids.");
+  }
+
+  let warIds;
+  let source;
+  if (args.targetWarIds) {
+    warIds = parseTargetWarIdsCsv(args.targetWarIds);
+    source = "cli:--target-war-ids";
+  } else {
+    const targetFilePath = args.targetFile
+      ? path.resolve(process.cwd(), args.targetFile)
+      : DEFAULT_TARGET_FILE;
+    const cfg = readJson(targetFilePath);
+    warIds = parseTargetWarIdsFromConfig(cfg.parsed, cfg.fullPath);
+    source = `file:${cfg.fullPath}`;
+  }
+
+  const seen = new Set();
+  const duplicates = [];
+  for (const id of warIds) {
+    if (seen.has(id)) duplicates.push(id);
+    seen.add(id);
+  }
+  if (duplicates.length > 0) {
+    throw new Error(`Duplicate target archiveWarId(s): ${[...new Set(duplicates)].join(", ")}`);
+  }
+  if (warIds.length === 0) {
+    throw new Error("Target archive war ID set cannot be empty.");
+  }
+
+  return { source, warIds, warIdSet: new Set(warIds) };
+}
+
 function parseArgs(argv) {
   const out = {
     stagedFile: null,
+    targetFile: null,
+    targetWarIds: null,
     apply: false,
     backupDir: "scripts/repair-backups",
     help: false,
@@ -84,6 +152,16 @@ function parseArgs(argv) {
     const token = argv[i];
     if (token === "--staged-file") {
       out.stagedFile = argv[i + 1] ?? null;
+      i += 1;
+      continue;
+    }
+    if (token === "--target-file") {
+      out.targetFile = argv[i + 1] ?? null;
+      i += 1;
+      continue;
+    }
+    if (token === "--target-war-ids") {
+      out.targetWarIds = argv[i + 1] ?? null;
       i += 1;
       continue;
     }
@@ -108,15 +186,22 @@ function parseArgs(argv) {
 function usage() {
   return [
     "Usage:",
-    "  node scripts/phase2-apply-archive-corrections.js --staged-file <path-to-staged-correction.json>",
+    "  node scripts/phase2-apply-archive-corrections.js --staged-file <path-to-staged-correction.json> [target options]",
+    "",
+    "Target options (choose one):",
+    "  --target-file <path>          JSON config with archive target IDs",
+    "  --target-war-ids <csv>        Inline CSV IDs, e.g. 1000026,1000027,...",
     "",
     "Options:",
     "  --apply                 Execute writes. Without this flag script is dry-run only.",
     "  --backup-dir <path>     Backup directory (default: scripts/repair-backups)",
+    "",
+    "Default target:",
+    `  --target-file ${DEFAULT_TARGET_FILE}`,
   ].join("\n");
 }
 
-function validateStagedRow(row, index) {
+function validateStagedRow(row, index, targetSpec) {
   const errors = [];
   if (!row || typeof row !== "object" || Array.isArray(row)) {
     return {
@@ -137,7 +222,7 @@ function validateStagedRow(row, index) {
 
   if (!Number.isInteger(row.archiveWarId)) {
     errors.push("archiveWarId must be an integer");
-  } else if (!TARGET_WAR_ID_SET.has(row.archiveWarId)) {
+  } else if (!targetSpec.warIdSet.has(row.archiveWarId)) {
     errors.push(`archiveWarId ${row.archiveWarId} is outside target set`);
   }
 
@@ -191,17 +276,21 @@ function validateStagedRow(row, index) {
   };
 }
 
-function validateStagedFile(stagedRows) {
+function validateStagedFile(stagedRows, targetSpec) {
   const errors = [];
   if (!Array.isArray(stagedRows)) {
     return { errors: ["staged file must be a JSON array"], rowResults: [], byWarId: new Map() };
   }
 
-  if (stagedRows.length !== TARGET_WAR_IDS.length) {
-    errors.push(`rowcount mismatch: expected ${TARGET_WAR_IDS.length}, got ${stagedRows.length}`);
+  if (stagedRows.length !== targetSpec.warIds.length) {
+    errors.push(
+      `rowcount mismatch: expected ${targetSpec.warIds.length}, got ${stagedRows.length}`
+    );
   }
 
-  const rowResults = stagedRows.map((row, index) => validateStagedRow(row, index));
+  const rowResults = stagedRows.map((row, index) =>
+    validateStagedRow(row, index, targetSpec)
+  );
   for (const result of rowResults) {
     for (const rowError of result.errors) {
       errors.push(`row[${result.index}] ${rowError}`);
@@ -225,8 +314,8 @@ function validateStagedFile(stagedRows) {
   }
 
   const present = new Set([...byWarId.keys()]);
-  const missing = TARGET_WAR_IDS.filter((warId) => !present.has(warId));
-  const extras = [...present].filter((warId) => !TARGET_WAR_ID_SET.has(warId));
+  const missing = targetSpec.warIds.filter((warId) => !present.has(warId));
+  const extras = [...present].filter((warId) => !targetSpec.warIdSet.has(warId));
   if (missing.length > 0) errors.push(`missing archiveWarId values: ${missing.join(", ")}`);
   if (extras.length > 0) errors.push(`unexpected archiveWarId values: ${extras.join(", ")}`);
 
@@ -309,31 +398,35 @@ function mapResultToOutcome(result) {
   return null;
 }
 
-async function fetchTargetRows() {
+async function fetchTargetRows(targetSpec) {
   const cwhRows = await prisma.clanWarHistory.findMany({
-    where: { warId: { in: TARGET_WAR_IDS } },
+    where: { warId: { in: targetSpec.warIds } },
     orderBy: { warId: "asc" },
   });
   const wlRows = await prisma.warLookup.findMany({
-    where: { warId: { in: TARGET_WAR_IDS.map(String) } },
+    where: { warId: { in: targetSpec.warIds.map(String) } },
     orderBy: { warId: "asc" },
   });
   return { cwhRows, wlRows };
 }
 
-function validateDbRows(cwhRows, wlRows, stagedByWarId) {
+function validateDbRows(cwhRows, wlRows, stagedByWarId, targetSpec) {
   const errors = [];
-  if (cwhRows.length !== TARGET_WAR_IDS.length) {
-    errors.push(`ClanWarHistory rowcount mismatch: expected 8, got ${cwhRows.length}`);
+  if (cwhRows.length !== targetSpec.warIds.length) {
+    errors.push(
+      `ClanWarHistory rowcount mismatch: expected ${targetSpec.warIds.length}, got ${cwhRows.length}`
+    );
   }
-  if (wlRows.length !== TARGET_WAR_IDS.length) {
-    errors.push(`WarLookup rowcount mismatch: expected 8, got ${wlRows.length}`);
+  if (wlRows.length !== targetSpec.warIds.length) {
+    errors.push(
+      `WarLookup rowcount mismatch: expected ${targetSpec.warIds.length}, got ${wlRows.length}`
+    );
   }
 
   const cwhByWarId = new Map(cwhRows.map((row) => [row.warId, row]));
   const wlByWarId = new Map(wlRows.map((row) => [Number(row.warId), row]));
 
-  for (const warId of TARGET_WAR_IDS) {
+  for (const warId of targetSpec.warIds) {
     const staged = stagedByWarId.get(warId);
     const cwh = cwhByWarId.get(warId);
     const wl = wlByWarId.get(warId);
@@ -384,15 +477,19 @@ function validateDbRows(cwhRows, wlRows, stagedByWarId) {
   return { errors, cwhByWarId, wlByWarId };
 }
 
-async function runPostApplyVerification(beforeSnapshot) {
-  const { cwhRows, wlRows } = await fetchTargetRows();
+async function runPostApplyVerification(beforeSnapshot, targetSpec) {
+  const { cwhRows, wlRows } = await fetchTargetRows(targetSpec);
   const errors = [];
 
-  if (cwhRows.length !== TARGET_WAR_IDS.length) {
-    errors.push(`post-apply ClanWarHistory rowcount mismatch: expected 8, got ${cwhRows.length}`);
+  if (cwhRows.length !== targetSpec.warIds.length) {
+    errors.push(
+      `post-apply ClanWarHistory rowcount mismatch: expected ${targetSpec.warIds.length}, got ${cwhRows.length}`
+    );
   }
-  if (wlRows.length !== TARGET_WAR_IDS.length) {
-    errors.push(`post-apply WarLookup rowcount mismatch: expected 8, got ${wlRows.length}`);
+  if (wlRows.length !== targetSpec.warIds.length) {
+    errors.push(
+      `post-apply WarLookup rowcount mismatch: expected ${targetSpec.warIds.length}, got ${wlRows.length}`
+    );
   }
 
   const cwhByWarId = new Map(cwhRows.map((row) => [row.warId, row]));
@@ -407,7 +504,7 @@ async function runPostApplyVerification(beforeSnapshot) {
     cwhIdentityKeys.add(key);
   }
 
-  for (const warId of TARGET_WAR_IDS) {
+  for (const warId of targetSpec.warIds) {
     const cwh = cwhByWarId.get(warId);
     const wl = wlByWarId.get(warId);
     if (!cwh || !wl) continue;
@@ -476,14 +573,16 @@ async function main() {
     throw new Error(`Missing --staged-file.\n\n${usage()}`);
   }
 
+  const targetSpec = buildTargetSpec(args);
   const stagedInput = readJson(args.stagedFile);
-  const stagedValidation = validateStagedFile(stagedInput.parsed);
+  const stagedValidation = validateStagedFile(stagedInput.parsed, targetSpec);
 
   line();
   console.log("PHASE 2 APPLY SCRIPT (ARCHIVE/HISTORY)");
   console.log(`mode: ${args.apply ? "APPLY" : "DRY_RUN"}`);
   console.log(`stagedFile: ${stagedInput.fullPath}`);
-  console.log(`targetWarIds: ${TARGET_WAR_IDS.join(", ")}`);
+  console.log(`targetSource: ${targetSpec.source}`);
+  console.log(`targetWarIds: ${targetSpec.warIds.join(", ")}`);
   line();
 
   if (stagedValidation.rowResults.length > 0) {
@@ -513,8 +612,8 @@ async function main() {
     stagedByWarId.set(row.archiveWarId, row);
   }
 
-  const { cwhRows, wlRows } = await fetchTargetRows();
-  const dbValidation = validateDbRows(cwhRows, wlRows, stagedByWarId);
+  const { cwhRows, wlRows } = await fetchTargetRows(targetSpec);
+  const dbValidation = validateDbRows(cwhRows, wlRows, stagedByWarId, targetSpec);
   if (dbValidation.errors.length > 0) {
     line();
     console.log(`FAIL_CLOSED: DB invariant checks failed (${dbValidation.errors.length})`);
@@ -545,9 +644,10 @@ async function main() {
   for (const cwh of cwhRows) {
     const wl = wlRows.find((row) => Number(row.warId) === cwh.warId);
     const wlPayload = wl?.payload;
-    const warMeta = wlPayload && typeof wlPayload === "object" && !Array.isArray(wlPayload)
-      ? wlPayload.warMeta
-      : null;
+    const warMeta =
+      wlPayload && typeof wlPayload === "object" && !Array.isArray(wlPayload)
+        ? wlPayload.warMeta
+        : null;
     beforeSnapshotByWar.set(cwh.warId, {
       clanTag: normalizeTag(cwh.clanTag),
       opponentTag: normalizeTag(cwh.opponentTag ?? ""),
@@ -568,7 +668,8 @@ async function main() {
   const backupPayload = {
     generatedAt: new Date().toISOString(),
     mode: args.apply ? "apply" : "dry_run",
-    targetWarIds: TARGET_WAR_IDS,
+    targetSource: targetSpec.source,
+    targetWarIds: targetSpec.warIds,
     stagedFile: stagedInput.fullPath,
     stagedRows: stagedInput.parsed,
     before: {
@@ -617,7 +718,7 @@ async function main() {
   };
 
   await prisma.$transaction(async (tx) => {
-    for (const warId of TARGET_WAR_IDS) {
+    for (const warId of targetSpec.warIds) {
       const staged = stagedByWarId.get(warId);
       if (!staged) {
         throw new Error(`staged row missing inside apply transaction for warId=${warId}`);
@@ -691,7 +792,10 @@ async function main() {
   console.log(`WarLookup rows updated: ${applyResult.wlUpdated.length}`);
   console.table(applyResult.wlUpdated);
 
-  const postVerify = await runPostApplyVerification({ byWarId: beforeSnapshotByWar });
+  const postVerify = await runPostApplyVerification(
+    { byWarId: beforeSnapshotByWar },
+    targetSpec
+  );
   line();
   console.log("POST-APPLY VERIFICATION");
   console.table([
