@@ -22,11 +22,15 @@ function formatNotFollowingLabel(issue: WarComplianceIssue): string {
 function formatIssueLines(issues: WarComplianceIssue[], limit = 12): string[] {
   const visible = issues.slice(0, limit);
   const lines = visible.map((issue) => {
-    const actual = String(issue.actualBehavior ?? "").trim() || "No details available.";
     if (issue.ruleType === "not_following_plan") {
+      const actual = String(issue.actualBehavior ?? "").trim() || "No details available.";
       return `- ${formatNotFollowingLabel(issue)} --> ${actual}`;
     }
-    return `- ${formatMemberLabel(issue)}: ${actual}`;
+    const actual = String(issue.actualBehavior ?? "").trim();
+    if (actual) {
+      return `- ${formatMemberLabel(issue)}: ${actual}`;
+    }
+    return `- ${formatMemberLabel(issue)}`;
   });
   const hidden = issues.length - visible.length;
   if (hidden > 0) {

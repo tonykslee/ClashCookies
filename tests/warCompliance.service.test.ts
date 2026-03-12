@@ -73,7 +73,7 @@ describe("WarComplianceService", () => {
     expect(snapshot).toEqual(expected);
   });
 
-  it("formats not-following-plan behavior with stars, reason, and strict-window context", async () => {
+  it("uses the first offending attack context for strict-window non-mirror triples", async () => {
     const warStartTime = new Date("2026-02-01T00:00:00.000Z");
     const warEndTime = new Date("2026-02-02T00:00:00.000Z");
     const participants = [
@@ -101,18 +101,18 @@ describe("WarComplianceService", () => {
         trueStars: 3,
         attackSeenAt: new Date("2026-02-01T02:00:00.000Z"),
         warEndTime,
-        attackOrder: 2,
+        attackOrder: 99,
       },
       {
         playerTag: "#P2",
         playerName: "lotus",
         playerPosition: 5,
-        defenderPosition: 5,
+        defenderPosition: 8,
         stars: 3,
         trueStars: 3,
         attackSeenAt: new Date("2026-02-01T03:00:00.000Z"),
         warEndTime,
-        attackOrder: 3,
+        attackOrder: 1,
       },
     ];
 
@@ -140,11 +140,81 @@ describe("WarComplianceService", () => {
     const lotus = report?.notFollowingPlan.find((row) => row.playerName === "lotus");
     expect(lotus).toBeTruthy();
     expect(lotus?.playerPosition).toBe(5);
-    expect(lotus?.actualBehavior).toContain("#14 (★ ★ ★)");
-    expect(lotus?.actualBehavior).toContain("#5 (★ ★ ★)");
+    expect(lotus?.actualBehavior).toContain("#14");
+    expect(lotus?.actualBehavior).toContain("#8");
     expect(lotus?.actualBehavior).toContain("tripled non-mirror in strict window");
-    expect(lotus?.actualBehavior).toContain("★ |");
+    expect(lotus?.actualBehavior).toContain("| 3★ | 22h 0m left");
     expect(lotus?.actualBehavior).not.toContain("Attacks used:");
+  });
+
+  it("uses explicit first strict-window context for didn't-triple-mirror reason", async () => {
+    const warStartTime = new Date("2026-02-01T00:00:00.000Z");
+    const warEndTime = new Date("2026-02-02T00:00:00.000Z");
+    const participants = [
+      { playerName: "mirror", playerTag: "#P1", attacksUsed: 1, playerPosition: 1 },
+      { playerName: "Baby PK", playerTag: "#P3", attacksUsed: 2, playerPosition: 8 },
+    ];
+    const attacks = [
+      {
+        playerTag: "#P1",
+        playerName: "mirror",
+        playerPosition: 1,
+        defenderPosition: 1,
+        stars: 3,
+        trueStars: 3,
+        attackSeenAt: new Date("2026-02-01T01:00:00.000Z"),
+        warEndTime,
+        attackOrder: 1,
+      },
+      {
+        playerTag: "#P3",
+        playerName: "Baby PK",
+        playerPosition: 8,
+        defenderPosition: 8,
+        stars: 2,
+        trueStars: 2,
+        attackSeenAt: new Date("2026-02-01T02:00:00.000Z"),
+        warEndTime,
+        attackOrder: 50,
+      },
+      {
+        playerTag: "#P3",
+        playerName: "Baby PK",
+        playerPosition: 8,
+        defenderPosition: 9,
+        stars: 2,
+        trueStars: 2,
+        attackSeenAt: new Date("2026-02-01T03:00:00.000Z"),
+        warEndTime,
+        attackOrder: 2,
+      },
+    ];
+
+    vi.spyOn(prisma.warAttacks, "findFirst").mockResolvedValue({
+      warStartTime,
+      warEndTime,
+      warId: 888,
+    } as any);
+    vi.spyOn(prisma.warAttacks, "findMany")
+      .mockResolvedValueOnce(participants as any)
+      .mockResolvedValueOnce(attacks as any);
+    vi.spyOn(prisma.trackedClan, "findFirst").mockResolvedValue({
+      loseStyle: "TRADITIONAL",
+    } as any);
+
+    const service = new WarComplianceService();
+    const report = await service.getComplianceReport({
+      clanTag: "#TEST",
+      preferredWarStartTime: warStartTime,
+      matchType: "FWA",
+      expectedOutcome: "WIN",
+    });
+
+    expect(report).not.toBeNull();
+    const babyPk = report?.notFollowingPlan.find((row) => row.playerName === "Baby PK");
+    expect(babyPk).toBeTruthy();
+    expect(babyPk?.actualBehavior).toContain("didn't triple mirror");
+    expect(babyPk?.actualBehavior).toContain("| 3★ | 22h 0m left");
   });
 
   it("returns null report for BL/MM checks without hitting DB", async () => {

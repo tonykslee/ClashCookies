@@ -43,7 +43,7 @@ describe("buildWarComplianceReportLines", () => {
           playerPosition: 1,
           ruleType: "missed_both",
           expectedBehavior: "Use both attacks for the war.",
-          actualBehavior: "Attacks used: 0.",
+          actualBehavior: "",
         },
       ],
       notFollowingPlan: [
@@ -66,7 +66,8 @@ describe("buildWarComplianceReportLines", () => {
     }).join("\n");
 
     expect(text).toContain("Missed both attacks:");
-    expect(text).toContain("Player One (#P1): Attacks used: 0.");
+    expect(text).toContain("- Player One (#P1)");
+    expect(text).not.toContain("Attacks used: 0.");
     expect(text).toContain("Didn't follow war plan:");
     expect(text).toContain("Expected: Mirror triple in strict window; avoid off-mirror triples/zeros.");
     expect(text).toContain(
