@@ -145,23 +145,22 @@ async function getDefaultPlanText(
   outcome: PlanOutcome,
   loseStyle: PlanLoseStyle
 ): Promise<string> {
-  const clanTagHint =
-    matchType === "FWA" && outcome === "LOSE"
-      ? loseStyle === "TRADITIONAL"
-        ? "#LOSETRADITIONAL"
-        : "#LOSETRIPLETOP30"
-      : "#DEFAULT";
   const expectedOutcome =
     matchType === "FWA" && (outcome === "WIN" || outcome === "LOSE") ? outcome : null;
+  const forcedLoseStyle =
+    matchType === "FWA" && outcome === "LOSE" && (loseStyle === "TRADITIONAL" || loseStyle === "TRIPLE_TOP_30")
+      ? loseStyle
+      : null;
   return (
     (await history.buildWarPlanText(
       guildId,
       matchType,
       expectedOutcome,
-      clanTagHint,
+      "",
       "{opponent}",
       "battle",
-      "{clan}"
+      "{clan}",
+      { forcedLoseStyle }
     )) ?? `${matchType} plan unavailable.`
   );
 }
