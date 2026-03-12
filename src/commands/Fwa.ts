@@ -3997,13 +3997,22 @@ async function showWarMailPreview(
   const previewSummary = enabled
     ? "Review mail preview and confirm send."
     : ["Cannot send yet.", ...warnings].join("\n");
+  const previewMentionRoleId = normalizeDiscordRoleId(rendered.clanRoleId);
+  const previewMailText = buildWarMailPostedContent(previewMentionRoleId, undefined, {
+    pingRole: true,
+    planText: rendered.planText,
+    includeNextRefresh: !rendered.freezeRefresh,
+  });
   const content = limitDiscordContent(
-    [previewSummary, "", "**Mail Text Preview**", rendered.planText].filter((part) => part.trim().length > 0).join("\n")
+    [previewSummary, "", "**Mail Text Preview**", previewMailText]
+      .filter((part) => part.trim().length > 0)
+      .join("\n")
   );
 
   if (interaction.isButton()) {
     await interaction.update({
       content,
+      allowedMentions: { parse: [] },
       embeds: [rendered.embed],
       components: buildWarMailPreviewComponents({
         userId,
@@ -4017,6 +4026,7 @@ async function showWarMailPreview(
 
   await interaction.editReply({
     content,
+    allowedMentions: { parse: [] },
     embeds: [rendered.embed],
     components: buildWarMailPreviewComponents({
       userId,
