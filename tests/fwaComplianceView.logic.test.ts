@@ -40,6 +40,7 @@ describe("buildWarComplianceReportLines", () => {
         {
           playerTag: "#P1",
           playerName: "Player One",
+          playerPosition: 1,
           ruleType: "missed_both",
           expectedBehavior: "Use both attacks for the war.",
           actualBehavior: "Attacks used: 0.",
@@ -49,9 +50,11 @@ describe("buildWarComplianceReportLines", () => {
         {
           playerTag: "#P2",
           playerName: "Player Two",
+          playerPosition: 2,
           ruleType: "not_following_plan",
           expectedBehavior: "Mirror triple in strict window; avoid off-mirror triples/zeros.",
-          actualBehavior: "Attacks used: 2. Targets: #1 (2*), #4 (3*).",
+          actualBehavior:
+            "#1 (★ ★ ☆), #4 (★ ★ ★) : tripled non-mirror in strict window | 56★ | 22h 1m left",
         },
       ],
     };
@@ -66,7 +69,10 @@ describe("buildWarComplianceReportLines", () => {
     expect(text).toContain("Player One (#P1): Attacks used: 0.");
     expect(text).toContain("Didn't follow war plan:");
     expect(text).toContain("Expected: Mirror triple in strict window; avoid off-mirror triples/zeros.");
-    expect(text).toContain("Player Two (#P2): Attacks used: 2.");
+    expect(text).toContain(
+      "#2. Player Two --> #1 (★ ★ ☆), #4 (★ ★ ★) : tripled non-mirror in strict window"
+    );
+    expect(text).not.toContain("Attacks used: 2.");
   });
 });
 

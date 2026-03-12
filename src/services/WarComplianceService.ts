@@ -14,6 +14,7 @@ import {
 export type WarComplianceIssue = {
   playerTag: string;
   playerName: string;
+  playerPosition?: number | null;
   ruleType: "missed_both" | "not_following_plan";
   expectedBehavior: string;
   actualBehavior: string;
@@ -127,6 +128,138 @@ function getParticipantLabel(input: { playerName: string | null; playerTag: stri
   return name || input.playerTag;
 }
 
+type AttackContext = {
+  starsBeforeAttack: number;
+  hoursRemaining: number | null;
+  isStrictWindow: boolean;
+  isMirror: boolean;
+};
+
+/** Purpose: format numeric stars as the visual triplet required by compliance output. */
+function formatStarTriplet(stars: number | null | undefined): string {
+  const normalized = Math.max(0, Math.min(3, Number(stars ?? 0)));
+  if (normalized >= 3) return "★ ★ ★";
+  if (normalized >= 2) return "★ ★ ☆";
+  if (normalized >= 1) return "★ ☆ ☆";
+  return "☆ ☆ ☆";
+}
+
+/** Purpose: format strict-window timing as `Xh Ym left` for deterministic output. */
+function formatTimeRemaining(hoursRemaining: number | null): string {
+  if (hoursRemaining === null || !Number.isFinite(hoursRemaining)) return "unknown left";
+  const totalMinutes = Math.max(0, Math.floor(hoursRemaining * 60));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${hours}h ${minutes}m left`;
+}
+
+/** Purpose: compute strict-window metadata once using the same ordering/rules as compliance checks. */
+function buildAttackContextByAttack(attacks: WarComplianceAttack[]): Map<WarComplianceAttack, AttackContext> {
+  const ordered = [...attacks].sort((a, b) => {
+    const t = a.attackSeenAt.getTime() - b.attackSeenAt.getTime();
+    if (t !== 0) return t;
+    const o = Number(a.attackOrder ?? 0) - Number(b.attackOrder ?? 0);
+    if (o !== 0) return o;
+    return normalizeTag(a.playerTag).localeCompare(normalizeTag(b.playerTag));
+  });
+
+  const result = new Map<WarComplianceAttack, AttackContext>();
+  let cumulativeClanStars = 0;
+  for (const attack of ordered) {
+    const starsBeforeAttack = cumulativeClanStars;
+    const gain = Math.max(0, Number(attack.trueStars ?? 0));
+    cumulativeClanStars += gain;
+
+    const hoursRemaining =
+      attack.warEndTime instanceof Date
+        ? (attack.warEndTime.getTime() - attack.attackSeenAt.getTime()) / (60 * 60 * 1000)
+        : null;
+    const isStrictWindow =
+      hoursRemaining !== null &&
+      Number.isFinite(hoursRemaining) &&
+      hoursRemaining > 12 &&
+      starsBeforeAttack < 100;
+    const playerPos = attack.playerPosition ?? null;
+    const defenderPos = attack.defenderPosition ?? null;
+    const isMirror = playerPos !== null && defenderPos !== null && playerPos === defenderPos;
+
+    result.set(attack, {
+      starsBeforeAttack,
+      hoursRemaining,
+      isStrictWindow,
+      isMirror,
+    });
+  }
+  return result;
+}
+
+type NotFollowingReason = {
+  label: string;
+  strictWindowContext: {
+    starsBeforeAttack: number;
+    timeRemaining: string;
+  } | null;
+};
+
+/** Purpose: compute a user-facing violation reason without changing compliance policy decisions. */
+function describeNotFollowingReason(input: {
+  playerAttacks: WarComplianceAttack[];
+  attackContextByAttack: Map<WarComplianceAttack, AttackContext>;
+  matchType: MatchType;
+  expectedOutcome: "WIN" | "LOSE" | null;
+  loseStyle: FwaLoseStyle;
+}): NotFollowingReason {
+  if (input.matchType === "FWA" && input.expectedOutcome === "WIN") {
+    let strictWindowSeen = false;
+    let mirrorTripleSeen = false;
+    let fallbackStrictContext: NotFollowingReason["strictWindowContext"] = null;
+
+    for (const attack of input.playerAttacks) {
+      const ctx = input.attackContextByAttack.get(attack);
+      if (!ctx?.isStrictWindow) continue;
+      strictWindowSeen = true;
+      const strictContext = {
+        starsBeforeAttack: ctx.starsBeforeAttack,
+        timeRemaining: formatTimeRemaining(ctx.hoursRemaining),
+      };
+      fallbackStrictContext = fallbackStrictContext ?? strictContext;
+
+      const stars = Number(attack.stars ?? 0);
+      const trueStars = Number(attack.trueStars ?? 0);
+      if (ctx.isMirror && stars >= 3) {
+        mirrorTripleSeen = true;
+      }
+      if (!ctx.isMirror && stars === 3 && trueStars > 0) {
+        return {
+          label: "tripled non-mirror in strict window",
+          strictWindowContext: strictContext,
+        };
+      }
+    }
+
+    if (strictWindowSeen && !mirrorTripleSeen) {
+      return {
+        label: "didn't triple mirror",
+        strictWindowContext: fallbackStrictContext,
+      };
+    }
+
+    return {
+      label: "didn't follow win plan",
+      strictWindowContext: fallbackStrictContext,
+    };
+  }
+
+  if (input.matchType === "FWA" && input.expectedOutcome === "LOSE") {
+    if (input.loseStyle === "TRIPLE_TOP_30") {
+      return { label: "attacked outside top-30", strictWindowContext: null };
+    }
+    return { label: "didn't follow lose-style rules", strictWindowContext: null };
+  }
+
+  return { label: "hit non-mirror target", strictWindowContext: null };
+}
+
 /** Purpose: describe expected plan behavior for actionable compliance output lines. */
 function describeExpectedPlanBehavior(input: {
   matchType: MatchType;
@@ -149,25 +282,41 @@ function describeExpectedPlanBehavior(input: {
 
 /** Purpose: summarize observed attack behavior for one player in command output. */
 function describeActualBehaviorForPlayer(
-  playerTag: string,
-  attacksByPlayerTag: Map<string, WarComplianceAttack[]>,
-  attacksUsedByPlayerTag: Map<string, number>
-): string {
-  const normalizedTag = normalizeTag(playerTag);
-  const attacksUsed = attacksUsedByPlayerTag.get(normalizedTag) ?? 0;
-  const playerAttacks = attacksByPlayerTag.get(normalizedTag) ?? [];
-  if (playerAttacks.length === 0) {
-    return `Attacks used: ${attacksUsed}. No attack rows recorded.`;
+  input: {
+    playerTag: string;
+    attacksByPlayerTag: Map<string, WarComplianceAttack[]>;
+    attackContextByAttack: Map<WarComplianceAttack, AttackContext>;
+    matchType: MatchType;
+    expectedOutcome: "WIN" | "LOSE" | null;
+    loseStyle: FwaLoseStyle;
   }
-  const attackSummaries = playerAttacks
+): string {
+  const normalizedTag = normalizeTag(input.playerTag);
+  const playerAttacks = input.attacksByPlayerTag.get(normalizedTag) ?? [];
+  if (playerAttacks.length === 0) {
+    return "No attack rows recorded.";
+  }
+  const orderedAttacks = playerAttacks
     .slice()
     .sort((a, b) => {
       const orderDelta = Number(a.attackOrder ?? 0) - Number(b.attackOrder ?? 0);
       if (orderDelta !== 0) return orderDelta;
       return a.attackSeenAt.getTime() - b.attackSeenAt.getTime();
-    })
-    .map((row) => `#${row.defenderPosition ?? "?"} (${row.stars ?? 0}*)`);
-  return `Attacks used: ${attacksUsed}. Targets: ${attackSummaries.join(", ")}.`;
+    });
+  const attackSummaries = orderedAttacks.map(
+    (row) => `#${row.defenderPosition ?? "?"} (${formatStarTriplet(row.stars)})`
+  );
+  const reason = describeNotFollowingReason({
+    playerAttacks: orderedAttacks,
+    attackContextByAttack: input.attackContextByAttack,
+    matchType: input.matchType,
+    expectedOutcome: input.expectedOutcome,
+    loseStyle: input.loseStyle,
+  });
+  const strictSuffix = reason.strictWindowContext
+    ? ` | ${reason.strictWindowContext.starsBeforeAttack}★ | ${reason.strictWindowContext.timeRemaining}`
+    : "";
+  return `${attackSummaries.join(", ")} : ${reason.label}${strictSuffix}`;
 }
 
 /** Purpose: map rule-engine name output into detailed issues for user-facing command output. */
@@ -177,7 +326,10 @@ function mapNamesToIssues(input: {
   expectedBehavior: string;
   participantByLabel: Map<string, WarComplianceParticipant>;
   attacksByPlayerTag: Map<string, WarComplianceAttack[]>;
-  attacksUsedByPlayerTag: Map<string, number>;
+  attackContextByAttack: Map<WarComplianceAttack, AttackContext>;
+  matchType: MatchType;
+  expectedOutcome: "WIN" | "LOSE" | null;
+  loseStyle: FwaLoseStyle;
 }): WarComplianceIssue[] {
   return input.names.map((name) => {
     const participant = input.participantByLabel.get(name) ?? null;
@@ -185,14 +337,18 @@ function mapNamesToIssues(input: {
     const actualBehavior =
       input.ruleType === "missed_both"
         ? `Attacks used: ${participant?.attacksUsed ?? 0}.`
-        : describeActualBehaviorForPlayer(
+        : describeActualBehaviorForPlayer({
             playerTag,
-            input.attacksByPlayerTag,
-            input.attacksUsedByPlayerTag
-          );
+            attacksByPlayerTag: input.attacksByPlayerTag,
+            attackContextByAttack: input.attackContextByAttack,
+            matchType: input.matchType,
+            expectedOutcome: input.expectedOutcome,
+            loseStyle: input.loseStyle,
+          });
     return {
       playerTag,
       playerName: name,
+      playerPosition: participant?.playerPosition ?? null,
       ruleType: input.ruleType,
       expectedBehavior: input.expectedBehavior,
       actualBehavior,
@@ -1005,7 +1161,7 @@ export class WarComplianceService {
 
     const participantByLabel = new Map<string, WarComplianceParticipant>();
     const attacksByPlayerTag = new Map<string, WarComplianceAttack[]>();
-    const attacksUsedByPlayerTag = new Map<string, number>();
+    const attackContextByAttack = buildAttackContextByAttack(context.attacks);
 
     for (const participant of context.participants) {
       const label = getParticipantLabel({
@@ -1013,10 +1169,6 @@ export class WarComplianceService {
         playerTag: participant.playerTag,
       });
       participantByLabel.set(label, participant);
-      attacksUsedByPlayerTag.set(
-        normalizeTag(participant.playerTag),
-        Number(participant.attacksUsed ?? 0)
-      );
     }
     for (const attack of context.attacks) {
       const tag = normalizeTag(attack.playerTag);
@@ -1045,7 +1197,10 @@ export class WarComplianceService {
         expectedBehavior: "Use both attacks for the war.",
         participantByLabel,
         attacksByPlayerTag,
-        attacksUsedByPlayerTag,
+        attackContextByAttack,
+        matchType: context.matchType,
+        expectedOutcome: context.expectedOutcome,
+        loseStyle,
       }),
       notFollowingPlan: mapNamesToIssues({
         names: snapshot.notFollowingPlan,
@@ -1053,7 +1208,10 @@ export class WarComplianceService {
         expectedBehavior: expectedPlanBehavior,
         participantByLabel,
         attacksByPlayerTag,
-        attacksUsedByPlayerTag,
+        attackContextByAttack,
+        matchType: context.matchType,
+        expectedOutcome: context.expectedOutcome,
+        loseStyle,
       }),
       participantsCount: context.participants.length,
       attacksCount: context.attacks.length,
