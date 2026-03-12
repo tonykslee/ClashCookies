@@ -135,6 +135,20 @@ type AttackContext = {
   isMirror: boolean;
 };
 
+/** Purpose: ensure all compliance-side attack iteration uses the same deterministic chronology. */
+function compareAttacksForComplianceOrder(a: WarComplianceAttack, b: WarComplianceAttack): number {
+  const timeDelta = a.attackSeenAt.getTime() - b.attackSeenAt.getTime();
+  if (timeDelta !== 0) return timeDelta;
+  const orderDelta = Number(a.attackOrder ?? 0) - Number(b.attackOrder ?? 0);
+  if (orderDelta !== 0) return orderDelta;
+  return normalizeTag(a.playerTag).localeCompare(normalizeTag(b.playerTag));
+}
+
+/** Purpose: sort attacks in the same chronology used by the shared compliance rule engine. */
+function sortAttacksForComplianceOrder(attacks: WarComplianceAttack[]): WarComplianceAttack[] {
+  return [...attacks].sort(compareAttacksForComplianceOrder);
+}
+
 /** Purpose: format numeric stars as the visual triplet required by compliance output. */
 function formatStarTriplet(stars: number | null | undefined): string {
   const normalized = Math.max(0, Math.min(3, Number(stars ?? 0)));
@@ -155,13 +169,7 @@ function formatTimeRemaining(hoursRemaining: number | null): string {
 
 /** Purpose: compute strict-window metadata once using the same ordering/rules as compliance checks. */
 function buildAttackContextByAttack(attacks: WarComplianceAttack[]): Map<WarComplianceAttack, AttackContext> {
-  const ordered = [...attacks].sort((a, b) => {
-    const t = a.attackSeenAt.getTime() - b.attackSeenAt.getTime();
-    if (t !== 0) return t;
-    const o = Number(a.attackOrder ?? 0) - Number(b.attackOrder ?? 0);
-    if (o !== 0) return o;
-    return normalizeTag(a.playerTag).localeCompare(normalizeTag(b.playerTag));
-  });
+  const ordered = sortAttacksForComplianceOrder(attacks);
 
   const result = new Map<WarComplianceAttack, AttackContext>();
   let cumulativeClanStars = 0;
@@ -210,24 +218,23 @@ function describeNotFollowingReason(input: {
   loseStyle: FwaLoseStyle;
 }): NotFollowingReason {
   if (input.matchType === "FWA" && input.expectedOutcome === "WIN") {
-    let strictWindowSeen = false;
-    let mirrorTripleSeen = false;
-    let fallbackStrictContext: NotFollowingReason["strictWindowContext"] = null;
+    const orderedPlayerAttacks = sortAttacksForComplianceOrder(input.playerAttacks);
+    let firstStrictContext: NotFollowingReason["strictWindowContext"] = null;
+    let hasMirrorTripleInStrictWindow = false;
 
-    for (const attack of input.playerAttacks) {
+    for (const attack of orderedPlayerAttacks) {
       const ctx = input.attackContextByAttack.get(attack);
       if (!ctx?.isStrictWindow) continue;
-      strictWindowSeen = true;
       const strictContext = {
         starsBeforeAttack: ctx.starsBeforeAttack,
         timeRemaining: formatTimeRemaining(ctx.hoursRemaining),
       };
-      fallbackStrictContext = fallbackStrictContext ?? strictContext;
+      firstStrictContext = firstStrictContext ?? strictContext;
 
       const stars = Number(attack.stars ?? 0);
       const trueStars = Number(attack.trueStars ?? 0);
       if (ctx.isMirror && stars >= 3) {
-        mirrorTripleSeen = true;
+        hasMirrorTripleInStrictWindow = true;
       }
       if (!ctx.isMirror && stars === 3 && trueStars > 0) {
         return {
@@ -237,16 +244,16 @@ function describeNotFollowingReason(input: {
       }
     }
 
-    if (strictWindowSeen && !mirrorTripleSeen) {
+    if (firstStrictContext && !hasMirrorTripleInStrictWindow) {
       return {
         label: "didn't triple mirror",
-        strictWindowContext: fallbackStrictContext,
+        strictWindowContext: firstStrictContext,
       };
     }
 
     return {
       label: "didn't follow win plan",
-      strictWindowContext: fallbackStrictContext,
+      strictWindowContext: firstStrictContext,
     };
   }
 
@@ -296,13 +303,7 @@ function describeActualBehaviorForPlayer(
   if (playerAttacks.length === 0) {
     return "No attack rows recorded.";
   }
-  const orderedAttacks = playerAttacks
-    .slice()
-    .sort((a, b) => {
-      const orderDelta = Number(a.attackOrder ?? 0) - Number(b.attackOrder ?? 0);
-      if (orderDelta !== 0) return orderDelta;
-      return a.attackSeenAt.getTime() - b.attackSeenAt.getTime();
-    });
+  const orderedAttacks = sortAttacksForComplianceOrder(playerAttacks);
   const attackSummaries = orderedAttacks.map(
     (row) => `#${row.defenderPosition ?? "?"} (${formatStarTriplet(row.stars)})`
   );
@@ -336,7 +337,7 @@ function mapNamesToIssues(input: {
     const playerTag = normalizeTag(participant?.playerTag ?? "") || "UNKNOWN";
     const actualBehavior =
       input.ruleType === "missed_both"
-        ? `Attacks used: ${participant?.attacksUsed ?? 0}.`
+        ? ""
         : describeActualBehaviorForPlayer({
             playerTag,
             attacksByPlayerTag: input.attacksByPlayerTag,
