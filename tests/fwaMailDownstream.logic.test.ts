@@ -55,7 +55,7 @@ describe("fwa war-mail posted content", () => {
       planText: "Custom war mail line 1\nCustom war mail line 2",
     });
     expect(content).toBe(
-      "<@&123456789>\n\nCustom war mail line 1\nCustom war mail line 2\n\nNext refresh <t:1200:R>"
+      "Custom war mail line 1\nCustom war mail line 2\n\n<@&123456789>\n\nNext refresh <t:1200:R>"
     );
   });
 
@@ -64,7 +64,7 @@ describe("fwa war-mail posted content", () => {
       pingRole: true,
       planText: "Plan body",
     });
-    expect(content).toBe("<@&123456789>\n\nPlan body\n\nNext refresh <t:1200:R>");
+    expect(content).toBe("Plan body\n\n<@&123456789>\n\nNext refresh <t:1200:R>");
   });
 
   it("can omit next-refresh line for frozen mail posts", () => {
@@ -73,19 +73,29 @@ describe("fwa war-mail posted content", () => {
       planText: "Plan body",
       includeNextRefresh: false,
     });
-    expect(content).toBe("<@&123456789>\n\nPlan body");
+    expect(content).toBe("Plan body\n\n<@&123456789>");
   });
 });
 
 describe("fwa war-mail refresh edit payload", () => {
   it("preserves existing visible role mention in refreshed content", () => {
     const payload = buildWarMailRefreshEditPayloadForTest(
+      "Old plan\n\n<@&123456789>\n\nNext refresh <t:999:R>",
+      "New plan",
+      0
+    );
+
+    expect(payload.content).toBe("New plan\n\n<@&123456789>\n\nNext refresh <t:1200:R>");
+  });
+
+  it("preserves mention in refresh edits for legacy mention-first content", () => {
+    const payload = buildWarMailRefreshEditPayloadForTest(
       "<@&123456789>\n\nOld plan\n\nNext refresh <t:999:R>",
       "New plan",
       0
     );
 
-    expect(payload.content).toBe("<@&123456789>\n\nNew plan\n\nNext refresh <t:1200:R>");
+    expect(payload.content).toBe("New plan\n\n<@&123456789>\n\nNext refresh <t:1200:R>");
   });
 
   it("uses non-pinging allowedMentions on refresh edits", () => {

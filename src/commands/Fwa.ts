@@ -2448,10 +2448,10 @@ function buildWarMailPostedContent(
     return nextRefresh || "War plan unavailable.";
   }
   const sections: string[] = [];
+  sections.push(planText);
   if (normalizedRoleId && options?.pingRole !== false) {
     sections.push(`<@&${normalizedRoleId}>`);
   }
-  sections.push(planText);
   if (nextRefresh) {
     sections.push(nextRefresh);
   }
@@ -2470,8 +2470,7 @@ function extractPostedWarMailMentionRoleId(
     const trimmed = line.trim();
     if (!trimmed) continue;
     const match = trimmed.match(/^<@&(\d{5,})>$/);
-    if (!match?.[1]) return null;
-    return normalizeDiscordRoleId(match[1]);
+    if (match?.[1]) return normalizeDiscordRoleId(match[1]);
   }
   return null;
 }
