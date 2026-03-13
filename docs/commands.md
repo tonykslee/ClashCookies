@@ -65,7 +65,7 @@
 - `/kick-list remove tag:<playerTag>` - Remove a player from kick list.
 - `/kick-list show` - Show current kick-list with reasons.
 - `/kick-list clear [mode:all|auto|manual]` - Clear kick-list entries.
-- `/sync time post [role:<discordRole>]` - Open modal, compose sync-time message, post it, and pin it.
+- `/sync time post [role:<discordRole>]` - Open modal, compose sync-time message, post it, and pin it. Timezone input accepts IANA names like `America/New_York` plus common US aliases such as `EST`, `EDT`, `PST`, and `PDT`.
 - `/sync post status [message-id:<id>]` - Show claimed vs unclaimed clan badge reactions for the active sync-time post, or for a specific message in the channel.
 - `/force sync data tag:<trackedClanTag> [datapoint:points|syncNum]` - Manually force-sync tracked clan points and/or sync number from points.fwafarm (explicitly bypasses points lock and war-scoped reuse).
 - `/force sync mail tag:<trackedClanTag> message-type:<mail|notify:war start|notify:battle start|notify:war end> message-id:<id>` - Upsert `CurrentWar.mailConfig` with current match configuration plus a posted message reference.
