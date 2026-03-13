@@ -718,6 +718,7 @@ type EventEmitPayload = {
   attacksPerMember: number | null;
   clanDestruction: number | null;
   opponentDestruction: number | null;
+  resolvedWarIdHint?: number | null;
   testFinalResultOverride?: WarEndResultSnapshot | null;
 };
 
@@ -1128,7 +1129,16 @@ export class WarEventLogService {
     if (!sub) return { ok: false, reason: "No war event subscription found for that guild+clan." };
     if (!sub.channelId) return { ok: false, reason: "Subscription has no configured channel." };
     const payload = await this.buildTestEventPayload(sub, params);
-    await this.emitEvent(sub.channelId, payload);
+    const canonicalized =
+      payload.eventType === "war_ended"
+        ? await this.resolveCanonicalWarEndedPayloadContext(payload)
+        : { payload, warId: null };
+    const payloadForEmit = canonicalized.payload;
+    const resolvedWarId =
+      canonicalized.warId ??
+      payloadForEmit.resolvedWarIdHint ??
+      (await this.resolveWarId(payloadForEmit.clanTag, payloadForEmit.warStartTime));
+    await this.emitEvent(sub.channelId, payloadForEmit, resolvedWarId, sub);
 
     return { ok: true };
   }
@@ -1156,16 +1166,24 @@ export class WarEventLogService {
     if (!sub) return { ok: false, reason: "No current war data found for that clan." };
 
     const payload = await this.buildTestEventPayload(sub, params);
-    const warId = await this.resolveWarId(payload.clanTag, payload.warStartTime);
-    const message = await this.buildEventMessage(payload, params.guildId, {
+    const canonicalized =
+      payload.eventType === "war_ended"
+        ? await this.resolveCanonicalWarEndedPayloadContext(payload)
+        : { payload, warId: null };
+    const payloadForPreview = canonicalized.payload;
+    const warId =
+      canonicalized.warId ??
+      payloadForPreview.resolvedWarIdHint ??
+      (await this.resolveWarId(payloadForPreview.clanTag, payloadForPreview.warStartTime));
+    const message = await this.buildEventMessage(payloadForPreview, params.guildId, {
       includeRoleMention: false,
       includeEventComponents: false,
       warId,
     });
     return {
       ok: true,
-      clanName: payload.clanName,
-      clanTag: payload.clanTag,
+      clanName: payloadForPreview.clanName,
+      clanTag: payloadForPreview.clanTag,
       channelId: config.channelId,
       embeds: message.embeds,
     };
@@ -1177,7 +1195,6 @@ export class WarEventLogService {
   ): Promise<EventEmitPayload> {
     const previousSync = await this.pointsSync.getPreviousSyncNum();
     const activeSync = previousSync === null ? null : previousSync + 1;
-    const syncNumber = params.source === "last" ? previousSync : activeSync;
 
     const currentWar =
       params.source === "current"
@@ -1193,6 +1210,7 @@ export class WarEventLogService {
             where: { clanTag: normalizeTag(sub.clanTag), warEndTime: { not: null }, attackOrder: 0 },
             orderBy: { warStartTime: "desc" },
             select: {
+              warId: true,
               clanName: true,
               opponentClanTag: true,
               opponentClanName: true,
@@ -1200,10 +1218,38 @@ export class WarEventLogService {
             },
           })
         : null;
+    const lastWarHistoryRow =
+      params.source === "last"
+        ? await prisma.clanWarHistory.findFirst({
+            where: { clanTag: normalizeTag(sub.clanTag) },
+            orderBy: [{ warEndTime: "desc" }, { warStartTime: "desc" }, { updatedAt: "desc" }],
+            select: {
+              warId: true,
+              syncNumber: true,
+              clanName: true,
+              opponentTag: true,
+              opponentName: true,
+              warStartTime: true,
+              warEndTime: true,
+              expectedOutcome: true,
+              matchType: true,
+            },
+          })
+        : null;
+    const syncNumber =
+      params.source === "last" &&
+      lastWarHistoryRow?.syncNumber !== null &&
+      lastWarHistoryRow?.syncNumber !== undefined &&
+      Number.isFinite(Number(lastWarHistoryRow?.syncNumber))
+        ? Math.trunc(Number(lastWarHistoryRow.syncNumber))
+        : params.source === "last"
+          ? previousSync
+          : activeSync;
 
     const clanTag = normalizeTag(sub.clanTag);
     const opponentTag = normalizeTag(
       currentWar?.opponent?.tag ??
+        lastWarHistoryRow?.opponentTag ??
         lastWarLogEntry?.opponent?.tag ??
         lastWarRow?.opponentClanTag ??
         sub.opponentTag ??
@@ -1212,6 +1258,7 @@ export class WarEventLogService {
     const clanName =
       String(
         currentWar?.clan?.name ??
+          lastWarHistoryRow?.clanName ??
           lastWarLogEntry?.clan?.name ??
           lastWarRow?.clanName ??
           sub.clanName ??
@@ -1220,6 +1267,7 @@ export class WarEventLogService {
     const opponentName =
       String(
         currentWar?.opponent?.name ??
+          lastWarHistoryRow?.opponentName ??
           lastWarLogEntry?.opponent?.name ??
           lastWarRow?.opponentClanName ??
           sub.opponentName ??
@@ -1228,7 +1276,17 @@ export class WarEventLogService {
 
     let fwaPoints = sub.fwaPoints;
     let opponentFwaPoints = sub.opponentFwaPoints;
-    let outcome = normalizeOutcome(sub.outcome);
+    let outcome =
+      params.source === "last"
+        ? normalizeOutcome(lastWarHistoryRow?.expectedOutcome ?? sub.outcome)
+        : normalizeOutcome(sub.outcome);
+    let matchType: MatchType =
+      params.source === "last" &&
+      (lastWarHistoryRow?.matchType === "BL" ||
+        lastWarHistoryRow?.matchType === "MM" ||
+        lastWarHistoryRow?.matchType === "FWA")
+        ? lastWarHistoryRow.matchType
+        : sub.matchType;
     if (params.source === "current" && opponentTag) {
       const [a, b] = await Promise.all([
         this.points.fetchSnapshot(clanTag, {
@@ -1252,7 +1310,7 @@ export class WarEventLogService {
     const testWarStartTime =
       params.source === "current"
         ? currentWarStartTime ?? sub.startTime
-        : lastWarRow?.warStartTime ?? sub.startTime ?? currentWarStartTime;
+        : lastWarHistoryRow?.warStartTime ?? lastWarRow?.warStartTime ?? sub.startTime ?? currentWarStartTime;
     const currentClanStars = Number.isFinite(Number(currentWar?.clan?.stars))
       ? Number(currentWar?.clan?.stars)
       : sub.clanStars;
@@ -1285,7 +1343,7 @@ export class WarEventLogService {
         fwaPoints: sub.fwaPoints,
       });
       testWarEndFwaPoints = this.computeExpectedWarEndPoints({
-        matchType: sub.matchType,
+        matchType,
         before,
         finalResult: testFinalResultOverride,
         outcome,
@@ -1304,7 +1362,7 @@ export class WarEventLogService {
       fwaPoints,
       opponentFwaPoints,
       outcome,
-      matchType: sub.matchType,
+      matchType,
       warStartFwaPoints: testWarStartFwaPoints,
       warEndFwaPoints: testWarEndFwaPoints,
       clanStars:
@@ -1325,7 +1383,10 @@ export class WarEventLogService {
             : sub.opponentStars,
       prepStartTime: parseCocTime(currentWar?.preparationStartTime ?? null) ?? sub.prepStartTime,
       warStartTime: testWarStartTime,
-      warEndTime: parseCocTime(currentWar?.endTime ?? null),
+      warEndTime:
+        params.source === "last"
+          ? lastWarHistoryRow?.warEndTime ?? null
+          : parseCocTime(currentWar?.endTime ?? null),
       clanAttacks: Number.isFinite(Number(currentWar?.clan?.attacks))
         ? Number(currentWar?.clan?.attacks)
         : null,
@@ -1342,6 +1403,17 @@ export class WarEventLogService {
       opponentDestruction: Number.isFinite(Number(currentWar?.opponent?.destructionPercentage))
         ? Number(currentWar?.opponent?.destructionPercentage)
         : null,
+      resolvedWarIdHint:
+        params.source === "last" &&
+        lastWarHistoryRow?.warId !== null &&
+        lastWarHistoryRow?.warId !== undefined &&
+        Number.isFinite(Number(lastWarHistoryRow?.warId))
+          ? Math.trunc(Number(lastWarHistoryRow.warId))
+          : lastWarRow?.warId !== null &&
+              lastWarRow?.warId !== undefined &&
+              Number.isFinite(Number(lastWarRow.warId))
+            ? Math.trunc(Number(lastWarRow.warId))
+            : null,
       testFinalResultOverride,
     };
   }
@@ -2344,6 +2416,12 @@ export class WarEventLogService {
     let nextFwaPoints = sub.fwaPoints;
     let nextOpponentFwaPoints = sub.opponentFwaPoints;
     let nextOutcome = sub.outcome;
+    let outcomeComputationInput: {
+      clanTag: string;
+      opponentTag: string;
+      clanPoints: number | null;
+      opponentPoints: number | null;
+    } | null = null;
     let nextWarStartFwaPoints = sub.warStartFwaPoints;
     let nextWarEndFwaPoints = sub.warEndFwaPoints;
     let nextClanStars =
@@ -2405,13 +2483,12 @@ export class WarEventLogService {
       });
       nextFwaPoints = a.balance;
       nextOpponentFwaPoints = b.balance;
-      nextOutcome = deriveExpectedOutcome(
-        projectionClanTag,
-        projectionOpponentTag,
-        a.balance,
-        b.balance,
-        fallbackSyncNumberForEvent
-      );
+      outcomeComputationInput = {
+        clanTag: projectionClanTag,
+        opponentTag: projectionOpponentTag,
+        clanPoints: a.balance,
+        opponentPoints: b.balance,
+      };
       const observedSync =
         a.effectiveSync !== null && Number.isFinite(a.effectiveSync)
           ? Math.trunc(a.effectiveSync)
@@ -2477,6 +2554,37 @@ export class WarEventLogService {
     let nextInferredMatchType =
       resolvedMatchType?.inferred ?? currentInferredMatchTypeForResolution;
 
+    const resolvedWarId = await this.ensureCurrentWarId({
+      sub,
+      warStartTime: nextWarStartTime,
+      currentState,
+    });
+    const syncRow =
+      guildId && nextWarStartTime
+        ? await this.currentSyncs.getCurrentSyncForClan({
+            guildId,
+            clanTag: sub.clanTag,
+            warId:
+              resolvedWarId !== null && resolvedWarId !== undefined
+                ? String(Math.trunc(Number(resolvedWarId)))
+                : sub.warId !== null && sub.warId !== undefined
+                  ? String(Math.trunc(Number(sub.warId)))
+                  : null,
+            warStartTime: nextWarStartTime,
+          })
+        : null;
+    const syncNumberForEvent =
+      syncRow?.syncNum ??
+      fallbackSyncNumberForEvent;
+    if (outcomeComputationInput) {
+      nextOutcome = deriveExpectedOutcome(
+        outcomeComputationInput.clanTag,
+        outcomeComputationInput.opponentTag,
+        outcomeComputationInput.clanPoints,
+        outcomeComputationInput.opponentPoints,
+        syncNumberForEvent
+      );
+    }
     if (eventType === "war_ended") {
       const finalResult = await this.history.getWarEndResultSnapshot({
         clanTag: sub.clanTag,
@@ -2502,29 +2610,6 @@ export class WarEventLogService {
         outcome: normalizeOutcome(nextOutcome),
       });
     }
-
-    const resolvedWarId = await this.ensureCurrentWarId({
-      sub,
-      warStartTime: nextWarStartTime,
-      currentState,
-    });
-    const syncRow =
-      guildId && nextWarStartTime
-        ? await this.currentSyncs.getCurrentSyncForClan({
-            guildId,
-            clanTag: sub.clanTag,
-            warId:
-              resolvedWarId !== null && resolvedWarId !== undefined
-                ? String(Math.trunc(Number(resolvedWarId)))
-                : sub.warId !== null && sub.warId !== undefined
-                  ? String(Math.trunc(Number(sub.warId)))
-                  : null,
-            warStartTime: nextWarStartTime,
-          })
-        : null;
-    const syncNumberForEvent =
-      syncRow?.syncNum ??
-      fallbackSyncNumberForEvent;
 
     const detectedEventPayload = eventType
       ? ({
@@ -2737,23 +2822,32 @@ export class WarEventLogService {
     payload: EventEmitPayload;
     resolvedWarId: number | null;
   }): Promise<void> {
+    let payloadForDelivery = params.payload;
+    let resolvedWarIdForDelivery = params.resolvedWarId;
     if (params.payload.eventType === "war_ended") {
       await this.history.persistWarEndHistory(params.payload).catch((err) => {
         console.error(
           `[war-events] persist war history failed guild=${params.sub.guildId} clan=${params.sub.clanTag} error=${formatError(err)}`
         );
       });
+      const canonicalized = await this.resolveCanonicalWarEndedPayloadContext(params.payload);
+      payloadForDelivery = canonicalized.payload;
+      resolvedWarIdForDelivery = canonicalized.warId ?? resolvedWarIdForDelivery;
     }
     if (!params.sub.notify || !params.sub.channelId) return;
-    const reserved = await this.reserveEventDelivery(params);
+    const reserved = await this.reserveEventDelivery({
+      sub: params.sub,
+      payload: payloadForDelivery,
+      resolvedWarId: resolvedWarIdForDelivery,
+    });
     if (!reserved.allowed) {
       return;
     }
     if (reserved.existingMessage) {
       console.log(
-        `[notify] existing message found guild=${params.sub.guildId} clan=${params.sub.clanTag} event=${params.payload.eventType} message=${reserved.existingMessage.messageId}`
+        `[notify] existing message found guild=${params.sub.guildId} clan=${params.sub.clanTag} event=${payloadForDelivery.eventType} message=${reserved.existingMessage.messageId}`
       );
-      if (params.payload.eventType === "battle_day") {
+      if (payloadForDelivery.eventType === "battle_day") {
         battleDayPostByGuildTag.set(makeBattleDayPostKey(params.sub.guildId, params.sub.clanTag), {
           channelId: reserved.existingMessage.channelId,
           messageId: reserved.existingMessage.messageId,
@@ -2762,12 +2856,12 @@ export class WarEventLogService {
       return;
     }
     console.log(
-      `[war-events] emit start guild=${params.sub.guildId} channel=${params.sub.channelId} clan=${params.payload.clanTag} event=${params.payload.eventType}`
+      `[war-events] emit start guild=${params.sub.guildId} channel=${params.sub.channelId} clan=${payloadForDelivery.clanTag} event=${payloadForDelivery.eventType}`
     );
     await this.emitEvent(
       params.sub.channelId,
-      params.payload,
-      params.resolvedWarId,
+      payloadForDelivery,
+      resolvedWarIdForDelivery,
       params.sub
     );
   }
@@ -2988,6 +3082,41 @@ export class WarEventLogService {
     return currentWarId?.warId !== null && currentWarId?.warId !== undefined
       ? Number(currentWarId.warId)
       : null;
+  }
+
+  /** Purpose: resolve one canonical persisted ended-war context and apply it to war-ended metadata payloads. */
+  private async resolveCanonicalWarEndedPayloadContext(
+    payload: EventEmitPayload
+  ): Promise<{ payload: EventEmitPayload; warId: number | null }> {
+    const canonical = await this.history
+      .resolveCanonicalWarEndedContext({
+        clanTag: payload.clanTag,
+        opponentTag: payload.opponentTag,
+        warStartTime: payload.warStartTime,
+      })
+      .catch(() => null);
+    if (!canonical) {
+      return {
+        payload,
+        warId: payload.resolvedWarIdHint ?? null,
+      };
+    }
+    return {
+      payload: {
+        ...payload,
+        clanName: String(canonical.clanName ?? payload.clanName).trim() || payload.clanName,
+        opponentTag: canonical.opponentTag || payload.opponentTag,
+        opponentName: String(canonical.opponentName ?? payload.opponentName).trim() || payload.opponentName,
+        syncNumber:
+          canonical.syncNumber !== null && canonical.syncNumber !== undefined
+            ? canonical.syncNumber
+            : payload.syncNumber,
+        warStartTime: canonical.warStartTime ?? payload.warStartTime,
+        warEndTime: canonical.warEndTime ?? payload.warEndTime,
+        resolvedWarIdHint: canonical.warId ?? payload.resolvedWarIdHint ?? null,
+      },
+      warId: canonical.warId ?? payload.resolvedWarIdHint ?? null,
+    };
   }
 
   private async emitEvent(
