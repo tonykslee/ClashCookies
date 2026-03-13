@@ -273,6 +273,62 @@ describe("WarComplianceService", () => {
     expect(report?.notFollowingPlan).toHaveLength(0);
   });
 
+  it("does not flag mirror-first then redundant non-mirror triple on already-tripled base", async () => {
+    const warStartTime = new Date("2026-02-01T00:00:00.000Z");
+    const warEndTime = new Date("2026-02-02T00:00:00.000Z");
+    const participants = [
+      { playerName: "Alice", playerTag: "#A1", attacksUsed: 2, playerPosition: 1 },
+      { playerName: "Bob", playerTag: "#B1", attacksUsed: 0, playerPosition: 2 },
+    ];
+    const attacks = [
+      {
+        playerTag: "#A1",
+        playerName: "Alice",
+        playerPosition: 1,
+        defenderPosition: 1,
+        stars: 3,
+        trueStars: 3,
+        attackSeenAt: new Date("2026-02-01T01:00:00.000Z"),
+        warEndTime,
+        attackOrder: 1,
+      },
+      {
+        playerTag: "#A1",
+        playerName: "Alice",
+        playerPosition: 1,
+        defenderPosition: 2,
+        stars: 3,
+        trueStars: 0,
+        attackSeenAt: new Date("2026-02-01T02:00:00.000Z"),
+        warEndTime,
+        attackOrder: 2,
+      },
+    ];
+
+    vi.spyOn(prisma.warAttacks, "findFirst").mockResolvedValue({
+      warStartTime,
+      warEndTime,
+      warId: 1001,
+    } as any);
+    vi.spyOn(prisma.warAttacks, "findMany")
+      .mockResolvedValueOnce(participants as any)
+      .mockResolvedValueOnce(attacks as any);
+    vi.spyOn(prisma.trackedClan, "findFirst").mockResolvedValue({
+      loseStyle: "TRIPLE_TOP_30",
+    } as any);
+
+    const service = new WarComplianceService();
+    const report = await service.getComplianceReport({
+      clanTag: "#TEST",
+      preferredWarStartTime: warStartTime,
+      matchType: "FWA",
+      expectedOutcome: "WIN",
+    });
+
+    expect(report).not.toBeNull();
+    expect(report?.notFollowingPlan).toHaveLength(0);
+  });
+
   it("returns null report for BL/MM checks without hitting DB", async () => {
     const findFirstSpy = vi.spyOn(prisma.warAttacks, "findFirst");
     const service = new WarComplianceService();

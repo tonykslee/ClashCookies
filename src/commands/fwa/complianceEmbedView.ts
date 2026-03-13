@@ -38,13 +38,33 @@ export type FwaComplianceEmbedRenderOutput = {
 };
 
 type ParsedActualBehavior = {
-  targets: string;
+  attacks: Array<{
+    defenderPosition: number | null;
+    stars: number;
+  }>;
   reason: string;
   strictContext: string | null;
 };
 
 const FIELD_LIMIT = 1024;
 const PAGE_CONTENT_LIMIT = 980;
+
+/** Purpose: render numeric stars as spaced triplets to match existing compliance visuals. */
+function formatStarTriplet(stars: number | null | undefined): string {
+  const normalized = Math.max(0, Math.min(3, Number(stars ?? 0)));
+  if (normalized >= 3) return "★ ★ ★";
+  if (normalized >= 2) return "★ ★ ☆";
+  if (normalized >= 1) return "★ ☆ ☆";
+  return "☆ ☆ ☆";
+}
+
+/** Purpose: convert serialized star glyphs into numeric star values for fallback parsing. */
+function parseStarTripletToCount(input: string): number {
+  const text = String(input ?? "");
+  const matches = text.match(/★|â˜…/g);
+  const count = matches ? matches.length : 0;
+  return Math.max(0, Math.min(3, count));
+}
 
 /** Purpose: sort compliance rows by roster position first for deterministic paging. */
 function sortIssuesDeterministically(issues: WarComplianceIssue[]): WarComplianceIssue[] {
@@ -72,7 +92,7 @@ function clampPage(page: number, pageCount: number): number {
 }
 
 /** Purpose: paginate variable-size text blocks without relying on silent truncation. */
-function paginateBlocks(blocks: string[]): string[] {
+function paginateBlocks(blocks: string[], separator = "\n\n"): string[] {
   if (blocks.length === 0) return ["No entries."];
   const pages: string[] = [];
   let current = "";
@@ -80,7 +100,7 @@ function paginateBlocks(blocks: string[]): string[] {
   for (const rawBlock of blocks) {
     const block = String(rawBlock ?? "").trim();
     if (!block) continue;
-    const next = current ? `${current}\n\n${block}` : block;
+    const next = current ? `${current}${separator}${block}` : block;
     if (next.length <= PAGE_CONTENT_LIMIT) {
       current = next;
       continue;
@@ -108,7 +128,7 @@ function parseActualBehavior(actualBehavior: string): ParsedActualBehavior {
   const raw = String(actualBehavior ?? "").trim();
   if (!raw) {
     return {
-      targets: "No targets logged.",
+      attacks: [],
       reason: "No details available.",
       strictContext: null,
     };
@@ -117,7 +137,7 @@ function parseActualBehavior(actualBehavior: string): ParsedActualBehavior {
   const separatorIndex = raw.indexOf(" : ");
   if (separatorIndex <= -1) {
     return {
-      targets: raw,
+      attacks: [],
       reason: "No details available.",
       strictContext: null,
     };
@@ -130,22 +150,67 @@ function parseActualBehavior(actualBehavior: string): ParsedActualBehavior {
     .map((part) => part.trim())
     .filter(Boolean);
 
-  const targets = targetsRaw
+  const attacks = targetsRaw
     .split(",")
-    .map((chunk) =>
-      chunk
-        .replace(/\(\s*([^)]*?)\s*\)/g, "$1")
-        .replace(/\s+/g, " ")
-        .trim()
-    )
+    .map((chunk) => chunk.trim())
     .filter(Boolean)
-    .join(" | ");
+    .map((chunk) => {
+      const match = chunk.match(/^#(\d+)\s*\(([^)]*)\)$/);
+      if (!match) {
+        return {
+          defenderPosition: null,
+          stars: parseStarTripletToCount(chunk),
+        };
+      }
+      return {
+        defenderPosition: Number(match[1]),
+        stars: parseStarTripletToCount(match[2] ?? ""),
+      };
+    });
 
   return {
-    targets: targets || "No targets logged.",
+    attacks,
     reason: reasonParts[0] ?? "No details available.",
     strictContext: reasonParts.length > 1 ? reasonParts.slice(1).join(" | ") : null,
   };
+}
+
+/** Purpose: infer breach markers for legacy parsed rows when structured attackDetails are unavailable. */
+function buildFallbackAttackDetails(
+  issue: WarComplianceIssue,
+  parsed: ParsedActualBehavior
+): Array<{ defenderPosition: number | null; stars: number; isBreach: boolean }> {
+  const details = parsed.attacks.map((row) => ({
+    defenderPosition: row.defenderPosition,
+    stars: row.stars,
+    isBreach: false,
+  }));
+  const reason = String(issue.reasonLabel ?? parsed.reason ?? "").toLowerCase();
+  const playerPos =
+    Number.isFinite(Number(issue.playerPosition)) && Number(issue.playerPosition) > 0
+      ? Number(issue.playerPosition)
+      : null;
+
+  if (reason.includes("tripled non-mirror")) {
+    for (const row of details) {
+      if (row.stars >= 3 && row.defenderPosition !== null && row.defenderPosition !== playerPos) {
+        row.isBreach = true;
+      }
+    }
+  } else if (reason.includes("didn't triple mirror")) {
+    for (const row of details) {
+      const isMirrorTriple =
+        playerPos !== null && row.defenderPosition === playerPos && row.stars >= 3;
+      if (!isMirrorTriple) {
+        row.isBreach = true;
+      }
+    }
+  }
+
+  if (!details.some((row) => row.isBreach) && details.length > 0 && parsed.strictContext) {
+    details[0].isBreach = true;
+  }
+  return details;
 }
 
 /** Purpose: render one not-following issue into the required multi-line violation block. */
@@ -155,9 +220,33 @@ function renderViolationBlock(issue: WarComplianceIssue): string {
   const pos = Number.isFinite(Number(issue.playerPosition))
     ? `#${Math.trunc(Number(issue.playerPosition))}`
     : "#?";
-  const lines = [`${pos} ${name}`, `→ ${parsed.targets}`, parsed.reason];
-  if (parsed.strictContext) {
-    lines.push(parsed.strictContext);
+  const lines = [`${pos} ${name}`];
+
+  const details =
+    issue.attackDetails && issue.attackDetails.length > 0
+      ? issue.attackDetails.map((detail) => ({
+          defenderPosition: detail.defenderPosition ?? null,
+          stars: Math.max(0, Math.min(3, Number(detail.stars ?? 0))),
+          isBreach: Boolean(detail.isBreach),
+        }))
+      : buildFallbackAttackDetails(issue, parsed);
+
+  if (details.length <= 0) {
+    lines.push("→ No targets logged.");
+  } else {
+    for (const detail of details) {
+      const target = detail.defenderPosition !== null ? `#${detail.defenderPosition}` : "#?";
+      lines.push(
+        `→ ${target} ${formatStarTriplet(detail.stars)}${detail.isBreach ? " ⚠️" : ""}`
+      );
+    }
+  }
+
+  const contextLine = issue.breachContext
+    ? `${issue.breachContext.starsAtBreach}★ | ${issue.breachContext.timeRemaining}`
+    : parsed.strictContext;
+  if (contextLine) {
+    lines.push(contextLine);
   }
   return lines.join("\n");
 }
@@ -172,15 +261,12 @@ function renderMissedLine(issue: WarComplianceIssue): string {
 
 /** Purpose: build deterministic summary text for the main FWA compliance embed. */
 function buildSummaryFieldValue(input: {
-  participantsCount: number;
   attacksCount: number;
   missedCount: number;
   violationCount: number;
 }): string {
   return [
-    `👥 Participants: ${input.participantsCount}`,
     `⚔️ Attacks Logged: ${input.attacksCount}`,
-    "---",
     `❌ Missed Both Attacks: ${input.missedCount}`,
     `⚠️ Didn't Follow Plan: ${input.violationCount}`,
   ].join("\n");
@@ -213,7 +299,6 @@ function buildMainEmbed(input: {
   expectedOutcome: "WIN" | "LOSE" | null;
   warStartTime: Date | null;
   warEndTime: Date | null;
-  participantsCount: number;
   attacksCount: number;
   missedBoth: WarComplianceIssue[];
   violations: WarComplianceIssue[];
@@ -239,7 +324,6 @@ function buildMainEmbed(input: {
       {
         name: "Summary",
         value: buildSummaryFieldValue({
-          participantsCount: input.participantsCount,
           attacksCount: input.attacksCount,
           missedCount: input.missedBoth.length,
           violationCount: input.violations.length,
@@ -271,7 +355,7 @@ function buildMissedEmbed(input: {
     sortedMissed.length > 0
       ? sortedMissed.map(renderMissedLine)
       : ["No players missed both attacks."];
-  const missedPages = paginateBlocks(missedLines);
+  const missedPages = paginateBlocks(missedLines, "\n");
   const page = clampPage(input.page, missedPages.length);
   const value = missedPages[page] ?? "No players missed both attacks.";
   const safeValue = value.length <= FIELD_LIMIT ? value : `${value.slice(0, FIELD_LIMIT - 12)}\n(+truncated)`;
@@ -406,7 +490,6 @@ export function buildFwaComplianceEmbedView(
       expectedOutcome: input.expectedOutcome,
       warStartTime: input.warStartTime,
       warEndTime: input.warEndTime,
-      participantsCount: input.participantsCount,
       attacksCount: input.attacksCount,
       missedBoth: input.missedBoth,
       violations: input.notFollowingPlan,
@@ -451,7 +534,6 @@ export function buildFwaComplianceEmbedView(
     expectedOutcome: input.expectedOutcome,
     warStartTime: input.warStartTime,
     warEndTime: input.warEndTime,
-    participantsCount: input.participantsCount,
     attacksCount: input.attacksCount,
     missedBoth: input.missedBoth,
     violations: input.notFollowingPlan,
