@@ -34,6 +34,9 @@ type WeightCacheEntry = {
 
 const SUCCESS_CACHE_TTL_MS = 10 * 60 * 1000;
 const PARSE_ERROR_CACHE_TTL_MS = 2 * 60 * 1000;
+const WEIGHT_AGE_UNIT_PATTERN =
+  "(d|day|days|h|hr|hrs|hour|hours|m|min|mins|minute|minutes|w|wk|wks|week|weeks|mo|mon|month|months|y|yr|yrs|year|years)";
+const WEIGHT_AGE_TOKEN_PATTERN = `(\\d+(?:\\.\\d+)?)\\s*${WEIGHT_AGE_UNIT_PATTERN}\\b`;
 
 /** Purpose: normalize clan tags to canonical #UPPER format. */
 function normalizeClanTag(input: string): string {
@@ -60,12 +63,49 @@ export function isFwaStatsLoginPage(html: string): boolean {
 
 /** Purpose: extract weight age token from HTML content. */
 export function extractWeightAgeToken(html: string): string | null {
-  const normalized = String(html ?? "").replace(/\s+/g, " ");
-  if (!normalized) return null;
-  const match = normalized.match(/Clan weight submitted\s+(.+?)\s+ago\b/i);
-  const raw = String(match?.[1] ?? "").trim();
-  if (!raw) return null;
-  return raw.replace(/[. ]+$/g, "").trim() || null;
+  const normalizedHtml = String(html ?? "").replace(/\s+/g, " ").trim();
+  if (!normalizedHtml) return null;
+
+  const normalizeMatch = (value: string | null | undefined): string | null => {
+    const raw = String(value ?? "")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/&nbsp;/gi, " ")
+      .replace(/\bago\b/gi, " ")
+      .replace(/\s+/g, " ")
+      .replace(/[. ]+$/g, "")
+      .trim();
+    if (!raw) return null;
+    return parseWeightAgeDays(raw) === null ? null : raw;
+  };
+
+  const strictPatterns = [
+    /Clan weight submitted\s+(.+?)\s+ago\b/i,
+    /(?:last\s+)?(?:clan\s+)?weight(?:\s+\w+){0,3}\s+submitted\s*[:-]?\s+(.+?)\s+ago\b/i,
+    /(?:last\s+)?weight(?:\s+\w+){0,3}\s+submission\s*[:-]?\s+(.+?)\s+ago\b/i,
+    /weight\s+age\s*[:-]?\s+(.+?)\s+ago\b/i,
+  ];
+  for (const pattern of strictPatterns) {
+    const match = normalizedHtml.match(pattern);
+    const token = normalizeMatch(match?.[1]);
+    if (token) return token;
+  }
+
+  const textOnly = normalizedHtml.replace(/<[^>]+>/g, " ").replace(/&nbsp;/gi, " ").trim();
+  if (!/\bweight\b/i.test(textOnly)) return null;
+
+  const contextualAgoPattern = new RegExp(
+    `(?:weight|submitted)[^\\r\\n]{0,80}?(${WEIGHT_AGE_TOKEN_PATTERN})\\s+ago\\b`,
+    "i"
+  );
+  const contextualToken = normalizeMatch(textOnly.match(contextualAgoPattern)?.[1]);
+  if (contextualToken) return contextualToken;
+
+  const fallbackAgoPattern = new RegExp(`${WEIGHT_AGE_TOKEN_PATTERN}\\s+ago\\b`, "gi");
+  for (const match of textOnly.matchAll(fallbackAgoPattern)) {
+    const token = normalizeMatch(match[1]);
+    if (token) return token;
+  }
+  return null;
 }
 
 /** Purpose: convert human-readable weight age token to day units for health scoring. */
@@ -73,9 +113,7 @@ export function parseWeightAgeDays(token: string | null | undefined): number | n
   const normalized = String(token ?? "").trim().toLowerCase();
   if (!normalized) return null;
 
-  const match = normalized.match(
-    /(\d+(?:\.\d+)?)\s*(d|day|days|h|hr|hrs|hour|hours|m|min|mins|minute|minutes|w|wk|wks|week|weeks|mo|mon|month|months|y|yr|yrs|year|years)\b/
-  );
+  const match = normalized.match(new RegExp(WEIGHT_AGE_TOKEN_PATTERN, "i"));
   if (!match) return null;
 
   const value = Number(match[1]);
@@ -344,7 +382,7 @@ export class FwaStatsWeightService {
             status: "parse_error",
             httpStatus: response.status,
             fromCache: false,
-            error: "Could not find 'Clan weight submitted ... ago' in page HTML.",
+            error: "Could not find weight age text in page HTML.",
             authErrorCode: null,
           };
           recordFetchEvent({

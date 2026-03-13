@@ -29,6 +29,24 @@ describe("FwaStatsWeightService helpers", () => {
     expect(extractWeightAgeToken(html)).toBe("22d");
   });
 
+  it("extracts weight age token from alternate submission wording", () => {
+    const html = `
+      <div class="alert alert-success">
+        Last weight submission: 3 days ago
+      </div>
+    `;
+    expect(extractWeightAgeToken(html)).toBe("3 days");
+  });
+
+  it("extracts weight age token when value is wrapped in nested markup", () => {
+    const html = `
+      <div>
+        <span>Weight submitted:</span> <strong>12h</strong> ago
+      </div>
+    `;
+    expect(extractWeightAgeToken(html)).toBe("12h");
+  });
+
   it("detects login page HTML", () => {
     const html = "<html><head><title>Login FWA Stats</title></head></html>";
     expect(isFwaStatsLoginPage(html)).toBe(true);
