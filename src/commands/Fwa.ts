@@ -26,7 +26,10 @@ import {
 } from "../services/CommandPermissionService";
 import { GoogleSheetsService } from "../services/GoogleSheetsService";
 import { SettingsService } from "../services/SettingsService";
-import { WarComplianceService } from "../services/WarComplianceService";
+import {
+  WarComplianceService,
+  type WarComplianceIssue,
+} from "../services/WarComplianceService";
 import { WarEventLogService } from "../services/WarEventLogService";
 import { FwaStatsWeightService } from "../services/FwaStatsWeightService";
 import { FwaStatsWeightCookieService } from "../services/FwaStatsWeightCookieService";
@@ -84,6 +87,7 @@ import {
 } from "../services/PointsDirectFetchGateService";
 import {
   buildFwaMailBackCustomId,
+  createTransientFwaKey,
   buildFwaMailConfirmCustomId,
   buildFwaMailConfirmNoPingCustomId,
   buildFwaMailRefreshCustomId,
@@ -100,6 +104,7 @@ import {
   buildOutcomeActionCustomId,
   buildPointsPostButtonCustomId,
   parseFwaMailBackCustomId,
+  parseFwaComplianceViewCustomId,
   parseFwaMailConfirmCustomId,
   parseFwaMailConfirmNoPingCustomId,
   parseFwaMailRefreshCustomId,
@@ -146,7 +151,10 @@ import {
   type WarMailExpectedOutcome,
   type WarMailMatchType,
 } from "./fwa/mailEmbedColor";
-import { buildWarComplianceReportLines } from "./fwa/complianceView";
+import {
+  buildFwaComplianceEmbedView,
+  type FwaComplianceActiveView,
+} from "./fwa/complianceEmbedView";
 import {
   WEIGHT_SEVERE_STALE_DAYS,
   WEIGHT_STALE_DAYS,
@@ -167,6 +175,7 @@ import {
 } from "./fwa/warScopedReuse";
 export { isMissedSyncClanForTest } from "./fwa/matchState";
 export {
+  isFwaComplianceViewButtonCustomId,
   isFwaMailBackButtonCustomId,
   isFwaMailConfirmButtonCustomId,
   isFwaMailConfirmNoPingButtonCustomId,
@@ -344,6 +353,39 @@ function parseComplianceWarTarget(input: string | null | undefined):
   };
 }
 
+/** Purpose: render a stored compliance-view payload into message-safe embed/components. */
+function renderComplianceViewPayload(input: {
+  key: string;
+  payload: FwaComplianceViewPayload;
+}): {
+  embeds: EmbedBuilder[];
+  components: ActionRowBuilder<ButtonBuilder>[];
+} {
+  const rendered = buildFwaComplianceEmbedView({
+    userId: input.payload.userId,
+    key: input.key,
+    isFwa: input.payload.isFwa,
+    clanName: input.payload.clanName,
+    warId: input.payload.warId,
+    expectedOutcome: input.payload.expectedOutcome,
+    warStartTime: input.payload.warStartTime,
+    warEndTime: input.payload.warEndTime,
+    participantsCount: input.payload.participantsCount,
+    attacksCount: input.payload.attacksCount,
+    missedBoth: input.payload.missedBoth,
+    notFollowingPlan: input.payload.notFollowingPlan,
+    activeView: input.payload.activeView,
+    mainPage: input.payload.mainPage,
+    missedPage: input.payload.missedPage,
+  });
+  input.payload.mainPage = rendered.mainPage;
+  input.payload.missedPage = rendered.missedPage;
+  return {
+    embeds: [rendered.embed],
+    components: rendered.components,
+  };
+}
+
 /** Purpose: normalize stored role values to a raw Discord role ID. */
 function normalizeDiscordRoleId(input: string | null | undefined): string | null {
   const raw = String(input ?? "").trim();
@@ -462,8 +504,28 @@ type FwaMailPreviewPayload = {
   revisionOverride?: MatchRevisionFields | null;
 };
 
+type FwaComplianceViewPayload = {
+  userId: string;
+  guildId: string;
+  clanName: string;
+  clanTag: string;
+  isFwa: boolean;
+  warId: number | null;
+  expectedOutcome: "WIN" | "LOSE" | null;
+  warStartTime: Date | null;
+  warEndTime: Date | null;
+  participantsCount: number;
+  attacksCount: number;
+  missedBoth: WarComplianceIssue[];
+  notFollowingPlan: WarComplianceIssue[];
+  activeView: FwaComplianceActiveView;
+  mainPage: number;
+  missedPage: number;
+};
+
 const fwaMatchCopyPayloads = new Map<string, FwaMatchCopyPayload>();
 const fwaMailPreviewPayloads = new Map<string, FwaMailPreviewPayload>();
+const fwaComplianceViewPayloads = new Map<string, FwaComplianceViewPayload>();
 const fwaMailPollers = new Map<string, ReturnType<typeof setInterval>>();
 const pointsSnapshotCache = new Map<string, PointsSnapshotCacheEntry>();
 const pointsSnapshotInFlight = new Map<string, Promise<PointsSnapshot>>();
@@ -2939,6 +3001,60 @@ function buildFwaMatchCopyComponents(
     }
   }
   return rows;
+}
+
+export async function handleFwaComplianceViewButton(
+  interaction: ButtonInteraction
+): Promise<void> {
+  const parsed = parseFwaComplianceViewCustomId(interaction.customId);
+  if (!parsed) return;
+  if (interaction.user.id !== parsed.userId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Only the command requester can use this button.",
+    });
+    return;
+  }
+
+  const payload = fwaComplianceViewPayloads.get(parsed.key);
+  if (!payload) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "This compliance view expired. Please run /fwa compliance again.",
+    });
+    return;
+  }
+
+  if (parsed.action === "open_missed") {
+    payload.activeView = "missed";
+  } else if (parsed.action === "open_main") {
+    if (payload.isFwa) {
+      payload.activeView = "fwa_main";
+    }
+  } else if (parsed.action === "prev") {
+    if (payload.activeView === "fwa_main") {
+      payload.mainPage = Math.max(0, payload.mainPage - 1);
+    } else {
+      payload.missedPage = Math.max(0, payload.missedPage - 1);
+    }
+  } else if (parsed.action === "next") {
+    if (payload.activeView === "fwa_main") {
+      payload.mainPage += 1;
+    } else {
+      payload.missedPage += 1;
+    }
+  }
+
+  const rendered = renderComplianceViewPayload({
+    key: parsed.key,
+    payload,
+  });
+  fwaComplianceViewPayloads.set(parsed.key, payload);
+  await interaction.update({
+    content: undefined,
+    embeds: rendered.embeds,
+    components: rendered.components,
+  });
 }
 
 export async function handleFwaMatchCopyButton(interaction: ButtonInteraction): Promise<void> {
@@ -8934,16 +9050,34 @@ export const Fwa: Command = {
       }
 
       if (evaluation.status === "not_applicable") {
-        await editReplySafe(
-          [
-            `War compliance for **${clanDisplayName}** (#${tag})`,
-            `War: **${evaluation.warId ?? "unknown"}** | Started ${startedLabel} | Ended ${endedLabel}`,
-            `Match type: **${evaluation.matchType ?? "UNKNOWN"}** | Expected outcome: **${evaluation.expectedOutcome ?? "UNKNOWN"}**`,
-            "War-plan compliance checks are only enforced for FWA wars.",
-          ].join("\n")
-        );
+        const key = createTransientFwaKey();
+        const payload: FwaComplianceViewPayload = {
+          userId: interaction.user.id,
+          guildId: interaction.guildId,
+          clanName: clanDisplayName,
+          clanTag: tag,
+          isFwa: false,
+          warId: evaluation.warId,
+          expectedOutcome: evaluation.expectedOutcome,
+          warStartTime: evaluation.warStartTime,
+          warEndTime: evaluation.warEndTime,
+          participantsCount: evaluation.participantsCount,
+          attacksCount: evaluation.attacksCount,
+          missedBoth: evaluation.report?.missedBoth ?? [],
+          notFollowingPlan: [],
+          activeView: "missed",
+          mainPage: 0,
+          missedPage: 0,
+        };
+        const rendered = renderComplianceViewPayload({ key, payload });
+        fwaComplianceViewPayloads.set(key, payload);
+        await editReplySafe({
+          content: undefined,
+          embeds: rendered.embeds,
+          components: rendered.components,
+        });
         console.info(
-          `[fwa-compliance] event=complete guild=${interaction.guildId} user=${interaction.user.id} clan=#${tag} scope=${evaluation.scope} source=${evaluation.source ?? "none"} war_resolution_source=${evaluation.warResolutionSource ?? "none"} war_id=${evaluation.warId ?? "unknown"} status=not_applicable match_type=${evaluation.matchType ?? "UNKNOWN"} duration_ms=${Date.now() - startedAtMs}`
+          `[fwa-compliance] event=complete guild=${interaction.guildId} user=${interaction.user.id} clan=#${tag} scope=${evaluation.scope} source=${evaluation.source ?? "none"} war_resolution_source=${evaluation.warResolutionSource ?? "none"} war_id=${evaluation.warId ?? "unknown"} status=not_applicable match_type=${evaluation.matchType ?? "UNKNOWN"} missed_both=${payload.missedBoth.length} duration_ms=${Date.now() - startedAtMs}`
         );
         return;
       }
@@ -8962,12 +9096,32 @@ export const Fwa: Command = {
         return;
       }
 
-      const lines = buildWarComplianceReportLines({
+      const key = createTransientFwaKey();
+      const payload: FwaComplianceViewPayload = {
+        userId: interaction.user.id,
+        guildId: interaction.guildId,
         clanName: clanDisplayName,
         clanTag: tag,
-        report: evaluation.report,
+        isFwa: true,
+        warId: evaluation.report.warId ?? evaluation.warId,
+        expectedOutcome: evaluation.report.expectedOutcome ?? evaluation.expectedOutcome,
+        warStartTime: evaluation.report.warStartTime ?? evaluation.warStartTime,
+        warEndTime: evaluation.report.warEndTime ?? evaluation.warEndTime,
+        participantsCount: evaluation.report.participantsCount,
+        attacksCount: evaluation.report.attacksCount,
+        missedBoth: evaluation.report.missedBoth,
+        notFollowingPlan: evaluation.report.notFollowingPlan,
+        activeView: "fwa_main",
+        mainPage: 0,
+        missedPage: 0,
+      };
+      const rendered = renderComplianceViewPayload({ key, payload });
+      fwaComplianceViewPayloads.set(key, payload);
+      await editReplySafe({
+        content: undefined,
+        embeds: rendered.embeds,
+        components: rendered.components,
       });
-      await editReplySafe(lines.join("\n"));
       console.info(
         `[fwa-compliance] event=complete guild=${interaction.guildId} user=${interaction.user.id} clan=#${tag} scope=${evaluation.scope} source=${evaluation.source ?? "none"} war_resolution_source=${evaluation.warResolutionSource ?? "none"} war_id=${evaluation.report.warId ?? evaluation.warId ?? "unknown"} status=ok missed_both=${evaluation.report.missedBoth.length} not_following=${evaluation.report.notFollowingPlan.length} participants=${evaluation.report.participantsCount} attacks=${evaluation.report.attacksCount} war_end_time=${evaluation.timingInputs.warEndTimeIso ?? "unknown"} first_attack_seen_at=${evaluation.timingInputs.firstAttackSeenAtIso ?? "unknown"} last_attack_seen_at=${evaluation.timingInputs.lastAttackSeenAtIso ?? "unknown"} duration_ms=${Date.now() - startedAtMs}`
       );

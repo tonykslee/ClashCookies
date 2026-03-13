@@ -217,6 +217,62 @@ describe("WarComplianceService", () => {
     expect(babyPk?.actualBehavior).toContain("| 3★ | 22h 0m left");
   });
 
+  it("does not flag strict-window non-mirror triples when trueStars is zero", async () => {
+    const warStartTime = new Date("2026-02-01T00:00:00.000Z");
+    const warEndTime = new Date("2026-02-02T00:00:00.000Z");
+    const participants = [
+      { playerName: "Alice", playerTag: "#A1", attacksUsed: 2, playerPosition: 1 },
+      { playerName: "Bob", playerTag: "#B1", attacksUsed: 0, playerPosition: 2 },
+    ];
+    const attacks = [
+      {
+        playerTag: "#A1",
+        playerName: "Alice",
+        playerPosition: 1,
+        defenderPosition: 2,
+        stars: 3,
+        trueStars: 0,
+        attackSeenAt: new Date("2026-02-01T01:00:00.000Z"),
+        warEndTime,
+        attackOrder: 1,
+      },
+      {
+        playerTag: "#A1",
+        playerName: "Alice",
+        playerPosition: 1,
+        defenderPosition: 1,
+        stars: 3,
+        trueStars: 3,
+        attackSeenAt: new Date("2026-02-01T02:00:00.000Z"),
+        warEndTime,
+        attackOrder: 2,
+      },
+    ];
+
+    vi.spyOn(prisma.warAttacks, "findFirst").mockResolvedValue({
+      warStartTime,
+      warEndTime,
+      warId: 999,
+    } as any);
+    vi.spyOn(prisma.warAttacks, "findMany")
+      .mockResolvedValueOnce(participants as any)
+      .mockResolvedValueOnce(attacks as any);
+    vi.spyOn(prisma.trackedClan, "findFirst").mockResolvedValue({
+      loseStyle: "TRIPLE_TOP_30",
+    } as any);
+
+    const service = new WarComplianceService();
+    const report = await service.getComplianceReport({
+      clanTag: "#TEST",
+      preferredWarStartTime: warStartTime,
+      matchType: "FWA",
+      expectedOutcome: "WIN",
+    });
+
+    expect(report).not.toBeNull();
+    expect(report?.notFollowingPlan).toHaveLength(0);
+  });
+
   it("returns null report for BL/MM checks without hitting DB", async () => {
     const findFirstSpy = vi.spyOn(prisma.warAttacks, "findFirst");
     const service = new WarComplianceService();
@@ -452,6 +508,53 @@ describe("WarComplianceService", () => {
     });
 
     expect(result.status).toBe("no_active_war");
+  });
+
+  it("returns non-FWA missed-both details for not-applicable evaluations", async () => {
+    const warStartTime = new Date("2026-02-01T00:00:00.000Z");
+    const warEndTime = new Date("2026-02-02T00:00:00.000Z");
+    vi.spyOn(prisma.currentWar, "findFirst").mockResolvedValue({
+      warId: 4001,
+      startTime: warStartTime,
+      endTime: warEndTime,
+      matchType: "BL",
+      outcome: "WIN",
+    } as any);
+    vi.spyOn(prisma.warAttacks, "findMany")
+      .mockResolvedValueOnce([
+        {
+          playerName: "Alice",
+          playerTag: "#A",
+          attacksUsed: 0,
+          playerPosition: 1,
+          warStartTime,
+        },
+        {
+          playerName: "Bob",
+          playerTag: "#B",
+          attacksUsed: 2,
+          playerPosition: 2,
+          warStartTime,
+        },
+      ] as any)
+      .mockResolvedValueOnce([] as any);
+    vi.spyOn(prisma.trackedClan, "findFirst").mockResolvedValue({
+      loseStyle: "TRADITIONAL",
+    } as any);
+
+    const service = new WarComplianceService();
+    const result = await service.evaluateComplianceForCommand({
+      guildId: "guild-1",
+      clanTag: "#TEST",
+      scope: "current",
+    });
+
+    expect(result.status).toBe("not_applicable");
+    expect(result.matchType).toBe("BL");
+    expect(result.report).toBeTruthy();
+    expect(result.report?.missedBoth).toHaveLength(1);
+    expect(result.report?.missedBoth[0]?.playerName).toBe("Alice");
+    expect(result.report?.notFollowingPlan).toHaveLength(0);
   });
 
   it("returns insufficient_data when historical participation implies attacks but no attack rows exist", async () => {

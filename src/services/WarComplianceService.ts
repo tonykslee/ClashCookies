@@ -357,6 +357,22 @@ function mapNamesToIssues(input: {
   });
 }
 
+/** Purpose: build missed-both issues for non-FWA contexts so UI can show missed-attacks view. */
+function buildMissedBothIssuesFromParticipants(
+  participants: WarComplianceParticipant[]
+): WarComplianceIssue[] {
+  return participants
+    .filter((row) => Number(row.attacksUsed ?? 0) <= 0)
+    .map((row) => ({
+      playerTag: normalizeTag(row.playerTag) || "UNKNOWN",
+      playerName: getParticipantLabel({ playerName: row.playerName, playerTag: row.playerTag }),
+      playerPosition: row.playerPosition ?? null,
+      ruleType: "missed_both" as const,
+      expectedBehavior: "Use both attacks for the war.",
+      actualBehavior: "",
+    }));
+}
+
 /** Purpose: normalize persisted match-type text to command-safe enum values. */
 function normalizeMatchType(input: string | null | undefined): MatchType {
   const value = String(input ?? "").trim().toUpperCase();
@@ -702,6 +718,20 @@ export class WarComplianceService {
     });
 
     if (context.matchType !== "FWA") {
+      const loseStyle = await getLoseStyleForClan(context.clanTag);
+      const report: WarComplianceReport = {
+        clanTag: context.clanTag,
+        warId: context.warId,
+        warStartTime: context.warStartTime,
+        warEndTime: context.warEndTime,
+        matchType: context.matchType,
+        expectedOutcome: context.expectedOutcome,
+        loseStyle,
+        missedBoth: buildMissedBothIssuesFromParticipants(context.participants),
+        notFollowingPlan: [],
+        participantsCount: context.participants.length,
+        attacksCount: context.attacks.length,
+      };
       return buildResult({
         status: "not_applicable",
         source: context.source,
@@ -711,6 +741,7 @@ export class WarComplianceService {
         warEndTime: context.warEndTime,
         matchType: context.matchType,
         expectedOutcome: context.expectedOutcome,
+        report,
         participantsCount: context.participants.length,
         attacksCount: context.attacks.length,
         timingInputs,
