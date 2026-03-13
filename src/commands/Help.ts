@@ -189,6 +189,8 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "This removes invalid option paths (no outcome/lose-style controls for BL/MM or FWA-WIN).",
       "Modal formatting tips: `**bold**`, `*italic*`, `` `code` ``, and code blocks with triple backticks.",
       "Custom/default plans support `{opponent}` placeholder and replace it with opponent clan name.",
+      "Warplan modal also supports optional compliance settings: `minimum clan stars before tripling non-mirror` (integer, default `101`) and `all bases open for 3 star time-left` (`H` or `Hh`, range `0..24`, default `0`).",
+      "These compliance settings are resolved with the same precedence (custom -> editable default -> fallback defaults) and are applied by `/fwa compliance` only for effective `FWA_WIN` checks.",
       "Precedence: clan custom -> editable guild default -> built-in fallback.",
     ],
     examples: [
@@ -226,7 +228,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`/fwa points` returns point balances (single clan tag or all tracked if tag omitted).",
       "`/fwa match` auto-resolves current war opponent from CoC API and evaluates win/lose/tiebreak using cached points + persisted sync state.",
       "`/fwa compliance` runs war-plan compliance checks on demand for a tracked clan (defaults to current active war; use `war-id:current` or numeric `war-id` for historical checks).",
-      "FWA compliance embeds include a `Warplan` field from the same active plan source used by war mail, and strict-window breach context shows clan stars before the breach attack.",
+      "FWA compliance embeds include a `Warplan` field from the same active plan source used by war mail, show resolved FWA-WIN threshold context (`N`/`H`) from warplan config, and strict-window breach context shows clan stars before the breach attack.",
       "`/fwa weight-age` scrapes the fwastats weight page and reports last submitted weight age (single clan or all tracked clans). Uses `FWASTATS_WEIGHT_COOKIE` when configured.",
       "`/fwa weight-link` returns fwastats weight page URL(s) for one clan or all tracked clans.",
       "`/fwa weight-health` summarizes all tracked clans and flags stale weight submissions (outdated >7d, severe >=30d) using the same auth flow as `weight-age`.",
