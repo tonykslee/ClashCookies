@@ -18,6 +18,21 @@ export type WarComplianceIssue = {
   ruleType: "missed_both" | "not_following_plan";
   expectedBehavior: string;
   actualBehavior: string;
+  attackDetails?: WarComplianceIssueAttackDetail[];
+  breachContext?: WarComplianceBreachContext | null;
+  reasonLabel?: string | null;
+};
+
+export type WarComplianceIssueAttackDetail = {
+  defenderPosition: number | null;
+  stars: number;
+  attackOrder: number | null;
+  isBreach: boolean;
+};
+
+export type WarComplianceBreachContext = {
+  starsAtBreach: number;
+  timeRemaining: string;
 };
 
 export type WarComplianceReport = {
@@ -207,7 +222,29 @@ type NotFollowingReason = {
     starsBeforeAttack: number;
     timeRemaining: string;
   } | null;
+  breachAttackOrders: number[];
 };
+
+type PlayerBehaviorDetails = {
+  actualBehavior: string;
+  reasonLabel: string;
+  strictWindowContext: NotFollowingReason["strictWindowContext"];
+  attackDetails: WarComplianceIssueAttackDetail[];
+};
+
+/** Purpose: normalize attack-order values so breach markers can be matched deterministically. */
+function normalizeAttackOrder(value: number | null | undefined): number | null {
+  const parsed = Number(value ?? NaN);
+  if (!Number.isFinite(parsed)) return null;
+  return Math.trunc(parsed);
+}
+
+/** Purpose: append a normalized attack-order only once to keep breach markers stable. */
+function pushUniqueAttackOrder(target: number[], value: number | null): void {
+  if (value === null) return;
+  if (target.includes(value)) return;
+  target.push(value);
+}
 
 /** Purpose: compute a user-facing violation reason without changing compliance policy decisions. */
 function describeNotFollowingReason(input: {
@@ -220,7 +257,10 @@ function describeNotFollowingReason(input: {
   if (input.matchType === "FWA" && input.expectedOutcome === "WIN") {
     const orderedPlayerAttacks = sortAttacksForComplianceOrder(input.playerAttacks);
     let firstStrictContext: NotFollowingReason["strictWindowContext"] = null;
+    let firstStrictWindowNonMirrorTripleContext: NotFollowingReason["strictWindowContext"] = null;
     let hasMirrorTripleInStrictWindow = false;
+    const nonMirrorStrictTripleBreachOrders: number[] = [];
+    const strictWindowNonCompliantOrders: number[] = [];
 
     for (const attack of orderedPlayerAttacks) {
       const ctx = input.attackContextByAttack.get(attack);
@@ -230,41 +270,67 @@ function describeNotFollowingReason(input: {
         timeRemaining: formatTimeRemaining(ctx.hoursRemaining),
       };
       firstStrictContext = firstStrictContext ?? strictContext;
+      const attackOrder = normalizeAttackOrder(attack.attackOrder ?? null);
 
       const stars = Number(attack.stars ?? 0);
       const trueStars = Number(attack.trueStars ?? 0);
-      if (ctx.isMirror && stars >= 3) {
+      const isMirrorTriple = ctx.isMirror && stars >= 3;
+      if (isMirrorTriple) {
         hasMirrorTripleInStrictWindow = true;
+      } else {
+        pushUniqueAttackOrder(strictWindowNonCompliantOrders, attackOrder);
       }
       if (!ctx.isMirror && stars === 3 && trueStars > 0) {
-        return {
-          label: "tripled non-mirror in strict window",
-          strictWindowContext: strictContext,
-        };
+        firstStrictWindowNonMirrorTripleContext =
+          firstStrictWindowNonMirrorTripleContext ?? strictContext;
+        pushUniqueAttackOrder(nonMirrorStrictTripleBreachOrders, attackOrder);
       }
+    }
+
+    if (nonMirrorStrictTripleBreachOrders.length > 0) {
+      return {
+        label: "tripled non-mirror in strict window",
+        strictWindowContext:
+          firstStrictWindowNonMirrorTripleContext ?? firstStrictContext,
+        breachAttackOrders: nonMirrorStrictTripleBreachOrders,
+      };
     }
 
     if (firstStrictContext && !hasMirrorTripleInStrictWindow) {
       return {
         label: "didn't triple mirror",
         strictWindowContext: firstStrictContext,
+        breachAttackOrders: strictWindowNonCompliantOrders,
       };
     }
 
     return {
       label: "didn't follow win plan",
       strictWindowContext: firstStrictContext,
+      breachAttackOrders: strictWindowNonCompliantOrders,
     };
   }
 
   if (input.matchType === "FWA" && input.expectedOutcome === "LOSE") {
     if (input.loseStyle === "TRIPLE_TOP_30") {
-      return { label: "attacked outside top-30", strictWindowContext: null };
+      return {
+        label: "attacked outside top-30",
+        strictWindowContext: null,
+        breachAttackOrders: [],
+      };
     }
-    return { label: "didn't follow lose-style rules", strictWindowContext: null };
+    return {
+      label: "didn't follow lose-style rules",
+      strictWindowContext: null,
+      breachAttackOrders: [],
+    };
   }
 
-  return { label: "hit non-mirror target", strictWindowContext: null };
+  return {
+    label: "hit non-mirror target",
+    strictWindowContext: null,
+    breachAttackOrders: [],
+  };
 }
 
 /** Purpose: describe expected plan behavior for actionable compliance output lines. */
@@ -297,11 +363,16 @@ function describeActualBehaviorForPlayer(
     expectedOutcome: "WIN" | "LOSE" | null;
     loseStyle: FwaLoseStyle;
   }
-): string {
+): PlayerBehaviorDetails {
   const normalizedTag = normalizeTag(input.playerTag);
   const playerAttacks = input.attacksByPlayerTag.get(normalizedTag) ?? [];
   if (playerAttacks.length === 0) {
-    return "No attack rows recorded.";
+    return {
+      actualBehavior: "No attack rows recorded.",
+      reasonLabel: "No details available.",
+      strictWindowContext: null,
+      attackDetails: [],
+    };
   }
   const orderedAttacks = sortAttacksForComplianceOrder(playerAttacks);
   const attackSummaries = orderedAttacks.map(
@@ -314,10 +385,26 @@ function describeActualBehaviorForPlayer(
     expectedOutcome: input.expectedOutcome,
     loseStyle: input.loseStyle,
   });
+  const breachOrders = new Set(reason.breachAttackOrders);
+  const attackDetails = orderedAttacks.map((row) => ({
+    defenderPosition: row.defenderPosition ?? null,
+    stars: Math.max(0, Math.min(3, Number(row.stars ?? 0))),
+    attackOrder: normalizeAttackOrder(row.attackOrder ?? null),
+    isBreach: breachOrders.has(normalizeAttackOrder(row.attackOrder ?? null) ?? NaN),
+  }));
+  if (!attackDetails.some((detail) => detail.isBreach) && attackDetails.length > 0) {
+    // Fail-safe: if source rows have missing attackOrder and no marker could be matched, mark the first line.
+    attackDetails[0] = { ...attackDetails[0], isBreach: true };
+  }
   const strictSuffix = reason.strictWindowContext
     ? ` | ${reason.strictWindowContext.starsBeforeAttack}★ | ${reason.strictWindowContext.timeRemaining}`
     : "";
-  return `${attackSummaries.join(", ")} : ${reason.label}${strictSuffix}`;
+  return {
+    actualBehavior: `${attackSummaries.join(", ")} : ${reason.label}${strictSuffix}`,
+    reasonLabel: reason.label,
+    strictWindowContext: reason.strictWindowContext,
+    attackDetails,
+  };
 }
 
 /** Purpose: map rule-engine name output into detailed issues for user-facing command output. */
@@ -335,9 +422,9 @@ function mapNamesToIssues(input: {
   return input.names.map((name) => {
     const participant = input.participantByLabel.get(name) ?? null;
     const playerTag = normalizeTag(participant?.playerTag ?? "") || "UNKNOWN";
-    const actualBehavior =
+    const behavior =
       input.ruleType === "missed_both"
-        ? ""
+        ? null
         : describeActualBehaviorForPlayer({
             playerTag,
             attacksByPlayerTag: input.attacksByPlayerTag,
@@ -352,7 +439,15 @@ function mapNamesToIssues(input: {
       playerPosition: participant?.playerPosition ?? null,
       ruleType: input.ruleType,
       expectedBehavior: input.expectedBehavior,
-      actualBehavior,
+      actualBehavior: behavior?.actualBehavior ?? "",
+      attackDetails: behavior?.attackDetails ?? [],
+      breachContext: behavior?.strictWindowContext
+        ? {
+            starsAtBreach: behavior.strictWindowContext.starsBeforeAttack,
+            timeRemaining: behavior.strictWindowContext.timeRemaining,
+          }
+        : null,
+      reasonLabel: behavior?.reasonLabel ?? null,
     };
   });
 }

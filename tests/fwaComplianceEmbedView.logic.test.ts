@@ -4,16 +4,31 @@ import {
   buildFwaComplianceEmbedView,
   toEmbedJson,
 } from "../src/commands/fwa/complianceEmbedView";
-import { type WarComplianceIssue } from "../src/services/WarComplianceService";
+import {
+  type WarComplianceIssue,
+  type WarComplianceIssueAttackDetail,
+} from "../src/services/WarComplianceService";
 
-function makeViolation(position: number, name: string, actualBehavior: string): WarComplianceIssue {
+function makeViolation(
+  position: number,
+  name: string,
+  options?: {
+    actualBehavior?: string;
+    attackDetails?: WarComplianceIssueAttackDetail[];
+    breachContext?: { starsAtBreach: number; timeRemaining: string } | null;
+    reasonLabel?: string;
+  }
+): WarComplianceIssue {
   return {
     playerTag: `#P${position}`,
     playerName: name,
     playerPosition: position,
     ruleType: "not_following_plan",
     expectedBehavior: "Mirror triple in strict window; avoid off-mirror triples/zeros.",
-    actualBehavior,
+    actualBehavior: options?.actualBehavior ?? "#5 (★ ★ ★), #14 (★ ★ ★) : tripled non-mirror in strict window | 56★ | 22h 1m left",
+    attackDetails: options?.attackDetails,
+    breachContext: options?.breachContext ?? { starsAtBreach: 56, timeRemaining: "22h 1m left" },
+    reasonLabel: options?.reasonLabel ?? "tripled non-mirror in strict window",
   };
 }
 
@@ -34,7 +49,7 @@ function flattenButtons(components: ReturnType<typeof buildFwaComplianceEmbedVie
 }
 
 describe("buildFwaComplianceEmbedView", () => {
-  it("renders main FWA compliance embed with summary and violations", () => {
+  it("renders summary without participants or divider and formats violations as per-attack lines", () => {
     const rendered = buildFwaComplianceEmbedView({
       userId: "123",
       key: "payload",
@@ -48,11 +63,13 @@ describe("buildFwaComplianceEmbedView", () => {
       attacksCount: 53,
       missedBoth: [makeMissed(10, "Missed One")],
       notFollowingPlan: [
-        makeViolation(
-          5,
-          "lotus",
-          "#5 (★ ★ ★), #14 (★ ★ ★) : tripled non-mirror in strict window | 56★ | 22h 1m left"
-        ),
+        makeViolation(5, "lotus", {
+          attackDetails: [
+            { defenderPosition: 5, stars: 3, attackOrder: 1, isBreach: false },
+            { defenderPosition: 14, stars: 3, attackOrder: 2, isBreach: true },
+          ],
+          breachContext: { starsAtBreach: 56, timeRemaining: "22h 1m left" },
+        }),
       ],
       activeView: "fwa_main",
       mainPage: 0,
@@ -60,19 +77,60 @@ describe("buildFwaComplianceEmbedView", () => {
     });
 
     const embed = toEmbedJson(rendered.embed);
+    const summary = embed.fields?.[0]?.value ?? "";
+    const plan = embed.fields?.[1]?.value ?? "";
+
     expect(embed.title).toBe("FWA War Compliance — Rocky Road");
     expect(embed.description).toContain("War #777 • Expected: WIN");
-    expect(embed.fields?.[0]?.name).toBe("Summary");
-    expect(embed.fields?.[1]?.name).toBe("Plan Violations");
-    expect(embed.fields?.[1]?.value).toContain("#5 lotus");
-    expect(embed.fields?.[1]?.value).toContain("→ #5 ★ ★ ★ | #14 ★ ★ ★");
-    expect(embed.fields?.[1]?.value).toContain("tripled non-mirror in strict window");
-    expect(embed.fields?.[1]?.value).toContain("56★ | 22h 1m left");
+    expect(summary).toContain("⚔️ Attacks Logged: 53");
+    expect(summary).toContain("❌ Missed Both Attacks: 1");
+    expect(summary).toContain("⚠️ Didn't Follow Plan: 1");
+    expect(summary).not.toContain("Participants:");
+    expect(summary).not.toContain("---");
+
+    expect(plan).toContain("#5 lotus");
+    expect(plan).toContain("→ #5 ★ ★ ★");
+    expect(plan).toContain("→ #14 ★ ★ ★ ⚠️");
+    expect(plan).toContain("56★ | 22h 1m left");
+    expect(plan).not.toContain("tripled non-mirror in strict window");
+    expect(plan).not.toContain("| #14");
 
     const buttons = flattenButtons(rendered.components);
     const missedToggle = buttons.find((button) => button.label === "Missed Attacks");
-    expect(missedToggle).toBeTruthy();
     expect(missedToggle?.disabled).toBe(false);
+  });
+
+  it("marks both attack lines when both attacks are breaches", () => {
+    const rendered = buildFwaComplianceEmbedView({
+      userId: "123",
+      key: "payload",
+      isFwa: true,
+      clanName: "Rocky Road",
+      warId: 777,
+      expectedOutcome: "WIN",
+      warStartTime: null,
+      warEndTime: null,
+      participantsCount: 50,
+      attacksCount: 53,
+      missedBoth: [],
+      notFollowingPlan: [
+        makeViolation(1, "Kirito", {
+          attackDetails: [
+            { defenderPosition: 1, stars: 3, attackOrder: 1, isBreach: true },
+            { defenderPosition: 2, stars: 3, attackOrder: 2, isBreach: true },
+          ],
+          breachContext: { starsAtBreach: 49, timeRemaining: "21h 27m left" },
+        }),
+      ],
+      activeView: "fwa_main",
+      mainPage: 0,
+      missedPage: 0,
+    });
+
+    const plan = toEmbedJson(rendered.embed).fields?.[1]?.value ?? "";
+    expect(plan).toContain("→ #1 ★ ★ ★ ⚠️");
+    expect(plan).toContain("→ #2 ★ ★ ★ ⚠️");
+    expect(plan).toContain("49★ | 21h 27m left");
   });
 
   it("disables missed-attacks toggle when there are no missed-both players", () => {
@@ -96,11 +154,10 @@ describe("buildFwaComplianceEmbedView", () => {
 
     const buttons = flattenButtons(rendered.components);
     const missedToggle = buttons.find((button) => button.label === "Missed Attacks");
-    expect(missedToggle).toBeTruthy();
     expect(missedToggle?.disabled).toBe(true);
   });
 
-  it("renders non-FWA missed view with disabled FWA compliance button and empty state", () => {
+  it("renders non-FWA missed view with disabled FWA compliance button and compact player spacing", () => {
     const rendered = buildFwaComplianceEmbedView({
       userId: "123",
       key: "payload",
@@ -112,7 +169,11 @@ describe("buildFwaComplianceEmbedView", () => {
       warEndTime: null,
       participantsCount: 50,
       attacksCount: 20,
-      missedBoth: [],
+      missedBoth: [
+        makeMissed(2, "Lucky Luke"),
+        makeMissed(5, "DiamondPro68"),
+        makeMissed(7, "Darkdestyne"),
+      ],
       notFollowingPlan: [],
       activeView: "missed",
       mainPage: 0,
@@ -122,25 +183,31 @@ describe("buildFwaComplianceEmbedView", () => {
     const embed = toEmbedJson(rendered.embed);
     expect(embed.title).toBe("Missed Attacks — Rocky Road");
     expect(embed.fields?.[0]?.name).toBe("Players");
-    expect(embed.fields?.[0]?.value).toContain("No players missed both attacks.");
+    const players = embed.fields?.[0]?.value ?? "";
+    expect(players).toContain("Lucky Luke (#M2)");
+    expect(players).toContain("DiamondPro68 (#M5)");
+    expect(players).toContain("Darkdestyne (#M7)");
+    expect(players).not.toContain("\n\n");
 
     const buttons = flattenButtons(rendered.components);
     const fwaButton = buttons.find((button) => button.label === "FWA Compliance");
-    expect(fwaButton).toBeTruthy();
     expect(fwaButton?.disabled).toBe(true);
   });
 
-  it("paginates violations and players with deterministic ordering", () => {
-    const notFollowing = Array.from({ length: 28 }, (_, idx) =>
-      makeViolation(
-        idx + 1,
-        `P${idx + 1}`,
-        `#${idx + 1} (★ ★ ☆), #${idx + 2} (★ ★ ★) : didn't triple mirror in strict window with extended reason text ${"x".repeat(48)} | ${20 + idx}★ | 21h 0m left`
-      )
+  it("keeps pagination deterministic for violations and missed-attacks lists", () => {
+    const notFollowing = Array.from({ length: 24 }, (_, idx) =>
+      makeViolation(idx + 1, `P${idx + 1}`, {
+        actualBehavior: `#${idx + 1} (★ ★ ★), #${idx + 2} (★ ★ ☆) : didn't triple mirror | ${45 + idx}★ | 21h 10m left`,
+        attackDetails: [
+          { defenderPosition: idx + 1, stars: 3, attackOrder: 1, isBreach: true },
+          { defenderPosition: idx + 2, stars: 2, attackOrder: 2, isBreach: true },
+        ],
+        breachContext: { starsAtBreach: 45 + idx, timeRemaining: "21h 10m left" },
+      })
     );
     const missed = Array.from({ length: 140 }, (_, idx) => makeMissed(idx + 1, `M${idx + 1}`));
 
-    const mainPageOne = buildFwaComplianceEmbedView({
+    const firstMain = buildFwaComplianceEmbedView({
       userId: "123",
       key: "payload",
       isFwa: true,
@@ -157,8 +224,7 @@ describe("buildFwaComplianceEmbedView", () => {
       mainPage: 0,
       missedPage: 0,
     });
-
-    const mainPageTwo = buildFwaComplianceEmbedView({
+    const secondMain = buildFwaComplianceEmbedView({
       userId: "123",
       key: "payload",
       isFwa: true,
@@ -175,16 +241,15 @@ describe("buildFwaComplianceEmbedView", () => {
       mainPage: 1,
       missedPage: 0,
     });
+    const firstMainEmbed = toEmbedJson(firstMain.embed);
+    const secondMainEmbed = toEmbedJson(secondMain.embed);
+    expect(firstMain.mainPageCount).toBeGreaterThan(1);
+    expect(firstMainEmbed.footer?.text).toMatch(/^Page 1\/\d+$/);
+    expect(secondMainEmbed.footer?.text).toMatch(/^Page 2\/\d+$/);
+    expect(firstMainEmbed.fields?.[1]?.value).toContain("#1 P1");
+    expect(secondMainEmbed.fields?.[1]?.value).not.toContain("#1 P1");
 
-    const mainOne = toEmbedJson(mainPageOne.embed);
-    const mainTwo = toEmbedJson(mainPageTwo.embed);
-    expect(mainPageOne.mainPageCount).toBeGreaterThan(1);
-    expect(mainOne.footer?.text).toMatch(/^Page 1\/\d+$/);
-    expect(mainTwo.footer?.text).toMatch(/^Page 2\/\d+$/);
-    expect(mainOne.fields?.[1]?.value).toContain("#1 P1");
-    expect(mainTwo.fields?.[1]?.value).not.toContain("#1 P1");
-
-    const missedPageTwo = buildFwaComplianceEmbedView({
+    const secondMissed = buildFwaComplianceEmbedView({
       userId: "123",
       key: "payload",
       isFwa: true,
@@ -201,8 +266,8 @@ describe("buildFwaComplianceEmbedView", () => {
       mainPage: 0,
       missedPage: 1,
     });
-    const missedTwo = toEmbedJson(missedPageTwo.embed);
-    expect(missedPageTwo.missedPageCount).toBeGreaterThan(1);
-    expect(missedTwo.footer?.text).toMatch(/^Page 2\/\d+$/);
+    const secondMissedEmbed = toEmbedJson(secondMissed.embed);
+    expect(secondMissed.missedPageCount).toBeGreaterThan(1);
+    expect(secondMissedEmbed.footer?.text).toMatch(/^Page 2\/\d+$/);
   });
 });
