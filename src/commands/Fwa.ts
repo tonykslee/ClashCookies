@@ -8815,13 +8815,19 @@ export const Fwa: Command = {
         },
         {
           name: "application-cookie",
-          description: "AspNetCore application cookie pair in name=value format",
+          description: "AspNetCore application cookie value (name auto-applied)",
           type: ApplicationCommandOptionType.String,
           required: false,
         },
         {
           name: "antiforgery-cookie",
-          description: "AspNetCore antiforgery cookie pair in name=value format",
+          description: "AspNetCore antiforgery cookie value (name auto-applied)",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+        },
+        {
+          name: "antiforgery-cookie-name",
+          description: "Optional antiforgery cookie name override",
           type: ApplicationCommandOptionType.String,
           required: false,
         },
@@ -9216,10 +9222,12 @@ export const Fwa: Command = {
 
       const applicationCookieRaw = interaction.options.getString("application-cookie", false);
       const antiforgeryCookieRaw = interaction.options.getString("antiforgery-cookie", false);
+      const antiforgeryCookieNameRaw = interaction.options.getString("antiforgery-cookie-name", false);
       const hasApplicationArg = applicationCookieRaw !== null;
       const hasAntiforgeryArg = antiforgeryCookieRaw !== null;
+      const hasAntiforgeryNameArg = antiforgeryCookieNameRaw !== null;
 
-      if (!hasApplicationArg && !hasAntiforgeryArg) {
+      if (!hasApplicationArg && !hasAntiforgeryArg && !hasAntiforgeryNameArg) {
         const status = await fwaStatsWeightCookieService.getCookieStatus();
         const updatedAtText =
           status.updatedAt && Number.isFinite(status.updatedAt.getTime())
@@ -9249,9 +9257,9 @@ export const Fwa: Command = {
         return;
       }
 
-      if (hasApplicationArg !== hasAntiforgeryArg) {
+      if (hasApplicationArg !== hasAntiforgeryArg || (!hasApplicationArg && hasAntiforgeryNameArg)) {
         await editReplySafe(
-          "Provide both `application-cookie` and `antiforgery-cookie`, or omit both to view status.",
+          "Provide both `application-cookie` and `antiforgery-cookie` (and optional `antiforgery-cookie-name`), or omit all cookie args to view status.",
           [],
           []
         );
@@ -9271,7 +9279,7 @@ export const Fwa: Command = {
       const antiforgeryCookie = String(antiforgeryCookieRaw ?? "").trim();
       if (!applicationCookie || !antiforgeryCookie) {
         await editReplySafe(
-          "Cookie values cannot be empty. Paste both cookie pairs in `name=value` format.",
+          "Cookie values cannot be empty. Paste both cookie values (or full `name=value` pairs).",
           [],
           []
         );
@@ -9297,6 +9305,7 @@ export const Fwa: Command = {
         const saved = await fwaStatsWeightCookieService.setCookies({
           applicationCookieRaw: applicationCookie,
           antiforgeryCookieRaw: antiforgeryCookie,
+          antiforgeryCookieNameRaw,
           guildId: interaction.guildId,
           userId: interaction.user.id,
         });
