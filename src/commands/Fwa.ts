@@ -31,6 +31,7 @@ import {
   type WarComplianceIssue,
 } from "../services/WarComplianceService";
 import { WarEventLogService } from "../services/WarEventLogService";
+import { buildComplianceWarPlanText } from "../services/warPlanDisplay";
 import { FwaStatsWeightService } from "../services/FwaStatsWeightService";
 import { FwaStatsWeightCookieService } from "../services/FwaStatsWeightCookieService";
 import { getNextWarMailRefreshAtMs } from "../services/refreshSchedule";
@@ -366,6 +367,7 @@ function renderComplianceViewPayload(input: {
     key: input.key,
     isFwa: input.payload.isFwa,
     clanName: input.payload.clanName,
+    warPlanText: input.payload.warPlanText,
     warId: input.payload.warId,
     expectedOutcome: input.payload.expectedOutcome,
     warStartTime: input.payload.warStartTime,
@@ -384,6 +386,34 @@ function renderComplianceViewPayload(input: {
     embeds: [rendered.embed],
     components: rendered.components,
   };
+}
+
+/** Purpose: resolve compliance warplan text from the same active plan source used by war mail, then format it for compliance display. */
+async function resolveComplianceWarPlanText(input: {
+  guildId: string;
+  clanTag: string;
+  clanName: string;
+  opponentName: string | null;
+  matchType: "FWA" | "BL" | "MM" | "SKIP" | null;
+  expectedOutcome: "WIN" | "LOSE" | null;
+  forcedLoseStyle?: "TRADITIONAL" | "TRIPLE_TOP_30" | null;
+  cocService: CoCService;
+}): Promise<string> {
+  if (input.matchType !== "FWA") {
+    return buildComplianceWarPlanText(null);
+  }
+  const history = new WarEventHistoryService(input.cocService);
+  const planText = await history.buildWarPlanText(
+    input.guildId,
+    input.matchType,
+    input.expectedOutcome,
+    input.clanTag,
+    input.opponentName,
+    "battle",
+    input.clanName,
+    { forcedLoseStyle: input.forcedLoseStyle ?? null }
+  );
+  return buildComplianceWarPlanText(planText);
 }
 
 /** Purpose: normalize stored role values to a raw Discord role ID. */
@@ -510,6 +540,7 @@ type FwaComplianceViewPayload = {
   clanName: string;
   clanTag: string;
   isFwa: boolean;
+  warPlanText: string | null;
   warId: number | null;
   expectedOutcome: "WIN" | "LOSE" | null;
   warStartTime: Date | null;
@@ -9057,6 +9088,7 @@ export const Fwa: Command = {
           clanName: clanDisplayName,
           clanTag: tag,
           isFwa: false,
+          warPlanText: null,
           warId: evaluation.warId,
           expectedOutcome: evaluation.expectedOutcome,
           warStartTime: evaluation.warStartTime,
@@ -9096,6 +9128,17 @@ export const Fwa: Command = {
         return;
       }
 
+      const warPlanText = await resolveComplianceWarPlanText({
+        guildId: interaction.guildId,
+        clanTag: evaluation.report.clanTag,
+        clanName: evaluation.report.clanName || clanDisplayName,
+        opponentName: evaluation.report.opponentName,
+        matchType: evaluation.report.matchType,
+        expectedOutcome: evaluation.report.expectedOutcome,
+        forcedLoseStyle: evaluation.report.loseStyle,
+        cocService,
+      });
+
       const key = createTransientFwaKey();
       const payload: FwaComplianceViewPayload = {
         userId: interaction.user.id,
@@ -9103,6 +9146,7 @@ export const Fwa: Command = {
         clanName: clanDisplayName,
         clanTag: tag,
         isFwa: true,
+        warPlanText,
         warId: evaluation.report.warId ?? evaluation.warId,
         expectedOutcome: evaluation.report.expectedOutcome ?? evaluation.expectedOutcome,
         warStartTime: evaluation.report.warStartTime ?? evaluation.warStartTime,

@@ -37,6 +37,8 @@ export type WarComplianceBreachContext = {
 
 export type WarComplianceReport = {
   clanTag: string;
+  clanName: string;
+  opponentName: string | null;
   warId: number | null;
   warStartTime: Date;
   warEndTime: Date | null;
@@ -70,6 +72,8 @@ export type WarComplianceEvaluation = {
   warEndTime: Date | null;
   matchType: MatchType;
   expectedOutcome: "WIN" | "LOSE" | null;
+  clanName: string | null;
+  opponentName: string | null;
   report: WarComplianceReport | null;
   participantsCount: number;
   attacksCount: number;
@@ -88,6 +92,8 @@ type WarSeedRow = {
 
 type ComplianceContext = {
   clanTag: string;
+  clanName: string;
+  opponentName: string | null;
   warId: number | null;
   warStartTime: Date;
   warEndTime: Date | null;
@@ -164,6 +170,24 @@ function sortAttacksForComplianceOrder(attacks: WarComplianceAttack[]): WarCompl
   return [...attacks].sort(compareAttacksForComplianceOrder);
 }
 
+/** Purpose: choose attack-order chronology when all rows have usable attackOrder values; otherwise fall back deterministically. */
+function sortAttacksForBreachContext(attacks: WarComplianceAttack[]): WarComplianceAttack[] {
+  const normalizedOrders = attacks.map((attack) => normalizeAttackOrder(attack.attackOrder));
+  const allOrdersValid =
+    normalizedOrders.length > 0 &&
+    normalizedOrders.every((order) => order !== null && order > 0);
+  if (!allOrdersValid) {
+    return sortAttacksForComplianceOrder(attacks);
+  }
+  return [...attacks].sort((a, b) => {
+    const orderDelta =
+      Number(normalizeAttackOrder(a.attackOrder) ?? 0) -
+      Number(normalizeAttackOrder(b.attackOrder) ?? 0);
+    if (orderDelta !== 0) return orderDelta;
+    return compareAttacksForComplianceOrder(a, b);
+  });
+}
+
 /** Purpose: format numeric stars as the visual triplet required by compliance output. */
 function formatStarTriplet(stars: number | null | undefined): string {
   const normalized = Math.max(0, Math.min(3, Number(stars ?? 0)));
@@ -182,14 +206,38 @@ function formatTimeRemaining(hoursRemaining: number | null): string {
   return `${hours}h ${minutes}m left`;
 }
 
+/** Purpose: derive stars-before-attack from lower attackOrder values when the breached row has a usable order. */
+function computeStarsBeforeAttack(
+  attack: WarComplianceAttack,
+  allAttacks: WarComplianceAttack[],
+  fallbackStarsBeforeAttack: number
+): number {
+  const attackOrder = normalizeAttackOrder(attack.attackOrder);
+  if (attackOrder === null || attackOrder <= 0) {
+    return fallbackStarsBeforeAttack;
+  }
+  return allAttacks.reduce((total, row) => {
+    const rowOrder = normalizeAttackOrder(row.attackOrder);
+    if (rowOrder === null || rowOrder <= 0 || rowOrder >= attackOrder) {
+      return total;
+    }
+    return total + Math.max(0, Number(row.trueStars ?? 0));
+  }, 0);
+}
+
 /** Purpose: compute strict-window metadata once using the same ordering/rules as compliance checks. */
 function buildAttackContextByAttack(attacks: WarComplianceAttack[]): Map<WarComplianceAttack, AttackContext> {
-  const ordered = sortAttacksForComplianceOrder(attacks);
+  const ordered = sortAttacksForBreachContext(attacks);
 
   const result = new Map<WarComplianceAttack, AttackContext>();
   let cumulativeClanStars = 0;
   for (const attack of ordered) {
-    const starsBeforeAttack = cumulativeClanStars;
+    const fallbackStarsBeforeAttack = cumulativeClanStars;
+    const starsBeforeAttack = computeStarsBeforeAttack(
+      attack,
+      attacks,
+      fallbackStarsBeforeAttack
+    );
     const gain = Math.max(0, Number(attack.trueStars ?? 0));
     cumulativeClanStars += gain;
 
@@ -255,7 +303,7 @@ function describeNotFollowingReason(input: {
   loseStyle: FwaLoseStyle;
 }): NotFollowingReason {
   if (input.matchType === "FWA" && input.expectedOutcome === "WIN") {
-    const orderedPlayerAttacks = sortAttacksForComplianceOrder(input.playerAttacks);
+    const orderedPlayerAttacks = sortAttacksForBreachContext(input.playerAttacks);
     let firstStrictContext: NotFollowingReason["strictWindowContext"] = null;
     let firstStrictWindowNonMirrorTripleContext: NotFollowingReason["strictWindowContext"] = null;
     let hasMirrorTripleInStrictWindow = false;
@@ -714,6 +762,8 @@ export class WarComplianceService {
       warEndTime?: Date | null;
       matchType?: MatchType;
       expectedOutcome?: "WIN" | "LOSE" | null;
+      clanName?: string | null;
+      opponentName?: string | null;
       report?: WarComplianceReport | null;
       participantsCount?: number;
       attacksCount?: number;
@@ -730,6 +780,8 @@ export class WarComplianceService {
         warEndTime: params.warEndTime ?? null,
         matchType: params.matchType ?? null,
         expectedOutcome: params.expectedOutcome ?? null,
+        clanName: params.clanName ?? null,
+        opponentName: params.opponentName ?? null,
         report: params.report ?? null,
         participantsCount: Number(params.participantsCount ?? 0),
         attacksCount: Number(params.attacksCount ?? 0),
@@ -816,6 +868,8 @@ export class WarComplianceService {
       const loseStyle = await getLoseStyleForClan(context.clanTag);
       const report: WarComplianceReport = {
         clanTag: context.clanTag,
+        clanName: context.clanName,
+        opponentName: context.opponentName,
         warId: context.warId,
         warStartTime: context.warStartTime,
         warEndTime: context.warEndTime,
@@ -836,6 +890,8 @@ export class WarComplianceService {
         warEndTime: context.warEndTime,
         matchType: context.matchType,
         expectedOutcome: context.expectedOutcome,
+        clanName: context.clanName,
+        opponentName: context.opponentName,
         report,
         participantsCount: context.participants.length,
         attacksCount: context.attacks.length,
@@ -936,6 +992,8 @@ export class WarComplianceService {
 
     const context: ComplianceContext = {
       clanTag,
+      clanName: clanTag,
+      opponentName: null,
       warId: Number.isFinite(Number(warSeed.warId)) ? Math.trunc(Number(warSeed.warId)) : null,
       warStartTime: warSeed.warStartTime,
       warEndTime: warSeed.warEndTime,
@@ -975,6 +1033,8 @@ export class WarComplianceService {
         endTime: true,
         matchType: true,
         outcome: true,
+        clanName: true,
+        opponentName: true,
       },
     });
     if (!current) return null;
@@ -1042,6 +1102,8 @@ export class WarComplianceService {
 
     return {
       clanTag: normalizeTag(input.clanTag),
+      clanName: String(current.clanName ?? normalizeTag(input.clanTag)).trim() || normalizeTag(input.clanTag),
+      opponentName: String(current.opponentName ?? "").trim() || null,
       warId: resolvedWarId,
       warStartTime,
       warEndTime,
@@ -1072,6 +1134,8 @@ export class WarComplianceService {
         warEndTime: true,
         matchType: true,
         expectedOutcome: true,
+        clanName: true,
+        opponentName: true,
       },
     });
     if (!historyRow) return null;
@@ -1128,6 +1192,8 @@ export class WarComplianceService {
 
     return {
       clanTag: normalizeTag(input.clanTag),
+      clanName: String(historyRow.clanName ?? normalizeTag(input.clanTag)).trim() || normalizeTag(input.clanTag),
+      opponentName: String(historyRow.opponentName ?? "").trim() || null,
       warId: Number.isFinite(Number(historyRow.warId))
         ? Math.trunc(Number(historyRow.warId))
         : null,
@@ -1312,6 +1378,8 @@ export class WarComplianceService {
 
     return {
       clanTag: context.clanTag,
+      clanName: context.clanName,
+      opponentName: context.opponentName,
       warId: context.warId,
       warStartTime: context.warStartTime,
       warEndTime: context.warEndTime,
