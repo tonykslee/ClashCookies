@@ -60,6 +60,89 @@ export class WarEventHistoryService {
     return `${payload.clanName}: ${before} -> ${after} (${deltaText})`;
   }
 
+  /** Purpose: resolve canonical persisted ended-war identity/metadata for downstream notify rendering. */
+  async resolveCanonicalWarEndedContext(input: {
+    clanTag: string;
+    opponentTag: string | null | undefined;
+    warStartTime: Date | null;
+  }): Promise<{
+    warId: number | null;
+    syncNumber: number | null;
+    clanName: string | null;
+    opponentTag: string | null;
+    opponentName: string | null;
+    warStartTime: Date | null;
+    warEndTime: Date | null;
+  } | null> {
+    const clanTag = normalizeTag(input.clanTag);
+    if (!clanTag) return null;
+    const opponentTag = normalizeTag(input.opponentTag ?? "");
+
+    let row: {
+      warId: number;
+      syncNumber: number | null;
+      clanName: string | null;
+      opponentTag: string | null;
+      opponentName: string | null;
+      warStartTime: Date;
+      warEndTime: Date | null;
+    } | null = null;
+    if (input.warStartTime) {
+      row = await prisma.clanWarHistory.findFirst({
+        where: {
+          clanTag,
+          warStartTime: input.warStartTime,
+          ...(opponentTag ? { opponentTag } : {}),
+        },
+        orderBy: [{ updatedAt: "desc" }],
+        select: {
+          warId: true,
+          syncNumber: true,
+          clanName: true,
+          opponentTag: true,
+          opponentName: true,
+          warStartTime: true,
+          warEndTime: true,
+        },
+      });
+    }
+    if (!row) {
+      row = await prisma.clanWarHistory.findFirst({
+        where: {
+          clanTag,
+          ...(opponentTag ? { opponentTag } : {}),
+        },
+        orderBy: [{ warEndTime: "desc" }, { warStartTime: "desc" }, { updatedAt: "desc" }],
+        select: {
+          warId: true,
+          syncNumber: true,
+          clanName: true,
+          opponentTag: true,
+          opponentName: true,
+          warStartTime: true,
+          warEndTime: true,
+        },
+      });
+    }
+    if (!row) return null;
+
+    return {
+      warId:
+        row.warId !== null && row.warId !== undefined && Number.isFinite(Number(row.warId))
+          ? Math.trunc(Number(row.warId))
+          : null,
+      syncNumber:
+        row.syncNumber !== null && row.syncNumber !== undefined && Number.isFinite(Number(row.syncNumber))
+          ? Math.trunc(Number(row.syncNumber))
+          : null,
+      clanName: row.clanName ?? null,
+      opponentTag: normalizeTag(row.opponentTag ?? "") || null,
+      opponentName: row.opponentName ?? null,
+      warStartTime: row.warStartTime ?? null,
+      warEndTime: row.warEndTime ?? null,
+    };
+  }
+
   /** Purpose: build per-clan war-plan instruction text for start/battle embeds. */
   async buildWarPlanText(
     guildIdOrMatchType: string | null | undefined,

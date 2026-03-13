@@ -796,3 +796,192 @@ describe("War-end points reconciliation", () => {
     expect(updateSpy).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("War-ended sync and metadata canonicalization", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("uses the same resolved sync for tie outcome logic and displayed event sync", async () => {
+    const service = new WarEventLogService({ channels: { fetch: vi.fn() } } as unknown as Client, {} as any);
+    const sub = makeSubscription({
+      clanTag: "#R80L8VYG",
+      opponentTag: "#8CPGGJ8P",
+      matchType: "FWA",
+      inferredMatchType: true,
+      state: "inWar",
+      startTime: new Date("2026-03-12T00:00:00.000Z"),
+      warStartFwaPoints: 1200,
+      fwaPoints: 1200,
+    });
+    const nowMs = Date.now();
+
+    vi.spyOn(prisma, "$queryRaw").mockResolvedValue([sub] as any);
+    const updateSpy = vi.spyOn(prisma.currentWar, "update").mockResolvedValue({} as any);
+    const dispatchSpy = vi.fn().mockResolvedValue(undefined);
+
+    (service as any).getCurrentWarSnapshot = vi.fn().mockResolvedValue({
+      war: null,
+      observation: { kind: "success" },
+    });
+    (service as any).hasWarEndRecorded = vi.fn().mockResolvedValue(false);
+    (service as any).ensureCurrentWarId = vi.fn().mockResolvedValue(1001);
+    (service as any).syncWarAttacksFromWarSnapshot = vi.fn().mockResolvedValue(undefined);
+    (service as any).dispatchDetectedEvent = dispatchSpy;
+    (service as any).reconcileWarEndedPointsDiscrepancy = vi.fn().mockResolvedValue(undefined);
+    (service as any).pointsPolicy = {
+      evaluatePollerFetch: vi.fn().mockReturnValue({
+        allowed: true,
+        fetchReason: "post_war_reconciliation",
+      }),
+    };
+    (service as any).currentSyncs = {
+      markNeedsValidation: vi.fn().mockResolvedValue(undefined),
+      getCurrentSyncForClan: vi.fn().mockResolvedValue({ syncNum: 476 }),
+      upsertPointsSync: vi.fn().mockResolvedValue(undefined),
+    };
+    (service as any).points = {
+      fetchSnapshot: vi
+        .fn()
+        .mockResolvedValueOnce({
+          balance: 1200,
+          winnerBoxTags: ["#8CPGGJ8P"],
+          winnerBoxText: "",
+          effectiveSync: 477,
+          fetchedAtMs: nowMs,
+        })
+        .mockResolvedValueOnce({
+          balance: 1200,
+          activeFwa: true,
+          notFound: false,
+          fetchedAtMs: nowMs,
+        }),
+    };
+    (service as any).history = {
+      getWarEndResultSnapshot: vi.fn().mockResolvedValue({
+        clanStars: null,
+        opponentStars: null,
+        clanDestruction: null,
+        opponentDestruction: null,
+        warEndTime: null,
+        resultLabel: "UNKNOWN",
+      }),
+    };
+
+    await (service as any).processSubscription("guild-1", "#R80L8VYG", {
+      previousSync: 476,
+      activeSync: 477,
+    });
+
+    expect(dispatchSpy).toHaveBeenCalledTimes(1);
+    const detectedPayload = dispatchSpy.mock.calls[0]?.[0]?.payload;
+    expect(detectedPayload.syncNumber).toBe(476);
+    expect(detectedPayload.outcome).toBe("WIN");
+    const updateData = updateSpy.mock.calls[0]?.[0]?.data;
+    expect(updateData?.outcome).toBe("WIN");
+  });
+
+  it("uses canonical persisted war-ended context for live dispatch metadata", async () => {
+    const service = new WarEventLogService({ channels: { fetch: vi.fn() } } as unknown as Client, {} as any);
+    const payload = buildBasePayload({
+      eventType: "war_ended",
+      clanTag: "#R80L8VYG",
+      clanName: "DARK EMPIRE™!",
+      opponentTag: "#8CPGGJ8P",
+      opponentName: "War Farmers 17",
+      syncNumber: 476,
+      warStartTime: new Date("2026-03-10T00:00:00.000Z"),
+      warEndTime: new Date("2026-03-11T00:00:00.000Z"),
+    });
+    const sub = makeSubscription({
+      guildId: "guild-1",
+      clanTag: "#R80L8VYG",
+      channelId: "chan-1",
+      notify: true,
+      state: "notInWar",
+    });
+    const reserveSpy = vi
+      .spyOn(service as any, "reserveEventDelivery")
+      .mockResolvedValue({ allowed: true, existingMessage: null, warId: "1001303" });
+    const emitSpy = vi.spyOn(service as any, "emitEvent").mockResolvedValue(undefined);
+
+    (service as any).history = {
+      persistWarEndHistory: vi.fn().mockResolvedValue(undefined),
+      resolveCanonicalWarEndedContext: vi.fn().mockResolvedValue({
+        warId: 1001303,
+        syncNumber: 477,
+        clanName: "DARK EMPIRE™!",
+        opponentTag: "#8CPGGJ8P",
+        opponentName: "War Farmers 17",
+        warStartTime: new Date("2026-03-09T00:00:00.000Z"),
+        warEndTime: new Date("2026-03-10T00:00:00.000Z"),
+      }),
+    };
+
+    await (service as any).dispatchDetectedEvent({
+      sub,
+      payload,
+      resolvedWarId: 1001350,
+    });
+
+    expect(reserveSpy).toHaveBeenCalledTimes(1);
+    const reserveArgs = reserveSpy.mock.calls[0]?.[0];
+    expect(reserveArgs.resolvedWarId).toBe(1001303);
+    expect(reserveArgs.payload.syncNumber).toBe(477);
+    expect(reserveArgs.payload.warStartTime?.toISOString()).toBe("2026-03-09T00:00:00.000Z");
+
+    expect(emitSpy).toHaveBeenCalledTimes(1);
+    expect(emitSpy.mock.calls[0]?.[2]).toBe(1001303);
+    expect(emitSpy.mock.calls[0]?.[1]?.syncNumber).toBe(477);
+  });
+
+  it("preview last-war path uses canonical persisted war-ended context metadata", async () => {
+    const service = buildServiceWithHistoryStub();
+    const history = (service as any).history;
+    vi.spyOn(history, "resolveCanonicalWarEndedContext").mockResolvedValue({
+      warId: 1001303,
+      syncNumber: 477,
+      clanName: "Rocky Road",
+      opponentTag: "#8CPGGJ8P",
+      opponentName: "War Farmers 17",
+      warStartTime: new Date("2026-03-09T00:00:00.000Z"),
+      warEndTime: new Date("2026-03-10T00:00:00.000Z"),
+    });
+    vi.spyOn(prisma.clanNotifyConfig, "findUnique").mockResolvedValue({
+      guildId: "guild-1",
+      clanTag: "R80L8VYG",
+      channelId: "chan-1",
+    } as any);
+    (service as any).findSubscriptionByGuildAndTag = vi.fn().mockResolvedValue(
+      makeSubscription({
+        guildId: "guild-1",
+        clanTag: "#R80L8VYG",
+      })
+    );
+    (service as any).buildTestEventPayload = vi.fn().mockResolvedValue(
+      buildBasePayload({
+        eventType: "war_ended",
+        clanTag: "#R80L8VYG",
+        clanName: "Rocky Road",
+        opponentTag: "#8CPGGJ8P",
+        opponentName: "War Farmers 17",
+        syncNumber: 476,
+        warStartTime: new Date("2026-03-12T00:00:00.000Z"),
+        resolvedWarIdHint: 1001350,
+      })
+    );
+
+    const result = await service.buildTestEventPreviewForClan({
+      guildId: "guild-1",
+      clanTag: "#R80L8VYG",
+      eventType: "war_ended",
+      source: "last",
+    });
+
+    expect(result.ok).toBe(true);
+    const fields = result.embeds?.[0]?.data?.fields ?? [];
+    const metadataField = fields.find((field) => field.name === "War Metadata");
+    expect(metadataField?.value).toContain("War ID: 1001303");
+    expect(metadataField?.value).toContain("Sync: 477");
+  });
+});
