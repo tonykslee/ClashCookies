@@ -29,6 +29,7 @@ import {
   handleFwaMatchSkipSyncActionButton,
   handleFwaMatchSkipSyncConfirmButton,
   handleFwaMatchSkipSyncUndoButton,
+  handleFwaComplianceViewButton,
   handleFwaMailConfirmButton,
   handleFwaMailConfirmNoPingButton,
   handleFwaMailBackButton,
@@ -48,6 +49,7 @@ import {
   isFwaOutcomeActionButtonCustomId,
   isFwaMatchSelectCustomId,
   isFwaMatchTypeActionButtonCustomId,
+  isFwaComplianceViewButtonCustomId,
   handlePointsPostButton,
   isFwaMatchCopyButtonCustomId,
   isPointsPostButtonCustomId,
@@ -317,6 +319,21 @@ const handleButtonInteraction = async (
         });
       }
     }
+  }
+
+  if (isFwaComplianceViewButtonCustomId(interaction.customId)) {
+    try {
+      await handleFwaComplianceViewButton(interaction);
+    } catch (err) {
+      console.error(`FWA compliance view button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to update compliance view.",
+        });
+      }
+    }
+    return;
   }
 
   if (isFwaMatchCopyButtonCustomId(interaction.customId)) {

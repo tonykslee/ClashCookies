@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildFwaComplianceViewCustomId,
   buildFwaMatchSendMailCustomId,
   buildMatchTypeActionCustomId,
   buildPointsPostButtonCustomId,
   createTransientFwaKey,
+  isFwaComplianceViewButtonCustomId,
   isFwaMatchSendMailButtonCustomId,
   isPointsPostButtonCustomId,
+  parseFwaComplianceViewCustomId,
   parseFwaMatchSendMailCustomId,
   parseMatchTypeActionCustomId,
   parsePointsPostButtonCustomId,
@@ -56,5 +59,20 @@ describe("fwa custom-id helpers", () => {
     expect(keyA.length).toBeGreaterThan(6);
     expect(keyB.length).toBeGreaterThan(6);
     expect(keyA).not.toBe(keyB);
+  });
+
+  it("round-trips fwa compliance view custom ids", () => {
+    const customId = buildFwaComplianceViewCustomId({
+      userId: "444",
+      key: "abc123",
+      action: "open_missed",
+    });
+
+    expect(isFwaComplianceViewButtonCustomId(customId)).toBe(true);
+    expect(parseFwaComplianceViewCustomId(customId)).toEqual({
+      userId: "444",
+      key: "abc123",
+      action: "open_missed",
+    });
   });
 });

@@ -14,6 +14,7 @@ const FWA_MAIL_CONFIRM_NO_PING_PREFIX = "fwa-mail-confirm-no-ping";
 const FWA_MAIL_BACK_PREFIX = "fwa-mail-back";
 const FWA_MAIL_REFRESH_PREFIX = "fwa-mail-refresh";
 const FWA_MATCH_SEND_MAIL_PREFIX = "fwa-match-send-mail";
+const FWA_COMPLIANCE_VIEW_PREFIX = "fwa-compliance-view";
 
 export type MatchTypeActionParams = {
   userId: string;
@@ -42,6 +43,13 @@ export type MatchSkipSyncActionParams = {
   userId: string;
   key: string;
   tag: string;
+};
+
+export type FwaComplianceViewAction = "open_missed" | "open_main" | "prev" | "next";
+export type FwaComplianceViewParams = {
+  userId: string;
+  key: string;
+  action: FwaComplianceViewAction;
 };
 
 /** Purpose: normalize incoming clan tags to the internal uppercase/hashless form. */
@@ -358,4 +366,32 @@ export function parseFwaMatchSendMailCustomId(
 /** Purpose: detect send-mail-from-match button prefix. */
 export function isFwaMatchSendMailButtonCustomId(customId: string): boolean {
   return customId.startsWith(`${FWA_MATCH_SEND_MAIL_PREFIX}:`);
+}
+
+/** Purpose: build custom-id for /fwa compliance embed view buttons. */
+export function buildFwaComplianceViewCustomId(params: FwaComplianceViewParams): string {
+  return `${FWA_COMPLIANCE_VIEW_PREFIX}:${params.userId}:${params.key}:${params.action}`;
+}
+
+/** Purpose: parse /fwa compliance embed view button custom-id payload. */
+export function parseFwaComplianceViewCustomId(
+  customId: string
+): FwaComplianceViewParams | null {
+  const values = parseCustomIdParts(customId, FWA_COMPLIANCE_VIEW_PREFIX, 4);
+  if (!values) return null;
+  const [userId, key, rawAction] = values;
+  const action: FwaComplianceViewAction | null =
+    rawAction === "open_missed" ||
+    rawAction === "open_main" ||
+    rawAction === "prev" ||
+    rawAction === "next"
+      ? rawAction
+      : null;
+  if (!action) return null;
+  return { userId, key, action };
+}
+
+/** Purpose: detect /fwa compliance embed view button custom-id prefix. */
+export function isFwaComplianceViewButtonCustomId(customId: string): boolean {
+  return customId.startsWith(`${FWA_COMPLIANCE_VIEW_PREFIX}:`);
 }
