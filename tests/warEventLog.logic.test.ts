@@ -4,6 +4,7 @@ import {
   applyWarEndedMaintenanceGuardForTest,
   buildBattleDayRefreshEditPayloadForTest,
   buildNotifyEventPostedContentForTest,
+  computeWarSnapshotAttackRowsForTest,
   computeWarComplianceForTest,
   computeWarPointsDeltaForTest,
   resolveActiveWarTimingForTest,
@@ -118,6 +119,129 @@ describe("WarEventLogService.computeWarPointsDeltaForTest", () => {
       },
     });
     expect(delta).toBeNull();
+  });
+});
+
+describe("WarEventLogService.computeWarSnapshotAttackRowsForTest", () => {
+  it("stores zero trueStars for later triples on already-tripled defenders", () => {
+    const rows = computeWarSnapshotAttackRowsForTest({
+      ownMembers: [
+        {
+          tag: "#A1",
+          name: "Alice",
+          mapPosition: 1,
+          attacks: [{ order: 1, stars: 3, defenderTag: "#D1" }],
+        },
+        {
+          tag: "#B1",
+          name: "Bob",
+          mapPosition: 2,
+          attacks: [{ order: 2, stars: 3, defenderTag: "#D1" }],
+        },
+      ],
+      opponentMembers: [{ tag: "#D1", name: "Def 1", mapPosition: 1 }],
+    });
+
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.trueStars).toBe(3);
+    expect(rows[1]?.trueStars).toBe(0);
+  });
+
+  it("computes cross-player incremental gains in global attack order", () => {
+    const rows = computeWarSnapshotAttackRowsForTest({
+      ownMembers: [
+        {
+          tag: "#A1",
+          name: "Alice",
+          mapPosition: 1,
+          attacks: [{ order: 1, stars: 1, defenderTag: "#D1" }],
+        },
+        {
+          tag: "#B1",
+          name: "Bob",
+          mapPosition: 2,
+          attacks: [{ order: 2, stars: 3, defenderTag: "#D1" }],
+        },
+        {
+          tag: "#C1",
+          name: "Cara",
+          mapPosition: 3,
+          attacks: [{ order: 3, stars: 2, defenderTag: "#D1" }],
+        },
+      ],
+      opponentMembers: [{ tag: "#D1", name: "Def 1", mapPosition: 1 }],
+    });
+
+    expect(rows.map((row) => row.trueStars)).toEqual([1, 2, 0]);
+  });
+
+  it("remains deterministic regardless of own-member iteration order", () => {
+    const ownMembersA = [
+      {
+        tag: "#A1",
+        name: "Alice",
+        mapPosition: 1,
+        attacks: [{ order: 1, stars: 1, defenderTag: "#D1" }],
+      },
+      {
+        tag: "#B1",
+        name: "Bob",
+        mapPosition: 2,
+        attacks: [{ order: 2, stars: 3, defenderTag: "#D1" }],
+      },
+      {
+        tag: "#C1",
+        name: "Cara",
+        mapPosition: 3,
+        attacks: [{ order: 3, stars: 2, defenderTag: "#D1" }],
+      },
+    ];
+    const ownMembersB = [ownMembersA[2], ownMembersA[0], ownMembersA[1]];
+    const opponentMembers = [{ tag: "#D1", name: "Def 1", mapPosition: 1 }];
+
+    const rowsA = computeWarSnapshotAttackRowsForTest({ ownMembers: ownMembersA, opponentMembers });
+    const rowsB = computeWarSnapshotAttackRowsForTest({ ownMembers: ownMembersB, opponentMembers });
+
+    const signature = (rows: typeof rowsA) =>
+      [...rows]
+        .sort((a, b) => {
+          if (a.playerTag < b.playerTag) return -1;
+          if (a.playerTag > b.playerTag) return 1;
+          return a.attackNumber - b.attackNumber;
+        })
+        .map((row) => `${row.playerTag}:${row.attackNumber}:${row.trueStars}`);
+
+    expect(signature(rowsA)).toEqual(signature(rowsB));
+  });
+
+  it("uses deterministic order fallback and fail-safe trueStars when defender identity is missing", () => {
+    const rows = computeWarSnapshotAttackRowsForTest({
+      ownMembers: [
+        {
+          tag: "#A1",
+          name: "Alice",
+          mapPosition: 1,
+          attacks: [
+            { stars: 3, defenderPosition: 4 },
+            { stars: 2 },
+          ],
+        },
+        {
+          tag: "#B1",
+          name: "Bob",
+          mapPosition: 2,
+          attacks: [{ stars: 3, defenderPosition: 4 }],
+        },
+      ],
+      opponentMembers: [],
+    });
+
+    expect(rows.map((row) => row.trueStars)).toEqual([3, 0, 0]);
+    const missingDefenderRow = rows.find(
+      (row) => row.defenderTag === null && row.defenderPosition === null
+    );
+    expect(missingDefenderRow).toBeDefined();
+    expect(missingDefenderRow?.trueStars).toBe(0);
   });
 });
 

@@ -248,8 +248,157 @@ type WarMemberSnapshot = {
     stars?: number;
     destructionPercentage?: number;
     defenderTag?: string;
+    defenderPosition?: number;
   }> | null;
 };
+
+type SnapshotWarAttackRow = {
+  playerTag: string;
+  playerName: string;
+  playerPosition: number | null;
+  attacksUsed: number;
+  attackOrder: number;
+  attackNumber: number;
+  defenderTag: string | null;
+  defenderName: string | null;
+  defenderPosition: number | null;
+  stars: number;
+  trueStars: number;
+  destruction: number;
+};
+
+type PendingSnapshotWarAttackRow = SnapshotWarAttackRow & {
+  sortAttackOrder: number;
+  sortPlayerPosition: number;
+  sortPlayerTag: string;
+  sortAttackNumber: number;
+  sortMemberIndex: number;
+};
+
+function toFiniteIntOrNull(input: unknown): number | null {
+  const parsed = Number(input);
+  if (!Number.isFinite(parsed)) return null;
+  return Math.trunc(parsed);
+}
+
+function compareLexicographic(a: string, b: string): number {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
+
+/** Purpose: compute global war-snapshot attack rows with deterministic true-stars attribution. */
+function computeWarSnapshotAttackRows(input: {
+  ownMembers: WarMemberSnapshot[];
+  opponentMembers: WarMemberSnapshot[];
+}): SnapshotWarAttackRow[] {
+  const opponentByTag = new Map<string, WarMemberSnapshot>();
+  for (const member of input.opponentMembers) {
+    const tag = normalizeTag(member?.tag ?? "");
+    if (tag) opponentByTag.set(tag, member);
+  }
+
+  const pendingRows: PendingSnapshotWarAttackRow[] = [];
+  for (let memberIndex = 0; memberIndex < input.ownMembers.length; memberIndex += 1) {
+    const member = input.ownMembers[memberIndex];
+    const playerTag = normalizeTag(member?.tag ?? "");
+    if (!playerTag) continue;
+    const playerName = String(member?.name ?? playerTag).trim() || playerTag;
+    const playerPosition = toFiniteIntOrNull(member?.mapPosition);
+    const attacks = Array.isArray(member?.attacks) ? member.attacks : [];
+    const attacksUsed = attacks.length;
+    const indexedAttacks = attacks.map((attack, index) => ({ attack, index }));
+    indexedAttacks.sort((a, b) => {
+      const orderA = toFiniteIntOrNull(a.attack?.order);
+      const orderB = toFiniteIntOrNull(b.attack?.order);
+      const normalizedA = orderA ?? Number.MAX_SAFE_INTEGER;
+      const normalizedB = orderB ?? Number.MAX_SAFE_INTEGER;
+      return normalizedA - normalizedB || a.index - b.index;
+    });
+
+    for (let idx = 0; idx < indexedAttacks.length; idx += 1) {
+      const wrapped = indexedAttacks[idx];
+      const attack = wrapped.attack;
+      const attackNumber = idx + 1;
+      const explicitOrder = toFiniteIntOrNull(attack?.order);
+      const attackOrder = explicitOrder ?? attackNumber;
+      const sortAttackOrder = explicitOrder ?? Number.MAX_SAFE_INTEGER;
+      const defenderTag = normalizeTag(attack?.defenderTag ?? "");
+      const defender = defenderTag ? opponentByTag.get(defenderTag) ?? null : null;
+      const defenderName = defender
+        ? String(defender.name ?? defenderTag).trim() || defenderTag
+        : null;
+      const defenderPosition =
+        toFiniteIntOrNull(defender?.mapPosition) ??
+        toFiniteIntOrNull(attack?.defenderPosition);
+      const stars = Math.max(0, Number(attack?.stars ?? 0));
+      const destruction = Number(attack?.destructionPercentage ?? 0);
+
+      pendingRows.push({
+        playerTag,
+        playerName,
+        playerPosition,
+        attacksUsed,
+        attackOrder,
+        attackNumber,
+        defenderTag: defenderTag || null,
+        defenderName,
+        defenderPosition,
+        stars,
+        trueStars: 0,
+        destruction,
+        sortAttackOrder,
+        sortPlayerPosition: playerPosition ?? Number.MAX_SAFE_INTEGER,
+        sortPlayerTag: playerTag,
+        sortAttackNumber: attackNumber,
+        sortMemberIndex: memberIndex,
+      });
+    }
+  }
+
+  // Global deterministic order: attack.order, then stable member/attack fallbacks.
+  pendingRows.sort((a, b) => {
+    return (
+      a.sortAttackOrder - b.sortAttackOrder ||
+      a.sortPlayerPosition - b.sortPlayerPosition ||
+      compareLexicographic(a.sortPlayerTag, b.sortPlayerTag) ||
+      a.sortAttackNumber - b.sortAttackNumber ||
+      a.sortMemberIndex - b.sortMemberIndex
+    );
+  });
+
+  const defenderBestStars = new Map<string, number>();
+  for (const row of pendingRows) {
+    const defenderKey =
+      row.defenderTag !== null && row.defenderTag.length > 0
+        ? `TAG:${row.defenderTag}`
+        : row.defenderPosition !== null
+          ? `POS:${row.defenderPosition}`
+          : null;
+    if (!defenderKey) {
+      row.trueStars = 0;
+      continue;
+    }
+    const previousBest = defenderBestStars.get(defenderKey) ?? 0;
+    row.trueStars = Math.max(0, row.stars - previousBest);
+    defenderBestStars.set(defenderKey, Math.max(previousBest, row.stars));
+  }
+
+  return pendingRows.map((row) => ({
+    playerTag: row.playerTag,
+    playerName: row.playerName,
+    playerPosition: row.playerPosition,
+    attacksUsed: row.attacksUsed,
+    attackOrder: row.attackOrder,
+    attackNumber: row.attackNumber,
+    defenderTag: row.defenderTag,
+    defenderName: row.defenderName,
+    defenderPosition: row.defenderPosition,
+    stars: row.stars,
+    trueStars: row.trueStars,
+    destruction: row.destruction,
+  }));
+}
 
 type EventEmitPayload = {
   eventType: EventType;
@@ -524,6 +673,7 @@ function applyWarEndedMaintenanceGuard(input: {
 export const advanceCocWarOutageStateForTest = advanceCocWarOutageState;
 export const resolveActiveWarTimingForTest = resolveActiveWarTiming;
 export const applyWarEndedMaintenanceGuardForTest = applyWarEndedMaintenanceGuard;
+export const computeWarSnapshotAttackRowsForTest = computeWarSnapshotAttackRows;
 
 export class WarEventLogService {
   private readonly points: PointsProjectionService;
@@ -1795,15 +1945,10 @@ export class WarEventLogService {
     const opponentMembers = Array.isArray(war.opponent?.members)
       ? (war.opponent?.members as WarMemberSnapshot[])
       : [];
-    const opponentByTag = new Map<string, WarMemberSnapshot>();
-    for (const m of opponentMembers) {
-      const tag = normalizeTag(m.tag);
-      if (tag) opponentByTag.set(tag, m);
-    }
-
     const ownMembers = Array.isArray(war.clan.members)
       ? (war.clan.members as WarMemberSnapshot[])
       : [];
+
     for (const member of ownMembers) {
       const playerTag = normalizeTag(member.tag);
       if (!playerTag) continue;
@@ -1812,18 +1957,14 @@ export class WarEventLogService {
         ? Number(member.mapPosition)
         : null;
       const attacks = Array.isArray(member.attacks) ? member.attacks : [];
-      const sortedAttacks = [...attacks].sort(
-        (a, b) =>
-          Number(a?.order ?? Number.MAX_SAFE_INTEGER) -
-          Number(b?.order ?? Number.MAX_SAFE_INTEGER)
-      );
+      const attacksUsed = attacks.length;
 
       await prisma.$executeRaw(
         Prisma.sql`
           INSERT INTO "WarAttacks"
             ("warId","clanTag","clanName","opponentClanTag","opponentClanName","warStartTime","warEndTime","warState","playerTag","playerName","playerPosition","attacksUsed","attackOrder","attackNumber","defenderTag","defenderName","defenderPosition","stars","trueStars","destruction","attackSeenAt","createdAt","updatedAt")
           VALUES
-            (${params.resolvedWarId}, ${ownClanTag}, ${ownClanName}, ${opponentClanTag || null}, ${opponentClanName || null}, ${warStartTime}, ${warEndTime}, ${warState}, ${playerTag}, ${playerName}, ${playerPosition}, ${sortedAttacks.length}, 0, 0, NULL, NULL, NULL, 0, 0, 0, ${observedAt}, NOW(), NOW())
+            (${params.resolvedWarId}, ${ownClanTag}, ${ownClanName}, ${opponentClanTag || null}, ${opponentClanName || null}, ${warStartTime}, ${warEndTime}, ${warState}, ${playerTag}, ${playerName}, ${playerPosition}, ${attacksUsed}, 0, 0, NULL, NULL, NULL, 0, 0, 0, ${observedAt}, NOW(), NOW())
           ON CONFLICT ("clanTag","warStartTime","playerTag","attackOrder")
           DO UPDATE SET
             "warId" = EXCLUDED."warId",
@@ -1839,58 +1980,41 @@ export class WarEventLogService {
             "updatedAt" = NOW()
         `
       );
+    }
 
-      let attackNum = 0;
-      const defenderBestStars = new Map<string, number>();
-      for (const attack of sortedAttacks) {
-        attackNum += 1;
-        const attackOrder = Number(attack?.order ?? attackNum);
-        const defenderTag = normalizeTag(attack?.defenderTag ?? "");
-        const defender = opponentByTag.get(defenderTag);
-        const defenderName = defender
-          ? String(defender.name ?? defenderTag).trim() || defenderTag
-          : null;
-        const defenderPosition =
-          defender && Number.isFinite(Number(defender.mapPosition))
-            ? Number(defender.mapPosition)
-            : null;
-        const stars = Math.max(0, Number(attack?.stars ?? 0));
-        const previousBest = defenderTag ? defenderBestStars.get(defenderTag) ?? 0 : 0;
-        const trueStars = Math.max(0, stars - previousBest);
-        if (defenderTag) {
-          defenderBestStars.set(defenderTag, Math.max(previousBest, stars));
-        }
-        const destruction = Number(attack?.destructionPercentage ?? 0);
-
-        await prisma.$executeRaw(
-          Prisma.sql`
-            INSERT INTO "WarAttacks"
-              ("warId","clanTag","clanName","opponentClanTag","opponentClanName","warStartTime","warEndTime","warState","playerTag","playerName","playerPosition","attacksUsed","attackOrder","attackNumber","defenderTag","defenderName","defenderPosition","stars","trueStars","destruction","attackSeenAt","createdAt","updatedAt")
-            VALUES
-              (${params.resolvedWarId}, ${ownClanTag}, ${ownClanName}, ${opponentClanTag || null}, ${opponentClanName || null}, ${warStartTime}, ${warEndTime}, ${warState}, ${playerTag}, ${playerName}, ${playerPosition}, ${sortedAttacks.length}, ${attackOrder}, ${attackNum}, ${defenderTag || null}, ${defenderName}, ${defenderPosition}, ${stars}, ${trueStars}, ${destruction}, ${observedAt}, NOW(), NOW())
-            ON CONFLICT ("clanTag","warStartTime","playerTag","attackOrder")
-            DO UPDATE SET
-              "warId" = EXCLUDED."warId",
-              "clanName" = EXCLUDED."clanName",
-              "opponentClanTag" = EXCLUDED."opponentClanTag",
-              "opponentClanName" = EXCLUDED."opponentClanName",
-              "warEndTime" = EXCLUDED."warEndTime",
-              "warState" = EXCLUDED."warState",
-              "playerName" = EXCLUDED."playerName",
-              "playerPosition" = EXCLUDED."playerPosition",
-              "attacksUsed" = EXCLUDED."attacksUsed",
-              "attackNumber" = EXCLUDED."attackNumber",
-              "defenderTag" = EXCLUDED."defenderTag",
-              "defenderName" = EXCLUDED."defenderName",
-              "defenderPosition" = EXCLUDED."defenderPosition",
-              "stars" = EXCLUDED."stars",
-              "trueStars" = EXCLUDED."trueStars",
-              "destruction" = EXCLUDED."destruction",
-              "attackSeenAt" = LEAST("WarAttacks"."attackSeenAt", EXCLUDED."attackSeenAt"),
-              "updatedAt" = NOW()
-          `
-        );
-      }
+    const computedAttackRows = computeWarSnapshotAttackRows({
+      ownMembers,
+      opponentMembers,
+    });
+    for (const row of computedAttackRows) {
+      await prisma.$executeRaw(
+        Prisma.sql`
+          INSERT INTO "WarAttacks"
+            ("warId","clanTag","clanName","opponentClanTag","opponentClanName","warStartTime","warEndTime","warState","playerTag","playerName","playerPosition","attacksUsed","attackOrder","attackNumber","defenderTag","defenderName","defenderPosition","stars","trueStars","destruction","attackSeenAt","createdAt","updatedAt")
+          VALUES
+            (${params.resolvedWarId}, ${ownClanTag}, ${ownClanName}, ${opponentClanTag || null}, ${opponentClanName || null}, ${warStartTime}, ${warEndTime}, ${warState}, ${row.playerTag}, ${row.playerName}, ${row.playerPosition}, ${row.attacksUsed}, ${row.attackOrder}, ${row.attackNumber}, ${row.defenderTag}, ${row.defenderName}, ${row.defenderPosition}, ${row.stars}, ${row.trueStars}, ${row.destruction}, ${observedAt}, NOW(), NOW())
+          ON CONFLICT ("clanTag","warStartTime","playerTag","attackOrder")
+          DO UPDATE SET
+            "warId" = EXCLUDED."warId",
+            "clanName" = EXCLUDED."clanName",
+            "opponentClanTag" = EXCLUDED."opponentClanTag",
+            "opponentClanName" = EXCLUDED."opponentClanName",
+            "warEndTime" = EXCLUDED."warEndTime",
+            "warState" = EXCLUDED."warState",
+            "playerName" = EXCLUDED."playerName",
+            "playerPosition" = EXCLUDED."playerPosition",
+            "attacksUsed" = EXCLUDED."attacksUsed",
+            "attackNumber" = EXCLUDED."attackNumber",
+            "defenderTag" = EXCLUDED."defenderTag",
+            "defenderName" = EXCLUDED."defenderName",
+            "defenderPosition" = EXCLUDED."defenderPosition",
+            "stars" = EXCLUDED."stars",
+            "trueStars" = EXCLUDED."trueStars",
+            "destruction" = EXCLUDED."destruction",
+            "attackSeenAt" = LEAST("WarAttacks"."attackSeenAt", EXCLUDED."attackSeenAt"),
+            "updatedAt" = NOW()
+        `
+      );
     }
   }
 
