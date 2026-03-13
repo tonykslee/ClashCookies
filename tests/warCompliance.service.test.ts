@@ -143,7 +143,8 @@ describe("WarComplianceService", () => {
     expect(lotus?.actualBehavior).toContain("#14");
     expect(lotus?.actualBehavior).toContain("#8");
     expect(lotus?.actualBehavior).toContain("tripled non-mirror in strict window");
-    expect(lotus?.actualBehavior).toContain("| 3★ | 22h 0m left");
+    expect(lotus?.actualBehavior).toContain("| 0");
+    expect(lotus?.actualBehavior).toContain("21h 0m left");
     expect(lotus?.actualBehavior).not.toContain("Attacks used:");
   });
 
@@ -214,7 +215,110 @@ describe("WarComplianceService", () => {
     const babyPk = report?.notFollowingPlan.find((row) => row.playerName === "Baby PK");
     expect(babyPk).toBeTruthy();
     expect(babyPk?.actualBehavior).toContain("didn't triple mirror");
-    expect(babyPk?.actualBehavior).toContain("| 3★ | 22h 0m left");
+    expect(babyPk?.actualBehavior).toContain("| 3");
+    expect(babyPk?.actualBehavior).toContain("21h 0m left");
+  });
+
+  it("computes breach-context stars from lower attackOrder values when seen times disagree", async () => {
+    const warStartTime = new Date("2026-02-01T00:00:00.000Z");
+    const warEndTime = new Date("2026-02-02T00:00:00.000Z");
+    const participants = [
+      { playerName: "Mirror", playerTag: "#P1", attacksUsed: 1, playerPosition: 1 },
+      { playerName: "Breach", playerTag: "#P2", attacksUsed: 1, playerPosition: 5 },
+    ];
+    const attacks = [
+      {
+        playerTag: "#P2",
+        playerName: "Breach",
+        playerPosition: 5,
+        defenderPosition: 14,
+        stars: 3,
+        trueStars: 3,
+        attackSeenAt: new Date("2026-02-01T01:00:00.000Z"),
+        warEndTime,
+        attackOrder: 2,
+      },
+      {
+        playerTag: "#P1",
+        playerName: "Mirror",
+        playerPosition: 1,
+        defenderPosition: 1,
+        stars: 3,
+        trueStars: 3,
+        attackSeenAt: new Date("2026-02-01T03:00:00.000Z"),
+        warEndTime,
+        attackOrder: 1,
+      },
+    ];
+
+    vi.spyOn(prisma.warAttacks, "findFirst").mockResolvedValue({
+      warStartTime,
+      warEndTime,
+      warId: 1002,
+    } as any);
+    vi.spyOn(prisma.warAttacks, "findMany")
+      .mockResolvedValueOnce(participants as any)
+      .mockResolvedValueOnce(attacks as any);
+    vi.spyOn(prisma.trackedClan, "findFirst").mockResolvedValue({
+      loseStyle: "TRADITIONAL",
+    } as any);
+
+    const service = new WarComplianceService();
+    const report = await service.getComplianceReport({
+      clanTag: "#TEST",
+      preferredWarStartTime: warStartTime,
+      matchType: "FWA",
+      expectedOutcome: "WIN",
+    });
+
+    const breach = report?.notFollowingPlan.find((row) => row.playerName === "Breach");
+    expect(breach?.breachContext?.starsAtBreach).toBe(3);
+    expect(breach?.actualBehavior).toContain("| 3★ | 23h 0m left");
+  });
+
+  it("shows 0 stars before a breach attack with attackOrder 1", async () => {
+    const warStartTime = new Date("2026-02-01T00:00:00.000Z");
+    const warEndTime = new Date("2026-02-02T00:00:00.000Z");
+    const participants = [
+      { playerName: "Solo", playerTag: "#P1", attacksUsed: 1, playerPosition: 4 },
+    ];
+    const attacks = [
+      {
+        playerTag: "#P1",
+        playerName: "Solo",
+        playerPosition: 4,
+        defenderPosition: 9,
+        stars: 3,
+        trueStars: 3,
+        attackSeenAt: new Date("2026-02-01T02:00:00.000Z"),
+        warEndTime,
+        attackOrder: 1,
+      },
+    ];
+
+    vi.spyOn(prisma.warAttacks, "findFirst").mockResolvedValue({
+      warStartTime,
+      warEndTime,
+      warId: 1003,
+    } as any);
+    vi.spyOn(prisma.warAttacks, "findMany")
+      .mockResolvedValueOnce(participants as any)
+      .mockResolvedValueOnce(attacks as any);
+    vi.spyOn(prisma.trackedClan, "findFirst").mockResolvedValue({
+      loseStyle: "TRADITIONAL",
+    } as any);
+
+    const service = new WarComplianceService();
+    const report = await service.getComplianceReport({
+      clanTag: "#TEST",
+      preferredWarStartTime: warStartTime,
+      matchType: "FWA",
+      expectedOutcome: "WIN",
+    });
+
+    const solo = report?.notFollowingPlan.find((row) => row.playerName === "Solo");
+    expect(solo?.breachContext?.starsAtBreach).toBe(0);
+    expect(solo?.actualBehavior).toContain("| 0★ | 22h 0m left");
   });
 
   it("does not flag strict-window non-mirror triples when trueStars is zero", async () => {

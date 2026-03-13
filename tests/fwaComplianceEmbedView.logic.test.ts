@@ -55,6 +55,7 @@ describe("buildFwaComplianceEmbedView", () => {
       key: "payload",
       isFwa: true,
       clanName: "Rocky Road",
+      warPlanText: "Mirror first\nHit mirror\nThen clean up",
       warId: 777,
       expectedOutcome: "WIN",
       warStartTime: new Date("2026-03-12T00:00:00.000Z"),
@@ -78,7 +79,8 @@ describe("buildFwaComplianceEmbedView", () => {
 
     const embed = toEmbedJson(rendered.embed);
     const summary = embed.fields?.[0]?.value ?? "";
-    const plan = embed.fields?.[1]?.value ?? "";
+    const warPlan = embed.fields?.[1]?.value ?? "";
+    const plan = embed.fields?.[2]?.value ?? "";
 
     expect(embed.title).toBe("FWA War Compliance — Rocky Road");
     expect(embed.description).toContain("War #777 • Expected: WIN");
@@ -87,6 +89,8 @@ describe("buildFwaComplianceEmbedView", () => {
     expect(summary).toContain("⚠️ Didn't Follow Plan: 1");
     expect(summary).not.toContain("Participants:");
     expect(summary).not.toContain("---");
+    expect(embed.fields?.[1]?.name).toBe("Warplan");
+    expect(warPlan).toBe("Mirror first\nHit mirror\nThen clean up");
 
     expect(plan).toContain("#5 lotus");
     expect(plan).toContain("→ #5 ★ ★ ★");
@@ -106,6 +110,7 @@ describe("buildFwaComplianceEmbedView", () => {
       key: "payload",
       isFwa: true,
       clanName: "Rocky Road",
+      warPlanText: "No warplan details",
       warId: 777,
       expectedOutcome: "WIN",
       warStartTime: null,
@@ -127,7 +132,7 @@ describe("buildFwaComplianceEmbedView", () => {
       missedPage: 0,
     });
 
-    const plan = toEmbedJson(rendered.embed).fields?.[1]?.value ?? "";
+    const plan = toEmbedJson(rendered.embed).fields?.[2]?.value ?? "";
     expect(plan).toContain("→ #1 ★ ★ ★ ⚠️");
     expect(plan).toContain("→ #2 ★ ★ ★ ⚠️");
     expect(plan).toContain("49★ | 21h 27m left");
@@ -139,6 +144,7 @@ describe("buildFwaComplianceEmbedView", () => {
       key: "payload",
       isFwa: true,
       clanName: "Rocky Road",
+      warPlanText: "No warplan details",
       warId: 777,
       expectedOutcome: "WIN",
       warStartTime: null,
@@ -163,6 +169,7 @@ describe("buildFwaComplianceEmbedView", () => {
       key: "payload",
       isFwa: false,
       clanName: "Rocky Road",
+      warPlanText: null,
       warId: 888,
       expectedOutcome: null,
       warStartTime: null,
@@ -212,6 +219,7 @@ describe("buildFwaComplianceEmbedView", () => {
       key: "payload",
       isFwa: true,
       clanName: "Rocky Road",
+      warPlanText: "No warplan details",
       warId: 999,
       expectedOutcome: "WIN",
       warStartTime: null,
@@ -246,14 +254,15 @@ describe("buildFwaComplianceEmbedView", () => {
     expect(firstMain.mainPageCount).toBeGreaterThan(1);
     expect(firstMainEmbed.footer?.text).toMatch(/^Page 1\/\d+$/);
     expect(secondMainEmbed.footer?.text).toMatch(/^Page 2\/\d+$/);
-    expect(firstMainEmbed.fields?.[1]?.value).toContain("#1 P1");
-    expect(secondMainEmbed.fields?.[1]?.value).not.toContain("#1 P1");
+    expect(firstMainEmbed.fields?.[2]?.value).toContain("#1 P1");
+    expect(secondMainEmbed.fields?.[2]?.value).not.toContain("#1 P1");
 
     const secondMissed = buildFwaComplianceEmbedView({
       userId: "123",
       key: "payload",
       isFwa: true,
       clanName: "Rocky Road",
+      warPlanText: "No warplan details",
       warId: 999,
       expectedOutcome: "WIN",
       warStartTime: null,
@@ -269,5 +278,28 @@ describe("buildFwaComplianceEmbedView", () => {
     const secondMissedEmbed = toEmbedJson(secondMissed.embed);
     expect(secondMissed.missedPageCount).toBeGreaterThan(1);
     expect(secondMissedEmbed.footer?.text).toMatch(/^Page 2\/\d+$/);
+  });
+
+  it("renders fallback warplan text when no details remain", () => {
+    const rendered = buildFwaComplianceEmbedView({
+      userId: "123",
+      key: "payload",
+      isFwa: true,
+      clanName: "Rocky Road",
+      warPlanText: "",
+      warId: 1001,
+      expectedOutcome: "WIN",
+      warStartTime: null,
+      warEndTime: null,
+      participantsCount: 50,
+      attacksCount: 0,
+      missedBoth: [],
+      notFollowingPlan: [],
+      activeView: "fwa_main",
+      mainPage: 0,
+      missedPage: 0,
+    });
+
+    expect(toEmbedJson(rendered.embed).fields?.[1]?.value).toBe("No warplan details");
   });
 });

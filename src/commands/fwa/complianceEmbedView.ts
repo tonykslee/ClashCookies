@@ -15,6 +15,7 @@ export type FwaComplianceEmbedRenderInput = {
   key: string;
   isFwa: boolean;
   clanName: string;
+  warPlanText?: string | null;
   warId: number | null;
   expectedOutcome: "WIN" | "LOSE" | null;
   warStartTime: Date | null;
@@ -272,6 +273,12 @@ function buildSummaryFieldValue(input: {
   ].join("\n");
 }
 
+/** Purpose: normalize compliance warplan field text into a safe non-empty embed value. */
+function buildWarPlanFieldValue(warPlanText: string | null | undefined): string {
+  const text = String(warPlanText ?? "").trim();
+  return text || "No warplan details";
+}
+
 /** Purpose: safely build the war description with unknown fallbacks required by command contract. */
 function buildWarDescription(input: {
   warId: number | null;
@@ -295,6 +302,7 @@ function buildWarDescription(input: {
 /** Purpose: build the paged FWA-main compliance embed (summary + plan violations). */
 function buildMainEmbed(input: {
   clanName: string;
+  warPlanText?: string | null;
   warId: number | null;
   expectedOutcome: "WIN" | "LOSE" | null;
   warStartTime: Date | null;
@@ -328,6 +336,10 @@ function buildMainEmbed(input: {
           missedCount: input.missedBoth.length,
           violationCount: input.violations.length,
         }),
+      },
+      {
+        name: "Warplan",
+        value: buildWarPlanFieldValue(input.warPlanText),
       },
       {
         name: "Plan Violations",
@@ -486,6 +498,7 @@ export function buildFwaComplianceEmbedView(
   if (input.activeView === "fwa_main") {
     const main = buildMainEmbed({
       clanName: input.clanName,
+      warPlanText: input.warPlanText,
       warId: input.warId,
       expectedOutcome: input.expectedOutcome,
       warStartTime: input.warStartTime,
@@ -530,6 +543,7 @@ export function buildFwaComplianceEmbedView(
   });
   const main = buildMainEmbed({
     clanName: input.clanName,
+    warPlanText: input.warPlanText,
     warId: input.warId,
     expectedOutcome: input.expectedOutcome,
     warStartTime: input.warStartTime,
