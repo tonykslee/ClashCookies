@@ -9071,7 +9071,7 @@ export const Fwa: Command = {
         };
         const rendered = renderComplianceViewPayload({ key, payload });
         fwaComplianceViewPayloads.set(key, payload);
-        await editReplySafe({
+        await interaction.editReply({
           content: undefined,
           embeds: rendered.embeds,
           components: rendered.components,
@@ -9117,7 +9117,7 @@ export const Fwa: Command = {
       };
       const rendered = renderComplianceViewPayload({ key, payload });
       fwaComplianceViewPayloads.set(key, payload);
-      await editReplySafe({
+      await interaction.editReply({
         content: undefined,
         embeds: rendered.embeds,
         components: rendered.components,
