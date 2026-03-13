@@ -69,7 +69,9 @@ import {
   isCompoRefreshButtonCustomId,
 } from "../commands/Compo";
 import {
+  handleNotifyWarEndedViewButton,
   handleNotifyWarRefreshButton,
+  isNotifyWarEndedViewButtonCustomId,
   isNotifyWarRefreshButtonCustomId,
 } from "../services/WarEventLogService";
 
@@ -541,6 +543,20 @@ const handleButtonInteraction = async (
         await interaction.reply({
           ephemeral: true,
           content: "Failed to refresh battle-day embed.",
+        });
+      }
+    }
+  }
+
+  if (isNotifyWarEndedViewButtonCustomId(interaction.customId)) {
+    try {
+      await handleNotifyWarEndedViewButton(interaction);
+    } catch (err) {
+      console.error(`Notify war-ended view button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "This war-end view expired.",
         });
       }
     }
