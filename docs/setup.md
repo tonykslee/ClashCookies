@@ -43,7 +43,7 @@ Notes:
 - `FWASTATS_WEIGHT_COOKIE` - optional fallback cookie header used for scraping `https://fwastats.com/Clan/<tag>/Weight` in `/fwa weight-age` and `/fwa weight-health`.
 
 Operational notes:
-- Preferred runtime path is `/fwa weight-cookie application-cookie:<name=value> antiforgery-cookie:<name=value>` (saved in `BotSetting`), with `FWASTATS_WEIGHT_COOKIE` kept as env fallback.
+- Preferred runtime path is `/fwa weight-cookie application-cookie:<value-or-name=value> antiforgery-cookie:<value-or-name=value> [antiforgery-cookie-name:<name>]` (saved in `BotSetting`), with `FWASTATS_WEIGHT_COOKIE` kept as env fallback. If no antiforgery name is provided, default is `.AspNetCore.Antiforgery.oBHtDLr47-0`.
 - `/fwa weight-cookie` (no cookie args) shows status, runtime source, and expiry metadata when parseable.
 - Store cookie values only in your secret manager or bot settings, never in git-tracked files.
 - Rotate cookies when telemetry reports `FWASTATS_AUTH_EXPIRED` or `FWASTATS_LOGIN_PAGE_DETECTED`.

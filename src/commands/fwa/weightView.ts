@@ -83,7 +83,7 @@ export function buildWeightAuthFailureNote(results: FwaStatsWeightAge[]): string
     "Recovery steps:",
     "1. Go to https://fwastats.com and sign in.",
     "2. Press F12, open the Network tab, and refresh.",
-    "3. Copy the two AspNetCore cookie pairs (name=value).",
+    "3. Copy the two AspNetCore cookie values (or full name=value pairs).",
     "4. Run `/fwa weight-cookie application-cookie:<cookie-1> antiforgery-cookie:<cookie-2>`.",
   ];
   return lines.join("\n");

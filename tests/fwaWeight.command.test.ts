@@ -35,9 +35,13 @@ describe("/fwa weight subcommands", () => {
     const antiforgeryCookie = weightCookie?.options?.find(
       (option) => option.name === "antiforgery-cookie"
     );
+    const antiforgeryCookieName = weightCookie?.options?.find(
+      (option) => option.name === "antiforgery-cookie-name"
+    );
 
     expect(applicationCookie?.required).toBe(false);
     expect(antiforgeryCookie?.required).toBe(false);
+    expect(antiforgeryCookieName?.required).toBe(false);
   });
 });
 

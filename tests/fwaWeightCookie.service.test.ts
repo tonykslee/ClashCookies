@@ -53,6 +53,65 @@ describe("FwaStatsWeightCookieService", () => {
     expect(result.antiforgeryCookieName).not.toContain("anti-secret");
   });
 
+  it("accepts value-only cookie inputs and applies default cookie names", async () => {
+    const settings = createSettingsMock();
+    const service = new FwaStatsWeightCookieService(settings as any);
+
+    const result = await service.setCookies({
+      applicationCookieRaw: "app-secret",
+      antiforgeryCookieRaw: "anti-secret",
+      guildId: "guild-1",
+      userId: "user-1",
+    });
+
+    expect(result.applicationCookieName).toBe(".AspNetCore.Identity.Application");
+    expect(result.antiforgeryCookieName).toBe(".AspNetCore.Antiforgery.oBHtDLr47-0");
+  });
+
+  it("uses explicit antiforgery-cookie-name override when provided", async () => {
+    const settings = createSettingsMock();
+    const service = new FwaStatsWeightCookieService(settings as any);
+
+    const result = await service.setCookies({
+      applicationCookieRaw: "app-secret",
+      antiforgeryCookieRaw: "anti-secret",
+      antiforgeryCookieNameRaw: ".AspNetCore.Antiforgery.custom",
+      guildId: "guild-1",
+      userId: "user-1",
+    });
+
+    expect(result.antiforgeryCookieName).toBe(".AspNetCore.Antiforgery.custom");
+  });
+
+  it("keeps parsed antiforgery name from legacy name=value input when no explicit override exists", async () => {
+    const settings = createSettingsMock();
+    const service = new FwaStatsWeightCookieService(settings as any);
+
+    const result = await service.setCookies({
+      applicationCookieRaw: "app-secret",
+      antiforgeryCookieRaw: ".AspNetCore.Antiforgery.legacy=anti-secret",
+      guildId: "guild-1",
+      userId: "user-1",
+    });
+
+    expect(result.antiforgeryCookieName).toBe(".AspNetCore.Antiforgery.legacy");
+  });
+
+  it("prefers explicit antiforgery-cookie-name over conflicting parsed legacy name", async () => {
+    const settings = createSettingsMock();
+    const service = new FwaStatsWeightCookieService(settings as any);
+
+    const result = await service.setCookies({
+      applicationCookieRaw: "app-secret",
+      antiforgeryCookieRaw: ".AspNetCore.Antiforgery.legacy=anti-secret",
+      antiforgeryCookieNameRaw: ".AspNetCore.Antiforgery.override",
+      guildId: "guild-1",
+      userId: "user-1",
+    });
+
+    expect(result.antiforgeryCookieName).toBe(".AspNetCore.Antiforgery.override");
+  });
+
   it("returns settings cookie header context when stored cookie pairs exist", async () => {
     const settings = createSettingsMock();
     const service = new FwaStatsWeightCookieService(settings as any);
@@ -115,14 +174,30 @@ describe("FwaStatsWeightCookieService", () => {
     expect(context.cookieHeader).toBeNull();
   });
 
-  it("rejects malformed cookie input safely", async () => {
+  it("rejects invalid antiforgery-cookie-name safely", async () => {
     const settings = createSettingsMock();
     const service = new FwaStatsWeightCookieService(settings as any);
 
     await expect(
       service.setCookies({
-        applicationCookieRaw: "not-a-cookie",
-        antiforgeryCookieRaw: ".AspNetCore.Antiforgery.abc=anti-secret",
+        applicationCookieRaw: "app-secret",
+        antiforgeryCookieRaw: "anti-secret",
+        antiforgeryCookieNameRaw: ".AspNetCore.Antiforgery.bad;name",
+        guildId: "guild-1",
+        userId: "user-1",
+      })
+    ).rejects.toThrow("Antiforgery cookie invalid");
+    expect(settings.set).not.toHaveBeenCalled();
+  });
+
+  it("rejects empty cookie values safely", async () => {
+    const settings = createSettingsMock();
+    const service = new FwaStatsWeightCookieService(settings as any);
+
+    await expect(
+      service.setCookies({
+        applicationCookieRaw: "   ",
+        antiforgeryCookieRaw: "anti-secret",
         guildId: "guild-1",
         userId: "user-1",
       })
