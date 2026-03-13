@@ -58,6 +58,10 @@ describe("buildFwaComplianceEmbedView", () => {
       warPlanText: "Mirror first\nHit mirror\nThen clean up",
       warId: 777,
       expectedOutcome: "WIN",
+      fwaWinGateConfig: {
+        nonMirrorTripleMinClanStars: 101,
+        allBasesOpenHoursLeft: 8,
+      },
       warStartTime: new Date("2026-03-12T00:00:00.000Z"),
       warEndTime: new Date("2026-03-13T00:00:00.000Z"),
       participantsCount: 50,
@@ -81,6 +85,7 @@ describe("buildFwaComplianceEmbedView", () => {
     const summary = embed.fields?.[0]?.value ?? "";
     const warPlan = embed.fields?.[1]?.value ?? "";
     const plan = embed.fields?.[2]?.value ?? "";
+    expect(embed.description).toContain("Rules: N=101, H=8h");
 
     expect(embed.title).toBe("FWA War Compliance — Rocky Road");
     expect(embed.description).toContain("War #777 • Expected: WIN");

@@ -53,6 +53,7 @@ describe("WarComplianceService", () => {
     vi.spyOn(prisma.trackedClan, "findFirst").mockResolvedValue({
       loseStyle: "TRADITIONAL",
     } as any);
+    vi.spyOn(prisma.clanWarPlan, "findFirst").mockResolvedValue(null as any);
 
     const service = new WarComplianceService();
     const snapshot = await service.getComplianceSnapshot({
@@ -127,6 +128,7 @@ describe("WarComplianceService", () => {
     vi.spyOn(prisma.trackedClan, "findFirst").mockResolvedValue({
       loseStyle: "TRADITIONAL",
     } as any);
+    vi.spyOn(prisma.clanWarPlan, "findFirst").mockResolvedValue(null as any);
 
     const service = new WarComplianceService();
     const report = await service.getComplianceReport({
@@ -202,6 +204,7 @@ describe("WarComplianceService", () => {
     vi.spyOn(prisma.trackedClan, "findFirst").mockResolvedValue({
       loseStyle: "TRADITIONAL",
     } as any);
+    vi.spyOn(prisma.clanWarPlan, "findFirst").mockResolvedValue(null as any);
 
     const service = new WarComplianceService();
     const report = await service.getComplianceReport({
@@ -714,6 +717,121 @@ describe("WarComplianceService", () => {
     expect(result.report).toBeTruthy();
     expect(result.report?.missedBoth).toHaveLength(1);
     expect(result.report?.missedBoth[0]?.playerName).toBe("Alice");
+    expect(result.report?.notFollowingPlan).toHaveLength(0);
+    expect(result.report?.fwaWinGateConfig).toBeNull();
+  });
+
+  it("applies default FWA-WIN gate (N=101, H=0) when no warplan thresholds are configured", async () => {
+    const warStartTime = new Date("2026-02-01T00:00:00.000Z");
+    const warEndTime = new Date("2026-02-02T00:00:00.000Z");
+    vi.spyOn(prisma.currentWar, "findFirst").mockResolvedValue({
+      warId: 4101,
+      startTime: warStartTime,
+      endTime: warEndTime,
+      matchType: "FWA",
+      outcome: "WIN",
+    } as any);
+    vi.spyOn(prisma.warAttacks, "findMany")
+      .mockResolvedValueOnce([
+        {
+          playerName: "Alpha",
+          playerTag: "#A",
+          attacksUsed: 1,
+          playerPosition: 1,
+          warStartTime,
+        },
+      ] as any)
+      .mockResolvedValueOnce([
+        {
+          playerTag: "#A",
+          playerName: "Alpha",
+          playerPosition: 1,
+          defenderPosition: 2,
+          stars: 3,
+          trueStars: 3,
+          attackSeenAt: new Date("2026-02-01T18:00:00.000Z"), // 6h remaining
+          warEndTime,
+          attackOrder: 1,
+          warStartTime,
+        },
+      ] as any);
+    vi.spyOn(prisma.trackedClan, "findFirst").mockResolvedValue({
+      loseStyle: "TRADITIONAL",
+    } as any);
+    vi.spyOn(prisma.clanWarPlan, "findFirst").mockResolvedValue(null as any);
+
+    const service = new WarComplianceService();
+    const result = await service.evaluateComplianceForCommand({
+      guildId: "guild-1",
+      clanTag: "#TEST",
+      scope: "current",
+    });
+
+    expect(result.status).toBe("ok");
+    expect(result.report?.fwaWinGateConfig).toEqual({
+      nonMirrorTripleMinClanStars: 101,
+      allBasesOpenHoursLeft: 0,
+    });
+    expect(result.report?.notFollowingPlan).toHaveLength(1);
+  });
+
+  it("applies configured H cutoff so non-mirror triples at T<=H are not flagged", async () => {
+    const warStartTime = new Date("2026-02-01T00:00:00.000Z");
+    const warEndTime = new Date("2026-02-02T00:00:00.000Z");
+    vi.spyOn(prisma.currentWar, "findFirst").mockResolvedValue({
+      warId: 4102,
+      startTime: warStartTime,
+      endTime: warEndTime,
+      matchType: "FWA",
+      outcome: "WIN",
+    } as any);
+    vi.spyOn(prisma.warAttacks, "findMany")
+      .mockResolvedValueOnce([
+        {
+          playerName: "Alpha",
+          playerTag: "#A",
+          attacksUsed: 1,
+          playerPosition: 1,
+          warStartTime,
+        },
+      ] as any)
+      .mockResolvedValueOnce([
+        {
+          playerTag: "#A",
+          playerName: "Alpha",
+          playerPosition: 1,
+          defenderPosition: 2,
+          stars: 3,
+          trueStars: 3,
+          attackSeenAt: new Date("2026-02-01T18:00:00.000Z"), // 6h remaining
+          warEndTime,
+          attackOrder: 1,
+          warStartTime,
+        },
+      ] as any);
+    vi.spyOn(prisma.trackedClan, "findFirst").mockResolvedValue({
+      loseStyle: "TRADITIONAL",
+    } as any);
+    const planSpy = vi.spyOn(prisma.clanWarPlan, "findFirst");
+    planSpy
+      .mockResolvedValueOnce({
+        nonMirrorTripleMinClanStars: 101,
+        allBasesOpenHoursLeft: 8,
+      } as any)
+      .mockResolvedValueOnce(null as any);
+
+    const service = new WarComplianceService();
+    const result = await service.evaluateComplianceForCommand({
+      guildId: "guild-1",
+      clanTag: "#TEST",
+      scope: "current",
+    });
+
+    expect(result.status).toBe("ok");
+    expect(result.report?.fwaWinGateConfig).toEqual({
+      nonMirrorTripleMinClanStars: 101,
+      allBasesOpenHoursLeft: 8,
+    });
     expect(result.report?.notFollowingPlan).toHaveLength(0);
   });
 

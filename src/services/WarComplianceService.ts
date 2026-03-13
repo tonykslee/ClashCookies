@@ -3,6 +3,7 @@ import {
   type FwaLoseStyle,
   type MatchType,
   type WarComplianceAttack,
+  type WarComplianceWinGateConfig,
   type WarComplianceParticipant,
   type WarComplianceSnapshot,
   computeWarComplianceForTest,
@@ -10,6 +11,11 @@ import {
   normalizeOutcome,
   normalizeTag,
 } from "./war-events/core";
+import {
+  DEFAULT_ALL_BASES_OPEN_HOURS_LEFT,
+  DEFAULT_NON_MIRROR_TRIPLE_MIN_CLAN_STARS,
+  resolveWarPlanComplianceConfig,
+} from "./warPlanComplianceConfig";
 
 export type WarComplianceIssue = {
   playerTag: string;
@@ -49,6 +55,7 @@ export type WarComplianceReport = {
   notFollowingPlan: WarComplianceIssue[];
   participantsCount: number;
   attacksCount: number;
+  fwaWinGateConfig: WarComplianceWinGateConfig | null;
 };
 
 export type WarComplianceCommandScope = "current" | "war_id";
@@ -91,6 +98,8 @@ type WarSeedRow = {
 };
 
 type ComplianceContext = {
+  guildId: string | null;
+  useConfiguredFwaWinGate: boolean;
   clanTag: string;
   clanName: string;
   opponentName: string | null;
@@ -226,8 +235,21 @@ function computeStarsBeforeAttack(
 }
 
 /** Purpose: compute strict-window metadata once using the same ordering/rules as compliance checks. */
-function buildAttackContextByAttack(attacks: WarComplianceAttack[]): Map<WarComplianceAttack, AttackContext> {
+function buildAttackContextByAttack(
+  attacks: WarComplianceAttack[],
+  winGateConfig?: WarComplianceWinGateConfig | null
+): Map<WarComplianceAttack, AttackContext> {
   const ordered = sortAttacksForBreachContext(attacks);
+  const minClanStarsBeforeNonMirrorTriple = Math.max(
+    0,
+    Math.trunc(
+      Number(winGateConfig?.nonMirrorTripleMinClanStars ?? 100)
+    )
+  );
+  const allBasesOpenHoursLeft = Math.max(
+    0,
+    Math.trunc(Number(winGateConfig?.allBasesOpenHoursLeft ?? 12))
+  );
 
   const result = new Map<WarComplianceAttack, AttackContext>();
   let cumulativeClanStars = 0;
@@ -245,11 +267,14 @@ function buildAttackContextByAttack(attacks: WarComplianceAttack[]): Map<WarComp
       attack.warEndTime instanceof Date
         ? (attack.warEndTime.getTime() - attack.attackSeenAt.getTime()) / (60 * 60 * 1000)
         : null;
-    const isStrictWindow =
-      hoursRemaining !== null &&
-      Number.isFinite(hoursRemaining) &&
-      hoursRemaining > 12 &&
-      starsBeforeAttack < 100;
+    const starsGateActive = starsBeforeAttack < minClanStarsBeforeNonMirrorTriple;
+    const isTimeGateActive =
+      allBasesOpenHoursLeft <= 0
+        ? true
+        : hoursRemaining !== null &&
+          Number.isFinite(hoursRemaining) &&
+          hoursRemaining > allBasesOpenHoursLeft;
+    const isStrictWindow = starsGateActive && isTimeGateActive;
     const playerPos = attack.playerPosition ?? null;
     const defenderPos = attack.defenderPosition ?? null;
     const isMirror = playerPos !== null && defenderPos !== null && playerPos === defenderPos;
@@ -880,6 +905,7 @@ export class WarComplianceService {
         notFollowingPlan: [],
         participantsCount: context.participants.length,
         attacksCount: context.attacks.length,
+        fwaWinGateConfig: null,
       };
       return buildResult({
         status: "not_applicable",
@@ -991,6 +1017,8 @@ export class WarComplianceService {
     });
 
     const context: ComplianceContext = {
+      guildId: null,
+      useConfiguredFwaWinGate: false,
       clanTag,
       clanName: clanTag,
       opponentName: null,
@@ -1101,6 +1129,8 @@ export class WarComplianceService {
       (current.endTime instanceof Date ? current.endTime : null) ?? attacks[0]?.warEndTime ?? null;
 
     return {
+      guildId: input.guildId,
+      useConfiguredFwaWinGate: true,
       clanTag: normalizeTag(input.clanTag),
       clanName: String(current.clanName ?? normalizeTag(input.clanTag)).trim() || normalizeTag(input.clanTag),
       opponentName: String(current.opponentName ?? "").trim() || null,
@@ -1191,6 +1221,8 @@ export class WarComplianceService {
     });
 
     return {
+      guildId: input.guildId,
+      useConfiguredFwaWinGate: true,
       clanTag: normalizeTag(input.clanTag),
       clanName: String(historyRow.clanName ?? normalizeTag(input.clanTag)).trim() || normalizeTag(input.clanTag),
       opponentName: String(historyRow.opponentName ?? "").trim() || null,
@@ -1340,9 +1372,79 @@ export class WarComplianceService {
     });
   }
 
+  /** Purpose: resolve effective FWA-WIN strict-window gate config for command evaluations. */
+  private async resolveEffectiveFwaWinGateConfig(
+    context: ComplianceContext
+  ): Promise<WarComplianceWinGateConfig> {
+    if (!context.useConfiguredFwaWinGate || !context.guildId) {
+      return {
+        nonMirrorTripleMinClanStars: 100,
+        allBasesOpenHoursLeft: 12,
+      };
+    }
+
+    const normalizedClanTag = normalizeTag(context.clanTag);
+    const clanTagWithHash = normalizedClanTag || "";
+    const clanTagBare = normalizedClanTag.replace(/^#/, "");
+
+    try {
+      const [customPlan, defaultPlan] = await Promise.all([
+        prisma.clanWarPlan.findFirst({
+          where: {
+            guildId: context.guildId,
+            scope: "CUSTOM",
+            OR: [
+              { clanTag: { equals: clanTagWithHash, mode: "insensitive" } },
+              { clanTag: { equals: clanTagBare, mode: "insensitive" } },
+            ],
+            matchType: "FWA",
+            outcome: "WIN",
+            loseStyle: "ANY",
+          },
+          select: {
+            nonMirrorTripleMinClanStars: true,
+            allBasesOpenHoursLeft: true,
+          },
+        }),
+        prisma.clanWarPlan.findFirst({
+          where: {
+            guildId: context.guildId,
+            scope: "DEFAULT",
+            clanTag: "",
+            matchType: "FWA",
+            outcome: "WIN",
+            loseStyle: "ANY",
+          },
+          select: {
+            nonMirrorTripleMinClanStars: true,
+            allBasesOpenHoursLeft: true,
+          },
+        }),
+      ]);
+
+      const resolved = resolveWarPlanComplianceConfig({
+        primary: customPlan,
+        fallback: defaultPlan,
+      });
+      return {
+        nonMirrorTripleMinClanStars: resolved.nonMirrorTripleMinClanStars,
+        allBasesOpenHoursLeft: resolved.allBasesOpenHoursLeft,
+      };
+    } catch {
+      return {
+        nonMirrorTripleMinClanStars: DEFAULT_NON_MIRROR_TRIPLE_MIN_CLAN_STARS,
+        allBasesOpenHoursLeft: DEFAULT_ALL_BASES_OPEN_HOURS_LEFT,
+      };
+    }
+  }
+
   /** Purpose: build a detailed compliance report from a source-agnostic context model. */
   private async buildReportFromContext(context: ComplianceContext): Promise<WarComplianceReport | null> {
     const loseStyle = await getLoseStyleForClan(context.clanTag);
+    const fwaWinGateConfig =
+      context.matchType === "FWA" && context.expectedOutcome === "WIN"
+        ? await this.resolveEffectiveFwaWinGateConfig(context)
+        : null;
     const snapshot = computeWarComplianceForTest({
       clanTag: context.clanTag,
       participants: context.participants,
@@ -1350,11 +1452,15 @@ export class WarComplianceService {
       matchType: context.matchType,
       expectedOutcome: context.expectedOutcome,
       loseStyle,
+      winGateConfig: fwaWinGateConfig,
     });
 
     const participantByLabel = new Map<string, WarComplianceParticipant>();
     const attacksByPlayerTag = new Map<string, WarComplianceAttack[]>();
-    const attackContextByAttack = buildAttackContextByAttack(context.attacks);
+    const attackContextByAttack = buildAttackContextByAttack(
+      context.attacks,
+      fwaWinGateConfig
+    );
 
     for (const participant of context.participants) {
       const label = getParticipantLabel({
@@ -1410,6 +1516,7 @@ export class WarComplianceService {
       }),
       participantsCount: context.participants.length,
       attacksCount: context.attacks.length,
+      fwaWinGateConfig: context.useConfiguredFwaWinGate ? fwaWinGateConfig : null,
     };
   }
 }

@@ -18,6 +18,12 @@ export type FwaComplianceEmbedRenderInput = {
   warPlanText?: string | null;
   warId: number | null;
   expectedOutcome: "WIN" | "LOSE" | null;
+  fwaWinGateConfig?:
+    | {
+        nonMirrorTripleMinClanStars: number;
+        allBasesOpenHoursLeft: number;
+      }
+    | null;
   warStartTime: Date | null;
   warEndTime: Date | null;
   participantsCount: number;
@@ -283,6 +289,12 @@ function buildWarPlanFieldValue(warPlanText: string | null | undefined): string 
 function buildWarDescription(input: {
   warId: number | null;
   expectedOutcome: "WIN" | "LOSE" | null;
+  fwaWinGateConfig?:
+    | {
+        nonMirrorTripleMinClanStars: number;
+        allBasesOpenHoursLeft: number;
+      }
+    | null;
   warStartTime: Date | null;
   warEndTime: Date | null;
 }): string {
@@ -296,7 +308,13 @@ function buildWarDescription(input: {
     input.warEndTime instanceof Date
       ? `End <t:${Math.floor(input.warEndTime.getTime() / 1000)}:R>`
       : "End unknown";
-  return [`War #${warIdLabel} • Expected: ${expected}`, startLine, endLine].join("\n");
+  const lines = [`War #${warIdLabel} • Expected: ${expected}`, startLine, endLine];
+  if (input.fwaWinGateConfig) {
+    lines.push(
+      `Rules: N=${input.fwaWinGateConfig.nonMirrorTripleMinClanStars}, H=${input.fwaWinGateConfig.allBasesOpenHoursLeft}h`
+    );
+  }
+  return lines.join("\n");
 }
 
 /** Purpose: build the paged FWA-main compliance embed (summary + plan violations). */
@@ -305,6 +323,12 @@ function buildMainEmbed(input: {
   warPlanText?: string | null;
   warId: number | null;
   expectedOutcome: "WIN" | "LOSE" | null;
+  fwaWinGateConfig?:
+    | {
+        nonMirrorTripleMinClanStars: number;
+        allBasesOpenHoursLeft: number;
+      }
+    | null;
   warStartTime: Date | null;
   warEndTime: Date | null;
   attacksCount: number;
@@ -324,6 +348,7 @@ function buildMainEmbed(input: {
       buildWarDescription({
         warId: input.warId,
         expectedOutcome: input.expectedOutcome,
+        fwaWinGateConfig: input.fwaWinGateConfig,
         warStartTime: input.warStartTime,
         warEndTime: input.warEndTime,
       })
@@ -501,6 +526,7 @@ export function buildFwaComplianceEmbedView(
       warPlanText: input.warPlanText,
       warId: input.warId,
       expectedOutcome: input.expectedOutcome,
+      fwaWinGateConfig: input.fwaWinGateConfig,
       warStartTime: input.warStartTime,
       warEndTime: input.warEndTime,
       attacksCount: input.attacksCount,
@@ -546,6 +572,7 @@ export function buildFwaComplianceEmbedView(
     warPlanText: input.warPlanText,
     warId: input.warId,
     expectedOutcome: input.expectedOutcome,
+    fwaWinGateConfig: input.fwaWinGateConfig,
     warStartTime: input.warStartTime,
     warEndTime: input.warEndTime,
     attacksCount: input.attacksCount,

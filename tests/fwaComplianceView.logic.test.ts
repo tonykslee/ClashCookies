@@ -15,6 +15,7 @@ function makeBaseReport(): WarComplianceReport {
     notFollowingPlan: [],
     participantsCount: 50,
     attacksCount: 100,
+    fwaWinGateConfig: null,
   };
 }
 

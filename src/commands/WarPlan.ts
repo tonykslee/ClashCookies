@@ -12,6 +12,11 @@ import {
 import { Command } from "../Command";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
+import {
+  parseAllBasesOpenHoursLeftInput,
+  parseNonMirrorTripleMinClanStarsInput,
+  resolveWarPlanComplianceConfig,
+} from "../services/warPlanComplianceConfig";
 import { WarEventHistoryService } from "../services/war-events/history";
 
 type PlanMatchType = "FWA" | "BL" | "MM";
@@ -29,6 +34,8 @@ type PlanTarget = { matchType: PlanMatchType; outcome: PlanOutcome; loseStyle: P
 
 const PLAN_MODAL_PREFIX = "warplan-edit";
 const PLAN_MODAL_INPUT_ID = "plan-text";
+const PLAN_MODAL_MIN_STARS_INPUT_ID = "non-mirror-min-stars";
+const PLAN_MODAL_OPEN_HOURS_INPUT_ID = "all-bases-open-hours-left";
 
 const MATCH_SELECTOR_CHOICES = [
   { name: "BL", value: "BL" },
@@ -61,6 +68,28 @@ function normalizePlanTextInput(raw: string): string {
     .replace(/\\r/g, "\n")
     .replace(/\\t/g, "\t")
     .replace(/\\\\/g, "\\");
+}
+
+function planTargetKey(target: PlanTarget): string {
+  return `${target.matchType}:${target.outcome}:${target.loseStyle}`;
+}
+
+function clampEmbedFieldValue(value: string): string {
+  const text = String(value ?? "").trim();
+  if (text.length <= 1024) return text;
+  return `${text.slice(0, 1012)}\n(+truncated)`;
+}
+
+function buildComplianceConfigLine(input: {
+  target: PlanTarget;
+  nonMirrorTripleMinClanStars: number;
+  allBasesOpenHoursLeft: number;
+}): string {
+  const applicability =
+    input.target.matchType === "FWA" && input.target.outcome === "WIN"
+      ? ""
+      : " (applies to FWA_WIN only)";
+  return `Compliance gate: nonMirrorTripleMinClanStars=${input.nonMirrorTripleMinClanStars}, allBasesOpenHoursLeft=${input.allBasesOpenHoursLeft}h${applicability}`;
 }
 
 async function resolveCustomEmojiShortcodes(
@@ -165,13 +194,17 @@ async function getDefaultPlanText(
   );
 }
 
-async function getCurrentOrDefaultPlanText(params: {
+async function getCurrentOrDefaultPlanData(params: {
   guildId: string;
   scope: PlanScope;
   clanTag: string;
   target: PlanTarget;
   history: WarEventHistoryService;
-}): Promise<string> {
+}): Promise<{
+  planText: string;
+  nonMirrorTripleMinClanStars: number;
+  allBasesOpenHoursLeft: number;
+}> {
   const existing = await prisma.clanWarPlan.findUnique({
     where: {
       guildId_scope_clanTag_matchType_outcome_loseStyle: {
@@ -183,16 +216,57 @@ async function getCurrentOrDefaultPlanText(params: {
         loseStyle: params.target.loseStyle,
       },
     },
-    select: { planText: true },
+    select: {
+      planText: true,
+      nonMirrorTripleMinClanStars: true,
+      allBasesOpenHoursLeft: true,
+    },
   });
-  if (existing?.planText?.trim()) return existing.planText;
-  return getDefaultPlanText(
-    params.history,
-    params.guildId,
-    params.target.matchType,
-    params.target.outcome,
-    params.target.loseStyle
-  );
+
+  let fallbackConfig: {
+    nonMirrorTripleMinClanStars: number | null;
+    allBasesOpenHoursLeft: number | null;
+  } | null = null;
+  if (params.scope === "CUSTOM") {
+    const defaultRow = await prisma.clanWarPlan.findUnique({
+      where: {
+        guildId_scope_clanTag_matchType_outcome_loseStyle: {
+          guildId: params.guildId,
+          scope: "DEFAULT",
+          clanTag: "",
+          matchType: params.target.matchType,
+          outcome: params.target.outcome,
+          loseStyle: params.target.loseStyle,
+        },
+      },
+      select: {
+        nonMirrorTripleMinClanStars: true,
+        allBasesOpenHoursLeft: true,
+      },
+    });
+    fallbackConfig = defaultRow;
+  }
+
+  const resolvedConfig = resolveWarPlanComplianceConfig({
+    primary: existing,
+    fallback: fallbackConfig,
+  });
+
+  const planText =
+    existing?.planText?.trim() ||
+    (await getDefaultPlanText(
+      params.history,
+      params.guildId,
+      params.target.matchType,
+      params.target.outcome,
+      params.target.loseStyle
+    ));
+
+  return {
+    planText,
+    nonMirrorTripleMinClanStars: resolvedConfig.nonMirrorTripleMinClanStars,
+    allBasesOpenHoursLeft: resolvedConfig.allBasesOpenHoursLeft,
+  };
 }
 
 export const WarPlan: Command = {
@@ -349,7 +423,7 @@ export const WarPlan: Command = {
         return;
       }
       const target = selectedResult[0];
-      const prefill = await getCurrentOrDefaultPlanText({
+      const prefill = await getCurrentOrDefaultPlanData({
         guildId,
         scope: mode,
         clanTag,
@@ -368,8 +442,28 @@ export const WarPlan: Command = {
         .setPlaceholder(
           "Bold: **text** | Italic: *text* | Code: `text` | Block: ```text``` | Emoji: :name: or <:name:id>"
         )
-        .setValue(prefill);
-      modal.addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(input));
+        .setValue(prefill.planText);
+      const minStarsInput = new TextInputBuilder()
+        .setCustomId(PLAN_MODAL_MIN_STARS_INPUT_ID)
+        .setLabel("Minimum clan stars before non-mirror triple")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(false)
+        .setMaxLength(4)
+        .setPlaceholder("Default: 101")
+        .setValue(String(prefill.nonMirrorTripleMinClanStars));
+      const openHoursInput = new TextInputBuilder()
+        .setCustomId(PLAN_MODAL_OPEN_HOURS_INPUT_ID)
+        .setLabel("All bases open hours left (H or Hh)")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(false)
+        .setMaxLength(3)
+        .setPlaceholder("Default: 0")
+        .setValue(String(prefill.allBasesOpenHoursLeft));
+      modal.addComponents(
+        new ActionRowBuilder<TextInputBuilder>().addComponents(input),
+        new ActionRowBuilder<TextInputBuilder>().addComponents(minStarsInput),
+        new ActionRowBuilder<TextInputBuilder>().addComponents(openHoursInput)
+      );
       await interaction.showModal(modal);
 
       try {
@@ -380,6 +474,19 @@ export const WarPlan: Command = {
         const normalizedPlanText = normalizePlanTextInput(
           submitted.fields.getTextInputValue(PLAN_MODAL_INPUT_ID)
         );
+        const minStarsRaw = submitted.fields.getTextInputValue(PLAN_MODAL_MIN_STARS_INPUT_ID);
+        const openHoursRaw = submitted.fields.getTextInputValue(PLAN_MODAL_OPEN_HOURS_INPUT_ID);
+        const parsedMinStars = parseNonMirrorTripleMinClanStarsInput(minStarsRaw);
+        if (!parsedMinStars.ok) {
+          await submitted.reply({ ephemeral: true, content: parsedMinStars.error });
+          return;
+        }
+        const parsedOpenHours = parseAllBasesOpenHoursLeftInput(openHoursRaw);
+        if (!parsedOpenHours.ok) {
+          await submitted.reply({ ephemeral: true, content: parsedOpenHours.error });
+          return;
+        }
+
         const planText = await resolveCustomEmojiShortcodes(normalizedPlanText, interaction);
         if (!planText.length) {
           await submitted.reply({ ephemeral: true, content: "Plan text cannot be empty." });
@@ -401,7 +508,11 @@ export const WarPlan: Command = {
               loseStyle: target.loseStyle,
             },
           },
-          update: { planText },
+          update: {
+            planText,
+            nonMirrorTripleMinClanStars: parsedMinStars.value,
+            allBasesOpenHoursLeft: parsedOpenHours.value,
+          },
           create: {
             guildId,
             scope: mode,
@@ -410,6 +521,8 @@ export const WarPlan: Command = {
             outcome: target.outcome,
             loseStyle: target.loseStyle,
             planText,
+            nonMirrorTripleMinClanStars: parsedMinStars.value,
+            allBasesOpenHoursLeft: parsedOpenHours.value,
           },
         });
         await submitted.reply({
@@ -436,24 +549,89 @@ export const WarPlan: Command = {
             loseStyle: target.loseStyle,
           })),
         },
-        select: { matchType: true, outcome: true, loseStyle: true, planText: true },
+        select: {
+          matchType: true,
+          outcome: true,
+          loseStyle: true,
+          planText: true,
+          nonMirrorTripleMinClanStars: true,
+          allBasesOpenHoursLeft: true,
+        },
       });
-      const rowByKey = new Map<string, string>();
+      const rowByKey = new Map<
+        string,
+        {
+          planText: string;
+          nonMirrorTripleMinClanStars: number | null;
+          allBasesOpenHoursLeft: number | null;
+        }
+      >();
       for (const row of rows) {
-        rowByKey.set(`${row.matchType}:${row.outcome}:${row.loseStyle}`, row.planText);
+        rowByKey.set(planTargetKey(row as PlanTarget), {
+          planText: row.planText,
+          nonMirrorTripleMinClanStars: row.nonMirrorTripleMinClanStars,
+          allBasesOpenHoursLeft: row.allBasesOpenHoursLeft,
+        });
+      }
+
+      const defaultRowByKey = new Map<
+        string,
+        {
+          nonMirrorTripleMinClanStars: number | null;
+          allBasesOpenHoursLeft: number | null;
+        }
+      >();
+      if (mode === "CUSTOM") {
+        const defaultRows = await prisma.clanWarPlan.findMany({
+          where: {
+            guildId,
+            scope: "DEFAULT",
+            clanTag: "",
+            OR: targets.map((target) => ({
+              matchType: target.matchType,
+              outcome: target.outcome,
+              loseStyle: target.loseStyle,
+            })),
+          },
+          select: {
+            matchType: true,
+            outcome: true,
+            loseStyle: true,
+            nonMirrorTripleMinClanStars: true,
+            allBasesOpenHoursLeft: true,
+          },
+        });
+        for (const row of defaultRows) {
+          defaultRowByKey.set(planTargetKey(row as PlanTarget), {
+            nonMirrorTripleMinClanStars: row.nonMirrorTripleMinClanStars,
+            allBasesOpenHoursLeft: row.allBasesOpenHoursLeft,
+          });
+        }
       }
 
       const fields = [];
       for (let i = 0; i < targets.length; i += 1) {
         const target = targets[i];
-        const key = `${target.matchType}:${target.outcome}:${target.loseStyle}`;
-        const scopedText = rowByKey.get(key);
+        const key = planTargetKey(target);
+        const scopedRow = rowByKey.get(key);
+        const scopedText = scopedRow?.planText;
         const text =
           scopedText ??
           (await getDefaultPlanText(history, guildId, target.matchType, target.outcome, target.loseStyle));
+        const resolvedConfig = resolveWarPlanComplianceConfig({
+          primary: scopedRow ?? null,
+          fallback: mode === "CUSTOM" ? defaultRowByKey.get(key) ?? null : null,
+        });
+        const fieldValue = clampEmbedFieldValue(
+          `${text}\n\n${buildComplianceConfigLine({
+            target,
+            nonMirrorTripleMinClanStars: resolvedConfig.nonMirrorTripleMinClanStars,
+            allBasesOpenHoursLeft: resolvedConfig.allBasesOpenHoursLeft,
+          })}`
+        );
         fields.push({
           name: `${formatKeyLabel(target.matchType, target.outcome, target.loseStyle)} (${scopedText ? (mode === "DEFAULT" ? "Editable Default" : "Custom") : "Effective Fallback"})`,
-          value: text,
+          value: fieldValue,
           inline: false,
         });
         if (i < targets.length - 1) {

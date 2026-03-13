@@ -38,6 +38,11 @@ export type WarComplianceAttack = {
   attackOrder: number;
 };
 
+export type WarComplianceWinGateConfig = {
+  nonMirrorTripleMinClanStars: number;
+  allBasesOpenHoursLeft: number;
+};
+
 /** Purpose: normalize a clan/player tag to uppercase with leading '#'. */
 export function normalizeTag(input: string | null | undefined): string {
   const raw = String(input ?? "").trim().toUpperCase();
@@ -189,6 +194,7 @@ export function computeWarComplianceForTest(input: {
   matchType: MatchType;
   expectedOutcome: "WIN" | "LOSE" | null;
   loseStyle: FwaLoseStyle;
+  winGateConfig?: WarComplianceWinGateConfig | null;
 }): WarComplianceSnapshot {
   if (input.matchType === "BL" || input.matchType === "MM") {
     return { missedBoth: [], notFollowingPlan: [] };
@@ -240,6 +246,14 @@ export function computeWarComplianceForTest(input: {
     }
 
     if (input.expectedOutcome === "WIN") {
+      const minClanStarsBeforeNonMirrorTriple = Math.max(
+        0,
+        Math.trunc(Number(input.winGateConfig?.nonMirrorTripleMinClanStars ?? 100))
+      );
+      const allBasesOpenHoursLeft = Math.max(
+        0,
+        Math.trunc(Number(input.winGateConfig?.allBasesOpenHoursLeft ?? 12))
+      );
       const mirrorTripleByPlayer = new Map<string, boolean>();
       const strictWindowSeenByPlayer = new Map<string, boolean>();
       for (let i = 0; i < attacks.length; i += 1) {
@@ -253,11 +267,15 @@ export function computeWarComplianceForTest(input: {
           attack.warEndTime instanceof Date
             ? (attack.warEndTime.getTime() - attack.attackSeenAt.getTime()) / (60 * 60 * 1000)
             : null;
-        const isStrictWindow =
-          hoursRemaining !== null &&
-          Number.isFinite(hoursRemaining) &&
-          hoursRemaining > 12 &&
-          (starsBeforeAttack.get(i) ?? 0) < 100;
+        const starsBefore = starsBeforeAttack.get(i) ?? 0;
+        const starsGateActive = starsBefore < minClanStarsBeforeNonMirrorTriple;
+        const isTimeGateActive =
+          allBasesOpenHoursLeft <= 0
+            ? true
+            : hoursRemaining !== null &&
+              Number.isFinite(hoursRemaining) &&
+              hoursRemaining > allBasesOpenHoursLeft;
+        const isStrictWindow = starsGateActive && isTimeGateActive;
         if (isStrictWindow) {
           strictWindowSeenByPlayer.set(playerTag, true);
           const isMirror = playerPos !== null && defenderPos !== null && playerPos === defenderPos;

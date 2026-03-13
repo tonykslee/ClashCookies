@@ -370,6 +370,7 @@ function renderComplianceViewPayload(input: {
     warPlanText: input.payload.warPlanText,
     warId: input.payload.warId,
     expectedOutcome: input.payload.expectedOutcome,
+    fwaWinGateConfig: input.payload.fwaWinGateConfig,
     warStartTime: input.payload.warStartTime,
     warEndTime: input.payload.warEndTime,
     participantsCount: input.payload.participantsCount,
@@ -543,6 +544,12 @@ type FwaComplianceViewPayload = {
   warPlanText: string | null;
   warId: number | null;
   expectedOutcome: "WIN" | "LOSE" | null;
+  fwaWinGateConfig:
+    | {
+        nonMirrorTripleMinClanStars: number;
+        allBasesOpenHoursLeft: number;
+      }
+    | null;
   warStartTime: Date | null;
   warEndTime: Date | null;
   participantsCount: number;
@@ -9097,6 +9104,7 @@ export const Fwa: Command = {
           warPlanText: null,
           warId: evaluation.warId,
           expectedOutcome: evaluation.expectedOutcome,
+          fwaWinGateConfig: null,
           warStartTime: evaluation.warStartTime,
           warEndTime: evaluation.warEndTime,
           participantsCount: evaluation.participantsCount,
@@ -9155,6 +9163,7 @@ export const Fwa: Command = {
         warPlanText,
         warId: evaluation.report.warId ?? evaluation.warId,
         expectedOutcome: evaluation.report.expectedOutcome ?? evaluation.expectedOutcome,
+        fwaWinGateConfig: evaluation.report.fwaWinGateConfig,
         warStartTime: evaluation.report.warStartTime ?? evaluation.warStartTime,
         warEndTime: evaluation.report.warEndTime ?? evaluation.warEndTime,
         participantsCount: evaluation.report.participantsCount,
