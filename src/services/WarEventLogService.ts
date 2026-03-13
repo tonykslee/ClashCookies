@@ -2225,6 +2225,7 @@ export class WarEventLogService {
     const nextWarStartTime = timing.warStartTime;
     const nextWarEndTime = timing.warEndTime;
     const nextPrepStartTime = parseCocTime(war?.preparationStartTime ?? null) ?? sub.prepStartTime;
+    const warIdentityChanged = isNewWarCycle(sub.startTime, nextWarStartTime);
 
     const eventTypeRaw = shouldEmit(prevState, candidateState);
     let eventType = eventTypeRaw;
@@ -2330,9 +2331,13 @@ export class WarEventLogService {
           ? syncContext.previousSync
           : syncContext.activeSync;
 
+    const currentMatchTypeForResolution = warIdentityChanged ? null : sub.matchType;
+    const currentInferredMatchTypeForResolution = warIdentityChanged
+      ? true
+      : sub.inferredMatchType;
     const currentWarResolution = resolveCurrentWarMatchTypeSignal({
-      matchType: sub.matchType,
-      inferredMatchType: sub.inferredMatchType,
+      matchType: currentMatchTypeForResolution,
+      inferredMatchType: currentInferredMatchTypeForResolution,
     });
     let liveOpponentResolution: MatchTypeResolution | null = null;
 
@@ -2468,8 +2473,9 @@ export class WarEventLogService {
       storedSync: null,
       unconfirmedCurrent: currentWarResolution.unconfirmed,
     });
-    let nextMatchType = resolvedMatchType?.matchType ?? sub.matchType;
-    let nextInferredMatchType = resolvedMatchType?.inferred ?? sub.inferredMatchType;
+    let nextMatchType = resolvedMatchType?.matchType ?? currentMatchTypeForResolution;
+    let nextInferredMatchType =
+      resolvedMatchType?.inferred ?? currentInferredMatchTypeForResolution;
 
     if (eventType === "war_ended") {
       const finalResult = await this.history.getWarEndResultSnapshot({
