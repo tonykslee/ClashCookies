@@ -2,11 +2,15 @@ import { describe, expect, it } from "vitest";
 import {
   advanceCocWarOutageStateForTest,
   applyWarEndedMaintenanceGuardForTest,
+  buildNotifyWarEndedViewCustomId,
   buildBattleDayRefreshEditPayloadForTest,
+  buildWarEndedMetadataValueForTest,
   buildNotifyEventPostedContentForTest,
   computeWarSnapshotAttackRowsForTest,
   computeWarComplianceForTest,
   computeWarPointsDeltaForTest,
+  isNotifyWarEndedViewButtonCustomId,
+  parseNotifyWarEndedViewCustomId,
   resolveActiveWarTimingForTest,
   sanitizeWarPlanForEmbedForTest,
 } from "../src/services/WarEventLogService";
@@ -15,6 +19,47 @@ import { WarEventHistoryService } from "../src/services/war-events/history";
 function dateAt(hour: number): Date {
   return new Date(Date.UTC(2026, 0, 1, hour, 0, 0));
 }
+
+describe("War-end view custom IDs", () => {
+  it("encodes and parses war-ended view context linkage", () => {
+    const customId = buildNotifyWarEndedViewCustomId({
+      view: "c",
+      guildId: "123456789012345678",
+      clanTag: "#Q2ABC9",
+      warId: 1000055,
+      messageId: "234567890123456789",
+      timestampUnix: 1773407400,
+      page: 2,
+    });
+    expect(isNotifyWarEndedViewButtonCustomId(customId)).toBe(true);
+    expect(parseNotifyWarEndedViewCustomId(customId)).toEqual({
+      view: "c",
+      guildId: "123456789012345678",
+      clanTag: "#Q2ABC9",
+      warId: 1000055,
+      messageId: "234567890123456789",
+      timestampUnix: 1773407400,
+      page: 2,
+    });
+  });
+
+  it("rejects malformed custom ids", () => {
+    expect(parseNotifyWarEndedViewCustomId("notify-war-end:c:g:#tag:1:2:3:0")).toBeNull();
+    expect(parseNotifyWarEndedViewCustomId("notify-war-end:x:1:TAG:1:2:3:0")).toBeNull();
+  });
+});
+
+describe("War-end metadata value", () => {
+  it("groups war id, sync, and timestamp in one field", () => {
+    expect(
+      buildWarEndedMetadataValueForTest({
+        warId: 1000055,
+        syncNumber: 476,
+        timestampUnix: 1773407400,
+      })
+    ).toBe("War ID: 1000055 - Sync: 476 - <t:1773407400:F>");
+  });
+});
 
 describe("WarEventLogService.computeWarPointsDeltaForTest", () => {
   it("BL war: returns +3 points when final result is WIN", () => {
