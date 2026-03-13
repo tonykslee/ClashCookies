@@ -33,52 +33,31 @@ export class WarEventHistoryService {
     },
     finalResult: WarEndResultSnapshot
   ): string {
-    const before = payload.warStartFwaPoints;
-    const delta = this.computeWarPointsDelta({
-      matchType: payload.matchType,
-      before,
-      after: payload.warEndFwaPoints,
-      finalResult,
-    });
-
+    const _finalResult = finalResult;
+    void _finalResult;
+    const before =
+      payload.warStartFwaPoints !== null && Number.isFinite(payload.warStartFwaPoints)
+        ? Math.trunc(payload.warStartFwaPoints)
+        : null;
+    const after =
+      payload.warEndFwaPoints !== null && Number.isFinite(payload.warEndFwaPoints)
+        ? Math.trunc(payload.warEndFwaPoints)
+        : null;
+    if (before === null && after === null) {
+      return `${payload.clanName}: unknown -> unknown (expected post-war points unavailable)`;
+    }
+    if (before === null || after === null) {
+      return `${payload.clanName}: ${before ?? "unknown"} -> ${after ?? "unknown"}`;
+    }
+    const delta = after - before;
+    const deltaText = delta >= 0 ? `+${delta}` : String(delta);
     if (payload.matchType === "BL") {
-      const afterFromRow = payload.warEndFwaPoints;
-      const after =
-        afterFromRow !== null && Number.isFinite(afterFromRow)
-          ? afterFromRow
-          : before !== null && Number.isFinite(before) && delta !== null
-            ? before + delta
-            : null;
-      const resolvedBefore =
-        before !== null && Number.isFinite(before)
-          ? before
-          : after !== null && Number.isFinite(after) && delta !== null
-            ? after - delta
-            : null;
-      return `${payload.clanName}: ${resolvedBefore ?? "unknown"} -> ${after ?? "unknown"} (${delta !== null && delta >= 0 ? `+${delta}` : String(delta ?? "unknown")}) [BL]`;
+      return `${payload.clanName}: ${before} -> ${after} (${deltaText}) [BL]`;
     }
-
     if (payload.matchType === "MM") {
-      const resolvedBefore =
-        before !== null && Number.isFinite(before)
-          ? before
-          : payload.warEndFwaPoints !== null && Number.isFinite(payload.warEndFwaPoints)
-            ? payload.warEndFwaPoints
-            : null;
-      const resolvedAfter = resolvedBefore;
-      return `${payload.clanName}: ${resolvedBefore ?? "unknown"} -> ${resolvedAfter ?? "unknown"} (+0) [MM]`;
+      return `${payload.clanName}: ${before} -> ${after} (+0) [MM]`;
     }
-
-    const after = payload.warEndFwaPoints;
-    if (
-      before !== null &&
-      Number.isFinite(before) &&
-      after !== null &&
-      Number.isFinite(after)
-    ) {
-      return `${payload.clanName}: ${before} -> ${after} (${delta !== null && delta >= 0 ? `+${delta}` : String(delta ?? after - before)})`;
-    }
-    return `${payload.clanName}: ${before ?? "unknown"} -> ${after ?? "unknown"}`;
+    return `${payload.clanName}: ${before} -> ${after} (${deltaText})`;
   }
 
   /** Purpose: build per-clan war-plan instruction text for start/battle embeds. */

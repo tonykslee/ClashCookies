@@ -15,8 +15,9 @@ import { CoCService } from "./CoCService";
 import { PointsProjectionService } from "./PointsProjectionService";
 import { PostedMessageService } from "./PostedMessageService";
 import { PointsSyncService } from "./PointsSyncService";
-import { PointsFetchPolicyService } from "./PointsFetchPolicyService";
+import { PointsFetchPolicyService, type PointsApiFetchReason } from "./PointsFetchPolicyService";
 import { SettingsService } from "./SettingsService";
+import { CommandPermissionService } from "./CommandPermissionService";
 import {
   chooseMatchTypeResolution,
   inferMatchTypeFromOpponentPoints,
@@ -33,6 +34,7 @@ import {
   type MatchType,
   type WarEndResultSnapshot,
   type WarState,
+  computeExpectedWarEndPointsForTest,
   deriveExpectedOutcome,
   deriveState,
   eventTitle,
@@ -55,6 +57,7 @@ const COC_WAR_OUTAGE_FAILURE_THRESHOLD = 2;
 const COC_WAR_OUTAGE_RECOVERY_THRESHOLD = 2;
 const battleDayPostByGuildTag = new Map<string, { channelId: string; messageId: string }>();
 const NOTIFY_UNKNOWN_OPPONENT = "Unknown Opponent";
+const WAR_END_DISCREPANCY_MARKER = "war_end_discrepancy";
 
 function buildNextRefreshRelativeLabel(
   intervalMs: number,
@@ -147,6 +150,73 @@ function buildBattleDayRefreshEditPayload(
 }
 
 export const buildBattleDayRefreshEditPayloadForTest = buildBattleDayRefreshEditPayload;
+
+/** Purpose: normalize and persist discrepancy fingerprint data on tracked notify rows. */
+function parseWarEndDiscrepancyFingerprint(configHash: string | null | undefined): string | null {
+  const raw = String(configHash ?? "");
+  const match = raw.match(new RegExp(`(?:^|\\|)${WAR_END_DISCREPANCY_MARKER}:([^|]+)$`));
+  return match?.[1] ? match[1] : null;
+}
+
+/** Purpose: write discrepancy fingerprint while preserving the existing notify config hash payload. */
+function writeWarEndDiscrepancyFingerprint(
+  configHash: string | null | undefined,
+  fingerprint: string
+): string {
+  const raw = String(configHash ?? "");
+  const stripped = raw.replace(
+    new RegExp(`(?:^|\\|)${WAR_END_DISCREPANCY_MARKER}:[^|]+$`),
+    ""
+  );
+  if (!stripped) return `${WAR_END_DISCREPANCY_MARKER}:${fingerprint}`;
+  return `${stripped}|${WAR_END_DISCREPANCY_MARKER}:${fingerprint}`;
+}
+
+/** Purpose: build canonical mismatch fingerprint for idempotent war-end discrepancy alerts. */
+function buildWarEndDiscrepancyFingerprint(
+  warId: number,
+  expectedPoints: number,
+  actualPoints: number
+): string {
+  return `${Math.trunc(warId)}:${Math.trunc(expectedPoints)}:${Math.trunc(actualPoints)}`;
+}
+
+/** Purpose: build visible warning content for war-end points reconciliation mismatches. */
+function buildWarEndDiscrepancyContent(params: {
+  existingPostedContent: string | null | undefined;
+  opponentName: string | null | undefined;
+  expectedPoints: number;
+  actualPoints: number;
+  fwaLeaderRoleId: string | null;
+}): {
+  content: string;
+  allowedMentions: { parse: []; roles?: string[] };
+} {
+  const existingMentionRoleId = extractPostedNotifyMentionRoleId(params.existingPostedContent);
+  const baseContent = buildNotifyEventPostedContent({
+    eventType: "war_ended",
+    opponentName: params.opponentName,
+    notifyRoleId: existingMentionRoleId,
+    includeRoleMention: Boolean(existingMentionRoleId),
+  });
+  const warningLines = [
+    "⚠️ War-end points mismatch detected.",
+    `Expected points: ${Math.trunc(params.expectedPoints)}`,
+    `Actual points: ${Math.trunc(params.actualPoints)}`,
+  ];
+  if (params.fwaLeaderRoleId) {
+    warningLines.push(`<@&${params.fwaLeaderRoleId}>`);
+  }
+  return {
+    content: [baseContent, ...warningLines].join("\n"),
+    allowedMentions: params.fwaLeaderRoleId
+      ? { parse: [], roles: [params.fwaLeaderRoleId] }
+      : { parse: [] },
+  };
+}
+
+export const buildWarEndDiscrepancyContentForTest = buildWarEndDiscrepancyContent;
+export const buildWarEndDiscrepancyFingerprintForTest = buildWarEndDiscrepancyFingerprint;
 
 /** Purpose: keep notify-event embed colors stable and centralized across render paths. */
 export function resolveNotifyEventEmbedColor(eventType: EventType): number {
@@ -667,6 +737,7 @@ export class WarEventLogService {
   private readonly pointsSync: WarStartPointsSyncService;
   private readonly currentSyncs: PointsSyncService;
   private readonly pointsPolicy: PointsFetchPolicyService;
+  private readonly commandPermissions: CommandPermissionService;
   private readonly history: WarEventHistoryService;
   private readonly postedMessages: PostedMessageService;
   private readonly cocWarOutageByClanTag = new Map<string, CocWarOutageState>();
@@ -677,6 +748,7 @@ export class WarEventLogService {
     this.pointsSync = new WarStartPointsSyncService(this.points, new SettingsService());
     this.currentSyncs = new PointsSyncService();
     this.pointsPolicy = new PointsFetchPolicyService();
+    this.commandPermissions = new CommandPermissionService();
     this.history = new WarEventHistoryService(coc);
     this.postedMessages = new PostedMessageService();
   }
@@ -979,24 +1051,22 @@ export class WarEventLogService {
             resultLabel: deriveResultLabelFromStars(currentClanStars, currentOpponentStars),
           }
         : null;
-    const testWarStartFwaPoints =
-      params.source === "current" ? sub.warStartFwaPoints ?? fwaPoints : sub.warStartFwaPoints;
+    const testWarStartFwaPoints = this.resolveWarEndBeforePoints({
+      warStartFwaPoints: sub.warStartFwaPoints,
+      fwaPoints: sub.fwaPoints,
+    });
     let testWarEndFwaPoints = sub.warEndFwaPoints;
-    if (params.source === "current" && params.eventType === "war_ended") {
-      if (sub.matchType === "BL" && testFinalResultOverride) {
-        const before = testWarStartFwaPoints ?? fwaPoints;
-        const delta = this.computeBlPointsDelta(testFinalResultOverride);
-        testWarEndFwaPoints = before !== null && Number.isFinite(before) ? before + delta : null;
-      } else if (sub.matchType === "FWA" && testFinalResultOverride) {
-        const before = testWarStartFwaPoints ?? fwaPoints;
-        const delta = this.computeTestFwaPointsDelta(testFinalResultOverride);
-        testWarEndFwaPoints = before !== null && Number.isFinite(before) ? before + delta : null;
-      } else if (sub.matchType === "MM") {
-        const before = testWarStartFwaPoints ?? fwaPoints;
-        testWarEndFwaPoints = before !== null && Number.isFinite(before) ? before : fwaPoints;
-      } else {
-        testWarEndFwaPoints = fwaPoints;
-      }
+    if (params.source === "current" && params.eventType === "war_ended" && testFinalResultOverride) {
+      const before = this.resolveWarEndBeforePoints({
+        warStartFwaPoints: sub.warStartFwaPoints,
+        fwaPoints: sub.fwaPoints,
+      });
+      testWarEndFwaPoints = this.computeExpectedWarEndPoints({
+        matchType: sub.matchType,
+        before,
+        finalResult: testFinalResultOverride,
+        outcome,
+      });
     }
 
     return {
@@ -1080,7 +1150,7 @@ export class WarEventLogService {
     embed.addFields(
       {
         name: "Opponent",
-        value: `${payload.opponentName} (${opponentTag ? `#${opponentTag}` : "unknown"})`,
+        value: `${payload.opponentName} (${opponentTag || "unknown"})`,
         inline: false,
       },
       {
@@ -1349,17 +1419,33 @@ export class WarEventLogService {
     return Boolean(existing?.warId);
   }
 
-  /** Purpose: compute bl points delta. */
-  private computeBlPointsDelta(finalResult: WarEndResultSnapshot): number {
-    if (finalResult.resultLabel === "WIN") return 3;
-    if ((finalResult.clanDestruction ?? 0) >= 60) return 2;
-    return 1;
+  /** Purpose: resolve canonical war-end "before points" source with explicit precedence. */
+  private resolveWarEndBeforePoints(sub: {
+    warStartFwaPoints: number | null;
+    fwaPoints: number | null;
+  }): number | null {
+    if (sub.warStartFwaPoints !== null && Number.isFinite(sub.warStartFwaPoints)) {
+      return Math.trunc(sub.warStartFwaPoints);
+    }
+    if (sub.fwaPoints !== null && Number.isFinite(sub.fwaPoints)) {
+      return Math.trunc(sub.fwaPoints);
+    }
+    return null;
   }
 
-  private computeTestFwaPointsDelta(finalResult: WarEndResultSnapshot): number {
-    if (finalResult.resultLabel === "WIN") return -1;
-    if (finalResult.resultLabel === "LOSE") return 1;
-    return 0;
+  /** Purpose: compute expected post-war points for persisted war-end canonical output. */
+  private computeExpectedWarEndPoints(input: {
+    matchType: MatchType;
+    before: number | null;
+    finalResult: WarEndResultSnapshot;
+    outcome: "WIN" | "LOSE" | null;
+  }): number | null {
+    return computeExpectedWarEndPointsForTest({
+      matchType: input.matchType,
+      before: input.before,
+      finalResult: input.finalResult,
+      outcome: input.outcome,
+    });
   }
 
   /** Purpose: fetch current war while preserving upstream-failure classification. */
@@ -1756,9 +1842,6 @@ export class WarEventLogService {
       if (eventType === "war_started") {
         nextWarStartFwaPoints = a.balance;
       }
-      if (eventType === "war_ended") {
-        nextWarEndFwaPoints = a.balance;
-      }
     }
     const resolvedMatchType = chooseMatchTypeResolution({
       confirmedCurrent: currentWarResolution.confirmed,
@@ -1769,7 +1852,7 @@ export class WarEventLogService {
     let nextMatchType = resolvedMatchType?.matchType ?? sub.matchType;
     let nextInferredMatchType = resolvedMatchType?.inferred ?? sub.inferredMatchType;
 
-    if (eventType === "war_ended" && nextMatchType === "BL") {
+    if (eventType === "war_ended") {
       const finalResult = await this.history.getWarEndResultSnapshot({
         clanTag: sub.clanTag,
         opponentTag: nextOpponentTag || normalizeTag(sub.opponentTag ?? ""),
@@ -1777,18 +1860,22 @@ export class WarEventLogService {
         fallbackOpponentStars: nextOpponentStars,
         warStartTime: nextWarStartTime,
       });
-      const delta = this.computeBlPointsDelta(finalResult);
-      const before =
-        nextWarStartFwaPoints !== null && Number.isFinite(nextWarStartFwaPoints)
-          ? nextWarStartFwaPoints
-          : nextFwaPoints !== null && Number.isFinite(nextFwaPoints)
-            ? nextFwaPoints
-            : null;
-      if (before !== null) {
-        const after = before + delta;
-        nextWarEndFwaPoints = after;
-        nextFwaPoints = after;
+      const before = this.resolveWarEndBeforePoints({
+        warStartFwaPoints: sub.warStartFwaPoints,
+        fwaPoints: sub.fwaPoints,
+      });
+      if (
+        (nextWarStartFwaPoints === null || nextWarStartFwaPoints === undefined) &&
+        before !== null
+      ) {
+        nextWarStartFwaPoints = before;
       }
+      nextWarEndFwaPoints = this.computeExpectedWarEndPoints({
+        matchType: nextMatchType,
+        before,
+        finalResult,
+        outcome: normalizeOutcome(nextOutcome),
+      });
     }
 
     const resolvedWarId = await this.ensureCurrentWarId({
@@ -1889,6 +1976,21 @@ export class WarEventLogService {
         sub,
         payload: detectedEventPayload,
         resolvedWarId,
+      });
+    }
+    if (currentState === "notInWar" && eventType !== "war_ended") {
+      await this.reconcileWarEndedPointsDiscrepancy({
+        guildId: sub.guildId,
+        clanTag: sub.clanTag,
+        fallbackOpponentName: nextOpponentName || sub.opponentName || null,
+        allowProviderFetch: gateDecision.allowed,
+        fetchReason: gateDecision.fetchReason ?? "post_war_reconciliation",
+      }).catch((err) => {
+        console.error(
+          `[war-events] reconcile war-end points failed guild=${sub.guildId} clan=${sub.clanTag} error=${formatError(
+            err
+          )}`
+        );
       });
     }
     return eventType === "war_ended";
@@ -2043,6 +2145,127 @@ export class WarEventLogService {
       params.resolvedWarId,
       params.sub
     );
+  }
+
+  /** Purpose: reconcile ended-war provider points against persisted expected points and alert once per mismatch fingerprint. */
+  private async reconcileWarEndedPointsDiscrepancy(params: {
+    guildId: string;
+    clanTag: string;
+    fallbackOpponentName: string | null;
+    allowProviderFetch: boolean;
+    fetchReason: PointsApiFetchReason;
+  }): Promise<void> {
+    const clanTag = normalizeTag(params.clanTag);
+    if (!clanTag) return;
+
+    const trackedMessage = await prisma.clanPostedMessage.findFirst({
+      where: {
+        guildId: params.guildId,
+        clanTag,
+        type: "notify",
+        event: "war_ended",
+        warId: { not: null },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+    if (!trackedMessage?.warId) return;
+
+    const warId = Number(trackedMessage.warId);
+    if (!Number.isFinite(warId)) return;
+
+    const historyRow = await prisma.clanWarHistory.findFirst({
+      where: {
+        warId: Math.trunc(warId),
+        clanTag,
+      },
+      select: {
+        pointsAfterWar: true,
+        clanName: true,
+        opponentName: true,
+      },
+    });
+    const expectedPoints =
+      historyRow?.pointsAfterWar !== null &&
+      historyRow?.pointsAfterWar !== undefined &&
+      Number.isFinite(Number(historyRow.pointsAfterWar))
+        ? Math.trunc(Number(historyRow.pointsAfterWar))
+        : null;
+    if (expectedPoints === null) return;
+    if (!params.allowProviderFetch) return;
+
+    const providerSnapshot = await this.points
+      .fetchSnapshot(clanTag, {
+        reason: params.fetchReason,
+        caller: "poller",
+      })
+      .catch(() => null);
+    const actualPoints =
+      providerSnapshot?.balance !== null &&
+      providerSnapshot?.balance !== undefined &&
+      Number.isFinite(Number(providerSnapshot.balance))
+        ? Math.trunc(Number(providerSnapshot.balance))
+        : null;
+    if (actualPoints === null) return;
+    if (actualPoints === expectedPoints) return;
+
+    const fingerprint = buildWarEndDiscrepancyFingerprint(warId, expectedPoints, actualPoints);
+    const previousFingerprint = parseWarEndDiscrepancyFingerprint(trackedMessage.configHash);
+    if (previousFingerprint === fingerprint) return;
+
+    const fwaLeaderRoleId = await this.commandPermissions
+      .getFwaLeaderRoleId(params.guildId)
+      .catch(() => null);
+    const allowedMentions = fwaLeaderRoleId
+      ? ({ parse: [], roles: [fwaLeaderRoleId] } as const)
+      : ({ parse: [] } as const);
+    const warningContent =
+      `⚠️ War-end points mismatch detected for ${historyRow?.clanName ?? clanTag} (War ID: ${Math.trunc(warId)}).\n` +
+      `Expected points: ${expectedPoints}\n` +
+      `Actual points: ${actualPoints}` +
+      (fwaLeaderRoleId ? `\n<@&${fwaLeaderRoleId}>` : "");
+
+    let alerted = false;
+    const channel = await this.client.channels.fetch(trackedMessage.channelId).catch(() => null);
+    if (channel && channel.isTextBased()) {
+      const message = await (channel as any).messages.fetch(trackedMessage.messageId).catch(() => null);
+      if (message) {
+        const edited = buildWarEndDiscrepancyContent({
+          existingPostedContent: String(message.content ?? ""),
+          opponentName: historyRow?.opponentName ?? params.fallbackOpponentName,
+          expectedPoints,
+          actualPoints,
+          fwaLeaderRoleId,
+        });
+        const editedOk = await message
+          .edit({
+            content: edited.content,
+            allowedMentions: edited.allowedMentions,
+          })
+          .then(() => true)
+          .catch(() => false);
+        alerted = editedOk;
+      }
+    }
+
+    if (!alerted && channel && channel.isTextBased()) {
+      const sent = await (channel as any)
+        .send({
+          content: warningContent,
+          allowedMentions,
+        })
+        .catch(() => null);
+      alerted = Boolean(sent);
+    }
+    if (!alerted) return;
+
+    await prisma.clanPostedMessage
+      .update({
+        where: { id: trackedMessage.id },
+        data: {
+          configHash: writeWarEndDiscrepancyFingerprint(trackedMessage.configHash, fingerprint),
+        },
+      })
+      .catch(() => null);
   }
 
   private async tryCreateEventGuard(
@@ -2212,7 +2435,7 @@ export class WarEventLogService {
 
     embed.addFields({
       name: "Opponent",
-      value: `${payload.opponentName} (${opponentTag ? `#${opponentTag}` : "unknown"})`,
+      value: `${payload.opponentName} (${opponentTag || "unknown"})`,
       inline: false,
     });
     embed.addFields({
@@ -2872,7 +3095,7 @@ export class WarEventLogService {
       .setTimestamp(new Date());
     embed.addFields({
       name: "Opponent",
-      value: `${payload.opponentName} (${opponentTag ? `#${opponentTag}` : "unknown"})`,
+      value: `${payload.opponentName} (${opponentTag || "unknown"})`,
       inline: false,
     });
     embed.addFields({
@@ -2976,7 +3199,7 @@ export class WarEventLogService {
       .setTimestamp(new Date());
     embed.addFields({
       name: "Opponent",
-      value: `${payload.opponentName} (${opponentTag ? `#${opponentTag}` : "unknown"})`,
+      value: `${payload.opponentName} (${opponentTag || "unknown"})`,
       inline: false,
     });
     embed.addFields({

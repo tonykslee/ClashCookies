@@ -15,6 +15,7 @@ const prismaMock = vi.hoisted(() => ({
 
 vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
+  hasInitializedPrismaClient: () => false,
 }));
 
 import { Fwa } from "../src/commands/Fwa";
