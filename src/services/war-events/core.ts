@@ -14,6 +14,8 @@ export type WarEndResultSnapshot = {
   resultLabel: "WIN" | "LOSE" | "TIE" | "UNKNOWN";
 };
 
+type ResolvedWarEndOutcome = "WIN" | "LOSE" | "TIE" | "UNKNOWN";
+
 export type WarComplianceSnapshot = {
   missedBoth: string[];
   notFollowingPlan: string[];
@@ -167,23 +169,56 @@ export function computeWarPointsDeltaForTest(input: {
   after: number | null;
   finalResult: WarEndResultSnapshot;
 }): number | null {
+  const before = input.before !== null && Number.isFinite(input.before) ? input.before : null;
+  if (before === null) return null;
+  const expectedAfter = computeExpectedWarEndPointsForTest({
+    matchType: input.matchType,
+    before,
+    finalResult: input.finalResult,
+    outcome: null,
+  });
+  if (expectedAfter === null || !Number.isFinite(expectedAfter)) return null;
+  return expectedAfter - before;
+}
+
+/** Purpose: compute expected post-war points using persisted before-points and match rules. */
+export function computeExpectedWarEndPointsForTest(input: {
+  matchType: MatchType;
+  before: number | null;
+  finalResult: WarEndResultSnapshot;
+  outcome: "WIN" | "LOSE" | null;
+}): number | null {
+  const before = input.before !== null && Number.isFinite(input.before) ? Math.trunc(input.before) : null;
+  if (before === null) return null;
+
+  const resolvedOutcome = resolveWarEndOutcome(input.finalResult, input.outcome);
+  if (resolvedOutcome === "UNKNOWN") return before;
+
+  if (input.matchType === "MM") return before;
+  if (input.matchType === "FWA") {
+    if (resolvedOutcome === "WIN") return before - 1;
+    if (resolvedOutcome === "LOSE") return before + 1;
+    return before;
+  }
   if (input.matchType === "BL") {
-    if (input.finalResult.resultLabel === "WIN") return 3;
-    if ((input.finalResult.clanDestruction ?? 0) >= 60) return 2;
-    return 1;
+    if (resolvedOutcome === "WIN") return before + 3;
+    if (Number(input.finalResult.clanDestruction ?? 0) > 60) return before + 2;
+    return before + 1;
   }
-  if (input.matchType === "MM") {
-    return 0;
+
+  return before;
+}
+
+/** Purpose: resolve best-available war-end outcome from CoC result and stored expected outcome. */
+function resolveWarEndOutcome(
+  finalResult: WarEndResultSnapshot,
+  outcome: "WIN" | "LOSE" | null
+): ResolvedWarEndOutcome {
+  if (finalResult.resultLabel === "WIN" || finalResult.resultLabel === "LOSE" || finalResult.resultLabel === "TIE") {
+    return finalResult.resultLabel;
   }
-  if (
-    input.before !== null &&
-    Number.isFinite(input.before) &&
-    input.after !== null &&
-    Number.isFinite(input.after)
-  ) {
-    return input.after - input.before;
-  }
-  return null;
+  if (outcome === "WIN" || outcome === "LOSE") return outcome;
+  return "UNKNOWN";
 }
 
 /** Purpose: compute missed/violating members for war-plan compliance checks. */
