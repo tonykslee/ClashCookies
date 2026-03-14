@@ -60,6 +60,10 @@
 - `/recruitment countdown start platform:discord|reddit|band clan:<tag>` - Start exact cooldown timer for your account on that platform+clan pair.
 - `/recruitment countdown status` - Show your current recruitment cooldown timers.
 - `/recruitment dashboard` - Show readiness across all tracked clans/platforms for your account.
+- `/defer add player-tag:<playerTag> weight:<weight>` - Add one deferred weight-input task for a prospective member (accepts `145000`, `145,000`, or `145k`).
+- `/defer list` - Show active open deferred weight-input tasks in oldest-first order for the active scope.
+- `/defer remove player-tag:<playerTag>` - Mark one open deferred task as resolved after FWAStats weight entry is complete.
+- `/defer clear` - Mark all open deferred tasks in scope as cleared.
 - `/kick-list build [days:<number>]` - Auto-build kick-list candidates from tracked-clan members who are inactive (`days` threshold, default `3`), unlinked, or linked to users not in this server. Players matching both inactivity and link issues are shown first.
 - `/kick-list add tag:<playerTag> reason:<text>` - Manually add a kick-list candidate with reason.
 - `/kick-list remove tag:<playerTag>` - Remove a player from kick list.

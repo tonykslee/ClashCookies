@@ -295,6 +295,23 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/recruitment dashboard",
     ],
   },
+  defer: {
+    summary: "Track deferred FWA weight-input tasks for prospective members.",
+    details: [
+      "`add` queues a player tag + known weight when FWAStats roster entry is not yet possible.",
+      "`list` shows only open deferments in oldest-first order for the active scope.",
+      "`remove` resolves one open deferment after weight entry is completed in FWAStats.",
+      "`clear` marks all open deferments in scope as cleared.",
+      "Open deferments run reminder lifecycle stages at 48h, 5d, and 7d.",
+      "Default access is FWA leader role + Administrator (or override via `/permission add`).",
+    ],
+    examples: [
+      "/defer add player-tag:#ABC123 weight:145k",
+      "/defer list",
+      "/defer remove player-tag:#ABC123",
+      "/defer clear",
+    ],
+  },
   "kick-list": {
     summary: "Build and manage kick-list candidates.",
     details: [
@@ -371,7 +388,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     details: [
       "Add/remove role whitelists for command targets.",
       "List current policy for one target or all targets.",
-      "`/permission list` includes `fwa:mail:send`, `fwa:compliance`, and `fwa:weight-*` targets (default FWA leader role + Administrator).",
+      "`/permission list` includes `fwa:mail:send`, `fwa:compliance`, `fwa:weight-*`, and `defer*` targets (default FWA leader role + Administrator).",
       "`add` and `remove` are admin-only by default.",
     ],
     examples: [
@@ -380,6 +397,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/permission add command:fwa:compliance role:@Leaders",
       "/permission add command:fwa:weight-health role:@Leaders",
       "/permission add command:fwa:weight-cookie role:@Leaders",
+      "/permission add command:defer role:@Leaders",
       "/permission add command:fwa role:@Leaders",
       "/permission remove command:sync role:@Leaders",
       "/permission list",
