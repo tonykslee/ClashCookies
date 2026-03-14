@@ -10,6 +10,7 @@ import { formatError } from "../helper/formatError";
 import { runFetchTelemetryBatch } from "../helper/fetchTelemetry";
 import { prisma } from "../prisma";
 import { processRecruitmentCooldownReminders } from "../services/RecruitmentService";
+import { processWeightInputDefermentStages } from "../services/WeightInputDefermentService";
 import { SettingsService } from "../services/SettingsService";
 import { PlayerLinkSyncService } from "../services/PlayerLinkSyncService";
 import { WarEventLogService } from "../services/WarEventLogService";
@@ -23,6 +24,7 @@ import {
 
 const DEFAULT_OBSERVE_INTERVAL_MINUTES = 30;
 const RECRUITMENT_REMINDER_INTERVAL_MS = 60 * 60 * 1000;
+const DEFERMENT_REMINDER_INTERVAL_MS = 60 * 60 * 1000;
 const DEFAULT_WAR_EVENT_POLL_INTERVAL_MINUTES = 5;
 const OBSERVE_LAST_RUN_AT_KEY = "activity_observe:last_run_at_ms";
 const VISIBILITY_OPTION = {
@@ -337,6 +339,24 @@ export default (client: Client, cocService: CoCService): void => {
       });
     }, RECRUITMENT_REMINDER_INTERVAL_MS);
     console.log("Recruitment reminder loop enabled (every 60 minute(s)).");
+
+    const runDefermentReminders = async () => {
+      await runFetchTelemetryBatch("deferment_reminder_cycle", async () => {
+        try {
+          await processWeightInputDefermentStages(client, guildId);
+        } catch (err) {
+          console.error(`[defer] reminder loop failed: ${formatError(err)}`);
+        }
+      });
+    };
+
+    await runDefermentReminders();
+    setInterval(() => {
+      runDefermentReminders().catch((err) => {
+        console.error(`[defer] reminder interval failed: ${formatError(err)}`);
+      });
+    }, DEFERMENT_REMINDER_INTERVAL_MS);
+    console.log("Deferment reminder loop enabled (every 60 minute(s)).");
 
     const warEventPollMinutesRaw = Number(
       process.env.WAR_EVENT_LOG_POLL_INTERVAL_MINUTES ?? DEFAULT_WAR_EVENT_POLL_INTERVAL_MINUTES

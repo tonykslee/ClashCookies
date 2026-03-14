@@ -19,6 +19,7 @@ import { Remaining } from "./commands/Remaining";
 import { WarPlan } from "./commands/WarPlan";
 import { Telemetry } from "./commands/Telemetry";
 import { ClanHealth } from "./commands/ClanHealth";
+import { Defer } from "./commands/Defer";
 
 // ...existing code...
 export const Commands = [
@@ -40,6 +41,7 @@ export const Commands = [
   KickList,
   Telemetry,
   ClanHealth,
+  Defer,
   Force,
   Post,
   CommandRole,

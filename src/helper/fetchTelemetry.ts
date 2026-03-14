@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { prisma } from "../prisma";
+import { hasInitializedPrismaClient, prisma } from "../prisma";
 import { TelemetryIngestService } from "../services/telemetry/ingest";
 
 type FetchSource = "api" | "web" | "cache_hit" | "cache_miss" | "fallback_cache";
@@ -27,6 +27,7 @@ const telemetryBatchStorage = new AsyncLocalStorage<{
   startedAtMs: number;
   operationTotals: Map<string, Totals>;
 }>();
+let apiUsagePersistenceDisabled = false;
 
 function makeEmptyTotals(): Totals {
   return {
@@ -59,9 +60,18 @@ function getOrCreateTotals(map: Map<string, Totals>, key: string): Totals {
   return created;
 }
 
+/** Purpose: determine whether a value supports Promise-style rejection handling. */
+function isPromiseLike(value: unknown): value is Promise<unknown> {
+  if (typeof value !== "object" || value === null) return false;
+  return typeof (value as { then?: unknown }).then === "function";
+}
+
 function trackApiUsage(endpoint: string, incrementBy: number): void {
-  void prisma.apiUsage
-    .upsert({
+  if (apiUsagePersistenceDisabled) return;
+  if (!hasInitializedPrismaClient()) return;
+
+  try {
+    const maybePromise = prisma.apiUsage.upsert({
       where: { endpoint },
       create: {
         endpoint,
@@ -72,8 +82,15 @@ function trackApiUsage(endpoint: string, incrementBy: number): void {
         lastCall: new Date(),
         callCount: { increment: incrementBy },
       },
-    })
-    .catch(() => undefined);
+    });
+    if (isPromiseLike(maybePromise)) {
+      void maybePromise.catch(() => undefined);
+    }
+  } catch (error) {
+    apiUsagePersistenceDisabled = true;
+    const message = String((error as { message?: string } | null)?.message ?? error);
+    console.warn(`[telemetry] apiUsage persistence disabled reason=${message}`);
+  }
 }
 
 export async function runFetchTelemetryBatch<T>(

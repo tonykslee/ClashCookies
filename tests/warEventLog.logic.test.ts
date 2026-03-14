@@ -2,8 +2,15 @@ import { describe, expect, it } from "vitest";
 import {
   advanceCocWarOutageStateForTest,
   applyWarEndedMaintenanceGuardForTest,
+  buildNotifyWarEndedViewCustomId,
+  buildBattleDayRefreshEditPayloadForTest,
+  buildWarEndedMetadataValueForTest,
+  buildNotifyEventPostedContentForTest,
+  computeWarSnapshotAttackRowsForTest,
   computeWarComplianceForTest,
   computeWarPointsDeltaForTest,
+  isNotifyWarEndedViewButtonCustomId,
+  parseNotifyWarEndedViewCustomId,
   resolveActiveWarTimingForTest,
   sanitizeWarPlanForEmbedForTest,
 } from "../src/services/WarEventLogService";
@@ -12,6 +19,47 @@ import { WarEventHistoryService } from "../src/services/war-events/history";
 function dateAt(hour: number): Date {
   return new Date(Date.UTC(2026, 0, 1, hour, 0, 0));
 }
+
+describe("War-end view custom IDs", () => {
+  it("encodes and parses war-ended view context linkage", () => {
+    const customId = buildNotifyWarEndedViewCustomId({
+      view: "c",
+      guildId: "123456789012345678",
+      clanTag: "#Q2ABC9",
+      warId: 1000055,
+      messageId: "234567890123456789",
+      timestampUnix: 1773407400,
+      page: 2,
+    });
+    expect(isNotifyWarEndedViewButtonCustomId(customId)).toBe(true);
+    expect(parseNotifyWarEndedViewCustomId(customId)).toEqual({
+      view: "c",
+      guildId: "123456789012345678",
+      clanTag: "#Q2ABC9",
+      warId: 1000055,
+      messageId: "234567890123456789",
+      timestampUnix: 1773407400,
+      page: 2,
+    });
+  });
+
+  it("rejects malformed custom ids", () => {
+    expect(parseNotifyWarEndedViewCustomId("notify-war-end:c:g:#tag:1:2:3:0")).toBeNull();
+    expect(parseNotifyWarEndedViewCustomId("notify-war-end:x:1:TAG:1:2:3:0")).toBeNull();
+  });
+});
+
+describe("War-end metadata value", () => {
+  it("groups war id, sync, and timestamp in one field", () => {
+    expect(
+      buildWarEndedMetadataValueForTest({
+        warId: 1000055,
+        syncNumber: 476,
+        timestampUnix: 1773407400,
+      })
+    ).toBe("War ID: 1000055 - Sync: 476 - <t:1773407400:F>");
+  });
+});
 
 describe("WarEventLogService.computeWarPointsDeltaForTest", () => {
   it("BL war: returns +3 points when final result is WIN", () => {
@@ -31,7 +79,7 @@ describe("WarEventLogService.computeWarPointsDeltaForTest", () => {
     expect(delta).toBe(3);
   });
 
-  it("BL war: returns +2 points when not a win but clan destruction is >= 60%", () => {
+  it("BL war: returns +2 points when not a win but clan destruction is > 60%", () => {
     const delta = computeWarPointsDeltaForTest({
       matchType: "BL",
       before: 100,
@@ -39,7 +87,7 @@ describe("WarEventLogService.computeWarPointsDeltaForTest", () => {
       finalResult: {
         clanStars: 90,
         opponentStars: 100,
-        clanDestruction: 60,
+        clanDestruction: 60.01,
         opponentDestruction: 70,
         warEndTime: null,
         resultLabel: "LOSE",
@@ -65,22 +113,22 @@ describe("WarEventLogService.computeWarPointsDeltaForTest", () => {
     expect(delta).toBe(1);
   });
 
-  it("FWA war: returns arithmetic delta (after - before) when both values are present", () => {
+  it("FWA war: returns -1 on WIN", () => {
     expect(
       computeWarPointsDeltaForTest({
         matchType: "FWA",
         before: 1200,
         after: 1205,
         finalResult: {
-          clanStars: null,
-          opponentStars: null,
+          clanStars: 100,
+          opponentStars: 99,
           clanDestruction: null,
           opponentDestruction: null,
           warEndTime: null,
-          resultLabel: "UNKNOWN",
+          resultLabel: "WIN",
         },
       })
-    ).toBe(5);
+    ).toBe(-1);
   });
 
   it("MM war: always returns 0 points delta at war end", () => {
@@ -101,7 +149,41 @@ describe("WarEventLogService.computeWarPointsDeltaForTest", () => {
     ).toBe(0);
   });
 
-  it("FWA/MM war: returns null when before/after values are incomplete", () => {
+  it("FWA war: returns +1 on LOSE", () => {
+    const delta = computeWarPointsDeltaForTest({
+      matchType: "FWA",
+      before: 100,
+      after: 100,
+      finalResult: {
+        clanStars: 99,
+        opponentStars: 100,
+        clanDestruction: null,
+        opponentDestruction: null,
+        warEndTime: null,
+        resultLabel: "LOSE",
+      },
+    });
+    expect(delta).toBe(1);
+  });
+
+  it("FWA war: returns 0 on TIE", () => {
+    const delta = computeWarPointsDeltaForTest({
+      matchType: "FWA",
+      before: 100,
+      after: 100,
+      finalResult: {
+        clanStars: 100,
+        opponentStars: 100,
+        clanDestruction: null,
+        opponentDestruction: null,
+        warEndTime: null,
+        resultLabel: "TIE",
+      },
+    });
+    expect(delta).toBe(0);
+  });
+
+  it("FWA/MM war: returns null when before is unknown", () => {
     const delta = computeWarPointsDeltaForTest({
       matchType: "FWA",
       before: null,
@@ -119,6 +201,129 @@ describe("WarEventLogService.computeWarPointsDeltaForTest", () => {
   });
 });
 
+describe("WarEventLogService.computeWarSnapshotAttackRowsForTest", () => {
+  it("stores zero trueStars for later triples on already-tripled defenders", () => {
+    const rows = computeWarSnapshotAttackRowsForTest({
+      ownMembers: [
+        {
+          tag: "#A1",
+          name: "Alice",
+          mapPosition: 1,
+          attacks: [{ order: 1, stars: 3, defenderTag: "#D1" }],
+        },
+        {
+          tag: "#B1",
+          name: "Bob",
+          mapPosition: 2,
+          attacks: [{ order: 2, stars: 3, defenderTag: "#D1" }],
+        },
+      ],
+      opponentMembers: [{ tag: "#D1", name: "Def 1", mapPosition: 1 }],
+    });
+
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.trueStars).toBe(3);
+    expect(rows[1]?.trueStars).toBe(0);
+  });
+
+  it("computes cross-player incremental gains in global attack order", () => {
+    const rows = computeWarSnapshotAttackRowsForTest({
+      ownMembers: [
+        {
+          tag: "#A1",
+          name: "Alice",
+          mapPosition: 1,
+          attacks: [{ order: 1, stars: 1, defenderTag: "#D1" }],
+        },
+        {
+          tag: "#B1",
+          name: "Bob",
+          mapPosition: 2,
+          attacks: [{ order: 2, stars: 3, defenderTag: "#D1" }],
+        },
+        {
+          tag: "#C1",
+          name: "Cara",
+          mapPosition: 3,
+          attacks: [{ order: 3, stars: 2, defenderTag: "#D1" }],
+        },
+      ],
+      opponentMembers: [{ tag: "#D1", name: "Def 1", mapPosition: 1 }],
+    });
+
+    expect(rows.map((row) => row.trueStars)).toEqual([1, 2, 0]);
+  });
+
+  it("remains deterministic regardless of own-member iteration order", () => {
+    const ownMembersA = [
+      {
+        tag: "#A1",
+        name: "Alice",
+        mapPosition: 1,
+        attacks: [{ order: 1, stars: 1, defenderTag: "#D1" }],
+      },
+      {
+        tag: "#B1",
+        name: "Bob",
+        mapPosition: 2,
+        attacks: [{ order: 2, stars: 3, defenderTag: "#D1" }],
+      },
+      {
+        tag: "#C1",
+        name: "Cara",
+        mapPosition: 3,
+        attacks: [{ order: 3, stars: 2, defenderTag: "#D1" }],
+      },
+    ];
+    const ownMembersB = [ownMembersA[2], ownMembersA[0], ownMembersA[1]];
+    const opponentMembers = [{ tag: "#D1", name: "Def 1", mapPosition: 1 }];
+
+    const rowsA = computeWarSnapshotAttackRowsForTest({ ownMembers: ownMembersA, opponentMembers });
+    const rowsB = computeWarSnapshotAttackRowsForTest({ ownMembers: ownMembersB, opponentMembers });
+
+    const signature = (rows: typeof rowsA) =>
+      [...rows]
+        .sort((a, b) => {
+          if (a.playerTag < b.playerTag) return -1;
+          if (a.playerTag > b.playerTag) return 1;
+          return a.attackNumber - b.attackNumber;
+        })
+        .map((row) => `${row.playerTag}:${row.attackNumber}:${row.trueStars}`);
+
+    expect(signature(rowsA)).toEqual(signature(rowsB));
+  });
+
+  it("uses deterministic order fallback and fail-safe trueStars when defender identity is missing", () => {
+    const rows = computeWarSnapshotAttackRowsForTest({
+      ownMembers: [
+        {
+          tag: "#A1",
+          name: "Alice",
+          mapPosition: 1,
+          attacks: [
+            { stars: 3, defenderPosition: 4 },
+            { stars: 2 },
+          ],
+        },
+        {
+          tag: "#B1",
+          name: "Bob",
+          mapPosition: 2,
+          attacks: [{ stars: 3, defenderPosition: 4 }],
+        },
+      ],
+      opponentMembers: [],
+    });
+
+    expect(rows.map((row) => row.trueStars)).toEqual([3, 0, 0]);
+    const missingDefenderRow = rows.find(
+      (row) => row.defenderTag === null && row.defenderPosition === null
+    );
+    expect(missingDefenderRow).toBeDefined();
+    expect(missingDefenderRow?.trueStars).toBe(0);
+  });
+});
+
 describe("WarEventHistoryService.buildWarEndPointsLine", () => {
   const history = new WarEventHistoryService({} as any);
   const baseResult = {
@@ -130,43 +335,43 @@ describe("WarEventHistoryService.buildWarEndPointsLine", () => {
     resultLabel: "WIN" as const,
   };
 
-  it("BL win: derives +3 and renders before->after even when after is missing", () => {
+  it("BL win: renders persisted expected +3", () => {
     const line = history.buildWarEndPointsLine(
       {
         clanName: "Alpha",
         matchType: "BL",
         warStartFwaPoints: 100,
-        warEndFwaPoints: null,
+        warEndFwaPoints: 103,
       },
       baseResult
     );
     expect(line).toBe("Alpha: 100 -> 103 (+3) [BL]");
   });
 
-  it("BL lose with 60%+ destruction: derives +2", () => {
+  it("BL lose with 60%+ destruction: renders persisted expected +2", () => {
     const line = history.buildWarEndPointsLine(
       {
         clanName: "Alpha",
         matchType: "BL",
         warStartFwaPoints: 100,
-        warEndFwaPoints: null,
+        warEndFwaPoints: 102,
       },
       {
         ...baseResult,
         resultLabel: "LOSE",
-        clanDestruction: 60,
+        clanDestruction: 60.01,
       }
     );
     expect(line).toBe("Alpha: 100 -> 102 (+2) [BL]");
   });
 
-  it("BL lose below 60% destruction: derives +1", () => {
+  it("BL lose below 60% destruction: renders persisted expected +1", () => {
     const line = history.buildWarEndPointsLine(
       {
         clanName: "Alpha",
         matchType: "BL",
         warStartFwaPoints: 100,
-        warEndFwaPoints: null,
+        warEndFwaPoints: 101,
       },
       {
         ...baseResult,
@@ -177,24 +382,22 @@ describe("WarEventHistoryService.buildWarEndPointsLine", () => {
     expect(line).toBe("Alpha: 100 -> 101 (+1) [BL]");
   });
 
-  it("FWA war: renders arithmetic delta using stored before/after", () => {
+  it("FWA win: renders persisted expected post-war points", () => {
     const line = history.buildWarEndPointsLine(
       {
         clanName: "Alpha",
         matchType: "FWA",
         warStartFwaPoints: 1200,
-        warEndFwaPoints: 1205,
+        warEndFwaPoints: 1199,
       },
       {
         ...baseResult,
-        resultLabel: "UNKNOWN",
-        clanStars: null,
-        opponentStars: null,
+        resultLabel: "WIN",
         clanDestruction: null,
         opponentDestruction: null,
       }
     );
-    expect(line).toBe("Alpha: 1200 -> 1205 (+5)");
+    expect(line).toBe("Alpha: 1200 -> 1199 (-1)");
   });
 
   it("MM war: renders no points change at war end", () => {
@@ -203,7 +406,7 @@ describe("WarEventHistoryService.buildWarEndPointsLine", () => {
         clanName: "Alpha",
         matchType: "MM",
         warStartFwaPoints: 1200,
-        warEndFwaPoints: 1197,
+        warEndFwaPoints: 1200,
       },
       {
         ...baseResult,
@@ -215,6 +418,22 @@ describe("WarEventHistoryService.buildWarEndPointsLine", () => {
       }
     );
     expect(line).toBe("Alpha: 1200 -> 1200 (+0) [MM]");
+  });
+
+  it("renders explicit unknown output when both before and expected are unknown", () => {
+    const line = history.buildWarEndPointsLine(
+      {
+        clanName: "Alpha",
+        matchType: "FWA",
+        warStartFwaPoints: null,
+        warEndFwaPoints: null,
+      },
+      {
+        ...baseResult,
+        resultLabel: "UNKNOWN",
+      }
+    );
+    expect(line).toBe("Alpha: unknown -> unknown (expected post-war points unavailable)");
   });
 });
 
@@ -393,7 +612,7 @@ describe("WarEventLogService.computeWarComplianceForTest", () => {
 });
 
 describe("WarEventLogService.sanitizeWarPlanForEmbedForTest", () => {
-  it("omits heading-style lines and keeps non-heading lines in order", () => {
+  it("normalizes heading-style prefixes and keeps line order", () => {
     const text = [
       "# Title",
       "Line 1",
@@ -406,7 +625,15 @@ describe("WarEventLogService.sanitizeWarPlanForEmbedForTest", () => {
 
     const sanitized = sanitizeWarPlanForEmbedForTest(text);
 
-    expect(sanitized?.split("\n")).toEqual(["Line 1", "", "  - Keep this", "Line 2"]);
+    expect(sanitized?.split("\n")).toEqual([
+      "Title",
+      "Line 1",
+      "  Subtitle",
+      "",
+      "  - Keep this",
+      "   Internal Header",
+      "Line 2",
+    ]);
   });
 
   it("keeps plans without heading lines unchanged", () => {
@@ -417,10 +644,94 @@ describe("WarEventLogService.sanitizeWarPlanForEmbedForTest", () => {
     expect(sanitized).toBe(text);
   });
 
-  it("returns null when all lines are heading-style lines", () => {
-    const text = ["# Title", "  ## Subtitle", "   ### More"].join("\n");
+  it("returns null when heading-only lines sanitize to empty content", () => {
+    const text = ["#   ", "  ##   ", "   ###"].join("\n");
 
     expect(sanitizeWarPlanForEmbedForTest(text)).toBeNull();
+  });
+
+  it("does not alter # characters that are not markdown heading prefixes", () => {
+    const text = ["Line #1", "  - # keep", "#not-a-heading", "foo #bar baz"].join("\n");
+    const sanitized = sanitizeWarPlanForEmbedForTest(text);
+    expect(sanitized).toBe(text);
+  });
+});
+
+describe("WarEventLogService notify event posted content", () => {
+  it("places prep-day context line above role mention", () => {
+    const content = buildNotifyEventPostedContentForTest({
+      eventType: "war_started",
+      opponentName: "Enemy Clan",
+      notifyRoleId: "123456789",
+      includeRoleMention: true,
+      nowMs: 0,
+    });
+    expect(content).toBe("War declared against Enemy Clan\n<@&123456789>");
+  });
+
+  it("places battle-day context above mention and refresh line", () => {
+    const content = buildNotifyEventPostedContentForTest({
+      eventType: "battle_day",
+      opponentName: "Enemy Clan",
+      notifyRoleId: "123456789",
+      includeRoleMention: true,
+      nowMs: 0,
+      nextScheduledRefreshAtMs: 1_200_000,
+    });
+    expect(content).toBe("War started against Enemy Clan\n<@&123456789>\nNext refresh <t:1200:R>");
+  });
+
+  it("places war-ended context line above role mention", () => {
+    const content = buildNotifyEventPostedContentForTest({
+      eventType: "war_ended",
+      opponentName: "Enemy Clan",
+      notifyRoleId: "123456789",
+      includeRoleMention: true,
+      nowMs: 0,
+    });
+    expect(content).toBe("War ended against Enemy Clan\n<@&123456789>");
+  });
+
+  it("uses fallback opponent label when name is unavailable", () => {
+    const content = buildNotifyEventPostedContentForTest({
+      eventType: "war_started",
+      opponentName: " ",
+      notifyRoleId: "123456789",
+      includeRoleMention: true,
+      nowMs: 0,
+    });
+    expect(content).toBe("War declared against Unknown Opponent\n<@&123456789>");
+  });
+});
+
+describe("WarEventLogService battle-day refresh content", () => {
+  it("preserves visible role mention with context-first order", () => {
+    const payload = buildBattleDayRefreshEditPayloadForTest(
+      "War started against Enemy Clan\n<@&123456789>\nNext refresh <t:999:R>",
+      "Enemy Clan",
+      0
+    );
+    expect(payload.content).toContain("War started against Enemy Clan\n<@&123456789>\nNext refresh <t:");
+    expect(payload.allowedMentions).toEqual({ parse: [] });
+  });
+
+  it("preserves mention for legacy mention-first posts", () => {
+    const payload = buildBattleDayRefreshEditPayloadForTest(
+      "<@&123456789>\nNext refresh <t:999:R>",
+      "Enemy Clan",
+      0
+    );
+    expect(payload.content).toContain("War started against Enemy Clan\n<@&123456789>\nNext refresh <t:");
+  });
+
+  it("does not add mention if original message had none", () => {
+    const payload = buildBattleDayRefreshEditPayloadForTest(
+      "War started against Enemy Clan\nNext refresh <t:999:R>",
+      "Enemy Clan",
+      0
+    );
+    expect(payload.content).toContain("War started against Enemy Clan\nNext refresh <t:");
+    expect(payload.content).not.toContain("<@&");
   });
 });
 

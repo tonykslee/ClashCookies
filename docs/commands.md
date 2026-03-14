@@ -28,11 +28,11 @@
 - `/cc clan tag:<tag>` - Build `https://cc.fwafarm.com/cc_n/clan.php?tag=<tag>`.
 - `/notify war clan-tag:<tag> target-channel:<channel> [role:<discordRole>]` - Enable war-state event logs (war start, battle day, war end) for a clan in a selected channel. Optional role is pinged when event logs are posted.
 - `/notify war-preview clan-tag:<tag> event:<war_started|battle_day|war_ended> [source:current|last]` - Show an ephemeral preview embed and confirm before posting publicly to the configured notify channel.
-- `/warplan set clan-tag:<tag> match-type:<BL|MM|FWA|FWA_WIN|FWA_LOSE_TRIPLE_TOP_30|FWA_LOSE_TRADITIONAL>` - Opens a modal to edit one clan custom plan. `clan-tag` supports autocomplete from tracked clans. Modal supports normal new lines, markdown (bold/italic/code/code blocks), emoji shortcodes, and direct image/GIF links.
-- `/warplan show clan-tag:<tag> [match-type:<BL|MM|FWA|FWA_WIN|FWA_LOSE_TRIPLE_TOP_30|FWA_LOSE_TRADITIONAL>]` - Show effective clan plans. Precedence is clan custom -> editable guild default -> built-in fallback.
+- `/warplan set clan-tag:<tag> match-type:<BL|MM|FWA|FWA_WIN|FWA_LOSE_TRIPLE_TOP_30|FWA_LOSE_TRADITIONAL>` - Opens a modal to edit one clan custom plan. `clan-tag` supports autocomplete from tracked clans. Modal supports normal new lines, markdown (bold/italic/code/code blocks), emoji shortcodes, direct image/GIF links, plus optional compliance fields: `minimum clan stars before tripling non-mirror` (integer, default `101`) and `all bases open for 3 star time-left` (`H` or `Hh`, range `0..24`, default `0`).
+- `/warplan show clan-tag:<tag> [match-type:<BL|MM|FWA|FWA_WIN|FWA_LOSE_TRIPLE_TOP_30|FWA_LOSE_TRADITIONAL>]` - Show effective clan plans. Precedence is clan custom -> editable guild default -> built-in fallback. Output now includes resolved compliance gate values (`nonMirrorTripleMinClanStars`, `allBasesOpenHoursLeft`), including defaults when unset.
 - `/warplan reset clan-tag:<tag> [match-type:<BL|MM|FWA|FWA_WIN|FWA_LOSE_TRIPLE_TOP_30|FWA_LOSE_TRADITIONAL>]` - Reset clan custom plans. With no match-type, resets all custom plans for that clan.
-- `/warplan set-default match-type:<BL|MM|FWA|FWA_WIN|FWA_LOSE_TRIPLE_TOP_30|FWA_LOSE_TRADITIONAL>` - Opens a modal to edit one guild default plan used when a clan has no custom plan.
-- `/warplan show-default [match-type:<BL|MM|FWA|FWA_WIN|FWA_LOSE_TRIPLE_TOP_30|FWA_LOSE_TRADITIONAL>]` - Show editable guild defaults and effective fallbacks.
+- `/warplan set-default match-type:<BL|MM|FWA|FWA_WIN|FWA_LOSE_TRIPLE_TOP_30|FWA_LOSE_TRADITIONAL>` - Opens a modal to edit one guild default plan used when a clan has no custom plan, with the same optional compliance fields and defaults as `/warplan set`.
+- `/warplan show-default [match-type:<BL|MM|FWA|FWA_WIN|FWA_LOSE_TRIPLE_TOP_30|FWA_LOSE_TRADITIONAL>]` - Show editable guild defaults and effective fallbacks, including resolved compliance gate defaults when unset.
 - `/warplan reset-default [match-type:<BL|MM|FWA|FWA_WIN|FWA_LOSE_TRIPLE_TOP_30|FWA_LOSE_TRADITIONAL>]` - Reset editable guild defaults back to built-in fallback text.
 - `/war history clan-tag:<tag> [limit:<number>]` - Show recent clan-level war history from stored war records.
 - `/war war-id war-id:<number>` - Export stored war lookup payload for one war ID as CSV.
@@ -44,11 +44,11 @@
 - `/fwa match` uses `:interrobang: Clan not found on points.fwafarm` when opponent-page-not-found is the validation issue, and alliance low-confidence views still collapse mismatch detail to one sync warning line.
 - `/fwa match` can validate MM/BL no-opponent-page wars via tracked-clan points-page fallback in the shared snapshot path.
 - `/fwa match tag:<clan>` now returns to the full alliance overview when `Alliance View` is pressed from a direct single-clan card.
-- `/fwa compliance tag:<trackedClanTag> [war-id:current|<clanWarHistoryWarId>] [visibility:private|public]` - Run war-plan compliance checks on demand using the shared war-end compliance engine. Defaults to the active current war; set `war-id:current` explicitly for active-war checks, or provide a numeric ended war ID for historical evaluation.
+- `/fwa compliance tag:<trackedClanTag> [war-id:current|<clanWarHistoryWarId>] [visibility:private|public]` - Run war-plan compliance checks on demand using the shared war-end compliance engine. Defaults to the active current war; set `war-id:current` explicitly for active-war checks, or provide a numeric ended war ID for historical evaluation. `war-id` supports autocomplete after `tag` is selected and returns recent ended wars for that clan only (up to 10). FWA embeds include a `Warplan` field from the same active plan source used by war mail, show resolved FWA-WIN threshold context (`N`/`H`) in rules text, and breach-context stars show the clan total before the breach attack.
 - `/fwa weight-age [visibility:private|public] [tag:<tag>]` - Scrape `https://fwastats.com/Clan/<tag>/Weight` and report last submitted weight age for one clan or all tracked clans. Uses `FWASTATS_WEIGHT_COOKIE` when configured.
 - `/fwa weight-link [visibility:private|public] [tag:<tag>]` - Return FWA Stats weight page link(s) for one clan or all tracked clans.
 - `/fwa weight-health [visibility:private|public] [tag:<tag>]` - Show stale-weight health summary (recent/outdated/severe) using fetched weight-age data; defaults to all tracked clans and shares the same auth flow as `weight-age`.
-- `/fwa weight-cookie [visibility:private|public] [application-cookie:<name=value>] [antiforgery-cookie:<name=value>]` - Set or inspect fwastats auth cookies used by weight scraping. With no cookie args, returns cookie status/expiry metadata; with both args, securely saves cookie pairs for `/fwa weight-age` and `/fwa weight-health`.
+- `/fwa weight-cookie [visibility:private|public] [application-cookie:<value-or-name=value>] [antiforgery-cookie:<value-or-name=value>] [antiforgery-cookie-name:<name>]` - Set or inspect fwastats auth cookies used by weight scraping. With no cookie args, returns cookie status/expiry metadata; with both cookie values, securely saves normalized cookie pairs for `/fwa weight-age` and `/fwa weight-health`. Defaults antiforgery cookie name to `.AspNetCore.Antiforgery.oBHtDLr47-0` when not provided.
 - `/fwa match-type [visibility:private|public] [tag:<trackedClanTag>] [type:FWA|BL|MM]` - Manually set or view per-clan match type override used by matchup output. If no args, lists overrides for all tracked clans.
 - `/fwa mail send tag:<trackedClanTag>` - Show ephemeral war mail preview with confirm-and-send to the tracked clan mail channel. Confirm-and-send pings `TrackedClan.clanRoleId` when enabled. Uses the same active-war mail freshness gating as `/fwa match` (up-to-date send is disabled; out-of-date resend is enabled when matchType/outcome differ). War-mail embed sidebar colors are mapped by effective match state only: BL=black, MM=white, FWA WIN=green, FWA LOSE=red, unresolved=gray.
 - `/fwa match` single-clan view includes a `Send Mail` button that follows the same access policy as `/fwa mail send` and uses the same role-ping behavior.
@@ -60,12 +60,16 @@
 - `/recruitment countdown start platform:discord|reddit|band clan:<tag>` - Start exact cooldown timer for your account on that platform+clan pair.
 - `/recruitment countdown status` - Show your current recruitment cooldown timers.
 - `/recruitment dashboard` - Show readiness across all tracked clans/platforms for your account.
+- `/defer add player-tag:<playerTag> weight:<weight>` - Add one deferred weight-input task for a prospective member (accepts `145000`, `145,000`, or `145k`).
+- `/defer list` - Show active open deferred weight-input tasks in oldest-first order for the active scope.
+- `/defer remove player-tag:<playerTag>` - Mark one open deferred task as resolved after FWAStats weight entry is complete.
+- `/defer clear` - Mark all open deferred tasks in scope as cleared.
 - `/kick-list build [days:<number>]` - Auto-build kick-list candidates from tracked-clan members who are inactive (`days` threshold, default `3`), unlinked, or linked to users not in this server. Players matching both inactivity and link issues are shown first.
 - `/kick-list add tag:<playerTag> reason:<text>` - Manually add a kick-list candidate with reason.
 - `/kick-list remove tag:<playerTag>` - Remove a player from kick list.
 - `/kick-list show` - Show current kick-list with reasons.
 - `/kick-list clear [mode:all|auto|manual]` - Clear kick-list entries.
-- `/sync time post [role:<discordRole>]` - Open modal, compose sync-time message, post it, and pin it.
+- `/sync time post [role:<discordRole>]` - Open modal, compose sync-time message, post it, and pin it. Timezone input accepts IANA names like `America/New_York` plus common US aliases such as `EST`, `EDT`, `PST`, and `PDT`.
 - `/sync post status [message-id:<id>]` - Show claimed vs unclaimed clan badge reactions for the active sync-time post, or for a specific message in the channel.
 - `/force sync data tag:<trackedClanTag> [datapoint:points|syncNum]` - Manually force-sync tracked clan points and/or sync number from points.fwafarm (explicitly bypasses points lock and war-scoped reuse).
 - `/force sync mail tag:<trackedClanTag> message-type:<mail|notify:war start|notify:battle start|notify:war end> message-id:<id>` - Upsert `CurrentWar.mailConfig` with current match configuration plus a posted message reference.

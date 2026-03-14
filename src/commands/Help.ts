@@ -189,6 +189,8 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "This removes invalid option paths (no outcome/lose-style controls for BL/MM or FWA-WIN).",
       "Modal formatting tips: `**bold**`, `*italic*`, `` `code` ``, and code blocks with triple backticks.",
       "Custom/default plans support `{opponent}` placeholder and replace it with opponent clan name.",
+      "Warplan modal also supports optional compliance settings: `minimum clan stars before tripling non-mirror` (integer, default `101`) and `all bases open for 3 star time-left` (`H` or `Hh`, range `0..24`, default `0`).",
+      "These compliance settings are resolved with the same precedence (custom -> editable default -> fallback defaults) and are applied by `/fwa compliance` only for effective `FWA_WIN` checks.",
       "Precedence: clan custom -> editable guild default -> built-in fallback.",
     ],
     examples: [
@@ -226,10 +228,11 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`/fwa points` returns point balances (single clan tag or all tracked if tag omitted).",
       "`/fwa match` auto-resolves current war opponent from CoC API and evaluates win/lose/tiebreak using cached points + persisted sync state.",
       "`/fwa compliance` runs war-plan compliance checks on demand for a tracked clan (defaults to current active war; use `war-id:current` or numeric `war-id` for historical checks).",
+      "FWA compliance embeds include a `Warplan` field from the same active plan source used by war mail, show resolved FWA-WIN threshold context (`N`/`H`) from warplan config, and strict-window breach context shows clan stars before the breach attack.",
       "`/fwa weight-age` scrapes the fwastats weight page and reports last submitted weight age (single clan or all tracked clans). Uses `FWASTATS_WEIGHT_COOKIE` when configured.",
       "`/fwa weight-link` returns fwastats weight page URL(s) for one clan or all tracked clans.",
       "`/fwa weight-health` summarizes all tracked clans and flags stale weight submissions (outdated >7d, severe >=30d) using the same auth flow as `weight-age`.",
-      "`/fwa weight-cookie` sets or checks fwastats auth cookies used by weight scraping. With no cookie args it shows status; with both cookie args it saves updated values.",
+      "`/fwa weight-cookie` sets or checks fwastats auth cookies used by weight scraping. With no cookie args it shows status; with both cookie values it saves updated values (optional `antiforgery-cookie-name` override).",
       "When fwastats auth expires, weight commands return recovery steps that point to `/fwa weight-cookie`.",
       "Points fetch lock is lifecycle-driven: when locked, command/poller paths use persisted/cache data only; `/force sync data` is the only direct points.fwafarm bypass.",
       "`/fwa match` only shows sync state text when validation is needed, and hides non-actionable confirmation/lifecycle debug fields when current.",
@@ -253,6 +256,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "Default access for `/fwa weight-age`, `/fwa weight-link`, `/fwa weight-health`, and `/fwa weight-cookie` is FWA leader role + Administrator (or override via `/permission add`).",
       "`/fwa leader-role` sets the default FWA leader role used by leader-only commands.",
       "Tag supports autocomplete from tracked clans.",
+      "After selecting a tracked tag, `war-id` supports autocomplete for recent ended wars scoped to that clan.",
       "Set `visibility:public` to post the result directly in channel.",
     ],
     examples: [
@@ -267,7 +271,8 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/fwa weight-link tag:2QG2C08UP",
       "/fwa weight-health",
       "/fwa weight-cookie",
-      "/fwa weight-cookie application-cookie:.AspNetCore.Identity.Application=... antiforgery-cookie:.AspNetCore.Antiforgery...=...",
+      "/fwa weight-cookie application-cookie:... antiforgery-cookie:...",
+      "/fwa weight-cookie application-cookie:... antiforgery-cookie:... antiforgery-cookie-name:.AspNetCore.Antiforgery.custom",
       "/tracked-clan configure tag:#2QG2C08UP mail-channel:#war-mail",
       "/fwa mail send tag:2QG2C08UP",
       "/fwa leader-role role:@FWA-Leaders",
@@ -290,6 +295,23 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/recruitment dashboard",
     ],
   },
+  defer: {
+    summary: "Track deferred FWA weight-input tasks for prospective members.",
+    details: [
+      "`add` queues a player tag + known weight when FWAStats roster entry is not yet possible.",
+      "`list` shows only open deferments in oldest-first order for the active scope.",
+      "`remove` resolves one open deferment after weight entry is completed in FWAStats.",
+      "`clear` marks all open deferments in scope as cleared.",
+      "Open deferments run reminder lifecycle stages at 48h, 5d, and 7d.",
+      "Default access is FWA leader role + Administrator (or override via `/permission add`).",
+    ],
+    examples: [
+      "/defer add player-tag:#ABC123 weight:145k",
+      "/defer list",
+      "/defer remove player-tag:#ABC123",
+      "/defer clear",
+    ],
+  },
   "kick-list": {
     summary: "Build and manage kick-list candidates.",
     details: [
@@ -309,6 +331,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     summary: "Post structured messages such as sync time announcements.",
     details: [
       "`/sync time post` opens a modal to capture date/time/timezone and role ping.",
+      "Timezone input accepts IANA names like `America/New_York` plus common US aliases such as `EST`, `EDT`, `PST`, and `PDT`.",
       "Creates and pins a sync-time message in the active channel, then adds clan badge reactions.",
       "`/sync post status` shows claimed vs unclaimed clans from the stored active sync post, or a provided message ID.",
       "`sync time` is admin-only by default.",
@@ -365,7 +388,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     details: [
       "Add/remove role whitelists for command targets.",
       "List current policy for one target or all targets.",
-      "`/permission list` includes `fwa:mail:send`, `fwa:compliance`, and `fwa:weight-*` targets (default FWA leader role + Administrator).",
+      "`/permission list` includes `fwa:mail:send`, `fwa:compliance`, `fwa:weight-*`, and `defer*` targets (default FWA leader role + Administrator).",
       "`add` and `remove` are admin-only by default.",
     ],
     examples: [
@@ -374,6 +397,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/permission add command:fwa:compliance role:@Leaders",
       "/permission add command:fwa:weight-health role:@Leaders",
       "/permission add command:fwa:weight-cookie role:@Leaders",
+      "/permission add command:defer role:@Leaders",
       "/permission add command:fwa role:@Leaders",
       "/permission remove command:sync role:@Leaders",
       "/permission list",

@@ -2,7 +2,7 @@ import { SettingsService } from "./SettingsService";
 
 const FWASTATS_WEIGHT_COOKIE_SETTING_KEY = "fwastats_weight_cookie_v1";
 const DEFAULT_APP_COOKIE_NAME = ".AspNetCore.Identity.Application";
-const DEFAULT_ANTIFORGERY_COOKIE_NAME = ".AspNetCore.Antiforgery";
+const DEFAULT_ANTIFORGERY_COOKIE_NAME = ".AspNetCore.Antiforgery.oBHtDLr47-0";
 const SETTINGS_CACHE_TTL_MS = 30 * 1000;
 
 export type FwaStatsWeightAuthErrorCode =
@@ -27,9 +27,10 @@ type StoredWeightCookieConfig = {
 };
 
 type ParsedCookieInput = {
-  name: string;
+  name: string | null;
   value: string;
   expiresAt: Date | null;
+  hadExplicitName: boolean;
 };
 
 type CookieHeaderContext = {
@@ -68,8 +69,7 @@ function parseOptionalIsoDate(input: string | null | undefined): Date | null {
 
 /** Purpose: parse one cookie token, preserving name/value and optional expiry metadata. */
 function parseCookieInput(
-  rawInput: string,
-  fallbackCookieName: string
+  rawInput: string
 ): { ok: true; value: ParsedCookieInput } | { ok: false; error: string } {
   const normalizedInput = String(rawInput ?? "").trim();
   if (!normalizedInput) {
@@ -91,22 +91,17 @@ function parseCookieInput(
 
   const firstSegment = segments[0] ?? "";
   const pairSeparatorIndex = firstSegment.indexOf("=");
-  if (pairSeparatorIndex < 0) {
-    return {
-      ok: false,
-      error:
-        "Cookie must include `name=value` format. Paste the cookie pair from browser DevTools.",
-    };
-  }
-
-  const parsedName = firstSegment.slice(0, pairSeparatorIndex).trim();
-  const parsedValue = firstSegment.slice(pairSeparatorIndex + 1).trim();
+  const candidateName = pairSeparatorIndex >= 0 ? firstSegment.slice(0, pairSeparatorIndex).trim() : "";
+  const candidateValue = pairSeparatorIndex >= 0 ? firstSegment.slice(pairSeparatorIndex + 1).trim() : "";
+  const treatAsExplicitPair =
+    pairSeparatorIndex >= 0 &&
+    Boolean(candidateName) &&
+    isValidCookieName(candidateName) &&
+    Boolean(candidateValue);
+  const parsedName = treatAsExplicitPair ? candidateName : null;
+  const parsedValue = treatAsExplicitPair ? candidateValue : firstSegment.trim();
   if (!parsedValue) {
     return { ok: false, error: "Cookie value cannot be empty." };
-  }
-  const cookieName = parsedName || fallbackCookieName;
-  if (!cookieName) {
-    return { ok: false, error: "Cookie name is required." };
   }
 
   let expiresAt: Date | null = null;
@@ -132,17 +127,24 @@ function parseCookieInput(
   return {
     ok: true,
     value: {
-      name: cookieName,
+      name: parsedName,
       value: parsedValue,
       expiresAt,
+      hadExplicitName: pairSeparatorIndex >= 0 && Boolean(parsedName),
     },
   };
+}
+
+/** Purpose: validate cookie-name safety and reject malformed option values early. */
+function isValidCookieName(input: string): boolean {
+  const value = String(input ?? "").trim();
+  return /^[A-Za-z0-9._-]+$/.test(value);
 }
 
 /** Purpose: serialize one parsed cookie into persisted representation. */
 function toStoredCookie(input: ParsedCookieInput, updatedAt: Date): StoredCookie {
   return {
-    name: input.name,
+    name: input.name ?? "",
     value: input.value,
     expiresAtIso: input.expiresAt ? input.expiresAt.toISOString() : null,
     updatedAtIso: updatedAt.toISOString(),
@@ -181,6 +183,7 @@ export class FwaStatsWeightCookieService {
   async setCookies(params: {
     applicationCookieRaw: string;
     antiforgeryCookieRaw: string;
+    antiforgeryCookieNameRaw?: string | null;
     guildId: string | null;
     userId: string | null;
   }): Promise<{
@@ -189,14 +192,37 @@ export class FwaStatsWeightCookieService {
     antiforgeryCookieName: string;
     applicationCookieExpiresAt: Date | null;
   }> {
-    const appParsed = parseCookieInput(params.applicationCookieRaw, DEFAULT_APP_COOKIE_NAME);
+    const appParsed = parseCookieInput(params.applicationCookieRaw);
     if (!appParsed.ok) {
       throw new Error(`Application cookie invalid: ${appParsed.error}`);
     }
-    const antiParsed = parseCookieInput(params.antiforgeryCookieRaw, DEFAULT_ANTIFORGERY_COOKIE_NAME);
+    const antiParsed = parseCookieInput(params.antiforgeryCookieRaw);
     if (!antiParsed.ok) {
       throw new Error(`Antiforgery cookie invalid: ${antiParsed.error}`);
     }
+    const explicitAntiforgeryName = String(params.antiforgeryCookieNameRaw ?? "").trim();
+    if (explicitAntiforgeryName && !isValidCookieName(explicitAntiforgeryName)) {
+      throw new Error(
+        "Antiforgery cookie invalid: Cookie name must use letters, digits, `.`, `_`, or `-`."
+      );
+    }
+
+    const applicationCookie: ParsedCookieInput = {
+      name: DEFAULT_APP_COOKIE_NAME,
+      value: appParsed.value.value,
+      expiresAt: appParsed.value.expiresAt,
+      hadExplicitName: true,
+    };
+    const resolvedAntiforgeryName =
+      explicitAntiforgeryName ||
+      (antiParsed.value.hadExplicitName && antiParsed.value.name ? antiParsed.value.name : null) ||
+      DEFAULT_ANTIFORGERY_COOKIE_NAME;
+    const antiforgeryCookie: ParsedCookieInput = {
+      name: resolvedAntiforgeryName,
+      value: antiParsed.value.value,
+      expiresAt: antiParsed.value.expiresAt,
+      hadExplicitName: true,
+    };
 
     const savedAt = new Date();
     const payload: StoredWeightCookieConfig = {
@@ -204,17 +230,17 @@ export class FwaStatsWeightCookieService {
       updatedAtIso: savedAt.toISOString(),
       updatedByGuildId: params.guildId ?? null,
       updatedByUserId: params.userId ?? null,
-      applicationCookie: toStoredCookie(appParsed.value, savedAt),
-      antiforgeryCookie: toStoredCookie(antiParsed.value, savedAt),
+      applicationCookie: toStoredCookie(applicationCookie, savedAt),
+      antiforgeryCookie: toStoredCookie(antiforgeryCookie, savedAt),
     };
     await this.settings.set(FWASTATS_WEIGHT_COOKIE_SETTING_KEY, JSON.stringify(payload));
     this.cachedConfig = payload;
     this.cacheExpiresAtMs = Date.now() + SETTINGS_CACHE_TTL_MS;
     return {
       savedAt,
-      applicationCookieName: displayCookieName(appParsed.value.name),
-      antiforgeryCookieName: displayCookieName(antiParsed.value.name),
-      applicationCookieExpiresAt: appParsed.value.expiresAt,
+      applicationCookieName: displayCookieName(applicationCookie.name ?? ""),
+      antiforgeryCookieName: displayCookieName(antiforgeryCookie.name ?? ""),
+      applicationCookieExpiresAt: applicationCookie.expiresAt,
     };
   }
 

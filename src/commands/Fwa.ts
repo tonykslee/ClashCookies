@@ -26,8 +26,12 @@ import {
 } from "../services/CommandPermissionService";
 import { GoogleSheetsService } from "../services/GoogleSheetsService";
 import { SettingsService } from "../services/SettingsService";
-import { WarComplianceService } from "../services/WarComplianceService";
+import {
+  WarComplianceService,
+  type WarComplianceIssue,
+} from "../services/WarComplianceService";
 import { WarEventLogService } from "../services/WarEventLogService";
+import { buildComplianceWarPlanText } from "../services/warPlanDisplay";
 import { FwaStatsWeightService } from "../services/FwaStatsWeightService";
 import { FwaStatsWeightCookieService } from "../services/FwaStatsWeightCookieService";
 import { getNextWarMailRefreshAtMs } from "../services/refreshSchedule";
@@ -84,6 +88,7 @@ import {
 } from "../services/PointsDirectFetchGateService";
 import {
   buildFwaMailBackCustomId,
+  createTransientFwaKey,
   buildFwaMailConfirmCustomId,
   buildFwaMailConfirmNoPingCustomId,
   buildFwaMailRefreshCustomId,
@@ -100,6 +105,7 @@ import {
   buildOutcomeActionCustomId,
   buildPointsPostButtonCustomId,
   parseFwaMailBackCustomId,
+  parseFwaComplianceViewCustomId,
   parseFwaMailConfirmCustomId,
   parseFwaMailConfirmNoPingCustomId,
   parseFwaMailRefreshCustomId,
@@ -146,7 +152,10 @@ import {
   type WarMailExpectedOutcome,
   type WarMailMatchType,
 } from "./fwa/mailEmbedColor";
-import { buildWarComplianceReportLines } from "./fwa/complianceView";
+import {
+  buildFwaComplianceEmbedView,
+  type FwaComplianceActiveView,
+} from "./fwa/complianceEmbedView";
 import {
   WEIGHT_SEVERE_STALE_DAYS,
   WEIGHT_STALE_DAYS,
@@ -167,6 +176,7 @@ import {
 } from "./fwa/warScopedReuse";
 export { isMissedSyncClanForTest } from "./fwa/matchState";
 export {
+  isFwaComplianceViewButtonCustomId,
   isFwaMailBackButtonCustomId,
   isFwaMailConfirmButtonCustomId,
   isFwaMailConfirmNoPingButtonCustomId,
@@ -317,6 +327,16 @@ type ComplianceWarTarget =
   | { scope: "current"; warId: null; requested: "default" | "current" }
   | { scope: "war_id"; warId: number; requested: "war_id" };
 
+type ComplianceWarAutocompleteCandidate = {
+  warId: number;
+  opponentName: string | null;
+  endedAt: Date | null;
+};
+
+const COMPLIANCE_WAR_ID_AUTOCOMPLETE_CANDIDATE_LIMIT = 50;
+const COMPLIANCE_WAR_ID_AUTOCOMPLETE_RESULT_LIMIT = 10;
+const COMPLIANCE_WAR_ID_AUTOCOMPLETE_DEFAULT_TIME_ZONE = "UTC";
+
 /** Purpose: parse `/fwa compliance war-id` text into deterministic scope selection. */
 function parseComplianceWarTarget(input: string | null | undefined):
   | { ok: true; value: ComplianceWarTarget }
@@ -342,6 +362,139 @@ function parseComplianceWarTarget(input: string | null | undefined):
     ok: false,
     error: "Invalid `war-id`. Use `current` or a numeric war ID.",
   };
+}
+
+/** Purpose: parse unknown values into Date objects for compliance autocomplete metadata. */
+function parseComplianceAutocompleteDateLike(value: unknown): Date | null {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
+  if (typeof value === "string" || typeof value === "number") {
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) return parsed;
+  }
+  return null;
+}
+
+/** Purpose: narrow unknown payload values to object records for compliance autocomplete parsing. */
+function asComplianceAutocompleteRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+/** Purpose: parse WarLookup payload fields used for compliance autocomplete fallback metadata. */
+function parseComplianceAutocompleteLookupPayload(payload: unknown): {
+  endedAt: Date | null;
+  opponentName: string | null;
+} {
+  let parsed: unknown = payload;
+  if (typeof parsed === "string") {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      parsed = null;
+    }
+  }
+  const root = asComplianceAutocompleteRecord(parsed);
+  if (!root) {
+    return { endedAt: null, opponentName: null };
+  }
+  const warMeta = asComplianceAutocompleteRecord(root.warMeta);
+  const opponent = asComplianceAutocompleteRecord(root.opponent);
+  const endedAt = parseComplianceAutocompleteDateLike(warMeta?.endTime ?? root.endTime ?? null);
+  const opponentName = String(opponent?.name ?? "").trim() || null;
+  return { endedAt, opponentName };
+}
+
+/** Purpose: keep autocomplete labels deterministic and bounded for Discord limits. */
+function buildComplianceWarIdAutocompleteLabel(input: {
+  warId: number;
+  endedAt: Date | null;
+  opponentName: string | null;
+  timeZone: string;
+}): string {
+  const dateLabel =
+    input.endedAt instanceof Date
+      ? new Intl.DateTimeFormat("en-US", {
+          timeZone: input.timeZone,
+          month: "2-digit",
+          day: "2-digit",
+        }).format(input.endedAt)
+      : "??/??";
+  const opponentLabel = input.opponentName ?? "Unknown Opponent";
+  return `${input.warId} | ended: ${dateLabel} | ${opponentLabel}`.slice(0, 100);
+}
+
+/** Purpose: sort compliance war-id autocomplete rows deterministically by ended time then warId. */
+function compareComplianceWarAutocompleteCandidates(
+  left: ComplianceWarAutocompleteCandidate,
+  right: ComplianceWarAutocompleteCandidate
+): number {
+  const leftTime = left.endedAt instanceof Date ? left.endedAt.getTime() : Number.NEGATIVE_INFINITY;
+  const rightTime = right.endedAt instanceof Date ? right.endedAt.getTime() : Number.NEGATIVE_INFINITY;
+  if (leftTime !== rightTime) return rightTime - leftTime;
+  return right.warId - left.warId;
+}
+
+/** Purpose: render a stored compliance-view payload into message-safe embed/components. */
+function renderComplianceViewPayload(input: {
+  key: string;
+  payload: FwaComplianceViewPayload;
+}): {
+  embeds: EmbedBuilder[];
+  components: ActionRowBuilder<ButtonBuilder>[];
+} {
+  const rendered = buildFwaComplianceEmbedView({
+    userId: input.payload.userId,
+    key: input.key,
+    isFwa: input.payload.isFwa,
+    clanName: input.payload.clanName,
+    warPlanText: input.payload.warPlanText,
+    warId: input.payload.warId,
+    expectedOutcome: input.payload.expectedOutcome,
+    fwaWinGateConfig: input.payload.fwaWinGateConfig,
+    warStartTime: input.payload.warStartTime,
+    warEndTime: input.payload.warEndTime,
+    participantsCount: input.payload.participantsCount,
+    attacksCount: input.payload.attacksCount,
+    missedBoth: input.payload.missedBoth,
+    notFollowingPlan: input.payload.notFollowingPlan,
+    activeView: input.payload.activeView,
+    mainPage: input.payload.mainPage,
+    missedPage: input.payload.missedPage,
+  });
+  input.payload.mainPage = rendered.mainPage;
+  input.payload.missedPage = rendered.missedPage;
+  return {
+    embeds: [rendered.embed],
+    components: rendered.components,
+  };
+}
+
+/** Purpose: resolve compliance warplan text from the same active plan source used by war mail, then format it for compliance display. */
+async function resolveComplianceWarPlanText(input: {
+  guildId: string;
+  clanTag: string;
+  clanName: string;
+  opponentName: string | null;
+  matchType: "FWA" | "BL" | "MM" | "SKIP" | null;
+  expectedOutcome: "WIN" | "LOSE" | null;
+  forcedLoseStyle?: "TRADITIONAL" | "TRIPLE_TOP_30" | null;
+  cocService: CoCService;
+}): Promise<string> {
+  if (input.matchType !== "FWA") {
+    return buildComplianceWarPlanText(null);
+  }
+  const history = new WarEventHistoryService(input.cocService);
+  const planText = await history.buildWarPlanText(
+    input.guildId,
+    input.matchType,
+    input.expectedOutcome,
+    input.clanTag,
+    input.opponentName,
+    "battle",
+    input.clanName,
+    { forcedLoseStyle: input.forcedLoseStyle ?? null }
+  );
+  return buildComplianceWarPlanText(planText);
 }
 
 /** Purpose: normalize stored role values to a raw Discord role ID. */
@@ -462,8 +615,35 @@ type FwaMailPreviewPayload = {
   revisionOverride?: MatchRevisionFields | null;
 };
 
+type FwaComplianceViewPayload = {
+  userId: string;
+  guildId: string;
+  clanName: string;
+  clanTag: string;
+  isFwa: boolean;
+  warPlanText: string | null;
+  warId: number | null;
+  expectedOutcome: "WIN" | "LOSE" | null;
+  fwaWinGateConfig:
+    | {
+        nonMirrorTripleMinClanStars: number;
+        allBasesOpenHoursLeft: number;
+      }
+    | null;
+  warStartTime: Date | null;
+  warEndTime: Date | null;
+  participantsCount: number;
+  attacksCount: number;
+  missedBoth: WarComplianceIssue[];
+  notFollowingPlan: WarComplianceIssue[];
+  activeView: FwaComplianceActiveView;
+  mainPage: number;
+  missedPage: number;
+};
+
 const fwaMatchCopyPayloads = new Map<string, FwaMatchCopyPayload>();
 const fwaMailPreviewPayloads = new Map<string, FwaMailPreviewPayload>();
+const fwaComplianceViewPayloads = new Map<string, FwaComplianceViewPayload>();
 const fwaMailPollers = new Map<string, ReturnType<typeof setInterval>>();
 const pointsSnapshotCache = new Map<string, PointsSnapshotCacheEntry>();
 const pointsSnapshotInFlight = new Map<string, Promise<PointsSnapshot>>();
@@ -2448,10 +2628,10 @@ function buildWarMailPostedContent(
     return nextRefresh || "War plan unavailable.";
   }
   const sections: string[] = [];
+  sections.push(planText);
   if (normalizedRoleId && options?.pingRole !== false) {
     sections.push(`<@&${normalizedRoleId}>`);
   }
-  sections.push(planText);
   if (nextRefresh) {
     sections.push(nextRefresh);
   }
@@ -2470,8 +2650,7 @@ function extractPostedWarMailMentionRoleId(
     const trimmed = line.trim();
     if (!trimmed) continue;
     const match = trimmed.match(/^<@&(\d{5,})>$/);
-    if (!match?.[1]) return null;
-    return normalizeDiscordRoleId(match[1]);
+    if (match?.[1]) return normalizeDiscordRoleId(match[1]);
   }
   return null;
 }
@@ -2940,6 +3119,60 @@ function buildFwaMatchCopyComponents(
     }
   }
   return rows;
+}
+
+export async function handleFwaComplianceViewButton(
+  interaction: ButtonInteraction
+): Promise<void> {
+  const parsed = parseFwaComplianceViewCustomId(interaction.customId);
+  if (!parsed) return;
+  if (interaction.user.id !== parsed.userId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Only the command requester can use this button.",
+    });
+    return;
+  }
+
+  const payload = fwaComplianceViewPayloads.get(parsed.key);
+  if (!payload) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "This compliance view expired. Please run /fwa compliance again.",
+    });
+    return;
+  }
+
+  if (parsed.action === "open_missed") {
+    payload.activeView = "missed";
+  } else if (parsed.action === "open_main") {
+    if (payload.isFwa) {
+      payload.activeView = "fwa_main";
+    }
+  } else if (parsed.action === "prev") {
+    if (payload.activeView === "fwa_main") {
+      payload.mainPage = Math.max(0, payload.mainPage - 1);
+    } else {
+      payload.missedPage = Math.max(0, payload.missedPage - 1);
+    }
+  } else if (parsed.action === "next") {
+    if (payload.activeView === "fwa_main") {
+      payload.mainPage += 1;
+    } else {
+      payload.missedPage += 1;
+    }
+  }
+
+  const rendered = renderComplianceViewPayload({
+    key: parsed.key,
+    payload,
+  });
+  fwaComplianceViewPayloads.set(parsed.key, payload);
+  await interaction.update({
+    content: undefined,
+    embeds: rendered.embeds,
+    components: rendered.components,
+  });
 }
 
 export async function handleFwaMatchCopyButton(interaction: ButtonInteraction): Promise<void> {
@@ -3998,13 +4231,22 @@ async function showWarMailPreview(
   const previewSummary = enabled
     ? "Review mail preview and confirm send."
     : ["Cannot send yet.", ...warnings].join("\n");
+  const previewMentionRoleId = normalizeDiscordRoleId(rendered.clanRoleId);
+  const previewMailText = buildWarMailPostedContent(previewMentionRoleId, undefined, {
+    pingRole: true,
+    planText: rendered.planText,
+    includeNextRefresh: !rendered.freezeRefresh,
+  });
   const content = limitDiscordContent(
-    [previewSummary, "", "**Mail Text Preview**", rendered.planText].filter((part) => part.trim().length > 0).join("\n")
+    [previewSummary, "", "**Mail Text Preview**", previewMailText]
+      .filter((part) => part.trim().length > 0)
+      .join("\n")
   );
 
   if (interaction.isButton()) {
     await interaction.update({
       content,
+      allowedMentions: { parse: [] },
       embeds: [rendered.embed],
       components: buildWarMailPreviewComponents({
         userId,
@@ -4018,6 +4260,7 @@ async function showWarMailPreview(
 
   await interaction.editReply({
     content,
+    allowedMentions: { parse: [] },
     embeds: [rendered.embed],
     components: buildWarMailPreviewComponents({
       userId,
@@ -8557,6 +8800,7 @@ export const Fwa: Command = {
           description: "Optional war target: `current` or numeric ended war ID (defaults to current)",
           type: ApplicationCommandOptionType.String,
           required: false,
+          autocomplete: true,
         },
         {
           name: "visibility",
@@ -8659,13 +8903,19 @@ export const Fwa: Command = {
         },
         {
           name: "application-cookie",
-          description: "AspNetCore application cookie pair in name=value format",
+          description: "AspNetCore application cookie value (name auto-applied)",
           type: ApplicationCommandOptionType.String,
           required: false,
         },
         {
           name: "antiforgery-cookie",
-          description: "AspNetCore antiforgery cookie pair in name=value format",
+          description: "AspNetCore antiforgery cookie value (name auto-applied)",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+        },
+        {
+          name: "antiforgery-cookie-name",
+          description: "Optional antiforgery cookie name override",
           type: ApplicationCommandOptionType.String,
           required: false,
         },
@@ -8925,16 +9175,36 @@ export const Fwa: Command = {
       }
 
       if (evaluation.status === "not_applicable") {
-        await editReplySafe(
-          [
-            `War compliance for **${clanDisplayName}** (#${tag})`,
-            `War: **${evaluation.warId ?? "unknown"}** | Started ${startedLabel} | Ended ${endedLabel}`,
-            `Match type: **${evaluation.matchType ?? "UNKNOWN"}** | Expected outcome: **${evaluation.expectedOutcome ?? "UNKNOWN"}**`,
-            "War-plan compliance checks are only enforced for FWA wars.",
-          ].join("\n")
-        );
+        const key = createTransientFwaKey();
+        const payload: FwaComplianceViewPayload = {
+          userId: interaction.user.id,
+          guildId: interaction.guildId,
+          clanName: clanDisplayName,
+          clanTag: tag,
+          isFwa: false,
+          warPlanText: null,
+          warId: evaluation.warId,
+          expectedOutcome: evaluation.expectedOutcome,
+          fwaWinGateConfig: null,
+          warStartTime: evaluation.warStartTime,
+          warEndTime: evaluation.warEndTime,
+          participantsCount: evaluation.participantsCount,
+          attacksCount: evaluation.attacksCount,
+          missedBoth: evaluation.report?.missedBoth ?? [],
+          notFollowingPlan: [],
+          activeView: "missed",
+          mainPage: 0,
+          missedPage: 0,
+        };
+        const rendered = renderComplianceViewPayload({ key, payload });
+        fwaComplianceViewPayloads.set(key, payload);
+        await interaction.editReply({
+          content: undefined,
+          embeds: rendered.embeds,
+          components: rendered.components,
+        });
         console.info(
-          `[fwa-compliance] event=complete guild=${interaction.guildId} user=${interaction.user.id} clan=#${tag} scope=${evaluation.scope} source=${evaluation.source ?? "none"} war_resolution_source=${evaluation.warResolutionSource ?? "none"} war_id=${evaluation.warId ?? "unknown"} status=not_applicable match_type=${evaluation.matchType ?? "UNKNOWN"} duration_ms=${Date.now() - startedAtMs}`
+          `[fwa-compliance] event=complete guild=${interaction.guildId} user=${interaction.user.id} clan=#${tag} scope=${evaluation.scope} source=${evaluation.source ?? "none"} war_resolution_source=${evaluation.warResolutionSource ?? "none"} war_id=${evaluation.warId ?? "unknown"} status=not_applicable match_type=${evaluation.matchType ?? "UNKNOWN"} missed_both=${payload.missedBoth.length} duration_ms=${Date.now() - startedAtMs}`
         );
         return;
       }
@@ -8953,12 +9223,45 @@ export const Fwa: Command = {
         return;
       }
 
-      const lines = buildWarComplianceReportLines({
+      const warPlanText = await resolveComplianceWarPlanText({
+        guildId: interaction.guildId,
+        clanTag: evaluation.report.clanTag,
+        clanName: evaluation.report.clanName || clanDisplayName,
+        opponentName: evaluation.report.opponentName,
+        matchType: evaluation.report.matchType,
+        expectedOutcome: evaluation.report.expectedOutcome,
+        forcedLoseStyle: evaluation.report.loseStyle,
+        cocService,
+      });
+
+      const key = createTransientFwaKey();
+      const payload: FwaComplianceViewPayload = {
+        userId: interaction.user.id,
+        guildId: interaction.guildId,
         clanName: clanDisplayName,
         clanTag: tag,
-        report: evaluation.report,
+        isFwa: true,
+        warPlanText,
+        warId: evaluation.report.warId ?? evaluation.warId,
+        expectedOutcome: evaluation.report.expectedOutcome ?? evaluation.expectedOutcome,
+        fwaWinGateConfig: evaluation.report.fwaWinGateConfig,
+        warStartTime: evaluation.report.warStartTime ?? evaluation.warStartTime,
+        warEndTime: evaluation.report.warEndTime ?? evaluation.warEndTime,
+        participantsCount: evaluation.report.participantsCount,
+        attacksCount: evaluation.report.attacksCount,
+        missedBoth: evaluation.report.missedBoth,
+        notFollowingPlan: evaluation.report.notFollowingPlan,
+        activeView: "fwa_main",
+        mainPage: 0,
+        missedPage: 0,
+      };
+      const rendered = renderComplianceViewPayload({ key, payload });
+      fwaComplianceViewPayloads.set(key, payload);
+      await interaction.editReply({
+        content: undefined,
+        embeds: rendered.embeds,
+        components: rendered.components,
       });
-      await editReplySafe(lines.join("\n"));
       console.info(
         `[fwa-compliance] event=complete guild=${interaction.guildId} user=${interaction.user.id} clan=#${tag} scope=${evaluation.scope} source=${evaluation.source ?? "none"} war_resolution_source=${evaluation.warResolutionSource ?? "none"} war_id=${evaluation.report.warId ?? evaluation.warId ?? "unknown"} status=ok missed_both=${evaluation.report.missedBoth.length} not_following=${evaluation.report.notFollowingPlan.length} participants=${evaluation.report.participantsCount} attacks=${evaluation.report.attacksCount} war_end_time=${evaluation.timingInputs.warEndTimeIso ?? "unknown"} first_attack_seen_at=${evaluation.timingInputs.firstAttackSeenAtIso ?? "unknown"} last_attack_seen_at=${evaluation.timingInputs.lastAttackSeenAtIso ?? "unknown"} duration_ms=${Date.now() - startedAtMs}`
       );
@@ -9009,10 +9312,12 @@ export const Fwa: Command = {
 
       const applicationCookieRaw = interaction.options.getString("application-cookie", false);
       const antiforgeryCookieRaw = interaction.options.getString("antiforgery-cookie", false);
+      const antiforgeryCookieNameRaw = interaction.options.getString("antiforgery-cookie-name", false);
       const hasApplicationArg = applicationCookieRaw !== null;
       const hasAntiforgeryArg = antiforgeryCookieRaw !== null;
+      const hasAntiforgeryNameArg = antiforgeryCookieNameRaw !== null;
 
-      if (!hasApplicationArg && !hasAntiforgeryArg) {
+      if (!hasApplicationArg && !hasAntiforgeryArg && !hasAntiforgeryNameArg) {
         const status = await fwaStatsWeightCookieService.getCookieStatus();
         const updatedAtText =
           status.updatedAt && Number.isFinite(status.updatedAt.getTime())
@@ -9042,9 +9347,9 @@ export const Fwa: Command = {
         return;
       }
 
-      if (hasApplicationArg !== hasAntiforgeryArg) {
+      if (hasApplicationArg !== hasAntiforgeryArg || (!hasApplicationArg && hasAntiforgeryNameArg)) {
         await editReplySafe(
-          "Provide both `application-cookie` and `antiforgery-cookie`, or omit both to view status.",
+          "Provide both `application-cookie` and `antiforgery-cookie` (and optional `antiforgery-cookie-name`), or omit all cookie args to view status.",
           [],
           []
         );
@@ -9064,7 +9369,7 @@ export const Fwa: Command = {
       const antiforgeryCookie = String(antiforgeryCookieRaw ?? "").trim();
       if (!applicationCookie || !antiforgeryCookie) {
         await editReplySafe(
-          "Cookie values cannot be empty. Paste both cookie pairs in `name=value` format.",
+          "Cookie values cannot be empty. Paste both cookie values (or full `name=value` pairs).",
           [],
           []
         );
@@ -9090,6 +9395,7 @@ export const Fwa: Command = {
         const saved = await fwaStatsWeightCookieService.setCookies({
           applicationCookieRaw: applicationCookie,
           antiforgeryCookieRaw: antiforgeryCookie,
+          antiforgeryCookieNameRaw,
           guildId: interaction.guildId,
           userId: interaction.user.id,
         });
@@ -10400,6 +10706,133 @@ export const Fwa: Command = {
   },
   autocomplete: async (interaction: AutocompleteInteraction) => {
     const focused = interaction.options.getFocused(true);
+    const subcommand = interaction.options.getSubcommand(false);
+    if (subcommand === "compliance" && focused.name === "war-id") {
+      const rawTag = interaction.options.getString("tag", false);
+      const normalizedTag = normalizeTag(String(rawTag ?? ""));
+      if (!normalizedTag) {
+        await interaction.respond([]);
+        return;
+      }
+
+      const trackedClan = await prisma.trackedClan.findFirst({
+        where: {
+          OR: [
+            { tag: { equals: `#${normalizedTag}`, mode: "insensitive" } },
+            { tag: { equals: normalizedTag, mode: "insensitive" } },
+          ],
+        },
+        select: { tag: true },
+      });
+      if (!trackedClan) {
+        await interaction.respond([]);
+        return;
+      }
+
+      const normalizedTracked = normalizeTag(String(trackedClan.tag ?? ""));
+      const bareTracked = normalizeTagBare(normalizedTracked);
+      const withHashTracked = normalizedTracked ? `#${normalizedTracked}` : "";
+      const clanTagValues = [
+        ...new Set([withHashTracked, normalizedTracked, bareTracked].filter(Boolean)),
+      ];
+      if (clanTagValues.length <= 0) {
+        await interaction.respond([]);
+        return;
+      }
+
+      const [historyRows, lookupRows] = await Promise.all([
+        prisma.clanWarHistory.findMany({
+          where: {
+            OR: clanTagValues.map((value) => ({ clanTag: value })),
+          },
+          orderBy: [{ warEndTime: "desc" }, { warId: "desc" }],
+          take: COMPLIANCE_WAR_ID_AUTOCOMPLETE_CANDIDATE_LIMIT,
+          select: {
+            warId: true,
+            warEndTime: true,
+            opponentName: true,
+          },
+        }),
+        prisma.warLookup.findMany({
+          where: {
+            OR: clanTagValues.map((value) => ({ clanTag: { equals: value, mode: "insensitive" } })),
+          },
+          orderBy: [{ endTime: "desc" }, { startTime: "desc" }],
+          take: COMPLIANCE_WAR_ID_AUTOCOMPLETE_CANDIDATE_LIMIT,
+          select: {
+            warId: true,
+            endTime: true,
+            payload: true,
+          },
+        }),
+      ]);
+
+      const byWarId = new Map<number, ComplianceWarAutocompleteCandidate>();
+      for (const row of historyRows) {
+        const warId = Number(row.warId);
+        if (!Number.isFinite(warId) || Math.trunc(warId) <= 0) continue;
+        byWarId.set(Math.trunc(warId), {
+          warId: Math.trunc(warId),
+          opponentName: String(row.opponentName ?? "").trim() || null,
+          endedAt: row.warEndTime instanceof Date ? row.warEndTime : null,
+        });
+      }
+
+      for (const row of lookupRows) {
+        const warId = Number(row.warId);
+        if (!Number.isFinite(warId) || Math.trunc(warId) <= 0) continue;
+        const normalizedWarId = Math.trunc(warId);
+        const fromPayload = parseComplianceAutocompleteLookupPayload(row.payload);
+        const endedAt =
+          (row.endTime instanceof Date ? row.endTime : null) ?? fromPayload.endedAt ?? null;
+        const existing = byWarId.get(normalizedWarId);
+        if (!existing && !(endedAt instanceof Date)) {
+          // Lookup-only rows without an ended time are not eligible for ended-war suggestions.
+          continue;
+        }
+        const next: ComplianceWarAutocompleteCandidate = existing ?? {
+          warId: normalizedWarId,
+          opponentName: null,
+          endedAt: null,
+        };
+        if (!(next.endedAt instanceof Date) && endedAt instanceof Date) {
+          next.endedAt = endedAt;
+        }
+        if (!next.opponentName) {
+          next.opponentName = fromPayload.opponentName;
+        }
+        byWarId.set(normalizedWarId, next);
+      }
+
+      const query = String(focused.value ?? "").trim().toLowerCase();
+      const timeZone = COMPLIANCE_WAR_ID_AUTOCOMPLETE_DEFAULT_TIME_ZONE;
+      const choices = [...byWarId.values()]
+        .sort(compareComplianceWarAutocompleteCandidates)
+        .map((candidate) => ({
+          name: buildComplianceWarIdAutocompleteLabel({
+            warId: candidate.warId,
+            endedAt: candidate.endedAt,
+            opponentName: candidate.opponentName,
+            timeZone,
+          }),
+          value: String(candidate.warId),
+          opponentName: candidate.opponentName ?? "Unknown Opponent",
+        }))
+        .filter((candidate) => {
+          if (!query) return true;
+          return (
+            candidate.value.toLowerCase().includes(query) ||
+            candidate.opponentName.toLowerCase().includes(query) ||
+            candidate.name.toLowerCase().includes(query)
+          );
+        })
+        .slice(0, COMPLIANCE_WAR_ID_AUTOCOMPLETE_RESULT_LIMIT)
+        .map((candidate) => ({ name: candidate.name, value: candidate.value }));
+
+      await interaction.respond(choices);
+      return;
+    }
+
     if (focused.name !== "tag") {
       await interaction.respond([]);
       return;

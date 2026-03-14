@@ -17,6 +17,7 @@ describe("/fwa compliance command shape", () => {
     const warIdOption = compliance?.options?.find((option) => option.name === "war-id");
     expect(warIdOption?.required).toBe(false);
     expect(warIdOption?.type).toBe(ApplicationCommandOptionType.String);
+    expect(warIdOption?.autocomplete).toBe(true);
   });
 });
 

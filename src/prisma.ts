@@ -57,6 +57,11 @@ export function getPrismaClient(): PrismaClient {
   }
 }
 
+/** Purpose: expose whether Prisma has already been initialized without forcing initialization. */
+export function hasInitializedPrismaClient(): boolean {
+  return prismaClient !== null;
+}
+
 /** Purpose: resolve a nested Prisma path into the owning object and target value. */
 function resolvePrismaPath(root: unknown, path: PrismaPath): { owner: unknown; value: unknown } {
   if (path.length === 0) {

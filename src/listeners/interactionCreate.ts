@@ -29,6 +29,7 @@ import {
   handleFwaMatchSkipSyncActionButton,
   handleFwaMatchSkipSyncConfirmButton,
   handleFwaMatchSkipSyncUndoButton,
+  handleFwaComplianceViewButton,
   handleFwaMailConfirmButton,
   handleFwaMailConfirmNoPingButton,
   handleFwaMailBackButton,
@@ -48,6 +49,7 @@ import {
   isFwaOutcomeActionButtonCustomId,
   isFwaMatchSelectCustomId,
   isFwaMatchTypeActionButtonCustomId,
+  isFwaComplianceViewButtonCustomId,
   handlePointsPostButton,
   isFwaMatchCopyButtonCustomId,
   isPointsPostButtonCustomId,
@@ -67,7 +69,9 @@ import {
   isCompoRefreshButtonCustomId,
 } from "../commands/Compo";
 import {
+  handleNotifyWarEndedViewButton,
   handleNotifyWarRefreshButton,
+  isNotifyWarEndedViewButtonCustomId,
   isNotifyWarRefreshButtonCustomId,
 } from "../services/WarEventLogService";
 
@@ -319,6 +323,21 @@ const handleButtonInteraction = async (
     }
   }
 
+  if (isFwaComplianceViewButtonCustomId(interaction.customId)) {
+    try {
+      await handleFwaComplianceViewButton(interaction);
+    } catch (err) {
+      console.error(`FWA compliance view button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to update compliance view.",
+        });
+      }
+    }
+    return;
+  }
+
   if (isFwaMatchCopyButtonCustomId(interaction.customId)) {
     try {
       await handleFwaMatchCopyButton(interaction);
@@ -524,6 +543,20 @@ const handleButtonInteraction = async (
         await interaction.reply({
           ephemeral: true,
           content: "Failed to refresh battle-day embed.",
+        });
+      }
+    }
+  }
+
+  if (isNotifyWarEndedViewButtonCustomId(interaction.customId)) {
+    try {
+      await handleNotifyWarEndedViewButton(interaction);
+    } catch (err) {
+      console.error(`Notify war-ended view button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "This war-end view expired.",
         });
       }
     }

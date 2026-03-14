@@ -151,6 +151,30 @@ model RecruitmentCooldown {
   @@index([guildId, expiresAt, reminded])
 }
 
+model WeightInputDeferment {
+  id                    String   @id @default(cuid())
+  guildId               String
+  scopeKey              String
+  clanTag               String?
+  playerTag             String
+  deferredWeight        Int
+  status                String   @default("open")
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  resolvedAt            DateTime?
+  clearedAt             DateTime?
+  reminded48At          DateTime?
+  escalated5dAt         DateTime?
+  summarized7dAt        DateTime?
+  processingLockToken   String?
+  processingLockExpiresAt DateTime?
+
+  @@unique([scopeKey, playerTag])
+  @@index([guildId, status, createdAt])
+  @@index([scopeKey, status, createdAt])
+  @@index([status, reminded48At, escalated5dAt, summarized7dAt, createdAt])
+}
+
 model WarAttacks {
   warId            Int
   clanTag          String
@@ -377,16 +401,18 @@ model ClanWarParticipation {
 }
 
 model ClanWarPlan {
-  id         String   @id @default(cuid())
-  guildId    String
-  clanTag    String
-  scope      WarPlanScope @default(CUSTOM)
-  matchType  WarMatchType
-  outcome    String
-  loseStyle  String   @default("ANY")
-  planText   String
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  id                          String      @id @default(cuid())
+  guildId                     String
+  clanTag                     String
+  scope                       WarPlanScope @default(CUSTOM)
+  matchType                   WarMatchType
+  outcome                     String
+  loseStyle                   String      @default("ANY")
+  planText                    String
+  nonMirrorTripleMinClanStars Int?
+  allBasesOpenHoursLeft       Int?
+  createdAt                   DateTime    @default(now())
+  updatedAt                   DateTime    @updatedAt
 
   @@unique([guildId, scope, clanTag, matchType, outcome, loseStyle])
   @@index([guildId, scope, clanTag, matchType])

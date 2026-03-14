@@ -27,6 +27,7 @@ import {
   FWA_LEADER_ROLE_SETTING_KEY,
 } from "../services/CommandPermissionService";
 import { SettingsService } from "../services/SettingsService";
+import { normalizeSyncTimeZone } from "../services/syncTimeZone";
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_PATTERN = /^\d{1,2}:\d{2}$/;
@@ -548,19 +549,6 @@ function toEpochSeconds(
   return Math.floor(result / 1000);
 }
 
-function normalizeTimeZone(input: string): string {
-  return input.trim();
-}
-
-function validateTimeZone(timeZone: string): boolean {
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function getDateTimeInTimeZone(
   date: Date,
   timeZone: string
@@ -707,16 +695,15 @@ export async function handlePostModalSubmit(
 
   const dateInput = interaction.fields.getTextInputValue(DATE_INPUT_ID).trim();
   const timeInput = interaction.fields.getTextInputValue(TIME_INPUT_ID).trim();
-  const timezoneInput = normalizeTimeZone(
-    interaction.fields.getTextInputValue(TIMEZONE_INPUT_ID)
-  );
+  const timezoneRawInput = interaction.fields.getTextInputValue(TIMEZONE_INPUT_ID);
+  const timezoneInput = normalizeSyncTimeZone(timezoneRawInput);
   const roleInput = interaction.fields.getTextInputValue(ROLE_INPUT_ID).trim();
   const permissionService = new CommandPermissionService(settings);
   const defaultLeaderRoleId = await permissionService.getFwaLeaderRoleId(interaction.guildId);
 
-  if (!validateTimeZone(timezoneInput)) {
+  if (!timezoneInput) {
     await interaction.editReply(
-      `Invalid timezone. Use a valid IANA timezone like America/New_York.\nReference: ${IANA_TIMEZONE_HELP_URL}`
+      `Invalid timezone. Use a valid IANA timezone like America/New_York, or a supported US alias like EST, EDT, PST, or PDT.\nReference: ${IANA_TIMEZONE_HELP_URL}`
     );
     return;
   }
@@ -1034,16 +1021,21 @@ export const Post: Command = {
     const settings = new SettingsService();
     const role = interaction.options.getRole("role", false);
 
-    const rememberedTimeZone = await settings.get(userTimeZoneKey(interaction.user.id));
-  const rememberedRoleId = await settings.get(guildSyncRoleKey(interaction.guildId));
-  const defaultLeaderRoleId =
-    (await settings.get(`${FWA_LEADER_ROLE_SETTING_KEY}:${interaction.guildId}`)) ?? "";
-  const initialTimeZone =
-    rememberedTimeZone && validateTimeZone(rememberedTimeZone)
-      ? rememberedTimeZone
-      : "UTC";
-  const defaults = getEffectiveDefaults(initialTimeZone);
-  const initialRoleId = role?.id ?? rememberedRoleId ?? defaultLeaderRoleId ?? "";
+    const rememberedTimeZoneRaw = await settings.get(userTimeZoneKey(interaction.user.id));
+    const rememberedTimeZone = normalizeSyncTimeZone(rememberedTimeZoneRaw);
+    if (
+      rememberedTimeZone &&
+      rememberedTimeZoneRaw?.trim() &&
+      rememberedTimeZoneRaw.trim() !== rememberedTimeZone
+    ) {
+      await settings.set(userTimeZoneKey(interaction.user.id), rememberedTimeZone);
+    }
+    const rememberedRoleId = await settings.get(guildSyncRoleKey(interaction.guildId));
+    const defaultLeaderRoleId =
+      (await settings.get(`${FWA_LEADER_ROLE_SETTING_KEY}:${interaction.guildId}`)) ?? "";
+    const initialTimeZone = rememberedTimeZone ?? "UTC";
+    const defaults = getEffectiveDefaults(initialTimeZone);
+    const initialRoleId = role?.id ?? rememberedRoleId ?? defaultLeaderRoleId ?? "";
 
     const modal = new ModalBuilder()
       .setCustomId(buildModalCustomId(interaction.user.id))
@@ -1063,7 +1055,7 @@ export const Post: Command = {
       .setValue(defaults.time);
     const timeZoneInput = new TextInputBuilder()
       .setCustomId(TIMEZONE_INPUT_ID)
-      .setLabel("Timezone (IANA)")
+      .setLabel("Timezone (IANA or US alias)")
       .setStyle(TextInputStyle.Short)
       .setRequired(true)
       .setValue(initialTimeZone);

@@ -15,6 +15,7 @@ const prismaMock = vi.hoisted(() => ({
 
 vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
+  hasInitializedPrismaClient: () => false,
 }));
 
 import { Fwa } from "../src/commands/Fwa";
@@ -30,6 +31,7 @@ function makeInteraction(params: {
   guildId?: string;
   applicationCookie?: string | null;
   antiforgeryCookie?: string | null;
+  antiforgeryCookieName?: string | null;
   isAdmin?: boolean;
 }) {
   const deferReply = vi.fn().mockResolvedValue(undefined);
@@ -52,6 +54,7 @@ function makeInteraction(params: {
         if (name === "visibility") return params.visibility ?? "private";
         if (name === "application-cookie") return params.applicationCookie ?? null;
         if (name === "antiforgery-cookie") return params.antiforgeryCookie ?? null;
+        if (name === "antiforgery-cookie-name") return params.antiforgeryCookieName ?? null;
         return null;
       }),
     },
@@ -211,15 +214,46 @@ describe("/fwa weight command output", () => {
     const setRun = makeInteraction({
       subcommand: "weight-cookie",
       tag: null,
-      applicationCookie: ".AspNetCore.Identity.Application=super-secret",
-      antiforgeryCookie: ".AspNetCore.Antiforgery.abc=also-secret",
+      applicationCookie: "super-secret",
+      antiforgeryCookie: "also-secret",
     });
     await Fwa.run({} as any, setRun.interaction as any, {} as any);
     const setContent = String(setRun.editReply.mock.calls[0]?.[0]?.content ?? "");
     expect(setSpy).toHaveBeenCalledTimes(1);
+    expect(setSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        applicationCookieRaw: "super-secret",
+        antiforgeryCookieRaw: "also-secret",
+        antiforgeryCookieNameRaw: null,
+      })
+    );
     expect(setContent).toContain("FWA Stats weight cookies saved.");
     expect(setContent).not.toContain("super-secret");
     expect(setContent).not.toContain("also-secret");
+  });
+
+  it("forwards optional antiforgery-cookie-name during save", async () => {
+    const setSpy = vi.spyOn(FwaStatsWeightCookieService.prototype, "setCookies").mockResolvedValue({
+      savedAt: new Date("2026-03-09T01:00:00.000Z"),
+      applicationCookieName: ".AspNetCore.Identity.Application",
+      antiforgeryCookieName: ".AspNetCore.Antiforgery.custom",
+      applicationCookieExpiresAt: null,
+    });
+
+    const run = makeInteraction({
+      subcommand: "weight-cookie",
+      tag: null,
+      applicationCookie: "super-secret",
+      antiforgeryCookie: "also-secret",
+      antiforgeryCookieName: ".AspNetCore.Antiforgery.custom",
+    });
+    await Fwa.run({} as any, run.interaction as any, {} as any);
+
+    expect(setSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        antiforgeryCookieNameRaw: ".AspNetCore.Antiforgery.custom",
+      })
+    );
   });
 
   it("shows expiration unknown fallback when status has no parseable expiry", async () => {
@@ -252,8 +286,28 @@ describe("/fwa weight command output", () => {
     const { interaction, editReply } = makeInteraction({
       subcommand: "weight-cookie",
       tag: null,
-      applicationCookie: ".AspNetCore.Identity.Application=super-secret",
+      applicationCookie: "super-secret",
       antiforgeryCookie: null,
+    });
+
+    await Fwa.run({} as any, interaction as any, {} as any);
+
+    const content = String(editReply.mock.calls[0]?.[0]?.content ?? "");
+    expect(content).toContain("Provide both `application-cookie` and `antiforgery-cookie`");
+    expect(setSpy).not.toHaveBeenCalled();
+  });
+
+  it("rejects antiforgery-cookie-name without cookie values", async () => {
+    const setSpy = vi.spyOn(FwaStatsWeightCookieService.prototype, "setCookies").mockResolvedValue({
+      savedAt: new Date("2026-03-09T01:00:00.000Z"),
+      applicationCookieName: ".AspNetCore.Identity.Application",
+      antiforgeryCookieName: ".AspNetCore.Antiforgery.abc",
+      applicationCookieExpiresAt: null,
+    });
+    const { interaction, editReply } = makeInteraction({
+      subcommand: "weight-cookie",
+      tag: null,
+      antiforgeryCookieName: ".AspNetCore.Antiforgery.custom",
     });
 
     await Fwa.run({} as any, interaction as any, {} as any);
@@ -274,7 +328,7 @@ describe("/fwa weight command output", () => {
       subcommand: "weight-cookie",
       tag: null,
       applicationCookie: "   ",
-      antiforgeryCookie: ".AspNetCore.Antiforgery.abc=also-secret",
+      antiforgeryCookie: "also-secret",
     });
 
     await Fwa.run({} as any, interaction as any, {} as any);
@@ -297,8 +351,8 @@ describe("/fwa weight command output", () => {
     const { interaction, editReply } = makeInteraction({
       subcommand: "weight-cookie",
       tag: null,
-      applicationCookie: ".AspNetCore.Identity.Application=super-secret",
-      antiforgeryCookie: ".AspNetCore.Antiforgery.abc=also-secret",
+      applicationCookie: "super-secret",
+      antiforgeryCookie: "also-secret",
       isAdmin: false,
     });
 
