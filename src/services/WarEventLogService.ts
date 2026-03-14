@@ -2833,6 +2833,35 @@ export class WarEventLogService {
       const canonicalized = await this.resolveCanonicalWarEndedPayloadContext(params.payload);
       payloadForDelivery = canonicalized.payload;
       resolvedWarIdForDelivery = canonicalized.warId ?? resolvedWarIdForDelivery;
+      const canonicalFinalResult = await this.history.getWarEndResultSnapshot({
+        clanTag: payloadForDelivery.clanTag,
+        opponentTag: payloadForDelivery.opponentTag,
+        fallbackClanStars: payloadForDelivery.clanStars,
+        fallbackOpponentStars: payloadForDelivery.opponentStars,
+        warStartTime: payloadForDelivery.warStartTime,
+      });
+      const canonicalBeforePoints = this.resolveWarEndBeforePoints({
+        warStartFwaPoints: payloadForDelivery.warStartFwaPoints,
+        fwaPoints: payloadForDelivery.fwaPoints,
+      });
+      const canonicalWarEndFwaPoints = this.computeExpectedWarEndPoints({
+        matchType: payloadForDelivery.matchType,
+        before: canonicalBeforePoints,
+        finalResult: canonicalFinalResult,
+        outcome: normalizeOutcome(payloadForDelivery.outcome),
+      });
+      payloadForDelivery = {
+        ...payloadForDelivery,
+        warEndFwaPoints: canonicalWarEndFwaPoints,
+        testFinalResultOverride: canonicalFinalResult,
+      };
+      if (payloadForDelivery.warEndFwaPoints !== params.payload.warEndFwaPoints) {
+        await this.history.persistWarEndHistory(payloadForDelivery).catch((err) => {
+          console.error(
+            `[war-events] persist canonical war history failed guild=${params.sub.guildId} clan=${params.sub.clanTag} error=${formatError(err)}`
+          );
+        });
+      }
     }
     if (!params.sub.notify || !params.sub.channelId) return;
     const reserved = await this.reserveEventDelivery({

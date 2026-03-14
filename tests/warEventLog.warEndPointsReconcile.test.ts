@@ -916,6 +916,14 @@ describe("War-ended sync and metadata canonicalization", () => {
         warStartTime: new Date("2026-03-09T00:00:00.000Z"),
         warEndTime: new Date("2026-03-10T00:00:00.000Z"),
       }),
+      getWarEndResultSnapshot: vi.fn().mockResolvedValue({
+        clanStars: null,
+        opponentStars: null,
+        clanDestruction: null,
+        opponentDestruction: null,
+        warEndTime: new Date("2026-03-10T00:00:00.000Z"),
+        resultLabel: "UNKNOWN",
+      }),
     };
 
     await (service as any).dispatchDetectedEvent({
@@ -933,6 +941,69 @@ describe("War-ended sync and metadata canonicalization", () => {
     expect(emitSpy).toHaveBeenCalledTimes(1);
     expect(emitSpy.mock.calls[0]?.[2]).toBe(1001303);
     expect(emitSpy.mock.calls[0]?.[1]?.syncNumber).toBe(477);
+  });
+
+  it("recomputes canonical war-ended expected points before live emit", async () => {
+    const service = new WarEventLogService({ channels: { fetch: vi.fn() } } as unknown as Client, {} as any);
+    const payload = buildBasePayload({
+      eventType: "war_ended",
+      clanTag: "#R80L8VYG",
+      clanName: "Rocky Road",
+      opponentTag: "#8CPGGJ8P",
+      opponentName: "War Farmers 17",
+      matchType: "FWA",
+      outcome: "LOSE",
+      warStartFwaPoints: 9,
+      fwaPoints: 9,
+      warEndFwaPoints: 10,
+      clanStars: 100,
+      opponentStars: 99,
+    });
+    const sub = makeSubscription({
+      guildId: "guild-1",
+      clanTag: "#R80L8VYG",
+      channelId: "chan-1",
+      notify: true,
+      state: "notInWar",
+    });
+    const reserveSpy = vi
+      .spyOn(service as any, "reserveEventDelivery")
+      .mockResolvedValue({ allowed: true, existingMessage: null, warId: "1001303" });
+    const emitSpy = vi.spyOn(service as any, "emitEvent").mockResolvedValue(undefined);
+    const persistSpy = vi.fn().mockResolvedValue(undefined);
+    (service as any).history = {
+      persistWarEndHistory: persistSpy,
+      resolveCanonicalWarEndedContext: vi.fn().mockResolvedValue({
+        warId: 1001303,
+        syncNumber: 477,
+        clanName: "Rocky Road",
+        opponentTag: "#8CPGGJ8P",
+        opponentName: "War Farmers 17",
+        warStartTime: new Date("2026-03-09T00:00:00.000Z"),
+        warEndTime: new Date("2026-03-10T00:00:00.000Z"),
+      }),
+      getWarEndResultSnapshot: vi.fn().mockResolvedValue({
+        clanStars: 100,
+        opponentStars: 99,
+        clanDestruction: 70,
+        opponentDestruction: 69,
+        warEndTime: new Date("2026-03-10T00:00:00.000Z"),
+        resultLabel: "WIN",
+      }),
+    };
+
+    await (service as any).dispatchDetectedEvent({
+      sub,
+      payload,
+      resolvedWarId: 1001350,
+    });
+
+    expect(reserveSpy).toHaveBeenCalledTimes(1);
+    expect(emitSpy).toHaveBeenCalledTimes(1);
+    expect(emitSpy.mock.calls[0]?.[1]?.warEndFwaPoints).toBe(8);
+    expect(emitSpy.mock.calls[0]?.[1]?.testFinalResultOverride?.resultLabel).toBe("WIN");
+    expect(persistSpy).toHaveBeenCalledTimes(2);
+    expect(persistSpy.mock.calls[1]?.[0]?.warEndFwaPoints).toBe(8);
   });
 
   it("preview last-war path uses canonical persisted war-ended context metadata", async () => {
