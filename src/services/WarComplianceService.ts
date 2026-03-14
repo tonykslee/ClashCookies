@@ -125,6 +125,11 @@ type ParsedWarLookupPayload = {
   opponentMembers: Map<string, WarLookupMember>;
   attacks: Array<Record<string, unknown>>;
   payloadEndTime: Date | null;
+  complianceCanonical: {
+    participants: Array<Record<string, unknown>>;
+    attacks: Array<Record<string, unknown>>;
+    warEndTime: Date | null;
+  } | null;
 };
 
 /** Purpose: produce a reusable clan-tag OR filter that supports stored with/without `#`. */
@@ -614,6 +619,7 @@ function parseWarLookupPayload(payload: unknown): ParsedWarLookupPayload {
       opponentMembers: new Map(),
       attacks: parsedPayload.filter((row) => Boolean(asRecord(row))) as Array<Record<string, unknown>>,
       payloadEndTime: null,
+      complianceCanonical: null,
     };
   }
 
@@ -624,12 +630,25 @@ function parseWarLookupPayload(payload: unknown): ParsedWarLookupPayload {
       opponentMembers: new Map(),
       attacks: [],
       payloadEndTime: null,
+      complianceCanonical: null,
     };
   }
 
   const warMeta = asRecord(root.warMeta);
   const clan = asRecord(root.clan);
   const opponent = asRecord(root.opponent);
+  const compliance = asRecord(root.compliance);
+  const complianceCanonical = asRecord(compliance?.canonical);
+  const canonicalParticipants = Array.isArray(complianceCanonical?.participants)
+    ? complianceCanonical.participants.filter((row) => Boolean(asRecord(row))) as Array<
+        Record<string, unknown>
+      >
+    : [];
+  const canonicalAttacks = Array.isArray(complianceCanonical?.attacks)
+    ? complianceCanonical.attacks.filter((row) => Boolean(asRecord(row))) as Array<
+        Record<string, unknown>
+      >
+    : [];
   const attackRows = Array.isArray(root.attacks)
     ? root.attacks.filter((row) => Boolean(asRecord(row)))
     : [];
@@ -639,6 +658,19 @@ function parseWarLookupPayload(payload: unknown): ParsedWarLookupPayload {
     opponentMembers: buildMemberMap(opponent?.members),
     attacks: attackRows as Array<Record<string, unknown>>,
     payloadEndTime: parseDateLike(warMeta?.endTime ?? root.endTime ?? null),
+    complianceCanonical:
+      canonicalParticipants.length > 0 || canonicalAttacks.length > 0
+        ? {
+            participants: canonicalParticipants,
+            attacks: canonicalAttacks,
+            warEndTime: parseDateLike(
+              complianceCanonical?.warEndTime ??
+                complianceCanonical?.endTime ??
+                compliance?.warEndTime ??
+                null
+            ),
+          }
+        : null,
   };
 }
 
@@ -1201,24 +1233,34 @@ export class WarComplianceService {
 
     const warEndTime =
       (historyRow.warEndTime instanceof Date ? historyRow.warEndTime : null) ??
+      parsedLookup.complianceCanonical?.warEndTime ??
       parsedLookup.payloadEndTime ??
       (lookupRow?.endTime instanceof Date ? lookupRow.endTime : null) ??
       null;
 
-    const attacks = this.mapHistoricalAttacks({
+    const canonicalRows = this.tryMapComplianceCanonicalRows({
+      canonical: parsedLookup.complianceCanonical,
       warStartTime: historyRow.warStartTime,
       warEndTime,
-      attackRows: parsedLookup.attacks,
-      clanMembersByTag: parsedLookup.clanMembers,
-      opponentMembersByTag: parsedLookup.opponentMembers,
-      firstAttackAtByPlayerTag,
     });
+    const attacks =
+      canonicalRows?.attacks ??
+      this.mapHistoricalAttacks({
+        warStartTime: historyRow.warStartTime,
+        warEndTime,
+        attackRows: parsedLookup.attacks,
+        clanMembersByTag: parsedLookup.clanMembers,
+        opponentMembersByTag: parsedLookup.opponentMembers,
+        firstAttackAtByPlayerTag,
+      });
 
-    const participants = this.mapHistoricalParticipants({
-      participationRows,
-      clanMembersByTag: parsedLookup.clanMembers,
-      attacks,
-    });
+    const participants =
+      canonicalRows?.participants ??
+      this.mapHistoricalParticipants({
+        participationRows,
+        clanMembersByTag: parsedLookup.clanMembers,
+        attacks,
+      });
 
     return {
       guildId: input.guildId,
@@ -1238,6 +1280,112 @@ export class WarComplianceService {
       source: "war_lookup",
       warResolutionSource: "clan_war_history",
     };
+  }
+
+  /** Purpose: prefer canonical compliance projection rows when the payload declares complete parseable inputs. */
+  private tryMapComplianceCanonicalRows(input: {
+    canonical: {
+      participants: Array<Record<string, unknown>>;
+      attacks: Array<Record<string, unknown>>;
+      warEndTime: Date | null;
+    } | null;
+    warStartTime: Date;
+    warEndTime: Date | null;
+  }): { participants: WarComplianceParticipant[]; attacks: WarComplianceAttack[] } | null {
+    if (!input.canonical) return null;
+    const resolvedWarEndTime = input.canonical.warEndTime ?? input.warEndTime;
+    const participants = this.tryMapComplianceCanonicalParticipants(input.canonical.participants);
+    const attacks = this.tryMapComplianceCanonicalAttacks({
+      rows: input.canonical.attacks,
+      warEndTime: resolvedWarEndTime,
+    });
+    if (!participants || !attacks) return null;
+    if (!(resolvedWarEndTime instanceof Date)) return null;
+    return { participants, attacks };
+  }
+
+  /** Purpose: parse canonical participant rows; return null when required fields are not fully parseable. */
+  private tryMapComplianceCanonicalParticipants(
+    rows: Array<Record<string, unknown>>
+  ): WarComplianceParticipant[] | null {
+    if (!Array.isArray(rows) || rows.length <= 0) return null;
+    const participants: WarComplianceParticipant[] = [];
+    for (const row of rows) {
+      const playerTag = normalizeTag(String(row.playerTag ?? row.tag ?? ""));
+      const playerPosition = toInt(row.playerPosition ?? row.mapPosition);
+      const attacksUsed = toInt(row.attacksUsed);
+      if (!playerTag || playerPosition === null || attacksUsed === null) {
+        return null;
+      }
+      const playerName = String(row.playerName ?? row.name ?? "").trim() || playerTag;
+      participants.push({
+        playerTag,
+        playerName,
+        playerPosition,
+        attacksUsed: Math.max(0, attacksUsed),
+      });
+    }
+    return participants.sort((a, b) => {
+      const posA = Number.isFinite(Number(a.playerPosition))
+        ? Number(a.playerPosition)
+        : Number.MAX_SAFE_INTEGER;
+      const posB = Number.isFinite(Number(b.playerPosition))
+        ? Number(b.playerPosition)
+        : Number.MAX_SAFE_INTEGER;
+      if (posA !== posB) return posA - posB;
+      return String(a.playerName ?? a.playerTag).localeCompare(String(b.playerName ?? b.playerTag));
+    });
+  }
+
+  /** Purpose: parse canonical attack rows; return null when required fields are not fully parseable. */
+  private tryMapComplianceCanonicalAttacks(input: {
+    rows: Array<Record<string, unknown>>;
+    warEndTime: Date | null;
+  }): WarComplianceAttack[] | null {
+    if (!Array.isArray(input.rows)) return null;
+    const attacks: WarComplianceAttack[] = [];
+    for (const row of input.rows) {
+      const playerTag = normalizeTag(
+        String(row.playerTag ?? row.attackerTag ?? row.tag ?? "")
+      );
+      const playerPosition = toInt(row.playerPosition ?? row.attackerPosition);
+      const defenderPosition = toInt(row.defenderPosition);
+      const stars = toInt(row.stars);
+      const trueStars = toInt(row.trueStars);
+      const attackOrder = toInt(row.attackOrder ?? row.order);
+      const attackSeenAt = parseDateLike(row.attackSeenAt ?? row.attackedAt ?? row.attackTime);
+      if (
+        !playerTag ||
+        playerPosition === null ||
+        defenderPosition === null ||
+        stars === null ||
+        trueStars === null ||
+        attackOrder === null ||
+        attackOrder <= 0 ||
+        !(attackSeenAt instanceof Date)
+      ) {
+        return null;
+      }
+      const playerName = String(row.playerName ?? row.attackerName ?? "").trim() || playerTag;
+      attacks.push({
+        playerTag,
+        playerName,
+        playerPosition,
+        defenderPosition,
+        stars: Math.max(0, stars),
+        trueStars: Math.max(0, trueStars),
+        attackSeenAt,
+        warEndTime: input.warEndTime,
+        attackOrder,
+      });
+    }
+    return attacks.sort((a, b) => {
+      const attackOrderDelta = Number(a.attackOrder ?? 0) - Number(b.attackOrder ?? 0);
+      if (attackOrderDelta !== 0) return attackOrderDelta;
+      const seenDelta = a.attackSeenAt.getTime() - b.attackSeenAt.getTime();
+      if (seenDelta !== 0) return seenDelta;
+      return normalizeTag(a.playerTag).localeCompare(normalizeTag(b.playerTag));
+    });
   }
 
   /** Purpose: map historical lookup payload attacks into compliance attack rows. */

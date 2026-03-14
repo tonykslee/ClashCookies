@@ -256,6 +256,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "Default access for `/fwa weight-age`, `/fwa weight-link`, `/fwa weight-health`, and `/fwa weight-cookie` is FWA leader role + Administrator (or override via `/permission add`).",
       "`/fwa leader-role` sets the default FWA leader role used by leader-only commands.",
       "Tag supports autocomplete from tracked clans.",
+      "After selecting a tracked tag, `war-id` supports autocomplete for recent ended wars scoped to that clan.",
       "Set `visibility:public` to post the result directly in channel.",
     ],
     examples: [

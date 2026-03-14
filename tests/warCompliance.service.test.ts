@@ -661,6 +661,155 @@ describe("WarComplianceService", () => {
     expect(warAttacksSpy).not.toHaveBeenCalled();
   });
 
+  it("prefers payload.compliance.canonical rows when complete", async () => {
+    const warStartTime = new Date("2026-02-01T00:00:00.000Z");
+    const warEndTime = new Date("2026-02-02T00:00:00.000Z");
+    vi.spyOn(prisma.clanWarHistory, "findFirst").mockResolvedValue({
+      warId: 5666,
+      warStartTime,
+      warEndTime,
+      matchType: "FWA",
+      expectedOutcome: "WIN",
+      clanName: "Test Clan",
+      opponentName: "Opp Clan",
+    } as any);
+    vi.spyOn(prisma.warLookup, "findUnique").mockResolvedValue({
+      payload: {
+        warMeta: {
+          endTime: warEndTime.toISOString(),
+        },
+        attacks: [
+          // Legacy attack shape intentionally invalid to prove canonical precedence.
+          { attackerTag: "", order: null },
+        ],
+        compliance: {
+          canonical: {
+            warEndTime: warEndTime.toISOString(),
+            participants: [
+              { playerTag: "#A", playerName: "Alice", playerPosition: 1, attacksUsed: 1 },
+              { playerTag: "#B", playerName: "Bob", playerPosition: 2, attacksUsed: 0 },
+            ],
+            attacks: [
+              {
+                playerTag: "#A",
+                playerName: "Alice",
+                playerPosition: 1,
+                defenderPosition: 2,
+                stars: 3,
+                trueStars: 3,
+                attackOrder: 1,
+                attackSeenAt: "2026-02-01T02:00:00.000Z",
+              },
+            ],
+          },
+        },
+      },
+      endTime: warEndTime,
+    } as any);
+    vi.spyOn(prisma.clanWarParticipation, "findMany").mockResolvedValue([] as any);
+    vi.spyOn(prisma.trackedClan, "findFirst").mockResolvedValue({
+      loseStyle: "TRADITIONAL",
+    } as any);
+
+    const service = new WarComplianceService();
+    const result = await service.evaluateComplianceForCommand({
+      guildId: "guild-1",
+      clanTag: "#TEST",
+      scope: "war_id",
+      warId: 5666,
+    });
+
+    expect(result.status).toBe("ok");
+    expect(result.attacksCount).toBe(1);
+    expect(result.participantsCount).toBe(2);
+    expect(result.timingInputs.firstAttackSeenAtIso).toBe("2026-02-01T02:00:00.000Z");
+  });
+
+  it("falls back to legacy WarLookup normalization when canonical projection is incomplete", async () => {
+    const warStartTime = new Date("2026-02-01T00:00:00.000Z");
+    const warEndTime = new Date("2026-02-02T00:00:00.000Z");
+    vi.spyOn(prisma.clanWarHistory, "findFirst").mockResolvedValue({
+      warId: 5777,
+      warStartTime,
+      warEndTime,
+      matchType: "FWA",
+      expectedOutcome: "WIN",
+      clanName: "Test Clan",
+      opponentName: "Opp Clan",
+    } as any);
+    vi.spyOn(prisma.warLookup, "findUnique").mockResolvedValue({
+      payload: {
+        warMeta: {
+          endTime: warEndTime.toISOString(),
+        },
+        clan: {
+          members: [
+            { tag: "#A", name: "Alice", mapPosition: 1 },
+            { tag: "#B", name: "Bob", mapPosition: 2 },
+          ],
+        },
+        opponent: {
+          members: [
+            { tag: "#X", name: "Opp1", mapPosition: 1 },
+            { tag: "#Y", name: "Opp2", mapPosition: 2 },
+          ],
+        },
+        attacks: [
+          {
+            attackerTag: "#A",
+            attackerName: "Alice",
+            defenderTag: "#Y",
+            defenderName: "Opp2",
+            stars: 3,
+            trueStars: 3,
+            order: 1,
+            attackSeenAt: "2026-02-01T03:00:00.000Z",
+          },
+        ],
+        compliance: {
+          canonical: {
+            warEndTime: warEndTime.toISOString(),
+            participants: [
+              { playerTag: "#A", playerName: "Alice", playerPosition: 1, attacksUsed: 1 },
+            ],
+            attacks: [
+              // Missing attackSeenAt makes canonical projection incomplete.
+              {
+                playerTag: "#A",
+                playerName: "Alice",
+                playerPosition: 1,
+                defenderPosition: 2,
+                stars: 3,
+                trueStars: 3,
+                attackOrder: 1,
+              },
+            ],
+          },
+        },
+      },
+      endTime: warEndTime,
+    } as any);
+    vi.spyOn(prisma.clanWarParticipation, "findMany").mockResolvedValue([
+      { playerTag: "#A", playerName: "Alice", attacksUsed: 1, firstAttackAt: new Date("2026-02-01T03:00:00.000Z") },
+      { playerTag: "#B", playerName: "Bob", attacksUsed: 0, firstAttackAt: null },
+    ] as any);
+    vi.spyOn(prisma.trackedClan, "findFirst").mockResolvedValue({
+      loseStyle: "TRADITIONAL",
+    } as any);
+
+    const service = new WarComplianceService();
+    const result = await service.evaluateComplianceForCommand({
+      guildId: "guild-1",
+      clanTag: "#TEST",
+      scope: "war_id",
+      warId: 5777,
+    });
+
+    expect(result.status).toBe("ok");
+    expect(result.attacksCount).toBe(1);
+    expect(result.timingInputs.firstAttackSeenAtIso).toBe("2026-02-01T03:00:00.000Z");
+  });
+
   it("returns no_active_war when no current war is available", async () => {
     vi.spyOn(prisma.currentWar, "findFirst").mockResolvedValue(null);
     const service = new WarComplianceService();
