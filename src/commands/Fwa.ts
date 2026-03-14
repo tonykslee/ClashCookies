@@ -327,6 +327,16 @@ type ComplianceWarTarget =
   | { scope: "current"; warId: null; requested: "default" | "current" }
   | { scope: "war_id"; warId: number; requested: "war_id" };
 
+type ComplianceWarAutocompleteCandidate = {
+  warId: number;
+  opponentName: string | null;
+  endedAt: Date | null;
+};
+
+const COMPLIANCE_WAR_ID_AUTOCOMPLETE_CANDIDATE_LIMIT = 50;
+const COMPLIANCE_WAR_ID_AUTOCOMPLETE_RESULT_LIMIT = 10;
+const COMPLIANCE_WAR_ID_AUTOCOMPLETE_DEFAULT_TIME_ZONE = "UTC";
+
 /** Purpose: parse `/fwa compliance war-id` text into deterministic scope selection. */
 function parseComplianceWarTarget(input: string | null | undefined):
   | { ok: true; value: ComplianceWarTarget }
@@ -352,6 +362,76 @@ function parseComplianceWarTarget(input: string | null | undefined):
     ok: false,
     error: "Invalid `war-id`. Use `current` or a numeric war ID.",
   };
+}
+
+/** Purpose: parse unknown values into Date objects for compliance autocomplete metadata. */
+function parseComplianceAutocompleteDateLike(value: unknown): Date | null {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
+  if (typeof value === "string" || typeof value === "number") {
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) return parsed;
+  }
+  return null;
+}
+
+/** Purpose: narrow unknown payload values to object records for compliance autocomplete parsing. */
+function asComplianceAutocompleteRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+/** Purpose: parse WarLookup payload fields used for compliance autocomplete fallback metadata. */
+function parseComplianceAutocompleteLookupPayload(payload: unknown): {
+  endedAt: Date | null;
+  opponentName: string | null;
+} {
+  let parsed: unknown = payload;
+  if (typeof parsed === "string") {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      parsed = null;
+    }
+  }
+  const root = asComplianceAutocompleteRecord(parsed);
+  if (!root) {
+    return { endedAt: null, opponentName: null };
+  }
+  const warMeta = asComplianceAutocompleteRecord(root.warMeta);
+  const opponent = asComplianceAutocompleteRecord(root.opponent);
+  const endedAt = parseComplianceAutocompleteDateLike(warMeta?.endTime ?? root.endTime ?? null);
+  const opponentName = String(opponent?.name ?? "").trim() || null;
+  return { endedAt, opponentName };
+}
+
+/** Purpose: keep autocomplete labels deterministic and bounded for Discord limits. */
+function buildComplianceWarIdAutocompleteLabel(input: {
+  warId: number;
+  endedAt: Date | null;
+  opponentName: string | null;
+  timeZone: string;
+}): string {
+  const dateLabel =
+    input.endedAt instanceof Date
+      ? new Intl.DateTimeFormat("en-US", {
+          timeZone: input.timeZone,
+          month: "2-digit",
+          day: "2-digit",
+        }).format(input.endedAt)
+      : "??/??";
+  const opponentLabel = input.opponentName ?? "Unknown Opponent";
+  return `${input.warId} | ended: ${dateLabel} | ${opponentLabel}`.slice(0, 100);
+}
+
+/** Purpose: sort compliance war-id autocomplete rows deterministically by ended time then warId. */
+function compareComplianceWarAutocompleteCandidates(
+  left: ComplianceWarAutocompleteCandidate,
+  right: ComplianceWarAutocompleteCandidate
+): number {
+  const leftTime = left.endedAt instanceof Date ? left.endedAt.getTime() : Number.NEGATIVE_INFINITY;
+  const rightTime = right.endedAt instanceof Date ? right.endedAt.getTime() : Number.NEGATIVE_INFINITY;
+  if (leftTime !== rightTime) return rightTime - leftTime;
+  return right.warId - left.warId;
 }
 
 /** Purpose: render a stored compliance-view payload into message-safe embed/components. */
@@ -8720,6 +8800,7 @@ export const Fwa: Command = {
           description: "Optional war target: `current` or numeric ended war ID (defaults to current)",
           type: ApplicationCommandOptionType.String,
           required: false,
+          autocomplete: true,
         },
         {
           name: "visibility",
@@ -10625,6 +10706,133 @@ export const Fwa: Command = {
   },
   autocomplete: async (interaction: AutocompleteInteraction) => {
     const focused = interaction.options.getFocused(true);
+    const subcommand = interaction.options.getSubcommand(false);
+    if (subcommand === "compliance" && focused.name === "war-id") {
+      const rawTag = interaction.options.getString("tag", false);
+      const normalizedTag = normalizeTag(String(rawTag ?? ""));
+      if (!normalizedTag) {
+        await interaction.respond([]);
+        return;
+      }
+
+      const trackedClan = await prisma.trackedClan.findFirst({
+        where: {
+          OR: [
+            { tag: { equals: `#${normalizedTag}`, mode: "insensitive" } },
+            { tag: { equals: normalizedTag, mode: "insensitive" } },
+          ],
+        },
+        select: { tag: true },
+      });
+      if (!trackedClan) {
+        await interaction.respond([]);
+        return;
+      }
+
+      const normalizedTracked = normalizeTag(String(trackedClan.tag ?? ""));
+      const bareTracked = normalizeTagBare(normalizedTracked);
+      const withHashTracked = normalizedTracked ? `#${normalizedTracked}` : "";
+      const clanTagValues = [
+        ...new Set([withHashTracked, normalizedTracked, bareTracked].filter(Boolean)),
+      ];
+      if (clanTagValues.length <= 0) {
+        await interaction.respond([]);
+        return;
+      }
+
+      const [historyRows, lookupRows] = await Promise.all([
+        prisma.clanWarHistory.findMany({
+          where: {
+            OR: clanTagValues.map((value) => ({ clanTag: value })),
+          },
+          orderBy: [{ warEndTime: "desc" }, { warId: "desc" }],
+          take: COMPLIANCE_WAR_ID_AUTOCOMPLETE_CANDIDATE_LIMIT,
+          select: {
+            warId: true,
+            warEndTime: true,
+            opponentName: true,
+          },
+        }),
+        prisma.warLookup.findMany({
+          where: {
+            OR: clanTagValues.map((value) => ({ clanTag: { equals: value, mode: "insensitive" } })),
+          },
+          orderBy: [{ endTime: "desc" }, { startTime: "desc" }],
+          take: COMPLIANCE_WAR_ID_AUTOCOMPLETE_CANDIDATE_LIMIT,
+          select: {
+            warId: true,
+            endTime: true,
+            payload: true,
+          },
+        }),
+      ]);
+
+      const byWarId = new Map<number, ComplianceWarAutocompleteCandidate>();
+      for (const row of historyRows) {
+        const warId = Number(row.warId);
+        if (!Number.isFinite(warId) || Math.trunc(warId) <= 0) continue;
+        byWarId.set(Math.trunc(warId), {
+          warId: Math.trunc(warId),
+          opponentName: String(row.opponentName ?? "").trim() || null,
+          endedAt: row.warEndTime instanceof Date ? row.warEndTime : null,
+        });
+      }
+
+      for (const row of lookupRows) {
+        const warId = Number(row.warId);
+        if (!Number.isFinite(warId) || Math.trunc(warId) <= 0) continue;
+        const normalizedWarId = Math.trunc(warId);
+        const fromPayload = parseComplianceAutocompleteLookupPayload(row.payload);
+        const endedAt =
+          (row.endTime instanceof Date ? row.endTime : null) ?? fromPayload.endedAt ?? null;
+        const existing = byWarId.get(normalizedWarId);
+        if (!existing && !(endedAt instanceof Date)) {
+          // Lookup-only rows without an ended time are not eligible for ended-war suggestions.
+          continue;
+        }
+        const next: ComplianceWarAutocompleteCandidate = existing ?? {
+          warId: normalizedWarId,
+          opponentName: null,
+          endedAt: null,
+        };
+        if (!(next.endedAt instanceof Date) && endedAt instanceof Date) {
+          next.endedAt = endedAt;
+        }
+        if (!next.opponentName) {
+          next.opponentName = fromPayload.opponentName;
+        }
+        byWarId.set(normalizedWarId, next);
+      }
+
+      const query = String(focused.value ?? "").trim().toLowerCase();
+      const timeZone = COMPLIANCE_WAR_ID_AUTOCOMPLETE_DEFAULT_TIME_ZONE;
+      const choices = [...byWarId.values()]
+        .sort(compareComplianceWarAutocompleteCandidates)
+        .map((candidate) => ({
+          name: buildComplianceWarIdAutocompleteLabel({
+            warId: candidate.warId,
+            endedAt: candidate.endedAt,
+            opponentName: candidate.opponentName,
+            timeZone,
+          }),
+          value: String(candidate.warId),
+          opponentName: candidate.opponentName ?? "Unknown Opponent",
+        }))
+        .filter((candidate) => {
+          if (!query) return true;
+          return (
+            candidate.value.toLowerCase().includes(query) ||
+            candidate.opponentName.toLowerCase().includes(query) ||
+            candidate.name.toLowerCase().includes(query)
+          );
+        })
+        .slice(0, COMPLIANCE_WAR_ID_AUTOCOMPLETE_RESULT_LIMIT)
+        .map((candidate) => ({ name: candidate.name, value: candidate.value }));
+
+      await interaction.respond(choices);
+      return;
+    }
+
     if (focused.name !== "tag") {
       await interaction.respond([]);
       return;

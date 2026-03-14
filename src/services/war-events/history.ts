@@ -545,6 +545,25 @@ export class WarEventHistoryService {
         nonMirrorHits,
         lateHits: 0,
         violations: [] as string[],
+        canonical: {
+          warEndTime: warEndTime ? warEndTime.toISOString() : null,
+          participants: participants.map((p) => ({
+            playerTag: p.playerTag,
+            playerName: p.playerName,
+            playerPosition: p.playerPosition,
+            attacksUsed: p.attacksUsed,
+          })),
+          attacks: attacksPayload.map((attack) => ({
+            playerTag: attack.attackerTag,
+            playerName: attack.attackerName,
+            playerPosition: attack.attackerPosition,
+            defenderPosition: attack.defenderPosition,
+            stars: attack.stars,
+            trueStars: attack.trueStars,
+            attackOrder: attack.order,
+            attackSeenAt: attack.attackSeenAt,
+          })),
+        },
       },
     };
     await prisma.$executeRaw(
