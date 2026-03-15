@@ -56,6 +56,19 @@ export type RunWithTransientRetryResult<T> =
   | { status: "success"; attempts: number; value: T }
   | { status: "failed"; attempts: number; transient: boolean; error: unknown };
 
+export type StartupErrorDiagnostics = {
+  code: string;
+  name: string;
+  message: string;
+  causeCode: string;
+  causeName: string;
+  causeMessage: string;
+  status: string;
+  httpStatus: string;
+  transientReason: string;
+  stackHead: string;
+};
+
 const DEFAULT_REST_TIMEOUT_MS = 30_000;
 const DEFAULT_REGISTRATION_MAX_ATTEMPTS = 3;
 const DEFAULT_REGISTRATION_BASE_BACKOFF_MS = 2_000;
@@ -63,6 +76,7 @@ const DEFAULT_STARTUP_LOGIN_BASE_BACKOFF_MS = 2_000;
 const DEFAULT_STARTUP_LOGIN_MAX_BACKOFF_MS = 60_000;
 const DEFAULT_STARTUP_BOOTSTRAP_BASE_BACKOFF_MS = 2_000;
 const DEFAULT_STARTUP_BOOTSTRAP_MAX_BACKOFF_MS = 60_000;
+const DEFAULT_STARTUP_RETRY_LOG_SUMMARY_EVERY = 5;
 
 /** Purpose: parse an env flag into a deterministic boolean. */
 function parseBoolean(input: string | undefined, fallback: boolean): boolean {
@@ -83,8 +97,20 @@ function parsePositiveInt(input: string | undefined, fallback: number): number {
   return Math.floor(parsed);
 }
 
-/** Purpose: classify timeout/network aborts as retryable Discord REST errors. */
-export function isTransientRegistrationError(error: unknown): boolean {
+/** Purpose: normalize startup diagnostic values to concise one-line strings. */
+function sanitizeDiagnosticValue(input: unknown, maxLen = 180): string {
+  const raw = String(input ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!raw) return "none";
+  const clipped = raw.length > maxLen ? `${raw.slice(0, maxLen - 3)}...` : raw;
+  return clipped.replace(/"/g, "'");
+}
+
+/** Purpose: classify timeout/network aborts and return deterministic reason codes. */
+function classifyTransientRegistrationError(
+  error: unknown
+): { transient: boolean; reason: string } {
   const code = String((error as { code?: string } | null | undefined)?.code ?? "").trim();
   const name = String((error as { name?: string } | null | undefined)?.name ?? "").trim();
   const message = String((error as { message?: string } | null | undefined)?.message ?? "").trim();
@@ -92,23 +118,98 @@ export function isTransientRegistrationError(error: unknown): boolean {
   const nameUpper = name.toUpperCase();
   const messageLower = message.toLowerCase();
 
-  if (
-    ["UND_ERR_ABORTED", "ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "EAI_AGAIN", "ENOTFOUND"].includes(
-      codeUpper
-    )
-  ) {
-    return true;
+  const codeReasons = new Set([
+    "UND_ERR_ABORTED",
+    "ETIMEDOUT",
+    "ECONNRESET",
+    "ECONNREFUSED",
+    "EAI_AGAIN",
+    "ENOTFOUND",
+  ]);
+  if (codeReasons.has(codeUpper)) {
+    return { transient: true, reason: `code:${codeUpper}` };
   }
-  if (nameUpper.includes("ABORT") || nameUpper.includes("TIMEOUT")) return true;
-  if (
-    messageLower.includes("request aborted") ||
-    messageLower.includes("aborterror") ||
-    messageLower.includes("timed out") ||
-    messageLower.includes("socket hang up")
-  ) {
-    return true;
+  if (nameUpper.includes("ABORT")) return { transient: true, reason: "name:ABORT" };
+  if (nameUpper.includes("TIMEOUT")) return { transient: true, reason: "name:TIMEOUT" };
+  if (messageLower.includes("request aborted")) {
+    return { transient: true, reason: "message:request_aborted" };
   }
-  return false;
+  if (messageLower.includes("aborterror")) {
+    return { transient: true, reason: "message:aborterror" };
+  }
+  if (messageLower.includes("timed out")) {
+    return { transient: true, reason: "message:timed_out" };
+  }
+  if (messageLower.includes("socket hang up")) {
+    return { transient: true, reason: "message:socket_hang_up" };
+  }
+  return { transient: false, reason: "none" };
+}
+
+/** Purpose: classify timeout/network aborts as retryable Discord REST errors. */
+export function isTransientRegistrationError(error: unknown): boolean {
+  return classifyTransientRegistrationError(error).transient;
+}
+
+/** Purpose: normalize unknown startup errors into deterministic diagnostics. */
+export function getStartupErrorDiagnostics(error: unknown): StartupErrorDiagnostics {
+  const errObj = (error && typeof error === "object" ? error : null) as
+    | Record<string, unknown>
+    | null;
+  const causeObj = (errObj?.cause && typeof errObj.cause === "object" ? errObj.cause : null) as
+    | Record<string, unknown>
+    | null;
+  const transient = classifyTransientRegistrationError(error);
+  const stackRaw = typeof errObj?.stack === "string" ? errObj.stack : "";
+  const stackHead = stackRaw.length > 0 ? stackRaw.split("\n")[0] ?? "" : "";
+  const fallbackMessage =
+    typeof error === "string" || typeof error === "number" || typeof error === "boolean"
+      ? error
+      : errObj?.message;
+
+  return {
+    code: sanitizeDiagnosticValue(errObj?.code),
+    name: sanitizeDiagnosticValue(errObj?.name),
+    message: sanitizeDiagnosticValue(fallbackMessage),
+    causeCode: sanitizeDiagnosticValue(causeObj?.code),
+    causeName: sanitizeDiagnosticValue(causeObj?.name),
+    causeMessage: sanitizeDiagnosticValue(causeObj?.message),
+    status: sanitizeDiagnosticValue(errObj?.status),
+    httpStatus: sanitizeDiagnosticValue(
+      (errObj?.response as Record<string, unknown> | null | undefined)?.status
+    ),
+    transientReason: transient.reason,
+    stackHead: sanitizeDiagnosticValue(stackHead),
+  };
+}
+
+type StartupLogFieldValue = string | number | boolean | null | undefined;
+
+/** Purpose: format startup log fields into deterministic key-value tokens. */
+export function formatStartupLogFields(fields: Record<string, StartupLogFieldValue>): string {
+  return Object.entries(fields)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, value]) => {
+      if (typeof value === "number") return `${key}=${Number.isFinite(value) ? value : 0}`;
+      if (typeof value === "boolean") return `${key}=${value ? 1 : 0}`;
+      return `${key}="${sanitizeDiagnosticValue(value)}"`;
+    })
+    .join(" ");
+}
+
+/** Purpose: parse retry-summary cadence for startup retry logs. */
+export function getStartupRetryLogSummaryEveryFromEnv(env: NodeJS.ProcessEnv): number {
+  return parsePositiveInt(
+    env.STARTUP_RETRY_LOG_SUMMARY_EVERY,
+    DEFAULT_STARTUP_RETRY_LOG_SUMMARY_EVERY
+  );
+}
+
+/** Purpose: deterministically gate periodic startup retry summary emission. */
+export function shouldEmitStartupRetrySummary(totalFailures: number, summaryEvery: number): boolean {
+  if (!Number.isFinite(totalFailures) || totalFailures <= 0) return false;
+  if (!Number.isFinite(summaryEvery) || summaryEvery <= 0) return false;
+  return Math.floor(totalFailures) % Math.floor(summaryEvery) === 0;
 }
 
 /** Purpose: compute exponential backoff with a deterministic cap. */
