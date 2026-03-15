@@ -17,6 +17,10 @@ import { TelemetryIngestService } from "../services/telemetry/ingest";
 import { startTelemetryScheduleLoop } from "../services/telemetry/schedule";
 import { refreshAllTrackedWarMailPosts } from "../commands/Fwa";
 import {
+  getCommandRegistrationConfigFromEnv,
+  registerGuildCommandsWithRetry,
+} from "../services/StartupCommandRegistrationService";
+import {
   setNextNotifyRefreshAtMs,
   setNextWarMailRefreshAtMs,
 } from "../services/refreshSchedule";
@@ -178,10 +182,20 @@ export default (client: Client, cocService: CoCService): void => {
 
     // Register ONLY guild commands
     const commandsWithVisibility = Commands.map((cmd) => injectVisibilityOptions(cmd));
-    try {
-      await guild.commands.set(commandsWithVisibility);
-    } catch (err) {
-      console.error(`Guild command registration failed: ${formatError(err)}`);
+    const registrationConfig = getCommandRegistrationConfigFromEnv(process.env);
+    const registrationResult = await registerGuildCommandsWithRetry({
+      guild,
+      commands: commandsWithVisibility,
+      config: registrationConfig,
+      logger: console,
+    });
+    if (registrationResult.status === "success") {
+      console.log(`[startup:commands] registration complete count=${Commands.length}`);
+    } else if (registrationResult.status === "skipped") {
+      console.warn(
+        `[startup:commands] registration skipped by config. payload_count=${Commands.length}`
+      );
+    } else {
       console.error(
         "Command registration payload summary:",
         commandsWithVisibility.map((c: any) => ({
@@ -189,9 +203,11 @@ export default (client: Client, cocService: CoCService): void => {
           optionCount: Array.isArray(c?.options) ? c.options.length : 0,
         }))
       );
-      throw err;
+      console.warn(
+        `[startup:commands] registration unavailable after ${registrationResult.attempts} attempt(s); startup continuing.`
+      );
     }
-    console.log(`✅ Guild commands registered (${Commands.length})`);
+
     TelemetryIngestService.getInstance().startAutoFlush();
     startTelemetryScheduleLoop(client);
     console.log("Telemetry ingest + schedule loops enabled.");

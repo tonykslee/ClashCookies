@@ -2,7 +2,11 @@ import { Client, GatewayIntentBits } from "discord.js";
 import ready from "./listeners/ready";
 import interactionCreate from "./listeners/interactionCreate";
 import { CoCService } from "./services/CoCService";
+import { getDiscordRestTimeoutMsFromEnv } from "./services/StartupCommandRegistrationService";
 import "dotenv/config";
+
+const discordRestTimeoutMs = getDiscordRestTimeoutMsFromEnv(process.env);
+console.log(`[startup:discord-rest] timeout_ms=${discordRestTimeoutMs}`);
 
 const client = new Client({
   intents: [
@@ -10,6 +14,9 @@ const client = new Client({
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
   ],
+  rest: {
+    timeout: discordRestTimeoutMs,
+  },
 });
 
 const cocService = new CoCService();
