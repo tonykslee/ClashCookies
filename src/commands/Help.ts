@@ -233,7 +233,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`create` with `user` is admin-only and can create a link for another Discord user when unlinked.",
       "Existing links are never implicitly reassigned; delete-first is required before relinking to another user.",
       "`delete` removes a link when run by the linked user or an admin override target.",
-      "`list` renders an embed roster split into `Players linked` and `Unlinked Players` with table-style columns.",
+      "`list` renders an embed roster of linked players as compact lines: `TH | Player | <@discordUserId>`.",
       "`list` includes a tracked-clan dropdown and updates the same message in place when switching clans.",
     ],
     examples: [
