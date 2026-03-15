@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ChannelType, PermissionFlagsBits } from "discord.js";
 
 const prismaMock = vi.hoisted(() => ({
+  $queryRaw: vi.fn().mockResolvedValue([]),
+  $executeRaw: vi.fn().mockResolvedValue(0),
   playerLink: {
     findUnique: vi.fn(),
     create: vi.fn(),
@@ -21,17 +24,25 @@ vi.mock("../src/prisma", () => ({
 }));
 
 import {
+  buildLinkEmbedAccountButtonCustomId,
+  buildLinkEmbedSetupModalCustomId,
+  buildLinkEmbedTagModalCustomId,
   buildLinkListSelectCustomId,
+  handleLinkEmbedButtonInteraction,
+  handleLinkEmbedModalSubmit,
   handleLinkListSelectMenu,
+  isLinkEmbedAccountButtonCustomId,
+  isLinkEmbedModalCustomId,
   Link,
 } from "../src/commands/Link";
 import { CommandPermissionService } from "../src/services/CommandPermissionService";
 
 type InteractionInput = {
-  subcommand: "create" | "delete" | "list";
+  subcommand: "create" | "delete" | "list" | "embed";
   playerTag?: string | null;
   userOverride?: string | null;
   clanTag?: string | null;
+  channel?: any;
   userId?: string;
   isAdmin?: boolean;
   guildMemberNames?: Record<string, string>;
@@ -51,6 +62,7 @@ function makeInteraction(input: InteractionInput) {
 
   return {
     guildId: "guild-1",
+    inGuild: vi.fn().mockReturnValue(true),
     guild: { members: { cache: guildMemberCache } },
     client: { users: { cache: userCache } },
     user: { id: input.userId ?? "111111111111111111" },
@@ -65,11 +77,16 @@ function makeInteraction(input: InteractionInput) {
         if (name === "clan-tag") return input.clanTag ?? null;
         return null;
       }),
+      getChannel: vi.fn((name: string) => {
+        if (name === "channel") return input.channel ?? null;
+        return null;
+      }),
     },
     deferReply: vi.fn().mockResolvedValue(undefined),
     editReply: vi.fn().mockResolvedValue(undefined),
     followUp: vi.fn().mockResolvedValue(undefined),
     reply: vi.fn().mockResolvedValue(undefined),
+    showModal: vi.fn().mockResolvedValue(undefined),
   };
 }
 
@@ -92,6 +109,7 @@ function getInlineRowSegments(row: string): { th: string; player: string; third:
 
 describe("/link run", () => {
   beforeEach(() => {
+    vi.restoreAllMocks();
     vi.clearAllMocks();
     prismaMock.playerLink.findUnique.mockReset();
     prismaMock.playerLink.create.mockReset();
@@ -162,6 +180,77 @@ describe("/link run", () => {
     expect(prismaMock.playerLink.create).not.toHaveBeenCalled();
   });
 
+  it("rejects /link embed when permission check fails", async () => {
+    vi.spyOn(CommandPermissionService.prototype, "canUseAnyTarget").mockResolvedValue(false);
+    const channel = {
+      id: "channel-1",
+      guildId: "guild-1",
+      type: ChannelType.GuildText,
+      send: vi.fn(),
+      permissionsFor: vi.fn().mockReturnValue({
+        has: vi.fn().mockReturnValue(true),
+      }),
+    };
+    const interaction = makeInteraction({
+      subcommand: "embed",
+      channel,
+      isAdmin: false,
+    }) as any;
+    interaction.guild = {
+      members: {
+        cache: new Map(),
+        me: { id: "bot-1" },
+      },
+    };
+
+    await Link.run({} as any, interaction, {} as any);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "not_allowed: only admins can use /link embed.",
+    });
+    expect(interaction.showModal).not.toHaveBeenCalled();
+  });
+
+  it("opens /link embed setup modal for authorized users with valid target channel", async () => {
+    vi.spyOn(CommandPermissionService.prototype, "canUseAnyTarget").mockResolvedValue(true);
+    const permissionHas = vi.fn().mockImplementation((bit: bigint) =>
+      [
+        PermissionFlagsBits.ViewChannel,
+        PermissionFlagsBits.SendMessages,
+        PermissionFlagsBits.EmbedLinks,
+      ].includes(bit)
+    );
+    const channel = {
+      id: "channel-1",
+      guildId: "guild-1",
+      type: ChannelType.GuildText,
+      send: vi.fn(),
+      permissionsFor: vi.fn().mockReturnValue({
+        has: permissionHas,
+      }),
+    };
+    const interaction = makeInteraction({
+      subcommand: "embed",
+      channel,
+      isAdmin: false,
+    }) as any;
+    interaction.guild = {
+      members: {
+        cache: new Map(),
+        me: { id: "bot-1" },
+      },
+    };
+
+    await Link.run({} as any, interaction, {} as any);
+
+    expect(interaction.showModal).toHaveBeenCalledTimes(1);
+    const modal = interaction.showModal.mock.calls[0]?.[0].toJSON();
+    expect(modal.title).toBe("Link Account Embed");
+    expect(modal.components).toHaveLength(4);
+    expect(interaction.deferReply).not.toHaveBeenCalled();
+  });
+
   it("deletes link when invoked by owner", async () => {
     prismaMock.playerLink.findUnique.mockResolvedValue({
       discordUserId: "111111111111111111",
@@ -171,7 +260,7 @@ describe("/link run", () => {
       subcommand: "delete",
       playerTag: "#pyl0289",
       userId: "111111111111111111",
-      isAdmin: false,
+      isAdmin: true,
     });
 
     await Link.run({} as any, interaction as any, {} as any);
@@ -410,6 +499,7 @@ describe("/link run", () => {
 
 describe("/link list select menu", () => {
   beforeEach(() => {
+    vi.restoreAllMocks();
     vi.clearAllMocks();
     prismaMock.playerLink.findMany.mockReset();
     prismaMock.trackedClan.findMany.mockReset();
@@ -497,5 +587,223 @@ describe("/link list select menu", () => {
       content: "Only the command requester can use this menu.",
     });
     expect(update).not.toHaveBeenCalled();
+  });
+});
+
+describe("/link embed interactions", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.clearAllMocks();
+    vi.spyOn(CommandPermissionService.prototype, "canUseAnyTarget").mockResolvedValue(true);
+    prismaMock.$queryRaw.mockReset();
+    prismaMock.$executeRaw.mockReset();
+    prismaMock.$queryRaw.mockResolvedValue([]);
+    prismaMock.$executeRaw.mockResolvedValue(0);
+    prismaMock.playerLink.findUnique.mockReset();
+    prismaMock.playerLink.create.mockReset();
+  });
+
+  it("opens player-tag modal from Link Account button", async () => {
+    const showModal = vi.fn().mockResolvedValue(undefined);
+    const reply = vi.fn().mockResolvedValue(undefined);
+    const interaction = {
+      customId: buildLinkEmbedAccountButtonCustomId("guild-1"),
+      guildId: "guild-1",
+      showModal,
+      reply,
+    };
+
+    await handleLinkEmbedButtonInteraction(interaction as any);
+
+    expect(showModal).toHaveBeenCalledTimes(1);
+    const modal = showModal.mock.calls[0]?.[0].toJSON();
+    expect(modal.title).toBe("Link Account");
+    expect(modal.components).toHaveLength(1);
+    expect(reply).not.toHaveBeenCalled();
+  });
+
+  it("returns context error when link button guild does not match", async () => {
+    const showModal = vi.fn().mockResolvedValue(undefined);
+    const reply = vi.fn().mockResolvedValue(undefined);
+    const interaction = {
+      customId: buildLinkEmbedAccountButtonCustomId("guild-1"),
+      guildId: "guild-2",
+      showModal,
+      reply,
+    };
+
+    await handleLinkEmbedButtonInteraction(interaction as any);
+
+    expect(reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "invalid_context: this link button can only be used in its original server.",
+    });
+    expect(showModal).not.toHaveBeenCalled();
+  });
+
+  it("handles embed setup modal submit and posts embed with button", async () => {
+    vi.spyOn(CommandPermissionService.prototype, "canUseAnyTarget").mockResolvedValue(true);
+    const send = vi.fn().mockResolvedValue({
+      url: "https://discord.com/channels/1/2/3",
+    });
+    const channel = {
+      id: "channel-1",
+      guildId: "guild-1",
+      type: ChannelType.GuildText,
+      send,
+      permissionsFor: vi.fn().mockReturnValue({
+        has: vi.fn().mockReturnValue(true),
+      }),
+    };
+    const interaction = {
+      customId: buildLinkEmbedSetupModalCustomId("111111111111111111", "channel-1"),
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      guild: {
+        channels: {
+          cache: new Map([["channel-1", channel]]),
+          fetch: vi.fn().mockResolvedValue(channel),
+        },
+        members: {
+          me: { id: "bot-1" },
+        },
+      },
+      fields: {
+        getTextInputValue: vi.fn((field: string) => {
+          if (field === "embed_title") return "Link Your Account";
+          if (field === "embed_description") return "Submit your player tag.";
+          if (field === "embed_image_url") return "https://example.com/image.png";
+          if (field === "embed_thumbnail_url") return "";
+          return "";
+        }),
+      },
+      reply: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await handleLinkEmbedModalSubmit(interaction as any);
+
+    expect(send).toHaveBeenCalledTimes(1);
+    const payload = send.mock.calls[0]?.[0];
+    expect(payload.embeds[0].toJSON().title).toBe("Link Your Account");
+    expect(payload.components[0].toJSON().components[0].label).toBe("Link Account");
+    expect(interaction.reply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ephemeral: true,
+      })
+    );
+  });
+
+  it("rejects invalid image url in embed setup modal", async () => {
+    vi.spyOn(CommandPermissionService.prototype, "canUseAnyTarget").mockResolvedValue(true);
+    const channel = {
+      id: "channel-1",
+      guildId: "guild-1",
+      type: ChannelType.GuildText,
+      send: vi.fn(),
+      permissionsFor: vi.fn().mockReturnValue({
+        has: vi.fn().mockReturnValue(true),
+      }),
+    };
+    const interaction = {
+      customId: buildLinkEmbedSetupModalCustomId("111111111111111111", "channel-1"),
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      guild: {
+        channels: {
+          cache: new Map([["channel-1", channel]]),
+          fetch: vi.fn().mockResolvedValue(channel),
+        },
+        members: {
+          me: { id: "bot-1" },
+        },
+      },
+      fields: {
+        getTextInputValue: vi.fn((field: string) => {
+          if (field === "embed_title") return "Title";
+          if (field === "embed_description") return "Description";
+          if (field === "embed_image_url") return "ftp://example.com/image.png";
+          if (field === "embed_thumbnail_url") return "";
+          return "";
+        }),
+      },
+      reply: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await handleLinkEmbedModalSubmit(interaction as any);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "invalid_image_url: provide an absolute http:// or https:// URL.",
+    });
+    expect(channel.send).not.toHaveBeenCalled();
+  });
+
+  it("creates link from tag modal when tag is unlinked", async () => {
+    prismaMock.playerLink.findUnique.mockResolvedValue(null);
+    prismaMock.playerLink.create.mockResolvedValue({});
+
+    const interaction = {
+      customId: buildLinkEmbedTagModalCustomId("guild-1"),
+      guildId: "guild-1",
+      user: {
+        id: "111111111111111111",
+        username: "  test  username  ",
+      },
+      fields: {
+        getTextInputValue: vi.fn().mockReturnValue("pyl0289"),
+      },
+      reply: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await handleLinkEmbedModalSubmit(interaction as any);
+
+    expect(prismaMock.playerLink.create).toHaveBeenCalledWith({
+      data: {
+        playerTag: "#PYL0289",
+        discordUserId: "111111111111111111",
+        discordUsername: "test username",
+      },
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "created: #PYL0289 linked to you.",
+    });
+  });
+
+  it("returns delete-first conflict for existing normalized tag from modal", async () => {
+    prismaMock.playerLink.findUnique.mockResolvedValue({
+      discordUserId: "111111111111111111",
+    });
+
+    const interaction = {
+      customId: buildLinkEmbedTagModalCustomId("guild-1"),
+      guildId: "guild-1",
+      user: {
+        id: "111111111111111111",
+        username: "test_username",
+      },
+      fields: {
+        getTextInputValue: vi.fn().mockReturnValue("#pyl0289"),
+      },
+      reply: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await handleLinkEmbedModalSubmit(interaction as any);
+
+    expect(prismaMock.playerLink.create).not.toHaveBeenCalled();
+    expect(interaction.reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content:
+        "already_linked: #PYL0289 already has a link. run `/link delete player-tag:#PYL0289` first.",
+    });
+  });
+
+  it("exposes stable custom-id guards for link embed interactions", () => {
+    expect(isLinkEmbedAccountButtonCustomId(buildLinkEmbedAccountButtonCustomId("guild-1"))).toBe(
+      true
+    );
+    expect(isLinkEmbedModalCustomId(buildLinkEmbedSetupModalCustomId("u", "c"))).toBe(true);
+    expect(isLinkEmbedModalCustomId(buildLinkEmbedTagModalCustomId("guild-1"))).toBe(true);
+    expect(isLinkEmbedModalCustomId("other:modal")).toBe(false);
   });
 });
