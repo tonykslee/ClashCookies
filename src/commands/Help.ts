@@ -33,6 +33,7 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "kick-list:clear",
   "sync:time:post",
   "notify:war",
+  "link:embed",
   "link:create:admin",
   "link:delete:admin",
   "permission:add",
@@ -234,6 +235,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "Existing links are never implicitly reassigned; delete-first is required before relinking to another user.",
       "`delete` removes a link when run by the linked user or an admin override target.",
       "`list` renders non-zero linked/unlinked count buckets with padded inline rows: `TH | Player | ServerDisplayName` when guild member is resolvable, otherwise persisted linked username fallback (then `Unknown User`) or `TH | Player | #PLAYER_TAG` for unlinked rows.",
+      "`embed` is admin-gated and posts a reusable self-service Link Account embed with button + modal flow.",
       "`list` includes a tracked-clan dropdown and updates the same message in place when switching clans.",
     ],
     examples: [
@@ -241,6 +243,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/link create player-tag:#ABC123 user:143827744717799425",
       "/link delete player-tag:#ABC123",
       "/link list clan-tag:2QG2C08UP",
+      "/link embed channel:#link-account",
     ],
   },
   fwa: {
@@ -410,7 +413,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "Add/remove role whitelists for command targets.",
       "List current policy for one target or all targets.",
       "`/permission list` includes `fwa:mail:send`, `fwa:compliance`, `fwa:weight-*`, and `defer*` targets (default FWA leader role + Administrator).",
-      "`link:create:admin` and `link:delete:admin` are admin-only by default and can be role-whitelisted.",
+      "`link:embed`, `link:create:admin`, and `link:delete:admin` are admin-only by default and can be role-whitelisted.",
       "`add` and `remove` are admin-only by default.",
     ],
     examples: [
@@ -420,6 +423,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/permission add command:fwa:weight-health role:@Leaders",
       "/permission add command:fwa:weight-cookie role:@Leaders",
       "/permission add command:defer role:@Leaders",
+      "/permission add command:link:embed role:@Leaders",
       "/permission add command:link:create:admin role:@Leaders",
       "/permission add command:link:delete:admin role:@Leaders",
       "/permission add command:fwa role:@Leaders",

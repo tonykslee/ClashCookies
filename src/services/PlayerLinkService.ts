@@ -17,6 +17,19 @@ export type PlayerLinkCreateResult = {
   existingDiscordUserId?: string | null;
 };
 
+export type PlayerLinkEmbedCreateOutcome =
+  | "created"
+  | "already_linked"
+  | "invalid_tag"
+  | "invalid_user";
+
+export type PlayerLinkEmbedCreateResult = {
+  outcome: PlayerLinkEmbedCreateOutcome;
+  playerTag: string;
+  discordUserId: string | null;
+  existingDiscordUserId?: string | null;
+};
+
 export type PlayerLinkDeleteResult = {
   outcome: PlayerLinkDeleteOutcome;
   playerTag: string;
@@ -29,6 +42,8 @@ export type ClanScopedPlayerLink = {
   discordUsername: string | null;
   linkedAt: Date;
 };
+
+export const PLAYER_LINK_DISCORD_USERNAME_FALLBACK = "unknown";
 
 /** Purpose: normalize a player tag into uppercase #TAG format. */
 export function normalizePlayerTag(input: string): string {
@@ -58,6 +73,11 @@ export function normalizePersistedDiscordUsername(input: unknown): string | null
   const normalized = String(input ?? "").replace(/\s+/g, " ").trim();
   if (!normalized) return null;
   return normalized;
+}
+
+/** Purpose: normalize persisted usernames with a deterministic fallback. */
+export function sanitizeDiscordUsernameForPersistence(input: unknown): string {
+  return normalizePersistedDiscordUsername(input) ?? PLAYER_LINK_DISCORD_USERNAME_FALLBACK;
 }
 
 /** Purpose: render a linked timestamp in deterministic UTC format. */
@@ -117,6 +137,66 @@ export async function createPlayerLink(input: {
     playerTag: normalizedTag,
     discordUserId: normalizedUserId,
   };
+}
+
+/** Purpose: create link via embed self-service with delete-first conflict behavior. */
+export async function createPlayerLinkFromEmbed(input: {
+  playerTag: string;
+  submittingDiscordUserId: string;
+  submittingDiscordUsername: string;
+}): Promise<PlayerLinkEmbedCreateResult> {
+  const normalizedTag = normalizePlayerTag(input.playerTag);
+  if (!normalizedTag) {
+    return { outcome: "invalid_tag", playerTag: "", discordUserId: null };
+  }
+  const normalizedUserId = normalizeDiscordUserId(input.submittingDiscordUserId);
+  if (!normalizedUserId) {
+    return { outcome: "invalid_user", playerTag: normalizedTag, discordUserId: null };
+  }
+
+  const existing = await prisma.playerLink.findUnique({
+    where: { playerTag: normalizedTag },
+    select: { discordUserId: true },
+  });
+  if (existing?.discordUserId) {
+    return {
+      outcome: "already_linked",
+      playerTag: normalizedTag,
+      discordUserId: normalizedUserId,
+      existingDiscordUserId: existing.discordUserId,
+    };
+  }
+
+  try {
+    await prisma.playerLink.create({
+      data: {
+        playerTag: normalizedTag,
+        discordUserId: normalizedUserId,
+        discordUsername: sanitizeDiscordUsernameForPersistence(
+          input.submittingDiscordUsername
+        ),
+      },
+    });
+    return {
+      outcome: "created",
+      playerTag: normalizedTag,
+      discordUserId: normalizedUserId,
+    };
+  } catch (err) {
+    const code = (err as { code?: string } | null | undefined)?.code ?? "";
+    if (code !== "P2002") throw err;
+
+    const racedExisting = await prisma.playerLink.findUnique({
+      where: { playerTag: normalizedTag },
+      select: { discordUserId: true },
+    });
+    return {
+      outcome: "already_linked",
+      playerTag: normalizedTag,
+      discordUserId: normalizedUserId,
+      existingDiscordUserId: racedExisting?.discordUserId ?? null,
+    };
+  }
 }
 
 /** Purpose: delete a player link with owner/admin checks. */

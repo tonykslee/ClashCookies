@@ -2,12 +2,20 @@ import {
   ActionRowBuilder,
   ApplicationCommandOptionType,
   AutocompleteInteraction,
+  ButtonBuilder,
+  ButtonInteraction,
+  ButtonStyle,
+  ChannelType,
   ChatInputCommandInteraction,
   Client,
   EmbedBuilder,
+  ModalBuilder,
+  ModalSubmitInteraction,
   PermissionFlagsBits,
   StringSelectMenuBuilder,
   StringSelectMenuInteraction,
+  TextInputBuilder,
+  TextInputStyle,
 } from "discord.js";
 import { Command } from "../Command";
 import { prisma } from "../prisma";
@@ -15,19 +23,38 @@ import { CoCService } from "../services/CoCService";
 import { CommandPermissionService } from "../services/CommandPermissionService";
 import {
   createPlayerLink,
+  createPlayerLinkFromEmbed,
   deletePlayerLink,
   listPlayerLinksForClanMembers,
   normalizeClanTag,
   normalizeDiscordUserId,
+  normalizePersistedDiscordUsername,
   normalizePlayerTag,
 } from "../services/PlayerLinkService";
 
 const permissionService = new CommandPermissionService();
 const LINK_LIST_SELECT_PREFIX = "link-list-select";
+const LINK_EMBED_SETUP_MODAL_PREFIX = "link-embed-setup";
+const LINK_EMBED_TAG_MODAL_PREFIX = "link-embed-tag";
+const LINK_EMBED_BUTTON_PREFIX = "link-embed-account";
+const LINK_EMBED_TITLE_FIELD = "embed_title";
+const LINK_EMBED_DESCRIPTION_FIELD = "embed_description";
+const LINK_EMBED_IMAGE_URL_FIELD = "embed_image_url";
+const LINK_EMBED_THUMBNAIL_URL_FIELD = "embed_thumbnail_url";
+const LINK_EMBED_PLAYER_TAG_FIELD = "player_tag";
+const LINK_EMBED_SUPPORTED_CHANNEL_TYPES = [
+  ChannelType.GuildText,
+  ChannelType.GuildAnnouncement,
+] as const;
 
 const EMBED_DESCRIPTION_LIMIT = 4096;
 const EMBED_MESSAGE_LIMIT = 10;
 const LINK_LIST_EMBED_COLOR = 0x5865f2;
+const LINK_EMBED_POST_COLOR = 0x5865f2;
+const EMBED_TITLE_LIMIT = 256;
+const LINK_EMBED_SETUP_MODAL_TITLE = "Link Account Embed";
+const LINK_EMBED_TAG_MODAL_TITLE = "Link Account";
+const LINK_EMBED_MODAL_DESCRIPTION_MAX = 4000;
 
 const MAX_PLAYER_NAME_CHARS = 28;
 const MAX_IDENTITY_CHARS = 30;
@@ -66,6 +93,20 @@ function truncateWithEllipsis(input: string, maxLength: number): string {
   if (normalized.length <= maxLength) return normalized;
   if (maxLength <= 3) return normalized.slice(0, maxLength);
   return `${normalized.slice(0, maxLength - 3)}...`;
+}
+
+function normalizeUrlInput(input: string): string | null {
+  const trimmed = String(input ?? "").trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function isValidHttpUrl(input: string): boolean {
+  try {
+    const parsed = new URL(input);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 function buildTitleWithBadge(input: { clanName: string; clanTag: string; badge: string | null }): string {
@@ -521,6 +562,110 @@ function parseLinkListSelectCustomId(customId: string): { userId: string } | nul
   return { userId };
 }
 
+export function buildLinkEmbedSetupModalCustomId(userId: string, channelId: string): string {
+  return `${LINK_EMBED_SETUP_MODAL_PREFIX}:${userId}:${channelId}`;
+}
+
+function parseLinkEmbedSetupModalCustomId(
+  customId: string
+): { userId: string; channelId: string } | null {
+  const parts = String(customId ?? "").split(":");
+  if (parts.length !== 3 || parts[0] !== LINK_EMBED_SETUP_MODAL_PREFIX) return null;
+  const userId = parts[1]?.trim() ?? "";
+  const channelId = parts[2]?.trim() ?? "";
+  if (!userId || !channelId) return null;
+  return { userId, channelId };
+}
+
+export function buildLinkEmbedTagModalCustomId(guildId: string): string {
+  return `${LINK_EMBED_TAG_MODAL_PREFIX}:${guildId}`;
+}
+
+function parseLinkEmbedTagModalCustomId(customId: string): { guildId: string } | null {
+  const parts = String(customId ?? "").split(":");
+  if (parts.length !== 2 || parts[0] !== LINK_EMBED_TAG_MODAL_PREFIX) return null;
+  const guildId = parts[1]?.trim() ?? "";
+  if (!guildId) return null;
+  return { guildId };
+}
+
+export function buildLinkEmbedAccountButtonCustomId(guildId: string): string {
+  return `${LINK_EMBED_BUTTON_PREFIX}:${guildId}`;
+}
+
+function parseLinkEmbedAccountButtonCustomId(customId: string): { guildId: string } | null {
+  const parts = String(customId ?? "").split(":");
+  if (parts.length !== 2 || parts[0] !== LINK_EMBED_BUTTON_PREFIX) return null;
+  const guildId = parts[1]?.trim() ?? "";
+  if (!guildId) return null;
+  return { guildId };
+}
+
+export function isLinkEmbedAccountButtonCustomId(customId: string): boolean {
+  return String(customId ?? "").startsWith(`${LINK_EMBED_BUTTON_PREFIX}:`);
+}
+
+export function isLinkEmbedModalCustomId(customId: string): boolean {
+  const input = String(customId ?? "");
+  return (
+    input.startsWith(`${LINK_EMBED_SETUP_MODAL_PREFIX}:`) ||
+    input.startsWith(`${LINK_EMBED_TAG_MODAL_PREFIX}:`)
+  );
+}
+
+function isSupportedLinkEmbedChannel(channel: { type?: number } | null | undefined): boolean {
+  if (!channel || typeof channel.type !== "number") return false;
+  return LINK_EMBED_SUPPORTED_CHANNEL_TYPES.includes(channel.type as (typeof LINK_EMBED_SUPPORTED_CHANNEL_TYPES)[number]);
+}
+
+async function resolveGuildMemberMe(
+  interaction: ChatInputCommandInteraction | ModalSubmitInteraction
+) {
+  if (!interaction.guild) return null;
+  if (interaction.guild.members.me) return interaction.guild.members.me;
+  try {
+    return await interaction.guild.members.fetchMe();
+  } catch {
+    return null;
+  }
+}
+
+async function validateLinkEmbedTargetChannel(input: {
+  interaction: ChatInputCommandInteraction | ModalSubmitInteraction;
+  channel: any;
+}): Promise<string | null> {
+  const { interaction, channel } = input;
+  if (!interaction.guildId || !interaction.guild) {
+    return "This command can only be used in a server.";
+  }
+
+  const channelGuildId = String(channel?.guildId ?? "");
+  if (!channelGuildId || channelGuildId !== interaction.guildId) {
+    return "invalid_channel: channel must belong to this server.";
+  }
+
+  if (!isSupportedLinkEmbedChannel(channel)) {
+    return "invalid_channel_type: use a server text or announcement channel.";
+  }
+
+  if (!channel || typeof channel.send !== "function") {
+    return "invalid_channel_type: selected channel cannot accept messages.";
+  }
+
+  const me = await resolveGuildMemberMe(interaction);
+  const permissions = me && typeof channel.permissionsFor === "function" ? channel.permissionsFor(me) : null;
+  const missing: string[] = [];
+  if (!permissions?.has(PermissionFlagsBits.ViewChannel)) missing.push("ViewChannel");
+  if (!permissions?.has(PermissionFlagsBits.SendMessages)) missing.push("SendMessages");
+  if (!permissions?.has(PermissionFlagsBits.EmbedLinks)) missing.push("EmbedLinks");
+
+  if (missing.length > 0) {
+    return `missing_bot_permissions: ${missing.join(", ")}`;
+  }
+
+  return null;
+}
+
 export async function handleLinkListSelectMenu(
   interaction: StringSelectMenuInteraction,
   cocService: CoCService
@@ -568,6 +713,227 @@ export async function handleLinkListSelectMenu(
   });
 }
 
+export async function handleLinkEmbedButtonInteraction(
+  interaction: ButtonInteraction
+): Promise<void> {
+  const parsed = parseLinkEmbedAccountButtonCustomId(interaction.customId);
+  if (!parsed) return;
+
+  if (!interaction.guildId || interaction.guildId !== parsed.guildId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "invalid_context: this link button can only be used in its original server.",
+    });
+    return;
+  }
+
+  const modal = new ModalBuilder()
+    .setCustomId(buildLinkEmbedTagModalCustomId(interaction.guildId))
+    .setTitle(LINK_EMBED_TAG_MODAL_TITLE)
+    .addComponents(
+      new ActionRowBuilder<TextInputBuilder>().addComponents(
+        new TextInputBuilder()
+          .setCustomId(LINK_EMBED_PLAYER_TAG_FIELD)
+          .setLabel("Player Tag")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(16)
+      )
+    );
+
+  await interaction.showModal(modal);
+}
+
+export async function handleLinkEmbedModalSubmit(
+  interaction: ModalSubmitInteraction
+): Promise<void> {
+  const setupParsed = parseLinkEmbedSetupModalCustomId(interaction.customId);
+  if (setupParsed) {
+    const canUse = await permissionService.canUseAnyTarget(["link:embed"], interaction);
+    if (!canUse) {
+      await interaction.reply({
+        ephemeral: true,
+        content: "You do not have permission to use /link embed.",
+      });
+      return;
+    }
+
+    if (interaction.user.id !== setupParsed.userId) {
+      await interaction.reply({
+        ephemeral: true,
+        content: "Only the user who opened this modal can submit it.",
+      });
+      return;
+    }
+
+    if (!interaction.guild) {
+      await interaction.reply({
+        ephemeral: true,
+        content: "This action can only be used in a server.",
+      });
+      return;
+    }
+
+    const targetChannel =
+      interaction.guild.channels.cache.get(setupParsed.channelId) ??
+      (await interaction.guild.channels.fetch(setupParsed.channelId).catch(() => null));
+
+    const channelError = await validateLinkEmbedTargetChannel({
+      interaction,
+      channel: targetChannel,
+    });
+    if (channelError) {
+      await interaction.reply({ ephemeral: true, content: channelError });
+      return;
+    }
+
+    const rawTitle = interaction.fields.getTextInputValue(LINK_EMBED_TITLE_FIELD);
+    const rawDescription = interaction.fields.getTextInputValue(LINK_EMBED_DESCRIPTION_FIELD);
+    const title = String(rawTitle ?? "").trim();
+    const description = String(rawDescription ?? "").trim();
+    if (!title || !description) {
+      await interaction.reply({
+        ephemeral: true,
+        content: "invalid_embed_fields: title and description are required.",
+      });
+      return;
+    }
+    if (title.length > EMBED_TITLE_LIMIT) {
+      await interaction.reply({
+        ephemeral: true,
+        content: `invalid_embed_title_length: max ${EMBED_TITLE_LIMIT} characters.`,
+      });
+      return;
+    }
+    if (description.length > EMBED_DESCRIPTION_LIMIT) {
+      await interaction.reply({
+        ephemeral: true,
+        content: `invalid_embed_description_length: max ${EMBED_DESCRIPTION_LIMIT} characters.`,
+      });
+      return;
+    }
+
+    const imageUrl = normalizeUrlInput(
+      interaction.fields.getTextInputValue(LINK_EMBED_IMAGE_URL_FIELD)
+    );
+    if (imageUrl && !isValidHttpUrl(imageUrl)) {
+      await interaction.reply({
+        ephemeral: true,
+        content: "invalid_image_url: provide an absolute http:// or https:// URL.",
+      });
+      return;
+    }
+
+    const thumbnailUrl = normalizeUrlInput(
+      interaction.fields.getTextInputValue(LINK_EMBED_THUMBNAIL_URL_FIELD)
+    );
+    if (thumbnailUrl && !isValidHttpUrl(thumbnailUrl)) {
+      await interaction.reply({
+        ephemeral: true,
+        content: "invalid_thumbnail_url: provide an absolute http:// or https:// URL.",
+      });
+      return;
+    }
+
+    const embed = new EmbedBuilder()
+      .setColor(LINK_EMBED_POST_COLOR)
+      .setTitle(title)
+      .setDescription(description);
+    if (imageUrl) embed.setImage(imageUrl);
+    if (thumbnailUrl) embed.setThumbnail(thumbnailUrl);
+
+    const guildId = interaction.guildId ?? interaction.guild.id;
+    const buttonRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(buildLinkEmbedAccountButtonCustomId(guildId))
+        .setLabel("Link Account")
+        .setStyle(ButtonStyle.Primary)
+    );
+
+    try {
+      const sendableChannel = targetChannel as {
+        id: string;
+        send: (payload: unknown) => Promise<{ url?: string }>;
+      };
+      const sent = await sendableChannel.send({
+        embeds: [embed],
+        components: [buttonRow],
+      });
+      const location = sent?.url ? ` ${sent.url}` : "";
+      await interaction.reply({
+        ephemeral: true,
+        content: `link_embed_posted: posted to <#${sendableChannel.id}>.${location}`,
+      });
+    } catch {
+      await interaction.reply({
+        ephemeral: true,
+        content: "send_failed: unable to post link embed in that channel.",
+      });
+    }
+    return;
+  }
+
+  const tagParsed = parseLinkEmbedTagModalCustomId(interaction.customId);
+  if (!tagParsed) return;
+
+  if (!interaction.guildId || interaction.guildId !== tagParsed.guildId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "invalid_context: this link action can only be used in its original server.",
+    });
+    return;
+  }
+
+  const rawTag = interaction.fields.getTextInputValue(LINK_EMBED_PLAYER_TAG_FIELD);
+  const normalizedTag = normalizePlayerTag(rawTag);
+  if (!normalizedTag) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "invalid_tag: use Clash tags with characters `PYLQGRJCUV0289`.",
+    });
+    return;
+  }
+
+  try {
+    const result = await createPlayerLinkFromEmbed({
+      playerTag: normalizedTag,
+      submittingDiscordUserId: interaction.user.id,
+      submittingDiscordUsername:
+        normalizePersistedDiscordUsername(interaction.user.username) ?? "unknown",
+    });
+    if (result.outcome === "created") {
+      await interaction.reply({
+        ephemeral: true,
+        content: `created: ${result.playerTag} linked to you.`,
+      });
+      return;
+    }
+    if (result.outcome === "already_linked") {
+      await interaction.reply({
+        ephemeral: true,
+        content: `already_linked: ${result.playerTag} already has a link. run \`/link delete player-tag:${result.playerTag}\` first.`,
+      });
+      return;
+    }
+    if (result.outcome === "invalid_tag") {
+      await interaction.reply({
+        ephemeral: true,
+        content: "invalid_tag: use Clash tags with characters `PYLQGRJCUV0289`.",
+      });
+      return;
+    }
+    await interaction.reply({
+      ephemeral: true,
+      content: "invalid_user: expected a valid Discord user ID.",
+    });
+  } catch {
+    await interaction.reply({
+      ephemeral: true,
+      content: "db_error: unable to persist this link right now.",
+    });
+  }
+}
+
 function canAdminBypass(interaction: ChatInputCommandInteraction): boolean {
   return interaction.memberPermissions?.has(PermissionFlagsBits.Administrator) ?? false;
 }
@@ -584,6 +950,11 @@ async function canUseAdminDeleteOverride(
 ): Promise<boolean> {
   if (canAdminBypass(interaction)) return true;
   return permissionService.canUseAnyTarget(["link:delete:admin"], interaction);
+}
+
+async function canUseLinkEmbed(interaction: ChatInputCommandInteraction): Promise<boolean> {
+  if (canAdminBypass(interaction)) return true;
+  return permissionService.canUseAnyTarget(["link:embed"], interaction);
 }
 
 export const Link: Command = {
@@ -636,6 +1007,20 @@ export const Link: Command = {
         },
       ],
     },
+    {
+      name: "embed",
+      description: "Post a reusable Link Account embed with self-service button",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "channel",
+          description: "Target text channel for the Link Account embed",
+          type: ApplicationCommandOptionType.Channel,
+          required: true,
+          channelTypes: [ChannelType.GuildText, ChannelType.GuildAnnouncement],
+        },
+      ],
+    },
   ],
   run: async (
     _client: Client,
@@ -650,8 +1035,74 @@ export const Link: Command = {
       return;
     }
 
-    await interaction.deferReply({ ephemeral: true });
     const subcommand = interaction.options.getSubcommand(true);
+
+    if (subcommand === "embed") {
+      const allowed = await canUseLinkEmbed(interaction);
+      if (!allowed) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "not_allowed: only admins can use /link embed.",
+        });
+        return;
+      }
+
+      const channel = interaction.options.getChannel("channel", true);
+      const channelError = await validateLinkEmbedTargetChannel({
+        interaction,
+        channel,
+      });
+      if (channelError) {
+        await interaction.reply({
+          ephemeral: true,
+          content: channelError,
+        });
+        return;
+      }
+
+      const modal = new ModalBuilder()
+        .setCustomId(buildLinkEmbedSetupModalCustomId(interaction.user.id, channel.id))
+        .setTitle(LINK_EMBED_SETUP_MODAL_TITLE)
+        .addComponents(
+          new ActionRowBuilder<TextInputBuilder>().addComponents(
+            new TextInputBuilder()
+              .setCustomId(LINK_EMBED_TITLE_FIELD)
+              .setLabel("Embed Title")
+              .setStyle(TextInputStyle.Short)
+              .setRequired(true)
+              .setMaxLength(EMBED_TITLE_LIMIT)
+          ),
+          new ActionRowBuilder<TextInputBuilder>().addComponents(
+            new TextInputBuilder()
+              .setCustomId(LINK_EMBED_DESCRIPTION_FIELD)
+              .setLabel("Embed Description")
+              .setStyle(TextInputStyle.Paragraph)
+              .setRequired(true)
+              .setMaxLength(LINK_EMBED_MODAL_DESCRIPTION_MAX)
+          ),
+          new ActionRowBuilder<TextInputBuilder>().addComponents(
+            new TextInputBuilder()
+              .setCustomId(LINK_EMBED_IMAGE_URL_FIELD)
+              .setLabel("Image URL")
+              .setStyle(TextInputStyle.Short)
+              .setRequired(false)
+              .setMaxLength(512)
+          ),
+          new ActionRowBuilder<TextInputBuilder>().addComponents(
+            new TextInputBuilder()
+              .setCustomId(LINK_EMBED_THUMBNAIL_URL_FIELD)
+              .setLabel("Thumbnail URL")
+              .setStyle(TextInputStyle.Short)
+              .setRequired(false)
+              .setMaxLength(512)
+          )
+        );
+
+      await interaction.showModal(modal);
+      return;
+    }
+
+    await interaction.deferReply({ ephemeral: true });
 
     if (subcommand === "create") {
       const rawTag = interaction.options.getString("player-tag", true);
