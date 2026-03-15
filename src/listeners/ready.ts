@@ -18,7 +18,10 @@ import { startTelemetryScheduleLoop } from "../services/telemetry/schedule";
 import { refreshAllTrackedWarMailPosts } from "../commands/Fwa";
 import {
   getCommandRegistrationConfigFromEnv,
+  getStartupBootstrapRetryConfigFromEnv,
+  isTransientRegistrationError,
   registerGuildCommandsWithRetry,
+  runWithTransientRetry,
 } from "../services/StartupCommandRegistrationService";
 import {
   setNextNotifyRefreshAtMs,
@@ -152,9 +155,44 @@ export default (client: Client, cocService: CoCService): void => {
 
     console.log("ClashCookies is starting...");
 
-    const guildId = process.env.GUILD_ID!;
-    const guild = await client.guilds.fetch(guildId);
-    const me = await guild.members.fetch(client.user!.id);
+    const bootstrapConfig = getStartupBootstrapRetryConfigFromEnv(process.env);
+    console.log(
+      `[startup:bootstrap] start base_backoff_ms=${bootstrapConfig.baseBackoffMs} max_backoff_ms=${bootstrapConfig.maxBackoffMs}`
+    );
+    const bootstrap = await runWithTransientRetry({
+      execute: async () => {
+        const guildIdRaw = String(process.env.GUILD_ID ?? "").trim();
+        if (!guildIdRaw) {
+          throw new Error("MISSING_GUILD_ID");
+        }
+        const guild = await client.guilds.fetch(guildIdRaw);
+        const me = await guild.members.fetch(client.user!.id);
+        return { guildId: guildIdRaw, guild, me };
+      },
+      config: bootstrapConfig,
+      isTransientError: isTransientRegistrationError,
+      onFailure: (context) => {
+        const errorMessage =
+          context.error instanceof Error ? context.error.message : String(context.error);
+        if (context.willRetry && context.backoffMs !== null) {
+          console.warn(
+            `[startup:bootstrap] retry attempt=${context.attempt + 1} backoff_ms=${context.backoffMs} transient=${context.transient ? 1 : 0} error=${errorMessage}`
+          );
+          return;
+        }
+
+        console.error(
+          `[startup:bootstrap] fatal_non_transient attempt=${context.attempt} transient=${context.transient ? 1 : 0} error=${errorMessage}`
+        );
+      },
+    });
+    if (bootstrap.status !== "success") {
+      process.exit(1);
+      return;
+    }
+
+    console.log(`[startup:bootstrap] success attempt=${bootstrap.attempts}`);
+    const { guildId, guild, me } = bootstrap.value;
     const guildPerms = me.permissions;
     const maybePinMessagesBit = (PermissionFlagsBits as Record<string, bigint>).PinMessages;
     const requiredGuildPerms: Array<[bigint, string]> = [

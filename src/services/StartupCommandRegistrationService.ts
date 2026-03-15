@@ -29,9 +29,40 @@ export type RegisterGuildCommandsInput = {
   sleep?: (ms: number) => Promise<void>;
 };
 
+export type TransientRetryConfig = {
+  baseBackoffMs: number;
+  maxBackoffMs: number;
+  maxAttempts?: number;
+};
+
+export type TransientRetryFailureContext = {
+  attempt: number;
+  transient: boolean;
+  willRetry: boolean;
+  backoffMs: number | null;
+  maxAttempts?: number;
+  error: unknown;
+};
+
+export type RunWithTransientRetryInput<T> = {
+  execute: () => Promise<T>;
+  config: TransientRetryConfig;
+  isTransientError?: (error: unknown) => boolean;
+  sleep?: (ms: number) => Promise<void>;
+  onFailure?: (context: TransientRetryFailureContext) => void;
+};
+
+export type RunWithTransientRetryResult<T> =
+  | { status: "success"; attempts: number; value: T }
+  | { status: "failed"; attempts: number; transient: boolean; error: unknown };
+
 const DEFAULT_REST_TIMEOUT_MS = 30_000;
 const DEFAULT_REGISTRATION_MAX_ATTEMPTS = 3;
 const DEFAULT_REGISTRATION_BASE_BACKOFF_MS = 2_000;
+const DEFAULT_STARTUP_LOGIN_BASE_BACKOFF_MS = 2_000;
+const DEFAULT_STARTUP_LOGIN_MAX_BACKOFF_MS = 60_000;
+const DEFAULT_STARTUP_BOOTSTRAP_BASE_BACKOFF_MS = 2_000;
+const DEFAULT_STARTUP_BOOTSTRAP_MAX_BACKOFF_MS = 60_000;
 
 /** Purpose: parse an env flag into a deterministic boolean. */
 function parseBoolean(input: string | undefined, fallback: boolean): boolean {
@@ -52,7 +83,7 @@ function parsePositiveInt(input: string | undefined, fallback: number): number {
   return Math.floor(parsed);
 }
 
-/** Purpose: classify timeout/network aborts as retryable registration errors. */
+/** Purpose: classify timeout/network aborts as retryable Discord REST errors. */
 export function isTransientRegistrationError(error: unknown): boolean {
   const code = String((error as { code?: string } | null | undefined)?.code ?? "").trim();
   const name = String((error as { name?: string } | null | undefined)?.name ?? "").trim();
@@ -80,6 +111,59 @@ export function isTransientRegistrationError(error: unknown): boolean {
   return false;
 }
 
+/** Purpose: compute exponential backoff with a deterministic cap. */
+function computeBackoffMs(config: TransientRetryConfig, attempt: number): number {
+  const exponent = Math.max(0, attempt - 1);
+  const candidate = config.baseBackoffMs * Math.pow(2, exponent);
+  return Math.min(config.maxBackoffMs, Math.floor(candidate));
+}
+
+/** Purpose: run one async operation with transient-aware retry policy. */
+export async function runWithTransientRetry<T>(
+  input: RunWithTransientRetryInput<T>
+): Promise<RunWithTransientRetryResult<T>> {
+  const sleep =
+    input.sleep ??
+    ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, Math.max(0, ms))));
+  const isTransient = input.isTransientError ?? isTransientRegistrationError;
+  const maxAttempts =
+    typeof input.config.maxAttempts === "number" && Number.isFinite(input.config.maxAttempts)
+      ? Math.max(1, Math.floor(input.config.maxAttempts))
+      : undefined;
+
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      const value = await input.execute();
+      return { status: "success", attempts: attempt, value };
+    } catch (error) {
+      const transient = isTransient(error);
+      const exhausted = typeof maxAttempts === "number" && attempt >= maxAttempts;
+      const willRetry = transient && !exhausted;
+      const backoffMs = willRetry ? computeBackoffMs(input.config, attempt) : null;
+
+      input.onFailure?.({
+        attempt,
+        transient,
+        willRetry,
+        backoffMs,
+        maxAttempts,
+        error,
+      });
+
+      if (!willRetry) {
+        return {
+          status: "failed",
+          attempts: attempt,
+          transient,
+          error,
+        };
+      }
+
+      await sleep(backoffMs ?? 0);
+    }
+  }
+}
+
 /** Purpose: load command registration retry config from process env. */
 export function getCommandRegistrationConfigFromEnv(
   env: NodeJS.ProcessEnv
@@ -97,6 +181,40 @@ export function getCommandRegistrationConfigFromEnv(
   };
 }
 
+/** Purpose: load startup login retry backoff config from env. */
+export function getStartupLoginRetryConfigFromEnv(env: NodeJS.ProcessEnv): TransientRetryConfig {
+  const baseBackoffMs = parsePositiveInt(
+    env.STARTUP_LOGIN_BASE_BACKOFF_MS,
+    DEFAULT_STARTUP_LOGIN_BASE_BACKOFF_MS
+  );
+  const maxBackoffMs = parsePositiveInt(
+    env.STARTUP_LOGIN_MAX_BACKOFF_MS,
+    DEFAULT_STARTUP_LOGIN_MAX_BACKOFF_MS
+  );
+  return {
+    baseBackoffMs,
+    maxBackoffMs: Math.max(baseBackoffMs, maxBackoffMs),
+  };
+}
+
+/** Purpose: load startup bootstrap retry backoff config from env. */
+export function getStartupBootstrapRetryConfigFromEnv(
+  env: NodeJS.ProcessEnv
+): TransientRetryConfig {
+  const baseBackoffMs = parsePositiveInt(
+    env.STARTUP_BOOTSTRAP_BASE_BACKOFF_MS,
+    DEFAULT_STARTUP_BOOTSTRAP_BASE_BACKOFF_MS
+  );
+  const maxBackoffMs = parsePositiveInt(
+    env.STARTUP_BOOTSTRAP_MAX_BACKOFF_MS,
+    DEFAULT_STARTUP_BOOTSTRAP_MAX_BACKOFF_MS
+  );
+  return {
+    baseBackoffMs,
+    maxBackoffMs: Math.max(baseBackoffMs, maxBackoffMs),
+  };
+}
+
 /** Purpose: load Discord REST timeout from env with safe fallback. */
 export function getDiscordRestTimeoutMsFromEnv(env: NodeJS.ProcessEnv): number {
   return parsePositiveInt(env.DISCORD_REST_TIMEOUT_MS, DEFAULT_REST_TIMEOUT_MS);
@@ -107,9 +225,6 @@ export async function registerGuildCommandsWithRetry(
   input: RegisterGuildCommandsInput
 ): Promise<CommandRegistrationResult> {
   const logger = input.logger ?? console;
-  const sleep =
-    input.sleep ??
-    ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, Math.max(0, ms))));
 
   if (!input.config.enabled) {
     logger.warn?.("[startup:commands] registration skipped (STARTUP_REGISTER_GUILD_COMMANDS=false)");
@@ -120,36 +235,41 @@ export async function registerGuildCommandsWithRetry(
     `[startup:commands] registration start attempts=${input.config.maxAttempts} payload_count=${input.commands.length}`
   );
 
-  for (let attempt = 1; attempt <= input.config.maxAttempts; attempt += 1) {
-    try {
-      await input.guild.commands.set(input.commands);
-      logger.info?.(`[startup:commands] registration success attempt=${attempt}`);
-      return { status: "success", attempts: attempt };
-    } catch (error) {
-      const transient = isTransientRegistrationError(error);
+  const maxBackoffMs = input.config.baseBackoffMs * Math.pow(2, Math.max(0, input.config.maxAttempts - 1));
+  const result = await runWithTransientRetry<unknown>({
+    execute: () => input.guild.commands.set(input.commands),
+    config: {
+      baseBackoffMs: input.config.baseBackoffMs,
+      maxBackoffMs,
+      maxAttempts: input.config.maxAttempts,
+    },
+    sleep: input.sleep,
+    isTransientError: isTransientRegistrationError,
+    onFailure: (context) => {
+      const errorMessage =
+        context.error instanceof Error ? context.error.message : String(context.error);
       logger.error?.(
-        `[startup:commands] registration failed attempt=${attempt}/${input.config.maxAttempts} transient=${
-          transient ? 1 : 0
-        } error=${error instanceof Error ? error.message : String(error)}`
+        `[startup:commands] registration failed attempt=${context.attempt}/${context.maxAttempts ?? "inf"} transient=${
+          context.transient ? 1 : 0
+        } error=${errorMessage}`
       );
-
-      const finalAttempt = attempt >= input.config.maxAttempts;
-      if (!transient || finalAttempt) {
+      if (context.willRetry && context.backoffMs !== null) {
         logger.warn?.(
-          "[startup:commands] continuing startup in degraded mode (command registration unavailable)"
+          `[startup:commands] retrying registration in ${context.backoffMs}ms attempt=${
+            context.attempt + 1
+          }`
         );
-        return { status: "failed", attempts: attempt, error };
       }
+    },
+  });
 
-      const backoffMs = input.config.baseBackoffMs * Math.pow(2, attempt - 1);
-      logger.warn?.(
-        `[startup:commands] retrying registration in ${backoffMs}ms attempt=${attempt + 1}`
-      );
-      await sleep(backoffMs);
-    }
+  if (result.status === "success") {
+    logger.info?.(`[startup:commands] registration success attempt=${result.attempts}`);
+    return { status: "success", attempts: result.attempts };
   }
 
-  const fallbackError = new Error("Registration failed without explicit error.");
-  logger.warn?.("[startup:commands] continuing startup in degraded mode (fallback terminal path)");
-  return { status: "failed", attempts: input.config.maxAttempts, error: fallbackError };
+  logger.warn?.(
+    "[startup:commands] continuing startup in degraded mode (command registration unavailable)"
+  );
+  return { status: "failed", attempts: result.attempts, error: result.error };
 }
