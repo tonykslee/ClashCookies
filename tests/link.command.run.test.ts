@@ -34,13 +34,25 @@ type InteractionInput = {
   clanTag?: string | null;
   userId?: string;
   isAdmin?: boolean;
+  guildMemberNames?: Record<string, string>;
+  cachedUserNames?: Record<string, string>;
 };
 
 function makeInteraction(input: InteractionInput) {
+  const guildMemberCache = new Map(
+    Object.entries(input.guildMemberNames ?? {}).map(([id, displayName]) => [
+      id,
+      { displayName },
+    ])
+  );
+  const userCache = new Map(
+    Object.entries(input.cachedUserNames ?? {}).map(([id, username]) => [id, { username }])
+  );
+
   return {
     guildId: "guild-1",
-    guild: { members: { cache: new Map() } },
-    client: { users: { cache: new Map() } },
+    guild: { members: { cache: guildMemberCache } },
+    client: { users: { cache: userCache } },
     user: { id: input.userId ?? "111111111111111111" },
     memberPermissions: {
       has: vi.fn().mockReturnValue(Boolean(input.isAdmin)),
@@ -204,6 +216,7 @@ describe("/link run", () => {
     const interaction = makeInteraction({
       subcommand: "list",
       clanTag: "#PQL0289",
+      guildMemberNames: { "111111111111111111": "Sin Display" },
     });
     const cocService = {
       getClan: vi.fn().mockResolvedValue({
@@ -232,10 +245,11 @@ describe("/link run", () => {
       .filter((line: string) => line.startsWith("`") && line.endsWith("`"));
     expect(rows).toHaveLength(2);
 
-    const linkedRow = rows.find((line: string) => line.includes("<@111111111111111111>"));
+    const linkedRow = rows.find((line: string) => line.includes("Sin Display"));
     const unlinkedRow = rows.find((line: string) => line.includes("#QGRJ2222"));
     expect(linkedRow).toBeTruthy();
     expect(unlinkedRow).toBeTruthy();
+    expect(description).not.toContain("<@111111111111111111>");
 
     const linkedParts = getInlineRowSegments(linkedRow as string);
     const unlinkedParts = getInlineRowSegments(unlinkedRow as string);
@@ -249,6 +263,61 @@ describe("/link run", () => {
     const select = payload.components[0].components[0].toJSON();
     expect(select.options).toHaveLength(2);
     expect(select.options.some((opt: any) => opt.default && opt.value === "#PQL0289")).toBe(true);
+  });
+
+  it("falls back to username when guild display name is unavailable", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        discordUserId: "111111111111111111",
+        createdAt: new Date("2026-03-15T09:07:00.000Z"),
+      },
+    ]);
+    const interaction = makeInteraction({
+      subcommand: "list",
+      clanTag: "#PQL0289",
+      cachedUserNames: { "111111111111111111": "cached_username" },
+    });
+    const cocService = {
+      getClan: vi.fn().mockResolvedValue({
+        name: "Alpha Clan",
+        members: [{ tag: "#PYLQ0289", name: "Tilonius", townHallLevel: 18, mapPosition: 1 }],
+      }),
+    };
+
+    await Link.run({} as any, interaction as any, cocService as any);
+
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const description = payload.embeds[0].toJSON().description as string;
+    expect(description).toContain("cached_username");
+    expect(description).not.toContain("<@111111111111111111>");
+  });
+
+  it("falls back to deterministic placeholder when user cannot be resolved", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        discordUserId: "111111111111111111",
+        createdAt: new Date("2026-03-15T09:07:00.000Z"),
+      },
+    ]);
+    const interaction = makeInteraction({
+      subcommand: "list",
+      clanTag: "#PQL0289",
+    });
+    const cocService = {
+      getClan: vi.fn().mockResolvedValue({
+        name: "Alpha Clan",
+        members: [{ tag: "#PYLQ0289", name: "Tilonius", townHallLevel: 18, mapPosition: 1 }],
+      }),
+    };
+
+    await Link.run({} as any, interaction as any, cocService as any);
+
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const description = payload.embeds[0].toJSON().description as string;
+    expect(description).toContain("Unknown User");
+    expect(description).not.toContain("<@111111111111111111>");
   });
 
   it("renders only unlinked bucket when there are no linked users", async () => {
@@ -366,7 +435,11 @@ describe("/link list select menu", () => {
       customId: buildLinkListSelectCustomId("111111111111111111"),
       user: { id: "111111111111111111" },
       guildId: "guild-1",
-      guild: { members: { cache: new Map() } },
+      guild: {
+        members: {
+          cache: new Map([["111111111111111111", { displayName: "Select Display Name" }]]),
+        },
+      },
       client: { users: { cache: new Map() } },
       values: ["#PQL0289"],
       update,
@@ -390,7 +463,8 @@ describe("/link list select menu", () => {
     const description = payload.embeds[0].toJSON().description as string;
     expect(description).toContain("Linked Users: 1");
     expect(description).toContain("`15 |");
-    expect(description).toContain("<@111111111111111111>");
+    expect(description).toContain("Select Display Name");
+    expect(description).not.toContain("<@111111111111111111>");
     expect(description).not.toContain("Unlinked users:");
     expect(reply).not.toHaveBeenCalled();
   });
