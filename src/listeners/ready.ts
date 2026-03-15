@@ -16,6 +16,7 @@ import { WarEventLogService } from "../services/WarEventLogService";
 import { TelemetryIngestService } from "../services/telemetry/ingest";
 import { startTelemetryScheduleLoop } from "../services/telemetry/schedule";
 import { refreshAllTrackedWarMailPosts } from "../commands/Fwa";
+import { backfillMissingDiscordUsernamesForClanMembers } from "../services/PlayerLinkService";
 import {
   formatStartupLogFields,
   getCommandRegistrationConfigFromEnv,
@@ -359,9 +360,39 @@ export default (client: Client, cocService: CoCService): void => {
       await settings.set(OBSERVE_LAST_RUN_AT_KEY, String(Date.now()));
     };
 
+    const resolveDiscordUsernameForBackfill = async (
+      discordUserId: string
+    ): Promise<string | null> => {
+      const cachedUsername = String(client.users.cache.get(discordUserId)?.username ?? "").trim();
+      if (cachedUsername.length > 0) return cachedUsername;
+
+      try {
+        const user = await client.users.fetch(discordUserId);
+        const fetchedUsername = String(user?.username ?? "").trim();
+        return fetchedUsername.length > 0 ? fetchedUsername : null;
+      } catch {
+        return null;
+      }
+    };
+
     const runObservedCycle = async () => {
       await runFetchTelemetryBatch("activity_observe_cycle", async () => {
-        await observeTrackedClans();
+        const observedTags = await observeTrackedClans();
+        try {
+          const backfill = await backfillMissingDiscordUsernamesForClanMembers({
+            memberTagsInOrder: observedTags,
+            resolveDiscordUsername: resolveDiscordUsernameForBackfill,
+          });
+          if (backfill.candidateLinks > 0) {
+            console.log(
+              `[activity-observe] playerlink_discord_username_backfill candidates=${backfill.candidateLinks} unique_users=${backfill.uniqueUsers} resolved_users=${backfill.resolvedUsers} updated=${backfill.updatedLinks}`
+            );
+          }
+        } catch (err) {
+          console.error(
+            `[activity-observe] playerlink_discord_username_backfill failed: ${formatError(err)}`
+          );
+        }
         try {
           await markObserveRun();
         } catch (err) {

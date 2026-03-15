@@ -233,7 +233,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`create` with `user` is admin-only and can create a link for another Discord user when unlinked.",
       "Existing links are never implicitly reassigned; delete-first is required before relinking to another user.",
       "`delete` removes a link when run by the linked user or an admin override target.",
-      "`list` renders non-zero linked/unlinked count buckets with padded inline rows: `TH | Player | ServerDisplayName` or `TH | Player | #PLAYER_TAG`.",
+      "`list` renders non-zero linked/unlinked count buckets with padded inline rows: `TH | Player | ServerDisplayName` when guild member is resolvable, otherwise persisted linked username fallback (then `Unknown User`) or `TH | Player | #PLAYER_TAG` for unlinked rows.",
       "`list` includes a tracked-clan dropdown and updates the same message in place when switching clans.",
     ],
     examples: [

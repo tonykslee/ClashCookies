@@ -26,6 +26,7 @@ export type PlayerLinkDeleteResult = {
 export type ClanScopedPlayerLink = {
   playerTag: string;
   discordUserId: string;
+  discordUsername: string | null;
   linkedAt: Date;
 };
 
@@ -50,6 +51,13 @@ export function normalizeDiscordUserId(input: string): string | null {
   const trimmed = String(input ?? "").trim();
   if (!/^\d{15,22}$/.test(trimmed)) return null;
   return trimmed;
+}
+
+/** Purpose: normalize persisted discord usernames to a deterministic text form. */
+export function normalizePersistedDiscordUsername(input: unknown): string | null {
+  const normalized = String(input ?? "").replace(/\s+/g, " ").trim();
+  if (!normalized) return null;
+  return normalized;
 }
 
 /** Purpose: render a linked timestamp in deterministic UTC format. */
@@ -166,7 +174,7 @@ export async function listPlayerLinksForClanMembers(input: {
   const uniqueOrdered = [...new Set(normalizedOrdered)];
   const rows = await prisma.playerLink.findMany({
     where: { playerTag: { in: uniqueOrdered } },
-    select: { playerTag: true, discordUserId: true, createdAt: true },
+    select: { playerTag: true, discordUserId: true, discordUsername: true, createdAt: true },
   });
 
   const indexByTag = new Map(uniqueOrdered.map((tag, idx) => [tag, idx]));
@@ -174,6 +182,7 @@ export async function listPlayerLinksForClanMembers(input: {
     .map((row) => ({
       playerTag: normalizePlayerTag(row.playerTag),
       discordUserId: String(row.discordUserId),
+      discordUsername: normalizePersistedDiscordUsername(row.discordUsername),
       linkedAt: row.createdAt,
     }))
     .filter((row) => row.playerTag.length > 0)
@@ -185,4 +194,84 @@ export async function listPlayerLinksForClanMembers(input: {
       }
       return a.playerTag.localeCompare(b.playerTag);
     });
+}
+
+export type PlayerLinkDiscordUsernameBackfillResult = {
+  candidateLinks: number;
+  uniqueUsers: number;
+  resolvedUsers: number;
+  updatedLinks: number;
+};
+
+/** Purpose: fill missing PlayerLink.discordUsername values for observed clan members. */
+export async function backfillMissingDiscordUsernamesForClanMembers(input: {
+  memberTagsInOrder: string[];
+  resolveDiscordUsername: (discordUserId: string) => Promise<string | null>;
+}): Promise<PlayerLinkDiscordUsernameBackfillResult> {
+  const normalizedOrdered = input.memberTagsInOrder
+    .map((tag) => normalizePlayerTag(tag))
+    .filter(Boolean);
+  if (normalizedOrdered.length === 0) {
+    return { candidateLinks: 0, uniqueUsers: 0, resolvedUsers: 0, updatedLinks: 0 };
+  }
+
+  const uniqueOrdered = [...new Set(normalizedOrdered)];
+  const candidateLinks = await prisma.playerLink.findMany({
+    where: {
+      playerTag: { in: uniqueOrdered },
+      OR: [{ discordUsername: null }, { discordUsername: "" }],
+    },
+    select: {
+      playerTag: true,
+      discordUserId: true,
+      discordUsername: true,
+    },
+  });
+  if (candidateLinks.length === 0) {
+    return { candidateLinks: 0, uniqueUsers: 0, resolvedUsers: 0, updatedLinks: 0 };
+  }
+
+  const uniqueUserIds = [
+    ...new Set(
+      candidateLinks
+        .map((row) => normalizeDiscordUserId(row.discordUserId))
+        .filter((value): value is string => value !== null)
+    ),
+  ];
+
+  const usernameByUserId = new Map<string, string>();
+  for (const discordUserId of uniqueUserIds) {
+    const resolved = normalizePersistedDiscordUsername(
+      await input.resolveDiscordUsername(discordUserId)
+    );
+    if (!resolved) continue;
+    usernameByUserId.set(discordUserId, resolved);
+  }
+
+  let updatedLinks = 0;
+  for (const row of candidateLinks) {
+    const discordUserId = normalizeDiscordUserId(row.discordUserId);
+    if (!discordUserId) continue;
+
+    const resolvedUsername = usernameByUserId.get(discordUserId);
+    if (!resolvedUsername) continue;
+
+    const updateResult = await prisma.playerLink.updateMany({
+      where: {
+        playerTag: row.playerTag,
+        OR: [{ discordUsername: null }, { discordUsername: "" }],
+      },
+      data: {
+        discordUsername: resolvedUsername,
+      },
+    });
+    updatedLinks += updateResult.count;
+  }
+
+  return {
+    candidateLinks: candidateLinks.length,
+    uniqueUsers: uniqueUserIds.length,
+    resolvedUsers: usernameByUserId.size,
+    updatedLinks,
+  };
 }
