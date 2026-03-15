@@ -12,7 +12,6 @@ import { prisma } from "../prisma";
 import { processRecruitmentCooldownReminders } from "../services/RecruitmentService";
 import { processWeightInputDefermentStages } from "../services/WeightInputDefermentService";
 import { SettingsService } from "../services/SettingsService";
-import { PlayerLinkSyncService } from "../services/PlayerLinkSyncService";
 import { WarEventLogService } from "../services/WarEventLogService";
 import { TelemetryIngestService } from "../services/telemetry/ingest";
 import { startTelemetryScheduleLoop } from "../services/telemetry/schedule";
@@ -198,7 +197,6 @@ export default (client: Client, cocService: CoCService): void => {
     console.log("Telemetry ingest + schedule loops enabled.");
 
     const activityService = new ActivityService(cocService);
-    const playerLinkSyncService = new PlayerLinkSyncService();
     const warEventLogService = new WarEventLogService(client, cocService);
     const settings = new SettingsService();
     let observeInProgress = false;
@@ -250,8 +248,7 @@ export default (client: Client, cocService: CoCService): void => {
 
     const runObservedCycle = async () => {
       await runFetchTelemetryBatch("activity_observe_cycle", async () => {
-        const observedMemberTags = await observeTrackedClans();
-        await playerLinkSyncService.syncMissingTagsIfDue(observedMemberTags);
+        await observeTrackedClans();
         try {
           await markObserveRun();
         } catch (err) {
