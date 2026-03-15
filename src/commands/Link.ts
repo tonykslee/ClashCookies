@@ -30,6 +30,7 @@ const EMBED_MESSAGE_LIMIT = 10;
 const LINK_LIST_EMBED_COLOR = 0x5865f2;
 
 const MAX_PLAYER_NAME_CHARS = 28;
+const MAX_IDENTITY_CHARS = 30;
 
 type ClanMemberRow = {
   playerTag: string;
@@ -183,7 +184,7 @@ type DescriptionChunk = {
   lineCount: number;
 };
 
-function chunkLinkedLines(lines: string[]): DescriptionChunk[] {
+function chunkDescriptionLines(lines: string[]): DescriptionChunk[] {
   const chunks: DescriptionChunk[] = [];
   let current = "";
   let currentCount = 0;
@@ -224,14 +225,14 @@ function appendDroppedSuffix(chunkText: string, droppedCount: number): string {
   return `${chunkText.slice(0, keepLength)}${suffix}`;
 }
 
-function buildLinkedLineEmbeds(title: string, lines: string[]): EmbedBuilder[] {
-  const chunks = chunkLinkedLines(lines);
+function buildDescriptionEmbeds(title: string, lines: string[]): EmbedBuilder[] {
+  const chunks = chunkDescriptionLines(lines);
   if (chunks.length === 0) {
     return [
       new EmbedBuilder()
         .setColor(LINK_LIST_EMBED_COLOR)
         .setTitle(title)
-        .setDescription("empty_list: no linked players found."),
+        .setDescription("empty_list: no rows to render."),
     ];
   }
 
@@ -317,9 +318,73 @@ function buildClanSelectRows(input: {
   return [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select)];
 }
 
-function buildLinkedLine(member: ClanMemberRow, discordUserId: string): string {
-  const playerName = truncateWithEllipsis(member.playerName, MAX_PLAYER_NAME_CHARS);
-  return `${member.townHallText} | ${playerName} | <@${discordUserId}>`;
+function rightAlign(value: string, width: number): string {
+  if (value.length >= width) return value;
+  return `${" ".repeat(width - value.length)}${value}`;
+}
+
+type LinkListRowInput = {
+  th: string;
+  playerName: string;
+  third: string;
+};
+
+function formatAlignedInlineRow(row: LinkListRowInput, widths: { player: number; third: number }): string {
+  const player = rightAlign(row.playerName, widths.player);
+  const third = rightAlign(row.third, widths.third);
+  return `\`${row.th} | ${player} | ${third}\``;
+}
+
+function computeColumnWidths(linkedRows: LinkListRowInput[], unlinkedRows: LinkListRowInput[]): {
+  player: number;
+  linkedThird: number;
+  unlinkedThird: number;
+} {
+  const allRows = [...linkedRows, ...unlinkedRows];
+  const player = Math.max(
+    6,
+    ...allRows.map((row) => row.playerName.length).filter((value) => Number.isFinite(value))
+  );
+
+  const linkedThird = Math.max(
+    3,
+    ...linkedRows.map((row) => row.third.length).filter((value) => Number.isFinite(value))
+  );
+  const unlinkedThird = Math.max(
+    3,
+    ...unlinkedRows.map((row) => row.third.length).filter((value) => Number.isFinite(value))
+  );
+
+  return { player, linkedThird, unlinkedThird };
+}
+
+function buildLinkListDescriptionLines(input: {
+  linkedRows: LinkListRowInput[];
+  unlinkedRows: LinkListRowInput[];
+}): string[] {
+  const { linkedRows, unlinkedRows } = input;
+  const widths = computeColumnWidths(linkedRows, unlinkedRows);
+  const lines: string[] = [];
+
+  if (linkedRows.length > 0) {
+    lines.push(`Linked Users: ${linkedRows.length}`);
+    lines.push(
+      ...linkedRows.map((row) =>
+        formatAlignedInlineRow(row, { player: widths.player, third: widths.linkedThird })
+      )
+    );
+  }
+
+  if (unlinkedRows.length > 0) {
+    lines.push(`Unlinked users: ${unlinkedRows.length}`);
+    lines.push(
+      ...unlinkedRows.map((row) =>
+        formatAlignedInlineRow(row, { player: widths.player, third: widths.unlinkedThird })
+      )
+    );
+  }
+
+  return lines;
 }
 
 async function buildLinkListView(input: {
@@ -353,25 +418,40 @@ async function buildLinkListView(input: {
   const links = await listPlayerLinksForClanMembers({
     memberTagsInOrder: members.map((row) => row.playerTag),
   });
-  if (links.length === 0) {
+  const linkByTag = new Map(links.map((row) => [row.playerTag, row]));
+  const linkedRows: LinkListRowInput[] = [];
+  const unlinkedRows: LinkListRowInput[] = [];
+
+  for (const member of members) {
+    const playerName = truncateWithEllipsis(member.playerName, MAX_PLAYER_NAME_CHARS);
+    const link = linkByTag.get(member.playerTag);
+    if (link) {
+      linkedRows.push({
+        th: member.townHallText,
+        playerName,
+        third: truncateWithEllipsis(`<@${link.discordUserId}>`, MAX_IDENTITY_CHARS),
+      });
+      continue;
+    }
+
+    unlinkedRows.push({
+      th: member.townHallText,
+      playerName,
+      third: truncateWithEllipsis(member.playerTag, MAX_IDENTITY_CHARS),
+    });
+  }
+
+  const lines = buildLinkListDescriptionLines({
+    linkedRows,
+    unlinkedRows,
+  });
+
+  if (lines.length === 0) {
     return {
       ok: false,
       message: `empty_list: no linked players found for ${input.clanTag}.`,
     };
   }
-
-  const memberByTag = new Map(members.map((row) => [row.playerTag, row]));
-  const lines = links.map((row) => {
-    const member = memberByTag.get(row.playerTag);
-    const fallbackMember: ClanMemberRow = {
-      playerTag: row.playerTag,
-      playerName: row.playerTag,
-      townHallText: "?",
-      mapPosition: null,
-      index: Number.MAX_SAFE_INTEGER,
-    };
-    return buildLinkedLine(member ?? fallbackMember, row.discordUserId);
-  });
 
   const tracked = await prisma.trackedClan.findUnique({
     where: { tag: input.clanTag },
@@ -387,7 +467,7 @@ async function buildLinkListView(input: {
     badge: tracked?.clanBadge?.trim() ?? null,
   });
 
-  const embeds = buildLinkedLineEmbeds(title, lines);
+  const embeds = buildDescriptionEmbeds(title, lines);
 
   const trackedClans = await getTrackedClansForGuild(input.interaction.guildId);
   const components = buildClanSelectRows({

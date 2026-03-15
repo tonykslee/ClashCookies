@@ -68,6 +68,16 @@ function makeValidTag(index: number): string {
   return `#PY${a}${b}${a}${b}`;
 }
 
+function getInlineRowSegments(row: string): { th: string; player: string; third: string } {
+  const trimmed = row.slice(1, -1);
+  const [th, player, third] = trimmed.split("|").map((part) => part);
+  return {
+    th: (th ?? "").trim(),
+    player: player ?? "",
+    third: third ?? "",
+  };
+}
+
 describe("/link run", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -160,7 +170,7 @@ describe("/link run", () => {
     expect(interaction.editReply).toHaveBeenCalledWith("deleted: #PYL0289.");
   });
 
-  it("renders /link list as flat linked lines with mention format and dropdown", async () => {
+  it("renders /link list with linked/unlinked count buckets and inline padded rows", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([
       {
         playerTag: "#PYLQ0289",
@@ -211,17 +221,37 @@ describe("/link run", () => {
     const firstEmbed = payload.embeds[0].toJSON();
 
     expect(firstEmbed.title).toBe("<:badge:1> Alpha Clan #PQL0289");
-    expect(firstEmbed.description).toContain("18 | Tilonius | <@111111111111111111>");
-    expect(firstEmbed.description).not.toContain("(111111111111111111)");
+    const description = String(firstEmbed.description ?? "");
+    expect(description).toContain("Linked Users: 1");
+    expect(description).toContain("Unlinked users: 1");
+    expect(description).not.toContain("(111111111111111111)");
     expect(firstEmbed.fields ?? []).toHaveLength(0);
-    expect(firstEmbed.description).not.toContain("Unlinked Guy");
+
+    const rows = description
+      .split("\n")
+      .filter((line: string) => line.startsWith("`") && line.endsWith("`"));
+    expect(rows).toHaveLength(2);
+
+    const linkedRow = rows.find((line: string) => line.includes("<@111111111111111111>"));
+    const unlinkedRow = rows.find((line: string) => line.includes("#QGRJ2222"));
+    expect(linkedRow).toBeTruthy();
+    expect(unlinkedRow).toBeTruthy();
+
+    const linkedParts = getInlineRowSegments(linkedRow as string);
+    const unlinkedParts = getInlineRowSegments(unlinkedRow as string);
+    expect(linkedParts.th).toBe("18");
+    expect(unlinkedParts.th).toBe("15");
+    expect(linkedParts.player.startsWith(" ")).toBe(true);
+    expect(linkedParts.third.startsWith(" ")).toBe(true);
+    expect(unlinkedParts.player.startsWith(" ")).toBe(true);
+    expect(unlinkedParts.third.startsWith(" ")).toBe(true);
 
     const select = payload.components[0].components[0].toJSON();
     expect(select.options).toHaveLength(2);
     expect(select.options.some((opt: any) => opt.default && opt.value === "#PQL0289")).toBe(true);
   });
 
-  it("returns empty_list when clan has no linked players", async () => {
+  it("renders only unlinked bucket when there are no linked users", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([]);
 
     const interaction = makeInteraction({
@@ -237,9 +267,12 @@ describe("/link run", () => {
 
     await Link.run({} as any, interaction as any, cocService as any);
 
-    expect(interaction.editReply).toHaveBeenCalledWith(
-      "empty_list: no linked players found for #PQL0289."
-    );
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const description = payload.embeds[0].toJSON().description as string;
+    expect(description).toContain("Unlinked users: 1");
+    expect(description).not.toContain("Linked Users:");
+    expect(description).toContain("`15 |");
+    expect(description).toContain("#QGRJ2222");
   });
 
   it("returns deterministic empty-member response when clan has no members", async () => {
@@ -354,7 +387,11 @@ describe("/link list select menu", () => {
     expect(update).toHaveBeenCalledTimes(1);
     const payload = update.mock.calls[0]?.[0] as any;
     expect(Array.isArray(payload.embeds)).toBe(true);
-    expect(payload.embeds[0].toJSON().description).toContain("15 | Player One | <@111111111111111111>");
+    const description = payload.embeds[0].toJSON().description as string;
+    expect(description).toContain("Linked Users: 1");
+    expect(description).toContain("`15 |");
+    expect(description).toContain("<@111111111111111111>");
+    expect(description).not.toContain("Unlinked users:");
     expect(reply).not.toHaveBeenCalled();
   });
 
