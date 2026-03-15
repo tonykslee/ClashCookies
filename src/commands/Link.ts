@@ -6,6 +6,7 @@ import {
   PermissionFlagsBits,
 } from "discord.js";
 import { Command } from "../Command";
+import { DISCORD_CONTENT_LIMIT, truncateDiscordContent } from "../helper/discordContent";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
 import { CommandPermissionService } from "../services/CommandPermissionService";
@@ -69,6 +70,33 @@ function normalizeClanMemberOrder(rawMembers: unknown[]): string[] {
     ordered.push(row.tag);
   }
   return ordered;
+}
+
+function buildChunkedLinkListMessages(header: string, rows: string[]): string[] {
+  const safeHeader =
+    header.length > DISCORD_CONTENT_LIMIT
+      ? truncateDiscordContent(header, DISCORD_CONTENT_LIMIT)
+      : header;
+  const chunks: string[] = [];
+  let current = safeHeader;
+
+  for (const row of rows) {
+    const safeRow =
+      row.length > DISCORD_CONTENT_LIMIT
+        ? truncateDiscordContent(row, DISCORD_CONTENT_LIMIT)
+        : row;
+    const candidate = `${current}\n${safeRow}`;
+    if (candidate.length <= DISCORD_CONTENT_LIMIT) {
+      current = candidate;
+      continue;
+    }
+
+    chunks.push(current);
+    current = safeRow;
+  }
+
+  chunks.push(current);
+  return chunks;
 }
 
 export const Link: Command = {
@@ -280,9 +308,14 @@ export const Link: Command = {
       (row) =>
         `- ${row.playerTag} | <@${row.discordUserId}> (${row.discordUserId}) | linkedAt ${formatLinkedAtUtc(row.linkedAt)}`
     );
-    await interaction.editReply(
-      [`linked_players: ${links.length} for ${normalizedClanTag}`, ...lines].join("\n")
+    const chunks = buildChunkedLinkListMessages(
+      `linked_players: ${links.length} for ${normalizedClanTag}`,
+      lines
     );
+    await interaction.editReply(chunks[0] ?? "empty_list: no linked players found.");
+    for (const chunk of chunks.slice(1)) {
+      await interaction.followUp({ content: chunk });
+    }
   },
   autocomplete: async (interaction: AutocompleteInteraction) => {
     const focused = interaction.options.getFocused(true);

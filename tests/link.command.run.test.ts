@@ -46,6 +46,7 @@ function makeInteraction(input: InteractionInput) {
     },
     deferReply: vi.fn().mockResolvedValue(undefined),
     editReply: vi.fn().mockResolvedValue(undefined),
+    followUp: vi.fn().mockResolvedValue(undefined),
     reply: vi.fn().mockResolvedValue(undefined),
   };
 }
@@ -165,5 +166,74 @@ describe("/link run", () => {
         "- #QGRJ2222 | <@222222222222222222> (222222222222222222) | linkedAt 2026-03-15 09:07 UTC",
       ].join("\n")
     );
+    expect(interaction.followUp).not.toHaveBeenCalled();
+  });
+
+  it("chunks /link list output when message content exceeds Discord limit", async () => {
+    const createdAt = new Date("2026-03-15T09:07:00.000Z");
+    const alphabet = "PYLQGRJCUV0289";
+    const makeValidTag = (index: number): string => {
+      const a = alphabet[Math.floor(index / alphabet.length) % alphabet.length];
+      const b = alphabet[index % alphabet.length];
+      return `#PY${a}${b}${a}${b}`;
+    };
+    const records = Array.from({ length: 45 }, (_, i) => {
+      return {
+        playerTag: makeValidTag(i),
+        discordUserId: `11111111111111${String(i).padStart(4, "0")}`,
+        createdAt,
+      };
+    });
+    prismaMock.playerLink.findMany.mockResolvedValue(records);
+    const interaction = makeInteraction({
+      subcommand: "list",
+      clanTag: "#PQL0289",
+    });
+    const cocService = {
+      getClan: vi.fn().mockResolvedValue({
+        members: records.map((row, index) => ({
+          tag: row.playerTag,
+          mapPosition: index + 1,
+        })),
+      }),
+    };
+
+    await Link.run({} as any, interaction as any, cocService as any);
+
+    const first = String(interaction.editReply.mock.calls[0]?.[0] ?? "");
+    const followUps = interaction.followUp.mock.calls.map((call) =>
+      String(call[0]?.content ?? "")
+    );
+    const allMessages = [first, ...followUps];
+
+    expect(interaction.editReply).toHaveBeenCalledTimes(1);
+    expect(interaction.followUp).toHaveBeenCalled();
+    expect(allMessages.every((content) => content.length <= 2000)).toBe(true);
+    expect(first).toContain("linked_players: 45 for #PQL0289");
+    expect(allMessages.join("\n")).toContain(records[records.length - 1]?.playerTag ?? "");
+  });
+
+  it("keeps output valid when a single line would exceed Discord limit", async () => {
+    const createdAt = new Date("2026-03-15T09:07:00.000Z");
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ0289", discordUserId: "1".repeat(2500), createdAt },
+    ]);
+    const interaction = makeInteraction({
+      subcommand: "list",
+      clanTag: "#PQL0289",
+    });
+    const cocService = {
+      getClan: vi.fn().mockResolvedValue({
+        members: [{ tag: "#PYLQ0289", mapPosition: 1 }],
+      }),
+    };
+
+    await Link.run({} as any, interaction as any, cocService as any);
+
+    const first = String(interaction.editReply.mock.calls[0]?.[0] ?? "");
+    const second = String(interaction.followUp.mock.calls[0]?.[0]?.content ?? "");
+    expect(first.length).toBeLessThanOrEqual(2000);
+    expect(second.length).toBeLessThanOrEqual(2000);
+    expect(second).toContain("...truncated");
   });
 });
