@@ -74,6 +74,10 @@ import {
   isNotifyWarEndedViewButtonCustomId,
   isNotifyWarRefreshButtonCustomId,
 } from "../services/WarEventLogService";
+import {
+  handleLinkListSelectMenu,
+  isLinkListSelectCustomId,
+} from "../commands/Link";
 
 const commandPermissionService = new CommandPermissionService();
 const GLOBAL_POST_BUTTON_PREFIX = "post-channel";
@@ -211,7 +215,7 @@ export default (client: Client, cocService: CoCService): void => {
   }
 
   if (interaction.isStringSelectMenu()) {
-    await handleSelectMenuInteraction(interaction);
+    await handleSelectMenuInteraction(interaction, cocService);
     return;
   }
 
@@ -246,8 +250,24 @@ export default (client: Client, cocService: CoCService): void => {
 };
 
 const handleSelectMenuInteraction = async (
-  interaction: StringSelectMenuInteraction
+  interaction: StringSelectMenuInteraction,
+  cocService: CoCService
 ): Promise<void> => {
+  if (isLinkListSelectCustomId(interaction.customId)) {
+    try {
+      await handleLinkListSelectMenu(interaction, cocService);
+    } catch (err) {
+      console.error(`Link list select menu failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to update link list view.",
+        });
+      }
+    }
+    return;
+  }
+
   if (isFwaMatchSelectCustomId(interaction.customId)) {
     try {
       await handleFwaMatchSelectMenu(interaction);

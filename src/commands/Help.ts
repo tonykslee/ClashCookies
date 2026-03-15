@@ -227,14 +227,14 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     ],
   },
   link: {
-    summary: "Manage local Discord ↔ player links using PlayerLink.",
+    summary: "Manage local Discord-player links using PlayerLink.",
     details: [
       "`create` links a player tag to your Discord account when the tag is currently unlinked.",
       "`create` with `user` is admin-only and can create a link for another Discord user when unlinked.",
       "Existing links are never implicitly reassigned; delete-first is required before relinking to another user.",
       "`delete` removes a link when run by the linked user or an admin override target.",
-      "`list` shows only currently linked players in the requested clan's current roster.",
-      "Linked timestamps are shown in deterministic UTC format (`YYYY-MM-DD HH:mm UTC`).",
+      "`list` renders an embed roster split into `Players linked` and `Unlinked Players` with table-style columns.",
+      "`list` includes a tracked-clan dropdown and updates the same message in place when switching clans.",
     ],
     examples: [
       "/link create player-tag:#ABC123",
