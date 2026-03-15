@@ -320,15 +320,16 @@ function buildClanSelectRows(input: {
 
 function resolveLinkedUserDisplayName(
   interaction: ChatInputCommandInteraction | StringSelectMenuInteraction,
-  discordUserId: string
+  discordUserId: string,
+  persistedDiscordUsername: string | null
 ): string {
   const memberDisplay = sanitizeTableText(
     interaction.guild?.members?.cache.get(discordUserId)?.displayName ?? ""
   );
   if (memberDisplay.length > 0) return memberDisplay;
 
-  const username = sanitizeTableText(interaction.client?.users?.cache.get(discordUserId)?.username ?? "");
-  if (username.length > 0) return username;
+  const persisted = sanitizeTableText(persistedDiscordUsername ?? "");
+  if (persisted.length > 0) return persisted;
 
   return "Unknown User";
 }
@@ -445,7 +446,11 @@ async function buildLinkListView(input: {
         th: member.townHallText,
         playerName,
         third: truncateWithEllipsis(
-          resolveLinkedUserDisplayName(input.interaction, link.discordUserId),
+          resolveLinkedUserDisplayName(
+            input.interaction,
+            link.discordUserId,
+            link.discordUsername
+          ),
           MAX_IDENTITY_CHARS
         ),
       });

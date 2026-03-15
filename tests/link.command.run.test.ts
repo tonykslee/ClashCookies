@@ -187,6 +187,7 @@ describe("/link run", () => {
       {
         playerTag: "#PYLQ0289",
         discordUserId: "111111111111111111",
+        discordUsername: "Persisted Sin",
         createdAt: new Date("2026-03-15T09:07:00.000Z"),
       },
     ]);
@@ -265,18 +266,18 @@ describe("/link run", () => {
     expect(select.options.some((opt: any) => opt.default && opt.value === "#PQL0289")).toBe(true);
   });
 
-  it("falls back to username when guild display name is unavailable", async () => {
+  it("falls back to persisted discord username when guild display name is unavailable", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([
       {
         playerTag: "#PYLQ0289",
         discordUserId: "111111111111111111",
+        discordUsername: "persisted_username",
         createdAt: new Date("2026-03-15T09:07:00.000Z"),
       },
     ]);
     const interaction = makeInteraction({
       subcommand: "list",
       clanTag: "#PQL0289",
-      cachedUserNames: { "111111111111111111": "cached_username" },
     });
     const cocService = {
       getClan: vi.fn().mockResolvedValue({
@@ -289,7 +290,7 @@ describe("/link run", () => {
 
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
     const description = payload.embeds[0].toJSON().description as string;
-    expect(description).toContain("cached_username");
+    expect(description).toContain("persisted_username");
     expect(description).not.toContain("<@111111111111111111>");
   });
 
@@ -298,6 +299,7 @@ describe("/link run", () => {
       {
         playerTag: "#PYLQ0289",
         discordUserId: "111111111111111111",
+        discordUsername: null,
         createdAt: new Date("2026-03-15T09:07:00.000Z"),
       },
     ]);
@@ -370,6 +372,7 @@ describe("/link run", () => {
       {
         playerTag: currentTag,
         discordUserId: "111111111111111111",
+        discordUsername: "current_user",
         createdAt: new Date("2026-03-15T09:07:00.000Z"),
       },
     ]);
@@ -417,6 +420,7 @@ describe("/link list select menu", () => {
       {
         playerTag: "#PQL0289",
         discordUserId: "111111111111111111",
+        discordUsername: "Persisted Select User",
         createdAt: new Date("2026-03-15T09:07:00.000Z"),
       },
     ]);
