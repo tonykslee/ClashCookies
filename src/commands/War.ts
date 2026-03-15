@@ -10,6 +10,7 @@ import { Prisma } from "@prisma/client";
 import { Command } from "../Command";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
+import { getClanScopedWarIdAutocompleteChoices } from "../services/WarIdAutocompleteService";
 
 function normalizeClanTagInput(input: string): string {
   return input.trim().toUpperCase().replace(/^#/, "");
@@ -38,13 +39,6 @@ function buildCsv(rows: Array<Record<string, unknown>>, headers: string[]): stri
     out.push(headers.map((h) => csvEscape(row[h])).join(","));
   }
   return out.join("\r\n");
-}
-
-function formatEndedDaysAgo(value: Date | null): string {
-  if (!value) return "ended unknown days ago";
-  const diffMs = Date.now() - value.getTime();
-  const days = Math.max(0, Math.floor(diffMs / (24 * 60 * 60 * 1000)));
-  return `ended ${days} day${days === 1 ? "" : "s"} ago`;
 }
 
 type WarHistoryRow = {
@@ -96,10 +90,18 @@ export const War: Command = {
       type: ApplicationCommandOptionType.Subcommand,
       options: [
         {
+          name: "clan-tag",
+          description: "Tracked clan tag (with or without #)",
+          type: ApplicationCommandOptionType.String,
+          required: true,
+          autocomplete: true,
+        },
+        {
           name: "war-id",
           description: "War ID (from /war history; text)",
           type: ApplicationCommandOptionType.String,
           required: true,
+          autocomplete: true,
         },
       ],
     },
@@ -165,6 +167,12 @@ export const War: Command = {
     }
 
     if (sub === "war-id") {
+      const clanTag = normalizeClanTag(interaction.options.getString("clan-tag", true));
+      if (!clanTag) {
+        await interaction.editReply("Invalid clan tag.");
+        return;
+      }
+      const tagBare = normalizeClanTagInput(clanTag);
       const warId = String(interaction.options.getString("war-id", true) ?? "").trim();
       if (!warId) {
         await interaction.editReply("Invalid war ID.");
@@ -176,12 +184,15 @@ export const War: Command = {
           SELECT "payload"
           FROM "WarLookup"
           WHERE "warId" = ${warId}
+            AND UPPER(REPLACE("clanTag",'#','')) = ${tagBare}
           LIMIT 1
         `
       );
       const payload = rows[0]?.payload ?? null;
       if (!payload) {
-        await interaction.editReply(`No lookup payload found for war ID ${warId}.`);
+        await interaction.editReply(
+          `No lookup payload found for war ID ${warId} under ${clanTag}.`
+        );
         return;
       }
 
@@ -309,24 +320,11 @@ export const War: Command = {
   autocomplete: async (interaction: AutocompleteInteraction) => {
     const focused = interaction.options.getFocused(true);
     if (focused.name === "war-id") {
-      const query = String(focused.value ?? "").trim();
-      const rows = await prisma.$queryRaw<
-        Array<{ warId: string; endTime: Date | null }>
-      >(
-        Prisma.sql`
-          SELECT "warId", "endTime"
-          FROM "WarLookup"
-          WHERE ${query ? Prisma.sql`CAST("warId" AS text) ILIKE ${`%${query}%`}` : Prisma.sql`TRUE`}
-          ORDER BY COALESCE("endTime", "startTime") DESC
-          LIMIT 25
-        `
-      );
-      await interaction.respond(
-        rows.map((row) => ({
-          name: `${row.warId} - ${formatEndedDaysAgo(row.endTime)}`.slice(0, 100),
-          value: row.warId,
-        }))
-      );
+      const choices = await getClanScopedWarIdAutocompleteChoices({
+        rawClanTag: interaction.options.getString("clan-tag", false),
+        focusedText: String(focused.value ?? ""),
+      });
+      await interaction.respond(choices);
       return;
     }
     if (focused.name !== "clan-tag") {
