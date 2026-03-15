@@ -34,22 +34,13 @@ type InteractionInput = {
   clanTag?: string | null;
   userId?: string;
   isAdmin?: boolean;
-  guildMemberNames?: Record<string, string>;
-  cachedUserNames?: Record<string, string>;
 };
 
 function makeInteraction(input: InteractionInput) {
-  const memberCache = new Map(
-    Object.entries(input.guildMemberNames ?? {}).map(([id, displayName]) => [id, { displayName }])
-  );
-  const userCache = new Map(
-    Object.entries(input.cachedUserNames ?? {}).map(([id, username]) => [id, { username }])
-  );
-
   return {
     guildId: "guild-1",
-    guild: { members: { cache: memberCache } },
-    client: { users: { cache: userCache } },
+    guild: { members: { cache: new Map() } },
+    client: { users: { cache: new Map() } },
     user: { id: input.userId ?? "111111111111111111" },
     memberPermissions: {
       has: vi.fn().mockReturnValue(Boolean(input.isAdmin)),
@@ -169,7 +160,7 @@ describe("/link run", () => {
     expect(interaction.editReply).toHaveBeenCalledWith("deleted: #PYL0289.");
   });
 
-  it("renders /link list as embed with linked/unlinked sections and clan dropdown", async () => {
+  it("renders /link list as flat linked lines with mention format and dropdown", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([
       {
         playerTag: "#PYLQ0289",
@@ -203,14 +194,13 @@ describe("/link run", () => {
     const interaction = makeInteraction({
       subcommand: "list",
       clanTag: "#PQL0289",
-      guildMemberNames: { "111111111111111111": "sin" },
     });
     const cocService = {
       getClan: vi.fn().mockResolvedValue({
         name: "Alpha Clan",
         members: [
-          { tag: "#PYLQ0289", name: "Player One", townHallLevel: 16, mapPosition: 1 },
-          { tag: "#QGRJ2222", name: "Player Two", townHallLevel: 15, mapPosition: 2 },
+          { tag: "#PYLQ0289", name: "Tilonius", townHallLevel: 18, mapPosition: 1 },
+          { tag: "#QGRJ2222", name: "Unlinked Guy", townHallLevel: 15, mapPosition: 2 },
         ],
       }),
     };
@@ -221,31 +211,18 @@ describe("/link run", () => {
     const firstEmbed = payload.embeds[0].toJSON();
 
     expect(firstEmbed.title).toBe("<:badge:1> Alpha Clan #PQL0289");
-    expect(firstEmbed.fields.some((f: any) => f.name === "Players linked")).toBe(true);
-    expect(firstEmbed.fields.some((f: any) => f.name === "Unlinked Players")).toBe(true);
-
-    const linkedField = firstEmbed.fields.find((f: any) => f.name === "Players linked");
-    const unlinkedField = firstEmbed.fields.find((f: any) => f.name === "Unlinked Players");
-    expect(linkedField.value).toContain("TH");
-    expect(linkedField.value).toContain("sin");
-    expect(unlinkedField.value).toContain("#QGRJ2222");
+    expect(firstEmbed.description).toContain("18 | Tilonius | <@111111111111111111>");
+    expect(firstEmbed.description).not.toContain("(111111111111111111)");
+    expect(firstEmbed.fields ?? []).toHaveLength(0);
+    expect(firstEmbed.description).not.toContain("Unlinked Guy");
 
     const select = payload.components[0].components[0].toJSON();
     expect(select.options).toHaveLength(2);
     expect(select.options.some((opt: any) => opt.default && opt.value === "#PQL0289")).toBe(true);
   });
 
-  it("renders deterministic empty linked table with -- none -- placeholder", async () => {
+  it("returns empty_list when clan has no linked players", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([]);
-    prismaMock.currentWar.findMany.mockResolvedValue([{ clanTag: "#PQL0289" }]);
-    prismaMock.trackedClan.findMany.mockResolvedValue([
-      {
-        tag: "#PQL0289",
-        name: "Alpha Clan",
-        clanBadge: null,
-        mailConfig: null,
-      },
-    ]);
 
     const interaction = makeInteraction({
       subcommand: "list",
@@ -260,13 +237,9 @@ describe("/link run", () => {
 
     await Link.run({} as any, interaction as any, cocService as any);
 
-    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
-    const firstEmbed = payload.embeds[0].toJSON();
-    const linkedField = firstEmbed.fields.find((f: any) => f.name === "Players linked");
-    const unlinkedField = firstEmbed.fields.find((f: any) => f.name === "Unlinked Players");
-
-    expect(linkedField.value).toContain("-- none --");
-    expect(unlinkedField.value).toContain("#QGRJ2222");
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "empty_list: no linked players found for #PQL0289."
+    );
   });
 
   it("returns deterministic empty-member response when clan has no members", async () => {
@@ -291,7 +264,13 @@ describe("/link run", () => {
   it("limits dropdown to 25 options and includes currently viewed clan", async () => {
     const tags = Array.from({ length: 30 }, (_, idx) => makeValidTag(idx));
     const currentTag = tags[29];
-    prismaMock.playerLink.findMany.mockResolvedValue([]);
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: currentTag,
+        discordUserId: "111111111111111111",
+        createdAt: new Date("2026-03-15T09:07:00.000Z"),
+      },
+    ]);
     prismaMock.currentWar.findMany.mockResolvedValue(tags.map((tag) => ({ clanTag: tag })));
     prismaMock.trackedClan.findMany.mockResolvedValue(
       tags.map((tag, idx) => ({
@@ -332,8 +311,16 @@ describe("/link list select menu", () => {
     prismaMock.trackedClan.findUnique.mockReset();
     prismaMock.currentWar.findMany.mockReset();
 
-    prismaMock.playerLink.findMany.mockResolvedValue([]);
-    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#PQL0289", name: "Alpha Clan", clanBadge: null, mailConfig: null }]);
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PQL0289",
+        discordUserId: "111111111111111111",
+        createdAt: new Date("2026-03-15T09:07:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#PQL0289", name: "Alpha Clan", clanBadge: null, mailConfig: null },
+    ]);
     prismaMock.trackedClan.findUnique.mockResolvedValue(null);
     prismaMock.currentWar.findMany.mockResolvedValue([{ clanTag: "#PQL0289" }]);
   });
@@ -367,7 +354,7 @@ describe("/link list select menu", () => {
     expect(update).toHaveBeenCalledTimes(1);
     const payload = update.mock.calls[0]?.[0] as any;
     expect(Array.isArray(payload.embeds)).toBe(true);
-    expect(payload.embeds[0].toJSON().title).toContain("Alpha Clan");
+    expect(payload.embeds[0].toJSON().description).toContain("15 | Player One | <@111111111111111111>");
     expect(reply).not.toHaveBeenCalled();
   });
 
