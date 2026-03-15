@@ -17,11 +17,15 @@ import { TelemetryIngestService } from "../services/telemetry/ingest";
 import { startTelemetryScheduleLoop } from "../services/telemetry/schedule";
 import { refreshAllTrackedWarMailPosts } from "../commands/Fwa";
 import {
+  formatStartupLogFields,
   getCommandRegistrationConfigFromEnv,
+  getStartupErrorDiagnostics,
   getStartupBootstrapRetryConfigFromEnv,
+  getStartupRetryLogSummaryEveryFromEnv,
   isTransientRegistrationError,
   registerGuildCommandsWithRetry,
   runWithTransientRetry,
+  shouldEmitStartupRetrySummary,
 } from "../services/StartupCommandRegistrationService";
 import {
   setNextNotifyRefreshAtMs,
@@ -156,34 +160,81 @@ export default (client: Client, cocService: CoCService): void => {
     console.log("ClashCookies is starting...");
 
     const bootstrapConfig = getStartupBootstrapRetryConfigFromEnv(process.env);
+    const summaryEvery = getStartupRetryLogSummaryEveryFromEnv(process.env);
+    const startupBootstrapStartMs = Date.now();
+    const guildIdRaw = String(process.env.GUILD_ID ?? "").trim();
+    const guildIdPresent = guildIdRaw.length > 0;
+    let firstFailureMs: number | null = null;
+    let totalFailures = 0;
+    let bootstrapStage = "guild_fetch";
     console.log(
-      `[startup:bootstrap] start base_backoff_ms=${bootstrapConfig.baseBackoffMs} max_backoff_ms=${bootstrapConfig.maxBackoffMs}`
+      `[startup:bootstrap] start ${formatStartupLogFields({
+        base_backoff_ms: bootstrapConfig.baseBackoffMs,
+        guild_id_present: guildIdPresent,
+        max_backoff_ms: bootstrapConfig.maxBackoffMs,
+        retry_summary_every: summaryEvery,
+      })}`
     );
     const bootstrap = await runWithTransientRetry({
       execute: async () => {
-        const guildIdRaw = String(process.env.GUILD_ID ?? "").trim();
         if (!guildIdRaw) {
           throw new Error("MISSING_GUILD_ID");
         }
+        bootstrapStage = "guild_fetch";
         const guild = await client.guilds.fetch(guildIdRaw);
+        bootstrapStage = "member_fetch";
         const me = await guild.members.fetch(client.user!.id);
+        bootstrapStage = "complete";
         return { guildId: guildIdRaw, guild, me };
       },
       config: bootstrapConfig,
       isTransientError: isTransientRegistrationError,
       onFailure: (context) => {
-        const errorMessage =
-          context.error instanceof Error ? context.error.message : String(context.error);
+        totalFailures += 1;
+        const now = Date.now();
+        if (firstFailureMs === null) firstFailureMs = now;
+        const diagnostics = getStartupErrorDiagnostics(context.error);
+        const baseLog = formatStartupLogFields({
+          attempt: context.attempt,
+          backoff_ms: context.backoffMs ?? 0,
+          client_user_present: Boolean(client.user),
+          elapsed_ms: now - startupBootstrapStartMs,
+          error_code: diagnostics.code,
+          error_name: diagnostics.name,
+          error_message: diagnostics.message,
+          error_cause_code: diagnostics.causeCode,
+          error_cause_name: diagnostics.causeName,
+          error_cause_message: diagnostics.causeMessage,
+          error_status: diagnostics.status,
+          error_http_status: diagnostics.httpStatus,
+          error_transient_reason: diagnostics.transientReason,
+          error_stack_head: diagnostics.stackHead,
+          guild_id_present: guildIdPresent,
+          next_attempt: context.willRetry ? context.attempt + 1 : 0,
+          stage: bootstrapStage,
+          total_failures: totalFailures,
+          transient: context.transient,
+        });
         if (context.willRetry && context.backoffMs !== null) {
-          console.warn(
-            `[startup:bootstrap] retry attempt=${context.attempt + 1} backoff_ms=${context.backoffMs} transient=${context.transient ? 1 : 0} error=${errorMessage}`
-          );
+          console.warn(`[startup:bootstrap] retry ${baseLog}`);
+          if (shouldEmitStartupRetrySummary(totalFailures, summaryEvery)) {
+            console.warn(
+              `[startup:bootstrap] retry_summary ${formatStartupLogFields({
+                every: summaryEvery,
+                first_failure_ms_ago: firstFailureMs === null ? 0 : now - firstFailureMs,
+                last_error_code: diagnostics.code,
+                last_error_name: diagnostics.name,
+                last_error_reason: diagnostics.transientReason,
+                retries: totalFailures,
+                since_start_ms: now - startupBootstrapStartMs,
+                stage: bootstrapStage,
+              })}`
+            );
+          }
           return;
         }
 
-        console.error(
-          `[startup:bootstrap] fatal_non_transient attempt=${context.attempt} transient=${context.transient ? 1 : 0} error=${errorMessage}`
-        );
+        console.error(`[startup:bootstrap] fatal_non_transient ${baseLog}`);
       },
     });
     if (bootstrap.status !== "success") {
@@ -191,7 +242,15 @@ export default (client: Client, cocService: CoCService): void => {
       return;
     }
 
-    console.log(`[startup:bootstrap] success attempt=${bootstrap.attempts}`);
+    console.log(
+      `[startup:bootstrap] success ${formatStartupLogFields({
+        attempts: bootstrap.attempts,
+        elapsed_ms: Date.now() - startupBootstrapStartMs,
+        guild_id_present: guildIdPresent,
+        stage: bootstrapStage,
+        total_failures: totalFailures,
+      })}`
+    );
     const { guildId, guild, me } = bootstrap.value;
     const guildPerms = me.permissions;
     const maybePinMessagesBit = (PermissionFlagsBits as Record<string, bigint>).PinMessages;

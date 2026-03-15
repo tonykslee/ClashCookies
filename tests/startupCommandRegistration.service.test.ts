@@ -1,12 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  formatStartupLogFields,
   getCommandRegistrationConfigFromEnv,
   getDiscordRestTimeoutMsFromEnv,
+  getStartupErrorDiagnostics,
   getStartupBootstrapRetryConfigFromEnv,
   getStartupLoginRetryConfigFromEnv,
+  getStartupRetryLogSummaryEveryFromEnv,
   isTransientRegistrationError,
   registerGuildCommandsWithRetry,
   runWithTransientRetry,
+  shouldEmitStartupRetrySummary,
 } from "../src/services/StartupCommandRegistrationService";
 
 describe("StartupCommandRegistrationService config", () => {
@@ -41,6 +45,12 @@ describe("StartupCommandRegistrationService config", () => {
       baseBackoffMs: 2000,
       maxBackoffMs: 60000,
     });
+    expect(getStartupRetryLogSummaryEveryFromEnv({} as NodeJS.ProcessEnv)).toBe(5);
+    expect(
+      getStartupRetryLogSummaryEveryFromEnv({
+        STARTUP_RETRY_LOG_SUMMARY_EVERY: "0",
+      } as NodeJS.ProcessEnv)
+    ).toBe(5);
   });
 
   it("parses valid env config values", () => {
@@ -78,6 +88,11 @@ describe("StartupCommandRegistrationService config", () => {
       baseBackoffMs: 2500,
       maxBackoffMs: 30000,
     });
+    expect(
+      getStartupRetryLogSummaryEveryFromEnv({
+        STARTUP_RETRY_LOG_SUMMARY_EVERY: "7",
+      } as NodeJS.ProcessEnv)
+    ).toBe(7);
   });
 });
 
@@ -164,6 +179,60 @@ describe("StartupCommandRegistrationService transient classifier", () => {
     expect(isTransientRegistrationError({ name: "AbortError" })).toBe(true);
     expect(isTransientRegistrationError({ message: "Request aborted" })).toBe(true);
     expect(isTransientRegistrationError({ message: "Invalid Form Body" })).toBe(false);
+  });
+});
+
+describe("StartupCommandRegistrationService diagnostics", () => {
+  it("normalizes error diagnostics with cause/http/status fields", () => {
+    const error = Object.assign(new Error("Request aborted"), {
+      code: "UND_ERR_ABORTED",
+      name: "AbortError",
+      status: 500,
+      response: { status: 504 },
+      cause: { code: "ECONNRESET", name: "SocketError", message: "socket hang up" },
+    });
+
+    const diagnostics = getStartupErrorDiagnostics(error);
+    expect(diagnostics.code).toBe("UND_ERR_ABORTED");
+    expect(diagnostics.name).toBe("AbortError");
+    expect(diagnostics.message).toBe("Request aborted");
+    expect(diagnostics.status).toBe("500");
+    expect(diagnostics.httpStatus).toBe("504");
+    expect(diagnostics.causeCode).toBe("ECONNRESET");
+    expect(diagnostics.causeName).toBe("SocketError");
+    expect(diagnostics.causeMessage).toBe("socket hang up");
+    expect(diagnostics.transientReason).toBe("code:UND_ERR_ABORTED");
+    expect(diagnostics.stackHead).toContain("AbortError");
+  });
+
+  it("returns deterministic fallbacks for malformed errors", () => {
+    const diagnostics = getStartupErrorDiagnostics("oops");
+    expect(diagnostics.code).toBe("none");
+    expect(diagnostics.name).toBe("none");
+    expect(diagnostics.message).toBe("oops");
+    expect(diagnostics.causeCode).toBe("none");
+    expect(diagnostics.status).toBe("none");
+    expect(diagnostics.httpStatus).toBe("none");
+    expect(diagnostics.transientReason).toBe("none");
+    expect(diagnostics.stackHead).toBe("none");
+  });
+
+  it("formats startup log fields deterministically and sanitizes whitespace", () => {
+    const formatted = formatStartupLogFields({
+      zeta: "  one\n two  ",
+      alpha: 12,
+      beta: true,
+      gamma: undefined,
+    });
+    expect(formatted).toBe('alpha=12 beta=1 gamma="none" zeta="one two"');
+  });
+
+  it("emits retry summary only on configured cadence", () => {
+    expect(shouldEmitStartupRetrySummary(0, 5)).toBe(false);
+    expect(shouldEmitStartupRetrySummary(1, 5)).toBe(false);
+    expect(shouldEmitStartupRetrySummary(5, 5)).toBe(true);
+    expect(shouldEmitStartupRetrySummary(10, 5)).toBe(true);
+    expect(shouldEmitStartupRetrySummary(10, 0)).toBe(false);
   });
 });
 
