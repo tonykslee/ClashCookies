@@ -173,11 +173,13 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`/war history` shows recent clan-level war summary rows from ClanWarHistory.",
       "`/war war-id` exports the stored WarLookup payload as a CSV file for drill-down review.",
       "Use war IDs returned from `/war history` to retrieve detailed attack rows.",
+      "`clan-tag` supports autocomplete from tracked clans.",
+      "After selecting a tracked `clan-tag`, `war-id` supports autocomplete for recent ended wars scoped to that clan (deterministic top 10).",
     ],
     examples: [
       "/war history clan-tag:2QG2C08UP",
       "/war history clan-tag:2QG2C08UP limit:25",
-      "/war war-id war-id:1000001",
+      "/war war-id clan-tag:2QG2C08UP war-id:1000001",
     ],
   },
   warplan: {
