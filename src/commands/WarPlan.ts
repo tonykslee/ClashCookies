@@ -213,6 +213,17 @@ function getModalComplianceFieldConfig(target: PlanTarget): {
       openHoursDefault: DEFAULT_TRADITIONAL_MODAL_ALL_BASES_OPEN_HOURS_LEFT,
       openHoursDefaultText: "12h",
     };
+  } else if (
+    target.matchType === "FWA" &&
+    target.outcome === "LOSE" &&
+    target.loseStyle === "TRIPLE_TOP_30"
+  ) {
+    return {
+      minStarsLabel: "Minimum clan stars before non-mirror ★★☆",
+      minStarsDefault: 0 ,
+      openHoursDefault: 0,
+      openHoursDefaultText: "0",
+    };
   }
 
   return {
