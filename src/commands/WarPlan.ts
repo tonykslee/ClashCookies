@@ -16,6 +16,7 @@ import {
   parseAllBasesOpenHoursLeftInput,
   parseNonMirrorTripleMinClanStarsInput,
   resolveWarPlanComplianceConfig,
+  type WarPlanComplianceConfig,
 } from "../services/warPlanComplianceConfig";
 import { WarEventHistoryService } from "../services/war-events/history";
 
@@ -30,7 +31,11 @@ type PlanMatchSelector =
   | "FWA_WIN"
   | "FWA_LOSE_TRIPLE_TOP_30"
   | "FWA_LOSE_TRADITIONAL";
-type PlanTarget = { matchType: PlanMatchType; outcome: PlanOutcome; loseStyle: PlanLoseStyle };
+type PlanTarget = {
+  matchType: PlanMatchType;
+  outcome: PlanOutcome;
+  loseStyle: PlanLoseStyle;
+};
 
 const PLAN_MODAL_PREFIX = "warplan-edit";
 const PLAN_MODAL_INPUT_ID = "plan-text";
@@ -46,8 +51,13 @@ const MATCH_SELECTOR_CHOICES = [
   { name: "FWA LOSE TRADITIONAL", value: "FWA_LOSE_TRADITIONAL" },
 ] as const;
 const MATCH_SELECTOR_CHOICES_SINGLE_TARGET = MATCH_SELECTOR_CHOICES.filter(
-  (choice) => choice.value !== "FWA"
+  (choice) => choice.value !== "FWA",
 );
+const DEFAULT_MODAL_NON_MIRROR_TRIPLE_MIN_CLAN_STARS = 101;
+const DEFAULT_MODAL_ALL_BASES_OPEN_HOURS_LEFT = 0;
+
+const DEFAULT_TRADITIONAL_MODAL_NON_MIRROR_TWO_STAR_MIN_CLAN_STARS = 0;
+const DEFAULT_TRADITIONAL_MODAL_ALL_BASES_OPEN_HOURS_LEFT = 12;
 
 const ALL_TARGETS: PlanTarget[] = [
   { matchType: "BL", outcome: "ANY", loseStyle: "ANY" },
@@ -58,7 +68,10 @@ const ALL_TARGETS: PlanTarget[] = [
 ];
 
 function normalizeClanTag(value: string | null): string {
-  return String(value ?? "").trim().toUpperCase().replace(/^#/, "");
+  return String(value ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/^#/, "");
 }
 
 function normalizePlanTextInput(raw: string): string {
@@ -94,7 +107,7 @@ function buildComplianceConfigLine(input: {
 
 async function resolveCustomEmojiShortcodes(
   text: string,
-  interaction: ChatInputCommandInteraction
+  interaction: ChatInputCommandInteraction,
 ): Promise<string> {
   const exact = new Map<string, string>();
   const lowercase = new Map<string, string>();
@@ -117,37 +130,53 @@ async function resolveCustomEmojiShortcodes(
       // Keep going; we can still use cached/global emojis.
     }
     for (const emoji of guild.emojis.cache.values()) {
-      pushEmoji(emoji.name, `<${emoji.animated ? "a" : ""}:${emoji.name}:${emoji.id}>`);
+      pushEmoji(
+        emoji.name,
+        `<${emoji.animated ? "a" : ""}:${emoji.name}:${emoji.id}>`,
+      );
     }
   }
 
   for (const emoji of interaction.client.emojis.cache.values()) {
-    pushEmoji(emoji.name, `<${emoji.animated ? "a" : ""}:${emoji.name}:${emoji.id}>`);
+    pushEmoji(
+      emoji.name,
+      `<${emoji.animated ? "a" : ""}:${emoji.name}:${emoji.id}>`,
+    );
   }
 
   return text.replace(
     /(^|[\s([{"']):([a-zA-Z0-9_]{2,32}):(?=$|[\s)\]}".,!?:;'"-])/g,
     (full, prefix: string, emojiName: string) => {
-      const token = exact.get(emojiName) ?? lowercase.get(emojiName.toLowerCase());
+      const token =
+        exact.get(emojiName) ?? lowercase.get(emojiName.toLowerCase());
       if (!token) return full;
       return `${prefix}${token}`;
-    }
+    },
   );
 }
 
-function formatKeyLabel(matchType: PlanMatchType, outcome: PlanOutcome, loseStyle: PlanLoseStyle): string {
+function formatKeyLabel(
+  matchType: PlanMatchType,
+  outcome: PlanOutcome,
+  loseStyle: PlanLoseStyle,
+): string {
   if (matchType === "FWA") {
-    if (outcome === "LOSE" && loseStyle !== "ANY") return `FWA-LOSE-${loseStyle}`;
+    if (outcome === "LOSE" && loseStyle !== "ANY")
+      return `FWA-LOSE-${loseStyle}`;
     if (outcome === "WIN" || outcome === "LOSE") return `FWA-${outcome}`;
   }
   return matchType;
 }
 
-function parseSelector(value: string | null | undefined): PlanTarget[] | { error: string } {
+function parseSelector(
+  value: string | null | undefined,
+): PlanTarget[] | { error: string } {
   const selector = String(value ?? "").toUpperCase() as PlanMatchSelector;
   if (!selector) return ALL_TARGETS;
-  if (selector === "BL") return [{ matchType: "BL", outcome: "ANY", loseStyle: "ANY" }];
-  if (selector === "MM") return [{ matchType: "MM", outcome: "ANY", loseStyle: "ANY" }];
+  if (selector === "BL")
+    return [{ matchType: "BL", outcome: "ANY", loseStyle: "ANY" }];
+  if (selector === "MM")
+    return [{ matchType: "MM", outcome: "ANY", loseStyle: "ANY" }];
   if (selector === "FWA") {
     return [
       { matchType: "FWA", outcome: "WIN", loseStyle: "ANY" },
@@ -167,6 +196,57 @@ function parseSelector(value: string | null | undefined): PlanTarget[] | { error
   return { error: "Unsupported match-type selector." };
 }
 
+function getModalComplianceFieldConfig(target: PlanTarget): {
+  minStarsLabel: string;
+  minStarsDefault: number;
+  openHoursDefault: number;
+  openHoursDefaultText: string;
+} {
+  if (
+    target.matchType === "FWA" &&
+    target.outcome === "LOSE" &&
+    target.loseStyle === "TRADITIONAL"
+  ) {
+    return {
+      minStarsLabel: "Minimum clan stars before non-mirror ★★☆",
+      minStarsDefault: DEFAULT_TRADITIONAL_MODAL_NON_MIRROR_TWO_STAR_MIN_CLAN_STARS ,
+      openHoursDefault: DEFAULT_TRADITIONAL_MODAL_ALL_BASES_OPEN_HOURS_LEFT,
+      openHoursDefaultText: "12h",
+    };
+  }
+
+  return {
+    minStarsLabel: "Minimum clan stars before non-mirror ★★★",
+    minStarsDefault: DEFAULT_MODAL_NON_MIRROR_TRIPLE_MIN_CLAN_STARS ,
+    openHoursDefault: DEFAULT_MODAL_ALL_BASES_OPEN_HOURS_LEFT ,
+    openHoursDefaultText: "0",
+  };
+}
+
+function getModalCompliancePrefillDefaults(
+  target: PlanTarget,
+  resolvedConfig: WarPlanComplianceConfig,
+): {
+  nonMirrorTripleMinClanStars: number;
+  allBasesOpenHoursLeft: number;
+} {
+  if (
+    target.matchType === "FWA" &&
+    target.outcome === "LOSE" &&
+    target.loseStyle === "TRADITIONAL"
+  ) {
+    return {
+      nonMirrorTripleMinClanStars: 0,
+      allBasesOpenHoursLeft: 12,
+    };
+  }
+
+  return {
+    nonMirrorTripleMinClanStars: resolvedConfig.nonMirrorTripleMinClanStars,
+    allBasesOpenHoursLeft: resolvedConfig.allBasesOpenHoursLeft,
+  };
+}
+
 async function getDefaultPlanText(
   history: WarEventHistoryService,
   guildId: string,
@@ -176,10 +256,25 @@ async function getDefaultPlanText(
 ): Promise<string> {
   const expectedOutcome =
     matchType === "FWA" && (outcome === "WIN" || outcome === "LOSE") ? outcome : null;
+
   const forcedLoseStyle =
-    matchType === "FWA" && outcome === "LOSE" && (loseStyle === "TRADITIONAL" || loseStyle === "TRIPLE_TOP_30")
+    matchType === "FWA" &&
+    outcome === "LOSE" &&
+    (loseStyle === "TRADITIONAL" || loseStyle === "TRIPLE_TOP_30")
       ? loseStyle
       : null;
+
+  const clanHeaderLabel =
+    matchType === "BL"
+      ? "BLACKLIST"
+      : matchType === "MM"
+        ? "MISMATCH"
+        : matchType === "FWA" && outcome === "WIN"
+          ? "WIN"
+          : matchType === "FWA" && outcome === "LOSE"
+            ? "LOSE"
+            : "{clan}";
+
   return (
     (await history.buildWarPlanText(
       guildId,
@@ -188,7 +283,7 @@ async function getDefaultPlanText(
       "",
       "{opponent}",
       "battle",
-      "{clan}",
+      clanHeaderLabel,
       { forcedLoseStyle }
     )) ?? `${matchType} plan unavailable.`
   );
@@ -259,13 +354,27 @@ async function getCurrentOrDefaultPlanData(params: {
       params.guildId,
       params.target.matchType,
       params.target.outcome,
-      params.target.loseStyle
+      params.target.loseStyle,
     ));
+
+  const modalDefaults =
+    params.target.matchType === "FWA" &&
+    params.target.outcome === "LOSE" &&
+    params.target.loseStyle === "TRADITIONAL"
+      ? {
+          nonMirrorTripleMinClanStars: DEFAULT_TRADITIONAL_MODAL_NON_MIRROR_TWO_STAR_MIN_CLAN_STARS,
+          allBasesOpenHoursLeft: DEFAULT_TRADITIONAL_MODAL_ALL_BASES_OPEN_HOURS_LEFT,
+        }
+      : {
+          nonMirrorTripleMinClanStars:
+            resolvedConfig.nonMirrorTripleMinClanStars,
+          allBasesOpenHoursLeft: resolvedConfig.allBasesOpenHoursLeft,
+        };
 
   return {
     planText,
-    nonMirrorTripleMinClanStars: resolvedConfig.nonMirrorTripleMinClanStars,
-    allBasesOpenHoursLeft: resolvedConfig.allBasesOpenHoursLeft,
+    nonMirrorTripleMinClanStars: modalDefaults.nonMirrorTripleMinClanStars,
+    allBasesOpenHoursLeft: modalDefaults.allBasesOpenHoursLeft,
   };
 }
 
@@ -379,30 +488,48 @@ export const WarPlan: Command = {
       ],
     },
   ],
-  run: async (_client: Client, interaction: ChatInputCommandInteraction, cocService: CoCService) => {
+  run: async (
+    _client: Client,
+    interaction: ChatInputCommandInteraction,
+    cocService: CoCService,
+  ) => {
     if (!interaction.guildId) {
-      await interaction.reply({ ephemeral: true, content: "This command can only be used in a server." });
+      await interaction.reply({
+        ephemeral: true,
+        content: "This command can only be used in a server.",
+      });
       return;
     }
 
     const guildId = interaction.guildId;
     const subcommand = interaction.options.getSubcommand(true);
-    const mode: PlanScope = subcommand.includes("default") ? "DEFAULT" : "CUSTOM";
+    const mode: PlanScope = subcommand.includes("default")
+      ? "DEFAULT"
+      : "CUSTOM";
     const isSet = subcommand === "set" || subcommand === "set-default";
     const isShow = subcommand === "show" || subcommand === "show-default";
     const isReset = subcommand === "reset" || subcommand === "reset-default";
     const history = new WarEventHistoryService(cocService);
-    const clanTag = mode === "CUSTOM" ? normalizeClanTag(interaction.options.getString("clan-tag", true)) : "";
+    const clanTag =
+      mode === "CUSTOM"
+        ? normalizeClanTag(interaction.options.getString("clan-tag", true))
+        : "";
 
     if (mode === "CUSTOM" && !clanTag) {
-      await interaction.reply({ ephemeral: true, content: "`clan-tag` is required." });
+      await interaction.reply({
+        ephemeral: true,
+        content: "`clan-tag` is required.",
+      });
       return;
     }
 
     const selectorRaw = interaction.options.getString("match-type", false);
     const targetsResult = parseSelector(selectorRaw);
     if ("error" in targetsResult) {
-      await interaction.reply({ ephemeral: true, content: targetsResult.error });
+      await interaction.reply({
+        ephemeral: true,
+        content: targetsResult.error,
+      });
       return;
     }
     const targets = targetsResult;
@@ -411,7 +538,10 @@ export const WarPlan: Command = {
       const selectedRaw = interaction.options.getString("match-type", true);
       const selectedResult = parseSelector(selectedRaw);
       if ("error" in selectedResult) {
-        await interaction.reply({ ephemeral: true, content: selectedResult.error });
+        await interaction.reply({
+          ephemeral: true,
+          content: selectedResult.error,
+        });
         return;
       }
       if (selectedResult.length !== 1) {
@@ -431,8 +561,13 @@ export const WarPlan: Command = {
         history,
       });
 
+      const modalConfig = getModalComplianceFieldConfig(target);
       const modalId = `${PLAN_MODAL_PREFIX}:${mode}:${clanTag || "_"}:${target.matchType}:${target.outcome}:${target.loseStyle}`;
-      const modal = new ModalBuilder().setCustomId(modalId).setTitle(`Edit ${formatKeyLabel(target.matchType, target.outcome, target.loseStyle)}`);
+      const modal = new ModalBuilder()
+        .setCustomId(modalId)
+        .setTitle(
+          `Edit ${formatKeyLabel(target.matchType, target.outcome, target.loseStyle)}`,
+        );
       const input = new TextInputBuilder()
         .setCustomId(PLAN_MODAL_INPUT_ID)
         .setLabel("Plan text")
@@ -440,16 +575,16 @@ export const WarPlan: Command = {
         .setRequired(true)
         .setMaxLength(1500)
         .setPlaceholder(
-          "Bold: **text** | Italic: *text* | Code: `text` | Block: ```text``` | Emoji: :name: or <:name:id>"
+          "Bold: **text** | Italic: *text* | Code: `text` | Block: ```text``` | Emoji: :name: or <:name:id>",
         )
         .setValue(prefill.planText);
       const minStarsInput = new TextInputBuilder()
         .setCustomId(PLAN_MODAL_MIN_STARS_INPUT_ID)
-        .setLabel("Minimum clan stars before non-mirror triple")
+        .setLabel(modalConfig.minStarsLabel)
         .setStyle(TextInputStyle.Short)
         .setRequired(false)
         .setMaxLength(4)
-        .setPlaceholder("Default: 101")
+        .setPlaceholder(`Default: ${modalConfig.minStarsDefault}`)
         .setValue(String(prefill.nonMirrorTripleMinClanStars));
       const openHoursInput = new TextInputBuilder()
         .setCustomId(PLAN_MODAL_OPEN_HOURS_INPUT_ID)
@@ -457,43 +592,64 @@ export const WarPlan: Command = {
         .setStyle(TextInputStyle.Short)
         .setRequired(false)
         .setMaxLength(3)
-        .setPlaceholder("Default: 0")
+        .setPlaceholder(`Default: ${modalConfig.openHoursDefaultText}`)
         .setValue(String(prefill.allBasesOpenHoursLeft));
       modal.addComponents(
         new ActionRowBuilder<TextInputBuilder>().addComponents(input),
         new ActionRowBuilder<TextInputBuilder>().addComponents(minStarsInput),
-        new ActionRowBuilder<TextInputBuilder>().addComponents(openHoursInput)
+        new ActionRowBuilder<TextInputBuilder>().addComponents(openHoursInput),
       );
       await interaction.showModal(modal);
 
       try {
         const submitted = await interaction.awaitModalSubmit({
-          filter: (m) => m.customId === modalId && m.user.id === interaction.user.id,
+          filter: (m) =>
+            m.customId === modalId && m.user.id === interaction.user.id,
           time: 10 * 60 * 1000,
         });
         const normalizedPlanText = normalizePlanTextInput(
-          submitted.fields.getTextInputValue(PLAN_MODAL_INPUT_ID)
+          submitted.fields.getTextInputValue(PLAN_MODAL_INPUT_ID),
         );
-        const minStarsRaw = submitted.fields.getTextInputValue(PLAN_MODAL_MIN_STARS_INPUT_ID);
-        const openHoursRaw = submitted.fields.getTextInputValue(PLAN_MODAL_OPEN_HOURS_INPUT_ID);
-        const parsedMinStars = parseNonMirrorTripleMinClanStarsInput(minStarsRaw);
+        const minStarsRaw = submitted.fields.getTextInputValue(
+          PLAN_MODAL_MIN_STARS_INPUT_ID,
+        );
+        const openHoursRaw = submitted.fields.getTextInputValue(
+          PLAN_MODAL_OPEN_HOURS_INPUT_ID,
+        );
+        const parsedMinStars =
+          parseNonMirrorTripleMinClanStarsInput(minStarsRaw);
         if (!parsedMinStars.ok) {
-          await submitted.reply({ ephemeral: true, content: parsedMinStars.error });
+          await submitted.reply({
+            ephemeral: true,
+            content: parsedMinStars.error,
+          });
           return;
         }
         const parsedOpenHours = parseAllBasesOpenHoursLeftInput(openHoursRaw);
         if (!parsedOpenHours.ok) {
-          await submitted.reply({ ephemeral: true, content: parsedOpenHours.error });
+          await submitted.reply({
+            ephemeral: true,
+            content: parsedOpenHours.error,
+          });
           return;
         }
 
-        const planText = await resolveCustomEmojiShortcodes(normalizedPlanText, interaction);
+        const planText = await resolveCustomEmojiShortcodes(
+          normalizedPlanText,
+          interaction,
+        );
         if (!planText.length) {
-          await submitted.reply({ ephemeral: true, content: "Plan text cannot be empty." });
+          await submitted.reply({
+            ephemeral: true,
+            content: "Plan text cannot be empty.",
+          });
           return;
         }
         if (planText.length > 1500) {
-          await submitted.reply({ ephemeral: true, content: "Plan text must be 1500 characters or fewer." });
+          await submitted.reply({
+            ephemeral: true,
+            content: "Plan text must be 1500 characters or fewer.",
+          });
           return;
         }
 
@@ -617,17 +773,25 @@ export const WarPlan: Command = {
         const scopedText = scopedRow?.planText;
         const text =
           scopedText ??
-          (await getDefaultPlanText(history, guildId, target.matchType, target.outcome, target.loseStyle));
+          (await getDefaultPlanText(
+            history,
+            guildId,
+            target.matchType,
+            target.outcome,
+            target.loseStyle,
+          ));
         const resolvedConfig = resolveWarPlanComplianceConfig({
           primary: scopedRow ?? null,
-          fallback: mode === "CUSTOM" ? defaultRowByKey.get(key) ?? null : null,
+          fallback:
+            mode === "CUSTOM" ? (defaultRowByKey.get(key) ?? null) : null,
         });
         const fieldValue = clampEmbedFieldValue(
           `${text}\n\n${buildComplianceConfigLine({
             target,
-            nonMirrorTripleMinClanStars: resolvedConfig.nonMirrorTripleMinClanStars,
+            nonMirrorTripleMinClanStars:
+              resolvedConfig.nonMirrorTripleMinClanStars,
             allBasesOpenHoursLeft: resolvedConfig.allBasesOpenHoursLeft,
-          })}`
+          })}`,
         );
         fields.push({
           name: `${formatKeyLabel(target.matchType, target.outcome, target.loseStyle)} (${scopedText ? (mode === "DEFAULT" ? "Editable Default" : "Custom") : "Effective Fallback"})`,
@@ -644,7 +808,7 @@ export const WarPlan: Command = {
         .setDescription(
           mode === "DEFAULT"
             ? "Editable guild defaults; missing entries fall back to built-in defaults."
-            : "Effective clan plans (custom overrides default)."
+            : "Effective clan plans (custom overrides default).",
         )
         .addFields(fields)
         .setColor(0x3498db)
@@ -669,7 +833,7 @@ export const WarPlan: Command = {
             };
       const result = await prisma.clanWarPlan.deleteMany({ where });
       await interaction.editReply(
-        `${mode === "DEFAULT" ? "Reset editable guild default plans." : "Reset clan custom plans."}\nRemoved entries: ${result.count}`
+        `${mode === "DEFAULT" ? "Reset editable guild default plans." : "Reset clan custom plans."}\nRemoved entries: ${result.count}`,
       );
       return;
     }
@@ -690,10 +854,16 @@ export const WarPlan: Command = {
     const choices = tracked
       .map((clan) => {
         const tag = normalizeClanTag(clan.tag);
-        const label = clan.name?.trim() ? `${clan.name.trim()} (#${tag})` : `#${tag}`;
+        const label = clan.name?.trim()
+          ? `${clan.name.trim()} (#${tag})`
+          : `#${tag}`;
         return { name: label.slice(0, 100), value: tag };
       })
-      .filter((c) => c.name.toLowerCase().includes(query) || c.value.toLowerCase().includes(query))
+      .filter(
+        (c) =>
+          c.name.toLowerCase().includes(query) ||
+          c.value.toLowerCase().includes(query),
+      )
       .slice(0, 25);
     await interaction.respond(choices);
   },

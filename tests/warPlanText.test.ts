@@ -136,7 +136,7 @@ describe("WarEventHistoryService.buildWarPlanText", () => {
   it("prefers clan custom plan text for guild-scoped lookups", async () => {
     const svc = new WarEventHistoryService({} as never);
     const planSpy = vi.spyOn(prisma.clanWarPlan, "findFirst");
-    planSpy.mockResolvedValueOnce({ planText: "MM custom plan {clan} vs {opponent}" } as any);
+    planSpy.mockResolvedValueOnce({ planText: "MM custom plan __**MISMATCH**__ vs {opponent}" } as any);
 
     const out = await svc.buildWarPlanText(
       "123456789012345678",
@@ -165,7 +165,7 @@ describe("WarEventHistoryService.buildWarPlanText", () => {
     const planSpy = vi.spyOn(prisma.clanWarPlan, "findFirst");
     planSpy
       .mockResolvedValueOnce(null as any)
-      .mockResolvedValueOnce({ planText: "BL default plan {clan} vs {opponent}" } as any);
+      .mockResolvedValueOnce({ planText: "BL default plan __**BLACKLIST**__ vs {opponent}" } as any);
 
     const out = await svc.buildWarPlanText(
       "123456789012345678",
@@ -194,7 +194,7 @@ describe("WarEventHistoryService.buildWarPlanText", () => {
     const planSpy = vi.spyOn(prisma.clanWarPlan, "findFirst");
     planSpy
       .mockResolvedValueOnce(null as any)
-      .mockResolvedValueOnce({ planText: "Traditional default {clan} vs {opponent}" } as any);
+      .mockResolvedValueOnce({ planText: "Traditional default __**LOSE**__ vs {opponent}" } as any);
 
     const out = await svc.buildWarPlanText(
       "123456789012345678",
@@ -227,7 +227,7 @@ describe("WarEventHistoryService.buildWarPlanText", () => {
     const planSpy = vi.spyOn(prisma.clanWarPlan, "findFirst");
     planSpy
       .mockResolvedValueOnce(null as any)
-      .mockResolvedValueOnce({ planText: "Triple default {clan} vs {opponent}" } as any);
+      .mockResolvedValueOnce({ planText: "Triple default __**LOSE**__ vs {opponent}" } as any);
 
     const out = await svc.buildWarPlanText(
       "123456789012345678",
