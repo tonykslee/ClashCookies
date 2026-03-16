@@ -15,7 +15,7 @@ describe("fwa match inference from points snapshots", () => {
   it("returns null when opponent evidence is unavailable", () => {
     const inferred = inferMatchTypeFromPointsSnapshotsForTest(
       { activeFwa: true },
-      { balance: null, activeFwa: null }
+      { balance: null, activeFwa: null },
     );
 
     expect(inferred).toBeNull();
@@ -24,7 +24,7 @@ describe("fwa match inference from points snapshots", () => {
   it("infers BL when opponent points exist but Active FWA is NO", () => {
     const inferred = inferMatchTypeFromPointsSnapshotsForTest(
       { activeFwa: true },
-      { balance: 1234, activeFwa: false }
+      { balance: 1234, activeFwa: false },
     );
 
     expect(inferred).toMatchObject({
@@ -37,7 +37,7 @@ describe("fwa match inference from points snapshots", () => {
   it("infers FWA when opponent points exist and Active FWA is YES", () => {
     const inferred = inferMatchTypeFromPointsSnapshotsForTest(
       { activeFwa: true },
-      { balance: 1234, activeFwa: true }
+      { balance: 1234, activeFwa: true },
     );
 
     expect(inferred).toMatchObject({
@@ -47,19 +47,48 @@ describe("fwa match inference from points snapshots", () => {
     });
   });
 
-  it("returns null when points site reports clan not found without active-war evidence", () => {
+  it("infers MM when points site reports clan not found without active-war evidence", () => {
     const inferred = inferMatchTypeFromPointsSnapshotsForTest(
       { activeFwa: true },
-      { balance: null, activeFwa: null, notFound: true }
+      { balance: null, activeFwa: null, notFound: true },
     );
 
-    expect(inferred).toBeNull();
+    expect(inferred).toMatchObject({
+      matchType: "MM",
+      source: "live_points_clan_not_found",
+      inferred: true,
+      confirmed: false,
+      syncIsFwa: false,
+    });
+  });
+
+  it("lets active-war BL evidence override default MM fallback when opponent is not found", () => {
+    const inferred = inferMatchTypeFromPointsSnapshotsForTest(
+      { activeFwa: true },
+      { balance: null, activeFwa: null, notFound: true },
+      {
+        winnerBoxNotMarkedFwa: true,
+        opponentEvidenceMissingOrNotCurrent: true,
+        currentWarState: "inWar",
+        currentWarClanAttacksUsed: 0,
+        currentWarClanStars: 0,
+        currentWarOpponentStars: 2,
+      },
+    );
+
+    expect(inferred).toMatchObject({
+      matchType: "BL",
+      source: "active_war_non_fwa_blacklist",
+      inferred: true,
+      confirmed: false,
+      syncIsFwa: false,
+    });
   });
 
   it("returns null when Active FWA signal is missing", () => {
     const inferred = inferMatchTypeFromPointsSnapshotsForTest(
       { activeFwa: true },
-      { balance: 1234, activeFwa: null }
+      { balance: 1234, activeFwa: null },
     );
 
     expect(inferred).toBeNull();
@@ -72,7 +101,7 @@ describe("fwa match inference from points snapshots", () => {
       {
         winnerBoxNotMarkedFwa: true,
         opponentEvidenceMissingOrNotCurrent: true,
-      }
+      },
     );
 
     expect(inferred).toBeNull();
@@ -89,7 +118,7 @@ describe("fwa match inference from points snapshots", () => {
         currentWarClanAttacksUsed: 3,
         currentWarClanStars: 6,
         currentWarOpponentStars: 2,
-      }
+      },
     );
 
     expect(inferred).toMatchObject({
@@ -110,7 +139,7 @@ describe("fwa match inference from points snapshots", () => {
         currentWarClanAttacksUsed: 0,
         currentWarClanStars: 0,
         currentWarOpponentStars: 2,
-      }
+      },
     );
 
     expect(inferred).toMatchObject({
@@ -127,7 +156,7 @@ describe("fwa match inference from points snapshots", () => {
       {
         winnerBoxNotMarkedFwa: true,
         opponentEvidenceMissingOrNotCurrent: true,
-      }
+      },
     );
 
     expect(inferred).toMatchObject({
@@ -144,7 +173,7 @@ describe("fwa match inference from points snapshots", () => {
       {
         winnerBoxNotMarkedFwa: true,
         opponentEvidenceMissingOrNotCurrent: true,
-      }
+      },
     );
 
     expect(inferred).toMatchObject({
@@ -223,7 +252,7 @@ describe("fwa match precedence", () => {
     });
     const live = inferMatchTypeFromPointsSnapshotsForTest(
       { activeFwa: true },
-      { balance: 2, activeFwa: false, notFound: false }
+      { balance: 2, activeFwa: false, notFound: false },
     );
     const resolved = chooseMatchTypeResolution({
       confirmedCurrent: current.confirmed,
@@ -256,7 +285,7 @@ describe("fwa match precedence", () => {
         currentWarClanAttacksUsed: 4,
         currentWarClanStars: 8,
         currentWarOpponentStars: 2,
-      }
+      },
     );
     const resolved = chooseMatchTypeResolution({
       confirmedCurrent: current.confirmed,
@@ -384,7 +413,7 @@ describe("fwa explicit opponent-not-found fallback guard", () => {
         currentWarClanAttacksUsed: 4,
         currentWarClanStars: 9,
         currentWarOpponentStars: 3,
-      }
+      },
     );
     const resolved = chooseMatchTypeResolution({
       confirmedCurrent: guarded.confirmedCurrent,
@@ -433,4 +462,3 @@ describe("fwa explicit opponent-not-found fallback guard", () => {
     });
   });
 });
-
