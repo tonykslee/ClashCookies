@@ -1203,4 +1203,28 @@ describe("fwa unresolved single-tag view", () => {
     expect(pointsField?.value ?? "").toContain("Bravo: **9876**");
     expect(view.copyText).toContain("Bravo: 9876");
   });
+
+  it("omits redundant unavailable warning when not-found status line is shown", () => {
+    const view = buildUnresolvedSingleMatchViewForTest({
+      clanName: "Alpha",
+      clanTag: "AAA111",
+      opponentName: "Bravo",
+      opponentTag: "BBB222",
+      pointsSyncStatusLine: ":interrobang: Clan not found on points.fwafarm",
+      warStateLabel: "Battle Day",
+      timeRemainingLabel: "2h",
+      syncLine: "470 (predicted)",
+      primaryPoints: 12345,
+      opponentUnavailableReason: "Opponent points page is currently unavailable.",
+      showOpponentUnavailableWarning: false,
+      mailStatusEmoji: ":mailbox_with_no_mail:",
+      mailStatusLine: "Mail status: **Not sent**",
+    });
+
+    const description = view.embed.toJSON().description ?? "";
+    expect(description).toContain(":interrobang: Clan not found on points.fwafarm");
+    expect(description).not.toContain(":warning: Opponent points page is currently unavailable.");
+    expect(view.copyText).toContain(":interrobang: Clan not found on points.fwafarm");
+    expect(view.copyText).not.toContain("Warning: Opponent points page is currently unavailable.");
+  });
 });
