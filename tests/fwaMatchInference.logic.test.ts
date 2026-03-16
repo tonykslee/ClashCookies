@@ -65,6 +65,48 @@ describe("fwa match inference from points snapshots", () => {
     expect(inferred).toBeNull();
   });
 
+  it("infers MM when Active FWA is missing but opponent evidence is flagged missing/not-current and battle evidence exists", () => {
+    const inferred = inferMatchTypeFromPointsSnapshotsForTest(
+      { activeFwa: true },
+      { balance: 1234, activeFwa: null, notFound: false },
+      {
+        opponentEvidenceMissingOrNotCurrent: true,
+        currentWarState: "inWar",
+        currentWarClanAttacksUsed: 3,
+        currentWarClanStars: 6,
+        currentWarOpponentStars: 2,
+      }
+    );
+
+    expect(inferred).toMatchObject({
+      matchType: "MM",
+      source: "active_war_non_fwa_mismatch",
+      inferred: true,
+      syncIsFwa: false,
+    });
+  });
+
+  it("infers BL when Active FWA is missing but opponent evidence is flagged missing/not-current with zero attacks", () => {
+    const inferred = inferMatchTypeFromPointsSnapshotsForTest(
+      { activeFwa: true },
+      { balance: 1234, activeFwa: null, notFound: false },
+      {
+        opponentEvidenceMissingOrNotCurrent: true,
+        currentWarState: "inWar",
+        currentWarClanAttacksUsed: 0,
+        currentWarClanStars: 0,
+        currentWarOpponentStars: 2,
+      }
+    );
+
+    expect(inferred).toMatchObject({
+      matchType: "BL",
+      source: "active_war_non_fwa_blacklist",
+      inferred: true,
+      syncIsFwa: false,
+    });
+  });
+
   it("returns null from winner-box fallback when battle evidence is still insufficient", () => {
     const inferred = inferMatchTypeFromPointsSnapshotsForTest(
       { activeFwa: true },
