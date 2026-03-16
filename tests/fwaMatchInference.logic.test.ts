@@ -94,7 +94,7 @@ describe("fwa match inference from points snapshots", () => {
     expect(inferred).toBeNull();
   });
 
-  it("returns null from winner-box fallback when battle evidence is still insufficient", () => {
+  it("defaults to MM from winner-box fallback when battle evidence is still insufficient", () => {
     const inferred = inferMatchTypeFromPointsSnapshotsForTest(
       { activeFwa: true },
       null,
@@ -104,7 +104,13 @@ describe("fwa match inference from points snapshots", () => {
       },
     );
 
-    expect(inferred).toBeNull();
+    expect(inferred).toMatchObject({
+      matchType: "MM",
+      source: "live_points_clan_not_found",
+      inferred: true,
+      confirmed: false,
+      syncIsFwa: false,
+    });
   });
 
   it("infers MM from opponent-missing non-FWA evidence when the tracked clan has used attacks", () => {
