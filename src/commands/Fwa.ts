@@ -1302,6 +1302,112 @@ function buildMatchStatusHeader(params: {
   return `${mailbox} | ${params.clanName} (#${params.clanTag}) vs ${params.opponentName} (#${params.opponentTag}) ${status}`;
 }
 
+/** Purpose: build a deterministic single-clan unresolved view when opponent points cannot be resolved. */
+function buildUnresolvedSingleMatchView(input: {
+  clanName: string;
+  clanTag: string;
+  opponentName: string;
+  opponentTag: string;
+  pointsSyncStatusLine: string;
+  warStateLabel: string;
+  timeRemainingLabel: string;
+  syncLine: string;
+  primaryPoints: number | null | undefined;
+  opponentPoints?: number | null | undefined;
+  opponentUnavailableReason: string;
+  mailStatusEmoji?: string | null;
+  mailStatusLine?: string | null;
+}): MatchView {
+  const mailStatusEmoji = input.mailStatusEmoji ?? MAILBOX_NOT_SENT_EMOJI;
+  const header = `${mailStatusEmoji} | ${input.clanName} (#${input.clanTag}) vs ${input.opponentName} (#${input.opponentTag}) :white_circle:`;
+  const primaryPointsValue =
+    input.primaryPoints !== null &&
+    input.primaryPoints !== undefined &&
+    Number.isFinite(Number(input.primaryPoints))
+      ? String(Math.trunc(Number(input.primaryPoints)))
+      : "unknown";
+  const opponentPointsValue =
+    input.opponentPoints !== null &&
+    input.opponentPoints !== undefined &&
+    Number.isFinite(Number(input.opponentPoints))
+      ? String(Math.trunc(Number(input.opponentPoints)))
+      : "unavailable";
+  const description = [
+    input.pointsSyncStatusLine,
+    input.mailStatusLine ?? "",
+    `:warning: ${input.opponentUnavailableReason}`,
+    "Match Type: **UNKNOWN**",
+    `War state: **${input.warStateLabel}**`,
+    `Time remaining: **${input.timeRemainingLabel}**`,
+    `Sync: **${input.syncLine}**`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  const opponentCcUrl = buildCcVerifyUrl(input.opponentTag);
+  const opponentPointsUrl = buildOfficialPointsUrl(input.opponentTag);
+  return {
+    embed: new EmbedBuilder()
+      .setTitle(header)
+      .setDescription(description)
+      .setColor(
+        resolveSingleClanMatchEmbedColor({
+          effectiveMatchType: "UNKNOWN",
+          effectiveExpectedOutcome: null,
+        })
+      )
+      .addFields(
+        {
+          name: "Points",
+          value: `${input.clanName}: **${primaryPointsValue}**\n${input.opponentName}: **${opponentPointsValue}**`,
+          inline: true,
+        },
+        {
+          name: "Opponent Links",
+          value: `[cc.fwafarm](${opponentCcUrl})\n[points.fwafarm](${opponentPointsUrl})`,
+          inline: true,
+        }
+      ),
+    copyText: limitDiscordContent(
+      [
+        `# ${header}`,
+        input.pointsSyncStatusLine,
+        input.mailStatusLine ?? "",
+        `Warning: ${input.opponentUnavailableReason}`,
+        "Match Type: UNKNOWN",
+        `War State: ${input.warStateLabel}`,
+        `Time Remaining: ${input.timeRemainingLabel}`,
+        `Sync: ${input.syncLine}`,
+        "## Opponent Name",
+        `\`${input.opponentName}\``,
+        "## Opponent Tag",
+        `\`${input.opponentTag}\``,
+        `CC: ${opponentCcUrl}`,
+        `Points: ${opponentPointsUrl}`,
+        "## Points",
+        `${input.clanName}: ${primaryPointsValue}`,
+        `${input.opponentName}: ${opponentPointsValue}`,
+      ]
+        .filter(Boolean)
+        .join("\n")
+    ),
+    matchTypeAction: null,
+    matchTypeCurrent: null,
+    inferredMatchType: false,
+    outcomeAction: null,
+    syncAction: null,
+    clanName: input.clanName,
+    clanTag: input.clanTag,
+    mailStatusEmoji,
+    mailAction: {
+      tag: input.clanTag,
+      enabled: false,
+      reason: input.opponentUnavailableReason,
+    },
+    skipSyncAction: null,
+    undoSkipSyncAction: null,
+  };
+}
+
 function mailStatusLabelForState(state: WarStateForSync): string {
   if (state === "preparation") return "Preparation Day";
   if (state === "inWar") return "Battle Day";
@@ -5580,6 +5686,7 @@ export const resolveOpponentActiveFwaEvidenceForTest = resolveOpponentActiveFwaE
 export const isLowConfidenceAllianceMismatchScenarioForTest =
   isLowConfidenceAllianceMismatchScenario;
 export const resolveSingleClanMatchEmbedColorForTest = resolveSingleClanMatchEmbedColor;
+export const buildUnresolvedSingleMatchViewForTest = buildUnresolvedSingleMatchView;
 export const buildOpponentSnapshotFromTrackedClanFallbackForTest =
   buildOpponentSnapshotFromTrackedClanFallback;
 export const resolveForceSyncMatchupEvidenceForTest = resolveForceSyncMatchupEvidence;
@@ -7074,6 +7181,58 @@ async function buildTrackedMatchOverview(
       unconfirmedCurrent: guardedFallbackResolution.unconfirmedCurrent,
     });
     if (!appliedResolution) {
+      const liveMailStatus = await resolveLiveWarMailStatus({
+        client: client ?? null,
+        guildId,
+        tag: clanTag,
+        warId: sub?.warId ?? null,
+        emitDebugLog: mailStatusDebugEnabled,
+      });
+      const unresolvedPointsStatusLine = opponentPoints?.notFound
+        ? POINTS_CLAN_NOT_FOUND_STATUS_LINE
+        : ":warning: Opponent points are currently unavailable.";
+      const unresolvedReason = opponentPoints?.notFound
+        ? "Opponent points page is currently unavailable."
+        : "Opponent points are currently unavailable.";
+      const unresolvedMailStatusLine = formatMailLifecycleStatusLine(liveMailStatus.status);
+      const unresolvedView = buildUnresolvedSingleMatchView({
+        clanName,
+        clanTag,
+        opponentName,
+        opponentTag,
+        pointsSyncStatusLine: unresolvedPointsStatusLine,
+        warStateLabel: clanWarStateLine,
+        timeRemainingLabel: clanTimeRemainingLine,
+        syncLine: clanSyncLine,
+        primaryPoints: primaryPoints?.balance ?? null,
+        opponentUnavailableReason: unresolvedReason,
+        mailStatusEmoji: liveMailStatus.mailStatusEmoji,
+        mailStatusLine: unresolvedMailStatusLine,
+      });
+      if (includeInOverview) {
+        embed.addFields({
+          name: `${liveMailStatus.mailStatusEmoji} | ${clanName} (#${clanTag}) vs ${opponentName} (#${opponentTag}) :white_circle:`,
+          value: [
+            unresolvedPointsStatusLine,
+            unresolvedMailStatusLine,
+            `Match Type: **UNKNOWN**`,
+            `War State: **${clanWarStateLine}**`,
+            `Time Remaining: **${clanTimeRemainingLine}**`,
+            `Sync: **${clanSyncLine}**`,
+          ].join("\n"),
+          inline: false,
+        });
+        copyLines.push(
+          `## ${clanName} (#${clanTag}) vs ${opponentName} (#${opponentTag})`,
+          unresolvedPointsStatusLine,
+          unresolvedMailStatusLine.replace(/\*\*/g, ""),
+          "Match Type: UNKNOWN",
+          `War State: ${clanWarStateLine}`,
+          `Time Remaining: ${clanTimeRemainingLine}`,
+          `Sync: ${clanSyncLine}`,
+        );
+      }
+      singleViews[clanTag] = unresolvedView;
       continue;
     }
     const matchType = appliedResolution.matchType;
@@ -9668,6 +9827,31 @@ export const Fwa: Command = {
         }
       );
       const key = interaction.id;
+      const replyWithScopedSingleView = async (view: MatchView, source: string): Promise<void> => {
+        console.info(
+          `[fwa-match-payload] stage=command_build scope=scoped guild=${interaction.guildId ?? "none"} source=${source} tag=#${tag}`
+        );
+        fwaMatchCopyPayloads.set(key, {
+          userId: interaction.user.id,
+          guildId: interaction.guildId ?? null,
+          includePostButton: !isPublic,
+          allianceView: { embed: overview.embed, copyText: overview.copyText, matchTypeAction: null },
+          allianceViewIsScoped: true,
+          singleViews: {
+            ...overview.singleViews,
+            [tag]: view,
+          },
+          currentScope: "single",
+          currentTag: tag,
+          revisionDraftByTag: {},
+        });
+        const stored = fwaMatchCopyPayloads.get(key)!;
+        await editReplySafe(
+          "",
+          [view.embed],
+          buildFwaMatchCopyComponents(stored, interaction.user.id, key, "embed")
+        );
+      };
       if (!tag) {
         console.info(
           `[fwa-match-payload] stage=command_build scope=full guild=${interaction.guildId ?? "none"} source=alliance`
@@ -9698,26 +9882,26 @@ export const Fwa: Command = {
 
       const trackedSingleView = overview.singleViews[tag];
       if (trackedSingleView) {
-        console.info(
-          `[fwa-match-payload] stage=command_build scope=scoped guild=${interaction.guildId ?? "none"} source=single_tag tag=#${tag}`
-        );
-        fwaMatchCopyPayloads.set(key, {
-          userId: interaction.user.id,
-          guildId: interaction.guildId ?? null,
-          includePostButton: !isPublic,
-          allianceView: { embed: overview.embed, copyText: overview.copyText, matchTypeAction: null },
-          allianceViewIsScoped: true,
-          singleViews: overview.singleViews,
-          currentScope: "single",
-          currentTag: tag,
-          revisionDraftByTag: {},
+        await replyWithScopedSingleView(trackedSingleView, "single_tag");
+        return;
+      }
+      const hasOverviewSingleView = Object.prototype.hasOwnProperty.call(overview.singleViews, tag);
+      if (!hasOverviewSingleView) {
+        const missingSingleView = buildUnresolvedSingleMatchView({
+          clanName: `Clan ${tag}`,
+          clanTag: tag,
+          opponentName: "Unknown Opponent",
+          opponentTag: "UNKNOWN",
+          pointsSyncStatusLine: ":warning: Tracked match snapshot is currently unavailable.",
+          warStateLabel: "unknown",
+          timeRemainingLabel: "unknown",
+          syncLine: withSyncModeLabel(getSyncDisplay(sourceSync, "notInWar"), sourceSync),
+          primaryPoints: null,
+          opponentUnavailableReason: "Tracked matchup snapshot was not available.",
+          mailStatusEmoji: MAILBOX_NOT_SENT_EMOJI,
+          mailStatusLine: formatMailLifecycleStatusLine("not_posted"),
         });
-        const stored = fwaMatchCopyPayloads.get(key)!;
-        await editReplySafe(
-          "",
-          [trackedSingleView.embed],
-          buildFwaMatchCopyComponents(stored, interaction.user.id, key, "embed")
-        );
+        await replyWithScopedSingleView(missingSingleView, "single_tag_missing_overview");
         return;
       }
 
@@ -10002,6 +10186,45 @@ export const Fwa: Command = {
         const trackedNameByTag = new Map(
           trackedPair.map((c) => [normalizeTag(c.tag), sanitizeClanName(c.name)])
         );
+        const resolvedPrimaryName =
+          trackedNameByTag.get(tag) ??
+          sanitizeClanName(String(war?.clan?.name ?? "")) ??
+          sanitizeClanName(primary.clanName);
+        const resolvedOpponentName =
+          trackedNameByTag.get(opponentTag) ??
+          sanitizeClanName(String(war?.opponent?.name ?? "")) ??
+          sanitizeClanName(opponent.clanName);
+        const replyWithUnresolvedLiveView = async (params: {
+          source: string;
+          pointsSyncStatusLine: string;
+          reason: string;
+          primaryPoints: number | null | undefined;
+          opponentPoints?: number | null | undefined;
+        }): Promise<void> => {
+          const liveMailStatus = await resolveLiveWarMailStatus({
+            client: interaction.client,
+            guildId: interaction.guildId ?? null,
+            tag,
+            warId: subscription?.warId ?? null,
+            emitDebugLog: matchMailStatusDebugEnabled,
+          });
+          const unresolvedView = buildUnresolvedSingleMatchView({
+            clanName: resolvedPrimaryName ?? tag,
+            clanTag: tag,
+            opponentName: resolvedOpponentName ?? opponentTag,
+            opponentTag,
+            pointsSyncStatusLine: params.pointsSyncStatusLine,
+            warStateLabel: formatWarStateLabel(warState),
+            timeRemainingLabel: warRemaining,
+            syncLine: withSyncModeLabel(getSyncDisplay(sourceSync, warState), sourceSync),
+            primaryPoints: params.primaryPoints,
+            opponentPoints: params.opponentPoints,
+            opponentUnavailableReason: params.reason,
+            mailStatusEmoji: liveMailStatus.mailStatusEmoji,
+            mailStatusLine: formatMailLifecycleStatusLine(liveMailStatus.status),
+          });
+          await replyWithScopedSingleView(unresolvedView, params.source);
+        };
 
         const hasPrimaryPoints = primary.balance !== null && !Number.isNaN(primary.balance);
         const hasOpponentPoints = opponent.balance !== null && !Number.isNaN(opponent.balance);
@@ -10036,11 +10259,27 @@ export const Fwa: Command = {
           opponentStars: war?.opponent?.stars ?? null,
         });
         if (!hasPrimaryPoints && hasOpponentPoints) {
-          await editReplySafe(`Could not fetch point balance for #${tag}.`);
+          await replyWithUnresolvedLiveView({
+            source: "single_tag_live_missing_primary_points",
+            pointsSyncStatusLine: ":warning: Clan points are currently unavailable.",
+            reason: "Clan points are currently unavailable.",
+            primaryPoints: primary.balance,
+            opponentPoints: opponent.balance,
+          });
           return;
         }
         if (hasPrimaryPoints && !hasOpponentPoints) {
-          await editReplySafe(`Could not fetch point balance for #${opponentTag}.`);
+          await replyWithUnresolvedLiveView({
+            source: "single_tag_live_missing_opponent_points",
+            pointsSyncStatusLine: opponent.notFound
+              ? POINTS_CLAN_NOT_FOUND_STATUS_LINE
+              : ":warning: Opponent points are currently unavailable.",
+            reason: opponent.notFound
+              ? "Opponent points page is currently unavailable."
+              : "Opponent points are currently unavailable.",
+            primaryPoints: primary.balance,
+            opponentPoints: opponent.balance,
+          });
           return;
         }
         const inferredFromPointsType = inferMatchTypeFromPointsSnapshots(primary, opponent, {
@@ -10067,7 +10306,18 @@ export const Fwa: Command = {
           unconfirmedCurrent: guardedFallbackResolution.unconfirmedCurrent,
         });
         if (!appliedResolution) {
-          await editReplySafe("Unable to resolve match type from current data.");
+          await replyWithUnresolvedLiveView({
+            source: "single_tag_live_unresolved_matchtype",
+            pointsSyncStatusLine:
+              hasPrimaryPoints && hasOpponentPoints
+                ? ":warning: Match type could not be resolved from current data."
+                : opponent.notFound
+                  ? POINTS_CLAN_NOT_FOUND_STATUS_LINE
+                  : ":warning: Opponent points are currently unavailable.",
+            reason: "Match type could not be resolved from current data.",
+            primaryPoints: primary.balance,
+            opponentPoints: opponent.balance,
+          });
           return;
         }
         const matchType = appliedResolution.matchType;
@@ -10143,14 +10393,6 @@ export const Fwa: Command = {
           detail: `tag=${tag} opponent=${opponentTag}`,
         });
 
-        const resolvedPrimaryName =
-          trackedNameByTag.get(tag) ??
-          sanitizeClanName(String(war?.clan?.name ?? "")) ??
-          sanitizeClanName(primary.clanName);
-        const resolvedOpponentName =
-          trackedNameByTag.get(opponentTag) ??
-          sanitizeClanName(String(war?.opponent?.name ?? "")) ??
-          sanitizeClanName(opponent.clanName);
         const [primaryNameFromApi, opponentNameFromApi] = await Promise.all([
           resolvedPrimaryName
             ? Promise.resolve<string | null>(null)

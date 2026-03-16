@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildOpponentSnapshotFromTrackedClanFallbackForTest,
+  buildUnresolvedSingleMatchViewForTest,
   buildCurrentWarConfirmedStateForTest,
   buildSyncValidationStateForTest,
   buildDraftFromOutcomeToggleForTest,
@@ -1146,5 +1147,60 @@ describe("fwa single-clan match embed color", () => {
       effectiveExpectedOutcome: nextDraft?.expectedOutcome ?? null,
     });
     expect(nextColor).toBe(WAR_MAIL_COLOR_FWA_LOSE);
+  });
+});
+
+describe("fwa unresolved single-tag view", () => {
+  it("builds deterministic embed/copy output when opponent points are unavailable", () => {
+    const view = buildUnresolvedSingleMatchViewForTest({
+      clanName: "Alpha",
+      clanTag: "AAA111",
+      opponentName: "Bravo",
+      opponentTag: "BBB222",
+      pointsSyncStatusLine: ":warning: Opponent points are currently unavailable.",
+      warStateLabel: "Battle Day",
+      timeRemainingLabel: "2h",
+      syncLine: "470 (predicted)",
+      primaryPoints: 12345,
+      opponentUnavailableReason: "Opponent points are currently unavailable.",
+      mailStatusEmoji: ":mailbox_with_no_mail:",
+      mailStatusLine: "Mail status: **Not sent**",
+    });
+
+    const json = view.embed.toJSON();
+    const pointsField = json.fields?.find((field) => field.name === "Points");
+    expect(json.description ?? "").toContain("Match Type: **UNKNOWN**");
+    expect(json.description ?? "").toContain(":warning: Opponent points are currently unavailable.");
+    expect(pointsField?.value ?? "").toContain("Alpha: **12345**");
+    expect(pointsField?.value ?? "").toContain("Bravo: **unavailable**");
+    expect(view.copyText).toContain("Match Type: UNKNOWN");
+    expect(view.copyText).toContain("Bravo: unavailable");
+    expect(view.copyText).not.toContain("Could not fetch point balance");
+    expect(view.mailAction?.enabled).toBe(false);
+    expect(view.matchTypeAction).toBeNull();
+    expect(view.syncAction).toBeNull();
+  });
+
+  it("renders opponent points when provided for partial-data unresolved cases", () => {
+    const view = buildUnresolvedSingleMatchViewForTest({
+      clanName: "Alpha",
+      clanTag: "AAA111",
+      opponentName: "Bravo",
+      opponentTag: "BBB222",
+      pointsSyncStatusLine: ":warning: Clan points are currently unavailable.",
+      warStateLabel: "Battle Day",
+      timeRemainingLabel: "2h",
+      syncLine: "470 (predicted)",
+      primaryPoints: null,
+      opponentPoints: 9876,
+      opponentUnavailableReason: "Match type could not be resolved from current data.",
+      mailStatusEmoji: ":mailbox_with_no_mail:",
+      mailStatusLine: "Mail status: **Not sent**",
+    });
+
+    const pointsField = view.embed.toJSON().fields?.find((field) => field.name === "Points");
+    expect(pointsField?.value ?? "").toContain("Alpha: **unknown**");
+    expect(pointsField?.value ?? "").toContain("Bravo: **9876**");
+    expect(view.copyText).toContain("Bravo: 9876");
   });
 });
