@@ -180,12 +180,15 @@ export function inferMatchTypeFromOpponentPoints(
   });
   if (activeWarNonFwaResolution) {
     return activeWarNonFwaResolution;
-  }
-  if (winnerBoxFallback) {
-    return null;
-  }
-  if (signal.notFound === true) {
-    return null;
+  } 
+  if (signal.notFound === true || winnerBoxFallback) {
+    return {
+      matchType: "MM",
+      source: "live_points_clan_not_found",
+      inferred: true,
+      confirmed: false,
+      syncIsFwa: false,
+    };
   }
   return null;
 }

@@ -74,6 +74,14 @@ import {
   isNotifyWarEndedViewButtonCustomId,
   isNotifyWarRefreshButtonCustomId,
 } from "../services/WarEventLogService";
+import {
+  handleLinkEmbedButtonInteraction,
+  handleLinkEmbedModalSubmit,
+  handleLinkListSelectMenu,
+  isLinkEmbedAccountButtonCustomId,
+  isLinkEmbedModalCustomId,
+  isLinkListSelectCustomId,
+} from "../commands/Link";
 
 const commandPermissionService = new CommandPermissionService();
 const GLOBAL_POST_BUTTON_PREFIX = "post-channel";
@@ -211,7 +219,7 @@ export default (client: Client, cocService: CoCService): void => {
   }
 
   if (interaction.isStringSelectMenu()) {
-    await handleSelectMenuInteraction(interaction);
+    await handleSelectMenuInteraction(interaction, cocService);
     return;
   }
 
@@ -246,8 +254,24 @@ export default (client: Client, cocService: CoCService): void => {
 };
 
 const handleSelectMenuInteraction = async (
-  interaction: StringSelectMenuInteraction
+  interaction: StringSelectMenuInteraction,
+  cocService: CoCService
 ): Promise<void> => {
+  if (isLinkListSelectCustomId(interaction.customId)) {
+    try {
+      await handleLinkListSelectMenu(interaction, cocService);
+    } catch (err) {
+      console.error(`Link list select menu failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to update link list view.",
+        });
+      }
+    }
+    return;
+  }
+
   if (isFwaMatchSelectCustomId(interaction.customId)) {
     try {
       await handleFwaMatchSelectMenu(interaction);
@@ -268,6 +292,21 @@ const handleButtonInteraction = async (
   cocService: CoCService
 ): Promise<void> => {
   if (!interaction.isButton()) return;
+
+  if (isLinkEmbedAccountButtonCustomId(interaction.customId)) {
+    try {
+      await handleLinkEmbedButtonInteraction(interaction);
+    } catch (err) {
+      console.error(`Link embed button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to open link modal.",
+        });
+      }
+    }
+    return;
+  }
 
   if (isGlobalPostButtonCustomId(interaction.customId)) {
     const parsed = parseGlobalPostButtonCustomId(interaction.customId);
@@ -596,9 +635,15 @@ const handleModalSubmit = async (
 ): Promise<void> => {
   const isPostModal = isPostModalCustomId(interaction.customId);
   const isRecruitmentModal = isRecruitmentModalCustomId(interaction.customId);
-  if (!isPostModal && !isRecruitmentModal) return;
+  const isLinkEmbedModal = isLinkEmbedModalCustomId(interaction.customId);
+  if (!isPostModal && !isRecruitmentModal && !isLinkEmbedModal) return;
 
   try {
+    if (isLinkEmbedModal) {
+      await handleLinkEmbedModalSubmit(interaction);
+      return;
+    }
+
     const targets = isPostModal
       ? ["sync:time:post", "sync"]
       : ["recruitment:edit", "recruitment"];

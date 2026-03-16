@@ -19,6 +19,7 @@ export type PointsDirectFetchCaller = "command" | "poller" | "service";
 
 export type PointsDirectFetchDecisionCode =
   | "manual_force_bypass"
+  | "global_active_war_lock"
   | "reused_war_snapshot"
   | "not_tracked"
   | "locked_active_war"
@@ -95,6 +96,7 @@ const PRESYNC_UNLOCK_OFFSET_MS = 10 * 60 * 1000;
 const MM_POSTWAR_UNLOCK_DELAY_MS = 60 * 60 * 1000;
 const ACTIVE_SYNC_POST_KEY_PREFIX = "active_sync_post:";
 const LOCK_STATE_KEY_PREFIX = "points_lock_state:";
+const GLOBAL_ACTIVE_WAR_LOCK_CACHE_TTL_MS = 15 * 1000;
 
 /** Purpose: normalize clan tag into canonical #TAG form. */
 function normalizeTag(input: string | null | undefined): string | null {
@@ -671,6 +673,9 @@ export function isPointsDirectFetchBlockedError(
 
 export class PointsDirectFetchGateService {
   private static readonly decisionRollups = new Map<string, number>();
+  private static globalActiveWarLockCache:
+    | { active: boolean; expiresAtMs: number }
+    | null = null;
 
   /** Purpose: initialize lock gate persistence dependencies. */
   constructor(private readonly settings: SettingsService = new SettingsService()) {}
@@ -709,12 +714,38 @@ export class PointsDirectFetchGateService {
       await this.writePersistedState(state);
     }
 
+    const manualForceBypass = Boolean(input.manualForceBypass);
+    const runtimeCaller = input.caller;
+    const appliesGlobalRuntimeLock = runtimeCaller === "poller" || runtimeCaller === "service";
+    if (appliesGlobalRuntimeLock && !manualForceBypass) {
+      const globalActiveWarLock = await this.isGlobalActiveWarLockEnabled(nowMs);
+      if (globalActiveWarLock) {
+        const decision: PointsDirectFetchDecision = {
+          allowed: false,
+          outcome: "blocked",
+          decisionCode: "global_active_war_lock",
+          reason:
+            "Global active-war lock is active; runtime poller/service direct points fetch is blocked.",
+          clanTag: runtime.clanTag,
+          guildId: runtime.guildId,
+          fetchReason: input.fetchReason,
+          caller: runtimeCaller,
+          lockState: state.lifecycleState,
+          lockUntilMs: state.lockUntilMs,
+          postedSyncAtMs: state.postedSyncAtMs,
+          manualForceBypass: false,
+        };
+        this.logDecision(decision);
+        return decision;
+      }
+    }
+
     const decision = buildDecisionFromState({
       runtime,
       state,
       caller: input.caller,
       fetchReason: input.fetchReason,
-      manualForceBypass: Boolean(input.manualForceBypass),
+      manualForceBypass,
     });
     this.logDecision(decision);
     return decision;
@@ -886,6 +917,26 @@ export class PointsDirectFetchGateService {
   /** Purpose: persist lock-state JSON atomically for deterministic transitions. */
   private async writePersistedState(state: PointsLockStateRecord): Promise<void> {
     await this.settings.set(buildLockStateKey(state.clanTag), JSON.stringify(state));
+  }
+
+  /** Purpose: detect active-war presence globally with short-lived caching for runtime fetch gates. */
+  private async isGlobalActiveWarLockEnabled(nowMs: number): Promise<boolean> {
+    const cached = PointsDirectFetchGateService.globalActiveWarLockCache;
+    if (cached && nowMs <= cached.expiresAtMs) {
+      return cached.active;
+    }
+
+    const activeWar = await prisma.currentWar.findFirst({
+      where: { state: { in: ["preparation", "inWar"] } },
+      select: { clanTag: true },
+      orderBy: { updatedAt: "desc" },
+    });
+    const active = Boolean(activeWar?.clanTag);
+    PointsDirectFetchGateService.globalActiveWarLockCache = {
+      active,
+      expiresAtMs: nowMs + GLOBAL_ACTIVE_WAR_LOCK_CACHE_TTL_MS,
+    };
+    return active;
   }
 
   /** Purpose: emit structured gate decisions and lightweight rollups for lock observability. */

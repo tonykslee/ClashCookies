@@ -20,6 +20,7 @@ import { WarPlan } from "./commands/WarPlan";
 import { Telemetry } from "./commands/Telemetry";
 import { ClanHealth } from "./commands/ClanHealth";
 import { Defer } from "./commands/Defer";
+import { Link } from "./commands/Link";
 
 // ...existing code...
 export const Commands = [
@@ -32,6 +33,7 @@ export const Commands = [
   Compo,
   CC,
   Accounts,
+  Link,
   Fwa,
   War,
   Notify,

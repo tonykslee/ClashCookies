@@ -12,11 +12,22 @@ import { prisma } from "../prisma";
 import { processRecruitmentCooldownReminders } from "../services/RecruitmentService";
 import { processWeightInputDefermentStages } from "../services/WeightInputDefermentService";
 import { SettingsService } from "../services/SettingsService";
-import { PlayerLinkSyncService } from "../services/PlayerLinkSyncService";
 import { WarEventLogService } from "../services/WarEventLogService";
 import { TelemetryIngestService } from "../services/telemetry/ingest";
 import { startTelemetryScheduleLoop } from "../services/telemetry/schedule";
 import { refreshAllTrackedWarMailPosts } from "../commands/Fwa";
+import { backfillMissingDiscordUsernamesForClanMembers } from "../services/PlayerLinkService";
+import {
+  formatStartupLogFields,
+  getCommandRegistrationConfigFromEnv,
+  getStartupErrorDiagnostics,
+  getStartupBootstrapRetryConfigFromEnv,
+  getStartupRetryLogSummaryEveryFromEnv,
+  isTransientRegistrationError,
+  registerGuildCommandsWithRetry,
+  runWithTransientRetry,
+  shouldEmitStartupRetrySummary,
+} from "../services/StartupCommandRegistrationService";
 import {
   setNextNotifyRefreshAtMs,
   setNextWarMailRefreshAtMs,
@@ -149,9 +160,99 @@ export default (client: Client, cocService: CoCService): void => {
 
     console.log("ClashCookies is starting...");
 
-    const guildId = process.env.GUILD_ID!;
-    const guild = await client.guilds.fetch(guildId);
-    const me = await guild.members.fetch(client.user!.id);
+    const bootstrapConfig = getStartupBootstrapRetryConfigFromEnv(process.env);
+    const summaryEvery = getStartupRetryLogSummaryEveryFromEnv(process.env);
+    const startupBootstrapStartMs = Date.now();
+    const guildIdRaw = String(process.env.GUILD_ID ?? "").trim();
+    const guildIdPresent = guildIdRaw.length > 0;
+    let firstFailureMs: number | null = null;
+    let totalFailures = 0;
+    let bootstrapStage = "guild_fetch";
+    console.log(
+      `[startup:bootstrap] start ${formatStartupLogFields({
+        base_backoff_ms: bootstrapConfig.baseBackoffMs,
+        guild_id_present: guildIdPresent,
+        max_backoff_ms: bootstrapConfig.maxBackoffMs,
+        retry_summary_every: summaryEvery,
+      })}`
+    );
+    const bootstrap = await runWithTransientRetry({
+      execute: async () => {
+        if (!guildIdRaw) {
+          throw new Error("MISSING_GUILD_ID");
+        }
+        bootstrapStage = "guild_fetch";
+        const guild = await client.guilds.fetch(guildIdRaw);
+        bootstrapStage = "member_fetch";
+        const me = await guild.members.fetch(client.user!.id);
+        bootstrapStage = "complete";
+        return { guildId: guildIdRaw, guild, me };
+      },
+      config: bootstrapConfig,
+      isTransientError: isTransientRegistrationError,
+      onFailure: (context) => {
+        totalFailures += 1;
+        const now = Date.now();
+        if (firstFailureMs === null) firstFailureMs = now;
+        const diagnostics = getStartupErrorDiagnostics(context.error);
+        const baseLog = formatStartupLogFields({
+          attempt: context.attempt,
+          backoff_ms: context.backoffMs ?? 0,
+          client_user_present: Boolean(client.user),
+          elapsed_ms: now - startupBootstrapStartMs,
+          error_code: diagnostics.code,
+          error_name: diagnostics.name,
+          error_message: diagnostics.message,
+          error_cause_code: diagnostics.causeCode,
+          error_cause_name: diagnostics.causeName,
+          error_cause_message: diagnostics.causeMessage,
+          error_status: diagnostics.status,
+          error_http_status: diagnostics.httpStatus,
+          error_transient_reason: diagnostics.transientReason,
+          error_stack_head: diagnostics.stackHead,
+          guild_id_present: guildIdPresent,
+          next_attempt: context.willRetry ? context.attempt + 1 : 0,
+          stage: bootstrapStage,
+          total_failures: totalFailures,
+          transient: context.transient,
+        });
+        if (context.willRetry && context.backoffMs !== null) {
+          console.warn(`[startup:bootstrap] retry ${baseLog}`);
+          if (shouldEmitStartupRetrySummary(totalFailures, summaryEvery)) {
+            console.warn(
+              `[startup:bootstrap] retry_summary ${formatStartupLogFields({
+                every: summaryEvery,
+                first_failure_ms_ago: firstFailureMs === null ? 0 : now - firstFailureMs,
+                last_error_code: diagnostics.code,
+                last_error_name: diagnostics.name,
+                last_error_reason: diagnostics.transientReason,
+                retries: totalFailures,
+                since_start_ms: now - startupBootstrapStartMs,
+                stage: bootstrapStage,
+              })}`
+            );
+          }
+          return;
+        }
+
+        console.error(`[startup:bootstrap] fatal_non_transient ${baseLog}`);
+      },
+    });
+    if (bootstrap.status !== "success") {
+      process.exit(1);
+      return;
+    }
+
+    console.log(
+      `[startup:bootstrap] success ${formatStartupLogFields({
+        attempts: bootstrap.attempts,
+        elapsed_ms: Date.now() - startupBootstrapStartMs,
+        guild_id_present: guildIdPresent,
+        stage: bootstrapStage,
+        total_failures: totalFailures,
+      })}`
+    );
+    const { guildId, guild, me } = bootstrap.value;
     const guildPerms = me.permissions;
     const maybePinMessagesBit = (PermissionFlagsBits as Record<string, bigint>).PinMessages;
     const requiredGuildPerms: Array<[bigint, string]> = [
@@ -179,10 +280,20 @@ export default (client: Client, cocService: CoCService): void => {
 
     // Register ONLY guild commands
     const commandsWithVisibility = Commands.map((cmd) => injectVisibilityOptions(cmd));
-    try {
-      await guild.commands.set(commandsWithVisibility);
-    } catch (err) {
-      console.error(`Guild command registration failed: ${formatError(err)}`);
+    const registrationConfig = getCommandRegistrationConfigFromEnv(process.env);
+    const registrationResult = await registerGuildCommandsWithRetry({
+      guild,
+      commands: commandsWithVisibility,
+      config: registrationConfig,
+      logger: console,
+    });
+    if (registrationResult.status === "success") {
+      console.log(`[startup:commands] registration complete count=${Commands.length}`);
+    } else if (registrationResult.status === "skipped") {
+      console.warn(
+        `[startup:commands] registration skipped by config. payload_count=${Commands.length}`
+      );
+    } else {
       console.error(
         "Command registration payload summary:",
         commandsWithVisibility.map((c: any) => ({
@@ -190,15 +301,16 @@ export default (client: Client, cocService: CoCService): void => {
           optionCount: Array.isArray(c?.options) ? c.options.length : 0,
         }))
       );
-      throw err;
+      console.warn(
+        `[startup:commands] registration unavailable after ${registrationResult.attempts} attempt(s); startup continuing.`
+      );
     }
-    console.log(`✅ Guild commands registered (${Commands.length})`);
+
     TelemetryIngestService.getInstance().startAutoFlush();
     startTelemetryScheduleLoop(client);
     console.log("Telemetry ingest + schedule loops enabled.");
 
     const activityService = new ActivityService(cocService);
-    const playerLinkSyncService = new PlayerLinkSyncService();
     const warEventLogService = new WarEventLogService(client, cocService);
     const settings = new SettingsService();
     let observeInProgress = false;
@@ -248,10 +360,39 @@ export default (client: Client, cocService: CoCService): void => {
       await settings.set(OBSERVE_LAST_RUN_AT_KEY, String(Date.now()));
     };
 
+    const resolveDiscordUsernameForBackfill = async (
+      discordUserId: string
+    ): Promise<string | null> => {
+      const cachedUsername = String(client.users.cache.get(discordUserId)?.username ?? "").trim();
+      if (cachedUsername.length > 0) return cachedUsername;
+
+      try {
+        const user = await client.users.fetch(discordUserId);
+        const fetchedUsername = String(user?.username ?? "").trim();
+        return fetchedUsername.length > 0 ? fetchedUsername : null;
+      } catch {
+        return null;
+      }
+    };
+
     const runObservedCycle = async () => {
       await runFetchTelemetryBatch("activity_observe_cycle", async () => {
-        const observedMemberTags = await observeTrackedClans();
-        await playerLinkSyncService.syncMissingTagsIfDue(observedMemberTags);
+        const observedTags = await observeTrackedClans();
+        try {
+          const backfill = await backfillMissingDiscordUsernamesForClanMembers({
+            memberTagsInOrder: observedTags,
+            resolveDiscordUsername: resolveDiscordUsernameForBackfill,
+          });
+          if (backfill.candidateLinks > 0) {
+            console.log(
+              `[activity-observe] playerlink_discord_username_backfill candidates=${backfill.candidateLinks} unique_users=${backfill.uniqueUsers} resolved_users=${backfill.resolvedUsers} updated=${backfill.updatedLinks}`
+            );
+          }
+        } catch (err) {
+          console.error(
+            `[activity-observe] playerlink_discord_username_backfill failed: ${formatError(err)}`
+          );
+        }
         try {
           await markObserveRun();
         } catch (err) {

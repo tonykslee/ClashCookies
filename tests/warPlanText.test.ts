@@ -70,6 +70,33 @@ describe("WarEventHistoryService.buildWarPlanText", () => {
     expect(out).toContain("Do NOT surpass 100");
   });
 
+  it("resolves lose style when tracked clan tag is stored without #", async () => {
+    const svc = new WarEventHistoryService({} as never);
+    vi.spyOn(prisma.trackedClan, "findFirst").mockImplementation(async (args: any) => {
+      const candidates = (args?.where?.OR ?? [])
+        .map((entry: any) => String(entry?.tag?.equals ?? "").toUpperCase())
+        .filter(Boolean);
+      if (candidates.includes("29PCQGUV0")) {
+        return { loseStyle: "TRADITIONAL" } as any;
+      }
+      return null as any;
+    });
+
+    const out = await svc.buildWarPlanText(
+      "FWA",
+      "LOSE",
+      "29PCQGUV0",
+      "OPPONENT_NAME",
+      undefined,
+      "battle",
+      "CLAN_NAME"
+    );
+
+    expect(out).toContain("Last 12hrs");
+    expect(out).toContain("Do NOT surpass 100");
+    expect(out).not.toContain("top 30");
+  });
+
   it("returns BL default with header format in first line", async () => {
     const svc = new WarEventHistoryService({} as never);
     const out = await svc.buildWarPlanText(

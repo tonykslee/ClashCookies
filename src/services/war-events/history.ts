@@ -669,13 +669,14 @@ export class WarEventHistoryService {
 
   /** Purpose: read configured lose-war style for a tracked clan. */
   private async getLoseStyleForClan(clanTagInput: string): Promise<FwaLoseStyle> {
-    const clanTag = normalizeTag(clanTagInput);
-    if (!clanTag) return "TRIPLE_TOP_30";
+    const clanTagWithHash = normalizeTag(clanTagInput);
+    const clanTagBare = clanTagWithHash.replace(/^#/, "");
+    if (!clanTagWithHash) return "TRIPLE_TOP_30";
     const row = await prisma.trackedClan.findFirst({
       where: {
         OR: [
-          { tag: { equals: `#${clanTag}`, mode: "insensitive" } },
-          { tag: { equals: clanTag, mode: "insensitive" } },
+          { tag: { equals: clanTagWithHash, mode: "insensitive" } },
+          { tag: { equals: clanTagBare, mode: "insensitive" } },
         ],
       },
       select: { loseStyle: true },

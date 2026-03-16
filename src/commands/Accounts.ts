@@ -12,8 +12,6 @@ import {
 import { Command } from "../Command";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
-import { ClashKingService } from "../services/ClashKingService";
-import { PlayerLinkSyncService } from "../services/PlayerLinkSyncService";
 
 type AccountRow = {
   tag: string;
@@ -147,7 +145,7 @@ export const Accounts: Command = {
     },
     {
       name: "tag",
-      description: "Player tag. Resolves linked Discord ID first.",
+      description: "Player tag. Resolves linked Discord ID from local PlayerLink.",
       type: ApplicationCommandOptionType.String,
       required: false,
       autocomplete: true,
@@ -184,7 +182,6 @@ export const Accounts: Command = {
 
     let targetDiscordUserId = interaction.user.id;
     let sourceLabel = "your Discord account";
-    let forceHydrateFromClashKingByDiscordId = false;
     if (rawDiscordId) {
       const normalized = normalizeDiscordUserId(rawDiscordId);
       if (!normalized) {
@@ -205,12 +202,7 @@ export const Accounts: Command = {
         select: { discordUserId: true },
       });
 
-      let linkedDiscordId = local?.discordUserId ?? null;
-      if (!linkedDiscordId) {
-        const clashKing = new ClashKingService();
-        linkedDiscordId = await clashKing.getLinkedDiscordUserId(tag);
-        if (linkedDiscordId) forceHydrateFromClashKingByDiscordId = true;
-      }
+      const linkedDiscordId = local?.discordUserId ?? null;
 
       if (!linkedDiscordId) {
         await interaction.editReply(`No Discord link found for player tag \`${tag}\`.`);
@@ -220,26 +212,11 @@ export const Accounts: Command = {
       sourceLabel = `player tag \`${tag}\` (linked Discord ID \`${linkedDiscordId}\`)`;
     }
 
-    if (forceHydrateFromClashKingByDiscordId) {
-      const syncService = new PlayerLinkSyncService();
-      await syncService.syncByDiscordUserId(targetDiscordUserId);
-    }
-
-    let links = await prisma.playerLink.findMany({
+    const links = await prisma.playerLink.findMany({
       where: { discordUserId: targetDiscordUserId },
       orderBy: { createdAt: "asc" },
       select: { playerTag: true },
     });
-
-    if (links.length === 0) {
-      const syncService = new PlayerLinkSyncService();
-      await syncService.syncByDiscordUserId(targetDiscordUserId);
-      links = await prisma.playerLink.findMany({
-        where: { discordUserId: targetDiscordUserId },
-        orderBy: { createdAt: "asc" },
-        select: { playerTag: true },
-      });
-    }
 
     if (links.length === 0) {
       await interaction.editReply(
