@@ -1302,12 +1302,19 @@ function buildMatchStatusHeader(params: {
   return `${mailbox} | ${params.clanName} (#${params.clanTag}) vs ${params.opponentName} (#${params.opponentTag}) ${status}`;
 }
 
+function formatWarIdStatusLine(
+  warId: number | string | null | undefined
+): string {
+  return `War ID: **${normalizeWarIdText(warId) ?? "unknown"}**`;
+}
+
 /** Purpose: build a deterministic single-clan unresolved view when opponent points cannot be resolved. */
 function buildUnresolvedSingleMatchView(input: {
   clanName: string;
   clanTag: string;
   opponentName: string;
   opponentTag: string;
+  warId?: number | string | null;
   pointsSyncStatusLine: string;
   warStateLabel: string;
   timeRemainingLabel: string;
@@ -1316,6 +1323,8 @@ function buildUnresolvedSingleMatchView(input: {
   opponentPoints?: number | null | undefined;
   opponentUnavailableReason: string;
   showOpponentUnavailableWarning?: boolean;
+  showMatchTypeAction?: boolean;
+  matchTypeCurrent?: "FWA" | "BL" | "MM" | "SKIP" | null;
   mailStatusEmoji?: string | null;
   mailStatusLine?: string | null;
 }): MatchView {
@@ -1340,11 +1349,26 @@ function buildUnresolvedSingleMatchView(input: {
   const opponentUnavailableCopyLine = showOpponentUnavailableWarning
     ? `Warning: ${input.opponentUnavailableReason}`
     : "";
+  const warIdLine = formatWarIdStatusLine(input.warId ?? null);
+  const showMatchTypeAction = input.showMatchTypeAction ?? false;
+  const resolvedCurrentType =
+    input.matchTypeCurrent === "FWA" ||
+    input.matchTypeCurrent === "BL" ||
+    input.matchTypeCurrent === "MM"
+      ? input.matchTypeCurrent
+      : "MM";
+  const unresolvedLiveFields = buildLiveRevisionFields({
+    warId: input.warId ?? null,
+    opponentTag: input.opponentTag,
+    matchType: "UNKNOWN",
+    expectedOutcome: null,
+  });
   const description = [
     input.pointsSyncStatusLine,
     input.mailStatusLine ?? "",
     opponentUnavailableWarningLine,
     "Match Type: **UNKNOWN**",
+    warIdLine,
     `War state: **${input.warStateLabel}**`,
     `Time remaining: **${input.timeRemainingLabel}**`,
     `Sync: **${input.syncLine}**`,
@@ -1382,6 +1406,7 @@ function buildUnresolvedSingleMatchView(input: {
         input.mailStatusLine ?? "",
         opponentUnavailableCopyLine,
         "Match Type: UNKNOWN",
+        warIdLine,
         `War State: ${input.warStateLabel}`,
         `Time Remaining: ${input.timeRemainingLabel}`,
         `Sync: ${input.syncLine}`,
@@ -1398,14 +1423,18 @@ function buildUnresolvedSingleMatchView(input: {
         .filter(Boolean)
         .join("\n")
     ),
-    matchTypeAction: null,
-    matchTypeCurrent: null,
+    matchTypeAction: showMatchTypeAction
+      ? { tag: input.clanTag, currentType: resolvedCurrentType }
+      : null,
+    matchTypeCurrent: input.matchTypeCurrent ?? null,
     inferredMatchType: false,
     outcomeAction: null,
     syncAction: null,
     clanName: input.clanName,
     clanTag: input.clanTag,
     mailStatusEmoji,
+    liveRevisionFields: unresolvedLiveFields,
+    effectiveRevisionFields: unresolvedLiveFields,
     mailAction: {
       tag: input.clanTag,
       enabled: false,
@@ -6920,6 +6949,7 @@ async function buildTrackedMatchOverview(
           Number(sub.fwaPoints) !== Number(livePoints.balance);
       const actual = actualByTag.get(clanTag) ?? null;
       const preWarHeader = `${mailStatusEmoji} | ${clanName} (#${clanTag})`;
+      const preWarIdLine = formatWarIdStatusLine(sub?.warId ?? null);
       const preWarLines = [
         outOfSync ? ":warning: out of sync with points site" : ":white_check_mark: data in sync with points site",
         `Clan points: **${clanPoints !== null && clanPoints !== undefined ? clanPoints : "unknown"}**`,
@@ -6955,10 +6985,11 @@ async function buildTrackedMatchOverview(
           ...preWarMailDebugLines,
         );
       }
+      const preWarSingleLines = [...preWarLines, preWarIdLine];
       singleViews[clanTag] = {
         embed: new EmbedBuilder()
           .setTitle(preWarHeader)
-          .setDescription(preWarLines.join("\n"))
+          .setDescription(preWarSingleLines.join("\n"))
           .setColor(
             resolveSingleClanMatchEmbedColor({
               effectiveMatchType:
@@ -6967,7 +6998,7 @@ async function buildTrackedMatchOverview(
               effectiveExpectedOutcome: null,
             })
           ),
-        copyText: limitDiscordContent([`# ${preWarHeader}`, ...preWarLines].join("\n")),
+        copyText: limitDiscordContent([`# ${preWarHeader}`, ...preWarSingleLines].join("\n")),
         matchTypeAction: null,
         matchTypeCurrent: (sub?.matchType as "FWA" | "BL" | "MM" | "SKIP" | null | undefined) ?? null,
         inferredMatchType: false,
@@ -7007,6 +7038,7 @@ async function buildTrackedMatchOverview(
       const noOpponentMailDebugLines =
         mailStatusDebugEnabled ? buildMailStatusDebugLines(noOpponentMailStatus.debug) : [];
       const noOpponentHeader = `${mailStatusEmoji} | ${clanName} (#${clanTag}) vs Unknown`;
+      const noOpponentWarIdLine = formatWarIdStatusLine(sub?.warId ?? null);
       const noOpponentLines = [
         "No active war opponent",
         `War State: **${clanWarStateLine}**`,
@@ -7026,10 +7058,11 @@ async function buildTrackedMatchOverview(
           ...noOpponentLines.map((line) => line.replace(/\*\*/g, "")),
         );
       }
+      const noOpponentSingleLines = [...noOpponentLines, noOpponentWarIdLine];
       singleViews[clanTag] = {
         embed: new EmbedBuilder()
           .setTitle(noOpponentHeader)
-          .setDescription(noOpponentLines.join("\n"))
+          .setDescription(noOpponentSingleLines.join("\n"))
           .setColor(
             resolveSingleClanMatchEmbedColor({
               effectiveMatchType:
@@ -7038,7 +7071,7 @@ async function buildTrackedMatchOverview(
               effectiveExpectedOutcome: null,
             })
           ),
-        copyText: limitDiscordContent([`# ${noOpponentHeader}`, ...noOpponentLines].join("\n")),
+        copyText: limitDiscordContent([`# ${noOpponentHeader}`, ...noOpponentSingleLines].join("\n")),
         matchTypeAction: null,
         matchTypeCurrent:
           (sub?.matchType as "FWA" | "BL" | "MM" | "SKIP" | null | undefined) ?? null,
@@ -7208,6 +7241,7 @@ async function buildTrackedMatchOverview(
         clanTag,
         opponentName,
         opponentTag,
+        warId: sub?.warId ?? null,
         pointsSyncStatusLine: unresolvedPointsStatusLine,
         warStateLabel: clanWarStateLine,
         timeRemainingLabel: clanTimeRemainingLine,
@@ -7215,6 +7249,9 @@ async function buildTrackedMatchOverview(
         primaryPoints: primaryPoints?.balance ?? null,
         opponentUnavailableReason: unresolvedReason,
         showOpponentUnavailableWarning: !(opponentPoints?.notFound === true),
+        showMatchTypeAction: opponentPoints?.notFound === true,
+        matchTypeCurrent:
+          (sub?.matchType as "FWA" | "BL" | "MM" | "SKIP" | null | undefined) ?? null,
         mailStatusEmoji: liveMailStatus.mailStatusEmoji,
         mailStatusLine: unresolvedMailStatusLine,
       });
@@ -7646,6 +7683,7 @@ async function buildTrackedMatchOverview(
       effectiveExpectedOutcome ?? null,
       "opponent"
     );
+    const singleWarIdLine = formatWarIdStatusLine(sub?.warId ?? null);
     const singleDescription = [
       pointsSyncStatus,
       storedSyncSummary.stateLine,
@@ -7659,6 +7697,7 @@ async function buildTrackedMatchOverview(
       effectiveMatchType === "FWA"
         ? `Expected outcome: **${effectiveExpectedOutcome ?? "UNKNOWN"}**`
         : "",
+      singleWarIdLine,
       `War state: **${formatWarStateLabel(warState)}**`,
       `Time remaining: **${getWarStateRemaining(war, warState)}**`,
       `Sync #: **${storedSyncSummary.syncLine}**`,
@@ -7766,6 +7805,7 @@ async function buildTrackedMatchOverview(
           effectiveMatchType === "FWA"
             ? `Expected outcome: ${effectiveExpectedOutcome ?? "UNKNOWN"}`
             : "",
+          singleWarIdLine,
           mismatchLines,
           ...mailDebugLines,
         ]
@@ -9901,6 +9941,7 @@ export const Fwa: Command = {
           clanTag: tag,
           opponentName: "Unknown Opponent",
           opponentTag: "UNKNOWN",
+          warId: null,
           pointsSyncStatusLine: ":warning: Tracked match snapshot is currently unavailable.",
           warStateLabel: "unknown",
           timeRemainingLabel: "unknown",
@@ -10026,6 +10067,7 @@ export const Fwa: Command = {
             ? buildMailStatusDebugLines(preWarMailStatus.debug)
             : [];
           const clanName = sanitizeClanName(trackedClanMeta?.name ?? "") ?? `#${tag}`;
+          const preWarWarIdLine = formatWarIdStatusLine(subscription?.warId ?? null);
           const preWarHeader = `${mailStatusEmoji} | ${clanName} (#${tag})`;
           const preWarLines = [
             outOfSync
@@ -10040,6 +10082,7 @@ export const Fwa: Command = {
             `War State: **${formatWarStateLabel(warState)}**`,
             `Time Remaining: **${warRemaining}**`,
             `Sync: **${withSyncModeLabel(getSyncDisplay(sourceSync, warState), sourceSync)}**`,
+            preWarWarIdLine,
             formatMailLifecycleStatusLine(preWarMailStatus.status),
             ...preWarMailDebugLines,
           ];
@@ -10208,6 +10251,7 @@ export const Fwa: Command = {
           pointsSyncStatusLine: string;
           reason: string;
           showOpponentUnavailableWarning?: boolean;
+          showMatchTypeAction?: boolean;
           primaryPoints: number | null | undefined;
           opponentPoints?: number | null | undefined;
         }): Promise<void> => {
@@ -10223,6 +10267,7 @@ export const Fwa: Command = {
             clanTag: tag,
             opponentName: resolvedOpponentName ?? opponentTag,
             opponentTag,
+            warId: subscription?.warId ?? null,
             pointsSyncStatusLine: params.pointsSyncStatusLine,
             warStateLabel: formatWarStateLabel(warState),
             timeRemainingLabel: warRemaining,
@@ -10231,6 +10276,9 @@ export const Fwa: Command = {
             opponentPoints: params.opponentPoints,
             opponentUnavailableReason: params.reason,
             showOpponentUnavailableWarning: params.showOpponentUnavailableWarning,
+            showMatchTypeAction: params.showMatchTypeAction,
+            matchTypeCurrent:
+              (subscription?.matchType as "FWA" | "BL" | "MM" | "SKIP" | null | undefined) ?? null,
             mailStatusEmoji: liveMailStatus.mailStatusEmoji,
             mailStatusLine: formatMailLifecycleStatusLine(liveMailStatus.status),
           });
@@ -10289,6 +10337,7 @@ export const Fwa: Command = {
               ? "Opponent points page is currently unavailable."
               : "Opponent points are currently unavailable.",
             showOpponentUnavailableWarning: !opponent.notFound,
+            showMatchTypeAction: opponent.notFound,
             primaryPoints: primary.balance,
             opponentPoints: opponent.balance,
           });
@@ -10327,6 +10376,7 @@ export const Fwa: Command = {
                   ? POINTS_CLAN_NOT_FOUND_STATUS_LINE
                   : ":warning: Opponent points are currently unavailable.",
             reason: "Match type could not be resolved from current data.",
+            showMatchTypeAction: opponent.notFound,
             primaryPoints: primary.balance,
             opponentPoints: opponent.balance,
           });
@@ -10590,6 +10640,7 @@ export const Fwa: Command = {
           storedSyncSummary.stateLine,
           mailStatusLine,
           mailBlockedReasonLine ?? "",
+          formatWarIdStatusLine(subscription?.warId ?? null),
           `War state: **${formatWarStateLabel(warState)}**`,
           `Time remaining: **${warRemaining}**`,
           `Sync #: **${storedSyncSummary.syncLine}**`,
@@ -10643,6 +10694,7 @@ export const Fwa: Command = {
             storedSyncSummary.updatedLine
               ? `Last points fetch: ${storedSyncSummary.updatedLine}`
               : "",
+            formatWarIdStatusLine(subscription?.warId ?? null),
             `War State: ${formatWarStateLabel(warState)}`,
             `Time Remaining: ${warRemaining}`,
             `## Opponent Name`,

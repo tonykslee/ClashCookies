@@ -1171,9 +1171,11 @@ describe("fwa unresolved single-tag view", () => {
     const pointsField = json.fields?.find((field) => field.name === "Points");
     expect(json.description ?? "").toContain("Match Type: **UNKNOWN**");
     expect(json.description ?? "").toContain(":warning: Opponent points are currently unavailable.");
+    expect(json.description ?? "").toContain("War ID: **unknown**");
     expect(pointsField?.value ?? "").toContain("Alpha: **12345**");
     expect(pointsField?.value ?? "").toContain("Bravo: **unavailable**");
     expect(view.copyText).toContain("Match Type: UNKNOWN");
+    expect(view.copyText).toContain("War ID: **unknown**");
     expect(view.copyText).toContain("Bravo: unavailable");
     expect(view.copyText).not.toContain("Could not fetch point balance");
     expect(view.mailAction?.enabled).toBe(false);
@@ -1187,6 +1189,7 @@ describe("fwa unresolved single-tag view", () => {
       clanTag: "AAA111",
       opponentName: "Bravo",
       opponentTag: "BBB222",
+      warId: 1001303,
       pointsSyncStatusLine: ":warning: Clan points are currently unavailable.",
       warStateLabel: "Battle Day",
       timeRemainingLabel: "2h",
@@ -1201,15 +1204,18 @@ describe("fwa unresolved single-tag view", () => {
     const pointsField = view.embed.toJSON().fields?.find((field) => field.name === "Points");
     expect(pointsField?.value ?? "").toContain("Alpha: **unknown**");
     expect(pointsField?.value ?? "").toContain("Bravo: **9876**");
+    expect(view.embed.toJSON().description ?? "").toContain("War ID: **1001303**");
+    expect(view.copyText).toContain("War ID: **1001303**");
     expect(view.copyText).toContain("Bravo: 9876");
   });
 
-  it("omits redundant unavailable warning when not-found status line is shown", () => {
+  it("omits redundant warning and keeps match-type action available in not-found view", () => {
     const view = buildUnresolvedSingleMatchViewForTest({
       clanName: "Alpha",
       clanTag: "AAA111",
       opponentName: "Bravo",
       opponentTag: "BBB222",
+      warId: "1001303",
       pointsSyncStatusLine: ":interrobang: Clan not found on points.fwafarm",
       warStateLabel: "Battle Day",
       timeRemainingLabel: "2h",
@@ -1217,6 +1223,8 @@ describe("fwa unresolved single-tag view", () => {
       primaryPoints: 12345,
       opponentUnavailableReason: "Opponent points page is currently unavailable.",
       showOpponentUnavailableWarning: false,
+      showMatchTypeAction: true,
+      matchTypeCurrent: "BL",
       mailStatusEmoji: ":mailbox_with_no_mail:",
       mailStatusLine: "Mail status: **Not sent**",
     });
@@ -1224,7 +1232,16 @@ describe("fwa unresolved single-tag view", () => {
     const description = view.embed.toJSON().description ?? "";
     expect(description).toContain(":interrobang: Clan not found on points.fwafarm");
     expect(description).not.toContain(":warning: Opponent points page is currently unavailable.");
+    expect(description).toContain("War ID: **1001303**");
     expect(view.copyText).toContain(":interrobang: Clan not found on points.fwafarm");
     expect(view.copyText).not.toContain("Warning: Opponent points page is currently unavailable.");
+    expect(view.copyText).toContain("War ID: **1001303**");
+    expect(view.matchTypeAction).toEqual({ tag: "AAA111", currentType: "BL" });
+    expect(view.liveRevisionFields).toEqual({
+      warId: "1001303",
+      opponentTag: "BBB222",
+      matchType: "UNKNOWN",
+      expectedOutcome: null,
+    });
   });
 });
