@@ -1315,6 +1315,7 @@ function buildUnresolvedSingleMatchView(input: {
   primaryPoints: number | null | undefined;
   opponentPoints?: number | null | undefined;
   opponentUnavailableReason: string;
+  showOpponentUnavailableWarning?: boolean;
   mailStatusEmoji?: string | null;
   mailStatusLine?: string | null;
 }): MatchView {
@@ -1332,10 +1333,17 @@ function buildUnresolvedSingleMatchView(input: {
     Number.isFinite(Number(input.opponentPoints))
       ? String(Math.trunc(Number(input.opponentPoints)))
       : "unavailable";
+  const showOpponentUnavailableWarning = input.showOpponentUnavailableWarning ?? true;
+  const opponentUnavailableWarningLine = showOpponentUnavailableWarning
+    ? `:warning: ${input.opponentUnavailableReason}`
+    : "";
+  const opponentUnavailableCopyLine = showOpponentUnavailableWarning
+    ? `Warning: ${input.opponentUnavailableReason}`
+    : "";
   const description = [
     input.pointsSyncStatusLine,
     input.mailStatusLine ?? "",
-    `:warning: ${input.opponentUnavailableReason}`,
+    opponentUnavailableWarningLine,
     "Match Type: **UNKNOWN**",
     `War state: **${input.warStateLabel}**`,
     `Time remaining: **${input.timeRemainingLabel}**`,
@@ -1372,7 +1380,7 @@ function buildUnresolvedSingleMatchView(input: {
         `# ${header}`,
         input.pointsSyncStatusLine,
         input.mailStatusLine ?? "",
-        `Warning: ${input.opponentUnavailableReason}`,
+        opponentUnavailableCopyLine,
         "Match Type: UNKNOWN",
         `War State: ${input.warStateLabel}`,
         `Time Remaining: ${input.timeRemainingLabel}`,
@@ -7206,6 +7214,7 @@ async function buildTrackedMatchOverview(
         syncLine: clanSyncLine,
         primaryPoints: primaryPoints?.balance ?? null,
         opponentUnavailableReason: unresolvedReason,
+        showOpponentUnavailableWarning: !(opponentPoints?.notFound === true),
         mailStatusEmoji: liveMailStatus.mailStatusEmoji,
         mailStatusLine: unresolvedMailStatusLine,
       });
@@ -10198,6 +10207,7 @@ export const Fwa: Command = {
           source: string;
           pointsSyncStatusLine: string;
           reason: string;
+          showOpponentUnavailableWarning?: boolean;
           primaryPoints: number | null | undefined;
           opponentPoints?: number | null | undefined;
         }): Promise<void> => {
@@ -10220,6 +10230,7 @@ export const Fwa: Command = {
             primaryPoints: params.primaryPoints,
             opponentPoints: params.opponentPoints,
             opponentUnavailableReason: params.reason,
+            showOpponentUnavailableWarning: params.showOpponentUnavailableWarning,
             mailStatusEmoji: liveMailStatus.mailStatusEmoji,
             mailStatusLine: formatMailLifecycleStatusLine(liveMailStatus.status),
           });
@@ -10277,6 +10288,7 @@ export const Fwa: Command = {
             reason: opponent.notFound
               ? "Opponent points page is currently unavailable."
               : "Opponent points are currently unavailable.",
+            showOpponentUnavailableWarning: !opponent.notFound,
             primaryPoints: primary.balance,
             opponentPoints: opponent.balance,
           });
