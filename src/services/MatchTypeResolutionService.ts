@@ -172,7 +172,10 @@ export function inferMatchTypeFromOpponentPoints(
     }
   }
   const activeWarNonFwaResolution = resolveNonFwaMatchTypeFromActiveWarEvidence({
-    nonFwaEvidencePresent: winnerBoxFallback || signal.notFound === true,
+    nonFwaEvidencePresent:
+      winnerBoxFallback ||
+      signal.notFound === true ||
+      signal.opponentEvidenceMissingOrNotCurrent === true,
     currentWarState: signal.currentWarState ?? null,
     currentWarClanAttacksUsed: signal.currentWarClanAttacksUsed ?? null,
     currentWarClanStars: signal.currentWarClanStars ?? null,
