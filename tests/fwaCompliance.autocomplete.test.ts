@@ -1,9 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
 const prismaMock = vi.hoisted(() => ({
   trackedClan: {
     findFirst: vi.fn(),
     findMany: vi.fn(),
+  },
+  currentWar: {
+    findFirst: vi.fn(),
   },
   clanWarHistory: {
     findMany: vi.fn(),
@@ -19,8 +24,9 @@ vi.mock("../src/prisma", () => ({
 
 import { Fwa } from "../src/commands/Fwa";
 
-function makeInteraction(input: { tag: string | null; focused: string }) {
+function makeInteraction(input: { tag: string | null; focused: string; guildId?: string | null }) {
   return {
+    guildId: input.guildId ?? "guild-1",
     options: {
       getFocused: vi.fn().mockReturnValue({ name: "war-id", value: input.focused }),
       getSubcommand: vi.fn().mockReturnValue("compliance"),
@@ -47,8 +53,36 @@ describe("/fwa compliance war-id autocomplete", () => {
     expect(interaction.respond).toHaveBeenCalledWith([]);
   });
 
-  it("returns deterministic top-10 clan-scoped ended wars sorted by endedAt then warId", async () => {
+  it("prepends the ongoing war choice before historical wars", async () => {
     prismaMock.trackedClan.findFirst.mockResolvedValue({ tag: "#AAA111" });
+    prismaMock.currentWar.findFirst.mockResolvedValue({
+      warId: 8123,
+      opponentName: "Live Opp",
+    });
+    prismaMock.clanWarHistory.findMany.mockResolvedValue([
+      { warId: 7002, warEndTime: new Date("2026-03-12T00:00:00.000Z"), opponentName: "Opp 2" },
+      { warId: 7001, warEndTime: new Date("2026-03-11T00:00:00.000Z"), opponentName: "Opp 1" },
+    ]);
+    prismaMock.warLookup.findMany.mockResolvedValue([]);
+
+    const interaction = makeInteraction({ tag: "AAA111", focused: "" });
+
+    await Fwa.autocomplete?.(interaction as any);
+
+    const choices = interaction.respond.mock.calls[0]?.[0] ?? [];
+    expect(choices).toEqual([
+      { name: "Ongoing | 8123 | Live Opp", value: "Ongoing" },
+      { name: "7002 | ended: 03/11 | Opp 2", value: "7002" },
+      { name: "7001 | ended: 03/10 | Opp 1", value: "7001" },
+    ]);
+  });
+
+  it("returns deterministic top-10 choices with ongoing first, then ended wars sorted by endedAt then warId", async () => {
+    prismaMock.trackedClan.findFirst.mockResolvedValue({ tag: "#AAA111" });
+    prismaMock.currentWar.findFirst.mockResolvedValue({
+      warId: 8123,
+      opponentName: "Live Opp",
+    });
     prismaMock.clanWarHistory.findMany.mockResolvedValue([
       { warId: 7001, warEndTime: new Date("2026-03-12T00:00:00.000Z"), opponentName: "Opp 1" },
       { warId: 7002, warEndTime: new Date("2026-03-12T00:00:00.000Z"), opponentName: "Opp 2" },
@@ -70,23 +104,24 @@ describe("/fwa compliance war-id autocomplete", () => {
         payload: { opponent: { name: "Lookup Opp" } },
       },
     ]);
+
     const interaction = makeInteraction({ tag: "AAA111", focused: "" });
 
     await Fwa.autocomplete?.(interaction as any);
 
+    expect(prismaMock.currentWar.findFirst).toHaveBeenCalled();
     expect(prismaMock.clanWarHistory.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          OR: expect.arrayContaining([
-            { clanTag: "#AAA111" },
-            { clanTag: "AAA111" },
-          ]),
+          OR: expect.arrayContaining([{ clanTag: "#AAA111" }, { clanTag: "AAA111" }]),
         }),
       })
     );
+
     const choices = interaction.respond.mock.calls[0]?.[0] ?? [];
     expect(choices).toHaveLength(10);
     expect(choices.map((choice: { value: string }) => choice.value)).toEqual([
+      "Ongoing",
       "7999",
       "7002",
       "7001",
@@ -96,18 +131,39 @@ describe("/fwa compliance war-id autocomplete", () => {
       "7006",
       "7007",
       "7008",
-      "7009",
     ]);
   });
 
-  it("applies focused-input filtering and unknown fallback label deterministically", async () => {
+  it("applies focused-input filtering to ongoing and historical choices", async () => {
     prismaMock.trackedClan.findFirst.mockResolvedValue({ tag: "#AAA111" });
+    prismaMock.currentWar.findFirst.mockResolvedValue({
+      warId: 8123,
+      opponentName: "Live Opp",
+    });
     prismaMock.clanWarHistory.findMany.mockResolvedValue([
       { warId: 9001, warEndTime: null, opponentName: null },
       { warId: 9002, warEndTime: new Date("2026-03-10T00:00:00.000Z"), opponentName: "Bravo" },
       { warId: 9003, warEndTime: new Date("2026-03-09T00:00:00.000Z"), opponentName: "Alpha" },
     ]);
     prismaMock.warLookup.findMany.mockResolvedValue([]);
+
+    const interaction = makeInteraction({ tag: "AAA111", focused: "ongoing" });
+
+    await Fwa.autocomplete?.(interaction as any);
+
+    const choices = interaction.respond.mock.calls[0]?.[0] ?? [];
+    expect(choices).toEqual([{ name: "Ongoing | 8123 | Live Opp", value: "Ongoing" }]);
+  });
+
+  it("uses unknown opponent fallback deterministically for historical entries", async () => {
+    prismaMock.trackedClan.findFirst.mockResolvedValue({ tag: "#AAA111" });
+    prismaMock.currentWar.findFirst.mockResolvedValue(null);
+    prismaMock.clanWarHistory.findMany.mockResolvedValue([
+      { warId: 9001, warEndTime: null, opponentName: null },
+      { warId: 9002, warEndTime: new Date("2026-03-10T00:00:00.000Z"), opponentName: "Bravo" },
+    ]);
+    prismaMock.warLookup.findMany.mockResolvedValue([]);
+
     const interaction = makeInteraction({ tag: "AAA111", focused: "unknown" });
 
     await Fwa.autocomplete?.(interaction as any);
