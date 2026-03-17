@@ -10,6 +10,7 @@ import {
   type WarComplianceSnapshot,
   type WarEndResultSnapshot,
   computeWarPointsDeltaForTest,
+  normalizeOutcome,
   normalizeTag,
   parseCocTime,
 } from "./core";
@@ -20,7 +21,7 @@ export class WarEventHistoryService {
   constructor(
     private readonly coc: CoCService,
     private readonly pointsSync = new PointsSyncService(),
-    private readonly compliance = new WarComplianceService()
+    private readonly compliance = new WarComplianceService(),
   ) {}
 
   /** Purpose: build the war-end points line text shown in event embeds. */
@@ -31,16 +32,18 @@ export class WarEventHistoryService {
       warStartFwaPoints: number | null;
       warEndFwaPoints: number | null;
     },
-    finalResult: WarEndResultSnapshot
+    finalResult: WarEndResultSnapshot,
   ): string {
     const _finalResult = finalResult;
     void _finalResult;
     const before =
-      payload.warStartFwaPoints !== null && Number.isFinite(payload.warStartFwaPoints)
+      payload.warStartFwaPoints !== null &&
+      Number.isFinite(payload.warStartFwaPoints)
         ? Math.trunc(payload.warStartFwaPoints)
         : null;
     const after =
-      payload.warEndFwaPoints !== null && Number.isFinite(payload.warEndFwaPoints)
+      payload.warEndFwaPoints !== null &&
+      Number.isFinite(payload.warEndFwaPoints)
         ? Math.trunc(payload.warEndFwaPoints)
         : null;
     if (before === null && after === null) {
@@ -112,7 +115,11 @@ export class WarEventHistoryService {
           clanTag,
           ...(opponentTag ? { opponentTag } : {}),
         },
-        orderBy: [{ warEndTime: "desc" }, { warStartTime: "desc" }, { updatedAt: "desc" }],
+        orderBy: [
+          { warEndTime: "desc" },
+          { warStartTime: "desc" },
+          { updatedAt: "desc" },
+        ],
         select: {
           warId: true,
           syncNumber: true,
@@ -128,11 +135,15 @@ export class WarEventHistoryService {
 
     return {
       warId:
-        row.warId !== null && row.warId !== undefined && Number.isFinite(Number(row.warId))
+        row.warId !== null &&
+        row.warId !== undefined &&
+        Number.isFinite(Number(row.warId))
           ? Math.trunc(Number(row.warId))
           : null,
       syncNumber:
-        row.syncNumber !== null && row.syncNumber !== undefined && Number.isFinite(Number(row.syncNumber))
+        row.syncNumber !== null &&
+        row.syncNumber !== undefined &&
+        Number.isFinite(Number(row.syncNumber))
           ? Math.trunc(Number(row.syncNumber))
           : null,
       clanName: row.clanName ?? null,
@@ -152,7 +163,7 @@ export class WarEventHistoryService {
     opponentNameInput?: string | null,
     _phase: "prep" | "battle" = "battle",
     clanNameInput?: string | null,
-    options?: { forcedLoseStyle?: FwaLoseStyle | null }
+    options?: { forcedLoseStyle?: FwaLoseStyle | null },
   ): Promise<string | null> {
     let guildId: string | null | undefined = guildIdOrMatchType;
     let matchType = matchTypeOrExpectedOutcome as MatchType;
@@ -161,11 +172,16 @@ export class WarEventHistoryService {
     let opponentNameInputResolved = opponentNameInput;
 
     const legacyMatchType = String(guildIdOrMatchType ?? "").toUpperCase();
-    if (legacyMatchType === "FWA" || legacyMatchType === "BL" || legacyMatchType === "MM") {
+    if (
+      legacyMatchType === "FWA" ||
+      legacyMatchType === "BL" ||
+      legacyMatchType === "MM"
+    ) {
       guildId = null;
       matchType = legacyMatchType as MatchType;
       expectedOutcome =
-        matchTypeOrExpectedOutcome === "WIN" || matchTypeOrExpectedOutcome === "LOSE"
+        matchTypeOrExpectedOutcome === "WIN" ||
+        matchTypeOrExpectedOutcome === "LOSE"
           ? matchTypeOrExpectedOutcome
           : null;
       clanTag = String(expectedOutcomeOrClanTag ?? "");
@@ -175,12 +191,19 @@ export class WarEventHistoryService {
     const normalizedClanTag = normalizeTag(clanTag);
     const normalizedClanTagWithHash = normalizedClanTag || "";
     const normalizedClanTagBare = normalizedClanTag.replace(/^#/, "");
-    const opponentName = String(opponentNameInputResolved ?? "").trim() || "Unknown";
-    const clanName = String(clanNameInput ?? "").trim() || normalizedClanTagWithHash || "Our Clan";
+    const opponentName =
+      String(opponentNameInputResolved ?? "").trim() || "Unknown";
+    const clanName =
+      String(clanNameInput ?? "").trim() ||
+      normalizedClanTagWithHash ||
+      "Our Clan";
     const applyPlaceholders = (planText: string): string =>
-      planText.replace(/\{opponent\}/gi, opponentName).replace(/\{clan\}/gi, clanName);
+      planText
+        .replace(/\{opponent\}/gi, opponentName)
+        .replace(/\{clan\}/gi, clanName);
     const forcedLoseStyle =
-      options?.forcedLoseStyle === "TRADITIONAL" || options?.forcedLoseStyle === "TRIPLE_TOP_30"
+      options?.forcedLoseStyle === "TRADITIONAL" ||
+      options?.forcedLoseStyle === "TRIPLE_TOP_30"
         ? options.forcedLoseStyle
         : null;
     let loseStyleCache: FwaLoseStyle | null = null;
@@ -193,7 +216,9 @@ export class WarEventHistoryService {
     };
     if (guildId) {
       const matchTypeKey: "FWA" | "BL" | "MM" =
-        matchType === "BL" || matchType === "MM" || matchType === "FWA" ? matchType : "FWA";
+        matchType === "BL" || matchType === "MM" || matchType === "FWA"
+          ? matchType
+          : "FWA";
       const outcomeKey =
         matchTypeKey === "FWA"
           ? expectedOutcome === "WIN" || expectedOutcome === "LOSE"
@@ -201,19 +226,26 @@ export class WarEventHistoryService {
             : "ANY"
           : "ANY";
       const loseStyle =
-        matchTypeKey === "FWA" && outcomeKey === "LOSE" ? await getLoseStyle() : "ANY";
-      const loseStyleKey =
         matchTypeKey === "FWA" && outcomeKey === "LOSE"
-          ? loseStyle
+          ? await getLoseStyle()
           : "ANY";
+      const loseStyleKey =
+        matchTypeKey === "FWA" && outcomeKey === "LOSE" ? loseStyle : "ANY";
       try {
         const customPlan = await prisma.clanWarPlan.findFirst({
           where: {
             guildId,
             scope: "CUSTOM",
             OR: [
-              { clanTag: { equals: normalizedClanTagWithHash, mode: "insensitive" } },
-              { clanTag: { equals: normalizedClanTagBare, mode: "insensitive" } },
+              {
+                clanTag: {
+                  equals: normalizedClanTagWithHash,
+                  mode: "insensitive",
+                },
+              },
+              {
+                clanTag: { equals: normalizedClanTagBare, mode: "insensitive" },
+              },
             ],
             matchType: matchTypeKey,
             outcome: outcomeKey,
@@ -349,15 +381,21 @@ export class WarEventHistoryService {
     });
     const attacks = await prisma.warAttacks.findMany({
       where: { clanTag, warStartTime },
-      orderBy: [{ attackSeenAt: "asc" }, { attackOrder: "asc" }, { playerTag: "asc" }],
+      orderBy: [
+        { attackSeenAt: "asc" },
+        { attackOrder: "asc" },
+        { playerTag: "asc" },
+      ],
     });
     const warEndTime =
       finalResult.warEndTime ??
-      (await prisma.warAttacks.findFirst({
-        where: { clanTag, warStartTime, attackOrder: 0 },
-        orderBy: { updatedAt: "desc" },
-        select: { warEndTime: true },
-      }))?.warEndTime ??
+      (
+        await prisma.warAttacks.findFirst({
+          where: { clanTag, warStartTime, attackOrder: 0 },
+          orderBy: { updatedAt: "desc" },
+          select: { warEndTime: true },
+        })
+      )?.warEndTime ??
       null;
 
     const pointsDelta = this.computeWarPointsDelta({
@@ -367,7 +405,8 @@ export class WarEventHistoryService {
       finalResult,
     });
     const resolvedPointsAfterWar =
-      payload.warEndFwaPoints !== null && Number.isFinite(payload.warEndFwaPoints)
+      payload.warEndFwaPoints !== null &&
+      Number.isFinite(payload.warEndFwaPoints)
         ? payload.warEndFwaPoints
         : payload.warStartFwaPoints !== null &&
             Number.isFinite(payload.warStartFwaPoints) &&
@@ -379,13 +418,38 @@ export class WarEventHistoryService {
       finalResult.resultLabel === "UNKNOWN" && payload.outcome
         ? payload.outcome
         : finalResult.resultLabel;
+    
+    const currentSnapshot = await prisma.currentWar.findFirst({
+      where: { clanTag, startTime: warStartTime },
+      select: {
+        guildId: true,
+        inferredMatchType: true,
+        matchType: true,
+        state: true,
+        outcome: true,
+        clanName: true,
+        opponentTag: true,
+        opponentName: true,
+        startTime: true,
+        endTime: true,
+      },
+    });
+
+    
+    const resolvedExpectedOutcome: "WIN" | "LOSE" | null =
+      normalizeOutcome(payload.outcome) ??
+      normalizeOutcome(currentSnapshot?.outcome ?? null) ??
+      (payload.matchType === "FWA" &&
+      (resolvedActualOutcome === "WIN" || resolvedActualOutcome === "LOSE")
+        ? resolvedActualOutcome
+        : null);
 
     const row = await prisma.$queryRaw<Array<{ warId: number }>>(
       Prisma.sql`
         INSERT INTO "ClanWarHistory"
           ("syncNumber","matchType","clanStars","clanDestruction","opponentStars","opponentDestruction","pointsAfterWar","expectedOutcome","actualOutcome","prepStartTime","warStartTime","warEndTime","clanName","clanTag","opponentName","opponentTag","updatedAt")
         VALUES
-          (${payload.syncNumber}, CAST(${payload.matchType} AS "WarMatchType"), ${finalResult.clanStars}, ${finalResult.clanDestruction}, ${finalResult.opponentStars}, ${finalResult.opponentDestruction}, ${resolvedPointsAfterWar}, ${payload.outcome}, ${resolvedActualOutcome}, ${payload.prepStartTime}, ${warStartTime}, ${warEndTime}, ${payload.clanName}, ${clanTag}, ${payload.opponentName}, ${normalizeTag(payload.opponentTag) || null}, NOW())
+          (${payload.syncNumber}, CAST(${payload.matchType} AS "WarMatchType"), ${finalResult.clanStars}, ${finalResult.clanDestruction}, ${finalResult.opponentStars}, ${finalResult.opponentDestruction}, ${resolvedPointsAfterWar}, ${resolvedExpectedOutcome}, ${resolvedActualOutcome}, ${payload.prepStartTime}, ${warStartTime}, ${warEndTime}, ${payload.clanName}, ${clanTag}, ${payload.opponentName}, ${normalizeTag(payload.opponentTag) || null}, NOW())
         ON CONFLICT ("warStartTime","clanTag","opponentTag")
         DO UPDATE SET
           "syncNumber" = EXCLUDED."syncNumber",
@@ -404,7 +468,7 @@ export class WarEventHistoryService {
           "opponentTag" = EXCLUDED."opponentTag",
           "updatedAt" = NOW()
         RETURNING "warId"
-      `
+      `,
     );
     const warId = Number(row[0]?.warId ?? NaN);
     if (!Number.isFinite(warId)) return;
@@ -424,20 +488,7 @@ export class WarEventHistoryService {
       warId: String(warId),
     });
 
-    const currentSnapshot = await prisma.currentWar.findFirst({
-      where: { clanTag, startTime: warStartTime },
-      select: {
-        guildId: true,
-        inferredMatchType: true,
-        matchType: true,
-        state: true,
-        clanName: true,
-        opponentTag: true,
-        opponentName: true,
-        startTime: true,
-        endTime: true,
-      },
-    });
+    
     const syncRow = currentSnapshot?.guildId
       ? await this.pointsSync.getCurrentSyncForClan({
           guildId: currentSnapshot.guildId,
@@ -468,14 +519,15 @@ export class WarEventHistoryService {
         trueStars: a.trueStars,
         destruction: a.destruction,
         order: a.attackOrder,
-        attackSeenAt: a.attackSeenAt instanceof Date ? a.attackSeenAt.toISOString() : null,
+        attackSeenAt:
+          a.attackSeenAt instanceof Date ? a.attackSeenAt.toISOString() : null,
       }));
     const mirrorHits = attacksPayload.filter((a) => {
       const row = attacks.find(
         (x) =>
           x.playerTag === a.attackerTag &&
           x.defenderTag === a.defenderTag &&
-          Number(x.attackOrder) === Number(a.order)
+          Number(x.attackOrder) === Number(a.order),
       );
       if (!row) return false;
       return (
@@ -521,7 +573,10 @@ export class WarEventHistoryService {
         })),
       },
       opponent: {
-        tag: normalizeTag(payload.opponentTag) || currentSnapshot?.opponentTag || null,
+        tag:
+          normalizeTag(payload.opponentTag) ||
+          currentSnapshot?.opponentTag ||
+          null,
         name: payload.opponentName ?? currentSnapshot?.opponentName ?? null,
         members: Array.from(
           new Map(
@@ -535,8 +590,8 @@ export class WarEventHistoryService {
                   mapPosition: a.defenderPosition,
                   townHall: null,
                 },
-              ])
-          ).values()
+              ]),
+          ).values(),
         ),
       },
       attacks: attacksPayload,
@@ -578,13 +633,16 @@ export class WarEventHistoryService {
           "endTime" = EXCLUDED."endTime",
           "result" = EXCLUDED."result",
           "payload" = EXCLUDED."payload"
-      `
+      `,
     );
     await this.persistWarParticipationSnapshot({
       guildId: currentSnapshot?.guildId ?? null,
       warId: String(warId),
       clanTag,
-      opponentTag: normalizeTag(payload.opponentTag) || currentSnapshot?.opponentTag || null,
+      opponentTag:
+        normalizeTag(payload.opponentTag) ||
+        currentSnapshot?.opponentTag ||
+        null,
       warStartTime: currentSnapshot?.startTime ?? warStartTime,
       warEndTime: currentSnapshot?.endTime ?? warEndTime,
       matchType: currentSnapshot?.matchType ?? payload.matchType,
@@ -612,29 +670,39 @@ export class WarEventHistoryService {
     const normalizedOpponentTag = normalizeTag(input.opponentTag);
 
     const matched =
-      log.find((entry) => normalizeTag(entry.opponent?.tag ?? "") === normalizedOpponentTag) ??
+      log.find(
+        (entry) =>
+          normalizeTag(entry.opponent?.tag ?? "") === normalizedOpponentTag,
+      ) ??
       log[0] ??
       null;
 
-    const clanStars =
-      Number.isFinite(Number(matched?.clan?.stars))
-        ? Number(matched?.clan?.stars)
-        : input.fallbackClanStars;
-    const opponentStars =
-      Number.isFinite(Number(matched?.opponent?.stars))
-        ? Number(matched?.opponent?.stars)
-        : input.fallbackOpponentStars;
-    const clanDestruction = Number.isFinite(Number(matched?.clan?.destructionPercentage))
+    const clanStars = Number.isFinite(Number(matched?.clan?.stars))
+      ? Number(matched?.clan?.stars)
+      : input.fallbackClanStars;
+    const opponentStars = Number.isFinite(Number(matched?.opponent?.stars))
+      ? Number(matched?.opponent?.stars)
+      : input.fallbackOpponentStars;
+    const clanDestruction = Number.isFinite(
+      Number(matched?.clan?.destructionPercentage),
+    )
       ? Number(matched?.clan?.destructionPercentage)
       : null;
-    const opponentDestruction = Number.isFinite(Number(matched?.opponent?.destructionPercentage))
+    const opponentDestruction = Number.isFinite(
+      Number(matched?.opponent?.destructionPercentage),
+    )
       ? Number(matched?.opponent?.destructionPercentage)
       : null;
     const warEndTime = parseCocTime(matched?.endTime ?? null);
 
     let resultLabel: "WIN" | "LOSE" | "TIE" | "UNKNOWN" = "UNKNOWN";
     if (clanStars !== null && opponentStars !== null) {
-      resultLabel = clanStars > opponentStars ? "WIN" : clanStars < opponentStars ? "LOSE" : "TIE";
+      resultLabel =
+        clanStars > opponentStars
+          ? "WIN"
+          : clanStars < opponentStars
+            ? "LOSE"
+            : "TIE";
     } else if (matched?.result) {
       const result = String(matched.result).toLowerCase();
       if (result.includes("win")) resultLabel = "WIN";
@@ -657,7 +725,7 @@ export class WarEventHistoryService {
     clanTagInput: string,
     preferredWarStartTime: Date | null,
     matchType: MatchType,
-    expectedOutcome: "WIN" | "LOSE" | null
+    expectedOutcome: "WIN" | "LOSE" | null,
   ): Promise<WarComplianceSnapshot> {
     return this.compliance.getComplianceSnapshot({
       clanTag: clanTagInput,
@@ -668,7 +736,9 @@ export class WarEventHistoryService {
   }
 
   /** Purpose: read configured lose-war style for a tracked clan. */
-  private async getLoseStyleForClan(clanTagInput: string): Promise<FwaLoseStyle> {
+  private async getLoseStyleForClan(
+    clanTagInput: string,
+  ): Promise<FwaLoseStyle> {
     const clanTagWithHash = normalizeTag(clanTagInput);
     const clanTagBare = clanTagWithHash.replace(/^#/, "");
     if (!clanTagWithHash) return "TRIPLE_TOP_30";
@@ -739,14 +809,15 @@ export class WarEventHistoryService {
       const firstAttackAt =
         attackRows.length > 0
           ? new Date(
-              Math.min(
-                ...attackRows.map((row) => row.attackSeenAt.getTime())
-              )
+              Math.min(...attackRows.map((row) => row.attackSeenAt.getTime())),
             )
           : null;
       const attackDelayMinutes =
         firstAttackAt !== null
-          ? Math.max(0, Math.floor((firstAttackAt.getTime() - battleDayStartMs) / 60000))
+          ? Math.max(
+              0,
+              Math.floor((firstAttackAt.getTime() - battleDayStartMs) / 60000),
+            )
           : null;
       return {
         guildId,
@@ -754,17 +825,28 @@ export class WarEventHistoryService {
         clanTag: input.clanTag,
         opponentTag: input.opponentTag,
         playerTag: player.playerTag,
-        playerName: player.playerName?.trim() || attackRows[0]?.playerName?.trim() || player.playerTag,
+        playerName:
+          player.playerName?.trim() ||
+          attackRows[0]?.playerName?.trim() ||
+          player.playerTag,
         townHall: null,
         attacksUsed,
         attacksMissed: Math.max(0, 2 - attacksUsed),
-        starsEarned: attackRows.reduce((sum, row) => sum + Number(row.stars || 0), 0),
-        trueStars: attackRows.reduce((sum, row) => sum + Number(row.trueStars || 0), 0),
+        starsEarned: attackRows.reduce(
+          (sum, row) => sum + Number(row.stars || 0),
+          0,
+        ),
+        trueStars: attackRows.reduce(
+          (sum, row) => sum + Number(row.trueStars || 0),
+          0,
+        ),
         missedBoth: attacksUsed === 0,
         firstAttackAt,
         attackDelayMinutes,
         attackWindowMissed:
-          firstAttackAt !== null ? firstAttackAt.getTime() > firstAttackWindowCloseMs : null,
+          firstAttackAt !== null
+            ? firstAttackAt.getTime() > firstAttackWindowCloseMs
+            : null,
         matchType: input.matchType ?? "FWA",
         warStartTime: input.warStartTime,
         warEndTime: input.warEndTime,
@@ -778,6 +860,3 @@ export class WarEventHistoryService {
     });
   }
 }
-
-
-

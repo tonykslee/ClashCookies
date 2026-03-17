@@ -1159,6 +1159,7 @@ export class WarComplianceService {
     const clanTagWhere = buildClanTagWhere(input.clanTag);
     const stateWhere = {
       OR: [
+        //
         { state: { equals: "preparation", mode: "insensitive" as const } },
         { state: { equals: "inWar", mode: "insensitive" as const } },
       ],
@@ -1290,6 +1291,7 @@ export class WarComplianceService {
         warEndTime: true,
         matchType: true,
         expectedOutcome: true,
+        actualOutcome: true,
         clanName: true,
         opponentName: true,
       },
@@ -1299,7 +1301,7 @@ export class WarComplianceService {
     const [lookupRow, participationRows] = await Promise.all([
       prisma.warLookup.findUnique({
         where: { warId: String(historyRow.warId) },
-        select: { payload: true, endTime: true },
+        select: { payload: true, result: true, endTime: true },
       }),
       prisma.clanWarParticipation.findMany({
         where: {
@@ -1370,7 +1372,12 @@ export class WarComplianceService {
       warStartTime: historyRow.warStartTime,
       warEndTime,
       matchType: normalizeMatchType(historyRow.matchType as string | null),
-      expectedOutcome: normalizeOutcome(historyRow.expectedOutcome),
+      expectedOutcome:
+        normalizeOutcome(historyRow.expectedOutcome) ??
+        normalizeOutcome(historyRow.actualOutcome) ??
+        normalizeOutcome(
+          typeof lookupRow?.result === "string" ? lookupRow.result : null,
+        ),
       participants,
       attacks,
       source: "war_lookup",
