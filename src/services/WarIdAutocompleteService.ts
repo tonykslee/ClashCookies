@@ -16,7 +16,10 @@ const DEFAULT_RESULT_LIMIT = 10;
 const DEFAULT_TIME_ZONE = "UTC";
 
 function normalizeTagBare(input: string | null | undefined): string {
-  return String(input ?? "").trim().toUpperCase().replace(/^#/, "");
+  return String(input ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/^#/, "");
 }
 
 function parseDateLike(value: unknown): Date | null {
@@ -57,10 +60,18 @@ function parseLookupPayload(payload: unknown): {
   };
 }
 
-function compareCandidates(left: WarAutocompleteCandidate, right: WarAutocompleteCandidate): number {
-  const leftTime = left.endedAt instanceof Date ? left.endedAt.getTime() : Number.NEGATIVE_INFINITY;
+function compareCandidates(
+  left: WarAutocompleteCandidate,
+  right: WarAutocompleteCandidate,
+): number {
+  const leftTime =
+    left.endedAt instanceof Date
+      ? left.endedAt.getTime()
+      : Number.NEGATIVE_INFINITY;
   const rightTime =
-    right.endedAt instanceof Date ? right.endedAt.getTime() : Number.NEGATIVE_INFINITY;
+    right.endedAt instanceof Date
+      ? right.endedAt.getTime()
+      : Number.NEGATIVE_INFINITY;
   if (leftTime !== rightTime) return rightTime - leftTime;
   return right.warId - left.warId;
 }
@@ -71,13 +82,14 @@ function buildLabel(input: {
   opponentName: string | null;
   timeZone: string;
 }): string {
-  const ended = input.endedAt instanceof Date
-    ? new Intl.DateTimeFormat("en-US", {
-        timeZone: input.timeZone,
-        month: "2-digit",
-        day: "2-digit",
-      }).format(input.endedAt)
-    : "??/??";
+  const ended =
+    input.endedAt instanceof Date
+      ? new Intl.DateTimeFormat("en-US", {
+          timeZone: input.timeZone,
+          month: "2-digit",
+          day: "2-digit",
+        }).format(input.endedAt)
+      : "??/??";
   const opponent = input.opponentName ?? "Unknown Opponent";
   return `${input.warId} | ended: ${ended} | ${opponent}`.slice(0, 100);
 }
@@ -89,6 +101,8 @@ export async function getClanScopedWarIdAutocompleteChoices(input: {
   timeZone?: string;
   candidateLimit?: number;
   resultLimit?: number;
+  includeOngoing?: boolean;
+  guildId?: string | null;
 }): Promise<WarAutocompleteChoice[]> {
   const bareTag = normalizeTagBare(input.rawClanTag);
   if (!bareTag) return [];
@@ -107,10 +121,66 @@ export async function getClanScopedWarIdAutocompleteChoices(input: {
   const trackedBareTag = normalizeTagBare(trackedClan.tag);
   if (!trackedBareTag) return [];
   const clanTagValues = [...new Set([`#${trackedBareTag}`, trackedBareTag])];
-  const candidateLimit = Math.max(1, Math.trunc(Number(input.candidateLimit ?? DEFAULT_CANDIDATE_LIMIT)));
-  const resultLimit = Math.max(1, Math.trunc(Number(input.resultLimit ?? DEFAULT_RESULT_LIMIT)));
-  const timeZone = String(input.timeZone ?? DEFAULT_TIME_ZONE).trim() || DEFAULT_TIME_ZONE;
+  const candidateLimit = Math.max(
+    1,
+    Math.trunc(Number(input.candidateLimit ?? DEFAULT_CANDIDATE_LIMIT)),
+  );
+  const resultLimit = Math.max(
+    1,
+    Math.trunc(Number(input.resultLimit ?? DEFAULT_RESULT_LIMIT)),
+  );
+  const timeZone =
+    String(input.timeZone ?? DEFAULT_TIME_ZONE).trim() || DEFAULT_TIME_ZONE;
 
+  const choices: WarAutocompleteChoice[] = [];
+
+  if (input.includeOngoing && input.guildId) {
+    const currentRow = await prisma.currentWar.findFirst({
+      where: {
+        guildId: input.guildId,
+        AND: [
+          {
+            OR: clanTagValues.map((value) => ({
+              clanTag: { equals: value, mode: "insensitive" as const },
+            })),
+          },
+          {
+            OR: [
+              {
+                state: { equals: "preparation", mode: "insensitive" as const },
+              },
+              { state: { equals: "inWar", mode: "insensitive" as const } },
+            ],
+          },
+        ],
+      },
+      orderBy: [{ updatedAt: "desc" }],
+      select: {
+        warId: true,
+        opponentName: true,
+      },
+    });
+
+    const currentWarId =
+      currentRow?.warId !== null &&
+      currentRow?.warId !== undefined &&
+      Number.isFinite(Number(currentRow.warId)) &&
+      Math.trunc(Number(currentRow.warId)) > 0
+        ? Math.trunc(Number(currentRow.warId))
+        : null;
+
+    if (currentWarId !== null) {
+      const currentChoice = {
+        name: `Ongoing | ${currentWarId} | ${String(currentRow?.opponentName ?? "").trim() || "Unknown Opponent"}`.slice(
+          0,
+          100,
+        ),
+        value: "Ongoing",
+      };
+
+      choices.push(currentChoice);
+    }
+  }
   const [historyRows, lookupRows] = await Promise.all([
     prisma.clanWarHistory.findMany({
       where: {
@@ -126,7 +196,9 @@ export async function getClanScopedWarIdAutocompleteChoices(input: {
     }),
     prisma.warLookup.findMany({
       where: {
-        OR: clanTagValues.map((value) => ({ clanTag: { equals: value, mode: "insensitive" } })),
+        OR: clanTagValues.map((value) => ({
+          clanTag: { equals: value, mode: "insensitive" },
+        })),
       },
       orderBy: [{ endTime: "desc" }, { startTime: "desc" }],
       take: candidateLimit,
@@ -154,7 +226,10 @@ export async function getClanScopedWarIdAutocompleteChoices(input: {
     if (!Number.isFinite(warId) || Math.trunc(warId) <= 0) continue;
     const normalizedWarId = Math.trunc(warId);
     const parsedPayload = parseLookupPayload(row.payload);
-    const endedAt = (row.endTime instanceof Date ? row.endTime : null) ?? parsedPayload.endedAt ?? null;
+    const endedAt =
+      (row.endTime instanceof Date ? row.endTime : null) ??
+      parsedPayload.endedAt ??
+      null;
     const existing = byWarId.get(normalizedWarId);
     if (!existing && !(endedAt instanceof Date)) {
       // Lookup-only rows without ended time are not eligible for ended-war suggestions.
@@ -175,8 +250,11 @@ export async function getClanScopedWarIdAutocompleteChoices(input: {
     byWarId.set(normalizedWarId, next);
   }
 
-  const query = String(input.focusedText ?? "").trim().toLowerCase();
-  return [...byWarId.values()]
+  const query = String(input.focusedText ?? "")
+    .trim()
+    .toLowerCase();
+
+  const historicalChoices = [...byWarId.values()]
     .sort(compareCandidates)
     .map((candidate) => ({
       name: buildLabel({
@@ -188,14 +266,15 @@ export async function getClanScopedWarIdAutocompleteChoices(input: {
       value: String(candidate.warId),
       opponentName: candidate.opponentName ?? "Unknown Opponent",
     }))
+    .map((candidate) => ({ name: candidate.name, value: candidate.value }));
+
+  return [...choices, ...historicalChoices]
     .filter((candidate) => {
       if (!query) return true;
       return (
         candidate.value.toLowerCase().includes(query) ||
-        candidate.opponentName.toLowerCase().includes(query) ||
         candidate.name.toLowerCase().includes(query)
       );
     })
-    .slice(0, resultLimit)
-    .map((candidate) => ({ name: candidate.name, value: candidate.value }));
+    .slice(0, resultLimit);
 }
