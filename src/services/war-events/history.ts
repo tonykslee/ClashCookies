@@ -257,7 +257,7 @@ export class WarEventHistoryService {
 
     if (matchType === "BL") {
       return [
-        `# \u26ab\ufe0f ${clanName} vs ${opponentName} \ud83c\udff4\u200d\u2620\ufe0f`,
+        `# \u26ab\ufe0f __**BLACKLIST**__ vs ${opponentName} \ud83c\udff4\u200d\u2620\ufe0f`,
         "Everyone switch to WAR BASES!!",
         "This is our opportunity to gain some extra FWA points!",
         "\u2795 30+ people switch to war base = +1 point",
@@ -270,7 +270,7 @@ export class WarEventHistoryService {
 
     if (matchType === "MM") {
       return [
-        `# \u26aa\ufe0f ${clanName} vs ${opponentName} :sob:`,
+        `# \u26aa\ufe0f __**MISMATCH**__ vs ${opponentName} :sob:`,
         "Keep WA base active, attack what you can!",
       ].join("\n");
     }
@@ -278,7 +278,7 @@ export class WarEventHistoryService {
     if (matchType !== "FWA") return null;
     if (expectedOutcome === "WIN") {
       return [
-        `# \ud83d\udfe2 ${clanName} vs ${opponentName} \ud83d\udc9a`,
+        `# \ud83d\udfe2 __**WIN**__ vs ${opponentName} \ud83d\udc9a`,
         "\ud83d\udde1\ufe0f 1st Attack: \u2605 \u2605 \u2605 -> Mirror",
         "\ud83d\udde1\ufe0f 2nd Attack: \u2605 \u2605 \u2606 -> any",
         "\u231b\ufe0f Only after 101+ stars -> Attack ANY base",
@@ -288,14 +288,14 @@ export class WarEventHistoryService {
       const loseStyle = await getLoseStyle();
       if (loseStyle === "TRIPLE_TOP_30") {
         return [
-          `# \ud83d\udd34 ${clanName} vs ${opponentName} \u2764\ufe0f`,
+          `# \ud83d\udd34 __**LOSE**__ vs ${opponentName} \u2764\ufe0f`,
           "\ud83d\udde1\ufe0f Attack any of the top 30 bases for 1-3 stars",
           "\ud83d\udeab Do NOT attack the bottom 20 bases",
           "\ud83c\udfaf Goal is 90 stars (do not cross)",
         ].join("\n");
       }
       return [
-        `# \ud83d\udd34 ${clanName} vs ${opponentName} \u2764\ufe0f`,
+        `# \ud83d\udd34 __**LOSE**__ vs ${opponentName} \u2764\ufe0f`,
         "\ud83d\udde1\ufe0f 1st Attack: \u2605 \u2605 \u2606 -> Mirror",
         "\ud83d\udde1\ufe0f 2nd Attack: \u2605 \u2606 \u2606 -> any",
         "\u23f3 Last 12hrs: \u2605 \u2605 \u2606 -> any",
