@@ -377,9 +377,8 @@ async function getCurrentOrDefaultPlanData(params: {
           allBasesOpenHoursLeft: DEFAULT_TRADITIONAL_MODAL_ALL_BASES_OPEN_HOURS_LEFT,
         }
       : {
-          nonMirrorTripleMinClanStars:
-            resolvedConfig.nonMirrorTripleMinClanStars,
-          allBasesOpenHoursLeft: resolvedConfig.allBasesOpenHoursLeft,
+          nonMirrorTripleMinClanStars: 0,
+          allBasesOpenHoursLeft: 0,
         };
 
   return {
