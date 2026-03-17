@@ -364,10 +364,13 @@ function resolveLinkedUserDisplayName(
   discordUserId: string,
   persistedDiscordUsername: string | null
 ): string {
-  const memberDisplay = sanitizeTableText(
-    interaction.guild?.members?.cache.get(discordUserId)?.displayName ?? ""
-  );
+  const member = interaction.guild?.members?.cache.get(discordUserId) ?? null;
+
+  const memberDisplay = sanitizeTableText(member?.displayName ?? "");
   if (memberDisplay.length > 0) return memberDisplay;
+
+  const username = sanitizeTableText(member?.user?.username ?? "");
+  if (username.length > 0) return username;
 
   const persisted = sanitizeTableText(persistedDiscordUsername ?? "");
   if (persisted.length > 0) return persisted;
@@ -472,9 +475,26 @@ async function buildLinkListView(input: {
     };
   }
 
-  const links = await listPlayerLinksForClanMembers({
+    const links = await listPlayerLinksForClanMembers({
     memberTagsInOrder: members.map((row) => row.playerTag),
   });
+
+  const linkedUserIds = [
+    ...new Set(
+      links
+        .map((row) => normalizeDiscordUserId(row.discordUserId))
+        .filter((value): value is string => Boolean(value))
+    ),
+  ];
+
+  if (input.interaction.guild && linkedUserIds.length > 0) {
+    try {
+      await input.interaction.guild.members.fetch({ user: linkedUserIds });
+    } catch {
+      // Best effort only. Fall back to persisted usernames for uncached members.
+    }
+  }
+
   const linkByTag = new Map(links.map((row) => [row.playerTag, row]));
   const linkedRows: LinkListRowInput[] = [];
   const unlinkedRows: LinkListRowInput[] = [];
