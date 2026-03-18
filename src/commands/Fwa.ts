@@ -316,7 +316,7 @@ function renderFwaBaseSwapAnnouncement(
   const parts: string[] = [];
   if (warBaseLines.length > 0) {
     parts.push(
-      `# ${alertEmoji} YOU HAVE AN ACTIVE WAR BASE ${alertEmoji}`,
+      `# <a:alert:1480828443531673700> YOU HAVE AN ACTIVE WAR BASE <a:alert:1480828443531673700>`,
       "",
       ...warBaseLines,
       "",
