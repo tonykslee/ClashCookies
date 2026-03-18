@@ -1,6 +1,7 @@
-import { Client, GatewayIntentBits } from "discord.js";
+import { Client, GatewayIntentBits, Partials } from "discord.js";
 import ready from "./listeners/ready";
 import interactionCreate from "./listeners/interactionCreate";
+import messageReactionAdd from "./listeners/messageReactionAdd";
 import { CoCService } from "./services/CoCService";
 import {
   formatStartupLogFields,
@@ -22,7 +23,9 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.GuildMessageReactions,
   ],
+  partials: [Partials.Message, Partials.Channel, Partials.Reaction, Partials.User],
   rest: {
     timeout: discordRestTimeoutMs,
   },
@@ -32,6 +35,7 @@ const cocService = new CoCService();
 
 // Register listeners once before login attempts.
 interactionCreate(client, cocService);
+messageReactionAdd(client);
 ready(client, cocService);
 
 async function loginWithRetry(): Promise<void> {
