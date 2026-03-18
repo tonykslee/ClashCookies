@@ -10202,6 +10202,19 @@ export const Fwa: Command = {
         return;
       }
 
+      console.log("alertEmoji:", alertEmoji);
+      console.log(
+        "client alert emojis:",
+        interaction.client.emojis.cache
+          .filter((e) => e.name === "alert")
+          .map((e) => ({
+            id: e.id,
+            name: e.name,
+            animated: e.animated,
+            guildId: e.guild?.id,
+            rendered: e.toString(),
+          })),
+      );
       const content = truncateDiscordContent(
         renderFwaBaseSwapAnnouncement({ entries }, { alertEmoji }),
       );
