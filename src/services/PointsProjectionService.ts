@@ -1,7 +1,7 @@
 import axios from "axios";
 import { CoCService } from "./CoCService";
 import { recordFetchEvent } from "../helper/fetchTelemetry";
-import type { PointsApiFetchReason } from "./PointsFetchPolicyService";
+import type { PointsApiFetchReason } from "./PointsFetchTypes";
 import { prisma } from "../prisma";
 import {
   PointsDirectFetchGateService,

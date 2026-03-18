@@ -1,5 +1,5 @@
 import { prisma } from "../prisma";
-import type { PointsApiFetchReason } from "./PointsFetchPolicyService";
+import type { PointsApiFetchReason } from "./PointsFetchTypes";
 
 type UpsertPointsSyncInput = {
   guildId: string;

@@ -7,16 +7,20 @@ describe("/fwa compliance command shape", () => {
     const compliance = Fwa.options?.find(
       (option) =>
         option.type === ApplicationCommandOptionType.Subcommand &&
-        option.name === "compliance"
+        option.name === "compliance",
     );
     expect(compliance).toBeTruthy();
 
-    const tagOption = compliance?.options?.find((option) => option.name === "tag");
+    const tagOption = compliance?.options?.find(
+      (option: { name: string }) => option.name === "tag",
+    );
     expect(tagOption?.required).toBe(true);
     expect(tagOption?.type).toBe(ApplicationCommandOptionType.String);
 
-    const warIdOption = compliance?.options?.find((option) => option.name === "war-id");
-    expect(warIdOption?.required).toBe(false);
+    const warIdOption = compliance?.options?.find(
+      (option: { name: string }) => option.name === "war-id",
+    );
+    expect(warIdOption?.required).toBe(true);
     expect(warIdOption?.type).toBe(ApplicationCommandOptionType.String);
     expect(warIdOption?.autocomplete).toBe(true);
     expect(warIdOption?.description).toContain("Ongoing");

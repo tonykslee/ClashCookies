@@ -368,7 +368,7 @@ describe("/link run", () => {
       .filter((line: string) => line.startsWith("`") && line.endsWith("`"));
     expect(rows).toHaveLength(2);
 
-    const linkedRow = rows.find((line: string) => line.includes("Sin Display"));
+    const linkedRow = rows.find((line: string) => line.includes("Persisted Sin"));
     const unlinkedRow = rows.find((line: string) => line.includes("#QGRJ2222"));
     expect(linkedRow).toBeTruthy();
     expect(unlinkedRow).toBeTruthy();
@@ -541,10 +541,11 @@ describe("/link run", () => {
     expect(interaction.editReply).toHaveBeenCalledWith(
       [
         "sync_complete: inserted 3 new link(s).",
+        "updated existing links: 1",
+        "unchanged existing links skipped: 0",
         "eligible rows: 4",
-        "existing links skipped: 1",
         "duplicate sheet tags skipped: 0",
-        "missing required fields skipped: 1",
+        "rows missing Tag, ID, or Username skipped: 1",
         "invalid tags skipped: 0",
         "invalid discord ids skipped: 0",
       ].join("\n"),
@@ -702,7 +703,7 @@ describe("/link list select menu", () => {
     const description = payload.embeds[0].toJSON().description as string;
     expect(description).toContain("Linked Users: 1");
     expect(description).toContain("`15 |");
-    expect(description).toContain("Select Display Name");
+    expect(description).toContain("Persisted Select User");
     expect(description).not.toContain("<@111111111111111111>");
     expect(description).not.toContain("Unlinked users:");
     expect(reply).not.toHaveBeenCalled();
