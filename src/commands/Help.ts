@@ -83,14 +83,18 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     examples: ["/inactive days:7", "/inactive days:30", "/inactive wars:3"],
   },
   "clan-health": {
-    summary: "Leadership snapshot for one tracked clan using persisted data only.",
+    summary:
+      "Leadership snapshot for one tracked clan using persisted data only.",
     details: [
       "Shows match rate and win rate from the last 30 ended wars.",
       "Shows inactivity counts from two signals: missed both attacks in last 3 ended FWA wars, and last-seen inactivity >= 7 days.",
       "Shows missing Discord links among observed clan members updated within the configured stale window.",
       "Command path is DB-only (no live CoC/points HTTP calls).",
     ],
-    examples: ["/clan-health tag:2QG2C08UP", "/clan-health tag:2QG2C08UP visibility:public"],
+    examples: [
+      "/clan-health tag:2QG2C08UP",
+      "/clan-health tag:2QG2C08UP visibility:public",
+    ],
   },
   "role-users": {
     summary: "Show members in a role with paging controls.",
@@ -171,7 +175,8 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     ],
   },
   war: {
-    summary: "Query clan-level war history and export war attack payload by war ID.",
+    summary:
+      "Query clan-level war history and export war attack payload by war ID.",
     details: [
       "`/war history` shows recent clan-level war summary rows from ClanWarHistory.",
       "`/war war-id` exports the stored WarLookup payload as a CSV file for drill-down review.",
@@ -237,6 +242,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`list` renders non-zero linked/unlinked count buckets with padded inline rows: `TH | Player | ServerDisplayName` when guild member is resolvable, otherwise persisted linked username fallback (then `Unknown User`) or `TH | Player | #PLAYER_TAG` for unlinked rows.",
       "`embed` is admin-gated and posts a reusable self-service Link Account embed with button + modal flow.",
       "`list` includes a tracked-clan dropdown and updates the same message in place when switching clans.",
+      "`sync-clashperk` is admin-gated and imports missing local PlayerLink rows from a public Google Sheet with ClashPerk-style columns.",
     ],
     examples: [
       "/link create player-tag:#ABC123",
@@ -244,6 +250,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/link delete player-tag:#ABC123",
       "/link list clan-tag:2QG2C08UP",
       "/link embed channel:#link-account",
+      "/link sync-clashperk sheet-url:https://docs.google.com/spreadsheets/d/...",
     ],
   },
   fwa: {
@@ -360,10 +367,15 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`/sync post status` shows claimed vs unclaimed clans from the stored active sync post, or a provided message ID.",
       "`sync time` is admin-only by default.",
     ],
-    examples: ["/sync time post role:@War", "/sync post status", "/sync post status message-id:123456789012345678"],
+    examples: [
+      "/sync time post role:@War",
+      "/sync post status",
+      "/sync post status message-id:123456789012345678",
+    ],
   },
   force: {
-    summary: "Run manual repair and refresh actions for war data, points sync, and tracked messages.",
+    summary:
+      "Run manual repair and refresh actions for war data, points sync, and tracked messages.",
     details: [
       "`/force sync data` refreshes live points.fwafarm data into `ClanPointsSync` for the current war when possible.",
       "`/force sync mail` repairs tracked Discord message references in `ClanPostedMessage` and keeps legacy mail settings aligned for compatibility.",
@@ -384,7 +396,8 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     ],
   },
   remaining: {
-    summary: "Show remaining war timing for one tracked clan or alliance-wide active wars.",
+    summary:
+      "Show remaining war timing for one tracked clan or alliance-wide active wars.",
     details: [
       "`/remaining war tag:<tag>` returns one tracked clan's current phase end and relative remaining time.",
       "`/remaining war` (no tag) summarizes all tracked clans currently in active war using a 10-minute dominant-time cluster.",
@@ -449,7 +462,10 @@ function getAllCommands(): Command[] {
 
 function getAdminDefaultTargetsForCommand(commandName: string): string[] {
   return [...ADMIN_DEFAULT_TARGETS]
-    .filter((target) => target === commandName || target.startsWith(`${commandName}:`))
+    .filter(
+      (target) =>
+        target === commandName || target.startsWith(`${commandName}:`),
+    )
     .map((target) => `/${target.replaceAll(":", " ")}`);
 }
 
@@ -496,7 +512,7 @@ function buildUsageLines(command: Command): string[] {
         const subOptions = (subcommand.options ?? []) as HelpOption[];
         const argTokens = subOptions.map(formatOptionToken).join(" ");
         lines.push(
-          `/${command.name} ${option.name} ${subcommand.name}${argTokens ? ` ${argTokens}` : ""}`
+          `/${command.name} ${option.name} ${subcommand.name}${argTokens ? ` ${argTokens}` : ""}`,
         );
       }
       continue;
@@ -505,7 +521,9 @@ function buildUsageLines(command: Command): string[] {
     if (option.type === ApplicationCommandOptionType.Subcommand) {
       const subOptions = (option.options ?? []) as HelpOption[];
       const argTokens = subOptions.map(formatOptionToken).join(" ");
-      lines.push(`/${command.name} ${option.name}${argTokens ? ` ${argTokens}` : ""}`);
+      lines.push(
+        `/${command.name} ${option.name}${argTokens ? ` ${argTokens}` : ""}`,
+      );
       continue;
     }
   }
@@ -516,8 +534,14 @@ function buildUsageLines(command: Command): string[] {
   return [`/${command.name}${topLevelTokens ? ` ${topLevelTokens}` : ""}`];
 }
 
-function getOverviewEmbed(commands: Command[], state: RenderState): EmbedBuilder {
-  const pageCount = Math.max(1, Math.ceil(commands.length / OVERVIEW_PAGE_SIZE));
+function getOverviewEmbed(
+  commands: Command[],
+  state: RenderState,
+): EmbedBuilder {
+  const pageCount = Math.max(
+    1,
+    Math.ceil(commands.length / OVERVIEW_PAGE_SIZE),
+  );
   const safePage = Math.max(0, Math.min(state.page, pageCount - 1));
   const start = safePage * OVERVIEW_PAGE_SIZE;
   const slice = commands.slice(start, start + OVERVIEW_PAGE_SIZE);
@@ -525,7 +549,9 @@ function getOverviewEmbed(commands: Command[], state: RenderState): EmbedBuilder
   const embed = new EmbedBuilder()
     .setTitle("Help Center")
     .setColor(0x5865f2)
-    .setDescription("Use **Previous/Next** to browse pages, then pick a command from the dropdown for details.")
+    .setDescription(
+      "Use **Previous/Next** to browse pages, then pick a command from the dropdown for details.",
+    )
     .setFooter({ text: `Overview page ${safePage + 1}/${pageCount}` });
 
   for (const cmd of slice) {
@@ -550,7 +576,9 @@ function getDetailEmbed(command: Command): EmbedBuilder {
     "If this command has subcommands, use one of the syntax lines below.",
   ];
 
-  const exampleLines = doc?.examples?.length ? doc.examples : [usageLines[0] ?? `/${command.name}`];
+  const exampleLines = doc?.examples?.length
+    ? doc.examples
+    : [usageLines[0] ?? `/${command.name}`];
 
   const accessText =
     adminDefaults.length === 0
@@ -581,7 +609,7 @@ function getDetailEmbed(command: Command): EmbedBuilder {
         name: "Access",
         value: `${accessText}\nUse \`/permission add\` to whitelist roles.`,
         inline: false,
-      }
+      },
     )
     .setFooter({ text: "Select another command or click Back to overview." });
 }
@@ -590,9 +618,12 @@ function getControls(
   commands: Command[],
   state: RenderState,
   interactionId: string,
-  allowPostToChannel: boolean
+  allowPostToChannel: boolean,
 ) {
-  const pageCount = Math.max(1, Math.ceil(commands.length / OVERVIEW_PAGE_SIZE));
+  const pageCount = Math.max(
+    1,
+    Math.ceil(commands.length / OVERVIEW_PAGE_SIZE),
+  );
   const prevId = `help-prev:${interactionId}`;
   const nextId = `help-next:${interactionId}`;
   const backId = `help-back:${interactionId}`;
@@ -603,15 +634,21 @@ function getControls(
   const buttonRow = new ActionRowBuilder<ButtonBuilder>();
   if (state.detailView) {
     buttonRow.addComponents(
-      new ButtonBuilder().setCustomId(backId).setLabel("Back").setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId(closeId).setLabel("Close").setStyle(ButtonStyle.Danger)
+      new ButtonBuilder()
+        .setCustomId(backId)
+        .setLabel("Back")
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(closeId)
+        .setLabel("Close")
+        .setStyle(ButtonStyle.Danger),
     );
     if (allowPostToChannel) {
       buttonRow.addComponents(
         new ButtonBuilder()
           .setCustomId(postId)
           .setLabel("Post to Channel")
-          .setStyle(ButtonStyle.Primary)
+          .setStyle(ButtonStyle.Primary),
       );
     }
   } else {
@@ -626,14 +663,17 @@ function getControls(
         .setLabel("Next")
         .setStyle(ButtonStyle.Secondary)
         .setDisabled(state.page >= pageCount - 1),
-      new ButtonBuilder().setCustomId(closeId).setLabel("Close").setStyle(ButtonStyle.Danger)
+      new ButtonBuilder()
+        .setCustomId(closeId)
+        .setLabel("Close")
+        .setStyle(ButtonStyle.Danger),
     );
     if (allowPostToChannel) {
       buttonRow.addComponents(
         new ButtonBuilder()
           .setCustomId(postId)
           .setLabel("Post to Channel")
-          .setStyle(ButtonStyle.Primary)
+          .setStyle(ButtonStyle.Primary),
       );
     }
   }
@@ -647,10 +687,11 @@ function getControls(
         description: cmd.description.slice(0, 100),
         value: cmd.name,
         default: cmd.name === state.selectedCommand,
-      }))
+      })),
     );
 
-  const selectRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
+  const selectRow =
+    new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
   return [buttonRow, selectRow];
 }
 
@@ -658,11 +699,19 @@ function getResponsePayload(
   commands: Command[],
   state: RenderState,
   interactionId: string,
-  allowPostToChannel: boolean
+  allowPostToChannel: boolean,
 ) {
-  const selected = commands.find((cmd) => cmd.name === state.selectedCommand) ?? commands[0];
-  const embed = state.detailView ? getDetailEmbed(selected) : getOverviewEmbed(commands, state);
-  const components = getControls(commands, state, interactionId, allowPostToChannel);
+  const selected =
+    commands.find((cmd) => cmd.name === state.selectedCommand) ?? commands[0];
+  const embed = state.detailView
+    ? getDetailEmbed(selected)
+    : getOverviewEmbed(commands, state);
+  const components = getControls(
+    commands,
+    state,
+    interactionId,
+    allowPostToChannel,
+  );
   return { embeds: [embed], components };
 }
 
@@ -690,8 +739,12 @@ export const Help: Command = {
   ],
   run: async (_client: Client, interaction: ChatInputCommandInteraction) => {
     const commands = getAllCommands();
-    const requestedCommand = interaction.options.getString("command", false)?.trim().toLowerCase();
-    const visibility = interaction.options.getString("visibility", false) ?? "private";
+    const requestedCommand = interaction.options
+      .getString("command", false)
+      ?.trim()
+      .toLowerCase();
+    const visibility =
+      interaction.options.getString("visibility", false) ?? "private";
     const isPublic = visibility === "public";
     const allowPostToChannel = !isPublic;
 
@@ -713,12 +766,20 @@ export const Help: Command = {
 
       state.detailView = true;
       state.selectedCommand = match.name;
-      state.page = Math.floor(commands.findIndex((cmd) => cmd.name === match.name) / OVERVIEW_PAGE_SIZE);
+      state.page = Math.floor(
+        commands.findIndex((cmd) => cmd.name === match.name) /
+          OVERVIEW_PAGE_SIZE,
+      );
     }
 
     await interaction.reply({
       ephemeral: !isPublic,
-      ...getResponsePayload(commands, state, interaction.id, allowPostToChannel),
+      ...getResponsePayload(
+        commands,
+        state,
+        interaction.id,
+        allowPostToChannel,
+      ),
     });
 
     const message = await interaction.fetchReply();
@@ -739,7 +800,10 @@ export const Help: Command = {
           }
 
           if (component.isButton()) {
-            if (component.customId === `help-prev:${interaction.id}` && state.page > 0) {
+            if (
+              component.customId === `help-prev:${interaction.id}` &&
+              state.page > 0
+            ) {
               state.page -= 1;
               state.detailView = false;
             } else if (
@@ -758,12 +822,15 @@ export const Help: Command = {
               });
               collector.stop("closed");
               return;
-            } else if (component.customId === `${HELP_POST_BUTTON_PREFIX}:${interaction.id}`) {
+            } else if (
+              component.customId ===
+              `${HELP_POST_BUTTON_PREFIX}:${interaction.id}`
+            ) {
               const payload = getResponsePayload(
                 commands,
                 state,
                 interaction.id,
-                allowPostToChannel
+                allowPostToChannel,
               );
               await interaction.channel?.send({
                 embeds: payload.embeds,
@@ -781,13 +848,19 @@ export const Help: Command = {
               state.selectedCommand = found.name;
               state.detailView = true;
               state.page = Math.floor(
-                commands.findIndex((cmd) => cmd.name === found.name) / OVERVIEW_PAGE_SIZE
+                commands.findIndex((cmd) => cmd.name === found.name) /
+                  OVERVIEW_PAGE_SIZE,
               );
             }
           }
 
           await component.update(
-            getResponsePayload(commands, state, interaction.id, allowPostToChannel)
+            getResponsePayload(
+              commands,
+              state,
+              interaction.id,
+              allowPostToChannel,
+            ),
           );
         } catch (err) {
           console.error(`help component handler failed: ${formatError(err)}`);
@@ -802,7 +875,7 @@ export const Help: Command = {
             // no-op
           }
         }
-      }
+      },
     );
 
     collector.on("end", async (_collected, reason) => {
@@ -822,17 +895,20 @@ export const Help: Command = {
       return;
     }
 
-    const query = String(focused.value ?? "").trim().toLowerCase();
+    const query = String(focused.value ?? "")
+      .trim()
+      .toLowerCase();
     const names = getAllCommands().map((cmd) => cmd.name);
     const starts = names.filter((name) => name.startsWith(query));
-    const contains = names.filter((name) => !name.startsWith(query) && name.includes(query));
+    const contains = names.filter(
+      (name) => !name.startsWith(query) && name.includes(query),
+    );
 
     await interaction.respond(
       [...starts, ...contains].slice(0, 25).map((name) => ({
         name,
         value: name,
-      }))
+      })),
     );
   },
 };
-

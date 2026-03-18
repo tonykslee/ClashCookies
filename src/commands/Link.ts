@@ -31,6 +31,7 @@ import {
   normalizePersistedDiscordUsername,
   normalizePlayerTag,
 } from "../services/PlayerLinkService";
+import { PlayerLinkSyncService } from "../services/PlayerLinkSyncService";
 
 const permissionService = new CommandPermissionService();
 const LINK_LIST_SELECT_PREFIX = "link-list-select";
@@ -85,7 +86,9 @@ type LinkListRenderResult =
   | { ok: false; message: string };
 
 function sanitizeTableText(input: string): string {
-  return String(input ?? "").replace(/\s+/g, " ").trim();
+  return String(input ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function truncateWithEllipsis(input: string, maxLength: number): string {
@@ -109,10 +112,16 @@ function isValidHttpUrl(input: string): boolean {
   }
 }
 
-function buildTitleWithBadge(input: { clanName: string; clanTag: string; badge: string | null }): string {
-  const pieces = [input.badge?.trim() ?? "", input.clanName.trim(), input.clanTag.trim()].filter(
-    (piece) => piece.length > 0
-  );
+function buildTitleWithBadge(input: {
+  clanName: string;
+  clanTag: string;
+  badge: string | null;
+}): string {
+  const pieces = [
+    input.badge?.trim() ?? "",
+    input.clanName.trim(),
+    input.clanTag.trim(),
+  ].filter((piece) => piece.length > 0);
   return pieces.join(" ");
 }
 
@@ -147,21 +156,30 @@ function extractDisplayOrderFromMailConfig(mailConfig: unknown): number | null {
   return null;
 }
 
-function sortTrackedClanOptions(a: GuildTrackedClanOption, b: GuildTrackedClanOption): number {
-  if (a.displayOrder !== null && b.displayOrder !== null && a.displayOrder !== b.displayOrder) {
+function sortTrackedClanOptions(
+  a: GuildTrackedClanOption,
+  b: GuildTrackedClanOption,
+): number {
+  if (
+    a.displayOrder !== null &&
+    b.displayOrder !== null &&
+    a.displayOrder !== b.displayOrder
+  ) {
     return a.displayOrder - b.displayOrder;
   }
   if (a.displayOrder !== null && b.displayOrder === null) return -1;
   if (a.displayOrder === null && b.displayOrder !== null) return 1;
 
-  const byName = a.name.localeCompare(b.name, undefined, { sensitivity: "accent" });
+  const byName = a.name.localeCompare(b.name, undefined, {
+    sensitivity: "accent",
+  });
   if (byName !== 0) return byName;
   return a.tag.localeCompare(b.tag, undefined, { sensitivity: "accent" });
 }
 
 function selectTrackedClanMenuOptions(
   ordered: GuildTrackedClanOption[],
-  currentClanTag: string
+  currentClanTag: string,
 ): GuildTrackedClanOption[] {
   if (ordered.length <= 25) return ordered;
   const first25 = ordered.slice(0, 25);
@@ -169,7 +187,9 @@ function selectTrackedClanMenuOptions(
 
   const current = ordered.find((row) => row.tag === currentClanTag);
   if (!current) return first25;
-  const remainder = ordered.filter((row) => row.tag !== currentClanTag).slice(0, 24);
+  const remainder = ordered
+    .filter((row) => row.tag !== currentClanTag)
+    .slice(0, 24);
   return [current, ...remainder];
 }
 
@@ -189,20 +209,27 @@ function normalizeClanMembers(rawMembers: unknown[]): ClanMemberRow[] {
       const mapPositionRaw = tryParseFiniteNumber(row?.mapPosition);
       const townHallRaw = tryParseFiniteNumber(row?.townHallLevel);
       const townHallText =
-        townHallRaw !== null && townHallRaw >= 1 ? String(Math.floor(townHallRaw)) : "?";
+        townHallRaw !== null && townHallRaw >= 1
+          ? String(Math.floor(townHallRaw))
+          : "?";
 
       return {
         playerTag,
         playerName: name,
         townHallText,
-        mapPosition: mapPositionRaw !== null ? Math.floor(mapPositionRaw) : null,
+        mapPosition:
+          mapPositionRaw !== null ? Math.floor(mapPositionRaw) : null,
         index,
       } as ClanMemberRow;
     })
     .filter((row): row is ClanMemberRow => row !== null);
 
   mapped.sort((a, b) => {
-    if (a.mapPosition !== null && b.mapPosition !== null && a.mapPosition !== b.mapPosition) {
+    if (
+      a.mapPosition !== null &&
+      b.mapPosition !== null &&
+      a.mapPosition !== b.mapPosition
+    ) {
       return a.mapPosition - b.mapPosition;
     }
     if (a.mapPosition !== null && b.mapPosition === null) return -1;
@@ -266,7 +293,10 @@ function appendDroppedSuffix(chunkText: string, droppedCount: number): string {
   return `${chunkText.slice(0, keepLength)}${suffix}`;
 }
 
-function buildDescriptionEmbeds(title: string, lines: string[]): EmbedBuilder[] {
+function buildDescriptionEmbeds(
+  title: string,
+  lines: string[],
+): EmbedBuilder[] {
   const chunks = chunkDescriptionLines(lines);
   if (chunks.length === 0) {
     return [
@@ -299,12 +329,18 @@ function buildDescriptionEmbeds(title: string, lines: string[]): EmbedBuilder[] 
   });
 }
 
-async function getTrackedClansForGuild(guildId: string): Promise<GuildTrackedClanOption[]> {
+async function getTrackedClansForGuild(
+  guildId: string,
+): Promise<GuildTrackedClanOption[]> {
   const guildWarRows = await prisma.currentWar.findMany({
     where: { guildId },
     select: { clanTag: true },
   });
-  const tags = [...new Set(guildWarRows.map((row) => normalizeClanTag(row.clanTag)).filter(Boolean))];
+  const tags = [
+    ...new Set(
+      guildWarRows.map((row) => normalizeClanTag(row.clanTag)).filter(Boolean),
+    ),
+  ];
   if (tags.length === 0) return [];
 
   const tracked = await prisma.trackedClan.findMany({
@@ -338,11 +374,16 @@ function buildClanSelectRows(input: {
   commandUserId: string;
 }): ActionRowBuilder<StringSelectMenuBuilder>[] {
   if (input.trackedClans.length === 0) return [];
-  const selectedSet = selectTrackedClanMenuOptions(input.trackedClans, input.currentClanTag);
+  const selectedSet = selectTrackedClanMenuOptions(
+    input.trackedClans,
+    input.currentClanTag,
+  );
 
   const options = selectedSet.map((row) => {
     const label = `${row.name} ${row.tag}`.trim().slice(0, 100);
-    const description = row.badge ? `badge: ${sanitizeTableText(row.badge)}`.slice(0, 100) : undefined;
+    const description = row.badge
+      ? `badge: ${sanitizeTableText(row.badge)}`.slice(0, 100)
+      : undefined;
     return {
       label,
       value: row.tag,
@@ -356,21 +397,33 @@ function buildClanSelectRows(input: {
     .setPlaceholder("Select tracked clan")
     .addOptions(options);
 
-  return [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select)];
+  return [
+    new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select),
+  ];
 }
 
 function resolveLinkedUserDisplayName(
   interaction: ChatInputCommandInteraction | StringSelectMenuInteraction,
   discordUserId: string,
-  persistedDiscordUsername: string | null
+  persistedDiscordUsername: string | null,
 ): string {
-  const memberDisplay = sanitizeTableText(
-    interaction.guild?.members?.cache.get(discordUserId)?.displayName ?? ""
-  );
-  if (memberDisplay.length > 0) return memberDisplay;
+  const member = interaction.guild?.members?.cache.get(discordUserId) ?? null;
+
+  console.log("link-list identity", {
+    discordUserId,
+    memberDisplay: member?.displayName,
+    username: member?.user?.username,
+    persistedDiscordUsername,
+  });
+
+  const username = sanitizeTableText(member?.user?.username ?? "");
+  if (username.length > 0) return username;
 
   const persisted = sanitizeTableText(persistedDiscordUsername ?? "");
   if (persisted.length > 0) return persisted;
+
+  const memberDisplay = sanitizeTableText(member?.displayName ?? "");
+  if (memberDisplay.length > 0) return memberDisplay;
 
   return "Unknown User";
 }
@@ -386,13 +439,19 @@ type LinkListRowInput = {
   third: string;
 };
 
-function formatAlignedInlineRow(row: LinkListRowInput, widths: { player: number; third: number }): string {
-  const player = rightAlign(row.playerName, widths.player);
-  const third = rightAlign(row.third, widths.third);
-  return `\`${row.th} | ${player} | ${third}\``;
+function formatAlignedInlineRow(
+  row: LinkListRowInput,
+  widths: { player: number; third: number },
+): string {
+  const playerName = rightAlign(row.playerName, widths.player);
+  const discordName = rightAlign(row.third, widths.third);
+  return `\`${row.th} | ${discordName} | ${playerName}\``;
 }
 
-function computeColumnWidths(linkedRows: LinkListRowInput[], unlinkedRows: LinkListRowInput[]): {
+function computeColumnWidths(
+  linkedRows: LinkListRowInput[],
+  unlinkedRows: LinkListRowInput[],
+): {
   player: number;
   linkedThird: number;
   unlinkedThird: number;
@@ -400,16 +459,22 @@ function computeColumnWidths(linkedRows: LinkListRowInput[], unlinkedRows: LinkL
   const allRows = [...linkedRows, ...unlinkedRows];
   const player = Math.max(
     6,
-    ...allRows.map((row) => row.playerName.length).filter((value) => Number.isFinite(value))
+    ...allRows
+      .map((row) => row.playerName.length)
+      .filter((value) => Number.isFinite(value)),
   );
 
   const linkedThird = Math.max(
     3,
-    ...linkedRows.map((row) => row.third.length).filter((value) => Number.isFinite(value))
+    ...linkedRows
+      .map((row) => row.third.length)
+      .filter((value) => Number.isFinite(value)),
   );
   const unlinkedThird = Math.max(
     3,
-    ...unlinkedRows.map((row) => row.third.length).filter((value) => Number.isFinite(value))
+    ...unlinkedRows
+      .map((row) => row.third.length)
+      .filter((value) => Number.isFinite(value)),
   );
 
   return { player, linkedThird, unlinkedThird };
@@ -421,14 +486,21 @@ function buildLinkListDescriptionLines(input: {
 }): string[] {
   const { linkedRows, unlinkedRows } = input;
   const widths = computeColumnWidths(linkedRows, unlinkedRows);
+  const thHeader = "TH".padEnd(2, " ");
+  const discordHeader = "Discord".padEnd(18, " ");
+  const playerHeader = "Player";
   const lines: string[] = [];
 
   if (linkedRows.length > 0) {
     lines.push(`Linked Users: ${linkedRows.length}`);
+
     lines.push(
       ...linkedRows.map((row) =>
-        formatAlignedInlineRow(row, { player: widths.player, third: widths.linkedThird })
-      )
+        formatAlignedInlineRow(row, {
+          player: widths.player,
+          third: widths.linkedThird,
+        }),
+      ),
     );
   }
 
@@ -436,8 +508,11 @@ function buildLinkListDescriptionLines(input: {
     lines.push(`Unlinked users: ${unlinkedRows.length}`);
     lines.push(
       ...unlinkedRows.map((row) =>
-        formatAlignedInlineRow(row, { player: widths.player, third: widths.unlinkedThird })
-      )
+        formatAlignedInlineRow(row, {
+          player: widths.player,
+          third: widths.unlinkedThird,
+        }),
+      ),
     );
   }
 
@@ -464,7 +539,9 @@ async function buildLinkListView(input: {
     };
   }
 
-  const members = normalizeClanMembers(Array.isArray(clan?.members) ? clan.members : []);
+  const members = normalizeClanMembers(
+    Array.isArray(clan?.members) ? clan.members : [],
+  );
   if (members.length === 0) {
     return {
       ok: false,
@@ -475,12 +552,32 @@ async function buildLinkListView(input: {
   const links = await listPlayerLinksForClanMembers({
     memberTagsInOrder: members.map((row) => row.playerTag),
   });
+
+  const linkedUserIds = [
+    ...new Set(
+      links
+        .map((row) => normalizeDiscordUserId(row.discordUserId))
+        .filter((value): value is string => Boolean(value)),
+    ),
+  ];
+
+  if (input.interaction.guild && linkedUserIds.length > 0) {
+    try {
+      await input.interaction.guild.members.fetch({ user: linkedUserIds });
+    } catch {
+      // Best effort only. Fall back to persisted usernames for uncached members.
+    }
+  }
+
   const linkByTag = new Map(links.map((row) => [row.playerTag, row]));
   const linkedRows: LinkListRowInput[] = [];
   const unlinkedRows: LinkListRowInput[] = [];
 
   for (const member of members) {
-    const playerName = truncateWithEllipsis(member.playerName, MAX_PLAYER_NAME_CHARS);
+    const playerName = truncateWithEllipsis(
+      member.playerName,
+      MAX_PLAYER_NAME_CHARS,
+    );
     const link = linkByTag.get(member.playerTag);
     if (link) {
       linkedRows.push({
@@ -490,9 +587,9 @@ async function buildLinkListView(input: {
           resolveLinkedUserDisplayName(
             input.interaction,
             link.discordUserId,
-            link.discordUsername
+            link.discordUsername,
           ),
-          MAX_IDENTITY_CHARS
+          MAX_IDENTITY_CHARS,
         ),
       });
       continue;
@@ -554,7 +651,9 @@ export function isLinkListSelectCustomId(customId: string): boolean {
   return customId.startsWith(`${LINK_LIST_SELECT_PREFIX}:`);
 }
 
-function parseLinkListSelectCustomId(customId: string): { userId: string } | null {
+function parseLinkListSelectCustomId(
+  customId: string,
+): { userId: string } | null {
   const parts = customId.split(":");
   if (parts.length !== 2 || parts[0] !== LINK_LIST_SELECT_PREFIX) return null;
   const userId = parts[1]?.trim() ?? "";
@@ -562,15 +661,19 @@ function parseLinkListSelectCustomId(customId: string): { userId: string } | nul
   return { userId };
 }
 
-export function buildLinkEmbedSetupModalCustomId(userId: string, channelId: string): string {
+export function buildLinkEmbedSetupModalCustomId(
+  userId: string,
+  channelId: string,
+): string {
   return `${LINK_EMBED_SETUP_MODAL_PREFIX}:${userId}:${channelId}`;
 }
 
 function parseLinkEmbedSetupModalCustomId(
-  customId: string
+  customId: string,
 ): { userId: string; channelId: string } | null {
   const parts = String(customId ?? "").split(":");
-  if (parts.length !== 3 || parts[0] !== LINK_EMBED_SETUP_MODAL_PREFIX) return null;
+  if (parts.length !== 3 || parts[0] !== LINK_EMBED_SETUP_MODAL_PREFIX)
+    return null;
   const userId = parts[1]?.trim() ?? "";
   const channelId = parts[2]?.trim() ?? "";
   if (!userId || !channelId) return null;
@@ -581,9 +684,12 @@ export function buildLinkEmbedTagModalCustomId(guildId: string): string {
   return `${LINK_EMBED_TAG_MODAL_PREFIX}:${guildId}`;
 }
 
-function parseLinkEmbedTagModalCustomId(customId: string): { guildId: string } | null {
+function parseLinkEmbedTagModalCustomId(
+  customId: string,
+): { guildId: string } | null {
   const parts = String(customId ?? "").split(":");
-  if (parts.length !== 2 || parts[0] !== LINK_EMBED_TAG_MODAL_PREFIX) return null;
+  if (parts.length !== 2 || parts[0] !== LINK_EMBED_TAG_MODAL_PREFIX)
+    return null;
   const guildId = parts[1]?.trim() ?? "";
   if (!guildId) return null;
   return { guildId };
@@ -593,7 +699,9 @@ export function buildLinkEmbedAccountButtonCustomId(guildId: string): string {
   return `${LINK_EMBED_BUTTON_PREFIX}:${guildId}`;
 }
 
-function parseLinkEmbedAccountButtonCustomId(customId: string): { guildId: string } | null {
+function parseLinkEmbedAccountButtonCustomId(
+  customId: string,
+): { guildId: string } | null {
   const parts = String(customId ?? "").split(":");
   if (parts.length !== 2 || parts[0] !== LINK_EMBED_BUTTON_PREFIX) return null;
   const guildId = parts[1]?.trim() ?? "";
@@ -613,13 +721,17 @@ export function isLinkEmbedModalCustomId(customId: string): boolean {
   );
 }
 
-function isSupportedLinkEmbedChannel(channel: { type?: number } | null | undefined): boolean {
+function isSupportedLinkEmbedChannel(
+  channel: { type?: number } | null | undefined,
+): boolean {
   if (!channel || typeof channel.type !== "number") return false;
-  return LINK_EMBED_SUPPORTED_CHANNEL_TYPES.includes(channel.type as (typeof LINK_EMBED_SUPPORTED_CHANNEL_TYPES)[number]);
+  return LINK_EMBED_SUPPORTED_CHANNEL_TYPES.includes(
+    channel.type as (typeof LINK_EMBED_SUPPORTED_CHANNEL_TYPES)[number],
+  );
 }
 
 async function resolveGuildMemberMe(
-  interaction: ChatInputCommandInteraction | ModalSubmitInteraction
+  interaction: ChatInputCommandInteraction | ModalSubmitInteraction,
 ) {
   if (!interaction.guild) return null;
   if (interaction.guild.members.me) return interaction.guild.members.me;
@@ -653,11 +765,17 @@ async function validateLinkEmbedTargetChannel(input: {
   }
 
   const me = await resolveGuildMemberMe(interaction);
-  const permissions = me && typeof channel.permissionsFor === "function" ? channel.permissionsFor(me) : null;
+  const permissions =
+    me && typeof channel.permissionsFor === "function"
+      ? channel.permissionsFor(me)
+      : null;
   const missing: string[] = [];
-  if (!permissions?.has(PermissionFlagsBits.ViewChannel)) missing.push("ViewChannel");
-  if (!permissions?.has(PermissionFlagsBits.SendMessages)) missing.push("SendMessages");
-  if (!permissions?.has(PermissionFlagsBits.EmbedLinks)) missing.push("EmbedLinks");
+  if (!permissions?.has(PermissionFlagsBits.ViewChannel))
+    missing.push("ViewChannel");
+  if (!permissions?.has(PermissionFlagsBits.SendMessages))
+    missing.push("SendMessages");
+  if (!permissions?.has(PermissionFlagsBits.EmbedLinks))
+    missing.push("EmbedLinks");
 
   if (missing.length > 0) {
     return `missing_bot_permissions: ${missing.join(", ")}`;
@@ -668,7 +786,7 @@ async function validateLinkEmbedTargetChannel(input: {
 
 export async function handleLinkListSelectMenu(
   interaction: StringSelectMenuInteraction,
-  cocService: CoCService
+  cocService: CoCService,
 ): Promise<void> {
   const parsed = parseLinkListSelectCustomId(interaction.customId);
   if (!parsed) return;
@@ -714,7 +832,7 @@ export async function handleLinkListSelectMenu(
 }
 
 export async function handleLinkEmbedButtonInteraction(
-  interaction: ButtonInteraction
+  interaction: ButtonInteraction,
 ): Promise<void> {
   const parsed = parseLinkEmbedAccountButtonCustomId(interaction.customId);
   if (!parsed) return;
@@ -722,7 +840,8 @@ export async function handleLinkEmbedButtonInteraction(
   if (!interaction.guildId || interaction.guildId !== parsed.guildId) {
     await interaction.reply({
       ephemeral: true,
-      content: "invalid_context: this link button can only be used in its original server.",
+      content:
+        "invalid_context: this link button can only be used in its original server.",
     });
     return;
   }
@@ -737,19 +856,22 @@ export async function handleLinkEmbedButtonInteraction(
           .setLabel("Player Tag")
           .setStyle(TextInputStyle.Short)
           .setRequired(true)
-          .setMaxLength(16)
-      )
+          .setMaxLength(16),
+      ),
     );
 
   await interaction.showModal(modal);
 }
 
 export async function handleLinkEmbedModalSubmit(
-  interaction: ModalSubmitInteraction
+  interaction: ModalSubmitInteraction,
 ): Promise<void> {
   const setupParsed = parseLinkEmbedSetupModalCustomId(interaction.customId);
   if (setupParsed) {
-    const canUse = await permissionService.canUseAnyTarget(["link:embed"], interaction);
+    const canUse = await permissionService.canUseAnyTarget(
+      ["link:embed"],
+      interaction,
+    );
     if (!canUse) {
       await interaction.reply({
         ephemeral: true,
@@ -776,7 +898,9 @@ export async function handleLinkEmbedModalSubmit(
 
     const targetChannel =
       interaction.guild.channels.cache.get(setupParsed.channelId) ??
-      (await interaction.guild.channels.fetch(setupParsed.channelId).catch(() => null));
+      (await interaction.guild.channels
+        .fetch(setupParsed.channelId)
+        .catch(() => null));
 
     const channelError = await validateLinkEmbedTargetChannel({
       interaction,
@@ -787,8 +911,12 @@ export async function handleLinkEmbedModalSubmit(
       return;
     }
 
-    const rawTitle = interaction.fields.getTextInputValue(LINK_EMBED_TITLE_FIELD);
-    const rawDescription = interaction.fields.getTextInputValue(LINK_EMBED_DESCRIPTION_FIELD);
+    const rawTitle = interaction.fields.getTextInputValue(
+      LINK_EMBED_TITLE_FIELD,
+    );
+    const rawDescription = interaction.fields.getTextInputValue(
+      LINK_EMBED_DESCRIPTION_FIELD,
+    );
     const title = String(rawTitle ?? "").trim();
     const description = String(rawDescription ?? "").trim();
     if (!title || !description) {
@@ -814,23 +942,25 @@ export async function handleLinkEmbedModalSubmit(
     }
 
     const imageUrl = normalizeUrlInput(
-      interaction.fields.getTextInputValue(LINK_EMBED_IMAGE_URL_FIELD)
+      interaction.fields.getTextInputValue(LINK_EMBED_IMAGE_URL_FIELD),
     );
     if (imageUrl && !isValidHttpUrl(imageUrl)) {
       await interaction.reply({
         ephemeral: true,
-        content: "invalid_image_url: provide an absolute http:// or https:// URL.",
+        content:
+          "invalid_image_url: provide an absolute http:// or https:// URL.",
       });
       return;
     }
 
     const thumbnailUrl = normalizeUrlInput(
-      interaction.fields.getTextInputValue(LINK_EMBED_THUMBNAIL_URL_FIELD)
+      interaction.fields.getTextInputValue(LINK_EMBED_THUMBNAIL_URL_FIELD),
     );
     if (thumbnailUrl && !isValidHttpUrl(thumbnailUrl)) {
       await interaction.reply({
         ephemeral: true,
-        content: "invalid_thumbnail_url: provide an absolute http:// or https:// URL.",
+        content:
+          "invalid_thumbnail_url: provide an absolute http:// or https:// URL.",
       });
       return;
     }
@@ -847,7 +977,7 @@ export async function handleLinkEmbedModalSubmit(
       new ButtonBuilder()
         .setCustomId(buildLinkEmbedAccountButtonCustomId(guildId))
         .setLabel("Link Account")
-        .setStyle(ButtonStyle.Primary)
+        .setStyle(ButtonStyle.Primary),
     );
 
     try {
@@ -879,12 +1009,15 @@ export async function handleLinkEmbedModalSubmit(
   if (!interaction.guildId || interaction.guildId !== tagParsed.guildId) {
     await interaction.reply({
       ephemeral: true,
-      content: "invalid_context: this link action can only be used in its original server.",
+      content:
+        "invalid_context: this link action can only be used in its original server.",
     });
     return;
   }
 
-  const rawTag = interaction.fields.getTextInputValue(LINK_EMBED_PLAYER_TAG_FIELD);
+  const rawTag = interaction.fields.getTextInputValue(
+    LINK_EMBED_PLAYER_TAG_FIELD,
+  );
   const normalizedTag = normalizePlayerTag(rawTag);
   if (!normalizedTag) {
     await interaction.reply({
@@ -899,7 +1032,8 @@ export async function handleLinkEmbedModalSubmit(
       playerTag: normalizedTag,
       submittingDiscordUserId: interaction.user.id,
       submittingDiscordUsername:
-        normalizePersistedDiscordUsername(interaction.user.username) ?? "unknown",
+        normalizePersistedDiscordUsername(interaction.user.username) ??
+        "unknown",
     });
     if (result.outcome === "created") {
       await interaction.reply({
@@ -918,7 +1052,8 @@ export async function handleLinkEmbedModalSubmit(
     if (result.outcome === "invalid_tag") {
       await interaction.reply({
         ephemeral: true,
-        content: "invalid_tag: use Clash tags with characters `PYLQGRJCUV0289`.",
+        content:
+          "invalid_tag: use Clash tags with characters `PYLQGRJCUV0289`.",
       });
       return;
     }
@@ -935,26 +1070,41 @@ export async function handleLinkEmbedModalSubmit(
 }
 
 function canAdminBypass(interaction: ChatInputCommandInteraction): boolean {
-  return interaction.memberPermissions?.has(PermissionFlagsBits.Administrator) ?? false;
+  return (
+    interaction.memberPermissions?.has(PermissionFlagsBits.Administrator) ??
+    false
+  );
 }
 
 async function canUseAdminCreateOverride(
-  interaction: ChatInputCommandInteraction
+  interaction: ChatInputCommandInteraction,
 ): Promise<boolean> {
   if (canAdminBypass(interaction)) return true;
   return permissionService.canUseAnyTarget(["link:create:admin"], interaction);
 }
 
 async function canUseAdminDeleteOverride(
-  interaction: ChatInputCommandInteraction
+  interaction: ChatInputCommandInteraction,
 ): Promise<boolean> {
   if (canAdminBypass(interaction)) return true;
   return permissionService.canUseAnyTarget(["link:delete:admin"], interaction);
 }
 
-async function canUseLinkEmbed(interaction: ChatInputCommandInteraction): Promise<boolean> {
+async function canUseLinkEmbed(
+  interaction: ChatInputCommandInteraction,
+): Promise<boolean> {
   if (canAdminBypass(interaction)) return true;
   return permissionService.canUseAnyTarget(["link:embed"], interaction);
+}
+
+async function canUseLinkSyncClashperk(
+  interaction: ChatInputCommandInteraction,
+): Promise<boolean> {
+  if (canAdminBypass(interaction)) return true;
+  return permissionService.canUseAnyTarget(
+    ["link:sync-clashperk"],
+    interaction,
+  );
 }
 
 export const Link: Command = {
@@ -1009,7 +1159,8 @@ export const Link: Command = {
     },
     {
       name: "embed",
-      description: "Post a reusable Link Account embed with self-service button",
+      description:
+        "Post a reusable Link Account embed with self-service button",
       type: ApplicationCommandOptionType.Subcommand,
       options: [
         {
@@ -1021,11 +1172,25 @@ export const Link: Command = {
         },
       ],
     },
+    {
+      name: "sync-clashperk",
+      description:
+        "Import missing PlayerLink rows from a public ClashPerk Google Sheet",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "sheet-url",
+          description: "Public Google Sheet URL (or sheet ID)",
+          type: ApplicationCommandOptionType.String,
+          required: true,
+        },
+      ],
+    },
   ],
   run: async (
     _client: Client,
     interaction: ChatInputCommandInteraction,
-    cocService: CoCService
+    cocService: CoCService,
   ) => {
     if (!interaction.guildId) {
       await interaction.reply({
@@ -1061,7 +1226,9 @@ export const Link: Command = {
       }
 
       const modal = new ModalBuilder()
-        .setCustomId(buildLinkEmbedSetupModalCustomId(interaction.user.id, channel.id))
+        .setCustomId(
+          buildLinkEmbedSetupModalCustomId(interaction.user.id, channel.id),
+        )
         .setTitle(LINK_EMBED_SETUP_MODAL_TITLE)
         .addComponents(
           new ActionRowBuilder<TextInputBuilder>().addComponents(
@@ -1070,7 +1237,7 @@ export const Link: Command = {
               .setLabel("Embed Title")
               .setStyle(TextInputStyle.Short)
               .setRequired(true)
-              .setMaxLength(EMBED_TITLE_LIMIT)
+              .setMaxLength(EMBED_TITLE_LIMIT),
           ),
           new ActionRowBuilder<TextInputBuilder>().addComponents(
             new TextInputBuilder()
@@ -1078,7 +1245,7 @@ export const Link: Command = {
               .setLabel("Embed Description")
               .setStyle(TextInputStyle.Paragraph)
               .setRequired(true)
-              .setMaxLength(LINK_EMBED_MODAL_DESCRIPTION_MAX)
+              .setMaxLength(LINK_EMBED_MODAL_DESCRIPTION_MAX),
           ),
           new ActionRowBuilder<TextInputBuilder>().addComponents(
             new TextInputBuilder()
@@ -1086,7 +1253,7 @@ export const Link: Command = {
               .setLabel("Image URL")
               .setStyle(TextInputStyle.Short)
               .setRequired(false)
-              .setMaxLength(512)
+              .setMaxLength(512),
           ),
           new ActionRowBuilder<TextInputBuilder>().addComponents(
             new TextInputBuilder()
@@ -1094,8 +1261,8 @@ export const Link: Command = {
               .setLabel("Thumbnail URL")
               .setStyle(TextInputStyle.Short)
               .setRequired(false)
-              .setMaxLength(512)
-          )
+              .setMaxLength(512),
+          ),
         );
 
       await interaction.showModal(modal);
@@ -1109,17 +1276,20 @@ export const Link: Command = {
       const normalizedTag = normalizePlayerTag(rawTag);
       if (!normalizedTag) {
         await interaction.editReply(
-          "invalid_tag: use Clash tags with characters `PYLQGRJCUV0289`."
+          "invalid_tag: use Clash tags with characters `PYLQGRJCUV0289`.",
         );
         return;
       }
 
-      const requestedUserInput = interaction.options.getString("user", false)?.trim() ?? "";
+      const requestedUserInput =
+        interaction.options.getString("user", false)?.trim() ?? "";
       const requestedUserId = requestedUserInput
         ? normalizeDiscordUserId(requestedUserInput)
         : null;
       if (requestedUserInput && !requestedUserId) {
-        await interaction.editReply("invalid_user: expected a Discord snowflake user ID.");
+        await interaction.editReply(
+          "invalid_user: expected a Discord snowflake user ID.",
+        );
         return;
       }
 
@@ -1129,7 +1299,7 @@ export const Link: Command = {
         const allowed = await canUseAdminCreateOverride(interaction);
         if (!allowed) {
           await interaction.editReply(
-            "not_allowed: only admins can create links for another Discord user."
+            "not_allowed: only admins can create links for another Discord user.",
           );
           return;
         }
@@ -1143,32 +1313,38 @@ export const Link: Command = {
 
       if (result.outcome === "created") {
         const owner = isSelfCreate ? "you" : `<@${targetDiscordUserId}>`;
-        await interaction.editReply(`created: ${result.playerTag} linked to ${owner}.`);
+        await interaction.editReply(
+          `created: ${result.playerTag} linked to ${owner}.`,
+        );
         return;
       }
       if (result.outcome === "already_linked_to_you") {
-        await interaction.editReply(`already_linked_to_you: ${result.playerTag}.`);
+        await interaction.editReply(
+          `already_linked_to_you: ${result.playerTag}.`,
+        );
         return;
       }
       if (result.outcome === "already_linked_to_target_user") {
         await interaction.editReply(
-          `already_linked_to_target_user: ${result.playerTag} -> <@${targetDiscordUserId}>.`
+          `already_linked_to_target_user: ${result.playerTag} -> <@${targetDiscordUserId}>.`,
         );
         return;
       }
       if (result.outcome === "already_linked_to_other_user") {
         await interaction.editReply(
-          `already_linked_to_other_user: ${result.playerTag} is linked to <@${result.existingDiscordUserId}>. delete-first is required.`
+          `already_linked_to_other_user: ${result.playerTag} is linked to <@${result.existingDiscordUserId}>. delete-first is required.`,
         );
         return;
       }
       if (result.outcome === "invalid_tag") {
         await interaction.editReply(
-          "invalid_tag: use Clash tags with characters `PYLQGRJCUV0289`."
+          "invalid_tag: use Clash tags with characters `PYLQGRJCUV0289`.",
         );
         return;
       }
-      await interaction.editReply("invalid_user: expected a Discord snowflake user ID.");
+      await interaction.editReply(
+        "invalid_user: expected a Discord snowflake user ID.",
+      );
       return;
     }
 
@@ -1177,7 +1353,7 @@ export const Link: Command = {
       const normalizedTag = normalizePlayerTag(rawTag);
       if (!normalizedTag) {
         await interaction.editReply(
-          "invalid_tag: use Clash tags with characters `PYLQGRJCUV0289`."
+          "invalid_tag: use Clash tags with characters `PYLQGRJCUV0289`.",
         );
         return;
       }
@@ -1194,17 +1370,47 @@ export const Link: Command = {
         return;
       }
       if (result.outcome === "not_found") {
-        await interaction.editReply(`not_found: no active link for ${result.playerTag}.`);
+        await interaction.editReply(
+          `not_found: no active link for ${result.playerTag}.`,
+        );
         return;
       }
       if (result.outcome === "not_owner") {
         await interaction.editReply(
-          `not_owner: ${result.playerTag} is linked to another Discord user.`
+          `not_owner: ${result.playerTag} is linked to another Discord user.`,
         );
         return;
       }
       await interaction.editReply(
-        "invalid_tag: use Clash tags with characters `PYLQGRJCUV0289`."
+        "invalid_tag: use Clash tags with characters `PYLQGRJCUV0289`.",
+      );
+      return;
+    }
+
+    if (subcommand === "sync-clashperk") {
+      const allowed = await canUseLinkSyncClashperk(interaction);
+      if (!allowed) {
+        await interaction.editReply(
+          "not_allowed: only admins can use /link sync-clashperk.",
+        );
+        return;
+      }
+
+      const sheetUrl = interaction.options.getString("sheet-url", true);
+      const syncService = new PlayerLinkSyncService();
+      const result = await syncService.syncFromPublicGoogleSheet(sheetUrl);
+
+      await interaction.editReply(
+        [
+          `sync_complete: inserted ${result.insertedCount} new link(s).`,
+          `updated existing links: ${result.updatedCount}`,
+          `unchanged existing links skipped: ${result.unchangedCount}`,
+          `eligible rows: ${result.eligibleRowCount}`,
+          `duplicate sheet tags skipped: ${result.duplicateTagCount}`,
+          `rows missing Tag, ID, or Username skipped: ${result.missingRequiredCount}`,
+          `invalid tags skipped: ${result.invalidTagCount}`,
+          `invalid discord ids skipped: ${result.invalidDiscordUserIdCount}`,
+        ].join("\n"),
       );
       return;
     }
@@ -1213,7 +1419,7 @@ export const Link: Command = {
     const normalizedClanTag = normalizeClanTag(rawClanTag);
     if (!normalizedClanTag) {
       await interaction.editReply(
-        "invalid_tag: use Clash tags with characters `PYLQGRJCUV0289`."
+        "invalid_tag: use Clash tags with characters `PYLQGRJCUV0289`.",
       );
       return;
     }
@@ -1250,13 +1456,15 @@ export const Link: Command = {
     const choices = tracked
       .map((row) => {
         const normalized = normalizeClanTag(row.tag).replace(/^#/, "");
-        const title = row.name?.trim() ? `${row.name.trim()} (#${normalized})` : `#${normalized}`;
+        const title = row.name?.trim()
+          ? `${row.name.trim()} (#${normalized})`
+          : `#${normalized}`;
         return { name: title.slice(0, 100), value: normalized };
       })
       .filter(
         (choice) =>
           choice.value.toLowerCase().includes(query.toLowerCase()) ||
-          choice.name.toLowerCase().includes(query.toLowerCase())
+          choice.name.toLowerCase().includes(query.toLowerCase()),
       )
       .slice(0, 25);
     await interaction.respond(choices);

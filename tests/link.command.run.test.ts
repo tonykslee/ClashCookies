@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ChannelType, PermissionFlagsBits } from "discord.js";
+import { PlayerLinkSyncService } from "../src/services/PlayerLinkSyncService";
 
 const prismaMock = vi.hoisted(() => ({
   $queryRaw: vi.fn().mockResolvedValue([]),
@@ -38,7 +39,8 @@ import {
 import { CommandPermissionService } from "../src/services/CommandPermissionService";
 
 type InteractionInput = {
-  subcommand: "create" | "delete" | "list" | "embed";
+  subcommand: "create" | "delete" | "list" | "embed" | "sync-clashperk";
+  sheetUrl?: string | null;
   playerTag?: string | null;
   userOverride?: string | null;
   clanTag?: string | null;
@@ -54,10 +56,13 @@ function makeInteraction(input: InteractionInput) {
     Object.entries(input.guildMemberNames ?? {}).map(([id, displayName]) => [
       id,
       { displayName },
-    ])
+    ]),
   );
   const userCache = new Map(
-    Object.entries(input.cachedUserNames ?? {}).map(([id, username]) => [id, { username }])
+    Object.entries(input.cachedUserNames ?? {}).map(([id, username]) => [
+      id,
+      { username },
+    ]),
   );
 
   return {
@@ -75,6 +80,7 @@ function makeInteraction(input: InteractionInput) {
         if (name === "player-tag") return input.playerTag ?? null;
         if (name === "user") return input.userOverride ?? null;
         if (name === "clan-tag") return input.clanTag ?? null;
+        if (name === "sheet-url") return input.sheetUrl ?? null;
         return null;
       }),
       getChannel: vi.fn((name: string) => {
@@ -97,7 +103,11 @@ function makeValidTag(index: number): string {
   return `#PY${a}${b}${a}${b}`;
 }
 
-function getInlineRowSegments(row: string): { th: string; player: string; third: string } {
+function getInlineRowSegments(row: string): {
+  th: string;
+  player: string;
+  third: string;
+} {
   const trimmed = row.slice(1, -1);
   const [th, player, third] = trimmed.split("|").map((part) => part);
   return {
@@ -141,7 +151,9 @@ describe("/link run", () => {
     expect(prismaMock.playerLink.create).toHaveBeenCalledWith({
       data: { playerTag: "#PYL0289", discordUserId: "111111111111111111" },
     });
-    expect(interaction.editReply).toHaveBeenCalledWith("created: #PYL0289 linked to you.");
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "created: #PYL0289 linked to you.",
+    );
   });
 
   it("returns conflict when already linked to another user", async () => {
@@ -158,12 +170,15 @@ describe("/link run", () => {
 
     expect(prismaMock.playerLink.create).not.toHaveBeenCalled();
     expect(interaction.editReply).toHaveBeenCalledWith(
-      "already_linked_to_other_user: #PYL0289 is linked to <@999999999999999999>. delete-first is required."
+      "already_linked_to_other_user: #PYL0289 is linked to <@999999999999999999>. delete-first is required.",
     );
   });
 
   it("rejects create-for-other when admin override permission is denied", async () => {
-    vi.spyOn(CommandPermissionService.prototype, "canUseAnyTarget").mockResolvedValue(false);
+    vi.spyOn(
+      CommandPermissionService.prototype,
+      "canUseAnyTarget",
+    ).mockResolvedValue(false);
     const interaction = makeInteraction({
       subcommand: "create",
       playerTag: "#pyl0289",
@@ -175,13 +190,16 @@ describe("/link run", () => {
     await Link.run({} as any, interaction as any, {} as any);
 
     expect(interaction.editReply).toHaveBeenCalledWith(
-      "not_allowed: only admins can create links for another Discord user."
+      "not_allowed: only admins can create links for another Discord user.",
     );
     expect(prismaMock.playerLink.create).not.toHaveBeenCalled();
   });
 
   it("rejects /link embed when permission check fails", async () => {
-    vi.spyOn(CommandPermissionService.prototype, "canUseAnyTarget").mockResolvedValue(false);
+    vi.spyOn(
+      CommandPermissionService.prototype,
+      "canUseAnyTarget",
+    ).mockResolvedValue(false);
     const channel = {
       id: "channel-1",
       guildId: "guild-1",
@@ -213,14 +231,19 @@ describe("/link run", () => {
   });
 
   it("opens /link embed setup modal for authorized users with valid target channel", async () => {
-    vi.spyOn(CommandPermissionService.prototype, "canUseAnyTarget").mockResolvedValue(true);
-    const permissionHas = vi.fn().mockImplementation((bit: bigint) =>
-      [
-        PermissionFlagsBits.ViewChannel,
-        PermissionFlagsBits.SendMessages,
-        PermissionFlagsBits.EmbedLinks,
-      ].includes(bit)
-    );
+    vi.spyOn(
+      CommandPermissionService.prototype,
+      "canUseAnyTarget",
+    ).mockResolvedValue(true);
+    const permissionHas = vi
+      .fn()
+      .mockImplementation((bit: bigint) =>
+        [
+          PermissionFlagsBits.ViewChannel,
+          PermissionFlagsBits.SendMessages,
+          PermissionFlagsBits.EmbedLinks,
+        ].includes(bit),
+      );
     const channel = {
       id: "channel-1",
       guildId: "guild-1",
@@ -312,8 +335,18 @@ describe("/link run", () => {
       getClan: vi.fn().mockResolvedValue({
         name: "Alpha Clan",
         members: [
-          { tag: "#PYLQ0289", name: "Tilonius", townHallLevel: 18, mapPosition: 1 },
-          { tag: "#QGRJ2222", name: "Unlinked Guy", townHallLevel: 15, mapPosition: 2 },
+          {
+            tag: "#PYLQ0289",
+            name: "Tilonius",
+            townHallLevel: 18,
+            mapPosition: 1,
+          },
+          {
+            tag: "#QGRJ2222",
+            name: "Unlinked Guy",
+            townHallLevel: 15,
+            mapPosition: 2,
+          },
         ],
       }),
     };
@@ -352,7 +385,11 @@ describe("/link run", () => {
 
     const select = payload.components[0].components[0].toJSON();
     expect(select.options).toHaveLength(2);
-    expect(select.options.some((opt: any) => opt.default && opt.value === "#PQL0289")).toBe(true);
+    expect(
+      select.options.some(
+        (opt: any) => opt.default && opt.value === "#PQL0289",
+      ),
+    ).toBe(true);
   });
 
   it("falls back to persisted discord username when guild display name is unavailable", async () => {
@@ -371,7 +408,14 @@ describe("/link run", () => {
     const cocService = {
       getClan: vi.fn().mockResolvedValue({
         name: "Alpha Clan",
-        members: [{ tag: "#PYLQ0289", name: "Tilonius", townHallLevel: 18, mapPosition: 1 }],
+        members: [
+          {
+            tag: "#PYLQ0289",
+            name: "Tilonius",
+            townHallLevel: 18,
+            mapPosition: 1,
+          },
+        ],
       }),
     };
 
@@ -399,7 +443,14 @@ describe("/link run", () => {
     const cocService = {
       getClan: vi.fn().mockResolvedValue({
         name: "Alpha Clan",
-        members: [{ tag: "#PYLQ0289", name: "Tilonius", townHallLevel: 18, mapPosition: 1 }],
+        members: [
+          {
+            tag: "#PYLQ0289",
+            name: "Tilonius",
+            townHallLevel: 18,
+            mapPosition: 1,
+          },
+        ],
       }),
     };
 
@@ -421,7 +472,14 @@ describe("/link run", () => {
     const cocService = {
       getClan: vi.fn().mockResolvedValue({
         name: "Alpha Clan",
-        members: [{ tag: "#QGRJ2222", name: "Player Two", townHallLevel: 15, mapPosition: 1 }],
+        members: [
+          {
+            tag: "#QGRJ2222",
+            name: "Player Two",
+            townHallLevel: 15,
+            mapPosition: 1,
+          },
+        ],
       }),
     };
 
@@ -450,7 +508,67 @@ describe("/link run", () => {
     await Link.run({} as any, interaction as any, cocService as any);
 
     expect(interaction.editReply).toHaveBeenCalledWith(
-      "empty_list: no current clan members for #PQL0289."
+      "empty_list: no current clan members for #PQL0289.",
+    );
+  });
+
+  it("runs /link sync-clashperk and reports inserted rows", async () => {
+    vi.spyOn(
+      PlayerLinkSyncService.prototype,
+      "syncFromPublicGoogleSheet",
+    ).mockResolvedValue({
+      totalRowCount: 5,
+      eligibleRowCount: 4,
+      insertedCount: 3,
+      updatedCount: 1,
+      unchangedCount: 0,
+      duplicateTagCount: 0,
+      missingRequiredCount: 1,
+      invalidTagCount: 0,
+      invalidDiscordUserIdCount: 0,
+    });
+
+    const interaction = makeInteraction({
+      subcommand: "sync-clashperk",
+      sheetUrl:
+        "https://docs.google.com/spreadsheets/d/test-sheet-id/edit?gid=0#gid=0",
+      userId: "111111111111111111",
+      isAdmin: true,
+    });
+
+    await Link.run({} as any, interaction as any, {} as any);
+
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      [
+        "sync_complete: inserted 3 new link(s).",
+        "eligible rows: 4",
+        "existing links skipped: 1",
+        "duplicate sheet tags skipped: 0",
+        "missing required fields skipped: 1",
+        "invalid tags skipped: 0",
+        "invalid discord ids skipped: 0",
+      ].join("\n"),
+    );
+  });
+
+  it("rejects /link sync-clashperk when permission check fails", async () => {
+    vi.spyOn(
+      CommandPermissionService.prototype,
+      "canUseAnyTarget",
+    ).mockResolvedValue(false);
+
+    const interaction = makeInteraction({
+      subcommand: "sync-clashperk",
+      sheetUrl:
+        "https://docs.google.com/spreadsheets/d/test-sheet-id/edit?gid=0#gid=0",
+      userId: "111111111111111111",
+      isAdmin: false,
+    });
+
+    await Link.run({} as any, interaction as any, {} as any);
+
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "not_allowed: only admins can use /link sync-clashperk.",
     );
   });
 
@@ -465,14 +583,16 @@ describe("/link run", () => {
         createdAt: new Date("2026-03-15T09:07:00.000Z"),
       },
     ]);
-    prismaMock.currentWar.findMany.mockResolvedValue(tags.map((tag) => ({ clanTag: tag })));
+    prismaMock.currentWar.findMany.mockResolvedValue(
+      tags.map((tag) => ({ clanTag: tag })),
+    );
     prismaMock.trackedClan.findMany.mockResolvedValue(
       tags.map((tag, idx) => ({
         tag,
         name: `Clan ${String(idx + 1).padStart(2, "0")}`,
         clanBadge: null,
         mailConfig: { displayOrder: idx === 29 ? 999 : idx + 1 },
-      }))
+      })),
     );
 
     const interaction = makeInteraction({
@@ -482,7 +602,14 @@ describe("/link run", () => {
     const cocService = {
       getClan: vi.fn().mockResolvedValue({
         name: "Current Clan",
-        members: [{ tag: currentTag, name: "Current Player", townHallLevel: 16, mapPosition: 1 }],
+        members: [
+          {
+            tag: currentTag,
+            name: "Current Player",
+            townHallLevel: 16,
+            mapPosition: 1,
+          },
+        ],
       }),
     };
 
@@ -493,7 +620,11 @@ describe("/link run", () => {
 
     expect(select.options).toHaveLength(25);
     expect(select.options.map((opt: any) => opt.value)).toContain(currentTag);
-    expect(select.options.some((opt: any) => opt.default && opt.value === currentTag)).toBe(true);
+    expect(
+      select.options.some(
+        (opt: any) => opt.default && opt.value === currentTag,
+      ),
+    ).toBe(true);
   });
 });
 
@@ -515,7 +646,12 @@ describe("/link list select menu", () => {
       },
     ]);
     prismaMock.trackedClan.findMany.mockResolvedValue([
-      { tag: "#PQL0289", name: "Alpha Clan", clanBadge: null, mailConfig: null },
+      {
+        tag: "#PQL0289",
+        name: "Alpha Clan",
+        clanBadge: null,
+        mailConfig: null,
+      },
     ]);
     prismaMock.trackedClan.findUnique.mockResolvedValue(null);
     prismaMock.currentWar.findMany.mockResolvedValue([{ clanTag: "#PQL0289" }]);
@@ -531,7 +667,9 @@ describe("/link list select menu", () => {
       guildId: "guild-1",
       guild: {
         members: {
-          cache: new Map([["111111111111111111", { displayName: "Select Display Name" }]]),
+          cache: new Map([
+            ["111111111111111111", { displayName: "Select Display Name" }],
+          ]),
         },
       },
       client: { users: { cache: new Map() } },
@@ -545,7 +683,14 @@ describe("/link list select menu", () => {
     const cocService = {
       getClan: vi.fn().mockResolvedValue({
         name: "Alpha Clan",
-        members: [{ tag: "#PQL0289", name: "Player One", townHallLevel: 15, mapPosition: 1 }],
+        members: [
+          {
+            tag: "#PQL0289",
+            name: "Player One",
+            townHallLevel: 15,
+            mapPosition: 1,
+          },
+        ],
       }),
     };
 
@@ -594,7 +739,10 @@ describe("/link embed interactions", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.clearAllMocks();
-    vi.spyOn(CommandPermissionService.prototype, "canUseAnyTarget").mockResolvedValue(true);
+    vi.spyOn(
+      CommandPermissionService.prototype,
+      "canUseAnyTarget",
+    ).mockResolvedValue(true);
     prismaMock.$queryRaw.mockReset();
     prismaMock.$executeRaw.mockReset();
     prismaMock.$queryRaw.mockResolvedValue([]);
@@ -636,13 +784,17 @@ describe("/link embed interactions", () => {
 
     expect(reply).toHaveBeenCalledWith({
       ephemeral: true,
-      content: "invalid_context: this link button can only be used in its original server.",
+      content:
+        "invalid_context: this link button can only be used in its original server.",
     });
     expect(showModal).not.toHaveBeenCalled();
   });
 
   it("handles embed setup modal submit and posts embed with button", async () => {
-    vi.spyOn(CommandPermissionService.prototype, "canUseAnyTarget").mockResolvedValue(true);
+    vi.spyOn(
+      CommandPermissionService.prototype,
+      "canUseAnyTarget",
+    ).mockResolvedValue(true);
     const send = vi.fn().mockResolvedValue({
       url: "https://discord.com/channels/1/2/3",
     });
@@ -656,7 +808,10 @@ describe("/link embed interactions", () => {
       }),
     };
     const interaction = {
-      customId: buildLinkEmbedSetupModalCustomId("111111111111111111", "channel-1"),
+      customId: buildLinkEmbedSetupModalCustomId(
+        "111111111111111111",
+        "channel-1",
+      ),
       user: { id: "111111111111111111" },
       guildId: "guild-1",
       guild: {
@@ -672,7 +827,8 @@ describe("/link embed interactions", () => {
         getTextInputValue: vi.fn((field: string) => {
           if (field === "embed_title") return "Link Your Account";
           if (field === "embed_description") return "Submit your player tag.";
-          if (field === "embed_image_url") return "https://example.com/image.png";
+          if (field === "embed_image_url")
+            return "https://example.com/image.png";
           if (field === "embed_thumbnail_url") return "";
           return "";
         }),
@@ -685,16 +841,21 @@ describe("/link embed interactions", () => {
     expect(send).toHaveBeenCalledTimes(1);
     const payload = send.mock.calls[0]?.[0];
     expect(payload.embeds[0].toJSON().title).toBe("Link Your Account");
-    expect(payload.components[0].toJSON().components[0].label).toBe("Link Account");
+    expect(payload.components[0].toJSON().components[0].label).toBe(
+      "Link Account",
+    );
     expect(interaction.reply).toHaveBeenCalledWith(
       expect.objectContaining({
         ephemeral: true,
-      })
+      }),
     );
   });
 
   it("rejects invalid image url in embed setup modal", async () => {
-    vi.spyOn(CommandPermissionService.prototype, "canUseAnyTarget").mockResolvedValue(true);
+    vi.spyOn(
+      CommandPermissionService.prototype,
+      "canUseAnyTarget",
+    ).mockResolvedValue(true);
     const channel = {
       id: "channel-1",
       guildId: "guild-1",
@@ -705,7 +866,10 @@ describe("/link embed interactions", () => {
       }),
     };
     const interaction = {
-      customId: buildLinkEmbedSetupModalCustomId("111111111111111111", "channel-1"),
+      customId: buildLinkEmbedSetupModalCustomId(
+        "111111111111111111",
+        "channel-1",
+      ),
       user: { id: "111111111111111111" },
       guildId: "guild-1",
       guild: {
@@ -733,7 +897,8 @@ describe("/link embed interactions", () => {
 
     expect(interaction.reply).toHaveBeenCalledWith({
       ephemeral: true,
-      content: "invalid_image_url: provide an absolute http:// or https:// URL.",
+      content:
+        "invalid_image_url: provide an absolute http:// or https:// URL.",
     });
     expect(channel.send).not.toHaveBeenCalled();
   });
@@ -799,11 +964,17 @@ describe("/link embed interactions", () => {
   });
 
   it("exposes stable custom-id guards for link embed interactions", () => {
-    expect(isLinkEmbedAccountButtonCustomId(buildLinkEmbedAccountButtonCustomId("guild-1"))).toBe(
-      true
-    );
-    expect(isLinkEmbedModalCustomId(buildLinkEmbedSetupModalCustomId("u", "c"))).toBe(true);
-    expect(isLinkEmbedModalCustomId(buildLinkEmbedTagModalCustomId("guild-1"))).toBe(true);
+    expect(
+      isLinkEmbedAccountButtonCustomId(
+        buildLinkEmbedAccountButtonCustomId("guild-1"),
+      ),
+    ).toBe(true);
+    expect(
+      isLinkEmbedModalCustomId(buildLinkEmbedSetupModalCustomId("u", "c")),
+    ).toBe(true);
+    expect(
+      isLinkEmbedModalCustomId(buildLinkEmbedTagModalCustomId("guild-1")),
+    ).toBe(true);
     expect(isLinkEmbedModalCustomId("other:modal")).toBe(false);
   });
 });
