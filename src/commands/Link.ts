@@ -409,14 +409,21 @@ function resolveLinkedUserDisplayName(
 ): string {
   const member = interaction.guild?.members?.cache.get(discordUserId) ?? null;
 
-  const memberDisplay = sanitizeTableText(member?.displayName ?? "");
-  if (memberDisplay.length > 0) return memberDisplay;
+  console.log("link-list identity", {
+    discordUserId,
+    memberDisplay: member?.displayName,
+    username: member?.user?.username,
+    persistedDiscordUsername,
+  });
 
   const username = sanitizeTableText(member?.user?.username ?? "");
   if (username.length > 0) return username;
 
   const persisted = sanitizeTableText(persistedDiscordUsername ?? "");
   if (persisted.length > 0) return persisted;
+
+  const memberDisplay = sanitizeTableText(member?.displayName ?? "");
+  if (memberDisplay.length > 0) return memberDisplay;
 
   return "Unknown User";
 }
@@ -436,9 +443,9 @@ function formatAlignedInlineRow(
   row: LinkListRowInput,
   widths: { player: number; third: number },
 ): string {
-  const player = rightAlign(row.playerName, widths.player);
-  const third = rightAlign(row.third, widths.third);
-  return `\`${row.th} | ${player} | ${third}\``;
+  const playerName = rightAlign(row.playerName, widths.player);
+  const discordName = rightAlign(row.third, widths.third);
+  return `\`${row.th} | ${discordName} | ${playerName}\``;
 }
 
 function computeColumnWidths(
@@ -479,10 +486,14 @@ function buildLinkListDescriptionLines(input: {
 }): string[] {
   const { linkedRows, unlinkedRows } = input;
   const widths = computeColumnWidths(linkedRows, unlinkedRows);
+  const thHeader = "TH".padEnd(2, " ");
+  const discordHeader = "Discord".padEnd(18, " ");
+  const playerHeader = "Player";
   const lines: string[] = [];
 
   if (linkedRows.length > 0) {
     lines.push(`Linked Users: ${linkedRows.length}`);
+
     lines.push(
       ...linkedRows.map((row) =>
         formatAlignedInlineRow(row, {
@@ -1392,10 +1403,11 @@ export const Link: Command = {
       await interaction.editReply(
         [
           `sync_complete: inserted ${result.insertedCount} new link(s).`,
+          `updated existing links: ${result.updatedCount}`,
+          `unchanged existing links skipped: ${result.unchangedCount}`,
           `eligible rows: ${result.eligibleRowCount}`,
-          `existing links skipped: ${result.existingCount}`,
           `duplicate sheet tags skipped: ${result.duplicateTagCount}`,
-          `missing required fields skipped: ${result.missingRequiredCount}`,
+          `rows missing Tag, ID, or Username skipped: ${result.missingRequiredCount}`,
           `invalid tags skipped: ${result.invalidTagCount}`,
           `invalid discord ids skipped: ${result.invalidDiscordUserIdCount}`,
         ].join("\n"),

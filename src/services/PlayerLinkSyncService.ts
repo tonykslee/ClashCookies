@@ -11,7 +11,9 @@ const UNRESOLVED_LAST_SYNC_KEY = "clashking:unresolved_last_sync_ms";
 
 /** Purpose: normalize tag. */
 function normalizeTag(input: string): string {
-  const trimmed = String(input ?? "").trim().toUpperCase();
+  const trimmed = String(input ?? "")
+    .trim()
+    .toUpperCase();
   if (!trimmed) return "";
   return trimmed.startsWith("#") ? trimmed : `#${trimmed}`;
 }
@@ -32,7 +34,8 @@ export type PublicGoogleSheetPlayerLinkSyncResult = {
   totalRowCount: number;
   eligibleRowCount: number;
   insertedCount: number;
-  existingCount: number;
+  updatedCount: number;
+  unchangedCount: number;
   duplicateTagCount: number;
   missingRequiredCount: number;
   invalidTagCount: number;
@@ -40,13 +43,14 @@ export type PublicGoogleSheetPlayerLinkSyncResult = {
 };
 
 type ClashPerkColumnIndexes = {
-  displayName: number;
   username: number;
   id: number;
   tag: number;
 };
 
-function extractPublicGoogleSheetIdentity(input: string): PublicGoogleSheetIdentity {
+function extractPublicGoogleSheetIdentity(
+  input: string,
+): PublicGoogleSheetIdentity {
   const trimmed = String(input ?? "").trim();
   if (!trimmed) {
     throw new Error("Google Sheet URL is required.");
@@ -75,7 +79,9 @@ function extractPublicGoogleSheetIdentity(input: string): PublicGoogleSheetIdent
   };
 }
 
-function buildPublicGoogleSheetTsvUrl(identity: PublicGoogleSheetIdentity): string {
+function buildPublicGoogleSheetTsvUrl(
+  identity: PublicGoogleSheetIdentity,
+): string {
   const params = new URLSearchParams({ format: "tsv" });
   if (identity.gid) params.set("gid", identity.gid);
 
@@ -84,27 +90,26 @@ function buildPublicGoogleSheetTsvUrl(identity: PublicGoogleSheetIdentity): stri
 
 function parseTsv(text: string): string[][] {
   const normalized = String(text ?? "").replace(/^\uFEFF/, "");
-  const lines = normalized
-    .split(/\r?\n/)
-    .filter((line) => line.length > 0);
+  const lines = normalized.split(/\r?\n/).filter((line) => line.length > 0);
 
   return lines.map((line) => line.split("\t").map((cell) => cell.trim()));
 }
 
-function resolveClashPerkColumnIndexes(headerRow: string[]): ClashPerkColumnIndexes {
+function resolveClashPerkColumnIndexes(
+  headerRow: string[],
+): ClashPerkColumnIndexes {
   const normalized = headerRow.map((cell) => cell.trim().toLowerCase());
 
-  const displayName = normalized.indexOf("displayname");
   const username = normalized.indexOf("username");
   const id = normalized.indexOf("id");
   const tag = normalized.indexOf("tag");
 
-  if (displayName === -1) throw new Error("Missing required ClashPerk column: DisplayName");
-  if (username === -1) throw new Error("Missing required ClashPerk column: Username");
+  if (username === -1)
+    throw new Error("Missing required ClashPerk column: Username");
   if (id === -1) throw new Error("Missing required ClashPerk column: ID");
   if (tag === -1) throw new Error("Missing required ClashPerk column: Tag");
 
-  return { displayName, username, id, tag };
+  return { username, id, tag };
 }
 
 function getCell(row: string[], index: number): string {
@@ -115,7 +120,7 @@ export class PlayerLinkSyncService {
   /** Purpose: initialize service dependencies. */
   constructor(
     private readonly clashKing = new ClashKingService(),
-    private readonly settings = new SettingsService()
+    private readonly settings = new SettingsService(),
   ) {}
 
   /** Purpose: sync by discord user id. */
@@ -144,9 +149,9 @@ export class PlayerLinkSyncService {
     return upserted;
   }
 
-    /** Purpose: sync missing PlayerLink rows from a public Google Sheet export. */
+  /** Purpose: sync missing PlayerLink rows from a public Google Sheet export. */
   async syncFromPublicGoogleSheet(
-    input: string
+    input: string,
   ): Promise<PublicGoogleSheetPlayerLinkSyncResult> {
     const identity = extractPublicGoogleSheetIdentity(input);
     const exportUrl = buildPublicGoogleSheetTsvUrl(identity);
@@ -162,7 +167,8 @@ export class PlayerLinkSyncService {
         totalRowCount: 0,
         eligibleRowCount: 0,
         insertedCount: 0,
-        existingCount: 0,
+        updatedCount: 0,
+        unchangedCount: 0,
         duplicateTagCount: 0,
         missingRequiredCount: 0,
         invalidTagCount: 0,
@@ -190,8 +196,11 @@ export class PlayerLinkSyncService {
     for (const row of dataRows) {
       const rawTag = getCell(row, indexes.tag);
       const rawDiscordUserId = getCell(row, indexes.id);
+      const discordUsername = normalizePersistedDiscordUsername(
+        getCell(row, indexes.username),
+      );
 
-      if (!rawTag || !rawDiscordUserId) {
+      if (!rawTag || !rawDiscordUserId || !discordUsername) {
         missingRequiredCount += 1;
         continue;
       }
@@ -213,10 +222,6 @@ export class PlayerLinkSyncService {
         continue;
       }
 
-      const discordUsername =
-        normalizePersistedDiscordUsername(getCell(row, indexes.displayName)) ??
-        normalizePersistedDiscordUsername(getCell(row, indexes.username));
-
       candidateByTag.set(playerTag, {
         playerTag,
         discordUserId,
@@ -230,7 +235,8 @@ export class PlayerLinkSyncService {
         totalRowCount: dataRows.length,
         eligibleRowCount: 0,
         insertedCount: 0,
-        existingCount: 0,
+        updatedCount: 0,
+        unchangedCount: 0,
         duplicateTagCount,
         missingRequiredCount,
         invalidTagCount,
@@ -238,31 +244,72 @@ export class PlayerLinkSyncService {
       };
     }
 
-    const existing = await prisma.playerLink.findMany({
+    let insertedCount = 0;
+    let updatedCount = 0;
+    let unchangedCount = 0;
+
+    const existingRows = await prisma.playerLink.findMany({
       where: {
         playerTag: {
           in: candidates.map((row) => row.playerTag),
         },
       },
-      select: { playerTag: true },
+      select: {
+        playerTag: true,
+        discordUserId: true,
+        discordUsername: true,
+      },
     });
 
-    const existingSet = new Set(existing.map((row) => normalizeTag(row.playerTag)));
-    const toCreate = candidates.filter((row) => !existingSet.has(row.playerTag));
+    const existingByTag = new Map(
+      existingRows.map((row) => [normalizeTag(row.playerTag), row]),
+    );
 
-    const createResult =
-      toCreate.length > 0
-        ? await prisma.playerLink.createMany({
-            data: toCreate,
-            skipDuplicates: true,
-          })
-        : { count: 0 };
+    for (const row of candidates) {
+      const existing = existingByTag.get(row.playerTag);
+
+      if (!existing) {
+        await prisma.playerLink.create({
+          data: {
+            playerTag: row.playerTag,
+            discordUserId: row.discordUserId,
+            discordUsername: row.discordUsername,
+          },
+        });
+        insertedCount += 1;
+        continue;
+      }
+
+      const existingDiscordUserId = String(existing.discordUserId ?? "").trim();
+      const existingDiscordUsername = normalizePersistedDiscordUsername(
+        existing.discordUsername,
+      );
+
+      const isSameDiscordUserId = existingDiscordUserId === row.discordUserId;
+      const isSameDiscordUsername =
+        existingDiscordUsername === row.discordUsername;
+
+      if (isSameDiscordUserId && isSameDiscordUsername) {
+        unchangedCount += 1;
+        continue;
+      }
+
+      await prisma.playerLink.update({
+        where: { playerTag: row.playerTag },
+        data: {
+          discordUserId: row.discordUserId,
+          discordUsername: row.discordUsername,
+        },
+      });
+      updatedCount += 1;
+    }
 
     return {
       totalRowCount: dataRows.length,
       eligibleRowCount: candidates.length,
-      insertedCount: createResult.count,
-      existingCount: existingSet.size,
+      insertedCount,
+      updatedCount,
+      unchangedCount,
       duplicateTagCount,
       missingRequiredCount,
       invalidTagCount,
@@ -298,7 +345,9 @@ export class PlayerLinkSyncService {
         where: { playerTag: { in: normalizedTags } },
         select: { playerTag: true },
       });
-      const existingSet = new Set(existing.map((e) => normalizeTag(e.playerTag)));
+      const existingSet = new Set(
+        existing.map((e) => normalizeTag(e.playerTag)),
+      );
       const unresolved = normalizedTags.filter((tag) => !existingSet.has(tag));
 
       if (unresolved.length === 0) {
@@ -335,9 +384,8 @@ export class PlayerLinkSyncService {
       await this.settings.set(UNRESOLVED_LAST_SYNC_KEY, String(now));
     } catch (err) {
       console.warn(
-        `[clashking] unresolved link sync failed tags=${normalizedTags.length} error=${formatError(err)}`
+        `[clashking] unresolved link sync failed tags=${normalizedTags.length} error=${formatError(err)}`,
       );
     }
   }
 }
-
