@@ -405,18 +405,18 @@ function buildClanSelectRows(input: {
 function resolveLinkedUserDisplayName(
   interaction: ChatInputCommandInteraction | StringSelectMenuInteraction,
   discordUserId: string,
-  persistedDiscordUsername: string | null,
+  persistedDiscordUsername: string | null
 ): string {
   const member = interaction.guild?.members?.cache.get(discordUserId) ?? null;
 
-  const memberDisplay = sanitizeTableText(member?.displayName ?? "");
-  if (memberDisplay.length > 0) return memberDisplay;
+  const persisted = sanitizeTableText(persistedDiscordUsername ?? "");
+  if (persisted.length > 0) return persisted;
 
   const username = sanitizeTableText(member?.user?.username ?? "");
   if (username.length > 0) return username;
 
-  const persisted = sanitizeTableText(persistedDiscordUsername ?? "");
-  if (persisted.length > 0) return persisted;
+  const memberDisplay = sanitizeTableText(member?.displayName ?? "");
+  if (memberDisplay.length > 0) return memberDisplay;
 
   return "Unknown User";
 }
