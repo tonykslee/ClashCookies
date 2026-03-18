@@ -2,6 +2,7 @@ import { Client, GatewayIntentBits, Partials } from "discord.js";
 import ready from "./listeners/ready";
 import interactionCreate from "./listeners/interactionCreate";
 import messageReactionAdd from "./listeners/messageReactionAdd";
+import messageDelete from "./listeners/messageDelete";
 import { CoCService } from "./services/CoCService";
 import {
   formatStartupLogFields,
@@ -36,6 +37,7 @@ const cocService = new CoCService();
 // Register listeners once before login attempts.
 interactionCreate(client, cocService);
 messageReactionAdd(client);
+messageDelete(client);
 ready(client, cocService);
 
 async function loginWithRetry(): Promise<void> {

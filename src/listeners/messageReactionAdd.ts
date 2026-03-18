@@ -1,6 +1,6 @@
 import { Client, MessageReaction, PartialMessageReaction, PartialUser, User } from "discord.js";
 import { formatError } from "../helper/formatError";
-import { handleFwaBaseSwapReaction } from "../commands/Fwa";
+import { FWA_BASE_SWAP_ACK_EMOJI, handleFwaBaseSwapReaction } from "../commands/Fwa";
 
 let isRegistered = false;
 
@@ -41,6 +41,7 @@ export default (client: Client): void => {
       const fullReaction = await materializeReaction(reaction);
       const fullUser = await materializeUser(user);
       if (!fullReaction || !fullUser || fullUser.bot) return;
+      if (fullReaction.emoji.id || fullReaction.emoji.name !== FWA_BASE_SWAP_ACK_EMOJI) return;
       await handleFwaBaseSwapReaction(
         fullReaction.message.id,
         fullUser.id,

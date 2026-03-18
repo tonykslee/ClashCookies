@@ -15,7 +15,7 @@ import { SettingsService } from "../services/SettingsService";
 import { WarEventLogService } from "../services/WarEventLogService";
 import { TelemetryIngestService } from "../services/telemetry/ingest";
 import { startTelemetryScheduleLoop } from "../services/telemetry/schedule";
-import { refreshAllTrackedWarMailPosts } from "../commands/Fwa";
+import { refreshAllTrackedWarMailPosts, sweepExpiredFwaBaseSwapAnnouncementStates } from "../commands/Fwa";
 import { backfillMissingDiscordUsernamesForClanMembers } from "../services/PlayerLinkService";
 import {
   formatStartupLogFields,
@@ -37,6 +37,7 @@ const DEFAULT_OBSERVE_INTERVAL_MINUTES = 30;
 const RECRUITMENT_REMINDER_INTERVAL_MS = 60 * 60 * 1000;
 const DEFERMENT_REMINDER_INTERVAL_MS = 60 * 60 * 1000;
 const DEFAULT_WAR_EVENT_POLL_INTERVAL_MINUTES = 5;
+const FWA_BASE_SWAP_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
 const OBSERVE_LAST_RUN_AT_KEY = "activity_observe:last_run_at_ms";
 const VISIBILITY_OPTION = {
   name: "visibility",
@@ -498,6 +499,16 @@ export default (client: Client, cocService: CoCService): void => {
       });
     }, DEFERMENT_REMINDER_INTERVAL_MS);
     console.log("Deferment reminder loop enabled (every 60 minute(s)).");
+
+    void sweepExpiredFwaBaseSwapAnnouncementStates().catch((err) => {
+      console.error(`FWA base-swap expiry sweep failed: ${formatError(err)}`);
+    });
+    setInterval(() => {
+      void sweepExpiredFwaBaseSwapAnnouncementStates().catch((err) => {
+        console.error(`FWA base-swap expiry sweep failed: ${formatError(err)}`);
+      });
+    }, FWA_BASE_SWAP_SWEEP_INTERVAL_MS);
+    console.log("FWA base-swap expiry sweep enabled (every 60 minute(s)).");
 
     const warEventPollMinutesRaw = Number(
       process.env.WAR_EVENT_LOG_POLL_INTERVAL_MINUTES ?? DEFAULT_WAR_EVENT_POLL_INTERVAL_MINUTES
