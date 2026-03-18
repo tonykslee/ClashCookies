@@ -1,6 +1,5 @@
 import { Client, MessageReaction, PartialMessageReaction, PartialUser, User } from "discord.js";
 import { formatError } from "../helper/formatError";
-import { FWA_BASE_SWAP_ACK_EMOJI, handleFwaBaseSwapReaction } from "../commands/Fwa";
 import { trackedMessageService, TRACKED_MESSAGE_FEATURE_TYPE } from "../services/TrackedMessageService";
 
 let isRegistered = false;
@@ -31,36 +30,23 @@ async function materializeUser(user: User | PartialUser): Promise<User | null> {
 
 export default (client: Client): void => {
   if (isRegistered) {
-    console.warn("messageReactionAdd already registered, skipping");
+    console.warn("messageReactionRemove already registered, skipping");
     return;
   }
 
   isRegistered = true;
 
-  client.on("messageReactionAdd", async (reaction, user) => {
+  client.on("messageReactionRemove", async (reaction, user) => {
     try {
       const fullReaction = await materializeReaction(reaction);
       const fullUser = await materializeUser(user);
       if (!fullReaction || !fullUser || fullUser.bot) return;
-
       const tracked = await trackedMessageService.getActiveByMessageId(fullReaction.message.id);
       if (!tracked || tracked.status !== "ACTIVE") return;
-
-      if (tracked.featureType === TRACKED_MESSAGE_FEATURE_TYPE.FWA_BASE_SWAP) {
-        if (fullReaction.emoji.id || fullReaction.emoji.name !== FWA_BASE_SWAP_ACK_EMOJI) return;
-        await handleFwaBaseSwapReaction(
-          fullReaction.message.id,
-          fullUser.id,
-          fullReaction.message,
-        );
-        return;
-      }
-
-      if (tracked.featureType === TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST) {
-        await trackedMessageService.recordSyncClaim(fullReaction.message.id, fullUser.id, fullReaction);
-      }
+      if (tracked.featureType !== TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST) return;
+      await trackedMessageService.removeSyncClaim(fullReaction.message.id, fullUser.id, fullReaction);
     } catch (err) {
-      console.error(`messageReactionAdd failed: ${formatError(err)}`);
+      console.error(`messageReactionRemove failed: ${formatError(err)}`);
     }
   });
 };

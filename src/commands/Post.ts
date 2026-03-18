@@ -27,6 +27,7 @@ import {
   FWA_LEADER_ROLE_SETTING_KEY,
 } from "../services/CommandPermissionService";
 import { SettingsService } from "../services/SettingsService";
+import { trackedMessageService } from "../services/TrackedMessageService";
 import { normalizeSyncTimeZone } from "../services/syncTimeZone";
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -43,6 +44,7 @@ const SHORTCODE_EMOJI_PATTERN = /^:([A-Za-z0-9_]+):$/;
 const SYNC_UNAVAILABLE_EMOJI = "💤";
 
 type SyncBadge = {
+  clanTag: string;
   code: string;
   label: string;
   reactionIdentifier: string;
@@ -98,6 +100,7 @@ function makeSyncBadgeFromHardcoded(entry: {
 },
 overrides?: { code?: string; label?: string }): SyncBadge {
   return {
+    clanTag: overrides?.label?.startsWith("#") ? (overrides?.label as string) : `#${(overrides?.code ?? entry.code)}` ,
     code: overrides?.code ?? entry.code,
     label: overrides?.label ?? entry.label,
     reactionIdentifier: `${entry.name}:${entry.id}`,
@@ -122,6 +125,7 @@ function makeSyncBadgeFromTrackedClan(
 
   if (custom) {
     return {
+      clanTag,
       code,
       label,
       reactionIdentifier: `${custom.name}:${custom.id}`,
@@ -134,6 +138,7 @@ function makeSyncBadgeFromTrackedClan(
   }
 
   return {
+    clanTag,
     code,
     label,
     reactionIdentifier: trimmed,
@@ -273,22 +278,33 @@ async function resolveStoredActiveSyncMessage(
   if (!guild) return null;
   const guildId = guild.id;
 
+  const fetchTrackedMessage = async (channelId: string, messageId: string) => {
+    const channel = await guild.channels.fetch(channelId).catch(() => null);
+    if (!channel?.isTextBased() || !("messages" in channel)) {
+      return null;
+    }
+    const message = await channel.messages.fetch(messageId).catch(() => null);
+    if (!message || !message.author.bot || !isBotSyncTimeMessage(message.content)) {
+      return null;
+    }
+    return message;
+  };
+
   const stored = parseActiveSyncPost(await settings.get(activeSyncPostKey(guildId)));
-  if (!stored) return null;
-
-  const channel = await guild.channels.fetch(stored.channelId).catch(() => null);
-  if (!channel?.isTextBased() || !("messages" in channel)) {
+  if (stored) {
+    const storedMessage = await fetchTrackedMessage(stored.channelId, stored.messageId);
+    if (storedMessage) return storedMessage;
     await settings.delete(activeSyncPostKey(guildId));
-    return null;
   }
 
-  const message = await channel.messages.fetch(stored.messageId).catch(() => null);
-  if (!message || !message.author.bot || !isBotSyncTimeMessage(message.content)) {
-    await settings.delete(activeSyncPostKey(guildId));
+  const latestTracked = await trackedMessageService.resolveLatestActiveSyncPost(guildId);
+  if (!latestTracked) return null;
+  const trackedMessage = await fetchTrackedMessage(latestTracked.channelId, latestTracked.messageId);
+  if (!trackedMessage) {
+    await trackedMessageService.markMessageDeleted(latestTracked.messageId);
     return null;
   }
-
-  return message;
+  return trackedMessage;
 }
 
 async function resolveSyncStatusMessage(
@@ -896,6 +912,26 @@ export async function handlePostModalSubmit(
       "Could not add :zzz: reaction for unavailable users. Check bot `Add Reactions` permission."
     );
   }
+
+  await trackedMessageService.createSyncTimeTrackedMessage({
+    guildId: interaction.guildId,
+    channelId: postedMessage.channelId,
+    messageId: postedMessage.id,
+    remindAt: new Date(epochSeconds * 1000 - 5 * 60 * 1000),
+    expiresAt: new Date(epochSeconds * 1000 + 60 * 60 * 1000),
+    metadata: {
+      syncTimeIso: new Date(epochSeconds * 1000).toISOString(),
+      syncEpochSeconds: epochSeconds,
+      roleId: role.id,
+      clans: badges.map((badge) => ({
+        clanTag: badge.clanTag,
+        clanName: badge.label,
+        emojiId: badge.id,
+        emojiName: badge.name,
+        emojiInline: badge.emojiInline,
+      })),
+    },
+  });
 
   try {
     const pinned = await channel.messages.fetchPinned();
