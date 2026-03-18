@@ -408,12 +408,12 @@ function resolveLinkedUserDisplayName(
   persistedDiscordUsername: string | null,
 ): string {
   const member = interaction.guild?.members?.cache.get(discordUserId) ?? null;
+  
+    const username = sanitizeTableText(member?.user?.username ?? "");
+    if (username.length > 0) return username;
 
   const persisted = sanitizeTableText(persistedDiscordUsername ?? "");
   if (persisted.length > 0) return persisted;
-
-  const username = sanitizeTableText(member?.user?.username ?? "");
-  if (username.length > 0) return username;
 
   const memberDisplay = sanitizeTableText(member?.displayName ?? "");
   if (memberDisplay.length > 0) return memberDisplay;
