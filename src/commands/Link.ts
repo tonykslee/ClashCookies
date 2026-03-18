@@ -405,7 +405,7 @@ function buildClanSelectRows(input: {
 function resolveLinkedUserDisplayName(
   interaction: ChatInputCommandInteraction | StringSelectMenuInteraction,
   discordUserId: string,
-  persistedDiscordUsername: string | null
+  persistedDiscordUsername: string | null,
 ): string {
   const member = interaction.guild?.members?.cache.get(discordUserId) ?? null;
 
@@ -436,9 +436,9 @@ function formatAlignedInlineRow(
   row: LinkListRowInput,
   widths: { player: number; third: number },
 ): string {
-  const player = rightAlign(row.playerName, widths.player);
-  const third = rightAlign(row.third, widths.third);
-  return `\`${row.th} | ${player} | ${third}\``;
+  const playerName = rightAlign(row.playerName, widths.player);
+  const discordName = rightAlign(row.third, widths.third);
+  return `\`${row.th} | ${discordName} | ${playerName}\``;
 }
 
 function computeColumnWidths(
@@ -479,10 +479,14 @@ function buildLinkListDescriptionLines(input: {
 }): string[] {
   const { linkedRows, unlinkedRows } = input;
   const widths = computeColumnWidths(linkedRows, unlinkedRows);
+  const thHeader = "TH".padEnd(2, " ");
+  const discordHeader = "Discord".padEnd(18, " ");
+  const playerHeader = "Player";
   const lines: string[] = [];
 
   if (linkedRows.length > 0) {
     lines.push(`Linked Users: ${linkedRows.length}`);
+
     lines.push(
       ...linkedRows.map((row) =>
         formatAlignedInlineRow(row, {
