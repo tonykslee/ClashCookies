@@ -1,6 +1,6 @@
 import { Client, Message, PartialMessage } from "discord.js";
 import { formatError } from "../helper/formatError";
-import { expireFwaBaseSwapAnnouncementState } from "../commands/Fwa";
+import { trackedMessageService } from "../services/TrackedMessageService";
 
 let isRegistered = false;
 
@@ -27,7 +27,7 @@ export default (client: Client): void => {
     try {
       const fullMessage = await materializeMessage(message);
       if (!fullMessage?.id) return;
-      await expireFwaBaseSwapAnnouncementState(fullMessage.id);
+      await trackedMessageService.markMessageDeleted(fullMessage.id);
     } catch (err) {
       console.error(`messageDelete failed: ${formatError(err)}`);
     }

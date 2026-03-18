@@ -27,6 +27,7 @@ import {
 } from "../services/CommandPermissionService";
 import { GoogleSheetsService } from "../services/GoogleSheetsService";
 import { SettingsService } from "../services/SettingsService";
+import { trackedMessageService } from "../services/TrackedMessageService";
 import {
   WarComplianceService,
   type WarComplianceIssue,
@@ -233,35 +234,44 @@ type FwaBaseSwapAnnouncementState = {
   createdAtIso: string;
 };
 
-const FWA_BASE_SWAP_STATE_PREFIX = "fwa:base-swap:";
 const FWA_BASE_SWAP_TTL_MS = 48 * 60 * 60 * 1000;
 export const FWA_BASE_SWAP_ACK_EMOJI = "✅";
 
-function buildFwaBaseSwapStateKey(messageId: string): string {
-  return `${FWA_BASE_SWAP_STATE_PREFIX}${messageId}`;
-}
-
-function isFwaBaseSwapExpired(state: FwaBaseSwapAnnouncementState, nowMs: number = Date.now()): boolean {
+function isFwaBaseSwapExpired(
+  state: FwaBaseSwapAnnouncementState,
+  nowMs: number = Date.now(),
+): boolean {
   const createdAtMs = Date.parse(state.createdAtIso);
   if (!Number.isFinite(createdAtMs)) return true;
   return nowMs - createdAtMs >= FWA_BASE_SWAP_TTL_MS;
 }
 
-async function deleteFwaBaseSwapAnnouncementState(messageId: string): Promise<void> {
-  await prisma.botSetting.deleteMany({
-    where: { key: buildFwaBaseSwapStateKey(messageId) },
-  });
+export async function expireFwaBaseSwapAnnouncementState(
+  messageId: string,
+): Promise<void> {
+  await trackedMessageService.markMessageDeleted(messageId);
 }
 
-async function deleteFwaBaseSwapAnnouncementStates(messageIds: string[]): Promise<void> {
-  const ids = [...new Set(messageIds.map((value) => String(value).trim()).filter(Boolean))];
-  if (ids.length === 0) return;
-  await prisma.botSetting.deleteMany({
-    where: {
-      key: {
-        in: ids.map((messageId) => buildFwaBaseSwapStateKey(messageId)),
-      },
-    },
+export async function sweepExpiredFwaBaseSwapAnnouncementStates(): Promise<number> {
+  return trackedMessageService.processDueExpirations();
+}
+
+export async function handleFwaBaseSwapReaction(
+  messageId: string,
+  reactorUserId: string,
+  message: {
+    edit: (payload: {
+      content: string;
+      allowedMentions: { users: string[] };
+    }) => Promise<unknown>;
+  },
+): Promise<boolean> {
+  return trackedMessageService.handleFwaBaseSwapReaction({
+    messageId,
+    reactorUserId,
+    message,
+    render: renderFwaBaseSwapAnnouncement,
+    truncate: truncateDiscordContent,
   });
 }
 
@@ -283,12 +293,16 @@ function parseBaseSwapPositionList(input: string | null | undefined): number[] {
 }
 
 function renderBaseSwapLine(entry: FwaBaseSwapAnnouncementEntry): string {
-  const mention = entry.discordUserId ? `<@${entry.discordUserId}>` : "*(unlinked)*";
+  const mention = entry.discordUserId
+    ? `<@${entry.discordUserId}>`
+    : "*(unlinked)*";
   const mark = entry.acknowledged ? "✅" : ":x:";
   return `#${entry.position} - ${mention} - ${entry.playerName} - ${mark}`;
 }
 
-function renderFwaBaseSwapAnnouncement(state: FwaBaseSwapAnnouncementState): string {
+function renderFwaBaseSwapAnnouncement(
+  state: { entries: FwaBaseSwapAnnouncementEntry[] },
+): string {
   const warBaseLines = state.entries
     .filter((entry) => entry.section === "war_bases")
     .map(renderBaseSwapLine);
@@ -299,7 +313,7 @@ function renderFwaBaseSwapAnnouncement(state: FwaBaseSwapAnnouncementState): str
   const parts: string[] = [];
   if (warBaseLines.length > 0) {
     parts.push(
-      "# <a:alert:1483326883469987883> YOU HAVE AN ACTIVE WAR BASE <a:alert:1483326883469987883>",
+      `# <a:alert:1480828443531673700> YOU HAVE AN ACTIVE WAR BASE <a:alert:1480828443531673700>`,
       "",
       ...warBaseLines,
       "",
@@ -308,7 +322,8 @@ function renderFwaBaseSwapAnnouncement(state: FwaBaseSwapAnnouncementState): str
   }
 
   if (baseErrorLines.length > 0) {
-    if (parts.length > 0) parts.push("", "──────────────────────────────────", "");
+    if (parts.length > 0)
+      parts.push("", "──────────────────────────────────", "");
     parts.push(
       "# :warning: YOU HAVE BASE ERRORS :warning:",
       "",
@@ -326,157 +341,6 @@ function renderFwaBaseSwapAnnouncement(state: FwaBaseSwapAnnouncementState): str
   }
 
   return parts.join("\n");
-}
-
-async function saveFwaBaseSwapAnnouncementState(
-  state: FwaBaseSwapAnnouncementState,
-): Promise<void> {
-  await prisma.botSetting.upsert({
-    where: { key: buildFwaBaseSwapStateKey(state.messageId) },
-    update: { value: JSON.stringify(state) },
-    create: {
-      key: buildFwaBaseSwapStateKey(state.messageId),
-      value: JSON.stringify(state),
-    },
-  });
-}
-
-async function loadFwaBaseSwapAnnouncementState(
-  messageId: string,
-): Promise<FwaBaseSwapAnnouncementState | null> {
-  const row = await prisma.botSetting.findUnique({
-    where: { key: buildFwaBaseSwapStateKey(messageId) },
-    select: { value: true },
-  });
-  if (!row?.value) return null;
-  try {
-    const parsed = JSON.parse(row.value) as FwaBaseSwapAnnouncementState;
-    if (!parsed || !Array.isArray(parsed.entries)) return null;
-    if (isFwaBaseSwapExpired(parsed)) {
-      await deleteFwaBaseSwapAnnouncementState(messageId);
-      return null;
-    }
-    return parsed;
-  } catch {
-    await deleteFwaBaseSwapAnnouncementState(messageId);
-    return null;
-  }
-}
-
-export async function expireFwaBaseSwapAnnouncementState(messageId: string): Promise<void> {
-  await deleteFwaBaseSwapAnnouncementState(messageId);
-}
-
-export async function sweepExpiredFwaBaseSwapAnnouncementStates(): Promise<number> {
-  const rows = await prisma.botSetting.findMany({
-    where: {
-      key: {
-        startsWith: FWA_BASE_SWAP_STATE_PREFIX,
-      },
-    },
-    select: { key: true, value: true },
-  });
-
-  const expiredMessageIds: string[] = [];
-  for (const row of rows) {
-    try {
-      const parsed = JSON.parse(row.value) as FwaBaseSwapAnnouncementState;
-      if (!parsed || !Array.isArray(parsed.entries) || isFwaBaseSwapExpired(parsed)) {
-        expiredMessageIds.push(row.key.slice(FWA_BASE_SWAP_STATE_PREFIX.length));
-      }
-    } catch {
-      expiredMessageIds.push(row.key.slice(FWA_BASE_SWAP_STATE_PREFIX.length));
-    }
-  }
-
-  await deleteFwaBaseSwapAnnouncementStates(expiredMessageIds);
-  return expiredMessageIds.length;
-}
-
-export async function expireSupersededFwaBaseSwapAnnouncementStates(
-  guildId: string,
-  clanTag: string,
-  keepMessageId?: string,
-): Promise<number> {
-  const normalizedGuildId = String(guildId ?? "").trim();
-  const normalizedClanTag = normalizeTag(clanTag);
-  if (!normalizedGuildId || !normalizedClanTag) return 0;
-
-  const rows = await prisma.botSetting.findMany({
-    where: {
-      key: {
-        startsWith: FWA_BASE_SWAP_STATE_PREFIX,
-      },
-    },
-    select: { key: true, value: true },
-  });
-
-  const supersededMessageIds: string[] = [];
-  for (const row of rows) {
-    const messageId = row.key.slice(FWA_BASE_SWAP_STATE_PREFIX.length);
-    if (keepMessageId && messageId === keepMessageId) continue;
-
-    try {
-      const parsed = JSON.parse(row.value) as FwaBaseSwapAnnouncementState;
-      if (!parsed || !Array.isArray(parsed.entries)) {
-        supersededMessageIds.push(messageId);
-        continue;
-      }
-      if (isFwaBaseSwapExpired(parsed)) {
-        supersededMessageIds.push(messageId);
-        continue;
-      }
-      if (parsed.guildId !== normalizedGuildId) continue;
-      if (normalizeTag(parsed.clanTag) !== normalizedClanTag) continue;
-      supersededMessageIds.push(messageId);
-    } catch {
-      supersededMessageIds.push(messageId);
-    }
-  }
-
-  await deleteFwaBaseSwapAnnouncementStates(supersededMessageIds);
-  return supersededMessageIds.length;
-}
-
-export async function handleFwaBaseSwapReaction(
-  messageId: string,
-  reactorUserId: string,
-  message: {
-    edit: (payload: {
-      content: string;
-      allowedMentions: { users: string[] };
-    }) => Promise<unknown>;
-  },
-): Promise<boolean> {
-  const state = await loadFwaBaseSwapAnnouncementState(messageId);
-  if (!state) return false;
-
-  let changed = false;
-  for (const entry of state.entries) {
-    if (entry.discordUserId === reactorUserId && !entry.acknowledged) {
-      entry.acknowledged = true;
-      changed = true;
-    }
-  }
-  if (!changed) return false;
-
-  await message.edit({
-    content: truncateDiscordContent(renderFwaBaseSwapAnnouncement(state)),
-    allowedMentions: {
-      users: state.entries.flatMap((entry) => (entry.discordUserId ? [entry.discordUserId] : [])),
-    },
-  });
-
-  const allAcknowledged = state.entries.every(
-    (entry) => !entry.discordUserId || entry.acknowledged,
-  );
-  if (allAcknowledged) {
-    await deleteFwaBaseSwapAnnouncementState(messageId);
-    return true;
-  }
-
-  await saveFwaBaseSwapAnnouncementState(state);
-  return true;
 }
 const POINTS_REQUEST_HEADERS = {
   "User-Agent":
@@ -10195,11 +10059,16 @@ export const Fwa: Command = {
     }
 
     if (subcommand === "base-swap") {
-      if (!interaction.inGuild() || !interaction.guildId || !interaction.channel) {
-        await editReplySafe("This command can only be used in a server channel.");
+      if (
+        !interaction.inGuild() ||
+        !interaction.guildId ||
+        !interaction.channel
+      ) {
+        await editReplySafe(
+          "This command can only be used in a server channel.",
+        );
         return;
       }
-
       const clanTag = normalizeTag(interaction.options.getString("clan", true));
       const warBasePositions = parseBaseSwapPositionList(
         interaction.options.getString("war-bases", false),
@@ -10229,31 +10098,53 @@ export const Fwa: Command = {
         return;
       }
 
-      const war = await getCurrentWarCached(cocService, clanTag, warLookupCache).catch(
-        () => null,
-      );
-      if (!war || !war.clan || !Array.isArray(war.clan.members) || war.clan.members.length === 0) {
-        await editReplySafe(`No active current war roster found for #${clanTag}.`);
+      const war = await getCurrentWarCached(
+        cocService,
+        clanTag,
+        warLookupCache,
+      ).catch(() => null);
+      if (
+        !war ||
+        !war.clan ||
+        !Array.isArray(war.clan.members) ||
+        war.clan.members.length === 0
+      ) {
+        await editReplySafe(
+          `No active current war roster found for #${clanTag}.`,
+        );
         return;
       }
 
       const roster = war.clan.members
         .map((member) => ({
           position:
-            typeof member.mapPosition === "number" && Number.isFinite(member.mapPosition)
+            typeof member.mapPosition === "number" &&
+            Number.isFinite(member.mapPosition)
               ? Math.trunc(member.mapPosition)
               : null,
           playerTag: normalizeTag(String(member.tag ?? "")),
           playerName: String(member.name ?? "Unknown").trim() || "Unknown",
         }))
         .filter(
-          (member): member is { position: number; playerTag: string; playerName: string } =>
-            member.position !== null && member.position > 0 && member.playerTag.length > 0,
+          (
+            member,
+          ): member is {
+            position: number;
+            playerTag: string;
+            playerName: string;
+          } =>
+            member.position !== null &&
+            member.position > 0 &&
+            member.playerTag.length > 0,
         )
         .sort((a, b) => a.position - b.position);
 
-      const memberByPosition = new Map(roster.map((member) => [member.position, member]));
-      const allRequestedPositions = [...new Set([...warBasePositions, ...baseErrorPositions])];
+      const memberByPosition = new Map(
+        roster.map((member) => [member.position, member]),
+      );
+      const allRequestedPositions = [
+        ...new Set([...warBasePositions, ...baseErrorPositions]),
+      ];
       const missingPositions = allRequestedPositions.filter(
         (position) => !memberByPosition.has(position),
       );
@@ -10304,20 +10195,18 @@ export const Fwa: Command = {
         return;
       }
 
+      
       const content = truncateDiscordContent(
-        renderFwaBaseSwapAnnouncement({
-          guildId: interaction.guildId,
-          channelId: interaction.channelId,
-          messageId: "pending",
-          clanTag,
-          clanName: sanitizeClanName(trackedClan.name) ?? `#${clanTag}`,
-          createdByUserId: interaction.user.id,
-          entries,
-          createdAtIso: new Date().toISOString(),
-        }),
+        renderFwaBaseSwapAnnouncement({ entries },),
       );
 
-      const mentionUserIds = [...new Set(entries.flatMap((entry) => (entry.discordUserId ? [entry.discordUserId] : [])))];
+      const mentionUserIds = [
+        ...new Set(
+          entries.flatMap((entry) =>
+            entry.discordUserId ? [entry.discordUserId] : [],
+          ),
+        ),
+      ];
       const posted = await interaction.channel.send({
         content,
         allowedMentions: { users: mentionUserIds },
@@ -10333,12 +10222,20 @@ export const Fwa: Command = {
         entries,
         createdAtIso: new Date().toISOString(),
       };
-      await saveFwaBaseSwapAnnouncementState(state);
-      await expireSupersededFwaBaseSwapAnnouncementStates(
-        state.guildId,
-        state.clanTag,
-        state.messageId,
-      );
+      const expiresAt = new Date(Date.now() + FWA_BASE_SWAP_TTL_MS);
+      await trackedMessageService.createFwaBaseSwapTrackedMessage({
+        guildId: state.guildId,
+        channelId: state.channelId,
+        messageId: state.messageId,
+        clanTag: state.clanTag,
+        expiresAt,
+        metadata: {
+          clanName: state.clanName,
+          createdByUserId: state.createdByUserId,
+          createdAtIso: state.createdAtIso,
+          entries: state.entries,
+        },
+      });
 
       try {
         await posted.react(FWA_BASE_SWAP_ACK_EMOJI);
@@ -10346,7 +10243,7 @@ export const Fwa: Command = {
         console.error(
           `[fwa base-swap] react failed guild=${interaction.guildId} channel=${interaction.channelId} message=${posted.id} emoji=${FWA_BASE_SWAP_ACK_EMOJI} user=${interaction.user.id} error=${formatError(
             err,
-          )}`
+          )}`,
         );
       }
 
