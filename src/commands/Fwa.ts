@@ -237,13 +237,18 @@ type FwaBaseSwapAnnouncementState = {
 const FWA_BASE_SWAP_TTL_MS = 48 * 60 * 60 * 1000;
 export const FWA_BASE_SWAP_ACK_EMOJI = "✅";
 
-function isFwaBaseSwapExpired(state: FwaBaseSwapAnnouncementState, nowMs: number = Date.now()): boolean {
+function isFwaBaseSwapExpired(
+  state: FwaBaseSwapAnnouncementState,
+  nowMs: number = Date.now(),
+): boolean {
   const createdAtMs = Date.parse(state.createdAtIso);
   if (!Number.isFinite(createdAtMs)) return true;
   return nowMs - createdAtMs >= FWA_BASE_SWAP_TTL_MS;
 }
 
-export async function expireFwaBaseSwapAnnouncementState(messageId: string): Promise<void> {
+export async function expireFwaBaseSwapAnnouncementState(
+  messageId: string,
+): Promise<void> {
   await trackedMessageService.markMessageDeleted(messageId);
 }
 
@@ -288,12 +293,16 @@ function parseBaseSwapPositionList(input: string | null | undefined): number[] {
 }
 
 function renderBaseSwapLine(entry: FwaBaseSwapAnnouncementEntry): string {
-  const mention = entry.discordUserId ? `<@${entry.discordUserId}>` : "*(unlinked)*";
+  const mention = entry.discordUserId
+    ? `<@${entry.discordUserId}>`
+    : "*(unlinked)*";
   const mark = entry.acknowledged ? "✅" : ":x:";
   return `#${entry.position} - ${mention} - ${entry.playerName} - ${mark}`;
 }
 
-function renderFwaBaseSwapAnnouncement(state: { entries: FwaBaseSwapAnnouncementEntry[] }): string {
+function renderFwaBaseSwapAnnouncement(state: {
+  entries: FwaBaseSwapAnnouncementEntry[];
+}): string {
   const warBaseLines = state.entries
     .filter((entry) => entry.section === "war_bases")
     .map(renderBaseSwapLine);
@@ -313,7 +322,8 @@ function renderFwaBaseSwapAnnouncement(state: { entries: FwaBaseSwapAnnouncement
   }
 
   if (baseErrorLines.length > 0) {
-    if (parts.length > 0) parts.push("", "──────────────────────────────────", "");
+    if (parts.length > 0)
+      parts.push("", "──────────────────────────────────", "");
     parts.push(
       "# :warning: YOU HAVE BASE ERRORS :warning:",
       "",
@@ -10049,8 +10059,14 @@ export const Fwa: Command = {
     }
 
     if (subcommand === "base-swap") {
-      if (!interaction.inGuild() || !interaction.guildId || !interaction.channel) {
-        await editReplySafe("This command can only be used in a server channel.");
+      if (
+        !interaction.inGuild() ||
+        !interaction.guildId ||
+        !interaction.channel
+      ) {
+        await editReplySafe(
+          "This command can only be used in a server channel.",
+        );
         return;
       }
 
@@ -10083,31 +10099,53 @@ export const Fwa: Command = {
         return;
       }
 
-      const war = await getCurrentWarCached(cocService, clanTag, warLookupCache).catch(
-        () => null,
-      );
-      if (!war || !war.clan || !Array.isArray(war.clan.members) || war.clan.members.length === 0) {
-        await editReplySafe(`No active current war roster found for #${clanTag}.`);
+      const war = await getCurrentWarCached(
+        cocService,
+        clanTag,
+        warLookupCache,
+      ).catch(() => null);
+      if (
+        !war ||
+        !war.clan ||
+        !Array.isArray(war.clan.members) ||
+        war.clan.members.length === 0
+      ) {
+        await editReplySafe(
+          `No active current war roster found for #${clanTag}.`,
+        );
         return;
       }
 
       const roster = war.clan.members
         .map((member) => ({
           position:
-            typeof member.mapPosition === "number" && Number.isFinite(member.mapPosition)
+            typeof member.mapPosition === "number" &&
+            Number.isFinite(member.mapPosition)
               ? Math.trunc(member.mapPosition)
               : null,
           playerTag: normalizeTag(String(member.tag ?? "")),
           playerName: String(member.name ?? "Unknown").trim() || "Unknown",
         }))
         .filter(
-          (member): member is { position: number; playerTag: string; playerName: string } =>
-            member.position !== null && member.position > 0 && member.playerTag.length > 0,
+          (
+            member,
+          ): member is {
+            position: number;
+            playerTag: string;
+            playerName: string;
+          } =>
+            member.position !== null &&
+            member.position > 0 &&
+            member.playerTag.length > 0,
         )
         .sort((a, b) => a.position - b.position);
 
-      const memberByPosition = new Map(roster.map((member) => [member.position, member]));
-      const allRequestedPositions = [...new Set([...warBasePositions, ...baseErrorPositions])];
+      const memberByPosition = new Map(
+        roster.map((member) => [member.position, member]),
+      );
+      const allRequestedPositions = [
+        ...new Set([...warBasePositions, ...baseErrorPositions]),
+      ];
       const missingPositions = allRequestedPositions.filter(
         (position) => !memberByPosition.has(position),
       );
@@ -10160,18 +10198,17 @@ export const Fwa: Command = {
 
       const content = truncateDiscordContent(
         renderFwaBaseSwapAnnouncement({
-          guildId: interaction.guildId,
-          channelId: interaction.channelId,
-          messageId: "pending",
-          clanTag,
-          clanName: sanitizeClanName(trackedClan.name) ?? `#${clanTag}`,
-          createdByUserId: interaction.user.id,
           entries,
-          createdAtIso: new Date().toISOString(),
         }),
       );
 
-      const mentionUserIds = [...new Set(entries.flatMap((entry) => (entry.discordUserId ? [entry.discordUserId] : [])))];
+      const mentionUserIds = [
+        ...new Set(
+          entries.flatMap((entry) =>
+            entry.discordUserId ? [entry.discordUserId] : [],
+          ),
+        ),
+      ];
       const posted = await interaction.channel.send({
         content,
         allowedMentions: { users: mentionUserIds },
@@ -10208,7 +10245,7 @@ export const Fwa: Command = {
         console.error(
           `[fwa base-swap] react failed guild=${interaction.guildId} channel=${interaction.channelId} message=${posted.id} emoji=${FWA_BASE_SWAP_ACK_EMOJI} user=${interaction.user.id} error=${formatError(
             err,
-          )}`
+          )}`,
         );
       }
 
