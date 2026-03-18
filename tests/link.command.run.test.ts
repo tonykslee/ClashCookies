@@ -521,6 +521,7 @@ describe("/link run", () => {
       eligibleRowCount: 4,
       insertedCount: 3,
       updatedCount: 1,
+      unchangedCount: 0,
       duplicateTagCount: 0,
       missingRequiredCount: 1,
       invalidTagCount: 0,

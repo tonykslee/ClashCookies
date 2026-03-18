@@ -35,6 +35,7 @@ export type PublicGoogleSheetPlayerLinkSyncResult = {
   eligibleRowCount: number;
   insertedCount: number;
   updatedCount: number;
+  unchangedCount: number;
   duplicateTagCount: number;
   missingRequiredCount: number;
   invalidTagCount: number;
@@ -171,6 +172,7 @@ export class PlayerLinkSyncService {
         eligibleRowCount: 0,
         insertedCount: 0,
         updatedCount: 0,
+        unchangedCount: 0,
         duplicateTagCount: 0,
         missingRequiredCount: 0,
         invalidTagCount: 0,
@@ -199,7 +201,11 @@ export class PlayerLinkSyncService {
       const rawTag = getCell(row, indexes.tag);
       const rawDiscordUserId = getCell(row, indexes.id);
 
-      if (!rawTag || !rawDiscordUserId) {
+      const discordUsername =
+        normalizePersistedDiscordUsername(getCell(row, indexes.displayName)) ??
+        normalizePersistedDiscordUsername(getCell(row, indexes.username));
+
+      if (!rawTag || !rawDiscordUserId || !discordUsername) {
         missingRequiredCount += 1;
         continue;
       }
@@ -221,10 +227,6 @@ export class PlayerLinkSyncService {
         continue;
       }
 
-      const discordUsername =
-        normalizePersistedDiscordUsername(getCell(row, indexes.displayName)) ??
-        normalizePersistedDiscordUsername(getCell(row, indexes.username));
-
       candidateByTag.set(playerTag, {
         playerTag,
         discordUserId,
@@ -239,6 +241,7 @@ export class PlayerLinkSyncService {
         eligibleRowCount: 0,
         insertedCount: 0,
         updatedCount: 0,
+        unchangedCount: 0,
         duplicateTagCount,
         missingRequiredCount,
         invalidTagCount,
@@ -248,35 +251,70 @@ export class PlayerLinkSyncService {
 
     let insertedCount = 0;
     let updatedCount = 0;
+    let unchangedCount = 0;
+
+    const existingRows = await prisma.playerLink.findMany({
+      where: {
+        playerTag: {
+          in: candidates.map((row) => row.playerTag),
+        },
+      },
+      select: {
+        playerTag: true,
+        discordUserId: true,
+        discordUsername: true,
+      },
+    });
+
+    const existingByTag = new Map(
+      existingRows.map((row) => [normalizeTag(row.playerTag), row]),
+    );
 
     for (const row of candidates) {
-      const existing = await prisma.playerLink.findUnique({
-        where: { playerTag: row.playerTag },
-        select: { playerTag: true },
-      });
+      const existing = existingByTag.get(row.playerTag);
 
-      await prisma.playerLink.upsert({
+      if (!existing) {
+        await prisma.playerLink.create({
+          data: {
+            playerTag: row.playerTag,
+            discordUserId: row.discordUserId,
+            discordUsername: row.discordUsername,
+          },
+        });
+        insertedCount += 1;
+        continue;
+      }
+
+      const existingDiscordUserId = String(existing.discordUserId ?? "").trim();
+      const existingDiscordUsername = normalizePersistedDiscordUsername(
+        existing.discordUsername,
+      );
+
+      const isSameDiscordUserId = existingDiscordUserId === row.discordUserId;
+      const isSameDiscordUsername =
+        existingDiscordUsername === row.discordUsername;
+
+      if (isSameDiscordUserId && isSameDiscordUsername) {
+        unchangedCount += 1;
+        continue;
+      }
+
+      await prisma.playerLink.update({
         where: { playerTag: row.playerTag },
-        update: {
+        data: {
           discordUserId: row.discordUserId,
           discordUsername: row.discordUsername,
         },
-        create: {
-          playerTag: row.playerTag,
-          discordUserId: row.discordUserId,
-          discordUsername: row.discordUsername,
-        },
       });
-
-      if (existing) updatedCount += 1;
-      else insertedCount += 1;
+      updatedCount += 1;
     }
 
     return {
       totalRowCount: dataRows.length,
       eligibleRowCount: candidates.length,
       insertedCount,
-      updatedCount: updatedCount,
+      updatedCount,
+      unchangedCount,
       duplicateTagCount,
       missingRequiredCount,
       invalidTagCount,

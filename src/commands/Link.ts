@@ -1404,9 +1404,10 @@ export const Link: Command = {
         [
           `sync_complete: inserted ${result.insertedCount} new link(s).`,
           `updated existing links: ${result.updatedCount}`,
+          `unchanged existing links skipped: ${result.unchangedCount}`,
           `eligible rows: ${result.eligibleRowCount}`,
           `duplicate sheet tags skipped: ${result.duplicateTagCount}`,
-          `missing required fields skipped: ${result.missingRequiredCount}`,
+          `rows missing Tag, ID, or Discord username skipped: ${result.missingRequiredCount}`,
           `invalid tags skipped: ${result.invalidTagCount}`,
           `invalid discord ids skipped: ${result.invalidDiscordUserIdCount}`,
         ].join("\n"),
