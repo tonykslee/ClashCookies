@@ -1403,8 +1403,8 @@ export const Link: Command = {
       await interaction.editReply(
         [
           `sync_complete: inserted ${result.insertedCount} new link(s).`,
+          `updated existing links: ${result.updatedCount}`,
           `eligible rows: ${result.eligibleRowCount}`,
-          `existing links skipped: ${result.existingCount}`,
           `duplicate sheet tags skipped: ${result.duplicateTagCount}`,
           `missing required fields skipped: ${result.missingRequiredCount}`,
           `invalid tags skipped: ${result.invalidTagCount}`,
