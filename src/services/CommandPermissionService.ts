@@ -19,6 +19,7 @@ export const COMMAND_PERMISSION_TARGETS = [
   "link:delete",
   "link:list",
   "link:embed",
+  "link:sync-clashperk",
   "link:create:admin",
   "link:delete:admin",
   "war",
@@ -84,7 +85,8 @@ export const COMMAND_PERMISSION_TARGETS = [
   `${MANAGE_COMMAND_ROLES_COMMAND}:list`,
 ] as const;
 
-export type CommandPermissionTarget = (typeof COMMAND_PERMISSION_TARGETS)[number];
+export type CommandPermissionTarget =
+  (typeof COMMAND_PERMISSION_TARGETS)[number];
 
 type GuildInteraction = ChatInputCommandInteraction | ModalSubmitInteraction;
 
@@ -98,6 +100,7 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "kick-list:clear",
   "notify:war",
   "link:embed",
+  "link:sync-clashperk",
   "warplan",
   "fwa:leader-role",
   "force:sync:data",
@@ -168,7 +171,9 @@ function stringifyRoleIds(roleIds: string[]): string {
 }
 
 /** Purpose: get interaction role ids. */
-async function getInteractionRoleIds(interaction: GuildInteraction): Promise<string[]> {
+async function getInteractionRoleIds(
+  interaction: GuildInteraction,
+): Promise<string[]> {
   if (!interaction.inGuild()) return [];
 
   const member = interaction.member;
@@ -204,20 +209,25 @@ function isKnownTarget(target: string): target is CommandPermissionTarget {
   return (COMMAND_PERMISSION_TARGETS as readonly string[]).includes(target);
 }
 
-export function getPermissionTargetPrefixesForCommand(commandName: string): string[] {
+export function getPermissionTargetPrefixesForCommand(
+  commandName: string,
+): string[] {
   return [commandName];
 }
 
 export function hasPermissionTargetForCommand(commandName: string): boolean {
   const prefixes = getPermissionTargetPrefixesForCommand(commandName);
   return COMMAND_PERMISSION_TARGETS.some((target) =>
-    prefixes.some((prefix) => target === prefix || target.startsWith(`${prefix}:`))
+    prefixes.some(
+      (prefix) => target === prefix || target.startsWith(`${prefix}:`),
+    ),
   );
 }
 
 /** Purpose: get owner bypass ids. */
 function getOwnerBypassIds(): Set<string> {
-  const raw = process.env.OWNER_DISCORD_USER_IDS ?? process.env.OWNER_DISCORD_USER_ID;
+  const raw =
+    process.env.OWNER_DISCORD_USER_IDS ?? process.env.OWNER_DISCORD_USER_ID;
   if (!raw) return new Set();
   const ids = raw
     .split(",")
@@ -235,7 +245,7 @@ function hasOwnerBypass(interaction: GuildInteraction): boolean {
 
 /** Purpose: get command targets from interaction. */
 export function getCommandTargetsFromInteraction(
-  interaction: ChatInputCommandInteraction
+  interaction: ChatInputCommandInteraction,
 ): string[] {
   const command = interaction.commandName;
   const group = interaction.options.getSubcommandGroup(false);
@@ -280,7 +290,10 @@ export class CommandPermissionService {
   }
 
   /** Purpose: set allowed role ids. */
-  async setAllowedRoleIds(commandName: string, roleIds: string[]): Promise<void> {
+  async setAllowedRoleIds(
+    commandName: string,
+    roleIds: string[],
+  ): Promise<void> {
     const serialized = stringifyRoleIds(roleIds);
     if (!serialized) {
       await this.settings.delete(commandRolesKey(commandName));
@@ -290,7 +303,10 @@ export class CommandPermissionService {
   }
 
   /** Purpose: add allowed role id. */
-  async addAllowedRoleId(commandName: string, roleId: string): Promise<string[]> {
+  async addAllowedRoleId(
+    commandName: string,
+    roleId: string,
+  ): Promise<string[]> {
     const existing = await this.getAllowedRoleIds(commandName);
     const next = [...new Set([...existing, roleId])];
     await this.setAllowedRoleIds(commandName, next);
@@ -298,7 +314,10 @@ export class CommandPermissionService {
   }
 
   /** Purpose: remove allowed role id. */
-  async removeAllowedRoleId(commandName: string, roleId: string): Promise<string[]> {
+  async removeAllowedRoleId(
+    commandName: string,
+    roleId: string,
+  ): Promise<string[]> {
     const existing = await this.getAllowedRoleIds(commandName);
     const next = existing.filter((id) => id !== roleId);
     await this.setAllowedRoleIds(commandName, next);
@@ -312,7 +331,7 @@ export class CommandPermissionService {
 
   async canUseCommand(
     commandName: string,
-    interaction: GuildInteraction
+    interaction: GuildInteraction,
   ): Promise<boolean> {
     if (hasOwnerBypass(interaction)) return true;
 
@@ -341,7 +360,7 @@ export class CommandPermissionService {
 
   async canUseAnyTarget(
     targets: string[],
-    interaction: GuildInteraction
+    interaction: GuildInteraction,
   ): Promise<boolean> {
     if (hasOwnerBypass(interaction)) return true;
 
@@ -385,7 +404,10 @@ export class CommandPermissionService {
   }
 
   /** Purpose: get policy summary. */
-  async getPolicySummary(commandName: string, guildId?: string | null): Promise<string> {
+  async getPolicySummary(
+    commandName: string,
+    guildId?: string | null,
+  ): Promise<string> {
     const roles = await this.getAllowedRoleIds(commandName);
     if (roles.length === 0) {
       if (isFwaLeaderDefaultTarget(commandName)) {
