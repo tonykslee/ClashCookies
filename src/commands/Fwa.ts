@@ -20,12 +20,14 @@ import { recordFetchEvent } from "../helper/fetchTelemetry";
 import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
+import { listPlayerLinksForClanMembers } from "../services/PlayerLinkService";
 import {
   CommandPermissionService,
   FWA_LEADER_ROLE_SETTING_KEY,
 } from "../services/CommandPermissionService";
 import { GoogleSheetsService } from "../services/GoogleSheetsService";
 import { SettingsService } from "../services/SettingsService";
+import { trackedMessageService } from "../services/TrackedMessageService";
 import {
   WarComplianceService,
   type WarComplianceIssue,
@@ -209,6 +211,137 @@ const fwaStatsWeightService = new FwaStatsWeightService();
 const fwaStatsWeightCookieService = new FwaStatsWeightCookieService();
 const pointsFetchPolicy = new PointsFetchPolicyService();
 const pointsDirectFetchGate = new PointsDirectFetchGateService();
+
+type FwaBaseSwapSection = "war_bases" | "base_errors";
+
+type FwaBaseSwapAnnouncementEntry = {
+  position: number;
+  playerTag: string;
+  playerName: string;
+  discordUserId: string | null;
+  section: FwaBaseSwapSection;
+  acknowledged: boolean;
+};
+
+type FwaBaseSwapAnnouncementState = {
+  guildId: string;
+  channelId: string;
+  messageId: string;
+  clanTag: string;
+  clanName: string;
+  createdByUserId: string;
+  entries: FwaBaseSwapAnnouncementEntry[];
+  createdAtIso: string;
+};
+
+const FWA_BASE_SWAP_TTL_MS = 48 * 60 * 60 * 1000;
+export const FWA_BASE_SWAP_ACK_EMOJI = "✅";
+
+function isFwaBaseSwapExpired(
+  state: FwaBaseSwapAnnouncementState,
+  nowMs: number = Date.now(),
+): boolean {
+  const createdAtMs = Date.parse(state.createdAtIso);
+  if (!Number.isFinite(createdAtMs)) return true;
+  return nowMs - createdAtMs >= FWA_BASE_SWAP_TTL_MS;
+}
+
+export async function expireFwaBaseSwapAnnouncementState(
+  messageId: string,
+): Promise<void> {
+  await trackedMessageService.markMessageDeleted(messageId);
+}
+
+export async function sweepExpiredFwaBaseSwapAnnouncementStates(): Promise<number> {
+  return trackedMessageService.processDueExpirations();
+}
+
+export async function handleFwaBaseSwapReaction(
+  messageId: string,
+  reactorUserId: string,
+  message: {
+    edit: (payload: {
+      content: string;
+      allowedMentions: { users: string[] };
+    }) => Promise<unknown>;
+  },
+): Promise<boolean> {
+  return trackedMessageService.handleFwaBaseSwapReaction({
+    messageId,
+    reactorUserId,
+    message,
+    render: renderFwaBaseSwapAnnouncement,
+    truncate: truncateDiscordContent,
+  });
+}
+
+function parseBaseSwapPositionList(input: string | null | undefined): number[] {
+  if (!input) return [];
+  const seen = new Set<number>();
+  const out: number[] = [];
+  for (const part of String(input)
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean)) {
+    if (!/^\d+$/.test(part)) continue;
+    const parsed = Number.parseInt(part, 10);
+    if (!Number.isFinite(parsed) || parsed <= 0 || seen.has(parsed)) continue;
+    seen.add(parsed);
+    out.push(parsed);
+  }
+  return out;
+}
+
+function renderBaseSwapLine(entry: FwaBaseSwapAnnouncementEntry): string {
+  const mention = entry.discordUserId
+    ? `<@${entry.discordUserId}>`
+    : "*(unlinked)*";
+  const mark = entry.acknowledged ? "✅" : ":x:";
+  return `#${entry.position} - ${mention} - ${entry.playerName} - ${mark}`;
+}
+
+function renderFwaBaseSwapAnnouncement(
+  state: { entries: FwaBaseSwapAnnouncementEntry[] },
+): string {
+  const warBaseLines = state.entries
+    .filter((entry) => entry.section === "war_bases")
+    .map(renderBaseSwapLine);
+  const baseErrorLines = state.entries
+    .filter((entry) => entry.section === "base_errors")
+    .map(renderBaseSwapLine);
+
+  const parts: string[] = [];
+  if (warBaseLines.length > 0) {
+    parts.push(
+      `# <a:alert:1480828443531673700> YOU HAVE AN ACTIVE WAR BASE <a:alert:1480828443531673700>`,
+      "",
+      ...warBaseLines,
+      "",
+      "**Failure to comply + acknowledge will result in __kick__ before the next sync**",
+    );
+  }
+
+  if (baseErrorLines.length > 0) {
+    if (parts.length > 0)
+      parts.push("", "──────────────────────────────────", "");
+    parts.push(
+      "# :warning: YOU HAVE BASE ERRORS :warning:",
+      "",
+      ...baseErrorLines,
+    );
+  }
+
+  if (parts.length > 0) {
+    parts.push(
+      "",
+      "──────────────────────────────────",
+      "",
+      `👇 React with ${FWA_BASE_SWAP_ACK_EMOJI} once your base is fixed.`,
+    );
+  }
+
+  return parts.join("\n");
+}
 const POINTS_REQUEST_HEADERS = {
   "User-Agent":
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
@@ -9569,6 +9702,32 @@ export const Fwa: Command = {
       ],
     },
     {
+      name: "base-swap",
+      description: "Post a base swap / base error acknowledgement announcement",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "clan",
+          description: "Tracked clan tag (with or without #)",
+          type: ApplicationCommandOptionType.String,
+          required: true,
+          autocomplete: true,
+        },
+        {
+          name: "war-bases",
+          description: "Comma-separated war-base positions, e.g. 1,4,7",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+        },
+        {
+          name: "base-errors",
+          description: "Comma-separated base-error positions, e.g. 2,3,9",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+        },
+      ],
+    },
+    {
       name: "compliance",
       description: "Review war-plan compliance for a tracked clan",
       type: ApplicationCommandOptionType.Subcommand,
@@ -9895,6 +10054,208 @@ export const Fwa: Command = {
         interaction.user.id,
         tag,
         cocService,
+      );
+      return;
+    }
+
+    if (subcommand === "base-swap") {
+      if (
+        !interaction.inGuild() ||
+        !interaction.guildId ||
+        !interaction.channel
+      ) {
+        await editReplySafe(
+          "This command can only be used in a server channel.",
+        );
+        return;
+      }
+      const clanTag = normalizeTag(interaction.options.getString("clan", true));
+      const warBasePositions = parseBaseSwapPositionList(
+        interaction.options.getString("war-bases", false),
+      );
+      const baseErrorPositions = parseBaseSwapPositionList(
+        interaction.options.getString("base-errors", false),
+      );
+
+      if (warBasePositions.length === 0 && baseErrorPositions.length === 0) {
+        await editReplySafe(
+          "Provide at least one position in `war-bases` or `base-errors`.",
+        );
+        return;
+      }
+
+      const trackedClan = await prisma.trackedClan.findFirst({
+        where: {
+          OR: [
+            { tag: { equals: `#${clanTag}`, mode: "insensitive" } },
+            { tag: { equals: clanTag, mode: "insensitive" } },
+          ],
+        },
+        select: { tag: true, name: true },
+      });
+      if (!trackedClan) {
+        await editReplySafe(`Clan #${clanTag} is not in tracked clans.`);
+        return;
+      }
+
+      const war = await getCurrentWarCached(
+        cocService,
+        clanTag,
+        warLookupCache,
+      ).catch(() => null);
+      if (
+        !war ||
+        !war.clan ||
+        !Array.isArray(war.clan.members) ||
+        war.clan.members.length === 0
+      ) {
+        await editReplySafe(
+          `No active current war roster found for #${clanTag}.`,
+        );
+        return;
+      }
+
+      const roster = war.clan.members
+        .map((member) => ({
+          position:
+            typeof member.mapPosition === "number" &&
+            Number.isFinite(member.mapPosition)
+              ? Math.trunc(member.mapPosition)
+              : null,
+          playerTag: normalizeTag(String(member.tag ?? "")),
+          playerName: String(member.name ?? "Unknown").trim() || "Unknown",
+        }))
+        .filter(
+          (
+            member,
+          ): member is {
+            position: number;
+            playerTag: string;
+            playerName: string;
+          } =>
+            member.position !== null &&
+            member.position > 0 &&
+            member.playerTag.length > 0,
+        )
+        .sort((a, b) => a.position - b.position);
+
+      const memberByPosition = new Map(
+        roster.map((member) => [member.position, member]),
+      );
+      const allRequestedPositions = [
+        ...new Set([...warBasePositions, ...baseErrorPositions]),
+      ];
+      const missingPositions = allRequestedPositions.filter(
+        (position) => !memberByPosition.has(position),
+      );
+      if (missingPositions.length > 0) {
+        await editReplySafe(
+          `These positions were not found in the current war roster for #${clanTag}: ${missingPositions
+            .map((value) => `#${value}`)
+            .join(", ")}`,
+        );
+        return;
+      }
+
+      const links = await listPlayerLinksForClanMembers({
+        memberTagsInOrder: roster.map((member) => member.playerTag),
+      });
+      const linkByTag = new Map(
+        links.map((link) => [normalizeTag(link.playerTag), link]),
+      );
+
+      const entries: FwaBaseSwapAnnouncementEntry[] = [];
+      for (const position of warBasePositions) {
+        const member = memberByPosition.get(position);
+        if (!member) continue;
+        entries.push({
+          position,
+          playerTag: member.playerTag,
+          playerName: member.playerName,
+          discordUserId: linkByTag.get(member.playerTag)?.discordUserId ?? null,
+          section: "war_bases",
+          acknowledged: false,
+        });
+      }
+      for (const position of baseErrorPositions) {
+        const member = memberByPosition.get(position);
+        if (!member) continue;
+        entries.push({
+          position,
+          playerTag: member.playerTag,
+          playerName: member.playerName,
+          discordUserId: linkByTag.get(member.playerTag)?.discordUserId ?? null,
+          section: "base_errors",
+          acknowledged: false,
+        });
+      }
+
+      if (entries.length === 0) {
+        await editReplySafe("No announcement entries were generated.");
+        return;
+      }
+
+      
+      const content = truncateDiscordContent(
+        renderFwaBaseSwapAnnouncement({ entries },),
+      );
+
+      const mentionUserIds = [
+        ...new Set(
+          entries.flatMap((entry) =>
+            entry.discordUserId ? [entry.discordUserId] : [],
+          ),
+        ),
+      ];
+      const posted = await interaction.channel.send({
+        content,
+        allowedMentions: { users: mentionUserIds },
+      });
+
+      const state: FwaBaseSwapAnnouncementState = {
+        guildId: interaction.guildId,
+        channelId: interaction.channelId,
+        messageId: posted.id,
+        clanTag,
+        clanName: sanitizeClanName(trackedClan.name) ?? `#${clanTag}`,
+        createdByUserId: interaction.user.id,
+        entries,
+        createdAtIso: new Date().toISOString(),
+      };
+      const expiresAt = new Date(Date.now() + FWA_BASE_SWAP_TTL_MS);
+      await trackedMessageService.createFwaBaseSwapTrackedMessage({
+        guildId: state.guildId,
+        channelId: state.channelId,
+        messageId: state.messageId,
+        clanTag: state.clanTag,
+        expiresAt,
+        metadata: {
+          clanName: state.clanName,
+          createdByUserId: state.createdByUserId,
+          createdAtIso: state.createdAtIso,
+          entries: state.entries,
+        },
+      });
+
+      try {
+        await posted.react(FWA_BASE_SWAP_ACK_EMOJI);
+      } catch (err) {
+        console.error(
+          `[fwa base-swap] react failed guild=${interaction.guildId} channel=${interaction.channelId} message=${posted.id} emoji=${FWA_BASE_SWAP_ACK_EMOJI} user=${interaction.user.id} error=${formatError(
+            err,
+          )}`,
+        );
+      }
+
+      const unlinked = entries.filter((entry) => !entry.discordUserId);
+      await editReplySafe(
+        [
+          `Posted base swap announcement for **${state.clanName}** (#${clanTag}).`,
+          unlinked.length > 0
+            ? `Unlinked positions: ${[...new Set(unlinked.map((entry) => `#${entry.position} ${entry.playerName}`))].join(", ")}`
+            : "All listed players have linked Discord users.",
+          posted.url,
+        ].join("\n"),
       );
       return;
     }
@@ -11722,7 +12083,7 @@ export const Fwa: Command = {
       return;
     }
 
-    if (focused.name !== "tag") {
+    if (focused.name !== "tag" && focused.name !== "clan") {
       await interaction.respond([]);
       return;
     }

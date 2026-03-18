@@ -98,6 +98,61 @@ enum LoseStyle {
   TRIPLE_TOP_30
 }
 
+
+enum TrackedMessageFeatureType {
+  FWA_BASE_SWAP
+  SYNC_TIME_POST
+}
+
+enum TrackedMessageStatus {
+  ACTIVE
+  COMPLETED
+  EXPIRED
+  REPLACED
+  DELETED
+}
+
+
+
+model TrackedMessage {
+  id          String                    @id @default(cuid())
+  guildId     String
+  channelId   String
+  messageId   String                    @unique
+  featureType TrackedMessageFeatureType
+  status      TrackedMessageStatus      @default(ACTIVE)
+  referenceId String?
+  clanTag     String?
+  expiresAt   DateTime?
+  remindAt    DateTime?
+  metadata    Json?
+  createdAt   DateTime                  @default(now())
+  updatedAt   DateTime                  @updatedAt
+  claims      TrackedMessageClaim[]
+
+  @@index([featureType])
+  @@index([status])
+  @@index([expiresAt])
+  @@index([remindAt])
+  @@index([featureType, status])
+  @@index([guildId, featureType, status])
+  @@index([clanTag, featureType, status])
+}
+
+model TrackedMessageClaim {
+  id               String         @id @default(cuid())
+  trackedMessageId String
+  userId           String
+  clanTag          String
+  createdAt        DateTime       @default(now())
+  trackedMessage   TrackedMessage @relation(fields: [trackedMessageId], references: [id], onDelete: Cascade)
+
+  @@unique([trackedMessageId, userId, clanTag])
+  @@index([trackedMessageId])
+  @@index([userId])
+  @@index([clanTag])
+}
+
 model KickListEntry {
   id            Int            @id @default(autoincrement())
   guildId       String
