@@ -1,6 +1,5 @@
 import axios from "axios";
 import { Prisma } from "@prisma/client";
-import { formatEmojiByName } from "../helper/discord/formatGuildEmoji";
 import {
   ActionRowBuilder,
   ApplicationCommandOptionType,
@@ -303,9 +302,7 @@ function renderBaseSwapLine(entry: FwaBaseSwapAnnouncementEntry): string {
 
 function renderFwaBaseSwapAnnouncement(
   state: { entries: FwaBaseSwapAnnouncementEntry[] },
-  options?: { alertEmoji: string },
 ): string {
-  const alertEmoji = options?.alertEmoji ?? "⚠️";
   const warBaseLines = state.entries
     .filter((entry) => entry.section === "war_bases")
     .map(renderBaseSwapLine);
@@ -10072,10 +10069,6 @@ export const Fwa: Command = {
         );
         return;
       }
-      const alertEmoji = formatEmojiByName(interaction.client, "alert", {
-        guild: interaction.guild,
-        fallback: "⚠️",
-      });
       const clanTag = normalizeTag(interaction.options.getString("clan", true));
       const warBasePositions = parseBaseSwapPositionList(
         interaction.options.getString("war-bases", false),
@@ -10202,21 +10195,9 @@ export const Fwa: Command = {
         return;
       }
 
-      console.log("alertEmoji:", alertEmoji);
-      console.log(
-        "client alert emojis:",
-        interaction.client.emojis.cache
-          .filter((e) => e.name === "alert")
-          .map((e) => ({
-            id: e.id,
-            name: e.name,
-            animated: e.animated,
-            guildId: e.guild?.id,
-            rendered: e.toString(),
-          })),
-      );
+      
       const content = truncateDiscordContent(
-        renderFwaBaseSwapAnnouncement({ entries }, { alertEmoji }),
+        renderFwaBaseSwapAnnouncement({ entries },),
       );
 
       const mentionUserIds = [
