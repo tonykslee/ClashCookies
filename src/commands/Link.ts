@@ -1407,7 +1407,7 @@ export const Link: Command = {
           `unchanged existing links skipped: ${result.unchangedCount}`,
           `eligible rows: ${result.eligibleRowCount}`,
           `duplicate sheet tags skipped: ${result.duplicateTagCount}`,
-          `rows missing Tag, ID, or Discord username skipped: ${result.missingRequiredCount}`,
+          `rows missing Tag, ID, or Username skipped: ${result.missingRequiredCount}`,
           `invalid tags skipped: ${result.invalidTagCount}`,
           `invalid discord ids skipped: ${result.invalidDiscordUserIdCount}`,
         ].join("\n"),

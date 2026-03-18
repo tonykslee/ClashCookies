@@ -43,7 +43,6 @@ export type PublicGoogleSheetPlayerLinkSyncResult = {
 };
 
 type ClashPerkColumnIndexes = {
-  displayName: number;
   username: number;
   id: number;
   tag: number;
@@ -101,19 +100,16 @@ function resolveClashPerkColumnIndexes(
 ): ClashPerkColumnIndexes {
   const normalized = headerRow.map((cell) => cell.trim().toLowerCase());
 
-  const displayName = normalized.indexOf("displayname");
   const username = normalized.indexOf("username");
   const id = normalized.indexOf("id");
   const tag = normalized.indexOf("tag");
 
-  if (displayName === -1)
-    throw new Error("Missing required ClashPerk column: DisplayName");
   if (username === -1)
     throw new Error("Missing required ClashPerk column: Username");
   if (id === -1) throw new Error("Missing required ClashPerk column: ID");
   if (tag === -1) throw new Error("Missing required ClashPerk column: Tag");
 
-  return { displayName, username, id, tag };
+  return { username, id, tag };
 }
 
 function getCell(row: string[], index: number): string {
@@ -200,10 +196,9 @@ export class PlayerLinkSyncService {
     for (const row of dataRows) {
       const rawTag = getCell(row, indexes.tag);
       const rawDiscordUserId = getCell(row, indexes.id);
-
-      const discordUsername =
-        normalizePersistedDiscordUsername(getCell(row, indexes.displayName)) ??
-        normalizePersistedDiscordUsername(getCell(row, indexes.username));
+      const discordUsername = normalizePersistedDiscordUsername(
+        getCell(row, indexes.username),
+      );
 
       if (!rawTag || !rawDiscordUserId || !discordUsername) {
         missingRequiredCount += 1;
