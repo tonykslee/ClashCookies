@@ -408,9 +408,16 @@ function resolveLinkedUserDisplayName(
   persistedDiscordUsername: string | null,
 ): string {
   const member = interaction.guild?.members?.cache.get(discordUserId) ?? null;
-  
-    const username = sanitizeTableText(member?.user?.username ?? "");
-    if (username.length > 0) return username;
+
+  console.log("link-list identity", {
+    discordUserId,
+    memberDisplay: member?.displayName,
+    username: member?.user?.username,
+    persistedDiscordUsername,
+  });
+
+  const username = sanitizeTableText(member?.user?.username ?? "");
+  if (username.length > 0) return username;
 
   const persisted = sanitizeTableText(persistedDiscordUsername ?? "");
   if (persisted.length > 0) return persisted;
