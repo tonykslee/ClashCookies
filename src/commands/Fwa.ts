@@ -1792,6 +1792,20 @@ async function buildWarMailEmbedForTag(
     subscription?.startTime ?? null,
     war,
   );
+  const mailConfig = await getCurrentWarMailConfig(guildId, normalizedTag);
+  const lifecycleStatus = warIdForSync
+    ? ((
+        await warMailLifecycleService
+          .getLifecycleForWar({
+            guildId,
+            clanTag: normalizedTag,
+            warId: Number(warIdForSync),
+          })
+          .catch(() => null)
+      )?.status === "POSTED"
+        ? "posted"
+        : "not_posted")
+    : "not_posted";
   const syncRow = await pointsSyncService
     .getCurrentSyncForClan({
       guildId,
@@ -2013,25 +2027,50 @@ async function buildWarMailEmbedForTag(
     });
   }
 
-  const scopedRevisionOverride = resolveScopedDraftRevision({
-    draft: options?.revisionOverride ?? null,
-    liveFields: buildLiveRevisionFields({
-      warId: subscription?.warId ?? null,
-      opponentTag: effectiveOpponentTag,
-      matchType:
-        matchType === "FWA" || matchType === "BL" || matchType === "MM"
-          ? matchType
-          : "UNKNOWN",
-      expectedOutcome: matchType === "FWA" ? (outcome ?? "UNKNOWN") : null,
-    }),
+  const liveRevisionFields = buildLiveRevisionFields({
+    warId: subscription?.warId ?? null,
+    opponentTag: effectiveOpponentTag,
+    matchType:
+      matchType === "FWA" || matchType === "BL" || matchType === "MM"
+        ? matchType
+        : "UNKNOWN",
+    expectedOutcome: matchType === "FWA" ? (outcome ?? "UNKNOWN") : null,
   });
-  const mailMatchType = scopedRevisionOverride?.matchType ?? matchType;
-  const mailInferredMatchType = scopedRevisionOverride
+  const confirmedRevisionBaseline = resolveConfirmedRevisionBaseline({
+    syncRow: syncRow
+      ? {
+          warId: syncRow.warId ?? null,
+          opponentTag: syncRow.opponentTag,
+          lastKnownMatchType: syncRow.lastKnownMatchType ?? null,
+          lastKnownOutcome: syncRow.lastKnownOutcome ?? null,
+          isFwa: syncRow.isFwa ?? null,
+          confirmedByClanMail: Boolean(syncRow.confirmedByClanMail),
+        }
+      : null,
+    mailConfig: {
+      lastWarId: mailConfig.lastWarId,
+      lastOpponentTag: mailConfig.lastOpponentTag,
+      lastMatchType: mailConfig.lastMatchType,
+      lastExpectedOutcome: mailConfig.lastExpectedOutcome,
+    },
+    liveFields: liveRevisionFields,
+    lifecycleStatus,
+  });
+  const effectiveRevisionState = resolveEffectiveRevisionState({
+    liveFields: liveRevisionFields,
+    confirmedBaseline: confirmedRevisionBaseline,
+    draft: options?.revisionOverride ?? null,
+  });
+  const effectiveRevisionFields = effectiveRevisionState.effective;
+  const mailMatchType = effectiveRevisionFields?.matchType ?? matchType;
+  const mailInferredMatchType = effectiveRevisionState.appliedDraft
     ? false
-    : inferredMatchType;
+    : confirmedRevisionBaseline
+      ? false
+      : inferredMatchType;
   const mailExpectedOutcome =
     mailMatchType === "FWA"
-      ? (scopedRevisionOverride?.expectedOutcome ?? outcome ?? "UNKNOWN")
+      ? (effectiveRevisionFields?.expectedOutcome ?? outcome ?? "UNKNOWN")
       : null;
 
   const history = new WarEventHistoryService(cocService);
