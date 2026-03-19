@@ -13,6 +13,8 @@ vi.mock("../src/prisma", () => ({
 
 import {
   FWA_BASE_SWAP_ACK_EMOJI,
+  FWA_BASE_SWAP_ALERT_FALLBACK_EMOJI,
+  FWA_BASE_SWAP_LAYOUT_BULLET_FALLBACK_EMOJI,
   buildFwaBaseSwapPhaseTimingLineForTest,
   renderFwaBaseSwapAnnouncementForTest,
 } from "../src/commands/Fwa";
@@ -89,10 +91,8 @@ describe("FWA base-swap layout links", () => {
       ],
     });
 
-    const th18Line =
-      "## <a:arrow_arrow:1480819809338921142> TH18 Link: <https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg>";
-    const th17Line =
-      "## <a:arrow_arrow:1480819809338921142> TH17 Link: <https://link.clashofclans.com/en?action=OpenLayout&id=TH17%3AWB%3AAAAARQAAAAI6ppxkTfH3WnNJjWK96bqn>";
+    const th18Line = `## ${FWA_BASE_SWAP_LAYOUT_BULLET_FALLBACK_EMOJI} TH18 Link: <https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg>`;
+    const th17Line = `## ${FWA_BASE_SWAP_LAYOUT_BULLET_FALLBACK_EMOJI} TH17 Link: <https://link.clashofclans.com/en?action=OpenLayout&id=TH17%3AWB%3AAAAARQAAAAI6ppxkTfH3WnNJjWK96bqn>`;
     const reactLine = `👇 React with ${FWA_BASE_SWAP_ACK_EMOJI} once your base is fixed.`;
 
     const th18Index = content.indexOf(th18Line);
@@ -223,6 +223,64 @@ describe("FWA base-swap layout links", () => {
     expect(th18Occurrences).toBe(1);
   });
 
+  it("uses provided resolved inline emojis when present", () => {
+    const content = renderFwaBaseSwapAnnouncementForTest({
+      entries: [
+        buildEntry({
+          position: 1,
+          playerTag: "#AAA111",
+          playerName: "Alpha",
+          section: "war_bases",
+          townhallLevel: 18,
+        }),
+      ],
+      layoutLinks: [
+        buildLayoutLink({
+          townhall: 18,
+          layoutLink:
+            "https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg",
+        }),
+      ],
+      alertEmoji: "<a:alert:10001>",
+      layoutBulletEmoji: "<a:arrow_arrow:10002>",
+    });
+
+    expect(content).toContain(
+      "# <a:alert:10001> YOU HAVE AN ACTIVE WAR BASE <a:alert:10001>",
+    );
+    expect(content).toContain(
+      "## <a:arrow_arrow:10002> TH18 Link: <https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg>",
+    );
+  });
+
+  it("uses unicode fallback inline emojis when resolved emojis are unavailable", () => {
+    const content = renderFwaBaseSwapAnnouncementForTest({
+      entries: [
+        buildEntry({
+          position: 1,
+          playerTag: "#AAA111",
+          playerName: "Alpha",
+          section: "war_bases",
+          townhallLevel: 18,
+        }),
+      ],
+      layoutLinks: [
+        buildLayoutLink({
+          townhall: 18,
+          layoutLink:
+            "https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg",
+        }),
+      ],
+    });
+
+    expect(content).toContain(
+      `# ${FWA_BASE_SWAP_ALERT_FALLBACK_EMOJI} YOU HAVE AN ACTIVE WAR BASE ${FWA_BASE_SWAP_ALERT_FALLBACK_EMOJI}`,
+    );
+    expect(content).toContain(
+      `## ${FWA_BASE_SWAP_LAYOUT_BULLET_FALLBACK_EMOJI} TH18 Link: <https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg>`,
+    );
+  });
+
   it("skips TH lines when no matching RISINGDAWN layout link is available", () => {
     const content = renderFwaBaseSwapAnnouncementForTest({
       entries: [
@@ -259,6 +317,8 @@ describe("FWA base-swap layout links", () => {
       clanName: "Test Clan",
       createdByUserId: "admin-1",
       createdAtIso: "2026-03-19T00:00:00.000Z",
+      alertEmoji: "<a:alert:10001>",
+      layoutBulletEmoji: "<a:arrow_arrow:10002>",
       entries: [
         buildEntry({
           position: 1,
@@ -305,7 +365,7 @@ describe("FWA base-swap layout links", () => {
     expect(message.edit).toHaveBeenCalledTimes(1);
     const editPayload = message.edit.mock.calls[0]?.[0];
     expect(String(editPayload.content)).toContain(
-      "## <a:arrow_arrow:1480819809338921142> TH18 Link: <https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg>"
+      "## <a:arrow_arrow:10002> TH18 Link: <https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg>"
     );
     expect(String(editPayload.content)).toContain(
       `👇 React with ${FWA_BASE_SWAP_ACK_EMOJI} once your base is fixed.`
