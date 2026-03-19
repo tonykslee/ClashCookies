@@ -13,6 +13,7 @@ vi.mock("../src/prisma", () => ({
 
 import {
   FWA_BASE_SWAP_ACK_EMOJI,
+  buildFwaBaseSwapPhaseTimingLineForTest,
   renderFwaBaseSwapAnnouncementForTest,
 } from "../src/commands/Fwa";
 import {
@@ -105,6 +106,90 @@ describe("FWA base-swap layout links", () => {
     expect(playerLineIndex).toBeGreaterThan(-1);
     expect(th18Index).toBeGreaterThan(playerLineIndex);
     expect(reactIndex).toBeGreaterThan(th17Index);
+  });
+
+  it("builds preparation-day phase timing lines from prep-end timestamps", () => {
+    const line = buildFwaBaseSwapPhaseTimingLineForTest({
+      warState: "preparation",
+      prepEndMs: 1740000000000,
+      warEndMs: 1740003600000,
+    });
+
+    expect(line).toBe(
+      "## Preparation Day ends <t:1740000000:F> (<t:1740000000:R>)",
+    );
+  });
+
+  it("builds battle-day phase timing lines from war-end timestamps", () => {
+    const line = buildFwaBaseSwapPhaseTimingLineForTest({
+      warState: "inWar",
+      prepEndMs: 1740000000000,
+      warEndMs: 1740003600000,
+    });
+
+    expect(line).toBe("## Battle Day ends <t:1740003600:F> (<t:1740003600:R>)");
+  });
+
+  it("renders the phase timing line immediately above the acknowledge react line", () => {
+    const phaseLine = buildFwaBaseSwapPhaseTimingLineForTest({
+      warState: "inWar",
+      prepEndMs: 1740000000000,
+      warEndMs: 1740003600000,
+    });
+    const content = renderFwaBaseSwapAnnouncementForTest({
+      entries: [
+        buildEntry({
+          position: 1,
+          playerTag: "#AAA111",
+          playerName: "Alpha",
+          section: "war_bases",
+          discordUserId: "100",
+          townhallLevel: 18,
+        }),
+      ],
+      layoutLinks: [
+        buildLayoutLink({
+          townhall: 18,
+          layoutLink:
+            "https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg",
+        }),
+      ],
+      phaseTimingLine: phaseLine,
+    });
+
+    const reactPrompt = `React with ${FWA_BASE_SWAP_ACK_EMOJI} once your base is fixed.`;
+    expect(phaseLine).not.toBeNull();
+    expect(content).toContain(`${phaseLine}\n\n`);
+    expect(content.indexOf(String(phaseLine))).toBeLessThan(
+      content.indexOf(reactPrompt),
+    );
+  });
+
+  it("omits phase timing lines when current-war timing data is unavailable", () => {
+    const missingPrep = buildFwaBaseSwapPhaseTimingLineForTest({
+      warState: "preparation",
+      prepEndMs: null,
+      warEndMs: 1740003600000,
+    });
+    expect(missingPrep).toBeNull();
+
+    const content = renderFwaBaseSwapAnnouncementForTest({
+      entries: [
+        buildEntry({
+          position: 1,
+          playerTag: "#AAA111",
+          playerName: "Alpha",
+          section: "war_bases",
+          discordUserId: "100",
+          townhallLevel: 18,
+        }),
+      ],
+      layoutLinks: [],
+      phaseTimingLine: missingPrep,
+    });
+
+    expect(content).not.toContain("Preparation Day ends");
+    expect(content).not.toContain("Battle Day ends");
   });
 
   it("renders one TH line per townhall even when multiple entries share the TH", () => {

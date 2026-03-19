@@ -240,6 +240,7 @@ type FwaBaseSwapAnnouncementState = {
   createdByUserId: string;
   entries: FwaBaseSwapAnnouncementEntry[];
   layoutLinks?: FwaBaseSwapLayoutLink[];
+  phaseTimingLine?: string | null;
   createdAtIso: string;
 };
 
@@ -377,10 +378,25 @@ function renderBaseSwapLayoutLinkLine(link: FwaBaseSwapLayoutLink): string {
   return `## ${FWA_BASE_SWAP_LAYOUT_BULLET} TH${link.townhall} Link: ${wrapDiscordLink(link.layoutLink)}`;
 }
 
+function buildFwaBaseSwapPhaseTimingLine(input: {
+  warState: WarStateForSync;
+  prepEndMs: number | null;
+  warEndMs: number | null;
+}): string | null {
+  if (input.warState !== "preparation" && input.warState !== "inWar") {
+    return null;
+  }
+  const targetMs =
+    input.warState === "preparation" ? input.prepEndMs : input.warEndMs;
+  if (targetMs === null || !Number.isFinite(targetMs)) return null;
+  return `## ${mailStatusLabelForState(input.warState)} ends ${formatDiscordFullAndRelativeMs(targetMs)}`;
+}
+
 function renderFwaBaseSwapAnnouncement(
   state: {
     entries: FwaBaseSwapAnnouncementEntry[];
     layoutLinks?: FwaBaseSwapLayoutLink[];
+    phaseTimingLine?: string | null;
   },
 ): string {
   const warBaseLines = state.entries
@@ -419,6 +435,9 @@ function renderFwaBaseSwapAnnouncement(
     parts.push("", "──────────────────────────────────");
     if (layoutLinkLines.length > 0) {
       parts.push("", ...layoutLinkLines);
+    }
+    if (state.phaseTimingLine) {
+      parts.push("", state.phaseTimingLine);
     }
     parts.push("", `👇 React with ${FWA_BASE_SWAP_ACK_EMOJI} once your base is fixed.`);
   }
@@ -6503,6 +6522,8 @@ export const getMailBlockedReasonFromStatusForTest =
 export const collectBaseSwapTownhallLevelsForTest =
   collectBaseSwapTownhallLevels;
 export const buildBaseSwapLayoutLinksForTest = buildBaseSwapLayoutLinks;
+export const buildFwaBaseSwapPhaseTimingLineForTest =
+  buildFwaBaseSwapPhaseTimingLine;
 export const renderFwaBaseSwapAnnouncementForTest =
   renderFwaBaseSwapAnnouncement;
 export const getMailBlockedReasonFromRevisionStateForTest =
@@ -10351,6 +10372,26 @@ export const Fwa: Command = {
         return;
       }
 
+      const currentWarRow = await prisma.currentWar.findFirst({
+        where: {
+          guildId: interaction.guildId,
+          OR: [{ clanTag: `#${clanTag}` }, { clanTag: clanTag }],
+        },
+        orderBy: [{ updatedAt: "desc" }],
+        select: {
+          state: true,
+          startTime: true,
+          endTime: true,
+        },
+      });
+      const baseSwapPhaseTimingLine = buildFwaBaseSwapPhaseTimingLine({
+        warState: deriveWarState(currentWarRow?.state ?? null),
+        prepEndMs: currentWarRow?.startTime
+          ? currentWarRow.startTime.getTime()
+          : null,
+        warEndMs: currentWarRow?.endTime ? currentWarRow.endTime.getTime() : null,
+      });
+
       const war = await getCurrentWarCached(
         cocService,
         clanTag,
@@ -10472,6 +10513,7 @@ export const Fwa: Command = {
         renderFwaBaseSwapAnnouncement({
           entries,
           layoutLinks,
+          phaseTimingLine: baseSwapPhaseTimingLine,
         }),
       );
 
@@ -10496,6 +10538,7 @@ export const Fwa: Command = {
         createdByUserId: interaction.user.id,
         entries,
         layoutLinks,
+        phaseTimingLine: baseSwapPhaseTimingLine,
         createdAtIso: new Date().toISOString(),
       };
       const expiresAt = new Date(Date.now() + FWA_BASE_SWAP_TTL_MS);
@@ -10511,6 +10554,7 @@ export const Fwa: Command = {
           createdAtIso: state.createdAtIso,
           entries: state.entries,
           layoutLinks: state.layoutLinks,
+          phaseTimingLine: state.phaseTimingLine,
         },
       });
 
