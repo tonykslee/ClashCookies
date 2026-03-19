@@ -165,6 +165,42 @@ describe("EmojiResolverService", () => {
     expect(resolved?.rendered).toBe("<:arrow_arrow:1>");
   });
 
+  it("normalizes colon-wrapped lookup names", async () => {
+    const resolver = new EmojiResolverService(0);
+    const { client } = buildClientWithApplicationEmojis([
+      buildFakeEmoji({ id: "1", name: "arrow_arrow" }),
+    ]);
+
+    const resolved = await resolver.resolveByName(client, ":arrow_arrow:");
+
+    expect(resolved?.rendered).toBe("<:arrow_arrow:1>");
+  });
+
+  it("returns null for not-found names while keeping failures distinct", async () => {
+    const resolver = new EmojiResolverService(0);
+    const { client } = buildClientWithApplicationEmojis([
+      buildFakeEmoji({ id: "1", name: "arrow_arrow" }),
+    ]);
+
+    await expect(resolver.resolveByName(client, "missing_name")).resolves.toBeNull();
+  });
+
+  it("throws a typed runtime error when emoji inventory is unavailable", async () => {
+    const resolver = new EmojiResolverService(0);
+    const fetchApplication = vi.fn().mockResolvedValue(undefined);
+    const client = buildClient({
+      application: {
+        fetch: fetchApplication,
+        emojis: {},
+      },
+    });
+
+    await expect(resolver.resolveByName(client, "arrow_arrow")).rejects.toMatchObject({
+      name: "EmojiResolverRuntimeError",
+      code: "application_emoji_manager_unavailable",
+    });
+  });
+
   it("replaces multiple shortcodes in one text body", async () => {
     const resolver = new EmojiResolverService(0);
     const { client } = buildClientWithApplicationEmojis([

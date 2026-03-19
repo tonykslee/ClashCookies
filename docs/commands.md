@@ -1,7 +1,7 @@
 # Commands Reference
 
 - `/help [command:<name>] [visibility:private|public]` - List command docs/examples. Default visibility is private.
-- `/emoji [name:<emoji_name>]` - Resolve one bot application emoji by name, or browse a paginated list of all bot application emojis when `name` is omitted.
+- `/emoji [name:<emoji_name>] [react:<message-id>]` - Resolve one bot application emoji by name, react to a message in the current channel when `react` is provided, or browse a paginated list of all bot application emojis when `name` is omitted.
 - `/telemetry report [period:24h|7d|30d] [timezone:<ianaTz>]` - Show aggregate telemetry report (usage, latency, failures, API health) for the selected window.
 - `/telemetry schedule set target-channel:<channel> cadence-hours:<n> [timezone:<ianaTz>] [enabled:true|false]` - Configure scheduled telemetry report posting.
 - `/telemetry schedule show` - Show current telemetry schedule config and last posted window.
