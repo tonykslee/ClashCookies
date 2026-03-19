@@ -43,6 +43,7 @@ import { getClanScopedWarIdAutocompleteChoices } from "../services/WarIdAutocomp
 import { FwaStatsWeightService } from "../services/FwaStatsWeightService";
 import { FwaStatsWeightCookieService } from "../services/FwaStatsWeightCookieService";
 import { getNextWarMailRefreshAtMs } from "../services/refreshSchedule";
+import { emojiResolverService } from "../services/emoji/EmojiResolverService";
 import { WarEventHistoryService } from "../services/war-events/history";
 import {
   buildOutcomeMismatchWarning,
@@ -240,13 +241,24 @@ type FwaBaseSwapAnnouncementState = {
   createdByUserId: string;
   entries: FwaBaseSwapAnnouncementEntry[];
   layoutLinks?: FwaBaseSwapLayoutLink[];
+  phaseTimingLine?: string | null;
+  alertEmoji?: string | null;
+  layoutBulletEmoji?: string | null;
   createdAtIso: string;
 };
 
 const FWA_BASE_SWAP_TTL_MS = 48 * 60 * 60 * 1000;
 export const FWA_BASE_SWAP_ACK_EMOJI = "✅";
 const FWA_BASE_SWAP_LAYOUT_TYPE = "RISINGDAWN";
-const FWA_BASE_SWAP_LAYOUT_BULLET = "<a:arrow_arrow:1480819809338921142>";
+const FWA_BASE_SWAP_ALERT_EMOJI_NAME = "alert";
+const FWA_BASE_SWAP_LAYOUT_BULLET_EMOJI_NAME = "arrow_arrow";
+export const FWA_BASE_SWAP_ALERT_FALLBACK_EMOJI = "\u26A0\uFE0F";
+export const FWA_BASE_SWAP_LAYOUT_BULLET_FALLBACK_EMOJI = "\u27A1\uFE0F";
+
+type FwaBaseSwapResolvedInlineEmojis = {
+  alertEmoji: string;
+  layoutBulletEmoji: string;
+};
 
 function isFwaBaseSwapExpired(
   state: FwaBaseSwapAnnouncementState,
@@ -373,16 +385,71 @@ function renderBaseSwapLine(entry: FwaBaseSwapAnnouncementEntry): string {
   return `#${entry.position} - ${mention} - ${entry.playerName} - ${mark}`;
 }
 
-function renderBaseSwapLayoutLinkLine(link: FwaBaseSwapLayoutLink): string {
-  return `## ${FWA_BASE_SWAP_LAYOUT_BULLET} TH${link.townhall} Link: ${wrapDiscordLink(link.layoutLink)}`;
+async function resolveFwaBaseSwapInlineEmojis(
+  client: Client,
+): Promise<FwaBaseSwapResolvedInlineEmojis> {
+  const fallback: FwaBaseSwapResolvedInlineEmojis = {
+    alertEmoji: FWA_BASE_SWAP_ALERT_FALLBACK_EMOJI,
+    layoutBulletEmoji: FWA_BASE_SWAP_LAYOUT_BULLET_FALLBACK_EMOJI,
+  };
+  const inventoryResult =
+    await emojiResolverService.fetchApplicationEmojiInventory(client);
+  if (!inventoryResult.ok) {
+    return fallback;
+  }
+
+  const { snapshot } = inventoryResult;
+  const resolveByName = (name: string): string | null => {
+    const exact = snapshot.exactByName.get(name);
+    if (exact?.rendered) return exact.rendered;
+    const lowered = snapshot.lowercaseByName.get(name.toLowerCase());
+    if (lowered?.rendered) return lowered.rendered;
+    return null;
+  };
+
+  return {
+    alertEmoji: resolveByName(FWA_BASE_SWAP_ALERT_EMOJI_NAME) ?? fallback.alertEmoji,
+    layoutBulletEmoji:
+      resolveByName(FWA_BASE_SWAP_LAYOUT_BULLET_EMOJI_NAME) ??
+      fallback.layoutBulletEmoji,
+  };
+}
+
+function renderBaseSwapLayoutLinkLine(
+  link: FwaBaseSwapLayoutLink,
+  layoutBulletEmoji: string,
+): string {
+  return `## ${layoutBulletEmoji} TH${link.townhall} Link: ${wrapDiscordLink(link.layoutLink)}`;
+}
+
+function buildFwaBaseSwapPhaseTimingLine(input: {
+  warState: WarStateForSync;
+  prepEndMs: number | null;
+  warEndMs: number | null;
+}): string | null {
+  if (input.warState !== "preparation" && input.warState !== "inWar") {
+    return null;
+  }
+  const targetMs =
+    input.warState === "preparation" ? input.prepEndMs : input.warEndMs;
+  if (targetMs === null || !Number.isFinite(targetMs)) return null;
+  return `## ${mailStatusLabelForState(input.warState)} ends ${formatDiscordFullAndRelativeMs(targetMs)}`;
 }
 
 function renderFwaBaseSwapAnnouncement(
   state: {
     entries: FwaBaseSwapAnnouncementEntry[];
     layoutLinks?: FwaBaseSwapLayoutLink[];
+    phaseTimingLine?: string | null;
+    alertEmoji?: string | null;
+    layoutBulletEmoji?: string | null;
   },
 ): string {
+  const alertEmoji =
+    String(state.alertEmoji ?? "").trim() || FWA_BASE_SWAP_ALERT_FALLBACK_EMOJI;
+  const layoutBulletEmoji =
+    String(state.layoutBulletEmoji ?? "").trim() ||
+    FWA_BASE_SWAP_LAYOUT_BULLET_FALLBACK_EMOJI;
   const warBaseLines = state.entries
     .filter((entry) => entry.section === "war_bases")
     .map(renderBaseSwapLine);
@@ -392,12 +459,12 @@ function renderFwaBaseSwapAnnouncement(
   const layoutLinkLines = resolveRenderableBaseSwapLayoutLinks(
     state.entries,
     state.layoutLinks,
-  ).map(renderBaseSwapLayoutLinkLine);
+  ).map((link) => renderBaseSwapLayoutLinkLine(link, layoutBulletEmoji));
 
   const parts: string[] = [];
   if (warBaseLines.length > 0) {
     parts.push(
-      `# <a:alert:1480828443531673700> YOU HAVE AN ACTIVE WAR BASE <a:alert:1480828443531673700>`,
+      `# ${alertEmoji} YOU HAVE AN ACTIVE WAR BASE ${alertEmoji}`,
       "",
       ...warBaseLines,
       "",
@@ -419,6 +486,10 @@ function renderFwaBaseSwapAnnouncement(
     parts.push("", "──────────────────────────────────");
     if (layoutLinkLines.length > 0) {
       parts.push("", ...layoutLinkLines);
+    }
+    parts.push("", "──────────────────────────────────");
+    if (state.phaseTimingLine) {
+      parts.push("", state.phaseTimingLine);
     }
     parts.push("", `👇 React with ${FWA_BASE_SWAP_ACK_EMOJI} once your base is fixed.`);
   }
@@ -6503,6 +6574,8 @@ export const getMailBlockedReasonFromStatusForTest =
 export const collectBaseSwapTownhallLevelsForTest =
   collectBaseSwapTownhallLevels;
 export const buildBaseSwapLayoutLinksForTest = buildBaseSwapLayoutLinks;
+export const buildFwaBaseSwapPhaseTimingLineForTest =
+  buildFwaBaseSwapPhaseTimingLine;
 export const renderFwaBaseSwapAnnouncementForTest =
   renderFwaBaseSwapAnnouncement;
 export const getMailBlockedReasonFromRevisionStateForTest =
@@ -10351,6 +10424,26 @@ export const Fwa: Command = {
         return;
       }
 
+      const currentWarRow = await prisma.currentWar.findFirst({
+        where: {
+          guildId: interaction.guildId,
+          OR: [{ clanTag: `#${clanTag}` }, { clanTag: clanTag }],
+        },
+        orderBy: [{ updatedAt: "desc" }],
+        select: {
+          state: true,
+          startTime: true,
+          endTime: true,
+        },
+      });
+      const baseSwapPhaseTimingLine = buildFwaBaseSwapPhaseTimingLine({
+        warState: deriveWarState(currentWarRow?.state ?? null),
+        prepEndMs: currentWarRow?.startTime
+          ? currentWarRow.startTime.getTime()
+          : null,
+        warEndMs: currentWarRow?.endTime ? currentWarRow.endTime.getTime() : null,
+      });
+
       const war = await getCurrentWarCached(
         cocService,
         clanTag,
@@ -10467,11 +10560,17 @@ export const Fwa: Command = {
             })
           : [];
       const layoutLinks = buildBaseSwapLayoutLinks(entries, layoutRows);
+      const inlineEmojis = await resolveFwaBaseSwapInlineEmojis(
+        interaction.client,
+      );
 
       const content = truncateDiscordContent(
         renderFwaBaseSwapAnnouncement({
           entries,
           layoutLinks,
+          phaseTimingLine: baseSwapPhaseTimingLine,
+          alertEmoji: inlineEmojis.alertEmoji,
+          layoutBulletEmoji: inlineEmojis.layoutBulletEmoji,
         }),
       );
 
@@ -10496,6 +10595,9 @@ export const Fwa: Command = {
         createdByUserId: interaction.user.id,
         entries,
         layoutLinks,
+        phaseTimingLine: baseSwapPhaseTimingLine,
+        alertEmoji: inlineEmojis.alertEmoji,
+        layoutBulletEmoji: inlineEmojis.layoutBulletEmoji,
         createdAtIso: new Date().toISOString(),
       };
       const expiresAt = new Date(Date.now() + FWA_BASE_SWAP_TTL_MS);
@@ -10511,6 +10613,9 @@ export const Fwa: Command = {
           createdAtIso: state.createdAtIso,
           entries: state.entries,
           layoutLinks: state.layoutLinks,
+          phaseTimingLine: state.phaseTimingLine,
+          alertEmoji: state.alertEmoji,
+          layoutBulletEmoji: state.layoutBulletEmoji,
         },
       });
 

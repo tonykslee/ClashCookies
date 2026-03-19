@@ -24,6 +24,9 @@ export type FwaBaseSwapTrackedMetadata = {
   clanName: string;
   createdByUserId: string;
   createdAtIso: string;
+  phaseTimingLine?: string | null;
+  alertEmoji?: string | null;
+  layoutBulletEmoji?: string | null;
   entries: Array<{
     position: number;
     playerTag: string;
@@ -114,7 +117,19 @@ export function parseFwaBaseSwapMetadata(value: unknown): FwaBaseSwapTrackedMeta
             Boolean(layoutLink)
         )
     : undefined;
-  return { clanName, createdByUserId, createdAtIso, entries, layoutLinks };
+  const phaseTimingLineRaw = String(value.phaseTimingLine ?? "").trim();
+  const alertEmojiRaw = String(value.alertEmoji ?? "").trim();
+  const layoutBulletEmojiRaw = String(value.layoutBulletEmoji ?? "").trim();
+  return {
+    clanName,
+    createdByUserId,
+    createdAtIso,
+    phaseTimingLine: phaseTimingLineRaw || null,
+    alertEmoji: alertEmojiRaw || null,
+    layoutBulletEmoji: layoutBulletEmojiRaw || null,
+    entries,
+    layoutLinks,
+  };
 }
 
 export function parseSyncTimeMetadata(value: unknown): SyncTimeTrackedMetadata | null {
@@ -246,10 +261,18 @@ export class TrackedMessageService {
     }
     if (!changed) return false;
 
+    const mentionUserIds = [
+      ...new Set(
+        metadata.entries.flatMap((entry) =>
+          entry.discordUserId ? [entry.discordUserId] : [],
+        ),
+      ),
+    ];
+
     await params.message.edit({
       content: params.truncate(params.render(metadata)),
       allowedMentions: {
-        users: metadata.entries.flatMap((entry) => (entry.discordUserId ? [entry.discordUserId] : [])),
+        users: mentionUserIds,
       },
     });
 
