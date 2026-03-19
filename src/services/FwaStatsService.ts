@@ -1,10 +1,5 @@
-import axios from "axios";
-
-type FwaStatsWarRow = {
-  opponentTag?: string | null;
-  matched?: boolean | string | null;
-  synced?: boolean | string | null;
-};
+import { FwaStatsClient } from "./fwa-feeds/FwaStatsClient";
+import { normalizeFwaTag } from "./fwa-feeds/normalize";
 
 type OpponentCacheEntry = {
   fetchedAtMs: number;
@@ -12,28 +7,15 @@ type OpponentCacheEntry = {
   opponents: Set<string>;
 };
 
-/** Purpose: normalize clan tags to #UPPER format. */
-function normalizeTag(input: string): string {
-  return `#${input.trim().toUpperCase().replace(/^#/, "")}`;
-}
-
-/** Purpose: parse boolean-like API values safely. */
-function asBool(value: unknown): boolean | null {
-  if (typeof value === "boolean") return value;
-  if (typeof value !== "string") return null;
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "true" || normalized === "yes" || normalized === "1") return true;
-  if (normalized === "false" || normalized === "no" || normalized === "0") return false;
-  return null;
-}
-
 /** Purpose: read active opponent tags for a clan from fwastats. */
 export class FwaStatsService {
   private static readonly CACHE_TTL_MS = 5 * 60 * 1000;
-  private static readonly REQUEST_TIMEOUT_MS = 2000;
 
   private readonly cache = new Map<string, OpponentCacheEntry>();
   private readonly inFlight = new Map<string, Promise<OpponentCacheEntry>>();
+
+  /** Purpose: initialize fwastats service dependencies. */
+  constructor(private readonly client = new FwaStatsClient()) {}
 
   /** Purpose: clear in-memory cache (tests/maintenance). */
   clearCache(): void {
@@ -46,8 +28,8 @@ export class FwaStatsService {
     clanTag: string,
     opponentTag: string
   ): Promise<boolean | null> {
-    const clan = normalizeTag(clanTag);
-    const opponent = normalizeTag(opponentTag);
+    const clan = normalizeFwaTag(clanTag);
+    const opponent = normalizeFwaTag(opponentTag);
     if (!clan || !opponent) return null;
 
     try {
@@ -84,27 +66,16 @@ export class FwaStatsService {
 
   /** Purpose: fetch active opponent list from fwastats wars endpoint. */
   private async fetchOpponentCache(clanTag: string): Promise<OpponentCacheEntry> {
-    const bare = clanTag.replace(/^#/, "");
-    const url = `https://fwastats.com/Clan/${bare}/Wars.json`;
-    const response = await axios.get<unknown>(url, {
-      timeout: FwaStatsService.REQUEST_TIMEOUT_MS,
-      validateStatus: () => true,
-    });
-
-    if (response.status >= 400) {
-      throw new Error(`fwastats returned ${response.status}`);
-    }
-
-    const rows = Array.isArray(response.data) ? (response.data as FwaStatsWarRow[]) : [];
+    const rows = await this.client.fetchClanWars(clanTag);
     const opponents = new Set<string>();
     for (const row of rows) {
-      const rawOpponent = String(row?.opponentTag ?? "").trim();
-      if (!rawOpponent) continue;
-      const opponent = normalizeTag(rawOpponent);
+      if (!row.opponentTag) continue;
+      const opponent = normalizeFwaTag(row.opponentTag);
+      if (!opponent) continue;
 
       // Prefer wars that are matched/synced; keep unknown rows to avoid false negatives.
-      const matched = asBool(row?.matched);
-      const synced = asBool(row?.synced);
+      const matched = row.matched;
+      const synced = row.synced;
       if (matched === false && synced === false) continue;
 
       opponents.add(opponent);

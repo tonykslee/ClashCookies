@@ -26,6 +26,7 @@
     "lint": "eslint \"src/**/*.ts\" \"tests/**/*.ts\"",
     "lint:fix": "eslint \"src/**/*.ts\" \"tests/**/*.ts\" --fix",
     "seed:fwa-layouts": "ts-node src/scripts/seedFwaLayouts.ts",
+    "sync:fwa-feeds": "ts-node src/scripts/fwaFeedSync.ts",
     "start": "prisma migrate deploy && node dist/ClashCookies.js",
     "test": "vitest run",
     "test:watch": "vitest",

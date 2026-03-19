@@ -69,3 +69,44 @@ Optional fallback auth (not required for current setup):
 - `GOOGLE_SERVICE_ACCOUNT_JSON_BASE64`
 - `GOOGLE_SERVICE_ACCOUNT_EMAIL`
 - `GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY`
+
+## Optional FWAStats Feed Ingestion Scheduler
+These control the JSON-feed ingestion foundation for future DB-backed `/compo` migration.
+
+Feed toggles:
+- `FWA_CLANS_SYNC_ENABLED` (default `true`)
+- `FWA_CLAN_MEMBERS_SYNC_ENABLED` (default `true`)
+- `FWA_WAR_MEMBERS_SWEEP_ENABLED` (default `true`)
+- `FWA_TRACKED_CLAN_WARS_WATCH_ENABLED` (default `true`)
+- `FWA_GLOBAL_CLAN_WARS_SWEEP_ENABLED` (default `false`)
+
+Cadence controls:
+- `FWA_CLANS_SYNC_CRON_OR_MINUTES` (default `360`; clamped to minimum 15 minutes)
+- `FWA_CLAN_MEMBERS_SYNC_MINUTES` (default `15`; minimum 15)
+- `FWA_SWEEP_TICK_MINUTES` (default `15`; minimum 15)
+- `FWA_TRACKED_CLAN_WARS_WATCH_TICK_MINUTES` (default `5`; minimum 5)
+
+Sweep chunk controls:
+- `FWA_WAR_MEMBERS_SWEEP_CHUNK_SIZE` (default `6`)
+- `FWA_GLOBAL_CLAN_WARS_SWEEP_CHUNK_SIZE` (default `20`)
+
+Request/concurrency controls:
+- `FWA_FEED_REQUEST_TIMEOUT_MS` (default `5000`)
+- `FWA_FEED_RETRY_COUNT` (default `1`)
+- `FWA_FEED_MAX_CONCURRENCY` (default `4`)
+- `FWA_FEED_JOB_JITTER_MS` (default `30000`)
+
+Operational notes:
+- Normal feed polling is bounded by source freshness (minimum 15 minutes).
+- Tracked-clan `Wars.json` watch is the only 5-minute exception and only runs inside active watch windows.
+- Members polling uses tracked clans only.
+- Global WarMembers / optional global Wars use cursor-based distributed sweeps from `FwaClanCatalog`.
+- `/compo` remains sheet-backed in this phase.
+
+Manual/dev feed operations:
+```bash
+npm run sync:fwa-feeds -- status
+npm run sync:fwa-feeds -- run --feed=clan-members --tag=#2QG2C08UP
+npm run sync:fwa-feeds -- run-global --feed=clans
+npm run sync:fwa-feeds -- watch-status --tag=#2QG2C08UP
+```
