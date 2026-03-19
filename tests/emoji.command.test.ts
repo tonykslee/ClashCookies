@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import axios from "axios";
 import type {
   AutocompleteInteraction,
   ChatInputCommandInteraction,
@@ -8,7 +9,9 @@ import type {
 import {
   Emoji,
   applyEmojiPageActionForTest,
+  resetEmojiCommandPermissionServiceForTest,
   resetEmojiResolverForTest,
+  setEmojiCommandPermissionServiceForTest,
   setEmojiResolverForTest,
 } from "../src/commands/Emoji";
 import type {
@@ -18,13 +21,39 @@ import type {
 
 type EmojiResolverStub = {
   fetchApplicationEmojiInventory: ReturnType<typeof vi.fn>;
+  refresh: ReturnType<typeof vi.fn>;
+  invalidateCache: ReturnType<typeof vi.fn>;
+};
+
+type CommandPermissionStub = {
+  canUseAnyTarget: ReturnType<typeof vi.fn>;
 };
 
 /** Purpose: build resolver stub for deterministic command behavior assertions. */
 function buildResolverStub(): EmojiResolverStub {
   return {
     fetchApplicationEmojiInventory: vi.fn(),
+    refresh: vi.fn().mockResolvedValue(undefined),
+    invalidateCache: vi.fn(),
   };
+}
+
+/** Purpose: build permission stub for deterministic add-path authorization behavior. */
+function buildPermissionStub(): CommandPermissionStub {
+  return {
+    canUseAnyTarget: vi.fn().mockResolvedValue(true),
+  };
+}
+
+/** Purpose: mock one successful image download response for emoji-add attachment ingestion. */
+function mockEmojiImageDownloadSuccess(): void {
+  vi.spyOn(axios, "get").mockResolvedValue({
+    status: 200,
+    headers: {
+      "content-type": "image/png",
+    },
+    data: Buffer.from([1, 2, 3]),
+  } as any);
 }
 
 /** Purpose: create a successful inventory result from emoji entries for tests. */
@@ -81,7 +110,14 @@ function buildFailureResult(
 function buildInteraction(input?: {
   name?: string | null;
   react?: string | null;
+  emoji?: string | null;
+  shortCode?: string | null;
   visibility?: "private" | "public";
+  application?: {
+    emojis?: {
+      create?: ReturnType<typeof vi.fn>;
+    };
+  } | null;
   messageFetchError?: unknown;
   reactionError?: unknown;
   appPermissionHas?: (permission: PermissionResolvable) => boolean;
@@ -118,7 +154,9 @@ function buildInteraction(input?: {
     guildId: "guild-1",
     channelId: "channel-1",
     user: { id: "user-1" },
-    client: {} as Client,
+    client: {
+      application: input?.application ?? null,
+    } as Client,
     appPermissions: {
       has: vi.fn((permission: PermissionResolvable) =>
         input?.appPermissionHas ? input.appPermissionHas(permission) : true,
@@ -134,6 +172,8 @@ function buildInteraction(input?: {
       getString: vi.fn((name: string) => {
         if (name === "name") return input?.name ?? null;
         if (name === "react") return input?.react ?? null;
+        if (name === "emoji") return input?.emoji ?? null;
+        if (name === "short-code") return input?.shortCode ?? null;
         if (name === "visibility") return input?.visibility ?? "private";
         return null;
       }),
@@ -181,6 +221,8 @@ function buildAutocompleteInteraction(input?: {
 describe("/emoji command", () => {
   afterEach(() => {
     resetEmojiResolverForTest();
+    resetEmojiCommandPermissionServiceForTest();
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
@@ -311,6 +353,215 @@ describe("/emoji command", () => {
     expect(resolver.fetchApplicationEmojiInventory).not.toHaveBeenCalled();
     const payload = editReply.mock.calls[0]?.[0] ?? {};
     expect(String(payload.content ?? "")).toContain("Please provide a valid emoji name");
+  });
+
+  it("adds a new application emoji from custom token input", async () => {
+    const resolver = buildResolverStub();
+    resolver.fetchApplicationEmojiInventory.mockResolvedValue(buildSuccessResult([]));
+    setEmojiResolverForTest(resolver as any);
+    const permission = buildPermissionStub();
+    setEmojiCommandPermissionServiceForTest(permission as any);
+
+    mockEmojiImageDownloadSuccess();
+
+    const create = vi.fn().mockResolvedValue({
+      id: "999",
+      name: "arrow_arrow",
+      toString: () => "<:arrow_arrow:999>",
+    });
+    const { interaction, editReply } = buildInteraction({
+      emoji: "<:source_icon:123456789012345678>",
+      shortCode: ":arrow_arrow:",
+      application: {
+        emojis: {
+          create,
+        },
+      },
+    });
+
+    await Emoji.run({} as Client, interaction, {} as any);
+
+    expect(permission.canUseAnyTarget).toHaveBeenCalledWith(
+      ["emoji:add", "emoji"],
+      interaction,
+    );
+    expect(create).toHaveBeenCalledTimes(1);
+    const createInput = create.mock.calls[0]?.[0] ?? {};
+    expect(createInput.name).toBe("arrow_arrow");
+    expect(Buffer.isBuffer(createInput.attachment)).toBe(true);
+    expect(resolver.invalidateCache).toHaveBeenCalledTimes(1);
+    expect(resolver.refresh).toHaveBeenCalledTimes(1);
+
+    const payload = editReply.mock.calls[0]?.[0] ?? {};
+    expect(String(payload.content ?? "")).toContain(
+      "Added application emoji <:arrow_arrow:999> with shortcode `arrow_arrow`.",
+    );
+  });
+
+  it("blocks duplicate shortcode names before create", async () => {
+    const resolver = buildResolverStub();
+    resolver.fetchApplicationEmojiInventory.mockResolvedValue(
+      buildSuccessResult([
+        {
+          id: "4",
+          name: "arrow_arrow",
+          shortcode: ":arrow_arrow:",
+          rendered: "<:arrow_arrow:4>",
+          animated: false,
+        },
+      ]),
+    );
+    setEmojiResolverForTest(resolver as any);
+    const permission = buildPermissionStub();
+    setEmojiCommandPermissionServiceForTest(permission as any);
+    const create = vi.fn();
+
+    const { interaction, editReply } = buildInteraction({
+      emoji: "<:source_icon:123456789012345678>",
+      shortCode: "arrow_arrow",
+      application: {
+        emojis: {
+          create,
+        },
+      },
+    });
+
+    await Emoji.run({} as Client, interaction, {} as any);
+
+    expect(create).not.toHaveBeenCalled();
+    const payload = editReply.mock.calls[0]?.[0] ?? {};
+    expect(String(payload.content ?? "")).toContain("already exists");
+  });
+
+  it("rejects unsupported unicode emoji input on add path", async () => {
+    const resolver = buildResolverStub();
+    setEmojiResolverForTest(resolver as any);
+    const permission = buildPermissionStub();
+    setEmojiCommandPermissionServiceForTest(permission as any);
+    const { interaction, editReply } = buildInteraction({
+      emoji: "🔥",
+      shortCode: "arrow_arrow",
+    });
+
+    await Emoji.run({} as Client, interaction, {} as any);
+
+    expect(resolver.fetchApplicationEmojiInventory).not.toHaveBeenCalled();
+    const payload = editReply.mock.calls[0]?.[0] ?? {};
+    expect(String(payload.content ?? "")).toContain("Unicode emoji input is not supported");
+  });
+
+  it("rejects malformed shortcode on add path", async () => {
+    const resolver = buildResolverStub();
+    setEmojiResolverForTest(resolver as any);
+    const permission = buildPermissionStub();
+    setEmojiCommandPermissionServiceForTest(permission as any);
+    const { interaction, editReply } = buildInteraction({
+      emoji: "<:source_icon:123456789012345678>",
+      shortCode: "bad-name",
+    });
+
+    await Emoji.run({} as Client, interaction, {} as any);
+
+    expect(resolver.fetchApplicationEmojiInventory).not.toHaveBeenCalled();
+    const payload = editReply.mock.calls[0]?.[0] ?? {};
+    expect(String(payload.content ?? "")).toContain("Please provide a valid shortcode");
+  });
+
+  it("returns permission denied for unauthorized add-path users", async () => {
+    const resolver = buildResolverStub();
+    setEmojiResolverForTest(resolver as any);
+    const permission = buildPermissionStub();
+    permission.canUseAnyTarget.mockResolvedValue(false);
+    setEmojiCommandPermissionServiceForTest(permission as any);
+    const { interaction, editReply } = buildInteraction({
+      emoji: "<:source_icon:123456789012345678>",
+      shortCode: "arrow_arrow",
+    });
+
+    await Emoji.run({} as Client, interaction, {} as any);
+
+    expect(resolver.fetchApplicationEmojiInventory).not.toHaveBeenCalled();
+    const payload = editReply.mock.calls[0]?.[0] ?? {};
+    expect(String(payload.content ?? "")).toContain(
+      "You do not have permission to use /emoji add",
+    );
+  });
+
+  it("returns clear failure when application state is unavailable during add", async () => {
+    const resolver = buildResolverStub();
+    resolver.fetchApplicationEmojiInventory.mockResolvedValue(buildSuccessResult([]));
+    setEmojiResolverForTest(resolver as any);
+    const permission = buildPermissionStub();
+    setEmojiCommandPermissionServiceForTest(permission as any);
+
+    mockEmojiImageDownloadSuccess();
+
+    const { interaction, editReply } = buildInteraction({
+      emoji: "<:source_icon:123456789012345678>",
+      shortCode: "arrow_arrow",
+      application: null,
+    });
+
+    await Emoji.run({} as Client, interaction, {} as any);
+
+    const payload = editReply.mock.calls[0]?.[0] ?? {};
+    expect(String(payload.content ?? "")).toContain(
+      "Could not load bot application state right now",
+    );
+  });
+
+  it("returns inventory-full failure when add create API reports capacity reached", async () => {
+    const resolver = buildResolverStub();
+    resolver.fetchApplicationEmojiInventory.mockResolvedValue(buildSuccessResult([]));
+    setEmojiResolverForTest(resolver as any);
+    const permission = buildPermissionStub();
+    setEmojiCommandPermissionServiceForTest(permission as any);
+
+    mockEmojiImageDownloadSuccess();
+
+    const create = vi.fn().mockRejectedValue({ code: 30056 });
+    const { interaction, editReply } = buildInteraction({
+      emoji: "https://example.com/icon.png",
+      shortCode: "arrow_arrow",
+      application: {
+        emojis: {
+          create,
+        },
+      },
+    });
+
+    await Emoji.run({} as Client, interaction, {} as any);
+
+    const payload = editReply.mock.calls[0]?.[0] ?? {};
+    expect(String(payload.content ?? "")).toContain("inventory is full");
+  });
+
+  it("returns generic create failure when Discord rejects add request", async () => {
+    const resolver = buildResolverStub();
+    resolver.fetchApplicationEmojiInventory.mockResolvedValue(buildSuccessResult([]));
+    setEmojiResolverForTest(resolver as any);
+    const permission = buildPermissionStub();
+    setEmojiCommandPermissionServiceForTest(permission as any);
+
+    mockEmojiImageDownloadSuccess();
+
+    const create = vi.fn().mockRejectedValue(new Error("bad upload"));
+    const { interaction, editReply } = buildInteraction({
+      emoji: "https://example.com/icon.png",
+      shortCode: "arrow_arrow",
+      application: {
+        emojis: {
+          create,
+        },
+      },
+    });
+
+    await Emoji.run({} as Client, interaction, {} as any);
+
+    const payload = editReply.mock.calls[0]?.[0] ?? {};
+    expect(String(payload.content ?? "")).toContain(
+      "Discord rejected the emoji create request",
+    );
   });
 
   it("renders list mode first page", async () => {
@@ -559,6 +810,8 @@ describe("/emoji command", () => {
 describe("/emoji autocomplete", () => {
   afterEach(() => {
     resetEmojiResolverForTest();
+    resetEmojiCommandPermissionServiceForTest();
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 

@@ -69,6 +69,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     details: [
       "Use `/emoji name:<emoji_name>` to resolve one emoji and show rendered + raw token output.",
       "Use `/emoji name:<emoji_name> react:<message-id>` to react to a message in the current channel with that resolved emoji.",
+      "Use `/emoji emoji:<emoji-token-or-url> short-code:<name>` to add one new bot application emoji (admin-only by default).",
       "Use `/emoji` with no args to browse a paginated list of all available bot application emojis.",
       "For name-only resolves, `visibility:public` returns only the rendered emoji message content.",
       "`name` supports dynamic autocomplete backed by application emojis for this bot instance.",
@@ -79,6 +80,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/emoji name:arrow_arrow",
       "/emoji name::arrow_arrow:",
       "/emoji name:arrow_arrow react:123456789012345678",
+      "/emoji emoji:<:arrow_arrow:123456789012345678> short-code:arrow_arrow",
     ],
   },
   lastseen: {

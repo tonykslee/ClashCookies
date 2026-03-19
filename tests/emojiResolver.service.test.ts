@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Client } from "discord.js";
-import { EmojiResolverService } from "../src/services/emoji/EmojiResolverService";
+import {
+  EmojiResolverService,
+  isValidEmojiShortcodeName,
+  normalizeEmojiShortcodeName,
+  parseEmojiImageSource,
+} from "../src/services/emoji/EmojiResolverService";
 
 type FakeAppEmoji = {
   id: string;
@@ -64,6 +69,76 @@ function buildClientWithApplicationEmojis(
 }
 
 describe("EmojiResolverService", () => {
+  it("normalizes shortcode names by trimming and stripping surrounding colons", () => {
+    expect(normalizeEmojiShortcodeName("arrow_arrow")).toBe("arrow_arrow");
+    expect(normalizeEmojiShortcodeName(":arrow_arrow:")).toBe("arrow_arrow");
+    expect(normalizeEmojiShortcodeName("::arrow_arrow::")).toBe("arrow_arrow");
+  });
+
+  it("validates shortcode names using Discord-safe constraints", () => {
+    expect(isValidEmojiShortcodeName("arrow_arrow")).toBe(true);
+    expect(isValidEmojiShortcodeName("a")).toBe(false);
+    expect(isValidEmojiShortcodeName("bad-name")).toBe(false);
+  });
+
+  it("parses static custom emoji tokens into discord CDN image urls", () => {
+    const parsed = parseEmojiImageSource("<:arrow_arrow:123456789012345678>");
+
+    expect(parsed).toEqual({
+      ok: true,
+      sourceType: "custom_emoji_token",
+      imageUrl:
+        "https://cdn.discordapp.com/emojis/123456789012345678.png?quality=lossless",
+      customEmojiId: "123456789012345678",
+      animated: false,
+    });
+  });
+
+  it("parses animated custom emoji tokens into gif CDN image urls", () => {
+    const parsed = parseEmojiImageSource("<a:arrow_arrow:123456789012345678>");
+
+    expect(parsed).toEqual({
+      ok: true,
+      sourceType: "custom_emoji_token",
+      imageUrl:
+        "https://cdn.discordapp.com/emojis/123456789012345678.gif?quality=lossless",
+      customEmojiId: "123456789012345678",
+      animated: true,
+    });
+  });
+
+  it("parses direct image urls", () => {
+    const parsed = parseEmojiImageSource("https://example.com/icon.webp");
+
+    expect(parsed).toEqual({
+      ok: true,
+      sourceType: "direct_image_url",
+      imageUrl: "https://example.com/icon.webp",
+      customEmojiId: null,
+      animated: false,
+    });
+  });
+
+  it("rejects unsupported unicode emoji input for add-flow source parsing", () => {
+    const parsed = parseEmojiImageSource("🔥");
+
+    expect(parsed).toEqual({
+      ok: false,
+      sourceType: "unicode_emoji_unsupported",
+      code: "unsupported_unicode_emoji",
+    });
+  });
+
+  it("rejects random invalid image-source input", () => {
+    const parsed = parseEmojiImageSource("definitely-not-an-image-source");
+
+    expect(parsed).toEqual({
+      ok: false,
+      sourceType: "invalid_input",
+      code: "invalid_emoji_input",
+    });
+  });
+
   it("fetchApplicationEmojiInventory returns success with emojis", async () => {
     const resolver = new EmojiResolverService(0);
     const { client } = buildClientWithApplicationEmojis([

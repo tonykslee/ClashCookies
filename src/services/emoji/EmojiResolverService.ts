@@ -15,6 +15,36 @@ type EmojiSnapshot = {
   lowercaseByName: Map<string, ResolvedApplicationEmoji>;
 };
 
+type ParsedCustomEmojiToken = {
+  animated: boolean;
+  name: string;
+  id: string;
+};
+
+export type EmojiInputSourceType =
+  | "custom_emoji_token"
+  | "direct_image_url"
+  | "unicode_emoji_unsupported"
+  | "invalid_input";
+
+export type ParsedEmojiImageSourceSuccess = {
+  ok: true;
+  sourceType: "custom_emoji_token" | "direct_image_url";
+  imageUrl: string;
+  customEmojiId: string | null;
+  animated: boolean;
+};
+
+export type ParsedEmojiImageSourceFailure = {
+  ok: false;
+  sourceType: "unicode_emoji_unsupported" | "invalid_input";
+  code: "unsupported_unicode_emoji" | "invalid_emoji_input";
+};
+
+export type ParsedEmojiImageSourceResult =
+  | ParsedEmojiImageSourceSuccess
+  | ParsedEmojiImageSourceFailure;
+
 export type EmojiResolverFailureCode =
   | "application_missing"
   | "application_fetch_failed"
@@ -55,6 +85,93 @@ type EnsureApplicationResult =
 
 const SHORTCODE_REPLACE_PATTERN =
   /(^|[\s([{"']):([a-zA-Z0-9_]{2,32}):(?=$|[\s)\]}".,!?:;'"-])/g;
+const CUSTOM_EMOJI_TOKEN_PATTERN = /^<(a?):([a-zA-Z0-9_]{2,32}):(\d{17,22})>$/;
+const SHORTCODE_NAME_PATTERN = /^[a-zA-Z0-9_]{2,32}$/;
+const UNICODE_EMOJI_PATTERN = /[\p{Extended_Pictographic}\uFE0F]/u;
+
+/** Purpose: trim and de-colon one shortcode name for canonical application emoji creation lookup. */
+export function normalizeEmojiShortcodeName(input: string): string {
+  const trimmed = String(input ?? "").trim();
+  if (!trimmed) return "";
+  const withoutColons = trimmed.replace(/^:+/, "").replace(/:+$/, "");
+  return withoutColons.trim();
+}
+
+/** Purpose: validate one normalized application emoji shortcode name against Discord naming constraints. */
+export function isValidEmojiShortcodeName(input: string): boolean {
+  return SHORTCODE_NAME_PATTERN.test(String(input ?? ""));
+}
+
+/** Purpose: parse one custom Discord emoji token into id/name/animated fields for CDN source resolution. */
+function parseCustomEmojiToken(input: string): ParsedCustomEmojiToken | null {
+  const match = input.match(CUSTOM_EMOJI_TOKEN_PATTERN);
+  if (!match) return null;
+  return {
+    animated: match[1] === "a",
+    name: match[2],
+    id: match[3],
+  };
+}
+
+/** Purpose: test whether one arbitrary input likely contains a unicode emoji that this patch does not rasterize. */
+function looksLikeUnicodeEmoji(input: string): boolean {
+  return UNICODE_EMOJI_PATTERN.test(input);
+}
+
+/** Purpose: parse user-provided emoji image input into a canonical application-emoji upload source. */
+export function parseEmojiImageSource(
+  input: string,
+): ParsedEmojiImageSourceResult {
+  const trimmed = String(input ?? "").trim();
+  if (!trimmed) {
+    return {
+      ok: false,
+      sourceType: "invalid_input",
+      code: "invalid_emoji_input",
+    };
+  }
+
+  const parsedToken = parseCustomEmojiToken(trimmed);
+  if (parsedToken) {
+    const ext = parsedToken.animated ? "gif" : "png";
+    return {
+      ok: true,
+      sourceType: "custom_emoji_token",
+      imageUrl: `https://cdn.discordapp.com/emojis/${parsedToken.id}.${ext}?quality=lossless`,
+      customEmojiId: parsedToken.id,
+      animated: parsedToken.animated,
+    };
+  }
+
+  try {
+    const url = new URL(trimmed);
+    if (url.protocol === "http:" || url.protocol === "https:") {
+      return {
+        ok: true,
+        sourceType: "direct_image_url",
+        imageUrl: url.toString(),
+        customEmojiId: null,
+        animated: false,
+      };
+    }
+  } catch {
+    // Ignore URL parse errors and fall through to deterministic input classification.
+  }
+
+  if (looksLikeUnicodeEmoji(trimmed)) {
+    return {
+      ok: false,
+      sourceType: "unicode_emoji_unsupported",
+      code: "unsupported_unicode_emoji",
+    };
+  }
+
+  return {
+    ok: false,
+    sourceType: "invalid_input",
+    code: "invalid_emoji_input",
+  };
+}
 
 /** Purpose: normalize user-provided emoji-name input while preserving name-based environment stability. */
 export function normalizeEmojiLookupName(input: string): string {
@@ -133,6 +250,11 @@ export class EmojiResolverService {
       throw this.toRuntimeError(result);
     }
     this.snapshot = result.snapshot;
+  }
+
+  /** Purpose: invalidate in-memory emoji snapshot cache so subsequent reads refetch current application state. */
+  invalidateCache(): void {
+    this.snapshot = null;
   }
 
   /** Purpose: resolve one emoji by name (case-insensitive) from bot application emojis. */

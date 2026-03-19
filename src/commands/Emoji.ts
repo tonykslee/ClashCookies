@@ -11,29 +11,48 @@ import {
   EmbedBuilder,
   PermissionFlagsBits,
 } from "discord.js";
+import axios from "axios";
 import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
 import {
   emojiResolverService,
+  isValidEmojiShortcodeName,
   normalizeEmojiLookupName,
+  normalizeEmojiShortcodeName,
+  parseEmojiImageSource,
+  type EmojiInputSourceType,
   type EmojiInventoryFetchResult,
   type EmojiResolverFailureCode,
   type EmojiResolverService,
   type ResolvedApplicationEmoji,
 } from "../services/emoji/EmojiResolverService";
 import { CoCService } from "../services/CoCService";
+import { CommandPermissionService } from "../services/CommandPermissionService";
 
 type EmojiResolverPort = Pick<
   EmojiResolverService,
-  "fetchApplicationEmojiInventory"
+  "fetchApplicationEmojiInventory" | "refresh" | "invalidateCache"
 >;
+
+type CommandPermissionPort = Pick<CommandPermissionService, "canUseAnyTarget">;
+
+type EmojiAttachmentDownloadResult =
+  | { ok: true; attachment: Buffer }
+  | {
+      ok: false;
+      code: "invalid_emoji_input" | "image_download_failed";
+      statusCode?: number;
+    };
 
 const EMOJI_PAGE_SIZE = 20;
 const EMOJI_PAGINATOR_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_AUTOCOMPLETE_CHOICES = 25;
 const MESSAGE_ID_PATTERN = /^\d{17,22}$/;
+const INVENTORY_FULL_ERROR_CODES = new Set<number>([30008, 30018, 30056]);
 
 let activeEmojiResolver: EmojiResolverPort = emojiResolverService;
+let activeCommandPermissionService: CommandPermissionPort =
+  new CommandPermissionService();
 
 /** Purpose: convert one resolved emoji into compact list-display text. */
 function formatEmojiListLine(emoji: ResolvedApplicationEmoji): string {
@@ -192,6 +211,70 @@ function isValidMessageId(value: string): boolean {
   return MESSAGE_ID_PATTERN.test(String(value ?? "").trim());
 }
 
+/** Purpose: classify a Discord/HTTP error payload as application emoji inventory-full for clear user feedback. */
+function isApplicationEmojiInventoryFullError(error: unknown): boolean {
+  const code = getDiscordErrorCode(error);
+  if (code !== null && INVENTORY_FULL_ERROR_CODES.has(code)) return true;
+  const message = String((error as { message?: string } | null)?.message ?? "").toLowerCase();
+  return (
+    message.includes("maximum number of emojis") ||
+    message.includes("maximum number of application emojis") ||
+    message.includes("emoji slots")
+  );
+}
+
+/** Purpose: fetch one image attachment buffer from a parsed input source before emoji create calls. */
+async function downloadEmojiAttachment(
+  sourceUrl: string,
+): Promise<EmojiAttachmentDownloadResult> {
+  let response;
+  try {
+    response = await axios.get(sourceUrl, {
+      responseType: "arraybuffer",
+      timeout: 15_000,
+      validateStatus: () => true,
+    });
+  } catch {
+    return {
+      ok: false,
+      code: "image_download_failed",
+    };
+  }
+
+  if (response.status < 200 || response.status >= 300) {
+    return {
+      ok: false,
+      code: "image_download_failed",
+      statusCode: response.status,
+    };
+  }
+
+  const contentType = String(response.headers?.["content-type"] ?? "").toLowerCase();
+  if (!contentType.startsWith("image/")) {
+    return {
+      ok: false,
+      code: "invalid_emoji_input",
+      statusCode: response.status,
+    };
+  }
+
+  const bytes = Buffer.isBuffer(response.data)
+    ? response.data
+    : Buffer.from(response.data ?? "");
+  if (bytes.length === 0) {
+    return {
+      ok: false,
+      code: "invalid_emoji_input",
+      statusCode: response.status,
+    };
+  }
+
+  return {
+    ok: true,
+    attachment: bytes,
+  };
+}
+
 /** Purpose: read the shared command visibility value injected by framework registration plumbing. */
 function resolveInteractionVisibility(
   interaction: ChatInputCommandInteraction,
@@ -223,7 +306,7 @@ function logEmojiEvent(fields: Record<string, string | number | boolean | null |
 
 /** Purpose: emit structured resolver diagnostics tied to command mode and caller identity. */
 function logEmojiInventoryResult(input: {
-  mode: "list" | "resolve" | "react" | "autocomplete";
+  mode: "list" | "resolve" | "react" | "autocomplete" | "add";
   guildId: string | null;
   channelId: string | null;
   userId: string;
@@ -271,6 +354,18 @@ export function resetEmojiResolverForTest(): void {
   activeEmojiResolver = emojiResolverService;
 }
 
+/** Purpose: allow tests to inject command-permission behavior for add-path authorization checks. */
+export function setEmojiCommandPermissionServiceForTest(
+  service: CommandPermissionPort,
+): void {
+  activeCommandPermissionService = service;
+}
+
+/** Purpose: restore production command-permission service after test injection. */
+export function resetEmojiCommandPermissionServiceForTest(): void {
+  activeCommandPermissionService = new CommandPermissionService();
+}
+
 export const applyEmojiPageActionForTest = applyEmojiPageAction;
 export const paginateEmojiLinesForTest = paginateEmojiLines;
 export const buildEmojiListEmbedForTest = buildEmojiListEmbed;
@@ -278,10 +373,12 @@ export const buildEmojiListRowForTest = buildEmojiListRow;
 export const normalizeEmojiLookupNameInputForTest = normalizeEmojiLookupName;
 export const buildEmojiAutocompleteChoicesForTest = buildEmojiAutocompleteChoices;
 export const isValidMessageIdForTest = isValidMessageId;
+export const normalizeEmojiShortcodeNameForTest = normalizeEmojiShortcodeName;
+export const downloadEmojiAttachmentForTest = downloadEmojiAttachment;
 
 export const Emoji: Command = {
   name: "emoji",
-  description: "Resolve and browse bot application emojis",
+  description: "Resolve, browse, react with, and add bot application emojis",
   options: [
     {
       name: "name",
@@ -296,6 +393,18 @@ export const Emoji: Command = {
       type: ApplicationCommandOptionType.String,
       required: false,
     },
+    {
+      name: "emoji",
+      description: "Custom emoji token or direct image URL for add flow",
+      type: ApplicationCommandOptionType.String,
+      required: false,
+    },
+    {
+      name: "short-code",
+      description: "Shortcode name for a new bot application emoji",
+      type: ApplicationCommandOptionType.String,
+      required: false,
+    },
   ],
   run: async (
     _client: Client,
@@ -306,19 +415,77 @@ export const Emoji: Command = {
 
     const rawName = interaction.options.getString("name", false);
     const rawReact = interaction.options.getString("react", false);
+    const rawEmojiInput = interaction.options.getString("emoji", false);
+    const rawShortCode = interaction.options.getString("short-code", false);
     const hasNameInput = rawName !== null;
+    const hasEmojiInput = rawEmojiInput !== null;
+    const hasShortCodeInput = rawShortCode !== null;
+    const hasAddInputs = hasEmojiInput || hasShortCodeInput;
     const requestedName = String(rawName ?? "");
     const normalizedName = normalizeEmojiLookupName(requestedName);
     const targetMessageId = String(rawReact ?? "").trim();
+    const requestedEmojiInput = String(rawEmojiInput ?? "").trim();
+    const requestedShortCode = String(rawShortCode ?? "");
+    const normalizedShortCode = normalizeEmojiShortcodeName(requestedShortCode);
     const visibilityState = resolveInteractionVisibility(interaction);
 
-    const mode: "list" | "resolve" | "react" = !hasNameInput
-      ? "list"
-      : targetMessageId
-        ? "react"
-        : "resolve";
+    const mode: "list" | "resolve" | "react" | "add" = hasAddInputs
+      ? "add"
+      : !hasNameInput
+        ? "list"
+        : targetMessageId
+          ? "react"
+          : "resolve";
 
-    if (hasNameInput && !normalizedName) {
+    if (hasAddInputs && (!hasEmojiInput || !hasShortCodeInput)) {
+      logEmojiEvent({
+        command: "emoji",
+        mode,
+        guild_id: interaction.guildId ?? "dm",
+        channel_id: interaction.channelId ?? "none",
+        user_id: interaction.user.id,
+        requested_emoji_input: requestedEmojiInput,
+        requested_shortcode: requestedShortCode,
+        normalized_shortcode: normalizedShortCode,
+        create_attempted: false,
+        create_result: "validation_failed",
+        failure_code: "invalid_emoji_input",
+      });
+      await interaction.editReply({
+        content:
+          "To add an application emoji, provide both `emoji` and `short-code`.",
+        embeds: [],
+        components: [],
+      });
+      return;
+    }
+
+    if (hasAddInputs && (hasNameInput || targetMessageId)) {
+      logEmojiEvent({
+        command: "emoji",
+        mode,
+        guild_id: interaction.guildId ?? "dm",
+        channel_id: interaction.channelId ?? "none",
+        user_id: interaction.user.id,
+        requested_emoji_name: requestedName,
+        target_message_id: targetMessageId,
+        requested_emoji_input: requestedEmojiInput,
+        requested_shortcode: requestedShortCode,
+        normalized_shortcode: normalizedShortCode,
+        create_attempted: false,
+        create_result: "validation_failed",
+        failure_code: "invalid_emoji_input",
+      });
+      await interaction.editReply({
+        content:
+          "Use either add options (`emoji` + `short-code`) or resolve/react options (`name`/`react`), not both.",
+        embeds: [],
+        components: [],
+      });
+      return;
+    }
+
+    if (mode !== "add" && hasNameInput && !normalizedName) {
       logEmojiEvent({
         command: "emoji",
         mode,
@@ -341,6 +508,294 @@ export const Emoji: Command = {
     }
 
     try {
+      if (mode === "add") {
+        const allowed = await activeCommandPermissionService.canUseAnyTarget(
+          ["emoji:add", "emoji"],
+          interaction,
+        );
+        if (!allowed) {
+          logEmojiEvent({
+            command: "emoji",
+            mode,
+            guild_id: interaction.guildId ?? "dm",
+            channel_id: interaction.channelId ?? "none",
+            user_id: interaction.user.id,
+            requested_emoji_input: requestedEmojiInput,
+            requested_shortcode: requestedShortCode,
+            normalized_shortcode: normalizedShortCode,
+            create_attempted: false,
+            create_result: "permission_denied",
+            failure_code: "permission_denied",
+          });
+          await interaction.editReply({
+            content: "You do not have permission to use /emoji add.",
+            embeds: [],
+            components: [],
+          });
+          return;
+        }
+
+        if (!normalizedShortCode || !isValidEmojiShortcodeName(normalizedShortCode)) {
+          logEmojiEvent({
+            command: "emoji",
+            mode,
+            guild_id: interaction.guildId ?? "dm",
+            channel_id: interaction.channelId ?? "none",
+            user_id: interaction.user.id,
+            requested_emoji_input: requestedEmojiInput,
+            requested_shortcode: requestedShortCode,
+            normalized_shortcode: normalizedShortCode,
+            create_attempted: false,
+            create_result: "validation_failed",
+            failure_code: "invalid_shortcode",
+          });
+          await interaction.editReply({
+            content:
+              "Please provide a valid shortcode using letters, numbers, or underscores (2-32 chars).",
+            embeds: [],
+            components: [],
+          });
+          return;
+        }
+
+        const parsedSource = parseEmojiImageSource(requestedEmojiInput);
+        if (!parsedSource.ok) {
+          const failureCode = parsedSource.code;
+          const sourceType: EmojiInputSourceType = parsedSource.sourceType;
+          logEmojiEvent({
+            command: "emoji",
+            mode,
+            guild_id: interaction.guildId ?? "dm",
+            channel_id: interaction.channelId ?? "none",
+            user_id: interaction.user.id,
+            requested_emoji_input: requestedEmojiInput,
+            parsed_source_type: sourceType,
+            requested_shortcode: requestedShortCode,
+            normalized_shortcode: normalizedShortCode,
+            create_attempted: false,
+            create_result: "validation_failed",
+            failure_code: failureCode,
+          });
+          await interaction.editReply({
+            content:
+              failureCode === "unsupported_unicode_emoji"
+                ? "Unicode emoji input is not supported for `/emoji add` yet. Use a custom emoji token like `<:name:id>` or a direct image URL."
+                : "Invalid emoji input. Use a custom emoji token like `<:name:id>` or a direct image URL.",
+            embeds: [],
+            components: [],
+          });
+          return;
+        }
+
+        const inventory = await activeEmojiResolver.fetchApplicationEmojiInventory(
+          interaction.client,
+          { forceRefresh: true },
+        );
+        logEmojiInventoryResult({
+          mode,
+          guildId: interaction.guildId,
+          channelId: interaction.channelId,
+          userId: interaction.user.id,
+          requestedName: requestedShortCode,
+          normalizedName: normalizedShortCode,
+          result: inventory,
+        });
+        if (!inventory.ok) {
+          logEmojiEvent({
+            command: "emoji",
+            mode,
+            guild_id: interaction.guildId ?? "dm",
+            channel_id: interaction.channelId ?? "none",
+            user_id: interaction.user.id,
+            requested_emoji_input: requestedEmojiInput,
+            parsed_source_type: parsedSource.sourceType,
+            requested_shortcode: requestedShortCode,
+            normalized_shortcode: normalizedShortCode,
+            create_attempted: false,
+            create_result: "inventory_unavailable",
+            failure_code: "emoji_inventory_unavailable",
+          });
+          await interaction.editReply({
+            content: buildEmojiFailureMessage(inventory.code),
+            embeds: [],
+            components: [],
+          });
+          return;
+        }
+
+        const existingByName =
+          inventory.snapshot.exactByName.get(normalizedShortCode) ??
+          inventory.snapshot.lowercaseByName.get(normalizedShortCode.toLowerCase()) ??
+          null;
+        if (existingByName) {
+          logEmojiEvent({
+            command: "emoji",
+            mode,
+            guild_id: interaction.guildId ?? "dm",
+            channel_id: interaction.channelId ?? "none",
+            user_id: interaction.user.id,
+            requested_emoji_input: requestedEmojiInput,
+            parsed_source_type: parsedSource.sourceType,
+            requested_shortcode: requestedShortCode,
+            normalized_shortcode: normalizedShortCode,
+            create_attempted: false,
+            create_result: "duplicate_shortcode",
+            failure_code: "duplicate_shortcode",
+          });
+          await interaction.editReply({
+            content: `Shortcode \`${normalizedShortCode}\` already exists as ${existingByName.rendered}.`,
+            embeds: [],
+            components: [],
+          });
+          return;
+        }
+
+        const download = await downloadEmojiAttachment(parsedSource.imageUrl);
+        if (!download.ok) {
+          logEmojiEvent({
+            command: "emoji",
+            mode,
+            guild_id: interaction.guildId ?? "dm",
+            channel_id: interaction.channelId ?? "none",
+            user_id: interaction.user.id,
+            requested_emoji_input: requestedEmojiInput,
+            parsed_source_type: parsedSource.sourceType,
+            requested_shortcode: requestedShortCode,
+            normalized_shortcode: normalizedShortCode,
+            create_attempted: false,
+            create_result: "image_source_failed",
+            failure_code: download.code,
+          });
+          await interaction.editReply({
+            content:
+              download.code === "image_download_failed"
+                ? "Could not download the emoji image from that source."
+                : "That source did not resolve to a valid image.",
+            embeds: [],
+            components: [],
+          });
+          return;
+        }
+
+        const application = interaction.client.application;
+        if (!application) {
+          logEmojiEvent({
+            command: "emoji",
+            mode,
+            guild_id: interaction.guildId ?? "dm",
+            channel_id: interaction.channelId ?? "none",
+            user_id: interaction.user.id,
+            requested_emoji_input: requestedEmojiInput,
+            parsed_source_type: parsedSource.sourceType,
+            requested_shortcode: requestedShortCode,
+            normalized_shortcode: normalizedShortCode,
+            create_attempted: false,
+            create_result: "application_unavailable",
+            failure_code: "application_unavailable",
+          });
+          await interaction.editReply({
+            content: "Could not load bot application state right now.",
+            embeds: [],
+            components: [],
+          });
+          return;
+        }
+
+        if (!application.emojis || typeof application.emojis.create !== "function") {
+          logEmojiEvent({
+            command: "emoji",
+            mode,
+            guild_id: interaction.guildId ?? "dm",
+            channel_id: interaction.channelId ?? "none",
+            user_id: interaction.user.id,
+            requested_emoji_input: requestedEmojiInput,
+            parsed_source_type: parsedSource.sourceType,
+            requested_shortcode: requestedShortCode,
+            normalized_shortcode: normalizedShortCode,
+            create_attempted: false,
+            create_result: "application_emoji_manager_unavailable",
+            failure_code: "application_emoji_manager_unavailable",
+          });
+          await interaction.editReply({
+            content: "Application emoji manager is unavailable in this runtime.",
+            embeds: [],
+            components: [],
+          });
+          return;
+        }
+
+        let createdEmoji;
+        try {
+          createdEmoji = await application.emojis.create({
+            attachment: download.attachment,
+            name: normalizedShortCode,
+          });
+        } catch (error) {
+          const failureCode = isApplicationEmojiInventoryFullError(error)
+            ? "application_emoji_inventory_full"
+            : "application_emoji_create_failed";
+          logEmojiEvent({
+            command: "emoji",
+            mode,
+            guild_id: interaction.guildId ?? "dm",
+            channel_id: interaction.channelId ?? "none",
+            user_id: interaction.user.id,
+            requested_emoji_input: requestedEmojiInput,
+            parsed_source_type: parsedSource.sourceType,
+            requested_shortcode: requestedShortCode,
+            normalized_shortcode: normalizedShortCode,
+            create_attempted: true,
+            create_result: "failed",
+            failure_code: failureCode,
+          });
+          await interaction.editReply({
+            content:
+              failureCode === "application_emoji_inventory_full"
+                ? "Could not add emoji because this application emoji inventory is full."
+                : "Discord rejected the emoji create request. Verify the image and try again.",
+            embeds: [],
+            components: [],
+          });
+          return;
+        }
+
+        activeEmojiResolver.invalidateCache();
+        try {
+          await activeEmojiResolver.refresh(interaction.client);
+        } catch (error) {
+          console.warn(
+            `[emoji] cache refresh failed after add: ${formatError(error)}`,
+          );
+        }
+
+        const createdRendered = String(createdEmoji.toString?.() ?? "").trim();
+        const createdName = String(createdEmoji.name ?? normalizedShortCode).trim();
+
+        logEmojiEvent({
+          command: "emoji",
+          mode,
+          guild_id: interaction.guildId ?? "dm",
+          channel_id: interaction.channelId ?? "none",
+          user_id: interaction.user.id,
+          requested_emoji_input: requestedEmojiInput,
+          parsed_source_type: parsedSource.sourceType,
+          requested_shortcode: requestedShortCode,
+          normalized_shortcode: normalizedShortCode,
+          create_attempted: true,
+          create_result: "success",
+          created_emoji_id: createdEmoji.id,
+          created_emoji_name: createdName,
+          failure_code: "none",
+        });
+
+        await interaction.editReply({
+          content: `Added application emoji ${createdRendered} with shortcode \`${createdName}\`.`,
+          embeds: [],
+          components: [],
+        });
+        return;
+      }
+
       const inventory = await activeEmojiResolver.fetchApplicationEmojiInventory(
         interaction.client,
         { forceRefresh: true },
