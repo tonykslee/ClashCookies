@@ -41,6 +41,18 @@ export function isValidFwaLayoutLink(input: string): boolean {
   return trimmed.startsWith(FWA_LAYOUT_LINK_PREFIX);
 }
 
+/** Purpose: validate optional image URL input for layout preview links. */
+export function isValidImageUrl(input: string): boolean {
+  const trimmed = input.trim();
+  if (!trimmed) return false;
+  try {
+    const parsed = new URL(trimmed);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 /** Purpose: wrap links in angle brackets to suppress Discord embed expansion. */
 export function wrapDiscordLink(url: string): string {
   return `<${url.trim()}>`;
@@ -68,13 +80,15 @@ export async function getFwaLayout(
   });
 }
 
-/** Purpose: upsert one layout link while preserving any existing preview image URL. */
-export async function upsertFwaLayoutLink(params: {
+/** Purpose: upsert one layout row and only overwrite ImageUrl when explicitly provided. */
+export async function upsertFwaLayout(params: {
   townhall: number;
   type: FwaLayoutType;
   layoutLink: string;
+  imageUrl?: string;
 }): Promise<FwaLayouts> {
   const trimmedLink = params.layoutLink.trim();
+  const trimmedImageUrl = params.imageUrl?.trim();
   return prisma.fwaLayouts.upsert({
     where: {
       Townhall_Type: {
@@ -86,12 +100,22 @@ export async function upsertFwaLayoutLink(params: {
       Townhall: params.townhall,
       Type: params.type,
       LayoutLink: trimmedLink,
-      ImageUrl: null,
+      ImageUrl: trimmedImageUrl ?? null,
     },
     update: {
       LayoutLink: trimmedLink,
+      ...(trimmedImageUrl !== undefined ? { ImageUrl: trimmedImageUrl } : {}),
     },
   });
+}
+
+/** Purpose: keep backward-compatible layout-link-only upserts for existing call sites. */
+export async function upsertFwaLayoutLink(params: {
+  townhall: number;
+  type: FwaLayoutType;
+  layoutLink: string;
+}): Promise<FwaLayouts> {
+  return upsertFwaLayout(params);
 }
 
 /** Purpose: seed or refresh canonical layout rows using composite-key upserts. */

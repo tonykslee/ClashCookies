@@ -27,7 +27,7 @@ Discord bot for Clash of Clans activity tooling.
 - `/clan-health` now provides a DB-only leadership snapshot per tracked clan (last-30 match/win rates, inactivity counts, and missing Discord links).
 - `/fwa weight-age`, `/fwa weight-link`, `/fwa weight-health`, and `/fwa weight-cookie` now provide FWA Stats weight monitoring with cached scraping, stale-weight flags, auth-expiry recovery guidance, and secure cookie status/update flows.
 - `/fwa compliance` now runs the shared war-end compliance engine on demand for a tracked clan (latest ended war by default, optional `war-id` override).
-- `/layout` now supports FWA base layout listing/fetch by Town Hall and admin-only link upserts, backed by the new `FwaLayouts` table.
+- `/layout` now supports FWA base layout listing/fetch by Town Hall and admin-only link upserts (with optional `img-url` preview updates), backed by the new `FwaLayouts` table.
 
 ## Quick Start
 ```bash

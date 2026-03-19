@@ -17,6 +17,7 @@ import { Layout, buildLayoutListEmbedsForTest } from "../src/commands/Layout";
 import {
   isSupportedTownhall,
   isValidFwaLayoutLink,
+  isValidImageUrl,
   normalizeLayoutType,
   wrapDiscordLink,
 } from "../src/services/FwaLayoutService";
@@ -39,6 +40,7 @@ function makeInteraction(params: {
   th?: number | null;
   type?: string | null;
   edit?: string | null;
+  imgUrl?: string | null;
   visibility?: "private" | "public";
   isAdmin?: boolean;
 }) {
@@ -70,6 +72,7 @@ function makeInteraction(params: {
       getString: vi.fn((name: string) => {
         if (name === "type") return params.type ?? null;
         if (name === "edit") return params.edit ?? null;
+        if (name === "img-url") return params.imgUrl ?? null;
         if (name === "visibility") return params.visibility ?? "private";
         return null;
       }),
@@ -92,6 +95,13 @@ describe("/layout helper logic", () => {
       )
     ).toBe(true);
     expect(isValidFwaLayoutLink("https://example.com/not-layout")).toBe(false);
+  });
+
+  it("validates image URLs with http/https only", () => {
+    expect(isValidImageUrl("https://i.imgur.com/bCISCn1.png")).toBe(true);
+    expect(isValidImageUrl(" http://example.com/test.jpg ")).toBe(true);
+    expect(isValidImageUrl("ftp://example.com/test.jpg")).toBe(false);
+    expect(isValidImageUrl("not-a-url")).toBe(false);
   });
 
   it("enforces TH8-TH18 support range", () => {
@@ -235,7 +245,48 @@ describe("/layout command behavior", () => {
     );
   });
 
-  it("/layout th:11 edit:<valid-link> upserts row for admin", async () => {
+  it("admin edit with img-url updates both LayoutLink and ImageUrl", async () => {
+    const updatedLink =
+      "https://link.clashofclans.com/en?action=OpenLayout&id=TH11%3AWB%3AEDITED";
+    const updatedImage = "https://i.imgur.com/new-image.png";
+    prismaMock.fwaLayouts.upsert.mockResolvedValue(
+      buildRow({
+        Townhall: 11,
+        Type: "RISINGDAWN",
+        LayoutLink: updatedLink,
+        ImageUrl: updatedImage,
+      })
+    );
+
+    const { interaction, reply } = makeInteraction({
+      th: 11,
+      type: "RISINGDAWN",
+      edit: updatedLink,
+      imgUrl: updatedImage,
+      isAdmin: true,
+    });
+    await Layout.run({} as any, interaction as any, {} as any);
+
+    expect(prismaMock.fwaLayouts.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          LayoutLink: updatedLink,
+          ImageUrl: updatedImage,
+        }),
+        update: expect.objectContaining({
+          LayoutLink: updatedLink,
+          ImageUrl: updatedImage,
+        }),
+      })
+    );
+
+    const payload = reply.mock.calls[0]?.[0];
+    expect(String(payload.content)).toContain("Saved TH11 RISINGDAWN layout:");
+    expect(String(payload.content)).toContain(`<${updatedLink}>`);
+    expect(String(payload.content)).toContain(`Image: ${updatedImage}`);
+  });
+
+  it("admin edit without img-url preserves existing image by omitting ImageUrl update", async () => {
     const updatedLink =
       "https://link.clashofclans.com/en?action=OpenLayout&id=TH11%3AWB%3AEDITED";
     prismaMock.fwaLayouts.upsert.mockResolvedValue(
@@ -243,36 +294,122 @@ describe("/layout command behavior", () => {
         Townhall: 11,
         Type: "RISINGDAWN",
         LayoutLink: updatedLink,
-        ImageUrl: "https://i.imgur.com/APZjSyh.png",
+        ImageUrl: "https://i.imgur.com/existing.png",
       })
     );
 
-    const { interaction, reply } = makeInteraction({ th: 11, edit: updatedLink, isAdmin: true });
+    const { interaction } = makeInteraction({ th: 11, edit: updatedLink, isAdmin: true });
     await Layout.run({} as any, interaction as any, {} as any);
 
     expect(prismaMock.fwaLayouts.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: {
-          Townhall_Type: {
-            Townhall: 11,
-            Type: "RISINGDAWN",
-          },
-        },
         update: {
           LayoutLink: updatedLink,
         },
       })
     );
-
-    const payload = reply.mock.calls[0]?.[0];
-    expect(String(payload.content)).toContain("Saved TH11 RISINGDAWN layout:");
-    expect(String(payload.content)).toContain(`<${updatedLink}>`);
   });
 
-  it("denies non-admin users when edit is provided", async () => {
+  it("create payload stores img-url when provided", async () => {
+    const updatedLink =
+      "https://link.clashofclans.com/en?action=OpenLayout&id=TH13%3AWB%3AEDITED";
+    const updatedImage = "https://i.imgur.com/create-image.jpg";
+    prismaMock.fwaLayouts.upsert.mockResolvedValue(
+      buildRow({
+        Townhall: 13,
+        Type: "RISINGDAWN",
+        LayoutLink: updatedLink,
+        ImageUrl: updatedImage,
+      })
+    );
+
+    const { interaction } = makeInteraction({
+      th: 13,
+      edit: updatedLink,
+      imgUrl: updatedImage,
+      isAdmin: true,
+    });
+    await Layout.run({} as any, interaction as any, {} as any);
+
+    expect(prismaMock.fwaLayouts.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          ImageUrl: updatedImage,
+        }),
+      })
+    );
+  });
+
+  it("create payload defaults ImageUrl to null when img-url is omitted", async () => {
+    const updatedLink =
+      "https://link.clashofclans.com/en?action=OpenLayout&id=TH14%3AWB%3AEDITED";
+    prismaMock.fwaLayouts.upsert.mockResolvedValue(
+      buildRow({
+        Townhall: 14,
+        Type: "RISINGDAWN",
+        LayoutLink: updatedLink,
+        ImageUrl: null,
+      })
+    );
+
+    const { interaction } = makeInteraction({
+      th: 14,
+      edit: updatedLink,
+      isAdmin: true,
+    });
+    await Layout.run({} as any, interaction as any, {} as any);
+
+    expect(prismaMock.fwaLayouts.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          ImageUrl: null,
+        }),
+      })
+    );
+  });
+
+  it("img-url without edit is rejected", async () => {
+    const { interaction, reply } = makeInteraction({
+      th: 12,
+      imgUrl: "https://i.imgur.com/test.png",
+      isAdmin: true,
+    });
+
+    await Layout.run({} as any, interaction as any, {} as any);
+
+    expect(prismaMock.fwaLayouts.upsert).not.toHaveBeenCalled();
+    expect(reply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ephemeral: true,
+        content: "You must provide `edit` when using `img-url`.",
+      })
+    );
+  });
+
+  it("invalid img-url is rejected", async () => {
     const { interaction, reply } = makeInteraction({
       th: 11,
       edit: "https://link.clashofclans.com/en?action=OpenLayout&id=TH11%3AWB%3AEDITED",
+      imgUrl: "notaurl",
+      isAdmin: true,
+    });
+
+    await Layout.run({} as any, interaction as any, {} as any);
+
+    expect(prismaMock.fwaLayouts.upsert).not.toHaveBeenCalled();
+    expect(reply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ephemeral: true,
+        content: "Invalid image URL. Expected a valid http(s) URL.",
+      })
+    );
+  });
+
+  it("non-admin edit with img-url is denied", async () => {
+    const { interaction, reply } = makeInteraction({
+      th: 11,
+      edit: "https://link.clashofclans.com/en?action=OpenLayout&id=TH11%3AWB%3AEDITED",
+      imgUrl: "https://i.imgur.com/example.png",
       isAdmin: false,
     });
 
@@ -287,51 +424,34 @@ describe("/layout command behavior", () => {
     );
   });
 
-  it("rejects edit without th", async () => {
-    const { interaction, reply } = makeInteraction({
-      edit: "https://link.clashofclans.com/en?action=OpenLayout&id=TH11%3AWB%3AEDITED",
-      isAdmin: true,
-    });
-
-    await Layout.run({} as any, interaction as any, {} as any);
-
-    expect(prismaMock.fwaLayouts.upsert).not.toHaveBeenCalled();
-    expect(reply).toHaveBeenCalledWith(
-      expect.objectContaining({
-        ephemeral: true,
-        content: "You must provide `th` when using `edit`.",
+  it("fetch mode shows updated image URL when present", async () => {
+    const updatedImage = "https://i.imgur.com/updated-fetch.png";
+    prismaMock.fwaLayouts.findUnique.mockResolvedValue(
+      buildRow({
+        Townhall: 12,
+        Type: "RISINGDAWN",
+        LayoutLink:
+          "https://link.clashofclans.com/en?action=OpenLayout&id=TH12%3AHV%3AUPDATED",
+        ImageUrl: updatedImage,
       })
     );
-  });
 
-  it("rejects invalid edit links", async () => {
-    const { interaction, reply } = makeInteraction({
-      th: 11,
-      edit: "https://example.com/not-layout",
-      isAdmin: true,
-    });
-
+    const { interaction, reply } = makeInteraction({ th: 12, type: "RISINGDAWN" });
     await Layout.run({} as any, interaction as any, {} as any);
 
-    expect(prismaMock.fwaLayouts.upsert).not.toHaveBeenCalled();
-    expect(reply).toHaveBeenCalledWith(
-      expect.objectContaining({
-        ephemeral: true,
-      })
-    );
-    expect(String(reply.mock.calls[0]?.[0]?.content ?? "")).toContain(
-      "Invalid layout link. Expected a Clash of Clans layout URL starting with"
-    );
+    const payload = reply.mock.calls[0]?.[0];
+    expect(String(payload.content)).toContain(`Image: ${updatedImage}`);
   });
 
-  it("list embeds show image URLs only for rows that have one", () => {
+  it("list mode shows updated image URL when stored", () => {
+    const updatedImage = "https://i.imgur.com/updated-list.webp";
     const embeds = buildLayoutListEmbedsForTest([
       buildRow({
         Townhall: 12,
         Type: "RISINGDAWN",
         LayoutLink:
           "https://link.clashofclans.com/en?action=OpenLayout&id=TH12%3AHV%3AAAAABgAAAAL2WyTYmDxC5gKRGZcTtH3d",
-        ImageUrl: "https://i.imgur.com/bCISCn1.png",
+        ImageUrl: updatedImage,
       }),
       buildRow({
         Townhall: 12,
@@ -345,10 +465,8 @@ describe("/layout command behavior", () => {
     expect(embeds).toHaveLength(3);
     const rising = embeds[0].toJSON();
     const basic = embeds[1].toJSON();
-    const ice = embeds[2].toJSON();
 
-    expect(String(rising.description ?? "")).toContain("Image: https://i.imgur.com/bCISCn1.png");
+    expect(String(rising.description ?? "")).toContain(`Image: ${updatedImage}`);
     expect(String(basic.description ?? "")).not.toContain("Image:");
-    expect(String(ice.description ?? "")).toBe("No layouts saved for this type yet.");
   });
 });

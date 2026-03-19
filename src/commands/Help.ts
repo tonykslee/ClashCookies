@@ -111,12 +111,14 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`th` fetches one Town Hall layout; omitted `type` defaults to `RISINGDAWN`.",
       "All returned layout links are wrapped in `< >` to suppress Discord auto-embeds.",
       "Including `edit` performs an admin-only upsert by Town Hall + type.",
+      "`img-url` is optional and only valid when `edit` is also provided.",
     ],
     examples: [
       "/layout",
       "/layout th:12",
       "/layout th:12 type:ICE",
       "/layout th:12 edit:https://link.clashofclans.com/en?action=OpenLayout&id=TH12...",
+      "/layout th:12 type:RISINGDAWN edit:https://link.clashofclans.com/en?action=OpenLayout&id=TH12... img-url:https://i.imgur.com/example.png",
     ],
   },
   "tracked-clan": {

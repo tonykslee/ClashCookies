@@ -21,8 +21,9 @@ import {
   getFwaLayout,
   isSupportedTownhall,
   isValidFwaLayoutLink,
+  isValidImageUrl,
   normalizeLayoutType,
-  upsertFwaLayoutLink,
+  upsertFwaLayout,
   wrapDiscordLink,
 } from "../services/FwaLayoutService";
 
@@ -196,6 +197,12 @@ export const Layout: Command = {
       type: ApplicationCommandOptionType.String,
       required: false,
     },
+    {
+      name: "img-url",
+      description: "Optional preview image URL to save for this layout",
+      type: ApplicationCommandOptionType.String,
+      required: false,
+    },
   ],
   run: async (
     _client: Client,
@@ -206,9 +213,15 @@ export const Layout: Command = {
     const townhall = interaction.options.getInteger("th", false);
     const typeInput = interaction.options.getString("type", false);
     const editInput = interaction.options.getString("edit", false);
+    const imageUrlInput = interaction.options.getString("img-url", false);
     const type = normalizeLayoutType(typeInput);
 
     try {
+      if (imageUrlInput !== null && !editInput) {
+        await replyLayoutError(interaction, "You must provide `edit` when using `img-url`.");
+        return;
+      }
+
       if (editInput) {
         if (!canEditLayouts(interaction)) {
           await replyLayoutError(interaction, "You do not have permission to edit layouts.");
@@ -221,7 +234,7 @@ export const Layout: Command = {
         }
 
         if (!isSupportedTownhall(townhall)) {
-          await replyLayoutError(interaction, "Unsupported Town Hall. Allowed values: TH8–TH18.");
+          await replyLayoutError(interaction, "Unsupported Town Hall. Allowed values: TH8-TH18.");
           return;
         }
 
@@ -233,10 +246,19 @@ export const Layout: Command = {
           return;
         }
 
-        const saved = await upsertFwaLayoutLink({
+        if (imageUrlInput !== null && !isValidImageUrl(imageUrlInput)) {
+          await replyLayoutError(
+            interaction,
+            "Invalid image URL. Expected a valid http(s) URL."
+          );
+          return;
+        }
+
+        const saved = await upsertFwaLayout({
           townhall,
           type,
           layoutLink: editInput,
+          ...(imageUrlInput !== null ? { imageUrl: imageUrlInput } : {}),
         });
 
         await interaction.reply({
@@ -264,7 +286,7 @@ export const Layout: Command = {
       }
 
       if (!isSupportedTownhall(townhall)) {
-        await replyLayoutError(interaction, "Unsupported Town Hall. Allowed values: TH8–TH18.");
+        await replyLayoutError(interaction, "Unsupported Town Hall. Allowed values: TH8-TH18.");
         return;
       }
 
