@@ -19,49 +19,49 @@ export const FWA_LAYOUT_SEED_ROWS: readonly FwaLayoutSeedRow[] = [
     Townhall: 12,
     Type: "RISINGDAWN",
     LayoutLink:
-      "https://link.clashofclans.com/en?action=OpenLayout&id=TH12%3AHV%3AAAAABgAAAAL2WyTYmDxC5gKRGZcTtH3d",
+      "https://link.clashofclans.com/en?action=OpenLayout&id=TH12%3AWB%3AAAAAAAAAAAMYxd2JLIPabs_m1AJOK9Pr",
     ImageUrl: "https://i.imgur.com/bCISCn1.png",
   },
   {
     Townhall: 13,
     Type: "RISINGDAWN",
     LayoutLink:
-      "https://link.clashofclans.com/en?action=OpenLayout&id=TH13%3AWB%3AAAAADAAAAALE1Q6BqJtYL7DmD2DQU_7I",
+      "https://link.clashofclans.com/en?action=OpenLayout&id=TH13%3AWB%3AAAAANQAAAAJujuJ9iAbWmC4pLZE2Cx5n",
     ImageUrl: "https://i.imgur.com/dxLW2kF.jpeg",
   },
   {
     Townhall: 14,
     Type: "RISINGDAWN",
     LayoutLink:
-      "https://link.clashofclans.com/en?action=OpenLayout&id=TH14%3AWB%3AAAAAPQAAAAJdL9Ryjo6_ygBT97PSjUgQ",
+      "https://link.clashofclans.com/en?action=OpenLayout&id=TH14%3AWB%3AAAAAPQAAAAJdoO-ODiQQFw1-wdLoP0pi",
     ImageUrl: "https://i.imgur.com/GAQkHDb.jpeg",
   },
   {
     Townhall: 15,
     Type: "RISINGDAWN",
     LayoutLink:
-      "https://link.clashofclans.com/en?action=OpenLayout&id=TH15%3AWB%3AAAAAVAAAAAHuvRtTCj7Wwkk8zSCYzRWR",
+      "https://link.clashofclans.com/en?action=OpenLayout&id=TH15%3AWB%3AAAAAVAAAAAHvJKVnKw681zq_w9zZWZH4",
     ImageUrl: "https://i.imgur.com/s77cbEK.png",
   },
   {
     Townhall: 16,
     Type: "RISINGDAWN",
     LayoutLink:
-      "https://link.clashofclans.com/en?action=OpenLayout&id=TH16%3AWB%3AAAAAWQAAAAHkeUTU5T3VG9-v29pUOTR8",
+      "https://link.clashofclans.com/en?action=OpenLayout&id=TH16%3AWB%3AAAAAWQAAAAHk4PFauz_R4khwdqjodM6b",
     ImageUrl: "https://i.imgur.com/t8KI8vr.png",
   },
   {
     Townhall: 17,
     Type: "RISINGDAWN",
     LayoutLink:
-      "https://link.clashofclans.com/en?action=OpenLayout&id=TH17%3AWB%3AAAAARQAAAAI6ppxkTfH3WnNJjWK96bqn",
+      "https://link.clashofclans.com/en?action=OpenLayout&id=TH17%3AWB%3AAAAAAwAAAAMN3c729i-fFM_Iux9TVs10",
     ImageUrl: "https://i.imgur.com/6dZZo8V.jpeg",
   },
   {
     Townhall: 18,
     Type: "RISINGDAWN",
     LayoutLink:
-      "https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg",
+      "https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAAMwAAAAJ8_jtp6RRc8U3ZCZTYot51",
     ImageUrl: "https://i.imgur.com/4Tatx5Y.jpeg",
   },
   {
