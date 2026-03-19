@@ -98,6 +98,12 @@ enum LoseStyle {
   TRIPLE_TOP_30
 }
 
+enum FwaLayoutType {
+  RISINGDAWN
+  BASIC
+  ICE
+}
+
 
 enum TrackedMessageFeatureType {
   FWA_BASE_SWAP
@@ -472,6 +478,17 @@ model ClanWarPlan {
 
   @@unique([guildId, scope, clanTag, matchType, outcome, loseStyle])
   @@index([guildId, scope, clanTag, matchType])
+}
+
+model FwaLayouts {
+  Townhall    Int
+  Type        FwaLayoutType
+  LayoutLink  String
+  ImageUrl    String?
+  LastUpdated DateTime      @updatedAt
+
+  @@id([Townhall, Type])
+  @@index([Type])
 }
 
 model ApiUsage {

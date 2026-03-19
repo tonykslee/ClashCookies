@@ -104,6 +104,21 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     ],
     examples: ["/role-users role:@Leaders"],
   },
+  layout: {
+    summary: "Fetch, list, and admin-update stored FWA base layout links.",
+    details: [
+      "Use `/layout` with no args to browse paginated embeds (RISINGDAWN, BASIC, ICE).",
+      "`th` fetches one Town Hall layout; omitted `type` defaults to `RISINGDAWN`.",
+      "All returned layout links are wrapped in `< >` to suppress Discord auto-embeds.",
+      "Including `edit` performs an admin-only upsert by Town Hall + type.",
+    ],
+    examples: [
+      "/layout",
+      "/layout th:12",
+      "/layout th:12 type:ICE",
+      "/layout th:12 edit:https://link.clashofclans.com/en?action=OpenLayout&id=TH12...",
+    ],
+  },
   "tracked-clan": {
     summary: "Manage tracked clans used by activity features.",
     details: [

@@ -85,7 +85,7 @@ import {
 
 const commandPermissionService = new CommandPermissionService();
 const GLOBAL_POST_BUTTON_PREFIX = "post-channel";
-const COMMANDS_WITH_CUSTOM_VISIBILITY = new Set(["help", "fwa"]);
+const COMMANDS_WITH_CUSTOM_VISIBILITY = new Set(["help", "fwa", "layout"]);
 
 let isRegistered = false;
 const telemetryIngest = TelemetryIngestService.getInstance();

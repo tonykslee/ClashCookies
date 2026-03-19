@@ -14,6 +14,7 @@
 - `/inactive wars:<number>` - List tracked-clan members who used 0/2 attacks in each of the last N ended wars (requires war-history tracking window).
 - `/clan-health [visibility:private|public] tag:<trackedClanTag>` - Leadership snapshot from persisted data only: match rate and win rate (last 30 ended wars), inactive counts (missed-both in last 3 ended FWA wars + last-seen >=7d), and missing Discord links among observed members.
 - `/role-users role:<discordRole>` - List users in a role with pagination.
+- `/layout [th:<number>] [type:RISINGDAWN|BASIC|ICE] [edit:<layout-link>]` - Fetch or list stored FWA layouts; `edit` upserts are admin-only at runtime.
 - `/tracked-clan configure tag:<tag> [lose-style:triple-top-30|traditional] [mail-channel:<discordChannel>] [log-channel:<discordChannel>] [clan-role:<discordRole>] [clan-badge:<emoji>] [short-name:<abbr>]` - Add/update tracked clan settings.
 - `/tracked-clan remove tag:<tag>` - Remove tracked clan.
 - `/tracked-clan list` - List tracked clans and settings.
