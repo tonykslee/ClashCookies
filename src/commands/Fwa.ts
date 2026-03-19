@@ -487,6 +487,7 @@ function renderFwaBaseSwapAnnouncement(
     if (layoutLinkLines.length > 0) {
       parts.push("", ...layoutLinkLines);
     }
+    parts.push("", "──────────────────────────────────");
     if (state.phaseTimingLine) {
       parts.push("", state.phaseTimingLine);
     }
