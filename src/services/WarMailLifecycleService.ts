@@ -165,19 +165,29 @@ export class WarMailLifecycleService {
   /** Purpose: persist lifecycle status=POSTED for one clan and one war. */
   async markPosted(input: UpsertPostedLifecycleInput): Promise<void> {
     const clanTag = normalizeTag(input.clanTag);
+    const warId = Math.trunc(input.warId);
     const postedAt = input.postedAt ?? new Date();
+    const existing = await prisma.warMailLifecycle.findUnique({
+      where: {
+        guildId_clanTag_warId: {
+          guildId: input.guildId,
+          clanTag,
+          warId,
+        },
+      },
+    });
     await prisma.warMailLifecycle.upsert({
       where: {
         guildId_clanTag_warId: {
           guildId: input.guildId,
           clanTag,
-          warId: Math.trunc(input.warId),
+          warId,
         },
       },
       create: {
         guildId: input.guildId,
         clanTag,
-        warId: Math.trunc(input.warId),
+        warId,
         status: WarMailLifecycleStatus.POSTED,
         channelId: input.channelId,
         messageId: input.messageId,
@@ -192,9 +202,17 @@ export class WarMailLifecycleService {
         deletedAt: null,
       },
     });
-    console.info(
-      `[mail-lifecycle] guild=${input.guildId} clan=${clanTag} war=${Math.trunc(input.warId)} status=POSTED`
-    );
+    const isTransitionToPosted =
+      !existing || existing.status !== WarMailLifecycleStatus.POSTED;
+    const postedIdentityChanged =
+      existing?.channelId !== input.channelId ||
+      existing?.messageId !== input.messageId;
+    const logLine = `[mail-lifecycle] guild=${input.guildId} clan=${clanTag} war=${warId} status=POSTED`;
+    if (isTransitionToPosted || postedIdentityChanged) {
+      console.info(logLine);
+      return;
+    }
+    console.debug(`${logLine} outcome=noop_reasserted`);
   }
 
   /** Purpose: persist lifecycle status=DELETED for one clan and one war. */
