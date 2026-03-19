@@ -24,6 +24,7 @@ export type FwaBaseSwapTrackedMetadata = {
   clanName: string;
   createdByUserId: string;
   createdAtIso: string;
+  phaseTimingLine?: string | null;
   entries: Array<{
     position: number;
     playerTag: string;
@@ -114,7 +115,15 @@ export function parseFwaBaseSwapMetadata(value: unknown): FwaBaseSwapTrackedMeta
             Boolean(layoutLink)
         )
     : undefined;
-  return { clanName, createdByUserId, createdAtIso, entries, layoutLinks };
+  const phaseTimingLineRaw = String(value.phaseTimingLine ?? "").trim();
+  return {
+    clanName,
+    createdByUserId,
+    createdAtIso,
+    phaseTimingLine: phaseTimingLineRaw || null,
+    entries,
+    layoutLinks,
+  };
 }
 
 export function parseSyncTimeMetadata(value: unknown): SyncTimeTrackedMetadata | null {
