@@ -546,7 +546,7 @@ describe("WarComplianceService", () => {
       {
         playerName: "Bob",
         playerTag: "#B",
-        attacksUsed: 0,
+        attacksUsed: 2,
         playerPosition: 2,
         warStartTime,
       },

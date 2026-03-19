@@ -1,3 +1,4 @@
+import { WarMailLifecycleStatus } from "@prisma/client";
 import { describe, expect, it } from "vitest";
 import {
   applyObservedPointValueTransitionForTest,
@@ -6,7 +7,11 @@ import {
   type PointsLockStateRecord,
 } from "../src/services/PointsDirectFetchGateService";
 
-function buildRuntime(overrides?: Record<string, unknown>) {
+type TestRuntime = Parameters<
+  typeof derivePointsLockLifecycleStateForTest
+>[0]["runtime"];
+
+function buildRuntime(overrides?: Partial<TestRuntime>): TestRuntime {
   return {
     tracked: true,
     clanTag: "#AAA111",
@@ -17,7 +22,7 @@ function buildRuntime(overrides?: Record<string, unknown>) {
     activeWarStartMs: new Date("2026-03-08T07:00:00.000Z").getTime(),
     activeWarEndMs: new Date("2026-03-09T07:00:00.000Z").getTime(),
     activeOpponentTag: "#OPP999",
-    mailLifecycleStatus: "POSTED",
+    mailLifecycleStatus: WarMailLifecycleStatus.POSTED,
     lifecycle: {
       confirmedByClanMail: true,
       needsValidation: false,
@@ -35,7 +40,9 @@ function buildRuntime(overrides?: Record<string, unknown>) {
   };
 }
 
-function buildState(overrides?: Partial<PointsLockStateRecord>): PointsLockStateRecord {
+function buildState(
+  overrides?: Partial<PointsLockStateRecord>,
+): PointsLockStateRecord {
   return {
     lifecycleState: "active_war_locked",
     clanTag: "#AAA111",
@@ -129,11 +136,15 @@ describe("PointsDirectFetchGate lifecycle", () => {
       manualForceBypass: false,
     });
 
-    expect(postWarState.lifecycleState).toBe("post_war_unlocked_waiting_for_point_change");
+    expect(postWarState.lifecycleState).toBe(
+      "post_war_unlocked_waiting_for_point_change",
+    );
     expect(changed.lifecycleState).toBe("between_wars_locked_until_presync");
     expect(changed.lockUntilMs).toBe(postedSyncAtMs - 10 * 60 * 1000);
     expect(blockedDecision.allowed).toBe(false);
-    expect(blockedDecision.decisionCode).toBe("locked_between_wars_until_presync");
+    expect(blockedDecision.decisionCode).toBe(
+      "locked_between_wars_until_presync",
+    );
   });
 
   it("does not keep non-MM between-war lock after point change when no posted sync exists", () => {
@@ -193,7 +204,11 @@ describe("PointsDirectFetchGate lifecycle", () => {
         activeWarEndMs: warEndMs,
         postedSyncAtMs: null,
       }),
-      persisted: buildState({ matchType: "MM", warEndMs, postedSyncAtMs: null }),
+      persisted: buildState({
+        matchType: "MM",
+        warEndMs,
+        postedSyncAtMs: null,
+      }),
       nowMs: warEndMs + 30 * 60 * 1000,
     });
     const unlockedState = derivePointsLockLifecycleStateForTest({

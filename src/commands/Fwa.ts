@@ -70,10 +70,7 @@ import {
   type WarMailLifecycleNormalizedStatus,
   type WarMailLifecycleStatusDebugInfo,
 } from "../services/WarMailLifecycleService";
-import {
-  PointsFetchPolicyService,
-  type PointsApiFetchReason,
-} from "../services/PointsFetchPolicyService";
+import type { PointsApiFetchReason } from "../services/PointsFetchTypes";
 import { PointsSyncService } from "../services/PointsSyncService";
 import {
   chooseMatchTypeResolution,
@@ -209,7 +206,6 @@ const pointsSyncService = new PointsSyncService();
 const warComplianceService = new WarComplianceService();
 const fwaStatsWeightService = new FwaStatsWeightService();
 const fwaStatsWeightCookieService = new FwaStatsWeightCookieService();
-const pointsFetchPolicy = new PointsFetchPolicyService();
 const pointsDirectFetchGate = new PointsDirectFetchGateService();
 
 type FwaBaseSwapSection = "war_bases" | "base_errors";
@@ -1833,7 +1829,7 @@ async function buildWarMailEmbedForTag(
           warStartTime: syncRow.warStartTime ?? null,
         };
   const routineDecision = options?.routine
-    ? pointsFetchPolicy.evaluatePollerFetch({
+    ? await pointsDirectFetchGate.evaluatePollerFetch({
         guildId,
         clanTag: normalizedTag,
         pollerSource: "mail_refresh_loop",
@@ -1858,9 +1854,7 @@ async function buildWarMailEmbedForTag(
         decisionCode: "manual_override" as const,
         reason: "Manual mail preview fetch.",
         fetchReason: options?.fetchReason ?? ("mail_preview" as const),
-        policyReason: null,
-        mailConfirmedLockActive: false,
-        optimized: true,
+        lockState: "unlocked" as const,
       };
   const fetchReason =
     options?.fetchReason ??
