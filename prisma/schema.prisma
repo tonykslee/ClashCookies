@@ -104,6 +104,27 @@ enum FwaLayoutType {
   ICE
 }
 
+enum FwaFeedType {
+  CLANS
+  CLAN_MEMBERS
+  WAR_MEMBERS
+  CLAN_WARS
+}
+
+enum FwaFeedScopeType {
+  GLOBAL
+  TRACKED_CLANS
+  CLAN_TAG
+}
+
+enum FwaFeedSyncStatus {
+  IDLE
+  SUCCESS
+  FAILURE
+  NOOP
+  SKIPPED
+}
+
 
 enum TrackedMessageFeatureType {
   FWA_BASE_SWAP
@@ -489,6 +510,190 @@ model FwaLayouts {
 
   @@id([Townhall, Type])
   @@index([Type])
+}
+
+model FwaClanCatalog {
+  clanTag           String   @id
+  name              String
+  level             Int?
+  points            Int?
+  type              String?
+  location          String?
+  requiredTrophies  Int?
+  warFrequency      String?
+  winStreak         Int?
+  wins              Int?
+  ties              Int?
+  losses            Int?
+  isWarLogPublic    Boolean?
+  imageUrl          String?
+  description       String?
+  th18Count         Int?
+  th17Count         Int?
+  th16Count         Int?
+  th15Count         Int?
+  th14Count         Int?
+  th13Count         Int?
+  th12Count         Int?
+  th11Count         Int?
+  th10Count         Int?
+  th9Count          Int?
+  th8Count          Int?
+  thLowCount        Int?
+  estimatedWeight   Int?
+  firstSeenAt       DateTime @default(now())
+  lastSeenAt        DateTime
+  lastSyncedAt      DateTime
+
+  @@index([lastSeenAt])
+  @@index([lastSyncedAt])
+  @@index([points])
+}
+
+model FwaPlayerCatalog {
+  playerTag         String   @id
+  latestName        String
+  latestTownHall    Int?
+  latestKnownWeight Int?
+  firstSeenAt       DateTime @default(now())
+  lastSeenAt        DateTime
+  lastSyncedAt      DateTime
+
+  @@index([latestTownHall])
+  @@index([lastSeenAt])
+  @@index([lastSyncedAt])
+}
+
+model FwaClanMemberCurrent {
+  clanTag        String
+  playerTag      String
+  playerName     String
+  role           String?
+  level          Int?
+  donated        Int?
+  received       Int?
+  rank           Int?
+  trophies       Int?
+  league         String?
+  townHall       Int?
+  weight         Int?
+  inWar          Boolean?
+  sourceSyncedAt DateTime
+
+  @@id([clanTag, playerTag])
+  @@index([clanTag])
+  @@index([playerTag])
+  @@index([sourceSyncedAt])
+}
+
+model FwaWarMemberCurrent {
+  clanTag                 String
+  playerTag               String
+  playerName              String
+  position                Int?
+  townHall                Int?
+  weight                  Int?
+  opponentTag             String?
+  opponentName            String?
+  attacks                 Int?
+  defender1Tag            String?
+  defender1Name           String?
+  defender1TownHall       Int?
+  defender1Position       Int?
+  stars1                  Int?
+  destructionPercentage1  Float?
+  defender2Tag            String?
+  defender2Name           String?
+  defender2TownHall       Int?
+  defender2Position       Int?
+  stars2                  Int?
+  destructionPercentage2  Float?
+  sourceSyncedAt          DateTime
+
+  @@id([clanTag, playerTag])
+  @@index([clanTag])
+  @@index([playerTag])
+  @@index([opponentTag])
+  @@index([sourceSyncedAt])
+}
+
+model FwaClanWarLogCurrent {
+  id                          String   @id @default(cuid())
+  clanTag                     String
+  endTime                     DateTime
+  searchTime                  DateTime?
+  result                      String?
+  teamSize                    Int
+  clanName                    String?
+  clanLevel                   Int?
+  clanStars                   Int?
+  clanDestructionPercentage   Float?
+  clanAttacks                 Int?
+  clanExpEarned               Int?
+  opponentTag                 String
+  opponentName                String?
+  opponentLevel               Int?
+  opponentStars               Int?
+  opponentDestructionPercentage Float?
+  opponentInfo                String?
+  synced                      Boolean?
+  matched                     Boolean?
+  sourceSyncedAt              DateTime
+
+  @@unique([clanTag, endTime, opponentTag, teamSize])
+  @@index([clanTag])
+  @@index([opponentTag])
+  @@index([endTime])
+  @@index([sourceSyncedAt])
+}
+
+model FwaFeedSyncState {
+  id                  String            @id @default(cuid())
+  feedType            FwaFeedType
+  scopeType           FwaFeedScopeType
+  scopeKey            String
+  lastAttemptAt       DateTime?
+  lastSuccessAt       DateTime?
+  lastStatus          FwaFeedSyncStatus @default(IDLE)
+  lastErrorCode       String?
+  lastErrorSummary    String?
+  lastRowCount        Int?
+  lastChangedRowCount Int?
+  lastContentHash     String?
+  nextEligibleAt      DateTime?
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+
+  @@unique([feedType, scopeType, scopeKey])
+  @@index([feedType, scopeType, scopeKey])
+  @@index([lastStatus, updatedAt])
+  @@index([nextEligibleAt])
+}
+
+model FwaClanWarsWatchState {
+  clanTag                String   @id
+  syncTimeSourceMessageId String?
+  nextSyncTimeAt         DateTime?
+  pollWindowStartAt      DateTime?
+  pollingActive          Boolean  @default(false)
+  lastDetectedWarEndAt   DateTime?
+  lastAcquiredUpdateAt   DateTime?
+  lastObservedContentHash String?
+  currentWarCycleKey     String?
+  stopReason             String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  @@index([pollingActive, pollWindowStartAt, nextSyncTimeAt])
+  @@index([lastAcquiredUpdateAt])
+}
+
+model FwaFeedCursor {
+  feedType    FwaFeedType @id
+  lastScopeKey String?
+  lastRunAt   DateTime?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
 }
 
 model ApiUsage {

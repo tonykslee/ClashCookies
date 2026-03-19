@@ -33,6 +33,7 @@ import {
   setNextWarMailRefreshAtMs,
 } from "../services/refreshSchedule";
 import { trackedMessageService } from "../services/TrackedMessageService";
+import { FwaFeedSchedulerService } from "../services/fwa-feeds/FwaFeedSchedulerService";
 
 const DEFAULT_OBSERVE_INTERVAL_MINUTES = 30;
 const RECRUITMENT_REMINDER_INTERVAL_MS = 60 * 60 * 1000;
@@ -552,6 +553,10 @@ export default (client: Client, cocService: CoCService): void => {
     console.log(
       `War event poll + refresh loop enabled (every ${warEventPollMinutes} minute(s)).`
     );
+
+    const fwaFeedScheduler = new FwaFeedSchedulerService();
+    fwaFeedScheduler.start();
+    console.log("FWA feed scheduler loops initialized.");
 
     console.log("ClashCookies is online");
   });
