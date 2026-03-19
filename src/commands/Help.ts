@@ -860,7 +860,17 @@ export const Help: Command = {
                 interaction.id,
                 allowPostToChannel,
               );
-              await interaction.channel?.send({
+              const postChannel = interaction.channel as
+                | { send?: (input: { embeds: EmbedBuilder[] }) => Promise<unknown> }
+                | null;
+              if (!postChannel || typeof postChannel.send !== "function") {
+                await component.reply({
+                  ephemeral: true,
+                  content: "Could not post help in this channel.",
+                });
+                return;
+              }
+              await postChannel.send({
                 embeds: payload.embeds,
               });
               await component.reply({

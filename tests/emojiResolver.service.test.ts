@@ -9,6 +9,14 @@ type FakeAppEmoji = {
   toString: () => string;
 };
 
+type FakeApplication = {
+  fetch: ReturnType<typeof vi.fn>;
+  emojis?: {
+    fetch?: ReturnType<typeof vi.fn>;
+  };
+};
+
+/** Purpose: build deterministic fake app emoji objects with Discord-like string rendering. */
 function buildFakeEmoji(input: {
   id: string;
   name: string;
@@ -19,11 +27,18 @@ function buildFakeEmoji(input: {
     id: input.id,
     name: input.name,
     animated,
-    toString: () =>
-      `<${animated ? "a" : ""}:${input.name}:${input.id}>`,
+    toString: () => `<${animated ? "a" : ""}:${input.name}:${input.id}>`,
   };
 }
 
+/** Purpose: create a minimal fake client with configurable application + emoji fetch behavior. */
+function buildClient(input: { application: FakeApplication | null }): Client {
+  return {
+    application: input.application,
+  } as unknown as Client;
+}
+
+/** Purpose: build fake client/application that returns an emoji collection successfully. */
 function buildClientWithApplicationEmojis(
   emojis: FakeAppEmoji[],
 ): {
@@ -31,22 +46,102 @@ function buildClientWithApplicationEmojis(
   fetchApplication: ReturnType<typeof vi.fn>;
   fetchEmojis: ReturnType<typeof vi.fn>;
 } {
-  const fetchEmojis = vi.fn().mockResolvedValue(
-    new Map(emojis.map((emoji) => [emoji.id, emoji])),
-  );
+  const fetchEmojis = vi
+    .fn()
+    .mockResolvedValue(new Map(emojis.map((emoji) => [emoji.id, emoji])));
   const fetchApplication = vi.fn().mockResolvedValue(undefined);
-  const client = {
-    application: {
-      fetch: fetchApplication,
-      emojis: {
-        fetch: fetchEmojis,
-      },
+  const application: FakeApplication = {
+    fetch: fetchApplication,
+    emojis: {
+      fetch: fetchEmojis,
     },
-  } as unknown as Client;
-  return { client, fetchApplication, fetchEmojis };
+  };
+  return {
+    client: buildClient({ application }),
+    fetchApplication,
+    fetchEmojis,
+  };
 }
 
 describe("EmojiResolverService", () => {
+  it("fetchApplicationEmojiInventory returns success with emojis", async () => {
+    const resolver = new EmojiResolverService(0);
+    const { client } = buildClientWithApplicationEmojis([
+      buildFakeEmoji({ id: "2", name: "bravo" }),
+      buildFakeEmoji({ id: "1", name: "alpha" }),
+    ]);
+
+    const result = await resolver.fetchApplicationEmojiInventory(client, {
+      forceRefresh: true,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.snapshot.entries.map((entry) => entry.name)).toEqual([
+      "alpha",
+      "bravo",
+    ]);
+    expect(result.snapshot.exactByName.get("alpha")?.rendered).toBe("<:alpha:1>");
+    expect(result.snapshot.lowercaseByName.get("bravo")?.rendered).toBe(
+      "<:bravo:2>",
+    );
+  });
+
+  it("fetchApplicationEmojiInventory returns success with zero emojis", async () => {
+    const resolver = new EmojiResolverService(0);
+    const { client } = buildClientWithApplicationEmojis([]);
+
+    const result = await resolver.fetchApplicationEmojiInventory(client, {
+      forceRefresh: true,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.snapshot.entries).toEqual([]);
+    expect(result.diagnostics.emojiFetchSucceeded).toBe(true);
+  });
+
+  it("fetchApplicationEmojiInventory returns manager-unavailable failure", async () => {
+    const resolver = new EmojiResolverService(0);
+    const fetchApplication = vi.fn().mockResolvedValue(undefined);
+    const client = buildClient({
+      application: {
+        fetch: fetchApplication,
+        emojis: {},
+      },
+    });
+
+    const result = await resolver.fetchApplicationEmojiInventory(client, {
+      forceRefresh: true,
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe("application_emoji_manager_unavailable");
+  });
+
+  it("fetchApplicationEmojiInventory returns fetch-failed failure", async () => {
+    const resolver = new EmojiResolverService(0);
+    const fetchApplication = vi.fn().mockResolvedValue(undefined);
+    const fetchEmojis = vi.fn().mockRejectedValue(new Error("boom"));
+    const client = buildClient({
+      application: {
+        fetch: fetchApplication,
+        emojis: {
+          fetch: fetchEmojis,
+        },
+      },
+    });
+
+    const result = await resolver.fetchApplicationEmojiInventory(client, {
+      forceRefresh: true,
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe("application_emoji_fetch_failed");
+  });
+
   it("resolves exact-name match", async () => {
     const resolver = new EmojiResolverService(0);
     const { client } = buildClientWithApplicationEmojis([
@@ -97,19 +192,6 @@ describe("EmojiResolverService", () => {
     );
 
     expect(out).toBe("Known <:arrow_arrow:1> unknown :not_real:");
-  });
-
-  it("handles empty emoji collections", async () => {
-    const resolver = new EmojiResolverService(0);
-    const { client } = buildClientWithApplicationEmojis([]);
-
-    const list = await resolver.listApplicationEmojis(client);
-    const resolved = await resolver.resolveByName(client, "arrow_arrow");
-    const replaced = await resolver.replaceShortcodes(client, "Plan :arrow_arrow:");
-
-    expect(list).toEqual([]);
-    expect(resolved).toBeNull();
-    expect(replaced).toBe("Plan :arrow_arrow:");
   });
 
   it("keeps static and animated emoji render tokens as returned by Discord", async () => {

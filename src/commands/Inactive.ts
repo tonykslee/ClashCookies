@@ -2,8 +2,8 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  ChatInputCommandInteraction,
   Client,
-  CommandInteraction,
   ComponentType,
   EmbedBuilder,
 } from "discord.js";
@@ -108,7 +108,7 @@ type InactiveWarRow = {
 };
 
 async function fetchInactiveDaysEntries(
-  interaction: CommandInteraction,
+  interaction: ChatInputCommandInteraction,
   cocService: CoCService,
   days: number
 ): Promise<{
@@ -231,7 +231,7 @@ async function fetchInactiveDaysEntries(
 }
 
 async function fetchInactiveWarEntries(
-  interaction: CommandInteraction,
+  interaction: ChatInputCommandInteraction,
   wars: number
 ): Promise<{
   results: InactiveWarRow[];
@@ -344,7 +344,7 @@ async function fetchInactiveWarEntries(
 }
 
 async function renderEmbedsWithPager(
-  interaction: CommandInteraction,
+  interaction: ChatInputCommandInteraction,
   title: string,
   pages: string[],
   footerSuffix = ""
@@ -457,7 +457,7 @@ function buildGroupedPages<T>(
 }
 
 async function runDaysMode(
-  interaction: CommandInteraction,
+  interaction: ChatInputCommandInteraction,
   cocService: CoCService,
   days: number
 ): Promise<void> {
@@ -588,7 +588,7 @@ async function runDaysMode(
 }
 
 async function runWarsMode(
-  interaction: CommandInteraction,
+  interaction: ChatInputCommandInteraction,
   wars: number
 ): Promise<void> {
   const { results, trackedTags, trackedNameByTag, warnings } = await fetchInactiveWarEntries(
@@ -638,7 +638,7 @@ async function runWarsMode(
 }
 
 async function runCombinedMode(
-  interaction: CommandInteraction,
+  interaction: ChatInputCommandInteraction,
   cocService: CoCService,
   days: number,
   wars: number
@@ -777,13 +777,13 @@ export const Inactive: Command = {
 
   run: async (
     _client: Client,
-    interaction: CommandInteraction,
+    interaction: ChatInputCommandInteraction,
     cocService: CoCService
   ) => {
     await interaction.deferReply({ ephemeral: true });
 
-    const daysValue = interaction.options.get("days")?.value as number | undefined;
-    const warsValue = interaction.options.get("wars")?.value as number | undefined;
+    const daysValue = interaction.options.getInteger("days", false) ?? undefined;
+    const warsValue = interaction.options.getInteger("wars", false) ?? undefined;
 
     if (!daysValue && !warsValue) {
       await interaction.editReply("Provide at least one filter: `days` and/or `wars`.");

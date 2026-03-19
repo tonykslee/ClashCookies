@@ -15,11 +15,43 @@ type EmojiSnapshot = {
   lowercaseByName: Map<string, ResolvedApplicationEmoji>;
 };
 
-type ApplicationEmojiFetchOwner = {
-  emojis?: {
-    fetch?: () => Promise<Map<string, any> | { values: () => Iterable<any> }>;
-  };
+export type EmojiResolverFailureCode =
+  | "application_missing"
+  | "application_fetch_failed"
+  | "application_emoji_manager_unavailable"
+  | "application_emoji_fetch_failed";
+
+export type EmojiResolverDiagnostics = {
+  applicationExistedBeforeFetch: boolean;
+  applicationFetchAttempted: boolean;
+  applicationEmojiFetchAvailable: boolean;
+  emojiFetchSucceeded: boolean;
+  fetchedEmojiCount: number;
 };
+
+export type EmojiInventoryFetchSuccess = {
+  ok: true;
+  snapshot: EmojiSnapshot;
+  diagnostics: EmojiResolverDiagnostics;
+};
+
+export type EmojiInventoryFetchFailure = {
+  ok: false;
+  code: EmojiResolverFailureCode;
+  diagnostics: EmojiResolverDiagnostics;
+  cause?: unknown;
+};
+
+export type EmojiInventoryFetchResult =
+  | EmojiInventoryFetchSuccess
+  | EmojiInventoryFetchFailure;
+
+type EnsureApplicationResult =
+  | {
+      ok: true;
+      application: NonNullable<Client["application"]>;
+    }
+  | EmojiInventoryFetchFailure;
 
 const SHORTCODE_REPLACE_PATTERN =
   /(^|[\s([{"']):([a-zA-Z0-9_]{2,32}):(?=$|[\s)\]}".,!?:;'"-])/g;
@@ -45,6 +77,38 @@ function sortResolvedEmojis(
   });
 }
 
+/** Purpose: represent resolver fetch failures with explicit reason codes and diagnostics. */
+export class EmojiResolverRuntimeError extends Error {
+  readonly code: EmojiResolverFailureCode;
+  readonly diagnostics: EmojiResolverDiagnostics;
+  readonly cause?: unknown;
+
+  constructor(params: {
+    code: EmojiResolverFailureCode;
+    diagnostics: EmojiResolverDiagnostics;
+    cause?: unknown;
+  }) {
+    super(`Emoji resolver failed: ${params.code}`);
+    this.name = "EmojiResolverRuntimeError";
+    this.code = params.code;
+    this.diagnostics = params.diagnostics;
+    this.cause = params.cause;
+  }
+}
+
+/** Purpose: create default diagnostics for one snapshot fetch attempt. */
+function createEmptyDiagnostics(
+  applicationExistedBeforeFetch: boolean,
+): EmojiResolverDiagnostics {
+  return {
+    applicationExistedBeforeFetch,
+    applicationFetchAttempted: false,
+    applicationEmojiFetchAvailable: false,
+    emojiFetchSucceeded: false,
+    fetchedEmojiCount: 0,
+  };
+}
+
 /** Purpose: resolve bot-owned application emojis by name and replace shortcode text safely. */
 export class EmojiResolverService {
   private snapshot: EmojiSnapshot | null = null;
@@ -52,9 +116,23 @@ export class EmojiResolverService {
   /** Purpose: configure refreshable in-memory cache TTL for resolver lookups. */
   constructor(private readonly cacheTtlMs: number = 30_000) {}
 
+  /** Purpose: fetch application-emoji inventory with explicit success/failure typing for command-level handling. */
+  async fetchApplicationEmojiInventory(
+    client: Client,
+    options?: { forceRefresh?: boolean },
+  ): Promise<EmojiInventoryFetchResult> {
+    return this.getSnapshotResult(client, options?.forceRefresh ?? false);
+  }
+
   /** Purpose: force-refresh the application emoji snapshot from Discord. */
   async refresh(client: Client): Promise<void> {
-    this.snapshot = await this.fetchSnapshot(client);
+    const result = await this.fetchApplicationEmojiInventory(client, {
+      forceRefresh: true,
+    });
+    if (!result.ok) {
+      throw this.toRuntimeError(result);
+    }
+    this.snapshot = result.snapshot;
   }
 
   /** Purpose: resolve one emoji by name (case-insensitive) from bot application emojis. */
@@ -109,52 +187,110 @@ export class EmojiResolverService {
     client: Client,
     forceRefresh: boolean,
   ): Promise<EmojiSnapshot> {
+    const result = await this.getSnapshotResult(client, forceRefresh);
+    if (!result.ok) {
+      throw this.toRuntimeError(result);
+    }
+    return result.snapshot;
+  }
+
+  /** Purpose: return a typed snapshot result while honoring cache freshness for repeat lookups. */
+  private async getSnapshotResult(
+    client: Client,
+    forceRefresh: boolean,
+  ): Promise<EmojiInventoryFetchResult> {
     const nowMs = Date.now();
     if (
       !forceRefresh &&
       this.snapshot &&
       nowMs - this.snapshot.fetchedAtMs <= this.cacheTtlMs
     ) {
-      return this.snapshot;
+      return {
+        ok: true,
+        snapshot: this.snapshot,
+        diagnostics: {
+          applicationExistedBeforeFetch: Boolean(client.application),
+          applicationFetchAttempted: false,
+          applicationEmojiFetchAvailable: true,
+          emojiFetchSucceeded: true,
+          fetchedEmojiCount: this.snapshot.entries.length,
+        },
+      };
     }
     const next = await this.fetchSnapshot(client);
-    this.snapshot = next;
+    if (next.ok) {
+      this.snapshot = next.snapshot;
+    }
     return next;
   }
 
   /** Purpose: safely ensure client application hydration before reading application emoji inventory. */
-  private async ensureApplication(client: Client) {
-    if (client.application) {
-      await client.application.fetch().catch(() => undefined);
-      return client.application;
+  private async ensureApplication(
+    client: Client,
+    diagnostics: EmojiResolverDiagnostics,
+  ): Promise<EnsureApplicationResult> {
+    if (!client.application) {
+      return {
+        ok: false,
+        code: "application_missing",
+        diagnostics,
+      };
     }
-    return null;
+    diagnostics.applicationFetchAttempted = true;
+    try {
+      await client.application.fetch();
+    } catch (error) {
+      return {
+        ok: false,
+        code: "application_fetch_failed",
+        diagnostics,
+        cause: error,
+      };
+    }
+    if (!client.application) {
+      return {
+        ok: false,
+        code: "application_missing",
+        diagnostics,
+      };
+    }
+    return {
+      ok: true,
+      application: client.application,
+    };
   }
 
   /** Purpose: build a fresh application-emoji snapshot keyed for exact and case-insensitive lookups. */
-  private async fetchSnapshot(client: Client): Promise<EmojiSnapshot> {
-    const application = await this.ensureApplication(client);
-    if (!application) {
+  private async fetchSnapshot(client: Client): Promise<EmojiInventoryFetchResult> {
+    const diagnostics = createEmptyDiagnostics(Boolean(client.application));
+    const applicationResult = await this.ensureApplication(client, diagnostics);
+    if (!applicationResult.ok) {
+      return applicationResult;
+    }
+    const application = applicationResult.application;
+
+    if (!application?.emojis || typeof application.emojis.fetch !== "function") {
       return {
-        fetchedAtMs: Date.now(),
-        entries: [],
-        exactByName: new Map<string, ResolvedApplicationEmoji>(),
-        lowercaseByName: new Map<string, ResolvedApplicationEmoji>(),
+        ok: false,
+        code: "application_emoji_manager_unavailable",
+        diagnostics,
       };
     }
+    diagnostics.applicationEmojiFetchAvailable = true;
 
-    const applicationWithEmojis = application as unknown as ApplicationEmojiFetchOwner;
-    const emojiFetch = applicationWithEmojis.emojis?.fetch;
-    if (typeof emojiFetch !== "function") {
+    let fetched;
+    try {
+      fetched = await application.emojis.fetch();
+    } catch (error) {
       return {
-        fetchedAtMs: Date.now(),
-        entries: [],
-        exactByName: new Map<string, ResolvedApplicationEmoji>(),
-        lowercaseByName: new Map<string, ResolvedApplicationEmoji>(),
+        ok: false,
+        code: "application_emoji_fetch_failed",
+        diagnostics,
+        cause: error,
       };
     }
+    diagnostics.emojiFetchSucceeded = true;
 
-    const fetched = await emojiFetch();
     const collected: ResolvedApplicationEmoji[] = [];
     for (const emoji of fetched.values()) {
       const name = String(emoji.name ?? "").trim();
@@ -168,6 +304,7 @@ export class EmojiResolverService {
         animated: Boolean(emoji.animated),
       });
     }
+    diagnostics.fetchedEmojiCount = collected.length;
 
     const entries = sortResolvedEmojis(collected);
     const exactByName = new Map<string, ResolvedApplicationEmoji>();
@@ -183,11 +320,24 @@ export class EmojiResolverService {
     }
 
     return {
-      fetchedAtMs: Date.now(),
-      entries,
-      exactByName,
-      lowercaseByName,
+      ok: true,
+      diagnostics,
+      snapshot: {
+        fetchedAtMs: Date.now(),
+        entries,
+        exactByName,
+        lowercaseByName,
+      },
     };
+  }
+
+  /** Purpose: normalize typed failure results into thrown errors for legacy call sites. */
+  private toRuntimeError(failure: EmojiInventoryFetchFailure): EmojiResolverRuntimeError {
+    return new EmojiResolverRuntimeError({
+      code: failure.code,
+      diagnostics: failure.diagnostics,
+      cause: failure.cause,
+    });
   }
 }
 

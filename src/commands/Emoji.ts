@@ -14,6 +14,8 @@ import { formatError } from "../helper/formatError";
 import {
   emojiResolverService,
   normalizeEmojiLookupName,
+  type EmojiInventoryFetchResult,
+  type EmojiResolverFailureCode,
   type EmojiResolverService,
   type ResolvedApplicationEmoji,
 } from "../services/emoji/EmojiResolverService";
@@ -21,7 +23,7 @@ import { CoCService } from "../services/CoCService";
 
 type EmojiResolverPort = Pick<
   EmojiResolverService,
-  "listApplicationEmojis" | "resolveByName"
+  "fetchApplicationEmojiInventory"
 >;
 
 const EMOJI_PAGE_SIZE = 20;
@@ -76,7 +78,7 @@ function buildEmojiListEmbed(params: {
     .setTitle("Bot Application Emojis")
     .setDescription(params.pages[params.page] ?? "")
     .setFooter({
-      text: `Page ${params.page + 1}/${params.pages.length} • Total ${params.emojis.length} emojis`,
+      text: `Page ${params.page + 1}/${params.pages.length} | Total ${params.emojis.length} emojis`,
     })
     .setColor(0x5865f2);
 }
@@ -125,6 +127,39 @@ function buildEmojiNameSuggestions(
     .map((emoji) => emoji.shortcode);
 }
 
+/** Purpose: map resolver failure code to the most accurate user-facing /emoji error response. */
+function buildEmojiFailureMessage(code: EmojiResolverFailureCode): string {
+  if (code === "application_missing" || code === "application_emoji_manager_unavailable") {
+    return "Could not load bot application emojis in this runtime. Please contact an admin.";
+  }
+  return "Could not fetch bot application emojis right now. Please try again later.";
+}
+
+/** Purpose: emit concise structured diagnostics for one /emoji resolver run. */
+function logEmojiFetchResult(input: {
+  interaction: ChatInputCommandInteraction;
+  result: EmojiInventoryFetchResult;
+}): void {
+  const { diagnostics } = input.result;
+  const fields = [
+    "command=emoji",
+    `guild_id=${input.interaction.guildId ?? "dm"}`,
+    `user_id=${input.interaction.user.id}`,
+    `application_present_pre_fetch=${diagnostics.applicationExistedBeforeFetch}`,
+    `application_fetch_attempted=${diagnostics.applicationFetchAttempted}`,
+    `application_emoji_fetch_available=${diagnostics.applicationEmojiFetchAvailable}`,
+    `emoji_fetch_succeeded=${diagnostics.emojiFetchSucceeded}`,
+    `fetched_emoji_count=${diagnostics.fetchedEmojiCount}`,
+    `failure_code=${input.result.ok ? "none" : input.result.code}`,
+  ];
+  const message = `[emoji] fetch ${fields.join(" ")}`;
+  if (input.result.ok) {
+    console.log(message);
+    return;
+  }
+  console.warn(message);
+}
+
 /** Purpose: allow tests to inject a resolver and assert command behavior deterministically. */
 export function setEmojiResolverForTest(resolver: EmojiResolverPort): void {
   activeEmojiResolver = resolver;
@@ -162,11 +197,27 @@ export const Emoji: Command = {
     const requestedName = normalizeEmojiLookupName(rawName ?? "");
 
     try {
+      const inventory = await activeEmojiResolver.fetchApplicationEmojiInventory(
+        interaction.client,
+        { forceRefresh: true },
+      );
+      logEmojiFetchResult({ interaction, result: inventory });
+      if (!inventory.ok) {
+        await interaction.editReply({
+          content: buildEmojiFailureMessage(inventory.code),
+          embeds: [],
+          components: [],
+        });
+        return;
+      }
+
+      const { snapshot } = inventory;
+      const emojis = snapshot.entries;
       if (requestedName) {
-        const resolved = await activeEmojiResolver.resolveByName(
-          interaction.client,
-          requestedName,
-        );
+        const resolved =
+          snapshot.exactByName.get(requestedName) ??
+          snapshot.lowercaseByName.get(requestedName.toLowerCase()) ??
+          null;
         if (resolved) {
           await interaction.editReply({
             embeds: [buildEmojiResolveEmbed(resolved)],
@@ -174,10 +225,7 @@ export const Emoji: Command = {
           return;
         }
 
-        const all = await activeEmojiResolver.listApplicationEmojis(
-          interaction.client,
-        );
-        const suggestions = buildEmojiNameSuggestions(requestedName, all);
+        const suggestions = buildEmojiNameSuggestions(requestedName, emojis);
         const suggestionText = suggestions.length
           ? `\nDid you mean: ${suggestions.join(", ")}`
           : "";
@@ -189,9 +237,6 @@ export const Emoji: Command = {
         return;
       }
 
-      const emojis = await activeEmojiResolver.listApplicationEmojis(
-        interaction.client,
-      );
       const pages = paginateEmojiLines(emojis);
       let page = 0;
       const paginatorPrefix = `emoji-list:${interaction.id}`;

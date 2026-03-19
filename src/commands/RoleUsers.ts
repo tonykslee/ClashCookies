@@ -148,7 +148,10 @@ export const RoleUsers: Command = {
           ) {
             page += 1;
           } else if (button.customId === "role-users-print") {
-            if (!interaction.channel) {
+            const printChannel = interaction.channel as
+              | { send?: (input: { embeds: EmbedBuilder[] }) => Promise<unknown> }
+              | null;
+            if (!printChannel || typeof printChannel.send !== "function") {
               await button.reply({
                 content: "Could not print pages in this channel.",
                 ephemeral: true,
@@ -158,7 +161,7 @@ export const RoleUsers: Command = {
 
             await button.update({ components: [] });
             for (let i = 0; i < pages.length; i += 1) {
-              await interaction.channel.send({
+              await printChannel.send({
                 embeds: [getEmbed(interaction, role, pages[i], i, pages.length)],
               });
             }
