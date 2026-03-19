@@ -25,6 +25,8 @@ export type FwaBaseSwapTrackedMetadata = {
   createdByUserId: string;
   createdAtIso: string;
   phaseTimingLine?: string | null;
+  alertEmoji?: string | null;
+  layoutBulletEmoji?: string | null;
   entries: Array<{
     position: number;
     playerTag: string;
@@ -116,11 +118,15 @@ export function parseFwaBaseSwapMetadata(value: unknown): FwaBaseSwapTrackedMeta
         )
     : undefined;
   const phaseTimingLineRaw = String(value.phaseTimingLine ?? "").trim();
+  const alertEmojiRaw = String(value.alertEmoji ?? "").trim();
+  const layoutBulletEmojiRaw = String(value.layoutBulletEmoji ?? "").trim();
   return {
     clanName,
     createdByUserId,
     createdAtIso,
     phaseTimingLine: phaseTimingLineRaw || null,
+    alertEmoji: alertEmojiRaw || null,
+    layoutBulletEmoji: layoutBulletEmojiRaw || null,
     entries,
     layoutLinks,
   };
