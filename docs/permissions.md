@@ -7,6 +7,7 @@
 - `/fwa compliance` defaults to FWA leader-role + Administrator when no explicit whitelist is set.
 - `/fwa weight-age`, `/fwa weight-link`, `/fwa weight-health`, and `/fwa weight-cookie` default to FWA leader-role + Administrator when no explicit whitelist is set.
 - `/defer` defaults to FWA leader-role + Administrator when no explicit whitelist is set.
+- `/layout` is public by default; runtime `edit` (and optional `img-url` edit flow) still requires Administrator.
 
 ## Default Administrator-Only Targets
 - `/tracked-clan configure`, `/tracked-clan remove`

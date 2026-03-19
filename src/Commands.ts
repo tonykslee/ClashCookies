@@ -21,6 +21,7 @@ import { Telemetry } from "./commands/Telemetry";
 import { ClanHealth } from "./commands/ClanHealth";
 import { Defer } from "./commands/Defer";
 import { Link } from "./commands/Link";
+import { Layout } from "./commands/Layout";
 
 // ...existing code...
 export const Commands = [
@@ -34,6 +35,7 @@ export const Commands = [
   CC,
   Accounts,
   Link,
+  Layout,
   Fwa,
   War,
   Notify,
