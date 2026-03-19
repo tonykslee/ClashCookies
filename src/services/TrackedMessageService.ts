@@ -261,10 +261,18 @@ export class TrackedMessageService {
     }
     if (!changed) return false;
 
+    const mentionUserIds = [
+      ...new Set(
+        metadata.entries.flatMap((entry) =>
+          entry.discordUserId ? [entry.discordUserId] : [],
+        ),
+      ),
+    ];
+
     await params.message.edit({
       content: params.truncate(params.render(metadata)),
       allowedMentions: {
-        users: metadata.entries.flatMap((entry) => (entry.discordUserId ? [entry.discordUserId] : [])),
+        users: mentionUserIds,
       },
     });
 

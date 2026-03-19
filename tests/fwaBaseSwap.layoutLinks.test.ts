@@ -384,4 +384,58 @@ describe("FWA base-swap layout links", () => {
       })
     );
   });
+
+  it("dedupes allowedMentions users during tracked-message reaction re-renders", async () => {
+    const metadata: FwaBaseSwapTrackedMetadata = {
+      clanName: "Test Clan",
+      createdByUserId: "admin-1",
+      createdAtIso: "2026-03-19T00:00:00.000Z",
+      entries: [
+        buildEntry({
+          position: 1,
+          playerTag: "#AAA111",
+          playerName: "Alpha",
+          section: "war_bases",
+          discordUserId: "reactor-1",
+          acknowledged: false,
+        }),
+        buildEntry({
+          position: 2,
+          playerTag: "#BBB222",
+          playerName: "Bravo",
+          section: "base_errors",
+          discordUserId: "reactor-1",
+          acknowledged: false,
+        }),
+      ],
+      layoutLinks: [],
+    };
+
+    prismaMock.trackedMessage.findUnique.mockResolvedValue({
+      id: 42,
+      messageId: "message-1",
+      status: TRACKED_MESSAGE_STATUS.ACTIVE,
+      featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_BASE_SWAP,
+      metadata,
+    });
+    prismaMock.trackedMessage.update.mockResolvedValue(undefined);
+
+    const service = new TrackedMessageService();
+    const message = {
+      edit: vi.fn().mockResolvedValue(undefined),
+    };
+
+    const changed = await service.handleFwaBaseSwapReaction({
+      messageId: "message-1",
+      reactorUserId: "reactor-1",
+      message,
+      render: renderFwaBaseSwapAnnouncementForTest,
+      truncate: (text) => text,
+    });
+
+    expect(changed).toBe(true);
+    expect(message.edit).toHaveBeenCalledTimes(1);
+    const editPayload = message.edit.mock.calls[0]?.[0];
+    expect(editPayload.allowedMentions.users).toEqual(["reactor-1"]);
+  });
 });
