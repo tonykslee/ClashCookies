@@ -15,6 +15,7 @@ export const COMMAND_PERMISSION_TARGETS = [
   "role-users",
   "accounts",
   "link",
+  "layout",
   "link:create",
   "link:delete",
   "link:list",

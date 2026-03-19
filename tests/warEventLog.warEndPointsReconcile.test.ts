@@ -210,7 +210,7 @@ describe("War-end expected points persistence via processSubscription", () => {
     (service as any).syncWarAttacksFromWarSnapshot = vi.fn().mockResolvedValue(undefined);
     (service as any).dispatchDetectedEvent = vi.fn().mockResolvedValue(undefined);
     (service as any).reconcileWarEndedPointsDiscrepancy = vi.fn().mockResolvedValue(undefined);
-    (service as any).pointsPolicy = {
+    (service as any).pointsGate = {
       evaluatePollerFetch: vi.fn().mockReturnValue({
         allowed: false,
         fetchReason: "post_war_reconciliation",
@@ -434,7 +434,7 @@ describe("Match-type confirmation rollover via processSubscription", () => {
     (service as any).syncWarAttacksFromWarSnapshot = vi.fn().mockResolvedValue(undefined);
     (service as any).dispatchDetectedEvent = vi.fn().mockResolvedValue(undefined);
     (service as any).reconcileWarEndedPointsDiscrepancy = vi.fn().mockResolvedValue(undefined);
-    (service as any).pointsPolicy = {
+    (service as any).pointsGate = {
       evaluatePollerFetch: vi.fn().mockReturnValue({
         allowed: false,
         fetchReason: "post_war_reconciliation",
@@ -522,7 +522,7 @@ describe("Match-type confirmation rollover via processSubscription", () => {
     (service as any).syncWarAttacksFromWarSnapshot = vi.fn().mockResolvedValue(undefined);
     (service as any).dispatchDetectedEvent = vi.fn().mockResolvedValue(undefined);
     (service as any).reconcileWarEndedPointsDiscrepancy = vi.fn().mockResolvedValue(undefined);
-    (service as any).pointsPolicy = {
+    (service as any).pointsGate = {
       evaluatePollerFetch: vi.fn().mockReturnValue({
         allowed: true,
         fetchReason: "post_war_reconciliation",
@@ -829,7 +829,7 @@ describe("War-ended sync and metadata canonicalization", () => {
     (service as any).syncWarAttacksFromWarSnapshot = vi.fn().mockResolvedValue(undefined);
     (service as any).dispatchDetectedEvent = dispatchSpy;
     (service as any).reconcileWarEndedPointsDiscrepancy = vi.fn().mockResolvedValue(undefined);
-    (service as any).pointsPolicy = {
+    (service as any).pointsGate = {
       evaluatePollerFetch: vi.fn().mockReturnValue({
         allowed: true,
         fetchReason: "post_war_reconciliation",

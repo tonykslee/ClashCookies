@@ -13,9 +13,10 @@ import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
 import { CoCService } from "./CoCService";
 import { PointsProjectionService } from "./PointsProjectionService";
+import { PointsDirectFetchGateService } from "./PointsDirectFetchGateService";
 import { PostedMessageService } from "./PostedMessageService";
 import { PointsSyncService } from "./PointsSyncService";
-import { PointsFetchPolicyService, type PointsApiFetchReason } from "./PointsFetchPolicyService";
+import type { PointsApiFetchReason } from "./PointsFetchTypes";
 import { SettingsService } from "./SettingsService";
 import { CommandPermissionService } from "./CommandPermissionService";
 import {
@@ -956,9 +957,9 @@ export const computeWarSnapshotAttackRowsForTest = computeWarSnapshotAttackRows;
 
 export class WarEventLogService {
   private readonly points: PointsProjectionService;
+  private readonly pointsGate: PointsDirectFetchGateService;
   private readonly pointsSync: WarStartPointsSyncService;
   private readonly currentSyncs: PointsSyncService;
-  private readonly pointsPolicy: PointsFetchPolicyService;
   private readonly commandPermissions: CommandPermissionService;
   private readonly history: WarEventHistoryService;
   private readonly warCompliance: WarComplianceService;
@@ -968,9 +969,9 @@ export class WarEventLogService {
   /** Purpose: initialize service dependencies. */
   constructor(private readonly client: Client, private readonly coc: CoCService) {
     this.points = new PointsProjectionService(coc);
+    this.pointsGate = new PointsDirectFetchGateService();
     this.pointsSync = new WarStartPointsSyncService(this.points, new SettingsService());
     this.currentSyncs = new PointsSyncService();
-    this.pointsPolicy = new PointsFetchPolicyService();
     this.commandPermissions = new CommandPermissionService();
     this.history = new WarEventHistoryService(coc);
     this.warCompliance = new WarComplianceService();
@@ -2369,7 +2370,7 @@ export class WarEventLogService {
             opponentTag: sub.pointsOpponentTag ?? null,
             warStartTime: sub.pointsWarStartTime ?? null,
           };
-    const gateDecision = this.pointsPolicy.evaluatePollerFetch({
+    const gateDecision = await this.pointsGate.evaluatePollerFetch({
       guildId: sub.guildId,
       clanTag: sub.clanTag,
       pollerSource: "war_event_poll_cycle",

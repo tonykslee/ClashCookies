@@ -9,6 +9,7 @@
 ```bash
 npm install
 npx prisma migrate deploy
+npm run seed:fwa-layouts
 npm run build
 npm start
 ```

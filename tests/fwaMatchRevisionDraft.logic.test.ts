@@ -131,6 +131,39 @@ describe("fwa match revision draft scoping", () => {
     expect(scoped).toBeNull();
   });
 
+  it("keeps confirmed baseline effective when live outcome flips without a draft", () => {
+    const resolved = resolveEffectiveRevisionStateForTest({
+      liveFields: {
+        warId: "1001",
+        opponentTag: "2TAG",
+        matchType: "FWA",
+        expectedOutcome: "WIN",
+      },
+      confirmedBaseline: {
+        warId: "1001",
+        opponentTag: "2TAG",
+        matchType: "FWA",
+        expectedOutcome: "LOSE",
+      },
+      draft: null,
+    });
+
+    expect(resolved.baseline).toEqual({
+      warId: "1001",
+      opponentTag: "2TAG",
+      matchType: "FWA",
+      expectedOutcome: "LOSE",
+    });
+    expect(resolved.effective).toEqual({
+      warId: "1001",
+      opponentTag: "2TAG",
+      matchType: "FWA",
+      expectedOutcome: "LOSE",
+    });
+    expect(resolved.appliedDraft).toBeNull();
+    expect(resolved.draftDiffersFromBaseline).toBe(false);
+  });
+
   it("applies draft over baseline only when values actually differ", () => {
     const resolved = resolveEffectiveRevisionStateForTest({
       liveFields: {
@@ -161,6 +194,43 @@ describe("fwa match revision draft scoping", () => {
       expectedOutcome: null,
     });
     expect(resolved.effective?.matchType).toBe("BL");
+  });
+
+  it("lets a manual draft override the confirmed baseline for the same war", () => {
+    const resolved = resolveEffectiveRevisionStateForTest({
+      liveFields: {
+        warId: "1001",
+        opponentTag: "2TAG",
+        matchType: "FWA",
+        expectedOutcome: "WIN",
+      },
+      confirmedBaseline: {
+        warId: "1001",
+        opponentTag: "2TAG",
+        matchType: "FWA",
+        expectedOutcome: "LOSE",
+      },
+      draft: {
+        warId: "1001",
+        opponentTag: "2TAG",
+        matchType: "BL",
+        expectedOutcome: null,
+      },
+    });
+
+    expect(resolved.appliedDraft).toEqual({
+      warId: "1001",
+      opponentTag: "2TAG",
+      matchType: "BL",
+      expectedOutcome: null,
+    });
+    expect(resolved.effective).toEqual({
+      warId: "1001",
+      opponentTag: "2TAG",
+      matchType: "BL",
+      expectedOutcome: null,
+    });
+    expect(resolved.draftDiffersFromBaseline).toBe(true);
   });
 });
 

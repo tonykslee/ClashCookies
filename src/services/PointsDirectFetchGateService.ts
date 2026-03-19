@@ -1,7 +1,7 @@
 import { WarMailLifecycleStatus } from "@prisma/client";
 import { prisma } from "../prisma";
 import { SettingsService } from "./SettingsService";
-import type { PointsApiFetchReason, PointsLifecycleState } from "./PointsFetchPolicyService";
+import type { PointsApiFetchReason, PointsLifecycleState } from "./PointsFetchTypes";
 
 type WarStateForPolicy = "notInWar" | "preparation" | "inWar";
 
@@ -19,7 +19,6 @@ export type PointsDirectFetchCaller = "command" | "poller" | "service";
 
 export type PointsDirectFetchDecisionCode =
   | "manual_force_bypass"
-  | "global_active_war_lock"
   | "reused_war_snapshot"
   | "not_tracked"
   | "locked_active_war"
@@ -86,6 +85,45 @@ export type PointsDirectFetchDecision = {
   manualForceBypass: boolean;
 };
 
+
+export type PollerPointsFetchSource = "war_event_poll_cycle" | "mail_refresh_loop";
+
+export type PollerPointsFetchOutcome = "allowed" | "blocked" | "not_applicable";
+
+export type PollerPointsFetchDecisionCode =
+  | "manual_override"
+  | "no_active_opponent"
+  | "inactive_war_for_mail_refresh"
+  | "validated_active_war_locked"
+  | "policy_allowed"
+  | "policy_blocked";
+
+export type PollerPointsFetchDecision = {
+  allowed: boolean;
+  outcome: PollerPointsFetchOutcome;
+  decisionCode: PollerPointsFetchDecisionCode;
+  reason: string;
+  fetchReason: PointsApiFetchReason | null;
+  lockState: PointsLockLifecycleState;
+};
+
+export type PollerPointsFetchInput = {
+  guildId: string;
+  clanTag: string;
+  pollerSource: PollerPointsFetchSource;
+  requestedReason: PointsApiFetchReason;
+  preferredAllowedReason?: PointsApiFetchReason | null;
+  warState: WarStateForPolicy;
+  warStartTime: Date | null;
+  warEndTime: Date | null;
+  currentSyncNumber: number | null;
+  lifecycle: PointsLifecycleState | null;
+  activeOpponentTag?: string | null;
+  activeWarId?: string | number | null;
+  manualOverride?: boolean;
+  nowMs?: number;
+};
+
 type ApplyObservedPointValueInput = {
   state: PointsLockStateRecord;
   observedPoints: number | null;
@@ -96,7 +134,6 @@ const PRESYNC_UNLOCK_OFFSET_MS = 10 * 60 * 1000;
 const MM_POSTWAR_UNLOCK_DELAY_MS = 60 * 60 * 1000;
 const ACTIVE_SYNC_POST_KEY_PREFIX = "active_sync_post:";
 const LOCK_STATE_KEY_PREFIX = "points_lock_state:";
-const GLOBAL_ACTIVE_WAR_LOCK_CACHE_TTL_MS = 15 * 1000;
 
 /** Purpose: normalize clan tag into canonical #TAG form. */
 function normalizeTag(input: string | null | undefined): string | null {
@@ -673,9 +710,6 @@ export function isPointsDirectFetchBlockedError(
 
 export class PointsDirectFetchGateService {
   private static readonly decisionRollups = new Map<string, number>();
-  private static globalActiveWarLockCache:
-    | { active: boolean; expiresAtMs: number }
-    | null = null;
 
   /** Purpose: initialize lock gate persistence dependencies. */
   constructor(private readonly settings: SettingsService = new SettingsService()) {}
@@ -715,31 +749,6 @@ export class PointsDirectFetchGateService {
     }
 
     const manualForceBypass = Boolean(input.manualForceBypass);
-    const runtimeCaller = input.caller;
-    const appliesGlobalRuntimeLock = runtimeCaller === "poller" || runtimeCaller === "service";
-    if (appliesGlobalRuntimeLock && !manualForceBypass) {
-      const globalActiveWarLock = await this.isGlobalActiveWarLockEnabled(nowMs);
-      if (globalActiveWarLock) {
-        const decision: PointsDirectFetchDecision = {
-          allowed: false,
-          outcome: "blocked",
-          decisionCode: "global_active_war_lock",
-          reason:
-            "Global active-war lock is active; runtime poller/service direct points fetch is blocked.",
-          clanTag: runtime.clanTag,
-          guildId: runtime.guildId,
-          fetchReason: input.fetchReason,
-          caller: runtimeCaller,
-          lockState: state.lifecycleState,
-          lockUntilMs: state.lockUntilMs,
-          postedSyncAtMs: state.postedSyncAtMs,
-          manualForceBypass: false,
-        };
-        this.logDecision(decision);
-        return decision;
-      }
-    }
-
     const decision = buildDecisionFromState({
       runtime,
       state,
@@ -749,6 +758,88 @@ export class PointsDirectFetchGateService {
     });
     this.logDecision(decision);
     return decision;
+  }
+
+  /** Purpose: decide whether background pollers should attempt a points fetch using the authoritative per-clan gate state. */
+  async evaluatePollerFetch(input: PollerPointsFetchInput): Promise<PollerPointsFetchDecision> {
+    const nowMs = toOptionalInt(input.nowMs ?? Date.now()) ?? Date.now();
+    const normalizedTag = normalizeTag(input.clanTag);
+    if (!normalizedTag) {
+      return {
+        allowed: false,
+        outcome: "not_applicable",
+        decisionCode: "no_active_opponent",
+        reason: "Invalid clan tag; poller gate is not applicable.",
+        fetchReason: null,
+        lockState: "unlocked",
+      };
+    }
+
+    if (input.manualOverride) {
+      return {
+        allowed: true,
+        outcome: "allowed",
+        decisionCode: "manual_override",
+        reason: "Manual override bypasses routine poller checks.",
+        fetchReason: input.preferredAllowedReason ?? input.requestedReason,
+        lockState: "unlocked",
+      };
+    }
+
+    if (input.requestedReason === "mail_refresh" && input.warState === "notInWar") {
+      return {
+        allowed: false,
+        outcome: "not_applicable",
+        decisionCode: "inactive_war_for_mail_refresh",
+        reason: "Mail refresh points fetch applies only during an active war.",
+        fetchReason: null,
+        lockState: "unlocked",
+      };
+    }
+
+    if (input.warState !== "notInWar" && !normalizeTag(input.activeOpponentTag)) {
+      return {
+        allowed: false,
+        outcome: "not_applicable",
+        decisionCode: "no_active_opponent",
+        reason: "Active war has no resolved opponent tag yet.",
+        fetchReason: null,
+        lockState: "unlocked",
+      };
+    }
+
+    const [runtime, persisted] = await Promise.all([
+      this.loadRuntimeSnapshot(normalizedTag),
+      this.readPersistedState(normalizedTag),
+    ]);
+    const state = derivePointsLockLifecycleStateForTest({ runtime, persisted, nowMs });
+    if (runtime.tracked && !isSameLockState(persisted, state)) {
+      await this.writePersistedState(state);
+    }
+
+    const allowed =
+      state.lifecycleState === "unlocked" ||
+      state.lifecycleState === "post_war_unlocked_waiting_for_point_change";
+
+    const activeWarValidatedLocked =
+      input.warState !== "notInWar" && state.lifecycleState === "active_war_locked";
+
+    return {
+      allowed,
+      outcome: allowed ? "allowed" : "blocked",
+      decisionCode: activeWarValidatedLocked
+        ? "validated_active_war_locked"
+        : allowed
+          ? "policy_allowed"
+          : "policy_blocked",
+      reason: activeWarValidatedLocked
+        ? "Active-war match data is already validated and stored for this clan; keep the gate closed until war end."
+        : allowed
+          ? "Per-clan points gate is open for this clan in the current lifecycle phase."
+          : "Per-clan points gate is closed for this clan in the current lifecycle phase.",
+      fetchReason: allowed ? input.preferredAllowedReason ?? input.requestedReason : null,
+      lockState: state.lifecycleState,
+    };
   }
 
   /** Purpose: update between-war lock state after observing a fresh website point value. */
@@ -919,25 +1010,6 @@ export class PointsDirectFetchGateService {
     await this.settings.set(buildLockStateKey(state.clanTag), JSON.stringify(state));
   }
 
-  /** Purpose: detect active-war presence globally with short-lived caching for runtime fetch gates. */
-  private async isGlobalActiveWarLockEnabled(nowMs: number): Promise<boolean> {
-    const cached = PointsDirectFetchGateService.globalActiveWarLockCache;
-    if (cached && nowMs <= cached.expiresAtMs) {
-      return cached.active;
-    }
-
-    const activeWar = await prisma.currentWar.findFirst({
-      where: { state: { in: ["preparation", "inWar"] } },
-      select: { clanTag: true },
-      orderBy: { updatedAt: "desc" },
-    });
-    const active = Boolean(activeWar?.clanTag);
-    PointsDirectFetchGateService.globalActiveWarLockCache = {
-      active,
-      expiresAtMs: nowMs + GLOBAL_ACTIVE_WAR_LOCK_CACHE_TTL_MS,
-    };
-    return active;
-  }
 
   /** Purpose: emit structured gate decisions and lightweight rollups for lock observability. */
   private logDecision(decision: PointsDirectFetchDecision): void {
