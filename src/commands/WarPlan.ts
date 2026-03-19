@@ -19,6 +19,10 @@ import {
   type WarPlanComplianceConfig,
 } from "../services/warPlanComplianceConfig";
 import { WarEventHistoryService } from "../services/war-events/history";
+import {
+  emojiResolverService,
+  type EmojiResolverService,
+} from "../services/emoji/EmojiResolverService";
 
 type PlanMatchType = "FWA" | "BL" | "MM";
 type PlanOutcome = "WIN" | "LOSE" | "ANY";
@@ -105,54 +109,18 @@ function buildComplianceConfigLine(input: {
   return `Compliance gate: nonMirrorTripleMinClanStars=${input.nonMirrorTripleMinClanStars}, allBasesOpenHoursLeft=${input.allBasesOpenHoursLeft}h${applicability}`;
 }
 
-async function resolveCustomEmojiShortcodes(
-  text: string,
-  interaction: ChatInputCommandInteraction,
-): Promise<string> {
-  const exact = new Map<string, string>();
-  const lowercase = new Map<string, string>();
-  const pushEmoji = (name: string | null | undefined, token: string): void => {
-    if (!name) return;
-    if (!exact.has(name)) {
-      exact.set(name, token);
-    }
-    const lowered = name.toLowerCase();
-    if (!lowercase.has(lowered)) {
-      lowercase.set(lowered, token);
-    }
-  };
+type EmojiShortcodeResolver = Pick<EmojiResolverService, "replaceShortcodes">;
 
-  const guild = interaction.guild;
-  if (guild) {
-    try {
-      await guild.emojis.fetch();
-    } catch {
-      // Keep going; we can still use cached/global emojis.
-    }
-    for (const emoji of guild.emojis.cache.values()) {
-      pushEmoji(
-        emoji.name,
-        `<${emoji.animated ? "a" : ""}:${emoji.name}:${emoji.id}>`,
-      );
-    }
-  }
-
-  for (const emoji of interaction.client.emojis.cache.values()) {
-    pushEmoji(
-      emoji.name,
-      `<${emoji.animated ? "a" : ""}:${emoji.name}:${emoji.id}>`,
-    );
-  }
-
-  return text.replace(
-    /(^|[\s([{"']):([a-zA-Z0-9_]{2,32}):(?=$|[\s)\]}".,!?:;'"-])/g,
-    (full, prefix: string, emojiName: string) => {
-      const token =
-        exact.get(emojiName) ?? lowercase.get(emojiName.toLowerCase());
-      if (!token) return full;
-      return `${prefix}${token}`;
-    },
-  );
+/** Purpose: normalize warplan shortcode text via shared application-emoji resolver. */
+async function resolveWarPlanEmojiShortcodes(params: {
+  text: string;
+  client: Client;
+  resolver?: EmojiShortcodeResolver;
+}): Promise<string> {
+  const resolver = params.resolver ?? emojiResolverService;
+  return resolver
+    .replaceShortcodes(params.client, params.text)
+    .catch(() => params.text);
 }
 
 function formatKeyLabel(
@@ -387,6 +355,9 @@ async function getCurrentOrDefaultPlanData(params: {
     allBasesOpenHoursLeft: modalDefaults.allBasesOpenHoursLeft,
   };
 }
+
+export const resolveWarPlanEmojiShortcodesForTest =
+  resolveWarPlanEmojiShortcodes;
 
 export const WarPlan: Command = {
   name: "warplan",
@@ -644,10 +615,10 @@ export const WarPlan: Command = {
           return;
         }
 
-        const planText = await resolveCustomEmojiShortcodes(
-          normalizedPlanText,
-          interaction,
-        );
+        const planText = await resolveWarPlanEmojiShortcodes({
+          text: normalizedPlanText,
+          client: interaction.client,
+        });
         if (!planText.length) {
           await submitted.reply({
             ephemeral: true,
