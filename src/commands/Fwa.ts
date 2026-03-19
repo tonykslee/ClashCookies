@@ -6725,18 +6725,26 @@ async function resolveMatchTypeWithFallback(params: {
     matchType: params.existingMatchType ?? null,
     inferredMatchType: params.existingInferredMatchType ?? true,
   });
-  if (params.warState === "notInWar") {
-    return {
-      confirmedCurrent: currentResolution.confirmed,
-      storedSync: null,
-      unconfirmedCurrent: currentResolution.unconfirmed,
-    };
-  }
   const hasWarIdentity =
     (params.warId !== null &&
       params.warId !== undefined &&
       Number.isFinite(params.warId)) ||
     params.warStartTime instanceof Date;
+  if (params.warState === "notInWar") {
+    return {
+      confirmedCurrent: currentResolution.confirmed,
+      storedSync: hasWarIdentity
+        ? await resolveMatchTypeFromStoredSync({
+            guildId: params.guildId,
+            clanTag: params.clanTag,
+            opponentTag: params.opponentTag,
+            warId: params.warId,
+            warStartTime: params.warStartTime,
+          })
+        : null,
+      unconfirmedCurrent: currentResolution.unconfirmed,
+    };
+  }
   return {
     confirmedCurrent: currentResolution.confirmed,
     storedSync: hasWarIdentity
@@ -6751,6 +6759,8 @@ async function resolveMatchTypeWithFallback(params: {
     unconfirmedCurrent: currentResolution.unconfirmed,
   };
 }
+
+export const resolveMatchTypeWithFallbackForTest = resolveMatchTypeWithFallback;
 
 /** Purpose: apply source-of-truth sync number over a scraped points snapshot. */
 function applySourceSync(

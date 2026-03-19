@@ -201,4 +201,62 @@ describe("PointsDirectFetchGateService.evaluatePollerFetch", () => {
     expect(decision.fetchReason).toBeNull();
     expect(decision.lockState).toBe("between_wars_locked_until_presync");
   });
+
+  it("skips mail-refresh fetches after war end but still allows post-war reconciliation", async () => {
+    const postedSyncAtMs = new Date("2026-03-09T09:00:00.000Z").getTime();
+    const { service } = buildService({
+      runtime: buildRuntime({
+        warState: "notInWar",
+        lifecycle: null,
+        postedSyncAtMs,
+        matchType: "BL",
+      }),
+      persisted: buildState({
+        lifecycleState: "post_war_unlocked_waiting_for_point_change",
+        postedSyncAtMs,
+        matchType: "BL",
+        baselinePoints: 6,
+      }),
+    });
+
+    const mailDecision = await service.evaluatePollerFetch({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+      pollerSource: "mail_refresh_loop",
+      requestedReason: "mail_refresh",
+      warState: "notInWar",
+      warStartTime: null,
+      warEndTime: new Date("2026-03-09T07:00:00.000Z"),
+      currentSyncNumber: null,
+      lifecycle: null,
+      activeOpponentTag: null,
+      activeWarId: null,
+      nowMs: new Date("2026-03-09T07:20:00.000Z").getTime(),
+    });
+    const reconciliationDecision = await service.evaluatePollerFetch({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+      pollerSource: "war_event_poll_cycle",
+      requestedReason: "post_war_reconciliation",
+      warState: "notInWar",
+      warStartTime: null,
+      warEndTime: new Date("2026-03-09T07:00:00.000Z"),
+      currentSyncNumber: null,
+      lifecycle: null,
+      activeOpponentTag: null,
+      activeWarId: null,
+      nowMs: new Date("2026-03-09T07:20:00.000Z").getTime(),
+    });
+
+    expect(mailDecision.allowed).toBe(false);
+    expect(mailDecision.decisionCode).toBe("inactive_war_for_mail_refresh");
+    expect(mailDecision.fetchReason).toBeNull();
+
+    expect(reconciliationDecision.allowed).toBe(true);
+    expect(reconciliationDecision.decisionCode).toBe("policy_allowed");
+    expect(reconciliationDecision.fetchReason).toBe("post_war_reconciliation");
+    expect(reconciliationDecision.lockState).toBe(
+      "post_war_unlocked_waiting_for_point_change",
+    );
+  });
 });
