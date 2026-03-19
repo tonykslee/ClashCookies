@@ -28,6 +28,7 @@ Discord bot for Clash of Clans activity tooling.
 - `/fwa weight-age`, `/fwa weight-link`, `/fwa weight-health`, and `/fwa weight-cookie` now provide FWA Stats weight monitoring with cached scraping, stale-weight flags, auth-expiry recovery guidance, and secure cookie status/update flows.
 - `/fwa compliance` now runs the shared war-end compliance engine on demand for a tracked clan (latest ended war by default, optional `war-id` override).
 - `/layout` now supports FWA base layout listing/fetch by Town Hall and admin-only link upserts (with optional `img-url` preview updates), backed by the new `FwaLayouts` table.
+- FWAStats JSON feed ingestion foundation is now DB-backed with dedicated current-state tables, feed-sync metadata ownership (`FwaFeedSyncState`), tracked-clan wars watch state (`FwaClanWarsWatchState`), and bounded scheduler loops.
 
 ## Quick Start
 ```bash
@@ -46,3 +47,41 @@ npm start
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines and architecture documentation.
 FWA command internals are split under `src/commands/fwa/` helper modules to keep `Fwa.ts` orchestration-focused and unit-testable.
 Run `npm run seed:fwa-layouts` after migrations when you want to upsert the canonical layout seed rows.
+
+## FWAStats Feed Ingestion (Phase 1)
+Endpoints wired:
+- `https://fwastats.com/Clans.json`
+- `https://fwastats.com/Clan/<clan-tag>/Members.json`
+- `https://fwastats.com/Clan/<clan-tag>/WarMembers.json?warNo=1`
+- `https://fwastats.com/Clan/<clan-tag>/Wars.json`
+
+Intentionally omitted:
+- `https://fwastats.com/Weights.json` (not part of this ingestion phase)
+
+Current-state tables:
+- `FwaClanCatalog`
+- `FwaPlayerCatalog`
+- `FwaClanMemberCurrent`
+- `FwaWarMemberCurrent`
+- `FwaClanWarLogCurrent`
+- `FwaFeedSyncState`
+- `FwaClanWarsWatchState`
+- `FwaFeedCursor` (distributed sweep cursor state)
+
+Cadence defaults and cost controls:
+- `Clans.json`: every 6 hours
+- tracked-clan `Members.json`: every 15 minutes (minimum source freshness respected)
+- `WarMembers.json`: distributed sweep ticks every 15 minutes with bounded chunk size/concurrency
+- tracked-clan `Wars.json` watch: 5-minute cadence only inside active per-clan windows, starts 5 minutes before sync time, stops once update is acquired
+- optional global `Wars.json` sweep: disabled by default, configurable and chunked
+- command paths remain DB-first; `/compo` is still sheet-backed in this phase
+
+Manual/dev operations (script tooling):
+```bash
+npm run sync:fwa-feeds -- status
+npm run sync:fwa-feeds -- run --feed=clan-members --tag=#2QG2C08UP
+npm run sync:fwa-feeds -- run --feed=clan-wars --tag=#2QG2C08UP
+npm run sync:fwa-feeds -- run-global --feed=clans
+npm run sync:fwa-feeds -- run-global --feed=war-members
+npm run sync:fwa-feeds -- watch-status --tag=#2QG2C08UP
+```
