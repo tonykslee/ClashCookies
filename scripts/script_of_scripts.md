@@ -1,128 +1,51 @@
-# Step 1 — Load Project Context
-
-Run this first and read the output before implementing anything:
-
+# 1) Load context
+Run first:
 ./scripts/codex-task.sh
 
-This will load:
+Use loaded context as the source of truth:
+- project-brain
+- architecture-contract
+- core-priorities
+- commands
 
-* PROJECT BRAIN
-* ARCHITECTURE CONTRACT
-* CORE PRIORITIES
-* COMMAND SYSTEM
-
-Follow these rules while implementing the task.
-
----
-
-# Step 2 — Task Description
-
-(Write the implementation request here)
-
-GOAL
-WHAT EXISTS TODAY
-WHAT NEEDS TO CHANGE
-SUCCESS CRITERIA
-
----
-
-Important constraints:
-
-* Follow the architecture rules defined in the loaded context
-* Avoid monolithic files
-* Prefer reusing existing helpers/services before adding command-level logic
-* Extract reusable services when it cleanly reduces duplication
-* Keep files small and focused
-* New features should be designed to support unit testing
-* Keep database logic separated from command logic
-* Do not break existing commands
-* Do not introduce new state owners unless the task explicitly requires it
-* Preserve hot-path performance and determinism where relevant
-
-If the task changes command behavior, also update any affected:
-
-* `/help` docs/examples
-* `docs/commands.md`
-* command coverage/tests
-* `/permission` targets where applicable
-
----
-
-# Step 3 — Feature Branch
-
-Before making any code changes, run:
-
+# 2) Start branch
 ./scripts/start-feature.sh <short-feature-name>
 
-Example:
+# 3) Task
+(Paste task here)
 
-./scripts/start-feature.sh fwa-sync-validation
-
----
-
-# Step 4 — Implementation
-
-Implement the task described above.
-
-When making changes:
-
-* Follow existing architectural patterns
-* Prefer reusable services over command-level logic
-* Avoid code duplication
-* Keep files small and focused
-* Keep database logic separated from command logic
-* Refactor only where needed to support the feature cleanly
-* Preserve existing behavior outside the defined task scope
-
-Before considering the task complete:
-
-* Run relevant validation commands (lint/tests) for the affected scope
-* Fix CI-blocking lint errors
-* Do not leave touched files with avoidable lint issues
-
----
-
-# Step 5 — Generate Conventional Commit Message
-
-After implementing the changes:
-
-Generate a Conventional Commit message summarizing the changes.
-
-Format:
-
-type(scope): short summary
-
-Example:
-
-feat(sync): implement ClanPointsSync war validation
-
-Optional body (recommended for PR context):
-
-feat(sync): implement ClanPointsSync war validation
-
-- add lifecycle-based fetch gating after clan-mail confirmation
-- add reason-coded points API call logging
-- add tests for validation triggers and timestamp ownership
+Required sections:
+- Goal
+- Current behavior
+- Required change
+- Acceptance criteria
 
 Rules:
+- follow loaded architecture
+- reuse existing services/helpers first
+- keep command logic thin
+- keep DB logic out of commands
+- avoid new state owners unless required
+- avoid regressions outside scope
+- keep changes testable
+- update docs/help/permissions/tests when affected
 
-* Use feat / fix / refactor / test / docs when appropriate
-* Keep summary under 72 characters
-* You may include a blank line plus bullet-point body details
+# 4) Implement
+- make the smallest clean change that satisfies acceptance criteria
+- refactor only if needed to support the feature cleanly
+- run relevant lint/tests for touched scope
+- fix CI-blocking issues
 
-Save the commit message to:
-
+# 5) Commit message
+Write conventional commit to:
 .git/AI_COMMIT_MSG
 
----
+Format:
+type(scope): summary
 
-# Step 6 — Commit and Push
+Optional body:
+- key change 1
+- key change 2
 
-After the commit message file is created, run:
-
+# 6) Commit/push
 ./scripts/commit-feature.sh
-
-Notes:
-
-- `commit-feature.sh` auto-generates `.git/AI_PR_BODY.md` from branch commits/files.
-- If GitHub CLI (`gh`) is available and authenticated, it may create/update the PR description automatically.
