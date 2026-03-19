@@ -1,0 +1,242 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const prismaMock = vi.hoisted(() => ({
+  trackedMessage: {
+    findUnique: vi.fn(),
+    update: vi.fn(),
+  },
+}));
+
+vi.mock("../src/prisma", () => ({
+  prisma: prismaMock,
+}));
+
+import {
+  FWA_BASE_SWAP_ACK_EMOJI,
+  renderFwaBaseSwapAnnouncementForTest,
+} from "../src/commands/Fwa";
+import {
+  FwaBaseSwapTrackedMetadata,
+  TRACKED_MESSAGE_FEATURE_TYPE,
+  TRACKED_MESSAGE_STATUS,
+  TrackedMessageService,
+} from "../src/services/TrackedMessageService";
+
+function buildEntry(input: {
+  position: number;
+  playerTag: string;
+  playerName: string;
+  section: "war_bases" | "base_errors";
+  discordUserId?: string | null;
+  townhallLevel?: number | null;
+  acknowledged?: boolean;
+}): FwaBaseSwapTrackedMetadata["entries"][number] {
+  return {
+    position: input.position,
+    playerTag: input.playerTag,
+    playerName: input.playerName,
+    discordUserId: input.discordUserId ?? null,
+    townhallLevel: input.townhallLevel ?? null,
+    section: input.section,
+    acknowledged: input.acknowledged ?? false,
+  };
+}
+
+function buildLayoutLink(input: { townhall: number; layoutLink: string }) {
+  return {
+    townhall: input.townhall,
+    layoutLink: input.layoutLink,
+  };
+}
+
+describe("FWA base-swap layout links", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("renders TH links in descending order after player sections and before react prompt", () => {
+    const content = renderFwaBaseSwapAnnouncementForTest({
+      entries: [
+        buildEntry({
+          position: 1,
+          playerTag: "#AAA111",
+          playerName: "Alpha",
+          section: "war_bases",
+          discordUserId: "100",
+          townhallLevel: 18,
+        }),
+        buildEntry({
+          position: 2,
+          playerTag: "#BBB222",
+          playerName: "Bravo",
+          section: "base_errors",
+          discordUserId: null,
+          townhallLevel: 17,
+        }),
+      ],
+      layoutLinks: [
+        buildLayoutLink({
+          townhall: 17,
+          layoutLink:
+            "https://link.clashofclans.com/en?action=OpenLayout&id=TH17%3AWB%3AAAAARQAAAAI6ppxkTfH3WnNJjWK96bqn",
+        }),
+        buildLayoutLink({
+          townhall: 18,
+          layoutLink:
+            "https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg",
+        }),
+      ],
+    });
+
+    const th18Line =
+      "## <a:arrow_arrow:1480819809338921142> TH18 Link: <https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg>";
+    const th17Line =
+      "## <a:arrow_arrow:1480819809338921142> TH17 Link: <https://link.clashofclans.com/en?action=OpenLayout&id=TH17%3AWB%3AAAAARQAAAAI6ppxkTfH3WnNJjWK96bqn>";
+    const reactLine = `👇 React with ${FWA_BASE_SWAP_ACK_EMOJI} once your base is fixed.`;
+
+    const th18Index = content.indexOf(th18Line);
+    const th17Index = content.indexOf(th17Line);
+    const reactIndex = content.indexOf(reactLine);
+    const playerLineIndex = content.indexOf("#2 - *(unlinked)* - Bravo - :x:");
+
+    expect(th18Index).toBeGreaterThan(-1);
+    expect(th17Index).toBeGreaterThan(-1);
+    expect(th18Index).toBeLessThan(th17Index);
+    expect(playerLineIndex).toBeGreaterThan(-1);
+    expect(th18Index).toBeGreaterThan(playerLineIndex);
+    expect(reactIndex).toBeGreaterThan(th17Index);
+  });
+
+  it("renders one TH line per townhall even when multiple entries share the TH", () => {
+    const content = renderFwaBaseSwapAnnouncementForTest({
+      entries: [
+        buildEntry({
+          position: 1,
+          playerTag: "#AAA111",
+          playerName: "Alpha",
+          section: "war_bases",
+          townhallLevel: 18,
+        }),
+        buildEntry({
+          position: 2,
+          playerTag: "#BBB222",
+          playerName: "Bravo",
+          section: "base_errors",
+          townhallLevel: 18,
+        }),
+      ],
+      layoutLinks: [
+        buildLayoutLink({
+          townhall: 18,
+          layoutLink:
+            "https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg",
+        }),
+      ],
+    });
+
+    const th18Occurrences = (content.match(/TH18 Link:/g) ?? []).length;
+    expect(th18Occurrences).toBe(1);
+  });
+
+  it("skips TH lines when no matching RISINGDAWN layout link is available", () => {
+    const content = renderFwaBaseSwapAnnouncementForTest({
+      entries: [
+        buildEntry({
+          position: 1,
+          playerTag: "#AAA111",
+          playerName: "Alpha",
+          section: "war_bases",
+          townhallLevel: 18,
+        }),
+        buildEntry({
+          position: 2,
+          playerTag: "#BBB222",
+          playerName: "Bravo",
+          section: "base_errors",
+          townhallLevel: 17,
+        }),
+      ],
+      layoutLinks: [
+        buildLayoutLink({
+          townhall: 18,
+          layoutLink:
+            "https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg",
+        }),
+      ],
+    });
+
+    expect(content).toContain("TH18 Link:");
+    expect(content).not.toContain("TH17 Link:");
+  });
+
+  it("preserves TH links during tracked-message reaction re-renders", async () => {
+    const metadata: FwaBaseSwapTrackedMetadata = {
+      clanName: "Test Clan",
+      createdByUserId: "admin-1",
+      createdAtIso: "2026-03-19T00:00:00.000Z",
+      entries: [
+        buildEntry({
+          position: 1,
+          playerTag: "#AAA111",
+          playerName: "Alpha",
+          section: "war_bases",
+          discordUserId: "reactor-1",
+          townhallLevel: 18,
+          acknowledged: false,
+        }),
+      ],
+      layoutLinks: [
+        buildLayoutLink({
+          townhall: 18,
+          layoutLink:
+            "https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg",
+        }),
+      ],
+    };
+
+    prismaMock.trackedMessage.findUnique.mockResolvedValue({
+      id: 42,
+      messageId: "message-1",
+      status: TRACKED_MESSAGE_STATUS.ACTIVE,
+      featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_BASE_SWAP,
+      metadata,
+    });
+    prismaMock.trackedMessage.update.mockResolvedValue(undefined);
+
+    const service = new TrackedMessageService();
+    const message = {
+      edit: vi.fn().mockResolvedValue(undefined),
+    };
+
+    const changed = await service.handleFwaBaseSwapReaction({
+      messageId: "message-1",
+      reactorUserId: "reactor-1",
+      message,
+      render: renderFwaBaseSwapAnnouncementForTest,
+      truncate: (text) => text,
+    });
+
+    expect(changed).toBe(true);
+    expect(message.edit).toHaveBeenCalledTimes(1);
+    const editPayload = message.edit.mock.calls[0]?.[0];
+    expect(String(editPayload.content)).toContain(
+      "## <a:arrow_arrow:1480819809338921142> TH18 Link: <https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg>"
+    );
+    expect(String(editPayload.content)).toContain(
+      `👇 React with ${FWA_BASE_SWAP_ACK_EMOJI} once your base is fixed.`
+    );
+    expect(prismaMock.trackedMessage.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          metadata: expect.objectContaining({
+            layoutLinks: expect.arrayContaining([
+              expect.objectContaining({
+                townhall: 18,
+              }),
+            ]),
+          }),
+        }),
+      })
+    );
+  });
+});

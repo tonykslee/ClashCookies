@@ -29,8 +29,13 @@ export type FwaBaseSwapTrackedMetadata = {
     playerTag: string;
     playerName: string;
     discordUserId: string | null;
+    townhallLevel: number | null;
     section: "war_bases" | "base_errors";
     acknowledged: boolean;
+  }>;
+  layoutLinks?: Array<{
+    townhall: number;
+    layoutLink: string;
   }>;
 };
 
@@ -72,12 +77,17 @@ export function parseFwaBaseSwapMetadata(value: unknown): FwaBaseSwapTrackedMeta
       const playerTag = String(entry.playerTag ?? "").trim();
       const playerName = String(entry.playerName ?? "").trim();
       const discordUserIdRaw = String(entry.discordUserId ?? "").trim();
+      const townhallLevel = Number(entry.townhallLevel);
       const section = entry.section === "base_errors" ? "base_errors" : "war_bases";
       return {
         position: Number.isFinite(position) ? Math.trunc(position) : 0,
         playerTag,
         playerName,
         discordUserId: discordUserIdRaw || null,
+        townhallLevel:
+          Number.isFinite(townhallLevel) && Math.trunc(townhallLevel) > 0
+            ? Math.trunc(townhallLevel)
+            : null,
         section,
         acknowledged: Boolean(entry.acknowledged),
       };
@@ -87,7 +97,24 @@ export function parseFwaBaseSwapMetadata(value: unknown): FwaBaseSwapTrackedMeta
         Boolean(entry && entry.position > 0 && entry.playerTag && entry.playerName)
     );
   if (entries.length === 0) return null;
-  return { clanName, createdByUserId, createdAtIso, entries };
+  const layoutLinks = Array.isArray(value.layoutLinks)
+    ? value.layoutLinks
+        .map((layoutLink) => {
+          if (!isObject(layoutLink)) return null;
+          const townhall = Number(layoutLink.townhall);
+          const resolvedLink = String(layoutLink.layoutLink ?? "").trim();
+          if (!Number.isFinite(townhall) || Math.trunc(townhall) <= 0 || !resolvedLink) return null;
+          return {
+            townhall: Math.trunc(townhall),
+            layoutLink: resolvedLink,
+          };
+        })
+        .filter(
+          (layoutLink): layoutLink is NonNullable<FwaBaseSwapTrackedMetadata["layoutLinks"]>[number] =>
+            Boolean(layoutLink)
+        )
+    : undefined;
+  return { clanName, createdByUserId, createdAtIso, entries, layoutLinks };
 }
 
 export function parseSyncTimeMetadata(value: unknown): SyncTimeTrackedMetadata | null {

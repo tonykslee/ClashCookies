@@ -28,6 +28,7 @@ import {
 import { GoogleSheetsService } from "../services/GoogleSheetsService";
 import { SettingsService } from "../services/SettingsService";
 import { trackedMessageService } from "../services/TrackedMessageService";
+import { wrapDiscordLink } from "../services/FwaLayoutService";
 import {
   WarComplianceService,
   type WarComplianceIssue,
@@ -215,8 +216,14 @@ type FwaBaseSwapAnnouncementEntry = {
   playerTag: string;
   playerName: string;
   discordUserId: string | null;
+  townhallLevel: number | null;
   section: FwaBaseSwapSection;
   acknowledged: boolean;
+};
+
+type FwaBaseSwapLayoutLink = {
+  townhall: number;
+  layoutLink: string;
 };
 
 type FwaBaseSwapAnnouncementState = {
@@ -227,11 +234,14 @@ type FwaBaseSwapAnnouncementState = {
   clanName: string;
   createdByUserId: string;
   entries: FwaBaseSwapAnnouncementEntry[];
+  layoutLinks?: FwaBaseSwapLayoutLink[];
   createdAtIso: string;
 };
 
 const FWA_BASE_SWAP_TTL_MS = 48 * 60 * 60 * 1000;
 export const FWA_BASE_SWAP_ACK_EMOJI = "✅";
+const FWA_BASE_SWAP_LAYOUT_TYPE = "RISINGDAWN";
+const FWA_BASE_SWAP_LAYOUT_BULLET = "<a:arrow_arrow:1480819809338921142>";
 
 function isFwaBaseSwapExpired(
   state: FwaBaseSwapAnnouncementState,
@@ -288,6 +298,68 @@ function parseBaseSwapPositionList(input: string | null | undefined): number[] {
   return out;
 }
 
+function toPositiveIntegerOrNull(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  const parsed = Math.trunc(value);
+  return parsed > 0 ? parsed : null;
+}
+
+function getBaseSwapTownhallLevel(member: unknown): number | null {
+  if (!member || typeof member !== "object") return null;
+  const record = member as Record<string, unknown>;
+  const rawTownhall = record.townhallLevel ?? record.townHallLevel;
+  return toPositiveIntegerOrNull(rawTownhall);
+}
+
+function collectBaseSwapTownhallLevels(
+  entries: readonly FwaBaseSwapAnnouncementEntry[],
+): number[] {
+  return [...new Set(entries.map((entry) => entry.townhallLevel))]
+    .filter(
+      (townhall): townhall is number =>
+        typeof townhall === "number" &&
+        Number.isInteger(townhall) &&
+        townhall > 0,
+    )
+    .sort((a, b) => b - a);
+}
+
+function resolveRenderableBaseSwapLayoutLinks(
+  entries: readonly FwaBaseSwapAnnouncementEntry[],
+  layoutLinks: readonly FwaBaseSwapLayoutLink[] | undefined,
+): FwaBaseSwapLayoutLink[] {
+  if (!Array.isArray(layoutLinks) || layoutLinks.length === 0) return [];
+  const townhalls = collectBaseSwapTownhallLevels(entries);
+  if (townhalls.length === 0) return [];
+
+  const linkByTownhall = new Map<number, string>();
+  for (const row of layoutLinks) {
+    if (!row || typeof row !== "object") continue;
+    const townhall = toPositiveIntegerOrNull(row.townhall);
+    const layoutLink = String(row.layoutLink ?? "").trim();
+    if (townhall === null || !layoutLink || linkByTownhall.has(townhall)) continue;
+    linkByTownhall.set(townhall, layoutLink);
+  }
+
+  return townhalls.flatMap((townhall) => {
+    const layoutLink = linkByTownhall.get(townhall);
+    if (!layoutLink) return [];
+    return [{ townhall, layoutLink }];
+  });
+}
+
+function buildBaseSwapLayoutLinks(
+  entries: readonly FwaBaseSwapAnnouncementEntry[],
+  rows: ReadonlyArray<{ Townhall: number; LayoutLink: string }>,
+): FwaBaseSwapLayoutLink[] {
+  if (rows.length === 0) return [];
+  const rowLinks: FwaBaseSwapLayoutLink[] = rows.map((row) => ({
+    townhall: row.Townhall,
+    layoutLink: row.LayoutLink,
+  }));
+  return resolveRenderableBaseSwapLayoutLinks(entries, rowLinks);
+}
+
 function renderBaseSwapLine(entry: FwaBaseSwapAnnouncementEntry): string {
   const mention = entry.discordUserId
     ? `<@${entry.discordUserId}>`
@@ -296,8 +368,15 @@ function renderBaseSwapLine(entry: FwaBaseSwapAnnouncementEntry): string {
   return `#${entry.position} - ${mention} - ${entry.playerName} - ${mark}`;
 }
 
+function renderBaseSwapLayoutLinkLine(link: FwaBaseSwapLayoutLink): string {
+  return `## ${FWA_BASE_SWAP_LAYOUT_BULLET} TH${link.townhall} Link: ${wrapDiscordLink(link.layoutLink)}`;
+}
+
 function renderFwaBaseSwapAnnouncement(
-  state: { entries: FwaBaseSwapAnnouncementEntry[] },
+  state: {
+    entries: FwaBaseSwapAnnouncementEntry[];
+    layoutLinks?: FwaBaseSwapLayoutLink[];
+  },
 ): string {
   const warBaseLines = state.entries
     .filter((entry) => entry.section === "war_bases")
@@ -305,6 +384,10 @@ function renderFwaBaseSwapAnnouncement(
   const baseErrorLines = state.entries
     .filter((entry) => entry.section === "base_errors")
     .map(renderBaseSwapLine);
+  const layoutLinkLines = resolveRenderableBaseSwapLayoutLinks(
+    state.entries,
+    state.layoutLinks,
+  ).map(renderBaseSwapLayoutLinkLine);
 
   const parts: string[] = [];
   if (warBaseLines.length > 0) {
@@ -328,12 +411,11 @@ function renderFwaBaseSwapAnnouncement(
   }
 
   if (parts.length > 0) {
-    parts.push(
-      "",
-      "──────────────────────────────────",
-      "",
-      `👇 React with ${FWA_BASE_SWAP_ACK_EMOJI} once your base is fixed.`,
-    );
+    parts.push("", "──────────────────────────────────");
+    if (layoutLinkLines.length > 0) {
+      parts.push("", ...layoutLinkLines);
+    }
+    parts.push("", `👇 React with ${FWA_BASE_SWAP_ACK_EMOJI} once your base is fixed.`);
   }
 
   return parts.join("\n");
@@ -6291,6 +6373,11 @@ function applyExplicitOpponentNotFoundFallbackGuard(input: {
 
 export const getMailBlockedReasonFromStatusForTest =
   getMailBlockedReasonFromStatus;
+export const collectBaseSwapTownhallLevelsForTest =
+  collectBaseSwapTownhallLevels;
+export const buildBaseSwapLayoutLinksForTest = buildBaseSwapLayoutLinks;
+export const renderFwaBaseSwapAnnouncementForTest =
+  renderFwaBaseSwapAnnouncement;
 export const getMailBlockedReasonFromRevisionStateForTest =
   getMailBlockedReasonFromRevisionState;
 export const resolveWarMailFreshnessStatusForTest =
@@ -10157,6 +10244,7 @@ export const Fwa: Command = {
               : null,
           playerTag: normalizeTag(String(member.tag ?? "")),
           playerName: String(member.name ?? "Unknown").trim() || "Unknown",
+          townhallLevel: getBaseSwapTownhallLevel(member),
         }))
         .filter(
           (
@@ -10165,6 +10253,7 @@ export const Fwa: Command = {
             position: number;
             playerTag: string;
             playerName: string;
+            townhallLevel: number | null;
           } =>
             member.position !== null &&
             member.position > 0 &&
@@ -10206,6 +10295,7 @@ export const Fwa: Command = {
           playerTag: member.playerTag,
           playerName: member.playerName,
           discordUserId: linkByTag.get(member.playerTag)?.discordUserId ?? null,
+          townhallLevel: member.townhallLevel,
           section: "war_bases",
           acknowledged: false,
         });
@@ -10218,6 +10308,7 @@ export const Fwa: Command = {
           playerTag: member.playerTag,
           playerName: member.playerName,
           discordUserId: linkByTag.get(member.playerTag)?.discordUserId ?? null,
+          townhallLevel: member.townhallLevel,
           section: "base_errors",
           acknowledged: false,
         });
@@ -10228,9 +10319,27 @@ export const Fwa: Command = {
         return;
       }
 
-      
+      const townhalls = collectBaseSwapTownhallLevels(entries);
+      const layoutRows =
+        townhalls.length > 0
+          ? await prisma.fwaLayouts.findMany({
+              where: {
+                Type: FWA_BASE_SWAP_LAYOUT_TYPE,
+                Townhall: { in: townhalls },
+              },
+              select: {
+                Townhall: true,
+                LayoutLink: true,
+              },
+            })
+          : [];
+      const layoutLinks = buildBaseSwapLayoutLinks(entries, layoutRows);
+
       const content = truncateDiscordContent(
-        renderFwaBaseSwapAnnouncement({ entries },),
+        renderFwaBaseSwapAnnouncement({
+          entries,
+          layoutLinks,
+        }),
       );
 
       const mentionUserIds = [
@@ -10253,6 +10362,7 @@ export const Fwa: Command = {
         clanName: sanitizeClanName(trackedClan.name) ?? `#${clanTag}`,
         createdByUserId: interaction.user.id,
         entries,
+        layoutLinks,
         createdAtIso: new Date().toISOString(),
       };
       const expiresAt = new Date(Date.now() + FWA_BASE_SWAP_TTL_MS);
@@ -10267,6 +10377,7 @@ export const Fwa: Command = {
           createdByUserId: state.createdByUserId,
           createdAtIso: state.createdAtIso,
           entries: state.entries,
+          layoutLinks: state.layoutLinks,
         },
       });
 
