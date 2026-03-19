@@ -10,6 +10,8 @@ export const FWA_LEADER_ROLE_SETTING_KEY = "fwa_leader_role";
 
 export const COMMAND_PERMISSION_TARGETS = [
   "help",
+  "emoji",
+  "emoji:add",
   "lastseen",
   "inactive",
   "role-users",
@@ -98,6 +100,7 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "sheet:link",
   "sheet:unlink",
   "sheet:show",
+  "emoji:add",
   "telemetry",
   "kick-list:clear",
   "notify:war",

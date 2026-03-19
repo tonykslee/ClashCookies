@@ -1,4 +1,5 @@
 import { Help } from "./commands/Help";
+import { Emoji } from "./commands/Emoji";
 import { LastSeen } from "./commands/LastSeen";
 import { Inactive } from "./commands/Inactive";
 import { RoleUsers } from "./commands/RoleUsers";
@@ -26,6 +27,7 @@ import { Layout } from "./commands/Layout";
 // ...existing code...
 export const Commands = [
   Help,
+  Emoji,
   LastSeen,
   Inactive,
   RoleUsers,

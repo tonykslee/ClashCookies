@@ -64,6 +64,25 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     ],
     examples: ["/help", "/help command:sheet", "/help visibility:public"],
   },
+  emoji: {
+    summary: "Resolve or browse bot-owned application emojis by shortcode name.",
+    details: [
+      "Use `/emoji name:<emoji_name>` to resolve one emoji and show rendered + raw token output.",
+      "Use `/emoji name:<emoji_name> react:<message-id>` to react to a message in the current channel with that resolved emoji.",
+      "Use `/emoji emoji:<emoji-token-or-url> short-code:<name>` to add one new bot application emoji (admin-only by default).",
+      "Use `/emoji` with no args to browse a paginated list of all available bot application emojis.",
+      "For name-only resolves, `visibility:public` returns only the rendered emoji message content.",
+      "`name` supports dynamic autocomplete backed by application emojis for this bot instance.",
+      "Emoji resolution is environment-safe by name (application emoji IDs may differ per bot instance).",
+    ],
+    examples: [
+      "/emoji",
+      "/emoji name:arrow_arrow",
+      "/emoji name::arrow_arrow:",
+      "/emoji name:arrow_arrow react:123456789012345678",
+      "/emoji emoji:<:arrow_arrow:123456789012345678> short-code:arrow_arrow",
+    ],
+  },
   lastseen: {
     summary: "Estimate when a player was last active.",
     details: [
@@ -851,7 +870,17 @@ export const Help: Command = {
                 interaction.id,
                 allowPostToChannel,
               );
-              await interaction.channel?.send({
+              const postChannel = interaction.channel as
+                | { send?: (input: { embeds: EmbedBuilder[] }) => Promise<unknown> }
+                | null;
+              if (!postChannel || typeof postChannel.send !== "function") {
+                await component.reply({
+                  ephemeral: true,
+                  content: "Could not post help in this channel.",
+                });
+                return;
+              }
+              await postChannel.send({
                 embeds: payload.embeds,
               });
               await component.reply({

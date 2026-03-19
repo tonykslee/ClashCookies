@@ -2,6 +2,7 @@ import {
   ApplicationCommandOptionType,
   Client,
   PermissionFlagsBits,
+  version as discordJsVersion,
 } from "discord.js";
 import { Commands } from "../Commands";
 import { CoCService } from "../services/CoCService";
@@ -162,6 +163,25 @@ export default (client: Client, cocService: CoCService): void => {
     if (!client.application) return;
 
     console.log("ClashCookies is starting...");
+    let applicationFetchAttempted = false;
+    let applicationFetchSucceeded = false;
+    if (client.application) {
+      applicationFetchAttempted = true;
+      try {
+        await client.application.fetch();
+        applicationFetchSucceeded = true;
+      } catch {
+        applicationFetchSucceeded = false;
+      }
+    }
+    const hasApplicationEmojiFetch = Boolean(
+      client.application &&
+        client.application.emojis &&
+        typeof client.application.emojis.fetch === "function"
+    );
+    console.log(
+      `[startup:discord] discord_js_version=${discordJsVersion} application_present=${Boolean(client.application)} application_fetch_attempted=${applicationFetchAttempted} application_fetch_succeeded=${applicationFetchSucceeded} application_emoji_fetch_available=${hasApplicationEmojiFetch}`
+    );
 
     const bootstrapConfig = getStartupBootstrapRetryConfigFromEnv(process.env);
     const summaryEvery = getStartupRetryLogSummaryEveryFromEnv(process.env);

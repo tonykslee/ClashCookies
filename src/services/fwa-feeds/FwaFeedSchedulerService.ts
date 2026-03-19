@@ -1,5 +1,6 @@
 import { recordFetchEvent, runFetchTelemetryBatch } from "../../helper/fetchTelemetry";
 import { formatError } from "../../helper/formatError";
+import { SteadyStateLogGate } from "../../helper/steadyStateLogGate";
 import { FwaClansCatalogSyncService } from "./FwaClansCatalogSyncService";
 import { FwaClanMembersSyncService } from "./FwaClanMembersSyncService";
 import { FwaWarMembersSyncService } from "./FwaWarMembersSyncService";
@@ -23,6 +24,13 @@ type SchedulerConfig = {
   jitterMs: number;
 };
 
+type TrackedClanWarsWatchSummary = {
+  trackedClanCount: number;
+  activeClanCount: number;
+  polledClanCount: number;
+  updateAcquiredCount: number;
+};
+
 function toBool(input: string | undefined, fallback: boolean): boolean {
   if (input === undefined) return fallback;
   const normalized = input.trim().toLowerCase();
@@ -40,6 +48,36 @@ function minutesToMsWithMin(valueMinutes: number, minMinutes: number): number {
   return Math.max(minMinutes, valueMinutes) * 60 * 1000;
 }
 
+/** Purpose: serialize tracked-clan watch summary into a deterministic comparison key. */
+function buildTrackedClanWarsWatchSummaryKey(summary: TrackedClanWarsWatchSummary): string {
+  return `tracked=${summary.trackedClanCount}|active=${summary.activeClanCount}|polled=${summary.polledClanCount}|acquired=${summary.updateAcquiredCount}`;
+}
+
+/** Purpose: flag whether a tracked-clan watch summary represents actual polling work. */
+function hasTrackedClanWarsWatchActivity(summary: TrackedClanWarsWatchSummary): boolean {
+  return (
+    summary.activeClanCount > 0 ||
+    summary.polledClanCount > 0 ||
+    summary.updateAcquiredCount > 0
+  );
+}
+
+/** Purpose: keep watch summaries at info for work/changes, and demote repeated no-op states to debug. */
+function resolveTrackedClanWarsWatchSummaryLogLevel(params: {
+  summary: TrackedClanWarsWatchSummary;
+  summaryChanged: boolean;
+}): "info" | "debug" {
+  if (hasTrackedClanWarsWatchActivity(params.summary) || params.summaryChanged) {
+    return "info";
+  }
+  return "debug";
+}
+
+export const buildTrackedClanWarsWatchSummaryKeyForTest =
+  buildTrackedClanWarsWatchSummaryKey;
+export const resolveTrackedClanWarsWatchSummaryLogLevelForTest =
+  resolveTrackedClanWarsWatchSummaryLogLevel;
+
 /** Purpose: orchestrate bounded fwastats feed scheduler jobs with explicit cadence and cost controls. */
 export class FwaFeedSchedulerService {
   private readonly config: SchedulerConfig;
@@ -55,6 +93,7 @@ export class FwaFeedSchedulerService {
   private warMembersInProgress = false;
   private watchInProgress = false;
   private globalWarsInProgress = false;
+  private readonly trackedClanWarsWatchSummaryLogGate = new SteadyStateLogGate();
 
   /** Purpose: initialize scheduler config from env with safe minimum intervals and bounded defaults. */
   constructor() {
@@ -324,9 +363,20 @@ export class FwaFeedSchedulerService {
           },
           now,
         );
-        console.info(
-          `[fwa-feed] job=tracked_clan_wars_watch tracked=${summary.trackedClanCount} active=${summary.activeClanCount} polled=${summary.polledClanCount} acquired=${summary.updateAcquiredCount} duration_ms=${Date.now() - startedAt}`,
+        const summaryChanged = this.trackedClanWarsWatchSummaryLogGate.shouldEmitInfo(
+          "tracked_clan_wars_watch",
+          buildTrackedClanWarsWatchSummaryKey(summary),
         );
+        const logLevel = resolveTrackedClanWarsWatchSummaryLogLevel({
+          summary,
+          summaryChanged,
+        });
+        const line = `[fwa-feed] job=tracked_clan_wars_watch tracked=${summary.trackedClanCount} active=${summary.activeClanCount} polled=${summary.polledClanCount} acquired=${summary.updateAcquiredCount} duration_ms=${Date.now() - startedAt}`;
+        if (logLevel === "info") {
+          console.info(line);
+        } else {
+          console.debug(line);
+        }
       });
     } catch (error) {
       await this.syncState.recordFailure(

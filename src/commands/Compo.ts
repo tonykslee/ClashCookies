@@ -1,7 +1,7 @@
 import {
   ActionRowBuilder,
   APIActionRowComponent,
-  APIMessageActionRowComponent,
+  APIComponentInMessageActionRow,
   ApplicationCommandOptionType,
   AutocompleteInteraction,
   ButtonBuilder,
@@ -164,9 +164,9 @@ function buildCompoRefreshActionRow(
 
 function extractSupplementalRowsFromMessage(
   interaction: ButtonInteraction
-): Array<APIActionRowComponent<APIMessageActionRowComponent>> {
+): Array<APIActionRowComponent<APIComponentInMessageActionRow>> {
   return interaction.message.components
-    .map((row) => row.toJSON() as APIActionRowComponent<APIMessageActionRowComponent>)
+    .map((row) => row.toJSON() as APIActionRowComponent<APIComponentInMessageActionRow>)
     .filter(
       (row) =>
         !row.components.some(
@@ -865,9 +865,9 @@ function renderStatePng(mode: GoogleSheetMode, rows: string[][]): Buffer {
 function buildCompoRefreshComponents(input: {
   customId: string;
   loading: boolean;
-  supplementalRows?: Array<APIActionRowComponent<APIMessageActionRowComponent>>;
-}): Array<ActionRowBuilder<ButtonBuilder> | APIActionRowComponent<APIMessageActionRowComponent>> {
-  const components: Array<ActionRowBuilder<ButtonBuilder> | APIActionRowComponent<APIMessageActionRowComponent>> = [
+  supplementalRows?: Array<APIActionRowComponent<APIComponentInMessageActionRow>>;
+}): Array<ActionRowBuilder<ButtonBuilder> | APIActionRowComponent<APIComponentInMessageActionRow>> {
+  const components: Array<ActionRowBuilder<ButtonBuilder> | APIActionRowComponent<APIComponentInMessageActionRow>> = [
     buildCompoRefreshActionRow(input.customId, { loading: input.loading }),
   ];
   if (input.supplementalRows && input.supplementalRows.length > 0) {

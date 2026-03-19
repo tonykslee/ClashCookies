@@ -18,6 +18,10 @@ import { Command } from "../Command";
 import { truncateDiscordContent } from "../helper/discordContent";
 import { recordFetchEvent } from "../helper/fetchTelemetry";
 import { formatError } from "../helper/formatError";
+import {
+  resolveSteadyStateLogLevel,
+  SteadyStateLogGate,
+} from "../helper/steadyStateLogGate";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
 import { listPlayerLinksForClanMembers } from "../services/PlayerLinkService";
@@ -83,6 +87,7 @@ import {
 } from "../services/MatchTypeResolutionService";
 import {
   PointsDirectFetchGateService,
+  type PollerPointsFetchDecision,
   type PointsDirectFetchCaller,
   PointsDirectFetchBlockedError,
   isPointsDirectFetchBlockedError,
@@ -700,9 +705,107 @@ function logFwaMatchTelemetry(event: string, detail: string): void {
   console.log(`[telemetry-fwa-match] event=${event} ${detail}`);
 }
 
+type MatchTypeResolutionLogStage = "mail_embed" | "alliance_view" | "single_view";
+
+/** Purpose: build stable match-type log identity for one clan+war+stage. */
+function buildMatchTypeResolutionLogIdentity(params: {
+  stage: MatchTypeResolutionLogStage;
+  clanTag: string;
+  warId: number | null | undefined;
+}): string {
+  const warIdText =
+    params.warId !== null &&
+    params.warId !== undefined &&
+    Number.isFinite(params.warId)
+      ? String(Math.trunc(params.warId))
+      : "unknown";
+  return `matchtype|stage=${params.stage}|clan=${normalizeTag(params.clanTag)}|war=${warIdText}`;
+}
+
+/** Purpose: build match-type state signature used for steady-state info suppression. */
+function buildMatchTypeResolutionLogSignature(params: {
+  source: MatchTypeResolutionSource;
+  matchType: "FWA" | "BL" | "MM" | "SKIP";
+  inferred: boolean;
+  confirmed: boolean;
+}): string {
+  return `source=${params.source}|match_type=${params.matchType}|inferred=${params.inferred ? "1" : "0"}|confirmed=${params.confirmed ? "1" : "0"}`;
+}
+
+/** Purpose: emit info only when match-type state changes for the same clan+war+stage identity. */
+function resolveMatchTypeResolutionLogLevel(params: {
+  stage: MatchTypeResolutionLogStage;
+  clanTag: string;
+  warId: number | null | undefined;
+  source: MatchTypeResolutionSource;
+  matchType: "FWA" | "BL" | "MM" | "SKIP";
+  inferred: boolean;
+  confirmed: boolean;
+}): "info" | "debug" {
+  return resolveSteadyStateLogLevel({
+    gate: fwaMatchTypeResolutionLogGate,
+    identity: buildMatchTypeResolutionLogIdentity({
+      stage: params.stage,
+      clanTag: params.clanTag,
+      warId: params.warId,
+    }),
+    signature: buildMatchTypeResolutionLogSignature({
+      source: params.source,
+      matchType: params.matchType,
+      inferred: params.inferred,
+      confirmed: params.confirmed,
+    }),
+  });
+}
+
+/** Purpose: build stable routine blocked-fetch identity for one guild+clan+fetch reason. */
+function buildRoutineBlockedPointsFetchLogIdentity(params: {
+  guildId: string;
+  clanTag: string;
+  fetchReason: PointsApiFetchReason;
+}): string {
+  return `points_skip|guild=${params.guildId}|clan=${normalizeTag(params.clanTag)}|fetch_reason=${params.fetchReason}`;
+}
+
+/** Purpose: build routine blocked-fetch state signature for steady-state suppression. */
+function buildRoutineBlockedPointsFetchLogSignature(params: {
+  outcome: PollerPointsFetchDecision["outcome"];
+  decisionCode: PollerPointsFetchDecision["decisionCode"];
+}): string {
+  return `outcome=${params.outcome}|code=${params.decisionCode}`;
+}
+
+/** Purpose: emit info only when routine blocked-fetch state changes for one guild+clan reason. */
+function resolveRoutineBlockedPointsFetchSkipLogLevel(params: {
+  guildId: string;
+  clanTag: string;
+  fetchReason: PointsApiFetchReason;
+  outcome: PollerPointsFetchDecision["outcome"];
+  decisionCode: PollerPointsFetchDecision["decisionCode"];
+}): "info" | "debug" {
+  return resolveSteadyStateLogLevel({
+    gate: fwaRoutinePointsSkipLogGate,
+    identity: buildRoutineBlockedPointsFetchLogIdentity({
+      guildId: params.guildId,
+      clanTag: params.clanTag,
+      fetchReason: params.fetchReason,
+    }),
+    signature: buildRoutineBlockedPointsFetchLogSignature({
+      outcome: params.outcome,
+      decisionCode: params.decisionCode,
+    }),
+  });
+}
+
+/** Purpose: clear in-memory steady-state log trackers for deterministic tests. */
+function resetFwaSteadyStateLogTrackers(): void {
+  fwaMatchTypeResolutionLogGate.clear();
+  fwaRoutinePointsSkipLogGate.clear();
+}
+
 /** Purpose: emit structured logs for match-type source/inference/confirmation decisions. */
 function logMatchTypeResolution(params: {
-  stage: "mail_embed" | "alliance_view" | "single_view";
+  stage: MatchTypeResolutionLogStage;
   clanTag: string;
   opponentTag: string | null;
   warId: number | null | undefined;
@@ -718,9 +821,21 @@ function logMatchTypeResolution(params: {
       ? String(Math.trunc(params.warId))
       : "unknown";
   const opponent = normalizeTag(String(params.opponentTag ?? ""));
-  console.info(
-    `[fwa-matchtype] stage=${params.stage} clan=#${normalizeTag(params.clanTag)} opponent=${opponent ? `#${opponent}` : "unknown"} war_id=${warIdText} source=${params.source} match_type=${params.matchType} inferred=${params.inferred ? "1" : "0"} confirmed=${params.confirmed ? "1" : "0"}`,
-  );
+  const line = `[fwa-matchtype] stage=${params.stage} clan=#${normalizeTag(params.clanTag)} opponent=${opponent ? `#${opponent}` : "unknown"} war_id=${warIdText} source=${params.source} match_type=${params.matchType} inferred=${params.inferred ? "1" : "0"} confirmed=${params.confirmed ? "1" : "0"}`;
+  const logLevel = resolveMatchTypeResolutionLogLevel({
+    stage: params.stage,
+    clanTag: params.clanTag,
+    warId: params.warId,
+    source: params.source,
+    matchType: params.matchType,
+    inferred: params.inferred,
+    confirmed: params.confirmed,
+  });
+  if (logLevel === "info") {
+    console.info(line);
+    return;
+  }
+  console.debug(line);
 }
 
 type MatchView = {
@@ -814,6 +929,8 @@ const fwaComplianceViewPayloads = new Map<string, FwaComplianceViewPayload>();
 const fwaMailPollers = new Map<string, ReturnType<typeof setInterval>>();
 const pointsSnapshotCache = new Map<string, PointsSnapshotCacheEntry>();
 const pointsSnapshotInFlight = new Map<string, Promise<PointsSnapshot>>();
+const fwaMatchTypeResolutionLogGate = new SteadyStateLogGate();
+const fwaRoutinePointsSkipLogGate = new SteadyStateLogGate();
 
 /** Purpose: normalize any war id input to a comparable string key. */
 function normalizeWarIdText(
@@ -1943,9 +2060,19 @@ async function buildWarMailEmbedForTag(
     routineDecision.fetchReason ??
     (options?.routine ? "mail_refresh" : "mail_preview");
   if (options?.routine && !routineDecision.allowed) {
-    console.info(
-      `[fwa-mail] points fetch skipped guild=${guildId} clan=#${normalizedTag} outcome=${routineDecision.outcome} code=${routineDecision.decisionCode} reason=${routineDecision.reason}`,
-    );
+    const line = `[fwa-mail] points fetch skipped guild=${guildId} clan=#${normalizedTag} outcome=${routineDecision.outcome} code=${routineDecision.decisionCode} reason=${routineDecision.reason}`;
+    const logLevel = resolveRoutineBlockedPointsFetchSkipLogLevel({
+      guildId,
+      clanTag: normalizedTag,
+      fetchReason,
+      outcome: routineDecision.outcome,
+      decisionCode: routineDecision.decisionCode,
+    });
+    if (logLevel === "info") {
+      console.info(line);
+    } else {
+      console.debug(line);
+    }
   }
 
   let primaryBalance: number | null = null;
@@ -6426,6 +6553,12 @@ export const hasSameWarExplicitFwaConfirmationForTest =
   hasSameWarExplicitFwaConfirmation;
 export const applyExplicitOpponentNotFoundFallbackGuardForTest =
   applyExplicitOpponentNotFoundFallbackGuard;
+export const resolveMatchTypeResolutionLogLevelForTest =
+  resolveMatchTypeResolutionLogLevel;
+export const resolveRoutineBlockedPointsFetchSkipLogLevelForTest =
+  resolveRoutineBlockedPointsFetchSkipLogLevel;
+export const resetFwaSteadyStateLogTrackersForTest =
+  resetFwaSteadyStateLogTrackers;
 
 /** Purpose: infer match type strictly from opponent points-site signals. */
 function inferMatchTypeFromPointsSnapshots(

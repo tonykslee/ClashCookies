@@ -171,5 +171,88 @@ describe("WarMailLifecycleService", () => {
     expect(result.status).toBe("posted");
     expect(result.debug.reconciliationOutcome).toBe("channel_inaccessible");
   });
+
+  it("logs POSTED at info for first lifecycle transition", async () => {
+    const findSpy = vi.spyOn(prisma.warMailLifecycle, "findUnique").mockResolvedValueOnce(null as never);
+    const upsertSpy = vi.spyOn(prisma.warMailLifecycle, "upsert").mockResolvedValueOnce({} as never);
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+    const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => {});
+    const service = new WarMailLifecycleService();
+
+    await service.markPosted({
+      guildId: "guild-1",
+      clanTag: "AAA111",
+      warId: 1001,
+      channelId: "123",
+      messageId: "456",
+    });
+
+    expect(findSpy).toHaveBeenCalledTimes(1);
+    expect(upsertSpy).toHaveBeenCalledTimes(1);
+    expect(infoSpy).toHaveBeenCalledTimes(1);
+    expect(String(infoSpy.mock.calls[0]?.[0] ?? "")).toContain("status=POSTED");
+    expect(debugSpy).not.toHaveBeenCalled();
+  });
+
+  it("does not repeat POSTED info for no-op upserts with same message identity", async () => {
+    vi.spyOn(prisma.warMailLifecycle, "findUnique").mockResolvedValueOnce({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+      warId: 1001,
+      status: "POSTED",
+      channelId: "123",
+      messageId: "456",
+      postedAt: new Date(),
+      deletedAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as never);
+    vi.spyOn(prisma.warMailLifecycle, "upsert").mockResolvedValueOnce({} as never);
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+    const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => {});
+    const service = new WarMailLifecycleService();
+
+    await service.markPosted({
+      guildId: "guild-1",
+      clanTag: "AAA111",
+      warId: 1001,
+      channelId: "123",
+      messageId: "456",
+    });
+
+    expect(infoSpy).not.toHaveBeenCalled();
+    expect(debugSpy).toHaveBeenCalledTimes(1);
+    expect(String(debugSpy.mock.calls[0]?.[0] ?? "")).toContain("status=POSTED");
+  });
+
+  it("logs POSTED info when posted message identity changes", async () => {
+    vi.spyOn(prisma.warMailLifecycle, "findUnique").mockResolvedValueOnce({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+      warId: 1001,
+      status: "POSTED",
+      channelId: "123",
+      messageId: "old-message",
+      postedAt: new Date(),
+      deletedAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as never);
+    vi.spyOn(prisma.warMailLifecycle, "upsert").mockResolvedValueOnce({} as never);
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+    const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => {});
+    const service = new WarMailLifecycleService();
+
+    await service.markPosted({
+      guildId: "guild-1",
+      clanTag: "AAA111",
+      warId: 1001,
+      channelId: "123",
+      messageId: "new-message",
+    });
+
+    expect(infoSpy).toHaveBeenCalledTimes(1);
+    expect(debugSpy).not.toHaveBeenCalled();
+  });
 });
 
