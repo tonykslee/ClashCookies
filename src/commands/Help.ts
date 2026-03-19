@@ -64,6 +64,15 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     ],
     examples: ["/help", "/help command:sheet", "/help visibility:public"],
   },
+  emoji: {
+    summary: "Resolve or browse bot-owned application emojis by shortcode name.",
+    details: [
+      "Use `/emoji name:<emoji_name>` to resolve one emoji and show rendered + raw token output.",
+      "Use `/emoji` with no args to browse a paginated list of all available bot application emojis.",
+      "Emoji resolution is environment-safe by name (application emoji IDs may differ per bot instance).",
+    ],
+    examples: ["/emoji", "/emoji name:arrow_arrow", "/emoji name::arrow_arrow:"],
+  },
   lastseen: {
     summary: "Estimate when a player was last active.",
     details: [
