@@ -192,6 +192,14 @@ function isValidMessageId(value: string): boolean {
   return MESSAGE_ID_PATTERN.test(String(value ?? "").trim());
 }
 
+/** Purpose: read the shared command visibility value injected by framework registration plumbing. */
+function resolveInteractionVisibility(
+  interaction: ChatInputCommandInteraction,
+): "private" | "public" {
+  const visibility = interaction.options.getString("visibility", false);
+  return visibility === "public" ? "public" : "private";
+}
+
 /** Purpose: map resolver failure code to the most accurate user-facing /emoji error response. */
 function buildEmojiFailureMessage(code: EmojiResolverFailureCode): string {
   if (code === "application_missing" || code === "application_emoji_manager_unavailable") {
@@ -219,6 +227,7 @@ function logEmojiInventoryResult(input: {
   guildId: string | null;
   channelId: string | null;
   userId: string;
+  visibilityState?: "private" | "public";
   requestedName?: string;
   normalizedName?: string;
   focusedText?: string;
@@ -232,6 +241,7 @@ function logEmojiInventoryResult(input: {
     guild_id: input.guildId ?? "dm",
     channel_id: input.channelId ?? "none",
     user_id: input.userId,
+    visibility_state: input.visibilityState ?? "",
     requested_emoji_name: input.requestedName ?? "",
     normalized_emoji_name: input.normalizedName ?? "",
     focused_text: input.focusedText ?? "",
@@ -300,6 +310,7 @@ export const Emoji: Command = {
     const requestedName = String(rawName ?? "");
     const normalizedName = normalizeEmojiLookupName(requestedName);
     const targetMessageId = String(rawReact ?? "").trim();
+    const visibilityState = resolveInteractionVisibility(interaction);
 
     const mode: "list" | "resolve" | "react" = !hasNameInput
       ? "list"
@@ -314,6 +325,7 @@ export const Emoji: Command = {
         guild_id: interaction.guildId ?? "dm",
         channel_id: interaction.channelId ?? "none",
         user_id: interaction.user.id,
+        visibility_state: visibilityState,
         requested_emoji_name: requestedName,
         normalized_emoji_name: normalizedName,
         target_message_id: targetMessageId,
@@ -338,6 +350,7 @@ export const Emoji: Command = {
         guildId: interaction.guildId,
         channelId: interaction.channelId,
         userId: interaction.user.id,
+        visibilityState,
         requestedName,
         normalizedName,
         targetMessageId,
@@ -351,10 +364,12 @@ export const Emoji: Command = {
           guild_id: interaction.guildId ?? "dm",
           channel_id: interaction.channelId ?? "none",
           user_id: interaction.user.id,
+          visibility_state: visibilityState,
           requested_emoji_name: requestedName,
           normalized_emoji_name: normalizedName,
           target_message_id: targetMessageId,
           resolve_result: "inventory_unavailable",
+          result_type: mode === "resolve" ? "emoji_inventory_unavailable" : "",
           failure_code: "emoji_inventory_unavailable",
         });
         await interaction.editReply({
@@ -477,10 +492,12 @@ export const Emoji: Command = {
           guild_id: interaction.guildId ?? "dm",
           channel_id: interaction.channelId ?? "none",
           user_id: interaction.user.id,
+          visibility_state: visibilityState,
           requested_emoji_name: requestedName,
           normalized_emoji_name: normalizedName,
           target_message_id: targetMessageId,
           resolve_result: "not_found",
+          result_type: mode === "resolve" ? "emoji_not_found" : "",
           failure_code: "emoji_not_found",
         });
         await interaction.editReply({
@@ -492,21 +509,32 @@ export const Emoji: Command = {
       }
 
       if (mode === "resolve") {
+        const isVisibleOnly = visibilityState === "public";
         logEmojiEvent({
           command: "emoji",
           mode,
           guild_id: interaction.guildId ?? "dm",
           channel_id: interaction.channelId ?? "none",
           user_id: interaction.user.id,
+          visibility_state: visibilityState,
           requested_emoji_name: requestedName,
           normalized_emoji_name: normalizedName,
           resolve_result: "found",
+          result_type: isVisibleOnly ? "success_visible_only" : "success_detailed",
           failure_code: "none",
         });
-        await interaction.editReply({
-          embeds: [buildEmojiResolveEmbed(resolved)],
-          components: [],
-        });
+        if (isVisibleOnly) {
+          await interaction.editReply({
+            content: resolved.rendered,
+            embeds: [],
+            components: [],
+          });
+        } else {
+          await interaction.editReply({
+            embeds: [buildEmojiResolveEmbed(resolved)],
+            components: [],
+          });
+        }
         return;
       }
 

@@ -81,6 +81,7 @@ function buildFailureResult(
 function buildInteraction(input?: {
   name?: string | null;
   react?: string | null;
+  visibility?: "private" | "public";
   messageFetchError?: unknown;
   reactionError?: unknown;
   appPermissionHas?: (permission: PermissionResolvable) => boolean;
@@ -133,6 +134,7 @@ function buildInteraction(input?: {
       getString: vi.fn((name: string) => {
         if (name === "name") return input?.name ?? null;
         if (name === "react") return input?.react ?? null;
+        if (name === "visibility") return input?.visibility ?? "private";
         return null;
       }),
     },
@@ -204,6 +206,7 @@ describe("/emoji command", () => {
     const embed = payload.embeds?.[0];
     const json = typeof embed?.toJSON === "function" ? embed.toJSON() : embed?.data ?? {};
     expect(String(json.description ?? "")).toContain(":arrow_arrow:");
+    expect(String(payload.content ?? "")).not.toBe("<:arrow_arrow:1>");
   });
 
   it("supports name mode with colon-wrapped input", async () => {
@@ -230,6 +233,33 @@ describe("/emoji command", () => {
     expect(String(json.description ?? "")).toContain(":arrow_arrow:");
   });
 
+  it("returns only visible emoji content for name mode when visibility is public", async () => {
+    const resolver = buildResolverStub();
+    resolver.fetchApplicationEmojiInventory.mockResolvedValue(
+      buildSuccessResult([
+        {
+          id: "1",
+          name: "arrow_arrow",
+          shortcode: ":arrow_arrow:",
+          rendered: "<:arrow_arrow:1>",
+          animated: false,
+        },
+      ]),
+    );
+    setEmojiResolverForTest(resolver as any);
+    const { interaction, editReply } = buildInteraction({
+      name: "arrow_arrow",
+      visibility: "public",
+    });
+
+    await Emoji.run({} as Client, interaction, {} as any);
+
+    const payload = editReply.mock.calls[0]?.[0] ?? {};
+    expect(payload.content).toBe("<:arrow_arrow:1>");
+    expect(payload.embeds ?? []).toEqual([]);
+    expect(payload.components ?? []).toEqual([]);
+  });
+
   it("supports name mode not found", async () => {
     const resolver = buildResolverStub();
     resolver.fetchApplicationEmojiInventory.mockResolvedValue(
@@ -245,6 +275,23 @@ describe("/emoji command", () => {
     );
     setEmojiResolverForTest(resolver as any);
     const { interaction, editReply } = buildInteraction({ name: "not_real" });
+
+    await Emoji.run({} as Client, interaction, {} as any);
+
+    const payload = editReply.mock.calls[0]?.[0] ?? {};
+    expect(String(payload.content ?? "")).toContain(
+      "Could not find an application emoji named",
+    );
+  });
+
+  it("returns not-found message for name mode when visibility is public", async () => {
+    const resolver = buildResolverStub();
+    resolver.fetchApplicationEmojiInventory.mockResolvedValue(buildSuccessResult([]));
+    setEmojiResolverForTest(resolver as any);
+    const { interaction, editReply } = buildInteraction({
+      name: "not_real",
+      visibility: "public",
+    });
 
     await Emoji.run({} as Client, interaction, {} as any);
 
@@ -440,6 +487,25 @@ describe("/emoji command", () => {
     );
     setEmojiResolverForTest(resolver as any);
     const { interaction, editReply } = buildInteraction();
+
+    await Emoji.run({} as Client, interaction, {} as any);
+
+    const payload = editReply.mock.calls[0]?.[0] ?? {};
+    expect(String(payload.content ?? "")).toContain(
+      "Could not load application emojis right now",
+    );
+  });
+
+  it("shows runtime-unavailable message for name mode in public visibility", async () => {
+    const resolver = buildResolverStub();
+    resolver.fetchApplicationEmojiInventory.mockResolvedValue(
+      buildFailureResult("application_emoji_manager_unavailable"),
+    );
+    setEmojiResolverForTest(resolver as any);
+    const { interaction, editReply } = buildInteraction({
+      name: "arrow_arrow",
+      visibility: "public",
+    });
 
     await Emoji.run({} as Client, interaction, {} as any);
 
