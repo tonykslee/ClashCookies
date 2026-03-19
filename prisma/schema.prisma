@@ -651,7 +651,7 @@ model FwaFeedSyncState {
   id                  String            @id @default(cuid())
   feedType            FwaFeedType
   scopeType           FwaFeedScopeType
-  scopeKey            String?
+  scopeKey            String
   lastAttemptAt       DateTime?
   lastSuccessAt       DateTime?
   lastStatus          FwaFeedSyncStatus @default(IDLE)

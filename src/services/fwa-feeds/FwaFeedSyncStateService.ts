@@ -1,5 +1,6 @@
 import type { FwaFeedScopeType, FwaFeedSyncStatus, FwaFeedType } from "@prisma/client";
 import { prisma } from "../../prisma";
+import { resolveFwaFeedScopeKey } from "./scopeKey";
 
 type SyncScope = {
   feedType: FwaFeedType;
@@ -27,12 +28,20 @@ export class FwaFeedSyncStateService {
     return prisma.fwaFeedSyncState as any;
   }
 
+  private resolveScope(scope: SyncScope): SyncScope & { scopeKey: string } {
+    return {
+      ...scope,
+      scopeKey: resolveFwaFeedScopeKey(scope),
+    };
+  }
+
   private buildCompoundScopeWhere(scope: SyncScope) {
+    const resolved = this.resolveScope(scope);
     return {
       feedType_scopeType_scopeKey: {
-        feedType: scope.feedType,
-        scopeType: scope.scopeType,
-        scopeKey: scope.scopeKey,
+        feedType: resolved.feedType,
+        scopeType: resolved.scopeType,
+        scopeKey: resolved.scopeKey,
       },
     };
   }
@@ -40,17 +49,18 @@ export class FwaFeedSyncStateService {
   /** Purpose: load current sync-state metadata row for one feed/scope identity. */
   async getState(scope: SyncScope) {
     const delegate = this.getDelegate();
+    const resolved = this.resolveScope(scope);
     if (typeof delegate.findFirst === "function") {
       return delegate.findFirst({
         where: {
-          feedType: scope.feedType,
-          scopeType: scope.scopeType,
-          scopeKey: scope.scopeKey,
+          feedType: resolved.feedType,
+          scopeType: resolved.scopeType,
+          scopeKey: resolved.scopeKey,
         },
       });
     }
     return delegate.findUnique({
-      where: this.buildCompoundScopeWhere(scope),
+      where: this.buildCompoundScopeWhere(resolved),
     });
   }
 
@@ -72,12 +82,13 @@ export class FwaFeedSyncStateService {
   /** Purpose: persist sync-attempt timestamps before fetch/parse work starts. */
   async recordAttempt(scope: SyncScope, nextEligibleAt: Date | null, now: Date = new Date()): Promise<void> {
     const delegate = this.getDelegate();
+    const resolved = this.resolveScope(scope);
     await delegate.upsert({
-      where: this.buildCompoundScopeWhere(scope),
+      where: this.buildCompoundScopeWhere(resolved),
       create: {
-        feedType: scope.feedType,
-        scopeType: scope.scopeType,
-        scopeKey: scope.scopeKey,
+        feedType: resolved.feedType,
+        scopeType: resolved.scopeType,
+        scopeKey: resolved.scopeKey,
         lastAttemptAt: now,
         nextEligibleAt,
       },
@@ -91,12 +102,13 @@ export class FwaFeedSyncStateService {
   /** Purpose: persist successful sync metadata including content hash and row counts. */
   async recordSuccess(params: RecordSuccessParams, now: Date = new Date()): Promise<void> {
     const delegate = this.getDelegate();
+    const resolved = this.resolveScope(params);
     await delegate.upsert({
-      where: this.buildCompoundScopeWhere(params),
+      where: this.buildCompoundScopeWhere(resolved),
       create: {
-        feedType: params.feedType,
-        scopeType: params.scopeType,
-        scopeKey: params.scopeKey,
+        feedType: resolved.feedType,
+        scopeType: resolved.scopeType,
+        scopeKey: resolved.scopeKey,
         lastAttemptAt: now,
         lastSuccessAt: now,
         lastStatus: params.status,
@@ -124,12 +136,13 @@ export class FwaFeedSyncStateService {
   /** Purpose: persist failed sync metadata and concise error diagnostics for one scope. */
   async recordFailure(params: RecordFailureParams, now: Date = new Date()): Promise<void> {
     const delegate = this.getDelegate();
+    const resolved = this.resolveScope(params);
     await delegate.upsert({
-      where: this.buildCompoundScopeWhere(params),
+      where: this.buildCompoundScopeWhere(resolved),
       create: {
-        feedType: params.feedType,
-        scopeType: params.scopeType,
-        scopeKey: params.scopeKey,
+        feedType: resolved.feedType,
+        scopeType: resolved.scopeType,
+        scopeKey: resolved.scopeKey,
         lastAttemptAt: now,
         lastStatus: "FAILURE",
         lastErrorCode: params.errorCode,
