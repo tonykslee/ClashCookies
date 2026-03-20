@@ -1,15 +1,17 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   applyExplicitOpponentNotFoundFallbackGuardForTest,
   hasSameWarExplicitFwaConfirmationForTest,
   getMailBlockedReasonFromStatusForTest,
   inferMatchTypeFromPointsSnapshotsForTest,
+  resolveMatchTypeWithFallbackForTest,
   resolveMatchTypeFromStoredSyncRowForTest,
 } from "../src/commands/Fwa";
 import {
   chooseMatchTypeResolution,
   resolveCurrentWarMatchTypeSignal,
 } from "../src/services/MatchTypeResolutionService";
+import { PointsSyncService } from "../src/services/PointsSyncService";
 
 describe("fwa match inference from points snapshots", () => {
   it("returns null when opponent evidence is unavailable", () => {
@@ -226,6 +228,43 @@ describe("fwa match stored sync fallback", () => {
       inferred: true,
       confirmed: false,
       syncIsFwa: true,
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("keeps post-war resolution stable by preferring stored sync over unconfirmed current-war state", async () => {
+    vi.spyOn(PointsSyncService.prototype, "getCurrentSyncForClan").mockResolvedValue({
+      opponentTag: "#20P292Q2V",
+      isFwa: false,
+      lastKnownMatchType: "BL",
+    } as any);
+
+    const fallback = await resolveMatchTypeWithFallbackForTest({
+      guildId: "guild-1",
+      clanTag: "9GLGQCCU",
+      opponentTag: "20P292Q2V",
+      warState: "notInWar",
+      warId: 1001383,
+      warStartTime: new Date("2026-03-18T22:12:43.000Z"),
+      existingMatchType: "MM",
+      existingInferredMatchType: true,
+    });
+    const resolved = chooseMatchTypeResolution({
+      confirmedCurrent: fallback.confirmedCurrent,
+      liveOpponent: null,
+      storedSync: fallback.storedSync,
+      unconfirmedCurrent: fallback.unconfirmedCurrent,
+    });
+
+    expect(resolved).toMatchObject({
+      matchType: "BL",
+      source: "stored_sync",
+      inferred: true,
+      confirmed: false,
+      syncIsFwa: false,
     });
   });
 });

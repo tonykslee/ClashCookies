@@ -164,6 +164,76 @@ describe("PointsDirectFetchGate lifecycle", () => {
     expect(transitioned.lockUntilMs).toBeNull();
   });
 
+  it("keeps non-MM post-war wait state unchanged when observed points equal baseline", () => {
+    const state = buildState({
+      lifecycleState: "post_war_unlocked_waiting_for_point_change",
+      postedSyncAtMs: null,
+      lockUntilMs: null,
+      matchType: "BL",
+      baselinePoints: 6,
+      pointValueChangedAtMs: null,
+    });
+    const transitioned = applyObservedPointValueTransitionForTest({
+      state,
+      observedPoints: 6,
+      nowMs: new Date("2026-03-09T08:00:00.000Z").getTime(),
+    });
+
+    expect(transitioned).toEqual(state);
+    expect(transitioned.lifecycleState).toBe(
+      "post_war_unlocked_waiting_for_point_change",
+    );
+    expect(transitioned.baselinePoints).toBe(6);
+  });
+
+  it("does not unlock MM post-war state when observed points change", () => {
+    const state = buildState({
+      lifecycleState: "post_war_unlocked_waiting_for_point_change",
+      postedSyncAtMs: null,
+      lockUntilMs: null,
+      matchType: "MM",
+      baselinePoints: 6,
+      pointValueChangedAtMs: null,
+    });
+    const transitioned = applyObservedPointValueTransitionForTest({
+      state,
+      observedPoints: 7,
+      nowMs: new Date("2026-03-09T08:00:00.000Z").getTime(),
+    });
+
+    expect(transitioned).toEqual(state);
+    expect(transitioned.lifecycleState).toBe(
+      "post_war_unlocked_waiting_for_point_change",
+    );
+    expect(transitioned.baselinePoints).toBe(6);
+  });
+
+  it("keeps post-war waiting lifecycle when reusable sync snapshot blocks direct fetch", () => {
+    const runtime = buildRuntime({
+      warState: "notInWar",
+      matchType: "BL",
+      hasReusableWarSnapshot: true,
+    });
+    const state = buildState({
+      lifecycleState: "post_war_unlocked_waiting_for_point_change",
+      matchType: "BL",
+      baselinePoints: 6,
+    });
+    const decision = buildPointsDirectFetchDecisionForTest({
+      runtime,
+      state,
+      caller: "poller",
+      fetchReason: "post_war_reconciliation",
+      manualForceBypass: false,
+    });
+
+    expect(decision.allowed).toBe(false);
+    expect(decision.decisionCode).toBe("reused_war_snapshot");
+    expect(decision.lockState).toBe(
+      "post_war_unlocked_waiting_for_point_change",
+    );
+  });
+
   it("keeps MM locked until pre-sync window when posted sync exists", () => {
     const warEndMs = new Date("2026-03-09T07:00:00.000Z").getTime();
     const postedSyncAtMs = new Date("2026-03-09T09:00:00.000Z").getTime();
