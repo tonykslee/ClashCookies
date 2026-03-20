@@ -82,7 +82,7 @@ const COL_TOTAL_PLAYERS = 21; // V
 const COL_BUCKET_START = 22; // W (was 21 / V)
 const COL_BUCKET_END = 27; // AB (was 26 / AA)
 const COL_ADJUSTMENT = 54; // BC (was 53 / BB)
-const FIXED_LAYOUT_RANGE = "AllianceDashboard!A6:BD500";
+const FIXED_LAYOUT_RANGE = "AllianceDashboard!A6:BE500";
 const FIXED_LAYOUT_RANGE_START_ROW = 6;
 const STATE_HEADERS = [
   "Clan",
@@ -557,7 +557,7 @@ async function buildCompoPlacePayload(input: {
     return {
       payload: {
         content:
-          "No placement data found in ACTUAL rows from AllianceDashboard!A6:BD500.",
+          "No placement data found in ACTUAL rows from AllianceDashboard!A6:BE500.",
       },
       candidateCount: 0,
       recommendedCount: 0,
