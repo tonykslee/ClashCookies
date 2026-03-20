@@ -1,8 +1,9 @@
-import type { Client } from "discord.js";
+import type { ChatInputCommandInteraction, Client } from "discord.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Command } from "../src/Command";
 
 type ListenerHandler = (interaction: unknown) => Promise<void>;
+type CompoRun = (client: Client, interaction: ChatInputCommandInteraction, cocService: unknown) => Promise<void>;
 
 function makeCompoSlashInteraction() {
   const interaction: any = {
@@ -52,8 +53,8 @@ async function loadInteractionHandler(runMock: ReturnType<typeof vi.fn>): Promis
   if (!compoCommand) {
     throw new Error("Could not find /compo command");
   }
-  const originalRun = compoCommand.run;
-  compoCommand.run = runMock;
+
+  const runSpy = vi.spyOn(compoCommand, "run").mockImplementation(runMock as unknown as CompoRun);
 
   const { default: registerInteractionCreate } = await import(
     "../src/listeners/interactionCreate"
@@ -75,7 +76,7 @@ async function loadInteractionHandler(runMock: ReturnType<typeof vi.fn>): Promis
   return {
     handler,
     restoreCommand: () => {
-      compoCommand.run = originalRun;
+      runSpy.mockRestore();
     },
   };
 }
@@ -90,43 +91,48 @@ describe("interactionCreate /compo early acknowledgement", () => {
     vi.restoreAllMocks();
   });
 
-  it("acknowledges /compo before waiting on permission checks", async () => {
+  it("does not pre-acknowledge /compo in the interaction listener", async () => {
     const runMock = vi.fn().mockResolvedValue(undefined);
-    const { SettingsService } = await import("../src/services/SettingsService");
-    let resolveSettingsGet: (value: string) => void = () => undefined;
-    const settingsGetPromise = new Promise<string>((resolve) => {
-      resolveSettingsGet = resolve;
+    const { CommandPermissionService } = await import("../src/services/CommandPermissionService");
+    let resolveCanUse: (value: boolean) => void = () => undefined;
+    const canUsePromise = new Promise<boolean>((resolve) => {
+      resolveCanUse = resolve;
     });
-    const settingsGetSpy = vi
-      .spyOn(SettingsService.prototype, "get")
-      .mockReturnValue(settingsGetPromise as Promise<string | null>);
-    const { handler, restoreCommand } = await loadInteractionHandler(runMock);
+    const canUseSpy = vi
+      .spyOn(CommandPermissionService.prototype, "canUseAnyTarget")
+      .mockReturnValue(canUsePromise);
+    const { handler, restoreCommand } = await loadInteractionHandler(runMock as unknown as ReturnType<typeof vi.fn>);
     const interaction = makeCompoSlashInteraction();
     const deferReplySpy = interaction.deferReply;
+    const editReplySpy = interaction.editReply;
+    const replySpy = interaction.reply;
 
     const pending = handler(interaction);
-    for (let i = 0; i < 20 && settingsGetSpy.mock.calls.length === 0; i += 1) {
+    for (let i = 0; i < 20 && canUseSpy.mock.calls.length === 0; i += 1) {
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
 
-    expect(deferReplySpy).toHaveBeenCalledTimes(1);
-    expect(settingsGetSpy).toHaveBeenCalled();
-    expect(deferReplySpy.mock.invocationCallOrder[0]).toBeLessThan(
-      settingsGetSpy.mock.invocationCallOrder[0]
-    );
+    expect(deferReplySpy).not.toHaveBeenCalled();
+    expect(editReplySpy).not.toHaveBeenCalled();
+    expect(replySpy).not.toHaveBeenCalled();
+    expect(canUseSpy).toHaveBeenCalled();
     expect(runMock).not.toHaveBeenCalled();
 
-    resolveSettingsGet("123");
+    resolveCanUse(true);
     await pending;
     restoreCommand();
     expect(runMock).toHaveBeenCalledTimes(1);
   });
 
   it("uses post-ack error response path when /compo fails after defer", async () => {
-    const { SettingsService } = await import("../src/services/SettingsService");
-    vi.spyOn(SettingsService.prototype, "get").mockResolvedValue("123");
-    const runMock = vi.fn().mockRejectedValue(new Error("boom"));
-    const { handler, restoreCommand } = await loadInteractionHandler(runMock);
+    const { CommandPermissionService } = await import("../src/services/CommandPermissionService");
+    vi.spyOn(CommandPermissionService.prototype, "canUseAnyTarget").mockResolvedValue(true);
+    const runMockImpl: CompoRun = async (_client, interaction, _cocService) => {
+      await interaction.deferReply({ ephemeral: true });
+      throw new Error("boom");
+    };
+    const runMock = vi.fn(runMockImpl);
+    const { handler, restoreCommand } = await loadInteractionHandler(runMock as unknown as ReturnType<typeof vi.fn>);
     const interaction = makeCompoSlashInteraction();
     const deferReplySpy = interaction.deferReply;
     const editReplySpy = interaction.editReply;
