@@ -3,6 +3,7 @@ import {
   buildWarMailPostedContentForTest,
   buildWarMailRefreshEditPayloadForTest,
   hasWarIdentityShiftedForTest,
+  resolveWarMailRefreshIdentityDecisionForTest,
 } from "../src/commands/Fwa";
 
 describe("fwa war-mail war identity shift detection", () => {
@@ -30,6 +31,79 @@ describe("fwa war-mail war identity shift detection", () => {
       renderedWarStartMs: 1_700_000_000_000,
     });
     expect(shifted).toBe(false);
+  });
+
+  it("detects shift when the opponent identity changes for the same posted war id", () => {
+    const shifted = hasWarIdentityShiftedForTest({
+      postedWarId: "1001",
+      postedOpponentTag: "2OLDTAG",
+      renderedWarId: 1001,
+      renderedOpponentTag: "2NEWTAG",
+    });
+    expect(shifted).toBe(true);
+  });
+
+  it("does not flag shift when expected/posted and rendered opponent identities match", () => {
+    const shifted = hasWarIdentityShiftedForTest({
+      expectedWarId: "1001",
+      expectedOpponentTag: "#2MATCHED",
+      renderedWarId: 1001,
+      renderedOpponentTag: "2MATCHED",
+    });
+    expect(shifted).toBe(false);
+  });
+});
+
+describe("fwa war-mail refresh identity decision", () => {
+  it("freezes when a refresh resolves to a different war identity", () => {
+    const decision = resolveWarMailRefreshIdentityDecisionForTest({
+      expectedWarId: "1001",
+      expectedWarStartMs: 1_700_000_000_000,
+      postedWarId: "1001",
+      postedOpponentTag: "2OLDTAG",
+      renderedWarId: 2002,
+      renderedWarStartMs: 1_700_086_400_000,
+      renderedOpponentTag: "2NEWTAG",
+    });
+
+    expect(decision).toEqual({
+      action: "freeze",
+      identityShifted: true,
+    });
+  });
+
+  it("allows same-war rerender edits when identity is unchanged", () => {
+    const decision = resolveWarMailRefreshIdentityDecisionForTest({
+      expectedWarId: "1001",
+      expectedWarStartMs: 1_700_000_000_000,
+      postedWarId: "1001",
+      postedOpponentTag: "2MATCHED",
+      renderedWarId: 1001,
+      renderedWarStartMs: 1_700_000_000_000,
+      renderedOpponentTag: "2MATCHED",
+    });
+
+    expect(decision).toEqual({
+      action: "edit",
+      identityShifted: false,
+    });
+  });
+
+  it("fails closed when neither expected nor posted identity is available", () => {
+    const decision = resolveWarMailRefreshIdentityDecisionForTest({
+      expectedWarId: null,
+      expectedWarStartMs: null,
+      postedWarId: null,
+      postedOpponentTag: null,
+      renderedWarId: 1001,
+      renderedWarStartMs: 1_700_000_000_000,
+      renderedOpponentTag: "2MATCHED",
+    });
+
+    expect(decision).toEqual({
+      action: "freeze",
+      identityShifted: true,
+    });
   });
 });
 

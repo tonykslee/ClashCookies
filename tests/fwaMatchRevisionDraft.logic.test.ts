@@ -306,6 +306,43 @@ describe("fwa match posted mail gating with revisions", () => {
     expect(reason).toBeNull();
   });
 
+  it("does not report posted state as up-to-date across war identities", () => {
+    const baseline = resolveConfirmedRevisionBaselineForTest({
+      syncRow: {
+        warId: "1001",
+        opponentTag: "#2OLDWAR",
+        lastKnownMatchType: "BL",
+        lastKnownOutcome: null,
+        isFwa: false,
+        confirmedByClanMail: true,
+      },
+      mailConfig: {
+        lastWarId: "1001",
+        lastOpponentTag: "#2OLDWAR",
+        lastMatchType: "BL",
+        lastExpectedOutcome: null,
+      },
+      liveFields: {
+        warId: "2002",
+        opponentTag: "2NEWWAR",
+        matchType: "FWA",
+        expectedOutcome: "WIN",
+      },
+      lifecycleStatus: "posted",
+    });
+    const reason = getMailBlockedReasonFromRevisionStateForTest({
+      inferredMatchType: false,
+      hasMailChannel: true,
+      mailStatus: "posted",
+      appliedDraft: null,
+      draftDiffersFromBaseline: false,
+      hasConfirmedBaseline: Boolean(baseline),
+    });
+
+    expect(baseline).toBeNull();
+    expect(reason).toBeNull();
+  });
+
   it("allows draft-confirmed send for inferred not-posted state", () => {
     const reason = getMailBlockedReasonFromRevisionStateForTest({
       inferredMatchType: true,
