@@ -12,6 +12,11 @@ vi.mock("../src/prisma", () => ({
 }));
 
 import {
+  batchFwaBaseSwapPingLinesForTest,
+  buildFwaBaseSwapActiveWarDmLinesForTest,
+  buildFwaBaseSwapBaseErrorDmLinesForTest,
+  buildFwaBaseSwapDmContentForTest,
+  deliverFwaBaseSwapDmMessagesForTest,
   FWA_BASE_SWAP_ACK_EMOJI,
   FWA_BASE_SWAP_ALERT_FALLBACK_EMOJI,
   FWA_BASE_SWAP_LAYOUT_BULLET_FALLBACK_EMOJI,
@@ -437,5 +442,276 @@ describe("FWA base-swap layout links", () => {
     expect(message.edit).toHaveBeenCalledTimes(1);
     const editPayload = message.edit.mock.calls[0]?.[0];
     expect(editPayload.allowedMentions.users).toEqual(["reactor-1"]);
+  });
+});
+
+describe("FWA base-swap DM copy helpers", () => {
+  it("creates a single ACTIVE WAR BASE line when all pings fit", () => {
+    const lines = buildFwaBaseSwapActiveWarDmLinesForTest([
+      buildEntry({
+        position: 1,
+        playerTag: "#AAA111",
+        playerName: "Alpha",
+        section: "war_bases",
+      }),
+      buildEntry({
+        position: 2,
+        playerTag: "#BBB222",
+        playerName: "Bravo",
+        section: "war_bases",
+      }),
+      buildEntry({
+        position: 3,
+        playerTag: "#CCC333",
+        playerName: "Charlie",
+        section: "war_bases",
+      }),
+    ]);
+
+    expect(lines).toEqual([
+      "ACTIVE WAR BASE: swap to FWA now @Alpha @Bravo @Charlie",
+    ]);
+  });
+
+  it("splits ACTIVE WAR BASE lines when there are more than five pings", () => {
+    const lines = buildFwaBaseSwapActiveWarDmLinesForTest([
+      buildEntry({
+        position: 1,
+        playerTag: "#A1",
+        playerName: "One",
+        section: "war_bases",
+      }),
+      buildEntry({
+        position: 2,
+        playerTag: "#A2",
+        playerName: "Two",
+        section: "war_bases",
+      }),
+      buildEntry({
+        position: 3,
+        playerTag: "#A3",
+        playerName: "Three",
+        section: "war_bases",
+      }),
+      buildEntry({
+        position: 4,
+        playerTag: "#A4",
+        playerName: "Four",
+        section: "war_bases",
+      }),
+      buildEntry({
+        position: 5,
+        playerTag: "#A5",
+        playerName: "Five",
+        section: "war_bases",
+      }),
+      buildEntry({
+        position: 6,
+        playerTag: "#A6",
+        playerName: "Six",
+        section: "war_bases",
+      }),
+    ]);
+
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toBe(
+      "ACTIVE WAR BASE: swap to FWA now @One @Two @Three @Four @Five",
+    );
+    expect(lines[1]).toBe("ACTIVE WAR BASE: swap to FWA now @Six");
+  });
+
+  it("splits lines before five pings when the 256-char limit is reached", () => {
+    const longTokenA = `@${"a".repeat(110)}`;
+    const longTokenB = `@${"b".repeat(110)}`;
+    const longTokenC = `@${"c".repeat(110)}`;
+    const lines = batchFwaBaseSwapPingLinesForTest(
+      "ACTIVE WAR BASE: swap to FWA now",
+      [longTokenA, longTokenB, longTokenC],
+    );
+
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain(longTokenA);
+    expect(lines[0]).toContain(longTokenB);
+    expect(lines[0]).not.toContain(longTokenC);
+    expect(lines[1]).toContain(longTokenC);
+    for (const line of lines) {
+      expect(line.length).toBeLessThanOrEqual(256);
+    }
+  });
+
+  it("keeps generated lines valid at exact five pings and exact 256 chars", () => {
+    const fivePingLine = batchFwaBaseSwapPingLinesForTest(
+      "ACTIVE WAR BASE: swap to FWA now",
+      ["@a", "@b", "@c", "@d", "@e"],
+    );
+    expect(fivePingLine).toEqual([
+      "ACTIVE WAR BASE: swap to FWA now @a @b @c @d @e",
+    ]);
+
+    const prefix = "ACTIVE WAR BASE: swap to FWA now";
+    const exactLengthToken = `@${"z".repeat(256 - prefix.length - 2)}`;
+    const exactLine = batchFwaBaseSwapPingLinesForTest(prefix, [exactLengthToken]);
+    expect(exactLine).toHaveLength(1);
+    expect(exactLine[0].length).toBe(256);
+  });
+
+  it("groups base-error lines by TH and preserves member order inside each TH", () => {
+    const lines = buildFwaBaseSwapBaseErrorDmLinesForTest([
+      buildEntry({
+        position: 2,
+        playerTag: "#B1",
+        playerName: "Two",
+        section: "base_errors",
+        townhallLevel: 16,
+      }),
+      buildEntry({
+        position: 3,
+        playerTag: "#B2",
+        playerName: "Three",
+        section: "base_errors",
+        townhallLevel: 15,
+      }),
+      buildEntry({
+        position: 4,
+        playerTag: "#B3",
+        playerName: "Four",
+        section: "base_errors",
+        townhallLevel: 16,
+      }),
+    ]);
+
+    expect(lines).toEqual([
+      "TH16 update FWA layout: !th16 @Two @Four",
+      "TH15 update FWA layout: !th15 @Three",
+    ]);
+  });
+
+  it("assembles readable DM sections and separator only when both sections exist", () => {
+    const content = buildFwaBaseSwapDmContentForTest([
+      buildEntry({
+        position: 1,
+        playerTag: "#A1",
+        playerName: "Alpha",
+        section: "war_bases",
+      }),
+      buildEntry({
+        position: 2,
+        playerTag: "#B1",
+        playerName: "Bravo",
+        section: "base_errors",
+        townhallLevel: 16,
+      }),
+    ]);
+
+    expect(content).toContain("Active war base messages:");
+    expect(content).toContain("Base error messages:");
+    expect(content).toContain("----------");
+    expect(content).toContain(
+      "`ACTIVE WAR BASE: swap to FWA now @Alpha`",
+    );
+    expect(content).toContain(
+      "`TH16 update FWA layout: !th16 @Bravo`",
+    );
+  });
+
+  it("omits empty sections and returns null when there are no players in either category", () => {
+    const onlyActive = buildFwaBaseSwapDmContentForTest([
+      buildEntry({
+        position: 1,
+        playerTag: "#A1",
+        playerName: "Alpha",
+        section: "war_bases",
+      }),
+    ]);
+    expect(onlyActive).toContain("Active war base messages:");
+    expect(onlyActive).not.toContain("Base error messages:");
+    expect(onlyActive).not.toContain("----------");
+
+    const none = buildFwaBaseSwapDmContentForTest([]);
+    expect(none).toBeNull();
+  });
+
+  it("wraps each generated copy line in inline backticks without changing line constraints", () => {
+    const content = buildFwaBaseSwapDmContentForTest([
+      buildEntry({
+        position: 1,
+        playerTag: "#A1",
+        playerName: "Alpha",
+        section: "war_bases",
+      }),
+      buildEntry({
+        position: 2,
+        playerTag: "#A2",
+        playerName: "Beta",
+        section: "war_bases",
+      }),
+    ]);
+    expect(content).not.toBeNull();
+    const lines = String(content).split("\n");
+    const wrappedLines = lines.filter((line) => line.startsWith("`"));
+    expect(wrappedLines.length).toBeGreaterThan(0);
+    for (const wrappedLine of wrappedLines) {
+      expect(wrappedLine.endsWith("`")).toBe(true);
+      const raw = wrappedLine.slice(1, -1);
+      expect(raw.includes("\n")).toBe(false);
+      expect(raw.length).toBeLessThanOrEqual(256);
+    }
+  });
+});
+
+describe("FWA base-swap DM delivery behavior", () => {
+  it("completes normally when DM delivery succeeds", async () => {
+    const sendDm = vi.fn().mockResolvedValue(undefined);
+    const sendFailureNotice = vi.fn().mockResolvedValue(undefined);
+
+    const result = await deliverFwaBaseSwapDmMessagesForTest({
+      entries: [
+        buildEntry({
+          position: 1,
+          playerTag: "#A1",
+          playerName: "Alpha",
+          section: "war_bases",
+        }),
+      ],
+      guildId: "guild-1",
+      channelId: "channel-1",
+      clanTag: "2QG2C08UP",
+      userId: "user-1",
+      sendDm,
+      sendFailureNotice,
+    });
+
+    expect(result).toBe("sent");
+    expect(sendDm).toHaveBeenCalledTimes(1);
+    expect(sendFailureNotice).not.toHaveBeenCalled();
+  });
+
+  it("keeps command flow successful and sends failure notice when DM fails", async () => {
+    const sendDm = vi.fn().mockRejectedValue(new Error("dm blocked"));
+    const sendFailureNotice = vi.fn().mockResolvedValue(undefined);
+
+    const result = await deliverFwaBaseSwapDmMessagesForTest({
+      entries: [
+        buildEntry({
+          position: 1,
+          playerTag: "#A1",
+          playerName: "Alpha",
+          section: "war_bases",
+        }),
+      ],
+      guildId: "guild-1",
+      channelId: "channel-1",
+      clanTag: "2QG2C08UP",
+      userId: "user-1",
+      sendDm,
+      sendFailureNotice,
+    });
+
+    expect(result).toBe("failed_notified");
+    expect(sendDm).toHaveBeenCalledTimes(1);
+    expect(sendFailureNotice).toHaveBeenCalledTimes(1);
+    expect(sendFailureNotice).toHaveBeenCalledWith(
+      "Posted the base-swap message, but I couldn't DM you the in-game ping messages.",
+    );
   });
 });
