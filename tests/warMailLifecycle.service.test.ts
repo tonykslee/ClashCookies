@@ -254,5 +254,40 @@ describe("WarMailLifecycleService", () => {
     expect(infoSpy).toHaveBeenCalledTimes(1);
     expect(debugSpy).not.toHaveBeenCalled();
   });
+
+  it("scopes message lookup to one war identity when warId is provided", async () => {
+    const findFirstSpy = vi.spyOn(prisma.warMailLifecycle, "findFirst").mockResolvedValueOnce({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+      warId: 1001,
+      status: "POSTED",
+      messageId: "456",
+      channelId: "123",
+      postedAt: new Date(),
+      deletedAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as never);
+    const service = new WarMailLifecycleService();
+
+    await service.findLifecycleByMessage({
+      guildId: "guild-1",
+      channelId: "123",
+      messageId: "456",
+      warId: 1001,
+    });
+
+    expect(findFirstSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          guildId: "guild-1",
+          channelId: "123",
+          messageId: "456",
+          status: "POSTED",
+          warId: 1001,
+        }),
+      }),
+    );
+  });
 });
 
