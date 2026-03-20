@@ -15,6 +15,7 @@ const FWA_MAIL_BACK_PREFIX = "fwa-mail-back";
 const FWA_MAIL_REFRESH_PREFIX = "fwa-mail-refresh";
 const FWA_MATCH_SEND_MAIL_PREFIX = "fwa-match-send-mail";
 const FWA_COMPLIANCE_VIEW_PREFIX = "fwa-compliance-view";
+const FWA_BASE_SWAP_SPLIT_POST_PREFIX = "fwa-base-swap-split-post";
 
 export type MatchTypeActionParams = {
   userId: string;
@@ -50,6 +51,13 @@ export type FwaComplianceViewParams = {
   userId: string;
   key: string;
   action: FwaComplianceViewAction;
+};
+
+export type FwaBaseSwapSplitPostAction = "yes" | "cancel";
+export type FwaBaseSwapSplitPostParams = {
+  userId: string;
+  key: string;
+  action: FwaBaseSwapSplitPostAction;
 };
 
 /** Purpose: normalize incoming clan tags to the internal uppercase/hashless form. */
@@ -394,4 +402,29 @@ export function parseFwaComplianceViewCustomId(
 /** Purpose: detect /fwa compliance embed view button custom-id prefix. */
 export function isFwaComplianceViewButtonCustomId(customId: string): boolean {
   return customId.startsWith(`${FWA_COMPLIANCE_VIEW_PREFIX}:`);
+}
+
+/** Purpose: build custom-id for oversize base-swap split-post confirmation buttons. */
+export function buildFwaBaseSwapSplitPostCustomId(
+  params: FwaBaseSwapSplitPostParams,
+): string {
+  return `${FWA_BASE_SWAP_SPLIT_POST_PREFIX}:${params.userId}:${params.key}:${params.action}`;
+}
+
+/** Purpose: parse base-swap split-post confirmation custom-id payload. */
+export function parseFwaBaseSwapSplitPostCustomId(
+  customId: string,
+): FwaBaseSwapSplitPostParams | null {
+  const values = parseCustomIdParts(customId, FWA_BASE_SWAP_SPLIT_POST_PREFIX, 4);
+  if (!values) return null;
+  const [userId, key, rawAction] = values;
+  const action: FwaBaseSwapSplitPostAction | null =
+    rawAction === "yes" || rawAction === "cancel" ? rawAction : null;
+  if (!action) return null;
+  return { userId, key, action };
+}
+
+/** Purpose: detect base-swap split-post confirmation button prefix. */
+export function isFwaBaseSwapSplitPostButtonCustomId(customId: string): boolean {
+  return customId.startsWith(`${FWA_BASE_SWAP_SPLIT_POST_PREFIX}:`);
 }

@@ -15,7 +15,10 @@ import {
   StringSelectMenuInteraction,
 } from "discord.js";
 import { Command } from "../Command";
-import { truncateDiscordContent } from "../helper/discordContent";
+import {
+  DISCORD_CONTENT_LIMIT,
+  truncateDiscordContent,
+} from "../helper/discordContent";
 import { recordFetchEvent } from "../helper/fetchTelemetry";
 import { formatError } from "../helper/formatError";
 import {
@@ -95,6 +98,7 @@ import {
 } from "../services/PointsDirectFetchGateService";
 import {
   buildFwaMailBackCustomId,
+  buildFwaBaseSwapSplitPostCustomId,
   createTransientFwaKey,
   buildFwaMailConfirmCustomId,
   buildFwaMailConfirmNoPingCustomId,
@@ -112,6 +116,7 @@ import {
   buildOutcomeActionCustomId,
   buildPointsPostButtonCustomId,
   parseFwaMailBackCustomId,
+  parseFwaBaseSwapSplitPostCustomId,
   parseFwaComplianceViewCustomId,
   parseFwaMailConfirmCustomId,
   parseFwaMailConfirmNoPingCustomId,
@@ -184,6 +189,7 @@ import {
 export { isMissedSyncClanForTest } from "./fwa/matchState";
 export {
   isFwaComplianceViewButtonCustomId,
+  isFwaBaseSwapSplitPostButtonCustomId,
   isFwaMailBackButtonCustomId,
   isFwaMailConfirmButtonCustomId,
   isFwaMailConfirmNoPingButtonCustomId,
@@ -254,6 +260,41 @@ const FWA_BASE_SWAP_ALERT_EMOJI_NAME = "alert";
 const FWA_BASE_SWAP_LAYOUT_BULLET_EMOJI_NAME = "arrow_arrow";
 export const FWA_BASE_SWAP_ALERT_FALLBACK_EMOJI = "\u26A0\uFE0F";
 export const FWA_BASE_SWAP_LAYOUT_BULLET_FALLBACK_EMOJI = "\u27A1\uFE0F";
+const FWA_BASE_SWAP_DM_ACTIVE_PREFIX = "ACTIVE WAR BASE: swap to FWA now";
+const FWA_BASE_SWAP_DM_ACTIVE_LABEL = "Active war base messages:";
+const FWA_BASE_SWAP_DM_BASE_ERROR_LABEL = "Base error messages:";
+const FWA_BASE_SWAP_DM_SECTION_SEPARATOR = "----------";
+const FWA_BASE_SWAP_DM_MAX_PINGS_PER_LINE = 5;
+const FWA_BASE_SWAP_DM_MAX_LINE_CHARS = 256;
+const FWA_BASE_SWAP_DM_FAILURE_NOTICE =
+  "Posted the base-swap message, but I couldn't DM you the in-game ping messages.";
+const FWA_BASE_SWAP_SECTION_SEPARATOR = "──────────────────────────────────";
+const FWA_BASE_SWAP_REACT_LINE = `👇 React with ${FWA_BASE_SWAP_ACK_EMOJI} once your base is fixed.`;
+const FWA_BASE_SWAP_SPLIT_PROMPT = "This base-swap post is too large for one Discord message. Post it as 2 separate posts?";
+
+type FwaBaseSwapRenderVariant = "single" | "split_part_1" | "split_part_2";
+
+type FwaBaseSwapRenderPlan = {
+  singleContent: string;
+  splitContents: [string, string] | null;
+  fitsSingleMessage: boolean;
+};
+
+type FwaBaseSwapSplitPostPayload = {
+  userId: string;
+  guildId: string;
+  channelId: string;
+  clanTag: string;
+  clanName: string;
+  entries: FwaBaseSwapAnnouncementEntry[];
+  layoutLinks?: FwaBaseSwapLayoutLink[];
+  phaseTimingLine?: string | null;
+  alertEmoji?: string | null;
+  layoutBulletEmoji?: string | null;
+  mentionUserIds: string[];
+  createdAtIso: string;
+  splitContents: [string, string];
+};
 
 type FwaBaseSwapResolvedInlineEmojis = {
   alertEmoji: string;
@@ -283,6 +324,9 @@ export async function handleFwaBaseSwapReaction(
   messageId: string,
   reactorUserId: string,
   message: {
+    id: string;
+    channelId: string;
+    client: Client;
     edit: (payload: {
       content: string;
       allowedMentions: { users: string[] };
@@ -294,8 +338,157 @@ export async function handleFwaBaseSwapReaction(
     reactorUserId,
     message,
     render: renderFwaBaseSwapAnnouncement,
-    truncate: truncateDiscordContent,
+    resolveMessageForEdit: async ({ channelId, messageId: targetMessageId }) => {
+      if (targetMessageId === message.id) return message;
+      const channel = await message.client.channels
+        .fetch(channelId)
+        .catch(() => null);
+      if (!channel || !channel.isTextBased() || !("messages" in channel)) {
+        return null;
+      }
+      return (channel as any).messages.fetch(targetMessageId).catch(() => null);
+    },
   });
+}
+
+export async function handleFwaBaseSwapSplitPostButton(
+  interaction: ButtonInteraction,
+): Promise<void> {
+  const parsed = parseFwaBaseSwapSplitPostCustomId(interaction.customId);
+  if (!parsed) return;
+  if (interaction.user.id !== parsed.userId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Only the command requester can use this button.",
+    });
+    return;
+  }
+
+  const payload = fwaBaseSwapSplitPostPayloads.get(parsed.key);
+  if (!payload) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "This base-swap split prompt expired. Please run `/fwa base-swap` again.",
+    });
+    return;
+  }
+
+  if (parsed.action === "cancel") {
+    fwaBaseSwapSplitPostPayloads.delete(parsed.key);
+    await interaction.update({
+      content: "Cancelled. No split base-swap posts were published.",
+      components: [],
+    });
+    return;
+  }
+
+  const channel = interaction.channel;
+  if (
+    !channel ||
+    !channel.isTextBased() ||
+    !("send" in channel) ||
+    interaction.guildId !== payload.guildId ||
+    interaction.channelId !== payload.channelId
+  ) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Could not post split base-swap messages in this channel.",
+    });
+    return;
+  }
+
+  try {
+    const postedA = await (channel as any).send({
+      content: payload.splitContents[0],
+      allowedMentions: { users: payload.mentionUserIds },
+    });
+    const postedB = await (channel as any).send({
+      content: payload.splitContents[1],
+      allowedMentions: { users: payload.mentionUserIds },
+    });
+
+    const expiresAt = new Date(Date.now() + FWA_BASE_SWAP_TTL_MS);
+    await trackedMessageService.createFwaBaseSwapTrackedMessages({
+      guildId: payload.guildId,
+      clanTag: payload.clanTag,
+      expiresAt,
+      referenceId: `fwa-base-swap:${parsed.key}`,
+      messages: [
+        {
+          channelId: payload.channelId,
+          messageId: postedA.id,
+          metadata: {
+            clanName: payload.clanName,
+            createdByUserId: payload.userId,
+            createdAtIso: payload.createdAtIso,
+            entries: payload.entries,
+            layoutLinks: payload.layoutLinks,
+            phaseTimingLine: payload.phaseTimingLine,
+            alertEmoji: payload.alertEmoji,
+            layoutBulletEmoji: payload.layoutBulletEmoji,
+            renderVariant: "split_part_1",
+          },
+        },
+        {
+          channelId: payload.channelId,
+          messageId: postedB.id,
+          metadata: {
+            clanName: payload.clanName,
+            createdByUserId: payload.userId,
+            createdAtIso: payload.createdAtIso,
+            entries: payload.entries,
+            layoutLinks: payload.layoutLinks,
+            phaseTimingLine: payload.phaseTimingLine,
+            alertEmoji: payload.alertEmoji,
+            layoutBulletEmoji: payload.layoutBulletEmoji,
+            renderVariant: "split_part_2",
+          },
+        },
+      ],
+    });
+
+    await postedA.react(FWA_BASE_SWAP_ACK_EMOJI).catch((err: unknown) => {
+      console.error(
+        `[fwa base-swap] react failed guild=${payload.guildId} channel=${payload.channelId} message=${postedA.id} emoji=${FWA_BASE_SWAP_ACK_EMOJI} user=${payload.userId} error=${formatError(
+          err,
+        )}`,
+      );
+    });
+    await postedB.react(FWA_BASE_SWAP_ACK_EMOJI).catch((err: unknown) => {
+      console.error(
+        `[fwa base-swap] react failed guild=${payload.guildId} channel=${payload.channelId} message=${postedB.id} emoji=${FWA_BASE_SWAP_ACK_EMOJI} user=${payload.userId} error=${formatError(
+          err,
+        )}`,
+      );
+    });
+
+    await deliverFwaBaseSwapDmMessages({
+      entries: payload.entries,
+      guildId: payload.guildId,
+      channelId: payload.channelId,
+      clanTag: payload.clanTag,
+      userId: payload.userId,
+      sendDm: async (content) => interaction.user.send({ content }),
+      sendFailureNotice: async (content) =>
+        interaction.followUp({ content, ephemeral: true }),
+    });
+
+    fwaBaseSwapSplitPostPayloads.delete(parsed.key);
+    await interaction.update({
+      content: `Posted split base swap announcements for **${payload.clanName}** (#${payload.clanTag}).\n${postedA.url}\n${postedB.url}`,
+      components: [],
+    });
+  } catch (err) {
+    console.error(
+      `[fwa base-swap] split publish failed guild=${payload.guildId} channel=${payload.channelId} clan=#${payload.clanTag} user=${payload.userId} error=${formatError(
+        err,
+      )}`,
+    );
+    await interaction.reply({
+      ephemeral: true,
+      content: "Failed to publish split base-swap posts. Please try `/fwa base-swap` again.",
+    });
+  }
 }
 
 function parseBaseSwapPositionList(input: string | null | undefined): number[] {
@@ -385,6 +578,229 @@ function renderBaseSwapLine(entry: FwaBaseSwapAnnouncementEntry): string {
   return `#${entry.position} - ${mention} - ${entry.playerName} - ${mark}`;
 }
 
+/** Purpose: normalize one in-game ping token from a base-swap entry using the existing player-name source. */
+function buildFwaBaseSwapInGamePingToken(
+  entry: FwaBaseSwapAnnouncementEntry,
+): string | null {
+  const normalizedPlayerName = String(entry.playerName ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalizedPlayerName) return null;
+  return normalizedPlayerName.startsWith("@")
+    ? normalizedPlayerName
+    : `@${normalizedPlayerName}`;
+}
+
+/** Purpose: pack ping tokens into single-line copy blocks under deterministic ping-count and character limits. */
+function batchFwaBaseSwapPingLines(
+  prefix: string,
+  pingTokens: readonly string[],
+): string[] {
+  const normalizedPrefix = String(prefix).replace(/\s+/g, " ").trim();
+  if (!normalizedPrefix) return [];
+  const lines: string[] = [];
+  let currentTokens: string[] = [];
+
+  const flushCurrent = () => {
+    if (currentTokens.length === 0) return;
+    lines.push(`${normalizedPrefix} ${currentTokens.join(" ")}`);
+    currentTokens = [];
+  };
+
+  for (const rawToken of pingTokens) {
+    const token = String(rawToken).replace(/\s+/g, " ").trim();
+    if (!token) continue;
+    const singleTokenLine = `${normalizedPrefix} ${token}`;
+    if (singleTokenLine.length > FWA_BASE_SWAP_DM_MAX_LINE_CHARS) continue;
+
+    if (currentTokens.length === 0) {
+      currentTokens.push(token);
+      continue;
+    }
+
+    const candidateTokens = [...currentTokens, token];
+    const candidateLine = `${normalizedPrefix} ${candidateTokens.join(" ")}`;
+    const exceedsPingLimit =
+      candidateTokens.length > FWA_BASE_SWAP_DM_MAX_PINGS_PER_LINE;
+    const exceedsCharLimit = candidateLine.length > FWA_BASE_SWAP_DM_MAX_LINE_CHARS;
+    if (exceedsPingLimit || exceedsCharLimit) {
+      flushCurrent();
+      currentTokens.push(token);
+      continue;
+    }
+
+    currentTokens.push(token);
+  }
+
+  flushCurrent();
+  return lines;
+}
+
+/** Purpose: build ACTIVE WAR BASE copy/paste lines from finalized base-swap announcement ordering. */
+function buildFwaBaseSwapActiveWarDmLines(
+  entries: readonly FwaBaseSwapAnnouncementEntry[],
+): string[] {
+  const pingTokens = entries
+    .filter((entry) => entry.section === "war_bases")
+    .flatMap((entry) => {
+      const token = buildFwaBaseSwapInGamePingToken(entry);
+      return token ? [token] : [];
+    });
+  return batchFwaBaseSwapPingLines(FWA_BASE_SWAP_DM_ACTIVE_PREFIX, pingTokens);
+}
+
+/** Purpose: build TH-grouped base-error copy/paste lines while preserving original member order within each TH group. */
+function buildFwaBaseSwapBaseErrorDmLines(
+  entries: readonly FwaBaseSwapAnnouncementEntry[],
+): string[] {
+  const orderedTownhalls: number[] = [];
+  const tokensByTownhall = new Map<number, string[]>();
+  for (const entry of entries) {
+    if (entry.section !== "base_errors") continue;
+    const townhall =
+      typeof entry.townhallLevel === "number" &&
+      Number.isFinite(entry.townhallLevel) &&
+      entry.townhallLevel > 0
+        ? Math.trunc(entry.townhallLevel)
+        : null;
+    if (townhall === null) continue;
+    const token = buildFwaBaseSwapInGamePingToken(entry);
+    if (!token) continue;
+    if (!tokensByTownhall.has(townhall)) {
+      tokensByTownhall.set(townhall, []);
+      orderedTownhalls.push(townhall);
+    }
+    tokensByTownhall.get(townhall)!.push(token);
+  }
+
+  const lines: string[] = [];
+  for (const townhall of orderedTownhalls) {
+    const thTokens = tokensByTownhall.get(townhall) ?? [];
+    if (thTokens.length === 0) continue;
+    const prefix = `TH${townhall} update FWA layout: !th${townhall}`;
+    lines.push(...batchFwaBaseSwapPingLines(prefix, thTokens));
+  }
+  return lines;
+}
+
+/** Purpose: present each generated copy line as an individually copyable inline-code block in DMs. */
+function wrapFwaBaseSwapDmCopyLine(line: string): string {
+  return `\`${line}\``;
+}
+
+/** Purpose: compose the final DM body with optional sections and separator while preserving raw line constraints. */
+function buildFwaBaseSwapDmContent(
+  entries: readonly FwaBaseSwapAnnouncementEntry[],
+): string | null {
+  const activeWarLines = buildFwaBaseSwapActiveWarDmLines(entries);
+  const baseErrorLines = buildFwaBaseSwapBaseErrorDmLines(entries);
+  const lines: string[] = [];
+
+  if (activeWarLines.length > 0) {
+    lines.push(FWA_BASE_SWAP_DM_ACTIVE_LABEL);
+    lines.push(...activeWarLines.map(wrapFwaBaseSwapDmCopyLine));
+  }
+  if (activeWarLines.length > 0 && baseErrorLines.length > 0) {
+    lines.push("", FWA_BASE_SWAP_DM_SECTION_SEPARATOR, "");
+  }
+  if (baseErrorLines.length > 0) {
+    lines.push(FWA_BASE_SWAP_DM_BASE_ERROR_LABEL);
+    lines.push(...baseErrorLines.map(wrapFwaBaseSwapDmCopyLine));
+  }
+
+  if (lines.length === 0) return null;
+  return lines.join("\n");
+}
+
+/** Purpose: attempt post-send DM delivery and preserve command success by downgrading DM transport failures to an ephemeral notice. */
+async function deliverFwaBaseSwapDmMessages(input: {
+  entries: readonly FwaBaseSwapAnnouncementEntry[];
+  guildId: string | null;
+  channelId: string | null;
+  clanTag: string;
+  userId: string;
+  sendDm: (content: string) => Promise<unknown>;
+  sendFailureNotice: (content: string) => Promise<unknown>;
+}): Promise<"sent" | "skipped_empty" | "failed_notified" | "failed_unnoticed"> {
+  const dmContent = buildFwaBaseSwapDmContent(input.entries);
+  if (!dmContent) {
+    console.info(
+      `[fwa base-swap] dm status=skipped_empty guild=${input.guildId ?? "dm"} channel=${input.channelId ?? "dm"} clan=#${input.clanTag} user=${input.userId}`,
+    );
+    return "skipped_empty";
+  }
+
+  try {
+    await input.sendDm(dmContent);
+    console.info(
+      `[fwa base-swap] dm status=sent guild=${input.guildId ?? "dm"} channel=${input.channelId ?? "dm"} clan=#${input.clanTag} user=${input.userId}`,
+    );
+    return "sent";
+  } catch (err) {
+    console.error(
+      `[fwa base-swap] dm status=failed guild=${input.guildId ?? "dm"} channel=${input.channelId ?? "dm"} clan=#${input.clanTag} user=${input.userId} error=${formatError(
+        err,
+      )}`,
+    );
+  }
+
+  try {
+    await input.sendFailureNotice(FWA_BASE_SWAP_DM_FAILURE_NOTICE);
+    return "failed_notified";
+  } catch (noticeErr) {
+    console.error(
+      `[fwa base-swap] dm status=failed_notice guild=${input.guildId ?? "dm"} channel=${input.channelId ?? "dm"} clan=#${input.clanTag} user=${input.userId} error=${formatError(
+        noticeErr,
+      )}`,
+    );
+    return "failed_unnoticed";
+  }
+}
+
+/** Purpose: derive unique mentioned Discord user ids from base-swap entries. */
+function buildFwaBaseSwapMentionUserIds(
+  entries: readonly FwaBaseSwapAnnouncementEntry[],
+): string[] {
+  return [
+    ...new Set(
+      entries.flatMap((entry) =>
+        entry.discordUserId ? [entry.discordUserId] : [],
+      ),
+    ),
+  ];
+}
+
+/** Purpose: build yes/cancel controls for oversized base-swap split-post confirmation. */
+function buildFwaBaseSwapSplitPromptComponents(
+  userId: string,
+  key: string,
+): Array<ActionRowBuilder<ButtonBuilder>> {
+  return [
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(
+          buildFwaBaseSwapSplitPostCustomId({
+            userId,
+            key,
+            action: "yes",
+          }),
+        )
+        .setLabel("Yes")
+        .setStyle(ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId(
+          buildFwaBaseSwapSplitPostCustomId({
+            userId,
+            key,
+            action: "cancel",
+          }),
+        )
+        .setLabel("Cancel")
+        .setStyle(ButtonStyle.Secondary),
+    ),
+  ];
+}
+
 async function resolveFwaBaseSwapInlineEmojis(
   client: Client,
 ): Promise<FwaBaseSwapResolvedInlineEmojis> {
@@ -419,7 +835,7 @@ function renderBaseSwapLayoutLinkLine(
   link: FwaBaseSwapLayoutLink,
   layoutBulletEmoji: string,
 ): string {
-  return `## ${layoutBulletEmoji} TH${link.townhall} Link: ${wrapDiscordLink(link.layoutLink)}`;
+  return `## ${layoutBulletEmoji} TH${link.townhall}: ${wrapDiscordLink(link.layoutLink)}`;
 }
 
 function buildFwaBaseSwapPhaseTimingLine(input: {
@@ -436,15 +852,14 @@ function buildFwaBaseSwapPhaseTimingLine(input: {
   return `## ${mailStatusLabelForState(input.warState)} ends ${formatDiscordFullAndRelativeMs(targetMs)}`;
 }
 
-function renderFwaBaseSwapAnnouncement(
-  state: {
-    entries: FwaBaseSwapAnnouncementEntry[];
-    layoutLinks?: FwaBaseSwapLayoutLink[];
-    phaseTimingLine?: string | null;
-    alertEmoji?: string | null;
-    layoutBulletEmoji?: string | null;
-  },
-): string {
+/** Purpose: materialize deterministic line tokens for base-swap rendering so sizing/splitting can be evaluated before posting. */
+function buildFwaBaseSwapAnnouncementLines(state: {
+  entries: FwaBaseSwapAnnouncementEntry[];
+  layoutLinks?: FwaBaseSwapLayoutLink[];
+  phaseTimingLine?: string | null;
+  alertEmoji?: string | null;
+  layoutBulletEmoji?: string | null;
+}): string[] {
   const alertEmoji =
     String(state.alertEmoji ?? "").trim() || FWA_BASE_SWAP_ALERT_FALLBACK_EMOJI;
   const layoutBulletEmoji =
@@ -461,9 +876,9 @@ function renderFwaBaseSwapAnnouncement(
     state.layoutLinks,
   ).map((link) => renderBaseSwapLayoutLinkLine(link, layoutBulletEmoji));
 
-  const parts: string[] = [];
+  const lines: string[] = [];
   if (warBaseLines.length > 0) {
-    parts.push(
+    lines.push(
       `# ${alertEmoji} YOU HAVE AN ACTIVE WAR BASE ${alertEmoji}`,
       "",
       ...warBaseLines,
@@ -473,28 +888,112 @@ function renderFwaBaseSwapAnnouncement(
   }
 
   if (baseErrorLines.length > 0) {
-    if (parts.length > 0)
-      parts.push("", "──────────────────────────────────", "");
-    parts.push(
+    if (lines.length > 0) lines.push("", FWA_BASE_SWAP_SECTION_SEPARATOR, "");
+    lines.push(
       "# :warning: YOU HAVE BASE ERRORS :warning:",
       "",
       ...baseErrorLines,
     );
   }
 
-  if (parts.length > 0) {
-    parts.push("", "──────────────────────────────────");
-    if (layoutLinkLines.length > 0) {
-      parts.push("", ...layoutLinkLines);
-    }
-    parts.push("", "──────────────────────────────────");
-    if (state.phaseTimingLine) {
-      parts.push("", state.phaseTimingLine);
-    }
-    parts.push("", `👇 React with ${FWA_BASE_SWAP_ACK_EMOJI} once your base is fixed.`);
+  if (lines.length > 0) {
+    lines.push("", FWA_BASE_SWAP_SECTION_SEPARATOR);
+    if (layoutLinkLines.length > 0) lines.push("", ...layoutLinkLines);
+    lines.push("", FWA_BASE_SWAP_SECTION_SEPARATOR);
+    if (state.phaseTimingLine) lines.push("", state.phaseTimingLine);
+    lines.push("", FWA_BASE_SWAP_REACT_LINE);
   }
 
-  return parts.join("\n");
+  return lines;
+}
+
+/** Purpose: score split boundaries to prefer separators/section starts while keeping output balanced and deterministic. */
+function scoreFwaBaseSwapSplitBoundary(input: {
+  allLines: readonly string[];
+  splitIndex: number;
+}): number {
+  const prev = input.allLines[input.splitIndex - 1] ?? "";
+  const next = input.allLines[input.splitIndex] ?? "";
+  let score = 0;
+  if (prev === FWA_BASE_SWAP_SECTION_SEPARATOR || next === FWA_BASE_SWAP_SECTION_SEPARATOR) {
+    score += 1000;
+  }
+  if (next.startsWith("# ")) score += 200;
+  if (next.startsWith("## ")) score += 100;
+  if (!prev.trim() || !next.trim()) score += 25;
+  return score;
+}
+
+/** Purpose: split oversized base-swap content into exactly two valid Discord messages without breaking individual lines. */
+function splitFwaBaseSwapAnnouncementLines(
+  lines: readonly string[],
+): [string, string] | null {
+  if (lines.length < 2) return null;
+  let best: { first: string; second: string; score: number } | null = null;
+
+  for (let index = 1; index < lines.length; index += 1) {
+    const first = lines.slice(0, index).join("\n");
+    const second = lines.slice(index).join("\n");
+    if (
+      first.length > DISCORD_CONTENT_LIMIT ||
+      second.length > DISCORD_CONTENT_LIMIT
+    ) {
+      continue;
+    }
+    if (!first.trim() || !second.trim()) continue;
+    const balancePenalty = Math.abs(first.length - second.length);
+    const score =
+      scoreFwaBaseSwapSplitBoundary({ allLines: lines, splitIndex: index }) -
+      balancePenalty;
+    if (!best || score > best.score) {
+      best = { first, second, score };
+    }
+  }
+  return best ? [best.first, best.second] : null;
+}
+
+/** Purpose: build posting plan for base-swap messages and determine whether split fallback is available without truncation. */
+function buildFwaBaseSwapRenderPlan(state: {
+  entries: FwaBaseSwapAnnouncementEntry[];
+  layoutLinks?: FwaBaseSwapLayoutLink[];
+  phaseTimingLine?: string | null;
+  alertEmoji?: string | null;
+  layoutBulletEmoji?: string | null;
+}): FwaBaseSwapRenderPlan {
+  const lines = buildFwaBaseSwapAnnouncementLines(state);
+  const singleContent = lines.join("\n");
+  if (singleContent.length <= DISCORD_CONTENT_LIMIT) {
+    return {
+      singleContent,
+      splitContents: null,
+      fitsSingleMessage: true,
+    };
+  }
+  return {
+    singleContent,
+    splitContents: splitFwaBaseSwapAnnouncementLines(lines),
+    fitsSingleMessage: false,
+  };
+}
+
+function renderFwaBaseSwapAnnouncement(
+  state: {
+    entries: FwaBaseSwapAnnouncementEntry[];
+    layoutLinks?: FwaBaseSwapLayoutLink[];
+    phaseTimingLine?: string | null;
+    alertEmoji?: string | null;
+    layoutBulletEmoji?: string | null;
+    renderVariant?: FwaBaseSwapRenderVariant;
+  },
+): string {
+  const plan = buildFwaBaseSwapRenderPlan(state);
+  if (state.renderVariant === "split_part_1" && plan.splitContents) {
+    return plan.splitContents[0];
+  }
+  if (state.renderVariant === "split_part_2" && plan.splitContents) {
+    return plan.splitContents[1];
+  }
+  return plan.singleContent;
 }
 const POINTS_REQUEST_HEADERS = {
   "User-Agent":
@@ -768,7 +1267,7 @@ function buildCcVerifyUrl(tag: string): string {
 }
 
 const MATCHTYPE_WARNING_LEGEND =
-  ":warning: Match type is inferred. Confirm match type before sending war mail.";
+  ":warning: Match type is inferred. Sending is still allowed, but confirm before posting if this looks wrong.";
 const POINTS_CLAN_NOT_FOUND_STATUS_LINE =
   ":interrobang: Clan not found on points.fwafarm";
 
@@ -997,11 +1496,23 @@ type FwaComplianceViewPayload = {
 const fwaMatchCopyPayloads = new Map<string, FwaMatchCopyPayload>();
 const fwaMailPreviewPayloads = new Map<string, FwaMailPreviewPayload>();
 const fwaComplianceViewPayloads = new Map<string, FwaComplianceViewPayload>();
+const fwaBaseSwapSplitPostPayloads = new Map<string, FwaBaseSwapSplitPostPayload>();
 const fwaMailPollers = new Map<string, ReturnType<typeof setInterval>>();
 const pointsSnapshotCache = new Map<string, PointsSnapshotCacheEntry>();
 const pointsSnapshotInFlight = new Map<string, Promise<PointsSnapshot>>();
 const fwaMatchTypeResolutionLogGate = new SteadyStateLogGate();
 const fwaRoutinePointsSkipLogGate = new SteadyStateLogGate();
+
+export function setFwaBaseSwapSplitPostPayloadForTest(
+  key: string,
+  payload: FwaBaseSwapSplitPostPayload,
+): void {
+  fwaBaseSwapSplitPostPayloads.set(key, payload);
+}
+
+export function clearFwaBaseSwapSplitPostPayloadsForTest(): void {
+  fwaBaseSwapSplitPostPayloads.clear();
+}
 
 /** Purpose: normalize any war id input to a comparable string key. */
 function normalizeWarIdText(
@@ -3251,10 +3762,13 @@ export const buildWarMailRefreshEditPayloadForTest =
 function hasWarIdentityShifted(params: {
   postedWarId?: string | null;
   postedWarStartMs?: number | null;
+  postedOpponentTag?: string | null;
   renderedWarId?: number | null;
   renderedWarStartMs?: number | null;
+  renderedOpponentTag?: string | null;
   expectedWarId?: string | null;
   expectedWarStartMs?: number | null;
+  expectedOpponentTag?: string | null;
 }): boolean {
   const postedWarId =
     typeof params.postedWarId === "string" && params.postedWarId.trim()
@@ -3297,10 +3811,66 @@ function hasWarIdentityShifted(params: {
   ) {
     return true;
   }
+  const normalizeIdentityTag = (value: string | null | undefined): string | null => {
+    const normalized = normalizeTag(String(value ?? ""));
+    return normalized || null;
+  };
+  const postedOpponentTag = normalizeIdentityTag(params.postedOpponentTag);
+  const expectedOpponentTag = normalizeIdentityTag(params.expectedOpponentTag);
+  const identityOpponentTag = expectedOpponentTag ?? postedOpponentTag;
+  const renderedOpponentTag = normalizeIdentityTag(params.renderedOpponentTag);
+  if (
+    identityOpponentTag &&
+    renderedOpponentTag &&
+    identityOpponentTag !== renderedOpponentTag
+  ) {
+    return true;
+  }
   return false;
 }
 
 export const hasWarIdentityShiftedForTest = hasWarIdentityShifted;
+
+type WarMailRefreshIdentityDecision = {
+  action: "edit" | "freeze";
+  identityShifted: boolean;
+};
+
+/** Purpose: deterministically choose whether a posted war-mail refresh can edit or must freeze. */
+function resolveWarMailRefreshIdentityDecision(params: {
+  postedWarId?: string | null;
+  postedWarStartMs?: number | null;
+  postedOpponentTag?: string | null;
+  renderedWarId?: number | null;
+  renderedWarStartMs?: number | null;
+  renderedOpponentTag?: string | null;
+  expectedWarId?: string | null;
+  expectedWarStartMs?: number | null;
+  expectedOpponentTag?: string | null;
+}): WarMailRefreshIdentityDecision {
+  const hasExpectedWarIdentity = Boolean(
+    (typeof params.expectedWarId === "string" && params.expectedWarId.trim()) ||
+      (typeof params.expectedWarStartMs === "number" &&
+        Number.isFinite(params.expectedWarStartMs)),
+  );
+  const hasPostedIdentity = Boolean(
+    (typeof params.postedWarId === "string" && params.postedWarId.trim()) ||
+      (typeof params.postedWarStartMs === "number" &&
+        Number.isFinite(params.postedWarStartMs)) ||
+      normalizeTag(String(params.postedOpponentTag ?? "")),
+  );
+  if (!hasExpectedWarIdentity && !hasPostedIdentity) {
+    return {
+      action: "freeze",
+      identityShifted: true,
+    };
+  }
+  const identityShifted = hasWarIdentityShifted(params);
+  return {
+    action: identityShifted ? "freeze" : "edit",
+    identityShifted,
+  };
+}
 
 async function refreshWarMailPost(
   client: Client,
@@ -3335,6 +3905,11 @@ async function refreshWarMailPost(
     messageId: lifecycle.messageId,
     key,
     expectedWarId: String(parsed.warId),
+    expectedWarStartMs: await resolveExpectedWarStartMsForRefresh({
+      guildId: parsed.guildId,
+      tag: parsed.tag,
+      warId: parsed.warId,
+    }),
     fetchReason: "mail_refresh",
     routine: true,
   });
@@ -3358,6 +3933,45 @@ async function refreshWarMailPostByResolvedTarget(params: {
 }): Promise<"refreshed" | "frozen" | "missing"> {
   const normalizedTag = normalizeTag(params.tag);
   if (!normalizedTag) return "missing";
+  const logIdentityDecision = (input: {
+    action: "edit" | "freeze" | "missing";
+    identityShifted: boolean;
+    renderedWarId?: number | null;
+    renderedWarStartMs?: number | null;
+    renderedOpponentTag?: string | null;
+    postedWarId?: string | null;
+    postedOpponentTag?: string | null;
+  }): void => {
+    const expectedWarIdText =
+      typeof params.expectedWarId === "string" && params.expectedWarId.trim()
+        ? params.expectedWarId.trim()
+        : "none";
+    const expectedWarStartText =
+      typeof params.expectedWarStartMs === "number" &&
+      Number.isFinite(params.expectedWarStartMs)
+        ? String(Math.trunc(params.expectedWarStartMs))
+        : "none";
+    const renderedWarIdText =
+      input.renderedWarId !== null &&
+      input.renderedWarId !== undefined &&
+      Number.isFinite(input.renderedWarId)
+        ? String(Math.trunc(input.renderedWarId))
+        : "unknown";
+    const renderedWarStartText =
+      typeof input.renderedWarStartMs === "number" &&
+      Number.isFinite(input.renderedWarStartMs)
+        ? String(Math.trunc(input.renderedWarStartMs))
+        : "unknown";
+    const renderedOpponentTag = normalizeTag(String(input.renderedOpponentTag ?? ""));
+    const postedWarIdText =
+      typeof input.postedWarId === "string" && input.postedWarId.trim()
+        ? input.postedWarId.trim()
+        : "unknown";
+    const postedOpponentTag = normalizeTag(String(input.postedOpponentTag ?? ""));
+    console.info(
+      `[fwa-mail-refresh-identity] guild=${params.guildId} clan=#${normalizedTag} message_id=${params.messageId} expected_war_id=${expectedWarIdText} expected_war_start_ms=${expectedWarStartText} posted_war_id=${postedWarIdText} posted_opponent=${postedOpponentTag ? `#${postedOpponentTag}` : "unknown"} rendered_war_id=${renderedWarIdText} rendered_war_start_ms=${renderedWarStartText} rendered_opponent=${renderedOpponentTag ? `#${renderedOpponentTag}` : "unknown"} identity_shifted=${input.identityShifted ? "1" : "0"} action=${input.action}`,
+    );
+  };
   let channel: any = null;
   try {
     channel = await params.client.channels.fetch(params.channelId);
@@ -3374,9 +3988,19 @@ async function refreshWarMailPostByResolvedTarget(params: {
         })
         .catch(() => undefined);
     }
+    logIdentityDecision({
+      action: "missing",
+      identityShifted: false,
+    });
     return "missing";
   }
-  if (!channel || !channel.isTextBased()) return "missing";
+  if (!channel || !channel.isTextBased()) {
+    logIdentityDecision({
+      action: "missing",
+      identityShifted: false,
+    });
+    return "missing";
+  }
   let message: any = null;
   let messageVerifiedViaRest = false;
   try {
@@ -3399,6 +4023,10 @@ async function refreshWarMailPostByResolvedTarget(params: {
         })
         .catch(() => undefined);
     }
+    logIdentityDecision({
+      action: "missing",
+      identityShifted: false,
+    });
     return "missing";
   }
   if (!message) {
@@ -3411,7 +4039,37 @@ async function refreshWarMailPostByResolvedTarget(params: {
         })
         .catch(() => undefined);
     }
+    logIdentityDecision({
+      action: "missing",
+      identityShifted: false,
+    });
     return "missing";
+  }
+  const postedWarId = extractWarMailIdFromMessage(message);
+  const postedOpponentTag = extractWarMailOpponentTagFromMessage(message);
+  const identityDecision = resolveWarMailRefreshIdentityDecision({
+    postedWarId,
+    postedOpponentTag,
+    renderedWarId: null,
+    renderedWarStartMs: null,
+    renderedOpponentTag: null,
+    expectedWarId: params.expectedWarId,
+    expectedWarStartMs: params.expectedWarStartMs,
+  });
+  if (identityDecision.action === "freeze") {
+    logIdentityDecision({
+      action: "freeze",
+      identityShifted: identityDecision.identityShifted,
+      postedWarId,
+      postedOpponentTag,
+    });
+    await message
+      .edit({
+        components: [],
+      })
+      .catch(() => undefined);
+    if (params.key) stopWarMailPolling(params.key);
+    return "frozen";
   }
   const cocService = new CoCService();
   const rendered = await buildWarMailEmbedForTag(
@@ -3423,14 +4081,26 @@ async function refreshWarMailPostByResolvedTarget(params: {
       routine: params.routine,
     },
   );
-  if (
-    hasWarIdentityShifted({
-      renderedWarId: rendered.warId,
-      renderedWarStartMs: rendered.warStartMs,
-      expectedWarId: params.expectedWarId,
-      expectedWarStartMs: params.expectedWarStartMs,
-    })
-  ) {
+  const renderedIdentityDecision = resolveWarMailRefreshIdentityDecision({
+    postedWarId,
+    postedOpponentTag,
+    renderedWarId: rendered.warId,
+    renderedWarStartMs: rendered.warStartMs,
+    renderedOpponentTag: rendered.opponentTag,
+    expectedWarId: params.expectedWarId,
+    expectedWarStartMs: params.expectedWarStartMs,
+  });
+  const identityShifted = renderedIdentityDecision.identityShifted;
+  logIdentityDecision({
+    action: renderedIdentityDecision.action,
+    identityShifted,
+    renderedWarId: rendered.warId,
+    renderedWarStartMs: rendered.warStartMs,
+    renderedOpponentTag: rendered.opponentTag,
+    postedWarId,
+    postedOpponentTag,
+  });
+  if (renderedIdentityDecision.action === "freeze") {
     await message
       .edit({
         components: [],
@@ -3470,10 +4140,14 @@ async function refreshWarMailPostByResolvedTarget(params: {
       ? []
       : buildWarMailPostedComponents(refreshKey),
   });
+  const lifecycleWarIdText =
+    typeof params.expectedWarId === "string" && params.expectedWarId.trim()
+      ? params.expectedWarId.trim()
+      : nextWarIdText;
   if (
     messageVerifiedViaRest &&
-    nextWarIdText &&
-    Number.isFinite(Number(nextWarIdText)) &&
+    lifecycleWarIdText &&
+    Number.isFinite(Number(lifecycleWarIdText)) &&
     params.channelId &&
     params.messageId
   ) {
@@ -3481,7 +4155,7 @@ async function refreshWarMailPostByResolvedTarget(params: {
       .markPosted({
         guildId: params.guildId,
         clanTag: normalizedTag,
-        warId: Number(nextWarIdText),
+        warId: Number(lifecycleWarIdText),
         channelId: params.channelId,
         messageId: params.messageId,
       })
@@ -3511,17 +4185,83 @@ function extractWarMailIdFromMessage(
   return match[1];
 }
 
+function extractWarMailOpponentTagFromMessage(
+  message: ButtonInteraction["message"],
+): string | null {
+  const fields = message.embeds?.[0]?.fields ?? [];
+  const opponentField = fields.find((field) =>
+    String(field?.name ?? "").trim().toLowerCase() === "opponent",
+  );
+  const opponentValue = String(opponentField?.value ?? "");
+  const match = opponentValue.match(/#([A-Z0-9]+)/i);
+  if (!match?.[1]) return null;
+  return normalizeTag(match[1]);
+}
+
+async function resolveExpectedWarStartMsForRefresh(params: {
+  guildId: string;
+  tag: string;
+  warId: number | null | undefined;
+}): Promise<number | null> {
+  if (
+    params.warId === null ||
+    params.warId === undefined ||
+    !Number.isFinite(params.warId)
+  ) {
+    return null;
+  }
+  const warId = Math.trunc(params.warId);
+  const row = await prisma.currentWar
+    .findUnique({
+      where: {
+        clanTag_guildId: {
+          guildId: params.guildId,
+          clanTag: `#${normalizeTag(params.tag)}`,
+        },
+      },
+      select: {
+        warId: true,
+        startTime: true,
+      },
+    })
+    .catch(() => null);
+  if (
+    !row ||
+    row.warId === null ||
+    row.warId === undefined ||
+    !Number.isFinite(row.warId) ||
+    Math.trunc(row.warId) !== warId ||
+    !(row.startTime instanceof Date)
+  ) {
+    return null;
+  }
+  return row.startTime.getTime();
+}
+
 async function findWarMailTargetFromLifecycle(params: {
   guildId: string;
   channelId: string;
   messageId: string;
+  warId?: string | null;
 }): Promise<{
   tag: string;
   warId: string | null;
   channelId: string;
   messageId: string;
 } | null> {
-  const row = await warMailLifecycleService.findLifecycleByMessage(params);
+  const requestedWarId =
+    typeof params.warId === "string" && params.warId.trim()
+      ? Math.trunc(Number(params.warId))
+      : null;
+  const row = await warMailLifecycleService.findLifecycleByMessage({
+    guildId: params.guildId,
+    channelId: params.channelId,
+    messageId: params.messageId,
+    warId:
+      requestedWarId !== null && Number.isFinite(requestedWarId)
+        ? requestedWarId
+        : null,
+  });
   if (!row || !row.channelId || !row.messageId) return null;
   return {
     tag: normalizeTag(row.clanTag ?? ""),
@@ -5737,6 +6477,7 @@ export async function handleFwaMailRefreshButton(
             guildId,
             channelId: interaction.channelId,
             messageId: interaction.message.id,
+            warId: fallbackWarId,
           })
         : null;
   if (!guildId || !fallbackTarget) {
@@ -5753,6 +6494,14 @@ export async function handleFwaMailRefreshButton(
     channelId: fallbackTarget.channelId,
     messageId: fallbackTarget.messageId,
     expectedWarId: fallbackTarget.warId ?? null,
+    expectedWarStartMs:
+      fallbackTarget.warId !== null
+        ? await resolveExpectedWarStartMsForRefresh({
+            guildId,
+            tag: fallbackTarget.tag,
+            warId: Number(fallbackTarget.warId),
+          })
+        : null,
     fetchReason: "mail_refresh",
     routine: true,
   }).catch(() => "missing" as const);
@@ -6574,6 +7323,16 @@ export const getMailBlockedReasonFromStatusForTest =
 export const collectBaseSwapTownhallLevelsForTest =
   collectBaseSwapTownhallLevels;
 export const buildBaseSwapLayoutLinksForTest = buildBaseSwapLayoutLinks;
+export const batchFwaBaseSwapPingLinesForTest = batchFwaBaseSwapPingLines;
+export const buildFwaBaseSwapActiveWarDmLinesForTest =
+  buildFwaBaseSwapActiveWarDmLines;
+export const buildFwaBaseSwapBaseErrorDmLinesForTest =
+  buildFwaBaseSwapBaseErrorDmLines;
+export const buildFwaBaseSwapDmContentForTest = buildFwaBaseSwapDmContent;
+export const deliverFwaBaseSwapDmMessagesForTest = deliverFwaBaseSwapDmMessages;
+export const buildFwaBaseSwapRenderPlanForTest = buildFwaBaseSwapRenderPlan;
+export const splitFwaBaseSwapAnnouncementLinesForTest =
+  splitFwaBaseSwapAnnouncementLines;
 export const buildFwaBaseSwapPhaseTimingLineForTest =
   buildFwaBaseSwapPhaseTimingLine;
 export const renderFwaBaseSwapAnnouncementForTest =
@@ -6632,6 +7391,8 @@ export const resolveRoutineBlockedPointsFetchSkipLogLevelForTest =
   resolveRoutineBlockedPointsFetchSkipLogLevel;
 export const resetFwaSteadyStateLogTrackersForTest =
   resetFwaSteadyStateLogTrackers;
+export const resolveWarMailRefreshIdentityDecisionForTest =
+  resolveWarMailRefreshIdentityDecision;
 
 /** Purpose: infer match type strictly from opponent points-site signals. */
 function inferMatchTypeFromPointsSnapshots(
@@ -6725,18 +7486,26 @@ async function resolveMatchTypeWithFallback(params: {
     matchType: params.existingMatchType ?? null,
     inferredMatchType: params.existingInferredMatchType ?? true,
   });
-  if (params.warState === "notInWar") {
-    return {
-      confirmedCurrent: currentResolution.confirmed,
-      storedSync: null,
-      unconfirmedCurrent: currentResolution.unconfirmed,
-    };
-  }
   const hasWarIdentity =
     (params.warId !== null &&
       params.warId !== undefined &&
       Number.isFinite(params.warId)) ||
     params.warStartTime instanceof Date;
+  if (params.warState === "notInWar") {
+    return {
+      confirmedCurrent: currentResolution.confirmed,
+      storedSync: hasWarIdentity
+        ? await resolveMatchTypeFromStoredSync({
+            guildId: params.guildId,
+            clanTag: params.clanTag,
+            opponentTag: params.opponentTag,
+            warId: params.warId,
+            warStartTime: params.warStartTime,
+          })
+        : null,
+      unconfirmedCurrent: currentResolution.unconfirmed,
+    };
+  }
   return {
     confirmedCurrent: currentResolution.confirmed,
     storedSync: hasWarIdentity
@@ -6751,6 +7520,8 @@ async function resolveMatchTypeWithFallback(params: {
     unconfirmedCurrent: currentResolution.unconfirmed,
   };
 }
+
+export const resolveMatchTypeWithFallbackForTest = resolveMatchTypeWithFallback;
 
 /** Purpose: apply source-of-truth sync number over a scraped points snapshot. */
 function applySourceSync(
@@ -10564,81 +11335,120 @@ export const Fwa: Command = {
         interaction.client,
       );
 
-      const content = truncateDiscordContent(
-        renderFwaBaseSwapAnnouncement({
-          entries,
-          layoutLinks,
-          phaseTimingLine: baseSwapPhaseTimingLine,
-          alertEmoji: inlineEmojis.alertEmoji,
-          layoutBulletEmoji: inlineEmojis.layoutBulletEmoji,
-        }),
-      );
-
-      const mentionUserIds = [
-        ...new Set(
-          entries.flatMap((entry) =>
-            entry.discordUserId ? [entry.discordUserId] : [],
-          ),
-        ),
-      ];
-      const posted = await interaction.channel.send({
-        content,
-        allowedMentions: { users: mentionUserIds },
-      });
-
-      const state: FwaBaseSwapAnnouncementState = {
-        guildId: interaction.guildId,
-        channelId: interaction.channelId,
-        messageId: posted.id,
-        clanTag,
-        clanName: sanitizeClanName(trackedClan.name) ?? `#${clanTag}`,
-        createdByUserId: interaction.user.id,
+      const clanName = sanitizeClanName(trackedClan.name) ?? `#${clanTag}`;
+      const createdAtIso = new Date().toISOString();
+      const renderPlan = buildFwaBaseSwapRenderPlan({
         entries,
         layoutLinks,
         phaseTimingLine: baseSwapPhaseTimingLine,
         alertEmoji: inlineEmojis.alertEmoji,
         layoutBulletEmoji: inlineEmojis.layoutBulletEmoji,
-        createdAtIso: new Date().toISOString(),
-      };
+      });
+      const mentionUserIds = buildFwaBaseSwapMentionUserIds(entries);
+      const unlinked = entries.filter((entry) => !entry.discordUserId);
+
+      if (!renderPlan.fitsSingleMessage) {
+        if (!renderPlan.splitContents) {
+          await editReplySafe(
+            "This base-swap announcement exceeds Discord message limits and could not be safely split into 2 posts. Reduce the selected positions and try again.",
+          );
+          return;
+        }
+
+        const key = createTransientFwaKey();
+        fwaBaseSwapSplitPostPayloads.set(key, {
+          userId: interaction.user.id,
+          guildId: interaction.guildId,
+          channelId: interaction.channelId,
+          clanTag,
+          clanName,
+          entries,
+          layoutLinks,
+          phaseTimingLine: baseSwapPhaseTimingLine,
+          alertEmoji: inlineEmojis.alertEmoji,
+          layoutBulletEmoji: inlineEmojis.layoutBulletEmoji,
+          mentionUserIds,
+          createdAtIso,
+          splitContents: renderPlan.splitContents,
+        });
+
+        await interaction.editReply({
+          content: [
+            FWA_BASE_SWAP_SPLIT_PROMPT,
+            "Click **Yes** to publish 2 linked posts, or **Cancel** to stop.",
+            unlinked.length > 0
+              ? `Unlinked positions: ${[
+                  ...new Set(
+                    unlinked.map(
+                      (entry) => `#${entry.position} ${entry.playerName}`,
+                    ),
+                  ),
+                ].join(", ")}`
+              : "All listed players have linked Discord users.",
+          ].join("\n"),
+          components: buildFwaBaseSwapSplitPromptComponents(
+            interaction.user.id,
+            key,
+          ),
+        });
+        return;
+      }
+
+      const posted = await interaction.channel.send({
+        content: renderPlan.singleContent,
+        allowedMentions: { users: mentionUserIds },
+      });
       const expiresAt = new Date(Date.now() + FWA_BASE_SWAP_TTL_MS);
-      await trackedMessageService.createFwaBaseSwapTrackedMessage({
-        guildId: state.guildId,
-        channelId: state.channelId,
-        messageId: state.messageId,
-        clanTag: state.clanTag,
+      await trackedMessageService.createFwaBaseSwapTrackedMessages({
+        guildId: interaction.guildId,
+        clanTag,
         expiresAt,
-        metadata: {
-          clanName: state.clanName,
-          createdByUserId: state.createdByUserId,
-          createdAtIso: state.createdAtIso,
-          entries: state.entries,
-          layoutLinks: state.layoutLinks,
-          phaseTimingLine: state.phaseTimingLine,
-          alertEmoji: state.alertEmoji,
-          layoutBulletEmoji: state.layoutBulletEmoji,
-        },
+        messages: [
+          {
+            channelId: interaction.channelId,
+            messageId: posted.id,
+            metadata: {
+              clanName,
+              createdByUserId: interaction.user.id,
+              createdAtIso,
+              entries,
+              layoutLinks,
+              phaseTimingLine: baseSwapPhaseTimingLine,
+              alertEmoji: inlineEmojis.alertEmoji,
+              layoutBulletEmoji: inlineEmojis.layoutBulletEmoji,
+              renderVariant: "single",
+            },
+          },
+        ],
       });
 
-      try {
-        await posted.react(FWA_BASE_SWAP_ACK_EMOJI);
-      } catch (err) {
+      await posted.react(FWA_BASE_SWAP_ACK_EMOJI).catch((err: unknown) => {
         console.error(
           `[fwa base-swap] react failed guild=${interaction.guildId} channel=${interaction.channelId} message=${posted.id} emoji=${FWA_BASE_SWAP_ACK_EMOJI} user=${interaction.user.id} error=${formatError(
             err,
           )}`,
         );
-      }
+      });
 
-      const unlinked = entries.filter((entry) => !entry.discordUserId);
       await editReplySafe(
         [
-          `Posted base swap announcement for **${state.clanName}** (#${clanTag}).`,
+          `Posted base swap announcement for **${clanName}** (#${clanTag}).`,
           unlinked.length > 0
             ? `Unlinked positions: ${[...new Set(unlinked.map((entry) => `#${entry.position} ${entry.playerName}`))].join(", ")}`
             : "All listed players have linked Discord users.",
           posted.url,
         ].join("\n"),
       );
+      await deliverFwaBaseSwapDmMessages({
+        entries,
+        guildId: interaction.guildId,
+        channelId: interaction.channelId,
+        clanTag,
+        userId: interaction.user.id,
+        sendDm: async (content) => interaction.user.send({ content }),
+        sendFailureNotice: async (content) =>
+          interaction.followUp({ content, ephemeral: true }),
+      });
       return;
     }
 

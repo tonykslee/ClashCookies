@@ -1,13 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildFwaBaseSwapSplitPostCustomId,
   buildFwaComplianceViewCustomId,
   buildFwaMatchSendMailCustomId,
   buildMatchTypeActionCustomId,
   buildPointsPostButtonCustomId,
   createTransientFwaKey,
+  isFwaBaseSwapSplitPostButtonCustomId,
   isFwaComplianceViewButtonCustomId,
   isFwaMatchSendMailButtonCustomId,
   isPointsPostButtonCustomId,
+  parseFwaBaseSwapSplitPostCustomId,
   parseFwaComplianceViewCustomId,
   parseFwaMatchSendMailCustomId,
   parseMatchTypeActionCustomId,
@@ -74,5 +77,20 @@ describe("fwa custom-id helpers", () => {
       key: "abc123",
       action: "open_missed",
     });
+  });
+
+  it("round-trips base-swap split-post custom ids", () => {
+    const customId = buildFwaBaseSwapSplitPostCustomId({
+      userId: "999",
+      key: "base-swap-key",
+      action: "yes",
+    });
+    expect(isFwaBaseSwapSplitPostButtonCustomId(customId)).toBe(true);
+    expect(parseFwaBaseSwapSplitPostCustomId(customId)).toEqual({
+      userId: "999",
+      key: "base-swap-key",
+      action: "yes",
+    });
+    expect(parseFwaBaseSwapSplitPostCustomId("fwa-base-swap-split-post:999:key:nope")).toBeNull();
   });
 });

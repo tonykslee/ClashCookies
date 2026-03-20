@@ -81,6 +81,7 @@ type FindByMessageInput = {
   guildId: string;
   channelId: string;
   messageId: string;
+  warId?: number | null;
 };
 
 /** Purpose: normalize clan tags for deterministic lifecycle lookups. */
@@ -261,6 +262,9 @@ export class WarMailLifecycleService {
         channelId: input.channelId,
         messageId: input.messageId,
         status: WarMailLifecycleStatus.POSTED,
+        ...(typeof input.warId === "number" && Number.isFinite(input.warId)
+          ? { warId: Math.trunc(input.warId) }
+          : {}),
       },
       orderBy: { updatedAt: "desc" },
     });

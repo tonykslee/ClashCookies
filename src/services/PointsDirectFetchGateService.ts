@@ -130,6 +130,21 @@ type ApplyObservedPointValueInput = {
   nowMs: number;
 };
 
+type ObservedPointTransitionGuardCode =
+  | "not_waiting_for_point_change"
+  | "mm_wait_guard"
+  | "missing_points"
+  | "equal_points_blocked"
+  | "point_change_allowed";
+
+type ObservedPointTransitionEvaluation = {
+  next: PointsLockStateRecord;
+  observedPoints: number | null;
+  baselinePointsBefore: number | null;
+  guardCode: ObservedPointTransitionGuardCode;
+  equalityGuard: "allowed" | "blocked" | "not_applicable";
+};
+
 const PRESYNC_UNLOCK_OFFSET_MS = 10 * 60 * 1000;
 const MM_POSTWAR_UNLOCK_DELAY_MS = 60 * 60 * 1000;
 const ACTIVE_SYNC_POST_KEY_PREFIX = "active_sync_post:";
@@ -436,6 +451,56 @@ export function applyObservedPointValueTransitionForTest(
   };
 }
 
+/** Purpose: evaluate post-war observed-point transition decisions with explicit guard metadata. */
+function evaluateObservedPointTransition(input: ApplyObservedPointValueInput): ObservedPointTransitionEvaluation {
+  const state = input.state;
+  const observedPoints = toOptionalInt(input.observedPoints);
+  const baselinePointsBefore = toOptionalInt(state.baselinePoints);
+  if (state.lifecycleState !== "post_war_unlocked_waiting_for_point_change") {
+    return {
+      next: state,
+      observedPoints,
+      baselinePointsBefore,
+      guardCode: "not_waiting_for_point_change",
+      equalityGuard: "not_applicable",
+    };
+  }
+  if (state.matchType === "MM") {
+    return {
+      next: state,
+      observedPoints,
+      baselinePointsBefore,
+      guardCode: "mm_wait_guard",
+      equalityGuard: "not_applicable",
+    };
+  }
+  if (observedPoints === null || baselinePointsBefore === null) {
+    return {
+      next: state,
+      observedPoints,
+      baselinePointsBefore,
+      guardCode: "missing_points",
+      equalityGuard: "not_applicable",
+    };
+  }
+  if (observedPoints === baselinePointsBefore) {
+    return {
+      next: state,
+      observedPoints,
+      baselinePointsBefore,
+      guardCode: "equal_points_blocked",
+      equalityGuard: "blocked",
+    };
+  }
+  return {
+    next: applyObservedPointValueTransitionForTest(input),
+    observedPoints,
+    baselinePointsBefore,
+    guardCode: "point_change_allowed",
+    equalityGuard: "allowed",
+  };
+}
+
 /** Purpose: compare two lock-state records while ignoring harmless timestamp jitter. */
 function isSameLockState(a: PointsLockStateRecord | null, b: PointsLockStateRecord): boolean {
   if (!a) return false;
@@ -710,6 +775,7 @@ export function isPointsDirectFetchBlockedError(
 
 export class PointsDirectFetchGateService {
   private static readonly decisionRollups = new Map<string, number>();
+  private static readonly observedTransitionQueues = new Map<string, Promise<void>>();
 
   /** Purpose: initialize lock gate persistence dependencies. */
   constructor(private readonly settings: SettingsService = new SettingsService()) {}
@@ -850,22 +916,29 @@ export class PointsDirectFetchGateService {
   }): Promise<void> {
     const normalizedTag = normalizeTag(params.clanTag);
     if (!normalizedTag) return;
-    const nowMs = toOptionalInt(params.nowMs ?? Date.now()) ?? Date.now();
-    const persisted = await this.readPersistedState(normalizedTag);
-    if (!persisted) return;
+    await this.runObservedTransitionSerial(normalizedTag, async () => {
+      const nowMs = toOptionalInt(params.nowMs ?? Date.now()) ?? Date.now();
+      const persisted = await this.readPersistedState(normalizedTag);
+      if (!persisted) return;
 
-    const next = applyObservedPointValueTransitionForTest({
-      state: persisted,
-      observedPoints: params.observedPoints,
-      nowMs,
+      const evaluation = evaluateObservedPointTransition({
+        state: persisted,
+        observedPoints: params.observedPoints,
+        nowMs,
+      });
+      if (isSameLockState(persisted, evaluation.next)) {
+        if (evaluation.guardCode === "equal_points_blocked") {
+          console.debug(
+            `[points-lock] transition_noop clan=${normalizedTag} state=${persisted.lifecycleState} observed_points=${evaluation.observedPoints ?? "none"} baseline_before=${evaluation.baselinePointsBefore ?? "none"} equality_guard=${evaluation.equalityGuard} guard_code=${evaluation.guardCode} state_source=persisted_storage`
+          );
+        }
+        return;
+      }
+      await this.writePersistedState(evaluation.next);
+      console.info(
+        `[points-lock] transition clan=${normalizedTag} from=${persisted.lifecycleState} to=${evaluation.next.lifecycleState} observed_points=${evaluation.observedPoints ?? "none"} baseline_before=${evaluation.baselinePointsBefore ?? "none"} baseline_after=${evaluation.next.baselinePoints ?? "none"} equality_guard=${evaluation.equalityGuard} guard_code=${evaluation.guardCode} state_source=persisted_storage lock_until_ms=${evaluation.next.lockUntilMs ?? "none"} changed_at_ms=${evaluation.next.pointValueChangedAtMs ?? "none"}`
+      );
     });
-    if (isSameLockState(persisted, next)) return;
-    await this.writePersistedState(next);
-    console.info(
-      `[points-lock] transition clan=${normalizedTag} from=${persisted.lifecycleState} to=${next.lifecycleState} observed_points=${toOptionalInt(
-        params.observedPoints
-      ) ?? "none"} baseline=${next.baselinePoints ?? "none"} lock_until_ms=${next.lockUntilMs ?? "none"} changed_at_ms=${next.pointValueChangedAtMs ?? "none"}`
-    );
   }
 
   /** Purpose: load runtime policy inputs from authoritative tracked/current/sync state. */
@@ -1008,6 +1081,20 @@ export class PointsDirectFetchGateService {
   /** Purpose: persist lock-state JSON atomically for deterministic transitions. */
   private async writePersistedState(state: PointsLockStateRecord): Promise<void> {
     await this.settings.set(buildLockStateKey(state.clanTag), JSON.stringify(state));
+  }
+
+  /** Purpose: serialize observed-point transitions per clan to keep post-war updates idempotent. */
+  private async runObservedTransitionSerial(clanTag: string, task: () => Promise<void>): Promise<void> {
+    const previous = PointsDirectFetchGateService.observedTransitionQueues.get(clanTag) ?? Promise.resolve();
+    const nextTask = previous.catch(() => undefined).then(task);
+    let tracked: Promise<void>;
+    tracked = nextTask.finally(() => {
+      if (PointsDirectFetchGateService.observedTransitionQueues.get(clanTag) === tracked) {
+        PointsDirectFetchGateService.observedTransitionQueues.delete(clanTag);
+      }
+    });
+    PointsDirectFetchGateService.observedTransitionQueues.set(clanTag, tracked);
+    await nextTask;
   }
 
 
