@@ -280,7 +280,7 @@ function resolveInteractionVisibility(
   interaction: ChatInputCommandInteraction,
 ): "private" | "public" {
   const visibility = interaction.options.getString("visibility", false);
-  return visibility === "public" ? "public" : "private";
+  return visibility === "private" ? "private" : "public";
 }
 
 /** Purpose: map resolver failure code to the most accurate user-facing /emoji error response. */
