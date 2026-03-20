@@ -814,14 +814,6 @@ const handleSlashCommand = async (
         interactionId: interaction.id,
       },
       async () => {
-        if (
-          interaction.commandName === "compo" &&
-          !interaction.deferred &&
-          !interaction.replied
-        ) {
-          await interaction.deferReply({ ephemeral: true });
-        }
-
         const permissionStartedAtMs = Date.now();
         const targets = getCommandTargetsFromInteraction(interaction);
         const allowed = await commandPermissionService.canUseAnyTarget(

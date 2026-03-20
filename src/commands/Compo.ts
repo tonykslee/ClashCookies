@@ -1140,12 +1140,11 @@ export const Compo: Command = {
     interaction: ChatInputCommandInteraction,
     cocService: CoCService,
   ) => {
+    const visibility =
+      interaction.options.getString("visibility", false) ?? "private";
+    const isPublic = visibility === "public";
     try {
       logCompoStage(interaction, "handler_enter");
-
-      const visibility =
-        interaction.options.getString("visibility", false) ?? "private";
-      const isPublic = visibility === "public";
 
       if (!interaction.deferred && !interaction.replied) {
         await interaction.deferReply({ ephemeral: !isPublic });
@@ -1451,7 +1450,7 @@ export const Compo: Command = {
             : "",
       });
       await safeReply(interaction, {
-        ephemeral: true,
+        ephemeral: !isPublic,
         content: mapCompoSheetErrorToMessage(err),
       });
       logCompoStage(interaction, "response_sent", { reason: "run_catch" });
