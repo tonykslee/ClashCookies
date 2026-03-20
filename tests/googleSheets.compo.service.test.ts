@@ -32,7 +32,7 @@ function makeSettingsStub(map: SettingsStubMap): SettingsService {
   } as unknown as SettingsService;
 }
 
-const RANGE = "AllianceDashboard!A6:BD500";
+const RANGE = "AllianceDashboard!A6:BE500";
 
 describe("GoogleSheetsService /compo strict read path", () => {
   const mockedAxios = axios as unknown as AxiosMock;
