@@ -47,7 +47,7 @@ function getSubcommandSafe(interaction: ChatInputCommandInteraction): string {
 function logCompoStage(
   interaction: ChatInputCommandInteraction,
   stage: string,
-  detail: Record<string, string | number | boolean | null | undefined> = {}
+  detail: Record<string, string | number | boolean | null | undefined> = {},
 ): void {
   const base = {
     stage,
@@ -76,14 +76,26 @@ function readMode(interaction: ChatInputCommandInteraction): GoogleSheetMode {
 const COL_CLAN_NAME = 0; // A
 const COL_CLAN_TAG = 1; // B
 const COL_TOTAL_WEIGHT = 3; // D
-const COL_TARGET_BAND = 48; // AW
+const COL_TARGET_BAND = 49; // AX (was 48 / AW)
 const COL_MISSING_WEIGHT = 20; // U
-const COL_BUCKET_START = 21; // V
-const COL_BUCKET_END = 26; // AA
-const COL_ADJUSTMENT = 53; // BB
+const COL_TOTAL_PLAYERS = 21; // V
+const COL_BUCKET_START = 22; // W (was 21 / V)
+const COL_BUCKET_END = 27; // AB (was 26 / AA)
+const COL_ADJUSTMENT = 54; // BC (was 53 / BB)
 const FIXED_LAYOUT_RANGE = "AllianceDashboard!A6:BD500";
 const FIXED_LAYOUT_RANGE_START_ROW = 6;
-const STATE_HEADERS = ["Clan", "Total", "Missing", "TH18", "TH17", "TH16", "TH15", "TH14", "<=TH13"];
+const STATE_HEADERS = [
+  "Clan",
+  "Total",
+  "Missing",
+  "Players",
+  "TH18",
+  "TH17",
+  "TH16",
+  "TH15",
+  "TH14",
+  "<=TH13",
+];
 const LOOKUP_REFRESH_RANGE = "Lookup!B10:B10";
 const COMPO_REFRESH_PREFIX = "compo-refresh";
 const COMPO_REFRESH_LABEL = "Refresh Data";
@@ -119,7 +131,9 @@ function buildCompoRefreshCustomId(payload: CompoRefreshPayload): string {
   return `${COMPO_REFRESH_PREFIX}:place:${payload.userId}:${Math.trunc(payload.weight)}`;
 }
 
-function parseCompoRefreshCustomId(customId: string): CompoRefreshPayload | null {
+function parseCompoRefreshCustomId(
+  customId: string,
+): CompoRefreshPayload | null {
   const parts = String(customId ?? "").split(":");
   if (parts.length !== 4 || parts[0] !== COMPO_REFRESH_PREFIX) return null;
   const [, kind, userId, value] = parts;
@@ -150,7 +164,7 @@ export function isCompoRefreshButtonCustomId(customId: string): boolean {
 
 function buildCompoRefreshActionRow(
   customId: string,
-  options?: { loading?: boolean }
+  options?: { loading?: boolean },
 ): ActionRowBuilder<ButtonBuilder> {
   const loading = options?.loading ?? false;
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
@@ -158,15 +172,18 @@ function buildCompoRefreshActionRow(
       .setCustomId(customId)
       .setLabel(loading ? COMPO_REFRESH_LOADING_LABEL : COMPO_REFRESH_LABEL)
       .setStyle(ButtonStyle.Secondary)
-      .setDisabled(loading)
+      .setDisabled(loading),
   );
 }
 
 function extractSupplementalRowsFromMessage(
-  interaction: ButtonInteraction
+  interaction: ButtonInteraction,
 ): Array<APIActionRowComponent<APIComponentInMessageActionRow>> {
   return interaction.message.components
-    .map((row) => row.toJSON() as APIActionRowComponent<APIComponentInMessageActionRow>)
+    .map(
+      (row) =>
+        row.toJSON() as APIActionRowComponent<APIComponentInMessageActionRow>,
+    )
     .filter(
       (row) =>
         !row.components.some(
@@ -174,8 +191,8 @@ function extractSupplementalRowsFromMessage(
             component.type === ComponentType.Button &&
             "custom_id" in component &&
             typeof component.custom_id === "string" &&
-            isCompoRefreshButtonCustomId(component.custom_id)
-        )
+            isCompoRefreshButtonCustomId(component.custom_id),
+        ),
     );
 }
 
@@ -201,7 +218,10 @@ function getAbsoluteSheetRowNumber(rangeRelativeIndex: number): number {
 
 function mapCompoSheetErrorToMessage(err: unknown): string {
   if (err instanceof GoogleSheetReadError) {
-    return COMPO_ERROR_MESSAGE_BY_CODE[err.code] ?? COMPO_ERROR_MESSAGE_BY_CODE.SHEET_READ_FAILURE;
+    return (
+      COMPO_ERROR_MESSAGE_BY_CODE[err.code] ??
+      COMPO_ERROR_MESSAGE_BY_CODE.SHEET_READ_FAILURE
+    );
   }
   return COMPO_ERROR_MESSAGE_BY_CODE.SHEET_READ_FAILURE;
 }
@@ -214,10 +234,16 @@ function isWarSheetRow(sheetRowNumber: number): boolean {
   return sheetRowNumber >= 8 && sheetRowNumber % 3 === 2;
 }
 
-function getModeRows(rows: string[][], mode: GoogleSheetMode): SheetIndexedRow[] {
+function getModeRows(
+  rows: string[][],
+  mode: GoogleSheetMode,
+): SheetIndexedRow[] {
   return rows.flatMap((row, index) => {
     const sheetRowNumber = getAbsoluteSheetRowNumber(index);
-    const include = mode === "actual" ? isActualSheetRow(sheetRowNumber) : isWarSheetRow(sheetRowNumber);
+    const include =
+      mode === "actual"
+        ? isActualSheetRow(sheetRowNumber)
+        : isWarSheetRow(sheetRowNumber);
     return include ? [{ row, sheetRowNumber }] : [];
   });
 }
@@ -226,7 +252,10 @@ function _renderStateSvg(mode: GoogleSheetMode, rows: string[][]): Buffer {
   const tableRows = rows.length > 0 ? rows : [["(NO DATA)"]];
   const colCount = Math.max(...tableRows.map((row) => row.length), 1);
   const widths = Array.from({ length: colCount }, (_, col) =>
-    Math.min(40, Math.max(6, ...tableRows.map((row) => String(row[col] ?? "").length)))
+    Math.min(
+      40,
+      Math.max(6, ...tableRows.map((row) => String(row[col] ?? "").length)),
+    ),
   );
   const charPx = 8;
   const paddingX = 12;
@@ -249,7 +278,9 @@ function _renderStateSvg(mode: GoogleSheetMode, rows: string[][]): Buffer {
   for (let r = 0; r < tableRows.length; r += 1) {
     const y = margin + titleHeight + r * rowHeight;
     const bg = r === 0 ? "#1f2d5a" : r % 2 === 0 ? "#171d34" : "#131a2f";
-    cells.push(`<rect x="${margin}" y="${y}" width="${tableWidth}" height="${rowHeight}" fill="${bg}" />`);
+    cells.push(
+      `<rect x="${margin}" y="${y}" width="${tableWidth}" height="${rowHeight}" fill="${bg}" />`,
+    );
     for (let c = 0; c < colCount; c += 1) {
       const raw = String(tableRows[r][c] ?? "");
       const text = raw
@@ -258,7 +289,7 @@ function _renderStateSvg(mode: GoogleSheetMode, rows: string[][]): Buffer {
         .replace(/>/g, "&gt;");
       const color = r === 0 ? "#9ec2ff" : "#f0f4ff";
       cells.push(
-        `<text x="${xStarts[c] + paddingX}" y="${y + 20}" font-size="14" font-family="Consolas, Menlo, monospace" fill="${color}">${text}</text>`
+        `<text x="${xStarts[c] + paddingX}" y="${y + 20}" font-size="14" font-family="Consolas, Menlo, monospace" fill="${color}">${text}</text>`,
       );
     }
   }
@@ -267,14 +298,14 @@ function _renderStateSvg(mode: GoogleSheetMode, rows: string[][]): Buffer {
   for (let c = 0; c <= colCount; c += 1) {
     const x = c === colCount ? margin + tableWidth : xStarts[c];
     verticalLines.push(
-      `<line x1="${x}" y1="${margin + titleHeight}" x2="${x}" y2="${margin + titleHeight + tableRows.length * rowHeight}" stroke="#2a3558" stroke-width="1" />`
+      `<line x1="${x}" y1="${margin + titleHeight}" x2="${x}" y2="${margin + titleHeight + tableRows.length * rowHeight}" stroke="#2a3558" stroke-width="1" />`,
     );
   }
   const horizontalLines: string[] = [];
   for (let r = 0; r <= tableRows.length; r += 1) {
     const y = margin + titleHeight + r * rowHeight;
     horizontalLines.push(
-      `<line x1="${margin}" y1="${y}" x2="${margin + tableWidth}" y2="${y}" stroke="#2a3558" stroke-width="1" />`
+      `<line x1="${margin}" y1="${y}" x2="${margin + tableWidth}" y2="${y}" stroke="#2a3558" stroke-width="1" />`,
     );
   }
 
@@ -383,7 +414,7 @@ function abbreviateClan(value: string): string {
     "ZERO GRAVITY": "ZG",
     "DARK EMPIRE": "DE",
     "STEEL EMPIRE 2": "SE",
-    "THEWISECOWBOYS": "TWC",
+    THEWISECOWBOYS: "TWC",
     MARVELS: "MV",
     "ROCKY ROAD": "RR",
     AKATSUKI: "AK",
@@ -392,7 +423,11 @@ function abbreviateClan(value: string): string {
   return map[normalized] ?? value;
 }
 
-function _padRows(rows: string[][], rowCount: number, colCount: number): string[][] {
+function _padRows(
+  rows: string[][],
+  rowCount: number,
+  colCount: number,
+): string[][] {
   const padded: string[][] = [];
   for (let r = 0; r < rowCount; r += 1) {
     const source = rows[r] ?? [];
@@ -409,7 +444,7 @@ function _mergeStateRows(
   left: string[][],
   middle: string[][],
   right: string[][],
-  targetBand: string[][]
+  targetBand: string[][],
 ): string[][] {
   const out: string[][] = [];
   for (let i = 0; i < 9; i += 1) {
@@ -428,24 +463,26 @@ function _mergeStateRows(
 
 function buildCompoStateRows(modeRows: SheetIndexedRow[]): string[][] {
   const contentRows = modeRows.flatMap((modeRow) => {
-    const clanName = clampCell(normalizeCompoClanDisplayName(String(modeRow.row[COL_CLAN_NAME] ?? "")));
+    const clanName = clampCell(
+      normalizeCompoClanDisplayName(String(modeRow.row[COL_CLAN_NAME] ?? "")),
+    );
     if (!clanName) return [];
-    return [[
-      clanName,
-      clampCell(String(modeRow.row[COL_TOTAL_WEIGHT] ?? "")),
-      clampCell(String(modeRow.row[COL_MISSING_WEIGHT] ?? "")),
-      clampCell(String(modeRow.row[COL_BUCKET_START] ?? "")),
-      clampCell(String(modeRow.row[COL_BUCKET_START + 1] ?? "")),
-      clampCell(String(modeRow.row[COL_BUCKET_START + 2] ?? "")),
-      clampCell(String(modeRow.row[COL_BUCKET_START + 3] ?? "")),
-      clampCell(String(modeRow.row[COL_BUCKET_START + 4] ?? "")),
-      clampCell(String(modeRow.row[COL_BUCKET_END] ?? "")),
-    ]];
+    return [
+      [
+        clanName,
+        clampCell(String(modeRow.row[COL_TOTAL_WEIGHT] ?? "")),
+        clampCell(String(modeRow.row[COL_MISSING_WEIGHT] ?? "")),
+        clampCell(String(modeRow.row[COL_TOTAL_PLAYERS] ?? "")),
+        clampCell(String(modeRow.row[COL_BUCKET_START] ?? "")),
+        clampCell(String(modeRow.row[COL_BUCKET_START + 1] ?? "")),
+        clampCell(String(modeRow.row[COL_BUCKET_START + 2] ?? "")),
+        clampCell(String(modeRow.row[COL_BUCKET_START + 3] ?? "")),
+        clampCell(String(modeRow.row[COL_BUCKET_START + 4] ?? "")),
+        clampCell(String(modeRow.row[COL_BUCKET_END] ?? "")),
+      ],
+    ];
   });
-  return [
-    STATE_HEADERS,
-    ...contentRows,
-  ];
+  return [STATE_HEADERS, ...contentRows];
 }
 
 type CompoRenderPayload = {
@@ -464,7 +501,9 @@ type CompoSheetSnapshot = {
   refreshLine: string;
 };
 
-async function readCompoSheetSnapshot(mode: GoogleSheetMode): Promise<CompoSheetSnapshot> {
+async function readCompoSheetSnapshot(
+  mode: GoogleSheetMode,
+): Promise<CompoSheetSnapshot> {
   const settings = new SettingsService();
   const sheets = new GoogleSheetsService(settings);
   const linked = await sheets.getCompoLinkedSheet(FIXED_LAYOUT_RANGE);
@@ -487,7 +526,10 @@ function buildCompoStatePayload(input: {
 }): CompoRenderPayload {
   const stateRows = buildCompoStateRows(input.modeRows);
   return {
-    content: [`Mode Displayed: **${input.mode.toUpperCase()}**`, input.refreshLine].join("\n"),
+    content: [
+      `Mode Displayed: **${input.mode.toUpperCase()}**`,
+      input.refreshLine,
+    ].join("\n"),
     files: [
       {
         attachment: renderStatePng(input.mode, stateRows),
@@ -514,7 +556,8 @@ async function buildCompoPlacePayload(input: {
   if (candidates.length === 0) {
     return {
       payload: {
-        content: "No placement data found in ACTUAL rows from AllianceDashboard!A6:BD500.",
+        content:
+          "No placement data found in ACTUAL rows from AllianceDashboard!A6:BD500.",
       },
       candidateCount: 0,
       recommendedCount: 0,
@@ -525,14 +568,17 @@ async function buildCompoPlacePayload(input: {
 
   const candidatesWithLiveVacancy = await enrichCandidatesWithLiveVacancy(
     candidates,
-    input.cocService
+    input.cocService,
   );
   const vacancyChoice = candidatesWithLiveVacancy
     .filter((c) => c.hasVacancy)
     .sort((a, b) => {
       if (b.vacancySlots !== a.vacancySlots)
         return b.vacancySlots - a.vacancySlots;
-      return Math.abs(a.remainingToTarget - input.inputWeight) - Math.abs(b.remainingToTarget - input.inputWeight);
+      return (
+        Math.abs(a.remainingToTarget - input.inputWeight) -
+        Math.abs(b.remainingToTarget - input.inputWeight)
+      );
     });
 
   const compositionNeeds = candidatesWithLiveVacancy
@@ -591,7 +637,7 @@ type PlacementCandidateWithDelta = PlacementCandidateWithVacancy & {
 };
 
 function readPlacementCandidates(
-  modeRows: SheetIndexedRow[]
+  modeRows: SheetIndexedRow[],
 ): PlacementCandidate[] {
   const candidates: PlacementCandidate[] = [];
   const seenKeys = new Set<string>();
@@ -608,12 +654,24 @@ function readPlacementCandidates(
     const missingCount = parseNumber(row[COL_MISSING_WEIGHT]);
     const remainingToTarget = targetBand - totalWeight;
     const bucketDeltaByHeader: Record<string, number> = {};
-    bucketDeltaByHeader[normalize("TH18-delta")] = parseNumber(row[COL_BUCKET_START]);
-    bucketDeltaByHeader[normalize("TH17-delta")] = parseNumber(row[COL_BUCKET_START + 1]);
-    bucketDeltaByHeader[normalize("TH16-delta")] = parseNumber(row[COL_BUCKET_START + 2]);
-    bucketDeltaByHeader[normalize("TH15-delta")] = parseNumber(row[COL_BUCKET_START + 3]);
-    bucketDeltaByHeader[normalize("TH14-delta")] = parseNumber(row[COL_BUCKET_START + 4]);
-    bucketDeltaByHeader[normalize("<=TH13-delta")] = parseNumber(row[COL_BUCKET_END]);
+    bucketDeltaByHeader[normalize("TH18-delta")] = parseNumber(
+      row[COL_BUCKET_START],
+    );
+    bucketDeltaByHeader[normalize("TH17-delta")] = parseNumber(
+      row[COL_BUCKET_START + 1],
+    );
+    bucketDeltaByHeader[normalize("TH16-delta")] = parseNumber(
+      row[COL_BUCKET_START + 2],
+    );
+    bucketDeltaByHeader[normalize("TH15-delta")] = parseNumber(
+      row[COL_BUCKET_START + 3],
+    );
+    bucketDeltaByHeader[normalize("TH14-delta")] = parseNumber(
+      row[COL_BUCKET_START + 4],
+    );
+    bucketDeltaByHeader[normalize("<=TH13-delta")] = parseNumber(
+      row[COL_BUCKET_END],
+    );
 
     candidates.push({
       clanName,
@@ -632,7 +690,7 @@ function readPlacementCandidates(
 /** Purpose: resolve live member counts from CoC API and mark vacancy from current clan size. */
 async function enrichCandidatesWithLiveVacancy(
   candidates: PlacementCandidate[],
-  cocService: CoCService
+  cocService: CoCService,
 ): Promise<PlacementCandidateWithVacancy[]> {
   return Promise.all(
     candidates.map(async (candidate) => {
@@ -657,8 +715,7 @@ async function enrichCandidatesWithLiveVacancy(
         liveMemberCount !== null && Number.isFinite(liveMemberCount)
           ? Math.max(0, Math.min(50, Math.trunc(liveMemberCount)))
           : null;
-      const vacancySlots =
-        safeCount !== null ? Math.max(0, 50 - safeCount) : 0;
+      const vacancySlots = safeCount !== null ? Math.max(0, 50 - safeCount) : 0;
 
       return {
         ...candidate,
@@ -666,7 +723,7 @@ async function enrichCandidatesWithLiveVacancy(
         vacancySlots,
         hasVacancy: safeCount !== null && safeCount < 50,
       };
-    })
+    }),
   );
 }
 
@@ -685,16 +742,18 @@ function buildCompoPlaceEmbed(params: {
   refreshLine: string;
 }): EmbedBuilder {
   const recommendedRows = params.recommended.map(
-    (c) => `${abbreviateClan(normalizeCompoClanDisplayName(c.clanName))} — needs ${Math.abs(c.delta)} ${params.bucket}`
+    (c) =>
+      `${abbreviateClan(normalizeCompoClanDisplayName(c.clanName))} — needs ${Math.abs(c.delta)} ${params.bucket}`,
   );
   const vacancyRows = params.vacancyList.map(
     (c) =>
       `${abbreviateClan(normalizeCompoClanDisplayName(c.clanName))} — ${
         c.liveMemberCount !== null ? `${c.liveMemberCount}/50` : "unknown/50"
-      }`
+      }`,
   );
   const compositionRows = params.compositionList.map(
-    (c) => `${abbreviateClan(normalizeCompoClanDisplayName(c.clanName))} — ${c.delta}`
+    (c) =>
+      `${abbreviateClan(normalizeCompoClanDisplayName(c.clanName))} — ${c.delta}`,
   );
 
   return new EmbedBuilder()
@@ -702,12 +761,24 @@ function buildCompoPlaceEmbed(params: {
     .setDescription(
       `Weight: **${params.inputWeight.toLocaleString()}**\n` +
         `Bucket: **${params.bucket}**\n` +
-        params.refreshLine
+        params.refreshLine,
     )
     .addFields(
-      { name: "Recommended", value: formatPlacementRows(recommendedRows), inline: false },
-      { name: "Vacancy", value: formatPlacementRows(vacancyRows), inline: false },
-      { name: "Composition", value: formatPlacementRows(compositionRows), inline: false }
+      {
+        name: "Recommended",
+        value: formatPlacementRows(recommendedRows),
+        inline: false,
+      },
+      {
+        name: "Vacancy",
+        value: formatPlacementRows(vacancyRows),
+        inline: false,
+      },
+      {
+        name: "Composition",
+        value: formatPlacementRows(compositionRows),
+        inline: false,
+      },
     );
 }
 
@@ -777,7 +848,10 @@ function renderStatePng(mode: GoogleSheetMode, rows: string[][]): Buffer {
   const tableRows = rows.length > 0 ? rows : [["(NO DATA)"]];
   const colCount = Math.max(...tableRows.map((row) => row.length), 1);
   const widths = Array.from({ length: colCount }, (_, col) =>
-    Math.min(24, Math.max(4, ...tableRows.map((row) => (row[col] ?? "").length)))
+    Math.min(
+      24,
+      Math.max(4, ...tableRows.map((row) => (row[col] ?? "").length)),
+    ),
   );
 
   const scale = 3;
@@ -804,14 +878,25 @@ function renderStatePng(mode: GoogleSheetMode, rows: string[][]): Buffer {
     png.data[idx + 2] = rgb[2];
     png.data[idx + 3] = 255;
   };
-  const fillRect = (x: number, y: number, w: number, h: number, rgb: [number, number, number]) => {
+  const fillRect = (
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    rgb: [number, number, number],
+  ) => {
     for (let yy = y; yy < y + h; yy += 1) {
       for (let xx = x; xx < x + w; xx += 1) {
         setPixel(xx, yy, rgb);
       }
     }
   };
-  const drawChar = (x: number, y: number, ch: string, rgb: [number, number, number]) => {
+  const drawChar = (
+    x: number,
+    y: number,
+    ch: string,
+    rgb: [number, number, number],
+  ) => {
     const glyph = GLYPHS[ch] ?? GLYPHS["?"];
     for (let gy = 0; gy < glyph.length; gy += 1) {
       for (let gx = 0; gx < glyph[gy].length; gx += 1) {
@@ -820,7 +905,12 @@ function renderStatePng(mode: GoogleSheetMode, rows: string[][]): Buffer {
       }
     }
   };
-  const drawText = (x: number, y: number, text: string, rgb: [number, number, number]) => {
+  const drawText = (
+    x: number,
+    y: number,
+    text: string,
+    rgb: [number, number, number],
+  ) => {
     const glyphSafe = toGlyphSafeText(text);
     for (let i = 0; i < glyphSafe.length; i += 1) {
       drawChar(x + i * charPx, y, glyphSafe[i], rgb);
@@ -852,7 +942,13 @@ function renderStatePng(mode: GoogleSheetMode, rows: string[][]): Buffer {
   }
   for (let i = 0; i <= colCount; i += 1) {
     const lineX = i === colCount ? margin + tableWidth : xStarts[i];
-    fillRect(lineX, margin + titleHeight, 1, tableRows.length * rowHeight, grid);
+    fillRect(
+      lineX,
+      margin + titleHeight,
+      1,
+      tableRows.length * rowHeight,
+      grid,
+    );
   }
   for (let i = 0; i <= tableRows.length; i += 1) {
     const lineY = margin + titleHeight + i * rowHeight;
@@ -865,11 +961,17 @@ function renderStatePng(mode: GoogleSheetMode, rows: string[][]): Buffer {
 function buildCompoRefreshComponents(input: {
   customId: string;
   loading: boolean;
-  supplementalRows?: Array<APIActionRowComponent<APIComponentInMessageActionRow>>;
-}): Array<ActionRowBuilder<ButtonBuilder> | APIActionRowComponent<APIComponentInMessageActionRow>> {
-  const components: Array<ActionRowBuilder<ButtonBuilder> | APIActionRowComponent<APIComponentInMessageActionRow>> = [
-    buildCompoRefreshActionRow(input.customId, { loading: input.loading }),
-  ];
+  supplementalRows?: Array<
+    APIActionRowComponent<APIComponentInMessageActionRow>
+  >;
+}): Array<
+  | ActionRowBuilder<ButtonBuilder>
+  | APIActionRowComponent<APIComponentInMessageActionRow>
+> {
+  const components: Array<
+    | ActionRowBuilder<ButtonBuilder>
+    | APIActionRowComponent<APIComponentInMessageActionRow>
+  > = [buildCompoRefreshActionRow(input.customId, { loading: input.loading })];
   if (input.supplementalRows && input.supplementalRows.length > 0) {
     components.push(...input.supplementalRows);
   }
@@ -889,12 +991,15 @@ function mapCompoRefreshErrorToMessage(err: unknown): string {
 
 export async function handleCompoRefreshButton(
   interaction: ButtonInteraction,
-  cocService: CoCService
+  cocService: CoCService,
 ): Promise<void> {
   const parsed = parseCompoRefreshCustomId(interaction.customId);
   if (!parsed) {
     if (!interaction.replied && !interaction.deferred) {
-      await interaction.reply({ ephemeral: true, content: "Invalid refresh action." });
+      await interaction.reply({
+        ephemeral: true,
+        content: "Invalid refresh action.",
+      });
     }
     return;
   }
@@ -1017,7 +1122,8 @@ export const Compo: Command = {
     },
     {
       name: "place",
-      description: "Suggest clan placement for a given war weight (uses ACTUAL state)",
+      description:
+        "Suggest clan placement for a given war weight (uses ACTUAL state)",
       type: ApplicationCommandOptionType.Subcommand,
       options: [
         {
@@ -1032,12 +1138,17 @@ export const Compo: Command = {
   run: async (
     _client: Client,
     interaction: ChatInputCommandInteraction,
-    cocService: CoCService
+    cocService: CoCService,
   ) => {
     try {
       logCompoStage(interaction, "handler_enter");
+
+      const visibility =
+        interaction.options.getString("visibility", false) ?? "private";
+      const isPublic = visibility === "public";
+
       if (!interaction.deferred && !interaction.replied) {
-        await interaction.deferReply({ ephemeral: true });
+        await interaction.deferReply({ ephemeral: !isPublic });
         logCompoStage(interaction, "defer_reply_ok");
       }
 
@@ -1068,7 +1179,10 @@ export const Compo: Command = {
           range: FIXED_LAYOUT_RANGE,
           resolutionSource: linked.source,
         });
-        const rows = await sheets.readCompoLinkedValues(FIXED_LAYOUT_RANGE, linked);
+        const rows = await sheets.readCompoLinkedValues(
+          FIXED_LAYOUT_RANGE,
+          linked,
+        );
         const modeRows = getModeRows(rows, mode);
         logCompoStage(interaction, "db_fetch", {
           entity: "sheet_rows",
@@ -1079,12 +1193,16 @@ export const Compo: Command = {
         });
 
         if (modeRows.length === 0) {
-          logCompoStage(interaction, "response_build", { reason: "no_mode_rows" });
+          logCompoStage(interaction, "response_build", {
+            reason: "no_mode_rows",
+          });
           await safeReply(interaction, {
-            ephemeral: true,
+            ephemeral: !isPublic,
             content: `No ${mode.toUpperCase()} rows found in ${FIXED_LAYOUT_RANGE}.`,
           });
-          logCompoStage(interaction, "response_sent", { reason: "no_mode_rows" });
+          logCompoStage(interaction, "response_sent", {
+            reason: "no_mode_rows",
+          });
           return;
         }
 
@@ -1101,36 +1219,46 @@ export const Compo: Command = {
               result: "target_found",
               clanTag,
             });
-            logCompoStage(interaction, "response_build", { reason: "target_found" });
+            logCompoStage(interaction, "response_build", {
+              reason: "target_found",
+            });
             await safeReply(interaction, {
-              ephemeral: true,
+              ephemeral: !isPublic,
               content:
                 advice && advice.length > 0
                   ? `Mode: **${mode.toUpperCase()}**\n**${displayClanName}** (\`#${clanTag}\`) adjustment:\n${advice}`
-                  : `Mode: **${mode.toUpperCase()}**\nFound **${displayClanName}** (\`#${clanTag}\`), but there is no adjustment text in column BB.`,
+                  : `Mode: **${mode.toUpperCase()}**\nFound **${displayClanName}** (\`#${clanTag}\`), but there is no adjustment text in column BC.`,
             });
-            logCompoStage(interaction, "response_sent", { reason: "target_found" });
+            logCompoStage(interaction, "response_sent", {
+              reason: "target_found",
+            });
             return;
           }
         }
 
         const knownTags = modeRows
-          .map((modeRow) => normalizeTag(String(modeRow.row[COL_CLAN_TAG] ?? "")))
+          .map((modeRow) =>
+            normalizeTag(String(modeRow.row[COL_CLAN_TAG] ?? "")),
+          )
           .filter((tag): tag is string => Boolean(tag));
         logCompoStage(interaction, "computation_complete", {
           result: "target_missing",
           knownTags: knownTags.length,
         });
 
-        logCompoStage(interaction, "response_build", { reason: "target_missing" });
+        logCompoStage(interaction, "response_build", {
+          reason: "target_missing",
+        });
         await safeReply(interaction, {
-          ephemeral: true,
+          ephemeral: !isPublic,
           content:
             knownTags.length > 0
               ? `Mode: **${mode.toUpperCase()}**\nNo adjustment mapping found for tag \`#${targetTag}\`. Known tags in this mode: ${knownTags.map((t) => `#${t}`).join(", ")}`
               : `Mode: **${mode.toUpperCase()}**\nNo adjustment mapping found for tag \`#${targetTag}\`.`,
         });
-        logCompoStage(interaction, "response_sent", { reason: "target_missing" });
+        logCompoStage(interaction, "response_sent", {
+          reason: "target_missing",
+        });
         return;
       }
 
@@ -1194,13 +1322,17 @@ export const Compo: Command = {
           parsedWeight: inputWeight ?? "",
         });
         if (!inputWeight || inputWeight <= 0) {
-          logCompoStage(interaction, "response_build", { reason: "invalid_weight" });
+          logCompoStage(interaction, "response_build", {
+            reason: "invalid_weight",
+          });
           await safeReply(interaction, {
-            ephemeral: true,
+            ephemeral: !isPublic,
             content:
               "Invalid weight. Use formats like `145000`, `145,000`, or `145k`.",
           });
-          logCompoStage(interaction, "response_sent", { reason: "invalid_weight" });
+          logCompoStage(interaction, "response_sent", {
+            reason: "invalid_weight",
+          });
           return;
         }
 
@@ -1211,11 +1343,12 @@ export const Compo: Command = {
             parsedWeight: inputWeight,
           });
           await safeReply(interaction, {
-            ephemeral: true,
-            content:
-              "Weight is outside supported ranges (121,000 to 180,000).",
+            ephemeral: !isPublic,
+            content: "Weight is outside supported ranges (121,000 to 180,000).",
           });
-          logCompoStage(interaction, "response_sent", { reason: "weight_out_of_range" });
+          logCompoStage(interaction, "response_sent", {
+            reason: "weight_out_of_range",
+          });
           return;
         }
 
@@ -1263,7 +1396,10 @@ export const Compo: Command = {
           weight: inputWeight,
         });
         logCompoStage(interaction, "response_build", {
-          reason: placeResult.candidateCount === 0 ? "no_candidates" : "placement_result",
+          reason:
+            placeResult.candidateCount === 0
+              ? "no_candidates"
+              : "placement_result",
           recommended: placeResult.recommendedCount,
           vacancy: placeResult.vacancyCount,
           composition: placeResult.compositionCount,
@@ -1276,30 +1412,43 @@ export const Compo: Command = {
           }),
         });
         logCompoStage(interaction, "response_sent", {
-          reason: placeResult.candidateCount === 0 ? "no_candidates" : "placement_result",
+          reason:
+            placeResult.candidateCount === 0
+              ? "no_candidates"
+              : "placement_result",
         });
         return;
       }
 
-      logCompoStage(interaction, "response_build", { reason: "unknown_subcommand" });
+      logCompoStage(interaction, "response_build", {
+        reason: "unknown_subcommand",
+      });
       await safeReply(interaction, {
-        ephemeral: true,
+        ephemeral: !isPublic,
         content: "Unknown subcommand.",
       });
-      logCompoStage(interaction, "response_sent", { reason: "unknown_subcommand" });
+      logCompoStage(interaction, "response_sent", {
+        reason: "unknown_subcommand",
+      });
       return;
     } catch (err) {
       console.error(`compo command failed: ${formatError(err)}`);
       console.error(
-        `[compo-command-error] stage=run_catch subcommand=${getSubcommandSafe(interaction)} error=${formatError(err)}`
+        `[compo-command-error] stage=run_catch subcommand=${getSubcommandSafe(interaction)} error=${formatError(err)}`,
       );
       logCompoStage(interaction, "response_build", {
         reason: "run_catch",
         normalizedCode: err instanceof GoogleSheetReadError ? err.code : "",
-        normalizedStatus: err instanceof GoogleSheetReadError ? err.meta.httpStatus ?? "" : "",
-        normalizedRange: err instanceof GoogleSheetReadError ? err.meta.range : "",
+        normalizedStatus:
+          err instanceof GoogleSheetReadError
+            ? (err.meta.httpStatus ?? "")
+            : "",
+        normalizedRange:
+          err instanceof GoogleSheetReadError ? err.meta.range : "",
         resolutionSource:
-          err instanceof GoogleSheetReadError ? err.meta.resolutionSource ?? "" : "",
+          err instanceof GoogleSheetReadError
+            ? (err.meta.resolutionSource ?? "")
+            : "",
       });
       await safeReply(interaction, {
         ephemeral: true,
@@ -1330,10 +1479,17 @@ export const Compo: Command = {
           value: tag,
         };
       })
-      .filter((c, i, arr) => c.value.length > 0 && arr.findIndex((v) => v.value === c.value) === i);
+      .filter(
+        (c, i, arr) =>
+          c.value.length > 0 && arr.findIndex((v) => v.value === c.value) === i,
+      );
 
     const filtered = choices
-      .filter((choice) => normalize(choice.name).includes(query) || normalize(choice.value).includes(query))
+      .filter(
+        (choice) =>
+          normalize(choice.name).includes(query) ||
+          normalize(choice.value).includes(query),
+      )
       .slice(0, 25)
       .map((choice) => ({ name: choice.name, value: choice.value }));
 
@@ -1349,4 +1505,3 @@ export const getAbsoluteSheetRowNumberForTest = getAbsoluteSheetRowNumber;
 export const mapCompoSheetErrorToMessageForTest = mapCompoSheetErrorToMessage;
 export const buildCompoRefreshCustomIdForTest = buildCompoRefreshCustomId;
 export const parseCompoRefreshCustomIdForTest = parseCompoRefreshCustomId;
-

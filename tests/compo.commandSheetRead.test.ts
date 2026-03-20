@@ -6,11 +6,11 @@ import {
   GoogleSheetsService,
 } from "../src/services/GoogleSheetsService";
 
-const FIXED_LAYOUT_RANGE = "AllianceDashboard!A6:BD500";
+const FIXED_LAYOUT_RANGE = "AllianceDashboard!A6:BE500";
 const LOOKUP_REFRESH_RANGE = "Lookup!B10:B10";
 
 function makeRows(): string[][] {
-  const rows = Array.from({ length: 8 }, () => Array.from({ length: 56 }, () => ""));
+  const rows = Array.from({ length: 8 }, () => Array.from({ length: 57 }, () => ""));
   const actualRow = rows[1];
   actualRow[0] = "DARK EMPIRE";
   actualRow[1] = "#LQQ99UV8";
@@ -22,8 +22,8 @@ function makeRows(): string[][] {
   actualRow[24] = "0";
   actualRow[25] = "0";
   actualRow[26] = "0";
-  actualRow[48] = "1,500,000";
-  actualRow[53] = "Add 1x TH16";
+  actualRow[49] = "1,500,000";
+  actualRow[54] = "Add 1x TH16";
   return rows;
 }
 
