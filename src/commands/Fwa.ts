@@ -254,6 +254,14 @@ const FWA_BASE_SWAP_ALERT_EMOJI_NAME = "alert";
 const FWA_BASE_SWAP_LAYOUT_BULLET_EMOJI_NAME = "arrow_arrow";
 export const FWA_BASE_SWAP_ALERT_FALLBACK_EMOJI = "\u26A0\uFE0F";
 export const FWA_BASE_SWAP_LAYOUT_BULLET_FALLBACK_EMOJI = "\u27A1\uFE0F";
+const FWA_BASE_SWAP_DM_ACTIVE_PREFIX = "ACTIVE WAR BASE: swap to FWA now";
+const FWA_BASE_SWAP_DM_ACTIVE_LABEL = "Active war base messages:";
+const FWA_BASE_SWAP_DM_BASE_ERROR_LABEL = "Base error messages:";
+const FWA_BASE_SWAP_DM_SECTION_SEPARATOR = "----------";
+const FWA_BASE_SWAP_DM_MAX_PINGS_PER_LINE = 5;
+const FWA_BASE_SWAP_DM_MAX_LINE_CHARS = 256;
+const FWA_BASE_SWAP_DM_FAILURE_NOTICE =
+  "Posted the base-swap message, but I couldn't DM you the in-game ping messages.";
 
 type FwaBaseSwapResolvedInlineEmojis = {
   alertEmoji: string;
@@ -383,6 +391,185 @@ function renderBaseSwapLine(entry: FwaBaseSwapAnnouncementEntry): string {
     : "*(unlinked)*";
   const mark = entry.acknowledged ? "✅" : ":x:";
   return `#${entry.position} - ${mention} - ${entry.playerName} - ${mark}`;
+}
+
+/** Purpose: normalize one in-game ping token from a base-swap entry using the existing player-name source. */
+function buildFwaBaseSwapInGamePingToken(
+  entry: FwaBaseSwapAnnouncementEntry,
+): string | null {
+  const normalizedPlayerName = String(entry.playerName ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalizedPlayerName) return null;
+  return normalizedPlayerName.startsWith("@")
+    ? normalizedPlayerName
+    : `@${normalizedPlayerName}`;
+}
+
+/** Purpose: pack ping tokens into single-line copy blocks under deterministic ping-count and character limits. */
+function batchFwaBaseSwapPingLines(
+  prefix: string,
+  pingTokens: readonly string[],
+): string[] {
+  const normalizedPrefix = String(prefix).replace(/\s+/g, " ").trim();
+  if (!normalizedPrefix) return [];
+  const lines: string[] = [];
+  let currentTokens: string[] = [];
+
+  const flushCurrent = () => {
+    if (currentTokens.length === 0) return;
+    lines.push(`${normalizedPrefix} ${currentTokens.join(" ")}`);
+    currentTokens = [];
+  };
+
+  for (const rawToken of pingTokens) {
+    const token = String(rawToken).replace(/\s+/g, " ").trim();
+    if (!token) continue;
+    const singleTokenLine = `${normalizedPrefix} ${token}`;
+    if (singleTokenLine.length > FWA_BASE_SWAP_DM_MAX_LINE_CHARS) continue;
+
+    if (currentTokens.length === 0) {
+      currentTokens.push(token);
+      continue;
+    }
+
+    const candidateTokens = [...currentTokens, token];
+    const candidateLine = `${normalizedPrefix} ${candidateTokens.join(" ")}`;
+    const exceedsPingLimit =
+      candidateTokens.length > FWA_BASE_SWAP_DM_MAX_PINGS_PER_LINE;
+    const exceedsCharLimit = candidateLine.length > FWA_BASE_SWAP_DM_MAX_LINE_CHARS;
+    if (exceedsPingLimit || exceedsCharLimit) {
+      flushCurrent();
+      currentTokens.push(token);
+      continue;
+    }
+
+    currentTokens.push(token);
+  }
+
+  flushCurrent();
+  return lines;
+}
+
+/** Purpose: build ACTIVE WAR BASE copy/paste lines from finalized base-swap announcement ordering. */
+function buildFwaBaseSwapActiveWarDmLines(
+  entries: readonly FwaBaseSwapAnnouncementEntry[],
+): string[] {
+  const pingTokens = entries
+    .filter((entry) => entry.section === "war_bases")
+    .flatMap((entry) => {
+      const token = buildFwaBaseSwapInGamePingToken(entry);
+      return token ? [token] : [];
+    });
+  return batchFwaBaseSwapPingLines(FWA_BASE_SWAP_DM_ACTIVE_PREFIX, pingTokens);
+}
+
+/** Purpose: build TH-grouped base-error copy/paste lines while preserving original member order within each TH group. */
+function buildFwaBaseSwapBaseErrorDmLines(
+  entries: readonly FwaBaseSwapAnnouncementEntry[],
+): string[] {
+  const orderedTownhalls: number[] = [];
+  const tokensByTownhall = new Map<number, string[]>();
+  for (const entry of entries) {
+    if (entry.section !== "base_errors") continue;
+    const townhall =
+      typeof entry.townhallLevel === "number" &&
+      Number.isFinite(entry.townhallLevel) &&
+      entry.townhallLevel > 0
+        ? Math.trunc(entry.townhallLevel)
+        : null;
+    if (townhall === null) continue;
+    const token = buildFwaBaseSwapInGamePingToken(entry);
+    if (!token) continue;
+    if (!tokensByTownhall.has(townhall)) {
+      tokensByTownhall.set(townhall, []);
+      orderedTownhalls.push(townhall);
+    }
+    tokensByTownhall.get(townhall)!.push(token);
+  }
+
+  const lines: string[] = [];
+  for (const townhall of orderedTownhalls) {
+    const thTokens = tokensByTownhall.get(townhall) ?? [];
+    if (thTokens.length === 0) continue;
+    const prefix = `TH${townhall} update FWA layout: !th${townhall}`;
+    lines.push(...batchFwaBaseSwapPingLines(prefix, thTokens));
+  }
+  return lines;
+}
+
+/** Purpose: present each generated copy line as an individually copyable inline-code block in DMs. */
+function wrapFwaBaseSwapDmCopyLine(line: string): string {
+  return `\`${line}\``;
+}
+
+/** Purpose: compose the final DM body with optional sections and separator while preserving raw line constraints. */
+function buildFwaBaseSwapDmContent(
+  entries: readonly FwaBaseSwapAnnouncementEntry[],
+): string | null {
+  const activeWarLines = buildFwaBaseSwapActiveWarDmLines(entries);
+  const baseErrorLines = buildFwaBaseSwapBaseErrorDmLines(entries);
+  const lines: string[] = [];
+
+  if (activeWarLines.length > 0) {
+    lines.push(FWA_BASE_SWAP_DM_ACTIVE_LABEL);
+    lines.push(...activeWarLines.map(wrapFwaBaseSwapDmCopyLine));
+  }
+  if (activeWarLines.length > 0 && baseErrorLines.length > 0) {
+    lines.push("", FWA_BASE_SWAP_DM_SECTION_SEPARATOR, "");
+  }
+  if (baseErrorLines.length > 0) {
+    lines.push(FWA_BASE_SWAP_DM_BASE_ERROR_LABEL);
+    lines.push(...baseErrorLines.map(wrapFwaBaseSwapDmCopyLine));
+  }
+
+  if (lines.length === 0) return null;
+  return lines.join("\n");
+}
+
+/** Purpose: attempt post-send DM delivery and preserve command success by downgrading DM transport failures to an ephemeral notice. */
+async function deliverFwaBaseSwapDmMessages(input: {
+  entries: readonly FwaBaseSwapAnnouncementEntry[];
+  guildId: string | null;
+  channelId: string | null;
+  clanTag: string;
+  userId: string;
+  sendDm: (content: string) => Promise<unknown>;
+  sendFailureNotice: (content: string) => Promise<unknown>;
+}): Promise<"sent" | "skipped_empty" | "failed_notified" | "failed_unnoticed"> {
+  const dmContent = buildFwaBaseSwapDmContent(input.entries);
+  if (!dmContent) {
+    console.info(
+      `[fwa base-swap] dm status=skipped_empty guild=${input.guildId ?? "dm"} channel=${input.channelId ?? "dm"} clan=#${input.clanTag} user=${input.userId}`,
+    );
+    return "skipped_empty";
+  }
+
+  try {
+    await input.sendDm(dmContent);
+    console.info(
+      `[fwa base-swap] dm status=sent guild=${input.guildId ?? "dm"} channel=${input.channelId ?? "dm"} clan=#${input.clanTag} user=${input.userId}`,
+    );
+    return "sent";
+  } catch (err) {
+    console.error(
+      `[fwa base-swap] dm status=failed guild=${input.guildId ?? "dm"} channel=${input.channelId ?? "dm"} clan=#${input.clanTag} user=${input.userId} error=${formatError(
+        err,
+      )}`,
+    );
+  }
+
+  try {
+    await input.sendFailureNotice(FWA_BASE_SWAP_DM_FAILURE_NOTICE);
+    return "failed_notified";
+  } catch (noticeErr) {
+    console.error(
+      `[fwa base-swap] dm status=failed_notice guild=${input.guildId ?? "dm"} channel=${input.channelId ?? "dm"} clan=#${input.clanTag} user=${input.userId} error=${formatError(
+        noticeErr,
+      )}`,
+    );
+    return "failed_unnoticed";
+  }
 }
 
 async function resolveFwaBaseSwapInlineEmojis(
@@ -6812,6 +6999,13 @@ export const getMailBlockedReasonFromStatusForTest =
 export const collectBaseSwapTownhallLevelsForTest =
   collectBaseSwapTownhallLevels;
 export const buildBaseSwapLayoutLinksForTest = buildBaseSwapLayoutLinks;
+export const batchFwaBaseSwapPingLinesForTest = batchFwaBaseSwapPingLines;
+export const buildFwaBaseSwapActiveWarDmLinesForTest =
+  buildFwaBaseSwapActiveWarDmLines;
+export const buildFwaBaseSwapBaseErrorDmLinesForTest =
+  buildFwaBaseSwapBaseErrorDmLines;
+export const buildFwaBaseSwapDmContentForTest = buildFwaBaseSwapDmContent;
+export const deliverFwaBaseSwapDmMessagesForTest = deliverFwaBaseSwapDmMessages;
 export const buildFwaBaseSwapPhaseTimingLineForTest =
   buildFwaBaseSwapPhaseTimingLine;
 export const renderFwaBaseSwapAnnouncementForTest =
@@ -10889,6 +11083,16 @@ export const Fwa: Command = {
           posted.url,
         ].join("\n"),
       );
+      await deliverFwaBaseSwapDmMessages({
+        entries,
+        guildId: interaction.guildId,
+        channelId: interaction.channelId,
+        clanTag,
+        userId: interaction.user.id,
+        sendDm: async (content) => interaction.user.send({ content }),
+        sendFailureNotice: async (content) =>
+          interaction.followUp({ content, ephemeral: true }),
+      });
       return;
     }
 
