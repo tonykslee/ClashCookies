@@ -109,9 +109,9 @@ function missingPermissionMessage(context: string): string {
 function getRequestedVisibility(interaction: ChatInputCommandInteraction): "private" | "public" {
   try {
     const visibility = interaction.options.getString("visibility", false);
-    return visibility === "public" ? "public" : "private";
+    return visibility === "private" ? "private" : "public";
   } catch {
-    return "private";
+    return "public";
   }
 }
 
