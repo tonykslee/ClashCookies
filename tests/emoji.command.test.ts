@@ -174,7 +174,7 @@ function buildInteraction(input?: {
         if (name === "react") return input?.react ?? null;
         if (name === "emoji") return input?.emoji ?? null;
         if (name === "short-code") return input?.shortCode ?? null;
-        if (name === "visibility") return input?.visibility ?? "private";
+        if (name === "visibility") return input?.visibility ?? "public";
         return null;
       }),
     },
