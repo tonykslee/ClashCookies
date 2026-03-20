@@ -7,13 +7,13 @@ import {
   readPlacementCandidatesForTest,
 } from "../src/commands/Compo";
 
-function blankRows(count: number, cols = 56): string[][] {
+function blankRows(count: number, cols = 57): string[][] {
   return Array.from({ length: count }, () =>
     Array.from({ length: cols }, () => ""),
   );
 }
 
-function makeRow(cells: Record<number, string>, cols = 56): string[] {
+function makeRow(cells: Record<number, string>, cols = 57): string[] {
   const row = Array.from({ length: cols }, () => "");
   for (const [col, value] of Object.entries(cells)) {
     row[Number(col)] = value;
@@ -45,44 +45,69 @@ describe("/compo place candidate parsing", () => {
 
   it("builds ACTUAL placement candidates only from ACTUAL rows and prevents duplicate clans", () => {
     const rows = blankRows(8);
+
     rows[1] = makeRow({
       0: "RISING DAWN",
       1: "#RD111",
       3: "1,500,000",
       20: "2",
-      21: "0",
+      21: "48",
       22: "0",
-      23: "-1",
-      24: "-2",
-      25: "0",
+      23: "0",
+      24: "-1",
+      25: "-2",
       26: "0",
-      48: "1,520,000",
-      55: "WAR",
+      27: "0",
+      49: "1,520,000",
+      56: "ACTUAL",
     });
+
     rows[2] = makeRow({
       0: "RISING DAWN-war",
       1: "#RDWAR",
       3: "1,490,000",
       20: "3",
-      23: "-9",
-      48: "1,520,000",
-      55: "ACTUAL",
+      21: "48",
+      22: "0",
+      23: "0",
+      24: "-9",
+      25: "0",
+      26: "0",
+      27: "0",
+      49: "1,520,000",
+      56: "WAR",
     });
+
     rows[4] = makeRow({
       0: "RISING DAWN",
       1: "#RD111",
       3: "1,510,000",
       20: "5",
-      23: "-7",
-      48: "1,520,000",
+      21: "47",
+      22: "0",
+      23: "0",
+      24: "-7",
+      25: "0",
+      26: "0",
+      27: "0",
+      49: "1,520,000",
+      56: "ACTUAL",
     });
+
     rows[7] = makeRow({
-      0: "DARK EMPIRE\u2122!-actual",
+      0: "DARK EMPIRE™!-actual",
       1: "#DE222",
       3: "1,470,000",
       20: "1",
+      21: "49",
+      22: "0",
+      23: "0",
       24: "-3",
-      48: "1,500,000",
+      25: "0",
+      26: "0",
+      27: "0",
+      49: "1,500,000",
+      56: "ACTUAL",
     });
 
     const actualRows = getModeRowsForTest(rows, "actual");
