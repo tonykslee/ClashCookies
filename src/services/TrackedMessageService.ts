@@ -24,6 +24,7 @@ export type FwaBaseSwapTrackedMetadata = {
   clanName: string;
   createdByUserId: string;
   createdAtIso: string;
+  renderVariant?: "single" | "split_part_1" | "split_part_2";
   phaseTimingLine?: string | null;
   alertEmoji?: string | null;
   layoutBulletEmoji?: string | null;
@@ -120,10 +121,16 @@ export function parseFwaBaseSwapMetadata(value: unknown): FwaBaseSwapTrackedMeta
   const phaseTimingLineRaw = String(value.phaseTimingLine ?? "").trim();
   const alertEmojiRaw = String(value.alertEmoji ?? "").trim();
   const layoutBulletEmojiRaw = String(value.layoutBulletEmoji ?? "").trim();
+  const rawRenderVariant = String(value.renderVariant ?? "").trim();
+  const renderVariant: FwaBaseSwapTrackedMetadata["renderVariant"] =
+    rawRenderVariant === "split_part_1" || rawRenderVariant === "split_part_2"
+      ? rawRenderVariant
+      : "single";
   return {
     clanName,
     createdByUserId,
     createdAtIso,
+    renderVariant,
     phaseTimingLine: phaseTimingLineRaw || null,
     alertEmoji: alertEmojiRaw || null,
     layoutBulletEmoji: layoutBulletEmojiRaw || null,
@@ -175,14 +182,18 @@ function emojiMatches(
 }
 
 export class TrackedMessageService {
-  async createFwaBaseSwapTrackedMessage(params: {
+  async createFwaBaseSwapTrackedMessages(params: {
     guildId: string;
-    channelId: string;
-    messageId: string;
     clanTag: string;
     expiresAt: Date;
-    metadata: FwaBaseSwapTrackedMetadata;
+    referenceId?: string | null;
+    messages: Array<{
+      channelId: string;
+      messageId: string;
+      metadata: FwaBaseSwapTrackedMetadata;
+    }>;
   }): Promise<void> {
+    if (!Array.isArray(params.messages) || params.messages.length === 0) return;
     await prisma.$transaction(async (tx) => {
       await tx.trackedMessage.updateMany({
         where: {
@@ -193,28 +204,54 @@ export class TrackedMessageService {
         data: { status: TRACKED_MESSAGE_STATUS.REPLACED },
       });
 
-      await tx.trackedMessage.upsert({
-        where: { messageId: params.messageId },
-        update: {
-          guildId: params.guildId,
-          channelId: params.channelId,
-          featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_BASE_SWAP,
-          status: TRACKED_MESSAGE_STATUS.ACTIVE,
-          clanTag: params.clanTag,
-          expiresAt: params.expiresAt,
-          metadata: params.metadata as any,
-        },
-        create: {
-          guildId: params.guildId,
+      for (const message of params.messages) {
+        await tx.trackedMessage.upsert({
+          where: { messageId: message.messageId },
+          update: {
+            guildId: params.guildId,
+            channelId: message.channelId,
+            featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_BASE_SWAP,
+            status: TRACKED_MESSAGE_STATUS.ACTIVE,
+            referenceId: params.referenceId ?? null,
+            clanTag: params.clanTag,
+            expiresAt: params.expiresAt,
+            metadata: message.metadata as any,
+          },
+          create: {
+            guildId: params.guildId,
+            channelId: message.channelId,
+            messageId: message.messageId,
+            featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_BASE_SWAP,
+            status: TRACKED_MESSAGE_STATUS.ACTIVE,
+            referenceId: params.referenceId ?? null,
+            clanTag: params.clanTag,
+            expiresAt: params.expiresAt,
+            metadata: message.metadata as any,
+          },
+        });
+      }
+    });
+  }
+
+  async createFwaBaseSwapTrackedMessage(params: {
+    guildId: string;
+    channelId: string;
+    messageId: string;
+    clanTag: string;
+    expiresAt: Date;
+    metadata: FwaBaseSwapTrackedMetadata;
+  }): Promise<void> {
+    await this.createFwaBaseSwapTrackedMessages({
+      guildId: params.guildId,
+      clanTag: params.clanTag,
+      expiresAt: params.expiresAt,
+      messages: [
+        {
           channelId: params.channelId,
           messageId: params.messageId,
-          featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_BASE_SWAP,
-          status: TRACKED_MESSAGE_STATUS.ACTIVE,
-          clanTag: params.clanTag,
-          expiresAt: params.expiresAt,
-          metadata: params.metadata as any,
+          metadata: params.metadata,
         },
-      });
+      ],
     });
   }
 
@@ -235,9 +272,27 @@ export class TrackedMessageService {
   async handleFwaBaseSwapReaction(params: {
     messageId: string;
     reactorUserId: string;
-    message: { edit: (payload: { content: string; allowedMentions: { users: string[] } }) => Promise<unknown> };
+    message: {
+      id: string;
+      channelId: string;
+      edit: (payload: {
+        content: string;
+        allowedMentions: { users: string[] };
+      }) => Promise<unknown>;
+    };
     render: (metadata: FwaBaseSwapTrackedMetadata) => string;
-    truncate: (content: string) => string;
+    resolveMessageForEdit?: (input: {
+      channelId: string;
+      messageId: string;
+    }) => Promise<
+      | {
+          edit: (payload: {
+            content: string;
+            allowedMentions: { users: string[] };
+          }) => Promise<unknown>;
+        }
+      | null
+    >;
   }): Promise<boolean> {
     const tracked = await prisma.trackedMessage.findUnique({ where: { messageId: params.messageId } });
     if (!tracked || tracked.status !== TRACKED_MESSAGE_STATUS.ACTIVE) return false;
@@ -261,6 +316,19 @@ export class TrackedMessageService {
     }
     if (!changed) return false;
 
+    const relatedRows =
+      tracked.referenceId
+        ? await prisma.trackedMessage.findMany({
+            where: {
+              referenceId: tracked.referenceId,
+              featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_BASE_SWAP,
+              ...activeWhere(TRACKED_MESSAGE_FEATURE_TYPE.FWA_BASE_SWAP),
+            },
+            orderBy: [{ createdAt: "asc" }],
+          })
+        : [tracked];
+    const rowsToUpdate = relatedRows.length > 0 ? relatedRows : [tracked];
+
     const mentionUserIds = [
       ...new Set(
         metadata.entries.flatMap((entry) =>
@@ -269,21 +337,55 @@ export class TrackedMessageService {
       ),
     ];
 
-    await params.message.edit({
-      content: params.truncate(params.render(metadata)),
-      allowedMentions: {
-        users: mentionUserIds,
-      },
-    });
+    for (const row of rowsToUpdate) {
+      const rowMetadataRaw = parseFwaBaseSwapMetadata(row.metadata);
+      if (!rowMetadataRaw) continue;
+      const rowMetadata: FwaBaseSwapTrackedMetadata = {
+        ...rowMetadataRaw,
+        entries: metadata.entries.map((entry) => ({ ...entry })),
+      };
+      const editTarget =
+        row.messageId === params.message.id
+          ? params.message
+          : params.resolveMessageForEdit
+            ? await params.resolveMessageForEdit({
+                channelId: row.channelId,
+                messageId: row.messageId,
+              })
+            : null;
+      if (!editTarget) continue;
+      await editTarget.edit({
+        content: params.render(rowMetadata),
+        allowedMentions: {
+          users: mentionUserIds,
+        },
+      });
+    }
 
     const allAcknowledged = metadata.entries.every((entry) => !entry.discordUserId || entry.acknowledged);
-    await prisma.trackedMessage.update({
-      where: { messageId: params.messageId },
-      data: {
-        status: allAcknowledged ? TRACKED_MESSAGE_STATUS.COMPLETED : TRACKED_MESSAGE_STATUS.ACTIVE,
-        metadata: metadata as any,
-      },
-    });
+    await prisma.$transaction(
+      rowsToUpdate.map((row) => {
+        const rowMetadataRaw = parseFwaBaseSwapMetadata(row.metadata);
+        if (!rowMetadataRaw) {
+          return prisma.trackedMessage.update({
+            where: { messageId: row.messageId },
+            data: { status: TRACKED_MESSAGE_STATUS.EXPIRED },
+          });
+        }
+        return prisma.trackedMessage.update({
+          where: { messageId: row.messageId },
+          data: {
+            status: allAcknowledged
+              ? TRACKED_MESSAGE_STATUS.COMPLETED
+              : TRACKED_MESSAGE_STATUS.ACTIVE,
+            metadata: {
+              ...rowMetadataRaw,
+              entries: metadata.entries.map((entry) => ({ ...entry })),
+            } as any,
+          },
+        });
+      }),
+    );
     return true;
   }
 

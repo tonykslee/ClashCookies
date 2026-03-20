@@ -294,7 +294,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     details: [
       "`/fwa points` returns point balances (single clan tag or all tracked if tag omitted).",
       "`/fwa match` auto-resolves current war opponent from CoC API and evaluates win/lose/tiebreak using cached points + persisted sync state.",
-      "`/fwa base-swap` posts a tracked acknowledgment message for war-base/base-error positions, includes deduped TH-specific `RISINGDAWN` layout links for listed players, and DMs the invoker copy/paste in-game ping lines (active-war + TH-grouped base errors).",
+      "`/fwa base-swap` posts a tracked acknowledgment message for war-base/base-error positions, includes deduped TH-specific `RISINGDAWN` layout links for listed players, and DMs the invoker copy/paste in-game ping lines (active-war + TH-grouped base errors). If the full post exceeds one Discord message, it prompts the requester to publish exactly 2 linked posts instead of truncating required lines.",
       "`/fwa compliance` runs war-plan compliance checks on demand for a tracked clan (defaults to current active war; use `war-id:current` or numeric `war-id` for historical checks).",
       "FWA compliance embeds include a `Warplan` field from the same active plan source used by war mail, show resolved FWA-WIN threshold context (`N`/`H`) from warplan config, and strict-window breach context shows clan stars before the breach attack.",
       "`/fwa weight-age` scrapes the fwastats weight page and reports last submitted weight age (single clan or all tracked clans). Uses `FWASTATS_WEIGHT_COOKIE` when configured.",

@@ -15,7 +15,10 @@ import {
   StringSelectMenuInteraction,
 } from "discord.js";
 import { Command } from "../Command";
-import { truncateDiscordContent } from "../helper/discordContent";
+import {
+  DISCORD_CONTENT_LIMIT,
+  truncateDiscordContent,
+} from "../helper/discordContent";
 import { recordFetchEvent } from "../helper/fetchTelemetry";
 import { formatError } from "../helper/formatError";
 import {
@@ -95,6 +98,7 @@ import {
 } from "../services/PointsDirectFetchGateService";
 import {
   buildFwaMailBackCustomId,
+  buildFwaBaseSwapSplitPostCustomId,
   createTransientFwaKey,
   buildFwaMailConfirmCustomId,
   buildFwaMailConfirmNoPingCustomId,
@@ -112,6 +116,7 @@ import {
   buildOutcomeActionCustomId,
   buildPointsPostButtonCustomId,
   parseFwaMailBackCustomId,
+  parseFwaBaseSwapSplitPostCustomId,
   parseFwaComplianceViewCustomId,
   parseFwaMailConfirmCustomId,
   parseFwaMailConfirmNoPingCustomId,
@@ -184,6 +189,7 @@ import {
 export { isMissedSyncClanForTest } from "./fwa/matchState";
 export {
   isFwaComplianceViewButtonCustomId,
+  isFwaBaseSwapSplitPostButtonCustomId,
   isFwaMailBackButtonCustomId,
   isFwaMailConfirmButtonCustomId,
   isFwaMailConfirmNoPingButtonCustomId,
@@ -262,6 +268,33 @@ const FWA_BASE_SWAP_DM_MAX_PINGS_PER_LINE = 5;
 const FWA_BASE_SWAP_DM_MAX_LINE_CHARS = 256;
 const FWA_BASE_SWAP_DM_FAILURE_NOTICE =
   "Posted the base-swap message, but I couldn't DM you the in-game ping messages.";
+const FWA_BASE_SWAP_SECTION_SEPARATOR = "──────────────────────────────────";
+const FWA_BASE_SWAP_REACT_LINE = `👇 React with ${FWA_BASE_SWAP_ACK_EMOJI} once your base is fixed.`;
+const FWA_BASE_SWAP_SPLIT_PROMPT = "This base-swap post is too large for one Discord message. Post it as 2 separate posts?";
+
+type FwaBaseSwapRenderVariant = "single" | "split_part_1" | "split_part_2";
+
+type FwaBaseSwapRenderPlan = {
+  singleContent: string;
+  splitContents: [string, string] | null;
+  fitsSingleMessage: boolean;
+};
+
+type FwaBaseSwapSplitPostPayload = {
+  userId: string;
+  guildId: string;
+  channelId: string;
+  clanTag: string;
+  clanName: string;
+  entries: FwaBaseSwapAnnouncementEntry[];
+  layoutLinks?: FwaBaseSwapLayoutLink[];
+  phaseTimingLine?: string | null;
+  alertEmoji?: string | null;
+  layoutBulletEmoji?: string | null;
+  mentionUserIds: string[];
+  createdAtIso: string;
+  splitContents: [string, string];
+};
 
 type FwaBaseSwapResolvedInlineEmojis = {
   alertEmoji: string;
@@ -291,6 +324,9 @@ export async function handleFwaBaseSwapReaction(
   messageId: string,
   reactorUserId: string,
   message: {
+    id: string;
+    channelId: string;
+    client: Client;
     edit: (payload: {
       content: string;
       allowedMentions: { users: string[] };
@@ -302,8 +338,157 @@ export async function handleFwaBaseSwapReaction(
     reactorUserId,
     message,
     render: renderFwaBaseSwapAnnouncement,
-    truncate: truncateDiscordContent,
+    resolveMessageForEdit: async ({ channelId, messageId: targetMessageId }) => {
+      if (targetMessageId === message.id) return message;
+      const channel = await message.client.channels
+        .fetch(channelId)
+        .catch(() => null);
+      if (!channel || !channel.isTextBased() || !("messages" in channel)) {
+        return null;
+      }
+      return (channel as any).messages.fetch(targetMessageId).catch(() => null);
+    },
   });
+}
+
+export async function handleFwaBaseSwapSplitPostButton(
+  interaction: ButtonInteraction,
+): Promise<void> {
+  const parsed = parseFwaBaseSwapSplitPostCustomId(interaction.customId);
+  if (!parsed) return;
+  if (interaction.user.id !== parsed.userId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Only the command requester can use this button.",
+    });
+    return;
+  }
+
+  const payload = fwaBaseSwapSplitPostPayloads.get(parsed.key);
+  if (!payload) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "This base-swap split prompt expired. Please run `/fwa base-swap` again.",
+    });
+    return;
+  }
+
+  if (parsed.action === "cancel") {
+    fwaBaseSwapSplitPostPayloads.delete(parsed.key);
+    await interaction.update({
+      content: "Cancelled. No split base-swap posts were published.",
+      components: [],
+    });
+    return;
+  }
+
+  const channel = interaction.channel;
+  if (
+    !channel ||
+    !channel.isTextBased() ||
+    !("send" in channel) ||
+    interaction.guildId !== payload.guildId ||
+    interaction.channelId !== payload.channelId
+  ) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Could not post split base-swap messages in this channel.",
+    });
+    return;
+  }
+
+  try {
+    const postedA = await (channel as any).send({
+      content: payload.splitContents[0],
+      allowedMentions: { users: payload.mentionUserIds },
+    });
+    const postedB = await (channel as any).send({
+      content: payload.splitContents[1],
+      allowedMentions: { users: payload.mentionUserIds },
+    });
+
+    const expiresAt = new Date(Date.now() + FWA_BASE_SWAP_TTL_MS);
+    await trackedMessageService.createFwaBaseSwapTrackedMessages({
+      guildId: payload.guildId,
+      clanTag: payload.clanTag,
+      expiresAt,
+      referenceId: `fwa-base-swap:${parsed.key}`,
+      messages: [
+        {
+          channelId: payload.channelId,
+          messageId: postedA.id,
+          metadata: {
+            clanName: payload.clanName,
+            createdByUserId: payload.userId,
+            createdAtIso: payload.createdAtIso,
+            entries: payload.entries,
+            layoutLinks: payload.layoutLinks,
+            phaseTimingLine: payload.phaseTimingLine,
+            alertEmoji: payload.alertEmoji,
+            layoutBulletEmoji: payload.layoutBulletEmoji,
+            renderVariant: "split_part_1",
+          },
+        },
+        {
+          channelId: payload.channelId,
+          messageId: postedB.id,
+          metadata: {
+            clanName: payload.clanName,
+            createdByUserId: payload.userId,
+            createdAtIso: payload.createdAtIso,
+            entries: payload.entries,
+            layoutLinks: payload.layoutLinks,
+            phaseTimingLine: payload.phaseTimingLine,
+            alertEmoji: payload.alertEmoji,
+            layoutBulletEmoji: payload.layoutBulletEmoji,
+            renderVariant: "split_part_2",
+          },
+        },
+      ],
+    });
+
+    await postedA.react(FWA_BASE_SWAP_ACK_EMOJI).catch((err: unknown) => {
+      console.error(
+        `[fwa base-swap] react failed guild=${payload.guildId} channel=${payload.channelId} message=${postedA.id} emoji=${FWA_BASE_SWAP_ACK_EMOJI} user=${payload.userId} error=${formatError(
+          err,
+        )}`,
+      );
+    });
+    await postedB.react(FWA_BASE_SWAP_ACK_EMOJI).catch((err: unknown) => {
+      console.error(
+        `[fwa base-swap] react failed guild=${payload.guildId} channel=${payload.channelId} message=${postedB.id} emoji=${FWA_BASE_SWAP_ACK_EMOJI} user=${payload.userId} error=${formatError(
+          err,
+        )}`,
+      );
+    });
+
+    await deliverFwaBaseSwapDmMessages({
+      entries: payload.entries,
+      guildId: payload.guildId,
+      channelId: payload.channelId,
+      clanTag: payload.clanTag,
+      userId: payload.userId,
+      sendDm: async (content) => interaction.user.send({ content }),
+      sendFailureNotice: async (content) =>
+        interaction.followUp({ content, ephemeral: true }),
+    });
+
+    fwaBaseSwapSplitPostPayloads.delete(parsed.key);
+    await interaction.update({
+      content: `Posted split base swap announcements for **${payload.clanName}** (#${payload.clanTag}).\n${postedA.url}\n${postedB.url}`,
+      components: [],
+    });
+  } catch (err) {
+    console.error(
+      `[fwa base-swap] split publish failed guild=${payload.guildId} channel=${payload.channelId} clan=#${payload.clanTag} user=${payload.userId} error=${formatError(
+        err,
+      )}`,
+    );
+    await interaction.reply({
+      ephemeral: true,
+      content: "Failed to publish split base-swap posts. Please try `/fwa base-swap` again.",
+    });
+  }
 }
 
 function parseBaseSwapPositionList(input: string | null | undefined): number[] {
@@ -572,6 +757,50 @@ async function deliverFwaBaseSwapDmMessages(input: {
   }
 }
 
+/** Purpose: derive unique mentioned Discord user ids from base-swap entries. */
+function buildFwaBaseSwapMentionUserIds(
+  entries: readonly FwaBaseSwapAnnouncementEntry[],
+): string[] {
+  return [
+    ...new Set(
+      entries.flatMap((entry) =>
+        entry.discordUserId ? [entry.discordUserId] : [],
+      ),
+    ),
+  ];
+}
+
+/** Purpose: build yes/cancel controls for oversized base-swap split-post confirmation. */
+function buildFwaBaseSwapSplitPromptComponents(
+  userId: string,
+  key: string,
+): Array<ActionRowBuilder<ButtonBuilder>> {
+  return [
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(
+          buildFwaBaseSwapSplitPostCustomId({
+            userId,
+            key,
+            action: "yes",
+          }),
+        )
+        .setLabel("Yes")
+        .setStyle(ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId(
+          buildFwaBaseSwapSplitPostCustomId({
+            userId,
+            key,
+            action: "cancel",
+          }),
+        )
+        .setLabel("Cancel")
+        .setStyle(ButtonStyle.Secondary),
+    ),
+  ];
+}
+
 async function resolveFwaBaseSwapInlineEmojis(
   client: Client,
 ): Promise<FwaBaseSwapResolvedInlineEmojis> {
@@ -606,7 +835,7 @@ function renderBaseSwapLayoutLinkLine(
   link: FwaBaseSwapLayoutLink,
   layoutBulletEmoji: string,
 ): string {
-  return `## ${layoutBulletEmoji} TH${link.townhall} Link: ${wrapDiscordLink(link.layoutLink)}`;
+  return `## ${layoutBulletEmoji} TH${link.townhall}: ${wrapDiscordLink(link.layoutLink)}`;
 }
 
 function buildFwaBaseSwapPhaseTimingLine(input: {
@@ -623,15 +852,14 @@ function buildFwaBaseSwapPhaseTimingLine(input: {
   return `## ${mailStatusLabelForState(input.warState)} ends ${formatDiscordFullAndRelativeMs(targetMs)}`;
 }
 
-function renderFwaBaseSwapAnnouncement(
-  state: {
-    entries: FwaBaseSwapAnnouncementEntry[];
-    layoutLinks?: FwaBaseSwapLayoutLink[];
-    phaseTimingLine?: string | null;
-    alertEmoji?: string | null;
-    layoutBulletEmoji?: string | null;
-  },
-): string {
+/** Purpose: materialize deterministic line tokens for base-swap rendering so sizing/splitting can be evaluated before posting. */
+function buildFwaBaseSwapAnnouncementLines(state: {
+  entries: FwaBaseSwapAnnouncementEntry[];
+  layoutLinks?: FwaBaseSwapLayoutLink[];
+  phaseTimingLine?: string | null;
+  alertEmoji?: string | null;
+  layoutBulletEmoji?: string | null;
+}): string[] {
   const alertEmoji =
     String(state.alertEmoji ?? "").trim() || FWA_BASE_SWAP_ALERT_FALLBACK_EMOJI;
   const layoutBulletEmoji =
@@ -648,9 +876,9 @@ function renderFwaBaseSwapAnnouncement(
     state.layoutLinks,
   ).map((link) => renderBaseSwapLayoutLinkLine(link, layoutBulletEmoji));
 
-  const parts: string[] = [];
+  const lines: string[] = [];
   if (warBaseLines.length > 0) {
-    parts.push(
+    lines.push(
       `# ${alertEmoji} YOU HAVE AN ACTIVE WAR BASE ${alertEmoji}`,
       "",
       ...warBaseLines,
@@ -660,28 +888,112 @@ function renderFwaBaseSwapAnnouncement(
   }
 
   if (baseErrorLines.length > 0) {
-    if (parts.length > 0)
-      parts.push("", "──────────────────────────────────", "");
-    parts.push(
+    if (lines.length > 0) lines.push("", FWA_BASE_SWAP_SECTION_SEPARATOR, "");
+    lines.push(
       "# :warning: YOU HAVE BASE ERRORS :warning:",
       "",
       ...baseErrorLines,
     );
   }
 
-  if (parts.length > 0) {
-    parts.push("", "──────────────────────────────────");
-    if (layoutLinkLines.length > 0) {
-      parts.push("", ...layoutLinkLines);
-    }
-    parts.push("", "──────────────────────────────────");
-    if (state.phaseTimingLine) {
-      parts.push("", state.phaseTimingLine);
-    }
-    parts.push("", `👇 React with ${FWA_BASE_SWAP_ACK_EMOJI} once your base is fixed.`);
+  if (lines.length > 0) {
+    lines.push("", FWA_BASE_SWAP_SECTION_SEPARATOR);
+    if (layoutLinkLines.length > 0) lines.push("", ...layoutLinkLines);
+    lines.push("", FWA_BASE_SWAP_SECTION_SEPARATOR);
+    if (state.phaseTimingLine) lines.push("", state.phaseTimingLine);
+    lines.push("", FWA_BASE_SWAP_REACT_LINE);
   }
 
-  return parts.join("\n");
+  return lines;
+}
+
+/** Purpose: score split boundaries to prefer separators/section starts while keeping output balanced and deterministic. */
+function scoreFwaBaseSwapSplitBoundary(input: {
+  allLines: readonly string[];
+  splitIndex: number;
+}): number {
+  const prev = input.allLines[input.splitIndex - 1] ?? "";
+  const next = input.allLines[input.splitIndex] ?? "";
+  let score = 0;
+  if (prev === FWA_BASE_SWAP_SECTION_SEPARATOR || next === FWA_BASE_SWAP_SECTION_SEPARATOR) {
+    score += 1000;
+  }
+  if (next.startsWith("# ")) score += 200;
+  if (next.startsWith("## ")) score += 100;
+  if (!prev.trim() || !next.trim()) score += 25;
+  return score;
+}
+
+/** Purpose: split oversized base-swap content into exactly two valid Discord messages without breaking individual lines. */
+function splitFwaBaseSwapAnnouncementLines(
+  lines: readonly string[],
+): [string, string] | null {
+  if (lines.length < 2) return null;
+  let best: { first: string; second: string; score: number } | null = null;
+
+  for (let index = 1; index < lines.length; index += 1) {
+    const first = lines.slice(0, index).join("\n");
+    const second = lines.slice(index).join("\n");
+    if (
+      first.length > DISCORD_CONTENT_LIMIT ||
+      second.length > DISCORD_CONTENT_LIMIT
+    ) {
+      continue;
+    }
+    if (!first.trim() || !second.trim()) continue;
+    const balancePenalty = Math.abs(first.length - second.length);
+    const score =
+      scoreFwaBaseSwapSplitBoundary({ allLines: lines, splitIndex: index }) -
+      balancePenalty;
+    if (!best || score > best.score) {
+      best = { first, second, score };
+    }
+  }
+  return best ? [best.first, best.second] : null;
+}
+
+/** Purpose: build posting plan for base-swap messages and determine whether split fallback is available without truncation. */
+function buildFwaBaseSwapRenderPlan(state: {
+  entries: FwaBaseSwapAnnouncementEntry[];
+  layoutLinks?: FwaBaseSwapLayoutLink[];
+  phaseTimingLine?: string | null;
+  alertEmoji?: string | null;
+  layoutBulletEmoji?: string | null;
+}): FwaBaseSwapRenderPlan {
+  const lines = buildFwaBaseSwapAnnouncementLines(state);
+  const singleContent = lines.join("\n");
+  if (singleContent.length <= DISCORD_CONTENT_LIMIT) {
+    return {
+      singleContent,
+      splitContents: null,
+      fitsSingleMessage: true,
+    };
+  }
+  return {
+    singleContent,
+    splitContents: splitFwaBaseSwapAnnouncementLines(lines),
+    fitsSingleMessage: false,
+  };
+}
+
+function renderFwaBaseSwapAnnouncement(
+  state: {
+    entries: FwaBaseSwapAnnouncementEntry[];
+    layoutLinks?: FwaBaseSwapLayoutLink[];
+    phaseTimingLine?: string | null;
+    alertEmoji?: string | null;
+    layoutBulletEmoji?: string | null;
+    renderVariant?: FwaBaseSwapRenderVariant;
+  },
+): string {
+  const plan = buildFwaBaseSwapRenderPlan(state);
+  if (state.renderVariant === "split_part_1" && plan.splitContents) {
+    return plan.splitContents[0];
+  }
+  if (state.renderVariant === "split_part_2" && plan.splitContents) {
+    return plan.splitContents[1];
+  }
+  return plan.singleContent;
 }
 const POINTS_REQUEST_HEADERS = {
   "User-Agent":
@@ -1184,11 +1496,23 @@ type FwaComplianceViewPayload = {
 const fwaMatchCopyPayloads = new Map<string, FwaMatchCopyPayload>();
 const fwaMailPreviewPayloads = new Map<string, FwaMailPreviewPayload>();
 const fwaComplianceViewPayloads = new Map<string, FwaComplianceViewPayload>();
+const fwaBaseSwapSplitPostPayloads = new Map<string, FwaBaseSwapSplitPostPayload>();
 const fwaMailPollers = new Map<string, ReturnType<typeof setInterval>>();
 const pointsSnapshotCache = new Map<string, PointsSnapshotCacheEntry>();
 const pointsSnapshotInFlight = new Map<string, Promise<PointsSnapshot>>();
 const fwaMatchTypeResolutionLogGate = new SteadyStateLogGate();
 const fwaRoutinePointsSkipLogGate = new SteadyStateLogGate();
+
+export function setFwaBaseSwapSplitPostPayloadForTest(
+  key: string,
+  payload: FwaBaseSwapSplitPostPayload,
+): void {
+  fwaBaseSwapSplitPostPayloads.set(key, payload);
+}
+
+export function clearFwaBaseSwapSplitPostPayloadsForTest(): void {
+  fwaBaseSwapSplitPostPayloads.clear();
+}
 
 /** Purpose: normalize any war id input to a comparable string key. */
 function normalizeWarIdText(
@@ -7006,6 +7330,9 @@ export const buildFwaBaseSwapBaseErrorDmLinesForTest =
   buildFwaBaseSwapBaseErrorDmLines;
 export const buildFwaBaseSwapDmContentForTest = buildFwaBaseSwapDmContent;
 export const deliverFwaBaseSwapDmMessagesForTest = deliverFwaBaseSwapDmMessages;
+export const buildFwaBaseSwapRenderPlanForTest = buildFwaBaseSwapRenderPlan;
+export const splitFwaBaseSwapAnnouncementLinesForTest =
+  splitFwaBaseSwapAnnouncementLines;
 export const buildFwaBaseSwapPhaseTimingLineForTest =
   buildFwaBaseSwapPhaseTimingLine;
 export const renderFwaBaseSwapAnnouncementForTest =
@@ -11008,75 +11335,104 @@ export const Fwa: Command = {
         interaction.client,
       );
 
-      const content = truncateDiscordContent(
-        renderFwaBaseSwapAnnouncement({
-          entries,
-          layoutLinks,
-          phaseTimingLine: baseSwapPhaseTimingLine,
-          alertEmoji: inlineEmojis.alertEmoji,
-          layoutBulletEmoji: inlineEmojis.layoutBulletEmoji,
-        }),
-      );
-
-      const mentionUserIds = [
-        ...new Set(
-          entries.flatMap((entry) =>
-            entry.discordUserId ? [entry.discordUserId] : [],
-          ),
-        ),
-      ];
-      const posted = await interaction.channel.send({
-        content,
-        allowedMentions: { users: mentionUserIds },
-      });
-
-      const state: FwaBaseSwapAnnouncementState = {
-        guildId: interaction.guildId,
-        channelId: interaction.channelId,
-        messageId: posted.id,
-        clanTag,
-        clanName: sanitizeClanName(trackedClan.name) ?? `#${clanTag}`,
-        createdByUserId: interaction.user.id,
+      const clanName = sanitizeClanName(trackedClan.name) ?? `#${clanTag}`;
+      const createdAtIso = new Date().toISOString();
+      const renderPlan = buildFwaBaseSwapRenderPlan({
         entries,
         layoutLinks,
         phaseTimingLine: baseSwapPhaseTimingLine,
         alertEmoji: inlineEmojis.alertEmoji,
         layoutBulletEmoji: inlineEmojis.layoutBulletEmoji,
-        createdAtIso: new Date().toISOString(),
-      };
+      });
+      const mentionUserIds = buildFwaBaseSwapMentionUserIds(entries);
+      const unlinked = entries.filter((entry) => !entry.discordUserId);
+
+      if (!renderPlan.fitsSingleMessage) {
+        if (!renderPlan.splitContents) {
+          await editReplySafe(
+            "This base-swap announcement exceeds Discord message limits and could not be safely split into 2 posts. Reduce the selected positions and try again.",
+          );
+          return;
+        }
+
+        const key = createTransientFwaKey();
+        fwaBaseSwapSplitPostPayloads.set(key, {
+          userId: interaction.user.id,
+          guildId: interaction.guildId,
+          channelId: interaction.channelId,
+          clanTag,
+          clanName,
+          entries,
+          layoutLinks,
+          phaseTimingLine: baseSwapPhaseTimingLine,
+          alertEmoji: inlineEmojis.alertEmoji,
+          layoutBulletEmoji: inlineEmojis.layoutBulletEmoji,
+          mentionUserIds,
+          createdAtIso,
+          splitContents: renderPlan.splitContents,
+        });
+
+        await interaction.editReply({
+          content: [
+            FWA_BASE_SWAP_SPLIT_PROMPT,
+            "Click **Yes** to publish 2 linked posts, or **Cancel** to stop.",
+            unlinked.length > 0
+              ? `Unlinked positions: ${[
+                  ...new Set(
+                    unlinked.map(
+                      (entry) => `#${entry.position} ${entry.playerName}`,
+                    ),
+                  ),
+                ].join(", ")}`
+              : "All listed players have linked Discord users.",
+          ].join("\n"),
+          components: buildFwaBaseSwapSplitPromptComponents(
+            interaction.user.id,
+            key,
+          ),
+        });
+        return;
+      }
+
+      const posted = await interaction.channel.send({
+        content: renderPlan.singleContent,
+        allowedMentions: { users: mentionUserIds },
+      });
       const expiresAt = new Date(Date.now() + FWA_BASE_SWAP_TTL_MS);
-      await trackedMessageService.createFwaBaseSwapTrackedMessage({
-        guildId: state.guildId,
-        channelId: state.channelId,
-        messageId: state.messageId,
-        clanTag: state.clanTag,
+      await trackedMessageService.createFwaBaseSwapTrackedMessages({
+        guildId: interaction.guildId,
+        clanTag,
         expiresAt,
-        metadata: {
-          clanName: state.clanName,
-          createdByUserId: state.createdByUserId,
-          createdAtIso: state.createdAtIso,
-          entries: state.entries,
-          layoutLinks: state.layoutLinks,
-          phaseTimingLine: state.phaseTimingLine,
-          alertEmoji: state.alertEmoji,
-          layoutBulletEmoji: state.layoutBulletEmoji,
-        },
+        messages: [
+          {
+            channelId: interaction.channelId,
+            messageId: posted.id,
+            metadata: {
+              clanName,
+              createdByUserId: interaction.user.id,
+              createdAtIso,
+              entries,
+              layoutLinks,
+              phaseTimingLine: baseSwapPhaseTimingLine,
+              alertEmoji: inlineEmojis.alertEmoji,
+              layoutBulletEmoji: inlineEmojis.layoutBulletEmoji,
+              renderVariant: "single",
+            },
+          },
+        ],
       });
 
-      try {
-        await posted.react(FWA_BASE_SWAP_ACK_EMOJI);
-      } catch (err) {
+      await posted.react(FWA_BASE_SWAP_ACK_EMOJI).catch((err: unknown) => {
         console.error(
           `[fwa base-swap] react failed guild=${interaction.guildId} channel=${interaction.channelId} message=${posted.id} emoji=${FWA_BASE_SWAP_ACK_EMOJI} user=${interaction.user.id} error=${formatError(
             err,
           )}`,
         );
-      }
+      });
 
-      const unlinked = entries.filter((entry) => !entry.discordUserId);
       await editReplySafe(
         [
-          `Posted base swap announcement for **${state.clanName}** (#${clanTag}).`,
+          `Posted base swap announcement for **${clanName}** (#${clanTag}).`,
           unlinked.length > 0
             ? `Unlinked positions: ${[...new Set(unlinked.map((entry) => `#${entry.position} ${entry.playerName}`))].join(", ")}`
             : "All listed players have linked Discord users.",

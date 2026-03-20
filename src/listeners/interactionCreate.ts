@@ -35,6 +35,7 @@ import {
   handleFwaMailBackButton,
   handleFwaMailRefreshButton,
   handleFwaMatchSendMailButton,
+  handleFwaBaseSwapSplitPostButton,
   isFwaMatchAllianceButtonCustomId,
   isFwaMatchSyncActionButtonCustomId,
   isFwaMatchSkipSyncActionButtonCustomId,
@@ -50,6 +51,7 @@ import {
   isFwaMatchSelectCustomId,
   isFwaMatchTypeActionButtonCustomId,
   isFwaComplianceViewButtonCustomId,
+  isFwaBaseSwapSplitPostButtonCustomId,
   handlePointsPostButton,
   isFwaMatchCopyButtonCustomId,
   isPointsPostButtonCustomId,
@@ -360,6 +362,21 @@ const handleButtonInteraction = async (
         });
       }
     }
+  }
+
+  if (isFwaBaseSwapSplitPostButtonCustomId(interaction.customId)) {
+    try {
+      await handleFwaBaseSwapSplitPostButton(interaction);
+    } catch (err) {
+      console.error(`FWA base-swap split-post button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to process base-swap split-post action.",
+        });
+      }
+    }
+    return;
   }
 
   if (isFwaComplianceViewButtonCustomId(interaction.customId)) {
