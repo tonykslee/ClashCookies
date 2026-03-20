@@ -7753,14 +7753,15 @@ type ActualSheetClanSnapshot = {
   compoAdvice: string | null;
 };
 
-const ACTUAL_FIXED_LAYOUT_RANGE = "AllianceDashboard!A6:BD500";
+const ACTUAL_FIXED_LAYOUT_RANGE = "AllianceDashboard!A6:BE500";
 const ACTUAL_COL_CLAN_TAG = 1; // B
 const ACTUAL_COL_TOTAL_WEIGHT = 3; // D
 const ACTUAL_COL_MISSING_WEIGHT = 20; // U
-const ACTUAL_COL_BUCKET_START = 21; // V
-const ACTUAL_COL_BUCKET_END = 26; // AA
-const ACTUAL_COL_ADJUSTMENT = 53; // BB
-const ACTUAL_COL_MODE = 55; // BD
+const ACTUAL_COL_TOTAL_PLAYERS = 21; // V
+const ACTUAL_COL_BUCKET_START = 22; // W (was 21 / V)
+const ACTUAL_COL_BUCKET_END = 27; // AB (was 26 / AA)
+const ACTUAL_COL_ADJUSTMENT = 54; // BC (was 53 / BB)
+const ACTUAL_COL_MODE = 56; // BE (was 55 / BD)
 const ACTUAL_SHEET_CACHE_TTL_MS = 60 * 1000;
 
 let actualSheetSnapshotCache: {
