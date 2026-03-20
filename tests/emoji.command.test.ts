@@ -91,7 +91,9 @@ function buildSuccessResult(
 
 /** Purpose: create a failed inventory result with resolver diagnostics for tests. */
 function buildFailureResult(
-  code: "application_emoji_manager_unavailable" | "application_emoji_fetch_failed",
+  code:
+    | "application_emoji_manager_unavailable"
+    | "application_emoji_fetch_failed",
 ): EmojiInventoryFetchResult {
   return {
     ok: false,
@@ -99,7 +101,8 @@ function buildFailureResult(
     diagnostics: {
       applicationExistedBeforeFetch: true,
       applicationFetchAttempted: true,
-      applicationEmojiFetchAvailable: code !== "application_emoji_manager_unavailable",
+      applicationEmojiFetchAvailable:
+        code !== "application_emoji_manager_unavailable",
       emojiFetchSucceeded: false,
       fetchedEmojiCount: 0,
     },
@@ -240,13 +243,45 @@ describe("/emoji command", () => {
       ]),
     );
     setEmojiResolverForTest(resolver as any);
-    const { interaction, editReply } = buildInteraction({ name: "arrow_arrow" });
+    const { interaction, editReply } = buildInteraction({
+      name: "arrow_arrow",
+    });
+
+    await Emoji.run({} as Client, interaction, {} as any);
+
+    const payload = editReply.mock.calls[0]?.[0] ?? {};
+    expect(payload.content).toBe("<:arrow_arrow:1>");
+    expect(payload.embeds ?? []).toEqual([]);
+    expect(payload.components ?? []).toEqual([]);
+  });
+
+  it("supports name mode private visibility", async () => {
+    const resolver = buildResolverStub();
+    resolver.fetchApplicationEmojiInventory.mockResolvedValue(
+      buildSuccessResult([
+        {
+          id: "1",
+          name: "arrow_arrow",
+          shortcode: ":arrow_arrow:",
+          rendered: "<:arrow_arrow:1>",
+          animated: false,
+        },
+      ]),
+    );
+    setEmojiResolverForTest(resolver as any);
+    const { interaction, editReply } = buildInteraction({
+      name: "arrow_arrow",
+      visibility: "private",
+    });
 
     await Emoji.run({} as Client, interaction, {} as any);
 
     const payload = editReply.mock.calls[0]?.[0] ?? {};
     const embed = payload.embeds?.[0];
-    const json = typeof embed?.toJSON === "function" ? embed.toJSON() : embed?.data ?? {};
+    const json =
+      typeof embed?.toJSON === "function"
+        ? embed.toJSON()
+        : (embed?.data ?? {});
     expect(String(json.description ?? "")).toContain(":arrow_arrow:");
     expect(String(payload.content ?? "")).not.toBe("<:arrow_arrow:1>");
   });
@@ -265,14 +300,21 @@ describe("/emoji command", () => {
       ]),
     );
     setEmojiResolverForTest(resolver as any);
-    const { interaction, editReply } = buildInteraction({ name: ":arrow_arrow:" });
+    const { interaction, editReply } = buildInteraction({
+      name: ":arrow_arrow:",
+      visibility: "private",
+    });
 
     await Emoji.run({} as Client, interaction, {} as any);
 
     const payload = editReply.mock.calls[0]?.[0] ?? {};
     const embed = payload.embeds?.[0];
-    const json = typeof embed?.toJSON === "function" ? embed.toJSON() : embed?.data ?? {};
+    const json =
+      typeof embed?.toJSON === "function"
+        ? embed.toJSON()
+        : (embed?.data ?? {});
     expect(String(json.description ?? "")).toContain(":arrow_arrow:");
+    expect(String(payload.content ?? "")).not.toBe("<:arrow_arrow:1>");
   });
 
   it("returns only visible emoji content for name mode when visibility is public", async () => {
@@ -328,7 +370,9 @@ describe("/emoji command", () => {
 
   it("returns not-found message for name mode when visibility is public", async () => {
     const resolver = buildResolverStub();
-    resolver.fetchApplicationEmojiInventory.mockResolvedValue(buildSuccessResult([]));
+    resolver.fetchApplicationEmojiInventory.mockResolvedValue(
+      buildSuccessResult([]),
+    );
     setEmojiResolverForTest(resolver as any);
     const { interaction, editReply } = buildInteraction({
       name: "not_real",
@@ -352,12 +396,16 @@ describe("/emoji command", () => {
 
     expect(resolver.fetchApplicationEmojiInventory).not.toHaveBeenCalled();
     const payload = editReply.mock.calls[0]?.[0] ?? {};
-    expect(String(payload.content ?? "")).toContain("Please provide a valid emoji name");
+    expect(String(payload.content ?? "")).toContain(
+      "Please provide a valid emoji name",
+    );
   });
 
   it("adds a new application emoji from custom token input", async () => {
     const resolver = buildResolverStub();
-    resolver.fetchApplicationEmojiInventory.mockResolvedValue(buildSuccessResult([]));
+    resolver.fetchApplicationEmojiInventory.mockResolvedValue(
+      buildSuccessResult([]),
+    );
     setEmojiResolverForTest(resolver as any);
     const permission = buildPermissionStub();
     setEmojiCommandPermissionServiceForTest(permission as any);
@@ -447,7 +495,9 @@ describe("/emoji command", () => {
 
     expect(resolver.fetchApplicationEmojiInventory).not.toHaveBeenCalled();
     const payload = editReply.mock.calls[0]?.[0] ?? {};
-    expect(String(payload.content ?? "")).toContain("Unicode emoji input is not supported");
+    expect(String(payload.content ?? "")).toContain(
+      "Unicode emoji input is not supported",
+    );
   });
 
   it("rejects malformed shortcode on add path", async () => {
@@ -464,7 +514,9 @@ describe("/emoji command", () => {
 
     expect(resolver.fetchApplicationEmojiInventory).not.toHaveBeenCalled();
     const payload = editReply.mock.calls[0]?.[0] ?? {};
-    expect(String(payload.content ?? "")).toContain("Please provide a valid shortcode");
+    expect(String(payload.content ?? "")).toContain(
+      "Please provide a valid shortcode",
+    );
   });
 
   it("returns permission denied for unauthorized add-path users", async () => {
@@ -489,7 +541,9 @@ describe("/emoji command", () => {
 
   it("returns clear failure when application state is unavailable during add", async () => {
     const resolver = buildResolverStub();
-    resolver.fetchApplicationEmojiInventory.mockResolvedValue(buildSuccessResult([]));
+    resolver.fetchApplicationEmojiInventory.mockResolvedValue(
+      buildSuccessResult([]),
+    );
     setEmojiResolverForTest(resolver as any);
     const permission = buildPermissionStub();
     setEmojiCommandPermissionServiceForTest(permission as any);
@@ -512,7 +566,9 @@ describe("/emoji command", () => {
 
   it("returns inventory-full failure when add create API reports capacity reached", async () => {
     const resolver = buildResolverStub();
-    resolver.fetchApplicationEmojiInventory.mockResolvedValue(buildSuccessResult([]));
+    resolver.fetchApplicationEmojiInventory.mockResolvedValue(
+      buildSuccessResult([]),
+    );
     setEmojiResolverForTest(resolver as any);
     const permission = buildPermissionStub();
     setEmojiCommandPermissionServiceForTest(permission as any);
@@ -538,7 +594,9 @@ describe("/emoji command", () => {
 
   it("returns generic create failure when Discord rejects add request", async () => {
     const resolver = buildResolverStub();
-    resolver.fetchApplicationEmojiInventory.mockResolvedValue(buildSuccessResult([]));
+    resolver.fetchApplicationEmojiInventory.mockResolvedValue(
+      buildSuccessResult([]),
+    );
     setEmojiResolverForTest(resolver as any);
     const permission = buildPermissionStub();
     setEmojiCommandPermissionServiceForTest(permission as any);
@@ -591,7 +649,10 @@ describe("/emoji command", () => {
 
     const payload = editReply.mock.calls[0]?.[0] ?? {};
     const embed = payload.embeds?.[0];
-    const json = typeof embed?.toJSON === "function" ? embed.toJSON() : embed?.data ?? {};
+    const json =
+      typeof embed?.toJSON === "function"
+        ? embed.toJSON()
+        : (embed?.data ?? {});
     expect(json.title).toBe("Bot Application Emojis");
     expect(String(json.description ?? "")).toContain(":alpha:");
     expect(fetchReply).not.toHaveBeenCalled();
@@ -619,7 +680,10 @@ describe("/emoji command", () => {
 
     const payload = editReply.mock.calls[0]?.[0] ?? {};
     const embed = payload.embeds?.[0];
-    const json = typeof embed?.toJSON === "function" ? embed.toJSON() : embed?.data ?? {};
+    const json =
+      typeof embed?.toJSON === "function"
+        ? embed.toJSON()
+        : (embed?.data ?? {});
     expect(json.title).toBe("Bot Application Emojis");
     expect(messageFetch).not.toHaveBeenCalled();
   });
@@ -638,10 +702,11 @@ describe("/emoji command", () => {
       ]),
     );
     setEmojiResolverForTest(resolver as any);
-    const { interaction, editReply, messageFetch, messageReact } = buildInteraction({
-      name: "arrow_arrow",
-      react: "123456789012345678",
-    });
+    const { interaction, editReply, messageFetch, messageReact } =
+      buildInteraction({
+        name: "arrow_arrow",
+        react: "123456789012345678",
+      });
 
     await Emoji.run({} as Client, interaction, {} as any);
 
@@ -674,7 +739,9 @@ describe("/emoji command", () => {
 
     expect(messageFetch).not.toHaveBeenCalled();
     const payload = editReply.mock.calls[0]?.[0] ?? {};
-    expect(String(payload.content ?? "")).toContain("Please provide a valid message ID");
+    expect(String(payload.content ?? "")).toContain(
+      "Please provide a valid message ID",
+    );
   });
 
   it("shows message-not-found error when current-channel fetch fails", async () => {
@@ -929,7 +996,9 @@ describe("/emoji autocomplete", () => {
         animated: false,
       });
     }
-    resolver.fetchApplicationEmojiInventory.mockResolvedValue(buildSuccessResult(emojis));
+    resolver.fetchApplicationEmojiInventory.mockResolvedValue(
+      buildSuccessResult(emojis),
+    );
     setEmojiResolverForTest(resolver as any);
     const { interaction, respond } = buildAutocompleteInteraction({
       focusedValue: "arrow_",
