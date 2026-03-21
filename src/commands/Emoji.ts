@@ -279,8 +279,18 @@ async function downloadEmojiAttachment(
 function resolveInteractionVisibility(
   interaction: ChatInputCommandInteraction,
 ): "private" | "public" {
-  const visibility = interaction.options.getString("visibility", false);
-  return visibility === "private" ? "private" : "public";
+  const explicitVisibility = interaction.options.getString("visibility", false);
+  if (explicitVisibility === "public" || explicitVisibility === "private") {
+    return explicitVisibility;
+  }
+
+  const name = interaction.options.getString("name", false);
+
+  // name mode defaults public
+  if (name) return "public";
+
+  // list mode defaults private
+  return "private";
 }
 
 /** Purpose: map resolver failure code to the most accurate user-facing /emoji error response. */
@@ -411,7 +421,7 @@ export const Emoji: Command = {
     interaction: ChatInputCommandInteraction,
     _cocService: CoCService,
   ) => {
-    await interaction.deferReply({ ephemeral: true });
+
 
     const rawName = interaction.options.getString("name", false);
     const rawReact = interaction.options.getString("react", false);
@@ -428,6 +438,7 @@ export const Emoji: Command = {
     const requestedShortCode = String(rawShortCode ?? "");
     const normalizedShortCode = normalizeEmojiShortcodeName(requestedShortCode);
     const visibilityState = resolveInteractionVisibility(interaction);
+    await interaction.deferReply({ ephemeral: visibilityState !== "public" });
 
     const mode: "list" | "resolve" | "react" | "add" = hasAddInputs
       ? "add"
