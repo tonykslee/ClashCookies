@@ -16,9 +16,10 @@ vi.mock("../src/prisma", () => ({
 }));
 
 import { Remaining } from "../src/commands/Remaining";
+import { SettingsService } from "../src/services/SettingsService";
 
 /** Purpose: create a minimal chat-command interaction mock for /remaining war tests. */
-function makeInteraction(params: { tag: string | null; guildId?: string | null }) {
+function makeInteraction(params: { tag: string | null; all?: boolean | null; guildId?: string | null }) {
   const deferReply = vi.fn().mockResolvedValue(undefined);
   const editReply = vi.fn().mockResolvedValue(undefined);
   const interaction = {
@@ -131,5 +132,75 @@ describe("/remaining war command", () => {
 
     expect(cocService.getCurrentWar).not.toHaveBeenCalled();
     expect(editReply).toHaveBeenCalledWith("No tracked clans are currently in active war.");
+  });
+});
+
+
+describe("/remaining war command default selection behavior", () => {
+  it("uses the stored last-viewed clan when tag is omitted and all is not requested", async () => {
+    vi.spyOn(SettingsService.prototype, "get").mockResolvedValue("#2QG2C08UP");
+    const setSpy = vi.spyOn(SettingsService.prototype, "set").mockResolvedValue(undefined);
+
+    prismaMock.trackedClan.findFirst.mockResolvedValue({
+      tag: "#2QG2C08UP",
+      name: "Alpha",
+    });
+    prismaMock.currentWar.findUnique.mockResolvedValue({
+      clanTag: "#2QG2C08UP",
+      state: "preparation",
+      startTime: new Date("2026-03-08T10:00:00.000Z"),
+      endTime: new Date("2026-03-09T10:00:00.000Z"),
+    });
+
+    const { interaction, editReply } = makeInteraction({ tag: null, all: null });
+
+    await Remaining.run({} as any, { ...interaction, user: { id: "user-1" } } as any, {} as any);
+
+    expect(prismaMock.trackedClan.findMany).not.toHaveBeenCalled();
+    expect(prismaMock.currentWar.findMany).not.toHaveBeenCalled();
+    expect(editReply).toHaveBeenCalledWith(expect.stringContaining("**Alpha (#2QG2C08UP)**"));
+    expect(setSpy).toHaveBeenCalledWith(
+      "remaining:war:last-clan:guild-1:user-1",
+      "#2QG2C08UP"
+    );
+  });
+
+  it("returns aggregate view only when all:true is provided", async () => {
+    vi.spyOn(SettingsService.prototype, "get").mockResolvedValue("#2QG2C08UP");
+
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#A", name: "Alpha" },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#A",
+        state: "inWar",
+        startTime: new Date("2026-03-07T00:00:00.000Z"),
+        endTime: new Date("2026-03-08T01:00:00.000Z"),
+      },
+    ]);
+
+    const { interaction, editReply } = makeInteraction({ tag: null, all: true });
+
+    await Remaining.run({} as any, { ...interaction, user: { id: "user-1" } } as any, {} as any);
+
+    const output = String(editReply.mock.calls[0]?.[0] ?? "");
+    expect(output).toContain("Alliance Remaining War Summary");
+    expect(prismaMock.trackedClan.findFirst).not.toHaveBeenCalled();
+    expect(prismaMock.currentWar.findUnique).not.toHaveBeenCalled();
+  });
+
+  it("returns guidance when no tag is provided and no last-viewed clan exists", async () => {
+    vi.spyOn(SettingsService.prototype, "get").mockResolvedValue(null);
+
+    const { interaction, editReply } = makeInteraction({ tag: null, all: null });
+
+    await Remaining.run({} as any, { ...interaction, user: { id: "user-1" } } as any, {} as any);
+
+    expect(editReply).toHaveBeenCalledWith(
+      "No last viewed clan found for `/remaining war`. Use `/remaining war tag:<tag>` first or `/remaining war all`."
+    );
+    expect(prismaMock.trackedClan.findMany).not.toHaveBeenCalled();
+    expect(prismaMock.currentWar.findMany).not.toHaveBeenCalled();
   });
 });
