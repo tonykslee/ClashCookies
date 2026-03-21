@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const prismaMock = vi.hoisted(() => ({
+  $queryRaw: vi.fn().mockResolvedValue([]),
+  $executeRaw: vi.fn().mockResolvedValue(0),
   trackedClan: {
     findFirst: vi.fn(),
     findMany: vi.fn(),
@@ -19,17 +21,27 @@ import { Remaining } from "../src/commands/Remaining";
 import { SettingsService } from "../src/services/SettingsService";
 
 /** Purpose: create a minimal chat-command interaction mock for /remaining war tests. */
-function makeInteraction(params: { tag: string | null; all?: boolean | null; guildId?: string | null }) {
+function makeInteraction(params: {
+  tag: string | null;
+  all?: boolean | null;
+  guildId?: string | null;
+  userId?: string | null;
+}) {
   const deferReply = vi.fn().mockResolvedValue(undefined);
   const editReply = vi.fn().mockResolvedValue(undefined);
   const interaction = {
     guildId: params.guildId ?? "guild-1",
+    user: { id: params.userId ?? "user-1" },
     deferReply,
     editReply,
     options: {
       getSubcommand: vi.fn().mockReturnValue("war"),
       getString: vi.fn((name: string) => {
         if (name === "tag") return params.tag;
+        return null;
+      }),
+      getBoolean: vi.fn((name: string) => {
+        if (name === "all") return params.all ?? null;
         return null;
       }),
     },
@@ -137,6 +149,11 @@ describe("/remaining war command", () => {
 
 
 describe("/remaining war command default selection behavior", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.restoreAllMocks();
+  });
+
   it("uses the stored last-viewed clan when tag is omitted and all is not requested", async () => {
     vi.spyOn(SettingsService.prototype, "get").mockResolvedValue("#2QG2C08UP");
     const setSpy = vi.spyOn(SettingsService.prototype, "set").mockResolvedValue(undefined);
@@ -154,7 +171,7 @@ describe("/remaining war command default selection behavior", () => {
 
     const { interaction, editReply } = makeInteraction({ tag: null, all: null });
 
-    await Remaining.run({} as any, { ...interaction, user: { id: "user-1" } } as any, {} as any);
+    await Remaining.run({} as any, interaction as any, {} as any);
 
     expect(prismaMock.trackedClan.findMany).not.toHaveBeenCalled();
     expect(prismaMock.currentWar.findMany).not.toHaveBeenCalled();
@@ -166,7 +183,7 @@ describe("/remaining war command default selection behavior", () => {
   });
 
   it("returns aggregate view only when all:true is provided", async () => {
-    vi.spyOn(SettingsService.prototype, "get").mockResolvedValue("#2QG2C08UP");
+    const getSpy = vi.spyOn(SettingsService.prototype, "get").mockResolvedValue("#2QG2C08UP");
 
     prismaMock.trackedClan.findMany.mockResolvedValue([
       { tag: "#A", name: "Alpha" },
@@ -182,25 +199,28 @@ describe("/remaining war command default selection behavior", () => {
 
     const { interaction, editReply } = makeInteraction({ tag: null, all: true });
 
-    await Remaining.run({} as any, { ...interaction, user: { id: "user-1" } } as any, {} as any);
+    await Remaining.run({} as any, interaction as any, {} as any);
 
     const output = String(editReply.mock.calls[0]?.[0] ?? "");
     expect(output).toContain("Alliance Remaining War Summary");
+    expect(getSpy).not.toHaveBeenCalled();
     expect(prismaMock.trackedClan.findFirst).not.toHaveBeenCalled();
     expect(prismaMock.currentWar.findUnique).not.toHaveBeenCalled();
   });
 
-  it("returns guidance when no tag is provided and no last-viewed clan exists", async () => {
+  it("falls back to aggregate mode when no tag is provided and no last-viewed clan exists", async () => {
     vi.spyOn(SettingsService.prototype, "get").mockResolvedValue(null);
+    prismaMock.trackedClan.findMany.mockResolvedValue([]);
+    prismaMock.currentWar.findMany.mockResolvedValue([]);
 
     const { interaction, editReply } = makeInteraction({ tag: null, all: null });
 
-    await Remaining.run({} as any, { ...interaction, user: { id: "user-1" } } as any, {} as any);
+    await Remaining.run({} as any, interaction as any, {} as any);
 
     expect(editReply).toHaveBeenCalledWith(
-      "No last viewed clan found for `/remaining war`. Use `/remaining war tag:<tag>` first or `/remaining war all`."
+      "No tracked clans are currently in active war."
     );
-    expect(prismaMock.trackedClan.findMany).not.toHaveBeenCalled();
-    expect(prismaMock.currentWar.findMany).not.toHaveBeenCalled();
+    expect(prismaMock.trackedClan.findMany).toHaveBeenCalledTimes(1);
+    expect(prismaMock.currentWar.findMany).toHaveBeenCalledTimes(1);
   });
 });
