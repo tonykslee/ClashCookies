@@ -87,7 +87,7 @@ import {
 
 const commandPermissionService = new CommandPermissionService();
 const GLOBAL_POST_BUTTON_PREFIX = "post-channel";
-const COMMANDS_WITH_CUSTOM_VISIBILITY = new Set(["help", "fwa", "layout", "compo"]);
+const COMMANDS_WITH_CUSTOM_VISIBILITY = new Set(["help", "fwa", "layout", "compo", "emoji"]);
 
 let isRegistered = false;
 const telemetryIngest = TelemetryIngestService.getInstance();
@@ -109,9 +109,9 @@ function missingPermissionMessage(context: string): string {
 function getRequestedVisibility(interaction: ChatInputCommandInteraction): "private" | "public" {
   try {
     const visibility = interaction.options.getString("visibility", false);
-    return visibility === "private" ? "private" : "public";
+    return visibility === "public" ? "public" : "private";
   } catch {
-    return "public";
+    return "private";
   }
 }
 
