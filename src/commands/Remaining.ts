@@ -7,6 +7,7 @@ import {
 import { Command } from "../Command";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
+import { SettingsService } from "../services/SettingsService";
 import {
   buildActiveWarRemainingSamples,
   formatCurrentWarPhaseLabel,
@@ -100,6 +101,13 @@ function buildAggregateRemainingMessage(input: {
   return lines.join("\n");
 }
 
+const settingsService = new SettingsService();
+
+/** Purpose: persist per-user last-viewed remaining-war clan selection. */
+function buildRemainingWarLastClanKey(guildId: string, userId: string): string {
+  return `remaining:war:last-clan:${guildId}:${userId}`;
+}
+
 export const Remaining: Command = {
   name: "remaining",
   description: "Time remaining helpers",
@@ -115,6 +123,12 @@ export const Remaining: Command = {
           type: ApplicationCommandOptionType.String,
           required: false,
           autocomplete: true,
+        },
+        {
+          name: "all",
+          description: "Show all tracked clans currently in active war",
+          type: ApplicationCommandOptionType.Boolean,
+          required: false,
         },
       ],
     },
@@ -138,33 +152,57 @@ export const Remaining: Command = {
     }
 
     const requestedTag = interaction.options.getString("tag", false);
+    const allRequested = interaction.options.getBoolean("all", false) === true;
+    let resolvedTag: string | null = null;
+
     if (requestedTag) {
-      const tag = normalizeClanTag(requestedTag);
-      if (!tag) {
+      resolvedTag = normalizeClanTag(requestedTag);
+      if (!resolvedTag) {
         await interaction.editReply("Invalid clan tag.");
         return;
       }
+    }
 
+    if (!resolvedTag && !allRequested) {
+      const lastViewedTag = await settingsService.get(
+        buildRemainingWarLastClanKey(interaction.guildId, interaction.user.id)
+      );
+      if (lastViewedTag) {
+        resolvedTag = normalizeClanTag(lastViewedTag);
+      }
+    }
+
+    if (resolvedTag) {
       const [tracked, currentWar] = await Promise.all([
         prisma.trackedClan.findFirst({
-          where: { tag: { equals: tag, mode: "insensitive" } },
+          where: { tag: { equals: resolvedTag, mode: "insensitive" } },
           select: { tag: true, name: true },
         }),
         prisma.currentWar.findUnique({
           where: {
             clanTag_guildId: {
               guildId: interaction.guildId,
-              clanTag: tag,
+              clanTag: resolvedTag,
             },
           },
           select: { clanTag: true, state: true, startTime: true, endTime: true },
         }),
       ]);
       if (!tracked) {
-        await interaction.editReply(`Clan ${tag} is not in tracked clans.`);
+        if (!requestedTag) {
+          await interaction.editReply(
+            "No last viewed clan found for `/remaining war`. Use `/remaining war tag:<tag>` first or `/remaining war all`."
+          );
+          return;
+        }
+        await interaction.editReply(`Clan ${resolvedTag} is not in tracked clans.`);
         return;
       }
 
+      await settingsService.set(
+        buildRemainingWarLastClanKey(interaction.guildId, interaction.user.id),
+        normalizeClanTag(tracked.tag)
+      );
       await interaction.editReply(
         buildSingleRemainingMessage({
           clanTag: normalizeClanTag(tracked.tag),
