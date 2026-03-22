@@ -1266,6 +1266,32 @@ function buildCcVerifyUrl(tag: string): string {
   return `https://cc.fwafarm.com/cc_n/clan.php?tag=${normalizeTag(tag)}`;
 }
 
+const FWA_MATCH_TIEBREAKER_RULES_URL = "https://i.imgur.com/lvoJgZB.png";
+
+/** Purpose: build shared single-clan link presentation to keep render paths consistent. */
+function buildSingleClanMatchLinks(input: {
+  trackedClanTag: string;
+  opponentTag: string;
+}): {
+  pointsFieldName: string;
+  linksFieldName: string;
+  linksFieldValue: string;
+  copyLines: string[];
+} {
+  const opponentCcUrl = buildCcVerifyUrl(input.opponentTag);
+  const trackedPointsUrl = buildOfficialPointsUrl(input.trackedClanTag);
+  return {
+    pointsFieldName: `[Points](${trackedPointsUrl})`,
+    linksFieldName: "Links",
+    linksFieldValue: `[cc.fwafarm](<${opponentCcUrl}>)\n[Tie-breaker rules](<${FWA_MATCH_TIEBREAKER_RULES_URL}>)`,
+    copyLines: [
+      `CC (opponent): [cc.fwafarm](<${opponentCcUrl}>)`,
+      `Points (tracked clan): [points.fwafarm](<${trackedPointsUrl}>)`,
+      `Tie-breaker rules: [Tie-breaker rules](<${FWA_MATCH_TIEBREAKER_RULES_URL}>)`,
+    ],
+  };
+}
+
 const MATCHTYPE_WARNING_LEGEND =
   ":warning: Match type is inferred. Sending is still allowed, but confirm before posting if this looks wrong.";
 const POINTS_CLAN_NOT_FOUND_STATUS_LINE =
@@ -7368,6 +7394,7 @@ export const isLowConfidenceAllianceMismatchScenarioForTest =
   isLowConfidenceAllianceMismatchScenario;
 export const resolveSingleClanMatchEmbedColorForTest =
   resolveSingleClanMatchEmbedColor;
+export const buildSingleClanMatchLinksForTest = buildSingleClanMatchLinks;
 export const buildOpponentSnapshotFromTrackedClanFallbackForTest =
   buildOpponentSnapshotFromTrackedClanFallback;
 export const resolveForceSyncMatchupEvidenceForTest =
@@ -9205,8 +9232,10 @@ async function buildTrackedMatchOverview(
         inferredFromPointsType.matchType === "MM")
         ? inferredFromPointsType.matchType
         : null;
-    const opponentCcUrl = buildCcVerifyUrl(opponentTag);
-    const opponentPointsUrl = buildOfficialPointsUrl(opponentTag);
+    const singleClanLinks = buildSingleClanMatchLinks({
+      trackedClanTag: clanTag,
+      opponentTag,
+    });
     const mailChannelId = mailChannelByTag.get(clanTag) ?? null;
     const liveMailStatus = await resolveLiveWarMailStatus({
       client: client ?? null,
@@ -9548,7 +9577,7 @@ async function buildTrackedMatchOverview(
         )
         .addFields(
           {
-            name: "Points",
+            name: singleClanLinks.pointsFieldName,
             value:
               effectiveMatchType === "FWA"
                 ? hasPrimaryPoints && hasOpponentPoints
@@ -9560,8 +9589,8 @@ async function buildTrackedMatchOverview(
             inline: true,
           },
           {
-            name: "Opponent Links",
-            value: `[cc.fwafarm](${opponentCcUrl})\n[points.fwafarm](${opponentPointsUrl})`,
+            name: singleClanLinks.linksFieldName,
+            value: singleClanLinks.linksFieldValue,
             inline: true,
           },
         ),
@@ -9591,8 +9620,7 @@ async function buildTrackedMatchOverview(
           `\`${opponentName}\``,
           `## Opponent Tag`,
           `\`${opponentTag}\``,
-          `CC: ${opponentCcUrl}`,
-          `Points: ${opponentPointsUrl}`,
+          ...singleClanLinks.copyLines,
           `## Points`,
           hasPrimaryPoints && hasOpponentPoints
             ? `${clanName}: ${primaryPoints!.balance}${clanWinnerMarker}`
@@ -12926,8 +12954,10 @@ export const Fwa: Command = {
         const verifyLink = inferredMatchType
           ? `[cc:${opponentTag}](${buildCcVerifyUrl(opponentTag)})`
           : "";
-        const opponentCcUrl = buildCcVerifyUrl(opponentTag);
-        const opponentPointsUrl = buildOfficialPointsUrl(opponentTag);
+        const singleClanLinks = buildSingleClanMatchLinks({
+          trackedClanTag: tag,
+          opponentTag,
+        });
         const singleHeader = buildMatchStatusHeader({
           clanName: leftName,
           clanTag: tag,
@@ -12975,7 +13005,7 @@ export const Fwa: Command = {
           )
           .addFields(
             {
-              name: "Points",
+              name: singleClanLinks.pointsFieldName,
               value:
                 matchType === "FWA"
                   ? hasPrimaryPoints && hasOpponentPoints
@@ -12987,8 +13017,8 @@ export const Fwa: Command = {
               inline: true,
             },
             {
-              name: "Opponent Links",
-              value: `[cc.fwafarm](${opponentCcUrl})\n[points.fwafarm](${opponentPointsUrl})`,
+              name: singleClanLinks.linksFieldName,
+              value: singleClanLinks.linksFieldValue,
               inline: true,
             },
           );
@@ -13012,8 +13042,7 @@ export const Fwa: Command = {
             `\`${rightName}\``,
             `## Opponent Tag`,
             `\`${opponentTag}\``,
-            `CC: ${opponentCcUrl}`,
-            `Points: ${opponentPointsUrl}`,
+            ...singleClanLinks.copyLines,
             `## Points`,
             hasPrimaryPoints && hasOpponentPoints
               ? `${leftName}: ${primary.balance}${leftWinnerMarker}`
