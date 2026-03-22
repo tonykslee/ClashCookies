@@ -1281,7 +1281,7 @@ function buildSingleClanMatchLinks(input: {
   const opponentCcUrl = buildCcVerifyUrl(input.opponentTag);
   const trackedPointsUrl = buildOfficialPointsUrl(input.trackedClanTag);
   return {
-    pointsFieldName: `[Points](<${trackedPointsUrl}>)`,
+    pointsFieldName: `[Points](${trackedPointsUrl})`,
     linksFieldName: "Links",
     linksFieldValue: `[cc.fwafarm](<${opponentCcUrl}>)\n[Tie-breaker rules](<${FWA_MATCH_TIEBREAKER_RULES_URL}>)`,
     copyLines: [

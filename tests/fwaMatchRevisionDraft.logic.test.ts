@@ -1273,7 +1273,7 @@ describe("fwa single-clan links presentation", () => {
     );
     expect(rendered.linksFieldValue).not.toContain("points.fwafarm");
     expect(rendered.pointsFieldName).toBe(
-      "[Points](<https://points.fwafarm.com/clan?tag=CLAN123>)"
+      "[Points](https://points.fwafarm.com/clan?tag=CLAN123)"
     );
   });
 
