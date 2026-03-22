@@ -16,6 +16,7 @@ import {
   resolveOpponentActiveFwaEvidenceForTest,
   resolveForceSyncMatchupEvidenceForTest,
   resolveSingleClanMatchEmbedColorForTest,
+  buildSingleClanMatchLinksForTest,
   shouldDisplayInferredMatchTypeForTest,
   shouldHydrateAlliancePayloadForTest,
   resolveEffectiveFwaOutcomeForTest,
@@ -1253,5 +1254,42 @@ describe("fwa single-clan match embed color", () => {
       effectiveExpectedOutcome: nextDraft?.expectedOutcome ?? null,
     });
     expect(nextColor).toBe(WAR_MAIL_COLOR_FWA_LOSE);
+  });
+});
+
+describe("fwa single-clan links presentation", () => {
+  it("builds the new shared links field contract and removes opponent points link clutter", () => {
+    const rendered = buildSingleClanMatchLinksForTest({
+      trackedClanTag: "#CLAN123",
+      opponentTag: "#OPPO456",
+    });
+
+    expect(rendered.linksFieldName).toBe("Links");
+    expect(rendered.linksFieldValue).toContain(
+      "[cc.fwafarm](<https://cc.fwafarm.com/cc_n/clan.php?tag=OPPO456>)"
+    );
+    expect(rendered.linksFieldValue).toContain(
+      "[Tie-breaker rules](<https://i.imgur.com/lvoJgZB.png>)"
+    );
+    expect(rendered.linksFieldValue).not.toContain("points.fwafarm");
+    expect(rendered.pointsFieldName).toBe(
+      "[Points](https://points.fwafarm.com/clan?tag=CLAN123)"
+    );
+  });
+
+  it("labels copy output links by ownership using tracked-clan points and tie-breaker docs", () => {
+    const rendered = buildSingleClanMatchLinksForTest({
+      trackedClanTag: "#TEAM999",
+      opponentTag: "#ENEMY111",
+    });
+
+    expect(rendered.copyLines).toEqual([
+      "CC (opponent): [cc.fwafarm](<https://cc.fwafarm.com/cc_n/clan.php?tag=ENEMY111>)",
+      "Points (tracked clan): [points.fwafarm](<https://points.fwafarm.com/clan?tag=TEAM999>)",
+      "Tie-breaker rules: [Tie-breaker rules](<https://i.imgur.com/lvoJgZB.png>)",
+    ]);
+    expect(rendered.copyLines.join("\n")).not.toContain(
+      "https://points.fwafarm.com/clan?tag=ENEMY111"
+    );
   });
 });
