@@ -7,6 +7,9 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
     updateMany: vi.fn(),
   },
+  fwaClanMemberCurrent: {
+    findMany: vi.fn(),
+  },
 }));
 
 vi.mock("../src/prisma", () => ({
@@ -16,6 +19,7 @@ vi.mock("../src/prisma", () => ({
 import {
   createPlayerLinkFromEmbed,
   backfillMissingDiscordUsernamesForClanMembers,
+  listCurrentWeightsForClanMembers,
   listPlayerLinksForClanMembers,
   sanitizeDiscordUsernameForPersistence,
   normalizePersistedDiscordUsername,
@@ -28,6 +32,7 @@ describe("PlayerLinkService discordUsername", () => {
     prismaMock.playerLink.create.mockReset();
     prismaMock.playerLink.findMany.mockReset();
     prismaMock.playerLink.updateMany.mockReset();
+    prismaMock.fwaClanMemberCurrent.findMany.mockReset();
   });
 
   it("normalizes persisted discord username text deterministically", () => {
@@ -176,5 +181,59 @@ describe("PlayerLinkService discordUsername", () => {
       discordUserId: "111111111111111111",
       existingDiscordUserId: "222222222222222222",
     });
+  });
+
+  it("returns current clan member weights by player tag in deterministic order", async () => {
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#QGRJ2222",
+        weight: 98000,
+        sourceSyncedAt: new Date("2026-03-21T11:00:00.000Z"),
+      },
+      {
+        playerTag: "#PYLQ0289",
+        weight: 145000,
+        sourceSyncedAt: new Date("2026-03-20T10:00:00.000Z"),
+      },
+    ]);
+
+    const weights = await listCurrentWeightsForClanMembers({
+      memberTagsInOrder: ["#PYLQ0289", "#QGRJ2222"],
+    });
+
+    expect(prismaMock.fwaClanMemberCurrent.findMany).toHaveBeenCalledWith({
+      where: { playerTag: { in: ["#PYLQ0289", "#QGRJ2222"] } },
+      select: { playerTag: true, weight: true, sourceSyncedAt: true },
+    });
+    expect(Array.from(weights.entries())).toEqual([
+      ["#PYLQ0289", 145000],
+      ["#QGRJ2222", 98000],
+    ]);
+  });
+
+  it("keeps the latest weight per player tag when duplicate rows exist", async () => {
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        weight: 144000,
+        sourceSyncedAt: new Date("2026-03-20T09:00:00.000Z"),
+      },
+      {
+        playerTag: "#PYLQ0289",
+        weight: 145000,
+        sourceSyncedAt: new Date("2026-03-20T11:00:00.000Z"),
+      },
+      {
+        playerTag: "#QGRJ2222",
+        weight: null,
+        sourceSyncedAt: new Date("2026-03-20T11:00:00.000Z"),
+      },
+    ]);
+
+    const weights = await listCurrentWeightsForClanMembers({
+      memberTagsInOrder: ["#PYLQ0289", "#QGRJ2222"],
+    });
+
+    expect(Array.from(weights.entries())).toEqual([["#PYLQ0289", 145000]]);
   });
 });
