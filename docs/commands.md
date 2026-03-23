@@ -59,6 +59,7 @@
 - `/fwa match-type [visibility:private|public] [tag:<trackedClanTag>] [type:FWA|BL|MM]` - Manually set or view per-clan match type override used by matchup output. If no args, lists overrides for all tracked clans.
 - `/fwa mail send tag:<trackedClanTag>` - Show ephemeral war mail preview with confirm-and-send to the tracked clan mail channel. Confirm-and-send pings `TrackedClan.clanRoleId` when enabled. Uses the same active-war mail freshness gating as `/fwa match` (up-to-date send is disabled; out-of-date resend is enabled when matchType/outcome differ). War-mail embed sidebar colors are mapped by effective match state only: BL=black, MM=white, FWA WIN=green, FWA LOSE=red, unresolved=gray.
 - `/fwa match` single-clan view includes a `Send Mail` button that follows the same access policy as `/fwa mail send` and uses the same role-ping behavior.
+- `/fwa match` single-clan embed view includes a `Tie-breaker rules` button that opens an ephemeral image (`https://i.imgur.com/lvoJgZB.png`) for the requesting user.
 - `/recruitment show platform:discord|reddit|band clan:<tag>` - Render platform-specific recruitment template output for a tracked clan.
 - `/recruitment edit platform:discord|reddit|band clan:<tag>` - Open platform-specific modal:
   - Discord: clan tag, body (max 1024), optional image URL(s)

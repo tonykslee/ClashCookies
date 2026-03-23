@@ -35,6 +35,7 @@ import {
   handleFwaMailBackButton,
   handleFwaMailRefreshButton,
   handleFwaMatchSendMailButton,
+  handleFwaMatchTieBreakerButton,
   handleFwaBaseSwapSplitPostButton,
   isFwaMatchAllianceButtonCustomId,
   isFwaMatchSyncActionButtonCustomId,
@@ -46,6 +47,7 @@ import {
   isFwaMailBackButtonCustomId,
   isFwaMailRefreshButtonCustomId,
   isFwaMatchSendMailButtonCustomId,
+  isFwaMatchTieBreakerButtonCustomId,
   isFwaMatchTypeEditButtonCustomId,
   isFwaOutcomeActionButtonCustomId,
   isFwaMatchSelectCustomId,
@@ -403,6 +405,20 @@ const handleButtonInteraction = async (
         await interaction.reply({
           ephemeral: true,
           content: "Failed to toggle match view.",
+        });
+      }
+    }
+  }
+
+  if (isFwaMatchTieBreakerButtonCustomId(interaction.customId)) {
+    try {
+      await handleFwaMatchTieBreakerButton(interaction);
+    } catch (err) {
+      console.error(`FWA match tie-breaker button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to open tie-breaker rules.",
         });
       }
     }

@@ -14,6 +14,7 @@ const FWA_MAIL_CONFIRM_NO_PING_PREFIX = "fwa-mail-confirm-no-ping";
 const FWA_MAIL_BACK_PREFIX = "fwa-mail-back";
 const FWA_MAIL_REFRESH_PREFIX = "fwa-mail-refresh";
 const FWA_MATCH_SEND_MAIL_PREFIX = "fwa-match-send-mail";
+const FWA_MATCH_TIEBREAKER_PREFIX = "fwa-match-tiebreaker";
 const FWA_COMPLIANCE_VIEW_PREFIX = "fwa-compliance-view";
 const FWA_BASE_SWAP_SPLIT_POST_PREFIX = "fwa-base-swap-split-post";
 
@@ -41,6 +42,12 @@ export type MatchSyncActionParams = {
 };
 
 export type MatchSkipSyncActionParams = {
+  userId: string;
+  key: string;
+  tag: string;
+};
+
+export type FwaMatchTieBreakerParams = {
   userId: string;
   key: string;
   tag: string;
@@ -374,6 +381,27 @@ export function parseFwaMatchSendMailCustomId(
 /** Purpose: detect send-mail-from-match button prefix. */
 export function isFwaMatchSendMailButtonCustomId(customId: string): boolean {
   return customId.startsWith(`${FWA_MATCH_SEND_MAIL_PREFIX}:`);
+}
+
+/** Purpose: build custom-id for single-clan tie-breaker rules button. */
+export function buildFwaMatchTieBreakerCustomId(
+  params: FwaMatchTieBreakerParams,
+): string {
+  return `${FWA_MATCH_TIEBREAKER_PREFIX}:${params.userId}:${params.key}:${normalizeTag(params.tag)}`;
+}
+
+/** Purpose: parse single-clan tie-breaker rules button custom-id payload. */
+export function parseFwaMatchTieBreakerCustomId(
+  customId: string,
+): FwaMatchTieBreakerParams | null {
+  const values = parseCustomIdParts(customId, FWA_MATCH_TIEBREAKER_PREFIX, 4);
+  if (!values) return null;
+  return { userId: values[0], key: values[1], tag: normalizeTag(values[2]) };
+}
+
+/** Purpose: detect single-clan tie-breaker rules button prefix. */
+export function isFwaMatchTieBreakerButtonCustomId(customId: string): boolean {
+  return customId.startsWith(`${FWA_MATCH_TIEBREAKER_PREFIX}:`);
 }
 
 /** Purpose: build custom-id for /fwa compliance embed view buttons. */
