@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { prisma } from "../src/prisma";
-import { getCurrentOrDefaultPlanDataForTest } from "../src/commands/WarPlan";
+import {
+  buildComplianceConfigLineForTest,
+  getCurrentOrDefaultPlanDataForTest,
+} from "../src/commands/WarPlan";
 
 describe("warplan set modal compliance prefill", () => {
   afterEach(() => {
@@ -124,5 +127,18 @@ describe("warplan set modal compliance prefill", () => {
     expect(winPrefill.allBasesOpenHoursLeft).toBe(3);
     expect(traditionalLosePrefill.nonMirrorTripleMinClanStars).toBe(0);
     expect(traditionalLosePrefill.allBasesOpenHoursLeft).toBe(12);
+  });
+
+  it("does not append hardcoded FWA_WIN-only copy in compliance text", () => {
+    const line = buildComplianceConfigLineForTest({
+      target: { matchType: "FWA", outcome: "LOSE", loseStyle: "TRADITIONAL" },
+      nonMirrorTripleMinClanStars: 0,
+      allBasesOpenHoursLeft: 12,
+    });
+
+    expect(line).toBe(
+      "Compliance gate: nonMirrorTripleMinClanStars=0, allBasesOpenHoursLeft=12h",
+    );
+    expect(line).not.toContain("applies to FWA_WIN only");
   });
 });

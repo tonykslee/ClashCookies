@@ -102,11 +102,7 @@ function buildComplianceConfigLine(input: {
   nonMirrorTripleMinClanStars: number;
   allBasesOpenHoursLeft: number;
 }): string {
-  const applicability =
-    input.target.matchType === "FWA" && input.target.outcome === "WIN"
-      ? ""
-      : " (applies to FWA_WIN only)";
-  return `Compliance gate: nonMirrorTripleMinClanStars=${input.nonMirrorTripleMinClanStars}, allBasesOpenHoursLeft=${input.allBasesOpenHoursLeft}h${applicability}`;
+  return `Compliance gate: nonMirrorTripleMinClanStars=${input.nonMirrorTripleMinClanStars}, allBasesOpenHoursLeft=${input.allBasesOpenHoursLeft}h`;
 }
 
 type EmojiShortcodeResolver = Pick<EmojiResolverService, "replaceShortcodes">;
@@ -335,6 +331,7 @@ async function getCurrentOrDefaultPlanData(params: {
 
 export const resolveWarPlanEmojiShortcodesForTest =
   resolveWarPlanEmojiShortcodes;
+export const buildComplianceConfigLineForTest = buildComplianceConfigLine;
 export const getCurrentOrDefaultPlanDataForTest = getCurrentOrDefaultPlanData;
 
 export const WarPlan: Command = {
