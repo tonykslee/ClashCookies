@@ -1,6 +1,7 @@
 import { Client } from "discord.js";
 import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
+import { CommandPermissionService } from "./CommandPermissionService";
 import { normalizeTag, normalizeTagBare } from "./war-events/core";
 
 export type DefermentStatus = "open" | "resolved" | "cleared";
@@ -30,6 +31,7 @@ const FORTY_EIGHT_HOURS_MS = 48 * 60 * 60 * 1000;
 const FIVE_DAYS_MS = 5 * 24 * 60 * 60 * 1000;
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 const PROCESS_LOCK_TTL_MS = 10 * 60 * 1000;
+const commandPermissionService = new CommandPermissionService();
 
 /** Purpose: normalize player tags to an uppercase #TAG shape. */
 export function normalizePlayerTag(input: string): string {
@@ -340,7 +342,6 @@ async function releaseProcessingLock(rowId: string, token: string): Promise<void
 
 type ReminderDestination = {
   channelId: string | null;
-  roleId: string | null;
   clanTag: string;
   clanName: string | null;
   currentWeight: number | null;
@@ -383,7 +384,6 @@ async function resolveCurrentReminderDestination(input: {
       tag: true,
       name: true,
       logChannelId: true,
-      clanRoleId: true,
     },
     take: candidateTags.length,
   });
@@ -393,7 +393,6 @@ async function resolveCurrentReminderDestination(input: {
       tag: string;
       name: string | null;
       logChannelId: string | null;
-      clanRoleId: string | null;
     }
   >();
   for (const tracked of trackedRows) {
@@ -409,7 +408,6 @@ async function resolveCurrentReminderDestination(input: {
     if (!tracked) continue;
     return {
       channelId: tracked.logChannelId ?? null,
-      roleId: tracked.clanRoleId ?? null,
       clanTag: normalizeTag(tracked.tag),
       clanName: tracked.name?.trim() || null,
       currentWeight: membership.weight ?? null,
@@ -426,7 +424,7 @@ function buildStageMessage(input: {
   clanTag: string | null;
   clanName: string | null;
   currentWeight: number | null;
-  roleId: string | null;
+  leaderRoleId: string | null;
 }): string {
   const header =
     input.stage === "48h"
@@ -434,7 +432,7 @@ function buildStageMessage(input: {
       : input.stage === "5d"
         ? "Weight Deferment Escalation (5d)"
         : "Weight Deferment Leadership Summary (7d)";
-  const mention = input.roleId ? `<@&${input.roleId}> ` : "";
+  const mention = input.leaderRoleId ? `<@&${input.leaderRoleId}> ` : "";
   const clanLabel = input.clanTag
     ? input.clanName
       ? `${input.clanName} (${input.clanTag})`
@@ -459,6 +457,7 @@ async function deliverStageMessage(input: {
   deferredWeight: number;
   createdAt: Date;
   destination: ReminderDestination;
+  leaderRoleId: string | null;
 }): Promise<boolean> {
   if (!input.destination.channelId) {
     console.warn(
@@ -483,7 +482,7 @@ async function deliverStageMessage(input: {
     clanTag: input.destination.clanTag,
     clanName: input.destination.clanName,
     currentWeight: input.destination.currentWeight,
-    roleId: input.destination.roleId,
+    leaderRoleId: input.leaderRoleId,
   });
   await channel.send({ content });
   return true;
@@ -580,6 +579,9 @@ export async function processWeightInputDefermentStages(
         }
         continue;
       }
+      const leaderRoleId = await commandPermissionService.getFwaLeaderRoleId(
+        locked.guildId,
+      );
       for (const stage of dueStages) {
         try {
           const sent = await deliverStageMessage({
@@ -590,6 +592,7 @@ export async function processWeightInputDefermentStages(
             deferredWeight: locked.deferredWeight,
             createdAt: locked.createdAt,
             destination,
+            leaderRoleId,
           });
           if (!sent) {
             console.warn(

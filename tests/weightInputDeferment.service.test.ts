@@ -34,6 +34,7 @@ import {
   parseDeferWeightInput,
   processWeightInputDefermentStages,
 } from "../src/services/WeightInputDefermentService";
+import { CommandPermissionService } from "../src/services/CommandPermissionService";
 
 type MutableRecord = {
   id: string;
@@ -143,6 +144,9 @@ describe("WeightInputDefermentService helpers", () => {
 describe("WeightInputDefermentService lifecycle processing", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi
+      .spyOn(CommandPermissionService.prototype, "getFwaLeaderRoleId")
+      .mockResolvedValue("role-global-leader");
     prismaMock.clanNotifyConfig.findMany.mockResolvedValue([]);
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.currentWar.findMany.mockResolvedValue([]);
@@ -165,7 +169,7 @@ describe("WeightInputDefermentService lifecycle processing", () => {
     });
   });
 
-  it("reroutes reminders to the player's current tracked clan log channel and pings clanRoleId", async () => {
+  it("reroutes reminders to the player's current tracked clan log channel and pings guild-wide fwa leader role", async () => {
     const record: MutableRecord = {
       id: "row-1",
       guildId: "guild-1",
@@ -213,9 +217,14 @@ describe("WeightInputDefermentService lifecycle processing", () => {
     expect(fetch).toHaveBeenCalledWith("channel-2");
     expect(send).toHaveBeenCalledTimes(3);
     expect(String(send.mock.calls[0]?.[0]?.content)).toContain("48h");
-    expect(String(send.mock.calls[0]?.[0]?.content)).toContain("<@&role-lead-2>");
+    expect(String(send.mock.calls[0]?.[0]?.content)).toContain(
+      "<@&role-global-leader>",
+    );
     expect(String(send.mock.calls[0]?.[0]?.content)).toContain("Current clan: Bravo (#BBB222)");
     expect(String(send.mock.calls[0]?.[0]?.content)).not.toContain("<@&role-1>");
+    expect(String(send.mock.calls[0]?.[0]?.content)).not.toContain(
+      "<@&role-lead-2>",
+    );
     expect(String(send.mock.calls[1]?.[0]?.content)).toContain("5d");
     expect(String(send.mock.calls[2]?.[0]?.content)).toContain("7d");
     expect(record.reminded48At).toBeTruthy();
@@ -313,6 +322,60 @@ describe("WeightInputDefermentService lifecycle processing", () => {
     expect(record.reminded48At).toBeNull();
     expect(record.escalated5dAt).toBeNull();
     expect(record.summarized7dAt).toBeNull();
+  });
+
+  it("does not fall back to tracked clan role when fwa leader role is unset", async () => {
+    vi
+      .spyOn(CommandPermissionService.prototype, "getFwaLeaderRoleId")
+      .mockResolvedValueOnce(null);
+
+    const record: MutableRecord = {
+      id: "row-no-leader-role",
+      guildId: "guild-1",
+      scopeKey: "guild:guild-1|clan:AAA111",
+      clanTag: "#AAA111",
+      playerTag: "#ABC0289",
+      deferredWeight: 145000,
+      status: "open",
+      createdAt: new Date(Date.now() - 6 * 24 * 60 * 60 * 1000),
+      reminded48At: null,
+      escalated5dAt: null,
+      summarized7dAt: null,
+      processingLockToken: null,
+      processingLockExpiresAt: null,
+    };
+    setupStatefulDefermentMocks(record);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: "#AAA111",
+        weight: 140000,
+        sourceSyncedAt: new Date("2026-03-22T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      {
+        tag: "#AAA111",
+        name: "Alpha",
+        logChannelId: "channel-1",
+        clanRoleId: "role-lead-1",
+      },
+    ]);
+    const send = vi.fn().mockResolvedValue(undefined);
+    const client = {
+      channels: {
+        fetch: vi.fn().mockResolvedValue({
+          isTextBased: () => true,
+          send,
+        }),
+      },
+    } as any;
+
+    await processWeightInputDefermentStages(client, "guild-1");
+
+    expect(send).toHaveBeenCalledTimes(2);
+    const firstContent = String(send.mock.calls[0]?.[0]?.content ?? "");
+    expect(firstContent).not.toContain("<@&");
+    expect(firstContent).not.toContain("<@&role-lead-1>");
   });
 
   it("keeps stage unset when delivery fails so later runs can retry", async () => {
