@@ -689,10 +689,13 @@ describe("War-end points reconciliation", () => {
 
     expect(edit).toHaveBeenCalledTimes(1);
     const editPayload = edit.mock.calls[0]?.[0];
-    expect(editPayload.content).toContain("⚠️ War-end points mismatch detected.");
+    expect(editPayload.content).toContain(
+      "⚠️ War-end points mismatch detected. [points.fwafarm](<https://points.fwafarm.com/clan?tag=AAA111>)"
+    );
     expect(editPayload.content).toContain("Expected points: 100");
     expect(editPayload.content).toContain("Actual points: 99");
     expect(editPayload.content).toContain("<@&777>");
+    expect(editPayload.content).not.toContain("clan?tag=OPP123");
     expect(updateSpy).toHaveBeenCalledTimes(1);
   });
 
@@ -791,8 +794,12 @@ describe("War-end points reconciliation", () => {
     });
 
     expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0]?.[0]?.content).toContain(
+      "[points.fwafarm](<https://points.fwafarm.com/clan?tag=AAA111>)"
+    );
     expect(send.mock.calls[0]?.[0]?.content).toContain("Expected points: 100");
     expect(send.mock.calls[0]?.[0]?.content).toContain("Actual points: 99");
+    expect(send.mock.calls[0]?.[0]?.content).not.toContain("clan?tag=OPP123");
     expect(updateSpy).toHaveBeenCalledTimes(1);
   });
 });
