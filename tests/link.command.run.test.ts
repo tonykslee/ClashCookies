@@ -18,6 +18,9 @@ const prismaMock = vi.hoisted(() => ({
   currentWar: {
     findMany: vi.fn(),
   },
+  fwaClanMemberCurrent: {
+    findMany: vi.fn(),
+  },
 }));
 
 vi.mock("../src/prisma", () => ({
@@ -105,13 +108,15 @@ function makeValidTag(index: number): string {
 
 function getInlineRowSegments(row: string): {
   th: string;
+  weight: string;
   player: string;
   third: string;
 } {
   const trimmed = row.slice(1, -1);
-  const [th, player, third] = trimmed.split("|").map((part) => part);
+  const [th, weight, third, player] = trimmed.split("|").map((part) => part);
   return {
     th: (th ?? "").trim(),
+    weight: weight ?? "",
     player: player ?? "",
     third: third ?? "",
   };
@@ -128,10 +133,12 @@ describe("/link run", () => {
     prismaMock.trackedClan.findMany.mockReset();
     prismaMock.trackedClan.findUnique.mockReset();
     prismaMock.currentWar.findMany.mockReset();
+    prismaMock.fwaClanMemberCurrent.findMany.mockReset();
 
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.trackedClan.findUnique.mockResolvedValue(null);
     prismaMock.currentWar.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
   });
 
   it("creates a self-link when tag is unlinked", async () => {
@@ -325,6 +332,18 @@ describe("/link run", () => {
         mailConfig: { displayOrder: 2 },
       },
     ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        weight: 145000,
+        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
+      },
+      {
+        playerTag: "#QGRJ2222",
+        weight: 98000,
+        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
+      },
+    ]);
 
     const interaction = makeInteraction({
       subcommand: "list",
@@ -378,6 +397,10 @@ describe("/link run", () => {
     const unlinkedParts = getInlineRowSegments(unlinkedRow as string);
     expect(linkedParts.th).toBe("18");
     expect(unlinkedParts.th).toBe("15");
+    expect(linkedParts.weight.trim()).toBe("145k");
+    expect(unlinkedParts.weight.trim()).toBe("98k");
+    expect(linkedParts.weight.startsWith(" ")).toBe(true);
+    expect(unlinkedParts.weight.startsWith(" ")).toBe(true);
     expect(linkedParts.player.startsWith(" ")).toBe(true);
     expect(linkedParts.third.startsWith(" ")).toBe(true);
     expect(unlinkedParts.player.startsWith(" ")).toBe(true);
@@ -490,6 +513,7 @@ describe("/link run", () => {
     expect(description).toContain("Unlinked users: 1");
     expect(description).not.toContain("Linked Users:");
     expect(description).toContain("`15 |");
+    expect(description).toMatch(/`15 \|\s+— \|/);
     expect(description).toContain("#QGRJ2222");
   });
 
@@ -637,6 +661,7 @@ describe("/link list select menu", () => {
     prismaMock.trackedClan.findMany.mockReset();
     prismaMock.trackedClan.findUnique.mockReset();
     prismaMock.currentWar.findMany.mockReset();
+    prismaMock.fwaClanMemberCurrent.findMany.mockReset();
 
     prismaMock.playerLink.findMany.mockResolvedValue([
       {
@@ -656,6 +681,7 @@ describe("/link list select menu", () => {
     ]);
     prismaMock.trackedClan.findUnique.mockResolvedValue(null);
     prismaMock.currentWar.findMany.mockResolvedValue([{ clanTag: "#PQL0289" }]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
   });
 
   it("updates same message in place for valid selection", async () => {

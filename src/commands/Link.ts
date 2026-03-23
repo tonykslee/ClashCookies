@@ -25,6 +25,7 @@ import {
   createPlayerLink,
   createPlayerLinkFromEmbed,
   deletePlayerLink,
+  listCurrentWeightsForClanMembers,
   listPlayerLinksForClanMembers,
   normalizeClanTag,
   normalizeDiscordUserId,
@@ -59,6 +60,7 @@ const LINK_EMBED_MODAL_DESCRIPTION_MAX = 4000;
 
 const MAX_PLAYER_NAME_CHARS = 28;
 const MAX_IDENTITY_CHARS = 30;
+const WEIGHT_PLACEHOLDER = "—";
 
 type ClanMemberRow = {
   playerTag: string;
@@ -435,17 +437,27 @@ function rightAlign(value: string, width: number): string {
 
 type LinkListRowInput = {
   th: string;
+  weight: string;
   playerName: string;
   third: string;
 };
 
+function formatCompactWeightK(weight: number | null | undefined): string {
+  if (weight === null || weight === undefined || !Number.isFinite(weight)) {
+    return WEIGHT_PLACEHOLDER;
+  }
+  const normalized = Math.max(0, Math.trunc(weight));
+  return `${Math.trunc(normalized / 1000)}k`;
+}
+
 function formatAlignedInlineRow(
   row: LinkListRowInput,
-  widths: { player: number; third: number },
+  widths: { player: number; third: number; weight: number },
 ): string {
+  const weight = rightAlign(row.weight, widths.weight);
   const playerName = rightAlign(row.playerName, widths.player);
   const discordName = rightAlign(row.third, widths.third);
-  return `\`${row.th} | ${discordName} | ${playerName}\``;
+  return `\`${row.th} | ${weight} | ${discordName} | ${playerName}\``;
 }
 
 function computeColumnWidths(
@@ -455,6 +467,7 @@ function computeColumnWidths(
   player: number;
   linkedThird: number;
   unlinkedThird: number;
+  weight: number;
 } {
   const allRows = [...linkedRows, ...unlinkedRows];
   const player = Math.max(
@@ -476,8 +489,14 @@ function computeColumnWidths(
       .map((row) => row.third.length)
       .filter((value) => Number.isFinite(value)),
   );
+  const weight = Math.max(
+    WEIGHT_PLACEHOLDER.length,
+    ...allRows
+      .map((row) => row.weight.length)
+      .filter((value) => Number.isFinite(value)),
+  );
 
-  return { player, linkedThird, unlinkedThird };
+  return { player, linkedThird, unlinkedThird, weight };
 }
 
 function buildLinkListDescriptionLines(input: {
@@ -486,9 +505,6 @@ function buildLinkListDescriptionLines(input: {
 }): string[] {
   const { linkedRows, unlinkedRows } = input;
   const widths = computeColumnWidths(linkedRows, unlinkedRows);
-  const thHeader = "TH".padEnd(2, " ");
-  const discordHeader = "Discord".padEnd(18, " ");
-  const playerHeader = "Player";
   const lines: string[] = [];
 
   if (linkedRows.length > 0) {
@@ -498,6 +514,7 @@ function buildLinkListDescriptionLines(input: {
       ...linkedRows.map((row) =>
         formatAlignedInlineRow(row, {
           player: widths.player,
+          weight: widths.weight,
           third: widths.linkedThird,
         }),
       ),
@@ -510,6 +527,7 @@ function buildLinkListDescriptionLines(input: {
       ...unlinkedRows.map((row) =>
         formatAlignedInlineRow(row, {
           player: widths.player,
+          weight: widths.weight,
           third: widths.unlinkedThird,
         }),
       ),
@@ -552,6 +570,9 @@ async function buildLinkListView(input: {
   const links = await listPlayerLinksForClanMembers({
     memberTagsInOrder: members.map((row) => row.playerTag),
   });
+  const weightByTag = await listCurrentWeightsForClanMembers({
+    memberTagsInOrder: members.map((row) => row.playerTag),
+  });
 
   const linkedUserIds = [
     ...new Set(
@@ -578,10 +599,12 @@ async function buildLinkListView(input: {
       member.playerName,
       MAX_PLAYER_NAME_CHARS,
     );
+    const weight = formatCompactWeightK(weightByTag.get(member.playerTag));
     const link = linkByTag.get(member.playerTag);
     if (link) {
       linkedRows.push({
         th: member.townHallText,
+        weight,
         playerName,
         third: truncateWithEllipsis(
           resolveLinkedUserDisplayName(
@@ -597,6 +620,7 @@ async function buildLinkListView(input: {
 
     unlinkedRows.push({
       th: member.townHallText,
+      weight,
       playerName,
       third: truncateWithEllipsis(member.playerTag, MAX_IDENTITY_CHARS),
     });
