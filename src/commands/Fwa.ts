@@ -4312,6 +4312,19 @@ function startWarMailPolling(client: Client, key: string): void {
   fwaMailPollers.set(key, timer);
 }
 
+/** Purpose: append a compact alliance dropdown state indicator aligned to the effective displayed match state. */
+function resolveAllianceDropdownMatchStateEmoji(
+  view: MatchView | null | undefined,
+): "⚪" | "⚫" | "🟢" | "🔴" | "💤" {
+  if (view?.matchTypeCurrent === "MM") return "⚪";
+  if (view?.matchTypeCurrent === "BL") return "⚫";
+  if (view?.matchTypeCurrent === "FWA") {
+    if (view.outcomeAction?.currentOutcome === "WIN") return "🟢";
+    if (view.outcomeAction?.currentOutcome === "LOSE") return "🔴";
+  }
+  return "💤";
+}
+
 function buildFwaMatchCopyComponents(
   payload: FwaMatchCopyPayload,
   userId: string,
@@ -4504,8 +4517,10 @@ function buildFwaMatchCopyComponents(
             const warningSuffix = viewForTag?.inferredMatchType ? " ⚠️" : "";
             const mailStatusEmoji =
               viewForTag?.mailStatusEmoji ?? MAILBOX_NOT_SENT_EMOJI;
+            const matchStateEmoji =
+              resolveAllianceDropdownMatchStateEmoji(viewForTag);
             return {
-              label: `${mailStatusEmoji} ${clanName}${warningSuffix}`.slice(
+              label: `${mailStatusEmoji} ${clanName} ${matchStateEmoji}${warningSuffix}`.slice(
                 0,
                 100,
               ),
@@ -7435,6 +7450,8 @@ export const isLowConfidenceAllianceMismatchScenarioForTest =
 export const resolveSingleClanMatchEmbedColorForTest =
   resolveSingleClanMatchEmbedColor;
 export const buildSingleClanMatchLinksForTest = buildSingleClanMatchLinks;
+export const resolveAllianceDropdownMatchStateEmojiForTest =
+  resolveAllianceDropdownMatchStateEmoji;
 export const buildOpponentSnapshotFromTrackedClanFallbackForTest =
   buildOpponentSnapshotFromTrackedClanFallback;
 export const resolveForceSyncMatchupEvidenceForTest =
