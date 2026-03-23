@@ -1258,7 +1258,7 @@ describe("fwa single-clan match embed color", () => {
 });
 
 describe("fwa single-clan links presentation", () => {
-  it("builds the new shared links field contract and removes opponent points link clutter", () => {
+  it("keeps plain points header and includes tracked points in links", () => {
     const rendered = buildSingleClanMatchLinksForTest({
       trackedClanTag: "#CLAN123",
       opponentTag: "#OPPO456",
@@ -1269,15 +1269,13 @@ describe("fwa single-clan links presentation", () => {
       "[cc.fwafarm](<https://cc.fwafarm.com/cc_n/clan.php?tag=OPPO456>)"
     );
     expect(rendered.linksFieldValue).toContain(
-      "[Tie-breaker rules](<https://i.imgur.com/lvoJgZB.png>)"
+      "[points.fwafarm](<https://points.fwafarm.com/clan?tag=CLAN123>)"
     );
-    expect(rendered.linksFieldValue).not.toContain("points.fwafarm");
-    expect(rendered.pointsFieldName).toBe(
-      "[Points](https://points.fwafarm.com/clan?tag=CLAN123)"
-    );
+    expect(rendered.linksFieldValue).not.toContain("lvoJgZB.png");
+    expect(rendered.pointsFieldName).toBe("Points");
   });
 
-  it("labels copy output links by ownership using tracked-clan points and tie-breaker docs", () => {
+  it("labels copy output links by ownership without advertising tie-breaker as web link", () => {
     const rendered = buildSingleClanMatchLinksForTest({
       trackedClanTag: "#TEAM999",
       opponentTag: "#ENEMY111",
@@ -1286,10 +1284,10 @@ describe("fwa single-clan links presentation", () => {
     expect(rendered.copyLines).toEqual([
       "CC (opponent): [cc.fwafarm](<https://cc.fwafarm.com/cc_n/clan.php?tag=ENEMY111>)",
       "Points (tracked clan): [points.fwafarm](<https://points.fwafarm.com/clan?tag=TEAM999>)",
-      "Tie-breaker rules: [Tie-breaker rules](<https://i.imgur.com/lvoJgZB.png>)",
     ]);
     expect(rendered.copyLines.join("\n")).not.toContain(
       "https://points.fwafarm.com/clan?tag=ENEMY111"
     );
+    expect(rendered.copyLines.join("\n")).not.toContain("lvoJgZB.png");
   });
 });

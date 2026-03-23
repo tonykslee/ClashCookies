@@ -3,16 +3,19 @@ import {
   buildFwaBaseSwapSplitPostCustomId,
   buildFwaComplianceViewCustomId,
   buildFwaMatchSendMailCustomId,
+  buildFwaMatchTieBreakerCustomId,
   buildMatchTypeActionCustomId,
   buildPointsPostButtonCustomId,
   createTransientFwaKey,
   isFwaBaseSwapSplitPostButtonCustomId,
   isFwaComplianceViewButtonCustomId,
   isFwaMatchSendMailButtonCustomId,
+  isFwaMatchTieBreakerButtonCustomId,
   isPointsPostButtonCustomId,
   parseFwaBaseSwapSplitPostCustomId,
   parseFwaComplianceViewCustomId,
   parseFwaMatchSendMailCustomId,
+  parseFwaMatchTieBreakerCustomId,
   parseMatchTypeActionCustomId,
   parsePointsPostButtonCustomId,
 } from "../src/commands/fwa/customIds";
@@ -42,6 +45,21 @@ describe("fwa custom-id helpers", () => {
 
     expect(isFwaMatchSendMailButtonCustomId(customId)).toBe(true);
     expect(parseFwaMatchSendMailCustomId(customId)).toEqual({
+      userId: "321",
+      key: "payload",
+      tag: "QWERTY",
+    });
+  });
+
+  it("round-trips tie-breaker ids and supports selector checks", () => {
+    const customId = buildFwaMatchTieBreakerCustomId({
+      userId: "321",
+      key: "payload",
+      tag: "#qwerty",
+    });
+
+    expect(isFwaMatchTieBreakerButtonCustomId(customId)).toBe(true);
+    expect(parseFwaMatchTieBreakerCustomId(customId)).toEqual({
       userId: "321",
       key: "payload",
       tag: "QWERTY",

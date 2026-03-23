@@ -107,6 +107,7 @@ import {
   buildFwaMatchCopyCustomId,
   buildFwaMatchSelectCustomId,
   buildFwaMatchSendMailCustomId,
+  buildFwaMatchTieBreakerCustomId,
   buildMatchSkipSyncActionCustomId,
   buildMatchSkipSyncConfirmCustomId,
   buildMatchSkipSyncUndoCustomId,
@@ -125,6 +126,7 @@ import {
   parseFwaMatchCopyCustomId,
   parseFwaMatchSelectCustomId,
   parseFwaMatchSendMailCustomId,
+  parseFwaMatchTieBreakerCustomId,
   parseMatchSkipSyncActionCustomId,
   parseMatchSkipSyncConfirmCustomId,
   parseMatchSkipSyncUndoCustomId,
@@ -198,6 +200,7 @@ export {
   isFwaMatchCopyButtonCustomId,
   isFwaMatchSelectCustomId,
   isFwaMatchSendMailButtonCustomId,
+  isFwaMatchTieBreakerButtonCustomId,
   isFwaMatchSkipSyncActionButtonCustomId,
   isFwaMatchSkipSyncConfirmButtonCustomId,
   isFwaMatchSkipSyncUndoButtonCustomId,
@@ -1281,13 +1284,12 @@ function buildSingleClanMatchLinks(input: {
   const opponentCcUrl = buildCcVerifyUrl(input.opponentTag);
   const trackedPointsUrl = buildOfficialPointsUrl(input.trackedClanTag);
   return {
-    pointsFieldName: `[Points](${trackedPointsUrl})`,
+    pointsFieldName: "Points",
     linksFieldName: "Links",
-    linksFieldValue: `[cc.fwafarm](<${opponentCcUrl}>)\n[Tie-breaker rules](<${FWA_MATCH_TIEBREAKER_RULES_URL}>)`,
+    linksFieldValue: `[cc.fwafarm](<${opponentCcUrl}>)\n[points.fwafarm](<${trackedPointsUrl}>)`,
     copyLines: [
       `CC (opponent): [cc.fwafarm](<${opponentCcUrl}>)`,
       `Points (tracked clan): [points.fwafarm](<${trackedPointsUrl}>)`,
-      `Tie-breaker rules: [Tie-breaker rules](<${FWA_MATCH_TIEBREAKER_RULES_URL}>)`,
     ],
   };
 }
@@ -4352,6 +4354,20 @@ function buildFwaMatchCopyComponents(
         .setStyle(ButtonStyle.Secondary),
     );
   }
+  if (payload.currentScope === "single" && payload.currentTag && showMode === "embed") {
+    baseRow.addComponents(
+      new ButtonBuilder()
+        .setCustomId(
+          buildFwaMatchTieBreakerCustomId({
+            userId,
+            key,
+            tag: payload.currentTag,
+          }),
+        )
+        .setLabel("Tie-breaker rules")
+        .setStyle(ButtonStyle.Secondary),
+    );
+  }
   const rows: Array<
     ActionRowBuilder<ButtonBuilder> | ActionRowBuilder<StringSelectMenuBuilder>
   > = [baseRow];
@@ -4736,6 +4752,30 @@ export async function handleFwaMatchAllianceButton(
       parsed.key,
       "embed",
     ),
+  });
+}
+
+export async function handleFwaMatchTieBreakerButton(
+  interaction: ButtonInteraction,
+): Promise<void> {
+  const parsed = parseFwaMatchTieBreakerCustomId(interaction.customId);
+  if (!parsed) return;
+
+  if (interaction.user.id !== parsed.userId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Only the command requester can use this button.",
+    });
+    return;
+  }
+
+  await interaction.reply({
+    ephemeral: true,
+    embeds: [
+      new EmbedBuilder()
+        .setTitle("Tie-breaker rules")
+        .setImage(FWA_MATCH_TIEBREAKER_RULES_URL),
+    ],
   });
 }
 
