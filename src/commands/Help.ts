@@ -275,7 +275,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`create` with `user` is admin-only and can create a link for another Discord user when unlinked.",
       "Existing links are never implicitly reassigned; delete-first is required before relinking to another user.",
       "`delete` removes a link when run by the linked user or an admin override target.",
-      "`list` renders non-zero linked/unlinked count buckets with padded inline rows: linked rows use `TH | Wt | ServerDisplayName | Player`, unlinked rows use `TH | Wt | #PLAYER_TAG | Player`.",
+      "`list` renders non-zero linked/unlinked count buckets with padded inline rows: linked rows use `TH | ServerDisplayName | Player | Wt`, unlinked rows use `TH | #PLAYER_TAG | Player | Wt`.",
       "Weight (`Wt`) comes from `FwaClanMemberCurrent.weight` and is shown as compact lowercase `k` text (for example `145k`), with `—` when missing.",
       "`embed` is admin-gated and posts a reusable self-service Link Account embed with button + modal flow.",
       "`list` includes a tracked-clan dropdown and updates the same message in place when switching clans.",

@@ -113,7 +113,7 @@ function getInlineRowSegments(row: string): {
   third: string;
 } {
   const trimmed = row.slice(1, -1);
-  const [th, weight, third, player] = trimmed.split("|").map((part) => part);
+  const [th, third, player, weight] = trimmed.split("|").map((part) => part);
   return {
     th: (th ?? "").trim(),
     weight: weight ?? "",
@@ -513,7 +513,7 @@ describe("/link run", () => {
     expect(description).toContain("Unlinked users: 1");
     expect(description).not.toContain("Linked Users:");
     expect(description).toContain("`15 |");
-    expect(description).toMatch(/`15 \|\s+— \|/);
+    expect(description).toMatch(/`15 \|.*\|\s+—`/);
     expect(description).toContain("#QGRJ2222");
   });
 
