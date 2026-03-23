@@ -17,6 +17,7 @@ import {
   resolveForceSyncMatchupEvidenceForTest,
   resolveSingleClanMatchEmbedColorForTest,
   buildSingleClanMatchLinksForTest,
+  resolveAllianceDropdownMatchStateEmojiForTest,
   shouldDisplayInferredMatchTypeForTest,
   shouldHydrateAlliancePayloadForTest,
   resolveEffectiveFwaOutcomeForTest,
@@ -1289,5 +1290,43 @@ describe("fwa single-clan links presentation", () => {
       "https://points.fwafarm.com/clan?tag=ENEMY111"
     );
     expect(rendered.copyLines.join("\n")).not.toContain("lvoJgZB.png");
+  });
+});
+
+describe("fwa alliance dropdown state emoji", () => {
+  it("maps effective displayed match state to the expected dropdown emoji", () => {
+    const cases: Array<{
+      view: {
+        matchTypeCurrent?: "FWA" | "BL" | "MM" | "SKIP" | null;
+        outcomeAction?: { tag: string; currentOutcome: "WIN" | "LOSE" } | null;
+      } | null;
+      expected: "⚪" | "⚫" | "🟢" | "🔴" | "💤";
+    }> = [
+      { view: { matchTypeCurrent: "MM" }, expected: "⚪" },
+      { view: { matchTypeCurrent: "BL" }, expected: "⚫" },
+      {
+        view: {
+          matchTypeCurrent: "FWA",
+          outcomeAction: { tag: "TAG1", currentOutcome: "WIN" },
+        },
+        expected: "🟢",
+      },
+      {
+        view: {
+          matchTypeCurrent: "FWA",
+          outcomeAction: { tag: "TAG1", currentOutcome: "LOSE" },
+        },
+        expected: "🔴",
+      },
+      { view: { matchTypeCurrent: "FWA", outcomeAction: null }, expected: "💤" },
+      { view: { matchTypeCurrent: "SKIP" }, expected: "💤" },
+      { view: null, expected: "💤" },
+    ];
+
+    for (const testCase of cases) {
+      expect(
+        resolveAllianceDropdownMatchStateEmojiForTest(testCase.view as any),
+      ).toBe(testCase.expected);
+    }
   });
 });
