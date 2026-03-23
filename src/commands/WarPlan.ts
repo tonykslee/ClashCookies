@@ -203,23 +203,11 @@ function getModalComplianceFieldConfig(target: PlanTarget): {
 }
 
 function getModalCompliancePrefillDefaults(
-  target: PlanTarget,
   resolvedConfig: WarPlanComplianceConfig,
 ): {
   nonMirrorTripleMinClanStars: number;
   allBasesOpenHoursLeft: number;
 } {
-  if (
-    target.matchType === "FWA" &&
-    target.outcome === "LOSE" &&
-    target.loseStyle === "TRADITIONAL"
-  ) {
-    return {
-      nonMirrorTripleMinClanStars: 0,
-      allBasesOpenHoursLeft: 12,
-    };
-  }
-
   return {
     nonMirrorTripleMinClanStars: resolvedConfig.nonMirrorTripleMinClanStars,
     allBasesOpenHoursLeft: resolvedConfig.allBasesOpenHoursLeft,
@@ -336,18 +324,7 @@ async function getCurrentOrDefaultPlanData(params: {
       params.target.loseStyle,
     ));
 
-  const modalDefaults =
-    params.target.matchType === "FWA" &&
-    params.target.outcome === "LOSE" &&
-    params.target.loseStyle === "TRADITIONAL"
-      ? {
-          nonMirrorTripleMinClanStars: DEFAULT_TRADITIONAL_MODAL_NON_MIRROR_TWO_STAR_MIN_CLAN_STARS,
-          allBasesOpenHoursLeft: DEFAULT_TRADITIONAL_MODAL_ALL_BASES_OPEN_HOURS_LEFT,
-        }
-      : {
-          nonMirrorTripleMinClanStars: 0,
-          allBasesOpenHoursLeft: 0,
-        };
+  const modalDefaults = getModalCompliancePrefillDefaults(resolvedConfig);
 
   return {
     planText,
@@ -358,6 +335,7 @@ async function getCurrentOrDefaultPlanData(params: {
 
 export const resolveWarPlanEmojiShortcodesForTest =
   resolveWarPlanEmojiShortcodes;
+export const getCurrentOrDefaultPlanDataForTest = getCurrentOrDefaultPlanData;
 
 export const WarPlan: Command = {
   name: "warplan",
