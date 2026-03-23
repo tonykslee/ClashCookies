@@ -276,6 +276,47 @@ export async function listPlayerLinksForClanMembers(input: {
     });
 }
 
+/** Purpose: fetch current DB weights for provided player tags and return a deterministic lookup. */
+export async function listCurrentWeightsForClanMembers(input: {
+  memberTagsInOrder: string[];
+}): Promise<Map<string, number>> {
+  const normalizedOrdered = input.memberTagsInOrder
+    .map((tag) => normalizePlayerTag(tag))
+    .filter(Boolean);
+  if (normalizedOrdered.length === 0) return new Map();
+
+  const uniqueOrdered = [...new Set(normalizedOrdered)];
+  const rows = await prisma.fwaClanMemberCurrent.findMany({
+    where: { playerTag: { in: uniqueOrdered } },
+    select: { playerTag: true, weight: true, sourceSyncedAt: true },
+  });
+
+  const latestByTag = new Map<string, { weight: number; sourceSyncedAt: Date }>();
+  for (const row of rows) {
+    const playerTag = normalizePlayerTag(row.playerTag);
+    if (!playerTag) continue;
+    const weight =
+      row.weight !== null && row.weight !== undefined && Number.isFinite(row.weight)
+        ? Math.trunc(row.weight)
+        : null;
+    if (weight === null) continue;
+
+    const existing = latestByTag.get(playerTag);
+    if (!existing || row.sourceSyncedAt > existing.sourceSyncedAt) {
+      latestByTag.set(playerTag, {
+        weight,
+        sourceSyncedAt: row.sourceSyncedAt,
+      });
+    }
+  }
+
+  return new Map(
+    uniqueOrdered
+      .map((tag) => [tag, latestByTag.get(tag)?.weight] as const)
+      .filter((entry): entry is [string, number] => entry[1] !== undefined),
+  );
+}
+
 export type PlayerLinkDiscordUsernameBackfillResult = {
   candidateLinks: number;
   uniqueUsers: number;
