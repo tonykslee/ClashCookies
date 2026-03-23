@@ -63,6 +63,17 @@ const battleDayPostByGuildTag = new Map<string, { channelId: string; messageId: 
 const warEndedViewStateByMessage = new Map<string, NotifyWarEndedViewState>();
 const NOTIFY_UNKNOWN_OPPONENT = "Unknown Opponent";
 const WAR_END_DISCREPANCY_MARKER = "war_end_discrepancy";
+const POINTS_FWA_CLAN_URL_BASE = "https://points.fwafarm.com/clan?tag=";
+
+/** Purpose: build canonical tracked-clan points URL for war-end mismatch follow-up. */
+function buildTrackedClanPointsUrl(clanTag: string): string {
+  return `${POINTS_FWA_CLAN_URL_BASE}${normalizeTagBare(clanTag)}`;
+}
+
+/** Purpose: keep mismatch warning headline concise while linking to tracked-clan points page. */
+function buildWarEndMismatchWarningHeadline(clanTag: string): string {
+  return `⚠️ War-end points mismatch detected. [points.fwafarm](<${buildTrackedClanPointsUrl(clanTag)}>)`;
+}
 
 function buildNextRefreshRelativeLabel(
   intervalMs: number,
@@ -189,6 +200,7 @@ function buildWarEndDiscrepancyFingerprint(
 /** Purpose: build visible warning content for war-end points reconciliation mismatches. */
 function buildWarEndDiscrepancyContent(params: {
   existingPostedContent: string | null | undefined;
+  clanTag: string;
   opponentName: string | null | undefined;
   expectedPoints: number;
   actualPoints: number;
@@ -205,7 +217,7 @@ function buildWarEndDiscrepancyContent(params: {
     includeRoleMention: Boolean(existingMentionRoleId),
   });
   const warningLines = [
-    "⚠️ War-end points mismatch detected.",
+    buildWarEndMismatchWarningHeadline(params.clanTag),
     `Expected points: ${Math.trunc(params.expectedPoints)}`,
     `Actual points: ${Math.trunc(params.actualPoints)}`,
   ];
@@ -2968,7 +2980,8 @@ export class WarEventLogService {
       ? ({ parse: [], roles: [fwaLeaderRoleId] } as const)
       : ({ parse: [] } as const);
     const warningContent =
-      `⚠️ War-end points mismatch detected for ${historyRow?.clanName ?? clanTag} (War ID: ${Math.trunc(warId)}).\n` +
+      `${buildWarEndMismatchWarningHeadline(clanTag)}\n` +
+      `${historyRow?.clanName ?? clanTag} (War ID: ${Math.trunc(warId)}).\n` +
       `Expected points: ${expectedPoints}\n` +
       `Actual points: ${actualPoints}` +
       (fwaLeaderRoleId ? `\n<@&${fwaLeaderRoleId}>` : "");
@@ -2980,6 +2993,7 @@ export class WarEventLogService {
       if (message) {
         const edited = buildWarEndDiscrepancyContent({
           existingPostedContent: String(message.content ?? ""),
+          clanTag,
           opponentName: historyRow?.opponentName ?? params.fallbackOpponentName,
           expectedPoints,
           actualPoints,
