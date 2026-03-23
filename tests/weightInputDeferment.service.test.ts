@@ -12,6 +12,9 @@ const prismaMock = vi.hoisted(() => ({
   currentWar: {
     findMany: vi.fn(),
   },
+  fwaClanMemberCurrent: {
+    findMany: vi.fn(),
+  },
   weightInputDeferment: {
     findUnique: vi.fn(),
     upsert: vi.fn(),
@@ -73,6 +76,7 @@ function setupStatefulDefermentMocks(record: MutableRecord) {
     if (
       Object.prototype.hasOwnProperty.call(data, "processingLockToken") &&
       data.processingLockToken === null &&
+      !Object.prototype.hasOwnProperty.call(data, "status") &&
       where?.processingLockToken &&
       where.processingLockToken === record.processingLockToken
     ) {
@@ -81,6 +85,12 @@ function setupStatefulDefermentMocks(record: MutableRecord) {
       return { count: 1 };
     }
     if (where?.processingLockToken && where.processingLockToken === record.processingLockToken) {
+      if (data.status === "resolved" && record.status === "open") {
+        record.status = "resolved";
+        record.processingLockToken = null;
+        record.processingLockExpiresAt = null;
+        return { count: 1 };
+      }
       if (Object.prototype.hasOwnProperty.call(data, "reminded48At") && !record.reminded48At) {
         record.reminded48At = data.reminded48At;
         return { count: 1 };
@@ -136,6 +146,7 @@ describe("WeightInputDefermentService lifecycle processing", () => {
     prismaMock.clanNotifyConfig.findMany.mockResolvedValue([]);
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.currentWar.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.clanNotifyConfig.findFirst.mockResolvedValue({
       guildId: "guild-1",
       clanTag: "#AAA111",
@@ -154,7 +165,7 @@ describe("WeightInputDefermentService lifecycle processing", () => {
     });
   });
 
-  it("processes overdue stages in 48h -> 5d -> 7d order once", async () => {
+  it("reroutes reminders to the player's current tracked clan log channel and pings clanRoleId", async () => {
     const record: MutableRecord = {
       id: "row-1",
       guildId: "guild-1",
@@ -171,25 +182,137 @@ describe("WeightInputDefermentService lifecycle processing", () => {
       processingLockExpiresAt: null,
     };
     setupStatefulDefermentMocks(record);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: "#BBB222",
+        weight: 146000,
+        sourceSyncedAt: new Date("2026-03-22T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      {
+        tag: "#BBB222",
+        name: "Bravo",
+        logChannelId: "channel-2",
+        clanRoleId: "role-lead-2",
+      },
+    ]);
     const send = vi.fn().mockResolvedValue(undefined);
+    const fetch = vi.fn().mockResolvedValue({
+      isTextBased: () => true,
+      send,
+    });
     const client = {
       channels: {
-        fetch: vi.fn().mockResolvedValue({
-          isTextBased: () => true,
-          send,
-        }),
+        fetch,
       },
     } as any;
 
     await processWeightInputDefermentStages(client, "guild-1");
 
+    expect(fetch).toHaveBeenCalledWith("channel-2");
     expect(send).toHaveBeenCalledTimes(3);
     expect(String(send.mock.calls[0]?.[0]?.content)).toContain("48h");
+    expect(String(send.mock.calls[0]?.[0]?.content)).toContain("<@&role-lead-2>");
+    expect(String(send.mock.calls[0]?.[0]?.content)).toContain("Current clan: Bravo (#BBB222)");
+    expect(String(send.mock.calls[0]?.[0]?.content)).not.toContain("<@&role-1>");
     expect(String(send.mock.calls[1]?.[0]?.content)).toContain("5d");
     expect(String(send.mock.calls[2]?.[0]?.content)).toContain("7d");
     expect(record.reminded48At).toBeTruthy();
     expect(record.escalated5dAt).toBeTruthy();
     expect(record.summarized7dAt).toBeTruthy();
+  });
+
+  it("auto-resolves open deferments when current weight already matches deferredWeight", async () => {
+    const record: MutableRecord = {
+      id: "row-auto-resolve",
+      guildId: "guild-1",
+      scopeKey: "guild:guild-1|clan:AAA111",
+      clanTag: "#AAA111",
+      playerTag: "#ABC0289",
+      deferredWeight: 145000,
+      status: "open",
+      createdAt: new Date(Date.now() - 6 * 24 * 60 * 60 * 1000),
+      reminded48At: null,
+      escalated5dAt: null,
+      summarized7dAt: null,
+      processingLockToken: null,
+      processingLockExpiresAt: null,
+    };
+    setupStatefulDefermentMocks(record);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: "#AAA111",
+        weight: 145000,
+        sourceSyncedAt: new Date("2026-03-22T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      {
+        tag: "#AAA111",
+        name: "Alpha",
+        logChannelId: "channel-1",
+        clanRoleId: "role-lead-1",
+      },
+    ]);
+    const send = vi.fn().mockResolvedValue(undefined);
+    const fetch = vi.fn().mockResolvedValue({
+      isTextBased: () => true,
+      send,
+    });
+    const client = {
+      channels: {
+        fetch,
+      },
+    } as any;
+
+    await processWeightInputDefermentStages(client, "guild-1");
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+    expect(record.status).toBe("resolved");
+    expect(record.reminded48At).toBeNull();
+    expect(record.escalated5dAt).toBeNull();
+    expect(record.summarized7dAt).toBeNull();
+  });
+
+  it("skips pinging when player is not in current tracked/alliance membership", async () => {
+    const record: MutableRecord = {
+      id: "row-missing-member",
+      guildId: "guild-1",
+      scopeKey: "guild:guild-1|clan:AAA111",
+      clanTag: "#AAA111",
+      playerTag: "#ABC0289",
+      deferredWeight: 145000,
+      status: "open",
+      createdAt: new Date(Date.now() - 6 * 24 * 60 * 60 * 1000),
+      reminded48At: null,
+      escalated5dAt: null,
+      summarized7dAt: null,
+      processingLockToken: null,
+      processingLockExpiresAt: null,
+    };
+    setupStatefulDefermentMocks(record);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    const send = vi.fn().mockResolvedValue(undefined);
+    const fetch = vi.fn().mockResolvedValue({
+      isTextBased: () => true,
+      send,
+    });
+    const client = {
+      channels: {
+        fetch,
+      },
+    } as any;
+
+    await processWeightInputDefermentStages(client, "guild-1");
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+    expect(record.status).toBe("open");
+    expect(record.reminded48At).toBeNull();
+    expect(record.escalated5dAt).toBeNull();
+    expect(record.summarized7dAt).toBeNull();
   });
 
   it("keeps stage unset when delivery fails so later runs can retry", async () => {
@@ -209,6 +332,21 @@ describe("WeightInputDefermentService lifecycle processing", () => {
       processingLockExpiresAt: null,
     };
     setupStatefulDefermentMocks(record);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: "#AAA111",
+        weight: 140000,
+        sourceSyncedAt: new Date("2026-03-22T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      {
+        tag: "#AAA111",
+        name: "Alpha",
+        logChannelId: "channel-1",
+        clanRoleId: "role-lead-1",
+      },
+    ]);
     const send = vi.fn().mockRejectedValue(new Error("send failed"));
     const client = {
       channels: {

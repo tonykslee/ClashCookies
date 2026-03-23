@@ -338,58 +338,84 @@ async function releaseProcessingLock(rowId: string, token: string): Promise<void
   });
 }
 
-async function resolveReminderDestination(input: {
-  guildId: string;
-  clanTag: string | null;
-}) {
-  const tag = normalizeTag(input.clanTag);
-  const tagBare = normalizeTagBare(input.clanTag);
-  const variants = [tag, tagBare].filter(Boolean);
-  if (variants.length > 0) {
-    const [notify, tracked] = await Promise.all([
-      prisma.clanNotifyConfig.findFirst({
-        where: {
-          guildId: input.guildId,
-          OR: variants.map((value) => ({ clanTag: value })),
-        },
-        orderBy: { updatedAt: "desc" },
+type ReminderDestination = {
+  channelId: string | null;
+  roleId: string | null;
+  clanTag: string;
+  clanName: string | null;
+  currentWeight: number | null;
+};
+
+/** Purpose: resolve reminder routing from the player's current tracked-clan membership. */
+async function resolveCurrentReminderDestination(input: {
+  playerTag: string;
+}): Promise<ReminderDestination | null> {
+  const playerTag = normalizeTag(input.playerTag);
+  if (!playerTag) return null;
+  const memberships = await prisma.fwaClanMemberCurrent.findMany({
+    where: { playerTag },
+    select: {
+      clanTag: true,
+      weight: true,
+      sourceSyncedAt: true,
+    },
+    orderBy: { sourceSyncedAt: "desc" },
+    take: 10,
+  });
+  if (memberships.length === 0) return null;
+
+  const candidateTags = Array.from(
+    new Set(
+      memberships.flatMap((row) => {
+        const normalized = normalizeTag(row.clanTag);
+        const bare = normalizeTagBare(row.clanTag);
+        return [normalized, bare].filter(Boolean);
       }),
-      prisma.trackedClan.findFirst({
-        where: { OR: variants.map((value) => ({ tag: value })) },
-        select: {
-          tag: true,
-          name: true,
-          notifyChannelId: true,
-          notifyRole: true,
-          logChannelId: true,
-          mailChannelId: true,
-        },
-      }),
-    ]);
-    const channelId =
-      notify?.channelId ??
-      tracked?.notifyChannelId ??
-      tracked?.logChannelId ??
-      tracked?.mailChannelId ??
-      null;
-    return {
-      channelId,
-      roleId: notify?.roleId ?? tracked?.notifyRole ?? null,
-      clanTag: normalizeTag(tracked?.tag ?? input.clanTag),
-      clanName: tracked?.name?.trim() || null,
-    };
+    ),
+  );
+  if (candidateTags.length === 0) return null;
+
+  const trackedRows = await prisma.trackedClan.findMany({
+    where: {
+      OR: candidateTags.map((value) => ({ tag: value })),
+    },
+    select: {
+      tag: true,
+      name: true,
+      logChannelId: true,
+      clanRoleId: true,
+    },
+    take: candidateTags.length,
+  });
+  const trackedByBare = new Map<
+    string,
+    {
+      tag: string;
+      name: string | null;
+      logChannelId: string | null;
+      clanRoleId: string | null;
+    }
+  >();
+  for (const tracked of trackedRows) {
+    const bare = normalizeTagBare(tracked.tag);
+    if (!bare || trackedByBare.has(bare)) continue;
+    trackedByBare.set(bare, tracked);
   }
 
-  const fallbackNotify = await prisma.clanNotifyConfig.findFirst({
-    where: { guildId: input.guildId },
-    orderBy: { updatedAt: "desc" },
-  });
-  return {
-    channelId: fallbackNotify?.channelId ?? null,
-    roleId: fallbackNotify?.roleId ?? null,
-    clanTag: null,
-    clanName: null,
-  };
+  for (const membership of memberships) {
+    const bare = normalizeTagBare(membership.clanTag);
+    if (!bare) continue;
+    const tracked = trackedByBare.get(bare);
+    if (!tracked) continue;
+    return {
+      channelId: tracked.logChannelId ?? null,
+      roleId: tracked.clanRoleId ?? null,
+      clanTag: normalizeTag(tracked.tag),
+      clanName: tracked.name?.trim() || null,
+      currentWeight: membership.weight ?? null,
+    };
+  }
+  return null;
 }
 
 function buildStageMessage(input: {
@@ -399,6 +425,7 @@ function buildStageMessage(input: {
   pendingAge: string;
   clanTag: string | null;
   clanName: string | null;
+  currentWeight: number | null;
   roleId: string | null;
 }): string {
   const header =
@@ -417,8 +444,9 @@ function buildStageMessage(input: {
     `${mention}**${header}**`,
     `Player: ${input.playerTag}`,
     `Deferred weight: ${input.deferredWeight}`,
+    `Current weight: ${input.currentWeight ?? "unknown"}`,
     `Pending age: ${input.pendingAge}`,
-    `Scope: ${clanLabel}`,
+    `Current clan: ${clanLabel}`,
     "Resolve after FWAStats entry with `/defer remove <player-tag>`.",
   ].join("\n");
 }
@@ -430,22 +458,20 @@ async function deliverStageMessage(input: {
   playerTag: string;
   deferredWeight: number;
   createdAt: Date;
-  clanTag: string | null;
+  destination: ReminderDestination;
 }): Promise<boolean> {
-  const destination = await resolveReminderDestination({
-    guildId: input.guildId,
-    clanTag: input.clanTag,
-  });
-  if (!destination.channelId) {
+  if (!input.destination.channelId) {
     console.warn(
-      `[defer] stage=${input.stage} guild=${input.guildId} player=${input.playerTag} route=missing_channel`
+      `[defer] stage=${input.stage} guild=${input.guildId} player=${input.playerTag} route=missing_log_channel`
     );
     return false;
   }
-  const channel = await input.client.channels.fetch(destination.channelId).catch(() => null);
+  const channel = await input.client.channels
+    .fetch(input.destination.channelId)
+    .catch(() => null);
   if (!channel || !channel.isTextBased() || !("send" in channel)) {
     console.warn(
-      `[defer] stage=${input.stage} guild=${input.guildId} player=${input.playerTag} route=invalid_channel channel=${destination.channelId}`
+      `[defer] stage=${input.stage} guild=${input.guildId} player=${input.playerTag} route=invalid_channel channel=${input.destination.channelId}`
     );
     return false;
   }
@@ -454,9 +480,10 @@ async function deliverStageMessage(input: {
     playerTag: input.playerTag,
     deferredWeight: input.deferredWeight,
     pendingAge: formatPendingAge(input.createdAt),
-    clanTag: destination.clanTag,
-    clanName: destination.clanName,
-    roleId: destination.roleId,
+    clanTag: input.destination.clanTag,
+    clanName: input.destination.clanName,
+    currentWeight: input.destination.currentWeight,
+    roleId: input.destination.roleId,
   });
   await channel.send({ content });
   return true;
@@ -478,6 +505,27 @@ async function markStageComplete(input: {
     },
     data: {
       [field]: input.now,
+    },
+  });
+  return updated.count > 0;
+}
+
+async function markDefermentResolvedByCurrentWeight(input: {
+  rowId: string;
+  token: string;
+  now: Date;
+}): Promise<boolean> {
+  const updated = await prisma.weightInputDeferment.updateMany({
+    where: {
+      id: input.rowId,
+      status: "open",
+      processingLockToken: input.token,
+    },
+    data: {
+      status: "resolved",
+      resolvedAt: input.now,
+      processingLockToken: null,
+      processingLockExpiresAt: null,
     },
   });
   return updated.count > 0;
@@ -507,6 +555,31 @@ export async function processWeightInputDefermentStages(
       });
       if (!locked) continue;
       const dueStages = getDueDefermentStagesForTest(locked, now);
+      const destination = await resolveCurrentReminderDestination({
+        playerTag: locked.playerTag,
+      });
+      if (!destination) {
+        console.log(
+          `[defer] guild=${locked.guildId} player=${locked.playerTag} status=skipped_not_in_current_membership`
+        );
+        continue;
+      }
+      if (
+        destination.currentWeight !== null &&
+        destination.currentWeight === locked.deferredWeight
+      ) {
+        const resolved = await markDefermentResolvedByCurrentWeight({
+          rowId: locked.id,
+          token: lock.token,
+          now: new Date(),
+        });
+        if (resolved) {
+          console.log(
+            `[defer] guild=${locked.guildId} player=${locked.playerTag} status=auto_resolved_current_weight_match`
+          );
+        }
+        continue;
+      }
       for (const stage of dueStages) {
         try {
           const sent = await deliverStageMessage({
@@ -516,7 +589,7 @@ export async function processWeightInputDefermentStages(
             playerTag: locked.playerTag,
             deferredWeight: locked.deferredWeight,
             createdAt: locked.createdAt,
-            clanTag: locked.clanTag,
+            destination,
           });
           if (!sent) {
             console.warn(
