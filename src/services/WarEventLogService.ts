@@ -2602,23 +2602,21 @@ export class WarEventLogService {
       warStartTime: nextWarStartTime,
       currentState,
     });
-    const syncRow =
-      guildId && nextWarStartTime
-        ? await this.currentSyncs.getCurrentSyncForClan({
-            guildId,
-            clanTag: sub.clanTag,
-            warId:
-              resolvedWarId !== null && resolvedWarId !== undefined
-                ? String(Math.trunc(Number(resolvedWarId)))
-                : sub.warId !== null && sub.warId !== undefined
-                  ? String(Math.trunc(Number(sub.warId)))
-                  : null,
-            warStartTime: nextWarStartTime,
-          })
-        : null;
-    const syncNumberForEvent =
-      syncRow?.syncNum ??
-      fallbackSyncNumberForEvent;
+    const resolvedWarIdText =
+      resolvedWarId !== null && resolvedWarId !== undefined
+        ? String(Math.trunc(Number(resolvedWarId)))
+        : sub.warId !== null && sub.warId !== undefined
+          ? String(Math.trunc(Number(sub.warId)))
+          : null;
+    const syncNumberForEvent = await this.resolveNotifyEventSyncNumber({
+      guildId,
+      clanTag: sub.clanTag,
+      warId: resolvedWarIdText,
+      warStartTime: nextWarStartTime,
+      currentState,
+      postedSyncNumber: null,
+      previousSyncNumber: syncContext.previousSync,
+    });
     if (outcomeComputationInput) {
       nextOutcome = deriveExpectedOutcome(
         outcomeComputationInput.clanTag,
@@ -3953,6 +3951,7 @@ export class WarEventLogService {
     warStartTime: Date | null;
     currentState: WarState;
     postedSyncNumber: number | null;
+    previousSyncNumber?: number | null;
   }): Promise<number | null> {
     const sameWarSync = await this.currentSyncs
       .getCurrentSyncForClan({
@@ -3972,7 +3971,9 @@ export class WarEventLogService {
       return postedSyncNumber;
     }
 
-    const previousSyncNumber = toValidSyncNumber(await this.pointsSync.getPreviousSyncNum());
+    const previousSyncNumber = toValidSyncNumber(
+      input.previousSyncNumber ?? (await this.pointsSync.getPreviousSyncNum())
+    );
     return resolveEventRenderSyncNumber({
       sameWarSyncNumber: null,
       postedSyncNumber: null,
