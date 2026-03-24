@@ -11,6 +11,7 @@ import {
   computeWarPointsDeltaForTest,
   isNotifyWarEndedViewButtonCustomId,
   parseNotifyWarEndedViewCustomId,
+  resolveEventRenderSyncNumberForTest,
   resolveActiveWarTimingForTest,
   sanitizeWarPlanForEmbedForTest,
 } from "../src/services/WarEventLogService";
@@ -58,6 +59,60 @@ describe("War-end metadata value", () => {
         timestampUnix: 1773407400,
       })
     ).toBe("War ID: 1000055 - Sync: 476 - <t:1773407400:F>");
+  });
+});
+
+describe("WarEventLogService resolved notify sync fallback", () => {
+  it("prefers same-war sync over posted and derived values", () => {
+    expect(
+      resolveEventRenderSyncNumberForTest({
+        sameWarSyncNumber: 482,
+        postedSyncNumber: 481,
+        previousSyncNumber: 480,
+        currentState: "inWar",
+      })
+    ).toBe(482);
+  });
+
+  it("falls back to posted sync when same-war sync is unavailable", () => {
+    expect(
+      resolveEventRenderSyncNumberForTest({
+        sameWarSyncNumber: null,
+        postedSyncNumber: 482,
+        previousSyncNumber: 480,
+        currentState: "inWar",
+      })
+    ).toBe(482);
+  });
+
+  it("derives active-war sync as previous + 1 for preparation/inWar", () => {
+    expect(
+      resolveEventRenderSyncNumberForTest({
+        sameWarSyncNumber: null,
+        postedSyncNumber: null,
+        previousSyncNumber: 481,
+        currentState: "preparation",
+      })
+    ).toBe(482);
+    expect(
+      resolveEventRenderSyncNumberForTest({
+        sameWarSyncNumber: null,
+        postedSyncNumber: null,
+        previousSyncNumber: 481,
+        currentState: "inWar",
+      })
+    ).toBe(482);
+  });
+
+  it("falls back to previous sync when war is not active", () => {
+    expect(
+      resolveEventRenderSyncNumberForTest({
+        sameWarSyncNumber: null,
+        postedSyncNumber: null,
+        previousSyncNumber: 481,
+        currentState: "notInWar",
+      })
+    ).toBe(481);
   });
 });
 

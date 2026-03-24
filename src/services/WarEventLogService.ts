@@ -777,6 +777,36 @@ function makeBattleDayPostKey(guildId: string, clanTag: string): string {
   return `${guildId}:${normalizeTag(clanTag)}`;
 }
 
+function toValidSyncNumber(input: unknown): number | null {
+  const value = Number(input);
+  if (!Number.isFinite(value)) return null;
+  const normalized = Math.trunc(value);
+  return normalized > 0 ? normalized : null;
+}
+
+function resolveEventRenderSyncNumber(input: {
+  sameWarSyncNumber: number | null;
+  postedSyncNumber: number | null;
+  previousSyncNumber: number | null;
+  currentState: WarState;
+}): number | null {
+  const sameWarSyncNumber = toValidSyncNumber(input.sameWarSyncNumber);
+  if (sameWarSyncNumber !== null) return sameWarSyncNumber;
+
+  const postedSyncNumber = toValidSyncNumber(input.postedSyncNumber);
+  if (postedSyncNumber !== null) return postedSyncNumber;
+
+  const previousSyncNumber = toValidSyncNumber(input.previousSyncNumber);
+  if (previousSyncNumber === null) return null;
+
+  if (input.currentState === "preparation" || input.currentState === "inWar") {
+    return previousSyncNumber + 1;
+  }
+  return previousSyncNumber;
+}
+
+export const resolveEventRenderSyncNumberForTest = resolveEventRenderSyncNumber;
+
 function formatWarStatCellLeft(value: string): string {
   return value.padStart(10, " ");
 }
@@ -3658,20 +3688,21 @@ export class WarEventLogService {
     const message = await (channel as any).messages.fetch(existingMessage.messageId).catch(() => null);
     if (!message) return false;
 
+    const syncNumber = await this.resolveNotifyEventSyncNumber({
+      guildId,
+      clanTag,
+      warId: warIdText,
+      warStartTime,
+      currentState: state,
+      postedSyncNumber: toValidSyncNumber(existingMessage.syncNum),
+    });
+
     const basePayload = {
       clanTag: refreshedSub.clanTag,
       clanName: nextClanName,
       opponentTag: nextOpponentTag,
       opponentName: nextOpponentName,
-      syncNumber:
-        (
-          await this.currentSyncs.getCurrentSyncForClan({
-            guildId,
-            clanTag,
-            warId: warIdText,
-            warStartTime,
-          })
-        )?.syncNum ?? null,
+      syncNumber,
       notifyRole: refreshedSub.notifyRole,
       pingRole: refreshedSub.pingRole,
       fwaPoints: refreshedSub.fwaPoints,
@@ -3824,6 +3855,34 @@ export class WarEventLogService {
       return "missing";
     }
 
+    const resolvedWarIdText =
+      resolvedWarId !== null && resolvedWarId !== undefined
+        ? String(Math.trunc(Number(resolvedWarId)))
+        : refreshedSub.warId !== null && refreshedSub.warId !== undefined
+          ? String(Math.trunc(Number(refreshedSub.warId)))
+          : null;
+    const existingMessage = await this.postedMessages.findExistingMessage({
+      guildId,
+      clanTag,
+      warId: resolvedWarIdText,
+      type: "notify",
+      event: "battle_day",
+    });
+    const postedSyncNumber =
+      existingMessage &&
+      existingMessage.channelId === tracked.channelId &&
+      existingMessage.messageId === tracked.messageId
+        ? toValidSyncNumber(existingMessage.syncNum)
+        : null;
+    const syncNumber = await this.resolveNotifyEventSyncNumber({
+      guildId,
+      clanTag,
+      warId: resolvedWarIdText,
+      warStartTime,
+      currentState: "inWar",
+      postedSyncNumber,
+    });
+
     const payload = {
       eventType: "battle_day" as const,
       clanTag: refreshedSub.clanTag,
@@ -3831,20 +3890,7 @@ export class WarEventLogService {
       opponentTag: normalizeTag(war.opponent?.tag ?? refreshedSub.opponentTag ?? ""),
       opponentName:
         String(war.opponent?.name ?? refreshedSub.opponentName ?? "Unknown").trim() || "Unknown",
-      syncNumber:
-        (
-          await this.currentSyncs.getCurrentSyncForClan({
-            guildId,
-            clanTag,
-            warId:
-              resolvedWarId !== null && resolvedWarId !== undefined
-                ? String(Math.trunc(Number(resolvedWarId)))
-                : refreshedSub.warId !== null && refreshedSub.warId !== undefined
-                  ? String(Math.trunc(Number(refreshedSub.warId)))
-                  : null,
-            warStartTime,
-          })
-        )?.syncNum ?? null,
+      syncNumber,
       notifyRole: refreshedSub.notifyRole,
       pingRole: refreshedSub.pingRole,
       fwaPoints: refreshedSub.fwaPoints,
@@ -3898,6 +3944,41 @@ export class WarEventLogService {
       ],
     });
     return "refreshed";
+  }
+
+  private async resolveNotifyEventSyncNumber(input: {
+    guildId: string;
+    clanTag: string;
+    warId: string | null;
+    warStartTime: Date | null;
+    currentState: WarState;
+    postedSyncNumber: number | null;
+  }): Promise<number | null> {
+    const sameWarSync = await this.currentSyncs
+      .getCurrentSyncForClan({
+        guildId: input.guildId,
+        clanTag: input.clanTag,
+        warId: input.warId,
+        warStartTime: input.warStartTime,
+      })
+      .catch(() => null);
+    const sameWarSyncNumber = toValidSyncNumber(sameWarSync?.syncNum ?? null);
+    if (sameWarSyncNumber !== null) {
+      return sameWarSyncNumber;
+    }
+
+    const postedSyncNumber = toValidSyncNumber(input.postedSyncNumber);
+    if (postedSyncNumber !== null) {
+      return postedSyncNumber;
+    }
+
+    const previousSyncNumber = toValidSyncNumber(await this.pointsSync.getPreviousSyncNum());
+    return resolveEventRenderSyncNumber({
+      sameWarSyncNumber: null,
+      postedSyncNumber: null,
+      previousSyncNumber,
+      currentState: input.currentState,
+    });
   }
 
   private async buildBattleDayRefreshEmbed(
