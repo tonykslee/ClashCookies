@@ -270,14 +270,16 @@ describe("fwa match stored sync fallback", () => {
 });
 
 describe("fwa mail send gating", () => {
-  it("does not block send mail solely because match type is inferred", () => {
+  it("blocks send mail while match type is inferred", () => {
     const reason = getMailBlockedReasonFromStatusForTest({
       inferredMatchType: true,
       hasMailChannel: true,
       mailStatus: "not_posted",
     });
 
-    expect(reason).toBeNull();
+    expect(reason).toBe(
+      "Match type is inferred. Confirm match type before sending mail."
+    );
   });
 });
 

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Client } from "discord.js";
-import { ChannelType } from "discord.js";
+import { ChannelType, EmbedBuilder } from "discord.js";
 import { prisma } from "../src/prisma";
 import {
   WarEventLogService,
@@ -912,8 +912,9 @@ describe("War-ended sync and metadata canonicalization", () => {
       .mockResolvedValue({ allowed: true, existingMessage: null, warId: "1001303" });
     const emitSpy = vi.spyOn(service as any, "emitEvent").mockResolvedValue(undefined);
 
+    const persistSpy = vi.fn().mockResolvedValue(undefined);
     (service as any).history = {
-      persistWarEndHistory: vi.fn().mockResolvedValue(undefined),
+      persistWarEndHistory: persistSpy,
       resolveCanonicalWarEndedContext: vi.fn().mockResolvedValue({
         warId: 1001303,
         syncNumber: 477,
@@ -948,6 +949,8 @@ describe("War-ended sync and metadata canonicalization", () => {
     expect(emitSpy).toHaveBeenCalledTimes(1);
     expect(emitSpy.mock.calls[0]?.[2]).toBe(1001303);
     expect(emitSpy.mock.calls[0]?.[1]?.syncNumber).toBe(477);
+    expect(persistSpy).toHaveBeenCalledTimes(1);
+    expect(persistSpy.mock.calls[0]?.[0]?.guildId).toBe("guild-1");
   });
 
   it("recomputes canonical war-ended expected points before live emit", async () => {
@@ -1010,6 +1013,8 @@ describe("War-ended sync and metadata canonicalization", () => {
     expect(emitSpy.mock.calls[0]?.[1]?.warEndFwaPoints).toBe(8);
     expect(emitSpy.mock.calls[0]?.[1]?.testFinalResultOverride?.resultLabel).toBe("WIN");
     expect(persistSpy).toHaveBeenCalledTimes(2);
+    expect(persistSpy.mock.calls[0]?.[0]?.guildId).toBe("guild-1");
+    expect(persistSpy.mock.calls[1]?.[0]?.guildId).toBe("guild-1");
     expect(persistSpy.mock.calls[1]?.[0]?.warEndFwaPoints).toBe(8);
   });
 
@@ -1061,5 +1066,247 @@ describe("War-ended sync and metadata canonicalization", () => {
     const metadataField = fields.find((field) => field.name === "War Metadata");
     expect(metadataField?.value).toContain("War ID: 1001303");
     expect(metadataField?.value).toContain("Sync: 477");
+  });
+});
+
+describe("War-start notify refresh sync fallback", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function runWarStartedInitialCase(input: {
+    sameWarSync: number | null;
+    previousSync: number | null;
+  }): Promise<{
+    payloadSyncNumber: number | null;
+  }> {
+    vi.restoreAllMocks();
+    const service = new WarEventLogService(
+      { channels: { fetch: vi.fn() } } as unknown as Client,
+      {} as any,
+    );
+    const sub = makeSubscription({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+      warId: null,
+      state: "notInWar",
+      prepStartTime: null,
+      startTime: null,
+      endTime: null,
+      opponentTag: null,
+      opponentName: null,
+    });
+
+    vi.spyOn(prisma, "$queryRaw").mockResolvedValue([sub] as any);
+    vi.spyOn(prisma.currentWar, "update").mockResolvedValue({} as any);
+    (service as any).getCurrentWarSnapshot = vi.fn().mockResolvedValue({
+      war: {
+        state: "preparation",
+        clan: {
+          name: "Alpha",
+          stars: 0,
+          attacks: 0,
+          destructionPercentage: 0,
+        },
+        opponent: {
+          tag: "#OPP123",
+          name: "Enemy",
+          stars: 0,
+          attacks: 0,
+          destructionPercentage: 0,
+        },
+        preparationStartTime: "20260311T000000.000Z",
+        startTime: "20260312T000000.000Z",
+        endTime: "20260313T000000.000Z",
+        teamSize: 50,
+        attacksPerMember: 2,
+      },
+      observation: { kind: "success" },
+    });
+    (service as any).recordCocWarObservation = vi
+      .fn()
+      .mockReturnValue({ suspected: false });
+    (service as any).hasWarEndRecorded = vi.fn().mockResolvedValue(false);
+    (service as any).ensureCurrentWarId = vi.fn().mockResolvedValue(1000105);
+    (service as any).syncWarAttacksFromWarSnapshot = vi
+      .fn()
+      .mockResolvedValue(undefined);
+    const dispatchDetectedEventSpy = vi.fn().mockResolvedValue(undefined);
+    (service as any).dispatchDetectedEvent = dispatchDetectedEventSpy;
+    (service as any).reconcileWarEndedPointsDiscrepancy = vi
+      .fn()
+      .mockResolvedValue(undefined);
+    (service as any).pointsGate = {
+      evaluatePollerFetch: vi.fn().mockResolvedValue({
+        allowed: false,
+        fetchReason: "post_war_reconciliation",
+      }),
+    };
+    (service as any).pointsSync = {
+      resetWarStartPointsJob: vi.fn().mockResolvedValue(undefined),
+      maybeRunWarStartPointsCheck: vi.fn().mockResolvedValue(undefined),
+      getPreviousSyncNum: vi.fn().mockResolvedValue(input.previousSync),
+    };
+    (service as any).currentSyncs = {
+      markNeedsValidation: vi.fn().mockResolvedValue(undefined),
+      getCurrentSyncForClan: vi
+        .fn()
+        .mockResolvedValue(input.sameWarSync === null ? null : { syncNum: input.sameWarSync }),
+    };
+
+    await (service as any).processSubscription("guild-1", "#AAA111", {
+      previousSync: input.previousSync,
+      activeSync:
+        input.previousSync !== null && Number.isFinite(input.previousSync)
+          ? Math.trunc(input.previousSync) + 1
+          : null,
+    });
+
+    const payloadSyncNumber =
+      (dispatchDetectedEventSpy.mock.calls[0]?.[0]?.payload?.syncNumber as
+        | number
+        | null
+        | undefined) ?? null;
+    return { payloadSyncNumber };
+  }
+
+  async function runWarStartedRefreshCase(input: {
+    sameWarSync: number | null;
+    postedSync: number | null;
+    previousSync: number | null;
+  }): Promise<{
+    ok: boolean;
+    payloadSyncNumber: number | null;
+    getPreviousSyncNumSpy: ReturnType<typeof vi.fn>;
+  }> {
+    vi.restoreAllMocks();
+    const messageEdit = vi.fn().mockResolvedValue(undefined);
+    const messageFetch = vi.fn().mockResolvedValue({
+      content: "War declared against Enemy",
+      embeds: [],
+      edit: messageEdit,
+    });
+    const channelFetch = vi.fn().mockResolvedValue({
+      isTextBased: () => true,
+      messages: { fetch: messageFetch },
+    });
+    const coc = {
+      getCurrentWar: vi.fn().mockResolvedValue({
+        state: "preparation",
+        clan: { name: "Alpha", stars: 0 },
+        opponent: { tag: "#OPP123", name: "Enemy", stars: 0 },
+      }),
+    };
+    const service = new WarEventLogService(
+      { channels: { fetch: channelFetch } } as unknown as Client,
+      coc as any
+    );
+    const sub = makeSubscription({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+      startTime: new Date("2026-03-12T00:00:00.000Z"),
+      prepStartTime: new Date("2026-03-11T00:00:00.000Z"),
+      endTime: new Date("2026-03-13T00:00:00.000Z"),
+    });
+
+    vi.spyOn(prisma.currentWar, "update").mockResolvedValue({} as any);
+    (service as any).findSubscriptionByGuildAndTag = vi.fn().mockResolvedValue(sub);
+    (service as any).ensureCurrentWarId = vi.fn().mockResolvedValue(1000105);
+    (service as any).postedMessages = {
+      findExistingMessage: vi.fn().mockResolvedValue({
+        channelId: "chan-1",
+        messageId: "msg-1",
+        syncNum: input.postedSync,
+      }),
+    };
+    (service as any).currentSyncs = {
+      getCurrentSyncForClan: vi
+        .fn()
+        .mockResolvedValue(input.sameWarSync === null ? null : { syncNum: input.sameWarSync }),
+    };
+    const getPreviousSyncNumSpy = vi.fn().mockResolvedValue(input.previousSync);
+    (service as any).pointsSync = {
+      getPreviousSyncNum: getPreviousSyncNumSpy,
+    };
+
+    const buildSpy = vi
+      .spyOn(service as any, "buildWarStartedRefreshEmbed")
+      .mockResolvedValue(new EmbedBuilder());
+
+    const ok = await service.refreshCurrentNotifyPost("guild-1", "#AAA111");
+    const payloadSyncNumber = (buildSpy.mock.calls[0]?.[0]?.syncNumber as number | null) ?? null;
+    return {
+      ok,
+      payloadSyncNumber,
+      getPreviousSyncNumSpy,
+    };
+  }
+
+  it("prefers same-war sync over posted and derived values", async () => {
+    const result = await runWarStartedRefreshCase({
+      sameWarSync: 482,
+      postedSync: 481,
+      previousSync: 480,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.payloadSyncNumber).toBe(482);
+    expect(result.getPreviousSyncNumSpy).not.toHaveBeenCalled();
+  });
+
+  it("falls back to posted sync when same-war sync is unavailable", async () => {
+    const result = await runWarStartedRefreshCase({
+      sameWarSync: null,
+      postedSync: 482,
+      previousSync: 481,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.payloadSyncNumber).toBe(482);
+    expect(result.getPreviousSyncNumSpy).not.toHaveBeenCalled();
+  });
+
+  it("derives active-war sync as previous+1 when same-war and posted sync are unavailable", async () => {
+    const result = await runWarStartedRefreshCase({
+      sameWarSync: null,
+      postedSync: null,
+      previousSync: 481,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.payloadSyncNumber).toBe(482);
+    expect(result.getPreviousSyncNumSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps initial notify and refresh sync aligned when same-war sync exists", async () => {
+    const initial = await runWarStartedInitialCase({
+      sameWarSync: 482,
+      previousSync: 480,
+    });
+    const refresh = await runWarStartedRefreshCase({
+      sameWarSync: 482,
+      postedSync: null,
+      previousSync: 480,
+    });
+
+    expect(initial.payloadSyncNumber).toBe(482);
+    expect(refresh.payloadSyncNumber).toBe(482);
+    expect(initial.payloadSyncNumber).toBe(refresh.payloadSyncNumber);
+  });
+
+  it("keeps initial notify and refresh sync aligned for derived active fallback", async () => {
+    const initial = await runWarStartedInitialCase({
+      sameWarSync: null,
+      previousSync: 481,
+    });
+    const refresh = await runWarStartedRefreshCase({
+      sameWarSync: null,
+      postedSync: null,
+      previousSync: 481,
+    });
+
+    expect(initial.payloadSyncNumber).toBe(482);
+    expect(refresh.payloadSyncNumber).toBe(482);
+    expect(initial.payloadSyncNumber).toBe(refresh.payloadSyncNumber);
   });
 });

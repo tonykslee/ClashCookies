@@ -15,6 +15,18 @@ import {
   parseCocTime,
 } from "./core";
 
+/** Purpose: select the authoritative guild scope for participation persistence with explicit precedence. */
+export function resolveParticipationGuildId(input: {
+  payloadGuildId: string | null | undefined;
+  snapshotGuildId: string | null | undefined;
+}): string | null {
+  const payloadGuildId = String(input.payloadGuildId ?? "").trim();
+  if (payloadGuildId) return payloadGuildId;
+  const snapshotGuildId = String(input.snapshotGuildId ?? "").trim();
+  if (snapshotGuildId) return snapshotGuildId;
+  return null;
+}
+
 /** Purpose: encapsulate war-end history, compliance, and war-plan related logic. */
 export class WarEventHistoryService {
   /** Purpose: initialize war history service dependencies. */
@@ -340,6 +352,7 @@ export class WarEventHistoryService {
   /** Purpose: persist clan-level war-end summary and full attack payload into history/lookup tables. */
   async persistWarEndHistory(payload: {
     eventType: EventType;
+    guildId?: string | null;
     clanTag: string;
     clanName: string;
     opponentTag: string;
@@ -419,8 +432,13 @@ export class WarEventHistoryService {
         ? payload.outcome
         : finalResult.resultLabel;
     
+    const scopedGuildId = String(payload.guildId ?? "").trim() || null;
     const currentSnapshot = await prisma.currentWar.findFirst({
-      where: { clanTag, startTime: warStartTime },
+      where: {
+        clanTag,
+        startTime: warStartTime,
+        ...(scopedGuildId ? { guildId: scopedGuildId } : {}),
+      },
       select: {
         guildId: true,
         inferredMatchType: true,
@@ -489,9 +507,13 @@ export class WarEventHistoryService {
     });
 
     
-    const syncRow = currentSnapshot?.guildId
+    const participationGuildId = resolveParticipationGuildId({
+      payloadGuildId: scopedGuildId,
+      snapshotGuildId: currentSnapshot?.guildId ?? null,
+    });
+    const syncRow = participationGuildId
       ? await this.pointsSync.getCurrentSyncForClan({
-          guildId: currentSnapshot.guildId,
+          guildId: participationGuildId,
           clanTag,
           warId: String(warId),
           warStartTime,
@@ -636,7 +658,7 @@ export class WarEventHistoryService {
       `,
     );
     await this.persistWarParticipationSnapshot({
-      guildId: currentSnapshot?.guildId ?? null,
+      guildId: participationGuildId,
       warId: String(warId),
       clanTag,
       opponentTag:

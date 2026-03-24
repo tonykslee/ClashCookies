@@ -2,6 +2,7 @@ import { Client } from "discord.js";
 import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
 import { CommandPermissionService } from "./CommandPermissionService";
+import { buildFwaWeightPageUrl } from "./FwaStatsWeightService";
 import { normalizeTag, normalizeTagBare } from "./war-events/core";
 
 export type DefermentStatus = "open" | "resolved" | "cleared";
@@ -438,6 +439,7 @@ function buildStageMessage(input: {
       ? `${input.clanName} (${input.clanTag})`
       : input.clanTag
     : "unscoped";
+  const weightPageUrl = input.clanTag ? buildFwaWeightPageUrl(input.clanTag) : null;
   return [
     `${mention}**${header}**`,
     `Player: ${input.playerTag}`,
@@ -445,6 +447,7 @@ function buildStageMessage(input: {
     `Current weight: ${input.currentWeight ?? "unknown"}`,
     `Pending age: ${input.pendingAge}`,
     `Current clan: ${clanLabel}`,
+    `FWA Stats weights: ${weightPageUrl ? `<${weightPageUrl}>` : "unknown"}`,
     "Resolve after FWAStats entry with `/defer remove <player-tag>`.",
   ].join("\n");
 }

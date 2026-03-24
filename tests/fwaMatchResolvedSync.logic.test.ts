@@ -93,4 +93,93 @@ describe("fwa match resolved current sync", () => {
 
     expect(renderedSync).toBe(476);
   });
+
+  it("uses the same derived sync value for display and tie-break parity when same-war sync is missing", () => {
+    const resolved = resolveCurrentSyncNumberForMatchForTest({
+      warState: "preparation",
+      previousSyncNum: 481,
+      currentWarSyncNum: null,
+    });
+    const renderedSync = resolveRenderedSyncNumberForStoredSummaryForTest({
+      syncRow: null,
+      fallbackSyncNum: resolved.resolvedCurrentSyncNum,
+      warId: "3001",
+      warStartTime: new Date("2026-03-25T04:20:57.000Z"),
+      opponentNotFound: false,
+      validationState: {
+        siteCurrent: false,
+        syncRowMissing: true,
+        differences: [],
+        statusLine: "",
+      },
+    });
+
+    expect(renderedSync).toBe(482);
+    expect(renderedSync).toBe(resolved.resolvedCurrentSyncNum);
+
+    const outcomeFromResolved = deriveProjectedOutcomeForTest(
+      "B000",
+      "A000",
+      1000,
+      1000,
+      resolved.resolvedCurrentSyncNum,
+    );
+    const outcomeFromRendered = deriveProjectedOutcomeForTest(
+      "B000",
+      "A000",
+      1000,
+      1000,
+      renderedSync,
+    );
+
+    expect(outcomeFromResolved).toBe("WIN");
+    expect(outcomeFromRendered).toBe(outcomeFromResolved);
+  });
+
+  it("uses the same confirmed same-war sync value for display and tie-break parity", () => {
+    const resolved = resolveCurrentSyncNumberForMatchForTest({
+      warState: "inWar",
+      previousSyncNum: 481,
+      currentWarSyncNum: 482,
+    });
+    const renderedSync = resolveRenderedSyncNumberForStoredSummaryForTest({
+      syncRow: {
+        syncNum: 482,
+        lastKnownSyncNumber: 482,
+        warId: "3002",
+        warStartTime: new Date("2026-03-25T04:21:07.000Z"),
+      },
+      fallbackSyncNum: resolved.resolvedCurrentSyncNum,
+      warId: "3002",
+      warStartTime: new Date("2026-03-25T04:21:07.000Z"),
+      opponentNotFound: false,
+      validationState: {
+        siteCurrent: false,
+        syncRowMissing: false,
+        differences: [],
+        statusLine: "",
+      },
+    });
+
+    expect(renderedSync).toBe(482);
+    expect(renderedSync).toBe(resolved.resolvedCurrentSyncNum);
+
+    const outcomeFromResolved = deriveProjectedOutcomeForTest(
+      "B000",
+      "A000",
+      1000,
+      1000,
+      resolved.resolvedCurrentSyncNum,
+    );
+    const outcomeFromRendered = deriveProjectedOutcomeForTest(
+      "B000",
+      "A000",
+      1000,
+      1000,
+      renderedSync,
+    );
+
+    expect(outcomeFromResolved).toBe("WIN");
+    expect(outcomeFromRendered).toBe(outcomeFromResolved);
+  });
 });

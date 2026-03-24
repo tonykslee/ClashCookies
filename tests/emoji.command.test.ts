@@ -9,6 +9,7 @@ import type {
 import {
   Emoji,
   applyEmojiPageActionForTest,
+  buildEmojiListEmbedForTest,
   resetEmojiCommandPermissionServiceForTest,
   resetEmojiResolverForTest,
   setEmojiCommandPermissionServiceForTest,
@@ -654,8 +655,68 @@ describe("/emoji command", () => {
         ? embed.toJSON()
         : (embed?.data ?? {});
     expect(json.title).toBe("Bot Application Emojis");
-    expect(String(json.description ?? "")).toContain(":alpha:");
+    expect(Array.isArray(json.fields)).toBe(true);
+    expect(json.fields).toHaveLength(2);
+    expect(json.fields?.[0]?.inline).toBe(true);
+    expect(String(json.fields?.[0]?.value ?? "")).toContain(":alpha:");
+    expect(String(json.fields?.[1]?.value ?? "")).toContain(":bravo:");
     expect(fetchReply).not.toHaveBeenCalled();
+  });
+
+  it("builds list embeds with inline fields for 3-column layout and uneven rows", () => {
+    const emojis: ResolvedApplicationEmoji[] = [
+      {
+        id: "1",
+        name: "alpha",
+        shortcode: ":alpha:",
+        rendered: "<:alpha:1>",
+        animated: false,
+      },
+      {
+        id: "2",
+        name: "bravo",
+        shortcode: ":bravo:",
+        rendered: "<:bravo:2>",
+        animated: false,
+      },
+      {
+        id: "3",
+        name: "charlie",
+        shortcode: ":charlie:",
+        rendered: "<:charlie:3>",
+        animated: false,
+      },
+      {
+        id: "4",
+        name: "delta",
+        shortcode: ":delta:",
+        rendered: "<:delta:4>",
+        animated: false,
+      },
+      {
+        id: "5",
+        name: "echo",
+        shortcode: ":echo:",
+        rendered: "<:echo:5>",
+        animated: false,
+      },
+    ];
+    const pageText = emojis
+      .map((emoji) => `${emoji.rendered} \`${emoji.shortcode}\``)
+      .join("\n");
+    const embed = buildEmojiListEmbedForTest({
+      emojis,
+      pages: [pageText],
+      page: 0,
+    });
+    const json = embed.toJSON();
+    expect(json.fields).toHaveLength(3);
+    expect(json.fields?.every((field) => field.inline === true)).toBe(true);
+    expect(String(json.fields?.[0]?.value ?? "")).toContain(":alpha:");
+    expect(String(json.fields?.[0]?.value ?? "")).toContain(":delta:");
+    expect(String(json.fields?.[1]?.value ?? "")).toContain(":bravo:");
+    expect(String(json.fields?.[1]?.value ?? "")).toContain(":echo:");
+    expect(String(json.fields?.[2]?.value ?? "")).toContain(":charlie:");
   });
 
   it("ignores react when name is omitted and keeps list mode", async () => {

@@ -45,6 +45,7 @@ type EmojiAttachmentDownloadResult =
     };
 
 const EMOJI_PAGE_SIZE = 20;
+const EMOJI_LIST_COLUMNS = 3;
 const EMOJI_PAGINATOR_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_AUTOCOMPLETE_CHOICES = 25;
 const MESSAGE_ID_PATTERN = /^\d{17,22}$/;
@@ -73,6 +74,22 @@ function paginateEmojiLines(
   return pages;
 }
 
+/** Purpose: distribute one compact emoji line list into balanced columns while preserving row-wise order. */
+function buildEmojiListColumns(
+  lines: string[],
+  columnCount: number = EMOJI_LIST_COLUMNS,
+): string[] {
+  if (lines.length === 0) return [];
+  const effectiveColumns = Math.max(1, Math.min(columnCount, lines.length));
+  const columns = Array.from({ length: effectiveColumns }, () => [] as string[]);
+  lines.forEach((line, index) => {
+    columns[index % effectiveColumns].push(line);
+  });
+  return columns
+    .map((columnLines) => columnLines.join("\n").trim())
+    .filter((value) => value.length > 0);
+}
+
 /** Purpose: apply previous/next pagination input while keeping page index bounded. */
 function applyEmojiPageAction(params: {
   action: "prev" | "next";
@@ -97,13 +114,27 @@ function buildEmojiListEmbed(params: {
       .setFooter({ text: "Total 0 emojis" })
       .setColor(0x5865f2);
   }
-  return new EmbedBuilder()
+  const embed = new EmbedBuilder()
     .setTitle("Bot Application Emojis")
-    .setDescription(params.pages[params.page] ?? "")
     .setFooter({
       text: `Page ${params.page + 1}/${params.pages.length} | Total ${params.emojis.length} emojis`,
     })
     .setColor(0x5865f2);
+  const pageLines = String(params.pages[params.page] ?? "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  const columns = buildEmojiListColumns(pageLines);
+  if (columns.length > 0) {
+    embed.addFields(
+      columns.map((value) => ({
+        name: "\u200b",
+        value,
+        inline: true,
+      })),
+    );
+  }
+  return embed;
 }
 
 /** Purpose: build prev/next paginator buttons with proper boundary and timeout disabled states. */

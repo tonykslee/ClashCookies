@@ -6,6 +6,10 @@ import {
   buildDraftFromOutcomeToggleForTest,
   buildDraftFromMatchTypeSelectionForTest,
   buildEffectiveMatchMismatchWarningsForTest,
+  buildMailSendGateDecisionForTest,
+  buildInferredMatchWarningLinesForTest,
+  buildNonActiveMailProjectionForTest,
+  buildOverviewMailDecisionProjectionForTest,
   formatMailLifecycleStatusLineForTest,
   getMailBlockedReasonFromRevisionStateForTest,
   isPointsValidationCurrentForMatchupForTest,
@@ -261,6 +265,41 @@ describe("fwa inferred warning visibility", () => {
   });
 });
 
+describe("fwa inferred warning rendering", () => {
+  it("suppresses standalone inferred warning when inferred block reason is already present", () => {
+    const lines = buildInferredMatchWarningLinesForTest({
+      inferredMatchType: true,
+      mailBlockedReason: "Match type is inferred. Confirm match type before sending mail.",
+      includeSpacer: true,
+    });
+
+    expect(lines).toEqual([]);
+  });
+
+  it("renders standalone inferred warning when inferred and no inferred-block reason is present", () => {
+    const lines = buildInferredMatchWarningLinesForTest({
+      inferredMatchType: true,
+      mailBlockedReason: null,
+      includeSpacer: true,
+    });
+
+    expect(lines).toEqual([
+      ":warning: Match type is inferred. Confirm match type before sending mail.",
+      "\u200B",
+    ]);
+  });
+
+  it("does not render inferred warning lines for confirmed match type", () => {
+    const lines = buildInferredMatchWarningLinesForTest({
+      inferredMatchType: false,
+      mailBlockedReason: "Match type is inferred. Confirm match type before sending mail.",
+      includeSpacer: true,
+    });
+
+    expect(lines).toEqual([]);
+  });
+});
+
 describe("fwa match posted mail gating with revisions", () => {
   it("keeps send blocked when posted and no draft revision exists", () => {
     const reason = getMailBlockedReasonFromRevisionStateForTest({
@@ -345,7 +384,7 @@ describe("fwa match posted mail gating with revisions", () => {
     expect(reason).toBeNull();
   });
 
-  it("allows draft-confirmed send for inferred not-posted state", () => {
+  it("blocks send for inferred not-posted state even when a draft is present", () => {
     const reason = getMailBlockedReasonFromRevisionStateForTest({
       inferredMatchType: true,
       hasMailChannel: true,
@@ -357,6 +396,21 @@ describe("fwa match posted mail gating with revisions", () => {
         expectedOutcome: "LOSE",
       },
       draftDiffersFromBaseline: true,
+      hasConfirmedBaseline: false,
+    });
+
+    expect(reason).toBe(
+      "Match type is inferred. Confirm match type before sending mail."
+    );
+  });
+
+  it("allows normal not-posted send gating once match type is confirmed", () => {
+    const reason = getMailBlockedReasonFromRevisionStateForTest({
+      inferredMatchType: false,
+      hasMailChannel: true,
+      mailStatus: "not_posted",
+      appliedDraft: null,
+      draftDiffersFromBaseline: false,
       hasConfirmedBaseline: false,
     });
 
@@ -408,6 +462,261 @@ describe("fwa mail freshness status mapping", () => {
 
     expect(freshness).toBe("unsent");
     expect(line).toBe("Mail status: **Send Mail Available**");
+  });
+});
+
+describe("fwa mail revision decision contract projection", () => {
+  it("keeps gate and status line aligned for posted up-to-date state", () => {
+    const decision = {
+      mailStatus: {
+        status: "posted" as const,
+        mailStatusEmoji: ":mailbox_with_mail:",
+        debug: {},
+      },
+      liveRevisionFields: {
+        warId: "1001",
+        opponentTag: "2TAG",
+        matchType: "FWA" as const,
+        expectedOutcome: "WIN" as const,
+      },
+      confirmedRevisionBaseline: {
+        warId: "1001",
+        opponentTag: "2TAG",
+        matchType: "FWA" as const,
+        expectedOutcome: "WIN" as const,
+      },
+      effectiveRevisionFields: {
+        warId: "1001",
+        opponentTag: "2TAG",
+        matchType: "FWA" as const,
+        expectedOutcome: "WIN" as const,
+      },
+      appliedDraftRevision: null,
+      draftDiffersFromBaseline: false,
+      mailBlockedReason:
+        "Current mail is already up to date. Change match config before sending again.",
+    } as Parameters<typeof buildMailSendGateDecisionForTest>[0];
+
+    const gate = buildMailSendGateDecisionForTest(decision);
+    const statusLine = formatMailLifecycleStatusLineForTest(gate.mailStatus.status, {
+      hasConfirmedBaseline: Boolean(gate.confirmedRevisionBaseline),
+      draftDiffersFromBaseline: gate.draftDiffersFromBaseline,
+    });
+
+    expect(gate.mailStatus).toBe(decision.mailStatus);
+    expect(gate.mailBlockedReason).toBe(decision.mailBlockedReason);
+    expect(statusLine).toBe("Mail status: **Mail Sent (Up to Date)**");
+  });
+
+  it("keeps deleted lifecycle semantics aligned with resend availability", () => {
+    const decision = {
+      mailStatus: {
+        status: "deleted" as const,
+        mailStatusEmoji: ":mailbox_with_no_mail:",
+        debug: {},
+      },
+      liveRevisionFields: {
+        warId: "1001",
+        opponentTag: "2TAG",
+        matchType: "BL" as const,
+        expectedOutcome: null,
+      },
+      confirmedRevisionBaseline: {
+        warId: "1001",
+        opponentTag: "2TAG",
+        matchType: "BL" as const,
+        expectedOutcome: null,
+      },
+      effectiveRevisionFields: {
+        warId: "1001",
+        opponentTag: "2TAG",
+        matchType: "BL" as const,
+        expectedOutcome: null,
+      },
+      appliedDraftRevision: null,
+      draftDiffersFromBaseline: false,
+      mailBlockedReason: null,
+    } as Parameters<typeof buildMailSendGateDecisionForTest>[0];
+
+    const gate = buildMailSendGateDecisionForTest(decision);
+    const statusLine = formatMailLifecycleStatusLineForTest(gate.mailStatus.status, {
+      hasConfirmedBaseline: Boolean(gate.confirmedRevisionBaseline),
+      draftDiffersFromBaseline: gate.draftDiffersFromBaseline,
+    });
+
+    expect(gate.mailBlockedReason).toBeNull();
+    expect(statusLine).toBe("Mail status: **Mail Deleted / Resend Available**");
+  });
+
+  it("keeps overview active-war status/action aligned with posted up-to-date decisions", () => {
+    const projection = buildOverviewMailDecisionProjectionForTest({
+      inferredMatchType: true,
+      decision: {
+        mailStatus: {
+          status: "posted",
+          mailStatusEmoji: ":mailbox_with_mail:",
+          debug: {},
+        },
+        liveRevisionFields: {
+          warId: "1001",
+          opponentTag: "2TAG",
+          matchType: "FWA",
+          expectedOutcome: "WIN",
+        },
+        confirmedRevisionBaseline: {
+          warId: "1001",
+          opponentTag: "2TAG",
+          matchType: "FWA",
+          expectedOutcome: "WIN",
+        },
+        effectiveRevisionFields: {
+          warId: "1001",
+          opponentTag: "2TAG",
+          matchType: "FWA",
+          expectedOutcome: "WIN",
+        },
+        appliedDraftRevision: null,
+        draftDiffersFromBaseline: false,
+        mailBlockedReason:
+          "Current mail is already up to date. Change match config before sending again.",
+      },
+    } as Parameters<typeof buildOverviewMailDecisionProjectionForTest>[0]);
+
+    expect(projection.mailLifecycleStatusLine).toBe(
+      "Mail status: **Mail Sent (Up to Date)**"
+    );
+    expect(projection.mailActionEnabled).toBe(false);
+    expect(projection.effectiveInferredMatchType).toBe(true);
+  });
+
+  it("enables action when a same-war draft differs from the posted baseline", () => {
+    const projection = buildOverviewMailDecisionProjectionForTest({
+      inferredMatchType: true,
+      decision: {
+        mailStatus: {
+          status: "posted",
+          mailStatusEmoji: ":mailbox_with_mail:",
+          debug: {},
+        },
+        liveRevisionFields: {
+          warId: "1001",
+          opponentTag: "2TAG",
+          matchType: "FWA",
+          expectedOutcome: "LOSE",
+        },
+        confirmedRevisionBaseline: {
+          warId: "1001",
+          opponentTag: "2TAG",
+          matchType: "FWA",
+          expectedOutcome: "WIN",
+        },
+        effectiveRevisionFields: {
+          warId: "1001",
+          opponentTag: "2TAG",
+          matchType: "BL",
+          expectedOutcome: null,
+        },
+        appliedDraftRevision: {
+          warId: "1001",
+          opponentTag: "2TAG",
+          matchType: "BL",
+          expectedOutcome: null,
+        },
+        draftDiffersFromBaseline: true,
+        mailBlockedReason: null,
+      },
+    } as Parameters<typeof buildOverviewMailDecisionProjectionForTest>[0]);
+
+    expect(projection.mailLifecycleStatusLine).toBe(
+      "Mail status: **Mail Sent (Out of Date)**"
+    );
+    expect(projection.mailActionEnabled).toBe(true);
+    expect(projection.effectiveInferredMatchType).toBe(false);
+  });
+
+  it("keeps not-posted status semantics unchanged for pre-war/no-opponent paths", () => {
+    const projection = buildOverviewMailDecisionProjectionForTest({
+      inferredMatchType: false,
+      decision: {
+        mailStatus: {
+          status: "not_posted",
+          mailStatusEmoji: ":mailbox_with_no_mail:",
+          debug: {},
+        },
+        liveRevisionFields: {
+          warId: "1001",
+          opponentTag: "2TAG",
+          matchType: "BL",
+          expectedOutcome: null,
+        },
+        confirmedRevisionBaseline: null,
+        effectiveRevisionFields: {
+          warId: "1001",
+          opponentTag: "2TAG",
+          matchType: "BL",
+          expectedOutcome: null,
+        },
+        appliedDraftRevision: null,
+        draftDiffersFromBaseline: false,
+        mailBlockedReason: null,
+      },
+    } as Parameters<typeof buildOverviewMailDecisionProjectionForTest>[0]);
+
+    expect(projection.mailLifecycleStatusLine).toBe(
+      "Mail status: **Send Mail Available**"
+    );
+    expect(projection.mailActionEnabled).toBe(true);
+  });
+
+  it("aligns pre-war status/action semantics across overview and direct projections", () => {
+    const projection = buildNonActiveMailProjectionForTest({
+      mode: "pre_war",
+      tag: "2RYGLU2UY",
+      resolvedStatus: {
+        status: "not_posted",
+        mailStatusEmoji: ":mailbox_with_no_mail:",
+        debug: {},
+      },
+      mailStatusDebugEnabled: false,
+    } as Parameters<typeof buildNonActiveMailProjectionForTest>[0]);
+
+    expect(projection.mailStatusLine).toBe("Mail status: **Send Mail Available**");
+    expect(projection.mailAction).toBeUndefined();
+  });
+
+  it("aligns no-opponent status/action semantics across overview and direct projections", () => {
+    const projection = buildNonActiveMailProjectionForTest({
+      mode: "no_opponent",
+      tag: "2RYGLU2UY",
+      resolvedStatus: {
+        status: "posted",
+        mailStatusEmoji: ":mailbox_with_mail:",
+        debug: {},
+      },
+      mailStatusDebugEnabled: false,
+    } as Parameters<typeof buildNonActiveMailProjectionForTest>[0]);
+
+    expect(projection.mailStatusLine).toBe("Mail status: **Mail Sent**");
+    expect(projection.mailAction).toEqual({
+      tag: "2RYGLU2UY",
+      enabled: false,
+      reason: "No active war opponent.",
+    });
+  });
+
+  it("keeps non-active projection intentionally separate from active-war freshness semantics", () => {
+    const projection = buildNonActiveMailProjectionForTest({
+      mode: "pre_war",
+      tag: "2RYGLU2UY",
+      resolvedStatus: {
+        status: "posted",
+        mailStatusEmoji: ":mailbox_with_mail:",
+        debug: {},
+      },
+      mailStatusDebugEnabled: false,
+    } as Parameters<typeof buildNonActiveMailProjectionForTest>[0]);
+
+    expect(projection.mailStatusLine).toBe("Mail status: **Mail Sent**");
   });
 });
 
@@ -1259,7 +1568,7 @@ describe("fwa single-clan match embed color", () => {
 });
 
 describe("fwa single-clan links presentation", () => {
-  it("keeps plain points header and includes tracked points in links", () => {
+  it("keeps plain points header and includes labeled us/them links for cc and points", () => {
     const rendered = buildSingleClanMatchLinksForTest({
       trackedClanTag: "#CLAN123",
       opponentTag: "#OPPO456",
@@ -1267,28 +1576,33 @@ describe("fwa single-clan links presentation", () => {
 
     expect(rendered.linksFieldName).toBe("Links");
     expect(rendered.linksFieldValue).toContain(
-      "[cc.fwafarm](<https://cc.fwafarm.com/cc_n/clan.php?tag=OPPO456>)"
+      "[cc.fwafarm (them)](<https://cc.fwafarm.com/cc_n/clan.php?tag=OPPO456>)"
     );
     expect(rendered.linksFieldValue).toContain(
-      "[points.fwafarm](<https://points.fwafarm.com/clan?tag=CLAN123>)"
+      "[cc.fwafarm (us)](<https://cc.fwafarm.com/cc_n/clan.php?tag=CLAN123>)"
+    );
+    expect(rendered.linksFieldValue).toContain(
+      "[points.fwafarm (them)](<https://points.fwafarm.com/clan?tag=OPPO456>)"
+    );
+    expect(rendered.linksFieldValue).toContain(
+      "[points.fwafarm (us)](<https://points.fwafarm.com/clan?tag=CLAN123>)"
     );
     expect(rendered.linksFieldValue).not.toContain("lvoJgZB.png");
     expect(rendered.pointsFieldName).toBe("Points");
   });
 
-  it("labels copy output links by ownership without advertising tie-breaker as web link", () => {
+  it("labels copy output links with deterministic us/them ownership", () => {
     const rendered = buildSingleClanMatchLinksForTest({
       trackedClanTag: "#TEAM999",
       opponentTag: "#ENEMY111",
     });
 
     expect(rendered.copyLines).toEqual([
-      "CC (opponent): [cc.fwafarm](<https://cc.fwafarm.com/cc_n/clan.php?tag=ENEMY111>)",
-      "Points (tracked clan): [points.fwafarm](<https://points.fwafarm.com/clan?tag=TEAM999>)",
+      "CC (them): [cc.fwafarm](<https://cc.fwafarm.com/cc_n/clan.php?tag=ENEMY111>)",
+      "CC (us): [cc.fwafarm](<https://cc.fwafarm.com/cc_n/clan.php?tag=TEAM999>)",
+      "Points (them): [points.fwafarm](<https://points.fwafarm.com/clan?tag=ENEMY111>)",
+      "Points (us): [points.fwafarm](<https://points.fwafarm.com/clan?tag=TEAM999>)",
     ]);
-    expect(rendered.copyLines.join("\n")).not.toContain(
-      "https://points.fwafarm.com/clan?tag=ENEMY111"
-    );
     expect(rendered.copyLines.join("\n")).not.toContain("lvoJgZB.png");
   });
 });
