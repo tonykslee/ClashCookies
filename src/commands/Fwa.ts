@@ -2495,6 +2495,7 @@ async function buildWarMailEmbedForTag(
   unavailableReasons: string[];
   matchType: "FWA" | "BL" | "MM" | "UNKNOWN";
   expectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null;
+  mailRevisionDecision: MailRevisionDecisionContract;
 }> {
   const normalizedTag = normalizeTag(tag);
   const trackedConfig = await getTrackedClanMailConfig(normalizedTag);
@@ -2600,20 +2601,6 @@ async function buildWarMailEmbedForTag(
     warIdForSync !== null && Number.isFinite(Number(warIdForSync))
       ? Math.trunc(Number(warIdForSync))
       : null;
-  const mailConfig = await getCurrentWarMailConfig(guildId, normalizedTag);
-  const lifecycleStatus = warIdForSync
-    ? ((
-        await warMailLifecycleService
-          .getLifecycleForWar({
-            guildId,
-            clanTag: normalizedTag,
-            warId: Number(warIdForSync),
-          })
-          .catch(() => null)
-      )?.status === "POSTED"
-      ? "posted"
-        : "not_posted")
-    : "not_posted";
   const syncRow = await pointsSyncService
     .getCurrentSyncForClan({
       guildId,
@@ -2843,45 +2830,29 @@ async function buildWarMailEmbedForTag(
     });
   }
 
-  const liveRevisionFields = buildLiveRevisionFields({
-    warId: subscription?.warId ?? null,
-    opponentTag: effectiveOpponentTag,
-    matchType:
-      matchType === "FWA" || matchType === "BL" || matchType === "MM"
-        ? matchType
-        : "UNKNOWN",
-    expectedOutcome: matchType === "FWA" ? (outcome ?? "UNKNOWN") : null,
-  });
-  const confirmedRevisionBaseline = resolveConfirmedRevisionBaseline({
-    syncRow: syncRow
-      ? {
-          warId: syncRow.warId ?? null,
-          opponentTag: syncRow.opponentTag,
-          lastKnownMatchType: syncRow.lastKnownMatchType ?? null,
-          lastKnownOutcome: syncRow.lastKnownOutcome ?? null,
-          isFwa: syncRow.isFwa ?? null,
-          confirmedByClanMail: Boolean(syncRow.confirmedByClanMail),
-        }
-      : null,
-    mailConfig: {
-      lastWarId: mailConfig.lastWarId,
-      lastOpponentTag: mailConfig.lastOpponentTag,
-      lastMatchType: mailConfig.lastMatchType,
-      lastExpectedOutcome: mailConfig.lastExpectedOutcome,
+  const mailRevisionDecision = await resolveMailRevisionDecisionForRenderedState(
+    {
+      client: null,
+      guildId,
+      tag: normalizedTag,
+      hasMailChannel: Boolean(trackedConfig.mailChannelId),
+      inferredMatchType,
+      warId: warIdForSyncNumber,
+      warStartMs: warStartTimeForSync?.getTime?.() ?? null,
+      opponentTag: effectiveOpponentTag || null,
+      matchType:
+        matchType === "FWA" || matchType === "BL" || matchType === "MM"
+          ? matchType
+          : "UNKNOWN",
+      expectedOutcome: matchType === "FWA" ? (outcome ?? "UNKNOWN") : null,
+      draft: options?.revisionOverride ?? null,
     },
-    liveFields: liveRevisionFields,
-    lifecycleStatus,
-  });
-  const effectiveRevisionState = resolveEffectiveRevisionState({
-    liveFields: liveRevisionFields,
-    confirmedBaseline: confirmedRevisionBaseline,
-    draft: options?.revisionOverride ?? null,
-  });
-  const effectiveRevisionFields = effectiveRevisionState.effective;
+  );
+  const effectiveRevisionFields = mailRevisionDecision.effectiveRevisionFields;
   const mailMatchType = effectiveRevisionFields?.matchType ?? matchType;
-  const mailInferredMatchType = effectiveRevisionState.appliedDraft
+  const mailInferredMatchType = mailRevisionDecision.appliedDraftRevision
     ? false
-    : confirmedRevisionBaseline
+    : mailRevisionDecision.confirmedRevisionBaseline
       ? false
       : inferredMatchType;
   const mailExpectedOutcome =
@@ -3069,6 +3040,7 @@ async function buildWarMailEmbedForTag(
     unavailableReasons,
     matchType: mailMatchType,
     expectedOutcome: mailExpectedOutcome,
+    mailRevisionDecision,
   };
 }
 
@@ -3388,13 +3360,69 @@ async function resolveMailSendGateForRenderedState(params: {
   opponentTag: string | null | undefined;
   matchType: "FWA" | "BL" | "MM" | "UNKNOWN";
   expectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null;
-}): Promise<{
+}): Promise<MailSendGateDecision> {
+  const decision = await resolveMailRevisionDecisionForRenderedState({
+    client: params.client,
+    guildId: params.guildId,
+    tag: params.tag,
+    hasMailChannel: params.hasMailChannel,
+    inferredMatchType: params.inferredMatchType,
+    emitDebugLog: params.emitDebugLog,
+    warId: params.warId,
+    warStartMs: params.warStartMs,
+    opponentTag: params.opponentTag,
+    matchType: params.matchType,
+    expectedOutcome: params.expectedOutcome,
+    draft: null,
+  });
+  return buildMailSendGateDecision(decision);
+}
+
+type MailRevisionDecisionContract = {
+  mailStatus: ResolvedLiveWarMailStatus;
+  liveRevisionFields: MatchRevisionFields | null;
+  confirmedRevisionBaseline: MatchRevisionFields | null;
+  effectiveRevisionFields: MatchRevisionFields | null;
+  appliedDraftRevision: MatchRevisionFields | null;
+  draftDiffersFromBaseline: boolean;
+  mailBlockedReason: string | null;
+};
+
+type MailSendGateDecision = {
   mailStatus: ResolvedLiveWarMailStatus;
   liveRevisionFields: MatchRevisionFields | null;
   confirmedRevisionBaseline: MatchRevisionFields | null;
   draftDiffersFromBaseline: boolean;
   mailBlockedReason: string | null;
-}> {
+};
+
+/** Purpose: project the shared revision decision into gate fields consumed by `/fwa match` views. */
+function buildMailSendGateDecision(
+  decision: MailRevisionDecisionContract,
+): MailSendGateDecision {
+  return {
+    mailStatus: decision.mailStatus,
+    liveRevisionFields: decision.liveRevisionFields,
+    confirmedRevisionBaseline: decision.confirmedRevisionBaseline,
+    draftDiffersFromBaseline: decision.draftDiffersFromBaseline,
+    mailBlockedReason: decision.mailBlockedReason,
+  };
+}
+
+async function resolveMailRevisionDecisionForRenderedState(params: {
+  client: Client | null | undefined;
+  guildId: string;
+  tag: string;
+  hasMailChannel: boolean;
+  inferredMatchType: boolean;
+  emitDebugLog?: boolean;
+  warId: number | null | undefined;
+  warStartMs: number | null | undefined;
+  opponentTag: string | null | undefined;
+  matchType: "FWA" | "BL" | "MM" | "UNKNOWN";
+  expectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null;
+  draft: MatchRevisionFields | null;
+}): Promise<MailRevisionDecisionContract> {
   const mailStatus = await resolveLiveWarMailStatus({
     client: params.client,
     guildId: params.guildId,
@@ -3445,16 +3473,18 @@ async function resolveMailSendGateForRenderedState(params: {
     liveFields: liveRevisionFields,
     lifecycleStatus: mailStatus.status,
   });
-  const draftDiffersFromBaseline = Boolean(
-    confirmedRevisionBaseline &&
-    liveRevisionFields &&
-    !areRevisionFieldsEqual(confirmedRevisionBaseline, liveRevisionFields),
-  );
+  const effectiveRevisionState = resolveEffectiveRevisionState({
+    liveFields: liveRevisionFields,
+    confirmedBaseline: confirmedRevisionBaseline,
+    draft: params.draft ?? null,
+  });
+  const draftDiffersFromBaseline =
+    effectiveRevisionState.draftDiffersFromBaseline;
   const mailBlockedReason = getMailBlockedReasonFromRevisionState({
     inferredMatchType: params.inferredMatchType,
     hasMailChannel: params.hasMailChannel,
     mailStatus: mailStatus.status,
-    appliedDraft: draftDiffersFromBaseline ? liveRevisionFields : null,
+    appliedDraft: effectiveRevisionState.appliedDraft,
     draftDiffersFromBaseline,
     hasConfirmedBaseline: Boolean(confirmedRevisionBaseline),
   });
@@ -3462,6 +3492,8 @@ async function resolveMailSendGateForRenderedState(params: {
     mailStatus,
     liveRevisionFields,
     confirmedRevisionBaseline,
+    effectiveRevisionFields: effectiveRevisionState.effective,
+    appliedDraftRevision: effectiveRevisionState.appliedDraft,
     draftDiffersFromBaseline,
     mailBlockedReason,
   };
@@ -5761,18 +5793,7 @@ async function showWarMailPreview(
     revisionOverride: revisionOverride ?? null,
   });
 
-  const mailSendGate = await resolveMailSendGateForRenderedState({
-    client: interaction.client,
-    guildId,
-    tag,
-    hasMailChannel: Boolean(rendered.mailChannelId),
-    inferredMatchType: rendered.inferredMatchType,
-    warId: rendered.warId,
-    warStartMs: rendered.warStartMs,
-    opponentTag: rendered.opponentTag,
-    matchType: rendered.matchType,
-    expectedOutcome: rendered.expectedOutcome,
-  });
+  const mailSendGate = rendered.mailRevisionDecision;
   const channel = rendered.mailChannelId
     ? await interaction.client.channels
         .fetch(rendered.mailChannelId)
@@ -6157,18 +6178,7 @@ async function handleFwaMailConfirmAction(
     });
     return;
   }
-  const mailSendGate = await resolveMailSendGateForRenderedState({
-    client: interaction.client,
-    guildId: payload.guildId,
-    tag: payload.tag,
-    hasMailChannel: true,
-    inferredMatchType: rendered.inferredMatchType,
-    warId: rendered.warId,
-    warStartMs: rendered.warStartMs,
-    opponentTag: rendered.opponentTag,
-    matchType: rendered.matchType,
-    expectedOutcome: rendered.expectedOutcome,
-  });
+  const mailSendGate = rendered.mailRevisionDecision;
   if (mailSendGate.mailBlockedReason) {
     await interaction.editReply({
       content: `Cannot send mail: ${
@@ -7549,6 +7559,7 @@ export const resolveWarMailFreshnessStatusForTest =
   resolveWarMailFreshnessStatus;
 export const formatMailLifecycleStatusLineForTest =
   formatMailLifecycleStatusLine;
+export const buildMailSendGateDecisionForTest = buildMailSendGateDecision;
 export const buildWarMailStatusDebugSnapshotForTest =
   buildWarMailStatusDebugSnapshot;
 export const buildMailStatusDebugLinesForTest = buildMailStatusDebugLines;
@@ -13136,7 +13147,7 @@ export const Fwa: Command = {
           hasMailChannel: Boolean(trackedMailConfig?.mailChannelId),
           inferredMatchType,
           emitDebugLog: matchMailStatusDebugEnabled,
-          warId: subscription?.warId ?? null,
+          warId: warIdForReuseNumber,
           warStartMs: warStartTimeForSync?.getTime?.() ?? null,
           opponentTag,
           matchType: renderedMatchTypeForMailGate,
