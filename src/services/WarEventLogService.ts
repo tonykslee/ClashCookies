@@ -1133,7 +1133,7 @@ export class WarEventLogService {
   }
 
   private async listPollTargets(): Promise<PollTarget[]> {
-    const [trackedClans, currentWars, notifyConfigs] = await Promise.all([
+    const [trackedClans, currentWars] = await Promise.all([
       prisma.trackedClan.findMany({
         orderBy: { createdAt: "asc" },
         select: {
@@ -1158,17 +1158,25 @@ export class WarEventLogService {
           clanName: true,
         },
       }),
-      prisma.clanNotifyConfig.findMany({
-        select: {
-          guildId: true,
-          clanTag: true,
-          channelId: true,
-          roleId: true,
-          pingEnabled: true,
-          embedEnabled: true,
-        },
-      }),
     ]);
+
+    const notifyConfigs = trackedClans.flatMap((clan) => {
+      if (!clan.notifyChannelId) return [];
+
+      const clanTag = normalizeTag(clan.tag);
+      const matchingWars = currentWars.filter(
+        (war) => normalizeTag(war.clanTag) === clanTag,
+      );
+
+      return matchingWars.map((war) => ({
+        guildId: war.guildId,
+        clanTag,
+        channelId: clan.notifyChannelId,
+        roleId: clan.notifyRole,
+        pingEnabled: true,
+        embedEnabled: clan.notifyEnabled ?? false,
+      }));
+    });
 
     const currentWarsByTag = new Map<string, typeof currentWars>();
     for (const row of currentWars) {
