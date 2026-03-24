@@ -1517,7 +1517,7 @@ describe("fwa single-clan match embed color", () => {
 });
 
 describe("fwa single-clan links presentation", () => {
-  it("keeps plain points header and includes tracked points in links", () => {
+  it("keeps plain points header and includes labeled us/them links for cc and points", () => {
     const rendered = buildSingleClanMatchLinksForTest({
       trackedClanTag: "#CLAN123",
       opponentTag: "#OPPO456",
@@ -1525,28 +1525,33 @@ describe("fwa single-clan links presentation", () => {
 
     expect(rendered.linksFieldName).toBe("Links");
     expect(rendered.linksFieldValue).toContain(
-      "[cc.fwafarm](<https://cc.fwafarm.com/cc_n/clan.php?tag=OPPO456>)"
+      "[cc.fwafarm (them)](<https://cc.fwafarm.com/cc_n/clan.php?tag=OPPO456>)"
     );
     expect(rendered.linksFieldValue).toContain(
-      "[points.fwafarm](<https://points.fwafarm.com/clan?tag=CLAN123>)"
+      "[cc.fwafarm (us)](<https://cc.fwafarm.com/cc_n/clan.php?tag=CLAN123>)"
+    );
+    expect(rendered.linksFieldValue).toContain(
+      "[points.fwafarm (them)](<https://points.fwafarm.com/clan?tag=OPPO456>)"
+    );
+    expect(rendered.linksFieldValue).toContain(
+      "[points.fwafarm (us)](<https://points.fwafarm.com/clan?tag=CLAN123>)"
     );
     expect(rendered.linksFieldValue).not.toContain("lvoJgZB.png");
     expect(rendered.pointsFieldName).toBe("Points");
   });
 
-  it("labels copy output links by ownership without advertising tie-breaker as web link", () => {
+  it("labels copy output links with deterministic us/them ownership", () => {
     const rendered = buildSingleClanMatchLinksForTest({
       trackedClanTag: "#TEAM999",
       opponentTag: "#ENEMY111",
     });
 
     expect(rendered.copyLines).toEqual([
-      "CC (opponent): [cc.fwafarm](<https://cc.fwafarm.com/cc_n/clan.php?tag=ENEMY111>)",
-      "Points (tracked clan): [points.fwafarm](<https://points.fwafarm.com/clan?tag=TEAM999>)",
+      "CC (them): [cc.fwafarm](<https://cc.fwafarm.com/cc_n/clan.php?tag=ENEMY111>)",
+      "CC (us): [cc.fwafarm](<https://cc.fwafarm.com/cc_n/clan.php?tag=TEAM999>)",
+      "Points (them): [points.fwafarm](<https://points.fwafarm.com/clan?tag=ENEMY111>)",
+      "Points (us): [points.fwafarm](<https://points.fwafarm.com/clan?tag=TEAM999>)",
     ]);
-    expect(rendered.copyLines.join("\n")).not.toContain(
-      "https://points.fwafarm.com/clan?tag=ENEMY111"
-    );
     expect(rendered.copyLines.join("\n")).not.toContain("lvoJgZB.png");
   });
 });

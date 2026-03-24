@@ -1281,15 +1281,24 @@ function buildSingleClanMatchLinks(input: {
   linksFieldValue: string;
   copyLines: string[];
 } {
+  const trackedCcUrl = buildCcVerifyUrl(input.trackedClanTag);
   const opponentCcUrl = buildCcVerifyUrl(input.opponentTag);
+  const opponentPointsUrl = buildOfficialPointsUrl(input.opponentTag);
   const trackedPointsUrl = buildOfficialPointsUrl(input.trackedClanTag);
   return {
     pointsFieldName: "Points",
     linksFieldName: "Links",
-    linksFieldValue: `[cc.fwafarm](<${opponentCcUrl}>)\n[points.fwafarm](<${trackedPointsUrl}>)`,
+    linksFieldValue: [
+      `[cc.fwafarm (them)](<${opponentCcUrl}>)`,
+      `[cc.fwafarm (us)](<${trackedCcUrl}>)`,
+      `[points.fwafarm (them)](<${opponentPointsUrl}>)`,
+      `[points.fwafarm (us)](<${trackedPointsUrl}>)`,
+    ].join("\n"),
     copyLines: [
-      `CC (opponent): [cc.fwafarm](<${opponentCcUrl}>)`,
-      `Points (tracked clan): [points.fwafarm](<${trackedPointsUrl}>)`,
+      `CC (them): [cc.fwafarm](<${opponentCcUrl}>)`,
+      `CC (us): [cc.fwafarm](<${trackedCcUrl}>)`,
+      `Points (them): [points.fwafarm](<${opponentPointsUrl}>)`,
+      `Points (us): [points.fwafarm](<${trackedPointsUrl}>)`,
     ],
   };
 }
