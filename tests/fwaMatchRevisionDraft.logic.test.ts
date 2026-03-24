@@ -6,6 +6,7 @@ import {
   buildDraftFromOutcomeToggleForTest,
   buildDraftFromMatchTypeSelectionForTest,
   buildEffectiveMatchMismatchWarningsForTest,
+  buildMailSendGateDecisionForTest,
   formatMailLifecycleStatusLineForTest,
   getMailBlockedReasonFromRevisionStateForTest,
   isPointsValidationCurrentForMatchupForTest,
@@ -408,6 +409,90 @@ describe("fwa mail freshness status mapping", () => {
 
     expect(freshness).toBe("unsent");
     expect(line).toBe("Mail status: **Send Mail Available**");
+  });
+});
+
+describe("fwa mail revision decision contract projection", () => {
+  it("keeps gate and status line aligned for posted up-to-date state", () => {
+    const decision = {
+      mailStatus: {
+        status: "posted" as const,
+        mailStatusEmoji: ":mailbox_with_mail:",
+        debug: {},
+      },
+      liveRevisionFields: {
+        warId: "1001",
+        opponentTag: "2TAG",
+        matchType: "FWA" as const,
+        expectedOutcome: "WIN" as const,
+      },
+      confirmedRevisionBaseline: {
+        warId: "1001",
+        opponentTag: "2TAG",
+        matchType: "FWA" as const,
+        expectedOutcome: "WIN" as const,
+      },
+      effectiveRevisionFields: {
+        warId: "1001",
+        opponentTag: "2TAG",
+        matchType: "FWA" as const,
+        expectedOutcome: "WIN" as const,
+      },
+      appliedDraftRevision: null,
+      draftDiffersFromBaseline: false,
+      mailBlockedReason:
+        "Current mail is already up to date. Change match config before sending again.",
+    } as Parameters<typeof buildMailSendGateDecisionForTest>[0];
+
+    const gate = buildMailSendGateDecisionForTest(decision);
+    const statusLine = formatMailLifecycleStatusLineForTest(gate.mailStatus.status, {
+      hasConfirmedBaseline: Boolean(gate.confirmedRevisionBaseline),
+      draftDiffersFromBaseline: gate.draftDiffersFromBaseline,
+    });
+
+    expect(gate.mailStatus).toBe(decision.mailStatus);
+    expect(gate.mailBlockedReason).toBe(decision.mailBlockedReason);
+    expect(statusLine).toBe("Mail status: **Mail Sent (Up to Date)**");
+  });
+
+  it("keeps deleted lifecycle semantics aligned with resend availability", () => {
+    const decision = {
+      mailStatus: {
+        status: "deleted" as const,
+        mailStatusEmoji: ":mailbox_with_no_mail:",
+        debug: {},
+      },
+      liveRevisionFields: {
+        warId: "1001",
+        opponentTag: "2TAG",
+        matchType: "BL" as const,
+        expectedOutcome: null,
+      },
+      confirmedRevisionBaseline: {
+        warId: "1001",
+        opponentTag: "2TAG",
+        matchType: "BL" as const,
+        expectedOutcome: null,
+      },
+      effectiveRevisionFields: {
+        warId: "1001",
+        opponentTag: "2TAG",
+        matchType: "BL" as const,
+        expectedOutcome: null,
+      },
+      appliedDraftRevision: null,
+      draftDiffersFromBaseline: false,
+      mailBlockedReason: null,
+    } as Parameters<typeof buildMailSendGateDecisionForTest>[0];
+
+    const gate = buildMailSendGateDecisionForTest(decision);
+    const statusLine = formatMailLifecycleStatusLineForTest(gate.mailStatus.status, {
+      hasConfirmedBaseline: Boolean(gate.confirmedRevisionBaseline),
+      draftDiffersFromBaseline: gate.draftDiffersFromBaseline,
+    });
+
+    expect(gate.mailBlockedReason).toBeNull();
+    expect(statusLine).toBe("Mail status: **Mail Deleted / Resend Available**");
   });
 });
 
