@@ -3347,6 +3347,66 @@ function formatMailLifecycleStatusLine(
   return "Mail status: **Send Mail Available**";
 }
 
+type NonActiveMailProjectionMode = "pre_war" | "no_opponent";
+
+type NonActiveMailProjection = {
+  mode: NonActiveMailProjectionMode;
+  mailStatusEmoji: string;
+  mailStatusLine: string;
+  mailDebugLines: string[];
+  mailAction: MatchView["mailAction"] | undefined;
+};
+
+/** Purpose: project non-active mail status/action semantics shared by overview + direct single-tag renders. */
+function buildNonActiveMailProjection(params: {
+  mode: NonActiveMailProjectionMode;
+  tag: string;
+  resolvedStatus: ResolvedLiveWarMailStatus;
+  mailStatusDebugEnabled?: boolean;
+}): NonActiveMailProjection {
+  return {
+    mode: params.mode,
+    mailStatusEmoji: params.resolvedStatus.mailStatusEmoji,
+    mailStatusLine: formatMailLifecycleStatusLine(params.resolvedStatus.status),
+    mailDebugLines: params.mailStatusDebugEnabled
+      ? buildMailStatusDebugLines(params.resolvedStatus.debug)
+      : [],
+    mailAction:
+      params.mode === "no_opponent"
+        ? {
+            tag: normalizeTag(params.tag),
+            enabled: false,
+            reason: "No active war opponent.",
+          }
+        : undefined,
+  };
+}
+
+/** Purpose: resolve lifecycle and project non-active mail status/action semantics for overview + direct single-tag renders. */
+async function resolveNonActiveMailProjection(params: {
+  mode: NonActiveMailProjectionMode;
+  client: Client | null | undefined;
+  guildId: string | null;
+  tag: string;
+  warId: number | null | undefined;
+  emitDebugLog?: boolean;
+  mailStatusDebugEnabled?: boolean;
+}): Promise<NonActiveMailProjection> {
+  const resolved = await resolveLiveWarMailStatus({
+    client: params.client,
+    guildId: params.guildId,
+    tag: params.tag,
+    warId: params.warId ?? null,
+    emitDebugLog: params.emitDebugLog,
+  });
+  return buildNonActiveMailProjection({
+    mode: params.mode,
+    tag: params.tag,
+    resolvedStatus: resolved,
+    mailStatusDebugEnabled: params.mailStatusDebugEnabled,
+  });
+}
+
 /** Purpose: compute shared mail-send gating from lifecycle status + persisted baseline for one rendered war state. */
 async function resolveMailSendGateForRenderedState(params: {
   client: Client | null | undefined;
@@ -7599,6 +7659,7 @@ export const resolveWarMailFreshnessStatusForTest =
   resolveWarMailFreshnessStatus;
 export const formatMailLifecycleStatusLineForTest =
   formatMailLifecycleStatusLine;
+export const buildNonActiveMailProjectionForTest = buildNonActiveMailProjection;
 export const buildMailSendGateDecisionForTest = buildMailSendGateDecision;
 export const buildOverviewMailDecisionProjectionForTest =
   buildOverviewMailDecisionProjection;
@@ -8985,17 +9046,17 @@ async function buildTrackedMatchOverview(
     const clanTimeRemainingLine = getWarStateRemaining(war, warState);
     const sub = subByTag.get(clanTag);
     if (warState === "notInWar") {
-      const preWarMailStatus = await resolveLiveWarMailStatus({
+      const nonActiveMailProjection = await resolveNonActiveMailProjection({
+        mode: "pre_war",
         client: client ?? null,
         guildId,
         tag: clanTag,
         warId: sub?.warId ?? null,
         emitDebugLog: mailStatusDebugEnabled,
+        mailStatusDebugEnabled,
       });
-      const mailStatusEmoji = preWarMailStatus.mailStatusEmoji;
-      const preWarMailDebugLines = mailStatusDebugEnabled
-        ? buildMailStatusDebugLines(preWarMailStatus.debug)
-        : [];
+      const mailStatusEmoji = nonActiveMailProjection.mailStatusEmoji;
+      const preWarMailDebugLines = nonActiveMailProjection.mailDebugLines;
       const clanProfile = await cocService
         .getClan(`#${clanTag}`)
         .catch(() => null);
@@ -9031,7 +9092,7 @@ async function buildTrackedMatchOverview(
         `War State: **${clanWarStateLine}**`,
         `Time Remaining: **${clanTimeRemainingLine}**`,
         `Sync: **${clanSyncLine}**`,
-        formatMailLifecycleStatusLine(preWarMailStatus.status),
+        nonActiveMailProjection.mailStatusLine,
         ...preWarMailDebugLines,
       ];
       if (includeInOverview) {
@@ -9109,24 +9170,24 @@ async function buildTrackedMatchOverview(
     });
 
     if (!opponentTag) {
-      const noOpponentMailStatus = await resolveLiveWarMailStatus({
+      const nonActiveMailProjection = await resolveNonActiveMailProjection({
+        mode: "no_opponent",
         client: client ?? null,
         guildId,
         tag: clanTag,
         warId: sub?.warId ?? null,
         emitDebugLog: mailStatusDebugEnabled,
+        mailStatusDebugEnabled,
       });
-      const mailStatusEmoji = noOpponentMailStatus.mailStatusEmoji;
-      const noOpponentMailDebugLines = mailStatusDebugEnabled
-        ? buildMailStatusDebugLines(noOpponentMailStatus.debug)
-        : [];
+      const mailStatusEmoji = nonActiveMailProjection.mailStatusEmoji;
+      const noOpponentMailDebugLines = nonActiveMailProjection.mailDebugLines;
       const noOpponentHeader = `${mailStatusEmoji} | ${clanName} (#${clanTag}) vs Unknown`;
       const noOpponentLines = [
         "No active war opponent",
         `War State: **${clanWarStateLine}**`,
         `Time Remaining: **${clanTimeRemainingLine}**`,
         `Sync: **${clanSyncLine}**`,
-        formatMailLifecycleStatusLine(noOpponentMailStatus.status),
+        nonActiveMailProjection.mailStatusLine,
         ...noOpponentMailDebugLines,
       ];
       if (includeInOverview) {
@@ -9171,11 +9232,7 @@ async function buildTrackedMatchOverview(
         clanName,
         clanTag,
         mailStatusEmoji,
-        mailAction: {
-          tag: clanTag,
-          enabled: false,
-          reason: "No active war opponent.",
-        },
+        mailAction: nonActiveMailProjection.mailAction,
         skipSyncAction: sub?.matchType === "SKIP" ? null : { tag: clanTag },
         undoSkipSyncAction: sub?.matchType === "SKIP" ? { tag: clanTag } : null,
       };
@@ -12605,105 +12662,171 @@ export const Fwa: Command = {
           !opponentTag ||
           subscription?.state === "notInWar"
         ) {
-          const clanProfile = await cocService
-            .getClan(`#${tag}`)
-            .catch(() => null);
-          const memberCount = Array.isArray(clanProfile?.members)
-            ? clanProfile.members.length
-            : Number.isFinite(Number(clanProfile?.members))
-              ? Number(clanProfile?.members)
-              : null;
-          const livePoints = await getClanPointsCached(
-            settings,
-            cocService,
-            tag,
-            sourceSync,
-            warLookupCache,
-          ).catch(() => null);
-          const clanPoints =
-            livePoints?.balance ?? subscription?.fwaPoints ?? null;
-          const outOfSync =
-            subscription?.fwaPoints !== null &&
-            subscription?.fwaPoints !== undefined &&
-            livePoints?.balance !== null &&
-            livePoints?.balance !== undefined &&
-            Number(subscription.fwaPoints) !== Number(livePoints.balance);
-          const actualByTag = await getActualSheetSnapshotCached(
-            settings,
-          ).catch(() => new Map<string, ActualSheetClanSnapshot>());
-          const actual = actualByTag.get(tag) ?? null;
-          const preWarMailStatus = await resolveLiveWarMailStatus({
+          const nonActiveMode: NonActiveMailProjectionMode =
+            warState === "notInWar" || subscription?.state === "notInWar"
+              ? "pre_war"
+              : "no_opponent";
+          const nonActiveMailProjection = await resolveNonActiveMailProjection({
+            mode: nonActiveMode,
             client: interaction.client,
             guildId: interaction.guildId ?? null,
             tag,
             warId: subscription?.warId ?? null,
             emitDebugLog: matchMailStatusDebugEnabled,
+            mailStatusDebugEnabled: matchMailStatusDebugEnabled,
           });
-          const mailStatusEmoji = preWarMailStatus.mailStatusEmoji;
-          const preWarMailDebugLines = matchMailStatusDebugEnabled
-            ? buildMailStatusDebugLines(preWarMailStatus.debug)
-            : [];
+          const mailStatusEmoji = nonActiveMailProjection.mailStatusEmoji;
+          const nonActiveMailDebugLines = nonActiveMailProjection.mailDebugLines;
           const clanName =
             sanitizeClanName(trackedClanMeta?.name ?? "") ?? `#${tag}`;
-          const preWarHeader = `${mailStatusEmoji} | ${clanName} (#${tag})`;
-          const preWarLines = [
-            outOfSync
-              ? ":warning: out of sync with points site"
-              : ":white_check_mark: data in sync with points site",
-            `Clan points: **${clanPoints !== null && clanPoints !== undefined ? clanPoints : "unknown"}**`,
-            `Members: **${memberCount ?? "?"}/50**`,
-            `Total weight (ACTUAL): **${actual?.totalWeight ?? "unknown"}**`,
-            `Weight compo (ACTUAL): ${actual?.weightCompo ?? "unknown"}`,
-            `Weight deltas (ACTUAL): ${actual?.weightDeltas ?? "unknown"}`,
-            `Compo advice (ACTUAL): ${actual?.compoAdvice ?? "none"}`,
-            `War State: **${formatWarStateLabel(warState)}**`,
-            `Time Remaining: **${warRemaining}**`,
-            `Sync: **${withSyncModeLabel(getSyncDisplay(sourceSync, warState), sourceSync)}**`,
-            formatMailLifecycleStatusLine(preWarMailStatus.status),
-            ...preWarMailDebugLines,
-          ];
-          const singleView: MatchView = {
-            embed: new EmbedBuilder()
-              .setTitle(preWarHeader)
-              .setDescription(preWarLines.join("\n"))
-              .setColor(
-                resolveSingleClanMatchEmbedColor({
-                  effectiveMatchType:
-                    (subscription?.matchType as
-                      | "FWA"
-                      | "BL"
-                      | "MM"
-                      | "SKIP"
-                      | "UNKNOWN"
-                      | null
-                      | undefined) ?? "UNKNOWN",
-                  effectiveExpectedOutcome: null,
-                }),
+
+          let singleView: MatchView;
+          if (nonActiveMode === "no_opponent") {
+            singleView = {
+              embed: new EmbedBuilder()
+                .setTitle(`${mailStatusEmoji} | ${clanName} (#${tag}) vs Unknown`)
+                .setDescription(
+                  [
+                    "No active war opponent",
+                    `War State: **${formatWarStateLabel(warState)}**`,
+                    `Time Remaining: **${warRemaining}**`,
+                    `Sync: **${withSyncModeLabel(getSyncDisplay(sourceSync, warState), sourceSync)}**`,
+                    nonActiveMailProjection.mailStatusLine,
+                    ...nonActiveMailDebugLines,
+                  ].join("\n"),
+                )
+                .setColor(
+                  resolveSingleClanMatchEmbedColor({
+                    effectiveMatchType:
+                      (subscription?.matchType as
+                        | "FWA"
+                        | "BL"
+                        | "MM"
+                        | "SKIP"
+                        | "UNKNOWN"
+                        | null
+                        | undefined) ?? "UNKNOWN",
+                    effectiveExpectedOutcome: null,
+                  }),
+                ),
+              copyText: limitDiscordContent(
+                [
+                  `# ${mailStatusEmoji} | ${clanName} (#${tag}) vs Unknown`,
+                  "No active war opponent",
+                  `War State: ${formatWarStateLabel(warState)}`,
+                  `Time Remaining: ${warRemaining}`,
+                  `Sync: ${withSyncModeLabel(getSyncDisplay(sourceSync, warState), sourceSync)}`,
+                  nonActiveMailProjection.mailStatusLine.replace(/\*\*/g, ""),
+                  ...nonActiveMailDebugLines,
+                ].join("\n"),
               ),
-            copyText: limitDiscordContent(
-              [`# ${preWarHeader}`, ...preWarLines].join("\n"),
-            ),
-            matchTypeAction: null,
-            matchTypeCurrent:
-              (subscription?.matchType as
-                | "FWA"
-                | "BL"
-                | "MM"
-                | "SKIP"
-                | null
-                | undefined) ?? null,
-            inferredMatchType: false,
-            outcomeAction: null,
-            syncAction: null,
-            clanName,
-            clanTag: tag,
-            mailStatusEmoji,
-            skipSyncAction: subscription?.matchType === "SKIP" ? null : { tag },
-            undoSkipSyncAction:
-              subscription?.matchType === "SKIP" ? { tag } : null,
-          };
+              matchTypeAction: null,
+              matchTypeCurrent:
+                (subscription?.matchType as
+                  | "FWA"
+                  | "BL"
+                  | "MM"
+                  | "SKIP"
+                  | null
+                  | undefined) ?? null,
+              inferredMatchType: false,
+              outcomeAction: null,
+              syncAction: null,
+              clanName,
+              clanTag: tag,
+              mailStatusEmoji,
+              mailAction: nonActiveMailProjection.mailAction,
+              skipSyncAction: subscription?.matchType === "SKIP" ? null : { tag },
+              undoSkipSyncAction:
+                subscription?.matchType === "SKIP" ? { tag } : null,
+            };
+          } else {
+            const clanProfile = await cocService
+              .getClan(`#${tag}`)
+              .catch(() => null);
+            const memberCount = Array.isArray(clanProfile?.members)
+              ? clanProfile.members.length
+              : Number.isFinite(Number(clanProfile?.members))
+                ? Number(clanProfile?.members)
+                : null;
+            const livePoints = await getClanPointsCached(
+              settings,
+              cocService,
+              tag,
+              sourceSync,
+              warLookupCache,
+            ).catch(() => null);
+            const clanPoints = livePoints?.balance ?? subscription?.fwaPoints ?? null;
+            const outOfSync =
+              subscription?.fwaPoints !== null &&
+              subscription?.fwaPoints !== undefined &&
+              livePoints?.balance !== null &&
+              livePoints?.balance !== undefined &&
+              Number(subscription.fwaPoints) !== Number(livePoints.balance);
+            const actualByTag = await getActualSheetSnapshotCached(
+              settings,
+            ).catch(() => new Map<string, ActualSheetClanSnapshot>());
+            const actual = actualByTag.get(tag) ?? null;
+            const preWarHeader = `${mailStatusEmoji} | ${clanName} (#${tag})`;
+            const preWarLines = [
+              outOfSync
+                ? ":warning: out of sync with points site"
+                : ":white_check_mark: data in sync with points site",
+              `Clan points: **${clanPoints !== null && clanPoints !== undefined ? clanPoints : "unknown"}**`,
+              `Members: **${memberCount ?? "?"}/50**`,
+              `Total weight (ACTUAL): **${actual?.totalWeight ?? "unknown"}**`,
+              `Weight compo (ACTUAL): ${actual?.weightCompo ?? "unknown"}`,
+              `Weight deltas (ACTUAL): ${actual?.weightDeltas ?? "unknown"}`,
+              `Compo advice (ACTUAL): ${actual?.compoAdvice ?? "none"}`,
+              `War State: **${formatWarStateLabel(warState)}**`,
+              `Time Remaining: **${warRemaining}**`,
+              `Sync: **${withSyncModeLabel(getSyncDisplay(sourceSync, warState), sourceSync)}**`,
+              nonActiveMailProjection.mailStatusLine,
+              ...nonActiveMailDebugLines,
+            ];
+            singleView = {
+              embed: new EmbedBuilder()
+                .setTitle(preWarHeader)
+                .setDescription(preWarLines.join("\n"))
+                .setColor(
+                  resolveSingleClanMatchEmbedColor({
+                    effectiveMatchType:
+                      (subscription?.matchType as
+                        | "FWA"
+                        | "BL"
+                        | "MM"
+                        | "SKIP"
+                        | "UNKNOWN"
+                        | null
+                        | undefined) ?? "UNKNOWN",
+                    effectiveExpectedOutcome: null,
+                  }),
+                ),
+              copyText: limitDiscordContent(
+                [`# ${preWarHeader}`, ...preWarLines].join("\n"),
+              ),
+              matchTypeAction: null,
+              matchTypeCurrent:
+                (subscription?.matchType as
+                  | "FWA"
+                  | "BL"
+                  | "MM"
+                  | "SKIP"
+                  | null
+                  | undefined) ?? null,
+              inferredMatchType: false,
+              outcomeAction: null,
+              syncAction: null,
+              clanName,
+              clanTag: tag,
+              mailStatusEmoji,
+              skipSyncAction: subscription?.matchType === "SKIP" ? null : { tag },
+              undoSkipSyncAction:
+                subscription?.matchType === "SKIP" ? { tag } : null,
+            };
+          }
           console.info(
-            `[fwa-match-payload] stage=command_build scope=scoped guild=${interaction.guildId ?? "none"} source=single_tag_prewar tag=#${tag}`,
+            `[fwa-match-payload] stage=command_build scope=scoped guild=${interaction.guildId ?? "none"} source=${nonActiveMode === "no_opponent" ? "single_tag_no_opponent" : "single_tag_prewar"} tag=#${tag}`,
           );
           fwaMatchCopyPayloads.set(key, {
             userId: interaction.user.id,
