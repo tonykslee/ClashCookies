@@ -1303,8 +1303,10 @@ function buildSingleClanMatchLinks(input: {
   };
 }
 
+const INFERRED_MATCHTYPE_MAIL_BLOCK_REASON =
+  "Match type is inferred. Confirm match type before sending mail.";
 const MATCHTYPE_WARNING_LEGEND =
-  ":warning: Match type is inferred. Confirm match type before sending mail.";
+  `:warning: ${INFERRED_MATCHTYPE_MAIL_BLOCK_REASON}`;
 const POINTS_CLAN_NOT_FOUND_STATUS_LINE =
   ":interrobang: Clan not found on points.fwafarm";
 
@@ -1816,7 +1818,7 @@ function getMailBlockedReasonFromRevisionState(params: {
     return "Mail channel is not configured. Use /tracked-clan configure with a mail channel.";
   }
   if (params.inferredMatchType) {
-    return "Match type is inferred. Confirm match type before sending mail.";
+    return INFERRED_MATCHTYPE_MAIL_BLOCK_REASON;
   }
   if (params.mailStatus === "posted") {
     if (!params.hasConfirmedBaseline) return null;
@@ -1824,6 +1826,22 @@ function getMailBlockedReasonFromRevisionState(params: {
     return "Current mail is already up to date. Change match config before sending again.";
   }
   return null;
+}
+
+/** Purpose: avoid duplicate inferred-warning rendering when shared mail gate already emits the same reason. */
+function buildInferredMatchWarningLines(params: {
+  inferredMatchType: boolean;
+  mailBlockedReason: string | null | undefined;
+  includeSpacer?: boolean;
+}): string[] {
+  if (!params.inferredMatchType) return [];
+  if (params.mailBlockedReason === INFERRED_MATCHTYPE_MAIL_BLOCK_REASON) {
+    return [];
+  }
+  if (params.includeSpacer) {
+    return [MATCHTYPE_WARNING_LEGEND, "\u200B"];
+  }
+  return [MATCHTYPE_WARNING_LEGEND];
 }
 
 /** Purpose: keep inferred-match warnings visible until the user explicitly applies a draft/confirmation. */
@@ -7673,6 +7691,8 @@ export const formatMailLifecycleStatusLineForTest =
   formatMailLifecycleStatusLine;
 export const buildNonActiveMailProjectionForTest = buildNonActiveMailProjection;
 export const buildMailSendGateDecisionForTest = buildMailSendGateDecision;
+export const buildInferredMatchWarningLinesForTest =
+  buildInferredMatchWarningLines;
 export const buildOverviewMailDecisionProjectionForTest =
   buildOverviewMailDecisionProjection;
 export const buildWarMailStatusDebugSnapshotForTest =
@@ -9678,6 +9698,11 @@ async function buildTrackedMatchOverview(
     const mailStatusEmoji = liveMailStatus.mailStatusEmoji;
     const mailBlockedReason = mailProjection.mailBlockedReason;
     const mailBlockedReasonLine = mailProjection.mailBlockedReasonLine;
+    const inferredWarningLines = buildInferredMatchWarningLines({
+      inferredMatchType: effectiveInferredMatchType,
+      mailBlockedReason,
+      includeSpacer: true,
+    });
     const mailLifecycleStatusLine = mailProjection.mailLifecycleStatusLine;
     const mailDebugLines = mailStatusDebugEnabled
       ? buildMailStatusDebugLines(liveMailStatus.debug)
@@ -9798,8 +9823,7 @@ async function buildTrackedMatchOverview(
     const singleDescription = [
       pointsSyncStatus,
       storedSyncSummary.stateLine,
-      effectiveInferredMatchType ? MATCHTYPE_WARNING_LEGEND : "",
-      effectiveInferredMatchType ? "\u200B" : "",
+      ...inferredWarningLines,
       mailBlockedReasonLine ?? "",
       mailLifecycleStatusLine,
       `Match Type: **${effectiveMatchType}${effectiveInferredMatchType ? " :warning:" : ""}**${
@@ -9885,7 +9909,10 @@ async function buildTrackedMatchOverview(
             outcome: effectiveExpectedOutcome ?? "UNKNOWN",
             mailStatusEmoji,
           })}`,
-          effectiveInferredMatchType ? MATCHTYPE_WARNING_LEGEND : "",
+          ...buildInferredMatchWarningLines({
+            inferredMatchType: effectiveInferredMatchType,
+            mailBlockedReason,
+          }),
           pointsSyncStatus,
           storedSyncSummary.stateLine,
           mailLifecycleStatusLine.replace(/\*\*/g, ""),
@@ -13297,6 +13324,15 @@ export const Fwa: Command = {
         );
         const mailBlockedReasonLine =
           formatMailBlockedReason(mailBlockedReason);
+        const inferredWarningLines = buildInferredMatchWarningLines({
+          inferredMatchType,
+          mailBlockedReason,
+          includeSpacer: true,
+        });
+        const inferredWarningCopyLines = buildInferredMatchWarningLines({
+          inferredMatchType,
+          mailBlockedReason,
+        });
         const mailDebugLines = matchMailStatusDebugEnabled
           ? buildMailStatusDebugLines(liveMailStatus.debug)
           : [];
@@ -13328,7 +13364,7 @@ export const Fwa: Command = {
           "opponent",
         );
         const singleDescription = [
-          inferredMatchType ? `${MATCHTYPE_WARNING_LEGEND}\n\u200B` : "",
+          ...inferredWarningLines,
           `Match Type: **${matchTypeText}**${verifyLink ? ` ${verifyLink}` : ""}`,
           outcomeLine ? `Expected outcome: **${outcomeLine}**` : "",
           siteStatusLine,
@@ -13377,7 +13413,7 @@ export const Fwa: Command = {
         const copyText = limitDiscordContent(
           [
             `# ${singleHeader}`,
-            inferredMatchType ? MATCHTYPE_WARNING_LEGEND : "",
+            ...inferredWarningCopyLines,
             siteStatusLine,
             storedSyncSummary.stateLine,
             mailStatusLine.replace(/\*\*/g, ""),

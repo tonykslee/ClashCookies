@@ -7,6 +7,7 @@ import {
   buildDraftFromMatchTypeSelectionForTest,
   buildEffectiveMatchMismatchWarningsForTest,
   buildMailSendGateDecisionForTest,
+  buildInferredMatchWarningLinesForTest,
   buildNonActiveMailProjectionForTest,
   buildOverviewMailDecisionProjectionForTest,
   formatMailLifecycleStatusLineForTest,
@@ -261,6 +262,41 @@ describe("fwa inferred warning visibility", () => {
         },
       })
     ).toBe(false);
+  });
+});
+
+describe("fwa inferred warning rendering", () => {
+  it("suppresses standalone inferred warning when inferred block reason is already present", () => {
+    const lines = buildInferredMatchWarningLinesForTest({
+      inferredMatchType: true,
+      mailBlockedReason: "Match type is inferred. Confirm match type before sending mail.",
+      includeSpacer: true,
+    });
+
+    expect(lines).toEqual([]);
+  });
+
+  it("renders standalone inferred warning when inferred and no inferred-block reason is present", () => {
+    const lines = buildInferredMatchWarningLinesForTest({
+      inferredMatchType: true,
+      mailBlockedReason: null,
+      includeSpacer: true,
+    });
+
+    expect(lines).toEqual([
+      ":warning: Match type is inferred. Confirm match type before sending mail.",
+      "\u200B",
+    ]);
+  });
+
+  it("does not render inferred warning lines for confirmed match type", () => {
+    const lines = buildInferredMatchWarningLinesForTest({
+      inferredMatchType: false,
+      mailBlockedReason: "Match type is inferred. Confirm match type before sending mail.",
+      includeSpacer: true,
+    });
+
+    expect(lines).toEqual([]);
   });
 });
 
