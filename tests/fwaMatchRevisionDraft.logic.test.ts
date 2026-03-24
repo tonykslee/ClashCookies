@@ -7,6 +7,7 @@ import {
   buildDraftFromMatchTypeSelectionForTest,
   buildEffectiveMatchMismatchWarningsForTest,
   buildMailSendGateDecisionForTest,
+  buildNonActiveMailProjectionForTest,
   buildOverviewMailDecisionProjectionForTest,
   formatMailLifecycleStatusLineForTest,
   getMailBlockedReasonFromRevisionStateForTest,
@@ -614,6 +615,57 @@ describe("fwa mail revision decision contract projection", () => {
       "Mail status: **Send Mail Available**"
     );
     expect(projection.mailActionEnabled).toBe(true);
+  });
+
+  it("aligns pre-war status/action semantics across overview and direct projections", () => {
+    const projection = buildNonActiveMailProjectionForTest({
+      mode: "pre_war",
+      tag: "2RYGLU2UY",
+      resolvedStatus: {
+        status: "not_posted",
+        mailStatusEmoji: ":mailbox_with_no_mail:",
+        debug: {},
+      },
+      mailStatusDebugEnabled: false,
+    } as Parameters<typeof buildNonActiveMailProjectionForTest>[0]);
+
+    expect(projection.mailStatusLine).toBe("Mail status: **Send Mail Available**");
+    expect(projection.mailAction).toBeUndefined();
+  });
+
+  it("aligns no-opponent status/action semantics across overview and direct projections", () => {
+    const projection = buildNonActiveMailProjectionForTest({
+      mode: "no_opponent",
+      tag: "2RYGLU2UY",
+      resolvedStatus: {
+        status: "posted",
+        mailStatusEmoji: ":mailbox_with_mail:",
+        debug: {},
+      },
+      mailStatusDebugEnabled: false,
+    } as Parameters<typeof buildNonActiveMailProjectionForTest>[0]);
+
+    expect(projection.mailStatusLine).toBe("Mail status: **Mail Sent**");
+    expect(projection.mailAction).toEqual({
+      tag: "2RYGLU2UY",
+      enabled: false,
+      reason: "No active war opponent.",
+    });
+  });
+
+  it("keeps non-active projection intentionally separate from active-war freshness semantics", () => {
+    const projection = buildNonActiveMailProjectionForTest({
+      mode: "pre_war",
+      tag: "2RYGLU2UY",
+      resolvedStatus: {
+        status: "posted",
+        mailStatusEmoji: ":mailbox_with_mail:",
+        debug: {},
+      },
+      mailStatusDebugEnabled: false,
+    } as Parameters<typeof buildNonActiveMailProjectionForTest>[0]);
+
+    expect(projection.mailStatusLine).toBe("Mail status: **Mail Sent**");
   });
 });
 
