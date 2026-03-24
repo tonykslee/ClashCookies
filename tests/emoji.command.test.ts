@@ -710,9 +710,13 @@ describe("/emoji command", () => {
       page: 0,
     });
     const json = embed.toJSON();
-    expect(json.fields).toHaveLength(5);
+    expect(json.fields).toHaveLength(3);
     expect(json.fields?.every((field) => field.inline === true)).toBe(true);
-    expect(String(json.fields?.[4]?.value ?? "")).toContain(":echo:");
+    expect(String(json.fields?.[0]?.value ?? "")).toContain(":alpha:");
+    expect(String(json.fields?.[0]?.value ?? "")).toContain(":delta:");
+    expect(String(json.fields?.[1]?.value ?? "")).toContain(":bravo:");
+    expect(String(json.fields?.[1]?.value ?? "")).toContain(":echo:");
+    expect(String(json.fields?.[2]?.value ?? "")).toContain(":charlie:");
   });
 
   it("ignores react when name is omitted and keeps list mode", async () => {
