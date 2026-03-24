@@ -7,6 +7,7 @@ import {
   buildDraftFromMatchTypeSelectionForTest,
   buildEffectiveMatchMismatchWarningsForTest,
   buildMailSendGateDecisionForTest,
+  buildOverviewMailDecisionProjectionForTest,
   formatMailLifecycleStatusLineForTest,
   getMailBlockedReasonFromRevisionStateForTest,
   isPointsValidationCurrentForMatchupForTest,
@@ -493,6 +494,126 @@ describe("fwa mail revision decision contract projection", () => {
 
     expect(gate.mailBlockedReason).toBeNull();
     expect(statusLine).toBe("Mail status: **Mail Deleted / Resend Available**");
+  });
+
+  it("keeps overview active-war status/action aligned with posted up-to-date decisions", () => {
+    const projection = buildOverviewMailDecisionProjectionForTest({
+      inferredMatchType: true,
+      decision: {
+        mailStatus: {
+          status: "posted",
+          mailStatusEmoji: ":mailbox_with_mail:",
+          debug: {},
+        },
+        liveRevisionFields: {
+          warId: "1001",
+          opponentTag: "2TAG",
+          matchType: "FWA",
+          expectedOutcome: "WIN",
+        },
+        confirmedRevisionBaseline: {
+          warId: "1001",
+          opponentTag: "2TAG",
+          matchType: "FWA",
+          expectedOutcome: "WIN",
+        },
+        effectiveRevisionFields: {
+          warId: "1001",
+          opponentTag: "2TAG",
+          matchType: "FWA",
+          expectedOutcome: "WIN",
+        },
+        appliedDraftRevision: null,
+        draftDiffersFromBaseline: false,
+        mailBlockedReason:
+          "Current mail is already up to date. Change match config before sending again.",
+      },
+    } as Parameters<typeof buildOverviewMailDecisionProjectionForTest>[0]);
+
+    expect(projection.mailLifecycleStatusLine).toBe(
+      "Mail status: **Mail Sent (Up to Date)**"
+    );
+    expect(projection.mailActionEnabled).toBe(false);
+    expect(projection.effectiveInferredMatchType).toBe(true);
+  });
+
+  it("enables action when a same-war draft differs from the posted baseline", () => {
+    const projection = buildOverviewMailDecisionProjectionForTest({
+      inferredMatchType: true,
+      decision: {
+        mailStatus: {
+          status: "posted",
+          mailStatusEmoji: ":mailbox_with_mail:",
+          debug: {},
+        },
+        liveRevisionFields: {
+          warId: "1001",
+          opponentTag: "2TAG",
+          matchType: "FWA",
+          expectedOutcome: "LOSE",
+        },
+        confirmedRevisionBaseline: {
+          warId: "1001",
+          opponentTag: "2TAG",
+          matchType: "FWA",
+          expectedOutcome: "WIN",
+        },
+        effectiveRevisionFields: {
+          warId: "1001",
+          opponentTag: "2TAG",
+          matchType: "BL",
+          expectedOutcome: null,
+        },
+        appliedDraftRevision: {
+          warId: "1001",
+          opponentTag: "2TAG",
+          matchType: "BL",
+          expectedOutcome: null,
+        },
+        draftDiffersFromBaseline: true,
+        mailBlockedReason: null,
+      },
+    } as Parameters<typeof buildOverviewMailDecisionProjectionForTest>[0]);
+
+    expect(projection.mailLifecycleStatusLine).toBe(
+      "Mail status: **Mail Sent (Out of Date)**"
+    );
+    expect(projection.mailActionEnabled).toBe(true);
+    expect(projection.effectiveInferredMatchType).toBe(false);
+  });
+
+  it("keeps not-posted status semantics unchanged for pre-war/no-opponent paths", () => {
+    const projection = buildOverviewMailDecisionProjectionForTest({
+      inferredMatchType: false,
+      decision: {
+        mailStatus: {
+          status: "not_posted",
+          mailStatusEmoji: ":mailbox_with_no_mail:",
+          debug: {},
+        },
+        liveRevisionFields: {
+          warId: "1001",
+          opponentTag: "2TAG",
+          matchType: "BL",
+          expectedOutcome: null,
+        },
+        confirmedRevisionBaseline: null,
+        effectiveRevisionFields: {
+          warId: "1001",
+          opponentTag: "2TAG",
+          matchType: "BL",
+          expectedOutcome: null,
+        },
+        appliedDraftRevision: null,
+        draftDiffersFromBaseline: false,
+        mailBlockedReason: null,
+      },
+    } as Parameters<typeof buildOverviewMailDecisionProjectionForTest>[0]);
+
+    expect(projection.mailLifecycleStatusLine).toBe(
+      "Mail status: **Send Mail Available**"
+    );
+    expect(projection.mailActionEnabled).toBe(true);
   });
 });
 
