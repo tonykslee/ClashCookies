@@ -1304,7 +1304,7 @@ function buildSingleClanMatchLinks(input: {
 }
 
 const MATCHTYPE_WARNING_LEGEND =
-  ":warning: Match type is inferred. Sending is still allowed, but confirm before posting if this looks wrong.";
+  ":warning: Match type is inferred. Confirm match type before sending mail.";
 const POINTS_CLAN_NOT_FOUND_STATUS_LINE =
   ":interrobang: Clan not found on points.fwafarm";
 
@@ -1814,6 +1814,9 @@ function getMailBlockedReasonFromRevisionState(params: {
 }): string | null {
   if (!params.hasMailChannel) {
     return "Mail channel is not configured. Use /tracked-clan configure with a mail channel.";
+  }
+  if (params.inferredMatchType) {
+    return "Match type is inferred. Confirm match type before sending mail.";
   }
   if (params.mailStatus === "posted") {
     if (!params.hasConfirmedBaseline) return null;
