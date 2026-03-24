@@ -348,7 +348,7 @@ describe("fwa match posted mail gating with revisions", () => {
     expect(reason).toBeNull();
   });
 
-  it("allows draft-confirmed send for inferred not-posted state", () => {
+  it("blocks send for inferred not-posted state even when a draft is present", () => {
     const reason = getMailBlockedReasonFromRevisionStateForTest({
       inferredMatchType: true,
       hasMailChannel: true,
@@ -360,6 +360,21 @@ describe("fwa match posted mail gating with revisions", () => {
         expectedOutcome: "LOSE",
       },
       draftDiffersFromBaseline: true,
+      hasConfirmedBaseline: false,
+    });
+
+    expect(reason).toBe(
+      "Match type is inferred. Confirm match type before sending mail."
+    );
+  });
+
+  it("allows normal not-posted send gating once match type is confirmed", () => {
+    const reason = getMailBlockedReasonFromRevisionStateForTest({
+      inferredMatchType: false,
+      hasMailChannel: true,
+      mailStatus: "not_posted",
+      appliedDraft: null,
+      draftDiffersFromBaseline: false,
       hasConfirmedBaseline: false,
     });
 
