@@ -221,6 +221,9 @@ describe("WeightInputDefermentService lifecycle processing", () => {
       "<@&role-global-leader>",
     );
     expect(String(send.mock.calls[0]?.[0]?.content)).toContain("Current clan: Bravo (#BBB222)");
+    expect(String(send.mock.calls[0]?.[0]?.content)).toContain(
+      "<https://fwastats.com/Clan/BBB222/Weight>",
+    );
     expect(String(send.mock.calls[0]?.[0]?.content)).not.toContain("<@&role-1>");
     expect(String(send.mock.calls[0]?.[0]?.content)).not.toContain(
       "<@&role-lead-2>",
