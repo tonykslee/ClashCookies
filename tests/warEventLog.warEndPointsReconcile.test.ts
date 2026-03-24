@@ -912,8 +912,9 @@ describe("War-ended sync and metadata canonicalization", () => {
       .mockResolvedValue({ allowed: true, existingMessage: null, warId: "1001303" });
     const emitSpy = vi.spyOn(service as any, "emitEvent").mockResolvedValue(undefined);
 
+    const persistSpy = vi.fn().mockResolvedValue(undefined);
     (service as any).history = {
-      persistWarEndHistory: vi.fn().mockResolvedValue(undefined),
+      persistWarEndHistory: persistSpy,
       resolveCanonicalWarEndedContext: vi.fn().mockResolvedValue({
         warId: 1001303,
         syncNumber: 477,
@@ -948,6 +949,8 @@ describe("War-ended sync and metadata canonicalization", () => {
     expect(emitSpy).toHaveBeenCalledTimes(1);
     expect(emitSpy.mock.calls[0]?.[2]).toBe(1001303);
     expect(emitSpy.mock.calls[0]?.[1]?.syncNumber).toBe(477);
+    expect(persistSpy).toHaveBeenCalledTimes(1);
+    expect(persistSpy.mock.calls[0]?.[0]?.guildId).toBe("guild-1");
   });
 
   it("recomputes canonical war-ended expected points before live emit", async () => {
@@ -1010,6 +1013,8 @@ describe("War-ended sync and metadata canonicalization", () => {
     expect(emitSpy.mock.calls[0]?.[1]?.warEndFwaPoints).toBe(8);
     expect(emitSpy.mock.calls[0]?.[1]?.testFinalResultOverride?.resultLabel).toBe("WIN");
     expect(persistSpy).toHaveBeenCalledTimes(2);
+    expect(persistSpy.mock.calls[0]?.[0]?.guildId).toBe("guild-1");
+    expect(persistSpy.mock.calls[1]?.[0]?.guildId).toBe("guild-1");
     expect(persistSpy.mock.calls[1]?.[0]?.warEndFwaPoints).toBe(8);
   });
 

@@ -15,7 +15,10 @@ import {
   resolveActiveWarTimingForTest,
   sanitizeWarPlanForEmbedForTest,
 } from "../src/services/WarEventLogService";
-import { WarEventHistoryService } from "../src/services/war-events/history";
+import {
+  resolveParticipationGuildId,
+  WarEventHistoryService,
+} from "../src/services/war-events/history";
 
 function dateAt(hour: number): Date {
   return new Date(Date.UTC(2026, 0, 1, hour, 0, 0));
@@ -59,6 +62,35 @@ describe("War-end metadata value", () => {
         timestampUnix: 1773407400,
       })
     ).toBe("War ID: 1000055 - Sync: 476 - <t:1773407400:F>");
+  });
+});
+
+describe("WarEventHistoryService participation guild resolution", () => {
+  it("prefers payload guild over snapshot guild to avoid cross-guild writes", () => {
+    expect(
+      resolveParticipationGuildId({
+        payloadGuildId: "prod-guild",
+        snapshotGuildId: "staging-guild",
+      }),
+    ).toBe("prod-guild");
+  });
+
+  it("falls back to snapshot guild when payload guild is unavailable", () => {
+    expect(
+      resolveParticipationGuildId({
+        payloadGuildId: "",
+        snapshotGuildId: "snapshot-guild",
+      }),
+    ).toBe("snapshot-guild");
+  });
+
+  it("returns null when neither guild source is available", () => {
+    expect(
+      resolveParticipationGuildId({
+        payloadGuildId: null,
+        snapshotGuildId: undefined,
+      }),
+    ).toBeNull();
   });
 });
 

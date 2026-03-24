@@ -2866,7 +2866,12 @@ export class WarEventLogService {
     let payloadForDelivery = params.payload;
     let resolvedWarIdForDelivery = params.resolvedWarId;
     if (params.payload.eventType === "war_ended") {
-      await this.history.persistWarEndHistory(params.payload).catch((err) => {
+      await this.history
+        .persistWarEndHistory({
+          ...params.payload,
+          guildId: params.sub.guildId,
+        })
+        .catch((err) => {
         console.error(
           `[war-events] persist war history failed guild=${params.sub.guildId} clan=${params.sub.clanTag} error=${formatError(err)}`
         );
@@ -2897,11 +2902,16 @@ export class WarEventLogService {
         testFinalResultOverride: canonicalFinalResult,
       };
       if (payloadForDelivery.warEndFwaPoints !== params.payload.warEndFwaPoints) {
-        await this.history.persistWarEndHistory(payloadForDelivery).catch((err) => {
-          console.error(
-            `[war-events] persist canonical war history failed guild=${params.sub.guildId} clan=${params.sub.clanTag} error=${formatError(err)}`
-          );
-        });
+        await this.history
+          .persistWarEndHistory({
+            ...payloadForDelivery,
+            guildId: params.sub.guildId,
+          })
+          .catch((err) => {
+            console.error(
+              `[war-events] persist canonical war history failed guild=${params.sub.guildId} clan=${params.sub.clanTag} error=${formatError(err)}`
+            );
+          });
       }
     }
     if (!params.sub.notify || !params.sub.channelId) return;
