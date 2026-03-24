@@ -324,6 +324,33 @@ function resolveInteractionVisibility(
   return "private";
 }
 
+/** Purpose: keep /emoji user-specific failures ephemeral, even when the command was deferred publicly. */
+async function replyEmojiUserError(params: {
+  interaction: ChatInputCommandInteraction;
+  visibilityState: "private" | "public";
+  content: string;
+}): Promise<void> {
+  const payload = {
+    content: params.content,
+    embeds: [],
+    components: [],
+  };
+  if (params.visibilityState === "public") {
+    const sentEphemeral = await params.interaction
+      .followUp({
+        ...payload,
+        ephemeral: true,
+      })
+      .then(() => true)
+      .catch(() => false);
+    if (sentEphemeral) {
+      await params.interaction.deleteReply().catch(() => undefined);
+      return;
+    }
+  }
+  await params.interaction.editReply(payload);
+}
+
 /** Purpose: map resolver failure code to the most accurate user-facing /emoji error response. */
 function buildEmojiFailureMessage(code: EmojiResolverFailureCode): string {
   if (code === "application_missing" || code === "application_emoji_manager_unavailable") {
@@ -493,11 +520,11 @@ export const Emoji: Command = {
         create_result: "validation_failed",
         failure_code: "invalid_emoji_input",
       });
-      await interaction.editReply({
+      await replyEmojiUserError({
+        interaction,
+        visibilityState,
         content:
           "To add an application emoji, provide both `emoji` and `short-code`.",
-        embeds: [],
-        components: [],
       });
       return;
     }
@@ -518,11 +545,11 @@ export const Emoji: Command = {
         create_result: "validation_failed",
         failure_code: "invalid_emoji_input",
       });
-      await interaction.editReply({
+      await replyEmojiUserError({
+        interaction,
+        visibilityState,
         content:
           "Use either add options (`emoji` + `short-code`) or resolve/react options (`name`/`react`), not both.",
-        embeds: [],
-        components: [],
       });
       return;
     }
@@ -541,10 +568,10 @@ export const Emoji: Command = {
         resolve_result: "invalid_name",
         failure_code: "invalid_emoji_name",
       });
-      await interaction.editReply({
+      await replyEmojiUserError({
+        interaction,
+        visibilityState,
         content: "Please provide a valid emoji name.",
-        embeds: [],
-        components: [],
       });
       return;
     }
@@ -569,10 +596,10 @@ export const Emoji: Command = {
             create_result: "permission_denied",
             failure_code: "permission_denied",
           });
-          await interaction.editReply({
+          await replyEmojiUserError({
+            interaction,
+            visibilityState,
             content: "You do not have permission to use /emoji add.",
-            embeds: [],
-            components: [],
           });
           return;
         }
@@ -591,11 +618,11 @@ export const Emoji: Command = {
             create_result: "validation_failed",
             failure_code: "invalid_shortcode",
           });
-          await interaction.editReply({
+          await replyEmojiUserError({
+            interaction,
+            visibilityState,
             content:
               "Please provide a valid shortcode using letters, numbers, or underscores (2-32 chars).",
-            embeds: [],
-            components: [],
           });
           return;
         }
@@ -618,13 +645,13 @@ export const Emoji: Command = {
             create_result: "validation_failed",
             failure_code: failureCode,
           });
-          await interaction.editReply({
+          await replyEmojiUserError({
+            interaction,
+            visibilityState,
             content:
               failureCode === "unsupported_unicode_emoji"
                 ? "Unicode emoji input is not supported for `/emoji add` yet. Use a custom emoji token like `<:name:id>` or a direct image URL."
                 : "Invalid emoji input. Use a custom emoji token like `<:name:id>` or a direct image URL.",
-            embeds: [],
-            components: [],
           });
           return;
         }
@@ -657,10 +684,10 @@ export const Emoji: Command = {
             create_result: "inventory_unavailable",
             failure_code: "emoji_inventory_unavailable",
           });
-          await interaction.editReply({
+          await replyEmojiUserError({
+            interaction,
+            visibilityState,
             content: buildEmojiFailureMessage(inventory.code),
-            embeds: [],
-            components: [],
           });
           return;
         }
@@ -684,10 +711,10 @@ export const Emoji: Command = {
             create_result: "duplicate_shortcode",
             failure_code: "duplicate_shortcode",
           });
-          await interaction.editReply({
+          await replyEmojiUserError({
+            interaction,
+            visibilityState,
             content: `Shortcode \`${normalizedShortCode}\` already exists as ${existingByName.rendered}.`,
-            embeds: [],
-            components: [],
           });
           return;
         }
@@ -708,13 +735,13 @@ export const Emoji: Command = {
             create_result: "image_source_failed",
             failure_code: download.code,
           });
-          await interaction.editReply({
+          await replyEmojiUserError({
+            interaction,
+            visibilityState,
             content:
               download.code === "image_download_failed"
                 ? "Could not download the emoji image from that source."
                 : "That source did not resolve to a valid image.",
-            embeds: [],
-            components: [],
           });
           return;
         }
@@ -735,10 +762,10 @@ export const Emoji: Command = {
             create_result: "application_unavailable",
             failure_code: "application_unavailable",
           });
-          await interaction.editReply({
+          await replyEmojiUserError({
+            interaction,
+            visibilityState,
             content: "Could not load bot application state right now.",
-            embeds: [],
-            components: [],
           });
           return;
         }
@@ -758,10 +785,10 @@ export const Emoji: Command = {
             create_result: "application_emoji_manager_unavailable",
             failure_code: "application_emoji_manager_unavailable",
           });
-          await interaction.editReply({
+          await replyEmojiUserError({
+            interaction,
+            visibilityState,
             content: "Application emoji manager is unavailable in this runtime.",
-            embeds: [],
-            components: [],
           });
           return;
         }
@@ -790,13 +817,13 @@ export const Emoji: Command = {
             create_result: "failed",
             failure_code: failureCode,
           });
-          await interaction.editReply({
+          await replyEmojiUserError({
+            interaction,
+            visibilityState,
             content:
               failureCode === "application_emoji_inventory_full"
                 ? "Could not add emoji because this application emoji inventory is full."
                 : "Discord rejected the emoji create request. Verify the image and try again.",
-            embeds: [],
-            components: [],
           });
           return;
         }
@@ -869,10 +896,10 @@ export const Emoji: Command = {
           result_type: mode === "resolve" ? "emoji_inventory_unavailable" : "",
           failure_code: "emoji_inventory_unavailable",
         });
-        await interaction.editReply({
+        await replyEmojiUserError({
+          interaction,
+          visibilityState,
           content: buildEmojiFailureMessage(inventory.code),
-          embeds: [],
-          components: [],
         });
         return;
       }
@@ -997,10 +1024,10 @@ export const Emoji: Command = {
           result_type: mode === "resolve" ? "emoji_not_found" : "",
           failure_code: "emoji_not_found",
         });
-        await interaction.editReply({
+        await replyEmojiUserError({
+          interaction,
+          visibilityState,
           content: `Could not find an application emoji named \`${normalizedName}\`.${suggestionText}`,
-          embeds: [],
-          components: [],
         });
         return;
       }
@@ -1049,10 +1076,10 @@ export const Emoji: Command = {
           reaction_result: "validation_failed",
           failure_code: "invalid_message_id",
         });
-        await interaction.editReply({
+        await replyEmojiUserError({
+          interaction,
+          visibilityState,
           content: "Please provide a valid message ID.",
-          embeds: [],
-          components: [],
         });
         return;
       }
@@ -1078,10 +1105,10 @@ export const Emoji: Command = {
           reaction_result: "channel_unavailable",
           failure_code: "message_fetch_failed",
         });
-        await interaction.editReply({
+        await replyEmojiUserError({
+          interaction,
+          visibilityState,
           content: "Could not find that message in this channel.",
-          embeds: [],
-          components: [],
         });
         return;
       }
@@ -1106,10 +1133,10 @@ export const Emoji: Command = {
           reaction_result: "permission_denied",
           failure_code: "react_permission_denied",
         });
-        await interaction.editReply({
+        await replyEmojiUserError({
+          interaction,
+          visibilityState,
           content: "I do not have permission to add that reaction.",
-          embeds: [],
-          components: [],
         });
         return;
       }
@@ -1131,10 +1158,10 @@ export const Emoji: Command = {
           reaction_result: "message_fetch_failed",
           failure_code: "message_fetch_failed",
         });
-        await interaction.editReply({
+        await replyEmojiUserError({
+          interaction,
+          visibilityState,
           content: `Could not find message \`${targetMessageId}\` in this channel.`,
-          embeds: [],
-          components: [],
         });
         return;
       }
@@ -1159,13 +1186,13 @@ export const Emoji: Command = {
           reaction_result: "failed",
           failure_code: failureCode,
         });
-        await interaction.editReply({
+        await replyEmojiUserError({
+          interaction,
+          visibilityState,
           content:
             failureCode === "react_permission_denied"
               ? "I do not have permission to add that reaction."
               : "Discord rejected that reaction. Please try again.",
-          embeds: [],
-          components: [],
         });
         return;
       }
@@ -1190,11 +1217,11 @@ export const Emoji: Command = {
       });
     } catch (error) {
       console.error(`[emoji] command failed: ${formatError(error)}`);
-      await interaction.editReply({
+      await replyEmojiUserError({
+        interaction,
+        visibilityState,
         content:
           "Could not load application emojis right now. Please try again later.",
-        embeds: [],
-        components: [],
       });
     }
   },
