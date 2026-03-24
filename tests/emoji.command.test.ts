@@ -129,12 +129,16 @@ function buildInteraction(input?: {
   interaction: ChatInputCommandInteraction;
   deferReply: ReturnType<typeof vi.fn>;
   editReply: ReturnType<typeof vi.fn>;
+  followUp: ReturnType<typeof vi.fn>;
+  deleteReply: ReturnType<typeof vi.fn>;
   fetchReply: ReturnType<typeof vi.fn>;
   messageFetch: ReturnType<typeof vi.fn>;
   messageReact: ReturnType<typeof vi.fn>;
 } {
   const deferReply = vi.fn().mockResolvedValue(undefined);
   const editReply = vi.fn().mockResolvedValue(undefined);
+  const followUp = vi.fn().mockResolvedValue(undefined);
+  const deleteReply = vi.fn().mockResolvedValue(undefined);
   const fetchReply = vi.fn().mockResolvedValue({
     createMessageComponentCollector: vi.fn(),
   });
@@ -178,12 +182,14 @@ function buildInteraction(input?: {
         if (name === "react") return input?.react ?? null;
         if (name === "emoji") return input?.emoji ?? null;
         if (name === "short-code") return input?.shortCode ?? null;
-        if (name === "visibility") return input?.visibility ?? "public";
+        if (name === "visibility") return input?.visibility ?? null;
         return null;
       }),
     },
     deferReply,
     editReply,
+    followUp,
+    deleteReply,
     fetchReply,
   } as unknown as ChatInputCommandInteraction;
 
@@ -191,6 +197,8 @@ function buildInteraction(input?: {
     interaction,
     deferReply,
     editReply,
+    followUp,
+    deleteReply,
     fetchReply,
     messageFetch,
     messageReact,
@@ -244,7 +252,7 @@ describe("/emoji command", () => {
       ]),
     );
     setEmojiResolverForTest(resolver as any);
-    const { interaction, editReply } = buildInteraction({
+    const { interaction, deferReply, editReply, followUp } = buildInteraction({
       name: "arrow_arrow",
     });
 
@@ -254,6 +262,8 @@ describe("/emoji command", () => {
     expect(payload.content).toBe("<:arrow_arrow:1>");
     expect(payload.embeds ?? []).toEqual([]);
     expect(payload.components ?? []).toEqual([]);
+    expect(deferReply).toHaveBeenCalledWith({ ephemeral: false });
+    expect(followUp).not.toHaveBeenCalled();
   });
 
   it("supports name mode private visibility", async () => {
@@ -359,14 +369,19 @@ describe("/emoji command", () => {
       ]),
     );
     setEmojiResolverForTest(resolver as any);
-    const { interaction, editReply } = buildInteraction({ name: "not_real" });
+    const { interaction, editReply, followUp, deleteReply } = buildInteraction({
+      name: "not_real",
+    });
 
     await Emoji.run({} as Client, interaction, {} as any);
 
-    const payload = editReply.mock.calls[0]?.[0] ?? {};
+    const payload = followUp.mock.calls[0]?.[0] ?? {};
     expect(String(payload.content ?? "")).toContain(
       "Could not find an application emoji named",
     );
+    expect(payload.ephemeral).toBe(true);
+    expect(deleteReply).toHaveBeenCalledTimes(1);
+    expect(editReply).not.toHaveBeenCalled();
   });
 
   it("returns not-found message for name mode when visibility is public", async () => {
@@ -375,31 +390,39 @@ describe("/emoji command", () => {
       buildSuccessResult([]),
     );
     setEmojiResolverForTest(resolver as any);
-    const { interaction, editReply } = buildInteraction({
+    const { interaction, editReply, followUp, deleteReply } = buildInteraction({
       name: "not_real",
       visibility: "public",
     });
 
     await Emoji.run({} as Client, interaction, {} as any);
 
-    const payload = editReply.mock.calls[0]?.[0] ?? {};
+    const payload = followUp.mock.calls[0]?.[0] ?? {};
     expect(String(payload.content ?? "")).toContain(
       "Could not find an application emoji named",
     );
+    expect(payload.ephemeral).toBe(true);
+    expect(deleteReply).toHaveBeenCalledTimes(1);
+    expect(editReply).not.toHaveBeenCalled();
   });
 
   it("rejects invalid empty name input", async () => {
     const resolver = buildResolverStub();
     setEmojiResolverForTest(resolver as any);
-    const { interaction, editReply } = buildInteraction({ name: "   " });
+    const { interaction, editReply, followUp, deleteReply } = buildInteraction({
+      name: "   ",
+    });
 
     await Emoji.run({} as Client, interaction, {} as any);
 
     expect(resolver.fetchApplicationEmojiInventory).not.toHaveBeenCalled();
-    const payload = editReply.mock.calls[0]?.[0] ?? {};
+    const payload = followUp.mock.calls[0]?.[0] ?? {};
     expect(String(payload.content ?? "")).toContain(
       "Please provide a valid emoji name",
     );
+    expect(payload.ephemeral).toBe(true);
+    expect(deleteReply).toHaveBeenCalledTimes(1);
+    expect(editReply).not.toHaveBeenCalled();
   });
 
   it("adds a new application emoji from custom token input", async () => {
@@ -526,7 +549,7 @@ describe("/emoji command", () => {
     const permission = buildPermissionStub();
     permission.canUseAnyTarget.mockResolvedValue(false);
     setEmojiCommandPermissionServiceForTest(permission as any);
-    const { interaction, editReply } = buildInteraction({
+    const { interaction, deferReply, editReply } = buildInteraction({
       emoji: "<:source_icon:123456789012345678>",
       shortCode: "arrow_arrow",
     });
@@ -538,6 +561,7 @@ describe("/emoji command", () => {
     expect(String(payload.content ?? "")).toContain(
       "You do not have permission to use /emoji add",
     );
+    expect(deferReply).toHaveBeenCalledWith({ ephemeral: true });
   });
 
   it("returns clear failure when application state is unavailable during add", async () => {
@@ -791,7 +815,7 @@ describe("/emoji command", () => {
       ]),
     );
     setEmojiResolverForTest(resolver as any);
-    const { interaction, editReply, messageFetch } = buildInteraction({
+    const { interaction, editReply, followUp, deleteReply, messageFetch } = buildInteraction({
       name: "arrow_arrow",
       react: "abc",
     });
@@ -799,10 +823,13 @@ describe("/emoji command", () => {
     await Emoji.run({} as Client, interaction, {} as any);
 
     expect(messageFetch).not.toHaveBeenCalled();
-    const payload = editReply.mock.calls[0]?.[0] ?? {};
+    const payload = followUp.mock.calls[0]?.[0] ?? {};
     expect(String(payload.content ?? "")).toContain(
       "Please provide a valid message ID",
     );
+    expect(payload.ephemeral).toBe(true);
+    expect(deleteReply).toHaveBeenCalledTimes(1);
+    expect(editReply).not.toHaveBeenCalled();
   });
 
   it("shows message-not-found error when current-channel fetch fails", async () => {
@@ -819,7 +846,7 @@ describe("/emoji command", () => {
       ]),
     );
     setEmojiResolverForTest(resolver as any);
-    const { interaction, editReply } = buildInteraction({
+    const { interaction, editReply, followUp, deleteReply } = buildInteraction({
       name: "arrow_arrow",
       react: "123456789012345678",
       messageFetchError: new Error("missing"),
@@ -827,8 +854,11 @@ describe("/emoji command", () => {
 
     await Emoji.run({} as Client, interaction, {} as any);
 
-    const payload = editReply.mock.calls[0]?.[0] ?? {};
+    const payload = followUp.mock.calls[0]?.[0] ?? {};
     expect(String(payload.content ?? "")).toContain("Could not find message");
+    expect(payload.ephemeral).toBe(true);
+    expect(deleteReply).toHaveBeenCalledTimes(1);
+    expect(editReply).not.toHaveBeenCalled();
   });
 
   it("shows permission error when reaction is denied", async () => {
@@ -845,7 +875,7 @@ describe("/emoji command", () => {
       ]),
     );
     setEmojiResolverForTest(resolver as any);
-    const { interaction, editReply } = buildInteraction({
+    const { interaction, editReply, followUp, deleteReply } = buildInteraction({
       name: "arrow_arrow",
       react: "123456789012345678",
       reactionError: { code: 50013 },
@@ -853,10 +883,13 @@ describe("/emoji command", () => {
 
     await Emoji.run({} as Client, interaction, {} as any);
 
-    const payload = editReply.mock.calls[0]?.[0] ?? {};
+    const payload = followUp.mock.calls[0]?.[0] ?? {};
     expect(String(payload.content ?? "")).toContain(
       "I do not have permission to add that reaction",
     );
+    expect(payload.ephemeral).toBe(true);
+    expect(deleteReply).toHaveBeenCalledTimes(1);
+    expect(editReply).not.toHaveBeenCalled();
   });
 
   it("shows runtime-unavailable message when resolver reports manager unavailable", async () => {
@@ -881,17 +914,20 @@ describe("/emoji command", () => {
       buildFailureResult("application_emoji_manager_unavailable"),
     );
     setEmojiResolverForTest(resolver as any);
-    const { interaction, editReply } = buildInteraction({
+    const { interaction, editReply, followUp, deleteReply } = buildInteraction({
       name: "arrow_arrow",
       visibility: "public",
     });
 
     await Emoji.run({} as Client, interaction, {} as any);
 
-    const payload = editReply.mock.calls[0]?.[0] ?? {};
+    const payload = followUp.mock.calls[0]?.[0] ?? {};
     expect(String(payload.content ?? "")).toContain(
       "Could not load application emojis right now",
     );
+    expect(payload.ephemeral).toBe(true);
+    expect(deleteReply).toHaveBeenCalledTimes(1);
+    expect(editReply).not.toHaveBeenCalled();
   });
 
   it("shows retry message when resolver reports fetch failure", async () => {
