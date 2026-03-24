@@ -3409,6 +3409,46 @@ function buildMailSendGateDecision(
   };
 }
 
+type OverviewMailDecisionProjection = {
+  effectiveInferredMatchType: boolean;
+  mailBlockedReason: string | null;
+  mailBlockedReasonLine: string | null;
+  mailLifecycleStatusLine: string;
+  lifecycleStatus: WarMailLifecycleNormalizedStatus;
+  hasConfirmedBaseline: boolean;
+  draftDiffersFromBaseline: boolean;
+  mailActionEnabled: boolean;
+};
+
+/** Purpose: project shared mail decision fields into the overview/scoped active-war presentation model. */
+function buildOverviewMailDecisionProjection(params: {
+  decision: MailRevisionDecisionContract;
+  inferredMatchType: boolean;
+}): OverviewMailDecisionProjection {
+  const mailSendGate = buildMailSendGateDecision(params.decision);
+  const effectiveInferredMatchType = shouldDisplayInferredMatchType({
+    inferredMatchType: params.inferredMatchType,
+    appliedDraft: params.decision.appliedDraftRevision,
+  });
+  const mailBlockedReason = mailSendGate.mailBlockedReason;
+  return {
+    effectiveInferredMatchType,
+    mailBlockedReason,
+    mailBlockedReasonLine: formatMailBlockedReason(mailBlockedReason),
+    mailLifecycleStatusLine: formatMailLifecycleStatusLine(
+      mailSendGate.mailStatus.status,
+      {
+        hasConfirmedBaseline: Boolean(mailSendGate.confirmedRevisionBaseline),
+        draftDiffersFromBaseline: mailSendGate.draftDiffersFromBaseline,
+      },
+    ),
+    lifecycleStatus: mailSendGate.mailStatus.status,
+    hasConfirmedBaseline: Boolean(mailSendGate.confirmedRevisionBaseline),
+    draftDiffersFromBaseline: mailSendGate.draftDiffersFromBaseline,
+    mailActionEnabled: mailBlockedReason === null,
+  };
+}
+
 async function resolveMailRevisionDecisionForRenderedState(params: {
   client: Client | null | undefined;
   guildId: string;
@@ -7560,6 +7600,8 @@ export const resolveWarMailFreshnessStatusForTest =
 export const formatMailLifecycleStatusLineForTest =
   formatMailLifecycleStatusLine;
 export const buildMailSendGateDecisionForTest = buildMailSendGateDecision;
+export const buildOverviewMailDecisionProjectionForTest =
+  buildOverviewMailDecisionProjection;
 export const buildWarMailStatusDebugSnapshotForTest =
   buildWarMailStatusDebugSnapshot;
 export const buildMailStatusDebugLinesForTest = buildMailStatusDebugLines;
@@ -8746,7 +8788,7 @@ async function buildTrackedMatchOverview(
     : new Map<string, ActualSheetClanSnapshot>();
   const tracked = await prisma.trackedClan.findMany({
     orderBy: { createdAt: "asc" },
-    select: { tag: true, name: true, mailChannelId: true, mailConfig: true },
+    select: { tag: true, name: true, mailChannelId: true },
   });
   const scopedTracked = scopedTagSet
     ? tracked.filter((clan) => scopedTagSet.has(normalizeTag(clan.tag)))
@@ -8755,14 +8797,6 @@ async function buildTrackedMatchOverview(
     scopedTracked.map((row) => [
       normalizeTag(row.tag),
       row.mailChannelId ?? null,
-    ]),
-  );
-  const mailConfigByTag = new Map(
-    scopedTracked.map((row) => [
-      normalizeTag(row.tag),
-      parseMatchMailConfig(
-        row.mailConfig as Prisma.JsonValue | null | undefined,
-      ),
     ]),
   );
   if (scopedTracked.length === 0) {
@@ -9455,75 +9489,49 @@ async function buildTrackedMatchOverview(
       opponentTag,
     });
     const mailChannelId = mailChannelByTag.get(clanTag) ?? null;
-    const liveMailStatus = await resolveLiveWarMailStatus({
-      client: client ?? null,
-      guildId,
-      tag: clanTag,
-      warId: sub?.warId ?? null,
-      emitDebugLog: mailStatusDebugEnabled,
-    });
-    const revisionWarId =
-      normalizeWarIdText(sub?.warId ?? null) ??
-      normalizeWarIdText(liveMailStatus.debug.currentWarId);
-    const liveRevisionFields = buildLiveRevisionFields({
-      warId: revisionWarId,
-      opponentTag,
-      matchType:
-        matchType === "FWA" || matchType === "BL" || matchType === "MM"
-          ? matchType
-          : "UNKNOWN",
-      expectedOutcome:
-        matchType === "FWA" ? (liveExpectedOutcome ?? "UNKNOWN") : null,
-    });
-    const confirmedRevisionBaseline = resolveConfirmedRevisionBaseline({
-      syncRow: syncRow
-        ? {
-            warId: syncRow.warId ?? null,
-            opponentTag: syncRow.opponentTag,
-            lastKnownMatchType: syncRow.lastKnownMatchType ?? null,
-            lastKnownOutcome: syncRow.lastKnownOutcome ?? null,
-            isFwa: syncRow.isFwa ?? null,
-            confirmedByClanMail: Boolean(syncRow.confirmedByClanMail),
-          }
-        : null,
-      mailConfig: {
-        lastWarId: mailConfigByTag.get(clanTag)?.lastWarId ?? null,
-        lastOpponentTag: mailConfigByTag.get(clanTag)?.lastOpponentTag ?? null,
-        lastMatchType: mailConfigByTag.get(clanTag)?.lastMatchType ?? null,
-        lastExpectedOutcome:
-          mailConfigByTag.get(clanTag)?.lastExpectedOutcome ?? null,
+    const matchTypeForMailDecision =
+      matchType === "FWA" || matchType === "BL" || matchType === "MM"
+        ? matchType
+        : "UNKNOWN";
+    const mailRevisionDecision = await resolveMailRevisionDecisionForRenderedState(
+      {
+        client: client ?? null,
+        guildId: guildId ?? "",
+        tag: clanTag,
+        hasMailChannel: Boolean(mailChannelId),
+        inferredMatchType,
+        emitDebugLog: mailStatusDebugEnabled,
+        warId: warIdForReuseNumber,
+        warStartMs: warStartTimeForSync?.getTime?.() ?? null,
+        opponentTag,
+        matchType: matchTypeForMailDecision,
+        expectedOutcome:
+          matchTypeForMailDecision === "FWA"
+            ? (liveExpectedOutcome ?? "UNKNOWN")
+            : null,
+        draft: revisionDraftByTag[clanTag] ?? null,
       },
-      liveFields: liveRevisionFields,
-      lifecycleStatus: liveMailStatus.status,
-    });
-    console.info(
-      `[fwa-mail-baseline] stage=alliance_view clan=#${clanTag} owner=${confirmedRevisionBaseline ? "ClanPointsSync" : "none"} lifecycle=${liveMailStatus.status} war_id=${revisionWarId ?? "unknown"} opponent=#${opponentTag}`,
     );
-    if (
-      confirmedRevisionBaseline &&
-      liveRevisionFields &&
-      !areRevisionFieldsEqual(confirmedRevisionBaseline, liveRevisionFields)
-    ) {
-      console.info(
-        `[fwa-mail-baseline] stage=alliance_view mismatch=1 clan=#${clanTag} baseline_match_type=${confirmedRevisionBaseline.matchType} live_match_type=${liveRevisionFields.matchType} baseline_outcome=${confirmedRevisionBaseline.expectedOutcome ?? "N/A"} live_outcome=${liveRevisionFields.expectedOutcome ?? "N/A"}`,
-      );
-    }
-    const revisionState = resolveEffectiveRevisionState({
-      liveFields: liveRevisionFields,
-      confirmedBaseline: confirmedRevisionBaseline,
-      draft: revisionDraftByTag[clanTag] ?? null,
+    const mailSendGate = buildMailSendGateDecision(mailRevisionDecision);
+    const mailProjection = buildOverviewMailDecisionProjection({
+      decision: mailRevisionDecision,
+      inferredMatchType,
     });
+    const liveMailStatus = mailSendGate.mailStatus;
+    const liveRevisionFields = mailSendGate.liveRevisionFields;
+    const confirmedRevisionBaseline = mailSendGate.confirmedRevisionBaseline;
     const effectiveMatchType =
-      revisionState.effective?.matchType === "FWA" ||
-      revisionState.effective?.matchType === "BL" ||
-      revisionState.effective?.matchType === "MM"
-        ? revisionState.effective.matchType
+      mailRevisionDecision.effectiveRevisionFields?.matchType === "FWA" ||
+      mailRevisionDecision.effectiveRevisionFields?.matchType === "BL" ||
+      mailRevisionDecision.effectiveRevisionFields?.matchType === "MM"
+        ? mailRevisionDecision.effectiveRevisionFields.matchType
         : matchType;
     const projectedFwaOutcome =
       toWinLoseOutcome(liveExpectedOutcome) ?? toWinLoseOutcome(derivedOutcome);
     const effectiveExpectedOutcome = resolveEffectiveFwaOutcome({
       matchType: effectiveMatchType,
-      explicitOutcome: revisionState.effective?.expectedOutcome ?? null,
+      explicitOutcome:
+        mailRevisionDecision.effectiveRevisionFields?.expectedOutcome ?? null,
       projectedOutcome: projectedFwaOutcome,
     });
     const validationState = buildSyncValidationState({
@@ -9595,28 +9603,13 @@ async function buildTrackedMatchOverview(
       effectiveMismatchWarnings.matchTypeVsFwaMismatch ||
       validationState.differences.length > 0,
     );
-    const effectiveInferredMatchType = shouldDisplayInferredMatchType({
-      inferredMatchType,
-      appliedDraft: revisionState.appliedDraft,
-    });
+    const effectiveInferredMatchType =
+      mailProjection.effectiveInferredMatchType;
     if (effectiveInferredMatchType) hasAnyInferredMatchType = true;
     const mailStatusEmoji = liveMailStatus.mailStatusEmoji;
-    const mailBlockedReason = getMailBlockedReasonFromRevisionState({
-      inferredMatchType: effectiveInferredMatchType,
-      hasMailChannel: Boolean(mailChannelId),
-      mailStatus: liveMailStatus.status,
-      appliedDraft: revisionState.appliedDraft,
-      draftDiffersFromBaseline: revisionState.draftDiffersFromBaseline,
-      hasConfirmedBaseline: Boolean(confirmedRevisionBaseline),
-    });
-    const mailBlockedReasonLine = formatMailBlockedReason(mailBlockedReason);
-    const mailLifecycleStatusLine = formatMailLifecycleStatusLine(
-      liveMailStatus.status,
-      {
-        hasConfirmedBaseline: Boolean(confirmedRevisionBaseline),
-        draftDiffersFromBaseline: revisionState.draftDiffersFromBaseline,
-      },
-    );
+    const mailBlockedReason = mailProjection.mailBlockedReason;
+    const mailBlockedReasonLine = mailProjection.mailBlockedReasonLine;
+    const mailLifecycleStatusLine = mailProjection.mailLifecycleStatusLine;
     const mailDebugLines = mailStatusDebugEnabled
       ? buildMailStatusDebugLines(liveMailStatus.debug)
       : [];
@@ -9879,17 +9872,17 @@ async function buildTrackedMatchOverview(
       clanName,
       clanTag,
       mailStatusEmoji,
-      lifecycleStatus: liveMailStatus.status,
+      lifecycleStatus: mailProjection.lifecycleStatus,
       hasMailChannel: Boolean(mailChannelId),
       liveRevisionFields,
       confirmedRevisionBaseline,
-      effectiveRevisionFields: revisionState.effective,
-      appliedDraftRevision: revisionState.appliedDraft,
-      draftDiffersFromBaseline: revisionState.draftDiffersFromBaseline,
+      effectiveRevisionFields: mailRevisionDecision.effectiveRevisionFields,
+      appliedDraftRevision: mailRevisionDecision.appliedDraftRevision,
+      draftDiffersFromBaseline: mailRevisionDecision.draftDiffersFromBaseline,
       projectedFwaOutcome,
       mailAction: {
         tag: clanTag,
-        enabled: !mailBlockedReason,
+        enabled: mailProjection.mailActionEnabled,
         reason: mailBlockedReason,
       },
     };
