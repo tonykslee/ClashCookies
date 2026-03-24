@@ -97,13 +97,26 @@ function buildEmojiListEmbed(params: {
       .setFooter({ text: "Total 0 emojis" })
       .setColor(0x5865f2);
   }
-  return new EmbedBuilder()
+  const embed = new EmbedBuilder()
     .setTitle("Bot Application Emojis")
-    .setDescription(params.pages[params.page] ?? "")
     .setFooter({
       text: `Page ${params.page + 1}/${params.pages.length} | Total ${params.emojis.length} emojis`,
     })
     .setColor(0x5865f2);
+  const pageLines = String(params.pages[params.page] ?? "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (pageLines.length > 0) {
+    embed.addFields(
+      pageLines.map((line) => ({
+        name: "\u200b",
+        value: line,
+        inline: true,
+      })),
+    );
+  }
+  return embed;
 }
 
 /** Purpose: build prev/next paginator buttons with proper boundary and timeout disabled states. */
