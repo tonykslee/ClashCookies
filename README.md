@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/ClashCookies_logo_master_2.png" alt="Logo" width="200">
+  <img src="assets/ClashCookies_logo_master_alpha.png" alt="Logo" width="200">
 </div>
 
 # ClashCookies
