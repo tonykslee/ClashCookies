@@ -2267,13 +2267,14 @@ function formatMailBlockedReason(
   return `:warning: ${reason}`;
 }
 
-/** Purpose: identify lifecycle reconciliation outcomes that definitively prove the tracked target is gone. */
-function isDefinitiveMissingLifecycleOutcome(
+/** Purpose: identify lifecycle reconciliation outcomes that make tracked active-war mail unusable. */
+function isUnusableLifecycleOutcome(
   outcome: WarMailLifecycleReconciliationOutcome,
 ): boolean {
   return (
     outcome === "message_missing_confirmed" ||
-    outcome === "channel_missing_confirmed"
+    outcome === "channel_missing_confirmed" ||
+    outcome === "channel_inaccessible"
   );
 }
 
@@ -3150,9 +3151,9 @@ function buildWarMailStatusDebugSnapshot(params: {
         : params.status === "deleted" &&
             params.reconciliationOutcome === "channel_missing_confirmed"
           ? "tracked_post_missing_channel"
-          : params.status === "posted" &&
+          : params.status === "deleted" &&
               params.reconciliationOutcome === "channel_inaccessible"
-            ? "transient_channel_inaccessible"
+            ? "tracked_post_inaccessible_channel"
             : params.status === "posted" &&
                 params.reconciliationOutcome === "transient_error"
               ? "transient_unverified"
@@ -3164,8 +3165,8 @@ function buildWarMailStatusDebugSnapshot(params: {
         ? "Tracked lifecycle message is missing/deleted; lifecycle marked DELETED."
         : debugReasonCode === "tracked_post_missing_channel"
           ? "Tracked lifecycle channel is missing; lifecycle marked DELETED."
-          : debugReasonCode === "transient_channel_inaccessible"
-            ? "Tracked lifecycle channel is inaccessible; lifecycle remains POSTED."
+          : debugReasonCode === "tracked_post_inaccessible_channel"
+            ? "Tracked lifecycle channel is inaccessible; lifecycle marked DELETED."
             : debugReasonCode === "transient_unverified"
               ? "Tracked lifecycle message could not be verified due to transient error."
               : "No tracked lifecycle message exists for this war.";
@@ -4182,7 +4183,13 @@ async function refreshWarMailPostByResolvedTarget(params: {
     const code = Number(
       (err as { code?: unknown } | null | undefined)?.code ?? NaN,
     );
-    if ((code === 10003 || code === 10008) && params.expectedWarId) {
+    if (
+      (code === 10003 ||
+        code === 10008 ||
+        code === 50001 ||
+        code === 50013) &&
+      params.expectedWarId
+    ) {
       await warMailLifecycleService
         .markDeleted({
           guildId: params.guildId,
@@ -4217,7 +4224,13 @@ async function refreshWarMailPostByResolvedTarget(params: {
     const code = Number(
       (err as { code?: unknown } | null | undefined)?.code ?? NaN,
     );
-    if ((code === 10003 || code === 10008) && params.expectedWarId) {
+    if (
+      (code === 10003 ||
+        code === 10008 ||
+        code === 50001 ||
+        code === 50013) &&
+      params.expectedWarId
+    ) {
       await warMailLifecycleService
         .markDeleted({
           guildId: params.guildId,
@@ -4399,6 +4412,128 @@ function extractWarMailOpponentTagFromMessage(
   const match = opponentValue.match(/#([A-Z0-9]+)/i);
   if (!match?.[1]) return null;
   return normalizeTag(match[1]);
+}
+
+type ForceSyncMailReferenceValidationResult =
+  | {
+      ok: true;
+      channelId: string;
+      messageId: string;
+    }
+  | {
+      ok: false;
+      reason: string;
+    };
+
+/** Purpose: validate a forced mail-reference repair target against current channel + active-war identity before lifecycle writes. */
+async function validateForceSyncMailReferenceForActiveWar(params: {
+  interaction: ChatInputCommandInteraction;
+  tag: string;
+  messageId: string;
+  expectedWarId: string;
+  expectedOpponentTag: string | null;
+}): Promise<ForceSyncMailReferenceValidationResult> {
+  const interactionChannel = params.interaction.channel;
+  const channel = interactionChannel as
+    | {
+        id?: string;
+        isTextBased?: () => boolean;
+        messages?: {
+          fetch: (options: { message: string; force?: boolean }) => Promise<unknown>;
+        };
+      }
+    | null
+    | undefined;
+  if (
+    !channel ||
+    !channel.isTextBased ||
+    !channel.isTextBased() ||
+    !channel.messages ||
+    typeof channel.messages.fetch !== "function"
+  ) {
+    return {
+      ok: false,
+      reason: "current channel is not message-fetch capable for mail validation.",
+    };
+  }
+
+  let resolvedMessage: unknown;
+  try {
+    resolvedMessage = await channel.messages.fetch({
+      message: params.messageId,
+      force: true,
+    });
+  } catch (err) {
+    const code = Number((err as { code?: unknown } | null | undefined)?.code ?? NaN);
+    if (code === 10008) {
+      return {
+        ok: false,
+        reason: "message id was not found in this channel.",
+      };
+    }
+    if (code === 50001 || code === 50013) {
+      return {
+        ok: false,
+        reason: "bot cannot access that message in this channel.",
+      };
+    }
+    return {
+      ok: false,
+      reason: "message could not be fetched due to a transient Discord error.",
+    };
+  }
+  if (!resolvedMessage) {
+    return {
+      ok: false,
+      reason: "message id was not found in this channel.",
+    };
+  }
+
+  const message = resolvedMessage as ButtonInteraction["message"] & {
+    author?: { id?: string | null } | null;
+    channelId?: string;
+    id?: string;
+  };
+  const requesterClientUserId = params.interaction.client.user?.id ?? null;
+  const authorId = message.author?.id ?? null;
+  if (requesterClientUserId && authorId && authorId !== requesterClientUserId) {
+    return {
+      ok: false,
+      reason: "message was not authored by this bot, so it cannot be tracked as active war mail.",
+    };
+  }
+
+  const postedClanTag = extractWarMailTagFromMessage(message);
+  if (!postedClanTag || postedClanTag !== normalizeTag(params.tag)) {
+    return {
+      ok: false,
+      reason: `message clan identity does not match #${normalizeTag(params.tag)}.`,
+    };
+  }
+  const postedWarId = extractWarMailIdFromMessage(message);
+  if (!postedWarId || postedWarId !== params.expectedWarId) {
+    return {
+      ok: false,
+      reason: `message war identity does not match active war id ${params.expectedWarId}.`,
+    };
+  }
+  const normalizedExpectedOpponentTag =
+    normalizeTag(String(params.expectedOpponentTag ?? "")) || null;
+  if (normalizedExpectedOpponentTag) {
+    const postedOpponentTag = extractWarMailOpponentTagFromMessage(message);
+    if (!postedOpponentTag || postedOpponentTag !== normalizedExpectedOpponentTag) {
+      return {
+        ok: false,
+        reason: `message opponent identity does not match active opponent #${normalizedExpectedOpponentTag}.`,
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    channelId: String(message.channelId ?? channel.id ?? params.interaction.channelId),
+    messageId: String(message.id ?? params.messageId),
+  };
 }
 
 async function resolveExpectedWarStartMsForRefresh(params: {
@@ -6876,13 +7011,13 @@ export async function runForceMailUpdateCommand(
     lifecycle &&
     lifecycle.status === "deleted" &&
     hasTrackedTarget &&
-    isDefinitiveMissingLifecycleOutcome(
+    isUnusableLifecycleOutcome(
       lifecycle.debug.reconciliationOutcome,
     )
   ) {
     await interaction.editReply(
       [
-        `Tracked mail reference for #${tag} is missing or deleted.`,
+        `Tracked mail reference for #${tag} is missing, inaccessible, or otherwise unusable.`,
         "Lifecycle state was corrected for the active war: **WarMailLifecycle -> DELETED**.",
         "Send mail again or repair the reference with `/force sync mail`.",
       ].join("\n"),
@@ -10286,6 +10421,36 @@ export async function runForceSyncMailCommand(
     Number.isFinite(existing.warId)
       ? String(Math.trunc(existing.warId))
       : null;
+  let validatedMailReference: { channelId: string; messageId: string } | null = null;
+  if (parsedType.messageType === "mail") {
+    if (!warIdText || !Number.isFinite(Number(warIdText))) {
+      await interaction.editReply(
+        "Cannot sync mail lifecycle: active war id is unresolved for this clan.",
+      );
+      return;
+    }
+    const validated = await validateForceSyncMailReferenceForActiveWar({
+      interaction,
+      tag,
+      messageId: messageID,
+      expectedWarId: warIdText,
+      expectedOpponentTag: opponentTag || null,
+    });
+    if (!validated.ok) {
+      await interaction.editReply(
+        [
+          `Could not sync active-war mail reference for #${tag}.`,
+          `Validation failed: ${validated.reason}`,
+          "Lifecycle row was not updated.",
+        ].join("\n"),
+      );
+      return;
+    }
+    validatedMailReference = {
+      channelId: validated.channelId,
+      messageId: validated.messageId,
+    };
+  }
   const nowUnix = Math.floor(Date.now() / 1000);
   const syncBaselineRow = await pointsSyncService
     .getCurrentSyncForClan({
@@ -10334,18 +10499,12 @@ export async function runForceSyncMailCommand(
   });
 
   if (parsedType.messageType === "mail") {
-    if (!warIdText || !Number.isFinite(Number(warIdText))) {
-      await interaction.editReply(
-        "Cannot sync mail lifecycle: active war id is unresolved for this clan.",
-      );
-      return;
-    }
     await warMailLifecycleService.markPosted({
       guildId: interaction.guildId,
       clanTag: tag,
       warId: Number(warIdText),
-      channelId: interaction.channelId,
-      messageId: messageID,
+      channelId: validatedMailReference?.channelId ?? interaction.channelId,
+      messageId: validatedMailReference?.messageId ?? messageID,
     });
     const checkpointSyncRow = await pointsSyncService
       .getCurrentSyncForClan({
@@ -10402,9 +10561,14 @@ export async function runForceSyncMailCommand(
       `Match type: **${next.lastMatchType ?? "UNKNOWN"}**`,
       `Expected outcome: **${next.lastExpectedOutcome ?? "UNKNOWN"}**`,
       parsedType.messageType === "mail"
+        ? "Validation: tracked message exists in this channel and matches active-war identity."
+        : null,
+      parsedType.messageType === "mail"
         ? `Mail lifecycle saved in **WarMailLifecycle**.`
         : `Posted message tracking saved in **ClanPostedMessage**.`,
-    ].join("\n"),
+    ]
+      .filter((line): line is string => Boolean(line))
+      .join("\n"),
   );
 }
 

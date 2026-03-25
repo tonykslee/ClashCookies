@@ -10,6 +10,7 @@ Discord bot for Clash of Clans activity tooling.
 - Supports tracked-clan mail channel config via `/tracked-clan configure` and send-preview flow via `/fwa mail send`.
 - War mail send paths now mention the tracked clan role (`TrackedClan.clanRoleId`) when pinging is enabled.
 - `/fwa match` and `/fwa mail send` now share active-war mail freshness gating: sent state is scoped to current war identity, shows explicit up-to-date/out-of-date status, disables resend when matchType/outcome are unchanged, and re-enables resend when those fields change.
+- Active-war mail lifecycle reconciliation now treats inaccessible tracked references as unusable (moves out of healthy posted state), and `/force sync mail` now validates supplied `message_id` against current-channel active-war identity before writing `WarMailLifecycle`.
 - Supports configurable war plans by match type/outcome via `/warplan set|show|reset`; these templates are used in posted war mail content (including line breaks, emoji, and media links).
 - Optimized points polling now tracks lifecycle state in `ClanPointsSync` (`confirmedByClanMail`, `needsValidation`, last-known values) and reduces routine `points.fwafarm` calls after clan-mail confirmation.
 - Poller-side points fetches now use a shared gate that enforces an active-war mail-confirmed lock (`confirmedByClanMail=true`, `needsValidation=false`, matching war identity), blocking routine `post_war_reconciliation`/`mail_refresh` calls until an explicit unlock trigger.

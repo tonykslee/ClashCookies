@@ -139,7 +139,42 @@ describe("WarMailLifecycleService", () => {
     expect(fetchMessage).toHaveBeenCalledWith({ message: "456", force: true });
   });
 
-  it("keeps lifecycle posted on channel-inaccessible failures", async () => {
+  it("marks lifecycle deleted when tracked channel is inaccessible for active-war mail", async () => {
+    vi.spyOn(prisma.warMailLifecycle, "findUnique").mockResolvedValueOnce({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+      warId: 1001,
+      status: "POSTED",
+      messageId: "456",
+      channelId: "123",
+      postedAt: new Date(),
+      deletedAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as never);
+    const updateManySpy = vi
+      .spyOn(prisma.warMailLifecycle, "updateMany")
+      .mockResolvedValueOnce({ count: 1 } as never);
+    const service = new WarMailLifecycleService();
+    const { client } = buildClient({
+      channelError: { code: 50001, message: "Missing Access" },
+    });
+
+    const result = await service.resolveStatusForCurrentWar({
+      client,
+      guildId: "guild-1",
+      clanTag: "AAA111",
+      warId: 1001,
+      sentEmoji: "S",
+      unsentEmoji: "U",
+    });
+
+    expect(updateManySpy).toHaveBeenCalledTimes(1);
+    expect(result.status).toBe("deleted");
+    expect(result.debug.reconciliationOutcome).toBe("channel_inaccessible");
+  });
+
+  it("keeps lifecycle posted on transient reconciliation errors", async () => {
     vi.spyOn(prisma.warMailLifecycle, "findUnique").mockResolvedValueOnce({
       guildId: "guild-1",
       clanTag: "#AAA111",
@@ -155,7 +190,7 @@ describe("WarMailLifecycleService", () => {
     const updateManySpy = vi.spyOn(prisma.warMailLifecycle, "updateMany");
     const service = new WarMailLifecycleService();
     const { client } = buildClient({
-      channelError: { code: 50001, message: "Missing Access" },
+      channelError: { code: 0, message: "Transient" },
     });
 
     const result = await service.resolveStatusForCurrentWar({
@@ -169,7 +204,7 @@ describe("WarMailLifecycleService", () => {
 
     expect(updateManySpy).not.toHaveBeenCalled();
     expect(result.status).toBe("posted");
-    expect(result.debug.reconciliationOutcome).toBe("channel_inaccessible");
+    expect(result.debug.reconciliationOutcome).toBe("transient_error");
   });
 
   it("logs POSTED at info for first lifecycle transition", async () => {
