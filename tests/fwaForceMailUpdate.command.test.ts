@@ -74,7 +74,9 @@ describe("runForceMailUpdateCommand", () => {
     await runForceMailUpdateCommand(interaction);
 
     const reply = String(interaction.editReply.mock.calls[0]?.[0] ?? "");
-    expect(reply).toContain("Tracked mail reference for #R80L8VYG is missing or deleted.");
+    expect(reply).toContain(
+      "Tracked mail reference for #R80L8VYG is missing, inaccessible, or otherwise unusable.",
+    );
     expect(reply).toContain("WarMailLifecycle -> DELETED");
     expect(reply).toContain("`/force sync mail`");
   });
@@ -112,6 +114,34 @@ describe("runForceMailUpdateCommand", () => {
     expect(interaction.editReply).toHaveBeenCalledWith(
       "No active sent mail reference found for #R80L8VYG. Send mail first or sync it via `/force sync mail`.",
     );
+  });
+
+  it("returns lifecycle-corrected response when tracked channel is inaccessible for active-war mail", async () => {
+    vi.spyOn(prisma.trackedClan, "findFirst").mockResolvedValueOnce({
+      tag: "#R80L8VYG",
+      name: "DARK EMPIRE",
+    } as never);
+    vi.spyOn(prisma.currentWar, "findUnique").mockResolvedValueOnce({
+      warId: 1000110,
+      startTime: new Date("2026-03-25T04:22:17.000Z"),
+    } as never);
+    vi.spyOn(WarMailLifecycleService.prototype, "resolveStatusForCurrentWar").mockResolvedValueOnce(
+      buildLifecycleResult({
+        status: "deleted",
+        debug: {
+          ...buildLifecycleResult().debug,
+          reconciliationOutcome: "channel_inaccessible",
+          debugReasonCode: "tracked_post_inaccessible_channel",
+        },
+      }),
+    );
+    const interaction = createInteraction();
+
+    await runForceMailUpdateCommand(interaction);
+
+    const reply = String(interaction.editReply.mock.calls[0]?.[0] ?? "");
+    expect(reply).toContain("Tracked mail reference for #R80L8VYG is missing, inaccessible, or otherwise unusable.");
+    expect(reply).toContain("WarMailLifecycle -> DELETED");
   });
 });
 
