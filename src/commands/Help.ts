@@ -418,13 +418,18 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     summary: "Post plain text or an embed message as the bot.",
     details: [
       "Use `/say text:<message>` to post one plain text message directly in the current channel.",
+      "`show-from` defaults to true and posts through the interaction response path so Discord shows the native `/say` attribution header.",
+      "When `show-from:false` is used by an Administrator, `/say` posts via normal channel send without native slash attribution, then sends an ephemeral confirmation.",
       "Use `type:LONG_TEXT` to open a modal with one required paragraph field and post that body as a normal message.",
       "Use `type:EMBED` to open a modal with optional title, required body, and optional image URL.",
+      "Modal submit delivery follows the same show-from transport rule (`interaction reply` vs `channel send + ephemeral confirmation`).",
+      "`show-from:false` is restricted to Administrators.",
       "Embed image URL must be an absolute `http://` or `https://` URL.",
       "`/say` is admin-only by default unless role access is granted with `/permission add`.",
     ],
     examples: [
       "/say text:War starts in 15 minutes.",
+      "/say text:War starts in 15 minutes. show-from:false",
       "/say type:LONG_TEXT",
       "/say type:EMBED",
       "/say text:Draft body type:EMBED",
