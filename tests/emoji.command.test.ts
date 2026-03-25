@@ -10,6 +10,7 @@ import {
   Emoji,
   applyEmojiPageActionForTest,
   buildEmojiListEmbedForTest,
+  paginateEmojiLinesForTest,
   resetEmojiCommandPermissionServiceForTest,
   resetEmojiResolverForTest,
   setEmojiCommandPermissionServiceForTest,
@@ -691,56 +692,94 @@ describe("/emoji command", () => {
     const emojis: ResolvedApplicationEmoji[] = [
       {
         id: "1",
-        name: "alpha",
-        shortcode: ":alpha:",
-        rendered: "<:alpha:1>",
+        name: "foxno",
+        shortcode: ":foxno:",
+        rendered: "<:foxno:1>",
         animated: false,
       },
       {
         id: "2",
-        name: "bravo",
-        shortcode: ":bravo:",
-        rendered: "<:bravo:2>",
+        name: "yes",
+        shortcode: ":yes:",
+        rendered: "<:yes:2>",
         animated: false,
       },
       {
         id: "3",
-        name: "charlie",
-        shortcode: ":charlie:",
-        rendered: "<:charlie:3>",
+        name: "lvlup",
+        shortcode: ":lvlup:",
+        rendered: "<:lvlup:3>",
         animated: false,
       },
       {
         id: "4",
-        name: "delta",
-        shortcode: ":delta:",
-        rendered: "<:delta:4>",
+        name: "no",
+        shortcode: ":no:",
+        rendered: "<:no:4>",
         animated: false,
       },
       {
         id: "5",
-        name: "echo",
-        shortcode: ":echo:",
-        rendered: "<:echo:5>",
+        name: "happy",
+        shortcode: ":happy:",
+        rendered: "<:happy:5>",
+        animated: false,
+      },
+      {
+        id: "6",
+        name: "foxhi",
+        shortcode: ":foxhi:",
+        rendered: "<:foxhi:6>",
         animated: false,
       },
     ];
-    const pageText = emojis
-      .map((emoji) => `${emoji.rendered} \`${emoji.shortcode}\``)
-      .join("\n");
+    const pages = paginateEmojiLinesForTest(emojis, 2500);
+    expect(pages).toHaveLength(1);
+    const sortedShortcodes = String(pages[0] ?? "")
+      .split("\n")
+      .map((line) => (line.match(/`(:[^`]+:)`/)?.[1] ?? ""))
+      .filter((line) => line.length > 0);
+    expect(sortedShortcodes).toEqual([
+      ":no:",
+      ":yes:",
+      ":foxhi:",
+      ":foxno:",
+      ":happy:",
+      ":lvlup:",
+    ]);
+
     const embed = buildEmojiListEmbedForTest({
       emojis,
-      pages: [pageText],
+      pages,
       page: 0,
     });
     const json = embed.toJSON();
     expect(json.fields).toHaveLength(3);
     expect(json.fields?.every((field) => field.inline === true)).toBe(true);
-    expect(String(json.fields?.[0]?.value ?? "")).toContain(":alpha:");
-    expect(String(json.fields?.[0]?.value ?? "")).toContain(":delta:");
-    expect(String(json.fields?.[1]?.value ?? "")).toContain(":bravo:");
-    expect(String(json.fields?.[1]?.value ?? "")).toContain(":echo:");
-    expect(String(json.fields?.[2]?.value ?? "")).toContain(":charlie:");
+    expect(String(json.fields?.[0]?.value ?? "")).toContain(":no:");
+    expect(String(json.fields?.[0]?.value ?? "")).toContain(":foxno:");
+    expect(String(json.fields?.[1]?.value ?? "")).toContain(":yes:");
+    expect(String(json.fields?.[1]?.value ?? "")).toContain(":happy:");
+    expect(String(json.fields?.[2]?.value ?? "")).toContain(":foxhi:");
+    expect(String(json.fields?.[2]?.value ?? "")).toContain(":lvlup:");
+  });
+
+  it("caps list page content by rendered-line character budget", () => {
+    const emojis: ResolvedApplicationEmoji[] = Array.from({ length: 120 }, (_, index) => {
+      const id = String(index + 1);
+      const name = `emoji_${String(index + 1).padStart(3, "0")}`;
+      return {
+        id,
+        name,
+        shortcode: `:${name}:`,
+        rendered: `<:${name}:${id}>`,
+        animated: false,
+      };
+    });
+
+    const pages = paginateEmojiLinesForTest(emojis, 250);
+    expect(pages.length).toBeGreaterThan(1);
+    expect(pages.every((page) => page.length <= 250)).toBe(true);
   });
 
   it("ignores react when name is omitted and keeps list mode", async () => {
