@@ -33,6 +33,7 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "kick-list:clear",
   "sync:time:post",
   "say",
+  "bot-logs",
   "notify:war",
   "link:embed",
   "link:create:admin",
@@ -435,6 +436,16 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/say text:Draft body type:EMBED",
     ],
   },
+  "bot-logs": {
+    summary: "Set or inspect the guild channel used for important bot logs.",
+    details: [
+      "Use `/bot-logs set-channel:<channel>` to save the per-guild destination channel for important bot logs.",
+      "Use `/bot-logs` with no arguments to view the currently configured channel mention.",
+      "If a saved channel no longer exists, the command reports stale config and clears it.",
+      "`/bot-logs` is admin-only by default unless role access is granted with `/permission add`.",
+    ],
+    examples: ["/bot-logs", "/bot-logs set-channel:#leadership-logs"],
+  },
   force: {
     summary:
       "Run manual repair and refresh actions for war data, points sync, and tracked messages.",
@@ -488,7 +499,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "Add/remove role whitelists for command targets.",
       "List current policy for one target or all targets.",
       "`/permission list` includes `fwa:mail:send`, `fwa:compliance`, `fwa:weight-*`, and `defer*` targets (default FWA leader role + Administrator).",
-      "`say`, `link:embed`, `link:create:admin`, and `link:delete:admin` are admin-only by default and can be role-whitelisted.",
+      "`say`, `bot-logs`, `link:embed`, `link:create:admin`, and `link:delete:admin` are admin-only by default and can be role-whitelisted.",
       "`add` and `remove` are admin-only by default.",
     ],
     examples: [
@@ -500,6 +511,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/permission add command:defer role:@Leaders",
       "/permission add command:link:embed role:@Leaders",
       "/permission add command:say role:@Leaders",
+      "/permission add command:bot-logs role:@Leaders",
       "/permission add command:link:create:admin role:@Leaders",
       "/permission add command:link:delete:admin role:@Leaders",
       "/permission add command:fwa role:@Leaders",
