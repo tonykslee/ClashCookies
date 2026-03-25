@@ -18,7 +18,7 @@ export type WarMailLifecycleDebugReasonCode =
   | "live_matching_post_exists"
   | "tracked_post_missing_message"
   | "tracked_post_missing_channel"
-  | "transient_channel_inaccessible"
+  | "tracked_post_inaccessible_channel"
   | "transient_unverified"
   | "no_post_tracked";
 
@@ -144,10 +144,10 @@ function deriveDebugReason(params: {
       reason: "Tracked lifecycle channel is definitively missing; lifecycle was marked DELETED.",
     };
   }
-  if (params.status === "posted" && params.outcome === "channel_inaccessible") {
+  if (params.status === "deleted" && params.outcome === "channel_inaccessible") {
     return {
-      code: "transient_channel_inaccessible",
-      reason: "Tracked lifecycle channel is inaccessible; lifecycle remains POSTED.",
+      code: "tracked_post_inaccessible_channel",
+      reason: "Tracked lifecycle channel is inaccessible for active-war mail; lifecycle was marked DELETED.",
     };
   }
   if (params.status === "posted" && params.outcome === "transient_error") {
@@ -163,6 +163,17 @@ function deriveDebugReason(params: {
 }
 
 export class WarMailLifecycleService {
+  /** Purpose: classify reconciliation outcomes that should clear unusable active-war POSTED tracking. */
+  private shouldMarkDeletedForOutcome(
+    outcome: WarMailLifecycleReconciliationOutcome
+  ): boolean {
+    return (
+      outcome === "message_missing_confirmed" ||
+      outcome === "channel_missing_confirmed" ||
+      outcome === "channel_inaccessible"
+    );
+  }
+
   /** Purpose: persist lifecycle status=POSTED for one clan and one war. */
   async markPosted(input: UpsertPostedLifecycleInput): Promise<void> {
     const clanTag = normalizeTag(input.clanTag);
@@ -358,10 +369,7 @@ export class WarMailLifecycleService {
       channelId: row.channelId,
       messageId: row.messageId,
     });
-    if (
-      reconciliation === "message_missing_confirmed" ||
-      reconciliation === "channel_missing_confirmed"
-    ) {
+    if (this.shouldMarkDeletedForOutcome(reconciliation)) {
       const trackingCleared = await this.markDeleted({
         guildId: params.guildId,
         clanTag: normalizedTag,

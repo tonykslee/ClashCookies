@@ -450,9 +450,9 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "Run manual repair and refresh actions for war data, points sync, and tracked messages.",
     details: [
       "`/force sync data` refreshes live points.fwafarm data into `ClanPointsSync` for the current war when possible.",
-      "`/force sync mail` repairs tracked Discord message references in `ClanPostedMessage` and keeps legacy mail settings aligned for compatibility.",
+      "`/force sync mail` validates supplied mail references against current-channel active-war identity before writing `WarMailLifecycle`, and still repairs notify references in `ClanPostedMessage`.",
       "`/force sync warid` is a DB repair tool for `CurrentWar` and `ClanWarHistory` only.",
-      "`/force mail update` refreshes an existing sent war-mail message in place and re-attaches it to the 20-minute refresh loop.",
+      "`/force mail update` first reconciles active-war lifecycle tracking (marking definitively missing references as DELETED), then refreshes existing sent war-mail in place and re-attaches it to the 20-minute refresh loop when valid.",
       "`/force poll war-events` runs the real war-event poll + refresh pipeline immediately.",
       "`force` commands are admin-only by default.",
     ],
