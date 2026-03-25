@@ -23,6 +23,7 @@ import { ClanHealth } from "./commands/ClanHealth";
 import { Defer } from "./commands/Defer";
 import { Link } from "./commands/Link";
 import { Layout } from "./commands/Layout";
+import { Say } from "./commands/Say";
 
 // ...existing code...
 export const Commands = [
@@ -50,5 +51,6 @@ export const Commands = [
   Defer,
   Force,
   Post,
+  Say,
   CommandRole,
 ];

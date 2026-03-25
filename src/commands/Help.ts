@@ -32,6 +32,7 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "kick-list:show",
   "kick-list:clear",
   "sync:time:post",
+  "say",
   "notify:war",
   "link:embed",
   "link:create:admin",
@@ -412,6 +413,22 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/sync post status message-id:123456789012345678",
     ],
   },
+  say: {
+    summary: "Post plain text or an embed message as the bot.",
+    details: [
+      "Use `/say text:<message>` to post one plain text message directly in the current channel.",
+      "Use `type:LONG_TEXT` to open a modal with one required paragraph field and post that body as a normal message.",
+      "Use `type:EMBED` to open a modal with optional title, required body, and optional image URL.",
+      "Embed image URL must be an absolute `http://` or `https://` URL.",
+      "`/say` is admin-only by default unless role access is granted with `/permission add`.",
+    ],
+    examples: [
+      "/say text:War starts in 15 minutes.",
+      "/say type:LONG_TEXT",
+      "/say type:EMBED",
+      "/say text:Draft body type:EMBED",
+    ],
+  },
   force: {
     summary:
       "Run manual repair and refresh actions for war data, points sync, and tracked messages.",
@@ -465,7 +482,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "Add/remove role whitelists for command targets.",
       "List current policy for one target or all targets.",
       "`/permission list` includes `fwa:mail:send`, `fwa:compliance`, `fwa:weight-*`, and `defer*` targets (default FWA leader role + Administrator).",
-      "`link:embed`, `link:create:admin`, and `link:delete:admin` are admin-only by default and can be role-whitelisted.",
+      "`say`, `link:embed`, `link:create:admin`, and `link:delete:admin` are admin-only by default and can be role-whitelisted.",
       "`add` and `remove` are admin-only by default.",
     ],
     examples: [
@@ -476,6 +493,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/permission add command:fwa:weight-cookie role:@Leaders",
       "/permission add command:defer role:@Leaders",
       "/permission add command:link:embed role:@Leaders",
+      "/permission add command:say role:@Leaders",
       "/permission add command:link:create:admin role:@Leaders",
       "/permission add command:link:delete:admin role:@Leaders",
       "/permission add command:fwa role:@Leaders",
