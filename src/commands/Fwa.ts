@@ -4176,6 +4176,29 @@ async function refreshWarMailPostByResolvedTarget(params: {
       `[fwa-mail-refresh-identity] guild=${params.guildId} clan=#${normalizedTag} message_id=${params.messageId} expected_war_id=${expectedWarIdText} expected_war_start_ms=${expectedWarStartText} posted_war_id=${postedWarIdText} posted_opponent=${postedOpponentTag ? `#${postedOpponentTag}` : "unknown"} rendered_war_id=${renderedWarIdText} rendered_war_start_ms=${renderedWarStartText} rendered_opponent=${renderedOpponentTag ? `#${renderedOpponentTag}` : "unknown"} identity_shifted=${input.identityShifted ? "1" : "0"} action=${input.action}`,
     );
   };
+  const reconcileMissingExplicitTarget = async (): Promise<void> => {
+    const expectedWarIdNumber =
+      typeof params.expectedWarId === "string" &&
+      params.expectedWarId.trim() &&
+      Number.isFinite(Number(params.expectedWarId))
+        ? Number(params.expectedWarId)
+        : null;
+    if (expectedWarIdNumber === null) return;
+    const deletionResult = await warMailLifecycleService
+      .markDeletedIfTrackedMessageMatches({
+        guildId: params.guildId,
+        clanTag: normalizedTag,
+        warId: expectedWarIdNumber,
+        channelId: params.channelId,
+        messageId: params.messageId,
+      })
+      .catch(() => "missing_row" as const);
+    if (deletionResult === "stale_target") {
+      console.info(
+        `[fwa-mail-refresh-reconcile] guild=${params.guildId} clan=#${normalizedTag} war_id=${expectedWarIdNumber} action=skip_stale_target channel_id=${params.channelId} message_id=${params.messageId}`
+      );
+    }
+  };
   let channel: any = null;
   try {
     channel = await params.client.channels.fetch(params.channelId);
@@ -4190,13 +4213,7 @@ async function refreshWarMailPostByResolvedTarget(params: {
         code === 50013) &&
       params.expectedWarId
     ) {
-      await warMailLifecycleService
-        .markDeleted({
-          guildId: params.guildId,
-          clanTag: normalizedTag,
-          warId: Number(params.expectedWarId),
-        })
-        .catch(() => undefined);
+      await reconcileMissingExplicitTarget().catch(() => undefined);
     }
     logIdentityDecision({
       action: "missing",
@@ -4231,13 +4248,7 @@ async function refreshWarMailPostByResolvedTarget(params: {
         code === 50013) &&
       params.expectedWarId
     ) {
-      await warMailLifecycleService
-        .markDeleted({
-          guildId: params.guildId,
-          clanTag: normalizedTag,
-          warId: Number(params.expectedWarId),
-        })
-        .catch(() => undefined);
+      await reconcileMissingExplicitTarget().catch(() => undefined);
     }
     logIdentityDecision({
       action: "missing",
@@ -4247,13 +4258,7 @@ async function refreshWarMailPostByResolvedTarget(params: {
   }
   if (!message) {
     if (params.expectedWarId) {
-      await warMailLifecycleService
-        .markDeleted({
-          guildId: params.guildId,
-          clanTag: normalizedTag,
-          warId: Number(params.expectedWarId),
-        })
-        .catch(() => undefined);
+      await reconcileMissingExplicitTarget().catch(() => undefined);
     }
     logIdentityDecision({
       action: "missing",

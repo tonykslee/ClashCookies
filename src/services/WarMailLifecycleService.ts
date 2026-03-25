@@ -69,7 +69,25 @@ type MarkDeletedLifecycleInput = {
   clanTag: string;
   warId: number;
   deletedAt?: Date;
+  requirePosted?: boolean;
+  matchChannelId?: string;
+  matchMessageId?: string;
 };
+
+type MarkDeletedIfTrackedMessageMatchesInput = {
+  guildId: string;
+  clanTag: string;
+  warId: number;
+  channelId: string;
+  messageId: string;
+  deletedAt?: Date;
+};
+
+export type MarkDeletedIfTrackedMessageMatchesResult =
+  | "deleted"
+  | "stale_target"
+  | "not_posted"
+  | "missing_row";
 
 type GetLifecycleInput = {
   guildId: string;
@@ -231,11 +249,19 @@ export class WarMailLifecycleService {
   async markDeleted(input: MarkDeletedLifecycleInput): Promise<boolean> {
     const clanTag = normalizeTag(input.clanTag);
     const deletedAt = input.deletedAt ?? new Date();
+    const warId = Math.trunc(input.warId);
     const updated = await prisma.warMailLifecycle.updateMany({
       where: {
         guildId: input.guildId,
         clanTag,
-        warId: Math.trunc(input.warId),
+        warId,
+        ...(input.requirePosted ? { status: WarMailLifecycleStatus.POSTED } : {}),
+        ...(typeof input.matchChannelId === "string" && input.matchChannelId.trim()
+          ? { channelId: input.matchChannelId }
+          : {}),
+        ...(typeof input.matchMessageId === "string" && input.matchMessageId.trim()
+          ? { messageId: input.matchMessageId }
+          : {}),
       },
       data: {
         status: WarMailLifecycleStatus.DELETED,
@@ -244,11 +270,50 @@ export class WarMailLifecycleService {
     });
     if (updated.count > 0) {
       console.info(
-        `[mail-lifecycle] guild=${input.guildId} clan=${clanTag} war=${Math.trunc(input.warId)} status=DELETED`
+        `[mail-lifecycle] guild=${input.guildId} clan=${clanTag} war=${warId} status=DELETED`
       );
       return true;
     }
     return false;
+  }
+
+  /** Purpose: mark lifecycle DELETED only when the currently tracked active-war message still matches the failing message identity. */
+  async markDeletedIfTrackedMessageMatches(
+    input: MarkDeletedIfTrackedMessageMatchesInput
+  ): Promise<MarkDeletedIfTrackedMessageMatchesResult> {
+    const clanTag = normalizeTag(input.clanTag);
+    const warId = Math.trunc(input.warId);
+    const row = await this.getLifecycleForWar({
+      guildId: input.guildId,
+      clanTag,
+      warId,
+    });
+    if (!row) {
+      return "missing_row";
+    }
+    if (
+      row.status !== WarMailLifecycleStatus.POSTED ||
+      !row.channelId ||
+      !row.messageId
+    ) {
+      return "not_posted";
+    }
+    if (row.channelId !== input.channelId || row.messageId !== input.messageId) {
+      console.info(
+        `[mail-lifecycle] guild=${input.guildId} clan=${clanTag} war=${warId} status=NOOP_STALE_TARGET tracked_channel=${row.channelId} tracked_message=${row.messageId} failing_channel=${input.channelId} failing_message=${input.messageId}`
+      );
+      return "stale_target";
+    }
+    const deleted = await this.markDeleted({
+      guildId: input.guildId,
+      clanTag,
+      warId,
+      deletedAt: input.deletedAt,
+      requirePosted: true,
+      matchChannelId: input.channelId,
+      matchMessageId: input.messageId,
+    });
+    return deleted ? "deleted" : "stale_target";
   }
 
   /** Purpose: fetch one lifecycle row by guild/clan/war identity. */

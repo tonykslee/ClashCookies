@@ -139,6 +139,75 @@ describe("WarMailLifecycleService", () => {
     expect(fetchMessage).toHaveBeenCalledWith({ message: "456", force: true });
   });
 
+  it("skips deletion when a failing explicit target is stale versus current tracked lifecycle message", async () => {
+    vi.spyOn(prisma.warMailLifecycle, "findUnique").mockResolvedValueOnce({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+      warId: 1001,
+      status: "POSTED",
+      messageId: "new-message",
+      channelId: "new-channel",
+      postedAt: new Date(),
+      deletedAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as never);
+    const updateManySpy = vi.spyOn(prisma.warMailLifecycle, "updateMany");
+    const service = new WarMailLifecycleService();
+
+    const result = await service.markDeletedIfTrackedMessageMatches({
+      guildId: "guild-1",
+      clanTag: "AAA111",
+      warId: 1001,
+      channelId: "old-channel",
+      messageId: "old-message",
+    });
+
+    expect(result).toBe("stale_target");
+    expect(updateManySpy).not.toHaveBeenCalled();
+  });
+
+  it("deletes lifecycle when failing explicit target still matches current tracked lifecycle identity", async () => {
+    vi.spyOn(prisma.warMailLifecycle, "findUnique").mockResolvedValueOnce({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+      warId: 1001,
+      status: "POSTED",
+      messageId: "current-message",
+      channelId: "current-channel",
+      postedAt: new Date(),
+      deletedAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as never);
+    const updateManySpy = vi
+      .spyOn(prisma.warMailLifecycle, "updateMany")
+      .mockResolvedValueOnce({ count: 1 } as never);
+    const service = new WarMailLifecycleService();
+
+    const result = await service.markDeletedIfTrackedMessageMatches({
+      guildId: "guild-1",
+      clanTag: "AAA111",
+      warId: 1001,
+      channelId: "current-channel",
+      messageId: "current-message",
+    });
+
+    expect(result).toBe("deleted");
+    expect(updateManySpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          guildId: "guild-1",
+          clanTag: "#AAA111",
+          warId: 1001,
+          status: "POSTED",
+          channelId: "current-channel",
+          messageId: "current-message",
+        }),
+      }),
+    );
+  });
+
   it("marks lifecycle deleted when tracked channel is inaccessible for active-war mail", async () => {
     vi.spyOn(prisma.warMailLifecycle, "findUnique").mockResolvedValueOnce({
       guildId: "guild-1",

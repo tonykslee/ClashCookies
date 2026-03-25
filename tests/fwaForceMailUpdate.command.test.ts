@@ -34,12 +34,12 @@ function buildLifecycleResult(
   };
 }
 
-function createInteraction(input?: { tag?: string; guildId?: string }) {
+function createInteraction(input?: { tag?: string; guildId?: string; client?: any }) {
   const editReply = vi.fn().mockResolvedValue(undefined);
   return {
     guildId: input?.guildId ?? "guild-1",
     channelId: "command-channel-1",
-    client: {},
+    client: input?.client ?? {},
     deferReply: vi.fn().mockResolvedValue(undefined),
     editReply,
     options: {
@@ -142,6 +142,60 @@ describe("runForceMailUpdateCommand", () => {
     const reply = String(interaction.editReply.mock.calls[0]?.[0] ?? "");
     expect(reply).toContain("Tracked mail reference for #R80L8VYG is missing, inaccessible, or otherwise unusable.");
     expect(reply).toContain("WarMailLifecycle -> DELETED");
+  });
+
+  it("guards lifecycle deletion by tracked message identity when refresh target is missing", async () => {
+    vi.spyOn(prisma.trackedClan, "findFirst").mockResolvedValueOnce({
+      tag: "#R80L8VYG",
+      name: "DARK EMPIRE",
+    } as never);
+    vi.spyOn(prisma.currentWar, "findUnique").mockResolvedValueOnce({
+      warId: 1000110,
+      startTime: new Date("2026-03-25T04:22:17.000Z"),
+    } as never);
+    vi.spyOn(WarMailLifecycleService.prototype, "resolveStatusForCurrentWar").mockResolvedValueOnce(
+      buildLifecycleResult({
+        status: "posted",
+        debug: {
+          ...buildLifecycleResult().debug,
+          trackedMessageExists: "yes",
+          finalNormalizedStatus: "posted",
+          reconciliationOutcome: "exists",
+          reconciliationCertainty: "definitive",
+          debugReasonCode: "live_matching_post_exists",
+          debugReason: "Tracked lifecycle message exists for the active war.",
+          trackingCleared: false,
+        },
+      }),
+    );
+    const guardedDeleteSpy = vi
+      .spyOn(WarMailLifecycleService.prototype, "markDeletedIfTrackedMessageMatches")
+      .mockResolvedValueOnce("stale_target");
+    const interaction = createInteraction({
+      client: {
+        channels: {
+          fetch: vi.fn().mockResolvedValue({
+            isTextBased: () => true,
+            messages: {
+              fetch: vi.fn().mockRejectedValue({ code: 10008, message: "Unknown Message" }),
+            },
+          }),
+        },
+      },
+    });
+
+    await runForceMailUpdateCommand(interaction);
+
+    expect(guardedDeleteSpy).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      clanTag: "R80L8VYG",
+      warId: 1000110,
+      channelId: "mail-channel-1",
+      messageId: "mail-message-1",
+    });
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "Could not refresh #R80L8VYG mail in place. The stored message was missing or inaccessible.",
+    );
   });
 });
 
