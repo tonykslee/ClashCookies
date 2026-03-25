@@ -15,7 +15,6 @@
 - `/sheet link`, `/sheet unlink`, `/sheet show`, `/sheet refresh`
 - `/kick-list build`, `/kick-list add`, `/kick-list remove`, `/kick-list show`, `/kick-list clear`
 - `/sync time post`
-- `/say`
 - `/bot-logs`
 - `/notify war`
 
