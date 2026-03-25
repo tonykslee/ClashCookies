@@ -2267,6 +2267,16 @@ function formatMailBlockedReason(
   return `:warning: ${reason}`;
 }
 
+/** Purpose: identify lifecycle reconciliation outcomes that definitively prove the tracked target is gone. */
+function isDefinitiveMissingLifecycleOutcome(
+  outcome: WarMailLifecycleReconciliationOutcome,
+): boolean {
+  return (
+    outcome === "message_missing_confirmed" ||
+    outcome === "channel_missing_confirmed"
+  );
+}
+
 async function getCurrentWarMailConfig(
   guildId: string,
   tag: string,
@@ -6850,17 +6860,39 @@ export async function runForceMailUpdateCommand(
     ? currentWar.startTime.getTime()
     : null;
   const lifecycle = await warMailLifecycleService
-    .getLifecycleForWar({
+    .resolveStatusForCurrentWar({
+      client: interaction.client,
       guildId: interaction.guildId,
       clanTag: tag,
       warId: currentWarIdNumber,
+      sentEmoji: MAILBOX_SENT_EMOJI,
+      unsentEmoji: MAILBOX_NOT_SENT_EMOJI,
     })
     .catch(() => null);
+  const trackedChannelId = lifecycle?.debug.trackedChannelId ?? null;
+  const trackedMessageId = lifecycle?.debug.trackedMessageId ?? null;
+  const hasTrackedTarget = Boolean(trackedChannelId && trackedMessageId);
+  if (
+    lifecycle &&
+    lifecycle.status === "deleted" &&
+    hasTrackedTarget &&
+    isDefinitiveMissingLifecycleOutcome(
+      lifecycle.debug.reconciliationOutcome,
+    )
+  ) {
+    await interaction.editReply(
+      [
+        `Tracked mail reference for #${tag} is missing or deleted.`,
+        "Lifecycle state was corrected for the active war: **WarMailLifecycle -> DELETED**.",
+        "Send mail again or repair the reference with `/force sync mail`.",
+      ].join("\n"),
+    );
+    return;
+  }
   if (
     !lifecycle ||
-    lifecycle.status !== "POSTED" ||
-    !lifecycle.channelId ||
-    !lifecycle.messageId
+    lifecycle.status !== "posted" ||
+    !hasTrackedTarget
   ) {
     await interaction.editReply(
       `No active sent mail reference found for #${tag}. Send mail first or sync it via \`/force sync mail\`.`,
@@ -6868,8 +6900,8 @@ export async function runForceMailUpdateCommand(
     return;
   }
   const stored = {
-    channelId: lifecycle.channelId,
-    messageId: lifecycle.messageId,
+    channelId: trackedChannelId as string,
+    messageId: trackedMessageId as string,
   };
   const pollKey = buildWarMailPollKey(
     interaction.guildId,
