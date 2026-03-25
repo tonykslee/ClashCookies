@@ -24,6 +24,7 @@ import { Defer } from "./commands/Defer";
 import { Link } from "./commands/Link";
 import { Layout } from "./commands/Layout";
 import { Say } from "./commands/Say";
+import { BotLogs } from "./commands/BotLogs";
 
 // ...existing code...
 export const Commands = [
@@ -52,5 +53,6 @@ export const Commands = [
   Force,
   Post,
   Say,
+  BotLogs,
   CommandRole,
 ];
