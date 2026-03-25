@@ -1030,10 +1030,10 @@ describe("War-ended sync and metadata canonicalization", () => {
       warStartTime: new Date("2026-03-09T00:00:00.000Z"),
       warEndTime: new Date("2026-03-10T00:00:00.000Z"),
     });
-    vi.spyOn(prisma.clanNotifyConfig, "findUnique").mockResolvedValue({
-      guildId: "guild-1",
-      clanTag: "R80L8VYG",
-      channelId: "chan-1",
+    vi.spyOn(prisma.trackedClan, "findUnique").mockResolvedValue({
+      notifyChannelId: "chan-1",
+      notifyRole: null,
+      notifyEnabled: true,
     } as any);
     (service as any).findSubscriptionByGuildAndTag = vi.fn().mockResolvedValue(
       makeSubscription({
