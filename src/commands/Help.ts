@@ -32,7 +32,7 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "kick-list:show",
   "kick-list:clear",
   "sync:time:post",
-  "say",
+  "bot-logs",
   "notify:war",
   "link:embed",
   "link:create:admin",
@@ -419,13 +419,13 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     details: [
       "Use `/say text:<message>` to post one plain text message directly in the current channel.",
       "`show-from` defaults to true and posts through the interaction response path so Discord shows the native `/say` attribution header.",
-      "When `show-from:false` is used by an Administrator, `/say` posts via normal channel send without native slash attribution, then sends an ephemeral confirmation.",
+      "When `show-from:false` is used, `/say` posts via normal channel send without native slash attribution, then sends an ephemeral confirmation.",
       "Use `type:LONG_TEXT` to open a modal with one required paragraph field and post that body as a normal message.",
       "Use `type:EMBED` to open a modal with optional title, required body, and optional image URL.",
       "Modal submit delivery follows the same show-from transport rule (`interaction reply` vs `channel send + ephemeral confirmation`).",
-      "`show-from:false` is restricted to Administrators.",
+      "Hidden-source (`show-from:false`) sends are accountability-logged to the configured `/bot-logs` channel when one is set.",
       "Embed image URL must be an absolute `http://` or `https://` URL.",
-      "`/say` is admin-only by default unless role access is granted with `/permission add`.",
+      "`/say` is available to everyone by default unless restricted with `/permission add`.",
     ],
     examples: [
       "/say text:War starts in 15 minutes.",
@@ -434,6 +434,16 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/say type:EMBED",
       "/say text:Draft body type:EMBED",
     ],
+  },
+  "bot-logs": {
+    summary: "Set or inspect the guild channel used for important bot logs.",
+    details: [
+      "Use `/bot-logs set-channel:<channel>` to save the per-guild destination channel for important bot logs.",
+      "Use `/bot-logs` with no arguments to view the currently configured channel mention.",
+      "If a saved channel no longer exists, the command reports stale config and clears it.",
+      "`/bot-logs` is admin-only by default unless role access is granted with `/permission add`.",
+    ],
+    examples: ["/bot-logs", "/bot-logs set-channel:#leadership-logs"],
   },
   force: {
     summary:
@@ -488,7 +498,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "Add/remove role whitelists for command targets.",
       "List current policy for one target or all targets.",
       "`/permission list` includes `fwa:mail:send`, `fwa:compliance`, `fwa:weight-*`, and `defer*` targets (default FWA leader role + Administrator).",
-      "`say`, `link:embed`, `link:create:admin`, and `link:delete:admin` are admin-only by default and can be role-whitelisted.",
+      "`bot-logs`, `link:embed`, `link:create:admin`, and `link:delete:admin` are admin-only by default and can be role-whitelisted.",
       "`add` and `remove` are admin-only by default.",
     ],
     examples: [
@@ -500,6 +510,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/permission add command:defer role:@Leaders",
       "/permission add command:link:embed role:@Leaders",
       "/permission add command:say role:@Leaders",
+      "/permission add command:bot-logs role:@Leaders",
       "/permission add command:link:create:admin role:@Leaders",
       "/permission add command:link:delete:admin role:@Leaders",
       "/permission add command:fwa role:@Leaders",

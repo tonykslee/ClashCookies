@@ -1,22 +1,28 @@
 import { ApplicationCommandOptionType } from "discord.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Say, handleSayModalSubmit, isSayModalCustomId } from "../src/commands/Say";
+import { BotLogChannelService } from "../src/services/BotLogChannelService";
 
 beforeEach(() => {
   vi.restoreAllMocks();
+  vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(null);
+  vi.spyOn(BotLogChannelService.prototype, "clearChannelId").mockResolvedValue(undefined);
 });
 
 function createChatInteraction(input: {
   userId?: string;
+  guildId?: string;
+  channelId?: string;
   text?: string | null;
   type?: string | null;
   showFrom?: boolean | null;
-  isAdmin?: boolean;
   send?: ReturnType<typeof vi.fn>;
+  channelFetch?: ReturnType<typeof vi.fn>;
   reply?: ReturnType<typeof vi.fn>;
   showModal?: ReturnType<typeof vi.fn>;
 }) {
   const send = input.send ?? vi.fn().mockResolvedValue({});
+  const channelFetch = input.channelFetch ?? vi.fn().mockResolvedValue(null);
   const reply = input.reply ?? vi.fn().mockResolvedValue(undefined);
   const showModal = input.showModal ?? vi.fn().mockResolvedValue(undefined);
   const optionMap = new Map<string, string | null>([
@@ -24,13 +30,16 @@ function createChatInteraction(input: {
     ["type", input.type ?? null],
   ]);
   const showFrom = input.showFrom ?? null;
-  const isAdmin = input.isAdmin ?? false;
 
   return {
     inGuild: vi.fn(() => true),
+    guildId: input.guildId ?? "guild-1",
+    channelId: input.channelId ?? "source-channel-1",
     user: { id: input.userId ?? "user-1" },
-    memberPermissions: {
-      has: vi.fn(() => isAdmin),
+    client: {
+      channels: {
+        fetch: channelFetch,
+      },
     },
     channel: {
       isTextBased: vi.fn(() => true),
@@ -48,21 +57,27 @@ function createChatInteraction(input: {
 function createModalInteraction(input: {
   customId: string;
   userId?: string;
-  isAdmin?: boolean;
+  guildId?: string;
+  channelId?: string;
   values?: Record<string, string>;
   send?: ReturnType<typeof vi.fn>;
+  channelFetch?: ReturnType<typeof vi.fn>;
   reply?: ReturnType<typeof vi.fn>;
 }) {
   const values = input.values ?? {};
   const send = input.send ?? vi.fn().mockResolvedValue({});
+  const channelFetch = input.channelFetch ?? vi.fn().mockResolvedValue(null);
   const reply = input.reply ?? vi.fn().mockResolvedValue(undefined);
-  const isAdmin = input.isAdmin ?? false;
 
   return {
     customId: input.customId,
+    guildId: input.guildId ?? "guild-1",
+    channelId: input.channelId ?? "source-channel-1",
     user: { id: input.userId ?? "user-1" },
-    memberPermissions: {
-      has: vi.fn(() => isAdmin),
+    client: {
+      channels: {
+        fetch: channelFetch,
+      },
     },
     fields: {
       getTextInputValue: vi.fn((fieldId: string) => values[fieldId] ?? ""),
@@ -112,12 +127,11 @@ describe("/say behavior", () => {
     });
   });
 
-  it("uses channel-send + ephemeral confirmation for show-from=false by admin", async () => {
+  it("uses channel-send + ephemeral confirmation for show-from=false", async () => {
     const interaction = createChatInteraction({
       text: "Hello alliance",
       type: null,
       showFrom: false,
-      isAdmin: true,
     });
 
     await Say.run({} as any, interaction as any, {} as any);
@@ -131,21 +145,34 @@ describe("/say behavior", () => {
     });
   });
 
-  it("rejects non-admin show-from false attempts", async () => {
+  it("logs hidden-source plain text posts when a bot-log channel is configured", async () => {
+    vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue("log-channel-1");
+    const botLogSend = vi.fn().mockResolvedValue({});
     const interaction = createChatInteraction({
       text: "Hello alliance",
       type: null,
       showFrom: false,
-      isAdmin: false,
+      channelFetch: vi.fn().mockResolvedValue({
+        guildId: "guild-1",
+        isTextBased: () => true,
+        send: botLogSend,
+      }),
     });
 
     await Say.run({} as any, interaction as any, {} as any);
 
-    expect(interaction.channel.send).not.toHaveBeenCalled();
+    expect(interaction.channel.send).toHaveBeenCalledWith({
+      content: "Hello alliance",
+    });
     expect(interaction.reply).toHaveBeenCalledWith({
       ephemeral: true,
-      content: "Only administrators can set `show-from:false`.",
+      content: "Posted message to channel.",
     });
+    expect(botLogSend).toHaveBeenCalledTimes(1);
+    const payload = botLogSend.mock.calls[0]?.[0] ?? {};
+    expect(payload.content).toContain("Hidden `/say` post");
+    expect(payload.content).toContain("Mode: TEXT");
+    expect(payload.content).toContain("Hello alliance");
   });
 
   it("opens long-text modal with show-from=true state", async () => {
@@ -162,12 +189,11 @@ describe("/say behavior", () => {
     expect(modal.custom_id).toBe("say-modal:LONG_TEXT:user-1:1");
   });
 
-  it("opens embed modal with show-from=false state for admins", async () => {
+  it("opens embed modal with show-from=false state", async () => {
     const interaction = createChatInteraction({
       text: "prefill body",
       type: "EMBED",
       showFrom: false,
-      isAdmin: true,
     });
 
     await Say.run({} as any, interaction as any, {} as any);
@@ -217,7 +243,6 @@ describe("/say modal submit", () => {
   it("uses channel-send + ephemeral confirmation for show-from=false modal", async () => {
     const interaction = createModalInteraction({
       customId: "say-modal:LONG_TEXT:user-1:0",
-      isAdmin: true,
       values: {
         "say-long-text-body": "Long text body content",
       },
@@ -234,22 +259,35 @@ describe("/say modal submit", () => {
     });
   });
 
-  it("rejects non-admin modal suppression attempts", async () => {
+  it("logs hidden-source embed modal posts when a bot-log channel is configured", async () => {
+    vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue("log-channel-1");
+    const botLogSend = vi.fn().mockResolvedValue({});
     const interaction = createModalInteraction({
-      customId: "say-modal:LONG_TEXT:user-1:0",
-      isAdmin: false,
+      customId: "say-modal:EMBED:user-1:0",
       values: {
-        "say-long-text-body": "Long text body content",
+        "say-embed-title": "Status",
+        "say-embed-body": "Body",
+        "say-embed-image-url": "https://img.example.com/a.png",
       },
+      channelFetch: vi.fn().mockResolvedValue({
+        guildId: "guild-1",
+        isTextBased: () => true,
+        send: botLogSend,
+      }),
     });
 
     await handleSayModalSubmit(interaction as any);
 
-    expect(interaction.channel.send).not.toHaveBeenCalled();
+    expect(interaction.channel.send).toHaveBeenCalledTimes(1);
     expect(interaction.reply).toHaveBeenCalledWith({
       ephemeral: true,
-      content: "Only administrators can set `show-from:false`.",
+      content: "Posted message to channel.",
     });
+    const payload = botLogSend.mock.calls[0]?.[0] ?? {};
+    expect(payload.content).toContain("Mode: EMBED");
+    expect(payload.content).toContain("Status");
+    expect(payload.content).toContain("Body");
+    expect(payload.content).toContain("https://img.example.com/a.png");
   });
 
   it("rejects invalid embed image URL with ephemeral error", async () => {

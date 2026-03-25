@@ -24,6 +24,8 @@ Discord bot for Clash of Clans activity tooling.
 - Single-clan `/fwa match` embeds now use the same state-coded sidebar mapping from the currently displayed effective state (including draft revisions), without changing confirmation/persistence semantics.
 - `/remaining war` now supports alliance-wide aggregate mode (no tag) with dominant-cluster mean remaining time, spread, and outlier clan reporting.
 - Telemetry now records command lifecycle/API/stage aggregates and supports `/telemetry report` plus scheduled Discord report posting.
+- `/bot-logs` now lets admins set or inspect the guild-scoped destination channel for important bot log posts, with stale channel handling.
+- `/say` now allows anyone to use `show-from:false`, keeps the normal channel-send path for shortcode rendering, and logs hidden-source sends to `/bot-logs` when configured.
 - `/clan-health` now provides a DB-only leadership snapshot per tracked clan (last-30 match/win rates, inactivity counts, and missing Discord links).
 - `/fwa weight-age`, `/fwa weight-link`, `/fwa weight-health`, and `/fwa weight-cookie` now provide FWA Stats weight monitoring with cached scraping, stale-weight flags, auth-expiry recovery guidance, and secure cookie status/update flows.
 - `/fwa compliance` now runs the shared war-end compliance engine on demand for a tracked clan (latest ended war by default, optional `war-id` override).
