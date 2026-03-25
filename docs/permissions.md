@@ -15,6 +15,7 @@
 - `/sheet link`, `/sheet unlink`, `/sheet show`, `/sheet refresh`
 - `/kick-list build`, `/kick-list add`, `/kick-list remove`, `/kick-list show`, `/kick-list clear`
 - `/sync time post`
+- `/say`
 - `/notify war`
 
 ## Role Whitelisting
@@ -25,6 +26,8 @@
 Examples:
 - Lock `/sync` to role `@RoleX`:
   - `/permission add command:sync role:@RoleX`
+- Lock `/say` to role `@RoleX`:
+  - `/permission add command:say role:@RoleX`
 - Fine-grained `/sync ...` targets:
   - `sync:time:post`
   - `sync:post:status`
