@@ -44,7 +44,7 @@ type EmojiAttachmentDownloadResult =
       statusCode?: number;
     };
 
-const EMOJI_PAGE_SIZE = 20;
+const EMOJI_PAGE_CONTENT_BUDGET = 2500;
 const EMOJI_LIST_COLUMNS = 3;
 const EMOJI_PAGINATOR_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_AUTOCOMPLETE_CHOICES = 25;
@@ -60,17 +60,65 @@ function formatEmojiListLine(emoji: ResolvedApplicationEmoji): string {
   return `${emoji.rendered} \`${emoji.shortcode}\``;
 }
 
-/** Purpose: split emoji list output into deterministic page chunks for embed display. */
+/** Purpose: sort one list page by shortcode length with deterministic tie-breakers for stable output. */
+function sortEmojiPageEntries(
+  emojis: ResolvedApplicationEmoji[],
+): ResolvedApplicationEmoji[] {
+  return emojis
+    .map((emoji, index) => ({ emoji, index }))
+    .sort((a, b) => {
+      const byLength = a.emoji.shortcode.length - b.emoji.shortcode.length;
+      if (byLength !== 0) return byLength;
+      const byShortcode = a.emoji.shortcode.localeCompare(b.emoji.shortcode, undefined, {
+        sensitivity: "base",
+      });
+      if (byShortcode !== 0) return byShortcode;
+      const byName = a.emoji.name.localeCompare(b.emoji.name, undefined, {
+        sensitivity: "base",
+      });
+      if (byName !== 0) return byName;
+      return a.index - b.index;
+    })
+    .map((entry) => entry.emoji);
+}
+
+/** Purpose: split emoji list output into deterministic page chunks using rendered-list character budget per page. */
 function paginateEmojiLines(
   emojis: ResolvedApplicationEmoji[],
-  pageSize: number = EMOJI_PAGE_SIZE,
+  pageContentBudget: number = EMOJI_PAGE_CONTENT_BUDGET,
 ): string[] {
   if (emojis.length === 0) return [];
+  const effectiveBudget = Math.max(1, Math.floor(pageContentBudget));
   const pages: string[] = [];
-  for (let i = 0; i < emojis.length; i += pageSize) {
-    const slice = emojis.slice(i, i + pageSize);
-    pages.push(slice.map(formatEmojiListLine).join("\n"));
+
+  let cursor = 0;
+  while (cursor < emojis.length) {
+    const pageSlice: ResolvedApplicationEmoji[] = [];
+    let usedChars = 0;
+
+    while (cursor < emojis.length) {
+      const entry = emojis[cursor];
+      const line = formatEmojiListLine(entry);
+      const nextUsedChars = usedChars + line.length + (pageSlice.length > 0 ? 1 : 0);
+
+      if (pageSlice.length > 0 && nextUsedChars > effectiveBudget) {
+        break;
+      }
+
+      pageSlice.push(entry);
+      usedChars = nextUsedChars <= effectiveBudget ? nextUsedChars : line.length;
+      cursor += 1;
+
+      // Ensure progress even if one entry alone is longer than the page budget.
+      if (pageSlice.length === 1 && usedChars > effectiveBudget) {
+        break;
+      }
+    }
+
+    const sortedPage = sortEmojiPageEntries(pageSlice);
+    pages.push(sortedPage.map(formatEmojiListLine).join("\n"));
   }
+
   return pages;
 }
 

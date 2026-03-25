@@ -72,6 +72,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "Use `/emoji name:<emoji_name> react:<message-id>` to react to a message in the current channel with that resolved emoji.",
       "Use `/emoji emoji:<emoji-token-or-url> short-code:<name>` to add one new bot application emoji (admin-only by default).",
       "Use `/emoji` with no args to browse a paginated list of all available bot application emojis.",
+      "No-arg list pages are capped to ~2500 characters of emoji-entry content and shown in compact row-wise 3 columns sorted by shortcode length.",
       "For name-only resolves, `visibility:public` returns only the rendered emoji message content.",
       "`name` supports dynamic autocomplete backed by application emojis for this bot instance.",
       "Emoji resolution is environment-safe by name (application emoji IDs may differ per bot instance).",
