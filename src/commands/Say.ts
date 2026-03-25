@@ -6,6 +6,7 @@ import {
   EmbedBuilder,
   ModalBuilder,
   ModalSubmitInteraction,
+  PermissionFlagsBits,
   TextInputBuilder,
   TextInputStyle,
 } from "discord.js";
@@ -17,6 +18,7 @@ const SAY_LONG_TEXT_TYPE = "LONG_TEXT";
 const SAY_EMBED_TYPE = "EMBED";
 const SAY_TEXT_OPTION = "text";
 const SAY_TYPE_OPTION = "type";
+const SAY_SHOW_FROM_OPTION = "show-from";
 const SAY_LONG_TEXT_INPUT_ID = "say-long-text-body";
 const SAY_EMBED_TITLE_INPUT_ID = "say-embed-title";
 const SAY_EMBED_BODY_INPUT_ID = "say-embed-body";
@@ -42,18 +44,31 @@ function isValidHttpUrl(input: string): boolean {
   }
 }
 
-function buildSayModalCustomId(type: SayType, userId: string): string {
-  return `${SAY_MODAL_PREFIX}:${type}:${userId}`;
+function hasAdministratorPermission(
+  interaction: ChatInputCommandInteraction | ModalSubmitInteraction
+): boolean {
+  return Boolean(interaction.memberPermissions?.has(PermissionFlagsBits.Administrator));
+}
+
+function buildSayModalCustomId(type: SayType, userId: string, showFrom: boolean): string {
+  return `${SAY_MODAL_PREFIX}:${type}:${userId}:${showFrom ? "1" : "0"}`;
 }
 
 function parseSayModalCustomId(
   customId: string
-): { type: SayType; userId: string } | null {
-  const [prefix, type, userId] = String(customId ?? "").split(":");
+): { type: SayType; userId: string; showFrom: boolean } | null {
+  const parts = String(customId ?? "").split(":");
+  if (parts.length !== 3 && parts.length !== 4) return null;
+  const [prefix, type, userId, showFromValue] = parts;
   if (prefix !== SAY_MODAL_PREFIX) return null;
   if (!userId) return null;
   if (type !== SAY_LONG_TEXT_TYPE && type !== SAY_EMBED_TYPE) return null;
-  return { type, userId };
+  if (showFromValue !== undefined && showFromValue !== "0" && showFromValue !== "1") return null;
+  return {
+    type,
+    userId,
+    showFrom: showFromValue === undefined ? true : showFromValue === "1",
+  };
 }
 
 function parseSayType(value: string | null): SayType | null {
@@ -86,7 +101,28 @@ async function sendToChannel(
   }
 }
 
-function buildLongTextModal(interaction: ChatInputCommandInteraction, seedText: string | null) {
+function buildAttributionLine(userId: string): string {
+  return `<@${userId}> used \`/say\``;
+}
+
+function buildSayMessageContent(input: {
+  userId: string;
+  body: string | null;
+  showFrom: boolean;
+}): string | undefined {
+  if (!input.showFrom) {
+    return input.body ?? undefined;
+  }
+  const attribution = buildAttributionLine(input.userId);
+  if (!input.body) return attribution;
+  return `${attribution}\n${input.body}`;
+}
+
+function buildLongTextModal(
+  interaction: ChatInputCommandInteraction,
+  seedText: string | null,
+  showFrom: boolean
+) {
   const bodyInput = new TextInputBuilder()
     .setCustomId(SAY_LONG_TEXT_INPUT_ID)
     .setLabel("Message Body")
@@ -99,12 +135,16 @@ function buildLongTextModal(interaction: ChatInputCommandInteraction, seedText: 
   }
 
   return new ModalBuilder()
-    .setCustomId(buildSayModalCustomId(SAY_LONG_TEXT_TYPE, interaction.user.id))
+    .setCustomId(buildSayModalCustomId(SAY_LONG_TEXT_TYPE, interaction.user.id, showFrom))
     .setTitle("Say Long Text")
     .addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(bodyInput));
 }
 
-function buildEmbedModal(interaction: ChatInputCommandInteraction, seedText: string | null) {
+function buildEmbedModal(
+  interaction: ChatInputCommandInteraction,
+  seedText: string | null,
+  showFrom: boolean
+) {
   const titleInput = new TextInputBuilder()
     .setCustomId(SAY_EMBED_TITLE_INPUT_ID)
     .setLabel("Embed Title (optional)")
@@ -131,7 +171,7 @@ function buildEmbedModal(interaction: ChatInputCommandInteraction, seedText: str
     .setMaxLength(DISCORD_URL_LIMIT);
 
   return new ModalBuilder()
-    .setCustomId(buildSayModalCustomId(SAY_EMBED_TYPE, interaction.user.id))
+    .setCustomId(buildSayModalCustomId(SAY_EMBED_TYPE, interaction.user.id, showFrom))
     .setTitle("Say Embed")
     .addComponents(
       new ActionRowBuilder<TextInputBuilder>().addComponents(titleInput),
@@ -158,6 +198,14 @@ export async function handleSayModalSubmit(
     return;
   }
 
+  if (!parsed.showFrom && !hasAdministratorPermission(interaction)) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Only administrators can set `show-from:false`.",
+    });
+    return;
+  }
+
   await interaction.deferReply({ ephemeral: true });
 
   if (parsed.type === SAY_LONG_TEXT_TYPE) {
@@ -173,7 +221,23 @@ export async function handleSayModalSubmit(
       return;
     }
 
-    const sent = await sendToChannel(interaction, { content: body });
+    const content = buildSayMessageContent({
+      userId: interaction.user.id,
+      body,
+      showFrom: parsed.showFrom,
+    });
+    if (!content) {
+      await interaction.editReply("Message body cannot be empty.");
+      return;
+    }
+    if (content.length > DISCORD_MESSAGE_LIMIT) {
+      await interaction.editReply(
+        `Message body is too long. Max ${DISCORD_MESSAGE_LIMIT} characters including attribution.`
+      );
+      return;
+    }
+
+    const sent = await sendToChannel(interaction, { content });
     await interaction.editReply(sent.ok ? "Posted message to channel." : sent.message);
     return;
   }
@@ -213,7 +277,12 @@ export async function handleSayModalSubmit(
   if (title) embed.setTitle(title);
   if (imageUrl) embed.setImage(imageUrl);
 
-  const sent = await sendToChannel(interaction, { embeds: [embed] });
+  const content = buildSayMessageContent({
+    userId: interaction.user.id,
+    body: null,
+    showFrom: parsed.showFrom,
+  });
+  const sent = await sendToChannel(interaction, { content, embeds: [embed] });
   await interaction.editReply(sent.ok ? "Posted embed to channel." : sent.message);
 }
 
@@ -237,6 +306,12 @@ export const Say: Command = {
         { name: SAY_EMBED_TYPE, value: SAY_EMBED_TYPE },
       ],
     },
+    {
+      name: SAY_SHOW_FROM_OPTION,
+      description: "Show command invoker attribution (only admins can set false)",
+      type: ApplicationCommandOptionType.Boolean,
+      required: false,
+    },
   ],
   run: async (
     _client: Client,
@@ -253,6 +328,15 @@ export const Say: Command = {
 
     const text = normalizeOptionalText(interaction.options.getString(SAY_TEXT_OPTION, false));
     const type = parseSayType(interaction.options.getString(SAY_TYPE_OPTION, false));
+    const showFrom = interaction.options.getBoolean(SAY_SHOW_FROM_OPTION, false) ?? true;
+
+    if (!showFrom && !hasAdministratorPermission(interaction)) {
+      await interaction.reply({
+        ephemeral: true,
+        content: "Only administrators can set `show-from:false`.",
+      });
+      return;
+    }
 
     if (!type) {
       if (!text) {
@@ -271,7 +355,20 @@ export const Say: Command = {
         return;
       }
 
-      const sent = await sendToChannel(interaction, { content: text });
+      const content = buildSayMessageContent({
+        userId: interaction.user.id,
+        body: text,
+        showFrom,
+      });
+      if (!content || content.length > DISCORD_MESSAGE_LIMIT) {
+        await interaction.reply({
+          ephemeral: true,
+          content: `Text is too long. Max ${DISCORD_MESSAGE_LIMIT} characters including attribution.`,
+        });
+        return;
+      }
+
+      const sent = await sendToChannel(interaction, { content });
       await interaction.reply({
         ephemeral: true,
         content: sent.ok ? "Posted message to channel." : sent.message,
@@ -280,10 +377,10 @@ export const Say: Command = {
     }
 
     if (type === SAY_LONG_TEXT_TYPE) {
-      await interaction.showModal(buildLongTextModal(interaction, text));
+      await interaction.showModal(buildLongTextModal(interaction, text, showFrom));
       return;
     }
 
-    await interaction.showModal(buildEmbedModal(interaction, text));
+    await interaction.showModal(buildEmbedModal(interaction, text, showFrom));
   },
 };

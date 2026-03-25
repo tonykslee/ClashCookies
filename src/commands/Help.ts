@@ -418,13 +418,17 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     summary: "Post plain text or an embed message as the bot.",
     details: [
       "Use `/say text:<message>` to post one plain text message directly in the current channel.",
+      "By default, posted messages include attribution above content: `<@user> used /say`.",
       "Use `type:LONG_TEXT` to open a modal with one required paragraph field and post that body as a normal message.",
       "Use `type:EMBED` to open a modal with optional title, required body, and optional image URL.",
+      "In embed mode, attribution is posted as message content above the embed.",
+      "`show-from` defaults to true. `show-from:false` suppresses attribution and is restricted to Administrators.",
       "Embed image URL must be an absolute `http://` or `https://` URL.",
       "`/say` is admin-only by default unless role access is granted with `/permission add`.",
     ],
     examples: [
       "/say text:War starts in 15 minutes.",
+      "/say text:War starts in 15 minutes. show-from:false",
       "/say type:LONG_TEXT",
       "/say type:EMBED",
       "/say text:Draft body type:EMBED",
