@@ -1,3 +1,9 @@
+<div align="center">
+
+![Logo](assets/ClashCookies_logo_master_2.png)
+
+</div>
+
 # ClashCookies
 ClashCookies is a TypeScript-based Discord bot and operations tooling platform for Clash of Clans clan management. It combines command-driven workflows, persistent data models, and automation loops to support day-to-day war operations, player activity tracking, and alliance reporting.
 
