@@ -86,10 +86,18 @@ import {
   isLinkEmbedModalCustomId,
   isLinkListSelectCustomId,
 } from "../commands/Link";
+import { handleSayModalSubmit, isSayModalCustomId } from "../commands/Say";
 
 const commandPermissionService = new CommandPermissionService();
 const GLOBAL_POST_BUTTON_PREFIX = "post-channel";
-const COMMANDS_WITH_CUSTOM_VISIBILITY = new Set(["help", "fwa", "layout", "compo", "emoji"]);
+const COMMANDS_WITH_CUSTOM_VISIBILITY = new Set([
+  "help",
+  "fwa",
+  "layout",
+  "compo",
+  "emoji",
+  "say",
+]);
 
 let isRegistered = false;
 const telemetryIngest = TelemetryIngestService.getInstance();
@@ -669,11 +677,25 @@ const handleModalSubmit = async (
   const isPostModal = isPostModalCustomId(interaction.customId);
   const isRecruitmentModal = isRecruitmentModalCustomId(interaction.customId);
   const isLinkEmbedModal = isLinkEmbedModalCustomId(interaction.customId);
-  if (!isPostModal && !isRecruitmentModal && !isLinkEmbedModal) return;
+  const isSayModal = isSayModalCustomId(interaction.customId);
+  if (!isPostModal && !isRecruitmentModal && !isLinkEmbedModal && !isSayModal) return;
 
   try {
     if (isLinkEmbedModal) {
       await handleLinkEmbedModalSubmit(interaction);
+      return;
+    }
+
+    if (isSayModal) {
+      const allowed = await commandPermissionService.canUseAnyTarget(["say"], interaction);
+      if (!allowed) {
+        await interaction.reply({
+          content: "You do not have permission to use /say.",
+          ephemeral: true,
+        });
+        return;
+      }
+      await handleSayModalSubmit(interaction);
       return;
     }
 
