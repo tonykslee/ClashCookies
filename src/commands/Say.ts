@@ -6,12 +6,13 @@ import {
   EmbedBuilder,
   ModalBuilder,
   ModalSubmitInteraction,
-  PermissionFlagsBits,
   TextInputBuilder,
   TextInputStyle,
 } from "discord.js";
 import { Command } from "../Command";
+import { truncateDiscordContent } from "../helper/discordContent";
 import { CoCService } from "../services/CoCService";
+import { BotLogChannelService } from "../services/BotLogChannelService";
 
 const SAY_MODAL_PREFIX = "say-modal";
 const SAY_LONG_TEXT_TYPE = "LONG_TEXT";
@@ -30,6 +31,14 @@ const DISCORD_URL_LIMIT = 512;
 
 type SayType = typeof SAY_LONG_TEXT_TYPE | typeof SAY_EMBED_TYPE;
 type SayPayload = { content?: string; embeds?: EmbedBuilder[] };
+type SayMode = "TEXT" | "LONG_TEXT" | "EMBED";
+type SayHiddenSourceLogInput = {
+  mode: SayMode;
+  content?: string | null;
+  embedTitle?: string | null;
+  embedBody?: string | null;
+  embedImageUrl?: string | null;
+};
 
 function normalizeOptionalText(input: string | null | undefined): string | null {
   const normalized = String(input ?? "").trim();
@@ -43,12 +52,6 @@ function isValidHttpUrl(input: string): boolean {
   } catch {
     return false;
   }
-}
-
-function hasAdministratorPermission(
-  interaction: ChatInputCommandInteraction | ModalSubmitInteraction
-): boolean {
-  return Boolean(interaction.memberPermissions?.has(PermissionFlagsBits.Administrator));
 }
 
 function buildSayModalCustomId(type: SayType, userId: string, showFrom: boolean): string {
@@ -81,6 +84,116 @@ function parseSayType(value: string | null): SayType | null {
   return null;
 }
 
+/** Purpose: keep multi-line hidden-source log bodies readable and safe inside code fences. */
+function formatLogBlock(input: string | null | undefined, limit: number): string {
+  const normalized = String(input ?? "").trim();
+  if (!normalized) return "(none)";
+  const withoutCodeFenceTerminators = normalized.replaceAll("```", "'''");
+  return truncateDiscordContent(withoutCodeFenceTerminators, limit);
+}
+
+/** Purpose: build deterministic bot-log payload for hidden-source /say sends. */
+function buildHiddenSourceLogContent(
+  interaction: ChatInputCommandInteraction | ModalSubmitInteraction,
+  input: SayHiddenSourceLogInput
+): string {
+  const userTag = interaction.user.username ? ` (${interaction.user.username})` : "";
+  const lines = [
+    "Hidden `/say` post",
+    `User: <@${interaction.user.id}>${userTag} (\`${interaction.user.id}\`)`,
+    `Source channel: ${interaction.channelId ? `<#${interaction.channelId}>` : "unknown"}`,
+    `Mode: ${input.mode}`,
+  ];
+
+  if (input.mode === "EMBED") {
+    lines.push("Embed title:");
+    lines.push("```");
+    lines.push(formatLogBlock(input.embedTitle, 700));
+    lines.push("```");
+    lines.push("Embed body:");
+    lines.push("```");
+    lines.push(formatLogBlock(input.embedBody, 900));
+    lines.push("```");
+    if (input.embedImageUrl) {
+      lines.push(`Embed image URL: ${input.embedImageUrl}`);
+    }
+  } else {
+    lines.push("Posted content:");
+    lines.push("```");
+    lines.push(formatLogBlock(input.content, 1200));
+    lines.push("```");
+  }
+
+  return truncateDiscordContent(lines.join("\n"));
+}
+
+/** Purpose: resolve configured bot-log destination channel for the current guild, clearing stale ids. */
+async function resolveBotLogChannel(
+  interaction: ChatInputCommandInteraction | ModalSubmitInteraction,
+  botLogChannelService: BotLogChannelService
+): Promise<{ send: (payload: { content: string }) => Promise<unknown> } | null> {
+  if (!interaction.guildId) return null;
+
+  const configuredChannelId = await botLogChannelService.getChannelId(interaction.guildId);
+  if (!configuredChannelId) return null;
+
+  let fetchedChannel: unknown;
+  try {
+    fetchedChannel = await interaction.client.channels.fetch(configuredChannelId);
+  } catch (error) {
+    const code = (error as { code?: number } | null | undefined)?.code;
+    if (code === 10003) {
+      await botLogChannelService.clearChannelId(interaction.guildId);
+    }
+    return null;
+  }
+
+  if (!fetchedChannel) {
+    await botLogChannelService.clearChannelId(interaction.guildId);
+    return null;
+  }
+
+  const logChannel = fetchedChannel as {
+    guildId?: string;
+    isTextBased?: () => boolean;
+    send?: (payload: { content: string }) => Promise<unknown>;
+  };
+
+  const logGuildId = String(logChannel.guildId ?? "").trim();
+  if (!logGuildId || logGuildId !== interaction.guildId) {
+    await botLogChannelService.clearChannelId(interaction.guildId);
+    return null;
+  }
+  if (typeof logChannel.isTextBased !== "function" || !logChannel.isTextBased()) {
+    return null;
+  }
+  if (typeof logChannel.send !== "function") {
+    return null;
+  }
+
+  return { send: logChannel.send.bind(logChannel) };
+}
+
+/** Purpose: write accountability logs for hidden-source /say sends without affecting user-facing flow. */
+async function logHiddenSourceSay(
+  interaction: ChatInputCommandInteraction | ModalSubmitInteraction,
+  input: SayHiddenSourceLogInput
+): Promise<void> {
+  if (!interaction.guildId) return;
+
+  const botLogChannelService = new BotLogChannelService();
+  const logChannel = await resolveBotLogChannel(interaction, botLogChannelService);
+  if (!logChannel) return;
+
+  try {
+    await logChannel.send({
+      content: buildHiddenSourceLogContent(interaction, input),
+    });
+  } catch {
+    // non-blocking: hidden-source sends must succeed even if bot-log posting fails
+  }
+}
+
 async function sendToChannel(
   interaction: ChatInputCommandInteraction | ModalSubmitInteraction,
   payload: SayPayload
@@ -107,7 +220,8 @@ async function sendToChannel(
 async function sendSayPayload(
   interaction: ChatInputCommandInteraction | ModalSubmitInteraction,
   payload: SayPayload,
-  showFrom: boolean
+  showFrom: boolean,
+  hiddenSourceLog: SayHiddenSourceLogInput
 ): Promise<{ ok: true } | { ok: false; message: string }> {
   if (showFrom) {
     try {
@@ -123,6 +237,8 @@ async function sendSayPayload(
 
   const sent = await sendToChannel(interaction, payload);
   if (!sent.ok) return sent;
+
+  await logHiddenSourceSay(interaction, hiddenSourceLog);
 
   try {
     await interaction.reply({
@@ -218,14 +334,6 @@ export async function handleSayModalSubmit(
     return;
   }
 
-  if (!parsed.showFrom && !hasAdministratorPermission(interaction)) {
-    await interaction.reply({
-      ephemeral: true,
-      content: "Only administrators can set `show-from:false`.",
-    });
-    return;
-  }
-
   if (parsed.type === SAY_LONG_TEXT_TYPE) {
     const body = interaction.fields.getTextInputValue(SAY_LONG_TEXT_INPUT_ID).trim();
     if (!body) {
@@ -243,7 +351,12 @@ export async function handleSayModalSubmit(
       return;
     }
 
-    const sent = await sendSayPayload(interaction, { content: body }, parsed.showFrom);
+    const sent = await sendSayPayload(
+      interaction,
+      { content: body },
+      parsed.showFrom,
+      { mode: "LONG_TEXT", content: body }
+    );
     if (!sent.ok && !interaction.replied && !interaction.deferred) {
       await interaction.reply({
         ephemeral: true,
@@ -294,7 +407,17 @@ export async function handleSayModalSubmit(
   if (title) embed.setTitle(title);
   if (imageUrl) embed.setImage(imageUrl);
 
-  const sent = await sendSayPayload(interaction, { embeds: [embed] }, parsed.showFrom);
+  const sent = await sendSayPayload(
+    interaction,
+    { embeds: [embed] },
+    parsed.showFrom,
+    {
+      mode: "EMBED",
+      embedTitle: title,
+      embedBody: body,
+      embedImageUrl: imageUrl,
+    }
+  );
   if (!sent.ok && !interaction.replied && !interaction.deferred) {
     await interaction.reply({
       ephemeral: true,
@@ -325,7 +448,7 @@ export const Say: Command = {
     },
     {
       name: SAY_SHOW_FROM_OPTION,
-      description: "Show native command attribution header (only admins can set false)",
+      description: "Show native command attribution header",
       type: ApplicationCommandOptionType.Boolean,
       required: false,
     },
@@ -347,14 +470,6 @@ export const Say: Command = {
     const type = parseSayType(interaction.options.getString(SAY_TYPE_OPTION, false));
     const showFrom = interaction.options.getBoolean(SAY_SHOW_FROM_OPTION, false) ?? true;
 
-    if (!showFrom && !hasAdministratorPermission(interaction)) {
-      await interaction.reply({
-        ephemeral: true,
-        content: "Only administrators can set `show-from:false`.",
-      });
-      return;
-    }
-
     if (!type) {
       if (!text) {
         await interaction.reply({
@@ -372,7 +487,12 @@ export const Say: Command = {
         return;
       }
 
-      const sent = await sendSayPayload(interaction, { content: text }, showFrom);
+      const sent = await sendSayPayload(
+        interaction,
+        { content: text },
+        showFrom,
+        { mode: "TEXT", content: text }
+      );
       if (!sent.ok && !interaction.replied && !interaction.deferred) {
         await interaction.reply({
           ephemeral: true,

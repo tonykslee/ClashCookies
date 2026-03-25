@@ -108,7 +108,6 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "notify:war",
   "link:embed",
   "link:sync-clashperk",
-  "say",
   "bot-logs",
   "warplan",
   "fwa:leader-role",
