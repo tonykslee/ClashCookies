@@ -82,9 +82,11 @@ import {
   handleLinkEmbedButtonInteraction,
   handleLinkEmbedModalSubmit,
   handleLinkListSelectMenu,
+  handleLinkListSortButton,
   isLinkEmbedAccountButtonCustomId,
   isLinkEmbedModalCustomId,
   isLinkListSelectCustomId,
+  isLinkListSortButtonCustomId,
 } from "../commands/Link";
 import { handleSayModalSubmit, isSayModalCustomId } from "../commands/Say";
 
@@ -304,6 +306,21 @@ const handleButtonInteraction = async (
   cocService: CoCService
 ): Promise<void> => {
   if (!interaction.isButton()) return;
+
+  if (isLinkListSortButtonCustomId(interaction.customId)) {
+    try {
+      await handleLinkListSortButton(interaction, cocService);
+    } catch (err) {
+      console.error(`Link list sort button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to update link list sort.",
+        });
+      }
+    }
+    return;
+  }
 
   if (isLinkEmbedAccountButtonCustomId(interaction.customId)) {
     try {

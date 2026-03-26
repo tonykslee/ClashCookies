@@ -280,7 +280,8 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`list` renders non-zero linked/unlinked count buckets with padded inline rows: linked rows use `TH | ServerDisplayName | Player | Wt`, unlinked rows use `TH | #PLAYER_TAG | Player | Wt`.",
       "Weight (`Wt`) comes from `FwaClanMemberCurrent.weight` and is shown as compact lowercase `k` text (for example `145k`), with `—` when missing.",
       "`embed` is admin-gated and posts a reusable self-service Link Account embed with button + modal flow.",
-      "`list` includes a tracked-clan dropdown and updates the same message in place when switching clans.",
+      "`list` includes a tracked-clan dropdown and a sort-cycle button (`Discord Name -> Weight Desc -> Player Name`) and updates the same message in place.",
+      "`list` shows active sort mode in the embed footer.",
       "`sync-clashperk` is admin-gated and imports missing local PlayerLink rows from a public Google Sheet with ClashPerk-style columns.",
     ],
     examples: [
