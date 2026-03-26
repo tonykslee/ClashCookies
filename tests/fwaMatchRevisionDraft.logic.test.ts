@@ -888,6 +888,38 @@ describe("fwa explicit match-type confirmation", () => {
     });
   });
 
+  it("treats selecting a different type on inferred view as explicit confirmation", () => {
+    const selection = resolveMatchTypeSelectionForTest({
+      view: {
+        embed: {} as never,
+        copyText: "",
+        matchTypeCurrent: "MM",
+        inferredMatchType: true,
+        confirmedRevisionBaseline: {
+          warId: "2002",
+          opponentTag: "2TAG",
+          matchType: "MM",
+          expectedOutcome: null,
+        },
+        effectiveRevisionFields: {
+          warId: "2002",
+          opponentTag: "2TAG",
+          matchType: "MM",
+          expectedOutcome: null,
+        },
+      },
+      targetType: "BL",
+    });
+
+    expect(selection).toEqual({
+      draft: null,
+      explicitConfirmation: {
+        matchType: "BL",
+        expectedOutcome: null,
+      },
+    });
+  });
+
   it("keeps same-type selection as a no-op when the visible type is already confirmed", () => {
     const selection = resolveMatchTypeSelectionForTest({
       view: {
