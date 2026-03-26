@@ -54,6 +54,7 @@ type InteractionInput = {
   isAdmin?: boolean;
   guildMemberNames?: Record<string, string>;
   cachedUserNames?: Record<string, string>;
+  clientApplication?: any;
 };
 
 function makeInteraction(input: InteractionInput) {
@@ -74,7 +75,12 @@ function makeInteraction(input: InteractionInput) {
     guildId: "guild-1",
     inGuild: vi.fn().mockReturnValue(true),
     guild: { members: { cache: guildMemberCache } },
-    client: { users: { cache: userCache } },
+    client: {
+      users: { cache: userCache },
+      ...(input.clientApplication
+        ? { application: input.clientApplication }
+        : {}),
+    },
     user: { id: input.userId ?? "111111111111111111" },
     memberPermissions: {
       has: vi.fn().mockReturnValue(Boolean(input.isAdmin)),
@@ -109,17 +115,20 @@ function makeValidTag(index: number): string {
 }
 
 function getInlineRowSegments(row: string): {
-  status: ":yes:" | ":no:" | "";
+  statusKind: "linked" | "unlinked" | "";
+  statusToken: string;
   th: string;
   weight: string;
   player: string;
   third: string;
 } {
   const normalized = String(row ?? "");
-  const status = normalized.startsWith(":yes: ")
-    ? ":yes:"
-    : normalized.startsWith(":no: ")
-      ? ":no:"
+  const prefixMatch = normalized.match(/^(\S+)\s/);
+  const statusToken = String(prefixMatch?.[1] ?? "");
+  const statusKind = /:yes:\d+>$/i.test(statusToken) || statusToken === "✅"
+    ? "linked"
+    : /:no:\d+>$/i.test(statusToken) || statusToken === "❌"
+      ? "unlinked"
       : "";
   const codeStart = normalized.indexOf("`");
   const codeEnd = normalized.lastIndexOf("`");
@@ -132,7 +141,8 @@ function getInlineRowSegments(row: string): {
     .map((part) => part)
     .filter((part) => part.length > 0);
   return {
-    status,
+    statusKind,
+    statusToken,
     th: th.trim(),
     weight,
     player,
@@ -405,12 +415,12 @@ describe("/link run", () => {
       .split("\n")
       .filter(
         (line: string) =>
-          (line.startsWith(":yes: `") || line.startsWith(":no: `")) &&
+          /^(?:✅|❌|<a?:yes:\d+>|<a?:no:\d+>) `/.test(line) &&
           line.endsWith("`"),
       );
     expect(rows).toHaveLength(2);
 
-    const linkedRow = rows.find((line: string) => line.startsWith(":yes: "));
+    const linkedRow = rows.find((line: string) => line.includes("Tilonius"));
     const unlinkedRow = rows.find((line: string) => line.includes("#QGRJ2222"));
     expect(linkedRow).toBeTruthy();
     expect(unlinkedRow).toBeTruthy();
@@ -419,16 +429,16 @@ describe("/link run", () => {
 
     const linkedParts = getInlineRowSegments(linkedRow as string);
     const unlinkedParts = getInlineRowSegments(unlinkedRow as string);
-    expect(linkedParts.status).toBe(":yes:");
-    expect(unlinkedParts.status).toBe(":no:");
+    expect(linkedParts.statusKind).toBe("linked");
+    expect(unlinkedParts.statusKind).toBe("unlinked");
     expect(linkedParts.th).toBe("18");
     expect(unlinkedParts.th).toBe("15");
     expect(linkedParts.weight.trim()).toBe("145k");
     expect(unlinkedParts.weight.trim()).toBe("98k");
-    expect(linkedRow).toContain(":yes: `");
-    expect(unlinkedRow).toContain(":no: `");
-    expect(linkedRow).not.toContain(":yes:  `");
-    expect(unlinkedRow).not.toContain(":no:  `");
+    expect(linkedRow).toMatch(/^(?:✅|<a?:yes:\d+>) `/);
+    expect(unlinkedRow).toMatch(/^(?:❌|<a?:no:\d+>) `/);
+    expect(linkedRow).toMatch(/^(?:✅|<a?:yes:\d+>) `\S/);
+    expect(unlinkedRow).toMatch(/^(?:❌|<a?:no:\d+>) `\S/);
 
     const sortButton = payload.components[0].components[0].toJSON();
     expect(sortButton.label).toBe("Sort: Discord Name");
@@ -440,6 +450,77 @@ describe("/link run", () => {
         (opt: any) => opt.default && opt.value === "#PQL0289",
       ),
     ).toBe(true);
+  });
+
+  it("renders custom yes/no application emojis in /link list rows when available", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        discordUserId: "111111111111111111",
+        discordUsername: "Persisted Sin",
+        createdAt: new Date("2026-03-15T09:07:00.000Z"),
+      },
+    ]);
+    const application = {
+      fetch: vi.fn().mockResolvedValue(undefined),
+      emojis: {
+        fetch: vi.fn().mockResolvedValue(
+          new Map([
+            [
+              "1",
+              {
+                id: "1",
+                name: "yes",
+                animated: false,
+                toString: () => "<:yes:1>",
+              },
+            ],
+            [
+              "2",
+              {
+                id: "2",
+                name: "no",
+                animated: false,
+                toString: () => "<:no:2>",
+              },
+            ],
+          ]),
+        ),
+      },
+    };
+    const interaction = makeInteraction({
+      subcommand: "list",
+      clanTag: "#PQL0289",
+      clientApplication: application,
+    });
+    const cocService = {
+      getClan: vi.fn().mockResolvedValue({
+        name: "Alpha Clan",
+        members: [
+          {
+            tag: "#PYLQ0289",
+            name: "Tilonius",
+            townHallLevel: 18,
+            mapPosition: 1,
+          },
+          {
+            tag: "#QGRJ2222",
+            name: "Unlinked Guy",
+            townHallLevel: 15,
+            mapPosition: 2,
+          },
+        ],
+      }),
+    };
+
+    await Link.run({} as any, interaction as any, cocService as any);
+
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const description = String(payload.embeds[0].toJSON().description ?? "");
+    expect(description).toContain("<:yes:1> `");
+    expect(description).toContain("<:no:2> `");
+    expect(description).not.toContain("✅ `");
+    expect(description).not.toContain("❌ `");
   });
 
   it("falls back to persisted discord username when guild display name is unavailable", async () => {
@@ -539,7 +620,7 @@ describe("/link run", () => {
     const description = payload.embeds[0].toJSON().description as string;
     expect(description).toContain("Unlinked users: 1");
     expect(description).not.toContain("Linked Users:");
-    expect(description).toContain(":no: `15");
+    expect(description).toMatch(/(?:❌|<a?:no:\d+>) `15/);
     expect(description).toContain("—`");
     expect(description).not.toContain("|");
     expect(description).toContain("#QGRJ2222");
@@ -757,7 +838,7 @@ describe("/link list select menu", () => {
     const firstEmbed = payload.embeds[0].toJSON();
     const description = firstEmbed.description as string;
     expect(description).toContain("Linked Users: 1");
-    expect(description).toContain(":yes: `15");
+    expect(description).toMatch(/(?:✅|<a?:yes:\d+>) `15/);
     expect(description).toContain("Persisted Select User");
     expect(description).not.toContain("<@111111111111111111>");
     expect(description).not.toContain("Unlinked users:");

@@ -21,6 +21,7 @@ import { Command } from "../Command";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
 import { CommandPermissionService } from "../services/CommandPermissionService";
+import { emojiResolverService } from "../services/emoji/EmojiResolverService";
 import {
   createPlayerLink,
   createPlayerLinkFromEmbed,
@@ -61,6 +62,10 @@ const LINK_EMBED_MODAL_DESCRIPTION_MAX = 4000;
 
 const MAX_PLAYER_NAME_CHARS = 28;
 const MAX_IDENTITY_CHARS = 30;
+const LINK_LIST_LINKED_EMOJI_NAME = "yes";
+const LINK_LIST_UNLINKED_EMOJI_NAME = "no";
+const LINK_LIST_LINKED_FALLBACK_EMOJI = "✅";
+const LINK_LIST_UNLINKED_FALLBACK_EMOJI = "❌";
 const WEIGHT_PLACEHOLDER = "—";
 const LINK_LIST_SORT_MODE_CYCLE = ["discord", "weight", "player"] as const;
 
@@ -529,6 +534,38 @@ type LinkListResolvedMemberRow = {
   row: LinkListRowInput;
 };
 
+type LinkListStatusIcons = {
+  linked: string;
+  unlinked: string;
+};
+
+async function resolveLinkListStatusIcons(
+  client: LinkListInteraction["client"],
+): Promise<LinkListStatusIcons> {
+  const fallback: LinkListStatusIcons = {
+    linked: LINK_LIST_LINKED_FALLBACK_EMOJI,
+    unlinked: LINK_LIST_UNLINKED_FALLBACK_EMOJI,
+  };
+
+  const inventory = await emojiResolverService
+    .fetchApplicationEmojiInventory(client as Client)
+    .catch(() => null);
+  if (!inventory?.ok) return fallback;
+
+  const resolveByName = (name: string): string | null => {
+    const exact = inventory.snapshot.exactByName.get(name);
+    if (exact?.rendered) return exact.rendered;
+    const lower = inventory.snapshot.lowercaseByName.get(name.toLowerCase());
+    if (lower?.rendered) return lower.rendered;
+    return null;
+  };
+
+  return {
+    linked: resolveByName(LINK_LIST_LINKED_EMOJI_NAME) ?? fallback.linked,
+    unlinked: resolveByName(LINK_LIST_UNLINKED_EMOJI_NAME) ?? fallback.unlinked,
+  };
+}
+
 function compareSortText(a: string, b: string): number {
   return a.localeCompare(b, undefined, { sensitivity: "base" });
 }
@@ -592,7 +629,7 @@ function formatCompactWeightK(weight: number | null | undefined): string {
 function formatAlignedInlineRow(
   row: LinkListRowInput,
   widths: { player: number; third: number; weight: number },
-  statusPrefix: ":yes:" | ":no:",
+  statusPrefix: string,
 ): string {
   const weight = rightAlign(row.weight, widths.weight);
   const playerName = rightAlign(row.playerName, widths.player);
@@ -642,6 +679,7 @@ function computeColumnWidths(
 function buildLinkListDescriptionLines(input: {
   linkedRows: LinkListRowInput[];
   unlinkedRows: LinkListRowInput[];
+  statusIcons: LinkListStatusIcons;
 }): string[] {
   const { linkedRows, unlinkedRows } = input;
   const widths = computeColumnWidths(linkedRows, unlinkedRows);
@@ -656,7 +694,7 @@ function buildLinkListDescriptionLines(input: {
           player: widths.player,
           weight: widths.weight,
           third: widths.linkedThird,
-        }, ":yes:"),
+        }, input.statusIcons.linked),
       ),
     );
   }
@@ -669,7 +707,7 @@ function buildLinkListDescriptionLines(input: {
           player: widths.player,
           weight: widths.weight,
           third: widths.unlinkedThird,
-        }, ":no:"),
+        }, input.statusIcons.unlinked),
       ),
     );
   }
@@ -787,9 +825,11 @@ async function buildLinkListView(input: {
     unlinkedRows.push(row.row);
   }
 
+  const statusIcons = await resolveLinkListStatusIcons(input.interaction.client);
   const lines = buildLinkListDescriptionLines({
     linkedRows,
     unlinkedRows,
+    statusIcons,
   });
 
   if (lines.length === 0) {
