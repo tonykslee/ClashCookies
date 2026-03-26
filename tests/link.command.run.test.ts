@@ -109,18 +109,34 @@ function makeValidTag(index: number): string {
 }
 
 function getInlineRowSegments(row: string): {
+  status: ":yes:" | ":no:" | "";
   th: string;
   weight: string;
   player: string;
   third: string;
 } {
-  const trimmed = row.slice(1, -1);
-  const [th, third, player, weight] = trimmed.split("|").map((part) => part);
+  const normalized = String(row ?? "");
+  const status = normalized.startsWith(":yes: ")
+    ? ":yes:"
+    : normalized.startsWith(":no: ")
+      ? ":no:"
+      : "";
+  const codeStart = normalized.indexOf("`");
+  const codeEnd = normalized.lastIndexOf("`");
+  const codeText =
+    codeStart >= 0 && codeEnd > codeStart
+      ? normalized.slice(codeStart + 1, codeEnd)
+      : "";
+  const [th = "", third = "", player = "", weight = ""] = codeText
+    .split(/\s{2,}/)
+    .map((part) => part)
+    .filter((part) => part.length > 0);
   return {
-    th: (th ?? "").trim(),
-    weight: weight ?? "",
-    player: player ?? "",
-    third: third ?? "",
+    status,
+    th: th.trim(),
+    weight,
+    player,
+    third,
   };
 }
 
@@ -387,27 +403,32 @@ describe("/link run", () => {
 
     const rows = description
       .split("\n")
-      .filter((line: string) => line.startsWith("`") && line.endsWith("`"));
+      .filter(
+        (line: string) =>
+          (line.startsWith(":yes: `") || line.startsWith(":no: `")) &&
+          line.endsWith("`"),
+      );
     expect(rows).toHaveLength(2);
 
-    const linkedRow = rows.find((line: string) => line.includes("Persisted Sin"));
+    const linkedRow = rows.find((line: string) => line.startsWith(":yes: "));
     const unlinkedRow = rows.find((line: string) => line.includes("#QGRJ2222"));
     expect(linkedRow).toBeTruthy();
     expect(unlinkedRow).toBeTruthy();
     expect(description).not.toContain("<@111111111111111111>");
+    expect(description).not.toContain("|");
 
     const linkedParts = getInlineRowSegments(linkedRow as string);
     const unlinkedParts = getInlineRowSegments(unlinkedRow as string);
+    expect(linkedParts.status).toBe(":yes:");
+    expect(unlinkedParts.status).toBe(":no:");
     expect(linkedParts.th).toBe("18");
     expect(unlinkedParts.th).toBe("15");
     expect(linkedParts.weight.trim()).toBe("145k");
     expect(unlinkedParts.weight.trim()).toBe("98k");
-    expect(linkedParts.weight.startsWith(" ")).toBe(true);
-    expect(unlinkedParts.weight.startsWith(" ")).toBe(true);
-    expect(linkedParts.player.startsWith(" ")).toBe(true);
-    expect(linkedParts.third.startsWith(" ")).toBe(true);
-    expect(unlinkedParts.player.startsWith(" ")).toBe(true);
-    expect(unlinkedParts.third.startsWith(" ")).toBe(true);
+    expect(linkedRow).toContain(":yes: `");
+    expect(unlinkedRow).toContain(":no: `");
+    expect(linkedRow).not.toContain(":yes:  `");
+    expect(unlinkedRow).not.toContain(":no:  `");
 
     const sortButton = payload.components[0].components[0].toJSON();
     expect(sortButton.label).toBe("Sort: Discord Name");
@@ -518,8 +539,9 @@ describe("/link run", () => {
     const description = payload.embeds[0].toJSON().description as string;
     expect(description).toContain("Unlinked users: 1");
     expect(description).not.toContain("Linked Users:");
-    expect(description).toContain("`15 |");
-    expect(description).toMatch(/`15 \|.*\|\s+—`/);
+    expect(description).toContain(":no: `15");
+    expect(description).toContain("—`");
+    expect(description).not.toContain("|");
     expect(description).toContain("#QGRJ2222");
   });
 
@@ -735,10 +757,11 @@ describe("/link list select menu", () => {
     const firstEmbed = payload.embeds[0].toJSON();
     const description = firstEmbed.description as string;
     expect(description).toContain("Linked Users: 1");
-    expect(description).toContain("`15 |");
+    expect(description).toContain(":yes: `15");
     expect(description).toContain("Persisted Select User");
     expect(description).not.toContain("<@111111111111111111>");
     expect(description).not.toContain("Unlinked users:");
+    expect(description).not.toContain("|");
     expect(firstEmbed.footer?.text).toBe("Sort: Weight Desc");
     expect(payload.components[0].components[0].toJSON().label).toBe(
       "Sort: Weight Desc",
