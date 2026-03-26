@@ -2039,14 +2039,14 @@ type MatchTypeSelectionResolution = {
   } | null;
 };
 
-/** Purpose: distinguish draft changes from explicit same-type confirmation of an inferred value. */
+/** Purpose: treat inferred match-type selections as explicit confirmation; use drafts only for already-confirmed states. */
 function resolveMatchTypeSelection(params: {
   view: MatchView;
   targetType: "FWA" | "BL" | "MM";
 }): MatchTypeSelectionResolution {
   const currentType = params.view.matchTypeCurrent;
   const effective = getEffectiveRevisionForView(params.view);
-  if (params.view.inferredMatchType && currentType === params.targetType) {
+  if (params.view.inferredMatchType) {
     return {
       draft: null,
       explicitConfirmation: {
@@ -2062,19 +2062,7 @@ function resolveMatchTypeSelection(params: {
   if (draft) {
     return { draft, explicitConfirmation: null };
   }
-  if (!params.view.inferredMatchType || currentType !== params.targetType) {
-    return { draft: null, explicitConfirmation: null };
-  }
-  return {
-    draft: null,
-    explicitConfirmation: {
-      matchType: params.targetType,
-      expectedOutcome:
-        params.targetType === "FWA"
-          ? (effective?.expectedOutcome ?? "UNKNOWN")
-          : null,
-    },
-  };
+  return { draft: null, explicitConfirmation: null };
 }
 
 /** Purpose: build next draft when a user toggles expected outcome for an FWA revision. */
