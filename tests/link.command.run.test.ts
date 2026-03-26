@@ -32,9 +32,11 @@ import {
   buildLinkEmbedSetupModalCustomId,
   buildLinkEmbedTagModalCustomId,
   buildLinkListSelectCustomId,
+  buildLinkListSortButtonCustomId,
   handleLinkEmbedButtonInteraction,
   handleLinkEmbedModalSubmit,
   handleLinkListSelectMenu,
+  handleLinkListSortButton,
   isLinkEmbedAccountButtonCustomId,
   isLinkEmbedModalCustomId,
   Link,
@@ -52,6 +54,7 @@ type InteractionInput = {
   isAdmin?: boolean;
   guildMemberNames?: Record<string, string>;
   cachedUserNames?: Record<string, string>;
+  clientApplication?: any;
 };
 
 function makeInteraction(input: InteractionInput) {
@@ -72,7 +75,12 @@ function makeInteraction(input: InteractionInput) {
     guildId: "guild-1",
     inGuild: vi.fn().mockReturnValue(true),
     guild: { members: { cache: guildMemberCache } },
-    client: { users: { cache: userCache } },
+    client: {
+      users: { cache: userCache },
+      ...(input.clientApplication
+        ? { application: input.clientApplication }
+        : {}),
+    },
     user: { id: input.userId ?? "111111111111111111" },
     memberPermissions: {
       has: vi.fn().mockReturnValue(Boolean(input.isAdmin)),
@@ -107,18 +115,38 @@ function makeValidTag(index: number): string {
 }
 
 function getInlineRowSegments(row: string): {
+  statusKind: "linked" | "unlinked" | "";
+  statusToken: string;
   th: string;
   weight: string;
   player: string;
   third: string;
 } {
-  const trimmed = row.slice(1, -1);
-  const [th, third, player, weight] = trimmed.split("|").map((part) => part);
+  const normalized = String(row ?? "");
+  const prefixMatch = normalized.match(/^(\S+)\s/);
+  const statusToken = String(prefixMatch?.[1] ?? "");
+  const statusKind = /:yes:\d+>$/i.test(statusToken) || statusToken === "✅"
+    ? "linked"
+    : /:no:\d+>$/i.test(statusToken) || statusToken === "❌"
+      ? "unlinked"
+      : "";
+  const codeStart = normalized.indexOf("`");
+  const codeEnd = normalized.lastIndexOf("`");
+  const codeText =
+    codeStart >= 0 && codeEnd > codeStart
+      ? normalized.slice(codeStart + 1, codeEnd)
+      : "";
+  const [th = "", third = "", player = "", weight = ""] = codeText
+    .split(/\s{2,}/)
+    .map((part) => part)
+    .filter((part) => part.length > 0);
   return {
-    th: (th ?? "").trim(),
-    weight: weight ?? "",
-    player: player ?? "",
-    third: third ?? "",
+    statusKind,
+    statusToken,
+    th: th.trim(),
+    weight,
+    player,
+    third,
   };
 }
 
@@ -376,6 +404,7 @@ describe("/link run", () => {
     const firstEmbed = payload.embeds[0].toJSON();
 
     expect(firstEmbed.title).toBe("<:badge:1> Alpha Clan #PQL0289");
+    expect(firstEmbed.footer?.text).toBe("Sort: Discord Name");
     const description = String(firstEmbed.description ?? "");
     expect(description).toContain("Linked Users: 1");
     expect(description).toContain("Unlinked users: 1");
@@ -384,35 +413,114 @@ describe("/link run", () => {
 
     const rows = description
       .split("\n")
-      .filter((line: string) => line.startsWith("`") && line.endsWith("`"));
+      .filter(
+        (line: string) =>
+          /^(?:✅|❌|<a?:yes:\d+>|<a?:no:\d+>) `/.test(line) &&
+          line.endsWith("`"),
+      );
     expect(rows).toHaveLength(2);
 
-    const linkedRow = rows.find((line: string) => line.includes("Persisted Sin"));
+    const linkedRow = rows.find((line: string) => line.includes("Tilonius"));
     const unlinkedRow = rows.find((line: string) => line.includes("#QGRJ2222"));
     expect(linkedRow).toBeTruthy();
     expect(unlinkedRow).toBeTruthy();
     expect(description).not.toContain("<@111111111111111111>");
+    expect(description).not.toContain("|");
 
     const linkedParts = getInlineRowSegments(linkedRow as string);
     const unlinkedParts = getInlineRowSegments(unlinkedRow as string);
+    expect(linkedParts.statusKind).toBe("linked");
+    expect(unlinkedParts.statusKind).toBe("unlinked");
     expect(linkedParts.th).toBe("18");
     expect(unlinkedParts.th).toBe("15");
     expect(linkedParts.weight.trim()).toBe("145k");
     expect(unlinkedParts.weight.trim()).toBe("98k");
-    expect(linkedParts.weight.startsWith(" ")).toBe(true);
-    expect(unlinkedParts.weight.startsWith(" ")).toBe(true);
-    expect(linkedParts.player.startsWith(" ")).toBe(true);
-    expect(linkedParts.third.startsWith(" ")).toBe(true);
-    expect(unlinkedParts.player.startsWith(" ")).toBe(true);
-    expect(unlinkedParts.third.startsWith(" ")).toBe(true);
+    expect(linkedRow).toMatch(/^(?:✅|<a?:yes:\d+>) `/);
+    expect(unlinkedRow).toMatch(/^(?:❌|<a?:no:\d+>) `/);
+    expect(linkedRow).toMatch(/^(?:✅|<a?:yes:\d+>) `\S/);
+    expect(unlinkedRow).toMatch(/^(?:❌|<a?:no:\d+>) `\S/);
 
-    const select = payload.components[0].components[0].toJSON();
+    const sortButton = payload.components[0].components[0].toJSON();
+    expect(sortButton.label).toBe("Sort: Discord Name");
+
+    const select = payload.components[1].components[0].toJSON();
     expect(select.options).toHaveLength(2);
     expect(
       select.options.some(
         (opt: any) => opt.default && opt.value === "#PQL0289",
       ),
     ).toBe(true);
+  });
+
+  it("renders custom yes/no application emojis in /link list rows when available", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        discordUserId: "111111111111111111",
+        discordUsername: "Persisted Sin",
+        createdAt: new Date("2026-03-15T09:07:00.000Z"),
+      },
+    ]);
+    const application = {
+      fetch: vi.fn().mockResolvedValue(undefined),
+      emojis: {
+        fetch: vi.fn().mockResolvedValue(
+          new Map([
+            [
+              "1",
+              {
+                id: "1",
+                name: "yes",
+                animated: false,
+                toString: () => "<:yes:1>",
+              },
+            ],
+            [
+              "2",
+              {
+                id: "2",
+                name: "no",
+                animated: false,
+                toString: () => "<:no:2>",
+              },
+            ],
+          ]),
+        ),
+      },
+    };
+    const interaction = makeInteraction({
+      subcommand: "list",
+      clanTag: "#PQL0289",
+      clientApplication: application,
+    });
+    const cocService = {
+      getClan: vi.fn().mockResolvedValue({
+        name: "Alpha Clan",
+        members: [
+          {
+            tag: "#PYLQ0289",
+            name: "Tilonius",
+            townHallLevel: 18,
+            mapPosition: 1,
+          },
+          {
+            tag: "#QGRJ2222",
+            name: "Unlinked Guy",
+            townHallLevel: 15,
+            mapPosition: 2,
+          },
+        ],
+      }),
+    };
+
+    await Link.run({} as any, interaction as any, cocService as any);
+
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const description = String(payload.embeds[0].toJSON().description ?? "");
+    expect(description).toContain("<:yes:1> `");
+    expect(description).toContain("<:no:2> `");
+    expect(description).not.toContain("✅ `");
+    expect(description).not.toContain("❌ `");
   });
 
   it("falls back to persisted discord username when guild display name is unavailable", async () => {
@@ -512,8 +620,9 @@ describe("/link run", () => {
     const description = payload.embeds[0].toJSON().description as string;
     expect(description).toContain("Unlinked users: 1");
     expect(description).not.toContain("Linked Users:");
-    expect(description).toContain("`15 |");
-    expect(description).toMatch(/`15 \|.*\|\s+—`/);
+    expect(description).toMatch(/(?:❌|<a?:no:\d+>) `15/);
+    expect(description).toContain("—`");
+    expect(description).not.toContain("|");
     expect(description).toContain("#QGRJ2222");
   });
 
@@ -641,7 +750,7 @@ describe("/link run", () => {
     await Link.run({} as any, interaction as any, cocService as any);
 
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
-    const select = payload.components[0].components[0].toJSON();
+    const select = payload.components[1].components[0].toJSON();
 
     expect(select.options).toHaveLength(25);
     expect(select.options.map((opt: any) => opt.value)).toContain(currentTag);
@@ -689,7 +798,7 @@ describe("/link list select menu", () => {
     const reply = vi.fn().mockResolvedValue(undefined);
 
     const interaction = {
-      customId: buildLinkListSelectCustomId("111111111111111111"),
+      customId: buildLinkListSelectCustomId("111111111111111111", "weight"),
       user: { id: "111111111111111111" },
       guildId: "guild-1",
       guild: {
@@ -726,12 +835,18 @@ describe("/link list select menu", () => {
     expect(update).toHaveBeenCalledTimes(1);
     const payload = update.mock.calls[0]?.[0] as any;
     expect(Array.isArray(payload.embeds)).toBe(true);
-    const description = payload.embeds[0].toJSON().description as string;
+    const firstEmbed = payload.embeds[0].toJSON();
+    const description = firstEmbed.description as string;
     expect(description).toContain("Linked Users: 1");
-    expect(description).toContain("`15 |");
+    expect(description).toMatch(/(?:✅|<a?:yes:\d+>) `15/);
     expect(description).toContain("Persisted Select User");
     expect(description).not.toContain("<@111111111111111111>");
     expect(description).not.toContain("Unlinked users:");
+    expect(description).not.toContain("|");
+    expect(firstEmbed.footer?.text).toBe("Sort: Weight Desc");
+    expect(payload.components[0].components[0].toJSON().label).toBe(
+      "Sort: Weight Desc",
+    );
     expect(reply).not.toHaveBeenCalled();
   });
 
@@ -757,6 +872,176 @@ describe("/link list select menu", () => {
     expect(reply).toHaveBeenCalledWith({
       ephemeral: true,
       content: "Only the command requester can use this menu.",
+    });
+    expect(update).not.toHaveBeenCalled();
+  });
+});
+
+describe("/link list sort button", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.clearAllMocks();
+    prismaMock.playerLink.findMany.mockReset();
+    prismaMock.trackedClan.findMany.mockReset();
+    prismaMock.trackedClan.findUnique.mockReset();
+    prismaMock.currentWar.findMany.mockReset();
+    prismaMock.fwaClanMemberCurrent.findMany.mockReset();
+
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        discordUserId: "111111111111111111",
+        discordUsername: "ZedUser",
+        createdAt: new Date("2026-03-15T09:07:00.000Z"),
+      },
+      {
+        playerTag: "#QGRJ2222",
+        discordUserId: "222222222222222222",
+        discordUsername: "AmyUser",
+        createdAt: new Date("2026-03-15T09:07:00.000Z"),
+      },
+      {
+        playerTag: "#LCUV0289",
+        discordUserId: "333333333333333333",
+        discordUsername: "BobUser",
+        createdAt: new Date("2026-03-15T09:07:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      {
+        tag: "#PQL0289",
+        name: "Alpha Clan",
+        clanBadge: null,
+        mailConfig: null,
+      },
+    ]);
+    prismaMock.trackedClan.findUnique.mockResolvedValue(null);
+    prismaMock.currentWar.findMany.mockResolvedValue([{ clanTag: "#PQL0289" }]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        weight: 98000,
+        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
+      },
+      {
+        playerTag: "#QGRJ2222",
+        weight: 145000,
+        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
+      },
+    ]);
+  });
+
+  it("cycles sort mode in stable order and rerenders rows", async () => {
+    const cocService = {
+      getClan: vi.fn().mockResolvedValue({
+        name: "Alpha Clan",
+        members: [
+          {
+            tag: "#PYLQ0289",
+            name: "Charlie",
+            townHallLevel: 16,
+            mapPosition: 1,
+          },
+          {
+            tag: "#QGRJ2222",
+            name: "Alpha",
+            townHallLevel: 15,
+            mapPosition: 2,
+          },
+          {
+            tag: "#LCUV0289",
+            name: "Bravo",
+            townHallLevel: 14,
+            mapPosition: 3,
+          },
+        ],
+      }),
+    };
+
+    const runSortClick = async (mode: "discord" | "weight" | "player") => {
+      const update = vi.fn().mockResolvedValue(undefined);
+      const reply = vi.fn().mockResolvedValue(undefined);
+      const interaction = {
+        customId: buildLinkListSortButtonCustomId(
+          "111111111111111111",
+          "#PQL0289",
+          mode,
+        ),
+        user: { id: "111111111111111111" },
+        guildId: "guild-1",
+        guild: { members: { cache: new Map() } },
+        client: { users: { cache: new Map() } },
+        update,
+        reply,
+        deferred: false,
+        replied: false,
+      };
+
+      await handleLinkListSortButton(interaction as any, cocService as any);
+      return { update, reply };
+    };
+
+    const fromDiscord = await runSortClick("discord");
+    const payloadWeight = fromDiscord.update.mock.calls[0]?.[0] as any;
+    const embedWeight = payloadWeight.embeds[0].toJSON();
+    const descriptionWeight = String(embedWeight.description ?? "");
+    expect(embedWeight.footer?.text).toBe("Sort: Weight Desc");
+    expect(descriptionWeight.indexOf("AmyUser")).toBeLessThan(
+      descriptionWeight.indexOf("ZedUser"),
+    );
+    expect(descriptionWeight.indexOf("ZedUser")).toBeLessThan(
+      descriptionWeight.indexOf("BobUser"),
+    );
+    expect(payloadWeight.components[0].components[0].toJSON().label).toBe(
+      "Sort: Weight Desc",
+    );
+    expect(fromDiscord.reply).not.toHaveBeenCalled();
+
+    const fromWeight = await runSortClick("weight");
+    const payloadPlayer = fromWeight.update.mock.calls[0]?.[0] as any;
+    const embedPlayer = payloadPlayer.embeds[0].toJSON();
+    const descriptionPlayer = String(embedPlayer.description ?? "");
+    expect(embedPlayer.footer?.text).toBe("Sort: Player Name");
+    expect(descriptionPlayer.indexOf("Alpha")).toBeLessThan(
+      descriptionPlayer.indexOf("Bravo"),
+    );
+    expect(descriptionPlayer.indexOf("Bravo")).toBeLessThan(
+      descriptionPlayer.indexOf("Charlie"),
+    );
+
+    const fromPlayer = await runSortClick("player");
+    const payloadDiscord = fromPlayer.update.mock.calls[0]?.[0] as any;
+    const embedDiscord = payloadDiscord.embeds[0].toJSON();
+    expect(embedDiscord.footer?.text).toBe("Sort: Discord Name");
+    expect(payloadDiscord.components[0].components[0].toJSON().label).toBe(
+      "Sort: Discord Name",
+    );
+  });
+
+  it("rejects sort-button interaction from non-requesting user", async () => {
+    const update = vi.fn().mockResolvedValue(undefined);
+    const reply = vi.fn().mockResolvedValue(undefined);
+    const interaction = {
+      customId: buildLinkListSortButtonCustomId(
+        "111111111111111111",
+        "#PQL0289",
+        "discord",
+      ),
+      user: { id: "222222222222222222" },
+      guildId: "guild-1",
+      guild: { members: { cache: new Map() } },
+      client: { users: { cache: new Map() } },
+      update,
+      reply,
+      deferred: false,
+      replied: false,
+    };
+
+    await handleLinkListSortButton(interaction as any, {} as any);
+
+    expect(reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "Only the command requester can use this button.",
     });
     expect(update).not.toHaveBeenCalled();
   });

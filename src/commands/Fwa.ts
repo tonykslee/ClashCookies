@@ -2044,12 +2044,24 @@ function resolveMatchTypeSelection(params: {
   view: MatchView;
   targetType: "FWA" | "BL" | "MM";
 }): MatchTypeSelectionResolution {
+  const currentType = params.view.matchTypeCurrent;
+  const effective = getEffectiveRevisionForView(params.view);
+  if (params.view.inferredMatchType && currentType === params.targetType) {
+    return {
+      draft: null,
+      explicitConfirmation: {
+        matchType: params.targetType,
+        expectedOutcome:
+          params.targetType === "FWA"
+            ? (effective?.expectedOutcome ?? "UNKNOWN")
+            : null,
+      },
+    };
+  }
   const draft = buildDraftFromMatchTypeSelection(params);
   if (draft) {
     return { draft, explicitConfirmation: null };
   }
-  const currentType = params.view.matchTypeCurrent;
-  const effective = getEffectiveRevisionForView(params.view);
   if (!params.view.inferredMatchType || currentType !== params.targetType) {
     return { draft: null, explicitConfirmation: null };
   }

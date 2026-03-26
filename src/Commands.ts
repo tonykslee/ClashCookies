@@ -25,6 +25,8 @@ import { Link } from "./commands/Link";
 import { Layout } from "./commands/Layout";
 import { Say } from "./commands/Say";
 import { BotLogs } from "./commands/BotLogs";
+import { Todo } from "./commands/Todo";
+import { Reminders } from "./commands/Reminders";
 
 // ...existing code...
 export const Commands = [
@@ -38,6 +40,8 @@ export const Commands = [
   Compo,
   CC,
   Accounts,
+  Todo,
+  Reminders,
   Link,
   Layout,
   Fwa,

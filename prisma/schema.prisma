@@ -64,6 +64,149 @@ model PlayerLink {
   updatedAt     DateTime @updatedAt
 }
 
+model TodoPlayerSnapshot {
+  playerTag       String   @id
+  playerName      String
+  clanTag         String?
+  clanName        String?
+  cwlClanTag      String?
+  cwlClanName     String?
+  warActive       Boolean  @default(false)
+  warAttacksUsed  Int      @default(0)
+  warAttacksMax   Int      @default(2)
+  warPhase        String?
+  warEndsAt       DateTime?
+  cwlActive       Boolean  @default(false)
+  cwlAttacksUsed  Int      @default(0)
+  cwlAttacksMax   Int      @default(1)
+  cwlPhase        String?
+  cwlEndsAt       DateTime?
+  raidActive      Boolean  @default(false)
+  raidAttacksUsed Int      @default(0)
+  raidAttacksMax  Int      @default(6)
+  raidEndsAt      DateTime?
+  gamesActive     Boolean  @default(false)
+  gamesPoints     Int?
+  gamesTarget     Int?
+  gamesEndsAt     DateTime?
+  lastUpdatedAt   DateTime @default(now())
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([clanTag])
+  @@index([cwlClanTag])
+  @@index([updatedAt])
+}
+
+enum ReminderType {
+  WAR_CWL
+  RAIDS
+  GAMES
+  EVENT
+}
+
+enum ReminderTargetClanType {
+  FWA
+  CWL
+}
+
+enum ReminderDispatchStatus {
+  SENT
+  FAILED
+}
+
+model Reminder {
+  id              String             @id @default(cuid())
+  guildId         String
+  type            ReminderType
+  channelId       String
+  isEnabled       Boolean            @default(false)
+  createdByUserId String
+  updatedByUserId String
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  times           ReminderTimeOffset[]
+  targetClans     ReminderTargetClan[]
+  fireLogs        ReminderFireLog[]
+
+  @@index([guildId, type])
+  @@index([guildId, isEnabled])
+  @@index([createdAt])
+}
+
+model ReminderTimeOffset {
+  id            Int      @id @default(autoincrement())
+  reminderId    String
+  offsetSeconds Int
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  reminder      Reminder @relation(fields: [reminderId], references: [id], onDelete: Cascade)
+
+  @@unique([reminderId, offsetSeconds])
+  @@index([offsetSeconds])
+}
+
+model ReminderTargetClan {
+  id         Int                    @id @default(autoincrement())
+  reminderId String
+  clanTag    String
+  clanType   ReminderTargetClanType
+  createdAt  DateTime               @default(now())
+  updatedAt  DateTime               @updatedAt
+  reminder   Reminder               @relation(fields: [reminderId], references: [id], onDelete: Cascade)
+
+  @@unique([reminderId, clanTag, clanType])
+  @@index([clanTag])
+  @@index([clanType, clanTag])
+}
+
+model ReminderFireLog {
+  id             String               @id @default(cuid())
+  reminderId     String
+  guildId        String
+  clanTag        String
+  reminderType   ReminderType
+  offsetSeconds  Int
+  eventIdentity  String
+  dedupeKey      String               @unique
+  channelId      String
+  dispatchStatus ReminderDispatchStatus @default(SENT)
+  messageId      String?
+  errorMessage   String?
+  dispatchedAt   DateTime             @default(now())
+  createdAt      DateTime             @default(now())
+  reminder       Reminder             @relation(fields: [reminderId], references: [id], onDelete: Cascade)
+
+  @@index([reminderId, dispatchedAt])
+  @@index([guildId, dispatchedAt])
+  @@index([guildId, clanTag, dispatchedAt])
+}
+
+model CwlTrackedClan {
+  id        Int      @id @default(autoincrement())
+  season    String
+  tag       String
+  name      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([season, tag])
+  @@index([season, createdAt])
+}
+
+model CwlPlayerClanSeason {
+  id         Int      @id @default(autoincrement())
+  season     String
+  playerTag  String
+  cwlClanTag String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([season, playerTag])
+  @@index([season, cwlClanTag])
+  @@index([season, playerTag])
+}
+
 enum KickListSource {
   AUTO_INACTIVE
   MANUAL

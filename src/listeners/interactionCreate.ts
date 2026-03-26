@@ -82,10 +82,16 @@ import {
   handleLinkEmbedButtonInteraction,
   handleLinkEmbedModalSubmit,
   handleLinkListSelectMenu,
+  handleLinkListSortButton,
   isLinkEmbedAccountButtonCustomId,
   isLinkEmbedModalCustomId,
   isLinkListSelectCustomId,
+  isLinkListSortButtonCustomId,
 } from "../commands/Link";
+import {
+  handleTodoPageButtonInteraction,
+  isTodoPageButtonCustomId,
+} from "../commands/Todo";
 import { handleSayModalSubmit, isSayModalCustomId } from "../commands/Say";
 
 const commandPermissionService = new CommandPermissionService();
@@ -304,6 +310,36 @@ const handleButtonInteraction = async (
   cocService: CoCService
 ): Promise<void> => {
   if (!interaction.isButton()) return;
+
+  if (isTodoPageButtonCustomId(interaction.customId)) {
+    try {
+      await handleTodoPageButtonInteraction(interaction, cocService);
+    } catch (err) {
+      console.error(`Todo page button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to update todo page.",
+        });
+      }
+    }
+    return;
+  }
+
+  if (isLinkListSortButtonCustomId(interaction.customId)) {
+    try {
+      await handleLinkListSortButton(interaction, cocService);
+    } catch (err) {
+      console.error(`Link list sort button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to update link list sort.",
+        });
+      }
+    }
+    return;
+  }
 
   if (isLinkEmbedAccountButtonCustomId(interaction.customId)) {
     try {

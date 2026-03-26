@@ -43,6 +43,11 @@ export type ClanScopedPlayerLink = {
   linkedAt: Date;
 };
 
+export type DiscordUserPlayerLink = {
+  playerTag: string;
+  linkedAt: Date;
+};
+
 export const PLAYER_LINK_DISCORD_USERNAME_FALLBACK = "unknown";
 
 /** Purpose: normalize a player tag into uppercase #TAG format. */
@@ -274,6 +279,30 @@ export async function listPlayerLinksForClanMembers(input: {
       }
       return a.playerTag.localeCompare(b.playerTag);
     });
+}
+
+/** Purpose: fetch linked player tags for one Discord user in deterministic order. */
+export async function listPlayerLinksForDiscordUser(input: {
+  discordUserId: string;
+}): Promise<DiscordUserPlayerLink[]> {
+  const normalizedUserId = normalizeDiscordUserId(input.discordUserId);
+  if (!normalizedUserId) return [];
+
+  const rows = await prisma.playerLink.findMany({
+    where: { discordUserId: normalizedUserId },
+    orderBy: [{ createdAt: "asc" }, { playerTag: "asc" }],
+    select: { playerTag: true, createdAt: true },
+  });
+
+  const seen = new Set<string>();
+  const ordered: DiscordUserPlayerLink[] = [];
+  for (const row of rows) {
+    const playerTag = normalizePlayerTag(row.playerTag);
+    if (!playerTag || seen.has(playerTag)) continue;
+    seen.add(playerTag);
+    ordered.push({ playerTag, linkedAt: row.createdAt });
+  }
+  return ordered;
 }
 
 /** Purpose: fetch current DB weights for provided player tags and return a deterministic lookup. */

@@ -35,6 +35,8 @@ import {
 } from "../services/refreshSchedule";
 import { trackedMessageService } from "../services/TrackedMessageService";
 import { FwaFeedSchedulerService } from "../services/fwa-feeds/FwaFeedSchedulerService";
+import { todoSnapshotService } from "../services/TodoSnapshotService";
+import { ReminderSchedulerService } from "../services/reminders/ReminderSchedulerService";
 
 const DEFAULT_OBSERVE_INTERVAL_MINUTES = 30;
 const RECRUITMENT_REMINDER_INTERVAL_MS = 60 * 60 * 1000;
@@ -554,6 +556,9 @@ export default (client: Client, cocService: CoCService): void => {
           await warEventLogService.poll();
           await warEventLogService.refreshBattleDayPosts();
           await refreshAllTrackedWarMailPosts(client);
+          await todoSnapshotService.refreshAllLinkedPlayerSnapshots({
+            cocService,
+          });
         } catch (err) {
           console.error(`[war-events] poll loop failed: ${formatError(err)}`);
         }
@@ -577,6 +582,10 @@ export default (client: Client, cocService: CoCService): void => {
     const fwaFeedScheduler = new FwaFeedSchedulerService();
     fwaFeedScheduler.start();
     console.log("FWA feed scheduler loops initialized.");
+
+    const reminderScheduler = new ReminderSchedulerService(client);
+    reminderScheduler.start();
+    console.log("Reminder scheduler loop initialized.");
 
     console.log("ClashCookies is online");
   });
