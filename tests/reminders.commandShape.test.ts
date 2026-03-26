@@ -28,6 +28,11 @@ describe("/reminders command shape", () => {
     expect(create?.options?.find((o: any) => o.name === "type")?.type).toBe(
       ApplicationCommandOptionType.String,
     );
+    expect(create?.options?.find((o: any) => o.name === "type")?.choices).toEqual([
+      { name: "WAR_CWL", value: "WAR_CWL" },
+      { name: "RAIDS", value: "RAIDS" },
+      { name: "GAMES", value: "GAMES" },
+    ]);
     expect(create?.options?.find((o: any) => o.name === "time_left")?.required).toBe(true);
     expect(create?.options?.find((o: any) => o.name === "time_left")?.type).toBe(
       ApplicationCommandOptionType.String,

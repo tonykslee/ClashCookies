@@ -3,6 +3,7 @@ import { Client } from "discord.js";
 import { formatError } from "../../helper/formatError";
 import { prisma } from "../../prisma";
 import { resolveCurrentCwlSeasonKey } from "../CwlRegistryService";
+import { normalizeClanTag } from "../PlayerLinkService";
 import { reminderDispatchService, type ReminderDispatchService } from "./ReminderDispatchService";
 
 const DEFAULT_REMINDER_SCHEDULER_INTERVAL_MS = 60 * 1000;
@@ -19,24 +20,31 @@ type ReminderSchedulerRow = {
 
 type ReminderEventContext = {
   clanTag: string;
+  clanType: ReminderTargetClanType;
   clanName: string | null;
   eventEndsAt: Date;
   eventIdentity: string;
   eventLabel: string;
 };
 
-type ReminderWindow = {
-  active: boolean;
-  startMs: number;
-  endMs: number;
+type ReminderContextBundle = {
+  warByClanTag: Map<string, ReminderEventContext>;
+  cwlWarByClanTag: Map<string, ReminderEventContext>;
+  raidByTargetKey: Map<string, ReminderEventContext>;
+  gamesByTargetKey: Map<string, ReminderEventContext>;
+  clanNameByTag: Map<string, string | null>;
 };
 
-type ReminderContextBundle = {
-  byClan: Map<string, { war: ReminderEventContext | null; cwl: ReminderEventContext | null }>;
-  clanNameByTag: Map<string, string | null>;
-  raidWindow: ReminderWindow;
-  gamesWindow: ReminderWindow;
-  eventWindow: ReminderWindow;
+type TimedTargetContextRow = {
+  clanTag: string | null;
+  clanName: string | null;
+  cwlClanTag: string | null;
+  cwlClanName: string | null;
+  raidActive: boolean;
+  raidEndsAt: Date | null;
+  gamesActive: boolean;
+  gamesEndsAt: Date | null;
+  updatedAt: Date;
 };
 
 type ReminderSchedulerCounts = {
@@ -155,10 +163,9 @@ export async function runReminderSchedulerCycle(input: {
 
   for (const reminder of schedulerRows) {
     for (const target of reminder.targetClans) {
-      const normalizedTag = target.clanTag;
       const context = resolveContextForReminderType({
         reminderType: reminder.type,
-        clanTag: normalizedTag,
+        target,
         contexts: contextBundle,
       });
       if (!context) continue;
@@ -180,6 +187,7 @@ export async function runReminderSchedulerCycle(input: {
         const dedupeKey = buildReminderDedupeKey({
           reminderId: reminder.id,
           clanTag: context.clanTag,
+          clanType: context.clanType,
           eventIdentity: context.eventIdentity,
           offsetSeconds,
         });
@@ -258,18 +266,21 @@ function shouldReminderOffsetFire(input: {
   const triggerAtMs = input.eventEndsAtMs - offsetMs;
   if (!Number.isFinite(triggerAtMs)) return false;
   if (input.nowMs >= input.eventEndsAtMs) return false;
-  if (input.nowMs < triggerAtMs) return false;
-  return true;
+  const previousTickMs = input.nowMs - Math.max(1, input.intervalMs);
+  const crossedThisCycle = triggerAtMs > previousTickMs && triggerAtMs <= input.nowMs;
+  const lateFireBeforeEnd = triggerAtMs <= previousTickMs;
+  return crossedThisCycle || lateFireBeforeEnd;
 }
 
 /** Purpose: build deterministic dedupe key per reminder+clan+event identity+offset. */
 function buildReminderDedupeKey(input: {
   reminderId: string;
   clanTag: string;
+  clanType: ReminderTargetClanType;
   eventIdentity: string;
   offsetSeconds: number;
 }): string {
-  return `${input.reminderId}|${input.clanTag}|${input.eventIdentity}|${input.offsetSeconds}`;
+  return `${input.reminderId}|${input.clanType}|${input.clanTag}|${input.eventIdentity}|${input.offsetSeconds}`;
 }
 
 /** Purpose: write one reminder fire-log row if unique key not seen, returning dedupe outcome. */
@@ -307,76 +318,57 @@ async function createReminderFireLogIfFirst(input: {
 /** Purpose: choose one applicable context for a clan-target based on reminder type semantics. */
 function resolveContextForReminderType(input: {
   reminderType: ReminderType;
-  clanTag: string;
+  target: { clanTag: string; clanType: ReminderTargetClanType };
   contexts: ReminderContextBundle;
 }): ReminderEventContext | null {
-  const byClan = input.contexts.byClan.get(input.clanTag);
   if (input.reminderType === ReminderType.WAR_CWL) {
-    if (byClan?.cwl) return byClan.cwl;
-    if (byClan?.war) return byClan.war;
+    if (input.target.clanType === ReminderTargetClanType.CWL) {
+      return input.contexts.cwlWarByClanTag.get(input.target.clanTag) ?? null;
+    }
+    return input.contexts.warByClanTag.get(input.target.clanTag) ?? null;
+  }
+
+  if (input.reminderType === ReminderType.RAIDS) {
+    return input.contexts.raidByTargetKey.get(buildTargetKey(input.target)) ?? null;
+  }
+  if (input.reminderType === ReminderType.GAMES) {
+    return input.contexts.gamesByTargetKey.get(buildTargetKey(input.target)) ?? null;
+  }
+
+  // EVENT remains unimplemented in v1 until explicit stored event-timestamp semantics are added.
+  if (input.reminderType === ReminderType.EVENT) {
     return null;
   }
 
-  const clanName = input.contexts.clanNameByTag.get(input.clanTag) ?? null;
-  if (input.reminderType === ReminderType.RAIDS) {
-    if (!input.contexts.raidWindow.active) return null;
-    return {
-      clanTag: input.clanTag,
-      clanName,
-      eventEndsAt: new Date(input.contexts.raidWindow.endMs),
-      eventIdentity: `RAIDS:${input.contexts.raidWindow.startMs}:${input.contexts.raidWindow.endMs}`,
-      eventLabel: "raid weekend",
-    };
-  }
-  if (input.reminderType === ReminderType.GAMES) {
-    if (!input.contexts.gamesWindow.active) return null;
-    return {
-      clanTag: input.clanTag,
-      clanName,
-      eventEndsAt: new Date(input.contexts.gamesWindow.endMs),
-      eventIdentity: `GAMES:${input.contexts.gamesWindow.startMs}:${input.contexts.gamesWindow.endMs}`,
-      eventLabel: "clan games",
-    };
-  }
-  if (!input.contexts.eventWindow.active) return null;
-  return {
-    clanTag: input.clanTag,
-    clanName,
-    eventEndsAt: new Date(input.contexts.eventWindow.endMs),
-    eventIdentity: `EVENT:${input.contexts.eventWindow.startMs}:${input.contexts.eventWindow.endMs}`,
-    eventLabel: "season event",
-  };
+  return null;
 }
 
-/** Purpose: assemble per-clan reminder event contexts for WAR/CWL plus shared RAIDS/GAMES/EVENT windows. */
+/** Purpose: assemble per-target reminder contexts for WAR/CWL + RAIDS/GAMES using persisted state only. */
 async function resolveReminderContextBundle(input: {
   nowMs: number;
   reminders: ReminderSchedulerRow[];
 }): Promise<ReminderContextBundle> {
-  const clanTags = [
-    ...new Set(
-      input.reminders.flatMap((reminder) =>
-        reminder.targetClans.map((target) => target.clanTag),
-      ),
-    ),
-  ];
-  const byClan = new Map<string, { war: ReminderEventContext | null; cwl: ReminderEventContext | null }>();
+  const clanTagSet = new Set(
+    input.reminders.flatMap((reminder) => reminder.targetClans.map((target) => target.clanTag)),
+  );
+  const clanTags = [...clanTagSet];
+  const warByClanTag = new Map<string, ReminderEventContext>();
+  const cwlWarByClanTag = new Map<string, ReminderEventContext>();
+  const raidByTargetKey = new Map<string, ReminderEventContext>();
+  const gamesByTargetKey = new Map<string, ReminderEventContext>();
   const clanNameByTag = new Map<string, string | null>();
-  const raidWindow = resolveRaidWeekendWindow(input.nowMs);
-  const gamesWindow = resolveClanGamesWindow(input.nowMs);
-  const eventWindow = resolveSeasonEventWindow(input.nowMs);
   if (clanTags.length <= 0) {
     return {
-      byClan,
+      warByClanTag,
+      cwlWarByClanTag,
+      raidByTargetKey,
+      gamesByTargetKey,
       clanNameByTag,
-      raidWindow,
-      gamesWindow,
-      eventWindow,
     };
   }
 
   const season = resolveCurrentCwlSeasonKey(input.nowMs);
-  const [warRows, cwlRows, fwaNameRows, cwlNameRows] = await Promise.all([
+  const [warRows, cwlRows, timedRows, fwaNameRows, cwlNameRows] = await Promise.all([
     prisma.currentWar.findMany({
       where: {
         clanTag: { in: clanTags },
@@ -384,6 +376,7 @@ async function resolveReminderContextBundle(input: {
       select: {
         clanTag: true,
         clanName: true,
+        warId: true,
         state: true,
         startTime: true,
         endTime: true,
@@ -403,6 +396,22 @@ async function resolveReminderContextBundle(input: {
         updatedAt: true,
       },
     }),
+    prisma.todoPlayerSnapshot.findMany({
+      where: {
+        OR: [{ clanTag: { in: clanTags } }, { cwlClanTag: { in: clanTags } }],
+      },
+      select: {
+        clanTag: true,
+        clanName: true,
+        cwlClanTag: true,
+        cwlClanName: true,
+        raidActive: true,
+        raidEndsAt: true,
+        gamesActive: true,
+        gamesEndsAt: true,
+        updatedAt: true,
+      },
+    }),
     prisma.trackedClan.findMany({
       where: { tag: { in: clanTags } },
       select: { tag: true, name: true },
@@ -417,13 +426,17 @@ async function resolveReminderContextBundle(input: {
   ]);
 
   const fwaNameByTag = new Map(
-    fwaNameRows.map((row) => [row.tag, sanitizeDisplayText(row.name)] as const),
+    fwaNameRows
+      .map((row) => [normalizeClanTag(row.tag), sanitizeDisplayText(row.name)] as const)
+      .filter((entry): entry is [string, string | null] => Boolean(entry[0])),
   );
   const cwlNameByTag = new Map(
-    cwlNameRows.map((row) => [row.tag, sanitizeDisplayText(row.name)] as const),
+    cwlNameRows
+      .map((row) => [normalizeClanTag(row.tag), sanitizeDisplayText(row.name)] as const)
+      .filter((entry): entry is [string, string | null] => Boolean(entry[0])),
   );
-  const latestWarByTag = pickLatestWarByClanTag(warRows);
-  const latestCwlByTag = pickLatestCwlByClanTag(cwlRows);
+  const latestWarByTag = pickLatestWarByClanTag(warRows, input.nowMs);
+  const latestCwlByTag = pickLatestCwlByClanTag(cwlRows, input.nowMs);
 
   for (const clanTag of clanTags) {
     clanNameByTag.set(
@@ -432,53 +445,89 @@ async function resolveReminderContextBundle(input: {
     );
     const war = latestWarByTag.get(clanTag) ?? null;
     const cwl = latestCwlByTag.get(clanTag) ?? null;
-    byClan.set(clanTag, {
-      war: war
-        ? {
-            clanTag,
-            clanName: sanitizeDisplayText(war.clanName) ?? fwaNameByTag.get(clanTag) ?? null,
-            eventEndsAt: war.phaseEndsAt,
-            eventIdentity: `WAR:${clanTag}:${war.phase}:${war.phaseEndsAt.getTime()}`,
-            eventLabel: `war ${war.phase}`,
-          }
-        : null,
-      cwl: cwl
-        ? {
-            clanTag,
-            clanName: sanitizeDisplayText(cwl.cwlClanName) ?? cwlNameByTag.get(clanTag) ?? null,
-            eventEndsAt: cwl.phaseEndsAt,
-            eventIdentity: `CWL:${clanTag}:${cwl.phase}:${cwl.phaseEndsAt.getTime()}`,
-            eventLabel: `cwl ${cwl.phase}`,
-          }
-        : null,
+    if (war) {
+      warByClanTag.set(clanTag, {
+        clanTag,
+        clanType: ReminderTargetClanType.FWA,
+        clanName: sanitizeDisplayText(war.clanName) ?? fwaNameByTag.get(clanTag) ?? null,
+        eventEndsAt: war.warEndsAt,
+        eventIdentity: `WAR:${war.warIdentity}`,
+        eventLabel: "war end",
+      });
+    }
+    if (cwl) {
+      cwlWarByClanTag.set(clanTag, {
+        clanTag,
+        clanType: ReminderTargetClanType.CWL,
+        clanName: sanitizeDisplayText(cwl.cwlClanName) ?? cwlNameByTag.get(clanTag) ?? null,
+        eventEndsAt: cwl.warEndsAt,
+        eventIdentity: `CWL:${cwl.warIdentity}`,
+        eventLabel: "cwl war end",
+      });
+    }
+  }
+
+  const latestRaidByTargetKey = new Map<string, { context: ReminderEventContext; updatedAtMs: number }>();
+  const latestGamesByTargetKey = new Map<string, { context: ReminderEventContext; updatedAtMs: number }>();
+  for (const row of timedRows) {
+    ingestTimedTargetContexts({
+      nowMs: input.nowMs,
+      row,
+      clanTagSet,
+      clanNameByTag,
+      latestByTargetKey: latestRaidByTargetKey,
+      eventType: "RAIDS",
+      isActive: row.raidActive,
+      eventEndsAt: row.raidEndsAt,
+      eventLabel: "raid weekend",
+    });
+    ingestTimedTargetContexts({
+      nowMs: input.nowMs,
+      row,
+      clanTagSet,
+      clanNameByTag,
+      latestByTargetKey: latestGamesByTargetKey,
+      eventType: "GAMES",
+      isActive: row.gamesActive,
+      eventEndsAt: row.gamesEndsAt,
+      eventLabel: "clan games",
     });
   }
 
+  for (const [targetKey, payload] of latestRaidByTargetKey.entries()) {
+    raidByTargetKey.set(targetKey, payload.context);
+  }
+  for (const [targetKey, payload] of latestGamesByTargetKey.entries()) {
+    gamesByTargetKey.set(targetKey, payload.context);
+  }
+
   return {
-    byClan,
+    warByClanTag,
+    cwlWarByClanTag,
+    raidByTargetKey,
+    gamesByTargetKey,
     clanNameByTag,
-    raidWindow,
-    gamesWindow,
-    eventWindow,
   };
 }
 
-/** Purpose: keep latest active-war phase context per clan from CurrentWar rows. */
+/** Purpose: keep latest active-war-end context per clan from CurrentWar rows. */
 function pickLatestWarByClanTag(
   rows: Array<{
     clanTag: string;
     clanName: string | null;
+    warId: number | null;
     state: string | null;
     startTime: Date | null;
     endTime: Date | null;
     updatedAt: Date;
   }>,
+  nowMs: number,
 ): Map<
   string,
   {
     clanName: string | null;
-    phase: string;
-    phaseEndsAt: Date;
+    warIdentity: string;
+    warEndsAt: Date;
     updatedAt: Date;
   }
 > {
@@ -486,32 +535,26 @@ function pickLatestWarByClanTag(
     string,
     {
       clanName: string | null;
-      phase: string;
-      phaseEndsAt: Date;
+      warIdentity: string;
+      warEndsAt: Date;
       updatedAt: Date;
     }
   >();
   for (const row of rows) {
-    const normalizedState = String(row.state ?? "").toLowerCase();
-    const phase = normalizedState.includes("preparation")
-      ? "preparation"
-      : normalizedState.includes("inwar")
-        ? "battle day"
-        : "";
-    const phaseEndsAt =
-      phase === "preparation"
-        ? row.startTime
-        : phase === "battle day"
-          ? row.endTime
-          : null;
-    if (!phase || !phaseEndsAt) continue;
+    const clanTag = normalizeClanTag(row.clanTag);
+    if (!clanTag || !isActiveWarState(row.state) || !row.endTime) continue;
+    if (row.endTime.getTime() <= nowMs) continue;
+    const warIdentity =
+      Number.isFinite(row.warId) && Number(row.warId) > 0
+        ? `war-id:${Number(row.warId)}`
+        : `derived:${clanTag}:${row.startTime?.getTime() ?? 0}:${row.endTime.getTime()}`;
 
-    const existing = latest.get(row.clanTag);
+    const existing = latest.get(clanTag);
     if (!existing || row.updatedAt > existing.updatedAt) {
-      latest.set(row.clanTag, {
+      latest.set(clanTag, {
         clanName: row.clanName,
-        phase,
-        phaseEndsAt,
+        warIdentity,
+        warEndsAt: row.endTime,
         updatedAt: row.updatedAt,
       });
     }
@@ -519,7 +562,7 @@ function pickLatestWarByClanTag(
   return latest;
 }
 
-/** Purpose: keep latest active-CWL phase context per clan from snapshot rows. */
+/** Purpose: keep latest active-CWL war-end context per clan from snapshot rows. */
 function pickLatestCwlByClanTag(
   rows: Array<{
     cwlClanTag: string | null;
@@ -528,12 +571,13 @@ function pickLatestCwlByClanTag(
     cwlEndsAt: Date | null;
     updatedAt: Date;
   }>,
+  nowMs: number,
 ): Map<
   string,
   {
     cwlClanName: string | null;
-    phase: string;
-    phaseEndsAt: Date;
+    warIdentity: string;
+    warEndsAt: Date;
     updatedAt: Date;
   }
 > {
@@ -541,22 +585,27 @@ function pickLatestCwlByClanTag(
     string,
     {
       cwlClanName: string | null;
-      phase: string;
-      phaseEndsAt: Date;
+      warIdentity: string;
+      warEndsAt: Date;
       updatedAt: Date;
     }
   >();
   for (const row of rows) {
-    const clanTag = String(row.cwlClanTag ?? "").trim();
+    const clanTag = normalizeClanTag(row.cwlClanTag ?? "");
     const phaseEndsAt = row.cwlEndsAt;
-    const phase = sanitizeDisplayText(row.cwlPhase) ?? "active phase";
     if (!clanTag || !phaseEndsAt) continue;
+    const normalizedPhase = String(row.cwlPhase ?? "").toLowerCase();
+    const warEndsAt = normalizedPhase.includes("preparation")
+      ? new Date(phaseEndsAt.getTime() + 24 * 60 * 60 * 1000)
+      : phaseEndsAt;
+    if (warEndsAt.getTime() <= nowMs) continue;
+    const warIdentity = `${clanTag}:${warEndsAt.getTime()}`;
     const existing = latest.get(clanTag);
     if (!existing || row.updatedAt > existing.updatedAt) {
       latest.set(clanTag, {
         cwlClanName: row.cwlClanName,
-        phase,
-        phaseEndsAt,
+        warIdentity,
+        warEndsAt,
         updatedAt: row.updatedAt,
       });
     }
@@ -572,61 +621,82 @@ function sanitizeDisplayText(input: unknown): string | null {
   return normalized.length > 0 ? normalized : null;
 }
 
-/** Purpose: compute current/next raid weekend window boundaries using UTC-safe math. */
-function resolveRaidWeekendWindow(nowMs: number): ReminderWindow {
-  const dayMs = 24 * 60 * 60 * 1000;
-  const hourMs = 60 * 60 * 1000;
-  const now = new Date(nowMs);
-  const dayStartMs = Date.UTC(
-    now.getUTCFullYear(),
-    now.getUTCMonth(),
-    now.getUTCDate(),
-    0,
-    0,
-    0,
-    0,
-  );
-  const weekStartMs = dayStartMs - now.getUTCDay() * dayMs;
-  const fridayStartMs = weekStartMs + 5 * dayMs + 7 * hourMs;
-  const raidEndMs = fridayStartMs + 3 * dayMs;
-  if (nowMs >= fridayStartMs && nowMs < raidEndMs) {
-    return { active: true, startMs: fridayStartMs, endMs: raidEndMs };
-  }
-  if (nowMs < fridayStartMs) {
-    return { active: false, startMs: fridayStartMs, endMs: raidEndMs };
-  }
-  const nextStartMs = fridayStartMs + 7 * dayMs;
-  return { active: false, startMs: nextStartMs, endMs: nextStartMs + 3 * dayMs };
+/** Purpose: normalize reminder target identity into a deterministic map key. */
+function buildTargetKey(input: {
+  clanTag: string;
+  clanType: ReminderTargetClanType;
+}): string {
+  return `${input.clanType}|${input.clanTag}`;
 }
 
-/** Purpose: compute current/next clan-games window boundaries in UTC. */
-function resolveClanGamesWindow(nowMs: number): ReminderWindow {
-  const now = new Date(nowMs);
-  const year = now.getUTCFullYear();
-  const month = now.getUTCMonth();
-  const currentStartMs = Date.UTC(year, month, 22, 8, 0, 0, 0);
-  const currentEndMs = Date.UTC(year, month, 28, 8, 0, 0, 0);
-  if (nowMs >= currentStartMs && nowMs < currentEndMs) {
-    return { active: true, startMs: currentStartMs, endMs: currentEndMs };
-  }
-  if (nowMs < currentStartMs) {
-    return { active: false, startMs: currentStartMs, endMs: currentEndMs };
-  }
-  const nextStartMs = Date.UTC(year, month + 1, 22, 8, 0, 0, 0);
-  const nextEndMs = Date.UTC(year, month + 1, 28, 8, 0, 0, 0);
-  return { active: false, startMs: nextStartMs, endMs: nextEndMs };
+/** Purpose: classify persisted war-state values into active/non-active buckets. */
+function isActiveWarState(state: unknown): boolean {
+  const normalized = String(state ?? "").toLowerCase();
+  return normalized.includes("preparation") || normalized.includes("inwar");
 }
 
-/** Purpose: provide bounded EVENT window semantics as current UTC month -> next month rollover. */
-function resolveSeasonEventWindow(nowMs: number): ReminderWindow {
-  const now = new Date(nowMs);
-  const year = now.getUTCFullYear();
-  const month = now.getUTCMonth();
-  const startMs = Date.UTC(year, month, 1, 0, 0, 0, 0);
-  const endMs = Date.UTC(year, month + 1, 1, 0, 0, 0, 0);
-  return {
-    active: nowMs >= startMs && nowMs < endMs,
-    startMs,
-    endMs,
+/** Purpose: ingest one snapshot row into per-target timed event maps for RAIDS/GAMES semantics. */
+function ingestTimedTargetContexts(input: {
+  nowMs: number;
+  row: TimedTargetContextRow;
+  clanTagSet: Set<string>;
+  clanNameByTag: Map<string, string | null>;
+  latestByTargetKey: Map<string, { context: ReminderEventContext; updatedAtMs: number }>;
+  eventType: "RAIDS" | "GAMES";
+  isActive: boolean;
+  eventEndsAt: Date | null;
+  eventLabel: string;
+}): void {
+  if (!input.isActive || !input.eventEndsAt) return;
+  if (input.eventEndsAt.getTime() <= input.nowMs) return;
+
+  const upsert = (target: {
+    clanTag: string;
+    clanType: ReminderTargetClanType;
+    clanName: string | null;
+  }) => {
+    if (!input.clanTagSet.has(target.clanTag)) return;
+    const targetKey = buildTargetKey({
+      clanTag: target.clanTag,
+      clanType: target.clanType,
+    });
+    const nextContext: ReminderEventContext = {
+      clanTag: target.clanTag,
+      clanType: target.clanType,
+      clanName: target.clanName,
+      eventEndsAt: input.eventEndsAt!,
+      eventIdentity: `${input.eventType}:${targetKey}:${input.eventEndsAt!.getTime()}`,
+      eventLabel: input.eventLabel,
+    };
+    const nextUpdatedAtMs = input.row.updatedAt.getTime();
+    const existing = input.latestByTargetKey.get(targetKey);
+    if (!existing || nextUpdatedAtMs >= existing.updatedAtMs) {
+      input.latestByTargetKey.set(targetKey, {
+        context: nextContext,
+        updatedAtMs: nextUpdatedAtMs,
+      });
+    }
   };
+
+  const fwaClanTag = normalizeClanTag(input.row.clanTag ?? "");
+  const fwaClanName = sanitizeDisplayText(input.row.clanName) ?? null;
+  if (fwaClanTag) {
+    input.clanNameByTag.set(fwaClanTag, input.clanNameByTag.get(fwaClanTag) ?? fwaClanName);
+    upsert({
+      clanTag: fwaClanTag,
+      clanType: ReminderTargetClanType.FWA,
+      clanName: fwaClanName,
+    });
+  }
+
+  const cwlClanTag = normalizeClanTag(input.row.cwlClanTag ?? "");
+  const cwlClanName = sanitizeDisplayText(input.row.cwlClanName) ?? null;
+  if (cwlClanTag) {
+    input.clanNameByTag.set(cwlClanTag, input.clanNameByTag.get(cwlClanTag) ?? cwlClanName);
+    upsert({
+      clanTag: cwlClanTag,
+      clanType: ReminderTargetClanType.CWL,
+      clanName: cwlClanName,
+    });
+  }
 }
