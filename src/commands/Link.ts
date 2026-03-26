@@ -592,11 +592,12 @@ function formatCompactWeightK(weight: number | null | undefined): string {
 function formatAlignedInlineRow(
   row: LinkListRowInput,
   widths: { player: number; third: number; weight: number },
+  statusPrefix: ":yes:" | ":no:",
 ): string {
   const weight = rightAlign(row.weight, widths.weight);
   const playerName = rightAlign(row.playerName, widths.player);
   const discordName = rightAlign(row.third, widths.third);
-  return `\`${row.th} | ${discordName} | ${playerName} | ${weight}\``;
+  return `${statusPrefix} \`${row.th}  ${discordName}  ${playerName}  ${weight}\``;
 }
 
 function computeColumnWidths(
@@ -655,7 +656,7 @@ function buildLinkListDescriptionLines(input: {
           player: widths.player,
           weight: widths.weight,
           third: widths.linkedThird,
-        }),
+        }, ":yes:"),
       ),
     );
   }
@@ -668,7 +669,7 @@ function buildLinkListDescriptionLines(input: {
           player: widths.player,
           weight: widths.weight,
           third: widths.unlinkedThird,
-        }),
+        }, ":no:"),
       ),
     );
   }
