@@ -277,7 +277,10 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "Reads precomputed todo snapshots (background-refreshed) for fast command-time rendering.",
       "Always builds WAR, CWL, RAIDS, and GAMES pages in one response.",
       "`type` controls only the initial page shown; use page buttons to switch categories without rerunning.",
-      "Each page includes every linked player, including neutral status rows for players without active event data.",
+      "WAR/CWL pages group players by shared active event context and include section headers with phase timing.",
+      "RAIDS/GAMES pages use one shared top timer line and then list per-player progress rows.",
+      "When a page has no active context, it renders explicit inactive text instead of a blank list.",
+      "Linked players outside active contexts are still shown as neutral rows when active groups exist.",
       "If you have no linked tags, the command returns a clear private error and suggests `/link create`.",
     ],
     examples: [
