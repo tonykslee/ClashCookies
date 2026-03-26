@@ -32,9 +32,11 @@ import {
   buildLinkEmbedSetupModalCustomId,
   buildLinkEmbedTagModalCustomId,
   buildLinkListSelectCustomId,
+  buildLinkListSortButtonCustomId,
   handleLinkEmbedButtonInteraction,
   handleLinkEmbedModalSubmit,
   handleLinkListSelectMenu,
+  handleLinkListSortButton,
   isLinkEmbedAccountButtonCustomId,
   isLinkEmbedModalCustomId,
   Link,
@@ -376,6 +378,7 @@ describe("/link run", () => {
     const firstEmbed = payload.embeds[0].toJSON();
 
     expect(firstEmbed.title).toBe("<:badge:1> Alpha Clan #PQL0289");
+    expect(firstEmbed.footer?.text).toBe("Sort: Discord Name");
     const description = String(firstEmbed.description ?? "");
     expect(description).toContain("Linked Users: 1");
     expect(description).toContain("Unlinked users: 1");
@@ -406,7 +409,10 @@ describe("/link run", () => {
     expect(unlinkedParts.player.startsWith(" ")).toBe(true);
     expect(unlinkedParts.third.startsWith(" ")).toBe(true);
 
-    const select = payload.components[0].components[0].toJSON();
+    const sortButton = payload.components[0].components[0].toJSON();
+    expect(sortButton.label).toBe("Sort: Discord Name");
+
+    const select = payload.components[1].components[0].toJSON();
     expect(select.options).toHaveLength(2);
     expect(
       select.options.some(
@@ -641,7 +647,7 @@ describe("/link run", () => {
     await Link.run({} as any, interaction as any, cocService as any);
 
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
-    const select = payload.components[0].components[0].toJSON();
+    const select = payload.components[1].components[0].toJSON();
 
     expect(select.options).toHaveLength(25);
     expect(select.options.map((opt: any) => opt.value)).toContain(currentTag);
@@ -689,7 +695,7 @@ describe("/link list select menu", () => {
     const reply = vi.fn().mockResolvedValue(undefined);
 
     const interaction = {
-      customId: buildLinkListSelectCustomId("111111111111111111"),
+      customId: buildLinkListSelectCustomId("111111111111111111", "weight"),
       user: { id: "111111111111111111" },
       guildId: "guild-1",
       guild: {
@@ -726,12 +732,17 @@ describe("/link list select menu", () => {
     expect(update).toHaveBeenCalledTimes(1);
     const payload = update.mock.calls[0]?.[0] as any;
     expect(Array.isArray(payload.embeds)).toBe(true);
-    const description = payload.embeds[0].toJSON().description as string;
+    const firstEmbed = payload.embeds[0].toJSON();
+    const description = firstEmbed.description as string;
     expect(description).toContain("Linked Users: 1");
     expect(description).toContain("`15 |");
     expect(description).toContain("Persisted Select User");
     expect(description).not.toContain("<@111111111111111111>");
     expect(description).not.toContain("Unlinked users:");
+    expect(firstEmbed.footer?.text).toBe("Sort: Weight Desc");
+    expect(payload.components[0].components[0].toJSON().label).toBe(
+      "Sort: Weight Desc",
+    );
     expect(reply).not.toHaveBeenCalled();
   });
 
@@ -757,6 +768,176 @@ describe("/link list select menu", () => {
     expect(reply).toHaveBeenCalledWith({
       ephemeral: true,
       content: "Only the command requester can use this menu.",
+    });
+    expect(update).not.toHaveBeenCalled();
+  });
+});
+
+describe("/link list sort button", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.clearAllMocks();
+    prismaMock.playerLink.findMany.mockReset();
+    prismaMock.trackedClan.findMany.mockReset();
+    prismaMock.trackedClan.findUnique.mockReset();
+    prismaMock.currentWar.findMany.mockReset();
+    prismaMock.fwaClanMemberCurrent.findMany.mockReset();
+
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        discordUserId: "111111111111111111",
+        discordUsername: "ZedUser",
+        createdAt: new Date("2026-03-15T09:07:00.000Z"),
+      },
+      {
+        playerTag: "#QGRJ2222",
+        discordUserId: "222222222222222222",
+        discordUsername: "AmyUser",
+        createdAt: new Date("2026-03-15T09:07:00.000Z"),
+      },
+      {
+        playerTag: "#LCUV0289",
+        discordUserId: "333333333333333333",
+        discordUsername: "BobUser",
+        createdAt: new Date("2026-03-15T09:07:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      {
+        tag: "#PQL0289",
+        name: "Alpha Clan",
+        clanBadge: null,
+        mailConfig: null,
+      },
+    ]);
+    prismaMock.trackedClan.findUnique.mockResolvedValue(null);
+    prismaMock.currentWar.findMany.mockResolvedValue([{ clanTag: "#PQL0289" }]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        weight: 98000,
+        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
+      },
+      {
+        playerTag: "#QGRJ2222",
+        weight: 145000,
+        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
+      },
+    ]);
+  });
+
+  it("cycles sort mode in stable order and rerenders rows", async () => {
+    const cocService = {
+      getClan: vi.fn().mockResolvedValue({
+        name: "Alpha Clan",
+        members: [
+          {
+            tag: "#PYLQ0289",
+            name: "Charlie",
+            townHallLevel: 16,
+            mapPosition: 1,
+          },
+          {
+            tag: "#QGRJ2222",
+            name: "Alpha",
+            townHallLevel: 15,
+            mapPosition: 2,
+          },
+          {
+            tag: "#LCUV0289",
+            name: "Bravo",
+            townHallLevel: 14,
+            mapPosition: 3,
+          },
+        ],
+      }),
+    };
+
+    const runSortClick = async (mode: "discord" | "weight" | "player") => {
+      const update = vi.fn().mockResolvedValue(undefined);
+      const reply = vi.fn().mockResolvedValue(undefined);
+      const interaction = {
+        customId: buildLinkListSortButtonCustomId(
+          "111111111111111111",
+          "#PQL0289",
+          mode,
+        ),
+        user: { id: "111111111111111111" },
+        guildId: "guild-1",
+        guild: { members: { cache: new Map() } },
+        client: { users: { cache: new Map() } },
+        update,
+        reply,
+        deferred: false,
+        replied: false,
+      };
+
+      await handleLinkListSortButton(interaction as any, cocService as any);
+      return { update, reply };
+    };
+
+    const fromDiscord = await runSortClick("discord");
+    const payloadWeight = fromDiscord.update.mock.calls[0]?.[0] as any;
+    const embedWeight = payloadWeight.embeds[0].toJSON();
+    const descriptionWeight = String(embedWeight.description ?? "");
+    expect(embedWeight.footer?.text).toBe("Sort: Weight Desc");
+    expect(descriptionWeight.indexOf("AmyUser")).toBeLessThan(
+      descriptionWeight.indexOf("ZedUser"),
+    );
+    expect(descriptionWeight.indexOf("ZedUser")).toBeLessThan(
+      descriptionWeight.indexOf("BobUser"),
+    );
+    expect(payloadWeight.components[0].components[0].toJSON().label).toBe(
+      "Sort: Weight Desc",
+    );
+    expect(fromDiscord.reply).not.toHaveBeenCalled();
+
+    const fromWeight = await runSortClick("weight");
+    const payloadPlayer = fromWeight.update.mock.calls[0]?.[0] as any;
+    const embedPlayer = payloadPlayer.embeds[0].toJSON();
+    const descriptionPlayer = String(embedPlayer.description ?? "");
+    expect(embedPlayer.footer?.text).toBe("Sort: Player Name");
+    expect(descriptionPlayer.indexOf("Alpha")).toBeLessThan(
+      descriptionPlayer.indexOf("Bravo"),
+    );
+    expect(descriptionPlayer.indexOf("Bravo")).toBeLessThan(
+      descriptionPlayer.indexOf("Charlie"),
+    );
+
+    const fromPlayer = await runSortClick("player");
+    const payloadDiscord = fromPlayer.update.mock.calls[0]?.[0] as any;
+    const embedDiscord = payloadDiscord.embeds[0].toJSON();
+    expect(embedDiscord.footer?.text).toBe("Sort: Discord Name");
+    expect(payloadDiscord.components[0].components[0].toJSON().label).toBe(
+      "Sort: Discord Name",
+    );
+  });
+
+  it("rejects sort-button interaction from non-requesting user", async () => {
+    const update = vi.fn().mockResolvedValue(undefined);
+    const reply = vi.fn().mockResolvedValue(undefined);
+    const interaction = {
+      customId: buildLinkListSortButtonCustomId(
+        "111111111111111111",
+        "#PQL0289",
+        "discord",
+      ),
+      user: { id: "222222222222222222" },
+      guildId: "guild-1",
+      guild: { members: { cache: new Map() } },
+      client: { users: { cache: new Map() } },
+      update,
+      reply,
+      deferred: false,
+      replied: false,
+    };
+
+    await handleLinkListSortButton(interaction as any, {} as any);
+
+    expect(reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "Only the command requester can use this button.",
     });
     expect(update).not.toHaveBeenCalled();
   });

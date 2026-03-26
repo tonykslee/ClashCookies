@@ -36,6 +36,7 @@ import { PlayerLinkSyncService } from "../services/PlayerLinkSyncService";
 
 const permissionService = new CommandPermissionService();
 const LINK_LIST_SELECT_PREFIX = "link-list-select";
+const LINK_LIST_SORT_BUTTON_PREFIX = "link-list-sort-cycle";
 const LINK_EMBED_SETUP_MODAL_PREFIX = "link-embed-setup";
 const LINK_EMBED_TAG_MODAL_PREFIX = "link-embed-tag";
 const LINK_EMBED_BUTTON_PREFIX = "link-embed-account";
@@ -61,6 +62,10 @@ const LINK_EMBED_MODAL_DESCRIPTION_MAX = 4000;
 const MAX_PLAYER_NAME_CHARS = 28;
 const MAX_IDENTITY_CHARS = 30;
 const WEIGHT_PLACEHOLDER = "—";
+const LINK_LIST_SORT_MODE_CYCLE = ["discord", "weight", "player"] as const;
+
+type LinkListSortMode = (typeof LINK_LIST_SORT_MODE_CYCLE)[number];
+const LINK_LIST_DEFAULT_SORT_MODE: LinkListSortMode = "discord";
 
 type ClanMemberRow = {
   playerTag: string;
@@ -82,10 +87,17 @@ type LinkListRenderResult =
       ok: true;
       payload: {
         embeds: EmbedBuilder[];
-        components: ActionRowBuilder<StringSelectMenuBuilder>[];
+        components: ActionRowBuilder<
+          StringSelectMenuBuilder | ButtonBuilder
+        >[];
       };
     }
   | { ok: false; message: string };
+
+type LinkListInteraction =
+  | ChatInputCommandInteraction
+  | StringSelectMenuInteraction
+  | ButtonInteraction;
 
 function sanitizeTableText(input: string): string {
   return String(input ?? "")
@@ -98,6 +110,31 @@ function truncateWithEllipsis(input: string, maxLength: number): string {
   if (normalized.length <= maxLength) return normalized;
   if (maxLength <= 3) return normalized.slice(0, maxLength);
   return `${normalized.slice(0, maxLength - 3)}...`;
+}
+
+function normalizeLinkListSortMode(
+  input: string | null | undefined,
+): LinkListSortMode {
+  const value = String(input ?? "").trim().toLowerCase();
+  if (value === "discord" || value === "weight" || value === "player") {
+    return value;
+  }
+  return LINK_LIST_DEFAULT_SORT_MODE;
+}
+
+function getLinkListSortModeLabel(mode: LinkListSortMode): string {
+  if (mode === "weight") return "Weight Desc";
+  if (mode === "player") return "Player Name";
+  return "Discord Name";
+}
+
+function getNextLinkListSortMode(mode: LinkListSortMode): LinkListSortMode {
+  const currentIndex = LINK_LIST_SORT_MODE_CYCLE.indexOf(mode);
+  const nextIndex =
+    currentIndex >= 0
+      ? (currentIndex + 1) % LINK_LIST_SORT_MODE_CYCLE.length
+      : 0;
+  return LINK_LIST_SORT_MODE_CYCLE[nextIndex];
 }
 
 function normalizeUrlInput(input: string): string | null {
@@ -298,13 +335,16 @@ function appendDroppedSuffix(chunkText: string, droppedCount: number): string {
 function buildDescriptionEmbeds(
   title: string,
   lines: string[],
+  sortMode: LinkListSortMode,
 ): EmbedBuilder[] {
+  const sortLabel = getLinkListSortModeLabel(sortMode);
   const chunks = chunkDescriptionLines(lines);
   if (chunks.length === 0) {
     return [
       new EmbedBuilder()
         .setColor(LINK_LIST_EMBED_COLOR)
         .setTitle(title)
+        .setFooter({ text: `Sort: ${sortLabel}` })
         .setDescription("empty_list: no rows to render."),
     ];
   }
@@ -327,6 +367,7 @@ function buildDescriptionEmbeds(
     return new EmbedBuilder()
       .setColor(LINK_LIST_EMBED_COLOR)
       .setTitle(embedTitle)
+      .setFooter({ text: `Sort: ${sortLabel}` })
       .setDescription(chunk.text);
   });
 }
@@ -374,6 +415,7 @@ function buildClanSelectRows(input: {
   trackedClans: GuildTrackedClanOption[];
   currentClanTag: string;
   commandUserId: string;
+  sortMode: LinkListSortMode;
 }): ActionRowBuilder<StringSelectMenuBuilder>[] {
   if (input.trackedClans.length === 0) return [];
   const selectedSet = selectTrackedClanMenuOptions(
@@ -395,7 +437,9 @@ function buildClanSelectRows(input: {
   });
 
   const select = new StringSelectMenuBuilder()
-    .setCustomId(buildLinkListSelectCustomId(input.commandUserId))
+    .setCustomId(
+      buildLinkListSelectCustomId(input.commandUserId, input.sortMode),
+    )
     .setPlaceholder("Select tracked clan")
     .addOptions(options);
 
@@ -404,8 +448,41 @@ function buildClanSelectRows(input: {
   ];
 }
 
+function buildLinkListSortRow(input: {
+  commandUserId: string;
+  currentClanTag: string;
+  sortMode: LinkListSortMode;
+}): ActionRowBuilder<ButtonBuilder> {
+  const sortLabel = getLinkListSortModeLabel(input.sortMode);
+  const button = new ButtonBuilder()
+    .setCustomId(
+      buildLinkListSortButtonCustomId(
+        input.commandUserId,
+        input.currentClanTag,
+        input.sortMode,
+      ),
+    )
+    .setLabel(`Sort: ${sortLabel}`)
+    .setStyle(ButtonStyle.Secondary);
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(button);
+}
+
+function buildLinkListControlRows(input: {
+  trackedClans: GuildTrackedClanOption[];
+  currentClanTag: string;
+  commandUserId: string;
+  sortMode: LinkListSortMode;
+}): ActionRowBuilder<StringSelectMenuBuilder | ButtonBuilder>[] {
+  const rows: ActionRowBuilder<StringSelectMenuBuilder | ButtonBuilder>[] = [
+    buildLinkListSortRow(input),
+  ];
+  const selectRows = buildClanSelectRows(input);
+  rows.push(...selectRows);
+  return rows;
+}
+
 function resolveLinkedUserDisplayName(
-  interaction: ChatInputCommandInteraction | StringSelectMenuInteraction,
+  interaction: LinkListInteraction,
   discordUserId: string,
   persistedDiscordUsername: string | null,
 ): string {
@@ -441,6 +518,68 @@ type LinkListRowInput = {
   playerName: string;
   third: string;
 };
+
+type LinkListResolvedMemberRow = {
+  isLinked: boolean;
+  playerTag: string;
+  defaultIndex: number;
+  weightValue: number | null;
+  playerSort: string;
+  discordSort: string;
+  row: LinkListRowInput;
+};
+
+function compareSortText(a: string, b: string): number {
+  return a.localeCompare(b, undefined, { sensitivity: "base" });
+}
+
+function sortLinkListRows(
+  rows: LinkListResolvedMemberRow[],
+  sortMode: LinkListSortMode,
+): LinkListResolvedMemberRow[] {
+  return [...rows].sort((a, b) => {
+    if (sortMode === "weight") {
+      const aHasWeight = a.weightValue !== null;
+      const bHasWeight = b.weightValue !== null;
+      if (aHasWeight !== bHasWeight) return aHasWeight ? -1 : 1;
+      if (
+        a.weightValue !== null &&
+        b.weightValue !== null &&
+        a.weightValue !== b.weightValue
+      ) {
+        return b.weightValue - a.weightValue;
+      }
+      const byDiscord = compareSortText(a.discordSort, b.discordSort);
+      if (byDiscord !== 0) return byDiscord;
+      const byPlayer = compareSortText(a.playerSort, b.playerSort);
+      if (byPlayer !== 0) return byPlayer;
+      if (a.playerTag !== b.playerTag) {
+        return compareSortText(a.playerTag, b.playerTag);
+      }
+      return a.defaultIndex - b.defaultIndex;
+    }
+
+    if (sortMode === "player") {
+      const byPlayer = compareSortText(a.playerSort, b.playerSort);
+      if (byPlayer !== 0) return byPlayer;
+      const byDiscord = compareSortText(a.discordSort, b.discordSort);
+      if (byDiscord !== 0) return byDiscord;
+      if (a.playerTag !== b.playerTag) {
+        return compareSortText(a.playerTag, b.playerTag);
+      }
+      return a.defaultIndex - b.defaultIndex;
+    }
+
+    const byDiscord = compareSortText(a.discordSort, b.discordSort);
+    if (byDiscord !== 0) return byDiscord;
+    const byPlayer = compareSortText(a.playerSort, b.playerSort);
+    if (byPlayer !== 0) return byPlayer;
+    if (a.playerTag !== b.playerTag) {
+      return compareSortText(a.playerTag, b.playerTag);
+    }
+    return a.defaultIndex - b.defaultIndex;
+  });
+}
 
 function formatCompactWeightK(weight: number | null | undefined): string {
   if (weight === null || weight === undefined || !Number.isFinite(weight)) {
@@ -538,11 +677,14 @@ function buildLinkListDescriptionLines(input: {
 }
 
 async function buildLinkListView(input: {
-  interaction: ChatInputCommandInteraction | StringSelectMenuInteraction;
+  interaction: LinkListInteraction;
   cocService: CoCService;
   clanTag: string;
   commandUserId: string;
+  sortMode?: LinkListSortMode;
 }): Promise<LinkListRenderResult> {
+  const sortMode = normalizeLinkListSortMode(input.sortMode);
+
   if (!input.interaction.guildId) {
     return { ok: false, message: "This command can only be used in a server." };
   }
@@ -591,39 +733,57 @@ async function buildLinkListView(input: {
   }
 
   const linkByTag = new Map(links.map((row) => [row.playerTag, row]));
-  const linkedRows: LinkListRowInput[] = [];
-  const unlinkedRows: LinkListRowInput[] = [];
+  const resolvedRows: LinkListResolvedMemberRow[] = [];
 
-  for (const member of members) {
+  members.forEach((member, index) => {
     const playerName = truncateWithEllipsis(
       member.playerName,
       MAX_PLAYER_NAME_CHARS,
     );
-    const weight = formatCompactWeightK(weightByTag.get(member.playerTag));
+    const rawWeight = weightByTag.get(member.playerTag);
+    const weightValue =
+      typeof rawWeight === "number" && Number.isFinite(rawWeight)
+        ? Math.trunc(rawWeight)
+        : null;
+    const weight = formatCompactWeightK(weightValue);
     const link = linkByTag.get(member.playerTag);
-    if (link) {
-      linkedRows.push({
-        th: member.townHallText,
-        weight,
-        playerName,
-        third: truncateWithEllipsis(
-          resolveLinkedUserDisplayName(
+    const third = truncateWithEllipsis(
+      link
+        ? resolveLinkedUserDisplayName(
             input.interaction,
             link.discordUserId,
             link.discordUsername,
-          ),
-          MAX_IDENTITY_CHARS,
-        ),
-      });
+          )
+        : member.playerTag,
+      MAX_IDENTITY_CHARS,
+    );
+
+    resolvedRows.push({
+      isLinked: Boolean(link),
+      playerTag: member.playerTag,
+      defaultIndex: index,
+      weightValue,
+      playerSort: sanitizeTableText(playerName),
+      discordSort: sanitizeTableText(third),
+      row: {
+        th: member.townHallText,
+        weight,
+        playerName,
+        third,
+      },
+    });
+  });
+
+  const sortedRows = sortLinkListRows(resolvedRows, sortMode);
+  const linkedRows: LinkListRowInput[] = [];
+  const unlinkedRows: LinkListRowInput[] = [];
+
+  for (const row of sortedRows) {
+    if (row.isLinked) {
+      linkedRows.push(row.row);
       continue;
     }
-
-    unlinkedRows.push({
-      th: member.townHallText,
-      weight,
-      playerName,
-      third: truncateWithEllipsis(member.playerTag, MAX_IDENTITY_CHARS),
-    });
+    unlinkedRows.push(row.row);
   }
 
   const lines = buildLinkListDescriptionLines({
@@ -652,13 +812,14 @@ async function buildLinkListView(input: {
     badge: tracked?.clanBadge?.trim() ?? null,
   });
 
-  const embeds = buildDescriptionEmbeds(title, lines);
+  const embeds = buildDescriptionEmbeds(title, lines, sortMode);
 
   const trackedClans = await getTrackedClansForGuild(input.interaction.guildId);
-  const components = buildClanSelectRows({
+  const components = buildLinkListControlRows({
     trackedClans,
     currentClanTag: input.clanTag,
     commandUserId: input.commandUserId,
+    sortMode,
   });
 
   return {
@@ -667,8 +828,12 @@ async function buildLinkListView(input: {
   };
 }
 
-export function buildLinkListSelectCustomId(userId: string): string {
-  return `${LINK_LIST_SELECT_PREFIX}:${userId}`;
+export function buildLinkListSelectCustomId(
+  userId: string,
+  sortMode: LinkListSortMode = LINK_LIST_DEFAULT_SORT_MODE,
+): string {
+  const normalizedSort = normalizeLinkListSortMode(sortMode);
+  return `${LINK_LIST_SELECT_PREFIX}:${userId}:${normalizedSort}`;
 }
 
 export function isLinkListSelectCustomId(customId: string): boolean {
@@ -677,12 +842,49 @@ export function isLinkListSelectCustomId(customId: string): boolean {
 
 function parseLinkListSelectCustomId(
   customId: string,
-): { userId: string } | null {
+): { userId: string; sortMode: LinkListSortMode } | null {
   const parts = customId.split(":");
-  if (parts.length !== 2 || parts[0] !== LINK_LIST_SELECT_PREFIX) return null;
+  if (
+    (parts.length !== 2 && parts.length !== 3) ||
+    parts[0] !== LINK_LIST_SELECT_PREFIX
+  ) {
+    return null;
+  }
   const userId = parts[1]?.trim() ?? "";
   if (!userId) return null;
-  return { userId };
+  return {
+    userId,
+    sortMode: normalizeLinkListSortMode(parts[2]),
+  };
+}
+
+export function buildLinkListSortButtonCustomId(
+  userId: string,
+  clanTag: string,
+  sortMode: LinkListSortMode,
+): string {
+  return `${LINK_LIST_SORT_BUTTON_PREFIX}:${userId}:${clanTag}:${normalizeLinkListSortMode(sortMode)}`;
+}
+
+export function isLinkListSortButtonCustomId(customId: string): boolean {
+  return customId.startsWith(`${LINK_LIST_SORT_BUTTON_PREFIX}:`);
+}
+
+function parseLinkListSortButtonCustomId(
+  customId: string,
+): { userId: string; clanTag: string; sortMode: LinkListSortMode } | null {
+  const parts = String(customId ?? "").split(":");
+  if (parts.length !== 4 || parts[0] !== LINK_LIST_SORT_BUTTON_PREFIX) {
+    return null;
+  }
+  const userId = parts[1]?.trim() ?? "";
+  const clanTag = normalizeClanTag(parts[2] ?? "");
+  if (!userId || !clanTag) return null;
+  return {
+    userId,
+    clanTag,
+    sortMode: normalizeLinkListSortMode(parts[3]),
+  };
 }
 
 export function buildLinkEmbedSetupModalCustomId(
@@ -838,6 +1040,46 @@ export async function handleLinkListSelectMenu(
     cocService,
     clanTag: selectedTag,
     commandUserId: parsed.userId,
+    sortMode: parsed.sortMode,
+  });
+
+  if (!result.ok) {
+    await interaction.update({
+      content: result.message,
+      embeds: [],
+      components: [],
+    });
+    return;
+  }
+
+  await interaction.update({
+    content: null,
+    ...result.payload,
+  });
+}
+
+export async function handleLinkListSortButton(
+  interaction: ButtonInteraction,
+  cocService: CoCService,
+): Promise<void> {
+  const parsed = parseLinkListSortButtonCustomId(interaction.customId);
+  if (!parsed) return;
+
+  if (interaction.user.id !== parsed.userId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Only the command requester can use this button.",
+    });
+    return;
+  }
+
+  const nextSortMode = getNextLinkListSortMode(parsed.sortMode);
+  const result = await buildLinkListView({
+    interaction,
+    cocService,
+    clanTag: parsed.clanTag,
+    commandUserId: parsed.userId,
+    sortMode: nextSortMode,
   });
 
   if (!result.ok) {
@@ -1453,6 +1695,7 @@ export const Link: Command = {
       cocService,
       clanTag: normalizedClanTag,
       commandUserId: interaction.user.id,
+      sortMode: LINK_LIST_DEFAULT_SORT_MODE,
     });
     if (!result.ok) {
       await interaction.editReply(result.message);
