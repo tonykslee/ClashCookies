@@ -21,6 +21,8 @@ type TodoRenderRow = {
   playerName: string;
   clanTag: string | null;
   clanName: string | null;
+  cwlClanTag: string | null;
+  cwlClanName: string | null;
   snapshot: TodoSnapshotRecord | null;
   missingSnapshot: boolean;
   staleSnapshot: boolean;
@@ -122,6 +124,8 @@ export async function buildTodoPagesForUser(input: {
       playerName: snapshot?.playerName ?? normalizedTag,
       clanTag: snapshot?.clanTag ?? null,
       clanName: snapshot?.clanName ?? null,
+      cwlClanTag: snapshot?.cwlClanTag ?? null,
+      cwlClanName: snapshot?.cwlClanName ?? null,
       snapshot,
       missingSnapshot,
       staleSnapshot,
@@ -349,9 +353,11 @@ function buildEventGroups(
         : sanitizeStatusText(row.snapshot.cwlPhase) || "active phase";
     const phaseEndsAt =
       mode === "war" ? row.snapshot.warEndsAt : row.snapshot.cwlEndsAt;
+    const groupedClanTag = mode === "war" ? row.clanTag : row.cwlClanTag;
+    const groupedClanName = mode === "war" ? row.clanName : row.cwlClanName;
     const key = [
-      row.clanTag ?? "",
-      row.clanName ?? "",
+      groupedClanTag ?? "",
+      groupedClanName ?? "",
       phase,
       phaseEndsAt ? String(phaseEndsAt.getTime()) : "0",
     ].join("|");
@@ -362,8 +368,8 @@ function buildEventGroups(
       continue;
     }
     grouped.set(key, {
-      clanTag: row.clanTag ?? null,
-      clanName: row.clanName ?? null,
+      clanTag: groupedClanTag ?? null,
+      clanName: groupedClanName ?? null,
       phase,
       phaseEndsAt: phaseEndsAt ?? null,
       rows: [row],

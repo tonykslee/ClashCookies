@@ -16,11 +16,14 @@ import { safeReply } from "../helper/safeReply";
 import { prisma } from "../prisma";
 import { ActivityService } from "../services/ActivityService";
 import { CoCService } from "../services/CoCService";
-
-function normalizeClanTag(input: string): string {
-  const cleaned = input.trim().toUpperCase().replace(/^#/, "");
-  return `#${cleaned}`;
-}
+import { normalizeClanTag } from "../services/PlayerLinkService";
+import {
+  addCwlClanTagsForSeason,
+  listCwlTrackedClansForSeason,
+  removeTrackedClanTagFromRegistries,
+  resolveCurrentCwlSeasonKey,
+  type TrackedClanRegistryType,
+} from "../services/CwlRegistryService";
 
 const CUSTOM_EMOJI_PATTERN = /^<(a?):([A-Za-z0-9_]+):(\d+)>$/;
 const SHORTCODE_EMOJI_PATTERN = /^:([A-Za-z0-9_]+):$/;
@@ -57,6 +60,14 @@ function buildTrackedClanBlock(clan: {
   ].join("\n");
 }
 
+function buildCwlTrackedClanBlock(clan: {
+  name: string | null;
+  tag: string;
+}): string {
+  const label = clan.name ? `${clan.tag} (${clan.name})` : clan.tag;
+  return [`**${label}**`, "registry: CWL seasonal"].join("\n");
+}
+
 function paginateTrackedClanBlocks(blocks: string[]): string[] {
   const pages: string[] = [];
   let i = 0;
@@ -91,6 +102,20 @@ function buildTrackedClanListEmbed(total: number, pageContent: string, page: num
     .setFooter({ text: `Page ${page + 1}/${pages}` });
 }
 
+function buildCwlTrackedClanListEmbed(
+  total: number,
+  season: string,
+  pageContent: string,
+  page: number,
+  pages: number
+) {
+  return new EmbedBuilder()
+    .setTitle(`Tracked Clans (CWL ${season}) (${total})`)
+    .setDescription(pageContent)
+    .setColor(0xfee75c)
+    .setFooter({ text: `Page ${page + 1}/${pages}` });
+}
+
 function buildTrackedClanListRow(prefix: string, page: number, totalPages: number) {
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
@@ -104,6 +129,11 @@ function buildTrackedClanListRow(prefix: string, page: number, totalPages: numbe
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(page >= totalPages - 1)
   );
+}
+
+function formatTagListForSummary(tags: string[]): string {
+  if (tags.length <= 0) return "none";
+  return tags.join(", ");
 }
 
 async function normalizeClanBadgeInput(
@@ -214,12 +244,47 @@ export const TrackedClan: Command = {
           required: true,
           autocomplete: true,
         },
+        {
+          name: "type",
+          description: "Registry type to remove from (omit for auto/safe lookup)",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          choices: [
+            { name: "FWA", value: "FWA" },
+            { name: "CWL", value: "CWL" },
+          ],
+        },
       ],
     },
     {
       name: "list",
       description: "List tracked clans",
       type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "type",
+          description: "Registry type to list",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          choices: [
+            { name: "FWA", value: "FWA" },
+            { name: "CWL", value: "CWL" },
+          ],
+        },
+      ],
+    },
+    {
+      name: "cwl-tags",
+      description: "Add one or more CWL tracked clan tags for the current season",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "cwl-tags",
+          description: "Array-style or comma-separated clan tags (with or without #)",
+          type: ApplicationCommandOptionType.String,
+          required: true,
+        },
+      ],
     },
   ],
   run: async (
@@ -232,6 +297,87 @@ export const TrackedClan: Command = {
       const subcommand = interaction.options.getSubcommand(true);
 
       if (subcommand === "list") {
+        const listType =
+          (interaction.options.getString("type", false) as TrackedClanRegistryType | null) ??
+          "FWA";
+        if (listType === "CWL") {
+          const season = resolveCurrentCwlSeasonKey();
+          const tracked = await listCwlTrackedClansForSeason({ season });
+          if (tracked.length === 0) {
+            await safeReply(interaction, {
+              ephemeral: true,
+              content: `No CWL tracked clans for season ${season}.`,
+            });
+            return;
+          }
+
+          const blocks = tracked.map((clan) => buildCwlTrackedClanBlock(clan));
+          const pages = paginateTrackedClanBlocks(blocks);
+          let page = 0;
+          const paginatorPrefix = `tracked-clan-list:cwl:${interaction.id}`;
+          await interaction.editReply({
+            embeds: [buildCwlTrackedClanListEmbed(tracked.length, season, pages[page], page, pages.length)],
+            components:
+              pages.length > 1 ? [buildTrackedClanListRow(paginatorPrefix, page, pages.length)] : [],
+          });
+
+          if (pages.length <= 1) {
+            return;
+          }
+
+          const message = await interaction.fetchReply();
+          const collector = message.createMessageComponentCollector({
+            componentType: ComponentType.Button,
+            time: 10 * 60 * 1000,
+          });
+
+          collector.on("collect", async (button: ButtonInteraction) => {
+            try {
+              if (button.user.id !== interaction.user.id) {
+                await button.reply({
+                  content: "Only the command user can control this paginator.",
+                  ephemeral: true,
+                });
+                return;
+              }
+              if (
+                button.customId !== `${paginatorPrefix}:prev` &&
+                button.customId !== `${paginatorPrefix}:next`
+              ) {
+                return;
+              }
+
+              if (button.customId.endsWith(":prev")) page = Math.max(0, page - 1);
+              if (button.customId.endsWith(":next")) page = Math.min(pages.length - 1, page + 1);
+
+              await button.update({
+                embeds: [buildCwlTrackedClanListEmbed(tracked.length, season, pages[page], page, pages.length)],
+                components: [buildTrackedClanListRow(paginatorPrefix, page, pages.length)],
+              });
+            } catch (err) {
+              console.error(`tracked-clan CWL list paginator failed: ${formatError(err)}`);
+              if (!button.replied && !button.deferred) {
+                await button.reply({
+                  ephemeral: true,
+                  content: "Failed to update tracked-clan CWL list page.",
+                });
+              }
+            }
+          });
+
+          collector.on("end", async () => {
+            try {
+              await interaction.editReply({
+                embeds: [buildCwlTrackedClanListEmbed(tracked.length, season, pages[page], page, pages.length)],
+                components: [],
+              });
+            } catch {
+              // no-op
+            }
+          });
+          return;
+        }
+
         const tracked = await prisma.trackedClan.findMany({
           orderBy: { createdAt: "asc" },
         });
@@ -309,10 +455,37 @@ export const TrackedClan: Command = {
         return;
       }
 
-      const tagInput = interaction.options.getString("tag", true);
-      const tag = normalizeClanTag(tagInput);
+      if (subcommand === "cwl-tags") {
+        const rawCwlTags = interaction.options.getString("cwl-tags", true);
+        const result = await addCwlClanTagsForSeason({
+          rawTags: rawCwlTags,
+          cocService,
+        });
+
+        await safeReply(interaction, {
+          ephemeral: true,
+          content: [
+            `Updated CWL tracked clans for season ${result.season}.`,
+            `added: ${formatTagListForSummary(result.added)}`,
+            `already existed: ${formatTagListForSummary(result.alreadyExisting)}`,
+            `invalid: ${formatTagListForSummary(result.invalid)}`,
+            `duplicates in request: ${formatTagListForSummary(result.duplicateInRequest)}`,
+          ].join("\n"),
+        });
+        return;
+      }
 
       if (subcommand === "configure") {
+        const tagInput = interaction.options.getString("tag", true);
+        const tag = normalizeClanTag(tagInput);
+        if (!tag) {
+          await safeReply(interaction, {
+            ephemeral: true,
+            content: "Invalid clan tag format. Use a valid clan tag with or without `#`.",
+          });
+          return;
+        }
+
         const loseStyle = interaction.options.getString("lose-style", false) as
           | "TRIPLE_TOP_30"
           | "TRADITIONAL"
@@ -507,19 +680,39 @@ export const TrackedClan: Command = {
       }
 
       if (subcommand === "remove") {
-        const deleted = await prisma.trackedClan.deleteMany({
-          where: { tag },
-        });
-
-        if (deleted.count === 0) {
+        const tagInput = interaction.options.getString("tag", true);
+        const tag = normalizeClanTag(tagInput);
+        if (!tag) {
           await safeReply(interaction, {
             ephemeral: true,
-            content: `${tag} is not currently tracked.`,
+            content: "Invalid clan tag format. Use a valid clan tag with or without `#`.",
+          });
+          return;
+        }
+        const requestedType =
+          (interaction.options.getString("type", false) as TrackedClanRegistryType | null) ?? null;
+        const result = await removeTrackedClanTagFromRegistries({
+          tag,
+          type: requestedType,
+        });
+        if (result.outcome === "not_found") {
+          await safeReply(interaction, {
+            ephemeral: true,
+            content: `${tag} was not found in ${requestedType ? `${requestedType} tracked clans` : "FWA tracked clans or current-season CWL tracked clans"}.`,
+          });
+          return;
+        }
+        if (result.outcome === "ambiguous") {
+          await safeReply(interaction, {
+            ephemeral: true,
+            content:
+              `Ambiguous remove for ${tag}: it exists in both FWA and CWL (${result.season}) registries.\n` +
+              "Re-run `/tracked-clan remove` with `type:FWA` or `type:CWL`.",
           });
           return;
         }
 
-        if (interaction.guildId) {
+        if (result.removedFrom === "FWA" && interaction.guildId) {
           await prisma.currentWar.deleteMany({
             where: {
               guildId: interaction.guildId,
@@ -530,7 +723,10 @@ export const TrackedClan: Command = {
 
         await safeReply(interaction, {
           ephemeral: true,
-          content: `Removed tracked clan ${tag}.`,
+          content:
+            result.removedFrom === "FWA"
+              ? `Removed tracked clan ${tag} from FWA registry.`
+              : `Removed tracked clan ${tag} from CWL registry for season ${result.season}.`,
         });
       }
     } catch (err) {
@@ -548,7 +744,60 @@ export const TrackedClan: Command = {
       return;
     }
 
+    const subcommand = interaction.options.getSubcommand(false);
     const query = String(focused.value ?? "").trim().toLowerCase();
+    if (subcommand === "remove") {
+      const season = resolveCurrentCwlSeasonKey();
+      const [trackedFwa, trackedCwl] = await Promise.all([
+        prisma.trackedClan.findMany({
+          orderBy: { createdAt: "asc" },
+          select: { name: true, tag: true },
+        }),
+        prisma.cwlTrackedClan.findMany({
+          where: { season },
+          orderBy: { createdAt: "asc" },
+          select: { name: true, tag: true },
+        }),
+      ]);
+
+      const choiceByTag = new Map<string, { name: string; value: string }>();
+      for (const clan of trackedFwa) {
+        const tag = normalizeClanTag(clan.tag);
+        if (!tag) continue;
+        const label = clan.name?.trim() ? `${clan.name.trim()} (${tag}) [FWA]` : `${tag} [FWA]`;
+        choiceByTag.set(tag, { name: label.slice(0, 100), value: tag });
+      }
+      for (const clan of trackedCwl) {
+        const tag = normalizeClanTag(clan.tag);
+        if (!tag) continue;
+        const existing = choiceByTag.get(tag);
+        if (existing) {
+          const merged = existing.name.includes(`[CWL ${season}]`)
+            ? existing.name
+            : `${existing.name} [CWL ${season}]`;
+          choiceByTag.set(tag, {
+            name: merged.slice(0, 100),
+            value: tag,
+          });
+          continue;
+        }
+        const label = clan.name?.trim()
+          ? `${clan.name.trim()} (${tag}) [CWL ${season}]`
+          : `${tag} [CWL ${season}]`;
+        choiceByTag.set(tag, { name: label.slice(0, 100), value: tag });
+      }
+
+      const choices = [...choiceByTag.values()]
+        .filter(
+          (choice) =>
+            choice.name.toLowerCase().includes(query) || choice.value.toLowerCase().includes(query)
+        )
+        .slice(0, 25);
+
+      await interaction.respond(choices);
+      return;
+    }
+
     const tracked = await prisma.trackedClan.findMany({
       orderBy: { createdAt: "asc" },
       select: { name: true, tag: true },

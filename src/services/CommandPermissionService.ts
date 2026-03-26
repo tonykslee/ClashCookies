@@ -30,6 +30,7 @@ export const COMMAND_PERMISSION_TARGETS = [
   "notify",
   "warplan",
   "tracked-clan:configure",
+  "tracked-clan:cwl-tags",
   "tracked-clan:remove",
   "tracked-clan:list",
   "sheet:link",
@@ -99,6 +100,7 @@ type GuildInteraction = ChatInputCommandInteraction | ModalSubmitInteraction;
 
 const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "tracked-clan:configure",
+  "tracked-clan:cwl-tags",
   "tracked-clan:remove",
   "sheet:link",
   "sheet:unlink",

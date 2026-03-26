@@ -69,6 +69,8 @@ model TodoPlayerSnapshot {
   playerName      String
   clanTag         String?
   clanName        String?
+  cwlClanTag      String?
+  cwlClanName     String?
   warActive       Boolean  @default(false)
   warAttacksUsed  Int      @default(0)
   warAttacksMax   Int      @default(2)
@@ -92,7 +94,33 @@ model TodoPlayerSnapshot {
   updatedAt       DateTime @updatedAt
 
   @@index([clanTag])
+  @@index([cwlClanTag])
   @@index([updatedAt])
+}
+
+model CwlTrackedClan {
+  id        Int      @id @default(autoincrement())
+  season    String
+  tag       String
+  name      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([season, tag])
+  @@index([season, createdAt])
+}
+
+model CwlPlayerClanSeason {
+  id         Int      @id @default(autoincrement())
+  season     String
+  playerTag  String
+  cwlClanTag String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([season, playerTag])
+  @@index([season, cwlClanTag])
+  @@index([season, playerTag])
 }
 
 enum KickListSource {
