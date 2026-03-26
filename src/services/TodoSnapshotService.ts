@@ -624,6 +624,8 @@ function clampInt(input: unknown, min: number, max: number): number {
 
 /** Purpose: map unknown numeric values to finite integer or null for nullable persistence fields. */
 function toFiniteIntOrNull(input: unknown): number | null {
+  if (input === null || input === undefined) return null;
+  if (typeof input === "string" && input.trim().length <= 0) return null;
   const value = Number(input);
   if (!Number.isFinite(value)) return null;
   return Math.trunc(value);
@@ -683,9 +685,9 @@ function deriveTodoGamesValues(input: {
   }
   if (resolvedBaseline === null) {
     return {
-      points: clampInt(championTotal ?? 0, 0, TODO_GAMES_POINTS_MAX),
+      points: 0,
       target: TODO_GAMES_TARGET_POINTS,
-      baselineToPersist: 0,
+      baselineToPersist: championTotal,
     };
   }
 
