@@ -13,6 +13,7 @@ const COUNTER_KEYS = [
   "defenseWins",
   "versusBattleWins",
   "expLevel",
+  "gamesChampion",
 ] as const;
 
 const HASH_KEYS = [
@@ -81,6 +82,11 @@ function signalStateKey(tag: string): string {
   return `player_signal_state:${tag.toUpperCase()}`;
 }
 
+/** Purpose: expose deterministic signal-state key format for cross-service readers. */
+export function buildPlayerSignalStateKey(tag: string): string {
+  return signalStateKey(tag);
+}
+
 /** Purpose: to finite number. */
 function toFiniteNumber(value: unknown): number {
   const num = Number(value ?? 0);
@@ -107,6 +113,16 @@ function stableHashFromArray(items: unknown[]): string {
   return normalized.join("|");
 }
 
+/** Purpose: extract lifetime Clan Games points from CoC achievements payload. */
+function extractGamesChampionTotal(achievements: unknown[]): number {
+  for (const achievement of normalizeArray<Record<string, unknown>>(achievements)) {
+    const name = String(achievement?.name ?? "").trim().toLowerCase();
+    if (name !== "games champion") continue;
+    return Math.max(0, toFiniteNumber(achievement?.value));
+  }
+  return 0;
+}
+
 /** Purpose: get default state. */
 function getDefaultState(input: PlayerSignalInput): PlayerSignalState {
   return {
@@ -125,6 +141,7 @@ function getDefaultState(input: PlayerSignalInput): PlayerSignalState {
       defenseWins: toFiniteNumber(input.defenseWins),
       versusBattleWins: toFiniteNumber(input.versusBattleWins),
       expLevel: toFiniteNumber(input.expLevel),
+      gamesChampion: extractGamesChampionTotal(input.achievements),
     },
     hashes: {
       achievements: stableHashFromArray(normalizeArray(input.achievements)),
@@ -165,7 +182,14 @@ function shouldCountCounterChangeAsActivity(
   if (key === "donations" || key === "donationsReceived" || key === "capitalGold") {
     return next > previous;
   }
-  if (key === "warStars" || key === "attackWins" || key === "defenseWins" || key === "versusBattleWins" || key === "expLevel") {
+  if (
+    key === "warStars" ||
+    key === "attackWins" ||
+    key === "defenseWins" ||
+    key === "versusBattleWins" ||
+    key === "expLevel" ||
+    key === "gamesChampion"
+  ) {
     return next > previous;
   }
   return previous !== next;
@@ -218,6 +242,7 @@ export class ActivitySignalService {
       defenseWins: toFiniteNumber(input.defenseWins),
       versusBattleWins: toFiniteNumber(input.versusBattleWins),
       expLevel: toFiniteNumber(input.expLevel),
+      gamesChampion: extractGamesChampionTotal(input.achievements),
     };
 
     for (const key of COUNTER_KEYS) {
@@ -283,6 +308,7 @@ export function signalKeyLabel(key: SignalKey): string {
     defenseWins: "Defense Wins",
     versusBattleWins: "Versus Wins",
     expLevel: "XP Level",
+    gamesChampion: "Clan Games Points",
     achievements: "Achievements",
     troops: "Troops",
     heroes: "Heroes",

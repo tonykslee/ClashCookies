@@ -233,6 +233,89 @@ export async function listOpenWeightInputDeferments(input: {
   return { scope, rows };
 }
 
+/** Purpose: resolve open deferred weights for specific player tags with clan-scope precedence for read-only consumers. */
+export async function listOpenDeferredWeightsByPlayerTags(input: {
+  guildId: string;
+  clanTag: string | null;
+  playerTags: string[];
+}): Promise<Map<string, number>> {
+  const normalizedPlayerTags = [
+    ...new Set(
+      (input.playerTags ?? [])
+        .map((tag) => normalizePlayerTag(tag))
+        .filter((tag): tag is string => Boolean(tag)),
+    ),
+  ];
+  if (normalizedPlayerTags.length === 0) return new Map<string, number>();
+
+  const normalizedClanTag = normalizeTag(input.clanTag);
+  const clanScopeKey = buildDeferScopeKey(
+    input.guildId,
+    normalizedClanTag || null,
+  );
+  const guildScopeKey = buildDeferScopeKey(input.guildId, null);
+  const scopeKeys =
+    clanScopeKey === guildScopeKey
+      ? [clanScopeKey]
+      : [clanScopeKey, guildScopeKey];
+
+  const rows = await prisma.weightInputDeferment.findMany({
+    where: {
+      guildId: input.guildId,
+      status: "open",
+      scopeKey: { in: scopeKeys },
+      playerTag: { in: normalizedPlayerTags },
+    },
+    select: {
+      scopeKey: true,
+      playerTag: true,
+      deferredWeight: true,
+      createdAt: true,
+    },
+    orderBy: [{ createdAt: "desc" }],
+  });
+
+  const bestByTag = new Map<
+    string,
+    { deferredWeight: number; scopePriority: number; createdAtMs: number }
+  >();
+  for (const row of rows) {
+    const playerTag = normalizePlayerTag(row.playerTag);
+    if (!playerTag) continue;
+    const deferredWeight =
+      row.deferredWeight !== null &&
+      row.deferredWeight !== undefined &&
+      Number.isFinite(row.deferredWeight)
+        ? Math.max(0, Math.trunc(row.deferredWeight))
+        : null;
+    if (deferredWeight === null) continue;
+    const scopePriority = row.scopeKey === clanScopeKey ? 0 : 1;
+    const createdAtMs = row.createdAt.getTime();
+    const existing = bestByTag.get(playerTag);
+    if (!existing) {
+      bestByTag.set(playerTag, { deferredWeight, scopePriority, createdAtMs });
+      continue;
+    }
+    if (scopePriority < existing.scopePriority) {
+      bestByTag.set(playerTag, { deferredWeight, scopePriority, createdAtMs });
+      continue;
+    }
+    if (
+      scopePriority === existing.scopePriority &&
+      createdAtMs > existing.createdAtMs
+    ) {
+      bestByTag.set(playerTag, { deferredWeight, scopePriority, createdAtMs });
+    }
+  }
+
+  return new Map(
+    [...bestByTag.entries()].map(([playerTag, value]) => [
+      playerTag,
+      value.deferredWeight,
+    ]),
+  );
+}
+
 /** Purpose: resolve one open deferment by tag for command-driven state transitions. */
 export async function removeOpenWeightInputDeferment(input: {
   guildId: string;

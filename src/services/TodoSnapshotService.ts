@@ -1,5 +1,7 @@
 import { ClanWar } from "../generated/coc-api";
+import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
+import { buildPlayerSignalStateKey } from "./ActivitySignalService";
 import { resolveCurrentCwlSeasonKey } from "./CwlRegistryService";
 import { CoCService } from "./CoCService";
 import { normalizeClanTag, normalizePlayerTag } from "./PlayerLinkService";
@@ -67,6 +69,18 @@ type WarMemberCurrentRow = {
   attacks: number | null;
   sourceSyncedAt: Date;
 };
+
+type TodoGamesDerivedValues = {
+  points: number | null;
+  target: number | null;
+  baselineToPersist: number | null;
+};
+
+const TODO_GAMES_TARGET_POINTS = 4000;
+const TODO_GAMES_POINTS_MAX = 4000;
+const TODO_SNAPSHOT_WRITE_CHUNK_SIZE = 50;
+const TODO_CWL_SEASON_WRITE_CHUNK_SIZE = 100;
+const TODO_GAMES_BASELINE_SETTING_PREFIX = "todo_games_baseline";
 
 /** Purpose: keep all Todo snapshot reads/writes in one service boundary. */
 export class TodoSnapshotService {
@@ -207,13 +221,40 @@ export class TodoSnapshotService {
       return { playerCount: 0, updatedCount: 0 };
     }
 
-    const now = Number.isFinite(input.nowMs) ? new Date(Number(input.nowMs)) : new Date();
+    const now = Number.isFinite(input.nowMs)
+      ? new Date(Number(input.nowMs))
+      : new Date();
+    const nowMs = now.getTime();
+    const raidWindow = resolveRaidWeekendWindow(nowMs);
+    const gamesWindow = resolveClanGamesWindow(nowMs);
+    const gamesCycleKey = buildClanGamesCycleKey(gamesWindow.startMs);
+    const currentCwlSeason = resolveCurrentCwlSeasonKey(nowMs);
+
+    const signalStateKeyByTag = new Map(
+      normalizedTags.map((playerTag) => [
+        playerTag,
+        buildPlayerSignalStateKey(playerTag),
+      ]),
+    );
+    const gamesBaselineKeyByTag = new Map(
+      normalizedTags.map((playerTag) => [
+        playerTag,
+        buildTodoGamesBaselineSettingKey(gamesCycleKey, playerTag),
+      ]),
+    );
+    const settingKeys = [
+      ...new Set([
+        ...signalStateKeyByTag.values(),
+        ...gamesBaselineKeyByTag.values(),
+      ]),
+    ];
 
     const [
       existingSnapshots,
       playerCatalogRows,
       clanMemberRows,
       warMemberRows,
+      settingRows,
     ] = await Promise.all([
       this.listSnapshotsByPlayerTags({ playerTags: normalizedTags }),
       prisma.fwaPlayerCatalog.findMany({
@@ -238,6 +279,12 @@ export class TodoSnapshotService {
           sourceSyncedAt: true,
         },
       }),
+      settingKeys.length > 0
+        ? prisma.botSetting.findMany({
+            where: { key: { in: settingKeys } },
+            select: { key: true, value: true },
+          })
+        : Promise.resolve([]),
     ]);
 
     const existingByTag = new Map(existingSnapshots.map((row) => [row.playerTag, row]));
@@ -251,7 +298,25 @@ export class TodoSnapshotService {
     );
     const latestClanMemberByTag = pickLatestClanMemberByPlayerTag(clanMemberRows);
     const latestWarMemberByClanAndTag = pickLatestWarMemberByClanAndPlayer(warMemberRows);
-    const currentCwlSeason = resolveCurrentCwlSeasonKey(now.getTime());
+    const settingValueByKey = new Map(
+      settingRows.map((row) => [String(row.key), String(row.value)]),
+    );
+    const gamesChampionTotalByTag = new Map(
+      normalizedTags.map((playerTag) => [
+        playerTag,
+        parseGamesChampionTotalFromSignalState(
+          settingValueByKey.get(signalStateKeyByTag.get(playerTag) ?? ""),
+        ),
+      ]),
+    );
+    const gamesBaselineByTag = new Map(
+      normalizedTags.map((playerTag) => [
+        playerTag,
+        parseTodoGamesBaselineValue(
+          settingValueByKey.get(gamesBaselineKeyByTag.get(playerTag) ?? ""),
+        ),
+      ]),
+    );
 
     const clanTags = [
       ...new Set(
@@ -340,135 +405,193 @@ export class TodoSnapshotService {
       trackedCwlTags: cwlTrackedTagSet,
     });
 
-    const raidWindow = resolveRaidWeekendWindow(now.getTime());
-    const gamesWindow = resolveClanGamesWindow(now.getTime());
+    const gamesBaselineWriteByKey = new Map<string, string>();
+    const snapshotUpserts: Array<
+      Parameters<typeof prisma.todoPlayerSnapshot.upsert>[0]
+    > = [];
+    const cwlSeasonUpserts: Array<
+      Parameters<typeof prisma.cwlPlayerClanSeason.upsert>[0]
+    > = [];
 
-    let updatedCount = 0;
-    await prisma.$transaction(async (tx) => {
-      for (const playerTag of normalizedTags) {
-        const existing = existingByTag.get(playerTag);
-        const latestClanMember = latestClanMemberByTag.get(playerTag) ?? null;
-        const resolvedClanTag =
-          normalizeClanTag(latestClanMember?.clanTag ?? "") ||
-          normalizeClanTag(existing?.clanTag ?? "") ||
-          null;
-        const resolvedClanName =
-          (resolvedClanTag ? trackedClanNameByTag.get(resolvedClanTag) : null) ||
-          sanitizeDisplayText(existing?.clanName ?? "") ||
-          null;
-        const activeMappedCwlClanTag = activeCwlClanByPlayerTag.get(playerTag) ?? "";
-        const persistedMappedCwlClanTag = mappedCwlClanByPlayerTag.get(playerTag) ?? "";
-        const fallbackCwlClanTag =
-          resolvedClanTag && cwlTrackedTagSet.has(resolvedClanTag)
-            ? resolvedClanTag
-            : "";
-        const resolvedCwlClanTag =
-          normalizeClanTag(
-            activeMappedCwlClanTag || persistedMappedCwlClanTag || fallbackCwlClanTag,
-          ) || null;
-        const resolvedCwlClanName =
-          (resolvedCwlClanTag
-            ? cwlTrackedClanNameByTag.get(resolvedCwlClanTag) ||
-              trackedClanNameByTag.get(resolvedCwlClanTag)
-            : null) ||
-          sanitizeDisplayText(existing?.cwlClanName ?? "") ||
-          null;
-        const resolvedPlayerName =
-          sanitizeDisplayText(latestClanMember?.playerName ?? "") ||
-          latestCatalogNameByTag.get(playerTag) ||
-          sanitizeDisplayText(existing?.playerName ?? "") ||
-          playerTag;
+    for (const playerTag of normalizedTags) {
+      const existing = existingByTag.get(playerTag);
+      const latestClanMember = latestClanMemberByTag.get(playerTag) ?? null;
+      const resolvedClanTag =
+        normalizeClanTag(latestClanMember?.clanTag ?? "") ||
+        normalizeClanTag(existing?.clanTag ?? "") ||
+        null;
+      const resolvedClanName =
+        (resolvedClanTag ? trackedClanNameByTag.get(resolvedClanTag) : null) ||
+        sanitizeDisplayText(existing?.clanName ?? "") ||
+        null;
+      const activeMappedCwlClanTag =
+        activeCwlClanByPlayerTag.get(playerTag) ?? "";
+      const persistedMappedCwlClanTag =
+        mappedCwlClanByPlayerTag.get(playerTag) ?? "";
+      const fallbackCwlClanTag =
+        resolvedClanTag && cwlTrackedTagSet.has(resolvedClanTag)
+          ? resolvedClanTag
+          : "";
+      const resolvedCwlClanTag =
+        normalizeClanTag(
+          activeMappedCwlClanTag ||
+            persistedMappedCwlClanTag ||
+            fallbackCwlClanTag,
+        ) || null;
+      const resolvedCwlClanName =
+        (resolvedCwlClanTag
+          ? cwlTrackedClanNameByTag.get(resolvedCwlClanTag) ||
+            trackedClanNameByTag.get(resolvedCwlClanTag)
+          : null) ||
+        sanitizeDisplayText(existing?.cwlClanName ?? "") ||
+        null;
+      const resolvedPlayerName =
+        sanitizeDisplayText(latestClanMember?.playerName ?? "") ||
+        latestCatalogNameByTag.get(playerTag) ||
+        sanitizeDisplayText(existing?.playerName ?? "") ||
+        playerTag;
 
-        const currentWar = resolvedClanTag
-          ? currentWarByClanTag.get(resolvedClanTag) ?? null
-          : null;
-        const warActive = isWarStateActive(currentWar?.state ?? "");
-        const warPhase = warActive
-          ? normalizeWarPhaseLabel(currentWar?.state ?? "")
-          : null;
-        const warEndsAt = warActive ? resolveCurrentWarPhaseEnd(currentWar) : null;
+      const currentWar = resolvedClanTag
+        ? currentWarByClanTag.get(resolvedClanTag) ?? null
+        : null;
+      const warActive = isWarStateActive(currentWar?.state ?? "");
+      const warPhase = warActive
+        ? normalizeWarPhaseLabel(currentWar?.state ?? "")
+        : null;
+      const warEndsAt = warActive ? resolveCurrentWarPhaseEnd(currentWar) : null;
 
-        const warMemberKey = resolvedClanTag ? `${resolvedClanTag}:${playerTag}` : "";
-        const warMember = warMemberKey
-          ? latestWarMemberByClanAndTag.get(warMemberKey) ?? null
-          : null;
-        const warAttacksUsed = warActive
-          ? clampInt(warMember?.attacks, 0, 2)
+      const warMemberKey = resolvedClanTag ? `${resolvedClanTag}:${playerTag}` : "";
+      const warMember = warMemberKey
+        ? latestWarMemberByClanAndTag.get(warMemberKey) ?? null
+        : null;
+      const warAttacksUsed = warActive ? clampInt(warMember?.attacks, 0, 2) : 0;
+
+      const cwlWar = resolvedCwlClanTag
+        ? cwlWarByClan.get(resolvedCwlClanTag) ?? null
+        : null;
+      const cwlActive = isWarStateActive(cwlWar?.state ?? "");
+      const cwlPhase = cwlActive
+        ? normalizeWarPhaseLabel(cwlWar?.state ?? "")
+        : null;
+      const cwlEndsAt = cwlActive ? resolveCwlPhaseEnd(cwlWar) : null;
+      const cwlAttacksUsed = cwlActive
+        ? clampInt(findWarAttacksUsed(cwlWar, playerTag), 0, 1)
+        : !input.cocService && existing
+          ? clampInt(existing.cwlAttacksUsed, 0, 1)
           : 0;
 
-        const cwlWar = resolvedCwlClanTag
-          ? cwlWarByClan.get(resolvedCwlClanTag) ?? null
-          : null;
-        const cwlActive = isWarStateActive(cwlWar?.state ?? "");
-        const cwlPhase = cwlActive ? normalizeWarPhaseLabel(cwlWar?.state ?? "") : null;
-        const cwlEndsAt = cwlActive ? resolveCwlPhaseEnd(cwlWar) : null;
-        const cwlAttacksUsed = cwlActive
-          ? clampInt(findWarAttacksUsed(cwlWar, playerTag), 0, 1)
-          : !input.cocService && existing
-            ? clampInt(existing.cwlAttacksUsed, 0, 1)
-            : 0;
+      const derivedGames = deriveTodoGamesValues({
+        gamesWindowActive: gamesWindow.active,
+        gamesChampionTotal: gamesChampionTotalByTag.get(playerTag) ?? null,
+        baselineTotal: gamesBaselineByTag.get(playerTag) ?? null,
+      });
+      const gamesBaselineSettingKey = gamesBaselineKeyByTag.get(playerTag);
+      if (
+        gamesBaselineSettingKey &&
+        derivedGames.baselineToPersist !== null &&
+        settingValueByKey.get(gamesBaselineSettingKey) !==
+          String(derivedGames.baselineToPersist)
+      ) {
+        gamesBaselineWriteByKey.set(
+          gamesBaselineSettingKey,
+          String(derivedGames.baselineToPersist),
+        );
+      }
 
-        const data = {
-          playerName: resolvedPlayerName,
-          clanTag: resolvedClanTag,
-          clanName: resolvedClanName,
-          cwlClanTag: resolvedCwlClanTag,
-          cwlClanName: resolvedCwlClanName,
-          warActive,
-          warAttacksUsed,
-          warAttacksMax: 2,
-          warPhase,
-          warEndsAt,
-          cwlActive,
-          cwlAttacksUsed,
-          cwlAttacksMax: 1,
-          cwlPhase,
-          cwlEndsAt,
-          raidActive: raidWindow.active,
-          raidAttacksUsed: clampInt(existing?.raidAttacksUsed, 0, 6),
-          raidAttacksMax: 6,
-          raidEndsAt: new Date(raidWindow.endMs),
-          gamesActive: gamesWindow.active,
-          gamesPoints: toFiniteIntOrNull(existing?.gamesPoints),
-          gamesTarget: toFiniteIntOrNull(existing?.gamesTarget),
-          gamesEndsAt: new Date(gamesWindow.endMs),
-          lastUpdatedAt: now,
-        };
+      const data = {
+        playerName: resolvedPlayerName,
+        clanTag: resolvedClanTag,
+        clanName: resolvedClanName,
+        cwlClanTag: resolvedCwlClanTag,
+        cwlClanName: resolvedCwlClanName,
+        warActive,
+        warAttacksUsed,
+        warAttacksMax: 2,
+        warPhase,
+        warEndsAt,
+        cwlActive,
+        cwlAttacksUsed,
+        cwlAttacksMax: 1,
+        cwlPhase,
+        cwlEndsAt,
+        raidActive: raidWindow.active,
+        raidAttacksUsed: clampInt(existing?.raidAttacksUsed, 0, 6),
+        raidAttacksMax: 6,
+        raidEndsAt: new Date(raidWindow.endMs),
+        gamesActive: gamesWindow.active,
+        gamesPoints: derivedGames.points,
+        gamesTarget: derivedGames.target,
+        gamesEndsAt: new Date(gamesWindow.endMs),
+        lastUpdatedAt: now,
+      };
 
-        await tx.todoPlayerSnapshot.upsert({
-          where: { playerTag },
-          update: data,
-          create: {
-            playerTag,
-            ...data,
-          },
-        });
+      snapshotUpserts.push({
+        where: { playerTag },
+        update: data,
+        create: {
+          playerTag,
+          ...data,
+        },
+      });
 
-        if (resolvedCwlClanTag) {
-          await tx.cwlPlayerClanSeason.upsert({
-            where: {
-              season_playerTag: {
-                season: currentCwlSeason,
-                playerTag,
-              },
-            },
-            update: {
-              cwlClanTag: resolvedCwlClanTag,
-            },
-            create: {
+      if (resolvedCwlClanTag) {
+        cwlSeasonUpserts.push({
+          where: {
+            season_playerTag: {
               season: currentCwlSeason,
               playerTag,
-              cwlClanTag: resolvedCwlClanTag,
             },
-          });
-        }
-        updatedCount += 1;
+          },
+          update: {
+            cwlClanTag: resolvedCwlClanTag,
+          },
+          create: {
+            season: currentCwlSeason,
+            playerTag,
+            cwlClanTag: resolvedCwlClanTag,
+          },
+        });
       }
-    });
+    }
+
+    try {
+      await runChunkedWrites(
+        [...gamesBaselineWriteByKey.entries()],
+        TODO_SNAPSHOT_WRITE_CHUNK_SIZE,
+        async ([key, value]) => {
+          await prisma.botSetting.upsert({
+            where: { key },
+            update: { value },
+            create: { key, value },
+          });
+        },
+      );
+
+      await runChunkedWrites(
+        snapshotUpserts,
+        TODO_SNAPSHOT_WRITE_CHUNK_SIZE,
+        async (upsert) => {
+          await prisma.todoPlayerSnapshot.upsert(upsert);
+        },
+      );
+
+      await runChunkedWrites(
+        cwlSeasonUpserts,
+        TODO_CWL_SEASON_WRITE_CHUNK_SIZE,
+        async (upsert) => {
+          await prisma.cwlPlayerClanSeason.upsert(upsert);
+        },
+      );
+    } catch (err) {
+      console.error(
+        `[todo-snapshot] persist_failed players=${normalizedTags.length} snapshots=${snapshotUpserts.length} cwl=${cwlSeasonUpserts.length} baseline_writes=${gamesBaselineWriteByKey.size} error=${formatError(err)}`,
+      );
+      throw err;
+    }
 
     return {
       playerCount: normalizedTags.length,
-      updatedCount,
+      updatedCount: snapshotUpserts.length,
     };
   }
 }
@@ -504,6 +627,93 @@ function toFiniteIntOrNull(input: unknown): number | null {
   const value = Number(input);
   if (!Number.isFinite(value)) return null;
   return Math.trunc(value);
+}
+
+/** Purpose: parse persisted player-signal JSON and extract lifetime Clan Games total. */
+function parseGamesChampionTotalFromSignalState(raw: string | undefined): number | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as {
+      counters?: Record<string, unknown>;
+    };
+    return toFiniteIntOrNull(parsed?.counters?.gamesChampion);
+  } catch {
+    return null;
+  }
+}
+
+/** Purpose: parse one persisted Clan Games baseline value into a finite integer. */
+function parseTodoGamesBaselineValue(raw: string | undefined): number | null {
+  return toFiniteIntOrNull(raw);
+}
+
+/** Purpose: build one deterministic cycle key for Clan Games baseline ownership. */
+function buildClanGamesCycleKey(startMs: number): string {
+  return String(Math.trunc(startMs));
+}
+
+/** Purpose: build one deterministic BotSetting key for per-cycle player baseline values. */
+function buildTodoGamesBaselineSettingKey(cycleKey: string, playerTag: string): string {
+  return `${TODO_GAMES_BASELINE_SETTING_PREFIX}:${cycleKey}:${playerTag}`;
+}
+
+/** Purpose: derive snapshot-friendly Clan Games points using stored total + cycle baseline values. */
+function deriveTodoGamesValues(input: {
+  gamesWindowActive: boolean;
+  gamesChampionTotal: number | null;
+  baselineTotal: number | null;
+}): TodoGamesDerivedValues {
+  const championTotal = toFiniteIntOrNull(input.gamesChampionTotal);
+  const baselineTotal = toFiniteIntOrNull(input.baselineTotal);
+
+  if (!input.gamesWindowActive) {
+    return {
+      points: null,
+      target: null,
+      baselineToPersist: championTotal,
+    };
+  }
+
+  let resolvedBaseline = baselineTotal;
+  if (
+    championTotal !== null &&
+    (resolvedBaseline === null || championTotal < resolvedBaseline)
+  ) {
+    resolvedBaseline = championTotal;
+  }
+  if (resolvedBaseline === null) {
+    return {
+      points: clampInt(championTotal ?? 0, 0, TODO_GAMES_POINTS_MAX),
+      target: TODO_GAMES_TARGET_POINTS,
+      baselineToPersist: 0,
+    };
+  }
+
+  const resolvedTotal = championTotal ?? resolvedBaseline;
+  const points = clampInt(
+    resolvedTotal - resolvedBaseline,
+    0,
+    TODO_GAMES_POINTS_MAX,
+  );
+  return {
+    points,
+    target: TODO_GAMES_TARGET_POINTS,
+    baselineToPersist: resolvedBaseline,
+  };
+}
+
+/** Purpose: execute write operations in bounded chunks with parallel writes per chunk. */
+async function runChunkedWrites<T>(
+  items: T[],
+  chunkSize: number,
+  writeOne: (item: T) => Promise<void>,
+): Promise<void> {
+  if (items.length <= 0) return;
+  const safeChunkSize = Number.isFinite(chunkSize) && chunkSize > 0 ? Math.trunc(chunkSize) : 1;
+  for (let start = 0; start < items.length; start += safeChunkSize) {
+    const chunk = items.slice(start, start + safeChunkSize);
+    await Promise.all(chunk.map((item) => writeOne(item)));
+  }
 }
 
 /** Purpose: normalize many player tags in stable order with uniqueness and validation. */
