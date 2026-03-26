@@ -16,6 +16,7 @@ export const COMMAND_PERMISSION_TARGETS = [
   "inactive",
   "role-users",
   "accounts",
+  "todo",
   "link",
   "layout",
   "link:create",
