@@ -150,7 +150,7 @@ function buildReminderPanelComponents(input: {
     .setMinValues(1)
     .setMaxValues(1)
     .addOptions(
-      (["WAR_CWL", "RAIDS", "GAMES", "EVENT"] as ReminderType[]).map((type) => ({
+      (["WAR_CWL", "RAIDS", "GAMES"] as ReminderType[]).map((type) => ({
         label: type,
         value: type,
         description: `Reminder type ${type}`.slice(0, 100),
@@ -276,8 +276,7 @@ async function openReminderPanel(input: {
         if (
           nextType === ReminderType.WAR_CWL ||
           nextType === ReminderType.RAIDS ||
-          nextType === ReminderType.GAMES ||
-          nextType === ReminderType.EVENT
+          nextType === ReminderType.GAMES
         ) {
           await reminderService.setReminderType({
             reminderId: input.reminderId,
@@ -529,7 +528,7 @@ function buildReminderListRow(prefix: string, page: number, totalPages: number) 
 /** Purpose: compose and register `/reminders` command with create/list/edit admin flows. */
 export const Reminders: Command = {
   name: "reminders",
-  description: "Manage scheduled reminders for WAR/CWL, raids, games, and events",
+  description: "Manage scheduled reminders for WAR/CWL, raids, and games",
   options: [
     {
       name: "create",
@@ -545,7 +544,6 @@ export const Reminders: Command = {
             { name: "WAR_CWL", value: ReminderType.WAR_CWL },
             { name: "RAIDS", value: ReminderType.RAIDS },
             { name: "GAMES", value: ReminderType.GAMES },
-            { name: "EVENT", value: ReminderType.EVENT },
           ],
         },
         {
@@ -600,8 +598,7 @@ export const Reminders: Command = {
         const reminderType =
           typeRaw === ReminderType.WAR_CWL ||
           typeRaw === ReminderType.RAIDS ||
-          typeRaw === ReminderType.GAMES ||
-          typeRaw === ReminderType.EVENT
+          typeRaw === ReminderType.GAMES
             ? typeRaw
             : null;
         const timeLeftInput = interaction.options.getString("time_left", true);
