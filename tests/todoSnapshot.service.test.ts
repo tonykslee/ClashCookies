@@ -242,7 +242,7 @@ describe("TodoSnapshotService", () => {
     expect(prismaMock.botSetting.upsert).not.toHaveBeenCalled();
   });
 
-  it("initializes active-cycle baseline when missing and keeps points bounded", async () => {
+  it("initializes active-cycle baseline when missing and writes zero points for first observation", async () => {
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
       {
         playerTag: "#PYLQ0289",
@@ -271,16 +271,163 @@ describe("TodoSnapshotService", () => {
       expect.objectContaining({
         update: expect.objectContaining({
           gamesActive: true,
-          gamesPoints: 4000,
+          gamesPoints: 0,
           gamesTarget: 4000,
         }),
       }),
     );
     expect(prismaMock.botSetting.upsert).toHaveBeenCalledWith({
       where: { key: "todo_games_baseline:1774166400000:#PYLQ0289" },
-      update: { value: "0" },
-      create: { key: "todo_games_baseline:1774166400000:#PYLQ0289", value: "0" },
+      update: { value: "20000" },
+      create: {
+        key: "todo_games_baseline:1774166400000:#PYLQ0289",
+        value: "20000",
+      },
     });
+  });
+
+  it("derives active-cycle points from initialized baseline on later observations", async () => {
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        clanTag: "#PQL0289",
+        playerName: "Alpha",
+        sourceSyncedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.currentWar.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+    prismaMock.botSetting.findMany
+      .mockResolvedValueOnce([
+        {
+          key: "player_signal_state:#PYLQ0289",
+          value: JSON.stringify({ counters: { gamesChampion: 20000 } }),
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          key: "player_signal_state:#PYLQ0289",
+          value: JSON.stringify({ counters: { gamesChampion: 20350 } }),
+        },
+        {
+          key: "todo_games_baseline:1774166400000:#PYLQ0289",
+          value: "20000",
+        },
+      ]);
+
+    await todoSnapshotService.refreshSnapshotsForPlayerTags({
+      playerTags: ["#PYLQ0289"],
+      nowMs: Date.UTC(2026, 2, 26, 12, 0, 0, 0),
+    });
+    await todoSnapshotService.refreshSnapshotsForPlayerTags({
+      playerTags: ["#PYLQ0289"],
+      nowMs: Date.UTC(2026, 2, 26, 12, 5, 0, 0),
+    });
+
+    const firstSnapshotCall = prismaMock.todoPlayerSnapshot.upsert.mock.calls[0]?.[0];
+    const secondSnapshotCall = prismaMock.todoPlayerSnapshot.upsert.mock.calls[1]?.[0];
+    expect(firstSnapshotCall?.update.gamesPoints).toBe(0);
+    expect(secondSnapshotCall?.update.gamesPoints).toBe(350);
+    expect(prismaMock.botSetting.upsert).toHaveBeenCalledTimes(1);
+    expect(prismaMock.botSetting.upsert).toHaveBeenCalledWith({
+      where: { key: "todo_games_baseline:1774166400000:#PYLQ0289" },
+      update: { value: "20000" },
+      create: {
+        key: "todo_games_baseline:1774166400000:#PYLQ0289",
+        value: "20000",
+      },
+    });
+  });
+
+  it("resets baseline when observed total drops below stored baseline without inflating points", async () => {
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        clanTag: "#PQL0289",
+        playerName: "Alpha",
+        sourceSyncedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.currentWar.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+    prismaMock.botSetting.findMany.mockResolvedValue([
+      {
+        key: "player_signal_state:#PYLQ0289",
+        value: JSON.stringify({ counters: { gamesChampion: 11900 } }),
+      },
+      {
+        key: "todo_games_baseline:1774166400000:#PYLQ0289",
+        value: "12000",
+      },
+    ]);
+
+    await todoSnapshotService.refreshSnapshotsForPlayerTags({
+      playerTags: ["#PYLQ0289"],
+      nowMs: Date.UTC(2026, 2, 26, 12, 0, 0, 0),
+    });
+
+    expect(prismaMock.todoPlayerSnapshot.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          gamesActive: true,
+          gamesPoints: 0,
+          gamesTarget: 4000,
+        }),
+      }),
+    );
+    expect(prismaMock.botSetting.upsert).toHaveBeenCalledWith({
+      where: { key: "todo_games_baseline:1774166400000:#PYLQ0289" },
+      update: { value: "11900" },
+      create: {
+        key: "todo_games_baseline:1774166400000:#PYLQ0289",
+        value: "11900",
+      },
+    });
+  });
+
+  it("caps derived active-cycle points at the completion target only after baseline subtraction", async () => {
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        clanTag: "#PQL0289",
+        playerName: "Alpha",
+        sourceSyncedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.currentWar.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+    prismaMock.botSetting.findMany.mockResolvedValue([
+      {
+        key: "player_signal_state:#PYLQ0289",
+        value: JSON.stringify({ counters: { gamesChampion: 19050 } }),
+      },
+      {
+        key: "todo_games_baseline:1774166400000:#PYLQ0289",
+        value: "15000",
+      },
+    ]);
+
+    await todoSnapshotService.refreshSnapshotsForPlayerTags({
+      playerTags: ["#PYLQ0289"],
+      nowMs: Date.UTC(2026, 2, 26, 12, 0, 0, 0),
+    });
+
+    expect(prismaMock.todoPlayerSnapshot.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          gamesActive: true,
+          gamesPoints: 4000,
+          gamesTarget: 4000,
+        }),
+      }),
+    );
+    expect(prismaMock.botSetting.upsert).not.toHaveBeenCalled();
   });
 
   it("stores upcoming-cycle baseline and clears games points/target when games is not active", async () => {
