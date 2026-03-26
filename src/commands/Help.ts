@@ -274,6 +274,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     summary: "Show todo progress across all of your linked player tags.",
     details: [
       "Resolves all player tags linked to your Discord account from local PlayerLink data.",
+      "Reads precomputed todo snapshots (background-refreshed) for fast command-time rendering.",
       "Always builds WAR, CWL, RAIDS, and GAMES pages in one response.",
       "`type` controls only the initial page shown; use page buttons to switch categories without rerunning.",
       "Each page includes every linked player, including neutral status rows for players without active event data.",

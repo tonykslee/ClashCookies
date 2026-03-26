@@ -64,6 +64,37 @@ model PlayerLink {
   updatedAt     DateTime @updatedAt
 }
 
+model TodoPlayerSnapshot {
+  playerTag       String   @id
+  playerName      String
+  clanTag         String?
+  clanName        String?
+  warActive       Boolean  @default(false)
+  warAttacksUsed  Int      @default(0)
+  warAttacksMax   Int      @default(2)
+  warPhase        String?
+  warEndsAt       DateTime?
+  cwlActive       Boolean  @default(false)
+  cwlAttacksUsed  Int      @default(0)
+  cwlAttacksMax   Int      @default(1)
+  cwlPhase        String?
+  cwlEndsAt       DateTime?
+  raidActive      Boolean  @default(false)
+  raidAttacksUsed Int      @default(0)
+  raidAttacksMax  Int      @default(6)
+  raidEndsAt      DateTime?
+  gamesActive     Boolean  @default(false)
+  gamesPoints     Int?
+  gamesTarget     Int?
+  gamesEndsAt     DateTime?
+  lastUpdatedAt   DateTime @default(now())
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([clanTag])
+  @@index([updatedAt])
+}
+
 enum KickListSource {
   AUTO_INACTIVE
   MANUAL

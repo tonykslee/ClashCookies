@@ -55,6 +55,7 @@ The project is designed as a maintainable application, not a one-off bot script:
 - `/force mail update` reconciles tracked references before in-place refresh and resumes/stops refresh tracking based on validity.
 - Match state rendering supports deterministic active-war inference and explicit confirmation persistence for BL/MM/FWA decisions.
 - Sync validation uses war-scoped persisted snapshots (`ClanPointsSync`) with explicit force-sync paths for refresh-scrape operations.
+- `/todo` renders from precomputed per-player snapshots (`TodoPlayerSnapshot`) so high-traffic reads stay fast and avoid live per-player multi-source aggregation on command execution.
 - War-mail and match embeds use consistent effective-state color mapping for BL/MM/FWA/unresolved states.
 - Notification and posting flows include operational logging controls (`/bot-logs`, `/say`, telemetry report + schedule commands).
 - FWA stats and operations commands include weight-age/health tooling, compliance checks, and layout management.
