@@ -98,6 +98,90 @@ model TodoPlayerSnapshot {
   @@index([updatedAt])
 }
 
+enum ReminderType {
+  WAR_CWL
+  RAIDS
+  GAMES
+  EVENT
+}
+
+enum ReminderTargetClanType {
+  FWA
+  CWL
+}
+
+enum ReminderDispatchStatus {
+  SENT
+  FAILED
+}
+
+model Reminder {
+  id              String             @id @default(cuid())
+  guildId         String
+  type            ReminderType
+  channelId       String
+  isEnabled       Boolean            @default(false)
+  createdByUserId String
+  updatedByUserId String
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  times           ReminderTimeOffset[]
+  targetClans     ReminderTargetClan[]
+  fireLogs        ReminderFireLog[]
+
+  @@index([guildId, type])
+  @@index([guildId, isEnabled])
+  @@index([createdAt])
+}
+
+model ReminderTimeOffset {
+  id            Int      @id @default(autoincrement())
+  reminderId    String
+  offsetSeconds Int
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  reminder      Reminder @relation(fields: [reminderId], references: [id], onDelete: Cascade)
+
+  @@unique([reminderId, offsetSeconds])
+  @@index([offsetSeconds])
+}
+
+model ReminderTargetClan {
+  id         Int                    @id @default(autoincrement())
+  reminderId String
+  clanTag    String
+  clanType   ReminderTargetClanType
+  createdAt  DateTime               @default(now())
+  updatedAt  DateTime               @updatedAt
+  reminder   Reminder               @relation(fields: [reminderId], references: [id], onDelete: Cascade)
+
+  @@unique([reminderId, clanTag, clanType])
+  @@index([clanTag])
+  @@index([clanType, clanTag])
+}
+
+model ReminderFireLog {
+  id             String               @id @default(cuid())
+  reminderId     String
+  guildId        String
+  clanTag        String
+  reminderType   ReminderType
+  offsetSeconds  Int
+  eventIdentity  String
+  dedupeKey      String               @unique
+  channelId      String
+  dispatchStatus ReminderDispatchStatus @default(SENT)
+  messageId      String?
+  errorMessage   String?
+  dispatchedAt   DateTime             @default(now())
+  createdAt      DateTime             @default(now())
+  reminder       Reminder             @relation(fields: [reminderId], references: [id], onDelete: Cascade)
+
+  @@index([reminderId, dispatchedAt])
+  @@index([guildId, dispatchedAt])
+  @@index([guildId, clanTag, dispatchedAt])
+}
+
 model CwlTrackedClan {
   id        Int      @id @default(autoincrement())
   season    String

@@ -11,6 +11,7 @@
 
 ## Default Administrator-Only Targets
 - `/tracked-clan configure`, `/tracked-clan cwl-tags`, `/tracked-clan remove`
+- `/reminders`, `/reminders create`, `/reminders list`, `/reminders edit`
 - `/permission add`, `/permission remove`
 - `/sheet link`, `/sheet unlink`, `/sheet show`, `/sheet refresh`
 - `/kick-list build`, `/kick-list add`, `/kick-list remove`, `/kick-list show`, `/kick-list clear`
