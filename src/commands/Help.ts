@@ -270,6 +270,22 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/accounts visibility:public",
     ],
   },
+  todo: {
+    summary: "Show todo progress across all of your linked player tags.",
+    details: [
+      "Resolves all player tags linked to your Discord account from local PlayerLink data.",
+      "Always builds WAR, CWL, RAIDS, and GAMES pages in one response.",
+      "`type` controls only the initial page shown; use page buttons to switch categories without rerunning.",
+      "Each page includes every linked player, including neutral status rows for players without active event data.",
+      "If you have no linked tags, the command returns a clear private error and suggests `/link create`.",
+    ],
+    examples: [
+      "/todo type:WAR",
+      "/todo type:CWL",
+      "/todo type:RAIDS",
+      "/todo type:GAMES",
+    ],
+  },
   link: {
     summary: "Manage local Discord-player links using PlayerLink.",
     details: [

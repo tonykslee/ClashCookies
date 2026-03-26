@@ -2,6 +2,7 @@ import { AxiosError } from "axios";
 import {
   ClanWarLogEntry,
   ClanWar,
+  ClanWarLeagueGroup,
   ClansApi,
   Configuration,
   Player,
@@ -150,6 +151,100 @@ export class CoCService {
         timeout: failure.timeout,
       });
       return [];
+    }
+  }
+
+  /** Purpose: get clan war league group for a clan. */
+  async getClanWarLeagueGroup(tag: string): Promise<ClanWarLeagueGroup | null> {
+    const clanTag = tag.startsWith("#") ? tag : `#${tag}`;
+    const startedAtMs = Date.now();
+    try {
+      const { data } = await this.clansApi.getClanWarLeagueGroup(clanTag);
+      recordFetchEvent({
+        namespace: "coc",
+        operation: "getClanWarLeagueGroup",
+        source: "api",
+        detail: `tag=${clanTag}`,
+        durationMs: Date.now() - startedAtMs,
+        status: "success",
+      });
+      return data;
+    } catch (err) {
+      const status = (err as AxiosError)?.response?.status;
+      const failure = toFailureTelemetry(err);
+      if (status === 404) {
+        recordFetchEvent({
+          namespace: "coc",
+          operation: "getClanWarLeagueGroup",
+          source: "api",
+          detail: `tag=${clanTag} status=404`,
+          durationMs: Date.now() - startedAtMs,
+          status: "failure",
+          errorCategory: "validation",
+          errorCode: "HTTP_404",
+        });
+        return null;
+      }
+      recordFetchEvent({
+        namespace: "coc",
+        operation: "getClanWarLeagueGroup",
+        source: "api",
+        detail: `tag=${clanTag} status=${status ?? "unknown"} result=error`,
+        durationMs: Date.now() - startedAtMs,
+        status: "failure",
+        errorCategory: failure.errorCategory,
+        errorCode: failure.errorCode,
+        timeout: failure.timeout,
+      });
+      if (status) throw new Error(`CoC API error ${status}`);
+      throw err;
+    }
+  }
+
+  /** Purpose: get one clan war league war by war tag. */
+  async getClanWarLeagueWar(warTag: string): Promise<ClanWar | null> {
+    const normalizedWarTag = warTag.startsWith("#") ? warTag : `#${warTag}`;
+    const startedAtMs = Date.now();
+    try {
+      const { data } = await this.clansApi.getClanWarLeagueWar(normalizedWarTag);
+      recordFetchEvent({
+        namespace: "coc",
+        operation: "getClanWarLeagueWar",
+        source: "api",
+        detail: `warTag=${normalizedWarTag}`,
+        durationMs: Date.now() - startedAtMs,
+        status: "success",
+      });
+      return data;
+    } catch (err) {
+      const status = (err as AxiosError)?.response?.status;
+      const failure = toFailureTelemetry(err);
+      if (status === 404) {
+        recordFetchEvent({
+          namespace: "coc",
+          operation: "getClanWarLeagueWar",
+          source: "api",
+          detail: `warTag=${normalizedWarTag} status=404`,
+          durationMs: Date.now() - startedAtMs,
+          status: "failure",
+          errorCategory: "validation",
+          errorCode: "HTTP_404",
+        });
+        return null;
+      }
+      recordFetchEvent({
+        namespace: "coc",
+        operation: "getClanWarLeagueWar",
+        source: "api",
+        detail: `warTag=${normalizedWarTag} status=${status ?? "unknown"} result=error`,
+        durationMs: Date.now() - startedAtMs,
+        status: "failure",
+        errorCategory: failure.errorCategory,
+        errorCode: failure.errorCode,
+        timeout: failure.timeout,
+      });
+      if (status) throw new Error(`CoC API error ${status}`);
+      throw err;
     }
   }
 
