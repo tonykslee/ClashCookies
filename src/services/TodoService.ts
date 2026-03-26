@@ -1,36 +1,47 @@
-import { ClanWar } from "../generated/coc-api";
 import { CoCService } from "./CoCService";
 import {
   listPlayerLinksForDiscordUser,
-  normalizeClanTag,
   normalizePlayerTag,
 } from "./PlayerLinkService";
-import { parseCocTime } from "./war-events/core";
+import {
+  todoSnapshotService,
+  type TodoSnapshotRecord,
+} from "./TodoSnapshotService";
 
 export const TODO_TYPES = ["WAR", "CWL", "RAIDS", "GAMES"] as const;
 export type TodoType = (typeof TODO_TYPES)[number];
-
-type TodoPlayerContext = {
-  playerTag: string;
-  playerName: string;
-  clanTag: string | null;
-  clanName: string | null;
-};
-
-type TodoWindow = {
-  active: boolean;
-  startMs: number;
-  endMs: number;
-};
 
 export type TodoPagesResult = {
   linkedPlayerCount: number;
   pages: Record<TodoType, string>;
 };
 
-const DISCORD_DESCRIPTION_LIMIT = 4096;
+type TodoRenderRow = {
+  playerTag: string;
+  playerName: string;
+  clanTag: string | null;
+  clanName: string | null;
+  snapshot: TodoSnapshotRecord | null;
+  missingSnapshot: boolean;
+  staleSnapshot: boolean;
+};
 
-/** Purpose: normalize `/todo type` input into a safe enum value. */
+type CachedTodoRender = {
+  expiresAtMs: number;
+  pages: TodoPagesResult;
+};
+
+const DISCORD_DESCRIPTION_LIMIT = 4096;
+const TODO_RENDER_CACHE_TTL_MS = 30_000;
+const TODO_STALE_ACTIVE_WAR_MS = 2 * 60 * 1000;
+const TODO_STALE_ACTIVE_CWL_MS = 5 * 60 * 1000;
+const TODO_STALE_ACTIVE_RAID_MS = 15 * 60 * 1000;
+const TODO_STALE_ACTIVE_GAMES_MS = 30 * 60 * 1000;
+const TODO_STALE_IDLE_MS = 4 * 60 * 60 * 1000;
+const TODO_DEFAULT_GAMES_TARGET = 4000;
+const todoRenderCacheByKey = new Map<string, CachedTodoRender>();
+
+/** Purpose: normalize `/todo type` input into one safe enum value. */
 export function normalizeTodoType(input: string | null | undefined): TodoType {
   const value = String(input ?? "").trim().toUpperCase();
   if (
@@ -44,16 +55,21 @@ export function normalizeTodoType(input: string | null | undefined): TodoType {
   return "WAR";
 }
 
-/** Purpose: build all todo pages for one Discord user using linked player tags. */
+/** Purpose: clear in-memory todo render cache between isolated tests. */
+export function resetTodoRenderCacheForTest(): void {
+  todoRenderCacheByKey.clear();
+}
+
+/** Purpose: build snapshot-backed todo pages for one user with cheap cache re-use. */
 export async function buildTodoPagesForUser(input: {
   discordUserId: string;
-  cocService: CoCService;
+  cocService?: CoCService;
   nowMs?: number;
 }): Promise<TodoPagesResult> {
   const links = await listPlayerLinksForDiscordUser({
     discordUserId: input.discordUserId,
   });
-  if (links.length === 0) {
+  if (links.length <= 0) {
     return {
       linkedPlayerCount: 0,
       pages: {
@@ -66,178 +82,132 @@ export async function buildTodoPagesForUser(input: {
   }
 
   const linkedTags = links.map((row) => row.playerTag);
-  const players = await resolveTodoPlayers(input.cocService, linkedTags);
-  const clanTags = [
-    ...new Set(
-      players
-        .map((player) => player.clanTag)
-        .filter((value): value is string => Boolean(value)),
-    ),
-  ];
-
-  const [warByClanTag, cwlByClanTag] = await Promise.all([
-    loadCurrentWarsByClan(input.cocService, clanTags),
-    loadActiveCwlWarsByClan(input.cocService, clanTags),
-  ]);
+  const snapshotVersion = await todoSnapshotService.getSnapshotVersion({
+    playerTags: linkedTags,
+  });
+  const cacheKey = buildTodoRenderCacheKey({
+    discordUserId: input.discordUserId,
+    linkedTags,
+    snapshotVersion,
+  });
   const nowMs = Number.isFinite(input.nowMs) ? Number(input.nowMs) : Date.now();
-  const raidWindow = resolveRaidWeekendWindow(nowMs);
-  const clanGamesWindow = resolveClanGamesWindow(nowMs);
 
-  const warRows = players.map((player) =>
-    formatTodoRow(player, getWarStatus(player, warByClanTag.get(player.clanTag ?? ""))),
-  );
-  const cwlRows = players.map((player) =>
-    formatTodoRow(player, getCwlStatus(player, cwlByClanTag.get(player.clanTag ?? ""))),
-  );
-  const raidRows = players.map((player) =>
-    formatTodoRow(player, getRaidStatus(raidWindow)),
-  );
-  const gamesRows = players.map((player) =>
-    formatTodoRow(player, getClanGamesStatus(clanGamesWindow)),
-  );
-
-  return {
-    linkedPlayerCount: players.length,
-    pages: {
-      WAR: buildTodoPageDescription({
-        linkedPlayerCount: players.length,
-        heading: "WAR",
-        rows: warRows,
-      }),
-      CWL: buildTodoPageDescription({
-        linkedPlayerCount: players.length,
-        heading: "CWL",
-        rows: cwlRows,
-      }),
-      RAIDS: buildTodoPageDescription({
-        linkedPlayerCount: players.length,
-        heading: "RAIDS",
-        rows: raidRows,
-      }),
-      GAMES: buildTodoPageDescription({
-        linkedPlayerCount: players.length,
-        heading: "GAMES",
-        rows: gamesRows,
-      }),
-    },
-  };
-}
-
-/** Purpose: load normalized player context for all linked tags. */
-async function resolveTodoPlayers(
-  cocService: CoCService,
-  linkedTags: string[],
-): Promise<TodoPlayerContext[]> {
-  const profiles = await Promise.all(
-    linkedTags.map(async (playerTag) => {
-      const profile = await cocService.getPlayerRaw(playerTag).catch(() => null);
-      const normalizedTag = normalizePlayerTag(playerTag);
-      const playerName = sanitizeDisplayText(String(profile?.name ?? "")) || normalizedTag;
-      const clanTagRaw = normalizeClanTag(String(profile?.clan?.tag ?? ""));
-      const clanTag = clanTagRaw || null;
-      const clanName =
-        sanitizeDisplayText(String(profile?.clan?.name ?? "")) || null;
-      return {
-        playerTag: normalizedTag,
-        playerName,
-        clanTag,
-        clanName,
-      } satisfies TodoPlayerContext;
-    }),
-  );
-
-  return profiles;
-}
-
-/** Purpose: bulk-load current-war snapshots for all clans in one command render. */
-async function loadCurrentWarsByClan(
-  cocService: CoCService,
-  clanTags: string[],
-): Promise<Map<string, ClanWar | null>> {
-  const entries = await Promise.all(
-    clanTags.map(async (clanTag) => {
-      const war = await cocService.getCurrentWar(clanTag).catch(() => null);
-      return [clanTag, war] as const;
-    }),
-  );
-  return new Map(entries);
-}
-
-/** Purpose: bulk-load active CWL wars for all clans in one command render. */
-async function loadActiveCwlWarsByClan(
-  cocService: CoCService,
-  clanTags: string[],
-): Promise<Map<string, ClanWar | null>> {
-  const cwlWarByTag = new Map<string, ClanWar | null>();
-  const entries = await Promise.all(
-    clanTags.map(async (clanTag) => {
-      const war = await resolveActiveCwlWarForClan({
-        cocService,
-        clanTag,
-        cwlWarByTag,
-      });
-      return [clanTag, war] as const;
-    }),
-  );
-  return new Map(entries);
-}
-
-/** Purpose: resolve one clan's currently active CWL war, if present. */
-async function resolveActiveCwlWarForClan(input: {
-  cocService: CoCService;
-  clanTag: string;
-  cwlWarByTag: Map<string, ClanWar | null>;
-}): Promise<ClanWar | null> {
-  const group = await input.cocService
-    .getClanWarLeagueGroup(input.clanTag)
-    .catch(() => null);
-  if (!group || !isCwlGroupActive(group.state)) return null;
-
-  const rounds = Array.isArray(group.rounds) ? [...group.rounds].reverse() : [];
-  for (const round of rounds) {
-    const warTags = [
-      ...new Set(
-        (Array.isArray(round?.warTags) ? round.warTags : [])
-          .map((warTag) => String(warTag ?? "").trim())
-          .filter((warTag) => warTag.length > 0 && warTag !== "#0"),
-      ),
-    ];
-    if (warTags.length === 0) continue;
-
-    const wars = await Promise.all(
-      warTags.map(async (warTag) => {
-        if (input.cwlWarByTag.has(warTag)) {
-          return input.cwlWarByTag.get(warTag) ?? null;
-        }
-        const war = await input.cocService
-          .getClanWarLeagueWar(warTag)
-          .catch(() => null);
-        input.cwlWarByTag.set(warTag, war);
-        return war;
-      }),
-    );
-
-    const activeWar = wars.find((war) =>
-      isWarActiveForClan(war, input.clanTag),
-    );
-    if (activeWar) return activeWar;
+  pruneExpiredTodoRenderCache(nowMs);
+  const cached = todoRenderCacheByKey.get(cacheKey);
+  if (cached && cached.expiresAtMs > nowMs) {
+    return cached.pages;
   }
 
-  return null;
+  const snapshotRows = await todoSnapshotService.listSnapshotsByPlayerTags({
+    playerTags: linkedTags,
+  });
+  const snapshotByTag = new Map(snapshotRows.map((row) => [row.playerTag, row]));
+
+  const renderRows = linkedTags.map((playerTag) => {
+    const normalizedTag = normalizePlayerTag(playerTag);
+    const snapshot = snapshotByTag.get(normalizedTag) ?? null;
+    const missingSnapshot = snapshot === null;
+    const staleSnapshot = snapshot ? isSnapshotStale(snapshot, nowMs) : false;
+    return {
+      playerTag: normalizedTag,
+      playerName: snapshot?.playerName ?? normalizedTag,
+      clanTag: snapshot?.clanTag ?? null,
+      clanName: snapshot?.clanName ?? null,
+      snapshot,
+      missingSnapshot,
+      staleSnapshot,
+    } satisfies TodoRenderRow;
+  });
+
+  const missingOrStaleTags = renderRows
+    .filter((row) => row.missingSnapshot || row.staleSnapshot)
+    .map((row) => row.playerTag);
+  if (missingOrStaleTags.length > 0) {
+    void todoSnapshotService
+      .refreshSnapshotsForPlayerTags({
+        playerTags: missingOrStaleTags,
+      })
+      .catch(() => undefined);
+  }
+
+  const pages = {
+    linkedPlayerCount: linkedTags.length,
+    pages: {
+      WAR: buildTodoPageDescription({
+        heading: "WAR",
+        linkedPlayerCount: linkedTags.length,
+        rows: renderRows.map((row) => formatTodoRow(row, getWarStatus(row))),
+      }),
+      CWL: buildTodoPageDescription({
+        heading: "CWL",
+        linkedPlayerCount: linkedTags.length,
+        rows: renderRows.map((row) => formatTodoRow(row, getCwlStatus(row))),
+      }),
+      RAIDS: buildTodoPageDescription({
+        heading: "RAIDS",
+        linkedPlayerCount: linkedTags.length,
+        rows: renderRows.map((row) => formatTodoRow(row, getRaidStatus(row))),
+      }),
+      GAMES: buildTodoPageDescription({
+        heading: "GAMES",
+        linkedPlayerCount: linkedTags.length,
+        rows: renderRows.map((row) => formatTodoRow(row, getGamesStatus(row))),
+      }),
+    },
+  } satisfies TodoPagesResult;
+
+  todoRenderCacheByKey.set(cacheKey, {
+    expiresAtMs: nowMs + TODO_RENDER_CACHE_TTL_MS,
+    pages,
+  });
+  return pages;
 }
 
-/** Purpose: format one todo row with required player identity context. */
-function formatTodoRow(player: TodoPlayerContext, status: string): string {
+/** Purpose: build one compact, user-scoped render cache key tied to linked tags + snapshot version. */
+function buildTodoRenderCacheKey(input: {
+  discordUserId: string;
+  linkedTags: string[];
+  snapshotVersion: { snapshotCount: number; maxUpdatedAtMs: number };
+}): string {
+  return [
+    input.discordUserId,
+    input.linkedTags.join(","),
+    String(input.snapshotVersion.snapshotCount),
+    String(input.snapshotVersion.maxUpdatedAtMs),
+  ].join("|");
+}
+
+/** Purpose: drop expired todo render cache entries to keep memory bounded. */
+function pruneExpiredTodoRenderCache(nowMs: number): void {
+  for (const [key, value] of todoRenderCacheByKey.entries()) {
+    if (value.expiresAtMs <= nowMs) {
+      todoRenderCacheByKey.delete(key);
+    }
+  }
+}
+
+/** Purpose: classify snapshot freshness using per-type priority windows. */
+function isSnapshotStale(snapshot: TodoSnapshotRecord, nowMs: number): boolean {
+  const ageMs = Math.max(0, nowMs - snapshot.lastUpdatedAt.getTime());
+  if (snapshot.warActive) return ageMs > TODO_STALE_ACTIVE_WAR_MS;
+  if (snapshot.cwlActive) return ageMs > TODO_STALE_ACTIVE_CWL_MS;
+  if (snapshot.raidActive) return ageMs > TODO_STALE_ACTIVE_RAID_MS;
+  if (snapshot.gamesActive) return ageMs > TODO_STALE_ACTIVE_GAMES_MS;
+  return ageMs > TODO_STALE_IDLE_MS;
+}
+
+/** Purpose: format one todo row with stable identity context (player + tag + optional clan). */
+function formatTodoRow(row: TodoRenderRow, status: string): string {
   const clanSuffix =
-    player.clanTag && player.clanName
-      ? ` - ${player.clanName} (${player.clanTag})`
-      : player.clanTag
-        ? ` - ${player.clanTag}`
+    row.clanTag && row.clanName
+      ? ` - ${row.clanName} (${row.clanTag})`
+      : row.clanTag
+        ? ` - ${row.clanTag}`
         : "";
-  return `- ${player.playerName} (${player.playerTag})${clanSuffix}: ${status}`;
+  return `- ${row.playerName} (${row.playerTag})${clanSuffix}: ${status}`;
 }
 
-/** Purpose: build one bounded embed description for a todo category page. */
+/** Purpose: build one bounded embed description block for a todo page. */
 function buildTodoPageDescription(input: {
   heading: TodoType;
   linkedPlayerCount: number;
@@ -255,176 +225,115 @@ function buildTodoPageDescription(input: {
   return `${full.slice(0, DISCORD_DESCRIPTION_LIMIT - suffix.length)}${suffix}`;
 }
 
-/** Purpose: compute WAR page status text for one player. */
-function getWarStatus(player: TodoPlayerContext, war: ClanWar | null | undefined): string {
-  if (!player.clanTag) return "war attacks: 0/2 - no clan";
-  if (!war || !isWarStateActive(war.state)) {
-    return "war attacks: 0/2 - not in active war";
+/** Purpose: build WAR status text from snapshot data with stale/unavailable fallback labels. */
+function getWarStatus(row: TodoRenderRow): string {
+  if (row.missingSnapshot || !row.snapshot) {
+    return "war attacks: 0/2 - snapshot unavailable";
   }
-  const member = findWarMemberByTag(war, player.playerTag);
-  const attacksUsed = Math.max(
+
+  const used = clampInt(row.snapshot.warAttacksUsed, 0, row.snapshot.warAttacksMax || 2);
+  const max = Math.max(1, clampInt(row.snapshot.warAttacksMax, 1, 2));
+  const staleSuffix = row.staleSnapshot ? " - stale snapshot" : "";
+
+  if (!row.snapshot.warActive) {
+    return `war attacks: ${used}/${max} - not in active war${staleSuffix}`;
+  }
+
+  const phase = sanitizeStatusText(row.snapshot.warPhase) || "active phase";
+  if (row.snapshot.warEndsAt) {
+    const unix = Math.floor(row.snapshot.warEndsAt.getTime() / 1000);
+    return `war attacks: ${used}/${max} - ${phase} ends <t:${unix}:R>${staleSuffix}`;
+  }
+  return `war attacks: ${used}/${max} - ${phase}${staleSuffix}`;
+}
+
+/** Purpose: build CWL status text from snapshot data with stale/unavailable fallback labels. */
+function getCwlStatus(row: TodoRenderRow): string {
+  if (row.missingSnapshot || !row.snapshot) {
+    return "CWL attacks: 0/1 - snapshot unavailable";
+  }
+
+  const used = clampInt(row.snapshot.cwlAttacksUsed, 0, row.snapshot.cwlAttacksMax || 1);
+  const max = Math.max(1, clampInt(row.snapshot.cwlAttacksMax, 1, 1));
+  const staleSuffix = row.staleSnapshot ? " - stale snapshot" : "";
+
+  if (!row.snapshot.cwlActive) {
+    return `CWL attacks: ${used}/${max} - not in active CWL war${staleSuffix}`;
+  }
+
+  const phase = sanitizeStatusText(row.snapshot.cwlPhase) || "active phase";
+  if (row.snapshot.cwlEndsAt) {
+    const unix = Math.floor(row.snapshot.cwlEndsAt.getTime() / 1000);
+    return `CWL attacks: ${used}/${max} - ${phase} ends <t:${unix}:R>${staleSuffix}`;
+  }
+  return `CWL attacks: ${used}/${max} - ${phase}${staleSuffix}`;
+}
+
+/** Purpose: build RAIDS status text from snapshot data with neutral and stale variants. */
+function getRaidStatus(row: TodoRenderRow): string {
+  if (row.missingSnapshot || !row.snapshot) {
+    return "clan capital raids: 0/6 - snapshot unavailable";
+  }
+
+  const used = clampInt(
+    row.snapshot.raidAttacksUsed,
     0,
-    Math.min(2, Array.isArray(member?.attacks) ? member.attacks.length : 0),
+    row.snapshot.raidAttacksMax || 6,
   );
-  const phase = normalizeWarPhaseLabel(war.state);
-  const phaseEnd = resolvePhaseEndUnix(war);
-  if (phaseEnd !== null) {
-    return `war attacks: ${attacksUsed}/2 - ${phase} ends <t:${phaseEnd}:R>`;
-  }
-  return `war attacks: ${attacksUsed}/2 - ${phase}`;
-}
+  const max = Math.max(1, clampInt(row.snapshot.raidAttacksMax, 1, 6));
+  const staleSuffix = row.staleSnapshot ? " - stale snapshot" : "";
 
-/** Purpose: compute CWL page status text for one player. */
-function getCwlStatus(player: TodoPlayerContext, cwlWar: ClanWar | null | undefined): string {
-  if (!player.clanTag) return "CWL attacks: 0/1 - no clan";
-  if (!cwlWar || !isWarStateActive(cwlWar.state)) {
-    return "CWL attacks: 0/1 - not in active CWL war";
-  }
-  const member = findWarMemberByTag(cwlWar, player.playerTag);
-  const attacksUsed = Math.max(
-    0,
-    Math.min(1, Array.isArray(member?.attacks) ? member.attacks.length : 0),
-  );
-  const phase = normalizeWarPhaseLabel(cwlWar.state);
-  const phaseEnd = resolvePhaseEndUnix(cwlWar);
-  if (phaseEnd !== null) {
-    return `CWL attacks: ${attacksUsed}/1 - ${phase} ends <t:${phaseEnd}:R>`;
-  }
-  return `CWL attacks: ${attacksUsed}/1 - ${phase}`;
-}
-
-/** Purpose: compute RAIDS page status text using current raid-weekend window. */
-function getRaidStatus(window: TodoWindow): string {
-  if (!window.active) {
-    return `clan capital raids: 0/6 - not active (starts <t:${Math.floor(
-      window.startMs / 1000,
-    )}:R>)`;
-  }
-  return `clan capital raids: 0/6 - ends <t:${Math.floor(window.endMs / 1000)}:R>`;
-}
-
-/** Purpose: compute GAMES page status text using current clan-games window. */
-function getClanGamesStatus(window: TodoWindow): string {
-  if (!window.active) {
-    return `clan games: not active (starts <t:${Math.floor(window.startMs / 1000)}:R>)`;
-  }
-  return `clan games: active - ends <t:${Math.floor(window.endMs / 1000)}:R>`;
-}
-
-/** Purpose: find a war member across both sides by player tag. */
-function findWarMemberByTag(war: ClanWar, playerTag: string) {
-  const normalizedTarget = normalizePlayerTag(playerTag);
-  const allMembers = [
-    ...(Array.isArray(war.clan?.members) ? war.clan.members : []),
-    ...(Array.isArray(war.opponent?.members) ? war.opponent.members : []),
-  ];
-  return allMembers.find(
-    (member) => normalizePlayerTag(String(member?.tag ?? "")) === normalizedTarget,
-  );
-}
-
-/** Purpose: map CoC war-state input to simplified active phase label. */
-function normalizeWarPhaseLabel(state: unknown): string {
-  const normalized = String(state ?? "").toLowerCase();
-  if (normalized.includes("preparation")) return "preparation";
-  if (normalized.includes("inwar")) return "battle day";
-  return "active phase";
-}
-
-/** Purpose: determine whether a war object is active for a specific clan. */
-function isWarActiveForClan(war: ClanWar | null | undefined, clanTag: string): boolean {
-  if (!war || !isWarStateActive(war.state)) return false;
-  const normalizedClanTag = normalizeClanTag(clanTag);
-  const warClanTag = normalizeClanTag(String(war.clan?.tag ?? ""));
-  const warOpponentTag = normalizeClanTag(String(war.opponent?.tag ?? ""));
-  return warClanTag === normalizedClanTag || warOpponentTag === normalizedClanTag;
-}
-
-/** Purpose: determine whether CWL group state can contain an active war. */
-function isCwlGroupActive(state: unknown): boolean {
-  const normalized = String(state ?? "").toLowerCase();
-  return normalized.includes("preparation") || normalized.includes("inwar");
-}
-
-/** Purpose: determine whether one war-state value is considered active. */
-function isWarStateActive(state: unknown): boolean {
-  const normalized = String(state ?? "").toLowerCase();
-  return normalized.includes("preparation") || normalized.includes("inwar");
-}
-
-/** Purpose: resolve active phase end-time unix value from one war payload. */
-function resolvePhaseEndUnix(war: ClanWar): number | null {
-  const normalizedState = String(war.state ?? "").toLowerCase();
-  if (normalizedState.includes("preparation")) {
-    const prepEnd = parseCocTime(war.startTime ?? null);
-    if (prepEnd) return Math.floor(prepEnd.getTime() / 1000);
-    return null;
-  }
-  if (normalizedState.includes("inwar")) {
-    const warEnd = parseCocTime(war.endTime ?? null);
-    if (warEnd) return Math.floor(warEnd.getTime() / 1000);
-    return null;
-  }
-  return null;
-}
-
-/** Purpose: compute the current or next raid-weekend window in UTC. */
-function resolveRaidWeekendWindow(nowMs: number): TodoWindow {
-  const dayMs = 24 * 60 * 60 * 1000;
-  const hourMs = 60 * 60 * 1000;
-  const now = new Date(nowMs);
-  const dayStartMs = Date.UTC(
-    now.getUTCFullYear(),
-    now.getUTCMonth(),
-    now.getUTCDate(),
-    0,
-    0,
-    0,
-    0,
-  );
-  const weekStartMs = dayStartMs - now.getUTCDay() * dayMs;
-  const fridayStartMs = weekStartMs + 5 * dayMs + 7 * hourMs;
-  const raidEndMs = fridayStartMs + 3 * dayMs;
-
-  if (nowMs >= fridayStartMs && nowMs < raidEndMs) {
-    return { active: true, startMs: fridayStartMs, endMs: raidEndMs };
-  }
-  if (nowMs < fridayStartMs) {
-    return { active: false, startMs: fridayStartMs, endMs: raidEndMs };
+  if (!row.snapshot.raidActive) {
+    return `clan capital raids: ${used}/${max} - not active${staleSuffix}`;
   }
 
-  const nextStartMs = fridayStartMs + 7 * dayMs;
-  return {
-    active: false,
-    startMs: nextStartMs,
-    endMs: nextStartMs + 3 * dayMs,
-  };
+  if (row.snapshot.raidEndsAt) {
+    const unix = Math.floor(row.snapshot.raidEndsAt.getTime() / 1000);
+    return `clan capital raids: ${used}/${max} - ends <t:${unix}:R>${staleSuffix}`;
+  }
+  return `clan capital raids: ${used}/${max} - active${staleSuffix}`;
 }
 
-/** Purpose: compute current or next clan-games window in UTC month cycle. */
-function resolveClanGamesWindow(nowMs: number): TodoWindow {
-  const now = new Date(nowMs);
-  const year = now.getUTCFullYear();
-  const month = now.getUTCMonth();
-  const currentStart = Date.UTC(year, month, 22, 8, 0, 0, 0);
-  const currentEnd = Date.UTC(year, month, 28, 8, 0, 0, 0);
-
-  if (nowMs >= currentStart && nowMs < currentEnd) {
-    return { active: true, startMs: currentStart, endMs: currentEnd };
-  }
-  if (nowMs < currentStart) {
-    return { active: false, startMs: currentStart, endMs: currentEnd };
+/** Purpose: build GAMES status text from snapshot data with neutral and stale variants. */
+function getGamesStatus(row: TodoRenderRow): string {
+  if (row.missingSnapshot || !row.snapshot) {
+    return "clan games: snapshot unavailable";
   }
 
-  const nextStart = Date.UTC(year, month + 1, 22, 8, 0, 0, 0);
-  const nextEnd = Date.UTC(year, month + 1, 28, 8, 0, 0, 0);
-  return { active: false, startMs: nextStart, endMs: nextEnd };
+  const points = toFiniteIntOrNull(row.snapshot.gamesPoints) ?? 0;
+  const target =
+    toFiniteIntOrNull(row.snapshot.gamesTarget) ?? TODO_DEFAULT_GAMES_TARGET;
+  const staleSuffix = row.staleSnapshot ? " - stale snapshot" : "";
+
+  if (!row.snapshot.gamesActive) {
+    return `clan games: ${points}/${target} - not active${staleSuffix}`;
+  }
+
+  if (row.snapshot.gamesEndsAt) {
+    const unix = Math.floor(row.snapshot.gamesEndsAt.getTime() / 1000);
+    return `clan games: ${points}/${target} - ends <t:${unix}:R>${staleSuffix}`;
+  }
+  return `clan games: ${points}/${target} - active${staleSuffix}`;
 }
 
-/** Purpose: sanitize display text values for deterministic compact row output. */
-function sanitizeDisplayText(input: string): string {
+/** Purpose: keep status labels compact and deterministic for embed row rendering. */
+function sanitizeStatusText(input: unknown): string {
   return String(input ?? "")
     .replace(/\s+/g, " ")
     .trim();
 }
 
+/** Purpose: clamp unknown numeric values into one bounded integer range. */
+function clampInt(input: unknown, min: number, max: number): number {
+  const parsed = Number(input);
+  if (!Number.isFinite(parsed)) return min;
+  const truncated = Math.trunc(parsed);
+  return Math.max(min, Math.min(max, truncated));
+}
+
+/** Purpose: convert unknown numeric input to finite integer or null for nullable status fields. */
+function toFiniteIntOrNull(input: unknown): number | null {
+  const parsed = Number(input);
+  if (!Number.isFinite(parsed)) return null;
+  return Math.trunc(parsed);
+}

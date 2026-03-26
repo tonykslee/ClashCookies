@@ -35,6 +35,7 @@ import {
 } from "../services/refreshSchedule";
 import { trackedMessageService } from "../services/TrackedMessageService";
 import { FwaFeedSchedulerService } from "../services/fwa-feeds/FwaFeedSchedulerService";
+import { todoSnapshotService } from "../services/TodoSnapshotService";
 
 const DEFAULT_OBSERVE_INTERVAL_MINUTES = 30;
 const RECRUITMENT_REMINDER_INTERVAL_MS = 60 * 60 * 1000;
@@ -554,6 +555,9 @@ export default (client: Client, cocService: CoCService): void => {
           await warEventLogService.poll();
           await warEventLogService.refreshBattleDayPosts();
           await refreshAllTrackedWarMailPosts(client);
+          await todoSnapshotService.refreshAllLinkedPlayerSnapshots({
+            cocService,
+          });
         } catch (err) {
           console.error(`[war-events] poll loop failed: ${formatError(err)}`);
         }
