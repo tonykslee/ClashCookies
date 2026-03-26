@@ -289,6 +289,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`type` controls only the initial page shown; use page buttons to switch categories without rerunning.",
       "WAR/CWL pages group players by shared active event context and include section headers with phase timing.",
       "RAIDS/GAMES pages use one shared top timer line and then list per-player progress rows.",
+      "GAMES page points come from stored activity-signal totals plus per-cycle baseline snapshot derivation, keeping command reads DB-first.",
       "When a page has no active context, it renders explicit inactive text instead of a blank list.",
       "Linked players outside active contexts are still shown as neutral rows when active groups exist.",
       "If you have no linked tags, the command returns a clear private error and suggests `/link create`.",
