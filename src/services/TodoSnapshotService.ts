@@ -1,5 +1,6 @@
 import { ClanWar } from "../generated/coc-api";
 import { prisma } from "../prisma";
+import { resolveCurrentCwlSeasonKey } from "./CwlRegistryService";
 import { CoCService } from "./CoCService";
 import { normalizeClanTag, normalizePlayerTag } from "./PlayerLinkService";
 import { parseCocTime } from "./war-events/core";
@@ -9,6 +10,8 @@ const TODO_SNAPSHOT_SELECT = {
   playerName: true,
   clanTag: true,
   clanName: true,
+  cwlClanTag: true,
+  cwlClanName: true,
   warActive: true,
   warAttacksUsed: true,
   warAttacksMax: true,
@@ -91,6 +94,7 @@ export class TodoSnapshotService {
         ...row,
         playerTag: normalizePlayerTag(row.playerTag),
         clanTag: row.clanTag ? normalizeClanTag(row.clanTag) : null,
+        cwlClanTag: row.cwlClanTag ? normalizeClanTag(row.cwlClanTag) : null,
       }))
       .filter((row) => row.playerTag.length > 0)
       .sort((a, b) => {
@@ -247,6 +251,7 @@ export class TodoSnapshotService {
     );
     const latestClanMemberByTag = pickLatestClanMemberByPlayerTag(clanMemberRows);
     const latestWarMemberByClanAndTag = pickLatestWarMemberByClanAndPlayer(warMemberRows);
+    const currentCwlSeason = resolveCurrentCwlSeasonKey(now.getTime());
 
     const clanTags = [
       ...new Set(
@@ -260,7 +265,8 @@ export class TodoSnapshotService {
       ),
     ];
 
-    const [trackedClanRows, currentWarRows, cwlWarByClan] = await Promise.all([
+    const [trackedClanRows, currentWarRows, cwlTrackedClanRows, cwlSeasonMappingRows] =
+      await Promise.all([
       clanTags.length > 0
         ? prisma.trackedClan.findMany({
             where: { tag: { in: clanTags } },
@@ -279,9 +285,20 @@ export class TodoSnapshotService {
             },
           })
         : Promise.resolve([]),
-      input.cocService
-        ? loadActiveCwlWarsByClan(input.cocService, clanTags)
-        : Promise.resolve(new Map<string, ClanWar | null>()),
+      prisma.cwlTrackedClan.findMany({
+        where: { season: currentCwlSeason },
+        select: { tag: true, name: true },
+      }),
+      prisma.cwlPlayerClanSeason.findMany({
+        where: {
+          season: currentCwlSeason,
+          playerTag: { in: normalizedTags },
+        },
+        select: {
+          playerTag: true,
+          cwlClanTag: true,
+        },
+      }),
     ]);
 
     const trackedClanNameByTag = new Map(
@@ -293,6 +310,35 @@ export class TodoSnapshotService {
         .filter((entry): entry is [string, string] => Boolean(entry[0] && entry[1])),
     );
     const currentWarByClanTag = pickLatestCurrentWarByClanTag(currentWarRows);
+    const cwlTrackedTagSet = new Set(
+      cwlTrackedClanRows
+        .map((row) => normalizeClanTag(row.tag))
+        .filter(Boolean),
+    );
+    const cwlTrackedClanNameByTag = new Map(
+      cwlTrackedClanRows
+        .map((row) => [
+          normalizeClanTag(row.tag),
+          sanitizeDisplayText(String(row.name ?? "")),
+        ] as const)
+        .filter((entry): entry is [string, string] => Boolean(entry[0] && entry[1])),
+    );
+    const mappedCwlClanByPlayerTag = new Map(
+      cwlSeasonMappingRows
+        .map((row) => [
+          normalizePlayerTag(row.playerTag),
+          normalizeClanTag(row.cwlClanTag),
+        ] as const)
+        .filter((entry): entry is [string, string] => Boolean(entry[0] && entry[1])),
+    );
+    const cwlWarByClan =
+      input.cocService && cwlTrackedTagSet.size > 0
+        ? await loadActiveCwlWarsByClan(input.cocService, [...cwlTrackedTagSet])
+        : new Map<string, ClanWar | null>();
+    const activeCwlClanByPlayerTag = buildActiveCwlClanByPlayerTag({
+      cwlWarByClan,
+      trackedCwlTags: cwlTrackedTagSet,
+    });
 
     const raidWindow = resolveRaidWeekendWindow(now.getTime());
     const gamesWindow = resolveClanGamesWindow(now.getTime());
@@ -309,6 +355,23 @@ export class TodoSnapshotService {
         const resolvedClanName =
           (resolvedClanTag ? trackedClanNameByTag.get(resolvedClanTag) : null) ||
           sanitizeDisplayText(existing?.clanName ?? "") ||
+          null;
+        const activeMappedCwlClanTag = activeCwlClanByPlayerTag.get(playerTag) ?? "";
+        const persistedMappedCwlClanTag = mappedCwlClanByPlayerTag.get(playerTag) ?? "";
+        const fallbackCwlClanTag =
+          resolvedClanTag && cwlTrackedTagSet.has(resolvedClanTag)
+            ? resolvedClanTag
+            : "";
+        const resolvedCwlClanTag =
+          normalizeClanTag(
+            activeMappedCwlClanTag || persistedMappedCwlClanTag || fallbackCwlClanTag,
+          ) || null;
+        const resolvedCwlClanName =
+          (resolvedCwlClanTag
+            ? cwlTrackedClanNameByTag.get(resolvedCwlClanTag) ||
+              trackedClanNameByTag.get(resolvedCwlClanTag)
+            : null) ||
+          sanitizeDisplayText(existing?.cwlClanName ?? "") ||
           null;
         const resolvedPlayerName =
           sanitizeDisplayText(latestClanMember?.playerName ?? "") ||
@@ -333,8 +396,8 @@ export class TodoSnapshotService {
           ? clampInt(warMember?.attacks, 0, 2)
           : 0;
 
-        const cwlWar = resolvedClanTag
-          ? cwlWarByClan.get(resolvedClanTag) ?? null
+        const cwlWar = resolvedCwlClanTag
+          ? cwlWarByClan.get(resolvedCwlClanTag) ?? null
           : null;
         const cwlActive = isWarStateActive(cwlWar?.state ?? "");
         const cwlPhase = cwlActive ? normalizeWarPhaseLabel(cwlWar?.state ?? "") : null;
@@ -349,6 +412,8 @@ export class TodoSnapshotService {
           playerName: resolvedPlayerName,
           clanTag: resolvedClanTag,
           clanName: resolvedClanName,
+          cwlClanTag: resolvedCwlClanTag,
+          cwlClanName: resolvedCwlClanName,
           warActive,
           warAttacksUsed,
           warAttacksMax: 2,
@@ -378,6 +443,25 @@ export class TodoSnapshotService {
             ...data,
           },
         });
+
+        if (resolvedCwlClanTag) {
+          await tx.cwlPlayerClanSeason.upsert({
+            where: {
+              season_playerTag: {
+                season: currentCwlSeason,
+                playerTag,
+              },
+            },
+            update: {
+              cwlClanTag: resolvedCwlClanTag,
+            },
+            create: {
+              season: currentCwlSeason,
+              playerTag,
+              cwlClanTag: resolvedCwlClanTag,
+            },
+          });
+        }
         updatedCount += 1;
       }
     });
@@ -588,6 +672,38 @@ function findWarAttacksUsed(war: ClanWar | null, playerTag: string): number {
     (member) => normalizePlayerTag(String(member?.tag ?? "")) === normalizedTarget,
   );
   return Array.isArray(match?.attacks) ? match.attacks.length : 0;
+}
+
+/** Purpose: derive a season-scoped player->CWL-clan map from active CWL wars for tracked CWL clans. */
+function buildActiveCwlClanByPlayerTag(input: {
+  cwlWarByClan: Map<string, ClanWar | null>;
+  trackedCwlTags: Set<string>;
+}): Map<string, string> {
+  const mapped = new Map<string, string>();
+  for (const [trackedCwlTag, war] of input.cwlWarByClan.entries()) {
+    const normalizedTracked = normalizeClanTag(trackedCwlTag);
+    if (!normalizedTracked || !input.trackedCwlTags.has(normalizedTracked)) continue;
+    if (!war || !isWarStateActive(war.state)) continue;
+
+    const clanTag = normalizeClanTag(String(war.clan?.tag ?? ""));
+    const opponentTag = normalizeClanTag(String(war.opponent?.tag ?? ""));
+    const trackedSideMembers =
+      clanTag === normalizedTracked
+        ? Array.isArray(war.clan?.members)
+          ? war.clan.members
+          : []
+        : opponentTag === normalizedTracked
+          ? Array.isArray(war.opponent?.members)
+            ? war.opponent.members
+            : []
+          : [];
+    for (const member of trackedSideMembers) {
+      const playerTag = normalizePlayerTag(String(member?.tag ?? ""));
+      if (!playerTag) continue;
+      mapped.set(playerTag, normalizedTracked);
+    }
+  }
+  return mapped;
 }
 
 /** Purpose: load one active CWL war per clan tag with grouped war-tag reuse to avoid duplicate fetches. */

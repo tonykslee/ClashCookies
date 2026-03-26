@@ -10,7 +10,7 @@
 - `/layout` is public by default; runtime `edit` (and optional `img-url` edit flow) still requires Administrator.
 
 ## Default Administrator-Only Targets
-- `/tracked-clan configure`, `/tracked-clan remove`
+- `/tracked-clan configure`, `/tracked-clan cwl-tags`, `/tracked-clan remove`
 - `/permission add`, `/permission remove`
 - `/sheet link`, `/sheet unlink`, `/sheet show`, `/sheet refresh`
 - `/kick-list build`, `/kick-list add`, `/kick-list remove`, `/kick-list show`, `/kick-list clear`

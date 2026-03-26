@@ -17,8 +17,9 @@
 - `/role-users role:<discordRole>` - List users in a role with pagination.
 - `/layout [th:<number>] [type:RISINGDAWN|BASIC|ICE] [edit:<layout-link>] [img-url:<url>]` - Fetch or list stored FWA layouts; `edit` upserts are admin-only at runtime, and `img-url` is only valid when `edit` is provided.
 - `/tracked-clan configure tag:<tag> [lose-style:triple-top-30|traditional] [mail-channel:<discordChannel>] [log-channel:<discordChannel>] [clan-role:<discordRole>] [clan-badge:<emoji>] [short-name:<abbr>]` - Add/update tracked clan settings.
-- `/tracked-clan remove tag:<tag>` - Remove tracked clan.
-- `/tracked-clan list` - List tracked clans and settings.
+- `/tracked-clan cwl-tags cwl-tags:[<tag-array-or-comma-list>]` - Add one batch of seasonal CWL tracked clans (supports tags with or without `#`), with partial-success summary buckets for added/already-existing/invalid/duplicates.
+- `/tracked-clan remove tag:<tag> [type:FWA|CWL]` - Remove tracked clan from FWA or current-season CWL registry. When `type` is omitted and a tag exists in both registries, command returns an explicit ambiguity prompt instead of deleting.
+- `/tracked-clan list [type:FWA|CWL]` - List tracked clans and settings. Default is `type:FWA`; `type:CWL` lists current-season CWL throwaway registry.
 - `/sheet link sheet_id_or_url:<id-or-url> [tab:<tab-name>] [mode:actual|war]` - Link or relink sheet; mode is optional.
 - `/sheet show [mode:actual|war]` - Show linked sheet settings (single mode or all).
 - `/sheet unlink [mode:actual|war]` - Remove one mode link or all links.

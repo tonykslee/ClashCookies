@@ -20,6 +20,7 @@ const HELP_TIMEOUT_MS = 10 * 60 * 1000;
 const HELP_POST_BUTTON_PREFIX = "help-post-channel";
 const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "tracked-clan:configure",
+  "tracked-clan:cwl-tags",
   "tracked-clan:remove",
   "sheet:link",
   "sheet:unlink",
@@ -147,14 +148,19 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     details: [
       "Configure/remove tracked clans or list current tracked set.",
       "`configure` upserts tracked clan settings (lose-style, mail channel, log channel, clan role, clan badge emoji, short name).",
-      "`configure` and `remove` are admin-only by default.",
+      "`cwl-tags` adds one seasonal CWL throwaway clan batch (array-style or comma-separated tags) without polluting the FWA tracked list.",
+      "`list type:FWA|CWL` switches between permanent FWA tracked clans (default) and seasonal CWL registry.",
+      "`remove` supports deterministic FWA/CWL deletion; when a tag exists in both registries, pass `type` explicitly.",
+      "`configure`, `cwl-tags`, and `remove` are admin-only by default.",
     ],
     examples: [
       "/tracked-clan configure tag:#2QG2C08UP",
       "/tracked-clan configure tag:#2QG2C08UP lose-style:Traditional mail-channel:#war-mail",
       "/tracked-clan configure tag:#2QG2C08UP clan-badge::Logo_Gabbar:",
       "/tracked-clan configure tag:#2QG2C08UP short-name:GB",
-      "/tracked-clan remove tag:#2QG2C08UP",
+      "/tracked-clan cwl-tags cwl-tags:[#PYLQ0289,#QGRJ2222]",
+      "/tracked-clan list type:CWL",
+      "/tracked-clan remove tag:#2QG2C08UP type:FWA",
       "/tracked-clan list",
     ],
   },
