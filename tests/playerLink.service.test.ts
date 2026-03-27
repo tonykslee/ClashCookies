@@ -21,11 +21,13 @@ import {
   backfillMissingDiscordUsernamesForClanMembers,
   listCurrentWeightsForClanMembers,
   listPlayerLinksForClanMembers,
+  listPlayerLinksForDiscordUser,
   sanitizeDiscordUsernameForPersistence,
   normalizePersistedDiscordUsername,
+  normalizePersistedPlayerName,
 } from "../src/services/PlayerLinkService";
 
-describe("PlayerLinkService discordUsername", () => {
+describe("PlayerLinkService link identity", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     prismaMock.playerLink.findUnique.mockReset();
@@ -40,6 +42,49 @@ describe("PlayerLinkService discordUsername", () => {
     expect(normalizePersistedDiscordUsername("\n\t")).toBeNull();
     expect(normalizePersistedDiscordUsername(null)).toBeNull();
     expect(sanitizeDiscordUsernameForPersistence("\n\t")).toBe("unknown");
+  });
+
+  it("normalizes persisted player name text deterministically", () => {
+    expect(normalizePersistedPlayerName("  a   b  ")).toBe("a b");
+    expect(normalizePersistedPlayerName("\n\t")).toBeNull();
+    expect(normalizePersistedPlayerName(null)).toBeNull();
+  });
+
+  it("returns user-scoped links with linkedName from persisted playerName", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        playerName: "  Alpha One  ",
+        createdAt: new Date("2026-03-15T09:07:00.000Z"),
+      },
+      {
+        playerTag: "#QGRJ2222",
+        playerName: " ",
+        createdAt: new Date("2026-03-15T09:08:00.000Z"),
+      },
+    ]);
+
+    const links = await listPlayerLinksForDiscordUser({
+      discordUserId: "111111111111111111",
+    });
+
+    expect(prismaMock.playerLink.findMany).toHaveBeenCalledWith({
+      where: { discordUserId: "111111111111111111" },
+      orderBy: [{ createdAt: "asc" }, { playerTag: "asc" }],
+      select: { playerTag: true, playerName: true, createdAt: true },
+    });
+    expect(links).toEqual([
+      {
+        playerTag: "#PYLQ0289",
+        linkedAt: new Date("2026-03-15T09:07:00.000Z"),
+        linkedName: "Alpha One",
+      },
+      {
+        playerTag: "#QGRJ2222",
+        linkedAt: new Date("2026-03-15T09:08:00.000Z"),
+        linkedName: null,
+      },
+    ]);
   });
 
   it("returns clan-scoped links with persisted discordUsername", async () => {

@@ -729,16 +729,17 @@ describe("/todo command", () => {
     expect(description).toContain("- Bravo #QGRJ2222 - clan capital raids: 1/6");
   });
 
-  it("renders GAMES emojis by progress threshold and sorts by gamesChampionTotal desc", async () => {
+  it("renders GAMES emojis by progress threshold and sorts by gamesPoints desc then gamesChampionTotal desc", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([
       { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },
       { playerTag: "#QGRJ2222", createdAt: new Date("2026-03-02T00:00:00.000Z") },
       { playerTag: "#CUV9082", createdAt: new Date("2026-03-03T00:00:00.000Z") },
       { playerTag: "#LQ9P8R2", createdAt: new Date("2026-03-04T00:00:00.000Z") },
       { playerTag: "#Q2V8P9L2", createdAt: new Date("2026-03-05T00:00:00.000Z") },
+      { playerTag: "#9C8VY2L2", createdAt: new Date("2026-03-06T00:00:00.000Z") },
     ]);
     prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
-      _count: { _all: 5 },
+      _count: { _all: 6 },
       _max: { updatedAt: new Date("2026-03-26T00:00:00.000Z") },
     });
     prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
@@ -762,8 +763,8 @@ describe("/todo command", () => {
         playerTag: "#CUV9082",
         playerName: "Charlie",
         gamesActive: true,
-        gamesPoints: 4000,
-        gamesChampionTotal: 8000,
+        gamesPoints: 5200,
+        gamesChampionTotal: 7000,
         gamesEndsAt: new Date("2026-03-28T08:00:00.000Z"),
       }),
       makeSnapshotRow({
@@ -778,8 +779,16 @@ describe("/todo command", () => {
         playerTag: "#Q2V8P9L2",
         playerName: "Bravo",
         gamesActive: true,
-        gamesPoints: 5200,
+        gamesPoints: 4000,
         gamesChampionTotal: 8000,
+        gamesEndsAt: new Date("2026-03-28T08:00:00.000Z"),
+      }),
+      makeSnapshotRow({
+        playerTag: "#9C8VY2L2",
+        playerName: "Foxtrot",
+        gamesActive: true,
+        gamesPoints: 3999,
+        gamesChampionTotal: 5000,
         gamesEndsAt: new Date("2026-03-28T08:00:00.000Z"),
       }),
     ]);
@@ -790,38 +799,41 @@ describe("/todo command", () => {
     const description = getReplyDescription(interaction);
     expect(description).toContain("**Time remaining:** <t:");
     expect(countOccurrences(description, "<t:")).toBe(1);
-    expect(description).toContain("- 🏆 Alpha #LQ9P8R2 - clan games points: 10000/4000");
-    expect(description).toContain("- ✅ Bravo #Q2V8P9L2 - clan games points: 5200/4000");
-    expect(description).toContain("- ✅ Charlie #CUV9082 - clan games points: 4000/4000");
-    expect(description).toContain("- 🟡 Delta #QGRJ2222 - clan games points: 3999/4000");
+    expect(description).toContain("Alpha #LQ9P8R2 - clan games points: 10000/4000");
+    expect(description).toContain("Bravo #Q2V8P9L2 - clan games points: 4000/4000");
+    expect(description).toContain("Charlie #CUV9082 - clan games points: 5200/4000");
+    expect(description).toContain("Delta #QGRJ2222 - clan games points: 3999/4000");
+    expect(description).toContain("Foxtrot #9C8VY2L2 - clan games points: 3999/4000");
     expect(description).toContain("- Echo #PYLQ0289 - clan games points: 0/4000");
 
-    const indexTrophy = description.indexOf("🏆 Alpha #LQ9P8R2");
-    const indexBravo = description.indexOf("✅ Bravo #Q2V8P9L2");
-    const indexCharlie = description.indexOf("✅ Charlie #CUV9082");
-    const indexDelta = description.indexOf("🟡 Delta #QGRJ2222");
+    const indexTrophy = description.indexOf("Alpha #LQ9P8R2");
+    const indexBravo = description.indexOf("Bravo #Q2V8P9L2");
+    const indexCharlie = description.indexOf("Charlie #CUV9082");
+    const indexDelta = description.indexOf("Delta #QGRJ2222");
+    const indexFoxtrot = description.indexOf("Foxtrot #9C8VY2L2");
     const indexEcho = description.indexOf("Echo #PYLQ0289");
     expect(indexTrophy).toBeGreaterThan(-1);
     expect(indexBravo).toBeGreaterThan(-1);
     expect(indexCharlie).toBeGreaterThan(-1);
     expect(indexDelta).toBeGreaterThan(-1);
+    expect(indexFoxtrot).toBeGreaterThan(-1);
     expect(indexEcho).toBeGreaterThan(-1);
-    expect(indexTrophy).toBeLessThan(indexBravo);
-    expect(indexBravo).toBeLessThan(indexCharlie);
-    expect(indexCharlie).toBeLessThan(indexDelta);
-    expect(indexDelta).toBeLessThan(indexEcho);
+    expect(indexTrophy).toBeLessThan(indexCharlie);
+    expect(indexCharlie).toBeLessThan(indexBravo);
+    expect(indexBravo).toBeLessThan(indexDelta);
+    expect(indexDelta).toBeLessThan(indexFoxtrot);
+    expect(indexFoxtrot).toBeLessThan(indexEcho);
   });
-
   it("falls back to PlayerLink identity for linked rows before final raw-tag fallback", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([
       {
         playerTag: "#PYLQ0289",
-        discordUsername: "Linked Alias",
+        playerName: "Linked Alias",
         createdAt: new Date("2026-03-01T00:00:00.000Z"),
       },
       {
         playerTag: "#QGRJ2222",
-        discordUsername: null,
+        playerName: null,
         createdAt: new Date("2026-03-02T00:00:00.000Z"),
       },
     ]);
@@ -852,11 +864,12 @@ describe("/todo command", () => {
     expect(description).toContain("- #QGRJ2222 - clan games points: 0/4000");
   });
 
-  it("does not use discord-handle-like PlayerLink usernames as normal todo player identity fallback", async () => {
+  it("does not use discordUsername as normal todo player identity fallback", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([
       {
         playerTag: "#PYLQ0289",
         discordUsername: "tonyk_2020",
+        playerName: null,
         createdAt: new Date("2026-03-01T00:00:00.000Z"),
       },
     ]);
@@ -1154,4 +1167,5 @@ describe("/todo refresh button", () => {
     expect(interaction.deferUpdate).not.toHaveBeenCalled();
   });
 });
+
 

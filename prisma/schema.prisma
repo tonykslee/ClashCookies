@@ -60,6 +60,7 @@ model PlayerLink {
   playerTag     String   @id
   discordUserId String
   discordUsername String?
+  playerName    String?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 }

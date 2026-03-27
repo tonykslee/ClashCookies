@@ -10,6 +10,10 @@ const txMock = vi.hoisted(() => ({
   fwaPlayerCatalog: {
     upsert: vi.fn(),
   },
+  playerLink: {
+    findMany: vi.fn(),
+    updateMany: vi.fn(),
+  },
 }));
 
 const prismaMock = vi.hoisted(() => ({
@@ -70,6 +74,11 @@ describe("FwaClanMembersSyncService", () => {
 
     prismaMock.fwaFeedSyncState.findUnique.mockResolvedValue(null);
     txMock.fwaClanMemberCurrent.deleteMany.mockResolvedValue({ count: 1 });
+    txMock.playerLink.findMany.mockResolvedValue([
+      { playerTag: "#P1", playerName: null },
+      { playerTag: "#P2", playerName: "Two" },
+    ]);
+    txMock.playerLink.updateMany.mockResolvedValue({ count: 1 });
 
     const service = new FwaClanMembersSyncService(client);
     const result = await service.syncTrackedClan("#aaa111", { force: true });
@@ -85,9 +94,57 @@ describe("FwaClanMembersSyncService", () => {
     );
     expect(txMock.fwaClanMemberCurrent.upsert).toHaveBeenCalledTimes(2);
     expect(txMock.fwaPlayerCatalog.upsert).toHaveBeenCalledTimes(2);
+    expect(txMock.playerLink.findMany).toHaveBeenCalledWith({
+      where: { playerTag: { in: ["#P1", "#P2"] } },
+      select: { playerTag: true, playerName: true },
+    });
+    expect(txMock.playerLink.updateMany).toHaveBeenCalledTimes(1);
+    expect(txMock.playerLink.updateMany).toHaveBeenCalledWith({
+      where: { playerTag: "#P1" },
+      data: { playerName: "One" },
+    });
     expect(result.status).toBe("SUCCESS");
     expect(result.rowCount).toBe(2);
     expect(result.changedRowCount).toBe(3);
+  });
+
+  it("updates linked playerName when observed name changes", async () => {
+    const client = {
+      fetchClanMembers: vi.fn().mockResolvedValue([
+        {
+          clanTag: "#AAA111",
+          playerTag: "#P1",
+          playerName: "One Renamed",
+          role: "leader",
+          level: 10,
+          donated: 1,
+          received: 2,
+          rank: 1,
+          trophies: 1000,
+          league: "Gold",
+          townHall: 14,
+          weight: 120000,
+          inWar: true,
+        },
+      ]),
+    } as any;
+
+    prismaMock.fwaFeedSyncState.findUnique.mockResolvedValue(null);
+    txMock.fwaClanMemberCurrent.deleteMany.mockResolvedValue({ count: 0 });
+    txMock.playerLink.findMany.mockResolvedValue([
+      { playerTag: "#P1", playerName: "One" },
+    ]);
+    txMock.playerLink.updateMany.mockResolvedValue({ count: 1 });
+
+    const service = new FwaClanMembersSyncService(client);
+    const result = await service.syncTrackedClan("#AAA111", { force: true });
+
+    expect(txMock.playerLink.updateMany).toHaveBeenCalledTimes(1);
+    expect(txMock.playerLink.updateMany).toHaveBeenCalledWith({
+      where: { playerTag: "#P1" },
+      data: { playerName: "One Renamed" },
+    });
+    expect(result.status).toBe("SUCCESS");
   });
 
   it("returns NOOP when payload hash is unchanged", async () => {

@@ -852,11 +852,17 @@ function pickLatestCurrentWarMatchContextByClanTag(
   return latest;
 }
 
-/** Purpose: sort games rows by champion total desc with stable deterministic tie-breakers. */
+/** Purpose: sort games rows by current-cycle points first, then champion total, then stable ties. */
 function sortGamesRows(rows: TodoRenderRow[]): TodoRenderRow[] {
   return rows
     .map((row, index) => ({ row, index }))
     .sort((a, b) => {
+      const aPoints = Math.max(0, toFiniteIntOrNull(a.row.snapshot?.gamesPoints) ?? 0);
+      const bPoints = Math.max(0, toFiniteIntOrNull(b.row.snapshot?.gamesPoints) ?? 0);
+      if (aPoints !== bPoints) {
+        return bPoints - aPoints;
+      }
+
       const aTotal = toFiniteIntOrNull(a.row.snapshot?.gamesChampionTotal);
       const bTotal = toFiniteIntOrNull(b.row.snapshot?.gamesChampionTotal);
       const normalizedATotal = aTotal === null ? Number.NEGATIVE_INFINITY : aTotal;

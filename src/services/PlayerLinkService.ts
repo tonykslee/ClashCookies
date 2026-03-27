@@ -81,18 +81,10 @@ export function normalizePersistedDiscordUsername(input: unknown): string | null
   return normalized;
 }
 
-/** Purpose: detect whether one normalized label is likely a Discord username handle (not an in-game player identity). */
-function isLikelyDiscordUsernameLabel(input: string): boolean {
-  if (!input) return false;
-  return /^[A-Za-z0-9._]{2,32}$/.test(input);
-}
-
-/** Purpose: normalize one PlayerLink name-like value for `/todo` player identity fallback use. */
-function normalizeLinkedPlayerNameForTodo(input: unknown): string | null {
-  const normalized = normalizePersistedDiscordUsername(input);
+/** Purpose: normalize persisted in-game player names for deterministic identity fallback use. */
+export function normalizePersistedPlayerName(input: unknown): string | null {
+  const normalized = String(input ?? "").replace(/\s+/g, " ").trim();
   if (!normalized) return null;
-  if (normalized.toLowerCase() === PLAYER_LINK_DISCORD_USERNAME_FALLBACK) return null;
-  if (isLikelyDiscordUsernameLabel(normalized)) return null;
   return normalized;
 }
 
@@ -307,7 +299,7 @@ export async function listPlayerLinksForDiscordUser(input: {
   const rows = await prisma.playerLink.findMany({
     where: { discordUserId: normalizedUserId },
     orderBy: [{ createdAt: "asc" }, { playerTag: "asc" }],
-    select: { playerTag: true, discordUsername: true, createdAt: true },
+    select: { playerTag: true, playerName: true, createdAt: true },
   });
 
   const seen = new Set<string>();
@@ -319,7 +311,7 @@ export async function listPlayerLinksForDiscordUser(input: {
     ordered.push({
       playerTag,
       linkedAt: row.createdAt,
-      linkedName: normalizeLinkedPlayerNameForTodo(row.discordUsername),
+      linkedName: normalizePersistedPlayerName(row.playerName),
     });
   }
   return ordered;
