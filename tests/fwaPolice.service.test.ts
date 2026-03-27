@@ -239,6 +239,62 @@ describe("FwaPoliceService", () => {
     expect(result.dmSent).toBe(0);
   });
 
+  it("does not send DM or log when canonical compliance returns no remaining violations", async () => {
+    prismaMock.trackedClan.findFirst.mockResolvedValue({
+      tag: "#2QG2C08UP",
+      name: "Alpha",
+      fwaPoliceDmEnabled: true,
+      fwaPoliceLogEnabled: true,
+      logChannelId: "channel-1",
+      notifyChannelId: null,
+      mailChannelId: null,
+    });
+
+    const dmSend = vi.fn().mockResolvedValue({});
+    const logSend = vi.fn().mockResolvedValue({});
+    const client = {
+      users: {
+        fetch: vi.fn().mockResolvedValue({
+          createDM: vi.fn().mockResolvedValue({ send: dmSend }),
+        }),
+      },
+      channels: {
+        fetch: vi.fn().mockResolvedValue({
+          isTextBased: () => true,
+          send: logSend,
+        }),
+      },
+    } as any;
+    const evaluateComplianceForCommand = vi.fn().mockResolvedValue({
+      status: "ok",
+      report: {
+        warId: 12345,
+        clanName: "Alpha",
+        opponentName: "Bravo",
+        notFollowingPlan: [],
+      },
+    });
+
+    const service = new FwaPoliceService();
+    const result = await service.enforceWarViolations({
+      client,
+      guildId: "guild-1",
+      clanTag: "#2QG2C08UP",
+      warId: 12345,
+      warCompliance: { evaluateComplianceForCommand } as any,
+    });
+
+    expect(result).toEqual({
+      evaluatedViolations: 0,
+      created: 0,
+      deduped: 0,
+      dmSent: 0,
+      logSent: 0,
+    });
+    expect(dmSend).not.toHaveBeenCalled();
+    expect(logSend).not.toHaveBeenCalled();
+  });
+
   it("does not resend duplicate handled violations across reevaluations", async () => {
     prismaMock.trackedClan.findFirst.mockResolvedValue({
       tag: "#2QG2C08UP",
