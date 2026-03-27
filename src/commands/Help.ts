@@ -286,7 +286,9 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "Resolves all player tags linked to your Discord account from local PlayerLink data.",
       "Reads precomputed todo snapshots (background-refreshed) for fast command-time rendering.",
       "Always builds WAR, CWL, RAIDS, and GAMES pages in one response.",
+      "With no `type`, opens your most recently viewed todo page; if none is remembered, defaults to WAR.",
       "`type` controls only the initial page shown; use page buttons to switch categories without rerunning.",
+      "Running `/todo type:...` and switching pages via buttons updates your remembered page for future no-arg `/todo` runs.",
       "Use the `Refresh` button to trigger a targeted snapshot rebuild for the displayed todo user and update the same message in place.",
       "WAR/CWL pages group players by shared active event context and include section headers with phase timing.",
       "WAR section headers include tracked clan badge + match-state indicator, and WAR rows show lineup position with compact used-attack detail.",
@@ -299,6 +301,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "If you have no linked tags, the command returns a clear private error and suggests `/link create`.",
     ],
     examples: [
+      "/todo",
       "/todo type:WAR",
       "/todo type:CWL",
       "/todo type:RAIDS",

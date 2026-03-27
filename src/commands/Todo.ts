@@ -19,6 +19,7 @@ import {
   type TodoType,
 } from "../services/TodoService";
 import { todoSnapshotService } from "../services/TodoSnapshotService";
+import { todoLastViewedTypeService } from "../services/TodoLastViewedTypeService";
 
 const TODO_PAGE_BUTTON_PREFIX = "todo-page";
 const TODO_REFRESH_BUTTON_PREFIX = "todo-refresh";
@@ -50,6 +51,37 @@ type TodoRenderResult =
       };
     }
   | { ok: false; message: string };
+
+/** Purpose: persist one remembered `/todo` page type without blocking command UX on storage errors. */
+async function rememberLastViewedTodoType(input: {
+  discordUserId: string;
+  type: TodoType;
+}): Promise<void> {
+  try {
+    await todoLastViewedTypeService.setLastViewedType({
+      discordUserId: input.discordUserId,
+      type: normalizeTodoType(input.type),
+    });
+  } catch (err) {
+    console.error(
+      `[todo-last-viewed] set_failed user=${input.discordUserId} type=${input.type} error=${formatError(err)}`,
+    );
+  }
+}
+
+/** Purpose: resolve one remembered `/todo` page type with safe null fallback on read errors. */
+async function resolveRememberedTodoType(
+  discordUserId: string,
+): Promise<TodoType | null> {
+  try {
+    return await todoLastViewedTypeService.getLastViewedType({ discordUserId });
+  } catch (err) {
+    console.error(
+      `[todo-last-viewed] get_failed user=${discordUserId} error=${formatError(err)}`,
+    );
+    return null;
+  }
+}
 
 /** Purpose: build one stable guild scope token from guild-id or DM context. */
 function resolveTodoGuildScopeId(guildId: string | null | undefined): string {
@@ -283,6 +315,11 @@ export async function handleTodoPageButtonInteraction(
     return;
   }
 
+  await rememberLastViewedTodoType({
+    discordUserId: parsed.requesterUserId,
+    type: parsed.type,
+  });
+
   await interaction.update({
     content: null,
     ...result.payload,
@@ -358,6 +395,11 @@ export async function handleTodoRefreshButtonInteraction(
       return;
     }
 
+    await rememberLastViewedTodoType({
+      discordUserId: parsed.requesterUserId,
+      type: parsed.type,
+    });
+
     await interaction.editReply({
       content: null,
       ...result.payload,
@@ -387,7 +429,7 @@ export const Todo: Command = {
       name: "type",
       description: "Todo category page to open first",
       type: ApplicationCommandOptionType.String,
-      required: true,
+      required: false,
       choices: TODO_TYPES.map((type) => ({ name: type, value: type })),
     },
   ],
@@ -398,9 +440,21 @@ export const Todo: Command = {
   ) => {
     await interaction.deferReply({ ephemeral: true });
 
-    const selectedType = normalizeTodoType(
-      interaction.options.getString("type", true),
-    );
+    const explicitTypeInput = interaction.options.getString("type", false);
+    const explicitType = explicitTypeInput
+      ? normalizeTodoType(explicitTypeInput)
+      : null;
+    if (explicitType) {
+      await rememberLastViewedTodoType({
+        discordUserId: interaction.user.id,
+        type: explicitType,
+      });
+    }
+    const rememberedType = explicitType
+      ? null
+      : await resolveRememberedTodoType(interaction.user.id);
+    const selectedType = explicitType ?? rememberedType ?? normalizeTodoType(null);
+
     const result = await buildTodoRenderResult({
       cocService,
       selectedType,
