@@ -634,6 +634,106 @@ describe("WarComplianceService", () => {
     expect(report?.notFollowingPlan).toHaveLength(0);
   });
 
+  it("treats grouped FWA-WIN mirror obligations as owned by all linked members even when one owner has no strict-window attacks", async () => {
+    const warStartTime = new Date("2026-03-01T00:00:00.000Z");
+    const warEndTime = new Date("2026-03-02T00:00:00.000Z");
+    const participants = [
+      {
+        playerName: "Baby PK",
+        playerTag: "#QPJL9VUU2",
+        attacksUsed: 2,
+        playerPosition: 7,
+      },
+      {
+        playerName: "Red Knight",
+        playerTag: "#QRL2VG9JC",
+        attacksUsed: 0,
+        playerPosition: 8,
+      },
+      {
+        playerName: "Mango",
+        playerTag: "#G2VLQVU9V",
+        attacksUsed: 2,
+        playerPosition: 20,
+      },
+    ];
+    const attacks = [
+      {
+        playerTag: "#QPJL9VUU2",
+        playerName: "Baby PK",
+        playerPosition: 7,
+        defenderPosition: 7,
+        stars: 3,
+        trueStars: 1,
+        attackSeenAt: new Date("2026-03-01T08:00:00.000Z"),
+        warEndTime,
+        attackOrder: 1,
+      },
+      {
+        playerTag: "#QPJL9VUU2",
+        playerName: "Baby PK",
+        playerPosition: 7,
+        defenderPosition: 1,
+        stars: 1,
+        trueStars: 0,
+        attackSeenAt: new Date("2026-03-01T08:05:00.000Z"),
+        warEndTime,
+        attackOrder: 2,
+      },
+      {
+        playerTag: "#G2VLQVU9V",
+        playerName: "Mango",
+        playerPosition: 20,
+        defenderPosition: 20,
+        stars: 3,
+        trueStars: 1,
+        attackSeenAt: new Date("2026-03-01T08:10:00.000Z"),
+        warEndTime,
+        attackOrder: 3,
+      },
+      {
+        playerTag: "#G2VLQVU9V",
+        playerName: "Mango",
+        playerPosition: 20,
+        defenderPosition: 8,
+        stars: 3,
+        trueStars: 1,
+        attackSeenAt: new Date("2026-03-01T08:15:00.000Z"),
+        warEndTime,
+        attackOrder: 4,
+      },
+    ];
+
+    vi.spyOn(prisma.warAttacks, "findFirst").mockResolvedValue({
+      warStartTime,
+      warEndTime,
+      warId: 50011,
+    } as any);
+    vi.spyOn(prisma.warAttacks, "findMany")
+      .mockResolvedValueOnce(participants as any)
+      .mockResolvedValueOnce(attacks as any);
+    vi.spyOn(prisma.trackedClan, "findFirst").mockResolvedValue({
+      loseStyle: "TRADITIONAL",
+    } as any);
+    vi.spyOn(prisma.clanWarPlan, "findFirst").mockResolvedValue(null as any);
+    vi.spyOn(PlayerLinkService, "listPlayerLinksForClanMembers").mockResolvedValue([
+      { playerTag: "#QPJL9VUU2", discordUserId: "111111111111111111" },
+      { playerTag: "#QRL2VG9JC", discordUserId: "111111111111111111" },
+      { playerTag: "#G2VLQVU9V", discordUserId: "111111111111111111" },
+    ] as any);
+
+    const service = new WarComplianceService();
+    const report = await service.getComplianceReport({
+      clanTag: "#TEST",
+      preferredWarStartTime: warStartTime,
+      matchType: "FWA",
+      expectedOutcome: "WIN",
+    });
+
+    expect(report).not.toBeNull();
+    expect(report?.notFollowingPlan).toHaveLength(0);
+  });
+
   it("assigns grouped FWA-WIN unmet mirror to the owning account", async () => {
     const warStartTime = new Date("2026-03-01T00:00:00.000Z");
     const warEndTime = new Date("2026-03-02T00:00:00.000Z");
@@ -826,6 +926,77 @@ describe("WarComplianceService", () => {
       warStartTime,
       warEndTime,
       warId: 5003,
+    } as any);
+    vi.spyOn(prisma.warAttacks, "findMany")
+      .mockResolvedValueOnce(participants as any)
+      .mockResolvedValueOnce(attacks as any);
+    vi.spyOn(prisma.trackedClan, "findFirst").mockResolvedValue({
+      loseStyle: "TRADITIONAL",
+    } as any);
+    vi.spyOn(PlayerLinkService, "listPlayerLinksForClanMembers").mockResolvedValue([
+      { playerTag: "#P2YLC8R0", discordUserId: "111111111111111111" },
+      { playerTag: "#QGRJ2222", discordUserId: "111111111111111111" },
+    ] as any);
+
+    const service = new WarComplianceService();
+    const report = await service.getComplianceReport({
+      clanTag: "#TEST",
+      preferredWarStartTime: warStartTime,
+      matchType: "FWA",
+      expectedOutcome: "LOSE",
+    });
+
+    expect(report).not.toBeNull();
+    expect(report?.loseStyle).toBe("TRADITIONAL");
+    expect(report?.notFollowingPlan).toHaveLength(0);
+  });
+
+  it("treats grouped FWA-LOSS_TRADITIONAL obligations as owned by all linked members even when one owner has no late-window attacks", async () => {
+    const warStartTime = new Date("2026-03-01T00:00:00.000Z");
+    const warEndTime = new Date("2026-03-02T00:00:00.000Z");
+    const participants = [
+      {
+        playerName: "p1",
+        playerTag: "#P2YLC8R0",
+        attacksUsed: 2,
+        playerPosition: 4,
+      },
+      {
+        playerName: "p2",
+        playerTag: "#QGRJ2222",
+        attacksUsed: 0,
+        playerPosition: 5,
+      },
+    ];
+    const attacks = [
+      {
+        playerTag: "#P2YLC8R0",
+        playerName: "p1",
+        playerPosition: 4,
+        defenderPosition: 4,
+        stars: 2,
+        trueStars: 2,
+        attackSeenAt: new Date("2026-03-01T13:00:00.000Z"),
+        warEndTime,
+        attackOrder: 1,
+      },
+      {
+        playerTag: "#P2YLC8R0",
+        playerName: "p1",
+        playerPosition: 4,
+        defenderPosition: 5,
+        stars: 2,
+        trueStars: 2,
+        attackSeenAt: new Date("2026-03-01T13:10:00.000Z"),
+        warEndTime,
+        attackOrder: 2,
+      },
+    ];
+
+    vi.spyOn(prisma.warAttacks, "findFirst").mockResolvedValue({
+      warStartTime,
+      warEndTime,
+      warId: 50031,
     } as any);
     vi.spyOn(prisma.warAttacks, "findMany")
       .mockResolvedValueOnce(participants as any)

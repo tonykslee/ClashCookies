@@ -1775,7 +1775,7 @@ export class WarComplianceService {
       }
     }
 
-    const obligations = [...strictSeenByTag]
+    const obligations = input.group.memberTags
       .map((ownerTag) => ({
         ownerTag,
         ownerPosition: input.participantByTag.get(ownerTag)?.playerPosition ?? null,
@@ -1862,7 +1862,7 @@ export class WarComplianceService {
       lateSeenByTag.add(playerTag);
     }
 
-    const obligations = [...lateSeenByTag]
+    const obligations = input.group.memberTags
       .map((ownerTag) => ({
         ownerTag,
         ownerPosition: input.participantByTag.get(ownerTag)?.playerPosition ?? null,
