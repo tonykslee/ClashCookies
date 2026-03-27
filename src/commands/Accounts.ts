@@ -12,6 +12,10 @@ import {
 import { Command } from "../Command";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
+import {
+  backfillPlayerLinkNameIfMissing,
+  listPlayerLinksForDiscordUser,
+} from "../services/PlayerLinkService";
 
 type AccountRow = {
   tag: string;
@@ -32,6 +36,13 @@ function normalizeTag(input: string): string {
   const trimmed = input.trim().toUpperCase();
   if (!trimmed) return "";
   return trimmed.startsWith("#") ? trimmed : `#${trimmed}`;
+}
+
+function sanitizeDisplayText(input: unknown): string | null {
+  const normalized = String(input ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return normalized.length > 0 ? normalized : null;
 }
 
 function buildGroups(rows: AccountRow[]): ClanGroup[] {
@@ -212,10 +223,8 @@ export const Accounts: Command = {
       sourceLabel = `player tag \`${tag}\` (linked Discord ID \`${linkedDiscordId}\`)`;
     }
 
-    const links = await prisma.playerLink.findMany({
-      where: { discordUserId: targetDiscordUserId },
-      orderBy: { createdAt: "asc" },
-      select: { playerTag: true },
+    const links = await listPlayerLinksForDiscordUser({
+      discordUserId: targetDiscordUserId,
     });
 
     if (links.length === 0) {
@@ -229,6 +238,11 @@ export const Accounts: Command = {
       .map((l) => normalizeTag(l.playerTag))
       .filter((t) => Boolean(t));
     const uniqueTags = [...new Set(tags)];
+    const linkedNameByTag = new Map(
+      links
+        .map((link) => [normalizeTag(link.playerTag), sanitizeDisplayText(link.linkedName)] as const)
+        .filter((entry): entry is [string, string] => Boolean(entry[0] && entry[1]))
+    );
     const activity = await prisma.playerActivity.findMany({
       where: { guildId: interaction.guildId, tag: { in: uniqueTags } },
       select: { tag: true, name: true, clanTag: true },
@@ -237,30 +251,60 @@ export const Accounts: Command = {
       activity.map((a) => [normalizeTag(a.tag), a])
     );
 
-    const fetched = await Promise.allSettled(
-      uniqueTags.map((tag) => cocService.getPlayerRaw(tag))
-    );
+    const tagsNeedingLiveFetch = uniqueTags.filter((tag) => {
+      const hasLinkedName = Boolean(linkedNameByTag.get(tag));
+      const hasLocalFallback = activityByTag.has(tag);
+      return !hasLinkedName || !hasLocalFallback;
+    });
+    const fetchedPlayersByTag = new Map<string, any>();
+    if (tagsNeedingLiveFetch.length > 0) {
+      const fetched = await Promise.allSettled(
+        tagsNeedingLiveFetch.map((tag) => cocService.getPlayerRaw(tag))
+      );
+      for (let i = 0; i < tagsNeedingLiveFetch.length; i += 1) {
+        const tag = tagsNeedingLiveFetch[i];
+        const result = fetched[i];
+        if (result?.status === "fulfilled") {
+          fetchedPlayersByTag.set(tag, result.value);
+        }
+      }
+    }
 
-    const rows: AccountRow[] = uniqueTags.map((tag, idx) => {
-      const result = fetched[idx];
+    const playerNameBackfillTasks: Promise<void>[] = [];
+    const rows: AccountRow[] = uniqueTags.map((tag) => {
+      const linkedName = linkedNameByTag.get(tag) ?? null;
       const fallback = activityByTag.get(tag);
-      if (result.status === "fulfilled") {
-        const player = result.value;
-        return {
-          tag,
-          name: String(player?.name ?? fallback?.name ?? tag),
-          clanTag: player?.clan?.tag ?? fallback?.clanTag ?? null,
-          clanName: player?.clan?.name ?? null,
-        };
+      const livePlayer = fetchedPlayersByTag.get(tag) ?? null;
+      const livePlayerName = sanitizeDisplayText(livePlayer?.name);
+
+      if (!linkedName && livePlayerName) {
+        playerNameBackfillTasks.push(
+          backfillPlayerLinkNameIfMissing({
+            playerTag: tag,
+            playerName: livePlayerName,
+          })
+            .then(() => undefined)
+            .catch((error) => {
+              console.error(
+                `[accounts] player_name_backfill_failed tag=${tag} user=${targetDiscordUserId} error=${String(
+                  (error as { message?: string } | null | undefined)?.message ?? error
+                )}`
+              );
+            })
+        );
       }
 
       return {
         tag,
-        name: fallback?.name ?? tag,
-        clanTag: fallback?.clanTag ?? null,
-        clanName: null,
+        name: linkedName ?? livePlayerName ?? sanitizeDisplayText(fallback?.name) ?? tag,
+        clanTag: livePlayer?.clan?.tag ?? fallback?.clanTag ?? null,
+        clanName: livePlayer?.clan?.name ?? null,
       };
     });
+
+    if (playerNameBackfillTasks.length > 0) {
+      void Promise.allSettled(playerNameBackfillTasks);
+    }
 
     const embeds = buildEmbeds(rows);
     for (const embed of embeds) {

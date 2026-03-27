@@ -49,6 +49,11 @@ export type DiscordUserPlayerLink = {
   linkedName: string | null;
 };
 
+export type PlayerLinkNameBackfillResult = {
+  playerTag: string;
+  updated: boolean;
+};
+
 export const PLAYER_LINK_DISCORD_USERNAME_FALLBACK = "unknown";
 
 /** Purpose: normalize a player tag into uppercase #TAG format. */
@@ -315,6 +320,29 @@ export async function listPlayerLinksForDiscordUser(input: {
     });
   }
   return ordered;
+}
+
+/** Purpose: persist one linked in-game player name only when PlayerLink.playerName is currently missing. */
+export async function backfillPlayerLinkNameIfMissing(input: {
+  playerTag: string;
+  playerName: string;
+}): Promise<PlayerLinkNameBackfillResult> {
+  const playerTag = normalizePlayerTag(input.playerTag);
+  const playerName = normalizePersistedPlayerName(input.playerName);
+  if (!playerTag || !playerName) {
+    return { playerTag, updated: false };
+  }
+
+  const updateResult = await prisma.playerLink.updateMany({
+    where: {
+      playerTag,
+      OR: [{ playerName: null }, { playerName: "" }],
+    },
+    data: {
+      playerName,
+    },
+  });
+  return { playerTag, updated: updateResult.count > 0 };
 }
 
 /** Purpose: fetch current DB weights for provided player tags and return a deterministic lookup. */
