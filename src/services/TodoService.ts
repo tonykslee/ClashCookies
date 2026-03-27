@@ -27,6 +27,7 @@ type TodoRenderRow = {
   playerTag: string;
   playerName: string;
   defaultIndex: number;
+  townHall: number | null;
   clanTag: string | null;
   clanName: string | null;
   cwlClanTag: string | null;
@@ -38,6 +39,7 @@ type TodoRenderRow = {
   }>;
   warHeaderBadge: string | null;
   warMatchIndicator: string;
+  inValidatedWarMemberSet: boolean;
   snapshot: TodoSnapshotRecord | null;
   missingSnapshot: boolean;
   staleSnapshot: boolean;
@@ -82,6 +84,18 @@ type CurrentWarMatchContextRow = {
   updatedAt: Date;
 };
 
+type FwaClanMemberTownHallRow = {
+  playerTag: string;
+  clanTag: string;
+  townHall: number | null;
+  sourceSyncedAt: Date;
+};
+
+type FwaPlayerCatalogTownHallRow = {
+  playerTag: string;
+  latestTownHall: number | null;
+};
+
 const DISCORD_DESCRIPTION_LIMIT = 4096;
 const TODO_RENDER_CACHE_TTL_MS = 30_000;
 const TODO_STALE_ACTIVE_WAR_MS = 2 * 60 * 1000;
@@ -111,6 +125,16 @@ export function normalizeTodoType(input: string | null | undefined): TodoType {
 /** Purpose: clear in-memory todo render cache between isolated tests. */
 export function resetTodoRenderCacheForTest(): void {
   todoRenderCacheByKey.clear();
+}
+
+/** Purpose: invalidate cached todo render entries for one Discord user after snapshot rebuilds. */
+export function invalidateTodoRenderCacheForUser(discordUserId: string): void {
+  const keyPrefix = `${String(discordUserId ?? "").trim()}|`;
+  for (const key of todoRenderCacheByKey.keys()) {
+    if (key.startsWith(keyPrefix)) {
+      todoRenderCacheByKey.delete(key);
+    }
+  }
 }
 
 /** Purpose: build snapshot-backed todo pages for one user with cheap cache re-use. */
@@ -163,7 +187,8 @@ export async function buildTodoPagesForUser(input: {
     ),
   ];
 
-  const [trackedClanRows, currentWarRows] = await Promise.all([
+  const [trackedClanRows, currentWarRows, clanMemberTownHallRows, playerCatalogTownHallRows] =
+    await Promise.all([
     clanTags.length > 0
       ? prisma.trackedClan.findMany({
           where: { tag: { in: clanTags } },
@@ -184,7 +209,63 @@ export async function buildTodoPagesForUser(input: {
           },
         })
       : Promise.resolve([]),
-  ]);
+    linkedTags.length > 0
+      ? prisma.fwaClanMemberCurrent.findMany({
+          where: { playerTag: { in: linkedTags } },
+          select: {
+            playerTag: true,
+            clanTag: true,
+            townHall: true,
+            sourceSyncedAt: true,
+          },
+        })
+      : Promise.resolve([]),
+    linkedTags.length > 0
+      ? prisma.fwaPlayerCatalog.findMany({
+          where: { playerTag: { in: linkedTags } },
+          select: {
+            playerTag: true,
+            latestTownHall: true,
+          },
+        })
+      : Promise.resolve([]),
+    ]);
+
+  const townHallByClanAndPlayer = new Map<string, number>();
+  const latestTownHallByClanAndPlayer = new Map<string, Date>();
+  const townHallByPlayerTag = new Map<string, number>();
+  const latestTownHallByPlayerTag = new Map<string, Date>();
+  for (const row of clanMemberTownHallRows as FwaClanMemberTownHallRow[]) {
+    const playerTag = normalizePlayerTag(row.playerTag);
+    if (!playerTag) continue;
+    const normalizedTownHall = toFiniteIntOrNull(row.townHall);
+    if (normalizedTownHall === null || normalizedTownHall <= 0) continue;
+
+    const clanTag = normalizeClanTag(row.clanTag);
+    if (clanTag) {
+      const clanPlayerKey = `${clanTag}:${playerTag}`;
+      const existingSyncedAt = latestTownHallByClanAndPlayer.get(clanPlayerKey);
+      if (!existingSyncedAt || row.sourceSyncedAt > existingSyncedAt) {
+        latestTownHallByClanAndPlayer.set(clanPlayerKey, row.sourceSyncedAt);
+        townHallByClanAndPlayer.set(clanPlayerKey, normalizedTownHall);
+      }
+    }
+
+    const existingPlayerSyncedAt = latestTownHallByPlayerTag.get(playerTag);
+    if (!existingPlayerSyncedAt || row.sourceSyncedAt > existingPlayerSyncedAt) {
+      latestTownHallByPlayerTag.set(playerTag, row.sourceSyncedAt);
+      townHallByPlayerTag.set(playerTag, normalizedTownHall);
+    }
+  }
+
+  const townHallByPlayerCatalogTag = new Map<string, number>();
+  for (const row of playerCatalogTownHallRows as FwaPlayerCatalogTownHallRow[]) {
+    const playerTag = normalizePlayerTag(row.playerTag);
+    if (!playerTag) continue;
+    const townHall = toFiniteIntOrNull(row.latestTownHall);
+    if (townHall === null || townHall <= 0) continue;
+    townHallByPlayerCatalogTag.set(playerTag, townHall);
+  }
 
   const trackedClanTagSet = new Set(
     trackedClanRows
@@ -257,6 +338,17 @@ export async function buildTodoPagesForUser(input: {
     const resolvedWarAttackDetails = trackedClanActive
       ? (trackedWarMember?.attackDetails ?? [])
       : [];
+    const resolvedTownHall = (() => {
+      if (warMemberKey) {
+        const clanScoped = townHallByClanAndPlayer.get(warMemberKey);
+        if (clanScoped !== undefined) return clanScoped;
+      }
+      const playerScoped = townHallByPlayerTag.get(normalizedTag);
+      if (playerScoped !== undefined) return playerScoped;
+      const catalogScoped = townHallByPlayerCatalogTag.get(normalizedTag);
+      if (catalogScoped !== undefined) return catalogScoped;
+      return null;
+    })();
     const matchContext = resolvedClanTag
       ? warMatchContextByClanTag.get(resolvedClanTag) ?? null
       : null;
@@ -269,6 +361,7 @@ export async function buildTodoPagesForUser(input: {
       playerTag: normalizedTag,
       playerName: resolvedPlayerName,
       defaultIndex: index,
+      townHall: resolvedTownHall,
       clanTag: resolvedClanTag,
       clanName: snapshot?.clanName ?? null,
       cwlClanTag: snapshot?.cwlClanTag ?? null,
@@ -277,6 +370,7 @@ export async function buildTodoPagesForUser(input: {
       warAttackDetails: resolvedWarAttackDetails,
       warHeaderBadge: resolvedClanTag ? clanBadgeByTag.get(resolvedClanTag) ?? null : null,
       warMatchIndicator: resolveWarMatchStatusIndicator(matchContext),
+      inValidatedWarMemberSet: Boolean(trackedClanActive && trackedWarMember),
       snapshot,
       missingSnapshot,
       staleSnapshot,
@@ -349,7 +443,9 @@ function buildWarPageDescription(
   rows: TodoRenderRow[],
   linkedPlayerCount: number,
 ): string {
-  const activeRows = rows.filter((row) => Boolean(row.snapshot?.warActive));
+  const activeRows = rows.filter(
+    (row) => Boolean(row.snapshot?.warActive) && row.inValidatedWarMemberSet,
+  );
   if (activeRows.length <= 0) {
     return buildTodoPageDescription({
       heading: "WAR",
@@ -435,8 +531,8 @@ function buildRaidsPageDescription(
     lines.push(`**Time remaining:** ${formatRelativeTimestamp(sharedEndsAt)}`);
     lines.push("");
   }
-  for (const row of rows) {
-    lines.push(formatTodoRow(row, getRaidRowStatus(row)));
+  for (const row of sortRaidsRows(rows)) {
+    lines.push(formatRaidsTodoRow(row, getRaidRowStatus(row)));
   }
 
   return buildTodoPageDescription({
@@ -610,8 +706,21 @@ function formatGamesTodoRow(
   status: string,
   progressEmoji: string,
 ): string {
+  const points = Math.max(0, toFiniteIntOrNull(row.snapshot?.gamesPoints) ?? 0);
+  if (row.snapshot && points <= 0) {
+    return `:black_circle: ${formatPlayerIdentity(row)} - ${status}`;
+  }
   const progressPrefix = progressEmoji.length > 0 ? `${progressEmoji} ` : "";
-  return `- ${progressPrefix}${formatPlayerIdentity(row)} - ${status}`;
+  if (progressPrefix) {
+    return `${progressPrefix}${formatPlayerIdentity(row)} - ${status}`;
+  }
+  return `- ${formatPlayerIdentity(row)} - ${status}`;
+}
+
+/** Purpose: format one RAIDS row with completion marker emojis and unchanged status text. */
+function formatRaidsTodoRow(row: TodoRenderRow, status: string): string {
+  const marker = getRaidRowMarker(row);
+  return `${marker} ${formatPlayerIdentity(row)} - ${status}`;
 }
 
 /** Purpose: build one stable player identity token for todo row prefixes. */
@@ -654,8 +763,8 @@ function getWarRowStatus(row: TodoRenderRow): string {
   if (row.missingSnapshot || !row.snapshot) {
     return "`0 / 2` - snapshot unavailable";
   }
-  const { used, max } = getWarRowProgress(row);
-  const staleSuffix = row.staleSnapshot ? " - stale snapshot" : "";
+  const { used, max, complete } = getWarRowProgress(row);
+  const staleSuffix = row.staleSnapshot && !complete ? " - stale snapshot" : "";
   return `\`${used} / ${max}\`${staleSuffix}`;
 }
 
@@ -699,18 +808,43 @@ function getRaidRowStatus(row: TodoRenderRow): string {
     return "clan capital raids: snapshot unavailable";
   }
 
-  const used = clampInt(
-    row.snapshot.raidAttacksUsed,
-    0,
-    row.snapshot.raidAttacksMax || 6,
-  );
-  const max = Math.max(1, clampInt(row.snapshot.raidAttacksMax, 1, 6));
+  const { used, max } = getRaidRowProgress(row);
   const staleSuffix = row.staleSnapshot ? " - stale snapshot" : "";
 
   if (!row.snapshot.raidActive) {
     return `clan capital raids: ${used}/${max} - not active${staleSuffix}`;
   }
   return `clan capital raids: ${used}/${max}${staleSuffix}`;
+}
+
+/** Purpose: compute stable RAIDS used/max progress and completion flag for row marker decisions. */
+function getRaidRowProgress(row: TodoRenderRow): {
+  used: number;
+  max: number;
+  complete: boolean;
+} {
+  if (!row.snapshot) {
+    return { used: 0, max: 6, complete: false };
+  }
+  const used = clampInt(
+    row.snapshot.raidAttacksUsed,
+    0,
+    row.snapshot.raidAttacksMax || 6,
+  );
+  const max = Math.max(1, clampInt(row.snapshot.raidAttacksMax, 1, 6));
+  return { used, max, complete: used >= max };
+}
+
+/** Purpose: map one RAIDS row into marker semantics for complete/active/not-started states. */
+function getRaidRowMarker(row: TodoRenderRow): string {
+  const progress = getRaidRowProgress(row);
+  if (progress.used <= 0) {
+    return ":black_circle:";
+  }
+  if (progress.complete) {
+    return ":white_check_mark:";
+  }
+  return ":yellow_circle:";
 }
 
 /** Purpose: build GAMES row status text with points and completion marker, without per-row timer duplication. */
@@ -920,6 +1054,37 @@ function sortGamesRows(rows: TodoRenderRow[]): TodoRenderRow[] {
       const byTag = a.row.playerTag.localeCompare(b.row.playerTag);
       if (byTag !== 0) return byTag;
 
+      return a.index - b.index;
+    })
+    .map((entry) => entry.row);
+}
+
+/** Purpose: sort RAIDS rows by used attacks desc, then TH desc, then stable prior order. */
+function sortRaidsRows(rows: TodoRenderRow[]): TodoRenderRow[] {
+  return rows
+    .map((row, index) => ({ row, index }))
+    .sort((a, b) => {
+      const aUsed = getRaidRowProgress(a.row).used;
+      const bUsed = getRaidRowProgress(b.row).used;
+      if (aUsed !== bUsed) {
+        return bUsed - aUsed;
+      }
+
+      const aTownHall =
+        a.row.townHall !== null && a.row.townHall > 0
+          ? a.row.townHall
+          : Number.NEGATIVE_INFINITY;
+      const bTownHall =
+        b.row.townHall !== null && b.row.townHall > 0
+          ? b.row.townHall
+          : Number.NEGATIVE_INFINITY;
+      if (aTownHall !== bTownHall) {
+        return bTownHall - aTownHall;
+      }
+
+      if (a.row.defaultIndex !== b.row.defaultIndex) {
+        return a.row.defaultIndex - b.row.defaultIndex;
+      }
       return a.index - b.index;
     })
     .map((entry) => entry.row);

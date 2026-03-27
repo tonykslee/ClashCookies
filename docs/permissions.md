@@ -5,6 +5,7 @@
 - Administrator users can always use commands regardless of role whitelist.
 - `/fwa mail send` defaults to FWA leader-role + Administrator when no explicit whitelist is set.
 - `/fwa compliance` defaults to FWA leader-role + Administrator when no explicit whitelist is set.
+- `/fwa police` defaults to FWA leader-role + Administrator when no explicit whitelist is set.
 - `/fwa weight-age`, `/fwa weight-link`, `/fwa weight-health`, and `/fwa weight-cookie` default to FWA leader-role + Administrator when no explicit whitelist is set.
 - `/defer` defaults to FWA leader-role + Administrator when no explicit whitelist is set.
 - `/layout` is public by default; runtime `edit` (and optional `img-url` edit flow) still requires Administrator.
@@ -42,6 +43,8 @@ Examples:
   - `/permission add command:fwa:mail:send role:@RoleX`
 - Lock only `/fwa compliance` to role `@RoleX`:
   - `/permission add command:fwa:compliance role:@RoleX`
+- Lock only `/fwa police` to role `@RoleX`:
+  - `/permission add command:fwa:police role:@RoleX`
 - Lock only `/fwa weight-health` to role `@RoleX`:
   - `/permission add command:fwa:weight-health role:@RoleX`
 - Lock only `/fwa weight-cookie` to role `@RoleX`:

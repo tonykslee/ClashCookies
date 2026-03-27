@@ -6,7 +6,7 @@ import {
   extractGamesChampionTotalFromSignalState,
 } from "./ActivitySignalService";
 import { resolveCurrentCwlSeasonKey } from "./CwlRegistryService";
-import { CoCService } from "./CoCService";
+import { CoCService, type ClanCapitalRaidSeason } from "./CoCService";
 import { normalizeClanTag, normalizePlayerTag } from "./PlayerLinkService";
 import {
   buildTrackedWarMemberStateByClanAndPlayer,
@@ -256,6 +256,10 @@ export class TodoSnapshotService {
     const gamesWindow = resolveClanGamesWindow(nowMs);
     const gamesCycleKey = buildClanGamesCycleKey(gamesWindow.startMs);
     const currentCwlSeason = resolveCurrentCwlSeasonKey(nowMs);
+    const liveClanTagByPlayerTag = await loadLiveClanTagsByPlayerTag({
+      cocService: input.cocService,
+      playerTags: normalizedTags,
+    });
 
     const signalStateKeyByTag = new Map(
       normalizedTags.map((playerTag) => [
@@ -326,16 +330,21 @@ export class TodoSnapshotService {
         ),
       ]),
     );
+    const resolvedClanTagByPlayerTag = new Map<string, string | null>();
+    for (const playerTag of normalizedTags) {
+      const liveClanTag = liveClanTagByPlayerTag.get(playerTag) ?? "";
+      const fromMember = latestClanMemberByTag.get(playerTag)?.clanTag ?? "";
+      const fromExisting = existingByTag.get(playerTag)?.clanTag ?? "";
+      const resolvedClanTag =
+        normalizeClanTag(liveClanTag || fromMember || fromExisting) || null;
+      resolvedClanTagByPlayerTag.set(playerTag, resolvedClanTag);
+    }
 
     const clanTags = [
       ...new Set(
-        normalizedTags
-          .map((playerTag) => {
-            const fromMember = latestClanMemberByTag.get(playerTag)?.clanTag ?? "";
-            const fromExisting = existingByTag.get(playerTag)?.clanTag ?? "";
-            return normalizeClanTag(fromMember || fromExisting);
-          })
-          .filter(Boolean),
+        [...resolvedClanTagByPlayerTag.values()].filter(
+          (value): value is string => Boolean(value),
+        ),
       ),
     ];
 
@@ -457,6 +466,12 @@ export class TodoSnapshotService {
       cwlWarByClan,
       trackedCwlTags: cwlTrackedTagSet,
     });
+    const liveRaidAttacksUsedByPlayerTag =
+      await loadLiveRaidAttacksUsedByPlayerTag({
+        cocService: input.cocService,
+        raidWindow,
+        resolvedClanTagByPlayerTag,
+      });
 
     const snapshotUpserts: Array<
       Parameters<typeof prisma.todoPlayerSnapshot.upsert>[0]
@@ -468,10 +483,7 @@ export class TodoSnapshotService {
     for (const playerTag of normalizedTags) {
       const existing = existingByTag.get(playerTag);
       const latestClanMember = latestClanMemberByTag.get(playerTag) ?? null;
-      const resolvedClanTag =
-        normalizeClanTag(latestClanMember?.clanTag ?? "") ||
-        normalizeClanTag(existing?.clanTag ?? "") ||
-        null;
+      const resolvedClanTag = resolvedClanTagByPlayerTag.get(playerTag) ?? null;
       const resolvedClanName =
         (resolvedClanTag ? trackedClanNameByTag.get(resolvedClanTag) : null) ||
         sanitizeDisplayText(existing?.clanName ?? "") ||
@@ -578,7 +590,9 @@ export class TodoSnapshotService {
         cwlPhase,
         cwlEndsAt,
         raidActive: raidWindow.active,
-        raidAttacksUsed: clampInt(existing?.raidAttacksUsed, 0, 6),
+        raidAttacksUsed: raidWindow.active
+          ? clampInt(liveRaidAttacksUsedByPlayerTag.get(playerTag), 0, 6)
+          : 0,
         raidAttacksMax: 6,
         raidEndsAt: new Date(raidWindow.endMs),
         gamesActive: gamesWindow.active,
@@ -1066,6 +1080,124 @@ async function resolveActiveCwlWarForClan(input: {
   }
 
   return null;
+}
+
+/** Purpose: resolve live current-clan tags for player tags when CoC access is available. */
+async function loadLiveClanTagsByPlayerTag(input: {
+  cocService?: CoCService;
+  playerTags: string[];
+}): Promise<Map<string, string>> {
+  if (!input.cocService || typeof input.cocService.getPlayerRaw !== "function") {
+    return new Map();
+  }
+
+  const entries = await Promise.all(
+    input.playerTags.map(async (playerTag) => {
+      const player = await input.cocService!
+        .getPlayerRaw(playerTag, { suppressTelemetry: true })
+        .catch(() => null);
+      const clanTag = normalizeClanTag(String(player?.clan?.tag ?? ""));
+      return [playerTag, clanTag] as const;
+    }),
+  );
+  return new Map(
+    entries.filter((entry): entry is [string, string] => Boolean(entry[0] && entry[1])),
+  );
+}
+
+/** Purpose: fetch active raid-season member attacks once per clan and fan out by player tag. */
+async function loadLiveRaidAttacksUsedByPlayerTag(input: {
+  cocService?: CoCService;
+  raidWindow: TodoWindow;
+  resolvedClanTagByPlayerTag: Map<string, string | null>;
+}): Promise<Map<string, number>> {
+  if (
+    !input.raidWindow.active ||
+    !input.cocService ||
+    typeof input.cocService.getClanCapitalRaidSeasons !== "function"
+  ) {
+    return new Map();
+  }
+
+  const playerTagsByClanTag = new Map<string, string[]>();
+  for (const [playerTag, clanTag] of input.resolvedClanTagByPlayerTag.entries()) {
+    if (!clanTag) continue;
+    const existing = playerTagsByClanTag.get(clanTag);
+    if (existing) {
+      existing.push(playerTag);
+      continue;
+    }
+    playerTagsByClanTag.set(clanTag, [playerTag]);
+  }
+  if (playerTagsByClanTag.size <= 0) return new Map();
+
+  const attacksByPlayerTag = new Map<string, number>();
+  const clanTags = [...playerTagsByClanTag.keys()];
+  const clanMemberMaps = await Promise.all(
+    clanTags.map(async (clanTag) => {
+      const seasons = await input.cocService!
+        .getClanCapitalRaidSeasons(clanTag, 2)
+        .catch(() => []);
+      const season = selectRelevantRaidSeason({
+        seasons,
+        raidWindow: input.raidWindow,
+      });
+      const memberAttacksByTag = new Map<string, number>();
+      for (const member of Array.isArray(season?.members) ? season.members : []) {
+        const memberTag = normalizePlayerTag(String(member?.tag ?? ""));
+        if (!memberTag) continue;
+        memberAttacksByTag.set(memberTag, clampInt(member?.attacks, 0, 6));
+      }
+      return [clanTag, memberAttacksByTag] as const;
+    }),
+  );
+  const memberAttacksByClanTag = new Map(clanMemberMaps);
+
+  for (const [clanTag, playerTags] of playerTagsByClanTag.entries()) {
+    const memberAttacksByTag = memberAttacksByClanTag.get(clanTag) ?? new Map<string, number>();
+    for (const playerTag of playerTags) {
+      attacksByPlayerTag.set(
+        playerTag,
+        clampInt(memberAttacksByTag.get(playerTag), 0, 6),
+      );
+    }
+  }
+
+  return attacksByPlayerTag;
+}
+
+/** Purpose: choose one canonical raid season aligned to the active todo raid window. */
+function selectRelevantRaidSeason(input: {
+  seasons: ClanCapitalRaidSeason[];
+  raidWindow: TodoWindow;
+}): ClanCapitalRaidSeason | null {
+  if (!Array.isArray(input.seasons) || input.seasons.length <= 0) {
+    return null;
+  }
+
+  const withTimes = input.seasons.map((season) => ({
+    season,
+    startMs: parseCocTime(season.startTime ?? null)?.getTime() ?? null,
+    endMs: parseCocTime(season.endTime ?? null)?.getTime() ?? null,
+  }));
+
+  const exact = withTimes.find(
+    (entry) =>
+      entry.startMs === input.raidWindow.startMs ||
+      entry.endMs === input.raidWindow.endMs,
+  );
+  if (exact) return exact.season;
+
+  const nearestByEnd = [...withTimes]
+    .filter((entry): entry is { season: ClanCapitalRaidSeason; startMs: number | null; endMs: number } => entry.endMs !== null)
+    .sort(
+      (a, b) =>
+        Math.abs(a.endMs - input.raidWindow.endMs) -
+        Math.abs(b.endMs - input.raidWindow.endMs),
+    )[0];
+  if (nearestByEnd) return nearestByEnd.season;
+
+  return input.seasons[0];
 }
 
 /** Purpose: compute the current or next raid-weekend window with UTC-safe boundaries. */

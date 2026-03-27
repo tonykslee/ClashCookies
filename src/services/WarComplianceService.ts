@@ -1,5 +1,9 @@
 import { prisma } from "../prisma";
 import {
+  listPlayerLinksForClanMembers,
+  normalizePlayerTag,
+} from "./PlayerLinkService";
+import {
   type FwaLoseStyle,
   type MatchType,
   type WarComplianceAttack,
@@ -310,6 +314,37 @@ function buildAttackContextByAttack(
     });
   }
   return result;
+}
+
+type LinkedComplianceGroup = {
+  key: string;
+  isLinked: boolean;
+  memberTags: string[];
+  memberTagSet: Set<string>;
+};
+
+/** Purpose: track running clan true-stars totals in deterministic compliance order. */
+function buildStarsAfterByAttackIndex(
+  attacks: WarComplianceAttack[],
+): Map<number, number> {
+  const ordered = sortAttacksForComplianceOrder(attacks);
+  const result = new Map<number, number>();
+  let cumulative = 0;
+  for (let idx = 0; idx < ordered.length; idx += 1) {
+    const attack = ordered[idx];
+    cumulative += Math.max(0, Number(attack.trueStars ?? 0));
+    result.set(idx, cumulative);
+  }
+  return result;
+}
+
+/** Purpose: identify whether a traditional-loss attack row is in the late-window enforcement band. */
+function isLateLoseTraditionalWindow(attack: WarComplianceAttack): boolean {
+  if (!(attack.warEndTime instanceof Date)) return false;
+  const hoursRemaining =
+    (attack.warEndTime.getTime() - attack.attackSeenAt.getTime()) /
+    (60 * 60 * 1000);
+  return Number.isFinite(hoursRemaining) && hoursRemaining < 12;
 }
 
 type NotFollowingReason = {
@@ -1649,6 +1684,347 @@ export class WarComplianceService {
     });
   }
 
+  /** Purpose: resolve linked participant groups from canonical PlayerLink ownership for mirror-obligation substitutions. */
+  private async resolveLinkedComplianceGroups(
+    participants: WarComplianceParticipant[],
+  ): Promise<LinkedComplianceGroup[]> {
+    const participantByTag = new Map<string, WarComplianceParticipant>();
+    const orderedParticipantTags: string[] = [];
+    for (const participant of participants) {
+      const tag = normalizeTag(participant.playerTag);
+      if (!tag || participantByTag.has(tag)) continue;
+      participantByTag.set(tag, participant);
+      orderedParticipantTags.push(tag);
+    }
+
+    const orderedLinkLookupTags = orderedParticipantTags
+      .map((tag) => normalizePlayerTag(tag))
+      .filter(Boolean);
+    const lookupTagsUnique = [...new Set(orderedLinkLookupTags)];
+    const linkedRows =
+      lookupTagsUnique.length >= 2
+        ? await listPlayerLinksForClanMembers({
+            memberTagsInOrder: lookupTagsUnique,
+          }).catch(() => [])
+        : [];
+    const linkedUserByPlayerTag = new Map<string, string>(
+      linkedRows.map((row) => [normalizePlayerTag(row.playerTag), row.discordUserId]),
+    );
+
+    const groupByKey = new Map<
+      string,
+      { key: string; isLinked: boolean; memberTags: string[] }
+    >();
+    for (const tag of orderedParticipantTags) {
+      const strictTag = normalizePlayerTag(tag);
+      const linkedUserId = strictTag
+        ? linkedUserByPlayerTag.get(strictTag) ?? null
+        : null;
+      const key = linkedUserId ? `user:${linkedUserId}` : `tag:${tag}`;
+      const existing = groupByKey.get(key) ?? {
+        key,
+        isLinked: Boolean(linkedUserId),
+        memberTags: [],
+      };
+      existing.memberTags.push(tag);
+      groupByKey.set(key, existing);
+    }
+
+    const sortedPosition = (tag: string): number => {
+      const pos = participantByTag.get(tag)?.playerPosition;
+      return Number.isFinite(Number(pos)) && Number(pos) > 0
+        ? Number(pos)
+        : Number.MAX_SAFE_INTEGER;
+    };
+
+    return [...groupByKey.values()].map((group) => {
+      const memberTags = [...new Set(group.memberTags)].sort((a, b) => {
+        const posDelta = sortedPosition(a) - sortedPosition(b);
+        if (posDelta !== 0) return posDelta;
+        return a.localeCompare(b);
+      });
+      return {
+        key: group.key,
+        isLinked: group.isLinked,
+        memberTags,
+        memberTagSet: new Set(memberTags),
+      };
+    });
+  }
+
+  /** Purpose: evaluate grouped mirror obligations for FWA-WIN strict-window rules using linked-account substitution. */
+  private evaluateFwaWinLinkedGroupViolations(input: {
+    group: LinkedComplianceGroup;
+    orderedAttacks: WarComplianceAttack[];
+    attackContextByAttack: Map<WarComplianceAttack, AttackContext>;
+    participantByTag: Map<string, WarComplianceParticipant>;
+  }): Set<string> {
+    const strictAttackIndexes: number[] = [];
+    const strictSeenByTag = new Set<string>();
+    const mirrorTripleInStrictByTag = new Set<string>();
+    for (let idx = 0; idx < input.orderedAttacks.length; idx += 1) {
+      const attack = input.orderedAttacks[idx];
+      const playerTag = normalizeTag(attack.playerTag);
+      if (!input.group.memberTagSet.has(playerTag)) continue;
+      const context = input.attackContextByAttack.get(attack);
+      if (!context?.isStrictWindow) continue;
+      strictAttackIndexes.push(idx);
+      strictSeenByTag.add(playerTag);
+      if (context.isMirror && Number(attack.stars ?? 0) >= 3) {
+        mirrorTripleInStrictByTag.add(playerTag);
+      }
+    }
+
+    const obligations = input.group.memberTags
+      .map((ownerTag) => ({
+        ownerTag,
+        ownerPosition: input.participantByTag.get(ownerTag)?.playerPosition ?? null,
+      }))
+      .filter(
+        (row): row is { ownerTag: string; ownerPosition: number } =>
+          Number.isFinite(Number(row.ownerPosition)) &&
+          Number(row.ownerPosition) > 0,
+      )
+      .sort((a, b) => {
+        if (a.ownerPosition !== b.ownerPosition) {
+          return a.ownerPosition - b.ownerPosition;
+        }
+        return a.ownerTag.localeCompare(b.ownerTag);
+      });
+
+    const usedAttackIndexes = new Set<number>();
+    const satisfiedOwnerTags = new Set<string>();
+    for (const obligation of obligations) {
+      for (const idx of strictAttackIndexes) {
+        if (usedAttackIndexes.has(idx)) continue;
+        const attack = input.orderedAttacks[idx];
+        const defenderPosition = Number(attack.defenderPosition ?? NaN);
+        if (!Number.isFinite(defenderPosition) || defenderPosition <= 0) continue;
+        if (defenderPosition !== obligation.ownerPosition) continue;
+        if (Number(attack.stars ?? 0) < 3) continue;
+        usedAttackIndexes.add(idx);
+        satisfiedOwnerTags.add(obligation.ownerTag);
+        break;
+      }
+    }
+
+    const violatingTags = new Set<string>();
+    for (const obligation of obligations) {
+      if (!satisfiedOwnerTags.has(obligation.ownerTag)) {
+        violatingTags.add(obligation.ownerTag);
+      }
+    }
+
+    for (const idx of strictAttackIndexes) {
+      const attack = input.orderedAttacks[idx];
+      const context = input.attackContextByAttack.get(attack);
+      if (!context || context.isMirror) continue;
+      const playerTag = normalizeTag(attack.playerTag);
+      const stars = Number(attack.stars ?? 0);
+      const trueStars = Number(attack.trueStars ?? 0);
+      if (stars <= 0) {
+        violatingTags.add(playerTag);
+        continue;
+      }
+      if (stars === 3 && trueStars > 0 && !usedAttackIndexes.has(idx)) {
+        violatingTags.add(playerTag);
+      }
+    }
+
+    for (const playerTag of strictSeenByTag) {
+      const ownerPosition = input.participantByTag.get(playerTag)?.playerPosition;
+      const hasOwnedMirror =
+        Number.isFinite(Number(ownerPosition)) && Number(ownerPosition) > 0;
+      if (hasOwnedMirror) continue;
+      if (!mirrorTripleInStrictByTag.has(playerTag)) {
+        violatingTags.add(playerTag);
+      }
+    }
+
+    return violatingTags;
+  }
+
+  /** Purpose: evaluate grouped mirror obligations for FWA-LOSS_TRADITIONAL late-window mirror rules. */
+  private evaluateFwaLossTraditionalLinkedGroupViolations(input: {
+    group: LinkedComplianceGroup;
+    orderedAttacks: WarComplianceAttack[];
+    starsAfterByAttackIndex: Map<number, number>;
+    participantByTag: Map<string, WarComplianceParticipant>;
+  }): Set<string> {
+    const lateAttackIndexes: number[] = [];
+    const lateSeenByTag = new Set<string>();
+    for (let idx = 0; idx < input.orderedAttacks.length; idx += 1) {
+      const attack = input.orderedAttacks[idx];
+      const playerTag = normalizeTag(attack.playerTag);
+      if (!input.group.memberTagSet.has(playerTag)) continue;
+      if (!isLateLoseTraditionalWindow(attack)) continue;
+      lateAttackIndexes.push(idx);
+      lateSeenByTag.add(playerTag);
+    }
+
+    const obligations = input.group.memberTags
+      .map((ownerTag) => ({
+        ownerTag,
+        ownerPosition: input.participantByTag.get(ownerTag)?.playerPosition ?? null,
+      }))
+      .filter(
+        (row): row is { ownerTag: string; ownerPosition: number } =>
+          Number.isFinite(Number(row.ownerPosition)) &&
+          Number(row.ownerPosition) > 0,
+      )
+      .sort((a, b) => {
+        if (a.ownerPosition !== b.ownerPosition) {
+          return a.ownerPosition - b.ownerPosition;
+        }
+        return a.ownerTag.localeCompare(b.ownerTag);
+      });
+
+    const usedAttackIndexes = new Set<number>();
+    const satisfiedOwnerTags = new Set<string>();
+    for (const obligation of obligations) {
+      for (const idx of lateAttackIndexes) {
+        if (usedAttackIndexes.has(idx)) continue;
+        const attack = input.orderedAttacks[idx];
+        const defenderPosition = Number(attack.defenderPosition ?? NaN);
+        if (!Number.isFinite(defenderPosition) || defenderPosition <= 0) continue;
+        if (defenderPosition !== obligation.ownerPosition) continue;
+        if (Number(attack.stars ?? 0) !== 2) continue;
+        usedAttackIndexes.add(idx);
+        satisfiedOwnerTags.add(obligation.ownerTag);
+        break;
+      }
+    }
+
+    const violatingTags = new Set<string>();
+    for (let idx = 0; idx < input.orderedAttacks.length; idx += 1) {
+      const attack = input.orderedAttacks[idx];
+      const playerTag = normalizeTag(attack.playerTag);
+      if (!input.group.memberTagSet.has(playerTag)) continue;
+      const stars = Number(attack.stars ?? 0);
+
+      if (isLateLoseTraditionalWindow(attack)) {
+        const playerPosition = attack.playerPosition ?? null;
+        const defenderPosition = attack.defenderPosition ?? null;
+        const isMirror =
+          playerPosition !== null &&
+          defenderPosition !== null &&
+          playerPosition === defenderPosition;
+        const validLateAttack =
+          (isMirror && stars === 2) ||
+          (!isMirror && stars === 1) ||
+          (stars === 2 && usedAttackIndexes.has(idx));
+        if (!validLateAttack) {
+          violatingTags.add(playerTag);
+        }
+        continue;
+      }
+
+      if (!(stars === 1 || stars === 2)) {
+        violatingTags.add(playerTag);
+      }
+      if ((input.starsAfterByAttackIndex.get(idx) ?? 0) > 100) {
+        violatingTags.add(playerTag);
+      }
+    }
+
+    for (const obligation of obligations) {
+      if (!satisfiedOwnerTags.has(obligation.ownerTag)) {
+        violatingTags.add(obligation.ownerTag);
+      }
+    }
+
+    return violatingTags;
+  }
+
+  /** Purpose: apply linked-account mirror-obligation substitutions to canonical not-following output without introducing police-only logic. */
+  private async applyLinkedMirrorGroupingToNotFollowingNames(input: {
+    baselineNames: string[];
+    participantByLabel: Map<string, WarComplianceParticipant>;
+    participants: WarComplianceParticipant[];
+    attacks: WarComplianceAttack[];
+    attackContextByAttack: Map<WarComplianceAttack, AttackContext>;
+    matchType: MatchType;
+    expectedOutcome: "WIN" | "LOSE" | null;
+    loseStyle: FwaLoseStyle;
+  }): Promise<string[]> {
+    const baselineNamesUniqueSorted = [...new Set(input.baselineNames)].sort((a, b) =>
+      a.localeCompare(b),
+    );
+    const groupedModeEnabled =
+      input.matchType === "FWA" &&
+      (input.expectedOutcome === "WIN" ||
+        (input.expectedOutcome === "LOSE" && input.loseStyle === "TRADITIONAL"));
+    if (!groupedModeEnabled) return baselineNamesUniqueSorted;
+
+    const groups = await this.resolveLinkedComplianceGroups(input.participants);
+    const hasMultiLinkedGroup = groups.some(
+      (group) => group.isLinked && group.memberTags.length > 1,
+    );
+    if (!hasMultiLinkedGroup) return baselineNamesUniqueSorted;
+
+    const participantByTag = new Map<string, WarComplianceParticipant>();
+    const labelByTag = new Map<string, string>();
+    for (const participant of input.participants) {
+      const tag = normalizeTag(participant.playerTag);
+      if (!tag) continue;
+      participantByTag.set(tag, participant);
+      labelByTag.set(
+        tag,
+        getParticipantLabel({
+          playerName: participant.playerName,
+          playerTag: participant.playerTag,
+        }),
+      );
+    }
+
+    const preservedUnknownNames: string[] = [];
+    const baselineViolationTags = new Set<string>();
+    for (const name of baselineNamesUniqueSorted) {
+      const participant = input.participantByLabel.get(name);
+      const tag = normalizeTag(participant?.playerTag ?? "");
+      if (!tag) {
+        preservedUnknownNames.push(name);
+        continue;
+      }
+      baselineViolationTags.add(tag);
+    }
+
+    const orderedAttacks = sortAttacksForComplianceOrder(input.attacks);
+    const starsAfterByAttackIndex = buildStarsAfterByAttackIndex(input.attacks);
+    for (const group of groups) {
+      if (!group.isLinked || group.memberTags.length <= 1) continue;
+      for (const memberTag of group.memberTags) {
+        baselineViolationTags.delete(memberTag);
+      }
+
+      const groupedViolations =
+        input.expectedOutcome === "WIN"
+          ? this.evaluateFwaWinLinkedGroupViolations({
+              group,
+              orderedAttacks,
+              attackContextByAttack: input.attackContextByAttack,
+              participantByTag,
+            })
+          : this.evaluateFwaLossTraditionalLinkedGroupViolations({
+              group,
+              orderedAttacks,
+              starsAfterByAttackIndex,
+              participantByTag,
+            });
+      for (const tag of groupedViolations) {
+        baselineViolationTags.add(tag);
+      }
+    }
+
+    const mappedNames = [...baselineViolationTags]
+      .map((tag) => labelByTag.get(tag))
+      .filter((name): name is string => Boolean(name))
+      .sort((a, b) => a.localeCompare(b));
+    return [...new Set([...mappedNames, ...preservedUnknownNames])].sort((a, b) =>
+      a.localeCompare(b),
+    );
+  }
+
   /** Purpose: resolve effective FWA-WIN strict-window gate config for command evaluations. */
   private async resolveEffectiveFwaWinGateConfig(
     context: ComplianceContext,
@@ -1760,6 +2136,17 @@ export class WarComplianceService {
       expectedOutcome: context.expectedOutcome,
       loseStyle,
     });
+    const adjustedNotFollowingNames =
+      await this.applyLinkedMirrorGroupingToNotFollowingNames({
+        baselineNames: snapshot.notFollowingPlan,
+        participantByLabel,
+        participants: context.participants,
+        attacks: context.attacks,
+        attackContextByAttack,
+        matchType: context.matchType,
+        expectedOutcome: context.expectedOutcome,
+        loseStyle,
+      });
 
     return {
       clanTag: context.clanTag,
@@ -1783,7 +2170,7 @@ export class WarComplianceService {
         loseStyle,
       }),
       notFollowingPlan: mapNamesToIssues({
-        names: snapshot.notFollowingPlan,
+        names: adjustedNotFollowingNames,
         ruleType: "not_following_plan",
         expectedBehavior: expectedPlanBehavior,
         participantByLabel,
