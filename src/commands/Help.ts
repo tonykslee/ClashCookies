@@ -291,6 +291,8 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "WAR/CWL pages group players by shared active event context and include section headers with phase timing.",
       "RAIDS/GAMES pages use one shared top timer line and then list per-player progress rows.",
       "GAMES page points come from stored activity-signal totals, with cycle baseline/total observability persisted on TodoPlayerSnapshot for DB-first reads.",
+      "GAMES rows are sorted by observed `gamesChampionTotal` descending, with stable tie-breakers by player identity.",
+      "GAMES rows use progress indicators: `🟡` (>0), `✅` (>=4000), and `🏆` (>=10000).",
       "When a page has no active context, it renders explicit inactive text instead of a blank list.",
       "Linked players outside active contexts are still shown as neutral rows when active groups exist.",
       "If you have no linked tags, the command returns a clear private error and suggests `/link create`.",
