@@ -29,6 +29,10 @@ const prismaMock = vi.hoisted(() => ({
   },
   cwlPlayerClanSeason: {
     findMany: vi.fn(),
+    upsert: vi.fn(),
+  },
+  botSetting: {
+    findMany: vi.fn(),
   },
   $transaction: vi.fn(async (arg: any) => {
     if (typeof arg === "function") {
@@ -51,11 +55,14 @@ vi.mock("../src/prisma", () => ({
 }));
 
 import {
+  buildTodoRefreshButtonCustomId,
   buildTodoPageButtonCustomId,
   handleTodoPageButtonInteraction,
+  handleTodoRefreshButtonInteraction,
   Todo,
 } from "../src/commands/Todo";
 import { resetTodoRenderCacheForTest } from "../src/services/TodoService";
+import { todoSnapshotService } from "../src/services/TodoSnapshotService";
 
 type TodoType = "WAR" | "CWL" | "RAIDS" | "GAMES";
 
@@ -73,11 +80,18 @@ function makeTodoInteraction(input: { type: TodoType; userId?: string }) {
 function makeTodoButtonInteraction(input: {
   customId: string;
   userId?: string;
+  messageId?: string;
+  guildId?: string | null;
 }) {
   return {
     customId: input.customId,
     user: { id: input.userId ?? "111111111111111111" },
+    guildId: input.guildId ?? "123456789012345678",
+    message: { id: input.messageId ?? "999999999999999999" },
     update: vi.fn().mockResolvedValue(undefined),
+    deferUpdate: vi.fn().mockResolvedValue(undefined),
+    editReply: vi.fn().mockResolvedValue(undefined),
+    followUp: vi.fn().mockResolvedValue(undefined),
     reply: vi.fn().mockResolvedValue(undefined),
     deferred: false,
     replied: false,
@@ -193,6 +207,8 @@ describe("/todo command", () => {
     prismaMock.trackedClan.findMany.mockReset();
     prismaMock.cwlTrackedClan.findMany.mockReset();
     prismaMock.cwlPlayerClanSeason.findMany.mockReset();
+    prismaMock.cwlPlayerClanSeason.upsert.mockReset();
+    prismaMock.botSetting.findMany.mockReset();
     prismaMock.$transaction.mockClear();
 
     prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
@@ -207,6 +223,8 @@ describe("/todo command", () => {
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
     prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+    prismaMock.cwlPlayerClanSeason.upsert.mockResolvedValue(undefined);
+    prismaMock.botSetting.findMany.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -261,6 +279,9 @@ describe("/todo command", () => {
       "CWL",
       "RAIDS",
       "GAMES",
+    ]);
+    expect(payload.components[1].components.map((b: any) => b.toJSON().label)).toEqual([
+      "Refresh",
     ]);
     expect(cocService.getPlayerRaw).not.toHaveBeenCalled();
     expect(cocService.getCurrentWar).not.toHaveBeenCalled();
@@ -712,5 +733,162 @@ describe("/todo pagination buttons", () => {
       content: "Only the command requester can use this button.",
     });
     expect(interaction.update).not.toHaveBeenCalled();
+  });
+});
+
+describe("/todo refresh button", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetTodoRenderCacheForTest();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-26T00:00:00.000Z"));
+
+    prismaMock.playerLink.findMany.mockReset();
+    prismaMock.todoPlayerSnapshot.aggregate.mockReset();
+    prismaMock.todoPlayerSnapshot.findMany.mockReset();
+
+    prismaMock.playerLink.findMany.mockImplementation(async (args: any) => {
+      const userId = String(args?.where?.discordUserId ?? "");
+      if (userId === "222222222222222222") {
+        return [
+          { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },
+          { playerTag: "#QGRJ2222", createdAt: new Date("2026-03-02T00:00:00.000Z") },
+        ];
+      }
+      return [
+        { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },
+        { playerTag: "#QGRJ2222", createdAt: new Date("2026-03-02T00:00:00.000Z") },
+      ];
+    });
+    prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
+      _count: { _all: 2 },
+      _max: { updatedAt: new Date("2026-03-26T00:00:00.000Z") },
+    });
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      makeSnapshotRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha",
+        warAttacksUsed: 1,
+        cwlAttacksUsed: 1,
+        raidAttacksUsed: 3,
+        gamesPoints: 1200,
+      }),
+      makeSnapshotRow({
+        playerTag: "#QGRJ2222",
+        playerName: "Bravo",
+        warAttacksUsed: 2,
+        cwlAttacksUsed: 0,
+        raidAttacksUsed: 0,
+        gamesPoints: 2000,
+      }),
+    ]);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  it("refreshes the target user snapshots and updates the existing message on the same page", async () => {
+    const refreshSpy = vi
+      .spyOn(todoSnapshotService, "refreshSnapshotsForPlayerTags")
+      .mockResolvedValue({ playerCount: 2, updatedCount: 2 });
+    const interaction = makeTodoButtonInteraction({
+      customId: buildTodoRefreshButtonCustomId({
+        guildScopeId: "123456789012345678",
+        requesterUserId: "111111111111111111",
+        targetUserId: "222222222222222222",
+        type: "GAMES",
+      }),
+      userId: "111111111111111111",
+      guildId: "123456789012345678",
+    });
+
+    await handleTodoRefreshButtonInteraction(interaction as any, makeCocServiceSpy() as any);
+
+    expect(interaction.deferUpdate).toHaveBeenCalledTimes(1);
+    expect(refreshSpy).toHaveBeenCalledWith({
+      playerTags: ["#PYLQ0289", "#QGRJ2222"],
+      cocService: expect.anything(),
+    });
+    expect(interaction.editReply).toHaveBeenCalledTimes(1);
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    expect(payload.embeds[0].toJSON().title).toBe("Todo - GAMES");
+    expect(payload.components[1].components.map((b: any) => b.toJSON().label)).toEqual([
+      "Refresh",
+    ]);
+    expect(interaction.followUp).not.toHaveBeenCalled();
+  });
+
+  it("uses no-linked-tags behavior when the target user has no links", async () => {
+    const refreshSpy = vi
+      .spyOn(todoSnapshotService, "refreshSnapshotsForPlayerTags")
+      .mockResolvedValue({ playerCount: 0, updatedCount: 0 });
+    prismaMock.playerLink.findMany.mockResolvedValue([]);
+    const interaction = makeTodoButtonInteraction({
+      customId: buildTodoRefreshButtonCustomId({
+        guildScopeId: "123456789012345678",
+        requesterUserId: "111111111111111111",
+        targetUserId: "222222222222222222",
+        type: "WAR",
+      }),
+      userId: "111111111111111111",
+      guildId: "123456789012345678",
+    });
+
+    await handleTodoRefreshButtonInteraction(interaction as any, makeCocServiceSpy() as any);
+
+    expect(refreshSpy).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      content:
+        "no_linked_tags: no linked player tags found for your Discord account. Use `/link create player-tag:<tag>` first.",
+      embeds: [],
+      components: [],
+    });
+  });
+
+  it("returns a specific ephemeral error when targeted refresh fails", async () => {
+    vi.spyOn(todoSnapshotService, "refreshSnapshotsForPlayerTags").mockRejectedValue(
+      new Error("refresh failed"),
+    );
+    const interaction = makeTodoButtonInteraction({
+      customId: buildTodoRefreshButtonCustomId({
+        guildScopeId: "123456789012345678",
+        requesterUserId: "111111111111111111",
+        targetUserId: "222222222222222222",
+        type: "RAIDS",
+      }),
+      userId: "111111111111111111",
+      guildId: "123456789012345678",
+    });
+
+    await handleTodoRefreshButtonInteraction(interaction as any, makeCocServiceSpy() as any);
+
+    expect(interaction.followUp).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "Failed to refresh todo data. Please try again.",
+    });
+    expect(interaction.editReply).not.toHaveBeenCalled();
+  });
+
+  it("rejects refresh clicks from non-requesting users", async () => {
+    const interaction = makeTodoButtonInteraction({
+      customId: buildTodoRefreshButtonCustomId({
+        guildScopeId: "123456789012345678",
+        requesterUserId: "111111111111111111",
+        targetUserId: "222222222222222222",
+        type: "WAR",
+      }),
+      userId: "333333333333333333",
+      guildId: "123456789012345678",
+    });
+
+    await handleTodoRefreshButtonInteraction(interaction as any, makeCocServiceSpy() as any);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "Only the command requester can use this button.",
+    });
+    expect(interaction.deferUpdate).not.toHaveBeenCalled();
   });
 });

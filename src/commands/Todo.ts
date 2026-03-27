@@ -9,6 +9,8 @@ import {
   EmbedBuilder,
 } from "discord.js";
 import { Command } from "../Command";
+import { formatError } from "../helper/formatError";
+import { listPlayerLinksForDiscordUser } from "../services/PlayerLinkService";
 import { CoCService } from "../services/CoCService";
 import {
   buildTodoPagesForUser,
@@ -16,9 +18,28 @@ import {
   TODO_TYPES,
   type TodoType,
 } from "../services/TodoService";
+import { todoSnapshotService } from "../services/TodoSnapshotService";
 
 const TODO_PAGE_BUTTON_PREFIX = "todo-page";
+const TODO_REFRESH_BUTTON_PREFIX = "todo-refresh";
 const TODO_EMBED_COLOR = 0x5865f2;
+const TODO_GUILD_SCOPE_DM = "dm";
+const TODO_REFRESH_ERROR_MESSAGE =
+  "Failed to refresh todo data. Please try again.";
+const todoRefreshInFlightByMessageId = new Set<string>();
+
+type TodoButtonScope = {
+  guildScopeId: string;
+  requesterUserId: string;
+  targetUserId: string;
+};
+
+type ParsedTodoButtonScope = {
+  guildScopeId: string | null;
+  requesterUserId: string;
+  targetUserId: string;
+  type: TodoType;
+};
 
 type TodoRenderResult =
   | {
@@ -30,12 +51,48 @@ type TodoRenderResult =
     }
   | { ok: false; message: string };
 
+/** Purpose: build one stable guild scope token from guild-id or DM context. */
+function resolveTodoGuildScopeId(guildId: string | null | undefined): string {
+  const normalized = String(guildId ?? TODO_GUILD_SCOPE_DM).trim();
+  return normalized.length > 0 ? normalized : TODO_GUILD_SCOPE_DM;
+}
+
+/** Purpose: validate that one parsed guild scope still matches the interaction guild. */
+function isTodoGuildScopeMismatch(
+  parsedGuildScopeId: string | null,
+  interactionGuildId: string | null,
+): boolean {
+  if (!parsedGuildScopeId) return false;
+  return parsedGuildScopeId !== resolveTodoGuildScopeId(interactionGuildId);
+}
+
 /** Purpose: build one stable todo-page button custom-id. */
 export function buildTodoPageButtonCustomId(
   userId: string,
   type: TodoType,
+): string;
+export function buildTodoPageButtonCustomId(
+  input: TodoButtonScope & { type: TodoType },
+): string;
+export function buildTodoPageButtonCustomId(
+  inputOrUserId: (TodoButtonScope & { type: TodoType }) | string,
+  maybeType?: TodoType,
 ): string {
-  return `${TODO_PAGE_BUTTON_PREFIX}:${userId}:${type}`;
+  if (typeof inputOrUserId === "string") {
+    const userId = inputOrUserId;
+    const type = normalizeTodoType(maybeType);
+    return `${TODO_PAGE_BUTTON_PREFIX}:${userId}:${type}`;
+  }
+  const guildScopeId = resolveTodoGuildScopeId(inputOrUserId.guildScopeId);
+  return `${TODO_PAGE_BUTTON_PREFIX}:${guildScopeId}:${inputOrUserId.requesterUserId}:${inputOrUserId.targetUserId}:${normalizeTodoType(inputOrUserId.type)}`;
+}
+
+/** Purpose: build one stable todo-refresh button custom-id for targeted snapshot rebuild. */
+export function buildTodoRefreshButtonCustomId(
+  input: TodoButtonScope & { type: TodoType },
+): string {
+  const guildScopeId = resolveTodoGuildScopeId(input.guildScopeId);
+  return `${TODO_REFRESH_BUTTON_PREFIX}:${guildScopeId}:${input.requesterUserId}:${input.targetUserId}:${normalizeTodoType(input.type)}`;
 }
 
 /** Purpose: guard whether a button custom-id belongs to `/todo` paging. */
@@ -43,29 +100,94 @@ export function isTodoPageButtonCustomId(customId: string): boolean {
   return String(customId ?? "").startsWith(`${TODO_PAGE_BUTTON_PREFIX}:`);
 }
 
-/** Purpose: parse todo-page button custom-id with user scope and page type. */
+/** Purpose: guard whether a button custom-id belongs to `/todo` refresh. */
+export function isTodoRefreshButtonCustomId(customId: string): boolean {
+  return String(customId ?? "").startsWith(`${TODO_REFRESH_BUTTON_PREFIX}:`);
+}
+
+/** Purpose: parse todo-page button custom-id with requester/target scope and page type. */
 function parseTodoPageButtonCustomId(
   customId: string,
-): { userId: string; type: TodoType } | null {
+): ParsedTodoButtonScope | null {
   const parts = String(customId ?? "").split(":");
-  if (parts.length !== 3 || parts[0] !== TODO_PAGE_BUTTON_PREFIX) return null;
-  const userId = parts[1]?.trim() ?? "";
-  if (!userId) return null;
-  return { userId, type: normalizeTodoType(parts[2]) };
+  if (parts[0] !== TODO_PAGE_BUTTON_PREFIX) return null;
+
+  if (parts.length === 3) {
+    const requesterUserId = parts[1]?.trim() ?? "";
+    if (!requesterUserId) return null;
+    return {
+      guildScopeId: null,
+      requesterUserId,
+      targetUserId: requesterUserId,
+      type: normalizeTodoType(parts[2]),
+    };
+  }
+
+  if (parts.length !== 5) return null;
+  const guildScopeId = resolveTodoGuildScopeId(parts[1]);
+  const requesterUserId = parts[2]?.trim() ?? "";
+  const targetUserId = parts[3]?.trim() ?? "";
+  if (!requesterUserId || !targetUserId) return null;
+  return {
+    guildScopeId,
+    requesterUserId,
+    targetUserId,
+    type: normalizeTodoType(parts[4]),
+  };
+}
+
+/** Purpose: parse todo-refresh button custom-id with requester/target scope and selected page type. */
+function parseTodoRefreshButtonCustomId(
+  customId: string,
+): ParsedTodoButtonScope | null {
+  const parts = String(customId ?? "").split(":");
+  if (parts.length !== 5 || parts[0] !== TODO_REFRESH_BUTTON_PREFIX) return null;
+  const guildScopeId = resolveTodoGuildScopeId(parts[1]);
+  const requesterUserId = parts[2]?.trim() ?? "";
+  const targetUserId = parts[3]?.trim() ?? "";
+  if (!requesterUserId || !targetUserId) return null;
+  return {
+    guildScopeId,
+    requesterUserId,
+    targetUserId,
+    type: normalizeTodoType(parts[4]),
+  };
 }
 
 /** Purpose: build todo page-switch buttons with active page highlight. */
-function buildTodoPageButtons(
-  commandUserId: string,
+function buildTodoComponentRows(
+  scope: TodoButtonScope,
   activeType: TodoType,
 ): ActionRowBuilder<ButtonBuilder>[] {
-  const buttons = TODO_TYPES.map((type) =>
+  const pagingButtons = TODO_TYPES.map((type) =>
     new ButtonBuilder()
-      .setCustomId(buildTodoPageButtonCustomId(commandUserId, type))
+      .setCustomId(
+        buildTodoPageButtonCustomId({
+          guildScopeId: scope.guildScopeId,
+          requesterUserId: scope.requesterUserId,
+          targetUserId: scope.targetUserId,
+          type,
+        }),
+      )
       .setLabel(type)
       .setStyle(type === activeType ? ButtonStyle.Primary : ButtonStyle.Secondary),
   );
-  return [new ActionRowBuilder<ButtonBuilder>().addComponents(buttons)];
+  const refreshButton = new ButtonBuilder()
+    .setCustomId(
+      buildTodoRefreshButtonCustomId({
+        guildScopeId: scope.guildScopeId,
+        requesterUserId: scope.requesterUserId,
+        targetUserId: scope.targetUserId,
+        type: activeType,
+      }),
+    )
+    .setLabel("Refresh")
+    .setStyle(ButtonStyle.Secondary);
+
+  return [
+    new ActionRowBuilder<ButtonBuilder>().addComponents(pagingButtons),
+    new ActionRowBuilder<ButtonBuilder>().addComponents(refreshButton),
+  ];
 }
 
 /** Purpose: build one todo embed for the selected page type. */
@@ -87,13 +209,12 @@ function buildTodoEmbed(input: {
 
 /** Purpose: build a rendered todo response payload for one selected page type. */
 async function buildTodoRenderResult(input: {
-  interaction: ChatInputCommandInteraction | ButtonInteraction;
   cocService: CoCService;
   selectedType: TodoType;
-  commandUserId: string;
+  scope: TodoButtonScope;
 }): Promise<TodoRenderResult> {
   const pages = await buildTodoPagesForUser({
-    discordUserId: input.commandUserId,
+    discordUserId: input.scope.targetUserId,
     cocService: input.cocService,
   });
   if (pages.linkedPlayerCount <= 0) {
@@ -115,7 +236,7 @@ async function buildTodoRenderResult(input: {
           pageText: pages.pages[normalizedType],
         }),
       ],
-      components: buildTodoPageButtons(input.commandUserId, normalizedType),
+      components: buildTodoComponentRows(input.scope, normalizedType),
     },
   };
 }
@@ -128,7 +249,15 @@ export async function handleTodoPageButtonInteraction(
   const parsed = parseTodoPageButtonCustomId(interaction.customId);
   if (!parsed) return;
 
-  if (interaction.user.id !== parsed.userId) {
+  if (isTodoGuildScopeMismatch(parsed.guildScopeId, interaction.guildId)) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "This todo view is no longer valid for this guild.",
+    });
+    return;
+  }
+
+  if (interaction.user.id !== parsed.requesterUserId) {
     await interaction.reply({
       ephemeral: true,
       content: "Only the command requester can use this button.",
@@ -137,10 +266,13 @@ export async function handleTodoPageButtonInteraction(
   }
 
   const result = await buildTodoRenderResult({
-    interaction,
     cocService,
     selectedType: parsed.type,
-    commandUserId: parsed.userId,
+    scope: {
+      guildScopeId: parsed.guildScopeId || resolveTodoGuildScopeId(interaction.guildId),
+      requesterUserId: parsed.requesterUserId,
+      targetUserId: parsed.targetUserId,
+    },
   });
   if (!result.ok) {
     await interaction.update({
@@ -155,6 +287,96 @@ export async function handleTodoPageButtonInteraction(
     content: null,
     ...result.payload,
   });
+}
+
+/** Purpose: handle `/todo` refresh button interactions with targeted scoped snapshot rebuild. */
+export async function handleTodoRefreshButtonInteraction(
+  interaction: ButtonInteraction,
+  cocService: CoCService,
+): Promise<void> {
+  const parsed = parseTodoRefreshButtonCustomId(interaction.customId);
+  if (!parsed) return;
+
+  if (isTodoGuildScopeMismatch(parsed.guildScopeId, interaction.guildId)) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "This todo view is no longer valid for this guild.",
+    });
+    return;
+  }
+
+  if (interaction.user.id !== parsed.requesterUserId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Only the command requester can use this button.",
+    });
+    return;
+  }
+
+  const messageId = String(interaction.message?.id ?? "");
+  if (messageId && todoRefreshInFlightByMessageId.has(messageId)) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "A refresh is already in progress for this todo view.",
+    });
+    return;
+  }
+
+  if (messageId) {
+    todoRefreshInFlightByMessageId.add(messageId);
+  }
+
+  await interaction.deferUpdate();
+
+  try {
+    const links = await listPlayerLinksForDiscordUser({
+      discordUserId: parsed.targetUserId,
+    });
+    const linkedTags = [...new Set(links.map((row) => row.playerTag))];
+    if (linkedTags.length > 0) {
+      await todoSnapshotService.refreshSnapshotsForPlayerTags({
+        playerTags: linkedTags,
+        cocService,
+      });
+    }
+
+    const result = await buildTodoRenderResult({
+      cocService,
+      selectedType: parsed.type,
+      scope: {
+        guildScopeId: parsed.guildScopeId || resolveTodoGuildScopeId(interaction.guildId),
+        requesterUserId: parsed.requesterUserId,
+        targetUserId: parsed.targetUserId,
+      },
+    });
+    if (!result.ok) {
+      await interaction.editReply({
+        content: result.message,
+        embeds: [],
+        components: [],
+      });
+      return;
+    }
+
+    await interaction.editReply({
+      content: null,
+      ...result.payload,
+    });
+  } catch (err) {
+    console.error(
+      `[todo-refresh] requester=${parsed.requesterUserId} target=${parsed.targetUserId} guild=${parsed.guildScopeId} type=${parsed.type} error=${formatError(err)}`,
+    );
+    await interaction
+      .followUp({
+        ephemeral: true,
+        content: TODO_REFRESH_ERROR_MESSAGE,
+      })
+      .catch(() => undefined);
+  } finally {
+    if (messageId) {
+      todoRefreshInFlightByMessageId.delete(messageId);
+    }
+  }
 }
 
 export const Todo: Command = {
@@ -180,10 +402,13 @@ export const Todo: Command = {
       interaction.options.getString("type", true),
     );
     const result = await buildTodoRenderResult({
-      interaction,
       cocService,
       selectedType,
-      commandUserId: interaction.user.id,
+      scope: {
+        guildScopeId: resolveTodoGuildScopeId(interaction.guildId),
+        requesterUserId: interaction.user.id,
+        targetUserId: interaction.user.id,
+      },
     });
     if (!result.ok) {
       await interaction.editReply(result.message);
