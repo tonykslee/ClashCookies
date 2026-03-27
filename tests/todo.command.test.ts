@@ -122,6 +122,7 @@ function makeSnapshotRow(input: {
   gamesActive?: boolean;
   gamesPoints?: number | null;
   gamesTarget?: number | null;
+  gamesChampionTotal?: number | null;
   gamesEndsAt?: Date | null;
   lastUpdatedAt?: Date;
   updatedAt?: Date;
@@ -151,6 +152,9 @@ function makeSnapshotRow(input: {
     gamesActive: input.gamesActive ?? true,
     gamesPoints: input.gamesPoints ?? 1200,
     gamesTarget: input.gamesTarget ?? 4000,
+    gamesChampionTotal: input.gamesChampionTotal ?? 1200,
+    gamesSeasonBaseline: 0,
+    gamesCycleKey: "cycle-2026-03",
     gamesEndsAt: input.gamesEndsAt ?? new Date("2026-03-28T08:00:00.000Z"),
     lastUpdatedAt: input.lastUpdatedAt ?? now,
     updatedAt: input.updatedAt ?? now,
@@ -570,36 +574,57 @@ describe("/todo command", () => {
     expect(description).toContain("- Bravo #QGRJ2222 - clan capital raids: 1/6");
   });
 
-  it("renders GAMES with one shared top timer, points, and 4000+ completion marker", async () => {
+  it("renders GAMES emojis by progress threshold and sorts by gamesChampionTotal desc", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([
       { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },
       { playerTag: "#QGRJ2222", createdAt: new Date("2026-03-02T00:00:00.000Z") },
       { playerTag: "#CUV9082", createdAt: new Date("2026-03-03T00:00:00.000Z") },
+      { playerTag: "#LQ9P8R2", createdAt: new Date("2026-03-04T00:00:00.000Z") },
+      { playerTag: "#Q2V8P9L2", createdAt: new Date("2026-03-05T00:00:00.000Z") },
     ]);
     prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
-      _count: { _all: 3 },
+      _count: { _all: 5 },
       _max: { updatedAt: new Date("2026-03-26T00:00:00.000Z") },
     });
     prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
       makeSnapshotRow({
         playerTag: "#PYLQ0289",
-        playerName: "Alpha",
+        playerName: "Echo",
         gamesActive: true,
-        gamesPoints: 3999,
+        gamesPoints: 0,
+        gamesChampionTotal: 5000,
         gamesEndsAt: new Date("2026-03-28T08:00:00.000Z"),
       }),
       makeSnapshotRow({
         playerTag: "#QGRJ2222",
-        playerName: "Bravo",
+        playerName: "Delta",
         gamesActive: true,
-        gamesPoints: 4000,
+        gamesPoints: 3999,
+        gamesChampionTotal: 6500,
         gamesEndsAt: new Date("2026-03-28T08:00:00.000Z"),
       }),
       makeSnapshotRow({
         playerTag: "#CUV9082",
         playerName: "Charlie",
         gamesActive: true,
+        gamesPoints: 4000,
+        gamesChampionTotal: 8000,
+        gamesEndsAt: new Date("2026-03-28T08:00:00.000Z"),
+      }),
+      makeSnapshotRow({
+        playerTag: "#LQ9P8R2",
+        playerName: "Alpha",
+        gamesActive: true,
+        gamesPoints: 10000,
+        gamesChampionTotal: 15000,
+        gamesEndsAt: new Date("2026-03-28T08:00:00.000Z"),
+      }),
+      makeSnapshotRow({
+        playerTag: "#Q2V8P9L2",
+        playerName: "Bravo",
+        gamesActive: true,
         gamesPoints: 5200,
+        gamesChampionTotal: 8000,
         gamesEndsAt: new Date("2026-03-28T08:00:00.000Z"),
       }),
     ]);
@@ -610,13 +635,66 @@ describe("/todo command", () => {
     const description = getReplyDescription(interaction);
     expect(description).toContain("**Time remaining:** <t:");
     expect(countOccurrences(description, "<t:")).toBe(1);
-    expect(description).toContain("- Alpha #PYLQ0289 - clan games points: 3999/4000");
-    expect(description).toContain(
-      "- :white_check_mark: Bravo #QGRJ2222 - clan games points: 4000/4000",
-    );
-    expect(description).toContain(
-      "- :white_check_mark: Charlie #CUV9082 - clan games points: 5200/4000",
-    );
+    expect(description).toContain("- 🏆 Alpha #LQ9P8R2 - clan games points: 10000/4000");
+    expect(description).toContain("- ✅ Bravo #Q2V8P9L2 - clan games points: 5200/4000");
+    expect(description).toContain("- ✅ Charlie #CUV9082 - clan games points: 4000/4000");
+    expect(description).toContain("- 🟡 Delta #QGRJ2222 - clan games points: 3999/4000");
+    expect(description).toContain("- Echo #PYLQ0289 - clan games points: 0/4000");
+
+    const indexTrophy = description.indexOf("🏆 Alpha #LQ9P8R2");
+    const indexBravo = description.indexOf("✅ Bravo #Q2V8P9L2");
+    const indexCharlie = description.indexOf("✅ Charlie #CUV9082");
+    const indexDelta = description.indexOf("🟡 Delta #QGRJ2222");
+    const indexEcho = description.indexOf("Echo #PYLQ0289");
+    expect(indexTrophy).toBeGreaterThan(-1);
+    expect(indexBravo).toBeGreaterThan(-1);
+    expect(indexCharlie).toBeGreaterThan(-1);
+    expect(indexDelta).toBeGreaterThan(-1);
+    expect(indexEcho).toBeGreaterThan(-1);
+    expect(indexTrophy).toBeLessThan(indexBravo);
+    expect(indexBravo).toBeLessThan(indexCharlie);
+    expect(indexCharlie).toBeLessThan(indexDelta);
+    expect(indexDelta).toBeLessThan(indexEcho);
+  });
+
+  it("falls back to PlayerLink identity for linked rows before final raw-tag fallback", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        discordUsername: "Linked Alias",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+      {
+        playerTag: "#QGRJ2222",
+        discordUsername: null,
+        createdAt: new Date("2026-03-02T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
+      _count: { _all: 2 },
+      _max: { updatedAt: new Date("2026-03-26T00:00:00.000Z") },
+    });
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      makeSnapshotRow({
+        playerTag: "#PYLQ0289",
+        playerName: "#PYLQ0289",
+        gamesActive: true,
+        gamesPoints: 1200,
+      }),
+      makeSnapshotRow({
+        playerTag: "#QGRJ2222",
+        playerName: "",
+        gamesActive: true,
+        gamesPoints: 0,
+      }),
+    ]);
+
+    const interaction = makeTodoInteraction({ type: "GAMES" });
+    await Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
+
+    const description = getReplyDescription(interaction);
+    expect(description).toContain("- 🟡 Linked Alias #PYLQ0289 - clan games points: 1200/4000");
+    expect(description).toContain("- #QGRJ2222 - clan games points: 0/4000");
   });
 });
 

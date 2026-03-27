@@ -46,6 +46,7 @@ export type ClanScopedPlayerLink = {
 export type DiscordUserPlayerLink = {
   playerTag: string;
   linkedAt: Date;
+  linkedName: string | null;
 };
 
 export const PLAYER_LINK_DISCORD_USERNAME_FALLBACK = "unknown";
@@ -291,7 +292,7 @@ export async function listPlayerLinksForDiscordUser(input: {
   const rows = await prisma.playerLink.findMany({
     where: { discordUserId: normalizedUserId },
     orderBy: [{ createdAt: "asc" }, { playerTag: "asc" }],
-    select: { playerTag: true, createdAt: true },
+    select: { playerTag: true, discordUsername: true, createdAt: true },
   });
 
   const seen = new Set<string>();
@@ -300,7 +301,11 @@ export async function listPlayerLinksForDiscordUser(input: {
     const playerTag = normalizePlayerTag(row.playerTag);
     if (!playerTag || seen.has(playerTag)) continue;
     seen.add(playerTag);
-    ordered.push({ playerTag, linkedAt: row.createdAt });
+    ordered.push({
+      playerTag,
+      linkedAt: row.createdAt,
+      linkedName: normalizePersistedDiscordUsername(row.discordUsername),
+    });
   }
   return ordered;
 }

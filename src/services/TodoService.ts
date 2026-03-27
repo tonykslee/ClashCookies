@@ -50,6 +50,7 @@ const TODO_STALE_ACTIVE_GAMES_MS = 30 * 60 * 1000;
 const TODO_STALE_IDLE_MS = 4 * 60 * 60 * 1000;
 const TODO_DEFAULT_GAMES_TARGET = 4000;
 const TODO_GAMES_COMPLETE_POINTS = 4000;
+const TODO_GAMES_MAX_POINTS = 10_000;
 const todoRenderCacheByKey = new Map<string, CachedTodoRender>();
 
 /** Purpose: normalize `/todo type` input into one safe enum value. */
@@ -114,14 +115,19 @@ export async function buildTodoPagesForUser(input: {
   });
   const snapshotByTag = new Map(snapshotRows.map((row) => [row.playerTag, row]));
 
-  const renderRows = linkedTags.map((playerTag) => {
-    const normalizedTag = normalizePlayerTag(playerTag);
+  const renderRows = links.map((link) => {
+    const normalizedTag = normalizePlayerTag(link.playerTag);
     const snapshot = snapshotByTag.get(normalizedTag) ?? null;
     const missingSnapshot = snapshot === null;
     const staleSnapshot = snapshot ? isSnapshotStale(snapshot, nowMs) : false;
+    const resolvedPlayerName = resolveTodoPlayerDisplayName({
+      playerTag: normalizedTag,
+      snapshotPlayerName: snapshot?.playerName,
+      linkedName: link.linkedName,
+    });
     return {
       playerTag: normalizedTag,
-      playerName: snapshot?.playerName ?? normalizedTag,
+      playerName: resolvedPlayerName,
       clanTag: snapshot?.clanTag ?? null,
       clanName: snapshot?.clanName ?? null,
       cwlClanTag: snapshot?.cwlClanTag ?? null,
@@ -326,10 +332,9 @@ function buildGamesPageDescription(
     lines.push(`**Time remaining:** ${formatRelativeTimestamp(sharedEndsAt)}`);
     lines.push("");
   }
-  for (const row of rows) {
-    lines.push(
-      formatGamesTodoRow(row, getGamesRowStatus(row), isGamesComplete(row)),
-    );
+  const sortedRows = sortGamesRows(rows);
+  for (const row of sortedRows) {
+    lines.push(formatGamesTodoRow(row, getGamesRowStatus(row), getGamesProgressEmoji(row)));
   }
 
   return buildTodoPageDescription({
@@ -440,14 +445,17 @@ function formatTodoRow(row: TodoRenderRow, status: string): string {
 function formatGamesTodoRow(
   row: TodoRenderRow,
   status: string,
-  completed: boolean,
+  progressEmoji: string,
 ): string {
-  const completionPrefix = completed ? ":white_check_mark: " : "";
-  return `- ${completionPrefix}${formatPlayerIdentity(row)} - ${status}`;
+  const progressPrefix = progressEmoji.length > 0 ? `${progressEmoji} ` : "";
+  return `- ${progressPrefix}${formatPlayerIdentity(row)} - ${status}`;
 }
 
 /** Purpose: build one stable player identity token for todo row prefixes. */
 function formatPlayerIdentity(row: TodoRenderRow): string {
+  if (row.playerName === row.playerTag) {
+    return row.playerTag;
+  }
   return `${row.playerName} ${row.playerTag}`;
 }
 
@@ -553,11 +561,66 @@ function getGamesRowStatus(row: TodoRenderRow): string {
   return `clan games points: ${points}/${target}${staleSuffix}`;
 }
 
-/** Purpose: decide whether one player should be marked complete on the GAMES page. */
-function isGamesComplete(row: TodoRenderRow): boolean {
-  if (!row.snapshot) return false;
+/** Purpose: resolve one todo-row player display name with deterministic linked-user fallback ordering. */
+function resolveTodoPlayerDisplayName(input: {
+  playerTag: string;
+  snapshotPlayerName: unknown;
+  linkedName: unknown;
+}): string {
+  const normalizedTag = normalizePlayerTag(input.playerTag);
+  const preferredSnapshotName = sanitizeStatusText(input.snapshotPlayerName);
+  if (preferredSnapshotName && preferredSnapshotName !== normalizedTag) {
+    return preferredSnapshotName;
+  }
+
+  const linkedName = sanitizeStatusText(input.linkedName);
+  if (linkedName) {
+    return linkedName;
+  }
+
+  if (preferredSnapshotName) {
+    return preferredSnapshotName;
+  }
+
+  return normalizedTag;
+}
+
+/** Purpose: sort games rows by champion total desc with stable deterministic tie-breakers. */
+function sortGamesRows(rows: TodoRenderRow[]): TodoRenderRow[] {
+  return rows
+    .map((row, index) => ({ row, index }))
+    .sort((a, b) => {
+      const aTotal = toFiniteIntOrNull(a.row.snapshot?.gamesChampionTotal);
+      const bTotal = toFiniteIntOrNull(b.row.snapshot?.gamesChampionTotal);
+      const normalizedATotal = aTotal === null ? Number.NEGATIVE_INFINITY : aTotal;
+      const normalizedBTotal = bTotal === null ? Number.NEGATIVE_INFINITY : bTotal;
+      if (normalizedATotal !== normalizedBTotal) {
+        return normalizedBTotal - normalizedATotal;
+      }
+
+      const byName = sanitizeStatusText(a.row.playerName).localeCompare(
+        sanitizeStatusText(b.row.playerName),
+        undefined,
+        { sensitivity: "base" },
+      );
+      if (byName !== 0) return byName;
+
+      const byTag = a.row.playerTag.localeCompare(b.row.playerTag);
+      if (byTag !== 0) return byTag;
+
+      return a.index - b.index;
+    })
+    .map((entry) => entry.row);
+}
+
+/** Purpose: map games progress points to deterministic status emoji thresholds. */
+function getGamesProgressEmoji(row: TodoRenderRow): string {
+  if (!row.snapshot || !row.snapshot.gamesActive) return "";
   const points = Math.max(0, toFiniteIntOrNull(row.snapshot.gamesPoints) ?? 0);
-  return points >= TODO_GAMES_COMPLETE_POINTS;
+  if (points <= 0) return "";
+  if (points >= TODO_GAMES_MAX_POINTS) return "🏆";
+  if (points >= TODO_GAMES_COMPLETE_POINTS) return "✅";
+  return "🟡";
 }
 
 /** Purpose: format one date as a Discord relative timestamp token. */
