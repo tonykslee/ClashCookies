@@ -1,8 +1,10 @@
 import { CoCService } from "./CoCService";
 import {
   listPlayerLinksForDiscordUser,
+  normalizeClanTag,
   normalizePlayerTag,
 } from "./PlayerLinkService";
+import { prisma } from "../prisma";
 import {
   todoSnapshotService,
   type TodoSnapshotRecord,
@@ -19,10 +21,18 @@ export type TodoPagesResult = {
 type TodoRenderRow = {
   playerTag: string;
   playerName: string;
+  defaultIndex: number;
   clanTag: string | null;
   clanName: string | null;
   cwlClanTag: string | null;
   cwlClanName: string | null;
+  warPosition: number | null;
+  warAttackDetails: Array<{
+    defenderPosition: number | null;
+    stars: number | null;
+  }>;
+  warHeaderBadge: string | null;
+  warMatchIndicator: string;
   snapshot: TodoSnapshotRecord | null;
   missingSnapshot: boolean;
   staleSnapshot: boolean;
@@ -31,6 +41,8 @@ type TodoRenderRow = {
 type TodoEventGroup = {
   clanTag: string | null;
   clanName: string | null;
+  clanBadge: string | null;
+  matchIndicator: string;
   phase: string;
   phaseEndsAt: Date | null;
   rows: TodoRenderRow[];
@@ -39,6 +51,25 @@ type TodoEventGroup = {
 type CachedTodoRender = {
   expiresAtMs: number;
   pages: TodoPagesResult;
+};
+
+type WarMemberCurrentRow = {
+  clanTag: string;
+  playerTag: string;
+  position: number | null;
+  attacks: number | null;
+  defender1Position: number | null;
+  stars1: number | null;
+  defender2Position: number | null;
+  stars2: number | null;
+  sourceSyncedAt: Date;
+};
+
+type CurrentWarMatchContextRow = {
+  clanTag: string;
+  matchType: string | null;
+  outcome: string | null;
+  updatedAt: Date;
 };
 
 const DISCORD_DESCRIPTION_LIMIT = 4096;
@@ -114,12 +145,67 @@ export async function buildTodoPagesForUser(input: {
     playerTags: linkedTags,
   });
   const snapshotByTag = new Map(snapshotRows.map((row) => [row.playerTag, row]));
+  const clanTags = [
+    ...new Set(
+      snapshotRows
+        .map((row) => normalizeClanTag(row.clanTag ?? ""))
+        .filter(Boolean),
+    ),
+  ];
 
-  const renderRows = links.map((link) => {
+  const [warMemberRows, trackedClanRows, currentWarRows] = await Promise.all([
+    prisma.fwaWarMemberCurrent.findMany({
+      where: { playerTag: { in: linkedTags } },
+      select: {
+        clanTag: true,
+        playerTag: true,
+        position: true,
+        attacks: true,
+        defender1Position: true,
+        stars1: true,
+        defender2Position: true,
+        stars2: true,
+        sourceSyncedAt: true,
+      },
+    }),
+    clanTags.length > 0
+      ? prisma.trackedClan.findMany({
+          where: { tag: { in: clanTags } },
+          select: { tag: true, clanBadge: true },
+        })
+      : Promise.resolve([]),
+    clanTags.length > 0
+      ? prisma.currentWar.findMany({
+          where: { clanTag: { in: clanTags } },
+          select: { clanTag: true, matchType: true, outcome: true, updatedAt: true },
+        })
+      : Promise.resolve([]),
+  ]);
+
+  const latestWarMemberByClanAndPlayer =
+    pickLatestWarMemberByClanAndPlayer(warMemberRows);
+  const clanBadgeByTag = new Map(
+    trackedClanRows
+      .map((row) => [normalizeClanTag(row.tag), sanitizeStatusText(row.clanBadge)] as const)
+      .filter((entry): entry is [string, string] => Boolean(entry[0] && entry[1])),
+  );
+  const warMatchContextByClanTag =
+    pickLatestCurrentWarMatchContextByClanTag(currentWarRows);
+
+  const renderRows = links.map((link, index) => {
     const normalizedTag = normalizePlayerTag(link.playerTag);
     const snapshot = snapshotByTag.get(normalizedTag) ?? null;
     const missingSnapshot = snapshot === null;
     const staleSnapshot = snapshot ? isSnapshotStale(snapshot, nowMs) : false;
+    const resolvedClanTag = normalizeClanTag(snapshot?.clanTag ?? "") || null;
+    const warMemberKey = resolvedClanTag ? `${resolvedClanTag}:${normalizedTag}` : "";
+    const warMember = warMemberKey
+      ? latestWarMemberByClanAndPlayer.get(warMemberKey) ?? null
+      : null;
+    const warAttackDetails = resolveWarAttackDetails(warMember);
+    const matchContext = resolvedClanTag
+      ? warMatchContextByClanTag.get(resolvedClanTag) ?? null
+      : null;
     const resolvedPlayerName = resolveTodoPlayerDisplayName({
       playerTag: normalizedTag,
       snapshotPlayerName: snapshot?.playerName,
@@ -128,10 +214,15 @@ export async function buildTodoPagesForUser(input: {
     return {
       playerTag: normalizedTag,
       playerName: resolvedPlayerName,
-      clanTag: snapshot?.clanTag ?? null,
+      defaultIndex: index,
+      clanTag: resolvedClanTag,
       clanName: snapshot?.clanName ?? null,
       cwlClanTag: snapshot?.cwlClanTag ?? null,
       cwlClanName: snapshot?.cwlClanName ?? null,
+      warPosition: toFiniteIntOrNull(warMember?.position),
+      warAttackDetails,
+      warHeaderBadge: resolvedClanTag ? clanBadgeByTag.get(resolvedClanTag) ?? null : null,
+      warMatchIndicator: resolveWarMatchStatusIndicator(matchContext),
       snapshot,
       missingSnapshot,
       staleSnapshot,
@@ -219,7 +310,7 @@ function buildWarPageDescription(
   for (const group of grouped) {
     lines.push(`**${buildEventGroupHeader(group)}**`);
     for (const row of group.rows) {
-      lines.push(formatTodoRow(row, getWarRowStatus(row)));
+      lines.push(formatWarTodoRow(row, getWarRowStatus(row)));
     }
     lines.push("");
   }
@@ -375,6 +466,8 @@ function buildEventGroups(
     grouped.set(key, {
       clanTag: groupedClanTag ?? null,
       clanName: groupedClanName ?? null,
+      clanBadge: mode === "war" ? row.warHeaderBadge : null,
+      matchIndicator: mode === "war" ? row.warMatchIndicator : "",
       phase,
       phaseEndsAt: phaseEndsAt ?? null,
       rows: [row],
@@ -384,9 +477,12 @@ function buildEventGroups(
   return [...grouped.values()]
     .map((group) => ({
       ...group,
-      rows: [...group.rows].sort((a, b) =>
-        formatPlayerIdentity(a).localeCompare(formatPlayerIdentity(b)),
-      ),
+      rows:
+        mode === "war"
+          ? [...group.rows].sort(compareWarRowsForRendering)
+          : [...group.rows].sort((a, b) =>
+              formatPlayerIdentity(a).localeCompare(formatPlayerIdentity(b)),
+            ),
     }))
     .sort((a, b) => {
       const nameCompare = buildGroupClanIdentity(a).localeCompare(
@@ -399,11 +495,17 @@ function buildEventGroups(
 
 /** Purpose: build one compact active-event header line with clan and phase timing context. */
 function buildEventGroupHeader(group: TodoEventGroup): string {
+  const badgePrefix = sanitizeStatusText(group.clanBadge);
   const clan = buildGroupClanIdentity(group);
+  const matchIndicator = sanitizeStatusText(group.matchIndicator);
   const endsAt = group.phaseEndsAt
     ? ` ends ${formatRelativeTimestamp(group.phaseEndsAt)}`
     : "";
-  return `${clan} - ${group.phase}${endsAt}`;
+  const prefixedClan = badgePrefix ? `${badgePrefix} ${clan}` : clan;
+  const clanWithIndicator = matchIndicator
+    ? `${prefixedClan} ${matchIndicator}`
+    : prefixedClan;
+  return `${clanWithIndicator} - ${group.phase}${endsAt}`;
 }
 
 /** Purpose: build stable clan identity text for grouped section headings. */
@@ -441,6 +543,22 @@ function formatTodoRow(row: TodoRenderRow, status: string): string {
   return `- ${formatPlayerIdentity(row)} - ${status}`;
 }
 
+/** Purpose: format one WAR row with lineup position and compact attack-detail suffixes. */
+function formatWarTodoRow(row: TodoRenderRow, status: string): string {
+  const identity = formatWarPlayerIdentity(row);
+  const usedAttacks = clampInt(row.snapshot?.warAttacksUsed, 0, row.snapshot?.warAttacksMax || 2);
+  const detailRows =
+    usedAttacks > 0
+      ? row.warAttackDetails
+          .slice(0, usedAttacks)
+          .map((detail) => formatWarAttackDetail(detail))
+          .filter(Boolean)
+      : [];
+  const detailsSuffix =
+    detailRows.length > 0 ? ` | ${detailRows.join(" | ")}` : "";
+  return `- ${identity} - ${status}${detailsSuffix}`;
+}
+
 /** Purpose: format one GAMES row with optional completion marker next to player identity text. */
 function formatGamesTodoRow(
   row: TodoRenderRow,
@@ -457,6 +575,15 @@ function formatPlayerIdentity(row: TodoRenderRow): string {
     return row.playerTag;
   }
   return `${row.playerName} ${row.playerTag}`;
+}
+
+/** Purpose: format one WAR player identity with lineup position fallback when unavailable. */
+function formatWarPlayerIdentity(row: TodoRenderRow): string {
+  const positionLabel =
+    row.warPosition !== null && row.warPosition > 0
+      ? `#${row.warPosition}`
+      : "#?";
+  return `${positionLabel} ${row.playerName}`;
 }
 
 /** Purpose: build one bounded embed description block for a todo page. */
@@ -480,12 +607,12 @@ function buildTodoPageDescription(input: {
 /** Purpose: build active WAR row status text without repeating group-level phase timing details. */
 function getWarRowStatus(row: TodoRenderRow): string {
   if (row.missingSnapshot || !row.snapshot) {
-    return "war attacks: 0/2 - snapshot unavailable";
+    return "`0 / 2` - snapshot unavailable";
   }
   const used = clampInt(row.snapshot.warAttacksUsed, 0, row.snapshot.warAttacksMax || 2);
   const max = Math.max(1, clampInt(row.snapshot.warAttacksMax, 1, 2));
   const staleSuffix = row.staleSnapshot ? " - stale snapshot" : "";
-  return `war attacks: ${used}/${max}${staleSuffix}`;
+  return `\`${used} / ${max}\`${staleSuffix}`;
 }
 
 /** Purpose: build neutral WAR row status text for linked players outside active war groups. */
@@ -583,6 +710,134 @@ function resolveTodoPlayerDisplayName(input: {
   }
 
   return normalizedTag;
+}
+
+/** Purpose: compare WAR rows by actual lineup position first to keep rendering aligned with war roster order. */
+function compareWarRowsForRendering(a: TodoRenderRow, b: TodoRenderRow): number {
+  const aHasPos = a.warPosition !== null && a.warPosition > 0;
+  const bHasPos = b.warPosition !== null && b.warPosition > 0;
+  if (aHasPos && bHasPos && a.warPosition !== b.warPosition) {
+    return Number(a.warPosition) - Number(b.warPosition);
+  }
+  if (aHasPos !== bHasPos) return aHasPos ? -1 : 1;
+
+  const byName = sanitizeStatusText(a.playerName).localeCompare(
+    sanitizeStatusText(b.playerName),
+    undefined,
+    { sensitivity: "base" },
+  );
+  if (byName !== 0) return byName;
+
+  const byTag = a.playerTag.localeCompare(b.playerTag);
+  if (byTag !== 0) return byTag;
+
+  return a.defaultIndex - b.defaultIndex;
+}
+
+/** Purpose: extract compact first/second attack details from one latest war-member row. */
+function resolveWarAttackDetails(
+  row: Pick<
+    WarMemberCurrentRow,
+    "defender1Position" | "stars1" | "defender2Position" | "stars2"
+  > | null,
+): Array<{ defenderPosition: number | null; stars: number | null }> {
+  if (!row) return [];
+  return [
+    {
+      defenderPosition: toFiniteIntOrNull(row.defender1Position),
+      stars: toFiniteIntOrNull(row.stars1),
+    },
+    {
+      defenderPosition: toFiniteIntOrNull(row.defender2Position),
+      stars: toFiniteIntOrNull(row.stars2),
+    },
+  ];
+}
+
+/** Purpose: render one compact WAR attack detail segment for embed-friendly row suffixes. */
+function formatWarAttackDetail(input: {
+  defenderPosition: number | null;
+  stars: number | null;
+}): string {
+  const defenderLabel =
+    input.defenderPosition !== null && input.defenderPosition > 0
+      ? `#${input.defenderPosition}`
+      : "#?";
+  return `:dagger: ${defenderLabel} ${formatWarStarTriplet(input.stars)}`;
+}
+
+/** Purpose: render star counts as compact visual triplets used by WAR attack detail rows. */
+function formatWarStarTriplet(stars: number | null | undefined): string {
+  const normalized = Math.max(0, Math.min(3, Number(stars ?? 0)));
+  if (normalized >= 3) return "★ ★ ★";
+  if (normalized >= 2) return "★ ★ ☆";
+  if (normalized >= 1) return "★ ☆ ☆";
+  return "☆ ☆ ☆";
+}
+
+/** Purpose: map clan match type/outcome into the same effective status-color semantics used by match views. */
+function resolveWarMatchStatusIndicator(
+  context: Pick<CurrentWarMatchContextRow, "matchType" | "outcome"> | null,
+): string {
+  const matchType = sanitizeStatusText(context?.matchType).toUpperCase();
+  const outcome = sanitizeStatusText(context?.outcome).toUpperCase();
+  if (matchType === "BL") return ":black_circle:";
+  if (matchType === "MM") return ":white_circle:";
+  if (matchType === "SKIP") return ":yellow_circle:";
+  if (matchType === "FWA") {
+    if (outcome === "LOSE") return ":red_circle:";
+    return ":green_circle:";
+  }
+  return ":white_circle:";
+}
+
+/** Purpose: keep only the freshest war-member row for each clan+player pair. */
+function pickLatestWarMemberByClanAndPlayer(
+  rows: WarMemberCurrentRow[],
+): Map<string, WarMemberCurrentRow> {
+  const latest = new Map<string, WarMemberCurrentRow>();
+  for (const row of rows) {
+    const clanTag = normalizeClanTag(row.clanTag);
+    const playerTag = normalizePlayerTag(row.playerTag);
+    if (!clanTag || !playerTag) continue;
+    const key = `${clanTag}:${playerTag}`;
+    const existing = latest.get(key);
+    if (!existing || row.sourceSyncedAt > existing.sourceSyncedAt) {
+      latest.set(key, {
+        clanTag,
+        playerTag,
+        position: toFiniteIntOrNull(row.position),
+        attacks: toFiniteIntOrNull(row.attacks),
+        defender1Position: toFiniteIntOrNull(row.defender1Position),
+        stars1: toFiniteIntOrNull(row.stars1),
+        defender2Position: toFiniteIntOrNull(row.defender2Position),
+        stars2: toFiniteIntOrNull(row.stars2),
+        sourceSyncedAt: row.sourceSyncedAt,
+      });
+    }
+  }
+  return latest;
+}
+
+/** Purpose: keep one latest current-war match context row per clan for header indicator rendering. */
+function pickLatestCurrentWarMatchContextByClanTag(
+  rows: CurrentWarMatchContextRow[],
+): Map<string, CurrentWarMatchContextRow> {
+  const latest = new Map<string, CurrentWarMatchContextRow>();
+  for (const row of rows) {
+    const clanTag = normalizeClanTag(row.clanTag);
+    if (!clanTag) continue;
+    const existing = latest.get(clanTag);
+    if (!existing || row.updatedAt > existing.updatedAt) {
+      latest.set(clanTag, {
+        clanTag,
+        matchType: row.matchType,
+        outcome: row.outcome,
+        updatedAt: row.updatedAt,
+      });
+    }
+  }
+  return latest;
 }
 
 /** Purpose: sort games rows by champion total desc with stable deterministic tie-breakers. */
