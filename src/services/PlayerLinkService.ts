@@ -81,6 +81,21 @@ export function normalizePersistedDiscordUsername(input: unknown): string | null
   return normalized;
 }
 
+/** Purpose: detect whether one normalized label is likely a Discord username handle (not an in-game player identity). */
+function isLikelyDiscordUsernameLabel(input: string): boolean {
+  if (!input) return false;
+  return /^[A-Za-z0-9._]{2,32}$/.test(input);
+}
+
+/** Purpose: normalize one PlayerLink name-like value for `/todo` player identity fallback use. */
+function normalizeLinkedPlayerNameForTodo(input: unknown): string | null {
+  const normalized = normalizePersistedDiscordUsername(input);
+  if (!normalized) return null;
+  if (normalized.toLowerCase() === PLAYER_LINK_DISCORD_USERNAME_FALLBACK) return null;
+  if (isLikelyDiscordUsernameLabel(normalized)) return null;
+  return normalized;
+}
+
 /** Purpose: normalize persisted usernames with a deterministic fallback. */
 export function sanitizeDiscordUsernameForPersistence(input: unknown): string {
   return normalizePersistedDiscordUsername(input) ?? PLAYER_LINK_DISCORD_USERNAME_FALLBACK;
@@ -304,7 +319,7 @@ export async function listPlayerLinksForDiscordUser(input: {
     ordered.push({
       playerTag,
       linkedAt: row.createdAt,
-      linkedName: normalizePersistedDiscordUsername(row.discordUsername),
+      linkedName: normalizeLinkedPlayerNameForTodo(row.discordUsername),
     });
   }
   return ordered;

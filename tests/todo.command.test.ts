@@ -802,6 +802,35 @@ describe("/todo command", () => {
     expect(description).toContain("- 🟡 Linked Alias #PYLQ0289 - clan games points: 1200/4000");
     expect(description).toContain("- #QGRJ2222 - clan games points: 0/4000");
   });
+
+  it("does not use discord-handle-like PlayerLink usernames as normal todo player identity fallback", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        discordUsername: "tonyk_2020",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
+      _count: { _all: 1 },
+      _max: { updatedAt: new Date("2026-03-26T00:00:00.000Z") },
+    });
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      makeSnapshotRow({
+        playerTag: "#PYLQ0289",
+        playerName: "#PYLQ0289",
+        gamesActive: true,
+        gamesPoints: 1200,
+      }),
+    ]);
+
+    const interaction = makeTodoInteraction({ type: "GAMES" });
+    await Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
+
+    const description = getReplyDescription(interaction);
+    expect(description).toContain("- 🟡 #PYLQ0289 - clan games points: 1200/4000");
+    expect(description).not.toContain("tonyk_2020");
+  });
 });
 
 describe("/todo pagination buttons", () => {
