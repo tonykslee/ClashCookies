@@ -87,6 +87,23 @@ export function buildPlayerSignalStateKey(tag: string): string {
   return signalStateKey(tag);
 }
 
+/** Purpose: extract one lifetime Clan Games total from stored player signal-state JSON. */
+export function extractGamesChampionTotalFromSignalState(raw: string | null | undefined): number | null {
+  const parsed = parseState(raw ?? null);
+  if (parsed) {
+    return Math.max(0, toFiniteNumber(parsed.counters?.gamesChampion));
+  }
+  if (!raw) return null;
+  try {
+    const fallback = JSON.parse(raw) as { counters?: Record<string, unknown> };
+    const value = Number(fallback?.counters?.gamesChampion);
+    if (!Number.isFinite(value)) return null;
+    return Math.max(0, Math.trunc(value));
+  } catch {
+    return null;
+  }
+}
+
 /** Purpose: to finite number. */
 function toFiniteNumber(value: unknown): number {
   const num = Number(value ?? 0);
