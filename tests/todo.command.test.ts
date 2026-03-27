@@ -1483,8 +1483,9 @@ describe("/todo command", () => {
       makeSnapshotRow({
         playerTag: "#LQ9P8R2",
         playerName: "Charlie",
-        raidActive: false,
+        raidActive: true,
         raidAttacksUsed: 0,
+        raidEndsAt: new Date("2026-03-29T07:00:00.000Z"),
       }),
     ]);
 
@@ -1496,9 +1497,7 @@ describe("/todo command", () => {
     expect(countOccurrences(description, "<t:")).toBe(1);
     expect(description).toContain(":white_check_mark: Alpha #PYLQ0289 - clan capital raids: 6/6");
     expect(description).toContain(":yellow_circle: Bravo #QGRJ2222 - clan capital raids: 1/6");
-    expect(description).toContain(
-      ":black_circle: Charlie #LQ9P8R2 - clan capital raids: 0/6 - not active",
-    );
+    expect(description).toContain(":black_circle: Charlie #LQ9P8R2 - clan capital raids: 0/6");
   });
 
   it("sorts RAIDS rows by attacks used desc, then TH desc, then deterministic fallback order", async () => {
@@ -1658,7 +1657,7 @@ describe("/todo command", () => {
     expect(description).toContain("Charlie #CUV9082 - clan games points: 5200/4000");
     expect(description).toContain("Delta #QGRJ2222 - clan games points: 3999/4000");
     expect(description).toContain("Foxtrot #9C8VY2L2 - clan games points: 3999/4000");
-    expect(description).toContain("- Echo #PYLQ0289 - clan games points: 0/4000");
+    expect(description).toContain(":black_circle: Echo #PYLQ0289 - clan games points: 0/4000");
     expect(description).toContain("🏆 Alpha #LQ9P8R2 - clan games points: 10000/4000");
     expect(description).toContain("✅ Bravo #Q2V8P9L2 - clan games points: 4000/4000");
     expect(description).toContain("✅ Charlie #CUV9082 - clan games points: 5200/4000");
@@ -1678,6 +1677,7 @@ describe("/todo command", () => {
     expect(indexDelta).toBeGreaterThan(-1);
     expect(indexFoxtrot).toBeGreaterThan(-1);
     expect(indexEcho).toBeGreaterThan(-1);
+    expect(description).not.toContain("- Echo #PYLQ0289 - clan games points: 0/4000");
     expect(indexTrophy).toBeLessThan(indexCharlie);
     expect(indexCharlie).toBeLessThan(indexBravo);
     expect(indexBravo).toBeLessThan(indexDelta);
@@ -1722,7 +1722,7 @@ describe("/todo command", () => {
     const description = getReplyDescription(interaction);
     expect(description).toContain("🟡 Linked Alias #PYLQ0289 - clan games points: 1200/4000");
     expect(description).not.toContain("- 🟡 Linked Alias #PYLQ0289");
-    expect(description).toContain("- #QGRJ2222 - clan games points: 0/4000");
+    expect(description).toContain(":black_circle: #QGRJ2222 - clan games points: 0/4000");
   });
 
   it("does not use discordUsername as normal todo player identity fallback", async () => {
