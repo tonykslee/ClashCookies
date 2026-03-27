@@ -40,6 +40,7 @@ import {
   WarComplianceService,
   type WarComplianceIssue,
 } from "../services/WarComplianceService";
+import { fwaPoliceService } from "../services/FwaPoliceService";
 import { WarEventLogService } from "../services/WarEventLogService";
 import { buildComplianceWarPlanText } from "../services/warPlanDisplay";
 import { getClanScopedWarIdAutocompleteChoices } from "../services/WarIdAutocompleteService";
@@ -11394,6 +11395,32 @@ export const Fwa: Command = {
       ],
     },
     {
+      name: "police",
+      description: "Configure automatic FWA warplan-violation enforcement",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "clan-tag",
+          description: "Tracked clan tag (with or without #)",
+          type: ApplicationCommandOptionType.String,
+          required: true,
+          autocomplete: true,
+        },
+        {
+          name: "enable-dm",
+          description: "Enable DM notifications to linked violators",
+          type: ApplicationCommandOptionType.Boolean,
+          required: true,
+        },
+        {
+          name: "enable-log",
+          description: "Enable clan-channel logging for detected violations",
+          type: ApplicationCommandOptionType.Boolean,
+          required: true,
+        },
+      ],
+    },
+    {
       name: "weight-age",
       description: "Check last submitted FWA Stats weight age",
       type: ApplicationCommandOptionType.Subcommand,
@@ -11986,6 +12013,48 @@ export const Fwa: Command = {
         sendFailureNotice: async (content) =>
           interaction.followUp({ content, ephemeral: true }),
       });
+      return;
+    }
+
+    if (subcommand === "police") {
+      if (!interaction.inGuild() || !interaction.guildId) {
+        await editReplySafe("This command can only be used in a server.");
+        return;
+      }
+
+      const clanTag = normalizeTag(
+        interaction.options.getString("clan-tag", true),
+      );
+      if (!clanTag) {
+        await editReplySafe("Please provide a valid `clan-tag`.");
+        return;
+      }
+
+      const enableDm = interaction.options.getBoolean("enable-dm", true);
+      const enableLog = interaction.options.getBoolean("enable-log", true);
+      const saved = await fwaPoliceService.setClanConfig({
+        clanTag,
+        enableDm,
+        enableLog,
+      });
+      if (!saved) {
+        await editReplySafe(`Clan #${clanTag} is not in tracked clans.`);
+        return;
+      }
+
+      const actionSummary =
+        saved.enableDm || saved.enableLog
+          ? [
+              saved.enableDm ? "DM alerts: ON" : "DM alerts: OFF",
+              saved.enableLog ? "Clan logs: ON" : "Clan logs: OFF",
+            ].join(" | ")
+          : "Both DM and log actions are OFF (automation disabled for this clan).";
+      await editReplySafe(
+        [
+          `FWA police updated for **${saved.clanName ?? `#${saved.clanTag}`}** (${saved.clanTag}).`,
+          actionSummary,
+        ].join("\n"),
+      );
       return;
     }
 
@@ -13894,7 +13963,11 @@ export const Fwa: Command = {
       return;
     }
 
-    if (focused.name !== "tag" && focused.name !== "clan") {
+    if (
+      focused.name !== "tag" &&
+      focused.name !== "clan" &&
+      focused.name !== "clan-tag"
+    ) {
       await interaction.respond([]);
       return;
     }
