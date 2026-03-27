@@ -1,4 +1,4 @@
-import { AxiosError } from "axios";
+import axios, { AxiosError } from "axios";
 import {
   ClanWarLogEntry,
   ClanWar,
@@ -14,19 +14,86 @@ import { toFailureTelemetry } from "./telemetry/ingest";
 export class CoCService {
   private clansApi: ClansApi;
   private playersApi: PlayersApi;
+  private readonly cocApiToken: string;
+  private readonly cocApiBaseUrl: string;
 
   /** Purpose: initialize service dependencies. */
   constructor() {
     const token = process.env.COC_API_TOKEN?.trim();
     if (!token) throw new Error("COC_API_TOKEN missing");
+    this.cocApiToken = token;
+    this.cocApiBaseUrl =
+      (process.env.COC_API_BASE_URL ?? "https://api.clashofclans.com/v1").replace(
+        /\/+$/,
+        "",
+      );
 
     const config = new Configuration({
       apiKey: `Bearer ${token}`,
-      basePath: process.env.COC_API_BASE_URL ?? "https://api.clashofclans.com/v1",
+      basePath: this.cocApiBaseUrl,
     });
 
     this.clansApi = new ClansApi(config);
     this.playersApi = new PlayersApi(config);
+  }
+
+  /** Purpose: get current clan-capital raid seasons for one clan tag (newest first). */
+  async getClanCapitalRaidSeasons(
+    tag: string,
+    limit = 1,
+  ): Promise<ClanCapitalRaidSeason[]> {
+    const clanTag = tag.startsWith("#") ? tag : `#${tag}`;
+    const startedAtMs = Date.now();
+    try {
+      const response = await axios.get(`${this.cocApiBaseUrl}/clans/${encodeURIComponent(clanTag)}/capitalraidseasons`, {
+        headers: {
+          Authorization: `Bearer ${this.cocApiToken}`,
+        },
+        params: {
+          limit: Math.max(1, Math.trunc(Number(limit) || 1)),
+        },
+      });
+      const data = response?.data as { items?: ClanCapitalRaidSeason[] } | undefined;
+      const seasons = Array.isArray(data?.items) ? data.items : [];
+      recordFetchEvent({
+        namespace: "coc",
+        operation: "getClanCapitalRaidSeasons",
+        source: "api",
+        detail: `tag=${clanTag} limit=${limit}`,
+        durationMs: Date.now() - startedAtMs,
+        status: "success",
+      });
+      return seasons;
+    } catch (err) {
+      const status = (err as AxiosError)?.response?.status;
+      const failure = toFailureTelemetry(err);
+      if (status === 404) {
+        recordFetchEvent({
+          namespace: "coc",
+          operation: "getClanCapitalRaidSeasons",
+          source: "api",
+          detail: `tag=${clanTag} status=404`,
+          durationMs: Date.now() - startedAtMs,
+          status: "failure",
+          errorCategory: "validation",
+          errorCode: "HTTP_404",
+        });
+        return [];
+      }
+      recordFetchEvent({
+        namespace: "coc",
+        operation: "getClanCapitalRaidSeasons",
+        source: "api",
+        detail: `tag=${clanTag} status=${status ?? "unknown"} result=error`,
+        durationMs: Date.now() - startedAtMs,
+        status: "failure",
+        errorCategory: failure.errorCategory,
+        errorCode: failure.errorCode,
+        timeout: failure.timeout,
+      });
+      if (status) throw new Error(`CoC API error ${status}`);
+      throw err;
+    }
   }
 
   /** Purpose: get clan. */
@@ -325,3 +392,15 @@ export class CoCService {
     };
   }
 }
+
+export type ClanCapitalRaidSeasonMember = {
+  tag?: string | null;
+  attacks?: number | null;
+};
+
+export type ClanCapitalRaidSeason = {
+  state?: string | null;
+  startTime?: string | null;
+  endTime?: string | null;
+  members?: ClanCapitalRaidSeasonMember[];
+};
