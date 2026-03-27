@@ -293,7 +293,7 @@ describe("/todo command", () => {
     expect(cocService.getClanWarLeagueWar).not.toHaveBeenCalled();
   });
 
-  it("renders WAR headers with badge + match indicator and row-level attack detail", async () => {
+  it("renders WAR headers with badge + match indicator and suppresses preparation attack detail", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([
       { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },
       { playerTag: "#QGRJ2222", createdAt: new Date("2026-03-02T00:00:00.000Z") },
@@ -402,11 +402,10 @@ describe("/todo command", () => {
     expect(description).toContain("**:ak: Clan Two (#2QG2C08UP) :black_circle: - preparation ends <t:");
     expect(description).toContain("- #8 Alpha - `0 / 2`");
     expect(description).toContain("- #1 Bravo - `1 / 2` | :dagger: #8 ★ ★ ★");
-    expect(description).toContain(
-      "- #9 Charlie - `2 / 2` | :dagger: #8 ★ ★ ★ | :dagger: #1 ★ ☆ ☆",
-    );
-    expect(description).toContain("**Not in active war**");
-    expect(description).toContain("- Delta #LQ9P8R2 - war attacks: 0/2 - not in active war");
+    expect(description).toContain("- #9 Charlie - `0 / 2`");
+    expect(description).not.toContain("- #9 Charlie - `2 / 2`");
+    expect(description).not.toContain("**Not in active war**");
+    expect(description).not.toContain("Delta #LQ9P8R2");
   });
 
   it("uses safe #? fallback when war lineup position is unavailable", async () => {
@@ -459,7 +458,59 @@ describe("/todo command", () => {
     expect(description).toContain("- #? Alpha - `1 / 2` | :dagger: #? ★ ★ ☆");
   });
 
-  it("renders CWL grouped sections by shared context with neutral non-active rows", async () => {
+  it("uses player-tag fallback for war position when snapshot clan tag is stale", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },
+    ]);
+    prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
+      _count: { _all: 1 },
+      _max: { updatedAt: new Date("2026-03-26T00:00:00.000Z") },
+    });
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      makeSnapshotRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha",
+        clanTag: "#Q2V8P9L2",
+        clanName: "Stale Clan",
+        warAttacksUsed: 1,
+        warPhase: "battle day",
+      }),
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#Q2V8P9L2", clanBadge: ":rd:" },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#Q2V8P9L2",
+        matchType: "FWA",
+        outcome: "WIN",
+        updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: "#PQL0289",
+        playerTag: "#PYLQ0289",
+        position: 8,
+        attacks: 1,
+        defender1Position: 7,
+        stars1: 2,
+        defender2Position: null,
+        stars2: null,
+        sourceSyncedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+    ]);
+
+    const interaction = makeTodoInteraction({ type: "WAR" });
+    await Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
+
+    const description = getReplyDescription(interaction);
+    expect(description).toContain("- #8 Alpha - `1 / 2`");
+    expect(description).toContain("| :dagger: #7 ★ ★ ☆");
+    expect(description).not.toContain("- #? Alpha -");
+  });
+
+  it("renders CWL grouped sections by shared context and omits non-active linked rows", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([
       { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },
       { playerTag: "#QGRJ2222", createdAt: new Date("2026-03-02T00:00:00.000Z") },
@@ -515,10 +566,8 @@ describe("/todo command", () => {
     expect(description).toContain("**Clan Two (#2QG2C08UP) - preparation ends <t:");
     expect(description).toContain("- Alpha #PYLQ0289 - CWL attacks: 1/1");
     expect(description).toContain("- Bravo #QGRJ2222 - CWL attacks: 0/1");
-    expect(description).toContain("**Not in active CWL**");
-    expect(description).toContain(
-      "- Delta #LQ9P8R2 - CWL attacks: 0/1 - not in active CWL war",
-    );
+    expect(description).not.toContain("**Not in active CWL**");
+    expect(description).not.toContain("Delta #LQ9P8R2");
   });
 
   it("groups CWL rows by cwlClanTag/cwlClanName when different from home clan", async () => {
@@ -1105,3 +1154,4 @@ describe("/todo refresh button", () => {
     expect(interaction.deferUpdate).not.toHaveBeenCalled();
   });
 });
+
