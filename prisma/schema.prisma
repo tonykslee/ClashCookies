@@ -44,6 +44,8 @@ model TrackedClan {
   notifyChannelId String?
   notifyRole      String?
   notifyEnabled   Boolean   @default(false)
+  fwaPoliceDmEnabled  Boolean   @default(false)
+  fwaPoliceLogEnabled Boolean   @default(false)
   createdAt       DateTime  @default(now())
 }
 
@@ -239,6 +241,22 @@ model UserActivityReminderDelivery {
   @@unique([reminderRuleId, eventInstanceKey])
   @@index([deliveryStatus, createdAt])
   @@index([reminderRuleId, createdAt])
+}
+
+model FwaPoliceHandledViolation {
+  id                  String   @id @default(cuid())
+  clanTag             String
+  warId               Int
+  playerTag           String
+  violationKey        String
+  linkedDiscordUserId String?
+  dmSentAt            DateTime?
+  logSentAt           DateTime?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@unique([clanTag, warId, playerTag, violationKey])
+  @@index([clanTag, warId, createdAt])
 }
 
 model CwlTrackedClan {

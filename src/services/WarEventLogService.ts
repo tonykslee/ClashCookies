@@ -32,6 +32,7 @@ import {
   WarComplianceService,
   type WarComplianceIssue,
 } from "./WarComplianceService";
+import { FwaPoliceService } from "./FwaPoliceService";
 import { buildFwaComplianceEmbedView } from "../commands/fwa/complianceEmbedView";
 import {
   buildComplianceWarPlanText,
@@ -1087,6 +1088,7 @@ export class WarEventLogService {
   private readonly commandPermissions: CommandPermissionService;
   private readonly history: WarEventHistoryService;
   private readonly warCompliance: WarComplianceService;
+  private readonly fwaPolice: FwaPoliceService;
   private readonly postedMessages: PostedMessageService;
   private readonly cocWarOutageByClanTag = new Map<string, CocWarOutageState>();
 
@@ -1105,6 +1107,7 @@ export class WarEventLogService {
     this.commandPermissions = new CommandPermissionService();
     this.history = new WarEventHistoryService(coc);
     this.warCompliance = new WarComplianceService();
+    this.fwaPolice = new FwaPoliceService();
     this.postedMessages = new PostedMessageService();
   }
 
@@ -3170,6 +3173,29 @@ export class WarEventLogService {
           .catch((err) => {
             console.error(
               `[war-events] persist canonical war history failed guild=${params.sub.guildId} clan=${params.sub.clanTag} error=${formatError(err)}`,
+            );
+          });
+      }
+
+      const policeWarId =
+        resolvedWarIdForDelivery !== null &&
+        resolvedWarIdForDelivery !== undefined &&
+        Number.isFinite(Number(resolvedWarIdForDelivery)) &&
+        Math.trunc(Number(resolvedWarIdForDelivery)) > 0
+          ? Math.trunc(Number(resolvedWarIdForDelivery))
+          : null;
+      if (policeWarId !== null) {
+        await this.fwaPolice
+          .enforceWarViolations({
+            client: this.client,
+            guildId: params.sub.guildId,
+            clanTag: payloadForDelivery.clanTag,
+            warId: policeWarId,
+            warCompliance: this.warCompliance,
+          })
+          .catch((err) => {
+            console.error(
+              `[fwa-police] enforce_failed guild=${params.sub.guildId} clan=${params.sub.clanTag} warId=${policeWarId} error=${formatError(err)}`,
             );
           });
       }
