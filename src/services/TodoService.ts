@@ -11,7 +11,6 @@ import {
 } from "./TodoSnapshotService";
 import {
   buildTrackedWarMemberStateByClanAndPlayer,
-  buildTrackedWarMemberStateByPlayerTag,
   isTodoWarStateActive,
   type TodoTrackedCurrentWarRow,
 } from "./TodoTrackedWarStateService";
@@ -57,18 +56,6 @@ type TodoEventGroup = {
 type CachedTodoRender = {
   expiresAtMs: number;
   pages: TodoPagesResult;
-};
-
-type WarMemberCurrentRow = {
-  clanTag: string;
-  playerTag: string;
-  position: number | null;
-  attacks: number | null;
-  defender1Position: number | null;
-  stars1: number | null;
-  defender2Position: number | null;
-  stars2: number | null;
-  sourceSyncedAt: Date;
 };
 
 type WarAttacksRow = {
@@ -176,21 +163,7 @@ export async function buildTodoPagesForUser(input: {
     ),
   ];
 
-  const [warMemberRows, trackedClanRows, currentWarRows] = await Promise.all([
-    prisma.fwaWarMemberCurrent.findMany({
-      where: { playerTag: { in: linkedTags } },
-      select: {
-        clanTag: true,
-        playerTag: true,
-        position: true,
-        attacks: true,
-        defender1Position: true,
-        stars1: true,
-        defender2Position: true,
-        stars2: true,
-        sourceSyncedAt: true,
-      },
-    }),
+  const [trackedClanRows, currentWarRows] = await Promise.all([
     clanTags.length > 0
       ? prisma.trackedClan.findMany({
           where: { tag: { in: clanTags } },
@@ -213,9 +186,6 @@ export async function buildTodoPagesForUser(input: {
       : Promise.resolve([]),
   ]);
 
-  const latestWarMemberByClanAndPlayer =
-    pickLatestWarMemberByClanAndPlayer(warMemberRows);
-  const latestWarMemberByPlayerTag = pickLatestWarMemberByPlayerTag(warMemberRows);
   const trackedClanTagSet = new Set(
     trackedClanRows
       .map((row) => normalizeClanTag(row.tag))
@@ -267,9 +237,6 @@ export async function buildTodoPagesForUser(input: {
     currentWarByClanTag: activeTrackedCurrentWarByClanTag,
     warAttackRows: trackedWarAttackRows,
   });
-  const trackedWarMemberByPlayerTag = buildTrackedWarMemberStateByPlayerTag(
-    trackedWarMemberByClanAndPlayer,
-  );
 
   const renderRows = links.map((link, index) => {
     const normalizedTag = normalizePlayerTag(link.playerTag);
@@ -278,27 +245,18 @@ export async function buildTodoPagesForUser(input: {
     const staleSnapshot = snapshot ? isSnapshotStale(snapshot, nowMs) : false;
     const resolvedClanTag = normalizeClanTag(snapshot?.clanTag ?? "") || null;
     const warMemberKey = resolvedClanTag ? `${resolvedClanTag}:${normalizedTag}` : "";
-    const warMemberFromFeed = warMemberKey
-      ? latestWarMemberByClanAndPlayer.get(warMemberKey) ?? null
-      : null;
-    const fallbackWarMemberFromFeed =
-      warMemberFromFeed ?? latestWarMemberByPlayerTag.get(normalizedTag) ?? null;
     const trackedWarMember = warMemberKey
       ? trackedWarMemberByClanAndPlayer.get(warMemberKey) ?? null
       : null;
-    const fallbackTrackedWarMember =
-      trackedWarMember ?? trackedWarMemberByPlayerTag.get(normalizedTag) ?? null;
     const trackedClanActive = Boolean(
       resolvedClanTag && trackedClanTagSet.has(resolvedClanTag),
     );
     const resolvedWarPosition = trackedClanActive
-      ? toFiniteIntOrNull(
-          fallbackTrackedWarMember?.position ?? fallbackWarMemberFromFeed?.position,
-        )
-      : toFiniteIntOrNull(fallbackWarMemberFromFeed?.position);
+      ? toFiniteIntOrNull(trackedWarMember?.position)
+      : null;
     const resolvedWarAttackDetails = trackedClanActive
-      ? (fallbackTrackedWarMember?.attackDetails ?? [])
-      : resolveWarAttackDetails(fallbackWarMemberFromFeed);
+      ? (trackedWarMember?.attackDetails ?? [])
+      : [];
     const matchContext = resolvedClanTag
       ? warMatchContextByClanTag.get(resolvedClanTag) ?? null
       : null;
@@ -826,26 +784,6 @@ function isWarRowAttackPhaseActive(row: TodoRenderRow): boolean {
   return true;
 }
 
-/** Purpose: extract compact first/second attack details from one latest war-member row. */
-function resolveWarAttackDetails(
-  row: Pick<
-    WarMemberCurrentRow,
-    "defender1Position" | "stars1" | "defender2Position" | "stars2"
-  > | null,
-): Array<{ defenderPosition: number | null; stars: number | null }> {
-  if (!row) return [];
-  return [
-    {
-      defenderPosition: toFiniteIntOrNull(row.defender1Position),
-      stars: toFiniteIntOrNull(row.stars1),
-    },
-    {
-      defenderPosition: toFiniteIntOrNull(row.defender2Position),
-      stars: toFiniteIntOrNull(row.stars2),
-    },
-  ];
-}
-
 /** Purpose: render one compact WAR attack detail segment for embed-friendly row suffixes. */
 function formatWarAttackDetail(input: {
   defenderPosition: number | null;
@@ -881,61 +819,6 @@ function resolveWarMatchStatusIndicator(
     return ":green_circle:";
   }
   return ":white_circle:";
-}
-
-/** Purpose: keep only the freshest war-member row for each clan+player pair. */
-function pickLatestWarMemberByClanAndPlayer(
-  rows: WarMemberCurrentRow[],
-): Map<string, WarMemberCurrentRow> {
-  const latest = new Map<string, WarMemberCurrentRow>();
-  for (const row of rows) {
-    const clanTag = normalizeClanTag(row.clanTag);
-    const playerTag = normalizePlayerTag(row.playerTag);
-    if (!clanTag || !playerTag) continue;
-    const key = `${clanTag}:${playerTag}`;
-    const existing = latest.get(key);
-    if (!existing || row.sourceSyncedAt > existing.sourceSyncedAt) {
-      latest.set(key, {
-        clanTag,
-        playerTag,
-        position: toFiniteIntOrNull(row.position),
-        attacks: toFiniteIntOrNull(row.attacks),
-        defender1Position: toFiniteIntOrNull(row.defender1Position),
-        stars1: toFiniteIntOrNull(row.stars1),
-        defender2Position: toFiniteIntOrNull(row.defender2Position),
-        stars2: toFiniteIntOrNull(row.stars2),
-        sourceSyncedAt: row.sourceSyncedAt,
-      });
-    }
-  }
-  return latest;
-}
-
-/** Purpose: keep one freshest war-member row per player tag as fallback when clan-tag joins are stale. */
-function pickLatestWarMemberByPlayerTag(
-  rows: WarMemberCurrentRow[],
-): Map<string, WarMemberCurrentRow> {
-  const latest = new Map<string, WarMemberCurrentRow>();
-  for (const row of rows) {
-    const clanTag = normalizeClanTag(row.clanTag);
-    const playerTag = normalizePlayerTag(row.playerTag);
-    if (!clanTag || !playerTag) continue;
-    const existing = latest.get(playerTag);
-    if (!existing || row.sourceSyncedAt > existing.sourceSyncedAt) {
-      latest.set(playerTag, {
-        clanTag,
-        playerTag,
-        position: toFiniteIntOrNull(row.position),
-        attacks: toFiniteIntOrNull(row.attacks),
-        defender1Position: toFiniteIntOrNull(row.defender1Position),
-        stars1: toFiniteIntOrNull(row.stars1),
-        defender2Position: toFiniteIntOrNull(row.defender2Position),
-        stars2: toFiniteIntOrNull(row.stars2),
-        sourceSyncedAt: row.sourceSyncedAt,
-      });
-    }
-  }
-  return latest;
 }
 
 /** Purpose: keep one latest current-war match context row per clan for header indicator rendering. */
