@@ -21,6 +21,9 @@ const prismaMock = vi.hoisted(() => ({
   currentWar: {
     findMany: vi.fn(),
   },
+  warAttacks: {
+    findMany: vi.fn(),
+  },
   trackedClan: {
     findMany: vi.fn(),
   },
@@ -208,6 +211,7 @@ describe("/todo command", () => {
     prismaMock.fwaClanMemberCurrent.findMany.mockReset();
     prismaMock.fwaWarMemberCurrent.findMany.mockReset();
     prismaMock.currentWar.findMany.mockReset();
+    prismaMock.warAttacks.findMany.mockReset();
     prismaMock.trackedClan.findMany.mockReset();
     prismaMock.cwlTrackedClan.findMany.mockReset();
     prismaMock.cwlPlayerClanSeason.findMany.mockReset();
@@ -224,6 +228,7 @@ describe("/todo command", () => {
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.currentWar.findMany.mockResolvedValue([]);
+    prismaMock.warAttacks.findMany.mockResolvedValue([]);
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
     prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
@@ -346,15 +351,88 @@ describe("/todo command", () => {
     prismaMock.currentWar.findMany.mockResolvedValue([
       {
         clanTag: "#PQL0289",
+        warId: 1001,
+        startTime: new Date("2026-03-25T12:00:00.000Z"),
         matchType: "FWA",
         outcome: "WIN",
+        state: "inWar",
         updatedAt: new Date("2026-03-26T00:00:00.000Z"),
       },
       {
         clanTag: "#2QG2C08UP",
+        warId: 1002,
+        startTime: new Date("2026-03-25T12:00:00.000Z"),
         matchType: "BL",
         outcome: null,
+        state: "preparation",
         updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.warAttacks.findMany.mockResolvedValue([
+      {
+        warId: 1001,
+        clanTag: "#PQL0289",
+        warStartTime: new Date("2026-03-25T12:00:00.000Z"),
+        playerTag: "#PYLQ0289",
+        playerPosition: 8,
+        attacksUsed: 0,
+        attackOrder: 0,
+        attackNumber: 0,
+        defenderPosition: null,
+        stars: 0,
+        attackSeenAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+      {
+        warId: 1001,
+        clanTag: "#PQL0289",
+        warStartTime: new Date("2026-03-25T12:00:00.000Z"),
+        playerTag: "#QGRJ2222",
+        playerPosition: 1,
+        attacksUsed: 1,
+        attackOrder: 0,
+        attackNumber: 0,
+        defenderPosition: null,
+        stars: 0,
+        attackSeenAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+      {
+        warId: 1001,
+        clanTag: "#PQL0289",
+        warStartTime: new Date("2026-03-25T12:00:00.000Z"),
+        playerTag: "#QGRJ2222",
+        playerPosition: 1,
+        attacksUsed: 1,
+        attackOrder: 1,
+        attackNumber: 1,
+        defenderPosition: 8,
+        stars: 3,
+        attackSeenAt: new Date("2026-03-26T00:05:00.000Z"),
+      },
+      {
+        warId: 1002,
+        clanTag: "#2QG2C08UP",
+        warStartTime: new Date("2026-03-25T12:00:00.000Z"),
+        playerTag: "#CUV9082",
+        playerPosition: 9,
+        attacksUsed: 2,
+        attackOrder: 0,
+        attackNumber: 0,
+        defenderPosition: null,
+        stars: 0,
+        attackSeenAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+      {
+        warId: 1002,
+        clanTag: "#2QG2C08UP",
+        warStartTime: new Date("2026-03-25T12:00:00.000Z"),
+        playerTag: "#CUV9082",
+        playerPosition: 9,
+        attacksUsed: 2,
+        attackOrder: 1,
+        attackNumber: 1,
+        defenderPosition: 8,
+        stars: 3,
+        attackSeenAt: new Date("2026-03-26T00:10:00.000Z"),
       },
     ]);
     prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([
@@ -374,8 +452,8 @@ describe("/todo command", () => {
         playerTag: "#QGRJ2222",
         position: 1,
         attacks: 1,
-        defender1Position: 8,
-        stars1: 3,
+        defender1Position: 3,
+        stars1: 1,
         defender2Position: null,
         stars2: null,
         sourceSyncedAt: new Date("2026-03-26T00:00:00.000Z"),
@@ -432,9 +510,40 @@ describe("/todo command", () => {
     prismaMock.currentWar.findMany.mockResolvedValue([
       {
         clanTag: "#PQL0289",
+        warId: 1001,
+        startTime: new Date("2026-03-25T12:00:00.000Z"),
         matchType: "FWA",
         outcome: "WIN",
+        state: "inWar",
         updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.warAttacks.findMany.mockResolvedValue([
+      {
+        warId: 1001,
+        clanTag: "#PQL0289",
+        warStartTime: new Date("2026-03-25T12:00:00.000Z"),
+        playerTag: "#PYLQ0289",
+        playerPosition: null,
+        attacksUsed: 1,
+        attackOrder: 0,
+        attackNumber: 0,
+        defenderPosition: null,
+        stars: 0,
+        attackSeenAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+      {
+        warId: 1001,
+        clanTag: "#PQL0289",
+        warStartTime: new Date("2026-03-25T12:00:00.000Z"),
+        playerTag: "#PYLQ0289",
+        playerPosition: null,
+        attacksUsed: 1,
+        attackOrder: 1,
+        attackNumber: 1,
+        defenderPosition: null,
+        stars: 2,
+        attackSeenAt: new Date("2026-03-26T00:05:00.000Z"),
       },
     ]);
     prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([
@@ -482,9 +591,40 @@ describe("/todo command", () => {
     prismaMock.currentWar.findMany.mockResolvedValue([
       {
         clanTag: "#Q2V8P9L2",
+        warId: 1003,
+        startTime: new Date("2026-03-25T12:00:00.000Z"),
         matchType: "FWA",
         outcome: "WIN",
+        state: "inWar",
         updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.warAttacks.findMany.mockResolvedValue([
+      {
+        warId: 1003,
+        clanTag: "#Q2V8P9L2",
+        warStartTime: new Date("2026-03-25T12:00:00.000Z"),
+        playerTag: "#PYLQ0289",
+        playerPosition: 8,
+        attacksUsed: 1,
+        attackOrder: 0,
+        attackNumber: 0,
+        defenderPosition: null,
+        stars: 0,
+        attackSeenAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+      {
+        warId: 1003,
+        clanTag: "#Q2V8P9L2",
+        warStartTime: new Date("2026-03-25T12:00:00.000Z"),
+        playerTag: "#PYLQ0289",
+        playerPosition: 8,
+        attacksUsed: 1,
+        attackOrder: 1,
+        attackNumber: 1,
+        defenderPosition: 7,
+        stars: 2,
+        attackSeenAt: new Date("2026-03-26T00:05:00.000Z"),
       },
     ]);
     prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([
