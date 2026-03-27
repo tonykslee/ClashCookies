@@ -40,6 +40,9 @@
 - `/war history clan-tag:<tag> [limit:<number>]` - Show recent clan-level war history from stored war records.
 - `/war war-id clan-tag:<tag> war-id:<number>` - Export stored war lookup payload for one clan-scoped war ID as CSV. `war-id` supports autocomplete after `clan-tag` is selected and returns recent ended wars for that clan only (up to 10).
 - `/accounts [visibility:private|public] [tag:<playerTag>] [discord-id:<snowflake>]` - List linked player accounts grouped by current clan. Default is your own account; provide exactly one of `tag` or `discord-id` to inspect a different linked user.
+- `/remindme set type:<WAR|CWL|RAIDS|GAMES> player_tags:<comma-separated-linked-tags> time_left:<HhMm[,HhMm...]> [method:DM|ping-me-here]` - Create durable personal recurring reminder rules for linked player tags only. `time_left` accepts one or more offsets like `12h,2h,30m`; `method` defaults to `DM`.
+- `/remindme list` - Show your active personal activity reminders in a grouped scan-friendly embed (type, player, method, offsets).
+- `/remindme remove` - Open an owner-scoped reminder removal panel with multi-select plus confirm/cancel controls.
 - `/reminders create type:{WAR_CWL|RAIDS|GAMES} time_left:<HhMm> channel:<discordChannel>` - Open a preview-first reminder panel with selected type/offset/channel and a clan multi-select that combines FWA tracked clans plus current-season CWL tracked clans.
 - `/reminders list` - List guild reminder configs in an admin-scannable view (type, channel, offsets, target-count, enabled state) with pagination when needed.
 - `/reminders edit clan:<tag>` - Resolve reminder configs targeting the normalized clan tag (with or without `#`) and open an edit panel for offsets, channel, type, clan targets, and enabled state.

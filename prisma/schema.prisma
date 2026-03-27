@@ -120,6 +120,24 @@ enum ReminderDispatchStatus {
   FAILED
 }
 
+enum UserActivityReminderType {
+  WAR
+  CWL
+  RAIDS
+  GAMES
+}
+
+enum UserActivityReminderMethod {
+  DM
+  PING_HERE
+}
+
+enum UserActivityReminderDeliveryStatus {
+  SENT
+  FAILED
+  SKIPPED
+}
+
 model Reminder {
   id              String             @id @default(cuid())
   guildId         String
@@ -185,6 +203,42 @@ model ReminderFireLog {
   @@index([reminderId, dispatchedAt])
   @@index([guildId, dispatchedAt])
   @@index([guildId, clanTag, dispatchedAt])
+}
+
+model UserActivityReminderRule {
+  id               String                       @id @default(cuid())
+  discordUserId    String
+  type             UserActivityReminderType
+  playerTag        String
+  method           UserActivityReminderMethod
+  offsetMinutes    Int
+  surfaceGuildId   String?
+  surfaceChannelId String?
+  isActive         Boolean                      @default(true)
+  createdAt        DateTime                     @default(now())
+  updatedAt        DateTime                     @updatedAt
+  deliveries       UserActivityReminderDelivery[]
+
+  @@unique([discordUserId, type, playerTag, method, offsetMinutes])
+  @@index([discordUserId, isActive])
+  @@index([type, playerTag, isActive])
+}
+
+model UserActivityReminderDelivery {
+  id                String                             @id @default(cuid())
+  reminderRuleId    String
+  eventInstanceKey  String
+  scheduledAt       DateTime
+  sentAt            DateTime?
+  deliveryStatus    UserActivityReminderDeliveryStatus @default(SENT)
+  deliverySurface   String?
+  errorMessage      String?
+  createdAt         DateTime                           @default(now())
+  reminderRule      UserActivityReminderRule           @relation(fields: [reminderRuleId], references: [id], onDelete: Cascade)
+
+  @@unique([reminderRuleId, eventInstanceKey])
+  @@index([deliveryStatus, createdAt])
+  @@index([reminderRuleId, createdAt])
 }
 
 model CwlTrackedClan {

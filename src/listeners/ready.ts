@@ -37,6 +37,7 @@ import { trackedMessageService } from "../services/TrackedMessageService";
 import { FwaFeedSchedulerService } from "../services/fwa-feeds/FwaFeedSchedulerService";
 import { todoSnapshotService } from "../services/TodoSnapshotService";
 import { ReminderSchedulerService } from "../services/reminders/ReminderSchedulerService";
+import { UserActivityReminderSchedulerService } from "../services/remindme/UserActivityReminderSchedulerService";
 
 const DEFAULT_OBSERVE_INTERVAL_MINUTES = 30;
 const RECRUITMENT_REMINDER_INTERVAL_MS = 60 * 60 * 1000;
@@ -586,6 +587,13 @@ export default (client: Client, cocService: CoCService): void => {
     const reminderScheduler = new ReminderSchedulerService(client);
     reminderScheduler.start();
     console.log("Reminder scheduler loop initialized.");
+
+    const userActivityReminderScheduler = new UserActivityReminderSchedulerService(
+      client,
+      cocService
+    );
+    userActivityReminderScheduler.start();
+    console.log("User activity reminder scheduler loop initialized.");
 
     console.log("ClashCookies is online");
   });

@@ -27,6 +27,7 @@ import { Say } from "./commands/Say";
 import { BotLogs } from "./commands/BotLogs";
 import { Todo } from "./commands/Todo";
 import { Reminders } from "./commands/Reminders";
+import { RemindMe } from "./commands/RemindMe";
 
 // ...existing code...
 export const Commands = [
@@ -41,6 +42,7 @@ export const Commands = [
   CC,
   Accounts,
   Todo,
+  RemindMe,
   Reminders,
   Link,
   Layout,
