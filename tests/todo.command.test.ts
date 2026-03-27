@@ -592,6 +592,130 @@ describe("/todo command", () => {
     expect(description).not.toContain("Delta #LQ9P8R2");
   });
 
+  it("uses check-mark bullets for completed WAR rows while keeping unfinished bullets unchanged", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },
+      { playerTag: "#QGRJ2222", createdAt: new Date("2026-03-02T00:00:00.000Z") },
+    ]);
+    prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
+      _count: { _all: 2 },
+      _max: { updatedAt: new Date("2026-03-26T00:00:00.000Z") },
+    });
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      makeSnapshotRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha",
+        clanTag: "#PQL0289",
+        clanName: "Clan One",
+        warAttacksUsed: 1,
+        warPhase: "battle day",
+      }),
+      makeSnapshotRow({
+        playerTag: "#QGRJ2222",
+        playerName: "Bravo",
+        clanTag: "#PQL0289",
+        clanName: "Clan One",
+        warAttacksUsed: 2,
+        warPhase: "battle day",
+      }),
+    ]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: "#PQL0289",
+        playerTag: "#PYLQ0289",
+        position: 1,
+        attacks: 1,
+        defender1Position: null,
+        stars1: null,
+        defender2Position: null,
+        stars2: null,
+        sourceSyncedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+      {
+        clanTag: "#PQL0289",
+        playerTag: "#QGRJ2222",
+        position: 2,
+        attacks: 2,
+        defender1Position: null,
+        stars1: null,
+        defender2Position: null,
+        stars2: null,
+        sourceSyncedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+    ]);
+
+    const interaction = makeTodoInteraction({ type: "WAR" });
+    await Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
+
+    const description = getReplyDescription(interaction);
+    expect(description).toContain("- #1 Alpha - `1 / 2`");
+    expect(description).toContain(":white_check_mark: #2 Bravo - `2 / 2`");
+  });
+
+  it("moves fully completed WAR clans below unfinished clans while preserving subgroup order", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },
+      { playerTag: "#QGRJ2222", createdAt: new Date("2026-03-02T00:00:00.000Z") },
+      { playerTag: "#CUV9082", createdAt: new Date("2026-03-03T00:00:00.000Z") },
+      { playerTag: "#LQ9P8R2", createdAt: new Date("2026-03-04T00:00:00.000Z") },
+    ]);
+    prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
+      _count: { _all: 4 },
+      _max: { updatedAt: new Date("2026-03-26T00:00:00.000Z") },
+    });
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      makeSnapshotRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha",
+        clanTag: "#PQL0289",
+        clanName: "A Clan",
+        warAttacksUsed: 1,
+        warPhase: "battle day",
+      }),
+      makeSnapshotRow({
+        playerTag: "#QGRJ2222",
+        playerName: "Bravo",
+        clanTag: "#2QG2C08UP",
+        clanName: "B Clan",
+        warAttacksUsed: 2,
+        warPhase: "battle day",
+      }),
+      makeSnapshotRow({
+        playerTag: "#CUV9082",
+        playerName: "Charlie",
+        clanTag: "#Q2V8P9L2",
+        clanName: "C Clan",
+        warAttacksUsed: 1,
+        warPhase: "battle day",
+      }),
+      makeSnapshotRow({
+        playerTag: "#LQ9P8R2",
+        playerName: "Delta",
+        clanTag: "#9C8VY2L2",
+        clanName: "D Clan",
+        warAttacksUsed: 2,
+        warPhase: "battle day",
+      }),
+    ]);
+
+    const interaction = makeTodoInteraction({ type: "WAR" });
+    await Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
+
+    const description = getReplyDescription(interaction);
+    const indexA = description.indexOf("**A Clan (#PQL0289) :white_circle: - battle day ends <t:");
+    const indexB = description.indexOf("**B Clan (#2QG2C08UP) :white_circle: - battle day ends <t:");
+    const indexC = description.indexOf("**C Clan (#Q2V8P9L2) :white_circle: - battle day ends <t:");
+    const indexD = description.indexOf("**D Clan (#9C8VY2L2) :white_circle: - battle day ends <t:");
+
+    expect(indexA).toBeGreaterThan(-1);
+    expect(indexB).toBeGreaterThan(-1);
+    expect(indexC).toBeGreaterThan(-1);
+    expect(indexD).toBeGreaterThan(-1);
+    expect(indexA).toBeLessThan(indexC);
+    expect(indexC).toBeLessThan(indexB);
+    expect(indexB).toBeLessThan(indexD);
+  });
+
   it("uses safe #? fallback when war lineup position is unavailable", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([
       { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },
