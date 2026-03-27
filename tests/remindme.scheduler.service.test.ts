@@ -47,12 +47,20 @@ function snapshotRow(input: {
   cwlClanTag?: string | null;
   cwlClanName?: string | null;
   warActive?: boolean;
+  warAttacksUsed?: number;
+  warAttacksMax?: number;
   warEndsAt?: Date | null;
   cwlActive?: boolean;
+  cwlAttacksUsed?: number;
+  cwlAttacksMax?: number;
   cwlEndsAt?: Date | null;
   raidActive?: boolean;
+  raidAttacksUsed?: number;
+  raidAttacksMax?: number;
   raidEndsAt?: Date | null;
   gamesActive?: boolean;
+  gamesPoints?: number | null;
+  gamesTarget?: number | null;
   gamesEndsAt?: Date | null;
   gamesCycleKey?: string | null;
 }) {
@@ -64,22 +72,22 @@ function snapshotRow(input: {
     cwlClanTag: input.cwlClanTag ?? "#QGRJ2222",
     cwlClanName: input.cwlClanName ?? "CWL Clan",
     warActive: input.warActive ?? false,
-    warAttacksUsed: 0,
-    warAttacksMax: 2,
+    warAttacksUsed: input.warAttacksUsed ?? 0,
+    warAttacksMax: input.warAttacksMax ?? 2,
     warPhase: "battle day",
     warEndsAt: input.warEndsAt ?? null,
     cwlActive: input.cwlActive ?? false,
-    cwlAttacksUsed: 0,
-    cwlAttacksMax: 1,
+    cwlAttacksUsed: input.cwlAttacksUsed ?? 0,
+    cwlAttacksMax: input.cwlAttacksMax ?? 1,
     cwlPhase: "battle day",
     cwlEndsAt: input.cwlEndsAt ?? null,
     raidActive: input.raidActive ?? false,
-    raidAttacksUsed: 0,
-    raidAttacksMax: 6,
+    raidAttacksUsed: input.raidAttacksUsed ?? 0,
+    raidAttacksMax: input.raidAttacksMax ?? 6,
     raidEndsAt: input.raidEndsAt ?? null,
     gamesActive: input.gamesActive ?? false,
-    gamesPoints: 1000,
-    gamesTarget: 4000,
+    gamesPoints: input.gamesPoints ?? 1000,
+    gamesTarget: input.gamesTarget ?? 4000,
     gamesChampionTotal: 1000,
     gamesSeasonBaseline: 0,
     gamesCycleKey: input.gamesCycleKey ?? null,
@@ -282,6 +290,220 @@ describe("UserActivityReminderSchedulerService", () => {
       fired: 0,
       deduped: 1,
       failed: 0,
+    });
+    expect(dispatch.dispatchReminder).not.toHaveBeenCalled();
+  });
+
+  it("skips due reminders when targeted activity is already completed for each type", async () => {
+    const nowMs = Date.parse("2026-03-27T12:00:00.000Z");
+    prismaMock.userActivityReminderRule.findMany.mockResolvedValue([
+      {
+        id: "rule-war-complete",
+        discordUserId: "111111111111111111",
+        type: UserActivityReminderType.WAR,
+        playerTag: "#PWARDONE",
+        method: UserActivityReminderMethod.DM,
+        offsetMinutes: 60,
+        isActive: true,
+        surfaceChannelId: null,
+      },
+      {
+        id: "rule-cwl-complete",
+        discordUserId: "111111111111111111",
+        type: UserActivityReminderType.CWL,
+        playerTag: "#PCWLDONE",
+        method: UserActivityReminderMethod.DM,
+        offsetMinutes: 60,
+        isActive: true,
+        surfaceChannelId: null,
+      },
+      {
+        id: "rule-raids-complete",
+        discordUserId: "111111111111111111",
+        type: UserActivityReminderType.RAIDS,
+        playerTag: "#PRAIDDONE",
+        method: UserActivityReminderMethod.DM,
+        offsetMinutes: 60,
+        isActive: true,
+        surfaceChannelId: null,
+      },
+      {
+        id: "rule-games-complete",
+        discordUserId: "111111111111111111",
+        type: UserActivityReminderType.GAMES,
+        playerTag: "#PGAMESDONE",
+        method: UserActivityReminderMethod.DM,
+        offsetMinutes: 60,
+        isActive: true,
+        surfaceChannelId: null,
+      },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#PYLQ0289",
+        warId: 991,
+        startTime: new Date(nowMs - 6 * 60 * 60 * 1000),
+        endTime: new Date(nowMs + 30 * 60 * 1000),
+        state: "inWar",
+        updatedAt: new Date(nowMs),
+      },
+    ]);
+    todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValue([
+      snapshotRow({
+        playerTag: "#PWARDONE",
+        warActive: true,
+        warAttacksUsed: 2,
+        warAttacksMax: 2,
+        warEndsAt: new Date(nowMs + 30 * 60 * 1000),
+      }),
+      snapshotRow({
+        playerTag: "#PCWLDONE",
+        cwlActive: true,
+        cwlAttacksUsed: 1,
+        cwlAttacksMax: 1,
+        cwlEndsAt: new Date(nowMs + 30 * 60 * 1000),
+      }),
+      snapshotRow({
+        playerTag: "#PRAIDDONE",
+        raidActive: true,
+        raidAttacksUsed: 6,
+        raidAttacksMax: 6,
+        raidEndsAt: new Date(nowMs + 30 * 60 * 1000),
+      }),
+      snapshotRow({
+        playerTag: "#PGAMESDONE",
+        gamesActive: true,
+        gamesPoints: 4000,
+        gamesTarget: 4000,
+        gamesEndsAt: new Date(nowMs + 30 * 60 * 1000),
+        gamesCycleKey: "cycle-2026-03",
+      }),
+    ]);
+    prismaMock.userActivityReminderDelivery.create
+      .mockResolvedValueOnce({ id: "delivery-complete-1" })
+      .mockResolvedValueOnce({ id: "delivery-complete-2" })
+      .mockResolvedValueOnce({ id: "delivery-complete-3" })
+      .mockResolvedValueOnce({ id: "delivery-complete-4" });
+    const dispatch = {
+      dispatchReminder: vi.fn(),
+    };
+
+    const counts = await runUserActivityReminderSchedulerCycle({
+      client: {} as any,
+      cocService: {} as any,
+      dispatch: dispatch as any,
+      nowMs,
+      intervalMs: 60_000,
+    });
+
+    expect(counts).toEqual({
+      evaluated: 4,
+      fired: 0,
+      deduped: 0,
+      failed: 0,
+    });
+    expect(dispatch.dispatchReminder).not.toHaveBeenCalled();
+    expect(prismaMock.userActivityReminderDelivery.update).toHaveBeenCalledTimes(4);
+    const updateData = prismaMock.userActivityReminderDelivery.update.mock.calls.map(
+      (call: any[]) => call[0]?.data,
+    );
+    expect(updateData).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          deliveryStatus: UserActivityReminderDeliveryStatus.SKIPPED,
+          errorMessage: "completed_before_send:WAR:2/2",
+        }),
+        expect.objectContaining({
+          deliveryStatus: UserActivityReminderDeliveryStatus.SKIPPED,
+          errorMessage: "completed_before_send:CWL:1/1",
+        }),
+        expect.objectContaining({
+          deliveryStatus: UserActivityReminderDeliveryStatus.SKIPPED,
+          errorMessage: "completed_before_send:RAIDS:6/6",
+        }),
+        expect.objectContaining({
+          deliveryStatus: UserActivityReminderDeliveryStatus.SKIPPED,
+          errorMessage: "completed_before_send:GAMES:4000/4000",
+        }),
+      ]),
+    );
+  });
+
+  it("does not resurrect a completion-skipped reminder for the same rule and event identity", async () => {
+    const nowMs = Date.parse("2026-03-27T12:00:00.000Z");
+    prismaMock.userActivityReminderRule.findMany.mockResolvedValue([
+      {
+        id: "rule-raids",
+        discordUserId: "111111111111111111",
+        type: UserActivityReminderType.RAIDS,
+        playerTag: "#P3333333",
+        method: UserActivityReminderMethod.DM,
+        offsetMinutes: 60,
+        isActive: true,
+        surfaceChannelId: null,
+      },
+    ]);
+    const firstSnapshot = snapshotRow({
+      playerTag: "#P3333333",
+      clanTag: "#2QG2C08UP",
+      clanName: "Raid Clan",
+      raidActive: true,
+      raidAttacksUsed: 6,
+      raidAttacksMax: 6,
+      raidEndsAt: new Date(nowMs + 30 * 60 * 1000),
+    });
+    const secondSnapshot = snapshotRow({
+      playerTag: "#P3333333",
+      clanTag: "#2QG2C08UP",
+      clanName: "Raid Clan",
+      raidActive: true,
+      raidAttacksUsed: 2,
+      raidAttacksMax: 6,
+      raidEndsAt: new Date(nowMs + 30 * 60 * 1000),
+    });
+    todoSnapshotServiceMock.listSnapshotsByPlayerTags
+      .mockResolvedValueOnce([firstSnapshot])
+      .mockResolvedValueOnce([secondSnapshot]);
+    prismaMock.userActivityReminderDelivery.create
+      .mockResolvedValueOnce({ id: "delivery-complete-1" })
+      .mockRejectedValueOnce({ code: "P2002" });
+    const dispatch = {
+      dispatchReminder: vi.fn(),
+    };
+
+    const firstCounts = await runUserActivityReminderSchedulerCycle({
+      client: {} as any,
+      cocService: {} as any,
+      dispatch: dispatch as any,
+      nowMs,
+      intervalMs: 60_000,
+    });
+    const secondCounts = await runUserActivityReminderSchedulerCycle({
+      client: {} as any,
+      cocService: {} as any,
+      dispatch: dispatch as any,
+      nowMs,
+      intervalMs: 60_000,
+    });
+
+    expect(firstCounts).toEqual({
+      evaluated: 1,
+      fired: 0,
+      deduped: 0,
+      failed: 0,
+    });
+    expect(secondCounts).toEqual({
+      evaluated: 1,
+      fired: 0,
+      deduped: 1,
+      failed: 0,
+    });
+    expect(prismaMock.userActivityReminderDelivery.update).toHaveBeenCalledWith({
+      where: { id: "delivery-complete-1" },
+      data: {
+        deliveryStatus: UserActivityReminderDeliveryStatus.SKIPPED,
+        errorMessage: "completed_before_send:RAIDS:6/6",
+      },
     });
     expect(dispatch.dispatchReminder).not.toHaveBeenCalled();
   });
