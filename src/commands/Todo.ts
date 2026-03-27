@@ -14,6 +14,7 @@ import { listPlayerLinksForDiscordUser } from "../services/PlayerLinkService";
 import { CoCService } from "../services/CoCService";
 import {
   buildTodoPagesForUser,
+  invalidateTodoRenderCacheForUser,
   normalizeTodoType,
   TODO_TYPES,
   type TodoType,
@@ -27,6 +28,7 @@ const TODO_EMBED_COLOR = 0x5865f2;
 const TODO_GUILD_SCOPE_DM = "dm";
 const TODO_REFRESH_ERROR_MESSAGE =
   "Failed to refresh todo data. Please try again.";
+const TODO_REFRESH_BUTTON_EMOJI = "🔄";
 const todoRefreshInFlightByMessageId = new Set<string>();
 
 type TodoButtonScope = {
@@ -81,6 +83,24 @@ async function resolveRememberedTodoType(
     );
     return null;
   }
+}
+
+/** Purpose: rebuild one user's todo snapshots and invalidate stale render cache before rerender. */
+async function refreshTodoSnapshotsForDiscordUser(input: {
+  discordUserId: string;
+  cocService: CoCService;
+}): Promise<void> {
+  const links = await listPlayerLinksForDiscordUser({
+    discordUserId: input.discordUserId,
+  });
+  const linkedTags = [...new Set(links.map((row) => row.playerTag))];
+  if (linkedTags.length > 0) {
+    await todoSnapshotService.refreshSnapshotsForPlayerTags({
+      playerTags: linkedTags,
+      cocService: input.cocService,
+    });
+  }
+  invalidateTodoRenderCacheForUser(input.discordUserId);
 }
 
 /** Purpose: build one stable guild scope token from guild-id or DM context. */
@@ -213,7 +233,7 @@ function buildTodoComponentRows(
         type: activeType,
       }),
     )
-    .setLabel("Refresh")
+    .setEmoji(TODO_REFRESH_BUTTON_EMOJI)
     .setStyle(ButtonStyle.Secondary);
 
   return [
@@ -366,16 +386,10 @@ export async function handleTodoRefreshButtonInteraction(
   await interaction.deferUpdate();
 
   try {
-    const links = await listPlayerLinksForDiscordUser({
+    await refreshTodoSnapshotsForDiscordUser({
       discordUserId: parsed.targetUserId,
+      cocService,
     });
-    const linkedTags = [...new Set(links.map((row) => row.playerTag))];
-    if (linkedTags.length > 0) {
-      await todoSnapshotService.refreshSnapshotsForPlayerTags({
-        playerTags: linkedTags,
-        cocService,
-      });
-    }
 
     const result = await buildTodoRenderResult({
       cocService,
@@ -454,6 +468,19 @@ export const Todo: Command = {
       ? null
       : await resolveRememberedTodoType(interaction.user.id);
     const selectedType = explicitType ?? rememberedType ?? normalizeTodoType(null);
+
+    try {
+      await refreshTodoSnapshotsForDiscordUser({
+        discordUserId: interaction.user.id,
+        cocService,
+      });
+    } catch (err) {
+      console.error(
+        `[todo-initial-refresh] user=${interaction.user.id} error=${formatError(err)}`,
+      );
+      await interaction.editReply(TODO_REFRESH_ERROR_MESSAGE);
+      return;
+    }
 
     const result = await buildTodoRenderResult({
       cocService,

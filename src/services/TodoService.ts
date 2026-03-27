@@ -38,6 +38,7 @@ type TodoRenderRow = {
   }>;
   warHeaderBadge: string | null;
   warMatchIndicator: string;
+  inValidatedWarMemberSet: boolean;
   snapshot: TodoSnapshotRecord | null;
   missingSnapshot: boolean;
   staleSnapshot: boolean;
@@ -111,6 +112,16 @@ export function normalizeTodoType(input: string | null | undefined): TodoType {
 /** Purpose: clear in-memory todo render cache between isolated tests. */
 export function resetTodoRenderCacheForTest(): void {
   todoRenderCacheByKey.clear();
+}
+
+/** Purpose: invalidate cached todo render entries for one Discord user after snapshot rebuilds. */
+export function invalidateTodoRenderCacheForUser(discordUserId: string): void {
+  const keyPrefix = `${String(discordUserId ?? "").trim()}|`;
+  for (const key of todoRenderCacheByKey.keys()) {
+    if (key.startsWith(keyPrefix)) {
+      todoRenderCacheByKey.delete(key);
+    }
+  }
 }
 
 /** Purpose: build snapshot-backed todo pages for one user with cheap cache re-use. */
@@ -277,6 +288,7 @@ export async function buildTodoPagesForUser(input: {
       warAttackDetails: resolvedWarAttackDetails,
       warHeaderBadge: resolvedClanTag ? clanBadgeByTag.get(resolvedClanTag) ?? null : null,
       warMatchIndicator: resolveWarMatchStatusIndicator(matchContext),
+      inValidatedWarMemberSet: Boolean(trackedClanActive && trackedWarMember),
       snapshot,
       missingSnapshot,
       staleSnapshot,
@@ -349,7 +361,9 @@ function buildWarPageDescription(
   rows: TodoRenderRow[],
   linkedPlayerCount: number,
 ): string {
-  const activeRows = rows.filter((row) => Boolean(row.snapshot?.warActive));
+  const activeRows = rows.filter(
+    (row) => Boolean(row.snapshot?.warActive) && row.inValidatedWarMemberSet,
+  );
   if (activeRows.length <= 0) {
     return buildTodoPageDescription({
       heading: "WAR",
@@ -436,7 +450,7 @@ function buildRaidsPageDescription(
     lines.push("");
   }
   for (const row of rows) {
-    lines.push(formatTodoRow(row, getRaidRowStatus(row)));
+    lines.push(formatRaidsTodoRow(row, getRaidRowStatus(row)));
   }
 
   return buildTodoPageDescription({
@@ -611,7 +625,17 @@ function formatGamesTodoRow(
   progressEmoji: string,
 ): string {
   const progressPrefix = progressEmoji.length > 0 ? `${progressEmoji} ` : "";
-  return `- ${progressPrefix}${formatPlayerIdentity(row)} - ${status}`;
+  if (progressPrefix) {
+    return `${progressPrefix}${formatPlayerIdentity(row)} - ${status}`;
+  }
+  return `- ${formatPlayerIdentity(row)} - ${status}`;
+}
+
+/** Purpose: format one RAIDS row with completion marker emojis and unchanged status text. */
+function formatRaidsTodoRow(row: TodoRenderRow, status: string): string {
+  const progress = getRaidRowProgress(row);
+  const marker = progress.complete ? ":white_check_mark:" : ":yellow_circle:";
+  return `${marker} ${formatPlayerIdentity(row)} - ${status}`;
 }
 
 /** Purpose: build one stable player identity token for todo row prefixes. */
@@ -654,8 +678,8 @@ function getWarRowStatus(row: TodoRenderRow): string {
   if (row.missingSnapshot || !row.snapshot) {
     return "`0 / 2` - snapshot unavailable";
   }
-  const { used, max } = getWarRowProgress(row);
-  const staleSuffix = row.staleSnapshot ? " - stale snapshot" : "";
+  const { used, max, complete } = getWarRowProgress(row);
+  const staleSuffix = row.staleSnapshot && !complete ? " - stale snapshot" : "";
   return `\`${used} / ${max}\`${staleSuffix}`;
 }
 
@@ -699,18 +723,31 @@ function getRaidRowStatus(row: TodoRenderRow): string {
     return "clan capital raids: snapshot unavailable";
   }
 
-  const used = clampInt(
-    row.snapshot.raidAttacksUsed,
-    0,
-    row.snapshot.raidAttacksMax || 6,
-  );
-  const max = Math.max(1, clampInt(row.snapshot.raidAttacksMax, 1, 6));
+  const { used, max } = getRaidRowProgress(row);
   const staleSuffix = row.staleSnapshot ? " - stale snapshot" : "";
 
   if (!row.snapshot.raidActive) {
     return `clan capital raids: ${used}/${max} - not active${staleSuffix}`;
   }
   return `clan capital raids: ${used}/${max}${staleSuffix}`;
+}
+
+/** Purpose: compute stable RAIDS used/max progress and completion flag for row marker decisions. */
+function getRaidRowProgress(row: TodoRenderRow): {
+  used: number;
+  max: number;
+  complete: boolean;
+} {
+  if (!row.snapshot) {
+    return { used: 0, max: 6, complete: false };
+  }
+  const used = clampInt(
+    row.snapshot.raidAttacksUsed,
+    0,
+    row.snapshot.raidAttacksMax || 6,
+  );
+  const max = Math.max(1, clampInt(row.snapshot.raidAttacksMax, 1, 6));
+  return { used, max, complete: used >= max };
 }
 
 /** Purpose: build GAMES row status text with points and completion marker, without per-row timer duplication. */
