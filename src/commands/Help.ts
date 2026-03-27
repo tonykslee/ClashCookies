@@ -325,6 +325,24 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/reminders edit clan:#2QG2C08UP",
     ],
   },
+  remindme: {
+    summary:
+      "Configure recurring personal activity reminders for linked WAR/CWL/RAIDS/GAMES players.",
+    details: [
+      "`set` creates one rule per `(type, linked player tag, method, offset)` and stores reminders durably for future event cycles.",
+      "`player_tags` only accepts tags linked to your Discord account (autocomplete + server-side validation).",
+      "`time_left` accepts one or more `HhMm` offsets (comma-separated), for example `12h,2h,30m`.",
+      "`method` defaults to `DM`; `ping-me-here` stores the invoking channel as routing surface.",
+      "`list` shows active reminders grouped by type/player/method with normalized offsets.",
+      "`remove` opens an owner-scoped multi-select panel with confirm/cancel controls.",
+    ],
+    examples: [
+      "/remindme set type:WAR player_tags:#PYLQ0289 time_left:12h,2h",
+      "/remindme set type:RAIDS player_tags:#PYLQ0289,#QGRJ2222 time_left:30m method:ping-me-here",
+      "/remindme list",
+      "/remindme remove",
+    ],
+  },
   link: {
     summary: "Manage local Discord-player links using PlayerLink.",
     details: [
