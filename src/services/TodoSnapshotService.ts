@@ -1,7 +1,10 @@
 import { ClanWar } from "../generated/coc-api";
 import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
-import { buildPlayerSignalStateKey } from "./ActivitySignalService";
+import {
+  buildPlayerSignalStateKey,
+  extractGamesChampionTotalFromSignalState,
+} from "./ActivitySignalService";
 import { resolveCurrentCwlSeasonKey } from "./CwlRegistryService";
 import { CoCService } from "./CoCService";
 import { normalizeClanTag, normalizePlayerTag } from "./PlayerLinkService";
@@ -31,6 +34,9 @@ const TODO_SNAPSHOT_SELECT = {
   gamesActive: true,
   gamesPoints: true,
   gamesTarget: true,
+  gamesChampionTotal: true,
+  gamesSeasonBaseline: true,
+  gamesCycleKey: true,
   gamesEndsAt: true,
   lastUpdatedAt: true,
   updatedAt: true,
@@ -73,14 +79,15 @@ type WarMemberCurrentRow = {
 type TodoGamesDerivedValues = {
   points: number | null;
   target: number | null;
-  baselineToPersist: number | null;
+  championTotal: number | null;
+  seasonBaseline: number | null;
+  cycleKey: string | null;
 };
 
 const TODO_GAMES_TARGET_POINTS = 4000;
 const TODO_GAMES_POINTS_MAX = 4000;
 const TODO_SNAPSHOT_WRITE_CHUNK_SIZE = 50;
 const TODO_CWL_SEASON_WRITE_CHUNK_SIZE = 100;
-const TODO_GAMES_BASELINE_SETTING_PREFIX = "todo_games_baseline";
 
 /** Purpose: keep all Todo snapshot reads/writes in one service boundary. */
 export class TodoSnapshotService {
@@ -236,18 +243,7 @@ export class TodoSnapshotService {
         buildPlayerSignalStateKey(playerTag),
       ]),
     );
-    const gamesBaselineKeyByTag = new Map(
-      normalizedTags.map((playerTag) => [
-        playerTag,
-        buildTodoGamesBaselineSettingKey(gamesCycleKey, playerTag),
-      ]),
-    );
-    const settingKeys = [
-      ...new Set([
-        ...signalStateKeyByTag.values(),
-        ...gamesBaselineKeyByTag.values(),
-      ]),
-    ];
+    const settingKeys = [...new Set([...signalStateKeyByTag.values()])];
 
     const [
       existingSnapshots,
@@ -304,16 +300,8 @@ export class TodoSnapshotService {
     const gamesChampionTotalByTag = new Map(
       normalizedTags.map((playerTag) => [
         playerTag,
-        parseGamesChampionTotalFromSignalState(
+        extractGamesChampionTotalFromSignalState(
           settingValueByKey.get(signalStateKeyByTag.get(playerTag) ?? ""),
-        ),
-      ]),
-    );
-    const gamesBaselineByTag = new Map(
-      normalizedTags.map((playerTag) => [
-        playerTag,
-        parseTodoGamesBaselineValue(
-          settingValueByKey.get(gamesBaselineKeyByTag.get(playerTag) ?? ""),
         ),
       ]),
     );
@@ -405,7 +393,6 @@ export class TodoSnapshotService {
       trackedCwlTags: cwlTrackedTagSet,
     });
 
-    const gamesBaselineWriteByKey = new Map<string, string>();
     const snapshotUpserts: Array<
       Parameters<typeof prisma.todoPlayerSnapshot.upsert>[0]
     > = [];
@@ -482,21 +469,13 @@ export class TodoSnapshotService {
 
       const derivedGames = deriveTodoGamesValues({
         gamesWindowActive: gamesWindow.active,
-        gamesChampionTotal: gamesChampionTotalByTag.get(playerTag) ?? null,
-        baselineTotal: gamesBaselineByTag.get(playerTag) ?? null,
+        gamesCycleKey,
+        observedChampionTotal: gamesChampionTotalByTag.get(playerTag) ?? null,
+        existingChampionTotal: existing?.gamesChampionTotal ?? null,
+        existingSeasonBaseline: existing?.gamesSeasonBaseline ?? null,
+        existingCycleKey: existing?.gamesCycleKey ?? null,
+        existingPoints: existing?.gamesPoints ?? null,
       });
-      const gamesBaselineSettingKey = gamesBaselineKeyByTag.get(playerTag);
-      if (
-        gamesBaselineSettingKey &&
-        derivedGames.baselineToPersist !== null &&
-        settingValueByKey.get(gamesBaselineSettingKey) !==
-          String(derivedGames.baselineToPersist)
-      ) {
-        gamesBaselineWriteByKey.set(
-          gamesBaselineSettingKey,
-          String(derivedGames.baselineToPersist),
-        );
-      }
 
       const data = {
         playerName: resolvedPlayerName,
@@ -521,6 +500,9 @@ export class TodoSnapshotService {
         gamesActive: gamesWindow.active,
         gamesPoints: derivedGames.points,
         gamesTarget: derivedGames.target,
+        gamesChampionTotal: derivedGames.championTotal,
+        gamesSeasonBaseline: derivedGames.seasonBaseline,
+        gamesCycleKey: derivedGames.cycleKey,
         gamesEndsAt: new Date(gamesWindow.endMs),
         lastUpdatedAt: now,
       };
@@ -556,18 +538,6 @@ export class TodoSnapshotService {
 
     try {
       await runChunkedWrites(
-        [...gamesBaselineWriteByKey.entries()],
-        TODO_SNAPSHOT_WRITE_CHUNK_SIZE,
-        async ([key, value]) => {
-          await prisma.botSetting.upsert({
-            where: { key },
-            update: { value },
-            create: { key, value },
-          });
-        },
-      );
-
-      await runChunkedWrites(
         snapshotUpserts,
         TODO_SNAPSHOT_WRITE_CHUNK_SIZE,
         async (upsert) => {
@@ -584,7 +554,7 @@ export class TodoSnapshotService {
       );
     } catch (err) {
       console.error(
-        `[todo-snapshot] persist_failed players=${normalizedTags.length} snapshots=${snapshotUpserts.length} cwl=${cwlSeasonUpserts.length} baseline_writes=${gamesBaselineWriteByKey.size} error=${formatError(err)}`,
+        `[todo-snapshot] persist_failed players=${normalizedTags.length} snapshots=${snapshotUpserts.length} cwl=${cwlSeasonUpserts.length} error=${formatError(err)}`,
       );
       throw err;
     }
@@ -631,63 +601,76 @@ function toFiniteIntOrNull(input: unknown): number | null {
   return Math.trunc(value);
 }
 
-/** Purpose: parse persisted player-signal JSON and extract lifetime Clan Games total. */
-function parseGamesChampionTotalFromSignalState(raw: string | undefined): number | null {
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as {
-      counters?: Record<string, unknown>;
-    };
-    return toFiniteIntOrNull(parsed?.counters?.gamesChampion);
-  } catch {
-    return null;
-  }
-}
-
-/** Purpose: parse one persisted Clan Games baseline value into a finite integer. */
-function parseTodoGamesBaselineValue(raw: string | undefined): number | null {
-  return toFiniteIntOrNull(raw);
-}
-
 /** Purpose: build one deterministic cycle key for Clan Games baseline ownership. */
 function buildClanGamesCycleKey(startMs: number): string {
   return String(Math.trunc(startMs));
 }
 
-/** Purpose: build one deterministic BotSetting key for per-cycle player baseline values. */
-function buildTodoGamesBaselineSettingKey(cycleKey: string, playerTag: string): string {
-  return `${TODO_GAMES_BASELINE_SETTING_PREFIX}:${cycleKey}:${playerTag}`;
+/** Purpose: normalize potentially-empty cycle-key input into nullable stable string. */
+function normalizeGamesCycleKey(input: unknown): string | null {
+  const value = String(input ?? "").trim();
+  return value.length > 0 ? value : null;
 }
 
-/** Purpose: derive snapshot-friendly Clan Games points using stored total + cycle baseline values. */
+/** Purpose: derive snapshot-owned Clan Games observability values and bounded points. */
 function deriveTodoGamesValues(input: {
   gamesWindowActive: boolean;
-  gamesChampionTotal: number | null;
-  baselineTotal: number | null;
+  gamesCycleKey: string;
+  observedChampionTotal: number | null;
+  existingChampionTotal: number | null;
+  existingSeasonBaseline: number | null;
+  existingCycleKey: string | null;
+  existingPoints: number | null;
 }): TodoGamesDerivedValues {
-  const championTotal = toFiniteIntOrNull(input.gamesChampionTotal);
-  const baselineTotal = toFiniteIntOrNull(input.baselineTotal);
+  const championTotal =
+    toFiniteIntOrNull(input.observedChampionTotal) ??
+    toFiniteIntOrNull(input.existingChampionTotal);
+  const existingBaseline = toFiniteIntOrNull(input.existingSeasonBaseline);
+  const existingCycleKey = normalizeGamesCycleKey(input.existingCycleKey);
+  const existingPoints = toFiniteIntOrNull(input.existingPoints);
+  const activeCycleKey = normalizeGamesCycleKey(input.gamesCycleKey);
 
   if (!input.gamesWindowActive) {
     return {
       points: null,
       target: null,
-      baselineToPersist: championTotal,
+      championTotal,
+      seasonBaseline: championTotal,
+      cycleKey: activeCycleKey,
     };
   }
 
-  let resolvedBaseline = baselineTotal;
+  let resolvedBaseline: number | null = null;
+  if (existingCycleKey && activeCycleKey && existingCycleKey === activeCycleKey) {
+    resolvedBaseline = existingBaseline;
+    if (
+      championTotal !== null &&
+      resolvedBaseline === null &&
+      existingPoints !== null &&
+      existingPoints > 0
+    ) {
+      resolvedBaseline = Math.max(
+        0,
+        championTotal - clampInt(existingPoints, 0, TODO_GAMES_POINTS_MAX),
+      );
+    }
+  }
+  if (resolvedBaseline === null) resolvedBaseline = championTotal;
   if (
     championTotal !== null &&
-    (resolvedBaseline === null || championTotal < resolvedBaseline)
+    resolvedBaseline !== null &&
+    championTotal < resolvedBaseline
   ) {
     resolvedBaseline = championTotal;
   }
+
   if (resolvedBaseline === null) {
     return {
       points: 0,
       target: TODO_GAMES_TARGET_POINTS,
-      baselineToPersist: championTotal,
+      championTotal,
+      seasonBaseline: null,
+      cycleKey: activeCycleKey,
     };
   }
 
@@ -700,7 +683,9 @@ function deriveTodoGamesValues(input: {
   return {
     points,
     target: TODO_GAMES_TARGET_POINTS,
-    baselineToPersist: resolvedBaseline,
+    championTotal,
+    seasonBaseline: resolvedBaseline,
+    cycleKey: activeCycleKey,
   };
 }
 

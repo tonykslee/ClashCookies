@@ -88,6 +88,9 @@ model TodoPlayerSnapshot {
   gamesActive     Boolean  @default(false)
   gamesPoints     Int?
   gamesTarget     Int?
+  gamesChampionTotal Int?
+  gamesSeasonBaseline Int?
+  gamesCycleKey   String?
   gamesEndsAt     DateTime?
   lastUpdatedAt   DateTime @default(now())
   createdAt       DateTime @default(now())
@@ -95,6 +98,7 @@ model TodoPlayerSnapshot {
 
   @@index([clanTag])
   @@index([cwlClanTag])
+  @@index([gamesCycleKey])
   @@index([updatedAt])
 }
 
