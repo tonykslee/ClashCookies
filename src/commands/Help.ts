@@ -289,6 +289,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`type` controls only the initial page shown; use page buttons to switch categories without rerunning.",
       "Use the `Refresh` button to trigger a targeted snapshot rebuild for the displayed todo user and update the same message in place.",
       "WAR/CWL pages group players by shared active event context and include section headers with phase timing.",
+      "WAR section headers include tracked clan badge + match-state indicator, and WAR rows show lineup position with compact used-attack detail.",
       "RAIDS/GAMES pages use one shared top timer line and then list per-player progress rows.",
       "GAMES page points come from stored activity-signal totals, with cycle baseline/total observability persisted on TodoPlayerSnapshot for DB-first reads.",
       "GAMES rows are sorted by observed `gamesChampionTotal` descending, with stable tie-breakers by player identity.",
