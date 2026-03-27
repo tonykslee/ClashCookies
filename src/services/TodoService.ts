@@ -69,6 +69,7 @@ type CurrentWarMatchContextRow = {
   clanTag: string;
   matchType: string | null;
   outcome: string | null;
+  state: string | null;
   updatedAt: Date;
 };
 
@@ -177,13 +178,20 @@ export async function buildTodoPagesForUser(input: {
     clanTags.length > 0
       ? prisma.currentWar.findMany({
           where: { clanTag: { in: clanTags } },
-          select: { clanTag: true, matchType: true, outcome: true, updatedAt: true },
+          select: {
+            clanTag: true,
+            matchType: true,
+            outcome: true,
+            state: true,
+            updatedAt: true,
+          },
         })
       : Promise.resolve([]),
   ]);
 
   const latestWarMemberByClanAndPlayer =
     pickLatestWarMemberByClanAndPlayer(warMemberRows);
+  const latestWarMemberByPlayerTag = pickLatestWarMemberByPlayerTag(warMemberRows);
   const clanBadgeByTag = new Map(
     trackedClanRows
       .map((row) => [normalizeClanTag(row.tag), sanitizeStatusText(row.clanBadge)] as const)
@@ -202,7 +210,8 @@ export async function buildTodoPagesForUser(input: {
     const warMember = warMemberKey
       ? latestWarMemberByClanAndPlayer.get(warMemberKey) ?? null
       : null;
-    const warAttackDetails = resolveWarAttackDetails(warMember);
+    const fallbackWarMember =
+      warMember ?? latestWarMemberByPlayerTag.get(normalizedTag) ?? null;
     const matchContext = resolvedClanTag
       ? warMatchContextByClanTag.get(resolvedClanTag) ?? null
       : null;
@@ -219,8 +228,8 @@ export async function buildTodoPagesForUser(input: {
       clanName: snapshot?.clanName ?? null,
       cwlClanTag: snapshot?.cwlClanTag ?? null,
       cwlClanName: snapshot?.cwlClanName ?? null,
-      warPosition: toFiniteIntOrNull(warMember?.position),
-      warAttackDetails,
+      warPosition: toFiniteIntOrNull(fallbackWarMember?.position),
+      warAttackDetails: resolveWarAttackDetails(fallbackWarMember),
       warHeaderBadge: resolvedClanTag ? clanBadgeByTag.get(resolvedClanTag) ?? null : null,
       warMatchIndicator: resolveWarMatchStatusIndicator(matchContext),
       snapshot,
@@ -290,7 +299,7 @@ function isSnapshotStale(snapshot: TodoSnapshotRecord, nowMs: number): boolean {
   return ageMs > TODO_STALE_IDLE_MS;
 }
 
-/** Purpose: build the WAR page using grouped active contexts and explicit inactive fallback. */
+/** Purpose: build the WAR page from grouped active contexts only. */
 function buildWarPageDescription(
   rows: TodoRenderRow[],
   linkedPlayerCount: number,
@@ -305,7 +314,6 @@ function buildWarPageDescription(
   }
 
   const grouped = buildEventGroups(activeRows, "war");
-  const inactiveRows = rows.filter((row) => !row.snapshot?.warActive);
   const lines: string[] = [];
   for (const group of grouped) {
     lines.push(`**${buildEventGroupHeader(group)}**`);
@@ -314,13 +322,7 @@ function buildWarPageDescription(
     }
     lines.push("");
   }
-
-  if (inactiveRows.length > 0) {
-    lines.push("**Not in active war**");
-    for (const row of inactiveRows) {
-      lines.push(formatTodoRow(row, getWarNeutralStatus(row)));
-    }
-  } else if (lines.at(-1) === "") {
+  if (lines.at(-1) === "") {
     lines.pop();
   }
 
@@ -331,7 +333,7 @@ function buildWarPageDescription(
   });
 }
 
-/** Purpose: build the CWL page using grouped active contexts and explicit inactive fallback. */
+/** Purpose: build the CWL page from grouped active contexts only. */
 function buildCwlPageDescription(
   rows: TodoRenderRow[],
   linkedPlayerCount: number,
@@ -346,7 +348,6 @@ function buildCwlPageDescription(
   }
 
   const grouped = buildEventGroups(activeRows, "cwl");
-  const inactiveRows = rows.filter((row) => !row.snapshot?.cwlActive);
   const lines: string[] = [];
   for (const group of grouped) {
     lines.push(`**${buildEventGroupHeader(group)}**`);
@@ -355,13 +356,7 @@ function buildCwlPageDescription(
     }
     lines.push("");
   }
-
-  if (inactiveRows.length > 0) {
-    lines.push("**Not in active CWL**");
-    for (const row of inactiveRows) {
-      lines.push(formatTodoRow(row, getCwlNeutralStatus(row)));
-    }
-  } else if (lines.at(-1) === "") {
+  if (lines.at(-1) === "") {
     lines.pop();
   }
 
@@ -546,7 +541,10 @@ function formatTodoRow(row: TodoRenderRow, status: string): string {
 /** Purpose: format one WAR row with lineup position and compact attack-detail suffixes. */
 function formatWarTodoRow(row: TodoRenderRow, status: string): string {
   const identity = formatWarPlayerIdentity(row);
-  const usedAttacks = clampInt(row.snapshot?.warAttacksUsed, 0, row.snapshot?.warAttacksMax || 2);
+  const attacksActive = isWarRowAttackPhaseActive(row);
+  const usedAttacks = attacksActive
+    ? clampInt(row.snapshot?.warAttacksUsed, 0, row.snapshot?.warAttacksMax || 2)
+    : 0;
   const detailRows =
     usedAttacks > 0
       ? row.warAttackDetails
@@ -609,22 +607,12 @@ function getWarRowStatus(row: TodoRenderRow): string {
   if (row.missingSnapshot || !row.snapshot) {
     return "`0 / 2` - snapshot unavailable";
   }
-  const used = clampInt(row.snapshot.warAttacksUsed, 0, row.snapshot.warAttacksMax || 2);
+  const used = isWarRowAttackPhaseActive(row)
+    ? clampInt(row.snapshot.warAttacksUsed, 0, row.snapshot.warAttacksMax || 2)
+    : 0;
   const max = Math.max(1, clampInt(row.snapshot.warAttacksMax, 1, 2));
   const staleSuffix = row.staleSnapshot ? " - stale snapshot" : "";
   return `\`${used} / ${max}\`${staleSuffix}`;
-}
-
-/** Purpose: build neutral WAR row status text for linked players outside active war groups. */
-function getWarNeutralStatus(row: TodoRenderRow): string {
-  if (row.missingSnapshot || !row.snapshot) {
-    return "war attacks: 0/2 - snapshot unavailable";
-  }
-
-  const used = clampInt(row.snapshot.warAttacksUsed, 0, row.snapshot.warAttacksMax || 2);
-  const max = Math.max(1, clampInt(row.snapshot.warAttacksMax, 1, 2));
-  const staleSuffix = row.staleSnapshot ? " - stale snapshot" : "";
-  return `war attacks: ${used}/${max} - not in active war${staleSuffix}`;
 }
 
 /** Purpose: build active CWL row status text without repeating group-level phase timing details. */
@@ -637,18 +625,6 @@ function getCwlRowStatus(row: TodoRenderRow): string {
   const max = Math.max(1, clampInt(row.snapshot.cwlAttacksMax, 1, 1));
   const staleSuffix = row.staleSnapshot ? " - stale snapshot" : "";
   return `CWL attacks: ${used}/${max}${staleSuffix}`;
-}
-
-/** Purpose: build neutral CWL row status text for linked players outside active CWL groups. */
-function getCwlNeutralStatus(row: TodoRenderRow): string {
-  if (row.missingSnapshot || !row.snapshot) {
-    return "CWL attacks: 0/1 - snapshot unavailable";
-  }
-
-  const used = clampInt(row.snapshot.cwlAttacksUsed, 0, row.snapshot.cwlAttacksMax || 1);
-  const max = Math.max(1, clampInt(row.snapshot.cwlAttacksMax, 1, 1));
-  const staleSuffix = row.staleSnapshot ? " - stale snapshot" : "";
-  return `CWL attacks: ${used}/${max} - not in active CWL war${staleSuffix}`;
 }
 
 /** Purpose: build RAIDS row status text with usage only and without per-row timer duplication. */
@@ -732,6 +708,14 @@ function compareWarRowsForRendering(a: TodoRenderRow, b: TodoRenderRow): number 
   if (byTag !== 0) return byTag;
 
   return a.defaultIndex - b.defaultIndex;
+}
+
+/** Purpose: treat preparation phase as attack-inactive so stale prior-war attacks never render. */
+function isWarRowAttackPhaseActive(row: TodoRenderRow): boolean {
+  if (!row.snapshot?.warActive) return false;
+  const phase = sanitizeStatusText(row.snapshot.warPhase).toLowerCase();
+  if (phase.includes("preparation")) return false;
+  return true;
 }
 
 /** Purpose: extract compact first/second attack details from one latest war-member row. */
@@ -819,6 +803,33 @@ function pickLatestWarMemberByClanAndPlayer(
   return latest;
 }
 
+/** Purpose: keep one freshest war-member row per player tag as fallback when clan-tag joins are stale. */
+function pickLatestWarMemberByPlayerTag(
+  rows: WarMemberCurrentRow[],
+): Map<string, WarMemberCurrentRow> {
+  const latest = new Map<string, WarMemberCurrentRow>();
+  for (const row of rows) {
+    const clanTag = normalizeClanTag(row.clanTag);
+    const playerTag = normalizePlayerTag(row.playerTag);
+    if (!clanTag || !playerTag) continue;
+    const existing = latest.get(playerTag);
+    if (!existing || row.sourceSyncedAt > existing.sourceSyncedAt) {
+      latest.set(playerTag, {
+        clanTag,
+        playerTag,
+        position: toFiniteIntOrNull(row.position),
+        attacks: toFiniteIntOrNull(row.attacks),
+        defender1Position: toFiniteIntOrNull(row.defender1Position),
+        stars1: toFiniteIntOrNull(row.stars1),
+        defender2Position: toFiniteIntOrNull(row.defender2Position),
+        stars2: toFiniteIntOrNull(row.stars2),
+        sourceSyncedAt: row.sourceSyncedAt,
+      });
+    }
+  }
+  return latest;
+}
+
 /** Purpose: keep one latest current-war match context row per clan for header indicator rendering. */
 function pickLatestCurrentWarMatchContextByClanTag(
   rows: CurrentWarMatchContextRow[],
@@ -833,6 +844,7 @@ function pickLatestCurrentWarMatchContextByClanTag(
         clanTag,
         matchType: row.matchType,
         outcome: row.outcome,
+        state: row.state,
         updatedAt: row.updatedAt,
       });
     }
