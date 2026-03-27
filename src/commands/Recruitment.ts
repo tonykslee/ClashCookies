@@ -313,79 +313,92 @@ async function handleEditSubcommand(
     return;
   }
 
-  const tracked = await findTrackedClan(clanTag);
-  if (!tracked) {
-    await interaction.reply({
-      ephemeral: true,
-      content: "Clan is not tracked. Add it first with `/tracked-clan configure`.",
-    });
-    return;
-  }
+  try {
+    const tracked = await findTrackedClan(clanTag);
+    if (!tracked) {
+      await interaction.reply({
+        ephemeral: true,
+        content: "Clan is not tracked. Add it first with `/tracked-clan configure`.",
+      });
+      return;
+    }
 
-  const existing = await getRecruitmentTemplate(interaction.guildId, clanTag, platform);
-  const modal = new ModalBuilder()
-    .setCustomId(buildModalCustomId(interaction.user.id, clanTag, platform))
-    .setTitle(`Edit ${formatPlatform(platform)} ${formatClanTag(clanTag)}`);
+    const existing = await getRecruitmentTemplate(interaction.guildId, clanTag, platform);
+    const modal = new ModalBuilder()
+      .setCustomId(buildModalCustomId(interaction.user.id, clanTag, platform))
+      .setTitle(`Edit ${formatPlatform(platform)} ${formatClanTag(clanTag)}`);
 
-  const bodyInput = new TextInputBuilder()
-    .setCustomId(BODY_INPUT_ID)
-    .setLabel(platform === "reddit" ? "Message body (markdown supported)" : "Recruitment body")
-    .setStyle(TextInputStyle.Paragraph)
-    .setRequired(true)
-    .setMaxLength(1024)
-    .setValue(existing?.body ?? "");
-
-  const imageUrlsInput = new TextInputBuilder()
-    .setCustomId(IMAGE_URLS_INPUT_ID)
-    .setLabel("Default image URLs (comma separated)")
-    .setStyle(TextInputStyle.Paragraph)
-    .setRequired(false)
-    .setMaxLength(1024)
-    .setValue(existing ? toImageUrlsCsv(existing.imageUrls) : "");
-
-  const rows: Array<ActionRowBuilder<TextInputBuilder>> = [];
-  if (platform === "discord") {
-    const clanTagInput = new TextInputBuilder()
-      .setCustomId(DISCORD_CLAN_TAG_INPUT_ID)
-      .setLabel("Clan tag")
-      .setStyle(TextInputStyle.Short)
+    const bodyInput = new TextInputBuilder()
+      .setCustomId(BODY_INPUT_ID)
+      .setLabel(platform === "reddit" ? "Message body (markdown supported)" : "Recruitment body")
+      .setStyle(TextInputStyle.Paragraph)
       .setRequired(true)
-      .setMaxLength(32)
-      .setValue(formatClanTag(clanTag));
-    rows.push(new ActionRowBuilder<TextInputBuilder>().addComponents(clanTagInput));
+      .setMaxLength(1024)
+      .setValue(existing?.body ?? "");
+
+    const imageUrlsInput = new TextInputBuilder()
+      .setCustomId(IMAGE_URLS_INPUT_ID)
+      .setLabel("Default image URLs (comma separated)")
+      .setStyle(TextInputStyle.Paragraph)
+      .setRequired(false)
+      .setMaxLength(1024)
+      .setValue(existing ? toImageUrlsCsv(existing.imageUrls) : "");
+
+    const rows: Array<ActionRowBuilder<TextInputBuilder>> = [];
+    if (platform === "discord") {
+      const clanTagInput = new TextInputBuilder()
+        .setCustomId(DISCORD_CLAN_TAG_INPUT_ID)
+        .setLabel("Clan tag")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+        .setMaxLength(32)
+        .setValue(formatClanTag(clanTag));
+      rows.push(new ActionRowBuilder<TextInputBuilder>().addComponents(clanTagInput));
+    }
+
+    if (platform === "reddit") {
+      const clan = await cocService.getClan(clanTag).catch(() => null);
+      const requiredTh = Number(clan?.requiredTownhallLevel);
+      const clanLevel = Number(clan?.clanLevel);
+      const requiredThText =
+        Number.isFinite(requiredTh) && requiredTh > 0
+          ? `TH${requiredTh}`
+          : "Required TH/Level";
+      const clanLevelText =
+        Number.isFinite(clanLevel) && clanLevel > 0 ? `Level ${clanLevel}` : "Clan Level";
+      const clanNameText = tracked.name?.trim() || clan?.name?.trim() || "Clan Name";
+      const defaultSubject =
+        existing?.subject?.trim() ||
+        `[Recruiting] ${clanNameText} | ${formatClanTag(
+          clanTag
+        )} | ${requiredThText} | ${clanLevelText} | FWA | Discord`;
+      const subjectInput = new TextInputBuilder()
+        .setCustomId(REDDIT_SUBJECT_INPUT_ID)
+        .setLabel("Reddit post subject")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+        .setMaxLength(200)
+        .setValue(defaultSubject);
+      rows.push(new ActionRowBuilder<TextInputBuilder>().addComponents(subjectInput));
+    }
+
+    rows.push(new ActionRowBuilder<TextInputBuilder>().addComponents(bodyInput));
+    rows.push(new ActionRowBuilder<TextInputBuilder>().addComponents(imageUrlsInput));
+    modal.addComponents(...rows);
+
+    await interaction.showModal(modal);
+  } catch (err) {
+    console.error(
+      `[recruitment] edit_setup_failed guildId=${interaction.guildId} clanTag=${clanTag} platform=${platform} userId=${interaction.user.id} error=${formatError(err)}`
+    );
+    const content =
+      "Failed to open recruitment editor. Check recruitment database migration/state and try again.";
+    if (interaction.deferred || interaction.replied) {
+      await interaction.editReply(content);
+      return;
+    }
+    await interaction.reply({ ephemeral: true, content });
   }
-
-  if (platform === "reddit") {
-    const clan = await cocService.getClan(clanTag).catch(() => null);
-    const requiredTh = Number(clan?.requiredTownhallLevel);
-    const clanLevel = Number(clan?.clanLevel);
-    const requiredThText =
-      Number.isFinite(requiredTh) && requiredTh > 0
-        ? `TH${requiredTh}`
-        : "Required TH/Level";
-    const clanLevelText =
-      Number.isFinite(clanLevel) && clanLevel > 0 ? `Level ${clanLevel}` : "Clan Level";
-    const clanNameText = tracked.name?.trim() || clan?.name?.trim() || "Clan Name";
-    const defaultSubject =
-      existing?.subject?.trim() ||
-      `[Recruiting] ${clanNameText} | ${formatClanTag(
-        clanTag
-      )} | ${requiredThText} | ${clanLevelText} | FWA | Discord`;
-    const subjectInput = new TextInputBuilder()
-      .setCustomId(REDDIT_SUBJECT_INPUT_ID)
-      .setLabel("Reddit post subject")
-      .setStyle(TextInputStyle.Short)
-      .setRequired(true)
-      .setMaxLength(200)
-      .setValue(defaultSubject);
-    rows.push(new ActionRowBuilder<TextInputBuilder>().addComponents(subjectInput));
-  }
-
-  rows.push(new ActionRowBuilder<TextInputBuilder>().addComponents(bodyInput));
-  rows.push(new ActionRowBuilder<TextInputBuilder>().addComponents(imageUrlsInput));
-  modal.addComponents(...rows);
-
-  await interaction.showModal(modal);
 }
 
 async function handleCountdownStartSubcommand(
