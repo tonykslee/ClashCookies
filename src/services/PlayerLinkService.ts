@@ -46,6 +46,12 @@ export type ClanScopedPlayerLink = {
 export type DiscordUserPlayerLink = {
   playerTag: string;
   linkedAt: Date;
+  linkedName: string | null;
+};
+
+export type PlayerLinkNameBackfillResult = {
+  playerTag: string;
+  updated: boolean;
 };
 
 export const PLAYER_LINK_DISCORD_USERNAME_FALLBACK = "unknown";
@@ -75,6 +81,13 @@ export function normalizeDiscordUserId(input: string): string | null {
 
 /** Purpose: normalize persisted discord usernames to a deterministic text form. */
 export function normalizePersistedDiscordUsername(input: unknown): string | null {
+  const normalized = String(input ?? "").replace(/\s+/g, " ").trim();
+  if (!normalized) return null;
+  return normalized;
+}
+
+/** Purpose: normalize persisted in-game player names for deterministic identity fallback use. */
+export function normalizePersistedPlayerName(input: unknown): string | null {
   const normalized = String(input ?? "").replace(/\s+/g, " ").trim();
   if (!normalized) return null;
   return normalized;
@@ -291,7 +304,7 @@ export async function listPlayerLinksForDiscordUser(input: {
   const rows = await prisma.playerLink.findMany({
     where: { discordUserId: normalizedUserId },
     orderBy: [{ createdAt: "asc" }, { playerTag: "asc" }],
-    select: { playerTag: true, createdAt: true },
+    select: { playerTag: true, playerName: true, createdAt: true },
   });
 
   const seen = new Set<string>();
@@ -300,9 +313,36 @@ export async function listPlayerLinksForDiscordUser(input: {
     const playerTag = normalizePlayerTag(row.playerTag);
     if (!playerTag || seen.has(playerTag)) continue;
     seen.add(playerTag);
-    ordered.push({ playerTag, linkedAt: row.createdAt });
+    ordered.push({
+      playerTag,
+      linkedAt: row.createdAt,
+      linkedName: normalizePersistedPlayerName(row.playerName),
+    });
   }
   return ordered;
+}
+
+/** Purpose: persist one linked in-game player name only when PlayerLink.playerName is currently missing. */
+export async function backfillPlayerLinkNameIfMissing(input: {
+  playerTag: string;
+  playerName: string;
+}): Promise<PlayerLinkNameBackfillResult> {
+  const playerTag = normalizePlayerTag(input.playerTag);
+  const playerName = normalizePersistedPlayerName(input.playerName);
+  if (!playerTag || !playerName) {
+    return { playerTag, updated: false };
+  }
+
+  const updateResult = await prisma.playerLink.updateMany({
+    where: {
+      playerTag,
+      OR: [{ playerName: null }, { playerName: "" }],
+    },
+    data: {
+      playerName,
+    },
+  });
+  return { playerTag, updated: updateResult.count > 0 };
 }
 
 /** Purpose: fetch current DB weights for provided player tags and return a deterministic lookup. */

@@ -8,6 +8,11 @@ import {
 import { resolveCurrentCwlSeasonKey } from "./CwlRegistryService";
 import { CoCService } from "./CoCService";
 import { normalizeClanTag, normalizePlayerTag } from "./PlayerLinkService";
+import {
+  buildTrackedWarMemberStateByClanAndPlayer,
+  isTodoWarStateActive,
+  type TodoTrackedCurrentWarRow,
+} from "./TodoTrackedWarStateService";
 import { parseCocTime } from "./war-events/core";
 
 const TODO_SNAPSHOT_SELECT = {
@@ -72,8 +77,23 @@ type ClanMemberCurrentRow = {
 type WarMemberCurrentRow = {
   playerTag: string;
   clanTag: string;
+  position: number | null;
   attacks: number | null;
   sourceSyncedAt: Date;
+};
+
+type WarAttacksRow = {
+  warId: number;
+  clanTag: string;
+  warStartTime: Date;
+  playerTag: string;
+  playerPosition: number | null;
+  attacksUsed: number;
+  attackOrder: number;
+  attackNumber: number;
+  defenderPosition: number | null;
+  stars: number;
+  attackSeenAt: Date;
 };
 
 type TodoGamesDerivedValues = {
@@ -271,6 +291,7 @@ export class TodoSnapshotService {
         select: {
           playerTag: true,
           clanTag: true,
+          position: true,
           attacks: true,
           sourceSyncedAt: true,
         },
@@ -331,6 +352,7 @@ export class TodoSnapshotService {
             where: { clanTag: { in: clanTags } },
             select: {
               clanTag: true,
+              warId: true,
               state: true,
               startTime: true,
               endTime: true,
@@ -363,6 +385,49 @@ export class TodoSnapshotService {
         .filter((entry): entry is [string, string] => Boolean(entry[0] && entry[1])),
     );
     const currentWarByClanTag = pickLatestCurrentWarByClanTag(currentWarRows);
+    const trackedClanTagSet = new Set(
+      trackedClanRows
+        .map((row) => normalizeClanTag(row.tag))
+        .filter(Boolean),
+    );
+    const activeTrackedCurrentWarByClanTag = new Map<string, TodoTrackedCurrentWarRow>();
+    for (const [clanTag, currentWar] of currentWarByClanTag.entries()) {
+      if (!trackedClanTagSet.has(clanTag)) continue;
+      if (!isTodoWarStateActive(currentWar.state ?? "")) continue;
+      activeTrackedCurrentWarByClanTag.set(clanTag, {
+        clanTag,
+        warId: toFiniteIntOrNull(currentWar.warId),
+        startTime: currentWar.startTime ?? null,
+        state: currentWar.state ?? null,
+      });
+    }
+    const activeTrackedClanTags = [...activeTrackedCurrentWarByClanTag.keys()];
+    const trackedWarAttackRows: WarAttacksRow[] =
+      activeTrackedClanTags.length > 0
+        ? await prisma.warAttacks.findMany({
+            where: {
+              clanTag: { in: activeTrackedClanTags },
+              playerTag: { in: normalizedTags },
+            },
+            select: {
+              warId: true,
+              clanTag: true,
+              warStartTime: true,
+              playerTag: true,
+              playerPosition: true,
+              attacksUsed: true,
+              attackOrder: true,
+              attackNumber: true,
+              defenderPosition: true,
+              stars: true,
+              attackSeenAt: true,
+            },
+          })
+        : [];
+    const trackedWarMemberByClanAndTag = buildTrackedWarMemberStateByClanAndPlayer({
+      currentWarByClanTag: activeTrackedCurrentWarByClanTag,
+      warAttackRows: trackedWarAttackRows,
+    });
     const cwlTrackedTagSet = new Set(
       cwlTrackedClanRows
         .map((row) => normalizeClanTag(row.tag))
@@ -441,31 +506,50 @@ export class TodoSnapshotService {
       const currentWar = resolvedClanTag
         ? currentWarByClanTag.get(resolvedClanTag) ?? null
         : null;
-      const warActive = isWarStateActive(currentWar?.state ?? "");
+      const warStateActive = isTodoWarStateActive(currentWar?.state ?? "");
+      const warStatePreparation = isWarStatePreparation(currentWar?.state ?? "");
+      const trackedClanActive = Boolean(
+        resolvedClanTag && trackedClanTagSet.has(resolvedClanTag),
+      );
+
+      const warMemberKey = resolvedClanTag ? `${resolvedClanTag}:${playerTag}` : "";
+      const warMemberFromFeed = warMemberKey
+        ? latestWarMemberByClanAndTag.get(warMemberKey) ?? null
+        : null;
+      const trackedWarMember =
+        trackedClanActive && warMemberKey
+          ? trackedWarMemberByClanAndTag.get(warMemberKey) ?? null
+          : null;
+      const warMember = trackedClanActive
+        ? trackedWarMember ?? warMemberFromFeed
+        : warMemberFromFeed;
+      const warActive = warStateActive && warMember !== null;
       const warPhase = warActive
         ? normalizeWarPhaseLabel(currentWar?.state ?? "")
         : null;
       const warEndsAt = warActive ? resolveCurrentWarPhaseEnd(currentWar) : null;
-
-      const warMemberKey = resolvedClanTag ? `${resolvedClanTag}:${playerTag}` : "";
-      const warMember = warMemberKey
-        ? latestWarMemberByClanAndTag.get(warMemberKey) ?? null
-        : null;
-      const warAttacksUsed = warActive ? clampInt(warMember?.attacks, 0, 2) : 0;
+      const warAttacksUsed = !warActive
+        ? 0
+        : warStatePreparation
+          ? 0
+          : trackedClanActive
+            ? clampInt(trackedWarMember?.attacksUsed, 0, 2)
+            : clampInt(warMemberFromFeed?.attacks, 0, 2);
 
       const cwlWar = resolvedCwlClanTag
         ? cwlWarByClan.get(resolvedCwlClanTag) ?? null
         : null;
-      const cwlActive = isWarStateActive(cwlWar?.state ?? "");
+      const cwlParticipant =
+        !!resolvedCwlClanTag &&
+        activeCwlClanByPlayerTag.get(playerTag) === resolvedCwlClanTag;
+      const cwlActive = isWarStateActive(cwlWar?.state ?? "") && cwlParticipant;
       const cwlPhase = cwlActive
         ? normalizeWarPhaseLabel(cwlWar?.state ?? "")
         : null;
       const cwlEndsAt = cwlActive ? resolveCwlPhaseEnd(cwlWar) : null;
       const cwlAttacksUsed = cwlActive
         ? clampInt(findWarAttacksUsed(cwlWar, playerTag), 0, 1)
-        : !input.cocService && existing
-          ? clampInt(existing.cwlAttacksUsed, 0, 1)
-          : 0;
+        : 0;
 
       const derivedGames = deriveTodoGamesValues({
         gamesWindowActive: gamesWindow.active,
@@ -755,6 +839,7 @@ function pickLatestWarMemberByClanAndPlayer(
       latest.set(key, {
         playerTag,
         clanTag,
+        position: toFiniteIntOrNull(row.position),
         attacks: toFiniteIntOrNull(row.attacks),
         sourceSyncedAt: row.sourceSyncedAt,
       });
@@ -767,6 +852,7 @@ function pickLatestWarMemberByClanAndPlayer(
 function pickLatestCurrentWarByClanTag(
   rows: Array<{
     clanTag: string;
+    warId: number | null;
     state: string | null;
     startTime: Date | null;
     endTime: Date | null;
@@ -776,6 +862,7 @@ function pickLatestCurrentWarByClanTag(
   string,
   {
     clanTag: string;
+    warId: number | null;
     state: string | null;
     startTime: Date | null;
     endTime: Date | null;
@@ -786,6 +873,7 @@ function pickLatestCurrentWarByClanTag(
     string,
     {
       clanTag: string;
+      warId: number | null;
       state: string | null;
       startTime: Date | null;
       endTime: Date | null;
@@ -801,6 +889,7 @@ function pickLatestCurrentWarByClanTag(
     if (!existing || row.updatedAt > existing.updatedAt) {
       latest.set(clanTag, {
         clanTag,
+        warId: toFiniteIntOrNull(row.warId),
         state: row.state,
         startTime: row.startTime,
         endTime: row.endTime,
@@ -811,10 +900,15 @@ function pickLatestCurrentWarByClanTag(
   return latest;
 }
 
-/** Purpose: classify war-state strings into active/non-active buckets for todo status. */
-function isWarStateActive(state: unknown): boolean {
+/** Purpose: detect preparation phase so attacks remain zero until battle day starts. */
+function isWarStatePreparation(state: unknown): boolean {
   const normalized = String(state ?? "").toLowerCase();
-  return normalized.includes("preparation") || normalized.includes("inwar");
+  return normalized.includes("preparation");
+}
+
+/** Purpose: keep existing CWL helpers on one shared active-phase classifier. */
+function isWarStateActive(state: unknown): boolean {
+  return isTodoWarStateActive(state);
 }
 
 /** Purpose: map war-state values to user-facing phase labels. */

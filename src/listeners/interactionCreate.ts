@@ -90,7 +90,9 @@ import {
 } from "../commands/Link";
 import {
   handleTodoPageButtonInteraction,
+  handleTodoRefreshButtonInteraction,
   isTodoPageButtonCustomId,
+  isTodoRefreshButtonCustomId,
 } from "../commands/Todo";
 import { handleSayModalSubmit, isSayModalCustomId } from "../commands/Say";
 
@@ -320,6 +322,21 @@ const handleButtonInteraction = async (
         await interaction.reply({
           ephemeral: true,
           content: "Failed to update todo page.",
+        });
+      }
+    }
+    return;
+  }
+
+  if (isTodoRefreshButtonCustomId(interaction.customId)) {
+    try {
+      await handleTodoRefreshButtonInteraction(interaction, cocService);
+    } catch (err) {
+      console.error(`Todo refresh button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to refresh todo data.",
         });
       }
     }

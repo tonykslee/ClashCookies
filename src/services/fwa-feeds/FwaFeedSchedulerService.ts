@@ -40,9 +40,14 @@ function toBool(input: string | undefined, fallback: boolean): boolean {
 }
 
 function toInt(input: string | undefined, fallback: number): number {
-  const parsed = Number(input ?? "");
+  if (input === undefined) return fallback;
+  const trimmed = input.trim();
+  if (!trimmed) return fallback;
+  const parsed = Number(trimmed);
   return Number.isFinite(parsed) ? Math.trunc(parsed) : fallback;
 }
+
+export const toIntWithFallbackForTest = toInt;
 
 function minutesToMsWithMin(valueMinutes: number, minMinutes: number): number {
   return Math.max(minMinutes, valueMinutes) * 60 * 1000;
