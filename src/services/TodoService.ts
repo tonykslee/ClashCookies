@@ -706,7 +706,8 @@ function formatGamesTodoRow(
   status: string,
   progressEmoji: string,
 ): string {
-  if (row.snapshot && !row.snapshot.gamesActive) {
+  const points = Math.max(0, toFiniteIntOrNull(row.snapshot?.gamesPoints) ?? 0);
+  if (row.snapshot && points <= 0) {
     return `:black_circle: ${formatPlayerIdentity(row)} - ${status}`;
   }
   const progressPrefix = progressEmoji.length > 0 ? `${progressEmoji} ` : "";
@@ -836,10 +837,10 @@ function getRaidRowProgress(row: TodoRenderRow): {
 
 /** Purpose: map one RAIDS row into marker semantics for complete/active/not-started states. */
 function getRaidRowMarker(row: TodoRenderRow): string {
-  if (!row.snapshot || !row.snapshot.raidActive) {
+  const progress = getRaidRowProgress(row);
+  if (progress.used <= 0) {
     return ":black_circle:";
   }
-  const progress = getRaidRowProgress(row);
   if (progress.complete) {
     return ":white_check_mark:";
   }
