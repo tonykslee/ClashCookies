@@ -289,7 +289,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "With no `type`, opens your most recently viewed todo page; if none is remembered, defaults to WAR.",
       "`type` controls only the initial page shown; use page buttons to switch categories without rerunning.",
       "Running `/todo type:...` and switching pages via buttons updates your remembered page for future no-arg `/todo` runs.",
-      "Use the `Refresh` button to trigger a targeted snapshot rebuild for the displayed todo user and update the same message in place.",
+      "Use the refresh button to trigger a targeted snapshot rebuild for the displayed todo user and update the same message in place.",
       "WAR/CWL pages group players by shared active event context and include section headers with phase timing.",
       "WAR section headers include tracked clan badge + match-state indicator, and WAR rows show lineup position with compact used-attack detail.",
       "RAIDS/GAMES pages use one shared top timer line and then list per-player progress rows.",

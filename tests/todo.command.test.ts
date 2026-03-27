@@ -236,6 +236,10 @@ describe("/todo command", () => {
     prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
     prismaMock.cwlPlayerClanSeason.upsert.mockResolvedValue(undefined);
     prismaMock.botSetting.findMany.mockResolvedValue([]);
+    vi.spyOn(todoSnapshotService, "refreshSnapshotsForPlayerTags").mockResolvedValue({
+      playerCount: 0,
+      updatedCount: 0,
+    });
     vi.spyOn(todoLastViewedTypeService, "getLastViewedType").mockResolvedValue(null);
     vi.spyOn(todoLastViewedTypeService, "setLastViewedType").mockResolvedValue(undefined);
   });
@@ -247,6 +251,7 @@ describe("/todo command", () => {
 
   it("returns a clear error when the invoking user has no linked tags", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([]);
+    const refreshSpy = vi.spyOn(todoSnapshotService, "refreshSnapshotsForPlayerTags");
     const interaction = makeTodoInteraction({ type: "WAR" });
 
     await Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
@@ -255,6 +260,45 @@ describe("/todo command", () => {
     expect(interaction.editReply).toHaveBeenCalledWith(
       expect.stringContaining("no_linked_tags"),
     );
+    expect(refreshSpy).not.toHaveBeenCalled();
+  });
+
+  it("rebuilds invoking-user snapshots before initial /todo render", async () => {
+    const refreshSpy = vi
+      .spyOn(todoSnapshotService, "refreshSnapshotsForPlayerTags")
+      .mockResolvedValue({ playerCount: 2, updatedCount: 2 });
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },
+      { playerTag: "#QGRJ2222", createdAt: new Date("2026-03-02T00:00:00.000Z") },
+    ]);
+    prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
+      _count: { _all: 2 },
+      _max: { updatedAt: new Date("2026-03-26T00:00:00.000Z") },
+    });
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      makeSnapshotRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha",
+      }),
+      makeSnapshotRow({
+        playerTag: "#QGRJ2222",
+        playerName: "Bravo",
+      }),
+    ]);
+    const interaction = makeTodoInteraction({ type: "WAR" });
+    const cocService = makeCocServiceSpy();
+
+    await Todo.run({} as any, interaction as any, cocService as any);
+
+    expect(refreshSpy).toHaveBeenCalledWith({
+      playerTags: ["#PYLQ0289", "#QGRJ2222"],
+      cocService: expect.anything(),
+    });
+    const refreshOrder = refreshSpy.mock.invocationCallOrder[0] ?? 0;
+    const editOrder = interaction.editReply.mock.invocationCallOrder[0] ?? 0;
+    expect(refreshOrder).toBeGreaterThan(0);
+    expect(editOrder).toBeGreaterThan(0);
+    expect(refreshOrder).toBeLessThan(editOrder);
   });
 
   it("builds from snapshots, opens on requested page, and avoids live coc aggregation", async () => {
@@ -294,9 +338,9 @@ describe("/todo command", () => {
       "RAIDS",
       "GAMES",
     ]);
-    expect(payload.components[1].components.map((b: any) => b.toJSON().label)).toEqual([
-      "Refresh",
-    ]);
+    const refreshButton = payload.components[1].components[0].toJSON();
+    expect(refreshButton.label).toBeUndefined();
+    expect(refreshButton.emoji?.name).toBe("🔄");
     expect(cocService.getPlayerRaw).not.toHaveBeenCalled();
     expect(cocService.getCurrentWar).not.toHaveBeenCalled();
     expect(cocService.getClanWarLeagueGroup).not.toHaveBeenCalled();
@@ -619,28 +663,59 @@ describe("/todo command", () => {
         warPhase: "battle day",
       }),
     ]);
-    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#PQL0289", clanBadge: ":rd:" },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
       {
         clanTag: "#PQL0289",
+        warId: 1001,
+        startTime: new Date("2026-03-25T12:00:00.000Z"),
+        matchType: "FWA",
+        outcome: "WIN",
+        state: "inWar",
+        updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.warAttacks.findMany.mockResolvedValue([
+      {
+        clanTag: "#PQL0289",
+        warId: 1001,
+        warStartTime: new Date("2026-03-25T12:00:00.000Z"),
         playerTag: "#PYLQ0289",
-        position: 1,
-        attacks: 1,
-        defender1Position: null,
-        stars1: null,
-        defender2Position: null,
-        stars2: null,
-        sourceSyncedAt: new Date("2026-03-26T00:00:00.000Z"),
+        playerPosition: 1,
+        attacksUsed: 1,
+        attackOrder: 1,
+        attackNumber: 1,
+        defenderPosition: 10,
+        stars: 2,
+        attackSeenAt: new Date("2026-03-26T00:00:00.000Z"),
       },
       {
         clanTag: "#PQL0289",
+        warId: 1001,
+        warStartTime: new Date("2026-03-25T12:00:00.000Z"),
         playerTag: "#QGRJ2222",
-        position: 2,
-        attacks: 2,
-        defender1Position: null,
-        stars1: null,
-        defender2Position: null,
-        stars2: null,
-        sourceSyncedAt: new Date("2026-03-26T00:00:00.000Z"),
+        playerPosition: 2,
+        attacksUsed: 2,
+        attackOrder: 1,
+        attackNumber: 1,
+        defenderPosition: 8,
+        stars: 3,
+        attackSeenAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+      {
+        clanTag: "#PQL0289",
+        warId: 1001,
+        warStartTime: new Date("2026-03-25T12:00:00.000Z"),
+        playerTag: "#QGRJ2222",
+        playerPosition: 2,
+        attacksUsed: 2,
+        attackOrder: 2,
+        attackNumber: 2,
+        defenderPosition: 7,
+        stars: 2,
+        attackSeenAt: new Date("2026-03-26T00:05:00.000Z"),
       },
     ]);
 
@@ -649,7 +724,7 @@ describe("/todo command", () => {
 
     const description = getReplyDescription(interaction);
     expect(description).toContain("Alpha - `1 / 2`");
-    expect(description).toContain(":white_check_mark: #? Bravo - `2 / 2`");
+    expect(description).toContain(":white_check_mark: #2 Bravo - `2 / 2`");
   });
 
   it("moves fully completed WAR clans below unfinished clans while preserving subgroup order", async () => {
@@ -697,15 +772,113 @@ describe("/todo command", () => {
         warPhase: "battle day",
       }),
     ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#PQL0289", clanBadge: "" },
+      { tag: "#2QG2C08UP", clanBadge: "" },
+      { tag: "#Q2V8P9L2", clanBadge: "" },
+      { tag: "#9C8VY2L2", clanBadge: "" },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#PQL0289",
+        warId: 2001,
+        startTime: new Date("2026-03-25T12:00:00.000Z"),
+        matchType: "MM",
+        outcome: "WIN",
+        state: "inWar",
+        updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+      {
+        clanTag: "#2QG2C08UP",
+        warId: 2002,
+        startTime: new Date("2026-03-25T12:00:00.000Z"),
+        matchType: "MM",
+        outcome: "WIN",
+        state: "inWar",
+        updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+      {
+        clanTag: "#Q2V8P9L2",
+        warId: 2003,
+        startTime: new Date("2026-03-25T12:00:00.000Z"),
+        matchType: "MM",
+        outcome: "WIN",
+        state: "inWar",
+        updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+      {
+        clanTag: "#9C8VY2L2",
+        warId: 2004,
+        startTime: new Date("2026-03-25T12:00:00.000Z"),
+        matchType: "MM",
+        outcome: "WIN",
+        state: "inWar",
+        updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.warAttacks.findMany.mockResolvedValue([
+      {
+        clanTag: "#PQL0289",
+        warId: 2001,
+        warStartTime: new Date("2026-03-25T12:00:00.000Z"),
+        playerTag: "#PYLQ0289",
+        playerPosition: 1,
+        attacksUsed: 1,
+        attackOrder: 1,
+        attackNumber: 1,
+        defenderPosition: 3,
+        stars: 2,
+        attackSeenAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+      {
+        clanTag: "#2QG2C08UP",
+        warId: 2002,
+        warStartTime: new Date("2026-03-25T12:00:00.000Z"),
+        playerTag: "#QGRJ2222",
+        playerPosition: 2,
+        attacksUsed: 2,
+        attackOrder: 1,
+        attackNumber: 1,
+        defenderPosition: 4,
+        stars: 3,
+        attackSeenAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+      {
+        clanTag: "#Q2V8P9L2",
+        warId: 2003,
+        warStartTime: new Date("2026-03-25T12:00:00.000Z"),
+        playerTag: "#CUV9082",
+        playerPosition: 3,
+        attacksUsed: 1,
+        attackOrder: 1,
+        attackNumber: 1,
+        defenderPosition: 5,
+        stars: 1,
+        attackSeenAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+      {
+        clanTag: "#9C8VY2L2",
+        warId: 2004,
+        warStartTime: new Date("2026-03-25T12:00:00.000Z"),
+        playerTag: "#LQ9P8R2",
+        playerPosition: 4,
+        attacksUsed: 2,
+        attackOrder: 1,
+        attackNumber: 1,
+        defenderPosition: 6,
+        stars: 3,
+        attackSeenAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+    ]);
 
     const interaction = makeTodoInteraction({ type: "WAR" });
     await Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
 
     const description = getReplyDescription(interaction);
-    const indexA = description.indexOf("**A Clan (#PQL0289) :white_circle: - battle day ends <t:");
-    const indexB = description.indexOf("**B Clan (#2QG2C08UP) :white_circle: - battle day ends <t:");
-    const indexC = description.indexOf("**C Clan (#Q2V8P9L2) :white_circle: - battle day ends <t:");
-    const indexD = description.indexOf("**D Clan (#9C8VY2L2) :white_circle: - battle day ends <t:");
+    const indexA = description.indexOf("**A Clan (#PQL0289)");
+    const indexB = description.indexOf("**B Clan (#2QG2C08UP)");
+    const indexC = description.indexOf("**C Clan (#Q2V8P9L2)");
+    const indexD = description.indexOf("**D Clan (#9C8VY2L2)");
 
     expect(indexA).toBeGreaterThan(-1);
     expect(indexB).toBeGreaterThan(-1);
@@ -714,6 +887,168 @@ describe("/todo command", () => {
     expect(indexA).toBeLessThan(indexC);
     expect(indexC).toBeLessThan(indexB);
     expect(indexB).toBeLessThan(indexD);
+  });
+
+  it("suppresses WAR stale-snapshot suffix for 2/2 rows while keeping it for incomplete rows", async () => {
+    const staleAt = new Date("2026-03-25T20:00:00.000Z");
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },
+      { playerTag: "#QGRJ2222", createdAt: new Date("2026-03-02T00:00:00.000Z") },
+    ]);
+    prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
+      _count: { _all: 2 },
+      _max: { updatedAt: staleAt },
+    });
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      makeSnapshotRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha",
+        clanTag: "#PQL0289",
+        clanName: "Clan One",
+        warAttacksUsed: 2,
+        warPhase: "battle day",
+        lastUpdatedAt: staleAt,
+        updatedAt: staleAt,
+      }),
+      makeSnapshotRow({
+        playerTag: "#QGRJ2222",
+        playerName: "Bravo",
+        clanTag: "#PQL0289",
+        clanName: "Clan One",
+        warAttacksUsed: 1,
+        warPhase: "battle day",
+        lastUpdatedAt: staleAt,
+        updatedAt: staleAt,
+      }),
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#PQL0289", clanBadge: ":rd:" },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#PQL0289",
+        warId: 1001,
+        startTime: new Date("2026-03-25T12:00:00.000Z"),
+        matchType: "FWA",
+        outcome: "WIN",
+        state: "inWar",
+        updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.warAttacks.findMany.mockResolvedValue([
+      {
+        warId: 1001,
+        clanTag: "#PQL0289",
+        warStartTime: new Date("2026-03-25T12:00:00.000Z"),
+        playerTag: "#PYLQ0289",
+        playerPosition: 1,
+        attacksUsed: 2,
+        attackOrder: 1,
+        attackNumber: 1,
+        defenderPosition: 5,
+        stars: 3,
+        attackSeenAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+      {
+        warId: 1001,
+        clanTag: "#PQL0289",
+        warStartTime: new Date("2026-03-25T12:00:00.000Z"),
+        playerTag: "#PYLQ0289",
+        playerPosition: 1,
+        attacksUsed: 2,
+        attackOrder: 2,
+        attackNumber: 2,
+        defenderPosition: 4,
+        stars: 2,
+        attackSeenAt: new Date("2026-03-26T00:05:00.000Z"),
+      },
+      {
+        warId: 1001,
+        clanTag: "#PQL0289",
+        warStartTime: new Date("2026-03-25T12:00:00.000Z"),
+        playerTag: "#QGRJ2222",
+        playerPosition: 2,
+        attacksUsed: 1,
+        attackOrder: 1,
+        attackNumber: 1,
+        defenderPosition: 8,
+        stars: 2,
+        attackSeenAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+    ]);
+
+    const interaction = makeTodoInteraction({ type: "WAR" });
+    await Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
+
+    const description = getReplyDescription(interaction);
+    expect(description).toContain(":white_check_mark: #1 Alpha - `2 / 2`");
+    expect(description).not.toContain("`2 / 2` - stale snapshot");
+    expect(description).toContain("- #2 Bravo - `1 / 2` - stale snapshot");
+  });
+
+  it("excludes players not present in the clan's validated current-war member set", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },
+      { playerTag: "#QGRJ2222", createdAt: new Date("2026-03-02T00:00:00.000Z") },
+    ]);
+    prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
+      _count: { _all: 2 },
+      _max: { updatedAt: new Date("2026-03-26T00:00:00.000Z") },
+    });
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      makeSnapshotRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha",
+        clanTag: "#PQL0289",
+        clanName: "Clan One",
+        warAttacksUsed: 1,
+        warPhase: "battle day",
+      }),
+      makeSnapshotRow({
+        playerTag: "#QGRJ2222",
+        playerName: "Bravo",
+        clanTag: "#PQL0289",
+        clanName: "Clan One",
+        warAttacksUsed: 0,
+        warPhase: "battle day",
+      }),
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#PQL0289", clanBadge: ":rd:" },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#PQL0289",
+        warId: 1001,
+        startTime: new Date("2026-03-25T12:00:00.000Z"),
+        matchType: "FWA",
+        outcome: "WIN",
+        state: "inWar",
+        updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.warAttacks.findMany.mockResolvedValue([
+      {
+        warId: 1001,
+        clanTag: "#PQL0289",
+        warStartTime: new Date("2026-03-25T12:00:00.000Z"),
+        playerTag: "#PYLQ0289",
+        playerPosition: 8,
+        attacksUsed: 1,
+        attackOrder: 1,
+        attackNumber: 1,
+        defenderPosition: 7,
+        stars: 2,
+        attackSeenAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+    ]);
+
+    const interaction = makeTodoInteraction({ type: "WAR" });
+    await Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
+
+    const description = getReplyDescription(interaction);
+    expect(description).toContain("- #8 Alpha - `1 / 2`");
+    expect(description).not.toContain("Bravo");
   });
 
   it("uses safe #? fallback when war lineup position is unavailable", async () => {
@@ -931,9 +1266,9 @@ describe("/todo command", () => {
     await Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
 
     const description = getReplyDescription(interaction);
-    expect(description).toContain("- #? Alpha - `0 / 2`");
+    expect(description).toContain("No war active");
+    expect(description).not.toContain("Alpha #PYLQ0289");
     expect(description).not.toContain("#36 Alpha");
-    expect(description).not.toContain(":dagger:");
     expect(prismaMock.fwaWarMemberCurrent.findMany).not.toHaveBeenCalled();
   });
 
@@ -1134,7 +1469,7 @@ describe("/todo command", () => {
         playerTag: "#PYLQ0289",
         playerName: "Alpha",
         raidActive: true,
-        raidAttacksUsed: 3,
+        raidAttacksUsed: 6,
         raidEndsAt: new Date("2026-03-29T07:00:00.000Z"),
       }),
       makeSnapshotRow({
@@ -1152,8 +1487,8 @@ describe("/todo command", () => {
     const description = getReplyDescription(interaction);
     expect(description).toContain("**Time remaining:** <t:");
     expect(countOccurrences(description, "<t:")).toBe(1);
-    expect(description).toContain("- Alpha #PYLQ0289 - clan capital raids: 3/6");
-    expect(description).toContain("- Bravo #QGRJ2222 - clan capital raids: 1/6");
+    expect(description).toContain(":white_check_mark: Alpha #PYLQ0289 - clan capital raids: 6/6");
+    expect(description).toContain(":yellow_circle: Bravo #QGRJ2222 - clan capital raids: 1/6");
   });
 
   it("renders GAMES emojis by progress threshold and sorts by gamesPoints desc then gamesChampionTotal desc", async () => {
@@ -1232,6 +1567,12 @@ describe("/todo command", () => {
     expect(description).toContain("Delta #QGRJ2222 - clan games points: 3999/4000");
     expect(description).toContain("Foxtrot #9C8VY2L2 - clan games points: 3999/4000");
     expect(description).toContain("- Echo #PYLQ0289 - clan games points: 0/4000");
+    expect(description).toContain("🏆 Alpha #LQ9P8R2 - clan games points: 10000/4000");
+    expect(description).toContain("✅ Bravo #Q2V8P9L2 - clan games points: 4000/4000");
+    expect(description).toContain("✅ Charlie #CUV9082 - clan games points: 5200/4000");
+    expect(description).not.toContain("- 🏆");
+    expect(description).not.toContain("- ✅");
+    expect(description).not.toContain("- 🟡");
 
     const indexTrophy = description.indexOf("Alpha #LQ9P8R2");
     const indexBravo = description.indexOf("Bravo #Q2V8P9L2");
@@ -1287,7 +1628,8 @@ describe("/todo command", () => {
     await Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
 
     const description = getReplyDescription(interaction);
-    expect(description).toContain("- 🟡 Linked Alias #PYLQ0289 - clan games points: 1200/4000");
+    expect(description).toContain("🟡 Linked Alias #PYLQ0289 - clan games points: 1200/4000");
+    expect(description).not.toContain("- 🟡 Linked Alias #PYLQ0289");
     expect(description).toContain("- #QGRJ2222 - clan games points: 0/4000");
   });
 
@@ -1317,7 +1659,8 @@ describe("/todo command", () => {
     await Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
 
     const description = getReplyDescription(interaction);
-    expect(description).toContain("- 🟡 #PYLQ0289 - clan games points: 1200/4000");
+    expect(description).toContain("🟡 #PYLQ0289 - clan games points: 1200/4000");
+    expect(description).not.toContain("- 🟡 #PYLQ0289 - clan games points: 1200/4000");
     expect(description).not.toContain("tonyk_2020");
   });
 });
@@ -1388,7 +1731,7 @@ describe("/todo pagination buttons", () => {
 
   it("paginates across WAR/CWL/RAIDS/GAMES with user-scoped access", async () => {
     const checks: Array<{ type: TodoType; contains: string }> = [
-      { type: "WAR", contains: "`1 / 2`" },
+      { type: "WAR", contains: "No war active" },
       { type: "CWL", contains: "CWL attacks:" },
       { type: "RAIDS", contains: "clan capital raids:" },
       { type: "GAMES", contains: "clan games points:" },
@@ -1574,7 +1917,10 @@ describe("/todo refresh button", () => {
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
     expect(payload.embeds[0].toJSON().title).toBe("Todo - GAMES");
     expect(payload.components[1].components.map((b: any) => b.toJSON().label)).toEqual([
-      "Refresh",
+      undefined,
+    ]);
+    expect(payload.components[1].components.map((b: any) => b.toJSON().emoji?.name)).toEqual([
+      "🔄",
     ]);
     expect(todoLastViewedTypeService.setLastViewedType).toHaveBeenCalledWith({
       discordUserId: "111111111111111111",
