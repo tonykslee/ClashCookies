@@ -401,8 +401,11 @@ function buildWarPageDescription(
   }
 
   const grouped = buildEventGroups(activeRows, "war");
+  const unfinishedGroups = grouped.filter((group) => !isWarEventGroupComplete(group));
+  const completedGroups = grouped.filter((group) => isWarEventGroupComplete(group));
+  const groupedByCompletion = [...unfinishedGroups, ...completedGroups];
   const lines: string[] = [];
-  for (const group of grouped) {
+  for (const group of groupedByCompletion) {
     lines.push(`**${buildEventGroupHeader(group)}**`);
     for (const row of group.rows) {
       lines.push(formatWarTodoRow(row, getWarRowStatus(row)));
@@ -628,10 +631,8 @@ function formatTodoRow(row: TodoRenderRow, status: string): string {
 /** Purpose: format one WAR row with lineup position and compact attack-detail suffixes. */
 function formatWarTodoRow(row: TodoRenderRow, status: string): string {
   const identity = formatWarPlayerIdentity(row);
-  const attacksActive = isWarRowAttackPhaseActive(row);
-  const usedAttacks = attacksActive
-    ? clampInt(row.snapshot?.warAttacksUsed, 0, row.snapshot?.warAttacksMax || 2)
-    : 0;
+  const warProgress = getWarRowProgress(row);
+  const usedAttacks = warProgress.used;
   const detailRows =
     usedAttacks > 0
       ? row.warAttackDetails
@@ -641,7 +642,8 @@ function formatWarTodoRow(row: TodoRenderRow, status: string): string {
       : [];
   const detailsSuffix =
     detailRows.length > 0 ? ` | ${detailRows.join(" | ")}` : "";
-  return `- ${identity} - ${status}${detailsSuffix}`;
+  const bullet = warProgress.complete ? ":white_check_mark:" : "-";
+  return `${bullet} ${identity} - ${status}${detailsSuffix}`;
 }
 
 /** Purpose: format one GAMES row with optional completion marker next to player identity text. */
@@ -694,12 +696,31 @@ function getWarRowStatus(row: TodoRenderRow): string {
   if (row.missingSnapshot || !row.snapshot) {
     return "`0 / 2` - snapshot unavailable";
   }
+  const { used, max } = getWarRowProgress(row);
+  const staleSuffix = row.staleSnapshot ? " - stale snapshot" : "";
+  return `\`${used} / ${max}\`${staleSuffix}`;
+}
+
+/** Purpose: compute stable WAR used/max progress and completion flag for row render decisions. */
+function getWarRowProgress(row: TodoRenderRow): {
+  used: number;
+  max: number;
+  complete: boolean;
+} {
+  if (!row.snapshot) {
+    return { used: 0, max: 2, complete: false };
+  }
   const used = isWarRowAttackPhaseActive(row)
     ? clampInt(row.snapshot.warAttacksUsed, 0, row.snapshot.warAttacksMax || 2)
     : 0;
   const max = Math.max(1, clampInt(row.snapshot.warAttacksMax, 1, 2));
-  const staleSuffix = row.staleSnapshot ? " - stale snapshot" : "";
-  return `\`${used} / ${max}\`${staleSuffix}`;
+  return { used, max, complete: used >= max };
+}
+
+/** Purpose: mark one WAR section complete only when every rendered row is complete. */
+function isWarEventGroupComplete(group: TodoEventGroup): boolean {
+  if (group.rows.length <= 0) return false;
+  return group.rows.every((row) => getWarRowProgress(row).complete);
 }
 
 /** Purpose: build active CWL row status text without repeating group-level phase timing details. */
