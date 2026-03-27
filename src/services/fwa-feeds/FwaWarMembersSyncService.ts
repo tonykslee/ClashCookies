@@ -8,6 +8,7 @@ import { FwaFeedSyncStateService } from "./FwaFeedSyncStateService";
 import { mapWithConcurrency } from "./concurrency";
 import { selectDistributedSweepChunk } from "./sweep";
 import type { FwaSyncResult } from "./types";
+import { normalizePersistedPlayerName } from "../PlayerLinkService";
 
 type SyncOptions = {
   force?: boolean;
@@ -65,6 +66,19 @@ export class FwaWarMembersSyncService {
 
       const changedRowCount = await prisma.$transaction(async (tx) => {
         const playerTags = rows.map((row) => row.playerTag);
+        const linkedPlayerRows =
+          playerTags.length > 0
+            ? await tx.playerLink.findMany({
+                where: { playerTag: { in: playerTags } },
+                select: { playerTag: true, playerName: true },
+              })
+            : [];
+        const linkedPlayerNameByTag = new Map(
+          linkedPlayerRows.map((row) => [
+            row.playerTag,
+            normalizePersistedPlayerName(row.playerName),
+          ]),
+        );
         const staleDelete = await tx.fwaWarMemberCurrent.deleteMany({
           where: {
             clanTag: normalizedClanTag,
@@ -146,6 +160,21 @@ export class FwaWarMembersSyncService {
               lastSyncedAt: now,
             },
           });
+
+          if (linkedPlayerNameByTag.has(row.playerTag)) {
+            const observedPlayerName = normalizePersistedPlayerName(row.playerName);
+            const existingLinkedName =
+              linkedPlayerNameByTag.get(row.playerTag) ?? null;
+            if (observedPlayerName && observedPlayerName !== existingLinkedName) {
+              const updated = await tx.playerLink.updateMany({
+                where: { playerTag: row.playerTag },
+                data: { playerName: observedPlayerName },
+              });
+              if (updated.count > 0) {
+                linkedPlayerNameByTag.set(row.playerTag, observedPlayerName);
+              }
+            }
+          }
         }
         return staleDelete.count + rows.length;
       });
