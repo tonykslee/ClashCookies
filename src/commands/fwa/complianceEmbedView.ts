@@ -238,9 +238,7 @@ function renderViolationBlock(issue: WarComplianceIssue): string {
         }))
       : buildFallbackAttackDetails(issue, parsed);
 
-  if (details.length <= 0) {
-    lines.push("→ No targets logged.");
-  } else {
+  if (details.length > 0) {
     for (const detail of details) {
       const target = detail.defenderPosition !== null ? `#${detail.defenderPosition}` : "#?";
       lines.push(

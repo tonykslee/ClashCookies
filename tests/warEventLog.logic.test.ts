@@ -567,7 +567,7 @@ describe("WarEventLogService.computeWarComplianceForTest", () => {
     expect(result).toEqual({ missedBoth: [], notFollowingPlan: [] });
   });
 
-  it("FWA WIN plan: flags players who miss required mirror triple during strict window and invalid non-mirror strict-window hits", () => {
+  it("FWA WIN plan: clears mirror obligation once someone else already tripled that mirror while still flagging strict-window non-mirror triples", () => {
     const result = computeWarComplianceForTest({
       clanTag: "#CLAN",
       participants,
@@ -600,7 +600,7 @@ describe("WarEventLogService.computeWarComplianceForTest", () => {
       loseStyle: "TRADITIONAL",
     });
     expect(result.missedBoth).toEqual(["Cory"]);
-    expect(result.notFollowingPlan).toEqual(["Alice", "Bob"]);
+    expect(result.notFollowingPlan).toEqual(["Alice"]);
   });
 
   it("FWA LOSE Triple-top-30 plan: flags attacks on defender positions 31-50", () => {
