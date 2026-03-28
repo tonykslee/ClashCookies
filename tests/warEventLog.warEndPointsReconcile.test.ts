@@ -193,7 +193,7 @@ describe("War-end expected points persistence via processSubscription", () => {
       resultLabel: "WIN" | "LOSE" | "TIE" | "UNKNOWN";
     };
     expectedWarEndFwaPoints: number | null;
-  }): Promise<void> {
+  }): Promise<Record<string, unknown> | undefined> {
     vi.restoreAllMocks();
     const service = new WarEventLogService({ channels: { fetch: vi.fn() } } as unknown as Client, {} as any);
     const sub = makeSubscription(input.subOverrides);
@@ -237,6 +237,7 @@ describe("War-end expected points persistence via processSubscription", () => {
     expect(updateSpy).toHaveBeenCalledTimes(1);
     const updateData = updateSpy.mock.calls[0]?.[0]?.data;
     expect(updateData?.warEndFwaPoints).toBe(input.expectedWarEndFwaPoints);
+    return updateData;
   }
 
   it("persists FWA WIN/LOSE/TIE expected points using war-start before points", async () => {
@@ -365,6 +366,32 @@ describe("War-end expected points persistence via processSubscription", () => {
       },
       expectedWarEndFwaPoints: null,
     });
+  });
+
+  it("preserves war identity timestamps on war_ended updates", async () => {
+    const expectedPrepStart = new Date("2026-03-11T00:00:00.000Z");
+    const expectedWarStart = new Date("2026-03-12T00:00:00.000Z");
+    const expectedWarEnd = new Date("2026-03-12T01:00:00.000Z");
+    const updateData = await runProcessSubscriptionCase({
+      subOverrides: {
+        matchType: "BL",
+        prepStartTime: expectedPrepStart,
+        startTime: expectedWarStart,
+        endTime: expectedWarEnd,
+      },
+      finalResult: {
+        clanStars: 10,
+        opponentStars: 11,
+        clanDestruction: 60.01,
+        opponentDestruction: 41,
+        warEndTime: expectedWarEnd,
+        resultLabel: "LOSE",
+      },
+      expectedWarEndFwaPoints: 1202,
+    });
+    expect(updateData?.prepStartTime).toEqual(expectedPrepStart);
+    expect(updateData?.startTime).toEqual(expectedWarStart);
+    expect(updateData?.endTime).toEqual(expectedWarEnd);
   });
 });
 

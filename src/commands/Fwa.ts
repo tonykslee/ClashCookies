@@ -2624,10 +2624,14 @@ async function buildWarMailEmbedForTag(
     : (sanitizeClanName(String(subscription?.opponentName ?? "")) ??
       opponentName);
   const hasLiveWar = warState !== "notInWar" && Boolean(opponentTag);
+  const hasStoredWarIdentity = Boolean(
+    (subscription?.warId !== null &&
+      subscription?.warId !== undefined &&
+      Number.isFinite(Number(subscription.warId))) ||
+      subscription?.startTime,
+  );
   const freezeRefresh =
-    !hasLiveWar &&
-    Boolean(subscription?.startTime) &&
-    Boolean(effectiveOpponentTag);
+    !hasLiveWar && hasStoredWarIdentity && Boolean(effectiveOpponentTag);
 
   const syncIdentity = resolveCurrentWarSyncIdentity({
     warState,
@@ -2722,7 +2726,7 @@ async function buildWarMailEmbedForTag(
   let primarySnapshot: PointsSnapshot | null = null;
   let opponentSnapshot: PointsSnapshot | null = null;
   let pointsInference: MatchTypeResolution | null = null;
-  if (opponentTag && routineDecision.allowed) {
+  if (opponentTag && hasLiveWar && routineDecision.allowed) {
     primarySnapshot = await getClanPointsCached(
       settings,
       cocService,
