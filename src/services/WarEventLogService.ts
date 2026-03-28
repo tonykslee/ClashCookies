@@ -2962,9 +2962,11 @@ export class WarEventLogService {
         warEndFwaPoints: nextWarEndFwaPoints,
         clanStars: nextClanStars,
         opponentStars: nextOpponentStars,
-        prepStartTime: currentState === "notInWar" ? null : nextPrepStartTime,
-        startTime: currentState === "notInWar" ? null : nextWarStartTime,
-        endTime: currentState === "notInWar" ? null : nextWarEndTime,
+        // Preserve ended-war identity timestamps so downstream mail refresh can
+        // reliably recognize and freeze the completed war post.
+        prepStartTime: nextPrepStartTime,
+        startTime: nextWarStartTime,
+        endTime: nextWarEndTime,
         opponentTag: nextOpponentTag || sub.opponentTag,
         opponentName: nextOpponentName || sub.opponentName,
         clanName: nextClanName,
