@@ -255,10 +255,18 @@ export function computeWarComplianceForTest(input: {
     .filter(Boolean);
 
   const labelForTag = new Map<string, string>();
+  const playerPositionByTag = new Map<string, number>();
+  const attacksUsedByTag = new Map<string, number>();
   for (const p of participants) {
     const playerTag = normalizeTag(p.playerTag);
     const label = String(p.playerName ?? p.playerTag).trim();
     if (playerTag && label) labelForTag.set(playerTag, label);
+    if (playerTag && Number.isFinite(Number(p.playerPosition))) {
+      playerPositionByTag.set(playerTag, Number(p.playerPosition));
+    }
+    if (playerTag) {
+      attacksUsedByTag.set(playerTag, Math.max(0, Number(p.attacksUsed ?? 0)));
+    }
   }
   const notFollowing = new Set<string>();
   const addViolation = (playerTagRaw: string | null | undefined, fallbackName: string | null | undefined) => {
@@ -290,6 +298,7 @@ export function computeWarComplianceForTest(input: {
         Math.trunc(Number(input.winGateConfig?.allBasesOpenHoursLeft ?? 12))
       );
       const mirrorTripleByPlayer = new Map<string, boolean>();
+      const mirrorTripleByOwnedPosition = new Map<number, boolean>();
       const strictWindowSeenByPlayer = new Map<string, boolean>();
       for (let i = 0; i < attacks.length; i += 1) {
         const attack = attacks[i];
@@ -313,6 +322,9 @@ export function computeWarComplianceForTest(input: {
         const isStrictWindow = starsGateActive && isTimeGateActive;
         if (isStrictWindow) {
           strictWindowSeenByPlayer.set(playerTag, true);
+          if (defenderPos !== null && stars >= 3) {
+            mirrorTripleByOwnedPosition.set(defenderPos, true);
+          }
           const isMirror = playerPos !== null && defenderPos !== null && playerPos === defenderPos;
           if (isMirror && stars >= 3) {
             mirrorTripleByPlayer.set(playerTag, true);
@@ -325,7 +337,16 @@ export function computeWarComplianceForTest(input: {
       }
       for (const [playerTag, seenStrict] of strictWindowSeenByPlayer.entries()) {
         if (!seenStrict) continue;
-        if (!mirrorTripleByPlayer.get(playerTag)) {
+        const attacksUsed = attacksUsedByTag.get(playerTag) ?? 0;
+        if (attacksUsed < 2) continue;
+        const ownerPosition = playerPositionByTag.get(playerTag);
+        const mirrorAlreadyTripledByAnyone =
+          Number.isFinite(Number(ownerPosition)) &&
+          mirrorTripleByOwnedPosition.get(Number(ownerPosition)) === true;
+        if (
+          !mirrorTripleByPlayer.get(playerTag) &&
+          !mirrorAlreadyTripledByAnyone
+        ) {
           addViolation(playerTag, labelForTag.get(playerTag) ?? playerTag);
         }
       }

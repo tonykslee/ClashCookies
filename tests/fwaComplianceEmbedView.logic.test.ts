@@ -143,6 +143,37 @@ describe("buildFwaComplianceEmbedView", () => {
     expect(plan).toContain("49★ | 21h 27m left");
   });
 
+  it("does not render a no-targets placeholder when violation details are empty", () => {
+    const rendered = buildFwaComplianceEmbedView({
+      userId: "123",
+      key: "payload",
+      isFwa: true,
+      clanName: "Rocky Road",
+      warPlanText: "No warplan details",
+      warId: 777,
+      expectedOutcome: "WIN",
+      warStartTime: null,
+      warEndTime: null,
+      participantsCount: 50,
+      attacksCount: 53,
+      missedBoth: [],
+      notFollowingPlan: [
+        makeViolation(3, "NoDetail", {
+          actualBehavior: "",
+          attackDetails: [],
+          breachContext: null,
+        }),
+      ],
+      activeView: "fwa_main",
+      mainPage: 0,
+      missedPage: 0,
+    });
+
+    const plan = toEmbedJson(rendered.embed).fields?.[2]?.value ?? "";
+    expect(plan).toContain("#3 NoDetail");
+    expect(plan).not.toContain("No targets logged");
+  });
+
   it("disables missed-attacks toggle when there are no missed-both players", () => {
     const rendered = buildFwaComplianceEmbedView({
       userId: "123",

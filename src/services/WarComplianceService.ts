@@ -1759,15 +1759,17 @@ export class WarComplianceService {
     attackContextByAttack: Map<WarComplianceAttack, AttackContext>;
     participantByTag: Map<string, WarComplianceParticipant>;
   }): Set<string> {
+    const allStrictAttackIndexes: number[] = [];
     const strictAttackIndexes: number[] = [];
     const strictSeenByTag = new Set<string>();
     const mirrorTripleInStrictByTag = new Set<string>();
     for (let idx = 0; idx < input.orderedAttacks.length; idx += 1) {
       const attack = input.orderedAttacks[idx];
-      const playerTag = normalizeTag(attack.playerTag);
-      if (!input.group.memberTagSet.has(playerTag)) continue;
       const context = input.attackContextByAttack.get(attack);
       if (!context?.isStrictWindow) continue;
+      allStrictAttackIndexes.push(idx);
+      const playerTag = normalizeTag(attack.playerTag);
+      if (!input.group.memberTagSet.has(playerTag)) continue;
       strictAttackIndexes.push(idx);
       strictSeenByTag.add(playerTag);
       if (context.isMirror && Number(attack.stars ?? 0) >= 3) {
@@ -1795,7 +1797,7 @@ export class WarComplianceService {
     const usedAttackIndexes = new Set<number>();
     const satisfiedOwnerTags = new Set<string>();
     for (const obligation of obligations) {
-      for (const idx of strictAttackIndexes) {
+      for (const idx of allStrictAttackIndexes) {
         if (usedAttackIndexes.has(idx)) continue;
         const attack = input.orderedAttacks[idx];
         const defenderPosition = Number(attack.defenderPosition ?? NaN);
@@ -1810,6 +1812,10 @@ export class WarComplianceService {
 
     const violatingTags = new Set<string>();
     for (const obligation of obligations) {
+      const ownerAttacksUsed = Number(
+        input.participantByTag.get(obligation.ownerTag)?.attacksUsed ?? 0,
+      );
+      if (ownerAttacksUsed < 2) continue;
       if (!satisfiedOwnerTags.has(obligation.ownerTag)) {
         violatingTags.add(obligation.ownerTag);
       }
@@ -1851,15 +1857,15 @@ export class WarComplianceService {
     starsAfterByAttackIndex: Map<number, number>;
     participantByTag: Map<string, WarComplianceParticipant>;
   }): Set<string> {
+    const allLateAttackIndexes: number[] = [];
     const lateAttackIndexes: number[] = [];
-    const lateSeenByTag = new Set<string>();
     for (let idx = 0; idx < input.orderedAttacks.length; idx += 1) {
       const attack = input.orderedAttacks[idx];
+      if (!isLateLoseTraditionalWindow(attack)) continue;
+      allLateAttackIndexes.push(idx);
       const playerTag = normalizeTag(attack.playerTag);
       if (!input.group.memberTagSet.has(playerTag)) continue;
-      if (!isLateLoseTraditionalWindow(attack)) continue;
       lateAttackIndexes.push(idx);
-      lateSeenByTag.add(playerTag);
     }
 
     const obligations = input.group.memberTags
@@ -1882,13 +1888,13 @@ export class WarComplianceService {
     const usedAttackIndexes = new Set<number>();
     const satisfiedOwnerTags = new Set<string>();
     for (const obligation of obligations) {
-      for (const idx of lateAttackIndexes) {
+      for (const idx of allLateAttackIndexes) {
         if (usedAttackIndexes.has(idx)) continue;
         const attack = input.orderedAttacks[idx];
         const defenderPosition = Number(attack.defenderPosition ?? NaN);
         if (!Number.isFinite(defenderPosition) || defenderPosition <= 0) continue;
         if (defenderPosition !== obligation.ownerPosition) continue;
-        if (Number(attack.stars ?? 0) !== 2) continue;
+        if (Number(attack.stars ?? 0) < 2) continue;
         usedAttackIndexes.add(idx);
         satisfiedOwnerTags.add(obligation.ownerTag);
         break;
@@ -1928,6 +1934,10 @@ export class WarComplianceService {
     }
 
     for (const obligation of obligations) {
+      const ownerAttacksUsed = Number(
+        input.participantByTag.get(obligation.ownerTag)?.attacksUsed ?? 0,
+      );
+      if (ownerAttacksUsed < 2) continue;
       if (!satisfiedOwnerTags.has(obligation.ownerTag)) {
         violatingTags.add(obligation.ownerTag);
       }
