@@ -3950,6 +3950,9 @@ function buildWarMailRefreshEditPayload(
   existingPostedContent: string | null | undefined,
   planText: string | null | undefined,
   nowMs?: number,
+  options?: {
+    includeNextRefresh?: boolean;
+  },
 ): {
   content: string;
   allowedMentions: { parse: [] };
@@ -3960,6 +3963,7 @@ function buildWarMailRefreshEditPayload(
   return {
     content: buildWarMailPostedContent(persistedMentionRoleId, nowMs, {
       planText: String(planText ?? ""),
+      includeNextRefresh: options?.includeNextRefresh !== false,
     }),
     allowedMentions: { parse: [] },
   };
@@ -4350,17 +4354,17 @@ async function refreshWarMailPostByResolvedTarget(params: {
         ? Number(nextWarIdText)
         : null,
     );
-  const refreshEditPayload = rendered.freezeRefresh
-    ? null
-    : buildWarMailRefreshEditPayload(
-        String(message?.content ?? ""),
-        rendered.planText,
-      );
+  const refreshEditPayload = buildWarMailRefreshEditPayload(
+    String(message?.content ?? ""),
+    rendered.planText,
+    undefined,
+    {
+      includeNextRefresh: !rendered.freezeRefresh,
+    },
+  );
   await message.edit({
-    content: rendered.freezeRefresh ? undefined : refreshEditPayload?.content,
-    allowedMentions: rendered.freezeRefresh
-      ? undefined
-      : refreshEditPayload?.allowedMentions,
+    content: refreshEditPayload.content,
+    allowedMentions: refreshEditPayload.allowedMentions,
     embeds: [rendered.embed],
     components: rendered.freezeRefresh
       ? []
