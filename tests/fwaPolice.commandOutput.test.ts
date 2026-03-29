@@ -109,7 +109,29 @@ describe("/fwa police command output", () => {
           rawCustomTemplate: null,
           rawDefaultTemplate: null,
           effectiveTemplate: "{offender} sample",
-          renderedSample: "FWA Police - sample",
+          renderedSample: "#15 - Tilonius sample",
+          sampleEmbed: {
+            color: 0xed4245,
+            description:
+              "## :rotating_light: :oncoming_police_car: FWA Police - Warplan violation detected :oncoming_police_car: :rotating_light:\n**War**: FWA-WIN :green_circle:\n**Violation**: Early non-mirror triple before FFA window",
+            fields: [
+              {
+                name: "**Message**",
+                value: "#15 - Tilonius sample",
+                inline: false,
+              },
+              {
+                name: "**:yes: Expected**",
+                value: "Wait for FFA window before any non-mirror triple.",
+                inline: false,
+              },
+              {
+                name: "**:no: Actual**",
+                value: "#14 (* * *) : tripled non-mirror before FFA window",
+                inline: false,
+              },
+            ],
+          },
           isApplicable: true,
           applicabilityText: "Applicable",
         },
@@ -205,11 +227,85 @@ describe("/fwa police command output", () => {
 
     const payload = run.editReply.mock.calls[0]?.[0];
     const embedJson = payload?.embeds?.[0]?.toJSON?.() ?? null;
+    expect(Number(embedJson?.color ?? 0)).toBe(0xed4245);
     expect(String(embedJson?.description ?? "")).toContain(
-      "Effective source: **Built-in**",
+      "FWA Police - Warplan violation detected",
     );
-    expect(String(embedJson?.fields?.[1]?.value ?? "")).toContain(
-      "FWA Police - sample",
+    expect(String(embedJson?.fields?.[0]?.name ?? "")).toBe("**Message**");
+    expect(String(embedJson?.fields?.[3]?.name ?? "")).toBe(
+      "**Template Source**",
     );
+    expect(String(embedJson?.fields?.[3]?.value ?? "")).toContain("Built-in");
+  });
+
+  it("renders show-all as one-violation-per-page pagination", async () => {
+    fwaPoliceServiceMock.getTemplatePreviewBundle.mockResolvedValue({
+      clanTag: "#2QG2C08UP",
+      clanName: "Alpha",
+      contextSummary:
+        "Match type context: FWA WIN | Lose style: TRIPLE_TOP_30 | Free-for-all star threshold: 101 | Free-for-all time threshold: 0h",
+      rows: [
+        {
+          violation: "EARLY_NON_MIRROR_TRIPLE",
+          label: "Early non-mirror triple before FFA window",
+          effectiveSource: "Built-in",
+          rawCustomTemplate: null,
+          rawDefaultTemplate: null,
+          effectiveTemplate: "{offender} sample",
+          renderedSample: "#15 - Tilonius sample",
+          sampleEmbed: {
+            color: 0xed4245,
+            description:
+              "## :rotating_light: :oncoming_police_car: FWA Police - Warplan violation detected :oncoming_police_car: :rotating_light:\n**War**: FWA-WIN :green_circle:\n**Violation**: Early non-mirror triple before FFA window",
+            fields: [
+              { name: "**Message**", value: "sample 1", inline: false },
+              { name: "**:yes: Expected**", value: "expected 1", inline: false },
+              { name: "**:no: Actual**", value: "actual 1", inline: false },
+            ],
+          },
+          isApplicable: true,
+          applicabilityText: "Applicable",
+        },
+        {
+          violation: "ANY_3STAR",
+          label: "Any 3-star in FWA loss (traditional)",
+          effectiveSource: "Default",
+          rawCustomTemplate: null,
+          rawDefaultTemplate: "{offender}",
+          effectiveTemplate: "{offender}",
+          renderedSample: "#15 - Tilonius",
+          sampleEmbed: {
+            color: 0xed4245,
+            description:
+              "## :rotating_light: :oncoming_police_car: FWA Police - Warplan violation detected :oncoming_police_car: :rotating_light:\n**War**: FWA-LOSE :red_circle:\n**Violation**: Any 3-star in FWA loss (traditional)",
+            fields: [
+              { name: "**Message**", value: "sample 2", inline: false },
+              { name: "**:yes: Expected**", value: "expected 2", inline: false },
+              { name: "**:no: Actual**", value: "actual 2", inline: false },
+            ],
+          },
+          isApplicable: true,
+          applicabilityText: "Applicable",
+        },
+      ],
+    });
+    const collector = { on: vi.fn() };
+    const run = makeInteraction({
+      subcommand: "show-all",
+      clan: "#2QG2C08UP",
+    });
+    const createMessageComponentCollector = vi.fn().mockReturnValue(collector);
+    run.editReply.mockResolvedValueOnce({
+      createMessageComponentCollector,
+    } as any);
+
+    await Fwa.run({} as any, run.interaction as any, {} as any);
+
+    const payload = run.editReply.mock.calls[0]?.[0];
+    expect(payload?.components?.length ?? 0).toBe(1);
+    expect(
+      String(payload?.embeds?.[0]?.toJSON?.()?.footer?.text ?? ""),
+    ).toContain("Page 1/2");
+    expect(createMessageComponentCollector).toHaveBeenCalledTimes(1);
   });
 });
