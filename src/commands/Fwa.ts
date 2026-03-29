@@ -9,6 +9,7 @@ import {
   ButtonStyle,
   ChatInputCommandInteraction,
   Client,
+  ComponentType,
   EmbedBuilder,
   PermissionFlagsBits,
   StringSelectMenuBuilder,
@@ -12237,9 +12238,7 @@ export const Fwa: Command = {
         : null;
 
       const formatTemplateText = (value: string | null): string =>
-        value ? `\`\`\`\n${value.slice(0, 950)}\n\`\`\`` : "_Not set_";
-      const formatSampleText = (value: string): string =>
-        `\`\`\`\n${value.slice(0, 850)}\n\`\`\``;
+        value ? `\`\`\`\n${value.slice(0, 980)}\n\`\`\`` : "_Not set_";
 
       if (subcommand === "configure") {
         const enableDm = interaction.options.getBoolean("enable-dm", true);
@@ -12271,6 +12270,7 @@ export const Fwa: Command = {
       }
 
       const previewBundle = await fwaPoliceService.getTemplatePreviewBundle({
+        client: interaction.client,
         guildId: interaction.guildId,
         clanTag,
         sampleUserId: interaction.user.id,
@@ -12280,27 +12280,90 @@ export const Fwa: Command = {
         return;
       }
 
-      if (subcommand === "show-all") {
-        const embed = new EmbedBuilder()
-          .setTitle(
-            `FWA Police Templates - ${previewBundle.clanName ?? previewBundle.clanTag} (${previewBundle.clanTag})`,
-          )
-          .setDescription(`Context: ${previewBundle.contextSummary}`)
-          .setColor(0x5865f2);
-        for (const row of previewBundle.rows) {
-          embed.addFields({
-            name: `${row.label} (${row.violation})`,
-            value: [
-              `Source: **${row.effectiveSource}**`,
-              `Applicability: **${row.applicabilityText}**`,
-              `Context: ${previewBundle.contextSummary}`,
-              `Template: ${row.effectiveTemplate.slice(0, 220)}`,
-              `Sample:\n${formatSampleText(row.renderedSample)}`,
-            ].join("\n"),
+      const buildPoliceTemplatePreviewEmbed = (
+        row: (typeof previewBundle.rows)[number],
+      ): EmbedBuilder => {
+        const embed = EmbedBuilder.from(row.sampleEmbed).addFields(
+          {
+            name: "**Template Source**",
+            value: `**${row.effectiveSource}**`,
             inline: false,
+          },
+          {
+            name: "**Applicability**",
+            value: row.isApplicable
+              ? row.applicabilityText
+              : "Not applicable under current warplan",
+            inline: false,
+          },
+          {
+            name: "**Warplan Context**",
+            value: previewBundle.contextSummary.slice(0, 1024),
+            inline: false,
+          },
+        );
+        return embed;
+      };
+
+      if (subcommand === "show-all") {
+        const embeds = previewBundle.rows.map((row, index) =>
+          buildPoliceTemplatePreviewEmbed(row).setFooter({
+            text: `${previewBundle.clanName ?? previewBundle.clanTag} (${previewBundle.clanTag}) | ${row.violation} | Page ${index + 1}/${previewBundle.rows.length}`,
+          }),
+        );
+        const prefix = `fwa-police-show-all:${interaction.id}`;
+        const buildPaginationRow = (
+          page: number,
+          totalPages: number,
+        ): ActionRowBuilder<ButtonBuilder> =>
+          new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder()
+              .setCustomId(`${prefix}:prev`)
+              .setLabel("Prev")
+              .setStyle(ButtonStyle.Secondary)
+              .setDisabled(page <= 0),
+            new ButtonBuilder()
+              .setCustomId(`${prefix}:next`)
+              .setLabel("Next")
+              .setStyle(ButtonStyle.Secondary)
+              .setDisabled(page >= totalPages - 1),
+          );
+        let page = 0;
+        const reply = await interaction.editReply({
+          content: "",
+          embeds: [embeds[page]],
+          components:
+            embeds.length > 1 ? [buildPaginationRow(page, embeds.length)] : [],
+        });
+        if (embeds.length <= 1) return;
+
+        const collector = reply.createMessageComponentCollector({
+          componentType: ComponentType.Button,
+          time: 5 * 60 * 1000,
+          filter: (btn) =>
+            btn.user.id === interaction.user.id &&
+            (btn.customId === `${prefix}:prev` || btn.customId === `${prefix}:next`),
+        });
+        collector.on("collect", async (btn: ButtonInteraction) => {
+          if (btn.customId.endsWith(":prev")) {
+            page = Math.max(0, page - 1);
+          } else if (btn.customId.endsWith(":next")) {
+            page = Math.min(embeds.length - 1, page + 1);
+          }
+          await btn.update({
+            embeds: [embeds[page]],
+            components: [buildPaginationRow(page, embeds.length)],
           });
-        }
-        await interaction.editReply({ content: "", embeds: [embed], components: [] });
+        });
+        collector.on("end", async () => {
+          await interaction
+            .editReply({
+              content: "",
+              embeds: [embeds[page]],
+              components: [],
+            })
+            .catch(() => undefined);
+        });
         return;
       }
 
@@ -12325,35 +12388,15 @@ export const Fwa: Command = {
           subcommand === "show"
             ? "Raw Clan Custom Template"
             : "Raw Global Default Template";
-        const embed = new EmbedBuilder()
-          .setTitle(
-            `FWA Police ${subcommand === "show" ? "Template" : "Default Template"} - ${selectedRow.label}`,
-          )
-          .setDescription(
-            [
-              `Clan: **${previewBundle.clanName ?? previewBundle.clanTag}** (${previewBundle.clanTag})`,
-              `Violation: \`${selectedRow.violation}\``,
-              `Effective source: **${selectedRow.effectiveSource}**`,
-              `Applicability: **${selectedRow.applicabilityText}**`,
-              selectedRow.isApplicable ? "" : "Not applicable under current warplan.",
-              `Context: ${previewBundle.contextSummary}`,
-            ]
-              .filter(Boolean)
-              .join("\n"),
-          )
-          .setColor(0x5865f2)
-          .addFields(
-            {
-              name: rawTitle,
-              value: formatTemplateText(rawTemplateText),
-              inline: false,
-            },
-            {
-              name: "Rendered Sample",
-              value: formatSampleText(selectedRow.renderedSample),
-              inline: false,
-            },
-          );
+        const embed = buildPoliceTemplatePreviewEmbed(selectedRow)
+          .addFields({
+            name: `**${rawTitle}**`,
+            value: formatTemplateText(rawTemplateText),
+            inline: false,
+          })
+          .setFooter({
+            text: `${previewBundle.clanName ?? previewBundle.clanTag} (${previewBundle.clanTag}) | ${selectedRow.violation}`,
+          });
         await interaction.editReply({ content: "", embeds: [embed], components: [] });
         return;
       }

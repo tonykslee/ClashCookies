@@ -63,7 +63,7 @@
 - `/fwa police configure clan:<trackedClanTag> enable-dm:<true|false> enable-log:<true|false>` - Configure automated warplan-violation enforcement toggles for one tracked clan.
 - `/fwa police show clan:<trackedClanTag> violation:<EARLY_NON_MIRROR_TRIPLE|STRICT_WINDOW_MIRROR_MISS_WIN|STRICT_WINDOW_MIRROR_MISS_LOSS|EARLY_NON_MIRROR_2STAR|ANY_3STAR|LOWER20_ANY_STARS>` - Show clan custom raw template (if present), effective source (`Custom`/`Default`/`Built-in`), rendered sample output, and warplan-aware applicability/context.
 - `/fwa police show-default clan:<trackedClanTag> violation:<...>` - Show raw global default template (if present) plus effective source/sample/applicability for the selected clan context.
-- `/fwa police show-all clan:<trackedClanTag>` - Render all 6 canonical violations in one embed with source, sample output, and applicability status for each (defaults private).
+- `/fwa police show-all clan:<trackedClanTag>` - Render paginated canonical police previews (one violation per embed page) with source, sample output, and applicability status (defaults private).
 - `/fwa police set clan:<trackedClanTag> violation:<...> template:<text>` - Save a clan-scoped template override for one canonical violation. Valid placeholders: `{offender}`, `{user}`.
 - `/fwa police set-default clan:<trackedClanTag> violation:<...> template:<text>` - Save a global default template override for one canonical violation (storage keyed by violation only).
 - `/fwa police reset clan:<trackedClanTag> violation:<...>` - Delete one clan-scoped template override.

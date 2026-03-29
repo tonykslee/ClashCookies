@@ -1,5 +1,5 @@
 import { createHash } from "crypto";
-import { Client } from "discord.js";
+import { Client, EmbedBuilder, type APIEmbed } from "discord.js";
 import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
 import {
@@ -29,6 +29,7 @@ import {
   type FwaPoliceViolation,
   validateFwaPoliceTemplatePlaceholders,
 } from "./FwaPoliceTemplateCatalog";
+import { emojiResolverService } from "./emoji/EmojiResolverService";
 
 type TrackedClanPoliceRow = {
   tag: string;
@@ -89,6 +90,7 @@ export type FwaPoliceTemplatePreviewRow = {
   rawDefaultTemplate: string | null;
   effectiveTemplate: string;
   renderedSample: string;
+  sampleEmbed: APIEmbed;
   isApplicable: boolean;
   applicabilityText: string;
 };
@@ -112,6 +114,30 @@ export type FwaPoliceSendSampleResult =
         | "LOG_CHANNEL_UNAVAILABLE";
     };
 
+type FwaPoliceResolvedEmojiState = {
+  alert: string;
+  alertBlue: string;
+  yes: string;
+  no: string;
+  green: string;
+  red: string;
+  black: string;
+  white: string;
+  yellow: string;
+};
+
+const FWA_POLICE_EMOJI_FALLBACKS: FwaPoliceResolvedEmojiState = {
+  alert: ":rotating_light:",
+  alertBlue: ":oncoming_police_car:",
+  yes: ":yes:",
+  no: ":no:",
+  green: ":green_circle:",
+  red: ":red_circle:",
+  black: ":black_circle:",
+  white: ":white_circle:",
+  yellow: ":yellow_circle:",
+};
+
 function sortViolationsDeterministically(
   issues: WarComplianceIssue[],
 ): WarComplianceIssue[] {
@@ -132,8 +158,9 @@ function sortViolationsDeterministically(
   });
 }
 
-function clampText(input: unknown, maxLen: number): string {
-  const value = normalizeFwaPoliceText(input);
+function clampEmbedFieldValue(input: unknown, maxLen = 1024): string {
+  const value = String(input ?? "").trim();
+  if (!value) return "_(none)_";
   if (value.length <= maxLen) return value;
   return `${value.slice(0, Math.max(0, maxLen - 3))}...`;
 }
@@ -179,10 +206,6 @@ function resolveClanLogChannelId(clan: TrackedClanPoliceRow): string | null {
   );
 }
 
-function buildClanLabel(clanName: string | null, clanTag: string): string {
-  return clanName ? `${clanName} (${clanTag})` : clanTag;
-}
-
 function buildOffenderLabel(input: {
   playerPosition?: number | null;
   playerName?: string | null;
@@ -205,8 +228,9 @@ function isTextChannelWithSend(
 ): channel is {
   isTextBased: () => boolean;
   send: (input: {
-    content: string;
-    allowedMentions: { users: string[] };
+    content?: string;
+    embeds?: EmbedBuilder[];
+    allowedMentions?: { users?: string[] };
   }) => Promise<unknown>;
 } {
   if (!channel || typeof channel !== "object") return false;
@@ -254,50 +278,128 @@ function buildSampleExpectedBehavior(violation: FwaPoliceViolation): string {
 
 function buildSampleActualBehavior(violation: FwaPoliceViolation): string {
   if (violation === "EARLY_NON_MIRROR_TRIPLE") {
-    return "#14 (★ ★ ★) : tripled non-mirror before FFA window";
+    return "#14 (* * *) : tripled non-mirror before FFA window";
   }
   if (violation === "STRICT_WINDOW_MIRROR_MISS_WIN") {
-    return "#15 (★ ★ ☆) : missed mirror triple during strict window";
+    return "#15 (* * -) : missed mirror triple during strict window";
   }
   if (violation === "STRICT_WINDOW_MIRROR_MISS_LOSS") {
-    return "#15 (★ ☆ ☆) : mirror strict-window miss in loss-traditional flow";
+    return "#15 (* - -) : mirror strict-window miss in loss-traditional flow";
   }
   if (violation === "EARLY_NON_MIRROR_2STAR") {
-    return "#18 (★ ★ ☆) : early non-mirror 2-star before FFA window";
+    return "#18 (* * -) : early non-mirror 2-star before FFA window";
   }
   if (violation === "ANY_3STAR") {
-    return "#16 (★ ★ ★) : 3-star in loss-traditional flow";
+    return "#16 (* * *) : 3-star in loss-traditional flow";
   }
-  return "#41 (★ ☆ ☆) : starred lower-20 base in triple-top-30 loss";
+  return "#41 (* - -) : starred lower-20 base in triple-top-30 loss";
 }
 
-function buildPoliceMessage(input: {
-  clanTag: string;
-  clanName: string | null;
-  warLabel: string;
+async function resolveFwaPolicePresentationEmojis(
+  client: Client,
+): Promise<FwaPoliceResolvedEmojiState> {
+  const inventory = await emojiResolverService
+    .fetchApplicationEmojiInventory(client)
+    .catch(() => null);
+  if (!inventory?.ok) {
+    return FWA_POLICE_EMOJI_FALLBACKS;
+  }
+  const resolveByName = (name: string, fallback: string): string => {
+    const exact = inventory.snapshot.exactByName.get(name);
+    if (exact?.rendered) return exact.rendered;
+    const lower = inventory.snapshot.lowercaseByName.get(name.toLowerCase());
+    if (lower?.rendered) return lower.rendered;
+    return fallback;
+  };
+  return {
+    alert: resolveByName("alert", FWA_POLICE_EMOJI_FALLBACKS.alert),
+    alertBlue: resolveByName("alert_blue", FWA_POLICE_EMOJI_FALLBACKS.alertBlue),
+    yes: resolveByName("yes", FWA_POLICE_EMOJI_FALLBACKS.yes),
+    no: resolveByName("no", FWA_POLICE_EMOJI_FALLBACKS.no),
+    green: resolveByName("green_circle", FWA_POLICE_EMOJI_FALLBACKS.green),
+    red: resolveByName("red_circle", FWA_POLICE_EMOJI_FALLBACKS.red),
+    black: resolveByName("black_circle", FWA_POLICE_EMOJI_FALLBACKS.black),
+    white: resolveByName("white_circle", FWA_POLICE_EMOJI_FALLBACKS.white),
+    yellow: resolveByName("yellow_circle", FWA_POLICE_EMOJI_FALLBACKS.yellow),
+  };
+}
+
+function resolveWarLine(input: {
+  matchTypeContext: MatchType;
+  expectedOutcome: "WIN" | "LOSE" | null;
+  emojis: FwaPoliceResolvedEmojiState;
+}): string {
+  if (input.matchTypeContext === "FWA") {
+    if (input.expectedOutcome === "WIN") {
+      return `FWA-WIN ${input.emojis.green}`;
+    }
+    if (input.expectedOutcome === "LOSE") {
+      return `FWA-LOSE ${input.emojis.red}`;
+    }
+    return `FWA ${input.emojis.white}`;
+  }
+  if (input.matchTypeContext === "BL") {
+    return `BL ${input.emojis.black}`;
+  }
+  if (input.matchTypeContext === "MM") {
+    return `MM ${input.emojis.white}`;
+  }
+  if (input.matchTypeContext === "SKIP") {
+    return `SKIP ${input.emojis.yellow}`;
+  }
+  return `${input.matchTypeContext} ${input.emojis.white}`;
+}
+
+function buildPoliceMessagePresentation(input: {
   violation: FwaPoliceViolation;
   resolvedTemplate: string;
   offender: string;
   user: string;
   expectedBehavior: string;
   actualBehavior: string;
-}): string {
+  matchTypeContext: MatchType;
+  expectedOutcome: "WIN" | "LOSE" | null;
+  emojis: FwaPoliceResolvedEmojiState;
+}): { renderedTemplate: string; embed: EmbedBuilder } {
   const metadata = FWA_POLICE_VIOLATION_METADATA[input.violation];
   const renderedTemplate = renderFwaPoliceTemplate({
     template: input.resolvedTemplate,
     offender: input.offender,
     user: input.user,
   });
-
-  return [
-    "FWA Police - Warplan violation detected",
-    `Clan: ${buildClanLabel(input.clanName, input.clanTag)}`,
-    `War: ${input.warLabel}`,
-    `Violation: ${metadata.label}`,
-    `Message: ${renderedTemplate}`,
-    `Expected: ${clampText(input.expectedBehavior, 500)}`,
-    `Actual: ${clampText(input.actualBehavior, 500)}`,
+  const description = [
+    `## ${input.emojis.alert} ${input.emojis.alertBlue} FWA Police - Warplan violation detected ${input.emojis.alertBlue} ${input.emojis.alert}`,
+    `**War**: ${resolveWarLine({
+      matchTypeContext: input.matchTypeContext,
+      expectedOutcome: input.expectedOutcome,
+      emojis: input.emojis,
+    })}`,
+    `**Violation**: ${metadata.label}`,
   ].join("\n");
+  const embed = new EmbedBuilder()
+    .setColor(0xed4245)
+    .setDescription(description)
+    .addFields(
+      {
+        name: "**Message**",
+        value: clampEmbedFieldValue(renderedTemplate),
+        inline: false,
+      },
+      {
+        name: `**${input.emojis.yes} Expected**`,
+        value: clampEmbedFieldValue(input.expectedBehavior),
+        inline: false,
+      },
+      {
+        name: `**${input.emojis.no} Actual**`,
+        value: clampEmbedFieldValue(input.actualBehavior),
+        inline: false,
+      },
+    );
+  return {
+    renderedTemplate,
+    embed,
+  };
 }
 
 async function resolveTrackedClanByTag(
@@ -601,10 +703,12 @@ export class FwaPoliceService {
 
   /** Purpose: build preview rows for all canonical violations using shared template resolution + renderer logic. */
   private async buildPreviewRows(input: {
+    client: Client;
     clanTag: string;
     context: FwaPoliceWarplanContext;
     sampleUserId?: string | null;
   }): Promise<FwaPoliceTemplatePreviewRow[]> {
+    const emojis = await resolveFwaPolicePresentationEmojis(input.client);
     const templateResolutions = await Promise.all(
       FWA_POLICE_VIOLATIONS.map((violation) =>
         this.resolveTemplateForViolation({
@@ -616,16 +720,16 @@ export class FwaPoliceService {
 
     return templateResolutions.map((resolved) => {
       const metadata = FWA_POLICE_VIOLATION_METADATA[resolved.violation];
-      const renderedSample = buildPoliceMessage({
-        clanTag: normalizeClanTag(input.clanTag),
-        clanName: "Sample Clan",
-        warLabel: "sample-war vs Sample Opponent",
+      const presentation = buildPoliceMessagePresentation({
         violation: resolved.violation,
         resolvedTemplate: resolved.effectiveTemplate,
         offender: FWA_POLICE_SAMPLE_OFFENDER,
         user: input.sampleUserId ? `<@${input.sampleUserId}>` : "UNLINKED_USER",
         expectedBehavior: buildSampleExpectedBehavior(resolved.violation),
         actualBehavior: buildSampleActualBehavior(resolved.violation),
+        matchTypeContext: input.context.matchTypeContext,
+        expectedOutcome: input.context.expectedOutcome,
+        emojis,
       });
       const isApplicable = metadata.isApplicable(toApplicabilityContext(input.context));
       return {
@@ -635,7 +739,8 @@ export class FwaPoliceService {
         rawCustomTemplate: resolved.rawCustomTemplate,
         rawDefaultTemplate: resolved.rawDefaultTemplate,
         effectiveTemplate: resolved.effectiveTemplate,
-        renderedSample,
+        renderedSample: presentation.renderedTemplate,
+        sampleEmbed: presentation.embed.toJSON(),
         isApplicable,
         applicabilityText: isApplicable
           ? "Applicable"
@@ -646,6 +751,7 @@ export class FwaPoliceService {
 
   /** Purpose: build one full preview bundle for a tracked clan, including warplan-aware applicability context. */
   async getTemplatePreviewBundle(input: {
+    client: Client;
     guildId: string;
     clanTag: string;
     sampleUserId?: string | null;
@@ -660,6 +766,7 @@ export class FwaPoliceService {
       loseStyle: tracked.loseStyle,
     });
     const rows = await this.buildPreviewRows({
+      client: input.client,
       clanTag: normalizedClanTag,
       context,
       sampleUserId: input.sampleUserId ?? null,
@@ -683,27 +790,32 @@ export class FwaPoliceService {
     destination: "DM" | "LOG";
     requestingUserId: string;
   }): Promise<FwaPoliceSendSampleResult> {
-    void input.guildId;
     const tracked = await resolveTrackedClanByTag(input.clanTag);
     if (!tracked) {
       return { ok: false, error: "CLAN_NOT_TRACKED" };
     }
 
     const normalizedClanTag = normalizeClanTag(tracked.tag);
+    const context = await resolveWarplanContextForClan({
+      guildId: input.guildId,
+      clanTag: normalizedClanTag,
+      loseStyle: tracked.loseStyle,
+    });
+    const emojis = await resolveFwaPolicePresentationEmojis(input.client);
     const resolution = await this.resolveTemplateForViolation({
       clanTag: normalizedClanTag,
       violation: input.violation,
     });
-    const rendered = buildPoliceMessage({
-      clanTag: normalizedClanTag,
-      clanName: normalizeFwaPoliceText(tracked.name) || null,
-      warLabel: "sample-war vs Sample Opponent",
+    const presentation = buildPoliceMessagePresentation({
       violation: input.violation,
       resolvedTemplate: resolution.effectiveTemplate,
       offender: FWA_POLICE_SAMPLE_OFFENDER,
       user: `<@${input.requestingUserId}>`,
       expectedBehavior: buildSampleExpectedBehavior(input.violation),
       actualBehavior: buildSampleActualBehavior(input.violation),
+      matchTypeContext: context.matchTypeContext,
+      expectedOutcome: context.expectedOutcome,
+      emojis,
     });
 
     if (input.destination === "DM") {
@@ -712,8 +824,11 @@ export class FwaPoliceService {
       if (!dm) {
         return { ok: false, error: "DM_UNAVAILABLE" };
       }
-      await dm.send({ content: rendered });
-      return { ok: true, deliveredTo: "DM", rendered };
+      await dm.send({
+        embeds: [presentation.embed],
+        allowedMentions: { users: [input.requestingUserId] },
+      });
+      return { ok: true, deliveredTo: "DM", rendered: presentation.renderedTemplate };
     }
 
     const strictLogChannelId = normalizeFwaPoliceText(tracked.logChannelId) || null;
@@ -725,10 +840,10 @@ export class FwaPoliceService {
       return { ok: false, error: "LOG_CHANNEL_UNAVAILABLE" };
     }
     await channel.send({
-      content: rendered,
+      embeds: [presentation.embed],
       allowedMentions: { users: [input.requestingUserId] },
     });
-    return { ok: true, deliveredTo: "LOG", rendered };
+    return { ok: true, deliveredTo: "LOG", rendered: presentation.renderedTemplate };
   }
 
   /** Purpose: evaluate canonical compliance and enforce one-time police notifications per unique violation fingerprint. */
@@ -806,6 +921,7 @@ export class FwaPoliceService {
       expectedOutcome: report.expectedOutcome,
       loseStyle: report.loseStyle,
     };
+    const emojis = await resolveFwaPolicePresentationEmojis(input.client);
     const templateByViolation = new Map<FwaPoliceViolation, FwaPoliceTemplateResolution>(
       (
         await Promise.all(
@@ -854,12 +970,7 @@ export class FwaPoliceService {
           clanTag: normalizedClanTag,
           violation,
         }));
-      const content = buildPoliceMessage({
-        clanTag: normalizedClanTag,
-        clanName: normalizeFwaPoliceText(report.clanName) || normalizeFwaPoliceText(tracked.name) || null,
-        warLabel: normalizeFwaPoliceText(report.opponentName)
-          ? `${effectiveWarId} vs ${normalizeFwaPoliceText(report.opponentName)}`
-          : String(effectiveWarId),
+      const presentation = buildPoliceMessagePresentation({
         violation,
         resolvedTemplate: templateResolution.effectiveTemplate,
         offender: buildOffenderLabel({
@@ -870,6 +981,9 @@ export class FwaPoliceService {
         user: linkedDiscordUserId ? `<@${linkedDiscordUserId}>` : "UNLINKED_USER",
         expectedBehavior: issue.expectedBehavior,
         actualBehavior: issue.actualBehavior,
+        matchTypeContext: report.matchType,
+        expectedOutcome: report.expectedOutcome,
+        emojis,
       });
 
       let dmSentAt: Date | null = null;
@@ -882,7 +996,12 @@ export class FwaPoliceService {
             .catch(() => null);
           const dm = await user?.createDM().catch(() => null);
           if (dm) {
-            await dm.send({ content });
+            await dm.send({
+              embeds: [presentation.embed],
+              allowedMentions: {
+                users: linkedDiscordUserId ? [linkedDiscordUserId] : [],
+              },
+            });
             dmSentAt = new Date();
             dmSent += 1;
           }
@@ -895,9 +1014,8 @@ export class FwaPoliceService {
 
       if (enableLog && canSendLog) {
         try {
-          const prefix = linkedDiscordUserId ? `<@${linkedDiscordUserId}> ` : "";
           await resolvedLogChannel.send({
-            content: `${prefix}${content}`.trim(),
+            embeds: [presentation.embed],
             allowedMentions: {
               users: linkedDiscordUserId ? [linkedDiscordUserId] : [],
             },
@@ -933,3 +1051,4 @@ export class FwaPoliceService {
 }
 
 export const fwaPoliceService = new FwaPoliceService();
+

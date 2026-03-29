@@ -375,7 +375,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`/fwa base-swap` posts a tracked acknowledgment message for war-base/base-error positions, includes deduped TH-specific `RISINGDAWN` layout links for listed players, and DMs the invoker copy/paste in-game ping lines (active-war + TH-grouped base errors). If the full post exceeds one Discord message, it prompts the requester to publish exactly 2 linked posts instead of truncating required lines.",
       "`/fwa compliance` runs war-plan compliance checks on demand for a tracked clan (defaults to current active war; use `war-id:current` or numeric `war-id` for historical checks).",
       "`/fwa police configure` controls automatic DM/log enforcement toggles for a tracked clan.",
-      "`/fwa police show`, `show-default`, and `show-all` render canonical violation templates with source precedence (Custom -> Default -> Built-in), sample output, and warplan-aware applicability context.",
+      "`/fwa police show`, `show-default`, and `show-all` render canonical violation templates with source precedence (Custom -> Default -> Built-in), sample output, and warplan-aware applicability context (`show-all` paginates one violation per page).",
       "`/fwa police set`, `set-default`, `reset`, and `reset-default` manage per-violation template overrides using canonical enum keys only.",
       "`/fwa police send` test-delivers one rendered sample template to your DM or the clan log channel.",
       "FWA compliance embeds include a `Warplan` field from the same active plan source used by war mail, show resolved FWA-WIN threshold context (`N`/`H`) from warplan config, and strict-window breach context shows clan stars before the breach attack.",

@@ -152,6 +152,7 @@ describe("FwaPoliceService", () => {
 
     const service = new FwaPoliceService();
     const bundle = await service.getTemplatePreviewBundle({
+      client: {} as any,
       guildId: "guild-1",
       clanTag: "#2QG2C08UP",
       sampleUserId: "111111111111111111",
@@ -320,17 +321,23 @@ describe("FwaPoliceService", () => {
     });
 
     expect(logSend).toHaveBeenCalledTimes(1);
-    expect(String(logSend.mock.calls[0]?.[0]?.content ?? "")).toContain(
+    const sentPayload = logSend.mock.calls[0]?.[0];
+    const embedJson = sentPayload?.embeds?.[0]?.toJSON?.() ?? null;
+    expect(embedJson?.title ?? null).toBeNull();
+    expect(Number(embedJson?.color ?? 0)).toBe(0xed4245);
+    expect(String(embedJson?.description ?? "")).toContain(
+      "FWA Police - Warplan violation detected",
+    );
+    expect(String(embedJson?.description ?? "")).toContain("**War**: FWA-WIN");
+    expect(String(embedJson?.fields?.[0]?.name ?? "")).toBe("**Message**");
+    expect(String(embedJson?.fields?.[1]?.name ?? "")).toBe(
+      "**:yes: Expected**",
+    );
+    expect(String(embedJson?.fields?.[2]?.name ?? "")).toBe(
+      "**:no: Actual**",
+    );
+    expect(String(embedJson?.fields?.[0]?.value ?? "")).toContain(
       "<@222222222222222222>",
-    );
-    expect(String(logSend.mock.calls[0]?.[0]?.content ?? "")).toContain(
-      "Expected:",
-    );
-    expect(String(logSend.mock.calls[0]?.[0]?.content ?? "")).toContain(
-      "Actual:",
-    );
-    expect(String(logSend.mock.calls[0]?.[0]?.content ?? "")).toContain(
-      "Violation:",
     );
     expect(result.logSent).toBe(1);
     expect(result.dmSent).toBe(0);
