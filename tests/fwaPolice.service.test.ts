@@ -5,6 +5,22 @@ const prismaMock = vi.hoisted(() => ({
     findFirst: vi.fn(),
     update: vi.fn(),
   },
+  currentWar: {
+    findFirst: vi.fn(),
+  },
+  clanWarPlan: {
+    findFirst: vi.fn(),
+  },
+  fwaPoliceClanTemplate: {
+    findUnique: vi.fn(),
+    upsert: vi.fn(),
+    deleteMany: vi.fn(),
+  },
+  fwaPoliceDefaultTemplate: {
+    findUnique: vi.fn(),
+    upsert: vi.fn(),
+    deleteMany: vi.fn(),
+  },
   fwaPoliceHandledViolation: {
     create: vi.fn(),
     update: vi.fn(),
@@ -57,6 +73,7 @@ describe("FwaPoliceService", () => {
     prismaMock.trackedClan.findFirst.mockResolvedValue({
       tag: "#2QG2C08UP",
       name: "Alpha",
+      loseStyle: "TRIPLE_TOP_30",
       fwaPoliceDmEnabled: false,
       fwaPoliceLogEnabled: false,
       logChannelId: "channel-1",
@@ -73,6 +90,14 @@ describe("FwaPoliceService", () => {
       id: "handled-1",
     });
     prismaMock.fwaPoliceHandledViolation.update.mockResolvedValue({});
+    prismaMock.currentWar.findFirst.mockResolvedValue(null);
+    prismaMock.clanWarPlan.findFirst.mockResolvedValue(null);
+    prismaMock.fwaPoliceClanTemplate.findUnique.mockResolvedValue(null);
+    prismaMock.fwaPoliceDefaultTemplate.findUnique.mockResolvedValue(null);
+    prismaMock.fwaPoliceClanTemplate.upsert.mockResolvedValue({});
+    prismaMock.fwaPoliceDefaultTemplate.upsert.mockResolvedValue({});
+    prismaMock.fwaPoliceClanTemplate.deleteMany.mockResolvedValue({});
+    prismaMock.fwaPoliceDefaultTemplate.deleteMany.mockResolvedValue({});
     playerLinkServiceMock.listPlayerLinksForClanMembers.mockResolvedValue([]);
   });
 
@@ -101,10 +126,75 @@ describe("FwaPoliceService", () => {
     );
   });
 
+  it("rejects unknown placeholders on clan template save", async () => {
+    const service = new FwaPoliceService();
+    const result = await service.setClanTemplate({
+      clanTag: "#2QG2C08UP",
+      violation: "EARLY_NON_MIRROR_TRIPLE",
+      template: "Bad token {unknown_placeholder}",
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: "INVALID_PLACEHOLDER",
+      detail: "unknown_placeholder",
+    });
+    expect(prismaMock.fwaPoliceClanTemplate.upsert).not.toHaveBeenCalled();
+  });
+
+  it("resolves preview source precedence as Custom over Default over Built-in", async () => {
+    prismaMock.fwaPoliceClanTemplate.findUnique.mockResolvedValue({
+      template: "Clan custom {offender}",
+    });
+    prismaMock.fwaPoliceDefaultTemplate.findUnique.mockResolvedValue({
+      template: "Global default {offender}",
+    });
+
+    const service = new FwaPoliceService();
+    const bundle = await service.getTemplatePreviewBundle({
+      guildId: "guild-1",
+      clanTag: "#2QG2C08UP",
+      sampleUserId: "111111111111111111",
+    });
+
+    expect(bundle).not.toBeNull();
+    const first = bundle?.rows[0];
+    expect(first?.effectiveSource).toBe("Custom");
+    expect(first?.effectiveTemplate).toBe("Clan custom {offender}");
+  });
+
+  it("fails LOG sample send when clan log channel is not configured", async () => {
+    prismaMock.trackedClan.findFirst.mockResolvedValue({
+      tag: "#2QG2C08UP",
+      name: "Alpha",
+      loseStyle: "TRIPLE_TOP_30",
+      fwaPoliceDmEnabled: true,
+      fwaPoliceLogEnabled: true,
+      logChannelId: null,
+      notifyChannelId: null,
+      mailChannelId: null,
+    });
+    const service = new FwaPoliceService();
+    const result = await service.sendSampleMessage({
+      client: {} as any,
+      guildId: "guild-1",
+      clanTag: "#2QG2C08UP",
+      violation: "EARLY_NON_MIRROR_TRIPLE",
+      destination: "LOG",
+      requestingUserId: "111111111111111111",
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: "LOG_CHANNEL_NOT_CONFIGURED",
+    });
+  });
+
   it("uses canonical compliance evaluation and sends DM only when dm toggle is enabled", async () => {
     prismaMock.trackedClan.findFirst.mockResolvedValue({
       tag: "#2QG2C08UP",
       name: "Alpha",
+      loseStyle: "TRIPLE_TOP_30",
       fwaPoliceDmEnabled: true,
       fwaPoliceLogEnabled: false,
       logChannelId: "channel-1",
@@ -137,6 +227,9 @@ describe("FwaPoliceService", () => {
         warId: 12345,
         clanName: "Alpha",
         opponentName: "Bravo",
+        matchType: "FWA",
+        expectedOutcome: "WIN",
+        loseStyle: "TRIPLE_TOP_30",
         notFollowingPlan: [buildIssue()],
       },
     });
@@ -178,6 +271,7 @@ describe("FwaPoliceService", () => {
     prismaMock.trackedClan.findFirst.mockResolvedValue({
       tag: "#2QG2C08UP",
       name: "Alpha",
+      loseStyle: "TRIPLE_TOP_30",
       fwaPoliceDmEnabled: false,
       fwaPoliceLogEnabled: true,
       logChannelId: "channel-1",
@@ -209,6 +303,9 @@ describe("FwaPoliceService", () => {
         warId: 12345,
         clanName: "Alpha",
         opponentName: "Bravo",
+        matchType: "FWA",
+        expectedOutcome: "WIN",
+        loseStyle: "TRIPLE_TOP_30",
         notFollowingPlan: [buildIssue()],
       },
     });
@@ -243,6 +340,7 @@ describe("FwaPoliceService", () => {
     prismaMock.trackedClan.findFirst.mockResolvedValue({
       tag: "#2QG2C08UP",
       name: "Alpha",
+      loseStyle: "TRIPLE_TOP_30",
       fwaPoliceDmEnabled: true,
       fwaPoliceLogEnabled: true,
       logChannelId: "channel-1",
@@ -271,6 +369,9 @@ describe("FwaPoliceService", () => {
         warId: 12345,
         clanName: "Alpha",
         opponentName: "Bravo",
+        matchType: "FWA",
+        expectedOutcome: "WIN",
+        loseStyle: "TRIPLE_TOP_30",
         notFollowingPlan: [],
       },
     });
@@ -299,6 +400,7 @@ describe("FwaPoliceService", () => {
     prismaMock.trackedClan.findFirst.mockResolvedValue({
       tag: "#2QG2C08UP",
       name: "Alpha",
+      loseStyle: "TRIPLE_TOP_30",
       fwaPoliceDmEnabled: true,
       fwaPoliceLogEnabled: true,
       logChannelId: "channel-1",
@@ -336,6 +438,9 @@ describe("FwaPoliceService", () => {
         warId: 12345,
         clanName: "Alpha",
         opponentName: "Bravo",
+        matchType: "FWA",
+        expectedOutcome: "WIN",
+        loseStyle: "TRIPLE_TOP_30",
         notFollowingPlan: [buildIssue()],
       },
     });
@@ -364,6 +469,7 @@ describe("FwaPoliceService", () => {
     prismaMock.trackedClan.findFirst.mockResolvedValue({
       tag: "#2QG2C08UP",
       name: "Alpha",
+      loseStyle: "TRIPLE_TOP_30",
       fwaPoliceDmEnabled: true,
       fwaPoliceLogEnabled: true,
       logChannelId: "channel-1",
@@ -399,6 +505,9 @@ describe("FwaPoliceService", () => {
         warId: 12345,
         clanName: "Alpha",
         opponentName: "Bravo",
+        matchType: "FWA",
+        expectedOutcome: "WIN",
+        loseStyle: "TRIPLE_TOP_30",
         notFollowingPlan: [buildIssue()],
       },
     });

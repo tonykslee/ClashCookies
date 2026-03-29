@@ -9,8 +9,8 @@ describe("fwa police permission defaults", () => {
     const targets = getCommandTargetsFromInteraction({
       commandName: "fwa",
       options: {
-        getSubcommandGroup: () => null,
-        getSubcommand: () => "police",
+        getSubcommandGroup: () => "police",
+        getSubcommand: () => "show",
       },
     } as any);
 
