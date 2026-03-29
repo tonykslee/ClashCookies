@@ -945,7 +945,7 @@ describe("TodoSnapshotService", () => {
     expect(prismaMock.botSetting.upsert).not.toHaveBeenCalled();
   });
 
-  it("keeps ended-cycle key and baseline during post-games off-cycle in the same month", async () => {
+  it("keeps latest-season points through reward collection for the ended cycle", async () => {
     prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
       buildSnapshotRow({
         gamesActive: true,
@@ -987,12 +987,65 @@ describe("TodoSnapshotService", () => {
       expect.objectContaining({
         update: expect.objectContaining({
           gamesActive: false,
-          gamesPoints: null,
-          gamesTarget: null,
+          gamesPoints: 1000,
+          gamesTarget: 4000,
           gamesChampionTotal: 15000,
           gamesSeasonBaseline: 14000,
           gamesCycleKey: "1774166400000",
           gamesEndsAt: new Date("2026-03-28T08:00:00.000Z"),
+        }),
+      }),
+    );
+  });
+
+  it("clears latest-season games points once reward collection fully ends", async () => {
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      buildSnapshotRow({
+        gamesActive: false,
+        gamesPoints: 1000,
+        gamesTarget: 4000,
+        gamesChampionTotal: 15000,
+        gamesSeasonBaseline: 14000,
+        gamesCycleKey: "1774166400000",
+        gamesEndsAt: new Date("2026-03-28T08:00:00.000Z"),
+        lastUpdatedAt: new Date("2026-04-01T07:55:00.000Z"),
+        updatedAt: new Date("2026-04-01T07:55:00.000Z"),
+      }),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        clanTag: "#PQL0289",
+        playerName: "Alpha",
+        sourceSyncedAt: new Date("2026-04-01T09:00:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.currentWar.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+    prismaMock.botSetting.findMany.mockResolvedValue([
+      {
+        key: "player_signal_state:#PYLQ0289",
+        value: JSON.stringify({ counters: { gamesChampion: 15000 } }),
+      },
+    ]);
+
+    await todoSnapshotService.refreshSnapshotsForPlayerTags({
+      playerTags: ["#PYLQ0289"],
+      nowMs: Date.UTC(2026, 3, 1, 9, 0, 0, 0),
+    });
+
+    expect(prismaMock.todoPlayerSnapshot.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          gamesActive: false,
+          gamesPoints: null,
+          gamesTarget: null,
+          gamesChampionTotal: 15000,
+          gamesSeasonBaseline: 15000,
+          gamesCycleKey: "1776844800000",
+          gamesEndsAt: new Date("2026-04-28T08:00:00.000Z"),
         }),
       }),
     );

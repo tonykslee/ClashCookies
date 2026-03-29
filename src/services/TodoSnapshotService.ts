@@ -67,6 +67,14 @@ type TodoWindow = {
   endMs: number;
 };
 
+type TodoClanGamesWindow = {
+  active: boolean;
+  rewardCollectionActive: boolean;
+  startMs: number;
+  endMs: number;
+  rewardCollectionEndsMs: number;
+};
+
 type ClanMemberCurrentRow = {
   playerTag: string;
   clanTag: string;
@@ -565,6 +573,7 @@ export class TodoSnapshotService {
 
       const derivedGames = deriveTodoGamesValues({
         gamesWindowActive: gamesWindow.active,
+        gamesRewardCollectionActive: gamesWindow.rewardCollectionActive,
         gamesCycleKey,
         observedChampionTotal: gamesChampionTotalByTag.get(playerTag) ?? null,
         existingChampionTotal: existing?.gamesChampionTotal ?? null,
@@ -713,6 +722,7 @@ function normalizeGamesCycleKey(input: unknown): string | null {
 /** Purpose: derive snapshot-owned Clan Games observability values and bounded points. */
 function deriveTodoGamesValues(input: {
   gamesWindowActive: boolean;
+  gamesRewardCollectionActive: boolean;
   gamesCycleKey: string;
   observedChampionTotal: number | null;
   existingChampionTotal: number | null;
@@ -727,39 +737,6 @@ function deriveTodoGamesValues(input: {
   const existingCycleKey = normalizeGamesCycleKey(input.existingCycleKey);
   const existingPoints = toFiniteIntOrNull(input.existingPoints);
   const activeCycleKey = normalizeGamesCycleKey(input.gamesCycleKey);
-
-  if (!input.gamesWindowActive) {
-    let resolvedBaseline: number | null = championTotal;
-    if (existingCycleKey && activeCycleKey && existingCycleKey === activeCycleKey) {
-      resolvedBaseline = existingBaseline;
-      if (
-        championTotal !== null &&
-        resolvedBaseline === null &&
-        existingPoints !== null &&
-        existingPoints > 0
-      ) {
-        resolvedBaseline = Math.max(
-          0,
-          championTotal - clampInt(existingPoints, 0, TODO_GAMES_POINTS_MAX),
-        );
-      }
-      if (resolvedBaseline === null) resolvedBaseline = championTotal;
-      if (
-        championTotal !== null &&
-        resolvedBaseline !== null &&
-        championTotal < resolvedBaseline
-      ) {
-        resolvedBaseline = championTotal;
-      }
-    }
-    return {
-      points: null,
-      target: null,
-      championTotal,
-      seasonBaseline: resolvedBaseline,
-      cycleKey: activeCycleKey,
-    };
-  }
 
   let resolvedBaseline: number | null = null;
   if (existingCycleKey && activeCycleKey && existingCycleKey === activeCycleKey) {
@@ -785,7 +762,17 @@ function deriveTodoGamesValues(input: {
     resolvedBaseline = championTotal;
   }
 
-  if (resolvedBaseline === null) {
+  if (!input.gamesWindowActive && !input.gamesRewardCollectionActive) {
+    return {
+      points: null,
+      target: null,
+      championTotal,
+      seasonBaseline: championTotal,
+      cycleKey: activeCycleKey,
+    };
+  }
+
+  if (resolvedBaseline === null && !input.gamesRewardCollectionActive) {
     return {
       points: 0,
       target: TODO_GAMES_TARGET_POINTS,
@@ -795,12 +782,11 @@ function deriveTodoGamesValues(input: {
     };
   }
 
-  const resolvedTotal = championTotal ?? resolvedBaseline;
-  const points = clampInt(
-    resolvedTotal - resolvedBaseline,
-    0,
-    TODO_GAMES_POINTS_MAX,
-  );
+  const points = resolveGamesCyclePoints({
+    championTotal,
+    seasonBaseline: resolvedBaseline,
+    existingPoints,
+  });
   return {
     points,
     target: TODO_GAMES_TARGET_POINTS,
@@ -808,6 +794,25 @@ function deriveTodoGamesValues(input: {
     seasonBaseline: resolvedBaseline,
     cycleKey: activeCycleKey,
   };
+}
+
+/** Purpose: derive latest-season points with champion/baseline math and stable existing-points fallback during reward collection. */
+function resolveGamesCyclePoints(input: {
+  championTotal: number | null;
+  seasonBaseline: number | null;
+  existingPoints: number | null;
+}): number {
+  if (input.championTotal !== null && input.seasonBaseline !== null) {
+    return clampInt(
+      input.championTotal - input.seasonBaseline,
+      0,
+      TODO_GAMES_POINTS_MAX,
+    );
+  }
+  if (input.existingPoints !== null) {
+    return clampInt(input.existingPoints, 0, TODO_GAMES_POINTS_MAX);
+  }
+  return 0;
 }
 
 /** Purpose: execute write operations in bounded chunks with parallel writes per chunk. */
@@ -1256,16 +1261,78 @@ function resolveRaidWeekendWindow(nowMs: number): TodoWindow {
   };
 }
 
-/** Purpose: compute current or next monthly clan-games window in UTC. */
-function resolveClanGamesWindow(nowMs: number): TodoWindow {
+/** Purpose: build one UTC-safe Clan Games cycle boundary set for a specific calendar month. */
+function buildClanGamesCycleBoundary(
+  year: number,
+  month: number,
+): {
+  startMs: number;
+  earningEndsMs: number;
+  rewardCollectionEndsMs: number;
+} {
+  return {
+    startMs: Date.UTC(year, month, 22, 8, 0, 0, 0),
+    earningEndsMs: Date.UTC(year, month, 28, 8, 0, 0, 0),
+    rewardCollectionEndsMs: Date.UTC(year, month + 1, 1, 8, 0, 0, 0),
+  };
+}
+
+/** Purpose: compute current Clan Games earning/reward phase with exact reward-collection cutoff in UTC. */
+function resolveClanGamesWindow(nowMs: number): TodoClanGamesWindow {
   const now = new Date(nowMs);
   const year = now.getUTCFullYear();
   const month = now.getUTCMonth();
-  const currentStart = Date.UTC(year, month, 22, 8, 0, 0, 0);
-  const currentEnd = Date.UTC(year, month, 28, 8, 0, 0, 0);
+  const current = buildClanGamesCycleBoundary(year, month);
 
-  if (nowMs >= currentStart && nowMs < currentEnd) {
-    return { active: true, startMs: currentStart, endMs: currentEnd };
+  if (nowMs >= current.startMs && nowMs < current.earningEndsMs) {
+    return {
+      active: true,
+      rewardCollectionActive: false,
+      startMs: current.startMs,
+      endMs: current.earningEndsMs,
+      rewardCollectionEndsMs: current.rewardCollectionEndsMs,
+    };
   }
-  return { active: false, startMs: currentStart, endMs: currentEnd };
+
+  if (nowMs >= current.earningEndsMs && nowMs < current.rewardCollectionEndsMs) {
+    return {
+      active: false,
+      rewardCollectionActive: true,
+      startMs: current.startMs,
+      endMs: current.earningEndsMs,
+      rewardCollectionEndsMs: current.rewardCollectionEndsMs,
+    };
+  }
+
+  if (nowMs < current.startMs) {
+    const previous = buildClanGamesCycleBoundary(year, month - 1);
+    if (
+      nowMs >= previous.earningEndsMs &&
+      nowMs < previous.rewardCollectionEndsMs
+    ) {
+      return {
+        active: false,
+        rewardCollectionActive: true,
+        startMs: previous.startMs,
+        endMs: previous.earningEndsMs,
+        rewardCollectionEndsMs: previous.rewardCollectionEndsMs,
+      };
+    }
+    return {
+      active: false,
+      rewardCollectionActive: false,
+      startMs: current.startMs,
+      endMs: current.earningEndsMs,
+      rewardCollectionEndsMs: current.rewardCollectionEndsMs,
+    };
+  }
+
+  const next = buildClanGamesCycleBoundary(year, month + 1);
+  return {
+    active: false,
+    rewardCollectionActive: false,
+    startMs: next.startMs,
+    endMs: next.earningEndsMs,
+    rewardCollectionEndsMs: next.rewardCollectionEndsMs,
+  };
 }

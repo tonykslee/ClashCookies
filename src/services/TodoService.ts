@@ -25,7 +25,6 @@ export type TodoPagesResult = {
 
 type TodoRenderRow = {
   playerTag: string;
-  linkedName: string | null;
   playerName: string;
   defaultIndex: number;
   townHall: number | null;
@@ -361,7 +360,6 @@ export async function buildTodoPagesForUser(input: {
     });
     return {
       playerTag: normalizedTag,
-      linkedName: sanitizeStatusText(link.linkedName) || null,
       playerName: resolvedPlayerName,
       defaultIndex: index,
       townHall: resolvedTownHall,
@@ -560,30 +558,41 @@ function buildGamesPageDescription(
   const hasActive = rows.some((row) =>
     isTodoGamesSessionActive(row.snapshot, nowMs),
   );
-  if (!hasActive) {
-    const offCycleLines = buildGamesOffCycleLines(rows, nowMs);
+  if (hasActive) {
+    const lines: string[] = [];
+    const sharedEndsAt = getSharedEndsAt(rows, "games", nowMs);
+    if (sharedEndsAt) {
+      lines.push(`**Time remaining:** ${formatRelativeTimestamp(sharedEndsAt)}`);
+      lines.push("");
+    }
+    const sortedRows = sortGamesRows(rows);
+    for (const row of sortedRows) {
+      lines.push(
+        formatGamesTodoRow(row, getGamesRowStatus(row), getGamesProgressEmoji(row)),
+      );
+    }
+
     return buildTodoPageDescription({
       heading: "GAMES",
       linkedPlayerCount,
-      lines: offCycleLines,
+      lines,
     });
   }
 
-  const lines: string[] = [];
-  const sharedEndsAt = getSharedEndsAt(rows, "games", nowMs);
-  if (sharedEndsAt) {
-    lines.push(`**Time remaining:** ${formatRelativeTimestamp(sharedEndsAt)}`);
-    lines.push("");
-  }
-  const sortedRows = sortGamesRows(rows);
-  for (const row of sortedRows) {
-    lines.push(formatGamesTodoRow(row, getGamesRowStatus(row), getGamesProgressEmoji(row)));
+  const rewardCollectionEndsAt = resolveGamesRewardCollectionEndsAt(rows, nowMs);
+  if (rewardCollectionEndsAt) {
+    return buildTodoPageDescription({
+      heading: "GAMES",
+      linkedPlayerCount,
+      lines: buildGamesRewardCollectionLines(rows, rewardCollectionEndsAt),
+    });
   }
 
+  const offCycleLines = buildGamesOffCycleLines(rows);
   return buildTodoPageDescription({
     heading: "GAMES",
     linkedPlayerCount,
-    lines,
+    lines: offCycleLines,
   });
 }
 
@@ -1117,46 +1126,142 @@ function getGamesProgressEmoji(row: TodoRenderRow): string {
   return "🟡";
 }
 
-/** Purpose: render one off-cycle Games section with season participants and lifetime totals for linked accounts. */
-function buildGamesOffCycleLines(rows: TodoRenderRow[], nowMs: number): string[] {
-  const sortedRows = sortGamesOffCycleRows(rows);
-  const cycleKey = resolveClanGamesDisplayCycleKey(nowMs);
-  const participants = sortedRows.filter((entry) =>
-    didParticipateInCurrentGamesCycle(entry.row.snapshot, cycleKey),
+/** Purpose: build one reward-collection Games view with latest finished season results and reward-end timing context. */
+function buildGamesRewardCollectionLines(
+  rows: TodoRenderRow[],
+  rewardCollectionEndsAt: Date,
+): string[] {
+  const lines: string[] = [
+    "Clan Games point earning has ended. Showing latest Clan Games results during reward collection.",
+    `**Reward collection time remaining:** ${formatRelativeTimestamp(rewardCollectionEndsAt)}`,
+    "",
+  ];
+  for (const row of sortGamesLatestResultsRows(rows)) {
+    lines.push(
+      formatGamesTodoRow(
+        row,
+        getGamesRewardCollectionRowStatus(row),
+        getGamesRewardCollectionProgressEmoji(row),
+      ),
+    );
+  }
+  return lines;
+}
+
+/** Purpose: resolve one reward-collection deadline from dominant snapshot cycle key and guard against post-cutoff stale rows. */
+function resolveGamesRewardCollectionEndsAt(
+  rows: TodoRenderRow[],
+  nowMs: number,
+): Date | null {
+  const cycleKeys = rows
+    .filter(
+      (row) =>
+        toFiniteIntOrNull(row.snapshot?.gamesPoints) !== null &&
+        toFiniteIntOrNull(row.snapshot?.gamesTarget) !== null,
+    )
+    .map((row) => String(row.snapshot?.gamesCycleKey ?? "").trim())
+    .filter((value) => value.length > 0);
+  if (cycleKeys.length <= 0) return null;
+
+  const countsByCycleKey = new Map<string, number>();
+  for (const key of cycleKeys) {
+    countsByCycleKey.set(key, (countsByCycleKey.get(key) ?? 0) + 1);
+  }
+  const dominantCycleKey = [...countsByCycleKey.entries()]
+    .sort((a, b) => b[1] - a[1])[0]?.[0];
+  if (!dominantCycleKey) return null;
+
+  const cycleStartMs = Number(dominantCycleKey);
+  if (!Number.isFinite(cycleStartMs)) return null;
+  const cycleStart = new Date(cycleStartMs);
+  const earningEndsAt = new Date(
+    Date.UTC(
+      cycleStart.getUTCFullYear(),
+      cycleStart.getUTCMonth(),
+      28,
+      8,
+      0,
+      0,
+      0,
+    ),
   );
+  const rewardCollectionEndsAt = new Date(
+    Date.UTC(
+      cycleStart.getUTCFullYear(),
+      cycleStart.getUTCMonth() + 1,
+      1,
+      8,
+      0,
+      0,
+      0,
+    ),
+  );
+  if (nowMs < earningEndsAt.getTime()) return null;
+  if (rewardCollectionEndsAt.getTime() <= nowMs) return null;
+  return rewardCollectionEndsAt;
+}
+
+/** Purpose: sort latest-results rows by final season points desc with stable identity tie-breakers. */
+function sortGamesLatestResultsRows(rows: TodoRenderRow[]): TodoRenderRow[] {
+  return rows
+    .map((row, index) => ({ row, index }))
+    .sort((a, b) => {
+      const aPoints = Math.max(0, toFiniteIntOrNull(a.row.snapshot?.gamesPoints) ?? 0);
+      const bPoints = Math.max(0, toFiniteIntOrNull(b.row.snapshot?.gamesPoints) ?? 0);
+      if (aPoints !== bPoints) return bPoints - aPoints;
+
+      const byName = sanitizeStatusText(a.row.playerName).localeCompare(
+        sanitizeStatusText(b.row.playerName),
+        undefined,
+        { sensitivity: "base" },
+      );
+      if (byName !== 0) return byName;
+      const byTag = a.row.playerTag.localeCompare(b.row.playerTag);
+      if (byTag !== 0) return byTag;
+      return a.index - b.index;
+    })
+    .map((entry) => entry.row);
+}
+
+/** Purpose: render reward-collection row status with explicit non-participant labeling for zero-point accounts. */
+function getGamesRewardCollectionRowStatus(row: TodoRenderRow): string {
+  const points = Math.max(0, toFiniteIntOrNull(row.snapshot?.gamesPoints) ?? 0);
+  const target =
+    toFiniteIntOrNull(row.snapshot?.gamesTarget) ?? TODO_DEFAULT_GAMES_TARGET;
+  if (points <= 0) {
+    return `latest clan games points: ${points}/${target} - non-participant`;
+  }
+  return `latest clan games points: ${points}/${target}`;
+}
+
+/** Purpose: map final latest-season points to reward-collection row progress emojis. */
+function getGamesRewardCollectionProgressEmoji(row: TodoRenderRow): string {
+  const points = Math.max(0, toFiniteIntOrNull(row.snapshot?.gamesPoints) ?? 0);
+  if (points <= 0) return "";
+  if (points >= TODO_GAMES_MAX_POINTS) return "🏆";
+  if (points >= TODO_GAMES_COMPLETE_POINTS) return "✅";
+  return "🟡";
+}
+
+/** Purpose: build one off-cycle Games view with linked-account lifetime totals only. */
+function buildGamesOffCycleLines(rows: TodoRenderRow[]): string[] {
+  const sortedRows = sortGamesOffCycleRows(rows);
   const lines: string[] = [
     "Clan Games is not active. Showing lifetime Clan Games totals.",
     "",
-    "**This season participants (linked accounts):**",
   ];
-  if (participants.length <= 0) {
-    lines.push("None");
-  } else {
-    for (const entry of participants) {
-      lines.push(buildGamesOffCycleRowText(entry.row, entry.lifetimePoints));
-    }
-  }
-  lines.push("");
-  lines.push("**Linked accounts by lifetime Clan Games points:**");
   for (const entry of sortedRows) {
     lines.push(buildGamesOffCycleRowText(entry.row, entry.lifetimePoints));
   }
   return lines;
 }
 
-/** Purpose: build one off-cycle Games row using linked-first display-name fallback and comma-separated lifetime points. */
+/** Purpose: build one off-cycle Games row from resolved player identity and comma-formatted lifetime total. */
 function buildGamesOffCycleRowText(row: TodoRenderRow, lifetimePoints: number): string {
-  const displayName = resolveGamesOffCycleDisplayName(row);
-  return `${displayName} \`${row.playerTag}\` — ${formatLifetimePoints(lifetimePoints)}`;
+  return `${row.playerName} \`${row.playerTag}\` — ${formatLifetimePoints(lifetimePoints)}`;
 }
 
-/** Purpose: resolve off-cycle display names with PlayerLink name precedence, then existing snapshot fallback behavior. */
-function resolveGamesOffCycleDisplayName(row: TodoRenderRow): string {
-  if (row.linkedName) return row.linkedName;
-  return row.playerName;
-}
-
-/** Purpose: sort off-cycle Games rows by lifetime total desc then stable identity ties for deterministic output. */
+/** Purpose: sort off-cycle Games rows by lifetime total desc with stable identity tie-breakers. */
 function sortGamesOffCycleRows(
   rows: TodoRenderRow[],
 ): Array<{ row: TodoRenderRow; lifetimePoints: number }> {
@@ -1168,15 +1273,16 @@ function sortGamesOffCycleRows(
         0,
         toFiniteIntOrNull(row.snapshot?.gamesChampionTotal) ?? 0,
       ),
-      displayName: resolveGamesOffCycleDisplayName(row),
     }))
     .sort((a, b) => {
       if (a.lifetimePoints !== b.lifetimePoints) {
         return b.lifetimePoints - a.lifetimePoints;
       }
-      const byName = a.displayName.localeCompare(b.displayName, undefined, {
-        sensitivity: "base",
-      });
+      const byName = sanitizeStatusText(a.row.playerName).localeCompare(
+        sanitizeStatusText(b.row.playerName),
+        undefined,
+        { sensitivity: "base" },
+      );
       if (byName !== 0) return byName;
       const byTag = a.row.playerTag.localeCompare(b.row.playerTag);
       if (byTag !== 0) return byTag;
@@ -1189,30 +1295,6 @@ function sortGamesOffCycleRows(
 function formatLifetimePoints(input: number): string {
   const normalized = Math.max(0, Math.trunc(Number(input) || 0));
   return new Intl.NumberFormat(TODO_LOCALE).format(normalized);
-}
-
-/** Purpose: derive the Clan Games cycle key used for this-month off-cycle participant detection. */
-function resolveClanGamesDisplayCycleKey(nowMs: number): string {
-  const now = new Date(nowMs);
-  return String(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 22, 8, 0, 0, 0));
-}
-
-/** Purpose: identify whether one snapshot recorded positive points in the currently displayed Clan Games cycle. */
-function didParticipateInCurrentGamesCycle(
-  snapshot: TodoSnapshotRecord | null,
-  cycleKey: string,
-): boolean {
-  if (!snapshot) return false;
-  if (String(snapshot.gamesCycleKey ?? "") !== cycleKey) return false;
-
-  const championTotal = toFiniteIntOrNull(snapshot.gamesChampionTotal);
-  const baseline = toFiniteIntOrNull(snapshot.gamesSeasonBaseline);
-  if (championTotal !== null && baseline !== null) {
-    return championTotal > baseline;
-  }
-
-  const points = toFiniteIntOrNull(snapshot.gamesPoints);
-  return points !== null && points > 0;
 }
 
 /** Purpose: define when Clan Games is actively earning points for `/todo` render and staleness semantics. */
