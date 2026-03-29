@@ -12,6 +12,7 @@ model PlayerActivity {
   tag     String
   name    String
   clanTag String
+  clanName String?
 
   lastDonationAt DateTime?
   lastCapitalAt  DateTime?
