@@ -71,7 +71,7 @@ describe("/accounts command", () => {
       },
     ]);
     prismaMock.playerActivity.findMany.mockResolvedValue([
-      { tag: "#PYLQ0289", name: "Activity Alpha", clanTag: "#PQL0289" },
+      { tag: "#PYLQ0289", name: "Activity Alpha", clanTag: "#PQL0289", clanName: "Stored Clan" },
     ]);
     const cocService = {
       getPlayerRaw: vi.fn(),
@@ -156,5 +156,52 @@ describe("/accounts command", () => {
 
     expect(getEmbedDescription(interaction)).toContain("- #LQ9P8R2 `#LQ9P8R2`");
     expect(prismaMock.playerLink.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("uses PlayerActivity clan name in output without live fetch when local clan context is complete", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        playerName: "Linked Delta",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.playerActivity.findMany.mockResolvedValue([
+      { tag: "#PYLQ0289", name: "Activity Delta", clanTag: "#PQL0289", clanName: "Saved Clan Name" },
+    ]);
+    const cocService = {
+      getPlayerRaw: vi.fn(),
+    };
+    const interaction = makeInteraction();
+
+    await Accounts.run({} as any, interaction as any, cocService as any);
+
+    expect(cocService.getPlayerRaw).not.toHaveBeenCalled();
+    expect(getEmbedDescription(interaction)).toContain("**Saved Clan Name (#PQL0289)**");
+  });
+
+  it("treats clanTag-only local context as incomplete, live-fetches, then falls back to tracked clan name", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#QGRJ2222",
+        playerName: "Linked Echo",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.playerActivity.findMany.mockResolvedValue([
+      { tag: "#QGRJ2222", name: "Activity Echo", clanTag: "#2QG2C08UP", clanName: null },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#2QG2C08UP", name: "Tracked Clan Name" },
+    ]);
+    const cocService = {
+      getPlayerRaw: vi.fn().mockRejectedValue(new Error("coc unavailable")),
+    };
+    const interaction = makeInteraction();
+
+    await Accounts.run({} as any, interaction as any, cocService as any);
+
+    expect(cocService.getPlayerRaw).toHaveBeenCalledWith("#QGRJ2222");
+    expect(getEmbedDescription(interaction)).toContain("**Tracked Clan Name (#2QG2C08UP)**");
   });
 });
