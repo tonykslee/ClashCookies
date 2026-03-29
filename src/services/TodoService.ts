@@ -25,6 +25,7 @@ export type TodoPagesResult = {
 
 type TodoRenderRow = {
   playerTag: string;
+  linkedName: string | null;
   playerName: string;
   defaultIndex: number;
   townHall: number | null;
@@ -106,6 +107,7 @@ const TODO_STALE_IDLE_MS = 4 * 60 * 60 * 1000;
 const TODO_DEFAULT_GAMES_TARGET = 4000;
 const TODO_GAMES_COMPLETE_POINTS = 4000;
 const TODO_GAMES_MAX_POINTS = 10_000;
+const TODO_LOCALE = "en-US";
 const todoRenderCacheByKey = new Map<string, CachedTodoRender>();
 
 /** Purpose: normalize `/todo type` input into one safe enum value. */
@@ -359,6 +361,7 @@ export async function buildTodoPagesForUser(input: {
     });
     return {
       playerTag: normalizedTag,
+      linkedName: sanitizeStatusText(link.linkedName) || null,
       playerName: resolvedPlayerName,
       defaultIndex: index,
       townHall: resolvedTownHall,
@@ -380,10 +383,14 @@ export async function buildTodoPagesForUser(input: {
   const missingOrStaleTags = renderRows
     .filter((row) => row.missingSnapshot || row.staleSnapshot)
     .map((row) => row.playerTag);
-  if (missingOrStaleTags.length > 0) {
+  const gamesBackfillTags = renderRows
+    .filter((row) => needsGamesLifetimeBackfill(row, nowMs))
+    .map((row) => row.playerTag);
+  const refreshTags = [...new Set([...missingOrStaleTags, ...gamesBackfillTags])];
+  if (refreshTags.length > 0) {
     void todoSnapshotService
       .refreshSnapshotsForPlayerTags({
-        playerTags: missingOrStaleTags,
+        playerTags: refreshTags,
       })
       .catch(() => undefined);
   }
@@ -394,7 +401,7 @@ export async function buildTodoPagesForUser(input: {
       WAR: buildWarPageDescription(renderRows, linkedTags.length),
       CWL: buildCwlPageDescription(renderRows, linkedTags.length),
       RAIDS: buildRaidsPageDescription(renderRows, linkedTags.length),
-      GAMES: buildGamesPageDescription(renderRows, linkedTags.length),
+      GAMES: buildGamesPageDescription(renderRows, linkedTags.length, nowMs),
     },
   } satisfies TodoPagesResult;
 
@@ -434,7 +441,9 @@ function isSnapshotStale(snapshot: TodoSnapshotRecord, nowMs: number): boolean {
   if (snapshot.warActive) return ageMs > TODO_STALE_ACTIVE_WAR_MS;
   if (snapshot.cwlActive) return ageMs > TODO_STALE_ACTIVE_CWL_MS;
   if (snapshot.raidActive) return ageMs > TODO_STALE_ACTIVE_RAID_MS;
-  if (snapshot.gamesActive) return ageMs > TODO_STALE_ACTIVE_GAMES_MS;
+  if (isTodoGamesSessionActive(snapshot, nowMs)) {
+    return ageMs > TODO_STALE_ACTIVE_GAMES_MS;
+  }
   return ageMs > TODO_STALE_IDLE_MS;
 }
 
@@ -546,18 +555,22 @@ function buildRaidsPageDescription(
 function buildGamesPageDescription(
   rows: TodoRenderRow[],
   linkedPlayerCount: number,
+  nowMs: number,
 ): string {
-  const hasActive = rows.some((row) => Boolean(row.snapshot?.gamesActive));
+  const hasActive = rows.some((row) =>
+    isTodoGamesSessionActive(row.snapshot, nowMs),
+  );
   if (!hasActive) {
+    const offCycleLines = buildGamesOffCycleLines(rows, nowMs);
     return buildTodoPageDescription({
       heading: "GAMES",
       linkedPlayerCount,
-      lines: ["Clan Games is not active"],
+      lines: offCycleLines,
     });
   }
 
   const lines: string[] = [];
-  const sharedEndsAt = getSharedEndsAt(rows, "games");
+  const sharedEndsAt = getSharedEndsAt(rows, "games", nowMs);
   if (sharedEndsAt) {
     lines.push(`**Time remaining:** ${formatRelativeTimestamp(sharedEndsAt)}`);
     lines.push("");
@@ -660,14 +673,18 @@ function buildGroupClanIdentity(group: {
 }
 
 /** Purpose: find one shared end timestamp for active raid/games contexts to show at page top. */
-function getSharedEndsAt(rows: TodoRenderRow[], mode: "raid" | "games"): Date | null {
+function getSharedEndsAt(
+  rows: TodoRenderRow[],
+  mode: "raid" | "games",
+  nowMs = Date.now(),
+): Date | null {
   const candidates = rows
     .map((row) => {
       if (!row.snapshot) return null;
       if (mode === "raid" && row.snapshot.raidActive) {
         return row.snapshot.raidEndsAt ?? null;
       }
-      if (mode === "games" && row.snapshot.gamesActive) {
+      if (mode === "games" && isTodoGamesSessionActive(row.snapshot, nowMs)) {
         return row.snapshot.gamesEndsAt ?? null;
       }
       return null;
@@ -1098,6 +1115,125 @@ function getGamesProgressEmoji(row: TodoRenderRow): string {
   if (points >= TODO_GAMES_MAX_POINTS) return "🏆";
   if (points >= TODO_GAMES_COMPLETE_POINTS) return "✅";
   return "🟡";
+}
+
+/** Purpose: render one off-cycle Games section with season participants and lifetime totals for linked accounts. */
+function buildGamesOffCycleLines(rows: TodoRenderRow[], nowMs: number): string[] {
+  const sortedRows = sortGamesOffCycleRows(rows);
+  const cycleKey = resolveClanGamesDisplayCycleKey(nowMs);
+  const participants = sortedRows.filter((entry) =>
+    didParticipateInCurrentGamesCycle(entry.row.snapshot, cycleKey),
+  );
+  const lines: string[] = [
+    "Clan Games is not active. Showing lifetime Clan Games totals.",
+    "",
+    "**This season participants (linked accounts):**",
+  ];
+  if (participants.length <= 0) {
+    lines.push("None");
+  } else {
+    for (const entry of participants) {
+      lines.push(buildGamesOffCycleRowText(entry.row, entry.lifetimePoints));
+    }
+  }
+  lines.push("");
+  lines.push("**Linked accounts by lifetime Clan Games points:**");
+  for (const entry of sortedRows) {
+    lines.push(buildGamesOffCycleRowText(entry.row, entry.lifetimePoints));
+  }
+  return lines;
+}
+
+/** Purpose: build one off-cycle Games row using linked-first display-name fallback and comma-separated lifetime points. */
+function buildGamesOffCycleRowText(row: TodoRenderRow, lifetimePoints: number): string {
+  const displayName = resolveGamesOffCycleDisplayName(row);
+  return `${displayName} \`${row.playerTag}\` — ${formatLifetimePoints(lifetimePoints)}`;
+}
+
+/** Purpose: resolve off-cycle display names with PlayerLink name precedence, then existing snapshot fallback behavior. */
+function resolveGamesOffCycleDisplayName(row: TodoRenderRow): string {
+  if (row.linkedName) return row.linkedName;
+  return row.playerName;
+}
+
+/** Purpose: sort off-cycle Games rows by lifetime total desc then stable identity ties for deterministic output. */
+function sortGamesOffCycleRows(
+  rows: TodoRenderRow[],
+): Array<{ row: TodoRenderRow; lifetimePoints: number }> {
+  return rows
+    .map((row, index) => ({
+      row,
+      index,
+      lifetimePoints: Math.max(
+        0,
+        toFiniteIntOrNull(row.snapshot?.gamesChampionTotal) ?? 0,
+      ),
+      displayName: resolveGamesOffCycleDisplayName(row),
+    }))
+    .sort((a, b) => {
+      if (a.lifetimePoints !== b.lifetimePoints) {
+        return b.lifetimePoints - a.lifetimePoints;
+      }
+      const byName = a.displayName.localeCompare(b.displayName, undefined, {
+        sensitivity: "base",
+      });
+      if (byName !== 0) return byName;
+      const byTag = a.row.playerTag.localeCompare(b.row.playerTag);
+      if (byTag !== 0) return byTag;
+      return a.index - b.index;
+    })
+    .map(({ row, lifetimePoints }) => ({ row, lifetimePoints }));
+}
+
+/** Purpose: map lifetime totals to locale-aware comma-separated labels for off-cycle Games rows. */
+function formatLifetimePoints(input: number): string {
+  const normalized = Math.max(0, Math.trunc(Number(input) || 0));
+  return new Intl.NumberFormat(TODO_LOCALE).format(normalized);
+}
+
+/** Purpose: derive the Clan Games cycle key used for this-month off-cycle participant detection. */
+function resolveClanGamesDisplayCycleKey(nowMs: number): string {
+  const now = new Date(nowMs);
+  return String(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 22, 8, 0, 0, 0));
+}
+
+/** Purpose: identify whether one snapshot recorded positive points in the currently displayed Clan Games cycle. */
+function didParticipateInCurrentGamesCycle(
+  snapshot: TodoSnapshotRecord | null,
+  cycleKey: string,
+): boolean {
+  if (!snapshot) return false;
+  if (String(snapshot.gamesCycleKey ?? "") !== cycleKey) return false;
+
+  const championTotal = toFiniteIntOrNull(snapshot.gamesChampionTotal);
+  const baseline = toFiniteIntOrNull(snapshot.gamesSeasonBaseline);
+  if (championTotal !== null && baseline !== null) {
+    return championTotal > baseline;
+  }
+
+  const points = toFiniteIntOrNull(snapshot.gamesPoints);
+  return points !== null && points > 0;
+}
+
+/** Purpose: define when Clan Games is actively earning points for `/todo` render and staleness semantics. */
+function isTodoGamesSessionActive(
+  snapshot: TodoSnapshotRecord | null | undefined,
+  nowMs: number,
+): boolean {
+  if (!snapshot?.gamesActive) return false;
+  const endsAtMs = snapshot.gamesEndsAt?.getTime();
+  if (!Number.isFinite(endsAtMs)) return false;
+  return Number(endsAtMs) > nowMs;
+}
+
+/** Purpose: opportunistically refresh snapshots missing off-cycle lifetime totals so `gamesChampionTotal`/baseline can backfill. */
+function needsGamesLifetimeBackfill(row: TodoRenderRow, nowMs: number): boolean {
+  const snapshot = row.snapshot;
+  if (!snapshot) return false;
+  if (isTodoGamesSessionActive(snapshot, nowMs)) return false;
+  const championTotal = toFiniteIntOrNull(snapshot.gamesChampionTotal);
+  const seasonBaseline = toFiniteIntOrNull(snapshot.gamesSeasonBaseline);
+  return championTotal === null || seasonBaseline === null;
 }
 
 /** Purpose: format one date as a Discord relative timestamp token. */
