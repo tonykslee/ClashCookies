@@ -944,4 +944,57 @@ describe("TodoSnapshotService", () => {
     );
     expect(prismaMock.botSetting.upsert).not.toHaveBeenCalled();
   });
+
+  it("keeps ended-cycle key and baseline during post-games off-cycle in the same month", async () => {
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      buildSnapshotRow({
+        gamesActive: true,
+        gamesPoints: 1300,
+        gamesTarget: 4000,
+        gamesChampionTotal: 14999,
+        gamesSeasonBaseline: 14000,
+        gamesCycleKey: "1774166400000",
+        gamesEndsAt: new Date("2026-03-28T08:00:00.000Z"),
+        lastUpdatedAt: new Date("2026-03-28T08:05:00.000Z"),
+        updatedAt: new Date("2026-03-28T08:05:00.000Z"),
+      }),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        clanTag: "#PQL0289",
+        playerName: "Alpha",
+        sourceSyncedAt: new Date("2026-03-29T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.currentWar.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+    prismaMock.botSetting.findMany.mockResolvedValue([
+      {
+        key: "player_signal_state:#PYLQ0289",
+        value: JSON.stringify({ counters: { gamesChampion: 15000 } }),
+      },
+    ]);
+
+    await todoSnapshotService.refreshSnapshotsForPlayerTags({
+      playerTags: ["#PYLQ0289"],
+      nowMs: Date.UTC(2026, 2, 29, 12, 0, 0, 0),
+    });
+
+    expect(prismaMock.todoPlayerSnapshot.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          gamesActive: false,
+          gamesPoints: null,
+          gamesTarget: null,
+          gamesChampionTotal: 15000,
+          gamesSeasonBaseline: 14000,
+          gamesCycleKey: "1774166400000",
+          gamesEndsAt: new Date("2026-03-28T08:00:00.000Z"),
+        }),
+      }),
+    );
+  });
 });

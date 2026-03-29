@@ -127,6 +127,8 @@ function makeSnapshotRow(input: {
   gamesPoints?: number | null;
   gamesTarget?: number | null;
   gamesChampionTotal?: number | null;
+  gamesSeasonBaseline?: number | null;
+  gamesCycleKey?: string | null;
   gamesEndsAt?: Date | null;
   lastUpdatedAt?: Date;
   updatedAt?: Date;
@@ -154,11 +156,13 @@ function makeSnapshotRow(input: {
     raidAttacksMax: input.raidAttacksMax ?? 6,
     raidEndsAt: input.raidEndsAt ?? new Date("2026-03-29T07:00:00.000Z"),
     gamesActive: input.gamesActive ?? true,
-    gamesPoints: input.gamesPoints ?? 1200,
-    gamesTarget: input.gamesTarget ?? 4000,
-    gamesChampionTotal: input.gamesChampionTotal ?? 1200,
-    gamesSeasonBaseline: 0,
-    gamesCycleKey: "cycle-2026-03",
+    gamesPoints: input.gamesPoints === undefined ? 1200 : input.gamesPoints,
+    gamesTarget: input.gamesTarget === undefined ? 4000 : input.gamesTarget,
+    gamesChampionTotal:
+      input.gamesChampionTotal === undefined ? 1200 : input.gamesChampionTotal,
+    gamesSeasonBaseline:
+      input.gamesSeasonBaseline === undefined ? 0 : input.gamesSeasonBaseline,
+    gamesCycleKey: input.gamesCycleKey === undefined ? "cycle-2026-03" : input.gamesCycleKey,
     gamesEndsAt: input.gamesEndsAt ?? new Date("2026-03-28T08:00:00.000Z"),
     lastUpdatedAt: input.lastUpdatedAt ?? now,
     updatedAt: input.updatedAt ?? now,
@@ -1434,7 +1438,7 @@ describe("/todo command", () => {
     expect(getReplyDescription(interaction)).toContain("No raids active");
   });
 
-  it("shows explicit inactive GAMES page message when clan games is not active", async () => {
+  it("shows off-cycle GAMES view when clan games is not active", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([
       { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },
     ]);
@@ -1447,12 +1451,21 @@ describe("/todo command", () => {
         playerTag: "#PYLQ0289",
         playerName: "Alpha",
         gamesActive: false,
+        gamesChampionTotal: 1200,
+        gamesSeasonBaseline: 1200,
+        gamesCycleKey: "1774166400000",
       }),
     ]);
 
     const interaction = makeTodoInteraction({ type: "GAMES" });
     await Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
-    expect(getReplyDescription(interaction)).toContain("Clan Games is not active");
+    const description = getReplyDescription(interaction);
+    expect(description).toContain(
+      "Clan Games is not active. Showing lifetime Clan Games totals.",
+    );
+    expect(description).toContain("**This season participants (linked accounts):**");
+    expect(description).toContain("**Linked accounts by lifetime Clan Games points:**");
+    expect(description).toContain("Alpha `#PYLQ0289` — 1,200");
   });
 
   it("renders RAIDS markers for complete, active-incomplete, and not-started rows", async () => {
@@ -1792,6 +1805,140 @@ describe("/todo command", () => {
     expect(description).not.toContain(
       "- :black_circle: Bravo #QGRJ2222 - clan games points: 0/4000 - not active",
     );
+  });
+
+  it("renders off-cycle participants first and lifetime ranking for all linked accounts", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        playerName: "Linked Alpha",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+      {
+        playerTag: "#QGRJ2222",
+        createdAt: new Date("2026-03-02T00:00:00.000Z"),
+      },
+      {
+        playerTag: "#CUV9082",
+        playerName: "Linked Charlie",
+        createdAt: new Date("2026-03-03T00:00:00.000Z"),
+      },
+      {
+        playerTag: "#LQ9P8R2",
+        createdAt: new Date("2026-03-04T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
+      _count: { _all: 4 },
+      _max: { updatedAt: new Date("2026-03-26T00:00:00.000Z") },
+    });
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      makeSnapshotRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha Snapshot",
+        gamesActive: false,
+        gamesChampionTotal: 24000,
+        gamesSeasonBaseline: 21000,
+        gamesCycleKey: "1774166400000",
+      }),
+      makeSnapshotRow({
+        playerTag: "#QGRJ2222",
+        playerName: "Bravo Snapshot",
+        gamesActive: false,
+        gamesChampionTotal: 30000,
+        gamesSeasonBaseline: 30000,
+        gamesCycleKey: "1774166400000",
+      }),
+      makeSnapshotRow({
+        playerTag: "#CUV9082",
+        playerName: "Charlie Snapshot",
+        gamesActive: false,
+        gamesChampionTotal: 18000,
+        gamesSeasonBaseline: 17000,
+        gamesCycleKey: "1774166400000",
+      }),
+      makeSnapshotRow({
+        playerTag: "#LQ9P8R2",
+        playerName: "Delta Snapshot",
+        gamesActive: false,
+        gamesChampionTotal: null,
+        gamesSeasonBaseline: null,
+        gamesCycleKey: "1774166400000",
+      }),
+    ]);
+
+    const interaction = makeTodoInteraction({ type: "GAMES" });
+    await Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
+
+    const description = getReplyDescription(interaction);
+    const participantHeaderIndex = description.indexOf(
+      "**This season participants (linked accounts):**",
+    );
+    const lifetimeHeaderIndex = description.indexOf(
+      "**Linked accounts by lifetime Clan Games points:**",
+    );
+    const participantAlphaIndex = description.indexOf(
+      "Linked Alpha `#PYLQ0289` — 24,000",
+    );
+    const participantCharlieIndex = description.indexOf(
+      "Linked Charlie `#CUV9082` — 18,000",
+    );
+    const lifetimeBravoIndex = description.indexOf(
+      "Bravo Snapshot `#QGRJ2222` — 30,000",
+    );
+    const lifetimeAlphaIndex = description.indexOf(
+      "Linked Alpha `#PYLQ0289` — 24,000",
+      lifetimeHeaderIndex,
+    );
+    const lifetimeCharlieIndex = description.indexOf(
+      "Linked Charlie `#CUV9082` — 18,000",
+      lifetimeHeaderIndex,
+    );
+    const lifetimeDeltaIndex = description.indexOf("`#LQ9P8R2`", lifetimeHeaderIndex);
+
+    expect(participantHeaderIndex).toBeGreaterThan(-1);
+    expect(lifetimeHeaderIndex).toBeGreaterThan(participantHeaderIndex);
+    expect(participantAlphaIndex).toBeGreaterThan(participantHeaderIndex);
+    expect(participantCharlieIndex).toBeGreaterThan(participantAlphaIndex);
+    expect(lifetimeBravoIndex).toBeGreaterThan(lifetimeHeaderIndex);
+    expect(lifetimeAlphaIndex).toBeGreaterThan(lifetimeBravoIndex);
+    expect(lifetimeCharlieIndex).toBeGreaterThan(lifetimeAlphaIndex);
+    expect(lifetimeDeltaIndex).toBeGreaterThan(lifetimeCharlieIndex);
+    expect(description).toContain("`#LQ9P8R2` — 0");
+  });
+
+  it("treats reward-claim period as off-cycle even when stale snapshots still mark gamesActive", async () => {
+    vi.setSystemTime(new Date("2026-03-29T12:00:00.000Z"));
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },
+    ]);
+    prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
+      _count: { _all: 1 },
+      _max: { updatedAt: new Date("2026-03-29T11:40:00.000Z") },
+    });
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      makeSnapshotRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha",
+        gamesActive: true,
+        gamesPoints: 3900,
+        gamesChampionTotal: 12345,
+        gamesSeasonBaseline: 10000,
+        gamesCycleKey: "1774166400000",
+        gamesEndsAt: new Date("2026-03-28T08:00:00.000Z"),
+        lastUpdatedAt: new Date("2026-03-29T11:40:00.000Z"),
+      }),
+    ]);
+
+    const interaction = makeTodoInteraction({ type: "GAMES" });
+    await Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
+
+    const description = getReplyDescription(interaction);
+    expect(description).toContain(
+      "Clan Games is not active. Showing lifetime Clan Games totals.",
+    );
+    expect(description).not.toContain("**Time remaining:**");
+    expect(description).not.toContain("clan games points:");
   });
 });
 

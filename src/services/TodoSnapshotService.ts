@@ -729,11 +729,34 @@ function deriveTodoGamesValues(input: {
   const activeCycleKey = normalizeGamesCycleKey(input.gamesCycleKey);
 
   if (!input.gamesWindowActive) {
+    let resolvedBaseline: number | null = championTotal;
+    if (existingCycleKey && activeCycleKey && existingCycleKey === activeCycleKey) {
+      resolvedBaseline = existingBaseline;
+      if (
+        championTotal !== null &&
+        resolvedBaseline === null &&
+        existingPoints !== null &&
+        existingPoints > 0
+      ) {
+        resolvedBaseline = Math.max(
+          0,
+          championTotal - clampInt(existingPoints, 0, TODO_GAMES_POINTS_MAX),
+        );
+      }
+      if (resolvedBaseline === null) resolvedBaseline = championTotal;
+      if (
+        championTotal !== null &&
+        resolvedBaseline !== null &&
+        championTotal < resolvedBaseline
+      ) {
+        resolvedBaseline = championTotal;
+      }
+    }
     return {
       points: null,
       target: null,
       championTotal,
-      seasonBaseline: championTotal,
+      seasonBaseline: resolvedBaseline,
       cycleKey: activeCycleKey,
     };
   }
@@ -1244,11 +1267,5 @@ function resolveClanGamesWindow(nowMs: number): TodoWindow {
   if (nowMs >= currentStart && nowMs < currentEnd) {
     return { active: true, startMs: currentStart, endMs: currentEnd };
   }
-  if (nowMs < currentStart) {
-    return { active: false, startMs: currentStart, endMs: currentEnd };
-  }
-
-  const nextStart = Date.UTC(year, month + 1, 22, 8, 0, 0, 0);
-  const nextEnd = Date.UTC(year, month + 1, 28, 8, 0, 0, 0);
-  return { active: false, startMs: nextStart, endMs: nextEnd };
+  return { active: false, startMs: currentStart, endMs: currentEnd };
 }
