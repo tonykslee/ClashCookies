@@ -12493,7 +12493,7 @@ export const Fwa: Command = {
         if (!sendResult.ok) {
           if (sendResult.error === "LOG_CHANNEL_NOT_CONFIGURED") {
             await editReplySafe(
-              `Cannot send LOG sample for ${previewBundle.clanTag}: no clan log channel is configured.`,
+              `Cannot send LOG sample for ${previewBundle.clanTag}: no tracked clan log channel or \`/bot-logs\` fallback channel is configured.`,
             );
             return;
           }

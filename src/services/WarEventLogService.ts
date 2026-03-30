@@ -2973,12 +2973,35 @@ export class WarEventLogService {
         updatedAt: new Date(),
       },
     });
-    await this.syncWarAttacksFromWarSnapshot({
+    const newAttackRowsObserved = await this.syncWarAttacksFromWarSnapshot({
       war,
       clanTag: sub.clanTag,
       resolvedWarId,
       fallbackWarStartTime: nextWarStartTime,
     });
+    if (
+      currentState === "inWar" &&
+      newAttackRowsObserved > 0 &&
+      resolvedWarId !== null &&
+      resolvedWarId !== undefined &&
+      Number.isFinite(Number(resolvedWarId)) &&
+      Math.trunc(Number(resolvedWarId)) > 0
+    ) {
+      const policeWarId = Math.trunc(Number(resolvedWarId));
+      await this.fwaPolice
+        .enforceWarViolations({
+          client: this.client,
+          guildId: sub.guildId,
+          clanTag: sub.clanTag,
+          warId: policeWarId,
+          warCompliance: this.warCompliance,
+        })
+        .catch((err) => {
+          console.error(
+            `[fwa-police] enforce_failed guild=${sub.guildId} clan=${sub.clanTag} warId=${policeWarId} source=poll_cycle error=${formatError(err)}`,
+          );
+        });
+    }
     if (detectedEventPayload) {
       await this.dispatchDetectedEvent({
         sub,
@@ -3009,18 +3032,18 @@ export class WarEventLogService {
     clanTag: string;
     resolvedWarId: number | null;
     fallbackWarStartTime: Date | null;
-  }): Promise<void> {
+  }): Promise<number> {
     if (
       params.resolvedWarId === null ||
       params.resolvedWarId === undefined ||
       !Number.isFinite(Number(params.resolvedWarId))
     ) {
-      return;
+      return 0;
     }
     const war = params.war;
     const ownClanTag = normalizeTag(war?.clan?.tag ?? params.clanTag);
-    if (!ownClanTag) return;
-    if (!war?.clan?.tag || !war?.startTime) return;
+    if (!ownClanTag) return 0;
+    if (!war?.clan?.tag || !war?.startTime) return 0;
 
     const ownClanName =
       String(war.clan.name ?? ownClanTag).trim() || ownClanTag;
@@ -3029,7 +3052,7 @@ export class WarEventLogService {
       String(war.opponent?.name ?? opponentClanTag).trim() || opponentClanTag;
     const warStartTime =
       parseCocTime(war.startTime) ?? params.fallbackWarStartTime;
-    if (!warStartTime) return;
+    if (!warStartTime) return 0;
     const warEndTime = parseCocTime(war.endTime ?? null);
     const warState = String(war.state ?? "").trim() || null;
     const observedAt = new Date();
@@ -3086,7 +3109,30 @@ export class WarEventLogService {
       ownMembers,
       opponentMembers,
     });
+    const existingAttackRows = await prisma.warAttacks.findMany({
+      where: {
+        clanTag: ownClanTag,
+        warStartTime,
+        attackOrder: { gt: 0 },
+      },
+      select: {
+        playerTag: true,
+        attackOrder: true,
+      },
+    });
+    const existingAttackKeys = new Set(
+      existingAttackRows.map(
+        (row) => `${normalizeTag(row.playerTag)}:${Math.trunc(Number(row.attackOrder))}`,
+      ),
+    );
+    let newAttackRowsObserved = 0;
     for (const row of computedAttackRows) {
+      const attackOrder = Math.trunc(Number(row.attackOrder));
+      const attackKey = `${normalizeTag(row.playerTag)}:${attackOrder}`;
+      if (attackOrder > 0 && !existingAttackKeys.has(attackKey)) {
+        existingAttackKeys.add(attackKey);
+        newAttackRowsObserved += 1;
+      }
       await prisma.$executeRaw(
         Prisma.sql`
           INSERT INTO "WarAttacks"
@@ -3116,6 +3162,7 @@ export class WarEventLogService {
         `,
       );
     }
+    return newAttackRowsObserved;
   }
 
   private async dispatchDetectedEvent(params: {
@@ -3179,28 +3226,6 @@ export class WarEventLogService {
           });
       }
 
-      const policeWarId =
-        resolvedWarIdForDelivery !== null &&
-        resolvedWarIdForDelivery !== undefined &&
-        Number.isFinite(Number(resolvedWarIdForDelivery)) &&
-        Math.trunc(Number(resolvedWarIdForDelivery)) > 0
-          ? Math.trunc(Number(resolvedWarIdForDelivery))
-          : null;
-      if (policeWarId !== null) {
-        await this.fwaPolice
-          .enforceWarViolations({
-            client: this.client,
-            guildId: params.sub.guildId,
-            clanTag: payloadForDelivery.clanTag,
-            warId: policeWarId,
-            warCompliance: this.warCompliance,
-          })
-          .catch((err) => {
-            console.error(
-              `[fwa-police] enforce_failed guild=${params.sub.guildId} clan=${params.sub.clanTag} warId=${policeWarId} error=${formatError(err)}`,
-            );
-          });
-      }
     }
     if (!params.sub.notify || !params.sub.channelId) return;
     const reserved = await this.reserveEventDelivery({

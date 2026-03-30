@@ -68,7 +68,7 @@
 - `/fwa police set-default clan:<trackedClanTag> violation:<...> template:<text>` - Save a global default template override for one canonical violation (storage keyed by violation only).
 - `/fwa police reset clan:<trackedClanTag> violation:<...>` - Delete one clan-scoped template override.
 - `/fwa police reset-default clan:<trackedClanTag> violation:<...>` - Delete one global default template override.
-- `/fwa police send clan:<trackedClanTag> show:<DM|LOG> violation:<...>` - Send one rendered sample template through the shared police renderer to DM or clan log channel (`LOG` fails clearly when log channel is not configured).
+- `/fwa police send clan:<trackedClanTag> show:<DM|LOG> violation:<...>` - Send one rendered sample template through the shared police renderer to DM or police log channel (`TrackedClan.logChannelId` first, then `/bot-logs` fallback; `LOG` fails clearly when neither is configured).
 - `/fwa weight-age [visibility:private|public] [tag:<tag>]` - Scrape `https://fwastats.com/Clan/<tag>/Weight` and report last submitted weight age for one clan or all tracked clans. Uses `FWASTATS_WEIGHT_COOKIE` when configured.
 - `/fwa weight-link [visibility:private|public] [tag:<tag>]` - Return FWA Stats weight page link(s) for one clan or all tracked clans.
 - `/fwa weight-health [visibility:private|public] [tag:<tag>]` - Show stale-weight health summary (recent/outdated/severe) using fetched weight-age data; defaults to all tracked clans and shares the same auth flow as `weight-age`.

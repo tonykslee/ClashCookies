@@ -30,6 +30,7 @@ import {
   validateFwaPoliceTemplatePlaceholders,
 } from "./FwaPoliceTemplateCatalog";
 import { emojiResolverService } from "./emoji/EmojiResolverService";
+import { BotLogChannelService } from "./BotLogChannelService";
 
 type TrackedClanPoliceRow = {
   tag: string;
@@ -38,8 +39,6 @@ type TrackedClanPoliceRow = {
   fwaPoliceDmEnabled: boolean;
   fwaPoliceLogEnabled: boolean;
   logChannelId: string | null;
-  notifyChannelId: string | null;
-  mailChannelId: string | null;
 };
 
 type WarComplianceEvaluator = Pick<
@@ -198,12 +197,7 @@ function buildViolationKey(issue: WarComplianceIssue): string {
 }
 
 function resolveClanLogChannelId(clan: TrackedClanPoliceRow): string | null {
-  return (
-    normalizeFwaPoliceText(clan.logChannelId) ||
-    normalizeFwaPoliceText(clan.notifyChannelId) ||
-    normalizeFwaPoliceText(clan.mailChannelId) ||
-    null
-  );
+  return normalizeFwaPoliceText(clan.logChannelId) || null;
 }
 
 function buildOffenderLabel(input: {
@@ -350,6 +344,51 @@ function resolveWarLine(input: {
   return `${input.matchTypeContext} ${input.emojis.white}`;
 }
 
+function formatViolationTimeRemaining(input: {
+  attackSeenAt: Date | null;
+  warEndTime: Date | null;
+}): string | null {
+  if (!(input.attackSeenAt instanceof Date)) return null;
+  if (!(input.warEndTime instanceof Date)) return null;
+  const totalMinutes = Math.max(
+    0,
+    Math.floor((input.warEndTime.getTime() - input.attackSeenAt.getTime()) / (60 * 1000)),
+  );
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${hours}h ${minutes}m left`;
+}
+
+function resolveViolationTimeFallbackLabel(raw: string | null | undefined): string | null {
+  const normalized = normalizeFwaPoliceText(raw);
+  if (!normalized) return null;
+  if (!/^\d+h \d+m left$/i.test(normalized)) return null;
+  return normalized;
+}
+
+function resolveWarClanDisplayName(input: {
+  preferredClanName: string | null | undefined;
+  fallbackClanName: string | null | undefined;
+  clanTag: string;
+}): string {
+  return (
+    normalizeFwaPoliceText(input.preferredClanName) ||
+    normalizeFwaPoliceText(input.fallbackClanName) ||
+    normalizeClanTag(input.clanTag) ||
+    String(input.clanTag ?? "").trim() ||
+    "Unknown Clan"
+  );
+}
+
+function resolveBreachAttackOrder(issue: WarComplianceIssue): number | null {
+  const attackDetails = Array.isArray(issue.attackDetails) ? issue.attackDetails : [];
+  const breachDetail = attackDetails.find((row) => Boolean(row?.isBreach)) ?? attackDetails[0] ?? null;
+  if (!breachDetail) return null;
+  if (!Number.isFinite(Number(breachDetail.attackOrder))) return null;
+  const attackOrder = Math.trunc(Number(breachDetail.attackOrder));
+  return attackOrder > 0 ? attackOrder : null;
+}
+
 function buildPoliceMessagePresentation(input: {
   violation: FwaPoliceViolation;
   resolvedTemplate: string;
@@ -357,8 +396,10 @@ function buildPoliceMessagePresentation(input: {
   user: string;
   expectedBehavior: string;
   actualBehavior: string;
+  warClanDisplayName: string;
   matchTypeContext: MatchType;
   expectedOutcome: "WIN" | "LOSE" | null;
+  violationTimeRemaining: string;
   emojis: FwaPoliceResolvedEmojiState;
 }): { renderedTemplate: string; embed: EmbedBuilder } {
   const metadata = FWA_POLICE_VIOLATION_METADATA[input.violation];
@@ -369,12 +410,13 @@ function buildPoliceMessagePresentation(input: {
   });
   const description = [
     `## ${input.emojis.alert} ${input.emojis.alertBlue} FWA Police - Warplan violation detected ${input.emojis.alertBlue} ${input.emojis.alert}`,
-    `**War**: ${resolveWarLine({
+    `**War**: ${input.warClanDisplayName} ${resolveWarLine({
       matchTypeContext: input.matchTypeContext,
       expectedOutcome: input.expectedOutcome,
       emojis: input.emojis,
     })}`,
     `**Violation**: ${metadata.label}`,
+    `**Violation Time**: ${input.violationTimeRemaining}`,
   ].join("\n");
   const embed = new EmbedBuilder()
     .setColor(0xed4245)
@@ -422,8 +464,6 @@ async function resolveTrackedClanByTag(
       fwaPoliceDmEnabled: true,
       fwaPoliceLogEnabled: true,
       logChannelId: true,
-      notifyChannelId: true,
-      mailChannelId: true,
     },
   });
 }
@@ -522,6 +562,84 @@ async function resolveWarplanContextForClan(input: {
 }
 
 export class FwaPoliceService {
+  private readonly botLogChannels: Pick<BotLogChannelService, "getChannelId">;
+
+  /** Purpose: initialize shared dependencies for police delivery behavior. */
+  constructor(botLogChannels?: Pick<BotLogChannelService, "getChannelId">) {
+    this.botLogChannels = botLogChannels ?? new BotLogChannelService();
+  }
+
+  /** Purpose: resolve police log destination via tracked clan log channel first, then guild bot-log fallback. */
+  private async resolvePoliceLogChannelId(input: {
+    guildId: string;
+    tracked: TrackedClanPoliceRow;
+  }): Promise<string | null> {
+    const trackedLogChannelId = resolveClanLogChannelId(input.tracked);
+    if (trackedLogChannelId) return trackedLogChannelId;
+    const botLogChannelId = await this.botLogChannels
+      .getChannelId(input.guildId)
+      .catch(() => null);
+    return normalizeFwaPoliceText(botLogChannelId) || null;
+  }
+
+  /** Purpose: compute a deterministic `Xh Ym left` violation-time label from violating attack timing. */
+  private async resolveViolationTimeRemaining(input: {
+    clanTag: string;
+    warId: number;
+    playerTag: string;
+    issue: WarComplianceIssue;
+    reportWarEndTime: Date | null;
+  }): Promise<string> {
+    const normalizedClanTag = normalizeClanTag(input.clanTag);
+    const normalizedPlayerTag = normalizePlayerTag(input.playerTag);
+    if (!normalizedClanTag || !normalizedPlayerTag) {
+      return (
+        resolveViolationTimeFallbackLabel(input.issue.breachContext?.timeRemaining) ||
+        "unknown left"
+      );
+    }
+    const breachAttackOrder = resolveBreachAttackOrder(input.issue);
+    const baseWhere = {
+      clanTag: normalizedClanTag,
+      warId: Math.trunc(Number(input.warId)),
+      playerTag: normalizedPlayerTag,
+    };
+    const matchingAttackRow =
+      breachAttackOrder !== null
+        ? await prisma.warAttacks.findFirst({
+            where: {
+              ...baseWhere,
+              attackOrder: breachAttackOrder,
+            },
+            select: {
+              attackSeenAt: true,
+              warEndTime: true,
+            },
+          })
+        : null;
+    const fallbackAttackRow =
+      matchingAttackRow ??
+      (await prisma.warAttacks.findFirst({
+        where: {
+          ...baseWhere,
+          attackOrder: { gt: 0 },
+        },
+        orderBy: [{ attackSeenAt: "asc" }, { attackOrder: "asc" }],
+        select: {
+          attackSeenAt: true,
+          warEndTime: true,
+        },
+      }));
+    const computed =
+      formatViolationTimeRemaining({
+        attackSeenAt: fallbackAttackRow?.attackSeenAt ?? null,
+        warEndTime: fallbackAttackRow?.warEndTime ?? input.reportWarEndTime ?? null,
+      }) ||
+      resolveViolationTimeFallbackLabel(input.issue.breachContext?.timeRemaining) ||
+      "unknown left";
+    return computed;
+  }
+
   /** Purpose: persist clan-scoped police automation toggles on the tracked-clan source of truth. */
   async setClanConfig(input: {
     clanTag: string;
@@ -705,6 +823,7 @@ export class FwaPoliceService {
   private async buildPreviewRows(input: {
     client: Client;
     clanTag: string;
+    clanName?: string | null;
     context: FwaPoliceWarplanContext;
     sampleUserId?: string | null;
   }): Promise<FwaPoliceTemplatePreviewRow[]> {
@@ -727,8 +846,14 @@ export class FwaPoliceService {
         user: input.sampleUserId ? `<@${input.sampleUserId}>` : "UNLINKED_USER",
         expectedBehavior: buildSampleExpectedBehavior(resolved.violation),
         actualBehavior: buildSampleActualBehavior(resolved.violation),
+        warClanDisplayName: resolveWarClanDisplayName({
+          preferredClanName: input.clanName ?? null,
+          fallbackClanName: null,
+          clanTag: input.clanTag,
+        }),
         matchTypeContext: input.context.matchTypeContext,
         expectedOutcome: input.context.expectedOutcome,
+        violationTimeRemaining: "23h 15m left",
         emojis,
       });
       const isApplicable = metadata.isApplicable(toApplicabilityContext(input.context));
@@ -768,6 +893,7 @@ export class FwaPoliceService {
     const rows = await this.buildPreviewRows({
       client: input.client,
       clanTag: normalizedClanTag,
+      clanName: tracked.name,
       context,
       sampleUserId: input.sampleUserId ?? null,
     });
@@ -813,8 +939,14 @@ export class FwaPoliceService {
       user: `<@${input.requestingUserId}>`,
       expectedBehavior: buildSampleExpectedBehavior(input.violation),
       actualBehavior: buildSampleActualBehavior(input.violation),
+      warClanDisplayName: resolveWarClanDisplayName({
+        preferredClanName: normalizeFwaPoliceText(tracked.name),
+        fallbackClanName: null,
+        clanTag: normalizedClanTag,
+      }),
       matchTypeContext: context.matchTypeContext,
       expectedOutcome: context.expectedOutcome,
+      violationTimeRemaining: "23h 15m left",
       emojis,
     });
 
@@ -831,11 +963,16 @@ export class FwaPoliceService {
       return { ok: true, deliveredTo: "DM", rendered: presentation.renderedTemplate };
     }
 
-    const strictLogChannelId = normalizeFwaPoliceText(tracked.logChannelId) || null;
-    if (!strictLogChannelId) {
+    const resolvedLogChannelId = await this.resolvePoliceLogChannelId({
+      guildId: input.guildId,
+      tracked,
+    });
+    if (!resolvedLogChannelId) {
       return { ok: false, error: "LOG_CHANNEL_NOT_CONFIGURED" };
     }
-    const channel = await input.client.channels.fetch(strictLogChannelId).catch(() => null);
+    const channel = await input.client.channels
+      .fetch(resolvedLogChannelId)
+      .catch(() => null);
     if (!isTextChannelWithSend(channel)) {
       return { ok: false, error: "LOG_CHANNEL_UNAVAILABLE" };
     }
@@ -903,7 +1040,12 @@ export class FwaPoliceService {
       links.map((link) => [normalizePlayerTag(link.playerTag), link.discordUserId]),
     );
 
-    const resolvedLogChannelId = enableLog ? resolveClanLogChannelId(tracked) : null;
+    const resolvedLogChannelId = enableLog
+      ? await this.resolvePoliceLogChannelId({
+          guildId: input.guildId,
+          tracked,
+        })
+      : null;
     const resolvedLogChannel =
       enableLog && resolvedLogChannelId
         ? await input.client.channels.fetch(resolvedLogChannelId).catch(() => null)
@@ -916,6 +1058,11 @@ export class FwaPoliceService {
     let logSent = 0;
 
     const effectiveWarId = report.warId ?? normalizedWarId;
+    const warClanDisplayName = resolveWarClanDisplayName({
+      preferredClanName: report.clanName,
+      fallbackClanName: tracked.name,
+      clanTag: normalizedClanTag,
+    });
     const context: FwaPoliceApplicabilityContext = {
       matchType: report.matchType,
       expectedOutcome: report.expectedOutcome,
@@ -964,6 +1111,13 @@ export class FwaPoliceService {
       created += 1;
 
       const violation = classifyFwaPoliceViolation({ issue, context });
+      const violationTimeRemaining = await this.resolveViolationTimeRemaining({
+        clanTag: normalizedClanTag,
+        warId: effectiveWarId,
+        playerTag,
+        issue,
+        reportWarEndTime: report.warEndTime ?? null,
+      });
       const templateResolution =
         templateByViolation.get(violation) ??
         (await this.resolveTemplateForViolation({
@@ -981,8 +1135,10 @@ export class FwaPoliceService {
         user: linkedDiscordUserId ? `<@${linkedDiscordUserId}>` : "UNLINKED_USER",
         expectedBehavior: issue.expectedBehavior,
         actualBehavior: issue.actualBehavior,
+        warClanDisplayName,
         matchTypeContext: report.matchType,
         expectedOutcome: report.expectedOutcome,
+        violationTimeRemaining,
         emojis,
       });
 

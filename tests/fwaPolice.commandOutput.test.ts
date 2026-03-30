@@ -213,7 +213,8 @@ describe("/fwa police command output", () => {
     await Fwa.run({} as any, run.interaction as any, {} as any);
 
     const content = String(run.editReply.mock.calls[0]?.[0]?.content ?? "");
-    expect(content).toContain("no clan log channel is configured");
+    expect(content).toContain("no tracked clan log channel");
+    expect(content).toContain("/bot-logs");
   });
 
   it("renders show output with effective source and rendered sample", async () => {
