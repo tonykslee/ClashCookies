@@ -245,16 +245,37 @@ export const Accounts: Command = {
     );
     const activity = await prisma.playerActivity.findMany({
       where: { guildId: interaction.guildId, tag: { in: uniqueTags } },
-      select: { tag: true, name: true, clanTag: true },
+      select: { tag: true, name: true, clanTag: true, clanName: true },
     });
     const activityByTag = new Map(
       activity.map((a) => [normalizeTag(a.tag), a])
     );
+    const candidateClanTags = [...new Set(
+      activity
+        .map((row) => (row.clanTag ? normalizeTag(row.clanTag) : ""))
+        .filter(Boolean)
+    )];
+    const trackedClanRows =
+      candidateClanTags.length > 0
+        ? await prisma.trackedClan.findMany({
+            where: { tag: { in: candidateClanTags } },
+            select: { tag: true, name: true },
+          })
+        : [];
+    const trackedClanNameByTag = new Map(
+      trackedClanRows
+        .map((row) => [normalizeTag(row.tag), sanitizeDisplayText(row.name)] as const)
+        .filter((entry): entry is [string, string] => Boolean(entry[0] && entry[1]))
+    );
 
     const tagsNeedingLiveFetch = uniqueTags.filter((tag) => {
       const hasLinkedName = Boolean(linkedNameByTag.get(tag));
-      const hasLocalFallback = activityByTag.has(tag);
-      return !hasLinkedName || !hasLocalFallback;
+      const localFallback = activityByTag.get(tag);
+      const hasLocalFallback = Boolean(localFallback);
+      const hasIncompleteLocalClanContext = Boolean(
+        localFallback?.clanTag && !sanitizeDisplayText(localFallback.clanName)
+      );
+      return !hasLinkedName || !hasLocalFallback || hasIncompleteLocalClanContext;
     });
     const fetchedPlayersByTag = new Map<string, any>();
     if (tagsNeedingLiveFetch.length > 0) {
@@ -276,6 +297,12 @@ export const Accounts: Command = {
       const fallback = activityByTag.get(tag);
       const livePlayer = fetchedPlayersByTag.get(tag) ?? null;
       const livePlayerName = sanitizeDisplayText(livePlayer?.name);
+      const fallbackClanTag = fallback?.clanTag ? normalizeTag(fallback.clanTag) : null;
+      const clanTag = normalizeTag(livePlayer?.clan?.tag ?? fallbackClanTag ?? "");
+      const clanName =
+        sanitizeDisplayText(livePlayer?.clan?.name) ??
+        sanitizeDisplayText(fallback?.clanName) ??
+        (clanTag ? trackedClanNameByTag.get(clanTag) ?? null : null);
 
       if (!linkedName && livePlayerName) {
         playerNameBackfillTasks.push(
@@ -297,8 +324,8 @@ export const Accounts: Command = {
       return {
         tag,
         name: linkedName ?? livePlayerName ?? sanitizeDisplayText(fallback?.name) ?? tag,
-        clanTag: livePlayer?.clan?.tag ?? fallback?.clanTag ?? null,
-        clanName: livePlayer?.clan?.name ?? null,
+        clanTag: clanTag || null,
+        clanName,
       };
     });
 

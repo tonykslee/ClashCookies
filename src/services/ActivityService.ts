@@ -34,7 +34,8 @@ export class ActivityService {
         guildId,
         tag: player.tag,
         name: player.name,
-        clanTag: clan.tag,
+        clanTag: player.clan?.tag ?? clan.tag,
+        clanName: player.clan?.name ?? clan.name ?? null,
         trophies: player.trophies,
         donations: player.donations,
         donationsReceived: player.donationsReceived ?? 0,
@@ -76,6 +77,7 @@ export class ActivityService {
     tag: string;
     name: string;
     clanTag: string;
+    clanName: string | null;
     trophies: number;
     donations: number;
     donationsReceived: number;
@@ -106,6 +108,7 @@ export class ActivityService {
     const updates: any = {
       name: input.name,
       clanTag: input.clanTag,
+      clanName: input.clanName,
     };
 
     const processed = await this.signalService.processPlayer({

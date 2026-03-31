@@ -50,12 +50,13 @@ The project is designed as a maintainable application, not a one-off bot script:
 
 ## Detailed Capability Notes
 - `/fwa match` and `/fwa mail send` share active-war mail freshness gating and only treat same-war, same-outcome references as up to date.
+- `/fwa police` includes canonical per-violation template management (`Custom -> Default -> Built-in`), warplan-aware applicability preview (`show`/`show-default`/`show-all`), and sample test-send (`DM`/`LOG`) through the same renderer used by live enforcement.
 - Active-war mail lifecycle reconciliation handles missing/inaccessible tracked references and keeps lifecycle state aligned with usable message targets.
 - `/force sync mail` validates supplied mail `message_id` against current-channel active-war identity before writing `WarMailLifecycle`.
 - `/force mail update` reconciles tracked references before in-place refresh and resumes/stops refresh tracking based on validity.
 - Match state rendering supports deterministic active-war inference and explicit confirmation persistence for BL/MM/FWA decisions.
 - Sync validation uses war-scoped persisted snapshots (`ClanPointsSync`) with explicit force-sync paths for refresh-scrape operations.
-- `/todo` renders from precomputed per-player snapshots (`TodoPlayerSnapshot`) so high-traffic reads stay fast and avoid live per-player multi-source aggregation on command execution, with grouped WAR/CWL sections, shared top timers for RAIDS/GAMES, explicit inactive-state messaging, and CWL context resolved from a seasonal CWL clan registry/player mapping layer instead of assuming home FWA clan.
+- `/todo` renders from precomputed per-player snapshots (`TodoPlayerSnapshot`) so high-traffic reads stay fast and avoid live per-player multi-source aggregation on command execution, with grouped WAR/CWL sections, shared top timer for RAIDS, and phased GAMES rendering (active earning, latest-results reward collection, then post-reward lifetime totals) plus CWL context resolved from a seasonal CWL clan registry/player mapping layer instead of assuming home FWA clan.
 - `/reminders` now supports preview-first create/list/edit flows with FWA+CWL clan targeting, persisted reminder configs, and background scheduler dispatch with dedupe fire logs.
 - War-mail and match embeds use consistent effective-state color mapping for BL/MM/FWA/unresolved states.
 - Notification and posting flows include operational logging controls (`/bot-logs`, `/say`, telemetry report + schedule commands).

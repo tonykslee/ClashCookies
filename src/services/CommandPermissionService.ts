@@ -285,6 +285,9 @@ export function getCommandTargetsFromInteraction(
   } else if (group && sub) {
     raw.push(`${command}:${group}:${sub}`);
   }
+  if (group) {
+    raw.push(`${command}:${group}`);
+  }
   if (sub) {
     raw.push(`${command}:${sub}`);
   }

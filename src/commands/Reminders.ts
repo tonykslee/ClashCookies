@@ -13,16 +13,16 @@ import {
   StringSelectMenuBuilder,
   StringSelectMenuInteraction,
 } from "discord.js";
-import { ReminderType } from "@prisma/client";
+import { ReminderTargetClanType, ReminderType } from "@prisma/client";
 import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
 import { safeReply } from "../helper/safeReply";
 import { normalizeClanTag } from "../services/PlayerLinkService";
 import {
+  decodeReminderClanTargetValue,
   formatReminderOffsetSeconds,
   getReminderOffsetPresetSeconds,
   parseReminderOffsetsInputList,
-  parseReminderTimeLeftInput,
   reminderService,
   type ReminderClanOption,
   type ReminderWithDetails,
@@ -31,6 +31,16 @@ import {
 const PANEL_TIMEOUT_MS = 10 * 60 * 1000;
 const REMINDER_CREATE_MODE = "create";
 const REMINDER_EDIT_MODE = "edit";
+
+/** Purpose: determine whether reminder type is explicitly selected (exclude internal EVENT placeholder for create drafts). */
+function hasSelectedReminderType(type: ReminderType): boolean {
+  return type === ReminderType.WAR_CWL || type === ReminderType.RAIDS || type === ReminderType.GAMES;
+}
+
+/** Purpose: determine whether reminder channel is a valid Discord channel id for save checks + display. */
+function hasSelectedReminderChannel(channelId: string): boolean {
+  return /^\d+$/.test(String(channelId ?? "").trim());
+}
 
 /** Purpose: format reminder offsets for compact human-readable embed/list sections. */
 function formatOffsetList(offsetsSeconds: number[]): string {
@@ -54,14 +64,20 @@ function buildReminderPanelEmbed(input: {
   mode: "create" | "edit";
 }): EmbedBuilder {
   const modeLabel = input.mode === REMINDER_CREATE_MODE ? "Create" : "Edit";
+  const typeLabel = hasSelectedReminderType(input.reminder.type)
+    ? input.reminder.type
+    : "_not set_";
+  const channelLabel = hasSelectedReminderChannel(input.reminder.channelId)
+    ? `<#${input.reminder.channelId}>`
+    : "_not set_";
   return new EmbedBuilder()
     .setTitle(`Reminders - ${modeLabel}`)
     .setColor(input.mode === REMINDER_CREATE_MODE ? 0x5865f2 : 0x57f287)
     .setDescription(
       [
-        `Type: **${input.reminder.type}**`,
+        `Type: ${typeLabel}`,
         `Times: **${formatOffsetList(input.reminder.offsetsSeconds)}**`,
-        `Channel: <#${input.reminder.channelId}>`,
+        `Channel: ${channelLabel}`,
         `Enabled: **${input.reminder.isEnabled ? "yes" : "no"}**`,
         "",
         "Selected clans:",
@@ -238,6 +254,7 @@ async function openReminderPanel(input: {
 
   const message = await input.interaction.fetchReply();
   let createSaved = false;
+  let createClanAutofillAttemptConsumed = false;
   const collector = message.createMessageComponentCollector({
     time: PANEL_TIMEOUT_MS,
   });
@@ -251,12 +268,38 @@ async function openReminderPanel(input: {
     try {
       if (isSelect && component.customId === `reminders:clans:${input.reminderId}`) {
         await component.deferUpdate();
+        const selectedEncodedValues = component.values.filter((value) => value !== "none");
         await reminderService.replaceReminderTargetsFromEncodedValues({
           reminderId: input.reminderId,
           guildId: input.interaction.guildId!,
-          encodedValues: component.values.filter((value) => value !== "none"),
+          encodedValues: selectedEncodedValues,
           actorUserId: input.ownerUserId,
         });
+        if (
+          input.mode === REMINDER_CREATE_MODE &&
+          !createClanAutofillAttemptConsumed &&
+          selectedEncodedValues.length > 0
+        ) {
+          createClanAutofillAttemptConsumed = true;
+          const firstSelectedClan = selectedEncodedValues
+            .map((value) => decodeReminderClanTargetValue(value))
+            .find(
+              (
+                decoded,
+              ): decoded is {
+                clanType: ReminderTargetClanType;
+                clanTag: string;
+              } => Boolean(decoded),
+            );
+          if (firstSelectedClan?.clanTag) {
+            await reminderService.tryPrefillReminderChannelFromTrackedClanLog({
+              reminderId: input.reminderId,
+              guildId: input.interaction.guildId!,
+              clanTag: firstSelectedClan.clanTag,
+              actorUserId: input.ownerUserId,
+            });
+          }
+        }
       } else if (isSelect && component.customId === `reminders:offsets:${input.reminderId}`) {
         await component.deferUpdate();
         const selectedOffsets = component.values
@@ -314,6 +357,27 @@ async function openReminderPanel(input: {
           reminderId: input.reminderId,
           guildId: input.interaction.guildId!,
         });
+        if (!hasSelectedReminderType(reminder.type)) {
+          await component.reply({
+            ephemeral: true,
+            content: "Select a reminder type before saving this reminder.",
+          });
+          return;
+        }
+        if (reminder.offsetsSeconds.length <= 0) {
+          await component.reply({
+            ephemeral: true,
+            content: "Select at least one reminder time before saving this reminder.",
+          });
+          return;
+        }
+        if (!hasSelectedReminderChannel(reminder.channelId)) {
+          await component.reply({
+            ephemeral: true,
+            content: "Set a reminder channel before saving this reminder.",
+          });
+          return;
+        }
         if (reminder.targets.length <= 0) {
           await component.reply({
             ephemeral: true,
@@ -539,7 +603,7 @@ export const Reminders: Command = {
           name: "type",
           description: "Reminder category",
           type: ApplicationCommandOptionType.String,
-          required: true,
+          required: false,
           choices: [
             { name: "WAR_CWL", value: ReminderType.WAR_CWL },
             { name: "RAIDS", value: ReminderType.RAIDS },
@@ -550,14 +614,21 @@ export const Reminders: Command = {
           name: "time_left",
           description: "Offset before event end (examples: 1h, 30m, 1h30m)",
           type: ApplicationCommandOptionType.String,
-          required: true,
+          required: false,
         },
         {
           name: "channel",
           description: "Channel to post reminder messages",
           type: ApplicationCommandOptionType.Channel,
-          required: true,
+          required: false,
           channel_types: [ChannelType.GuildText, ChannelType.GuildAnnouncement],
+        },
+        {
+          name: "clan",
+          description: "Clan tag to preselect in the create panel (with or without #)",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          autocomplete: true,
         },
       ],
     },
@@ -594,24 +665,28 @@ export const Reminders: Command = {
       const subcommand = interaction.options.getSubcommand(true);
 
       if (subcommand === "create") {
-        const typeRaw = interaction.options.getString("type", true);
+        const typeRaw = interaction.options.getString("type", false);
         const reminderType =
           typeRaw === ReminderType.WAR_CWL ||
           typeRaw === ReminderType.RAIDS ||
           typeRaw === ReminderType.GAMES
             ? typeRaw
             : null;
-        const timeLeftInput = interaction.options.getString("time_left", true);
-        const offsetSeconds = parseReminderTimeLeftInput(timeLeftInput);
-        const channel = interaction.options.getChannel("channel", true);
-        if (!reminderType) {
+        const timeLeftInput = interaction.options.getString("time_left", false);
+        const seededOffsets =
+          timeLeftInput === null ? [] : parseReminderOffsetsInputList(timeLeftInput);
+        const channel = interaction.options.getChannel("channel", false);
+        const clanInput = interaction.options.getString("clan", false);
+        const normalizedSeedClan = clanInput === null ? "" : normalizeClanTag(clanInput);
+        let seededClan: ReminderClanOption | null = null;
+        if (typeRaw !== null && !reminderType) {
           await safeReply(interaction, {
             ephemeral: true,
             content: "Invalid reminder type.",
           });
           return;
         }
-        if (!offsetSeconds) {
+        if (timeLeftInput !== null && seededOffsets.length <= 0) {
           await safeReply(interaction, {
             ephemeral: true,
             content:
@@ -619,21 +694,57 @@ export const Reminders: Command = {
           });
           return;
         }
-        if (!("id" in channel)) {
+        if (channel && !("id" in channel)) {
           await safeReply(interaction, {
             ephemeral: true,
             content: "Reminder channel must be a text-based channel.",
           });
           return;
         }
+        if (clanInput !== null && !normalizedSeedClan) {
+          await safeReply(interaction, {
+            ephemeral: true,
+            content: "Invalid clan tag format.",
+          });
+          return;
+        }
+        if (normalizedSeedClan) {
+          seededClan = await reminderService.findSelectableClanOptionByTag({
+            guildId: interaction.guildId,
+            clanTag: normalizedSeedClan,
+          });
+          if (!seededClan) {
+            await safeReply(interaction, {
+              ephemeral: true,
+              content: `Clan ${normalizedSeedClan} is not in tracked clans.`,
+            });
+            return;
+          }
+        }
 
         const created = await reminderService.createReminderDraft({
           guildId: interaction.guildId,
           type: reminderType,
-          channelId: channel.id,
-          offsetSeconds,
+          channelId: channel?.id ?? null,
+          offsetsSeconds: seededOffsets,
           actorUserId: interaction.user.id,
         });
+        if (seededClan) {
+          await reminderService.replaceReminderTargetsFromEncodedValues({
+            reminderId: created.id,
+            guildId: interaction.guildId,
+            encodedValues: [seededClan.value],
+            actorUserId: interaction.user.id,
+          });
+          if (!channel?.id) {
+            await reminderService.tryPrefillReminderChannelFromTrackedClanLog({
+              reminderId: created.id,
+              guildId: interaction.guildId,
+              clanTag: seededClan.clanTag,
+              actorUserId: interaction.user.id,
+            });
+          }
+        }
         await openReminderPanel({
           interaction,
           reminderId: created.id,

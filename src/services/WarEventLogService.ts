@@ -1074,10 +1074,74 @@ function applyWarEndedMaintenanceGuard(input: {
   };
 }
 
+function isActiveWarState(state: WarState): boolean {
+  return state === "preparation" || state === "inWar";
+}
+
+/** Purpose: decide whether the prior active phase should still be running based on last known war timing. */
+function isWarPhaseExpectedActive(input: {
+  state: WarState;
+  knownWarStartTime: Date | null;
+  knownWarEndTime: Date | null;
+  now: Date;
+}): boolean {
+  if (!isActiveWarState(input.state)) return false;
+  const nowMs = input.now.getTime();
+  const knownStartMs =
+    input.knownWarStartTime instanceof Date
+      ? input.knownWarStartTime.getTime()
+      : NaN;
+  const knownEndMs =
+    input.knownWarEndTime instanceof Date
+      ? input.knownWarEndTime.getTime()
+      : NaN;
+
+  if (input.state === "preparation" && Number.isFinite(knownStartMs)) {
+    return nowMs < knownStartMs;
+  }
+  if (input.state === "inWar" && Number.isFinite(knownEndMs)) {
+    return nowMs < knownEndMs;
+  }
+  if (Number.isFinite(knownEndMs)) {
+    return nowMs < knownEndMs;
+  }
+  return true;
+}
+
+/** Purpose: preserve active-war identity when outage recovery only changes timestamps but not lifecycle phase. */
+function shouldPreserveWarIdentityDuringOutageRecovery(input: {
+  previousState: WarState;
+  candidateState: WarState;
+  previousWarStartTime: Date | null;
+  previousWarEndTime: Date | null;
+  warIdentityChanged: boolean;
+  eventDerivedFromIdentityShift: boolean;
+  warFetchFailed: boolean;
+  maintenanceSuspected: boolean;
+  now: Date;
+}): boolean {
+  if (input.warFetchFailed) return false;
+  if (!input.maintenanceSuspected) return false;
+  if (!input.warIdentityChanged) return false;
+  if (!input.eventDerivedFromIdentityShift) return false;
+  if (!isActiveWarState(input.previousState)) return false;
+  if (!isActiveWarState(input.candidateState)) return false;
+
+  return isWarPhaseExpectedActive({
+    state: input.previousState,
+    knownWarStartTime: input.previousWarStartTime,
+    knownWarEndTime: input.previousWarEndTime,
+    now: input.now,
+  });
+}
+
 export const advanceCocWarOutageStateForTest = advanceCocWarOutageState;
 export const resolveActiveWarTimingForTest = resolveActiveWarTiming;
 export const applyWarEndedMaintenanceGuardForTest =
   applyWarEndedMaintenanceGuard;
+export const isWarPhaseExpectedActiveForTest = isWarPhaseExpectedActive;
+export const shouldPreserveWarIdentityDuringOutageRecoveryForTest =
+  shouldPreserveWarIdentityDuringOutageRecovery;
 export const computeWarSnapshotAttackRowsForTest = computeWarSnapshotAttackRows;
 
 export class WarEventLogService {
@@ -2449,9 +2513,17 @@ export class WarEventLogService {
     sub: SubscriptionRow;
     warStartTime: Date | null;
     currentState: WarState;
+    preserveExistingWarId?: boolean;
   }): Promise<number | null> {
     if (params.currentState === "notInWar") return params.sub.warId ?? null;
     if (!params.warStartTime) return params.sub.warId ?? null;
+    if (
+      params.preserveExistingWarId &&
+      params.sub.warId !== null &&
+      params.sub.warId !== undefined
+    ) {
+      return Number(params.sub.warId);
+    }
 
     if (
       params.sub.warId !== null &&
@@ -2555,14 +2627,33 @@ export class WarEventLogService {
     const nextPrepStartTime =
       parseCocTime(war?.preparationStartTime ?? null) ?? sub.prepStartTime;
     const warIdentityChanged = isNewWarCycle(sub.startTime, nextWarStartTime);
+    const pollNow = new Date();
+    const previousPhaseExpectedActive = isWarPhaseExpectedActive({
+      state: prevState,
+      knownWarStartTime: sub.startTime ?? null,
+      knownWarEndTime: sub.endTime ?? null,
+      now: pollNow,
+    });
+    if (
+      warSnapshot.observation.kind === "failure" &&
+      isActiveWarState(prevState) &&
+      previousPhaseExpectedActive
+    ) {
+      console.warn(
+        `[war-events] outage detected guild=${sub.guildId} clan=${sub.clanTag} prev=${prevState} knownStart=${sub.startTime?.toISOString() ?? "unknown"} knownEnd=${sub.endTime?.toISOString() ?? "unknown"} status=${outageState.lastFailureStatusCode ?? "unknown"} failureStreak=${outageState.failureStreak}`,
+      );
+    }
 
     const eventTypeRaw = shouldEmit(prevState, candidateState);
     let eventType = eventTypeRaw;
-    if (!eventType && isNewWarCycle(sub.startTime, nextWarStartTime)) {
+    let eventDerivedFromIdentityShift = false;
+    if (!eventType && warIdentityChanged) {
       if (candidateState === "preparation") {
         eventType = "war_started";
+        eventDerivedFromIdentityShift = true;
       } else if (candidateState === "inWar") {
         eventType = "battle_day";
+        eventDerivedFromIdentityShift = true;
       }
     }
     const warEndedGuard = applyWarEndedMaintenanceGuard({
@@ -2572,13 +2663,36 @@ export class WarEventLogService {
       warFetchFailed: warSnapshot.observation.kind === "failure",
       maintenanceSuspected: outageState.suspected,
       knownWarEndTime: nextWarEndTime,
-      now: new Date(),
+      now: pollNow,
     });
     let currentState: WarState = warEndedGuard.state;
     eventType = warEndedGuard.eventType;
     if (warEndedGuard.suppressReason) {
       console.log(
         `[war-events] war_ended suppressed guild=${sub.guildId} clan=${sub.clanTag} reason=${warEndedGuard.suppressReason} prev=${prevState} current=${candidateState} knownEnd=${nextWarEndTime?.toISOString() ?? "unknown"} maintenanceSuspected=${outageState.suspected} failureStreak=${outageState.failureStreak}${outageState.lastFailureStatusCode ? ` status=${outageState.lastFailureStatusCode}` : ""}`,
+      );
+    }
+    let preserveExistingWarId = false;
+    let effectiveWarIdentityChanged = warIdentityChanged;
+    if (
+      shouldPreserveWarIdentityDuringOutageRecovery({
+        previousState: prevState,
+        candidateState,
+        previousWarStartTime: sub.startTime ?? null,
+        previousWarEndTime: sub.endTime ?? null,
+        warIdentityChanged,
+        eventDerivedFromIdentityShift,
+        warFetchFailed: warSnapshot.observation.kind === "failure",
+        maintenanceSuspected: outageState.suspected,
+        now: pollNow,
+      })
+    ) {
+      preserveExistingWarId = true;
+      effectiveWarIdentityChanged = false;
+      eventType = null;
+      currentState = prevState;
+      console.log(
+        `[war-events] outage recovery reconciled guild=${sub.guildId} clan=${sub.clanTag} action=update_in_place suppress_new_cycle=true prev=${prevState} current=${candidateState} previousStart=${sub.startTime?.toISOString() ?? "unknown"} observedStart=${nextWarStartTime?.toISOString() ?? "unknown"} previousEnd=${sub.endTime?.toISOString() ?? "unknown"} observedEnd=${nextWarEndTime?.toISOString() ?? "unknown"} suspected=${outageState.suspected} failureStreak=${outageState.failureStreak} recoveryStreak=${outageState.recoveryStreak}`,
       );
     }
     if (eventType === "war_ended") {
@@ -2674,10 +2788,10 @@ export class WarEventLogService {
           ? syncContext.previousSync
           : syncContext.activeSync;
 
-    const currentMatchTypeForResolution = warIdentityChanged
+    const currentMatchTypeForResolution = effectiveWarIdentityChanged
       ? null
       : sub.matchType;
-    const currentInferredMatchTypeForResolution = warIdentityChanged
+    const currentInferredMatchTypeForResolution = effectiveWarIdentityChanged
       ? true
       : sub.inferredMatchType;
     const currentWarResolution = resolveCurrentWarMatchTypeSignal({
@@ -2854,6 +2968,7 @@ export class WarEventLogService {
       sub,
       warStartTime: nextWarStartTime,
       currentState,
+      preserveExistingWarId,
     });
     const resolvedWarIdText =
       resolvedWarId !== null && resolvedWarId !== undefined
@@ -2973,12 +3088,35 @@ export class WarEventLogService {
         updatedAt: new Date(),
       },
     });
-    await this.syncWarAttacksFromWarSnapshot({
+    const newAttackRowsObserved = await this.syncWarAttacksFromWarSnapshot({
       war,
       clanTag: sub.clanTag,
       resolvedWarId,
       fallbackWarStartTime: nextWarStartTime,
     });
+    if (
+      currentState === "inWar" &&
+      newAttackRowsObserved > 0 &&
+      resolvedWarId !== null &&
+      resolvedWarId !== undefined &&
+      Number.isFinite(Number(resolvedWarId)) &&
+      Math.trunc(Number(resolvedWarId)) > 0
+    ) {
+      const policeWarId = Math.trunc(Number(resolvedWarId));
+      await this.fwaPolice
+        .enforceWarViolations({
+          client: this.client,
+          guildId: sub.guildId,
+          clanTag: sub.clanTag,
+          warId: policeWarId,
+          warCompliance: this.warCompliance,
+        })
+        .catch((err) => {
+          console.error(
+            `[fwa-police] enforce_failed guild=${sub.guildId} clan=${sub.clanTag} warId=${policeWarId} source=poll_cycle error=${formatError(err)}`,
+          );
+        });
+    }
     if (detectedEventPayload) {
       await this.dispatchDetectedEvent({
         sub,
@@ -3009,18 +3147,18 @@ export class WarEventLogService {
     clanTag: string;
     resolvedWarId: number | null;
     fallbackWarStartTime: Date | null;
-  }): Promise<void> {
+  }): Promise<number> {
     if (
       params.resolvedWarId === null ||
       params.resolvedWarId === undefined ||
       !Number.isFinite(Number(params.resolvedWarId))
     ) {
-      return;
+      return 0;
     }
     const war = params.war;
     const ownClanTag = normalizeTag(war?.clan?.tag ?? params.clanTag);
-    if (!ownClanTag) return;
-    if (!war?.clan?.tag || !war?.startTime) return;
+    if (!ownClanTag) return 0;
+    if (!war?.clan?.tag || !war?.startTime) return 0;
 
     const ownClanName =
       String(war.clan.name ?? ownClanTag).trim() || ownClanTag;
@@ -3029,7 +3167,7 @@ export class WarEventLogService {
       String(war.opponent?.name ?? opponentClanTag).trim() || opponentClanTag;
     const warStartTime =
       parseCocTime(war.startTime) ?? params.fallbackWarStartTime;
-    if (!warStartTime) return;
+    if (!warStartTime) return 0;
     const warEndTime = parseCocTime(war.endTime ?? null);
     const warState = String(war.state ?? "").trim() || null;
     const observedAt = new Date();
@@ -3086,7 +3224,30 @@ export class WarEventLogService {
       ownMembers,
       opponentMembers,
     });
+    const existingAttackRows = await prisma.warAttacks.findMany({
+      where: {
+        clanTag: ownClanTag,
+        warStartTime,
+        attackOrder: { gt: 0 },
+      },
+      select: {
+        playerTag: true,
+        attackOrder: true,
+      },
+    });
+    const existingAttackKeys = new Set(
+      existingAttackRows.map(
+        (row) => `${normalizeTag(row.playerTag)}:${Math.trunc(Number(row.attackOrder))}`,
+      ),
+    );
+    let newAttackRowsObserved = 0;
     for (const row of computedAttackRows) {
+      const attackOrder = Math.trunc(Number(row.attackOrder));
+      const attackKey = `${normalizeTag(row.playerTag)}:${attackOrder}`;
+      if (attackOrder > 0 && !existingAttackKeys.has(attackKey)) {
+        existingAttackKeys.add(attackKey);
+        newAttackRowsObserved += 1;
+      }
       await prisma.$executeRaw(
         Prisma.sql`
           INSERT INTO "WarAttacks"
@@ -3116,6 +3277,7 @@ export class WarEventLogService {
         `,
       );
     }
+    return newAttackRowsObserved;
   }
 
   private async dispatchDetectedEvent(params: {
@@ -3179,28 +3341,6 @@ export class WarEventLogService {
           });
       }
 
-      const policeWarId =
-        resolvedWarIdForDelivery !== null &&
-        resolvedWarIdForDelivery !== undefined &&
-        Number.isFinite(Number(resolvedWarIdForDelivery)) &&
-        Math.trunc(Number(resolvedWarIdForDelivery)) > 0
-          ? Math.trunc(Number(resolvedWarIdForDelivery))
-          : null;
-      if (policeWarId !== null) {
-        await this.fwaPolice
-          .enforceWarViolations({
-            client: this.client,
-            guildId: params.sub.guildId,
-            clanTag: payloadForDelivery.clanTag,
-            warId: policeWarId,
-            warCompliance: this.warCompliance,
-          })
-          .catch((err) => {
-            console.error(
-              `[fwa-police] enforce_failed guild=${params.sub.guildId} clan=${params.sub.clanTag} warId=${policeWarId} error=${formatError(err)}`,
-            );
-          });
-      }
     }
     if (!params.sub.notify || !params.sub.channelId) return;
     const reserved = await this.reserveEventDelivery({

@@ -605,6 +605,405 @@ describe("Match-type confirmation rollover via processSubscription", () => {
   });
 });
 
+describe("War outage recovery reconciliation", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  function buildOutageRecoveryService(input: {
+    subOverrides: Partial<Record<string, unknown>>;
+    snapshots: Array<{ war: Record<string, unknown> | null; observation: { kind: "success" } | { kind: "failure"; statusCode: number | null } }>;
+  }): {
+    service: WarEventLogService;
+    sub: Record<string, unknown>;
+    updateSpy: ReturnType<typeof vi.spyOn>;
+    dispatchSpy: ReturnType<typeof vi.fn>;
+    ensureSpy: ReturnType<typeof vi.spyOn>;
+    allocateSpy: ReturnType<typeof vi.spyOn>;
+  } {
+    const service = new WarEventLogService(
+      { channels: { fetch: vi.fn() } } as unknown as Client,
+      {} as any,
+    );
+    const sub = makeSubscription(input.subOverrides);
+    vi.spyOn(prisma, "$queryRaw").mockResolvedValue([sub] as any);
+    const updateSpy = vi
+      .spyOn(prisma.currentWar, "update")
+      .mockImplementation(async (args: any) => {
+        Object.assign(sub, args?.data ?? {});
+        return {} as any;
+      });
+    (service as any).getCurrentWarSnapshot = vi
+      .fn()
+      .mockImplementation(async () => {
+        const next = input.snapshots.shift();
+        if (!next) return { war: null, observation: { kind: "success" } };
+        return next;
+      });
+    (service as any).hasWarEndRecorded = vi.fn().mockResolvedValue(false);
+    (service as any).syncWarAttacksFromWarSnapshot = vi.fn().mockResolvedValue(0);
+    const dispatchSpy = vi.fn().mockResolvedValue(undefined);
+    (service as any).dispatchDetectedEvent = dispatchSpy;
+    (service as any).reconcileWarEndedPointsDiscrepancy = vi
+      .fn()
+      .mockResolvedValue(undefined);
+    (service as any).pointsGate = {
+      evaluatePollerFetch: vi.fn().mockResolvedValue({
+        allowed: false,
+        fetchReason: "post_war_reconciliation",
+      }),
+    };
+    (service as any).pointsSync = {
+      resetWarStartPointsJob: vi.fn().mockResolvedValue(undefined),
+      maybeRunWarStartPointsCheck: vi.fn().mockResolvedValue(undefined),
+      getPreviousSyncNum: vi.fn().mockResolvedValue(10),
+    };
+    (service as any).currentSyncs = {
+      markNeedsValidation: vi.fn().mockResolvedValue(undefined),
+      getCurrentSyncForClan: vi.fn().mockResolvedValue(null),
+    };
+    const ensureSpy = vi.spyOn(service as any, "ensureCurrentWarId");
+    const allocateSpy = vi.spyOn(service as any, "allocateNextWarId");
+    return {
+      service,
+      sub,
+      updateSpy,
+      dispatchSpy,
+      ensureSpy,
+      allocateSpy,
+    };
+  }
+
+  it("suppresses prep-day outage recovery identity shifts and updates active row in place", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-11T08:00:00.000Z"));
+    const shiftedWar = {
+      state: "preparation",
+      clan: { tag: "#AAA111", name: "Alpha", stars: 0, attacks: 0, destructionPercentage: 0 },
+      opponent: {
+        tag: "#OPP123",
+        name: "Enemy",
+        stars: 0,
+        attacks: 0,
+        destructionPercentage: 0,
+      },
+      preparationStartTime: "20260311T020000.000Z",
+      startTime: "20260312T020000.000Z",
+      endTime: "20260313T020000.000Z",
+      teamSize: 50,
+      attacksPerMember: 2,
+    };
+    const snapshots = [
+      { war: null, observation: { kind: "failure" as const, statusCode: 503 } },
+      { war: null, observation: { kind: "failure" as const, statusCode: 500 } },
+      { war: shiftedWar, observation: { kind: "success" as const } },
+    ];
+    const { service, sub, updateSpy, dispatchSpy, ensureSpy, allocateSpy } =
+      buildOutageRecoveryService({
+        subOverrides: {
+          state: "preparation",
+          warId: 1001,
+          startTime: new Date("2026-03-12T00:00:00.000Z"),
+          endTime: new Date("2026-03-13T00:00:00.000Z"),
+          prepStartTime: new Date("2026-03-11T00:00:00.000Z"),
+        },
+        snapshots,
+      });
+
+    await (service as any).processSubscription("guild-1", "#AAA111", {
+      previousSync: 10,
+      activeSync: 11,
+    });
+    await (service as any).processSubscription("guild-1", "#AAA111", {
+      previousSync: 11,
+      activeSync: 12,
+    });
+    await (service as any).processSubscription("guild-1", "#AAA111", {
+      previousSync: 12,
+      activeSync: 13,
+    });
+
+    expect(dispatchSpy).not.toHaveBeenCalled();
+    expect(allocateSpy).not.toHaveBeenCalled();
+    expect(
+      ensureSpy.mock.calls.some((call) => call?.[0]?.preserveExistingWarId === true),
+    ).toBe(true);
+    expect(updateSpy).toHaveBeenCalled();
+    expect(sub.warId).toBe(1001);
+    expect((sub.startTime as Date).toISOString()).toBe("2026-03-12T02:00:00.000Z");
+  });
+
+  it("suppresses battle-day outage recovery identity shifts without duplicate battle_day emit", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-12T08:00:00.000Z"));
+    const shiftedWar = {
+      state: "inWar",
+      clan: { tag: "#AAA111", name: "Alpha", stars: 100, attacks: 15, destructionPercentage: 70 },
+      opponent: {
+        tag: "#OPP123",
+        name: "Enemy",
+        stars: 99,
+        attacks: 14,
+        destructionPercentage: 69,
+      },
+      preparationStartTime: "20260311T010000.000Z",
+      startTime: "20260312T010000.000Z",
+      endTime: "20260313T010000.000Z",
+      teamSize: 50,
+      attacksPerMember: 2,
+    };
+    const snapshots = [
+      { war: null, observation: { kind: "failure" as const, statusCode: 503 } },
+      { war: null, observation: { kind: "failure" as const, statusCode: 503 } },
+      { war: shiftedWar, observation: { kind: "success" as const } },
+    ];
+    const { service, sub, dispatchSpy, ensureSpy, allocateSpy } =
+      buildOutageRecoveryService({
+        subOverrides: {
+          state: "inWar",
+          warId: 1001,
+          startTime: new Date("2026-03-12T00:00:00.000Z"),
+          endTime: new Date("2026-03-13T00:00:00.000Z"),
+        },
+        snapshots,
+      });
+
+    await (service as any).processSubscription("guild-1", "#AAA111", {
+      previousSync: 10,
+      activeSync: 11,
+    });
+    await (service as any).processSubscription("guild-1", "#AAA111", {
+      previousSync: 11,
+      activeSync: 12,
+    });
+    await (service as any).processSubscription("guild-1", "#AAA111", {
+      previousSync: 12,
+      activeSync: 13,
+    });
+
+    expect(dispatchSpy).not.toHaveBeenCalled();
+    expect(allocateSpy).not.toHaveBeenCalled();
+    expect(
+      ensureSpy.mock.calls.some((call) => call?.[0]?.preserveExistingWarId === true),
+    ).toBe(true);
+    expect(sub.warId).toBe(1001);
+  });
+
+  it("keeps healthy non-outage preparation->inWar transitions emitting once", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-11T08:00:00.000Z"));
+    const snapshots = [
+      {
+        war: {
+          state: "inWar",
+          clan: { tag: "#AAA111", name: "Alpha", stars: 100, attacks: 12, destructionPercentage: 70 },
+          opponent: {
+            tag: "#OPP123",
+            name: "Enemy",
+            stars: 99,
+            attacks: 11,
+            destructionPercentage: 69,
+          },
+          preparationStartTime: "20260311T000000.000Z",
+          startTime: "20260312T000000.000Z",
+          endTime: "20260313T000000.000Z",
+          teamSize: 50,
+          attacksPerMember: 2,
+        },
+        observation: { kind: "success" as const },
+      },
+    ];
+    const { service, dispatchSpy } = buildOutageRecoveryService({
+      subOverrides: {
+        state: "preparation",
+        warId: 1001,
+        startTime: new Date("2026-03-12T00:00:00.000Z"),
+        endTime: new Date("2026-03-13T00:00:00.000Z"),
+      },
+      snapshots,
+    });
+
+    await (service as any).processSubscription("guild-1", "#AAA111", {
+      previousSync: 10,
+      activeSync: 11,
+    });
+
+    expect(dispatchSpy).toHaveBeenCalledTimes(1);
+    expect(dispatchSpy.mock.calls[0]?.[0]?.payload?.eventType).toBe("battle_day");
+  });
+});
+
+describe("FWA police poll-time enforcement", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function buildInWarSnapshot(): Record<string, unknown> {
+    return {
+      state: "inWar",
+      startTime: "20260312T000000.000Z",
+      preparationStartTime: "20260311T000000.000Z",
+      endTime: "20260313T000000.000Z",
+      teamSize: 50,
+      attacksPerMember: 2,
+      clan: {
+        tag: "#AAA111",
+        name: "Alpha",
+        stars: 100,
+        attacks: 10,
+        destructionPercentage: 70,
+        members: [],
+      },
+      opponent: {
+        tag: "#OPP123",
+        name: "Enemy",
+        stars: 99,
+        attacks: 10,
+        destructionPercentage: 69,
+        members: [],
+      },
+    };
+  }
+
+  function buildProcessSubscriptionService(syncResults: number[]): {
+    service: WarEventLogService;
+    enforceSpy: ReturnType<typeof vi.spyOn>;
+  } {
+    const service = new WarEventLogService(
+      { channels: { fetch: vi.fn() } } as unknown as Client,
+      {} as any,
+    );
+    const sub = makeSubscription({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+      state: "inWar",
+      startTime: new Date("2026-03-12T00:00:00.000Z"),
+      endTime: new Date("2026-03-13T00:00:00.000Z"),
+      opponentTag: "#OPP123",
+      opponentName: "Enemy",
+    });
+
+    vi.spyOn(prisma, "$queryRaw").mockResolvedValue([sub] as any);
+    vi.spyOn(prisma.currentWar, "update").mockResolvedValue({} as any);
+    (service as any).getCurrentWarSnapshot = vi.fn().mockResolvedValue({
+      war: buildInWarSnapshot(),
+      observation: { kind: "success" },
+    });
+    (service as any).hasWarEndRecorded = vi.fn().mockResolvedValue(false);
+    (service as any).ensureCurrentWarId = vi.fn().mockResolvedValue(1001);
+    (service as any).syncWarAttacksFromWarSnapshot = vi
+      .fn()
+      .mockImplementation(async () => syncResults.shift() ?? 0);
+    (service as any).dispatchDetectedEvent = vi.fn().mockResolvedValue(undefined);
+    (service as any).reconcileWarEndedPointsDiscrepancy = vi
+      .fn()
+      .mockResolvedValue(undefined);
+    (service as any).pointsGate = {
+      evaluatePollerFetch: vi.fn().mockReturnValue({
+        allowed: false,
+        fetchReason: "post_war_reconciliation",
+      }),
+    };
+    (service as any).pointsSync = {
+      resetWarStartPointsJob: vi.fn().mockResolvedValue(undefined),
+      maybeRunWarStartPointsCheck: vi.fn().mockResolvedValue(undefined),
+      getPreviousSyncNum: vi.fn().mockResolvedValue(10),
+    };
+    (service as any).currentSyncs = {
+      markNeedsValidation: vi.fn().mockResolvedValue(undefined),
+      getCurrentSyncForClan: vi.fn().mockResolvedValue(null),
+    };
+    const enforceSpy = vi
+      .spyOn((service as any).fwaPolice, "enforceWarViolations")
+      .mockResolvedValue({
+        evaluatedViolations: 1,
+        created: 1,
+        deduped: 0,
+        dmSent: 0,
+        logSent: 1,
+      });
+    return { service, enforceSpy };
+  }
+
+  it("enforces police immediately in poll cycle after new attack rows are synced", async () => {
+    const { service, enforceSpy } = buildProcessSubscriptionService([1]);
+    await (service as any).processSubscription("guild-1", "#AAA111", {
+      previousSync: 10,
+      activeSync: 11,
+    });
+
+    expect(enforceSpy).toHaveBeenCalledTimes(1);
+    expect(enforceSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guildId: "guild-1",
+        clanTag: "#AAA111",
+        warId: 1001,
+      }),
+    );
+  });
+
+  it("does not re-enforce on later polls when no new attack rows are observed", async () => {
+    const { service, enforceSpy } = buildProcessSubscriptionService([1, 0]);
+    await (service as any).processSubscription("guild-1", "#AAA111", {
+      previousSync: 10,
+      activeSync: 11,
+    });
+    await (service as any).processSubscription("guild-1", "#AAA111", {
+      previousSync: 11,
+      activeSync: 12,
+    });
+
+    expect(enforceSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not trigger police delivery from war-ended dispatch flow", async () => {
+    const service = new WarEventLogService(
+      { channels: { fetch: vi.fn() } } as unknown as Client,
+      {} as any,
+    );
+    const enforceSpy = vi
+      .spyOn((service as any).fwaPolice, "enforceWarViolations")
+      .mockResolvedValue({
+        evaluatedViolations: 0,
+        created: 0,
+        deduped: 0,
+        dmSent: 0,
+        logSent: 0,
+      });
+
+    (service as any).history = {
+      persistWarEndHistory: vi.fn().mockResolvedValue(undefined),
+      resolveCanonicalWarEndedContext: vi.fn().mockResolvedValue(null),
+      getWarEndResultSnapshot: vi.fn().mockResolvedValue({
+        clanStars: 100,
+        opponentStars: 99,
+        clanDestruction: 70,
+        opponentDestruction: 69,
+        warEndTime: new Date("2026-03-10T00:00:00.000Z"),
+        resultLabel: "WIN",
+      }),
+    };
+
+    await (service as any).dispatchDetectedEvent({
+      sub: makeSubscription({
+        guildId: "guild-1",
+        clanTag: "#AAA111",
+        notify: false,
+      }),
+      payload: buildBasePayload({
+        eventType: "war_ended",
+        clanTag: "#AAA111",
+        warStartTime: new Date("2026-03-09T00:00:00.000Z"),
+        warEndTime: new Date("2026-03-10T00:00:00.000Z"),
+      }),
+      resolvedWarId: 1001,
+    });
+
+    expect(enforceSpy).not.toHaveBeenCalled();
+  });
+});
+
 describe("War-end points reconciliation", () => {
   afterEach(() => {
     vi.restoreAllMocks();

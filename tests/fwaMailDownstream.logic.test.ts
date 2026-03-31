@@ -191,4 +191,16 @@ describe("fwa war-mail refresh edit payload", () => {
 
     expect(payload.content).toBe("New plan\n\nNext refresh <t:1200:R>");
   });
+
+  it("removes stale next-refresh text when refresh is frozen", () => {
+    const payload = buildWarMailRefreshEditPayloadForTest(
+      "Old plan\n\n<@&123456789>\n\nNext refresh <t:999:R>",
+      "New plan",
+      0,
+      { includeNextRefresh: false },
+    );
+
+    expect(payload.content).toBe("New plan\n\n<@&123456789>");
+    expect(payload.allowedMentions).toEqual({ parse: [] });
+  });
 });

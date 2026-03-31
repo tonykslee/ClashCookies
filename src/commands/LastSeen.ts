@@ -232,6 +232,7 @@ export const LastSeen: Command = {
           update: {
             name: player.name,
             clanTag: player.clan?.tag ?? "UNKNOWN",
+            clanName: player.clan?.name ?? null,
             lastSeenAt: inferredAt,
           },
           create: {
@@ -239,6 +240,7 @@ export const LastSeen: Command = {
             tag,
             name: player.name,
             clanTag: player.clan?.tag ?? "UNKNOWN",
+            clanName: player.clan?.name ?? null,
             lastSeenAt: inferredAt,
           },
         });

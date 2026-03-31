@@ -45,6 +45,7 @@ Examples:
   - `/permission add command:fwa:compliance role:@RoleX`
 - Lock only `/fwa police` to role `@RoleX`:
   - `/permission add command:fwa:police role:@RoleX`
+  - Covers `/fwa police configure|show|show-default|show-all|set|set-default|reset|reset-default|send`.
 - Lock only `/fwa weight-health` to role `@RoleX`:
   - `/permission add command:fwa:weight-health role:@RoleX`
 - Lock only `/fwa weight-cookie` to role `@RoleX`:

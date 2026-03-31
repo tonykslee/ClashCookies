@@ -9,11 +9,13 @@ import {
   computeWarSnapshotAttackRowsForTest,
   computeWarComplianceForTest,
   computeWarPointsDeltaForTest,
+  isWarPhaseExpectedActiveForTest,
   isNotifyWarEndedViewButtonCustomId,
   parseNotifyWarEndedViewCustomId,
   resolveEventRenderSyncNumberForTest,
   resolveActiveWarTimingForTest,
   sanitizeWarPlanForEmbedForTest,
+  shouldPreserveWarIdentityDuringOutageRecoveryForTest,
 } from "../src/services/WarEventLogService";
 import {
   resolveParticipationGuildId,
@@ -915,6 +917,71 @@ describe("WarEventLogService.applyWarEndedMaintenanceGuardForTest", () => {
     });
   });
 });
+
+describe("WarEventLogService.isWarPhaseExpectedActiveForTest", () => {
+  it("returns true for preparation before known battle start", () => {
+    expect(
+      isWarPhaseExpectedActiveForTest({
+        state: "preparation",
+        knownWarStartTime: new Date("2026-03-11T14:00:00.000Z"),
+        knownWarEndTime: new Date("2026-03-12T14:00:00.000Z"),
+        now: new Date("2026-03-11T08:00:00.000Z"),
+      }),
+    ).toBe(true);
+  });
+
+  it("returns false for inWar after known battle end", () => {
+    expect(
+      isWarPhaseExpectedActiveForTest({
+        state: "inWar",
+        knownWarStartTime: new Date("2026-03-10T14:00:00.000Z"),
+        knownWarEndTime: new Date("2026-03-11T08:00:00.000Z"),
+        now: new Date("2026-03-11T08:00:01.000Z"),
+      }),
+    ).toBe(false);
+  });
+});
+
+describe(
+  "WarEventLogService.shouldPreserveWarIdentityDuringOutageRecoveryForTest",
+  () => {
+    it("preserves identity for outage recovery timestamp shifts in expected active window", () => {
+      const shouldPreserve = shouldPreserveWarIdentityDuringOutageRecoveryForTest(
+        {
+          previousState: "preparation",
+          candidateState: "preparation",
+          previousWarStartTime: new Date("2026-03-11T14:21:56.000Z"),
+          previousWarEndTime: new Date("2026-03-12T14:21:56.000Z"),
+          warIdentityChanged: true,
+          eventDerivedFromIdentityShift: true,
+          warFetchFailed: false,
+          maintenanceSuspected: true,
+          now: new Date("2026-03-11T08:33:49.914Z"),
+        },
+      );
+
+      expect(shouldPreserve).toBe(true);
+    });
+
+    it("does not preserve identity when active window should already be over", () => {
+      const shouldPreserve = shouldPreserveWarIdentityDuringOutageRecoveryForTest(
+        {
+          previousState: "inWar",
+          candidateState: "inWar",
+          previousWarStartTime: new Date("2026-03-10T14:21:56.000Z"),
+          previousWarEndTime: new Date("2026-03-11T08:30:00.000Z"),
+          warIdentityChanged: true,
+          eventDerivedFromIdentityShift: true,
+          warFetchFailed: false,
+          maintenanceSuspected: true,
+          now: new Date("2026-03-11T08:33:49.914Z"),
+        },
+      );
+
+      expect(shouldPreserve).toBe(false);
+    });
+  },
+);
 
 describe("WarEventLogService.advanceCocWarOutageStateForTest", () => {
   it("marks outage suspected after repeated mixed 503/500 failures", () => {

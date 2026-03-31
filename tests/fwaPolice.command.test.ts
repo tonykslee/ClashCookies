@@ -3,32 +3,44 @@ import { ApplicationCommandOptionType } from "discord.js";
 import { Fwa } from "../src/commands/Fwa";
 
 describe("/fwa police command shape", () => {
-  it("registers police as a subcommand with required clan-tag and toggle booleans", () => {
+  it("registers police as a subcommand group with clan-required template tooling", () => {
     const police = Fwa.options?.find(
       (option) =>
-        option.type === ApplicationCommandOptionType.Subcommand &&
+        option.type === ApplicationCommandOptionType.SubcommandGroup &&
         option.name === "police",
     );
     expect(police).toBeTruthy();
 
-    const clanTagOption = police?.options?.find(
-      (option: { name: string }) => option.name === "clan-tag",
-    );
-    expect(clanTagOption?.required).toBe(true);
-    expect(clanTagOption?.type).toBe(ApplicationCommandOptionType.String);
-    expect(clanTagOption?.autocomplete).toBe(true);
+    const allPoliceSubcommands = (police?.options ?? []) as Array<{
+      name: string;
+      options?: Array<{ name: string; required?: boolean; type?: number; autocomplete?: boolean }>;
+    }>;
+    for (const sub of allPoliceSubcommands) {
+      const clanOption = sub.options?.find((option) => option.name === "clan");
+      expect(clanOption?.required).toBe(true);
+      expect(clanOption?.type).toBe(ApplicationCommandOptionType.String);
+      expect(clanOption?.autocomplete).toBe(true);
+    }
 
-    const enableDmOption = police?.options?.find(
-      (option: { name: string }) => option.name === "enable-dm",
+    const setTemplate = police?.options?.find(
+      (option: { name: string }) => option.name === "set",
     );
-    expect(enableDmOption?.required).toBe(true);
-    expect(enableDmOption?.type).toBe(ApplicationCommandOptionType.Boolean);
+    const setTemplateTextOption = setTemplate?.options?.find(
+      (option: { name: string }) => option.name === "template",
+    );
+    expect(setTemplateTextOption?.required).toBe(true);
+    expect(setTemplateTextOption?.type).toBe(
+      ApplicationCommandOptionType.String,
+    );
 
-    const enableLogOption = police?.options?.find(
-      (option: { name: string }) => option.name === "enable-log",
+    const send = police?.options?.find(
+      (option: { name: string }) => option.name === "send",
     );
-    expect(enableLogOption?.required).toBe(true);
-    expect(enableLogOption?.type).toBe(ApplicationCommandOptionType.Boolean);
+    const sendShowOption = send?.options?.find(
+      (option: { name: string }) => option.name === "show",
+    );
+    expect(sendShowOption?.required).toBe(true);
+    expect(sendShowOption?.type).toBe(ApplicationCommandOptionType.String);
   });
 });
 
