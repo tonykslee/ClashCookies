@@ -24,7 +24,7 @@ describe("/reminders command shape", () => {
     expect(list).toBeTruthy();
     expect(edit).toBeTruthy();
 
-    expect(create?.options?.find((o: any) => o.name === "type")?.required).toBe(true);
+    expect(create?.options?.find((o: any) => o.name === "type")?.required).toBe(false);
     expect(create?.options?.find((o: any) => o.name === "type")?.type).toBe(
       ApplicationCommandOptionType.String,
     );
@@ -33,10 +33,11 @@ describe("/reminders command shape", () => {
       { name: "RAIDS", value: "RAIDS" },
       { name: "GAMES", value: "GAMES" },
     ]);
-    expect(create?.options?.find((o: any) => o.name === "time_left")?.required).toBe(true);
+    expect(create?.options?.find((o: any) => o.name === "time_left")?.required).toBe(false);
     expect(create?.options?.find((o: any) => o.name === "time_left")?.type).toBe(
       ApplicationCommandOptionType.String,
     );
+    expect(create?.options?.find((o: any) => o.name === "channel")?.required).toBe(false);
     expect(create?.options?.find((o: any) => o.name === "channel")?.type).toBe(
       ApplicationCommandOptionType.Channel,
     );

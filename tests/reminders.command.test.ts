@@ -69,7 +69,8 @@ function createInteraction(input: {
       }),
       getChannel: vi.fn((name: string) => {
         if (name !== "channel") return null;
-        return { id: input.channelId ?? "channel-1" };
+        if (!input.channelId) return null;
+        return { id: input.channelId };
       }),
     },
   };
@@ -101,25 +102,47 @@ describe("/reminders command", () => {
     reminderServiceMock.getReminderWithDetails.mockResolvedValue({
       id: "reminder-1",
       guildId: "guild-1",
-      type: ReminderType.WAR_CWL,
-      channelId: "channel-1",
+      type: ReminderType.EVENT,
+      channelId: "",
       isEnabled: false,
       createdByUserId: "user-1",
       updatedByUserId: "user-1",
       createdAt: new Date("2026-03-26T00:00:00.000Z"),
       updatedAt: new Date("2026-03-26T00:00:00.000Z"),
-      offsetsSeconds: [3600],
+      offsetsSeconds: [],
       targets: [],
     });
     reminderServiceMock.listReminderSummariesForGuild.mockResolvedValue([]);
     reminderServiceMock.findReminderSummariesByClan.mockResolvedValue([]);
   });
 
-  it("initializes create flow with preview panel and no selected clans plus FWA/CWL multi-select options", async () => {
+  it("initializes create flow with a blank preview panel when no create args are supplied", async () => {
+    const interaction = createInteraction({ subcommand: "create" });
+
+    await Reminders.run({} as any, interaction as any, {} as any);
+
+    expect(reminderServiceMock.createReminderDraft).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      type: null,
+      channelId: null,
+      offsetsSeconds: [],
+      actorUserId: "user-1",
+    });
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const embed = payload.embeds[0].toJSON();
+    expect(embed.title).toContain("Reminders - Create");
+    expect(String(embed.description)).toContain("Type: _not set_");
+    expect(String(embed.description)).toContain("Times: **not set**");
+    expect(String(embed.description)).toContain("Channel: _not set_");
+    expect(String(embed.description)).toContain("Selected clans:");
+    expect(String(embed.description)).toContain("none selected");
+  });
+
+  it("seeds create flow from optional slash args and keeps FWA/CWL multi-select options", async () => {
     const interaction = createInteraction({
       subcommand: "create",
       type: ReminderType.WAR_CWL,
-      timeLeft: "1h",
+      timeLeft: "1h,30m",
       channelId: "channel-1",
     });
 
@@ -129,7 +152,7 @@ describe("/reminders command", () => {
       guildId: "guild-1",
       type: ReminderType.WAR_CWL,
       channelId: "channel-1",
-      offsetSeconds: 3600,
+      offsetsSeconds: [1800, 3600],
       actorUserId: "user-1",
     });
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
@@ -143,6 +166,23 @@ describe("/reminders command", () => {
     expect(
       descriptions.some((description: string) => description.includes("CWL tracked clan")),
     ).toBe(true);
+  });
+
+  it("returns a clear validation error when optional create time_left is provided but invalid", async () => {
+    const interaction = createInteraction({
+      subcommand: "create",
+      timeLeft: "bad-input",
+    });
+
+    await Reminders.run({} as any, interaction as any, {} as any);
+
+    expect(reminderServiceMock.createReminderDraft).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content:
+          "Invalid `time_left`. Use positive `HhMm` input, for example `1h`, `45m`, or `1h30m`.",
+      }),
+    );
   });
 
   it("shows clear empty-state for list when no reminders exist", async () => {

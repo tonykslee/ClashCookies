@@ -1,4 +1,5 @@
 import { ReminderTargetClanType, ReminderType } from "@prisma/client";
+import { randomUUID } from "crypto";
 import { prisma } from "../../prisma";
 import { resolveCurrentCwlSeasonKey } from "../CwlRegistryService";
 import { normalizeClanTag } from "../PlayerLinkService";
@@ -54,6 +55,21 @@ export type ReminderListRow = {
   targetCount: number;
   createdAt: Date;
   updatedAt: Date;
+};
+
+type ReminderDraftRow = {
+  id: string;
+  guildId: string;
+  type: ReminderType;
+  channelId: string;
+  isEnabled: boolean;
+  createdByUserId: string;
+  updatedByUserId: string;
+  createdAt: Date;
+  updatedAt: Date;
+  offsetsSeconds: number[];
+  targets: Array<{ clanTag: string; clanType: ReminderTargetClanType }>;
+  persistedReminderId: string | null;
 };
 
 /** Purpose: parse `HhMm` reminder offsets into positive total seconds. */
@@ -128,6 +144,8 @@ export function decodeReminderClanTargetValue(
 
 /** Purpose: keep reminder persistence and guild-scoped reads/writes in one service boundary. */
 export class ReminderService {
+  private readonly draftById = new Map<string, ReminderDraftRow>();
+
   /** Purpose: return selectable clan options from both FWA tracked and current-season CWL registries. */
   async listSelectableClanOptions(guildId: string): Promise<ReminderClanOption[]> {
     if (!guildId) return [];
@@ -187,35 +205,45 @@ export class ReminderService {
     });
   }
 
-  /** Purpose: create an initial reminder config draft from slash inputs with one normalized offset. */
+  /** Purpose: create an in-memory reminder draft from optional slash seeds without persisting until save. */
   async createReminderDraft(input: {
     guildId: string;
-    type: ReminderType;
-    channelId: string;
-    offsetSeconds: number;
+    type?: ReminderType | null;
+    channelId?: string | null;
+    offsetSeconds?: number | null;
+    offsetsSeconds?: number[] | null;
     actorUserId: string;
   }): Promise<ReminderWithDetails> {
-    const normalizedOffset = Math.max(1, Math.trunc(Number(input.offsetSeconds)));
-    const created = await prisma.reminder.create({
-      data: {
-        guildId: input.guildId,
-        type: input.type,
-        channelId: input.channelId,
-        isEnabled: false,
-        createdByUserId: input.actorUserId,
-        updatedByUserId: input.actorUserId,
-        times: {
-          create: [{ offsetSeconds: normalizedOffset }],
-        },
-      },
-    });
-    console.log(
-      `[reminders] action=created reminder_id=${created.id} guild=${created.guildId} type=${created.type} channel=${created.channelId} actor=${input.actorUserId}`,
-    );
-    return this.getReminderWithDetails({
-      reminderId: created.id,
+    const normalizedOffsets = normalizeReminderOffsets([
+      ...(Array.isArray(input.offsetsSeconds) ? input.offsetsSeconds : []),
+      Number(input.offsetSeconds ?? 0),
+    ]);
+    const now = new Date();
+    const draftId = `draft_${randomUUID()}`;
+    const created: ReminderDraftRow = {
+      id: draftId,
       guildId: input.guildId,
-    });
+      type:
+        input.type === ReminderType.WAR_CWL ||
+        input.type === ReminderType.RAIDS ||
+        input.type === ReminderType.GAMES
+          ? input.type
+          : ReminderType.EVENT,
+      channelId: sanitizeDraftChannelId(input.channelId),
+      isEnabled: false,
+      createdByUserId: input.actorUserId,
+      updatedByUserId: input.actorUserId,
+      createdAt: now,
+      updatedAt: now,
+      offsetsSeconds: normalizedOffsets,
+      targets: [],
+      persistedReminderId: null,
+    };
+    this.draftById.set(draftId, created);
+    console.log(
+      `[reminders] action=draft_created reminder_id=${created.id} guild=${created.guildId} type=${created.type} channel=${created.channelId || "unset"} actor=${input.actorUserId}`,
+    );
+    return this.getReminderWithDetails({ reminderId: created.id, guildId: input.guildId });
   }
 
   /** Purpose: delete one reminder config with guild scoping and safe no-op semantics. */
@@ -224,6 +252,14 @@ export class ReminderService {
     guildId: string;
     actorUserId: string;
   }): Promise<boolean> {
+    const draft = this.draftById.get(input.reminderId);
+    if (draft && draft.guildId === input.guildId) {
+      this.draftById.delete(input.reminderId);
+      console.log(
+        `[reminders] action=draft_deleted reminder_id=${input.reminderId} guild=${input.guildId} actor=${input.actorUserId}`,
+      );
+      return true;
+    }
     const deleted = await prisma.reminder.deleteMany({
       where: {
         id: input.reminderId,
@@ -245,6 +281,26 @@ export class ReminderService {
     isEnabled: boolean;
     actorUserId: string;
   }): Promise<void> {
+    const draft = this.draftById.get(input.reminderId);
+    if (draft && draft.guildId === input.guildId) {
+      if (input.isEnabled) {
+        const persisted = await this.createOrMergeReminder({
+          guildId: input.guildId,
+          type: draft.type,
+          channelId: draft.channelId,
+          offsetsSeconds: draft.offsetsSeconds,
+          targets: draft.targets,
+          actorUserId: input.actorUserId,
+          isEnabled: true,
+        });
+        draft.persistedReminderId = persisted.id;
+      } else {
+        draft.isEnabled = false;
+        draft.updatedByUserId = input.actorUserId;
+        draft.updatedAt = new Date();
+      }
+      return;
+    }
     await prisma.reminder.updateMany({
       where: {
         id: input.reminderId,
@@ -267,6 +323,13 @@ export class ReminderService {
     type: ReminderType;
     actorUserId: string;
   }): Promise<void> {
+    const draft = this.draftById.get(input.reminderId);
+    if (draft && draft.guildId === input.guildId) {
+      draft.type = input.type;
+      draft.updatedByUserId = input.actorUserId;
+      draft.updatedAt = new Date();
+      return;
+    }
     await prisma.reminder.updateMany({
       where: {
         id: input.reminderId,
@@ -289,6 +352,13 @@ export class ReminderService {
     channelId: string;
     actorUserId: string;
   }): Promise<void> {
+    const draft = this.draftById.get(input.reminderId);
+    if (draft && draft.guildId === input.guildId) {
+      draft.channelId = sanitizeDraftChannelId(input.channelId);
+      draft.updatedByUserId = input.actorUserId;
+      draft.updatedAt = new Date();
+      return;
+    }
     await prisma.reminder.updateMany({
       where: {
         id: input.reminderId,
@@ -311,14 +381,16 @@ export class ReminderService {
     offsetsSeconds: number[];
     actorUserId: string;
   }): Promise<number[]> {
-    const normalized = [
-      ...new Set(
-        input.offsetsSeconds
-          .map((offset) => Math.trunc(Number(offset)))
-          .filter((offset) => Number.isFinite(offset) && offset > 0),
-      ),
-    ].sort((a, b) => a - b);
+    const normalized = normalizeReminderOffsets(input.offsetsSeconds);
     if (normalized.length <= 0) return [];
+
+    const draft = this.draftById.get(input.reminderId);
+    if (draft && draft.guildId === input.guildId) {
+      draft.offsetsSeconds = normalized;
+      draft.updatedByUserId = input.actorUserId;
+      draft.updatedAt = new Date();
+      return normalized;
+    }
 
     await prisma.$transaction(async (tx) => {
       const ownsReminder = await tx.reminder.findFirst({
@@ -363,6 +435,13 @@ export class ReminderService {
         clanType: target.clanType,
       })),
     );
+    const draft = this.draftById.get(input.reminderId);
+    if (draft && draft.guildId === input.guildId) {
+      draft.targets = normalizedTargets;
+      draft.updatedByUserId = input.actorUserId;
+      draft.updatedAt = new Date();
+      return normalizedTargets.length;
+    }
     await prisma.$transaction(async (tx) => {
       const ownsReminder = await tx.reminder.findFirst({
         where: {
@@ -401,6 +480,32 @@ export class ReminderService {
     reminderId: string;
     guildId: string;
   }): Promise<ReminderWithDetails> {
+    const draft = this.draftById.get(input.reminderId);
+    if (draft && draft.guildId === input.guildId) {
+      if (draft.persistedReminderId) {
+        const persistedReminderId = draft.persistedReminderId;
+        this.draftById.delete(input.reminderId);
+        return this.getReminderWithDetails({
+          reminderId: persistedReminderId,
+          guildId: input.guildId,
+        });
+      }
+      const targets = await resolveReminderTargetDisplays(draft.targets);
+      return {
+        id: draft.id,
+        guildId: draft.guildId,
+        type: draft.type,
+        channelId: draft.channelId,
+        isEnabled: draft.isEnabled,
+        createdByUserId: draft.createdByUserId,
+        updatedByUserId: draft.updatedByUserId,
+        createdAt: draft.createdAt,
+        updatedAt: draft.updatedAt,
+        offsetsSeconds: [...draft.offsetsSeconds],
+        targets,
+      };
+    }
+
     const reminder = await prisma.reminder.findFirst({
       where: {
         id: input.reminderId,
@@ -503,6 +608,116 @@ export class ReminderService {
     }));
   }
 
+  /** Purpose: persist one final create-panel config, merging with an identical existing reminder when present. */
+  private async createOrMergeReminder(input: {
+    guildId: string;
+    type: ReminderType;
+    channelId: string;
+    offsetsSeconds: number[];
+    targets: Array<{ clanTag: string; clanType: ReminderTargetClanType }>;
+    actorUserId: string;
+    isEnabled: boolean;
+  }): Promise<ReminderWithDetails> {
+    const type =
+      input.type === ReminderType.WAR_CWL ||
+      input.type === ReminderType.RAIDS ||
+      input.type === ReminderType.GAMES
+        ? input.type
+        : null;
+    const channelId = sanitizeDraftChannelId(input.channelId);
+    const offsetsSeconds = normalizeReminderOffsets(input.offsetsSeconds);
+    const targets = dedupeReminderTargets(
+      input.targets.map((target) => ({
+        clanTag: normalizeClanTag(target.clanTag),
+        clanType: target.clanType,
+      })),
+    );
+    if (!type) {
+      throw new Error("REMINDER_DRAFT_TYPE_REQUIRED");
+    }
+    if (!channelId) {
+      throw new Error("REMINDER_DRAFT_CHANNEL_REQUIRED");
+    }
+    if (offsetsSeconds.length <= 0) {
+      throw new Error("REMINDER_DRAFT_OFFSETS_REQUIRED");
+    }
+    if (targets.length <= 0) {
+      throw new Error("REMINDER_DRAFT_TARGETS_REQUIRED");
+    }
+
+    const candidates = await prisma.reminder.findMany({
+      where: {
+        guildId: input.guildId,
+        type,
+        channelId,
+      },
+      include: {
+        times: {
+          select: { offsetSeconds: true },
+          orderBy: { offsetSeconds: "asc" },
+        },
+        targetClans: {
+          select: { clanTag: true, clanType: true },
+          orderBy: [{ clanType: "asc" }, { clanTag: "asc" }],
+        },
+      },
+    });
+    const matchingExisting = candidates.find((row) => {
+      const rowOffsets = normalizeReminderOffsets(row.times.map((time) => time.offsetSeconds));
+      if (!areNumberListsEqual(rowOffsets, offsetsSeconds)) return false;
+      const rowTargets = dedupeReminderTargets(
+        row.targetClans.map((target) => ({
+          clanTag: normalizeClanTag(target.clanTag),
+          clanType: target.clanType,
+        })),
+      );
+      return areReminderTargetListsEqual(rowTargets, targets);
+    });
+    if (matchingExisting) {
+      await prisma.reminder.update({
+        where: { id: matchingExisting.id },
+        data: {
+          isEnabled: input.isEnabled ? true : matchingExisting.isEnabled,
+          updatedByUserId: input.actorUserId,
+        },
+      });
+      console.log(
+        `[reminders] action=merged_existing reminder_id=${matchingExisting.id} guild=${input.guildId} type=${type} channel=${channelId} actor=${input.actorUserId}`,
+      );
+      return this.getReminderWithDetails({
+        reminderId: matchingExisting.id,
+        guildId: input.guildId,
+      });
+    }
+
+    const created = await prisma.reminder.create({
+      data: {
+        guildId: input.guildId,
+        type,
+        channelId,
+        isEnabled: input.isEnabled,
+        createdByUserId: input.actorUserId,
+        updatedByUserId: input.actorUserId,
+        times: {
+          create: offsetsSeconds.map((offsetSeconds) => ({ offsetSeconds })),
+        },
+        targetClans: {
+          create: targets.map((target) => ({
+            clanTag: target.clanTag,
+            clanType: target.clanType,
+          })),
+        },
+      },
+    });
+    console.log(
+      `[reminders] action=created reminder_id=${created.id} guild=${input.guildId} type=${type} channel=${channelId} actor=${input.actorUserId}`,
+    );
+    return this.getReminderWithDetails({
+      reminderId: created.id,
+      guildId: input.guildId,
+    });
+  }
+
   /** Purpose: decode select-menu target values and persist the normalized reminder target set. */
   async replaceReminderTargetsFromEncodedValues(input: {
     reminderId: string;
@@ -510,7 +725,11 @@ export class ReminderService {
     encodedValues: string[];
     actorUserId: string;
   }): Promise<number> {
+    const allowedValues = new Set(
+      (await this.listSelectableClanOptions(input.guildId)).map((option) => option.value),
+    );
     const decoded = input.encodedValues
+      .filter((value) => allowedValues.has(value))
       .map((value) => decodeReminderClanTargetValue(value))
       .filter(
         (target): target is { clanTag: string; clanType: ReminderTargetClanType } =>
@@ -536,6 +755,33 @@ function sanitizeDisplayText(input: unknown): string | null {
   return normalized.length > 0 ? normalized : null;
 }
 
+/** Purpose: normalize optional draft channel input to a Discord snowflake or empty-string placeholder. */
+function sanitizeDraftChannelId(input: unknown): string {
+  const normalized = String(input ?? "").trim();
+  if (!/^\d+$/.test(normalized)) return "";
+  return normalized;
+}
+
+/** Purpose: normalize offset arrays into sorted unique positive integer seconds. */
+function normalizeReminderOffsets(offsetsSeconds: number[]): number[] {
+  return [
+    ...new Set(
+      offsetsSeconds
+        .map((offset) => Math.trunc(Number(offset)))
+        .filter((offset) => Number.isFinite(offset) && offset > 0),
+    ),
+  ].sort((a, b) => a - b);
+}
+
+/** Purpose: compare two sorted numeric lists with exact length/value matching. */
+function areNumberListsEqual(left: number[], right: number[]): boolean {
+  if (left.length !== right.length) return false;
+  for (let idx = 0; idx < left.length; idx += 1) {
+    if (left[idx] !== right[idx]) return false;
+  }
+  return true;
+}
+
 /** Purpose: dedupe normalized reminder target refs using clan-type + clan-tag identity. */
 function dedupeReminderTargets(
   targets: Array<{ clanTag: string; clanType: ReminderTargetClanType }>,
@@ -554,6 +800,19 @@ function dedupeReminderTargets(
     if (typeSort !== 0) return typeSort;
     return a.clanTag.localeCompare(b.clanTag);
   });
+}
+
+/** Purpose: compare normalized reminder target identity sets for merge detection. */
+function areReminderTargetListsEqual(
+  left: Array<{ clanTag: string; clanType: ReminderTargetClanType }>,
+  right: Array<{ clanTag: string; clanType: ReminderTargetClanType }>,
+): boolean {
+  if (left.length !== right.length) return false;
+  for (let idx = 0; idx < left.length; idx += 1) {
+    if (left[idx]?.clanType !== right[idx]?.clanType) return false;
+    if (left[idx]?.clanTag !== right[idx]?.clanTag) return false;
+  }
+  return true;
 }
 
 /** Purpose: resolve reminder target clan labels with source-aware names for FWA and seasonal CWL tags. */

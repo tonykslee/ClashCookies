@@ -311,7 +311,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
   reminders: {
     summary: "Create, list, and edit scheduled reminder configs by clan scope.",
     details: [
-      "`create` opens a preview-first admin panel with type, time offsets, channel, and selected clans.",
+      "`create` opens a preview-first admin panel with type, time offsets, channel, and selected clans; running with no args starts as a blank setup.",
       "Clan selector combines both FWA tracked clans and current-season CWL tracked clans in one multi-select.",
       "`list` shows scan-friendly reminder rows with type/channel/offsets/target-count/enabled state.",
       "`edit clan:<tag>` resolves reminder configs targeting that normalized clan tag and opens the same panel flow.",
@@ -319,8 +319,9 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "Default access is admin-only unless role policy is changed with `/permission add`.",
     ],
     examples: [
+      "/reminders create",
       "/reminders create type:WAR_CWL time_left:1h channel:#war-reminders",
-      "/reminders create type:RAIDS time_left:30m channel:#raid-reminders",
+      "/reminders create type:RAIDS time_left:30m,1h channel:#raid-reminders",
       "/reminders list",
       "/reminders edit clan:#2QG2C08UP",
     ],
