@@ -14,6 +14,7 @@ const prismaMock = vi.hoisted(() => ({
 
 const fwaPoliceServiceMock = vi.hoisted(() => ({
   setClanConfig: vi.fn(),
+  getStatusReport: vi.fn(),
   getTemplatePreviewBundle: vi.fn(),
   setClanTemplate: vi.fn(),
   setDefaultTemplate: vi.fn(),
@@ -36,6 +37,7 @@ import { PointsSyncService } from "../src/services/PointsSyncService";
 
 function makeInteraction(input: {
   subcommand:
+    | "status"
     | "configure"
     | "show"
     | "show-default"
@@ -45,12 +47,13 @@ function makeInteraction(input: {
     | "reset"
     | "reset-default"
     | "send";
-  clan: string;
+  clan?: string | null;
   violation?: string;
   template?: string;
   show?: "DM" | "LOG";
   enableDm?: boolean;
   enableLog?: boolean;
+  isAdmin?: boolean;
 }) {
   const deferReply = vi.fn().mockResolvedValue(undefined);
   const editReply = vi.fn().mockResolvedValue(undefined);
@@ -61,7 +64,7 @@ function makeInteraction(input: {
     user: { id: "111111111111111111" },
     client: {},
     memberPermissions: {
-      has: vi.fn(() => true),
+      has: vi.fn(() => input.isAdmin ?? true),
     },
     deferReply,
     editReply,
@@ -71,7 +74,7 @@ function makeInteraction(input: {
       getSubcommand: vi.fn(() => input.subcommand),
       getString: vi.fn((name: string) => {
         if (name === "visibility") return null;
-        if (name === "clan") return input.clan;
+        if (name === "clan") return input.clan ?? null;
         if (name === "violation") return input.violation ?? null;
         if (name === "template") return input.template ?? null;
         if (name === "show") return input.show ?? null;
@@ -96,6 +99,34 @@ describe("/fwa police command output", () => {
     );
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.clanWarHistory.findFirst.mockResolvedValue(null);
+    fwaPoliceServiceMock.getStatusReport.mockResolvedValue({
+      ok: true,
+      report: {
+        scope: "guild",
+        policeEnabled: true,
+        dmEnabled: true,
+        logEnabled: true,
+        storedPoliceLogChannelOverrideId: null,
+        storedBotLogChannelId: "bot-log-1",
+        storedBotLogChannelHealth: "ok",
+        fallbackBehavior:
+          "tracked-clan log-channel when configured, otherwise /bot-logs fallback, otherwise unresolved",
+        enabledViolationTypes: [
+          "EARLY_NON_MIRROR_TRIPLE",
+          "STRICT_WINDOW_MIRROR_MISS_WIN",
+        ],
+        trackedClanSummary: {
+          total: 2,
+          policeEnabled: 2,
+          dmEnabled: 2,
+          logEnabled: 2,
+          withTrackedLogChannel: 1,
+          logEnabledWithoutTrackedLogChannel: 1,
+        },
+        clan: null,
+        warnings: [],
+      },
+    });
     fwaPoliceServiceMock.getTemplatePreviewBundle.mockResolvedValue({
       clanTag: "#2QG2C08UP",
       clanName: "Alpha",
@@ -149,6 +180,91 @@ describe("/fwa police command output", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("renders guild police status with effective fallback details", async () => {
+    const run = makeInteraction({
+      subcommand: "status",
+    });
+    await Fwa.run({} as any, run.interaction as any, {} as any);
+
+    expect(fwaPoliceServiceMock.getStatusReport).toHaveBeenCalledWith({
+      client: run.interaction.client,
+      guildId: "guild-1",
+      clanTag: null,
+    });
+    const content = String(run.editReply.mock.calls[0]?.[0]?.content ?? "");
+    expect(content).toContain("FWA Police status (guild scope)");
+    expect(content).toContain("FWA Police enabled: yes");
+    expect(content).toContain("DM sending enabled: yes");
+    expect(content).toContain("Stored /bot-logs fallback: <#bot-log-1> (ok)");
+    expect(content).toContain("Effective fallback behavior:");
+  });
+
+  it("renders clan-scoped status and warns when resolved channel is unavailable", async () => {
+    fwaPoliceServiceMock.getStatusReport.mockResolvedValue({
+      ok: true,
+      report: {
+        scope: "clan",
+        policeEnabled: true,
+        dmEnabled: true,
+        logEnabled: true,
+        storedPoliceLogChannelOverrideId: null,
+        storedBotLogChannelId: "bot-log-1",
+        storedBotLogChannelHealth: "ok",
+        fallbackBehavior:
+          "tracked-clan log-channel when configured, otherwise /bot-logs fallback, otherwise unresolved",
+        enabledViolationTypes: ["EARLY_NON_MIRROR_TRIPLE"],
+        trackedClanSummary: {
+          total: 1,
+          policeEnabled: 1,
+          dmEnabled: 1,
+          logEnabled: 1,
+          withTrackedLogChannel: 1,
+          logEnabledWithoutTrackedLogChannel: 0,
+        },
+        clan: {
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          policeEnabled: true,
+          dmEnabled: true,
+          logEnabled: true,
+          storedTrackedLogChannelId: "clan-log-1",
+          storedTrackedLogChannelHealth: "missing_or_inaccessible",
+          effectiveLogChannelId: "clan-log-1",
+          effectiveLogChannelSource: "tracked_clan",
+          effectiveLogChannelHealth: "missing_or_inaccessible",
+        },
+        warnings: ["Effective log destination <#clan-log-1> is missing or inaccessible."],
+      },
+    });
+
+    const run = makeInteraction({
+      subcommand: "status",
+      clan: "#2QG2C08UP",
+    });
+    await Fwa.run({} as any, run.interaction as any, {} as any);
+
+    const content = String(run.editReply.mock.calls[0]?.[0]?.content ?? "");
+    expect(content).toContain("FWA Police status (clan scope)");
+    expect(content).toContain("Clan: Alpha (#2QG2C08UP)");
+    expect(content).toContain(
+      "Effective log destination: <#clan-log-1> (tracked-clan log-channel, missing or inaccessible)",
+    );
+    expect(content).toContain("Warnings:");
+    expect(content).toContain("missing or inaccessible");
+  });
+
+  it("requires administrator permissions for police status", async () => {
+    const run = makeInteraction({
+      subcommand: "status",
+      isAdmin: false,
+    });
+    await Fwa.run({} as any, run.interaction as any, {} as any);
+
+    expect(fwaPoliceServiceMock.getStatusReport).not.toHaveBeenCalled();
+    const content = String(run.editReply.mock.calls[0]?.[0]?.content ?? "");
+    expect(content).toContain("Only administrators can use `/fwa police status`.");
   });
 
   it("renders configure summary and persists toggle values", async () => {

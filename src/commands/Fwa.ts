@@ -41,7 +41,10 @@ import {
   WarComplianceService,
   type WarComplianceIssue,
 } from "../services/WarComplianceService";
-import { fwaPoliceService } from "../services/FwaPoliceService";
+import {
+  fwaPoliceService,
+  type FwaPoliceStatusReport,
+} from "../services/FwaPoliceService";
 import {
   FWA_POLICE_VIOLATION_CHOICES,
   normalizeFwaPoliceText,
@@ -1127,6 +1130,72 @@ async function canViewFwaMatchMailDebug(
   if (!interaction.inGuild() || !interaction.guildId) return false;
   const permissionService = new CommandPermissionService();
   return permissionService.canUseCommand("fwa:mail:send", interaction);
+}
+
+function formatFwaPoliceBoolean(value: boolean): string {
+  return value ? "yes" : "no";
+}
+
+function formatFwaPoliceChannelMention(channelId: string | null): string {
+  return channelId ? `<#${channelId}>` : "not configured";
+}
+
+function formatFwaPoliceChannelHealthLabel(health: string): string {
+  if (health === "ok") return "ok";
+  if (health === "not_configured") return "not configured";
+  if (health === "missing_or_inaccessible") return "missing or inaccessible";
+  if (health === "not_text_sendable") return "not text-sendable";
+  return health;
+}
+
+function formatFwaPoliceLogSourceLabel(source: string): string {
+  if (source === "tracked_clan") return "tracked-clan log-channel";
+  if (source === "bot_logs") return "/bot-logs fallback";
+  return "unresolved";
+}
+
+function formatFwaPoliceStatusReport(report: FwaPoliceStatusReport): string {
+  const lines: string[] = [
+    `FWA Police status (${report.scope === "clan" ? "clan scope" : "guild scope"})`,
+    `FWA Police enabled: ${formatFwaPoliceBoolean(report.policeEnabled)}`,
+    `DM sending enabled: ${formatFwaPoliceBoolean(report.dmEnabled)}`,
+    `Log sending enabled: ${formatFwaPoliceBoolean(report.logEnabled)}`,
+    `Stored police log override: ${formatFwaPoliceChannelMention(report.storedPoliceLogChannelOverrideId)}`,
+    `Stored /bot-logs fallback: ${formatFwaPoliceChannelMention(report.storedBotLogChannelId)} (${formatFwaPoliceChannelHealthLabel(report.storedBotLogChannelHealth)})`,
+    `Effective fallback behavior: ${report.fallbackBehavior}`,
+  ];
+
+  if (report.clan) {
+    lines.push(
+      `Clan: ${report.clan.clanName ?? `#${report.clan.clanTag}`} (${report.clan.clanTag})`,
+      `Stored tracked-clan log-channel: ${formatFwaPoliceChannelMention(report.clan.storedTrackedLogChannelId)} (${formatFwaPoliceChannelHealthLabel(report.clan.storedTrackedLogChannelHealth)})`,
+      `Effective log destination: ${formatFwaPoliceChannelMention(report.clan.effectiveLogChannelId)} (${formatFwaPoliceLogSourceLabel(report.clan.effectiveLogChannelSource)}, ${formatFwaPoliceChannelHealthLabel(report.clan.effectiveLogChannelHealth)})`,
+    );
+  } else {
+    lines.push(
+      `Tracked clans: ${report.trackedClanSummary.total}`,
+      `Tracked clans with police enabled: ${report.trackedClanSummary.policeEnabled}`,
+      `Tracked clans with DM enabled: ${report.trackedClanSummary.dmEnabled}`,
+      `Tracked clans with log enabled: ${report.trackedClanSummary.logEnabled}`,
+      `Tracked clans with stored log-channel: ${report.trackedClanSummary.withTrackedLogChannel}`,
+      `Log-enabled clans without tracked log-channel: ${report.trackedClanSummary.logEnabledWithoutTrackedLogChannel}`,
+    );
+  }
+
+  lines.push(
+    `Enabled enforcement types: ${report.enabledViolationTypes.join(", ")} (canonical set)`,
+  );
+
+  if (report.warnings.length > 0) {
+    lines.push("", "Warnings:");
+    for (const warning of report.warnings) {
+      lines.push(`- ${warning}`);
+    }
+  } else {
+    lines.push("", "Warnings: none");
+  }
+
+  return lines.join("\n");
 }
 
 function normalizeTag(input: string): string {
@@ -11759,6 +11828,22 @@ export const Fwa: Command = {
       type: ApplicationCommandOptionType.SubcommandGroup,
       options: [
         {
+          name: "status",
+          description:
+            "Show effective FWA police configuration and log-resolution status",
+          type: ApplicationCommandOptionType.Subcommand,
+          options: [
+            {
+              name: "clan",
+              description:
+                "Optional tracked clan tag (with or without #) for clan-specific resolution",
+              type: ApplicationCommandOptionType.String,
+              required: false,
+              autocomplete: true,
+            },
+          ],
+        },
+        {
           name: "configure",
           description: "Configure automatic FWA warplan-violation enforcement",
           type: ApplicationCommandOptionType.Subcommand,
@@ -12568,6 +12653,39 @@ export const Fwa: Command = {
     if (subcommandGroup === "police") {
       if (!interaction.inGuild() || !interaction.guildId) {
         await editReplySafe("This command can only be used in a server.");
+        return;
+      }
+
+      if (subcommand === "status") {
+        if (
+          !hasOwnerBypassUserId(interaction.user.id) &&
+          !interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)
+        ) {
+          await editReplySafe(
+            "Only administrators can use `/fwa police status`.",
+          );
+          return;
+        }
+        const rawStatusClanTag = interaction.options.getString("clan", false);
+        const statusClanTag = rawStatusClanTag
+          ? normalizeTag(rawStatusClanTag)
+          : null;
+        if (rawStatusClanTag && !statusClanTag) {
+          await editReplySafe("Please provide a valid optional `clan` tag.");
+          return;
+        }
+
+        const status = await fwaPoliceService.getStatusReport({
+          client: interaction.client,
+          guildId: interaction.guildId,
+          clanTag: statusClanTag,
+        });
+        if (!status.ok) {
+          await editReplySafe(`Clan ${status.clanTag} is not in tracked clans.`);
+          return;
+        }
+
+        await editReplySafe(formatFwaPoliceStatusReport(status.report), [], []);
         return;
       }
 

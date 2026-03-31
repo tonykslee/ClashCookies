@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const prismaMock = vi.hoisted(() => ({
   trackedClan: {
     findFirst: vi.fn(),
+    findMany: vi.fn(),
     update: vi.fn(),
   },
   currentWar: {
@@ -94,6 +95,16 @@ describe("FwaPoliceService", () => {
       notifyChannelId: "channel-2",
       mailChannelId: null,
     });
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      {
+        tag: "#2QG2C08UP",
+        name: "Alpha",
+        loseStyle: "TRIPLE_TOP_30",
+        fwaPoliceDmEnabled: false,
+        fwaPoliceLogEnabled: false,
+        logChannelId: "channel-1",
+      },
+    ]);
     prismaMock.trackedClan.update.mockResolvedValue({
       tag: "#2QG2C08UP",
       name: "Alpha",
@@ -309,6 +320,76 @@ describe("FwaPoliceService", () => {
       error: "LOG_CHANNEL_NOT_CONFIGURED",
     });
     expect(client.channels.fetch).not.toHaveBeenCalled();
+  });
+
+  it("resolves clan status LOG destination with tracked-clan priority then /bot-logs fallback", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      {
+        tag: "#2QG2C08UP",
+        name: "Alpha",
+        loseStyle: "TRIPLE_TOP_30",
+        fwaPoliceDmEnabled: true,
+        fwaPoliceLogEnabled: true,
+        logChannelId: null,
+      },
+    ]);
+    botLogServiceMock.getChannelId.mockResolvedValue("channel-bot-log");
+    const client = {
+      channels: {
+        fetch: vi.fn().mockResolvedValue({
+          isTextBased: () => true,
+          send: vi.fn(),
+        }),
+      },
+    } as any;
+    const service = new FwaPoliceService();
+
+    const result = await service.getStatusReport({
+      client,
+      guildId: "guild-1",
+      clanTag: "#2QG2C08UP",
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.report.scope).toBe("clan");
+      expect(result.report.clan?.effectiveLogChannelSource).toBe("bot_logs");
+      expect(result.report.clan?.effectiveLogChannelId).toBe("channel-bot-log");
+      expect(result.report.warnings).toEqual([]);
+    }
+  });
+
+  it("surfaces unresolved-channel warning in clan status when no tracked log or /bot-logs fallback exists", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      {
+        tag: "#2QG2C08UP",
+        name: "Alpha",
+        loseStyle: "TRIPLE_TOP_30",
+        fwaPoliceDmEnabled: true,
+        fwaPoliceLogEnabled: true,
+        logChannelId: null,
+      },
+    ]);
+    botLogServiceMock.getChannelId.mockResolvedValue(null);
+    const client = {
+      channels: {
+        fetch: vi.fn(),
+      },
+    } as any;
+    const service = new FwaPoliceService();
+
+    const result = await service.getStatusReport({
+      client,
+      guildId: "guild-1",
+      clanTag: "#2QG2C08UP",
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.report.clan?.effectiveLogChannelSource).toBe("none");
+      expect(result.report.clan?.effectiveLogChannelId).toBeNull();
+      expect(result.report.warnings.some((line) => line.includes("No effective log channel resolved"))).toBe(true);
+    }
   });
 
   it("uses canonical compliance evaluation and sends DM only when dm toggle is enabled", async () => {
