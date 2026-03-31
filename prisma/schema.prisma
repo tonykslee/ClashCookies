@@ -260,34 +260,6 @@ model FwaPoliceHandledViolation {
   @@index([clanTag, warId, createdAt])
 }
 
-enum FwaPoliceViolation {
-  EARLY_NON_MIRROR_TRIPLE
-  STRICT_WINDOW_MIRROR_MISS_WIN
-  STRICT_WINDOW_MIRROR_MISS_LOSS
-  EARLY_NON_MIRROR_2STAR
-  ANY_3STAR
-  LOWER20_ANY_STARS
-}
-
-model FwaPoliceClanTemplate {
-  clanTag   String
-  violation FwaPoliceViolation
-  template  String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@id([clanTag, violation])
-  @@index([clanTag])
-  @@index([violation])
-}
-
-model FwaPoliceDefaultTemplate {
-  violation FwaPoliceViolation @id
-  template  String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-}
-
 model CwlTrackedClan {
   id        Int      @id @default(autoincrement())
   season    String

@@ -3,7 +3,7 @@ import { ApplicationCommandOptionType } from "discord.js";
 import { Fwa } from "../src/commands/Fwa";
 
 describe("/fwa police command shape", () => {
-  it("registers police status with optional clan and keeps clan-required template tooling", () => {
+  it("registers only status/configure/send subcommands with expected options", () => {
     const police = Fwa.options?.find(
       (option) =>
         option.type === ApplicationCommandOptionType.SubcommandGroup &&
@@ -15,6 +15,12 @@ describe("/fwa police command shape", () => {
       name: string;
       options?: Array<{ name: string; required?: boolean; type?: number; autocomplete?: boolean }>;
     }>;
+    expect(allPoliceSubcommands.map((sub) => sub.name)).toEqual([
+      "status",
+      "configure",
+      "send",
+    ]);
+
     for (const sub of allPoliceSubcommands) {
       if (sub.name === "status") continue;
       const clanOption = sub.options?.find((option) => option.name === "clan");
@@ -32,17 +38,6 @@ describe("/fwa police command shape", () => {
     expect(statusClanOption?.required).toBe(false);
     expect(statusClanOption?.type).toBe(ApplicationCommandOptionType.String);
     expect(statusClanOption?.autocomplete).toBe(true);
-
-    const setTemplate = police?.options?.find(
-      (option: { name: string }) => option.name === "set",
-    );
-    const setTemplateTextOption = setTemplate?.options?.find(
-      (option: { name: string }) => option.name === "template",
-    );
-    expect(setTemplateTextOption?.required).toBe(true);
-    expect(setTemplateTextOption?.type).toBe(
-      ApplicationCommandOptionType.String,
-    );
 
     const send = police?.options?.find(
       (option: { name: string }) => option.name === "send",
