@@ -224,7 +224,7 @@ function isTextChannelWithSend(
   send: (input: {
     content?: string;
     embeds?: EmbedBuilder[];
-    allowedMentions?: { users?: string[] };
+    allowedMentions?: { users?: string[]; parse?: [] };
   }) => Promise<unknown>;
 } {
   if (!channel || typeof channel !== "object") return false;
@@ -366,6 +366,33 @@ function resolveViolationTimeFallbackLabel(raw: string | null | undefined): stri
   return normalized;
 }
 
+function resolveStarsBeforeHitFallbackValue(
+  raw: number | string | null | undefined,
+): number | null {
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return null;
+  const normalized = Math.trunc(parsed);
+  return normalized >= 0 ? normalized : null;
+}
+
+function formatStarsBeforeHitValue(starsBeforeHit: number | null): string {
+  if (starsBeforeHit === null || !Number.isFinite(starsBeforeHit)) return "?";
+  return String(Math.max(0, Math.trunc(starsBeforeHit)));
+}
+
+function resolveMentionUserId(raw: string | null | undefined): string | null {
+  const normalized = String(raw ?? "").trim();
+  if (!/^\d+$/.test(normalized)) return null;
+  return normalized;
+}
+
+function buildSingleUserAllowedMentions(userId: string | null): {
+  users: string[];
+  parse: [];
+} {
+  return userId ? { users: [userId], parse: [] } : { users: [], parse: [] };
+}
+
 function resolveWarClanDisplayName(input: {
   preferredClanName: string | null | undefined;
   fallbackClanName: string | null | undefined;
@@ -400,6 +427,7 @@ function buildPoliceMessagePresentation(input: {
   matchTypeContext: MatchType;
   expectedOutcome: "WIN" | "LOSE" | null;
   violationTimeRemaining: string;
+  starsBeforeHit: number | null;
   emojis: FwaPoliceResolvedEmojiState;
 }): { renderedTemplate: string; embed: EmbedBuilder } {
   const metadata = FWA_POLICE_VIOLATION_METADATA[input.violation];
@@ -416,7 +444,9 @@ function buildPoliceMessagePresentation(input: {
       emojis: input.emojis,
     })}`,
     `**Violation**: ${metadata.label}`,
-    `**Violation Time**: ${input.violationTimeRemaining}`,
+    `**Violation Time**: ${input.violationTimeRemaining} | **Clan stars before hit**: ${formatStarsBeforeHitValue(
+      input.starsBeforeHit,
+    )}\u2605`,
   ].join("\n");
   const embed = new EmbedBuilder()
     .setColor(0xed4245)
@@ -582,26 +612,41 @@ export class FwaPoliceService {
     return normalizeFwaPoliceText(botLogChannelId) || null;
   }
 
-  /** Purpose: compute a deterministic `Xh Ym left` violation-time label from violating attack timing. */
-  private async resolveViolationTimeRemaining(input: {
+  /** Purpose: resolve `Violation Time` and stars-before-hit from shared breach context and war-attack chronology. */
+  private async resolveViolationPresentationContext(input: {
     clanTag: string;
     warId: number;
     playerTag: string;
     issue: WarComplianceIssue;
     reportWarEndTime: Date | null;
-  }): Promise<string> {
+  }): Promise<{ violationTimeRemaining: string; starsBeforeHit: number | null }> {
     const normalizedClanTag = normalizeClanTag(input.clanTag);
     const normalizedPlayerTag = normalizePlayerTag(input.playerTag);
+    const fallbackTimeRemaining =
+      resolveViolationTimeFallbackLabel(input.issue.breachContext?.timeRemaining) ||
+      "unknown left";
+    const fallbackStarsBeforeHit = resolveStarsBeforeHitFallbackValue(
+      input.issue.breachContext?.starsAtBreach,
+    );
     if (!normalizedClanTag || !normalizedPlayerTag) {
-      return (
-        resolveViolationTimeFallbackLabel(input.issue.breachContext?.timeRemaining) ||
-        "unknown left"
-      );
+      return {
+        violationTimeRemaining: fallbackTimeRemaining,
+        starsBeforeHit: fallbackStarsBeforeHit,
+      };
     }
+
+    const normalizedWarId = Math.trunc(Number(input.warId));
+    if (!Number.isFinite(normalizedWarId) || normalizedWarId <= 0) {
+      return {
+        violationTimeRemaining: fallbackTimeRemaining,
+        starsBeforeHit: fallbackStarsBeforeHit,
+      };
+    }
+
     const breachAttackOrder = resolveBreachAttackOrder(input.issue);
     const baseWhere = {
       clanTag: normalizedClanTag,
-      warId: Math.trunc(Number(input.warId)),
+      warId: normalizedWarId,
       playerTag: normalizedPlayerTag,
     };
     const matchingAttackRow =
@@ -630,14 +675,51 @@ export class FwaPoliceService {
           warEndTime: true,
         },
       }));
-    const computed =
+    const violationTimeRemaining =
       formatViolationTimeRemaining({
         attackSeenAt: fallbackAttackRow?.attackSeenAt ?? null,
         warEndTime: fallbackAttackRow?.warEndTime ?? input.reportWarEndTime ?? null,
       }) ||
-      resolveViolationTimeFallbackLabel(input.issue.breachContext?.timeRemaining) ||
-      "unknown left";
-    return computed;
+      fallbackTimeRemaining;
+
+    if (fallbackStarsBeforeHit !== null) {
+      return {
+        violationTimeRemaining,
+        starsBeforeHit: fallbackStarsBeforeHit,
+      };
+    }
+
+    if (breachAttackOrder === null) {
+      return {
+        violationTimeRemaining,
+        starsBeforeHit: null,
+      };
+    }
+
+    const priorWarAttacks = await prisma.warAttacks.findMany({
+      where: {
+        clanTag: normalizedClanTag,
+        warId: normalizedWarId,
+        attackOrder: {
+          gt: 0,
+          lt: breachAttackOrder,
+        },
+      },
+      select: {
+        trueStars: true,
+      },
+    });
+    const computedStarsBeforeHit = priorWarAttacks.reduce((sum, row) => {
+      const value = Number(row.trueStars ?? 0);
+      return sum + (Number.isFinite(value) && value > 0 ? value : 0);
+    }, 0);
+
+    return {
+      violationTimeRemaining,
+      starsBeforeHit: Number.isFinite(computedStarsBeforeHit)
+        ? Math.max(0, Math.trunc(computedStarsBeforeHit))
+        : null,
+    };
   }
 
   /** Purpose: persist clan-scoped police automation toggles on the tracked-clan source of truth. */
@@ -854,6 +936,7 @@ export class FwaPoliceService {
         matchTypeContext: input.context.matchTypeContext,
         expectedOutcome: input.context.expectedOutcome,
         violationTimeRemaining: "23h 15m left",
+        starsBeforeHit: null,
         emojis,
       });
       const isApplicable = metadata.isApplicable(toApplicabilityContext(input.context));
@@ -947,8 +1030,11 @@ export class FwaPoliceService {
       matchTypeContext: context.matchTypeContext,
       expectedOutcome: context.expectedOutcome,
       violationTimeRemaining: "23h 15m left",
+      starsBeforeHit: null,
       emojis,
     });
+    const mentionUserId = resolveMentionUserId(input.requestingUserId);
+    const allowedMentions = buildSingleUserAllowedMentions(mentionUserId);
 
     if (input.destination === "DM") {
       const user = await input.client.users.fetch(input.requestingUserId).catch(() => null);
@@ -957,8 +1043,9 @@ export class FwaPoliceService {
         return { ok: false, error: "DM_UNAVAILABLE" };
       }
       await dm.send({
+        content: presentation.renderedTemplate,
         embeds: [presentation.embed],
-        allowedMentions: { users: [input.requestingUserId] },
+        allowedMentions,
       });
       return { ok: true, deliveredTo: "DM", rendered: presentation.renderedTemplate };
     }
@@ -977,8 +1064,9 @@ export class FwaPoliceService {
       return { ok: false, error: "LOG_CHANNEL_UNAVAILABLE" };
     }
     await channel.send({
+      content: presentation.renderedTemplate,
       embeds: [presentation.embed],
-      allowedMentions: { users: [input.requestingUserId] },
+      allowedMentions,
     });
     return { ok: true, deliveredTo: "LOG", rendered: presentation.renderedTemplate };
   }
@@ -1111,7 +1199,7 @@ export class FwaPoliceService {
       created += 1;
 
       const violation = classifyFwaPoliceViolation({ issue, context });
-      const violationTimeRemaining = await this.resolveViolationTimeRemaining({
+      const violationPresentation = await this.resolveViolationPresentationContext({
         clanTag: normalizedClanTag,
         warId: effectiveWarId,
         playerTag,
@@ -1138,9 +1226,12 @@ export class FwaPoliceService {
         warClanDisplayName,
         matchTypeContext: report.matchType,
         expectedOutcome: report.expectedOutcome,
-        violationTimeRemaining,
+        violationTimeRemaining: violationPresentation.violationTimeRemaining,
+        starsBeforeHit: violationPresentation.starsBeforeHit,
         emojis,
       });
+      const mentionUserId = resolveMentionUserId(linkedDiscordUserId);
+      const allowedMentions = buildSingleUserAllowedMentions(mentionUserId);
 
       let dmSentAt: Date | null = null;
       let logSentAt: Date | null = null;
@@ -1153,10 +1244,9 @@ export class FwaPoliceService {
           const dm = await user?.createDM().catch(() => null);
           if (dm) {
             await dm.send({
+              content: presentation.renderedTemplate,
               embeds: [presentation.embed],
-              allowedMentions: {
-                users: linkedDiscordUserId ? [linkedDiscordUserId] : [],
-              },
+              allowedMentions,
             });
             dmSentAt = new Date();
             dmSent += 1;
@@ -1171,10 +1261,9 @@ export class FwaPoliceService {
       if (enableLog && canSendLog) {
         try {
           await resolvedLogChannel.send({
+            content: presentation.renderedTemplate,
             embeds: [presentation.embed],
-            allowedMentions: {
-              users: linkedDiscordUserId ? [linkedDiscordUserId] : [],
-            },
+            allowedMentions,
           });
           logSentAt = new Date();
           logSent += 1;
