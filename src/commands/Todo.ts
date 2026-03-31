@@ -446,13 +446,26 @@ export const Todo: Command = {
       required: false,
       choices: TODO_TYPES.map((type) => ({ name: type, value: type })),
     },
+    {
+      name: "visibility",
+      description: "Response visibility",
+      type: ApplicationCommandOptionType.String,
+      required: false,
+      choices: [
+        { name: "private", value: "private" },
+        { name: "public", value: "public" },
+      ],
+    },
   ],
   run: async (
     _client: Client,
     interaction: ChatInputCommandInteraction,
     cocService: CoCService,
   ) => {
-    await interaction.deferReply({ ephemeral: true });
+    const visibility =
+      interaction.options.getString("visibility", false) ?? "private";
+    const isPublic = visibility === "public";
+    await interaction.deferReply({ ephemeral: !isPublic });
 
     const explicitTypeInput = interaction.options.getString("type", false);
     const explicitType = explicitTypeInput
