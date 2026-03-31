@@ -3,7 +3,6 @@ import {
   classifyFwaPoliceViolation,
   FWA_POLICE_VIOLATIONS,
   renderFwaPoliceTemplate,
-  validateFwaPoliceTemplatePlaceholders,
 } from "../src/services/FwaPoliceTemplateCatalog";
 
 describe("FwaPoliceTemplateCatalog", () => {
@@ -16,21 +15,6 @@ describe("FwaPoliceTemplateCatalog", () => {
       "ANY_3STAR",
       "LOWER20_ANY_STARS",
     ]);
-  });
-
-  it("rejects unknown placeholders while allowing offender/user", () => {
-    const valid = validateFwaPoliceTemplatePlaceholders(
-      "{offender} -> {user}",
-    );
-    const invalid = validateFwaPoliceTemplatePlaceholders(
-      "{offender} {bad_token}",
-    );
-
-    expect(valid).toEqual({ ok: true });
-    expect(invalid).toEqual({
-      ok: false,
-      unknownPlaceholders: ["bad_token"],
-    });
   });
 
   it("renders offender/user placeholders deterministically", () => {

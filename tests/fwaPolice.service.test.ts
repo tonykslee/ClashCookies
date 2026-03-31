@@ -12,16 +12,6 @@ const prismaMock = vi.hoisted(() => ({
   clanWarPlan: {
     findFirst: vi.fn(),
   },
-  fwaPoliceClanTemplate: {
-    findUnique: vi.fn(),
-    upsert: vi.fn(),
-    deleteMany: vi.fn(),
-  },
-  fwaPoliceDefaultTemplate: {
-    findUnique: vi.fn(),
-    upsert: vi.fn(),
-    deleteMany: vi.fn(),
-  },
   fwaPoliceHandledViolation: {
     create: vi.fn(),
     update: vi.fn(),
@@ -117,12 +107,6 @@ describe("FwaPoliceService", () => {
     prismaMock.fwaPoliceHandledViolation.update.mockResolvedValue({});
     prismaMock.currentWar.findFirst.mockResolvedValue(null);
     prismaMock.clanWarPlan.findFirst.mockResolvedValue(null);
-    prismaMock.fwaPoliceClanTemplate.findUnique.mockResolvedValue(null);
-    prismaMock.fwaPoliceDefaultTemplate.findUnique.mockResolvedValue(null);
-    prismaMock.fwaPoliceClanTemplate.upsert.mockResolvedValue({});
-    prismaMock.fwaPoliceDefaultTemplate.upsert.mockResolvedValue({});
-    prismaMock.fwaPoliceClanTemplate.deleteMany.mockResolvedValue({});
-    prismaMock.fwaPoliceDefaultTemplate.deleteMany.mockResolvedValue({});
     playerLinkServiceMock.listPlayerLinksForClanMembers.mockResolvedValue([]);
     botLogServiceMock.getChannelId.mockResolvedValue(null);
     prismaMock.warAttacks.findFirst.mockResolvedValue({
@@ -162,44 +146,6 @@ describe("FwaPoliceService", () => {
         },
       }),
     );
-  });
-
-  it("rejects unknown placeholders on clan template save", async () => {
-    const service = new FwaPoliceService();
-    const result = await service.setClanTemplate({
-      clanTag: "#2QG2C08UP",
-      violation: "EARLY_NON_MIRROR_TRIPLE",
-      template: "Bad token {unknown_placeholder}",
-    });
-
-    expect(result).toEqual({
-      ok: false,
-      error: "INVALID_PLACEHOLDER",
-      detail: "unknown_placeholder",
-    });
-    expect(prismaMock.fwaPoliceClanTemplate.upsert).not.toHaveBeenCalled();
-  });
-
-  it("resolves preview source precedence as Custom over Default over Built-in", async () => {
-    prismaMock.fwaPoliceClanTemplate.findUnique.mockResolvedValue({
-      template: "Clan custom {offender}",
-    });
-    prismaMock.fwaPoliceDefaultTemplate.findUnique.mockResolvedValue({
-      template: "Global default {offender}",
-    });
-
-    const service = new FwaPoliceService();
-    const bundle = await service.getTemplatePreviewBundle({
-      client: {} as any,
-      guildId: "guild-1",
-      clanTag: "#2QG2C08UP",
-      sampleUserId: "111111111111111111",
-    });
-
-    expect(bundle).not.toBeNull();
-    const first = bundle?.rows[0];
-    expect(first?.effectiveSource).toBe("Custom");
-    expect(first?.effectiveTemplate).toBe("Clan custom {offender}");
   });
 
   it("fails LOG sample send when clan log channel is not configured", async () => {
@@ -269,6 +215,9 @@ describe("FwaPoliceService", () => {
     expect(logSend).toHaveBeenCalledTimes(1);
     const sentPayload = logSend.mock.calls[0]?.[0];
     expect(String(sentPayload?.content ?? "")).toContain("<@111111111111111111>");
+    expect(String(sentPayload?.content ?? "")).toContain(
+      "made an early non-mirror triple before the FFA window",
+    );
     expect(sentPayload?.allowedMentions).toEqual({
       users: ["111111111111111111"],
       parse: [],
