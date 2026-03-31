@@ -27,6 +27,7 @@ const prismaMock = vi.hoisted(() => ({
   },
   warAttacks: {
     findFirst: vi.fn(),
+    findMany: vi.fn(),
   },
 }));
 
@@ -117,6 +118,14 @@ describe("FwaPoliceService", () => {
       attackSeenAt: new Date("2026-03-12T00:45:00.000Z"),
       warEndTime: new Date("2026-03-13T00:00:00.000Z"),
     });
+    prismaMock.warAttacks.findMany.mockResolvedValue([
+      {
+        trueStars: 1,
+      },
+      {
+        trueStars: 2,
+      },
+    ]);
   });
 
   it("persists clan police config on tracked clan rows", async () => {
@@ -247,6 +256,16 @@ describe("FwaPoliceService", () => {
     expect(botLogServiceMock.getChannelId).toHaveBeenCalledWith("guild-1");
     expect(client.channels.fetch).toHaveBeenCalledWith("channel-bot-log");
     expect(logSend).toHaveBeenCalledTimes(1);
+    const sentPayload = logSend.mock.calls[0]?.[0];
+    expect(String(sentPayload?.content ?? "")).toContain("<@111111111111111111>");
+    expect(sentPayload?.allowedMentions).toEqual({
+      users: ["111111111111111111"],
+      parse: [],
+    });
+    const sampleEmbed = sentPayload?.embeds?.[0]?.toJSON?.() ?? null;
+    expect(String(sampleEmbed?.description ?? "")).toContain(
+      "**Violation Time**: 23h 15m left | **Clan stars before hit**: ?★",
+    );
     expect(result).toEqual({
       ok: true,
       deliveredTo: "LOG",
@@ -431,8 +450,15 @@ describe("FwaPoliceService", () => {
     );
     expect(String(embedJson?.description ?? "")).toContain("**War**: Alpha FWA-WIN");
     expect(String(embedJson?.description ?? "")).toContain(
-      "**Violation Time**: 23h 15m left",
+      "**Violation Time**: 23h 15m left | **Clan stars before hit**: 3★",
     );
+    expect(String(sentPayload?.content ?? "")).toContain(
+      "<@222222222222222222>",
+    );
+    expect(sentPayload?.allowedMentions).toEqual({
+      users: ["222222222222222222"],
+      parse: [],
+    });
     expect(String(embedJson?.fields?.[0]?.name ?? "")).toBe("**Message**");
     expect(String(embedJson?.fields?.[1]?.name ?? "")).toBe(
       "**:yes: Expected**",
@@ -446,6 +472,79 @@ describe("FwaPoliceService", () => {
     expect(botLogServiceMock.getChannelId).not.toHaveBeenCalled();
     expect(result.logSent).toBe(1);
     expect(result.dmSent).toBe(0);
+  });
+
+  it("renders unknown stars-before-hit when breach chronology is unavailable", async () => {
+    prismaMock.trackedClan.findFirst.mockResolvedValue({
+      tag: "#2QG2C08UP",
+      name: "Alpha",
+      loseStyle: "TRIPLE_TOP_30",
+      fwaPoliceDmEnabled: false,
+      fwaPoliceLogEnabled: true,
+      logChannelId: "channel-1",
+      notifyChannelId: null,
+      mailChannelId: null,
+    });
+    playerLinkServiceMock.listPlayerLinksForClanMembers.mockResolvedValue([
+      {
+        playerTag: "#P2YLC8R0",
+        discordUserId: "222222222222222222",
+      },
+    ]);
+
+    const logSend = vi.fn().mockResolvedValue({});
+    const client = {
+      users: {
+        fetch: vi.fn(),
+      },
+      channels: {
+        fetch: vi.fn().mockResolvedValue({
+          isTextBased: () => true,
+          send: logSend,
+        }),
+      },
+    } as any;
+    const evaluateComplianceForCommand = vi.fn().mockResolvedValue({
+      status: "ok",
+      report: {
+        warId: 12345,
+        clanName: "Alpha",
+        opponentName: "Bravo",
+        matchType: "FWA",
+        expectedOutcome: "WIN",
+        loseStyle: "TRIPLE_TOP_30",
+        notFollowingPlan: [
+          buildIssue({
+            attackDetails: [
+              {
+                defenderPosition: 14,
+                stars: 3,
+                attackOrder: null,
+                isBreach: true,
+              },
+            ],
+            breachContext: null,
+          }),
+        ],
+      },
+    });
+
+    const service = new FwaPoliceService();
+    const result = await service.enforceWarViolations({
+      client,
+      guildId: "guild-1",
+      clanTag: "#2QG2C08UP",
+      warId: 12345,
+      warCompliance: { evaluateComplianceForCommand } as any,
+    });
+
+    expect(logSend).toHaveBeenCalledTimes(1);
+    const sentPayload = logSend.mock.calls[0]?.[0];
+    const embedJson = sentPayload?.embeds?.[0]?.toJSON?.() ?? null;
+    expect(String(embedJson?.description ?? "")).toContain(
+      "**Violation Time**: 23h 15m left | **Clan stars before hit**: ?★",
+    );
+    expect(result.logSent).toBe(1);
   });
 
   it("falls back to /bot-logs for live police log delivery when tracked log channel is missing", async () => {
