@@ -21,7 +21,10 @@ export type TodoType = (typeof TODO_TYPES)[number];
 export type TodoPagesResult = {
   linkedPlayerCount: number;
   pages: Record<TodoType, string>;
+  sidebarStateByType: Record<TodoType, TodoSidebarState>;
 };
+
+export type TodoSidebarState = "default" | "incomplete" | "complete";
 
 type TodoRenderRow = {
   playerTag: string;
@@ -155,6 +158,12 @@ export async function buildTodoPagesForUser(input: {
         CWL: "",
         RAIDS: "",
         GAMES: "",
+      },
+      sidebarStateByType: {
+        WAR: "default",
+        CWL: "default",
+        RAIDS: "default",
+        GAMES: "default",
       },
     };
   }
@@ -393,13 +402,21 @@ export async function buildTodoPagesForUser(input: {
       .catch(() => undefined);
   }
 
+  const warView = buildWarPageDescription(renderRows, linkedTags.length);
+  const cwlView = buildCwlPageDescription(renderRows, linkedTags.length);
   const pages = {
     linkedPlayerCount: linkedTags.length,
     pages: {
-      WAR: buildWarPageDescription(renderRows, linkedTags.length),
-      CWL: buildCwlPageDescription(renderRows, linkedTags.length),
+      WAR: warView.description,
+      CWL: cwlView.description,
       RAIDS: buildRaidsPageDescription(renderRows, linkedTags.length),
       GAMES: buildGamesPageDescription(renderRows, linkedTags.length, nowMs),
+    },
+    sidebarStateByType: {
+      WAR: warView.sidebarState,
+      CWL: cwlView.sidebarState,
+      RAIDS: "default",
+      GAMES: "default",
     },
   } satisfies TodoPagesResult;
 
@@ -449,16 +466,21 @@ function isSnapshotStale(snapshot: TodoSnapshotRecord, nowMs: number): boolean {
 function buildWarPageDescription(
   rows: TodoRenderRow[],
   linkedPlayerCount: number,
-): string {
+): { description: string; sidebarState: TodoSidebarState } {
   const activeRows = rows.filter(
     (row) => Boolean(row.snapshot?.warActive) && row.inValidatedWarMemberSet,
   );
+  const warCompletion = summarizeWarCompletionStatus(activeRows);
   if (activeRows.length <= 0) {
-    return buildTodoPageDescription({
-      heading: "WAR",
-      linkedPlayerCount,
-      lines: ["No war active"],
-    });
+    return {
+      description: buildTodoPageDescription({
+        heading: "WAR",
+        linkedPlayerCount,
+        statusLine: warCompletion.statusLine,
+        lines: ["No war active"],
+      }),
+      sidebarState: warCompletion.sidebarState,
+    };
   }
 
   const grouped = buildEventGroups(activeRows, "war");
@@ -477,25 +499,34 @@ function buildWarPageDescription(
     lines.pop();
   }
 
-  return buildTodoPageDescription({
-    heading: "WAR",
-    linkedPlayerCount,
-    lines,
-  });
+  return {
+    description: buildTodoPageDescription({
+      heading: "WAR",
+      linkedPlayerCount,
+      statusLine: warCompletion.statusLine,
+      lines,
+    }),
+    sidebarState: warCompletion.sidebarState,
+  };
 }
 
 /** Purpose: build the CWL page from grouped active contexts only. */
 function buildCwlPageDescription(
   rows: TodoRenderRow[],
   linkedPlayerCount: number,
-): string {
+): { description: string; sidebarState: TodoSidebarState } {
   const activeRows = rows.filter((row) => Boolean(row.snapshot?.cwlActive));
+  const cwlCompletion = summarizeCwlCompletionStatus(activeRows);
   if (activeRows.length <= 0) {
-    return buildTodoPageDescription({
-      heading: "CWL",
-      linkedPlayerCount,
-      lines: ["No CWL active"],
-    });
+    return {
+      description: buildTodoPageDescription({
+        heading: "CWL",
+        linkedPlayerCount,
+        statusLine: cwlCompletion.statusLine,
+        lines: ["No CWL active"],
+      }),
+      sidebarState: cwlCompletion.sidebarState,
+    };
   }
 
   const grouped = buildEventGroups(activeRows, "cwl");
@@ -511,11 +542,70 @@ function buildCwlPageDescription(
     lines.pop();
   }
 
-  return buildTodoPageDescription({
-    heading: "CWL",
-    linkedPlayerCount,
-    lines,
-  });
+  return {
+    description: buildTodoPageDescription({
+      heading: "CWL",
+      linkedPlayerCount,
+      statusLine: cwlCompletion.statusLine,
+      lines,
+    }),
+    sidebarState: cwlCompletion.sidebarState,
+  };
+}
+
+/** Purpose: compute WAR completion totals and sidebar state from confirmed participating rows. */
+function summarizeWarCompletionStatus(
+  confirmedRows: TodoRenderRow[],
+): { statusLine: string; sidebarState: TodoSidebarState } {
+  const completedAttacks = confirmedRows.reduce(
+    (sum, row) => sum + getWarRowProgress(row).used,
+    0,
+  );
+  const requiredAttacks = confirmedRows.length * 2;
+  const attackPhaseRows = confirmedRows.filter((row) =>
+    isWarRowAttackPhaseActive(row),
+  );
+  if (attackPhaseRows.length <= 0) {
+    return {
+      statusLine: `war status: ${completedAttacks} / ${requiredAttacks} attacks completed`,
+      sidebarState: "default",
+    };
+  }
+  const attackPhaseCompleted = attackPhaseRows.reduce(
+    (sum, row) => sum + getWarRowProgress(row).used,
+    0,
+  );
+  const attackPhaseRequired = attackPhaseRows.length * 2;
+  return {
+    statusLine: `war status: ${completedAttacks} / ${requiredAttacks} attacks completed`,
+    sidebarState:
+      attackPhaseCompleted >= attackPhaseRequired ? "complete" : "incomplete",
+  };
+}
+
+/** Purpose: compute CWL completion totals and sidebar state from confirmed active battle-day participants. */
+function summarizeCwlCompletionStatus(
+  confirmedRows: TodoRenderRow[],
+): { statusLine: string; sidebarState: TodoSidebarState } {
+  const battleDayRows = confirmedRows.filter((row) =>
+    isCwlRowAttackPhaseActive(row),
+  );
+  const completedAttacks = battleDayRows.reduce(
+    (sum, row) => sum + getCwlRowProgress(row).used,
+    0,
+  );
+  const requiredAttacks = battleDayRows.length;
+  if (battleDayRows.length <= 0) {
+    return {
+      statusLine: `cwl status: ${completedAttacks} / ${requiredAttacks} attacks completed`,
+      sidebarState: "default",
+    };
+  }
+  return {
+    statusLine: `cwl status: ${completedAttacks} / ${requiredAttacks} attacks completed`,
+    sidebarState:
+      completedAttacks >= requiredAttacks ? "complete" : "incomplete",
+  };
 }
 
 /** Purpose: build the RAIDS page with one shared timer header and row-level usage only. */
@@ -770,11 +860,13 @@ function formatWarPlayerIdentity(row: TodoRenderRow): string {
 function buildTodoPageDescription(input: {
   heading: TodoType;
   linkedPlayerCount: number;
+  statusLine?: string | null;
   lines: string[];
 }): string {
+  const statusLine = sanitizeStatusText(input.statusLine ?? "");
   const lines = [
     `Type: ${input.heading}`,
-    `Linked players: ${input.linkedPlayerCount}`,
+    statusLine || `Linked players: ${input.linkedPlayerCount}`,
     "",
     ...input.lines,
   ];
@@ -822,10 +914,34 @@ function getCwlRowStatus(row: TodoRenderRow): string {
     return "CWL attacks: 0/1 - snapshot unavailable";
   }
 
-  const used = clampInt(row.snapshot.cwlAttacksUsed, 0, row.snapshot.cwlAttacksMax || 1);
-  const max = Math.max(1, clampInt(row.snapshot.cwlAttacksMax, 1, 1));
+  const { used, max } = getCwlRowProgress(row);
   const staleSuffix = row.staleSnapshot ? " - stale snapshot" : "";
   return `CWL attacks: ${used}/${max}${staleSuffix}`;
+}
+
+/** Purpose: compute stable CWL used/max progress and completion state for one confirmed participant row. */
+function getCwlRowProgress(row: TodoRenderRow): {
+  used: number;
+  max: number;
+  complete: boolean;
+} {
+  if (!row.snapshot) {
+    return { used: 0, max: 1, complete: false };
+  }
+  const used = clampInt(
+    row.snapshot.cwlAttacksUsed,
+    0,
+    row.snapshot.cwlAttacksMax || 1,
+  );
+  const max = Math.max(1, clampInt(row.snapshot.cwlAttacksMax, 1, 1));
+  return { used, max, complete: used >= max };
+}
+
+/** Purpose: treat only CWL battle-day contexts as attack-active for completion coloring. */
+function isCwlRowAttackPhaseActive(row: TodoRenderRow): boolean {
+  if (!row.snapshot?.cwlActive) return false;
+  const phase = sanitizeStatusText(row.snapshot.cwlPhase).toLowerCase();
+  return phase.includes("battle");
 }
 
 /** Purpose: build RAIDS row status text with usage only and without per-row timer duplication. */
