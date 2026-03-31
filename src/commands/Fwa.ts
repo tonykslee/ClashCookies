@@ -105,6 +105,7 @@ import {
 } from "../services/PointsDirectFetchGateService";
 import {
   buildFwaMailBackCustomId,
+  buildFwaMailGateResumeCustomId,
   buildFwaBaseSwapSplitPostCustomId,
   createTransientFwaKey,
   buildFwaMailConfirmCustomId,
@@ -124,6 +125,7 @@ import {
   buildOutcomeActionCustomId,
   buildPointsPostButtonCustomId,
   parseFwaMailBackCustomId,
+  parseFwaMailGateResumeCustomId,
   parseFwaBaseSwapSplitPostCustomId,
   parseFwaComplianceViewCustomId,
   parseFwaMailConfirmCustomId,
@@ -200,6 +202,7 @@ export {
   isFwaComplianceViewButtonCustomId,
   isFwaBaseSwapSplitPostButtonCustomId,
   isFwaMailBackButtonCustomId,
+  isFwaMailGateResumeButtonCustomId,
   isFwaMailConfirmButtonCustomId,
   isFwaMailConfirmNoPingButtonCustomId,
   isFwaMailRefreshButtonCustomId,
@@ -1317,6 +1320,13 @@ const MATCHTYPE_WARNING_LEGEND =
 const POINTS_CLAN_NOT_FOUND_STATUS_LINE =
   ":interrobang: Clan not found on points.fwafarm";
 
+/** Purpose: keep mail preview/send entry behavior consistent by routing inferred match-type blocks back to `/fwa match`. */
+function shouldRedirectToFwaMatchForMailGateReason(
+  reason: string | null | undefined,
+): boolean {
+  return reason === INFERRED_MATCHTYPE_MAIL_BLOCK_REASON;
+}
+
 function logFwaMatchTelemetry(event: string, detail: string): void {
   console.log(`[telemetry-fwa-match] event=${event} ${detail}`);
 }
@@ -1502,6 +1512,7 @@ type FwaMatchCopyPayload = {
   currentScope: "alliance" | "single";
   currentTag: string | null;
   revisionDraftByTag: Record<string, MatchRevisionFields>;
+  mailGateResumeTag?: string | null;
 };
 
 type FwaMailPreviewPayload = {
@@ -2157,6 +2168,158 @@ async function rebuildTrackedPayloadForTag(
     revisionDraftByTag: nextRevisionDraftByTag,
     currentScope: "single",
     currentTag: tag,
+  };
+}
+
+function applyMailGateResumeStateToPayload(
+  payload: FwaMatchCopyPayload,
+  tag: string,
+): FwaMatchCopyPayload {
+  const normalizedTag = normalizeTag(tag);
+  return {
+    ...payload,
+    currentScope: "single",
+    currentTag: normalizedTag,
+    mailGateResumeTag: normalizedTag,
+  };
+}
+
+function buildScopedFwaMatchPayload(params: {
+  guildId: string;
+  userId: string;
+  tag: string;
+  includePostButton: boolean;
+  overview: {
+    embed: EmbedBuilder;
+    copyText: string;
+    singleViews: Record<string, MatchView>;
+  };
+  mailGateResumeTag?: string | null;
+}): { payload: FwaMatchCopyPayload; view: MatchView } | null {
+  const normalizedTag = normalizeTag(params.tag);
+  const trackedSingleView = params.overview.singleViews[normalizedTag];
+  if (!trackedSingleView) return null;
+  const payload: FwaMatchCopyPayload = {
+    userId: params.userId,
+    guildId: params.guildId,
+    includePostButton: params.includePostButton,
+    allianceView: {
+      embed: params.overview.embed,
+      copyText: params.overview.copyText,
+      matchTypeAction: null,
+    },
+    allianceViewIsScoped: true,
+    singleViews: params.overview.singleViews,
+    currentScope: "single",
+    currentTag: normalizedTag,
+    revisionDraftByTag: {},
+    mailGateResumeTag: params.mailGateResumeTag
+      ? normalizeTag(params.mailGateResumeTag)
+      : null,
+  };
+  return { payload, view: trackedSingleView };
+}
+
+async function buildScopedFwaMatchPayloadForTag(params: {
+  guildId: string;
+  userId: string;
+  tag: string;
+  includePostButton: boolean;
+  client?: Client | null;
+  mailGateResumeTag?: string | null;
+}): Promise<{ payload: FwaMatchCopyPayload; view: MatchView } | null> {
+  const normalizedTag = normalizeTag(params.tag);
+  const settings = new SettingsService();
+  const sourceSync = await getSourceOfTruthSync(settings, params.guildId);
+  const cocService = new CoCService();
+  const warLookupCache: WarLookupCache = new Map();
+  const overview = await buildTrackedMatchOverview(
+    cocService,
+    sourceSync,
+    params.guildId,
+    warLookupCache,
+    params.client ?? null,
+    { onlyClanTags: [normalizedTag] },
+  );
+  return buildScopedFwaMatchPayload({
+    guildId: params.guildId,
+    userId: params.userId,
+    tag: normalizedTag,
+    includePostButton: params.includePostButton,
+    overview,
+    mailGateResumeTag: params.mailGateResumeTag ?? null,
+  });
+}
+
+async function prepareMailGateResumeMatchPayloadForTag(params: {
+  guildId: string;
+  userId: string;
+  tag: string;
+  sourceMatchPayloadKey?: string;
+  client?: Client | null;
+}): Promise<{ key: string; payload: FwaMatchCopyPayload; view: MatchView } | null> {
+  const normalizedTag = normalizeTag(params.tag);
+  const sourceKey = params.sourceMatchPayloadKey?.trim() ?? "";
+  if (sourceKey) {
+    const existing = fwaMatchCopyPayloads.get(sourceKey);
+    if (existing) {
+      const refreshed = await rebuildTrackedPayloadForTag(
+        existing,
+        params.guildId,
+        normalizedTag,
+        params.client ?? null,
+      ).catch(() => null);
+      const active = refreshed ?? existing;
+      const view = active.singleViews[normalizedTag];
+      if (view) {
+        const nextPayload = applyMailGateResumeStateToPayload(
+          active,
+          normalizedTag,
+        );
+        fwaMatchCopyPayloads.set(sourceKey, nextPayload);
+        return { key: sourceKey, payload: nextPayload, view };
+      }
+    }
+  }
+
+  const scoped = await buildScopedFwaMatchPayloadForTag({
+    guildId: params.guildId,
+    userId: params.userId,
+    tag: normalizedTag,
+    includePostButton: false,
+    client: params.client ?? null,
+    mailGateResumeTag: normalizedTag,
+  });
+  if (!scoped) return null;
+  const key = createTransientFwaKey();
+  fwaMatchCopyPayloads.set(key, scoped.payload);
+  return { key, payload: scoped.payload, view: scoped.view };
+}
+
+function buildFwaMatchViewRenderPayload(params: {
+  payload: FwaMatchCopyPayload;
+  key: string;
+  view: MatchView;
+  showMode: "embed" | "copy";
+}): {
+  content: string | undefined;
+  embeds: EmbedBuilder[];
+  components: Array<
+    ActionRowBuilder<ButtonBuilder> | ActionRowBuilder<StringSelectMenuBuilder>
+  >;
+} {
+  return {
+    content:
+      params.showMode === "copy"
+        ? limitDiscordContent(params.view.copyText)
+        : undefined,
+    embeds: params.showMode === "embed" ? [params.view.embed] : [],
+    components: buildFwaMatchCopyComponents(
+      params.payload,
+      params.payload.userId,
+      params.key,
+      params.showMode,
+    ),
   };
 }
 
@@ -4673,6 +4836,12 @@ function buildFwaMatchCopyComponents(
   const mailAction = view.mailAction ?? null;
   const skipSyncAction = view.skipSyncAction ?? null;
   const undoSkipSyncAction = view.undoSkipSyncAction ?? null;
+  const mailGateResumeActive =
+    payload.currentScope === "single" &&
+    Boolean(payload.currentTag) &&
+    payload.currentTag === payload.mailGateResumeTag &&
+    (Boolean(view.inferredMatchType) ||
+      view.mailAction?.reason === INFERRED_MATCHTYPE_MAIL_BLOCK_REASON);
   const toggleMode = showMode === "embed" ? "copy" : "embed";
   const toggleLabel = showMode === "embed" ? "Copy/Paste View" : "Embed View";
   const baseRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
@@ -4713,8 +4882,42 @@ function buildFwaMatchCopyComponents(
   }
   const rows: Array<
     ActionRowBuilder<ButtonBuilder> | ActionRowBuilder<StringSelectMenuBuilder>
-  > = [baseRow];
-  if (payload.currentScope === "single" && payload.currentTag && mailAction) {
+  > = [];
+  if (mailGateResumeActive && payload.currentTag) {
+    rows.push(
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setCustomId(
+            buildFwaMailGateResumeCustomId({
+              userId,
+              key,
+              tag: payload.currentTag,
+              action: "continue",
+            }),
+          )
+          .setLabel("Review match + continue")
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId(
+            buildFwaMailGateResumeCustomId({
+              userId,
+              key,
+              tag: payload.currentTag,
+              action: "cancel",
+            }),
+          )
+          .setLabel("Cancel")
+          .setStyle(ButtonStyle.Secondary),
+      ),
+    );
+  }
+  rows.push(baseRow);
+  if (
+    payload.currentScope === "single" &&
+    payload.currentTag &&
+    mailAction &&
+    !mailGateResumeActive
+  ) {
     rows.push(
       new ActionRowBuilder<ButtonBuilder>().addComponents(
         new ButtonBuilder()
@@ -6067,6 +6270,52 @@ async function showWarMailPreview(
     fetchReason: "pre_fwa_validation",
     revisionOverride: revisionOverride ?? null,
   });
+  const mailSendGate = rendered.mailRevisionDecision;
+  if (
+    shouldRedirectToFwaMatchForMailGateReason(mailSendGate.mailBlockedReason)
+  ) {
+    const handoff = await prepareMailGateResumeMatchPayloadForTag({
+      guildId,
+      userId,
+      tag,
+      sourceMatchPayloadKey,
+      client: interaction.client,
+    });
+    if (!handoff) {
+      const fallbackMessage = `:warning: ${INFERRED_MATCHTYPE_MAIL_BLOCK_REASON}`;
+      if (interaction.isButton()) {
+        await interaction.update({
+          content: fallbackMessage,
+          embeds: [],
+          components: [],
+        });
+      } else {
+        await interaction.editReply({
+          content: fallbackMessage,
+          embeds: [],
+          components: [],
+        });
+      }
+      return;
+    }
+    const showMode =
+      interaction.isButton() && interaction.message.embeds.length === 0
+        ? "copy"
+        : "embed";
+    const response = buildFwaMatchViewRenderPayload({
+      payload: handoff.payload,
+      key: handoff.key,
+      view: handoff.view,
+      showMode,
+    });
+    if (interaction.isButton()) {
+      await interaction.update(response);
+    } else {
+      await interaction.editReply(response);
+    }
+    return;
+  }
+
   const previewKey = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
   const sourceShowMode =
     interaction.isButton() && interaction.message.embeds.length > 0
@@ -6088,7 +6337,6 @@ async function showWarMailPreview(
     revisionOverride: revisionOverride ?? null,
   });
 
-  const mailSendGate = rendered.mailRevisionDecision;
   const channel = rendered.mailChannelId
     ? await interaction.client.channels
         .fetch(rendered.mailChannelId)
@@ -6222,6 +6470,69 @@ export async function handleFwaMatchSendMailButton(
     cocService,
     parsed.key,
     revisionOverride,
+  );
+}
+
+export async function handleFwaMailGateResumeButton(
+  interaction: ButtonInteraction,
+): Promise<void> {
+  const parsed = parseFwaMailGateResumeCustomId(interaction.customId);
+  if (!parsed) return;
+  if (interaction.user.id !== parsed.userId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Only the command requester can use this button.",
+    });
+    return;
+  }
+  const payload = fwaMatchCopyPayloads.get(parsed.key);
+  if (!payload) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "This match view expired. Please run /fwa match again.",
+    });
+    return;
+  }
+  const tag = normalizeTag(parsed.tag);
+  if (parsed.action === "cancel") {
+    fwaMatchCopyPayloads.delete(parsed.key);
+    await interaction.update({
+      content: "Cancelled.",
+      embeds: [],
+      components: [],
+    });
+    return;
+  }
+  const refreshed = await rebuildTrackedPayloadForTag(
+    payload,
+    payload.guildId,
+    tag,
+    interaction.client,
+  ).catch(() => null);
+  const activePayload = refreshed ?? payload;
+  const nextView = activePayload.singleViews[tag];
+  if (!nextView) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "This clan view is no longer available. Please run /fwa match again.",
+    });
+    return;
+  }
+  const nextPayload: FwaMatchCopyPayload = {
+    ...activePayload,
+    currentScope: "single",
+    currentTag: tag,
+    mailGateResumeTag: null,
+  };
+  fwaMatchCopyPayloads.set(parsed.key, nextPayload);
+  const showMode = interaction.message.embeds.length > 0 ? "embed" : "copy";
+  await interaction.update(
+    buildFwaMatchViewRenderPayload({
+      payload: nextPayload,
+      key: parsed.key,
+      view: nextView,
+      showMode,
+    }),
   );
 }
 
@@ -6475,6 +6786,38 @@ async function handleFwaMailConfirmAction(
   }
   const mailSendGate = rendered.mailRevisionDecision;
   if (mailSendGate.mailBlockedReason) {
+    if (
+      shouldRedirectToFwaMatchForMailGateReason(mailSendGate.mailBlockedReason)
+    ) {
+      const handoff = await prepareMailGateResumeMatchPayloadForTag({
+        guildId: payload.guildId,
+        userId: parsed.userId,
+        tag: payload.tag,
+        sourceMatchPayloadKey: payload.sourceMatchPayloadKey,
+        client: interaction.client,
+      });
+      if (!handoff) {
+        await interaction.editReply({
+          content: `Cannot send mail: ${formatMailBlockedReason(mailSendGate.mailBlockedReason) ?? mailSendGate.mailBlockedReason}`,
+          embeds: [],
+          components: [],
+        });
+      } else {
+        const showMode =
+          payload.sourceShowMode ??
+          (interaction.message.embeds.length > 0 ? "embed" : "copy");
+        await interaction.editReply(
+          buildFwaMatchViewRenderPayload({
+            payload: handoff.payload,
+            key: handoff.key,
+            view: handoff.view,
+            showMode,
+          }),
+        );
+      }
+      fwaMailPreviewPayloads.delete(parsed.key);
+      return;
+    }
     await interaction.editReply({
       content: `Cannot send mail: ${
         formatMailBlockedReason(mailSendGate.mailBlockedReason) ??
@@ -7853,6 +8196,8 @@ function applyExplicitOpponentNotFoundFallbackGuard(input: {
 
 export const getMailBlockedReasonFromStatusForTest =
   getMailBlockedReasonFromStatus;
+export const shouldRedirectToFwaMatchForMailGateReasonForTest =
+  shouldRedirectToFwaMatchForMailGateReason;
 export const collectBaseSwapTownhallLevelsForTest =
   collectBaseSwapTownhallLevels;
 export const buildBaseSwapLayoutLinksForTest = buildBaseSwapLayoutLinks;

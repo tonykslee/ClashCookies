@@ -3,6 +3,7 @@ import {
   applyExplicitOpponentNotFoundFallbackGuardForTest,
   hasSameWarExplicitFwaConfirmationForTest,
   getMailBlockedReasonFromStatusForTest,
+  shouldRedirectToFwaMatchForMailGateReasonForTest,
   inferMatchTypeFromPointsSnapshotsForTest,
   resolveMatchTypeWithFallbackForTest,
   resolveMatchTypeFromStoredSyncRowForTest,
@@ -280,6 +281,20 @@ describe("fwa mail send gating", () => {
     expect(reason).toBe(
       "Match type is inferred. Confirm match type before sending mail."
     );
+  });
+
+  it("redirects inferred mail blocks back to fwa match flow", () => {
+    expect(
+      shouldRedirectToFwaMatchForMailGateReasonForTest(
+        "Match type is inferred. Confirm match type before sending mail.",
+      ),
+    ).toBe(true);
+    expect(
+      shouldRedirectToFwaMatchForMailGateReasonForTest(
+        "Current mail is already up to date. Change match config before sending again.",
+      ),
+    ).toBe(false);
+    expect(shouldRedirectToFwaMatchForMailGateReasonForTest(null)).toBe(false);
   });
 });
 

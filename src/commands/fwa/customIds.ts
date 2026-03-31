@@ -14,6 +14,7 @@ const FWA_MAIL_CONFIRM_NO_PING_PREFIX = "fwa-mail-confirm-no-ping";
 const FWA_MAIL_BACK_PREFIX = "fwa-mail-back";
 const FWA_MAIL_REFRESH_PREFIX = "fwa-mail-refresh";
 const FWA_MATCH_SEND_MAIL_PREFIX = "fwa-match-send-mail";
+const FWA_MAIL_GATE_RESUME_PREFIX = "fwa-mail-gate-resume";
 const FWA_MATCH_TIEBREAKER_PREFIX = "fwa-match-tiebreaker";
 const FWA_COMPLIANCE_VIEW_PREFIX = "fwa-compliance-view";
 const FWA_BASE_SWAP_SPLIT_POST_PREFIX = "fwa-base-swap-split-post";
@@ -51,6 +52,14 @@ export type FwaMatchTieBreakerParams = {
   userId: string;
   key: string;
   tag: string;
+};
+
+export type FwaMailGateResumeAction = "continue" | "cancel";
+export type FwaMailGateResumeParams = {
+  userId: string;
+  key: string;
+  tag: string;
+  action: FwaMailGateResumeAction;
 };
 
 export type FwaComplianceViewAction = "open_missed" | "open_main" | "prev" | "next";
@@ -381,6 +390,31 @@ export function parseFwaMatchSendMailCustomId(
 /** Purpose: detect send-mail-from-match button prefix. */
 export function isFwaMatchSendMailButtonCustomId(customId: string): boolean {
   return customId.startsWith(`${FWA_MATCH_SEND_MAIL_PREFIX}:`);
+}
+
+/** Purpose: build custom-id for inferred match-type mail gate handoff actions. */
+export function buildFwaMailGateResumeCustomId(
+  params: FwaMailGateResumeParams,
+): string {
+  return `${FWA_MAIL_GATE_RESUME_PREFIX}:${params.userId}:${params.key}:${normalizeTag(params.tag)}:${params.action}`;
+}
+
+/** Purpose: parse inferred match-type mail gate handoff action custom-id payload. */
+export function parseFwaMailGateResumeCustomId(
+  customId: string,
+): FwaMailGateResumeParams | null {
+  const values = parseCustomIdParts(customId, FWA_MAIL_GATE_RESUME_PREFIX, 5);
+  if (!values) return null;
+  const [userId, key, rawTag, rawAction] = values;
+  const action: FwaMailGateResumeAction | null =
+    rawAction === "continue" || rawAction === "cancel" ? rawAction : null;
+  if (!action) return null;
+  return { userId, key, tag: normalizeTag(rawTag), action };
+}
+
+/** Purpose: detect inferred match-type mail gate handoff action button prefix. */
+export function isFwaMailGateResumeButtonCustomId(customId: string): boolean {
+  return customId.startsWith(`${FWA_MAIL_GATE_RESUME_PREFIX}:`);
 }
 
 /** Purpose: build custom-id for single-clan tie-breaker rules button. */

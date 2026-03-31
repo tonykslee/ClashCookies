@@ -33,6 +33,7 @@ import {
   handleFwaMailConfirmButton,
   handleFwaMailConfirmNoPingButton,
   handleFwaMailBackButton,
+  handleFwaMailGateResumeButton,
   handleFwaMailRefreshButton,
   handleFwaMatchSendMailButton,
   handleFwaMatchTieBreakerButton,
@@ -45,6 +46,7 @@ import {
   isFwaMailConfirmButtonCustomId,
   isFwaMailConfirmNoPingButtonCustomId,
   isFwaMailBackButtonCustomId,
+  isFwaMailGateResumeButtonCustomId,
   isFwaMailRefreshButtonCustomId,
   isFwaMatchSendMailButtonCustomId,
   isFwaMatchTieBreakerButtonCustomId,
@@ -606,6 +608,20 @@ const handleButtonInteraction = async (
         await interaction.reply({
           ephemeral: true,
           content: "Failed to open war mail preview.",
+        });
+      }
+    }
+  }
+
+  if (isFwaMailGateResumeButtonCustomId(interaction.customId)) {
+    try {
+      await handleFwaMailGateResumeButton(interaction);
+    } catch (err) {
+      console.error(`FWA mail gate resume button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to continue in match view.",
         });
       }
     }
