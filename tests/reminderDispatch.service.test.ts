@@ -8,19 +8,26 @@ const prismaMock = vi.hoisted(() => ({
   fwaWarMemberCurrent: {
     findMany: vi.fn(),
   },
+  currentWar: {
+    findFirst: vi.fn(),
+  },
 }));
 
 vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
 
-import { buildReminderDispatchEmbedsForTest } from "../src/services/reminders/ReminderDispatchService";
+import {
+  ReminderDispatchService,
+  buildReminderDispatchEmbedsForTest,
+} from "../src/services/reminders/ReminderDispatchService";
 
 describe("ReminderDispatchService roster rendering", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     prismaMock.playerLink.findMany.mockResolvedValue([]);
     prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.currentWar.findFirst.mockResolvedValue({ state: "inWar" });
   });
 
   it("renders WAR remaining-attacks roster with position sort and linked/unlinked formats", async () => {
@@ -229,5 +236,148 @@ describe("ReminderDispatchService roster rendering", () => {
         /^#\d+ - :no: Player_\d{2}_X+ - 2 \/ 2$/.test(line),
       ),
     ).toBe(true);
+  });
+
+  it("skips WAR roster reminder rendering during preparation state", async () => {
+    prismaMock.currentWar.findFirst.mockResolvedValue({ state: "preparation" });
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ", playerName: "Alpha", position: 1, attacks: 0 },
+    ]);
+
+    const embeds = await buildReminderDispatchEmbedsForTest({
+      input: {
+        guildId: "guild-1",
+        channelId: "channel-1",
+        reminderId: "rem-1",
+        type: ReminderType.WAR_CWL,
+        clanTag: "#PYLQ",
+        clanName: "Alpha Clan",
+        offsetSeconds: 3600,
+        eventIdentity: "WAR:war-id:9",
+        eventEndsAt: new Date("2026-04-10T01:00:00.000Z"),
+        eventLabel: "war end",
+      },
+      nowMs: Date.parse("2026-04-09T00:30:00.000Z"),
+      cocService: null,
+    });
+
+    expect(embeds).toEqual([]);
+  });
+
+  it("skips CWL roster reminder rendering when CWL has no active battle-day war", async () => {
+    const cocService = {
+      getClanWarLeagueGroup: vi.fn().mockResolvedValue({
+        state: "inWar",
+        rounds: [{ warTags: ["#WAR1"] }],
+      }),
+      getClanWarLeagueWar: vi.fn().mockResolvedValue({
+        state: "preparation",
+        clan: {
+          tag: "#PYLQ",
+          members: [{ tag: "#PYLQ", name: "One", mapPosition: 1, attacks: [] }],
+        },
+        opponent: {
+          tag: "#PYLG",
+          members: [],
+        },
+      }),
+      getClanCapitalRaidSeasons: vi.fn(),
+      getClan: vi.fn(),
+    };
+
+    const embeds = await buildReminderDispatchEmbedsForTest({
+      input: {
+        guildId: "guild-1",
+        channelId: "channel-1",
+        reminderId: "rem-1",
+        type: ReminderType.WAR_CWL,
+        clanTag: "#PYLQ",
+        clanName: "CWL Clan",
+        offsetSeconds: 3600,
+        eventIdentity: "CWL:#PYLQ:1712700000000",
+        eventEndsAt: new Date("2026-04-10T01:00:00.000Z"),
+        eventLabel: "cwl war end",
+      },
+      nowMs: Date.parse("2026-04-10T00:30:00.000Z"),
+      cocService,
+    });
+
+    expect(embeds).toEqual([]);
+  });
+
+  it("skips RAIDS roster reminder rendering before raid weekend is active", async () => {
+    const cocService = {
+      getClanWarLeagueGroup: vi.fn(),
+      getClanWarLeagueWar: vi.fn(),
+      getClanCapitalRaidSeasons: vi.fn().mockResolvedValue([
+        {
+          startTime: "20260412T070000.000Z",
+          endTime: "20260415T070000.000Z",
+          members: [{ tag: "#PYLQ", name: "Zulu", attacks: 0 }],
+        },
+      ]),
+      getClan: vi.fn().mockResolvedValue({
+        members: [{ tag: "#PYLQ", name: "Zulu" }],
+      }),
+    };
+
+    const embeds = await buildReminderDispatchEmbedsForTest({
+      input: {
+        guildId: "guild-1",
+        channelId: "channel-1",
+        reminderId: "rem-1",
+        type: ReminderType.RAIDS,
+        clanTag: "#PYLQ",
+        clanName: "Raid Clan",
+        offsetSeconds: 1800,
+        eventIdentity: "RAIDS:FWA|#PYLQ:1712700000000",
+        eventEndsAt: new Date("2026-04-15T07:00:00.000Z"),
+        eventLabel: "raid weekend",
+      },
+      nowMs: Date.parse("2026-04-11T00:00:00.000Z"),
+      cocService,
+    });
+
+    expect(embeds).toEqual([]);
+  });
+
+  it("does not send a message when attack window is inactive in dispatch flow", async () => {
+    prismaMock.currentWar.findFirst.mockResolvedValue({ state: "preparation" });
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ", playerName: "Alpha", position: 1, attacks: 0 },
+    ]);
+
+    const send = vi.fn();
+    const client = {
+      channels: {
+        fetch: vi.fn().mockResolvedValue({
+          isTextBased: () => true,
+          send,
+        }),
+      },
+    } as any;
+    const service = new ReminderDispatchService({
+      nowMsProvider: () => Date.parse("2026-04-09T00:30:00.000Z"),
+      cocService: null,
+    });
+
+    const result = await service.dispatchReminder(client, {
+      guildId: "guild-1",
+      channelId: "channel-1",
+      reminderId: "rem-1",
+      type: ReminderType.WAR_CWL,
+      clanTag: "#PYLQ",
+      clanName: "Alpha Clan",
+      offsetSeconds: 3600,
+      eventIdentity: "WAR:war-id:9",
+      eventEndsAt: new Date("2026-04-10T01:00:00.000Z"),
+      eventLabel: "war end",
+    });
+
+    expect(result).toEqual({
+      status: "failed",
+      errorMessage: "attack_window_not_active",
+    });
+    expect(send).not.toHaveBeenCalled();
   });
 });

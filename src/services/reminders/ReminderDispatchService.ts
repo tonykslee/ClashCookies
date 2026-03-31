@@ -50,6 +50,11 @@ type ReminderRosterEntry = {
   attacksMax: number;
 };
 
+type ReminderRosterResolveResult = {
+  windowActive: boolean;
+  lines: string[];
+};
+
 const DISCORD_EMBED_DESCRIPTION_LIMIT = 4096;
 const MAX_REMINDER_EMBEDS = 2;
 
@@ -77,6 +82,12 @@ export class ReminderDispatchService {
         nowMs: this.getNowMs(),
         cocService: this.getCoCService(),
       });
+      if (embeds.length <= 0) {
+        return {
+          status: "failed",
+          errorMessage: "attack_window_not_active",
+        };
+      }
       const sent = await channel.send({
         embeds,
         allowedMentions: {
@@ -138,19 +149,22 @@ async function buildReminderDispatchEmbeds(input: {
     reminderType: payload.type,
     eventIdentity: payload.eventIdentity,
   });
-  const rosterLines = await resolveReminderRosterLines({
+  const roster = await resolveReminderRosterLines({
     input: payload,
     semantic,
     cocService: input.cocService,
     nowMs: input.nowMs,
   });
+  if (semantic !== "OTHER" && !roster.windowActive) {
+    return [];
+  }
   return buildReminderEmbedsWithRosterOverflow({
     title: `${titlePrefix} Reminder`,
     color,
     footerText: `reminder:${payload.reminderId} | identity:${payload.eventIdentity}`,
     timestamp: new Date(input.nowMs),
     headerLines,
-    rosterLines,
+    rosterLines: roster.lines,
   });
 }
 
@@ -194,29 +208,42 @@ async function resolveReminderRosterLines(input: {
   semantic: ReminderRosterSemantic;
   cocService: ReminderDispatchCoCClient | null;
   nowMs: number;
-}): Promise<string[]> {
-  if (input.semantic === "OTHER") return [];
+}): Promise<ReminderRosterResolveResult> {
+  if (input.semantic === "OTHER") {
+    return { windowActive: true, lines: [] };
+  }
 
+  let windowActive = false;
   let roster: ReminderRosterEntry[] = [];
   if (input.semantic === "WAR") {
-    roster = await resolveWarReminderRoster({
+    const resolved = await resolveWarReminderRoster({
       clanTag: input.input.clanTag,
     });
+    windowActive = resolved.windowActive;
+    roster = resolved.roster;
   } else if (input.semantic === "CWL") {
-    roster = await resolveCwlReminderRoster({
+    const resolved = await resolveCwlReminderRoster({
       clanTag: input.input.clanTag,
       cocService: input.cocService,
     });
+    windowActive = resolved.windowActive;
+    roster = resolved.roster;
   } else if (input.semantic === "RAIDS") {
-    roster = await resolveRaidsReminderRoster({
+    const resolved = await resolveRaidsReminderRoster({
       clanTag: input.input.clanTag,
       cocService: input.cocService,
       nowMs: input.nowMs,
-      eventEndsAt: input.input.eventEndsAt,
     });
+    windowActive = resolved.windowActive;
+    roster = resolved.roster;
   }
 
-  if (roster.length <= 0) return [];
+  if (!windowActive || roster.length <= 0) {
+    return {
+      windowActive,
+      lines: [],
+    };
+  }
 
   const tags = [...new Set(roster.map((entry) => entry.playerTag).filter(Boolean))];
   const linkRows =
@@ -235,30 +262,42 @@ async function resolveReminderRosterLines(input: {
       .filter((entry): entry is [string, string] => Boolean(entry[0] && entry[1])),
   );
 
-  return roster.map((entry) => {
-    const mention = linkedDiscordIdByTag.get(entry.playerTag) ?? null;
-    if (input.semantic === "RAIDS") {
-      if (mention) {
-        return `${entry.playerName} - <@${mention}> - ${entry.attacksRemaining} / ${entry.attacksMax}`;
+  return {
+    windowActive,
+    lines: roster.map((entry) => {
+      const mention = linkedDiscordIdByTag.get(entry.playerTag) ?? null;
+      if (input.semantic === "RAIDS") {
+        if (mention) {
+          return `${entry.playerName} - <@${mention}> - ${entry.attacksRemaining} / ${entry.attacksMax}`;
+        }
+        return `:no: ${entry.playerName} - ${entry.attacksRemaining} / ${entry.attacksMax}`;
       }
-      return `:no: ${entry.playerName} - ${entry.attacksRemaining} / ${entry.attacksMax}`;
-    }
 
-    const positionLabel =
-      entry.position !== null && entry.position > 0 ? `#${entry.position}` : "#?";
-    if (mention) {
-      return `${positionLabel} - ${entry.playerName} - <@${mention}> - ${entry.attacksRemaining} / ${entry.attacksMax}`;
-    }
-    return `${positionLabel} - :no: ${entry.playerName} - ${entry.attacksRemaining} / ${entry.attacksMax}`;
-  });
+      const positionLabel =
+        entry.position !== null && entry.position > 0 ? `#${entry.position}` : "#?";
+      if (mention) {
+        return `${positionLabel} - ${entry.playerName} - <@${mention}> - ${entry.attacksRemaining} / ${entry.attacksMax}`;
+      }
+      return `${positionLabel} - :no: ${entry.playerName} - ${entry.attacksRemaining} / ${entry.attacksMax}`;
+    }),
+  };
 }
 
 /** Purpose: resolve WAR roster entries from current war-member feed rows and keep only members with attacks remaining. */
 async function resolveWarReminderRoster(input: {
   clanTag: string;
-}): Promise<ReminderRosterEntry[]> {
+}): Promise<{ windowActive: boolean; roster: ReminderRosterEntry[] }> {
   const clanTag = normalizeClanTag(input.clanTag);
-  if (!clanTag) return [];
+  if (!clanTag) return { windowActive: false, roster: [] };
+
+  const currentWar = await prisma.currentWar.findFirst({
+    where: { clanTag },
+    orderBy: { updatedAt: "desc" },
+    select: { state: true },
+  });
+  if (!isBattleWarState(currentWar?.state)) {
+    return { windowActive: false, roster: [] };
+  }
 
   const rows = await prisma.fwaWarMemberCurrent.findMany({
     where: { clanTag },
@@ -270,7 +309,7 @@ async function resolveWarReminderRoster(input: {
     },
   });
 
-  return rows
+  const roster = rows
     .map((row) => {
       const playerTag = normalizePlayerTag(row.playerTag);
       if (!playerTag) return null;
@@ -287,27 +326,34 @@ async function resolveWarReminderRoster(input: {
     })
     .filter((entry): entry is ReminderRosterEntry => Boolean(entry && entry.attacksRemaining > 0))
     .sort(compareRosterByPositionThenName);
+
+  return {
+    windowActive: true,
+    roster,
+  };
 }
 
 /** Purpose: resolve CWL roster entries from the currently active CWL war roster for the tracked clan side only. */
 async function resolveCwlReminderRoster(input: {
   clanTag: string;
   cocService: ReminderDispatchCoCClient | null;
-}): Promise<ReminderRosterEntry[]> {
+}): Promise<{ windowActive: boolean; roster: ReminderRosterEntry[] }> {
   const clanTag = normalizeClanTag(input.clanTag);
-  if (!clanTag || !input.cocService) return [];
+  if (!clanTag || !input.cocService) {
+    return { windowActive: false, roster: [] };
+  }
 
-  const war = await resolveActiveCwlWarForClan({
+  const war = await resolveActiveCwlBattleWarForClan({
     clanTag,
     cocService: input.cocService,
   });
-  if (!war) return [];
+  if (!war) return { windowActive: false, roster: [] };
 
   const members = resolveTrackedWarMembers({
     war,
     trackedClanTag: clanTag,
   });
-  return members
+  const roster = members
     .map((member) => {
       const playerTag = normalizePlayerTag(String(member?.tag ?? ""));
       if (!playerTag) return null;
@@ -324,6 +370,11 @@ async function resolveCwlReminderRoster(input: {
     })
     .filter((entry): entry is ReminderRosterEntry => Boolean(entry && entry.attacksRemaining > 0))
     .sort(compareRosterByPositionThenName);
+
+  return {
+    windowActive: true,
+    roster,
+  };
 }
 
 /** Purpose: resolve RAIDS roster entries from the current active raid-season member eligibility set for one tracked clan. */
@@ -331,10 +382,11 @@ async function resolveRaidsReminderRoster(input: {
   clanTag: string;
   cocService: ReminderDispatchCoCClient | null;
   nowMs: number;
-  eventEndsAt: Date;
-}): Promise<ReminderRosterEntry[]> {
+}): Promise<{ windowActive: boolean; roster: ReminderRosterEntry[] }> {
   const clanTag = normalizeClanTag(input.clanTag);
-  if (!clanTag || !input.cocService) return [];
+  if (!clanTag || !input.cocService) {
+    return { windowActive: false, roster: [] };
+  }
 
   const seasons = await input.cocService
     .getClanCapitalRaidSeasons(clanTag, 2)
@@ -342,9 +394,8 @@ async function resolveRaidsReminderRoster(input: {
   const activeSeason = selectActiveRaidSeasonForReminder({
     seasons,
     nowMs: input.nowMs,
-    eventEndsAt: input.eventEndsAt,
   });
-  if (!activeSeason) return [];
+  if (!activeSeason) return { windowActive: false, roster: [] };
 
   const clan = await input.cocService.getClan(clanTag).catch(() => null);
   const clanMembers = Array.isArray(clan?.members)
@@ -383,7 +434,9 @@ async function resolveRaidsReminderRoster(input: {
     });
   }
 
-  return roster.sort((a, b) => {
+  return {
+    windowActive: true,
+    roster: roster.sort((a, b) => {
       if (a.attacksRemaining !== b.attacksRemaining) {
         return a.attacksRemaining - b.attacksRemaining;
       }
@@ -392,17 +445,16 @@ async function resolveRaidsReminderRoster(input: {
       });
       if (byName !== 0) return byName;
       return a.playerTag.localeCompare(b.playerTag);
-    });
+    }),
+  };
 }
 
 /** Purpose: select one raid season aligned to active-window or event-end timing so send-time roster resolution stays deterministic. */
 function selectActiveRaidSeasonForReminder(input: {
   seasons: ClanCapitalRaidSeason[];
   nowMs: number;
-  eventEndsAt: Date;
 }): ClanCapitalRaidSeason | null {
   if (!Array.isArray(input.seasons) || input.seasons.length <= 0) return null;
-  const targetEndMs = input.eventEndsAt.getTime();
 
   const candidates = input.seasons.map((season) => {
     const startMs = parseCocTime(season.startTime ?? null)?.getTime() ?? null;
@@ -418,17 +470,7 @@ function selectActiveRaidSeasonForReminder(input: {
     if (!Number.isFinite(candidate.startMs) || !Number.isFinite(candidate.endMs)) return false;
     return input.nowMs >= Number(candidate.startMs) && input.nowMs < Number(candidate.endMs);
   });
-  if (active) return active.season;
-
-  const nearestByEnd = candidates
-    .filter(
-      (candidate): candidate is { season: ClanCapitalRaidSeason; startMs: number | null; endMs: number } =>
-        Number.isFinite(candidate.endMs),
-    )
-    .sort((a, b) => Math.abs(a.endMs - targetEndMs) - Math.abs(b.endMs - targetEndMs))[0];
-  if (nearestByEnd) return nearestByEnd.season;
-
-  return input.seasons[0] ?? null;
+  return active?.season ?? null;
 }
 
 /** Purpose: resolve the tracked clan side member list from one CWL war payload. */
@@ -458,7 +500,7 @@ function resolveTrackedWarMembers(input: {
 }
 
 /** Purpose: resolve one active CWL war for a clan by traversing league rounds newest-first with shared war-tag fetches. */
-async function resolveActiveCwlWarForClan(input: {
+async function resolveActiveCwlBattleWarForClan(input: {
   clanTag: string;
   cocService: ReminderDispatchCoCClient;
 }): Promise<ClanWar | null> {
@@ -483,7 +525,7 @@ async function resolveActiveCwlWarForClan(input: {
     );
 
     const active = wars.find((war) => {
-      if (!war || !isActiveWarState(war.state)) return false;
+      if (!war || !isBattleWarState(war.state)) return false;
       const warClanTag = normalizeClanTag(String(war.clan?.tag ?? ""));
       const warOpponentTag = normalizeClanTag(String(war.opponent?.tag ?? ""));
       return warClanTag === input.clanTag || warOpponentTag === input.clanTag;
@@ -597,6 +639,12 @@ function toFiniteIntOrNull(input: unknown): number | null {
 function isActiveWarState(state: unknown): boolean {
   const normalized = String(state ?? "").toLowerCase();
   return normalized.includes("preparation") || normalized.includes("inwar");
+}
+
+/** Purpose: classify war-state values into attack-window-active battle-day states only. */
+function isBattleWarState(state: unknown): boolean {
+  const normalized = String(state ?? "").toLowerCase();
+  return normalized.includes("inwar");
 }
 
 /** Purpose: map reminder types to stable friendly heading prefixes. */
