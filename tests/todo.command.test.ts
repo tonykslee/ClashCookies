@@ -70,11 +70,19 @@ import { todoLastViewedTypeService } from "../src/services/TodoLastViewedTypeSer
 
 type TodoType = "WAR" | "CWL" | "RAIDS" | "GAMES";
 
-function makeTodoInteraction(input: { type?: TodoType | null; userId?: string }) {
+function makeTodoInteraction(input: {
+  type?: TodoType | null;
+  visibility?: "private" | "public" | null;
+  userId?: string;
+}) {
   return {
     user: { id: input.userId ?? "111111111111111111" },
     options: {
-      getString: vi.fn((name: string) => (name === "type" ? (input.type ?? null) : null)),
+      getString: vi.fn((name: string) => {
+        if (name === "type") return input.type ?? null;
+        if (name === "visibility") return input.visibility ?? null;
+        return null;
+      }),
     },
     deferReply: vi.fn().mockResolvedValue(undefined),
     editReply: vi.fn().mockResolvedValue(undefined),
@@ -265,6 +273,39 @@ describe("/todo command", () => {
       expect.stringContaining("no_linked_tags"),
     );
     expect(refreshSpy).not.toHaveBeenCalled();
+  });
+
+  it("defers publicly when /todo visibility:public is requested", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([]);
+    const interaction = makeTodoInteraction({
+      type: "WAR",
+      visibility: "public",
+    });
+
+    await Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
+
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: false });
+  });
+
+  it("defers ephemerally when /todo visibility:private is requested", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([]);
+    const interaction = makeTodoInteraction({
+      type: "WAR",
+      visibility: "private",
+    });
+
+    await Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
+
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+  });
+
+  it("defaults /todo visibility to private when omitted", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([]);
+    const interaction = makeTodoInteraction({ type: "WAR" });
+
+    await Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
+
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
   });
 
   it("rebuilds invoking-user snapshots before initial /todo render", async () => {

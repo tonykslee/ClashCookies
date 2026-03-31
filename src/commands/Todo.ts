@@ -452,7 +452,10 @@ export const Todo: Command = {
     interaction: ChatInputCommandInteraction,
     cocService: CoCService,
   ) => {
-    await interaction.deferReply({ ephemeral: true });
+    const visibility =
+      interaction.options.getString("visibility", false) ?? "private";
+    const isPublic = visibility === "public";
+    await interaction.deferReply({ ephemeral: !isPublic });
 
     const explicitTypeInput = interaction.options.getString("type", false);
     const explicitType = explicitTypeInput
