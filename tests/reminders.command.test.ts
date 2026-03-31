@@ -263,6 +263,105 @@ describe("/reminders command", () => {
     });
   });
 
+  it("acknowledges save via deferred ephemeral response and updates panel into saved state", async () => {
+    reminderServiceMock.getReminderWithDetails
+      .mockResolvedValueOnce({
+        id: "reminder-1",
+        guildId: "guild-1",
+        type: ReminderType.EVENT,
+        channelId: "",
+        isEnabled: false,
+        createdByUserId: "user-1",
+        updatedByUserId: "user-1",
+        createdAt: new Date("2026-03-26T00:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+        offsetsSeconds: [],
+        targets: [],
+      })
+      .mockResolvedValueOnce({
+        id: "reminder-1",
+        guildId: "guild-1",
+        type: ReminderType.WAR_CWL,
+        channelId: "123456789012345678",
+        isEnabled: false,
+        createdByUserId: "user-1",
+        updatedByUserId: "user-1",
+        createdAt: new Date("2026-03-26T00:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+        offsetsSeconds: [1800],
+        targets: [
+          {
+            clanTag: "#PQL0289",
+            clanType: ReminderTargetClanType.FWA,
+            name: "FWA One",
+            label: "FWA One (#PQL0289) [FWA]",
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        id: "reminder-1",
+        guildId: "guild-1",
+        type: ReminderType.WAR_CWL,
+        channelId: "123456789012345678",
+        isEnabled: true,
+        createdByUserId: "user-1",
+        updatedByUserId: "user-1",
+        createdAt: new Date("2026-03-26T00:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+        offsetsSeconds: [1800],
+        targets: [
+          {
+            clanTag: "#PQL0289",
+            clanType: ReminderTargetClanType.FWA,
+            name: "FWA One",
+            label: "FWA One (#PQL0289) [FWA]",
+          },
+        ],
+      });
+
+    const interaction = createInteraction({ subcommand: "create" });
+    await Reminders.run({} as any, interaction as any, {} as any);
+
+    const collectHandler = interaction.__collector.on.mock.calls.find(
+      ([eventName]: [string]) => eventName === "collect",
+    )?.[1];
+    const endHandler = interaction.__collector.on.mock.calls.find(
+      ([eventName]: [string]) => eventName === "end",
+    )?.[1];
+
+    const saveButton: any = {
+      isButton: () => true,
+      isStringSelectMenu: () => false,
+      user: { id: "user-1" },
+      customId: "reminders:save:reminder-1",
+      deferReply: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      replied: false,
+      deferred: false,
+      reply: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await collectHandler(saveButton);
+    await endHandler([], "saved");
+
+    expect(saveButton.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(reminderServiceMock.setReminderEnabled).toHaveBeenCalledWith({
+      reminderId: "reminder-1",
+      guildId: "guild-1",
+      isEnabled: true,
+      actorUserId: "user-1",
+    });
+    expect(saveButton.editReply).toHaveBeenCalledWith({
+      content: "Reminder saved and enabled: reminder-1",
+    });
+    expect(interaction.__collector.stop).toHaveBeenCalledWith("saved");
+    const finalEdit = interaction.editReply.mock.calls.at(-1)?.[0] as any;
+    const savedEmbed = finalEdit?.embeds?.[0]?.toJSON?.() ?? finalEdit?.embeds?.[0];
+    expect(finalEdit?.content).toBe("Reminder saved and enabled: reminder-1");
+    expect(String(savedEmbed?.title)).toContain("Reminders - Saved");
+    expect(finalEdit?.components).toEqual([]);
+  });
+
   it("returns a clear validation error when optional create time_left is provided but invalid", async () => {
     const interaction = createInteraction({
       subcommand: "create",
