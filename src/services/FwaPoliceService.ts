@@ -113,6 +113,58 @@ export type FwaPoliceSendSampleResult =
         | "LOG_CHANNEL_UNAVAILABLE";
     };
 
+type FwaPoliceLogResolutionSource = "tracked_clan" | "bot_logs" | "none";
+
+type FwaPoliceLogDestinationResolution = {
+  trackedLogChannelId: string | null;
+  botLogChannelId: string | null;
+  resolvedChannelId: string | null;
+  source: FwaPoliceLogResolutionSource;
+};
+
+export type FwaPoliceStatusChannelHealth =
+  | "not_configured"
+  | "ok"
+  | "missing_or_inaccessible"
+  | "not_text_sendable";
+
+export type FwaPoliceStatusReport = {
+  scope: "guild" | "clan";
+  policeEnabled: boolean;
+  dmEnabled: boolean;
+  logEnabled: boolean;
+  storedPoliceLogChannelOverrideId: string | null;
+  storedBotLogChannelId: string | null;
+  storedBotLogChannelHealth: FwaPoliceStatusChannelHealth;
+  fallbackBehavior: string;
+  enabledViolationTypes: FwaPoliceViolation[];
+  trackedClanSummary: {
+    total: number;
+    policeEnabled: number;
+    dmEnabled: number;
+    logEnabled: number;
+    withTrackedLogChannel: number;
+    logEnabledWithoutTrackedLogChannel: number;
+  };
+  clan: null | {
+    clanTag: string;
+    clanName: string | null;
+    policeEnabled: boolean;
+    dmEnabled: boolean;
+    logEnabled: boolean;
+    storedTrackedLogChannelId: string | null;
+    storedTrackedLogChannelHealth: FwaPoliceStatusChannelHealth;
+    effectiveLogChannelId: string | null;
+    effectiveLogChannelSource: FwaPoliceLogResolutionSource;
+    effectiveLogChannelHealth: FwaPoliceStatusChannelHealth;
+  };
+  warnings: string[];
+};
+
+export type FwaPoliceStatusResult =
+  | { ok: true; report: FwaPoliceStatusReport }
+  | { ok: false; error: "CLAN_NOT_TRACKED"; clanTag: string };
+
 type FwaPoliceResolvedEmojiState = {
   alert: string;
   alertBlue: string;
@@ -600,16 +652,246 @@ export class FwaPoliceService {
   }
 
   /** Purpose: resolve police log destination via tracked clan log channel first, then guild bot-log fallback. */
-  private async resolvePoliceLogChannelId(input: {
+  private async resolvePoliceLogDestination(input: {
     guildId: string;
     tracked: TrackedClanPoliceRow;
-  }): Promise<string | null> {
+  }): Promise<FwaPoliceLogDestinationResolution> {
     const trackedLogChannelId = resolveClanLogChannelId(input.tracked);
-    if (trackedLogChannelId) return trackedLogChannelId;
+    if (trackedLogChannelId) {
+      return {
+        trackedLogChannelId,
+        botLogChannelId: null,
+        resolvedChannelId: trackedLogChannelId,
+        source: "tracked_clan",
+      };
+    }
     const botLogChannelId = await this.botLogChannels
       .getChannelId(input.guildId)
       .catch(() => null);
-    return normalizeFwaPoliceText(botLogChannelId) || null;
+    const normalizedBotLogChannelId = normalizeFwaPoliceText(botLogChannelId) || null;
+    return {
+      trackedLogChannelId: null,
+      botLogChannelId: normalizedBotLogChannelId,
+      resolvedChannelId: normalizedBotLogChannelId,
+      source: normalizedBotLogChannelId ? "bot_logs" : "none",
+    };
+  }
+
+  /** Purpose: classify channel health for status visibility without throwing. */
+  private async probeChannelHealth(input: {
+    client: Client;
+    channelId: string | null;
+  }): Promise<FwaPoliceStatusChannelHealth> {
+    if (!input.channelId) return "not_configured";
+    const channel = await input.client.channels
+      .fetch(input.channelId)
+      .catch(() => null);
+    if (!channel) return "missing_or_inaccessible";
+    if (!isTextChannelWithSend(channel)) return "not_text_sendable";
+    return "ok";
+  }
+
+  /** Purpose: resolve effective police config and logging behavior for guild-wide or clan-scoped status views. */
+  async getStatusReport(input: {
+    client: Client;
+    guildId: string;
+    clanTag?: string | null;
+  }): Promise<FwaPoliceStatusResult> {
+    const normalizedRequestedClanTag = normalizeClanTag(input.clanTag ?? "");
+    const trackedRows = (await prisma.trackedClan.findMany({
+      orderBy: { createdAt: "asc" },
+      select: {
+        tag: true,
+        name: true,
+        loseStyle: true,
+        fwaPoliceDmEnabled: true,
+        fwaPoliceLogEnabled: true,
+        logChannelId: true,
+      },
+    })) as TrackedClanPoliceRow[];
+    const normalizedBotLogChannelId =
+      normalizeFwaPoliceText(
+        await this.botLogChannels.getChannelId(input.guildId).catch(() => null),
+      ) || null;
+    const botLogChannelHealth = await this.probeChannelHealth({
+      client: input.client,
+      channelId: normalizedBotLogChannelId,
+    });
+    const trackedClanSummary = {
+      total: trackedRows.length,
+      policeEnabled: trackedRows.filter(
+        (row) => Boolean(row.fwaPoliceDmEnabled || row.fwaPoliceLogEnabled),
+      ).length,
+      dmEnabled: trackedRows.filter((row) => Boolean(row.fwaPoliceDmEnabled))
+        .length,
+      logEnabled: trackedRows.filter((row) => Boolean(row.fwaPoliceLogEnabled))
+        .length,
+      withTrackedLogChannel: trackedRows.filter((row) =>
+        Boolean(resolveClanLogChannelId(row)),
+      ).length,
+      logEnabledWithoutTrackedLogChannel: trackedRows.filter(
+        (row) => Boolean(row.fwaPoliceLogEnabled) && !resolveClanLogChannelId(row),
+      ).length,
+    };
+
+    const warnings: string[] = [];
+    if (
+      normalizedBotLogChannelId &&
+      botLogChannelHealth !== "ok" &&
+      botLogChannelHealth !== "not_configured"
+    ) {
+      warnings.push(
+        `Configured /bot-logs fallback channel <#${normalizedBotLogChannelId}> is ${botLogChannelHealth.replace(/_/g, " ")}.`,
+      );
+    }
+
+    if (
+      !normalizedBotLogChannelId &&
+      trackedClanSummary.logEnabledWithoutTrackedLogChannel > 0
+    ) {
+      warnings.push(
+        `${trackedClanSummary.logEnabledWithoutTrackedLogChannel} log-enabled tracked clan(s) have no tracked log-channel and no /bot-logs fallback, so log delivery cannot resolve.`,
+      );
+    }
+
+    const invalidTrackedLogChannelRows = await Promise.all(
+      trackedRows
+        .filter((row) => Boolean(row.fwaPoliceLogEnabled) && Boolean(resolveClanLogChannelId(row)))
+        .map(async (row) => {
+          const channelId = resolveClanLogChannelId(row);
+          const health = await this.probeChannelHealth({
+            client: input.client,
+            channelId,
+          });
+          return {
+            clanTag: normalizeClanTag(row.tag),
+            channelId,
+            health,
+          };
+        }),
+    );
+    const unresolvedTrackedLogRows = invalidTrackedLogChannelRows.filter(
+      (row) => row.health !== "ok",
+    );
+    if (unresolvedTrackedLogRows.length > 0) {
+      const preview = unresolvedTrackedLogRows
+        .slice(0, 3)
+        .map(
+          (row) =>
+            `${row.clanTag}:${row.channelId ? `<#${row.channelId}>` : "not set"}`,
+        )
+        .join(", ");
+      warnings.push(
+        `Configured tracked-clan police log channel(s) are unresolved/unusable for ${unresolvedTrackedLogRows.length} clan(s) (${preview}${unresolvedTrackedLogRows.length > 3 ? ", ..." : ""}).`,
+      );
+    }
+
+    if (!normalizedRequestedClanTag) {
+      return {
+        ok: true,
+        report: {
+          scope: "guild",
+          policeEnabled: trackedClanSummary.policeEnabled > 0,
+          dmEnabled: trackedClanSummary.dmEnabled > 0,
+          logEnabled: trackedClanSummary.logEnabled > 0,
+          storedPoliceLogChannelOverrideId: null,
+          storedBotLogChannelId: normalizedBotLogChannelId,
+          storedBotLogChannelHealth: botLogChannelHealth,
+          fallbackBehavior:
+            "tracked-clan log-channel when configured, otherwise /bot-logs fallback, otherwise unresolved",
+          enabledViolationTypes: [...FWA_POLICE_VIOLATIONS],
+          trackedClanSummary,
+          clan: null,
+          warnings,
+        },
+      };
+    }
+
+    const tracked = trackedRows.find(
+      (row) => normalizeClanTag(row.tag) === normalizedRequestedClanTag,
+    );
+    if (!tracked) {
+      return {
+        ok: false,
+        error: "CLAN_NOT_TRACKED",
+        clanTag: normalizedRequestedClanTag,
+      };
+    }
+
+    const logResolution = await this.resolvePoliceLogDestination({
+      guildId: input.guildId,
+      tracked,
+    });
+    const trackedLogChannelHealth = await this.probeChannelHealth({
+      client: input.client,
+      channelId: logResolution.trackedLogChannelId,
+    });
+    const effectiveLogChannelHealth =
+      logResolution.resolvedChannelId &&
+      logResolution.resolvedChannelId === logResolution.trackedLogChannelId
+        ? trackedLogChannelHealth
+        : await this.probeChannelHealth({
+            client: input.client,
+            channelId: logResolution.resolvedChannelId,
+          });
+    const clanWarnings = [...warnings];
+    if (
+      logResolution.trackedLogChannelId &&
+      trackedLogChannelHealth !== "ok" &&
+      trackedLogChannelHealth !== "not_configured"
+    ) {
+      clanWarnings.push(
+        `Tracked-clan log-channel <#${logResolution.trackedLogChannelId}> is ${trackedLogChannelHealth.replace(/_/g, " ")}.`,
+      );
+    }
+    if (logResolution.source === "none") {
+      clanWarnings.push(
+        "No effective log channel resolved (missing tracked-clan log-channel and /bot-logs fallback).",
+      );
+    } else if (
+      effectiveLogChannelHealth !== "ok" &&
+      effectiveLogChannelHealth !== "not_configured"
+    ) {
+      clanWarnings.push(
+        `Effective log destination <#${logResolution.resolvedChannelId}> is ${effectiveLogChannelHealth.replace(/_/g, " ")}.`,
+      );
+    }
+
+    const clanTag = normalizeClanTag(tracked.tag);
+    return {
+      ok: true,
+      report: {
+        scope: "clan",
+        policeEnabled: Boolean(
+          tracked.fwaPoliceDmEnabled || tracked.fwaPoliceLogEnabled,
+        ),
+        dmEnabled: Boolean(tracked.fwaPoliceDmEnabled),
+        logEnabled: Boolean(tracked.fwaPoliceLogEnabled),
+        storedPoliceLogChannelOverrideId: null,
+        storedBotLogChannelId:
+          logResolution.botLogChannelId ?? normalizedBotLogChannelId,
+        storedBotLogChannelHealth: botLogChannelHealth,
+        fallbackBehavior:
+          "tracked-clan log-channel when configured, otherwise /bot-logs fallback, otherwise unresolved",
+        enabledViolationTypes: [...FWA_POLICE_VIOLATIONS],
+        trackedClanSummary,
+        clan: {
+          clanTag,
+          clanName: normalizeFwaPoliceText(tracked.name) || null,
+          policeEnabled: Boolean(
+            tracked.fwaPoliceDmEnabled || tracked.fwaPoliceLogEnabled,
+          ),
+          dmEnabled: Boolean(tracked.fwaPoliceDmEnabled),
+          logEnabled: Boolean(tracked.fwaPoliceLogEnabled),
+          storedTrackedLogChannelId: logResolution.trackedLogChannelId,
+          storedTrackedLogChannelHealth: trackedLogChannelHealth,
+          effectiveLogChannelId: logResolution.resolvedChannelId,
+          effectiveLogChannelSource: logResolution.source,
+          effectiveLogChannelHealth,
+        },
+        warnings: clanWarnings,
+      },
+    };
   }
 
   /** Purpose: resolve `Violation Time` and stars-before-hit from shared breach context and war-attack chronology. */
@@ -1050,10 +1332,11 @@ export class FwaPoliceService {
       return { ok: true, deliveredTo: "DM", rendered: presentation.renderedTemplate };
     }
 
-    const resolvedLogChannelId = await this.resolvePoliceLogChannelId({
+    const logResolution = await this.resolvePoliceLogDestination({
       guildId: input.guildId,
       tracked,
     });
+    const resolvedLogChannelId = logResolution.resolvedChannelId;
     if (!resolvedLogChannelId) {
       return { ok: false, error: "LOG_CHANNEL_NOT_CONFIGURED" };
     }
@@ -1128,12 +1411,13 @@ export class FwaPoliceService {
       links.map((link) => [normalizePlayerTag(link.playerTag), link.discordUserId]),
     );
 
-    const resolvedLogChannelId = enableLog
-      ? await this.resolvePoliceLogChannelId({
+    const logResolution = enableLog
+      ? await this.resolvePoliceLogDestination({
           guildId: input.guildId,
           tracked,
         })
       : null;
+    const resolvedLogChannelId = logResolution?.resolvedChannelId ?? null;
     const resolvedLogChannel =
       enableLog && resolvedLogChannelId
         ? await input.client.channels.fetch(resolvedLogChannelId).catch(() => null)

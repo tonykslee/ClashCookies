@@ -3,7 +3,7 @@ import { ApplicationCommandOptionType } from "discord.js";
 import { Fwa } from "../src/commands/Fwa";
 
 describe("/fwa police command shape", () => {
-  it("registers police as a subcommand group with clan-required template tooling", () => {
+  it("registers police status with optional clan and keeps clan-required template tooling", () => {
     const police = Fwa.options?.find(
       (option) =>
         option.type === ApplicationCommandOptionType.SubcommandGroup &&
@@ -16,11 +16,22 @@ describe("/fwa police command shape", () => {
       options?: Array<{ name: string; required?: boolean; type?: number; autocomplete?: boolean }>;
     }>;
     for (const sub of allPoliceSubcommands) {
+      if (sub.name === "status") continue;
       const clanOption = sub.options?.find((option) => option.name === "clan");
       expect(clanOption?.required).toBe(true);
       expect(clanOption?.type).toBe(ApplicationCommandOptionType.String);
       expect(clanOption?.autocomplete).toBe(true);
     }
+
+    const status = police?.options?.find(
+      (option: { name: string }) => option.name === "status",
+    );
+    const statusClanOption = status?.options?.find(
+      (option: { name: string }) => option.name === "clan",
+    );
+    expect(statusClanOption?.required).toBe(false);
+    expect(statusClanOption?.type).toBe(ApplicationCommandOptionType.String);
+    expect(statusClanOption?.autocomplete).toBe(true);
 
     const setTemplate = police?.options?.find(
       (option: { name: string }) => option.name === "set",
