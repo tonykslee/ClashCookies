@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildFwaBaseSwapSplitPostCustomId,
   buildFwaComplianceViewCustomId,
+  buildFwaMailGateResumeCustomId,
   buildFwaMatchSendMailCustomId,
   buildFwaMatchTieBreakerCustomId,
   buildMatchTypeActionCustomId,
@@ -9,11 +10,13 @@ import {
   createTransientFwaKey,
   isFwaBaseSwapSplitPostButtonCustomId,
   isFwaComplianceViewButtonCustomId,
+  isFwaMailGateResumeButtonCustomId,
   isFwaMatchSendMailButtonCustomId,
   isFwaMatchTieBreakerButtonCustomId,
   isPointsPostButtonCustomId,
   parseFwaBaseSwapSplitPostCustomId,
   parseFwaComplianceViewCustomId,
+  parseFwaMailGateResumeCustomId,
   parseFwaMatchSendMailCustomId,
   parseFwaMatchTieBreakerCustomId,
   parseMatchTypeActionCustomId,
@@ -49,6 +52,24 @@ describe("fwa custom-id helpers", () => {
       key: "payload",
       tag: "QWERTY",
     });
+  });
+
+  it("round-trips mail-gate resume ids and supports selector checks", () => {
+    const customId = buildFwaMailGateResumeCustomId({
+      userId: "321",
+      key: "payload",
+      tag: "#qwerty",
+      action: "continue",
+    });
+
+    expect(isFwaMailGateResumeButtonCustomId(customId)).toBe(true);
+    expect(parseFwaMailGateResumeCustomId(customId)).toEqual({
+      userId: "321",
+      key: "payload",
+      tag: "QWERTY",
+      action: "continue",
+    });
+    expect(parseFwaMailGateResumeCustomId("fwa-mail-gate-resume:321:key:QWERTY:bad")).toBeNull();
   });
 
   it("round-trips tie-breaker ids and supports selector checks", () => {
