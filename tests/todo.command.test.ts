@@ -261,18 +261,6 @@ describe("/todo command", () => {
     vi.useRealTimers();
   });
 
-  it("registers the standard visibility option", () => {
-    const visibilityOption = (Todo.options ?? []).find(
-      (option: any) => option?.name === "visibility",
-    ) as any;
-    expect(visibilityOption).toBeTruthy();
-    expect(visibilityOption.required).toBe(false);
-    expect(visibilityOption.choices).toEqual([
-      { name: "private", value: "private" },
-      { name: "public", value: "public" },
-    ]);
-  });
-
   it("returns a clear error when the invoking user has no linked tags", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([]);
     const refreshSpy = vi.spyOn(todoSnapshotService, "refreshSnapshotsForPlayerTags");

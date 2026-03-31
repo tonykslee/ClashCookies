@@ -446,16 +446,6 @@ export const Todo: Command = {
       required: false,
       choices: TODO_TYPES.map((type) => ({ name: type, value: type })),
     },
-    {
-      name: "visibility",
-      description: "Response visibility",
-      type: ApplicationCommandOptionType.String,
-      required: false,
-      choices: [
-        { name: "private", value: "private" },
-        { name: "public", value: "public" },
-      ],
-    },
   ],
   run: async (
     _client: Client,
