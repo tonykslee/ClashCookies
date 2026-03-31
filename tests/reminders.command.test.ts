@@ -3,6 +3,7 @@ import { ReminderTargetClanType, ReminderType } from "@prisma/client";
 
 const reminderServiceMock = vi.hoisted(() => ({
   listSelectableClanOptions: vi.fn(),
+  findSelectableClanOptionByTag: vi.fn(),
   createReminderDraft: vi.fn(),
   getReminderWithDetails: vi.fn(),
   listReminderSummariesForGuild: vi.fn(),
@@ -12,6 +13,7 @@ const reminderServiceMock = vi.hoisted(() => ({
   setReminderType: vi.fn(),
   setReminderEnabled: vi.fn(),
   setReminderChannel: vi.fn(),
+  tryPrefillReminderChannelFromTrackedClanLog: vi.fn(),
   deleteReminder: vi.fn(),
 }));
 
@@ -73,6 +75,7 @@ function createInteraction(input: {
         return { id: input.channelId };
       }),
     },
+    __collector: collector,
   };
   return interaction;
 }
@@ -99,6 +102,7 @@ describe("/reminders command", () => {
     reminderServiceMock.createReminderDraft.mockResolvedValue({
       id: "reminder-1",
     });
+    reminderServiceMock.findSelectableClanOptionByTag.mockResolvedValue(null);
     reminderServiceMock.getReminderWithDetails.mockResolvedValue({
       id: "reminder-1",
       guildId: "guild-1",
@@ -112,6 +116,7 @@ describe("/reminders command", () => {
       offsetsSeconds: [],
       targets: [],
     });
+    reminderServiceMock.tryPrefillReminderChannelFromTrackedClanLog.mockResolvedValue(null);
     reminderServiceMock.listReminderSummariesForGuild.mockResolvedValue([]);
     reminderServiceMock.findReminderSummariesByClan.mockResolvedValue([]);
   });
@@ -166,6 +171,96 @@ describe("/reminders command", () => {
     expect(
       descriptions.some((description: string) => description.includes("CWL tracked clan")),
     ).toBe(true);
+  });
+
+  it("seeds create clan from optional slash arg and prefills channel from tracked-clan log when channel is unset", async () => {
+    reminderServiceMock.findSelectableClanOptionByTag.mockResolvedValue({
+      value: `${ReminderTargetClanType.FWA}|#PQL0289`,
+      clanTag: "#PQL0289",
+      clanType: ReminderTargetClanType.FWA,
+      name: "FWA One",
+      description: "FWA tracked clan",
+    });
+    const interaction = createInteraction({
+      subcommand: "create",
+      clan: "#PQL0289",
+    });
+
+    await Reminders.run({} as any, interaction as any, {} as any);
+
+    expect(reminderServiceMock.findSelectableClanOptionByTag).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      clanTag: "#PQL0289",
+    });
+    expect(reminderServiceMock.replaceReminderTargetsFromEncodedValues).toHaveBeenCalledWith({
+      reminderId: "reminder-1",
+      guildId: "guild-1",
+      encodedValues: [`${ReminderTargetClanType.FWA}|#PQL0289`],
+      actorUserId: "user-1",
+    });
+    expect(reminderServiceMock.tryPrefillReminderChannelFromTrackedClanLog).toHaveBeenCalledWith({
+      reminderId: "reminder-1",
+      guildId: "guild-1",
+      clanTag: "#PQL0289",
+      actorUserId: "user-1",
+    });
+  });
+
+  it("shows a clear error when create clan arg is not tracked/selectable", async () => {
+    reminderServiceMock.findSelectableClanOptionByTag.mockResolvedValue(null);
+    const interaction = createInteraction({
+      subcommand: "create",
+      clan: "#PQL0288",
+    });
+
+    await Reminders.run({} as any, interaction as any, {} as any);
+
+    expect(reminderServiceMock.createReminderDraft).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: "Clan #PQL0288 is not in tracked clans.",
+      }),
+    );
+  });
+
+  it("only attempts clan-log channel autofill on the first create-panel clan selection", async () => {
+    const interaction = createInteraction({ subcommand: "create" });
+    await Reminders.run({} as any, interaction as any, {} as any);
+
+    const collectHandler = interaction.__collector.on.mock.calls.find(
+      ([eventName]: [string]) => eventName === "collect",
+    )?.[1];
+    expect(collectHandler).toBeTypeOf("function");
+
+    const firstSelect: any = {
+      isButton: () => false,
+      isStringSelectMenu: () => true,
+      user: { id: "user-1" },
+      customId: "reminders:clans:reminder-1",
+      values: [`${ReminderTargetClanType.FWA}|#PQL0289`],
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+      replied: false,
+      deferred: true,
+      reply: vi.fn().mockResolvedValue(undefined),
+    };
+    await collectHandler(firstSelect);
+
+    const secondSelect: any = {
+      ...firstSelect,
+      values: [`${ReminderTargetClanType.CWL}|#2QG2C08UP`],
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+    };
+    await collectHandler(secondSelect);
+
+    expect(reminderServiceMock.tryPrefillReminderChannelFromTrackedClanLog).toHaveBeenCalledTimes(
+      1,
+    );
+    expect(reminderServiceMock.tryPrefillReminderChannelFromTrackedClanLog).toHaveBeenCalledWith({
+      reminderId: "reminder-1",
+      guildId: "guild-1",
+      clanTag: "#PQL0289",
+      actorUserId: "user-1",
+    });
   });
 
   it("returns a clear validation error when optional create time_left is provided but invalid", async () => {

@@ -177,4 +177,88 @@ describe("ReminderService create-draft flow", () => {
     expect(prismaMock.reminder.create).not.toHaveBeenCalled();
     expect(saved.id).toBe("rem-existing-1");
   });
+
+  it("prefers FWA option when the same clan tag exists in both FWA and CWL selectable sets", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      {
+        tag: "#PQL0289",
+        name: "Alpha",
+      },
+    ]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([
+      {
+        tag: "#PQL0289",
+        name: "Alpha CWL",
+      },
+    ]);
+
+    const service = new ReminderService();
+    const selected = await service.findSelectableClanOptionByTag({
+      guildId: "guild-1",
+      clanTag: "#PQL0289",
+    });
+
+    expect(selected).toBeTruthy();
+    expect(selected?.clanTag).toBe("#PQL0289");
+    expect(selected?.clanType).toBe(ReminderTargetClanType.FWA);
+  });
+
+  it("prefills draft channel from tracked-clan log channel only when channel is empty", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      {
+        tag: "#PQL0289",
+        name: "Alpha",
+        logChannelId: "999999999999999999",
+      },
+    ]);
+    const service = new ReminderService();
+    const draft = await service.createReminderDraft({
+      guildId: "guild-1",
+      actorUserId: "user-1",
+    });
+
+    const prefilled = await service.tryPrefillReminderChannelFromTrackedClanLog({
+      reminderId: draft.id,
+      guildId: "guild-1",
+      clanTag: "#PQL0289",
+      actorUserId: "user-1",
+    });
+    const updated = await service.getReminderWithDetails({
+      reminderId: draft.id,
+      guildId: "guild-1",
+    });
+
+    expect(prefilled).toBe("999999999999999999");
+    expect(updated.channelId).toBe("999999999999999999");
+  });
+
+  it("does not overwrite an already populated channel during log-channel autofill", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      {
+        tag: "#PQL0289",
+        name: "Alpha",
+        logChannelId: "999999999999999999",
+      },
+    ]);
+    const service = new ReminderService();
+    const draft = await service.createReminderDraft({
+      guildId: "guild-1",
+      channelId: "123456789012345678",
+      actorUserId: "user-1",
+    });
+
+    const prefilled = await service.tryPrefillReminderChannelFromTrackedClanLog({
+      reminderId: draft.id,
+      guildId: "guild-1",
+      clanTag: "#PQL0289",
+      actorUserId: "user-1",
+    });
+    const updated = await service.getReminderWithDetails({
+      reminderId: draft.id,
+      guildId: "guild-1",
+    });
+
+    expect(prefilled).toBeNull();
+    expect(updated.channelId).toBe("123456789012345678");
+  });
 });

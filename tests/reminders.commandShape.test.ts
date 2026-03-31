@@ -45,6 +45,11 @@ describe("/reminders command shape", () => {
       ChannelType.GuildText,
       ChannelType.GuildAnnouncement,
     ]);
+    expect(create?.options?.find((o: any) => o.name === "clan")?.required).toBe(false);
+    expect(create?.options?.find((o: any) => o.name === "clan")?.type).toBe(
+      ApplicationCommandOptionType.String,
+    );
+    expect(create?.options?.find((o: any) => o.name === "clan")?.autocomplete).toBe(true);
 
     expect(edit?.options?.find((o: any) => o.name === "clan")?.required).toBe(true);
     expect(edit?.options?.find((o: any) => o.name === "clan")?.autocomplete).toBe(true);
