@@ -17,6 +17,7 @@ import {
   invalidateTodoRenderCacheForUser,
   normalizeTodoType,
   TODO_TYPES,
+  type TodoSidebarState,
   type TodoType,
 } from "../services/TodoService";
 import { todoSnapshotService } from "../services/TodoSnapshotService";
@@ -24,7 +25,9 @@ import { todoLastViewedTypeService } from "../services/TodoLastViewedTypeService
 
 const TODO_PAGE_BUTTON_PREFIX = "todo-page";
 const TODO_REFRESH_BUTTON_PREFIX = "todo-refresh";
-const TODO_EMBED_COLOR = 0x5865f2;
+const TODO_EMBED_COLOR_DEFAULT = 0x5865f2;
+const TODO_EMBED_COLOR_INCOMPLETE = 0xed4245;
+const TODO_EMBED_COLOR_COMPLETE = 0x57f287;
 const TODO_GUILD_SCOPE_DM = "dm";
 const TODO_REFRESH_ERROR_MESSAGE =
   "Failed to refresh todo data. Please try again.";
@@ -247,16 +250,24 @@ function buildTodoEmbed(input: {
   selectedType: TodoType;
   linkedPlayerCount: number;
   pageText: string;
+  sidebarState: TodoSidebarState;
 }): EmbedBuilder {
   const pageIndex = TODO_TYPES.indexOf(input.selectedType);
   const safeIndex = pageIndex >= 0 ? pageIndex : 0;
   return new EmbedBuilder()
-    .setColor(TODO_EMBED_COLOR)
+    .setColor(resolveTodoEmbedColor(input.sidebarState))
     .setTitle(`Todo - ${input.selectedType}`)
     .setDescription(input.pageText || "No todo rows available.")
     .setFooter({
       text: `Page ${safeIndex + 1}/${TODO_TYPES.length} - Linked players: ${input.linkedPlayerCount}`,
     });
+}
+
+/** Purpose: map shared todo sidebar state into deterministic embed colors for command render. */
+function resolveTodoEmbedColor(sidebarState: TodoSidebarState): number {
+  if (sidebarState === "incomplete") return TODO_EMBED_COLOR_INCOMPLETE;
+  if (sidebarState === "complete") return TODO_EMBED_COLOR_COMPLETE;
+  return TODO_EMBED_COLOR_DEFAULT;
 }
 
 /** Purpose: build a rendered todo response payload for one selected page type. */
@@ -286,6 +297,7 @@ async function buildTodoRenderResult(input: {
           selectedType: normalizedType,
           linkedPlayerCount: pages.linkedPlayerCount,
           pageText: pages.pages[normalizedType],
+          sidebarState: pages.sidebarStateByType[normalizedType] ?? "default",
         }),
       ],
       components: buildTodoComponentRows(input.scope, normalizedType),
