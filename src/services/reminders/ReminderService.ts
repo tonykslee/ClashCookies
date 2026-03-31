@@ -205,6 +205,23 @@ export class ReminderService {
     });
   }
 
+  /** Purpose: resolve one create-flow clan seed by tag with deterministic FWA-first precedence when dual-registered. */
+  async findSelectableClanOptionByTag(input: {
+    guildId: string;
+    clanTag: string;
+  }): Promise<ReminderClanOption | null> {
+    const clanTag = normalizeClanTag(input.clanTag);
+    if (!input.guildId || !clanTag) return null;
+    const options = await this.listSelectableClanOptions(input.guildId);
+    const matches = options.filter((option) => option.clanTag === clanTag);
+    if (matches.length <= 0) return null;
+    return (
+      matches.find((option) => option.clanType === ReminderTargetClanType.FWA) ??
+      matches[0] ??
+      null
+    );
+  }
+
   /** Purpose: create an in-memory reminder draft from optional slash seeds without persisting until save. */
   async createReminderDraft(input: {
     guildId: string;
@@ -372,6 +389,47 @@ export class ReminderService {
     console.log(
       `[reminders] action=channel_updated reminder_id=${input.reminderId} guild=${input.guildId} channel=${input.channelId} actor=${input.actorUserId}`,
     );
+  }
+
+  /** Purpose: prefill reminder channel from tracked-clan log channel only when the reminder channel is currently empty. */
+  async tryPrefillReminderChannelFromTrackedClanLog(input: {
+    reminderId: string;
+    guildId: string;
+    clanTag: string;
+    actorUserId: string;
+  }): Promise<string | null> {
+    const clanTag = normalizeClanTag(input.clanTag);
+    if (!clanTag) return null;
+
+    const reminder = await this.getReminderWithDetails({
+      reminderId: input.reminderId,
+      guildId: input.guildId,
+    });
+    if (sanitizeDraftChannelId(reminder.channelId)) {
+      return null;
+    }
+
+    const trackedRows = await prisma.trackedClan.findMany({
+      select: {
+        tag: true,
+        logChannelId: true,
+      },
+    });
+    const matched = trackedRows.find(
+      (row) => normalizeClanTag(row.tag) === clanTag,
+    );
+    const logChannelId = sanitizeDraftChannelId(matched?.logChannelId);
+    if (!logChannelId) {
+      return null;
+    }
+
+    await this.setReminderChannel({
+      reminderId: input.reminderId,
+      guildId: input.guildId,
+      channelId: logChannelId,
+      actorUserId: input.actorUserId,
+    });
+    return logChannelId;
   }
 
   /** Purpose: replace one reminder's offsets atomically with normalized unique positive values. */

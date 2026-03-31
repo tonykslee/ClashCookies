@@ -13,12 +13,13 @@ import {
   StringSelectMenuBuilder,
   StringSelectMenuInteraction,
 } from "discord.js";
-import { ReminderType } from "@prisma/client";
+import { ReminderTargetClanType, ReminderType } from "@prisma/client";
 import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
 import { safeReply } from "../helper/safeReply";
 import { normalizeClanTag } from "../services/PlayerLinkService";
 import {
+  decodeReminderClanTargetValue,
   formatReminderOffsetSeconds,
   getReminderOffsetPresetSeconds,
   parseReminderOffsetsInputList,
@@ -253,6 +254,7 @@ async function openReminderPanel(input: {
 
   const message = await input.interaction.fetchReply();
   let createSaved = false;
+  let createClanAutofillAttemptConsumed = false;
   const collector = message.createMessageComponentCollector({
     time: PANEL_TIMEOUT_MS,
   });
@@ -266,12 +268,38 @@ async function openReminderPanel(input: {
     try {
       if (isSelect && component.customId === `reminders:clans:${input.reminderId}`) {
         await component.deferUpdate();
+        const selectedEncodedValues = component.values.filter((value) => value !== "none");
         await reminderService.replaceReminderTargetsFromEncodedValues({
           reminderId: input.reminderId,
           guildId: input.interaction.guildId!,
-          encodedValues: component.values.filter((value) => value !== "none"),
+          encodedValues: selectedEncodedValues,
           actorUserId: input.ownerUserId,
         });
+        if (
+          input.mode === REMINDER_CREATE_MODE &&
+          !createClanAutofillAttemptConsumed &&
+          selectedEncodedValues.length > 0
+        ) {
+          createClanAutofillAttemptConsumed = true;
+          const firstSelectedClan = selectedEncodedValues
+            .map((value) => decodeReminderClanTargetValue(value))
+            .find(
+              (
+                decoded,
+              ): decoded is {
+                clanType: ReminderTargetClanType;
+                clanTag: string;
+              } => Boolean(decoded),
+            );
+          if (firstSelectedClan?.clanTag) {
+            await reminderService.tryPrefillReminderChannelFromTrackedClanLog({
+              reminderId: input.reminderId,
+              guildId: input.interaction.guildId!,
+              clanTag: firstSelectedClan.clanTag,
+              actorUserId: input.ownerUserId,
+            });
+          }
+        }
       } else if (isSelect && component.customId === `reminders:offsets:${input.reminderId}`) {
         await component.deferUpdate();
         const selectedOffsets = component.values
@@ -595,6 +623,13 @@ export const Reminders: Command = {
           required: false,
           channel_types: [ChannelType.GuildText, ChannelType.GuildAnnouncement],
         },
+        {
+          name: "clan",
+          description: "Clan tag to preselect in the create panel (with or without #)",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          autocomplete: true,
+        },
       ],
     },
     {
@@ -641,6 +676,9 @@ export const Reminders: Command = {
         const seededOffsets =
           timeLeftInput === null ? [] : parseReminderOffsetsInputList(timeLeftInput);
         const channel = interaction.options.getChannel("channel", false);
+        const clanInput = interaction.options.getString("clan", false);
+        const normalizedSeedClan = clanInput === null ? "" : normalizeClanTag(clanInput);
+        let seededClan: ReminderClanOption | null = null;
         if (typeRaw !== null && !reminderType) {
           await safeReply(interaction, {
             ephemeral: true,
@@ -663,6 +701,26 @@ export const Reminders: Command = {
           });
           return;
         }
+        if (clanInput !== null && !normalizedSeedClan) {
+          await safeReply(interaction, {
+            ephemeral: true,
+            content: "Invalid clan tag format.",
+          });
+          return;
+        }
+        if (normalizedSeedClan) {
+          seededClan = await reminderService.findSelectableClanOptionByTag({
+            guildId: interaction.guildId,
+            clanTag: normalizedSeedClan,
+          });
+          if (!seededClan) {
+            await safeReply(interaction, {
+              ephemeral: true,
+              content: `Clan ${normalizedSeedClan} is not in tracked clans.`,
+            });
+            return;
+          }
+        }
 
         const created = await reminderService.createReminderDraft({
           guildId: interaction.guildId,
@@ -671,6 +729,22 @@ export const Reminders: Command = {
           offsetsSeconds: seededOffsets,
           actorUserId: interaction.user.id,
         });
+        if (seededClan) {
+          await reminderService.replaceReminderTargetsFromEncodedValues({
+            reminderId: created.id,
+            guildId: interaction.guildId,
+            encodedValues: [seededClan.value],
+            actorUserId: interaction.user.id,
+          });
+          if (!channel?.id) {
+            await reminderService.tryPrefillReminderChannelFromTrackedClanLog({
+              reminderId: created.id,
+              guildId: interaction.guildId,
+              clanTag: seededClan.clanTag,
+              actorUserId: interaction.user.id,
+            });
+          }
+        }
         await openReminderPanel({
           interaction,
           reminderId: created.id,
