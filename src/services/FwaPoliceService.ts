@@ -20,7 +20,6 @@ import {
 import { type FwaLoseStyle, type MatchType, normalizeOutcome } from "./war-events/core";
 import {
   classifyFwaPoliceViolation,
-  FWA_POLICE_SAMPLE_OFFENDER,
   FWA_POLICE_VIOLATIONS,
   FWA_POLICE_VIOLATION_METADATA,
   normalizeFwaPoliceText,
@@ -230,7 +229,7 @@ function buildOffenderLabel(input: {
       ? Math.trunc(Number(input.playerPosition))
       : null;
   if (playerPosition !== null) {
-    return `#${playerPosition} - ${playerName}`;
+    return `**#${playerPosition} - ${playerName}**`;
   }
   const tag = normalizePlayerTag(String(input.playerTag ?? ""));
   return tag ? `${tag} - ${playerName}` : playerName;
@@ -381,11 +380,6 @@ function resolveStarsBeforeHitFallbackValue(
   return normalized >= 0 ? normalized : null;
 }
 
-function formatStarsBeforeHitValue(starsBeforeHit: number | null): string {
-  if (starsBeforeHit === null || !Number.isFinite(starsBeforeHit)) return "?";
-  return String(Math.max(0, Math.trunc(starsBeforeHit)));
-}
-
 function resolveMentionUserId(raw: string | null | undefined): string | null {
   const normalized = String(raw ?? "").trim();
   if (!/^\d+$/.test(normalized)) return null;
@@ -436,33 +430,23 @@ function buildPoliceMessagePresentation(input: {
   starsBeforeHit: number | null;
   emojis: FwaPoliceResolvedEmojiState;
 }): { renderedTemplate: string; embed: EmbedBuilder } {
-  const metadata = FWA_POLICE_VIOLATION_METADATA[input.violation];
   const renderedTemplate = renderFwaPoliceTemplate({
     template: input.resolvedTemplate,
     offender: input.offender,
     user: input.user,
   });
   const description = [
-    `## ${input.emojis.alert} ${input.emojis.alertBlue} FWA Police - Warplan violation detected ${input.emojis.alertBlue} ${input.emojis.alert}`,
+    `## ${input.emojis.alert} Warplan violation ${input.emojis.alertBlue}`,
     `**War**: ${input.warClanDisplayName} ${resolveWarLine({
       matchTypeContext: input.matchTypeContext,
       expectedOutcome: input.expectedOutcome,
       emojis: input.emojis,
     })}`,
-    `**Violation**: ${metadata.label}`,
-    `**Violation Time**: ${input.violationTimeRemaining} | **Clan stars before hit**: ${formatStarsBeforeHitValue(
-      input.starsBeforeHit,
-    )}\u2605`,
   ].join("\n");
   const embed = new EmbedBuilder()
     .setColor(0xed4245)
     .setDescription(description)
     .addFields(
-      {
-        name: "**Message**",
-        value: clampEmbedFieldValue(renderedTemplate),
-        inline: false,
-      },
       {
         name: `**${input.emojis.yes} Expected**`,
         value: clampEmbedFieldValue(input.expectedBehavior),
@@ -1045,7 +1029,11 @@ export class FwaPoliceService {
     const presentation = buildPoliceMessagePresentation({
       violation: input.violation,
       resolvedTemplate: resolveStandardTemplateForViolation(input.violation),
-      offender: FWA_POLICE_SAMPLE_OFFENDER,
+      offender: buildOffenderLabel({
+        playerPosition: 15,
+        playerName: "Tilonius",
+        playerTag: null,
+      }),
       user: `<@${input.requestingUserId}>`,
       expectedBehavior: buildSampleExpectedBehavior(input.violation),
       actualBehavior: buildSampleActualBehavior(input.violation),
