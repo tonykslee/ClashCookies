@@ -1,0 +1,63 @@
+services:
+  uptime-kuma:
+    image: louislam/uptime-kuma:2
+    container_name: clashcookies-uptime-kuma
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${UPTIME_KUMA_BIND_ADDRESS:-127.0.0.1}:${UPTIME_KUMA_PORT:-3001}:3001"
+    volumes:
+      - uptime_kuma_data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  dozzle:
+    image: amir20/dozzle:latest
+    container_name: clashcookies-dozzle
+    restart: unless-stopped
+    environment:
+      DOZZLE_AUTH_PROVIDER: simple
+      DOZZLE_FILTER: ${DOZZLE_FILTER:-name=clashcookies}
+      DOZZLE_NO_ANALYTICS: "true"
+    healthcheck:
+      test: ["CMD", "/dozzle", "healthcheck"]
+      interval: 30s
+      timeout: 30s
+      retries: 5
+      start_period: 30s
+    ports:
+      - "${DOZZLE_BIND_ADDRESS:-127.0.0.1}:${DOZZLE_PORT:-8080}:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - dozzle_data:/data
+      - ./dozzle/users.yml:/data/users.yml:ro
+
+  netdata:
+    image: netdata/netdata:stable
+    container_name: clashcookies-netdata
+    hostname: ${NETDATA_HOSTNAME:-clashcookies-droplet}
+    restart: unless-stopped
+    network_mode: host
+    pid: host
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - apparmor:unconfined
+    volumes:
+      - netdata_lib:/var/lib/netdata
+      - netdata_cache:/var/cache/netdata
+      - /etc/passwd:/host/etc/passwd:ro
+      - /etc/group:/host/etc/group:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /etc/os-release:/host/etc/os-release:ro
+      - /var/log:/host/var/log:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./netdata/netdata.conf:/etc/netdata/netdata.conf:ro
+
+volumes:
+  dozzle_data:
+  netdata_cache:
+  netdata_lib:
+  uptime_kuma_data:

@@ -9,7 +9,6 @@ import {
   ButtonStyle,
   ChatInputCommandInteraction,
   Client,
-  ComponentType,
   EmbedBuilder,
   PermissionFlagsBits,
   StringSelectMenuBuilder,
@@ -41,7 +40,10 @@ import {
   WarComplianceService,
   type WarComplianceIssue,
 } from "../services/WarComplianceService";
-import { fwaPoliceService } from "../services/FwaPoliceService";
+import {
+  fwaPoliceService,
+  type FwaPoliceStatusReport,
+} from "../services/FwaPoliceService";
 import {
   FWA_POLICE_VIOLATION_CHOICES,
   normalizeFwaPoliceText,
@@ -1127,6 +1129,72 @@ async function canViewFwaMatchMailDebug(
   if (!interaction.inGuild() || !interaction.guildId) return false;
   const permissionService = new CommandPermissionService();
   return permissionService.canUseCommand("fwa:mail:send", interaction);
+}
+
+function formatFwaPoliceBoolean(value: boolean): string {
+  return value ? "yes" : "no";
+}
+
+function formatFwaPoliceChannelMention(channelId: string | null): string {
+  return channelId ? `<#${channelId}>` : "not configured";
+}
+
+function formatFwaPoliceChannelHealthLabel(health: string): string {
+  if (health === "ok") return "ok";
+  if (health === "not_configured") return "not configured";
+  if (health === "missing_or_inaccessible") return "missing or inaccessible";
+  if (health === "not_text_sendable") return "not text-sendable";
+  return health;
+}
+
+function formatFwaPoliceLogSourceLabel(source: string): string {
+  if (source === "tracked_clan") return "tracked-clan log-channel";
+  if (source === "bot_logs") return "/bot-logs fallback";
+  return "unresolved";
+}
+
+function formatFwaPoliceStatusReport(report: FwaPoliceStatusReport): string {
+  const lines: string[] = [
+    `FWA Police status (${report.scope === "clan" ? "clan scope" : "guild scope"})`,
+    `FWA Police enabled: ${formatFwaPoliceBoolean(report.policeEnabled)}`,
+    `DM sending enabled: ${formatFwaPoliceBoolean(report.dmEnabled)}`,
+    `Log sending enabled: ${formatFwaPoliceBoolean(report.logEnabled)}`,
+    `Stored police log override: ${formatFwaPoliceChannelMention(report.storedPoliceLogChannelOverrideId)}`,
+    `Stored /bot-logs fallback: ${formatFwaPoliceChannelMention(report.storedBotLogChannelId)} (${formatFwaPoliceChannelHealthLabel(report.storedBotLogChannelHealth)})`,
+    `Effective fallback behavior: ${report.fallbackBehavior}`,
+  ];
+
+  if (report.clan) {
+    lines.push(
+      `Clan: ${report.clan.clanName ?? `#${report.clan.clanTag}`} (${report.clan.clanTag})`,
+      `Stored tracked-clan log-channel: ${formatFwaPoliceChannelMention(report.clan.storedTrackedLogChannelId)} (${formatFwaPoliceChannelHealthLabel(report.clan.storedTrackedLogChannelHealth)})`,
+      `Effective log destination: ${formatFwaPoliceChannelMention(report.clan.effectiveLogChannelId)} (${formatFwaPoliceLogSourceLabel(report.clan.effectiveLogChannelSource)}, ${formatFwaPoliceChannelHealthLabel(report.clan.effectiveLogChannelHealth)})`,
+    );
+  } else {
+    lines.push(
+      `Tracked clans: ${report.trackedClanSummary.total}`,
+      `Tracked clans with police enabled: ${report.trackedClanSummary.policeEnabled}`,
+      `Tracked clans with DM enabled: ${report.trackedClanSummary.dmEnabled}`,
+      `Tracked clans with log enabled: ${report.trackedClanSummary.logEnabled}`,
+      `Tracked clans with stored log-channel: ${report.trackedClanSummary.withTrackedLogChannel}`,
+      `Log-enabled clans without tracked log-channel: ${report.trackedClanSummary.logEnabledWithoutTrackedLogChannel}`,
+    );
+  }
+
+  lines.push(
+    `Enabled enforcement types: ${report.enabledViolationTypes.join(", ")} (canonical set)`,
+  );
+
+  if (report.warnings.length > 0) {
+    lines.push("", "Warnings:");
+    for (const warning of report.warnings) {
+      lines.push(`- ${warning}`);
+    }
+  } else {
+    lines.push("", "Warnings: none");
+  }
+
+  return lines.join("\n");
 }
 
 function normalizeTag(input: string): string {
@@ -11755,9 +11823,25 @@ export const Fwa: Command = {
     },
     {
       name: "police",
-      description: "Manage FWA police automation and per-violation templates",
+      description: "Manage FWA police automation, status, and preview delivery",
       type: ApplicationCommandOptionType.SubcommandGroup,
       options: [
+        {
+          name: "status",
+          description:
+            "Show effective FWA police configuration and log-resolution status",
+          type: ApplicationCommandOptionType.Subcommand,
+          options: [
+            {
+              name: "clan",
+              description:
+                "Optional tracked clan tag (with or without #) for clan-specific resolution",
+              type: ApplicationCommandOptionType.String,
+              required: false,
+              autocomplete: true,
+            },
+          ],
+        },
         {
           name: "configure",
           description: "Configure automatic FWA warplan-violation enforcement",
@@ -11781,158 +11865,6 @@ export const Fwa: Command = {
               description: "Enable clan-channel logging for detected violations",
               type: ApplicationCommandOptionType.Boolean,
               required: true,
-            },
-          ],
-        },
-        {
-          name: "show",
-          description: "Show one clan violation template with effective rendering",
-          type: ApplicationCommandOptionType.Subcommand,
-          options: [
-            {
-              name: "clan",
-              description: "Tracked clan tag (with or without #)",
-              type: ApplicationCommandOptionType.String,
-              required: true,
-              autocomplete: true,
-            },
-            {
-              name: "violation",
-              description: "Canonical police violation",
-              type: ApplicationCommandOptionType.String,
-              required: true,
-              choices: FWA_POLICE_VIOLATION_CHOICES,
-            },
-          ],
-        },
-        {
-          name: "show-default",
-          description: "Show one global default template with effective rendering for a clan",
-          type: ApplicationCommandOptionType.Subcommand,
-          options: [
-            {
-              name: "clan",
-              description: "Tracked clan tag (with or without #)",
-              type: ApplicationCommandOptionType.String,
-              required: true,
-              autocomplete: true,
-            },
-            {
-              name: "violation",
-              description: "Canonical police violation",
-              type: ApplicationCommandOptionType.String,
-              required: true,
-              choices: FWA_POLICE_VIOLATION_CHOICES,
-            },
-          ],
-        },
-        {
-          name: "show-all",
-          description: "Show all canonical police violations with source/sample/applicability",
-          type: ApplicationCommandOptionType.Subcommand,
-          options: [
-            {
-              name: "clan",
-              description: "Tracked clan tag (with or without #)",
-              type: ApplicationCommandOptionType.String,
-              required: true,
-              autocomplete: true,
-            },
-          ],
-        },
-        {
-          name: "set",
-          description: "Set one clan-scoped custom template override",
-          type: ApplicationCommandOptionType.Subcommand,
-          options: [
-            {
-              name: "clan",
-              description: "Tracked clan tag (with or without #)",
-              type: ApplicationCommandOptionType.String,
-              required: true,
-              autocomplete: true,
-            },
-            {
-              name: "violation",
-              description: "Canonical police violation",
-              type: ApplicationCommandOptionType.String,
-              required: true,
-              choices: FWA_POLICE_VIOLATION_CHOICES,
-            },
-            {
-              name: "template",
-              description: "Template text (supports placeholders: {offender}, {user})",
-              type: ApplicationCommandOptionType.String,
-              required: true,
-            },
-          ],
-        },
-        {
-          name: "set-default",
-          description: "Set one global default template override",
-          type: ApplicationCommandOptionType.Subcommand,
-          options: [
-            {
-              name: "clan",
-              description: "Tracked clan tag (with or without #)",
-              type: ApplicationCommandOptionType.String,
-              required: true,
-              autocomplete: true,
-            },
-            {
-              name: "violation",
-              description: "Canonical police violation",
-              type: ApplicationCommandOptionType.String,
-              required: true,
-              choices: FWA_POLICE_VIOLATION_CHOICES,
-            },
-            {
-              name: "template",
-              description: "Template text (supports placeholders: {offender}, {user})",
-              type: ApplicationCommandOptionType.String,
-              required: true,
-            },
-          ],
-        },
-        {
-          name: "reset",
-          description: "Reset one clan-scoped custom template override",
-          type: ApplicationCommandOptionType.Subcommand,
-          options: [
-            {
-              name: "clan",
-              description: "Tracked clan tag (with or without #)",
-              type: ApplicationCommandOptionType.String,
-              required: true,
-              autocomplete: true,
-            },
-            {
-              name: "violation",
-              description: "Canonical police violation",
-              type: ApplicationCommandOptionType.String,
-              required: true,
-              choices: FWA_POLICE_VIOLATION_CHOICES,
-            },
-          ],
-        },
-        {
-          name: "reset-default",
-          description: "Reset one global default template override",
-          type: ApplicationCommandOptionType.Subcommand,
-          options: [
-            {
-              name: "clan",
-              description: "Tracked clan tag (with or without #)",
-              type: ApplicationCommandOptionType.String,
-              required: true,
-              autocomplete: true,
-            },
-            {
-              name: "violation",
-              description: "Canonical police violation",
-              type: ApplicationCommandOptionType.String,
-              required: true,
-              choices: FWA_POLICE_VIOLATION_CHOICES,
             },
           ],
         },
@@ -12571,19 +12503,44 @@ export const Fwa: Command = {
         return;
       }
 
+      if (subcommand === "status") {
+        if (
+          !hasOwnerBypassUserId(interaction.user.id) &&
+          !interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)
+        ) {
+          await editReplySafe(
+            "Only administrators can use `/fwa police status`.",
+          );
+          return;
+        }
+        const rawStatusClanTag = interaction.options.getString("clan", false);
+        const statusClanTag = rawStatusClanTag
+          ? normalizeTag(rawStatusClanTag)
+          : null;
+        if (rawStatusClanTag && !statusClanTag) {
+          await editReplySafe("Please provide a valid optional `clan` tag.");
+          return;
+        }
+
+        const status = await fwaPoliceService.getStatusReport({
+          client: interaction.client,
+          guildId: interaction.guildId,
+          clanTag: statusClanTag,
+        });
+        if (!status.ok) {
+          await editReplySafe(`Clan ${status.clanTag} is not in tracked clans.`);
+          return;
+        }
+
+        await editReplySafe(formatFwaPoliceStatusReport(status.report), [], []);
+        return;
+      }
+
       const clanTag = normalizeTag(interaction.options.getString("clan", true));
       if (!clanTag) {
         await editReplySafe("Please provide a valid `clan`.");
         return;
       }
-
-      const selectedViolationRaw = interaction.options.getString("violation", false);
-      const selectedViolation = selectedViolationRaw
-        ? (selectedViolationRaw as FwaPoliceViolation)
-        : null;
-
-      const formatTemplateText = (value: string | null): string =>
-        value ? `\`\`\`\n${value.slice(0, 980)}\n\`\`\`` : "_Not set_";
 
       if (subcommand === "configure") {
         const enableDm = interaction.options.getBoolean("enable-dm", true);
@@ -12614,213 +12571,18 @@ export const Fwa: Command = {
         return;
       }
 
-      const previewBundle = await fwaPoliceService.getTemplatePreviewBundle({
-        client: interaction.client,
-        guildId: interaction.guildId,
-        clanTag,
-        sampleUserId: interaction.user.id,
-      });
-      if (!previewBundle) {
-        await editReplySafe(`Clan #${clanTag} is not in tracked clans.`);
-        return;
-      }
-
-      const buildPoliceTemplatePreviewEmbed = (
-        row: (typeof previewBundle.rows)[number],
-      ): EmbedBuilder => {
-        const embed = EmbedBuilder.from(row.sampleEmbed).addFields(
-          {
-            name: "**Template Source**",
-            value: `**${row.effectiveSource}**`,
-            inline: false,
-          },
-          {
-            name: "**Applicability**",
-            value: row.isApplicable
-              ? row.applicabilityText
-              : "Not applicable under current warplan",
-            inline: false,
-          },
-          {
-            name: "**Warplan Context**",
-            value: previewBundle.contextSummary.slice(0, 1024),
-            inline: false,
-          },
-        );
-        return embed;
-      };
-
-      if (subcommand === "show-all") {
-        const embeds = previewBundle.rows.map((row, index) =>
-          buildPoliceTemplatePreviewEmbed(row).setFooter({
-            text: `${previewBundle.clanName ?? previewBundle.clanTag} (${previewBundle.clanTag}) | ${row.violation} | Page ${index + 1}/${previewBundle.rows.length}`,
-          }),
-        );
-        const prefix = `fwa-police-show-all:${interaction.id}`;
-        const buildPaginationRow = (
-          page: number,
-          totalPages: number,
-        ): ActionRowBuilder<ButtonBuilder> =>
-          new ActionRowBuilder<ButtonBuilder>().addComponents(
-            new ButtonBuilder()
-              .setCustomId(`${prefix}:prev`)
-              .setLabel("Prev")
-              .setStyle(ButtonStyle.Secondary)
-              .setDisabled(page <= 0),
-            new ButtonBuilder()
-              .setCustomId(`${prefix}:next`)
-              .setLabel("Next")
-              .setStyle(ButtonStyle.Secondary)
-              .setDisabled(page >= totalPages - 1),
-          );
-        let page = 0;
-        const reply = await interaction.editReply({
-          content: "",
-          embeds: [embeds[page]],
-          components:
-            embeds.length > 1 ? [buildPaginationRow(page, embeds.length)] : [],
-        });
-        if (embeds.length <= 1) return;
-
-        const collector = reply.createMessageComponentCollector({
-          componentType: ComponentType.Button,
-          time: 5 * 60 * 1000,
-          filter: (btn) =>
-            btn.user.id === interaction.user.id &&
-            (btn.customId === `${prefix}:prev` || btn.customId === `${prefix}:next`),
-        });
-        collector.on("collect", async (btn: ButtonInteraction) => {
-          if (btn.customId.endsWith(":prev")) {
-            page = Math.max(0, page - 1);
-          } else if (btn.customId.endsWith(":next")) {
-            page = Math.min(embeds.length - 1, page + 1);
-          }
-          await btn.update({
-            embeds: [embeds[page]],
-            components: [buildPaginationRow(page, embeds.length)],
-          });
-        });
-        collector.on("end", async () => {
-          await interaction
-            .editReply({
-              content: "",
-              embeds: [embeds[page]],
-              components: [],
-            })
-            .catch(() => undefined);
-        });
-        return;
-      }
-
-      if (!selectedViolation) {
-        await editReplySafe("Please provide a valid `violation`.");
-        return;
-      }
-      const selectedRow = previewBundle.rows.find(
-        (row) => row.violation === selectedViolation,
-      );
-      if (!selectedRow) {
-        await editReplySafe("Unsupported violation.");
-        return;
-      }
-
-      if (subcommand === "show" || subcommand === "show-default") {
-        const rawTemplateText =
-          subcommand === "show"
-            ? selectedRow.rawCustomTemplate
-            : selectedRow.rawDefaultTemplate;
-        const rawTitle =
-          subcommand === "show"
-            ? "Raw Clan Custom Template"
-            : "Raw Global Default Template";
-        const embed = buildPoliceTemplatePreviewEmbed(selectedRow)
-          .addFields({
-            name: `**${rawTitle}**`,
-            value: formatTemplateText(rawTemplateText),
-            inline: false,
-          })
-          .setFooter({
-            text: `${previewBundle.clanName ?? previewBundle.clanTag} (${previewBundle.clanTag}) | ${selectedRow.violation}`,
-          });
-        await interaction.editReply({ content: "", embeds: [embed], components: [] });
-        return;
-      }
-
-      if (subcommand === "set") {
-        const template = interaction.options.getString("template", true);
-        const result = await fwaPoliceService.setClanTemplate({
-          clanTag: previewBundle.clanTag,
-          violation: selectedViolation,
-          template,
-        });
-        if (!result.ok) {
-          if (result.error === "INVALID_PLACEHOLDER") {
-            await editReplySafe(
-              `Template save failed: unknown placeholders (${result.detail ?? "unknown"}). Supported placeholders: \`{offender}\`, \`{user}\`.`,
-            );
-            return;
-          }
-          if (result.error === "EMPTY_TEMPLATE") {
-            await editReplySafe("Template save failed: template cannot be empty.");
-            return;
-          }
-          await editReplySafe(`Clan #${clanTag} is not in tracked clans.`);
-          return;
-        }
-        await editReplySafe(
-          `Saved clan custom template for \`${selectedViolation}\` on ${previewBundle.clanTag}.`,
-        );
-        return;
-      }
-
-      if (subcommand === "set-default") {
-        const template = interaction.options.getString("template", true);
-        const result = await fwaPoliceService.setDefaultTemplate({
-          violation: selectedViolation,
-          template,
-        });
-        if (!result.ok) {
-          if (result.error === "INVALID_PLACEHOLDER") {
-            await editReplySafe(
-              `Template save failed: unknown placeholders (${result.detail ?? "unknown"}). Supported placeholders: \`{offender}\`, \`{user}\`.`,
-            );
-            return;
-          }
-          await editReplySafe("Template save failed: template cannot be empty.");
-          return;
-        }
-        await editReplySafe(
-          `Saved global default template for \`${selectedViolation}\` (context clan ${previewBundle.clanTag}).`,
-        );
-        return;
-      }
-
-      if (subcommand === "reset") {
-        const reset = await fwaPoliceService.resetClanTemplate({
-          clanTag: previewBundle.clanTag,
-          violation: selectedViolation,
-        });
-        if (!reset.ok) {
-          await editReplySafe(`Clan #${clanTag} is not in tracked clans.`);
-          return;
-        }
-        await editReplySafe(
-          `Reset clan custom template for \`${selectedViolation}\` on ${previewBundle.clanTag}.`,
-        );
-        return;
-      }
-
-      if (subcommand === "reset-default") {
-        await fwaPoliceService.resetDefaultTemplate({
-          violation: selectedViolation,
-        });
-        await editReplySafe(
-          `Reset global default template for \`${selectedViolation}\` (context clan ${previewBundle.clanTag}).`,
-        );
-        return;
-      }
-
       if (subcommand === "send") {
+        const selectedViolationRaw = interaction.options.getString(
+          "violation",
+          false,
+        );
+        const selectedViolation = selectedViolationRaw
+          ? (selectedViolationRaw as FwaPoliceViolation)
+          : null;
+        if (!selectedViolation) {
+          await editReplySafe("Please provide a valid `violation`.");
+          return;
+        }
         const showTargetRaw = interaction.options.getString("show", true);
         const showTarget = normalizeFwaPoliceText(showTargetRaw).toUpperCase();
         if (showTarget !== "DM" && showTarget !== "LOG") {
@@ -12830,7 +12592,7 @@ export const Fwa: Command = {
         const sendResult = await fwaPoliceService.sendSampleMessage({
           client: interaction.client,
           guildId: interaction.guildId,
-          clanTag: previewBundle.clanTag,
+          clanTag,
           violation: selectedViolation,
           destination: showTarget,
           requestingUserId: interaction.user.id,
@@ -12838,13 +12600,13 @@ export const Fwa: Command = {
         if (!sendResult.ok) {
           if (sendResult.error === "LOG_CHANNEL_NOT_CONFIGURED") {
             await editReplySafe(
-              `Cannot send LOG sample for ${previewBundle.clanTag}: no tracked clan log channel or \`/bot-logs\` fallback channel is configured.`,
+              `Cannot send LOG sample for #${clanTag}: no tracked clan log channel or \`/bot-logs\` fallback channel is configured.`,
             );
             return;
           }
           if (sendResult.error === "LOG_CHANNEL_UNAVAILABLE") {
             await editReplySafe(
-              `Cannot send LOG sample for ${previewBundle.clanTag}: configured log channel is unavailable.`,
+              `Cannot send LOG sample for #${clanTag}: configured log channel is unavailable.`,
             );
             return;
           }
@@ -12856,7 +12618,7 @@ export const Fwa: Command = {
           return;
         }
         await editReplySafe(
-          `Sent ${sendResult.deliveredTo} sample message for \`${selectedViolation}\` on ${previewBundle.clanTag}.`,
+          `Sent ${sendResult.deliveredTo} sample message for \`${selectedViolation}\` on #${clanTag}.`,
         );
         return;
       }

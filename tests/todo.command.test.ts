@@ -67,6 +67,7 @@ import {
 import { resetTodoRenderCacheForTest } from "../src/services/TodoService";
 import { todoSnapshotService } from "../src/services/TodoSnapshotService";
 import { todoLastViewedTypeService } from "../src/services/TodoLastViewedTypeService";
+import { cocRequestQueueService } from "../src/services/CoCRequestQueueService";
 
 type TodoType = "WAR" | "CWL" | "RAIDS" | "GAMES";
 const TODO_DEFAULT_EMBED_COLOR = 0x5865f2;
@@ -348,11 +349,93 @@ describe("/todo command", () => {
       playerTags: ["#PYLQ0289", "#QGRJ2222"],
       cocService: expect.anything(),
     });
+    const deferOrder = interaction.deferReply.mock.invocationCallOrder[0] ?? 0;
     const refreshOrder = refreshSpy.mock.invocationCallOrder[0] ?? 0;
     const editOrder = interaction.editReply.mock.invocationCallOrder[0] ?? 0;
+    expect(deferOrder).toBeGreaterThan(0);
+    expect(deferOrder).toBeLessThan(refreshOrder);
     expect(refreshOrder).toBeGreaterThan(0);
     expect(editOrder).toBeGreaterThan(0);
     expect(refreshOrder).toBeLessThan(editOrder);
+  });
+
+  it("serves snapshot output without live refresh when CoC queue is degraded", async () => {
+    const queueSpy = vi.spyOn(cocRequestQueueService, "getStatus").mockReturnValue({
+      queueDepth: 5,
+      inFlight: 1,
+      penaltyMs: 1200,
+      spacingMs: 1320,
+      degraded: true,
+    });
+    const refreshSpy = vi.spyOn(todoSnapshotService, "refreshSnapshotsForPlayerTags");
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },
+    ]);
+    prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
+      _count: { _all: 1 },
+      _max: { updatedAt: new Date("2026-03-26T00:00:00.000Z") },
+    });
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      makeSnapshotRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha",
+      }),
+    ]);
+    const interaction = makeTodoInteraction({ type: "WAR" });
+
+    await Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
+
+    expect(queueSpy).toHaveBeenCalled();
+    expect(refreshSpy).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[todo] event=snapshot_served reason=coc_degraded"),
+    );
+  });
+
+  it("falls back to snapshot output when bounded initial refresh times out", async () => {
+    vi.spyOn(cocRequestQueueService, "getStatus").mockReturnValue({
+      queueDepth: 0,
+      inFlight: 0,
+      penaltyMs: 0,
+      spacingMs: 120,
+      degraded: false,
+    });
+    vi.spyOn(todoSnapshotService, "refreshSnapshotsForPlayerTags").mockImplementation(
+      async () =>
+        await new Promise(() => {
+          // intentionally unresolved to force timeout-path snapshot fallback
+        }),
+    );
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },
+    ]);
+    prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
+      _count: { _all: 1 },
+      _max: { updatedAt: new Date("2026-03-26T00:00:00.000Z") },
+    });
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      makeSnapshotRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha",
+      }),
+    ]);
+    const interaction = makeTodoInteraction({ type: "WAR" });
+
+    const runPromise = Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
+    await vi.advanceTimersByTimeAsync(3_100);
+    await runPromise;
+
+    expect(interaction.editReply).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "[todo] event=snapshot_served reason=bounded_refresh_timeout",
+      ),
+    );
   });
 
   it("builds from snapshots, opens on requested page, and avoids live coc aggregation", async () => {

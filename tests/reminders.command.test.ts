@@ -80,6 +80,40 @@ function createInteraction(input: {
   return interaction;
 }
 
+function getCollectHandler(interaction: any) {
+  return interaction.__collector.on.mock.calls.find(
+    ([eventName]: [string]) => eventName === "collect",
+  )?.[1];
+}
+
+function getEndHandler(interaction: any) {
+  return interaction.__collector.on.mock.calls.find(
+    ([eventName]: [string]) => eventName === "end",
+  )?.[1];
+}
+
+function createPanelButtonInteraction(input: {
+  customId: string;
+  userId?: string;
+}) {
+  return {
+    isButton: () => true,
+    isStringSelectMenu: () => false,
+    user: { id: input.userId ?? "user-1" },
+    customId: input.customId,
+    channelId: "channel-1",
+    deferUpdate: vi.fn().mockImplementation(async function (this: any) {
+      this.deferred = true;
+    }),
+    followUp: vi.fn().mockResolvedValue(undefined),
+    reply: vi.fn().mockImplementation(async function (this: any) {
+      this.replied = true;
+    }),
+    replied: false,
+    deferred: false,
+  } as any;
+}
+
 describe("/reminders command", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -227,9 +261,7 @@ describe("/reminders command", () => {
     const interaction = createInteraction({ subcommand: "create" });
     await Reminders.run({} as any, interaction as any, {} as any);
 
-    const collectHandler = interaction.__collector.on.mock.calls.find(
-      ([eventName]: [string]) => eventName === "collect",
-    )?.[1];
+    const collectHandler = getCollectHandler(interaction);
     expect(collectHandler).toBeTypeOf("function");
 
     const firstSelect: any = {
@@ -261,6 +293,124 @@ describe("/reminders command", () => {
       clanTag: "#PQL0289",
       actorUserId: "user-1",
     });
+  });
+
+  it("defers create save before reading reminder details and enabling the reminder", async () => {
+    reminderServiceMock.getReminderWithDetails
+      .mockResolvedValueOnce({
+        id: "reminder-1",
+        guildId: "guild-1",
+        type: ReminderType.WAR_CWL,
+        channelId: "123456789012345678",
+        isEnabled: false,
+        createdByUserId: "user-1",
+        updatedByUserId: "user-1",
+        createdAt: new Date("2026-03-26T00:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+        offsetsSeconds: [1800],
+        targets: [
+          {
+            clanTag: "#PQL0289",
+            clanType: ReminderTargetClanType.FWA,
+            label: "FWA One (#PQL0289)",
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        id: "reminder-1",
+        guildId: "guild-1",
+        type: ReminderType.WAR_CWL,
+        channelId: "123456789012345678",
+        isEnabled: true,
+        createdByUserId: "user-1",
+        updatedByUserId: "user-1",
+        createdAt: new Date("2026-03-26T00:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+        offsetsSeconds: [1800],
+        targets: [
+          {
+            clanTag: "#PQL0289",
+            clanType: ReminderTargetClanType.FWA,
+            label: "FWA One (#PQL0289)",
+          },
+        ],
+      })
+      .mockResolvedValue({
+        id: "reminder-1",
+        guildId: "guild-1",
+        type: ReminderType.WAR_CWL,
+        channelId: "123456789012345678",
+        isEnabled: true,
+        createdByUserId: "user-1",
+        updatedByUserId: "user-1",
+        createdAt: new Date("2026-03-26T00:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+        offsetsSeconds: [1800],
+        targets: [
+          {
+            clanTag: "#PQL0289",
+            clanType: ReminderTargetClanType.FWA,
+            label: "FWA One (#PQL0289)",
+          },
+        ],
+      });
+
+    const interaction = createInteraction({ subcommand: "create" });
+    await Reminders.run({} as any, interaction as any, {} as any);
+
+    const collectHandler = getCollectHandler(interaction);
+    const endHandler = getEndHandler(interaction);
+    expect(collectHandler).toBeTypeOf("function");
+    expect(endHandler).toBeTypeOf("function");
+
+    const saveButton = createPanelButtonInteraction({
+      customId: "reminders:save:reminder-1",
+    });
+    await collectHandler(saveButton);
+    await endHandler(new Map(), "saved");
+
+    expect(saveButton.deferUpdate).toHaveBeenCalledTimes(1);
+    expect(reminderServiceMock.setReminderEnabled).toHaveBeenCalledWith({
+      reminderId: "reminder-1",
+      guildId: "guild-1",
+      isEnabled: true,
+      actorUserId: "user-1",
+    });
+    expect(saveButton.deferUpdate.mock.invocationCallOrder[0]).toBeLessThan(
+      reminderServiceMock.getReminderWithDetails.mock.invocationCallOrder[1],
+    );
+    expect(saveButton.deferUpdate.mock.invocationCallOrder[0]).toBeLessThan(
+      reminderServiceMock.setReminderEnabled.mock.invocationCallOrder[0],
+    );
+    expect(interaction.__collector.stop).toHaveBeenCalledWith("saved");
+    const finalPayload = interaction.editReply.mock.calls.at(-1)?.[0] as any;
+    expect(finalPayload).toEqual(
+      expect.objectContaining({
+        content: "Reminder saved and enabled: reminder-1",
+        components: [],
+      }),
+    );
+  });
+
+  it("keeps create save validation errors working after early defer", async () => {
+    const interaction = createInteraction({ subcommand: "create" });
+    await Reminders.run({} as any, interaction as any, {} as any);
+
+    const collectHandler = getCollectHandler(interaction);
+    expect(collectHandler).toBeTypeOf("function");
+
+    const saveButton = createPanelButtonInteraction({
+      customId: "reminders:save:reminder-1",
+    });
+    await collectHandler(saveButton);
+
+    expect(saveButton.deferUpdate).toHaveBeenCalledTimes(1);
+    expect(saveButton.followUp).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "Select a reminder type before saving this reminder.",
+    });
+    expect(reminderServiceMock.setReminderEnabled).not.toHaveBeenCalled();
+    expect(interaction.__collector.stop).not.toHaveBeenCalledWith("saved");
   });
 
   it("returns a clear validation error when optional create time_left is provided but invalid", async () => {

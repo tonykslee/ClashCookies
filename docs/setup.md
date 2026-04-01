@@ -29,6 +29,32 @@ Behavior:
 ## Optional War Event Poll Setting
 - `WAR_EVENT_LOG_POLL_INTERVAL_MINUTES` - interval for war-state event listener polling (default: `5` minutes).
 
+## Polling Ownership Mode (Prod Polls, Staging Mirrors)
+- `POLLING_MODE` - `active` (default) or `mirror`.
+  - `active`: runs normal external pollers/schedulers.
+  - `mirror`: disables duplicated upstream pollers and runs prod->staging snapshot sync.
+- `MIRROR_SOURCE_DATABASE_URL` - required in `mirror` mode; source/prod DB URL used for one-way sync.
+- `MIRROR_SYNC_INTERVAL_MINUTES` - mirror scheduled sync cadence (default: `15` minutes).
+- `MIRROR_SYNC_BATCH_SIZE` - createMany batch size for mirrored table writes (default: `500`).
+- `POLLING_ENV` (or `DEPLOY_ENV` / `APP_ENV`) - set to `staging` for mirror instances; mirror sync is safety-blocked in `prod`.
+
+Mirror mode behavior:
+- Disables duplicated external polling owners (activity observe, war-event poll, FWA feed scheduler, user-activity reminder scheduler).
+- Runs scheduled full-overwrite sync for mirrored runtime tables:
+  - `TrackedClan`
+  - `CurrentWar`
+  - `WarAttacks`
+  - `ClanPointsSync`
+  - `ClanWarHistory`
+  - `ClanWarParticipation`
+  - `WarLookup`
+- Sync direction is always source/prod -> target/current DATABASE_URL.
+
+Manual sync now:
+```bash
+npm run sync:mirror
+```
+
 ## Optional Optimized Points Polling
 - `FWA_OPTIMIZED_POINTS_POLLING` - enable lifecycle-based routine fetch gating for points checks (default: `true`).
 - `FWA_POST_WAR_CHECK_WINDOW_MINUTES` - how long post-war delayed-update checks may run after war end (default: `240`).

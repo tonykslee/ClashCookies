@@ -12,7 +12,6 @@ export const FWA_POLICE_VIOLATIONS = [
 ] as const;
 
 export type FwaPoliceViolation = (typeof FWA_POLICE_VIOLATIONS)[number];
-export type FwaPoliceTemplateSource = "Custom" | "Default" | "Built-in";
 
 export type FwaPoliceApplicabilityContext = {
   matchType: MatchType;
@@ -26,7 +25,6 @@ export type FwaPoliceViolationMetadata = {
   isApplicable: (context: FwaPoliceApplicabilityContext) => boolean;
 };
 
-const ALLOWED_PLACEHOLDERS = new Set(["offender", "user"]);
 const PLACEHOLDER_REGEX = /\{([a-zA-Z0-9_]+)\}/g;
 
 /** Purpose: shared preview offender text used for sample rendering paths. */
@@ -101,22 +99,6 @@ export const FWA_POLICE_VIOLATION_METADATA: Record<
   },
 };
 
-/** Purpose: validate placeholder usage at save-time so unknown tokens never persist. */
-export function validateFwaPoliceTemplatePlaceholders(
-  template: string,
-): { ok: true } | { ok: false; unknownPlaceholders: string[] } {
-  const unknown = new Set<string>();
-  for (const match of template.matchAll(PLACEHOLDER_REGEX)) {
-    const key = normalizeFwaPoliceText(match[1]).toLowerCase();
-    if (!key || ALLOWED_PLACEHOLDERS.has(key)) continue;
-    unknown.add(key);
-  }
-  if (unknown.size > 0) {
-    return { ok: false, unknownPlaceholders: [...unknown].sort((a, b) => a.localeCompare(b)) };
-  }
-  return { ok: true };
-}
-
 /** Purpose: render a police template with deterministic placeholder replacements. */
 export function renderFwaPoliceTemplate(input: {
   template: string;
@@ -158,13 +140,31 @@ function isMirrorAttack(
   );
 }
 
+function hasStrictWindowBreachContext(issue: WarComplianceIssue): boolean {
+  const breach = issue.breachContext;
+  if (!breach) return false;
+  const starsAtBreach = Number(breach.starsAtBreach);
+  const timeRemaining = normalizeFwaPoliceText(breach.timeRemaining ?? "");
+  return Number.isFinite(starsAtBreach) && starsAtBreach >= 0 && timeRemaining.length > 0;
+}
+
 /** Purpose: map one canonical compliance issue to the single supported police violation enum used by template resolution. */
 export function classifyFwaPoliceViolation(input: {
   issue: WarComplianceIssue;
   context: FwaPoliceApplicabilityContext;
-}): FwaPoliceViolation {
+}): FwaPoliceViolation | null {
   const fromLabel = classifyUsingReasonLabel(input.issue.reasonLabel ?? "");
-  if (fromLabel) return fromLabel;
+  const hasStrictWindowContext = hasStrictWindowBreachContext(input.issue);
+  if (fromLabel) {
+    if (
+      (fromLabel === "STRICT_WINDOW_MIRROR_MISS_WIN" ||
+        fromLabel === "STRICT_WINDOW_MIRROR_MISS_LOSS") &&
+      !hasStrictWindowContext
+    ) {
+      return null;
+    }
+    return fromLabel;
+  }
 
   const details =
     input.issue.attackDetails?.filter((row) => row?.isBreach) ??
@@ -185,7 +185,7 @@ export function classifyFwaPoliceViolation(input: {
   if (input.context.matchType === "FWA" && input.context.expectedOutcome === "WIN") {
     if (hasNonMirrorTriple) return "EARLY_NON_MIRROR_TRIPLE";
     if (hasNonMirrorTwoStar) return "EARLY_NON_MIRROR_2STAR";
-    return "STRICT_WINDOW_MIRROR_MISS_WIN";
+    return hasStrictWindowContext ? "STRICT_WINDOW_MIRROR_MISS_WIN" : null;
   }
 
   if (
@@ -202,8 +202,8 @@ export function classifyFwaPoliceViolation(input: {
     input.context.loseStyle === "TRADITIONAL"
   ) {
     if (hasAnyThreeStar) return "ANY_3STAR";
-    return "STRICT_WINDOW_MIRROR_MISS_LOSS";
+    return hasStrictWindowContext ? "STRICT_WINDOW_MIRROR_MISS_LOSS" : null;
   }
 
-  return "STRICT_WINDOW_MIRROR_MISS_WIN";
+  return null;
 }

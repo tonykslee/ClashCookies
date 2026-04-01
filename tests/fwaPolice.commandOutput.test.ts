@@ -14,11 +14,7 @@ const prismaMock = vi.hoisted(() => ({
 
 const fwaPoliceServiceMock = vi.hoisted(() => ({
   setClanConfig: vi.fn(),
-  getTemplatePreviewBundle: vi.fn(),
-  setClanTemplate: vi.fn(),
-  setDefaultTemplate: vi.fn(),
-  resetClanTemplate: vi.fn(),
-  resetDefaultTemplate: vi.fn(),
+  getStatusReport: vi.fn(),
   sendSampleMessage: vi.fn(),
 }));
 
@@ -35,22 +31,13 @@ import { Fwa } from "../src/commands/Fwa";
 import { PointsSyncService } from "../src/services/PointsSyncService";
 
 function makeInteraction(input: {
-  subcommand:
-    | "configure"
-    | "show"
-    | "show-default"
-    | "show-all"
-    | "set"
-    | "set-default"
-    | "reset"
-    | "reset-default"
-    | "send";
-  clan: string;
+  subcommand: string;
+  clan?: string | null;
   violation?: string;
-  template?: string;
   show?: "DM" | "LOG";
   enableDm?: boolean;
   enableLog?: boolean;
+  isAdmin?: boolean;
 }) {
   const deferReply = vi.fn().mockResolvedValue(undefined);
   const editReply = vi.fn().mockResolvedValue(undefined);
@@ -61,7 +48,7 @@ function makeInteraction(input: {
     user: { id: "111111111111111111" },
     client: {},
     memberPermissions: {
-      has: vi.fn(() => true),
+      has: vi.fn(() => input.isAdmin ?? true),
     },
     deferReply,
     editReply,
@@ -71,9 +58,8 @@ function makeInteraction(input: {
       getSubcommand: vi.fn(() => input.subcommand),
       getString: vi.fn((name: string) => {
         if (name === "visibility") return null;
-        if (name === "clan") return input.clan;
+        if (name === "clan") return input.clan ?? null;
         if (name === "violation") return input.violation ?? null;
-        if (name === "template") return input.template ?? null;
         if (name === "show") return input.show ?? null;
         if (name === "tag") return null;
         return null;
@@ -85,7 +71,7 @@ function makeInteraction(input: {
       }),
     },
   };
-  return { interaction, deferReply, editReply };
+  return { interaction, editReply };
 }
 
 describe("/fwa police command output", () => {
@@ -96,50 +82,34 @@ describe("/fwa police command output", () => {
     );
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.clanWarHistory.findFirst.mockResolvedValue(null);
-    fwaPoliceServiceMock.getTemplatePreviewBundle.mockResolvedValue({
-      clanTag: "#2QG2C08UP",
-      clanName: "Alpha",
-      contextSummary:
-        "Match type context: FWA WIN | Lose style: TRIPLE_TOP_30 | Free-for-all star threshold: 101 | Free-for-all time threshold: 0h",
-      rows: [
-        {
-          violation: "EARLY_NON_MIRROR_TRIPLE",
-          label: "Early non-mirror triple before FFA window",
-          effectiveSource: "Built-in",
-          rawCustomTemplate: null,
-          rawDefaultTemplate: null,
-          effectiveTemplate: "{offender} sample",
-          renderedSample: "#15 - Tilonius sample",
-          sampleEmbed: {
-            color: 0xed4245,
-            description:
-              "## :rotating_light: :oncoming_police_car: FWA Police - Warplan violation detected :oncoming_police_car: :rotating_light:\n**War**: FWA-WIN :green_circle:\n**Violation**: Early non-mirror triple before FFA window",
-            fields: [
-              {
-                name: "**Message**",
-                value: "#15 - Tilonius sample",
-                inline: false,
-              },
-              {
-                name: "**:yes: Expected**",
-                value: "Wait for FFA window before any non-mirror triple.",
-                inline: false,
-              },
-              {
-                name: "**:no: Actual**",
-                value: "#14 (* * *) : tripled non-mirror before FFA window",
-                inline: false,
-              },
-            ],
-          },
-          isApplicable: true,
-          applicabilityText: "Applicable",
+    fwaPoliceServiceMock.getStatusReport.mockResolvedValue({
+      ok: true,
+      report: {
+        scope: "guild",
+        policeEnabled: true,
+        dmEnabled: true,
+        logEnabled: true,
+        storedPoliceLogChannelOverrideId: null,
+        storedBotLogChannelId: "bot-log-1",
+        storedBotLogChannelHealth: "ok",
+        fallbackBehavior:
+          "tracked-clan log-channel when configured, otherwise /bot-logs fallback, otherwise unresolved",
+        enabledViolationTypes: [
+          "EARLY_NON_MIRROR_TRIPLE",
+          "STRICT_WINDOW_MIRROR_MISS_WIN",
+        ],
+        trackedClanSummary: {
+          total: 2,
+          policeEnabled: 2,
+          dmEnabled: 2,
+          logEnabled: 2,
+          withTrackedLogChannel: 1,
+          logEnabledWithoutTrackedLogChannel: 1,
         },
-      ],
+        clan: null,
+        warnings: [],
+      },
     });
-    fwaPoliceServiceMock.resetClanTemplate.mockResolvedValue({ ok: true });
-    fwaPoliceServiceMock.setClanTemplate.mockResolvedValue({ ok: true });
-    fwaPoliceServiceMock.setDefaultTemplate.mockResolvedValue({ ok: true });
     fwaPoliceServiceMock.sendSampleMessage.mockResolvedValue({
       ok: true,
       deliveredTo: "DM",
@@ -149,6 +119,87 @@ describe("/fwa police command output", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("renders guild police status with effective fallback details", async () => {
+    const run = makeInteraction({
+      subcommand: "status",
+    });
+    await Fwa.run({} as any, run.interaction as any, {} as any);
+
+    expect(fwaPoliceServiceMock.getStatusReport).toHaveBeenCalledWith({
+      client: run.interaction.client,
+      guildId: "guild-1",
+      clanTag: null,
+    });
+    const content = String(run.editReply.mock.calls[0]?.[0]?.content ?? "");
+    expect(content).toContain("FWA Police status (guild scope)");
+    expect(content).toContain("FWA Police enabled: yes");
+    expect(content).toContain("DM sending enabled: yes");
+    expect(content).toContain("Stored /bot-logs fallback: <#bot-log-1> (ok)");
+  });
+
+  it("renders clan-scoped status and warnings when resolved channel is unavailable", async () => {
+    fwaPoliceServiceMock.getStatusReport.mockResolvedValue({
+      ok: true,
+      report: {
+        scope: "clan",
+        policeEnabled: true,
+        dmEnabled: true,
+        logEnabled: true,
+        storedPoliceLogChannelOverrideId: null,
+        storedBotLogChannelId: "bot-log-1",
+        storedBotLogChannelHealth: "ok",
+        fallbackBehavior:
+          "tracked-clan log-channel when configured, otherwise /bot-logs fallback, otherwise unresolved",
+        enabledViolationTypes: ["EARLY_NON_MIRROR_TRIPLE"],
+        trackedClanSummary: {
+          total: 1,
+          policeEnabled: 1,
+          dmEnabled: 1,
+          logEnabled: 1,
+          withTrackedLogChannel: 1,
+          logEnabledWithoutTrackedLogChannel: 0,
+        },
+        clan: {
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          policeEnabled: true,
+          dmEnabled: true,
+          logEnabled: true,
+          storedTrackedLogChannelId: "clan-log-1",
+          storedTrackedLogChannelHealth: "missing_or_inaccessible",
+          effectiveLogChannelId: "clan-log-1",
+          effectiveLogChannelSource: "tracked_clan",
+          effectiveLogChannelHealth: "missing_or_inaccessible",
+        },
+        warnings: ["Effective log destination <#clan-log-1> is missing or inaccessible."],
+      },
+    });
+
+    const run = makeInteraction({
+      subcommand: "status",
+      clan: "#2QG2C08UP",
+    });
+    await Fwa.run({} as any, run.interaction as any, {} as any);
+
+    const content = String(run.editReply.mock.calls[0]?.[0]?.content ?? "");
+    expect(content).toContain("FWA Police status (clan scope)");
+    expect(content).toContain("Clan: Alpha (#2QG2C08UP)");
+    expect(content).toContain("Warnings:");
+    expect(content).toContain("missing or inaccessible");
+  });
+
+  it("requires administrator permissions for police status", async () => {
+    const run = makeInteraction({
+      subcommand: "status",
+      isAdmin: false,
+    });
+    await Fwa.run({} as any, run.interaction as any, {} as any);
+
+    expect(fwaPoliceServiceMock.getStatusReport).not.toHaveBeenCalled();
+    const content = String(run.editReply.mock.calls[0]?.[0]?.content ?? "");
+    expect(content).toContain("Only administrators can use `/fwa police status`.");
   });
 
   it("renders configure summary and persists toggle values", async () => {
@@ -177,27 +228,6 @@ describe("/fwa police command output", () => {
     expect(content).toContain("DM alerts: ON | Clan logs: OFF");
   });
 
-  it("shows placeholder validation failure when clan template contains unknown placeholders", async () => {
-    fwaPoliceServiceMock.setClanTemplate.mockResolvedValue({
-      ok: false,
-      error: "INVALID_PLACEHOLDER",
-      detail: "bad_token",
-    });
-    const run = makeInteraction({
-      subcommand: "set",
-      clan: "#2QG2C08UP",
-      violation: "EARLY_NON_MIRROR_TRIPLE",
-      template: "Hello {bad_token}",
-    });
-
-    await Fwa.run({} as any, run.interaction as any, {} as any);
-
-    const content = String(run.editReply.mock.calls[0]?.[0]?.content ?? "");
-    expect(content).toContain("unknown placeholders");
-    expect(content).toContain("{offender}");
-    expect(content).toContain("{user}");
-  });
-
   it("returns a clear error for send LOG when clan log channel is missing", async () => {
     fwaPoliceServiceMock.sendSampleMessage.mockResolvedValue({
       ok: false,
@@ -217,96 +247,23 @@ describe("/fwa police command output", () => {
     expect(content).toContain("/bot-logs");
   });
 
-  it("renders show output with effective source and rendered sample", async () => {
+  it("passes selected violation/clan to send preview flow", async () => {
     const run = makeInteraction({
-      subcommand: "show",
+      subcommand: "send",
       clan: "#2QG2C08UP",
       violation: "EARLY_NON_MIRROR_TRIPLE",
+      show: "DM",
     });
 
     await Fwa.run({} as any, run.interaction as any, {} as any);
 
-    const payload = run.editReply.mock.calls[0]?.[0];
-    const embedJson = payload?.embeds?.[0]?.toJSON?.() ?? null;
-    expect(Number(embedJson?.color ?? 0)).toBe(0xed4245);
-    expect(String(embedJson?.description ?? "")).toContain(
-      "FWA Police - Warplan violation detected",
-    );
-    expect(String(embedJson?.fields?.[0]?.name ?? "")).toBe("**Message**");
-    expect(String(embedJson?.fields?.[3]?.name ?? "")).toBe(
-      "**Template Source**",
-    );
-    expect(String(embedJson?.fields?.[3]?.value ?? "")).toContain("Built-in");
-  });
-
-  it("renders show-all as one-violation-per-page pagination", async () => {
-    fwaPoliceServiceMock.getTemplatePreviewBundle.mockResolvedValue({
-      clanTag: "#2QG2C08UP",
-      clanName: "Alpha",
-      contextSummary:
-        "Match type context: FWA WIN | Lose style: TRIPLE_TOP_30 | Free-for-all star threshold: 101 | Free-for-all time threshold: 0h",
-      rows: [
-        {
-          violation: "EARLY_NON_MIRROR_TRIPLE",
-          label: "Early non-mirror triple before FFA window",
-          effectiveSource: "Built-in",
-          rawCustomTemplate: null,
-          rawDefaultTemplate: null,
-          effectiveTemplate: "{offender} sample",
-          renderedSample: "#15 - Tilonius sample",
-          sampleEmbed: {
-            color: 0xed4245,
-            description:
-              "## :rotating_light: :oncoming_police_car: FWA Police - Warplan violation detected :oncoming_police_car: :rotating_light:\n**War**: FWA-WIN :green_circle:\n**Violation**: Early non-mirror triple before FFA window",
-            fields: [
-              { name: "**Message**", value: "sample 1", inline: false },
-              { name: "**:yes: Expected**", value: "expected 1", inline: false },
-              { name: "**:no: Actual**", value: "actual 1", inline: false },
-            ],
-          },
-          isApplicable: true,
-          applicabilityText: "Applicable",
-        },
-        {
-          violation: "ANY_3STAR",
-          label: "Any 3-star in FWA loss (traditional)",
-          effectiveSource: "Default",
-          rawCustomTemplate: null,
-          rawDefaultTemplate: "{offender}",
-          effectiveTemplate: "{offender}",
-          renderedSample: "#15 - Tilonius",
-          sampleEmbed: {
-            color: 0xed4245,
-            description:
-              "## :rotating_light: :oncoming_police_car: FWA Police - Warplan violation detected :oncoming_police_car: :rotating_light:\n**War**: FWA-LOSE :red_circle:\n**Violation**: Any 3-star in FWA loss (traditional)",
-            fields: [
-              { name: "**Message**", value: "sample 2", inline: false },
-              { name: "**:yes: Expected**", value: "expected 2", inline: false },
-              { name: "**:no: Actual**", value: "actual 2", inline: false },
-            ],
-          },
-          isApplicable: true,
-          applicabilityText: "Applicable",
-        },
-      ],
+    expect(fwaPoliceServiceMock.sendSampleMessage).toHaveBeenCalledWith({
+      client: run.interaction.client,
+      guildId: "guild-1",
+      clanTag: "2QG2C08UP",
+      violation: "EARLY_NON_MIRROR_TRIPLE",
+      destination: "DM",
+      requestingUserId: "111111111111111111",
     });
-    const collector = { on: vi.fn() };
-    const run = makeInteraction({
-      subcommand: "show-all",
-      clan: "#2QG2C08UP",
-    });
-    const createMessageComponentCollector = vi.fn().mockReturnValue(collector);
-    run.editReply.mockResolvedValueOnce({
-      createMessageComponentCollector,
-    } as any);
-
-    await Fwa.run({} as any, run.interaction as any, {} as any);
-
-    const payload = run.editReply.mock.calls[0]?.[0];
-    expect(payload?.components?.length ?? 0).toBe(1);
-    expect(
-      String(payload?.embeds?.[0]?.toJSON?.()?.footer?.text ?? ""),
-    ).toContain("Page 1/2");
-    expect(createMessageComponentCollector).toHaveBeenCalledTimes(1);
   });
 });
