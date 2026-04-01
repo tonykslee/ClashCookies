@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ChannelType } from "discord.js";
 import { Unlinked } from "../src/commands/Unlinked";
-import { unlinkedMemberAlertService } from "../src/services/UnlinkedMemberAlertService";
+import {
+  UnlinkedStageTimeoutError,
+  unlinkedMemberAlertService,
+} from "../src/services/UnlinkedMemberAlertService";
 
 type InteractionInput = {
   subcommand: "set-alert" | "list";
@@ -11,11 +14,13 @@ type InteractionInput = {
 };
 
 function createInteraction(input: InteractionInput) {
-  return {
+  const interaction: any = {
     inGuild: vi.fn().mockReturnValue(true),
     guildId: input.guildId ?? "guild-1",
+    user: { id: "111111111111111111" },
     deferred: false,
     replied: false,
+    reply: vi.fn().mockResolvedValue(undefined),
     options: {
       getSubcommand: vi.fn().mockReturnValue(input.subcommand),
       getChannel: vi.fn((name: string) => (name === "channel" ? (input.channel ?? null) : null)),
@@ -24,7 +29,15 @@ function createInteraction(input: InteractionInput) {
     deferReply: vi.fn().mockResolvedValue(undefined),
     editReply: vi.fn().mockResolvedValue(undefined),
     followUp: vi.fn().mockResolvedValue(undefined),
+    reply: vi.fn().mockResolvedValue(undefined),
   };
+  interaction.deferReply.mockImplementation(async () => {
+    interaction.deferred = true;
+  });
+  interaction.reply.mockImplementation(async () => {
+    interaction.replied = true;
+  });
+  return interaction;
 }
 
 describe("/unlinked command", () => {
@@ -57,6 +70,7 @@ describe("/unlinked command", () => {
   });
 
   it("lists current unresolved unlinked players and supports clan filtering", async () => {
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
     vi.spyOn(unlinkedMemberAlertService, "listCurrentUnlinkedMembers").mockResolvedValue([
       {
         playerTag: "#P1",
@@ -80,6 +94,30 @@ describe("/unlinked command", () => {
     expect(interaction.editReply).toHaveBeenCalledWith(
       "Current unresolved unlinked players in #2QG2C08UP:\n- One (`#P1`) | Alpha Clan #2QG2C08UP",
     );
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[unlinked] stage=handler_entered"),
+    );
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[unlinked] stage=interaction_deferred"),
+    );
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[unlinked] stage=member_fetch_started"),
+    );
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[unlinked] stage=member_fetch_completed"),
+    );
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[unlinked] stage=list_render_started"),
+    );
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[unlinked] stage=list_render_completed"),
+    );
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[unlinked] stage=reply_sent"),
+    );
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[unlinked] stage=terminal status=success"),
+    );
   });
 
   it("returns a clear empty-state list when no unresolved players remain", async () => {
@@ -92,6 +130,37 @@ describe("/unlinked command", () => {
 
     expect(interaction.editReply).toHaveBeenCalledWith(
       "Current unresolved unlinked players:\n- none",
+    );
+  });
+
+  it("surfaces a visible timeout when live member lookup stalls", async () => {
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.spyOn(unlinkedMemberAlertService, "listCurrentUnlinkedMembers").mockRejectedValue(
+      new UnlinkedStageTimeoutError("fwa_member_fetch", 15_000, "clan=#2QG2C08UP"),
+    );
+    const interaction = createInteraction({
+      subcommand: "list",
+      clan: "#2QG2C08UP",
+    });
+
+    await Unlinked.run({} as any, interaction as any, {} as any);
+
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "Unlinked-player lookup timed out while loading live clan data. Please try again.",
+    );
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[unlinked] stage=handler_entered"),
+    );
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[unlinked] stage=interaction_deferred"),
+    );
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[unlinked] stage=terminal_error status=timeout"),
+    );
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[unlinked] stage=terminal status=timeout"),
     );
   });
 });

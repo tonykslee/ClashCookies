@@ -1,4 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  UNLINKED_DB_STAGE_TIMEOUT_MS,
+  UNLINKED_EXTERNAL_STAGE_TIMEOUT_MS,
+  UnlinkedStageTimeoutError,
+} from "../src/services/UnlinkedMemberAlertService";
 
 const prismaMock = vi.hoisted(() => ({
   trackedClan: {
@@ -159,6 +164,100 @@ describe("UnlinkedMemberAlertService", () => {
 
     expect(result).toHaveLength(1);
     expect(result[0]?.playerTag).toBe("#PYLQ0289");
+  });
+
+  it("times out a stalled live clan fetch and logs the slow stage", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-01T00:00:00.000Z"));
+    try {
+      const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      prismaMock.trackedClan.findMany.mockResolvedValue([
+        { tag: "#2QG2C08UP", name: "Alpha Clan", logChannelId: "222222222222222222" },
+      ]);
+      prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+      prismaMock.playerLink.findMany.mockResolvedValue([]);
+      const service = new UnlinkedMemberAlertService();
+
+      const outcomePromise = service
+        .listCurrentUnlinkedMembers({
+        guildId: "guild-1",
+        cocService: {
+          getClan: vi.fn(
+            () =>
+              new Promise(() => {
+                // intentionally unresolved to exercise the bounded stage timeout
+              }),
+          ),
+        } as any,
+        })
+        .then(
+          () => ({ ok: true as const, error: null as null }),
+          (error) => ({ ok: false as const, error }),
+        );
+
+      await vi.advanceTimersByTimeAsync(UNLINKED_EXTERNAL_STAGE_TIMEOUT_MS + 1);
+      const outcome = await outcomePromise;
+      expect(outcome.ok).toBe(false);
+      expect(outcome.error).toBeInstanceOf(UnlinkedStageTimeoutError);
+      expect(infoSpy).toHaveBeenCalledWith(
+        expect.stringContaining("[unlinked] stage=tracked_clan_members_query status=started"),
+      );
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining("[unlinked] stage=fwa_member_fetch status=timeout"),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("times out a stalled player-link query and logs the slow stage", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-01T00:00:00.000Z"));
+    try {
+      const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      prismaMock.trackedClan.findMany.mockResolvedValue([
+        { tag: "#2QG2C08UP", name: "Alpha Clan", logChannelId: "222222222222222222" },
+      ]);
+      prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+      prismaMock.playerLink.findMany.mockImplementation(
+        () =>
+          new Promise(() => {
+            // intentionally unresolved to exercise the bounded DB timeout
+          }),
+      );
+      const service = new UnlinkedMemberAlertService();
+
+      const outcomePromise = service
+        .listCurrentUnlinkedMembers({
+        guildId: "guild-1",
+        cocService: {
+          getClan: vi.fn().mockResolvedValue({
+            tag: "#2QG2C08UP",
+            name: "Alpha Clan",
+            members: [{ tag: "#PYLQ0289", name: "One" }],
+          }),
+        } as any,
+        })
+        .then(
+          () => ({ ok: true as const, error: null as null }),
+          (error) => ({ ok: false as const, error }),
+        );
+
+      await vi.advanceTimersByTimeAsync(UNLINKED_DB_STAGE_TIMEOUT_MS + 1);
+      const outcome = await outcomePromise;
+      expect(outcome.ok).toBe(false);
+      expect(outcome.error).toBeInstanceOf(UnlinkedStageTimeoutError);
+      expect(infoSpy).toHaveBeenCalledWith(
+        expect.stringContaining("[unlinked] stage=player_link_query status=started"),
+      );
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining("[unlinked] stage=player_link_query status=timeout"),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("posts one alert for a newly observed unresolved join", async () => {

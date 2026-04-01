@@ -12,7 +12,10 @@ import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
 import { resolveCurrentCwlSeasonKey } from "../services/CwlRegistryService";
 import { normalizeClanTag } from "../services/PlayerLinkService";
-import { unlinkedMemberAlertService } from "../services/UnlinkedMemberAlertService";
+import {
+  UnlinkedStageTimeoutError,
+  unlinkedMemberAlertService,
+} from "../services/UnlinkedMemberAlertService";
 
 const UNLINKED_ALERT_SUPPORTED_CHANNEL_TYPES = [
   ChannelType.GuildText,
@@ -59,6 +62,20 @@ function buildUnlinkedListLines(input: {
         )
       : ["- none"];
   return [header, ...body];
+}
+
+function formatUnlinkedCommandLog(input: Record<string, string | number | boolean | null | undefined>): string {
+  return Object.entries(input)
+    .map(([key, value]) => `${key}=${String(value)}`)
+    .join(" ");
+}
+
+function logUnlinkedCommandStage(
+  stage: string,
+  details: Record<string, string | number | boolean | null | undefined> = {},
+): void {
+  const line = `[unlinked] stage=${stage} ${formatUnlinkedCommandLog(details)}`.trim();
+  console.info(line);
 }
 
 async function autocompleteTrackedClanChoice(
@@ -150,10 +167,24 @@ export const Unlinked: Command = {
     interaction: ChatInputCommandInteraction,
     cocService: CoCService,
   ) => {
+    let terminalOutcome: "success" | "error" | "timeout" = "success";
     try {
+      logUnlinkedCommandStage("handler_entered", {
+        guild: interaction.guildId ?? "DM",
+        user: interaction.user.id,
+      });
       await interaction.deferReply({ ephemeral: true });
+      logUnlinkedCommandStage("interaction_deferred", {
+        guild: interaction.guildId ?? "DM",
+        user: interaction.user.id,
+      });
       if (!interaction.inGuild() || !interaction.guildId) {
         await interaction.editReply("This command can only be used in a server.");
+        logUnlinkedCommandStage("reply_sent", {
+          method: "editReply",
+          status: "success",
+          reason: "not_in_guild",
+        });
         return;
       }
 
@@ -178,14 +209,33 @@ export const Unlinked: Command = {
         await interaction.editReply(
           `Saved the unlinked-player alert channel: <#${requestedChannel.id}>.`,
         );
+        logUnlinkedCommandStage("reply_sent", {
+          method: "editReply",
+          status: "success",
+          subcommand,
+        });
         return;
       }
 
       const clanTag = normalizeClanTag(interaction.options.getString("clan", false) ?? "");
+      logUnlinkedCommandStage("member_fetch_started", {
+        guild: interaction.guildId,
+        clan: clanTag || "all",
+      });
       const entries = await unlinkedMemberAlertService.listCurrentUnlinkedMembers({
         guildId: interaction.guildId,
         cocService,
         clanTag: clanTag || null,
+      });
+      logUnlinkedCommandStage("member_fetch_completed", {
+        guild: interaction.guildId,
+        clan: clanTag || "all",
+        count: entries.length,
+      });
+      logUnlinkedCommandStage("list_render_started", {
+        guild: interaction.guildId,
+        clan: clanTag || "all",
+        count: entries.length,
       });
       const messages = splitDiscordLineMessages({
         lines: buildUnlinkedListLines({
@@ -194,21 +244,68 @@ export const Unlinked: Command = {
         }),
         maxMessages: 3,
       });
+      logUnlinkedCommandStage("list_render_completed", {
+        guild: interaction.guildId,
+        clan: clanTag || "all",
+        message_count: messages.length,
+      });
       if (messages.length <= 0) {
         await interaction.editReply("Current unresolved unlinked players:\n- none");
+        logUnlinkedCommandStage("reply_sent", {
+          method: "editReply",
+          status: "success",
+          messages: 0,
+        });
         return;
       }
 
       await interaction.editReply(messages[0]);
+      logUnlinkedCommandStage("reply_sent", {
+        method: "editReply",
+        status: "success",
+        part: 1,
+        total_parts: messages.length,
+      });
       for (const message of messages.slice(1)) {
         await interaction.followUp({
           ephemeral: true,
           content: message,
         });
+        logUnlinkedCommandStage("reply_sent", {
+          method: "followUp",
+          status: "success",
+          total_parts: messages.length,
+        });
       }
+      terminalOutcome = "success";
     } catch (err) {
-      console.error(`unlinked command failed: ${formatError(err)}`);
-      await interaction.editReply("Failed to load unlinked-player data. Please try again.");
+      terminalOutcome = err instanceof UnlinkedStageTimeoutError ? "timeout" : "error";
+      const timeout = err instanceof UnlinkedStageTimeoutError;
+      console.error(
+        `[unlinked] stage=terminal_error status=${terminalOutcome} error=${formatError(err)}`,
+      );
+      const message = timeout
+        ? "Unlinked-player lookup timed out while loading live clan data. Please try again."
+        : "Failed to load unlinked-player data. Please try again.";
+      const replyMethod = interaction.deferred || interaction.replied ? "editReply" : "reply";
+      if (interaction.deferred || interaction.replied) {
+        await interaction.editReply(message);
+      } else {
+        await interaction.reply({
+          ephemeral: true,
+          content: message,
+        });
+      }
+      logUnlinkedCommandStage("reply_sent", {
+        method: replyMethod,
+        status: terminalOutcome,
+      });
+    } finally {
+      logUnlinkedCommandStage("terminal", {
+        status: terminalOutcome,
+        guild: interaction.guildId ?? "DM",
+        user: interaction.user.id,
+      });
     }
   },
   autocomplete: async (interaction: AutocompleteInteraction) => {

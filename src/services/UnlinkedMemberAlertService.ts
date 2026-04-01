@@ -38,12 +38,94 @@ type LiveTrackedClanMember = {
   logChannelId: string | null;
 };
 
+export const UNLINKED_DB_STAGE_TIMEOUT_MS = 5_000;
+export const UNLINKED_EXTERNAL_STAGE_TIMEOUT_MS = 15_000;
+
 export type CurrentUnlinkedTrackedMember = {
   playerTag: string;
   playerName: string;
   clanTag: string;
   clanName: string;
 };
+
+type UnlinkedStageDetailValue = string | number | boolean | null | undefined;
+
+type UnlinkedStageDetails = Record<string, UnlinkedStageDetailValue>;
+
+export class UnlinkedStageTimeoutError extends Error {
+  readonly stage: string;
+  readonly timeoutMs: number;
+
+  constructor(stage: string, timeoutMs: number, details?: string) {
+    super(
+      details
+        ? `Unlinked stage timed out: ${stage} after ${timeoutMs}ms (${details})`
+        : `Unlinked stage timed out: ${stage} after ${timeoutMs}ms`,
+    );
+    this.name = "UnlinkedStageTimeoutError";
+    this.stage = stage;
+    this.timeoutMs = timeoutMs;
+  }
+}
+
+function formatStageDetails(details?: UnlinkedStageDetails): string {
+  if (!details) return "";
+  const parts = Object.entries(details)
+    .map(([key, value]) => `${key}=${String(value)}`)
+    .filter((value) => !value.endsWith("=undefined"));
+  return parts.length > 0 ? ` ${parts.join(" ")}` : "";
+}
+
+async function runBoundedUnlinkedStage<T>(input: {
+  stage: string;
+  timeoutMs: number;
+  details?: UnlinkedStageDetails;
+  action: () => Promise<T>;
+}): Promise<T> {
+  const startedAtMs = Date.now();
+  const detailText = formatStageDetails(input.details);
+  console.info(
+    `[unlinked] stage=${input.stage} status=started timeout_ms=${input.timeoutMs}${detailText}`,
+  );
+
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  try {
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => {
+        reject(
+          new UnlinkedStageTimeoutError(
+            input.stage,
+            input.timeoutMs,
+            detailText.trim(),
+          ),
+        );
+      }, input.timeoutMs);
+    });
+    const result = (await Promise.race([
+      input.action(),
+      timeoutPromise,
+    ])) as T;
+    console.info(
+      `[unlinked] stage=${input.stage} status=completed duration_ms=${
+        Date.now() - startedAtMs
+      }${detailText}`,
+    );
+    return result;
+  } catch (err) {
+    const timeout = err instanceof UnlinkedStageTimeoutError;
+    const level = timeout ? console.error : console.error;
+    level(
+      `[unlinked] stage=${input.stage} status=${timeout ? "timeout" : "failed"} duration_ms=${
+        Date.now() - startedAtMs
+      } timeout_ms=${input.timeoutMs}${detailText}${
+        timeout ? "" : ` error=${formatError(err)}`
+      }`,
+    );
+    throw err;
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+  }
+}
 
 export function buildUnlinkedAlertContent(input: {
   playerName: string;
@@ -124,12 +206,17 @@ async function resolveSendableGuildChannel(input: {
 }
 
 async function loadTrackedClanLogChannelByTag(): Promise<Map<string, string | null>> {
-  const trackedClans = await prisma.trackedClan.findMany({
-    orderBy: [{ createdAt: "asc" }, { tag: "asc" }],
-    select: {
-      tag: true,
-      logChannelId: true,
-    },
+  const trackedClans = await runBoundedUnlinkedStage({
+    stage: "tracked_clan_log_channel_query",
+    timeoutMs: UNLINKED_DB_STAGE_TIMEOUT_MS,
+    action: () =>
+      prisma.trackedClan.findMany({
+        orderBy: [{ createdAt: "asc" }, { tag: "asc" }],
+        select: {
+          tag: true,
+          logChannelId: true,
+        },
+      }),
   });
   return new Map(
     trackedClans.map((row) => [
@@ -141,7 +228,7 @@ async function loadTrackedClanLogChannelByTag(): Promise<Map<string, string | nu
 
 async function loadLiveFwaMembers(input: {
   cocService: CoCService;
-  trackedClanLogChannelByTag: Map<string, string | null>;
+  trackedClanLogChannelByTag?: Map<string, string | null>;
   observedFwaClans?: ObservedFwaClan[];
 }): Promise<LiveTrackedClanMember[]> {
   const observed = input.observedFwaClans;
@@ -152,7 +239,7 @@ async function loadLiveFwaMembers(input: {
       const clanName = normalizeDisplayText(clan.clanName, clanTag);
       const logChannelId =
         normalizeChannelId(clan.logChannelId) ??
-        input.trackedClanLogChannelByTag.get(clanTag) ??
+        input.trackedClanLogChannelByTag?.get(clanTag) ??
         null;
       return clan.members
         .map((member) => {
@@ -166,41 +253,46 @@ async function loadLiveFwaMembers(input: {
             logChannelId,
           };
         })
-        .filter((value): value is LiveTrackedClanMember => value !== null);
+      .filter((value): value is LiveTrackedClanMember => value !== null);
     });
   }
 
-  const trackedClans = await prisma.trackedClan.findMany({
-    orderBy: [{ createdAt: "asc" }, { tag: "asc" }],
-    select: {
-      tag: true,
-      name: true,
-      logChannelId: true,
-    },
+  const trackedClans = await runBoundedUnlinkedStage({
+    stage: "tracked_clan_members_query",
+    timeoutMs: UNLINKED_DB_STAGE_TIMEOUT_MS,
+    action: () =>
+      prisma.trackedClan.findMany({
+        orderBy: [{ createdAt: "asc" }, { tag: "asc" }],
+        select: {
+          tag: true,
+          name: true,
+          logChannelId: true,
+        },
+      }),
   });
 
   const clans = await Promise.all(
     trackedClans.map(async (tracked) => {
-      try {
-        const clan = await input.cocService.getClan(tracked.tag);
-        return {
-          clanTag: normalizeClanTag(tracked.tag),
-          clanName: normalizeDisplayText(
-            String(clan?.name ?? tracked.name ?? ""),
-            normalizeClanTag(tracked.tag) || tracked.tag,
-          ),
-          logChannelId:
-            normalizeChannelId(tracked.logChannelId) ??
-            input.trackedClanLogChannelByTag.get(normalizeClanTag(tracked.tag)) ??
-            null,
-          members: Array.isArray(clan?.members) ? clan.members : [],
-        };
-      } catch (err) {
-        console.error(
-          `[unlinked] load_fwa_members_failed clan=${tracked.tag} error=${formatError(err)}`,
-        );
-        return null;
-      }
+      const clanTag = normalizeClanTag(tracked.tag);
+      if (!clanTag) return null;
+      const clan = await runBoundedUnlinkedStage({
+        stage: "fwa_member_fetch",
+        timeoutMs: UNLINKED_EXTERNAL_STAGE_TIMEOUT_MS,
+        details: { clan: clanTag },
+        action: () => input.cocService.getClan(tracked.tag),
+      });
+      return {
+        clanTag,
+        clanName: normalizeDisplayText(
+          String(clan?.name ?? tracked.name ?? ""),
+          clanTag || tracked.tag,
+        ),
+        logChannelId:
+          normalizeChannelId(tracked.logChannelId) ??
+          input.trackedClanLogChannelByTag?.get(clanTag) ??
+          null,
+        members: Array.isArray(clan?.members) ? clan.members : [],
+      };
     }),
   );
 
@@ -258,23 +350,34 @@ function resolveTrackedCwlSideMembers(input: {
 
 async function loadLiveCwlMembers(input: {
   cocService: CoCService;
-  trackedClanLogChannelByTag: Map<string, string | null>;
+  trackedClanLogChannelByTag?: Map<string, string | null>;
 }): Promise<LiveTrackedClanMember[]> {
   const season = resolveCurrentCwlSeasonKey();
-  const cwlTrackedClans = await prisma.cwlTrackedClan.findMany({
-    where: { season },
-    orderBy: [{ createdAt: "asc" }, { tag: "asc" }],
-    select: {
-      tag: true,
-      name: true,
-    },
+  const cwlTrackedClans = await runBoundedUnlinkedStage({
+    stage: "cwl_tracked_clan_query",
+    timeoutMs: UNLINKED_DB_STAGE_TIMEOUT_MS,
+    details: { season },
+    action: () =>
+      prisma.cwlTrackedClan.findMany({
+        where: { season },
+        orderBy: [{ createdAt: "asc" }, { tag: "asc" }],
+        select: {
+          tag: true,
+          name: true,
+        },
+      }),
   });
   const trackedTags = cwlTrackedClans
     .map((row) => normalizeClanTag(row.tag))
     .filter(Boolean);
   if (trackedTags.length <= 0) return [];
 
-  const warsByClan = await loadActiveCwlWarsByClan(input.cocService, trackedTags);
+  const warsByClan = await runBoundedUnlinkedStage({
+    stage: "cwl_war_fetch",
+    timeoutMs: UNLINKED_EXTERNAL_STAGE_TIMEOUT_MS,
+    details: { season, clan_count: trackedTags.length },
+    action: () => loadActiveCwlWarsByClan(input.cocService, trackedTags),
+  });
   const activeMembersByPlayerTag = buildActiveCwlClanByPlayerTag({
     cwlWarByClan: warsByClan,
     trackedCwlTags: new Set(trackedTags),
@@ -294,7 +397,7 @@ async function loadLiveCwlMembers(input: {
         playerName: member.playerName,
         clanTag,
         clanName: normalizeDisplayText(member.clanName, tracked.name ?? clanTag),
-        logChannelId: input.trackedClanLogChannelByTag.get(clanTag) ?? null,
+        logChannelId: input.trackedClanLogChannelByTag?.get(clanTag) ?? null,
       }));
   });
 }
@@ -357,16 +460,13 @@ export class UnlinkedMemberAlertService {
     const guildId = normalizeGuildId(input.guildId);
     if (!guildId) return [];
 
-    const trackedClanLogChannelByTag = await loadTrackedClanLogChannelByTag();
     const [fwaMembers, cwlMembers] = await Promise.all([
       loadLiveFwaMembers({
         cocService: input.cocService,
-        trackedClanLogChannelByTag,
         observedFwaClans: input.observedFwaClans,
       }),
       loadLiveCwlMembers({
         cocService: input.cocService,
-        trackedClanLogChannelByTag,
       }),
     ]);
 
@@ -378,14 +478,23 @@ export class UnlinkedMemberAlertService {
       return [];
     }
 
-    const linkedRows = await prisma.playerLink.findMany({
-      where: {
-        playerTag: { in: currentMembers.map((member) => member.playerTag) },
+    const linkedRows = await runBoundedUnlinkedStage({
+      stage: "player_link_query",
+      timeoutMs: UNLINKED_DB_STAGE_TIMEOUT_MS,
+      details: {
+        guild: guildId,
+        player_count: currentMembers.length,
       },
-      select: {
-        playerTag: true,
-        discordUserId: true,
-      },
+      action: () =>
+        prisma.playerLink.findMany({
+          where: {
+            playerTag: { in: currentMembers.map((member) => member.playerTag) },
+          },
+          select: {
+            playerTag: true,
+            discordUserId: true,
+          },
+        }),
     });
     const linkedTagSet = new Set(
       linkedRows
@@ -442,14 +551,23 @@ export class UnlinkedMemberAlertService {
     const currentMembers = dedupeTrackedMembers([...fwaMembers, ...cwlMembers]);
     const linkedRows =
       currentMembers.length > 0
-        ? await prisma.playerLink.findMany({
-            where: {
-              playerTag: { in: currentMembers.map((member) => member.playerTag) },
+        ? await runBoundedUnlinkedStage({
+            stage: "player_link_query",
+            timeoutMs: UNLINKED_DB_STAGE_TIMEOUT_MS,
+            details: {
+              guild: guildId,
+              player_count: currentMembers.length,
             },
-            select: {
-              playerTag: true,
-              discordUserId: true,
-            },
+            action: () =>
+              prisma.playerLink.findMany({
+                where: {
+                  playerTag: { in: currentMembers.map((member) => member.playerTag) },
+                },
+                select: {
+                  playerTag: true,
+                  discordUserId: true,
+                },
+              }),
           })
         : [];
     const linkedTagSet = new Set(
