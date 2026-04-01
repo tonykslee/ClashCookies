@@ -223,9 +223,14 @@ describe("FwaPoliceService", () => {
       parse: [],
     });
     const sampleEmbed = sentPayload?.embeds?.[0]?.toJSON?.() ?? null;
-    expect(String(sampleEmbed?.description ?? "")).toContain(
-      "**Violation Time**: 23h 15m left | **Clan stars before hit**: ?★",
-    );
+    expect(
+      String(sampleEmbed?.description ?? "").startsWith(
+        "## :rotating_light: Warplan violation :oncoming_police_car:",
+      ),
+    ).toBe(true);
+    expect(String(sampleEmbed?.description ?? "")).not.toContain("**Violation**:");
+    expect(String(sampleEmbed?.description ?? "")).not.toContain("**Violation Time**:");
+    expect(String(sentPayload?.content ?? "")).toContain("**#15 - Tilonius**");
     expect(result).toEqual({
       ok: true,
       deliveredTo: "LOG",
@@ -529,29 +534,27 @@ describe("FwaPoliceService", () => {
     const embedJson = sentPayload?.embeds?.[0]?.toJSON?.() ?? null;
     expect(embedJson?.title ?? null).toBeNull();
     expect(Number(embedJson?.color ?? 0)).toBe(0xed4245);
-    expect(String(embedJson?.description ?? "")).toContain(
-      "FWA Police - Warplan violation detected",
-    );
+    expect(
+      String(embedJson?.description ?? "").startsWith(
+        "## :rotating_light: Warplan violation :oncoming_police_car:",
+      ),
+    ).toBe(true);
     expect(String(embedJson?.description ?? "")).toContain("**War**: Alpha FWA-WIN");
-    expect(String(embedJson?.description ?? "")).toContain(
-      "**Violation Time**: 23h 15m left | **Clan stars before hit**: 3★",
-    );
+    expect(String(embedJson?.description ?? "")).not.toContain("**Violation**:");
+    expect(String(embedJson?.description ?? "")).not.toContain("**Violation Time**:");
     expect(String(sentPayload?.content ?? "")).toContain(
       "<@222222222222222222>",
     );
+    expect(String(sentPayload?.content ?? "")).toContain("**#1 - Player One**");
     expect(sentPayload?.allowedMentions).toEqual({
       users: ["222222222222222222"],
       parse: [],
     });
-    expect(String(embedJson?.fields?.[0]?.name ?? "")).toBe("**Message**");
-    expect(String(embedJson?.fields?.[1]?.name ?? "")).toBe(
+    expect(String(embedJson?.fields?.[0]?.name ?? "")).toBe(
       "**:yes: Expected**",
     );
-    expect(String(embedJson?.fields?.[2]?.name ?? "")).toBe(
+    expect(String(embedJson?.fields?.[1]?.name ?? "")).toBe(
       "**:no: Actual**",
-    );
-    expect(String(embedJson?.fields?.[0]?.value ?? "")).toContain(
-      "<@222222222222222222>",
     );
     expect(botLogServiceMock.getChannelId).not.toHaveBeenCalled();
     expect(result.logSent).toBe(1);
@@ -625,9 +628,70 @@ describe("FwaPoliceService", () => {
     expect(logSend).toHaveBeenCalledTimes(1);
     const sentPayload = logSend.mock.calls[0]?.[0];
     const embedJson = sentPayload?.embeds?.[0]?.toJSON?.() ?? null;
-    expect(String(embedJson?.description ?? "")).toContain(
-      "**Violation Time**: 23h 15m left | **Clan stars before hit**: ?★",
-    );
+    expect(String(embedJson?.description ?? "")).not.toContain("**Violation Time**:");
+    expect(result.logSent).toBe(1);
+  });
+
+  it("keeps offender fallback format unchanged when position is unavailable", async () => {
+    prismaMock.trackedClan.findFirst.mockResolvedValue({
+      tag: "#2QG2C08UP",
+      name: "Alpha",
+      loseStyle: "TRIPLE_TOP_30",
+      fwaPoliceDmEnabled: false,
+      fwaPoliceLogEnabled: true,
+      logChannelId: "channel-1",
+      notifyChannelId: null,
+      mailChannelId: null,
+    });
+    playerLinkServiceMock.listPlayerLinksForClanMembers.mockResolvedValue([
+      {
+        playerTag: "#P2YLC8R0",
+        discordUserId: "222222222222222222",
+      },
+    ]);
+
+    const logSend = vi.fn().mockResolvedValue({});
+    const client = {
+      users: {
+        fetch: vi.fn(),
+      },
+      channels: {
+        fetch: vi.fn().mockResolvedValue({
+          isTextBased: () => true,
+          send: logSend,
+        }),
+      },
+    } as any;
+    const evaluateComplianceForCommand = vi.fn().mockResolvedValue({
+      status: "ok",
+      report: {
+        warId: 12345,
+        clanName: "Alpha",
+        opponentName: "Bravo",
+        matchType: "FWA",
+        expectedOutcome: "WIN",
+        loseStyle: "TRIPLE_TOP_30",
+        notFollowingPlan: [
+          buildIssue({
+            playerPosition: null,
+          }),
+        ],
+      },
+    });
+
+    const service = new FwaPoliceService();
+    const result = await service.enforceWarViolations({
+      client,
+      guildId: "guild-1",
+      clanTag: "#2QG2C08UP",
+      warId: 12345,
+      warCompliance: { evaluateComplianceForCommand } as any,
+    });
+
+    expect(logSend).toHaveBeenCalledTimes(1);
+    const sentPayload = logSend.mock.calls[0]?.[0];
+    expect(String(sentPayload?.content ?? "")).toContain("#P2YLC8R0 - Player One");
+    expect(String(sentPayload?.content ?? "")).not.toContain("**#P2YLC8R0 - Player One**");
     expect(result.logSent).toBe(1);
   });
 
