@@ -75,6 +75,7 @@ npm start
 - [Commands Reference](docs/commands.md)
 - [Command Access and Permissions](docs/permissions.md)
 - [Deployment and Install Links](docs/deployment.md)
+- [Observability](docs/observability.md)
 
 ## Development
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines and architecture documentation.

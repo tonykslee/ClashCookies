@@ -6,6 +6,7 @@
 - Polling ownership:
   - Prod: `POLLING_MODE=active`
   - Staging: `POLLING_MODE=mirror` with `MIRROR_SOURCE_DATABASE_URL` set to prod DB and `POLLING_ENV=staging`
+- Observability is documented separately in `docs/observability.md` and is intended to stay localhost-only by default on the droplet.
 
 ## Install Links
 Prod guild install:
