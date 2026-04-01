@@ -361,6 +361,7 @@ type PlayerBehaviorDetails = {
   reasonLabel: string;
   strictWindowContext: NotFollowingReason["strictWindowContext"];
   attackDetails: WarComplianceIssueAttackDetail[];
+  hasProvenStrictWindowViolation: boolean;
 };
 
 /** Purpose: normalize attack-order values so breach markers can be matched deterministically. */
@@ -504,6 +505,7 @@ function describeActualBehaviorForPlayer(input: {
       reasonLabel: "No details available.",
       strictWindowContext: null,
       attackDetails: [],
+      hasProvenStrictWindowViolation: false,
     };
   }
   const orderedAttacks = sortAttacksForComplianceOrder(playerAttacks);
@@ -527,13 +529,6 @@ function describeActualBehaviorForPlayer(input: {
       normalizeAttackOrder(row.attackOrder ?? null) ?? NaN,
     ),
   }));
-  if (
-    !attackDetails.some((detail) => detail.isBreach) &&
-    attackDetails.length > 0
-  ) {
-    // Fail-safe: if source rows have missing attackOrder and no marker could be matched, mark the first line.
-    attackDetails[0] = { ...attackDetails[0], isBreach: true };
-  }
   const strictSuffix = reason.strictWindowContext
     ? ` | ${reason.strictWindowContext.starsBeforeAttack}★ | ${reason.strictWindowContext.timeRemaining}`
     : "";
@@ -542,6 +537,7 @@ function describeActualBehaviorForPlayer(input: {
     reasonLabel: reason.label,
     strictWindowContext: reason.strictWindowContext,
     attackDetails,
+    hasProvenStrictWindowViolation: reason.strictWindowContext !== null,
   };
 }
 
@@ -557,7 +553,7 @@ function mapNamesToIssues(input: {
   expectedOutcome: "WIN" | "LOSE" | null;
   loseStyle: FwaLoseStyle;
 }): WarComplianceIssue[] {
-  return input.names.map((name) => {
+  return input.names.flatMap((name) => {
     const participant = input.participantByLabel.get(name) ?? null;
     const playerTag = normalizeTag(participant?.playerTag ?? "") || "UNKNOWN";
     const behavior =
@@ -571,6 +567,14 @@ function mapNamesToIssues(input: {
             expectedOutcome: input.expectedOutcome,
             loseStyle: input.loseStyle,
           });
+    if (
+      input.ruleType === "not_following_plan" &&
+      input.matchType === "FWA" &&
+      input.expectedOutcome === "WIN" &&
+      !behavior?.hasProvenStrictWindowViolation
+    ) {
+      return [];
+    }
     return {
       playerTag,
       playerName: name,
