@@ -11,11 +11,7 @@ import {
 } from "discord.js";
 import { Command } from "../Command";
 import { prisma } from "../prisma";
-import { CoCService } from "../services/CoCService";
-import {
-  backfillPlayerLinkNameIfMissing,
-  listPlayerLinksForDiscordUser,
-} from "../services/PlayerLinkService";
+import { listPlayerLinksForDiscordUser } from "../services/PlayerLinkService";
 
 type AccountRow = {
   tag: string;
@@ -266,7 +262,7 @@ export const Accounts: Command = {
   run: async (
     _client: Client,
     interaction: ChatInputCommandInteraction,
-    cocService: CoCService
+    _cocService: unknown
   ) => {
     if (!interaction.guildId) {
       await interaction.reply({ ephemeral: true, content: "This command can only be used in a server." });
@@ -362,71 +358,23 @@ export const Accounts: Command = {
         .map((row) => [normalizeTag(row.tag), sanitizeDisplayText(row.name)] as const)
         .filter((entry): entry is [string, string] => Boolean(entry[0] && entry[1]))
     );
-
-    const tagsNeedingLiveFetch = uniqueTags.filter((tag) => {
-      const hasLinkedName = Boolean(linkedNameByTag.get(tag));
-      const localFallback = activityByTag.get(tag);
-      const hasLocalFallback = Boolean(localFallback);
-      const hasIncompleteLocalClanContext = Boolean(
-        localFallback?.clanTag && !sanitizeDisplayText(localFallback.clanName)
-      );
-      return !hasLinkedName || !hasLocalFallback || hasIncompleteLocalClanContext;
-    });
-    const fetchedPlayersByTag = new Map<string, any>();
-    if (tagsNeedingLiveFetch.length > 0) {
-      const fetched = await Promise.allSettled(
-        tagsNeedingLiveFetch.map((tag) => cocService.getPlayerRaw(tag))
-      );
-      for (let i = 0; i < tagsNeedingLiveFetch.length; i += 1) {
-        const tag = tagsNeedingLiveFetch[i];
-        const result = fetched[i];
-        if (result?.status === "fulfilled") {
-          fetchedPlayersByTag.set(tag, result.value);
-        }
-      }
-    }
-
-    const playerNameBackfillTasks: Promise<void>[] = [];
     const rows: AccountRow[] = uniqueTags.map((tag) => {
       const linkedName = linkedNameByTag.get(tag) ?? null;
       const fallback = activityByTag.get(tag);
-      const livePlayer = fetchedPlayersByTag.get(tag) ?? null;
-      const livePlayerName = sanitizeDisplayText(livePlayer?.name);
       const fallbackClanTag = fallback?.clanTag ? normalizeTag(fallback.clanTag) : null;
-      const clanTag = normalizeTag(livePlayer?.clan?.tag ?? fallbackClanTag ?? "");
+      const clanTag = fallbackClanTag ?? "";
+      const activityName = sanitizeDisplayText(fallback?.name);
       const clanName =
-        sanitizeDisplayText(livePlayer?.clan?.name) ??
         sanitizeDisplayText(fallback?.clanName) ??
         (clanTag ? trackedClanNameByTag.get(clanTag) ?? null : null);
 
-      if (!linkedName && livePlayerName) {
-        playerNameBackfillTasks.push(
-          backfillPlayerLinkNameIfMissing({
-            playerTag: tag,
-            playerName: livePlayerName,
-          })
-            .then(() => undefined)
-            .catch((error) => {
-              console.error(
-                `[accounts] player_name_backfill_failed tag=${tag} user=${targetDiscordUserId} error=${String(
-                  (error as { message?: string } | null | undefined)?.message ?? error
-                )}`
-              );
-            })
-        );
-      }
-
       return {
         tag,
-        name: linkedName ?? livePlayerName ?? sanitizeDisplayText(fallback?.name) ?? tag,
+        name: linkedName ?? activityName ?? tag,
         clanTag: clanTag || null,
         clanName,
       };
     });
-
-    if (playerNameBackfillTasks.length > 0) {
-      void Promise.allSettled(playerNameBackfillTasks);
-    }
 
     const embeds = buildEmbeds(rows);
     for (const embed of embeds) {

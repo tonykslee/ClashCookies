@@ -270,7 +270,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "If `tag` is provided, resolves linked Discord ID from local PlayerLink, then lists that user's accounts.",
       "Only one of `tag` or `discord-id` can be provided.",
       "Runtime link resolution is local-only from `PlayerLink`.",
-      "Fetches live player data when available and groups accounts by current clan.",
+      "Account display uses persisted local data only.",
       "Set `visibility:public` to post the response directly in channel.",
     ],
     examples: [
