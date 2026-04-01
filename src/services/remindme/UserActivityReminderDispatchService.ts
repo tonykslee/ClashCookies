@@ -2,8 +2,9 @@ import {
   UserActivityReminderMethod,
   UserActivityReminderType,
 } from "@prisma/client";
-import { Client, EmbedBuilder } from "discord.js";
+import { Client } from "discord.js";
 import { formatError } from "../../helper/formatError";
+import { splitDiscordLineMessages } from "../../helper/discordLineMessageSplit";
 import { formatOffsetMinutes } from "./UserActivityReminderService";
 
 export type UserActivityReminderDispatchInput = {
@@ -38,7 +39,7 @@ export class UserActivityReminderDispatchService {
     input: UserActivityReminderDispatchInput,
   ): Promise<UserActivityReminderDispatchResult> {
     try {
-      const embed = buildUserActivityReminderEmbed(input);
+      const contents = buildUserActivityReminderContents(input);
       if (input.method === UserActivityReminderMethod.DM) {
         const user = await client.users.fetch(input.discordUserId).catch(() => null);
         if (!user) {
@@ -48,10 +49,16 @@ export class UserActivityReminderDispatchService {
         if (!dm) {
           return { status: "failed", errorMessage: "dm_channel_unavailable" };
         }
-        const sent = await dm.send({ embeds: [embed] });
+        let firstMessageId: string | null = null;
+        for (const content of contents) {
+          const sent = await dm.send({ content });
+          if (!firstMessageId) {
+            firstMessageId = sent.id;
+          }
+        }
         return {
           status: "sent",
-          messageId: sent.id,
+          messageId: firstMessageId ?? "unknown",
           deliverySurface: `DM:${dm.id}`,
         };
       }
@@ -66,16 +73,21 @@ export class UserActivityReminderDispatchService {
           errorMessage: "ping_here_channel_unavailable_or_not_text_based",
         };
       }
-      const sent = await channel.send({
-        content: `<@${input.discordUserId}>`,
-        allowedMentions: {
-          users: [input.discordUserId],
-        },
-        embeds: [embed],
-      });
+      let firstMessageId: string | null = null;
+      for (const content of contents) {
+        const sent = await channel.send({
+          content,
+          allowedMentions: {
+            users: [input.discordUserId],
+          },
+        });
+        if (!firstMessageId) {
+          firstMessageId = sent.id;
+        }
+      }
       return {
         status: "sent",
-        messageId: sent.id,
+        messageId: firstMessageId ?? "unknown",
         deliverySurface: `CHANNEL:${input.surfaceChannelId}`,
       };
     } catch (err) {
@@ -91,26 +103,34 @@ export class UserActivityReminderDispatchService {
 export const userActivityReminderDispatchService =
   new UserActivityReminderDispatchService();
 
-/** Purpose: build deterministic reminder embed content with required player/clan/time-left details. */
-function buildUserActivityReminderEmbed(input: UserActivityReminderDispatchInput): EmbedBuilder {
+/** Purpose: build deterministic reminder message content with required player/clan/time-left details. */
+function buildUserActivityReminderContents(
+  input: UserActivityReminderDispatchInput,
+): string[] {
   const playerLabel = input.playerName ? `${input.playerName} (${input.playerTag})` : input.playerTag;
   const clanLabel = input.clanName ?? "Unknown Clan";
   const offsetLabel = formatOffsetMinutes(input.offsetMinutes);
   const typeLabel = input.reminderType;
   const endUnix = Math.floor(input.eventEndsAt.getTime() / 1000);
+  const headingPrefix =
+    input.method === UserActivityReminderMethod.PING_HERE
+      ? `### <@${input.discordUserId}> Activity Reminder - ${typeLabel}`
+      : `### Activity Reminder - ${typeLabel}`;
 
-  return new EmbedBuilder()
-    .setColor(0x5865f2)
-    .setTitle(`Activity Reminder - ${typeLabel}`)
-    .setDescription(
-      [
-        `Player: **${playerLabel}**`,
-        `Tag: **${input.playerTag}**`,
-        `Clan: **${clanLabel}**`,
-        `Configured offset: **${offsetLabel}**`,
-        `Time left: <t:${endUnix}:R>`,
-      ].join("\n"),
-    )
-    .setFooter({ text: `event:${input.eventInstanceKey}` })
-    .setTimestamp(new Date());
+  return splitDiscordLineMessages({
+    lines: [
+      headingPrefix,
+      `Player: ${playerLabel}`,
+      `Tag: ${input.playerTag}`,
+      `Clan: ${clanLabel}`,
+      `Configured offset: ${offsetLabel}`,
+      `Time left: <t:${endUnix}:R>`,
+      `Ends at: <t:${endUnix}:F> (<t:${endUnix}:R>)`,
+      `Event: ${input.eventInstanceKey}`,
+    ],
+    maxMessages: 3,
+  });
 }
+
+export const buildUserActivityReminderContentsForTest =
+  buildUserActivityReminderContents;
