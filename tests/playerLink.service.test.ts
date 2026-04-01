@@ -146,6 +146,7 @@ describe("PlayerLinkService link identity", () => {
     expect(prismaMock.playerLink.findMany).toHaveBeenCalledWith({
       where: {
         playerTag: { in: ["#PYLQ0289", "#QGRJ2222", "#G2RC8899"] },
+        discordUserId: { not: null },
         OR: [{ discordUsername: null }, { discordUsername: "" }],
       },
       select: {

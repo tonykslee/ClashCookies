@@ -73,7 +73,7 @@ export function normalizeClanTag(input: string): string {
 }
 
 /** Purpose: normalize a Discord user snowflake. */
-export function normalizeDiscordUserId(input: string): string | null {
+export function normalizeDiscordUserId(input: unknown): string | null {
   const trimmed = String(input ?? "").trim();
   if (!/^\d{15,22}$/.test(trimmed)) return null;
   return trimmed;
@@ -144,12 +144,21 @@ export async function createPlayerLink(input: {
     };
   }
 
-  await prisma.playerLink.create({
-    data: {
-      playerTag: normalizedTag,
-      discordUserId: normalizedUserId,
-    },
-  });
+  if (existing) {
+    await prisma.playerLink.update({
+      where: { playerTag: normalizedTag },
+      data: {
+        discordUserId: normalizedUserId,
+      },
+    });
+  } else {
+    await prisma.playerLink.create({
+      data: {
+        playerTag: normalizedTag,
+        discordUserId: normalizedUserId,
+      },
+    });
+  }
   return {
     outcome: "created",
     playerTag: normalizedTag,
@@ -186,15 +195,27 @@ export async function createPlayerLinkFromEmbed(input: {
   }
 
   try {
-    await prisma.playerLink.create({
-      data: {
-        playerTag: normalizedTag,
-        discordUserId: normalizedUserId,
-        discordUsername: sanitizeDiscordUsernameForPersistence(
-          input.submittingDiscordUsername
-        ),
-      },
-    });
+    if (existing) {
+      await prisma.playerLink.update({
+        where: { playerTag: normalizedTag },
+        data: {
+          discordUserId: normalizedUserId,
+          discordUsername: sanitizeDiscordUsernameForPersistence(
+            input.submittingDiscordUsername
+          ),
+        },
+      });
+    } else {
+      await prisma.playerLink.create({
+        data: {
+          playerTag: normalizedTag,
+          discordUserId: normalizedUserId,
+          discordUsername: sanitizeDiscordUsernameForPersistence(
+            input.submittingDiscordUsername
+          ),
+        },
+      });
+    }
     return {
       outcome: "created",
       playerTag: normalizedTag,
@@ -271,7 +292,10 @@ export async function listPlayerLinksForClanMembers(input: {
 
   const uniqueOrdered = [...new Set(normalizedOrdered)];
   const rows = await prisma.playerLink.findMany({
-    where: { playerTag: { in: uniqueOrdered } },
+    where: {
+      playerTag: { in: uniqueOrdered },
+      discordUserId: { not: null },
+    },
     select: { playerTag: true, discordUserId: true, discordUsername: true, createdAt: true },
   });
 
@@ -279,11 +303,11 @@ export async function listPlayerLinksForClanMembers(input: {
   return rows
     .map((row) => ({
       playerTag: normalizePlayerTag(row.playerTag),
-      discordUserId: String(row.discordUserId),
+      discordUserId: normalizeDiscordUserId(row.discordUserId) ?? "",
       discordUsername: normalizePersistedDiscordUsername(row.discordUsername),
       linkedAt: row.createdAt,
     }))
-    .filter((row) => row.playerTag.length > 0)
+    .filter((row) => row.playerTag.length > 0 && row.discordUserId.length > 0)
     .sort((a, b) => {
       const aIndex = indexByTag.get(a.playerTag);
       const bIndex = indexByTag.get(b.playerTag);
@@ -409,6 +433,7 @@ export async function backfillMissingDiscordUsernamesForClanMembers(input: {
   const candidateLinks = await prisma.playerLink.findMany({
     where: {
       playerTag: { in: uniqueOrdered },
+      discordUserId: { not: null },
       OR: [{ discordUsername: null }, { discordUsername: "" }],
     },
     select: {

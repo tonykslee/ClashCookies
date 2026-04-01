@@ -230,6 +230,7 @@ export class TodoSnapshotService {
     nowMs?: number;
   }): Promise<TodoSnapshotRefreshResult> {
     const links = await prisma.playerLink.findMany({
+      where: { discordUserId: { not: null } },
       select: { playerTag: true },
       orderBy: [{ createdAt: "asc" }, { playerTag: "asc" }],
     });
@@ -1024,7 +1025,7 @@ function findWarAttacksUsed(war: ClanWar | null, playerTag: string): number {
 }
 
 /** Purpose: derive a season-scoped player->CWL-clan map from active CWL wars for tracked CWL clans. */
-function buildActiveCwlClanByPlayerTag(input: {
+export function buildActiveCwlClanByPlayerTag(input: {
   cwlWarByClan: Map<string, ClanWar | null>;
   trackedCwlTags: Set<string>;
 }): Map<string, string> {
@@ -1056,7 +1057,7 @@ function buildActiveCwlClanByPlayerTag(input: {
 }
 
 /** Purpose: load one active CWL war per clan tag with grouped war-tag reuse to avoid duplicate fetches. */
-async function loadActiveCwlWarsByClan(
+export async function loadActiveCwlWarsByClan(
   cocService: CoCService,
   clanTags: string[],
 ): Promise<Map<string, ClanWar | null>> {
