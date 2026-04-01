@@ -81,6 +81,7 @@ npm start
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines and architecture documentation.
 FWA command internals are split under `src/commands/fwa/` helper modules to keep `Fwa.ts` orchestration-focused and unit-testable.
 Run `npm run seed:fwa-layouts` after migrations when you want to upsert the canonical layout seed rows.
+Droplet deploys use cached Yarn dependency volumes and only rerun locked installs when `package.json` or `yarn.lock` changes.
 
 ## FWAStats Feed Ingestion (Phase 1)
 Endpoints wired:
