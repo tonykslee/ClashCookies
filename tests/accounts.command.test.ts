@@ -44,6 +44,15 @@ function makeInteraction(input?: {
   };
 }
 
+function makeAutocompleteInteraction(value: string) {
+  return {
+    options: {
+      getFocused: vi.fn(() => ({ name: "tag", value })),
+    },
+    respond: vi.fn().mockResolvedValue(undefined),
+  };
+}
+
 function getEmbedDescription(interaction: any): string {
   const payload = interaction.editReply.mock.calls.find(
     (call: unknown[]) => call[0] && typeof call[0] === "object" && Array.isArray(call[0].embeds)
@@ -136,6 +145,87 @@ describe("/accounts command", () => {
 
     expect(getEmbedDescription(interaction)).toContain("- Activity Charlie `#CUV9082`");
     expect(prismaMock.playerLink.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("autocompletes player tags from PlayerLink and ignores tracked clans", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#ABC123",
+        playerName: "Alpha",
+        discordUserId: null,
+      },
+      {
+        playerTag: "#ABC123",
+        playerName: "Alpha Prime",
+        discordUserId: "111111111111111111",
+      },
+      {
+        playerTag: "#ABC999",
+        playerName: "Beta",
+        discordUserId: "222222222222222222",
+      },
+    ]);
+    const interaction = makeAutocompleteInteraction("abc");
+
+    await Accounts.autocomplete(interaction as any);
+
+    expect(prismaMock.playerLink.findMany).toHaveBeenCalledWith({
+      select: {
+        discordUserId: true,
+        playerName: true,
+        playerTag: true,
+      },
+    });
+    expect(prismaMock.trackedClan.findMany).not.toHaveBeenCalled();
+    expect(interaction.respond).toHaveBeenCalledWith([
+      { name: "Alpha Prime (#ABC123)", value: "#ABC123" },
+      { name: "Beta (#ABC999)", value: "#ABC999" },
+    ]);
+  });
+
+  it("matches by partial linked name and falls back to the bare tag label", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#QGRJ2222",
+        playerName: "Bravo Player",
+        discordUserId: "111111111111111111",
+      },
+      {
+        playerTag: "#LQ9P8R2",
+        playerName: null,
+        discordUserId: "222222222222222222",
+      },
+    ]);
+    const interaction = makeAutocompleteInteraction("brav");
+
+    await Accounts.autocomplete(interaction as any);
+
+    expect(interaction.respond).toHaveBeenCalledWith([
+      { name: "Bravo Player (#QGRJ2222)", value: "#QGRJ2222" },
+    ]);
+
+    const emptyQueryInteraction = makeAutocompleteInteraction("");
+    await Accounts.autocomplete(emptyQueryInteraction as any);
+
+    expect(emptyQueryInteraction.respond).toHaveBeenCalledWith([
+      { name: "Bravo Player (#QGRJ2222)", value: "#QGRJ2222" },
+      { name: "#LQ9P8R2", value: "#LQ9P8R2" },
+    ]);
+  });
+
+  it("caps autocomplete results at 25", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue(
+      Array.from({ length: 30 }, (_, index) => ({
+        playerTag: `#PYLQ0${String(index).padStart(3, "0")}`,
+        playerName: `Player ${String(index).padStart(2, "0")}`,
+        discordUserId: "111111111111111111",
+      })),
+    );
+    const interaction = makeAutocompleteInteraction("");
+
+    await Accounts.autocomplete(interaction as any);
+
+    expect((interaction.respond as any).mock.calls[0][0]).toHaveLength(25);
   });
 
   it("falls back to raw tag when no linked/live/activity name exists", async () => {
