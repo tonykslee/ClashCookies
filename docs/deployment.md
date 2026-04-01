@@ -3,6 +3,9 @@
 ## Deployment Notes
 - Commands are registered as guild commands using `GUILD_ID` on startup.
 - If commands are missing, verify environment (`DISCORD_TOKEN`, `GUILD_ID`) and restart.
+- Polling ownership:
+  - Prod: `POLLING_MODE=active`
+  - Staging: `POLLING_MODE=mirror` with `MIRROR_SOURCE_DATABASE_URL` set to prod DB and `POLLING_ENV=staging`
 
 ## Install Links
 Prod guild install:

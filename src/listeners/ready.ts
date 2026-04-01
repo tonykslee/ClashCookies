@@ -40,6 +40,12 @@ import { ReminderSchedulerService } from "../services/reminders/ReminderSchedule
 import { UserActivityReminderSchedulerService } from "../services/remindme/UserActivityReminderSchedulerService";
 import { cocRequestQueueService } from "../services/CoCRequestQueueService";
 import { PollCycleGuardService } from "../services/PollCycleGuardService";
+import {
+  isActivePollingMode,
+  resolveMirrorSyncIntervalMsFromEnv,
+  resolvePollingMode,
+} from "../services/PollingModeService";
+import { MirrorSyncService } from "../services/MirrorSyncService";
 
 const DEFAULT_OBSERVE_INTERVAL_MINUTES = 30;
 const RECRUITMENT_REMINDER_INTERVAL_MS = 60 * 60 * 1000;
@@ -47,6 +53,7 @@ const DEFERMENT_REMINDER_INTERVAL_MS = 60 * 60 * 1000;
 const DEFAULT_WAR_EVENT_POLL_INTERVAL_MINUTES = 5;
 const TRACKED_MESSAGE_SWEEP_INTERVAL_MS = 60 * 1000;
 const OBSERVE_LAST_RUN_AT_KEY = "activity_observe:last_run_at_ms";
+const MIRROR_SYNC_POLL_GUARD_KEY = "mirror_snapshot_sync_cycle";
 const VISIBILITY_OPTION = {
   name: "visibility",
   description: "Response visibility",
@@ -342,6 +349,10 @@ export default (client: Client, cocService: CoCService): void => {
     const warEventLogService = new WarEventLogService(client, cocService);
     const settings = new SettingsService();
     const pollCycleGuard = new PollCycleGuardService();
+    const pollingMode = resolvePollingMode(process.env);
+    const activePollingEnabled = isActivePollingMode(process.env);
+    const mirrorSyncService = new MirrorSyncService();
+    console.log(`[polling-mode] mode=${pollingMode}`);
 
     const observeTrackedClans = async (): Promise<string[]> => {
       const dbTracked = await prisma.trackedClan.findMany({
@@ -461,33 +472,39 @@ export default (client: Client, cocService: CoCService): void => {
     const intervalMs = Math.floor(intervalMinutes * 60 * 1000);
     const initialObserveDelayMs = await getInitialObserveDelayMs();
 
-    if (initialObserveDelayMs === 0) {
-      await runObservedCycle();
-      setInterval(() => {
-        runObservedCycle().catch((err) => {
-          console.error(`observeTrackedClans loop failed: ${formatError(err)}`);
-        });
-      }, intervalMs);
-    } else {
-      const initialObserveDelayMin = Math.ceil(initialObserveDelayMs / 60000);
-      console.log(
-        `Skipping startup activity observe run; next run in ${initialObserveDelayMin} minute(s).`
-      );
-      setTimeout(() => {
-        runObservedCycle()
-          .catch((err) => {
-            console.error(`observeTrackedClans delayed run failed: ${formatError(err)}`);
-          })
-          .finally(() => {
-            setInterval(() => {
-              runObservedCycle().catch((err) => {
-                console.error(`observeTrackedClans loop failed: ${formatError(err)}`);
-              });
-            }, intervalMs);
+    if (activePollingEnabled) {
+      if (initialObserveDelayMs === 0) {
+        await runObservedCycle();
+        setInterval(() => {
+          runObservedCycle().catch((err) => {
+            console.error(`observeTrackedClans loop failed: ${formatError(err)}`);
           });
-      }, initialObserveDelayMs);
+        }, intervalMs);
+      } else {
+        const initialObserveDelayMin = Math.ceil(initialObserveDelayMs / 60000);
+        console.log(
+          `Skipping startup activity observe run; next run in ${initialObserveDelayMin} minute(s).`
+        );
+        setTimeout(() => {
+          runObservedCycle()
+            .catch((err) => {
+              console.error(`observeTrackedClans delayed run failed: ${formatError(err)}`);
+            })
+            .finally(() => {
+              setInterval(() => {
+                runObservedCycle().catch((err) => {
+                  console.error(`observeTrackedClans loop failed: ${formatError(err)}`);
+                });
+              }, intervalMs);
+            });
+        }, initialObserveDelayMs);
+      }
+      console.log(`Activity observe loop enabled (every ${intervalMinutes} minute(s)).`);
+    } else {
+      console.log(
+        "[polling-mode] event=poller_skipped job=activity_observe_cycle mode=mirror",
+      );
     }
-    console.log(`Activity observe loop enabled (every ${intervalMinutes} minute(s)).`);
 
     const runRecruitmentReminders = async () => {
       await runFetchTelemetryBatch("recruitment_reminder_cycle", async () => {
@@ -574,34 +591,79 @@ export default (client: Client, cocService: CoCService): void => {
       });
     };
 
-    setNextNotifyRefreshAtMs(Date.now() + warEventPollMs);
-    setNextWarMailRefreshAtMs(Date.now() + warEventPollMs);
-    await runWarEventPoll();
-    setInterval(() => {
+    if (activePollingEnabled) {
       setNextNotifyRefreshAtMs(Date.now() + warEventPollMs);
       setNextWarMailRefreshAtMs(Date.now() + warEventPollMs);
-      runWarEventPoll().catch((err) => {
-        console.error(`[war-events] poll interval failed: ${formatError(err)}`);
-      });
-    }, warEventPollMs);
-    console.log(
-      `War event poll + refresh loop enabled (every ${warEventPollMinutes} minute(s)).`
-    );
+      await runWarEventPoll();
+      setInterval(() => {
+        setNextNotifyRefreshAtMs(Date.now() + warEventPollMs);
+        setNextWarMailRefreshAtMs(Date.now() + warEventPollMs);
+        runWarEventPoll().catch((err) => {
+          console.error(`[war-events] poll interval failed: ${formatError(err)}`);
+        });
+      }, warEventPollMs);
+      console.log(
+        `War event poll + refresh loop enabled (every ${warEventPollMinutes} minute(s)).`
+      );
 
-    const fwaFeedScheduler = new FwaFeedSchedulerService();
-    fwaFeedScheduler.start();
-    console.log("FWA feed scheduler loops initialized.");
+      const fwaFeedScheduler = new FwaFeedSchedulerService();
+      fwaFeedScheduler.start();
+      console.log("FWA feed scheduler loops initialized.");
+    } else {
+      console.log(
+        "[polling-mode] event=poller_skipped job=war_event_poll_cycle mode=mirror",
+      );
+      console.log(
+        "[polling-mode] event=poller_skipped job=fwa_feed_scheduler mode=mirror",
+      );
+    }
+
+    if (!activePollingEnabled) {
+      const mirrorSyncIntervalMs = resolveMirrorSyncIntervalMsFromEnv(process.env);
+      const mirrorSyncIntervalMinutes = Math.max(
+        1,
+        Math.trunc(mirrorSyncIntervalMs / 60_000),
+      );
+
+      const runMirrorSyncCycle = async (trigger: "startup" | "scheduled") => {
+        await pollCycleGuard.run(MIRROR_SYNC_POLL_GUARD_KEY, async () => {
+          try {
+            await mirrorSyncService.syncNow("scheduled");
+          } catch (err) {
+            console.error(
+              `[mirror-sync] event=${trigger}_failed error=${formatError(err)}`,
+            );
+          }
+        });
+      };
+
+      await runMirrorSyncCycle("startup");
+      setInterval(() => {
+        runMirrorSyncCycle("scheduled").catch((err) => {
+          console.error(`[mirror-sync] event=scheduled_failed error=${formatError(err)}`);
+        });
+      }, mirrorSyncIntervalMs);
+      console.log(
+        `[mirror-sync] event=scheduler_started interval_minutes=${mirrorSyncIntervalMinutes}`,
+      );
+    }
 
     const reminderScheduler = new ReminderSchedulerService(client);
     reminderScheduler.start();
     console.log("Reminder scheduler loop initialized.");
 
-    const userActivityReminderScheduler = new UserActivityReminderSchedulerService(
-      client,
-      cocService
-    );
-    userActivityReminderScheduler.start();
-    console.log("User activity reminder scheduler loop initialized.");
+    if (activePollingEnabled) {
+      const userActivityReminderScheduler = new UserActivityReminderSchedulerService(
+        client,
+        cocService
+      );
+      userActivityReminderScheduler.start();
+      console.log("User activity reminder scheduler loop initialized.");
+    } else {
+      console.log(
+        "[polling-mode] event=poller_skipped job=user_activity_reminder_scheduler mode=mirror",
+      );
+    }
 
     console.log("ClashCookies is online");
   });
