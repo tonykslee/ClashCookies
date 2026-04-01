@@ -199,9 +199,6 @@ export async function runReminderSchedulerCycle(input: {
         });
         if (!fireLog.created) {
           deduped += 1;
-          console.log(
-            `[reminders] deduped reminder_id=${reminder.id} clan=${context.clanTag} offset_s=${offsetSeconds} identity=${context.eventIdentity}`,
-          );
           continue;
         }
 

@@ -42,6 +42,26 @@ function hasSelectedReminderChannel(channelId: string): boolean {
   return /^\d+$/.test(String(channelId ?? "").trim());
 }
 
+/** Purpose: send one ephemeral component message safely before or after a deferred component ack. */
+async function sendComponentEphemeralMessage(
+  component:
+    | ButtonInteraction
+    | StringSelectMenuInteraction,
+  content: string,
+): Promise<void> {
+  if (component.deferred || component.replied) {
+    await component.followUp({
+      ephemeral: true,
+      content,
+    });
+    return;
+  }
+  await component.reply({
+    ephemeral: true,
+    content,
+  });
+}
+
 /** Purpose: format reminder offsets for compact human-readable embed/list sections. */
 function formatOffsetList(offsetsSeconds: number[]): string {
   if (offsetsSeconds.length <= 0) return "not set";
@@ -353,39 +373,39 @@ async function openReminderPanel(input: {
         input.mode === REMINDER_CREATE_MODE &&
         component.customId === `reminders:save:${input.reminderId}`
       ) {
+        await component.deferUpdate();
         reminder = await reminderService.getReminderWithDetails({
           reminderId: input.reminderId,
           guildId: input.interaction.guildId!,
         });
         if (!hasSelectedReminderType(reminder.type)) {
-          await component.reply({
-            ephemeral: true,
-            content: "Select a reminder type before saving this reminder.",
-          });
+          await sendComponentEphemeralMessage(
+            component,
+            "Select a reminder type before saving this reminder.",
+          );
           return;
         }
         if (reminder.offsetsSeconds.length <= 0) {
-          await component.reply({
-            ephemeral: true,
-            content: "Select at least one reminder time before saving this reminder.",
-          });
+          await sendComponentEphemeralMessage(
+            component,
+            "Select at least one reminder time before saving this reminder.",
+          );
           return;
         }
         if (!hasSelectedReminderChannel(reminder.channelId)) {
-          await component.reply({
-            ephemeral: true,
-            content: "Set a reminder channel before saving this reminder.",
-          });
+          await sendComponentEphemeralMessage(
+            component,
+            "Set a reminder channel before saving this reminder.",
+          );
           return;
         }
         if (reminder.targets.length <= 0) {
-          await component.reply({
-            ephemeral: true,
-            content: "Select at least one clan before saving this reminder.",
-          });
+          await sendComponentEphemeralMessage(
+            component,
+            "Select at least one clan before saving this reminder.",
+          );
           return;
         }
-        await component.deferUpdate();
         await reminderService.setReminderEnabled({
           reminderId: input.reminderId,
           guildId: input.interaction.guildId!,
@@ -457,12 +477,10 @@ async function openReminderPanel(input: {
         return;
       }
       console.error(`[reminders] panel interaction failed: ${code}`);
-      if (!component.replied && !component.deferred) {
-        await component.reply({
-          ephemeral: true,
-          content: "Failed to update reminder settings.",
-        });
-      }
+      await sendComponentEphemeralMessage(
+        component,
+        "Failed to update reminder settings.",
+      );
     }
   });
 

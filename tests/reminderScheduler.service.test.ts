@@ -365,6 +365,62 @@ describe("ReminderSchedulerService v1 trigger semantics", () => {
     expect(dispatch.dispatchReminder).toHaveBeenCalledTimes(4);
   });
 
+  it("keeps deduped counts but does not emit per-item dedupe log spam by default", async () => {
+    const nowMs = Date.parse("2026-04-05T00:00:00.000Z");
+    prismaMock.reminder.findMany.mockResolvedValue([
+      {
+        id: "rem-raids",
+        guildId: "guild-1",
+        channelId: "channel-raids",
+        type: ReminderType.RAIDS,
+        isEnabled: true,
+        times: [{ offsetSeconds: 60 * 60 }],
+        targetClans: [{ clanTag: "#QGRJ2222", clanType: "FWA" }],
+      },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#QGRJ2222", name: "Raid Clan 1" }]);
+    setTodoSnapshotRows({
+      timedRows: [
+        {
+          clanTag: "#QGRJ2222",
+          clanName: "Raid Clan 1",
+          cwlClanTag: null,
+          cwlClanName: null,
+          raidActive: true,
+          raidEndsAt: new Date(nowMs + 20 * 60 * 1000),
+          gamesActive: false,
+          gamesEndsAt: null,
+          updatedAt: new Date(nowMs),
+        },
+      ],
+    });
+    prismaMock.reminderFireLog.create.mockRejectedValue({ code: "P2002" });
+    const dispatch = {
+      dispatchReminder: vi.fn(),
+    };
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const counts = await runReminderSchedulerCycle({
+      client: {} as any,
+      dispatch: dispatch as any,
+      nowMs,
+      intervalMs: 60_000,
+    });
+
+    expect(counts).toEqual({
+      evaluated: 1,
+      fired: 0,
+      deduped: 1,
+      failed: 0,
+    });
+    expect(dispatch.dispatchReminder).not.toHaveBeenCalled();
+    expect(
+      logSpy.mock.calls.some(([message]) =>
+        String(message).includes("[reminders] deduped reminder_id="),
+      ),
+    ).toBe(false);
+  });
+
   it("does not duplicate sends after disable/re-enable within the same event identity", async () => {
     const nowMs = Date.parse("2026-04-05T00:00:00.000Z");
     prismaMock.reminder.findMany
