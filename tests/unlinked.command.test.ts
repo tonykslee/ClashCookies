@@ -71,7 +71,8 @@ describe("/unlinked command", () => {
 
   it("lists current unresolved unlinked players and supports clan filtering", async () => {
     const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
-    vi.spyOn(unlinkedMemberAlertService, "listCurrentUnlinkedMembers").mockResolvedValue([
+    const liveSpy = vi.spyOn(unlinkedMemberAlertService, "listCurrentUnlinkedMembers");
+    vi.spyOn(unlinkedMemberAlertService, "listPersistedUnlinkedMembers").mockResolvedValue([
       {
         playerTag: "#P1",
         playerName: "One",
@@ -86,11 +87,11 @@ describe("/unlinked command", () => {
 
     await Unlinked.run({} as any, interaction as any, {} as any);
 
-    expect(unlinkedMemberAlertService.listCurrentUnlinkedMembers).toHaveBeenCalledWith({
+    expect(unlinkedMemberAlertService.listPersistedUnlinkedMembers).toHaveBeenCalledWith({
       guildId: "guild-1",
-      cocService: {},
       clanTag: "#2QG2C08UP",
     });
+    expect(liveSpy).not.toHaveBeenCalled();
     expect(interaction.editReply).toHaveBeenCalledWith(
       "Current unresolved unlinked players in #2QG2C08UP:\n- One (`#P1`) | Alpha Clan #2QG2C08UP",
     );
@@ -107,10 +108,10 @@ describe("/unlinked command", () => {
       expect.stringContaining("[unlinked] stage=scope_resolution_completed"),
     );
     expect(infoSpy).toHaveBeenCalledWith(
-      expect.stringContaining("[unlinked] stage=member_fetch_started"),
+      expect.stringContaining("[unlinked] stage=persisted_unlinked_query_started"),
     );
     expect(infoSpy).toHaveBeenCalledWith(
-      expect.stringContaining("[unlinked] stage=member_fetch_completed"),
+      expect.stringContaining("[unlinked] stage=persisted_unlinked_query_completed"),
     );
     expect(infoSpy).toHaveBeenCalledWith(
       expect.stringContaining("[unlinked] stage=list_render_started"),
@@ -127,7 +128,8 @@ describe("/unlinked command", () => {
   });
 
   it("returns a clear empty-state list when no unresolved players remain", async () => {
-    vi.spyOn(unlinkedMemberAlertService, "listCurrentUnlinkedMembers").mockResolvedValue([]);
+    const liveSpy = vi.spyOn(unlinkedMemberAlertService, "listCurrentUnlinkedMembers");
+    vi.spyOn(unlinkedMemberAlertService, "listPersistedUnlinkedMembers").mockResolvedValue([]);
     const interaction = createInteraction({
       subcommand: "list",
     });
@@ -137,13 +139,15 @@ describe("/unlinked command", () => {
     expect(interaction.editReply).toHaveBeenCalledWith(
       "Current unresolved unlinked players:\n- none",
     );
+    expect(liveSpy).not.toHaveBeenCalled();
   });
 
-  it("surfaces a visible timeout when live member lookup stalls", async () => {
+  it("surfaces a visible timeout when persisted unresolved lookup stalls", async () => {
     const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    vi.spyOn(unlinkedMemberAlertService, "listCurrentUnlinkedMembers").mockRejectedValue(
-      new UnlinkedStageTimeoutError("fwa_member_fetch", 15_000, "clan=#2QG2C08UP"),
+    const liveSpy = vi.spyOn(unlinkedMemberAlertService, "listCurrentUnlinkedMembers");
+    vi.spyOn(unlinkedMemberAlertService, "listPersistedUnlinkedMembers").mockRejectedValue(
+      new UnlinkedStageTimeoutError("persisted_unlinked_query", 5_000, "guild=guild-1 clan=#2QG2C08UP"),
     );
     const interaction = createInteraction({
       subcommand: "list",
@@ -154,14 +158,15 @@ describe("/unlinked command", () => {
 
     expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
     expect(interaction.editReply).toHaveBeenCalledWith(
-      "Unlinked-player lookup timed out while loading live clan data. Please try again.",
+      "Unlinked-player lookup timed out while loading persisted unresolved data. Please try again.",
     );
     expect(infoSpy).toHaveBeenCalledWith(
-      expect.stringContaining("[unlinked] stage=handler_entered"),
+      expect.stringContaining("[unlinked] stage=persisted_unlinked_query_started"),
     );
     expect(infoSpy).toHaveBeenCalledWith(
       expect.stringContaining("[unlinked] stage=interaction_deferred"),
     );
+    expect(liveSpy).not.toHaveBeenCalled();
     expect(errorSpy).toHaveBeenCalledWith(
       expect.stringContaining("[unlinked] stage=terminal_error status=timeout"),
     );
