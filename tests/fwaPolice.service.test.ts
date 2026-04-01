@@ -341,6 +341,60 @@ describe("FwaPoliceService", () => {
     }
   });
 
+  it("logs warning when live current-war compliance evaluation returns non-ok status", async () => {
+    prismaMock.trackedClan.findFirst.mockResolvedValue({
+      tag: "#2QG2C08UP",
+      name: "Alpha",
+      loseStyle: "TRIPLE_TOP_30",
+      fwaPoliceDmEnabled: true,
+      fwaPoliceLogEnabled: false,
+      logChannelId: "channel-1",
+      notifyChannelId: null,
+      mailChannelId: null,
+    });
+    const warnSpy = vi
+      .spyOn(console, "warn")
+      .mockImplementation(() => undefined);
+    const evaluateComplianceForCommand = vi.fn().mockResolvedValue({
+      status: "no_active_war",
+      scope: "current",
+      source: "war_attacks",
+      warResolutionSource: "current_war",
+      report: null,
+      participantsCount: 0,
+      attacksCount: 0,
+    });
+
+    const service = new FwaPoliceService();
+    const result = await service.enforceWarViolations({
+      client: {} as any,
+      guildId: "guild-1",
+      clanTag: "#2QG2C08UP",
+      warId: 12345,
+      warCompliance: { evaluateComplianceForCommand } as any,
+    });
+
+    expect(evaluateComplianceForCommand).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      clanTag: "#2QG2C08UP",
+      scope: "current",
+      warId: 12345,
+    });
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "[fwa-police] compliance_eval_non_ok guild=guild-1 clan=#2QG2C08UP warId=12345 path=live_current_war status=no_active_war",
+      ),
+    );
+    expect(result).toEqual({
+      evaluatedViolations: 0,
+      created: 0,
+      deduped: 0,
+      dmSent: 0,
+      logSent: 0,
+    });
+    warnSpy.mockRestore();
+  });
+
   it("uses canonical compliance evaluation and sends DM only when dm toggle is enabled", async () => {
     prismaMock.trackedClan.findFirst.mockResolvedValue({
       tag: "#2QG2C08UP",
@@ -397,7 +451,7 @@ describe("FwaPoliceService", () => {
     expect(evaluateComplianceForCommand).toHaveBeenCalledWith({
       guildId: "guild-1",
       clanTag: "#2QG2C08UP",
-      scope: "war_id",
+      scope: "current",
       warId: 12345,
     });
     expect(dmSend).toHaveBeenCalledTimes(1);

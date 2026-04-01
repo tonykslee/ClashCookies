@@ -13,6 +13,7 @@ import {
   resolveWarPlanComplianceConfig,
 } from "./warPlanComplianceConfig";
 import {
+  type WarComplianceReport,
   type WarComplianceIssue,
   type WarComplianceService,
 } from "./WarComplianceService";
@@ -644,6 +645,38 @@ export class FwaPoliceService {
     return "ok";
   }
 
+  /** Purpose: enforce guardrail that live police checks must evaluate current-war compliance, never historical war-id scope. */
+  private async evaluateLiveCurrentWarCompliance(input: {
+    guildId: string;
+    clanTag: string;
+    warId: number;
+    warCompliance: WarComplianceEvaluator;
+  }): Promise<WarComplianceReport | null> {
+    const evaluation = await input.warCompliance
+      .evaluateComplianceForCommand({
+        guildId: input.guildId,
+        clanTag: input.clanTag,
+        scope: "current",
+        warId: input.warId,
+      })
+      .catch((err) => {
+        console.error(
+          `[fwa-police] compliance_eval_failed guild=${input.guildId} clan=${input.clanTag} warId=${input.warId} path=live_current_war error=${formatError(err)}`,
+        );
+        return null;
+      });
+    if (!evaluation) return null;
+
+    if (evaluation.status !== "ok" || !evaluation.report) {
+      console.warn(
+        `[fwa-police] compliance_eval_non_ok guild=${input.guildId} clan=${input.clanTag} warId=${input.warId} path=live_current_war status=${evaluation.status} source=${evaluation.source ?? "none"} war_resolution_source=${evaluation.warResolutionSource ?? "none"} participants=${evaluation.participantsCount} attacks=${evaluation.attacksCount}`,
+      );
+      return null;
+    }
+
+    return evaluation.report;
+  }
+
   /** Purpose: resolve effective police config and logging behavior for guild-wide or clan-scoped status views. */
   async getStatusReport(input: {
     client: Client;
@@ -1095,24 +1128,16 @@ export class FwaPoliceService {
       return empty;
     }
 
-    const evaluation = await input.warCompliance
-      .evaluateComplianceForCommand({
-        guildId: input.guildId,
-        clanTag: normalizedClanTag,
-        scope: "war_id",
-        warId: normalizedWarId,
-      })
-      .catch((err) => {
-        console.error(
-          `[fwa-police] compliance_eval_failed guild=${input.guildId} clan=${normalizedClanTag} warId=${normalizedWarId} error=${formatError(err)}`,
-        );
-        return null;
-      });
-    if (!evaluation || evaluation.status !== "ok" || !evaluation.report) {
+    const evaluation = await this.evaluateLiveCurrentWarCompliance({
+      guildId: input.guildId,
+      clanTag: normalizedClanTag,
+      warId: normalizedWarId,
+      warCompliance: input.warCompliance,
+    });
+    if (!evaluation) {
       return empty;
     }
-
-    const report = evaluation.report;
+    const report = evaluation;
     const issues = sortViolationsDeterministically(report.notFollowingPlan);
     if (issues.length <= 0) return empty;
 
