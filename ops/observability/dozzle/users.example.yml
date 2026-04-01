@@ -1,0 +1,8 @@
+users:
+  admin:
+    email: ops@example.com
+    name: ClashCookies Ops
+    password: "$2a$10$replace_me_with_a_bcrypt_hash"
+    filter: "name=clashcookies"
+    roles:
+      - none

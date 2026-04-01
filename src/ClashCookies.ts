@@ -15,6 +15,8 @@ import {
   runWithTransientRetry,
   shouldEmitStartupRetrySummary,
 } from "./services/StartupCommandRegistrationService";
+import { startHealthcheckServer } from "./services/HealthcheckServer";
+import { prisma } from "./prisma";
 import "dotenv/config";
 
 const discordRestTimeoutMs = getDiscordRestTimeoutMsFromEnv(process.env);
@@ -34,6 +36,13 @@ const client = new Client({
 });
 
 const cocService = new CoCService();
+
+startHealthcheckServer({
+  checkDatabase: async () => {
+    await prisma.$queryRaw`SELECT 1`;
+  },
+  isDiscordReady: () => client.isReady(),
+});
 
 // Register listeners once before login attempts.
 interactionCreate(client, cocService);
