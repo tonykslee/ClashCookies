@@ -172,7 +172,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     summary: "Link and manage Google Sheet settings.",
     details: [
       "Uses one linked Google Sheet for both ACTUAL/WAR data modes.",
-      "Refresh triggers a shared Apps Script webhook and can target ACTUAL or WAR mode.",
+      "Refresh triggers a shared Apps Script webhook and can target ACTUAL or WAR mode (disabled when POLLING_MODE=mirror).",
       "`link`, `unlink`, `show`, and `refresh` are admin-only by default.",
     ],
     examples: [

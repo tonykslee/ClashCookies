@@ -23,7 +23,7 @@
 - `/sheet link sheet_id_or_url:<id-or-url> [tab:<tab-name>] [mode:actual|war]` - Link or relink sheet; mode is optional.
 - `/sheet show [mode:actual|war]` - Show linked sheet settings (single mode or all).
 - `/sheet unlink [mode:actual|war]` - Remove one mode link or all links.
-- `/sheet refresh mode:actual|war` - Trigger mode-specific Apps Script raw feed refresh.
+- `/sheet refresh mode:actual|war` - Trigger mode-specific Apps Script raw feed refresh. Disabled when `POLLING_MODE=mirror`.
 - `/compo advice clan:<tracked-clan> [mode:actual|war]` - Pull advice using mode-specific sheet link.
 - `/compo state [mode:actual|war]` - Render AllianceDashboard state as an attached PNG image with mode label. Includes an inline `Refresh Data` button that triggers the shared sheet-refresh flow and rerenders in place.
 - `/compo place weight:<value>` - Suggest placement options from ACTUAL state (vacancy + composition fit). Accepts formats like `145000`, `145,000`, or `145k` and maps to TH weight buckets. Includes an inline `Refresh Data` button that triggers the shared sheet-refresh flow and rerenders in place.

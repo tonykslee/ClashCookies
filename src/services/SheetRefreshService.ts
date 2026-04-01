@@ -1,6 +1,7 @@
 import axios from "axios";
 import { formatError } from "../helper/formatError";
 import { recordFetchEvent } from "../helper/fetchTelemetry";
+import { isMirrorPollingMode } from "./PollingModeService";
 
 export type SheetRefreshMode = "actual" | "war";
 type SheetRefreshAction = "refreshMembers" | "refreshWar";
@@ -9,7 +10,11 @@ const SHEET_REFRESH_COOLDOWN_MS = 5 * 60 * 1000;
 const SHEET_REFRESH_TIMEOUT_MS = 120000;
 const lastRefreshAtMsByGuild = new Map<string, number>();
 
-type SheetRefreshFlowErrorCode = "INVALID_MODE" | "COOLDOWN_ACTIVE" | "MISSING_WEBHOOK_URL";
+type SheetRefreshFlowErrorCode =
+  | "INVALID_MODE"
+  | "COOLDOWN_ACTIVE"
+  | "MISSING_WEBHOOK_URL"
+  | "MIRROR_MODE_DISABLED";
 
 export class SheetRefreshFlowError extends Error {
   readonly code: SheetRefreshFlowErrorCode;
@@ -82,6 +87,9 @@ async function postRefreshWebhook(
 
 export function mapSheetRefreshFlowErrorToMessage(err: SheetRefreshFlowError): string {
   if (err.code === "INVALID_MODE") return "Invalid mode. Use actual or war.";
+  if (err.code === "MIRROR_MODE_DISABLED") {
+    return "Sheet refresh is disabled while POLLING_MODE=mirror.";
+  }
   if (err.code === "MISSING_WEBHOOK_URL") return "Missing GS_WEBHOOK_URL.";
   if (err.code === "COOLDOWN_ACTIVE" && err.retryAtEpochSeconds) {
     return `Refresh cooldown active. Try again <t:${err.retryAtEpochSeconds}:R>.`;
@@ -113,6 +121,16 @@ export async function triggerSharedSheetRefresh(input: {
   guildId: string | null | undefined;
   mode: SheetRefreshMode;
 }): Promise<{ mode: SheetRefreshMode; resultText: string; durationSeconds: string }> {
+  if (isMirrorPollingMode(process.env)) {
+    console.warn(
+      `[sheet-refresh] event=skipped reason=mirror_mode guild=${input.guildId ?? "dm"}`,
+    );
+    throw new SheetRefreshFlowError(
+      "MIRROR_MODE_DISABLED",
+      "sheet refresh disabled in mirror mode",
+    );
+  }
+
   const mode = input.mode;
   if (mode !== "actual" && mode !== "war") {
     throw new SheetRefreshFlowError("INVALID_MODE", "invalid mode");
