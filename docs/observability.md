@@ -109,6 +109,9 @@ This works immediately with the localhost-only Uptime Kuma deployment because th
 ### Optional HTTP health monitors
 
 If you also map the app health endpoint to localhost ports, use HTTP monitors:
+### HTTP readiness monitors to add alongside container monitors
+
+Keep the Docker Container monitors above, and add HTTP monitors for app readiness:
 
 - Production URL: `http://host.docker.internal:8085/healthz`
 - Staging URL: `http://host.docker.internal:8086/healthz`
@@ -116,7 +119,24 @@ If you also map the app health endpoint to localhost ports, use HTTP monitors:
 
 If `host.docker.internal` is not available in your Docker runtime, use the droplet host gateway IP from inside the Uptime Kuma container instead.
 
-Recommended localhost-only app port mapping:
+Result:
+
+- container monitors tell you whether the container is up
+- HTTP monitors tell you whether the bot is actually ready
+
+## Bot Health Endpoint
+
+The bot exposes:
+
+- `/livez` for process liveness
+- `/healthz` for readiness
+
+Readiness returns HTTP `200` only when:
+
+- the Discord client is ready
+- the database probe succeeds
+
+Recommended container port mapping on the droplet:
 
 - Production app: `127.0.0.1:8085:8080`
 - Staging app: `127.0.0.1:8086:8080`
