@@ -48,6 +48,13 @@ export type CurrentUnlinkedTrackedMember = {
   clanName: string;
 };
 
+export type PersistedUnlinkedTrackedMember = {
+  playerTag: string;
+  playerName: string;
+  clanTag: string;
+  clanName: string;
+};
+
 type UnlinkedStageDetailValue = string | number | boolean | null | undefined;
 
 type UnlinkedStageDetails = Record<string, UnlinkedStageDetailValue>;
@@ -528,6 +535,55 @@ export class UnlinkedMemberAlertService {
         clanTag: member.clanTag,
         clanName: member.clanName,
       }));
+  }
+
+  /** Purpose: read the persisted unresolved unlinked-member snapshot for a guild. */
+  async listPersistedUnlinkedMembers(input: {
+    guildId: string;
+    clanTag?: string | null;
+  }): Promise<PersistedUnlinkedTrackedMember[]> {
+    const guildId = normalizeGuildId(input.guildId);
+    if (!guildId) return [];
+
+    const normalizedClanTag = normalizeClanTag(input.clanTag ?? "");
+    const rows = await runBoundedUnlinkedStage({
+      stage: "persisted_unlinked_query",
+      timeoutMs: UNLINKED_DB_STAGE_TIMEOUT_MS,
+      details: {
+        guild: guildId,
+        clan: normalizedClanTag || "all",
+      },
+      action: () =>
+        prisma.unlinkedPlayer.findMany({
+          where: {
+            guildId,
+            ...(normalizedClanTag ? { clanTag: normalizedClanTag } : {}),
+          },
+          orderBy: [{ createdAt: "asc" }, { playerTag: "asc" }],
+          select: {
+            playerTag: true,
+            playerName: true,
+            clanTag: true,
+            clanName: true,
+          },
+        }),
+    });
+    console.info(
+      `[unlinked] stage=persisted_unlinked_query_summary guild=${guildId} clan=${normalizedClanTag || "all"} row_count=${rows.length}`,
+    );
+    return rows.flatMap((row) => {
+      const playerTag = normalizePlayerTag(row.playerTag);
+      const clanTag = normalizeClanTag(row.clanTag);
+      if (!playerTag || !clanTag) return [];
+      return [
+        {
+          playerTag,
+          playerName: normalizeDisplayText(row.playerName, playerTag),
+          clanTag,
+          clanName: normalizeDisplayText(row.clanName, clanTag),
+        },
+      ];
+    });
   }
 
   /** Purpose: reconcile persisted unresolved state with the current live unlinked-member set and send first-seen alerts once. */

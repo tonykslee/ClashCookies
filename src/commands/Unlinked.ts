@@ -165,7 +165,7 @@ export const Unlinked: Command = {
   run: async (
     _client: Client,
     interaction: ChatInputCommandInteraction,
-    cocService: CoCService,
+    _cocService: CoCService,
   ) => {
     let terminalOutcome: "success" | "error" | "timeout" = "success";
     try {
@@ -228,16 +228,15 @@ export const Unlinked: Command = {
         clan_filter: rawClanFilter,
         normalized_clan: clanTag || "all",
       });
-      logUnlinkedCommandStage("member_fetch_started", {
+      logUnlinkedCommandStage("persisted_unlinked_query_started", {
         guild: interaction.guildId,
         clan: clanTag || "all",
       });
-      const entries = await unlinkedMemberAlertService.listCurrentUnlinkedMembers({
+      const entries = await unlinkedMemberAlertService.listPersistedUnlinkedMembers({
         guildId: interaction.guildId,
-        cocService,
         clanTag: clanTag || null,
       });
-      logUnlinkedCommandStage("member_fetch_completed", {
+      logUnlinkedCommandStage("persisted_unlinked_query_completed", {
         guild: interaction.guildId,
         clan: clanTag || "all",
         count: entries.length,
@@ -288,14 +287,14 @@ export const Unlinked: Command = {
         });
       }
       terminalOutcome = "success";
-    } catch (err) {
-      terminalOutcome = err instanceof UnlinkedStageTimeoutError ? "timeout" : "error";
-      const timeout = err instanceof UnlinkedStageTimeoutError;
-      console.error(
-        `[unlinked] stage=terminal_error status=${terminalOutcome} error=${formatError(err)}`,
-      );
-      const message = timeout
-        ? "Unlinked-player lookup timed out while loading live clan data. Please try again."
+      } catch (err) {
+        terminalOutcome = err instanceof UnlinkedStageTimeoutError ? "timeout" : "error";
+        const timeout = err instanceof UnlinkedStageTimeoutError;
+        console.error(
+          `[unlinked] stage=terminal_error status=${terminalOutcome} error=${formatError(err)}`,
+        );
+        const message = timeout
+        ? "Unlinked-player lookup timed out while loading persisted unresolved data. Please try again."
         : "Failed to load unlinked-player data. Please try again.";
       const replyMethod = interaction.deferred || interaction.replied ? "editReply" : "reply";
       if (interaction.deferred || interaction.replied) {
