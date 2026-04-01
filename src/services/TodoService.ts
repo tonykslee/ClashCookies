@@ -7,6 +7,7 @@ import {
 import { prisma } from "../prisma";
 import {
   todoSnapshotService,
+  resolveClanGamesCycleBoundaryFromCycleKey,
   type TodoSnapshotRecord,
 } from "./TodoSnapshotService";
 import {
@@ -1287,34 +1288,13 @@ function resolveGamesRewardCollectionEndsAt(
     .sort((a, b) => b[1] - a[1])[0]?.[0];
   if (!dominantCycleKey) return null;
 
-  const cycleStartMs = Number(dominantCycleKey);
-  if (!Number.isFinite(cycleStartMs)) return null;
-  const cycleStart = new Date(cycleStartMs);
-  const earningEndsAt = new Date(
-    Date.UTC(
-      cycleStart.getUTCFullYear(),
-      cycleStart.getUTCMonth(),
-      28,
-      8,
-      0,
-      0,
-      0,
-    ),
+  const cycleBoundary = resolveClanGamesCycleBoundaryFromCycleKey(
+    dominantCycleKey,
   );
-  const rewardCollectionEndsAt = new Date(
-    Date.UTC(
-      cycleStart.getUTCFullYear(),
-      cycleStart.getUTCMonth() + 1,
-      1,
-      8,
-      0,
-      0,
-      0,
-    ),
-  );
-  if (nowMs < earningEndsAt.getTime()) return null;
-  if (rewardCollectionEndsAt.getTime() <= nowMs) return null;
-  return rewardCollectionEndsAt;
+  if (!cycleBoundary) return null;
+  if (nowMs < cycleBoundary.earningEndsMs) return null;
+  if (cycleBoundary.rewardCollectionEndsMs <= nowMs) return null;
+  return new Date(cycleBoundary.rewardCollectionEndsMs);
 }
 
 /** Purpose: sort latest-results rows by final season points desc with stable identity tie-breakers. */

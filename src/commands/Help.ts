@@ -294,7 +294,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "WAR section headers include tracked clan badge + match-state indicator, and WAR rows show lineup position with compact used-attack detail.",
       "RAIDS page uses one shared top timer line and then lists per-player progress rows.",
       "GAMES page points come from stored activity-signal totals, with cycle baseline/total observability persisted on TodoPlayerSnapshot for DB-first reads.",
-      "GAMES has three snapshot-backed views: active earning (time remaining), reward collection (latest final points + reward time remaining), and post-reward off-cycle lifetime totals.",
+      "GAMES has three snapshot-backed views: active earning (time remaining), reward collection through the full in-game claim window (latest final points + reward time remaining), and post-reward off-cycle lifetime totals.",
       "GAMES rows use progress indicators: `🟡` (>0), `✅` (>=4000), and `🏆` (>=10000).",
       "When a page has no active context, it renders explicit inactive text instead of a blank list.",
       "Linked players outside active contexts are still shown as neutral rows when active groups exist.",

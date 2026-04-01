@@ -2244,15 +2244,15 @@ describe("/todo command", () => {
     expect(lifetimeDeltaIndex).toBeGreaterThan(lifetimeCharlieIndex);
   });
 
-  it("shows latest Clan Games reward-collection results after earning ends", async () => {
-    vi.setSystemTime(new Date("2026-03-29T12:00:00.000Z"));
+  it("shows latest Clan Games reward-collection results throughout the extended claim window", async () => {
+    vi.setSystemTime(new Date("2026-04-03T12:00:00.000Z"));
     prismaMock.playerLink.findMany.mockResolvedValue([
       { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },
       { playerTag: "#QGRJ2222", createdAt: new Date("2026-03-02T00:00:00.000Z") },
     ]);
     prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
       _count: { _all: 2 },
-      _max: { updatedAt: new Date("2026-03-29T11:40:00.000Z") },
+      _max: { updatedAt: new Date("2026-04-03T11:40:00.000Z") },
     });
     prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
       makeSnapshotRow({
@@ -2264,7 +2264,7 @@ describe("/todo command", () => {
         gamesSeasonBaseline: 10000,
         gamesCycleKey: "1774166400000",
         gamesEndsAt: new Date("2026-03-28T08:00:00.000Z"),
-        lastUpdatedAt: new Date("2026-03-29T11:40:00.000Z"),
+        lastUpdatedAt: new Date("2026-04-03T11:40:00.000Z"),
       }),
       makeSnapshotRow({
         playerTag: "#QGRJ2222",
@@ -2276,7 +2276,7 @@ describe("/todo command", () => {
         gamesSeasonBaseline: 10000,
         gamesCycleKey: "1774166400000",
         gamesEndsAt: new Date("2026-03-28T08:00:00.000Z"),
-        lastUpdatedAt: new Date("2026-03-29T11:40:00.000Z"),
+        lastUpdatedAt: new Date("2026-04-03T11:40:00.000Z"),
       }),
     ]);
 
