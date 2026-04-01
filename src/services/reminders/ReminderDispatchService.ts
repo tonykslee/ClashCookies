@@ -250,7 +250,10 @@ async function resolveReminderRosterLines(input: {
   const linkRows =
     tags.length > 0
       ? await prisma.playerLink.findMany({
-          where: { playerTag: { in: tags } },
+          where: {
+            playerTag: { in: tags },
+            discordUserId: { not: null },
+          },
           select: {
             playerTag: true,
             discordUserId: true,
@@ -259,7 +262,7 @@ async function resolveReminderRosterLines(input: {
       : [];
   const linkedDiscordIdByTag = new Map(
     linkRows
-      .map((row) => [normalizePlayerTag(row.playerTag), String(row.discordUserId)] as const)
+      .map((row) => [normalizePlayerTag(row.playerTag), String(row.discordUserId ?? "")] as const)
       .filter((entry): entry is [string, string] => Boolean(entry[0] && entry[1])),
   );
   const sortedRoster = keepSameUserAccountsAdjacent(

@@ -47,7 +47,7 @@ function buildPaginationRow(prefix: string, page: number, totalPages: number) {
 async function getLinkReason(
   guild: ChatInputCommandInteraction["guild"],
   playerTag: string,
-  linksByTag: Map<string, { discordUserId: string }>
+  linksByTag: Map<string, { discordUserId: string | null }>
 ): Promise<string | null> {
   const discordUserId = linksByTag.get(playerTag)?.discordUserId ?? null;
 
@@ -247,7 +247,10 @@ export const KickList: Command = {
       }
 
       const links = await prisma.playerLink.findMany({
-        where: { playerTag: { in: memberTags } },
+        where: {
+          playerTag: { in: memberTags },
+          discordUserId: { not: null },
+        },
         select: { playerTag: true, discordUserId: true },
       });
 
@@ -356,7 +359,7 @@ export const KickList: Command = {
       const linkReason = await getLinkReason(
         interaction.guild,
         tag,
-        new Map(link ? [[tag, { discordUserId: link.discordUserId }]] : [])
+        new Map(link?.discordUserId ? [[tag, { discordUserId: link.discordUserId }]] : [])
       );
       const finalReason = linkReason ? `${reason} | ${linkReason}` : reason;
 
