@@ -101,6 +101,12 @@ describe("/unlinked command", () => {
       expect.stringContaining("[unlinked] stage=interaction_deferred"),
     );
     expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[unlinked] stage=scope_resolution_started"),
+    );
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[unlinked] stage=scope_resolution_completed"),
+    );
+    expect(infoSpy).toHaveBeenCalledWith(
       expect.stringContaining("[unlinked] stage=member_fetch_started"),
     );
     expect(infoSpy).toHaveBeenCalledWith(

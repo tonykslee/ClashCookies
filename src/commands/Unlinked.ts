@@ -217,7 +217,17 @@ export const Unlinked: Command = {
         return;
       }
 
-      const clanTag = normalizeClanTag(interaction.options.getString("clan", false) ?? "");
+      const rawClanFilter = interaction.options.getString("clan", false) ?? "";
+      logUnlinkedCommandStage("scope_resolution_started", {
+        guild: interaction.guildId,
+        clan_filter: rawClanFilter,
+      });
+      const clanTag = normalizeClanTag(rawClanFilter);
+      logUnlinkedCommandStage("scope_resolution_completed", {
+        guild: interaction.guildId,
+        clan_filter: rawClanFilter,
+        normalized_clan: clanTag || "all",
+      });
       logUnlinkedCommandStage("member_fetch_started", {
         guild: interaction.guildId,
         clan: clanTag || "all",
