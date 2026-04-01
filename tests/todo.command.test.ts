@@ -146,13 +146,19 @@ function makeSnapshotRow(input: {
   updatedAt?: Date;
 }) {
   const now = new Date("2026-03-26T00:00:00.000Z");
+  const hasOwn = <K extends string>(key: K) =>
+    Object.prototype.hasOwnProperty.call(input, key);
   return {
     playerTag: input.playerTag,
     playerName: input.playerName,
     clanTag: input.clanTag ?? "#PQL0289",
     clanName: input.clanName ?? "Clan One",
-    cwlClanTag: input.cwlClanTag ?? input.clanTag ?? "#PQL0289",
-    cwlClanName: input.cwlClanName ?? input.clanName ?? "Clan One",
+    cwlClanTag: hasOwn("cwlClanTag")
+      ? input.cwlClanTag ?? null
+      : input.clanTag ?? "#PQL0289",
+    cwlClanName: hasOwn("cwlClanName")
+      ? input.cwlClanName ?? null
+      : input.clanName ?? "Clan One",
     warActive: input.warActive ?? true,
     warAttacksUsed: input.warAttacksUsed ?? 0,
     warAttacksMax: input.warAttacksMax ?? 2,
@@ -161,8 +167,10 @@ function makeSnapshotRow(input: {
     cwlActive: input.cwlActive ?? true,
     cwlAttacksUsed: input.cwlAttacksUsed ?? 0,
     cwlAttacksMax: input.cwlAttacksMax ?? 1,
-    cwlPhase: input.cwlPhase ?? "preparation",
-    cwlEndsAt: input.cwlEndsAt ?? new Date("2026-03-30T12:00:00.000Z"),
+    cwlPhase: hasOwn("cwlPhase") ? input.cwlPhase ?? null : "preparation",
+    cwlEndsAt: hasOwn("cwlEndsAt")
+      ? input.cwlEndsAt ?? null
+      : new Date("2026-03-30T12:00:00.000Z"),
     raidActive: input.raidActive ?? true,
     raidAttacksUsed: input.raidAttacksUsed ?? 0,
     raidAttacksMax: input.raidAttacksMax ?? 6,
@@ -467,8 +475,11 @@ describe("/todo command", () => {
     const description = getReplyDescription(interaction);
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
     expect(getReplyTitle(interaction)).toBe("Todo - CWL");
-    expect(description).toContain("**Clan One (#PQL0289) - preparation ends <t:");
-    expect(description).toContain("CWL attacks: 1/1");
+    expect(description).toContain("CWL Status: Not in war yet");
+    expect(description).toContain(
+      "[Clan One](https://link.clashofclans.com/en?action=OpenClanProfile&tag=PQL0289) `#PQL0289` - Next war <t:",
+    );
+    expect(description).toContain(":black_circle: Alpha - `0 / 0`");
     expect(payload.components[0].components.map((b: any) => b.toJSON().label)).toEqual([
       "WAR",
       "CWL",
@@ -505,6 +516,33 @@ describe("/todo command", () => {
     await Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
 
     expect(getReplyTitle(interaction)).toBe("Todo - RAIDS");
+  });
+
+  it("uses the same CWL prep rendering when no-arg /todo opens on the remembered CWL page", async () => {
+    vi.spyOn(todoLastViewedTypeService, "getLastViewedType").mockResolvedValue("CWL");
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },
+    ]);
+    prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
+      _count: { _all: 1 },
+      _max: { updatedAt: new Date("2026-03-26T00:00:00.000Z") },
+    });
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      makeSnapshotRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha",
+        cwlPhase: "preparation",
+        cwlEndsAt: new Date("2026-03-30T12:00:00.000Z"),
+      }),
+    ]);
+    const interaction = makeTodoInteraction({ type: null });
+
+    await Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
+
+    const description = getReplyDescription(interaction);
+    expect(getReplyTitle(interaction)).toBe("Todo - CWL");
+    expect(description).toContain("CWL Status: Not in war yet");
+    expect(description).toContain(":black_circle: Alpha - `0 / 0`");
   });
 
   it("falls back to default WAR page for no-arg /todo when no remembered page exists", async () => {
@@ -1591,6 +1629,10 @@ describe("/todo command", () => {
         clanTag: "#PQL0289",
         clanName: "Clan One",
         cwlActive: false,
+        cwlPhase: null,
+        cwlEndsAt: null,
+        cwlClanTag: null,
+        cwlClanName: null,
         cwlAttacksUsed: 0,
       }),
     ]);
@@ -1601,14 +1643,18 @@ describe("/todo command", () => {
     const description = getReplyDescription(interaction);
     expect(getReplyTitle(interaction)).toBe("Todo - CWL");
     expect(getReplyColor(interaction)).toBe(TODO_INCOMPLETE_EMBED_COLOR);
-    expect(description).toContain("cwl status: 1 / 2 attacks completed");
+    expect(description).toContain("CWL Status: 1 / 2 attacks completed");
     expect(description).not.toContain("Linked players:");
-    expect(description).toContain("**Clan One (#PQL0289) - battle day ends <t:");
-    expect(description).toContain("**Clan Two (#2QG2C08UP) - preparation ends <t:");
-    expect(description).toContain("- Alpha #PYLQ0289 - CWL attacks: 1/1");
-    expect(description).toContain("- Bravo #QGRJ2222 - CWL attacks: 0/1");
-    expect(description).not.toContain("**Not in active CWL**");
-    expect(description).not.toContain("Delta #LQ9P8R2");
+    expect(description).toContain(
+      "[Clan One](https://link.clashofclans.com/en?action=OpenClanProfile&tag=PQL0289) `#PQL0289` - Next war <t:",
+    );
+    expect(description).toContain(
+      "[Clan Two](https://link.clashofclans.com/en?action=OpenClanProfile&tag=2QG2C08UP) `#2QG2C08UP` - Next war <t:",
+    );
+    expect(description).toContain(":white_check_mark: Alpha - `1 / 1`");
+    expect(description).toContain(":black_circle: Bravo - `0 / 1`");
+    expect(description).toContain(":black_circle: Charlie - `0 / 0`");
+    expect(description).not.toContain("Delta");
   });
 
   it("uses green CWL sidebar when all active battle-day participants have attacked", async () => {
@@ -1640,7 +1686,7 @@ describe("/todo command", () => {
 
     expect(getReplyColor(interaction)).toBe(TODO_COMPLETE_EMBED_COLOR);
     expect(getReplyDescription(interaction)).toContain(
-      "cwl status: 2 / 2 attacks completed",
+      "CWL Status: 2 / 2 attacks completed",
     );
   });
 
@@ -1666,8 +1712,10 @@ describe("/todo command", () => {
 
     expect(getReplyColor(interaction)).toBe(TODO_DEFAULT_EMBED_COLOR);
     expect(getReplyDescription(interaction)).toContain(
-      "cwl status: 0 / 0 attacks completed",
+      "CWL Status: Not in war yet",
     );
+    expect(getReplyDescription(interaction)).not.toContain("No CWL active");
+    expect(getReplyDescription(interaction)).toContain(":black_circle: Alpha - `0 / 0`");
   });
 
   it("groups CWL rows by cwlClanTag/cwlClanName when different from home clan", async () => {
@@ -1704,9 +1752,42 @@ describe("/todo command", () => {
     await Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
 
     const description = getReplyDescription(interaction);
-    expect(description).toContain("**CWL One (#2QG2C08UP) - preparation ends <t:");
-    expect(description).not.toContain("**Home Clan (#PQL0289) - preparation ends <t:");
-    expect(description).toContain("- Alpha #PYLQ0289 - CWL attacks: 1/1");
+    expect(description).toContain(
+      "[CWL One](https://link.clashofclans.com/en?action=OpenClanProfile&tag=2QG2C08UP) `#2QG2C08UP` - Next war <t:",
+    );
+    expect(description).not.toContain("Home Clan");
+    expect(description).toContain(":black_circle: Alpha - `0 / 0`");
+  });
+
+  it("renders upcoming CWL context with unknown timing instead of no-context when a CWL clan is already known", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },
+    ]);
+    prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
+      _count: { _all: 1 },
+      _max: { updatedAt: new Date("2026-03-26T00:00:00.000Z") },
+    });
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      makeSnapshotRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha",
+        cwlActive: false,
+        cwlPhase: null,
+        cwlEndsAt: null,
+        cwlClanTag: "#2QG2C08UP",
+        cwlClanName: "Clan Two",
+      }),
+    ]);
+
+    const interaction = makeTodoInteraction({ type: "CWL" });
+    await Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
+
+    const description = getReplyDescription(interaction);
+    expect(description).toContain("CWL Status: Not in war yet");
+    expect(description).not.toContain("No CWL active");
+    expect(description).toContain(
+      "[Clan Two](https://link.clashofclans.com/en?action=OpenClanProfile&tag=2QG2C08UP) `#2QG2C08UP` - Next war unknown",
+    );
   });
 
   it("shows explicit inactive WAR page message when no active war contexts exist", async () => {
@@ -1747,6 +1828,10 @@ describe("/todo command", () => {
         playerTag: "#PYLQ0289",
         playerName: "Alpha",
         cwlActive: false,
+        cwlPhase: null,
+        cwlEndsAt: null,
+        cwlClanTag: null,
+        cwlClanName: null,
       }),
     ]);
 
@@ -1754,7 +1839,7 @@ describe("/todo command", () => {
     await Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
     expect(getReplyColor(interaction)).toBe(TODO_DEFAULT_EMBED_COLOR);
     expect(getReplyDescription(interaction)).toContain(
-      "cwl status: 0 / 0 attacks completed",
+      "CWL Status: 0 / 0 attacks completed",
     );
     expect(getReplyDescription(interaction)).toContain("No CWL active");
   });
@@ -2362,7 +2447,7 @@ describe("/todo pagination buttons", () => {
   it("paginates across WAR/CWL/RAIDS/GAMES with user-scoped access", async () => {
     const checks: Array<{ type: TodoType; contains: string }> = [
       { type: "WAR", contains: "No war active" },
-      { type: "CWL", contains: "CWL attacks:" },
+      { type: "CWL", contains: "CWL Status:" },
       { type: "RAIDS", contains: "clan capital raids:" },
       { type: "GAMES", contains: "clan games points:" },
     ];

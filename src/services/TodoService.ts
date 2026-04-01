@@ -516,26 +516,26 @@ function buildCwlPageDescription(
   rows: TodoRenderRow[],
   linkedPlayerCount: number,
 ): { description: string; sidebarState: TodoSidebarState } {
-  const activeRows = rows.filter((row) => Boolean(row.snapshot?.cwlActive));
-  const cwlCompletion = summarizeCwlCompletionStatus(activeRows);
-  if (activeRows.length <= 0) {
+  const contextRows = rows.filter((row) => hasCwlRenderContext(row));
+  if (contextRows.length <= 0) {
     return {
       description: buildTodoPageDescription({
         heading: "CWL",
         linkedPlayerCount,
-        statusLine: cwlCompletion.statusLine,
+        statusLine: "CWL Status: 0 / 0 attacks completed",
         lines: ["No CWL active"],
       }),
-      sidebarState: cwlCompletion.sidebarState,
+      sidebarState: "default",
     };
   }
 
-  const grouped = buildEventGroups(activeRows, "cwl");
+  const cwlCompletion = summarizeCwlCompletionStatus(contextRows);
+  const grouped = buildEventGroups(contextRows, "cwl");
   const lines: string[] = [];
   for (const group of grouped) {
-    lines.push(`**${buildEventGroupHeader(group)}**`);
+    lines.push(buildCwlEventGroupHeader(group));
     for (const row of group.rows) {
-      lines.push(formatTodoRow(row, getCwlRowStatus(row)));
+      lines.push(formatCwlTodoRow(row));
     }
     lines.push("");
   }
@@ -586,24 +586,27 @@ function summarizeWarCompletionStatus(
 
 /** Purpose: compute CWL completion totals and sidebar state from confirmed active battle-day participants. */
 function summarizeCwlCompletionStatus(
-  confirmedRows: TodoRenderRow[],
+  contextRows: TodoRenderRow[],
 ): { statusLine: string; sidebarState: TodoSidebarState } {
-  const battleDayRows = confirmedRows.filter((row) =>
+  const battleDayRows = contextRows.filter((row) =>
     isCwlRowAttackPhaseActive(row),
   );
   const completedAttacks = battleDayRows.reduce(
     (sum, row) => sum + getCwlRowProgress(row).used,
     0,
   );
-  const requiredAttacks = battleDayRows.length;
+  const requiredAttacks = battleDayRows.reduce(
+    (sum, row) => sum + getCwlRowProgress(row).max,
+    0,
+  );
   if (battleDayRows.length <= 0) {
     return {
-      statusLine: `cwl status: ${completedAttacks} / ${requiredAttacks} attacks completed`,
+      statusLine: "CWL Status: Not in war yet",
       sidebarState: "default",
     };
   }
   return {
-    statusLine: `cwl status: ${completedAttacks} / ${requiredAttacks} attacks completed`,
+    statusLine: `CWL Status: ${completedAttacks} / ${requiredAttacks} attacks completed`,
     sidebarState:
       completedAttacks >= requiredAttacks ? "complete" : "incomplete",
   };
@@ -760,6 +763,31 @@ function buildEventGroupHeader(group: TodoEventGroup): string {
   return `${clanWithIndicator} - ${group.phase}${endsAt}`;
 }
 
+/** Purpose: build one CWL clan section header as a clickable clan-profile line with phase timing suffix. */
+function buildCwlEventGroupHeader(group: TodoEventGroup): string {
+  const nextWarSuffix = group.phaseEndsAt
+    ? `Next war ${formatRelativeTimestamp(group.phaseEndsAt)}`
+    : "Next war unknown";
+  const clanLink = buildClanProfileMarkdownLink(group.clanName, group.clanTag);
+  const clanTagText = group.clanTag ? ` \`${group.clanTag}\`` : "";
+  return `${clanLink}${clanTagText} - ${nextWarSuffix}`;
+}
+
+/** Purpose: render one clan-profile markdown alias using the tag-stripped Clash link when possible. */
+function buildClanProfileMarkdownLink(
+  clanName: string | null,
+  clanTag: string | null,
+): string {
+  const normalizedClanTag = normalizeClanTag(clanTag ?? "");
+  const fallbackLabel = normalizedClanTag || "Unknown Clan";
+  const label = sanitizeStatusText(clanName) || fallbackLabel;
+  if (!normalizedClanTag) {
+    return label;
+  }
+  const encodedTag = normalizedClanTag.replace(/^#/, "");
+  return `[${label}](https://link.clashofclans.com/en?action=OpenClanProfile&tag=${encodedTag})`;
+}
+
 /** Purpose: build stable clan identity text for grouped section headings. */
 function buildGroupClanIdentity(group: {
   clanName: string | null;
@@ -794,11 +822,6 @@ function getSharedEndsAt(
   return [...candidates].sort((a, b) => a.getTime() - b.getTime())[0];
 }
 
-/** Purpose: format one todo row with stable identity context (player + tag). */
-function formatTodoRow(row: TodoRenderRow, status: string): string {
-  return `- ${formatPlayerIdentity(row)} - ${status}`;
-}
-
 /** Purpose: format one WAR row with lineup position and compact attack-detail suffixes. */
 function formatWarTodoRow(row: TodoRenderRow, status: string): string {
   const identity = formatWarPlayerIdentity(row);
@@ -815,6 +838,11 @@ function formatWarTodoRow(row: TodoRenderRow, status: string): string {
     detailRows.length > 0 ? ` | ${detailRows.join(" | ")}` : "";
   const bullet = warProgress.complete ? ":white_check_mark:" : "-";
   return `${bullet} ${identity} - ${status}${detailsSuffix}`;
+}
+
+/** Purpose: format one CWL row with WAR-style completion markers and compact attack progress text. */
+function formatCwlTodoRow(row: TodoRenderRow): string {
+  return `${getCwlRowMarker(row)} ${row.playerName} - ${getCwlRowStatus(row)}`;
 }
 
 /** Purpose: format one GAMES row with optional completion marker next to player identity text. */
@@ -912,12 +940,17 @@ function isWarEventGroupComplete(group: TodoEventGroup): boolean {
 /** Purpose: build active CWL row status text without repeating group-level phase timing details. */
 function getCwlRowStatus(row: TodoRenderRow): string {
   if (row.missingSnapshot || !row.snapshot) {
-    return "CWL attacks: 0/1 - snapshot unavailable";
+    return "`0 / 0` - snapshot unavailable";
+  }
+
+  if (!isCwlRowAttackPhaseActive(row)) {
+    const staleSuffix = row.staleSnapshot ? " - stale snapshot" : "";
+    return `\`0 / 0\`${staleSuffix}`;
   }
 
   const { used, max } = getCwlRowProgress(row);
   const staleSuffix = row.staleSnapshot ? " - stale snapshot" : "";
-  return `CWL attacks: ${used}/${max}${staleSuffix}`;
+  return `\`${used} / ${max}\`${staleSuffix}`;
 }
 
 /** Purpose: compute stable CWL used/max progress and completion state for one confirmed participant row. */
@@ -943,6 +976,23 @@ function isCwlRowAttackPhaseActive(row: TodoRenderRow): boolean {
   if (!row.snapshot?.cwlActive) return false;
   const phase = sanitizeStatusText(row.snapshot.cwlPhase).toLowerCase();
   return phase.includes("battle");
+}
+
+/** Purpose: include active or upcoming/persisted CWL-clan context rows in the shared CWL page render. */
+function hasCwlRenderContext(row: TodoRenderRow): boolean {
+  if (!row.snapshot) return false;
+  if (row.snapshot.cwlActive) return true;
+  return Boolean(row.cwlClanTag || row.cwlClanName);
+}
+
+/** Purpose: map one CWL row into prep/battle completion markers that match WAR semantics. */
+function getCwlRowMarker(row: TodoRenderRow): string {
+  if (!isCwlRowAttackPhaseActive(row)) {
+    return ":black_circle:";
+  }
+  return getCwlRowProgress(row).complete
+    ? ":white_check_mark:"
+    : ":black_circle:";
 }
 
 /** Purpose: build RAIDS row status text with usage only and without per-row timer duplication. */
