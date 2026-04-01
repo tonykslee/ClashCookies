@@ -65,15 +65,20 @@ Use Docker Container monitors from inside Uptime Kuma:
 
 This works immediately with the localhost-only Uptime Kuma deployment because the Kuma container mounts the Docker socket privately.
 
-### Optional HTTP readiness monitors
+### HTTP readiness monitors to add alongside container monitors
 
-If you also deploy the bot health endpoint and localhost port mappings, use HTTP monitors:
+Keep the Docker Container monitors above, and add HTTP monitors for app readiness:
 
 - Production URL: `http://host.docker.internal:8085/healthz`
 - Staging URL: `http://host.docker.internal:8086/healthz`
 - Expected status: `200`
 
 If `host.docker.internal` is not available in your Docker runtime, use the droplet host gateway IP from inside the Uptime Kuma container instead.
+
+Result:
+
+- container monitors tell you whether the container is up
+- HTTP monitors tell you whether the bot is actually ready
 
 ## Bot Health Endpoint
 
