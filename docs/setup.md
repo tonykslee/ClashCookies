@@ -23,7 +23,7 @@ npm start
 - `CLASHKING_API_TOKEN` - bearer token for private ClashKing API (if required).
 
 Behavior:
-- `/accounts` backfills `PlayerLink` from ClashKing when local links are missing for the target user.
+- `/accounts` resolves linked accounts from persisted `PlayerLink` and local player activity only.
 - Activity observe loop checks unresolved tracked-member links via ClashKing at most once every 6 hours and caches matches in `PlayerLink`.
 
 ## Optional War Event Poll Setting
