@@ -765,22 +765,6 @@ async function buildLinkListView(input: {
     playerTags: members.map((row) => row.playerTag),
   });
 
-  const linkedUserIds = [
-    ...new Set(
-      links
-        .map((row) => normalizeDiscordUserId(row.discordUserId))
-        .filter((value): value is string => Boolean(value)),
-    ),
-  ];
-
-  if (input.interaction.guild && linkedUserIds.length > 0) {
-    try {
-      await input.interaction.guild.members.fetch({ user: linkedUserIds });
-    } catch {
-      // Best effort only. Fall back to persisted usernames for uncached members.
-    }
-  }
-
   const linkByTag = new Map(links.map((row) => [row.playerTag, row]));
   const resolvedRows: LinkListResolvedMemberRow[] = [];
 
@@ -893,6 +877,25 @@ async function buildLinkListView(input: {
     ok: true,
     payload: { embeds, components },
   };
+}
+
+async function updateDeferredLinkListInteraction(
+  interaction: StringSelectMenuInteraction | ButtonInteraction,
+  result: LinkListRenderResult,
+): Promise<void> {
+  if (!result.ok) {
+    await interaction.editReply({
+      content: result.message,
+      embeds: [],
+      components: [],
+    });
+    return;
+  }
+
+  await interaction.editReply({
+    content: null,
+    ...result.payload,
+  });
 }
 
 export function buildLinkListSelectCustomId(
@@ -1102,6 +1105,7 @@ export async function handleLinkListSelectMenu(
     return;
   }
 
+  await interaction.deferUpdate();
   const result = await buildLinkListView({
     interaction,
     cocService,
@@ -1109,20 +1113,7 @@ export async function handleLinkListSelectMenu(
     commandUserId: parsed.userId,
     sortMode: parsed.sortMode,
   });
-
-  if (!result.ok) {
-    await interaction.update({
-      content: result.message,
-      embeds: [],
-      components: [],
-    });
-    return;
-  }
-
-  await interaction.update({
-    content: null,
-    ...result.payload,
-  });
+  await updateDeferredLinkListInteraction(interaction, result);
 }
 
 export async function handleLinkListSortButton(
@@ -1141,6 +1132,7 @@ export async function handleLinkListSortButton(
   }
 
   const nextSortMode = getNextLinkListSortMode(parsed.sortMode);
+  await interaction.deferUpdate();
   const result = await buildLinkListView({
     interaction,
     cocService,
@@ -1148,20 +1140,7 @@ export async function handleLinkListSortButton(
     commandUserId: parsed.userId,
     sortMode: nextSortMode,
   });
-
-  if (!result.ok) {
-    await interaction.update({
-      content: result.message,
-      embeds: [],
-      components: [],
-    });
-    return;
-  }
-
-  await interaction.update({
-    content: null,
-    ...result.payload,
-  });
+  await updateDeferredLinkListInteraction(interaction, result);
 }
 
 export async function handleLinkEmbedButtonInteraction(

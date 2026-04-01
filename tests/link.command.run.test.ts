@@ -978,6 +978,8 @@ describe("/link list select menu", () => {
   });
 
   it("updates same message in place for valid selection", async () => {
+    const deferUpdate = vi.fn().mockResolvedValue(undefined);
+    const editReply = vi.fn().mockResolvedValue(undefined);
     const update = vi.fn().mockResolvedValue(undefined);
     const reply = vi.fn().mockResolvedValue(undefined);
 
@@ -994,6 +996,8 @@ describe("/link list select menu", () => {
       },
       client: { users: { cache: new Map() } },
       values: ["#PQL0289"],
+      deferUpdate,
+      editReply,
       update,
       reply,
       deferred: false,
@@ -1016,8 +1020,16 @@ describe("/link list select menu", () => {
 
     await handleLinkListSelectMenu(interaction as any, cocService as any);
 
-    expect(update).toHaveBeenCalledTimes(1);
-    const payload = update.mock.calls[0]?.[0] as any;
+    expect(deferUpdate).toHaveBeenCalledTimes(1);
+    expect(deferUpdate.mock.invocationCallOrder[0]).toBeLessThan(
+      cocService.getClan.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
+    expect(editReply).toHaveBeenCalledTimes(1);
+    expect(deferUpdate.mock.invocationCallOrder[0]).toBeLessThan(
+      editReply.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
+    expect(update).not.toHaveBeenCalled();
+    const payload = editReply.mock.calls[0]?.[0] as any;
     expect(Array.isArray(payload.embeds)).toBe(true);
     const firstEmbed = payload.embeds[0].toJSON();
     const description = firstEmbed.description as string;
@@ -1035,6 +1047,8 @@ describe("/link list select menu", () => {
   });
 
   it("rejects menu interaction from non-requesting user", async () => {
+    const deferUpdate = vi.fn().mockResolvedValue(undefined);
+    const editReply = vi.fn().mockResolvedValue(undefined);
     const update = vi.fn().mockResolvedValue(undefined);
     const reply = vi.fn().mockResolvedValue(undefined);
 
@@ -1045,6 +1059,8 @@ describe("/link list select menu", () => {
       guild: { members: { cache: new Map() } },
       client: { users: { cache: new Map() } },
       values: ["#PQL0289"],
+      deferUpdate,
+      editReply,
       update,
       reply,
       deferred: false,
@@ -1057,6 +1073,8 @@ describe("/link list select menu", () => {
       ephemeral: true,
       content: "Only the command requester can use this menu.",
     });
+    expect(deferUpdate).not.toHaveBeenCalled();
+    expect(editReply).not.toHaveBeenCalled();
     expect(update).not.toHaveBeenCalled();
   });
 });
@@ -1145,6 +1163,8 @@ describe("/link list sort button", () => {
     };
 
     const runSortClick = async (mode: "discord" | "weight" | "player") => {
+      const deferUpdate = vi.fn().mockResolvedValue(undefined);
+      const editReply = vi.fn().mockResolvedValue(undefined);
       const update = vi.fn().mockResolvedValue(undefined);
       const reply = vi.fn().mockResolvedValue(undefined);
       const interaction = {
@@ -1157,6 +1177,8 @@ describe("/link list sort button", () => {
         guildId: "guild-1",
         guild: { members: { cache: new Map() } },
         client: { users: { cache: new Map() } },
+        deferUpdate,
+        editReply,
         update,
         reply,
         deferred: false,
@@ -1164,11 +1186,17 @@ describe("/link list sort button", () => {
       };
 
       await handleLinkListSortButton(interaction as any, cocService as any);
-      return { update, reply };
+      return { deferUpdate, editReply, update, reply };
     };
 
     const fromDiscord = await runSortClick("discord");
-    const payloadWeight = fromDiscord.update.mock.calls[0]?.[0] as any;
+    expect(fromDiscord.deferUpdate).toHaveBeenCalledTimes(1);
+    expect(fromDiscord.deferUpdate.mock.invocationCallOrder[0]).toBeLessThan(
+      cocService.getClan.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
+    expect(fromDiscord.editReply).toHaveBeenCalledTimes(1);
+    expect(fromDiscord.update).not.toHaveBeenCalled();
+    const payloadWeight = fromDiscord.editReply.mock.calls[0]?.[0] as any;
     const embedWeight = payloadWeight.embeds[0].toJSON();
     const descriptionWeight = String(embedWeight.description ?? "");
     expect(embedWeight.footer?.text).toBe("Sort: Weight Desc");
@@ -1184,7 +1212,10 @@ describe("/link list sort button", () => {
     expect(fromDiscord.reply).not.toHaveBeenCalled();
 
     const fromWeight = await runSortClick("weight");
-    const payloadPlayer = fromWeight.update.mock.calls[0]?.[0] as any;
+    expect(fromWeight.deferUpdate).toHaveBeenCalledTimes(1);
+    expect(fromWeight.editReply).toHaveBeenCalledTimes(1);
+    expect(fromWeight.update).not.toHaveBeenCalled();
+    const payloadPlayer = fromWeight.editReply.mock.calls[0]?.[0] as any;
     const embedPlayer = payloadPlayer.embeds[0].toJSON();
     const descriptionPlayer = String(embedPlayer.description ?? "");
     expect(embedPlayer.footer?.text).toBe("Sort: Player Name");
@@ -1196,7 +1227,10 @@ describe("/link list sort button", () => {
     );
 
     const fromPlayer = await runSortClick("player");
-    const payloadDiscord = fromPlayer.update.mock.calls[0]?.[0] as any;
+    expect(fromPlayer.deferUpdate).toHaveBeenCalledTimes(1);
+    expect(fromPlayer.editReply).toHaveBeenCalledTimes(1);
+    expect(fromPlayer.update).not.toHaveBeenCalled();
+    const payloadDiscord = fromPlayer.editReply.mock.calls[0]?.[0] as any;
     const embedDiscord = payloadDiscord.embeds[0].toJSON();
     expect(embedDiscord.footer?.text).toBe("Sort: Discord Name");
     expect(payloadDiscord.components[0].components[0].toJSON().label).toBe(
@@ -1205,6 +1239,8 @@ describe("/link list sort button", () => {
   });
 
   it("rejects sort-button interaction from non-requesting user", async () => {
+    const deferUpdate = vi.fn().mockResolvedValue(undefined);
+    const editReply = vi.fn().mockResolvedValue(undefined);
     const update = vi.fn().mockResolvedValue(undefined);
     const reply = vi.fn().mockResolvedValue(undefined);
     const interaction = {
@@ -1217,6 +1253,8 @@ describe("/link list sort button", () => {
       guildId: "guild-1",
       guild: { members: { cache: new Map() } },
       client: { users: { cache: new Map() } },
+      deferUpdate,
+      editReply,
       update,
       reply,
       deferred: false,
@@ -1229,6 +1267,8 @@ describe("/link list sort button", () => {
       ephemeral: true,
       content: "Only the command requester can use this button.",
     });
+    expect(deferUpdate).not.toHaveBeenCalled();
+    expect(editReply).not.toHaveBeenCalled();
     expect(update).not.toHaveBeenCalled();
   });
 });
