@@ -1,4 +1,5 @@
 ## Codex-min task format
+wrap the following in ``` format
 
 Goal:
 <1-3 lines>

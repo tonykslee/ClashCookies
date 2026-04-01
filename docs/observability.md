@@ -1,6 +1,47 @@
 # Observability
 
-This project supports a self-hosted observability stack on the droplet using:
+ClashCookies currently uses two observability layers:
+
+1. Internal app observability
+2. External droplet observability
+
+## Internal App Observability
+
+The application itself provides:
+
+- structured startup, poller, and scheduler logs
+- telemetry aggregate tables and scheduled Discord reports
+- health endpoints for liveness and readiness
+
+Built-in health endpoints:
+
+- `/livez` for process liveness
+- `/healthz` for readiness
+
+Readiness returns HTTP `200` only when:
+
+- the Discord client is ready
+- the database probe succeeds
+
+Configured by environment:
+
+- `HEALTHCHECK_ENABLED`
+- `HEALTHCHECK_HOST`
+- `HEALTHCHECK_PORT`
+- `HEALTHCHECK_LIVE_PATH`
+- `HEALTHCHECK_READY_PATH`
+
+Internal telemetry surfaces:
+
+- `/telemetry report`
+- `/telemetry schedule set`
+- `/telemetry schedule show`
+- `/telemetry schedule disable`
+- `/telemetry schedule run-now`
+
+## External Droplet Observability
+
+The current droplet stack uses:
 
 - Uptime Kuma for status pages, checks, and Discord alerts
 - Dozzle for live Docker logs
@@ -54,17 +95,20 @@ docker compose -f ops/observability/docker-compose.yml up -d
 4. Open Uptime Kuma through the SSH tunnel and create the first admin account.
 5. In Uptime Kuma, add a Discord notification endpoint using your Discord webhook URL.
 
-## Recommended Uptime Kuma Monitors
+## Recommended Monitors
 
-### Current droplet-safe default
+### Safe default on the droplet
 
 Use Docker Container monitors from inside Uptime Kuma:
 
-- Production: monitor container `clashcookies-app`
-- Staging: monitor container `clashcookies-staging-app`
+- Production app container
+- Staging app container
 
 This works immediately with the localhost-only Uptime Kuma deployment because the Kuma container mounts the Docker socket privately.
 
+### Optional HTTP health monitors
+
+If you also map the app health endpoint to localhost ports, use HTTP monitors:
 ### HTTP readiness monitors to add alongside container monitors
 
 Keep the Docker Container monitors above, and add HTTP monitors for app readiness:
@@ -136,4 +180,5 @@ docker compose -f ops/observability/docker-compose.yml logs --tail=100
 
 - Dozzle reads the Docker socket, so keep it localhost-only or put it behind strong auth if you ever expose it.
 - Netdata is configured for local-only access in `ops/observability/netdata/netdata.conf`.
-- The existing bot and database deployment flow stays separate from this stack.
+- The bot and database deployment flow stays separate from the observability compose stack.
+- Keep internal telemetry docs and external stack docs aligned when monitors, health paths, or scheduled report behavior change.

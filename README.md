@@ -12,6 +12,8 @@ The project is designed as a maintainable application, not a one-off bot script:
 - Workflow automation for war lifecycle, mail refresh, and sync flows
 - Reporting and operational visibility for leaders and staff
 - Prisma-backed data ownership with explicit lifecycle/state modeling
+- Active production runtime plus mirror-mode staging support
+- Built-in health endpoints, telemetry reports, and external observability support
 - Test coverage, scripts, docs, and deployment/configuration support
 - Built for maintainability, determinism, and operational reliability
 
@@ -20,7 +22,8 @@ The project is designed as a maintainable application, not a one-off bot script:
 - Discord API via slash commands and interactive message components
 - Prisma ORM with PostgreSQL-backed persistence
 - Vitest test suite + TypeScript type-checking
-- Scripted local/dev workflows and Docker-compatible deployment paths
+- Scripted local/dev workflows and droplet-oriented container deployment paths
+- Self-hosted observability on the droplet via Uptime Kuma, Dozzle, and Netdata
 
 ## What It Does
 ### Command-driven workflows
@@ -37,6 +40,8 @@ The project is designed as a maintainable application, not a one-off bot script:
 - Polls and reconciles war-related state with explicit lifecycle ownership.
 - Refreshes tracked war-mail posts and applies guarded reconciliation rules for missing/stale targets.
 - Uses bounded feed-sync/watch loops for external data ingestion and update timing.
+- Supports mirror-mode staging via guarded prod-to-staging runtime snapshot sync.
+- Exposes `/livez` and `/healthz` for liveness/readiness checks.
 
 ### Clan management tooling
 - Manages tracked clan configuration, mail channels/roles, and war plans.
@@ -46,6 +51,7 @@ The project is designed as a maintainable application, not a one-off bot script:
 ### Reliability and maintainability support
 - Uses explicit data ownership boundaries across lifecycle/persistence tables.
 - Includes force/repair commands for operational recovery without bypassing core state rules.
+- Includes tracked-message lifecycle handling, telemetry rollups, and reminder schedulers as first-class runtime concerns.
 - Maintains contributor documentation, setup guides, and script-based workflows.
 
 ## Detailed Capability Notes
@@ -72,6 +78,12 @@ npx prisma migrate deploy
 npm run build
 npm start
 ```
+
+## Deployment Model
+Production and staging currently run on a droplet-based container deployment.
+
+Production uses `POLLING_MODE=active` and owns upstream pollers/schedulers. Staging uses `POLLING_MODE=mirror` with guarded prod-to-staging runtime snapshot sync so it can stay operational without duplicating upstream polling. Health endpoints are built into the app, and the droplet observability stack is documented in [Observability](docs/observability.md).
+
 ## Documentation
 - [Setup and Environment](docs/setup.md)
 - [Commands Reference](docs/commands.md)
@@ -83,7 +95,7 @@ npm start
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines and architecture documentation.
 FWA command internals are split under `src/commands/fwa/` helper modules to keep `Fwa.ts` orchestration-focused and unit-testable.
 Run `npm run seed:fwa-layouts` after migrations when you want to upsert the canonical layout seed rows.
-Droplet deploys use cached Yarn dependency volumes and only rerun locked installs when `package.json` or `yarn.lock` changes.
+Droplet deploys use cached Yarn dependency volumes and only rerun locked installs when `package.json` or `yarn.lock` changes. The current container path uses `ops/deploy/container-start.sh`, which runs the dependency guard, builds, and then starts the app.
 
 ## FWAStats Feed Ingestion (Phase 1)
 Endpoints wired:
