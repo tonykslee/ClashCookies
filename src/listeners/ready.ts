@@ -38,6 +38,8 @@ import { FwaFeedSchedulerService } from "../services/fwa-feeds/FwaFeedSchedulerS
 import { todoSnapshotService } from "../services/TodoSnapshotService";
 import { ReminderSchedulerService } from "../services/reminders/ReminderSchedulerService";
 import { UserActivityReminderSchedulerService } from "../services/remindme/UserActivityReminderSchedulerService";
+import { cocRequestQueueService } from "../services/CoCRequestQueueService";
+import { PollCycleGuardService } from "../services/PollCycleGuardService";
 
 const DEFAULT_OBSERVE_INTERVAL_MINUTES = 30;
 const RECRUITMENT_REMINDER_INTERVAL_MS = 60 * 60 * 1000;
@@ -339,47 +341,37 @@ export default (client: Client, cocService: CoCService): void => {
     const activityService = new ActivityService(cocService);
     const warEventLogService = new WarEventLogService(client, cocService);
     const settings = new SettingsService();
-    let observeInProgress = false;
+    const pollCycleGuard = new PollCycleGuardService();
 
     const observeTrackedClans = async (): Promise<string[]> => {
-      if (observeInProgress) {
-        console.warn("Skipping observe loop because previous run is still in progress.");
+      const dbTracked = await prisma.trackedClan.findMany({
+        orderBy: { createdAt: "asc" },
+      });
+
+      const trackedTags = dbTracked.map((c) => c.tag);
+
+      if (trackedTags.length === 0) {
+        console.warn(
+          "No tracked clans configured. Use /tracked-clan configure."
+        );
         return [];
       }
 
-      observeInProgress = true;
-      try {
-        const dbTracked = await prisma.trackedClan.findMany({
-          orderBy: { createdAt: "asc" },
-        });
-
-        const trackedTags = dbTracked.map((c) => c.tag);
-
-        if (trackedTags.length === 0) {
-          console.warn(
-            "No tracked clans configured. Use /tracked-clan configure."
-          );
-          return [];
-        }
-
-        const observedMemberTags = new Set<string>();
-        for (const tag of trackedTags) {
-          try {
-            const memberTags = await activityService.observeClan(guildId, tag);
-            for (const memberTag of memberTags) {
-              observedMemberTags.add(memberTag);
-            }
-          } catch (err) {
-            console.error(
-              `observeClan failed for ${tag}: ${formatError(err)}`
-            );
+      const observedMemberTags = new Set<string>();
+      for (const tag of trackedTags) {
+        try {
+          const memberTags = await activityService.observeClan(guildId, tag);
+          for (const memberTag of memberTags) {
+            observedMemberTags.add(memberTag);
           }
+        } catch (err) {
+          console.error(
+            `observeClan failed for ${tag}: ${formatError(err)}`
+          );
         }
-
-        return [...observedMemberTags];
-      } finally {
-        observeInProgress = false;
       }
+
+      return [...observedMemberTags];
     };
 
     const markObserveRun = async () => {
@@ -402,28 +394,36 @@ export default (client: Client, cocService: CoCService): void => {
     };
 
     const runObservedCycle = async () => {
-      await runFetchTelemetryBatch("activity_observe_cycle", async () => {
-        const observedTags = await observeTrackedClans();
-        try {
-          const backfill = await backfillMissingDiscordUsernamesForClanMembers({
-            memberTagsInOrder: observedTags,
-            resolveDiscordUsername: resolveDiscordUsernameForBackfill,
-          });
-          if (backfill.candidateLinks > 0) {
-            console.log(
-              `[activity-observe] playerlink_discord_username_backfill candidates=${backfill.candidateLinks} unique_users=${backfill.uniqueUsers} resolved_users=${backfill.resolvedUsers} updated=${backfill.updatedLinks}`
-            );
-          }
-        } catch (err) {
-          console.error(
-            `[activity-observe] playerlink_discord_username_backfill failed: ${formatError(err)}`
+      await pollCycleGuard.run("activity_observe_cycle", async () => {
+        const queueStatus = cocRequestQueueService.getStatus();
+        if (queueStatus.degraded) {
+          console.warn(
+            `[poll-cycle] event=degraded_mode job=activity_observe_cycle spacing_ms=${queueStatus.spacingMs} penalty_ms=${queueStatus.penaltyMs} queue_depth=${queueStatus.queueDepth} in_flight=${queueStatus.inFlight}`,
           );
         }
-        try {
-          await markObserveRun();
-        } catch (err) {
-          console.error(`observe run timestamp write failed: ${formatError(err)}`);
-        }
+        await runFetchTelemetryBatch("activity_observe_cycle", async () => {
+          const observedTags = await observeTrackedClans();
+          try {
+            const backfill = await backfillMissingDiscordUsernamesForClanMembers({
+              memberTagsInOrder: observedTags,
+              resolveDiscordUsername: resolveDiscordUsernameForBackfill,
+            });
+            if (backfill.candidateLinks > 0) {
+              console.log(
+                `[activity-observe] playerlink_discord_username_backfill candidates=${backfill.candidateLinks} unique_users=${backfill.uniqueUsers} resolved_users=${backfill.resolvedUsers} updated=${backfill.updatedLinks}`
+              );
+            }
+          } catch (err) {
+            console.error(
+              `[activity-observe] playerlink_discord_username_backfill failed: ${formatError(err)}`
+            );
+          }
+          try {
+            await markObserveRun();
+          } catch (err) {
+            console.error(`observe run timestamp write failed: ${formatError(err)}`);
+          }
+        });
       });
     };
 
@@ -552,17 +552,25 @@ export default (client: Client, cocService: CoCService): void => {
     const warEventPollMs = Math.floor(warEventPollMinutes * 60 * 1000);
 
     const runWarEventPoll = async () => {
-      await runFetchTelemetryBatch("war_event_poll_cycle", async () => {
-        try {
-          await warEventLogService.poll();
-          await warEventLogService.refreshBattleDayPosts();
-          await refreshAllTrackedWarMailPosts(client);
-          await todoSnapshotService.refreshAllLinkedPlayerSnapshots({
-            cocService,
-          });
-        } catch (err) {
-          console.error(`[war-events] poll loop failed: ${formatError(err)}`);
+      await pollCycleGuard.run("war_event_poll_cycle", async () => {
+        const queueStatus = cocRequestQueueService.getStatus();
+        if (queueStatus.degraded) {
+          console.warn(
+            `[poll-cycle] event=degraded_mode job=war_event_poll_cycle spacing_ms=${queueStatus.spacingMs} penalty_ms=${queueStatus.penaltyMs} queue_depth=${queueStatus.queueDepth} in_flight=${queueStatus.inFlight}`,
+          );
         }
+        await runFetchTelemetryBatch("war_event_poll_cycle", async () => {
+          try {
+            await warEventLogService.poll();
+            await warEventLogService.refreshBattleDayPosts();
+            await refreshAllTrackedWarMailPosts(client);
+            await todoSnapshotService.refreshAllLinkedPlayerSnapshots({
+              cocService,
+            });
+          } catch (err) {
+            console.error(`[war-events] poll loop failed: ${formatError(err)}`);
+          }
+        });
       });
     };
 

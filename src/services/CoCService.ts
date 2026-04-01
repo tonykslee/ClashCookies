@@ -10,12 +10,14 @@ import {
 } from "../generated/coc-api";
 import { recordFetchEvent } from "../helper/fetchTelemetry";
 import { toFailureTelemetry } from "./telemetry/ingest";
+import { cocRequestQueueService } from "./CoCRequestQueueService";
 
 export class CoCService {
   private clansApi: ClansApi;
   private playersApi: PlayersApi;
   private readonly cocApiToken: string;
   private readonly cocApiBaseUrl: string;
+  private readonly queue = cocRequestQueueService;
 
   /** Purpose: initialize service dependencies. */
   constructor() {
@@ -37,6 +39,19 @@ export class CoCService {
     this.playersApi = new PlayersApi(config);
   }
 
+  /** Purpose: run one outbound CoC API call through shared queue pacing. */
+  private async runQueuedRequest<T>(input: {
+    operation: string;
+    detail: string;
+    run: () => Promise<T>;
+  }): Promise<T> {
+    return this.queue.enqueue({
+      operation: input.operation,
+      detail: input.detail,
+      run: input.run,
+    });
+  }
+
   /** Purpose: get current clan-capital raid seasons for one clan tag (newest first). */
   async getClanCapitalRaidSeasons(
     tag: string,
@@ -45,13 +60,21 @@ export class CoCService {
     const clanTag = tag.startsWith("#") ? tag : `#${tag}`;
     const startedAtMs = Date.now();
     try {
-      const response = await axios.get(`${this.cocApiBaseUrl}/clans/${encodeURIComponent(clanTag)}/capitalraidseasons`, {
-        headers: {
-          Authorization: `Bearer ${this.cocApiToken}`,
-        },
-        params: {
-          limit: Math.max(1, Math.trunc(Number(limit) || 1)),
-        },
+      const response = await this.runQueuedRequest({
+        operation: "getClanCapitalRaidSeasons",
+        detail: `tag=${clanTag}`,
+        run: () =>
+          axios.get(
+            `${this.cocApiBaseUrl}/clans/${encodeURIComponent(clanTag)}/capitalraidseasons`,
+            {
+              headers: {
+                Authorization: `Bearer ${this.cocApiToken}`,
+              },
+              params: {
+                limit: Math.max(1, Math.trunc(Number(limit) || 1)),
+              },
+            },
+          ),
       });
       const data = response?.data as { items?: ClanCapitalRaidSeason[] } | undefined;
       const seasons = Array.isArray(data?.items) ? data.items : [];
@@ -101,7 +124,11 @@ export class CoCService {
     const clanTag = tag.startsWith("#") ? tag : `#${tag}`;
     const startedAtMs = Date.now();
     try {
-      const { data } = await this.clansApi.getClan(clanTag);
+      const { data } = await this.runQueuedRequest({
+        operation: "getClan",
+        detail: `tag=${clanTag}`,
+        run: () => this.clansApi.getClan(clanTag),
+      });
       recordFetchEvent({
         namespace: "coc",
         operation: "getClan",
@@ -146,7 +173,11 @@ export class CoCService {
     const clanTag = tag.startsWith("#") ? tag : `#${tag}`;
     const startedAtMs = Date.now();
     try {
-      const { data } = await this.clansApi.getCurrentWar(clanTag);
+      const { data } = await this.runQueuedRequest({
+        operation: "getCurrentWar",
+        detail: `tag=${clanTag}`,
+        run: () => this.clansApi.getCurrentWar(clanTag),
+      });
       recordFetchEvent({
         namespace: "coc",
         operation: "getCurrentWar",
@@ -193,7 +224,11 @@ export class CoCService {
     const clanTag = tag.startsWith("#") ? tag : `#${tag}`;
     const startedAtMs = Date.now();
     try {
-      const { data } = await this.clansApi.getClanWarLog(clanTag, limit);
+      const { data } = await this.runQueuedRequest({
+        operation: "getClanWarLog",
+        detail: `tag=${clanTag} limit=${limit}`,
+        run: () => this.clansApi.getClanWarLog(clanTag, limit),
+      });
       recordFetchEvent({
         namespace: "coc",
         operation: "getClanWarLog",
@@ -226,7 +261,11 @@ export class CoCService {
     const clanTag = tag.startsWith("#") ? tag : `#${tag}`;
     const startedAtMs = Date.now();
     try {
-      const { data } = await this.clansApi.getClanWarLeagueGroup(clanTag);
+      const { data } = await this.runQueuedRequest({
+        operation: "getClanWarLeagueGroup",
+        detail: `tag=${clanTag}`,
+        run: () => this.clansApi.getClanWarLeagueGroup(clanTag),
+      });
       recordFetchEvent({
         namespace: "coc",
         operation: "getClanWarLeagueGroup",
@@ -273,7 +312,11 @@ export class CoCService {
     const normalizedWarTag = warTag.startsWith("#") ? warTag : `#${warTag}`;
     const startedAtMs = Date.now();
     try {
-      const { data } = await this.clansApi.getClanWarLeagueWar(normalizedWarTag);
+      const { data } = await this.runQueuedRequest({
+        operation: "getClanWarLeagueWar",
+        detail: `warTag=${normalizedWarTag}`,
+        run: () => this.clansApi.getClanWarLeagueWar(normalizedWarTag),
+      });
       recordFetchEvent({
         namespace: "coc",
         operation: "getClanWarLeagueWar",
@@ -324,7 +367,11 @@ export class CoCService {
     const startedAtMs = Date.now();
 
     try {
-      const { data } = await this.playersApi.getPlayer(playerTag);
+      const { data } = await this.runQueuedRequest({
+        operation: "getPlayerRaw",
+        detail: `tag=${playerTag}`,
+        run: () => this.playersApi.getPlayer(playerTag),
+      });
       if (!options?.suppressTelemetry) {
         recordFetchEvent({
           namespace: "coc",
