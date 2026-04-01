@@ -40,6 +40,7 @@ import { ReminderSchedulerService } from "../services/reminders/ReminderSchedule
 import { UserActivityReminderSchedulerService } from "../services/remindme/UserActivityReminderSchedulerService";
 import { cocRequestQueueService } from "../services/CoCRequestQueueService";
 import { PollCycleGuardService } from "../services/PollCycleGuardService";
+import { unlinkedMemberAlertService } from "../services/UnlinkedMemberAlertService";
 import {
   isActivePollingMode,
   resolveMirrorSyncIntervalMsFromEnv,
@@ -354,9 +355,22 @@ export default (client: Client, cocService: CoCService): void => {
     const mirrorSyncService = new MirrorSyncService();
     console.log(`[polling-mode] mode=${pollingMode}`);
 
-    const observeTrackedClans = async (): Promise<string[]> => {
+    const observeTrackedClans = async (): Promise<{
+      observedTags: string[];
+      observedFwaClans: Array<{
+        clanTag: string;
+        clanName: string;
+        logChannelId: string | null;
+        members: Array<{ playerTag: string; playerName: string }>;
+      }>;
+    }> => {
       const dbTracked = await prisma.trackedClan.findMany({
         orderBy: { createdAt: "asc" },
+        select: {
+          tag: true,
+          name: true,
+          logChannelId: true,
+        },
       });
 
       const trackedTags = dbTracked.map((c) => c.tag);
@@ -365,24 +379,45 @@ export default (client: Client, cocService: CoCService): void => {
         console.warn(
           "No tracked clans configured. Use /tracked-clan configure."
         );
-        return [];
+        return {
+          observedTags: [],
+          observedFwaClans: [],
+        };
       }
 
       const observedMemberTags = new Set<string>();
-      for (const tag of trackedTags) {
+      const observedFwaClans: Array<{
+        clanTag: string;
+        clanName: string;
+        logChannelId: string | null;
+        members: Array<{ playerTag: string; playerName: string }>;
+      }> = [];
+      for (const trackedClan of dbTracked) {
         try {
-          const memberTags = await activityService.observeClan(guildId, tag);
-          for (const memberTag of memberTags) {
+          const observedClan = await activityService.observeClanDetailed(
+            guildId,
+            trackedClan.tag
+          );
+          for (const memberTag of observedClan.memberTags) {
             observedMemberTags.add(memberTag);
           }
+          observedFwaClans.push({
+            clanTag: observedClan.clanTag,
+            clanName: observedClan.clanName,
+            logChannelId: trackedClan.logChannelId ?? null,
+            members: observedClan.members,
+          });
         } catch (err) {
           console.error(
-            `observeClan failed for ${tag}: ${formatError(err)}`
+            `observeClan failed for ${trackedClan.tag}: ${formatError(err)}`
           );
         }
       }
 
-      return [...observedMemberTags];
+      return {
+        observedTags: [...observedMemberTags],
+        observedFwaClans,
+      };
     };
 
     const markObserveRun = async () => {
@@ -413,10 +448,10 @@ export default (client: Client, cocService: CoCService): void => {
           );
         }
         await runFetchTelemetryBatch("activity_observe_cycle", async () => {
-          const observedTags = await observeTrackedClans();
+          const observed = await observeTrackedClans();
           try {
             const backfill = await backfillMissingDiscordUsernamesForClanMembers({
-              memberTagsInOrder: observedTags,
+              memberTagsInOrder: observed.observedTags,
               resolveDiscordUsername: resolveDiscordUsernameForBackfill,
             });
             if (backfill.candidateLinks > 0) {
@@ -428,6 +463,21 @@ export default (client: Client, cocService: CoCService): void => {
             console.error(
               `[activity-observe] playerlink_discord_username_backfill failed: ${formatError(err)}`
             );
+          }
+          try {
+            const result = await unlinkedMemberAlertService.reconcileGuildAlerts({
+              client: client as any,
+              guildId,
+              cocService,
+              observedFwaClans: observed.observedFwaClans,
+            });
+            if (result.unresolvedCount > 0 || result.resolvedCount > 0 || result.alertedCount > 0) {
+              console.log(
+                `[unlinked] reconcile_complete guild=${guildId} unresolved=${result.unresolvedCount} alerted=${result.alertedCount} resolved=${result.resolvedCount}`
+              );
+            }
+          } catch (err) {
+            console.error(`[unlinked] reconcile_failed guild=${guildId} error=${formatError(err)}`);
           }
           try {
             await markObserveRun();

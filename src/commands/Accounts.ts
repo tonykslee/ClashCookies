@@ -11,11 +11,7 @@ import {
 } from "discord.js";
 import { Command } from "../Command";
 import { prisma } from "../prisma";
-import { CoCService } from "../services/CoCService";
-import {
-  backfillPlayerLinkNameIfMissing,
-  listPlayerLinksForDiscordUser,
-} from "../services/PlayerLinkService";
+import { listPlayerLinksForDiscordUser } from "../services/PlayerLinkService";
 
 type AccountRow = {
   tag: string;
@@ -28,6 +24,17 @@ type ClanGroup = {
   key: string;
   title: string;
   entries: AccountRow[];
+};
+
+type AccountAutocompleteRow = {
+  playerTag: string;
+  playerName: string | null;
+  discordUserId: string | null;
+};
+
+type AccountAutocompleteChoice = {
+  name: string;
+  value: string;
 };
 
 const MAX_ACCOUNTS_PER_PAGE = 18;
@@ -43,6 +50,90 @@ function sanitizeDisplayText(input: unknown): string | null {
     .replace(/\s+/g, " ")
     .trim();
   return normalized.length > 0 ? normalized : null;
+}
+
+function normalizeAutocompleteQuery(input: string): string {
+  return String(input ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/^#+/, "");
+}
+
+function buildAccountsTagAutocompleteChoices(
+  rows: AccountAutocompleteRow[],
+  query: string,
+): AccountAutocompleteChoice[] {
+  const normalizedQuery = normalizeAutocompleteQuery(query);
+  const deduped = new Map<
+    string,
+    { tag: string; linkedName: string | null; hasDiscordUserId: boolean }
+  >();
+
+  for (const row of rows) {
+    const tag = normalizeTag(row.playerTag);
+    if (!tag) continue;
+    const linkedName = sanitizeDisplayText(row.playerName);
+    const hasDiscordUserId = Boolean(String(row.discordUserId ?? "").trim());
+    const existing = deduped.get(tag);
+    if (!existing) {
+      deduped.set(tag, { tag, linkedName, hasDiscordUserId });
+      continue;
+    }
+
+    if (hasDiscordUserId && !existing.hasDiscordUserId) {
+      deduped.set(tag, { tag, linkedName, hasDiscordUserId });
+      continue;
+    }
+    if (hasDiscordUserId === existing.hasDiscordUserId && linkedName && !existing.linkedName) {
+      deduped.set(tag, { tag, linkedName, hasDiscordUserId });
+    }
+  }
+
+  const ranked = [...deduped.values()]
+    .map((row) => {
+      const tagNoHash = row.tag.replace(/^#/, "").toLowerCase();
+      const linkedNameLower = row.linkedName?.toLowerCase() ?? "";
+      const exactTagMatch = normalizedQuery.length > 0 && tagNoHash === normalizedQuery;
+      const prefixTagMatch =
+        normalizedQuery.length > 0 &&
+        tagNoHash.startsWith(normalizedQuery) &&
+        !exactTagMatch;
+      const nameMatch =
+        normalizedQuery.length > 0 &&
+        row.linkedName !== null &&
+        linkedNameLower.includes(normalizedQuery);
+      const matchRank =
+        normalizedQuery.length === 0
+          ? 3
+          : exactTagMatch
+            ? 0
+            : prefixTagMatch
+              ? 1
+              : nameMatch
+                ? 2
+                : 99;
+      return {
+        ...row,
+        matchRank,
+        sortName: row.linkedName?.toLowerCase() ?? "\uffff",
+        sortTag: tagNoHash,
+      };
+    })
+    .filter((row) => row.matchRank !== 99)
+    .sort((a, b) => {
+      if (a.matchRank !== b.matchRank) return a.matchRank - b.matchRank;
+      const byName = a.sortName.localeCompare(b.sortName, undefined, {
+        sensitivity: "base",
+      });
+      if (byName !== 0) return byName;
+      return a.sortTag.localeCompare(b.sortTag, undefined, { sensitivity: "base" });
+    })
+    .slice(0, 25);
+
+  return ranked.map((row) => ({
+    name: (row.linkedName ? `${row.linkedName} (${row.tag})` : row.tag).slice(0, 100),
+    value: row.tag,
+  }));
 }
 
 function buildGroups(rows: AccountRow[]): ClanGroup[] {
@@ -171,7 +262,7 @@ export const Accounts: Command = {
   run: async (
     _client: Client,
     interaction: ChatInputCommandInteraction,
-    cocService: CoCService
+    _cocService: unknown
   ) => {
     if (!interaction.guildId) {
       await interaction.reply({ ephemeral: true, content: "This command can only be used in a server." });
@@ -267,71 +358,23 @@ export const Accounts: Command = {
         .map((row) => [normalizeTag(row.tag), sanitizeDisplayText(row.name)] as const)
         .filter((entry): entry is [string, string] => Boolean(entry[0] && entry[1]))
     );
-
-    const tagsNeedingLiveFetch = uniqueTags.filter((tag) => {
-      const hasLinkedName = Boolean(linkedNameByTag.get(tag));
-      const localFallback = activityByTag.get(tag);
-      const hasLocalFallback = Boolean(localFallback);
-      const hasIncompleteLocalClanContext = Boolean(
-        localFallback?.clanTag && !sanitizeDisplayText(localFallback.clanName)
-      );
-      return !hasLinkedName || !hasLocalFallback || hasIncompleteLocalClanContext;
-    });
-    const fetchedPlayersByTag = new Map<string, any>();
-    if (tagsNeedingLiveFetch.length > 0) {
-      const fetched = await Promise.allSettled(
-        tagsNeedingLiveFetch.map((tag) => cocService.getPlayerRaw(tag))
-      );
-      for (let i = 0; i < tagsNeedingLiveFetch.length; i += 1) {
-        const tag = tagsNeedingLiveFetch[i];
-        const result = fetched[i];
-        if (result?.status === "fulfilled") {
-          fetchedPlayersByTag.set(tag, result.value);
-        }
-      }
-    }
-
-    const playerNameBackfillTasks: Promise<void>[] = [];
     const rows: AccountRow[] = uniqueTags.map((tag) => {
       const linkedName = linkedNameByTag.get(tag) ?? null;
       const fallback = activityByTag.get(tag);
-      const livePlayer = fetchedPlayersByTag.get(tag) ?? null;
-      const livePlayerName = sanitizeDisplayText(livePlayer?.name);
       const fallbackClanTag = fallback?.clanTag ? normalizeTag(fallback.clanTag) : null;
-      const clanTag = normalizeTag(livePlayer?.clan?.tag ?? fallbackClanTag ?? "");
+      const clanTag = fallbackClanTag ?? "";
+      const activityName = sanitizeDisplayText(fallback?.name);
       const clanName =
-        sanitizeDisplayText(livePlayer?.clan?.name) ??
         sanitizeDisplayText(fallback?.clanName) ??
         (clanTag ? trackedClanNameByTag.get(clanTag) ?? null : null);
 
-      if (!linkedName && livePlayerName) {
-        playerNameBackfillTasks.push(
-          backfillPlayerLinkNameIfMissing({
-            playerTag: tag,
-            playerName: livePlayerName,
-          })
-            .then(() => undefined)
-            .catch((error) => {
-              console.error(
-                `[accounts] player_name_backfill_failed tag=${tag} user=${targetDiscordUserId} error=${String(
-                  (error as { message?: string } | null | undefined)?.message ?? error
-                )}`
-              );
-            })
-        );
-      }
-
       return {
         tag,
-        name: linkedName ?? livePlayerName ?? sanitizeDisplayText(fallback?.name) ?? tag,
+        name: linkedName ?? activityName ?? tag,
         clanTag: clanTag || null,
         clanName,
       };
     });
-
-    if (playerNameBackfillTasks.length > 0) {
-      void Promise.allSettled(playerNameBackfillTasks);
-    }
 
     const embeds = buildEmbeds(rows);
     for (const embed of embeds) {
@@ -378,23 +421,19 @@ export const Accounts: Command = {
       return;
     }
 
-    const query = normalizeTag(String(focused.value ?? "")).replace(/^#/, "").toLowerCase();
-    const tracked = await prisma.trackedClan.findMany({
-      orderBy: { createdAt: "asc" },
-      select: { name: true, tag: true },
+    const query = String(focused.value ?? "");
+    const rows = await prisma.playerLink.findMany({
+      select: {
+        discordUserId: true,
+        playerName: true,
+        playerTag: true,
+      },
     });
 
-    const choices = tracked
-      .map((clan) => {
-        const tag = normalizeTag(clan.tag).replace(/^#/, "");
-        const name = clan.name?.trim() ? `${clan.name.trim()} (#${tag})` : `#${tag}`;
-        return { name: name.slice(0, 100), value: tag };
-      })
-      .filter(
-        (choice) =>
-          choice.name.toLowerCase().includes(query) || choice.value.toLowerCase().includes(query)
-      )
-      .slice(0, 25);
+    const choices = buildAccountsTagAutocompleteChoices(
+      rows as AccountAutocompleteRow[],
+      query,
+    );
 
     await interaction.respond(choices);
   },

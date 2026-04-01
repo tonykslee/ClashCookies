@@ -4,7 +4,10 @@ import { formatError } from "../helper/formatError";
 import { ClashKingService } from "./ClashKingService";
 import { SettingsService } from "./SettingsService";
 import axios from "axios";
-import { normalizePersistedDiscordUsername } from "./PlayerLinkService";
+import {
+  normalizePersistedDiscordUsername,
+  normalizePersistedPlayerName,
+} from "./PlayerLinkService";
 
 const UNRESOLVED_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const UNRESOLVED_LAST_SYNC_KEY = "clashking:unresolved_last_sync_ms";
@@ -43,6 +46,7 @@ export type PublicGoogleSheetPlayerLinkSyncResult = {
 };
 
 type ClashPerkColumnIndexes = {
+  name: number;
   username: number;
   id: number;
   tag: number;
@@ -100,6 +104,7 @@ function resolveClashPerkColumnIndexes(
 ): ClashPerkColumnIndexes {
   const normalized = headerRow.map((cell) => cell.trim().toLowerCase());
 
+  const name = normalized.indexOf("name");
   const username = normalized.indexOf("username");
   const id = normalized.indexOf("id");
   const tag = normalized.indexOf("tag");
@@ -109,11 +114,15 @@ function resolveClashPerkColumnIndexes(
   if (id === -1) throw new Error("Missing required ClashPerk column: ID");
   if (tag === -1) throw new Error("Missing required ClashPerk column: Tag");
 
-  return { username, id, tag };
+  return { name, username, id, tag };
 }
 
 function getCell(row: string[], index: number): string {
   return String(row[index] ?? "").trim();
+}
+
+function normalizeClashPerkPlayerName(input: unknown): string | null {
+  return normalizePersistedPlayerName(input);
 }
 
 export class PlayerLinkSyncService {
@@ -190,15 +199,18 @@ export class PlayerLinkSyncService {
         playerTag: string;
         discordUserId: string;
         discordUsername: string | null;
+        playerName: string | null;
       }
     >();
 
     for (const row of dataRows) {
+      const rawName = indexes.name === -1 ? "" : getCell(row, indexes.name);
       const rawTag = getCell(row, indexes.tag);
       const rawDiscordUserId = getCell(row, indexes.id);
       const discordUsername = normalizePersistedDiscordUsername(
         getCell(row, indexes.username),
       );
+      const playerName = normalizeClashPerkPlayerName(rawName);
 
       if (!rawTag || !rawDiscordUserId || !discordUsername) {
         missingRequiredCount += 1;
@@ -226,6 +238,7 @@ export class PlayerLinkSyncService {
         playerTag,
         discordUserId,
         discordUsername,
+        playerName,
       });
     }
 
@@ -258,6 +271,7 @@ export class PlayerLinkSyncService {
         playerTag: true,
         discordUserId: true,
         discordUsername: true,
+        playerName: true,
       },
     });
 
@@ -274,6 +288,7 @@ export class PlayerLinkSyncService {
             playerTag: row.playerTag,
             discordUserId: row.discordUserId,
             discordUsername: row.discordUsername,
+            playerName: row.playerName,
           },
         });
         insertedCount += 1;
@@ -284,22 +299,36 @@ export class PlayerLinkSyncService {
       const existingDiscordUsername = normalizePersistedDiscordUsername(
         existing.discordUsername,
       );
+      const existingPlayerName = normalizeClashPerkPlayerName(
+        existing.playerName,
+      );
 
       const isSameDiscordUserId = existingDiscordUserId === row.discordUserId;
       const isSameDiscordUsername =
         existingDiscordUsername === row.discordUsername;
+      const isSamePlayerName =
+        row.playerName === null || existingPlayerName === row.playerName;
 
-      if (isSameDiscordUserId && isSameDiscordUsername) {
+      if (isSameDiscordUserId && isSameDiscordUsername && isSamePlayerName) {
         unchangedCount += 1;
         continue;
       }
 
+      const updateData: {
+        discordUserId: string;
+        discordUsername: string | null;
+        playerName?: string | null;
+      } = {
+        discordUserId: row.discordUserId,
+        discordUsername: row.discordUsername,
+      };
+      if (row.playerName !== null && row.playerName !== existingPlayerName) {
+        updateData.playerName = row.playerName;
+      }
+
       await prisma.playerLink.update({
         where: { playerTag: row.playerTag },
-        data: {
-          discordUserId: row.discordUserId,
-          discordUsername: row.discordUsername,
-        },
+        data: updateData,
       });
       updatedCount += 1;
     }

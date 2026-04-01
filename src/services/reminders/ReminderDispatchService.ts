@@ -1,7 +1,8 @@
 import { ReminderType } from "@prisma/client";
-import { Client, EmbedBuilder } from "discord.js";
+import { Client } from "discord.js";
 import type { ClanWar } from "../../generated/coc-api";
 import { formatError } from "../../helper/formatError";
+import { splitDiscordLineMessages } from "../../helper/discordLineMessageSplit";
 import { prisma } from "../../prisma";
 import { CoCService, type ClanCapitalRaidSeason } from "../CoCService";
 import { normalizeClanTag, normalizePlayerTag } from "../PlayerLinkService";
@@ -46,6 +47,7 @@ type ReminderRosterEntry = {
   playerTag: string;
   playerName: string;
   position: number | null;
+  discordUserId: string | null;
   attacksRemaining: number;
   attacksMax: number;
 };
@@ -55,10 +57,9 @@ type ReminderRosterResolveResult = {
   lines: string[];
 };
 
-const DISCORD_EMBED_DESCRIPTION_LIMIT = 4096;
-const MAX_REMINDER_EMBEDS = 2;
+const MAX_REMINDER_MESSAGES = 3;
 
-/** Purpose: send one reminder embed message to configured channels with deterministic type-aware content. */
+/** Purpose: send one reminder message sequence to configured channels with deterministic type-aware content. */
 export class ReminderDispatchService {
   private resolvedDefaultCoCService = false;
   private cachedDefaultCoCService: ReminderDispatchCoCClient | null = null;
@@ -77,26 +78,32 @@ export class ReminderDispatchService {
         };
       }
 
-      const embeds = await buildReminderDispatchEmbeds({
+      const contents = await buildReminderDispatchContents({
         input,
         nowMs: this.getNowMs(),
         cocService: this.getCoCService(),
       });
-      if (embeds.length <= 0) {
+      if (contents.length <= 0) {
         return {
           status: "failed",
           errorMessage: "attack_window_not_active",
         };
       }
-      const sent = await channel.send({
-        embeds,
-        allowedMentions: {
-          parse: ["users"],
-        },
-      });
+      let firstMessageId: string | null = null;
+      for (const content of contents) {
+        const sent = await channel.send({
+          content,
+          allowedMentions: {
+            parse: ["users"],
+          },
+        });
+        if (!firstMessageId) {
+          firstMessageId = sent.id;
+        }
+      }
       return {
         status: "sent",
-        messageId: sent.id,
+        messageId: firstMessageId ?? "unknown",
       };
     } catch (error) {
       return {
@@ -132,15 +139,13 @@ export class ReminderDispatchService {
 /** Purpose: expose one shared reminder dispatch service singleton. */
 export const reminderDispatchService = new ReminderDispatchService();
 
-/** Purpose: build one or two embeds with optional attack-remaining roster continuation for send-time reminder posts. */
-async function buildReminderDispatchEmbeds(input: {
+/** Purpose: build one to three reminder messages with optional attack-remaining roster continuation for send-time reminder posts. */
+async function buildReminderDispatchContents(input: {
   input: ReminderDispatchInput;
   nowMs: number;
   cocService: ReminderDispatchCoCClient | null;
-}): Promise<EmbedBuilder[]> {
+}): Promise<string[]> {
   const payload = input.input;
-  const color = getReminderTypeColor(payload.type);
-  const titlePrefix = getReminderTitlePrefix(payload.type);
   const headerLines = buildReminderDispatchHeaderLines({
     input: payload,
     nowMs: input.nowMs,
@@ -158,37 +163,33 @@ async function buildReminderDispatchEmbeds(input: {
   if (semantic !== "OTHER" && !roster.windowActive) {
     return [];
   }
-  return buildReminderEmbedsWithRosterOverflow({
-    title: `${titlePrefix} Reminder`,
-    color,
-    footerText: `reminder:${payload.reminderId} | identity:${payload.eventIdentity}`,
-    timestamp: new Date(input.nowMs),
+  return buildReminderContentsWithRosterOverflow({
     headerLines,
     rosterLines: roster.lines,
   });
 }
 
-/** Purpose: build deterministic core reminder header lines shared by all reminder dispatch embeds. */
+/** Purpose: build deterministic core reminder header lines shared by all reminder dispatch messages. */
 function buildReminderDispatchHeaderLines(input: {
   input: ReminderDispatchInput;
   nowMs: number;
 }): string[] {
   const payload = input.input;
   const clanLabel = payload.clanName
-    ? `${payload.clanName} (${payload.clanTag})`
+    ? `${payload.clanName} ${payload.clanTag}`
     : payload.clanTag;
   const offsetLabel = formatOffsetLabel(payload.offsetSeconds);
   const remainingSeconds = Math.max(
     0,
     Math.floor((payload.eventEndsAt.getTime() - input.nowMs) / 1000),
   );
-  const remainingLabel = `<t:${Math.floor(payload.eventEndsAt.getTime() / 1000)}:R>`;
+  const endUnix = Math.floor(payload.eventEndsAt.getTime() / 1000);
 
   return [
-    `Clan: **${clanLabel}**`,
-    `Configured offset: **${offsetLabel}**`,
-    `Event timing: **${payload.eventLabel}**`,
-    `Time remaining: ${remainingLabel} (${remainingSeconds}s)`,
+    `### ${getReminderHeadingLabel(payload.type)} in ${offsetLabel}`,
+    `Clan: ${clanLabel}`,
+    `Time remaining: <t:${endUnix}:R> (${remainingSeconds}s)`,
+    `Ends at: <t:${endUnix}:F> (<t:${endUnix}:R>)`,
   ];
 }
 
@@ -249,7 +250,10 @@ async function resolveReminderRosterLines(input: {
   const linkRows =
     tags.length > 0
       ? await prisma.playerLink.findMany({
-          where: { playerTag: { in: tags } },
+          where: {
+            playerTag: { in: tags },
+            discordUserId: { not: null },
+          },
           select: {
             playerTag: true,
             discordUserId: true,
@@ -258,14 +262,20 @@ async function resolveReminderRosterLines(input: {
       : [];
   const linkedDiscordIdByTag = new Map(
     linkRows
-      .map((row) => [normalizePlayerTag(row.playerTag), String(row.discordUserId)] as const)
+      .map((row) => [normalizePlayerTag(row.playerTag), String(row.discordUserId ?? "")] as const)
       .filter((entry): entry is [string, string] => Boolean(entry[0] && entry[1])),
+  );
+  const sortedRoster = keepSameUserAccountsAdjacent(
+    roster.map((entry) => ({
+      ...entry,
+      discordUserId: linkedDiscordIdByTag.get(entry.playerTag) ?? null,
+    })),
   );
 
   return {
     windowActive,
-    lines: roster.map((entry) => {
-      const mention = linkedDiscordIdByTag.get(entry.playerTag) ?? null;
+    lines: sortedRoster.map((entry) => {
+      const mention = entry.discordUserId;
       if (input.semantic === "RAIDS") {
         if (mention) {
           return `${entry.playerName} - <@${mention}> - ${entry.attacksRemaining} / ${entry.attacksMax}`;
@@ -310,7 +320,7 @@ async function resolveWarReminderRoster(input: {
   });
 
   const roster = rows
-    .map((row) => {
+    .map((row): ReminderRosterEntry | null => {
       const playerTag = normalizePlayerTag(row.playerTag);
       if (!playerTag) return null;
       const playerName = sanitizeReminderPlayerName(row.playerName, playerTag);
@@ -320,6 +330,7 @@ async function resolveWarReminderRoster(input: {
         playerTag,
         playerName,
         position: toFiniteIntOrNull(row.position),
+        discordUserId: null,
         attacksRemaining,
         attacksMax: 2,
       } satisfies ReminderRosterEntry;
@@ -354,7 +365,7 @@ async function resolveCwlReminderRoster(input: {
     trackedClanTag: clanTag,
   });
   const roster = members
-    .map((member) => {
+    .map((member): ReminderRosterEntry | null => {
       const playerTag = normalizePlayerTag(String(member?.tag ?? ""));
       if (!playerTag) return null;
       const playerName = sanitizeReminderPlayerName(member?.name, playerTag);
@@ -364,6 +375,7 @@ async function resolveCwlReminderRoster(input: {
         playerTag,
         playerName,
         position: toFiniteIntOrNull(member?.mapPosition),
+        discordUserId: null,
         attacksRemaining,
         attacksMax: 1,
       } satisfies ReminderRosterEntry;
@@ -429,6 +441,7 @@ async function resolveRaidsReminderRoster(input: {
       playerTag,
       playerName,
       position: null,
+      discordUserId: null,
       attacksRemaining,
       attacksMax: 6,
     });
@@ -536,64 +549,19 @@ async function resolveActiveCwlBattleWarForClan(input: {
   return null;
 }
 
-/** Purpose: build final one-or-two embed output with line-safe overflow handling and hard cap at two embeds. */
-function buildReminderEmbedsWithRosterOverflow(input: {
-  title: string;
-  color: number;
-  footerText: string;
-  timestamp: Date;
+/** Purpose: build final one-to-three message output with line-safe overflow handling and hard cap at three messages. */
+function buildReminderContentsWithRosterOverflow(input: {
   headerLines: string[];
   rosterLines: string[];
-}): EmbedBuilder[] {
-  const headerDescription = input.headerLines.join("\n");
-  const firstEmbed = new EmbedBuilder()
-    .setColor(input.color)
-    .setTitle(input.title)
-    .setFooter({ text: input.footerText })
-    .setTimestamp(input.timestamp);
-
-  if (input.rosterLines.length <= 0) {
-    firstEmbed.setDescription(headerDescription);
-    return [firstEmbed];
-  }
-
-  const firstSeed = [...input.headerLines, "", "**Players With Attacks Remaining:**"].join("\n");
-  let firstDescription =
-    firstSeed.length <= DISCORD_EMBED_DESCRIPTION_LIMIT ? firstSeed : headerDescription;
-  let secondDescription = "";
-
-  for (const line of input.rosterLines) {
-    if (canAppendDescriptionLine(firstDescription, line)) {
-      firstDescription = appendDescriptionLine(firstDescription, line);
-      continue;
-    }
-    if (canAppendDescriptionLine(secondDescription, line)) {
-      secondDescription = appendDescriptionLine(secondDescription, line);
-      continue;
-    }
-    break;
-  }
-
-  firstEmbed.setDescription(firstDescription);
-  if (!secondDescription || MAX_REMINDER_EMBEDS <= 1) {
-    return [firstEmbed];
-  }
-
-  const secondEmbed = new EmbedBuilder()
-    .setColor(input.color)
-    .setDescription(secondDescription);
-  return [firstEmbed, secondEmbed].slice(0, MAX_REMINDER_EMBEDS);
-}
-
-/** Purpose: append one line to a description block using newline joins while preserving exact line boundaries. */
-function appendDescriptionLine(current: string, line: string): string {
-  if (!current) return line;
-  return `${current}\n${line}`;
-}
-
-/** Purpose: check if one full line can fit in the target description buffer without splitting across embeds. */
-function canAppendDescriptionLine(current: string, line: string): boolean {
-  return appendDescriptionLine(current, line).length <= DISCORD_EMBED_DESCRIPTION_LIMIT;
+}): string[] {
+  const lines =
+    input.rosterLines.length > 0
+      ? [...input.headerLines, "", "Players With Attacks Remaining:", ...input.rosterLines]
+      : [...input.headerLines];
+  return splitDiscordLineMessages({
+    lines,
+    maxMessages: MAX_REMINDER_MESSAGES,
+  });
 }
 
 /** Purpose: compare roster rows by lineup position first, then stable name/tag fallback ordering. */
@@ -610,6 +578,23 @@ function compareRosterByPositionThenName(a: ReminderRosterEntry, b: ReminderRost
   });
   if (byName !== 0) return byName;
   return a.playerTag.localeCompare(b.playerTag);
+}
+
+/** Purpose: keep linked users' multiple accounts adjacent while preserving first-seen group order and per-group line order. */
+function keepSameUserAccountsAdjacent(roster: ReminderRosterEntry[]): ReminderRosterEntry[] {
+  const groups = new Map<string, ReminderRosterEntry[]>();
+  const groupOrder: string[] = [];
+  for (const entry of roster) {
+    const ownerKey = entry.discordUserId
+      ? `discord:${entry.discordUserId}`
+      : `player:${entry.playerTag}`;
+    if (!groups.has(ownerKey)) {
+      groups.set(ownerKey, []);
+      groupOrder.push(ownerKey);
+    }
+    groups.get(ownerKey)!.push(entry);
+  }
+  return groupOrder.flatMap((ownerKey) => groups.get(ownerKey) ?? []);
 }
 
 /** Purpose: normalize one player display name into compact deterministic text with player-tag fallback. */
@@ -647,23 +632,15 @@ function isBattleWarState(state: unknown): boolean {
   return normalized.includes("inwar");
 }
 
-/** Purpose: map reminder types to stable friendly heading prefixes. */
-function getReminderTitlePrefix(type: ReminderType): string {
-  if (type === ReminderType.WAR_CWL) return "WAR/CWL";
-  if (type === ReminderType.RAIDS) return "Raid Weekend";
-  if (type === ReminderType.GAMES) return "Clan Games";
-  return "Event";
+/** Purpose: map reminder types to the first-line heading label used in plain-text delivery. */
+function getReminderHeadingLabel(type: ReminderType): string {
+  if (type === ReminderType.WAR_CWL) return "War ends";
+  if (type === ReminderType.RAIDS) return "Raid weekend ends";
+  if (type === ReminderType.GAMES) return "Clan games end";
+  return "Event ends";
 }
 
-/** Purpose: map reminder types to deterministic embed accent colors. */
-function getReminderTypeColor(type: ReminderType): number {
-  if (type === ReminderType.WAR_CWL) return 0xed4245;
-  if (type === ReminderType.RAIDS) return 0x5865f2;
-  if (type === ReminderType.GAMES) return 0x57f287;
-  return 0xfee75c;
-}
-
-/** Purpose: render one offset in human-readable compact `HhMm` format for embeds. */
+/** Purpose: render one offset in human-readable compact `HhMm` format for plain-text reminder headers. */
 function formatOffsetLabel(offsetSeconds: number): string {
   const totalMinutes = Math.max(0, Math.floor(offsetSeconds / 60));
   const hours = Math.floor(totalMinutes / 60);
@@ -673,4 +650,4 @@ function formatOffsetLabel(offsetSeconds: number): string {
   return `${hours}h${minutes}m`;
 }
 
-export const buildReminderDispatchEmbedsForTest = buildReminderDispatchEmbeds;
+export const buildReminderDispatchContentsForTest = buildReminderDispatchContents;

@@ -13,15 +13,33 @@ export class ActivityService {
    * Observe all members of a clan and update activity signals.
    */
   async observeClan(guildId: string, clanTag: string): Promise<string[]> {
-    const clan = await this.coc.getClan(clanTag);
+    const result = await this.observeClanDetailed(guildId, clanTag);
+    return result.memberTags;
+  }
+
+  /**
+   * Observe one clan and return the live roster payload needed by downstream membership-driven features.
+   */
+  async observeClanDetailed(inputGuildId: string, inputClanTag: string): Promise<{
+    clanTag: string;
+    clanName: string;
+    memberTags: string[];
+    members: Array<{ playerTag: string; playerName: string }>;
+  }> {
+    const clan = await this.coc.getClan(inputClanTag);
     const now = new Date();
     let playerApiCalls = 0;
     let playersMissing = 0;
     const observedTags: string[] = [];
+    const observedMembers: Array<{ playerTag: string; playerName: string }> = [];
 
     for (const member of clan.members) {
       if (member?.tag) {
         observedTags.push(String(member.tag));
+        observedMembers.push({
+          playerTag: String(member.tag),
+          playerName: String(member.name ?? member.tag),
+        });
       }
       playerApiCalls += 1;
       const player = await this.coc.getPlayerRaw(member.tag, { suppressTelemetry: true });
@@ -31,7 +49,7 @@ export class ActivityService {
       }
 
       await this.observePlayer({
-        guildId,
+        guildId: inputGuildId,
         tag: player.tag,
         name: player.name,
         clanTag: player.clan?.tag ?? clan.tag,
@@ -66,7 +84,12 @@ export class ActivityService {
       });
     }
 
-    return observedTags;
+    return {
+      clanTag: String(clan.tag ?? inputClanTag),
+      clanName: String(clan.name ?? inputClanTag),
+      memberTags: observedTags,
+      members: observedMembers,
+    };
   }
 
   /**

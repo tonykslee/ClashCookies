@@ -61,11 +61,35 @@ model BotSetting {
 
 model PlayerLink {
   playerTag     String   @id
-  discordUserId String
+  discordUserId String?
   discordUsername String?
   playerName    String?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
+
+  @@index([discordUserId])
+}
+
+model UnlinkedAlertConfig {
+  guildId    String   @id
+  channelId  String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+model UnlinkedPlayer {
+  guildId    String
+  playerTag  String
+  playerName String
+  clanTag    String
+  clanName   String
+  alertedAt  DateTime?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@id([guildId, playerTag])
+  @@index([guildId, clanTag])
+  @@index([guildId, alertedAt])
 }
 
 model TodoPlayerSnapshot {

@@ -270,7 +270,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "If `tag` is provided, resolves linked Discord ID from local PlayerLink, then lists that user's accounts.",
       "Only one of `tag` or `discord-id` can be provided.",
       "Runtime link resolution is local-only from `PlayerLink`.",
-      "Fetches live player data when available and groups accounts by current clan.",
+      "Account display uses persisted local data only.",
       "Set `visibility:public` to post the response directly in channel.",
     ],
     examples: [
@@ -294,7 +294,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "WAR section headers include tracked clan badge + match-state indicator, and WAR rows show lineup position with compact used-attack detail.",
       "RAIDS page uses one shared top timer line and then lists per-player progress rows.",
       "GAMES page points come from stored activity-signal totals, with cycle baseline/total observability persisted on TodoPlayerSnapshot for DB-first reads.",
-      "GAMES has three snapshot-backed views: active earning (time remaining), reward collection (latest final points + reward time remaining), and post-reward off-cycle lifetime totals.",
+      "GAMES has three snapshot-backed views: active earning (time remaining), reward collection through the full in-game claim window (latest final points + reward time remaining), and post-reward off-cycle lifetime totals.",
       "GAMES rows use progress indicators: `🟡` (>0), `✅` (>=4000), and `🏆` (>=10000).",
       "When a page has no active context, it renders explicit inactive text instead of a blank list.",
       "Linked players outside active contexts are still shown as neutral rows when active groups exist.",
@@ -350,7 +350,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
   link: {
     summary: "Manage local Discord-player links using PlayerLink.",
     details: [
-      "`create` links a player tag to your Discord account when the tag is currently unlinked.",
+      "`create` links one or more player tags to your Discord account when the tags are currently unlinked.",
       "`create` with `user` is admin-only and can create a link for another Discord user when unlinked.",
       "Existing links are never implicitly reassigned; delete-first is required before relinking to another user.",
       "`delete` removes a link when run by the linked user or an admin override target.",
@@ -363,7 +363,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`sync-clashperk` is admin-gated and imports missing local PlayerLink rows from a public Google Sheet with ClashPerk-style columns.",
     ],
     examples: [
-      "/link create player-tag:#ABC123",
+      "/link create player-tag:#ABC123,#DEF456",
       "/link create player-tag:#ABC123 user:143827744717799425",
       "/link delete player-tag:#ABC123",
       "/link list clan-tag:2QG2C08UP",
@@ -531,6 +531,21 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`/bot-logs` is admin-only by default unless role access is granted with `/permission add`.",
     ],
     examples: ["/bot-logs", "/bot-logs set-channel:#leadership-logs"],
+  },
+  unlinked: {
+    summary: "Alert leaders when tracked-clan members are not linked to Discord, and list unresolved players.",
+    details: [
+      "`set-alert` stores one guild-level alert channel in dedicated unlinked-alert persistence instead of `BotSetting`.",
+      "If no guild-level alert channel is configured, live alerts fall back to the tracked clan `log-channel` when available.",
+      "`list` resolves the current live unresolved set across tracked FWA clans and active current-season CWL clans.",
+      "A player is only considered linked when `PlayerLink.discordUserId` points to a Discord user; rows without a Discord user still count as unlinked.",
+      "Default access is FWA Leader role + Administrator unless role policy is changed with `/permission add`.",
+    ],
+    examples: [
+      "/unlinked set-alert channel:#leadership-alerts",
+      "/unlinked list",
+      "/unlinked list clan:#2QG2C08UP",
+    ],
   },
   force: {
     summary:

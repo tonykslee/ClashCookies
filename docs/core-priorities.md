@@ -6,7 +6,7 @@ Project handoff and priorities for this repo (`ClashCookies`):
 - Never commit directly to `main` or `dev`.
 - Keep commits small, scoped, and conventional (`feat`, `fix`, `refactor`, `test`, `docs`, `chore`).
 - Before finalizing:
-  - run typecheck/tests
+  - run typecheck/tests when code behavior changed
   - generate commit message
   - save to `.git/AI_COMMIT_MSG`
   - run `./scripts/commit-feature.sh`
@@ -18,14 +18,22 @@ Project handoff and priorities for this repo (`ClashCookies`):
   - domain/services
   - persistence (Prisma)
   - integrations (Discord, CoC, points site, sheets)
+  - background schedulers/pollers
 - Favor single ownership of state (no duplicate source-of-truth fields).
-- Prefer deterministic, idempotent flows for war events and message posting.
+- Preserve active-vs-mirror runtime ownership:
+  - active instances own upstream polling and schedulers
+  - mirror instances only run guarded snapshot sync
+- Prefer deterministic, idempotent flows for war events, mail, notify posts, reminders, and tracked messages.
 
 3) Dependencies and runtime safety
 - Introduce new dependencies only when justified.
 - Prefer existing helpers/services before adding new abstractions.
-- Keep startup and deploy behavior stable (`prisma migrate deploy` compatibility).
-- Highlight operational risks when schema/runtime assumptions change.
+- Keep startup and deploy behavior stable (`prisma migrate deploy`, health endpoints, command registration, scheduler boot).
+- Preserve current droplet deployment assumptions unless intentionally migrating again:
+  - yarn-based container start
+  - dependency-cache guard
+  - localhost-only ops surfaces by default
+- Highlight operational risks when schema, deployment, or runtime assumptions change.
 
 4) Database design
 - Use normalized tables over fragile JSON blobs for core logic.
@@ -35,16 +43,17 @@ Project handoff and priorities for this repo (`ClashCookies`):
 - Avoid nullable/duplicate ownership fields unless intentionally transitional.
 
 5) API/web call efficiency
-- Minimize duplicate CoC and points.fwafarm calls.
+- Minimize duplicate CoC, points.fwafarm, and FWAStats calls.
 - Prefer cache/reuse and DB-backed reads for repeated command rendering.
 - Make expensive operations explicit (`force` commands) rather than default behavior.
 - Keep polling loops bounded and efficient.
 
 6) Telemetry and observability
-- Instrument key paths with actionable logs and telemetry rollups.
+- Instrument key command, poller, and scheduler paths with actionable logs and telemetry rollups.
 - Track API/web/cache sources and key job durations.
-- Prefer concise, structured log messages over noisy spam.
 - Keep error paths informative (include context and reason codes).
+- Keep `/livez` and `/healthz` cheap and side-effect free.
+- Keep internal telemetry docs and the external droplet observability runbook aligned.
 
 7) Unit testing requirements
 - Add/update tests for all behavior changes, especially:
@@ -52,8 +61,9 @@ Project handoff and priorities for this repo (`ClashCookies`):
   - idempotency guards
   - command coverage
   - parsing/validation logic
+  - scheduler logic when behavior changes
 - Keep tests deterministic and isolated from external APIs.
-- Ensure `npm test` and `npx tsc --noEmit` pass before handoff.
+- Ensure `npm test` and `npx tsc --noEmit` pass before handoff when code changes warrant them.
 
 8) Code quality and comments
 - Add descriptive function-level comments for all functions (purpose-oriented, concise).
@@ -62,9 +72,11 @@ Project handoff and priorities for this repo (`ClashCookies`):
 - Keep implementations efficient and easy to trace.
 
 9) Documentation expectations
-- Update `README.md` for every user-facing feature or architectural change.
-- Keep runbooks/deploy notes accurate when migrations or data flows change.
-- Document operational commands and caveats clearly.
+- Update `README.md` for every user-facing feature or major architectural, runtime, or platform change.
+- Keep setup, deploy, and observability runbooks accurate when migrations, scheduler ownership, or health endpoints change.
+- Update `docs/architecture-contract.md` and `docs/project-brain.md` when ownership boundaries or runtime flows change.
+- Always update `/help` docs, permission targets, and command references when command behavior changes.
+- Keep `docs/commands.md` and command coverage tests in sync.
 
 10) Command discoverability and access control
 - Always update `/help` docs when adding or changing command behavior.

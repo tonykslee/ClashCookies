@@ -44,6 +44,15 @@ function makeInteraction(input?: {
   };
 }
 
+function makeAutocompleteInteraction(value: string) {
+  return {
+    options: {
+      getFocused: vi.fn(() => ({ name: "tag", value })),
+    },
+    respond: vi.fn().mockResolvedValue(undefined),
+  };
+}
+
 function getEmbedDescription(interaction: any): string {
   const payload = interaction.editReply.mock.calls.find(
     (call: unknown[]) => call[0] && typeof call[0] === "object" && Array.isArray(call[0].embeds)
@@ -62,7 +71,7 @@ describe("/accounts command", () => {
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
   });
 
-  it("uses PlayerLink.playerName first when present and avoids live fetch for that row", async () => {
+  it("uses PlayerLink.playerName first when present and keeps render DB-only", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([
       {
         playerTag: "#PYLQ0289",
@@ -85,7 +94,7 @@ describe("/accounts command", () => {
     expect(prismaMock.playerLink.updateMany).not.toHaveBeenCalled();
   });
 
-  it("fetches live name and backfills PlayerLink.playerName when missing", async () => {
+  it("falls back to playerActivity.name when playerName is missing", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([
       {
         playerTag: "#QGRJ2222",
@@ -93,7 +102,14 @@ describe("/accounts command", () => {
         createdAt: new Date("2026-03-01T00:00:00.000Z"),
       },
     ]);
-    prismaMock.playerActivity.findMany.mockResolvedValue([]);
+    prismaMock.playerActivity.findMany.mockResolvedValue([
+      {
+        tag: "#QGRJ2222",
+        name: "Activity Bravo",
+        clanTag: "#PQL0289",
+        clanName: "Clan One",
+      },
+    ]);
     const cocService = {
       getPlayerRaw: vi.fn().mockResolvedValue({
         name: "Live Bravo",
@@ -103,46 +119,17 @@ describe("/accounts command", () => {
     const interaction = makeInteraction();
 
     await Accounts.run({} as any, interaction as any, cocService as any);
-    await Promise.resolve();
 
-    expect(cocService.getPlayerRaw).toHaveBeenCalledWith("#QGRJ2222");
-    expect(getEmbedDescription(interaction)).toContain("- Live Bravo `#QGRJ2222`");
-    expect(prismaMock.playerLink.updateMany).toHaveBeenCalledWith({
-      where: {
-        playerTag: "#QGRJ2222",
-        OR: [{ playerName: null }, { playerName: "" }],
-      },
-      data: { playerName: "Live Bravo" },
-    });
+    expect(cocService.getPlayerRaw).not.toHaveBeenCalled();
+    expect(getEmbedDescription(interaction)).toContain("- Activity Bravo `#QGRJ2222`");
+    expect(prismaMock.playerLink.updateMany).not.toHaveBeenCalled();
   });
 
-  it("uses local fallback name when live fetch fails and does not write backfill", async () => {
+  it("falls back to raw tag when neither local name source exists", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([
       {
         playerTag: "#CUV9082",
         playerName: "",
-        createdAt: new Date("2026-03-01T00:00:00.000Z"),
-      },
-    ]);
-    prismaMock.playerActivity.findMany.mockResolvedValue([
-      { tag: "#CUV9082", name: "Activity Charlie", clanTag: "#2QG2C08UP" },
-    ]);
-    const cocService = {
-      getPlayerRaw: vi.fn().mockRejectedValue(new Error("coc unavailable")),
-    };
-    const interaction = makeInteraction();
-
-    await Accounts.run({} as any, interaction as any, cocService as any);
-
-    expect(getEmbedDescription(interaction)).toContain("- Activity Charlie `#CUV9082`");
-    expect(prismaMock.playerLink.updateMany).not.toHaveBeenCalled();
-  });
-
-  it("falls back to raw tag when no linked/live/activity name exists", async () => {
-    prismaMock.playerLink.findMany.mockResolvedValue([
-      {
-        playerTag: "#LQ9P8R2",
-        playerName: null,
         createdAt: new Date("2026-03-01T00:00:00.000Z"),
       },
     ]);
@@ -154,11 +141,93 @@ describe("/accounts command", () => {
 
     await Accounts.run({} as any, interaction as any, cocService as any);
 
-    expect(getEmbedDescription(interaction)).toContain("- #LQ9P8R2 `#LQ9P8R2`");
+    expect(cocService.getPlayerRaw).not.toHaveBeenCalled();
+    expect(getEmbedDescription(interaction)).toContain("- #CUV9082 `#CUV9082`");
     expect(prismaMock.playerLink.updateMany).not.toHaveBeenCalled();
   });
 
-  it("uses PlayerActivity clan name in output without live fetch when local clan context is complete", async () => {
+  it("autocompletes player tags from PlayerLink and ignores tracked clans", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#ABC123",
+        playerName: "Alpha",
+        discordUserId: null,
+      },
+      {
+        playerTag: "#ABC123",
+        playerName: "Alpha Prime",
+        discordUserId: "111111111111111111",
+      },
+      {
+        playerTag: "#ABC999",
+        playerName: "Beta",
+        discordUserId: "222222222222222222",
+      },
+    ]);
+    const interaction = makeAutocompleteInteraction("abc");
+
+    await Accounts.autocomplete(interaction as any);
+
+    expect(prismaMock.playerLink.findMany).toHaveBeenCalledWith({
+      select: {
+        discordUserId: true,
+        playerName: true,
+        playerTag: true,
+      },
+    });
+    expect(prismaMock.trackedClan.findMany).not.toHaveBeenCalled();
+    expect(interaction.respond).toHaveBeenCalledWith([
+      { name: "Alpha Prime (#ABC123)", value: "#ABC123" },
+      { name: "Beta (#ABC999)", value: "#ABC999" },
+    ]);
+  });
+
+  it("matches by partial linked name and falls back to the bare tag label", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#QGRJ2222",
+        playerName: "Bravo Player",
+        discordUserId: "111111111111111111",
+      },
+      {
+        playerTag: "#LQ9P8R2",
+        playerName: null,
+        discordUserId: "222222222222222222",
+      },
+    ]);
+    const interaction = makeAutocompleteInteraction("brav");
+
+    await Accounts.autocomplete(interaction as any);
+
+    expect(interaction.respond).toHaveBeenCalledWith([
+      { name: "Bravo Player (#QGRJ2222)", value: "#QGRJ2222" },
+    ]);
+
+    const emptyQueryInteraction = makeAutocompleteInteraction("");
+    await Accounts.autocomplete(emptyQueryInteraction as any);
+
+    expect(emptyQueryInteraction.respond).toHaveBeenCalledWith([
+      { name: "Bravo Player (#QGRJ2222)", value: "#QGRJ2222" },
+      { name: "#LQ9P8R2", value: "#LQ9P8R2" },
+    ]);
+  });
+
+  it("caps autocomplete results at 25", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue(
+      Array.from({ length: 30 }, (_, index) => ({
+        playerTag: `#PYLQ0${String(index).padStart(3, "0")}`,
+        playerName: `Player ${String(index).padStart(2, "0")}`,
+        discordUserId: "111111111111111111",
+      })),
+    );
+    const interaction = makeAutocompleteInteraction("");
+
+    await Accounts.autocomplete(interaction as any);
+
+    expect((interaction.respond as any).mock.calls[0][0]).toHaveLength(25);
+  });
+
+  it("uses PlayerActivity clan name in output when local clan context is complete", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([
       {
         playerTag: "#PYLQ0289",
@@ -180,7 +249,7 @@ describe("/accounts command", () => {
     expect(getEmbedDescription(interaction)).toContain("**Saved Clan Name (#PQL0289)**");
   });
 
-  it("treats clanTag-only local context as incomplete, live-fetches, then falls back to tracked clan name", async () => {
+  it("uses tracked clan fallback name when playerActivity.clanTag exists but clanName is missing", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([
       {
         playerTag: "#QGRJ2222",
@@ -201,7 +270,7 @@ describe("/accounts command", () => {
 
     await Accounts.run({} as any, interaction as any, cocService as any);
 
-    expect(cocService.getPlayerRaw).toHaveBeenCalledWith("#QGRJ2222");
+    expect(cocService.getPlayerRaw).not.toHaveBeenCalled();
     expect(getEmbedDescription(interaction)).toContain("**Tracked Clan Name (#2QG2C08UP)**");
   });
 });

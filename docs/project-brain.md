@@ -4,7 +4,7 @@ Before implementing any code changes, read:
 - architecture-contract.md
 - core-priorities.md
 
-# ClashCookies – Project Brain
+# ClashCookies - Project Brain
 
 This file defines the architectural context for the project.
 All AI tasks should read this file before making changes.
@@ -12,6 +12,8 @@ All AI tasks should read this file before making changes.
 Related documents:
 - docs/core-priorities.md
 - docs/architecture-contract.md
+- docs/deployment.md
+- docs/observability.md
 
 ---
 
@@ -19,42 +21,32 @@ Related documents:
 
 Primary goals:
 
-1. Reliable FWA tooling for Discord clans
-2. Deterministic war event handling
-3. Fast command response times
-4. Clear data ownership boundaries
-5. Safe schema evolution
+1. Reliable FWA and CWL tooling for Discord clans
+2. Deterministic war, mail, and notify handling
+3. Fast DB-first command response times
+4. Clear state ownership boundaries
+5. Safe schema and platform evolution
+6. Strong operational visibility for production and staging
 
 ---
 
 # System Architecture Overview
 
-High level flow:
+High-level runtime model:
 
-TrackedClan
-    │
-    ▼
-WarEventPoller
-    │
-    ▼
-CurrentWar
-    │
-    ├── ClanWarParticipation
-    ├── WarLookup
-    └── WarEvent
+- The Discord command surface renders primarily from persisted state.
+- Active runtime instances own upstream pollers, schedulers, and refresh loops.
+- Mirror runtime instances do not own upstream polling; they mirror a guarded runtime-table allowlist from production for staging-safe reads.
+- The app exposes health endpoints and emits internal telemetry in addition to the external droplet observability stack.
 
-points.fwafarm
-    │
-    ▼
-PointsSyncService
-    │
-    ▼
-ClanPointsSync
+Core subsystems:
 
-Commands
-    │
-    ▼
-Render using CurrentWar + ClanPointsSync
+- War state: `TrackedClan -> WarEventLogService/poll loops -> CurrentWar -> ClanWarHistory / ClanWarParticipation / WarAttacks / WarLookup / WarEvent / WarMailLifecycle / ClanPostedMessage`
+- Points sync: `points.fwafarm -> PointsSyncService -> ClanPointsSync`
+- Feed-backed current state: `FWAStats JSON feeds -> FwaFeedSchedulerService -> FwaClanCatalog / FwaPlayerCatalog / FwaClanMemberCurrent / FwaWarMemberCurrent / FwaClanWarLogCurrent`
+- Snapshot-backed todo: `PlayerLink + CurrentWar + CWL registry + activity signals -> TodoSnapshotService -> TodoPlayerSnapshot`
+- Reminder delivery: `Reminder/UserActivityReminder config + snapshots/current war -> reminder schedulers -> delivery logs`
+- Operational state: `TrackedMessage`, unlinked-alert persistence, telemetry aggregates, report schedules
 
 ---
 
@@ -62,18 +54,25 @@ Render using CurrentWar + ClanPointsSync
 
 Each domain concept has a single authoritative owner.
 
+Important owners:
+
 | Concept | Owner |
-|------|------|
-Tracked clans | TrackedClan |
-Live war state | CurrentWar |
-FWA sync metadata | ClanPointsSync |
-War participation history | ClanWarParticipation |
-Archived war payloads | WarLookup |
-Event idempotency | WarEvent |
-Posted Discord messages | ClanPostedMessage |
-Clan configuration | TrackedClan |
-Notification routing | ClanNotifyConfig |
-Custom war plans | ClanWarPlan |
+| --- | --- |
+| Tracked FWA clans | TrackedClan |
+| Seasonal CWL tracked clans | CwlTrackedClan |
+| Player-to-Discord links | PlayerLink |
+| Live war state | CurrentWar |
+| Ended-war canonical record | ClanWarHistory |
+| Ended-war participation | ClanWarParticipation |
+| Points sync metadata | ClanPointsSync |
+| Posted notify/mail messages | ClanPostedMessage |
+| Active-war mail lifecycle | WarMailLifecycle |
+| Todo render snapshots | TodoPlayerSnapshot |
+| Guild reminders | Reminder* tables |
+| Personal reminders | UserActivityReminder* tables |
+| Tracked long-lived posts | TrackedMessage* tables |
+| FWA feed current-state tables | Fwa* current-state tables |
+| Telemetry rollups and report schedules | Telemetry* tables |
 
 Do not duplicate ownership across tables.
 
@@ -81,11 +80,10 @@ Do not duplicate ownership across tables.
 
 # Polling Model
 
-War polling always starts from `TrackedClan`.
-
-Never start polling from derived tables such as `CurrentWar`.
-
-Derived tables must be recreatable by polling.
+- Active mode owns external pollers and schedulers.
+- Mirror mode is read-oriented and only runs guarded prod-to-staging snapshot sync for the runtime allowlist.
+- Expensive upstream fetches should happen in background services, not in user-facing commands.
+- Derived tables and snapshots must be recreatable by their owning service.
 
 ---
 
@@ -94,28 +92,34 @@ Derived tables must be recreatable by polling.
 Hot commands must remain fast.
 
 Examples:
+
 - `/fwa match`
+- `/todo`
 - `/inactive`
 
 Rules:
 
-- Avoid external HTTP calls inside commands.
+- Avoid external HTTP calls inside hot command render paths when persisted state already exists.
 - Prefer DB reads over live API calls.
-- Use bulk queries instead of per-clan queries.
-- Poll loops handle expensive operations.
+- Use bulk reads instead of per-clan or per-player fan-out.
+- Keep schedulers and poll loops bounded by tracked scope.
 
 ---
 
-# Idempotency Guarantees
+# Deployment Model
 
-All war events must be idempotent.
+Current production and staging deployments are droplet-based.
 
-Tables responsible:
+- Production runs in active polling mode.
+- Staging runs in mirror mode against production runtime data.
+- The app exposes `/livez` and `/healthz`.
+- External observability on the droplet is documented separately in `docs/observability.md`.
 
-WarEvent
-ClanPostedMessage
+When deployment assumptions change, update:
 
-These tables prevent duplicate Discord messages.
+- `README.md`
+- `docs/deployment.md`
+- `docs/observability.md`
 
 ---
 
@@ -123,10 +127,10 @@ These tables prevent duplicate Discord messages.
 
 When changing ownership of a field:
 
-1. Introduce the new table
-2. Migrate reads
-3. Backfill data
-4. Remove old ownership
+1. Introduce the new table.
+2. Migrate reads.
+3. Backfill data.
+4. Remove old ownership.
 
 Never perform ownership swaps in a single step.
 
@@ -136,8 +140,10 @@ Never perform ownership swaps in a single step.
 
 Design should support:
 
-- 50–100 tracked clans
-- thousands of wars
+- 50-100 tracked FWA clans
+- seasonal CWL registries
+- thousands of wars and participation rows
+- growing reminder, telemetry, tracked-message, and feed-state tables
 - years of historical data
 
 ---
@@ -152,8 +158,8 @@ Important expectations:
 
 - feature branches only
 - small commits
-- tests required
-- documentation updated
+- tests required when behavior changes
+- documentation updated for user-facing, architectural, runtime, or platform changes
 
 ---
 

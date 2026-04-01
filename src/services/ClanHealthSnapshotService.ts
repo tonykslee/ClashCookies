@@ -215,7 +215,10 @@ export class ClanHealthSnapshotService {
         : Promise.resolve([] as ParticipationMetricRow[]),
       activityRows.length > 0
         ? prisma.playerLink.findMany({
-            where: { playerTag: { in: activityRows.map((row) => row.tag) } },
+            where: {
+              playerTag: { in: activityRows.map((row) => row.tag) },
+              discordUserId: { not: null },
+            },
             select: { playerTag: true },
           })
         : Promise.resolve([] as Array<{ playerTag: string }>),

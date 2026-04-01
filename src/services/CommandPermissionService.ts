@@ -97,6 +97,9 @@ export const COMMAND_PERMISSION_TARGETS = [
   "sync:post:status",
   "say",
   "bot-logs",
+  "unlinked",
+  "unlinked:set-alert",
+  "unlinked:list",
   `${MANAGE_COMMAND_ROLES_COMMAND}:add`,
   `${MANAGE_COMMAND_ROLES_COMMAND}:remove`,
   `${MANAGE_COMMAND_ROLES_COMMAND}:list`,
@@ -169,6 +172,9 @@ const FWA_LEADER_DEFAULT_TARGETS = new Set<string>([
   "sync:post:status",
   "inactive",
   "clan-health",
+  "unlinked",
+  "unlinked:set-alert",
+  "unlinked:list",
 ]);
 
 /** Purpose: command roles key. */
