@@ -114,6 +114,7 @@ type TodoGamesDerivedValues = {
 
 const TODO_GAMES_TARGET_POINTS = 4000;
 const TODO_GAMES_POINTS_MAX = 4000;
+const TODO_GAMES_REWARD_COLLECTION_DURATION_MS = 7 * 24 * 60 * 60 * 1000;
 const TODO_SNAPSHOT_WRITE_CHUNK_SIZE = 50;
 const TODO_CWL_SEASON_WRITE_CHUNK_SIZE = 100;
 
@@ -713,6 +714,21 @@ function buildClanGamesCycleKey(startMs: number): string {
   return String(Math.trunc(startMs));
 }
 
+/** Purpose: resolve one shared Clan Games cycle boundary from persisted cycle-key state. */
+export function resolveClanGamesCycleBoundaryFromCycleKey(input: unknown): {
+  startMs: number;
+  earningEndsMs: number;
+  rewardCollectionEndsMs: number;
+} | null {
+  const cycleStartMs = toFiniteIntOrNull(input);
+  if (cycleStartMs === null) return null;
+  const cycleStart = new Date(cycleStartMs);
+  return buildClanGamesCycleBoundary(
+    cycleStart.getUTCFullYear(),
+    cycleStart.getUTCMonth(),
+  );
+}
+
 /** Purpose: normalize potentially-empty cycle-key input into nullable stable string. */
 function normalizeGamesCycleKey(input: unknown): string | null {
   const value = String(input ?? "").trim();
@@ -1270,10 +1286,12 @@ function buildClanGamesCycleBoundary(
   earningEndsMs: number;
   rewardCollectionEndsMs: number;
 } {
+  const earningEndsMs = Date.UTC(year, month, 28, 8, 0, 0, 0);
   return {
     startMs: Date.UTC(year, month, 22, 8, 0, 0, 0),
-    earningEndsMs: Date.UTC(year, month, 28, 8, 0, 0, 0),
-    rewardCollectionEndsMs: Date.UTC(year, month + 1, 1, 8, 0, 0, 0),
+    earningEndsMs,
+    rewardCollectionEndsMs:
+      earningEndsMs + TODO_GAMES_REWARD_COLLECTION_DURATION_MS,
   };
 }
 
@@ -1336,3 +1354,5 @@ function resolveClanGamesWindow(nowMs: number): TodoClanGamesWindow {
     rewardCollectionEndsMs: next.rewardCollectionEndsMs,
   };
 }
+
+export const resolveClanGamesWindowForTest = resolveClanGamesWindow;

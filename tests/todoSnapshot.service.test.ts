@@ -44,7 +44,10 @@ vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
 
-import { todoSnapshotService } from "../src/services/TodoSnapshotService";
+import {
+  resolveClanGamesWindowForTest,
+  todoSnapshotService,
+} from "../src/services/TodoSnapshotService";
 
 function buildSnapshotRow(
   overrides: Record<string, unknown> = {},
@@ -998,7 +1001,7 @@ describe("TodoSnapshotService", () => {
     );
   });
 
-  it("clears latest-season games points once reward collection fully ends", async () => {
+  it("keeps latest-season points through the extended reward claim window after April 1", async () => {
     prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
       buildSnapshotRow({
         gamesActive: false,
@@ -1008,8 +1011,8 @@ describe("TodoSnapshotService", () => {
         gamesSeasonBaseline: 14000,
         gamesCycleKey: "1774166400000",
         gamesEndsAt: new Date("2026-03-28T08:00:00.000Z"),
-        lastUpdatedAt: new Date("2026-04-01T07:55:00.000Z"),
-        updatedAt: new Date("2026-04-01T07:55:00.000Z"),
+        lastUpdatedAt: new Date("2026-04-01T11:55:00.000Z"),
+        updatedAt: new Date("2026-04-01T11:55:00.000Z"),
       }),
     ]);
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
@@ -1017,7 +1020,7 @@ describe("TodoSnapshotService", () => {
         playerTag: "#PYLQ0289",
         clanTag: "#PQL0289",
         playerName: "Alpha",
-        sourceSyncedAt: new Date("2026-04-01T09:00:00.000Z"),
+        sourceSyncedAt: new Date("2026-04-01T12:00:00.000Z"),
       },
     ]);
     prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
@@ -1033,7 +1036,60 @@ describe("TodoSnapshotService", () => {
 
     await todoSnapshotService.refreshSnapshotsForPlayerTags({
       playerTags: ["#PYLQ0289"],
-      nowMs: Date.UTC(2026, 3, 1, 9, 0, 0, 0),
+      nowMs: Date.UTC(2026, 3, 1, 12, 0, 0, 0),
+    });
+
+    expect(prismaMock.todoPlayerSnapshot.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          gamesActive: false,
+          gamesPoints: 1000,
+          gamesTarget: 4000,
+          gamesChampionTotal: 15000,
+          gamesSeasonBaseline: 14000,
+          gamesCycleKey: "1774166400000",
+          gamesEndsAt: new Date("2026-03-28T08:00:00.000Z"),
+        }),
+      }),
+    );
+  });
+
+  it("clears latest-season games points once reward collection fully ends", async () => {
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      buildSnapshotRow({
+        gamesActive: false,
+        gamesPoints: 1000,
+        gamesTarget: 4000,
+        gamesChampionTotal: 15000,
+        gamesSeasonBaseline: 14000,
+        gamesCycleKey: "1774166400000",
+        gamesEndsAt: new Date("2026-03-28T08:00:00.000Z"),
+        lastUpdatedAt: new Date("2026-04-04T07:55:00.000Z"),
+        updatedAt: new Date("2026-04-04T07:55:00.000Z"),
+      }),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        clanTag: "#PQL0289",
+        playerName: "Alpha",
+        sourceSyncedAt: new Date("2026-04-04T09:00:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.currentWar.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+    prismaMock.botSetting.findMany.mockResolvedValue([
+      {
+        key: "player_signal_state:#PYLQ0289",
+        value: JSON.stringify({ counters: { gamesChampion: 15000 } }),
+      },
+    ]);
+
+    await todoSnapshotService.refreshSnapshotsForPlayerTags({
+      playerTags: ["#PYLQ0289"],
+      nowMs: Date.UTC(2026, 3, 4, 9, 0, 0, 0),
     });
 
     expect(prismaMock.todoPlayerSnapshot.upsert).toHaveBeenCalledWith(
@@ -1049,5 +1105,35 @@ describe("TodoSnapshotService", () => {
         }),
       }),
     );
+  });
+
+  it("switches Clan Games windows at the exact earning and reward-claim cutoffs", () => {
+    const beforeEarningCutoff = resolveClanGamesWindowForTest(
+      Date.UTC(2026, 2, 28, 7, 59, 59, 999),
+    );
+    const atEarningCutoff = resolveClanGamesWindowForTest(
+      Date.UTC(2026, 2, 28, 8, 0, 0, 0),
+    );
+    const beforeClaimCutoff = resolveClanGamesWindowForTest(
+      Date.UTC(2026, 3, 4, 7, 59, 59, 999),
+    );
+    const atClaimCutoff = resolveClanGamesWindowForTest(
+      Date.UTC(2026, 3, 4, 8, 0, 0, 0),
+    );
+
+    expect(beforeEarningCutoff.active).toBe(true);
+    expect(beforeEarningCutoff.rewardCollectionActive).toBe(false);
+
+    expect(atEarningCutoff.active).toBe(false);
+    expect(atEarningCutoff.rewardCollectionActive).toBe(true);
+    expect(atEarningCutoff.rewardCollectionEndsMs).toBe(
+      Date.UTC(2026, 3, 4, 8, 0, 0, 0),
+    );
+
+    expect(beforeClaimCutoff.active).toBe(false);
+    expect(beforeClaimCutoff.rewardCollectionActive).toBe(true);
+
+    expect(atClaimCutoff.active).toBe(false);
+    expect(atClaimCutoff.rewardCollectionActive).toBe(false);
   });
 });
