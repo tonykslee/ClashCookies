@@ -1129,8 +1129,30 @@ export class FwaPoliceService {
     const issues = sortViolationsDeterministically(report.notFollowingPlan);
     if (issues.length <= 0) return empty;
 
+    const context: FwaPoliceApplicabilityContext = {
+      matchType: report.matchType,
+      expectedOutcome: report.expectedOutcome,
+      loseStyle: report.loseStyle,
+    };
+    const classifiedIssues = issues
+      .map((issue) => ({
+        issue,
+        violation: classifyFwaPoliceViolation({ issue, context }),
+      }))
+      .filter(
+        (
+          row,
+        ): row is {
+          issue: (typeof issues)[number];
+          violation: FwaPoliceViolation;
+        } => row.violation !== null,
+      );
+    if (classifiedIssues.length <= 0) return empty;
+
     const links = await listPlayerLinksForClanMembers({
-      memberTagsInOrder: issues.map((issue) => normalizePlayerTag(issue.playerTag)),
+      memberTagsInOrder: classifiedIssues.map((row) =>
+        normalizePlayerTag(row.issue.playerTag),
+      ),
     });
     const discordUserIdByTag = new Map(
       links.map((link) => [normalizePlayerTag(link.playerTag), link.discordUserId]),
@@ -1160,11 +1182,6 @@ export class FwaPoliceService {
       fallbackClanName: tracked.name,
       clanTag: normalizedClanTag,
     });
-    const context: FwaPoliceApplicabilityContext = {
-      matchType: report.matchType,
-      expectedOutcome: report.expectedOutcome,
-      loseStyle: report.loseStyle,
-    };
     const emojis = await resolveFwaPolicePresentationEmojis(input.client);
     const templateByViolation = new Map<FwaPoliceViolation, string>(
       FWA_POLICE_VIOLATIONS.map((violation) => [
@@ -1172,7 +1189,9 @@ export class FwaPoliceService {
         resolveStandardTemplateForViolation(violation),
       ]),
     );
-    for (const issue of issues) {
+    for (const classified of classifiedIssues) {
+      const issue = classified.issue;
+      const violation = classified.violation;
       const playerTag = normalizePlayerTag(issue.playerTag);
       if (!playerTag) continue;
 
@@ -1200,7 +1219,6 @@ export class FwaPoliceService {
       }
       created += 1;
 
-      const violation = classifyFwaPoliceViolation({ issue, context });
       const violationPresentation = await this.resolveViolationPresentationContext({
         clanTag: normalizedClanTag,
         warId: effectiveWarId,
@@ -1285,7 +1303,7 @@ export class FwaPoliceService {
     }
 
     return {
-      evaluatedViolations: issues.length,
+      evaluatedViolations: classifiedIssues.length,
       created,
       deduped,
       dmSent,
