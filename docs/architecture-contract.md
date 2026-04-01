@@ -2,121 +2,199 @@
 
 You must preserve these system flows unless I explicitly approve a redesign.
 
-## System Flow diagram
+## System flow
+
+War state:
 
 TrackedClan
-    │
-    ▼
-WarEventPoller
-    │
-    ▼
+    ->
+WarEventLogService / active poll loops
+    ->
 CurrentWar
-    │
-    ├── ClanWarParticipation
-    ├── WarLookup
-    └── WarEvent
+    ->
+ClanWarHistory
+ClanWarParticipation
+WarAttacks
+WarLookup
+WarEvent
+WarMailLifecycle
+ClanPostedMessage
+
+Points state:
 
 points.fwafarm
-    │
-    ▼
+    ->
 PointsSyncService
-    │
-    ▼
+    ->
 ClanPointsSync
 
-Commands
-    │
-    ▼
-read from CurrentWar + ClanPointsSync
+Feed-backed current state:
+
+FWAStats JSON feeds
+    ->
+FwaFeedSchedulerService
+    ->
+FwaClanCatalog
+FwaPlayerCatalog
+FwaClanMemberCurrent
+FwaWarMemberCurrent
+FwaClanWarLogCurrent
+FwaFeedSyncState
+FwaClanWarsWatchState
+FwaFeedCursor
+
+Snapshot and reminder state:
+
+PlayerLink + CurrentWar + CWL registry + activity signals
+    ->
+TodoSnapshotService
+    ->
+TodoPlayerSnapshot
+
+Reminder / UserActivityReminder config
+    + TodoPlayerSnapshot / CurrentWar
+    ->
+Reminder schedulers
+    ->
+ReminderFireLog / UserActivityReminderDelivery
+
+Operational state:
+
+TrackedMessageService -> TrackedMessage / TrackedMessageClaim
+TelemetryIngestService -> Telemetry aggregates / report schedules
+UnlinkedMemberAlertService -> UnlinkedAlertConfig / UnlinkedPlayer
+
+Mirror runtime:
+
+Prod runtime allowlist
+    ->
+MirrorSyncService
+    ->
+Staging runtime mirrors
+
+Commands:
+
+Read from CurrentWar + ClanPointsSync + TodoPlayerSnapshot + feed-backed tables + other persisted owners
 
 ## 0) State ownership map (single source of truth)
 
 Each domain concept must have exactly one authoritative owner.
 
-| Concept                   | Owner                |
-| ------------------------- | -------------------- |
-| Tracked clans             | TrackedClan          |
-| Live war state            | CurrentWar           |
-| FWA sync metadata         | ClanPointsSync       |
-| War participation history | ClanWarParticipation |
-| Archived war payloads     | WarLookup            |
-| Event idempotency         | WarEvent             |
-| Posted Discord messages   | ClanPostedMessage    |
-| Clan metadata/config      | TrackedClan          |
-| Notification routing      | ClanNotifyConfig     |
-| Custom war plans          | ClanWarPlan          |
+| Concept | Owner |
+| --- | --- |
+| Tracked FWA clans | TrackedClan |
+| Seasonal CWL tracked clans | CwlTrackedClan |
+| Player-to-Discord links | PlayerLink |
+| Live war state | CurrentWar |
+| Ended-war canonical record | ClanWarHistory |
+| Ended-war player participation | ClanWarParticipation |
+| Current-war attack detail | WarAttacks |
+| Archived war payloads | WarLookup |
+| Points sync metadata | ClanPointsSync |
+| War event idempotency | WarEvent |
+| Posted notify/mail messages | ClanPostedMessage |
+| Active-war mail lifecycle | WarMailLifecycle |
+| Notify overrides | ClanNotifyConfig |
+| Todo render snapshots | TodoPlayerSnapshot |
+| Guild reminder config and dedupe | Reminder, ReminderTimeOffset, ReminderTargetClan, ReminderFireLog |
+| Personal reminder config and dedupe | UserActivityReminderRule, UserActivityReminderDelivery |
+| Tracked reusable posts and claims | TrackedMessage, TrackedMessageClaim |
+| FWA feed current state | FwaClanCatalog, FwaPlayerCatalog, FwaClanMemberCurrent, FwaWarMemberCurrent, FwaClanWarLogCurrent |
+| FWA feed scheduler metadata | FwaFeedSyncState, FwaClanWarsWatchState, FwaFeedCursor |
+| Unlinked alert routing and unresolved members | UnlinkedAlertConfig, UnlinkedPlayer |
+| Telemetry rollups and scheduled reports | TelemetryCommandAggregate, TelemetryUserCommandAggregate, TelemetryApiAggregate, TelemetryStageAggregate, TelemetryReportSchedule, TelemetryReportRun |
+| Police-handled dedupe | FwaPoliceHandledViolation |
 
 Rules:
 
 - Do not duplicate ownership fields across tables.
 - Do not store derived data where it can be queried from the owner.
-- If a field appears in two tables, one must be explicitly marked as derived.
+- If a field appears in multiple tables, document which copy is authoritative and mark every other copy as derived or transitional.
 
-## 1) War polling ownership
+## 1) Runtime ownership model
 
-- Polling starts from `TrackedClan` (authoritative set), not `CurrentWar`.
-- `CurrentWar` is derived runtime state created/updated by poll.
-- Empty `CurrentWar` must be bootstrappable by poll/force poll.
-- Polling services must always start from authoritative sources
-  - (e.g. TrackedClan) rather than derived runtime state.
-- Derived tables must be recreatable by pollers.
+- `POLLING_MODE=active` owns upstream pollers and schedulers.
+- `POLLING_MODE=mirror` must not duplicate upstream polling or reminder ownership.
+- Mirror mode may only run guarded prod-to-staging snapshot sync for the allowlisted runtime tables.
+- Derived runtime tables must be recreatable from active pollers or guarded mirror sync.
 
 ## 2) CurrentWar role
 
 - `CurrentWar` stores live war state only.
-- Do not treat `CurrentWar.syncNum` as authoritative sync source.
+- `CurrentWar` may hold materialized per-war notify and mail runtime flags, but those values are derived from persisted config.
+- Do not treat `CurrentWar.syncNum` as the authoritative sync source.
+- Do not turn `CurrentWar` into a historical archive.
 
-## 3) Points sync ownership
+## 3) War history ownership
+
+- `ClanWarHistory` is the canonical ended-war record.
+- `ClanWarParticipation` is the canonical per-player ended-war participation record.
+- `WarAttacks` is current-war operational detail only.
+- `WarLookup` owns archived/raw war payloads.
+- `/inactive` and other historical commands must read ended-war tables, not historical reuse of `WarAttacks`.
+
+## 4) Points sync ownership
 
 - `ClanPointsSync` is the single source of truth for points.fwafarm sync metadata.
-- `/fwa match` validation must read from `ClanPointsSync` (warId first, then warStart fallback).
-- Do not reintroduce `TrackedClan.pointsScrape` validation logic.
+- `/fwa match` validation must read from `ClanPointsSync` first.
+- Do not reintroduce `TrackedClan.pointsScrape`-style ownership.
 
-## 4) War history ownership
+## 5) Feed ingestion ownership
 
-- `WarAttacks` is current-war operational data only.
-- At war end, archive participation into `ClanWarParticipation`.
-- `/inactive` must query `ClanWarParticipation` (SQL/window logic), not historical `WarAttacks`.
+- FWAStats JSON feed reads flow into feed-backed current-state tables, not directly into command rendering.
+- `FwaFeedSyncState`, `FwaClanWarsWatchState`, and `FwaFeedCursor` own feed scheduler metadata.
+- Commands should prefer persisted feed rows over live feed calls on hot paths.
 
-## 5) Idempotent messaging
+## 6) Snapshot and reminder ownership
 
-- `WarEvent` is the event guard (dedupe/idempotency).
-- `ClanPostedMessage` is message tracking for mail/notify updates and edits.
-- Do not reintroduce message tracking in `TrackedClan.mailConfig.messages[]`.
+- `TodoPlayerSnapshot` is the authoritative render source for `/todo`.
+- Guild reminder ownership lives in `Reminder`, `ReminderTimeOffset`, `ReminderTargetClan`, and `ReminderFireLog`.
+- Personal reminder ownership lives in `UserActivityReminderRule` and `UserActivityReminderDelivery`.
+- Do not rebuild broad multi-source player state synchronously in command handlers when a maintained snapshot already exists.
 
-## 6) TrackedClan scope
+## 7) Messaging and idempotency
 
-- `TrackedClan` holds clan metadata/config only.
-- Keep runtime/posted-message/sync-history ownership in dedicated tables/services above.
+- `WarEvent` is the war-event dedupe guard.
+- `ClanPostedMessage` tracks posted notify/mail messages.
+- `WarMailLifecycle` owns active-war mail send lifecycle state.
+- `TrackedMessage` owns long-lived tracked posts such as sync-time and base-swap flows.
+- Do not collapse these responsibilities into one generic table or back into config blobs.
 
-## 7) Change safety rule
+## 8) Notification routing
 
-- If a requested change appears to conflict with any rule above:
-  1. Stop.
-  2. Explain the conflict.
-  3. Ask for explicit approval before implementing.
+- `TrackedClan` owns default clan metadata plus default mail/log/notify destinations.
+- `ClanNotifyConfig` owns per-guild notify overrides.
+- `CurrentWar` may materialize per-war runtime notify flags derived from those persisted configs.
+- Do not add new notification ownership fields without explicit approval.
 
-## 8) Performance invariants
+## 9) Command determinism and performance
 
-Hot command paths must remain fast.
+Hot command paths must remain fast and predictable.
 
 Rules:
 
-- `/fwa match` must execute without external HTTP calls.
-- Poll loops must avoid N+1 queries.
-- Database queries should prefer bulk reads over per-clan queries.
-- Poll loops must remain bounded by the number of tracked clans.
+- Preferred hierarchy is: database -> cache -> external API.
+- Hot commands must avoid external HTTP calls on the render path whenever persisted state already exists.
+- Poll loops must avoid N+1 database patterns.
+- Prefer bulk reads followed by in-memory mapping.
+- Poll loops and schedulers must stay bounded by tracked scope.
 
 Preferred pattern:
 
-1 query → in-memory map → command rendering
+1 query -> in-memory map -> command rendering
 
 Avoid patterns like:
 
 for each clan:
 database query
 
-## 9) Schema evolution safety
+## 10) Telemetry and health
+
+- Health endpoints must stay cheap, side-effect free, and safe for frequent probes.
+- Telemetry aggregate/report tables are observability state, not command-domain source of truth.
+- Add telemetry to important command and scheduler paths without making commands depend on telemetry writes to succeed.
+
+## 11) Schema evolution safety
 
 When changing table ownership:
 
@@ -127,23 +205,22 @@ When changing table ownership:
 
 Never switch ownership in a single step.
 
-## 10) Command determinism
+## 12) Change safety rule
 
-Commands should not rely on unstable external systems.
+If a requested change appears to conflict with any rule above:
 
-Preferred hierarchy:
-
-Database → cache → external API
-
-Expensive or unreliable operations must be handled by polling jobs,
-not user commands.
+1. Stop.
+2. Explain the conflict.
+3. Ask for explicit approval before implementing.
 
 ## Expected scale
 
 The system should remain stable with:
 
-- 50–100 tracked clans
-- thousands of war participation rows
+- 50-100 tracked FWA clans
+- seasonal CWL registries and linked-player snapshot workloads
+- thousands of war participation rows and growing archived history
+- growing reminder, telemetry, and feed-state tables
 - years of historical data
 
 Design decisions should prefer long-term clarity over short-term convenience.

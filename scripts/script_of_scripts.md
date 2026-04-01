@@ -11,6 +11,14 @@ Use loaded context as the source of truth:
 # 2) Start branch
 ./scripts/start-feature.sh <short-feature-name>
 
+Immediately verify:
+- `git branch --show-current` matches the new feature branch
+- `git status --short --branch` shows the new branch
+- if the branch did not change, stop and fix it before any edits
+
+Do not continue to Step 3 until the branch is confirmed.
+
+
 # 3) Task
 (Paste task here)
 
