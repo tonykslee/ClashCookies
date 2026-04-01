@@ -2,8 +2,12 @@ import {
   ActionRowBuilder,
   ApplicationCommandOptionType,
   AutocompleteInteraction,
+  ButtonBuilder,
+  ButtonInteraction,
+  ButtonStyle,
   ChatInputCommandInteraction,
   Client,
+  ComponentType,
   EmbedBuilder,
   ModalBuilder,
   TextInputBuilder,
@@ -45,6 +49,17 @@ const PLAN_MODAL_PREFIX = "warplan-edit";
 const PLAN_MODAL_INPUT_ID = "plan-text";
 const PLAN_MODAL_MIN_STARS_INPUT_ID = "non-mirror-min-stars";
 const PLAN_MODAL_OPEN_HOURS_INPUT_ID = "all-bases-open-hours-left";
+const WARPLAN_OVERVIEW_PAGE_SIZE = 10;
+const WARPLAN_OVERVIEW_PAGINATOR_TIMEOUT_MS = 10 * 60 * 1000;
+
+const WARPLAN_OVERVIEW_OVERRIDE_TYPES = [
+  "FWA-WIN",
+  "FWA-LOSS-TRIPLE_TOP_30",
+  "FWA-LOSS-TRADITIONAL",
+  "BL",
+  "MM",
+] as const;
+type WarPlanOverviewOverrideType = (typeof WARPLAN_OVERVIEW_OVERRIDE_TYPES)[number];
 
 const MATCH_SELECTOR_CHOICES = [
   { name: "BL", value: "BL" },
@@ -95,6 +110,107 @@ function clampEmbedFieldValue(value: string): string {
   const text = String(value ?? "").trim();
   if (text.length <= 1024) return text;
   return `${text.slice(0, 1012)}\n(+truncated)`;
+}
+
+function resolveWarPlanOverviewOverrideType(input: {
+  matchType: string | null | undefined;
+  outcome: string | null | undefined;
+  loseStyle: string | null | undefined;
+}): WarPlanOverviewOverrideType | null {
+  const matchType = String(input.matchType ?? "").toUpperCase();
+  const outcome = String(input.outcome ?? "").toUpperCase();
+  const loseStyle = String(input.loseStyle ?? "").toUpperCase();
+
+  if (matchType === "BL" && outcome === "ANY" && loseStyle === "ANY") return "BL";
+  if (matchType === "MM" && outcome === "ANY" && loseStyle === "ANY") return "MM";
+  if (matchType === "FWA" && outcome === "WIN" && loseStyle === "ANY")
+    return "FWA-WIN";
+  if (
+    matchType === "FWA" &&
+    outcome === "LOSE" &&
+    loseStyle === "TRIPLE_TOP_30"
+  ) {
+    return "FWA-LOSS-TRIPLE_TOP_30";
+  }
+  if (
+    matchType === "FWA" &&
+    outcome === "LOSE" &&
+    loseStyle === "TRADITIONAL"
+  ) {
+    return "FWA-LOSS-TRADITIONAL";
+  }
+  return null;
+}
+
+function buildWarPlanOverviewClanFieldName(input: {
+  clanTag: string;
+  clanName: string | null;
+}): string {
+  const clanTag = normalizeClanTag(input.clanTag);
+  const clanName = String(input.clanName ?? "").trim();
+  if (!clanName) return `#${clanTag}`;
+  return `${clanName} (#${clanTag})`;
+}
+
+function buildWarPlanOverviewClanFieldValue(
+  customTypes: ReadonlySet<WarPlanOverviewOverrideType>,
+): string {
+  const listed = WARPLAN_OVERVIEW_OVERRIDE_TYPES.filter((type) =>
+    customTypes.has(type),
+  );
+  if (listed.length === 0) return "Uses defaults for all match types";
+  return listed.map((type) => `- \`${type}\``).join("\n");
+}
+
+function paginateWarPlanOverviewFields(
+  fields: Array<{ name: string; value: string; inline?: boolean }>,
+  pageSize = WARPLAN_OVERVIEW_PAGE_SIZE,
+): Array<Array<{ name: string; value: string; inline?: boolean }>> {
+  const normalizedPageSize =
+    Number.isFinite(pageSize) && pageSize > 0 ? Math.trunc(pageSize) : 1;
+  if (fields.length <= 0) return [[]];
+  const pages: Array<Array<{ name: string; value: string; inline?: boolean }>> = [];
+  for (let i = 0; i < fields.length; i += normalizedPageSize) {
+    pages.push(fields.slice(i, i + normalizedPageSize));
+  }
+  return pages;
+}
+
+function buildWarPlanOverviewEmbed(input: {
+  pageFields: Array<{ name: string; value: string; inline?: boolean }>;
+  page: number;
+  totalPages: number;
+}): EmbedBuilder {
+  return new EmbedBuilder()
+    .setTitle("War Plan Override Overview")
+    .setDescription(
+      "Tracked clans for this guild and their clan-specific custom warplan overrides.",
+    )
+    .addFields(input.pageFields)
+    .setColor(0x3498db)
+    .setFooter({
+      text: `Page ${input.page + 1}/${input.totalPages}`,
+    })
+    .setTimestamp(new Date());
+}
+
+function buildWarPlanOverviewPaginationRow(input: {
+  customIdPrefix: string;
+  page: number;
+  totalPages: number;
+}): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`${input.customIdPrefix}:prev`)
+      .setLabel("Prev")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(input.page <= 0),
+    new ButtonBuilder()
+      .setCustomId(`${input.customIdPrefix}:next`)
+      .setLabel("Next")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(input.page >= input.totalPages - 1),
+  );
 }
 
 function buildComplianceConfigLine(input: {
@@ -333,6 +449,12 @@ export const resolveWarPlanEmojiShortcodesForTest =
   resolveWarPlanEmojiShortcodes;
 export const buildComplianceConfigLineForTest = buildComplianceConfigLine;
 export const getCurrentOrDefaultPlanDataForTest = getCurrentOrDefaultPlanData;
+export const resolveWarPlanOverviewOverrideTypeForTest =
+  resolveWarPlanOverviewOverrideType;
+export const buildWarPlanOverviewClanFieldValueForTest =
+  buildWarPlanOverviewClanFieldValue;
+export const paginateWarPlanOverviewFieldsForTest =
+  paginateWarPlanOverviewFields;
 
 export const WarPlan: Command = {
   name: "warplan",
@@ -368,7 +490,7 @@ export const WarPlan: Command = {
           name: "clan-tag",
           description: "Tracked clan tag",
           type: ApplicationCommandOptionType.String,
-          required: true,
+          required: false,
           autocomplete: true,
         },
         {
@@ -468,10 +590,12 @@ export const WarPlan: Command = {
     const history = new WarEventHistoryService(cocService);
     const clanTag =
       mode === "CUSTOM"
-        ? normalizeClanTag(interaction.options.getString("clan-tag", true))
+        ? normalizeClanTag(
+            interaction.options.getString("clan-tag", isSet || isReset),
+          )
         : "";
 
-    if (mode === "CUSTOM" && !clanTag) {
+    if (mode === "CUSTOM" && (isSet || isReset) && !clanTag) {
       await interaction.reply({
         ephemeral: true,
         content: "`clan-tag` is required.",
@@ -650,6 +774,181 @@ export const WarPlan: Command = {
     await interaction.deferReply({ ephemeral: true });
 
     if (isShow) {
+      if (mode === "CUSTOM" && !clanTag) {
+        const guildTrackedClanRows = await prisma.currentWar.findMany({
+          where: { guildId },
+          select: { clanTag: true },
+        });
+        const guildTrackedClanTags = [
+          ...new Set(
+            guildTrackedClanRows
+              .map((row) => normalizeClanTag(row.clanTag))
+              .filter(Boolean),
+          ),
+        ];
+        if (guildTrackedClanTags.length <= 0) {
+          await interaction.editReply("No tracked clans found for this guild.");
+          return;
+        }
+
+        const trackedClans = await prisma.trackedClan.findMany({
+          where: { tag: { in: guildTrackedClanTags } },
+          orderBy: { createdAt: "asc" },
+          select: { tag: true, name: true },
+        });
+        if (trackedClans.length <= 0) {
+          await interaction.editReply("No tracked clans found for this guild.");
+          return;
+        }
+
+        const trackedClanTags = trackedClans.map((clan) => normalizeClanTag(clan.tag));
+        const customRows = await prisma.clanWarPlan.findMany({
+          where: {
+            guildId,
+            scope: "CUSTOM",
+            clanTag: { in: trackedClanTags },
+          },
+          select: {
+            clanTag: true,
+            matchType: true,
+            outcome: true,
+            loseStyle: true,
+          },
+        });
+        const customTypesByClanTag = new Map<
+          string,
+          Set<WarPlanOverviewOverrideType>
+        >();
+        for (const row of customRows) {
+          const clanTagKey = normalizeClanTag(row.clanTag);
+          if (!clanTagKey) continue;
+          const customType = resolveWarPlanOverviewOverrideType({
+            matchType: row.matchType,
+            outcome: row.outcome,
+            loseStyle: row.loseStyle,
+          });
+          if (!customType) continue;
+          let existing = customTypesByClanTag.get(clanTagKey);
+          if (!existing) {
+            existing = new Set<WarPlanOverviewOverrideType>();
+            customTypesByClanTag.set(clanTagKey, existing);
+          }
+          existing.add(customType);
+        }
+
+        const overviewFields = trackedClans.map((clan) => {
+          const clanTagKey = normalizeClanTag(clan.tag);
+          return {
+            name: buildWarPlanOverviewClanFieldName({
+              clanTag: clanTagKey,
+              clanName: clan.name,
+            }),
+            value: clampEmbedFieldValue(
+              buildWarPlanOverviewClanFieldValue(
+                customTypesByClanTag.get(clanTagKey) ?? new Set(),
+              ),
+            ),
+            inline: false,
+          };
+        });
+        const pages = paginateWarPlanOverviewFields(overviewFields);
+        let page = 0;
+        const paginatorPrefix = `warplan-show-overview:${interaction.id}`;
+
+        await interaction.editReply({
+          embeds: [
+            buildWarPlanOverviewEmbed({
+              pageFields: pages[page],
+              page,
+              totalPages: pages.length,
+            }),
+          ],
+          components:
+            pages.length > 1
+              ? [
+                  buildWarPlanOverviewPaginationRow({
+                    customIdPrefix: paginatorPrefix,
+                    page,
+                    totalPages: pages.length,
+                  }),
+                ]
+              : [],
+        });
+
+        if (pages.length <= 1) {
+          return;
+        }
+
+        const message = await interaction.fetchReply();
+        const collector = message.createMessageComponentCollector({
+          componentType: ComponentType.Button,
+          time: WARPLAN_OVERVIEW_PAGINATOR_TIMEOUT_MS,
+        });
+
+        collector.on("collect", async (button: ButtonInteraction) => {
+          try {
+            if (button.user.id !== interaction.user.id) {
+              await button.reply({
+                ephemeral: true,
+                content: "Only the command user can control this paginator.",
+              });
+              return;
+            }
+            if (
+              button.customId !== `${paginatorPrefix}:prev` &&
+              button.customId !== `${paginatorPrefix}:next`
+            ) {
+              return;
+            }
+
+            if (button.customId.endsWith(":prev")) page = Math.max(0, page - 1);
+            if (button.customId.endsWith(":next")) page = Math.min(pages.length - 1, page + 1);
+
+            await button.update({
+              embeds: [
+                buildWarPlanOverviewEmbed({
+                  pageFields: pages[page],
+                  page,
+                  totalPages: pages.length,
+                }),
+              ],
+              components: [
+                buildWarPlanOverviewPaginationRow({
+                  customIdPrefix: paginatorPrefix,
+                  page,
+                  totalPages: pages.length,
+                }),
+              ],
+            });
+          } catch {
+            if (!button.replied && !button.deferred) {
+              await button.reply({
+                ephemeral: true,
+                content: "Failed to update warplan overview page.",
+              });
+            }
+          }
+        });
+
+        collector.on("end", async () => {
+          try {
+            await interaction.editReply({
+              embeds: [
+                buildWarPlanOverviewEmbed({
+                  pageFields: pages[page],
+                  page,
+                  totalPages: pages.length,
+                }),
+              ],
+              components: [],
+            });
+          } catch {
+            // no-op
+          }
+        });
+        return;
+      }
+
       const rows = await prisma.clanWarPlan.findMany({
         where: {
           guildId,
