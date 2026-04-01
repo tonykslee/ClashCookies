@@ -22,7 +22,7 @@
     "vitest": "^0.34.6"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "prisma generate && tsc",
     "lint": "eslint \"src/**/*.ts\" \"tests/**/*.ts\"",
     "lint:fix": "eslint \"src/**/*.ts\" \"tests/**/*.ts\" --fix",
     "seed:fwa-layouts": "ts-node src/scripts/seedFwaLayouts.ts",
