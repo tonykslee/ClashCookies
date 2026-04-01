@@ -295,6 +295,9 @@ async function loadLiveFwaMembers(input: {
       };
     }),
   );
+  console.info(
+    `[unlinked] stage=tracked_clan_members_summary clan_count=${trackedClans.length} live_clan_count=${clans.filter((clan) => clan?.clanTag).length}`,
+  );
 
   return clans.flatMap((clan) => {
     if (!clan?.clanTag) return [];
@@ -370,6 +373,9 @@ async function loadLiveCwlMembers(input: {
   const trackedTags = cwlTrackedClans
     .map((row) => normalizeClanTag(row.tag))
     .filter(Boolean);
+  console.info(
+    `[unlinked] stage=cwl_tracked_clan_summary season=${season} tracked_clan_count=${trackedTags.length}`,
+  );
   if (trackedTags.length <= 0) return [];
 
   const warsByClan = await runBoundedUnlinkedStage({
@@ -382,6 +388,9 @@ async function loadLiveCwlMembers(input: {
     cwlWarByClan: warsByClan,
     trackedCwlTags: new Set(trackedTags),
   });
+  console.info(
+    `[unlinked] stage=cwl_war_fetch_summary season=${season} tracked_clan_count=${trackedTags.length} active_member_count=${activeMembersByPlayerTag.size}`,
+  );
 
   return cwlTrackedClans.flatMap((tracked) => {
     const clanTag = normalizeClanTag(tracked.tag);
@@ -496,6 +505,9 @@ export class UnlinkedMemberAlertService {
           },
         }),
     });
+    console.info(
+      `[unlinked] stage=player_link_query_summary guild=${guildId} player_count=${currentMembers.length} row_count=${linkedRows.length}`,
+    );
     const linkedTagSet = new Set(
       linkedRows
         .filter((row) => normalizeDiscordUserId(row.discordUserId) !== null)
@@ -503,9 +515,14 @@ export class UnlinkedMemberAlertService {
         .filter(Boolean),
     );
 
-    return currentMembers
-      .filter((member) => !linkedTagSet.has(member.playerTag))
-      .map((member) => ({
+    const unresolvedMembers = currentMembers.filter(
+      (member) => !linkedTagSet.has(member.playerTag),
+    );
+    console.info(
+      `[unlinked] stage=current_unlinked_summary guild=${guildId} current_member_count=${currentMembers.length} unresolved_count=${unresolvedMembers.length}`,
+    );
+
+    return unresolvedMembers.map((member) => ({
         playerTag: member.playerTag,
         playerName: member.playerName,
         clanTag: member.clanTag,
@@ -578,6 +595,9 @@ export class UnlinkedMemberAlertService {
     );
     const currentUnlinked = currentMembers.filter(
       (member) => !linkedTagSet.has(member.playerTag),
+    );
+    console.info(
+      `[unlinked] stage=current_unlinked_summary guild=${guildId} current_member_count=${currentMembers.length} unresolved_count=${currentUnlinked.length}`,
     );
     const currentByTag = new Map(
       currentUnlinked.map((member) => [member.playerTag, member] as const),

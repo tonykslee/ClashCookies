@@ -142,6 +142,56 @@ describe("UnlinkedMemberAlertService", () => {
     ]);
   });
 
+  it("logs the read-path stages and avoids unresolved-state writes while listing", async () => {
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#2QG2C08UP", name: "Alpha Clan", logChannelId: "222222222222222222" },
+    ]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    const getClan = vi.fn().mockResolvedValue({
+      tag: "#2QG2C08UP",
+      name: "Alpha Clan",
+      members: [{ tag: "#PYLQ0289", name: "One" }],
+    });
+    const service = new UnlinkedMemberAlertService();
+
+    const result = await service.listCurrentUnlinkedMembers({
+      guildId: "guild-1",
+      cocService: {
+        getClan,
+      } as any,
+    });
+
+    expect(result).toEqual([
+      {
+        playerTag: "#PYLQ0289",
+        playerName: "One",
+        clanTag: "#2QG2C08UP",
+        clanName: "Alpha Clan",
+      },
+    ]);
+    expect(getClan).toHaveBeenCalledTimes(1);
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[unlinked] stage=tracked_clan_members_query status=completed"),
+    );
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[unlinked] stage=tracked_clan_members_summary clan_count=1 live_clan_count=1"),
+    );
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[unlinked] stage=cwl_tracked_clan_summary season="),
+    );
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[unlinked] stage=player_link_query_summary guild=guild-1 player_count=1 row_count=0"),
+    );
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[unlinked] stage=current_unlinked_summary guild=guild-1 current_member_count=1 unresolved_count=1"),
+    );
+    expect(prismaMock.unlinkedPlayer.findMany).not.toHaveBeenCalled();
+    expect(prismaMock.unlinkedPlayer.deleteMany).not.toHaveBeenCalled();
+    expect(prismaMock.unlinkedPlayer.upsert).not.toHaveBeenCalled();
+    expect(prismaMock.unlinkedPlayer.update).not.toHaveBeenCalled();
+  });
+
   it("treats PlayerLink rows without a Discord user as unlinked", async () => {
     prismaMock.trackedClan.findMany.mockResolvedValue([
       { tag: "#2QG2C08UP", name: "Alpha Clan", logChannelId: "222222222222222222" },
