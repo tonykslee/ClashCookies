@@ -220,6 +220,65 @@ describe("/link run", () => {
     );
   });
 
+  it("links multiple tags while trimming whitespace and reporting invalid entries individually", async () => {
+    prismaMock.playerLink.findUnique
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null);
+    prismaMock.playerLink.create.mockResolvedValue({});
+
+    const interaction = makeInteraction({
+      subcommand: "create",
+      playerTag: "  pyl0289 , not-a-tag , ,  #qgrj2222  ",
+      userId: "111111111111111111",
+    });
+
+    await Link.run({} as any, interaction as any, {} as any);
+
+    expect(prismaMock.playerLink.create).toHaveBeenNthCalledWith(1, {
+      data: { playerTag: "#PYL0289", discordUserId: "111111111111111111" },
+    });
+    expect(prismaMock.playerLink.create).toHaveBeenNthCalledWith(2, {
+      data: { playerTag: "#QGRJ2222", discordUserId: "111111111111111111" },
+    });
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      [
+        "created: #PYL0289 linked to you.",
+        "invalid_tag: not-a-tag is not a valid Clash tag.",
+        "invalid_tag: empty entry.",
+        "created: #QGRJ2222 linked to you.",
+      ].join("\n"),
+    );
+  });
+
+  it("links multiple tags for an admin override target and reports per-tag conflicts", async () => {
+    prismaMock.playerLink.findUnique
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        discordUserId: "999999999999999999",
+      });
+    prismaMock.playerLink.create.mockResolvedValue({});
+
+    const interaction = makeInteraction({
+      subcommand: "create",
+      playerTag: "#pyl0289, #qgrj2222",
+      userOverride: "222222222222222222",
+      userId: "111111111111111111",
+      isAdmin: true,
+    });
+
+    await Link.run({} as any, interaction as any, {} as any);
+
+    expect(prismaMock.playerLink.create).toHaveBeenCalledWith({
+      data: { playerTag: "#PYL0289", discordUserId: "222222222222222222" },
+    });
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      [
+        "created: #PYL0289 linked to <@222222222222222222>.",
+        "already_linked_to_other_user: #QGRJ2222 is linked to <@999999999999999999>. delete-first is required.",
+      ].join("\n"),
+    );
+  });
+
   it("rejects create-for-other when admin override permission is denied", async () => {
     vi.spyOn(
       CommandPermissionService.prototype,

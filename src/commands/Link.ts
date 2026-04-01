@@ -29,6 +29,7 @@ import {
   deletePlayerLink,
   listCurrentWeightsForClanMembers,
   listPlayerLinksForClanMembers,
+  type PlayerLinkCreateResult,
   normalizeClanTag,
   normalizeDiscordUserId,
   normalizePersistedDiscordUsername,
@@ -142,6 +143,54 @@ function getNextLinkListSortMode(mode: LinkListSortMode): LinkListSortMode {
       ? (currentIndex + 1) % LINK_LIST_SORT_MODE_CYCLE.length
       : 0;
   return LINK_LIST_SORT_MODE_CYCLE[nextIndex];
+}
+
+type LinkCreateTagInput = {
+  raw: string;
+  normalized: string;
+};
+
+function splitLinkCreateTags(rawInput: string): {
+  entries: LinkCreateTagInput[];
+  hadComma: boolean;
+} {
+  const parts = String(rawInput ?? "").split(",");
+  return {
+    hadComma: parts.length > 1,
+    entries: parts.map((part) => {
+      const raw = part.trim();
+      return {
+        raw,
+        normalized: normalizePlayerTag(raw),
+      };
+    }),
+  };
+}
+
+function formatLinkCreateResultMessage(input: {
+  outcome: PlayerLinkCreateResult["outcome"];
+  playerTag: string;
+  existingDiscordUserId?: string | null;
+  targetDiscordUserId: string;
+  isSelfCreate: boolean;
+}): string {
+  if (input.outcome === "created") {
+    const owner = input.isSelfCreate ? "you" : `<@${input.targetDiscordUserId}>`;
+    return `created: ${input.playerTag} linked to ${owner}.`;
+  }
+  if (input.outcome === "already_linked_to_you") {
+    return `already_linked_to_you: ${input.playerTag}.`;
+  }
+  if (input.outcome === "already_linked_to_target_user") {
+    return `already_linked_to_target_user: ${input.playerTag} -> <@${input.targetDiscordUserId}>.`;
+  }
+  if (input.outcome === "already_linked_to_other_user") {
+    return `already_linked_to_other_user: ${input.playerTag} is linked to <@${input.existingDiscordUserId}>. delete-first is required.`;
+  }
+  if (input.outcome === "invalid_user") {
+    return "invalid_user: expected a Discord snowflake user ID.";
+  }
+  return "invalid_tag: use Clash tags with characters `PYLQGRJCUV0289`.";
 }
 
 function normalizeUrlInput(input: string): string | null {
@@ -1430,7 +1479,7 @@ export const Link: Command = {
       options: [
         {
           name: "player-tag",
-          description: "Player tag (with or without #)",
+          description: "Player tag(s), comma-separated, with or without #",
           type: ApplicationCommandOptionType.String,
           required: true,
         },
@@ -1585,8 +1634,9 @@ export const Link: Command = {
 
     if (subcommand === "create") {
       const rawTag = interaction.options.getString("player-tag", true);
-      const normalizedTag = normalizePlayerTag(rawTag);
-      if (!normalizedTag) {
+      const parsedTags = splitLinkCreateTags(rawTag);
+      const firstValidTag = parsedTags.entries.find((entry) => entry.normalized);
+      if (!parsedTags.hadComma && !firstValidTag?.normalized) {
         await interaction.editReply(
           "invalid_tag: use Clash tags with characters `PYLQGRJCUV0289`.",
         );
@@ -1617,46 +1667,53 @@ export const Link: Command = {
         }
       }
 
-      const result = await createPlayerLink({
-        playerTag: normalizedTag,
-        targetDiscordUserId,
-        selfService: isSelfCreate,
-      });
+      if (!parsedTags.hadComma && firstValidTag?.normalized) {
+        const result = await createPlayerLink({
+          playerTag: firstValidTag.normalized,
+          targetDiscordUserId,
+          selfService: isSelfCreate,
+        });
 
-      if (result.outcome === "created") {
-        const owner = isSelfCreate ? "you" : `<@${targetDiscordUserId}>`;
         await interaction.editReply(
-          `created: ${result.playerTag} linked to ${owner}.`,
+          formatLinkCreateResultMessage({
+            outcome: result.outcome,
+            playerTag: result.playerTag,
+            existingDiscordUserId: result.existingDiscordUserId,
+            targetDiscordUserId,
+            isSelfCreate,
+          }),
         );
         return;
       }
-      if (result.outcome === "already_linked_to_you") {
-        await interaction.editReply(
-          `already_linked_to_you: ${result.playerTag}.`,
+
+      const resultLines: string[] = [];
+      for (const entry of parsedTags.entries) {
+        if (!entry.normalized) {
+          resultLines.push(
+            entry.raw
+              ? `invalid_tag: ${entry.raw} is not a valid Clash tag.`
+              : "invalid_tag: empty entry.",
+          );
+          continue;
+        }
+
+        const result = await createPlayerLink({
+          playerTag: entry.normalized,
+          targetDiscordUserId,
+          selfService: isSelfCreate,
+        });
+        resultLines.push(
+          formatLinkCreateResultMessage({
+            outcome: result.outcome,
+            playerTag: result.playerTag,
+            existingDiscordUserId: result.existingDiscordUserId,
+            targetDiscordUserId,
+            isSelfCreate,
+          }),
         );
-        return;
       }
-      if (result.outcome === "already_linked_to_target_user") {
-        await interaction.editReply(
-          `already_linked_to_target_user: ${result.playerTag} -> <@${targetDiscordUserId}>.`,
-        );
-        return;
-      }
-      if (result.outcome === "already_linked_to_other_user") {
-        await interaction.editReply(
-          `already_linked_to_other_user: ${result.playerTag} is linked to <@${result.existingDiscordUserId}>. delete-first is required.`,
-        );
-        return;
-      }
-      if (result.outcome === "invalid_tag") {
-        await interaction.editReply(
-          "invalid_tag: use Clash tags with characters `PYLQGRJCUV0289`.",
-        );
-        return;
-      }
-      await interaction.editReply(
-        "invalid_user: expected a Discord snowflake user ID.",
-      );
+
+      await interaction.editReply(resultLines.join("\n"));
       return;
     }
 
