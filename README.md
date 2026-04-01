@@ -58,6 +58,7 @@ The project is designed as a maintainable application, not a one-off bot script:
 - Sync validation uses war-scoped persisted snapshots (`ClanPointsSync`) with explicit force-sync paths for refresh-scrape operations.
 - `/todo` renders from precomputed per-player snapshots (`TodoPlayerSnapshot`) so high-traffic reads stay fast and avoid live per-player multi-source aggregation on command execution, with grouped WAR/CWL sections, shared top timer for RAIDS, and phased GAMES rendering (active earning, latest-results reward collection, then post-reward lifetime totals) plus CWL context resolved from a seasonal CWL clan registry/player mapping layer instead of assuming home FWA clan.
 - `/reminders` now supports preview-first create/list/edit flows with FWA+CWL clan targeting, persisted reminder configs, and background scheduler dispatch with dedupe fire logs.
+- Reminder deliveries now send plain-text Discord messages so inline user mentions actually notify, with whole-line overflow splitting capped at 3 messages.
 - War-mail and match embeds use consistent effective-state color mapping for BL/MM/FWA/unresolved states.
 - Notification and posting flows include operational logging controls (`/bot-logs`, `/say`, telemetry report + schedule commands).
 - FWA stats and operations commands include weight-age/health tooling, compliance checks, and layout management.

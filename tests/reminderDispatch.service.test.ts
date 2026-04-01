@@ -19,8 +19,19 @@ vi.mock("../src/prisma", () => ({
 
 import {
   ReminderDispatchService,
-  buildReminderDispatchEmbedsForTest,
+  buildReminderDispatchContentsForTest,
 } from "../src/services/reminders/ReminderDispatchService";
+
+function buildValidPlayerTag(index: number): string {
+  const alphabet = "PYLQGRJCUV0289";
+  let value = Math.max(0, Math.trunc(index));
+  let tag = "";
+  do {
+    tag = `${alphabet[value % alphabet.length]}${tag}`;
+    value = Math.floor(value / alphabet.length);
+  } while (value > 0);
+  return `#${tag.padStart(4, "P")}`;
+}
 
 describe("ReminderDispatchService roster rendering", () => {
   beforeEach(() => {
@@ -30,7 +41,7 @@ describe("ReminderDispatchService roster rendering", () => {
     prismaMock.currentWar.findFirst.mockResolvedValue({ state: "inWar" });
   });
 
-  it("renders WAR remaining-attacks roster with position sort and linked/unlinked formats", async () => {
+  it("renders WAR reminder content in plain text with inline mentions and updated header lines", async () => {
     prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([
       { playerTag: "#PYLG", playerName: "Bravo", position: 2, attacks: 1 },
       { playerTag: "#PYLQ", playerName: "Alpha", position: 1, attacks: 0 },
@@ -42,7 +53,7 @@ describe("ReminderDispatchService roster rendering", () => {
       { playerTag: "#PYLR", discordUserId: "333" },
     ]);
 
-    const embeds = await buildReminderDispatchEmbedsForTest({
+    const contents = await buildReminderDispatchContentsForTest({
       input: {
         guildId: "guild-1",
         channelId: "channel-1",
@@ -59,17 +70,59 @@ describe("ReminderDispatchService roster rendering", () => {
       cocService: null,
     });
 
-    expect(embeds).toHaveLength(1);
-    const description = String(embeds[0].toJSON().description ?? "");
-    const rosterLines = description
-      .split("\n")
-      .filter((line) => line.startsWith("#"));
+    expect(contents).toHaveLength(1);
+    const lines = contents[0].split("\n");
+    expect(lines[0]).toBe("### War ends in 1h");
+    expect(lines[1]).toBe("Clan: Alpha Clan #PYLQ");
+    expect(lines[2]).toBe("Time remaining: <t:1775782800:R> (1800s)");
+    expect(lines[3]).toBe("Ends at: <t:1775782800:F> (<t:1775782800:R>)");
+    expect(contents[0]).not.toContain("WAR reminder");
+    expect(contents[0]).not.toContain("CWL reminder");
+    expect(contents[0]).not.toContain("Configured offset");
+    expect(contents[0]).not.toContain("Event timing");
+
+    const rosterLines = lines.filter((line) => /^#\d+ /.test(line));
     expect(rosterLines).toEqual([
       "#1 - Alpha - <@111> - 2 / 2",
       "#2 - :no: Bravo - 1 / 2",
       "#3 - Charlie - <@333> - 2 / 2",
     ]);
-    expect(description).not.toContain("Done");
+    expect(contents[0]).not.toContain("Done");
+  });
+
+  it("keeps multiple accounts for the same linked user adjacent", async () => {
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ", playerName: "First", position: 1, attacks: 0 },
+      { playerTag: "#PYLG", playerName: "Middle", position: 2, attacks: 0 },
+      { playerTag: "#PYLR", playerName: "Second", position: 3, attacks: 0 },
+    ]);
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ", discordUserId: "111" },
+      { playerTag: "#PYLR", discordUserId: "111" },
+    ]);
+
+    const contents = await buildReminderDispatchContentsForTest({
+      input: {
+        guildId: "guild-1",
+        channelId: "channel-1",
+        reminderId: "rem-1",
+        type: ReminderType.WAR_CWL,
+        clanTag: "#PYLQ",
+        clanName: "Adjacency Clan",
+        offsetSeconds: 3600,
+        eventIdentity: "WAR:war-id:9",
+        eventEndsAt: new Date("2026-04-10T01:00:00.000Z"),
+        eventLabel: "war end",
+      },
+      nowMs: Date.parse("2026-04-10T00:30:00.000Z"),
+      cocService: null,
+    });
+
+    expect(contents[0].split("\n").filter((line) => /^#\d+ /.test(line))).toEqual([
+      "#1 - First - <@111> - 2 / 2",
+      "#3 - Second - <@111> - 2 / 2",
+      "#2 - :no: Middle - 2 / 2",
+    ]);
   });
 
   it("renders CWL roster from active CWL war participants only and sorts by map position", async () => {
@@ -92,7 +145,7 @@ describe("ReminderDispatchService roster rendering", () => {
           members: [
             { tag: "#PYLQ", name: "One", mapPosition: 1, attacks: [] },
             { tag: "#PYLG", name: "Two", mapPosition: 2, attacks: [] },
-            { tag: "#PYLR", name: "Done", mapPosition: 3, attacks: [{}, {}] },
+            { tag: "#PYLR", name: "Done", mapPosition: 3, attacks: [{}] },
           ],
         },
       }),
@@ -100,7 +153,7 @@ describe("ReminderDispatchService roster rendering", () => {
       getClan: vi.fn(),
     };
 
-    const embeds = await buildReminderDispatchEmbedsForTest({
+    const contents = await buildReminderDispatchContentsForTest({
       input: {
         guildId: "guild-1",
         channelId: "channel-1",
@@ -117,16 +170,15 @@ describe("ReminderDispatchService roster rendering", () => {
       cocService,
     });
 
-    const description = String(embeds[0].toJSON().description ?? "");
-    const rosterLines = description
+    const rosterLines = contents[0]
       .split("\n")
-      .filter((line) => line.startsWith("#"));
+      .filter((line) => /^#\d+ /.test(line));
     expect(rosterLines).toEqual([
       "#1 - :no: One - 1 / 1",
       "#2 - Two - <@222> - 1 / 1",
     ]);
-    expect(description).not.toContain("Outside");
-    expect(description).not.toContain("Done");
+    expect(contents[0]).not.toContain("Outside");
+    expect(contents[0]).not.toContain("Done");
   });
 
   it("renders RAIDS roster sorted by remaining attacks then player name and excludes non-season members", async () => {
@@ -159,7 +211,7 @@ describe("ReminderDispatchService roster rendering", () => {
       }),
     };
 
-    const embeds = await buildReminderDispatchEmbedsForTest({
+    const contents = await buildReminderDispatchContentsForTest({
       input: {
         guildId: "guild-1",
         channelId: "channel-1",
@@ -176,8 +228,7 @@ describe("ReminderDispatchService roster rendering", () => {
       cocService,
     });
 
-    const description = String(embeds[0].toJSON().description ?? "");
-    const rosterLines = description
+    const rosterLines = contents[0]
       .split("\n")
       .filter((line) => line.includes("/ 6"));
     expect(rosterLines).toEqual([
@@ -185,22 +236,22 @@ describe("ReminderDispatchService roster rendering", () => {
       ":no: Zulu - 1 / 6",
       "Bravo - <@222> - 6 / 6",
     ]);
-    expect(description).not.toContain("Spent");
-    expect(description).not.toContain("IneligibleElsewhere");
-    expect(description).not.toContain("#1 -");
+    expect(contents[0]).not.toContain("Spent");
+    expect(contents[0]).not.toContain("IneligibleElsewhere");
+    expect(contents[0]).not.toContain("#1 -");
   });
 
-  it("splits long roster output into at most two embeds with continuation-only second embed", async () => {
+  it("splits long reminder output into two plain-text messages on whole lines only", async () => {
     prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue(
-      Array.from({ length: 80 }, (_, index) => ({
-        playerTag: "#PYLQ",
-        playerName: `Player_${String(index + 1).padStart(2, "0")}_${"X".repeat(120)}`,
+      Array.from({ length: 30 }, (_, index) => ({
+        playerTag: buildValidPlayerTag(index),
+        playerName: `Player_${String(index + 1).padStart(2, "0")}_${"X".repeat(90)}`,
         position: index + 1,
         attacks: 0,
       })),
     );
 
-    const embeds = await buildReminderDispatchEmbedsForTest({
+    const contents = await buildReminderDispatchContentsForTest({
       input: {
         guildId: "guild-1",
         channelId: "channel-1",
@@ -217,25 +268,55 @@ describe("ReminderDispatchService roster rendering", () => {
       cocService: null,
     });
 
-    expect(embeds).toHaveLength(2);
-    const first = embeds[0].toJSON();
-    const second = embeds[1].toJSON();
-    expect(first.color).toBe(second.color);
-    expect(second.title).toBeUndefined();
-    expect(String(second.description ?? "")).not.toContain("Clan: **");
-    expect(String(second.description ?? "")).not.toContain("Players With Attacks Remaining");
+    expect(contents).toHaveLength(2);
+    expect(contents.every((content) => content.length <= 2000)).toBe(true);
+    expect(contents[1]).not.toContain("Clan: Overflow Clan #PYLQ");
 
-    const combinedRosterLines = [
-      ...String(first.description ?? "").split("\n"),
-      ...String(second.description ?? "").split("\n"),
-    ].filter((line) => line.startsWith("#"));
-    expect(combinedRosterLines.length).toBeGreaterThan(0);
-    expect(combinedRosterLines.length).toBeLessThan(80);
+    const combinedRosterLines = contents
+      .flatMap((content) => content.split("\n"))
+      .filter((line) => /^#\d+ /.test(line));
+    expect(combinedRosterLines).toHaveLength(30);
     expect(
       combinedRosterLines.every((line) =>
         /^#\d+ - :no: Player_\d{2}_X+ - 2 \/ 2$/.test(line),
       ),
     ).toBe(true);
+  });
+
+  it("splits overflow into at most three messages and stops after the third message", async () => {
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue(
+      Array.from({ length: 240 }, (_, index) => ({
+        playerTag: buildValidPlayerTag(index + 1000),
+        playerName: `Player_${String(index + 1).padStart(3, "0")}_${"Y".repeat(80)}`,
+        position: index + 1,
+        attacks: 0,
+      })),
+    );
+
+    const contents = await buildReminderDispatchContentsForTest({
+      input: {
+        guildId: "guild-1",
+        channelId: "channel-1",
+        reminderId: "rem-1",
+        type: ReminderType.WAR_CWL,
+        clanTag: "#PYLQ",
+        clanName: "Cap Clan",
+        offsetSeconds: 3600,
+        eventIdentity: "WAR:war-id:55",
+        eventEndsAt: new Date("2026-04-10T01:00:00.000Z"),
+        eventLabel: "war end",
+      },
+      nowMs: Date.parse("2026-04-10T00:30:00.000Z"),
+      cocService: null,
+    });
+
+    expect(contents).toHaveLength(3);
+    expect(contents.every((content) => content.length <= 2000)).toBe(true);
+    const renderedRosterLines = contents
+      .flatMap((content) => content.split("\n"))
+      .filter((line) => /^#\d+ /.test(line));
+    expect(renderedRosterLines.length).toBeGreaterThan(0);
+    expect(renderedRosterLines.length).toBeLessThan(240);
   });
 
   it("skips WAR roster reminder rendering during preparation state", async () => {
@@ -244,7 +325,7 @@ describe("ReminderDispatchService roster rendering", () => {
       { playerTag: "#PYLQ", playerName: "Alpha", position: 1, attacks: 0 },
     ]);
 
-    const embeds = await buildReminderDispatchEmbedsForTest({
+    const contents = await buildReminderDispatchContentsForTest({
       input: {
         guildId: "guild-1",
         channelId: "channel-1",
@@ -261,7 +342,7 @@ describe("ReminderDispatchService roster rendering", () => {
       cocService: null,
     });
 
-    expect(embeds).toEqual([]);
+    expect(contents).toEqual([]);
   });
 
   it("skips CWL roster reminder rendering when CWL has no active battle-day war", async () => {
@@ -285,7 +366,7 @@ describe("ReminderDispatchService roster rendering", () => {
       getClan: vi.fn(),
     };
 
-    const embeds = await buildReminderDispatchEmbedsForTest({
+    const contents = await buildReminderDispatchContentsForTest({
       input: {
         guildId: "guild-1",
         channelId: "channel-1",
@@ -302,7 +383,7 @@ describe("ReminderDispatchService roster rendering", () => {
       cocService,
     });
 
-    expect(embeds).toEqual([]);
+    expect(contents).toEqual([]);
   });
 
   it("skips RAIDS roster reminder rendering before raid weekend is active", async () => {
@@ -321,7 +402,7 @@ describe("ReminderDispatchService roster rendering", () => {
       }),
     };
 
-    const embeds = await buildReminderDispatchEmbedsForTest({
+    const contents = await buildReminderDispatchContentsForTest({
       input: {
         guildId: "guild-1",
         channelId: "channel-1",
@@ -338,7 +419,56 @@ describe("ReminderDispatchService roster rendering", () => {
       cocService,
     });
 
-    expect(embeds).toEqual([]);
+    expect(contents).toEqual([]);
+  });
+
+  it("dispatches plain-text payloads with inline mentions and no embed fallback", async () => {
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ", playerName: "Alpha", position: 1, attacks: 0 },
+    ]);
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ", discordUserId: "111" },
+    ]);
+
+    const send = vi.fn().mockResolvedValue({ id: "message-1" });
+    const client = {
+      channels: {
+        fetch: vi.fn().mockResolvedValue({
+          isTextBased: () => true,
+          send,
+        }),
+      },
+    } as any;
+    const service = new ReminderDispatchService({
+      nowMsProvider: () => Date.parse("2026-04-10T00:30:00.000Z"),
+      cocService: null,
+    });
+
+    const result = await service.dispatchReminder(client, {
+      guildId: "guild-1",
+      channelId: "channel-1",
+      reminderId: "rem-1",
+      type: ReminderType.WAR_CWL,
+      clanTag: "#PYLQ",
+      clanName: "Alpha Clan",
+      offsetSeconds: 3600,
+      eventIdentity: "WAR:war-id:9",
+      eventEndsAt: new Date("2026-04-10T01:00:00.000Z"),
+      eventLabel: "war end",
+    });
+
+    expect(result).toEqual({
+      status: "sent",
+      messageId: "message-1",
+    });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledWith({
+      content: expect.stringContaining("#1 - Alpha - <@111> - 2 / 2"),
+      allowedMentions: {
+        parse: ["users"],
+      },
+    });
+    expect(send.mock.calls[0][0]).not.toHaveProperty("embeds");
   });
 
   it("does not send a message when attack window is inactive in dispatch flow", async () => {
