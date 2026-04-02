@@ -92,6 +92,10 @@ import {
   isLinkListSortButtonCustomId,
 } from "../commands/Link";
 import {
+  handleCwlRotationImportButtonInteraction,
+  isCwlRotationImportButtonCustomId,
+} from "../commands/Cwl";
+import {
   handleTodoPageButtonInteraction,
   handleTodoRefreshButtonInteraction,
   isTodoPageButtonCustomId,
@@ -406,6 +410,21 @@ const handleButtonInteraction = async (
         await interaction.reply({
           ephemeral: true,
           content: "Failed to open link modal.",
+        });
+      }
+    }
+    return;
+  }
+
+  if (isCwlRotationImportButtonCustomId(interaction.customId)) {
+    try {
+      await handleCwlRotationImportButtonInteraction(interaction);
+    } catch (err) {
+      console.error(`CWL rotation import preview button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to update the CWL rotation import preview.",
         });
       }
     }

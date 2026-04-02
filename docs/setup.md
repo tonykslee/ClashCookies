@@ -86,15 +86,17 @@ Required env vars:
 - `GOOGLE_OAUTH_REFRESH_TOKEN`
 
 Notes:
-- Refresh token scope: `https://www.googleapis.com/auth/spreadsheets.readonly`.
-- The Google account tied to the refresh token must have access to the sheet.
-- Viewer access is enough.
+- Refresh token scope: `https://www.googleapis.com/auth/spreadsheets.readonly` for read-only flows, or `https://www.googleapis.com/auth/spreadsheets` + `https://www.googleapis.com/auth/drive.file` when you need sheet export/write support.
+- The Google account tied to the refresh token must have access to the source sheet for imports.
+- Viewer access is enough for `/cwl rotations import`; `/cwl rotations export` requires writable Sheets auth.
 
 Optional fallback auth (not required for current setup):
 - `GOOGLE_SERVICE_ACCOUNT_JSON`
 - `GOOGLE_SERVICE_ACCOUNT_JSON_BASE64`
 - `GOOGLE_SERVICE_ACCOUNT_EMAIL`
 - `GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY`
+
+When using the service-account path, make sure the token scopes include writable Sheets and Drive file permissions so the CWL planner export can create and publish a brand-new sheet.
 
 ## Optional FWAStats Feed Ingestion Scheduler
 These control the JSON-feed ingestion foundation for future DB-backed `/compo` migration.

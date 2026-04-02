@@ -46,7 +46,7 @@ Core subsystems:
 - Feed-backed current state: `FWAStats JSON feeds -> FwaFeedSchedulerService -> FwaClanCatalog / FwaPlayerCatalog / FwaClanMemberCurrent / FwaWarMemberCurrent / FwaClanWarLogCurrent`
 - Snapshot-backed todo: `PlayerLink + CurrentWar + CurrentCwlRound/CwlRoundMemberCurrent + activity signals -> TodoSnapshotService -> TodoPlayerSnapshot`
 - Persisted CWL state: `CwlTrackedClan -> CwlStateService -> CurrentCwlRound / CwlRoundMemberCurrent / CwlRoundHistory / CwlRoundMemberHistory / CwlPlayerClanSeason`
-- CWL planner state: `CurrentCwlRound + CwlRoundMemberCurrent + CwlPlayerClanSeason -> CwlRotationService -> CwlRotationPlan / CwlRotationPlanDay / CwlRotationPlanMember`
+- CWL planner state: `CurrentCwlRound + CwlRoundMemberCurrent + CwlPlayerClanSeason -> CwlRotationService -> CwlRotationPlan / CwlRotationPlanDay / CwlRotationPlanMember`, with sheet import/export orchestration layered on top for admin-only planner exchange flows.
 - Reminder delivery: `Reminder/UserActivityReminder config + snapshots/current war -> reminder schedulers -> delivery logs`
 - Operational state: `TrackedMessage`, unlinked-alert persistence, telemetry aggregates, report schedules
 

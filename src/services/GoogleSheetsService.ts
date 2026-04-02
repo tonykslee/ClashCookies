@@ -12,6 +12,8 @@ export const SHEET_SETTING_WAR_ID_KEY = "google_sheet_war_id";
 export const SHEET_SETTING_WAR_TAB_KEY = "google_sheet_war_tab";
 const GOOGLE_API_TIMEOUT_MS = 20000;
 const APPS_SCRIPT_PROXY_TIMEOUT_MS = 30000;
+const GOOGLE_SHEETS_RW_SCOPE = "https://www.googleapis.com/auth/spreadsheets";
+const GOOGLE_DRIVE_FILE_SCOPE = "https://www.googleapis.com/auth/drive.file";
 const PROXY_UNAUTHORIZED_SIGNALS = [
   "unauthorized",
   "forbidden",
@@ -90,6 +92,29 @@ export type CompoLinkedSheet = {
   sheetId: string;
   tabName: string | null;
   source: "google_sheet_id";
+};
+
+export type GoogleSpreadsheetTabMetadata = {
+  sheetId: number;
+  title: string;
+  index: number;
+  hidden: boolean;
+};
+
+export type GoogleSpreadsheetMetadata = {
+  spreadsheetId: string;
+  title: string | null;
+  sheets: GoogleSpreadsheetTabMetadata[];
+};
+
+export type GoogleSpreadsheetWriteTab = {
+  tabName: string;
+  values: string[][];
+};
+
+export type GoogleSpreadsheetCreateResult = {
+  spreadsheetId: string;
+  spreadsheetUrl: string;
 };
 
 type AccessTokenCache = {
@@ -175,6 +200,251 @@ export class GoogleSheetsService {
 
     const effectiveRange = range ?? (tabName ? `${escapeSheetTabName(tabName)}!A1:D10` : "A1:D10");
     return this.readValues(sheetId, effectiveRange);
+  }
+
+  /** Purpose: load sheet metadata for workbook-level tab discovery and export introspection. */
+  async getSpreadsheetMetadata(sheetId: string): Promise<GoogleSpreadsheetMetadata> {
+    const startedAtMs = Date.now();
+    const token = await this.getAccessToken();
+    const encodedSheetId = encodeURIComponent(sheetId);
+    const url =
+      `https://sheets.googleapis.com/v4/spreadsheets/${encodedSheetId}` +
+      "?fields=spreadsheetId,properties.title,sheets.properties.sheetId,sheets.properties.title,sheets.properties.index,sheets.properties.hidden";
+
+    try {
+      const response = await axios.get<{
+        spreadsheetId?: string;
+        properties?: { title?: string };
+        sheets?: Array<{
+          properties?: {
+            sheetId?: number;
+            title?: string;
+            index?: number;
+            hidden?: boolean;
+          };
+        }>;
+      }>(url, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        timeout: GOOGLE_API_TIMEOUT_MS,
+      });
+      recordFetchEvent({
+        namespace: "google_sheets",
+        operation: "read_metadata",
+        source: "api",
+        detail: `sheet=${sheetId}`,
+        durationMs: Date.now() - startedAtMs,
+        status: "success",
+      });
+      return {
+        spreadsheetId: String(response.data.spreadsheetId ?? sheetId),
+        title: response.data.properties?.title?.trim() || null,
+        sheets: (Array.isArray(response.data.sheets) ? response.data.sheets : [])
+          .map((sheet) => sheet.properties)
+          .filter(
+            (
+              props,
+            ): props is {
+              sheetId?: number;
+              title?: string;
+              index?: number;
+              hidden?: boolean;
+            } => Boolean(props),
+          )
+          .map((props) => ({
+            sheetId: Number(props.sheetId ?? 0),
+            title: String(props.title ?? "").trim(),
+            index: Number(props.index ?? 0),
+            hidden: Boolean(props.hidden),
+          }))
+          .filter((sheet) => sheet.sheetId > 0 && sheet.title.length > 0)
+          .sort((a, b) => a.index - b.index),
+      };
+    } catch (err) {
+      const failure = toFailureTelemetry(err);
+      recordFetchEvent({
+        namespace: "google_sheets",
+        operation: "read_metadata",
+        source: "api",
+        detail: `sheet=${sheetId} result=error`,
+        durationMs: Date.now() - startedAtMs,
+        status: "failure",
+        errorCategory: failure.errorCategory,
+        errorCode: failure.errorCode,
+        timeout: failure.timeout,
+      });
+      throw new Error(this.errorMessageFromUnknown(err, "Google Sheets metadata request failed."));
+    }
+  }
+
+  /** Purpose: create one brand-new spreadsheet with the requested tab titles. */
+  async createSpreadsheet(input: {
+    title: string;
+    tabNames?: string[];
+  }): Promise<GoogleSpreadsheetCreateResult> {
+    const startedAtMs = Date.now();
+    const token = await this.getAccessToken();
+    const tabs = [...new Set((input.tabNames ?? []).map((tab) => sanitizeSheetTabName(tab)).filter(Boolean))];
+    const body: Record<string, unknown> = {
+      properties: {
+        title: input.title.trim() || "ClashCookies CWL Rotation Export",
+      },
+    };
+    if (tabs.length > 0) {
+      body.sheets = tabs.map((title) => ({
+        properties: {
+          title,
+        },
+      }));
+    }
+
+    try {
+      const response = await axios.post<{
+        spreadsheetId?: string;
+        spreadsheetUrl?: string;
+      }>("https://sheets.googleapis.com/v4/spreadsheets", body, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        timeout: GOOGLE_API_TIMEOUT_MS,
+      });
+      const spreadsheetId = String(response.data.spreadsheetId ?? "").trim();
+      if (!spreadsheetId) {
+        throw new Error("Google Sheets create response did not include spreadsheetId.");
+      }
+      recordFetchEvent({
+        namespace: "google_sheets",
+        operation: "create_spreadsheet",
+        source: "api",
+        detail: `sheet=${spreadsheetId}`,
+        durationMs: Date.now() - startedAtMs,
+        status: "success",
+      });
+      return {
+        spreadsheetId,
+        spreadsheetUrl:
+          response.data.spreadsheetUrl?.trim() ||
+          `https://docs.google.com/spreadsheets/d/${encodeURIComponent(spreadsheetId)}/edit?usp=sharing`,
+      };
+    } catch (err) {
+      const failure = toFailureTelemetry(err);
+      recordFetchEvent({
+        namespace: "google_sheets",
+        operation: "create_spreadsheet",
+        source: "api",
+        detail: "create_spreadsheet result=error",
+        durationMs: Date.now() - startedAtMs,
+        status: "failure",
+        errorCategory: failure.errorCategory,
+        errorCode: failure.errorCode,
+        timeout: failure.timeout,
+      });
+      throw new Error(this.errorMessageFromUnknown(err, "Google Sheets create request failed."));
+    }
+  }
+
+  /** Purpose: write tab values into one spreadsheet using the Sheets API batch update path. */
+  async writeSpreadsheetTabs(input: {
+    spreadsheetId: string;
+    tabs: GoogleSpreadsheetWriteTab[];
+  }): Promise<void> {
+    if (input.tabs.length <= 0) return;
+
+    const startedAtMs = Date.now();
+    const token = await this.getAccessToken();
+    const encodedSheetId = encodeURIComponent(input.spreadsheetId);
+    const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodedSheetId}/values:batchUpdate`;
+    const data = input.tabs.map((tab) => ({
+      range: `${escapeSheetTabName(tab.tabName)}!A1`,
+      values: tab.values,
+    }));
+
+    try {
+      await axios.post(
+        url,
+        {
+          valueInputOption: "RAW",
+          data,
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          timeout: GOOGLE_API_TIMEOUT_MS,
+        },
+      );
+      recordFetchEvent({
+        namespace: "google_sheets",
+        operation: "write_values",
+        source: "api",
+        detail: `sheet=${input.spreadsheetId} tabs=${input.tabs.length}`,
+        durationMs: Date.now() - startedAtMs,
+        status: "success",
+      });
+    } catch (err) {
+      const failure = toFailureTelemetry(err);
+      recordFetchEvent({
+        namespace: "google_sheets",
+        operation: "write_values",
+        source: "api",
+        detail: `sheet=${input.spreadsheetId} tabs=${input.tabs.length} result=error`,
+        durationMs: Date.now() - startedAtMs,
+        status: "failure",
+        errorCategory: failure.errorCategory,
+        errorCode: failure.errorCode,
+        timeout: failure.timeout,
+      });
+      throw new Error(this.errorMessageFromUnknown(err, "Google Sheets write request failed."));
+    }
+  }
+
+  /** Purpose: make one newly created spreadsheet publicly readable. */
+  async makeSpreadsheetPublic(spreadsheetId: string): Promise<void> {
+    const startedAtMs = Date.now();
+    const token = await this.getAccessToken();
+    const url = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(spreadsheetId)}/permissions?supportsAllDrives=true`;
+
+    try {
+      await axios.post(
+        url,
+        {
+          role: "reader",
+          type: "anyone",
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          timeout: GOOGLE_API_TIMEOUT_MS,
+        },
+      );
+      recordFetchEvent({
+        namespace: "google_sheets",
+        operation: "share_public",
+        source: "api",
+        detail: `sheet=${spreadsheetId}`,
+        durationMs: Date.now() - startedAtMs,
+        status: "success",
+      });
+    } catch (err) {
+      const failure = toFailureTelemetry(err);
+      recordFetchEvent({
+        namespace: "google_sheets",
+        operation: "share_public",
+        source: "api",
+        detail: `sheet=${spreadsheetId} result=error`,
+        durationMs: Date.now() - startedAtMs,
+        status: "failure",
+        errorCategory: failure.errorCategory,
+        errorCode: failure.errorCode,
+        timeout: failure.timeout,
+      });
+      throw new Error(this.errorMessageFromUnknown(err, "Google Drive permission request failed."));
+    }
   }
 
   async getCompoLinkedSheet(range: string): Promise<CompoLinkedSheet> {
@@ -619,7 +889,7 @@ export class GoogleSheetsService {
     const header = { alg: "RS256", typ: "JWT" };
     const payload = {
       iss: clientEmail,
-      scope: "https://www.googleapis.com/auth/spreadsheets.readonly",
+      scope: `${GOOGLE_SHEETS_RW_SCOPE} ${GOOGLE_DRIVE_FILE_SCOPE}`,
       aud: "https://oauth2.googleapis.com/token",
       iat: nowSeconds,
       exp: nowSeconds + 3600,
@@ -708,4 +978,15 @@ export class GoogleSheetsService {
 function escapeSheetTabName(tabName: string): string {
   const escaped = String(tabName ?? "").trim().replace(/'/g, "''");
   return `'${escaped}'`;
+}
+
+function sanitizeSheetTabName(tabName: string): string {
+  return String(tabName ?? "")
+    .trim()
+    .replace(/\[/g, " ")
+    .replace(/\]/g, " ")
+    .replace(/[*?:/\\]/g, " ")
+    .replace(/\s+/g, " ")
+    .slice(0, 100)
+    .trim() || "Sheet";
 }

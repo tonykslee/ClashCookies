@@ -10,6 +10,8 @@ import {
   resolveClanGamesCycleBoundaryFromCycleKey,
   type TodoSnapshotRecord,
 } from "./TodoSnapshotService";
+import { resolveCurrentCwlSeasonKey } from "./CwlRegistryService";
+import { cwlRotationService } from "./CwlRotationService";
 import {
   buildTrackedWarMemberStateByClanAndPlayer,
   isTodoWarStateActive,
@@ -36,6 +38,7 @@ type TodoRenderRow = {
   clanName: string | null;
   cwlClanTag: string | null;
   cwlClanName: string | null;
+  cwlPlannedSubInAt: Date | null;
   warPosition: number | null;
   warAttackDetails: Array<{
     defenderPosition: number | null;
@@ -197,8 +200,23 @@ export async function buildTodoPagesForUser(input: {
         .filter(Boolean),
     ),
   ];
+  const cwlClanTags = [
+    ...new Set(
+      snapshotRows
+        .map((row) => normalizeClanTag(row.cwlClanTag ?? ""))
+        .filter(Boolean),
+    ),
+  ];
 
-  const [trackedClanRows, currentWarRows, clanMemberTownHallRows, playerCatalogTownHallRows] =
+  const [
+    trackedClanRows,
+    currentWarRows,
+    clanMemberTownHallRows,
+    playerCatalogTownHallRows,
+    currentCwlRoundRows,
+    currentCwlMemberRows,
+    activeCwlPlans,
+  ] =
     await Promise.all([
     clanTags.length > 0
       ? prisma.trackedClan.findMany({
@@ -240,7 +258,49 @@ export async function buildTodoPagesForUser(input: {
           },
         })
       : Promise.resolve([]),
+    cwlClanTags.length > 0
+      ? prisma.currentCwlRound.findMany({
+          where: { clanTag: { in: cwlClanTags } },
+          select: {
+            season: true,
+            clanTag: true,
+            clanName: true,
+            roundDay: true,
+            roundState: true,
+            startTime: true,
+            endTime: true,
+          },
+        })
+      : Promise.resolve([]),
+    cwlClanTags.length > 0
+      ? prisma.cwlRoundMemberCurrent.findMany({
+          where: {
+            clanTag: { in: cwlClanTags },
+          },
+          select: {
+            clanTag: true,
+            playerTag: true,
+            subbedIn: true,
+          },
+        })
+      : Promise.resolve([]),
+    cwlClanTags.length > 0
+      ? cwlRotationService.listActivePlanExports({
+          season: resolveCurrentCwlSeasonKey(),
+          clanTags: cwlClanTags,
+        })
+      : Promise.resolve([]),
     ]);
+
+  const currentCwlRoundList = Array.isArray(currentCwlRoundRows)
+    ? currentCwlRoundRows
+    : [];
+  const currentCwlMemberList = Array.isArray(currentCwlMemberRows)
+    ? currentCwlMemberRows
+    : [];
+  const activeCwlPlanList = Array.isArray(activeCwlPlans)
+    ? activeCwlPlans
+    : [];
 
   const townHallByClanAndPlayer = new Map<string, number>();
   const latestTownHallByClanAndPlayer = new Map<string, Date>();
@@ -278,16 +338,109 @@ export async function buildTodoPagesForUser(input: {
     townHallByPlayerCatalogTag.set(playerTag, townHall);
   }
 
+  const currentCwlRoundByClanTag = new Map<
+    string,
+    {
+      season: string;
+      clanTag: string;
+      clanName: string | null;
+      roundDay: number;
+      roundState: string;
+      startTime: Date | null;
+      endTime: Date | null;
+    }
+  >();
+  for (const row of currentCwlRoundList as Array<{
+    season: string;
+    clanTag: string;
+    clanName: string | null;
+    roundDay: number;
+    roundState: string;
+    startTime: Date | null;
+    endTime: Date | null;
+  }>) {
+    const clanTag = normalizeClanTag(row.clanTag);
+    if (!clanTag) continue;
+    currentCwlRoundByClanTag.set(clanTag, {
+      season: row.season,
+      clanTag,
+      clanName: sanitizeStatusText(row.clanName) || null,
+      roundDay: Math.max(1, Math.trunc(Number(row.roundDay) || 1)),
+      roundState: row.roundState,
+      startTime: row.startTime ?? null,
+      endTime: row.endTime ?? null,
+    });
+  }
+
+  const currentCwlMemberByClanAndPlayerTag = new Map<
+    string,
+    {
+      clanTag: string;
+      playerTag: string;
+      subbedIn: boolean;
+    }
+  >();
+  for (const row of currentCwlMemberList as Array<{
+    clanTag: string;
+    playerTag: string;
+    subbedIn: boolean;
+  }>) {
+    const clanTag = normalizeClanTag(row.clanTag);
+    const playerTag = normalizePlayerTag(row.playerTag);
+    if (!clanTag || !playerTag) continue;
+    currentCwlMemberByClanAndPlayerTag.set(`${clanTag}:${playerTag}`, {
+      clanTag,
+      playerTag,
+      subbedIn: Boolean(row.subbedIn),
+    });
+  }
+
+  const activeCwlPlanByClanTag = new Map<
+    string,
+    {
+      clanTag: string;
+      clanName: string | null;
+      days: Array<{
+        roundDay: number;
+        rows: Array<{
+          playerTag: string;
+          playerName: string;
+          subbedOut: boolean;
+          assignmentOrder: number;
+        }>;
+      }>;
+    }
+  >();
+  for (const plan of activeCwlPlanList as Array<{
+    clanTag: string;
+    clanName: string | null;
+    days: Array<{
+      roundDay: number;
+      rows: Array<{
+        playerTag: string;
+        playerName: string;
+        subbedOut: boolean;
+        assignmentOrder: number;
+      }>;
+    }>;
+  }>) {
+    const clanTag = normalizeClanTag(plan.clanTag);
+    if (!clanTag) continue;
+    activeCwlPlanByClanTag.set(clanTag, plan);
+  }
+
   const trackedClanTagSet = new Set(
     trackedClanRows
       .map((row) => normalizeClanTag(row.tag))
       .filter(Boolean),
   );
-  const clanBadgeByTag = new Map(
-    trackedClanRows
-      .map((row) => [normalizeClanTag(row.tag), sanitizeStatusText(row.clanBadge)] as const)
-      .filter((entry): entry is [string, string] => Boolean(entry[0] && entry[1])),
-  );
+  const clanBadgeByTag = new Map<string, string>();
+  for (const row of trackedClanRows as Array<{ tag: string; clanBadge: string | null }>) {
+    const clanTag = normalizeClanTag(row.tag);
+    const clanBadge = sanitizeStatusText(row.clanBadge);
+    if (!clanTag || !clanBadge) continue;
+    clanBadgeByTag.set(clanTag, clanBadge);
+  }
   const warMatchContextByClanTag =
     pickLatestCurrentWarMatchContextByClanTag(currentWarRows);
   const currentWarIdentityByClanTag = pickLatestCurrentWarIdentityByClanTag(currentWarRows);
@@ -336,6 +489,7 @@ export async function buildTodoPagesForUser(input: {
     const missingSnapshot = snapshot === null;
     const staleSnapshot = snapshot ? isSnapshotStale(snapshot, nowMs) : false;
     const resolvedClanTag = normalizeClanTag(snapshot?.clanTag ?? "") || null;
+    const resolvedCwlClanTag = normalizeClanTag(snapshot?.cwlClanTag ?? "") || null;
     const warMemberKey = resolvedClanTag ? `${resolvedClanTag}:${normalizedTag}` : "";
     const trackedWarMember = warMemberKey
       ? trackedWarMemberByClanAndPlayer.get(warMemberKey) ?? null
@@ -360,6 +514,21 @@ export async function buildTodoPagesForUser(input: {
       if (catalogScoped !== undefined) return catalogScoped;
       return null;
     })();
+    const currentCwlRound = resolvedCwlClanTag
+      ? currentCwlRoundByClanTag.get(resolvedCwlClanTag) ?? null
+      : null;
+    const currentCwlMember = resolvedCwlClanTag
+      ? currentCwlMemberByClanAndPlayerTag.get(`${resolvedCwlClanTag}:${normalizedTag}`) ?? null
+      : null;
+    const activeCwlPlan = resolvedCwlClanTag
+      ? activeCwlPlanByClanTag.get(resolvedCwlClanTag) ?? null
+      : null;
+    const cwlPlannedSubInAt = resolveTodoCwlPlannedSubInAt({
+      currentRound: currentCwlRound,
+      currentMemberSubbedIn: Boolean(currentCwlMember?.subbedIn),
+      activePlan: activeCwlPlan,
+      playerTag: normalizedTag,
+    });
     const matchContext = resolvedClanTag
       ? warMatchContextByClanTag.get(resolvedClanTag) ?? null
       : null;
@@ -375,8 +544,9 @@ export async function buildTodoPagesForUser(input: {
       townHall: resolvedTownHall,
       clanTag: resolvedClanTag,
       clanName: snapshot?.clanName ?? null,
-      cwlClanTag: snapshot?.cwlClanTag ?? null,
+      cwlClanTag: resolvedCwlClanTag,
       cwlClanName: snapshot?.cwlClanName ?? null,
+      cwlPlannedSubInAt,
       warPosition: resolvedWarPosition,
       warAttackDetails: resolvedWarAttackDetails,
       warHeaderBadge: resolvedClanTag ? clanBadgeByTag.get(resolvedClanTag) ?? null : null,
@@ -945,7 +1115,10 @@ function getCwlRowStatus(row: TodoRenderRow): string {
 
   if (!isCwlRowAttackPhaseActive(row)) {
     const staleSuffix = row.staleSnapshot ? " - stale snapshot" : "";
-    return `\`0 / 0\`${staleSuffix}`;
+    const plannedSuffix = row.cwlPlannedSubInAt
+      ? ` - planned sub in ${formatRelativeTimestamp(row.cwlPlannedSubInAt)}`
+      : "";
+    return `\`0 / 0\`${plannedSuffix}${staleSuffix}`;
   }
 
   const { used, max } = getCwlRowProgress(row);
@@ -969,6 +1142,46 @@ function getCwlRowProgress(row: TodoRenderRow): {
   );
   const max = Math.max(1, clampInt(row.snapshot.cwlAttacksMax, 1, 1));
   return { used, max, complete: used >= max };
+}
+
+/** Purpose: resolve one future CWL sub-in timestamp from the confirmed active plan and current persisted round. */
+function resolveTodoCwlPlannedSubInAt(input: {
+  currentRound: {
+    roundDay: number;
+    startTime: Date | null;
+    roundState: string;
+  } | null;
+  currentMemberSubbedIn: boolean;
+  activePlan: {
+    days: Array<{
+      roundDay: number;
+      rows: Array<{
+        playerTag: string;
+        playerName: string;
+        subbedOut: boolean;
+        assignmentOrder: number;
+      }>;
+    }>;
+  } | null;
+  playerTag: string;
+}): Date | null {
+  if (!input.currentRound || input.currentMemberSubbedIn) return null;
+  if (!input.activePlan || !input.currentRound.startTime) return null;
+
+  const futureDays = input.activePlan.days
+    .filter((day) => day.roundDay > input.currentRound!.roundDay)
+    .filter((day) =>
+      day.rows.some(
+        (row) => !row.subbedOut && normalizePlayerTag(row.playerTag) === input.playerTag,
+      ),
+    )
+    .map((day) => day.roundDay)
+    .sort((a, b) => a - b);
+  const targetDay = futureDays[0];
+  if (!targetDay) return null;
+
+  const dayOffset = Math.max(1, targetDay - input.currentRound.roundDay);
+  return new Date(input.currentRound.startTime.getTime() + dayOffset * 24 * 60 * 60 * 1000);
 }
 
 /** Purpose: treat only CWL battle-day contexts as attack-active for completion coloring. */

@@ -105,6 +105,8 @@ export const COMMAND_PERMISSION_TARGETS = [
   "cwl:rotations",
   "cwl:rotations:show",
   "cwl:rotations:create",
+  "cwl:rotations:import",
+  "cwl:rotations:export",
   `${MANAGE_COMMAND_ROLES_COMMAND}:add`,
   `${MANAGE_COMMAND_ROLES_COMMAND}:remove`,
   `${MANAGE_COMMAND_ROLES_COMMAND}:list`,
@@ -140,6 +142,8 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "force:sync:warid",
   "force:mail:update",
   "cwl:rotations:create",
+  "cwl:rotations:import",
+  "cwl:rotations:export",
   `${MANAGE_COMMAND_ROLES_COMMAND}:add`,
   `${MANAGE_COMMAND_ROLES_COMMAND}:remove`,
 ]);
