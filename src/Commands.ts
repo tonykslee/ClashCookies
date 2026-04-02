@@ -29,6 +29,7 @@ import { Todo } from "./commands/Todo";
 import { Reminders } from "./commands/Reminders";
 import { RemindMe } from "./commands/RemindMe";
 import { Unlinked } from "./commands/Unlinked";
+import { Cwl } from "./commands/Cwl";
 
 // ...existing code...
 export const Commands = [
@@ -62,5 +63,6 @@ export const Commands = [
   Say,
   BotLogs,
   Unlinked,
+  Cwl,
   CommandRole,
 ];

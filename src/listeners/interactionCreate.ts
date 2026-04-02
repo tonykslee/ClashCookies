@@ -64,6 +64,7 @@ import {
   CommandPermissionService,
   getCommandTargetsFromInteraction,
 } from "../services/CommandPermissionService";
+import { runWithCoCQueueContext } from "../services/CoCQueueContext";
 import { runWithTelemetryContext } from "../services/telemetry/context";
 import { TelemetryIngestService, toFailureTelemetry } from "../services/telemetry/ingest";
 import {
@@ -204,6 +205,27 @@ function parseGlobalPostButtonCustomId(customId: string): { userId: string } | n
   return { userId };
 }
 
+function normalizeQueueSourceSegment(input: string | null | undefined, fallback: string): string {
+  const normalized = String(input ?? "")
+    .trim()
+    .replace(/[^a-zA-Z0-9:_-]+/g, "_")
+    .slice(0, 80);
+  return normalized || fallback;
+}
+
+async function runWithInteractiveQueueContext<T>(
+  source: string,
+  run: () => Promise<T>,
+): Promise<T> {
+  return runWithCoCQueueContext(
+    {
+      priority: "interactive",
+      source: normalizeQueueSourceSegment(source, "interactive"),
+    },
+    run,
+  );
+}
+
 export default (client: Client, cocService: CoCService): void => {
   if (isRegistered) {
     console.warn("interactionCreate already registered, skipping");
@@ -214,13 +236,19 @@ export default (client: Client, cocService: CoCService): void => {
 
   client.on("interactionCreate", async (interaction: Interaction) => {
     if (interaction.isAutocomplete()) {
-      await handleAutocomplete(interaction);
+      await runWithInteractiveQueueContext(
+        `autocomplete:${interaction.commandName}`,
+        () => handleAutocomplete(interaction),
+      );
       return;
     }
 
   if (interaction.isButton()) {
     try {
-      await handleButtonInteraction(interaction, cocService);
+      await runWithInteractiveQueueContext(
+        `button:${interaction.customId.split(":")[0] ?? "unknown"}`,
+        () => handleButtonInteraction(interaction, cocService),
+      );
     } catch (err) {
       console.error(`Button interaction failed: ${formatError(err)}`);
       const code = getDiscordErrorCode(err);
@@ -241,12 +269,18 @@ export default (client: Client, cocService: CoCService): void => {
   }
 
   if (interaction.isStringSelectMenu()) {
-    await handleSelectMenuInteraction(interaction, cocService);
+    await runWithInteractiveQueueContext(
+      `select:${interaction.customId.split(":")[0] ?? "unknown"}`,
+      () => handleSelectMenuInteraction(interaction, cocService),
+    );
     return;
   }
 
     if (interaction.isModalSubmit()) {
-      await handleModalSubmit(interaction);
+      await runWithInteractiveQueueContext(
+        `modal:${interaction.customId.split(":")[0] ?? "unknown"}`,
+        () => handleModalSubmit(interaction),
+      );
       return;
     }
 
@@ -271,7 +305,10 @@ export default (client: Client, cocService: CoCService): void => {
       );
     }
 
-    await handleSlashCommand(client, interaction, cocService);
+    await runWithInteractiveQueueContext(
+      `slash:${interaction.commandName}:${getInteractionSubcommandPath(interaction) || "root"}`,
+      () => handleSlashCommand(client, interaction, cocService),
+    );
   });
 };
 

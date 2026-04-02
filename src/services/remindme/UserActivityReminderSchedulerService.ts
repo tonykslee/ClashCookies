@@ -6,6 +6,10 @@ import { Client } from "discord.js";
 import { formatError } from "../../helper/formatError";
 import { prisma } from "../../prisma";
 import { type CoCService } from "../CoCService";
+import {
+  isCoCQueueSkippedError,
+} from "../CoCRequestQueueService";
+import { runWithCoCQueueContext } from "../CoCQueueContext";
 import { normalizeClanTag } from "../PlayerLinkService";
 import {
   todoSnapshotService,
@@ -73,17 +77,32 @@ export class UserActivityReminderSchedulerService {
     }
     this.inFlight = true;
     try {
-      const counts = await runUserActivityReminderSchedulerCycle({
-        client: this.client,
-        cocService: this.cocService,
-        dispatch: this.dispatch,
-        nowMs,
-        intervalMs: this.intervalMs,
-      });
+      const counts = await runWithCoCQueueContext(
+        {
+          priority: "background",
+          source: "user_activity_reminder_scheduler",
+          scheduledAtMs: nowMs,
+          nextScheduledAtMs: nowMs + this.intervalMs,
+        },
+        () =>
+          runUserActivityReminderSchedulerCycle({
+            client: this.client,
+            cocService: this.cocService,
+            dispatch: this.dispatch,
+            nowMs,
+            intervalMs: this.intervalMs,
+          }),
+      );
       console.log(
         `[remindme] scheduler evaluated=${counts.evaluated} fired=${counts.fired} deduped=${counts.deduped} failed=${counts.failed}`,
       );
       return counts;
+    } catch (err) {
+      if (isCoCQueueSkippedError(err)) {
+        console.warn(`[remindme] scheduler skipped reason=stale_queue ${err.message}`);
+        return { evaluated: 0, fired: 0, deduped: 0, failed: 0 };
+      }
+      throw err;
     } finally {
       this.inFlight = false;
     }

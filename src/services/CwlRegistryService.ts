@@ -1,4 +1,5 @@
 import { prisma } from "../prisma";
+import { formatError } from "../helper/formatError";
 import { normalizeClanTag } from "./PlayerLinkService";
 import { CoCService } from "./CoCService";
 
@@ -36,6 +37,59 @@ export type RemoveTrackedClanResult =
       tag: string;
       season: string;
     };
+
+const CWL_TAG_DB_STAGE_TIMEOUT_MS = 5_000;
+const CWL_TAG_HYDRATION_LOOKUP_TIMEOUT_MS = 5_000;
+
+type CwlTagStageDetailValue = string | number | boolean | null | undefined;
+type CwlTagStageDetails = Record<string, CwlTagStageDetailValue>;
+
+function formatCwlTagStageDetails(details?: CwlTagStageDetails): string {
+  if (!details) return "";
+  const parts = Object.entries(details)
+    .map(([key, value]) => `${key}=${String(value)}`)
+    .filter((value) => !value.endsWith("=undefined"));
+  return parts.length > 0 ? ` ${parts.join(" ")}` : "";
+}
+
+async function runBoundedCwlTagStage<T>(input: {
+  stage: string;
+  timeoutMs: number;
+  details?: CwlTagStageDetails;
+  action: () => Promise<T>;
+}): Promise<T> {
+  const startedAtMs = Date.now();
+  const detailText = formatCwlTagStageDetails(input.details);
+  console.info(
+    `[tracked-clan] stage=${input.stage} status=started timeout_ms=${input.timeoutMs}${detailText}`,
+  );
+
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  try {
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => {
+        reject(new Error(`tracked-clan stage timed out: ${input.stage} after ${input.timeoutMs}ms`));
+      }, input.timeoutMs);
+    });
+    const result = (await Promise.race([input.action(), timeoutPromise])) as T;
+    console.info(
+      `[tracked-clan] stage=${input.stage} status=completed duration_ms=${
+        Date.now() - startedAtMs
+      }${detailText}`,
+    );
+    return result;
+  } catch (err) {
+    const timedOut = String((err as Error)?.message ?? "").includes("timed out");
+    console.error(
+      `[tracked-clan] stage=${input.stage} status=${timedOut ? "timeout" : "failed"} duration_ms=${
+        Date.now() - startedAtMs
+      } timeout_ms=${input.timeoutMs}${detailText}${timedOut ? "" : ` error=${formatError(err)}`}`,
+    );
+    throw err;
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+  }
+}
 
 /** Purpose: resolve current CWL month key in stable UTC `YYYY-MM` format. */
 export function resolveCurrentCwlSeasonKey(nowMs?: number): string {
@@ -94,10 +148,12 @@ export function parseCwlClanTagsInput(rawInput: string): ParsedCwlTagInput {
 export async function addCwlClanTagsForSeason(input: {
   rawTags: string;
   season?: string;
-  cocService?: CoCService;
 }): Promise<AddCwlClanTagsResult> {
   const season = input.season ?? resolveCurrentCwlSeasonKey();
   const parsed = parseCwlClanTagsInput(input.rawTags);
+  console.info(
+    `[tracked-clan] stage=cwl_tags_parsed season=${season} raw_count=${String(input.rawTags ?? "").split(/[\s,;]+/g).filter(Boolean).length} valid_count=${parsed.validTags.length} invalid_count=${parsed.invalidTags.length} duplicate_count=${parsed.duplicateTagsInRequest.length}`,
+  );
   if (parsed.validTags.length <= 0) {
     return {
       season,
@@ -108,47 +164,54 @@ export async function addCwlClanTagsForSeason(input: {
     };
   }
 
-  const existing = await prisma.cwlTrackedClan.findMany({
-    where: {
-      season,
-      tag: { in: parsed.validTags },
-    },
-    select: { tag: true },
+  const existing = await runBoundedCwlTagStage({
+    stage: "cwl_tags_existing_rows_query",
+    timeoutMs: CWL_TAG_DB_STAGE_TIMEOUT_MS,
+    details: { season, valid_count: parsed.validTags.length },
+    action: () =>
+      prisma.cwlTrackedClan.findMany({
+        where: {
+          season,
+          tag: { in: parsed.validTags },
+        },
+        select: { tag: true },
+      }),
   });
   const existingSet = new Set(existing.map((row) => normalizeClanTag(row.tag)).filter(Boolean));
   const toCreate = parsed.validTags.filter((tag) => !existingSet.has(tag));
-
-  const namesByTag = new Map<string, string | null>();
-  if (input.cocService && toCreate.length > 0) {
-    const lookups = await Promise.allSettled(
-      toCreate.map(async (tag) => {
-        const clan = await input.cocService!.getClan(tag);
-        return [tag, String(clan.name ?? "").trim() || null] as const;
-      }),
-    );
-    for (const lookup of lookups) {
-      if (lookup.status !== "fulfilled") continue;
-      namesByTag.set(lookup.value[0], lookup.value[1]);
-    }
-  }
+  console.info(
+    `[tracked-clan] stage=cwl_tags_existing_rows_loaded season=${season} existing_count=${existing.length} to_create_count=${toCreate.length}`,
+  );
 
   if (toCreate.length > 0) {
-    await prisma.cwlTrackedClan.createMany({
-      data: toCreate.map((tag) => ({
-        season,
-        tag,
-        name: namesByTag.get(tag) ?? null,
-      })),
-      skipDuplicates: true,
+    await runBoundedCwlTagStage({
+      stage: "cwl_tags_create_many",
+      timeoutMs: CWL_TAG_DB_STAGE_TIMEOUT_MS,
+      details: { season, to_create_count: toCreate.length },
+      action: () =>
+        prisma.cwlTrackedClan.createMany({
+          data: toCreate.map((tag) => ({
+            season,
+            tag,
+            name: null,
+          })),
+          skipDuplicates: true,
+        }),
     });
   }
 
-  const finalRows = await prisma.cwlTrackedClan.findMany({
-    where: {
-      season,
-      tag: { in: parsed.validTags },
-    },
-    select: { tag: true },
+  const finalRows = await runBoundedCwlTagStage({
+    stage: "cwl_tags_final_rows_query",
+    timeoutMs: CWL_TAG_DB_STAGE_TIMEOUT_MS,
+    details: { season, valid_count: parsed.validTags.length },
+    action: () =>
+      prisma.cwlTrackedClan.findMany({
+        where: {
+          season,
+          tag: { in: parsed.validTags },
+        },
+        select: { tag: true },
+      }),
   });
   const finalSet = new Set(finalRows.map((row) => normalizeClanTag(row.tag)).filter(Boolean));
 
@@ -170,6 +233,101 @@ export async function addCwlClanTagsForSeason(input: {
     invalid: parsed.invalidTags,
     duplicateInRequest: parsed.duplicateTagsInRequest,
   };
+}
+
+/** Purpose: hydrate missing CWL clan names as best-effort enrichment after rows exist. */
+export async function hydrateMissingCwlClanNamesForSeason(input: {
+  rawTags: string;
+  season?: string;
+  cocService: CoCService;
+}): Promise<void> {
+  const season = input.season ?? resolveCurrentCwlSeasonKey();
+  const parsed = parseCwlClanTagsInput(input.rawTags);
+  console.info(
+    `[tracked-clan] stage=cwl_tags_name_hydration_started season=${season} valid_count=${parsed.validTags.length}`,
+  );
+  if (parsed.validTags.length <= 0) {
+    console.info(
+      `[tracked-clan] stage=cwl_tags_name_hydration_completed season=${season} hydrated_count=0 skipped_count=0`,
+    );
+    return;
+  }
+
+  const missingRows = await runBoundedCwlTagStage({
+    stage: "cwl_tags_missing_name_rows_query",
+    timeoutMs: CWL_TAG_DB_STAGE_TIMEOUT_MS,
+    details: { season, valid_count: parsed.validTags.length },
+    action: () =>
+      prisma.cwlTrackedClan.findMany({
+        where: {
+          season,
+          tag: { in: parsed.validTags },
+          OR: [{ name: null }, { name: "" }],
+        },
+        select: { tag: true },
+      }),
+  });
+
+  if (missingRows.length <= 0) {
+    console.info(
+      `[tracked-clan] stage=cwl_tags_name_hydration_completed season=${season} hydrated_count=0 skipped_count=0`,
+    );
+    return;
+  }
+
+  let hydratedCount = 0;
+  let skippedCount = 0;
+  await Promise.allSettled(
+    missingRows.map(async (row) => {
+      const tag = normalizeClanTag(row.tag) || row.tag;
+      try {
+        const clan = await runBoundedCwlTagStage({
+          stage: "cwl_tags_name_lookup",
+          timeoutMs: CWL_TAG_HYDRATION_LOOKUP_TIMEOUT_MS,
+          details: { season, tag },
+          action: () => input.cocService.getClan(tag),
+        });
+        const clanName = String(clan?.name ?? "").trim();
+        if (!clanName) {
+          skippedCount += 1;
+          console.info(
+            `[tracked-clan] stage=cwl_tags_name_hydration_skipped season=${season} tag=${tag} reason=empty_name`,
+          );
+          return;
+        }
+        const updated = await runBoundedCwlTagStage({
+          stage: "cwl_tags_name_update",
+          timeoutMs: CWL_TAG_DB_STAGE_TIMEOUT_MS,
+          details: { season, tag },
+          action: () =>
+            prisma.cwlTrackedClan.updateMany({
+              where: {
+                season,
+                tag,
+                OR: [{ name: null }, { name: "" }],
+              },
+              data: {
+                name: clanName,
+              },
+            }),
+        });
+        if (updated.count > 0) {
+          hydratedCount += updated.count;
+        } else {
+          skippedCount += 1;
+        }
+      } catch (err) {
+        skippedCount += 1;
+        console.error(
+          `[tracked-clan] stage=cwl_tags_name_hydration_failed season=${season} tag=${tag} error=${formatError(err)}`,
+        );
+      }
+    }),
+  );
+
+  console.info(
+    `[tracked-clan] stage=cwl_tags_name_hydration_completed season=${season} hydrated_count=${hydratedCount} skipped_count=${skippedCount}`,
+  );
 }
 
 /** Purpose: list one season-scoped CWL tracked-clan registry in deterministic order. */

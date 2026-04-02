@@ -45,6 +45,7 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "permission:add",
   "permission:remove",
   "telemetry",
+  "cwl:rotations:create",
 ]);
 
 type CommandDoc = {
@@ -236,6 +237,23 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/war history clan-tag:2QG2C08UP",
       "/war history clan-tag:2QG2C08UP limit:25",
       "/war war-id clan-tag:2QG2C08UP war-id:1000001",
+    ],
+  },
+  cwl: {
+    summary: "Inspect persisted CWL roster, current round state, and planner output.",
+    details: [
+      "`/cwl members clan:<tag>` shows the observed current-season CWL roster for one tracked CWL clan using persisted round observations only.",
+      "`/cwl members clan:<tag> inwar:true` narrows to the persisted current/prep lineup and includes current round status when available.",
+      "`/cwl rotations show` summarizes active plan-vs-actual validation across clans; add `clan` and optional `day` for one plan view.",
+      "`/cwl rotations create` is admin-only by default and only works during persisted CWL preparation state for the tracked clan.",
+      "The `/cwl` surface is DB-first and does not live-query broad CWL state on render when persisted state exists.",
+    ],
+    examples: [
+      "/cwl members clan:#2QG2C08UP",
+      "/cwl members clan:#2QG2C08UP inwar:true",
+      "/cwl rotations show",
+      "/cwl rotations show clan:#2QG2C08UP day:3",
+      "/cwl rotations create clan:#2QG2C08UP exclude:#PYLQ0289,#QGRJ2222 overwrite:true",
     ],
   },
   warplan: {
@@ -535,7 +553,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
   unlinked: {
     summary: "Alert leaders when tracked-clan members are not linked to Discord, and list unresolved players.",
     details: [
-      "`set-alert` stores one guild-level alert channel in dedicated unlinked-alert persistence instead of `BotSetting`.",
+      "`set-alert` stores one guild-level alert channel or thread in dedicated unlinked-alert persistence instead of `BotSetting`.",
       "If no guild-level alert channel is configured, live alerts fall back to the tracked clan `log-channel` when available.",
       "`list` resolves the current live unresolved set across tracked FWA clans and active current-season CWL clans.",
       "A player is only considered linked when `PlayerLink.discordUserId` points to a Discord user; rows without a Discord user still count as unlinked.",

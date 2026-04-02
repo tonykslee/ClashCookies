@@ -36,11 +36,16 @@ import {
 import { trackedMessageService } from "../services/TrackedMessageService";
 import { FwaFeedSchedulerService } from "../services/fwa-feeds/FwaFeedSchedulerService";
 import { todoSnapshotService } from "../services/TodoSnapshotService";
+import { cwlStateService } from "../services/CwlStateService";
 import { ReminderSchedulerService } from "../services/reminders/ReminderSchedulerService";
 import { UserActivityReminderSchedulerService } from "../services/remindme/UserActivityReminderSchedulerService";
-import { cocRequestQueueService } from "../services/CoCRequestQueueService";
+import {
+  cocRequestQueueService,
+  isCoCQueueSkippedError,
+} from "../services/CoCRequestQueueService";
 import { PollCycleGuardService } from "../services/PollCycleGuardService";
 import { unlinkedMemberAlertService } from "../services/UnlinkedMemberAlertService";
+import { runWithCoCQueueContext } from "../services/CoCQueueContext";
 import {
   isActivePollingMode,
   resolveMirrorSyncIntervalMsFromEnv,
@@ -439,12 +444,20 @@ export default (client: Client, cocService: CoCService): void => {
       }
     };
 
-    const runObservedCycle = async () => {
+    const runObservedCycle = async (scheduledAtMs: number = Date.now()) => {
+      await runWithCoCQueueContext(
+        {
+          priority: "background",
+          source: "activity_observe_cycle",
+          scheduledAtMs,
+          nextScheduledAtMs: scheduledAtMs + intervalMs,
+        },
+        async () => {
       await pollCycleGuard.run("activity_observe_cycle", async () => {
         const queueStatus = cocRequestQueueService.getStatus();
         if (queueStatus.degraded) {
           console.warn(
-            `[poll-cycle] event=degraded_mode job=activity_observe_cycle spacing_ms=${queueStatus.spacingMs} penalty_ms=${queueStatus.penaltyMs} queue_depth=${queueStatus.queueDepth} in_flight=${queueStatus.inFlight}`,
+            `[poll-cycle] event=degraded_mode job=activity_observe_cycle spacing_ms=${queueStatus.spacingMs} penalty_ms=${queueStatus.penaltyMs} queue_depth=${queueStatus.queueDepth} interactive_depth=${queueStatus.interactiveQueueDepth} background_depth=${queueStatus.backgroundQueueDepth} in_flight=${queueStatus.inFlight}`,
           );
         }
         await runFetchTelemetryBatch("activity_observe_cycle", async () => {
@@ -477,6 +490,10 @@ export default (client: Client, cocService: CoCService): void => {
               );
             }
           } catch (err) {
+            if (isCoCQueueSkippedError(err)) {
+              console.warn(`[unlinked] reconcile_skipped guild=${guildId} reason=${err.message}`);
+              return;
+            }
             console.error(`[unlinked] reconcile_failed guild=${guildId} error=${formatError(err)}`);
           }
           try {
@@ -486,6 +503,8 @@ export default (client: Client, cocService: CoCService): void => {
           }
         });
       });
+        },
+      );
     };
 
     const getInitialObserveDelayMs = async (): Promise<number> => {
@@ -524,9 +543,13 @@ export default (client: Client, cocService: CoCService): void => {
 
     if (activePollingEnabled) {
       if (initialObserveDelayMs === 0) {
-        await runObservedCycle();
+        await runObservedCycle(Date.now());
         setInterval(() => {
-          runObservedCycle().catch((err) => {
+          runObservedCycle(Date.now()).catch((err) => {
+            if (isCoCQueueSkippedError(err)) {
+              console.warn(`[activity-observe] skipped reason=${err.message}`);
+              return;
+            }
             console.error(`observeTrackedClans loop failed: ${formatError(err)}`);
           });
         }, intervalMs);
@@ -536,13 +559,21 @@ export default (client: Client, cocService: CoCService): void => {
           `Skipping startup activity observe run; next run in ${initialObserveDelayMin} minute(s).`
         );
         setTimeout(() => {
-          runObservedCycle()
+          runObservedCycle(Date.now())
             .catch((err) => {
+              if (isCoCQueueSkippedError(err)) {
+                console.warn(`[activity-observe] delayed_run_skipped reason=${err.message}`);
+                return;
+              }
               console.error(`observeTrackedClans delayed run failed: ${formatError(err)}`);
             })
             .finally(() => {
               setInterval(() => {
-                runObservedCycle().catch((err) => {
+                runObservedCycle(Date.now()).catch((err) => {
+                  if (isCoCQueueSkippedError(err)) {
+                    console.warn(`[activity-observe] skipped reason=${err.message}`);
+                    return;
+                  }
                   console.error(`observeTrackedClans loop failed: ${formatError(err)}`);
                 });
               }, intervalMs);
@@ -618,12 +649,20 @@ export default (client: Client, cocService: CoCService): void => {
         : DEFAULT_WAR_EVENT_POLL_INTERVAL_MINUTES;
     const warEventPollMs = Math.floor(warEventPollMinutes * 60 * 1000);
 
-    const runWarEventPoll = async () => {
+    const runWarEventPoll = async (scheduledAtMs: number = Date.now()) => {
+      await runWithCoCQueueContext(
+        {
+          priority: "background",
+          source: "war_event_poll_cycle",
+          scheduledAtMs,
+          nextScheduledAtMs: scheduledAtMs + warEventPollMs,
+        },
+        async () => {
       await pollCycleGuard.run("war_event_poll_cycle", async () => {
         const queueStatus = cocRequestQueueService.getStatus();
         if (queueStatus.degraded) {
           console.warn(
-            `[poll-cycle] event=degraded_mode job=war_event_poll_cycle spacing_ms=${queueStatus.spacingMs} penalty_ms=${queueStatus.penaltyMs} queue_depth=${queueStatus.queueDepth} in_flight=${queueStatus.inFlight}`,
+            `[poll-cycle] event=degraded_mode job=war_event_poll_cycle spacing_ms=${queueStatus.spacingMs} penalty_ms=${queueStatus.penaltyMs} queue_depth=${queueStatus.queueDepth} interactive_depth=${queueStatus.interactiveQueueDepth} background_depth=${queueStatus.backgroundQueueDepth} in_flight=${queueStatus.inFlight}`,
           );
         }
         await runFetchTelemetryBatch("war_event_poll_cycle", async () => {
@@ -631,24 +670,37 @@ export default (client: Client, cocService: CoCService): void => {
             await warEventLogService.poll();
             await warEventLogService.refreshBattleDayPosts();
             await refreshAllTrackedWarMailPosts(client);
+            await cwlStateService.refreshTrackedCwlState({
+              cocService,
+            });
             await todoSnapshotService.refreshAllLinkedPlayerSnapshots({
               cocService,
             });
           } catch (err) {
+            if (isCoCQueueSkippedError(err)) {
+              console.warn(`[war-events] poll_skipped reason=${err.message}`);
+              return;
+            }
             console.error(`[war-events] poll loop failed: ${formatError(err)}`);
           }
         });
       });
+        },
+      );
     };
 
     if (activePollingEnabled) {
       setNextNotifyRefreshAtMs(Date.now() + warEventPollMs);
       setNextWarMailRefreshAtMs(Date.now() + warEventPollMs);
-      await runWarEventPoll();
+      await runWarEventPoll(Date.now());
       setInterval(() => {
         setNextNotifyRefreshAtMs(Date.now() + warEventPollMs);
         setNextWarMailRefreshAtMs(Date.now() + warEventPollMs);
-        runWarEventPoll().catch((err) => {
+        runWarEventPoll(Date.now()).catch((err) => {
+          if (isCoCQueueSkippedError(err)) {
+            console.warn(`[war-events] poll_skipped reason=${err.message}`);
+            return;
+          }
           console.error(`[war-events] poll interval failed: ${formatError(err)}`);
         });
       }, warEventPollMs);

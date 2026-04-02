@@ -11,6 +11,8 @@ import {
 import { recordFetchEvent } from "../helper/fetchTelemetry";
 import { toFailureTelemetry } from "./telemetry/ingest";
 import { cocRequestQueueService } from "./CoCRequestQueueService";
+import { getCoCQueueContext } from "./CoCQueueContext";
+import { getTelemetryContext } from "./telemetry/context";
 
 export class CoCService {
   private clansApi: ClansApi;
@@ -45,9 +47,19 @@ export class CoCService {
     detail: string;
     run: () => Promise<T>;
   }): Promise<T> {
+    const queueContext = getCoCQueueContext();
+    if (!queueContext) {
+      throw new Error(`COC_QUEUE_CONTEXT_MISSING:${input.operation}`);
+    }
     return this.queue.enqueue({
       operation: input.operation,
       detail: input.detail,
+      priority: queueContext.priority,
+      source: queueContext.source,
+      scheduledAtMs: queueContext.scheduledAtMs,
+      nextScheduledAtMs: queueContext.nextScheduledAtMs,
+      freshnessDeadlineMs: queueContext.freshnessDeadlineMs,
+      telemetryContext: getTelemetryContext(),
       run: input.run,
     });
   }

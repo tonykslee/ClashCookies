@@ -507,6 +507,110 @@ describe("UnlinkedMemberAlertService", () => {
     expect(send).toHaveBeenCalledTimes(1);
   });
 
+  it("posts alerts directly into a configured thread destination", async () => {
+    prismaMock.trackedClan.findMany
+      .mockResolvedValueOnce([{ tag: "#2QG2C08UP", logChannelId: "333333333333333333" }])
+      .mockResolvedValueOnce([]);
+    prismaMock.unlinkedAlertConfig.findUnique.mockResolvedValue({
+      channelId: "111111111111111111",
+    });
+    const threadSend = vi.fn().mockResolvedValue(undefined);
+    const fallbackSend = vi.fn().mockResolvedValue(undefined);
+    const parentSend = vi.fn().mockResolvedValue(undefined);
+    const client = createClient(
+      new Map<string, unknown>([
+        [
+          "111111111111111111",
+          {
+            id: "111111111111111111",
+            send: threadSend,
+          },
+        ],
+        [
+          "222222222222222222",
+          {
+            id: "222222222222222222",
+            send: parentSend,
+          },
+        ],
+        [
+          "333333333333333333",
+          {
+            id: "333333333333333333",
+            send: fallbackSend,
+          },
+        ],
+      ]),
+    );
+    const service = new UnlinkedMemberAlertService();
+
+    await service.reconcileGuildAlerts({
+      client,
+      guildId: "guild-1",
+      cocService: {} as any,
+      observedFwaClans: [
+        {
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha Clan",
+          logChannelId: "333333333333333333",
+          members: [{ playerTag: "#PYLQ0289", playerName: "One" }],
+        },
+      ],
+    });
+
+    expect(threadSend).toHaveBeenCalledTimes(1);
+    expect(parentSend).not.toHaveBeenCalled();
+    expect(fallbackSend).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the tracked clan log channel when a configured thread cannot be used", async () => {
+    prismaMock.trackedClan.findMany
+      .mockResolvedValueOnce([{ tag: "#2QG2C08UP", logChannelId: "333333333333333333" }])
+      .mockResolvedValueOnce([]);
+    prismaMock.unlinkedAlertConfig.findUnique.mockResolvedValue({
+      channelId: "111111111111111111",
+    });
+    const threadSend = vi.fn().mockRejectedValue(new Error("archived thread"));
+    const fallbackSend = vi.fn().mockResolvedValue(undefined);
+    const client = createClient(
+      new Map<string, unknown>([
+        [
+          "111111111111111111",
+          {
+            id: "111111111111111111",
+            send: threadSend,
+          },
+        ],
+        [
+          "333333333333333333",
+          {
+            id: "333333333333333333",
+            send: fallbackSend,
+          },
+        ],
+      ]),
+    );
+    const service = new UnlinkedMemberAlertService();
+
+    const result = await service.reconcileGuildAlerts({
+      client,
+      guildId: "guild-1",
+      cocService: {} as any,
+      observedFwaClans: [
+        {
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha Clan",
+          logChannelId: "333333333333333333",
+          members: [{ playerTag: "#PYLQ0289", playerName: "One" }],
+        },
+      ],
+    });
+
+    expect(threadSend).toHaveBeenCalledTimes(1);
+    expect(fallbackSend).toHaveBeenCalledTimes(1);
+    expect(result.alertedCount).toBe(1);
+  });
+
   it("supports clan-scoped list filtering and includes active CWL clan members", async () => {
     prismaMock.trackedClan.findMany
       .mockResolvedValueOnce([{ tag: "#2QG2C08UP", logChannelId: "222222222222222222" }])

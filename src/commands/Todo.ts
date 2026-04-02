@@ -65,6 +65,8 @@ type TodoInitialRefreshOutcome =
       spacingMs: number;
       penaltyMs: number;
       queueDepth: number;
+      interactiveQueueDepth: number;
+      backgroundQueueDepth: number;
       inFlight: number;
     }
   | { status: "timeout"; timeoutMs: number }
@@ -142,6 +144,8 @@ async function tryBoundedInitialTodoRefresh(input: {
       spacingMs: queueStatus.spacingMs,
       penaltyMs: queueStatus.penaltyMs,
       queueDepth: queueStatus.queueDepth,
+      interactiveQueueDepth: queueStatus.interactiveQueueDepth,
+      backgroundQueueDepth: queueStatus.backgroundQueueDepth,
       inFlight: queueStatus.inFlight,
     };
   }
@@ -589,7 +593,7 @@ export const Todo: Command = {
         });
       } else if (initialRefresh.status === "skipped_degraded") {
         console.warn(
-          `[todo] event=snapshot_served reason=coc_degraded user=${interaction.user.id} spacing_ms=${initialRefresh.spacingMs} penalty_ms=${initialRefresh.penaltyMs} queue_depth=${initialRefresh.queueDepth} in_flight=${initialRefresh.inFlight}`,
+          `[todo] event=snapshot_served reason=coc_degraded user=${interaction.user.id} spacing_ms=${initialRefresh.spacingMs} penalty_ms=${initialRefresh.penaltyMs} queue_depth=${initialRefresh.queueDepth} interactive_depth=${initialRefresh.interactiveQueueDepth} background_depth=${initialRefresh.backgroundQueueDepth} in_flight=${initialRefresh.inFlight}`,
         );
       } else if (initialRefresh.status === "timeout") {
         console.warn(

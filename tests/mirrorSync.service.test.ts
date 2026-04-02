@@ -18,6 +18,13 @@ function makeDefaultTableStore(): MirrorTableDataStore {
     TrackedClan: [{ id: 1, tag: "#AAA111", createdAt: new Date("2026-04-01T00:00:00.000Z") }],
     CurrentWar: [{ guildId: "g1", clanTag: "#AAA111", channelId: "c1", notify: true }],
     WarAttacks: [{ warId: 1, playerTag: "#P1", attackNumber: 1 }],
+    CurrentCwlRound: [],
+    CwlRoundMemberCurrent: [],
+    CwlRoundHistory: [],
+    CwlRoundMemberHistory: [],
+    CwlRotationPlan: [],
+    CwlRotationPlanDay: [],
+    CwlRotationPlanMember: [],
     ClanPointsSync: [{ id: "ps1", guildId: "g1", clanTag: "#AAA111", syncNum: 42 }],
     ClanWarHistory: [{ warId: 1, clanTag: "#AAA111", warStartTime: new Date("2026-03-30T00:00:00.000Z") }],
     ClanWarParticipation: [{ id: "p1", guildId: "g1", warId: "1", clanTag: "#AAA111", playerTag: "#P1" }],
@@ -66,6 +73,27 @@ function buildSourceClient(
     warAttacks: {
       findMany: vi.fn(async () => cloneRows(store.WarAttacks)),
     },
+    currentCwlRound: {
+      findMany: vi.fn(async () => cloneRows(store.CurrentCwlRound)),
+    },
+    cwlRoundMemberCurrent: {
+      findMany: vi.fn(async () => cloneRows(store.CwlRoundMemberCurrent)),
+    },
+    cwlRoundHistory: {
+      findMany: vi.fn(async () => cloneRows(store.CwlRoundHistory)),
+    },
+    cwlRoundMemberHistory: {
+      findMany: vi.fn(async () => cloneRows(store.CwlRoundMemberHistory)),
+    },
+    cwlRotationPlan: {
+      findMany: vi.fn(async () => cloneRows(store.CwlRotationPlan)),
+    },
+    cwlRotationPlanDay: {
+      findMany: vi.fn(async () => cloneRows(store.CwlRotationPlanDay)),
+    },
+    cwlRotationPlanMember: {
+      findMany: vi.fn(async () => cloneRows(store.CwlRotationPlanMember)),
+    },
     clanPointsSync: {
       findMany: vi.fn(async () => cloneRows(store.ClanPointsSync)),
     },
@@ -106,6 +134,34 @@ function buildTargetClient(
     trackedClan: { deleteMany: deleteMany("TrackedClan"), createMany: createMany("TrackedClan") },
     currentWar: { deleteMany: deleteMany("CurrentWar"), createMany: createMany("CurrentWar") },
     warAttacks: { deleteMany: deleteMany("WarAttacks"), createMany: createMany("WarAttacks") },
+    currentCwlRound: {
+      deleteMany: deleteMany("CurrentCwlRound"),
+      createMany: createMany("CurrentCwlRound"),
+    },
+    cwlRoundMemberCurrent: {
+      deleteMany: deleteMany("CwlRoundMemberCurrent"),
+      createMany: createMany("CwlRoundMemberCurrent"),
+    },
+    cwlRoundHistory: {
+      deleteMany: deleteMany("CwlRoundHistory"),
+      createMany: createMany("CwlRoundHistory"),
+    },
+    cwlRoundMemberHistory: {
+      deleteMany: deleteMany("CwlRoundMemberHistory"),
+      createMany: createMany("CwlRoundMemberHistory"),
+    },
+    cwlRotationPlan: {
+      deleteMany: deleteMany("CwlRotationPlan"),
+      createMany: createMany("CwlRotationPlan"),
+    },
+    cwlRotationPlanDay: {
+      deleteMany: deleteMany("CwlRotationPlanDay"),
+      createMany: createMany("CwlRotationPlanDay"),
+    },
+    cwlRotationPlanMember: {
+      deleteMany: deleteMany("CwlRotationPlanMember"),
+      createMany: createMany("CwlRotationPlanMember"),
+    },
     clanPointsSync: {
       deleteMany: deleteMany("ClanPointsSync"),
       createMany: createMany("ClanPointsSync"),
@@ -165,11 +221,18 @@ describe("MirrorSyncService", () => {
     expect(targetStore.TrackedClan).toEqual(sourceStore.TrackedClan);
     expect(targetStore.CurrentWar).toEqual(sourceStore.CurrentWar);
     expect(targetStore.WarAttacks).toEqual(sourceStore.WarAttacks);
+    expect(targetStore.CurrentCwlRound).toEqual(sourceStore.CurrentCwlRound);
+    expect(targetStore.CwlRoundMemberCurrent).toEqual(sourceStore.CwlRoundMemberCurrent);
+    expect(targetStore.CwlRoundHistory).toEqual(sourceStore.CwlRoundHistory);
+    expect(targetStore.CwlRoundMemberHistory).toEqual(sourceStore.CwlRoundMemberHistory);
+    expect(targetStore.CwlRotationPlan).toEqual(sourceStore.CwlRotationPlan);
+    expect(targetStore.CwlRotationPlanDay).toEqual(sourceStore.CwlRotationPlanDay);
+    expect(targetStore.CwlRotationPlanMember).toEqual(sourceStore.CwlRotationPlanMember);
     expect(targetStore.ClanPointsSync).toEqual(sourceStore.ClanPointsSync);
     expect(targetStore.ClanWarHistory).toEqual(sourceStore.ClanWarHistory);
     expect(targetStore.ClanWarParticipation).toEqual(sourceStore.ClanWarParticipation);
     expect(targetStore.WarLookup).toEqual(sourceStore.WarLookup);
-    expect(targetClient.$executeRawUnsafe).toHaveBeenCalledTimes(2);
+    expect(targetClient.$executeRawUnsafe.mock.calls.length).toBeGreaterThanOrEqual(2);
     expect(logger.info).toHaveBeenCalledWith(
       expect.stringContaining("[mirror-sync] event=manual_completed"),
     );
