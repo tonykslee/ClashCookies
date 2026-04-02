@@ -1,20 +1,41 @@
 import {
+  ActionRowBuilder,
   ApplicationCommandOptionType,
   AutocompleteInteraction,
   ChatInputCommandInteraction,
   Client,
   EmbedBuilder,
+  ButtonBuilder,
+  ButtonInteraction,
+  ButtonStyle,
 } from "discord.js";
+import { randomUUID } from "crypto";
 import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
 import { resolveCurrentCwlSeasonKey } from "../services/CwlRegistryService";
 import { cwlRotationService } from "../services/CwlRotationService";
+import {
+  cwlRotationSheetService,
+  type CwlRotationSheetImportConfirmResult,
+  type CwlRotationSheetImportPreview,
+} from "../services/CwlRotationSheetService";
 import { cwlStateService } from "../services/CwlStateService";
 import { normalizeClanTag } from "../services/PlayerLinkService";
 
 const CWL_EMBED_COLOR = 0xfee75c;
 const DISCORD_DESCRIPTION_LIMIT = 4096;
+const CWL_ROTATION_IMPORT_SESSION_TTL_MS = 15 * 60 * 1000;
+const CWL_ROTATION_IMPORT_SESSION_PREFIX = "cwl-rot-import";
+
+type CwlRotationImportSession = {
+  requestedByUserId: string;
+  createdAtMs: number;
+  preview: CwlRotationSheetImportPreview;
+  overwrite: boolean;
+};
+
+const cwlRotationImportSessions = new Map<string, CwlRotationImportSession>();
 
 function formatRelativeTimestamp(value: Date | null): string {
   if (!(value instanceof Date) || Number.isNaN(value.getTime())) {
@@ -104,6 +125,227 @@ function renderValidationSummary(input: {
     parts.push(`extra ${input.extraActualPlayerTags.join(", ")}`);
   }
   return parts.join(" | ");
+}
+
+function pruneExpiredCwlRotationImportSessions(nowMs = Date.now()): void {
+  for (const [sessionId, session] of cwlRotationImportSessions.entries()) {
+    if (session.createdAtMs + CWL_ROTATION_IMPORT_SESSION_TTL_MS <= nowMs) {
+      cwlRotationImportSessions.delete(sessionId);
+    }
+  }
+}
+
+function createCwlRotationImportSession(
+  preview: CwlRotationSheetImportPreview,
+  overwrite: boolean,
+  requestedByUserId: string,
+): string {
+  pruneExpiredCwlRotationImportSessions();
+  const sessionId = randomUUID().replace(/-/g, "").slice(0, 18);
+  cwlRotationImportSessions.set(sessionId, {
+    requestedByUserId,
+    createdAtMs: Date.now(),
+    preview,
+    overwrite,
+  });
+  return sessionId;
+}
+
+function getCwlRotationImportSession(
+  sessionId: string,
+  userId: string,
+): CwlRotationImportSession | null {
+  pruneExpiredCwlRotationImportSessions();
+  const session = cwlRotationImportSessions.get(sessionId) ?? null;
+  if (!session) return null;
+  if (session.requestedByUserId !== userId) return null;
+  return session;
+}
+
+function deleteCwlRotationImportSession(sessionId: string): void {
+  cwlRotationImportSessions.delete(sessionId);
+}
+
+export function isCwlRotationImportButtonCustomId(customId: string): boolean {
+  return String(customId ?? "").startsWith(`${CWL_ROTATION_IMPORT_SESSION_PREFIX}:`);
+}
+
+function parseCwlRotationImportButtonCustomId(
+  customId: string,
+): { action: "page" | "confirm" | "cancel"; sessionId: string; pageIndex: number | null } | null {
+  const parts = String(customId ?? "").split(":");
+  if (parts.length < 3 || parts[0] !== CWL_ROTATION_IMPORT_SESSION_PREFIX) return null;
+  const action = parts[1];
+  if (action !== "page" && action !== "confirm" && action !== "cancel") return null;
+  const sessionId = String(parts[2] ?? "").trim();
+  if (!sessionId) return null;
+  const pageIndex =
+    action === "page"
+      ? Math.max(0, Math.trunc(Number(parts[3] ?? "0") || 0))
+      : null;
+  return {
+    action,
+    sessionId,
+    pageIndex,
+  };
+}
+
+function buildCwlRotationImportPreviewPageLines(input: {
+  preview: CwlRotationSheetImportPreview;
+  pageIndex: number;
+}): string[] {
+  const roundDay = Math.max(1, Math.min(7, Math.trunc(input.pageIndex) + 1));
+  const lines: string[] = [
+    `Season: ${input.preview.season}`,
+    `Source: ${input.preview.sourceSheetTitle || input.preview.sourceSheetId}`,
+    `Page: ${roundDay} / 7`,
+    `Importable clans: ${input.preview.matchedClans.filter((clan) => clan.importable).length} / ${input.preview.matchedClans.length}`,
+    "",
+  ];
+
+  if (input.preview.skippedTrackedClans.length > 0) {
+    lines.push(
+      `Skipped tracked clans: ${input.preview.skippedTrackedClans
+        .map((entry) => `${entry.clanName || entry.clanTag} (${entry.reason})`)
+        .join(" | ")}`,
+    );
+    lines.push("");
+  }
+  if (input.preview.skippedTabs.length > 0) {
+    lines.push(
+      `Skipped tabs: ${input.preview.skippedTabs
+        .map((entry) => `${entry.tabTitle} (${entry.reason})`)
+        .join(" | ")}`,
+    );
+    lines.push("");
+  }
+
+  for (const clan of input.preview.matchedClans) {
+    const day = clan.days.find((entry) => entry.roundDay === roundDay);
+    const clanLabel = clan.clanName || clan.clanTag;
+    const statusLabel = clan.importable
+      ? ""
+      : ` - blocked${clan.importBlockedReason ? ` (${clan.importBlockedReason})` : ""}`;
+    lines.push(`**${clanLabel}**${statusLabel}`);
+    if (clan.warnings.length > 0) {
+      lines.push(`Warnings: ${clan.warnings.join(" | ")}`);
+    }
+    if (!day || day.members.length <= 0) {
+      lines.push("No rows parsed.");
+    } else {
+      for (const member of day.members) {
+        const prefix = member.subbedOut ? ":x:" : ":black_circle:";
+        lines.push(`${prefix} ${member.playerName} (${member.playerTag})`);
+      }
+    }
+    lines.push("");
+  }
+
+  if (lines.at(-1) === "") {
+    lines.pop();
+  }
+  return lines;
+}
+
+function buildCwlRotationImportPreviewEmbed(input: {
+  preview: CwlRotationSheetImportPreview;
+  pageIndex: number;
+  sessionId: string;
+}): EmbedBuilder {
+  const roundDay = Math.max(1, Math.min(7, Math.trunc(input.pageIndex) + 1));
+  return new EmbedBuilder()
+    .setColor(CWL_EMBED_COLOR)
+    .setTitle(`/cwl rotations import preview - day ${roundDay}`)
+    .setDescription(
+      buildDescription(
+        buildCwlRotationImportPreviewPageLines({
+          preview: input.preview,
+          pageIndex: input.pageIndex,
+        }),
+      ),
+    )
+    .setFooter({
+      text: `Session ${input.sessionId.slice(0, 8)} - page ${roundDay}/7`,
+    });
+}
+
+function buildCwlRotationImportActionRows(input: {
+  sessionId: string;
+  pageIndex: number;
+  hasImportableClans: boolean;
+}): ActionRowBuilder<ButtonBuilder>[] {
+  const prevButton = new ButtonBuilder()
+    .setCustomId(`${CWL_ROTATION_IMPORT_SESSION_PREFIX}:page:${input.sessionId}:${Math.max(0, input.pageIndex - 1)}`)
+    .setLabel("Prev")
+    .setStyle(ButtonStyle.Secondary)
+    .setDisabled(input.pageIndex <= 0);
+  const nextButton = new ButtonBuilder()
+    .setCustomId(`${CWL_ROTATION_IMPORT_SESSION_PREFIX}:page:${input.sessionId}:${Math.min(6, input.pageIndex + 1)}`)
+    .setLabel("Next")
+    .setStyle(ButtonStyle.Secondary)
+    .setDisabled(input.pageIndex >= 6);
+  const confirmButton = new ButtonBuilder()
+    .setCustomId(`${CWL_ROTATION_IMPORT_SESSION_PREFIX}:confirm:${input.sessionId}`)
+    .setLabel("Save Import")
+    .setStyle(ButtonStyle.Success)
+    .setDisabled(!input.hasImportableClans);
+  const cancelButton = new ButtonBuilder()
+    .setCustomId(`${CWL_ROTATION_IMPORT_SESSION_PREFIX}:cancel:${input.sessionId}`)
+    .setLabel("Cancel")
+    .setStyle(ButtonStyle.Danger);
+
+  return [new ActionRowBuilder<ButtonBuilder>().addComponents(prevButton, nextButton, confirmButton, cancelButton)];
+}
+
+function buildCwlRotationImportSummaryEmbed(input: {
+  result: CwlRotationSheetImportConfirmResult;
+}): EmbedBuilder {
+  const lines: string[] = [
+    `Season: ${input.result.season}`,
+    "",
+  ];
+  for (const saved of input.result.saved) {
+    if (saved.outcome === "created") {
+      lines.push(
+        `Saved ${saved.clanName || saved.clanTag} from ${saved.sourceTabName} as version ${saved.version}.`,
+      );
+      if (saved.warnings.length > 0) {
+        lines.push(`Warnings: ${saved.warnings.join(" | ")}`);
+      }
+    } else if (saved.outcome === "blocked_existing") {
+      lines.push(
+        `Blocked ${saved.clanName || saved.clanTag} from ${saved.sourceTabName}: active version ${saved.existingVersion}.`,
+      );
+    } else {
+      lines.push(`Skipped ${saved.clanName || saved.clanTag} from ${saved.sourceTabName}.`);
+    }
+    lines.push("");
+  }
+
+  if (input.result.skippedTrackedClans.length > 0) {
+    lines.push(
+      `Skipped tracked clans: ${input.result.skippedTrackedClans
+        .map((entry) => `${entry.clanName || entry.clanTag} (${entry.reason})`)
+        .join(" | ")}`,
+    );
+    lines.push("");
+  }
+  if (input.result.skippedTabs.length > 0) {
+    lines.push(
+      `Skipped tabs: ${input.result.skippedTabs
+        .map((entry) => `${entry.tabTitle} (${entry.reason})`)
+        .join(" | ")}`,
+    );
+  }
+
+  if (lines.at(-1) === "") {
+    lines.pop();
+  }
+
+  return new EmbedBuilder()
+    .setColor(CWL_EMBED_COLOR)
+    .setTitle("/cwl rotations import")
+    .setDescription(buildDescription(lines));
 }
 
 async function autocompleteCwlTrackedClan(
@@ -373,9 +615,130 @@ async function handleRotationShowSubcommand(interaction: ChatInputCommandInterac
   });
 }
 
+async function handleRotationImportSubcommand(interaction: ChatInputCommandInteraction) {
+  const sheetLink = interaction.options.getString("sheet", true);
+  const overwrite = interaction.options.getBoolean("overwrite", false) ?? false;
+  let preview;
+  try {
+    preview = await cwlRotationSheetService.buildImportPreview({
+      sheetLink,
+      overwrite,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Failed to parse the Google Sheets link.";
+    await interaction.editReply(message);
+    return;
+  }
+  const sessionId = createCwlRotationImportSession(
+    preview,
+    overwrite,
+    interaction.user.id,
+  );
+  const pageIndex = 0;
+  await interaction.editReply({
+    embeds: [
+      buildCwlRotationImportPreviewEmbed({
+        preview,
+        pageIndex,
+        sessionId,
+      }),
+    ],
+    components: buildCwlRotationImportActionRows({
+      sessionId,
+      pageIndex,
+      hasImportableClans: preview.matchedClans.some((clan) => clan.importable),
+    }),
+  });
+}
+
+async function handleRotationExportSubcommand(interaction: ChatInputCommandInteraction) {
+  const result = await cwlRotationSheetService.exportActivePlans();
+  await interaction.editReply({
+    embeds: [
+      new EmbedBuilder()
+        .setColor(CWL_EMBED_COLOR)
+        .setTitle("/cwl rotations export")
+        .setDescription(
+          buildDescription([
+            `Created a new public Google Sheet with ${result.tabCount} active CWL planner tab${result.tabCount === 1 ? "" : "s"}.`,
+            `Link: ${result.spreadsheetUrl}`,
+          ]),
+        ),
+    ],
+  });
+}
+
+export async function handleCwlRotationImportButtonInteraction(
+  interaction: ButtonInteraction,
+): Promise<void> {
+  const parsed = parseCwlRotationImportButtonCustomId(interaction.customId);
+  if (!parsed) return;
+  const session = getCwlRotationImportSession(parsed.sessionId, interaction.user.id);
+  if (!session) {
+    await interaction.reply({
+      content: "That CWL rotation import preview has expired or is no longer available.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (parsed.action === "cancel") {
+    deleteCwlRotationImportSession(parsed.sessionId);
+    await interaction.update({
+      embeds: [
+        new EmbedBuilder()
+          .setColor(CWL_EMBED_COLOR)
+          .setTitle("/cwl rotations import")
+          .setDescription("CWL rotation import cancelled."),
+      ],
+      components: [],
+    });
+    return;
+  }
+
+  if (parsed.action === "page") {
+    const pageIndex = Math.max(0, Math.min(6, parsed.pageIndex ?? 0));
+    await interaction.update({
+      embeds: [
+        buildCwlRotationImportPreviewEmbed({
+          preview: session.preview,
+          pageIndex,
+          sessionId: parsed.sessionId,
+        }),
+      ],
+      components: buildCwlRotationImportActionRows({
+        sessionId: parsed.sessionId,
+        pageIndex,
+        hasImportableClans: session.preview.matchedClans.some((clan) => clan.importable),
+      }),
+    });
+    return;
+  }
+
+  await interaction.deferUpdate();
+  try {
+    const result = await cwlRotationSheetService.confirmImport({
+      preview: session.preview,
+      overwrite: session.overwrite,
+    });
+    deleteCwlRotationImportSession(parsed.sessionId);
+    await interaction.editReply({
+      embeds: [buildCwlRotationImportSummaryEmbed({ result })],
+      components: [],
+    });
+  } catch (err) {
+    console.error(`CWL rotation import confirmation failed: ${formatError(err)}`);
+    await interaction.editReply({
+      content: "Failed to save the CWL rotation import.",
+      embeds: [],
+      components: [],
+    });
+  }
+}
+
 export const Cwl: Command = {
   name: "cwl",
-  description: "Inspect persisted CWL rosters and rotation plans",
+  description: "Inspect persisted CWL rosters, rotation plans, and planner sheet imports/exports",
   options: [
     {
       name: "members",
@@ -450,6 +813,30 @@ export const Cwl: Command = {
             },
           ],
         },
+        {
+          name: "import",
+          description: "Import active CWL planner tabs from one public Google Sheet",
+          type: ApplicationCommandOptionType.Subcommand,
+          options: [
+            {
+              name: "sheet",
+              description: "Public Google Sheet link with CWL planner tabs",
+              type: ApplicationCommandOptionType.String,
+              required: true,
+            },
+            {
+              name: "overwrite",
+              description: "Replace the active current-season plan when it already exists",
+              type: ApplicationCommandOptionType.Boolean,
+              required: false,
+            },
+          ],
+        },
+        {
+          name: "export",
+          description: "Export the active CWL planner data to a brand-new public Google Sheet",
+          type: ApplicationCommandOptionType.Subcommand,
+        },
       ],
     },
   ],
@@ -470,6 +857,14 @@ export const Cwl: Command = {
       }
       if (group === "rotations" && subcommand === "create") {
         await handleRotationCreateSubcommand(interaction);
+        return;
+      }
+      if (group === "rotations" && subcommand === "import") {
+        await handleRotationImportSubcommand(interaction);
+        return;
+      }
+      if (group === "rotations" && subcommand === "export") {
+        await handleRotationExportSubcommand(interaction);
         return;
       }
       if (group === "rotations" && subcommand === "show") {

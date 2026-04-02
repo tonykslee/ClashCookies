@@ -107,6 +107,7 @@ async function resolveRememberedTodoType(
 async function refreshTodoSnapshotsForDiscordUser(input: {
   discordUserId: string;
   cocService: CoCService;
+  includeNonTrackedCwlRefresh?: boolean;
 }): Promise<void> {
   const links = await listPlayerLinksForDiscordUser({
     discordUserId: input.discordUserId,
@@ -116,6 +117,7 @@ async function refreshTodoSnapshotsForDiscordUser(input: {
     await todoSnapshotService.refreshSnapshotsForPlayerTags({
       playerTags: linkedTags,
       cocService: input.cocService,
+      includeNonTrackedCwlRefresh: input.includeNonTrackedCwlRefresh,
     });
   }
   invalidateTodoRenderCacheForUser(input.discordUserId);
@@ -482,6 +484,7 @@ export async function handleTodoRefreshButtonInteraction(
     await refreshTodoSnapshotsForDiscordUser({
       discordUserId: parsed.targetUserId,
       cocService,
+      includeNonTrackedCwlRefresh: true,
     });
 
     const result = await buildTodoRenderResult({

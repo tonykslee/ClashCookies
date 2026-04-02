@@ -1,4 +1,4 @@
-import { ClanWar } from "../generated/coc-api";
+import { ClanWar, type ClanWarMember } from "../generated/coc-api";
 import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
 import {
@@ -7,6 +7,7 @@ import {
 } from "./ActivitySignalService";
 import { resolveCurrentCwlSeasonKey } from "./CwlRegistryService";
 import { CoCService, type ClanCapitalRaidSeason } from "./CoCService";
+import { cocRequestQueueService } from "./CoCRequestQueueService";
 import { normalizeClanTag, normalizePlayerTag } from "./PlayerLinkService";
 import {
   buildTrackedWarMemberStateByClanAndPlayer,
@@ -67,12 +68,37 @@ type TodoWindow = {
   endMs: number;
 };
 
+type WarEventLinkedPlayerRefreshProducer = {
+  source: string;
+  pacingMs: number | null;
+  backlogThreshold: number;
+};
+
 type TodoClanGamesWindow = {
   active: boolean;
   rewardCollectionActive: boolean;
   startMs: number;
   endMs: number;
   rewardCollectionEndsMs: number;
+};
+
+type LiveCwlClanContext = {
+  clanTag: string;
+  clanName: string | null;
+  roundState: string;
+  phaseEndsAt: Date | null;
+  membersByPlayerTag: Map<
+    string,
+    {
+      clanTag: string;
+      playerName: string;
+      townHall: number | null;
+      attacksUsed: number;
+      attacksAvailable: number;
+      subbedIn: boolean;
+      subbedOut: boolean;
+    }
+  >;
 };
 
 type ClanMemberCurrentRow = {
@@ -123,6 +149,12 @@ export class TodoSnapshotService {
     string,
     Promise<TodoSnapshotRefreshResult>
   >();
+
+  /** Purpose: clear in-memory refresh locks between isolated tests. */
+  resetForTest(): void {
+    this.refreshAllPromise = null;
+    this.refreshByBatchKey.clear();
+  }
 
   /** Purpose: load ordered snapshot rows for one player-tag set. */
   async listSnapshotsByPlayerTags(input: {
@@ -182,6 +214,7 @@ export class TodoSnapshotService {
   async refreshAllLinkedPlayerSnapshots(input: {
     cocService?: CoCService;
     nowMs?: number;
+    producerPacingMs?: number | null;
   }): Promise<TodoSnapshotRefreshResult> {
     if (this.refreshAllPromise) {
       return this.refreshAllPromise;
@@ -199,13 +232,17 @@ export class TodoSnapshotService {
     playerTags: string[];
     cocService?: CoCService;
     nowMs?: number;
+    includeNonTrackedCwlRefresh?: boolean;
   }): Promise<TodoSnapshotRefreshResult> {
     const normalizedTags = normalizePlayerTags(input.playerTags);
     if (normalizedTags.length <= 0) {
       return { playerCount: 0, updatedCount: 0 };
     }
 
-    const batchKey = normalizedTags.join(",");
+    const batchKey = [
+      normalizedTags.join(","),
+      input.includeNonTrackedCwlRefresh ? "nontracked-cwl" : "default",
+    ].join("|");
     const existing = this.refreshByBatchKey.get(batchKey);
     if (existing) {
       return existing;
@@ -226,6 +263,7 @@ export class TodoSnapshotService {
   private async refreshAllLinkedPlayerSnapshotsInternal(input: {
     cocService?: CoCService;
     nowMs?: number;
+    producerPacingMs?: number | null;
   }): Promise<TodoSnapshotRefreshResult> {
     const links = await prisma.playerLink.findMany({
       where: { discordUserId: { not: null } },
@@ -233,8 +271,8 @@ export class TodoSnapshotService {
       orderBy: [{ createdAt: "asc" }, { playerTag: "asc" }],
     });
 
-    const playerTags = normalizePlayerTags(links.map((row) => row.playerTag));
-    if (playerTags.length <= 0) {
+    const playerTags = links.map((row) => row.playerTag);
+    if (normalizePlayerTags(playerTags).length <= 0) {
       return { playerCount: 0, updatedCount: 0 };
     }
 
@@ -242,6 +280,15 @@ export class TodoSnapshotService {
       playerTags,
       cocService: input.cocService,
       nowMs: input.nowMs,
+      producer: {
+        source: "war_event_poll_cycle",
+        pacingMs:
+          Number.isFinite(input.producerPacingMs ?? NaN) &&
+          Number(input.producerPacingMs) > 0
+            ? Math.trunc(Number(input.producerPacingMs))
+            : null,
+        backlogThreshold: 250,
+      },
     });
   }
 
@@ -250,6 +297,8 @@ export class TodoSnapshotService {
     playerTags: string[];
     cocService?: CoCService;
     nowMs?: number;
+    includeNonTrackedCwlRefresh?: boolean;
+    producer?: WarEventLinkedPlayerRefreshProducer | null;
   }): Promise<TodoSnapshotRefreshResult> {
     const normalizedTags = normalizePlayerTags(input.playerTags);
     if (normalizedTags.length <= 0) {
@@ -267,6 +316,7 @@ export class TodoSnapshotService {
     const liveClanTagByPlayerTag = await loadLiveClanTagsByPlayerTag({
       cocService: input.cocService,
       playerTags: normalizedTags,
+      producer: input.producer ?? null,
     });
 
     const signalStateKeyByTag = new Map(
@@ -492,6 +542,19 @@ export class TodoSnapshotService {
         ] as const)
         .filter((entry): entry is [string, string] => Boolean(entry[0] && entry[1])),
     );
+    const liveNonTrackedCwlContextByClanTag = input.includeNonTrackedCwlRefresh
+      ? await loadLiveNonTrackedCwlContextsByClanTag({
+          cocService: input.cocService,
+          clanTags: [
+            ...new Set(
+              [...resolvedClanTagByPlayerTag.values()].filter(
+                (value): value is string =>
+                  Boolean(value && !cwlTrackedTagSet.has(value)),
+              ),
+            ),
+          ],
+        })
+      : new Map<string, LiveCwlClanContext>();
     const mappedCwlClanByPlayerTag = new Map(
       cwlSeasonMappingRows
         .map((row) => [
@@ -579,20 +642,69 @@ export class TodoSnapshotService {
         resolvedClanTag && cwlTrackedTagSet.has(resolvedClanTag)
           ? resolvedClanTag
           : "";
+      const liveNonTrackedCwlContext =
+        resolvedClanTag && !cwlTrackedTagSet.has(resolvedClanTag)
+          ? liveNonTrackedCwlContextByClanTag.get(resolvedClanTag) ?? null
+          : null;
       const resolvedCwlClanTag =
         normalizeClanTag(
           activeMappedCwlClanTag ||
             persistedMappedCwlClanTag ||
             fallbackCwlClanTag,
-        ) || null;
+        ) ||
+        normalizeClanTag(liveNonTrackedCwlContext?.clanTag ?? "") ||
+        normalizeClanTag(existing?.cwlClanTag ?? "") ||
+        null;
       const resolvedCwlClanName =
         (resolvedCwlClanTag
           ? currentCwlRoundByClanTag.get(resolvedCwlClanTag)?.clanName ||
             cwlTrackedClanNameByTag.get(resolvedCwlClanTag) ||
+            liveNonTrackedCwlContext?.clanName ||
+            resolvedClanName ||
             trackedClanNameByTag.get(resolvedCwlClanTag)
           : null) ||
         sanitizeDisplayText(existing?.cwlClanName ?? "") ||
         null;
+      const liveNonTrackedCwlMember =
+        resolvedClanTag && liveNonTrackedCwlContext
+          ? liveNonTrackedCwlContext.membersByPlayerTag.get(playerTag) ?? null
+          : null;
+      const currentCwlRound = resolvedCwlClanTag
+        ? currentCwlRoundByClanTag.get(resolvedCwlClanTag) ?? null
+        : null;
+      const currentCwlMember =
+        currentCwlMemberByPlayerTag.get(playerTag) ?? liveNonTrackedCwlMember ?? null;
+      const cwlParticipant = Boolean(
+        resolvedCwlClanTag &&
+          currentCwlMember &&
+          currentCwlMember.subbedIn &&
+          (!currentCwlRound || currentCwlMember.clanTag === resolvedCwlClanTag),
+      );
+      const cwlHasContext = Boolean(
+        currentCwlRound ||
+          liveNonTrackedCwlContext ||
+          existing?.cwlClanTag ||
+          existing?.cwlClanName,
+      );
+      const cwlActive = cwlHasContext && cwlParticipant;
+      const cwlPhase = cwlHasContext
+        ? normalizeWarPhaseLabel(
+            currentCwlRound?.roundState ?? liveNonTrackedCwlContext?.roundState ?? "",
+          )
+        : null;
+      const cwlEndsAt = currentCwlRound
+        ? resolveCurrentWarPhaseEnd({
+            state: currentCwlRound?.roundState ?? null,
+            startTime: currentCwlRound?.startTime ?? null,
+            endTime: currentCwlRound?.endTime ?? null,
+          })
+        : liveNonTrackedCwlContext?.phaseEndsAt ?? null;
+      const cwlAttacksUsed = cwlParticipant
+        ? clampInt(currentCwlMember?.attacksUsed, 0, currentCwlMember?.attacksAvailable || 1)
+        : 0;
+      const cwlAttacksMax = cwlParticipant
+        ? Math.max(0, clampInt(currentCwlMember?.attacksAvailable, 0, 1))
+        : 0;
       const resolvedPlayerName =
         sanitizeDisplayText(latestClanMember?.playerName ?? "") ||
         latestCatalogNameByTag.get(playerTag) ||
@@ -631,33 +743,6 @@ export class TodoSnapshotService {
           : trackedClanActive
             ? clampInt(trackedWarMember?.attacksUsed, 0, 2)
             : clampInt(warMemberFromFeed?.attacks, 0, 2);
-
-      const currentCwlRound = resolvedCwlClanTag
-        ? currentCwlRoundByClanTag.get(resolvedCwlClanTag) ?? null
-        : null;
-      const currentCwlMember = currentCwlMemberByPlayerTag.get(playerTag) ?? null;
-      const cwlParticipant =
-        !!resolvedCwlClanTag &&
-        currentCwlMember?.clanTag === resolvedCwlClanTag &&
-        currentCwlMember.subbedIn;
-      const cwlHasContext = Boolean(currentCwlRound);
-      const cwlActive = cwlHasContext && cwlParticipant;
-      const cwlPhase = cwlHasContext
-        ? normalizeWarPhaseLabel(currentCwlRound?.roundState ?? "")
-        : null;
-      const cwlEndsAt = cwlHasContext
-        ? resolveCurrentWarPhaseEnd({
-            state: currentCwlRound?.roundState ?? null,
-            startTime: currentCwlRound?.startTime ?? null,
-            endTime: currentCwlRound?.endTime ?? null,
-          })
-        : null;
-      const cwlAttacksUsed = cwlParticipant
-        ? clampInt(currentCwlMember?.attacksUsed, 0, 1)
-        : 0;
-      const cwlAttacksMax = cwlParticipant
-        ? Math.max(0, clampInt(currentCwlMember?.attacksAvailable, 0, 1))
-        : 0;
 
       const derivedGames = deriveTodoGamesValues({
         gamesWindowActive: gamesWindow.active,
@@ -736,6 +821,11 @@ export class TodoSnapshotService {
 
 /** Purpose: provide one singleton snapshot service instance for command and background use. */
 export const todoSnapshotService = new TodoSnapshotService();
+
+/** Purpose: clear in-memory refresh locks between isolated tests. */
+export function resetTodoSnapshotServiceForTest(): void {
+  todoSnapshotService.resetForTest();
+}
 
 /** Purpose: satisfy TS type inference for snapshot row shape from one shared select object. */
 async function listTodoSnapshotRecordsForTypeInference() {
@@ -891,6 +981,11 @@ function resolveGamesCyclePoints(input: {
   return 0;
 }
 
+function sleepMs(ms: number): Promise<void> {
+  if (!Number.isFinite(ms) || ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, Math.trunc(ms)));
+}
+
 /** Purpose: execute write operations in bounded chunks with parallel writes per chunk. */
 async function runChunkedWrites<T>(
   items: T[],
@@ -916,6 +1011,42 @@ function normalizePlayerTags(input: string[]): string[] {
     normalized.push(playerTag);
   }
   return normalized;
+}
+
+function chunkArray<T>(input: T[], chunkSize: number): T[][] {
+  const safeChunkSize =
+    Number.isFinite(chunkSize) && chunkSize > 0 ? Math.trunc(chunkSize) : 1;
+  const chunks: T[][] = [];
+  for (let index = 0; index < input.length; index += safeChunkSize) {
+    chunks.push(input.slice(index, index + safeChunkSize));
+  }
+  return chunks;
+}
+
+export function resolveWarEventLinkedPlayerRefreshPlanForTest(input: {
+  candidateCount: number;
+  dedupedCount: number;
+  pacingMs?: number | null;
+}): {
+  candidateCount: number;
+  dedupedCount: number;
+  chunkSize: number;
+  chunkCount: number;
+  chunkDelayMs: number;
+} {
+  const candidateCount = Math.max(0, Math.trunc(Number(input.candidateCount) || 0));
+  const dedupedCount = Math.max(0, Math.trunc(Number(input.dedupedCount) || 0));
+  const chunkSize = dedupedCount > 0 ? 25 : 1;
+  const chunkCount = dedupedCount > 0 ? Math.ceil(dedupedCount / chunkSize) : 0;
+  const pacingMs =
+    Number.isFinite(input.pacingMs ?? NaN) && Number(input.pacingMs) > 0
+      ? Math.trunc(Number(input.pacingMs))
+      : 0;
+  const chunkDelayMs =
+    pacingMs > 0 && chunkCount > 1
+      ? Math.max(250, Math.floor(pacingMs / chunkCount))
+      : 0;
+  return { candidateCount, dedupedCount, chunkSize, chunkCount, chunkDelayMs };
 }
 
 /** Purpose: keep only the most recent clan-member row per player tag by source sync time. */
@@ -1157,24 +1288,228 @@ async function resolveActiveCwlWarForClan(input: {
   return null;
 }
 
+/** Purpose: load one deduped live CWL context per non-tracked clan for targeted manual snapshot refreshes. */
+async function loadLiveNonTrackedCwlContextsByClanTag(input: {
+  cocService?: CoCService;
+  clanTags: string[];
+}): Promise<Map<string, LiveCwlClanContext>> {
+  if (!input.cocService || input.clanTags.length <= 0) {
+    return new Map();
+  }
+
+  const contexts = await Promise.all(
+    [...new Set(input.clanTags)].map(async (clanTag) => {
+      const normalizedClanTag = normalizeClanTag(clanTag);
+      const group = await input.cocService!
+        .getClanWarLeagueGroup(clanTag)
+        .catch(() => null);
+      if (!group) {
+        return [clanTag, null] as const;
+      }
+
+      const groupClan = Array.isArray(group.clans)
+        ? group.clans.find(
+            (entry) =>
+              normalizeClanTag(String(entry?.tag ?? "")) === normalizedClanTag,
+          )
+        : null;
+      const baseClanName = sanitizeDisplayText(groupClan?.name) || null;
+      const rounds = Array.isArray(group.rounds) ? [...group.rounds].reverse() : [];
+      for (const round of rounds) {
+        const warTags = [
+          ...new Set(
+            (Array.isArray(round?.warTags) ? round.warTags : [])
+              .map((warTag) => String(warTag ?? "").trim())
+              .filter((warTag) => warTag.length > 0 && warTag !== "#0"),
+          ),
+        ];
+        if (warTags.length <= 0) continue;
+
+        for (const warTag of warTags) {
+          const war = await input.cocService!
+            .getClanWarLeagueWar(warTag)
+            .catch(() => null);
+          if (!war) continue;
+
+          const side = resolveLiveCwlSide(normalizedClanTag, war);
+          if (!side) continue;
+
+          const roundState = normalizeRoundState(war.state);
+          if (!(isWarStatePreparation(roundState) || isWarStateActive(roundState))) {
+            continue;
+          }
+
+          const phaseEndsAt = resolveCurrentWarPhaseEnd({
+            state: roundState,
+            startTime: parseCocTime(war.startTime ?? null),
+            endTime: parseCocTime(war.endTime ?? null),
+          });
+          const attacksAvailable = isWarStatePreparation(roundState)
+            ? 0
+            : Math.max(1, Math.trunc(Number(war.attacksPerMember ?? 1) || 1));
+          const membersByPlayerTag = new Map<
+            string,
+            {
+              clanTag: string;
+              playerName: string;
+              townHall: number | null;
+              attacksUsed: number;
+              attacksAvailable: number;
+              subbedIn: boolean;
+              subbedOut: boolean;
+            }
+          >();
+          for (const member of side.members) {
+            const playerTag = normalizePlayerTag(String(member?.tag ?? ""));
+            if (!playerTag) continue;
+            membersByPlayerTag.set(playerTag, {
+              clanTag: normalizedClanTag,
+              playerName: sanitizeDisplayText(member?.name) || playerTag,
+              townHall: Number.isFinite(Number(member?.townhallLevel))
+                ? Math.trunc(Number(member?.townhallLevel))
+                : null,
+              attacksUsed: Array.isArray(member?.attacks) ? member.attacks.length : 0,
+              attacksAvailable,
+              subbedIn: true,
+              subbedOut: false,
+            });
+          }
+
+          return [
+            clanTag,
+            {
+              clanTag: normalizedClanTag,
+              clanName: side.clanName || baseClanName,
+              roundState,
+              phaseEndsAt,
+              membersByPlayerTag,
+            },
+          ] as const;
+        }
+      }
+
+      return [
+        clanTag,
+        {
+          clanTag: normalizedClanTag,
+          clanName: baseClanName,
+          roundState: "notInWar",
+          phaseEndsAt: null,
+          membersByPlayerTag: new Map(),
+        },
+      ] as const;
+    }),
+  );
+
+  return new Map(
+    contexts.filter((entry): entry is [string, LiveCwlClanContext] =>
+      Boolean(entry[0] && entry[1]),
+    ),
+  );
+}
+
+/** Purpose: resolve one live CWL war side for a clan tag. */
+function resolveLiveCwlSide(
+  clanTag: string,
+  war: ClanWar,
+): { clanName: string | null; members: ClanWarMember[] } | null {
+  const normalizedClanTag = normalizeClanTag(clanTag);
+  const warClanTag = normalizeClanTag(String(war.clan?.tag ?? ""));
+  const warOpponentTag = normalizeClanTag(String(war.opponent?.tag ?? ""));
+
+  if (warClanTag === normalizedClanTag && war.clan) {
+    return {
+      clanName: sanitizeDisplayText(war.clan.name) || null,
+      members: Array.isArray(war.clan.members) ? war.clan.members : [],
+    };
+  }
+  if (warOpponentTag === normalizedClanTag && war.opponent) {
+    return {
+      clanName: sanitizeDisplayText(war.opponent.name) || null,
+      members: Array.isArray(war.opponent.members) ? war.opponent.members : [],
+    };
+  }
+  return null;
+}
+
+/** Purpose: normalize live CWL round states into a compact deterministic string. */
+function normalizeRoundState(input: unknown): string {
+  const value = String(input ?? "").trim();
+  return value.length > 0 ? value : "notInWar";
+}
+
 /** Purpose: resolve live current-clan tags for player tags when CoC access is available. */
 async function loadLiveClanTagsByPlayerTag(input: {
   cocService?: CoCService;
   playerTags: string[];
+  producer?: WarEventLinkedPlayerRefreshProducer | null;
 }): Promise<Map<string, string>> {
   if (!input.cocService || typeof input.cocService.getPlayerRaw !== "function") {
     return new Map();
   }
 
-  const entries = await Promise.all(
-    input.playerTags.map(async (playerTag) => {
-      const player = await input.cocService!
-        .getPlayerRaw(playerTag, { suppressTelemetry: true })
-        .catch(() => null);
-      const clanTag = normalizeClanTag(String(player?.clan?.tag ?? ""));
-      return [playerTag, clanTag] as const;
-    }),
-  );
+  const normalizedTags = normalizePlayerTags(input.playerTags);
+  const plan = resolveWarEventLinkedPlayerRefreshPlanForTest({
+    candidateCount: input.playerTags.length,
+    dedupedCount: normalizedTags.length,
+    pacingMs: input.producer?.pacingMs ?? null,
+  });
+  const chunkedTags = chunkArray(normalizedTags, plan.chunkSize);
+  if (input.producer) {
+    console.info(
+      `[todo-snapshot] event=war_event_player_refresh_plan source=${input.producer.source} candidate_count=${plan.candidateCount} deduped_count=${plan.dedupedCount} chunk_size=${plan.chunkSize} chunk_count=${plan.chunkCount} stagger_ms=${plan.chunkDelayMs} backlog_threshold=${input.producer.backlogThreshold}`,
+    );
+  }
+
+  const entries: Array<readonly [string, string]> = [];
+  let enqueuedCount = 0;
+  let deferredCount = 0;
+  for (let chunkIndex = 0; chunkIndex < chunkedTags.length; chunkIndex += 1) {
+    if (input.producer) {
+      const queueStatus = cocRequestQueueService.getStatus();
+      if (queueStatus.backgroundQueueDepth >= input.producer.backlogThreshold) {
+        deferredCount = chunkedTags
+          .slice(chunkIndex)
+          .reduce((sum, chunk) => sum + chunk.length, 0);
+        console.warn(
+          `[todo-snapshot] event=war_event_player_refresh_deferred source=${input.producer.source} reason=background_backlog backlog_depth=${queueStatus.backgroundQueueDepth} threshold=${input.producer.backlogThreshold} deferred_count=${deferredCount}`,
+        );
+        break;
+      }
+      if (chunkIndex > 0 && plan.chunkDelayMs > 0) {
+        console.info(
+          `[todo-snapshot] event=war_event_player_refresh_stagger source=${input.producer.source} chunk_index=${chunkIndex + 1} chunk_count=${chunkedTags.length} delay_ms=${plan.chunkDelayMs}`,
+        );
+        await sleepMs(plan.chunkDelayMs);
+      }
+    }
+
+    const chunk = chunkedTags[chunkIndex];
+    if (input.producer) {
+      const queueStatus = cocRequestQueueService.getStatus();
+      console.info(
+        `[todo-snapshot] event=war_event_player_refresh_chunk source=${input.producer.source} chunk_index=${chunkIndex + 1} chunk_count=${chunkedTags.length} chunk_size=${chunk.length} background_depth=${queueStatus.backgroundQueueDepth}`,
+      );
+    }
+    const chunkEntries = await Promise.all(
+      chunk.map(async (playerTag) => {
+        const player = await input.cocService!
+          .getPlayerRaw(playerTag, { suppressTelemetry: true })
+          .catch(() => null);
+        const clanTag = normalizeClanTag(String(player?.clan?.tag ?? ""));
+        return [playerTag, clanTag] as const;
+      }),
+    );
+    entries.push(...chunkEntries);
+    enqueuedCount += chunk.length;
+  }
+
+  if (input.producer) {
+    console.info(
+      `[todo-snapshot] event=war_event_player_refresh_complete source=${input.producer.source} candidate_count=${plan.candidateCount} deduped_count=${plan.dedupedCount} enqueued_count=${enqueuedCount} deferred_count=${deferredCount}`,
+    );
+  }
+
   return new Map(
     entries.filter((entry): entry is [string, string] => Boolean(entry[0] && entry[1])),
   );
