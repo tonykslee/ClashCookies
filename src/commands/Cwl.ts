@@ -618,10 +618,17 @@ async function handleRotationShowSubcommand(interaction: ChatInputCommandInterac
 async function handleRotationImportSubcommand(interaction: ChatInputCommandInteraction) {
   const sheetLink = interaction.options.getString("sheet", true);
   const overwrite = interaction.options.getBoolean("overwrite", false) ?? false;
-  const preview = await cwlRotationSheetService.buildImportPreview({
-    sheetLink,
-    overwrite,
-  });
+  let preview;
+  try {
+    preview = await cwlRotationSheetService.buildImportPreview({
+      sheetLink,
+      overwrite,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Failed to parse the Google Sheets link.";
+    await interaction.editReply(message);
+    return;
+  }
   const sessionId = createCwlRotationImportSession(
     preview,
     overwrite,

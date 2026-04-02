@@ -133,10 +133,18 @@ export class CwlRotationSheetService {
     season?: string;
   }): Promise<CwlRotationSheetImportPreview> {
     const season = input.season ?? resolveCurrentCwlSeasonKey();
-    const sheetId = extractSpreadsheetId(input.sheetLink);
-    if (!sheetId) {
-      throw new Error("Unable to parse a Google Sheet ID from the provided link.");
+    const sheetIdResult = extractSpreadsheetId(input.sheetLink);
+    if (!sheetIdResult.sheetId) {
+      if (sheetIdResult.error === "unsupported_format") {
+        throw new Error(
+          "Unsupported Google Sheets link format. Use a standard /spreadsheets/d/<id> link or a published /spreadsheets/d/e/<published-id>/pubhtml link.",
+        );
+      }
+      throw new Error(
+        "No spreadsheet ID could be extracted from the provided Google Sheets link.",
+      );
     }
+    const sheetId = sheetIdResult.sheetId;
 
     const [metadata, trackedClans] = await Promise.all([
       this.sheets.getSpreadsheetMetadata(sheetId),
@@ -565,21 +573,35 @@ function escapeSheetTabName(tabName: string): string {
   return `'${String(tabName ?? "").trim().replace(/'/g, "''")}'`;
 }
 
-function extractSpreadsheetId(input: string): string | null {
+function extractSpreadsheetId(input: string): {
+  sheetId: string | null;
+  error: "unsupported_format" | "missing_id" | null;
+} {
   const trimmed = String(input ?? "").trim();
-  if (!trimmed) return null;
+  if (!trimmed) {
+    return { sheetId: null, error: "missing_id" };
+  }
 
   const directMatch = trimmed.match(/^[a-zA-Z0-9-_]{20,}$/);
   if (directMatch) {
-    return trimmed;
+    return { sheetId: trimmed, error: null };
   }
 
   try {
     const parsed = new URL(trimmed);
-    const match = parsed.pathname.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
-    return match?.[1] ?? null;
+    const publishedMatch = parsed.pathname.match(
+      /\/spreadsheets\/d\/e\/([a-zA-Z0-9-_]+)/,
+    );
+    if (publishedMatch?.[1]) {
+      return { sheetId: publishedMatch[1], error: null };
+    }
+    const standardMatch = parsed.pathname.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+    if (standardMatch?.[1]) {
+      return { sheetId: standardMatch[1], error: null };
+    }
+    return { sheetId: null, error: "missing_id" };
   } catch {
-    return null;
+    return { sheetId: null, error: "unsupported_format" };
   }
 }
 
