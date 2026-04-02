@@ -304,6 +304,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "Resolves all player tags linked to your Discord account from local PlayerLink data.",
       "Reads precomputed todo snapshots (background-refreshed) for fast command-time rendering.",
       "Always builds WAR, CWL, RAIDS, and GAMES pages in one response.",
+      "CWL todo snapshots can include linked players outside tracked clans after a manual refresh hydrates their CWL context.",
       "With no `type`, opens your most recently viewed todo page; if none is remembered, defaults to WAR.",
       "`type` controls only the initial page shown; use page buttons to switch categories without rerunning.",
       "Running `/todo type:...` and switching pages via buttons updates your remembered page for future no-arg `/todo` runs.",

@@ -71,7 +71,10 @@ import {
   Todo,
 } from "../src/commands/Todo";
 import { resetTodoRenderCacheForTest } from "../src/services/TodoService";
-import { todoSnapshotService } from "../src/services/TodoSnapshotService";
+import {
+  resetTodoSnapshotServiceForTest,
+  todoSnapshotService,
+} from "../src/services/TodoSnapshotService";
 import { todoLastViewedTypeService } from "../src/services/TodoLastViewedTypeService";
 import { cocRequestQueueService } from "../src/services/CoCRequestQueueService";
 
@@ -238,6 +241,7 @@ describe("/todo command", () => {
     vi.restoreAllMocks();
     vi.clearAllMocks();
     resetTodoRenderCacheForTest();
+    resetTodoSnapshotServiceForTest();
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-26T00:00:00.000Z"));
 
@@ -1742,7 +1746,11 @@ describe("/todo command", () => {
     expect(getReplyDescription(interaction)).toContain(":black_circle: Alpha - `0 / 0`");
   });
 
-  it("groups CWL rows by cwlClanTag/cwlClanName when different from home clan", async () => {
+  it("groups non-tracked CWL rows by cwlClanTag/cwlClanName and attack state", async () => {
+    vi.spyOn(todoSnapshotService, "refreshSnapshotsForPlayerTags").mockResolvedValue({
+      playerCount: 0,
+      updatedCount: 0,
+    });
     prismaMock.playerLink.findMany.mockResolvedValue([
       { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },
       { playerTag: "#QGRJ2222", createdAt: new Date("2026-03-02T00:00:00.000Z") },
@@ -1757,18 +1765,26 @@ describe("/todo command", () => {
         playerName: "Alpha",
         clanTag: "#PQL0289",
         clanName: "Home Clan",
-        cwlClanTag: "#2QG2C08UP",
-        cwlClanName: "CWL One",
+        cwlClanTag: "#QGRJ",
+        cwlClanName: "Nontracked Clan",
+        cwlActive: true,
         cwlAttacksUsed: 1,
+        cwlAttacksMax: 1,
+        cwlPhase: "battle day",
+        cwlEndsAt: new Date("2026-03-30T12:00:00.000Z"),
       }),
       makeSnapshotRow({
         playerTag: "#QGRJ2222",
         playerName: "Bravo",
         clanTag: "#PQL0289",
         clanName: "Home Clan",
-        cwlClanTag: "#2QG2C08UP",
-        cwlClanName: "CWL One",
+        cwlClanTag: "#QGRJ",
+        cwlClanName: "Nontracked Clan",
+        cwlActive: true,
         cwlAttacksUsed: 0,
+        cwlAttacksMax: 1,
+        cwlPhase: "battle day",
+        cwlEndsAt: new Date("2026-03-30T12:00:00.000Z"),
       }),
     ]);
 
@@ -1776,11 +1792,12 @@ describe("/todo command", () => {
     await Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
 
     const description = getReplyDescription(interaction);
-    expect(description).toContain(
-      "[CWL One](https://link.clashofclans.com/en?action=OpenClanProfile&tag=2QG2C08UP) `#2QG2C08UP` - Next war <t:",
-    );
+    expect(description).toContain("Nontracked Clan");
+    expect(description).toContain("#QGRJ");
+    expect(description).toContain("Next war");
     expect(description).not.toContain("Home Clan");
-    expect(description).toContain(":black_circle: Alpha - `0 / 0`");
+    expect(description).toContain(":white_check_mark: Alpha - `1 / 1`");
+    expect(description).toContain(":black_circle: Bravo - `0 / 1`");
   });
 
   it("renders upcoming CWL context with unknown timing instead of no-context when a CWL clan is already known", async () => {
@@ -2651,6 +2668,7 @@ describe("/todo refresh button", () => {
     expect(refreshSpy).toHaveBeenCalledWith({
       playerTags: ["#PYLQ0289", "#QGRJ2222"],
       cocService: expect.anything(),
+      includeNonTrackedCwlRefresh: true,
     });
     expect(interaction.editReply).toHaveBeenCalledTimes(1);
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;

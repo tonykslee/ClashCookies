@@ -1,4 +1,4 @@
-import { ClanWar } from "../generated/coc-api";
+import { ClanWar, type ClanWarMember } from "../generated/coc-api";
 import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
 import {
@@ -75,6 +75,25 @@ type TodoClanGamesWindow = {
   rewardCollectionEndsMs: number;
 };
 
+type LiveCwlClanContext = {
+  clanTag: string;
+  clanName: string | null;
+  roundState: string;
+  phaseEndsAt: Date | null;
+  membersByPlayerTag: Map<
+    string,
+    {
+      clanTag: string;
+      playerName: string;
+      townHall: number | null;
+      attacksUsed: number;
+      attacksAvailable: number;
+      subbedIn: boolean;
+      subbedOut: boolean;
+    }
+  >;
+};
+
 type ClanMemberCurrentRow = {
   playerTag: string;
   clanTag: string;
@@ -123,6 +142,12 @@ export class TodoSnapshotService {
     string,
     Promise<TodoSnapshotRefreshResult>
   >();
+
+  /** Purpose: clear in-memory refresh locks between isolated tests. */
+  resetForTest(): void {
+    this.refreshAllPromise = null;
+    this.refreshByBatchKey.clear();
+  }
 
   /** Purpose: load ordered snapshot rows for one player-tag set. */
   async listSnapshotsByPlayerTags(input: {
@@ -199,13 +224,17 @@ export class TodoSnapshotService {
     playerTags: string[];
     cocService?: CoCService;
     nowMs?: number;
+    includeNonTrackedCwlRefresh?: boolean;
   }): Promise<TodoSnapshotRefreshResult> {
     const normalizedTags = normalizePlayerTags(input.playerTags);
     if (normalizedTags.length <= 0) {
       return { playerCount: 0, updatedCount: 0 };
     }
 
-    const batchKey = normalizedTags.join(",");
+    const batchKey = [
+      normalizedTags.join(","),
+      input.includeNonTrackedCwlRefresh ? "nontracked-cwl" : "default",
+    ].join("|");
     const existing = this.refreshByBatchKey.get(batchKey);
     if (existing) {
       return existing;
@@ -250,6 +279,7 @@ export class TodoSnapshotService {
     playerTags: string[];
     cocService?: CoCService;
     nowMs?: number;
+    includeNonTrackedCwlRefresh?: boolean;
   }): Promise<TodoSnapshotRefreshResult> {
     const normalizedTags = normalizePlayerTags(input.playerTags);
     if (normalizedTags.length <= 0) {
@@ -492,6 +522,19 @@ export class TodoSnapshotService {
         ] as const)
         .filter((entry): entry is [string, string] => Boolean(entry[0] && entry[1])),
     );
+    const liveNonTrackedCwlContextByClanTag = input.includeNonTrackedCwlRefresh
+      ? await loadLiveNonTrackedCwlContextsByClanTag({
+          cocService: input.cocService,
+          clanTags: [
+            ...new Set(
+              [...resolvedClanTagByPlayerTag.values()].filter(
+                (value): value is string =>
+                  Boolean(value && !cwlTrackedTagSet.has(value)),
+              ),
+            ),
+          ],
+        })
+      : new Map<string, LiveCwlClanContext>();
     const mappedCwlClanByPlayerTag = new Map(
       cwlSeasonMappingRows
         .map((row) => [
@@ -579,20 +622,69 @@ export class TodoSnapshotService {
         resolvedClanTag && cwlTrackedTagSet.has(resolvedClanTag)
           ? resolvedClanTag
           : "";
+      const liveNonTrackedCwlContext =
+        resolvedClanTag && !cwlTrackedTagSet.has(resolvedClanTag)
+          ? liveNonTrackedCwlContextByClanTag.get(resolvedClanTag) ?? null
+          : null;
       const resolvedCwlClanTag =
         normalizeClanTag(
           activeMappedCwlClanTag ||
             persistedMappedCwlClanTag ||
             fallbackCwlClanTag,
-        ) || null;
+        ) ||
+        normalizeClanTag(liveNonTrackedCwlContext?.clanTag ?? "") ||
+        normalizeClanTag(existing?.cwlClanTag ?? "") ||
+        null;
       const resolvedCwlClanName =
         (resolvedCwlClanTag
           ? currentCwlRoundByClanTag.get(resolvedCwlClanTag)?.clanName ||
             cwlTrackedClanNameByTag.get(resolvedCwlClanTag) ||
+            liveNonTrackedCwlContext?.clanName ||
+            resolvedClanName ||
             trackedClanNameByTag.get(resolvedCwlClanTag)
           : null) ||
         sanitizeDisplayText(existing?.cwlClanName ?? "") ||
         null;
+      const liveNonTrackedCwlMember =
+        resolvedClanTag && liveNonTrackedCwlContext
+          ? liveNonTrackedCwlContext.membersByPlayerTag.get(playerTag) ?? null
+          : null;
+      const currentCwlRound = resolvedCwlClanTag
+        ? currentCwlRoundByClanTag.get(resolvedCwlClanTag) ?? null
+        : null;
+      const currentCwlMember =
+        currentCwlMemberByPlayerTag.get(playerTag) ?? liveNonTrackedCwlMember ?? null;
+      const cwlParticipant = Boolean(
+        resolvedCwlClanTag &&
+          currentCwlMember &&
+          currentCwlMember.subbedIn &&
+          (!currentCwlRound || currentCwlMember.clanTag === resolvedCwlClanTag),
+      );
+      const cwlHasContext = Boolean(
+        currentCwlRound ||
+          liveNonTrackedCwlContext ||
+          existing?.cwlClanTag ||
+          existing?.cwlClanName,
+      );
+      const cwlActive = cwlHasContext && cwlParticipant;
+      const cwlPhase = cwlHasContext
+        ? normalizeWarPhaseLabel(
+            currentCwlRound?.roundState ?? liveNonTrackedCwlContext?.roundState ?? "",
+          )
+        : null;
+      const cwlEndsAt = currentCwlRound
+        ? resolveCurrentWarPhaseEnd({
+            state: currentCwlRound?.roundState ?? null,
+            startTime: currentCwlRound?.startTime ?? null,
+            endTime: currentCwlRound?.endTime ?? null,
+          })
+        : liveNonTrackedCwlContext?.phaseEndsAt ?? null;
+      const cwlAttacksUsed = cwlParticipant
+        ? clampInt(currentCwlMember?.attacksUsed, 0, currentCwlMember?.attacksAvailable || 1)
+        : 0;
+      const cwlAttacksMax = cwlParticipant
+        ? Math.max(0, clampInt(currentCwlMember?.attacksAvailable, 0, 1))
+        : 0;
       const resolvedPlayerName =
         sanitizeDisplayText(latestClanMember?.playerName ?? "") ||
         latestCatalogNameByTag.get(playerTag) ||
@@ -631,33 +723,6 @@ export class TodoSnapshotService {
           : trackedClanActive
             ? clampInt(trackedWarMember?.attacksUsed, 0, 2)
             : clampInt(warMemberFromFeed?.attacks, 0, 2);
-
-      const currentCwlRound = resolvedCwlClanTag
-        ? currentCwlRoundByClanTag.get(resolvedCwlClanTag) ?? null
-        : null;
-      const currentCwlMember = currentCwlMemberByPlayerTag.get(playerTag) ?? null;
-      const cwlParticipant =
-        !!resolvedCwlClanTag &&
-        currentCwlMember?.clanTag === resolvedCwlClanTag &&
-        currentCwlMember.subbedIn;
-      const cwlHasContext = Boolean(currentCwlRound);
-      const cwlActive = cwlHasContext && cwlParticipant;
-      const cwlPhase = cwlHasContext
-        ? normalizeWarPhaseLabel(currentCwlRound?.roundState ?? "")
-        : null;
-      const cwlEndsAt = cwlHasContext
-        ? resolveCurrentWarPhaseEnd({
-            state: currentCwlRound?.roundState ?? null,
-            startTime: currentCwlRound?.startTime ?? null,
-            endTime: currentCwlRound?.endTime ?? null,
-          })
-        : null;
-      const cwlAttacksUsed = cwlParticipant
-        ? clampInt(currentCwlMember?.attacksUsed, 0, 1)
-        : 0;
-      const cwlAttacksMax = cwlParticipant
-        ? Math.max(0, clampInt(currentCwlMember?.attacksAvailable, 0, 1))
-        : 0;
 
       const derivedGames = deriveTodoGamesValues({
         gamesWindowActive: gamesWindow.active,
@@ -736,6 +801,11 @@ export class TodoSnapshotService {
 
 /** Purpose: provide one singleton snapshot service instance for command and background use. */
 export const todoSnapshotService = new TodoSnapshotService();
+
+/** Purpose: clear in-memory refresh locks between isolated tests. */
+export function resetTodoSnapshotServiceForTest(): void {
+  todoSnapshotService.resetForTest();
+}
 
 /** Purpose: satisfy TS type inference for snapshot row shape from one shared select object. */
 async function listTodoSnapshotRecordsForTypeInference() {
@@ -1155,6 +1225,156 @@ async function resolveActiveCwlWarForClan(input: {
   }
 
   return null;
+}
+
+/** Purpose: load one deduped live CWL context per non-tracked clan for targeted manual snapshot refreshes. */
+async function loadLiveNonTrackedCwlContextsByClanTag(input: {
+  cocService?: CoCService;
+  clanTags: string[];
+}): Promise<Map<string, LiveCwlClanContext>> {
+  if (!input.cocService || input.clanTags.length <= 0) {
+    return new Map();
+  }
+
+  const contexts = await Promise.all(
+    [...new Set(input.clanTags)].map(async (clanTag) => {
+      const normalizedClanTag = normalizeClanTag(clanTag);
+      const group = await input.cocService!
+        .getClanWarLeagueGroup(clanTag)
+        .catch(() => null);
+      if (!group) {
+        return [clanTag, null] as const;
+      }
+
+      const groupClan = Array.isArray(group.clans)
+        ? group.clans.find(
+            (entry) =>
+              normalizeClanTag(String(entry?.tag ?? "")) === normalizedClanTag,
+          )
+        : null;
+      const baseClanName = sanitizeDisplayText(groupClan?.name) || null;
+      const rounds = Array.isArray(group.rounds) ? [...group.rounds].reverse() : [];
+      for (const round of rounds) {
+        const warTags = [
+          ...new Set(
+            (Array.isArray(round?.warTags) ? round.warTags : [])
+              .map((warTag) => String(warTag ?? "").trim())
+              .filter((warTag) => warTag.length > 0 && warTag !== "#0"),
+          ),
+        ];
+        if (warTags.length <= 0) continue;
+
+        for (const warTag of warTags) {
+          const war = await input.cocService!
+            .getClanWarLeagueWar(warTag)
+            .catch(() => null);
+          if (!war) continue;
+
+          const side = resolveLiveCwlSide(normalizedClanTag, war);
+          if (!side) continue;
+
+          const roundState = normalizeRoundState(war.state);
+          if (!(isWarStatePreparation(roundState) || isWarStateActive(roundState))) {
+            continue;
+          }
+
+          const phaseEndsAt = resolveCurrentWarPhaseEnd({
+            state: roundState,
+            startTime: parseCocTime(war.startTime ?? null),
+            endTime: parseCocTime(war.endTime ?? null),
+          });
+          const attacksAvailable = isWarStatePreparation(roundState)
+            ? 0
+            : Math.max(1, Math.trunc(Number(war.attacksPerMember ?? 1) || 1));
+          const membersByPlayerTag = new Map<
+            string,
+            {
+              clanTag: string;
+              playerName: string;
+              townHall: number | null;
+              attacksUsed: number;
+              attacksAvailable: number;
+              subbedIn: boolean;
+              subbedOut: boolean;
+            }
+          >();
+          for (const member of side.members) {
+            const playerTag = normalizePlayerTag(String(member?.tag ?? ""));
+            if (!playerTag) continue;
+            membersByPlayerTag.set(playerTag, {
+              clanTag: normalizedClanTag,
+              playerName: sanitizeDisplayText(member?.name) || playerTag,
+              townHall: Number.isFinite(Number(member?.townhallLevel))
+                ? Math.trunc(Number(member?.townhallLevel))
+                : null,
+              attacksUsed: Array.isArray(member?.attacks) ? member.attacks.length : 0,
+              attacksAvailable,
+              subbedIn: true,
+              subbedOut: false,
+            });
+          }
+
+          return [
+            clanTag,
+            {
+              clanTag: normalizedClanTag,
+              clanName: side.clanName || baseClanName,
+              roundState,
+              phaseEndsAt,
+              membersByPlayerTag,
+            },
+          ] as const;
+        }
+      }
+
+      return [
+        clanTag,
+        {
+          clanTag: normalizedClanTag,
+          clanName: baseClanName,
+          roundState: "notInWar",
+          phaseEndsAt: null,
+          membersByPlayerTag: new Map(),
+        },
+      ] as const;
+    }),
+  );
+
+  return new Map(
+    contexts.filter((entry): entry is [string, LiveCwlClanContext] =>
+      Boolean(entry[0] && entry[1]),
+    ),
+  );
+}
+
+/** Purpose: resolve one live CWL war side for a clan tag. */
+function resolveLiveCwlSide(
+  clanTag: string,
+  war: ClanWar,
+): { clanName: string | null; members: ClanWarMember[] } | null {
+  const normalizedClanTag = normalizeClanTag(clanTag);
+  const warClanTag = normalizeClanTag(String(war.clan?.tag ?? ""));
+  const warOpponentTag = normalizeClanTag(String(war.opponent?.tag ?? ""));
+
+  if (warClanTag === normalizedClanTag && war.clan) {
+    return {
+      clanName: sanitizeDisplayText(war.clan.name) || null,
+      members: Array.isArray(war.clan.members) ? war.clan.members : [],
+    };
+  }
+  if (warOpponentTag === normalizedClanTag && war.opponent) {
+    return {
+      clanName: sanitizeDisplayText(war.opponent.name) || null,
+      members: Array.isArray(war.opponent.members) ? war.opponent.members : [],
+    };
+  }
+  return null;
+}
+
+/** Purpose: normalize live CWL round states into a compact deterministic string. */
+function normalizeRoundState(input: unknown): string {
+  const value = String(input ?? "").trim();
+  return value.length > 0 ? value : "notInWar";
 }
 
 /** Purpose: resolve live current-clan tags for player tags when CoC access is available. */
