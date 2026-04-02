@@ -151,6 +151,11 @@ function normalizeChannelId(input: string | null | undefined): string | null {
   return /^\d+$/.test(trimmed) ? trimmed : null;
 }
 
+type AlertChannelCandidate = {
+  channelId: string;
+  source: "configured" | "fallback";
+};
+
 function normalizeDisplayText(input: string | null | undefined, fallback: string): string {
   const normalized = String(input ?? "").replace(/\s+/g, " ").trim();
   return normalized || fallback;
@@ -704,51 +709,67 @@ export class UnlinkedMemberAlertService {
       }
 
       const fallbackChannelId = trackedClanLogChannelByTag.get(member.clanTag) ?? null;
-      const channelId = await this.resolveAlertChannelId({
-        client: input.client,
-        guildId,
+      const channelCandidates = await this.resolveAlertChannelCandidates({
         configuredAlertChannelId,
         fallbackChannelId,
       });
-      if (!channelId) {
+      if (channelCandidates.length <= 0) {
         continue;
       }
 
-      const channel = await resolveSendableGuildChannel({
-        client: input.client,
-        guildId,
-        channelId,
-      });
-      if (!channel) {
-        continue;
-      }
-
-      try {
-        await channel.send({
-          content: buildUnlinkedAlertContent({
-            playerName: member.playerName,
-            playerTag: member.playerTag,
-            clanName: member.clanName,
-          }),
-          allowedMentions: { parse: [] },
+      let sent = false;
+      for (const candidate of channelCandidates) {
+        const channel = await resolveSendableGuildChannel({
+          client: input.client,
+          guildId,
+          channelId: candidate.channelId,
         });
-        alertedCount += 1;
-        await prisma.unlinkedPlayer.update({
-          where: {
-            guildId_playerTag: {
-              guildId,
+        if (!channel) {
+          console.info(
+            `[unlinked] alert_destination_unusable guild=${guildId} player=${member.playerTag} clan=${member.clanTag} destination=${candidate.channelId} source=${candidate.source}`,
+          );
+          continue;
+        }
+
+        try {
+          await channel.send({
+            content: buildUnlinkedAlertContent({
+              playerName: member.playerName,
               playerTag: member.playerTag,
-            },
-          },
-          data: {
-            alertedAt: new Date(),
-          },
-        });
-      } catch (err) {
-        console.error(
-          `[unlinked] alert_send_failed guild=${guildId} player=${member.playerTag} clan=${member.clanTag} error=${formatError(err)}`,
-        );
+              clanName: member.clanName,
+            }),
+            allowedMentions: { parse: [] },
+          });
+          if (candidate.source === "fallback") {
+            console.info(
+              `[unlinked] alert_fallback_used guild=${guildId} player=${member.playerTag} clan=${member.clanTag} destination=${candidate.channelId}`,
+            );
+          }
+          sent = true;
+          break;
+        } catch (err) {
+          console.error(
+            `[unlinked] alert_send_failed guild=${guildId} player=${member.playerTag} clan=${member.clanTag} destination=${candidate.channelId} source=${candidate.source} error=${formatError(err)}`,
+          );
+        }
       }
+
+      if (!sent) {
+        continue;
+      }
+
+      alertedCount += 1;
+      await prisma.unlinkedPlayer.update({
+        where: {
+          guildId_playerTag: {
+            guildId,
+            playerTag: member.playerTag,
+          },
+        },
+        data: {
+          alertedAt: new Date(),
+        },
+      });
     }
 
     return {
@@ -759,34 +780,27 @@ export class UnlinkedMemberAlertService {
   }
 
   /** Purpose: prefer configured guild-level alert routing and fall back to tracked-clan log routing when needed. */
-  private async resolveAlertChannelId(input: {
-    client: DiscordClientLike;
-    guildId: string;
+  private async resolveAlertChannelCandidates(input: {
     configuredAlertChannelId: string | null;
     fallbackChannelId: string | null;
-  }): Promise<string | null> {
+  }): Promise<AlertChannelCandidate[]> {
+    const candidates: AlertChannelCandidate[] = [];
     const configured = normalizeChannelId(input.configuredAlertChannelId);
     if (configured) {
-      const configuredChannel = await resolveSendableGuildChannel({
-        client: input.client,
-        guildId: input.guildId,
+      candidates.push({
         channelId: configured,
+        source: "configured",
       });
-      if (configuredChannel) {
-        return configured;
-      }
     }
 
     const fallback = normalizeChannelId(input.fallbackChannelId);
-    if (!fallback) {
-      return null;
+    if (fallback && fallback !== configured) {
+      candidates.push({
+        channelId: fallback,
+        source: "fallback",
+      });
     }
-    const fallbackChannel = await resolveSendableGuildChannel({
-      client: input.client,
-      guildId: input.guildId,
-      channelId: fallback,
-    });
-    return fallbackChannel ? fallback : null;
+    return candidates;
   }
 }
 
