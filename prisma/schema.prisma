@@ -301,12 +301,163 @@ model CwlPlayerClanSeason {
   season     String
   playerTag  String
   cwlClanTag String
+  playerName String?
+  townHall   Int?
+  daysParticipated Int @default(0)
+  lastRoundDay Int?
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
   @@unique([season, playerTag])
   @@index([season, cwlClanTag])
   @@index([season, playerTag])
+}
+
+model CurrentCwlRound {
+  season               String
+  clanTag              String
+  roundDay             Int
+  clanName             String?
+  opponentTag          String?
+  opponentName         String?
+  roundState           String
+  leagueGroupState     String?
+  teamSize             Int?
+  attacksPerMember     Int      @default(1)
+  preparationStartTime DateTime?
+  startTime            DateTime?
+  endTime              DateTime?
+  sourceUpdatedAt      DateTime
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  members              CwlRoundMemberCurrent[]
+
+  @@id([season, clanTag])
+  @@unique([season, clanTag, roundDay])
+  @@index([season, roundDay])
+  @@index([roundState, updatedAt])
+}
+
+model CwlRoundMemberCurrent {
+  season           String
+  clanTag          String
+  playerTag        String
+  roundDay         Int
+  playerName       String
+  mapPosition      Int?
+  townHall         Int?
+  attacksUsed      Int      @default(0)
+  attacksAvailable Int      @default(1)
+  stars            Int      @default(0)
+  destruction      Float    @default(0)
+  subbedIn         Boolean  @default(true)
+  subbedOut        Boolean  @default(false)
+  sourceRoundState String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  currentRound     CurrentCwlRound @relation(fields: [season, clanTag], references: [season, clanTag], onDelete: Cascade)
+
+  @@id([season, clanTag, playerTag])
+  @@index([season, clanTag, roundDay])
+  @@index([season, playerTag])
+  @@index([season, clanTag, subbedIn])
+}
+
+model CwlRoundHistory {
+  season               String
+  clanTag              String
+  roundDay             Int
+  clanName             String?
+  opponentTag          String?
+  opponentName         String?
+  roundState           String
+  leagueGroupState     String?
+  teamSize             Int?
+  attacksPerMember     Int      @default(1)
+  preparationStartTime DateTime?
+  startTime            DateTime?
+  endTime              DateTime?
+  sourceUpdatedAt      DateTime
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  members              CwlRoundMemberHistory[]
+
+  @@id([season, clanTag, roundDay])
+  @@index([season, clanTag, endTime])
+  @@index([season, roundDay])
+}
+
+model CwlRoundMemberHistory {
+  season           String
+  clanTag          String
+  roundDay         Int
+  playerTag        String
+  playerName       String
+  mapPosition      Int?
+  townHall         Int?
+  attacksUsed      Int      @default(0)
+  attacksAvailable Int      @default(1)
+  stars            Int      @default(0)
+  destruction      Float    @default(0)
+  subbedIn         Boolean  @default(true)
+  subbedOut        Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  round            CwlRoundHistory @relation(fields: [season, clanTag, roundDay], references: [season, clanTag, roundDay], onDelete: Cascade)
+
+  @@id([season, clanTag, roundDay, playerTag])
+  @@index([season, clanTag, playerTag])
+  @@index([season, playerTag])
+}
+
+model CwlRotationPlan {
+  id                   String   @id @default(cuid())
+  clanTag              String
+  season               String
+  version              Int
+  isActive             Boolean  @default(true)
+  rosterSize           Int
+  generatedFromRoundDay Int?
+  excludedPlayerTags   String[]
+  warningSummary       String?
+  metadata             Json?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  days                 CwlRotationPlanDay[]
+
+  @@unique([clanTag, season, version])
+  @@index([clanTag, season, isActive])
+}
+
+model CwlRotationPlanDay {
+  id         Int      @id @default(autoincrement())
+  planId     String
+  roundDay   Int
+  lineupSize Int
+  locked     Boolean  @default(false)
+  metadata   Json?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  plan       CwlRotationPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  members    CwlRotationPlanMember[]
+
+  @@unique([planId, roundDay])
+  @@index([roundDay])
+}
+
+model CwlRotationPlanMember {
+  id             Int      @id @default(autoincrement())
+  planDayId      Int
+  playerTag      String
+  playerName     String
+  assignmentOrder Int
+  manualOverride Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  planDay        CwlRotationPlanDay @relation(fields: [planDayId], references: [id], onDelete: Cascade)
+
+  @@unique([planDayId, playerTag])
+  @@index([playerTag])
 }
 
 enum KickListSource {

@@ -9,6 +9,7 @@
 - `/fwa weight-age`, `/fwa weight-link`, `/fwa weight-health`, and `/fwa weight-cookie` default to FWA leader-role + Administrator when no explicit whitelist is set.
 - `/defer` defaults to FWA leader-role + Administrator when no explicit whitelist is set.
 - `/unlinked` defaults to FWA leader-role + Administrator when no explicit whitelist is set.
+- `/cwl members` and `/cwl rotations show` are public by default; `/cwl rotations create` defaults to Administrator.
 - `/layout` is public by default; runtime `edit` (and optional `img-url` edit flow) still requires Administrator.
 
 ## Default Administrator-Only Targets
@@ -20,6 +21,7 @@
 - `/sync time post`
 - `/bot-logs`
 - `/notify war`
+- `/cwl rotations create`
 
 ## Role Whitelisting
 - Use `/permission add` to whitelist roles per command target.
@@ -55,6 +57,8 @@ Examples:
   - `/permission add command:defer role:@RoleX`
 - Lock only `/unlinked` to role `@RoleX`:
   - `/permission add command:unlinked role:@RoleX`
+- Lock only `/cwl rotations create` to role `@RoleX`:
+  - `/permission add command:cwl:rotations:create role:@RoleX`
 - Lock `/recruitment` to role `@RoleX`:
   - `/permission add command:recruitment role:@RoleX`
 - Lock `/notify` to role `@RoleX`:

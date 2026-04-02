@@ -3,7 +3,14 @@ import {
   type ClanPointsSync,
   type ClanWarHistory,
   type ClanWarParticipation,
+  type CurrentCwlRound,
   type CurrentWar,
+  type CwlRotationPlan,
+  type CwlRotationPlanDay,
+  type CwlRotationPlanMember,
+  type CwlRoundHistory,
+  type CwlRoundMemberCurrent,
+  type CwlRoundMemberHistory,
   type TrackedClan,
   type WarAttacks,
   type WarLookup,
@@ -25,6 +32,13 @@ export const MIRRORED_RUNTIME_TABLES = [
   "ClanWarHistory",
   "ClanWarParticipation",
   "WarLookup",
+  "CurrentCwlRound",
+  "CwlRoundMemberCurrent",
+  "CwlRoundHistory",
+  "CwlRoundMemberHistory",
+  "CwlRotationPlan",
+  "CwlRotationPlanDay",
+  "CwlRotationPlanMember",
 ] as const;
 
 type MirrorTableName = (typeof MIRRORED_RUNTIME_TABLES)[number];
@@ -67,6 +81,19 @@ type MirrorSyncSourceClient = {
     findMany: (args?: unknown) => Promise<ClanWarParticipation[]>;
   };
   warLookup: { findMany: (args?: unknown) => Promise<WarLookup[]> };
+  currentCwlRound: { findMany: (args?: unknown) => Promise<CurrentCwlRound[]> };
+  cwlRoundMemberCurrent: {
+    findMany: (args?: unknown) => Promise<CwlRoundMemberCurrent[]>;
+  };
+  cwlRoundHistory: { findMany: (args?: unknown) => Promise<CwlRoundHistory[]> };
+  cwlRoundMemberHistory: {
+    findMany: (args?: unknown) => Promise<CwlRoundMemberHistory[]>;
+  };
+  cwlRotationPlan: { findMany: (args?: unknown) => Promise<CwlRotationPlan[]> };
+  cwlRotationPlanDay: { findMany: (args?: unknown) => Promise<CwlRotationPlanDay[]> };
+  cwlRotationPlanMember: {
+    findMany: (args?: unknown) => Promise<CwlRotationPlanMember[]>;
+  };
   $queryRawUnsafe: <T = unknown>(query: string, ...values: unknown[]) => Promise<T>;
   $disconnect?: () => Promise<void>;
 };
@@ -99,6 +126,34 @@ type MirrorSyncTargetClient = {
   warLookup: {
     deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
     createMany: (args: { data: WarLookup[] }) => Promise<CreateManyResult>;
+  };
+  currentCwlRound: {
+    deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
+    createMany: (args: { data: CurrentCwlRound[] }) => Promise<CreateManyResult>;
+  };
+  cwlRoundMemberCurrent: {
+    deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
+    createMany: (args: { data: CwlRoundMemberCurrent[] }) => Promise<CreateManyResult>;
+  };
+  cwlRoundHistory: {
+    deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
+    createMany: (args: { data: CwlRoundHistory[] }) => Promise<CreateManyResult>;
+  };
+  cwlRoundMemberHistory: {
+    deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
+    createMany: (args: { data: CwlRoundMemberHistory[] }) => Promise<CreateManyResult>;
+  };
+  cwlRotationPlan: {
+    deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
+    createMany: (args: { data: CwlRotationPlan[] }) => Promise<CreateManyResult>;
+  };
+  cwlRotationPlanDay: {
+    deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
+    createMany: (args: { data: CwlRotationPlanDay[] }) => Promise<CreateManyResult>;
+  };
+  cwlRotationPlanMember: {
+    deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
+    createMany: (args: { data: CwlRotationPlanMember[] }) => Promise<CreateManyResult>;
   };
   $queryRawUnsafe: <T = unknown>(query: string, ...values: unknown[]) => Promise<T>;
   $executeRawUnsafe: (query: string, ...values: unknown[]) => Promise<number>;
@@ -371,6 +426,13 @@ export class MirrorSyncService {
     ClanWarHistory: ClanWarHistory[];
     ClanWarParticipation: ClanWarParticipation[];
     WarLookup: WarLookup[];
+    CurrentCwlRound: CurrentCwlRound[];
+    CwlRoundMemberCurrent: CwlRoundMemberCurrent[];
+    CwlRoundHistory: CwlRoundHistory[];
+    CwlRoundMemberHistory: CwlRoundMemberHistory[];
+    CwlRotationPlan: CwlRotationPlan[];
+    CwlRotationPlanDay: CwlRotationPlanDay[];
+    CwlRotationPlanMember: CwlRotationPlanMember[];
   }> {
     return {
       TrackedClan: await sourceClient.trackedClan.findMany({
@@ -394,6 +456,32 @@ export class MirrorSyncService {
       WarLookup: await sourceClient.warLookup.findMany({
         orderBy: [{ warId: "asc" }],
       }),
+      CurrentCwlRound: await sourceClient.currentCwlRound.findMany({
+        orderBy: [{ season: "asc" }, { clanTag: "asc" }],
+      }),
+      CwlRoundMemberCurrent: await sourceClient.cwlRoundMemberCurrent.findMany({
+        orderBy: [{ season: "asc" }, { clanTag: "asc" }, { playerTag: "asc" }],
+      }),
+      CwlRoundHistory: await sourceClient.cwlRoundHistory.findMany({
+        orderBy: [{ season: "asc" }, { clanTag: "asc" }, { roundDay: "asc" }],
+      }),
+      CwlRoundMemberHistory: await sourceClient.cwlRoundMemberHistory.findMany({
+        orderBy: [
+          { season: "asc" },
+          { clanTag: "asc" },
+          { roundDay: "asc" },
+          { playerTag: "asc" },
+        ],
+      }),
+      CwlRotationPlan: await sourceClient.cwlRotationPlan.findMany({
+        orderBy: [{ season: "asc" }, { clanTag: "asc" }, { version: "asc" }],
+      }),
+      CwlRotationPlanDay: await sourceClient.cwlRotationPlanDay.findMany({
+        orderBy: [{ id: "asc" }],
+      }),
+      CwlRotationPlanMember: await sourceClient.cwlRotationPlanMember.findMany({
+        orderBy: [{ id: "asc" }],
+      }),
     };
   }
 
@@ -407,7 +495,14 @@ export class MirrorSyncService {
       | ClanPointsSync[]
       | ClanWarHistory[]
       | ClanWarParticipation[]
-      | WarLookup[],
+      | WarLookup[]
+      | CurrentCwlRound[]
+      | CwlRoundMemberCurrent[]
+      | CwlRoundHistory[]
+      | CwlRoundMemberHistory[]
+      | CwlRotationPlan[]
+      | CwlRotationPlanDay[]
+      | CwlRotationPlanMember[],
   ): Promise<MirrorSyncTableSummary> {
     if (table === "TrackedClan") {
       const deletedRows = (await tx.trackedClan.deleteMany()).count;
@@ -458,6 +553,65 @@ export class MirrorSyncService {
       return { table, sourceRows: rows.length, deletedRows, insertedRows };
     }
 
+    if (table === "CurrentCwlRound") {
+      const deletedRows = (await tx.currentCwlRound.deleteMany()).count;
+      const insertedRows = await this.insertBatches(rows as CurrentCwlRound[], (batch) =>
+        tx.currentCwlRound.createMany({ data: batch }),
+      );
+      return { table, sourceRows: rows.length, deletedRows, insertedRows };
+    }
+
+    if (table === "CwlRoundMemberCurrent") {
+      const deletedRows = (await tx.cwlRoundMemberCurrent.deleteMany()).count;
+      const insertedRows = await this.insertBatches(
+        rows as CwlRoundMemberCurrent[],
+        (batch) => tx.cwlRoundMemberCurrent.createMany({ data: batch }),
+      );
+      return { table, sourceRows: rows.length, deletedRows, insertedRows };
+    }
+
+    if (table === "CwlRoundHistory") {
+      const deletedRows = (await tx.cwlRoundHistory.deleteMany()).count;
+      const insertedRows = await this.insertBatches(rows as CwlRoundHistory[], (batch) =>
+        tx.cwlRoundHistory.createMany({ data: batch }),
+      );
+      return { table, sourceRows: rows.length, deletedRows, insertedRows };
+    }
+
+    if (table === "CwlRoundMemberHistory") {
+      const deletedRows = (await tx.cwlRoundMemberHistory.deleteMany()).count;
+      const insertedRows = await this.insertBatches(
+        rows as CwlRoundMemberHistory[],
+        (batch) => tx.cwlRoundMemberHistory.createMany({ data: batch }),
+      );
+      return { table, sourceRows: rows.length, deletedRows, insertedRows };
+    }
+
+    if (table === "CwlRotationPlan") {
+      const deletedRows = (await tx.cwlRotationPlan.deleteMany()).count;
+      const insertedRows = await this.insertBatches(rows as CwlRotationPlan[], (batch) =>
+        tx.cwlRotationPlan.createMany({ data: batch }),
+      );
+      return { table, sourceRows: rows.length, deletedRows, insertedRows };
+    }
+
+    if (table === "CwlRotationPlanDay") {
+      const deletedRows = (await tx.cwlRotationPlanDay.deleteMany()).count;
+      const insertedRows = await this.insertBatches(rows as CwlRotationPlanDay[], (batch) =>
+        tx.cwlRotationPlanDay.createMany({ data: batch }),
+      );
+      return { table, sourceRows: rows.length, deletedRows, insertedRows };
+    }
+
+    if (table === "CwlRotationPlanMember") {
+      const deletedRows = (await tx.cwlRotationPlanMember.deleteMany()).count;
+      const insertedRows = await this.insertBatches(
+        rows as CwlRotationPlanMember[],
+        (batch) => tx.cwlRotationPlanMember.createMany({ data: batch }),
+      );
+      return { table, sourceRows: rows.length, deletedRows, insertedRows };
+    }
+
     const deletedRows = (await tx.warLookup.deleteMany()).count;
     const insertedRows = await this.insertBatches(rows as WarLookup[], (batch) =>
       tx.warLookup.createMany({ data: batch }),
@@ -491,6 +645,20 @@ export class MirrorSyncService {
         pg_get_serial_sequence('"ClanWarHistory"', 'warId'),
         COALESCE((SELECT MAX("warId") FROM "ClanWarHistory"), 1),
         COALESCE((SELECT MAX("warId") FROM "ClanWarHistory"), 0) > 0
+      );
+    `);
+    await tx.$executeRawUnsafe(`
+      SELECT setval(
+        pg_get_serial_sequence('"CwlRotationPlanDay"', 'id'),
+        COALESCE((SELECT MAX("id") FROM "CwlRotationPlanDay"), 1),
+        COALESCE((SELECT MAX("id") FROM "CwlRotationPlanDay"), 0) > 0
+      );
+    `);
+    await tx.$executeRawUnsafe(`
+      SELECT setval(
+        pg_get_serial_sequence('"CwlRotationPlanMember"', 'id'),
+        COALESCE((SELECT MAX("id") FROM "CwlRotationPlanMember"), 1),
+        COALESCE((SELECT MAX("id") FROM "CwlRotationPlanMember"), 0) > 0
       );
     `);
   }

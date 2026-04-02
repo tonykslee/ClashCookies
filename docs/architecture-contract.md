@@ -45,11 +45,33 @@ FwaFeedCursor
 
 Snapshot and reminder state:
 
-PlayerLink + CurrentWar + CWL registry + activity signals
+PlayerLink + CurrentWar + CurrentCwlRound/CwlRoundMemberCurrent + activity signals
     ->
 TodoSnapshotService
     ->
 TodoPlayerSnapshot
+
+CWL state:
+
+CwlTrackedClan
+    ->
+CwlStateService
+    ->
+CurrentCwlRound
+CwlRoundMemberCurrent
+CwlRoundHistory
+CwlRoundMemberHistory
+CwlPlayerClanSeason
+
+CWL planner state:
+
+CurrentCwlRound + CwlRoundMemberCurrent + CwlPlayerClanSeason
+    ->
+CwlRotationService
+    ->
+CwlRotationPlan
+CwlRotationPlanDay
+CwlRotationPlanMember
 
 Reminder / UserActivityReminder config
     + TodoPlayerSnapshot / CurrentWar
@@ -84,6 +106,12 @@ Each domain concept must have exactly one authoritative owner.
 | --- | --- |
 | Tracked FWA clans | TrackedClan |
 | Seasonal CWL tracked clans | CwlTrackedClan |
+| Live/prep CWL round identity and timing | CurrentCwlRound |
+| Live/prep CWL round member summaries | CwlRoundMemberCurrent |
+| Ended CWL round canonical history | CwlRoundHistory |
+| Ended CWL round member history | CwlRoundMemberHistory |
+| Derived current-season CWL roster summary | CwlPlayerClanSeason |
+| Current-season CWL planner state | CwlRotationPlan, CwlRotationPlanDay, CwlRotationPlanMember |
 | Player-to-Discord links | PlayerLink |
 | Live war state | CurrentWar |
 | Ended-war canonical record | ClanWarHistory |
@@ -148,6 +176,10 @@ Rules:
 ## 6) Snapshot and reminder ownership
 
 - `TodoPlayerSnapshot` is the authoritative render source for `/todo`.
+- `CurrentCwlRound` and `CwlRoundMemberCurrent` own current/prep CWL timing and lineup truth.
+- `CwlRoundHistory` and `CwlRoundMemberHistory` own ended CWL round truth.
+- `CwlPlayerClanSeason` owns the derived observed current-season CWL roster summary.
+- `CwlRotationPlan*` owns current-season planner artifacts only.
 - Guild reminder ownership lives in `Reminder`, `ReminderTimeOffset`, `ReminderTargetClan`, and `ReminderFireLog`.
 - Personal reminder ownership lives in `UserActivityReminderRule` and `UserActivityReminderDelivery`.
 - Do not rebuild broad multi-source player state synchronously in command handlers when a maintained snapshot already exists.

@@ -39,6 +39,9 @@
 - `/warplan reset-default [match-type:<BL|MM|FWA|FWA_WIN|FWA_LOSE_TRIPLE_TOP_30|FWA_LOSE_TRADITIONAL>]` - Reset editable guild defaults back to built-in fallback text.
 - `/war history clan-tag:<tag> [limit:<number>]` - Show recent clan-level war history from stored war records.
 - `/war war-id clan-tag:<tag> war-id:<number>` - Export stored war lookup payload for one clan-scoped war ID as CSV. `war-id` supports autocomplete after `clan-tag` is selected and returns recent ended wars for that clan only (up to 10).
+- `/cwl members clan:<trackedCwlClanTag> [inwar:true]` - Show the persisted observed current-season CWL roster for one tracked CWL clan, optionally narrowed to the current/prep lineup only.
+- `/cwl rotations show [clan:<trackedCwlClanTag>] [day:<1-7>]` - Show active CWL rotation validation across tracked CWL clans, or inspect one clan's planned vs actual lineup by day.
+- `/cwl rotations create clan:<trackedCwlClanTag> [exclude:<comma-separated-player-tags>] [overwrite:true]` - Create or replace the active current-season CWL planner version for one tracked CWL clan during persisted preparation-day state.
 - `/accounts [visibility:private|public] [tag:<playerTag>] [discord-id:<snowflake>]` - List linked player accounts grouped by current clan. Default is your own account; provide exactly one of `tag` or `discord-id` to inspect a different linked user.
 - `/remindme set type:<WAR|CWL|RAIDS|GAMES> player_tags:<comma-separated-linked-tags> time_left:<HhMm[,HhMm...]> [method:DM|ping-me-here]` - Create durable personal recurring reminder rules for linked player tags only. `time_left` accepts one or more offsets like `12h,2h,30m`; `method` defaults to `DM`. Outbound reminder deliveries are plain-text, and `ping-me-here` includes the inline user mention in the message content so Discord notifies correctly.
 - `/remindme list` - Show your active personal activity reminders in a grouped scan-friendly embed (type, player, method, offsets).
