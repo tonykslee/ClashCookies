@@ -2,6 +2,10 @@ import { ReminderDispatchStatus, ReminderTargetClanType, ReminderType } from "@p
 import { Client } from "discord.js";
 import { formatError } from "../../helper/formatError";
 import { prisma } from "../../prisma";
+import {
+  isCoCQueueSkippedError,
+} from "../CoCRequestQueueService";
+import { runWithCoCQueueContext } from "../CoCQueueContext";
 import { resolveCurrentCwlSeasonKey } from "../CwlRegistryService";
 import { normalizeClanTag } from "../PlayerLinkService";
 import { reminderDispatchService, type ReminderDispatchService } from "./ReminderDispatchService";
@@ -96,16 +100,36 @@ export class ReminderSchedulerService {
     }
     this.inFlight = true;
     try {
-      const counts = await runReminderSchedulerCycle({
-        client: this.client,
-        dispatch: this.dispatch,
-        nowMs,
-        intervalMs: this.intervalMs,
-      });
+      const counts = await runWithCoCQueueContext(
+        {
+          priority: "background",
+          source: "guild_reminder_scheduler",
+          scheduledAtMs: nowMs,
+          nextScheduledAtMs: nowMs + this.intervalMs,
+        },
+        () =>
+          runReminderSchedulerCycle({
+            client: this.client,
+            dispatch: this.dispatch,
+            nowMs,
+            intervalMs: this.intervalMs,
+          }),
+      );
       console.log(
         `[reminders] scheduler evaluated=${counts.evaluated} fired=${counts.fired} deduped=${counts.deduped} failed=${counts.failed}`,
       );
       return counts;
+    } catch (err) {
+      if (isCoCQueueSkippedError(err)) {
+        console.warn(`[reminders] scheduler skipped reason=stale_queue ${err.message}`);
+        return {
+          evaluated: 0,
+          fired: 0,
+          deduped: 0,
+          failed: 0,
+        };
+      }
+      throw err;
     } finally {
       this.inFlight = false;
     }

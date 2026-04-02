@@ -370,10 +370,17 @@ describe("/todo command", () => {
   it("serves snapshot output without live refresh when CoC queue is degraded", async () => {
     const queueSpy = vi.spyOn(cocRequestQueueService, "getStatus").mockReturnValue({
       queueDepth: 5,
+      interactiveQueueDepth: 2,
+      backgroundQueueDepth: 3,
       inFlight: 1,
       penaltyMs: 1200,
       spacingMs: 1320,
       degraded: true,
+      lastInteractiveWaitMs: 0,
+      lastBackgroundWaitMs: 0,
+      backgroundSkippedCount: 0,
+      interactiveDispatchedCount: 0,
+      backgroundDispatchedCount: 0,
     });
     const refreshSpy = vi.spyOn(todoSnapshotService, "refreshSnapshotsForPlayerTags");
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
@@ -406,10 +413,17 @@ describe("/todo command", () => {
   it("falls back to snapshot output when bounded initial refresh times out", async () => {
     vi.spyOn(cocRequestQueueService, "getStatus").mockReturnValue({
       queueDepth: 0,
+      interactiveQueueDepth: 0,
+      backgroundQueueDepth: 0,
       inFlight: 0,
       penaltyMs: 0,
       spacingMs: 120,
       degraded: false,
+      lastInteractiveWaitMs: 0,
+      lastBackgroundWaitMs: 0,
+      backgroundSkippedCount: 0,
+      interactiveDispatchedCount: 0,
+      backgroundDispatchedCount: 0,
     });
     vi.spyOn(todoSnapshotService, "refreshSnapshotsForPlayerTags").mockImplementation(
       async () =>

@@ -1,17 +1,46 @@
 import { formatError } from "../helper/formatError";
+import type { CoCQueuePriority } from "./CoCQueueContext";
+import type { TelemetryCommandContext } from "./telemetry/context";
+import { TelemetryIngestService } from "./telemetry/ingest";
 
 type CoCQueueTask<T> = {
   operation: string;
   detail?: string;
+  priority: CoCQueuePriority;
+  source: string;
+  scheduledAtMs?: number | null;
+  nextScheduledAtMs?: number | null;
+  freshnessDeadlineMs?: number | null;
+  telemetryContext?: TelemetryCommandContext | null;
   run: () => Promise<T>;
+};
+
+type PendingCoCQueueTask<T> = CoCQueueTask<T> & {
+  id: number;
+  enqueuedAtMs: number;
+  resolve: (value: T) => void;
+  reject: (error: unknown) => void;
 };
 
 type CoCQueueStatus = {
   queueDepth: number;
+  interactiveQueueDepth: number;
+  backgroundQueueDepth: number;
   inFlight: number;
   penaltyMs: number;
   spacingMs: number;
   degraded: boolean;
+  lastInteractiveWaitMs: number;
+  lastBackgroundWaitMs: number;
+  backgroundSkippedCount: number;
+  interactiveDispatchedCount: number;
+  backgroundDispatchedCount: number;
+};
+
+type BackgroundStaleness = {
+  stale: boolean;
+  reason: string;
+  deadlineMs: number | null;
 };
 
 function sleep(ms: number): Promise<void> {
@@ -23,6 +52,11 @@ function toPositiveInt(value: unknown, fallback: number): number {
   const parsed = Math.trunc(Number(value));
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
   return parsed;
+}
+
+function normalizeOptionalTimestamp(value: number | null | undefined): number | null {
+  if (!Number.isFinite(value ?? NaN)) return null;
+  return Math.max(0, Math.trunc(Number(value)));
 }
 
 function resolveHttpStatus(err: unknown): number | null {
@@ -43,16 +77,54 @@ function resolveHttpStatus(err: unknown): number | null {
   return null;
 }
 
-/** Purpose: provide one shared serialized pacing queue for CoC API requests with bounded 429 backoff. */
+/** Purpose: signal one background queue task was intentionally skipped after becoming stale. */
+export class CoCQueueSkippedError extends Error {
+  readonly priority: CoCQueuePriority;
+  readonly source: string;
+  readonly operation: string;
+  readonly waitMs: number;
+
+  constructor(input: {
+    priority: CoCQueuePriority;
+    source: string;
+    operation: string;
+    waitMs: number;
+    reason: string;
+  }) {
+    super(
+      `CoC queue skipped ${input.priority} task ${input.operation} source=${input.source} reason=${input.reason} wait_ms=${input.waitMs}`,
+    );
+    this.name = "CoCQueueSkippedError";
+    this.priority = input.priority;
+    this.source = input.source;
+    this.operation = input.operation;
+    this.waitMs = input.waitMs;
+  }
+}
+
+/** Purpose: identify one queue-skip error without leaking implementation details to callers. */
+export function isCoCQueueSkippedError(err: unknown): err is CoCQueueSkippedError {
+  return err instanceof CoCQueueSkippedError;
+}
+
+/** Purpose: provide one shared paced dispatcher for CoC API requests with strict interactive priority. */
 export class CoCRequestQueueService {
-  private tail: Promise<void> = Promise.resolve();
+  private interactiveQueue: Array<PendingCoCQueueTask<unknown>> = [];
+  private backgroundQueue: Array<PendingCoCQueueTask<unknown>> = [];
   private nextAllowedAtMs = 0;
-  private queueDepth = 0;
   private inFlight = 0;
   private penaltyMs = 0;
   private lastRateLimitLogAtMs = 0;
   private lastDegradedDelayLogAtMs = 0;
   private lastRecoveredLogAtMs = 0;
+  private dispatchLoop: Promise<void> | null = null;
+  private nextTaskId = 1;
+  private lastInteractiveWaitMs = 0;
+  private lastBackgroundWaitMs = 0;
+  private backgroundSkippedCount = 0;
+  private interactiveDispatchedCount = 0;
+  private backgroundDispatchedCount = 0;
+  private readonly telemetryIngest = TelemetryIngestService.getInstance();
 
   private readonly baseSpacingMs = toPositiveInt(
     process.env.COC_REQUEST_QUEUE_BASE_SPACING_MS,
@@ -79,77 +151,233 @@ export class CoCRequestQueueService {
     10_000,
   );
 
-  /** Purpose: enqueue one CoC-bound request and execute it under shared pacing guarantees. */
+  /** Purpose: enqueue one CoC-bound request under strict interactive-first dispatch and shared pacing. */
   async enqueue<T>(task: CoCQueueTask<T>): Promise<T> {
-    this.queueDepth += 1;
+    const priority = task.priority;
+    const source = String(task.source ?? "").trim();
+    if (priority !== "interactive" && priority !== "background") {
+      throw new Error(`COC_QUEUE_PRIORITY_INVALID:${String(task.priority)}`);
+    }
+    if (!source) {
+      throw new Error(`COC_QUEUE_SOURCE_REQUIRED:${task.operation}`);
+    }
+
     return new Promise<T>((resolve, reject) => {
-      const runQueued = async () => {
-        this.queueDepth = Math.max(0, this.queueDepth - 1);
-        this.inFlight += 1;
-        try {
-          await this.waitForTurn(task.operation, task.detail);
-          try {
-            const result = await task.run();
-            this.noteSuccess();
-            resolve(result);
-          } catch (err) {
-            this.noteFailure(err, task.operation, task.detail);
-            reject(err);
-          } finally {
-            this.nextAllowedAtMs =
-              Math.max(this.nextAllowedAtMs, Date.now()) +
-              this.currentSpacingMs();
-          }
-        } finally {
-          this.inFlight = Math.max(0, this.inFlight - 1);
-        }
+      const pending: PendingCoCQueueTask<T> = {
+        ...task,
+        source,
+        scheduledAtMs: normalizeOptionalTimestamp(task.scheduledAtMs),
+        nextScheduledAtMs: normalizeOptionalTimestamp(task.nextScheduledAtMs),
+        freshnessDeadlineMs: normalizeOptionalTimestamp(task.freshnessDeadlineMs),
+        id: this.nextTaskId++,
+        enqueuedAtMs: Date.now(),
+        resolve,
+        reject,
       };
-      this.tail = this.tail.then(runQueued, runQueued).then(
-        () => undefined,
-        () => undefined,
+
+      if (priority === "interactive") {
+        this.interactiveQueue.push(pending as PendingCoCQueueTask<unknown>);
+      } else {
+        this.backgroundQueue.push(pending as PendingCoCQueueTask<unknown>);
+      }
+
+      console.info(
+        `[coc-queue] event=enqueue priority=${priority} source=${source} operation=${task.operation} detail=${task.detail ?? "none"} interactive_depth=${this.interactiveQueue.length} background_depth=${this.backgroundQueue.length} in_flight=${this.inFlight}`,
       );
+      this.ensureDispatchLoop();
     });
   }
 
   /** Purpose: expose queue health for guarded command/poller behavior during upstream throttling. */
   getStatus(): CoCQueueStatus {
+    const interactiveQueueDepth = this.interactiveQueue.length;
+    const backgroundQueueDepth = this.backgroundQueue.length;
     return {
-      queueDepth: this.queueDepth,
+      queueDepth: interactiveQueueDepth + backgroundQueueDepth,
+      interactiveQueueDepth,
+      backgroundQueueDepth,
       inFlight: this.inFlight,
       penaltyMs: this.penaltyMs,
       spacingMs: this.currentSpacingMs(),
       degraded: this.penaltyMs > 0,
+      lastInteractiveWaitMs: this.lastInteractiveWaitMs,
+      lastBackgroundWaitMs: this.lastBackgroundWaitMs,
+      backgroundSkippedCount: this.backgroundSkippedCount,
+      interactiveDispatchedCount: this.interactiveDispatchedCount,
+      backgroundDispatchedCount: this.backgroundDispatchedCount,
     };
   }
 
   /** Purpose: provide deterministic reset hook for queue-focused tests. */
   resetForTest(): void {
-    this.tail = Promise.resolve();
+    this.interactiveQueue = [];
+    this.backgroundQueue = [];
     this.nextAllowedAtMs = 0;
-    this.queueDepth = 0;
     this.inFlight = 0;
     this.penaltyMs = 0;
     this.lastRateLimitLogAtMs = 0;
     this.lastDegradedDelayLogAtMs = 0;
     this.lastRecoveredLogAtMs = 0;
+    this.dispatchLoop = null;
+    this.nextTaskId = 1;
+    this.lastInteractiveWaitMs = 0;
+    this.lastBackgroundWaitMs = 0;
+    this.backgroundSkippedCount = 0;
+    this.interactiveDispatchedCount = 0;
+    this.backgroundDispatchedCount = 0;
+  }
+
+  private ensureDispatchLoop(): void {
+    if (this.dispatchLoop) return;
+    this.dispatchLoop = this.runDispatchLoop()
+      .catch((err) => {
+        console.error(`[coc-queue] event=dispatcher_failed error=${formatError(err)}`);
+      })
+      .finally(() => {
+        this.dispatchLoop = null;
+        if (this.hasQueuedTasks()) {
+          this.ensureDispatchLoop();
+        }
+      });
+  }
+
+  private async runDispatchLoop(): Promise<void> {
+    while (this.hasQueuedTasks()) {
+      await this.waitForDispatchTurn();
+      const nextTask = this.pickNextDispatchableTask();
+      if (!nextTask) {
+        continue;
+      }
+      await this.executeTask(nextTask);
+    }
+  }
+
+  private hasQueuedTasks(): boolean {
+    return this.interactiveQueue.length > 0 || this.backgroundQueue.length > 0;
   }
 
   private currentSpacingMs(): number {
     return this.baseSpacingMs + this.penaltyMs;
   }
 
-  private async waitForTurn(operation: string, detail?: string): Promise<void> {
+  private async waitForDispatchTurn(): Promise<void> {
     const now = Date.now();
     const delayMs = Math.max(0, this.nextAllowedAtMs - now);
     if (delayMs <= 0) return;
     if (this.penaltyMs > 0) {
-      this.logDegradedDelay({
-        operation,
-        detail,
-        delayMs,
-      });
+      this.logDegradedDelay(delayMs);
     }
     await sleep(delayMs);
+  }
+
+  private pickNextDispatchableTask(): PendingCoCQueueTask<unknown> | null {
+    if (this.interactiveQueue.length > 0) {
+      return this.interactiveQueue.shift() ?? null;
+    }
+
+    while (this.backgroundQueue.length > 0) {
+      const next = this.backgroundQueue[0];
+      const staleness = this.resolveBackgroundStaleness(next);
+      if (!staleness.stale) {
+        return this.backgroundQueue.shift() ?? null;
+      }
+
+      this.backgroundQueue.shift();
+      this.noteBackgroundSkipped(next, staleness);
+    }
+
+    return null;
+  }
+
+  private resolveBackgroundStaleness(task: PendingCoCQueueTask<unknown>): BackgroundStaleness {
+    if (task.priority !== "background") {
+      return { stale: false, reason: "not_background", deadlineMs: null };
+    }
+
+    const deadlineMs =
+      normalizeOptionalTimestamp(task.freshnessDeadlineMs) ??
+      normalizeOptionalTimestamp(task.nextScheduledAtMs);
+    if (deadlineMs === null) {
+      return { stale: false, reason: "no_deadline", deadlineMs: null };
+    }
+    if (Date.now() < deadlineMs) {
+      return { stale: false, reason: "fresh", deadlineMs };
+    }
+    return {
+      stale: true,
+      reason:
+        normalizeOptionalTimestamp(task.freshnessDeadlineMs) !== null
+          ? "freshness_deadline_elapsed"
+          : "next_scheduled_run_due",
+      deadlineMs,
+    };
+  }
+
+  private async executeTask(task: PendingCoCQueueTask<unknown>): Promise<void> {
+    this.inFlight += 1;
+    try {
+      const waitMs = Math.max(0, Date.now() - task.enqueuedAtMs);
+      this.noteDispatched(task, waitMs);
+      try {
+        const result = await task.run();
+        this.noteSuccess();
+        task.resolve(result);
+      } catch (err) {
+        this.noteFailure(err, task);
+        task.reject(err);
+      } finally {
+        this.nextAllowedAtMs =
+          Math.max(this.nextAllowedAtMs, Date.now()) + this.currentSpacingMs();
+      }
+    } finally {
+      this.inFlight = Math.max(0, this.inFlight - 1);
+    }
+  }
+
+  private noteDispatched(task: PendingCoCQueueTask<unknown>, waitMs: number): void {
+    if (task.priority === "interactive") {
+      this.interactiveDispatchedCount += 1;
+      this.lastInteractiveWaitMs = waitMs;
+    } else {
+      this.backgroundDispatchedCount += 1;
+      this.lastBackgroundWaitMs = waitMs;
+    }
+
+    console.info(
+      `[coc-queue] event=dispatch priority=${task.priority} source=${task.source} operation=${task.operation} detail=${task.detail ?? "none"} wait_ms=${waitMs} interactive_depth=${this.interactiveQueue.length} background_depth=${this.backgroundQueue.length} in_flight=${this.inFlight} penalty_ms=${this.penaltyMs} spacing_ms=${this.currentSpacingMs()}`,
+    );
+    this.recordDispatchTelemetry(task, waitMs);
+  }
+
+  private noteBackgroundSkipped(
+    task: PendingCoCQueueTask<unknown>,
+    staleness: BackgroundStaleness,
+  ): void {
+    const waitMs = Math.max(0, Date.now() - task.enqueuedAtMs);
+    this.backgroundSkippedCount += 1;
+    this.lastBackgroundWaitMs = waitMs;
+
+    console.warn(
+      `[coc-queue] event=background_skipped source=${task.source} operation=${task.operation} detail=${task.detail ?? "none"} wait_ms=${waitMs} reason=${staleness.reason} scheduled_at_ms=${task.scheduledAtMs ?? "none"} next_scheduled_at_ms=${task.nextScheduledAtMs ?? "none"} freshness_deadline_ms=${task.freshnessDeadlineMs ?? "none"} stale_deadline_ms=${staleness.deadlineMs ?? "none"} interactive_depth=${this.interactiveQueue.length} background_depth=${this.backgroundQueue.length}`,
+    );
+    this.telemetryIngest.recordApiTiming({
+      namespace: "coc_queue",
+      operation: "background_skipped",
+      source: "api",
+      status: "failure",
+      durationMs: waitMs,
+      errorCategory: "stale",
+      errorCode: "BACKGROUND_STALE_SKIPPED",
+    });
+    task.reject(
+      new CoCQueueSkippedError({
+        priority: task.priority,
+        source: task.source,
+        operation: task.operation,
+        waitMs,
+        reason: staleness.reason,
+      }),
+    );
   }
 
   private noteSuccess(): void {
@@ -160,12 +388,21 @@ export class CoCRequestQueueService {
       const now = Date.now();
       if (now - this.lastRecoveredLogAtMs >= this.rateLimitLogIntervalMs) {
         this.lastRecoveredLogAtMs = now;
-        console.info("[coc-queue] event=recovered penalty_ms=0 spacing_ms=" + this.currentSpacingMs());
+        console.info(
+          `[coc-queue] event=recovered penalty_ms=0 spacing_ms=${this.currentSpacingMs()} interactive_depth=${this.interactiveQueue.length} background_depth=${this.backgroundQueue.length}`,
+        );
+        this.telemetryIngest.recordApiTiming({
+          namespace: "coc_queue",
+          operation: "recovered",
+          source: "api",
+          status: "success",
+          durationMs: 0,
+        });
       }
     }
   }
 
-  private noteFailure(err: unknown, operation: string, detail?: string): void {
+  private noteFailure(err: unknown, task: PendingCoCQueueTask<unknown>): void {
     const status = resolveHttpStatus(err);
     if (status !== 429) return;
 
@@ -187,26 +424,65 @@ export class CoCRequestQueueService {
     ) {
       this.lastRateLimitLogAtMs = now;
       console.warn(
-        `[coc-queue] event=rate_limited status=429 operation=${operation} detail=${detail ?? "none"} penalty_ms=${this.penaltyMs} spacing_ms=${this.currentSpacingMs()} queue_depth=${this.queueDepth} in_flight=${this.inFlight} error=${formatError(err)}`,
+        `[coc-queue] event=rate_limited status=429 priority=${task.priority} source=${task.source} operation=${task.operation} detail=${task.detail ?? "none"} penalty_ms=${this.penaltyMs} spacing_ms=${this.currentSpacingMs()} interactive_depth=${this.interactiveQueue.length} background_depth=${this.backgroundQueue.length} in_flight=${this.inFlight} error=${formatError(err)}`,
       );
+      this.telemetryIngest.recordApiTiming({
+        namespace: "coc_queue",
+        operation: "rate_limited",
+        source: "api",
+        status: "failure",
+        durationMs: this.penaltyMs,
+        errorCategory: "rate_limit",
+        errorCode: "HTTP_429",
+      });
     }
   }
 
-  private logDegradedDelay(input: {
-    operation: string;
-    detail?: string;
-    delayMs: number;
-  }): void {
+  private logDegradedDelay(delayMs: number): void {
     const now = Date.now();
     if (now - this.lastDegradedDelayLogAtMs < this.degradedDelayLogIntervalMs) {
       return;
     }
     this.lastDegradedDelayLogAtMs = now;
+    const interactivePresent = this.interactiveQueue.length > 0;
     console.warn(
-      `[coc-queue] event=degraded_delay operation=${input.operation} detail=${input.detail ?? "none"} delay_ms=${input.delayMs} penalty_ms=${this.penaltyMs} spacing_ms=${this.currentSpacingMs()} queue_depth=${this.queueDepth} in_flight=${this.inFlight}`,
+      `[coc-queue] event=degraded_delay delay_ms=${delayMs} penalty_ms=${this.penaltyMs} spacing_ms=${this.currentSpacingMs()} interactive_depth=${this.interactiveQueue.length} background_depth=${this.backgroundQueue.length} in_flight=${this.inFlight} interactive_present=${interactivePresent}`,
     );
+    this.telemetryIngest.recordApiTiming({
+      namespace: "coc_queue",
+      operation: interactivePresent ? "interactive_degraded_wait" : "background_degraded_wait",
+      source: "api",
+      status: "failure",
+      durationMs: delayMs,
+      timeout: false,
+    });
+  }
+
+  private recordDispatchTelemetry(task: PendingCoCQueueTask<unknown>, waitMs: number): void {
+    const telemetry = task.telemetryContext ?? null;
+    this.telemetryIngest.recordApiTiming({
+      namespace: "coc_queue",
+      operation: task.priority === "interactive" ? "interactive_wait" : "background_wait",
+      source: "api",
+      status: "success",
+      guildId: telemetry?.guildId ?? null,
+      commandName: telemetry?.commandName ?? null,
+      durationMs: waitMs,
+    });
+
+    if (!telemetry || task.priority !== "interactive") {
+      return;
+    }
+    this.telemetryIngest.recordStageTiming({
+      stage: "coc_queue_wait",
+      status: "success",
+      guildId: telemetry.guildId,
+      commandName: telemetry.commandName,
+      subcommand: telemetry.subcommand,
+      runId: telemetry.runId,
+      durationMs: waitMs,
+    });
   }
 }
 
 export const cocRequestQueueService = new CoCRequestQueueService();
-
