@@ -46,6 +46,7 @@ Queue observability now includes:
 - queue wait timing telemetry for interactive and background CoC work
 - stale background skip counts and logs
 - degraded-delay and 429 recovery logs from the shared CoC pacing owner
+- war-event producer logs such as `war_event_player_refresh_plan`, `war_event_player_refresh_chunk`, `war_event_player_refresh_stagger`, `war_event_player_refresh_deferred`, and `war_event_player_refresh_complete`
 
 ## External Droplet Observability
 

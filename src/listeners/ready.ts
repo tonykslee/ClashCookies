@@ -51,12 +51,14 @@ import {
   resolveMirrorSyncIntervalMsFromEnv,
   resolvePollingMode,
 } from "../services/PollingModeService";
+import {
+  resolveWarEventPollIntervalMsFromEnv,
+} from "../services/WarEventPollScheduleService";
 import { MirrorSyncService } from "../services/MirrorSyncService";
 
 const DEFAULT_OBSERVE_INTERVAL_MINUTES = 30;
 const RECRUITMENT_REMINDER_INTERVAL_MS = 60 * 60 * 1000;
 const DEFERMENT_REMINDER_INTERVAL_MS = 60 * 60 * 1000;
-const DEFAULT_WAR_EVENT_POLL_INTERVAL_MINUTES = 5;
 const TRACKED_MESSAGE_SWEEP_INTERVAL_MS = 60 * 1000;
 const OBSERVE_LAST_RUN_AT_KEY = "activity_observe:last_run_at_ms";
 const MIRROR_SYNC_POLL_GUARD_KEY = "mirror_snapshot_sync_cycle";
@@ -640,14 +642,8 @@ export default (client: Client, cocService: CoCService): void => {
     }, TRACKED_MESSAGE_SWEEP_INTERVAL_MS);
     console.log("Tracked message sweep enabled (every 1 minute).");
 
-    const warEventPollMinutesRaw = Number(
-      process.env.WAR_EVENT_LOG_POLL_INTERVAL_MINUTES ?? DEFAULT_WAR_EVENT_POLL_INTERVAL_MINUTES
-    );
-    const warEventPollMinutes =
-      Number.isFinite(warEventPollMinutesRaw) && warEventPollMinutesRaw > 0
-        ? warEventPollMinutesRaw
-        : DEFAULT_WAR_EVENT_POLL_INTERVAL_MINUTES;
-    const warEventPollMs = Math.floor(warEventPollMinutes * 60 * 1000);
+    const warEventPollMs = resolveWarEventPollIntervalMsFromEnv(process.env);
+    const warEventPollMinutes = Math.round(warEventPollMs / 60_000);
 
     const runWarEventPoll = async (scheduledAtMs: number = Date.now()) => {
       await runWithCoCQueueContext(
@@ -658,33 +654,34 @@ export default (client: Client, cocService: CoCService): void => {
           nextScheduledAtMs: scheduledAtMs + warEventPollMs,
         },
         async () => {
-      await pollCycleGuard.run("war_event_poll_cycle", async () => {
-        const queueStatus = cocRequestQueueService.getStatus();
-        if (queueStatus.degraded) {
-          console.warn(
-            `[poll-cycle] event=degraded_mode job=war_event_poll_cycle spacing_ms=${queueStatus.spacingMs} penalty_ms=${queueStatus.penaltyMs} queue_depth=${queueStatus.queueDepth} interactive_depth=${queueStatus.interactiveQueueDepth} background_depth=${queueStatus.backgroundQueueDepth} in_flight=${queueStatus.inFlight}`,
-          );
-        }
-        await runFetchTelemetryBatch("war_event_poll_cycle", async () => {
-          try {
-            await warEventLogService.poll();
-            await warEventLogService.refreshBattleDayPosts();
-            await refreshAllTrackedWarMailPosts(client);
-            await cwlStateService.refreshTrackedCwlState({
-              cocService,
-            });
-            await todoSnapshotService.refreshAllLinkedPlayerSnapshots({
-              cocService,
-            });
-          } catch (err) {
-            if (isCoCQueueSkippedError(err)) {
-              console.warn(`[war-events] poll_skipped reason=${err.message}`);
-              return;
+          await pollCycleGuard.run("war_event_poll_cycle", async () => {
+            const queueStatus = cocRequestQueueService.getStatus();
+            if (queueStatus.degraded) {
+              console.warn(
+                `[poll-cycle] event=degraded_mode job=war_event_poll_cycle spacing_ms=${queueStatus.spacingMs} penalty_ms=${queueStatus.penaltyMs} queue_depth=${queueStatus.queueDepth} interactive_depth=${queueStatus.interactiveQueueDepth} background_depth=${queueStatus.backgroundQueueDepth} in_flight=${queueStatus.inFlight}`,
+              );
             }
-            console.error(`[war-events] poll loop failed: ${formatError(err)}`);
-          }
-        });
-      });
+            await runFetchTelemetryBatch("war_event_poll_cycle", async () => {
+              try {
+                await warEventLogService.poll();
+                await warEventLogService.refreshBattleDayPosts();
+                await refreshAllTrackedWarMailPosts(client);
+                await cwlStateService.refreshTrackedCwlState({
+                  cocService,
+                });
+                await todoSnapshotService.refreshAllLinkedPlayerSnapshots({
+                  cocService,
+                  producerPacingMs: warEventPollMs,
+                });
+              } catch (err) {
+                if (isCoCQueueSkippedError(err)) {
+                  console.warn(`[war-events] poll_skipped reason=${err.message}`);
+                  return;
+                }
+                console.error(`[war-events] poll loop failed: ${formatError(err)}`);
+              }
+            });
+          });
         },
       );
     };

@@ -27,7 +27,8 @@ Behavior:
 - Activity observe loop checks unresolved tracked-member links via ClashKing at most once every 6 hours and caches matches in `PlayerLink`.
 
 ## Optional War Event Poll Setting
-- `WAR_EVENT_LOG_POLL_INTERVAL_MINUTES` - interval for war-state event listener polling (default: `5` minutes).
+- `WAR_EVENT_LOG_POLL_INTERVAL_MINUTES` - interval for war-state event listener polling (default: `15` minutes).
+  - A longer cadence reduces repeated full-cycle queue pressure while the war-event producer now staggers linked-player refreshes internally.
 
 ## Polling Ownership Mode (Prod Polls, Staging Mirrors)
 - `POLLING_MODE` - `active` (default) or `mirror`.
