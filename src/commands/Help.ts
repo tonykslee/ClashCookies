@@ -596,13 +596,22 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
   },
   remaining: {
     summary:
-      "Show remaining war timing for one tracked clan or alliance-wide active wars.",
+      "Show remaining war timing or CWL round timing for one tracked clan, remembered clan, or alliance-wide tracked clans.",
     details: [
       "`/remaining war tag:<tag>` returns one tracked clan's current phase end and relative remaining time.",
       "`/remaining war` (no tag) summarizes all tracked clans currently in active war using a 10-minute dominant-time cluster.",
       "Aggregate mode reports dominant-cluster mean, spread (max-min), and outlier clans with divergent remaining times.",
+      "`/remaining cwl tag:<tag>` returns one tracked CWL clan's persisted round state and timing from CWL tables only.",
+      "`/remaining cwl` (no tag) reuses your last CWL clan selection when available, otherwise prompts for a tag or `all:true`.",
+      "`/remaining cwl all:true` lists all tracked CWL clans with persisted preparation/in-war timing or `Unknown` when unavailable.",
     ],
-    examples: ["/remaining war", "/remaining war tag:2QG2C08UP"],
+    examples: [
+      "/remaining war",
+      "/remaining war tag:2QG2C08UP",
+      "/remaining cwl",
+      "/remaining cwl tag:2QG2C08UP",
+      "/remaining cwl all:true",
+    ],
   },
   telemetry: {
     summary: "View telemetry reports and manage scheduled report posts.",

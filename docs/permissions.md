@@ -59,6 +59,8 @@ Examples:
   - `/permission add command:defer role:@RoleX`
 - Lock only `/unlinked` to role `@RoleX`:
   - `/permission add command:unlinked role:@RoleX`
+- Lock only `/remaining cwl` to role `@RoleX`:
+  - `/permission add command:remaining:cwl role:@RoleX`
 - Lock only `/cwl rotations create` to role `@RoleX`:
   - `/permission add command:cwl:rotations:create role:@RoleX`
 - Lock `/recruitment` to role `@RoleX`:
