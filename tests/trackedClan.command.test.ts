@@ -12,6 +12,7 @@ const prismaMock = vi.hoisted(() => ({
     createMany: vi.fn(),
     findFirst: vi.fn(),
     deleteMany: vi.fn(),
+    updateMany: vi.fn(),
   },
   cwlPlayerClanSeason: {
     findMany: vi.fn(),
@@ -73,6 +74,8 @@ describe("/tracked-clan command behavior", () => {
     vi.clearAllMocks();
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-26T00:00:00.000Z"));
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
 
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.trackedClan.findUnique.mockResolvedValue(null);
@@ -81,12 +84,14 @@ describe("/tracked-clan command behavior", () => {
     prismaMock.cwlTrackedClan.createMany.mockResolvedValue({ count: 0 });
     prismaMock.cwlTrackedClan.findFirst.mockResolvedValue(null);
     prismaMock.cwlTrackedClan.deleteMany.mockResolvedValue({ count: 0 });
+    prismaMock.cwlTrackedClan.updateMany.mockResolvedValue({ count: 0 });
     prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
     prismaMock.cwlPlayerClanSeason.deleteMany.mockResolvedValue({ count: 0 });
     prismaMock.currentWar.deleteMany.mockResolvedValue({ count: 0 });
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.useRealTimers();
   });
 
@@ -101,7 +106,7 @@ describe("/tracked-clan command behavior", () => {
       },
     });
     const cocService = {
-      getClan: vi.fn().mockResolvedValue({ name: "CWL Alpha" }),
+      getClan: vi.fn().mockRejectedValue(new Error("boom")),
     };
 
     await TrackedClan.run({} as any, interaction as any, cocService as any);
@@ -111,7 +116,7 @@ describe("/tracked-clan command behavior", () => {
         {
           season: "2026-03",
           tag: "#PYLQ0289",
-          name: "CWL Alpha",
+          name: null,
         },
       ],
       skipDuplicates: true,
@@ -122,6 +127,18 @@ describe("/tracked-clan command behavior", () => {
     expect(content).toContain("already existed: #QGRJ2222");
     expect(content).toContain("invalid: BADTAG");
     expect(content).toContain("duplicates in request: #PYLQ0289");
+
+    const infoLogs = (console.info as unknown as { mock: { calls: unknown[][] } }).mock.calls.map(
+      (call) => String(call[0] ?? ""),
+    );
+    expect(infoLogs.some((line: string) => line.includes("stage=command_entered"))).toBe(true);
+    expect(infoLogs.some((line: string) => line.includes("stage=interaction_deferred"))).toBe(true);
+    expect(infoLogs.some((line: string) => line.includes("stage=cwl_tags_parsed"))).toBe(true);
+    expect(
+      infoLogs.some((line: string) => line.includes("stage=cwl_tags_existing_rows_loaded")),
+    ).toBe(true);
+    expect(infoLogs.some((line: string) => line.includes("stage=cwl_tags_create_many"))).toBe(true);
+    expect(infoLogs.some((line: string) => line.includes("stage=cwl_tags_final_reply_sent"))).toBe(true);
   });
 
   it("keeps default /tracked-clan list behavior on FWA registry when type is omitted", async () => {
