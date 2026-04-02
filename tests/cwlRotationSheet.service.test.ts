@@ -83,6 +83,42 @@ describe("CwlRotationSheetService", () => {
     );
   });
 
+  it("extracts the real ID from a published Google Sheets pubhtml URL", async () => {
+    vi.spyOn(GoogleSheetsService.prototype, "getSpreadsheetMetadata").mockResolvedValue({
+      spreadsheetId: "published-id",
+      title: "Imported CWL Planner",
+      sheets: [{ sheetId: 1, title: "CWL Alpha roster", index: 0, hidden: false }],
+    });
+    vi.spyOn(GoogleSheetsService.prototype, "readValues").mockResolvedValue([["Day 1"]]);
+
+    const preview = await cwlRotationSheetService.buildImportPreview({
+      sheetLink:
+        "https://docs.google.com/spreadsheets/d/e/published-id/pubhtml#gid=123456789",
+      overwrite: false,
+    });
+
+    expect(preview.sourceSheetId).toBe("published-id");
+    expect(GoogleSheetsService.prototype.getSpreadsheetMetadata).toHaveBeenCalledWith(
+      "published-id",
+    );
+  });
+
+  it("rejects malformed or incomplete Google Sheets links with a clear error", async () => {
+    await expect(
+      cwlRotationSheetService.buildImportPreview({
+        sheetLink: "not-a-valid-link",
+        overwrite: false,
+      }),
+    ).rejects.toThrow("Unsupported Google Sheets link format");
+
+    await expect(
+      cwlRotationSheetService.buildImportPreview({
+        sheetLink: "https://docs.google.com/spreadsheets/d/",
+        overwrite: false,
+      }),
+    ).rejects.toThrow("No spreadsheet ID could be extracted");
+  });
+
   it("blocks clans that already have an active plan unless overwrite is requested", async () => {
     prismaMock.cwlRotationPlan.findFirst.mockResolvedValue({
       id: "plan-1",

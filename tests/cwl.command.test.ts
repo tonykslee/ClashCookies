@@ -357,6 +357,33 @@ describe("/cwl command", () => {
     expect(confirmInteraction.editReply).toHaveBeenCalled();
   });
 
+  it("surfaces a clear message when the import sheet link format is unsupported", async () => {
+    vi.mocked(cwlRotationSheetService.buildImportPreview).mockRejectedValueOnce(
+      new Error(
+        "Unsupported Google Sheets link format. Use a standard /spreadsheets/d/<id> link or a published /spreadsheets/d/e/<published-id>/pubhtml link.",
+      ),
+    );
+    const interaction = makeInteraction({
+      group: "rotations",
+      subcommand: "import",
+    });
+    (interaction.options.getString as any).mockImplementation((name: string) => {
+      if (name === "sheet") return "not-a-valid-link";
+      if (name === "visibility") return null;
+      return null;
+    });
+    (interaction.options.getBoolean as any).mockImplementation((name: string) => {
+      if (name === "overwrite") return false;
+      return null;
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    expect(String(interaction.editReply.mock.calls[0]?.[0] ?? "")).toContain(
+      "Unsupported Google Sheets link format",
+    );
+  });
+
   it("exports active CWL planner data to a new public sheet", async () => {
     vi.mocked(cwlRotationSheetService.exportActivePlans).mockResolvedValue({
       spreadsheetId: "sheet-new",
