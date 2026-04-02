@@ -10,6 +10,7 @@ ClashCookies currently uses two observability layers:
 The application itself provides:
 
 - structured startup, poller, and scheduler logs
+- always-on CoC queue priority logs for interactive vs background dispatch
 - telemetry aggregate tables and scheduled Discord reports
 - health endpoints for liveness and readiness
 
@@ -38,6 +39,13 @@ Internal telemetry surfaces:
 - `/telemetry schedule show`
 - `/telemetry schedule disable`
 - `/telemetry schedule run-now`
+
+Queue observability now includes:
+
+- interactive vs background CoC queue depth in runtime status/logs
+- queue wait timing telemetry for interactive and background CoC work
+- stale background skip counts and logs
+- degraded-delay and 429 recovery logs from the shared CoC pacing owner
 
 ## External Droplet Observability
 
