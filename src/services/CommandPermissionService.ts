@@ -75,6 +75,7 @@ export const COMMAND_PERMISSION_TARGETS = [
   "force:mail:update",
   "remaining",
   "remaining:war",
+  "remaining:cwl",
   "clan-health",
   "telemetry",
   "telemetry:report",
