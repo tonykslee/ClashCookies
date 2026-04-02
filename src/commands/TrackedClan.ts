@@ -19,6 +19,7 @@ import { CoCService } from "../services/CoCService";
 import { normalizeClanTag } from "../services/PlayerLinkService";
 import {
   addCwlClanTagsForSeason,
+  hydrateMissingCwlClanNamesForSeason,
   listCwlTrackedClansForSeason,
   removeTrackedClanTagFromRegistries,
   resolveCurrentCwlSeasonKey,
@@ -293,7 +294,13 @@ export const TrackedClan: Command = {
     cocService: CoCService
   ) => {
     try {
+      console.info(
+        `[tracked-clan] stage=command_entered command=tracked-clan guild=${interaction.guildId ?? "none"} user=${interaction.user.id}`,
+      );
       await interaction.deferReply({ ephemeral: true });
+      console.info(
+        `[tracked-clan] stage=interaction_deferred command=tracked-clan guild=${interaction.guildId ?? "none"} user=${interaction.user.id}`,
+      );
       const subcommand = interaction.options.getSubcommand(true);
 
       if (subcommand === "list") {
@@ -459,7 +466,6 @@ export const TrackedClan: Command = {
         const rawCwlTags = interaction.options.getString("cwl-tags", true);
         const result = await addCwlClanTagsForSeason({
           rawTags: rawCwlTags,
-          cocService,
         });
 
         await safeReply(interaction, {
@@ -472,6 +478,21 @@ export const TrackedClan: Command = {
             `duplicates in request: ${formatTagListForSummary(result.duplicateInRequest)}`,
           ].join("\n"),
         });
+        console.info(
+          `[tracked-clan] stage=cwl_tags_final_reply_sent season=${result.season} added_count=${result.added.length} existing_count=${result.alreadyExisting.length}`,
+        );
+
+        if (cocService && typeof cocService.getClan === "function") {
+          void hydrateMissingCwlClanNamesForSeason({
+            rawTags: rawCwlTags,
+            season: result.season,
+            cocService,
+          }).catch((err) => {
+            console.error(
+              `[tracked-clan] stage=cwl_tags_name_hydration_unhandled_error season=${result.season} error=${formatError(err)}`,
+            );
+          });
+        }
         return;
       }
 
