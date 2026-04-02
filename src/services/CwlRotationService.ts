@@ -1,7 +1,66 @@
+import { Prisma } from "@prisma/client";
 import { prisma } from "../prisma";
 import { resolveCurrentCwlSeasonKey } from "./CwlRegistryService";
 import { cwlStateService, type CwlActualLineup, type CwlSeasonRosterEntry } from "./CwlStateService";
 import { normalizeClanTag, normalizePlayerTag } from "./PlayerLinkService";
+
+type CwlRotationPlanPlayerRow = {
+  playerTag: string;
+  playerName: string;
+  assignmentOrder: number;
+  manualOverride?: boolean;
+};
+
+type CwlRotationPlanDayWriteInput = {
+  roundDay: number;
+  lineupSize: number;
+  locked: boolean;
+  metadata: Prisma.InputJsonValue;
+  members: CwlRotationPlanPlayerRow[];
+};
+
+type CwlRotationPlanWriteInput = {
+  clanTag: string;
+  season: string;
+  version: number;
+  overwriteExisting: boolean;
+  rosterSize: number;
+  generatedFromRoundDay: number | null;
+  excludedPlayerTags: string[];
+  warningSummary: string | null;
+  metadata: Prisma.InputJsonValue;
+  days: CwlRotationPlanDayWriteInput[];
+};
+
+export type CwlRotationPlanExportDayRow = {
+  playerTag: string;
+  playerName: string;
+  subbedOut: boolean;
+  assignmentOrder: number;
+};
+
+export type CwlRotationPlanExportDay = {
+  roundDay: number;
+  lineupSize: number;
+  locked: boolean;
+  rows: CwlRotationPlanExportDayRow[];
+  metadata: Record<string, unknown> | null;
+};
+
+export type CwlRotationPlanExport = {
+  season: string;
+  clanTag: string;
+  clanName: string | null;
+  version: number;
+  rosterSize: number;
+  generatedFromRoundDay: number | null;
+  excludedPlayerTags: string[];
+  warningSummary: string | null;
+  metadata: Record<string, unknown> | null;
+  days: CwlRotationPlanExportDay[];
+};
+
+type CwlRotationPlanWriteTx = Prisma.TransactionClient;
 
 export type CreateCwlRotationPlanResult =
   | {
@@ -40,6 +99,33 @@ export type CreateCwlRotationPlanResult =
       clanTag: string;
       lineupSize: number;
       availablePlayers: number;
+    };
+
+export type PersistImportedCwlRotationPlanResult =
+  | {
+      outcome: "created";
+      season: string;
+      clanTag: string;
+      clanName: string | null;
+      version: number;
+      dayCount: number;
+      warnings: string[];
+      sourceTabName: string;
+    }
+  | {
+      outcome: "blocked_existing";
+      season: string;
+      clanTag: string;
+      clanName: string | null;
+      existingVersion: number;
+      sourceTabName: string;
+    }
+  | {
+      outcome: "not_tracked";
+      season: string;
+      clanTag: string;
+      clanName: string | null;
+      sourceTabName: string;
     };
 
 export type CwlRotationValidationResult = {
@@ -223,6 +309,174 @@ async function loadPlanDaysWithMembers(planId: string) {
   });
 }
 
+function buildRosterRowsForMetadata(roster: CwlSeasonRosterEntry[]): Array<{
+  playerTag: string;
+  playerName: string;
+}> {
+  return roster.map((entry) => ({
+    playerTag: entry.playerTag,
+    playerName: entry.playerName,
+  }));
+}
+
+function sanitizeDisplayText(input: unknown): string {
+  return String(input ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function toRecordValue(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function normalizeRosterRows(value: unknown): Array<{
+  playerTag: string;
+  playerName: string;
+}> {
+  if (!Array.isArray(value)) return [];
+  const rows = value
+    .map((row) => {
+      const record = toRecordValue(row);
+      if (!record) return null;
+      const playerTag = normalizePlayerTag(String(record.playerTag ?? ""));
+      if (!playerTag) return null;
+      const playerName = sanitizeDisplayText(record.playerName);
+      return {
+        playerTag,
+        playerName: playerName || playerTag,
+      };
+    })
+    .filter((row): row is { playerTag: string; playerName: string } => Boolean(row));
+  return [...new Map(rows.map((row) => [row.playerTag, row])).values()];
+}
+
+function normalizeExportRows(value: unknown): CwlRotationPlanExportDayRow[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((row, index) => {
+      const record = toRecordValue(row);
+      if (!record) return null;
+      const playerTag = normalizePlayerTag(String(record.playerTag ?? ""));
+      if (!playerTag) return null;
+      const playerName = sanitizeDisplayText(record.playerName) || playerTag;
+      const subbedOut =
+        typeof record.subbedOut === "boolean"
+          ? record.subbedOut
+          : typeof record.subbedOut === "string"
+            ? ["1", "true", "yes", "y", "x"].includes(record.subbedOut.trim().toLowerCase())
+            : false;
+      const assignmentOrder =
+        typeof record.assignmentOrder === "number"
+          ? Math.trunc(record.assignmentOrder)
+          : index;
+      return {
+        playerTag,
+        playerName,
+        subbedOut,
+        assignmentOrder,
+      };
+    })
+    .filter((row): row is CwlRotationPlanExportDayRow => Boolean(row));
+}
+
+function buildExportRowsFromMembersAndRoster(input: {
+  dayMembers: Array<{
+    playerTag: string;
+    playerName: string;
+    assignmentOrder: number;
+    manualOverride?: boolean;
+  }>;
+  rosterRows: Array<{
+    playerTag: string;
+    playerName: string;
+  }>;
+}): CwlRotationPlanExportDayRow[] {
+  const activeMemberByTag = new Map(
+    input.dayMembers.map((member) => [member.playerTag, member]),
+  );
+  const rows: CwlRotationPlanExportDayRow[] = [];
+  const seenTags = new Set<string>();
+
+  for (const rosterRow of input.rosterRows) {
+    const activeMember = activeMemberByTag.get(rosterRow.playerTag);
+    rows.push({
+      playerTag: rosterRow.playerTag,
+      playerName: rosterRow.playerName,
+      subbedOut: !activeMember,
+      assignmentOrder: activeMember?.assignmentOrder ?? rows.length,
+    });
+    seenTags.add(rosterRow.playerTag);
+  }
+
+  for (const member of [...input.dayMembers].sort((a, b) => a.assignmentOrder - b.assignmentOrder)) {
+    if (seenTags.has(member.playerTag)) continue;
+    rows.push({
+      playerTag: member.playerTag,
+      playerName: member.playerName,
+      subbedOut: false,
+      assignmentOrder: member.assignmentOrder,
+    });
+  }
+
+  return rows;
+}
+
+async function persistRotationPlanVersion(
+  tx: CwlRotationPlanWriteTx,
+  input: CwlRotationPlanWriteInput,
+): Promise<{ version: number }> {
+  if (input.overwriteExisting) {
+    await tx.cwlRotationPlan.updateMany({
+      where: {
+        clanTag: input.clanTag,
+        season: input.season,
+        isActive: true,
+      },
+      data: { isActive: false },
+    });
+  }
+
+  const createdPlan = await tx.cwlRotationPlan.create({
+    data: {
+      clanTag: input.clanTag,
+      season: input.season,
+      version: input.version,
+      isActive: true,
+      rosterSize: input.rosterSize,
+      generatedFromRoundDay: input.generatedFromRoundDay,
+      excludedPlayerTags: input.excludedPlayerTags,
+      warningSummary: input.warningSummary,
+      metadata: input.metadata,
+    },
+  });
+
+  for (const day of input.days) {
+    const createdDay = await tx.cwlRotationPlanDay.create({
+      data: {
+        planId: createdPlan.id,
+        roundDay: day.roundDay,
+        lineupSize: day.lineupSize,
+        locked: day.locked,
+        metadata: day.metadata,
+      },
+    });
+    if (day.members.length > 0) {
+      await tx.cwlRotationPlanMember.createMany({
+        data: day.members.map((member) => ({
+          planDayId: createdDay.id,
+          playerTag: member.playerTag,
+          playerName: member.playerName,
+          assignmentOrder: member.assignmentOrder,
+          manualOverride: Boolean(member.manualOverride),
+        })),
+      });
+    }
+  }
+
+  return { version: input.version };
+}
+
 /** Purpose: own CWL rotation-plan generation and validation using persisted CWL state only. */
 export class CwlRotationService {
   async createPlan(input: {
@@ -298,60 +552,41 @@ export class CwlRotationService {
       roster: includedRoster,
       planDays,
     });
+    const rosterRows = buildRosterRowsForMetadata(includedRoster);
 
     await prisma.$transaction(async (tx) => {
-      if (existingActivePlan) {
-        await tx.cwlRotationPlan.updateMany({
-          where: {
-            clanTag,
-            season,
-            isActive: true,
-          },
-          data: { isActive: false },
-        });
-      }
-
-      const createdPlan = await tx.cwlRotationPlan.create({
-        data: {
-          clanTag,
-          season,
-          version,
-          isActive: true,
-          rosterSize: lineupSize,
-          generatedFromRoundDay: currentRound.roundDay,
-          excludedPlayerTags: excludeTags,
-          warningSummary: warnings.join(" | ") || null,
+      await persistRotationPlanVersion(tx, {
+        clanTag,
+        season,
+        version,
+        overwriteExisting: Boolean(existingActivePlan),
+        rosterSize: lineupSize,
+        generatedFromRoundDay: currentRound.roundDay,
+        excludedPlayerTags: excludeTags,
+        warningSummary: warnings.join(" | ") || null,
+        metadata: {
+          source: "manual",
+          clanName: currentRound.clanName,
+          createdFromRoundState: currentRound.roundState,
+          currentLineupTags,
+          rosterRows,
+        } as Prisma.InputJsonValue,
+        days: planDays.map((day) => ({
+          roundDay: day.roundDay,
+          lineupSize,
+          locked: day.roundDay < currentRound.roundDay,
           metadata: {
-            createdFromRoundState: currentRound.roundState,
-            currentLineupTags,
-          },
-        },
+            source: "manual",
+            generatedFromPreparationRoundDay: currentRound.roundDay,
+          } as Prisma.InputJsonValue,
+          members: day.members.map((member, index) => ({
+            playerTag: member.playerTag,
+            playerName: member.playerName,
+            assignmentOrder: index,
+            manualOverride: false,
+          })),
+        })),
       });
-
-      for (const day of planDays) {
-        const createdDay = await tx.cwlRotationPlanDay.create({
-          data: {
-            planId: createdPlan.id,
-            roundDay: day.roundDay,
-            lineupSize,
-            locked: day.roundDay < currentRound.roundDay,
-            metadata: {
-              generatedFromPreparationRoundDay: currentRound.roundDay,
-            },
-          },
-        });
-        if (day.members.length > 0) {
-          await tx.cwlRotationPlanMember.createMany({
-            data: day.members.map((member, index) => ({
-              planDayId: createdDay.id,
-              playerTag: member.playerTag,
-              playerName: member.playerName,
-              assignmentOrder: index,
-              manualOverride: false,
-            })),
-          });
-        }
-      }
     });
 
     return {
@@ -362,6 +597,213 @@ export class CwlRotationService {
       lineupSize,
       warnings,
     };
+  }
+
+  /** Purpose: persist one confirmed imported CWL planner plan into the active-season planner tables. */
+  async persistImportedPlan(input: {
+    clanTag: string;
+    clanName: string | null;
+    sourceSheetId: string;
+    sourceSheetTitle: string | null;
+    sourceTabName: string;
+    season?: string;
+    overwrite?: boolean;
+    generatedFromRoundDay?: number | null;
+    warningSummary?: string | null;
+    metadata?: Prisma.InputJsonValue;
+    rosterRows: Array<{
+      playerTag: string;
+      playerName: string;
+    }>;
+    days: Array<{
+      roundDay: number;
+      lineupSize: number;
+      locked: boolean;
+      rows: Array<{
+        playerTag: string;
+        playerName: string;
+        subbedOut: boolean;
+        assignmentOrder: number;
+      }>;
+      activeMembers: Array<{
+        playerTag: string;
+        playerName: string;
+        assignmentOrder: number;
+      }>;
+    }>;
+  }): Promise<PersistImportedCwlRotationPlanResult> {
+    const season = input.season ?? resolveCurrentCwlSeasonKey();
+    const clanTag = normalizeClanTag(input.clanTag);
+    if (!clanTag) {
+      return {
+        outcome: "not_tracked",
+        season,
+        clanTag: "",
+        clanName: input.clanName,
+        sourceTabName: input.sourceTabName,
+      };
+    }
+
+    const trackedClan = await prisma.cwlTrackedClan.findFirst({
+      where: { season, tag: clanTag },
+      select: { tag: true },
+    });
+    if (!trackedClan) {
+      return {
+        outcome: "not_tracked",
+        season,
+        clanTag,
+        clanName: input.clanName,
+        sourceTabName: input.sourceTabName,
+      };
+    }
+
+    const existingActivePlan = await loadActivePlan({ clanTag, season });
+    if (existingActivePlan && !input.overwrite) {
+      return {
+        outcome: "blocked_existing",
+        season,
+        clanTag,
+        clanName: input.clanName,
+        existingVersion: existingActivePlan.version,
+        sourceTabName: input.sourceTabName,
+      };
+    }
+
+    const activeDays: CwlRotationPlanDayWriteInput[] = input.days.map((day) => ({
+      roundDay: day.roundDay,
+      lineupSize: day.lineupSize,
+      locked: day.locked,
+      metadata: {
+        source: "sheet-import",
+        sheetId: input.sourceSheetId,
+        sheetTitle: input.sourceSheetTitle,
+        tabName: input.sourceTabName,
+        roundDay: day.roundDay,
+        rows: day.rows,
+      } as Prisma.InputJsonValue,
+      members: day.activeMembers.map((member, index) => ({
+        playerTag: member.playerTag,
+        playerName: member.playerName,
+        assignmentOrder: member.assignmentOrder ?? index,
+        manualOverride: false,
+      })),
+    }));
+    const rosterRows = [...new Map(input.rosterRows.map((row) => [row.playerTag, row])).values()];
+    const activeMemberCountByDay = activeDays.map((day) => day.members.length);
+    const rosterSize = Math.max(...activeMemberCountByDay, 0);
+    const version = (existingActivePlan?.version ?? 0) + 1;
+    const warningSummary = input.warningSummary?.trim() || null;
+    const inputMetadata = toRecordValue(input.metadata);
+    const metadata = ({
+      source: "sheet-import",
+      sheetId: input.sourceSheetId,
+      sheetTitle: input.sourceSheetTitle,
+      tabName: input.sourceTabName,
+      clanName: input.clanName,
+      rosterRows,
+      ...(inputMetadata ?? {}),
+    } as Prisma.InputJsonValue);
+
+    await prisma.$transaction(async (tx) => {
+      await persistRotationPlanVersion(tx, {
+        clanTag,
+        season,
+        version,
+        overwriteExisting: Boolean(existingActivePlan),
+        rosterSize,
+        generatedFromRoundDay: input.generatedFromRoundDay ?? null,
+        excludedPlayerTags: [],
+        warningSummary,
+        metadata,
+        days: activeDays,
+      });
+    });
+
+    return {
+      outcome: "created",
+      season,
+      clanTag,
+      clanName: input.clanName,
+      version,
+      dayCount: input.days.length,
+      warnings: warningSummary ? [warningSummary] : [],
+      sourceTabName: input.sourceTabName,
+    };
+  }
+
+  /** Purpose: summarize active plan data for sheet export without hydrating live lineup state. */
+  async listActivePlanExports(input?: {
+    season?: string;
+    clanTags?: string[];
+  }): Promise<CwlRotationPlanExport[]> {
+    const season = input?.season ?? resolveCurrentCwlSeasonKey();
+    const clanTags = [...new Set((input?.clanTags ?? []).map((tag) => normalizeClanTag(tag)).filter(Boolean))];
+    const activePlans = await prisma.cwlRotationPlan.findMany({
+      where: {
+        season,
+        isActive: true,
+        ...(clanTags.length > 0 ? { clanTag: { in: clanTags } } : {}),
+      },
+      orderBy: [{ clanTag: "asc" }, { version: "desc" }],
+    });
+
+    const uniquePlans = new Map<string, (typeof activePlans)[number]>();
+    for (const plan of activePlans) {
+      if (!uniquePlans.has(plan.clanTag)) {
+        uniquePlans.set(plan.clanTag, plan);
+      }
+    }
+
+    const exports: CwlRotationPlanExport[] = [];
+    for (const plan of uniquePlans.values()) {
+      const days = await loadPlanDaysWithMembers(plan.id);
+      const planMetadata = toRecordValue(plan.metadata);
+      const rosterRows = normalizeRosterRows(
+        Array.isArray(planMetadata?.rosterRows) ? planMetadata.rosterRows : [],
+      );
+      const clanName =
+        sanitizeDisplayText(String(planMetadata?.clanName ?? "")) ||
+        null;
+      exports.push({
+        season: plan.season,
+        clanTag: plan.clanTag,
+        clanName,
+        version: plan.version,
+        rosterSize: plan.rosterSize,
+        generatedFromRoundDay: plan.generatedFromRoundDay ?? null,
+        excludedPlayerTags: [...plan.excludedPlayerTags],
+        warningSummary: plan.warningSummary ?? null,
+        metadata: planMetadata,
+        days: days.map((day) => {
+          const dayMetadata = toRecordValue(day.metadata);
+          const rowSource = normalizeExportRows(
+            Array.isArray(dayMetadata?.rows) ? dayMetadata.rows : [],
+          );
+          const rows =
+            rowSource.length > 0
+              ? rowSource
+              : buildExportRowsFromMembersAndRoster({
+                  dayMembers: day.members.map((member) => ({
+                    playerTag: member.playerTag,
+                    playerName: member.playerName,
+                    assignmentOrder: member.assignmentOrder,
+                    manualOverride: member.manualOverride,
+                  })),
+                  rosterRows,
+                });
+          return {
+            roundDay: day.roundDay,
+            lineupSize: day.lineupSize,
+            locked: day.locked,
+        metadata: dayMetadata,
+            rows,
+          };
+        }),
+      });
+    }
+
+    return exports.sort((a, b) => a.clanTag.localeCompare(b.clanTag));
   }
 
   /** Purpose: compare one planned day against persisted actual CWL lineup data when available. */

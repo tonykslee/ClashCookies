@@ -40,6 +40,12 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
     upsert: vi.fn(),
   },
+  cwlRotationPlan: {
+    findMany: vi.fn(),
+  },
+  cwlRotationPlanDay: {
+    findMany: vi.fn(),
+  },
   botSetting: {
     findMany: vi.fn(),
   },
@@ -77,6 +83,7 @@ import {
 } from "../src/services/TodoSnapshotService";
 import { todoLastViewedTypeService } from "../src/services/TodoLastViewedTypeService";
 import { cocRequestQueueService } from "../src/services/CoCRequestQueueService";
+import { cwlRotationService } from "../src/services/CwlRotationService";
 
 type TodoType = "WAR" | "CWL" | "RAIDS" | "GAMES";
 const TODO_DEFAULT_EMBED_COLOR = 0x5865f2;
@@ -260,6 +267,13 @@ describe("/todo command", () => {
     prismaMock.cwlRoundMemberCurrent.findMany.mockReset();
     prismaMock.cwlPlayerClanSeason.findMany.mockReset();
     prismaMock.cwlPlayerClanSeason.upsert.mockReset();
+    prismaMock.cwlRotationPlan.findMany.mockReset();
+    prismaMock.cwlRotationPlanDay.findMany.mockReset();
+    prismaMock.currentCwlRound.findMany = vi.fn(async () => []);
+    prismaMock.cwlRoundMemberCurrent.findMany = vi.fn(async () => []);
+    prismaMock.cwlRotationPlan.findMany = vi.fn(async () => []);
+    prismaMock.cwlRotationPlanDay.findMany = vi.fn(async () => []);
+    (cwlRotationService as any).listActivePlanExports = vi.fn().mockResolvedValue([]);
     prismaMock.botSetting.findMany.mockReset();
     prismaMock.$transaction.mockClear();
 
@@ -275,8 +289,8 @@ describe("/todo command", () => {
     prismaMock.warAttacks.findMany.mockResolvedValue([]);
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
-    prismaMock.currentCwlRound.findMany.mockResolvedValue([]);
-    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.currentCwlRound.findMany = vi.fn(async () => []);
+    prismaMock.cwlRoundMemberCurrent.findMany = vi.fn(async () => []);
     prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
     prismaMock.cwlPlayerClanSeason.upsert.mockResolvedValue(undefined);
     prismaMock.botSetting.findMany.mockResolvedValue([]);
@@ -1798,6 +1812,81 @@ describe("/todo command", () => {
     expect(description).not.toContain("Home Clan");
     expect(description).toContain(":white_check_mark: Alpha - `1 / 1`");
     expect(description).toContain(":black_circle: Bravo - `0 / 1`");
+  });
+
+  it("derives a planned future CWL sub-in from the confirmed active rotation plan", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },
+    ]);
+    prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
+      _count: { _all: 1 },
+      _max: { updatedAt: new Date("2026-03-26T00:00:00.000Z") },
+    });
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      makeSnapshotRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha",
+        cwlActive: false,
+        cwlPhase: null,
+        cwlEndsAt: null,
+        cwlClanTag: "#QGRJ",
+        cwlClanName: "Nontracked Clan",
+      }),
+    ]);
+    prismaMock.currentCwlRound.findMany.mockResolvedValue([
+      {
+        season: "2026-03",
+        clanTag: "#QGRJ",
+        clanName: "Nontracked Clan",
+        roundDay: 2,
+        roundState: "preparation",
+        startTime: new Date("2026-03-26T12:00:00.000Z"),
+        endTime: new Date("2026-03-27T12:00:00.000Z"),
+      },
+    ]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
+    vi.mocked(cwlRotationService.listActivePlanExports).mockResolvedValue([
+      {
+        season: "2026-03",
+        clanTag: "#QGRJ",
+        clanName: "Nontracked Clan",
+        version: 1,
+        rosterSize: 2,
+        generatedFromRoundDay: 2,
+        excludedPlayerTags: [],
+        warningSummary: null,
+        metadata: null,
+        days: [
+          {
+            roundDay: 2,
+            lineupSize: 2,
+            locked: false,
+            metadata: null,
+            rows: [],
+          },
+          {
+            roundDay: 4,
+            lineupSize: 2,
+            locked: false,
+            metadata: null,
+            rows: [
+              {
+                playerTag: "#PYLQ0289",
+                playerName: "Alpha",
+                subbedOut: false,
+                assignmentOrder: 0,
+              },
+            ],
+          },
+        ],
+      },
+    ]);
+
+    const interaction = makeTodoInteraction({ type: "CWL" });
+    await Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
+
+    const description = getReplyDescription(interaction);
+    expect(description).toContain("planned sub in <t:");
   });
 
   it("renders upcoming CWL context with unknown timing instead of no-context when a CWL clan is already known", async () => {

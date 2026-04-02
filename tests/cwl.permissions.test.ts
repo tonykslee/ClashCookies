@@ -34,4 +34,24 @@ describe("cwl permission defaults", () => {
       service.canUseAnyTarget(["cwl:rotations:create"], buildInteraction({ isAdmin: true })),
     ).resolves.toBe(true);
   });
+
+  it("keeps /cwl rotations import and export admin-only by default", async () => {
+    const settings = {
+      get: vi.fn(async () => null),
+    };
+    const service = new CommandPermissionService(settings as any);
+
+    await expect(
+      service.canUseAnyTarget(["cwl:rotations:import"], buildInteraction({ isAdmin: false })),
+    ).resolves.toBe(false);
+    await expect(
+      service.canUseAnyTarget(["cwl:rotations:export"], buildInteraction({ isAdmin: false })),
+    ).resolves.toBe(false);
+    await expect(
+      service.canUseAnyTarget(["cwl:rotations:import"], buildInteraction({ isAdmin: true })),
+    ).resolves.toBe(true);
+    await expect(
+      service.canUseAnyTarget(["cwl:rotations:export"], buildInteraction({ isAdmin: true })),
+    ).resolves.toBe(true);
+  });
 });

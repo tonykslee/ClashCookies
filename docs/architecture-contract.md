@@ -179,7 +179,7 @@ Rules:
 - `CurrentCwlRound` and `CwlRoundMemberCurrent` own current/prep CWL timing and lineup truth.
 - `CwlRoundHistory` and `CwlRoundMemberHistory` own ended CWL round truth.
 - `CwlPlayerClanSeason` owns the derived observed current-season CWL roster summary.
-- `CwlRotationPlan*` owns current-season planner artifacts only.
+- `CwlRotationPlan*` owns current-season planner artifacts only, and sheet import/export commands treat those rows as the active planner source once confirmed.
 - Guild reminder ownership lives in `Reminder`, `ReminderTimeOffset`, `ReminderTargetClan`, and `ReminderFireLog`.
 - Personal reminder ownership lives in `UserActivityReminderRule` and `UserActivityReminderDelivery`.
 - Do not rebuild broad multi-source player state synchronously in command handlers when a maintained snapshot already exists.
