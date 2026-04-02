@@ -30,6 +30,12 @@ const prismaMock = vi.hoisted(() => ({
   cwlTrackedClan: {
     findMany: vi.fn(),
   },
+  currentCwlRound: {
+    findMany: vi.fn(),
+  },
+  cwlRoundMemberCurrent: {
+    findMany: vi.fn(),
+  },
   cwlPlayerClanSeason: {
     findMany: vi.fn(),
     upsert: vi.fn(),
@@ -246,6 +252,8 @@ describe("/todo command", () => {
     prismaMock.warAttacks.findMany.mockReset();
     prismaMock.trackedClan.findMany.mockReset();
     prismaMock.cwlTrackedClan.findMany.mockReset();
+    prismaMock.currentCwlRound.findMany.mockReset();
+    prismaMock.cwlRoundMemberCurrent.findMany.mockReset();
     prismaMock.cwlPlayerClanSeason.findMany.mockReset();
     prismaMock.cwlPlayerClanSeason.upsert.mockReset();
     prismaMock.botSetting.findMany.mockReset();
@@ -263,6 +271,8 @@ describe("/todo command", () => {
     prismaMock.warAttacks.findMany.mockResolvedValue([]);
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.currentCwlRound.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
     prismaMock.cwlPlayerClanSeason.upsert.mockResolvedValue(undefined);
     prismaMock.botSetting.findMany.mockResolvedValue([]);

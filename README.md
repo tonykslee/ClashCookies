@@ -47,6 +47,7 @@ The project is designed as a maintainable application, not a one-off bot script:
 - Manages tracked clan configuration, mail channels/roles, and war plans.
 - Supports player-linking, roster-related utilities, and operational helper commands.
 - Provides FWA-focused tooling for points, match handling, layouts, and related workflows.
+- Adds persisted CWL round tracking plus `/cwl members` and `/cwl rotations` planner/check flows on top of seasonal CWL clan tracking.
 
 ### Reliability and maintainability support
 - Uses explicit data ownership boundaries across lifecycle/persistence tables.
@@ -63,9 +64,11 @@ The project is designed as a maintainable application, not a one-off bot script:
 - Match state rendering supports deterministic active-war inference and explicit confirmation persistence for BL/MM/FWA decisions.
 - Sync validation uses war-scoped persisted snapshots (`ClanPointsSync`) with explicit force-sync paths for refresh-scrape operations.
 - `/todo` renders from precomputed per-player snapshots (`TodoPlayerSnapshot`) so high-traffic reads stay fast and avoid live per-player multi-source aggregation on command execution, with grouped WAR/CWL sections, shared top timer for RAIDS, and phased GAMES rendering (active earning, latest-results reward collection through the full claim window, then post-reward lifetime totals) plus CWL context resolved from a seasonal CWL clan registry/player mapping layer instead of assuming home FWA clan.
+- CWL now has parallel persisted owners for live/prep rounds, ended round history, and planner state so `/todo cwl` and `/cwl ...` commands stay DB-first when persisted state exists.
 - `/reminders` now supports preview-first create/list/edit flows with FWA+CWL clan targeting, persisted reminder configs, and background scheduler dispatch with dedupe fire logs.
 - Reminder deliveries now send plain-text Discord messages so inline user mentions actually notify, with whole-line overflow splitting capped at 3 messages.
 - Unlinked tracked-clan member alerts use dedicated persistence instead of `BotSetting`, support one guild-level alert channel with tracked-clan log fallback, and expose `/unlinked list` for current unresolved FWA plus active CWL members.
+- Staging mirror sync now includes the runtime-owned CWL round/history tables plus CWL planner tables so `/todo cwl` and `/cwl rotations` render consistently against mirrored prod data.
 - War-mail and match embeds use consistent effective-state color mapping for BL/MM/FWA/unresolved states.
 - Notification and posting flows include operational logging controls (`/bot-logs`, `/say`, telemetry report + schedule commands).
 - FWA stats and operations commands include weight-age/health tooling, compliance checks, and layout management.

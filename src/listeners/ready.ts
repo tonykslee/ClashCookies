@@ -36,6 +36,7 @@ import {
 import { trackedMessageService } from "../services/TrackedMessageService";
 import { FwaFeedSchedulerService } from "../services/fwa-feeds/FwaFeedSchedulerService";
 import { todoSnapshotService } from "../services/TodoSnapshotService";
+import { cwlStateService } from "../services/CwlStateService";
 import { ReminderSchedulerService } from "../services/reminders/ReminderSchedulerService";
 import { UserActivityReminderSchedulerService } from "../services/remindme/UserActivityReminderSchedulerService";
 import {
@@ -669,6 +670,9 @@ export default (client: Client, cocService: CoCService): void => {
             await warEventLogService.poll();
             await warEventLogService.refreshBattleDayPosts();
             await refreshAllTrackedWarMailPosts(client);
+            await cwlStateService.refreshTrackedCwlState({
+              cocService,
+            });
             await todoSnapshotService.refreshAllLinkedPlayerSnapshots({
               cocService,
             });

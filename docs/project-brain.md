@@ -44,7 +44,9 @@ Core subsystems:
 - War state: `TrackedClan -> WarEventLogService/poll loops -> CurrentWar -> ClanWarHistory / ClanWarParticipation / WarAttacks / WarLookup / WarEvent / WarMailLifecycle / ClanPostedMessage`
 - Points sync: `points.fwafarm -> PointsSyncService -> ClanPointsSync`
 - Feed-backed current state: `FWAStats JSON feeds -> FwaFeedSchedulerService -> FwaClanCatalog / FwaPlayerCatalog / FwaClanMemberCurrent / FwaWarMemberCurrent / FwaClanWarLogCurrent`
-- Snapshot-backed todo: `PlayerLink + CurrentWar + CWL registry + activity signals -> TodoSnapshotService -> TodoPlayerSnapshot`
+- Snapshot-backed todo: `PlayerLink + CurrentWar + CurrentCwlRound/CwlRoundMemberCurrent + activity signals -> TodoSnapshotService -> TodoPlayerSnapshot`
+- Persisted CWL state: `CwlTrackedClan -> CwlStateService -> CurrentCwlRound / CwlRoundMemberCurrent / CwlRoundHistory / CwlRoundMemberHistory / CwlPlayerClanSeason`
+- CWL planner state: `CurrentCwlRound + CwlRoundMemberCurrent + CwlPlayerClanSeason -> CwlRotationService -> CwlRotationPlan / CwlRotationPlanDay / CwlRotationPlanMember`
 - Reminder delivery: `Reminder/UserActivityReminder config + snapshots/current war -> reminder schedulers -> delivery logs`
 - Operational state: `TrackedMessage`, unlinked-alert persistence, telemetry aggregates, report schedules
 
@@ -60,6 +62,12 @@ Important owners:
 | --- | --- |
 | Tracked FWA clans | TrackedClan |
 | Seasonal CWL tracked clans | CwlTrackedClan |
+| Live/prep CWL round identity and timing | CurrentCwlRound |
+| Live/prep CWL round member summaries | CwlRoundMemberCurrent |
+| Ended CWL round history | CwlRoundHistory |
+| Ended CWL round member history | CwlRoundMemberHistory |
+| Derived observed CWL season roster | CwlPlayerClanSeason |
+| CWL planner artifacts | CwlRotationPlan* tables |
 | Player-to-Discord links | PlayerLink |
 | Live war state | CurrentWar |
 | Ended-war canonical record | ClanWarHistory |
@@ -84,6 +92,7 @@ Do not duplicate ownership across tables.
 - Mirror mode is read-oriented and only runs guarded prod-to-staging snapshot sync for the runtime allowlist.
 - Expensive upstream fetches should happen in background services, not in user-facing commands.
 - Derived tables and snapshots must be recreatable by their owning service.
+- Mirror runtime should include runtime-owned CWL round/history tables, and planner tables when staging needs consistent `/cwl` rendering against mirrored prod data.
 
 ---
 
