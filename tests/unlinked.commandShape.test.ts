@@ -19,10 +19,12 @@ describe("/unlinked command shape", () => {
     expect(list).toBeTruthy();
     expect(setAlert?.options?.find((option: any) => option.name === "channel")).toMatchObject({
       type: ApplicationCommandOptionType.Channel,
+      description: "Channel or thread for unlinked-player alerts",
       required: true,
       channel_types: [
         ChannelType.GuildText,
         ChannelType.GuildAnnouncement,
+        ChannelType.AnnouncementThread,
         ChannelType.PublicThread,
         ChannelType.PrivateThread,
       ],

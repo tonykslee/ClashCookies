@@ -17,29 +17,61 @@ import {
   unlinkedMemberAlertService,
 } from "../services/UnlinkedMemberAlertService";
 
+const UNLINKED_ALERT_THREAD_CHANNEL_TYPES = [
+  ChannelType.AnnouncementThread,
+  ChannelType.PublicThread,
+  ChannelType.PrivateThread,
+] as const;
+
 const UNLINKED_ALERT_SUPPORTED_CHANNEL_TYPES = [
   ChannelType.GuildText,
   ChannelType.GuildAnnouncement,
-  ChannelType.PublicThread,
-  ChannelType.PrivateThread,
+  ...UNLINKED_ALERT_THREAD_CHANNEL_TYPES,
 ] as const;
 
 type GuildChannelLike = {
   id: string;
   guildId?: string;
   type?: number;
+  parentId?: string | null;
+  parent?: {
+    id?: string | null;
+  } | null;
+  isThread?: () => boolean;
 };
 
 function isGuildScopedChannel(channel: GuildChannelLike, guildId: string): boolean {
   return String(channel.guildId ?? "").trim() === guildId;
 }
 
-function isSupportedAlertChannel(channel: GuildChannelLike): boolean {
+function isThreadChannel(channel: GuildChannelLike): boolean {
+  if (typeof channel.isThread === "function") {
+    return channel.isThread();
+  }
   return typeof channel.type === "number"
-    ? UNLINKED_ALERT_SUPPORTED_CHANNEL_TYPES.includes(
-        channel.type as (typeof UNLINKED_ALERT_SUPPORTED_CHANNEL_TYPES)[number],
+    ? UNLINKED_ALERT_THREAD_CHANNEL_TYPES.includes(
+        channel.type as (typeof UNLINKED_ALERT_THREAD_CHANNEL_TYPES)[number],
       )
     : false;
+}
+
+function isSupportedAlertChannel(channel: GuildChannelLike): boolean {
+  return typeof channel.type === "number"
+    ? channel.type === ChannelType.GuildText ||
+        channel.type === ChannelType.GuildAnnouncement ||
+        isThreadChannel(channel)
+    : false;
+}
+
+function formatUnlinkedAlertDestinationConfirmation(channel: GuildChannelLike): string {
+  if (!isThreadChannel(channel)) {
+    return `Saved the unlinked-player alert channel: <#${channel.id}>.`;
+  }
+
+  const parentId = channel.parentId ?? channel.parent?.id ?? null;
+  return parentId
+    ? `Saved the unlinked-player alert thread: <#${channel.id}> (in <#${parentId}>).`
+    : `Saved the unlinked-player alert thread: <#${channel.id}>.`;
 }
 
 function buildUnlinkedListLines(input: {
@@ -135,12 +167,12 @@ export const Unlinked: Command = {
   options: [
     {
       name: "set-alert",
-      description: "Set the guild-level alert channel for unlinked tracked members",
+      description: "Set the guild-level alert channel or thread for unlinked tracked members",
       type: ApplicationCommandOptionType.Subcommand,
       options: [
         {
           name: "channel",
-          description: "Channel for unlinked-player alerts",
+          description: "Channel or thread for unlinked-player alerts",
           type: ApplicationCommandOptionType.Channel,
           required: true,
           channel_types: [...UNLINKED_ALERT_SUPPORTED_CHANNEL_TYPES],
@@ -197,7 +229,7 @@ export const Unlinked: Command = {
         }
         if (!isSupportedAlertChannel(requestedChannel)) {
           await interaction.editReply(
-            "Selected channel must be a server text, announcement, or thread channel.",
+            "Selected destination must be a server text channel, announcement channel, or thread in this server.",
           );
           return;
         }
@@ -206,9 +238,7 @@ export const Unlinked: Command = {
           guildId: interaction.guildId,
           channelId: requestedChannel.id,
         });
-        await interaction.editReply(
-          `Saved the unlinked-player alert channel: <#${requestedChannel.id}>.`,
-        );
+        await interaction.editReply(formatUnlinkedAlertDestinationConfirmation(requestedChannel));
         logUnlinkedCommandStage("reply_sent", {
           method: "editReply",
           status: "success",

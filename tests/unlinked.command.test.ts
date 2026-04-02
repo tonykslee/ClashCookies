@@ -9,7 +9,16 @@ import {
 type InteractionInput = {
   subcommand: "set-alert" | "list";
   guildId?: string | null;
-  channel?: { id: string; guildId?: string; type?: number } | null;
+  channel?:
+    | {
+        id: string;
+        guildId?: string;
+        type?: number;
+        parentId?: string | null;
+        parent?: { id?: string | null } | null;
+        isThread?: () => boolean;
+      }
+    | null;
   clan?: string | null;
 };
 
@@ -66,6 +75,31 @@ describe("/unlinked command", () => {
     });
     expect(interaction.editReply).toHaveBeenCalledWith(
       "Saved the unlinked-player alert channel: <#channel-1>.",
+    );
+  });
+
+  it("stores a configured thread destination and mentions its parent channel", async () => {
+    const setAlertChannelId = vi
+      .spyOn(unlinkedMemberAlertService, "setAlertChannelId")
+      .mockResolvedValue(undefined);
+    const interaction = createInteraction({
+      subcommand: "set-alert",
+      channel: {
+        id: "thread-1",
+        guildId: "guild-1",
+        parentId: "parent-1",
+        type: ChannelType.AnnouncementThread,
+      },
+    });
+
+    await Unlinked.run({} as any, interaction as any, {} as any);
+
+    expect(setAlertChannelId).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      channelId: "thread-1",
+    });
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "Saved the unlinked-player alert thread: <#thread-1> (in <#parent-1>).",
     );
   });
 

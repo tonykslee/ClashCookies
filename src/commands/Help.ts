@@ -535,7 +535,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
   unlinked: {
     summary: "Alert leaders when tracked-clan members are not linked to Discord, and list unresolved players.",
     details: [
-      "`set-alert` stores one guild-level alert channel in dedicated unlinked-alert persistence instead of `BotSetting`.",
+      "`set-alert` stores one guild-level alert channel or thread in dedicated unlinked-alert persistence instead of `BotSetting`.",
       "If no guild-level alert channel is configured, live alerts fall back to the tracked clan `log-channel` when available.",
       "`list` resolves the current live unresolved set across tracked FWA clans and active current-season CWL clans.",
       "A player is only considered linked when `PlayerLink.discordUserId` points to a Discord user; rows without a Discord user still count as unlinked.",
