@@ -712,9 +712,302 @@ describe("/cwl command", () => {
 
     await handleCwlRotationImportSelectMenuInteraction(selectInteraction as any);
 
-    expect(getUpdatedDescription(selectInteraction)).toContain("Importable clans: 1 / 1");
-    expect(getUpdatedDescription(selectInteraction)).not.toContain("Review rows: 1");
+    expect(getUpdatedDescription(selectInteraction)).toContain("Review rows: 0");
+    expect(getComponentButtonCustomIds(selectInteraction)).toEqual(
+      expect.arrayContaining([expect.stringContaining(":confirm:")]),
+    );
     expect(cwlRotationSheetService.confirmImport).not.toHaveBeenCalled();
+
+    const confirmId = getComponentButtonCustomIds(selectInteraction).find((id) => id.includes(":confirm:"));
+    expect(confirmId).toBeTruthy();
+    const confirmClanInteraction = {
+      customId: confirmId,
+      user: { id: "111111111111111111" },
+      update: vi.fn().mockResolvedValue(undefined),
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await handleCwlRotationImportButtonInteraction(confirmClanInteraction as any);
+
+    expect(getUpdatedDescription(confirmClanInteraction)).toContain("Importable clans: 1 / 1");
+    expect(getUpdatedDescription(confirmClanInteraction)).toContain("CWL Alpha");
+    expect(cwlRotationSheetService.confirmImport).not.toHaveBeenCalled();
+
+    const saveId = getComponentButtonCustomIds(confirmClanInteraction).find((id) => id.includes(":confirm:"));
+    expect(saveId).toBeTruthy();
+    const saveInteraction = {
+      customId: saveId,
+      user: { id: "111111111111111111" },
+      update: vi.fn().mockResolvedValue(undefined),
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await handleCwlRotationImportButtonInteraction(saveInteraction as any);
+
+    expect(cwlRotationSheetService.confirmImport).toHaveBeenCalledTimes(1);
+    expect(saveInteraction.deferUpdate).toHaveBeenCalled();
+    expect(saveInteraction.editReply).toHaveBeenCalled();
+  });
+
+  it("keeps review state isolated per clan and requires a clan confirmation boundary", async () => {
+    const preview: CwlRotationSheetImportPreview = {
+      sourceSheetId: "sheet-1",
+      sourceSheetTitle: "Imported CWL Planner",
+      season: "2026-04",
+      matchedClans: [
+        {
+          clanTag: "#2QG2C08UP",
+          clanName: "CWL Alpha",
+          tabTitle: "CWL Alpha roster",
+          existingVersion: null,
+          importable: false,
+          importBlockedReason: "1 row need review before save.",
+          warnings: ["1 row need review."],
+          structuralRowCount: 1,
+          reviewRequiredRowCount: 1,
+          ignoredRowCount: 0,
+          rosterRows: [{ playerTag: "#PYLQ0289", playerName: "Alpha" }],
+          trackedRosterRows: [{ playerTag: "#PYLQ0289", playerName: "Alpha" }],
+          days: [
+            {
+              roundDay: 1,
+              lineupSize: 0,
+              rows: [],
+              members: [],
+            },
+          ],
+          parsedRows: [
+            {
+              rowId: "cwl-alpha-roster:4",
+              sheetRowNumber: 4,
+              tabTitle: "CWL Alpha roster",
+              clanTag: "#2QG2C08UP",
+              clanName: "CWL Alpha",
+              rawText: "Alpha-ish | 12 | IN",
+              parsedPlayerTag: null,
+              parsedPlayerName: "Alpha-ish",
+              classification: "fuzzy_match_needs_review",
+              reason: "Player row needs review before it can be saved.",
+              suggestions: [
+                { playerTag: "#PYLQ0289", playerName: "Alpha", score: 0.9 },
+              ],
+              dayRows: [{ roundDay: 1, subbedOut: false, assignmentOrder: 0 }],
+              resolvedPlayerTag: null,
+              resolvedPlayerName: null,
+              ignored: false,
+            },
+          ],
+        },
+        {
+          clanTag: "#9GLGQCCU",
+          clanName: "CWL Beta",
+          tabTitle: "CWL Beta roster",
+          existingVersion: null,
+          importable: false,
+          importBlockedReason: "1 row need review before save.",
+          warnings: ["1 row need review."],
+          structuralRowCount: 1,
+          reviewRequiredRowCount: 1,
+          ignoredRowCount: 0,
+          rosterRows: [{ playerTag: "#QGRJ2222", playerName: "Bravo" }],
+          trackedRosterRows: [{ playerTag: "#QGRJ2222", playerName: "Bravo" }],
+          days: [
+            {
+              roundDay: 1,
+              lineupSize: 0,
+              rows: [],
+              members: [],
+            },
+          ],
+          parsedRows: [
+            {
+              rowId: "cwl-beta-roster:4",
+              sheetRowNumber: 4,
+              tabTitle: "CWL Beta roster",
+              clanTag: "#9GLGQCCU",
+              clanName: "CWL Beta",
+              rawText: "Bravo-ish | 12 | IN",
+              parsedPlayerTag: null,
+              parsedPlayerName: "Bravo-ish",
+              classification: "fuzzy_match_needs_review",
+              reason: "Player row needs review before it can be saved.",
+              suggestions: [
+                { playerTag: "#QGRJ2222", playerName: "Bravo", score: 0.9 },
+              ],
+              dayRows: [{ roundDay: 1, subbedOut: false, assignmentOrder: 0 }],
+              resolvedPlayerTag: null,
+              resolvedPlayerName: null,
+              ignored: false,
+            },
+          ],
+        },
+      ],
+      skippedTrackedClans: [],
+      skippedTabs: [],
+      warnings: ["2 rows need review."],
+    };
+    const confirmResult = {
+      season: "2026-04",
+      saved: [
+        {
+          outcome: "created",
+          season: "2026-04",
+          clanTag: "#2QG2C08UP",
+          clanName: "CWL Alpha",
+          version: 2,
+          dayCount: 1,
+          warnings: [],
+          sourceTabName: "CWL Alpha roster",
+        },
+        {
+          outcome: "created",
+          season: "2026-04",
+          clanTag: "#9GLGQCCU",
+          clanName: "CWL Beta",
+          version: 1,
+          dayCount: 1,
+          warnings: [],
+          sourceTabName: "CWL Beta roster",
+        },
+      ],
+      skippedTrackedClans: [],
+      skippedTabs: [],
+      ignoredRows: [],
+    } as const;
+    vi.mocked(cwlRotationSheetService.buildImportPreview).mockResolvedValue(preview);
+    vi.mocked(cwlRotationSheetService.confirmImport).mockResolvedValue(confirmResult as any);
+
+    const interaction = makeInteraction({
+      group: "rotations",
+      subcommand: "import",
+    });
+    (interaction.options.getString as any).mockImplementation((name: string) => {
+      if (name === "sheet") return "https://docs.google.com/spreadsheets/d/sheet-1/edit";
+      if (name === "visibility") return null;
+      return null;
+    });
+    (interaction.options.getBoolean as any).mockImplementation((name: string) => {
+      if (name === "overwrite") return false;
+      return null;
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    const reviewId = getComponentButtonCustomIds(interaction).find((id) => id.includes(":review:"));
+    expect(reviewId).toBeTruthy();
+    const reviewInteraction = {
+      customId: reviewId,
+      user: { id: "111111111111111111" },
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await handleCwlRotationImportButtonInteraction(reviewInteraction as any);
+    expect(getUpdatedDescription(reviewInteraction)).toContain("Clan: CWL Alpha");
+    expect(getUpdatedDescription(reviewInteraction)).toContain("Review rows: 1");
+
+    const alphaOptions = getComponentSelectMenuOptions(reviewInteraction).map((option) => option.label);
+    expect(alphaOptions).toEqual(expect.arrayContaining(["Alpha", "Ignore this row"]));
+    expect(alphaOptions).not.toContain("Bravo");
+
+    const alphaSelectId = getComponentSelectMenuCustomIds(reviewInteraction).find((id) => id.includes(":resolve:"));
+    expect(alphaSelectId).toBeTruthy();
+    const alphaSelectInteraction = {
+      customId: alphaSelectId,
+      values: ["tag:#PYLQ0289"],
+      user: { id: "111111111111111111" },
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await handleCwlRotationImportSelectMenuInteraction(alphaSelectInteraction as any);
+    expect(getUpdatedDescription(alphaSelectInteraction)).toContain("Review rows: 0");
+    expect(getComponentButtonCustomIds(alphaSelectInteraction)).toEqual(
+      expect.arrayContaining([expect.stringContaining(":confirm:")]),
+    );
+
+    const alphaConfirmId = getComponentButtonCustomIds(alphaSelectInteraction).find((id) => id.includes(":confirm:"));
+    expect(alphaConfirmId).toBeTruthy();
+    const alphaConfirmInteraction = {
+      customId: alphaConfirmId,
+      user: { id: "111111111111111111" },
+      update: vi.fn().mockResolvedValue(undefined),
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await handleCwlRotationImportButtonInteraction(alphaConfirmInteraction as any);
+    expect(getUpdatedDescription(alphaConfirmInteraction)).toContain("Clan: CWL Beta");
+
+    const betaOptions = getComponentSelectMenuOptions(alphaConfirmInteraction).map((option) => option.label);
+    expect(betaOptions).toEqual(expect.arrayContaining(["Bravo", "Ignore this row"]));
+    expect(betaOptions).not.toContain("Alpha");
+
+    const staleAlphaInteraction = {
+      customId: alphaSelectId,
+      values: ["tag:#PYLQ0289"],
+      user: { id: "111111111111111111" },
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    };
+    await handleCwlRotationImportSelectMenuInteraction(staleAlphaInteraction as any);
+    expect(staleAlphaInteraction.reply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining("expired"),
+        ephemeral: true,
+      }),
+    );
+
+    const betaSelectId = getComponentSelectMenuCustomIds(alphaConfirmInteraction).find((id) => id.includes(":resolve:"));
+    expect(betaSelectId).toBeTruthy();
+    const betaSelectInteraction = {
+      customId: betaSelectId,
+      values: ["tag:#QGRJ2222"],
+      user: { id: "111111111111111111" },
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await handleCwlRotationImportSelectMenuInteraction(betaSelectInteraction as any);
+    expect(getUpdatedDescription(betaSelectInteraction)).toContain("Review rows: 0");
+    expect(getComponentButtonCustomIds(betaSelectInteraction)).toEqual(
+      expect.arrayContaining([expect.stringContaining(":confirm:")]),
+    );
+
+    const betaConfirmId = getComponentButtonCustomIds(betaSelectInteraction).find((id) => id.includes(":confirm:"));
+    expect(betaConfirmId).toBeTruthy();
+    const betaConfirmInteraction = {
+      customId: betaConfirmId,
+      user: { id: "111111111111111111" },
+      update: vi.fn().mockResolvedValue(undefined),
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await handleCwlRotationImportButtonInteraction(betaConfirmInteraction as any);
+    expect(getUpdatedDescription(betaConfirmInteraction)).toContain("Importable clans: 2 / 2");
+
+    const saveId = getComponentButtonCustomIds(betaConfirmInteraction).find((id) => id.includes(":confirm:"));
+    expect(saveId).toBeTruthy();
+    const saveInteraction = {
+      customId: saveId,
+      user: { id: "111111111111111111" },
+      update: vi.fn().mockResolvedValue(undefined),
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await handleCwlRotationImportButtonInteraction(saveInteraction as any);
+    expect(cwlRotationSheetService.confirmImport).toHaveBeenCalledTimes(1);
+    expect(saveInteraction.deferUpdate).toHaveBeenCalled();
+    expect(saveInteraction.editReply).toHaveBeenCalled();
   });
 
   it("offers remaining tracked players as fallback mappings and prevents duplicate row mappings", async () => {
@@ -863,7 +1156,7 @@ describe("/cwl command", () => {
     await handleCwlRotationImportSelectMenuInteraction(duplicateInteraction as any);
     expect(duplicateInteraction.reply).toHaveBeenCalledWith(
       expect.objectContaining({
-        content: expect.stringContaining("no longer available"),
+        content: expect.stringContaining("already mapped"),
         ephemeral: true,
       }),
     );
