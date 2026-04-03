@@ -40,7 +40,7 @@
 - `/war history clan-tag:<tag> [limit:<number>]` - Show recent clan-level war history from stored war records.
 - `/war war-id clan-tag:<tag> war-id:<number>` - Export stored war lookup payload for one clan-scoped war ID as CSV. `war-id` supports autocomplete after `clan-tag` is selected and returns recent ended wars for that clan only (up to 10).
 - `/cwl members clan:<trackedCwlClanTag> [inwar:true]` - Show the persisted observed current-season CWL roster for one tracked CWL clan, optionally narrowed to the current/prep lineup only.
-- `/cwl rotations show [clan:<trackedCwlClanTag>] [day:<1-7>]` - Show active CWL rotation validation across tracked CWL clans, or inspect one clan's planned vs actual lineup by day.
+- `/cwl rotations show [clan:<trackedCwlClanTag>] [day:<1-7>]` - Show active CWL rotation validation across tracked CWL clans, or inspect one clan's planned vs actual lineup one CWL day per page.
 - `/cwl rotations create clan:<trackedCwlClanTag> [exclude:<comma-separated-player-tags>] [overwrite:true]` - Create or replace the active current-season CWL planner version for one tracked CWL clan during persisted preparation-day state.
 - `/cwl rotations import sheet:<public-google-sheet-link> [overwrite:true]` - Preview then import active CWL planner tabs from one public Google Sheet into the active-season planner tables. Public published-sheet imports are read without Google Sheets credentials; export/write still requires writable credentials.
 - `/cwl rotations export` - Export the active CWL planner data to a brand-new public Google Sheet.

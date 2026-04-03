@@ -13,6 +13,7 @@ vi.mock("../src/prisma", () => ({
 
 import { Cwl } from "../src/commands/Cwl";
 import { handleCwlRotationImportButtonInteraction } from "../src/commands/Cwl";
+import { handleCwlRotationShowButtonInteraction } from "../src/commands/Cwl";
 import {
   cwlRotationSheetService,
   type CwlRotationSheetImportPreview,
@@ -69,6 +70,11 @@ function getDescription(interaction: any): string {
   return String(payload?.embeds?.[0]?.toJSON?.().description ?? "");
 }
 
+function getUpdatedDescription(interaction: any): string {
+  const payload = interaction.update.mock.calls[0]?.[0] as any;
+  return String(payload?.embeds?.[0]?.toJSON?.().description ?? "");
+}
+
 function getComponentButtonCustomIds(interaction: any): string[] {
   const payload = interaction.editReply.mock.calls[0]?.[0] as any;
   const rows = Array.isArray(payload?.components) ? payload.components : [];
@@ -101,6 +107,8 @@ describe("/cwl command", () => {
     vi.spyOn(cwlRotationSheetService, "buildImportPreview");
     vi.spyOn(cwlRotationSheetService, "confirmImport");
     vi.spyOn(cwlRotationSheetService, "exportActivePlans");
+    vi.spyOn(cwlRotationService, "listActivePlanExports");
+    vi.spyOn(cwlRotationService, "validatePlanDay");
   });
 
   it("renders the persisted season roster with current round summary for /cwl members", async () => {
@@ -232,6 +240,125 @@ describe("/cwl command", () => {
 
     expect(getDescription(interaction)).toContain("CWL Alpha (#2QG2C08UP) - day 3 mismatch - missing #P2 - extra #P3");
     expect(getDescription(interaction)).toContain("CWL Beta (#9GLGQCCU) - day 3 complete");
+  });
+
+  it("renders one CWL day per page for /cwl rotations show and uses the same member-line contract as import preview", async () => {
+    vi.mocked(cwlRotationService.listActivePlanExports).mockResolvedValue([
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        clanName: "CWL Alpha",
+        version: 4,
+        warningSummary: "1 warning",
+        excludedPlayerTags: ["#P9"],
+        days: [
+          {
+            roundDay: 1,
+            lineupSize: 2,
+            rows: [
+              { playerTag: "#P1", playerName: "Alpha", subbedOut: false, assignmentOrder: 0 },
+              { playerTag: "#P2", playerName: "Bravo", subbedOut: true, assignmentOrder: 1 },
+            ],
+            actual: null,
+          },
+          {
+            roundDay: 2,
+            lineupSize: 2,
+            rows: [
+              { playerTag: "#P3", playerName: "Charlie", subbedOut: false, assignmentOrder: 0 },
+              { playerTag: "#P4", playerName: "Delta", subbedOut: false, assignmentOrder: 1 },
+            ],
+            actual: null,
+          },
+        ],
+      } as any,
+    ]);
+    vi.mocked(cwlRotationService.validatePlanDay).mockResolvedValue({
+      actualAvailable: true,
+      complete: false,
+      missingExpectedPlayerTags: ["#P2"],
+      extraActualPlayerTags: ["#P3"],
+      actualPlayerTags: ["#P1", "#P3"],
+      actualPlayerNames: ["Alpha", "Charlie"],
+    } as any);
+    const interaction = makeInteraction({
+      group: "rotations",
+      subcommand: "show",
+      clan: "#2QG2C08UP",
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    expect(vi.mocked(cwlRotationService.listActivePlanExports)).toHaveBeenCalledWith({
+      season: "2026-04",
+      clanTags: ["#2QG2C08UP"],
+    });
+    expect(getDescription(interaction)).toContain("Day 1");
+    expect(getDescription(interaction)).toContain(":black_circle: Alpha (#P1)");
+    expect(getDescription(interaction)).toContain(":x: Bravo (#P2)");
+    expect(getDescription(interaction)).toContain("Actual:");
+    expect(getDescription(interaction)).toContain("Status: missing #P2 | extra #P3");
+    expect(getComponentButtonCustomIds(interaction)).toHaveLength(2);
+
+    const nextButtonId = getComponentButtonCustomIds(interaction).find((id) => id.endsWith(":1"));
+    expect(nextButtonId).toBeTruthy();
+    const buttonInteraction = {
+      customId: nextButtonId,
+      user: { id: "111111111111111111" },
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await handleCwlRotationShowButtonInteraction(buttonInteraction as any);
+
+    expect(getUpdatedDescription(buttonInteraction)).toContain("Day 2");
+    expect(getUpdatedDescription(buttonInteraction)).toContain(":black_circle: Charlie (#P3)");
+    expect(getUpdatedDescription(buttonInteraction)).toContain(":black_circle: Delta (#P4)");
+  });
+
+  it("renders only the requested day when /cwl rotations show is day-filtered", async () => {
+    vi.mocked(cwlRotationService.listActivePlanExports).mockResolvedValue([
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        clanName: "CWL Alpha",
+        version: 4,
+        warningSummary: null,
+        excludedPlayerTags: [],
+        days: [
+          {
+            roundDay: 2,
+            lineupSize: 2,
+            rows: [
+              { playerTag: "#P3", playerName: "Charlie", subbedOut: false, assignmentOrder: 0 },
+              { playerTag: "#P4", playerName: "Delta", subbedOut: true, assignmentOrder: 1 },
+            ],
+            actual: null,
+          },
+        ],
+      } as any,
+    ]);
+    vi.mocked(cwlRotationService.validatePlanDay).mockResolvedValue({
+      actualAvailable: true,
+      complete: true,
+      missingExpectedPlayerTags: [],
+      extraActualPlayerTags: [],
+      actualPlayerTags: ["#P3", "#P4"],
+      actualPlayerNames: ["Charlie", "Delta"],
+    } as any);
+    const interaction = makeInteraction({
+      group: "rotations",
+      subcommand: "show",
+      clan: "#2QG2C08UP",
+      day: 2,
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    expect(getDescription(interaction)).toContain("Day 2");
+    expect(getDescription(interaction)).toContain(":x: Delta (#P4)");
+    expect(getDescription(interaction)).not.toContain("Day 1");
+    expect(getComponentButtonCustomIds(interaction)).toHaveLength(0);
   });
 
   it("renders an import preview before save and confirms only after a button interaction", async () => {
