@@ -34,6 +34,18 @@ const CWL_ROTATION_IMPORT_SESSION_PREFIX = "cwl-rot-import";
 const CWL_ROTATION_SHOW_SESSION_PREFIX = "cwl-rot-show";
 type CwlRotationPlanExport = Awaited<ReturnType<typeof cwlRotationService.listActivePlanExports>>[number];
 
+type CwlRotationImportClanSession = {
+  clanKey: string;
+  clanTag: string;
+  clanName: string | null;
+  tabTitle: string;
+  tab: CwlRotationSheetImportPreview["matchedClans"][number];
+  confirmed: boolean;
+  readyToConfirm: boolean;
+  reviewRowIds: string[];
+  activeRowId: string | null;
+};
+
 type CwlRotationImportSession = {
   requestedByUserId: string;
   createdAtMs: number;
@@ -42,7 +54,8 @@ type CwlRotationImportSession = {
   overwrite: boolean;
   view: "preview" | "review";
   pageIndex: number;
-  reviewIndex: number;
+  activeClanIndex: number;
+  clanSessions: CwlRotationImportClanSession[];
 };
 
 type CwlRotationImportReviewOption = {
@@ -176,6 +189,61 @@ function pruneExpiredCwlRotationImportSessions(nowMs = Date.now()): void {
   }
 }
 
+function cloneCwlRotationImportPreview(preview: CwlRotationSheetImportPreview): CwlRotationSheetImportPreview {
+  return {
+    ...preview,
+    matchedClans: preview.matchedClans.map((clan) => cloneCwlRotationImportTab(clan)),
+    skippedTrackedClans: preview.skippedTrackedClans.map((entry) => ({ ...entry })),
+    skippedTabs: preview.skippedTabs.map((entry) => ({ ...entry })),
+    warnings: [...preview.warnings],
+  };
+}
+
+function cloneCwlRotationImportTab(tab: CwlRotationImportSession["clanSessions"][number]["tab"]): CwlRotationImportSession["clanSessions"][number]["tab"] {
+  return {
+    ...tab,
+    warnings: [...tab.warnings],
+    days: tab.days.map((day) => ({
+      ...day,
+      rows: day.rows.map((row) => ({ ...row })),
+      members: day.members.map((member) => ({ ...member })),
+    })),
+    parsedRows: tab.parsedRows.map((row) => ({
+      ...row,
+      suggestions: row.suggestions.map((suggestion) => ({ ...suggestion })),
+      dayRows: row.dayRows.map((dayRow) => ({ ...dayRow })),
+    })),
+    trackedRosterRows: tab.trackedRosterRows?.map((row) => ({ ...row })),
+    rosterRows: tab.rosterRows.map((row) => ({ ...row })),
+  };
+}
+
+function buildCwlRotationImportClanKey(input: { clanTag: string; tabTitle: string }): string {
+  return `${normalizeClanTag(input.clanTag)}::${String(input.tabTitle ?? "").trim().toLowerCase()}`;
+}
+
+function isCwlRotationImportRowPendingReview(row: CwlRotationImportRow): boolean {
+  return row.classification !== "exact_match" && !row.ignored && !row.resolvedPlayerTag;
+}
+
+function createCwlRotationImportClanSession(
+  clan: CwlRotationSheetImportPreview["matchedClans"][number],
+): CwlRotationImportClanSession {
+  const tab = cloneCwlRotationImportTab(clan);
+  const reviewRowIds = tab.parsedRows.filter(isCwlRotationImportRowPendingReview).map((row) => row.rowId);
+  return {
+    clanKey: buildCwlRotationImportClanKey({ clanTag: tab.clanTag, tabTitle: tab.tabTitle }),
+    clanTag: tab.clanTag,
+    clanName: tab.clanName,
+    tabTitle: tab.tabTitle,
+    tab,
+    confirmed: reviewRowIds.length <= 0,
+    readyToConfirm: false,
+    reviewRowIds,
+    activeRowId: reviewRowIds[0] ?? null,
+  };
+}
+
 function createCwlRotationImportSession(
   preview: CwlRotationSheetImportPreview,
   overwrite: boolean,
@@ -183,15 +251,17 @@ function createCwlRotationImportSession(
 ): string {
   pruneExpiredCwlRotationImportSessions();
   const sessionId = randomUUID().replace(/-/g, "").slice(0, 18);
+  const clanSessions = preview.matchedClans.map((clan) => createCwlRotationImportClanSession(clan));
   cwlRotationImportSessions.set(sessionId, {
     requestedByUserId,
     createdAtMs: Date.now(),
-    preview,
+    preview: cloneCwlRotationImportPreview(preview),
     baseWarnings: [...preview.warnings],
     overwrite,
     view: "preview",
     pageIndex: 0,
-    reviewIndex: 0,
+    activeClanIndex: Math.max(0, clanSessions.findIndex((clan) => !clan.confirmed && clan.reviewRowIds.length > 0)),
+    clanSessions,
   });
   return sessionId;
 }
@@ -351,25 +421,37 @@ function buildCwlRotationImportPreviewEmbed(input: {
 
 function buildCwlRotationImportReviewPageLines(input: {
   preview: CwlRotationSheetImportPreview;
+  clanSession: CwlRotationImportClanSession | null;
   reviewRow: CwlRotationImportRow | null;
   reviewIndex: number;
   reviewCount: number;
+  clanLabel: string;
+  clanConfirmed: boolean;
+  clanReadyToConfirm: boolean;
+  clanHasPendingRows: boolean;
 }): string[] {
   const reviewOptions = input.reviewRow
     ? buildCwlRotationImportReviewOptions({
-        preview: input.preview,
+        clanSession: input.clanSession,
         reviewRow: input.reviewRow,
       })
     : null;
   const lines: string[] = [
     `Season: ${input.preview.season}`,
     `Source: ${input.preview.sourceSheetTitle || input.preview.sourceSheetId}`,
+    `Clan: ${input.clanLabel}${input.clanConfirmed ? " (confirmed)" : ""}`,
     `Review rows: ${input.reviewCount}`,
     "",
   ];
 
   if (!input.reviewRow) {
-    lines.push("All non-structural rows are resolved or explicitly ignored.");
+    lines.push(
+      input.clanConfirmed
+        ? "This clan is confirmed and ready to move on."
+        : input.clanReadyToConfirm
+          ? "All rows in this clan are resolved. Confirm this clan to continue."
+          : "This clan is waiting on row review.",
+    );
     return lines;
   }
 
@@ -405,32 +487,50 @@ function buildCwlRotationImportReviewPageLines(input: {
     );
   }
 
+  if (!input.clanHasPendingRows) {
+    lines.push("");
+    lines.push(
+      input.clanConfirmed
+        ? "This clan is already confirmed."
+        : "This clan is ready to confirm before moving to the next clan.",
+    );
+  }
+
   return lines;
 }
 
 function buildCwlRotationImportReviewEmbed(input: {
   preview: CwlRotationSheetImportPreview;
+  clanSession: CwlRotationImportClanSession | null;
   reviewRow: CwlRotationImportRow | null;
   reviewIndex: number;
   reviewCount: number;
   sessionId: string;
+  clanLabel: string;
+  clanConfirmed: boolean;
+  clanHasPendingRows: boolean;
 }): EmbedBuilder {
-  const titleSuffix = input.reviewRow ? `row ${input.reviewIndex + 1}` : "complete";
+  const titleSuffix = input.reviewRow ? `${input.clanLabel} - row ${input.reviewIndex + 1}` : `${input.clanLabel} - complete`;
   return new EmbedBuilder()
     .setColor(CWL_EMBED_COLOR)
     .setTitle(`/cwl rotations import review - ${titleSuffix}`)
     .setDescription(
       buildDescription(
-        buildCwlRotationImportReviewPageLines({
+      buildCwlRotationImportReviewPageLines({
           preview: input.preview,
+          clanSession: input.clanSession,
           reviewRow: input.reviewRow,
           reviewIndex: input.reviewIndex,
           reviewCount: input.reviewCount,
+          clanLabel: input.clanLabel,
+          clanConfirmed: input.clanConfirmed,
+          clanReadyToConfirm: Boolean(input.clanSession?.readyToConfirm),
+          clanHasPendingRows: input.clanHasPendingRows,
         }),
       ),
     )
     .setFooter({
-      text: `Session ${input.sessionId.slice(0, 8)} - review ${Math.max(0, input.reviewIndex + 1)}/${Math.max(1, input.reviewCount)}`,
+      text: `Session ${input.sessionId.slice(0, 8)} - ${input.clanLabel} review ${Math.max(0, input.reviewIndex + 1)}/${Math.max(1, input.reviewCount)}`,
     });
 }
 
@@ -475,6 +575,8 @@ function buildCwlRotationImportReviewActionRows(input: {
   hasImportableClans: boolean;
   hasPendingRows: boolean;
   previewPageIndex: number;
+  canConfirmClan: boolean;
+  currentClanLabel: string;
 }): ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>[] {
   const prevButton = new ButtonBuilder()
     .setCustomId(`${CWL_ROTATION_IMPORT_SESSION_PREFIX}:review-page:${input.sessionId}:${Math.max(0, input.reviewIndex - 1)}`)
@@ -492,9 +594,9 @@ function buildCwlRotationImportReviewActionRows(input: {
     .setStyle(ButtonStyle.Primary);
   const confirmButton = new ButtonBuilder()
     .setCustomId(`${CWL_ROTATION_IMPORT_SESSION_PREFIX}:confirm:${input.sessionId}`)
-    .setLabel("Save Import")
+    .setLabel("Confirm Clan")
     .setStyle(ButtonStyle.Success)
-    .setDisabled(!input.hasImportableClans || input.hasPendingRows);
+    .setDisabled(!input.canConfirmClan);
   const cancelButton = new ButtonBuilder()
     .setCustomId(`${CWL_ROTATION_IMPORT_SESSION_PREFIX}:cancel:${input.sessionId}`)
     .setLabel("Cancel")
@@ -530,12 +632,12 @@ function _buildCwlRotationImportReviewSelectMenu(input: {
 
 function buildCwlRotationImportReviewSelectMenuV2(input: {
   sessionId: string;
-  preview: CwlRotationSheetImportPreview;
+  clanSession: CwlRotationImportClanSession;
   reviewRow: CwlRotationImportRow;
 }): ActionRowBuilder<StringSelectMenuBuilder> | null {
   if (input.reviewRow.ignored || input.reviewRow.resolvedPlayerTag) return null;
   const reviewOptions = buildCwlRotationImportReviewOptions({
-    preview: input.preview,
+    clanSession: input.clanSession,
     reviewRow: input.reviewRow,
   });
   const menu = new StringSelectMenuBuilder()
@@ -560,15 +662,11 @@ function buildCwlRotationImportReviewSelectMenuV2(input: {
 }
 
 function buildCwlRotationImportReviewOptions(input: {
-  preview: CwlRotationSheetImportPreview;
+  clanSession: CwlRotationImportClanSession | null;
   reviewRow: CwlRotationImportRow;
 }): CwlRotationImportReviewOptions {
-  const clan = input.preview.matchedClans.find(
-    (entry) =>
-      normalizeClanTag(entry.clanTag) === normalizeClanTag(input.reviewRow.clanTag) &&
-      entry.tabTitle === input.reviewRow.tabTitle,
-  );
-  const resolvedTags = getCwlRotationImportResolvedPlayerTagSet(input.preview);
+  const clanSession = input.clanSession;
+  const resolvedTags = getCwlRotationImportResolvedPlayerTagSetForClan(clanSession);
   const seenTags = new Set<string>();
 
   const suggested = input.reviewRow.suggestions
@@ -585,7 +683,7 @@ function buildCwlRotationImportReviewOptions(input: {
       return true;
     });
 
-  const fallback = (clan?.trackedRosterRows ?? [])
+  const fallback = (clanSession?.tab.trackedRosterRows ?? [])
     .map((entry) => ({
       playerTag: normalizePlayerTag(entry.playerTag),
       playerName: entry.playerName,
@@ -606,14 +704,15 @@ function buildCwlRotationImportReviewOptions(input: {
   };
 }
 
-function getCwlRotationImportResolvedPlayerTagSet(preview: CwlRotationSheetImportPreview): Set<string> {
+function getCwlRotationImportResolvedPlayerTagSetForClan(
+  clanSession: CwlRotationImportClanSession | null,
+): Set<string> {
   const resolvedTags = new Set<string>();
-  for (const clan of preview.matchedClans) {
-    for (const row of clan.parsedRows) {
-      const resolvedPlayerTag = normalizePlayerTag(row.resolvedPlayerTag ?? "");
-      if (resolvedPlayerTag && !row.ignored) {
-        resolvedTags.add(resolvedPlayerTag);
-      }
+  if (!clanSession) return resolvedTags;
+  for (const row of clanSession.tab.parsedRows) {
+    const resolvedPlayerTag = normalizePlayerTag(row.resolvedPlayerTag ?? "");
+    if (resolvedPlayerTag && !row.ignored) {
+      resolvedTags.add(resolvedPlayerTag);
     }
   }
   return resolvedTags;
@@ -633,21 +732,6 @@ function getCwlRotationImportReviewRows(preview: CwlRotationSheetImportPreview):
   return preview.matchedClans.flatMap((clan) =>
     clan.parsedRows.filter((row) => row.classification !== "exact_match" && !row.ignored && !row.resolvedPlayerTag),
   );
-}
-
-function rebuildImportPreviewSessionState(session: CwlRotationImportSession): void {
-  const matchedClans = session.preview.matchedClans.map((clan) => rebuildCwlRotationImportTabState(clan, session.overwrite));
-  session.preview = {
-    ...session.preview,
-    matchedClans,
-    warnings: [
-      ...stripCwlRotationImportSummaryWarnings(session.baseWarnings),
-      ...buildCwlRotationImportWarnings({
-        ...session.preview,
-        matchedClans,
-      }),
-    ],
-  };
 }
 
 function buildCwlRotationImportWarnings(preview: CwlRotationSheetImportPreview): string[] {
@@ -885,6 +969,117 @@ function buildCwlRotationImportSummaryEmbed(input: {
     .setDescription(buildDescription(lines));
 }
 
+function getCwlRotationImportActiveClanSession(
+  session: CwlRotationImportSession,
+): CwlRotationImportClanSession | null {
+  return session.clanSessions[session.activeClanIndex] ?? null;
+}
+
+function getCwlRotationImportClanReviewRows(
+  clanSession: CwlRotationImportClanSession,
+): CwlRotationImportRow[] {
+  return clanSession.tab.parsedRows.filter(isCwlRotationImportRowPendingReview);
+}
+
+function getCwlRotationImportClanReviewIndex(
+  clanSession: CwlRotationImportClanSession,
+): number {
+  if (!clanSession.activeRowId) return 0;
+  const reviewRows = getCwlRotationImportClanReviewRows(clanSession);
+  const index = reviewRows.findIndex((row) => row.rowId === clanSession.activeRowId);
+  return index >= 0 ? index : 0;
+}
+
+function getCwlRotationImportNextReviewRowId(
+  clanSession: CwlRotationImportClanSession,
+  currentRowId: string | null,
+): string | null {
+  const reviewRows = getCwlRotationImportClanReviewRows(clanSession);
+  if (reviewRows.length <= 0) return null;
+  const currentIndex = currentRowId ? reviewRows.findIndex((row) => row.rowId === currentRowId) : -1;
+  for (let index = Math.max(0, currentIndex + 1); index < reviewRows.length; index += 1) {
+    const row = reviewRows[index];
+    if (row) return row.rowId;
+  }
+  return null;
+}
+
+function getCwlRotationImportNextClanIndex(
+  session: CwlRotationImportSession,
+  startIndex: number,
+): number {
+  for (let index = Math.max(0, startIndex); index < session.clanSessions.length; index += 1) {
+    const clanSession = session.clanSessions[index];
+    if (!clanSession) continue;
+    if (!clanSession.confirmed && getCwlRotationImportClanReviewRows(clanSession).length > 0) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function activateCwlRotationImportClan(session: CwlRotationImportSession, clanIndex: number): void {
+  const clanSession = session.clanSessions[clanIndex];
+  if (!clanSession) return;
+  session.activeClanIndex = clanIndex;
+  clanSession.activeRowId = clanSession.reviewRowIds[0] ?? null;
+}
+
+function syncCwlRotationImportClanState(session: CwlRotationImportSession, clanIndex: number): void {
+  const clanSession = session.clanSessions[clanIndex];
+  if (!clanSession) return;
+  clanSession.reviewRowIds = clanSession.tab.parsedRows.filter(isCwlRotationImportRowPendingReview).map((row) => row.rowId);
+  if (clanSession.reviewRowIds.length <= 0) {
+    clanSession.activeRowId = null;
+    clanSession.readyToConfirm = !clanSession.confirmed;
+    return;
+  }
+  clanSession.readyToConfirm = false;
+  if (!clanSession.activeRowId || !clanSession.reviewRowIds.includes(clanSession.activeRowId)) {
+    clanSession.activeRowId = clanSession.reviewRowIds[0] ?? null;
+  }
+}
+
+function rebuildImportPreviewSessionState(session: CwlRotationImportSession): void {
+  session.clanSessions = session.clanSessions.map((clanSession) => {
+    const rebuiltTab = rebuildCwlRotationImportTabState(clanSession.tab, session.overwrite);
+    return {
+      ...clanSession,
+      tab: rebuiltTab,
+      reviewRowIds: rebuiltTab.parsedRows.filter(isCwlRotationImportRowPendingReview).map((row) => row.rowId),
+      activeRowId:
+        rebuiltTab.parsedRows.some((row) => row.rowId === clanSession.activeRowId && isCwlRotationImportRowPendingReview(row))
+          ? clanSession.activeRowId
+          : getCwlRotationImportNextReviewRowId(
+              {
+                ...clanSession,
+                tab: rebuiltTab,
+              },
+              clanSession.activeRowId,
+            ),
+    };
+  });
+
+  if (session.view === "review") {
+    const activeClan = getCwlRotationImportActiveClanSession(session);
+    if (activeClan && !activeClan.confirmed && getCwlRotationImportClanReviewRows(activeClan).length <= 0) {
+      activeClan.activeRowId = null;
+    }
+  }
+
+  session.preview = {
+    ...session.preview,
+    matchedClans: session.clanSessions.map((clanSession) => clanSession.tab),
+    warnings: [
+      ...stripCwlRotationImportSummaryWarnings(session.baseWarnings),
+      ...buildCwlRotationImportWarnings({
+        ...session.preview,
+        matchedClans: session.clanSessions.map((clanSession) => clanSession.tab),
+      }),
+    ],
+  };
+}
+
 function buildCwlRotationImportSessionMessage(
   sessionId: string,
   session: CwlRotationImportSession,
@@ -895,21 +1090,34 @@ function buildCwlRotationImportSessionMessage(
   const hasImportableClans = session.preview.matchedClans.some((clan) => clan.importable);
   const hasReviewRows = getCwlRotationImportReviewRows(session.preview).length > 0;
   if (session.view === "review") {
-    const reviewRows = getCwlRotationImportReviewRows(session.preview);
-    const reviewIndex = Math.max(0, Math.min(session.reviewIndex, Math.max(0, reviewRows.length - 1)));
-    const reviewRow = reviewRows[reviewIndex] ?? null;
+    const activeClan = getCwlRotationImportActiveClanSession(session);
+    const reviewRows = activeClan ? getCwlRotationImportClanReviewRows(activeClan) : [];
+    const reviewIndex = activeClan ? getCwlRotationImportClanReviewIndex(activeClan) : 0;
+    const reviewRow = activeClan?.activeRowId
+      ? reviewRows.find((row) => row.rowId === activeClan.activeRowId) ?? null
+      : reviewRows[0] ?? null;
+    const reviewCount = reviewRows.length;
+    const hasCurrentClanPendingRows = reviewCount > 0;
     const components: ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>[] = [
       ...buildCwlRotationImportReviewActionRows({
         sessionId,
         reviewIndex,
-        reviewCount: reviewRows.length,
+        reviewCount,
         hasImportableClans,
-        hasPendingRows: reviewRows.length > 0,
+        hasPendingRows: hasCurrentClanPendingRows,
         previewPageIndex: session.pageIndex,
+        canConfirmClan: Boolean(activeClan?.readyToConfirm),
+        currentClanLabel: activeClan?.clanName || activeClan?.clanTag || "unknown clan",
       }),
     ];
     if (reviewRow) {
-      const menu = buildCwlRotationImportReviewSelectMenuV2({ sessionId, preview: session.preview, reviewRow });
+      const menu = activeClan
+        ? buildCwlRotationImportReviewSelectMenuV2({
+            sessionId,
+            clanSession: activeClan,
+            reviewRow,
+          })
+        : null;
       if (menu) components.push(menu);
     }
     return {
@@ -918,8 +1126,12 @@ function buildCwlRotationImportSessionMessage(
           preview: session.preview,
           reviewRow,
           reviewIndex,
-          reviewCount: reviewRows.length,
+          reviewCount,
           sessionId,
+          clanLabel: activeClan?.clanName || activeClan?.clanTag || "unknown clan",
+          clanConfirmed: Boolean(activeClan?.confirmed),
+          clanReadyToConfirm: Boolean(activeClan?.readyToConfirm),
+          clanHasPendingRows: hasCurrentClanPendingRows,
         }),
       ],
       components,
@@ -1297,7 +1509,12 @@ export async function handleCwlRotationImportButtonInteraction(
 
   if (parsed.action === "review") {
     session.view = "review";
-    session.reviewIndex = 0;
+    const firstClanIndex = getCwlRotationImportNextClanIndex(session, 0);
+    if (firstClanIndex < 0) {
+      session.view = "preview";
+    } else {
+      activateCwlRotationImportClan(session, firstClanIndex);
+    }
     rebuildImportPreviewSessionState(session);
     await interaction.update(buildCwlRotationImportSessionMessage(parsed.sessionId, session));
     return;
@@ -1305,7 +1522,61 @@ export async function handleCwlRotationImportButtonInteraction(
 
   if (parsed.action === "review-page") {
     session.view = "review";
-    session.reviewIndex = Math.max(0, Math.min(getCwlRotationImportReviewRows(session.preview).length - 1, parsed.pageIndex ?? 0));
+    const activeClan = getCwlRotationImportActiveClanSession(session);
+    if (!activeClan) {
+      await interaction.reply({
+        content: "That CWL rotation import review session has expired. Please restart the import.",
+        ephemeral: true,
+      });
+      return;
+    }
+    syncCwlRotationImportClanState(session, session.activeClanIndex);
+    const reviewRows = getCwlRotationImportClanReviewRows(activeClan);
+    const reviewIndex = Math.max(0, Math.min(reviewRows.length - 1, parsed.pageIndex ?? 0));
+    activeClan.activeRowId = reviewRows[reviewIndex]?.rowId ?? null;
+    rebuildImportPreviewSessionState(session);
+    await interaction.update(buildCwlRotationImportSessionMessage(parsed.sessionId, session));
+    return;
+  }
+
+  if (session.view === "review") {
+    const activeClan = getCwlRotationImportActiveClanSession(session);
+    if (!activeClan) {
+      await interaction.reply({
+        content: "That CWL rotation import review session has expired. Please restart the import.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    syncCwlRotationImportClanState(session, session.activeClanIndex);
+    if (!activeClan.readyToConfirm) {
+      await interaction.reply({
+        ephemeral: true,
+        content: `Confirm ${activeClan.clanName || activeClan.clanTag} after its remaining review rows are resolved.`,
+      });
+      return;
+    }
+    const pendingRows = getCwlRotationImportClanReviewRows(activeClan);
+    if (pendingRows.length > 0) {
+      await interaction.reply({
+        ephemeral: true,
+        content: `Cannot confirm ${activeClan.clanName || activeClan.clanTag} while ${pendingRows.length} row${pendingRows.length === 1 ? "" : "s"} still need review.`,
+      });
+      return;
+    }
+
+    activeClan.confirmed = true;
+    activeClan.readyToConfirm = false;
+    activeClan.activeRowId = null;
+    const nextClanIndex = getCwlRotationImportNextClanIndex(session, session.activeClanIndex + 1);
+    if (nextClanIndex >= 0) {
+      session.view = "review";
+      activateCwlRotationImportClan(session, nextClanIndex);
+    } else {
+      session.view = "preview";
+    }
+
     rebuildImportPreviewSessionState(session);
     await interaction.update(buildCwlRotationImportSessionMessage(parsed.sessionId, session));
     return;
@@ -1355,10 +1626,28 @@ export async function handleCwlRotationImportSelectMenuInteraction(
     return;
   }
 
-  const targetRow = session.preview.matchedClans.flatMap((clan) => clan.parsedRows).find((row) => row.rowId === parsed.rowId);
-  if (!targetRow) {
+  const activeClan = getCwlRotationImportActiveClanSession(session);
+  if (!activeClan) {
     await interaction.reply({
-      content: "That CWL rotation import row is no longer available.",
+      content: "That CWL rotation import review session has expired. Please restart the import.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  syncCwlRotationImportClanState(session, session.activeClanIndex);
+  if (activeClan.confirmed) {
+    await interaction.reply({
+      content: "That CWL rotation import review session has already advanced. Please restart the import if you need to change earlier rows.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const targetRow = activeClan.tab.parsedRows.find((row) => row.rowId === parsed.rowId);
+  if (!targetRow || targetRow.rowId !== activeClan.activeRowId) {
+    await interaction.reply({
+      content: "That CWL rotation import review session has expired. Please restart the import.",
       ephemeral: true,
     });
     return;
@@ -1374,21 +1663,21 @@ export async function handleCwlRotationImportSelectMenuInteraction(
   } else if (choice.startsWith("tag:")) {
     const playerTag = normalizePlayerTag(choice.slice(4));
     const availableOptions = buildCwlRotationImportReviewOptions({
-      preview: session.preview,
+      clanSession: activeClan,
       reviewRow: targetRow,
     });
-    const option = availableOptions.options.find((entry) => normalizePlayerTag(entry.playerTag) === playerTag) ?? null;
-    if (!option) {
+    const resolvedTags = getCwlRotationImportResolvedPlayerTagSetForClan(activeClan);
+    if (resolvedTags.has(playerTag)) {
       await interaction.reply({
-        content: "That tracked-player mapping is no longer available.",
+        content: "That tracked player is already mapped to another row in this clan review session.",
         ephemeral: true,
       });
       return;
     }
-    const resolvedTags = getCwlRotationImportResolvedPlayerTagSet(session.preview);
-    if (resolvedTags.has(playerTag)) {
+    const option = availableOptions.options.find((entry) => normalizePlayerTag(entry.playerTag) === playerTag) ?? null;
+    if (!option) {
       await interaction.reply({
-        content: "That tracked player is already mapped to another row in this import session.",
+        content: "That CWL rotation import review session has expired. Please restart the import.",
         ephemeral: true,
       });
       return;
@@ -1407,13 +1696,14 @@ export async function handleCwlRotationImportSelectMenuInteraction(
     return;
   }
 
+  activeClan.activeRowId = getCwlRotationImportNextReviewRowId(activeClan, targetRow.rowId);
+  syncCwlRotationImportClanState(session, session.activeClanIndex);
   rebuildImportPreviewSessionState(session);
-  const reviewRows = getCwlRotationImportReviewRows(session.preview);
-  if (reviewRows.length <= 0) {
+  const activeClanAfterUpdate = getCwlRotationImportActiveClanSession(session);
+  if (!activeClanAfterUpdate) {
     session.view = "preview";
   } else {
     session.view = "review";
-    session.reviewIndex = Math.min(session.reviewIndex, reviewRows.length - 1);
   }
 
   await interaction.update(buildCwlRotationImportSessionMessage(parsed.sessionId, session));
