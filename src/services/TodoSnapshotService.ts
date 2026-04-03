@@ -8,7 +8,11 @@ import {
 import { resolveCurrentCwlSeasonKey } from "./CwlRegistryService";
 import { CoCService, type ClanCapitalRaidSeason } from "./CoCService";
 import { cocRequestQueueService } from "./CoCRequestQueueService";
-import { normalizeClanTag, normalizePlayerTag } from "./PlayerLinkService";
+import {
+  normalizeClanTag,
+  normalizeDiscordUserId,
+  normalizePlayerTag,
+} from "./PlayerLinkService";
 import {
   buildTrackedWarMemberStateByClanAndPlayer,
   isTodoWarStateActive,
@@ -60,6 +64,17 @@ type TodoSnapshotVersion = {
 type TodoSnapshotRefreshResult = {
   playerCount: number;
   updatedCount: number;
+};
+
+type TodoRefreshCadence = "tracked" | "observe";
+
+type TodoActivatedRefreshStats = {
+  activatedUserCount: number;
+  totalLinkedUserCount: number;
+  skippedNeverUsedUserCount: number;
+  selectedPlayerCount: number;
+  trackedPlayerCount: number;
+  nonTrackedPlayerCount: number;
 };
 
 type TodoWindow = {
@@ -144,7 +159,6 @@ const TODO_GAMES_REWARD_COLLECTION_DURATION_MS = 7 * 24 * 60 * 60 * 1000;
 const TODO_SNAPSHOT_WRITE_CHUNK_SIZE = 50;
 /** Purpose: keep all Todo snapshot reads/writes in one service boundary. */
 export class TodoSnapshotService {
-  private refreshAllPromise: Promise<TodoSnapshotRefreshResult> | null = null;
   private readonly refreshByBatchKey = new Map<
     string,
     Promise<TodoSnapshotRefreshResult>
@@ -152,7 +166,6 @@ export class TodoSnapshotService {
 
   /** Purpose: clear in-memory refresh locks between isolated tests. */
   resetForTest(): void {
-    this.refreshAllPromise = null;
     this.refreshByBatchKey.clear();
   }
 
@@ -216,15 +229,130 @@ export class TodoSnapshotService {
     nowMs?: number;
     producerPacingMs?: number | null;
   }): Promise<TodoSnapshotRefreshResult> {
-    if (this.refreshAllPromise) {
-      return this.refreshAllPromise;
+    return this.refreshActivatedTodoLinkedPlayerSnapshots({
+      cadence: "tracked",
+      cocService: input.cocService,
+      nowMs: input.nowMs,
+      producerPacingMs: input.producerPacingMs,
+    });
+  }
+
+  /** Purpose: refresh todo snapshots for previously-activated users within one cadence bucket. */
+  async refreshActivatedTodoLinkedPlayerSnapshots(input: {
+    cadence: TodoRefreshCadence;
+    cocService?: CoCService;
+    nowMs?: number;
+    producerPacingMs?: number | null;
+  }): Promise<TodoSnapshotRefreshResult & TodoActivatedRefreshStats> {
+    const allLinkedUserRows = await prisma.playerLink.findMany({
+      where: { discordUserId: { not: null } },
+      select: { discordUserId: true, playerTag: true },
+      orderBy: [{ createdAt: "asc" }, { playerTag: "asc" }],
+    });
+    const totalLinkedUserIds = [
+      ...new Set(
+        allLinkedUserRows
+          .map((row) => normalizeDiscordUserId(row.discordUserId))
+          .filter((value): value is string => Boolean(value)),
+      ),
+    ];
+
+    const activatedUserRows = await prisma.todoUserUsage.findMany({
+      select: { discordUserId: true },
+      orderBy: { activatedAt: "asc" },
+    });
+    const activatedUserIdSet = new Set(
+      activatedUserRows
+        .map((row) => normalizeDiscordUserId(row.discordUserId))
+        .filter((value): value is string => Boolean(value)),
+    );
+
+    const activatedLinkedRows = allLinkedUserRows.filter((row) => {
+      const discordUserId = normalizeDiscordUserId(row.discordUserId);
+      return Boolean(discordUserId && activatedUserIdSet.has(discordUserId));
+    });
+    const activatedPlayerTags = normalizePlayerTags(
+      activatedLinkedRows.map((row) => row.playerTag),
+    );
+
+    const snapshotRows = activatedPlayerTags.length > 0
+      ? await prisma.todoPlayerSnapshot.findMany({
+          where: { playerTag: { in: activatedPlayerTags } },
+          select: { playerTag: true, clanTag: true },
+        })
+      : [];
+    const snapshotClanTagByPlayerTag = new Map(
+      snapshotRows.map((row) => [
+        normalizePlayerTag(row.playerTag),
+        normalizeClanTag(row.clanTag ?? ""),
+      ] as const),
+    );
+    const trackedClanTagRows = await prisma.trackedClan.findMany({
+      select: { tag: true },
+    });
+    const trackedClanTagSet = new Set(
+      trackedClanTagRows
+        .map((row) => normalizeClanTag(row.tag))
+        .filter(Boolean),
+    );
+
+    const trackedPlayerTags: string[] = [];
+    const nonTrackedPlayerTags: string[] = [];
+    for (const playerTag of activatedPlayerTags) {
+      const clanTag = snapshotClanTagByPlayerTag.get(playerTag) ?? null;
+      if (clanTag && trackedClanTagSet.has(clanTag)) {
+        trackedPlayerTags.push(playerTag);
+      } else {
+        nonTrackedPlayerTags.push(playerTag);
+      }
     }
 
-    const task = this.refreshAllLinkedPlayerSnapshotsInternal(input).finally(() => {
-      this.refreshAllPromise = null;
-    });
-    this.refreshAllPromise = task;
-    return task;
+    const selectedPlayerTags =
+      input.cadence === "tracked" ? trackedPlayerTags : nonTrackedPlayerTags;
+    const producerSource =
+      input.cadence === "tracked"
+        ? "war_event_poll_cycle"
+        : "activity_observe_cycle";
+    const result =
+      selectedPlayerTags.length > 0
+        ? await this.refreshSnapshotsForPlayerTagsInternal({
+            playerTags: selectedPlayerTags,
+            cocService: input.cocService,
+            nowMs: input.nowMs,
+            includeNonTrackedCwlRefresh: input.cadence === "observe",
+            producer: {
+              source: producerSource,
+              pacingMs:
+                Number.isFinite(input.producerPacingMs ?? NaN) &&
+                Number(input.producerPacingMs) > 0
+                  ? Math.trunc(Number(input.producerPacingMs))
+                  : null,
+              backlogThreshold: 250,
+            },
+          })
+        : { playerCount: 0, updatedCount: 0 };
+
+    const selectedPlayerCount = normalizePlayerTags(selectedPlayerTags).length;
+    const trackedPlayerCount = normalizePlayerTags(trackedPlayerTags).length;
+    const nonTrackedPlayerCount = normalizePlayerTags(nonTrackedPlayerTags).length;
+    const activatedUserCount = activatedUserIdSet.size;
+    const skippedNeverUsedUserCount = Math.max(
+      0,
+      totalLinkedUserIds.length - activatedUserCount,
+    );
+    console.info(
+      `[todo-snapshot] event=todo_refresh_population cadence=${input.cadence} activated_user_count=${activatedUserCount} total_linked_user_count=${totalLinkedUserIds.length} skipped_never_used_user_count=${skippedNeverUsedUserCount} selected_player_count=${selectedPlayerCount} tracked_player_count=${trackedPlayerCount} non_tracked_player_count=${nonTrackedPlayerCount}`,
+    );
+
+    return {
+      ...result,
+      activatedUserCount,
+      totalLinkedUserCount: totalLinkedUserIds.length,
+      skippedNeverUsedUserCount,
+      selectedPlayerCount,
+      trackedPlayerCount,
+      nonTrackedPlayerCount,
+    };
   }
 
   /** Purpose: refresh one targeted player-tag subset with deduped in-flight locking. */

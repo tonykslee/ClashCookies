@@ -94,6 +94,10 @@ import {
 import {
   handleCwlRotationImportButtonInteraction,
   isCwlRotationImportButtonCustomId,
+  handleCwlRotationImportSelectMenuInteraction,
+  isCwlRotationImportSelectMenuCustomId,
+  handleCwlRotationShowButtonInteraction,
+  isCwlRotationShowButtonCustomId,
 } from "../commands/Cwl";
 import {
   handleTodoPageButtonInteraction,
@@ -320,6 +324,21 @@ const handleSelectMenuInteraction = async (
   interaction: StringSelectMenuInteraction,
   cocService: CoCService
 ): Promise<void> => {
+  if (isCwlRotationImportSelectMenuCustomId(interaction.customId)) {
+    try {
+      await handleCwlRotationImportSelectMenuInteraction(interaction);
+    } catch (err) {
+      console.error(`CWL rotation import select menu failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to update the CWL rotation import review.",
+        });
+      }
+    }
+    return;
+  }
+
   if (isLinkListSelectCustomId(interaction.customId)) {
     try {
       await handleLinkListSelectMenu(interaction, cocService);
@@ -425,6 +444,21 @@ const handleButtonInteraction = async (
         await interaction.reply({
           ephemeral: true,
           content: "Failed to update the CWL rotation import preview.",
+        });
+      }
+    }
+    return;
+  }
+
+  if (isCwlRotationShowButtonCustomId(interaction.customId)) {
+    try {
+      await handleCwlRotationShowButtonInteraction(interaction);
+    } catch (err) {
+      console.error(`CWL rotation show button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to update the CWL rotation show view.",
         });
       }
     }

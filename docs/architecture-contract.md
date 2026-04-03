@@ -176,6 +176,7 @@ Rules:
 ## 6) Snapshot and reminder ownership
 
 - `TodoPlayerSnapshot` is the authoritative render source for `/todo`.
+- `TodoUserUsage` is the lightweight per-user activation owner for `/todo` background refresh eligibility.
 - `CurrentCwlRound` and `CwlRoundMemberCurrent` own current/prep CWL timing and lineup truth.
 - `CwlRoundHistory` and `CwlRoundMemberHistory` own ended CWL round truth.
 - `CwlPlayerClanSeason` owns the derived observed current-season CWL roster summary.
@@ -210,6 +211,7 @@ Rules:
 - Poll loops must avoid N+1 database patterns.
 - Prefer bulk reads followed by in-memory mapping.
 - Poll loops and schedulers must stay bounded by tracked scope.
+- Split `/todo` background refreshes by cadence: faster tracked-clan refresh for activated users in tracked clans, slower observe refresh for activated users outside tracked clans.
 
 Preferred pattern:
 

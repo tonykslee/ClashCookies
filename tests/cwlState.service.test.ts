@@ -170,6 +170,119 @@ describe("CwlStateService", () => {
     );
   });
 
+  it("prefers a live battle-day round over a later preparation round when persisting current CWL state", async () => {
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([
+      { tag: "#2QG2C08UP" },
+    ]);
+    const cocService = {
+      getClanWarLeagueGroup: vi.fn().mockResolvedValue({
+        season: "2026-04",
+        state: "inWar",
+        clans: [
+          {
+            tag: "#2QG2C08UP",
+            members: [{ tag: "#PYLQ0289", name: "Alpha", townHallLevel: 16 }],
+          },
+        ],
+        rounds: [{ warTags: ["#WAR1"] }, { warTags: ["#WAR2"] }],
+      }),
+      getClanWarLeagueWar: vi.fn().mockImplementation(async (warTag: string) => {
+        if (warTag === "#WAR1") {
+          return {
+            state: "inWar",
+            preparationStartTime: "20260401T120000.000Z",
+            startTime: "20260402T120000.000Z",
+            endTime: "20260403T120000.000Z",
+            attacksPerMember: 1,
+            teamSize: 15,
+            clan: {
+              tag: "#2QG2C08UP",
+              name: "CWL Alpha",
+              members: [
+                {
+                  tag: "#PYLQ0289",
+                  name: "Alpha",
+                  mapPosition: 1,
+                  townhallLevel: 16,
+                  attacks: [{ stars: 3, destructionPercentage: 100 }],
+                },
+              ],
+            },
+            opponent: {
+              tag: "#Q2V8P9L2",
+              name: "Opponent One",
+              members: [],
+            },
+          };
+        }
+        return {
+          state: "preparation",
+          preparationStartTime: "20260403T120000.000Z",
+          startTime: "20260404T120000.000Z",
+          endTime: "20260405T120000.000Z",
+          attacksPerMember: 1,
+          teamSize: 15,
+          clan: {
+            tag: "#2QG2C08UP",
+            name: "CWL Alpha",
+            members: [
+              {
+                tag: "#PYLQ0289",
+                name: "Alpha",
+                mapPosition: 1,
+                townhallLevel: 16,
+                attacks: [],
+              },
+            ],
+          },
+          opponent: {
+            tag: "#Q2V8P9L3",
+            name: "Opponent Two",
+            members: [],
+          },
+        };
+      }),
+    };
+
+    const result = await cwlStateService.refreshTrackedCwlState({
+      cocService: cocService as any,
+      season: "2026-04",
+    });
+
+    expect(result).toMatchObject({
+      season: "2026-04",
+      trackedClanCount: 1,
+      refreshedClanCount: 1,
+      currentRoundCount: 1,
+      currentMemberCount: 1,
+    });
+    expect(txMock.currentCwlRound.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          season: "2026-04",
+          clanTag: "#2QG2C08UP",
+          roundDay: 1,
+          roundState: "inWar",
+        }),
+      }),
+    );
+    expect(txMock.cwlRoundMemberCurrent.createMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.arrayContaining([
+          expect.objectContaining({
+            season: "2026-04",
+            clanTag: "#2QG2C08UP",
+            playerTag: "#PYLQ0289",
+            roundDay: 1,
+            attacksUsed: 1,
+            attacksAvailable: 1,
+            sourceRoundState: "inWar",
+          }),
+        ]),
+      }),
+    );
+  });
+
   it("archives ended rounds into history and clears the current-round owner when no live/prep round remains", async () => {
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([
       { tag: "#2QG2C08UP" },

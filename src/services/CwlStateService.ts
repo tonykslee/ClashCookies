@@ -157,6 +157,10 @@ function normalizeSeasonKey(input: unknown, fallback: string): string {
   return /^\d{4}-\d{2}$/.test(normalized) ? normalized : fallback;
 }
 
+function normalizePlayerTags(input: string[]): string[] {
+  return [...new Set(input.map((tag) => normalizePlayerTag(String(tag ?? ""))).filter(Boolean))];
+}
+
 function normalizeRoundState(input: unknown): string {
   const value = String(input ?? "").trim();
   return value.length > 0 ? value : "notInWar";
@@ -169,6 +173,13 @@ function isCurrentRoundState(state: string): boolean {
 
 function isEndedRoundState(state: string): boolean {
   return state.toLowerCase().includes("warended");
+}
+
+function scoreCurrentRoundState(state: string): number {
+  const normalized = state.toLowerCase();
+  if (normalized.includes("inwar")) return 2;
+  if (normalized.includes("preparation")) return 1;
+  return 0;
 }
 
 function resolvePhaseEndsAt(input: {
@@ -444,10 +455,11 @@ async function loadObservedTrackedClanState(input: {
   const currentRound = [...observedRounds]
     .filter((round) => isCurrentRoundState(round.roundState))
     .sort((a, b) => {
+      const aScore = scoreCurrentRoundState(a.roundState);
+      const bScore = scoreCurrentRoundState(b.roundState);
+      if (aScore !== bScore) return bScore - aScore;
       if (a.roundDay !== b.roundDay) return b.roundDay - a.roundDay;
-      const aScore = a.roundState.toLowerCase().includes("inwar") ? 2 : 1;
-      const bScore = b.roundState.toLowerCase().includes("inwar") ? 2 : 1;
-      return bScore - aScore;
+      return b.sourceUpdatedAt.getTime() - a.sourceUpdatedAt.getTime();
     })[0] ?? null;
   const historyRounds = observedRounds
     .filter((round) => isEndedRoundState(round.roundState))
@@ -469,18 +481,16 @@ async function loadObservedTrackedClanState(input: {
 
 /** Purpose: persist tracked CWL current/prep rounds, ended history, and derived season-roster summaries from CoC. */
 export class CwlStateService {
-  async refreshTrackedCwlState(input: {
+  /** Purpose: refresh tracked CWL state only for clans associated with one linked player set. */
+  async refreshTrackedCwlStateForPlayerTags(input: {
     cocService: CoCService;
+    playerTags: string[];
     season?: string;
     nowMs?: number;
   }): Promise<RefreshTrackedCwlStateResult> {
     const season = input.season ?? resolveCurrentCwlSeasonKey(input.nowMs);
-    const trackedClans = await prisma.cwlTrackedClan.findMany({
-      where: { season },
-      orderBy: [{ createdAt: "asc" }, { tag: "asc" }],
-      select: { tag: true },
-    });
-    if (trackedClans.length <= 0) {
+    const normalizedTags = [...new Set(normalizePlayerTags(input.playerTags))];
+    if (normalizedTags.length <= 0) {
       return {
         season,
         trackedClanCount: 0,
@@ -492,14 +502,82 @@ export class CwlStateService {
       };
     }
 
+    const candidateClanRows = await prisma.cwlPlayerClanSeason.findMany({
+      where: {
+        season,
+        playerTag: { in: normalizedTags },
+      },
+      select: { cwlClanTag: true },
+    });
+    const candidateClanTags = [
+      ...new Set(
+        candidateClanRows
+          .map((row) => normalizeClanTag(row.cwlClanTag))
+          .filter((tag): tag is string => Boolean(tag)),
+      ),
+    ];
+
+    return this.refreshTrackedCwlStateForClanTags({
+      cocService: input.cocService,
+      season,
+      trackedClanTags: candidateClanTags,
+    });
+  }
+
+  async refreshTrackedCwlState(input: {
+    cocService: CoCService;
+    season?: string;
+    nowMs?: number;
+  }): Promise<RefreshTrackedCwlStateResult> {
+    const season = input.season ?? resolveCurrentCwlSeasonKey(input.nowMs);
+    const trackedClanRows = await prisma.cwlTrackedClan.findMany({
+      where: { season },
+      orderBy: [{ createdAt: "asc" }, { tag: "asc" }],
+      select: { tag: true },
+    });
+    const trackedClanTags = [
+      ...new Set(
+        trackedClanRows.map((row) => normalizeClanTag(row.tag)).filter(Boolean),
+      ),
+    ];
+    return this.refreshTrackedCwlStateForClanTags({
+      cocService: input.cocService,
+      season,
+      trackedClanTags,
+    });
+  }
+
+  /** Purpose: refresh tracked CWL state for one bounded clan-tag set. */
+  private async refreshTrackedCwlStateForClanTags(input: {
+    cocService: CoCService;
+    season: string;
+    trackedClanTags: string[];
+  }): Promise<RefreshTrackedCwlStateResult> {
+    const trackedClanTags = [
+      ...new Set(
+        input.trackedClanTags.map((tag) => normalizeClanTag(tag)).filter(Boolean),
+      ),
+    ];
+    if (trackedClanTags.length <= 0) {
+      return {
+        season: input.season,
+        trackedClanCount: 0,
+        refreshedClanCount: 0,
+        currentRoundCount: 0,
+        currentMemberCount: 0,
+        historyRoundCount: 0,
+        historyMemberCount: 0,
+      };
+    }
+
     const warByWarTag = new Map<string, ClanWar | null>();
     const observedStates: ObservedTrackedClanState[] = [];
-    for (const trackedClan of trackedClans) {
+    for (const trackedClanTag of trackedClanTags) {
       observedStates.push(
         await loadObservedTrackedClanState({
           cocService: input.cocService,
-          trackedClanTag: trackedClan.tag,
-          defaultSeason: season,
+          trackedClanTag,
+          defaultSeason: input.season,
           warByWarTag,
         }),
       );
@@ -689,8 +767,8 @@ export class CwlStateService {
     });
 
     return {
-      season,
-      trackedClanCount: trackedClans.length,
+      season: input.season,
+      trackedClanCount: trackedClanTags.length,
       refreshedClanCount: observedStates.filter((state) => state.fetched).length,
       currentRoundCount,
       currentMemberCount,

@@ -1,0 +1,7 @@
+CREATE TABLE "TodoUserUsage" (
+  "discordUserId" TEXT NOT NULL,
+  "activatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "lastUsedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+  CONSTRAINT "TodoUserUsage_pkey" PRIMARY KEY ("discordUserId")
+);

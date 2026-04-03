@@ -46,6 +46,11 @@ const prismaMock = vi.hoisted(() => ({
   cwlRotationPlanDay: {
     findMany: vi.fn(),
   },
+  todoUserUsage: {
+    findMany: vi.fn(),
+    findUnique: vi.fn(),
+    upsert: vi.fn(),
+  },
   botSetting: {
     findMany: vi.fn(),
   },
@@ -81,8 +86,8 @@ import {
   resetTodoSnapshotServiceForTest,
   todoSnapshotService,
 } from "../src/services/TodoSnapshotService";
+import { cwlStateService } from "../src/services/CwlStateService";
 import { todoLastViewedTypeService } from "../src/services/TodoLastViewedTypeService";
-import { cocRequestQueueService } from "../src/services/CoCRequestQueueService";
 import { cwlRotationService } from "../src/services/CwlRotationService";
 
 type TodoType = "WAR" | "CWL" | "RAIDS" | "GAMES";
@@ -269,6 +274,9 @@ describe("/todo command", () => {
     prismaMock.cwlPlayerClanSeason.upsert.mockReset();
     prismaMock.cwlRotationPlan.findMany.mockReset();
     prismaMock.cwlRotationPlanDay.findMany.mockReset();
+    prismaMock.todoUserUsage.findMany.mockReset();
+    prismaMock.todoUserUsage.findUnique.mockReset();
+    prismaMock.todoUserUsage.upsert.mockReset();
     prismaMock.currentCwlRound.findMany = vi.fn(async () => []);
     prismaMock.cwlRoundMemberCurrent.findMany = vi.fn(async () => []);
     prismaMock.cwlRotationPlan.findMany = vi.fn(async () => []);
@@ -293,6 +301,11 @@ describe("/todo command", () => {
     prismaMock.cwlRoundMemberCurrent.findMany = vi.fn(async () => []);
     prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
     prismaMock.cwlPlayerClanSeason.upsert.mockResolvedValue(undefined);
+    prismaMock.todoUserUsage.findMany.mockResolvedValue([]);
+    prismaMock.todoUserUsage.findUnique.mockResolvedValue({
+      discordUserId: "111111111111111111",
+    });
+    prismaMock.todoUserUsage.upsert.mockResolvedValue(undefined);
     prismaMock.botSetting.findMany.mockResolvedValue([]);
     vi.spyOn(todoSnapshotService, "refreshSnapshotsForPlayerTags").mockResolvedValue({
       playerCount: 0,
@@ -354,10 +367,11 @@ describe("/todo command", () => {
     expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
   });
 
-  it("rebuilds invoking-user snapshots before initial /todo render", async () => {
+  it("hydrates invoking-user snapshots on first /todo use and marks the user activated", async () => {
     const refreshSpy = vi
       .spyOn(todoSnapshotService, "refreshSnapshotsForPlayerTags")
       .mockResolvedValue({ playerCount: 2, updatedCount: 2 });
+    prismaMock.todoUserUsage.findUnique.mockResolvedValue(null);
     prismaMock.playerLink.findMany.mockResolvedValue([
       { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },
       { playerTag: "#QGRJ2222", createdAt: new Date("2026-03-02T00:00:00.000Z") },
@@ -381,38 +395,33 @@ describe("/todo command", () => {
 
     await Todo.run({} as any, interaction as any, cocService as any);
 
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
     expect(refreshSpy).toHaveBeenCalledWith({
       playerTags: ["#PYLQ0289", "#QGRJ2222"],
       cocService: expect.anything(),
+      includeNonTrackedCwlRefresh: true,
     });
-    const deferOrder = interaction.deferReply.mock.invocationCallOrder[0] ?? 0;
-    const refreshOrder = refreshSpy.mock.invocationCallOrder[0] ?? 0;
-    const editOrder = interaction.editReply.mock.invocationCallOrder[0] ?? 0;
-    expect(deferOrder).toBeGreaterThan(0);
-    expect(deferOrder).toBeLessThan(refreshOrder);
-    expect(refreshOrder).toBeGreaterThan(0);
-    expect(editOrder).toBeGreaterThan(0);
-    expect(refreshOrder).toBeLessThan(editOrder);
+    expect(prismaMock.todoUserUsage.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { discordUserId: interaction.user.id },
+        create: expect.objectContaining({
+          discordUserId: interaction.user.id,
+        }),
+        update: expect.objectContaining({
+          lastUsedAt: expect.any(Date),
+        }),
+      }),
+    );
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    expect(payload?.content).toContain("First-time `/todo` use may take longer");
+    expect(payload?.embeds?.length).toBe(1);
   });
 
-  it("serves snapshot output without live refresh when CoC queue is degraded", async () => {
-    const queueSpy = vi.spyOn(cocRequestQueueService, "getStatus").mockReturnValue({
-      queueDepth: 5,
-      interactiveQueueDepth: 2,
-      backgroundQueueDepth: 3,
-      inFlight: 1,
-      penaltyMs: 1200,
-      spacingMs: 1320,
-      degraded: true,
-      lastInteractiveWaitMs: 0,
-      lastBackgroundWaitMs: 0,
-      backgroundSkippedCount: 0,
-      interactiveDispatchedCount: 0,
-      backgroundDispatchedCount: 0,
+  it("serves snapshot output without on-demand refresh once the user is activated", async () => {
+    prismaMock.todoUserUsage.findUnique.mockResolvedValue({
+      discordUserId: "111111111111111111",
     });
     const refreshSpy = vi.spyOn(todoSnapshotService, "refreshSnapshotsForPlayerTags");
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-
     prismaMock.playerLink.findMany.mockResolvedValue([
       { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },
     ]);
@@ -430,62 +439,9 @@ describe("/todo command", () => {
 
     await Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
 
-    expect(queueSpy).toHaveBeenCalled();
     expect(refreshSpy).not.toHaveBeenCalled();
-    expect(interaction.editReply).toHaveBeenCalledTimes(1);
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining("[todo] event=snapshot_served reason=coc_degraded"),
-    );
-  });
-
-  it("falls back to snapshot output when bounded initial refresh times out", async () => {
-    vi.spyOn(cocRequestQueueService, "getStatus").mockReturnValue({
-      queueDepth: 0,
-      interactiveQueueDepth: 0,
-      backgroundQueueDepth: 0,
-      inFlight: 0,
-      penaltyMs: 0,
-      spacingMs: 120,
-      degraded: false,
-      lastInteractiveWaitMs: 0,
-      lastBackgroundWaitMs: 0,
-      backgroundSkippedCount: 0,
-      interactiveDispatchedCount: 0,
-      backgroundDispatchedCount: 0,
-    });
-    vi.spyOn(todoSnapshotService, "refreshSnapshotsForPlayerTags").mockImplementation(
-      async () =>
-        await new Promise(() => {
-          // intentionally unresolved to force timeout-path snapshot fallback
-        }),
-    );
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-
-    prismaMock.playerLink.findMany.mockResolvedValue([
-      { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },
-    ]);
-    prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
-      _count: { _all: 1 },
-      _max: { updatedAt: new Date("2026-03-26T00:00:00.000Z") },
-    });
-    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
-      makeSnapshotRow({
-        playerTag: "#PYLQ0289",
-        playerName: "Alpha",
-      }),
-    ]);
-    const interaction = makeTodoInteraction({ type: "WAR" });
-
-    const runPromise = Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
-    await vi.advanceTimersByTimeAsync(3_100);
-    await runPromise;
-
-    expect(interaction.editReply).toHaveBeenCalledTimes(1);
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining(
-        "[todo] event=snapshot_served reason=bounded_refresh_timeout",
-      ),
-    );
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    expect(payload?.content).toBeNull();
   });
 
   it("builds from snapshots, opens on requested page, and avoids live coc aggregation", async () => {
@@ -2737,6 +2693,17 @@ describe("/todo refresh button", () => {
   });
 
   it("refreshes the target user snapshots and updates the existing message on the same page", async () => {
+    const cwlRefreshSpy = vi
+      .spyOn(cwlStateService, "refreshTrackedCwlStateForPlayerTags")
+      .mockResolvedValue({
+        season: "2026-03",
+        trackedClanCount: 1,
+        refreshedClanCount: 1,
+        currentRoundCount: 1,
+        currentMemberCount: 2,
+        historyRoundCount: 0,
+        historyMemberCount: 0,
+      });
     const refreshSpy = vi
       .spyOn(todoSnapshotService, "refreshSnapshotsForPlayerTags")
       .mockResolvedValue({ playerCount: 2, updatedCount: 2 });
@@ -2754,11 +2721,18 @@ describe("/todo refresh button", () => {
     await handleTodoRefreshButtonInteraction(interaction as any, makeCocServiceSpy() as any);
 
     expect(interaction.deferUpdate).toHaveBeenCalledTimes(1);
+    expect(cwlRefreshSpy).toHaveBeenCalledWith({
+      cocService: expect.anything(),
+      playerTags: ["#PYLQ0289", "#QGRJ2222"],
+    });
     expect(refreshSpy).toHaveBeenCalledWith({
       playerTags: ["#PYLQ0289", "#QGRJ2222"],
       cocService: expect.anything(),
       includeNonTrackedCwlRefresh: true,
     });
+    expect(cwlRefreshSpy.mock.invocationCallOrder[0]).toBeLessThan(
+      refreshSpy.mock.invocationCallOrder[0],
+    );
     expect(interaction.editReply).toHaveBeenCalledTimes(1);
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
     expect(payload.embeds[0].toJSON().title).toBe("Todo - GAMES");
