@@ -251,6 +251,9 @@ describe("CwlRotationSheetService", () => {
     expect(preview.matchedClans[0]?.parsedRows[0]?.parsedPlayerName).toBe(
       "\u{2606}\u{2605}\u{2606}\u{2605}\u{2606}\u{2605}\u{2606}\u{2605}\u{2606}\u{2605}",
     );
+    expect(preview.matchedClans[0]?.parsedRows[0]?.rawPlayerNameSnippet).toBe(
+      "\u{2606}\u{2605}\u{2606}\u{2605}\u{2606}\u{2605}\u{2606}\u{2605}\u{2606}\u{2605}",
+    );
     expect(preview.matchedClans[0]?.parsedRows[0]?.parsedPlayerTag).toBeNull();
     expect(preview.matchedClans[0]?.parsedRows[0]?.classification).toBe("unresolved_needs_review");
     expect(preview.matchedClans[0]?.warnings).toEqual(
@@ -359,6 +362,7 @@ describe("CwlRotationSheetService", () => {
     expect(preview.matchedClans).toHaveLength(1);
     expect(preview.matchedClans[0]?.importable).toBe(false);
     expect(preview.matchedClans[0]?.reviewRequiredRowCount).toBe(1);
+    expect(preview.matchedClans[0]?.parsedRows[0]?.rawPlayerNameSnippet).toBeNull();
     expect(preview.matchedClans[0]?.warnings).toEqual(
       expect.arrayContaining([expect.stringContaining("1 row need review")]),
     );
