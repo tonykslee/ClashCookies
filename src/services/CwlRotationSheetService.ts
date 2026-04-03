@@ -30,6 +30,42 @@ export type CwlRotationImportDayPreview = {
   }>;
 };
 
+export type CwlRotationImportRowSuggestion = {
+  playerTag: string;
+  playerName: string;
+  score: number;
+};
+
+export type CwlRotationImportRowClassification =
+  | "structural_row"
+  | "exact_match"
+  | "fuzzy_match_needs_review"
+  | "ambiguous_match_needs_review"
+  | "unresolved_needs_review"
+  | "explicitly_ignored";
+
+export type CwlRotationImportRow = {
+  rowId: string;
+  sheetRowNumber: number;
+  tabTitle: string;
+  clanTag: string;
+  clanName: string | null;
+  rawText: string;
+  parsedPlayerTag: string | null;
+  parsedPlayerName: string;
+  classification: CwlRotationImportRowClassification;
+  reason: string | null;
+  suggestions: CwlRotationImportRowSuggestion[];
+  dayRows: Array<{
+    roundDay: number;
+    subbedOut: boolean;
+    assignmentOrder: number;
+  }>;
+  resolvedPlayerTag: string | null;
+  resolvedPlayerName: string | null;
+  ignored: boolean;
+};
+
 export type CwlRotationImportPreview = {
   sourceSheetId: string;
   sourceSheetTitle: string | null;
@@ -55,7 +91,11 @@ export type CwlRotationSheetClanImportTab = {
   importable: boolean;
   importBlockedReason: string | null;
   warnings: string[];
+  structuralRowCount: number;
+  reviewRequiredRowCount: number;
+  ignoredRowCount: number;
   days: CwlRotationImportDayPreview[];
+  parsedRows: CwlRotationImportRow[];
   rosterRows: Array<{ playerTag: string; playerName: string }>;
 };
 
@@ -88,6 +128,13 @@ export type CwlRotationSheetImportConfirmResult = {
     tabTitle: string;
     reason: string;
   }>;
+  ignoredRows: Array<{
+    clanTag: string;
+    clanName: string | null;
+    tabTitle: string;
+    sheetRowNumber: number;
+    rawText: string;
+  }>;
 };
 
 export type CwlRotationSheetExportResult = {
@@ -113,6 +160,18 @@ type ParsedTabImport = {
   rosterRows: Array<{ playerTag: string; playerName: string }>;
   warnings: string[];
   parsedPlayerRowCount: number;
+  parsedRows: CwlRotationImportRow[];
+  structuralRowCount: number;
+  reviewRequiredRowCount: number;
+  ignoredRowCount: number;
+};
+
+type ParsedCwlRotationTableHeader = {
+  canonical: boolean;
+  memberColumnIndex: number;
+  playerTagColumnIndex: number | null;
+  totalWarsColumnIndex: number | null;
+  dayColumns: Array<{ roundDay: number; columnIndex: number }>;
 };
 
 type TrackedClanMatch = {
@@ -235,7 +294,8 @@ export class CwlRotationSheetService {
           clanTag: match.clanTag,
           season,
         });
-        const importable = !existingVersion || Boolean(input.overwrite);
+        const needsReview = parsed.reviewRequiredRowCount > 0;
+        const importable = (!existingVersion || Boolean(input.overwrite)) && !needsReview;
         matchedClans.push({
           clanTag: match.clanTag,
           clanName: match.clanName,
@@ -245,9 +305,20 @@ export class CwlRotationSheetService {
           importBlockedReason:
             existingVersion && !input.overwrite
               ? `Active version ${existingVersion} already exists. Use overwrite:true to replace it.`
-              : null,
+              : needsReview
+                ? `${parsed.reviewRequiredRowCount} row${parsed.reviewRequiredRowCount === 1 ? "" : "s"} need review before save.`
+                : null,
           warnings: parsed.warnings,
-          days: buildPreviewDays(parsed.days),
+          structuralRowCount: parsed.structuralRowCount,
+          reviewRequiredRowCount: parsed.reviewRequiredRowCount,
+          ignoredRowCount: parsed.ignoredRowCount,
+          days: buildPreviewDaysFromRows(parsed.parsedRows),
+          parsedRows: parsed.parsedRows.map((row) => ({
+            ...row,
+            clanTag: match.clanTag,
+            clanName: match.clanName,
+            tabTitle: match.tabTitle,
+          })),
           rosterRows: parsed.rosterRows,
         });
       }
@@ -307,6 +378,43 @@ export class CwlRotationSheetService {
   }): Promise<CwlRotationSheetImportConfirmResult> {
     const overwrite = Boolean(input.overwrite);
     const saved: PersistImportedCwlRotationPlanResult[] = [];
+    const ignoredRows: Array<{
+      clanTag: string;
+      clanName: string | null;
+      tabTitle: string;
+      sheetRowNumber: number;
+      rawText: string;
+    }> = [];
+
+    for (const clan of input.preview.matchedClans) {
+      for (const row of clan.parsedRows) {
+        if (row.ignored) {
+          ignoredRows.push({
+            clanTag: clan.clanTag,
+            clanName: clan.clanName,
+            tabTitle: clan.tabTitle,
+            sheetRowNumber: row.sheetRowNumber,
+            rawText: row.rawText,
+          });
+        }
+      }
+    }
+
+    const unresolvedRows = input.preview.matchedClans.flatMap((clan) =>
+      clan.parsedRows.filter(
+        (row) =>
+          row.classification !== "structural_row" &&
+          !row.ignored &&
+          !row.resolvedPlayerTag &&
+          row.classification !== "exact_match",
+      ),
+    );
+    if (unresolvedRows.length > 0) {
+      throw new Error(
+        `Cannot save CWL rotation import while ${unresolvedRows.length} row${unresolvedRows.length === 1 ? "" : "s"} need review or explicit ignore.`,
+      );
+    }
+
     for (const clan of input.preview.matchedClans) {
       if (!clan.importable) {
         saved.push({
@@ -357,6 +465,7 @@ export class CwlRotationSheetService {
       saved,
       skippedTrackedClans: input.preview.skippedTrackedClans,
       skippedTabs: input.preview.skippedTabs,
+      ignoredRows,
     };
   }
 
@@ -392,7 +501,7 @@ export class CwlRotationSheetService {
 
 export const cwlRotationSheetService = new CwlRotationSheetService();
 
-function buildPreviewDays(days: ParsedImportDay[]): CwlRotationImportDayPreview[] {
+function buildPreviewDaysFromRows(rows: CwlRotationImportRow[]): CwlRotationImportDayPreview[] {
   const previewDays = new Map<number, CwlRotationImportDayPreview>();
   for (let roundDay = 1; roundDay <= 7; roundDay += 1) {
     previewDays.set(roundDay, {
@@ -403,25 +512,69 @@ function buildPreviewDays(days: ParsedImportDay[]): CwlRotationImportDayPreview[
     });
   }
 
-  for (const day of days) {
-    const previewDay = previewDays.get(day.roundDay);
-    if (!previewDay) continue;
-    previewDay.rows = day.rows.map((row) => ({
-      playerTag: row.playerTag,
-      playerName: row.playerName,
-      subbedOut: row.subbedOut,
-      assignmentOrder: row.assignmentOrder,
-    }));
-    previewDay.members = day.rows.map((row) => ({
-      playerTag: row.playerTag,
-      playerName: row.playerName,
-      subbedOut: row.subbedOut,
-      assignmentOrder: row.assignmentOrder,
-    }));
-    previewDay.lineupSize = day.rows.filter((row) => !row.subbedOut).length;
+  for (const row of rows) {
+    if (row.ignored || !row.resolvedPlayerTag || !row.resolvedPlayerName) continue;
+    for (const dayRow of row.dayRows) {
+      const previewDay = previewDays.get(dayRow.roundDay);
+      if (!previewDay) continue;
+      previewDay.rows.push({
+        playerTag: row.resolvedPlayerTag,
+        playerName: row.resolvedPlayerName,
+        subbedOut: dayRow.subbedOut,
+        assignmentOrder: dayRow.assignmentOrder,
+      });
+      previewDay.members.push({
+        playerTag: row.resolvedPlayerTag,
+        playerName: row.resolvedPlayerName,
+        subbedOut: dayRow.subbedOut,
+        assignmentOrder: dayRow.assignmentOrder,
+      });
+    }
+  }
+
+  for (const previewDay of previewDays.values()) {
+    previewDay.rows.sort((a, b) => a.assignmentOrder - b.assignmentOrder || a.playerName.localeCompare(b.playerName));
+    previewDay.members.sort((a, b) => a.assignmentOrder - b.assignmentOrder || a.playerName.localeCompare(b.playerName));
+    previewDay.lineupSize = previewDay.rows.filter((row) => !row.subbedOut).length;
   }
 
   return [...previewDays.values()];
+}
+
+export function rebuildCwlRotationImportTabState(
+  tab: CwlRotationSheetClanImportTab,
+  overwrite: boolean,
+): CwlRotationSheetClanImportTab {
+  const resolvedRows = tab.parsedRows.filter((row) => row.resolvedPlayerTag && !row.ignored);
+  const rosterRows = [...new Map(
+    resolvedRows.map((row) => [
+      row.resolvedPlayerTag as string,
+      {
+        playerTag: row.resolvedPlayerTag as string,
+        playerName: row.resolvedPlayerName ?? row.parsedPlayerName,
+      },
+    ]),
+  ).values()];
+  const pendingReviewCount = tab.parsedRows.filter(
+    (row) => row.classification !== "exact_match" && !row.ignored && !row.resolvedPlayerTag,
+  ).length;
+  const importBlockedReason =
+    tab.existingVersion && !overwrite
+      ? `Active version ${tab.existingVersion} already exists. Use overwrite:true to replace it.`
+      : pendingReviewCount > 0
+        ? `${pendingReviewCount} row${pendingReviewCount === 1 ? "" : "s"} need review before save.`
+        : null;
+
+  return {
+    ...tab,
+    days: buildPreviewDaysFromRows(tab.parsedRows),
+    rosterRows,
+    importable: (!tab.existingVersion || overwrite) && pendingReviewCount <= 0,
+    importBlockedReason,
+    reviewRequiredRowCount: pendingReviewCount,
+    ignoredRowCount: tab.parsedRows.filter((row) => row.ignored).length,
+    structuralRowCount: tab.structuralRowCount,
+  };
 }
 
 function buildExportTabValues(plan: CwlRotationPlanExport): string[][] {
@@ -433,13 +586,49 @@ function buildExportTabValues(plan: CwlRotationPlanExport): string[][] {
   }
   values.push([]);
 
-  for (const day of plan.days) {
-    values.push([`Day ${day.roundDay}`]);
-    for (const row of day.rows) {
-      const prefix = row.subbedOut ? ":x:" : ":black_circle:";
-      values.push([`${prefix} ${row.playerName} (${row.playerTag})`]);
+  const dayHeaders = Array.from({ length: 7 }, (_, index) => `Day ${index + 1}`);
+  values.push(["Member", "Player Tag", "Total Wars", ...dayHeaders]);
+
+  const playerRows = new Map<
+    string,
+    {
+      playerTag: string;
+      playerName: string;
+      assignmentOrder: number;
+      dayMap: Map<number, boolean>;
     }
-    values.push([]);
+  >();
+
+  for (const day of plan.days) {
+    for (const row of day.rows) {
+      const existing = playerRows.get(row.playerTag) ?? {
+        playerTag: row.playerTag,
+        playerName: row.playerName,
+        assignmentOrder: playerRows.size,
+        dayMap: new Map<number, boolean>(),
+      };
+      existing.playerName = existing.playerName || row.playerName;
+      existing.assignmentOrder = Math.min(existing.assignmentOrder, row.assignmentOrder);
+      existing.dayMap.set(day.roundDay, !row.subbedOut);
+      playerRows.set(row.playerTag, existing);
+    }
+  }
+
+  const orderedPlayers = [...playerRows.values()].sort((a, b) => {
+    if (a.assignmentOrder !== b.assignmentOrder) return a.assignmentOrder - b.assignmentOrder;
+    const byName = a.playerName.localeCompare(b.playerName, undefined, { sensitivity: "base" });
+    if (byName !== 0) return byName;
+    return a.playerTag.localeCompare(b.playerTag);
+  });
+
+  for (const player of orderedPlayers) {
+    const totalWars = [...player.dayMap.values()].filter(Boolean).length;
+    values.push([
+      player.playerName,
+      player.playerTag,
+      String(totalWars),
+      ...dayHeaders.map((_, index) => (player.dayMap.get(index + 1) ? "IN" : "")),
+    ]);
   }
 
   while (values.length > 0 && values[values.length - 1]?.every((cell) => String(cell ?? "").trim().length <= 0)) {
@@ -496,110 +685,82 @@ function parseCwlPlannerTab(
 ): ParsedTabImport {
   const rows = values.map((row) => row.map((cell) => sanitizeDisplayText(cell)));
   const warnings: string[] = [];
-  const rosterRows = new Map<string, { playerTag: string; playerName: string }>();
   const rosterLookup = buildRosterLookup(rosterEntries);
+  const rosterRows = new Map<string, { playerTag: string; playerName: string }>();
+  const parsedRows: CwlRotationImportRow[] = [];
   const daysByRound = new Map<number, ParsedImportDay>();
   for (let roundDay = 1; roundDay <= 7; roundDay += 1) {
     daysByRound.set(roundDay, { roundDay, rows: [] });
   }
 
   const headerIndex = rows.findIndex((row) => parseCwlRotationTableHeader(row) !== null);
-  if (headerIndex < 0) {
-    warnings.push(
-      "Could not parse tab as a CWL rotation table. Expected a player-per-row table with day columns.",
-    );
-    return {
-      days: [...daysByRound.values()],
-      rosterRows: [],
-      warnings,
-      parsedPlayerRowCount: 0,
-    };
-  }
+  const header = headerIndex >= 0 ? parseCwlRotationTableHeader(rows[headerIndex]) : null;
+  const fallbackHeader: ParsedCwlRotationTableHeader = header ?? {
+    canonical: false,
+    memberColumnIndex: 0,
+    playerTagColumnIndex: null,
+    totalWarsColumnIndex: null,
+    dayColumns: inferFallbackDayColumns(rows),
+  };
 
-  const header = parseCwlRotationTableHeader(rows[headerIndex]);
-  if (!header) {
-    warnings.push(
-      "Could not parse tab as a CWL rotation table. Expected a player-per-row table with day columns.",
-    );
-    return {
-      days: [...daysByRound.values()],
-      rosterRows: [],
-      warnings,
-      parsedPlayerRowCount: 0,
-    };
-  }
-
-  const missingDays = [...Array.from({ length: 7 }, (_, index) => index + 1)].filter(
-    (roundDay) => !header.dayColumns.some((entry) => entry.roundDay === roundDay),
-  );
-  if (missingDays.length > 0) {
-    warnings.push(`Missing day columns: Day ${missingDays.join(", Day ")}.`);
-  }
-
-  let skippedNonDataRows = 0;
-  let skippedMalformedRows = 0;
-  let skippedDuplicateRows = 0;
+  let structuralRowCount = 0;
   let parsedPlayerRowCount = 0;
+  let ignoredRowCount = 0;
+  let reviewRequiredRowCount = 0;
+
+  if (headerIndex < 0) {
+    warnings.push("Could not find a CWL rotation table header. Using row-based review parsing.");
+  }
 
   for (const [rowIndex, row] of rows.entries()) {
-    if (rowIndex <= headerIndex) {
-      if (row.some((cell) => cell.length > 0)) skippedNonDataRows += 1;
-      continue;
-    }
-
+    const sheetRowNumber = rowIndex + 1;
     if (row.every((cell) => cell.length <= 0)) {
+      structuralRowCount += 1;
       continue;
     }
 
-    if (isCwlRotationMetaRow(row)) {
-      skippedNonDataRows += 1;
+    if (isCwlRotationMetaRow(row) || isCwlRotationHeaderLikeRow(row)) {
+      structuralRowCount += 1;
       continue;
     }
 
-    if (isCwlRotationHeaderLikeRow(row)) {
-      skippedNonDataRows += 1;
-      continue;
-    }
-
-    const parsed = parseCwlRotationPlayerRow(row, header.memberColumnIndex, rosterLookup);
-    if (!parsed) {
-      skippedMalformedRows += 1;
-      continue;
-    }
-
-    if (rosterRows.has(parsed.playerTag)) {
-      skippedDuplicateRows += 1;
-      continue;
-    }
-
-    const assignmentOrder = parsedPlayerRowCount;
-    parsedPlayerRowCount += 1;
-    rosterRows.set(parsed.playerTag, {
-      playerTag: parsed.playerTag,
-      playerName: parsed.playerName,
+    const parsedRow = parseCwlRotationImportRow({
+      row,
+      sheetRowNumber,
+      header: header ?? fallbackHeader,
+      rosterEntries,
+      rosterLookup,
+      tabTitle: "",
     });
+    if (!parsedRow) {
+      structuralRowCount += 1;
+      continue;
+    }
 
-    for (const dayColumn of header.dayColumns) {
-      const day = daysByRound.get(dayColumn.roundDay);
-      if (!day) continue;
-      const cellValue = sanitizeDisplayText(row[dayColumn.columnIndex] ?? "");
-      day.rows.push({
-        playerTag: parsed.playerTag,
-        playerName: parsed.playerName,
-        subbedOut: !isPlannedInCell(cellValue),
-        assignmentOrder,
+    parsedRows.push(parsedRow);
+    parsedPlayerRowCount += 1;
+    if (parsedRow.ignored) {
+      ignoredRowCount += 1;
+    }
+    if (parsedRow.classification !== "exact_match" && !parsedRow.ignored) {
+      reviewRequiredRowCount += 1;
+    }
+    if (parsedRow.resolvedPlayerTag && !parsedRow.ignored) {
+      rosterRows.set(parsedRow.resolvedPlayerTag, {
+        playerTag: parsedRow.resolvedPlayerTag,
+        playerName: parsedRow.resolvedPlayerName ?? parsedRow.parsedPlayerName,
       });
     }
   }
 
-  if (skippedNonDataRows > 0) {
-    warnings.push(`Skipped ${skippedNonDataRows} non-data rows.`);
+  if (structuralRowCount > 0) {
+    warnings.push(`Skipped ${structuralRowCount} structural rows.`);
   }
-  if (skippedMalformedRows > 0) {
-    warnings.push(`Skipped ${skippedMalformedRows} malformed player rows.`);
+  if (reviewRequiredRowCount > 0) {
+    warnings.push(`${reviewRequiredRowCount} row${reviewRequiredRowCount === 1 ? "" : "s"} need review.`);
   }
-  if (skippedDuplicateRows > 0) {
-    warnings.push(`Skipped ${skippedDuplicateRows} duplicate player rows.`);
+  if (ignoredRowCount > 0) {
+    warnings.push(`${ignoredRowCount} row${ignoredRowCount === 1 ? "" : "s"} explicitly ignored.`);
   }
   if (parsedPlayerRowCount <= 0) {
     warnings.push(
@@ -612,11 +773,29 @@ function parseCwlPlannerTab(
     days.push(daysByRound.get(roundDay) ?? { roundDay, rows: [] });
   }
 
+  for (const parsedRow of parsedRows) {
+    if (parsedRow.ignored || !parsedRow.resolvedPlayerTag || !parsedRow.resolvedPlayerName) continue;
+    for (const dayRow of parsedRow.dayRows) {
+      const day = daysByRound.get(dayRow.roundDay);
+      if (!day) continue;
+      day.rows.push({
+        playerTag: parsedRow.resolvedPlayerTag,
+        playerName: parsedRow.resolvedPlayerName,
+        subbedOut: dayRow.subbedOut,
+        assignmentOrder: dayRow.assignmentOrder,
+      });
+    }
+  }
+
   return {
     days,
     rosterRows: [...rosterRows.values()],
     warnings,
     parsedPlayerRowCount,
+    parsedRows,
+    structuralRowCount,
+    reviewRequiredRowCount,
+    ignoredRowCount,
   };
 }
 
@@ -632,14 +811,11 @@ function buildRosterLookup(rosterEntries: CwlSeasonRosterEntry[]): Map<string, C
   return lookup;
 }
 
-function parseCwlRotationTableHeader(row: string[]): {
-  memberColumnIndex: number;
-  totalWarsColumnIndex: number | null;
-  dayColumns: Array<{ roundDay: number; columnIndex: number }>;
-} | null {
+function parseCwlRotationTableHeader(row: string[]): ParsedCwlRotationTableHeader | null {
   const memberColumnIndex = row.findIndex((cell) => isCwlRotationMemberHeader(cell));
   if (memberColumnIndex < 0) return null;
 
+  const playerTagColumnIndex = row.findIndex((cell) => isCwlRotationPlayerTagHeader(cell));
   const totalWarsColumnIndex = row.findIndex((cell) => isCwlRotationTotalWarsHeader(cell));
   const explicitDayColumns = row
     .map((cell, columnIndex) => ({
@@ -655,7 +831,7 @@ function parseCwlRotationTableHeader(row: string[]): {
     }
   }
 
-  if (dayColumnsByRound.size <= 0 && totalWarsColumnIndex !== null) {
+  if (dayColumnsByRound.size <= 0 && totalWarsColumnIndex >= 0) {
     for (let roundDay = 1; roundDay <= 7; roundDay += 1) {
       const columnIndex = totalWarsColumnIndex + roundDay;
       if (columnIndex < row.length) {
@@ -667,8 +843,10 @@ function parseCwlRotationTableHeader(row: string[]): {
   if (dayColumnsByRound.size <= 0) return null;
 
   return {
+    canonical: playerTagColumnIndex >= 0,
     memberColumnIndex,
-    totalWarsColumnIndex,
+    playerTagColumnIndex: playerTagColumnIndex >= 0 ? playerTagColumnIndex : null,
+    totalWarsColumnIndex: totalWarsColumnIndex >= 0 ? totalWarsColumnIndex : null,
     dayColumns: [...dayColumnsByRound.entries()]
       .map(([roundDay, columnIndex]) => ({ roundDay, columnIndex }))
       .sort((a, b) => a.roundDay - b.roundDay),
@@ -694,6 +872,11 @@ function isCwlRotationMemberHeader(cell: string): boolean {
   return normalized === "member" || normalized === "player" || normalized === "player name";
 }
 
+function isCwlRotationPlayerTagHeader(cell: string): boolean {
+  const normalized = sanitizeDisplayText(cell).toLowerCase();
+  return normalized === "player tag" || normalized === "tag";
+}
+
 function isCwlRotationTotalWarsHeader(cell: string): boolean {
   const normalized = sanitizeDisplayText(cell).toLowerCase();
   return normalized === "total wars" || normalized === "wars";
@@ -713,30 +896,6 @@ function isCwlRotationMetaRow(row: string[]): boolean {
     firstCell.startsWith("note:") ||
     firstCell.startsWith("source:")
   );
-}
-
-function parseCwlRotationPlayerRow(
-  row: string[],
-  memberColumnIndex: number,
-  rosterLookup: Map<string, CwlSeasonRosterEntry[]>,
-): { playerTag: string; playerName: string } | null {
-  const memberCell = sanitizeDisplayText(row[memberColumnIndex] ?? row.find((cell) => cell.length > 0) ?? "");
-  if (!memberCell) return null;
-
-  const parsedIdentity = parseCwlRotationPlayerIdentity(memberCell);
-  if (parsedIdentity?.playerTag) {
-    return {
-      playerTag: parsedIdentity.playerTag,
-      playerName: parsedIdentity.playerName,
-    };
-  }
-
-  const rosterMatches = rosterLookup.get(normalizeRosterNameKey(parsedIdentity?.playerName ?? memberCell)) ?? [];
-  if (rosterMatches.length !== 1) return null;
-  return {
-    playerTag: rosterMatches[0].playerTag,
-    playerName: rosterMatches[0].playerName || parsedIdentity?.playerName || memberCell,
-  };
 }
 
 function parseCwlRotationPlayerIdentity(cell: string): { playerTag: string | null; playerName: string } | null {
@@ -768,13 +927,219 @@ function parseCwlRotationPlayerIdentity(cell: string): { playerTag: string | nul
   };
 }
 
+function parseCwlRotationImportRow(input: {
+  row: string[];
+  sheetRowNumber: number;
+  header: ParsedCwlRotationTableHeader;
+  rosterEntries: CwlSeasonRosterEntry[];
+  rosterLookup: Map<string, CwlSeasonRosterEntry[]>;
+  tabTitle: string;
+}): CwlRotationImportRow | null {
+  const rawText = input.row.map((cell) => sanitizeDisplayText(cell)).join(" | ").trim();
+  if (!rawText) return null;
+
+  const memberCell = sanitizeDisplayText(input.row[input.header.memberColumnIndex] ?? "");
+  const firstNonEmptyCell = sanitizeDisplayText(input.row.find((cell) => cell.length > 0) ?? "");
+  const candidateCell = memberCell || firstNonEmptyCell || rawText;
+  const parsedIdentity = parseCwlRotationPlayerIdentity(candidateCell);
+  const parsedPlayerName = parsedIdentity?.playerName || candidateCell;
+  const explicitTag = normalizePlayerTag(
+    input.header.playerTagColumnIndex !== null
+      ? String(input.row[input.header.playerTagColumnIndex] ?? "")
+      : parsedIdentity?.playerTag ?? "",
+  );
+  const dayRows = input.header.dayColumns.map((dayColumn, index) => {
+    const cellValue = sanitizeDisplayText(input.row[dayColumn.columnIndex] ?? "");
+    return {
+      roundDay: dayColumn.roundDay,
+      subbedOut: !isPlannedInCell(cellValue),
+      assignmentOrder: index,
+    };
+  });
+  const rowId = `${normalizeMatchKey(input.tabTitle)}:${input.sheetRowNumber}`;
+
+  if (!memberCell) {
+    return {
+      rowId,
+      sheetRowNumber: input.sheetRowNumber,
+      tabTitle: input.tabTitle,
+      clanTag: "",
+      clanName: null,
+      rawText,
+      parsedPlayerTag: parsedIdentity?.playerTag ?? null,
+      parsedPlayerName,
+      classification: "unresolved_needs_review",
+      reason: "Could not identify the player name column for this row.",
+      suggestions: buildRosterSuggestions(parsedPlayerName, input.rosterEntries),
+      dayRows,
+      resolvedPlayerTag: null,
+      resolvedPlayerName: null,
+      ignored: false,
+    };
+  }
+
+  if (explicitTag) {
+    return {
+      rowId,
+      sheetRowNumber: input.sheetRowNumber,
+      tabTitle: input.tabTitle,
+      clanTag: "",
+      clanName: null,
+      rawText,
+      parsedPlayerTag: explicitTag,
+      parsedPlayerName,
+      classification: "exact_match",
+      reason: null,
+      suggestions: [],
+      dayRows,
+      resolvedPlayerTag: explicitTag,
+      resolvedPlayerName: parsedPlayerName,
+      ignored: false,
+    };
+  }
+
+  const exactRosterMatch = findExactRosterMatch(parsedPlayerName, input.rosterLookup);
+  if (exactRosterMatch) {
+    return {
+      rowId,
+      sheetRowNumber: input.sheetRowNumber,
+      tabTitle: input.tabTitle,
+      clanTag: "",
+      clanName: null,
+      rawText,
+      parsedPlayerTag: exactRosterMatch.playerTag,
+      parsedPlayerName: exactRosterMatch.playerName || parsedPlayerName,
+      classification: "exact_match",
+      reason: null,
+      suggestions: [],
+      dayRows,
+      resolvedPlayerTag: exactRosterMatch.playerTag,
+      resolvedPlayerName: exactRosterMatch.playerName || parsedPlayerName,
+      ignored: false,
+    };
+  }
+
+  const suggestions = buildRosterSuggestions(parsedPlayerName, input.rosterEntries);
+  const bestScore = suggestions[0]?.score ?? 0;
+  const secondScore = suggestions[1]?.score ?? 0;
+  const classification =
+    suggestions.length <= 0
+      ? "unresolved_needs_review"
+      : suggestions.length > 1 && Math.abs(bestScore - secondScore) <= 0.05
+        ? "ambiguous_match_needs_review"
+        : "fuzzy_match_needs_review";
+
+  return {
+    rowId,
+    sheetRowNumber: input.sheetRowNumber,
+    tabTitle: input.tabTitle,
+    clanTag: "",
+    clanName: null,
+    rawText,
+    parsedPlayerTag: parsedIdentity?.playerTag ?? null,
+    parsedPlayerName,
+    classification,
+    reason:
+      classification === "ambiguous_match_needs_review"
+        ? "Multiple tracked players look plausible."
+        : classification === "fuzzy_match_needs_review"
+          ? "Player row needs review before it can be saved."
+          : "Could not identify a tracked player for this row.",
+    suggestions,
+    dayRows,
+    resolvedPlayerTag: null,
+    resolvedPlayerName: null,
+    ignored: false,
+  };
+}
+
+function findExactRosterMatch(
+  playerName: string,
+  rosterLookup: Map<string, CwlSeasonRosterEntry[]>,
+): CwlSeasonRosterEntry | null {
+  const matches = rosterLookup.get(normalizeRosterNameKey(playerName)) ?? [];
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function buildRosterSuggestions(
+  playerName: string,
+  rosterEntries: CwlSeasonRosterEntry[],
+): CwlRotationImportRowSuggestion[] {
+  const normalizedQuery = normalizeMatchKey(playerName);
+  if (!normalizedQuery) return [];
+
+  return rosterEntries
+    .map((entry) => {
+      const normalizedCandidate = normalizeMatchKey(entry.playerName);
+      const score = calculateMatchScore(normalizedQuery, normalizedCandidate);
+      return {
+        playerTag: entry.playerTag,
+        playerName: entry.playerName,
+        score,
+      };
+    })
+    .filter((entry) => entry.score >= 0.55)
+    .sort((a, b) => b.score - a.score || a.playerName.localeCompare(b.playerName) || a.playerTag.localeCompare(b.playerTag))
+    .slice(0, 5);
+}
+
+function calculateMatchScore(a: string, b: string): number {
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+  if (a.includes(b) || b.includes(a)) return 0.92;
+  const distance = levenshteinDistance(a, b);
+  return Math.max(0, 1 - distance / Math.max(a.length, b.length));
+}
+
+function levenshteinDistance(a: string, b: string): number {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+
+  const previous = Array.from({ length: b.length + 1 }, (_, index) => index);
+  const current = new Array<number>(b.length + 1);
+  for (let i = 1; i <= a.length; i += 1) {
+    current[0] = i;
+    for (let j = 1; j <= b.length; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      current[j] = Math.min(
+        (current[j - 1] ?? 0) + 1,
+        (previous[j] ?? 0) + 1,
+        (previous[j - 1] ?? 0) + cost,
+      );
+    }
+    for (let j = 0; j <= b.length; j += 1) {
+      previous[j] = current[j] ?? previous[j];
+    }
+  }
+  return previous[b.length] ?? 0;
+}
+
 function normalizeRosterNameKey(input: string): string {
-  return sanitizeDisplayText(input).toLowerCase();
+  return normalizeMatchKey(input);
 }
 
 function isPlannedInCell(cell: string): boolean {
   const normalized = sanitizeDisplayText(cell).toLowerCase();
   return normalized === "in" || normalized === "yes" || normalized === "y" || normalized === "true";
+}
+
+function normalizeMatchKey(input: string): string {
+  return sanitizeDisplayText(input)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+function inferFallbackDayColumns(rows: string[][]): Array<{ roundDay: number; columnIndex: number }> {
+  const maxColumns = Math.max(0, ...rows.map((row) => row.length));
+  const dayColumns: Array<{ roundDay: number; columnIndex: number }> = [];
+  for (let roundDay = 1; roundDay <= 7; roundDay += 1) {
+    const columnIndex = roundDay;
+    if (columnIndex < maxColumns) {
+      dayColumns.push({ roundDay, columnIndex });
+    }
+  }
+  return dayColumns;
 }
 function escapeSheetTabName(tabName: string): string {
   return `'${String(tabName ?? "").trim().replace(/'/g, "''")}'`;
