@@ -120,6 +120,26 @@ function getComponentSelectMenuCustomIds(interaction: any): string[] {
   return ids;
 }
 
+function getComponentSelectMenuOptions(interaction: any): Array<{ label: string; value: string; description?: string }> {
+  const payload = (interaction.editReply?.mock.calls[0]?.[0] ?? interaction.update?.mock.calls[0]?.[0]) as any;
+  const rows = Array.isArray(payload?.components) ? payload.components : [];
+  for (const row of rows) {
+    const rowJson = typeof row?.toJSON === "function" ? row.toJSON() : row;
+    for (const menu of Array.isArray(rowJson?.components) ? rowJson.components : []) {
+      const menuJson = typeof menu?.toJSON === "function" ? menu.toJSON() : menu;
+      const options = menuJson?.options ?? menuJson?.data?.options ?? [];
+      if (Array.isArray(options) && options.length > 0) {
+        return options.map((option: any) => ({
+          label: String(option?.label ?? ""),
+          value: String(option?.value ?? ""),
+          description: option?.description ? String(option.description) : undefined,
+        }));
+      }
+    }
+  }
+  return [];
+}
+
 describe("/cwl command", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -695,6 +715,158 @@ describe("/cwl command", () => {
     expect(getUpdatedDescription(selectInteraction)).toContain("Importable clans: 1 / 1");
     expect(getUpdatedDescription(selectInteraction)).not.toContain("Review rows: 1");
     expect(cwlRotationSheetService.confirmImport).not.toHaveBeenCalled();
+  });
+
+  it("offers remaining tracked players as fallback mappings and prevents duplicate row mappings", async () => {
+    const preview: CwlRotationSheetImportPreview = {
+      sourceSheetId: "sheet-1",
+      sourceSheetTitle: "Imported CWL Planner",
+      season: "2026-04",
+      matchedClans: [
+        {
+          clanTag: "#2QG2C08UP",
+          clanName: "CWL Alpha",
+          tabTitle: "CWL Alpha roster",
+          existingVersion: null,
+          importable: false,
+          importBlockedReason: "2 rows need review before save.",
+          warnings: ["2 rows need review."],
+          structuralRowCount: 1,
+          reviewRequiredRowCount: 2,
+          ignoredRowCount: 0,
+          rosterRows: [
+            { playerTag: "#PYLQ0289", playerName: "Alpha" },
+            { playerTag: "#QGRJ2222", playerName: "Bravo" },
+          ],
+          trackedRosterRows: [
+            { playerTag: "#PYLQ0289", playerName: "Alpha" },
+            { playerTag: "#QGRJ2222", playerName: "Bravo" },
+          ],
+          days: [
+            {
+              roundDay: 1,
+              lineupSize: 0,
+              rows: [],
+              members: [],
+            },
+          ],
+          parsedRows: [
+            {
+              rowId: "cwl-alpha-roster:4",
+              sheetRowNumber: 4,
+              tabTitle: "CWL Alpha roster",
+              clanTag: "#2QG2C08UP",
+              clanName: "CWL Alpha",
+              rawText: "Alpha-ish | 12 | IN",
+              parsedPlayerTag: null,
+              parsedPlayerName: "Alpha-ish",
+              classification: "fuzzy_match_needs_review",
+              reason: "Player row needs review before it can be saved.",
+              suggestions: [],
+              dayRows: [{ roundDay: 1, subbedOut: false, assignmentOrder: 0 }],
+              resolvedPlayerTag: null,
+              resolvedPlayerName: null,
+              ignored: false,
+            },
+            {
+              rowId: "cwl-alpha-roster:5",
+              sheetRowNumber: 5,
+              tabTitle: "CWL Alpha roster",
+              clanTag: "#2QG2C08UP",
+              clanName: "CWL Alpha",
+              rawText: "Bravo-ish | 12 | IN",
+              parsedPlayerTag: null,
+              parsedPlayerName: "Bravo-ish",
+              classification: "fuzzy_match_needs_review",
+              reason: "Player row needs review before it can be saved.",
+              suggestions: [],
+              dayRows: [{ roundDay: 1, subbedOut: false, assignmentOrder: 0 }],
+              resolvedPlayerTag: null,
+              resolvedPlayerName: null,
+              ignored: false,
+            },
+          ],
+        },
+      ],
+      skippedTrackedClans: [],
+      skippedTabs: [],
+      warnings: ["2 rows need review."],
+    };
+    vi.mocked(cwlRotationSheetService.buildImportPreview).mockResolvedValue(preview);
+    vi.mocked(cwlRotationSheetService.confirmImport).mockResolvedValue({
+      season: "2026-04",
+      saved: [],
+      skippedTrackedClans: [],
+      skippedTabs: [],
+      ignoredRows: [],
+    } as any);
+
+    const interaction = makeInteraction({
+      group: "rotations",
+      subcommand: "import",
+    });
+    (interaction.options.getString as any).mockImplementation((name: string) => {
+      if (name === "sheet") return "https://docs.google.com/spreadsheets/d/sheet-1/edit";
+      if (name === "visibility") return null;
+      return null;
+    });
+    (interaction.options.getBoolean as any).mockImplementation((name: string) => {
+      if (name === "overwrite") return false;
+      return null;
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    const reviewId = getComponentButtonCustomIds(interaction).find((id) => id.includes(":review:"));
+    expect(reviewId).toBeTruthy();
+    const reviewInteraction = {
+      customId: reviewId,
+      user: { id: "111111111111111111" },
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await handleCwlRotationImportButtonInteraction(reviewInteraction as any);
+
+    const initialOptions = getComponentSelectMenuOptions(reviewInteraction);
+    expect(initialOptions.map((option) => option.label)).toEqual(
+      expect.arrayContaining(["Alpha", "Bravo", "Ignore this row"]),
+    );
+
+    const selectId = getComponentSelectMenuCustomIds(reviewInteraction).find((id) => id.includes(":resolve:"));
+    expect(selectId).toBeTruthy();
+    const firstSelectInteraction = {
+      customId: selectId,
+      values: ["tag:#PYLQ0289"],
+      user: { id: "111111111111111111" },
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await handleCwlRotationImportSelectMenuInteraction(firstSelectInteraction as any);
+    const secondOptions = getComponentSelectMenuOptions(firstSelectInteraction);
+    expect(secondOptions.map((option) => option.label)).not.toContain("Alpha");
+    expect(secondOptions.map((option) => option.label)).toEqual(
+      expect.arrayContaining(["Bravo", "Ignore this row"]),
+    );
+
+    const secondSelectId = getComponentSelectMenuCustomIds(firstSelectInteraction).find((id) => id.includes(":resolve:"));
+    expect(secondSelectId).toBeTruthy();
+    const duplicateInteraction = {
+      customId: secondSelectId,
+      values: ["tag:#PYLQ0289"],
+      user: { id: "111111111111111111" },
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await handleCwlRotationImportSelectMenuInteraction(duplicateInteraction as any);
+    expect(duplicateInteraction.reply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining("no longer available"),
+        ephemeral: true,
+      }),
+    );
   });
 
   it("surfaces a clear message when the import sheet link format is unsupported", async () => {

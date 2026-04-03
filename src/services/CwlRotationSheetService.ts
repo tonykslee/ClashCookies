@@ -96,6 +96,7 @@ export type CwlRotationSheetClanImportTab = {
   ignoredRowCount: number;
   days: CwlRotationImportDayPreview[];
   parsedRows: CwlRotationImportRow[];
+  trackedRosterRows?: Array<{ playerTag: string; playerName: string }>;
   rosterRows: Array<{ playerTag: string; playerName: string }>;
 };
 
@@ -318,6 +319,10 @@ export class CwlRotationSheetService {
             clanTag: match.clanTag,
             clanName: match.clanName,
             tabTitle: match.tabTitle,
+          })),
+          trackedRosterRows: rosterEntries.map((entry) => ({
+            playerTag: entry.playerTag,
+            playerName: entry.playerName,
           })),
           rosterRows: parsed.rosterRows,
         });
@@ -574,6 +579,7 @@ export function rebuildCwlRotationImportTabState(
     reviewRequiredRowCount: pendingReviewCount,
     ignoredRowCount: tab.parsedRows.filter((row) => row.ignored).length,
     structuralRowCount: tab.structuralRowCount,
+    trackedRosterRows: tab.trackedRosterRows ?? [],
   };
 }
 
@@ -940,7 +946,11 @@ function parseCwlRotationImportRow(input: {
 
   const memberCell = sanitizeDisplayText(input.row[input.header.memberColumnIndex] ?? "");
   const firstNonEmptyCell = sanitizeDisplayText(input.row.find((cell) => cell.length > 0) ?? "");
-  const candidateCell = memberCell || firstNonEmptyCell || rawText;
+  const candidateCell = resolveCwlRotationImportIdentityCell({
+    row: input.row,
+    header: input.header,
+    rawText,
+  }) || memberCell || firstNonEmptyCell || rawText;
   const parsedIdentity = parseCwlRotationPlayerIdentity(candidateCell);
   const parsedPlayerName = parsedIdentity?.playerName || candidateCell;
   const explicitTag = normalizePlayerTag(
@@ -970,7 +980,7 @@ function parseCwlRotationImportRow(input: {
       parsedPlayerName,
       classification: "unresolved_needs_review",
       reason: "Could not identify the player name column for this row.",
-      suggestions: buildRosterSuggestions(parsedPlayerName, input.rosterEntries),
+      suggestions: buildRosterSuggestions(parsedPlayerName, input.rosterEntries, []),
       dayRows,
       resolvedPlayerTag: null,
       resolvedPlayerName: null,
@@ -1019,7 +1029,7 @@ function parseCwlRotationImportRow(input: {
     };
   }
 
-  const suggestions = buildRosterSuggestions(parsedPlayerName, input.rosterEntries);
+  const suggestions = buildRosterSuggestions(parsedPlayerName, input.rosterEntries, []);
   const bestScore = suggestions[0]?.score ?? 0;
   const secondScore = suggestions[1]?.score ?? 0;
   const classification =
@@ -1064,9 +1074,11 @@ function findExactRosterMatch(
 function buildRosterSuggestions(
   playerName: string,
   rosterEntries: CwlSeasonRosterEntry[],
+  excludedTags: string[] = [],
 ): CwlRotationImportRowSuggestion[] {
   const normalizedQuery = normalizeMatchKey(playerName);
   if (!normalizedQuery) return [];
+  const excludedTagSet = new Set(excludedTags.map((tag) => normalizePlayerTag(tag)).filter(Boolean));
 
   return rosterEntries
     .map((entry) => {
@@ -1078,7 +1090,7 @@ function buildRosterSuggestions(
         score,
       };
     })
-    .filter((entry) => entry.score >= 0.55)
+    .filter((entry) => entry.score >= 0.55 && !excludedTagSet.has(normalizePlayerTag(entry.playerTag)))
     .sort((a, b) => b.score - a.score || a.playerName.localeCompare(b.playerName) || a.playerTag.localeCompare(b.playerTag))
     .slice(0, 5);
 }
@@ -1117,6 +1129,39 @@ function levenshteinDistance(a: string, b: string): number {
 
 function normalizeRosterNameKey(input: string): string {
   return normalizeMatchKey(input);
+}
+
+function resolveCwlRotationImportIdentityCell(input: {
+  row: string[];
+  header: ParsedCwlRotationTableHeader;
+  rawText: string;
+}): string {
+  const firstCell = sanitizeDisplayText(input.row[0] ?? "");
+  const secondCell = sanitizeDisplayText(input.row[1] ?? "");
+  const explicitIdentityCell = sanitizeDisplayText(input.row[input.header.memberColumnIndex] ?? "");
+
+  if (isRosterIndexCell(firstCell) && secondCell) {
+    return secondCell;
+  }
+
+  if (input.header.canonical && explicitIdentityCell) {
+    return explicitIdentityCell;
+  }
+
+  if (explicitIdentityCell) {
+    return explicitIdentityCell;
+  }
+
+  if (secondCell) {
+    return secondCell;
+  }
+
+  return sanitizeDisplayText(input.rawText);
+}
+
+function isRosterIndexCell(cell: string): boolean {
+  const normalized = sanitizeDisplayText(cell);
+  return /^\d+$/.test(normalized);
 }
 
 function isPlannedInCell(cell: string): boolean {
