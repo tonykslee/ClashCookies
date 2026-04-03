@@ -480,6 +480,25 @@ export default (client: Client, cocService: CoCService): void => {
             );
           }
           try {
+            const todoRefresh = await todoSnapshotService.refreshActivatedTodoLinkedPlayerSnapshots(
+              {
+                cadence: "observe",
+                cocService,
+                nowMs: scheduledAtMs,
+                producerPacingMs: intervalMs,
+              },
+            );
+            if (todoRefresh.selectedPlayerCount > 0) {
+              console.log(
+                `[todo-snapshot] event=observe_cycle_refresh activated_users=${todoRefresh.activatedUserCount} selected_players=${todoRefresh.selectedPlayerCount} tracked_players=${todoRefresh.trackedPlayerCount} non_tracked_players=${todoRefresh.nonTrackedPlayerCount} skipped_never_used_users=${todoRefresh.skippedNeverUsedUserCount}`,
+              );
+            }
+          } catch (err) {
+            console.error(
+              `[todo-snapshot] event=observe_cycle_refresh_failed error=${formatError(err)}`,
+            );
+          }
+          try {
             const result = await unlinkedMemberAlertService.reconcileGuildAlerts({
               client: client as any,
               guildId,
@@ -669,8 +688,10 @@ export default (client: Client, cocService: CoCService): void => {
                 await cwlStateService.refreshTrackedCwlState({
                   cocService,
                 });
-                await todoSnapshotService.refreshAllLinkedPlayerSnapshots({
+                await todoSnapshotService.refreshActivatedTodoLinkedPlayerSnapshots({
+                  cadence: "tracked",
                   cocService,
+                  nowMs: scheduledAtMs,
                   producerPacingMs: warEventPollMs,
                 });
               } catch (err) {
