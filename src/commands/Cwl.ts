@@ -45,6 +45,19 @@ type CwlRotationImportSession = {
   reviewIndex: number;
 };
 
+type CwlRotationImportReviewOption = {
+  playerTag: string;
+  playerName: string;
+  source: "suggested" | "fallback";
+  score?: number;
+};
+
+type CwlRotationImportReviewOptions = {
+  suggested: CwlRotationImportReviewOption[];
+  fallback: CwlRotationImportReviewOption[];
+  options: CwlRotationImportReviewOption[];
+};
+
 const cwlRotationImportSessions = new Map<string, CwlRotationImportSession>();
 
 function formatRelativeTimestamp(value: Date | null): string {
@@ -342,6 +355,12 @@ function buildCwlRotationImportReviewPageLines(input: {
   reviewIndex: number;
   reviewCount: number;
 }): string[] {
+  const reviewOptions = input.reviewRow
+    ? buildCwlRotationImportReviewOptions({
+        preview: input.preview,
+        reviewRow: input.reviewRow,
+      })
+    : null;
   const lines: string[] = [
     `Season: ${input.preview.season}`,
     `Source: ${input.preview.sourceSheetTitle || input.preview.sourceSheetId}`,
@@ -358,17 +377,32 @@ function buildCwlRotationImportReviewPageLines(input: {
   lines.push(`Sheet row: ${input.reviewRow.sheetRowNumber}`);
   lines.push(`Raw: ${input.reviewRow.rawText}`);
   lines.push(`Parsed tag: ${input.reviewRow.parsedPlayerTag || "none"}`);
-  lines.push(`Player: ${input.reviewRow.parsedPlayerName}`);
+  lines.push(`Parsed player: ${input.reviewRow.parsedPlayerName}`);
   lines.push(`Reason: ${input.reviewRow.reason || "Review required."}`);
 
-  if (input.reviewRow.suggestions.length > 0) {
+  if (reviewOptions) {
     lines.push("");
-    lines.push("Suggested matches:");
-    for (const suggestion of input.reviewRow.suggestions.slice(0, 5)) {
-      lines.push(
-        `${suggestion.playerName} (${suggestion.playerTag}) - ${(suggestion.score * 100).toFixed(0)}%`,
-      );
+    if (reviewOptions.suggested.length > 0) {
+      lines.push("Suggested matches:");
+      for (const suggestion of reviewOptions.suggested.slice(0, 5)) {
+        lines.push(
+          `${suggestion.playerName} (${suggestion.playerTag}) - ${((suggestion.score ?? 0) * 100).toFixed(0)}%`,
+        );
+      }
     }
+    if (reviewOptions.fallback.length > 0) {
+      lines.push("");
+      lines.push("Remaining tracked players:");
+      for (const fallback of reviewOptions.fallback.slice(0, 5)) {
+        lines.push(`${fallback.playerName} (${fallback.playerTag})`);
+      }
+    }
+    lines.push("");
+    lines.push(
+      reviewOptions.options.length > 0
+        ? `Selectable mappings: ${reviewOptions.options.length} available.`
+        : "No tracked players remain; ignore is the only available action.",
+    );
   }
 
   return lines;
@@ -471,7 +505,7 @@ function buildCwlRotationImportReviewActionRows(input: {
   ];
 }
 
-function buildCwlRotationImportReviewSelectMenu(input: {
+function _buildCwlRotationImportReviewSelectMenu(input: {
   sessionId: string;
   reviewRow: CwlRotationImportRow;
 }): ActionRowBuilder<StringSelectMenuBuilder> | null {
@@ -492,6 +526,97 @@ function buildCwlRotationImportReviewSelectMenu(input: {
   });
   menu.addOptions(options);
   return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu);
+}
+
+function buildCwlRotationImportReviewSelectMenuV2(input: {
+  sessionId: string;
+  preview: CwlRotationSheetImportPreview;
+  reviewRow: CwlRotationImportRow;
+}): ActionRowBuilder<StringSelectMenuBuilder> | null {
+  if (input.reviewRow.ignored || input.reviewRow.resolvedPlayerTag) return null;
+  const reviewOptions = buildCwlRotationImportReviewOptions({
+    preview: input.preview,
+    reviewRow: input.reviewRow,
+  });
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId(`${CWL_ROTATION_IMPORT_SESSION_PREFIX}:resolve:${input.sessionId}:${input.reviewRow.rowId}`)
+    .setPlaceholder("Choose a suggested or remaining tracked player, or ignore this row");
+
+  const options = reviewOptions.options.slice(0, 24).map((option) => ({
+    label: `${option.playerName}`.slice(0, 100),
+    value: `tag:${option.playerTag}`,
+    description:
+      option.source === "suggested"
+        ? `${option.playerTag} - ${((option.score ?? 0) * 100).toFixed(0)}% suggested`.slice(0, 100)
+        : `${option.playerTag} - remaining tracked player`.slice(0, 100),
+  }));
+  options.push({
+    label: "Ignore this row",
+    value: "ignore",
+    description: "Leave this row out of the imported plan.",
+  });
+  menu.addOptions(options);
+  return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu);
+}
+
+function buildCwlRotationImportReviewOptions(input: {
+  preview: CwlRotationSheetImportPreview;
+  reviewRow: CwlRotationImportRow;
+}): CwlRotationImportReviewOptions {
+  const clan = input.preview.matchedClans.find(
+    (entry) =>
+      normalizeClanTag(entry.clanTag) === normalizeClanTag(input.reviewRow.clanTag) &&
+      entry.tabTitle === input.reviewRow.tabTitle,
+  );
+  const resolvedTags = getCwlRotationImportResolvedPlayerTagSet(input.preview);
+  const seenTags = new Set<string>();
+
+  const suggested = input.reviewRow.suggestions
+    .filter((suggestion) => !resolvedTags.has(normalizePlayerTag(suggestion.playerTag)))
+    .map((suggestion) => ({
+      playerTag: normalizePlayerTag(suggestion.playerTag),
+      playerName: suggestion.playerName,
+      score: suggestion.score,
+      source: "suggested" as const,
+    }))
+    .filter((suggestion) => {
+      if (!suggestion.playerTag || seenTags.has(suggestion.playerTag)) return false;
+      seenTags.add(suggestion.playerTag);
+      return true;
+    });
+
+  const fallback = (clan?.trackedRosterRows ?? [])
+    .map((entry) => ({
+      playerTag: normalizePlayerTag(entry.playerTag),
+      playerName: entry.playerName,
+      source: "fallback" as const,
+    }))
+    .filter((entry) => {
+      if (!entry.playerTag) return false;
+      if (resolvedTags.has(entry.playerTag)) return false;
+      if (seenTags.has(entry.playerTag)) return false;
+      seenTags.add(entry.playerTag);
+      return true;
+    });
+
+  return {
+    suggested,
+    fallback,
+    options: [...suggested, ...fallback],
+  };
+}
+
+function getCwlRotationImportResolvedPlayerTagSet(preview: CwlRotationSheetImportPreview): Set<string> {
+  const resolvedTags = new Set<string>();
+  for (const clan of preview.matchedClans) {
+    for (const row of clan.parsedRows) {
+      const resolvedPlayerTag = normalizePlayerTag(row.resolvedPlayerTag ?? "");
+      if (resolvedPlayerTag && !row.ignored) {
+        resolvedTags.add(resolvedPlayerTag);
+      }
+    }
+  }
+  return resolvedTags;
 }
 
 function getCwlRotationImportPendingRows(preview: CwlRotationSheetImportPreview): CwlRotationImportRow[] {
@@ -784,7 +909,7 @@ function buildCwlRotationImportSessionMessage(
       }),
     ];
     if (reviewRow) {
-      const menu = buildCwlRotationImportReviewSelectMenu({ sessionId, reviewRow });
+      const menu = buildCwlRotationImportReviewSelectMenuV2({ sessionId, preview: session.preview, reviewRow });
       if (menu) components.push(menu);
     }
     return {
@@ -1248,16 +1373,28 @@ export async function handleCwlRotationImportSelectMenuInteraction(
     targetRow.resolvedPlayerName = null;
   } else if (choice.startsWith("tag:")) {
     const playerTag = normalizePlayerTag(choice.slice(4));
-    const suggestion = targetRow.suggestions.find((entry) => normalizePlayerTag(entry.playerTag) === playerTag) ?? null;
-    if (!suggestion) {
+    const availableOptions = buildCwlRotationImportReviewOptions({
+      preview: session.preview,
+      reviewRow: targetRow,
+    });
+    const option = availableOptions.options.find((entry) => normalizePlayerTag(entry.playerTag) === playerTag) ?? null;
+    if (!option) {
       await interaction.reply({
         content: "That tracked-player mapping is no longer available.",
         ephemeral: true,
       });
       return;
     }
-    targetRow.resolvedPlayerTag = suggestion.playerTag;
-    targetRow.resolvedPlayerName = suggestion.playerName;
+    const resolvedTags = getCwlRotationImportResolvedPlayerTagSet(session.preview);
+    if (resolvedTags.has(playerTag)) {
+      await interaction.reply({
+        content: "That tracked player is already mapped to another row in this import session.",
+        ephemeral: true,
+      });
+      return;
+    }
+    targetRow.resolvedPlayerTag = option.playerTag;
+    targetRow.resolvedPlayerName = option.playerName;
     targetRow.ignored = false;
     if (targetRow.classification === "unresolved_needs_review" || targetRow.classification === "ambiguous_match_needs_review" || targetRow.classification === "fuzzy_match_needs_review") {
       targetRow.reason = null;

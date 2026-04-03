@@ -137,6 +137,53 @@ describe("CwlRotationSheetService", () => {
     expect(String(preview.warnings.join(" "))).not.toContain("could not parse member line");
   });
 
+  it("parses legacy public table rows as roster-index plus player-name columns", async () => {
+    vi.spyOn(PublicGoogleSheetsService.prototype, "readPublishedWorkbook").mockResolvedValue({
+      title: "Imported CWL Planner",
+      tabs: [
+        {
+          title: "CWL Alpha roster",
+          pageUrl: "https://docs.google.com/spreadsheets/d/e/published-id/pubhtml/sheet?headers=false&gid=0",
+          gid: "0",
+        },
+      ],
+    });
+    vi.spyOn(PublicGoogleSheetsService.prototype, "readPublishedSheetValues").mockResolvedValue([
+      ["Season: 2026-04"],
+      ["Clan: CWL Alpha"],
+      ["Member", "Total Wars", "Day 1", "Day 2", "Day 3", "Day 4", "Day 5", "Day 6", "Day 7"],
+      [
+        "8",
+        "\u{2606}\u{2605}\u{2606}\u{2605}\u{2606}\u{2605}\u{2606}\u{2605}\u{2606}\u{2605}",
+        "IN",
+        "IN",
+        "IN",
+        "IN",
+        "IN",
+        "IN",
+        "IN",
+        "7",
+      ],
+      ["", "", "", "", "", "", "", "", "", ""],
+    ]);
+
+    const preview = await cwlRotationSheetService.buildImportPreview({
+      sheetLink: "https://docs.google.com/spreadsheets/d/e/published-id/pubhtml#gid=123456789",
+      overwrite: false,
+    });
+
+    expect(preview.matchedClans).toHaveLength(1);
+    expect(preview.matchedClans[0]?.parsedRows).toHaveLength(1);
+    expect(preview.matchedClans[0]?.parsedRows[0]?.parsedPlayerName).toBe(
+      "\u{2606}\u{2605}\u{2606}\u{2605}\u{2606}\u{2605}\u{2606}\u{2605}\u{2606}\u{2605}",
+    );
+    expect(preview.matchedClans[0]?.parsedRows[0]?.parsedPlayerTag).toBeNull();
+    expect(preview.matchedClans[0]?.parsedRows[0]?.classification).toBe("unresolved_needs_review");
+    expect(preview.matchedClans[0]?.warnings).toEqual(
+      expect.arrayContaining([expect.stringContaining("1 row need review")]),
+    );
+  });
+
   it("still requires credentials for non-public Google Sheets links", async () => {
     const publicWorkbookSpy = vi.spyOn(PublicGoogleSheetsService.prototype, "readPublishedWorkbook");
     const interactionLink = "https://docs.google.com/spreadsheets/d/standard-sheet-id/edit";
