@@ -106,6 +106,10 @@ function getComponentSelectMenuCustomIds(interaction: any): string[] {
     const rowJson = typeof row?.toJSON === "function" ? row.toJSON() : row;
     for (const menu of Array.isArray(rowJson?.components) ? rowJson.components : []) {
       const menuJson = typeof menu?.toJSON === "function" ? menu.toJSON() : menu;
+      const options = menuJson?.options ?? menuJson?.data?.options ?? [];
+      if (!Array.isArray(options) || options.length <= 0) {
+        continue;
+      }
       const id =
         menuJson?.custom_id ??
         menuJson?.customId ??
@@ -118,6 +122,10 @@ function getComponentSelectMenuCustomIds(interaction: any): string[] {
     }
   }
   return ids;
+}
+
+function getComponentCustomIds(interaction: any): string[] {
+  return [...new Set([...getComponentButtonCustomIds(interaction), ...getComponentSelectMenuCustomIds(interaction)])];
 }
 
 function getComponentSelectMenuOptions(interaction: any): Array<{ label: string; value: string; description?: string }> {
@@ -559,11 +567,34 @@ describe("/cwl command", () => {
       overwrite: false,
     });
     expect(cwlRotationSheetService.confirmImport).not.toHaveBeenCalled();
-    const customIds = getComponentButtonCustomIds(interaction);
-    expect(customIds.some((id) => id.includes(":confirm:"))).toBe(true);
     expect(getDescription(interaction)).toContain("Importable clans: 1 / 1");
-    expect(getDescription(interaction)).toContain("**CWL Alpha**");
-    expect(getDescription(interaction)).toContain(":x: Bravo (#QGRJ2222)");
+    expect(getDescription(interaction)).toContain("Clan: CWL Alpha (#2QG2C08UP)");
+    expect(getDescription(interaction)).toContain("Day: Day 1");
+    expect(getDescription(interaction)).toContain(":black_circle: Alpha #PYLQ0289");
+    expect(getDescription(interaction)).toContain(":x: Bravo #QGRJ2222");
+
+    expect(new Set(getComponentCustomIds(interaction)).size).toBe(getComponentCustomIds(interaction).length);
+    expect(getComponentSelectMenuCustomIds(interaction)).toHaveLength(1);
+    expect(getComponentSelectMenuOptions(interaction).map((option) => option.label)).toEqual(
+      expect.arrayContaining([expect.stringContaining("CWL Alpha - 2/2")]),
+    );
+
+    const nextDayId = getComponentButtonCustomIds(interaction).find((id) => id.includes(":preview-day:next:"));
+    expect(nextDayId).toBeTruthy();
+    const nextDayInteraction = {
+      customId: nextDayId,
+      user: { id: "111111111111111111" },
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await handleCwlRotationImportButtonInteraction(nextDayInteraction as any);
+    expect(getUpdatedDescription(nextDayInteraction)).toContain("Day: Day 2");
+    expect(getUpdatedDescription(nextDayInteraction)).toContain(":x: Alpha #PYLQ0289");
+    expect(getUpdatedDescription(nextDayInteraction)).toContain(":black_circle: Bravo #QGRJ2222");
+
+    const customIds = getComponentButtonCustomIds(nextDayInteraction);
+    expect(customIds.some((id) => id.includes(":confirm:"))).toBe(true);
 
     const confirmId = customIds.find((id) => id.includes(":confirm:"));
     expect(confirmId).toBeTruthy();
@@ -581,6 +612,203 @@ describe("/cwl command", () => {
     expect(cwlRotationSheetService.confirmImport).toHaveBeenCalledTimes(1);
     expect(confirmInteraction.deferUpdate).toHaveBeenCalled();
     expect(confirmInteraction.editReply).toHaveBeenCalled();
+  });
+
+  it("switches preview clans directly, preserves the selected day, and surfaces unavailable clans for that day", async () => {
+    const preview: CwlRotationSheetImportPreview = {
+      sourceSheetId: "sheet-1",
+      sourceSheetTitle: "Imported CWL Planner",
+      season: "2026-04",
+      matchedClans: [
+        {
+          clanTag: "#2QG2C08UP",
+          clanName: "CWL Alpha",
+          tabTitle: "CWL Alpha roster",
+          existingVersion: null,
+          importable: true,
+          importBlockedReason: null,
+          warnings: [],
+          structuralRowCount: 1,
+          reviewRequiredRowCount: 0,
+          ignoredRowCount: 0,
+          rosterRows: [{ playerTag: "#PYLQ0289", playerName: "Alpha" }],
+          days: [
+            {
+              roundDay: 1,
+              lineupSize: 1,
+              rows: [{ playerTag: "#PYLQ0289", playerName: "Alpha", subbedOut: false, assignmentOrder: 0 }],
+              members: [{ playerTag: "#PYLQ0289", playerName: "Alpha", subbedOut: false, assignmentOrder: 0 }],
+            },
+          ],
+          parsedRows: [
+            {
+              rowId: "cwl-alpha-roster:3",
+              sheetRowNumber: 3,
+              tabTitle: "CWL Alpha roster",
+              clanTag: "#2QG2C08UP",
+              clanName: "CWL Alpha",
+              rawText: "Alpha | #PYLQ0289 | IN",
+              parsedPlayerTag: "#PYLQ0289",
+              parsedPlayerName: "Alpha",
+              classification: "exact_match",
+              reason: null,
+              suggestions: [],
+              dayRows: [
+                { roundDay: 1, subbedOut: false, assignmentOrder: 0 },
+                { roundDay: 2, subbedOut: true, assignmentOrder: 1 },
+                { roundDay: 3, subbedOut: true, assignmentOrder: 2 },
+                { roundDay: 4, subbedOut: true, assignmentOrder: 3 },
+                { roundDay: 5, subbedOut: true, assignmentOrder: 4 },
+                { roundDay: 6, subbedOut: true, assignmentOrder: 5 },
+                { roundDay: 7, subbedOut: true, assignmentOrder: 6 },
+              ],
+              resolvedPlayerTag: "#PYLQ0289",
+              resolvedPlayerName: "Alpha",
+              ignored: false,
+            },
+          ],
+        },
+        {
+          clanTag: "#9GLGQCCU",
+          clanName: "CWL Beta",
+          tabTitle: "CWL Beta roster",
+          existingVersion: null,
+          importable: true,
+          importBlockedReason: null,
+          warnings: [],
+          structuralRowCount: 1,
+          reviewRequiredRowCount: 0,
+          ignoredRowCount: 0,
+          rosterRows: [{ playerTag: "#QGRJ2222", playerName: "Bravo" }],
+          days: [
+            {
+              roundDay: 1,
+              lineupSize: 1,
+              rows: [{ playerTag: "#QGRJ2222", playerName: "Bravo", subbedOut: true, assignmentOrder: 0 }],
+              members: [{ playerTag: "#QGRJ2222", playerName: "Bravo", subbedOut: true, assignmentOrder: 0 }],
+            },
+          ],
+          parsedRows: [
+            {
+              rowId: "cwl-beta-roster:3",
+              sheetRowNumber: 3,
+              tabTitle: "CWL Beta roster",
+              clanTag: "#9GLGQCCU",
+              clanName: "CWL Beta",
+              rawText: "Bravo | #QGRJ2222 | OUT",
+              parsedPlayerTag: "#QGRJ2222",
+              parsedPlayerName: "Bravo",
+              classification: "exact_match",
+              reason: null,
+              suggestions: [],
+              dayRows: [
+                { roundDay: 1, subbedOut: true, assignmentOrder: 0 },
+                { roundDay: 2, subbedOut: false, assignmentOrder: 1 },
+                { roundDay: 3, subbedOut: true, assignmentOrder: 2 },
+                { roundDay: 4, subbedOut: true, assignmentOrder: 3 },
+                { roundDay: 5, subbedOut: true, assignmentOrder: 4 },
+                { roundDay: 6, subbedOut: true, assignmentOrder: 5 },
+                { roundDay: 7, subbedOut: true, assignmentOrder: 6 },
+              ],
+              resolvedPlayerTag: "#QGRJ2222",
+              resolvedPlayerName: "Bravo",
+              ignored: false,
+            },
+          ],
+        },
+        {
+          clanTag: "#7X7X7X7X",
+          clanName: "CWL Gamma",
+          tabTitle: "CWL Gamma roster",
+          existingVersion: null,
+          importable: false,
+          importBlockedReason: "No parsed rows",
+          warnings: ["No parsed rows."],
+          structuralRowCount: 2,
+          reviewRequiredRowCount: 0,
+          ignoredRowCount: 0,
+          rosterRows: [],
+          days: [],
+          parsedRows: [],
+        },
+      ],
+      skippedTrackedClans: [],
+      skippedTabs: [],
+      warnings: ["No parsed rows."],
+    };
+    vi.mocked(cwlRotationSheetService.buildImportPreview).mockResolvedValue(preview);
+
+    const interaction = makeInteraction({
+      group: "rotations",
+      subcommand: "import",
+    });
+    (interaction.options.getString as any).mockImplementation((name: string) => {
+      if (name === "sheet") return "https://docs.google.com/spreadsheets/d/sheet-1/edit";
+      if (name === "visibility") return null;
+      return null;
+    });
+    (interaction.options.getBoolean as any).mockImplementation((name: string) => {
+      if (name === "overwrite") return false;
+      return null;
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    expect(getDescription(interaction)).toContain("Clan: CWL Alpha (#2QG2C08UP)");
+    expect(getDescription(interaction)).toContain("Day: Day 1");
+
+    const clanOptions = getComponentSelectMenuOptions(interaction);
+    expect(clanOptions.map((option) => option.label)).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("CWL Alpha - 1/1"),
+        expect.stringContaining("CWL Beta - 1/1"),
+        expect.stringContaining("CWL Gamma - 0/0"),
+      ]),
+    );
+    expect(clanOptions.find((option) => option.label.includes("CWL Gamma"))?.description).toContain(
+      "No usable rows for Day 1",
+    );
+
+    const clanSelectId = getComponentSelectMenuCustomIds(interaction).find((id) => id.includes(":preview-clan:"));
+    expect(clanSelectId).toBeTruthy();
+    const unavailableClanInteraction = {
+      customId: clanSelectId,
+      values: ["#7X7X7X7X"],
+      user: { id: "111111111111111111" },
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    };
+    await handleCwlRotationImportSelectMenuInteraction(unavailableClanInteraction as any);
+    expect(unavailableClanInteraction.reply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining("no usable rows for Day 1"),
+        ephemeral: true,
+      }),
+    );
+
+    const betaClanInteraction = {
+      customId: clanSelectId,
+      values: ["#9GLGQCCU"],
+      user: { id: "111111111111111111" },
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    };
+    await handleCwlRotationImportSelectMenuInteraction(betaClanInteraction as any);
+    expect(getUpdatedDescription(betaClanInteraction)).toContain("Clan: CWL Beta (#9GLGQCCU)");
+    expect(getUpdatedDescription(betaClanInteraction)).toContain("Day: Day 1");
+    expect(getUpdatedDescription(betaClanInteraction)).toContain(":x: Bravo #QGRJ2222");
+
+    const betaNextDayId = getComponentButtonCustomIds(betaClanInteraction).find((id) => id.includes(":preview-day:next:"));
+    expect(betaNextDayId).toBeTruthy();
+    const betaNextDayInteraction = {
+      customId: betaNextDayId,
+      user: { id: "111111111111111111" },
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    };
+    await handleCwlRotationImportButtonInteraction(betaNextDayInteraction as any);
+    expect(getUpdatedDescription(betaNextDayInteraction)).toContain("Clan: CWL Beta (#9GLGQCCU)");
+    expect(getUpdatedDescription(betaNextDayInteraction)).toContain("Day: Day 2");
   });
 
   it("forces unresolved import rows through review before save and allows inline remap", async () => {
@@ -684,6 +912,7 @@ describe("/cwl command", () => {
         expect.stringContaining(":confirm:"),
       ]),
     );
+    expect(getDescription(interaction)).toContain(":warning: Bravoo");
 
     const reviewId = getComponentButtonCustomIds(interaction).find((id) => id.includes(":review:"));
     expect(reviewId).toBeTruthy();
@@ -747,6 +976,8 @@ describe("/cwl command", () => {
 
     expect(getUpdatedDescription(confirmClanInteraction)).toContain("Importable clans: 1 / 1");
     expect(getUpdatedDescription(confirmClanInteraction)).toContain("CWL Alpha");
+    expect(getUpdatedDescription(confirmClanInteraction)).not.toContain(":warning:");
+    expect(getUpdatedDescription(confirmClanInteraction)).toContain(":black_circle: Bravo #QGRJ2222");
     expect(cwlRotationSheetService.confirmImport).not.toHaveBeenCalled();
 
     const saveId = getComponentButtonCustomIds(confirmClanInteraction).find((id) => id.includes(":confirm:"));
@@ -1186,6 +1417,105 @@ describe("/cwl command", () => {
 
     await handleCwlRotationImportButtonInteraction(legacyPrevInteraction as any);
     expect(getUpdatedDescription(legacyPrevInteraction)).toContain("Sheet row: 5");
+  });
+
+  it("omits raw snippets when the preview would otherwise exceed Discord limits", async () => {
+    const rosterRows = Array.from({ length: 110 }, (_, index) => {
+      const playerTag = `#PX${String(index).padStart(4, "0")}`;
+      const playerName = `Player ${index + 1}`;
+      return { playerTag, playerName };
+    });
+    const parsedRows = rosterRows.map((row, index) => ({
+      rowId: `cwl-alpha-roster:${index + 3}`,
+      sheetRowNumber: index + 3,
+      tabTitle: "CWL Alpha roster",
+      clanTag: "#2QG2C08UP",
+      clanName: "CWL Alpha",
+      rawText: `${row.playerName} | ${row.playerTag} | IN | THIS RAW SNIPPET SHOULD BE OMITTED ${String(index).padStart(3, "0")}`,
+      parsedPlayerTag: row.playerTag,
+      parsedPlayerName: row.playerName,
+      classification: "exact_match" as const,
+      reason: null,
+      suggestions: [],
+      dayRows: [
+        { roundDay: 1, subbedOut: false, assignmentOrder: index },
+        { roundDay: 2, subbedOut: true, assignmentOrder: index },
+        { roundDay: 3, subbedOut: true, assignmentOrder: index },
+        { roundDay: 4, subbedOut: true, assignmentOrder: index },
+        { roundDay: 5, subbedOut: true, assignmentOrder: index },
+        { roundDay: 6, subbedOut: true, assignmentOrder: index },
+        { roundDay: 7, subbedOut: true, assignmentOrder: index },
+      ],
+      resolvedPlayerTag: row.playerTag,
+      resolvedPlayerName: row.playerName,
+      ignored: false,
+    }));
+    const preview: CwlRotationSheetImportPreview = {
+      sourceSheetId: "sheet-1",
+      sourceSheetTitle: "Imported CWL Planner",
+      season: "2026-04",
+      matchedClans: [
+        {
+          clanTag: "#2QG2C08UP",
+          clanName: "CWL Alpha",
+          tabTitle: "CWL Alpha roster",
+          existingVersion: null,
+          importable: true,
+          importBlockedReason: null,
+          warnings: [],
+          structuralRowCount: 1,
+          reviewRequiredRowCount: 0,
+          ignoredRowCount: 0,
+          rosterRows,
+          days: [
+            {
+              roundDay: 1,
+              lineupSize: rosterRows.length,
+              rows: rosterRows.map((row, index) => ({
+                playerTag: row.playerTag,
+                playerName: row.playerName,
+                subbedOut: false,
+                assignmentOrder: index,
+              })),
+              members: rosterRows.map((row, index) => ({
+                playerTag: row.playerTag,
+                playerName: row.playerName,
+                subbedOut: false,
+                assignmentOrder: index,
+              })),
+            },
+          ],
+          parsedRows,
+        },
+      ],
+      skippedTrackedClans: [],
+      skippedTabs: [],
+      warnings: [],
+    };
+    vi.mocked(cwlRotationSheetService.buildImportPreview).mockResolvedValue(preview);
+
+    const interaction = makeInteraction({
+      group: "rotations",
+      subcommand: "import",
+    });
+    (interaction.options.getString as any).mockImplementation((name: string) => {
+      if (name === "sheet") return "https://docs.google.com/spreadsheets/d/sheet-1/edit";
+      if (name === "visibility") return null;
+      return null;
+    });
+    (interaction.options.getBoolean as any).mockImplementation((name: string) => {
+      if (name === "overwrite") return false;
+      return null;
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    const description = getDescription(interaction);
+    expect(description.length).toBeLessThanOrEqual(4096);
+    expect(description).toContain("Day: Day 1");
+    expect(description).toContain("Player 1 #PX0000");
+    expect(description).toContain(`Player ${rosterRows.length} #PX${String(rosterRows.length - 1).padStart(4, "0")}`);
+    expect(description).not.toContain("THIS RAW SNIPPET SHOULD BE OMITTED");
   });
 
   it("surfaces a clear message when the import sheet link format is unsupported", async () => {
