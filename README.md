@@ -68,7 +68,7 @@ The project is designed as a maintainable application, not a one-off bot script:
 - `/reminders` now supports preview-first create/list/edit flows with FWA+CWL clan targeting, persisted reminder configs, and background scheduler dispatch with dedupe fire logs.
 - Reminder deliveries now send plain-text Discord messages so inline user mentions actually notify, with whole-line overflow splitting capped at 3 messages.
 - Unlinked tracked-clan member alerts use dedicated persistence instead of `BotSetting`, support one guild-level alert channel with tracked-clan log fallback, and expose `/unlinked list` for current unresolved FWA plus active CWL members.
-- Staging mirror sync now includes the runtime-owned CWL round/history tables plus CWL planner tables so `/todo cwl` and `/cwl rotations` render consistently against mirrored prod data. CWL sheet export uses writable Google Sheets auth, while import accepts public published sheet URLs.
+- Staging mirror sync now includes the runtime-owned CWL round/history tables plus CWL planner tables so `/todo cwl` and `/cwl rotations` render consistently against mirrored prod data. CWL sheet import reads public published sheet URLs without Google Sheets credentials, while export uses writable Google Sheets auth.
 - War-mail and match embeds use consistent effective-state color mapping for BL/MM/FWA/unresolved states.
 - Notification and posting flows include operational logging controls (`/bot-logs`, `/say`, telemetry report + schedule commands).
 - FWA stats and operations commands include weight-age/health tooling, compliance checks, and layout management.

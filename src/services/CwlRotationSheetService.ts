@@ -1,6 +1,7 @@
 import { prisma } from "../prisma";
 import { SettingsService } from "./SettingsService";
 import { GoogleSheetsService } from "./GoogleSheetsService";
+import { PublicGoogleSheetsService } from "./PublicGoogleSheetsService";
 import {
   cwlRotationService,
   type CwlRotationPlanExport,
@@ -121,9 +122,11 @@ type TrackedClanMatch = {
 /** Purpose: own CWL planner workbook parsing and export orchestration around persisted planner tables. */
 export class CwlRotationSheetService {
   private readonly sheets: GoogleSheetsService;
+  private readonly publicSheets: PublicGoogleSheetsService;
 
   constructor(private readonly settings = new SettingsService()) {
     this.sheets = new GoogleSheetsService(this.settings);
+    this.publicSheets = new PublicGoogleSheetsService();
   }
 
   /** Purpose: parse one public workbook into clan-matched import previews without writing anything. */
@@ -145,96 +148,139 @@ export class CwlRotationSheetService {
       );
     }
     const sheetId = sheetIdResult.sheetId;
+    const isPublicPublishedSheet = isPublishedGoogleSheetsLink(input.sheetLink);
 
-    const [metadata, trackedClans] = await Promise.all([
-      this.sheets.getSpreadsheetMetadata(sheetId),
-      prisma.cwlTrackedClan.findMany({
-        where: { season },
-        select: { tag: true, name: true },
-      }),
-    ]);
+    const trackedClans = await prisma.cwlTrackedClan.findMany({
+      where: { season },
+      select: { tag: true, name: true },
+    });
 
-    const tabTitles = metadata.sheets.filter((sheet) => !sheet.hidden).map((sheet) => sheet.title);
-    const matchedTabs = matchTrackedClansToTabs(trackedClans, tabTitles);
-    const matchedClans: CwlRotationSheetClanImportTab[] = [];
-    const skippedTrackedClans: Array<{
-      clanTag: string;
-      clanName: string | null;
-      reason: string;
-    }> = [];
-    const skippedTabs: Array<{
-      tabTitle: string;
-      reason: string;
-    }> = [];
-    const warnings: string[] = [];
-    const usedTabTitles = new Map<string, string>();
-    for (const clan of trackedClans) {
-      const clanTag = normalizeClanTag(clan.tag);
-      const match = matchedTabs.get(clanTag);
-      if (!match) {
-        skippedTrackedClans.push({
-          clanTag,
-          clanName: sanitizeDisplayText(clan.name) || null,
-          reason: "No workbook tab name contained this tracked CWL clan name.",
+    const buildPreviewFromTabs = async (
+      inputTabs: Array<{
+        title: string;
+        readValues: () => Promise<string[][]>;
+      }>,
+      sourceSheetTitle: string | null,
+    ): Promise<CwlRotationSheetImportPreview> => {
+      const tabTitles = inputTabs.map((tab) => tab.title);
+      const matchedTabs = matchTrackedClansToTabs(trackedClans, tabTitles);
+      const matchedClans: CwlRotationSheetClanImportTab[] = [];
+      const skippedTrackedClans: Array<{
+        clanTag: string;
+        clanName: string | null;
+        reason: string;
+      }> = [];
+      const skippedTabs: Array<{
+        tabTitle: string;
+        reason: string;
+      }> = [];
+      const warnings: string[] = [];
+      const usedTabTitles = new Map<string, string>();
+
+      for (const clan of trackedClans) {
+        const clanTag = normalizeClanTag(clan.tag);
+        const match = matchedTabs.get(clanTag);
+        if (!match) {
+          skippedTrackedClans.push({
+            clanTag,
+            clanName: sanitizeDisplayText(clan.name) || null,
+            reason: "No workbook tab name contained this tracked CWL clan name.",
+          });
+          continue;
+        }
+
+        const existingOwner = usedTabTitles.get(match.tabTitle);
+        if (existingOwner && existingOwner !== clanTag) {
+          skippedTrackedClans.push({
+            clanTag,
+            clanName: sanitizeDisplayText(clan.name) || null,
+            reason: `Workbook tab "${match.tabTitle}" was already matched to another clan; rename tabs so each tracked clan name appears once.`,
+          });
+          continue;
+        }
+
+        usedTabTitles.set(match.tabTitle, clanTag);
+        const tabEntry = inputTabs.find((tab) => tab.title === match.tabTitle);
+        if (!tabEntry) {
+          skippedTrackedClans.push({
+            clanTag,
+            clanName: sanitizeDisplayText(clan.name) || null,
+            reason: `Workbook tab "${match.tabTitle}" was not available in the workbook payload.`,
+          });
+          continue;
+        }
+
+        const tabValues = await tabEntry.readValues();
+        const parsed = parseCwlPlannerTab(tabValues);
+        warnings.push(...parsed.warnings);
+
+        const existingVersion = await loadActiveRotationPlanVersion({
+          clanTag: match.clanTag,
+          season,
         });
-        continue;
+        const importable = !existingVersion || Boolean(input.overwrite);
+        matchedClans.push({
+          clanTag: match.clanTag,
+          clanName: match.clanName,
+          tabTitle: match.tabTitle,
+          existingVersion,
+          importable,
+          importBlockedReason:
+            existingVersion && !input.overwrite
+              ? `Active version ${existingVersion} already exists. Use overwrite:true to replace it.`
+              : null,
+          warnings: parsed.warnings,
+          days: buildPreviewDays(parsed.days),
+          rosterRows: parsed.rosterRows,
+        });
       }
 
-      const existingOwner = usedTabTitles.get(match.tabTitle);
-      if (existingOwner && existingOwner !== clanTag) {
-        skippedTrackedClans.push({
-          clanTag,
-          clanName: sanitizeDisplayText(clan.name) || null,
-          reason: `Workbook tab "${match.tabTitle}" was already matched to another clan; rename tabs so each tracked clan name appears once.`,
+      for (const tabTitle of tabTitles) {
+        if (usedTabTitles.has(tabTitle)) continue;
+        skippedTabs.push({
+          tabTitle,
+          reason: "Workbook tab did not match any tracked CWL clan name.",
         });
-        continue;
       }
 
-      usedTabTitles.set(match.tabTitle, clanTag);
-      const tabValues = await this.sheets.readValues(
-        sheetId,
-        `${escapeSheetTabName(match.tabTitle)}!${CWL_IMPORT_RANGE}`,
-      );
-      const parsed = parseCwlPlannerTab(tabValues);
-      warnings.push(...parsed.warnings);
-
-      const existingVersion = await loadActiveRotationPlanVersion({
-        clanTag: match.clanTag,
+      return {
+        sourceSheetId: sheetId,
+        sourceSheetTitle,
         season,
-      });
-      const importable = !existingVersion || Boolean(input.overwrite);
-      matchedClans.push({
-        clanTag: match.clanTag,
-        clanName: match.clanName,
-        tabTitle: match.tabTitle,
-        existingVersion,
-        importable,
-        importBlockedReason: existingVersion && !input.overwrite
-          ? `Active version ${existingVersion} already exists. Use overwrite:true to replace it.`
-          : null,
-        warnings: parsed.warnings,
-        days: buildPreviewDays(parsed.days),
-        rosterRows: parsed.rosterRows,
-      });
-    }
-
-    for (const tabTitle of tabTitles) {
-      if (usedTabTitles.has(tabTitle)) continue;
-      skippedTabs.push({
-        tabTitle,
-        reason: "Workbook tab did not match any tracked CWL clan name.",
-      });
-    }
-
-    return {
-      sourceSheetId: sheetId,
-      sourceSheetTitle: metadata.title,
-      season,
-      matchedClans,
-      skippedTrackedClans,
-      skippedTabs,
-      warnings,
+        matchedClans,
+        skippedTrackedClans,
+        skippedTabs,
+        warnings,
+      };
     };
+
+    if (isPublicPublishedSheet) {
+      const source = await this.publicSheets.readPublishedWorkbook(
+        buildPublishedWorkbookUrl(sheetId),
+      );
+      return await buildPreviewFromTabs(
+        source.tabs.map((tab) => ({
+          title: tab.title,
+          readValues: () => this.publicSheets.readPublishedSheetValues(tab.pageUrl),
+        })),
+        source.title,
+      );
+    }
+
+    const metadata = await this.sheets.getSpreadsheetMetadata(sheetId);
+    return await buildPreviewFromTabs(
+      metadata.sheets
+        .filter((sheet) => !sheet.hidden)
+        .map((sheet) => ({
+          title: sheet.title,
+          readValues: () =>
+            this.sheets.readValues(
+              sheetId,
+              `${escapeSheetTabName(sheet.title)}!${CWL_IMPORT_RANGE}`,
+            ),
+        })),
+      metadata.title,
+    );
   }
 
   /** Purpose: persist one confirmed import preview into the existing planner tables. */
@@ -272,16 +318,16 @@ export class CwlRotationSheetService {
           skippedTabs: input.preview.skippedTabs,
         },
         rosterRows: clan.rosterRows,
-      days: clan.days.map((day) => ({
-        roundDay: day.roundDay,
-        lineupSize: day.lineupSize,
-        locked: false,
-        rows: day.rows,
-        activeMembers: day.rows
-          .filter((row) => !row.subbedOut)
-          .map((row) => ({
-            playerTag: row.playerTag,
-            playerName: row.playerName,
+        days: clan.days.map((day) => ({
+          roundDay: day.roundDay,
+          lineupSize: day.lineupSize,
+          locked: false,
+          rows: day.rows,
+          activeMembers: day.rows
+            .filter((row) => !row.subbedOut)
+            .map((row) => ({
+              playerTag: row.playerTag,
+              playerName: row.playerName,
               assignmentOrder: row.assignmentOrder,
             })),
         })),
@@ -571,6 +617,27 @@ function escapeRegExp(input: string): string {
 
 function escapeSheetTabName(tabName: string): string {
   return `'${String(tabName ?? "").trim().replace(/'/g, "''")}'`;
+}
+
+function buildPublishedWorkbookUrl(publishedSheetId: string): string {
+  return `https://docs.google.com/spreadsheets/d/e/${encodeURIComponent(
+    publishedSheetId,
+  )}/pubhtml`;
+}
+
+function isPublishedGoogleSheetsLink(input: string): boolean {
+  const trimmed = String(input ?? "").trim();
+  if (!trimmed) return false;
+  try {
+    const parsed = new URL(trimmed);
+    return (
+      parsed.hostname === "docs.google.com" &&
+      parsed.pathname.includes("/spreadsheets/d/e/") &&
+      parsed.pathname.includes("/pub")
+    );
+  } catch {
+    return false;
+  }
 }
 
 function extractSpreadsheetId(input: string): {

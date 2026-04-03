@@ -248,7 +248,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`/cwl members clan:<tag> inwar:true` narrows to the persisted current/prep lineup and includes current round status when available.",
       "`/cwl rotations show` summarizes active plan-vs-actual validation across clans; add `clan` and optional `day` for one plan view.",
       "`/cwl rotations create` is admin-only by default and only works during persisted CWL preparation state for the tracked clan.",
-      "`/cwl rotations import` is admin-only by default and imports active planner tabs from one public Google Sheet after a confirmation preview.",
+      "`/cwl rotations import` is admin-only by default and imports active planner tabs from one public Google Sheet after a confirmation preview. Public imports do not require Google Sheets credentials; export/write still does.",
       "`/cwl rotations export` is admin-only by default and writes the active planner data to a brand-new public Google Sheet.",
       "The `/cwl` surface is DB-first and does not live-query broad CWL state on render when persisted state exists.",
     ],

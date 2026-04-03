@@ -189,5 +189,42 @@ describe("GoogleSheetsService /compo strict read path", () => {
       expect((err as GoogleSheetReadError).meta.resolutionSource).toBe("google_sheet_id");
     }
   });
+
+  it("still requires credentials when creating a spreadsheet for export/write", async () => {
+    const credentialKeys = [
+      "GOOGLE_OAUTH_CLIENT_ID",
+      "GOOGLE_OAUTH_CLIENT_SECRET",
+      "GOOGLE_OAUTH_REFRESH_TOKEN",
+      "GOOGLE_SERVICE_ACCOUNT_JSON",
+      "GOOGLE_SERVICE_ACCOUNT_JSON_BASE64",
+      "GOOGLE_SERVICE_ACCOUNT_EMAIL",
+      "GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY",
+    ] as const;
+    const originalValues = new Map<string, string | undefined>();
+    for (const key of credentialKeys) {
+      originalValues.set(key, process.env[key]);
+      delete process.env[key];
+    }
+
+    try {
+      const service = new GoogleSheetsService(
+        makeSettingsStub({
+          [SHEET_SETTING_ID_KEY]: "sheet-1",
+        }),
+      );
+
+      await expect(service.createSpreadsheet({ title: "Export" })).rejects.toThrow(
+        "Google Sheets credentials missing",
+      );
+    } finally {
+      for (const [key, value] of originalValues.entries()) {
+        if (typeof value === "string") {
+          process.env[key] = value;
+        } else {
+          delete process.env[key];
+        }
+      }
+    }
+  });
 });
 
