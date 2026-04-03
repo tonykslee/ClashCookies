@@ -475,6 +475,7 @@ describe("/cwl command", () => {
               clanTag: "#2QG2C08UP",
               clanName: "CWL Alpha",
               rawText: "Alpha | #PYLQ0289 | 12 | IN",
+              rawPlayerNameSnippet: "Alpha",
               parsedPlayerTag: "#PYLQ0289",
               parsedPlayerName: "Alpha",
               classification: "exact_match",
@@ -500,6 +501,7 @@ describe("/cwl command", () => {
               clanTag: "#2QG2C08UP",
               clanName: "CWL Alpha",
               rawText: "Bravo | #QGRJ2222 | 8 | ",
+              rawPlayerNameSnippet: "Bravo",
               parsedPlayerTag: "#QGRJ2222",
               parsedPlayerName: "Bravo",
               classification: "exact_match",
@@ -570,8 +572,10 @@ describe("/cwl command", () => {
     expect(getDescription(interaction)).toContain("Importable clans: 1 / 1");
     expect(getDescription(interaction)).toContain("Clan: CWL Alpha (#2QG2C08UP)");
     expect(getDescription(interaction)).toContain("Day: Day 1");
-    expect(getDescription(interaction)).toContain(":black_circle: Alpha #PYLQ0289");
-    expect(getDescription(interaction)).toContain(":x: Bravo #QGRJ2222");
+    expect(getDescription(interaction)).toContain(":black_circle: Alpha #PYLQ0289 | Alpha");
+    expect(getDescription(interaction)).toContain(":x: Bravo #QGRJ2222 | Bravo");
+    expect(getDescription(interaction)).not.toContain("Alpha | #PYLQ0289 | 12 | IN");
+    expect(getDescription(interaction)).not.toContain("Bravo | #QGRJ2222 | 8 |");
 
     expect(new Set(getComponentCustomIds(interaction)).size).toBe(getComponentCustomIds(interaction).length);
     expect(getComponentSelectMenuCustomIds(interaction)).toHaveLength(1);
@@ -696,6 +700,7 @@ describe("/cwl command", () => {
               clanTag: "#9GLGQCCU",
               clanName: "CWL Beta",
               rawText: "Bravo | #QGRJ2222 | OUT",
+              rawPlayerNameSnippet: null,
               parsedPlayerTag: "#QGRJ2222",
               parsedPlayerName: "Bravo",
               classification: "exact_match",
@@ -797,6 +802,7 @@ describe("/cwl command", () => {
     expect(getUpdatedDescription(betaClanInteraction)).toContain("Clan: CWL Beta (#9GLGQCCU)");
     expect(getUpdatedDescription(betaClanInteraction)).toContain("Day: Day 1");
     expect(getUpdatedDescription(betaClanInteraction)).toContain(":x: Bravo #QGRJ2222");
+    expect(getUpdatedDescription(betaClanInteraction)).not.toContain("Bravo | #QGRJ2222 | OUT");
 
     const betaNextDayId = getComponentButtonCustomIds(betaClanInteraction).find((id) => id.includes(":preview-day:next:"));
     expect(betaNextDayId).toBeTruthy();
@@ -1432,6 +1438,7 @@ describe("/cwl command", () => {
       clanTag: "#2QG2C08UP",
       clanName: "CWL Alpha",
       rawText: `${row.playerName} | ${row.playerTag} | IN | THIS RAW SNIPPET SHOULD BE OMITTED ${String(index).padStart(3, "0")}`,
+      rawPlayerNameSnippet: row.playerName,
       parsedPlayerTag: row.playerTag,
       parsedPlayerName: row.playerName,
       classification: "exact_match" as const,

@@ -51,6 +51,7 @@ export type CwlRotationImportRow = {
   clanTag: string;
   clanName: string | null;
   rawText: string;
+  rawPlayerNameSnippet?: string | null;
   parsedPlayerTag: string | null;
   parsedPlayerName: string;
   classification: CwlRotationImportRowClassification;
@@ -951,6 +952,11 @@ function parseCwlRotationImportRow(input: {
   }) || memberCell || firstNonEmptyCell || rawText;
   const parsedIdentity = parseCwlRotationPlayerIdentity(candidateCell);
   const parsedPlayerName = parsedIdentity?.playerName || candidateCell;
+  const rawPlayerNameSnippet = resolveCwlRotationImportRawPlayerNameSnippet({
+    row: input.row,
+    candidateCell,
+    rawText,
+  });
   const explicitTag = normalizePlayerTag(
     input.header.playerTagColumnIndex !== null
       ? String(input.row[input.header.playerTagColumnIndex] ?? "")
@@ -974,6 +980,7 @@ function parseCwlRotationImportRow(input: {
       clanTag: "",
       clanName: null,
       rawText,
+      rawPlayerNameSnippet,
       parsedPlayerTag: parsedIdentity?.playerTag ?? null,
       parsedPlayerName,
       classification: "unresolved_needs_review",
@@ -994,6 +1001,7 @@ function parseCwlRotationImportRow(input: {
       clanTag: "",
       clanName: null,
       rawText,
+      rawPlayerNameSnippet,
       parsedPlayerTag: explicitTag,
       parsedPlayerName,
       classification: "exact_match",
@@ -1015,6 +1023,7 @@ function parseCwlRotationImportRow(input: {
       clanTag: "",
       clanName: null,
       rawText,
+      rawPlayerNameSnippet,
       parsedPlayerTag: exactRosterMatch.playerTag,
       parsedPlayerName: exactRosterMatch.playerName || parsedPlayerName,
       classification: "exact_match",
@@ -1044,6 +1053,7 @@ function parseCwlRotationImportRow(input: {
     clanTag: "",
     clanName: null,
     rawText,
+    rawPlayerNameSnippet,
     parsedPlayerTag: parsedIdentity?.playerTag ?? null,
     parsedPlayerName,
     classification,
@@ -1059,6 +1069,33 @@ function parseCwlRotationImportRow(input: {
     resolvedPlayerName: null,
     ignored: false,
   };
+}
+
+function resolveCwlRotationImportRawPlayerNameSnippet(input: {
+  row: string[];
+  candidateCell: string;
+  rawText: string;
+}): string | null {
+  const candidateCell = sanitizeDisplayText(input.candidateCell);
+  if (!candidateCell || !looksLikeUsefulCwlRotationPlayerNameSnippet(candidateCell)) return null;
+
+  const nonEmptyCellCount = input.row.reduce(
+    (count, cell) => count + (sanitizeDisplayText(cell).length > 0 ? 1 : 0),
+    0,
+  );
+  if (nonEmptyCellCount <= 1) {
+    return candidateCell;
+  }
+
+  return candidateCell === sanitizeDisplayText(input.rawText) ? null : candidateCell;
+}
+
+function looksLikeUsefulCwlRotationPlayerNameSnippet(value: string): boolean {
+  const normalized = sanitizeDisplayText(value).toLowerCase();
+  if (!normalized) return false;
+  if (/^\d+$/.test(normalized)) return false;
+  if (/^(?:in|out|yes|no|y|n|true|false|member|player|name|total)$/i.test(normalized)) return false;
+  return true;
 }
 
 function findExactRosterMatch(

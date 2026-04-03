@@ -377,7 +377,7 @@ function buildCwlRotationImportPreviewPlayerLine(input: {
         : ":black_circle:";
   const playerName = input.row.resolvedPlayerName ?? input.row.parsedPlayerName;
   const playerTag = input.row.resolvedPlayerTag ?? input.row.parsedPlayerTag ?? "unmapped";
-  const rawSnippet = input.includeRawSnippet && input.row.rawText ? ` | ${input.row.rawText}` : "";
+  const rawSnippet = input.includeRawSnippet && input.row.rawPlayerNameSnippet ? ` | ${input.row.rawPlayerNameSnippet}` : "";
   return `${statusEmoji} ${playerName} ${playerTag}${rawSnippet}`;
 }
 
