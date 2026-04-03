@@ -94,6 +94,8 @@ import {
 import {
   handleCwlRotationImportButtonInteraction,
   isCwlRotationImportButtonCustomId,
+  handleCwlRotationShowButtonInteraction,
+  isCwlRotationShowButtonCustomId,
 } from "../commands/Cwl";
 import {
   handleTodoPageButtonInteraction,
@@ -425,6 +427,21 @@ const handleButtonInteraction = async (
         await interaction.reply({
           ephemeral: true,
           content: "Failed to update the CWL rotation import preview.",
+        });
+      }
+    }
+    return;
+  }
+
+  if (isCwlRotationShowButtonCustomId(interaction.customId)) {
+    try {
+      await handleCwlRotationShowButtonInteraction(interaction);
+    } catch (err) {
+      console.error(`CWL rotation show button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to update the CWL rotation show view.",
         });
       }
     }
