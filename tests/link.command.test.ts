@@ -37,6 +37,9 @@ describe("/link command shape", () => {
       ApplicationCommandOptionType.String
     );
     expect(create?.options?.find((o: any) => o.name === "user")?.required).toBe(false);
+    expect(create?.options?.find((o: any) => o.name === "user")?.type).toBe(
+      ApplicationCommandOptionType.User
+    );
 
     expect(del?.options?.find((o: any) => o.name === "player-tag")?.required).toBe(true);
     expect(del?.options?.find((o: any) => o.name === "player-tag")?.type).toBe(
