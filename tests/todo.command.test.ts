@@ -86,6 +86,7 @@ import {
   resetTodoSnapshotServiceForTest,
   todoSnapshotService,
 } from "../src/services/TodoSnapshotService";
+import { cwlStateService } from "../src/services/CwlStateService";
 import { todoLastViewedTypeService } from "../src/services/TodoLastViewedTypeService";
 import { cwlRotationService } from "../src/services/CwlRotationService";
 
@@ -2692,6 +2693,17 @@ describe("/todo refresh button", () => {
   });
 
   it("refreshes the target user snapshots and updates the existing message on the same page", async () => {
+    const cwlRefreshSpy = vi
+      .spyOn(cwlStateService, "refreshTrackedCwlStateForPlayerTags")
+      .mockResolvedValue({
+        season: "2026-03",
+        trackedClanCount: 1,
+        refreshedClanCount: 1,
+        currentRoundCount: 1,
+        currentMemberCount: 2,
+        historyRoundCount: 0,
+        historyMemberCount: 0,
+      });
     const refreshSpy = vi
       .spyOn(todoSnapshotService, "refreshSnapshotsForPlayerTags")
       .mockResolvedValue({ playerCount: 2, updatedCount: 2 });
@@ -2709,11 +2721,18 @@ describe("/todo refresh button", () => {
     await handleTodoRefreshButtonInteraction(interaction as any, makeCocServiceSpy() as any);
 
     expect(interaction.deferUpdate).toHaveBeenCalledTimes(1);
+    expect(cwlRefreshSpy).toHaveBeenCalledWith({
+      cocService: expect.anything(),
+      playerTags: ["#PYLQ0289", "#QGRJ2222"],
+    });
     expect(refreshSpy).toHaveBeenCalledWith({
       playerTags: ["#PYLQ0289", "#QGRJ2222"],
       cocService: expect.anything(),
       includeNonTrackedCwlRefresh: true,
     });
+    expect(cwlRefreshSpy.mock.invocationCallOrder[0]).toBeLessThan(
+      refreshSpy.mock.invocationCallOrder[0],
+    );
     expect(interaction.editReply).toHaveBeenCalledTimes(1);
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
     expect(payload.embeds[0].toJSON().title).toBe("Todo - GAMES");
