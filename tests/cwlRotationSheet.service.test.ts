@@ -20,6 +20,7 @@ vi.mock("../src/prisma", () => ({
 import { GoogleSheetsService } from "../src/services/GoogleSheetsService";
 import { cwlRotationService } from "../src/services/CwlRotationService";
 import { cwlRotationSheetService } from "../src/services/CwlRotationSheetService";
+import { cwlStateService } from "../src/services/CwlStateService";
 import { PublicGoogleSheetsService } from "../src/services/PublicGoogleSheetsService";
 
 describe("CwlRotationSheetService", () => {
@@ -34,6 +35,30 @@ describe("CwlRotationSheetService", () => {
     prismaMock.cwlRotationPlan.findFirst.mockResolvedValue(null);
     prismaMock.cwlRotationPlan.findMany.mockResolvedValue([]);
     prismaMock.cwlRotationPlanDay.findMany.mockResolvedValue([]);
+    vi.spyOn(cwlStateService, "listSeasonRosterForClan").mockResolvedValue([
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        playerTag: "#PYLQ0289",
+        playerName: "\u{1F525} Lethargic Yunan",
+        townHall: 16,
+        linkedDiscordUserId: "111111111111111111",
+        linkedDiscordUsername: "Alpha",
+        daysParticipated: 0,
+        currentRound: null,
+      },
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        playerTag: "#QGRJ2222",
+        playerName: "Second Player",
+        townHall: 15,
+        linkedDiscordUserId: null,
+        linkedDiscordUsername: null,
+        daysParticipated: 0,
+        currentRound: null,
+      },
+    ] as any);
   });
 
   it("builds a preview from a public sheet, matches clan-name containment, and skips unmatched tabs", async () => {
@@ -59,11 +84,13 @@ describe("CwlRotationSheetService", () => {
       .mockImplementation(async (pageUrl) => {
         if (String(pageUrl).includes("gid=0")) {
           return [
-            ["Day 1"],
-            [":black_circle: Alpha (#PYLQ0289)"],
-            [":x: Bravo (#QGRJ2222)"],
-            ["Day 2"],
-            [":black_circle: Alpha (#PYLQ0289)"],
+            ["Season: 2026-04"],
+            ["Clan: CWL Alpha"],
+            ["Member", "Total Wars", "Day 1", "Day 2", "Day 3", "Day 4", "Day 5", "Day 6", "Day 7"],
+            ["\u{1F525} Lethargic Yunan", "12", "IN", "", "IN", "", "", "", ""],
+            ["Member", "Total Wars", "Day 1", "Day 2", "Day 3", "Day 4", "Day 5", "Day 6", "Day 7"],
+            ["Second Player", "8", "", "IN", "", "", "", "", ""],
+            ["", "", "", "", "", "", "", "", ""],
           ];
         }
         return [];
@@ -80,7 +107,13 @@ describe("CwlRotationSheetService", () => {
     expect(preview.matchedClans).toHaveLength(1);
     expect(preview.matchedClans[0]?.clanTag).toBe("#2QG2C08UP");
     expect(preview.matchedClans[0]?.importable).toBe(true);
-    expect(preview.matchedClans[0]?.days[0]?.members[1]?.subbedOut).toBe(true);
+    expect(preview.matchedClans[0]?.days[0]?.members[0]?.playerName).toBe("\u{1F525} Lethargic Yunan");
+    expect(preview.matchedClans[0]?.days[0]?.members[0]?.subbedOut).toBe(false);
+    expect(preview.matchedClans[0]?.days[1]?.members[1]?.playerName).toBe("Second Player");
+    expect(preview.matchedClans[0]?.days[1]?.members[1]?.subbedOut).toBe(false);
+    expect(preview.matchedClans[0]?.warnings).toEqual(
+      expect.arrayContaining([expect.stringContaining("Skipped 4 non-data rows.")]),
+    );
     expect(preview.skippedTrackedClans).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -101,6 +134,7 @@ describe("CwlRotationSheetService", () => {
     expect(publicValuesSpy).toHaveBeenCalled();
     expect(authMetadataSpy).not.toHaveBeenCalled();
     expect(authValuesSpy).not.toHaveBeenCalled();
+    expect(String(preview.warnings.join(" "))).not.toContain("could not parse member line");
   });
 
   it("still requires credentials for non-public Google Sheets links", async () => {
@@ -152,8 +186,8 @@ describe("CwlRotationSheetService", () => {
       sheets: [{ sheetId: 1, title: "CWL Alpha roster", index: 0, hidden: false }],
     });
     vi.spyOn(GoogleSheetsService.prototype, "readValues").mockResolvedValue([
-      ["Day 1"],
-      [":black_circle: Alpha (#PYLQ0289)"],
+      ["Member", "Total Wars", "Day 1", "Day 2", "Day 3", "Day 4", "Day 5", "Day 6", "Day 7"],
+      [":black_circle: Alpha (#PYLQ0289)", "12", "IN", "", "", "", "", "", ""],
     ]);
 
     const preview = await cwlRotationSheetService.buildImportPreview({
@@ -178,6 +212,41 @@ describe("CwlRotationSheetService", () => {
         overwrite: false,
       }),
     ).rejects.toThrow("Unable to read the public Google Sheet import");
+  });
+
+  it("summarizes malformed table tabs with one compact format warning instead of cell spam", async () => {
+    vi.spyOn(PublicGoogleSheetsService.prototype, "readPublishedWorkbook").mockResolvedValue({
+      title: "Imported CWL Planner",
+      tabs: [
+        {
+          title: "CWL Alpha roster",
+          pageUrl: "https://docs.google.com/spreadsheets/d/e/published-id/pubhtml/sheet?headers=false&gid=0",
+          gid: "0",
+        },
+      ],
+    });
+    vi.spyOn(PublicGoogleSheetsService.prototype, "readPublishedSheetValues").mockResolvedValue([
+      ["Season: 2026-04"],
+      ["Clan: CWL Alpha"],
+      ["Lethargic Yunan"],
+      ["Second Player"],
+    ]);
+
+    const preview = await cwlRotationSheetService.buildImportPreview({
+      sheetLink: "https://docs.google.com/spreadsheets/d/e/published-id/pubhtml#gid=123456789",
+      overwrite: false,
+    });
+
+    expect(preview.matchedClans).toHaveLength(0);
+    expect(preview.skippedTrackedClans).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          clanTag: "#2QG2C08UP",
+          reason: expect.stringContaining("Could not parse tab as a CWL rotation table"),
+        }),
+      ]),
+    );
+    expect(String(preview.warnings.join(" "))).not.toContain("could not parse member line");
   });
 
   it("persists confirmed imports into the planner service only after confirmation", async () => {

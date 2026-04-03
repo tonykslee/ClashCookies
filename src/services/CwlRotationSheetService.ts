@@ -7,6 +7,7 @@ import {
   type CwlRotationPlanExport,
   type PersistImportedCwlRotationPlanResult,
 } from "./CwlRotationService";
+import { cwlStateService, type CwlSeasonRosterEntry } from "./CwlStateService";
 import { normalizeClanTag, normalizePlayerTag } from "./PlayerLinkService";
 import { resolveCurrentCwlSeasonKey } from "./CwlRegistryService";
 
@@ -111,6 +112,7 @@ type ParsedTabImport = {
   days: ParsedImportDay[];
   rosterRows: Array<{ playerTag: string; playerName: string }>;
   warnings: string[];
+  parsedPlayerRowCount: number;
 };
 
 type TrackedClanMatch = {
@@ -211,8 +213,23 @@ export class CwlRotationSheetService {
         }
 
         const tabValues = await tabEntry.readValues();
-        const parsed = parseCwlPlannerTab(tabValues);
+        const rosterEntries = await cwlStateService.listSeasonRosterForClan({
+          clanTag: match.clanTag,
+          season,
+        });
+        const parsed = parseCwlPlannerTab(tabValues, rosterEntries);
         warnings.push(...parsed.warnings);
+
+        if (parsed.parsedPlayerRowCount <= 0) {
+          skippedTrackedClans.push({
+            clanTag: match.clanTag,
+            clanName: match.clanName,
+            reason:
+              parsed.warnings.join(" ") ||
+              "Could not parse tab as a CWL rotation table. Expected a player-per-row table with day columns.",
+          });
+          continue;
+        }
 
         const existingVersion = await loadActiveRotationPlanVersion({
           clanTag: match.clanTag,
@@ -473,91 +490,193 @@ function matchTrackedClansToTabs(
   return matches;
 }
 
-function parseCwlPlannerTab(values: string[][]): ParsedTabImport {
+function parseCwlPlannerTab(
+  values: string[][],
+  rosterEntries: CwlSeasonRosterEntry[] = [],
+): ParsedTabImport {
+  const rows = values.map((row) => row.map((cell) => sanitizeDisplayText(cell)));
   const warnings: string[] = [];
-  const daysByRound = new Map<number, ParsedImportDay>();
   const rosterRows = new Map<string, { playerTag: string; playerName: string }>();
-  let currentRoundDay = 1;
-  let hasDayHeader = false;
-  let seenMemberRow = false;
+  const rosterLookup = buildRosterLookup(rosterEntries);
+  const daysByRound = new Map<number, ParsedImportDay>();
+  for (let roundDay = 1; roundDay <= 7; roundDay += 1) {
+    daysByRound.set(roundDay, { roundDay, rows: [] });
+  }
 
-  for (const [rowIndex, row] of values.entries()) {
-    const lineCells = row
-      .flatMap((cell) => String(cell ?? "").split(/\r?\n/g))
-      .map((cell) => sanitizeDisplayText(cell))
-      .filter((cell) => cell.length > 0);
-    if (lineCells.length <= 0) continue;
+  const headerIndex = rows.findIndex((row) => parseCwlRotationTableHeader(row) !== null);
+  if (headerIndex < 0) {
+    warnings.push(
+      "Could not parse tab as a CWL rotation table. Expected a player-per-row table with day columns.",
+    );
+    return {
+      days: [...daysByRound.values()],
+      rosterRows: [],
+      warnings,
+      parsedPlayerRowCount: 0,
+    };
+  }
 
-    for (const line of lineCells) {
-      const headerRoundDay = parseRoundDayHeader(line);
-      if (headerRoundDay !== null) {
-        hasDayHeader = true;
-        currentRoundDay = headerRoundDay;
-        if (!daysByRound.has(currentRoundDay)) {
-          daysByRound.set(currentRoundDay, {
-            roundDay: currentRoundDay,
-            rows: [],
-          });
-        }
-        continue;
-      }
+  const header = parseCwlRotationTableHeader(rows[headerIndex]);
+  if (!header) {
+    warnings.push(
+      "Could not parse tab as a CWL rotation table. Expected a player-per-row table with day columns.",
+    );
+    return {
+      days: [...daysByRound.values()],
+      rosterRows: [],
+      warnings,
+      parsedPlayerRowCount: 0,
+    };
+  }
 
-      const parsed = parsePlannerMemberLine(line);
-      if (!parsed) {
-        warnings.push(`Row ${rowIndex + 1}: could not parse member line "${line}".`);
-        continue;
-      }
+  const missingDays = [...Array.from({ length: 7 }, (_, index) => index + 1)].filter(
+    (roundDay) => !header.dayColumns.some((entry) => entry.roundDay === roundDay),
+  );
+  if (missingDays.length > 0) {
+    warnings.push(`Missing day columns: Day ${missingDays.join(", Day ")}.`);
+  }
 
-      if (!hasDayHeader && !seenMemberRow) {
-        warnings.push("No day headers found before member rows; assuming Day 1.");
-      }
-      seenMemberRow = true;
-      if (!daysByRound.has(currentRoundDay)) {
-        daysByRound.set(currentRoundDay, {
-          roundDay: currentRoundDay,
-          rows: [],
-        });
-      }
-      const day = daysByRound.get(currentRoundDay)!;
+  let skippedNonDataRows = 0;
+  let skippedMalformedRows = 0;
+  let skippedDuplicateRows = 0;
+  let parsedPlayerRowCount = 0;
+
+  for (const [rowIndex, row] of rows.entries()) {
+    if (rowIndex <= headerIndex) {
+      if (row.some((cell) => cell.length > 0)) skippedNonDataRows += 1;
+      continue;
+    }
+
+    if (row.every((cell) => cell.length <= 0)) {
+      continue;
+    }
+
+    if (isCwlRotationMetaRow(row)) {
+      skippedNonDataRows += 1;
+      continue;
+    }
+
+    if (isCwlRotationHeaderLikeRow(row)) {
+      skippedNonDataRows += 1;
+      continue;
+    }
+
+    const parsed = parseCwlRotationPlayerRow(row, header.memberColumnIndex, rosterLookup);
+    if (!parsed) {
+      skippedMalformedRows += 1;
+      continue;
+    }
+
+    if (rosterRows.has(parsed.playerTag)) {
+      skippedDuplicateRows += 1;
+      continue;
+    }
+
+    const assignmentOrder = parsedPlayerRowCount;
+    parsedPlayerRowCount += 1;
+    rosterRows.set(parsed.playerTag, {
+      playerTag: parsed.playerTag,
+      playerName: parsed.playerName,
+    });
+
+    for (const dayColumn of header.dayColumns) {
+      const day = daysByRound.get(dayColumn.roundDay);
+      if (!day) continue;
+      const cellValue = sanitizeDisplayText(row[dayColumn.columnIndex] ?? "");
       day.rows.push({
         playerTag: parsed.playerTag,
         playerName: parsed.playerName,
-        subbedOut: parsed.subbedOut,
-        assignmentOrder: day.rows.length,
+        subbedOut: !isPlannedInCell(cellValue),
+        assignmentOrder,
       });
-      if (!rosterRows.has(parsed.playerTag)) {
-        rosterRows.set(parsed.playerTag, {
-          playerTag: parsed.playerTag,
-          playerName: parsed.playerName,
-        });
-      }
     }
   }
 
-  if (daysByRound.size <= 0 && rosterRows.size <= 0) {
-    warnings.push("No CWL planner rows were parsed from the tab.");
+  if (skippedNonDataRows > 0) {
+    warnings.push(`Skipped ${skippedNonDataRows} non-data rows.`);
+  }
+  if (skippedMalformedRows > 0) {
+    warnings.push(`Skipped ${skippedMalformedRows} malformed player rows.`);
+  }
+  if (skippedDuplicateRows > 0) {
+    warnings.push(`Skipped ${skippedDuplicateRows} duplicate player rows.`);
+  }
+  if (parsedPlayerRowCount <= 0) {
+    warnings.push(
+      "Could not parse tab as a CWL rotation table. Expected a player-per-row table with day columns.",
+    );
   }
 
   const days: ParsedImportDay[] = [];
   for (let roundDay = 1; roundDay <= 7; roundDay += 1) {
-    const day = daysByRound.get(roundDay);
-    days.push(
-      day || {
-        roundDay,
-        rows: [],
-      },
-    );
+    days.push(daysByRound.get(roundDay) ?? { roundDay, rows: [] });
   }
 
   return {
     days,
     rosterRows: [...rosterRows.values()],
     warnings,
+    parsedPlayerRowCount,
   };
 }
 
-function parseRoundDayHeader(line: string): number | null {
-  const normalized = sanitizeDisplayText(line).toLowerCase();
+function buildRosterLookup(rosterEntries: CwlSeasonRosterEntry[]): Map<string, CwlSeasonRosterEntry[]> {
+  const lookup = new Map<string, CwlSeasonRosterEntry[]>();
+  for (const entry of rosterEntries) {
+    const key = normalizeRosterNameKey(entry.playerName);
+    if (!key) continue;
+    const list = lookup.get(key) ?? [];
+    list.push(entry);
+    lookup.set(key, list);
+  }
+  return lookup;
+}
+
+function parseCwlRotationTableHeader(row: string[]): {
+  memberColumnIndex: number;
+  totalWarsColumnIndex: number | null;
+  dayColumns: Array<{ roundDay: number; columnIndex: number }>;
+} | null {
+  const memberColumnIndex = row.findIndex((cell) => isCwlRotationMemberHeader(cell));
+  if (memberColumnIndex < 0) return null;
+
+  const totalWarsColumnIndex = row.findIndex((cell) => isCwlRotationTotalWarsHeader(cell));
+  const explicitDayColumns = row
+    .map((cell, columnIndex) => ({
+      roundDay: parseRoundDayHeader(cell),
+      columnIndex,
+    }))
+    .filter((entry): entry is { roundDay: number; columnIndex: number } => entry.roundDay !== null);
+
+  const dayColumnsByRound = new Map<number, number>();
+  for (const entry of explicitDayColumns) {
+    if (!dayColumnsByRound.has(entry.roundDay)) {
+      dayColumnsByRound.set(entry.roundDay, entry.columnIndex);
+    }
+  }
+
+  if (dayColumnsByRound.size <= 0 && totalWarsColumnIndex !== null) {
+    for (let roundDay = 1; roundDay <= 7; roundDay += 1) {
+      const columnIndex = totalWarsColumnIndex + roundDay;
+      if (columnIndex < row.length) {
+        dayColumnsByRound.set(roundDay, columnIndex);
+      }
+    }
+  }
+
+  if (dayColumnsByRound.size <= 0) return null;
+
+  return {
+    memberColumnIndex,
+    totalWarsColumnIndex,
+    dayColumns: [...dayColumnsByRound.entries()]
+      .map(([roundDay, columnIndex]) => ({ roundDay, columnIndex }))
+      .sort((a, b) => a.roundDay - b.roundDay),
+  };
+}
+
+function parseRoundDayHeader(cell: string): number | null {
+  const normalized = sanitizeDisplayText(cell).toLowerCase();
   const directNumber = normalized.match(/^\d{1,2}$/);
   if (directNumber) {
     const roundDay = Number(directNumber[0]);
@@ -570,51 +689,93 @@ function parseRoundDayHeader(line: string): number | null {
   return roundDay >= 1 && roundDay <= 7 ? roundDay : null;
 }
 
-function parsePlannerMemberLine(line: string): {
-  playerTag: string;
-  playerName: string;
-  subbedOut: boolean;
-} | null {
-  const trimmed = sanitizeDisplayText(line);
-  if (!trimmed) return null;
+function isCwlRotationMemberHeader(cell: string): boolean {
+  const normalized = sanitizeDisplayText(cell).toLowerCase();
+  return normalized === "member" || normalized === "player" || normalized === "player name";
+}
 
-  const subbedOut =
-    /:x:/i.test(trimmed) ||
-    /\bsubbed\s*out\b/i.test(trimmed) ||
-    /^\s*x\s*[:\-–—]/i.test(trimmed);
+function isCwlRotationTotalWarsHeader(cell: string): boolean {
+  const normalized = sanitizeDisplayText(cell).toLowerCase();
+  return normalized === "total wars" || normalized === "wars";
+}
+
+function isCwlRotationHeaderLikeRow(row: string[]): boolean {
+  return Boolean(parseCwlRotationTableHeader(row));
+}
+
+function isCwlRotationMetaRow(row: string[]): boolean {
+  const firstCell = sanitizeDisplayText(row.find((cell) => cell.length > 0) ?? "").toLowerCase();
+  return (
+    firstCell.startsWith("season:") ||
+    firstCell.startsWith("clan:") ||
+    firstCell.startsWith("league:") ||
+    firstCell.startsWith("warnings:") ||
+    firstCell.startsWith("note:") ||
+    firstCell.startsWith("source:")
+  );
+}
+
+function parseCwlRotationPlayerRow(
+  row: string[],
+  memberColumnIndex: number,
+  rosterLookup: Map<string, CwlSeasonRosterEntry[]>,
+): { playerTag: string; playerName: string } | null {
+  const memberCell = sanitizeDisplayText(row[memberColumnIndex] ?? row.find((cell) => cell.length > 0) ?? "");
+  if (!memberCell) return null;
+
+  const parsedIdentity = parseCwlRotationPlayerIdentity(memberCell);
+  if (parsedIdentity?.playerTag) {
+    return {
+      playerTag: parsedIdentity.playerTag,
+      playerName: parsedIdentity.playerName,
+    };
+  }
+
+  const rosterMatches = rosterLookup.get(normalizeRosterNameKey(parsedIdentity?.playerName ?? memberCell)) ?? [];
+  if (rosterMatches.length !== 1) return null;
+  return {
+    playerTag: rosterMatches[0].playerTag,
+    playerName: rosterMatches[0].playerName || parsedIdentity?.playerName || memberCell,
+  };
+}
+
+function parseCwlRotationPlayerIdentity(cell: string): { playerTag: string | null; playerName: string } | null {
+  const trimmed = sanitizeDisplayText(cell);
+  if (!trimmed) return null;
 
   const tagCandidates = trimmed.match(/#?[A-Z0-9]{5,15}/gi) ?? [];
   const playerTag = tagCandidates
     .map((tag) => normalizePlayerTag(tag))
-    .find(Boolean);
-  if (!playerTag) return null;
+    .find(Boolean) ?? null;
 
   let playerName = trimmed
     .replace(/:x:/gi, " ")
     .replace(/\bsubbed\s*out\b/gi, " ")
-    .replace(new RegExp(escapeRegExp(playerTag), "gi"), " ")
+    .replace(/\bIN\b/gi, " ")
     .replace(/\([^)]*\)/g, " ")
-    .replace(/\[/g, " ")
-    .replace(/\]/g, " ")
+    .replace(/\[[^\]]*\]/g, " ")
     .replace(/[-–—|]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 
   if (!playerName) {
-    playerName = playerTag;
+    playerName = trimmed;
   }
 
   return {
     playerTag,
     playerName,
-    subbedOut,
   };
 }
 
-function escapeRegExp(input: string): string {
-  return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function normalizeRosterNameKey(input: string): string {
+  return sanitizeDisplayText(input).toLowerCase();
 }
 
+function isPlannedInCell(cell: string): boolean {
+  const normalized = sanitizeDisplayText(cell).toLowerCase();
+  return normalized === "in" || normalized === "yes" || normalized === "y" || normalized === "true";
+}
 function escapeSheetTabName(tabName: string): string {
   return `'${String(tabName ?? "").trim().replace(/'/g, "''")}'`;
 }
