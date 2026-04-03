@@ -638,9 +638,7 @@ function buildWarPageDescription(
   rows: TodoRenderRow[],
   linkedPlayerCount: number,
 ): { description: string; sidebarState: TodoSidebarState } {
-  const activeRows = rows.filter(
-    (row) => Boolean(row.snapshot?.warActive) && row.inValidatedWarMemberSet,
-  );
+  const activeRows = rows.filter((row) => Boolean(row.snapshot?.warActive));
   const warCompletion = summarizeWarCompletionStatus(activeRows);
   if (activeRows.length <= 0) {
     return {
