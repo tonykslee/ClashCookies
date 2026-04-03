@@ -20,6 +20,7 @@ vi.mock("../src/prisma", () => ({
 import { GoogleSheetsService } from "../src/services/GoogleSheetsService";
 import { cwlRotationService } from "../src/services/CwlRotationService";
 import { cwlRotationSheetService } from "../src/services/CwlRotationSheetService";
+import { PublicGoogleSheetsService } from "../src/services/PublicGoogleSheetsService";
 
 describe("CwlRotationSheetService", () => {
   beforeEach(() => {
@@ -36,33 +37,46 @@ describe("CwlRotationSheetService", () => {
   });
 
   it("builds a preview from a public sheet, matches clan-name containment, and skips unmatched tabs", async () => {
-    vi.spyOn(GoogleSheetsService.prototype, "getSpreadsheetMetadata").mockResolvedValue({
-      spreadsheetId: "sheet-1",
-      title: "Imported CWL Planner",
-      sheets: [
-        { sheetId: 1, title: "CWL Alpha roster", index: 0, hidden: false },
-        { sheetId: 2, title: "Unmatched tab", index: 1, hidden: false },
-      ],
-    });
-    vi.spyOn(GoogleSheetsService.prototype, "readValues").mockImplementation(async (_sheetId, range) => {
-      if (String(range).includes("CWL Alpha roster")) {
-        return [
-          ["Day 1"],
-          [":black_circle: Alpha (#PYLQ0289)"],
-          [":x: Bravo (#QGRJ2222)"],
-          ["Day 2"],
-          [":black_circle: Alpha (#PYLQ0289)"],
-        ];
-      }
-      return [];
-    });
+    const publicWorkbookSpy = vi
+      .spyOn(PublicGoogleSheetsService.prototype, "readPublishedWorkbook")
+      .mockResolvedValue({
+        title: "Imported CWL Planner",
+        tabs: [
+          {
+            title: "CWL Alpha roster",
+            pageUrl: "https://docs.google.com/spreadsheets/d/e/published-id/pubhtml/sheet?headers=false&gid=0",
+            gid: "0",
+          },
+          {
+            title: "Unmatched tab",
+            pageUrl: "https://docs.google.com/spreadsheets/d/e/published-id/pubhtml/sheet?headers=false&gid=1",
+            gid: "1",
+          },
+        ],
+      });
+    const publicValuesSpy = vi
+      .spyOn(PublicGoogleSheetsService.prototype, "readPublishedSheetValues")
+      .mockImplementation(async (pageUrl) => {
+        if (String(pageUrl).includes("gid=0")) {
+          return [
+            ["Day 1"],
+            [":black_circle: Alpha (#PYLQ0289)"],
+            [":x: Bravo (#QGRJ2222)"],
+            ["Day 2"],
+            [":black_circle: Alpha (#PYLQ0289)"],
+          ];
+        }
+        return [];
+      });
+    const authMetadataSpy = vi.spyOn(GoogleSheetsService.prototype, "getSpreadsheetMetadata");
+    const authValuesSpy = vi.spyOn(GoogleSheetsService.prototype, "readValues");
 
     const preview = await cwlRotationSheetService.buildImportPreview({
-      sheetLink: "https://docs.google.com/spreadsheets/d/sheet-1/edit",
+      sheetLink: "https://docs.google.com/spreadsheets/d/e/published-id/pubhtml#gid=123456789",
       overwrite: false,
     });
 
-    expect(preview.sourceSheetId).toBe("sheet-1");
+    expect(preview.sourceSheetId).toBe("published-id");
     expect(preview.matchedClans).toHaveLength(1);
     expect(preview.matchedClans[0]?.clanTag).toBe("#2QG2C08UP");
     expect(preview.matchedClans[0]?.importable).toBe(true);
@@ -81,26 +95,26 @@ describe("CwlRotationSheetService", () => {
         }),
       ]),
     );
+    expect(publicWorkbookSpy).toHaveBeenCalledWith(
+      "https://docs.google.com/spreadsheets/d/e/published-id/pubhtml",
+    );
+    expect(publicValuesSpy).toHaveBeenCalled();
+    expect(authMetadataSpy).not.toHaveBeenCalled();
+    expect(authValuesSpy).not.toHaveBeenCalled();
   });
 
-  it("extracts the real ID from a published Google Sheets pubhtml URL", async () => {
-    vi.spyOn(GoogleSheetsService.prototype, "getSpreadsheetMetadata").mockResolvedValue({
-      spreadsheetId: "published-id",
-      title: "Imported CWL Planner",
-      sheets: [{ sheetId: 1, title: "CWL Alpha roster", index: 0, hidden: false }],
-    });
-    vi.spyOn(GoogleSheetsService.prototype, "readValues").mockResolvedValue([["Day 1"]]);
+  it("still requires credentials for non-public Google Sheets links", async () => {
+    const publicWorkbookSpy = vi.spyOn(PublicGoogleSheetsService.prototype, "readPublishedWorkbook");
+    const interactionLink = "https://docs.google.com/spreadsheets/d/standard-sheet-id/edit";
 
-    const preview = await cwlRotationSheetService.buildImportPreview({
-      sheetLink:
-        "https://docs.google.com/spreadsheets/d/e/published-id/pubhtml#gid=123456789",
-      overwrite: false,
-    });
+    await expect(
+      cwlRotationSheetService.buildImportPreview({
+        sheetLink: interactionLink,
+        overwrite: false,
+      }),
+    ).rejects.toThrow("Google Sheets credentials missing");
 
-    expect(preview.sourceSheetId).toBe("published-id");
-    expect(GoogleSheetsService.prototype.getSpreadsheetMetadata).toHaveBeenCalledWith(
-      "published-id",
-    );
+    expect(publicWorkbookSpy).not.toHaveBeenCalled();
   });
 
   it("rejects malformed or incomplete Google Sheets links with a clear error", async () => {
@@ -149,6 +163,21 @@ describe("CwlRotationSheetService", () => {
 
     expect(preview.matchedClans[0]?.importable).toBe(false);
     expect(preview.matchedClans[0]?.importBlockedReason).toContain("overwrite:true");
+  });
+
+  it("surfaces a public-sheet-specific error when the anonymous import path fails", async () => {
+    vi.spyOn(PublicGoogleSheetsService.prototype, "readPublishedWorkbook").mockRejectedValueOnce(
+      new Error(
+        "Unable to read the public Google Sheet import. Failed to fetch the published Google Sheet.",
+      ),
+    );
+
+    await expect(
+      cwlRotationSheetService.buildImportPreview({
+        sheetLink: "https://docs.google.com/spreadsheets/d/e/published-id/pubhtml#gid=123456789",
+        overwrite: false,
+      }),
+    ).rejects.toThrow("Unable to read the public Google Sheet import");
   });
 
   it("persists confirmed imports into the planner service only after confirmation", async () => {
