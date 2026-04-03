@@ -8,6 +8,8 @@ import {
   ButtonBuilder,
   ButtonInteraction,
   ButtonStyle,
+  StringSelectMenuBuilder,
+  StringSelectMenuInteraction,
 } from "discord.js";
 import { randomUUID } from "crypto";
 import { Command } from "../Command";
@@ -17,11 +19,13 @@ import { resolveCurrentCwlSeasonKey } from "../services/CwlRegistryService";
 import { cwlRotationService } from "../services/CwlRotationService";
 import {
   cwlRotationSheetService,
+  rebuildCwlRotationImportTabState,
   type CwlRotationSheetImportConfirmResult,
   type CwlRotationSheetImportPreview,
+  type CwlRotationImportRow,
 } from "../services/CwlRotationSheetService";
 import { cwlStateService } from "../services/CwlStateService";
-import { normalizeClanTag } from "../services/PlayerLinkService";
+import { normalizeClanTag, normalizePlayerTag } from "../services/PlayerLinkService";
 
 const CWL_EMBED_COLOR = 0xfee75c;
 const DISCORD_DESCRIPTION_LIMIT = 4096;
@@ -34,7 +38,11 @@ type CwlRotationImportSession = {
   requestedByUserId: string;
   createdAtMs: number;
   preview: CwlRotationSheetImportPreview;
+  baseWarnings: string[];
   overwrite: boolean;
+  view: "preview" | "review";
+  pageIndex: number;
+  reviewIndex: number;
 };
 
 const cwlRotationImportSessions = new Map<string, CwlRotationImportSession>();
@@ -166,7 +174,11 @@ function createCwlRotationImportSession(
     requestedByUserId,
     createdAtMs: Date.now(),
     preview,
+    baseWarnings: [...preview.warnings],
     overwrite,
+    view: "preview",
+    pageIndex: 0,
+    reviewIndex: 0,
   });
   return sessionId;
 }
@@ -190,23 +202,56 @@ export function isCwlRotationImportButtonCustomId(customId: string): boolean {
   return String(customId ?? "").startsWith(`${CWL_ROTATION_IMPORT_SESSION_PREFIX}:`);
 }
 
+export function isCwlRotationImportSelectMenuCustomId(customId: string): boolean {
+  return String(customId ?? "").startsWith(`${CWL_ROTATION_IMPORT_SESSION_PREFIX}:resolve:`);
+}
+
 function parseCwlRotationImportButtonCustomId(
   customId: string,
-): { action: "page" | "confirm" | "cancel"; sessionId: string; pageIndex: number | null } | null {
+): {
+  action: "page" | "review" | "review-page" | "preview" | "confirm" | "cancel";
+  sessionId: string;
+  pageIndex: number | null;
+} | null {
   const parts = String(customId ?? "").split(":");
   if (parts.length < 3 || parts[0] !== CWL_ROTATION_IMPORT_SESSION_PREFIX) return null;
   const action = parts[1];
-  if (action !== "page" && action !== "confirm" && action !== "cancel") return null;
+  if (
+    action !== "page" &&
+    action !== "review" &&
+    action !== "review-page" &&
+    action !== "preview" &&
+    action !== "confirm" &&
+    action !== "cancel"
+  ) {
+    return null;
+  }
   const sessionId = String(parts[2] ?? "").trim();
   if (!sessionId) return null;
   const pageIndex =
-    action === "page"
+    action === "page" || action === "review-page" || action === "preview"
       ? Math.max(0, Math.trunc(Number(parts[3] ?? "0") || 0))
       : null;
   return {
     action,
     sessionId,
     pageIndex,
+  };
+}
+
+function parseCwlRotationImportSelectMenuCustomId(
+  customId: string,
+): { action: "resolve"; sessionId: string; rowId: string } | null {
+  const parts = String(customId ?? "").split(":");
+  if (parts.length < 4 || parts[0] !== CWL_ROTATION_IMPORT_SESSION_PREFIX) return null;
+  if (parts[1] !== "resolve") return null;
+  const sessionId = String(parts[2] ?? "").trim();
+  const rowId = String(parts.slice(3).join(":") ?? "").trim();
+  if (!sessionId || !rowId) return null;
+  return {
+    action: "resolve",
+    sessionId,
+    rowId,
   };
 }
 
@@ -291,10 +336,75 @@ function buildCwlRotationImportPreviewEmbed(input: {
     });
 }
 
-function buildCwlRotationImportActionRows(input: {
+function buildCwlRotationImportReviewPageLines(input: {
+  preview: CwlRotationSheetImportPreview;
+  reviewRow: CwlRotationImportRow | null;
+  reviewIndex: number;
+  reviewCount: number;
+}): string[] {
+  const lines: string[] = [
+    `Season: ${input.preview.season}`,
+    `Source: ${input.preview.sourceSheetTitle || input.preview.sourceSheetId}`,
+    `Review rows: ${input.reviewCount}`,
+    "",
+  ];
+
+  if (!input.reviewRow) {
+    lines.push("All non-structural rows are resolved or explicitly ignored.");
+    return lines;
+  }
+
+  lines.push(`Row ${input.reviewIndex + 1} / ${input.reviewCount}`);
+  lines.push(`Sheet row: ${input.reviewRow.sheetRowNumber}`);
+  lines.push(`Raw: ${input.reviewRow.rawText}`);
+  lines.push(`Parsed tag: ${input.reviewRow.parsedPlayerTag || "none"}`);
+  lines.push(`Player: ${input.reviewRow.parsedPlayerName}`);
+  lines.push(`Reason: ${input.reviewRow.reason || "Review required."}`);
+
+  if (input.reviewRow.suggestions.length > 0) {
+    lines.push("");
+    lines.push("Suggested matches:");
+    for (const suggestion of input.reviewRow.suggestions.slice(0, 5)) {
+      lines.push(
+        `${suggestion.playerName} (${suggestion.playerTag}) - ${(suggestion.score * 100).toFixed(0)}%`,
+      );
+    }
+  }
+
+  return lines;
+}
+
+function buildCwlRotationImportReviewEmbed(input: {
+  preview: CwlRotationSheetImportPreview;
+  reviewRow: CwlRotationImportRow | null;
+  reviewIndex: number;
+  reviewCount: number;
+  sessionId: string;
+}): EmbedBuilder {
+  const titleSuffix = input.reviewRow ? `row ${input.reviewIndex + 1}` : "complete";
+  return new EmbedBuilder()
+    .setColor(CWL_EMBED_COLOR)
+    .setTitle(`/cwl rotations import review - ${titleSuffix}`)
+    .setDescription(
+      buildDescription(
+        buildCwlRotationImportReviewPageLines({
+          preview: input.preview,
+          reviewRow: input.reviewRow,
+          reviewIndex: input.reviewIndex,
+          reviewCount: input.reviewCount,
+        }),
+      ),
+    )
+    .setFooter({
+      text: `Session ${input.sessionId.slice(0, 8)} - review ${Math.max(0, input.reviewIndex + 1)}/${Math.max(1, input.reviewCount)}`,
+    });
+}
+
+function buildCwlRotationImportPreviewActionRows(input: {
   sessionId: string;
   pageIndex: number;
   hasImportableClans: boolean;
+  hasReviewRows: boolean;
 }): ActionRowBuilder<ButtonBuilder>[] {
   const prevButton = new ButtonBuilder()
     .setCustomId(`${CWL_ROTATION_IMPORT_SESSION_PREFIX}:page:${input.sessionId}:${Math.max(0, input.pageIndex - 1)}`)
@@ -306,6 +416,11 @@ function buildCwlRotationImportActionRows(input: {
     .setLabel("Next")
     .setStyle(ButtonStyle.Secondary)
     .setDisabled(input.pageIndex >= 6);
+  const reviewButton = new ButtonBuilder()
+    .setCustomId(`${CWL_ROTATION_IMPORT_SESSION_PREFIX}:review:${input.sessionId}`)
+    .setLabel(input.hasReviewRows ? "Review Rows" : "Review Complete")
+    .setStyle(ButtonStyle.Primary)
+    .setDisabled(!input.hasReviewRows);
   const confirmButton = new ButtonBuilder()
     .setCustomId(`${CWL_ROTATION_IMPORT_SESSION_PREFIX}:confirm:${input.sessionId}`)
     .setLabel("Save Import")
@@ -316,7 +431,118 @@ function buildCwlRotationImportActionRows(input: {
     .setLabel("Cancel")
     .setStyle(ButtonStyle.Danger);
 
-  return [new ActionRowBuilder<ButtonBuilder>().addComponents(prevButton, nextButton, confirmButton, cancelButton)];
+  return [new ActionRowBuilder<ButtonBuilder>().addComponents(prevButton, nextButton, reviewButton, confirmButton, cancelButton)];
+}
+
+function buildCwlRotationImportReviewActionRows(input: {
+  sessionId: string;
+  reviewIndex: number;
+  reviewCount: number;
+  hasImportableClans: boolean;
+  hasPendingRows: boolean;
+  previewPageIndex: number;
+}): ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>[] {
+  const prevButton = new ButtonBuilder()
+    .setCustomId(`${CWL_ROTATION_IMPORT_SESSION_PREFIX}:review-page:${input.sessionId}:${Math.max(0, input.reviewIndex - 1)}`)
+    .setLabel("Prev Row")
+    .setStyle(ButtonStyle.Secondary)
+    .setDisabled(input.reviewIndex <= 0);
+  const nextButton = new ButtonBuilder()
+    .setCustomId(`${CWL_ROTATION_IMPORT_SESSION_PREFIX}:review-page:${input.sessionId}:${Math.min(Math.max(0, input.reviewCount - 1), input.reviewIndex + 1)}`)
+    .setLabel("Next Row")
+    .setStyle(ButtonStyle.Secondary)
+    .setDisabled(input.reviewIndex >= input.reviewCount - 1);
+  const backButton = new ButtonBuilder()
+    .setCustomId(`${CWL_ROTATION_IMPORT_SESSION_PREFIX}:preview:${input.sessionId}:${input.previewPageIndex}`)
+    .setLabel("Back to Preview")
+    .setStyle(ButtonStyle.Primary);
+  const confirmButton = new ButtonBuilder()
+    .setCustomId(`${CWL_ROTATION_IMPORT_SESSION_PREFIX}:confirm:${input.sessionId}`)
+    .setLabel("Save Import")
+    .setStyle(ButtonStyle.Success)
+    .setDisabled(!input.hasImportableClans || input.hasPendingRows);
+  const cancelButton = new ButtonBuilder()
+    .setCustomId(`${CWL_ROTATION_IMPORT_SESSION_PREFIX}:cancel:${input.sessionId}`)
+    .setLabel("Cancel")
+    .setStyle(ButtonStyle.Danger);
+
+  return [
+    new ActionRowBuilder<ButtonBuilder>().addComponents(prevButton, nextButton, backButton, confirmButton, cancelButton),
+  ];
+}
+
+function buildCwlRotationImportReviewSelectMenu(input: {
+  sessionId: string;
+  reviewRow: CwlRotationImportRow;
+}): ActionRowBuilder<StringSelectMenuBuilder> | null {
+  if (input.reviewRow.ignored || input.reviewRow.resolvedPlayerTag) return null;
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId(`${CWL_ROTATION_IMPORT_SESSION_PREFIX}:resolve:${input.sessionId}:${input.reviewRow.rowId}`)
+    .setPlaceholder("Choose a tracked player mapping or ignore this row");
+
+  const options = input.reviewRow.suggestions.slice(0, 25).map((suggestion) => ({
+    label: `${suggestion.playerName}`.slice(0, 100),
+    value: `tag:${suggestion.playerTag}`,
+    description: `${suggestion.playerTag} • ${(suggestion.score * 100).toFixed(0)}%`.slice(0, 100),
+  }));
+  options.push({
+    label: "Ignore this row",
+    value: "ignore",
+    description: "Leave this row out of the imported plan.",
+  });
+  menu.addOptions(options);
+  return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu);
+}
+
+function getCwlRotationImportPendingRows(preview: CwlRotationSheetImportPreview): CwlRotationImportRow[] {
+  return preview.matchedClans.flatMap((clan) =>
+    clan.parsedRows.filter((row) => row.classification !== "exact_match" && !row.ignored && !row.resolvedPlayerTag),
+  );
+}
+
+function getCwlRotationImportIgnoredRows(preview: CwlRotationSheetImportPreview): CwlRotationImportRow[] {
+  return preview.matchedClans.flatMap((clan) => clan.parsedRows.filter((row) => row.ignored));
+}
+
+function getCwlRotationImportReviewRows(preview: CwlRotationSheetImportPreview): CwlRotationImportRow[] {
+  return preview.matchedClans.flatMap((clan) =>
+    clan.parsedRows.filter((row) => row.classification !== "exact_match" && !row.ignored && !row.resolvedPlayerTag),
+  );
+}
+
+function rebuildImportPreviewSessionState(session: CwlRotationImportSession): void {
+  const matchedClans = session.preview.matchedClans.map((clan) => rebuildCwlRotationImportTabState(clan, session.overwrite));
+  session.preview = {
+    ...session.preview,
+    matchedClans,
+    warnings: [
+      ...stripCwlRotationImportSummaryWarnings(session.baseWarnings),
+      ...buildCwlRotationImportWarnings({
+        ...session.preview,
+        matchedClans,
+      }),
+    ],
+  };
+}
+
+function buildCwlRotationImportWarnings(preview: CwlRotationSheetImportPreview): string[] {
+  const warnings: string[] = [];
+  const structuralCount = preview.matchedClans.reduce((total, clan) => total + clan.structuralRowCount, 0);
+  const pendingCount = getCwlRotationImportPendingRows(preview).length;
+  const ignoredCount = getCwlRotationImportIgnoredRows(preview).length;
+  if (structuralCount > 0) warnings.push(`Skipped ${structuralCount} structural rows.`);
+  if (pendingCount > 0) warnings.push(`${pendingCount} row${pendingCount === 1 ? "" : "s"} need review.`);
+  if (ignoredCount > 0) warnings.push(`${ignoredCount} row${ignoredCount === 1 ? "" : "s"} explicitly ignored.`);
+  return warnings;
+}
+
+function stripCwlRotationImportSummaryWarnings(warnings: string[]): string[] {
+  return warnings.filter(
+    (warning) =>
+      !/^Skipped \d+ structural rows\.$/i.test(warning) &&
+      !/^\d+ row(?:s)? need review\.$/i.test(warning) &&
+      !/^\d+ row(?:s)? explicitly ignored\.$/i.test(warning),
+  );
 }
 
 function buildCwlRotationShowButtonCustomId(input: {
@@ -512,6 +738,17 @@ function buildCwlRotationImportSummaryEmbed(input: {
         .join(" | ")}`,
     );
   }
+  if (input.result.ignoredRows.length > 0) {
+    lines.push("");
+    lines.push(
+      `Ignored rows: ${input.result.ignoredRows
+        .map(
+          (entry) =>
+            `${entry.clanName || entry.clanTag} ${entry.tabTitle} row ${entry.sheetRowNumber} (${entry.rawText})`,
+        )
+        .join(" | ")}`,
+    );
+  }
 
   if (lines.at(-1) === "") {
     lines.pop();
@@ -521,6 +758,64 @@ function buildCwlRotationImportSummaryEmbed(input: {
     .setColor(CWL_EMBED_COLOR)
     .setTitle("/cwl rotations import")
     .setDescription(buildDescription(lines));
+}
+
+function buildCwlRotationImportSessionMessage(
+  sessionId: string,
+  session: CwlRotationImportSession,
+): {
+  embeds: EmbedBuilder[];
+  components: ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>[];
+} {
+  const hasImportableClans = session.preview.matchedClans.some((clan) => clan.importable);
+  const hasReviewRows = getCwlRotationImportReviewRows(session.preview).length > 0;
+  if (session.view === "review") {
+    const reviewRows = getCwlRotationImportReviewRows(session.preview);
+    const reviewIndex = Math.max(0, Math.min(session.reviewIndex, Math.max(0, reviewRows.length - 1)));
+    const reviewRow = reviewRows[reviewIndex] ?? null;
+    const components: ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>[] = [
+      ...buildCwlRotationImportReviewActionRows({
+        sessionId,
+        reviewIndex,
+        reviewCount: reviewRows.length,
+        hasImportableClans,
+        hasPendingRows: reviewRows.length > 0,
+        previewPageIndex: session.pageIndex,
+      }),
+    ];
+    if (reviewRow) {
+      const menu = buildCwlRotationImportReviewSelectMenu({ sessionId, reviewRow });
+      if (menu) components.push(menu);
+    }
+    return {
+      embeds: [
+        buildCwlRotationImportReviewEmbed({
+          preview: session.preview,
+          reviewRow,
+          reviewIndex,
+          reviewCount: reviewRows.length,
+          sessionId,
+        }),
+      ],
+      components,
+    };
+  }
+
+  return {
+    embeds: [
+      buildCwlRotationImportPreviewEmbed({
+        preview: session.preview,
+        pageIndex: session.pageIndex,
+        sessionId,
+      }),
+    ],
+    components: buildCwlRotationImportPreviewActionRows({
+      sessionId,
+      pageIndex: session.pageIndex,
+      hasImportableClans,
+      hasReviewRows,
+    }),
+  };
 }
 
 async function autocompleteCwlTrackedClan(
@@ -805,21 +1100,13 @@ async function handleRotationImportSubcommand(interaction: ChatInputCommandInter
     overwrite,
     interaction.user.id,
   );
-  const pageIndex = 0;
-  await interaction.editReply({
-    embeds: [
-      buildCwlRotationImportPreviewEmbed({
-        preview,
-        pageIndex,
-        sessionId,
-      }),
-    ],
-    components: buildCwlRotationImportActionRows({
-      sessionId,
-      pageIndex,
-      hasImportableClans: preview.matchedClans.some((clan) => clan.importable),
-    }),
-  });
+  const session = getCwlRotationImportSession(sessionId, interaction.user.id);
+  if (!session) {
+    await interaction.editReply("Failed to create the CWL rotation import preview.");
+    return;
+  }
+  const rendered = buildCwlRotationImportSessionMessage(sessionId, session);
+  await interaction.editReply(rendered);
 }
 
 async function handleRotationExportSubcommand(interaction: ChatInputCommandInteraction) {
@@ -868,20 +1155,42 @@ export async function handleCwlRotationImportButtonInteraction(
   }
 
   if (parsed.action === "page") {
-    const pageIndex = Math.max(0, Math.min(6, parsed.pageIndex ?? 0));
-    await interaction.update({
-      embeds: [
-        buildCwlRotationImportPreviewEmbed({
-          preview: session.preview,
-          pageIndex,
-          sessionId: parsed.sessionId,
-        }),
-      ],
-      components: buildCwlRotationImportActionRows({
-        sessionId: parsed.sessionId,
-        pageIndex,
-        hasImportableClans: session.preview.matchedClans.some((clan) => clan.importable),
-      }),
+    session.view = "preview";
+    session.pageIndex = Math.max(0, Math.min(6, parsed.pageIndex ?? 0));
+    rebuildImportPreviewSessionState(session);
+    await interaction.update(buildCwlRotationImportSessionMessage(parsed.sessionId, session));
+    return;
+  }
+
+  if (parsed.action === "preview") {
+    session.view = "preview";
+    session.pageIndex = Math.max(0, Math.min(6, parsed.pageIndex ?? session.pageIndex));
+    rebuildImportPreviewSessionState(session);
+    await interaction.update(buildCwlRotationImportSessionMessage(parsed.sessionId, session));
+    return;
+  }
+
+  if (parsed.action === "review") {
+    session.view = "review";
+    session.reviewIndex = 0;
+    rebuildImportPreviewSessionState(session);
+    await interaction.update(buildCwlRotationImportSessionMessage(parsed.sessionId, session));
+    return;
+  }
+
+  if (parsed.action === "review-page") {
+    session.view = "review";
+    session.reviewIndex = Math.max(0, Math.min(getCwlRotationImportReviewRows(session.preview).length - 1, parsed.pageIndex ?? 0));
+    rebuildImportPreviewSessionState(session);
+    await interaction.update(buildCwlRotationImportSessionMessage(parsed.sessionId, session));
+    return;
+  }
+
+  const pendingRows = getCwlRotationImportPendingRows(session.preview);
+  if (pendingRows.length > 0) {
+    await interaction.reply({
+      ephemeral: true,
+      content: `Cannot save the CWL rotation import while ${pendingRows.length} row${pendingRows.length === 1 ? "" : "s"} still need review.`,
     });
     return;
   }
@@ -905,6 +1214,72 @@ export async function handleCwlRotationImportButtonInteraction(
       components: [],
     });
   }
+}
+
+export async function handleCwlRotationImportSelectMenuInteraction(
+  interaction: StringSelectMenuInteraction,
+): Promise<void> {
+  const parsed = parseCwlRotationImportSelectMenuCustomId(interaction.customId);
+  if (!parsed) return;
+  const session = getCwlRotationImportSession(parsed.sessionId, interaction.user.id);
+  if (!session) {
+    await interaction.reply({
+      content: "That CWL rotation import preview has expired or is no longer available.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const targetRow = session.preview.matchedClans.flatMap((clan) => clan.parsedRows).find((row) => row.rowId === parsed.rowId);
+  if (!targetRow) {
+    await interaction.reply({
+      content: "That CWL rotation import row is no longer available.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const choice = String(interaction.values[0] ?? "");
+  if (choice === "ignore") {
+    targetRow.ignored = true;
+    targetRow.classification = "explicitly_ignored";
+    targetRow.reason = "Explicitly ignored by the importing admin.";
+    targetRow.resolvedPlayerTag = null;
+    targetRow.resolvedPlayerName = null;
+  } else if (choice.startsWith("tag:")) {
+    const playerTag = normalizePlayerTag(choice.slice(4));
+    const suggestion = targetRow.suggestions.find((entry) => normalizePlayerTag(entry.playerTag) === playerTag) ?? null;
+    if (!suggestion) {
+      await interaction.reply({
+        content: "That tracked-player mapping is no longer available.",
+        ephemeral: true,
+      });
+      return;
+    }
+    targetRow.resolvedPlayerTag = suggestion.playerTag;
+    targetRow.resolvedPlayerName = suggestion.playerName;
+    targetRow.ignored = false;
+    if (targetRow.classification === "unresolved_needs_review" || targetRow.classification === "ambiguous_match_needs_review" || targetRow.classification === "fuzzy_match_needs_review") {
+      targetRow.reason = null;
+    }
+  } else {
+    await interaction.reply({
+      content: "Unsupported CWL rotation import selection.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  rebuildImportPreviewSessionState(session);
+  const reviewRows = getCwlRotationImportReviewRows(session.preview);
+  if (reviewRows.length <= 0) {
+    session.view = "preview";
+  } else {
+    session.view = "review";
+    session.reviewIndex = Math.min(session.reviewIndex, reviewRows.length - 1);
+  }
+
+  await interaction.update(buildCwlRotationImportSessionMessage(parsed.sessionId, session));
 }
 
 export async function handleCwlRotationShowButtonInteraction(

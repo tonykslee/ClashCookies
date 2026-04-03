@@ -112,7 +112,7 @@ describe("CwlRotationSheetService", () => {
     expect(preview.matchedClans[0]?.days[1]?.members[1]?.playerName).toBe("Second Player");
     expect(preview.matchedClans[0]?.days[1]?.members[1]?.subbedOut).toBe(false);
     expect(preview.matchedClans[0]?.warnings).toEqual(
-      expect.arrayContaining([expect.stringContaining("Skipped 4 non-data rows.")]),
+      expect.arrayContaining([expect.stringContaining("Skipped 5 structural rows.")]),
     );
     expect(preview.skippedTrackedClans).toEqual(
       expect.arrayContaining([
@@ -214,7 +214,7 @@ describe("CwlRotationSheetService", () => {
     ).rejects.toThrow("Unable to read the public Google Sheet import");
   });
 
-  it("summarizes malformed table tabs with one compact format warning instead of cell spam", async () => {
+  it("sends malformed player-like rows into review with a compact format warning instead of cell spam", async () => {
     vi.spyOn(PublicGoogleSheetsService.prototype, "readPublishedWorkbook").mockResolvedValue({
       title: "Imported CWL Planner",
       tabs: [
@@ -226,10 +226,8 @@ describe("CwlRotationSheetService", () => {
       ],
     });
     vi.spyOn(PublicGoogleSheetsService.prototype, "readPublishedSheetValues").mockResolvedValue([
-      ["Season: 2026-04"],
-      ["Clan: CWL Alpha"],
-      ["Lethargic Yunan"],
-      ["Second Player"],
+      ["Member", "Total Wars", "Day 1", "Day 2", "Day 3", "Day 4", "Day 5", "Day 6", "Day 7"],
+      ["IN", "12", "IN", "", "", "", "", "", ""],
     ]);
 
     const preview = await cwlRotationSheetService.buildImportPreview({
@@ -237,12 +235,16 @@ describe("CwlRotationSheetService", () => {
       overwrite: false,
     });
 
-    expect(preview.matchedClans).toHaveLength(0);
+    expect(preview.matchedClans).toHaveLength(1);
+    expect(preview.matchedClans[0]?.importable).toBe(false);
+    expect(preview.matchedClans[0]?.reviewRequiredRowCount).toBe(1);
+    expect(preview.matchedClans[0]?.warnings).toEqual(
+      expect.arrayContaining([expect.stringContaining("1 row need review")]),
+    );
     expect(preview.skippedTrackedClans).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          clanTag: "#2QG2C08UP",
-          reason: expect.stringContaining("Could not parse tab as a CWL rotation table"),
+          clanTag: "#9GLGQCCU",
         }),
       ]),
     );
@@ -276,6 +278,9 @@ describe("CwlRotationSheetService", () => {
             importable: true,
             importBlockedReason: null,
             warnings: ["Tab was loosely formatted."],
+            structuralRowCount: 0,
+            reviewRequiredRowCount: 0,
+            ignoredRowCount: 0,
             rosterRows: [
               { playerTag: "#PYLQ0289", playerName: "Alpha" },
             ],
@@ -299,6 +304,31 @@ describe("CwlRotationSheetService", () => {
                     assignmentOrder: 0,
                   },
                 ],
+              },
+            ],
+            parsedRows: [
+              {
+                rowId: "cwl-alpha-roster:3",
+                sheetRowNumber: 3,
+                tabTitle: "CWL Alpha roster",
+                clanTag: "#2QG2C08UP",
+                clanName: "CWL Alpha",
+                rawText: "Alpha | #PYLQ0289 | 12 | IN",
+                parsedPlayerTag: "#PYLQ0289",
+                parsedPlayerName: "Alpha",
+                classification: "exact_match",
+                reason: null,
+                suggestions: [],
+                dayRows: [
+                  {
+                    roundDay: 1,
+                    subbedOut: false,
+                    assignmentOrder: 0,
+                  },
+                ],
+                resolvedPlayerTag: "#PYLQ0289",
+                resolvedPlayerName: "Alpha",
+                ignored: false,
               },
             ],
           },
@@ -330,7 +360,118 @@ describe("CwlRotationSheetService", () => {
     });
   });
 
-  it("exports active planner data to a new sheet payload", async () => {
+  it("lists ignored rows explicitly during confirmation and still persists resolved rows", async () => {
+    const persistSpy = vi.spyOn(cwlRotationService, "persistImportedPlan").mockResolvedValue({
+      outcome: "created",
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      clanName: "CWL Alpha",
+      version: 4,
+      dayCount: 1,
+      warnings: [],
+      sourceTabName: "CWL Alpha roster",
+    });
+
+    const result = await cwlRotationSheetService.confirmImport({
+      overwrite: true,
+      preview: {
+        sourceSheetId: "sheet-1",
+        sourceSheetTitle: "Imported CWL Planner",
+        season: "2026-04",
+        matchedClans: [
+          {
+            clanTag: "#2QG2C08UP",
+            clanName: "CWL Alpha",
+            tabTitle: "CWL Alpha roster",
+            existingVersion: null,
+            importable: true,
+            importBlockedReason: null,
+            warnings: [],
+            structuralRowCount: 1,
+            reviewRequiredRowCount: 0,
+            ignoredRowCount: 1,
+            rosterRows: [{ playerTag: "#PYLQ0289", playerName: "Alpha" }],
+            days: [
+              {
+                roundDay: 1,
+                lineupSize: 1,
+                rows: [
+                  {
+                    playerTag: "#PYLQ0289",
+                    playerName: "Alpha",
+                    subbedOut: false,
+                    assignmentOrder: 0,
+                  },
+                ],
+                members: [
+                  {
+                    playerTag: "#PYLQ0289",
+                    playerName: "Alpha",
+                    subbedOut: false,
+                    assignmentOrder: 0,
+                  },
+                ],
+              },
+            ],
+            parsedRows: [
+              {
+                rowId: "cwl-alpha-roster:3",
+                sheetRowNumber: 3,
+                tabTitle: "CWL Alpha roster",
+                clanTag: "#2QG2C08UP",
+                clanName: "CWL Alpha",
+                rawText: "Alpha | #PYLQ0289 | 1 | IN",
+                parsedPlayerTag: "#PYLQ0289",
+                parsedPlayerName: "Alpha",
+                classification: "exact_match",
+                reason: null,
+                suggestions: [],
+                dayRows: [
+                  { roundDay: 1, subbedOut: false, assignmentOrder: 0 },
+                ],
+                resolvedPlayerTag: "#PYLQ0289",
+                resolvedPlayerName: "Alpha",
+                ignored: false,
+              },
+              {
+                rowId: "cwl-alpha-roster:4",
+                sheetRowNumber: 4,
+                tabTitle: "CWL Alpha roster",
+                clanTag: "#2QG2C08UP",
+                clanName: "CWL Alpha",
+                rawText: "Bravo | 12 | ",
+                parsedPlayerTag: null,
+                parsedPlayerName: "Bravo",
+                classification: "explicitly_ignored",
+                reason: "Explicitly ignored by the importing admin.",
+                suggestions: [],
+                dayRows: [
+                  { roundDay: 1, subbedOut: true, assignmentOrder: 0 },
+                ],
+                resolvedPlayerTag: null,
+                resolvedPlayerName: null,
+                ignored: true,
+              },
+            ],
+          },
+        ],
+        skippedTrackedClans: [],
+        skippedTabs: [],
+        warnings: [],
+      },
+    });
+
+    expect(persistSpy).toHaveBeenCalledTimes(1);
+    expect(result.ignoredRows).toEqual([
+      expect.objectContaining({
+        clanTag: "#2QG2C08UP",
+        tabTitle: "CWL Alpha roster",
+        sheetRowNumber: 4,
+      }),
+    ]);
+  });
+
+  it("exports active planner data to a canonical tabular sheet payload", async () => {
     vi.spyOn(cwlRotationService, "listActivePlanExports").mockResolvedValue([
       {
         season: "2026-04",
@@ -397,11 +538,91 @@ describe("CwlRotationSheetService", () => {
         ]),
       }),
     );
+    const exportedTabValues = (writeTabs.mock.calls[0]?.[0] as any)?.tabs?.[0]?.values as string[][] | undefined;
+    expect(exportedTabValues).toEqual([
+      ["Season: 2026-04"],
+      ["Clan: CWL Alpha"],
+      ["Warnings: Watch coverage"],
+      [],
+      ["Member", "Player Tag", "Total Wars", "Day 1", "Day 2", "Day 3", "Day 4", "Day 5", "Day 6", "Day 7"],
+      ["Alpha", "#PYLQ0289", "1", "IN", "", "", "", "", "", ""],
+      ["Bravo", "#QGRJ2222", "0", "", "", "", "", "", "", ""],
+    ]);
     expect(publicSpy).toHaveBeenCalledWith("sheet-new");
     expect(result).toEqual({
       spreadsheetId: "sheet-new",
       spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet-new/edit?usp=sharing",
       tabCount: 1,
     });
+  });
+
+  it("reimports canonical exported planner data with exact tag-based parity and no review", async () => {
+    vi.spyOn(cwlRotationService, "listActivePlanExports").mockResolvedValue([
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        clanName: "CWL Alpha",
+        version: 3,
+        rosterSize: 2,
+        generatedFromRoundDay: 2,
+        excludedPlayerTags: ["#QGRJ2222"],
+        warningSummary: null,
+        metadata: { source: "sheet-import" },
+        days: [
+          {
+            roundDay: 1,
+            lineupSize: 2,
+            locked: false,
+            metadata: { source: "sheet-import" },
+            rows: [
+              {
+                playerTag: "#PYLQ0289",
+                playerName: "Alpha",
+                subbedOut: false,
+                assignmentOrder: 0,
+              },
+              {
+                playerTag: "#QGRJ2222",
+                playerName: "Bravo",
+                subbedOut: true,
+                assignmentOrder: 1,
+              },
+            ],
+          },
+        ],
+      },
+    ]);
+    vi.spyOn(GoogleSheetsService.prototype, "createSpreadsheet").mockResolvedValue({
+      spreadsheetId: "sheet-new",
+      spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet-new/edit?usp=sharing",
+    });
+    const writeTabs = vi
+      .spyOn(GoogleSheetsService.prototype, "writeSpreadsheetTabs")
+      .mockResolvedValue(undefined);
+    vi.spyOn(GoogleSheetsService.prototype, "makeSpreadsheetPublic").mockResolvedValue(undefined);
+
+    await cwlRotationSheetService.exportActivePlans({
+      season: "2026-04",
+    });
+
+    const exportedValues = (writeTabs.mock.calls[0]?.[0] as any)?.tabs?.[0]?.values as string[][];
+    vi.spyOn(GoogleSheetsService.prototype, "getSpreadsheetMetadata").mockResolvedValue({
+      spreadsheetId: "sheet-new",
+      title: "Canonical CWL Export",
+      sheets: [{ sheetId: 1, title: "CWL Alpha #2QG2C08UP", index: 0, hidden: false }],
+    });
+    vi.spyOn(GoogleSheetsService.prototype, "readValues").mockResolvedValue(exportedValues);
+
+    const preview = await cwlRotationSheetService.buildImportPreview({
+      sheetLink: "https://docs.google.com/spreadsheets/d/sheet-new/edit",
+      overwrite: false,
+    });
+
+    expect(preview.matchedClans).toHaveLength(1);
+    expect(preview.matchedClans[0]?.importable).toBe(true);
+    expect(preview.matchedClans[0]?.reviewRequiredRowCount).toBe(0);
+    expect(preview.matchedClans[0]?.parsedRows.every((row) => row.classification === "exact_match")).toBe(true);
+    expect(preview.matchedClans[0]?.days[0]?.members[0]?.playerTag).toBe("#PYLQ0289");
+    expect(preview.matchedClans[0]?.days[0]?.members[1]?.playerTag).toBe("#QGRJ2222");
   });
 });
