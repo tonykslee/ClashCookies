@@ -508,6 +508,7 @@ function buildCwlRotationImportReviewEmbed(input: {
   sessionId: string;
   clanLabel: string;
   clanConfirmed: boolean;
+  clanReadyToConfirm: boolean;
   clanHasPendingRows: boolean;
 }): EmbedBuilder {
   const titleSuffix = input.reviewRow ? `${input.clanLabel} - row ${input.reviewIndex + 1}` : `${input.clanLabel} - complete`;
@@ -516,7 +517,7 @@ function buildCwlRotationImportReviewEmbed(input: {
     .setTitle(`/cwl rotations import review - ${titleSuffix}`)
     .setDescription(
       buildDescription(
-      buildCwlRotationImportReviewPageLines({
+        buildCwlRotationImportReviewPageLines({
           preview: input.preview,
           clanSession: input.clanSession,
           reviewRow: input.reviewRow,
@@ -524,7 +525,7 @@ function buildCwlRotationImportReviewEmbed(input: {
           reviewCount: input.reviewCount,
           clanLabel: input.clanLabel,
           clanConfirmed: input.clanConfirmed,
-          clanReadyToConfirm: Boolean(input.clanSession?.readyToConfirm),
+          clanReadyToConfirm: input.clanReadyToConfirm,
           clanHasPendingRows: input.clanHasPendingRows,
         }),
       ),
@@ -1124,6 +1125,7 @@ function buildCwlRotationImportSessionMessage(
       embeds: [
         buildCwlRotationImportReviewEmbed({
           preview: session.preview,
+          clanSession: activeClan,
           reviewRow,
           reviewIndex,
           reviewCount,
