@@ -309,11 +309,15 @@ function parseCwlRotationImportButtonCustomId(
   ) {
     return null;
   }
-  const sessionId = String(parts[2] ?? "").trim();
+  const hasReviewPageDirection = action === "review-page" && (parts[2] === "prev" || parts[2] === "next");
+  const sessionId = String(hasReviewPageDirection ? parts[3] ?? "" : parts[2] ?? "").trim();
   if (!sessionId) return null;
   const pageIndex =
     action === "page" || action === "review-page" || action === "preview"
-      ? Math.max(0, Math.trunc(Number(parts[3] ?? "0") || 0))
+      ? Math.max(
+          0,
+          Math.trunc(Number(hasReviewPageDirection ? parts[4] ?? "0" : parts[3] ?? "0") || 0),
+        )
       : null;
   return {
     action,
@@ -579,13 +583,15 @@ function buildCwlRotationImportReviewActionRows(input: {
   canConfirmClan: boolean;
   currentClanLabel: string;
 }): ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>[] {
+  const prevPageIndex = Math.max(0, input.reviewIndex - 1);
+  const nextPageIndex = Math.min(Math.max(0, input.reviewCount - 1), input.reviewIndex + 1);
   const prevButton = new ButtonBuilder()
-    .setCustomId(`${CWL_ROTATION_IMPORT_SESSION_PREFIX}:review-page:${input.sessionId}:${Math.max(0, input.reviewIndex - 1)}`)
+    .setCustomId(`${CWL_ROTATION_IMPORT_SESSION_PREFIX}:review-page:prev:${input.sessionId}:${prevPageIndex}`)
     .setLabel("Prev Row")
     .setStyle(ButtonStyle.Secondary)
     .setDisabled(input.reviewIndex <= 0);
   const nextButton = new ButtonBuilder()
-    .setCustomId(`${CWL_ROTATION_IMPORT_SESSION_PREFIX}:review-page:${input.sessionId}:${Math.min(Math.max(0, input.reviewCount - 1), input.reviewIndex + 1)}`)
+    .setCustomId(`${CWL_ROTATION_IMPORT_SESSION_PREFIX}:review-page:next:${input.sessionId}:${nextPageIndex}`)
     .setLabel("Next Row")
     .setStyle(ButtonStyle.Secondary)
     .setDisabled(input.reviewIndex >= input.reviewCount - 1);

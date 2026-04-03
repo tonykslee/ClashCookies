@@ -699,6 +699,20 @@ describe("/cwl command", () => {
     expect(getUpdatedDescription(reviewInteraction)).toContain("Review rows: 1");
     expect(getUpdatedDescription(reviewInteraction)).toContain("Sheet row: 4");
     expect(getUpdatedDescription(reviewInteraction)).toContain("Raw: Bravoo | 12 | IN");
+    expect(new Set(getComponentButtonCustomIds(reviewInteraction)).size).toBe(getComponentButtonCustomIds(reviewInteraction).length);
+
+    const reviewButtonIds = getComponentButtonCustomIds(reviewInteraction);
+    const legacyReviewPageId = reviewButtonIds.find((id) => id.includes(":review-page:"));
+    expect(legacyReviewPageId).toBeTruthy();
+    const legacyReviewInteraction = {
+      customId: String(legacyReviewPageId).replace(":review-page:prev:", ":review-page:").replace(":review-page:next:", ":review-page:"),
+      user: { id: "111111111111111111" },
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await handleCwlRotationImportButtonInteraction(legacyReviewInteraction as any);
+    expect(getUpdatedDescription(legacyReviewInteraction)).toContain("Sheet row: 4");
 
     const selectId = getComponentSelectMenuCustomIds(reviewInteraction).find((id) => id.includes(":resolve:"));
     expect(selectId).toBeTruthy();
@@ -1125,6 +1139,7 @@ describe("/cwl command", () => {
     expect(initialOptions.map((option) => option.label)).toEqual(
       expect.arrayContaining(["Alpha", "Bravo", "Ignore this row"]),
     );
+    expect(new Set(getComponentButtonCustomIds(reviewInteraction)).size).toBe(getComponentButtonCustomIds(reviewInteraction).length);
 
     const selectId = getComponentSelectMenuCustomIds(reviewInteraction).find((id) => id.includes(":resolve:"));
     expect(selectId).toBeTruthy();
@@ -1142,24 +1157,35 @@ describe("/cwl command", () => {
     expect(secondOptions.map((option) => option.label)).toEqual(
       expect.arrayContaining(["Bravo", "Ignore this row"]),
     );
+    expect(new Set(getComponentButtonCustomIds(firstSelectInteraction)).size).toBe(getComponentButtonCustomIds(firstSelectInteraction).length);
 
-    const secondSelectId = getComponentSelectMenuCustomIds(firstSelectInteraction).find((id) => id.includes(":resolve:"));
-    expect(secondSelectId).toBeTruthy();
-    const duplicateInteraction = {
-      customId: secondSelectId,
-      values: ["tag:#PYLQ0289"],
+    const nextReviewButtonId = getComponentButtonCustomIds(reviewInteraction).find((id) => id.includes(":review-page:next:"));
+    expect(nextReviewButtonId).toBeTruthy();
+    const nextReviewInteraction = {
+      customId: nextReviewButtonId,
       user: { id: "111111111111111111" },
       update: vi.fn().mockResolvedValue(undefined),
       reply: vi.fn().mockResolvedValue(undefined),
     };
 
-    await handleCwlRotationImportSelectMenuInteraction(duplicateInteraction as any);
-    expect(duplicateInteraction.reply).toHaveBeenCalledWith(
-      expect.objectContaining({
-        content: expect.stringContaining("already mapped"),
-        ephemeral: true,
-      }),
-    );
+    await handleCwlRotationImportButtonInteraction(nextReviewInteraction as any);
+    expect(getUpdatedDescription(nextReviewInteraction)).toContain("Sheet row: 5");
+    expect(getUpdatedDescription(nextReviewInteraction)).toContain("Raw: Bravo-ish | 12 | IN");
+    expect(new Set(getComponentButtonCustomIds(nextReviewInteraction)).size).toBe(getComponentButtonCustomIds(nextReviewInteraction).length);
+
+    const legacyPrevButtonId = getComponentButtonCustomIds(nextReviewInteraction)
+      .find((id) => id.includes(":review-page:prev:"))
+      ?.replace(":review-page:prev:", ":review-page:");
+    expect(legacyPrevButtonId).toBeTruthy();
+    const legacyPrevInteraction = {
+      customId: legacyPrevButtonId,
+      user: { id: "111111111111111111" },
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await handleCwlRotationImportButtonInteraction(legacyPrevInteraction as any);
+    expect(getUpdatedDescription(legacyPrevInteraction)).toContain("Sheet row: 5");
   });
 
   it("surfaces a clear message when the import sheet link format is unsupported", async () => {
