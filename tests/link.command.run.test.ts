@@ -51,6 +51,7 @@ type InteractionInput = {
   sheetUrl?: string | null;
   playerTag?: string | null;
   userOverride?: string | null;
+  memberRoleIds?: string[];
   clanTag?: string | null;
   channel?: any;
   userId?: string;
@@ -78,6 +79,13 @@ function makeInteraction(input: InteractionInput) {
     guildId: "guild-1",
     inGuild: vi.fn().mockReturnValue(true),
     guild: { members: { cache: guildMemberCache } },
+    member: {
+      roles: {
+        cache: new Map(
+          (input.memberRoleIds ?? []).map((roleId) => [roleId, { id: roleId }]),
+        ),
+      },
+    },
     client: {
       users: { cache: userCache },
       ...(input.clientApplication
@@ -92,9 +100,14 @@ function makeInteraction(input: InteractionInput) {
       getSubcommand: vi.fn().mockReturnValue(input.subcommand),
       getString: vi.fn((name: string) => {
         if (name === "player-tag") return input.playerTag ?? null;
-        if (name === "user") return input.userOverride ?? null;
         if (name === "clan-tag") return input.clanTag ?? null;
         if (name === "sheet-url") return input.sheetUrl ?? null;
+        return null;
+      }),
+      getUser: vi.fn((name: string) => {
+        if (name === "user" && input.userOverride) {
+          return { id: input.userOverride };
+        }
         return null;
       }),
       getChannel: vi.fn((name: string) => {
@@ -279,7 +292,36 @@ describe("/link run", () => {
     );
   });
 
-  it("rejects create-for-other when admin override permission is denied", async () => {
+  it("allows FWA Leaders to create links for another Discord user", async () => {
+    vi.spyOn(
+      CommandPermissionService.prototype,
+      "getAllowedRoleIds",
+    ).mockResolvedValue([]);
+    vi.spyOn(
+      CommandPermissionService.prototype,
+      "getFwaLeaderRoleId",
+    ).mockResolvedValue("leader-role-1");
+    prismaMock.playerLink.findUnique.mockResolvedValue(null);
+    prismaMock.playerLink.create.mockResolvedValue({});
+    const interaction = makeInteraction({
+      subcommand: "create",
+      playerTag: "#pyl0289",
+      userOverride: "222222222222222222",
+      userId: "111111111111111111",
+      memberRoleIds: ["leader-role-1"],
+    });
+
+    await Link.run({} as any, interaction as any, {} as any);
+
+    expect(prismaMock.playerLink.create).toHaveBeenCalledWith({
+      data: { playerTag: "#PYL0289", discordUserId: "222222222222222222" },
+    });
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "created: #PYL0289 linked to <@222222222222222222>.",
+    );
+  });
+
+  it("rejects create-for-other when non-admin and non-FWA-leader permission is denied", async () => {
     vi.spyOn(
       CommandPermissionService.prototype,
       "canUseAnyTarget",
@@ -295,7 +337,7 @@ describe("/link run", () => {
     await Link.run({} as any, interaction as any, {} as any);
 
     expect(interaction.editReply).toHaveBeenCalledWith(
-      "not_allowed: only admins can create links for another Discord user.",
+      "not_allowed: only admins or FWA Leaders can create links for another Discord user.",
     );
     expect(prismaMock.playerLink.create).not.toHaveBeenCalled();
   });

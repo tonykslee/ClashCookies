@@ -376,7 +376,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     summary: "Manage local Discord-player links using PlayerLink.",
     details: [
       "`create` links one or more player tags to your Discord account when the tags are currently unlinked.",
-      "`create` with `user` is admin-only and can create a link for another Discord user when unlinked.",
+      "`create` with `user` uses the Discord user picker and can create a link for another Discord user when unlinked for admins and FWA Leaders.",
       "Existing links are never implicitly reassigned; delete-first is required before relinking to another user.",
       "`delete` removes a link when run by the linked user or an admin override target.",
       "`list` renders non-zero linked/unlinked count buckets with padded inline rows: linked rows start with a resolved `yes` status emoji and show `TH ServerDisplayName Player Wt`, unlinked rows start with a resolved `no` status emoji and show `TH #PLAYER_TAG Player Wt`.",
@@ -389,7 +389,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     ],
     examples: [
       "/link create player-tag:#ABC123,#DEF456",
-      "/link create player-tag:#ABC123 user:143827744717799425",
+      "/link create player-tag:#ABC123 user:@SomeUser",
       "/link delete player-tag:#ABC123",
       "/link list clan-tag:2QG2C08UP",
       "/link embed channel:#link-account",
