@@ -44,7 +44,7 @@ Core subsystems:
 - War state: `TrackedClan -> WarEventLogService/poll loops -> CurrentWar -> ClanWarHistory / ClanWarParticipation / WarAttacks / WarLookup / WarEvent / WarMailLifecycle / ClanPostedMessage`
 - Points sync: `points.fwafarm -> PointsSyncService -> ClanPointsSync`
 - Feed-backed current state: `FWAStats JSON feeds -> FwaFeedSchedulerService -> FwaClanCatalog / FwaPlayerCatalog / FwaClanMemberCurrent / FwaWarMemberCurrent / FwaClanWarLogCurrent`
-- Snapshot-backed todo: `PlayerLink + CurrentWar + CurrentCwlRound/CwlRoundMemberCurrent + activity signals -> TodoSnapshotService -> TodoPlayerSnapshot`
+- Snapshot-backed todo: `PlayerLink + TodoUserUsage + CurrentWar + CurrentCwlRound/CwlRoundMemberCurrent + activity signals -> TodoSnapshotService -> TodoPlayerSnapshot`
 - Persisted CWL state: `CwlTrackedClan -> CwlStateService -> CurrentCwlRound / CwlRoundMemberCurrent / CwlRoundHistory / CwlRoundMemberHistory / CwlPlayerClanSeason`
 - CWL planner state: `CurrentCwlRound + CwlRoundMemberCurrent + CwlPlayerClanSeason -> CwlRotationService -> CwlRotationPlan / CwlRotationPlanDay / CwlRotationPlanMember`, with sheet import/export orchestration layered on top for admin-only planner exchange flows.
 - Reminder delivery: `Reminder/UserActivityReminder config + snapshots/current war -> reminder schedulers -> delivery logs`
@@ -75,6 +75,7 @@ Important owners:
 | Points sync metadata | ClanPointsSync |
 | Posted notify/mail messages | ClanPostedMessage |
 | Active-war mail lifecycle | WarMailLifecycle |
+| Todo activation gate | TodoUserUsage |
 | Todo render snapshots | TodoPlayerSnapshot |
 | Guild reminders | Reminder* tables |
 | Personal reminders | UserActivityReminder* tables |

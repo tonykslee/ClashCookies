@@ -130,6 +130,12 @@ model TodoPlayerSnapshot {
   @@index([updatedAt])
 }
 
+model TodoUserUsage {
+  discordUserId String   @id
+  activatedAt   DateTime @default(now())
+  lastUsedAt    DateTime @updatedAt
+}
+
 enum ReminderType {
   WAR_CWL
   RAIDS
