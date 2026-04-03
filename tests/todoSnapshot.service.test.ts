@@ -692,6 +692,68 @@ describe("TodoSnapshotService", () => {
     );
   });
 
+  it("persists battle-day CWL attack counts from corrected current-round owner rows", async () => {
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        clanTag: "#PQL0289",
+        playerName: "Alpha",
+        sourceSyncedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        clanTag: "#PQL0289",
+        sourceSyncedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#PQL0289", name: "Home Clan" },
+    ]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([
+      { tag: "#2QG2C08UP", name: "CWL Clan" },
+    ]);
+    prismaMock.currentCwlRound.findMany.mockResolvedValue([
+      {
+        season: "2026-03",
+        clanTag: "#2QG2C08UP",
+        clanName: "CWL Clan",
+        roundState: "inWar",
+        startTime: new Date("2026-03-29T12:00:00.000Z"),
+        endTime: new Date("2026-03-30T12:00:00.000Z"),
+      },
+    ]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([
+      {
+        season: "2026-03",
+        clanTag: "#2QG2C08UP",
+        playerTag: "#PYLQ0289",
+        attacksUsed: 1,
+        attacksAvailable: 1,
+        subbedIn: true,
+      },
+    ]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ0289", cwlClanTag: "#2QG2C08UP" },
+    ]);
+
+    await todoSnapshotService.refreshSnapshotsForPlayerTags({
+      playerTags: ["#PYLQ0289"],
+      nowMs: Date.UTC(2026, 2, 29, 12, 0, 0, 0),
+    });
+
+    expect(prismaMock.todoPlayerSnapshot.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          cwlPhase: "battle day",
+          cwlAttacksUsed: 1,
+          cwlAttacksMax: 1,
+        }),
+      }),
+    );
+  });
+
   it("writes zero war attacks during preparation even when member attack state is non-zero", async () => {
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
       {

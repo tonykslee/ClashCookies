@@ -12,6 +12,7 @@ import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
 import { listPlayerLinksForDiscordUser } from "../services/PlayerLinkService";
 import { CoCService } from "../services/CoCService";
+import { cwlStateService } from "../services/CwlStateService";
 import {
   buildTodoPagesForUser,
   invalidateTodoRenderCacheForUser,
@@ -96,12 +97,19 @@ async function refreshTodoSnapshotsForDiscordUser(input: {
   discordUserId: string;
   cocService: CoCService;
   includeNonTrackedCwlRefresh?: boolean;
+  refreshTrackedCwlStateFirst?: boolean;
 }): Promise<void> {
   const links = await listPlayerLinksForDiscordUser({
     discordUserId: input.discordUserId,
   });
   const linkedTags = [...new Set(links.map((row) => row.playerTag))];
   if (linkedTags.length > 0) {
+    if (input.refreshTrackedCwlStateFirst) {
+      await cwlStateService.refreshTrackedCwlStateForPlayerTags({
+        cocService: input.cocService,
+        playerTags: linkedTags,
+      });
+    }
     await todoSnapshotService.refreshSnapshotsForPlayerTags({
       playerTags: linkedTags,
       cocService: input.cocService,
@@ -406,6 +414,7 @@ export async function handleTodoRefreshButtonInteraction(
     await refreshTodoSnapshotsForDiscordUser({
       discordUserId: parsed.targetUserId,
       cocService,
+      refreshTrackedCwlStateFirst: true,
       includeNonTrackedCwlRefresh: true,
     });
 
