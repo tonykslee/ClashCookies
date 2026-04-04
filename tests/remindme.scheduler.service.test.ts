@@ -249,6 +249,188 @@ describe("UserActivityReminderSchedulerService", () => {
     });
   });
 
+  it("uses CurrentWar.endTime for prep-day WAR reminders instead of the prep end snapshot", async () => {
+    const nowMs = Date.parse("2026-03-27T11:30:00.000Z");
+    const prepStart = new Date("2026-03-27T12:00:00.000Z");
+    const battleEnd = new Date("2026-03-28T12:00:00.000Z");
+    prismaMock.userActivityReminderRule.findMany.mockResolvedValue([
+      {
+        id: "rule-war",
+        discordUserId: "111111111111111111",
+        type: UserActivityReminderType.WAR,
+        playerTag: "#P1111111",
+        method: UserActivityReminderMethod.DM,
+        offsetMinutes: 60,
+        isActive: true,
+        surfaceChannelId: null,
+      },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#PYLQ0289",
+        warId: 991,
+        startTime: prepStart,
+        endTime: battleEnd,
+        state: "preparation",
+        updatedAt: new Date(nowMs),
+      },
+    ]);
+    todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValue([
+      snapshotRow({
+        playerTag: "#P1111111",
+        clanTag: "#PYLQ0289",
+        clanName: "War Clan",
+        warActive: true,
+        warEndsAt: prepStart,
+      }),
+    ]);
+    const dispatch = {
+      dispatchReminder: vi.fn(),
+    };
+
+    const counts = await runUserActivityReminderSchedulerCycle({
+      client: {} as any,
+      cocService: {} as any,
+      dispatch: dispatch as any,
+      nowMs,
+      intervalMs: 60_000,
+    });
+
+    expect(counts).toEqual({
+      evaluated: 1,
+      fired: 0,
+      deduped: 0,
+      failed: 0,
+    });
+    expect(dispatch.dispatchReminder).not.toHaveBeenCalled();
+    expect(prismaMock.userActivityReminderDelivery.create).not.toHaveBeenCalled();
+  });
+
+  it("uses CurrentWar.endTime for battle-day WAR reminders", async () => {
+    const nowMs = Date.parse("2026-03-28T11:30:00.000Z");
+    const warEnd = new Date("2026-03-28T12:00:00.000Z");
+    prismaMock.userActivityReminderRule.findMany.mockResolvedValue([
+      {
+        id: "rule-war",
+        discordUserId: "111111111111111111",
+        type: UserActivityReminderType.WAR,
+        playerTag: "#P1111111",
+        method: UserActivityReminderMethod.DM,
+        offsetMinutes: 60,
+        isActive: true,
+        surfaceChannelId: null,
+      },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#PYLQ0289",
+        warId: 992,
+        startTime: new Date("2026-03-27T12:00:00.000Z"),
+        endTime: warEnd,
+        state: "inWar",
+        updatedAt: new Date(nowMs),
+      },
+    ]);
+    todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValue([
+      snapshotRow({
+        playerTag: "#P1111111",
+        clanTag: "#PYLQ0289",
+        clanName: "War Clan",
+        warActive: true,
+        warEndsAt: warEnd,
+      }),
+    ]);
+    prismaMock.userActivityReminderDelivery.create.mockResolvedValue({ id: "delivery-war" });
+    const dispatch = {
+      dispatchReminder: vi.fn().mockResolvedValue({
+        status: "sent",
+        messageId: "msg-war",
+        deliverySurface: "DM:123",
+      }),
+    };
+
+    const counts = await runUserActivityReminderSchedulerCycle({
+      client: {} as any,
+      cocService: {} as any,
+      dispatch: dispatch as any,
+      nowMs,
+      intervalMs: 60_000,
+    });
+
+    expect(counts).toEqual({
+      evaluated: 1,
+      fired: 1,
+      deduped: 0,
+      failed: 0,
+    });
+    expect(dispatch.dispatchReminder).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({
+        reminderType: UserActivityReminderType.WAR,
+        eventEndsAt: warEnd,
+        eventInstanceKey: "WAR:#PYLQ0289:war-id:992",
+      }),
+    );
+  });
+
+  it("falls back to snapshot warEndsAt when CurrentWar is unavailable", async () => {
+    const nowMs = Date.parse("2026-03-28T11:30:00.000Z");
+    const snapshotWarEndsAt = new Date("2026-03-28T12:00:00.000Z");
+    prismaMock.userActivityReminderRule.findMany.mockResolvedValue([
+      {
+        id: "rule-war",
+        discordUserId: "111111111111111111",
+        type: UserActivityReminderType.WAR,
+        playerTag: "#P1111111",
+        method: UserActivityReminderMethod.DM,
+        offsetMinutes: 60,
+        isActive: true,
+        surfaceChannelId: null,
+      },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([]);
+    todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValue([
+      snapshotRow({
+        playerTag: "#P1111111",
+        clanTag: "#PYLQ0289",
+        clanName: "War Clan",
+        warActive: true,
+        warEndsAt: snapshotWarEndsAt,
+      }),
+    ]);
+    prismaMock.userActivityReminderDelivery.create.mockResolvedValue({ id: "delivery-war" });
+    const dispatch = {
+      dispatchReminder: vi.fn().mockResolvedValue({
+        status: "sent",
+        messageId: "msg-war",
+        deliverySurface: "DM:123",
+      }),
+    };
+
+    const counts = await runUserActivityReminderSchedulerCycle({
+      client: {} as any,
+      cocService: {} as any,
+      dispatch: dispatch as any,
+      nowMs,
+      intervalMs: 60_000,
+    });
+
+    expect(counts).toEqual({
+      evaluated: 1,
+      fired: 1,
+      deduped: 0,
+      failed: 0,
+    });
+    expect(dispatch.dispatchReminder).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({
+        reminderType: UserActivityReminderType.WAR,
+        eventEndsAt: snapshotWarEndsAt,
+        eventInstanceKey: `WAR:#PYLQ0289:${snapshotWarEndsAt.getTime()}`,
+      }),
+    );
+  });
+
   it("dedupes already-sent rule/event identities before dispatch", async () => {
     const nowMs = Date.parse("2026-03-27T12:00:00.000Z");
     prismaMock.userActivityReminderRule.findMany.mockResolvedValue([

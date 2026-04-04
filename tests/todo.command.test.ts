@@ -636,6 +636,7 @@ describe("/todo command", () => {
       makeSnapshotRow({
         playerTag: "#PYLQ0289",
         playerName: "Alpha",
+        warActive: true,
         clanTag: "#PQL0289",
         clanName: "Clan One",
         warAttacksUsed: 0,
@@ -1298,7 +1299,7 @@ describe("/todo command", () => {
     expect(description).toContain("- #2 Bravo - `1 / 2` - stale snapshot");
   });
 
-  it("excludes players not present in the clan's validated current-war member set", async () => {
+  it("keeps WAR rows visible when the linked account's current clan differs from the war clan context", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([
       { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },
       { playerTag: "#QGRJ2222", createdAt: new Date("2026-03-02T00:00:00.000Z") },
@@ -1313,16 +1314,19 @@ describe("/todo command", () => {
         playerName: "Alpha",
         clanTag: "#PQL0289",
         clanName: "Clan One",
+        warActive: true,
         warAttacksUsed: 1,
         warPhase: "battle day",
+        warEndsAt: new Date("2026-03-31T12:00:00.000Z"),
       }),
       makeSnapshotRow({
         playerTag: "#QGRJ2222",
         playerName: "Bravo",
         clanTag: "#PQL0289",
         clanName: "Clan One",
+        warActive: false,
         warAttacksUsed: 0,
-        warPhase: "battle day",
+        warPhase: null,
       }),
     ]);
     prismaMock.trackedClan.findMany.mockResolvedValue([
@@ -1339,19 +1343,19 @@ describe("/todo command", () => {
         updatedAt: new Date("2026-03-26T00:00:00.000Z"),
       },
     ]);
-    prismaMock.warAttacks.findMany.mockResolvedValue([
+    prismaMock.warAttacks.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
       {
-        warId: 1001,
-        clanTag: "#PQL0289",
-        warStartTime: new Date("2026-03-25T12:00:00.000Z"),
         playerTag: "#PYLQ0289",
-        playerPosition: 8,
-        attacksUsed: 1,
-        attackOrder: 1,
-        attackNumber: 1,
-        defenderPosition: 7,
-        stars: 2,
-        attackSeenAt: new Date("2026-03-26T00:00:00.000Z"),
+        clanTag: "#NEWCLAN",
+        townHall: 15,
+        sourceSyncedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+      {
+        playerTag: "#QGRJ2222",
+        clanTag: "#NEWCLAN",
+        townHall: 14,
+        sourceSyncedAt: new Date("2026-03-26T00:00:00.000Z"),
       },
     ]);
 
@@ -1359,8 +1363,58 @@ describe("/todo command", () => {
     await Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
 
     const description = getReplyDescription(interaction);
-    expect(description).toContain("- #8 Alpha - `1 / 2`");
+    expect(description).toContain("#? Alpha - `1 / 2`");
+    expect(description).not.toContain("No war active");
     expect(description).not.toContain("Bravo");
+  });
+
+  it("keeps RAIDS rows visible when the linked account's current clan differs from the raid clan context", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },
+      { playerTag: "#QGRJ2222", createdAt: new Date("2026-03-02T00:00:00.000Z") },
+    ]);
+    prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
+      _count: { _all: 2 },
+      _max: { updatedAt: new Date("2026-03-26T00:00:00.000Z") },
+    });
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      makeSnapshotRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha",
+        clanTag: "#PQL0289",
+        clanName: "Clan One",
+        raidActive: true,
+        raidAttacksUsed: 3,
+      }),
+      makeSnapshotRow({
+        playerTag: "#QGRJ2222",
+        playerName: "Bravo",
+        clanTag: "#PQL0289",
+        clanName: "Clan One",
+        raidActive: false,
+        raidAttacksUsed: 0,
+      }),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        clanTag: "#NEWCLAN",
+        townHall: 15,
+        sourceSyncedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+      {
+        playerTag: "#QGRJ2222",
+        clanTag: "#NEWCLAN",
+        townHall: 14,
+        sourceSyncedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+    ]);
+
+    const interaction = makeTodoInteraction({ type: "RAIDS" });
+    await Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
+
+    const description = getReplyDescription(interaction);
+    expect(description).toContain("Alpha #PYLQ0289 - clan capital raids: 3/6");
   });
 
   it("uses safe #? fallback when war lineup position is unavailable", async () => {
@@ -1541,6 +1595,7 @@ describe("/todo command", () => {
         playerName: "Alpha",
         clanTag: "#PQL0289",
         clanName: "Clan One",
+        warActive: false,
         warAttacksUsed: 0,
         warPhase: "battle day",
       }),
@@ -2499,6 +2554,7 @@ describe("/todo pagination buttons", () => {
       makeSnapshotRow({
         playerTag: "#PYLQ0289",
         playerName: "Alpha",
+        warActive: false,
         warAttacksUsed: 1,
         cwlAttacksUsed: 1,
         raidAttacksUsed: 3,
@@ -2507,6 +2563,7 @@ describe("/todo pagination buttons", () => {
       makeSnapshotRow({
         playerTag: "#QGRJ2222",
         playerName: "Bravo",
+        warActive: false,
         warAttacksUsed: 2,
         cwlAttacksUsed: 0,
         raidAttacksUsed: 0,

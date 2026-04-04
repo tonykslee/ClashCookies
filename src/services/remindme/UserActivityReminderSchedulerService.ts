@@ -340,17 +340,18 @@ function resolveReminderEventContext(input: {
   nowMs: number;
 }): ResolvedReminderEventContext | null {
   if (input.ruleType === UserActivityReminderType.WAR) {
-    if (!input.snapshot.warActive || !input.snapshot.warEndsAt) return null;
-    if (input.snapshot.warEndsAt.getTime() <= input.nowMs) return null;
     const clanTag = normalizeClanTag(input.snapshot.clanTag ?? "");
     if (!clanTag) return null;
     const war = input.currentWarByClanTag.get(clanTag) ?? null;
+    const eventEndsAt = war?.endTime ?? input.snapshot.warEndsAt ?? null;
+    if (!input.snapshot.warActive || !eventEndsAt) return null;
+    if (eventEndsAt.getTime() <= input.nowMs) return null;
     const eventInstanceKey = war
       ? buildWarEventInstanceKey(clanTag, war)
-      : `WAR:${clanTag}:${input.snapshot.warEndsAt.getTime()}`;
+      : `WAR:${clanTag}:${eventEndsAt.getTime()}`;
     return {
       eventInstanceKey,
-      eventEndsAt: input.snapshot.warEndsAt,
+      eventEndsAt,
       playerTag: input.snapshot.playerTag,
       playerName: sanitizeDisplayText(input.snapshot.playerName),
       clanName: sanitizeDisplayText(input.snapshot.clanName),

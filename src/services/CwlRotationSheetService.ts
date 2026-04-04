@@ -51,6 +51,7 @@ export type CwlRotationImportRow = {
   clanTag: string;
   clanName: string | null;
   rawText: string;
+  rawPlayerNameSnippet?: string | null;
   parsedPlayerTag: string | null;
   parsedPlayerName: string;
   classification: CwlRotationImportRowClassification;
@@ -701,13 +702,7 @@ function parseCwlPlannerTab(
 
   const headerIndex = rows.findIndex((row) => parseCwlRotationTableHeader(row) !== null);
   const header = headerIndex >= 0 ? parseCwlRotationTableHeader(rows[headerIndex]) : null;
-  const fallbackHeader: ParsedCwlRotationTableHeader = header ?? {
-    canonical: false,
-    memberColumnIndex: 0,
-    playerTagColumnIndex: null,
-    totalWarsColumnIndex: null,
-    dayColumns: inferFallbackDayColumns(rows),
-  };
+  const fallbackHeader: ParsedCwlRotationTableHeader = header ?? inferFallbackCwlRotationTableHeader(rows);
 
   let structuralRowCount = 0;
   let parsedPlayerRowCount = 0;
@@ -725,7 +720,7 @@ function parseCwlPlannerTab(
       continue;
     }
 
-    if (isCwlRotationMetaRow(row) || isCwlRotationHeaderLikeRow(row)) {
+    if (isCwlRotationMetaRow(row) || isCwlRotationHeaderLikeRow(row) || isCwlRotationStructuralTitleRow(row)) {
       structuralRowCount += 1;
       continue;
     }
@@ -892,6 +887,10 @@ function isCwlRotationHeaderLikeRow(row: string[]): boolean {
   return Boolean(parseCwlRotationTableHeader(row));
 }
 
+function isCwlRotationStructuralTitleRow(row: string[]): boolean {
+  return row.filter((cell) => sanitizeDisplayText(cell).length > 0).length <= 1;
+}
+
 function isCwlRotationMetaRow(row: string[]): boolean {
   const firstCell = sanitizeDisplayText(row.find((cell) => cell.length > 0) ?? "").toLowerCase();
   return (
@@ -953,6 +952,11 @@ function parseCwlRotationImportRow(input: {
   }) || memberCell || firstNonEmptyCell || rawText;
   const parsedIdentity = parseCwlRotationPlayerIdentity(candidateCell);
   const parsedPlayerName = parsedIdentity?.playerName || candidateCell;
+  const rawPlayerNameSnippet = resolveCwlRotationImportRawPlayerNameSnippet({
+    row: input.row,
+    candidateCell,
+    rawText,
+  });
   const explicitTag = normalizePlayerTag(
     input.header.playerTagColumnIndex !== null
       ? String(input.row[input.header.playerTagColumnIndex] ?? "")
@@ -976,6 +980,7 @@ function parseCwlRotationImportRow(input: {
       clanTag: "",
       clanName: null,
       rawText,
+      rawPlayerNameSnippet,
       parsedPlayerTag: parsedIdentity?.playerTag ?? null,
       parsedPlayerName,
       classification: "unresolved_needs_review",
@@ -996,6 +1001,7 @@ function parseCwlRotationImportRow(input: {
       clanTag: "",
       clanName: null,
       rawText,
+      rawPlayerNameSnippet,
       parsedPlayerTag: explicitTag,
       parsedPlayerName,
       classification: "exact_match",
@@ -1017,6 +1023,7 @@ function parseCwlRotationImportRow(input: {
       clanTag: "",
       clanName: null,
       rawText,
+      rawPlayerNameSnippet,
       parsedPlayerTag: exactRosterMatch.playerTag,
       parsedPlayerName: exactRosterMatch.playerName || parsedPlayerName,
       classification: "exact_match",
@@ -1046,6 +1053,7 @@ function parseCwlRotationImportRow(input: {
     clanTag: "",
     clanName: null,
     rawText,
+    rawPlayerNameSnippet,
     parsedPlayerTag: parsedIdentity?.playerTag ?? null,
     parsedPlayerName,
     classification,
@@ -1061,6 +1069,33 @@ function parseCwlRotationImportRow(input: {
     resolvedPlayerName: null,
     ignored: false,
   };
+}
+
+function resolveCwlRotationImportRawPlayerNameSnippet(input: {
+  row: string[];
+  candidateCell: string;
+  rawText: string;
+}): string | null {
+  const candidateCell = sanitizeDisplayText(input.candidateCell);
+  if (!candidateCell || !looksLikeUsefulCwlRotationPlayerNameSnippet(candidateCell)) return null;
+
+  const nonEmptyCellCount = input.row.reduce(
+    (count, cell) => count + (sanitizeDisplayText(cell).length > 0 ? 1 : 0),
+    0,
+  );
+  if (nonEmptyCellCount <= 1) {
+    return candidateCell;
+  }
+
+  return candidateCell === sanitizeDisplayText(input.rawText) ? null : candidateCell;
+}
+
+function looksLikeUsefulCwlRotationPlayerNameSnippet(value: string): boolean {
+  const normalized = sanitizeDisplayText(value).toLowerCase();
+  if (!normalized) return false;
+  if (/^\d+$/.test(normalized)) return false;
+  if (/^(?:in|out|yes|no|y|n|true|false|member|player|name|total)$/i.test(normalized)) return false;
+  return true;
 }
 
 function findExactRosterMatch(
@@ -1082,7 +1117,7 @@ function buildRosterSuggestions(
 
   return rosterEntries
     .map((entry) => {
-      const normalizedCandidate = normalizeMatchKey(entry.playerName);
+      const normalizedCandidate = normalizeRosterNameKey(entry.playerName);
       const score = calculateMatchScore(normalizedQuery, normalizedCandidate);
       return {
         playerTag: entry.playerTag,
@@ -1128,7 +1163,14 @@ function levenshteinDistance(a: string, b: string): number {
 }
 
 function normalizeRosterNameKey(input: string): string {
-  return normalizeMatchKey(input);
+  return normalizeMatchKey(stripPlayerDisplayLabel(input));
+}
+
+function stripPlayerDisplayLabel(input: string): string {
+  return sanitizeDisplayText(input)
+    .replace(/\s*\(\s*#?[A-Z0-9]{5,15}\s*\)\s*$/i, "")
+    .replace(/\s*`#?[A-Z0-9]{5,15}`\s*$/i, "")
+    .trim();
 }
 
 function resolveCwlRotationImportIdentityCell(input: {
@@ -1162,6 +1204,42 @@ function resolveCwlRotationImportIdentityCell(input: {
 function isRosterIndexCell(cell: string): boolean {
   const normalized = sanitizeDisplayText(cell);
   return /^\d+$/.test(normalized);
+}
+
+function inferFallbackCwlRotationTableHeader(rows: string[][]): ParsedCwlRotationTableHeader {
+  const sampleRow =
+    rows.find((row) => {
+      if (!row.some((cell) => sanitizeDisplayText(cell).length > 0)) return false;
+      if (isCwlRotationMetaRow(row) || isCwlRotationHeaderLikeRow(row) || isCwlRotationStructuralTitleRow(row)) {
+        return false;
+      }
+      return true;
+    }) ?? [];
+
+  const firstCell = sanitizeDisplayText(sampleRow[0] ?? "");
+  const secondCell = sanitizeDisplayText(sampleRow[1] ?? "");
+  if (isRosterIndexCell(firstCell) && secondCell) {
+    const hasTrailingTotal = isRosterIndexCell(sanitizeDisplayText(sampleRow.at(-1) ?? ""));
+    const dayColumnCount = Math.max(0, hasTrailingTotal ? sampleRow.length - 3 : sampleRow.length - 2);
+    return {
+      canonical: false,
+      memberColumnIndex: 1,
+      playerTagColumnIndex: null,
+      totalWarsColumnIndex: null,
+      dayColumns: Array.from({ length: Math.min(7, dayColumnCount) }, (_, index) => ({
+        roundDay: index + 1,
+        columnIndex: index + 2,
+      })),
+    };
+  }
+
+  return {
+    canonical: false,
+    memberColumnIndex: 0,
+    playerTagColumnIndex: null,
+    totalWarsColumnIndex: null,
+    dayColumns: inferFallbackDayColumns(rows),
+  };
 }
 
 function isPlannedInCell(cell: string): boolean {

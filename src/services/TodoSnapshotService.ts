@@ -518,11 +518,18 @@ export class TodoSnapshotService {
     );
     const resolvedClanTagByPlayerTag = new Map<string, string | null>();
     for (const playerTag of normalizedTags) {
+      const existing = existingByTag.get(playerTag) ?? null;
       const liveClanTag = liveClanTagByPlayerTag.get(playerTag) ?? "";
       const fromMember = latestClanMemberByTag.get(playerTag)?.clanTag ?? "";
       const fromExisting = existingByTag.get(playerTag)?.clanTag ?? "";
+      const pinnedEventClanTag =
+        existing && (existing.warActive || existing.raidActive)
+          ? normalizeClanTag(existing.clanTag ?? "")
+          : "";
       const resolvedClanTag =
-        normalizeClanTag(liveClanTag || fromMember || fromExisting) || null;
+        normalizeClanTag(
+          pinnedEventClanTag || liveClanTag || fromMember || fromExisting,
+        ) || null;
       resolvedClanTagByPlayerTag.set(playerTag, resolvedClanTag);
     }
 
