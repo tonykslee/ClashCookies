@@ -43,6 +43,35 @@ function normalizeOptionalInt(input: number | null | undefined): number | null {
     : null;
 }
 
+/** Purpose: preserve explicit same-war mail confirmation fields during routine sync refreshes. */
+function resolveLastKnownMatchBaseline(input: {
+  existing: {
+    confirmedByClanMail: boolean;
+    lastKnownMatchType: string | null;
+    lastKnownOutcome: string | null;
+  } | null;
+  incomingMatchType: string | null;
+  incomingOutcome: string | null;
+  incomingConfirmedByClanMail?: boolean;
+}): {
+  lastKnownMatchType: string | null;
+  lastKnownOutcome: string | null;
+} {
+  const preserveConfirmedBaseline =
+    input.existing?.confirmedByClanMail === true &&
+    input.incomingConfirmedByClanMail !== true;
+  if (!preserveConfirmedBaseline) {
+    return {
+      lastKnownMatchType: input.incomingMatchType,
+      lastKnownOutcome: input.incomingOutcome,
+    };
+  }
+  return {
+    lastKnownMatchType: input.existing?.lastKnownMatchType ?? null,
+    lastKnownOutcome: input.existing?.lastKnownOutcome ?? null,
+  };
+}
+
 export class PointsSyncService {
   /** Purpose: upsert current-war points sync state and lifecycle metadata. */
   async upsertPointsSync(input: UpsertPointsSyncInput) {
@@ -50,6 +79,27 @@ export class PointsSyncService {
     const opponentTag = normalizeTag(input.opponentTag);
     const fetchedAt = normalizeDate(input.fetchedAt) ?? new Date();
     const matchType = (input.matchType ?? "").trim().toUpperCase() || null;
+    const where = {
+      guildId_clanTag_warStartTime: {
+        guildId: input.guildId,
+        clanTag,
+        warStartTime: input.warStartTime,
+      },
+    } as const;
+    const existing = await prisma.clanPointsSync.findUnique({
+      where,
+      select: {
+        confirmedByClanMail: true,
+        lastKnownMatchType: true,
+        lastKnownOutcome: true,
+      },
+    });
+    const lastKnownMatchBaseline = resolveLastKnownMatchBaseline({
+      existing,
+      incomingMatchType: matchType,
+      incomingOutcome: input.outcome ?? null,
+      incomingConfirmedByClanMail: input.confirmedByClanMail,
+    });
     const data = {
       warId: input.warId ?? null,
       syncNum: Math.trunc(input.syncNum),
@@ -62,8 +112,8 @@ export class PointsSyncService {
       lastSuccessfulPointsApiFetchAt: fetchedAt,
       lastFetchReason: input.fetchReason ?? null,
       lastKnownPoints: Math.trunc(input.clanPoints),
-      lastKnownMatchType: matchType,
-      lastKnownOutcome: input.outcome ?? null,
+      lastKnownMatchType: lastKnownMatchBaseline.lastKnownMatchType,
+      lastKnownOutcome: lastKnownMatchBaseline.lastKnownOutcome,
       lastKnownSyncNumber: Math.trunc(input.syncNum),
       needsValidation: input.needsValidation ?? false,
       ...(input.confirmedByClanMail !== undefined
@@ -71,13 +121,7 @@ export class PointsSyncService {
         : {}),
     };
     return prisma.clanPointsSync.upsert({
-      where: {
-        guildId_clanTag_warStartTime: {
-          guildId: input.guildId,
-          clanTag,
-          warStartTime: input.warStartTime,
-        },
-      },
+      where,
       update: data,
       create: {
         guildId: input.guildId,

@@ -846,6 +846,46 @@ function toValidSyncNumber(input: unknown): number | null {
   return normalized > 0 ? normalized : null;
 }
 
+/** Purpose: normalize optional war identifiers for same-war confirmation checks. */
+function toValidWarIdText(input: unknown): string | null {
+  const raw = String(input ?? "").trim();
+  if (!raw) return null;
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return null;
+  const normalized = Math.trunc(value);
+  return normalized > 0 ? String(normalized) : null;
+}
+
+/** Purpose: keep confirmed clan-mail protection scoped to the exact same current-war identity. */
+function hasSameWarConfirmedMailBaseline(input: {
+  sub: SubscriptionRow;
+  effectiveWarIdentityChanged: boolean;
+}): boolean {
+  if (input.effectiveWarIdentityChanged) return false;
+  if (!input.sub.pointsConfirmedByClanMail) return false;
+  if (!input.sub.startTime || !input.sub.pointsWarStartTime) return false;
+  if (
+    input.sub.startTime.getTime() !== input.sub.pointsWarStartTime.getTime()
+  ) {
+    return false;
+  }
+  const currentWarId = toValidWarIdText(input.sub.warId);
+  const pointsWarId = toValidWarIdText(input.sub.pointsWarId);
+  if (currentWarId && pointsWarId && currentWarId !== pointsWarId) {
+    return false;
+  }
+  const currentOpponentTag = normalizeTag(input.sub.opponentTag ?? "");
+  const pointsOpponentTag = normalizeTag(input.sub.pointsOpponentTag ?? "");
+  if (
+    currentOpponentTag &&
+    pointsOpponentTag &&
+    currentOpponentTag !== pointsOpponentTag
+  ) {
+    return false;
+  }
+  return true;
+}
+
 function resolveEventRenderSyncNumber(input: {
   sameWarSyncNumber: number | null;
   postedSyncNumber: number | null;
@@ -2798,6 +2838,10 @@ export class WarEventLogService {
       matchType: currentMatchTypeForResolution,
       inferredMatchType: currentInferredMatchTypeForResolution,
     });
+    const preserveConfirmedCurrentWarRevision = hasSameWarConfirmedMailBaseline({
+      sub,
+      effectiveWarIdentityChanged,
+    });
     let liveOpponentResolution: MatchTypeResolution | null = null;
 
     let nextFwaPoints = sub.fwaPoints;
@@ -2993,6 +3037,10 @@ export class WarEventLogService {
         outcomeComputationInput.opponentPoints,
         syncNumberForEvent,
       );
+    }
+    if (preserveConfirmedCurrentWarRevision) {
+      nextMatchType = sub.matchType;
+      nextOutcome = normalizeOutcome(sub.outcome);
     }
     if (eventType === "war_ended") {
       const finalResult = await this.history.getWarEndResultSnapshot({
