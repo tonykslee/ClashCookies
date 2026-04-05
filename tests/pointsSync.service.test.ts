@@ -4,6 +4,7 @@ const prismaMock = vi.hoisted(() => ({
   clanPointsSync: {
     findFirst: vi.fn(),
     findUnique: vi.fn(),
+    upsert: vi.fn(),
     updateMany: vi.fn(),
   },
 }));
@@ -136,5 +137,95 @@ describe("PointsSyncService.checkpointCurrentWarSync", () => {
 
     expect(updated).toBe(false);
     expect(prismaMock.clanPointsSync.updateMany).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("PointsSyncService.upsertPointsSync", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("preserves confirmed same-war match baseline while refreshing routine sync fields", async () => {
+    prismaMock.clanPointsSync.findUnique.mockResolvedValue({
+      confirmedByClanMail: true,
+      lastKnownMatchType: "FWA",
+      lastKnownOutcome: "LOSE",
+    });
+    prismaMock.clanPointsSync.upsert.mockResolvedValue({
+      id: 1,
+    });
+    const service = new PointsSyncService();
+    const warStartTime = new Date("2026-03-12T00:00:00.000Z");
+    const fetchedAt = new Date("2026-03-12T00:15:00.000Z");
+
+    await service.upsertPointsSync({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+      warId: "1001",
+      warStartTime,
+      syncNum: 482,
+      opponentTag: "#OPP123",
+      clanPoints: 1300,
+      opponentPoints: 1200,
+      outcome: "WIN",
+      isFwa: true,
+      fetchedAt,
+      fetchReason: "post_war_reconciliation",
+      matchType: "FWA",
+      needsValidation: false,
+    });
+
+    expect(prismaMock.clanPointsSync.findUnique).toHaveBeenCalledTimes(1);
+    expect(prismaMock.clanPointsSync.upsert).toHaveBeenCalledTimes(1);
+    expect(prismaMock.clanPointsSync.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          syncFetchedAt: fetchedAt,
+          lastSuccessfulPointsApiFetchAt: fetchedAt,
+          lastKnownPoints: 1300,
+          lastKnownSyncNumber: 482,
+          lastKnownMatchType: "FWA",
+          lastKnownOutcome: "LOSE",
+          opponentPoints: 1200,
+        }),
+      }),
+    );
+  });
+
+  it("stores the incoming baseline for a fresh same-war row", async () => {
+    prismaMock.clanPointsSync.findUnique.mockResolvedValue(null);
+    prismaMock.clanPointsSync.upsert.mockResolvedValue({
+      id: 2,
+    });
+    const service = new PointsSyncService();
+
+    await service.upsertPointsSync({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+      warId: "1002",
+      warStartTime: new Date("2026-03-14T00:00:00.000Z"),
+      syncNum: 483,
+      opponentTag: "#OPP456",
+      clanPoints: 1200,
+      opponentPoints: 1300,
+      outcome: "LOSE",
+      isFwa: true,
+      fetchReason: "post_war_reconciliation",
+      matchType: "FWA",
+      needsValidation: false,
+    });
+
+    expect(prismaMock.clanPointsSync.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          lastKnownMatchType: "FWA",
+          lastKnownOutcome: "LOSE",
+        }),
+        create: expect.objectContaining({
+          lastKnownMatchType: "FWA",
+          lastKnownOutcome: "LOSE",
+        }),
+      }),
+    );
   });
 });
