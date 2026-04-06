@@ -48,6 +48,28 @@ export type CwlCurrentRoundMemberRecord = {
   subbedOut: boolean;
 };
 
+export type CwlPreparationSnapshotRecord = {
+  season: string;
+  clanTag: string;
+  clanName: string | null;
+  roundDay: number;
+  roundState: string;
+  opponentTag: string | null;
+  opponentName: string | null;
+  preparationStartTime: Date | null;
+  startTime: Date | null;
+  endTime: Date | null;
+  sourceUpdatedAt: Date;
+  members: Array<{
+    playerTag: string;
+    playerName: string;
+    mapPosition: number | null;
+    townHall: number | null;
+    subbedIn: boolean;
+    subbedOut: boolean;
+  }>;
+};
+
 export type CwlSeasonRosterEntry = {
   season: string;
   clanTag: string;
@@ -144,6 +166,7 @@ type ObservedTrackedClanState = {
   clanTag: string;
   fetched: boolean;
   currentRound: ObservedCwlRound | null;
+  currentPreparationRound: ObservedCwlRound | null;
   historyRounds: ObservedCwlRound[];
   seasonRoster: ObservedSeasonRosterMember[];
 };
@@ -192,6 +215,205 @@ function resolvePhaseEndsAt(input: {
   if (state.includes("preparation")) return input.startTime;
   if (state.includes("inwar")) return input.endTime;
   return input.endTime;
+}
+
+type CwlActualLineupOwner = {
+  season: string;
+  clanTag: string;
+  clanName: string | null;
+  roundDay: number;
+  roundState: string;
+  opponentTag: string | null;
+  opponentName: string | null;
+  preparationStartTime: Date | null;
+  startTime: Date | null;
+  endTime: Date | null;
+};
+
+type CwlPrepSnapshotOwner = CwlActualLineupOwner & {
+  lineupJson: unknown;
+  sourceUpdatedAt: Date;
+};
+
+type CwlDayOwnerResolution =
+  | {
+      owner: CwlActualLineupOwner;
+      source: "current" | "history";
+    }
+  | {
+      owner: CwlPrepSnapshotOwner;
+      source: "prep";
+    };
+
+function toRecordValue(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function normalizeBooleanValue(value: unknown, fallback: boolean): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "1", "yes", "y", "x"].includes(normalized)) return true;
+    if (["false", "0", "no", "n", ""].includes(normalized)) return false;
+  }
+  if (typeof value === "number") return value !== 0;
+  return fallback;
+}
+
+function normalizePrepSnapshotMembers(value: unknown): CwlPreparationSnapshotRecord["members"] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => {
+      const record = toRecordValue(entry);
+      if (!record) return null;
+      const playerTag = normalizePlayerTag(String(record.playerTag ?? ""));
+      if (!playerTag) return null;
+      const playerName =
+        sanitizeCwlName(record.playerName, playerTag) ??
+        playerTag;
+      const mapPosition = Number.isFinite(Number(record.mapPosition))
+        ? Math.trunc(Number(record.mapPosition))
+        : null;
+      const townHall = Number.isFinite(Number(record.townHall))
+        ? Math.trunc(Number(record.townHall))
+        : null;
+      return {
+        playerTag,
+        playerName,
+        mapPosition,
+        townHall,
+        subbedIn: normalizeBooleanValue(record.subbedIn, true),
+        subbedOut: normalizeBooleanValue(record.subbedOut, false),
+      };
+    })
+    .filter((member): member is CwlPreparationSnapshotRecord["members"][number] => Boolean(member))
+    .sort(compareRoundMembers);
+}
+
+function buildPrepSnapshotLineupJson(
+  members: ObservedCwlRoundMember[],
+): Array<{
+  playerTag: string;
+  playerName: string;
+  mapPosition: number | null;
+  townHall: number | null;
+  subbedIn: boolean;
+  subbedOut: boolean;
+}> {
+  return members.map((member) => ({
+    playerTag: member.playerTag,
+    playerName: member.playerName,
+    mapPosition: member.mapPosition,
+    townHall: member.townHall,
+    subbedIn: member.subbedIn,
+    subbedOut: member.subbedOut,
+  }));
+}
+
+/** Purpose: map one persisted CWL round owner row into a lineup response with sorted members. */
+async function loadPersistedCwlActualLineup(input: {
+  owner: CwlActualLineupOwner;
+  memberSource: "current" | "history";
+}): Promise<CwlActualLineup> {
+  const members =
+    input.memberSource === "current"
+      ? await prisma.cwlRoundMemberCurrent.findMany({
+          where: {
+            season: input.owner.season,
+            clanTag: input.owner.clanTag,
+            roundDay: input.owner.roundDay,
+          },
+          orderBy: [{ mapPosition: "asc" }, { playerName: "asc" }, { playerTag: "asc" }],
+        })
+      : await prisma.cwlRoundMemberHistory.findMany({
+          where: {
+            season: input.owner.season,
+            clanTag: input.owner.clanTag,
+            roundDay: input.owner.roundDay,
+          },
+          orderBy: [{ mapPosition: "asc" }, { playerName: "asc" }, { playerTag: "asc" }],
+        });
+
+  return {
+    season: input.owner.season,
+    clanTag: input.owner.clanTag,
+    clanName: input.owner.clanName,
+    roundDay: input.owner.roundDay,
+    roundState: input.owner.roundState,
+    opponentTag: input.owner.opponentTag,
+    opponentName: input.owner.opponentName,
+    phaseEndsAt: resolvePhaseEndsAt(input.owner),
+    members: members.map((member) => ({
+      playerTag: member.playerTag,
+      playerName: member.playerName,
+      mapPosition: member.mapPosition,
+      townHall: member.townHall,
+      attacksUsed: member.attacksUsed,
+      attacksAvailable: member.attacksAvailable,
+      subbedIn: member.subbedIn,
+      subbedOut: member.subbedOut,
+    })),
+  };
+}
+
+function mapPreparationSnapshotToActualLineup(
+  owner: CwlPrepSnapshotOwner,
+): CwlActualLineup {
+  const members = normalizePrepSnapshotMembers(owner.lineupJson);
+  return {
+    season: owner.season,
+    clanTag: owner.clanTag,
+    clanName: owner.clanName,
+    roundDay: owner.roundDay,
+    roundState: owner.roundState,
+    opponentTag: owner.opponentTag,
+    opponentName: owner.opponentName,
+    phaseEndsAt: resolvePhaseEndsAt(owner),
+    members: members.map((member) => ({
+      playerTag: member.playerTag,
+      playerName: member.playerName,
+      mapPosition: member.mapPosition,
+      townHall: member.townHall,
+      attacksUsed: 0,
+      attacksAvailable: 0,
+      subbedIn: member.subbedIn,
+      subbedOut: member.subbedOut,
+    })),
+  };
+}
+
+async function loadPersistedCwlDayOwner(input: {
+  clanTag: string;
+  season: string;
+  roundDay: number;
+}): Promise<CwlDayOwnerResolution | null> {
+  const currentRound = await prisma.currentCwlRound.findUnique({
+    where: { season_clanTag: { season: input.season, clanTag: input.clanTag } },
+  });
+  if (currentRound && currentRound.roundDay === input.roundDay) {
+    return { owner: currentRound, source: "current" };
+  }
+
+  const historyRound = await prisma.cwlRoundHistory.findUnique({
+    where: {
+      season_clanTag_roundDay: { season: input.season, clanTag: input.clanTag, roundDay: input.roundDay },
+    },
+  });
+  if (historyRound) {
+    return { owner: historyRound, source: "history" };
+  }
+
+  const preparationSnapshot = await prisma.currentCwlPrepSnapshot.findUnique({
+    where: {
+      season_clanTag: { season: input.season, clanTag: input.clanTag },
+    },
+  });
+  if (preparationSnapshot && preparationSnapshot.roundDay === input.roundDay) {
+    return { owner: preparationSnapshot, source: "prep" };
+  }
+
+  return null;
 }
 
 function compareRoundMembers(a: { mapPosition: number | null; playerName: string; playerTag: string }, b: { mapPosition: number | null; playerName: string; playerTag: string }): number {
@@ -409,6 +631,7 @@ async function loadObservedTrackedClanState(input: {
       clanTag: normalizeClanTag(input.trackedClanTag),
       fetched: false,
       currentRound: null,
+      currentPreparationRound: null,
       historyRounds: [],
       seasonRoster: [],
     };
@@ -461,6 +684,19 @@ async function loadObservedTrackedClanState(input: {
       if (a.roundDay !== b.roundDay) return b.roundDay - a.roundDay;
       return b.sourceUpdatedAt.getTime() - a.sourceUpdatedAt.getTime();
     })[0] ?? null;
+  const currentPreparationRound =
+    currentRound && currentRound.roundState.toLowerCase().includes("inwar")
+      ? [...observedRounds]
+          .filter(
+            (round) =>
+              round.roundState.toLowerCase().includes("preparation") &&
+              round.roundDay !== currentRound.roundDay,
+          )
+          .sort((a, b) => {
+            if (a.roundDay !== b.roundDay) return b.roundDay - a.roundDay;
+            return b.sourceUpdatedAt.getTime() - a.sourceUpdatedAt.getTime();
+          })[0] ?? null
+      : null;
   const historyRounds = observedRounds
     .filter((round) => isEndedRoundState(round.roundState))
     .sort((a, b) => a.roundDay - b.roundDay);
@@ -470,6 +706,7 @@ async function loadObservedTrackedClanState(input: {
     clanTag: normalizeClanTag(input.trackedClanTag),
     fetched: true,
     currentRound,
+    currentPreparationRound,
     historyRounds,
     seasonRoster: buildObservedSeasonRoster({
       leagueRosterByTag,
@@ -668,6 +905,53 @@ export class CwlStateService {
           });
         }
 
+        if (observed.currentPreparationRound) {
+          await tx.currentCwlPrepSnapshot.upsert({
+            where: {
+              season_clanTag: {
+                season: observed.season,
+                clanTag: observed.clanTag,
+              },
+            },
+            create: {
+              season: observed.season,
+              clanTag: observed.clanTag,
+              roundDay: observed.currentPreparationRound.roundDay,
+              clanName: observed.currentPreparationRound.clanName,
+              opponentTag: observed.currentPreparationRound.opponentTag,
+              opponentName: observed.currentPreparationRound.opponentName,
+              roundState: observed.currentPreparationRound.roundState,
+              leagueGroupState: observed.currentPreparationRound.leagueGroupState,
+              preparationStartTime: observed.currentPreparationRound.preparationStartTime,
+              startTime: observed.currentPreparationRound.startTime,
+              endTime: observed.currentPreparationRound.endTime,
+              lineupJson: buildPrepSnapshotLineupJson(
+                observed.currentPreparationRound.members,
+              ),
+              sourceUpdatedAt: observed.currentPreparationRound.sourceUpdatedAt,
+            },
+            update: {
+              roundDay: observed.currentPreparationRound.roundDay,
+              clanName: observed.currentPreparationRound.clanName,
+              opponentTag: observed.currentPreparationRound.opponentTag,
+              opponentName: observed.currentPreparationRound.opponentName,
+              roundState: observed.currentPreparationRound.roundState,
+              leagueGroupState: observed.currentPreparationRound.leagueGroupState,
+              preparationStartTime: observed.currentPreparationRound.preparationStartTime,
+              startTime: observed.currentPreparationRound.startTime,
+              endTime: observed.currentPreparationRound.endTime,
+              lineupJson: buildPrepSnapshotLineupJson(
+                observed.currentPreparationRound.members,
+              ),
+              sourceUpdatedAt: observed.currentPreparationRound.sourceUpdatedAt,
+            },
+          });
+        } else {
+          await tx.currentCwlPrepSnapshot.deleteMany({
+            where: { season: observed.season, clanTag: observed.clanTag },
+          });
+        }
+
         for (const round of observed.historyRounds) {
           historyRoundCount += 1;
           historyMemberCount += round.members.length;
@@ -833,7 +1117,89 @@ export class CwlStateService {
     };
   }
 
-  /** Purpose: load one persisted actual CWL lineup for a requested round day from current or history owners. */
+  /** Purpose: load one persisted live prep snapshot for a tracked clan when overlap exists. */
+  async getCurrentPreparationSnapshotForClan(input: {
+    clanTag: string;
+    season?: string;
+  }): Promise<CwlPreparationSnapshotRecord | null> {
+    const season = input.season ?? resolveCurrentCwlSeasonKey();
+    const clanTag = normalizeClanTag(input.clanTag);
+    if (!clanTag) return null;
+
+    const snapshot = await prisma.currentCwlPrepSnapshot.findUnique({
+      where: {
+        season_clanTag: {
+          season,
+          clanTag,
+        },
+      },
+    });
+    if (!snapshot) return null;
+
+    return {
+      season: snapshot.season,
+      clanTag: snapshot.clanTag,
+      clanName: snapshot.clanName,
+      roundDay: snapshot.roundDay,
+      roundState: snapshot.roundState,
+      opponentTag: snapshot.opponentTag,
+      opponentName: snapshot.opponentName,
+      preparationStartTime: snapshot.preparationStartTime,
+      startTime: snapshot.startTime,
+      endTime: snapshot.endTime,
+      sourceUpdatedAt: snapshot.sourceUpdatedAt,
+      members: normalizePrepSnapshotMembers(snapshot.lineupJson),
+    };
+  }
+
+  /** Purpose: load per-player CWL participation counts through one round day from persisted actual rounds. */
+  async getParticipationCountsForClanDay(input: {
+    clanTag: string;
+    season?: string;
+    throughRoundDay: number;
+  }): Promise<Map<string, number>> {
+    const season = input.season ?? resolveCurrentCwlSeasonKey();
+    const clanTag = normalizeClanTag(input.clanTag);
+    const throughRoundDay = Math.max(1, Math.trunc(Number(input.throughRoundDay) || 0));
+    if (!clanTag || throughRoundDay <= 0) {
+      return new Map();
+    }
+
+    const [historyMembers, currentMembers] = await Promise.all([
+      prisma.cwlRoundMemberHistory.findMany({
+        where: {
+          season,
+          clanTag,
+          roundDay: { lte: throughRoundDay },
+          subbedIn: true,
+        },
+        select: {
+          playerTag: true,
+        },
+      }),
+      prisma.cwlRoundMemberCurrent.findMany({
+        where: {
+          season,
+          clanTag,
+          roundDay: { lte: throughRoundDay },
+          subbedIn: true,
+        },
+        select: {
+          playerTag: true,
+        },
+      }),
+    ]);
+
+    const countsByPlayerTag = new Map<string, number>();
+    for (const row of [...historyMembers, ...currentMembers]) {
+      const playerTag = normalizePlayerTag(row.playerTag);
+      if (!playerTag) continue;
+      countsByPlayerTag.set(playerTag, (countsByPlayerTag.get(playerTag) ?? 0) + 1);
+    }
+    return countsByPlayerTag;
+  }
+
+  /** Purpose: load one persisted actual CWL lineup for a requested round day from current, history, or live prep snapshot owners. */
   async getActualLineupForDay(input: {
     clanTag: string;
     season?: string;
@@ -844,66 +1210,33 @@ export class CwlStateService {
     const roundDay = Math.max(1, Math.trunc(Number(input.roundDay) || 0));
     if (!clanTag || roundDay <= 0) return null;
 
-    const currentRound = await prisma.currentCwlRound.findUnique({
-      where: { season_clanTag: { season, clanTag } },
-    });
-    if (currentRound && currentRound.roundDay === roundDay) {
-      const members = await prisma.cwlRoundMemberCurrent.findMany({
-        where: { season, clanTag },
-        orderBy: [{ mapPosition: "asc" }, { playerName: "asc" }, { playerTag: "asc" }],
-      });
-      return {
-        season,
-        clanTag,
-        clanName: currentRound.clanName,
-        roundDay,
-        roundState: currentRound.roundState,
-        opponentTag: currentRound.opponentTag,
-        opponentName: currentRound.opponentName,
-        phaseEndsAt: resolvePhaseEndsAt(currentRound),
-        members: members.map((member) => ({
-          playerTag: member.playerTag,
-          playerName: member.playerName,
-          mapPosition: member.mapPosition,
-          townHall: member.townHall,
-          attacksUsed: member.attacksUsed,
-          attacksAvailable: member.attacksAvailable,
-          subbedIn: member.subbedIn,
-          subbedOut: member.subbedOut,
-        })),
-      };
+    const resolvedOwner = await loadPersistedCwlDayOwner({ clanTag, season, roundDay });
+    if (!resolvedOwner) {
+      return null;
     }
 
-    const historyRound = await prisma.cwlRoundHistory.findUnique({
-      where: {
-        season_clanTag_roundDay: { season, clanTag, roundDay },
-      },
+    if (resolvedOwner.source === "prep") {
+      return mapPreparationSnapshotToActualLineup(resolvedOwner.owner);
+    }
+    return loadPersistedCwlActualLineup({
+      owner: resolvedOwner.owner,
+      memberSource: resolvedOwner.source,
     });
-    if (!historyRound) return null;
-    const members = await prisma.cwlRoundMemberHistory.findMany({
-      where: { season, clanTag, roundDay },
-      orderBy: [{ mapPosition: "asc" }, { playerName: "asc" }, { playerTag: "asc" }],
-    });
-    return {
-      season,
-      clanTag,
-      clanName: historyRound.clanName,
-      roundDay,
-      roundState: historyRound.roundState,
-      opponentTag: historyRound.opponentTag,
-      opponentName: historyRound.opponentName,
-      phaseEndsAt: resolvePhaseEndsAt(historyRound),
-      members: members.map((member) => ({
-        playerTag: member.playerTag,
-        playerName: member.playerName,
-        mapPosition: member.mapPosition,
-        townHall: member.townHall,
-        attacksUsed: member.attacksUsed,
-        attacksAvailable: member.attacksAvailable,
-        subbedIn: member.subbedIn,
-        subbedOut: member.subbedOut,
-      })),
-    };
+  }
+
+  /** Purpose: load the persisted battle-day start timestamp for one requested CWL day. */
+  async getBattleDayStartForClanDay(input: {
+    clanTag: string;
+    season?: string;
+    roundDay: number;
+  }): Promise<Date | null> {
+    const season = input.season ?? resolveCurrentCwlSeasonKey();
+    const clanTag = normalizeClanTag(input.clanTag);
+    const roundDay = Math.max(1, Math.trunc(Number(input.roundDay) || 0));
+    if (!clanTag || roundDay <= 0) return null;
+
+    const resolvedOwner = await loadPersistedCwlDayOwner({ clanTag, season, roundDay });
+    return resolvedOwner?.owner.startTime ?? null;
   }
 
   /** Purpose: build one DB-first current-season CWL roster view from persisted roster and round owners. */

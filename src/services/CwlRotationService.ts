@@ -149,10 +149,22 @@ export type CwlRotationOverviewEntry = {
   clanName: string | null;
   version: number;
   roundDay: number | null;
+  battleDayStartAt: Date | null;
+  leaderNames: string[];
   status: "complete" | "mismatch" | "no_active_round" | "no_plan_day";
   missingExpectedPlayerTags: string[];
   extraActualPlayerTags: string[];
 };
+
+function normalizeClanMemberRole(input: unknown): "leader" | "coleader" | null {
+  const normalized = String(input ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z]/g, "");
+  if (normalized === "leader") return "leader";
+  if (normalized === "coleader") return "coleader";
+  return null;
+}
 
 function compareRosterEntries(
   a: CwlSeasonRosterEntry,
@@ -206,6 +218,7 @@ function buildPlanDays(input: {
   lineupSize: number;
   currentRoundDay: number;
   currentLineupTags: string[];
+  seedRoundAlreadyCountedInParticipation?: boolean;
 }): Array<{ roundDay: number; members: CwlSeasonRosterEntry[] }> {
   const stableRoster = buildStableRosterOrder({
     roster: input.roster,
@@ -224,8 +237,10 @@ function buildPlanDays(input: {
     .map((tag) => rosterByTag.get(tag))
     .filter((entry): entry is CwlSeasonRosterEntry => Boolean(entry))
     .slice(0, input.lineupSize);
-  for (const member of currentDayMembers) {
-    totalCountByTag.set(member.playerTag, (totalCountByTag.get(member.playerTag) ?? 0) + 1);
+  if (!input.seedRoundAlreadyCountedInParticipation) {
+    for (const member of currentDayMembers) {
+      totalCountByTag.set(member.playerTag, (totalCountByTag.get(member.playerTag) ?? 0) + 1);
+    }
   }
   days.push({
     roundDay: input.currentRoundDay,
@@ -256,9 +271,14 @@ function buildPlanDays(input: {
 function buildCoverageWarnings(input: {
   roster: CwlSeasonRosterEntry[];
   planDays: Array<{ roundDay: number; members: CwlSeasonRosterEntry[] }>;
+  currentRoundDay: number;
+  seedRoundAlreadyCountedInParticipation?: boolean;
 }): string[] {
   const plannedDaysByTag = new Map<string, number>();
   for (const day of input.planDays) {
+    if (input.seedRoundAlreadyCountedInParticipation && day.roundDay === input.currentRoundDay) {
+      continue;
+    }
     for (const member of day.members) {
       plannedDaysByTag.set(member.playerTag, (plannedDaysByTag.get(member.playerTag) ?? 0) + 1);
     }
@@ -317,6 +337,40 @@ function buildRosterRowsForMetadata(roster: CwlSeasonRosterEntry[]): Array<{
     playerTag: entry.playerTag,
     playerName: entry.playerName,
   }));
+}
+
+function shouldShowRotationSubbedOutMember(input: {
+  playerTag: string;
+  excludedPlayerTags: string[];
+  scheduledInTagSet: Set<string>;
+}): boolean {
+  const playerTag = normalizePlayerTag(input.playerTag);
+  if (!playerTag) return false;
+  const excludedTagSet = new Set(
+    input.excludedPlayerTags.map((tag) => normalizePlayerTag(tag)).filter(Boolean),
+  );
+  if (excludedTagSet.has(playerTag)) return false;
+  return input.scheduledInTagSet.has(playerTag);
+}
+
+function buildRotationShowScheduledInTagSet(input: {
+  days: Array<{
+    rows: Array<{
+      playerTag: string;
+      subbedOut: boolean;
+    }>;
+  }>;
+}): Set<string> {
+  const scheduledInTagSet = new Set<string>();
+  for (const day of input.days) {
+    for (const row of day.rows) {
+      if (row.subbedOut) continue;
+      const playerTag = normalizePlayerTag(row.playerTag);
+      if (!playerTag) continue;
+      scheduledInTagSet.add(playerTag);
+    }
+  }
+  return scheduledInTagSet;
 }
 
 function sanitizeDisplayText(input: unknown): string {
@@ -479,6 +533,59 @@ async function persistRotationPlanVersion(
 
 /** Purpose: own CWL rotation-plan generation and validation using persisted CWL state only. */
 export class CwlRotationService {
+  /** Purpose: determine which planned day rows should be rendered for CWL show pages. */
+  getVisibleRotationShowDayRows(input: {
+    excludedPlayerTags: string[];
+    days: Array<{
+      rows: Array<{
+        playerTag: string;
+        playerName: string;
+        subbedOut: boolean;
+        assignmentOrder: number;
+      }>;
+    }>;
+    day: {
+      rows: Array<{
+        playerTag: string;
+        playerName: string;
+        subbedOut: boolean;
+        assignmentOrder: number;
+      }>;
+    };
+  }): Array<{
+    playerTag: string;
+    playerName: string;
+    subbedOut: boolean;
+    assignmentOrder: number;
+  }> {
+    const scheduledInTagSet = buildRotationShowScheduledInTagSet({
+      days: input.days,
+    });
+    return input.day.rows.filter((row) => {
+      if (!row.subbedOut) return true;
+      return shouldShowRotationSubbedOutMember({
+        playerTag: row.playerTag,
+        excludedPlayerTags: input.excludedPlayerTags,
+        scheduledInTagSet,
+      });
+    });
+  }
+
+  async getPreferredDisplayDay(input: {
+    clanTag: string;
+    season?: string;
+  }): Promise<number | null> {
+    const season = input.season ?? resolveCurrentCwlSeasonKey();
+    const clanTag = normalizeClanTag(input.clanTag);
+    if (!clanTag) return null;
+
+    const [currentRound, prepSnapshot] = await Promise.all([
+      cwlStateService.getCurrentRoundForClan({ clanTag, season }),
+      cwlStateService.getCurrentPreparationSnapshotForClan({ clanTag, season }),
+    ]);
+    return prepSnapshot?.roundDay ?? currentRound?.roundDay ?? null;
+  }
+
   async createPlan(input: {
     clanTag: string;
     excludeTagsRaw?: string | null;
@@ -499,8 +606,19 @@ export class CwlRotationService {
       return { outcome: "not_tracked", season, clanTag };
     }
 
-    const currentRound = await cwlStateService.getCurrentRoundForClan({ clanTag, season });
-    if (!currentRound || !currentRound.roundState.toLowerCase().includes("preparation")) {
+    const [currentRound, prepSnapshot] = await Promise.all([
+      cwlStateService.getCurrentRoundForClan({ clanTag, season }),
+      cwlStateService.getCurrentPreparationSnapshotForClan({ clanTag, season }),
+    ]);
+    const currentRoundState = currentRound?.roundState.toLowerCase() ?? "";
+    const hasOverlapPreparation =
+      currentRound !== null &&
+      currentRoundState.includes("inwar") &&
+      prepSnapshot !== null &&
+      prepSnapshot.roundDay > currentRound.roundDay;
+    const hasPreparationWindow =
+      currentRoundState.includes("preparation") || hasOverlapPreparation;
+    if (!currentRound || !hasPreparationWindow) {
       return { outcome: "not_preparation", season, clanTag };
     }
 
@@ -531,6 +649,7 @@ export class CwlRotationService {
       .filter((member) => member.subbedIn)
       .map((member) => member.playerTag);
     const lineupSize = Math.max(0, currentLineupTags.length || currentRound.members.length);
+    const seedRoundAlreadyCountedInParticipation = hasOverlapPreparation;
     if (includedRoster.length < lineupSize) {
       return {
         outcome: "not_enough_players",
@@ -547,10 +666,13 @@ export class CwlRotationService {
       lineupSize,
       currentRoundDay: currentRound.roundDay,
       currentLineupTags,
+      seedRoundAlreadyCountedInParticipation,
     });
     const warnings = buildCoverageWarnings({
       roster: includedRoster,
       planDays,
+      currentRoundDay: currentRound.roundDay,
+      seedRoundAlreadyCountedInParticipation,
     });
     const rosterRows = buildRosterRowsForMetadata(includedRoster);
 
@@ -568,16 +690,19 @@ export class CwlRotationService {
           source: "manual",
           clanName: currentRound.clanName,
           createdFromRoundState: currentRound.roundState,
+          hasOverlapPreparation,
           currentLineupTags,
           rosterRows,
         } as Prisma.InputJsonValue,
         days: planDays.map((day) => ({
           roundDay: day.roundDay,
           lineupSize,
-          locked: day.roundDay < currentRound.roundDay,
+          locked: hasOverlapPreparation
+            ? day.roundDay <= currentRound.roundDay
+            : day.roundDay < currentRound.roundDay,
           metadata: {
             source: "manual",
-            generatedFromPreparationRoundDay: currentRound.roundDay,
+            generatedFromRoundDay: currentRound.roundDay,
           } as Prisma.InputJsonValue,
           members: day.members.map((member, index) => ({
             playerTag: member.playerTag,
@@ -883,6 +1008,7 @@ export class CwlRotationService {
       },
       orderBy: [{ clanTag: "asc" }, { version: "desc" }],
     });
+    const clanTags = [...new Set(activePlans.map((plan) => plan.clanTag).filter(Boolean))];
     const uniquePlans = new Map<string, typeof activePlans[number]>();
     for (const plan of activePlans) {
       if (!uniquePlans.has(plan.clanTag)) {
@@ -890,12 +1016,70 @@ export class CwlRotationService {
       }
     }
 
+    const leaderRows = clanTags.length > 0
+      ? await prisma.fwaClanMemberCurrent.findMany({
+          where: {
+            clanTag: { in: clanTags },
+            role: { not: null },
+          },
+          select: {
+            clanTag: true,
+            playerTag: true,
+            playerName: true,
+            role: true,
+          },
+          orderBy: [
+            { clanTag: "asc" },
+            { role: "asc" },
+            { playerName: "asc" },
+            { playerTag: "asc" },
+          ],
+        })
+      : [];
+    const leaderNamesByClanTag = new Map<string, string[]>();
+    const leaderRowsByClanTag = new Map<
+      string,
+      Array<{ roleRank: number; playerName: string; playerTag: string }>
+    >();
+    for (const row of leaderRows) {
+      const clanTag = normalizeClanTag(row.clanTag);
+      const role = normalizeClanMemberRole(row.role);
+      if (!clanTag || !role) continue;
+      const roleRank = role === "leader" ? 0 : 1;
+      const entries = leaderRowsByClanTag.get(clanTag) ?? [];
+      entries.push({
+        roleRank,
+        playerName: String(row.playerName ?? "").trim() || row.playerTag,
+        playerTag: String(row.playerTag ?? "").trim() || "",
+      });
+      leaderRowsByClanTag.set(clanTag, entries);
+    }
+    for (const [clanTag, rows] of leaderRowsByClanTag.entries()) {
+      leaderNamesByClanTag.set(
+        clanTag,
+        rows
+          .sort((a, b) => {
+            if (a.roleRank !== b.roleRank) return a.roleRank - b.roleRank;
+            const byName = a.playerName.localeCompare(b.playerName, undefined, { sensitivity: "base" });
+            if (byName !== 0) return byName;
+            return a.playerTag.localeCompare(b.playerTag);
+          })
+          .map((row) => row.playerName),
+      );
+    }
+
     const entries: CwlRotationOverviewEntry[] = [];
     for (const plan of uniquePlans.values()) {
-      const currentRound = await cwlStateService.getCurrentRoundForClan({
-        clanTag: plan.clanTag,
-        season,
-      });
+      const [currentRound, preferredDay] = await Promise.all([
+        cwlStateService.getCurrentRoundForClan({
+          clanTag: plan.clanTag,
+          season,
+        }),
+        this.getPreferredDisplayDay({
+          clanTag: plan.clanTag,
+          season,
+        }),
+      ]);
       if (!currentRound) {
         entries.push({
           season,
@@ -903,24 +1087,36 @@ export class CwlRotationService {
           clanName: null,
           version: plan.version,
           roundDay: null,
+          battleDayStartAt: null,
+          leaderNames: leaderNamesByClanTag.get(plan.clanTag) ?? [],
           status: "no_active_round",
           missingExpectedPlayerTags: [],
           extraActualPlayerTags: [],
         });
         continue;
       }
-      const validation = await this.validatePlanDay({
-        clanTag: plan.clanTag,
-        season,
-        roundDay: currentRound.roundDay,
-      });
+      const targetRoundDay = preferredDay ?? currentRound.roundDay;
+      const [validation, battleDayStartAt] = await Promise.all([
+        this.validatePlanDay({
+          clanTag: plan.clanTag,
+          season,
+          roundDay: targetRoundDay,
+        }),
+        cwlStateService.getBattleDayStartForClanDay({
+          clanTag: plan.clanTag,
+          season,
+          roundDay: targetRoundDay,
+        }),
+      ]);
       if (!validation || validation.plannedPlayerTags.length <= 0) {
         entries.push({
           season,
           clanTag: plan.clanTag,
           clanName: currentRound.clanName,
           version: plan.version,
-          roundDay: currentRound.roundDay,
+          roundDay: targetRoundDay,
+          battleDayStartAt,
+          leaderNames: leaderNamesByClanTag.get(plan.clanTag) ?? [],
           status: "no_plan_day",
           missingExpectedPlayerTags: [],
           extraActualPlayerTags: [],
@@ -932,7 +1128,9 @@ export class CwlRotationService {
         clanTag: plan.clanTag,
         clanName: currentRound.clanName,
         version: plan.version,
-        roundDay: currentRound.roundDay,
+        roundDay: targetRoundDay,
+        battleDayStartAt,
+        leaderNames: leaderNamesByClanTag.get(plan.clanTag) ?? [],
         status: validation.complete ? "complete" : "mismatch",
         missingExpectedPlayerTags: validation.missingExpectedPlayerTags,
         extraActualPlayerTags: validation.extraActualPlayerTags,

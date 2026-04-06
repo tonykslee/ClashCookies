@@ -98,6 +98,8 @@ import {
   isCwlRotationImportSelectMenuCustomId,
   handleCwlRotationShowButtonInteraction,
   isCwlRotationShowButtonCustomId,
+  handleCwlRotationShowSelectMenuInteraction,
+  isCwlRotationShowSelectMenuCustomId,
 } from "../commands/Cwl";
 import {
   handleTodoPageButtonInteraction,
@@ -333,6 +335,21 @@ const handleSelectMenuInteraction = async (
         await interaction.reply({
           ephemeral: true,
           content: "Failed to update the CWL rotation import review.",
+        });
+      }
+    }
+    return;
+  }
+
+  if (isCwlRotationShowSelectMenuCustomId(interaction.customId)) {
+    try {
+      await handleCwlRotationShowSelectMenuInteraction(interaction);
+    } catch (err) {
+      console.error(`CWL rotation show select menu failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to update the CWL rotation show overview.",
         });
       }
     }
