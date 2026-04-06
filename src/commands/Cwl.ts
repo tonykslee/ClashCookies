@@ -283,6 +283,12 @@ function buildCwlRotationMergedRosterLines(input: {
     }),
   );
 
+  lines.push(
+    ...plannedBenchMembers.map(
+      (member) => `:x: ${member.playerName} (${member.playerTag}) | War count: ${member.warCount}`,
+    ),
+  );
+
   if (lines.length <= 0) {
     lines.push("No actual lineup members.");
   }
@@ -1035,6 +1041,11 @@ function buildCwlRotationShowPageLines(input: {
     actualPlayerRows: Array<{ playerTag: string; playerName: string }>;
   } | null;
 }): string[] {
+  const visibleDayRows = cwlRotationService.getVisibleRotationShowDayRows({
+    excludedPlayerTags: input.plan.excludedPlayerTags,
+    days: input.plan.days,
+    day: input.day,
+  });
   const lines: string[] = [
     `Season: ${input.plan.season}`,
     `Clan: ${input.plan.clanName || input.plan.clanTag}`,
@@ -1055,7 +1066,7 @@ function buildCwlRotationShowPageLines(input: {
     lines.push(
       ...buildCwlRotationMergedRosterLines({
         warCountByPlayerTag: input.warCountByPlayerTag,
-        plannedMembers: input.day.rows,
+        plannedMembers: visibleDayRows,
         actualPlayerRows: [],
         actualAvailable: false,
       }).slice(1),
@@ -1064,7 +1075,7 @@ function buildCwlRotationShowPageLines(input: {
     lines.push(
       ...buildCwlRotationMergedRosterLines({
         warCountByPlayerTag: input.warCountByPlayerTag,
-        plannedMembers: input.day.rows,
+        plannedMembers: visibleDayRows,
         actualPlayerRows: input.validation.actualPlayerRows,
         actualAvailable: input.validation.actualAvailable,
       }),
