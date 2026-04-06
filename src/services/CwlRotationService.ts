@@ -327,6 +327,40 @@ function buildRosterRowsForMetadata(roster: CwlSeasonRosterEntry[]): Array<{
   }));
 }
 
+function shouldShowRotationSubbedOutMember(input: {
+  playerTag: string;
+  excludedPlayerTags: string[];
+  scheduledInTagSet: Set<string>;
+}): boolean {
+  const playerTag = normalizePlayerTag(input.playerTag);
+  if (!playerTag) return false;
+  const excludedTagSet = new Set(
+    input.excludedPlayerTags.map((tag) => normalizePlayerTag(tag)).filter(Boolean),
+  );
+  if (excludedTagSet.has(playerTag)) return false;
+  return input.scheduledInTagSet.has(playerTag);
+}
+
+function buildRotationShowScheduledInTagSet(input: {
+  days: Array<{
+    rows: Array<{
+      playerTag: string;
+      subbedOut: boolean;
+    }>;
+  }>;
+}): Set<string> {
+  const scheduledInTagSet = new Set<string>();
+  for (const day of input.days) {
+    for (const row of day.rows) {
+      if (row.subbedOut) continue;
+      const playerTag = normalizePlayerTag(row.playerTag);
+      if (!playerTag) continue;
+      scheduledInTagSet.add(playerTag);
+    }
+  }
+  return scheduledInTagSet;
+}
+
 function sanitizeDisplayText(input: unknown): string {
   return String(input ?? "")
     .replace(/\s+/g, " ")
@@ -487,6 +521,44 @@ async function persistRotationPlanVersion(
 
 /** Purpose: own CWL rotation-plan generation and validation using persisted CWL state only. */
 export class CwlRotationService {
+  /** Purpose: determine which planned day rows should be rendered for CWL show pages. */
+  getVisibleRotationShowDayRows(input: {
+    excludedPlayerTags: string[];
+    days: Array<{
+      rows: Array<{
+        playerTag: string;
+        playerName: string;
+        subbedOut: boolean;
+        assignmentOrder: number;
+      }>;
+    }>;
+    day: {
+      rows: Array<{
+        playerTag: string;
+        playerName: string;
+        subbedOut: boolean;
+        assignmentOrder: number;
+      }>;
+    };
+  }): Array<{
+    playerTag: string;
+    playerName: string;
+    subbedOut: boolean;
+    assignmentOrder: number;
+  }> {
+    const scheduledInTagSet = buildRotationShowScheduledInTagSet({
+      days: input.days,
+    });
+    return input.day.rows.filter((row) => {
+      if (!row.subbedOut) return true;
+      return shouldShowRotationSubbedOutMember({
+        playerTag: row.playerTag,
+        excludedPlayerTags: input.excludedPlayerTags,
+        scheduledInTagSet,
+      });
+    });
+  }
+
   async getPreferredDisplayDay(input: {
     clanTag: string;
     season?: string;

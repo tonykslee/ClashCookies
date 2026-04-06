@@ -566,4 +566,71 @@ describe("CwlRotationService", () => {
       roundDay: 4,
     });
   });
+
+  it("shows subbed-out members when a create-backed schedule includes them elsewhere and they were not excluded", () => {
+    const visibleRows = cwlRotationService.getVisibleRotationShowDayRows({
+      excludedPlayerTags: ["#CUV02898"],
+      days: [
+        {
+          rows: [
+            { playerTag: "#PYLQ0289", playerName: "Active One", subbedOut: false, assignmentOrder: 0 },
+            { playerTag: "#QGRJ2222", playerName: "Bench Later", subbedOut: true, assignmentOrder: 1 },
+            { playerTag: "#CUV02898", playerName: "Excluded", subbedOut: true, assignmentOrder: 2 },
+            { playerTag: "#JQJQ2222", playerName: "Never", subbedOut: true, assignmentOrder: 3 },
+          ],
+        },
+        {
+          rows: [
+            { playerTag: "#QGRJ2222", playerName: "Bench Later", subbedOut: false, assignmentOrder: 0 },
+            { playerTag: "#PYLQ0289", playerName: "Active One", subbedOut: false, assignmentOrder: 1 },
+          ],
+        },
+      ],
+      day: {
+        rows: [
+          { playerTag: "#PYLQ0289", playerName: "Active One", subbedOut: false, assignmentOrder: 0 },
+          { playerTag: "#QGRJ2222", playerName: "Bench Later", subbedOut: true, assignmentOrder: 1 },
+          { playerTag: "#CUV02898", playerName: "Excluded", subbedOut: true, assignmentOrder: 2 },
+          { playerTag: "#JQJQ2222", playerName: "Never", subbedOut: true, assignmentOrder: 3 },
+        ],
+      },
+    });
+
+    expect(visibleRows).toEqual([
+      { playerTag: "#PYLQ0289", playerName: "Active One", subbedOut: false, assignmentOrder: 0 },
+      { playerTag: "#QGRJ2222", playerName: "Bench Later", subbedOut: true, assignmentOrder: 1 },
+    ]);
+  });
+
+  it("shows imported subbed-out members only when they are scheduled in somewhere in the effective plan", () => {
+    const visibleRows = cwlRotationService.getVisibleRotationShowDayRows({
+      excludedPlayerTags: [],
+      days: [
+        {
+          rows: [
+            { playerTag: "#PYLQ0289", playerName: "Active One", subbedOut: false, assignmentOrder: 0 },
+            { playerTag: "#QGRJ2222", playerName: "Bench Later", subbedOut: true, assignmentOrder: 1 },
+            { playerTag: "#JQJQ2222", playerName: "Never", subbedOut: true, assignmentOrder: 2 },
+          ],
+        },
+        {
+          rows: [
+            { playerTag: "#QGRJ2222", playerName: "Bench Later", subbedOut: false, assignmentOrder: 0 },
+          ],
+        },
+      ],
+      day: {
+        rows: [
+          { playerTag: "#PYLQ0289", playerName: "Active One", subbedOut: false, assignmentOrder: 0 },
+          { playerTag: "#QGRJ2222", playerName: "Bench Later", subbedOut: true, assignmentOrder: 1 },
+          { playerTag: "#JQJQ2222", playerName: "Never", subbedOut: true, assignmentOrder: 2 },
+        ],
+      },
+    });
+
+    expect(visibleRows).toEqual([
+      { playerTag: "#PYLQ0289", playerName: "Active One", subbedOut: false, assignmentOrder: 0 },
+      { playerTag: "#QGRJ2222", playerName: "Bench Later", subbedOut: true, assignmentOrder: 1 },
+    ]);
+  });
 });

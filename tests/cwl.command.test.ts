@@ -324,7 +324,7 @@ describe("/cwl command", () => {
             roundDay: 2,
             lineupSize: 2,
             rows: [
-              { playerTag: "#VJQ28888", playerName: "Charlie", subbedOut: false, assignmentOrder: 0 },
+              { playerTag: "#JQJQ2222", playerName: "Hotel", subbedOut: false, assignmentOrder: 0 },
               { playerTag: "#CUV02898", playerName: "Delta", subbedOut: false, assignmentOrder: 1 },
             ],
             actual: null,
@@ -347,8 +347,8 @@ describe("/cwl command", () => {
         complete: true,
         missingExpectedPlayerTags: [],
         extraActualPlayerTags: [],
-        actualPlayerTags: ["#VJQ28888", "#CUV02898"],
-        actualPlayerNames: ["Charlie", "Delta"],
+        actualPlayerTags: ["#JQJQ2222", "#CUV02898"],
+        actualPlayerNames: ["Hotel", "Delta"],
       } as any);
     vi.mocked(cwlStateService.getParticipationCountsForClanDay).mockImplementation(async ({ throughRoundDay }) => {
       if (throughRoundDay === 1) {
@@ -362,7 +362,7 @@ describe("/cwl command", () => {
       if (throughRoundDay === 2) {
         return makeParticipationCounts([
           ["#PYLQ0289", 1],
-          ["#VJQ28888", 2],
+          ["#JQJQ2222", 1],
           ["#QGRJ2222", 0],
           ["#CUV02898", 1],
         ]);
@@ -390,7 +390,7 @@ describe("/cwl command", () => {
     );
     expect(getDescription(interaction)).toContain(":x: Bravo (#QGRJ2222) | War count: 0");
     expect(getDescription(interaction)).toContain(":x: Delta (#CUV02898) | War count: 0");
-    expect(getDescription(interaction)).not.toContain(":x: Hotel (#JQJQ2222)");
+    expect(getDescription(interaction)).toContain(":x: Hotel (#JQJQ2222) | War count: 0");
     expect(getDescription(interaction)).not.toContain("Actual:");
     expect(getDescription(interaction)).not.toContain("Status:");
     expect(getComponentButtonCustomIds(interaction)).toHaveLength(2);
@@ -408,7 +408,7 @@ describe("/cwl command", () => {
 
     expect(getUpdatedDescription(buttonInteraction)).toContain("Day 2");
     expect(getUpdatedDescription(buttonInteraction)).toContain(
-      ":white_check_mark: Charlie (#VJQ28888) | War count: 2",
+      ":white_check_mark: Hotel (#JQJQ2222) | War count: 1",
     );
     expect(getUpdatedDescription(buttonInteraction)).toContain(
       ":white_check_mark: Delta (#CUV02898) | War count: 1",
@@ -573,7 +573,7 @@ describe("/cwl command", () => {
 
     expect(getDescription(interaction)).toContain("Day 7");
     expect(getDescription(interaction)).toContain("Actual lineup unavailable");
-    expect(getDescription(interaction)).toContain(":x: Hotel (#JQJQ2222) | War count: 0");
+    expect(getDescription(interaction)).not.toContain(":x: Hotel (#JQJQ2222)");
     expect(getDescription(interaction)).not.toContain("Actual:");
     expect(getDescription(interaction)).not.toContain("Status:");
   });
@@ -594,6 +594,15 @@ describe("/cwl command", () => {
             rows: [
               { playerTag: "#2JVRPVGLQ", playerName: "ChipsAreTasty", subbedOut: true, assignmentOrder: 0 },
               { playerTag: "#PYLQ0289", playerName: "Alpha", subbedOut: false, assignmentOrder: 1 },
+            ],
+            actual: null,
+          },
+          {
+            roundDay: 3,
+            lineupSize: 2,
+            rows: [
+              { playerTag: "#2JVRPVGLQ", playerName: "ChipsAreTasty", subbedOut: false, assignmentOrder: 0 },
+              { playerTag: "#QGRJ2222", playerName: "Bravo", subbedOut: false, assignmentOrder: 1 },
             ],
             actual: null,
           },
