@@ -111,6 +111,35 @@ function buildCwlRotationMemberLines(input: {
   });
 }
 
+function buildCwlRotationWarCountMap(input: {
+  days: Array<{
+    rows: Array<{
+      playerTag: string;
+      subbedOut: boolean;
+    }>;
+  }>;
+}): Map<string, number> {
+  const warCountByPlayerTag = new Map<string, number>();
+  for (const day of input.days) {
+    for (const row of day.rows) {
+      if (row.subbedOut) continue;
+      const playerTag = normalizePlayerTag(row.playerTag);
+      if (!playerTag) continue;
+      warCountByPlayerTag.set(playerTag, (warCountByPlayerTag.get(playerTag) ?? 0) + 1);
+    }
+  }
+  return warCountByPlayerTag;
+}
+
+function getCwlRotationWarCount(input: {
+  playerTag: string;
+  warCountByPlayerTag: Map<string, number>;
+}): number {
+  const playerTag = normalizePlayerTag(input.playerTag);
+  if (!playerTag) return 0;
+  return input.warCountByPlayerTag.get(playerTag) ?? 0;
+}
+
 function renderCurrentRoundSummary(input: {
   clanTag: string;
   clanName: string | null;
@@ -187,6 +216,7 @@ function renderValidationSummary(input: {
 }
 
 function buildCwlRotationMergedRosterLines(input: {
+  warCountByPlayerTag: Map<string, number>;
   plannedMembers: Array<{
     playerTag: string;
     playerName: string;
@@ -198,8 +228,24 @@ function buildCwlRotationMergedRosterLines(input: {
   }>;
   actualAvailable: boolean;
 }): string[] {
+  const benchMembers = input.plannedMembers
+    .filter((member) => member.subbedOut)
+    .map((member) => ({
+      playerTag: member.playerTag,
+      playerName: member.playerName,
+      warCount: getCwlRotationWarCount({
+        playerTag: member.playerTag,
+        warCountByPlayerTag: input.warCountByPlayerTag,
+      }),
+    }));
+
   if (!input.actualAvailable) {
-    return ["Actual lineup unavailable"];
+    return [
+      "Actual lineup unavailable",
+      ...benchMembers.map(
+        (member) => `:x: ${member.playerName} (${member.playerTag}) | War count: ${member.warCount}`,
+      ),
+    ];
   }
 
   const expectedMembers = input.plannedMembers.filter((member) => !member.subbedOut);
@@ -216,6 +262,10 @@ function buildCwlRotationMergedRosterLines(input: {
     normalizedTag: normalizePlayerTag(member.playerTag),
     playerTag: member.playerTag,
     playerName: member.playerName,
+    warCount: getCwlRotationWarCount({
+      playerTag: member.playerTag,
+      warCountByPlayerTag: input.warCountByPlayerTag,
+    }),
   }));
   const actualTagSet = new Set(actualRows.map((member) => member.normalizedTag).filter(Boolean));
   const missingExpectedRows = expectedMembers.filter((member) => {
@@ -227,7 +277,7 @@ function buildCwlRotationMergedRosterLines(input: {
   let missingExpectedIndex = 0;
   for (const actual of actualRows) {
     if (actual.normalizedTag && expectedByTag.has(actual.normalizedTag)) {
-      lines.push(`:white_check_mark: ${actual.playerName} (${actual.playerTag})`);
+      lines.push(`:white_check_mark: ${actual.playerName} (${actual.playerTag}) | War count: ${actual.warCount}`);
       continue;
     }
 
@@ -235,18 +285,30 @@ function buildCwlRotationMergedRosterLines(input: {
     if (expected) {
       missingExpectedIndex += 1;
       lines.push(
-        `:warning: ${actual.playerName} (${actual.playerTag}) | Expected ${expected.playerName} (${expected.playerTag})`,
+        `:warning: ${actual.playerName} (${actual.playerTag}) | Expected ${expected.playerName} (${expected.playerTag}) | War count: ${actual.warCount}`,
       );
       continue;
     }
 
-    lines.push(`:warning: ${actual.playerName} (${actual.playerTag})`);
+    lines.push(`:warning: ${actual.playerName} (${actual.playerTag}) | War count: ${actual.warCount}`);
   }
 
   for (; missingExpectedIndex < missingExpectedRows.length; missingExpectedIndex += 1) {
     const expected = missingExpectedRows[missingExpectedIndex];
-    lines.push(`:warning: Missing actual member | Expected ${expected.playerName} (${expected.playerTag})`);
+    const expectedWarCount = getCwlRotationWarCount({
+      playerTag: expected.playerTag,
+      warCountByPlayerTag: input.warCountByPlayerTag,
+    });
+    lines.push(
+      `:warning: Missing actual member | Expected ${expected.playerName} (${expected.playerTag}) | War count: ${expectedWarCount}`,
+    );
   }
+
+  lines.push(
+    ...benchMembers.map(
+      (member) => `:x: ${member.playerName} (${member.playerTag}) | War count: ${member.warCount}`,
+    ),
+  );
 
   if (lines.length <= 0) {
     lines.push("No actual lineup members.");
@@ -999,6 +1061,9 @@ function buildCwlRotationShowPageLines(input: {
     actualPlayerRows: Array<{ playerTag: string; playerName: string }>;
   } | null;
 }): string[] {
+  const warCountByPlayerTag = buildCwlRotationWarCountMap({
+    days: input.plan.days,
+  });
   const lines: string[] = [
     `Season: ${input.plan.season}`,
     `Clan: ${input.plan.clanName || input.plan.clanTag}`,
@@ -1016,9 +1081,18 @@ function buildCwlRotationShowPageLines(input: {
   lines.push("");
   if (!input.validation || !input.validation.actualAvailable) {
     lines.push("Actual lineup unavailable");
+    lines.push(
+      ...buildCwlRotationMergedRosterLines({
+        warCountByPlayerTag,
+        plannedMembers: input.day.rows,
+        actualPlayerRows: [],
+        actualAvailable: false,
+      }).slice(1),
+    );
   } else {
     lines.push(
       ...buildCwlRotationMergedRosterLines({
+        warCountByPlayerTag,
         plannedMembers: input.day.rows,
         actualPlayerRows: input.validation.actualPlayerRows,
         actualAvailable: input.validation.actualAvailable,
