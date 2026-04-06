@@ -159,6 +159,7 @@ describe("/cwl command", () => {
     vi.spyOn(cwlRotationSheetService, "confirmImport");
     vi.spyOn(cwlRotationSheetService, "exportActivePlans");
     vi.spyOn(cwlRotationService, "listActivePlanExports");
+    vi.spyOn(cwlRotationService, "getPreferredDisplayDay").mockResolvedValue(null);
     vi.spyOn(cwlRotationService, "validatePlanDay");
   });
 
@@ -365,6 +366,60 @@ describe("/cwl command", () => {
     expect(getUpdatedDescription(buttonInteraction)).toContain("Day 2");
     expect(getUpdatedDescription(buttonInteraction)).toContain(":black_circle: Charlie (#P3)");
     expect(getUpdatedDescription(buttonInteraction)).toContain(":black_circle: Delta (#P4)");
+  });
+
+  it("defaults /cwl rotations show to the prep-day page during overlap", async () => {
+    vi.mocked(cwlRotationService.listActivePlanExports).mockResolvedValue([
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        clanName: "CWL Alpha",
+        version: 4,
+        warningSummary: null,
+        excludedPlayerTags: [],
+        days: [
+          {
+            roundDay: 3,
+            lineupSize: 2,
+            rows: [
+              { playerTag: "#P1", playerName: "Alpha", subbedOut: false, assignmentOrder: 0 },
+              { playerTag: "#P2", playerName: "Bravo", subbedOut: false, assignmentOrder: 1 },
+            ],
+            actual: null,
+          },
+          {
+            roundDay: 4,
+            lineupSize: 2,
+            rows: [
+              { playerTag: "#P3", playerName: "Charlie", subbedOut: false, assignmentOrder: 0 },
+              { playerTag: "#P4", playerName: "Delta", subbedOut: false, assignmentOrder: 1 },
+            ],
+            actual: null,
+          },
+        ],
+      } as any,
+    ]);
+    vi.mocked(cwlRotationService.getPreferredDisplayDay).mockResolvedValue(4);
+    vi.mocked(cwlRotationService.validatePlanDay).mockResolvedValue({
+      actualAvailable: true,
+      complete: true,
+      missingExpectedPlayerTags: [],
+      extraActualPlayerTags: [],
+      actualPlayerTags: ["#P3", "#P4"],
+      actualPlayerNames: ["Charlie", "Delta"],
+    } as any);
+    const interaction = makeInteraction({
+      group: "rotations",
+      subcommand: "show",
+      clan: "#2QG2C08UP",
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    expect(getDescription(interaction)).toContain("Day 4");
+    expect(getDescription(interaction)).toContain(":black_circle: Charlie (#P3)");
+    expect(getDescription(interaction)).toContain(":black_circle: Delta (#P4)");
+    expect(getDescription(interaction)).not.toContain("Day 3");
   });
 
   it("renders only the requested day when /cwl rotations show is day-filtered", async () => {

@@ -5,6 +5,10 @@ const txMock = vi.hoisted(() => ({
     upsert: vi.fn(),
     deleteMany: vi.fn(),
   },
+  currentCwlPrepSnapshot: {
+    upsert: vi.fn(),
+    deleteMany: vi.fn(),
+  },
   cwlRoundMemberCurrent: {
     deleteMany: vi.fn(),
     createMany: vi.fn(),
@@ -27,7 +31,9 @@ const prismaMock = vi.hoisted(() => ({
   },
   currentCwlRound: {
     findUnique: vi.fn(),
-    findFirst: vi.fn(),
+  },
+  currentCwlPrepSnapshot: {
+    findUnique: vi.fn(),
   },
   cwlRoundMemberCurrent: {
     findMany: vi.fn(),
@@ -59,7 +65,7 @@ describe("CwlStateService", () => {
 
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
     prismaMock.currentCwlRound.findUnique.mockResolvedValue(null);
-    prismaMock.currentCwlRound.findFirst.mockResolvedValue(null);
+    prismaMock.currentCwlPrepSnapshot.findUnique.mockResolvedValue(null);
     prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.cwlRoundHistory.findUnique.mockResolvedValue(null);
     prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([]);
@@ -68,6 +74,8 @@ describe("CwlStateService", () => {
 
     txMock.currentCwlRound.upsert.mockResolvedValue(undefined);
     txMock.currentCwlRound.deleteMany.mockResolvedValue({ count: 0 });
+    txMock.currentCwlPrepSnapshot.upsert.mockResolvedValue(undefined);
+    txMock.currentCwlPrepSnapshot.deleteMany.mockResolvedValue({ count: 0 });
     txMock.cwlRoundMemberCurrent.deleteMany.mockResolvedValue({ count: 0 });
     txMock.cwlRoundMemberCurrent.createMany.mockResolvedValue({ count: 0 });
     txMock.cwlRoundHistory.upsert.mockResolvedValue(undefined);
@@ -170,9 +178,12 @@ describe("CwlStateService", () => {
         }),
       }),
     );
+    expect(txMock.currentCwlPrepSnapshot.deleteMany).toHaveBeenCalledWith({
+      where: { season: "2026-04", clanTag: "#2QG2C08UP" },
+    });
   });
 
-  it("prefers a live battle-day round over a later preparation round when persisting current CWL state", async () => {
+  it("prefers a live battle-day round over a later preparation round and persists the overlap prep snapshot", async () => {
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([
       { tag: "#2QG2C08UP" },
     ]);
@@ -283,6 +294,27 @@ describe("CwlStateService", () => {
         ]),
       }),
     );
+    expect(txMock.currentCwlPrepSnapshot.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          season: "2026-04",
+          clanTag: "#2QG2C08UP",
+          roundDay: 2,
+          roundState: "preparation",
+          opponentName: "Opponent Two",
+          lineupJson: expect.arrayContaining([
+            expect.objectContaining({
+              playerTag: "#PYLQ0289",
+              playerName: "Alpha",
+              mapPosition: 1,
+              townHall: 16,
+              subbedIn: true,
+              subbedOut: false,
+            }),
+          ]),
+        }),
+      }),
+    );
   });
 
   it("archives ended rounds into history and clears the current-round owner when no live/prep round remains", async () => {
@@ -338,6 +370,9 @@ describe("CwlStateService", () => {
     expect(result.historyRoundCount).toBe(1);
     expect(result.historyMemberCount).toBe(1);
     expect(txMock.currentCwlRound.deleteMany).toHaveBeenCalledWith({
+      where: { season: "2026-04", clanTag: "#2QG2C08UP" },
+    });
+    expect(txMock.currentCwlPrepSnapshot.deleteMany).toHaveBeenCalledWith({
       where: { season: "2026-04", clanTag: "#2QG2C08UP" },
     });
     expect(txMock.cwlRoundHistory.upsert).toHaveBeenCalledWith(
@@ -442,7 +477,7 @@ describe("CwlStateService", () => {
         ],
       }),
     );
-    expect(prismaMock.currentCwlRound.findFirst).not.toHaveBeenCalled();
+    expect(prismaMock.currentCwlPrepSnapshot.findUnique).not.toHaveBeenCalled();
   });
 
   it("returns the persisted history lineup when the requested day is in history", async () => {
@@ -513,10 +548,10 @@ describe("CwlStateService", () => {
         ],
       }),
     );
-    expect(prismaMock.currentCwlRound.findFirst).not.toHaveBeenCalled();
+    expect(prismaMock.currentCwlPrepSnapshot.findUnique).not.toHaveBeenCalled();
   });
 
-  it("returns the persisted next-day preparation lineup when the current round remains in war", async () => {
+  it("returns the persisted next-day preparation lineup from the live prep snapshot when the current round remains in war", async () => {
     prismaMock.currentCwlRound.findUnique.mockResolvedValue({
       season: "2026-04",
       clanTag: "#2QG2C08UP",
@@ -530,7 +565,7 @@ describe("CwlStateService", () => {
       endTime: new Date("2026-04-02T12:00:00.000Z"),
       sourceUpdatedAt: new Date("2026-04-01T00:00:00.000Z"),
     });
-    prismaMock.currentCwlRound.findFirst.mockResolvedValue({
+    prismaMock.currentCwlPrepSnapshot.findUnique.mockResolvedValue({
       season: "2026-04",
       clanTag: "#2QG2C08UP",
       clanName: "CWL Alpha",
@@ -541,40 +576,25 @@ describe("CwlStateService", () => {
       preparationStartTime: new Date("2026-04-02T10:00:00.000Z"),
       startTime: new Date("2026-04-02T12:00:00.000Z"),
       endTime: new Date("2026-04-03T12:00:00.000Z"),
+      lineupJson: [
+        {
+          playerTag: "#QGRJ2222",
+          playerName: "Bravo",
+          mapPosition: 1,
+          townHall: 15,
+          subbedIn: true,
+          subbedOut: false,
+        },
+        {
+          playerTag: "#CUV9082",
+          playerName: "Charlie",
+          mapPosition: 2,
+          townHall: 15,
+          subbedIn: true,
+          subbedOut: false,
+        },
+      ],
       sourceUpdatedAt: new Date("2026-04-02T00:00:00.000Z"),
-    });
-    prismaMock.cwlRoundMemberCurrent.findMany.mockImplementation(async (args: any) => {
-      if (args?.where?.roundDay === 2) {
-        return [
-          {
-            season: "2026-04",
-            clanTag: "#2QG2C08UP",
-            playerTag: "#QGRJ2222",
-            roundDay: 2,
-            playerName: "Bravo",
-            mapPosition: 1,
-            townHall: 15,
-            attacksUsed: 0,
-            attacksAvailable: 0,
-            subbedIn: true,
-            subbedOut: false,
-          },
-          {
-            season: "2026-04",
-            clanTag: "#2QG2C08UP",
-            playerTag: "#CUV9082",
-            roundDay: 2,
-            playerName: "Charlie",
-            mapPosition: 2,
-            townHall: 15,
-            attacksUsed: 0,
-            attacksAvailable: 0,
-            subbedIn: true,
-            subbedOut: false,
-          },
-        ];
-      }
-      return [];
     });
 
     const actual = await cwlStateService.getActualLineupForDay({
@@ -583,12 +603,13 @@ describe("CwlStateService", () => {
       roundDay: 2,
     });
 
-    expect(prismaMock.currentCwlRound.findFirst).toHaveBeenCalledWith(
+    expect(prismaMock.currentCwlPrepSnapshot.findUnique).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
-          season: "2026-04",
-          clanTag: "#2QG2C08UP",
-          roundDay: 2,
+          season_clanTag: {
+            season: "2026-04",
+            clanTag: "#2QG2C08UP",
+          },
         },
       }),
     );
@@ -606,11 +627,15 @@ describe("CwlStateService", () => {
           expect.objectContaining({
             playerTag: "#QGRJ2222",
             playerName: "Bravo",
+            attacksUsed: 0,
+            attacksAvailable: 0,
             subbedIn: true,
           }),
           expect.objectContaining({
             playerTag: "#CUV9082",
             playerName: "Charlie",
+            attacksUsed: 0,
+            attacksAvailable: 0,
             subbedIn: true,
           }),
         ],
@@ -632,7 +657,6 @@ describe("CwlStateService", () => {
       endTime: new Date("2026-04-02T12:00:00.000Z"),
       sourceUpdatedAt: new Date("2026-04-01T00:00:00.000Z"),
     });
-    prismaMock.currentCwlRound.findFirst.mockResolvedValue(null);
 
     const actual = await cwlStateService.getActualLineupForDay({
       clanTag: "#2QG2C08UP",
@@ -641,7 +665,7 @@ describe("CwlStateService", () => {
     });
 
     expect(actual).toBeNull();
-    expect(prismaMock.currentCwlRound.findFirst).not.toHaveBeenCalled();
+    expect(prismaMock.currentCwlPrepSnapshot.findUnique).toHaveBeenCalledTimes(1);
   });
 
   it("builds a DB-first season roster view with linked-user and current-round context", async () => {

@@ -1505,7 +1505,18 @@ async function handleRotationShowSubcommand(interaction: ChatInputCommandInterac
     });
   };
 
-  const pageIndex = 0;
+  const preferredDay = day
+    ? day
+    : await cwlRotationService.getPreferredDisplayDay({
+        clanTag: planView.clanTag,
+        season: planView.season,
+      });
+  const pageIndex = Math.max(
+    0,
+    preferredDay
+      ? relevantDays.findIndex((entry) => entry.roundDay === preferredDay)
+      : 0,
+  );
   const embed = await renderPage(pageIndex);
   if (!embed) {
     await interaction.editReply(`No planned CWL rotation day ${day ?? 1} exists for ${clanTag}.`);
