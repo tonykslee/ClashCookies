@@ -412,6 +412,51 @@ describe("/cwl command", () => {
     expect(getComponentButtonCustomIds(interaction)).toHaveLength(0);
   });
 
+  it("keeps actual lineup unavailable for far-future /cwl rotations show days", async () => {
+    vi.mocked(cwlRotationService.listActivePlanExports).mockResolvedValue([
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        clanName: "CWL Alpha",
+        version: 4,
+        warningSummary: null,
+        excludedPlayerTags: [],
+        days: [
+          {
+            roundDay: 7,
+            lineupSize: 2,
+            rows: [
+              { playerTag: "#P7", playerName: "Golf", subbedOut: false, assignmentOrder: 0 },
+              { playerTag: "#P8", playerName: "Hotel", subbedOut: true, assignmentOrder: 1 },
+            ],
+            actual: null,
+          },
+        ],
+      } as any,
+    ]);
+    vi.mocked(cwlRotationService.validatePlanDay).mockResolvedValue({
+      actualAvailable: false,
+      complete: false,
+      missingExpectedPlayerTags: [],
+      extraActualPlayerTags: [],
+      actualPlayerTags: [],
+      actualPlayerNames: [],
+    } as any);
+    const interaction = makeInteraction({
+      group: "rotations",
+      subcommand: "show",
+      clan: "#2QG2C08UP",
+      day: 7,
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    expect(getDescription(interaction)).toContain("Day 7");
+    expect(getDescription(interaction)).toContain("Actual:");
+    expect(getDescription(interaction)).toContain("unavailable");
+    expect(getDescription(interaction)).toContain("Status: actual lineup unavailable");
+  });
+
   it("renders an import preview before save and confirms only after a button interaction", async () => {
     const preview: CwlRotationSheetImportPreview = {
       sourceSheetId: "sheet-1",

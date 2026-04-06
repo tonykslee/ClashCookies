@@ -27,6 +27,7 @@ const prismaMock = vi.hoisted(() => ({
   },
   currentCwlRound: {
     findUnique: vi.fn(),
+    findFirst: vi.fn(),
   },
   cwlRoundMemberCurrent: {
     findMany: vi.fn(),
@@ -58,6 +59,7 @@ describe("CwlStateService", () => {
 
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
     prismaMock.currentCwlRound.findUnique.mockResolvedValue(null);
+    prismaMock.currentCwlRound.findFirst.mockResolvedValue(null);
     prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.cwlRoundHistory.findUnique.mockResolvedValue(null);
     prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([]);
@@ -363,6 +365,283 @@ describe("CwlStateService", () => {
         ]),
       }),
     );
+  });
+
+  it("returns the persisted current-day lineup when the current round matches the requested day", async () => {
+    prismaMock.currentCwlRound.findUnique.mockResolvedValue({
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      clanName: "CWL Alpha",
+      roundDay: 2,
+      roundState: "preparation",
+      opponentTag: "#OPP1",
+      opponentName: "Opponent One",
+      preparationStartTime: new Date("2026-04-02T10:00:00.000Z"),
+      startTime: new Date("2026-04-02T12:00:00.000Z"),
+      endTime: new Date("2026-04-03T12:00:00.000Z"),
+      sourceUpdatedAt: new Date("2026-04-02T00:00:00.000Z"),
+    });
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        playerTag: "#PYLQ0289",
+        roundDay: 2,
+        playerName: "Alpha",
+        mapPosition: 1,
+        townHall: 16,
+        attacksUsed: 0,
+        attacksAvailable: 0,
+        subbedIn: true,
+        subbedOut: false,
+      },
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        playerTag: "#QGRJ2222",
+        roundDay: 2,
+        playerName: "Bravo",
+        mapPosition: 2,
+        townHall: 15,
+        attacksUsed: 0,
+        attacksAvailable: 0,
+        subbedIn: true,
+        subbedOut: false,
+      },
+    ]);
+
+    const actual = await cwlStateService.getActualLineupForDay({
+      clanTag: "#2QG2C08UP",
+      season: "2026-04",
+      roundDay: 2,
+    });
+
+    expect(actual).toEqual(
+      expect.objectContaining({
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        clanName: "CWL Alpha",
+        roundDay: 2,
+        roundState: "preparation",
+        opponentTag: "#OPP1",
+        opponentName: "Opponent One",
+        phaseEndsAt: new Date("2026-04-02T12:00:00.000Z"),
+        members: [
+          expect.objectContaining({
+            playerTag: "#PYLQ0289",
+            playerName: "Alpha",
+            mapPosition: 1,
+            subbedIn: true,
+          }),
+          expect.objectContaining({
+            playerTag: "#QGRJ2222",
+            playerName: "Bravo",
+            mapPosition: 2,
+            subbedIn: true,
+          }),
+        ],
+      }),
+    );
+    expect(prismaMock.currentCwlRound.findFirst).not.toHaveBeenCalled();
+  });
+
+  it("returns the persisted history lineup when the requested day is in history", async () => {
+    prismaMock.currentCwlRound.findUnique.mockResolvedValue({
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      clanName: "CWL Alpha",
+      roundDay: 3,
+      roundState: "inWar",
+      opponentTag: "#OPP1",
+      opponentName: "Opponent One",
+      preparationStartTime: new Date("2026-04-03T10:00:00.000Z"),
+      startTime: new Date("2026-04-03T12:00:00.000Z"),
+      endTime: new Date("2026-04-04T12:00:00.000Z"),
+      sourceUpdatedAt: new Date("2026-04-03T00:00:00.000Z"),
+    });
+    prismaMock.cwlRoundHistory.findUnique.mockResolvedValue({
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      roundDay: 1,
+      clanName: "CWL Alpha",
+      roundState: "warEnded",
+      opponentTag: "#OPP2",
+      opponentName: "Opponent Two",
+      preparationStartTime: new Date("2026-04-01T10:00:00.000Z"),
+      startTime: new Date("2026-04-01T12:00:00.000Z"),
+      endTime: new Date("2026-04-02T12:00:00.000Z"),
+      sourceUpdatedAt: new Date("2026-04-01T00:00:00.000Z"),
+    });
+    prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        roundDay: 1,
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha",
+        mapPosition: 1,
+        townHall: 16,
+        attacksUsed: 1,
+        attacksAvailable: 1,
+        subbedIn: true,
+        subbedOut: false,
+      },
+    ]);
+
+    const actual = await cwlStateService.getActualLineupForDay({
+      clanTag: "#2QG2C08UP",
+      season: "2026-04",
+      roundDay: 1,
+    });
+
+    expect(actual).toEqual(
+      expect.objectContaining({
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        clanName: "CWL Alpha",
+        roundDay: 1,
+        roundState: "warEnded",
+        opponentTag: "#OPP2",
+        opponentName: "Opponent Two",
+        phaseEndsAt: new Date("2026-04-02T12:00:00.000Z"),
+        members: [
+          expect.objectContaining({
+            playerTag: "#PYLQ0289",
+            playerName: "Alpha",
+            subbedIn: true,
+          }),
+        ],
+      }),
+    );
+    expect(prismaMock.currentCwlRound.findFirst).not.toHaveBeenCalled();
+  });
+
+  it("returns the persisted next-day preparation lineup when the current round remains in war", async () => {
+    prismaMock.currentCwlRound.findUnique.mockResolvedValue({
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      clanName: "CWL Alpha",
+      roundDay: 1,
+      roundState: "inWar",
+      opponentTag: "#OPP1",
+      opponentName: "Opponent One",
+      preparationStartTime: new Date("2026-04-01T10:00:00.000Z"),
+      startTime: new Date("2026-04-01T12:00:00.000Z"),
+      endTime: new Date("2026-04-02T12:00:00.000Z"),
+      sourceUpdatedAt: new Date("2026-04-01T00:00:00.000Z"),
+    });
+    prismaMock.currentCwlRound.findFirst.mockResolvedValue({
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      clanName: "CWL Alpha",
+      roundDay: 2,
+      roundState: "preparation",
+      opponentTag: "#OPP2",
+      opponentName: "Opponent Two",
+      preparationStartTime: new Date("2026-04-02T10:00:00.000Z"),
+      startTime: new Date("2026-04-02T12:00:00.000Z"),
+      endTime: new Date("2026-04-03T12:00:00.000Z"),
+      sourceUpdatedAt: new Date("2026-04-02T00:00:00.000Z"),
+    });
+    prismaMock.cwlRoundMemberCurrent.findMany.mockImplementation(async (args: any) => {
+      if (args?.where?.roundDay === 2) {
+        return [
+          {
+            season: "2026-04",
+            clanTag: "#2QG2C08UP",
+            playerTag: "#QGRJ2222",
+            roundDay: 2,
+            playerName: "Bravo",
+            mapPosition: 1,
+            townHall: 15,
+            attacksUsed: 0,
+            attacksAvailable: 0,
+            subbedIn: true,
+            subbedOut: false,
+          },
+          {
+            season: "2026-04",
+            clanTag: "#2QG2C08UP",
+            playerTag: "#CUV9082",
+            roundDay: 2,
+            playerName: "Charlie",
+            mapPosition: 2,
+            townHall: 15,
+            attacksUsed: 0,
+            attacksAvailable: 0,
+            subbedIn: true,
+            subbedOut: false,
+          },
+        ];
+      }
+      return [];
+    });
+
+    const actual = await cwlStateService.getActualLineupForDay({
+      clanTag: "#2QG2C08UP",
+      season: "2026-04",
+      roundDay: 2,
+    });
+
+    expect(prismaMock.currentCwlRound.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          season: "2026-04",
+          clanTag: "#2QG2C08UP",
+          roundDay: 2,
+        },
+      }),
+    );
+    expect(actual).toEqual(
+      expect.objectContaining({
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        clanName: "CWL Alpha",
+        roundDay: 2,
+        roundState: "preparation",
+        opponentTag: "#OPP2",
+        opponentName: "Opponent Two",
+        phaseEndsAt: new Date("2026-04-02T12:00:00.000Z"),
+        members: [
+          expect.objectContaining({
+            playerTag: "#QGRJ2222",
+            playerName: "Bravo",
+            subbedIn: true,
+          }),
+          expect.objectContaining({
+            playerTag: "#CUV9082",
+            playerName: "Charlie",
+            subbedIn: true,
+          }),
+        ],
+      }),
+    );
+  });
+
+  it("returns null for a future day that is not yet in preparation", async () => {
+    prismaMock.currentCwlRound.findUnique.mockResolvedValue({
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      clanName: "CWL Alpha",
+      roundDay: 1,
+      roundState: "inWar",
+      opponentTag: "#OPP1",
+      opponentName: "Opponent One",
+      preparationStartTime: new Date("2026-04-01T10:00:00.000Z"),
+      startTime: new Date("2026-04-01T12:00:00.000Z"),
+      endTime: new Date("2026-04-02T12:00:00.000Z"),
+      sourceUpdatedAt: new Date("2026-04-01T00:00:00.000Z"),
+    });
+    prismaMock.currentCwlRound.findFirst.mockResolvedValue(null);
+
+    const actual = await cwlStateService.getActualLineupForDay({
+      clanTag: "#2QG2C08UP",
+      season: "2026-04",
+      roundDay: 4,
+    });
+
+    expect(actual).toBeNull();
+    expect(prismaMock.currentCwlRound.findFirst).not.toHaveBeenCalled();
   });
 
   it("builds a DB-first season roster view with linked-user and current-round context", async () => {
