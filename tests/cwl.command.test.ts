@@ -311,6 +311,7 @@ describe("/cwl command", () => {
               { playerTag: "#PYLQ0289", playerName: "Alpha", subbedOut: false, assignmentOrder: 0 },
               { playerTag: "#QGRJ2222", playerName: "Bravo", subbedOut: false, assignmentOrder: 1 },
               { playerTag: "#CUV02898", playerName: "Delta", subbedOut: false, assignmentOrder: 2 },
+              { playerTag: "#JQJQ2222", playerName: "Hotel", subbedOut: true, assignmentOrder: 3 },
             ],
             actual: null,
           },
@@ -359,9 +360,14 @@ describe("/cwl command", () => {
     expect(getDescription(interaction)).toContain("Warnings: 1 warning");
     expect(getDescription(interaction)).toContain("Excluded: #P9");
     expect(getDescription(interaction)).toContain("Day 1");
-    expect(getDescription(interaction)).toContain(":white_check_mark: Alpha (#PYLQ0289)");
-    expect(getDescription(interaction)).toContain(":warning: Charlie (#VJQ28888) | Expected Bravo (#QGRJ2222)");
-    expect(getDescription(interaction)).toContain(":warning: Missing actual member | Expected Delta (#CUV02898)");
+    expect(getDescription(interaction)).toContain(":white_check_mark: Alpha (#PYLQ0289) | War count: 1");
+    expect(getDescription(interaction)).toContain(
+      ":warning: Charlie (#VJQ28888) | Expected Bravo (#QGRJ2222) | War count: 1",
+    );
+    expect(getDescription(interaction)).toContain(
+      ":warning: Missing actual member | Expected Delta (#CUV02898) | War count: 2",
+    );
+    expect(getDescription(interaction)).toContain(":x: Hotel (#JQJQ2222) | War count: 0");
     expect(getDescription(interaction)).not.toContain("Actual:");
     expect(getDescription(interaction)).not.toContain("Status:");
     expect(getComponentButtonCustomIds(interaction)).toHaveLength(2);
@@ -378,8 +384,12 @@ describe("/cwl command", () => {
     await handleCwlRotationShowButtonInteraction(buttonInteraction as any);
 
     expect(getUpdatedDescription(buttonInteraction)).toContain("Day 2");
-    expect(getUpdatedDescription(buttonInteraction)).toContain(":white_check_mark: Charlie (#VJQ28888)");
-    expect(getUpdatedDescription(buttonInteraction)).toContain(":white_check_mark: Delta (#CUV02898)");
+    expect(getUpdatedDescription(buttonInteraction)).toContain(
+      ":white_check_mark: Charlie (#VJQ28888) | War count: 1",
+    );
+    expect(getUpdatedDescription(buttonInteraction)).toContain(
+      ":white_check_mark: Delta (#CUV02898) | War count: 2",
+    );
     expect(getUpdatedDescription(buttonInteraction)).not.toContain("Actual:");
     expect(getUpdatedDescription(buttonInteraction)).not.toContain("Status:");
   });
@@ -433,8 +443,8 @@ describe("/cwl command", () => {
     await Cwl.run({} as any, interaction as any);
 
     expect(getDescription(interaction)).toContain("Day 4");
-    expect(getDescription(interaction)).toContain(":white_check_mark: Charlie (#VJQ28888)");
-    expect(getDescription(interaction)).toContain(":white_check_mark: Delta (#CUV02898)");
+    expect(getDescription(interaction)).toContain(":white_check_mark: Charlie (#VJQ28888) | War count: 1");
+    expect(getDescription(interaction)).toContain(":white_check_mark: Delta (#CUV02898) | War count: 1");
     expect(getDescription(interaction)).not.toContain("Day 3");
     expect(getDescription(interaction)).not.toContain("Actual:");
     expect(getDescription(interaction)).not.toContain("Status:");
@@ -480,8 +490,8 @@ describe("/cwl command", () => {
     await Cwl.run({} as any, interaction as any);
 
     expect(getDescription(interaction)).toContain("Day 2");
-    expect(getDescription(interaction)).toContain(":white_check_mark: Charlie (#VJQ28888)");
-    expect(getDescription(interaction)).toContain(":white_check_mark: Delta (#CUV02898)");
+    expect(getDescription(interaction)).toContain(":white_check_mark: Charlie (#VJQ28888) | War count: 1");
+    expect(getDescription(interaction)).toContain(":white_check_mark: Delta (#CUV02898) | War count: 1");
     expect(getDescription(interaction)).not.toContain("Day 1");
     expect(getDescription(interaction)).not.toContain("Actual:");
     expect(getDescription(interaction)).not.toContain("Status:");
@@ -502,8 +512,7 @@ describe("/cwl command", () => {
             roundDay: 7,
             lineupSize: 2,
             rows: [
-              { playerTag: "#P7", playerName: "Golf", subbedOut: false, assignmentOrder: 0 },
-              { playerTag: "#P8", playerName: "Hotel", subbedOut: true, assignmentOrder: 1 },
+              { playerTag: "#JQJQ2222", playerName: "Hotel", subbedOut: true, assignmentOrder: 0 },
             ],
             actual: null,
           },
@@ -529,6 +538,7 @@ describe("/cwl command", () => {
 
     expect(getDescription(interaction)).toContain("Day 7");
     expect(getDescription(interaction)).toContain("Actual lineup unavailable");
+    expect(getDescription(interaction)).toContain(":x: Hotel (#JQJQ2222) | War count: 0");
     expect(getDescription(interaction)).not.toContain("Actual:");
     expect(getDescription(interaction)).not.toContain("Status:");
   });
@@ -578,6 +588,48 @@ describe("/cwl command", () => {
     expect(getDescription(interaction)).toContain(":warning: Missing actual member | Expected Golf (#CUV02898)");
     expect(getDescription(interaction)).not.toContain("Actual:");
     expect(getDescription(interaction)).not.toContain("Status:");
+  });
+
+  it("shows unexpected actual members with zero war count when they are absent from the plan", async () => {
+    vi.mocked(cwlRotationService.listActivePlanExports).mockResolvedValue([
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        clanName: "CWL Alpha",
+        version: 4,
+        warningSummary: null,
+        excludedPlayerTags: [],
+        days: [
+          {
+            roundDay: 5,
+            lineupSize: 1,
+            rows: [
+              { playerTag: "#JQJQ2222", playerName: "Hotel", subbedOut: true, assignmentOrder: 0 },
+            ],
+            actual: null,
+          },
+        ],
+      } as any,
+    ]);
+    vi.mocked(cwlRotationService.validatePlanDay).mockResolvedValue({
+      actualAvailable: true,
+      complete: false,
+      missingExpectedPlayerTags: [],
+      extraActualPlayerTags: ["#VJQ28888"],
+      actualPlayerTags: ["#VJQ28888"],
+      actualPlayerNames: ["Visitor"],
+    } as any);
+    const interaction = makeInteraction({
+      group: "rotations",
+      subcommand: "show",
+      clan: "#2QG2C08UP",
+      day: 5,
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    expect(getDescription(interaction)).toContain(":warning: Visitor (#VJQ28888) | War count: 0");
+    expect(getDescription(interaction)).toContain(":x: Hotel (#JQJQ2222) | War count: 0");
   });
 
   it("renders an import preview before save and confirms only after a button interaction", async () => {
