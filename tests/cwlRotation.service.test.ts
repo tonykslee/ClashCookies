@@ -302,4 +302,70 @@ describe("CwlRotationService", () => {
       currentState: "inWar",
     });
   });
+
+  it("validates the next-day preparation lineup against the planned roster", async () => {
+    prismaMock.cwlRotationPlan.findFirst.mockResolvedValue({
+      id: "plan-1",
+      clanTag: "#2QG2C08UP",
+      season: "2026-04",
+      version: 2,
+      isActive: true,
+    });
+    prismaMock.cwlRotationPlanDay.findMany.mockResolvedValue([
+      {
+        roundDay: 4,
+        lineupSize: 2,
+        members: [
+          { playerTag: "#PYLQ0289", playerName: "Alpha", assignmentOrder: 0 },
+          { playerTag: "#QGRJ2222", playerName: "Bravo", assignmentOrder: 1 },
+        ],
+      },
+    ]);
+    vi.spyOn(cwlStateService, "getActualLineupForDay").mockResolvedValue({
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      clanName: "CWL Alpha",
+      roundDay: 4,
+      roundState: "preparation",
+      opponentTag: "#OPP2",
+      opponentName: "Opponent Two",
+      phaseEndsAt: new Date("2026-04-04T12:00:00.000Z"),
+      members: [
+        {
+          playerTag: "#PYLQ0289",
+          playerName: "Alpha",
+          mapPosition: 1,
+          townHall: 16,
+          attacksUsed: 0,
+          attacksAvailable: 0,
+          subbedIn: true,
+          subbedOut: false,
+        },
+        {
+          playerTag: "#CUV9082",
+          playerName: "Charlie",
+          mapPosition: 2,
+          townHall: 15,
+          attacksUsed: 0,
+          attacksAvailable: 0,
+          subbedIn: true,
+          subbedOut: false,
+        },
+      ],
+    });
+
+    const result = await cwlRotationService.validatePlanDay({
+      clanTag: "#2QG2C08UP",
+      season: "2026-04",
+      roundDay: 4,
+    });
+
+    expect(result).toMatchObject({
+      complete: false,
+      actualAvailable: true,
+      missingExpectedPlayerTags: ["#QGRJ2222"],
+      extraActualPlayerTags: ["#CUV9082"],
+      currentState: "preparation",
+    });
+  });
 });
