@@ -235,6 +235,16 @@ type CwlPrepSnapshotOwner = CwlActualLineupOwner & {
   sourceUpdatedAt: Date;
 };
 
+type CwlDayOwnerResolution =
+  | {
+      owner: CwlActualLineupOwner;
+      source: "current" | "history";
+    }
+  | {
+      owner: CwlPrepSnapshotOwner;
+      source: "prep";
+    };
+
 function toRecordValue(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
@@ -371,6 +381,39 @@ function mapPreparationSnapshotToActualLineup(
       subbedOut: member.subbedOut,
     })),
   };
+}
+
+async function loadPersistedCwlDayOwner(input: {
+  clanTag: string;
+  season: string;
+  roundDay: number;
+}): Promise<CwlDayOwnerResolution | null> {
+  const currentRound = await prisma.currentCwlRound.findUnique({
+    where: { season_clanTag: { season: input.season, clanTag: input.clanTag } },
+  });
+  if (currentRound && currentRound.roundDay === input.roundDay) {
+    return { owner: currentRound, source: "current" };
+  }
+
+  const historyRound = await prisma.cwlRoundHistory.findUnique({
+    where: {
+      season_clanTag_roundDay: { season: input.season, clanTag: input.clanTag, roundDay: input.roundDay },
+    },
+  });
+  if (historyRound) {
+    return { owner: historyRound, source: "history" };
+  }
+
+  const preparationSnapshot = await prisma.currentCwlPrepSnapshot.findUnique({
+    where: {
+      season_clanTag: { season: input.season, clanTag: input.clanTag },
+    },
+  });
+  if (preparationSnapshot && preparationSnapshot.roundDay === input.roundDay) {
+    return { owner: preparationSnapshot, source: "prep" };
+  }
+
+  return null;
 }
 
 function compareRoundMembers(a: { mapPosition: number | null; playerName: string; playerTag: string }, b: { mapPosition: number | null; playerName: string; playerTag: string }): number {
@@ -1167,38 +1210,33 @@ export class CwlStateService {
     const roundDay = Math.max(1, Math.trunc(Number(input.roundDay) || 0));
     if (!clanTag || roundDay <= 0) return null;
 
-    const currentRound = await prisma.currentCwlRound.findUnique({
-      where: { season_clanTag: { season, clanTag } },
-    });
-    if (currentRound && currentRound.roundDay === roundDay) {
-      return loadPersistedCwlActualLineup({
-        owner: currentRound,
-        memberSource: "current",
-      });
+    const resolvedOwner = await loadPersistedCwlDayOwner({ clanTag, season, roundDay });
+    if (!resolvedOwner) {
+      return null;
     }
 
-    const historyRound = await prisma.cwlRoundHistory.findUnique({
-      where: {
-        season_clanTag_roundDay: { season, clanTag, roundDay },
-      },
-    });
-    if (historyRound) {
-      return loadPersistedCwlActualLineup({
-        owner: historyRound,
-        memberSource: "history",
-      });
+    if (resolvedOwner.source === "prep") {
+      return mapPreparationSnapshotToActualLineup(resolvedOwner.owner);
     }
-
-    const preparationSnapshot = await prisma.currentCwlPrepSnapshot.findUnique({
-      where: {
-        season_clanTag: { season, clanTag },
-      },
+    return loadPersistedCwlActualLineup({
+      owner: resolvedOwner.owner,
+      memberSource: resolvedOwner.source,
     });
-    if (preparationSnapshot && preparationSnapshot.roundDay === roundDay) {
-      return mapPreparationSnapshotToActualLineup(preparationSnapshot);
-    }
+  }
 
-    return null;
+  /** Purpose: load the persisted battle-day start timestamp for one requested CWL day. */
+  async getBattleDayStartForClanDay(input: {
+    clanTag: string;
+    season?: string;
+    roundDay: number;
+  }): Promise<Date | null> {
+    const season = input.season ?? resolveCurrentCwlSeasonKey();
+    const clanTag = normalizeClanTag(input.clanTag);
+    const roundDay = Math.max(1, Math.trunc(Number(input.roundDay) || 0));
+    if (!clanTag || roundDay <= 0) return null;
+
+    const resolvedOwner = await loadPersistedCwlDayOwner({ clanTag, season, roundDay });
+    return resolvedOwner?.owner.startTime ?? null;
   }
 
   /** Purpose: build one DB-first current-season CWL roster view from persisted roster and round owners. */

@@ -165,6 +165,7 @@ describe("/cwl command", () => {
     vi.spyOn(cwlRotationService, "listActivePlanExports");
     vi.spyOn(cwlRotationService, "getPreferredDisplayDay").mockResolvedValue(null);
     vi.spyOn(cwlRotationService, "validatePlanDay");
+    vi.spyOn(cwlStateService, "getBattleDayStartForClanDay").mockResolvedValue(null);
     vi.spyOn(cwlStateService, "getParticipationCountsForClanDay").mockResolvedValue(new Map());
   });
 
@@ -324,7 +325,7 @@ describe("/cwl command", () => {
             roundDay: 2,
             lineupSize: 2,
             rows: [
-              { playerTag: "#JQJQ2222", playerName: "Hotel", subbedOut: false, assignmentOrder: 0 },
+              { playerTag: "#QGRJ2222", playerName: "Bravo", subbedOut: true, assignmentOrder: 0 },
               { playerTag: "#CUV02898", playerName: "Delta", subbedOut: false, assignmentOrder: 1 },
             ],
             actual: null,
@@ -344,11 +345,11 @@ describe("/cwl command", () => {
       } as any)
       .mockResolvedValueOnce({
         actualAvailable: true,
-        complete: true,
+        complete: false,
         missingExpectedPlayerTags: [],
-        extraActualPlayerTags: [],
-        actualPlayerTags: ["#JQJQ2222", "#CUV02898"],
-        actualPlayerNames: ["Hotel", "Delta"],
+        extraActualPlayerTags: ["#QGRJ2222"],
+        actualPlayerTags: ["#QGRJ2222", "#CUV02898"],
+        actualPlayerNames: ["Bravo", "Delta"],
       } as any);
     vi.mocked(cwlStateService.getParticipationCountsForClanDay).mockImplementation(async ({ throughRoundDay }) => {
       if (throughRoundDay === 1) {
@@ -362,12 +363,20 @@ describe("/cwl command", () => {
       if (throughRoundDay === 2) {
         return makeParticipationCounts([
           ["#PYLQ0289", 1],
-          ["#JQJQ2222", 1],
-          ["#QGRJ2222", 0],
+          ["#QGRJ2222", 1],
           ["#CUV02898", 1],
         ]);
       }
       return new Map();
+    });
+    vi.mocked(cwlStateService.getBattleDayStartForClanDay).mockImplementation(async ({ roundDay }) => {
+      if (roundDay === 1) {
+        return new Date("2026-04-03T12:00:00.000Z");
+      }
+      if (roundDay === 2) {
+        return new Date("2026-04-04T12:00:00.000Z");
+      }
+      return null;
     });
     const interaction = makeInteraction({
       group: "rotations",
@@ -381,16 +390,18 @@ describe("/cwl command", () => {
       season: "2026-04",
       clanTags: ["#2QG2C08UP"],
     });
-    expect(getDescription(interaction)).toContain("Warnings: 1 warning");
+    expect(getDescription(interaction)).toContain("Battle day start: <t:");
+    expect(getDescription(interaction)).toContain(":R>");
     expect(getDescription(interaction)).toContain("Excluded: #P9");
     expect(getDescription(interaction)).toContain("Day 1");
+    expect(getDescription(interaction)).not.toContain("Warnings:");
     expect(getDescription(interaction)).toContain(":white_check_mark: Alpha (#PYLQ0289) | War count: 1");
     expect(getDescription(interaction)).toContain(
       ":warning: Charlie (#VJQ28888) | War count: 1 - Expected Bravo (#QGRJ2222)",
     );
     expect(getDescription(interaction)).toContain(":x: Bravo (#QGRJ2222) | War count: 0");
     expect(getDescription(interaction)).toContain(":x: Delta (#CUV02898) | War count: 0");
-    expect(getDescription(interaction)).toContain(":x: Hotel (#JQJQ2222) | War count: 0");
+    expect(getDescription(interaction)).not.toContain(":x: Hotel (#JQJQ2222)");
     expect(getDescription(interaction)).not.toContain("Actual:");
     expect(getDescription(interaction)).not.toContain("Status:");
     expect(getComponentButtonCustomIds(interaction)).toHaveLength(2);
@@ -407,14 +418,90 @@ describe("/cwl command", () => {
     await handleCwlRotationShowButtonInteraction(buttonInteraction as any);
 
     expect(getUpdatedDescription(buttonInteraction)).toContain("Day 2");
+    expect(getUpdatedDescription(buttonInteraction)).toContain("Battle day start: <t:");
+    expect(getUpdatedDescription(buttonInteraction)).toContain(":R>");
     expect(getUpdatedDescription(buttonInteraction)).toContain(
-      ":white_check_mark: Hotel (#JQJQ2222) | War count: 1",
+      ":warning: Bravo (#QGRJ2222) | War count: 1",
     );
     expect(getUpdatedDescription(buttonInteraction)).toContain(
       ":white_check_mark: Delta (#CUV02898) | War count: 1",
     );
+    expect(getUpdatedDescription(buttonInteraction)).not.toContain(":x: Bravo (#QGRJ2222)");
     expect(getUpdatedDescription(buttonInteraction)).not.toContain("Actual:");
     expect(getUpdatedDescription(buttonInteraction)).not.toContain("Status:");
+  });
+
+  it("does not render a duplicate bench line when a visible subbed-out member appears in the actual lineup", async () => {
+    vi.mocked(cwlRotationService.listActivePlanExports).mockResolvedValue([
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        clanName: "CWL Alpha",
+        version: 5,
+        warningSummary: null,
+        excludedPlayerTags: [],
+        days: [
+          {
+            roundDay: 1,
+            lineupSize: 3,
+            rows: [
+              { playerTag: "#PYLQ0289", playerName: "Alpha", subbedOut: false, assignmentOrder: 0 },
+              { playerTag: "#QGRJ2222", playerName: "Bench Later", subbedOut: true, assignmentOrder: 1 },
+              { playerTag: "#CUV02898", playerName: "Delta", subbedOut: false, assignmentOrder: 2 },
+            ],
+            actual: null,
+          },
+          {
+            roundDay: 2,
+            lineupSize: 3,
+            rows: [
+              { playerTag: "#QGRJ2222", playerName: "Bench Later", subbedOut: false, assignmentOrder: 0 },
+              { playerTag: "#PYLQ0289", playerName: "Alpha", subbedOut: false, assignmentOrder: 1 },
+              { playerTag: "#CUV02898", playerName: "Delta", subbedOut: false, assignmentOrder: 2 },
+            ],
+            actual: null,
+          },
+        ],
+      } as any,
+    ]);
+    vi.mocked(cwlRotationService.getPreferredDisplayDay).mockResolvedValue(1);
+    vi.mocked(cwlRotationService.validatePlanDay).mockResolvedValue({
+      actualAvailable: true,
+      complete: false,
+      missingExpectedPlayerTags: [],
+      extraActualPlayerTags: ["#QGRJ2222"],
+      actualPlayerTags: ["#PYLQ0289", "#QGRJ2222", "#CUV02898"],
+      actualPlayerNames: ["Alpha", "Bench Later", "Delta"],
+    } as any);
+    vi.mocked(cwlStateService.getBattleDayStartForClanDay).mockResolvedValue(
+      new Date("2026-04-03T12:00:00.000Z"),
+    );
+    vi.mocked(cwlStateService.getParticipationCountsForClanDay).mockResolvedValue(
+      makeParticipationCounts([
+        ["#PYLQ0289", 1],
+        ["#QGRJ2222", 1],
+        ["#CUV02898", 1],
+      ]),
+    );
+    const interaction = makeInteraction({
+      group: "rotations",
+      subcommand: "show",
+      clan: "#2QG2C08UP",
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    expect(getDescription(interaction)).toContain("Day 1");
+    expect(getDescription(interaction)).toContain("Battle day start: <t:");
+    expect(getDescription(interaction)).toContain(":white_check_mark: Alpha (#PYLQ0289) | War count: 1");
+    expect(getDescription(interaction)).toContain(
+      ":warning: Bench Later (#QGRJ2222) | War count: 1",
+    );
+    expect(getDescription(interaction)).toContain(":white_check_mark: Delta (#CUV02898) | War count: 1");
+    expect(getDescription(interaction)).not.toContain(":x: Bench Later (#QGRJ2222)");
+    expect(getDescription(interaction)).not.toContain("Warnings:");
+    expect(getDescription(interaction)).not.toContain("Actual:");
+    expect(getDescription(interaction)).not.toContain("Status:");
   });
 
   it("renders the prep-day page with merged check marks during overlap", async () => {
@@ -572,8 +659,10 @@ describe("/cwl command", () => {
     await Cwl.run({} as any, interaction as any);
 
     expect(getDescription(interaction)).toContain("Day 7");
+    expect(getDescription(interaction)).toContain("Battle day start: unknown");
     expect(getDescription(interaction)).toContain("Actual lineup unavailable");
     expect(getDescription(interaction)).not.toContain(":x: Hotel (#JQJQ2222)");
+    expect(getDescription(interaction)).not.toContain("Warnings:");
     expect(getDescription(interaction)).not.toContain("Actual:");
     expect(getDescription(interaction)).not.toContain("Status:");
   });
