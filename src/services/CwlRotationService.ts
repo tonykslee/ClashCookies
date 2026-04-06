@@ -149,10 +149,22 @@ export type CwlRotationOverviewEntry = {
   clanName: string | null;
   version: number;
   roundDay: number | null;
+  battleDayStartAt: Date | null;
+  leaderNames: string[];
   status: "complete" | "mismatch" | "no_active_round" | "no_plan_day";
   missingExpectedPlayerTags: string[];
   extraActualPlayerTags: string[];
 };
+
+function normalizeClanMemberRole(input: unknown): "leader" | "coleader" | null {
+  const normalized = String(input ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z]/g, "");
+  if (normalized === "leader") return "leader";
+  if (normalized === "coleader") return "coleader";
+  return null;
+}
 
 function compareRosterEntries(
   a: CwlSeasonRosterEntry,
@@ -996,11 +1008,64 @@ export class CwlRotationService {
       },
       orderBy: [{ clanTag: "asc" }, { version: "desc" }],
     });
+    const clanTags = [...new Set(activePlans.map((plan) => plan.clanTag).filter(Boolean))];
     const uniquePlans = new Map<string, typeof activePlans[number]>();
     for (const plan of activePlans) {
       if (!uniquePlans.has(plan.clanTag)) {
         uniquePlans.set(plan.clanTag, plan);
       }
+    }
+
+    const leaderRows = clanTags.length > 0
+      ? await prisma.fwaClanMemberCurrent.findMany({
+          where: {
+            clanTag: { in: clanTags },
+            role: { not: null },
+          },
+          select: {
+            clanTag: true,
+            playerTag: true,
+            playerName: true,
+            role: true,
+          },
+          orderBy: [
+            { clanTag: "asc" },
+            { role: "asc" },
+            { playerName: "asc" },
+            { playerTag: "asc" },
+          ],
+        })
+      : [];
+    const leaderNamesByClanTag = new Map<string, string[]>();
+    const leaderRowsByClanTag = new Map<
+      string,
+      Array<{ roleRank: number; playerName: string; playerTag: string }>
+    >();
+    for (const row of leaderRows) {
+      const clanTag = normalizeClanTag(row.clanTag);
+      const role = normalizeClanMemberRole(row.role);
+      if (!clanTag || !role) continue;
+      const roleRank = role === "leader" ? 0 : 1;
+      const entries = leaderRowsByClanTag.get(clanTag) ?? [];
+      entries.push({
+        roleRank,
+        playerName: String(row.playerName ?? "").trim() || row.playerTag,
+        playerTag: String(row.playerTag ?? "").trim() || "",
+      });
+      leaderRowsByClanTag.set(clanTag, entries);
+    }
+    for (const [clanTag, rows] of leaderRowsByClanTag.entries()) {
+      leaderNamesByClanTag.set(
+        clanTag,
+        rows
+          .sort((a, b) => {
+            if (a.roleRank !== b.roleRank) return a.roleRank - b.roleRank;
+            const byName = a.playerName.localeCompare(b.playerName, undefined, { sensitivity: "base" });
+            if (byName !== 0) return byName;
+            return a.playerTag.localeCompare(b.playerTag);
+          })
+          .map((row) => row.playerName),
+      );
     }
 
     const entries: CwlRotationOverviewEntry[] = [];
@@ -1022,6 +1087,8 @@ export class CwlRotationService {
           clanName: null,
           version: plan.version,
           roundDay: null,
+          battleDayStartAt: null,
+          leaderNames: leaderNamesByClanTag.get(plan.clanTag) ?? [],
           status: "no_active_round",
           missingExpectedPlayerTags: [],
           extraActualPlayerTags: [],
@@ -1029,11 +1096,18 @@ export class CwlRotationService {
         continue;
       }
       const targetRoundDay = preferredDay ?? currentRound.roundDay;
-      const validation = await this.validatePlanDay({
-        clanTag: plan.clanTag,
-        season,
-        roundDay: targetRoundDay,
-      });
+      const [validation, battleDayStartAt] = await Promise.all([
+        this.validatePlanDay({
+          clanTag: plan.clanTag,
+          season,
+          roundDay: targetRoundDay,
+        }),
+        cwlStateService.getBattleDayStartForClanDay({
+          clanTag: plan.clanTag,
+          season,
+          roundDay: targetRoundDay,
+        }),
+      ]);
       if (!validation || validation.plannedPlayerTags.length <= 0) {
         entries.push({
           season,
@@ -1041,6 +1115,8 @@ export class CwlRotationService {
           clanName: currentRound.clanName,
           version: plan.version,
           roundDay: targetRoundDay,
+          battleDayStartAt,
+          leaderNames: leaderNamesByClanTag.get(plan.clanTag) ?? [],
           status: "no_plan_day",
           missingExpectedPlayerTags: [],
           extraActualPlayerTags: [],
@@ -1053,6 +1129,8 @@ export class CwlRotationService {
         clanName: currentRound.clanName,
         version: plan.version,
         roundDay: targetRoundDay,
+        battleDayStartAt,
+        leaderNames: leaderNamesByClanTag.get(plan.clanTag) ?? [],
         status: validation.complete ? "complete" : "mismatch",
         missingExpectedPlayerTags: validation.missingExpectedPlayerTags,
         extraActualPlayerTags: validation.extraActualPlayerTags,
