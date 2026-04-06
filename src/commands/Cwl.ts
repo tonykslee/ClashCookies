@@ -32,6 +32,10 @@ const DISCORD_DESCRIPTION_LIMIT = 4096;
 const CWL_ROTATION_IMPORT_SESSION_TTL_MS = 15 * 60 * 1000;
 const CWL_ROTATION_IMPORT_SESSION_PREFIX = "cwl-rot-import";
 const CWL_ROTATION_SHOW_SESSION_PREFIX = "cwl-rot-show";
+const CWL_ROTATION_SHOW_DAY_CHOICES = [1, 2, 3, 4, 5, 6, 7].map((day) => ({
+  name: `Day ${day}`,
+  value: day,
+}));
 type CwlRotationPlanExport = Awaited<ReturnType<typeof cwlRotationService.listActivePlanExports>>[number];
 
 type CwlRotationImportClanSession = {
@@ -180,6 +184,75 @@ function renderValidationSummary(input: {
     parts.push(`extra ${input.extraActualPlayerTags.join(", ")}`);
   }
   return parts.join(" | ");
+}
+
+function buildCwlRotationMergedRosterLines(input: {
+  plannedMembers: Array<{
+    playerTag: string;
+    playerName: string;
+    subbedOut: boolean;
+  }>;
+  actualPlayerRows: Array<{
+    playerTag: string;
+    playerName: string;
+  }>;
+  actualAvailable: boolean;
+}): string[] {
+  if (!input.actualAvailable) {
+    return ["Actual lineup unavailable"];
+  }
+
+  const expectedMembers = input.plannedMembers.filter((member) => !member.subbedOut);
+  const expectedByTag = new Map<string, { playerTag: string; playerName: string }>();
+  for (const member of expectedMembers) {
+    const normalizedTag = normalizePlayerTag(member.playerTag);
+    if (!normalizedTag || expectedByTag.has(normalizedTag)) {
+      continue;
+    }
+    expectedByTag.set(normalizedTag, { playerTag: member.playerTag, playerName: member.playerName });
+  }
+
+  const actualRows = input.actualPlayerRows.map((member) => ({
+    normalizedTag: normalizePlayerTag(member.playerTag),
+    playerTag: member.playerTag,
+    playerName: member.playerName,
+  }));
+  const actualTagSet = new Set(actualRows.map((member) => member.normalizedTag).filter(Boolean));
+  const missingExpectedRows = expectedMembers.filter((member) => {
+    const normalizedTag = normalizePlayerTag(member.playerTag);
+    return !normalizedTag || !actualTagSet.has(normalizedTag);
+  });
+
+  const lines: string[] = [];
+  let missingExpectedIndex = 0;
+  for (const actual of actualRows) {
+    if (actual.normalizedTag && expectedByTag.has(actual.normalizedTag)) {
+      lines.push(`:white_check_mark: ${actual.playerName} (${actual.playerTag})`);
+      continue;
+    }
+
+    const expected = missingExpectedRows[missingExpectedIndex] ?? null;
+    if (expected) {
+      missingExpectedIndex += 1;
+      lines.push(
+        `:warning: ${actual.playerName} (${actual.playerTag}) | Expected ${expected.playerName} (${expected.playerTag})`,
+      );
+      continue;
+    }
+
+    lines.push(`:warning: ${actual.playerName} (${actual.playerTag})`);
+  }
+
+  for (; missingExpectedIndex < missingExpectedRows.length; missingExpectedIndex += 1) {
+    const expected = missingExpectedRows[missingExpectedIndex];
+    lines.push(`:warning: Missing actual member | Expected ${expected.playerName} (${expected.playerTag})`);
+  }
+
+  if (lines.length <= 0) {
+    lines.push("No actual lineup members.");
+  }
+
+  return lines;
 }
 
 function pruneExpiredCwlRotationImportSessions(nowMs = Date.now()): void {
@@ -940,33 +1013,16 @@ function buildCwlRotationShowPageLines(input: {
   lines.push(`Page: ${input.pageIndex + 1} / ${input.pageCount}`);
   lines.push("");
   lines.push(`Day ${input.day.roundDay}`);
-  lines.push(
-    ...buildCwlRotationMemberLines({
-      members: input.day.rows,
-      emptyMessage: "No planned members.",
-    }),
-  );
   lines.push("");
-
-  if (input.validation) {
-    lines.push("Actual:");
+  if (!input.validation || !input.validation.actualAvailable) {
+    lines.push("Actual lineup unavailable");
+  } else {
     lines.push(
-      ...buildCwlRotationMemberLines({
-        members: input.validation.actualPlayerRows.map((member) => ({
-          playerTag: member.playerTag,
-          playerName: member.playerName,
-          subbedOut: false,
-        })),
-        emptyMessage: input.validation.actualAvailable ? "none" : "unavailable",
-      }),
-    );
-    lines.push(
-      `Status: ${renderValidationSummary({
-        missingExpectedPlayerTags: input.validation.missingExpectedPlayerTags,
-        extraActualPlayerTags: input.validation.extraActualPlayerTags,
+      ...buildCwlRotationMergedRosterLines({
+        plannedMembers: input.day.rows,
+        actualPlayerRows: input.validation.actualPlayerRows,
         actualAvailable: input.validation.actualAvailable,
-        complete: input.validation.complete,
-      })}`,
+      }),
     );
   }
 
@@ -1294,6 +1350,20 @@ async function autocompleteCwlTrackedClan(
           choice.value.toLowerCase().includes(query),
       )
       .slice(0, 25),
+  );
+}
+
+async function autocompleteCwlRotationShowDay(interaction: AutocompleteInteraction): Promise<void> {
+  const query = String(interaction.options.getFocused(true).value ?? "")
+    .trim()
+    .toLowerCase();
+  await interaction.respond(
+    CWL_ROTATION_SHOW_DAY_CHOICES.filter((choice) => {
+      if (!query) return true;
+      const label = choice.name.toLowerCase();
+      const value = String(choice.value).toLowerCase();
+      return label.includes(query) || value.includes(query);
+    }),
   );
 }
 
@@ -1992,6 +2062,7 @@ export const Cwl: Command = {
               required: false,
               minValue: 1,
               maxValue: 7,
+              autocomplete: true,
             },
           ],
         },
@@ -2087,6 +2158,10 @@ export const Cwl: Command = {
   },
   autocomplete: async (interaction: AutocompleteInteraction) => {
     const focused = interaction.options.getFocused(true);
+    if (focused.name === "day") {
+      await autocompleteCwlRotationShowDay(interaction);
+      return;
+    }
     if (focused.name === "clan") {
       await autocompleteCwlTrackedClan(interaction);
       return;
