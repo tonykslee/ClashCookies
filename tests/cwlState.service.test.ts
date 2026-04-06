@@ -668,6 +668,50 @@ describe("CwlStateService", () => {
     expect(prismaMock.currentCwlPrepSnapshot.findUnique).toHaveBeenCalledTimes(1);
   });
 
+  it("counts persisted participation through the requested day from current and history member rows", async () => {
+    prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ0289" },
+      { playerTag: "#PYLQ0289" },
+      { playerTag: "#QGRJ2222" },
+    ]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ0289" },
+      { playerTag: "#VJQ28888" },
+    ]);
+
+    const counts = await cwlStateService.getParticipationCountsForClanDay({
+      clanTag: "#2QG2C08UP",
+      season: "2026-04",
+      throughRoundDay: 2,
+    });
+
+    expect(prismaMock.cwlRoundMemberHistory.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          season: "2026-04",
+          clanTag: "#2QG2C08UP",
+          roundDay: { lte: 2 },
+          subbedIn: true,
+        }),
+        select: { playerTag: true },
+      }),
+    );
+    expect(prismaMock.cwlRoundMemberCurrent.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          season: "2026-04",
+          clanTag: "#2QG2C08UP",
+          roundDay: { lte: 2 },
+          subbedIn: true,
+        }),
+        select: { playerTag: true },
+      }),
+    );
+    expect(counts.get("#PYLQ0289")).toBe(3);
+    expect(counts.get("#QGRJ2222")).toBe(1);
+    expect(counts.get("#VJQ28888")).toBe(1);
+  });
+
   it("builds a DB-first season roster view with linked-user and current-round context", async () => {
     prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([
       {

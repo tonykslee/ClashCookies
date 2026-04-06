@@ -148,6 +148,10 @@ function getComponentSelectMenuOptions(interaction: any): Array<{ label: string;
   return [];
 }
 
+function makeParticipationCounts(entries: Array<[string, number]>): Map<string, number> {
+  return new Map(entries);
+}
+
 describe("/cwl command", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -161,6 +165,7 @@ describe("/cwl command", () => {
     vi.spyOn(cwlRotationService, "listActivePlanExports");
     vi.spyOn(cwlRotationService, "getPreferredDisplayDay").mockResolvedValue(null);
     vi.spyOn(cwlRotationService, "validatePlanDay");
+    vi.spyOn(cwlStateService, "getParticipationCountsForClanDay").mockResolvedValue(new Map());
   });
 
   it("renders the persisted season roster with current round summary for /cwl members", async () => {
@@ -345,6 +350,25 @@ describe("/cwl command", () => {
         actualPlayerTags: ["#VJQ28888", "#CUV02898"],
         actualPlayerNames: ["Charlie", "Delta"],
       } as any);
+    vi.mocked(cwlStateService.getParticipationCountsForClanDay).mockImplementation(async ({ throughRoundDay }) => {
+      if (throughRoundDay === 1) {
+        return makeParticipationCounts([
+          ["#PYLQ0289", 1],
+          ["#VJQ28888", 1],
+          ["#QGRJ2222", 0],
+          ["#CUV02898", 0],
+        ]);
+      }
+      if (throughRoundDay === 2) {
+        return makeParticipationCounts([
+          ["#PYLQ0289", 1],
+          ["#VJQ28888", 2],
+          ["#QGRJ2222", 0],
+          ["#CUV02898", 1],
+        ]);
+      }
+      return new Map();
+    });
     const interaction = makeInteraction({
       group: "rotations",
       subcommand: "show",
@@ -362,10 +386,10 @@ describe("/cwl command", () => {
     expect(getDescription(interaction)).toContain("Day 1");
     expect(getDescription(interaction)).toContain(":white_check_mark: Alpha (#PYLQ0289) | War count: 1");
     expect(getDescription(interaction)).toContain(
-      ":warning: Charlie (#VJQ28888) | War count: 0 - Expected Bravo (#QGRJ2222)",
+      ":warning: Charlie (#VJQ28888) | War count: 1 - Expected Bravo (#QGRJ2222)",
     );
-    expect(getDescription(interaction)).toContain(":x: Bravo (#QGRJ2222) | War count: 1");
-    expect(getDescription(interaction)).toContain(":x: Delta (#CUV02898) | War count: 1");
+    expect(getDescription(interaction)).toContain(":x: Bravo (#QGRJ2222) | War count: 0");
+    expect(getDescription(interaction)).toContain(":x: Delta (#CUV02898) | War count: 0");
     expect(getDescription(interaction)).not.toContain(":x: Hotel (#JQJQ2222)");
     expect(getDescription(interaction)).not.toContain("Actual:");
     expect(getDescription(interaction)).not.toContain("Status:");
@@ -384,10 +408,10 @@ describe("/cwl command", () => {
 
     expect(getUpdatedDescription(buttonInteraction)).toContain("Day 2");
     expect(getUpdatedDescription(buttonInteraction)).toContain(
-      ":white_check_mark: Charlie (#VJQ28888) | War count: 1",
+      ":white_check_mark: Charlie (#VJQ28888) | War count: 2",
     );
     expect(getUpdatedDescription(buttonInteraction)).toContain(
-      ":white_check_mark: Delta (#CUV02898) | War count: 2",
+      ":white_check_mark: Delta (#CUV02898) | War count: 1",
     );
     expect(getUpdatedDescription(buttonInteraction)).not.toContain("Actual:");
     expect(getUpdatedDescription(buttonInteraction)).not.toContain("Status:");
@@ -433,6 +457,12 @@ describe("/cwl command", () => {
       actualPlayerTags: ["#VJQ28888", "#CUV02898"],
       actualPlayerNames: ["Charlie", "Delta"],
     } as any);
+    vi.mocked(cwlStateService.getParticipationCountsForClanDay).mockResolvedValue(
+      makeParticipationCounts([
+        ["#VJQ28888", 1],
+        ["#CUV02898", 1],
+      ]),
+    );
     const interaction = makeInteraction({
       group: "rotations",
       subcommand: "show",
@@ -479,6 +509,12 @@ describe("/cwl command", () => {
       actualPlayerTags: ["#VJQ28888", "#CUV02898"],
       actualPlayerNames: ["Charlie", "Delta"],
     } as any);
+    vi.mocked(cwlStateService.getParticipationCountsForClanDay).mockResolvedValue(
+      makeParticipationCounts([
+        ["#VJQ28888", 1],
+        ["#CUV02898", 1],
+      ]),
+    );
     const interaction = makeInteraction({
       group: "rotations",
       subcommand: "show",
@@ -542,6 +578,57 @@ describe("/cwl command", () => {
     expect(getDescription(interaction)).not.toContain("Status:");
   });
 
+  it("shows zero war count for a day-2 benched member who has not actually participated yet", async () => {
+    vi.mocked(cwlRotationService.listActivePlanExports).mockResolvedValue([
+      {
+        season: "2026-04",
+        clanTag: "#2C0UURLQU",
+        clanName: "Rising Crowns",
+        version: 2,
+        warningSummary: null,
+        excludedPlayerTags: [],
+        days: [
+          {
+            roundDay: 2,
+            lineupSize: 2,
+            rows: [
+              { playerTag: "#2JVRPVGLQ", playerName: "ChipsAreTasty", subbedOut: true, assignmentOrder: 0 },
+              { playerTag: "#PYLQ0289", playerName: "Alpha", subbedOut: false, assignmentOrder: 1 },
+            ],
+            actual: null,
+          },
+        ],
+      } as any,
+    ]);
+    vi.mocked(cwlRotationService.validatePlanDay).mockResolvedValue({
+      actualAvailable: false,
+      complete: false,
+      missingExpectedPlayerTags: [],
+      extraActualPlayerTags: [],
+      actualPlayerTags: [],
+      actualPlayerNames: [],
+    } as any);
+    vi.mocked(cwlStateService.getParticipationCountsForClanDay).mockResolvedValue(
+      makeParticipationCounts([
+        ["#2JVRPVGLQ", 0],
+        ["#PYLQ0289", 1],
+      ]),
+    );
+    const interaction = makeInteraction({
+      group: "rotations",
+      subcommand: "show",
+      clan: "#2C0UURLQU",
+      day: 2,
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    expect(getDescription(interaction)).toContain("Day 2");
+    expect(getDescription(interaction)).toContain("Actual lineup unavailable");
+    expect(getDescription(interaction)).toContain(":x: ChipsAreTasty (#2JVRPVGLQ) | War count: 0");
+    expect(getDescription(interaction)).not.toContain("War count: 1");
+  });
+
   it("appends trailing missing expected rows when actual lineup runs short", async () => {
     vi.mocked(cwlRotationService.listActivePlanExports).mockResolvedValue([
       {
@@ -573,6 +660,14 @@ describe("/cwl command", () => {
       actualPlayerTags: ["#PYLQ0289", "#VJQ28888"],
       actualPlayerNames: ["Echo", "Zulu"],
     } as any);
+    vi.mocked(cwlStateService.getParticipationCountsForClanDay).mockResolvedValue(
+      makeParticipationCounts([
+        ["#PYLQ0289", 1],
+        ["#VJQ28888", 0],
+        ["#QGRJ2222", 0],
+        ["#CUV02898", 0],
+      ]),
+    );
     const interaction = makeInteraction({
       group: "rotations",
       subcommand: "show",
@@ -586,8 +681,8 @@ describe("/cwl command", () => {
     expect(getDescription(interaction)).toContain(
       ":warning: Zulu (#VJQ28888) | War count: 0 - Expected Foxtrot (#QGRJ2222)",
     );
-    expect(getDescription(interaction)).toContain(":x: Foxtrot (#QGRJ2222) | War count: 1");
-    expect(getDescription(interaction)).toContain(":x: Golf (#CUV02898) | War count: 1");
+    expect(getDescription(interaction)).toContain(":x: Foxtrot (#QGRJ2222) | War count: 0");
+    expect(getDescription(interaction)).toContain(":x: Golf (#CUV02898) | War count: 0");
     expect(getDescription(interaction)).not.toContain("Actual:");
     expect(getDescription(interaction)).not.toContain("Status:");
   });
@@ -621,6 +716,9 @@ describe("/cwl command", () => {
       actualPlayerTags: ["#VJQ28888"],
       actualPlayerNames: ["Visitor"],
     } as any);
+    vi.mocked(cwlStateService.getParticipationCountsForClanDay).mockResolvedValue(
+      makeParticipationCounts([["#VJQ28888", 0]]),
+    );
     const interaction = makeInteraction({
       group: "rotations",
       subcommand: "show",

@@ -1109,6 +1109,53 @@ export class CwlStateService {
     };
   }
 
+  /** Purpose: load per-player CWL participation counts through one round day from persisted actual rounds. */
+  async getParticipationCountsForClanDay(input: {
+    clanTag: string;
+    season?: string;
+    throughRoundDay: number;
+  }): Promise<Map<string, number>> {
+    const season = input.season ?? resolveCurrentCwlSeasonKey();
+    const clanTag = normalizeClanTag(input.clanTag);
+    const throughRoundDay = Math.max(1, Math.trunc(Number(input.throughRoundDay) || 0));
+    if (!clanTag || throughRoundDay <= 0) {
+      return new Map();
+    }
+
+    const [historyMembers, currentMembers] = await Promise.all([
+      prisma.cwlRoundMemberHistory.findMany({
+        where: {
+          season,
+          clanTag,
+          roundDay: { lte: throughRoundDay },
+          subbedIn: true,
+        },
+        select: {
+          playerTag: true,
+        },
+      }),
+      prisma.cwlRoundMemberCurrent.findMany({
+        where: {
+          season,
+          clanTag,
+          roundDay: { lte: throughRoundDay },
+          subbedIn: true,
+        },
+        select: {
+          playerTag: true,
+        },
+      }),
+    ]);
+
+    const countsByPlayerTag = new Map<string, number>();
+    for (const row of [...historyMembers, ...currentMembers]) {
+      const playerTag = normalizePlayerTag(row.playerTag);
+      if (!playerTag) continue;
+      countsByPlayerTag.set(playerTag, (countsByPlayerTag.get(playerTag) ?? 0) + 1);
+    }
+    return countsByPlayerTag;
+  }
+
   /** Purpose: load one persisted actual CWL lineup for a requested round day from current, history, or live prep snapshot owners. */
   async getActualLineupForDay(input: {
     clanTag: string;
