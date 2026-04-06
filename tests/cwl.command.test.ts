@@ -362,12 +362,11 @@ describe("/cwl command", () => {
     expect(getDescription(interaction)).toContain("Day 1");
     expect(getDescription(interaction)).toContain(":white_check_mark: Alpha (#PYLQ0289) | War count: 1");
     expect(getDescription(interaction)).toContain(
-      ":warning: Charlie (#VJQ28888) | Expected Bravo (#QGRJ2222) | War count: 0",
+      ":warning: Charlie (#VJQ28888) | War count: 0 - Expected Bravo (#QGRJ2222)",
     );
-    expect(getDescription(interaction)).toContain(
-      ":warning: Missing actual member | Expected Delta (#CUV02898) | War count: 1",
-    );
-    expect(getDescription(interaction)).toContain(":x: Hotel (#JQJQ2222) | War count: 0");
+    expect(getDescription(interaction)).toContain(":x: Bravo (#QGRJ2222) | War count: 1");
+    expect(getDescription(interaction)).toContain(":x: Delta (#CUV02898) | War count: 1");
+    expect(getDescription(interaction)).not.toContain(":x: Hotel (#JQJQ2222)");
     expect(getDescription(interaction)).not.toContain("Actual:");
     expect(getDescription(interaction)).not.toContain("Status:");
     expect(getComponentButtonCustomIds(interaction)).toHaveLength(2);
@@ -584,8 +583,11 @@ describe("/cwl command", () => {
     await Cwl.run({} as any, interaction as any);
 
     expect(getDescription(interaction)).toContain(":white_check_mark: Echo (#PYLQ0289)");
-    expect(getDescription(interaction)).toContain(":warning: Zulu (#VJQ28888) | Expected Foxtrot (#QGRJ2222)");
-    expect(getDescription(interaction)).toContain(":warning: Missing actual member | Expected Golf (#CUV02898)");
+    expect(getDescription(interaction)).toContain(
+      ":warning: Zulu (#VJQ28888) | War count: 0 - Expected Foxtrot (#QGRJ2222)",
+    );
+    expect(getDescription(interaction)).toContain(":x: Foxtrot (#QGRJ2222) | War count: 1");
+    expect(getDescription(interaction)).toContain(":x: Golf (#CUV02898) | War count: 1");
     expect(getDescription(interaction)).not.toContain("Actual:");
     expect(getDescription(interaction)).not.toContain("Status:");
   });
@@ -629,7 +631,7 @@ describe("/cwl command", () => {
     await Cwl.run({} as any, interaction as any);
 
     expect(getDescription(interaction)).toContain(":warning: Visitor (#VJQ28888) | War count: 0");
-    expect(getDescription(interaction)).toContain(":x: Hotel (#JQJQ2222) | War count: 0");
+    expect(getDescription(interaction)).not.toContain(":x: Hotel (#JQJQ2222)");
   });
 
   it("renders an import preview before save and confirms only after a button interaction", async () => {
