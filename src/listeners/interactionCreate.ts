@@ -469,7 +469,7 @@ const handleButtonInteraction = async (
 
   if (isCwlRotationShowButtonCustomId(interaction.customId)) {
     try {
-      await handleCwlRotationShowButtonInteraction(interaction);
+      await handleCwlRotationShowButtonInteraction(interaction, cocService);
     } catch (err) {
       console.error(`CWL rotation show button failed: ${formatError(err)}`);
       if (!interaction.replied && !interaction.deferred) {

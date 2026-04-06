@@ -784,6 +784,34 @@ export class CwlStateService {
     });
   }
 
+  /** Purpose: refresh tracked CWL state for one clan only. */
+  async refreshTrackedCwlStateForClan(input: {
+    cocService: CoCService;
+    clanTag: string;
+    season?: string;
+    nowMs?: number;
+  }): Promise<RefreshTrackedCwlStateResult> {
+    const season = input.season ?? resolveCurrentCwlSeasonKey(input.nowMs);
+    const clanTag = normalizeClanTag(input.clanTag);
+    if (!clanTag) {
+      return {
+        season,
+        trackedClanCount: 0,
+        refreshedClanCount: 0,
+        currentRoundCount: 0,
+        currentMemberCount: 0,
+        historyRoundCount: 0,
+        historyMemberCount: 0,
+      };
+    }
+
+    return this.refreshTrackedCwlStateForClanTags({
+      cocService: input.cocService,
+      season,
+      trackedClanTags: [clanTag],
+    });
+  }
+
   /** Purpose: refresh tracked CWL state for one bounded clan-tag set. */
   private async refreshTrackedCwlStateForClanTags(input: {
     cocService: CoCService;
