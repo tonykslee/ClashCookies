@@ -15,6 +15,7 @@ import { randomUUID } from "crypto";
 import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
+import { CoCService } from "../services/CoCService";
 import { resolveCurrentCwlSeasonKey } from "../services/CwlRegistryService";
 import { cwlRotationService } from "../services/CwlRotationService";
 import { emojiResolverService } from "../services/emoji/EmojiResolverService";
@@ -1040,6 +1041,16 @@ function buildCwlRotationShowBackButtonCustomId(input: {
   return `${CWL_ROTATION_SHOW_SESSION_PREFIX}:back:${input.userId}:${input.season}`;
 }
 
+function buildCwlRotationShowRefreshButtonCustomId(input: {
+  userId: string;
+  clanTag: string;
+  season: string;
+  pageIndex: number;
+  showBackButton: boolean;
+}): string {
+  return `${CWL_ROTATION_SHOW_SESSION_PREFIX}:refresh:${input.userId}:${input.clanTag}:${input.season}:${input.pageIndex}:${input.showBackButton ? "1" : "0"}`;
+}
+
 function buildCwlRotationShowSelectMenuCustomId(input: {
   userId: string;
   season: string;
@@ -1050,6 +1061,14 @@ function buildCwlRotationShowSelectMenuCustomId(input: {
 type CwlRotationShowCustomId =
   | { action: "page"; userId: string; clanTag: string; season: string; pageIndex: number }
   | { action: "back"; userId: string; season: string }
+  | {
+      action: "refresh";
+      userId: string;
+      clanTag: string;
+      season: string;
+      pageIndex: number;
+      showBackButton: boolean;
+    }
   | { action: "select"; userId: string; season: string };
 
 function parseCwlRotationShowCustomId(customId: string): CwlRotationShowCustomId | null {
@@ -1065,6 +1084,15 @@ function parseCwlRotationShowCustomId(customId: string): CwlRotationShowCustomId
     if (!userId || !clanTag || !season) return null;
     return { action, userId, clanTag, season, pageIndex };
   }
+  if (action === "refresh") {
+    if (parts.length < 7) return null;
+    const clanTag = normalizeClanTag(parts[3] ?? "");
+    const season = String(parts[4] ?? "").trim();
+    const pageIndex = Math.max(0, Math.trunc(Number(parts[5] ?? "0") || 0));
+    const showBackButton = String(parts[6] ?? "").trim() === "1";
+    if (!userId || !clanTag || !season) return null;
+    return { action, userId, clanTag, season, pageIndex, showBackButton };
+  }
   if (action === "back" || action === "select") {
     const season = String(parts[3] ?? "").trim();
     if (!userId || !season) return null;
@@ -1075,7 +1103,7 @@ function parseCwlRotationShowCustomId(customId: string): CwlRotationShowCustomId
 
 export function isCwlRotationShowButtonCustomId(customId: string): boolean {
   const parsed = parseCwlRotationShowCustomId(customId);
-  return parsed?.action === "page" || parsed?.action === "back";
+  return parsed?.action === "page" || parsed?.action === "back" || parsed?.action === "refresh";
 }
 
 export function isCwlRotationShowSelectMenuCustomId(customId: string): boolean {
@@ -1089,8 +1117,10 @@ function buildCwlRotationShowActionRows(input: {
   pageIndex: number;
   totalPages: number;
   showBackButton: boolean;
+  loading?: boolean;
 }): ActionRowBuilder<ButtonBuilder>[] {
   const components: ButtonBuilder[] = [];
+  const loading = input.loading ?? false;
   if (input.showBackButton) {
     components.push(
       new ButtonBuilder()
@@ -1116,7 +1146,7 @@ function buildCwlRotationShowActionRows(input: {
       )
       .setLabel("Prev")
       .setStyle(ButtonStyle.Secondary)
-      .setDisabled(input.pageIndex <= 0),
+      .setDisabled(loading || input.pageIndex <= 0),
     new ButtonBuilder()
       .setCustomId(
         buildCwlRotationShowPageCustomId({
@@ -1128,7 +1158,20 @@ function buildCwlRotationShowActionRows(input: {
       )
       .setLabel("Next")
       .setStyle(ButtonStyle.Secondary)
-      .setDisabled(input.pageIndex >= input.totalPages - 1),
+      .setDisabled(loading || input.pageIndex >= input.totalPages - 1),
+    new ButtonBuilder()
+      .setCustomId(
+        buildCwlRotationShowRefreshButtonCustomId({
+          userId: input.userId,
+          clanTag: input.clanTag,
+          season: input.season,
+          pageIndex: input.pageIndex,
+          showBackButton: input.showBackButton,
+        }),
+      )
+      .setLabel(loading ? "Refreshing..." : "Refresh")
+      .setStyle(ButtonStyle.Primary)
+      .setDisabled(loading),
   );
 
   return [new ActionRowBuilder<ButtonBuilder>().addComponents(components)];
@@ -1285,6 +1328,111 @@ async function buildCwlRotationShowOverviewPayload(input: {
   };
 }
 
+async function loadCwlRotationShowClanPayload(input: {
+  userId: string;
+  season: string;
+  clanTag: string;
+  showBackButton: boolean;
+  explicitDay?: number | null;
+  pageIndex?: number | null;
+}): Promise<{
+  payload: {
+    embed: EmbedBuilder;
+    components: ActionRowBuilder<ButtonBuilder>[];
+  };
+  planView: CwlRotationPlanExport;
+  dayEntry: CwlRotationPlanExport["days"][number];
+  pageIndex: number;
+  pageCount: number;
+} | null> {
+  const [planView] = await cwlRotationService.listActivePlanExports({
+    season: input.season,
+    clanTags: [input.clanTag],
+  });
+  if (!planView) {
+    return null;
+  }
+
+  const hasExplicitDay =
+    typeof input.explicitDay === "number" && Number.isFinite(input.explicitDay) && input.explicitDay > 0;
+  const relevantDays = hasExplicitDay
+    ? planView.days.filter((entry) =>
+        entry.roundDay === Math.max(1, Math.trunc(Number(input.explicitDay) || 0)),
+      )
+    : planView.days;
+  if (hasExplicitDay && relevantDays.length <= 0) {
+    return null;
+  }
+
+  const preferredDay = hasExplicitDay
+    ? null
+    : await cwlRotationService.getPreferredDisplayDay({
+        clanTag: input.clanTag,
+        season: input.season,
+      });
+  const pageIndex =
+    typeof input.pageIndex === "number"
+      ? Math.max(0, Math.min(Math.max(0, relevantDays.length - 1), input.pageIndex))
+      : hasExplicitDay
+        ? 0
+        : Math.max(
+            0,
+            preferredDay ? relevantDays.findIndex((entry) => entry.roundDay === preferredDay) : 0,
+          );
+
+  const selectedDay = relevantDays[pageIndex];
+  if (!selectedDay) {
+    return null;
+  }
+
+  const [validation, battleDayStartAt, warCountByPlayerTag] = await Promise.all([
+    cwlRotationService.validatePlanDay({
+      clanTag: planView.clanTag,
+      season: planView.season,
+      roundDay: selectedDay.roundDay,
+    }),
+    cwlStateService.getBattleDayStartForClanDay({
+      clanTag: planView.clanTag,
+      season: planView.season,
+      roundDay: selectedDay.roundDay,
+    }),
+    cwlStateService.getParticipationCountsForClanDay({
+      clanTag: planView.clanTag,
+      season: planView.season,
+      throughRoundDay: selectedDay.roundDay,
+    }),
+  ]);
+
+  return {
+    payload: await buildCwlRotationShowClanPayload({
+      userId: input.userId,
+      showBackButton: input.showBackButton,
+      plan: planView,
+      day: selectedDay,
+      pageIndex,
+      pageCount: relevantDays.length,
+      battleDayStartAt,
+      warCountByPlayerTag,
+      validation: validation
+        ? {
+            actualAvailable: validation.actualAvailable,
+            complete: validation.complete,
+            missingExpectedPlayerTags: validation.missingExpectedPlayerTags,
+            extraActualPlayerTags: validation.extraActualPlayerTags,
+            actualPlayerRows: validation.actualPlayerTags.map((playerTag, index) => ({
+              playerTag,
+              playerName: validation.actualPlayerNames[index] ?? playerTag,
+            })),
+          }
+        : null,
+    }),
+    planView,
+    dayEntry: selectedDay,
+    pageIndex,
+    pageCount: relevantDays.length,
+  };
+}
+
 async function buildCwlRotationShowClanPayload(input: {
   userId: string;
   showBackButton: boolean;
@@ -1315,17 +1463,14 @@ async function buildCwlRotationShowClanPayload(input: {
       warCountByPlayerTag: input.warCountByPlayerTag,
       validation: input.validation,
     }),
-    components:
-      input.showBackButton || input.pageCount > 1
-        ? buildCwlRotationShowActionRows({
-            userId: input.userId,
-            clanTag: input.plan.clanTag,
-            season: input.plan.season,
-            pageIndex: input.pageIndex,
-            totalPages: input.pageCount,
-            showBackButton: input.showBackButton,
-          })
-        : [],
+    components: buildCwlRotationShowActionRows({
+      userId: input.userId,
+      clanTag: input.plan.clanTag,
+      season: input.plan.season,
+      pageIndex: input.pageIndex,
+      totalPages: input.pageCount,
+      showBackButton: input.showBackButton,
+    }),
   };
 }
 
@@ -1780,86 +1925,24 @@ async function handleRotationShowSubcommand(client: Client, interaction: ChatInp
     return;
   }
 
-  const [planView] = await cwlRotationService.listActivePlanExports({
+  const payload = await loadCwlRotationShowClanPayload({
+    userId: interaction.user.id,
     season,
-    clanTags: [clanTag],
+    clanTag,
+    showBackButton: !day,
+    explicitDay: day,
   });
-  if (!planView) {
-    await interaction.editReply(`No active CWL rotation plan exists for ${clanTag} in ${season}.`);
-    return;
-  }
-
-  const relevantDays = day
-    ? planView.days.filter((entry) => entry.roundDay === day)
-    : planView.days;
-  if (day && relevantDays.length <= 0) {
-    await interaction.editReply(`No planned CWL rotation day ${day} exists for ${clanTag}.`);
-    return;
-  }
-
-  const renderPage = async (pageIndex: number) => {
-    const dayEntry = relevantDays[pageIndex];
-    if (!dayEntry) return null;
-    const validation = await cwlRotationService.validatePlanDay({
-      clanTag: planView.clanTag,
-      season: planView.season,
-      roundDay: dayEntry.roundDay,
-    });
-    const battleDayStartAt = await cwlStateService.getBattleDayStartForClanDay({
-      clanTag: planView.clanTag,
-      season: planView.season,
-      roundDay: dayEntry.roundDay,
-    });
-    const warCountByPlayerTag = await cwlStateService.getParticipationCountsForClanDay({
-      clanTag: planView.clanTag,
-      season: planView.season,
-      throughRoundDay: dayEntry.roundDay,
-    });
-    return buildCwlRotationShowClanPayload({
-      userId: interaction.user.id,
-      showBackButton: !day,
-      plan: planView,
-      day: dayEntry,
-      pageIndex,
-      pageCount: relevantDays.length,
-      battleDayStartAt,
-      warCountByPlayerTag,
-      validation: validation
-        ? {
-            actualAvailable: validation.actualAvailable,
-            complete: validation.complete,
-            missingExpectedPlayerTags: validation.missingExpectedPlayerTags,
-            extraActualPlayerTags: validation.extraActualPlayerTags,
-            actualPlayerRows: validation.actualPlayerTags.map((playerTag, index) => ({
-              playerTag,
-              playerName: validation.actualPlayerNames[index] ?? playerTag,
-            })),
-          }
-        : null,
-    });
-  };
-
-  const preferredDay = day
-    ? day
-    : await cwlRotationService.getPreferredDisplayDay({
-        clanTag: planView.clanTag,
-        season: planView.season,
-      });
-  const pageIndex = Math.max(
-    0,
-    preferredDay
-      ? relevantDays.findIndex((entry) => entry.roundDay === preferredDay)
-      : 0,
-  );
-  const payload = await renderPage(pageIndex);
   if (!payload) {
-    await interaction.editReply(`No planned CWL rotation day ${day ?? 1} exists for ${clanTag}.`);
+    const message = day
+      ? `No planned CWL rotation day ${day} exists for ${clanTag}.`
+      : `No active CWL rotation plan exists for ${clanTag} in ${season}.`;
+    await interaction.editReply(message);
     return;
   }
 
   await interaction.editReply({
-    embeds: [payload.embed],
-    components: payload.components,
+    embeds: [payload.payload.embed],
+    components: payload.payload.components,
   });
 }
 
@@ -2194,6 +2277,7 @@ export async function handleCwlRotationImportSelectMenuInteraction(
 
 export async function handleCwlRotationShowButtonInteraction(
   interaction: ButtonInteraction,
+  cocService?: CoCService,
 ): Promise<void> {
   const parsed = parseCwlRotationShowCustomId(interaction.customId);
   if (!parsed) return;
@@ -2220,15 +2304,84 @@ export async function handleCwlRotationShowButtonInteraction(
     return;
   }
 
+  if (parsed.action === "refresh") {
+    const currentView = await loadCwlRotationShowClanPayload({
+      userId: interaction.user.id,
+      season: parsed.season,
+      clanTag: parsed.clanTag,
+      pageIndex: parsed.pageIndex,
+      showBackButton: parsed.showBackButton,
+    });
+    if (!currentView) {
+      await interaction.reply({
+        content: `No active CWL rotation plan exists for ${parsed.clanTag} in ${parsed.season}.`,
+        ephemeral: true,
+      });
+      return;
+    }
+
+    await interaction.update({
+      embeds: [currentView.payload.embed],
+      components: buildCwlRotationShowActionRows({
+        userId: interaction.user.id,
+        clanTag: parsed.clanTag,
+        season: parsed.season,
+        pageIndex: currentView.pageIndex,
+        totalPages: currentView.pageCount,
+        showBackButton: parsed.showBackButton,
+        loading: true,
+      }),
+    });
+
+    try {
+      await cwlStateService.refreshTrackedCwlStateForClan({
+        cocService: cocService ?? new CoCService(),
+        clanTag: parsed.clanTag,
+        season: parsed.season,
+      });
+      const refreshedView = await loadCwlRotationShowClanPayload({
+        userId: interaction.user.id,
+        season: parsed.season,
+        clanTag: parsed.clanTag,
+        pageIndex: parsed.pageIndex,
+        showBackButton: parsed.showBackButton,
+      });
+      if (!refreshedView) {
+        await interaction.editReply({
+          embeds: [currentView.payload.embed],
+          components: currentView.payload.components,
+        });
+        return;
+      }
+      await interaction.editReply({
+        embeds: [refreshedView.payload.embed],
+        components: refreshedView.payload.components,
+      });
+    } catch (err) {
+      await interaction.editReply({
+        embeds: [currentView.payload.embed],
+        components: currentView.payload.components,
+      });
+      await interaction.followUp({
+        ephemeral: true,
+        content: "Failed to refresh the CWL rotation view.",
+      });
+    }
+    return;
+  }
+
   if (parsed.action !== "page") {
     return;
   }
 
-  const [planView] = await cwlRotationService.listActivePlanExports({
+  const payload = await loadCwlRotationShowClanPayload({
+    userId: interaction.user.id,
     season: parsed.season,
-    clanTags: [parsed.clanTag],
+    clanTag: parsed.clanTag,
+    pageIndex: parsed.pageIndex,
+    showBackButton: true,
   });
-  if (!planView) {
+  if (!payload) {
     await interaction.reply({
       content: `No active CWL rotation plan exists for ${parsed.clanTag} in ${parsed.season}.`,
       ephemeral: true,
@@ -2236,59 +2389,9 @@ export async function handleCwlRotationShowButtonInteraction(
     return;
   }
 
-  const relevantDays = planView.days;
-  const pageIndex = Math.max(0, Math.min(relevantDays.length - 1, parsed.pageIndex));
-  const dayEntry = relevantDays[pageIndex];
-  if (!dayEntry) {
-    await interaction.reply({
-      content: `No planned CWL rotation day exists for ${parsed.clanTag}.`,
-      ephemeral: true,
-    });
-    return;
-  }
-
-  const validation = await cwlRotationService.validatePlanDay({
-    clanTag: planView.clanTag,
-    season: planView.season,
-    roundDay: dayEntry.roundDay,
-  });
-  const battleDayStartAt = await cwlStateService.getBattleDayStartForClanDay({
-    clanTag: planView.clanTag,
-    season: planView.season,
-    roundDay: dayEntry.roundDay,
-  });
-  const warCountByPlayerTag = await cwlStateService.getParticipationCountsForClanDay({
-    clanTag: planView.clanTag,
-    season: planView.season,
-    throughRoundDay: dayEntry.roundDay,
-  });
-
-  const payload = await buildCwlRotationShowClanPayload({
-    userId: interaction.user.id,
-    showBackButton: true,
-    plan: planView,
-    day: dayEntry,
-    pageIndex,
-    pageCount: relevantDays.length,
-    battleDayStartAt,
-    warCountByPlayerTag,
-    validation: validation
-      ? {
-          actualAvailable: validation.actualAvailable,
-          complete: validation.complete,
-          missingExpectedPlayerTags: validation.missingExpectedPlayerTags,
-          extraActualPlayerTags: validation.extraActualPlayerTags,
-          actualPlayerRows: validation.actualPlayerTags.map((playerTag, index) => ({
-            playerTag,
-            playerName: validation.actualPlayerNames[index] ?? playerTag,
-          })),
-        }
-      : null,
-  });
-
   await interaction.update({
-    embeds: [payload.embed],
-    components: payload.components,
+    embeds: [payload.payload.embed],
+    components: payload.payload.components,
   });
 }
 
@@ -2315,17 +2418,13 @@ export async function handleCwlRotationShowSelectMenuInteraction(
     return;
   }
 
-  const [planView, preferredDay] = await Promise.all([
-    cwlRotationService.listActivePlanExports({
-      season,
-      clanTags: [clanTag],
-    }).then(([plan]) => plan ?? null),
-    cwlRotationService.getPreferredDisplayDay({
-      clanTag,
-      season,
-    }),
-  ]);
-  if (!planView) {
+  const renderPayload = await loadCwlRotationShowClanPayload({
+    userId: interaction.user.id,
+    season,
+    clanTag,
+    showBackButton: true,
+  });
+  if (!renderPayload) {
     await interaction.reply({
       content: `No active CWL rotation plan exists for ${clanTag} in ${season}.`,
       ephemeral: true,
@@ -2333,66 +2432,9 @@ export async function handleCwlRotationShowSelectMenuInteraction(
     return;
   }
 
-  const relevantDays = planView.days;
-  const pageIndex = Math.max(
-    0,
-    preferredDay
-      ? relevantDays.findIndex((entry) => entry.roundDay === preferredDay)
-      : 0,
-  );
-  const dayEntry = relevantDays[pageIndex];
-  if (!dayEntry) {
-    await interaction.reply({
-      content: `No planned CWL rotation day exists for ${clanTag}.`,
-      ephemeral: true,
-    });
-    return;
-  }
-
-  const [validation, battleDayStartAt, warCountByPlayerTag] = await Promise.all([
-    cwlRotationService.validatePlanDay({
-      clanTag: planView.clanTag,
-      season: planView.season,
-      roundDay: dayEntry.roundDay,
-    }),
-    cwlStateService.getBattleDayStartForClanDay({
-      clanTag: planView.clanTag,
-      season: planView.season,
-      roundDay: dayEntry.roundDay,
-    }),
-    cwlStateService.getParticipationCountsForClanDay({
-      clanTag: planView.clanTag,
-      season: planView.season,
-      throughRoundDay: dayEntry.roundDay,
-    }),
-  ]);
-
-  const renderPayload = await buildCwlRotationShowClanPayload({
-    userId: interaction.user.id,
-    showBackButton: true,
-    plan: planView,
-    day: dayEntry,
-    pageIndex,
-    pageCount: relevantDays.length,
-    battleDayStartAt,
-    warCountByPlayerTag,
-    validation: validation
-      ? {
-          actualAvailable: validation.actualAvailable,
-          complete: validation.complete,
-          missingExpectedPlayerTags: validation.missingExpectedPlayerTags,
-          extraActualPlayerTags: validation.extraActualPlayerTags,
-          actualPlayerRows: validation.actualPlayerTags.map((playerTag, index) => ({
-            playerTag,
-            playerName: validation.actualPlayerNames[index] ?? playerTag,
-          })),
-        }
-      : null,
-  });
-
   await interaction.update({
-    embeds: [renderPayload.embed],
-    components: renderPayload.components,
+    embeds: [renderPayload.payload.embed],
+    components: renderPayload.payload.components,
   });
 }
 
