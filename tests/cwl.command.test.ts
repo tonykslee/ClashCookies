@@ -57,10 +57,10 @@ function makeInteraction(input: {
   };
 }
 
-function makeAutocompleteInteraction(value: string) {
+function makeAutocompleteInteraction(value: string, name: "clan" | "day" = "clan") {
   return {
     options: {
-      getFocused: vi.fn(() => ({ name: "clan", value })),
+      getFocused: vi.fn(() => ({ name, value })),
     },
     respond: vi.fn().mockResolvedValue(undefined),
   };
@@ -294,7 +294,7 @@ describe("/cwl command", () => {
     expect(getDescription(interaction)).toContain("CWL Beta (#9GLGQCCU) - day 3 complete");
   });
 
-  it("renders one CWL day per page for /cwl rotations show and uses the same member-line contract as import preview", async () => {
+  it("renders one merged CWL day per page for /cwl rotations show", async () => {
     vi.mocked(cwlRotationService.listActivePlanExports).mockResolvedValue([
       {
         season: "2026-04",
@@ -306,10 +306,11 @@ describe("/cwl command", () => {
         days: [
           {
             roundDay: 1,
-            lineupSize: 2,
+            lineupSize: 3,
             rows: [
-              { playerTag: "#P1", playerName: "Alpha", subbedOut: false, assignmentOrder: 0 },
-              { playerTag: "#P2", playerName: "Bravo", subbedOut: true, assignmentOrder: 1 },
+              { playerTag: "#PYLQ0289", playerName: "Alpha", subbedOut: false, assignmentOrder: 0 },
+              { playerTag: "#QGRJ2222", playerName: "Bravo", subbedOut: false, assignmentOrder: 1 },
+              { playerTag: "#CUV02898", playerName: "Delta", subbedOut: false, assignmentOrder: 2 },
             ],
             actual: null,
           },
@@ -317,22 +318,32 @@ describe("/cwl command", () => {
             roundDay: 2,
             lineupSize: 2,
             rows: [
-              { playerTag: "#P3", playerName: "Charlie", subbedOut: false, assignmentOrder: 0 },
-              { playerTag: "#P4", playerName: "Delta", subbedOut: false, assignmentOrder: 1 },
+              { playerTag: "#VJQ28888", playerName: "Charlie", subbedOut: false, assignmentOrder: 0 },
+              { playerTag: "#CUV02898", playerName: "Delta", subbedOut: false, assignmentOrder: 1 },
             ],
             actual: null,
           },
         ],
       } as any,
     ]);
-    vi.mocked(cwlRotationService.validatePlanDay).mockResolvedValue({
-      actualAvailable: true,
-      complete: false,
-      missingExpectedPlayerTags: ["#P2"],
-      extraActualPlayerTags: ["#P3"],
-      actualPlayerTags: ["#P1", "#P3"],
-      actualPlayerNames: ["Alpha", "Charlie"],
-    } as any);
+    vi.mocked(cwlRotationService.getPreferredDisplayDay).mockResolvedValue(1);
+    vi.mocked(cwlRotationService.validatePlanDay)
+      .mockResolvedValueOnce({
+        actualAvailable: true,
+        complete: false,
+        missingExpectedPlayerTags: ["#QGRJ2222", "#CUV02898"],
+        extraActualPlayerTags: ["#VJQ28888"],
+        actualPlayerTags: ["#PYLQ0289", "#VJQ28888"],
+        actualPlayerNames: ["Alpha", "Charlie"],
+      } as any)
+      .mockResolvedValueOnce({
+        actualAvailable: true,
+        complete: true,
+        missingExpectedPlayerTags: [],
+        extraActualPlayerTags: [],
+        actualPlayerTags: ["#VJQ28888", "#CUV02898"],
+        actualPlayerNames: ["Charlie", "Delta"],
+      } as any);
     const interaction = makeInteraction({
       group: "rotations",
       subcommand: "show",
@@ -345,11 +356,14 @@ describe("/cwl command", () => {
       season: "2026-04",
       clanTags: ["#2QG2C08UP"],
     });
+    expect(getDescription(interaction)).toContain("Warnings: 1 warning");
+    expect(getDescription(interaction)).toContain("Excluded: #P9");
     expect(getDescription(interaction)).toContain("Day 1");
-    expect(getDescription(interaction)).toContain(":black_circle: Alpha (#P1)");
-    expect(getDescription(interaction)).toContain(":x: Bravo (#P2)");
-    expect(getDescription(interaction)).toContain("Actual:");
-    expect(getDescription(interaction)).toContain("Status: missing #P2 | extra #P3");
+    expect(getDescription(interaction)).toContain(":white_check_mark: Alpha (#PYLQ0289)");
+    expect(getDescription(interaction)).toContain(":warning: Charlie (#VJQ28888) | Expected Bravo (#QGRJ2222)");
+    expect(getDescription(interaction)).toContain(":warning: Missing actual member | Expected Delta (#CUV02898)");
+    expect(getDescription(interaction)).not.toContain("Actual:");
+    expect(getDescription(interaction)).not.toContain("Status:");
     expect(getComponentButtonCustomIds(interaction)).toHaveLength(2);
 
     const nextButtonId = getComponentButtonCustomIds(interaction).find((id) => id.endsWith(":1"));
@@ -364,11 +378,13 @@ describe("/cwl command", () => {
     await handleCwlRotationShowButtonInteraction(buttonInteraction as any);
 
     expect(getUpdatedDescription(buttonInteraction)).toContain("Day 2");
-    expect(getUpdatedDescription(buttonInteraction)).toContain(":black_circle: Charlie (#P3)");
-    expect(getUpdatedDescription(buttonInteraction)).toContain(":black_circle: Delta (#P4)");
+    expect(getUpdatedDescription(buttonInteraction)).toContain(":white_check_mark: Charlie (#VJQ28888)");
+    expect(getUpdatedDescription(buttonInteraction)).toContain(":white_check_mark: Delta (#CUV02898)");
+    expect(getUpdatedDescription(buttonInteraction)).not.toContain("Actual:");
+    expect(getUpdatedDescription(buttonInteraction)).not.toContain("Status:");
   });
 
-  it("defaults /cwl rotations show to the prep-day page during overlap", async () => {
+  it("renders the prep-day page with merged check marks during overlap", async () => {
     vi.mocked(cwlRotationService.listActivePlanExports).mockResolvedValue([
       {
         season: "2026-04",
@@ -382,8 +398,8 @@ describe("/cwl command", () => {
             roundDay: 3,
             lineupSize: 2,
             rows: [
-              { playerTag: "#P1", playerName: "Alpha", subbedOut: false, assignmentOrder: 0 },
-              { playerTag: "#P2", playerName: "Bravo", subbedOut: false, assignmentOrder: 1 },
+              { playerTag: "#PYLQ0289", playerName: "Alpha", subbedOut: false, assignmentOrder: 0 },
+              { playerTag: "#QGRJ2222", playerName: "Bravo", subbedOut: false, assignmentOrder: 1 },
             ],
             actual: null,
           },
@@ -391,8 +407,8 @@ describe("/cwl command", () => {
             roundDay: 4,
             lineupSize: 2,
             rows: [
-              { playerTag: "#P3", playerName: "Charlie", subbedOut: false, assignmentOrder: 0 },
-              { playerTag: "#P4", playerName: "Delta", subbedOut: false, assignmentOrder: 1 },
+              { playerTag: "#VJQ28888", playerName: "Charlie", subbedOut: false, assignmentOrder: 0 },
+              { playerTag: "#CUV02898", playerName: "Delta", subbedOut: false, assignmentOrder: 1 },
             ],
             actual: null,
           },
@@ -405,7 +421,7 @@ describe("/cwl command", () => {
       complete: true,
       missingExpectedPlayerTags: [],
       extraActualPlayerTags: [],
-      actualPlayerTags: ["#P3", "#P4"],
+      actualPlayerTags: ["#VJQ28888", "#CUV02898"],
       actualPlayerNames: ["Charlie", "Delta"],
     } as any);
     const interaction = makeInteraction({
@@ -417,9 +433,11 @@ describe("/cwl command", () => {
     await Cwl.run({} as any, interaction as any);
 
     expect(getDescription(interaction)).toContain("Day 4");
-    expect(getDescription(interaction)).toContain(":black_circle: Charlie (#P3)");
-    expect(getDescription(interaction)).toContain(":black_circle: Delta (#P4)");
+    expect(getDescription(interaction)).toContain(":white_check_mark: Charlie (#VJQ28888)");
+    expect(getDescription(interaction)).toContain(":white_check_mark: Delta (#CUV02898)");
     expect(getDescription(interaction)).not.toContain("Day 3");
+    expect(getDescription(interaction)).not.toContain("Actual:");
+    expect(getDescription(interaction)).not.toContain("Status:");
   });
 
   it("renders only the requested day when /cwl rotations show is day-filtered", async () => {
@@ -436,8 +454,8 @@ describe("/cwl command", () => {
             roundDay: 2,
             lineupSize: 2,
             rows: [
-              { playerTag: "#P3", playerName: "Charlie", subbedOut: false, assignmentOrder: 0 },
-              { playerTag: "#P4", playerName: "Delta", subbedOut: true, assignmentOrder: 1 },
+              { playerTag: "#VJQ28888", playerName: "Charlie", subbedOut: false, assignmentOrder: 0 },
+              { playerTag: "#CUV02898", playerName: "Delta", subbedOut: false, assignmentOrder: 1 },
             ],
             actual: null,
           },
@@ -449,7 +467,7 @@ describe("/cwl command", () => {
       complete: true,
       missingExpectedPlayerTags: [],
       extraActualPlayerTags: [],
-      actualPlayerTags: ["#P3", "#P4"],
+      actualPlayerTags: ["#VJQ28888", "#CUV02898"],
       actualPlayerNames: ["Charlie", "Delta"],
     } as any);
     const interaction = makeInteraction({
@@ -462,8 +480,11 @@ describe("/cwl command", () => {
     await Cwl.run({} as any, interaction as any);
 
     expect(getDescription(interaction)).toContain("Day 2");
-    expect(getDescription(interaction)).toContain(":x: Delta (#P4)");
+    expect(getDescription(interaction)).toContain(":white_check_mark: Charlie (#VJQ28888)");
+    expect(getDescription(interaction)).toContain(":white_check_mark: Delta (#CUV02898)");
     expect(getDescription(interaction)).not.toContain("Day 1");
+    expect(getDescription(interaction)).not.toContain("Actual:");
+    expect(getDescription(interaction)).not.toContain("Status:");
     expect(getComponentButtonCustomIds(interaction)).toHaveLength(0);
   });
 
@@ -507,9 +528,56 @@ describe("/cwl command", () => {
     await Cwl.run({} as any, interaction as any);
 
     expect(getDescription(interaction)).toContain("Day 7");
-    expect(getDescription(interaction)).toContain("Actual:");
-    expect(getDescription(interaction)).toContain("unavailable");
-    expect(getDescription(interaction)).toContain("Status: actual lineup unavailable");
+    expect(getDescription(interaction)).toContain("Actual lineup unavailable");
+    expect(getDescription(interaction)).not.toContain("Actual:");
+    expect(getDescription(interaction)).not.toContain("Status:");
+  });
+
+  it("appends trailing missing expected rows when actual lineup runs short", async () => {
+    vi.mocked(cwlRotationService.listActivePlanExports).mockResolvedValue([
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        clanName: "CWL Alpha",
+        version: 4,
+        warningSummary: null,
+        excludedPlayerTags: [],
+        days: [
+          {
+            roundDay: 3,
+            lineupSize: 3,
+            rows: [
+              { playerTag: "#PYLQ0289", playerName: "Echo", subbedOut: false, assignmentOrder: 0 },
+              { playerTag: "#QGRJ2222", playerName: "Foxtrot", subbedOut: false, assignmentOrder: 1 },
+              { playerTag: "#CUV02898", playerName: "Golf", subbedOut: false, assignmentOrder: 2 },
+            ],
+            actual: null,
+          },
+        ],
+      } as any,
+    ]);
+    vi.mocked(cwlRotationService.validatePlanDay).mockResolvedValue({
+      actualAvailable: true,
+      complete: false,
+      missingExpectedPlayerTags: ["#QGRJ2222", "#CUV02898"],
+      extraActualPlayerTags: ["#VJQ28888"],
+      actualPlayerTags: ["#PYLQ0289", "#VJQ28888"],
+      actualPlayerNames: ["Echo", "Zulu"],
+    } as any);
+    const interaction = makeInteraction({
+      group: "rotations",
+      subcommand: "show",
+      clan: "#2QG2C08UP",
+      day: 3,
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    expect(getDescription(interaction)).toContain(":white_check_mark: Echo (#PYLQ0289)");
+    expect(getDescription(interaction)).toContain(":warning: Zulu (#VJQ28888) | Expected Foxtrot (#QGRJ2222)");
+    expect(getDescription(interaction)).toContain(":warning: Missing actual member | Expected Golf (#CUV02898)");
+    expect(getDescription(interaction)).not.toContain("Actual:");
+    expect(getDescription(interaction)).not.toContain("Status:");
   });
 
   it("renders an import preview before save and confirms only after a button interaction", async () => {
@@ -1668,6 +1736,28 @@ describe("/cwl command", () => {
     expect(cwlRotationSheetService.exportActivePlans).toHaveBeenCalled();
     expect(getDescription(interaction)).toContain("Created a new public Google Sheet");
     expect(getDescription(interaction)).toContain("https://docs.google.com/spreadsheets/d/sheet-new/edit?usp=sharing");
+  });
+
+  it("autocompletes /cwl rotations show day choices 1 through 7", async () => {
+    const allDaysInteraction = makeAutocompleteInteraction("", "day");
+
+    await Cwl.autocomplete(allDaysInteraction as any);
+
+    expect(allDaysInteraction.respond).toHaveBeenCalledWith([
+      { name: "Day 1", value: 1 },
+      { name: "Day 2", value: 2 },
+      { name: "Day 3", value: 3 },
+      { name: "Day 4", value: 4 },
+      { name: "Day 5", value: 5 },
+      { name: "Day 6", value: 6 },
+      { name: "Day 7", value: 7 },
+    ]);
+
+    const filteredInteraction = makeAutocompleteInteraction("2", "day");
+
+    await Cwl.autocomplete(filteredInteraction as any);
+
+    expect(filteredInteraction.respond).toHaveBeenCalledWith([{ name: "Day 2", value: 2 }]);
   });
 
   it("autocompletes tracked CWL clans from the persisted seasonal registry", async () => {

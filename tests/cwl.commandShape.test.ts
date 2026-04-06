@@ -26,9 +26,11 @@ describe("/cwl command shape", () => {
     expect(importOption?.type).toBe(ApplicationCommandOptionType.Subcommand);
     expect(exportOption?.type).toBe(ApplicationCommandOptionType.Subcommand);
     expect(members?.options?.find((option: any) => option.name === "clan")?.required).toBe(true);
-    expect(show?.options?.find((option: any) => option.name === "day")?.type).toBe(
-      ApplicationCommandOptionType.Integer,
-    );
+    const showDay = show?.options?.find((option: any) => option.name === "day");
+    expect(showDay?.type).toBe(ApplicationCommandOptionType.Integer);
+    expect(showDay?.minValue).toBe(1);
+    expect(showDay?.maxValue).toBe(7);
+    expect(showDay?.autocomplete).toBe(true);
     expect(create?.options?.find((option: any) => option.name === "overwrite")?.type).toBe(
       ApplicationCommandOptionType.Boolean,
     );
