@@ -362,10 +362,10 @@ describe("/cwl command", () => {
     expect(getDescription(interaction)).toContain("Day 1");
     expect(getDescription(interaction)).toContain(":white_check_mark: Alpha (#PYLQ0289) | War count: 1");
     expect(getDescription(interaction)).toContain(
-      ":warning: Charlie (#VJQ28888) | Expected Bravo (#QGRJ2222) | War count: 1",
+      ":warning: Charlie (#VJQ28888) | Expected Bravo (#QGRJ2222) | War count: 0",
     );
     expect(getDescription(interaction)).toContain(
-      ":warning: Missing actual member | Expected Delta (#CUV02898) | War count: 2",
+      ":warning: Missing actual member | Expected Delta (#CUV02898) | War count: 1",
     );
     expect(getDescription(interaction)).toContain(":x: Hotel (#JQJQ2222) | War count: 0");
     expect(getDescription(interaction)).not.toContain("Actual:");

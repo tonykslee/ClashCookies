@@ -113,14 +113,17 @@ function buildCwlRotationMemberLines(input: {
 
 function buildCwlRotationWarCountMap(input: {
   days: Array<{
+    roundDay: number;
     rows: Array<{
       playerTag: string;
       subbedOut: boolean;
     }>;
   }>;
+  throughRoundDay: number;
 }): Map<string, number> {
   const warCountByPlayerTag = new Map<string, number>();
   for (const day of input.days) {
+    if (day.roundDay > input.throughRoundDay) continue;
     for (const row of day.rows) {
       if (row.subbedOut) continue;
       const playerTag = normalizePlayerTag(row.playerTag);
@@ -1063,6 +1066,7 @@ function buildCwlRotationShowPageLines(input: {
 }): string[] {
   const warCountByPlayerTag = buildCwlRotationWarCountMap({
     days: input.plan.days,
+    throughRoundDay: input.day.roundDay,
   });
   const lines: string[] = [
     `Season: ${input.plan.season}`,
