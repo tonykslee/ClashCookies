@@ -231,7 +231,7 @@ function buildCwlRotationMergedRosterLines(input: {
   }>;
   actualAvailable: boolean;
 }): string[] {
-  const benchMembers = input.plannedMembers
+  const plannedBenchMembers = input.plannedMembers
     .filter((member) => member.subbedOut)
     .map((member) => ({
       playerTag: member.playerTag,
@@ -245,7 +245,7 @@ function buildCwlRotationMergedRosterLines(input: {
   if (!input.actualAvailable) {
     return [
       "Actual lineup unavailable",
-      ...benchMembers.map(
+      ...plannedBenchMembers.map(
         (member) => `:x: ${member.playerName} (${member.playerTag}) | War count: ${member.warCount}`,
       ),
     ];
@@ -288,7 +288,7 @@ function buildCwlRotationMergedRosterLines(input: {
     if (expected) {
       missingExpectedIndex += 1;
       lines.push(
-        `:warning: ${actual.playerName} (${actual.playerTag}) | Expected ${expected.playerName} (${expected.playerTag}) | War count: ${actual.warCount}`,
+        `:warning: ${actual.playerName} (${actual.playerTag}) | War count: ${actual.warCount} - Expected ${expected.playerName} (${expected.playerTag})`,
       );
       continue;
     }
@@ -296,21 +296,14 @@ function buildCwlRotationMergedRosterLines(input: {
     lines.push(`:warning: ${actual.playerName} (${actual.playerTag}) | War count: ${actual.warCount}`);
   }
 
-  for (; missingExpectedIndex < missingExpectedRows.length; missingExpectedIndex += 1) {
-    const expected = missingExpectedRows[missingExpectedIndex];
-    const expectedWarCount = getCwlRotationWarCount({
-      playerTag: expected.playerTag,
-      warCountByPlayerTag: input.warCountByPlayerTag,
-    });
-    lines.push(
-      `:warning: Missing actual member | Expected ${expected.playerName} (${expected.playerTag}) | War count: ${expectedWarCount}`,
-    );
-  }
-
   lines.push(
-    ...benchMembers.map(
-      (member) => `:x: ${member.playerName} (${member.playerTag}) | War count: ${member.warCount}`,
-    ),
+    ...missingExpectedRows.map((member) => {
+      const expectedWarCount = getCwlRotationWarCount({
+        playerTag: member.playerTag,
+        warCountByPlayerTag: input.warCountByPlayerTag,
+      });
+      return `:x: ${member.playerName} (${member.playerTag}) | War count: ${expectedWarCount}`;
+    }),
   );
 
   if (lines.length <= 0) {
