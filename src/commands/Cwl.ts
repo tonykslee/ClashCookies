@@ -111,29 +111,6 @@ function buildCwlRotationMemberLines(input: {
   });
 }
 
-function buildCwlRotationWarCountMap(input: {
-  days: Array<{
-    roundDay: number;
-    rows: Array<{
-      playerTag: string;
-      subbedOut: boolean;
-    }>;
-  }>;
-  throughRoundDay: number;
-}): Map<string, number> {
-  const warCountByPlayerTag = new Map<string, number>();
-  for (const day of input.days) {
-    if (day.roundDay > input.throughRoundDay) continue;
-    for (const row of day.rows) {
-      if (row.subbedOut) continue;
-      const playerTag = normalizePlayerTag(row.playerTag);
-      if (!playerTag) continue;
-      warCountByPlayerTag.set(playerTag, (warCountByPlayerTag.get(playerTag) ?? 0) + 1);
-    }
-  }
-  return warCountByPlayerTag;
-}
-
 function getCwlRotationWarCount(input: {
   playerTag: string;
   warCountByPlayerTag: Map<string, number>;
@@ -1049,6 +1026,7 @@ function buildCwlRotationShowPageLines(input: {
   day: CwlRotationPlanExport["days"][number];
   pageIndex: number;
   pageCount: number;
+  warCountByPlayerTag: Map<string, number>;
   validation: {
     actualAvailable: boolean;
     complete: boolean;
@@ -1057,10 +1035,6 @@ function buildCwlRotationShowPageLines(input: {
     actualPlayerRows: Array<{ playerTag: string; playerName: string }>;
   } | null;
 }): string[] {
-  const warCountByPlayerTag = buildCwlRotationWarCountMap({
-    days: input.plan.days,
-    throughRoundDay: input.day.roundDay,
-  });
   const lines: string[] = [
     `Season: ${input.plan.season}`,
     `Clan: ${input.plan.clanName || input.plan.clanTag}`,
@@ -1080,7 +1054,7 @@ function buildCwlRotationShowPageLines(input: {
     lines.push("Actual lineup unavailable");
     lines.push(
       ...buildCwlRotationMergedRosterLines({
-        warCountByPlayerTag,
+        warCountByPlayerTag: input.warCountByPlayerTag,
         plannedMembers: input.day.rows,
         actualPlayerRows: [],
         actualAvailable: false,
@@ -1089,7 +1063,7 @@ function buildCwlRotationShowPageLines(input: {
   } else {
     lines.push(
       ...buildCwlRotationMergedRosterLines({
-        warCountByPlayerTag,
+        warCountByPlayerTag: input.warCountByPlayerTag,
         plannedMembers: input.day.rows,
         actualPlayerRows: input.validation.actualPlayerRows,
         actualAvailable: input.validation.actualAvailable,
@@ -1105,6 +1079,7 @@ function buildCwlRotationShowPageEmbed(input: {
   day: CwlRotationPlanExport["days"][number];
   pageIndex: number;
   pageCount: number;
+  warCountByPlayerTag: Map<string, number>;
   validation: {
     actualAvailable: boolean;
     complete: boolean;
@@ -1118,13 +1093,14 @@ function buildCwlRotationShowPageEmbed(input: {
     .setTitle(`/cwl rotations show ${input.plan.clanTag}`)
     .setDescription(
       buildDescription(
-        buildCwlRotationShowPageLines({
-          plan: input.plan,
-          day: input.day,
-          pageIndex: input.pageIndex,
-          pageCount: input.pageCount,
-          validation: input.validation,
-        }),
+          buildCwlRotationShowPageLines({
+            plan: input.plan,
+            day: input.day,
+            pageIndex: input.pageIndex,
+            pageCount: input.pageCount,
+            warCountByPlayerTag: input.warCountByPlayerTag,
+            validation: input.validation,
+          }),
       ),
     )
     .setFooter({
@@ -1626,11 +1602,17 @@ async function handleRotationShowSubcommand(interaction: ChatInputCommandInterac
       season: planView.season,
       roundDay: dayEntry.roundDay,
     });
+    const warCountByPlayerTag = await cwlStateService.getParticipationCountsForClanDay({
+      clanTag: planView.clanTag,
+      season: planView.season,
+      throughRoundDay: dayEntry.roundDay,
+    });
     return buildCwlRotationShowPageEmbed({
       plan: planView,
       day: dayEntry,
       pageIndex,
       pageCount: relevantDays.length,
+      warCountByPlayerTag,
       validation: validation
         ? {
             actualAvailable: validation.actualAvailable,
@@ -2051,6 +2033,11 @@ export async function handleCwlRotationShowButtonInteraction(
     season: planView.season,
     roundDay: dayEntry.roundDay,
   });
+  const warCountByPlayerTag = await cwlStateService.getParticipationCountsForClanDay({
+    clanTag: planView.clanTag,
+    season: planView.season,
+    throughRoundDay: dayEntry.roundDay,
+  });
 
   await interaction.update({
     embeds: [
@@ -2059,6 +2046,7 @@ export async function handleCwlRotationShowButtonInteraction(
         day: dayEntry,
         pageIndex,
         pageCount: relevantDays.length,
+        warCountByPlayerTag,
         validation: validation
           ? {
               actualAvailable: validation.actualAvailable,
