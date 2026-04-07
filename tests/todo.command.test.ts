@@ -554,12 +554,9 @@ describe("/todo command", () => {
     );
     const description = getReplyDescription(interaction);
     expect(description).toContain("Tracked Clan");
-    expect(description).toContain("Nontracked Clan");
-    expect(description).toContain("#QGRJ");
-    expect(description).toContain(
-      "[Nontracked Clan](https://link.clashofclans.com/en?action=OpenClanProfile&tag=QGRJ) `#QGRJ` - Next war <t:",
-    );
-    expect(description).toContain(":black_circle: Bravo - `0 / 0`");
+    expect(description).not.toContain("Nontracked Clan");
+    expect(description).not.toContain("#QGRJ");
+    expect(description).not.toContain("Bravo - `0 / 0`");
   });
 
   it("forwards refreshTrackedCwlStateFirst through the bounded initial CWL /todo refresh", async () => {
@@ -2016,7 +2013,7 @@ describe("/todo command", () => {
     expect(description).toContain("planned sub in <t:");
   });
 
-  it("renders upcoming CWL context with unknown timing instead of no-context when a CWL clan is already known", async () => {
+  it("hides stale CWL clan context when the player is not a confirmed participant", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([
       { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },
     ]);
@@ -2040,11 +2037,10 @@ describe("/todo command", () => {
     await Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
 
     const description = getReplyDescription(interaction);
-    expect(description).toContain("CWL Status: Not in war yet");
-    expect(description).not.toContain("No CWL active");
-    expect(description).toContain(
-      "[Clan Two](https://link.clashofclans.com/en?action=OpenClanProfile&tag=2QG2C08UP) `#2QG2C08UP` - Next war unknown",
-    );
+    expect(description).toContain("CWL Status: 0 / 0 attacks completed");
+    expect(description).toContain("No CWL active");
+    expect(description).not.toContain("Clan Two");
+    expect(description).not.toContain("2QG2C08UP");
   });
 
   it("shows explicit inactive WAR page message when no active war contexts exist", async () => {
