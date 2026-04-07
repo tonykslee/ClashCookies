@@ -1263,7 +1263,9 @@ describe("/link list sort button", () => {
       }),
     };
 
-    const runSortClick = async (mode: "discord" | "weight" | "player") => {
+    const runSortClick = async (
+      mode: "discord" | "weight" | "player-tags" | "player",
+    ) => {
       const deferUpdate = vi.fn().mockResolvedValue(undefined);
       const editReply = vi.fn().mockResolvedValue(undefined);
       const update = vi.fn().mockResolvedValue(undefined);
@@ -1316,7 +1318,25 @@ describe("/link list sort button", () => {
     expect(fromWeight.deferUpdate).toHaveBeenCalledTimes(1);
     expect(fromWeight.editReply).toHaveBeenCalledTimes(1);
     expect(fromWeight.update).not.toHaveBeenCalled();
-    const payloadPlayer = fromWeight.editReply.mock.calls[0]?.[0] as any;
+    const payloadPlayerTags = fromWeight.editReply.mock.calls[0]?.[0] as any;
+    const embedPlayerTags = payloadPlayerTags.embeds[0].toJSON();
+    const descriptionPlayerTags = String(embedPlayerTags.description ?? "");
+    expect(embedPlayerTags.footer?.text).toBe("Sort: Player Tags");
+    expect(descriptionPlayerTags.indexOf("#QGRJ2222")).toBeLessThan(
+      descriptionPlayerTags.indexOf("#PYLQ0289"),
+    );
+    expect(descriptionPlayerTags.indexOf("#PYLQ0289")).toBeLessThan(
+      descriptionPlayerTags.indexOf("#LCUV0289"),
+    );
+    expect(payloadPlayerTags.components[0].components[0].toJSON().label).toBe(
+      "Sort: Player Tags",
+    );
+
+    const fromPlayerTags = await runSortClick("player-tags");
+    expect(fromPlayerTags.deferUpdate).toHaveBeenCalledTimes(1);
+    expect(fromPlayerTags.editReply).toHaveBeenCalledTimes(1);
+    expect(fromPlayerTags.update).not.toHaveBeenCalled();
+    const payloadPlayer = fromPlayerTags.editReply.mock.calls[0]?.[0] as any;
     const embedPlayer = payloadPlayer.embeds[0].toJSON();
     const descriptionPlayer = String(embedPlayer.description ?? "");
     expect(embedPlayer.footer?.text).toBe("Sort: Player Name");
@@ -1336,6 +1356,110 @@ describe("/link list sort button", () => {
     expect(embedDiscord.footer?.text).toBe("Sort: Discord Name");
     expect(payloadDiscord.components[0].components[0].toJSON().label).toBe(
       "Sort: Discord Name",
+    );
+  });
+
+  it("keeps deterministic tie ordering in Player Tags mode", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        discordUserId: "111111111111111111",
+        discordUsername: "ZedUser",
+        createdAt: new Date("2026-03-15T09:07:00.000Z"),
+      },
+      {
+        playerTag: "#QGRJ2222",
+        discordUserId: "222222222222222222",
+        discordUsername: "AmyUser",
+        createdAt: new Date("2026-03-15T09:07:00.000Z"),
+      },
+      {
+        playerTag: "#LCUV0289",
+        discordUserId: "333333333333333333",
+        discordUsername: "BobUser",
+        createdAt: new Date("2026-03-15T09:07:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        weight: 120000,
+        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
+      },
+      {
+        playerTag: "#QGRJ2222",
+        weight: 120000,
+        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
+      },
+      {
+        playerTag: "#LCUV0289",
+        weight: 120000,
+        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
+      },
+    ]);
+
+    const cocService = {
+      getClan: vi.fn().mockResolvedValue({
+        name: "Alpha Clan",
+        members: [
+          {
+            tag: "#PYLQ0289",
+            name: "Charlie",
+            townHallLevel: 16,
+            mapPosition: 1,
+          },
+          {
+            tag: "#QGRJ2222",
+            name: "Alpha",
+            townHallLevel: 15,
+            mapPosition: 2,
+          },
+          {
+            tag: "#LCUV0289",
+            name: "Bravo",
+            townHallLevel: 14,
+            mapPosition: 3,
+          },
+        ],
+      }),
+    };
+
+    const deferUpdate = vi.fn().mockResolvedValue(undefined);
+    const editReply = vi.fn().mockResolvedValue(undefined);
+    const update = vi.fn().mockResolvedValue(undefined);
+    const reply = vi.fn().mockResolvedValue(undefined);
+    const interaction = {
+      customId: buildLinkListSortButtonCustomId(
+        "111111111111111111",
+        "#PQL0289",
+        "weight",
+      ),
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      guild: { members: { cache: new Map() } },
+      client: { users: { cache: new Map() } },
+      deferUpdate,
+      editReply,
+      update,
+      reply,
+      deferred: false,
+      replied: false,
+    };
+
+    await handleLinkListSortButton(interaction as any, cocService as any);
+
+    expect(deferUpdate).toHaveBeenCalledTimes(1);
+    expect(editReply).toHaveBeenCalledTimes(1);
+    expect(update).not.toHaveBeenCalled();
+    const payload = editReply.mock.calls[0]?.[0] as any;
+    const embed = payload.embeds[0].toJSON();
+    const description = String(embed.description ?? "");
+    expect(embed.footer?.text).toBe("Sort: Player Tags");
+    expect(description.indexOf("#LCUV0289")).toBeLessThan(
+      description.indexOf("#PYLQ0289"),
+    );
+    expect(description.indexOf("#PYLQ0289")).toBeLessThan(
+      description.indexOf("#QGRJ2222"),
     );
   });
 

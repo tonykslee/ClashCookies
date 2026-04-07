@@ -384,7 +384,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "Weight (`Wt`) comes from `FwaClanMemberCurrent.weight` and is shown as compact lowercase `k` text (for example `145k`), with `—` when missing.",
       "If `Wt` resolves to `0` and an open deferred weight exists for the same normalized player tag, `/link list` shows that deferred weight and appends a right-side `⏳` marker for that row.",
       "`embed` is admin-gated and posts a reusable self-service Link Account embed with button + modal flow.",
-      "`list` includes a tracked-clan dropdown and a sort-cycle button (`Discord Name -> Weight Desc -> Player Name`) and updates the same message in place.",
+      "`list` includes a tracked-clan dropdown and a sort-cycle button (`Discord Name -> Weight Desc -> Player Tags -> Player Name`) and updates the same message in place.",
       "`list` shows active sort mode in the embed footer.",
       "`sync-clashperk` is admin-gated and imports missing local PlayerLink rows from a public Google Sheet with ClashPerk-style columns.",
     ],

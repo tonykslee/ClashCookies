@@ -69,7 +69,12 @@ const LINK_LIST_LINKED_FALLBACK_EMOJI = "✅";
 const LINK_LIST_UNLINKED_FALLBACK_EMOJI = "❌";
 const WEIGHT_PLACEHOLDER = "—";
 const LINK_LIST_DEFERRED_WEIGHT_FALLBACK_EMOJI = "⏳";
-const LINK_LIST_SORT_MODE_CYCLE = ["discord", "weight", "player"] as const;
+const LINK_LIST_SORT_MODE_CYCLE = [
+  "discord",
+  "weight",
+  "player-tags",
+  "player",
+] as const;
 
 type LinkListSortMode = (typeof LINK_LIST_SORT_MODE_CYCLE)[number];
 const LINK_LIST_DEFAULT_SORT_MODE: LinkListSortMode = "discord";
@@ -123,7 +128,12 @@ function normalizeLinkListSortMode(
   input: string | null | undefined,
 ): LinkListSortMode {
   const value = String(input ?? "").trim().toLowerCase();
-  if (value === "discord" || value === "weight" || value === "player") {
+  if (
+    value === "discord" ||
+    value === "weight" ||
+    value === "player-tags" ||
+    value === "player"
+  ) {
     return value;
   }
   return LINK_LIST_DEFAULT_SORT_MODE;
@@ -131,6 +141,7 @@ function normalizeLinkListSortMode(
 
 function getLinkListSortModeLabel(mode: LinkListSortMode): string {
   if (mode === "weight") return "Weight Desc";
+  if (mode === "player-tags") return "Player Tags";
   if (mode === "player") return "Player Name";
   return "Discord Name";
 }
@@ -626,7 +637,7 @@ function sortLinkListRows(
   sortMode: LinkListSortMode,
 ): LinkListResolvedMemberRow[] {
   return [...rows].sort((a, b) => {
-    if (sortMode === "weight") {
+    if (sortMode === "weight" || sortMode === "player-tags") {
       const aHasWeight = a.weightValue !== null;
       const bHasWeight = b.weightValue !== null;
       if (aHasWeight !== bHasWeight) return aHasWeight ? -1 : 1;
@@ -842,13 +853,15 @@ async function buildLinkListView(input: {
     const weight = formatCompactWeightK(weightValue);
     const link = linkByTag.get(member.playerTag);
     const third = truncateWithEllipsis(
-      link
-        ? resolveLinkedUserDisplayName(
-            input.interaction,
-            link.discordUserId,
-            link.discordUsername,
-          )
-        : member.playerTag,
+      sortMode === "player-tags"
+        ? member.playerTag
+        : link
+          ? resolveLinkedUserDisplayName(
+              input.interaction,
+              link.discordUserId,
+              link.discordUsername,
+            )
+          : member.playerTag,
       MAX_IDENTITY_CHARS,
     );
 
