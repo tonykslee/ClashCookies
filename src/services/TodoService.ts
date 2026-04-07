@@ -1206,7 +1206,7 @@ function isCwlRowAttackPhaseActive(row: TodoRenderRow): boolean {
 function hasCwlRenderContext(row: TodoRenderRow): boolean {
   if (!row.snapshot) return false;
   if (row.snapshot.cwlActive) return true;
-  return Boolean(row.cwlClanTag || row.cwlClanName);
+  return Boolean(row.cwlPlannedSubInAt);
 }
 
 /** Purpose: map one CWL row into prep/battle completion markers that match WAR semantics. */
