@@ -114,7 +114,6 @@ const TODO_DEFAULT_GAMES_TARGET = 4000;
 const TODO_GAMES_COMPLETE_POINTS = 4000;
 const TODO_GAMES_MAX_POINTS = 10_000;
 const TODO_LOCALE = "en-US";
-const TODO_STALE_SNAPSHOT_LEGEND = ":hourglass: snapshot may be out of date";
 const todoRenderCacheByKey = new Map<string, CachedTodoRender>();
 const todoRenderGenerationByUser = new Map<string, number>();
 
@@ -584,15 +583,33 @@ export async function buildTodoPagesForUser(input: {
       .catch(() => undefined);
   }
 
-  const warView = buildWarPageDescription(renderRows, linkedTags.length);
-  const cwlView = buildCwlPageDescription(renderRows, linkedTags.length);
+  const snapshotLastUpdatedAtMs = snapshotVersion.maxUpdatedAtMs;
+  const warView = buildWarPageDescription(
+    renderRows,
+    linkedTags.length,
+    snapshotLastUpdatedAtMs,
+  );
+  const cwlView = buildCwlPageDescription(
+    renderRows,
+    linkedTags.length,
+    snapshotLastUpdatedAtMs,
+  );
   const pages = {
     linkedPlayerCount: linkedTags.length,
     pages: {
       WAR: warView.description,
       CWL: cwlView.description,
-      RAIDS: buildRaidsPageDescription(renderRows, linkedTags.length),
-      GAMES: buildGamesPageDescription(renderRows, linkedTags.length, nowMs),
+      RAIDS: buildRaidsPageDescription(
+        renderRows,
+        linkedTags.length,
+        snapshotLastUpdatedAtMs,
+      ),
+      GAMES: buildGamesPageDescription(
+        renderRows,
+        linkedTags.length,
+        nowMs,
+        snapshotLastUpdatedAtMs,
+      ),
     },
     sidebarStateByType: {
       WAR: warView.sidebarState,
@@ -651,6 +668,7 @@ function isSnapshotStale(snapshot: TodoSnapshotRecord, nowMs: number): boolean {
 function buildWarPageDescription(
   rows: TodoRenderRow[],
   linkedPlayerCount: number,
+  snapshotLastUpdatedAtMs: number,
 ): { description: string; sidebarState: TodoSidebarState } {
   const activeRows = rows.filter((row) => Boolean(row.snapshot?.warActive));
   const warCompletion = summarizeWarCompletionStatus(activeRows);
@@ -659,6 +677,7 @@ function buildWarPageDescription(
       description: buildTodoPageDescription({
         heading: "WAR",
         linkedPlayerCount,
+        snapshotLastUpdatedAtMs,
         statusLine: warCompletion.statusLine,
         lines: ["No war active"],
       }),
@@ -686,6 +705,7 @@ function buildWarPageDescription(
     description: buildTodoPageDescription({
       heading: "WAR",
       linkedPlayerCount,
+      snapshotLastUpdatedAtMs,
       statusLine: warCompletion.statusLine,
       lines,
     }),
@@ -697,6 +717,7 @@ function buildWarPageDescription(
 function buildCwlPageDescription(
   rows: TodoRenderRow[],
   linkedPlayerCount: number,
+  snapshotLastUpdatedAtMs: number,
 ): { description: string; sidebarState: TodoSidebarState } {
   const contextRows = rows.filter((row) => hasCwlRenderContext(row));
   if (contextRows.length <= 0) {
@@ -704,6 +725,7 @@ function buildCwlPageDescription(
       description: buildTodoPageDescription({
         heading: "CWL",
         linkedPlayerCount,
+        snapshotLastUpdatedAtMs,
         statusLine: "CWL Status: 0 / 0 attacks completed",
         lines: ["No CWL active"],
       }),
@@ -729,6 +751,7 @@ function buildCwlPageDescription(
     description: buildTodoPageDescription({
       heading: "CWL",
       linkedPlayerCount,
+      snapshotLastUpdatedAtMs,
       statusLine: cwlCompletion.statusLine,
       lines,
     }),
@@ -798,12 +821,14 @@ function summarizeCwlCompletionStatus(
 function buildRaidsPageDescription(
   rows: TodoRenderRow[],
   linkedPlayerCount: number,
+  snapshotLastUpdatedAtMs: number,
 ): string {
   const hasActive = rows.some((row) => Boolean(row.snapshot?.raidActive));
   if (!hasActive) {
     return buildTodoPageDescription({
       heading: "RAIDS",
       linkedPlayerCount,
+      snapshotLastUpdatedAtMs,
       lines: ["No raids active"],
     });
   }
@@ -821,6 +846,7 @@ function buildRaidsPageDescription(
   return buildTodoPageDescription({
     heading: "RAIDS",
     linkedPlayerCount,
+    snapshotLastUpdatedAtMs,
     lines,
   });
 }
@@ -830,6 +856,7 @@ function buildGamesPageDescription(
   rows: TodoRenderRow[],
   linkedPlayerCount: number,
   nowMs: number,
+  snapshotLastUpdatedAtMs: number,
 ): string {
   const hasActive = rows.some((row) =>
     isTodoGamesSessionActive(row.snapshot, nowMs),
@@ -851,6 +878,7 @@ function buildGamesPageDescription(
     return buildTodoPageDescription({
       heading: "GAMES",
       linkedPlayerCount,
+      snapshotLastUpdatedAtMs,
       lines,
     });
   }
@@ -860,6 +888,7 @@ function buildGamesPageDescription(
     return buildTodoPageDescription({
       heading: "GAMES",
       linkedPlayerCount,
+      snapshotLastUpdatedAtMs,
       lines: buildGamesRewardCollectionLines(rows, rewardCollectionEndsAt),
     });
   }
@@ -868,6 +897,7 @@ function buildGamesPageDescription(
   return buildTodoPageDescription({
     heading: "GAMES",
     linkedPlayerCount,
+    snapshotLastUpdatedAtMs,
     lines: offCycleLines,
   });
 }
@@ -1071,13 +1101,14 @@ function formatWarPlayerIdentity(row: TodoRenderRow): string {
 function buildTodoPageDescription(input: {
   heading: TodoType;
   linkedPlayerCount: number;
+  snapshotLastUpdatedAtMs: number;
   statusLine?: string | null;
   lines: string[];
 }): string {
   const statusLine = sanitizeStatusText(input.statusLine ?? "");
   const lines = [
     `Type: ${input.heading}`,
-    TODO_STALE_SNAPSHOT_LEGEND,
+    formatTodoSnapshotLegend(input.snapshotLastUpdatedAtMs),
     statusLine || `Linked players: ${input.linkedPlayerCount}`,
     "",
     ...input.lines,
@@ -1693,6 +1724,13 @@ function needsGamesLifetimeBackfill(row: TodoRenderRow, nowMs: number): boolean 
 /** Purpose: format one date as a Discord relative timestamp token. */
 function formatRelativeTimestamp(input: Date): string {
   return `<t:${Math.floor(input.getTime() / 1000)}:R>`;
+}
+
+/** Purpose: build the shared todo snapshot freshness legend from the authoritative snapshot version timestamp. */
+function formatTodoSnapshotLegend(snapshotLastUpdatedAtMs: number): string {
+  return `:hourglass: last updated ${formatRelativeTimestamp(
+    new Date(snapshotLastUpdatedAtMs),
+  )}`;
 }
 
 /** Purpose: keep status labels compact and deterministic for embed row rendering. */
