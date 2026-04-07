@@ -781,6 +781,9 @@ export class TodoSnapshotService {
         resolvedClanTag && !cwlTrackedTagSet.has(resolvedClanTag)
           ? liveNonTrackedCwlContextByClanTag.get(resolvedClanTag) ?? null
           : null;
+      const liveNonTrackedCwlMember = liveNonTrackedCwlContext
+        ? liveNonTrackedCwlContext.membersByPlayerTag.get(playerTag) ?? null
+        : null;
       const resolvedCwlClanTag =
         normalizeClanTag(
           activeMappedCwlClanTag ||
@@ -800,20 +803,19 @@ export class TodoSnapshotService {
           : null) ||
         sanitizeDisplayText(existing?.cwlClanName ?? "") ||
         null;
-      const liveNonTrackedCwlMember =
-        resolvedClanTag && liveNonTrackedCwlContext
-          ? liveNonTrackedCwlContext.membersByPlayerTag.get(playerTag) ?? null
-          : null;
-      const currentCwlRound = resolvedCwlClanTag
+      const persistedCurrentCwlRound = resolvedCwlClanTag
         ? currentCwlRoundByClanTag.get(resolvedCwlClanTag) ?? null
         : null;
+      const currentCwlRound = liveNonTrackedCwlContext ?? persistedCurrentCwlRound;
       const currentCwlMember =
-        currentCwlMemberByPlayerTag.get(playerTag) ?? liveNonTrackedCwlMember ?? null;
+        liveNonTrackedCwlMember ??
+        currentCwlMemberByPlayerTag.get(playerTag) ??
+        null;
       const cwlParticipant = Boolean(
         resolvedCwlClanTag &&
           currentCwlMember &&
           currentCwlMember.subbedIn &&
-          (!currentCwlRound || currentCwlMember.clanTag === resolvedCwlClanTag),
+          currentCwlMember.clanTag === resolvedCwlClanTag,
       );
       const cwlHasContext = Boolean(
         currentCwlRound ||
@@ -824,16 +826,18 @@ export class TodoSnapshotService {
       const cwlActive = cwlHasContext && cwlParticipant;
       const cwlPhase = cwlHasContext
         ? normalizeWarPhaseLabel(
-            currentCwlRound?.roundState ?? liveNonTrackedCwlContext?.roundState ?? "",
+            currentCwlRound?.roundState ?? persistedCurrentCwlRound?.roundState ?? "",
           )
         : null;
-      const cwlEndsAt = currentCwlRound
-        ? resolveCurrentWarPhaseEnd({
-            state: currentCwlRound?.roundState ?? null,
-            startTime: currentCwlRound?.startTime ?? null,
-            endTime: currentCwlRound?.endTime ?? null,
-          })
-        : liveNonTrackedCwlContext?.phaseEndsAt ?? null;
+      const cwlEndsAt = liveNonTrackedCwlContext?.phaseEndsAt
+        ? liveNonTrackedCwlContext.phaseEndsAt
+        : persistedCurrentCwlRound
+          ? resolveCurrentWarPhaseEnd({
+              state: persistedCurrentCwlRound.roundState ?? null,
+              startTime: persistedCurrentCwlRound.startTime ?? null,
+              endTime: persistedCurrentCwlRound.endTime ?? null,
+            })
+          : null;
       const cwlAttacksUsed = cwlParticipant
         ? clampInt(currentCwlMember?.attacksUsed, 0, currentCwlMember?.attacksAvailable || 1)
         : 0;
