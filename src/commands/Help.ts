@@ -311,7 +311,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "Reads precomputed todo snapshots (background-refreshed) for fast command-time rendering.",
       "The first `/todo` use for a Discord user may take longer while their snapshots are loaded on demand.",
       "Always builds WAR, CWL, RAIDS, and GAMES pages in one response.",
-      "CWL todo snapshots can include linked players outside tracked clans after a manual refresh hydrates their CWL context.",
+      "CWL todo snapshots can include linked players outside tracked clans after the first CWL refresh hydrates their CWL context, and that first run may take a bit longer.",
       "With no `type`, opens your most recently viewed todo page; if none is remembered, defaults to WAR.",
       "`type` controls only the initial page shown; use page buttons to switch categories without rerunning.",
       "Running `/todo type:...` and switching pages via buttons updates your remembered page for future no-arg `/todo` runs.",

@@ -12,6 +12,7 @@ import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
 import { listPlayerLinksForDiscordUser } from "../services/PlayerLinkService";
 import { CoCService } from "../services/CoCService";
+import { cocRequestQueueService } from "../services/CoCRequestQueueService";
 import { cwlStateService } from "../services/CwlStateService";
 import {
   buildTodoPagesForUser,
@@ -31,6 +32,9 @@ const TODO_EMBED_COLOR_DEFAULT = 0x5865f2;
 const TODO_EMBED_COLOR_INCOMPLETE = 0xed4245;
 const TODO_EMBED_COLOR_COMPLETE = 0x57f287;
 const TODO_GUILD_SCOPE_DM = "dm";
+const TODO_CWL_FIRST_RUN_NOTICE =
+  "The first /todo CWL run may take a bit longer while CWL state is refreshed.";
+const TODO_INITIAL_REFRESH_TIMEOUT_MS = 3000;
 const TODO_REFRESH_ERROR_MESSAGE =
   "Failed to refresh todo data. Please try again.";
 const TODO_REFRESH_BUTTON_EMOJI = "🔄";
@@ -60,6 +64,19 @@ type TodoRenderResult =
       };
     }
   | { ok: false; message: string };
+type TodoInitialRefreshOutcome =
+  | { status: "refreshed"; durationMs: number }
+  | {
+      status: "skipped_degraded";
+      spacingMs: number;
+      penaltyMs: number;
+      queueDepth: number;
+      interactiveQueueDepth: number;
+      backgroundQueueDepth: number;
+      inFlight: number;
+    }
+  | { status: "timeout"; timeoutMs: number }
+  | { status: "failed"; error: unknown };
 
 /** Purpose: persist one remembered `/todo` page type without blocking command UX on storage errors. */
 async function rememberLastViewedTodoType(input: {
@@ -104,19 +121,93 @@ async function refreshTodoSnapshotsForDiscordUser(input: {
   });
   const linkedTags = [...new Set(links.map((row) => row.playerTag))];
   if (linkedTags.length > 0) {
+    const refreshInput: Parameters<
+      typeof todoSnapshotService.refreshSnapshotsForPlayerTags
+    >[0] = {
+      playerTags: linkedTags,
+      cocService: input.cocService,
+    };
+    if (input.includeNonTrackedCwlRefresh) {
+      refreshInput.includeNonTrackedCwlRefresh = true;
+    }
     if (input.refreshTrackedCwlStateFirst) {
       await cwlStateService.refreshTrackedCwlStateForPlayerTags({
         cocService: input.cocService,
         playerTags: linkedTags,
       });
     }
-    await todoSnapshotService.refreshSnapshotsForPlayerTags({
-      playerTags: linkedTags,
-      cocService: input.cocService,
-      includeNonTrackedCwlRefresh: input.includeNonTrackedCwlRefresh,
-    });
+    await todoSnapshotService.refreshSnapshotsForPlayerTags(refreshInput);
   }
   invalidateTodoRenderCacheForUser(input.discordUserId);
+}
+
+/** Purpose: resolve one bounded `/todo` startup refresh timeout to avoid slow startup under upstream pressure. */
+function resolveTodoInitialRefreshTimeoutMs(): number {
+  const configured = Number(
+    process.env.TODO_INITIAL_REFRESH_TIMEOUT_MS ?? TODO_INITIAL_REFRESH_TIMEOUT_MS,
+  );
+  if (!Number.isFinite(configured) || configured <= 0) {
+    return TODO_INITIAL_REFRESH_TIMEOUT_MS;
+  }
+  return Math.max(250, Math.trunc(configured));
+}
+
+/** Purpose: prefer snapshot-first render and only attempt live refresh with bounded wait when queue pressure is healthy. */
+async function tryBoundedInitialTodoRefresh(input: {
+  discordUserId: string;
+  cocService: CoCService;
+  includeNonTrackedCwlRefresh?: boolean;
+  refreshTrackedCwlStateFirst?: boolean;
+}): Promise<TodoInitialRefreshOutcome> {
+  const queueStatus = cocRequestQueueService.getStatus();
+  if (queueStatus.degraded) {
+    return {
+      status: "skipped_degraded",
+      spacingMs: queueStatus.spacingMs,
+      penaltyMs: queueStatus.penaltyMs,
+      queueDepth: queueStatus.queueDepth,
+      interactiveQueueDepth: queueStatus.interactiveQueueDepth,
+      backgroundQueueDepth: queueStatus.backgroundQueueDepth,
+      inFlight: queueStatus.inFlight,
+    };
+  }
+
+  const timeoutMs = resolveTodoInitialRefreshTimeoutMs();
+  const startedAtMs = Date.now();
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+
+  const refreshPromise = refreshTodoSnapshotsForDiscordUser({
+    discordUserId: input.discordUserId,
+    cocService: input.cocService,
+    includeNonTrackedCwlRefresh: input.includeNonTrackedCwlRefresh,
+  })
+    .then(
+      (): TodoInitialRefreshOutcome => ({
+        status: "refreshed",
+        durationMs: Date.now() - startedAtMs,
+      }),
+    )
+    .catch(
+      (error): TodoInitialRefreshOutcome => ({
+        status: "failed",
+        error,
+      }),
+    );
+
+  const timeoutPromise = new Promise<TodoInitialRefreshOutcome>((resolve) => {
+    timeoutHandle = setTimeout(() => {
+      resolve({
+        status: "timeout",
+        timeoutMs,
+      });
+    }, timeoutMs);
+  });
+
+  const outcome = await Promise.race([refreshPromise, timeoutPromise]);
+  if (timeoutHandle) {
+    clearTimeout(timeoutHandle);
+  }
+  return outcome;
 }
 
 /** Purpose: build one stable guild scope token from guild-id or DM context. */
@@ -488,6 +579,9 @@ export const Todo: Command = {
     const explicitType = explicitTypeInput
       ? normalizeTodoType(explicitTypeInput)
       : null;
+    const rememberedTypeBeforeUpdate = await resolveRememberedTodoType(
+      interaction.user.id,
+    );
     if (explicitType) {
       await rememberLastViewedTodoType({
         discordUserId: interaction.user.id,
@@ -496,12 +590,17 @@ export const Todo: Command = {
     }
     const rememberedType = explicitType
       ? null
-      : await resolveRememberedTodoType(interaction.user.id);
+      : rememberedTypeBeforeUpdate;
     const selectedType = explicitType ?? rememberedType ?? normalizeTodoType(null);
+    const shouldRefreshNonTrackedCwl = selectedType === "CWL";
     const hasUsedTodo = await todoUserUsageService.hasUsedTodo({
       discordUserId: interaction.user.id,
     });
-    const firstUseWarning = hasUsedTodo ? null : TODO_FIRST_USE_WARNING_MESSAGE;
+    const firstUseWarning = hasUsedTodo
+      ? null
+      : shouldRefreshNonTrackedCwl
+        ? TODO_CWL_FIRST_RUN_NOTICE
+        : TODO_FIRST_USE_WARNING_MESSAGE;
 
     if (!hasUsedTodo) {
       let hydratedSuccessfully = false;
@@ -509,6 +608,7 @@ export const Todo: Command = {
         await refreshTodoSnapshotsForDiscordUser({
           discordUserId: interaction.user.id,
           cocService,
+          refreshTrackedCwlStateFirst: true,
           includeNonTrackedCwlRefresh: true,
         });
         hydratedSuccessfully = true;
@@ -530,7 +630,7 @@ export const Todo: Command = {
       }
     }
 
-    const result = await buildTodoRenderResult({
+    let result = await buildTodoRenderResult({
       cocService,
       selectedType,
       scope: {
@@ -540,6 +640,38 @@ export const Todo: Command = {
       },
     });
 
+    if (result.ok && hasUsedTodo && shouldRefreshNonTrackedCwl) {
+      const initialRefresh = await tryBoundedInitialTodoRefresh({
+        discordUserId: interaction.user.id,
+        cocService,
+        refreshTrackedCwlStateFirst: true,
+        includeNonTrackedCwlRefresh: shouldRefreshNonTrackedCwl,
+      });
+
+      if (initialRefresh.status === "refreshed") {
+        result = await buildTodoRenderResult({
+          cocService,
+          selectedType,
+          scope: {
+            guildScopeId: resolveTodoGuildScopeId(interaction.guildId),
+            requesterUserId: interaction.user.id,
+            targetUserId: interaction.user.id,
+          },
+        });
+      } else if (initialRefresh.status === "skipped_degraded") {
+        console.warn(
+          `[todo] event=snapshot_served reason=coc_degraded user=${interaction.user.id} spacing_ms=${initialRefresh.spacingMs} penalty_ms=${initialRefresh.penaltyMs} queue_depth=${initialRefresh.queueDepth} interactive_depth=${initialRefresh.interactiveQueueDepth} background_depth=${initialRefresh.backgroundQueueDepth} in_flight=${initialRefresh.inFlight}`,
+        );
+      } else if (initialRefresh.status === "timeout") {
+        console.warn(
+          `[todo] event=snapshot_served reason=bounded_refresh_timeout user=${interaction.user.id} timeout_ms=${initialRefresh.timeoutMs}`,
+        );
+      } else if (initialRefresh.status === "failed") {
+        console.warn(
+          `[todo] event=snapshot_served reason=bounded_refresh_failed user=${interaction.user.id} error=${formatError(initialRefresh.error)}`,
+        );
+      }
+    }
     if (!result.ok) {
       await interaction.editReply(result.message);
       return;
