@@ -8,6 +8,9 @@ const prismaMock = vi.hoisted(() => ({
   fwaWarMemberCurrent: {
     findMany: vi.fn(),
   },
+  warAttacks: {
+    findMany: vi.fn(),
+  },
   currentWar: {
     findFirst: vi.fn(),
   },
@@ -38,15 +41,16 @@ describe("ReminderDispatchService roster rendering", () => {
     vi.clearAllMocks();
     prismaMock.playerLink.findMany.mockResolvedValue([]);
     prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
-    prismaMock.currentWar.findFirst.mockResolvedValue({ state: "inWar" });
+    prismaMock.warAttacks.findMany.mockResolvedValue([]);
+    prismaMock.currentWar.findFirst.mockResolvedValue({ state: "inWar", warId: 9 });
   });
 
   it("renders WAR reminder content in plain text with inline mentions and updated header lines", async () => {
-    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([
-      { playerTag: "#PYLG", playerName: "Bravo", position: 2, attacks: 1 },
-      { playerTag: "#PYLQ", playerName: "Alpha", position: 1, attacks: 0 },
-      { playerTag: "#PYLR", playerName: "Charlie", position: 3, attacks: 0 },
-      { playerTag: "#PYLC", playerName: "Done", position: 4, attacks: 2 },
+    prismaMock.warAttacks.findMany.mockResolvedValue([
+      { playerTag: "#PYLG", playerName: "Bravo", playerPosition: 2, attacksUsed: 1 },
+      { playerTag: "#PYLQ", playerName: "Alpha", playerPosition: 1, attacksUsed: 0 },
+      { playerTag: "#PYLR", playerName: "Charlie", playerPosition: 3, attacksUsed: 0 },
+      { playerTag: "#PYLC", playerName: "Done", playerPosition: 4, attacksUsed: 2 },
     ]);
     prismaMock.playerLink.findMany.mockResolvedValue([
       { playerTag: "#PYLQ", discordUserId: "111" },
@@ -90,11 +94,49 @@ describe("ReminderDispatchService roster rendering", () => {
     expect(contents[0]).not.toContain("Done");
   });
 
-  it("keeps multiple accounts for the same linked user adjacent", async () => {
+  it("ignores stale FwaWarMemberCurrent data when WarAttacks already has the authoritative counts", async () => {
     prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([
-      { playerTag: "#PYLQ", playerName: "First", position: 1, attacks: 0 },
-      { playerTag: "#PYLG", playerName: "Middle", position: 2, attacks: 0 },
-      { playerTag: "#PYLR", playerName: "Second", position: 3, attacks: 0 },
+      { playerTag: "#PYLQ", playerName: "Stale Alpha", position: 1, attacks: 0 },
+      { playerTag: "#PYLG", playerName: "Stale Bravo", position: 2, attacks: 0 },
+    ]);
+    prismaMock.warAttacks.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ", playerName: "Fresh Alpha", playerPosition: 1, attacksUsed: 2 },
+      { playerTag: "#PYLG", playerName: "Fresh Bravo", playerPosition: 2, attacksUsed: 1 },
+    ]);
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { playerTag: "#PYLG", discordUserId: "222" },
+    ]);
+
+    const contents = await buildReminderDispatchContentsForTest({
+      input: {
+        guildId: "guild-1",
+        channelId: "channel-1",
+        reminderId: "rem-1",
+        type: ReminderType.WAR_CWL,
+        clanTag: "#PYLQ",
+        clanName: "Authoritative Clan",
+        offsetSeconds: 3600,
+        eventIdentity: "WAR:war-id:9",
+        eventEndsAt: new Date("2026-04-10T01:00:00.000Z"),
+        eventLabel: "war end",
+      },
+      nowMs: Date.parse("2026-04-10T00:30:00.000Z"),
+      cocService: null,
+    });
+
+    expect(prismaMock.fwaWarMemberCurrent.findMany).not.toHaveBeenCalled();
+    const rosterLines = contents[0].split("\n").filter((line) => /^#\d+ /.test(line));
+    expect(rosterLines).toEqual(["#2 - Fresh Bravo - <@222> - 1 / 2"]);
+    expect(contents[0]).not.toContain("Fresh Alpha");
+    expect(contents[0]).not.toContain("Stale Alpha");
+    expect(contents[0]).not.toContain("Stale Bravo");
+  });
+
+  it("keeps multiple accounts for the same linked user adjacent", async () => {
+    prismaMock.warAttacks.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ", playerName: "First", playerPosition: 1, attacksUsed: 0 },
+      { playerTag: "#PYLG", playerName: "Middle", playerPosition: 2, attacksUsed: 0 },
+      { playerTag: "#PYLR", playerName: "Second", playerPosition: 3, attacksUsed: 0 },
     ]);
     prismaMock.playerLink.findMany.mockResolvedValue([
       { playerTag: "#PYLQ", discordUserId: "111" },
@@ -242,12 +284,12 @@ describe("ReminderDispatchService roster rendering", () => {
   });
 
   it("splits long reminder output into two plain-text messages on whole lines only", async () => {
-    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue(
+    prismaMock.warAttacks.findMany.mockResolvedValue(
       Array.from({ length: 30 }, (_, index) => ({
         playerTag: buildValidPlayerTag(index),
         playerName: `Player_${String(index + 1).padStart(2, "0")}_${"X".repeat(90)}`,
-        position: index + 1,
-        attacks: 0,
+        playerPosition: index + 1,
+        attacksUsed: 0,
       })),
     );
 
@@ -284,12 +326,12 @@ describe("ReminderDispatchService roster rendering", () => {
   });
 
   it("splits overflow into at most three messages and stops after the third message", async () => {
-    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue(
+    prismaMock.warAttacks.findMany.mockResolvedValue(
       Array.from({ length: 240 }, (_, index) => ({
         playerTag: buildValidPlayerTag(index + 1000),
         playerName: `Player_${String(index + 1).padStart(3, "0")}_${"Y".repeat(80)}`,
-        position: index + 1,
-        attacks: 0,
+        playerPosition: index + 1,
+        attacksUsed: 0,
       })),
     );
 
@@ -320,9 +362,9 @@ describe("ReminderDispatchService roster rendering", () => {
   });
 
   it("skips WAR roster reminder rendering during preparation state", async () => {
-    prismaMock.currentWar.findFirst.mockResolvedValue({ state: "preparation" });
-    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([
-      { playerTag: "#PYLQ", playerName: "Alpha", position: 1, attacks: 0 },
+    prismaMock.currentWar.findFirst.mockResolvedValue({ state: "preparation", warId: 9 });
+    prismaMock.warAttacks.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ", playerName: "Alpha", playerPosition: 1, attacksUsed: 0 },
     ]);
 
     const contents = await buildReminderDispatchContentsForTest({
@@ -423,8 +465,8 @@ describe("ReminderDispatchService roster rendering", () => {
   });
 
   it("dispatches plain-text payloads with inline mentions and no embed fallback", async () => {
-    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([
-      { playerTag: "#PYLQ", playerName: "Alpha", position: 1, attacks: 0 },
+    prismaMock.warAttacks.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ", playerName: "Alpha", playerPosition: 1, attacksUsed: 0 },
     ]);
     prismaMock.playerLink.findMany.mockResolvedValue([
       { playerTag: "#PYLQ", discordUserId: "111" },
@@ -472,9 +514,9 @@ describe("ReminderDispatchService roster rendering", () => {
   });
 
   it("does not send a message when attack window is inactive in dispatch flow", async () => {
-    prismaMock.currentWar.findFirst.mockResolvedValue({ state: "preparation" });
-    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([
-      { playerTag: "#PYLQ", playerName: "Alpha", position: 1, attacks: 0 },
+    prismaMock.currentWar.findFirst.mockResolvedValue({ state: "preparation", warId: 9 });
+    prismaMock.warAttacks.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ", playerName: "Alpha", playerPosition: 1, attacksUsed: 0 },
     ]);
 
     const send = vi.fn();
