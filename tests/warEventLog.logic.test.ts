@@ -770,6 +770,18 @@ describe("WarEventLogService notify event posted content", () => {
     expect(content).toBe("War started against Enemy Clan\n<@&123456789>\nNext refresh <t:1200:R>");
   });
 
+  it("omits the battle-day role mention when mismatch suppression is active", () => {
+    const content = buildNotifyEventPostedContentForTest({
+      eventType: "battle_day",
+      opponentName: "Enemy Clan",
+      notifyRoleId: "123456789",
+      includeRoleMention: false,
+      nowMs: 0,
+      nextScheduledRefreshAtMs: 1_200_000,
+    });
+    expect(content).toBe("War started against Enemy Clan\nNext refresh <t:1200:R>");
+  });
+
   it("places war-ended context line above role mention", () => {
     const content = buildNotifyEventPostedContentForTest({
       eventType: "war_ended",
@@ -821,6 +833,17 @@ describe("WarEventLogService battle-day refresh content", () => {
     );
     expect(payload.content).toContain("War started against Enemy Clan\nNext refresh <t:");
     expect(payload.content).not.toContain("<@&");
+  });
+
+  it("drops a previously posted mention when battle-day mismatch suppression is active", () => {
+    const payload = buildBattleDayRefreshEditPayloadForTest(
+      "War started against Enemy Clan\n<@&123456789>\nNext refresh <t:999:R>",
+      "Enemy Clan",
+      0,
+      false,
+    );
+    expect(payload.content).toContain("War started against Enemy Clan\nNext refresh <t:");
+    expect(payload.content).not.toContain("<@&123456789>");
   });
 });
 
