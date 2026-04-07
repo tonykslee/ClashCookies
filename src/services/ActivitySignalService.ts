@@ -104,6 +104,19 @@ export function extractGamesChampionTotalFromSignalState(raw: string | null | un
   }
 }
 
+/** Purpose: extract one persisted freshness timestamp from a player signal-state JSON blob. */
+export function extractSignalStateFreshnessMsFromState(raw: string | null | undefined): number | null {
+  const parsed = parseState(raw ?? null);
+  if (!parsed) return null;
+  const candidates = [
+    parsed.lastSeenAtMs,
+    parsed.updatedAtMs,
+    ...Object.values(parsed.signalTimes ?? {}),
+  ].filter((value): value is number => Number.isFinite(value));
+  if (candidates.length <= 0) return null;
+  return Math.max(...candidates);
+}
+
 /** Purpose: to finite number. */
 function toFiniteNumber(value: unknown): number {
   const num = Number(value ?? 0);

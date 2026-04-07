@@ -53,6 +53,7 @@ export type CwlRotationPlanExport = {
   clanTag: string;
   clanName: string | null;
   version: number;
+  updatedAt: Date;
   rosterSize: number;
   generatedFromRoundDay: number | null;
   excludedPlayerTags: string[];
@@ -898,6 +899,7 @@ export class CwlRotationService {
         clanTag: plan.clanTag,
         clanName,
         version: plan.version,
+        updatedAt: plan.updatedAt,
         rosterSize: plan.rosterSize,
         generatedFromRoundDay: plan.generatedFromRoundDay ?? null,
         excludedPlayerTags: [...plan.excludedPlayerTags],

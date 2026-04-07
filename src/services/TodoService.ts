@@ -1,5 +1,9 @@
 import { CoCService } from "./CoCService";
 import {
+  buildPlayerSignalStateKey,
+  extractSignalStateFreshnessMsFromState,
+} from "./ActivitySignalService";
+import {
   listPlayerLinksForDiscordUser,
   normalizeClanTag,
   normalizePlayerTag,
@@ -50,6 +54,7 @@ type TodoRenderRow = {
   snapshot: TodoSnapshotRecord | null;
   missingSnapshot: boolean;
   staleSnapshot: boolean;
+  displayedFreshnessAtMsByType: Record<TodoType, number | null>;
 };
 
 type TodoEventGroup = {
@@ -101,6 +106,8 @@ type FwaClanMemberTownHallRow = {
 type FwaPlayerCatalogTownHallRow = {
   playerTag: string;
   latestTownHall: number | null;
+  lastSeenAt: Date | null;
+  lastSyncedAt: Date | null;
 };
 
 const DISCORD_DESCRIPTION_LIMIT = 4096;
@@ -223,6 +230,7 @@ export async function buildTodoPagesForUser(input: {
     currentWarRows,
     clanMemberTownHallRows,
     playerCatalogTownHallRows,
+    playerSignalStateRows,
     currentCwlRoundRows,
     currentCwlMemberRows,
     activeCwlPlans,
@@ -265,6 +273,21 @@ export async function buildTodoPagesForUser(input: {
           select: {
             playerTag: true,
             latestTownHall: true,
+            lastSeenAt: true,
+            lastSyncedAt: true,
+          },
+        })
+      : Promise.resolve([]),
+    linkedTags.length > 0
+      ? prisma.botSetting.findMany({
+          where: {
+            key: {
+              in: linkedTags.map((tag) => buildPlayerSignalStateKey(tag)),
+            },
+          },
+          select: {
+            key: true,
+            value: true,
           },
         })
       : Promise.resolve([]),
@@ -279,6 +302,8 @@ export async function buildTodoPagesForUser(input: {
             roundState: true,
             startTime: true,
             endTime: true,
+            sourceUpdatedAt: true,
+            updatedAt: true,
           },
         })
       : Promise.resolve([]),
@@ -291,6 +316,7 @@ export async function buildTodoPagesForUser(input: {
             clanTag: true,
             playerTag: true,
             subbedIn: true,
+            updatedAt: true,
           },
         })
       : Promise.resolve([]),
@@ -340,12 +366,34 @@ export async function buildTodoPagesForUser(input: {
   }
 
   const townHallByPlayerCatalogTag = new Map<string, number>();
+  const latestPlayerCatalogSeenAtByTag = new Map<string, Date>();
   for (const row of playerCatalogTownHallRows as FwaPlayerCatalogTownHallRow[]) {
     const playerTag = normalizePlayerTag(row.playerTag);
     if (!playerTag) continue;
     const townHall = toFiniteIntOrNull(row.latestTownHall);
     if (townHall === null || townHall <= 0) continue;
     townHallByPlayerCatalogTag.set(playerTag, townHall);
+    if (row.lastSeenAt instanceof Date) {
+      const existingSeenAt = latestPlayerCatalogSeenAtByTag.get(playerTag);
+      if (!existingSeenAt || row.lastSeenAt > existingSeenAt) {
+        latestPlayerCatalogSeenAtByTag.set(playerTag, row.lastSeenAt);
+      }
+    }
+  }
+
+  const playerSignalStateList = Array.isArray(playerSignalStateRows)
+    ? playerSignalStateRows
+    : [];
+  const playerSignalStateFreshnessByTag = new Map<string, number>();
+  for (const row of playerSignalStateList as Array<{ key: string; value: string }>) {
+    const playerTag = normalizePlayerTag(String(row.key ?? "").replace(/^player_signal_state:/i, ""));
+    if (!playerTag) continue;
+    const freshnessMs = extractSignalStateFreshnessMsFromState(row.value);
+    if (freshnessMs === null) continue;
+    const existingFreshnessMs = playerSignalStateFreshnessByTag.get(playerTag);
+    if (existingFreshnessMs === undefined || freshnessMs > existingFreshnessMs) {
+      playerSignalStateFreshnessByTag.set(playerTag, freshnessMs);
+    }
   }
 
   const currentCwlRoundByClanTag = new Map<
@@ -358,6 +406,8 @@ export async function buildTodoPagesForUser(input: {
       roundState: string;
       startTime: Date | null;
       endTime: Date | null;
+      sourceUpdatedAt: Date;
+      updatedAt: Date;
     }
   >();
   for (const row of currentCwlRoundList as Array<{
@@ -368,6 +418,8 @@ export async function buildTodoPagesForUser(input: {
     roundState: string;
     startTime: Date | null;
     endTime: Date | null;
+    sourceUpdatedAt: Date;
+    updatedAt: Date;
   }>) {
     const clanTag = normalizeClanTag(row.clanTag);
     if (!clanTag) continue;
@@ -379,6 +431,8 @@ export async function buildTodoPagesForUser(input: {
       roundState: row.roundState,
       startTime: row.startTime ?? null,
       endTime: row.endTime ?? null,
+      sourceUpdatedAt: row.sourceUpdatedAt,
+      updatedAt: row.updatedAt,
     });
   }
 
@@ -388,12 +442,14 @@ export async function buildTodoPagesForUser(input: {
       clanTag: string;
       playerTag: string;
       subbedIn: boolean;
+      updatedAt: Date;
     }
   >();
   for (const row of currentCwlMemberList as Array<{
     clanTag: string;
     playerTag: string;
     subbedIn: boolean;
+    updatedAt: Date;
   }>) {
     const clanTag = normalizeClanTag(row.clanTag);
     const playerTag = normalizePlayerTag(row.playerTag);
@@ -402,6 +458,7 @@ export async function buildTodoPagesForUser(input: {
       clanTag,
       playerTag,
       subbedIn: Boolean(row.subbedIn),
+      updatedAt: row.updatedAt,
     });
   }
 
@@ -410,6 +467,7 @@ export async function buildTodoPagesForUser(input: {
     {
       clanTag: string;
       clanName: string | null;
+      updatedAt: Date;
       days: Array<{
         roundDay: number;
         rows: Array<{
@@ -424,6 +482,7 @@ export async function buildTodoPagesForUser(input: {
   for (const plan of activeCwlPlanList as Array<{
     clanTag: string;
     clanName: string | null;
+    updatedAt: Date;
     days: Array<{
       roundDay: number;
       rows: Array<{
@@ -547,6 +606,38 @@ export async function buildTodoPagesForUser(input: {
       snapshotPlayerName: snapshot?.playerName,
       linkedName: link.linkedName,
     });
+    const warFreshnessCandidates = [
+      resolvedClanTag ? currentWarIdentityByClanTag.get(resolvedClanTag)?.updatedAt.getTime() ?? null : null,
+      trackedWarMember?.attackDetails
+        ? Math.min(
+            ...trackedWarMember.attackDetails
+              .map((detail) => detail.seenAtMs)
+              .filter((value): value is number => Number.isFinite(value)),
+          )
+        : null,
+    ].filter((value): value is number => Number.isFinite(value));
+    const cwlFreshnessCandidates = [
+      resolvedCwlClanTag
+        ? currentCwlRoundByClanTag.get(resolvedCwlClanTag)?.sourceUpdatedAt?.getTime() ?? null
+        : null,
+      resolvedCwlClanTag
+        ? currentCwlRoundByClanTag.get(resolvedCwlClanTag)?.updatedAt?.getTime() ?? null
+        : null,
+      resolvedCwlClanTag && normalizedTag
+        ? currentCwlMemberByClanAndPlayerTag.get(`${resolvedCwlClanTag}:${normalizedTag}`)?.updatedAt?.getTime() ?? null
+        : null,
+      resolvedCwlClanTag ? activeCwlPlanByClanTag.get(resolvedCwlClanTag)?.updatedAt?.getTime() ?? null : null,
+    ].filter((value): value is number => Number.isFinite(value));
+    const raidFreshnessCandidates = [
+      resolvedClanTag
+        ? latestTownHallByClanAndPlayer.get(`${resolvedClanTag}:${normalizedTag}`)?.getTime() ?? null
+        : null,
+      latestTownHallByPlayerTag.get(normalizedTag)?.getTime() ?? null,
+      latestPlayerCatalogSeenAtByTag.get(normalizedTag)?.getTime() ?? null,
+    ].filter((value): value is number => Number.isFinite(value));
+    const gamesFreshnessCandidates = [
+      playerSignalStateFreshnessByTag.get(normalizedTag) ?? null,
+    ].filter((value): value is number => Number.isFinite(value));
     return {
       playerTag: normalizedTag,
       playerName: resolvedPlayerName,
@@ -565,6 +656,12 @@ export async function buildTodoPagesForUser(input: {
       snapshot,
       missingSnapshot,
       staleSnapshot,
+      displayedFreshnessAtMsByType: {
+        WAR: resolveMinimumTimestampMs(warFreshnessCandidates),
+        CWL: resolveMinimumTimestampMs(cwlFreshnessCandidates),
+        RAIDS: resolveMinimumTimestampMs(raidFreshnessCandidates),
+        GAMES: resolveMinimumTimestampMs(gamesFreshnessCandidates),
+      },
     } satisfies TodoRenderRow;
   });
 
@@ -583,33 +680,19 @@ export async function buildTodoPagesForUser(input: {
       .catch(() => undefined);
   }
 
-  const snapshotLastUpdatedAtMs = snapshotVersion.maxUpdatedAtMs;
-  const warView = buildWarPageDescription(
-    renderRows,
-    linkedTags.length,
-    snapshotLastUpdatedAtMs,
-  );
-  const cwlView = buildCwlPageDescription(
-    renderRows,
-    linkedTags.length,
-    snapshotLastUpdatedAtMs,
-  );
+  const warFreshnessAtMs = resolveTodoPageDisplayedDataFreshnessMs(renderRows, "WAR");
+  const cwlFreshnessAtMs = resolveTodoPageDisplayedDataFreshnessMs(renderRows, "CWL");
+  const raidsFreshnessAtMs = resolveTodoPageDisplayedDataFreshnessMs(renderRows, "RAIDS");
+  const gamesFreshnessAtMs = resolveTodoPageDisplayedDataFreshnessMs(renderRows, "GAMES");
+  const warView = buildWarPageDescription(renderRows, linkedTags.length, warFreshnessAtMs);
+  const cwlView = buildCwlPageDescription(renderRows, linkedTags.length, cwlFreshnessAtMs);
   const pages = {
     linkedPlayerCount: linkedTags.length,
     pages: {
       WAR: warView.description,
       CWL: cwlView.description,
-      RAIDS: buildRaidsPageDescription(
-        renderRows,
-        linkedTags.length,
-        snapshotLastUpdatedAtMs,
-      ),
-      GAMES: buildGamesPageDescription(
-        renderRows,
-        linkedTags.length,
-        nowMs,
-        snapshotLastUpdatedAtMs,
-      ),
+      RAIDS: buildRaidsPageDescription(renderRows, linkedTags.length, raidsFreshnessAtMs),
+      GAMES: buildGamesPageDescription(renderRows, linkedTags.length, nowMs, gamesFreshnessAtMs),
     },
     sidebarStateByType: {
       WAR: warView.sidebarState,
@@ -668,7 +751,7 @@ function isSnapshotStale(snapshot: TodoSnapshotRecord, nowMs: number): boolean {
 function buildWarPageDescription(
   rows: TodoRenderRow[],
   linkedPlayerCount: number,
-  snapshotLastUpdatedAtMs: number,
+  displayedFreshnessAtMs: number | null,
 ): { description: string; sidebarState: TodoSidebarState } {
   const activeRows = rows.filter((row) => Boolean(row.snapshot?.warActive));
   const warCompletion = summarizeWarCompletionStatus(activeRows);
@@ -677,7 +760,7 @@ function buildWarPageDescription(
       description: buildTodoPageDescription({
         heading: "WAR",
         linkedPlayerCount,
-        snapshotLastUpdatedAtMs,
+        displayedFreshnessAtMs,
         statusLine: warCompletion.statusLine,
         lines: ["No war active"],
       }),
@@ -705,7 +788,7 @@ function buildWarPageDescription(
     description: buildTodoPageDescription({
       heading: "WAR",
       linkedPlayerCount,
-      snapshotLastUpdatedAtMs,
+      displayedFreshnessAtMs,
       statusLine: warCompletion.statusLine,
       lines,
     }),
@@ -717,7 +800,7 @@ function buildWarPageDescription(
 function buildCwlPageDescription(
   rows: TodoRenderRow[],
   linkedPlayerCount: number,
-  snapshotLastUpdatedAtMs: number,
+  displayedFreshnessAtMs: number | null,
 ): { description: string; sidebarState: TodoSidebarState } {
   const contextRows = rows.filter((row) => hasCwlRenderContext(row));
   if (contextRows.length <= 0) {
@@ -725,7 +808,7 @@ function buildCwlPageDescription(
       description: buildTodoPageDescription({
         heading: "CWL",
         linkedPlayerCount,
-        snapshotLastUpdatedAtMs,
+        displayedFreshnessAtMs,
         statusLine: "CWL Status: 0 / 0 attacks completed",
         lines: ["No CWL active"],
       }),
@@ -751,7 +834,7 @@ function buildCwlPageDescription(
     description: buildTodoPageDescription({
       heading: "CWL",
       linkedPlayerCount,
-      snapshotLastUpdatedAtMs,
+      displayedFreshnessAtMs,
       statusLine: cwlCompletion.statusLine,
       lines,
     }),
@@ -821,14 +904,14 @@ function summarizeCwlCompletionStatus(
 function buildRaidsPageDescription(
   rows: TodoRenderRow[],
   linkedPlayerCount: number,
-  snapshotLastUpdatedAtMs: number,
+  displayedFreshnessAtMs: number | null,
 ): string {
   const hasActive = rows.some((row) => Boolean(row.snapshot?.raidActive));
   if (!hasActive) {
     return buildTodoPageDescription({
       heading: "RAIDS",
       linkedPlayerCount,
-      snapshotLastUpdatedAtMs,
+      displayedFreshnessAtMs,
       lines: ["No raids active"],
     });
   }
@@ -846,7 +929,7 @@ function buildRaidsPageDescription(
   return buildTodoPageDescription({
     heading: "RAIDS",
     linkedPlayerCount,
-    snapshotLastUpdatedAtMs,
+    displayedFreshnessAtMs,
     lines,
   });
 }
@@ -856,7 +939,7 @@ function buildGamesPageDescription(
   rows: TodoRenderRow[],
   linkedPlayerCount: number,
   nowMs: number,
-  snapshotLastUpdatedAtMs: number,
+  displayedFreshnessAtMs: number | null,
 ): string {
   const hasActive = rows.some((row) =>
     isTodoGamesSessionActive(row.snapshot, nowMs),
@@ -878,7 +961,7 @@ function buildGamesPageDescription(
     return buildTodoPageDescription({
       heading: "GAMES",
       linkedPlayerCount,
-      snapshotLastUpdatedAtMs,
+      displayedFreshnessAtMs,
       lines,
     });
   }
@@ -888,7 +971,7 @@ function buildGamesPageDescription(
     return buildTodoPageDescription({
       heading: "GAMES",
       linkedPlayerCount,
-      snapshotLastUpdatedAtMs,
+      displayedFreshnessAtMs,
       lines: buildGamesRewardCollectionLines(rows, rewardCollectionEndsAt),
     });
   }
@@ -897,7 +980,7 @@ function buildGamesPageDescription(
   return buildTodoPageDescription({
     heading: "GAMES",
     linkedPlayerCount,
-    snapshotLastUpdatedAtMs,
+    displayedFreshnessAtMs,
     lines: offCycleLines,
   });
 }
@@ -1101,14 +1184,14 @@ function formatWarPlayerIdentity(row: TodoRenderRow): string {
 function buildTodoPageDescription(input: {
   heading: TodoType;
   linkedPlayerCount: number;
-  snapshotLastUpdatedAtMs: number;
+  displayedFreshnessAtMs: number | null;
   statusLine?: string | null;
   lines: string[];
 }): string {
   const statusLine = sanitizeStatusText(input.statusLine ?? "");
   const lines = [
     `Type: ${input.heading}`,
-    formatTodoSnapshotLegend(input.snapshotLastUpdatedAtMs),
+    formatTodoDisplayedDataLegend(input.displayedFreshnessAtMs),
     statusLine || `Linked players: ${input.linkedPlayerCount}`,
     "",
     ...input.lines,
@@ -1726,11 +1809,32 @@ function formatRelativeTimestamp(input: Date): string {
   return `<t:${Math.floor(input.getTime() / 1000)}:R>`;
 }
 
-/** Purpose: build the shared todo snapshot freshness legend from the authoritative snapshot version timestamp. */
-function formatTodoSnapshotLegend(snapshotLastUpdatedAtMs: number): string {
+/** Purpose: build the shared todo freshness legend from the displayed page data timestamp. */
+function formatTodoDisplayedDataLegend(displayedFreshnessAtMs: number | null): string {
+  if (displayedFreshnessAtMs === null) {
+    return ":hourglass: last updated unknown";
+  }
   return `:hourglass: last updated ${formatRelativeTimestamp(
-    new Date(snapshotLastUpdatedAtMs),
+    new Date(displayedFreshnessAtMs),
   )}`;
+}
+
+/** Purpose: resolve one page-wide freshness timestamp from the per-row displayed-data timestamps. */
+function resolveTodoPageDisplayedDataFreshnessMs(
+  rows: TodoRenderRow[],
+  type: TodoType,
+): number | null {
+  const candidates = rows
+    .map((row) => row.displayedFreshnessAtMsByType[type])
+    .filter((value): value is number => Number.isFinite(value));
+  return resolveMinimumTimestampMs(candidates);
+}
+
+/** Purpose: choose the oldest usable timestamp from one candidate list. */
+function resolveMinimumTimestampMs(values: Array<number | null | undefined>): number | null {
+  const candidates = values.filter((value): value is number => Number.isFinite(value));
+  if (candidates.length <= 0) return null;
+  return candidates.reduce((min, value) => (value < min ? value : min), candidates[0]);
 }
 
 /** Purpose: keep status labels compact and deterministic for embed row rendering. */
