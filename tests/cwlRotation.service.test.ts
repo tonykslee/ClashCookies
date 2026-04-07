@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { FwaClanMembersSyncService } from "../src/services/fwa-feeds/FwaClanMembersSyncService";
 
 const txMock = vi.hoisted(() => ({
   cwlRotationPlan: {
@@ -395,6 +396,14 @@ describe("CwlRotationService", () => {
         isActive: true,
       },
     ]);
+    const refreshSpy = vi
+      .spyOn(FwaClanMembersSyncService.prototype, "refreshCurrentClanMembersForClanTags")
+      .mockResolvedValue({
+        clanCount: 1,
+        rowCount: 3,
+        changedRowCount: 3,
+        failedClans: [],
+      });
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
       {
         clanTag: "#2QG2C08UP",
@@ -405,6 +414,12 @@ describe("CwlRotationService", () => {
       {
         clanTag: "#2QG2C08UP",
         playerTag: "#BBB",
+        playerName: "Charlie",
+        role: "coLeader",
+      },
+      {
+        clanTag: "#2QG2C08UP",
+        playerTag: "#CCC",
         playerName: "Bravo",
         role: "coLeader",
       },
@@ -444,15 +459,89 @@ describe("CwlRotationService", () => {
       currentState: "preparation",
     });
 
-    const overview = await cwlRotationService.listOverview({ season: "2026-04" });
+    const overview = await cwlRotationService.listOverview({
+      season: "2026-04",
+      refreshLeadershipMembers: true,
+    });
+    expect(refreshSpy).toHaveBeenCalledWith(["#2QG2C08UP"]);
     expect(overview).toEqual([
       expect.objectContaining({
         clanTag: "#2QG2C08UP",
         clanName: "CWL Alpha",
         roundDay: 2,
         battleDayStartAt: new Date("2026-04-03T12:00:00.000Z"),
-        leaderNames: ["Alpha", "Bravo"],
+        leaderNames: ["Alpha", "Bravo", "Charlie"],
         status: "complete",
+      }),
+    ]);
+  });
+
+  it("falls back to unknown leadership names when targeted refresh fails", async () => {
+    prismaMock.cwlRotationPlan.findMany.mockResolvedValue([
+      {
+        id: "plan-1",
+        clanTag: "#2QG2C08UP",
+        season: "2026-04",
+        version: 2,
+        isActive: true,
+      },
+    ]);
+    vi.spyOn(FwaClanMembersSyncService.prototype, "refreshCurrentClanMembersForClanTags").mockResolvedValue({
+      clanCount: 1,
+      rowCount: 0,
+      changedRowCount: 0,
+      failedClans: ["#2QG2C08UP"],
+    });
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: "#2QG2C08UP",
+        playerTag: "#AAA",
+        playerName: "Alpha",
+        role: "leader",
+      },
+    ]);
+    vi.spyOn(cwlStateService, "getCurrentRoundForClan").mockResolvedValue({
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      clanName: "CWL Alpha",
+      roundDay: 2,
+      roundState: "preparation",
+      opponentTag: "#OPP1",
+      opponentName: "Opponent One",
+      teamSize: 15,
+      attacksPerMember: 1,
+      preparationStartTime: new Date("2026-04-03T12:00:00.000Z"),
+      startTime: new Date("2026-04-03T12:00:00.000Z"),
+      endTime: new Date("2026-04-04T12:00:00.000Z"),
+      sourceUpdatedAt: new Date("2026-04-03T00:00:00.000Z"),
+      members: [],
+    });
+    vi.spyOn(cwlRotationService, "getPreferredDisplayDay").mockResolvedValue(2);
+    vi.spyOn(cwlStateService, "getBattleDayStartForClanDay").mockResolvedValue(
+      new Date("2026-04-03T12:00:00.000Z"),
+    );
+    vi.spyOn(cwlRotationService, "validatePlanDay").mockResolvedValue({
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      roundDay: 2,
+      plannedPlayerTags: ["#AAA"],
+      plannedPlayerNames: ["Alpha"],
+      actualPlayerTags: ["#AAA"],
+      actualPlayerNames: ["Alpha"],
+      missingExpectedPlayerTags: [],
+      extraActualPlayerTags: [],
+      complete: true,
+      actualAvailable: true,
+      currentState: "preparation",
+    });
+
+    const overview = await cwlRotationService.listOverview({
+      season: "2026-04",
+      refreshLeadershipMembers: true,
+    });
+    expect(overview).toEqual([
+      expect.objectContaining({
+        leaderNames: [],
       }),
     ]);
   });
