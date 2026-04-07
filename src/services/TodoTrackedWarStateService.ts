@@ -24,6 +24,7 @@ export type TodoTrackedWarAttackRow = {
 export type TodoTrackedWarAttackDetail = {
   defenderPosition: number | null;
   stars: number | null;
+  seenAtMs: number;
 };
 
 export type TodoTrackedWarMemberState = {
@@ -121,10 +122,11 @@ export function buildTrackedWarMemberStateByClanAndPlayer(input: {
         return a.seenAtMs - b.seenAtMs;
       })
       .slice(0, 2)
-      .map((detail) => ({
-        defenderPosition: detail.defenderPosition,
-        stars: detail.stars,
-      }));
+        .map((detail) => ({
+          defenderPosition: detail.defenderPosition,
+          stars: detail.stars,
+          seenAtMs: detail.seenAtMs,
+        }));
     const attacksUsed = Math.max(
       value.attacksUsed,
       Math.min(2, orderedAttackDetails.length),
