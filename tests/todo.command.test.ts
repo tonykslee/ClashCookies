@@ -557,6 +557,53 @@ describe("/todo command", () => {
     expect(description).toContain(":black_circle: Bravo - `0 / 0`");
   });
 
+  it("forwards refreshTrackedCwlStateFirst through the bounded initial CWL /todo refresh", async () => {
+    const trackedRefreshSpy = vi
+      .spyOn(cwlStateService, "refreshTrackedCwlStateForPlayerTags")
+      .mockResolvedValue({
+        season: "2026-03",
+        trackedClanCount: 0,
+        refreshedClanCount: 0,
+        currentRoundCount: 0,
+        currentMemberCount: 0,
+        historyRoundCount: 0,
+        historyMemberCount: 0,
+      });
+    const refreshSpy = vi
+      .spyOn(todoSnapshotService, "refreshSnapshotsForPlayerTags")
+      .mockResolvedValue({ playerCount: 1, updatedCount: 1 });
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },
+    ]);
+    prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
+      _count: { _all: 1 },
+      _max: { updatedAt: new Date("2026-03-26T00:00:00.000Z") },
+    });
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      makeSnapshotRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha",
+        cwlAttacksUsed: 0,
+        cwlPhase: "preparation",
+      }),
+    ]);
+
+    const interaction = makeTodoInteraction({ type: "CWL" });
+    await Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
+
+    expect(trackedRefreshSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        playerTags: ["#PYLQ0289"],
+        cocService: expect.anything(),
+      }),
+    );
+    expect(refreshSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        includeNonTrackedCwlRefresh: true,
+      }),
+    );
+  });
+
   it("opens no-arg /todo on the remembered page when one exists", async () => {
     vi.spyOn(todoLastViewedTypeService, "getLastViewedType").mockResolvedValue("RAIDS");
     prismaMock.playerLink.findMany.mockResolvedValue([

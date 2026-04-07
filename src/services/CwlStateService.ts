@@ -122,6 +122,16 @@ export type RefreshTrackedCwlStateResult = {
   historyMemberCount: number;
 };
 
+export type RefreshSeasonalCwlClanMappingsResult = {
+  season: string;
+  playerCount: number;
+  existingMappingCount: number;
+  persistedEvidenceCount: number;
+  liveEvidenceCount: number;
+  learnedClanCount: number;
+  failedClanCount: number;
+};
+
 type ObservedCwlRoundMember = {
   playerTag: string;
   playerName: string;
@@ -215,6 +225,41 @@ function resolvePhaseEndsAt(input: {
   if (state.includes("preparation")) return input.startTime;
   if (state.includes("inwar")) return input.endTime;
   return input.endTime;
+}
+
+function normalizeLiveCwlRoundState(input: unknown): string {
+  const value = String(input ?? "").trim();
+  return value.length > 0 ? value : "notInWar";
+}
+
+function scoreLiveCwlRoundState(state: string): number {
+  const normalized = state.toLowerCase();
+  if (normalized.includes("inwar")) return 2;
+  if (normalized.includes("preparation")) return 1;
+  return 0;
+}
+
+function resolveLiveCwlSide(
+  clanTag: string,
+  war: ClanWar,
+): { clanName: string | null; members: ClanWarMember[] } | null {
+  const normalizedClanTag = normalizeClanTag(clanTag);
+  const warClanTag = normalizeClanTag(String(war.clan?.tag ?? ""));
+  const warOpponentTag = normalizeClanTag(String(war.opponent?.tag ?? ""));
+
+  if (warClanTag === normalizedClanTag && war.clan) {
+    return {
+      clanName: sanitizeCwlName(war.clan.name) || null,
+      members: Array.isArray(war.clan.members) ? war.clan.members : [],
+    };
+  }
+  if (warOpponentTag === normalizedClanTag && war.opponent) {
+    return {
+      clanName: sanitizeCwlName(war.opponent.name) || null,
+      members: Array.isArray(war.opponent.members) ? war.opponent.members : [],
+    };
+  }
+  return null;
 }
 
 type CwlActualLineupOwner = {
@@ -718,6 +763,312 @@ async function loadObservedTrackedClanState(input: {
 
 /** Purpose: persist tracked CWL current/prep rounds, ended history, and derived season-roster summaries from CoC. */
 export class CwlStateService {
+  /** Purpose: refresh persisted seasonal CWL clan mappings for bounded player tags. */
+  async refreshSeasonalCwlClanMappingsForPlayerTags(input: {
+    cocService?: CoCService;
+    playerTags: string[];
+    season?: string;
+    candidateClanTags?: string[];
+  }): Promise<RefreshSeasonalCwlClanMappingsResult> {
+    const season = input.season ?? resolveCurrentCwlSeasonKey();
+    const normalizedTags = [...new Set(normalizePlayerTags(input.playerTags))];
+    if (normalizedTags.length <= 0) {
+      return {
+        season,
+        playerCount: 0,
+        existingMappingCount: 0,
+        persistedEvidenceCount: 0,
+        liveEvidenceCount: 0,
+        learnedClanCount: 0,
+        failedClanCount: 0,
+      };
+    }
+
+    const existingMappings = await prisma.cwlPlayerClanSeason.findMany({
+      where: {
+        season,
+        playerTag: { in: normalizedTags },
+      },
+      select: {
+        playerTag: true,
+        cwlClanTag: true,
+      },
+    });
+    const mappingByPlayerTag = new Map(
+      existingMappings
+        .map((row) => [
+          normalizePlayerTag(row.playerTag),
+          normalizeClanTag(row.cwlClanTag),
+        ] as const)
+        .filter((entry): entry is [string, string] => Boolean(entry[0] && entry[1])),
+    );
+
+    const directEvidenceRows = await Promise.all([
+      prisma.cwlRoundMemberCurrent.findMany({
+        where: {
+          season,
+          playerTag: { in: normalizedTags },
+        },
+        select: {
+          playerTag: true,
+          clanTag: true,
+          playerName: true,
+          townHall: true,
+          roundDay: true,
+        },
+      }),
+      prisma.cwlRoundMemberHistory.findMany({
+        where: {
+          season,
+          playerTag: { in: normalizedTags },
+        },
+        select: {
+          playerTag: true,
+          clanTag: true,
+          playerName: true,
+          townHall: true,
+          roundDay: true,
+        },
+        orderBy: [{ roundDay: "desc" }, { updatedAt: "desc" }, { playerTag: "asc" }],
+      }),
+    ]);
+
+    const trackedClanRows = await prisma.cwlTrackedClan.findMany({
+      where: { season },
+      select: { tag: true },
+    });
+    const trackedClanTagSet = new Set(
+      trackedClanRows.map((row) => normalizeClanTag(row.tag)).filter(Boolean),
+    );
+
+    const evidenceByPlayerTag = new Map<
+      string,
+      {
+        clanTag: string;
+        playerName: string | null;
+        townHall: number | null;
+        roundDay: number | null;
+        source: "current" | "history";
+        sourceRank: number;
+      }
+    >();
+    for (const row of directEvidenceRows[0]) {
+      const playerTag = normalizePlayerTag(row.playerTag);
+      const clanTag = normalizeClanTag(row.clanTag);
+      if (!playerTag || !clanTag) continue;
+      const next = {
+        clanTag,
+        playerName: sanitizeCwlName(row.playerName) ?? playerTag,
+        townHall: Number.isFinite(Number(row.townHall))
+          ? Math.trunc(Number(row.townHall))
+          : null,
+        roundDay: Number.isFinite(Number(row.roundDay))
+          ? Math.trunc(Number(row.roundDay))
+          : null,
+        source: "current" as const,
+        sourceRank: 2,
+      };
+      const existing = evidenceByPlayerTag.get(playerTag);
+      if (
+        !existing ||
+        next.sourceRank > existing.sourceRank ||
+        (next.sourceRank === existing.sourceRank &&
+          (next.roundDay ?? 0) >= (existing.roundDay ?? 0))
+      ) {
+        evidenceByPlayerTag.set(playerTag, next);
+      }
+    }
+    for (const row of directEvidenceRows[1]) {
+      const playerTag = normalizePlayerTag(row.playerTag);
+      const clanTag = normalizeClanTag(row.clanTag);
+      if (!playerTag || !clanTag) continue;
+      const next = {
+        clanTag,
+        playerName: sanitizeCwlName(row.playerName) ?? playerTag,
+        townHall: Number.isFinite(Number(row.townHall))
+          ? Math.trunc(Number(row.townHall))
+          : null,
+        roundDay: Number.isFinite(Number(row.roundDay))
+          ? Math.trunc(Number(row.roundDay))
+          : null,
+        source: "history" as const,
+        sourceRank: 1,
+      };
+      const existing = evidenceByPlayerTag.get(playerTag);
+      if (
+        !existing ||
+        next.sourceRank > existing.sourceRank ||
+        (next.sourceRank === existing.sourceRank &&
+          (next.roundDay ?? 0) >= (existing.roundDay ?? 0))
+      ) {
+        evidenceByPlayerTag.set(playerTag, next);
+      }
+    }
+
+    const candidateClanTags = [
+      ...new Set(
+        (input.candidateClanTags ?? [])
+          .map((tag) => normalizeClanTag(tag))
+          .filter(
+            (tag): tag is string => Boolean(tag && !trackedClanTagSet.has(tag)),
+          ),
+      ),
+    ];
+
+    const liveEvidenceByPlayerTag = new Map<
+      string,
+      {
+        clanTag: string;
+        playerName: string | null;
+        townHall: number | null;
+        roundDay: number | null;
+        sourceRank: number;
+      }
+    >();
+    const remainingPlayerTags = normalizedTags.filter(
+      (playerTag) => !mappingByPlayerTag.has(playerTag) && !evidenceByPlayerTag.has(playerTag),
+    );
+    const liveDiscoveryRan = Boolean(
+      input.cocService && candidateClanTags.length > 0 && remainingPlayerTags.length > 0,
+    );
+    const cocService = input.cocService ?? null;
+    if (liveDiscoveryRan && cocService) {
+      const targetPlayerTagSet = new Set(remainingPlayerTags);
+      for (const clanTag of candidateClanTags) {
+        let group: ClanWarLeagueGroup | null = null;
+        try {
+          group = await cocService.getClanWarLeagueGroup(clanTag);
+        } catch (error) {
+          console.warn(
+            `[cwl-mapping] season=${season} clan_tag=${clanTag} stage=group_fetch_failed error=${formatError(error)}`,
+          );
+          continue;
+        }
+
+        const rounds = Array.isArray(group?.rounds) ? [...group.rounds].reverse() : [];
+        for (const round of rounds) {
+          const warTags = [
+            ...new Set(
+              (Array.isArray(round?.warTags) ? round.warTags : [])
+                .map((warTag) => String(warTag ?? "").trim())
+                .filter((warTag) => warTag.length > 0 && warTag !== "#0"),
+            ),
+          ];
+          if (warTags.length <= 0) continue;
+
+          for (const warTag of warTags) {
+            const war = await cocService.getClanWarLeagueWar(warTag).catch(() => null);
+            if (!war) continue;
+            const side = resolveLiveCwlSide(clanTag, war);
+            if (!side) continue;
+            const roundState = normalizeLiveCwlRoundState(war.state);
+            const roundScore = scoreLiveCwlRoundState(roundState);
+            if (roundScore <= 0) continue;
+
+            for (const member of side.members) {
+              const playerTag = normalizePlayerTag(String(member?.tag ?? ""));
+              if (!playerTag || !targetPlayerTagSet.has(playerTag)) continue;
+              const existing = liveEvidenceByPlayerTag.get(playerTag);
+              if (!existing || roundScore > existing.sourceRank) {
+                liveEvidenceByPlayerTag.set(playerTag, {
+                  clanTag: normalizeClanTag(clanTag),
+                  playerName: sanitizeCwlName(member?.name) ?? playerTag,
+                  townHall: Number.isFinite(Number(member?.townhallLevel))
+                    ? Math.trunc(Number(member?.townhallLevel))
+                    : null,
+                  roundDay: null,
+                  sourceRank: roundScore,
+                });
+              }
+            }
+
+            const remaining = [...targetPlayerTagSet].filter(
+              (playerTag) =>
+                !mappingByPlayerTag.has(playerTag) &&
+                !evidenceByPlayerTag.has(playerTag) &&
+                !liveEvidenceByPlayerTag.has(playerTag),
+            );
+            if (remaining.length <= 0) break;
+          }
+        }
+      }
+    }
+
+    let learnedClanCount = 0;
+    let persistedEvidenceCount = 0;
+    let liveEvidenceCount = 0;
+    await prisma.$transaction(async (tx) => {
+      for (const playerTag of normalizedTags) {
+        const hadExistingMapping = mappingByPlayerTag.has(playerTag);
+        if (hadExistingMapping) {
+          console.info(
+            `[cwl-mapping] season=${season} player_tag=${playerTag} existing_mapping=yes live_discovery_ran=${liveDiscoveryRan ? "yes" : "no"} learned_clan=no source=existing_mapping`,
+          );
+          continue;
+        }
+
+        const persistedClanTag = evidenceByPlayerTag.get(playerTag)?.clanTag ?? "";
+        const liveClanTag = liveEvidenceByPlayerTag.get(playerTag)?.clanTag ?? "";
+        const clanTag = normalizeClanTag(persistedClanTag || liveClanTag);
+        if (!clanTag) {
+          console.info(
+            `[cwl-mapping] season=${season} player_tag=${playerTag} existing_mapping=no live_discovery_ran=${liveDiscoveryRan ? "yes" : "no"} learned_clan=no source=${persistedClanTag ? "persisted" : liveClanTag ? "live" : "none"}`,
+          );
+          continue;
+        }
+        const evidence =
+          evidenceByPlayerTag.get(playerTag) ?? liveEvidenceByPlayerTag.get(playerTag) ?? null;
+
+        if (persistedClanTag) {
+          persistedEvidenceCount += 1;
+        } else if (liveClanTag) {
+          liveEvidenceCount += 1;
+        }
+
+        await tx.cwlPlayerClanSeason.upsert({
+          where: {
+            season_playerTag: {
+              season,
+              playerTag,
+            },
+          },
+          create: {
+            season,
+            playerTag,
+            cwlClanTag: clanTag,
+            playerName: evidence?.playerName ?? playerTag,
+            townHall: evidence?.townHall ?? null,
+            daysParticipated: 0,
+            lastRoundDay: null,
+          },
+          update: {
+            cwlClanTag: clanTag,
+            playerName: evidence?.playerName ?? playerTag,
+            townHall: evidence?.townHall ?? null,
+          },
+        });
+        learnedClanCount += 1;
+        console.info(
+          `[cwl-mapping] season=${season} player_tag=${playerTag} existing_mapping=no live_discovery_ran=${liveDiscoveryRan ? "yes" : "no"} learned_clan=yes clan_tag=${clanTag} source=${persistedClanTag ? "persisted" : "live"}`,
+        );
+      }
+    });
+
+    console.info(
+      `[cwl-mapping] season=${season} requested_player_count=${normalizedTags.length} existing_mapping_count=${mappingByPlayerTag.size} persisted_evidence_count=${persistedEvidenceCount} live_evidence_count=${liveEvidenceCount} learned_clan_count=${learnedClanCount} candidate_clan_count=${candidateClanTags.length}`,
+    );
+
+    return {
+      season,
+      playerCount: normalizedTags.length,
+      existingMappingCount: mappingByPlayerTag.size,
+      persistedEvidenceCount,
+      liveEvidenceCount,
+      learnedClanCount,
+      failedClanCount: 0,
+    };
+  }
+
   /** Purpose: refresh tracked CWL state only for clans associated with one linked player set. */
   async refreshTrackedCwlStateForPlayerTags(input: {
     cocService: CoCService;

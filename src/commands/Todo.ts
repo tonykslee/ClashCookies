@@ -180,6 +180,7 @@ async function tryBoundedInitialTodoRefresh(input: {
     discordUserId: input.discordUserId,
     cocService: input.cocService,
     includeNonTrackedCwlRefresh: input.includeNonTrackedCwlRefresh,
+    refreshTrackedCwlStateFirst: input.refreshTrackedCwlStateFirst,
   })
     .then(
       (): TodoInitialRefreshOutcome => ({
