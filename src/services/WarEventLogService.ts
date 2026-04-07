@@ -125,6 +125,13 @@ function buildNotifyEventContextLine(
   return `War ended against ${opponentName}`;
 }
 
+function shouldSuppressBattleDayNotifyRoleMention(
+  eventType: EventType,
+  pointsNeedsValidation: boolean | null | undefined,
+): boolean {
+  return eventType === "battle_day" && pointsNeedsValidation === true;
+}
+
 function buildNotifyEventPostedContent(params: {
   eventType: EventType;
   opponentName: string | null | undefined;
@@ -172,16 +179,18 @@ function buildBattleDayRefreshEditPayload(
   existingPostedContent: string | null | undefined,
   opponentName: string | null | undefined,
   nowMs?: number,
+  includeRoleMention = true,
 ): { content: string; allowedMentions: { parse: [] } } {
   const persistedMentionRoleId = extractPostedNotifyMentionRoleId(
-    existingPostedContent,
+    includeRoleMention ? existingPostedContent : null,
   );
   return {
     content: buildNotifyEventPostedContent({
       eventType: "battle_day",
       opponentName,
       notifyRoleId: persistedMentionRoleId,
-      includeRoleMention: Boolean(persistedMentionRoleId),
+      includeRoleMention:
+        includeRoleMention && Boolean(persistedMentionRoleId),
       nowMs,
       nextScheduledRefreshAtMs: getNextNotifyRefreshAtMs(),
     }),
@@ -785,6 +794,7 @@ type EventEmitPayload = {
   attacksPerMember: number | null;
   clanDestruction: number | null;
   opponentDestruction: number | null;
+  pointsNeedsValidation?: boolean | null;
   resolvedWarIdHint?: number | null;
   testFinalResultOverride?: WarEndResultSnapshot | null;
 };
@@ -2207,7 +2217,13 @@ export class WarEventLogService {
     const includeEventComponents = options?.includeEventComponents ?? true;
     const warId = options?.warId ?? null;
     const roleId = normalizeNotifyRoleId(payload.notifyRole);
-    const includeRoleMentionForPost = includeRoleMention && payload.pingRole;
+    const includeRoleMentionForPost =
+      includeRoleMention &&
+      payload.pingRole &&
+      !shouldSuppressBattleDayNotifyRoleMention(
+        payload.eventType,
+        payload.pointsNeedsValidation,
+      );
     const content = buildNotifyEventPostedContent({
       eventType: payload.eventType,
       opponentName: payload.opponentName,
@@ -3079,6 +3095,7 @@ export class WarEventLogService {
           syncNumber: syncNumberForEvent,
           notifyRole: sub.notifyRole,
           pingRole: sub.pingRole,
+          pointsNeedsValidation: sub.pointsNeedsValidation,
           fwaPoints: nextFwaPoints,
           opponentFwaPoints: nextOpponentFwaPoints,
           outcome: normalizeOutcome(nextOutcome),
@@ -4292,6 +4309,7 @@ export class WarEventLogService {
       opponentTag: nextOpponentTag,
       opponentName: nextOpponentName,
       syncNumber,
+      pointsNeedsValidation: refreshedSub.pointsNeedsValidation,
       notifyRole: refreshedSub.notifyRole,
       pingRole: refreshedSub.pingRole,
       fwaPoints: refreshedSub.fwaPoints,
@@ -4345,6 +4363,10 @@ export class WarEventLogService {
         String(message.content ?? ""),
         payload.opponentName,
         Date.now(),
+        !shouldSuppressBattleDayNotifyRoleMention(
+          payload.eventType,
+          payload.pointsNeedsValidation,
+        ),
       );
       await message.edit({
         content: refreshEditPayload.content,
@@ -4522,6 +4544,7 @@ export class WarEventLogService {
           war.opponent?.name ?? refreshedSub.opponentName ?? "Unknown",
         ).trim() || "Unknown",
       syncNumber,
+      pointsNeedsValidation: refreshedSub.pointsNeedsValidation,
       notifyRole: refreshedSub.notifyRole,
       pingRole: refreshedSub.pingRole,
       fwaPoints: refreshedSub.fwaPoints,
@@ -4571,6 +4594,10 @@ export class WarEventLogService {
       String(message.content ?? ""),
       payload.opponentName,
       Date.now(),
+      !shouldSuppressBattleDayNotifyRoleMention(
+        payload.eventType,
+        payload.pointsNeedsValidation,
+      ),
     );
     await message.edit({
       content: refreshEditPayload.content,
