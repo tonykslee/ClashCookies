@@ -1,6 +1,7 @@
 import {
   ActionRowBuilder,
   ApplicationCommandOptionType,
+  AutocompleteInteraction,
   ChatInputCommandInteraction,
   Client,
   EmbedBuilder,
@@ -28,7 +29,10 @@ import {
 } from "../services/CommandPermissionService";
 import { SettingsService } from "../services/SettingsService";
 import { trackedMessageService } from "../services/TrackedMessageService";
-import { normalizeSyncTimeZone } from "../services/syncTimeZone";
+import {
+  autocompleteSyncTimeZones,
+  normalizeSyncTimeZone,
+} from "../services/syncTimeZone";
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_PATTERN = /^\d{1,2}:\d{2}$/;
@@ -992,6 +996,13 @@ export const Post: Command = {
               type: ApplicationCommandOptionType.Role,
               required: false,
             },
+            {
+              name: "timezone",
+              description: "IANA timezone to prefill the modal",
+              type: ApplicationCommandOptionType.String,
+              required: false,
+              autocomplete: true,
+            },
           ],
         },
       ],
@@ -1056,6 +1067,7 @@ export const Post: Command = {
 
     const settings = new SettingsService();
     const role = interaction.options.getRole("role", false);
+    const timezoneSeedRaw = interaction.options.getString("timezone", false)?.trim() ?? null;
 
     const rememberedTimeZoneRaw = await settings.get(userTimeZoneKey(interaction.user.id));
     const rememberedTimeZone = normalizeSyncTimeZone(rememberedTimeZoneRaw);
@@ -1069,7 +1081,8 @@ export const Post: Command = {
     const rememberedRoleId = await settings.get(guildSyncRoleKey(interaction.guildId));
     const defaultLeaderRoleId =
       (await settings.get(`${FWA_LEADER_ROLE_SETTING_KEY}:${interaction.guildId}`)) ?? "";
-    const initialTimeZone = rememberedTimeZone ?? "UTC";
+    const providedTimeZone = normalizeSyncTimeZone(timezoneSeedRaw);
+    const initialTimeZone = providedTimeZone ?? rememberedTimeZone ?? "UTC";
     const defaults = getEffectiveDefaults(initialTimeZone);
     const initialRoleId = role?.id ?? rememberedRoleId ?? defaultLeaderRoleId ?? "";
 
@@ -1113,6 +1126,18 @@ export const Post: Command = {
     );
 
     await interaction.showModal(modal);
+  },
+  autocomplete: async (interaction: AutocompleteInteraction) => {
+    const subcommandGroup = interaction.options.getSubcommandGroup(false);
+    const subcommand = interaction.options.getSubcommand(false);
+    const focused = interaction.options.getFocused(true);
+
+    if (!(subcommandGroup === "time" && subcommand === "post" && focused.name === "timezone")) {
+      await interaction.respond([]);
+      return;
+    }
+
+    await interaction.respond(autocompleteSyncTimeZones(String(focused.value ?? "")));
   },
 };
 
