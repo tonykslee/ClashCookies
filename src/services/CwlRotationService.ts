@@ -3,6 +3,7 @@ import { prisma } from "../prisma";
 import { resolveCurrentCwlSeasonKey } from "./CwlRegistryService";
 import { cwlStateService, type CwlActualLineup, type CwlSeasonRosterEntry } from "./CwlStateService";
 import { normalizeClanTag, normalizePlayerTag } from "./PlayerLinkService";
+import { FwaClanMembersSyncService } from "./fwa-feeds/FwaClanMembersSyncService";
 
 type CwlRotationPlanPlayerRow = {
   playerTag: string;
@@ -165,6 +166,8 @@ function normalizeClanMemberRole(input: unknown): "leader" | "coleader" | null {
   if (normalized === "coleader") return "coleader";
   return null;
 }
+
+const fwaClanMembersSyncService = new FwaClanMembersSyncService();
 
 function compareRosterEntries(
   a: CwlSeasonRosterEntry,
@@ -999,6 +1002,7 @@ export class CwlRotationService {
   /** Purpose: summarize current-day plan-vs-actual status across all active CWL rotation plans. */
   async listOverview(input?: {
     season?: string;
+    refreshLeadershipMembers?: boolean;
   }): Promise<CwlRotationOverviewEntry[]> {
     const season = input?.season ?? resolveCurrentCwlSeasonKey();
     const activePlans = await prisma.cwlRotationPlan.findMany({
@@ -1013,6 +1017,30 @@ export class CwlRotationService {
     for (const plan of activePlans) {
       if (!uniquePlans.has(plan.clanTag)) {
         uniquePlans.set(plan.clanTag, plan);
+      }
+    }
+
+    const failedLeadershipClanTags = new Set<string>();
+    if (input?.refreshLeadershipMembers && clanTags.length > 0) {
+      try {
+        const refreshResult = await fwaClanMembersSyncService.refreshCurrentClanMembersForClanTags(
+          clanTags,
+        );
+        for (const clanTag of refreshResult.failedClans) {
+          failedLeadershipClanTags.add(clanTag);
+        }
+        console.info(
+          `[cwl] overview leadership refresh requested=${refreshResult.clanCount} rows=${refreshResult.rowCount} changed=${refreshResult.changedRowCount} failed=${refreshResult.failedClans.length}`,
+        );
+      } catch (error) {
+        for (const clanTag of clanTags) {
+          failedLeadershipClanTags.add(clanTag);
+        }
+        console.warn(
+          `[cwl] overview leadership refresh failed requested=${clanTags.length} error=${String(
+            (error as { message?: unknown })?.message ?? error,
+          ).slice(0, 200)}`,
+        );
       }
     }
 
@@ -1070,6 +1098,14 @@ export class CwlRotationService {
 
     const entries: CwlRotationOverviewEntry[] = [];
     for (const plan of uniquePlans.values()) {
+      const refreshFailed = failedLeadershipClanTags.has(plan.clanTag);
+      const leaderRowsForClan = leaderRowsByClanTag.get(plan.clanTag) ?? [];
+      const leaderNames = refreshFailed ? [] : leaderNamesByClanTag.get(plan.clanTag) ?? [];
+      if (input?.refreshLeadershipMembers) {
+        console.info(
+          `[cwl] overview leadership clan=${plan.clanTag} persisted_rows=${leaderRowsForClan.length} refresh_failed=${refreshFailed ? "yes" : "no"}`,
+        );
+      }
       const [currentRound, preferredDay] = await Promise.all([
         cwlStateService.getCurrentRoundForClan({
           clanTag: plan.clanTag,
@@ -1088,7 +1124,7 @@ export class CwlRotationService {
           version: plan.version,
           roundDay: null,
           battleDayStartAt: null,
-          leaderNames: leaderNamesByClanTag.get(plan.clanTag) ?? [],
+          leaderNames,
           status: "no_active_round",
           missingExpectedPlayerTags: [],
           extraActualPlayerTags: [],
@@ -1116,7 +1152,7 @@ export class CwlRotationService {
           version: plan.version,
           roundDay: targetRoundDay,
           battleDayStartAt,
-          leaderNames: leaderNamesByClanTag.get(plan.clanTag) ?? [],
+          leaderNames,
           status: "no_plan_day",
           missingExpectedPlayerTags: [],
           extraActualPlayerTags: [],
@@ -1130,7 +1166,7 @@ export class CwlRotationService {
         version: plan.version,
         roundDay: targetRoundDay,
         battleDayStartAt,
-        leaderNames: leaderNamesByClanTag.get(plan.clanTag) ?? [],
+        leaderNames,
         status: validation.complete ? "complete" : "mismatch",
         missingExpectedPlayerTags: validation.missingExpectedPlayerTags,
         extraActualPlayerTags: validation.extraActualPlayerTags,

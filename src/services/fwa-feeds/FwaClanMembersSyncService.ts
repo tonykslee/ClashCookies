@@ -2,10 +2,11 @@ import type { FwaFeedType } from "@prisma/client";
 import { prisma } from "../../prisma";
 import { computeFeedContentHash } from "./hash";
 import { normalizeFwaTag } from "./normalize";
+import { CoCService } from "../CoCService";
 import { FwaStatsClient } from "./FwaStatsClient";
 import { FwaFeedSyncStateService } from "./FwaFeedSyncStateService";
 import { mapWithConcurrency } from "./concurrency";
-import { normalizePersistedPlayerName } from "../PlayerLinkService";
+import { normalizePersistedPlayerName, normalizePlayerTag } from "../PlayerLinkService";
 import type { FwaSyncResult } from "./types";
 
 type SyncOptions = {
@@ -21,6 +22,134 @@ export class FwaClanMembersSyncService {
 
   /** Purpose: initialize members-sync dependencies. */
   constructor(private readonly client = new FwaStatsClient()) {}
+
+  /** Purpose: refresh current clan-member rows from CoC for one or more clan tags. */
+  async refreshCurrentClanMembersForClanTags(
+    clanTags: string[],
+    options?: { cocService?: CoCService; concurrency?: number; now?: Date },
+  ): Promise<{
+    clanCount: number;
+    rowCount: number;
+    changedRowCount: number;
+    failedClans: string[];
+  }> {
+    const normalizedClanTags = [...new Set(clanTags.map((tag) => normalizeFwaTag(tag)).filter(Boolean))];
+    const concurrency = Math.max(1, Math.trunc(options?.concurrency ?? 4));
+    const cocService = options?.cocService ?? new CoCService();
+    const now = options?.now ?? new Date();
+    console.info(
+      `[fwa-feed] cwl_overview_current_members_refresh requested clan_count=${normalizedClanTags.length}`,
+    );
+    const results = await mapWithConcurrency(normalizedClanTags, concurrency, async (clanTag) => {
+      try {
+        const clan = await cocService.getClan(clanTag);
+        const members = Array.isArray(clan?.members) ? clan.members : [];
+        const result = await prisma.$transaction(async (tx) => {
+          const playerTags = members
+            .map((row: any) => normalizePlayerTag(String((row as { tag?: unknown })?.tag ?? "")))
+            .filter(Boolean);
+          const staleDelete = await tx.fwaClanMemberCurrent.deleteMany({
+            where: {
+              clanTag,
+              ...(playerTags.length > 0 ? { playerTag: { notIn: playerTags } } : {}),
+            },
+          });
+          for (const row of members) {
+            const playerTag = normalizePlayerTag(String((row as { tag?: unknown })?.tag ?? ""));
+            if (!playerTag) continue;
+            const playerName =
+              normalizePersistedPlayerName(String((row as { name?: unknown })?.name ?? "")) ??
+              playerTag;
+            const role = String((row as { role?: unknown })?.role ?? "").trim() || null;
+            const level = Number.isFinite(Number((row as { expLevel?: unknown })?.expLevel))
+              ? Math.trunc(Number((row as { expLevel?: unknown })?.expLevel))
+              : null;
+            const donated = Number.isFinite(Number((row as { donations?: unknown })?.donations))
+              ? Math.trunc(Number((row as { donations?: unknown })?.donations))
+              : null;
+            const received = Number.isFinite(
+              Number((row as { donationsReceived?: unknown })?.donationsReceived),
+            )
+              ? Math.trunc(Number((row as { donationsReceived?: unknown })?.donationsReceived))
+              : null;
+            const rank = Number.isFinite(Number((row as { clanRank?: unknown })?.clanRank))
+              ? Math.trunc(Number((row as { clanRank?: unknown })?.clanRank))
+              : null;
+            const trophies = Number.isFinite(Number((row as { trophies?: unknown })?.trophies))
+              ? Math.trunc(Number((row as { trophies?: unknown })?.trophies))
+              : null;
+            const leagueName = String(
+              ((row as { league?: { name?: unknown } | null })?.league?.name ?? "") as string,
+            ).trim();
+            await tx.fwaClanMemberCurrent.upsert({
+              where: {
+                clanTag_playerTag: {
+                  clanTag,
+                  playerTag,
+                },
+              },
+              update: {
+                playerName,
+                role,
+                level,
+                donated,
+                received,
+                rank,
+                trophies,
+                league: leagueName || null,
+                sourceSyncedAt: now,
+              },
+              create: {
+                clanTag,
+                playerTag,
+                playerName,
+                role,
+                level,
+                donated,
+                received,
+                rank,
+                trophies,
+                league: leagueName || null,
+                sourceSyncedAt: now,
+              },
+            });
+          }
+          return {
+            rowCount: members.length,
+            changedRowCount: staleDelete.count + members.length,
+          };
+        });
+        console.info(
+          `[fwa-feed] cwl_overview_current_members_refresh clan=${clanTag} status=SUCCESS rows=${result.rowCount} persisted=${result.rowCount}`,
+        );
+        return { clanTag, failed: false, ...result };
+      } catch (error) {
+        console.warn(
+          `[fwa-feed] cwl_overview_current_members_refresh clan=${clanTag} status=FAILURE error=${String(
+            (error as { message?: unknown })?.message ?? error,
+          ).slice(0, 200)}`,
+        );
+        return { clanTag, failed: true, rowCount: 0, changedRowCount: 0 };
+      }
+    });
+    return results.reduce(
+      (acc, row) => {
+        if (row.failed) {
+          acc.failedClans.push(row.clanTag);
+          return acc;
+        }
+        acc.rowCount += row.rowCount;
+        acc.changedRowCount += row.changedRowCount;
+        return acc;
+      },
+      {
+        clanCount: normalizedClanTags.length,
+        rowCount: 0,
+        changedRowCount: 0,
+        failedClans: [] as string[],
+      },
+    );
+  }
 
   /** Purpose: sync all tracked clans using bounded concurrency and tracked-clan authoritative source list. */
   async syncAllTrackedClans(params?: SyncOptions & { concurrency?: number }): Promise<{

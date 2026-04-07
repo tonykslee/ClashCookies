@@ -331,6 +331,10 @@ describe("/cwl command", () => {
 
     await Cwl.run({} as any, interaction as any);
 
+    expect(cwlRotationService.listOverview).toHaveBeenCalledWith({
+      season: "2026-04",
+      refreshLeadershipMembers: true,
+    });
     expect(getDescription(interaction)).toContain(
       `<:no:222> CWL Alpha (\`#2QG2C08UP\`) - day 3 - Next Battle Day <t:${alphaBattleDay}:R>`,
     );
