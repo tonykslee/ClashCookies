@@ -258,6 +258,12 @@ function countOccurrences(haystack: string, needle: string): number {
   return count;
 }
 
+function expectTodoLegendWithLastUpdated(description: string): void {
+  expect(description).toContain(":hourglass: last updated <t:");
+  expect(description).toMatch(/:hourglass: last updated <t:\d+:R>/);
+  expect(description).not.toContain(":hourglass: snapshot may be out of date");
+}
+
 describe("/todo command", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -483,7 +489,7 @@ describe("/todo command", () => {
     const description = getReplyDescription(interaction);
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
     expect(getReplyTitle(interaction)).toBe("Todo - CWL");
-    expect(description).toContain(":hourglass: snapshot may be out of date");
+    expectTodoLegendWithLastUpdated(description);
     expect(description).toContain("CWL Status: Not in war yet");
     expect(description).toContain(
       "[Clan One](https://link.clashofclans.com/en?action=OpenClanProfile&tag=PQL0289) `#PQL0289` - Next war <t:",
@@ -653,7 +659,7 @@ describe("/todo command", () => {
 
     const description = getReplyDescription(interaction);
     expect(getReplyTitle(interaction)).toBe("Todo - CWL");
-    expect(description).toContain(":hourglass: snapshot may be out of date");
+    expectTodoLegendWithLastUpdated(description);
     expect(description).toContain("CWL Status: Not in war yet");
     expect(description).toContain(":black_circle: Alpha - `0 / 0`");
   });
@@ -1409,7 +1415,7 @@ describe("/todo command", () => {
     await Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
 
     const description = getReplyDescription(interaction);
-    expect(description).toContain(":hourglass: snapshot may be out of date");
+    expectTodoLegendWithLastUpdated(description);
     expect(description).toContain(":white_check_mark: #1 Alpha - `2 / 2`");
     expect(description).not.toContain("stale snapshot");
     expect(description).toContain("- #2 Bravo - `1 / 2` - :hourglass:");
@@ -1530,7 +1536,7 @@ describe("/todo command", () => {
     await Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
 
     const description = getReplyDescription(interaction);
-    expect(description).toContain(":hourglass: snapshot may be out of date");
+    expectTodoLegendWithLastUpdated(description);
     expect(description).toContain("Alpha #PYLQ0289 - clan capital raids: 3/6");
   });
 
@@ -2191,9 +2197,9 @@ describe("/todo command", () => {
     await Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
 
     const description = getReplyDescription(interaction);
-    expect(description).toContain(":hourglass: snapshot may be out of date");
+    expectTodoLegendWithLastUpdated(description);
     expect(description).toContain("**Time remaining:** <t:");
-    expect(countOccurrences(description, "<t:")).toBe(1);
+    expect(countOccurrences(description, "<t:")).toBe(2);
     expect(description).toContain(":white_check_mark: Alpha #PYLQ0289 - clan capital raids: 6/6");
     expect(description).toContain(":yellow_circle: Bravo #QGRJ2222 - clan capital raids: 1/6");
     expect(description).toContain(":black_circle: Charlie #LQ9P8R2 - clan capital raids: 0/6");
@@ -2350,7 +2356,7 @@ describe("/todo command", () => {
 
     const description = getReplyDescription(interaction);
     expect(description).toContain("**Time remaining:** <t:");
-    expect(countOccurrences(description, "<t:")).toBe(1);
+    expect(countOccurrences(description, "<t:")).toBe(2);
     expect(description).toContain("Alpha #LQ9P8R2 - clan games points: 10000/4000");
     expect(description).toContain("Bravo #Q2V8P9L2 - clan games points: 4000/4000");
     expect(description).toContain("Charlie #CUV9082 - clan games points: 5200/4000");
