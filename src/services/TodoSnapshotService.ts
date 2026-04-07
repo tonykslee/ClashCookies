@@ -213,14 +213,14 @@ export class TodoSnapshotService {
     const aggregate = await prisma.todoPlayerSnapshot.aggregate({
       where: { playerTag: { in: normalizedTags } },
       _count: { _all: true },
-      _max: { updatedAt: true },
+      _max: { lastUpdatedAt: true, updatedAt: true },
     });
 
+    const maxUpdatedAt =
+      aggregate._max.lastUpdatedAt ?? aggregate._max.updatedAt ?? null;
     return {
       snapshotCount: Number(aggregate._count?._all ?? 0),
-      maxUpdatedAtMs: aggregate._max.updatedAt
-        ? aggregate._max.updatedAt.getTime()
-        : 0,
+      maxUpdatedAtMs: maxUpdatedAt ? maxUpdatedAt.getTime() : 0,
     };
   }
 
