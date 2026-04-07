@@ -2293,6 +2293,7 @@ export async function handleCwlRotationShowButtonInteraction(
   }
 
   if (parsed.action === "back") {
+    await interaction.deferUpdate();
     const overview = await cwlRotationService.listOverview({
       season: parsed.season,
       refreshLeadershipMembers: true,
@@ -2303,7 +2304,7 @@ export async function handleCwlRotationShowButtonInteraction(
       season: parsed.season,
       overview,
     });
-    await interaction.update({
+    await interaction.editReply({
       embeds: [embed],
       components,
     });
