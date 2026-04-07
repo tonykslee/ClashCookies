@@ -1450,6 +1450,7 @@ async function loadLiveNonTrackedCwlContextsByClanTag(input: {
         : null;
       const baseClanName = sanitizeDisplayText(groupClan?.name) || null;
       const rounds = Array.isArray(group.rounds) ? [...group.rounds].reverse() : [];
+      let fallbackContext: LiveCwlClanContext | null = null;
       for (const round of rounds) {
         const warTags = [
           ...new Set(
@@ -1470,7 +1471,8 @@ async function loadLiveNonTrackedCwlContextsByClanTag(input: {
           if (!side) continue;
 
           const roundState = normalizeRoundState(war.state);
-          if (!(isWarStatePreparation(roundState) || isWarStateActive(roundState))) {
+          const roundScore = scoreLiveCwlRoundState(roundState);
+          if (roundScore <= 0) {
             continue;
           }
 
@@ -1510,22 +1512,25 @@ async function loadLiveNonTrackedCwlContextsByClanTag(input: {
             });
           }
 
-          return [
-            clanTag,
-            {
-              clanTag: normalizedClanTag,
-              clanName: side.clanName || baseClanName,
-              roundState,
-              phaseEndsAt,
-              membersByPlayerTag,
-            },
-          ] as const;
+          const context: LiveCwlClanContext = {
+            clanTag: normalizedClanTag,
+            clanName: side.clanName || baseClanName,
+            roundState,
+            phaseEndsAt,
+            membersByPlayerTag,
+          };
+
+          if (roundScore >= 2) {
+            return [clanTag, context] as const;
+          }
+
+          fallbackContext ??= context;
         }
       }
 
       return [
         clanTag,
-        {
+        fallbackContext ?? {
           clanTag: normalizedClanTag,
           clanName: baseClanName,
           roundState: "notInWar",
@@ -1571,6 +1576,14 @@ function resolveLiveCwlSide(
 function normalizeRoundState(input: unknown): string {
   const value = String(input ?? "").trim();
   return value.length > 0 ? value : "notInWar";
+}
+
+/** Purpose: rank live CWL round states so active wars win over later preparation rounds. */
+function scoreLiveCwlRoundState(state: string): number {
+  const normalized = state.toLowerCase();
+  if (normalized.includes("inwar")) return 2;
+  if (normalized.includes("preparation")) return 1;
+  return 0;
 }
 
 /** Purpose: resolve live current-clan tags for player tags when CoC access is available. */
