@@ -1911,7 +1911,10 @@ async function handleRotationShowSubcommand(client: Client, interaction: ChatInp
   const day = interaction.options.getInteger("day", false);
 
   if (!clanTag) {
-    const overview = await cwlRotationService.listOverview({ season });
+    const overview = await cwlRotationService.listOverview({
+      season,
+      refreshLeadershipMembers: true,
+    });
     const { embed, components } = await buildCwlRotationShowOverviewPayload({
       client,
       userId: interaction.user.id,
@@ -2290,7 +2293,10 @@ export async function handleCwlRotationShowButtonInteraction(
   }
 
   if (parsed.action === "back") {
-    const overview = await cwlRotationService.listOverview({ season: parsed.season });
+    const overview = await cwlRotationService.listOverview({
+      season: parsed.season,
+      refreshLeadershipMembers: true,
+    });
     const { embed, components } = await buildCwlRotationShowOverviewPayload({
       client: interaction.client,
       userId: interaction.user.id,
