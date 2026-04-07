@@ -1319,13 +1319,40 @@ async function buildCwlRotationShowOverviewPayload(input: {
             statusIcons,
           }),
         ),
-      ),
+    ),
     components: buildCwlRotationShowOverviewActionRows({
       userId: input.userId,
       season: input.season,
       overview: input.overview,
     }),
   };
+}
+
+async function loadCwlRotationShowOverviewPayload(input: {
+  client: Client;
+  userId: string;
+  season: string;
+  refreshLeadershipMembers?: boolean;
+}): Promise<{
+  embed: EmbedBuilder;
+  components: ActionRowBuilder<StringSelectMenuBuilder>[];
+}> {
+  const overview = await cwlRotationService.listOverview(
+    input.refreshLeadershipMembers
+      ? {
+          season: input.season,
+          refreshLeadershipMembers: true,
+        }
+      : {
+          season: input.season,
+        },
+  );
+  return buildCwlRotationShowOverviewPayload({
+    client: input.client,
+    userId: input.userId,
+    season: input.season,
+    overview,
+  });
 }
 
 async function loadCwlRotationShowClanPayload(input: {
@@ -1911,15 +1938,11 @@ async function handleRotationShowSubcommand(client: Client, interaction: ChatInp
   const day = interaction.options.getInteger("day", false);
 
   if (!clanTag) {
-    const overview = await cwlRotationService.listOverview({
-      season,
-      refreshLeadershipMembers: true,
-    });
-    const { embed, components } = await buildCwlRotationShowOverviewPayload({
+    const { embed, components } = await loadCwlRotationShowOverviewPayload({
       client,
       userId: interaction.user.id,
       season,
-      overview,
+      refreshLeadershipMembers: true,
     });
     await interaction.editReply({
       embeds: [embed],
@@ -2293,21 +2316,29 @@ export async function handleCwlRotationShowButtonInteraction(
   }
 
   if (parsed.action === "back") {
-    await interaction.deferUpdate();
-    const overview = await cwlRotationService.listOverview({
-      season: parsed.season,
-      refreshLeadershipMembers: true,
-    });
-    const { embed, components } = await buildCwlRotationShowOverviewPayload({
-      client: interaction.client,
-      userId: interaction.user.id,
-      season: parsed.season,
-      overview,
-    });
-    await interaction.editReply({
-      embeds: [embed],
-      components,
-    });
+    try {
+      await interaction.deferUpdate();
+      const { embed, components } = await loadCwlRotationShowOverviewPayload({
+        client: interaction.client,
+        userId: interaction.user.id,
+        season: parsed.season,
+      });
+      await interaction.editReply({
+        embeds: [embed],
+        components,
+      });
+    } catch (error) {
+      console.error(`CWL rotation show back failed: ${formatError(error)}`);
+      const failurePayload = {
+        content: "Unable to load the CWL overview right now.",
+        ephemeral: true,
+      };
+      if (interaction.deferred || interaction.replied) {
+        await interaction.followUp(failurePayload);
+      } else {
+        await interaction.reply(failurePayload);
+      }
+    }
     return;
   }
 

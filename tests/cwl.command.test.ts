@@ -477,6 +477,9 @@ describe("/cwl command", () => {
     await handleCwlRotationShowButtonInteraction(backInteraction as any);
     expect(backInteraction.deferUpdate).toHaveBeenCalledTimes(1);
     expect(backInteraction.editReply).toHaveBeenCalledTimes(1);
+    expect(cwlRotationService.listOverview).toHaveBeenNthCalledWith(2, {
+      season: "2026-04",
+    });
     expect(getEditedDescription(backInteraction)).toContain(
       `<:yes:111> CWL Alpha (\`#2QG2C08UP\`) - day 2 - Next Battle Day <t:${alphaBattleDay}:R>`,
     );
@@ -1034,6 +1037,9 @@ describe("/cwl command", () => {
 
     expect(backInteraction.deferUpdate).toHaveBeenCalledTimes(1);
     expect(backInteraction.editReply).toHaveBeenCalledTimes(1);
+    expect(cwlRotationService.listOverview).toHaveBeenNthCalledWith(2, {
+      season: "2026-04",
+    });
     const backDescription = getEditedDescription(backInteraction);
     expect(backDescription).toContain(
       `<:yes:111> CWL Alpha (\`#2QG2C08UP\`) - day 2 - Next Battle Day <t:${alphaBattleDay}:R>`,
