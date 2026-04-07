@@ -455,6 +455,202 @@ describe("CwlStateService", () => {
     );
   });
 
+  it("keeps an existing seasonal CWL mapping without running live discovery", async () => {
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ0289", cwlClanTag: "#2QG2C08UP" },
+    ]);
+    const cocService = {
+      getClanWarLeagueGroup: vi.fn(),
+      getClanWarLeagueWar: vi.fn(),
+    };
+
+    const result = await cwlStateService.refreshSeasonalCwlClanMappingsForPlayerTags({
+      cocService: cocService as any,
+      season: "2026-04",
+      playerTags: ["#PYLQ0289"],
+      candidateClanTags: ["#QGRJ"],
+    });
+
+    expect(result).toMatchObject({
+      season: "2026-04",
+      playerCount: 1,
+      existingMappingCount: 1,
+      persistedEvidenceCount: 0,
+      liveEvidenceCount: 0,
+      learnedClanCount: 0,
+    });
+    expect(txMock.cwlPlayerClanSeason.upsert).not.toHaveBeenCalled();
+    expect(cocService.getClanWarLeagueGroup).not.toHaveBeenCalled();
+  });
+
+  it("learns a missing seasonal CWL mapping from persisted CWL evidence before probing live clans", async () => {
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        clanTag: "#2QG2C08UP",
+        playerName: "Alpha",
+        townHall: 16,
+      },
+    ]);
+    const cocService = {
+      getClanWarLeagueGroup: vi.fn(),
+      getClanWarLeagueWar: vi.fn(),
+    };
+
+    const result = await cwlStateService.refreshSeasonalCwlClanMappingsForPlayerTags({
+      cocService: cocService as any,
+      season: "2026-04",
+      playerTags: ["#PYLQ0289"],
+      candidateClanTags: ["#QGRJ"],
+    });
+
+    expect(result).toMatchObject({
+      season: "2026-04",
+      playerCount: 1,
+      existingMappingCount: 0,
+      persistedEvidenceCount: 1,
+      liveEvidenceCount: 0,
+      learnedClanCount: 1,
+    });
+    expect(txMock.cwlPlayerClanSeason.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          season: "2026-04",
+          playerTag: "#PYLQ0289",
+          cwlClanTag: "#2QG2C08UP",
+          playerName: "Alpha",
+          townHall: 16,
+        }),
+        update: expect.objectContaining({
+          cwlClanTag: "#2QG2C08UP",
+          playerName: "Alpha",
+          townHall: 16,
+        }),
+      }),
+    );
+    expect(cocService.getClanWarLeagueGroup).not.toHaveBeenCalled();
+  });
+
+  it("learns a missing seasonal CWL mapping from live non-tracked CWL evidence when persisted rows are absent", async () => {
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([]);
+    const cocService = {
+      getClanWarLeagueGroup: vi.fn().mockResolvedValue({
+        season: "2026-04",
+        state: "preparation",
+        clans: [
+          {
+            tag: "#2QG2C08UP",
+            name: "Nontracked Clan",
+          },
+        ],
+        rounds: [{ warTags: ["#WAR1"] }],
+      }),
+      getClanWarLeagueWar: vi.fn().mockResolvedValue({
+        state: "preparation",
+        attacksPerMember: 1,
+        startTime: "20260403T120000.000Z",
+        endTime: "20260404T120000.000Z",
+        clan: {
+          tag: "#2QG2C08UP",
+          name: "Nontracked Clan",
+          members: [
+            {
+              tag: "#PYLQ0289",
+              name: "Alpha",
+              townhallLevel: 16,
+              attacks: [],
+            },
+          ],
+        },
+        opponent: {
+          tag: "#Q2V8P9L2",
+          name: "Opponent One",
+          members: [],
+        },
+      }),
+    };
+
+    const result = await cwlStateService.refreshSeasonalCwlClanMappingsForPlayerTags({
+      cocService: cocService as any,
+      season: "2026-04",
+      playerTags: ["#PYLQ0289"],
+      candidateClanTags: ["#2QG2C08UP"],
+    });
+
+    expect(result).toMatchObject({
+      season: "2026-04",
+      playerCount: 1,
+      existingMappingCount: 0,
+      persistedEvidenceCount: 0,
+      liveEvidenceCount: 1,
+      learnedClanCount: 1,
+    });
+    expect(txMock.cwlPlayerClanSeason.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          season: "2026-04",
+          playerTag: "#PYLQ0289",
+          cwlClanTag: "#2QG2C08UP",
+          playerName: "Alpha",
+          townHall: 16,
+        }),
+      }),
+    );
+    expect(cocService.getClanWarLeagueGroup).toHaveBeenCalledWith("#2QG2C08UP");
+    expect(cocService.getClanWarLeagueWar).toHaveBeenCalledWith("#WAR1");
+  });
+
+  it("returns without inventing a mapping when no current or live CWL proof exists", async () => {
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([]);
+    const cocService = {
+      getClanWarLeagueGroup: vi.fn().mockResolvedValue({
+        season: "2026-04",
+        state: "preparation",
+        clans: [{ tag: "#2QG2C08UP", name: "Nontracked Clan" }],
+        rounds: [{ warTags: ["#WAR1"] }],
+      }),
+      getClanWarLeagueWar: vi.fn().mockResolvedValue({
+        state: "preparation",
+        attacksPerMember: 1,
+        startTime: "20260403T120000.000Z",
+        endTime: "20260404T120000.000Z",
+        clan: {
+          tag: "#2QG2C08UP",
+          name: "Nontracked Clan",
+          members: [],
+        },
+        opponent: {
+          tag: "#Q2V8P9L2",
+          name: "Opponent One",
+          members: [],
+        },
+      }),
+    };
+
+    const result = await cwlStateService.refreshSeasonalCwlClanMappingsForPlayerTags({
+      cocService: cocService as any,
+      season: "2026-04",
+      playerTags: ["#PYLQ0289"],
+      candidateClanTags: ["#2QG2C08UP"],
+    });
+
+    expect(result).toMatchObject({
+      season: "2026-04",
+      playerCount: 1,
+      existingMappingCount: 0,
+      persistedEvidenceCount: 0,
+      liveEvidenceCount: 0,
+      learnedClanCount: 0,
+    });
+    expect(txMock.cwlPlayerClanSeason.upsert).not.toHaveBeenCalled();
+  });
+
   it("returns the persisted current-day lineup when the current round matches the requested day", async () => {
     prismaMock.currentCwlRound.findUnique.mockResolvedValue({
       season: "2026-04",

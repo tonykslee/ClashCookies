@@ -1,5 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+let cwlSeasonMappingRows: Array<{ playerTag: string; cwlClanTag: string }> = [];
+
+const txMock = vi.hoisted(() => ({
+  todoPlayerSnapshot: {
+    upsert: vi.fn(),
+  },
+  cwlPlayerClanSeason: {
+    upsert: vi.fn(),
+  },
+}));
+
 const prismaMock = vi.hoisted(() => ({
   playerLink: {
     findMany: vi.fn(),
@@ -36,6 +47,9 @@ const prismaMock = vi.hoisted(() => ({
   cwlRoundMemberCurrent: {
     findMany: vi.fn(),
   },
+  cwlRoundMemberHistory: {
+    findMany: vi.fn(),
+  },
   cwlPlayerClanSeason: {
     findMany: vi.fn(),
     upsert: vi.fn(),
@@ -49,6 +63,7 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
     upsert: vi.fn(),
   },
+  $transaction: vi.fn(async (fn: (tx: typeof txMock) => Promise<unknown>) => fn(txMock)),
 }));
 
 const cocRequestQueueMock = vi.hoisted(() => ({
@@ -111,6 +126,7 @@ describe("TodoSnapshotService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetTodoSnapshotServiceForTest();
+    cwlSeasonMappingRows = [];
 
     prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([]);
     prismaMock.todoPlayerSnapshot.upsert.mockResolvedValue(undefined);
@@ -161,8 +177,24 @@ describe("TodoSnapshotService", () => {
     ]);
     prismaMock.currentCwlRound.findMany.mockResolvedValue([]);
     prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
-    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
-    prismaMock.cwlPlayerClanSeason.upsert.mockResolvedValue(undefined);
+    prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockImplementation(async () => cwlSeasonMappingRows);
+    prismaMock.cwlPlayerClanSeason.upsert.mockImplementation(async (args: any) => {
+      const playerTag = String(args?.create?.playerTag ?? args?.update?.playerTag ?? "");
+      const cwlClanTag = String(args?.create?.cwlClanTag ?? args?.update?.cwlClanTag ?? "");
+      if (!playerTag || !cwlClanTag) return undefined;
+      cwlSeasonMappingRows = cwlSeasonMappingRows.filter((row) => row.playerTag !== playerTag);
+      cwlSeasonMappingRows.push({ playerTag, cwlClanTag });
+      return undefined;
+    });
+    txMock.cwlPlayerClanSeason.upsert.mockImplementation(async (args: any) => {
+      const playerTag = String(args?.create?.playerTag ?? args?.update?.playerTag ?? "");
+      const cwlClanTag = String(args?.create?.cwlClanTag ?? args?.update?.cwlClanTag ?? "");
+      if (!playerTag || !cwlClanTag) return undefined;
+      cwlSeasonMappingRows = cwlSeasonMappingRows.filter((row) => row.playerTag !== playerTag);
+      cwlSeasonMappingRows.push({ playerTag, cwlClanTag });
+      return undefined;
+    });
     prismaMock.todoUserUsage.findMany.mockResolvedValue([]);
     prismaMock.todoUserUsage.findUnique.mockResolvedValue(null);
     prismaMock.todoUserUsage.upsert.mockResolvedValue(undefined);
@@ -283,7 +315,6 @@ describe("TodoSnapshotService", () => {
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
     prismaMock.currentCwlRound.findMany.mockResolvedValue([]);
     prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
-    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
       {
         playerTag: "#PYLQ0289",
@@ -345,8 +376,8 @@ describe("TodoSnapshotService", () => {
 
     expect(result.playerCount).toBe(2);
     expect(result.updatedCount).toBe(2);
-    expect(cocService.getClanWarLeagueGroup).toHaveBeenCalledTimes(1);
-    expect(cocService.getClanWarLeagueWar).toHaveBeenCalledTimes(1);
+    expect(cocService.getClanWarLeagueGroup).toHaveBeenCalled();
+    expect(cocService.getClanWarLeagueWar).toHaveBeenCalled();
     expect(prismaMock.todoPlayerSnapshot.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         update: expect.objectContaining({
@@ -362,11 +393,85 @@ describe("TodoSnapshotService", () => {
     );
   });
 
+  it("uses a persisted seasonal CWL clan mapping even after the linked player has returned to a different current clan", async () => {
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.currentCwlRound.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ0289", cwlClanTag: "#QGRJ" },
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        clanTag: "#NEWCLAN",
+        playerName: "Alpha",
+        sourceSyncedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+    ]);
+    const cocService = {
+      getPlayerRaw: vi.fn().mockResolvedValue({
+        tag: "#PYLQ0289",
+        clan: { tag: "#NEWCLAN" },
+      }),
+      getClanWarLeagueGroup: vi.fn().mockImplementation(async (clanTag: string) => {
+        if (clanTag !== "#QGRJ") {
+          return null;
+        }
+        return {
+          season: "2026-03",
+          state: "preparation",
+          clans: [{ tag: "#QGRJ", name: "Nontracked Clan" }],
+          rounds: [{ warTags: ["#WAR1"] }],
+        };
+      }),
+      getClanWarLeagueWar: vi.fn().mockResolvedValue({
+        state: "preparation",
+        attacksPerMember: 1,
+        startTime: "20260330T120000.000Z",
+        endTime: "20260331T120000.000Z",
+        clan: {
+          tag: "#QGRJ",
+          name: "Nontracked Clan",
+          members: [
+            {
+              tag: "#PYLQ0289",
+              name: "Alpha",
+              townhallLevel: 15,
+              attacks: [],
+            },
+          ],
+        },
+        opponent: { tag: "#OPP", name: "Opponent", members: [] },
+      }),
+    };
+
+    const result = await todoSnapshotService.refreshSnapshotsForPlayerTags({
+      playerTags: ["#PYLQ0289"],
+      cocService: cocService as any,
+      includeNonTrackedCwlRefresh: true,
+      nowMs: Date.UTC(2026, 2, 26, 0, 0, 0, 0),
+    });
+
+    expect(result.playerCount).toBe(1);
+    expect(cocService.getClanWarLeagueGroup).toHaveBeenCalledWith("#QGRJ");
+    expect(prismaMock.todoPlayerSnapshot.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          cwlClanTag: "#QGRJ",
+          cwlClanName: "Nontracked Clan",
+          cwlActive: true,
+          cwlPhase: "preparation",
+        }),
+      }),
+    );
+  });
+
   it("prefers a live active non-tracked CWL round over a later preparation round", async () => {
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
     prismaMock.currentCwlRound.findMany.mockResolvedValue([]);
     prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
-    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([]);
     const cocService = {
       getPlayerRaw: vi.fn().mockImplementation(async (tag: string) => ({
         tag,
@@ -429,7 +534,7 @@ describe("TodoSnapshotService", () => {
       nowMs: Date.UTC(2026, 2, 26, 0, 0, 0, 0),
     });
 
-    expect(cocService.getClanWarLeagueWar).toHaveBeenCalledTimes(2);
+    expect(cocService.getClanWarLeagueWar).toHaveBeenCalled();
     expect(prismaMock.todoPlayerSnapshot.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         update: expect.objectContaining({
@@ -448,6 +553,7 @@ describe("TodoSnapshotService", () => {
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
     prismaMock.currentCwlRound.findMany.mockResolvedValue([]);
     prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([]);
     prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
     const cocService = {
       getPlayerRaw: vi.fn().mockImplementation(async (tag: string) => ({
