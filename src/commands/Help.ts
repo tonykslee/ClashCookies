@@ -516,13 +516,14 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     summary: "Post structured messages such as sync time announcements.",
     details: [
       "`/sync time post` opens a modal to capture date/time/timezone and role ping.",
+      "Optional `timezone` autocompletes IANA zones and prefills the modal timezone field while keeping the field editable.",
       "Timezone input accepts IANA names like `America/New_York` plus common US aliases such as `EST`, `EDT`, `PST`, and `PDT`.",
       "Creates and pins a sync-time message in the active channel, then adds clan badge reactions.",
       "`/sync post status` shows claimed vs unclaimed clans from the stored active sync post, or a provided message ID.",
       "`sync time` is admin-only by default.",
     ],
     examples: [
-      "/sync time post role:@War",
+      "/sync time post role:@War timezone:America/New_York",
       "/sync post status",
       "/sync post status message-id:123456789012345678",
     ],
