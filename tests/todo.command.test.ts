@@ -81,7 +81,12 @@ import {
   handleTodoRefreshButtonInteraction,
   Todo,
 } from "../src/commands/Todo";
-import { resetTodoRenderCacheForTest } from "../src/services/TodoService";
+import * as TodoServiceModule from "../src/services/TodoService";
+import {
+  bumpTodoRenderCacheGenerationForUser,
+  buildTodoPagesForUser,
+  resetTodoRenderCacheForTest,
+} from "../src/services/TodoService";
 import {
   resetTodoSnapshotServiceForTest,
   todoSnapshotService,
@@ -2755,6 +2760,63 @@ describe("/todo pagination buttons", () => {
     expect(prismaMock.todoPlayerSnapshot.findMany).toHaveBeenCalledTimes(2);
   });
 
+  it("busts cached todo pages after refresh so later page switches see refreshed CWL data", async () => {
+    const discordUserId = "111111111111111111";
+    let snapshotRows = [
+      makeSnapshotRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha",
+        cwlClanTag: "#PQL0289",
+        cwlClanName: "Clan One",
+        cwlActive: true,
+        cwlPhase: "battle day",
+        cwlAttacksUsed: 0,
+        cwlAttacksMax: 1,
+      }),
+    ];
+
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },
+    ]);
+    prismaMock.todoPlayerSnapshot.aggregate.mockImplementation(async () => ({
+      _count: { _all: snapshotRows.length },
+      _max: { updatedAt: new Date("2026-03-26T00:00:00.000Z") },
+    }));
+    prismaMock.todoPlayerSnapshot.findMany.mockImplementation(async () => snapshotRows);
+
+    const initialPages = await buildTodoPagesForUser({
+      discordUserId,
+      cocService: makeCocServiceSpy() as any,
+    });
+    expect(initialPages.pages.CWL).toContain("CWL Status: 0 / 1 attacks completed");
+
+    snapshotRows = [
+      makeSnapshotRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha",
+        cwlClanTag: "#PQL0289",
+        cwlClanName: "Clan One",
+        cwlActive: true,
+        cwlPhase: "battle day",
+        cwlAttacksUsed: 1,
+        cwlAttacksMax: 1,
+      }),
+    ];
+
+    const cachedPages = await buildTodoPagesForUser({
+      discordUserId,
+      cocService: makeCocServiceSpy() as any,
+    });
+    expect(cachedPages.pages.CWL).toContain("CWL Status: 0 / 1 attacks completed");
+
+    bumpTodoRenderCacheGenerationForUser(discordUserId);
+    const refreshedPages = await buildTodoPagesForUser({
+      discordUserId,
+      cocService: makeCocServiceSpy() as any,
+    });
+    expect(refreshedPages.pages.CWL).toContain("CWL Status: 1 / 1 attacks completed");
+  });
+
   it("rejects button interactions from non-requesting users", async () => {
     const interaction = makeTodoButtonInteraction({
       customId: buildTodoPageButtonCustomId("111111111111111111", "WAR"),
@@ -2861,6 +2923,7 @@ describe("/todo refresh button", () => {
   });
 
   it("refreshes the target user snapshots and updates the existing message on the same page", async () => {
+    const bumpSpy = vi.spyOn(TodoServiceModule, "bumpTodoRenderCacheGenerationForUser");
     const cwlRefreshSpy = vi
       .spyOn(cwlStateService, "refreshTrackedCwlStateForPlayerTags")
       .mockResolvedValue({
@@ -2898,6 +2961,7 @@ describe("/todo refresh button", () => {
       cocService: expect.anything(),
       includeNonTrackedCwlRefresh: true,
     });
+    expect(bumpSpy).toHaveBeenCalledWith("222222222222222222");
     expect(cwlRefreshSpy.mock.invocationCallOrder[0]).toBeLessThan(
       refreshSpy.mock.invocationCallOrder[0],
     );

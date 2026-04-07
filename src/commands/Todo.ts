@@ -15,6 +15,7 @@ import { CoCService } from "../services/CoCService";
 import { cocRequestQueueService } from "../services/CoCRequestQueueService";
 import { cwlStateService } from "../services/CwlStateService";
 import {
+  bumpTodoRenderCacheGenerationForUser,
   buildTodoPagesForUser,
   invalidateTodoRenderCacheForUser,
   normalizeTodoType,
@@ -137,6 +138,7 @@ async function refreshTodoSnapshotsForDiscordUser(input: {
       });
     }
     await todoSnapshotService.refreshSnapshotsForPlayerTags(refreshInput);
+    bumpTodoRenderCacheGenerationForUser(input.discordUserId);
   }
   invalidateTodoRenderCacheForUser(input.discordUserId);
 }
