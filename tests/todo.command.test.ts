@@ -212,6 +212,11 @@ function getReplyDescription(interaction: any): string {
   return String(payload?.embeds?.[0]?.toJSON?.().description ?? "");
 }
 
+function getReplyContent(interaction: any): string {
+  const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+  return String(payload?.content ?? "");
+}
+
 function getReplyTitle(interaction: any): string {
   const payload = interaction.editReply.mock.calls[0]?.[0] as any;
   return String(payload?.embeds?.[0]?.toJSON?.().title ?? "");
@@ -521,6 +526,87 @@ describe("/todo command", () => {
     expect(cocService.getCurrentWar).not.toHaveBeenCalled();
     expect(cocService.getClanWarLeagueGroup).not.toHaveBeenCalled();
     expect(cocService.getClanWarLeagueWar).not.toHaveBeenCalled();
+  });
+
+  it("shows the first-run notice and refreshes non-tracked CWL clans on initial CWL /todo renders", async () => {
+    const refreshSpy = vi
+      .spyOn(todoSnapshotService, "refreshSnapshotsForPlayerTags")
+      .mockResolvedValue({ playerCount: 2, updatedCount: 2 });
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },
+      { playerTag: "#QGRJ2222", createdAt: new Date("2026-03-02T00:00:00.000Z") },
+    ]);
+    prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
+      _count: { _all: 2 },
+      _max: { updatedAt: new Date("2026-03-26T00:00:00.000Z") },
+    });
+    prismaMock.todoPlayerSnapshot.findMany
+      .mockResolvedValueOnce([
+        makeSnapshotRow({
+          playerTag: "#PYLQ0289",
+          playerName: "Alpha",
+          cwlClanTag: "#PQL0289",
+          cwlClanName: "Tracked Clan",
+          cwlAttacksUsed: 1,
+          cwlAttacksMax: 1,
+          cwlPhase: "battle day",
+        }),
+        makeSnapshotRow({
+          playerTag: "#QGRJ2222",
+          playerName: "Bravo",
+          cwlClanTag: null,
+          cwlClanName: null,
+          cwlActive: false,
+          cwlPhase: null,
+          cwlEndsAt: null,
+          cwlAttacksUsed: 0,
+          cwlAttacksMax: 0,
+        }),
+      ])
+      .mockResolvedValueOnce([
+        makeSnapshotRow({
+          playerTag: "#PYLQ0289",
+          playerName: "Alpha",
+          cwlClanTag: "#PQL0289",
+          cwlClanName: "Tracked Clan",
+          cwlAttacksUsed: 1,
+          cwlAttacksMax: 1,
+          cwlPhase: "battle day",
+        }),
+        makeSnapshotRow({
+          playerTag: "#QGRJ2222",
+          playerName: "Bravo",
+          cwlClanTag: "#QGRJ",
+          cwlClanName: "Nontracked Clan",
+          cwlActive: false,
+          cwlAttacksUsed: 0,
+          cwlAttacksMax: 0,
+          cwlPhase: "battle day",
+          cwlEndsAt: new Date("2026-03-30T12:00:00.000Z"),
+        }),
+      ]);
+
+    const interaction = makeTodoInteraction({ type: "CWL" });
+
+    await Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
+
+    expect(refreshSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        playerTags: ["#PYLQ0289", "#QGRJ2222"],
+        includeNonTrackedCwlRefresh: true,
+      }),
+    );
+    expect(getReplyContent(interaction)).toContain(
+      "The first /todo CWL run may take a bit longer while CWL state is refreshed.",
+    );
+    const description = getReplyDescription(interaction);
+    expect(description).toContain("Tracked Clan");
+    expect(description).toContain("Nontracked Clan");
+    expect(description).toContain("#QGRJ");
+    expect(description).toContain(
+      "[Nontracked Clan](https://link.clashofclans.com/en?action=OpenClanProfile&tag=QGRJ) `#QGRJ` - Next war <t:",
+    );
+    expect(description).toContain(":black_circle: Bravo - `0 / 0`");
   });
 
   it("opens no-arg /todo on the remembered page when one exists", async () => {
