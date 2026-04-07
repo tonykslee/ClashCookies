@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildWarMailPostedContentForTest,
+  buildWarMailSendPayloadForTest,
   buildWarMailRefreshEditPayloadForTest,
   hasWarIdentityShiftedForTest,
   resolveWarMailRefreshIdentityDecisionForTest,
@@ -151,6 +152,30 @@ describe("fwa war-mail posted content", () => {
   });
 });
 
+describe("fwa war-mail send payload", () => {
+  it("includes the visible role mention and allows the ping when enabled", () => {
+    const payload = buildWarMailSendPayloadForTest("123456789", 0, {
+      pingRole: true,
+      planText: "Plan body",
+      includeNextRefresh: true,
+    });
+
+    expect(payload.content).toBe("Plan body\n\n<@&123456789>\n\nNext refresh <t:1200:R>");
+    expect(payload.allowedMentions).toEqual({ roles: ["123456789"] });
+  });
+
+  it("omits the visible role mention and allowedMentions when pinging is disabled", () => {
+    const payload = buildWarMailSendPayloadForTest("123456789", 0, {
+      pingRole: false,
+      planText: "Plan body",
+      includeNextRefresh: true,
+    });
+
+    expect(payload.content).toBe("Plan body\n\nNext refresh <t:1200:R>");
+    expect(payload.allowedMentions).toBeUndefined();
+  });
+});
+
 describe("fwa war-mail refresh edit payload", () => {
   it("preserves existing visible role mention in refreshed content", () => {
     const payload = buildWarMailRefreshEditPayloadForTest(
@@ -182,6 +207,17 @@ describe("fwa war-mail refresh edit payload", () => {
     expect(payload.allowedMentions).toEqual({ parse: [] });
   });
 
+  it("prefers durable mention role state over parsing when provided", () => {
+    const payload = buildWarMailRefreshEditPayloadForTest(
+      "Old plan -- <@&999999999> in the middle of text\n\nNext refresh <t:999:R>",
+      "New plan",
+      0,
+      { mentionRoleId: "123456789" },
+    );
+
+    expect(payload.content).toBe("New plan\n\n<@&123456789>\n\nNext refresh <t:1200:R>");
+  });
+
   it("does not add a role mention when existing posted message has none", () => {
     const payload = buildWarMailRefreshEditPayloadForTest(
       "Old plan\n\nNext refresh <t:999:R>",
@@ -194,7 +230,7 @@ describe("fwa war-mail refresh edit payload", () => {
 
   it("removes stale next-refresh text when refresh is frozen", () => {
     const payload = buildWarMailRefreshEditPayloadForTest(
-      "Old plan\n\n<@&123456789>\n\nNext refresh <t:999:R>",
+      "Old plan\n\nMail role: <@&123456789>.\n\nNext refresh <t:999:R>",
       "New plan",
       0,
       { includeNextRefresh: false },
