@@ -264,6 +264,15 @@ function expectTodoLegendWithLastUpdated(description: string): void {
   expect(description).not.toContain(":hourglass: snapshot may be out of date");
 }
 
+function expectTodoPagesLastUpdatedAt(pages: Record<TodoType, string>, timestamp: Date): void {
+  const unix = Math.floor(timestamp.getTime() / 1000);
+  const expected = `:hourglass: last updated <t:${unix}:R>`;
+  expect(pages.WAR).toContain(expected);
+  expect(pages.CWL).toContain(expected);
+  expect(pages.RAIDS).toContain(expected);
+  expect(pages.GAMES).toContain(expected);
+}
+
 describe("/todo command", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -2822,6 +2831,71 @@ describe("/todo pagination buttons", () => {
       cocService: makeCocServiceSpy() as any,
     });
     expect(refreshedPages.pages.CWL).toContain("CWL Status: 1 / 1 attacks completed");
+  });
+
+  it("keeps the last updated legend tied to persisted snapshot freshness across rerenders and page types", async () => {
+    const discordUserId = "111111111111111111";
+    const firstRefreshAt = new Date("2026-03-25T20:00:00.000Z");
+    const secondRefreshAt = new Date("2026-03-25T21:00:00.000Z");
+    const snapshotRows = [
+      makeSnapshotRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha",
+        clanTag: "#PQL0289",
+        clanName: "Clan One",
+        cwlClanTag: "#PQL0289",
+        cwlClanName: "Clan One",
+        lastUpdatedAt: firstRefreshAt,
+        updatedAt: firstRefreshAt,
+      }),
+      makeSnapshotRow({
+        playerTag: "#QGRJ2222",
+        playerName: "Bravo",
+        clanTag: "#PQL0289",
+        clanName: "Clan One",
+        cwlClanTag: "#PQL0289",
+        cwlClanName: "Clan One",
+        lastUpdatedAt: firstRefreshAt,
+        updatedAt: firstRefreshAt,
+      }),
+    ];
+
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },
+      { playerTag: "#QGRJ2222", createdAt: new Date("2026-03-02T00:00:00.000Z") },
+    ]);
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue(snapshotRows);
+    prismaMock.todoPlayerSnapshot.aggregate
+      .mockResolvedValueOnce({
+        _count: { _all: 2 },
+        _max: { lastUpdatedAt: firstRefreshAt, updatedAt: firstRefreshAt },
+      })
+      .mockResolvedValueOnce({
+        _count: { _all: 2 },
+        _max: { lastUpdatedAt: firstRefreshAt, updatedAt: firstRefreshAt },
+      })
+      .mockResolvedValueOnce({
+        _count: { _all: 2 },
+        _max: { lastUpdatedAt: secondRefreshAt, updatedAt: secondRefreshAt },
+      });
+
+    const firstPages = await buildTodoPagesForUser({
+      discordUserId,
+      cocService: makeCocServiceSpy() as any,
+    });
+    expectTodoPagesLastUpdatedAt(firstPages.pages, firstRefreshAt);
+
+    const rerenderedPages = await buildTodoPagesForUser({
+      discordUserId,
+      cocService: makeCocServiceSpy() as any,
+    });
+    expectTodoPagesLastUpdatedAt(rerenderedPages.pages, firstRefreshAt);
+
+    const refreshedPages = await buildTodoPagesForUser({
+      discordUserId,
+      cocService: makeCocServiceSpy() as any,
+    });
+    expectTodoPagesLastUpdatedAt(refreshedPages.pages, secondRefreshAt);
   });
 
   it("rejects button interactions from non-requesting users", async () => {
