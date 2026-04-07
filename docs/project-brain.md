@@ -44,9 +44,9 @@ Core subsystems:
 - War state: `TrackedClan -> WarEventLogService/poll loops -> CurrentWar -> ClanWarHistory / ClanWarParticipation / WarAttacks / WarLookup / WarEvent / WarMailLifecycle / ClanPostedMessage`
 - Points sync: `points.fwafarm -> PointsSyncService -> ClanPointsSync`
 - Feed-backed current state: `FWAStats JSON feeds -> FwaFeedSchedulerService -> FwaClanCatalog / FwaPlayerCatalog / FwaClanMemberCurrent / FwaWarMemberCurrent / FwaClanWarLogCurrent`
-- Snapshot-backed todo: `PlayerLink + CurrentWar + CurrentCwlRound/CwlRoundMemberCurrent + activity signals -> TodoSnapshotService -> TodoPlayerSnapshot`
-- Persisted CWL state: `CwlTrackedClan -> CwlStateService -> CurrentCwlRound / CwlRoundMemberCurrent / CwlRoundHistory / CwlRoundMemberHistory / CwlPlayerClanSeason`
-- CWL planner state: `CurrentCwlRound + CwlRoundMemberCurrent + CwlPlayerClanSeason -> CwlRotationService -> CwlRotationPlan / CwlRotationPlanDay / CwlRotationPlanMember`
+- Snapshot-backed todo: `PlayerLink + TodoUserUsage + CurrentWar + CurrentCwlRound/CwlRoundMemberCurrent + activity signals -> TodoSnapshotService -> TodoPlayerSnapshot`
+- Persisted CWL state: `CwlTrackedClan -> CwlStateService -> CurrentCwlRound / CwlRoundMemberCurrent / CurrentCwlPrepSnapshot / CwlRoundHistory / CwlRoundMemberHistory / CwlPlayerClanSeason`
+- CWL planner state: `CurrentCwlRound + CwlRoundMemberCurrent + CurrentCwlPrepSnapshot + CwlPlayerClanSeason -> CwlRotationService -> CwlRotationPlan / CwlRotationPlanDay / CwlRotationPlanMember`, with sheet import/export orchestration layered on top for admin-only planner exchange flows.
 - Reminder delivery: `Reminder/UserActivityReminder config + snapshots/current war -> reminder schedulers -> delivery logs`
 - Operational state: `TrackedMessage`, unlinked-alert persistence, telemetry aggregates, report schedules
 
@@ -62,8 +62,9 @@ Important owners:
 | --- | --- |
 | Tracked FWA clans | TrackedClan |
 | Seasonal CWL tracked clans | CwlTrackedClan |
-| Live/prep CWL round identity and timing | CurrentCwlRound |
-| Live/prep CWL round member summaries | CwlRoundMemberCurrent |
+| Live battle-day CWL round identity and timing | CurrentCwlRound |
+| Live battle-day CWL round member summaries | CwlRoundMemberCurrent |
+| Live overlapping prep-day CWL snapshot | CurrentCwlPrepSnapshot |
 | Ended CWL round history | CwlRoundHistory |
 | Ended CWL round member history | CwlRoundMemberHistory |
 | Derived observed CWL season roster | CwlPlayerClanSeason |
@@ -75,6 +76,7 @@ Important owners:
 | Points sync metadata | ClanPointsSync |
 | Posted notify/mail messages | ClanPostedMessage |
 | Active-war mail lifecycle | WarMailLifecycle |
+| Todo activation gate | TodoUserUsage |
 | Todo render snapshots | TodoPlayerSnapshot |
 | Guild reminders | Reminder* tables |
 | Personal reminders | UserActivityReminder* tables |

@@ -11,13 +11,15 @@ Use loaded context as the source of truth:
 # 2) Start branch
 ./scripts/start-feature.sh <short-feature-name>
 
-Immediately verify:
-- `git branch --show-current` matches the new feature branch
-- `git status --short --branch` shows the new branch
-- if the branch did not change, stop and fix it before any edits
+After Step 2, stop and explicitly report:
+- current branch name
+- `git status --short --branch`
+- whether the branch is based on latest `origin/dev`
 
-Do not continue to Step 3 until the branch is confirmed.
+Do not start Step 3 until that confirmation has been shown.
 
+If the branch confirmation is missing or ambiguous, stop and do not continue.
+Do not read other files, edit files, or run Step 3 until branch confirmation has been shown.
 
 # 3) Task
 (Paste task here)

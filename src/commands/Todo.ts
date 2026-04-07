@@ -13,6 +13,7 @@ import { formatError } from "../helper/formatError";
 import { listPlayerLinksForDiscordUser } from "../services/PlayerLinkService";
 import { CoCService } from "../services/CoCService";
 import { cocRequestQueueService } from "../services/CoCRequestQueueService";
+import { cwlStateService } from "../services/CwlStateService";
 import {
   buildTodoPagesForUser,
   invalidateTodoRenderCacheForUser,
@@ -23,6 +24,7 @@ import {
 } from "../services/TodoService";
 import { todoSnapshotService } from "../services/TodoSnapshotService";
 import { todoLastViewedTypeService } from "../services/TodoLastViewedTypeService";
+import { todoUserUsageService } from "../services/TodoUserUsageService";
 
 const TODO_PAGE_BUTTON_PREFIX = "todo-page";
 const TODO_REFRESH_BUTTON_PREFIX = "todo-refresh";
@@ -32,10 +34,12 @@ const TODO_EMBED_COLOR_COMPLETE = 0x57f287;
 const TODO_GUILD_SCOPE_DM = "dm";
 const TODO_CWL_FIRST_RUN_NOTICE =
   "The first /todo CWL run may take a bit longer while CWL state is refreshed.";
+const TODO_INITIAL_REFRESH_TIMEOUT_MS = 3000;
 const TODO_REFRESH_ERROR_MESSAGE =
   "Failed to refresh todo data. Please try again.";
 const TODO_REFRESH_BUTTON_EMOJI = "🔄";
-const TODO_INITIAL_REFRESH_TIMEOUT_MS = 3000;
+const TODO_FIRST_USE_WARNING_MESSAGE =
+  "First-time `/todo` use may take longer while data is loaded.";
 const todoRefreshInFlightByMessageId = new Set<string>();
 
 type TodoButtonScope = {
@@ -110,6 +114,7 @@ async function refreshTodoSnapshotsForDiscordUser(input: {
   discordUserId: string;
   cocService: CoCService;
   includeNonTrackedCwlRefresh?: boolean;
+  refreshTrackedCwlStateFirst?: boolean;
 }): Promise<void> {
   const links = await listPlayerLinksForDiscordUser({
     discordUserId: input.discordUserId,
@@ -124,6 +129,12 @@ async function refreshTodoSnapshotsForDiscordUser(input: {
     };
     if (input.includeNonTrackedCwlRefresh) {
       refreshInput.includeNonTrackedCwlRefresh = true;
+    }
+    if (input.refreshTrackedCwlStateFirst) {
+      await cwlStateService.refreshTrackedCwlStateForPlayerTags({
+        cocService: input.cocService,
+        playerTags: linkedTags,
+      });
     }
     await todoSnapshotService.refreshSnapshotsForPlayerTags(refreshInput);
   }
@@ -146,6 +157,7 @@ async function tryBoundedInitialTodoRefresh(input: {
   discordUserId: string;
   cocService: CoCService;
   includeNonTrackedCwlRefresh?: boolean;
+  refreshTrackedCwlStateFirst?: boolean;
 }): Promise<TodoInitialRefreshOutcome> {
   const queueStatus = cocRequestQueueService.getStatus();
   if (queueStatus.degraded) {
@@ -493,6 +505,7 @@ export async function handleTodoRefreshButtonInteraction(
     await refreshTodoSnapshotsForDiscordUser({
       discordUserId: parsed.targetUserId,
       cocService,
+      refreshTrackedCwlStateFirst: true,
       includeNonTrackedCwlRefresh: true,
     });
 
@@ -580,8 +593,42 @@ export const Todo: Command = {
       : rememberedTypeBeforeUpdate;
     const selectedType = explicitType ?? rememberedType ?? normalizeTodoType(null);
     const shouldRefreshNonTrackedCwl = selectedType === "CWL";
-    let shouldShowFirstRunNotice =
-      shouldRefreshNonTrackedCwl && rememberedTypeBeforeUpdate === null;
+    const hasUsedTodo = await todoUserUsageService.hasUsedTodo({
+      discordUserId: interaction.user.id,
+    });
+    const firstUseWarning = hasUsedTodo
+      ? null
+      : shouldRefreshNonTrackedCwl
+        ? TODO_CWL_FIRST_RUN_NOTICE
+        : TODO_FIRST_USE_WARNING_MESSAGE;
+
+    if (!hasUsedTodo) {
+      let hydratedSuccessfully = false;
+      try {
+        await refreshTodoSnapshotsForDiscordUser({
+          discordUserId: interaction.user.id,
+          cocService,
+          refreshTrackedCwlStateFirst: true,
+          includeNonTrackedCwlRefresh: true,
+        });
+        hydratedSuccessfully = true;
+      } catch (err) {
+        console.error(
+          `[todo] first_use_hydration_failed user=${interaction.user.id} error=${formatError(err)}`,
+        );
+      }
+      if (hydratedSuccessfully) {
+        try {
+          await todoUserUsageService.markUsedTodo({
+            discordUserId: interaction.user.id,
+          });
+        } catch (err) {
+          console.error(
+            `[todo] first_use_activation_persist_failed user=${interaction.user.id} error=${formatError(err)}`,
+          );
+        }
+      }
+    }
 
     let result = await buildTodoRenderResult({
       cocService,
@@ -593,10 +640,11 @@ export const Todo: Command = {
       },
     });
 
-    if (result.ok) {
+    if (result.ok && hasUsedTodo && shouldRefreshNonTrackedCwl) {
       const initialRefresh = await tryBoundedInitialTodoRefresh({
         discordUserId: interaction.user.id,
         cocService,
+        refreshTrackedCwlStateFirst: true,
         includeNonTrackedCwlRefresh: shouldRefreshNonTrackedCwl,
       });
 
@@ -611,7 +659,6 @@ export const Todo: Command = {
           },
         });
       } else if (initialRefresh.status === "skipped_degraded") {
-        shouldShowFirstRunNotice = false;
         console.warn(
           `[todo] event=snapshot_served reason=coc_degraded user=${interaction.user.id} spacing_ms=${initialRefresh.spacingMs} penalty_ms=${initialRefresh.penaltyMs} queue_depth=${initialRefresh.queueDepth} interactive_depth=${initialRefresh.interactiveQueueDepth} background_depth=${initialRefresh.backgroundQueueDepth} in_flight=${initialRefresh.inFlight}`,
         );
@@ -625,16 +672,15 @@ export const Todo: Command = {
         );
       }
     }
-
     if (!result.ok) {
       await interaction.editReply(result.message);
       return;
     }
 
-    const editPayload = shouldShowFirstRunNotice
-      ? { content: TODO_CWL_FIRST_RUN_NOTICE, ...result.payload }
-      : result.payload;
-    await interaction.editReply(editPayload);
+    await interaction.editReply({
+      content: firstUseWarning,
+      ...result.payload,
+    });
   },
 };
 

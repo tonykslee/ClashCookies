@@ -46,6 +46,8 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "permission:remove",
   "telemetry",
   "cwl:rotations:create",
+  "cwl:rotations:import",
+  "cwl:rotations:export",
 ]);
 
 type CommandDoc = {
@@ -244,8 +246,10 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     details: [
       "`/cwl members clan:<tag>` shows the observed current-season CWL roster for one tracked CWL clan using persisted round observations only.",
       "`/cwl members clan:<tag> inwar:true` narrows to the persisted current/prep lineup and includes current round status when available.",
-      "`/cwl rotations show` summarizes active plan-vs-actual validation across clans; add `clan` and optional `day` for one plan view.",
+      "`/cwl rotations show` renders an interactive overview of active CWL plans with status, next battle-day timing, current-clan leadership summary, and a dropdown to open the detailed clan view; the clan page supports paging and manual refresh of that clan's actual CWL state.",
       "`/cwl rotations create` is admin-only by default and only works during persisted CWL preparation state for the tracked clan.",
+      "`/cwl rotations import` is admin-only by default and imports active planner tabs from one public Google Sheet after a confirmation preview and clan-by-clan row-review step. Structural rows may be skipped automatically, but player-like rows are never dropped silently. Public imports do not require Google Sheets credentials; export/write still does.",
+      "`/cwl rotations export` is admin-only by default and writes the active planner data to a brand-new public Google Sheet using the canonical re-importable tabular format.",
       "The `/cwl` surface is DB-first and does not live-query broad CWL state on render when persisted state exists.",
     ],
     examples: [
@@ -254,6 +258,8 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/cwl rotations show",
       "/cwl rotations show clan:#2QG2C08UP day:3",
       "/cwl rotations create clan:#2QG2C08UP exclude:#PYLQ0289,#QGRJ2222 overwrite:true",
+      "/cwl rotations import sheet:https://docs.google.com/spreadsheets/d/... overwrite:true",
+      "/cwl rotations export",
     ],
   },
   warplan: {
@@ -303,6 +309,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     details: [
       "Resolves all player tags linked to your Discord account from local PlayerLink data.",
       "Reads precomputed todo snapshots (background-refreshed) for fast command-time rendering.",
+      "The first `/todo` use for a Discord user may take longer while their snapshots are loaded on demand.",
       "Always builds WAR, CWL, RAIDS, and GAMES pages in one response.",
       "CWL todo snapshots can include linked players outside tracked clans after the first CWL refresh hydrates their CWL context, and that first run may take a bit longer.",
       "With no `type`, opens your most recently viewed todo page; if none is remembered, defaults to WAR.",
@@ -370,7 +377,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     summary: "Manage local Discord-player links using PlayerLink.",
     details: [
       "`create` links one or more player tags to your Discord account when the tags are currently unlinked.",
-      "`create` with `user` is admin-only and can create a link for another Discord user when unlinked.",
+      "`create` with `user` uses the Discord user picker and can create a link for another Discord user when unlinked for admins and FWA Leaders.",
       "Existing links are never implicitly reassigned; delete-first is required before relinking to another user.",
       "`delete` removes a link when run by the linked user or an admin override target.",
       "`list` renders non-zero linked/unlinked count buckets with padded inline rows: linked rows start with a resolved `yes` status emoji and show `TH ServerDisplayName Player Wt`, unlinked rows start with a resolved `no` status emoji and show `TH #PLAYER_TAG Player Wt`.",
@@ -383,7 +390,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     ],
     examples: [
       "/link create player-tag:#ABC123,#DEF456",
-      "/link create player-tag:#ABC123 user:143827744717799425",
+      "/link create player-tag:#ABC123 user:@SomeUser",
       "/link delete player-tag:#ABC123",
       "/link list clan-tag:2QG2C08UP",
       "/link embed channel:#link-account",
@@ -590,13 +597,22 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
   },
   remaining: {
     summary:
-      "Show remaining war timing for one tracked clan or alliance-wide active wars.",
+      "Show remaining war timing or CWL round timing for one tracked clan, remembered clan, or alliance-wide tracked clans.",
     details: [
       "`/remaining war tag:<tag>` returns one tracked clan's current phase end and relative remaining time.",
       "`/remaining war` (no tag) summarizes all tracked clans currently in active war using a 10-minute dominant-time cluster.",
       "Aggregate mode reports dominant-cluster mean, spread (max-min), and outlier clans with divergent remaining times.",
+      "`/remaining cwl tag:<tag>` returns one tracked CWL clan's persisted round state and timing from CWL tables only.",
+      "`/remaining cwl` (no tag) reuses your last CWL clan selection when available, otherwise prompts for a tag or `all:true`.",
+      "`/remaining cwl all:true` lists all tracked CWL clans with persisted preparation/in-war timing or `Unknown` when unavailable.",
     ],
-    examples: ["/remaining war", "/remaining war tag:2QG2C08UP"],
+    examples: [
+      "/remaining war",
+      "/remaining war tag:2QG2C08UP",
+      "/remaining cwl",
+      "/remaining cwl tag:2QG2C08UP",
+      "/remaining cwl all:true",
+    ],
   },
   telemetry: {
     summary: "View telemetry reports and manage scheduled report posts.",

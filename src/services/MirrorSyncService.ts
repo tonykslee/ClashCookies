@@ -3,6 +3,7 @@ import {
   type ClanPointsSync,
   type ClanWarHistory,
   type ClanWarParticipation,
+  type CurrentCwlPrepSnapshot,
   type CurrentCwlRound,
   type CurrentWar,
   type CwlRotationPlan,
@@ -33,6 +34,7 @@ export const MIRRORED_RUNTIME_TABLES = [
   "ClanWarParticipation",
   "WarLookup",
   "CurrentCwlRound",
+  "CurrentCwlPrepSnapshot",
   "CwlRoundMemberCurrent",
   "CwlRoundHistory",
   "CwlRoundMemberHistory",
@@ -82,6 +84,7 @@ type MirrorSyncSourceClient = {
   };
   warLookup: { findMany: (args?: unknown) => Promise<WarLookup[]> };
   currentCwlRound: { findMany: (args?: unknown) => Promise<CurrentCwlRound[]> };
+  currentCwlPrepSnapshot: { findMany: (args?: unknown) => Promise<CurrentCwlPrepSnapshot[]> };
   cwlRoundMemberCurrent: {
     findMany: (args?: unknown) => Promise<CwlRoundMemberCurrent[]>;
   };
@@ -130,6 +133,10 @@ type MirrorSyncTargetClient = {
   currentCwlRound: {
     deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
     createMany: (args: { data: CurrentCwlRound[] }) => Promise<CreateManyResult>;
+  };
+  currentCwlPrepSnapshot: {
+    deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
+    createMany: (args: { data: CurrentCwlPrepSnapshot[] }) => Promise<CreateManyResult>;
   };
   cwlRoundMemberCurrent: {
     deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
@@ -427,6 +434,7 @@ export class MirrorSyncService {
     ClanWarParticipation: ClanWarParticipation[];
     WarLookup: WarLookup[];
     CurrentCwlRound: CurrentCwlRound[];
+    CurrentCwlPrepSnapshot: CurrentCwlPrepSnapshot[];
     CwlRoundMemberCurrent: CwlRoundMemberCurrent[];
     CwlRoundHistory: CwlRoundHistory[];
     CwlRoundMemberHistory: CwlRoundMemberHistory[];
@@ -457,6 +465,9 @@ export class MirrorSyncService {
         orderBy: [{ warId: "asc" }],
       }),
       CurrentCwlRound: await sourceClient.currentCwlRound.findMany({
+        orderBy: [{ season: "asc" }, { clanTag: "asc" }],
+      }),
+      CurrentCwlPrepSnapshot: await sourceClient.currentCwlPrepSnapshot.findMany({
         orderBy: [{ season: "asc" }, { clanTag: "asc" }],
       }),
       CwlRoundMemberCurrent: await sourceClient.cwlRoundMemberCurrent.findMany({
@@ -497,6 +508,7 @@ export class MirrorSyncService {
       | ClanWarParticipation[]
       | WarLookup[]
       | CurrentCwlRound[]
+      | CurrentCwlPrepSnapshot[]
       | CwlRoundMemberCurrent[]
       | CwlRoundHistory[]
       | CwlRoundMemberHistory[]
@@ -557,6 +569,15 @@ export class MirrorSyncService {
       const deletedRows = (await tx.currentCwlRound.deleteMany()).count;
       const insertedRows = await this.insertBatches(rows as CurrentCwlRound[], (batch) =>
         tx.currentCwlRound.createMany({ data: batch }),
+      );
+      return { table, sourceRows: rows.length, deletedRows, insertedRows };
+    }
+
+    if (table === "CurrentCwlPrepSnapshot") {
+      const deletedRows = (await tx.currentCwlPrepSnapshot.deleteMany()).count;
+      const insertedRows = await this.insertBatches(
+        rows as CurrentCwlPrepSnapshot[],
+        (batch) => tx.currentCwlPrepSnapshot.createMany({ data: batch }),
       );
       return { table, sourceRows: rows.length, deletedRows, insertedRows };
     }

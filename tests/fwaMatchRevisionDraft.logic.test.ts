@@ -67,6 +67,59 @@ describe("fwa match revision baseline resolution", () => {
     });
   });
 
+  it("keeps same-war posted refreshes anchored to the confirmed outcome baseline", () => {
+    const confirmedState = buildCurrentWarConfirmedStateForTest({
+      warId: 777,
+      warStartMs: Date.parse("2026-03-12T00:00:00.000Z"),
+      opponentTag: "2Q80R9PYU",
+      matchType: "FWA",
+      expectedOutcome: "LOSE",
+    });
+    const liveFields = {
+      warId: String(confirmedState?.warId ?? ""),
+      opponentTag: "2Q80R9PYU",
+      matchType: "FWA" as const,
+      expectedOutcome: "WIN" as const,
+    };
+    const baseline = resolveConfirmedRevisionBaselineForTest({
+      syncRow: {
+        warId: String(confirmedState?.warId ?? ""),
+        opponentTag: confirmedState?.opponentTag ?? "#2Q80R9PYU",
+        lastKnownMatchType: confirmedState?.matchType ?? null,
+        lastKnownOutcome: confirmedState?.outcome ?? null,
+        isFwa: true,
+        confirmedByClanMail: true,
+      },
+      mailConfig: {
+        lastWarId: String(confirmedState?.warId ?? ""),
+        lastOpponentTag: confirmedState?.opponentTag ?? "#2Q80R9PYU",
+        lastMatchType: confirmedState?.matchType ?? null,
+        lastExpectedOutcome: confirmedState?.outcome ?? null,
+      },
+      liveFields,
+      lifecycleStatus: "posted",
+    });
+    const resolved = resolveEffectiveRevisionStateForTest({
+      liveFields,
+      confirmedBaseline: baseline,
+      draft: null,
+    });
+
+    expect(baseline).toEqual({
+      warId: "777",
+      opponentTag: "2Q80R9PYU",
+      matchType: "FWA",
+      expectedOutcome: "LOSE",
+    });
+    expect(resolved.effective).toEqual({
+      warId: "777",
+      opponentTag: "2Q80R9PYU",
+      matchType: "FWA",
+      expectedOutcome: "LOSE",
+    });
+    expect(resolved.draftDiffersFromBaseline).toBe(false);
+  });
+
   it("returns null for posted state when confirmed baseline is unavailable", () => {
     const baseline = resolveConfirmedRevisionBaselineForTest({
       syncRow: {

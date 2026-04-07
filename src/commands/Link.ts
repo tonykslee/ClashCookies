@@ -31,7 +31,6 @@ import {
   listPlayerLinksForClanMembers,
   type PlayerLinkCreateResult,
   normalizeClanTag,
-  normalizeDiscordUserId,
   normalizePersistedDiscordUsername,
   normalizePlayerTag,
 } from "../services/PlayerLinkService";
@@ -188,7 +187,7 @@ function formatLinkCreateResultMessage(input: {
     return `already_linked_to_other_user: ${input.playerTag} is linked to <@${input.existingDiscordUserId}>. delete-first is required.`;
   }
   if (input.outcome === "invalid_user") {
-    return "invalid_user: expected a Discord snowflake user ID.";
+    return "invalid_user: expected a Discord user.";
   }
   return "invalid_tag: use Clash tags with characters `PYLQGRJCUV0289`.";
 }
@@ -1420,7 +1419,7 @@ export async function handleLinkEmbedModalSubmit(
     }
     await interaction.reply({
       ephemeral: true,
-      content: "invalid_user: expected a valid Discord user ID.",
+      content: "invalid_user: expected a valid Discord user.",
     });
   } catch {
     await interaction.reply({
@@ -1441,7 +1440,10 @@ async function canUseAdminCreateOverride(
   interaction: ChatInputCommandInteraction,
 ): Promise<boolean> {
   if (canAdminBypass(interaction)) return true;
-  return permissionService.canUseAnyTarget(["link:create:admin"], interaction);
+  return permissionService.canUseAnyTarget(
+    ["link:create:other-user"],
+    interaction,
+  );
 }
 
 async function canUseAdminDeleteOverride(
@@ -1485,8 +1487,8 @@ export const Link: Command = {
         },
         {
           name: "user",
-          description: "Discord user ID override (admin-only)",
-          type: ApplicationCommandOptionType.String,
+          description: "Selected Discord user override (FWA Leader/Admin)",
+          type: ApplicationCommandOptionType.User,
           required: false,
         },
       ],
@@ -1643,25 +1645,14 @@ export const Link: Command = {
         return;
       }
 
-      const requestedUserInput =
-        interaction.options.getString("user", false)?.trim() ?? "";
-      const requestedUserId = requestedUserInput
-        ? normalizeDiscordUserId(requestedUserInput)
-        : null;
-      if (requestedUserInput && !requestedUserId) {
-        await interaction.editReply(
-          "invalid_user: expected a Discord snowflake user ID.",
-        );
-        return;
-      }
-
-      const targetDiscordUserId = requestedUserId ?? interaction.user.id;
+      const requestedUser = interaction.options.getUser("user", false);
+      const targetDiscordUserId = requestedUser?.id ?? interaction.user.id;
       const isSelfCreate = targetDiscordUserId === interaction.user.id;
       if (!isSelfCreate) {
         const allowed = await canUseAdminCreateOverride(interaction);
         if (!allowed) {
           await interaction.editReply(
-            "not_allowed: only admins can create links for another Discord user.",
+            "not_allowed: only admins or FWA Leaders can create links for another Discord user.",
           );
           return;
         }

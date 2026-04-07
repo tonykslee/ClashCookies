@@ -7,7 +7,12 @@ import {
 } from "./ActivitySignalService";
 import { resolveCurrentCwlSeasonKey } from "./CwlRegistryService";
 import { CoCService, type ClanCapitalRaidSeason } from "./CoCService";
-import { normalizeClanTag, normalizePlayerTag } from "./PlayerLinkService";
+import { cocRequestQueueService } from "./CoCRequestQueueService";
+import {
+  normalizeClanTag,
+  normalizeDiscordUserId,
+  normalizePlayerTag,
+} from "./PlayerLinkService";
 import {
   buildTrackedWarMemberStateByClanAndPlayer,
   isTodoWarStateActive,
@@ -61,10 +66,27 @@ type TodoSnapshotRefreshResult = {
   updatedCount: number;
 };
 
+type TodoRefreshCadence = "tracked" | "observe";
+
+type TodoActivatedRefreshStats = {
+  activatedUserCount: number;
+  totalLinkedUserCount: number;
+  skippedNeverUsedUserCount: number;
+  selectedPlayerCount: number;
+  trackedPlayerCount: number;
+  nonTrackedPlayerCount: number;
+};
+
 type TodoWindow = {
   active: boolean;
   startMs: number;
   endMs: number;
+};
+
+type WarEventLinkedPlayerRefreshProducer = {
+  source: string;
+  pacingMs: number | null;
+  backlogThreshold: number;
 };
 
 type TodoClanGamesWindow = {
@@ -137,7 +159,6 @@ const TODO_GAMES_REWARD_COLLECTION_DURATION_MS = 7 * 24 * 60 * 60 * 1000;
 const TODO_SNAPSHOT_WRITE_CHUNK_SIZE = 50;
 /** Purpose: keep all Todo snapshot reads/writes in one service boundary. */
 export class TodoSnapshotService {
-  private refreshAllPromise: Promise<TodoSnapshotRefreshResult> | null = null;
   private readonly refreshByBatchKey = new Map<
     string,
     Promise<TodoSnapshotRefreshResult>
@@ -145,7 +166,6 @@ export class TodoSnapshotService {
 
   /** Purpose: clear in-memory refresh locks between isolated tests. */
   resetForTest(): void {
-    this.refreshAllPromise = null;
     this.refreshByBatchKey.clear();
   }
 
@@ -207,16 +227,132 @@ export class TodoSnapshotService {
   async refreshAllLinkedPlayerSnapshots(input: {
     cocService?: CoCService;
     nowMs?: number;
+    producerPacingMs?: number | null;
   }): Promise<TodoSnapshotRefreshResult> {
-    if (this.refreshAllPromise) {
-      return this.refreshAllPromise;
+    return this.refreshActivatedTodoLinkedPlayerSnapshots({
+      cadence: "tracked",
+      cocService: input.cocService,
+      nowMs: input.nowMs,
+      producerPacingMs: input.producerPacingMs,
+    });
+  }
+
+  /** Purpose: refresh todo snapshots for previously-activated users within one cadence bucket. */
+  async refreshActivatedTodoLinkedPlayerSnapshots(input: {
+    cadence: TodoRefreshCadence;
+    cocService?: CoCService;
+    nowMs?: number;
+    producerPacingMs?: number | null;
+  }): Promise<TodoSnapshotRefreshResult & TodoActivatedRefreshStats> {
+    const allLinkedUserRows = await prisma.playerLink.findMany({
+      where: { discordUserId: { not: null } },
+      select: { discordUserId: true, playerTag: true },
+      orderBy: [{ createdAt: "asc" }, { playerTag: "asc" }],
+    });
+    const totalLinkedUserIds = [
+      ...new Set(
+        allLinkedUserRows
+          .map((row) => normalizeDiscordUserId(row.discordUserId))
+          .filter((value): value is string => Boolean(value)),
+      ),
+    ];
+
+    const activatedUserRows = await prisma.todoUserUsage.findMany({
+      select: { discordUserId: true },
+      orderBy: { activatedAt: "asc" },
+    });
+    const activatedUserIdSet = new Set(
+      activatedUserRows
+        .map((row) => normalizeDiscordUserId(row.discordUserId))
+        .filter((value): value is string => Boolean(value)),
+    );
+
+    const activatedLinkedRows = allLinkedUserRows.filter((row) => {
+      const discordUserId = normalizeDiscordUserId(row.discordUserId);
+      return Boolean(discordUserId && activatedUserIdSet.has(discordUserId));
+    });
+    const activatedPlayerTags = normalizePlayerTags(
+      activatedLinkedRows.map((row) => row.playerTag),
+    );
+
+    const snapshotRows = activatedPlayerTags.length > 0
+      ? await prisma.todoPlayerSnapshot.findMany({
+          where: { playerTag: { in: activatedPlayerTags } },
+          select: { playerTag: true, clanTag: true },
+        })
+      : [];
+    const snapshotClanTagByPlayerTag = new Map(
+      snapshotRows.map((row) => [
+        normalizePlayerTag(row.playerTag),
+        normalizeClanTag(row.clanTag ?? ""),
+      ] as const),
+    );
+    const trackedClanTagRows = await prisma.trackedClan.findMany({
+      select: { tag: true },
+    });
+    const trackedClanTagSet = new Set(
+      trackedClanTagRows
+        .map((row) => normalizeClanTag(row.tag))
+        .filter(Boolean),
+    );
+
+    const trackedPlayerTags: string[] = [];
+    const nonTrackedPlayerTags: string[] = [];
+    for (const playerTag of activatedPlayerTags) {
+      const clanTag = snapshotClanTagByPlayerTag.get(playerTag) ?? null;
+      if (clanTag && trackedClanTagSet.has(clanTag)) {
+        trackedPlayerTags.push(playerTag);
+      } else {
+        nonTrackedPlayerTags.push(playerTag);
+      }
     }
 
-    const task = this.refreshAllLinkedPlayerSnapshotsInternal(input).finally(() => {
-      this.refreshAllPromise = null;
-    });
-    this.refreshAllPromise = task;
-    return task;
+    const selectedPlayerTags =
+      input.cadence === "tracked" ? trackedPlayerTags : nonTrackedPlayerTags;
+    const producerSource =
+      input.cadence === "tracked"
+        ? "war_event_poll_cycle"
+        : "activity_observe_cycle";
+    const result =
+      selectedPlayerTags.length > 0
+        ? await this.refreshSnapshotsForPlayerTagsInternal({
+            playerTags: selectedPlayerTags,
+            cocService: input.cocService,
+            nowMs: input.nowMs,
+            includeNonTrackedCwlRefresh: input.cadence === "observe",
+            producer: {
+              source: producerSource,
+              pacingMs:
+                Number.isFinite(input.producerPacingMs ?? NaN) &&
+                Number(input.producerPacingMs) > 0
+                  ? Math.trunc(Number(input.producerPacingMs))
+                  : null,
+              backlogThreshold: 250,
+            },
+          })
+        : { playerCount: 0, updatedCount: 0 };
+
+    const selectedPlayerCount = normalizePlayerTags(selectedPlayerTags).length;
+    const trackedPlayerCount = normalizePlayerTags(trackedPlayerTags).length;
+    const nonTrackedPlayerCount = normalizePlayerTags(nonTrackedPlayerTags).length;
+    const activatedUserCount = activatedUserIdSet.size;
+    const skippedNeverUsedUserCount = Math.max(
+      0,
+      totalLinkedUserIds.length - activatedUserCount,
+    );
+    console.info(
+      `[todo-snapshot] event=todo_refresh_population cadence=${input.cadence} activated_user_count=${activatedUserCount} total_linked_user_count=${totalLinkedUserIds.length} skipped_never_used_user_count=${skippedNeverUsedUserCount} selected_player_count=${selectedPlayerCount} tracked_player_count=${trackedPlayerCount} non_tracked_player_count=${nonTrackedPlayerCount}`,
+    );
+
+    return {
+      ...result,
+      activatedUserCount,
+      totalLinkedUserCount: totalLinkedUserIds.length,
+      skippedNeverUsedUserCount,
+      selectedPlayerCount,
+      trackedPlayerCount,
+      nonTrackedPlayerCount,
+    };
   }
 
   /** Purpose: refresh one targeted player-tag subset with deduped in-flight locking. */
@@ -255,6 +391,7 @@ export class TodoSnapshotService {
   private async refreshAllLinkedPlayerSnapshotsInternal(input: {
     cocService?: CoCService;
     nowMs?: number;
+    producerPacingMs?: number | null;
   }): Promise<TodoSnapshotRefreshResult> {
     const links = await prisma.playerLink.findMany({
       where: { discordUserId: { not: null } },
@@ -262,8 +399,8 @@ export class TodoSnapshotService {
       orderBy: [{ createdAt: "asc" }, { playerTag: "asc" }],
     });
 
-    const playerTags = normalizePlayerTags(links.map((row) => row.playerTag));
-    if (playerTags.length <= 0) {
+    const playerTags = links.map((row) => row.playerTag);
+    if (normalizePlayerTags(playerTags).length <= 0) {
       return { playerCount: 0, updatedCount: 0 };
     }
 
@@ -271,6 +408,15 @@ export class TodoSnapshotService {
       playerTags,
       cocService: input.cocService,
       nowMs: input.nowMs,
+      producer: {
+        source: "war_event_poll_cycle",
+        pacingMs:
+          Number.isFinite(input.producerPacingMs ?? NaN) &&
+          Number(input.producerPacingMs) > 0
+            ? Math.trunc(Number(input.producerPacingMs))
+            : null,
+        backlogThreshold: 250,
+      },
     });
   }
 
@@ -280,6 +426,7 @@ export class TodoSnapshotService {
     cocService?: CoCService;
     nowMs?: number;
     includeNonTrackedCwlRefresh?: boolean;
+    producer?: WarEventLinkedPlayerRefreshProducer | null;
   }): Promise<TodoSnapshotRefreshResult> {
     const normalizedTags = normalizePlayerTags(input.playerTags);
     if (normalizedTags.length <= 0) {
@@ -297,6 +444,7 @@ export class TodoSnapshotService {
     const liveClanTagByPlayerTag = await loadLiveClanTagsByPlayerTag({
       cocService: input.cocService,
       playerTags: normalizedTags,
+      producer: input.producer ?? null,
     });
 
     const signalStateKeyByTag = new Map(
@@ -370,11 +518,18 @@ export class TodoSnapshotService {
     );
     const resolvedClanTagByPlayerTag = new Map<string, string | null>();
     for (const playerTag of normalizedTags) {
+      const existing = existingByTag.get(playerTag) ?? null;
       const liveClanTag = liveClanTagByPlayerTag.get(playerTag) ?? "";
       const fromMember = latestClanMemberByTag.get(playerTag)?.clanTag ?? "";
       const fromExisting = existingByTag.get(playerTag)?.clanTag ?? "";
+      const pinnedEventClanTag =
+        existing && (existing.warActive || existing.raidActive)
+          ? normalizeClanTag(existing.clanTag ?? "")
+          : "";
       const resolvedClanTag =
-        normalizeClanTag(liveClanTag || fromMember || fromExisting) || null;
+        normalizeClanTag(
+          pinnedEventClanTag || liveClanTag || fromMember || fromExisting,
+        ) || null;
       resolvedClanTagByPlayerTag.set(playerTag, resolvedClanTag);
     }
 
@@ -961,6 +1116,11 @@ function resolveGamesCyclePoints(input: {
   return 0;
 }
 
+function sleepMs(ms: number): Promise<void> {
+  if (!Number.isFinite(ms) || ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, Math.trunc(ms)));
+}
+
 /** Purpose: execute write operations in bounded chunks with parallel writes per chunk. */
 async function runChunkedWrites<T>(
   items: T[],
@@ -986,6 +1146,42 @@ function normalizePlayerTags(input: string[]): string[] {
     normalized.push(playerTag);
   }
   return normalized;
+}
+
+function chunkArray<T>(input: T[], chunkSize: number): T[][] {
+  const safeChunkSize =
+    Number.isFinite(chunkSize) && chunkSize > 0 ? Math.trunc(chunkSize) : 1;
+  const chunks: T[][] = [];
+  for (let index = 0; index < input.length; index += safeChunkSize) {
+    chunks.push(input.slice(index, index + safeChunkSize));
+  }
+  return chunks;
+}
+
+export function resolveWarEventLinkedPlayerRefreshPlanForTest(input: {
+  candidateCount: number;
+  dedupedCount: number;
+  pacingMs?: number | null;
+}): {
+  candidateCount: number;
+  dedupedCount: number;
+  chunkSize: number;
+  chunkCount: number;
+  chunkDelayMs: number;
+} {
+  const candidateCount = Math.max(0, Math.trunc(Number(input.candidateCount) || 0));
+  const dedupedCount = Math.max(0, Math.trunc(Number(input.dedupedCount) || 0));
+  const chunkSize = dedupedCount > 0 ? 25 : 1;
+  const chunkCount = dedupedCount > 0 ? Math.ceil(dedupedCount / chunkSize) : 0;
+  const pacingMs =
+    Number.isFinite(input.pacingMs ?? NaN) && Number(input.pacingMs) > 0
+      ? Math.trunc(Number(input.pacingMs))
+      : 0;
+  const chunkDelayMs =
+    pacingMs > 0 && chunkCount > 1
+      ? Math.max(250, Math.floor(pacingMs / chunkCount))
+      : 0;
+  return { candidateCount, dedupedCount, chunkSize, chunkCount, chunkDelayMs };
 }
 
 /** Purpose: keep only the most recent clan-member row per player tag by source sync time. */
@@ -1381,20 +1577,74 @@ function normalizeRoundState(input: unknown): string {
 async function loadLiveClanTagsByPlayerTag(input: {
   cocService?: CoCService;
   playerTags: string[];
+  producer?: WarEventLinkedPlayerRefreshProducer | null;
 }): Promise<Map<string, string>> {
   if (!input.cocService || typeof input.cocService.getPlayerRaw !== "function") {
     return new Map();
   }
 
-  const entries = await Promise.all(
-    input.playerTags.map(async (playerTag) => {
-      const player = await input.cocService!
-        .getPlayerRaw(playerTag, { suppressTelemetry: true })
-        .catch(() => null);
-      const clanTag = normalizeClanTag(String(player?.clan?.tag ?? ""));
-      return [playerTag, clanTag] as const;
-    }),
-  );
+  const normalizedTags = normalizePlayerTags(input.playerTags);
+  const plan = resolveWarEventLinkedPlayerRefreshPlanForTest({
+    candidateCount: input.playerTags.length,
+    dedupedCount: normalizedTags.length,
+    pacingMs: input.producer?.pacingMs ?? null,
+  });
+  const chunkedTags = chunkArray(normalizedTags, plan.chunkSize);
+  if (input.producer) {
+    console.info(
+      `[todo-snapshot] event=war_event_player_refresh_plan source=${input.producer.source} candidate_count=${plan.candidateCount} deduped_count=${plan.dedupedCount} chunk_size=${plan.chunkSize} chunk_count=${plan.chunkCount} stagger_ms=${plan.chunkDelayMs} backlog_threshold=${input.producer.backlogThreshold}`,
+    );
+  }
+
+  const entries: Array<readonly [string, string]> = [];
+  let enqueuedCount = 0;
+  let deferredCount = 0;
+  for (let chunkIndex = 0; chunkIndex < chunkedTags.length; chunkIndex += 1) {
+    if (input.producer) {
+      const queueStatus = cocRequestQueueService.getStatus();
+      if (queueStatus.backgroundQueueDepth >= input.producer.backlogThreshold) {
+        deferredCount = chunkedTags
+          .slice(chunkIndex)
+          .reduce((sum, chunk) => sum + chunk.length, 0);
+        console.warn(
+          `[todo-snapshot] event=war_event_player_refresh_deferred source=${input.producer.source} reason=background_backlog backlog_depth=${queueStatus.backgroundQueueDepth} threshold=${input.producer.backlogThreshold} deferred_count=${deferredCount}`,
+        );
+        break;
+      }
+      if (chunkIndex > 0 && plan.chunkDelayMs > 0) {
+        console.info(
+          `[todo-snapshot] event=war_event_player_refresh_stagger source=${input.producer.source} chunk_index=${chunkIndex + 1} chunk_count=${chunkedTags.length} delay_ms=${plan.chunkDelayMs}`,
+        );
+        await sleepMs(plan.chunkDelayMs);
+      }
+    }
+
+    const chunk = chunkedTags[chunkIndex];
+    if (input.producer) {
+      const queueStatus = cocRequestQueueService.getStatus();
+      console.info(
+        `[todo-snapshot] event=war_event_player_refresh_chunk source=${input.producer.source} chunk_index=${chunkIndex + 1} chunk_count=${chunkedTags.length} chunk_size=${chunk.length} background_depth=${queueStatus.backgroundQueueDepth}`,
+      );
+    }
+    const chunkEntries = await Promise.all(
+      chunk.map(async (playerTag) => {
+        const player = await input.cocService!
+          .getPlayerRaw(playerTag, { suppressTelemetry: true })
+          .catch(() => null);
+        const clanTag = normalizeClanTag(String(player?.clan?.tag ?? ""));
+        return [playerTag, clanTag] as const;
+      }),
+    );
+    entries.push(...chunkEntries);
+    enqueuedCount += chunk.length;
+  }
+
+  if (input.producer) {
+    console.info(
+      `[todo-snapshot] event=war_event_player_refresh_complete source=${input.producer.source} candidate_count=${plan.candidateCount} deduped_count=${plan.dedupedCount} enqueued_count=${enqueuedCount} deferred_count=${deferredCount}`,
+    );
+  }
+
   return new Map(
     entries.filter((entry): entry is [string, string] => Boolean(entry[0] && entry[1])),
   );

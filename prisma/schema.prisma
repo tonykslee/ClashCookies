@@ -130,6 +130,12 @@ model TodoPlayerSnapshot {
   @@index([updatedAt])
 }
 
+model TodoUserUsage {
+  discordUserId String   @id
+  activatedAt   DateTime @default(now())
+  lastUsedAt    DateTime @updatedAt
+}
+
 enum ReminderType {
   WAR_CWL
   RAIDS
@@ -361,6 +367,29 @@ model CwlRoundMemberCurrent {
   @@index([season, clanTag, roundDay])
   @@index([season, playerTag])
   @@index([season, clanTag, subbedIn])
+}
+
+model CurrentCwlPrepSnapshot {
+  season               String
+  clanTag              String
+  roundDay             Int
+  clanName             String?
+  opponentTag          String?
+  opponentName         String?
+  roundState           String
+  leagueGroupState     String?
+  preparationStartTime DateTime?
+  startTime            DateTime?
+  endTime              DateTime?
+  lineupJson           Json
+  sourceUpdatedAt      DateTime
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@id([season, clanTag])
+  @@unique([season, clanTag, roundDay])
+  @@index([season, roundDay])
+  @@index([roundState, updatedAt])
 }
 
 model CwlRoundHistory {

@@ -36,6 +36,61 @@ describe("FwaClanMembersSyncService", () => {
     vi.clearAllMocks();
   });
 
+  it("refreshes only the requested clan tags from CoC into the current-member owner", async () => {
+    const cocService = {
+      getClan: vi.fn().mockResolvedValue({
+        members: [
+          {
+            tag: "#PYLQ0289",
+            name: "Alpha",
+            role: "leader",
+            expLevel: 10,
+            clanRank: 1,
+            donations: 3,
+            donationsReceived: 4,
+            trophies: 5000,
+            league: { name: "Gold I" },
+          },
+          {
+            tag: "#QGRJ2222",
+            name: "Bravo",
+            role: "coLeader",
+            expLevel: 9,
+            clanRank: 2,
+            donations: 1,
+            donationsReceived: 2,
+            trophies: 4800,
+            league: { name: "Gold II" },
+          },
+        ],
+      }),
+    } as any;
+
+    txMock.fwaClanMemberCurrent.deleteMany.mockResolvedValue({ count: 1 });
+    txMock.fwaClanMemberCurrent.upsert.mockResolvedValue({});
+
+    const service = new FwaClanMembersSyncService();
+    const result = await service.refreshCurrentClanMembersForClanTags(["#aaa111", "#AAA111"], {
+      cocService,
+    });
+
+    expect(cocService.getClan).toHaveBeenCalledTimes(1);
+    expect(cocService.getClan).toHaveBeenCalledWith("#AAA111");
+    expect(txMock.fwaClanMemberCurrent.deleteMany).toHaveBeenCalledWith({
+      where: {
+        clanTag: "#AAA111",
+        playerTag: { notIn: ["#PYLQ0289", "#QGRJ2222"] },
+      },
+    });
+    expect(txMock.fwaClanMemberCurrent.upsert).toHaveBeenCalledTimes(2);
+    expect(result).toEqual({
+      clanCount: 1,
+      rowCount: 2,
+      changedRowCount: 3,
+      failedClans: [],
+    });
+  });
+
   it("syncs one tracked clan and removes stale current rows", async () => {
     const client = {
       fetchClanMembers: vi.fn().mockResolvedValue([

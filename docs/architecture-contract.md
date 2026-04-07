@@ -106,8 +106,9 @@ Each domain concept must have exactly one authoritative owner.
 | --- | --- |
 | Tracked FWA clans | TrackedClan |
 | Seasonal CWL tracked clans | CwlTrackedClan |
-| Live/prep CWL round identity and timing | CurrentCwlRound |
-| Live/prep CWL round member summaries | CwlRoundMemberCurrent |
+| Live battle-day CWL round identity and timing | CurrentCwlRound |
+| Live battle-day CWL round member summaries | CwlRoundMemberCurrent |
+| Live overlapping prep-day CWL snapshot | CurrentCwlPrepSnapshot |
 | Ended CWL round canonical history | CwlRoundHistory |
 | Ended CWL round member history | CwlRoundMemberHistory |
 | Derived current-season CWL roster summary | CwlPlayerClanSeason |
@@ -176,10 +177,12 @@ Rules:
 ## 6) Snapshot and reminder ownership
 
 - `TodoPlayerSnapshot` is the authoritative render source for `/todo`.
-- `CurrentCwlRound` and `CwlRoundMemberCurrent` own current/prep CWL timing and lineup truth.
+- `TodoUserUsage` is the lightweight per-user activation owner for `/todo` background refresh eligibility.
+- `CurrentCwlRound` and `CwlRoundMemberCurrent` own live battle-day CWL timing and lineup truth.
+- `CurrentCwlPrepSnapshot` owns the one live overlapping prep-day lineup snapshot when the next day is simultaneously in preparation.
 - `CwlRoundHistory` and `CwlRoundMemberHistory` own ended CWL round truth.
 - `CwlPlayerClanSeason` owns the derived observed current-season CWL roster summary.
-- `CwlRotationPlan*` owns current-season planner artifacts only.
+- `CwlRotationPlan*` owns current-season planner artifacts only, and sheet import/export commands treat those rows as the active planner source once confirmed.
 - Guild reminder ownership lives in `Reminder`, `ReminderTimeOffset`, `ReminderTargetClan`, and `ReminderFireLog`.
 - Personal reminder ownership lives in `UserActivityReminderRule` and `UserActivityReminderDelivery`.
 - Do not rebuild broad multi-source player state synchronously in command handlers when a maintained snapshot already exists.
@@ -210,6 +213,7 @@ Rules:
 - Poll loops must avoid N+1 database patterns.
 - Prefer bulk reads followed by in-memory mapping.
 - Poll loops and schedulers must stay bounded by tracked scope.
+- Split `/todo` background refreshes by cadence: faster tracked-clan refresh for activated users in tracked clans, slower observe refresh for activated users outside tracked clans.
 
 Preferred pattern:
 

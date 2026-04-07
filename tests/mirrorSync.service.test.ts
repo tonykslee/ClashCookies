@@ -19,6 +19,7 @@ function makeDefaultTableStore(): MirrorTableDataStore {
     CurrentWar: [{ guildId: "g1", clanTag: "#AAA111", channelId: "c1", notify: true }],
     WarAttacks: [{ warId: 1, playerTag: "#P1", attackNumber: 1 }],
     CurrentCwlRound: [],
+    CurrentCwlPrepSnapshot: [],
     CwlRoundMemberCurrent: [],
     CwlRoundHistory: [],
     CwlRoundMemberHistory: [],
@@ -75,6 +76,9 @@ function buildSourceClient(
     },
     currentCwlRound: {
       findMany: vi.fn(async () => cloneRows(store.CurrentCwlRound)),
+    },
+    currentCwlPrepSnapshot: {
+      findMany: vi.fn(async () => cloneRows(store.CurrentCwlPrepSnapshot)),
     },
     cwlRoundMemberCurrent: {
       findMany: vi.fn(async () => cloneRows(store.CwlRoundMemberCurrent)),
@@ -137,6 +141,10 @@ function buildTargetClient(
     currentCwlRound: {
       deleteMany: deleteMany("CurrentCwlRound"),
       createMany: createMany("CurrentCwlRound"),
+    },
+    currentCwlPrepSnapshot: {
+      deleteMany: deleteMany("CurrentCwlPrepSnapshot"),
+      createMany: createMany("CurrentCwlPrepSnapshot"),
     },
     cwlRoundMemberCurrent: {
       deleteMany: deleteMany("CwlRoundMemberCurrent"),
@@ -222,6 +230,7 @@ describe("MirrorSyncService", () => {
     expect(targetStore.CurrentWar).toEqual(sourceStore.CurrentWar);
     expect(targetStore.WarAttacks).toEqual(sourceStore.WarAttacks);
     expect(targetStore.CurrentCwlRound).toEqual(sourceStore.CurrentCwlRound);
+    expect(targetStore.CurrentCwlPrepSnapshot).toEqual(sourceStore.CurrentCwlPrepSnapshot);
     expect(targetStore.CwlRoundMemberCurrent).toEqual(sourceStore.CwlRoundMemberCurrent);
     expect(targetStore.CwlRoundHistory).toEqual(sourceStore.CwlRoundHistory);
     expect(targetStore.CwlRoundMemberHistory).toEqual(sourceStore.CwlRoundMemberHistory);
