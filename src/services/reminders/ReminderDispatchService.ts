@@ -293,7 +293,7 @@ async function resolveReminderRosterLines(input: {
   };
 }
 
-/** Purpose: resolve WAR roster entries from current war-member feed rows and keep only members with attacks remaining. */
+/** Purpose: resolve WAR roster entries from the active war attack rows and keep only members with attacks remaining. */
 async function resolveWarReminderRoster(input: {
   clanTag: string;
 }): Promise<{ windowActive: boolean; roster: ReminderRosterEntry[] }> {
@@ -303,19 +303,24 @@ async function resolveWarReminderRoster(input: {
   const currentWar = await prisma.currentWar.findFirst({
     where: { clanTag },
     orderBy: { updatedAt: "desc" },
-    select: { state: true },
+    select: { state: true, warId: true },
   });
-  if (!isBattleWarState(currentWar?.state)) {
+  const warId = Number(currentWar?.warId);
+  if (!isBattleWarState(currentWar?.state) || !Number.isFinite(warId)) {
     return { windowActive: false, roster: [] };
   }
 
-  const rows = await prisma.fwaWarMemberCurrent.findMany({
-    where: { clanTag },
+  const rows = await prisma.warAttacks.findMany({
+    where: {
+      clanTag,
+      warId,
+      attackOrder: 0,
+    },
     select: {
       playerTag: true,
       playerName: true,
-      position: true,
-      attacks: true,
+      playerPosition: true,
+      attacksUsed: true,
     },
   });
 
@@ -324,12 +329,12 @@ async function resolveWarReminderRoster(input: {
       const playerTag = normalizePlayerTag(row.playerTag);
       if (!playerTag) return null;
       const playerName = sanitizeReminderPlayerName(row.playerName, playerTag);
-      const attacksUsed = clampInt(row.attacks, 0, 2);
+      const attacksUsed = clampInt(row.attacksUsed, 0, 2);
       const attacksRemaining = Math.max(0, 2 - attacksUsed);
       return {
         playerTag,
         playerName,
-        position: toFiniteIntOrNull(row.position),
+        position: toFiniteIntOrNull(row.playerPosition),
         discordUserId: null,
         attacksRemaining,
         attacksMax: 2,
