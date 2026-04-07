@@ -114,7 +114,9 @@ const TODO_DEFAULT_GAMES_TARGET = 4000;
 const TODO_GAMES_COMPLETE_POINTS = 4000;
 const TODO_GAMES_MAX_POINTS = 10_000;
 const TODO_LOCALE = "en-US";
+const TODO_STALE_SNAPSHOT_LEGEND = ":hourglass: snapshot may be out of date";
 const todoRenderCacheByKey = new Map<string, CachedTodoRender>();
+const todoRenderGenerationByUser = new Map<string, number>();
 
 /** Purpose: normalize `/todo type` input into one safe enum value. */
 export function normalizeTodoType(input: string | null | undefined): TodoType {
@@ -133,6 +135,15 @@ export function normalizeTodoType(input: string | null | undefined): TodoType {
 /** Purpose: clear in-memory todo render cache between isolated tests. */
 export function resetTodoRenderCacheForTest(): void {
   todoRenderCacheByKey.clear();
+  todoRenderGenerationByUser.clear();
+}
+
+/** Purpose: bump the render cache generation for one user after snapshot refreshes. */
+export function bumpTodoRenderCacheGenerationForUser(discordUserId: string): void {
+  const key = String(discordUserId ?? "").trim();
+  if (!key) return;
+  const current = todoRenderGenerationByUser.get(key) ?? 0;
+  todoRenderGenerationByUser.set(key, current + 1);
 }
 
 /** Purpose: invalidate cached todo render entries for one Discord user after snapshot rebuilds. */
@@ -604,8 +615,11 @@ function buildTodoRenderCacheKey(input: {
   linkedTags: string[];
   snapshotVersion: { snapshotCount: number; maxUpdatedAtMs: number };
 }): string {
+  const discordUserId = String(input.discordUserId ?? "").trim();
+  const generation = todoRenderGenerationByUser.get(discordUserId) ?? 0;
   return [
-    input.discordUserId,
+    discordUserId,
+    String(generation),
     input.linkedTags.join(","),
     String(input.snapshotVersion.snapshotCount),
     String(input.snapshotVersion.maxUpdatedAtMs),
@@ -1063,6 +1077,7 @@ function buildTodoPageDescription(input: {
   const statusLine = sanitizeStatusText(input.statusLine ?? "");
   const lines = [
     `Type: ${input.heading}`,
+    TODO_STALE_SNAPSHOT_LEGEND,
     statusLine || `Linked players: ${input.linkedPlayerCount}`,
     "",
     ...input.lines,
@@ -1079,7 +1094,7 @@ function getWarRowStatus(row: TodoRenderRow): string {
     return "`0 / 2` - snapshot unavailable";
   }
   const { used, max, complete } = getWarRowProgress(row);
-  const staleSuffix = row.staleSnapshot && !complete ? " - stale snapshot" : "";
+  const staleSuffix = row.staleSnapshot && !complete ? " - :hourglass:" : "";
   return `\`${used} / ${max}\`${staleSuffix}`;
 }
 
@@ -1112,7 +1127,7 @@ function getCwlRowStatus(row: TodoRenderRow): string {
   }
 
   if (!isCwlRowAttackPhaseActive(row)) {
-    const staleSuffix = row.staleSnapshot ? " - stale snapshot" : "";
+    const staleSuffix = row.staleSnapshot ? " - :hourglass:" : "";
     const plannedSuffix = row.cwlPlannedSubInAt
       ? ` - planned sub in ${formatRelativeTimestamp(row.cwlPlannedSubInAt)}`
       : "";
@@ -1120,7 +1135,7 @@ function getCwlRowStatus(row: TodoRenderRow): string {
   }
 
   const { used, max } = getCwlRowProgress(row);
-  const staleSuffix = row.staleSnapshot ? " - stale snapshot" : "";
+  const staleSuffix = row.staleSnapshot ? " - :hourglass:" : "";
   return `\`${used} / ${max}\`${staleSuffix}`;
 }
 
@@ -1193,7 +1208,7 @@ function isCwlRowAttackPhaseActive(row: TodoRenderRow): boolean {
 function hasCwlRenderContext(row: TodoRenderRow): boolean {
   if (!row.snapshot) return false;
   if (row.snapshot.cwlActive) return true;
-  return Boolean(row.cwlClanTag || row.cwlClanName);
+  return Boolean(row.cwlPlannedSubInAt);
 }
 
 /** Purpose: map one CWL row into prep/battle completion markers that match WAR semantics. */
@@ -1213,7 +1228,7 @@ function getRaidRowStatus(row: TodoRenderRow): string {
   }
 
   const { used, max } = getRaidRowProgress(row);
-  const staleSuffix = row.staleSnapshot ? " - stale snapshot" : "";
+  const staleSuffix = row.staleSnapshot ? " - :hourglass:" : "";
 
   if (!row.snapshot.raidActive) {
     return `clan capital raids: ${used}/${max} - not active${staleSuffix}`;
@@ -1260,7 +1275,7 @@ function getGamesRowStatus(row: TodoRenderRow): string {
   const points = Math.max(0, toFiniteIntOrNull(row.snapshot.gamesPoints) ?? 0);
   const target =
     toFiniteIntOrNull(row.snapshot.gamesTarget) ?? TODO_DEFAULT_GAMES_TARGET;
-  const staleSuffix = row.staleSnapshot ? " - stale snapshot" : "";
+  const staleSuffix = row.staleSnapshot ? " - :hourglass:" : "";
 
   if (!row.snapshot.gamesActive) {
     return `clan games points: ${points}/${target} - not active${staleSuffix}`;
