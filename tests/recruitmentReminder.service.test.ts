@@ -212,4 +212,19 @@ describe("recruitment reminder service", () => {
       }),
     });
   });
+
+  it("formats recruitment reminder bodies with double backticks", () => {
+    const content = buildRecruitmentReminderDmContent({
+      clanTag: "#PYLQ0289",
+      clanName: "Alpha",
+      platform: "reddit",
+      cooldownExpiresAt: null,
+      templateSubject: "Subject",
+      templateBody: "Line 1\nLine 2",
+      templateImageUrls: [],
+    });
+
+    expect(content).toContain("``Line 1\nLine 2``");
+    expect(content).not.toContain("```");
+  });
 });

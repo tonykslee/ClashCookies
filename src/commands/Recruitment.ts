@@ -18,6 +18,7 @@ import { truncateDiscordContent } from "../helper/discordContent";
 import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
+import { SettingsService } from "../services/SettingsService";
 import {
   formatClanTag,
   getRecruitmentCooldown,
@@ -37,6 +38,7 @@ import {
   autocompleteRecruitmentTimeZones,
   getDateKeyInTimeZone,
   formatRecruitmentReminderTime,
+  formatRecruitmentReminderBody,
   formatRecruitmentReminderWindowSummaryInTimeZone,
   formatRecruitmentReminderRhythmSummaryInTimeZone,
   getNextRecruitmentReminderSlot,
@@ -44,6 +46,7 @@ import {
   normalizeRecruitmentTimezone,
   recruitmentReminderService,
 } from "../services/RecruitmentReminderService";
+import { getSupportedSyncTimeZones } from "../services/syncTimeZone";
 
 const RECRUITMENT_MODAL_PREFIX = "recruitment-edit";
 const DISCORD_CLAN_TAG_INPUT_ID = "discord-clan-tag";
@@ -78,9 +81,8 @@ function sanitizeBodyForBand(body: string): string {
     .trim();
 }
 
-function codeBlock(content: string, language = ""): string {
-  const safe = content.replaceAll("```", "`\u200b``");
-  return `\`\`\`${language}\n${safe}\n\`\`\``;
+function doubleBacktickBlock(content: string): string {
+  return formatRecruitmentReminderBody(content);
 }
 
 function parseModalCustomId(
@@ -143,7 +145,7 @@ function buildDiscordShowMessage(input: {
     `Clan: **${input.clanName}**`,
     "",
     `Recruitment Contents (${input.body.length}/1024):`,
-    codeBlock(input.body),
+    doubleBacktickBlock(input.body),
   ];
 
   if (input.imageUrls.length > 0) {
@@ -155,6 +157,7 @@ function buildDiscordShowMessage(input: {
     "Instructions:",
     `- Go to ${DISCORD_RECRUITMENT_CHANNEL_URL}`,
     "- Type `/post` in that channel and fill clan tag, recruitment contents, image URL, and language.",
+    "- Copy/paste the body from the double-backtick block below.",
     "",
     input.cooldownLine
   );
@@ -177,14 +180,20 @@ function buildBandShowMessage(input: {
     "⚠️ Do NOT mention alliances, families, or Discord servers.",
     "",
     "Recruitment Contents:",
-    codeBlock(sanitizedBody),
+    doubleBacktickBlock(sanitizedBody),
   ];
 
   if (input.imageUrls.length > 0) {
     lines.push("", "Suggested Image URLs:", ...input.imageUrls.map((url) => `- ${url}`));
   }
 
-  lines.push("", input.cooldownLine);
+  lines.push(
+    "",
+    "Destination:",
+    "- https://www.band.us/band/67130116/post",
+    "",
+    input.cooldownLine,
+  );
   return lines.join("\n");
 }
 
@@ -209,11 +218,14 @@ function buildRedditShowMessage(input: {
     `\`${input.subject}\``,
     "",
     "Recruitment Contents:",
-    codeBlock(noGiveawayBody, "md"),
+    doubleBacktickBlock(noGiveawayBody),
     "",
     "Rules:",
     "- No giveaway mentions.",
     "- Once per 7 days per account.",
+    "",
+    "Destination:",
+    "- https://www.reddit.com/r/ClashOfClansRecruit/",
     "",
     input.cooldownLine,
   ].join("\n");
@@ -294,6 +306,63 @@ function formatClanLabel(tag: string, name: string | null): string {
   return name?.trim() ? `${name.trim()} (${formatClanTag(tag)})` : formatClanTag(tag);
 }
 
+function recruitmentDashboardTimezoneKey(userId: string): string {
+  return `user_timezone:${userId}`;
+}
+
+async function resolveRecruitmentDashboardTimezone(input: {
+  settings: SettingsService;
+  userId: string;
+  timezoneSeedRaw: string | null;
+}): Promise<string> {
+  const provided = input.timezoneSeedRaw ? normalizeRecruitmentTimezone(input.timezoneSeedRaw) : null;
+  if (input.timezoneSeedRaw && !provided) {
+    throw new Error("invalid_timezone");
+  }
+
+  const rememberedRaw = await input.settings.get(recruitmentDashboardTimezoneKey(input.userId));
+  const remembered = normalizeRecruitmentTimezone(rememberedRaw);
+  const resolved = provided ?? remembered ?? "UTC";
+  await input.settings.set(recruitmentDashboardTimezoneKey(input.userId), resolved);
+  return resolved;
+}
+
+async function persistRecruitmentDashboardTimezone(
+  settings: SettingsService,
+  userId: string,
+  timezone: string,
+): Promise<void> {
+  const normalized = normalizeRecruitmentTimezone(timezone) ?? "UTC";
+  await settings.set(recruitmentDashboardTimezoneKey(userId), normalized);
+}
+
+function stepRecruitmentDashboardTimezone(
+  currentTimezone: string,
+  delta: -1 | 1,
+  referenceDate = new Date(),
+): string {
+  const zones = getSupportedSyncTimeZones(referenceDate);
+  const current = normalizeRecruitmentTimezone(currentTimezone) ?? "UTC";
+  const index = zones.indexOf(current);
+  const baseIndex = index >= 0 ? index : zones.indexOf("UTC");
+  if (zones.length === 0 || baseIndex < 0) return "UTC";
+  const nextIndex = (baseIndex + delta + zones.length) % zones.length;
+  return zones[nextIndex] ?? "UTC";
+}
+
+function buildRecruitmentDashboardTimezoneControls(input: { sessionId: string }): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(recruitmentDashboardCustomId(input.sessionId, "timezone:prev"))
+      .setLabel("TZ -")
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(recruitmentDashboardCustomId(input.sessionId, "timezone:next"))
+      .setLabel("TZ +")
+      .setStyle(ButtonStyle.Secondary),
+  );
+}
+
 async function loadRecruitmentDashboardData(guildId: string, userId: string): Promise<{
   trackedClans: RecruitmentDashboardTrackedClan[];
   templates: Map<string, RecruitmentDashboardTemplateRow>;
@@ -372,38 +441,44 @@ function buildRecruitmentDashboardEmbed(input: {
       if (tracked.length <= 0) {
         lines.push("No tracked clans configured.");
       } else {
-        for (const clan of tracked) {
-          const statuses = (["discord", "reddit", "band"] as RecruitmentPlatform[]).map((platform) => {
-            const hasTemplate = input.data.templates.has(`${clan.tag}:${platform}`);
-            return `${formatRecruitmentPlatformChoice(platform)}=${hasTemplate ? "stored" : "missing"}`;
-          });
-          lines.push(`- ${formatClanLabel(clan.tag, clan.name)} | ${statuses.join(" | ")}`);
-        }
+        const tableLines = [
+          "Clan".padEnd(24),
+          "Discord".padEnd(10),
+          "Reddit".padEnd(10),
+          "Band".padEnd(10),
+        ];
+        const rows = tracked.map((clan) => {
+          const discord = input.data.templates.has(`${clan.tag}:discord`) ? ":white_check_mark:" : "";
+          const reddit = input.data.templates.has(`${clan.tag}:reddit`) ? ":white_check_mark:" : "";
+          const band = input.data.templates.has(`${clan.tag}:band`) ? ":white_check_mark:" : "";
+          return [
+            formatClanLabel(clan.tag, clan.name).slice(0, 24).padEnd(24),
+            discord.padEnd(10),
+            reddit.padEnd(10),
+            band.padEnd(10),
+          ].join(" | ");
+        });
+        lines.push("```text", tableLines.join(" | "), ...rows, "```");
       }
     } else {
       lines.push("", "Optimization guide:");
       for (const platform of ["discord", "reddit", "band"] as RecruitmentPlatform[]) {
-        const windows = formatRecruitmentReminderWindowSummaryInTimeZone(
-          platform,
-          state.timezone,
-          new Date(input.nowMs),
-        );
+        const now = new Date(input.nowMs);
+        const windows = formatRecruitmentReminderWindowSummaryInTimeZone(platform, state.timezone, now);
         const nextSlots = getRecruitmentReminderSlotCandidates({
           platform,
           timezone: state.timezone,
-          after: new Date(input.nowMs),
+          after: now,
         })
           .slice(0, 3)
           .map((slot) => `\`${formatRecruitmentReminderTime(slot, state.timezone)}\``)
-          .join(", ");
+          .join("\n    - ");
         lines.push(
-          `- ${formatRecruitmentPlatformChoice(platform)}: ${windows}`,
-          `  Rhythm: ${formatRecruitmentReminderRhythmSummaryInTimeZone(
-            platform,
-            state.timezone,
-            new Date(input.nowMs),
-          )}`,
-          `  Next: ${nextSlots || "no upcoming slots"}`,
+          `- ${formatRecruitmentPlatformChoice(platform)}`,
+          `  - Best windows: ${windows}`,
+          `  - Rhythm: ${formatRecruitmentReminderRhythmSummaryInTimeZone(platform, state.timezone, now)}`,
+          "  - Next recommended slots:",
+          nextSlots ? `    - ${nextSlots}` : "    - no upcoming slots",
         );
       }
     }
@@ -423,6 +498,7 @@ function buildRecruitmentDashboardEmbed(input: {
         imageUrls: template.imageUrls,
         cooldownLine: buildCooldownLine(input.data.cooldowns.get(`${state.clanTag}:${platform}`) ?? null),
       }));
+      lines.push("", "Destination:", `- ${DISCORD_RECRUITMENT_CHANNEL_URL}`);
     } else if (platform === "band") {
       lines.push("", buildBandShowMessage({
         clanName: clan?.name ?? state.clanTag,
@@ -499,7 +575,6 @@ function buildRecruitmentDashboardComponents(input: {
 }): Array<ActionRowBuilder<ButtonBuilder> | ActionRowBuilder<StringSelectMenuBuilder>> {
   const state = input.state;
   const tracked = input.data.trackedClans;
-  const buttons = new ActionRowBuilder<ButtonBuilder>();
   const dropdown = new StringSelectMenuBuilder()
     .setCustomId(recruitmentDashboardCustomId(input.sessionId, "scope"))
     .setMinValues(1)
@@ -521,6 +596,7 @@ function buildRecruitmentDashboardComponents(input: {
     })),
   ];
   dropdown.addOptions(menuOptions);
+  const timezoneControls = buildRecruitmentDashboardTimezoneControls({ sessionId: input.sessionId });
 
   if (state.scope === "schedule") {
     const confirmEnabled = Boolean(
@@ -543,6 +619,7 @@ function buildRecruitmentDashboardComponents(input: {
     const dayOptions = buildRecruitmentDashboardDayOptions(input.state, input.data);
     const timeOptions = buildRecruitmentDashboardTimeOptions(input.state, input.data);
     return [
+      timezoneControls,
       scheduleButtons,
       new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
         new StringSelectMenuBuilder()
@@ -567,7 +644,7 @@ function buildRecruitmentDashboardComponents(input: {
   }
 
   if (state.scope === "overview") {
-    buttons.addComponents(
+    const overviewButtons = new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder()
         .setCustomId(recruitmentDashboardCustomId(input.sessionId, "overview:timers"))
         .setLabel("Timers")
@@ -582,13 +659,14 @@ function buildRecruitmentDashboardComponents(input: {
         .setStyle(state.overviewTab === "optimize" ? ButtonStyle.Primary : ButtonStyle.Secondary),
     );
     return [
-      buttons,
+      timezoneControls,
+      overviewButtons,
       new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(dropdown),
     ];
   }
 
   const templateExists = input.data.templates.has(`${state.clanTag}:${state.clanTab}`);
-  buttons.addComponents(
+  const clanButtons = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
       .setCustomId(recruitmentDashboardCustomId(input.sessionId, "clan:discord"))
       .setLabel("Discord")
@@ -606,9 +684,14 @@ function buildRecruitmentDashboardComponents(input: {
       .setLabel("Remind")
       .setStyle(ButtonStyle.Success)
       .setDisabled(!templateExists),
+    new ButtonBuilder()
+      .setCustomId(recruitmentDashboardCustomId(input.sessionId, "clan:start-countdown"))
+      .setLabel("Start countdown")
+      .setStyle(ButtonStyle.Secondary),
   );
   return [
-    buttons,
+    timezoneControls,
+    clanButtons,
     new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(dropdown),
   ];
 }
@@ -950,9 +1033,16 @@ async function handleDashboardSubcommand(interaction: ChatInputCommandInteractio
     return;
   }
   await interaction.deferReply({ ephemeral: true });
-  const timezoneSeedRaw = interaction.options.getString("timezone", true);
-  const normalizedTimezone = normalizeRecruitmentTimezone(timezoneSeedRaw);
-  if (!normalizedTimezone) {
+  const settings = new SettingsService();
+  const timezoneSeedRaw = interaction.options.getString("timezone", false)?.trim() ?? null;
+  let normalizedTimezone: string;
+  try {
+    normalizedTimezone = await resolveRecruitmentDashboardTimezone({
+      settings,
+      userId: interaction.user.id,
+      timezoneSeedRaw,
+    });
+  } catch {
     await interaction.editReply("Invalid timezone. Use a valid IANA timezone.");
     return;
   }
@@ -1002,6 +1092,26 @@ async function handleDashboardSubcommand(interaction: ChatInputCommandInteractio
     }
 
     try {
+      if (component.isButton() && parsed.action === "timezone:prev") {
+        await component.deferUpdate();
+        state.timezone = stepRecruitmentDashboardTimezone(state.timezone, -1, new Date());
+        state.reminderDayKey = null;
+        state.reminderTimeIso = null;
+        await persistRecruitmentDashboardTimezone(settings, interaction.user.id, state.timezone);
+        await render();
+        return;
+      }
+
+      if (component.isButton() && parsed.action === "timezone:next") {
+        await component.deferUpdate();
+        state.timezone = stepRecruitmentDashboardTimezone(state.timezone, 1, new Date());
+        state.reminderDayKey = null;
+        state.reminderTimeIso = null;
+        await persistRecruitmentDashboardTimezone(settings, interaction.user.id, state.timezone);
+        await render();
+        return;
+      }
+
       if (component.isStringSelectMenu() && parsed.action === "scope") {
         await component.deferUpdate();
         const selected = component.values[0] ?? "overview";
@@ -1057,6 +1167,29 @@ async function handleDashboardSubcommand(interaction: ChatInputCommandInteractio
           state.reminderDayKey = null;
           state.reminderTimeIso = null;
           await render();
+          return;
+        }
+        if (next === "start-countdown") {
+          if (!state.clanTag) {
+            await render("Select a clan first.");
+            return;
+          }
+          const startedAt = new Date();
+          const expiresAt = new Date(startedAt.getTime() + getRecruitmentCooldownDurationMs(state.clanTab));
+          await startOrResetRecruitmentCooldown({
+            guildId: interaction.guildId!,
+            userId: interaction.user.id,
+            clanTag: state.clanTag,
+            platform: state.clanTab,
+            startedAt,
+            expiresAt,
+          });
+          await render(
+            `Started ${formatRecruitmentPlatformChoice(state.clanTab)} countdown for ${formatClanLabel(
+              state.clanTag,
+              tracked.find((row) => row.tag === state.clanTag)?.name ?? null,
+            )}.`,
+          );
           return;
         }
       }
@@ -1336,7 +1469,7 @@ export const Recruitment: Command = {
           name: "timezone",
           description: "IANA timezone to use for window display and slot selection",
           type: ApplicationCommandOptionType.String,
-          required: true,
+          required: false,
           autocomplete: true,
         },
       ],

@@ -89,7 +89,7 @@
   - Reddit: subject (`[Recruiting] Name of Clan | #ClanTag | Required TH/Level | Clan Level | FWA | Discord`) auto-prefilled from in-game TH minimum and clan level, body (markdown), optional image URL(s)
 - `/recruitment countdown start platform:discord|reddit|band clan:<tag>` - Start exact cooldown timer for your account on that platform+clan pair.
 - `/recruitment countdown status` - Show your current recruitment cooldown timers.
-- `/recruitment dashboard timezone:<ianaTz>` - Open an interactive alliance/clan dashboard in the selected timezone with timers, scripts, optimize guidance, template tabs, and recruitment reminder scheduling.
+- `/recruitment dashboard [timezone:<ianaTz>]` - Open an interactive alliance/clan dashboard in the selected timezone with timers, scripts, optimize guidance, template tabs, timezone controls, a Start countdown button, and recruitment reminder scheduling. When omitted, the dashboard reuses your stored dashboard timezone from `/sync time post` and falls back to UTC if none is remembered.
 - `/defer add player-tag:<playerTag> weight:<weight>` - Add one deferred weight-input task for a prospective member (accepts `145000`, `145,000`, or `145k`).
 - `/defer list` - Show active open deferred weight-input tasks in oldest-first order for the active scope.
 - `/defer remove player-tag:<playerTag>` - Mark one open deferred task as resolved after FWAStats weight entry is complete.

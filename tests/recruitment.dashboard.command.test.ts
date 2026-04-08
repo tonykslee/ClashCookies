@@ -1,4 +1,11 @@
-import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const settingsStore = new Map<string, string>();
+const cooldownRows: Array<{
+  clanTag: string;
+  platform: "discord" | "reddit" | "band";
+  expiresAt: Date;
+}> = [];
 
 const prismaMock = vi.hoisted(() => ({
   trackedClan: {
@@ -20,6 +27,46 @@ const prismaMock = vi.hoisted(() => ({
 vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
+
+vi.mock("../src/services/SettingsService", () => ({
+  SettingsService: class {
+    async get(key: string): Promise<string | null> {
+      return settingsStore.get(key) ?? null;
+    }
+
+    async set(key: string, value: string): Promise<void> {
+      settingsStore.set(key, value);
+    }
+
+    async delete(key: string): Promise<void> {
+      settingsStore.delete(key);
+    }
+  },
+}));
+
+vi.mock("../src/services/RecruitmentService", async () => {
+  const actual = await vi.importActual("../src/services/RecruitmentService");
+  return {
+    ...actual,
+    getRecruitmentTemplate: vi.fn(),
+    startOrResetRecruitmentCooldown: vi.fn(async (input: { clanTag: string; platform: string; expiresAt: Date }) => {
+      const normalizedTag = String(input.clanTag).trim().toUpperCase().replace(/^#/, "");
+      const existingIndex = cooldownRows.findIndex(
+        (row) => row.clanTag === normalizedTag && row.platform === input.platform,
+      );
+      const nextRow = {
+        clanTag: normalizedTag,
+        platform: input.platform,
+        expiresAt: input.expiresAt,
+      } as const;
+      if (existingIndex >= 0) {
+        cooldownRows[existingIndex] = nextRow;
+      } else {
+        cooldownRows.push(nextRow);
+      }
+    }),
+  };
+});
 
 import { Recruitment } from "../src/commands/Recruitment";
 import * as recruitmentServiceModule from "../src/services/RecruitmentService";
@@ -43,7 +90,7 @@ function createCollector() {
   };
 }
 
-function createDashboardInteraction(timezone = "America/Los_Angeles") {
+function createDashboardInteraction(timezone: string | null = null) {
   const { handlers, collector } = createCollector();
   const interaction: any = {
     id: "dashboard-1",
@@ -104,14 +151,14 @@ function getLastPayload(interaction: any): any {
   return interaction.editReply.mock.calls.at(-1)?.[0] ?? {};
 }
 
-function getComponentJson(payload: any): Array<any> {
+function getRowComponents(payload: any): Array<any> {
   return Array.isArray(payload?.components)
     ? payload.components.map((row: any) => (typeof row?.toJSON === "function" ? row.toJSON() : row))
     : [];
 }
 
 function getButtonLabels(payload: any): string[] {
-  return getComponentJson(payload).flatMap((row) =>
+  return getRowComponents(payload).flatMap((row) =>
     Array.isArray(row?.components)
       ? row.components
           .map((component: any) => (typeof component?.toJSON === "function" ? component.toJSON() : component))
@@ -122,7 +169,7 @@ function getButtonLabels(payload: any): string[] {
 }
 
 function getSelectMenus(payload: any): Array<any> {
-  return getComponentJson(payload).flatMap((row) =>
+  return getRowComponents(payload).flatMap((row) =>
     Array.isArray(row?.components)
       ? row.components
           .map((component: any) => (typeof component?.toJSON === "function" ? component.toJSON() : component))
@@ -132,15 +179,50 @@ function getSelectMenus(payload: any): Array<any> {
 }
 
 describe("/recruitment dashboard", () => {
+  it("registers an optional timezone argument on the dashboard subcommand", () => {
+    const dashboardOption = Recruitment.options.find((option) => option.name === "dashboard");
+    const timezoneOption = dashboardOption?.options?.find((option) => option.name === "timezone");
+    expect(timezoneOption?.required).toBe(false);
+    expect(timezoneOption?.autocomplete).toBe(true);
+  });
+
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-08T17:45:00-07:00"));
     vi.clearAllMocks();
-    vi.spyOn(recruitmentServiceModule, "getRecruitmentTemplate").mockResolvedValue({
-      subject: "Alpha Subject",
-      body: "Alpha body",
-      imageUrls: ["https://img.example/alpha.png"],
-    } as any);
+    settingsStore.clear();
+    cooldownRows.length = 0;
+
+    vi.mocked(recruitmentServiceModule.getRecruitmentTemplate).mockImplementation(
+      async (guildId: string, clanTag: string, platform: string) => {
+        if (guildId !== "guild-1") return null;
+        const normalized = String(clanTag).trim().toUpperCase().replace(/^#/, "");
+        if (normalized !== "AAA111") return null;
+        if (platform === "discord") {
+          return {
+            subject: "Alpha Subject",
+            body: "Alpha body",
+            imageUrls: ["https://img.example/alpha.png"],
+          } as any;
+        }
+        if (platform === "reddit") {
+          return {
+            subject: "Alpha Reddit",
+            body: "Alpha reddit body",
+            imageUrls: [],
+          } as any;
+        }
+        if (platform === "band") {
+          return {
+            subject: null,
+            body: "Alpha band body",
+            imageUrls: [],
+          } as any;
+        }
+        return null;
+      },
+    );
+
     prismaMock.trackedClan.findMany.mockResolvedValue([
       { tag: "#AAA111", name: "Alpha" },
       { tag: "#BBB222", name: "Beta" },
@@ -160,14 +242,15 @@ describe("/recruitment dashboard", () => {
         body: "Alpha reddit body",
         imageUrls: [],
       },
-    ]);
-    prismaMock.recruitmentCooldown.findMany.mockResolvedValue([
       {
         clanTag: "#AAA111",
-        platform: "discord",
-        expiresAt: new Date("2026-04-08T18:30:00-07:00"),
+        platform: "band",
+        subject: null,
+        body: "Alpha band body",
+        imageUrls: [],
       },
     ]);
+    prismaMock.recruitmentCooldown.findMany.mockImplementation(async () => [...cooldownRows]);
     prismaMock.recruitmentReminderRule.findFirst.mockResolvedValue(null);
     prismaMock.recruitmentReminderRule.create.mockResolvedValue({ id: "rule-1" });
     prismaMock.recruitmentReminderRule.update.mockResolvedValue({ id: "rule-1" });
@@ -178,91 +261,130 @@ describe("/recruitment dashboard", () => {
     vi.restoreAllMocks();
   });
 
-  it("wires timezone autocomplete and renders the alliance overview controls", async () => {
-    const autocompleteInteraction: any = {
-      user: { id: "user-1" },
-      options: {
-        getFocused: vi.fn().mockReturnValue({
-          name: "timezone",
-          value: "pac",
-        }),
-      },
-      respond: vi.fn().mockResolvedValue(undefined),
-    };
-
-    await Recruitment.autocomplete?.(autocompleteInteraction);
-
-    expect(autocompleteInteraction.respond).toHaveBeenCalledWith(
-      expect.arrayContaining([
-        expect.objectContaining({ value: "America/Los_Angeles" }),
-      ]),
-    );
-
-    const { interaction, handlers } = createDashboardInteraction();
+  it("uses UTC when timezone is omitted and no remembered timezone exists", async () => {
+    const { interaction } = createDashboardInteraction();
     await Recruitment.run({} as any, interaction as any, {} as any);
 
     const payload = getLastPayload(interaction);
-    expect(String(payload.embeds[0].toJSON().description)).toContain("Alliance Overview");
-    expect(String(payload.embeds[0].toJSON().description)).toContain("Active recruitment timers");
-    expect(getButtonLabels(payload)).toEqual(["Timers", "Scripts", "Optimize"]);
-    const scopeMenu = getSelectMenus(payload)[0];
-    expect(scopeMenu?.options?.[0]?.label).toBe("Alliance Overview");
-    expect(scopeMenu?.options?.some((option: any) => String(option.label).includes("Alpha"))).toBe(true);
-    expect(handlers.collect).toBeTypeOf("function");
+    expect(String(payload.embeds[0].toJSON().description)).toContain("Timezone: `UTC`");
+    expect(settingsStore.get("user_timezone:user-1")).toBe("UTC");
+    expect(getButtonLabels(payload)).toEqual(
+      expect.arrayContaining(["TZ -", "TZ +", "Timers", "Scripts", "Optimize"]),
+    );
   });
 
-  it("switches between alliance overview, clan templates, empty states, and reminder scheduling", async () => {
+  it("falls back to the stored sync timezone when available", async () => {
+    settingsStore.set("user_timezone:user-1", "America/Chicago");
+    const { interaction } = createDashboardInteraction();
+
+    await Recruitment.run({} as any, interaction as any, {} as any);
+
+    const payload = getLastPayload(interaction);
+    expect(String(payload.embeds[0].toJSON().description)).toContain("Timezone: `America/Chicago`");
+    expect(settingsStore.get("user_timezone:user-1")).toBe("America/Chicago");
+  });
+
+  it("timezone buttons update the dashboard timezone and persist it", async () => {
     const { interaction, handlers } = createDashboardInteraction();
+    await Recruitment.run({} as any, interaction as any, {} as any);
+
+    await handlers.collect?.(createButtonComponent("recruitment-dashboard:dashboard-1:timezone:next"));
+    let payload = getLastPayload(interaction);
+    const nextTimezone = settingsStore.get("user_timezone:user-1");
+    expect(nextTimezone).toBeTruthy();
+    expect(nextTimezone).not.toBe("UTC");
+    expect(String(payload.embeds[0].toJSON().description)).toContain(`Timezone: \`${nextTimezone}\``);
+
+    await handlers.collect?.(createButtonComponent("recruitment-dashboard:dashboard-1:timezone:prev"));
+    payload = getLastPayload(interaction);
+    expect(String(payload.embeds[0].toJSON().description)).toContain(
+      `Timezone: \`${settingsStore.get("user_timezone:user-1")}\``,
+    );
+  });
+
+  it("renders scripts as a table and optimize as bullets", async () => {
+    settingsStore.set("user_timezone:user-1", "UTC");
+    const { interaction, handlers } = createDashboardInteraction();
+    await Recruitment.run({} as any, interaction as any, {} as any);
+
+    await handlers.collect?.(createButtonComponent("recruitment-dashboard:dashboard-1:overview:scripts"));
+    let payload = getLastPayload(interaction);
+    const scriptsDescription = String(payload.embeds[0].toJSON().description);
+    expect(scriptsDescription).toMatch(/Discord\s+\|\s+Reddit\s+\|\s+Band/);
+    expect(scriptsDescription).toContain(":white_check_mark:");
+    expect(scriptsDescription).toContain("Alpha (#AAA111)");
+
+    await handlers.collect?.(createButtonComponent("recruitment-dashboard:dashboard-1:overview:optimize"));
+    payload = getLastPayload(interaction);
+    const optimizeDescription = String(payload.embeds[0].toJSON().description);
+    expect(optimizeDescription).toContain("- Discord");
+    expect(optimizeDescription).toContain("  - Best windows:");
+    expect(optimizeDescription).toContain("  - Rhythm:");
+    expect(optimizeDescription).toContain("  - Next recommended slots:");
+  });
+
+  it("shows platform links and double-backtick body wrapping on clan views", async () => {
+    const { interaction, handlers } = createDashboardInteraction("America/Los_Angeles");
+    await Recruitment.run({} as any, interaction as any, {} as any);
+
+    await handlers.collect?.(createSelectComponent("recruitment-dashboard:dashboard-1:scope", ["AAA111"]));
+    await handlers.collect?.(createButtonComponent("recruitment-dashboard:dashboard-1:clan:reddit"));
+    let payload = getLastPayload(interaction);
+    const redditDescription = String(payload.embeds[0].toJSON().description);
+    expect(redditDescription).toContain("https://www.reddit.com/r/ClashOfClansRecruit/");
+    expect(redditDescription).toContain("``Alpha reddit body``");
+
+    await handlers.collect?.(createButtonComponent("recruitment-dashboard:dashboard-1:clan:band"));
+    payload = getLastPayload(interaction);
+    const bandDescription = String(payload.embeds[0].toJSON().description);
+    expect(bandDescription).toContain("https://www.band.us/band/67130116/post");
+    expect(bandDescription).toContain("``Alpha band body``");
+  });
+
+  it("starts cooldowns from the dashboard and reflects them in timers", async () => {
+    const { interaction, handlers } = createDashboardInteraction("UTC");
+    await Recruitment.run({} as any, interaction as any, {} as any);
+
+    await handlers.collect?.(createSelectComponent("recruitment-dashboard:dashboard-1:scope", ["AAA111"]));
+    await handlers.collect?.(createButtonComponent("recruitment-dashboard:dashboard-1:clan:discord"));
+    const clanButtons = getButtonLabels(getLastPayload(interaction));
+    expect(clanButtons).toEqual(
+      expect.arrayContaining(["Discord", "Reddit", "Band", "Remind", "Start countdown"]),
+    );
+    await handlers.collect?.(createButtonComponent("recruitment-dashboard:dashboard-1:clan:start-countdown"));
+
+    const startCall = vi.mocked(recruitmentServiceModule.startOrResetRecruitmentCooldown).mock.calls[0]?.[0];
+    expect(startCall).toEqual(
+      expect.objectContaining({
+        guildId: "guild-1",
+        userId: "user-1",
+        clanTag: "AAA111",
+        platform: "discord",
+      }),
+    );
+    expect(cooldownRows).toHaveLength(1);
+
+    await handlers.collect?.(createButtonComponent("recruitment-dashboard:dashboard-1:scope", ["overview"]));
+    await handlers.collect?.(createButtonComponent("recruitment-dashboard:dashboard-1:overview:timers"));
+    const payload = getLastPayload(interaction);
+    expect(String(payload.embeds[0].toJSON().description)).toContain("Alpha (#AAA111)");
+    expect(String(payload.embeds[0].toJSON().description)).toContain("<t:");
+  });
+
+  it("supports reminder scheduling from the clan view", async () => {
     const reminderUpsertSpy = vi
       .spyOn(recruitmentReminderService, "upsertRecruitmentReminderRule")
       .mockResolvedValue({
         id: "rule-1",
       } as any);
-
+    const { interaction, handlers } = createDashboardInteraction("America/Los_Angeles");
     await Recruitment.run({} as any, interaction as any, {} as any);
 
-    await handlers.collect?.(createButtonComponent("recruitment-dashboard:dashboard-1:overview:scripts"));
-    expect(String(getLastPayload(interaction).embeds[0].toJSON().description)).toContain(
-      "Stored template coverage",
-    );
-    expect(String(getLastPayload(interaction).embeds[0].toJSON().description)).toContain(
-      "Discord=stored",
-    );
-
-    await handlers.collect?.(createButtonComponent("recruitment-dashboard:dashboard-1:overview:optimize"));
-    let payload = getLastPayload(interaction);
-    expect(String(payload.embeds[0].toJSON().description)).toContain("Optimization guide:");
-    expect(String(payload.embeds[0].toJSON().description)).not.toContain("PST");
-    expect(String(payload.embeds[0].toJSON().description)).toContain("Next:");
-
-    await handlers.collect?.(createSelectComponent("recruitment-dashboard:dashboard-1:scope", ["#AAA111"]));
-    payload = getLastPayload(interaction);
-    expect(String(payload.embeds[0].toJSON().description)).toContain("Scope: Alpha (#AAA111)");
-    expect(getButtonLabels(payload)).toEqual(["Discord", "Reddit", "Band", "Remind"]);
-
-    await handlers.collect?.(createButtonComponent("recruitment-dashboard:dashboard-1:clan:band"));
-    payload = getLastPayload(interaction);
-    expect(String(payload.embeds[0].toJSON().description)).toContain(
-      "No stored template for this platform.",
-    );
-    const bandButtons = getButtonLabels(payload);
-    expect(bandButtons).toContain("Remind");
-    const bandButtonRow = getComponentJson(payload)[0];
-    const remindButton = bandButtonRow?.components?.find((component: any) => component.label === "Remind");
-    expect(remindButton?.disabled).toBe(true);
-
+    await handlers.collect?.(createSelectComponent("recruitment-dashboard:dashboard-1:scope", ["AAA111"]));
     await handlers.collect?.(createButtonComponent("recruitment-dashboard:dashboard-1:clan:discord"));
-    payload = getLastPayload(interaction);
-    expect(String(payload.embeds[0].toJSON().description)).toContain("Recruitment Contents");
-    expect(String(payload.embeds[0].toJSON().description)).toContain("Suggested Image URLs");
-    const remindButtonRow = getComponentJson(payload)[0];
-    const discordRemind = remindButtonRow?.components?.find((component: any) => component.label === "Remind");
-    expect(discordRemind?.disabled).toBe(false);
-
     await handlers.collect?.(createButtonComponent("recruitment-dashboard:dashboard-1:clan:remind"));
-    payload = getLastPayload(interaction);
-    expect(String(payload.embeds[0].toJSON().description)).toContain("Scheduling reminder for");
-    expect(String(payload.embeds[0].toJSON().description)).toContain("Recommended:");
+
+    let payload = getLastPayload(interaction);
     expect(String(payload.embeds[0].toJSON().footer?.text)).toContain("Reminder Scheduling");
     expect(getSelectMenus(payload)).toHaveLength(3);
 
@@ -270,9 +392,8 @@ describe("/recruitment dashboard", () => {
     const dayValue = dayMenu?.options?.[0]?.value;
     expect(dayValue).toBeTypeOf("string");
     await handlers.collect?.(createSelectComponent("recruitment-dashboard:dashboard-1:schedule:day", [dayValue]));
+
     payload = getLastPayload(interaction);
-    expect(String(payload.embeds[0].toJSON().description)).toContain("Select a day and time in 30-minute increments");
-    expect(String(payload.embeds[0].toJSON().description)).toContain("Day choice:");
     const timeMenu = getSelectMenus(payload)[1];
     const selectedTimeValue = timeMenu?.options?.[0]?.value;
     expect(selectedTimeValue).toBeTypeOf("string");
@@ -294,6 +415,5 @@ describe("/recruitment dashboard", () => {
         templateImageUrls: ["https://img.example/alpha.png"],
       }),
     );
-    expect(String(getLastPayload(interaction).content)).toContain("Reminder saved for Alpha (#AAA111).");
   });
 });

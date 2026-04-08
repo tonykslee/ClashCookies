@@ -340,6 +340,11 @@ export function formatRecruitmentReminderTime(date: Date, timeZone: string): str
   return formatDateInTimeZone(date, timeZone);
 }
 
+export function formatRecruitmentReminderBody(body: string): string {
+  const safe = body.replaceAll("``", "`\u200b`");
+  return `\`\`${safe}\`\``;
+}
+
 export function getRecruitmentReminderSlotCandidates(input: {
   platform: RecruitmentReminderPlatform;
   timezone: string;
@@ -425,9 +430,7 @@ export function buildRecruitmentReminderDmContent(input: {
     lines.push(`Subject: \`${input.templateSubject}\``);
   }
   lines.push("Template:");
-  lines.push("```");
-  lines.push(input.templateBody);
-  lines.push("```");
+  lines.push(formatRecruitmentReminderBody(input.templateBody));
   if (input.templateImageUrls.length > 0) {
     lines.push("Images:");
     lines.push(...input.templateImageUrls.map((url) => `- ${url}`));
@@ -629,6 +632,7 @@ export async function processDueRecruitmentReminders(input: {
 export const recruitmentReminderService = {
   autocompleteRecruitmentTimeZones,
   formatRecruitmentReminderTime,
+  formatRecruitmentReminderBody,
   formatRecruitmentReminderWindowSummary,
   formatRecruitmentReminderWindowSummaryInTimeZone,
   formatRecruitmentReminderRhythmSummaryInTimeZone,
