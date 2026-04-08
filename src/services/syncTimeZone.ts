@@ -185,3 +185,30 @@ export function normalizeSyncTimeZone(input: string | null | undefined): string 
 export function autocompleteSyncTimeZones(input: string | null | undefined): SyncTimeZoneAutocompleteChoice[] {
   return buildAutocompleteChoices(getSupportedIanaTimeZones(), String(input ?? ""));
 }
+
+function getTimeZoneOffsetMinutes(timeZone: string, referenceDate: Date): number {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    timeZoneName: "shortOffset",
+  });
+  const token =
+    formatter.formatToParts(referenceDate).find((part) => part.type === "timeZoneName")?.value ??
+    "GMT+00";
+  const normalized = token.replace("UTC", "GMT");
+  const match = normalized.match(/^GMT([+-])(\d{1,2})(?::?(\d{2}))?$/i);
+  if (!match) return 0;
+  const sign = match[1] === "-" ? -1 : 1;
+  const hours = Number(match[2] ?? "0");
+  const minutes = Number(match[3] ?? "0");
+  return sign * (hours * 60 + minutes);
+}
+
+/** Purpose: return supported canonical IANA zones in stable current-offset order for timezone stepping. */
+export function getSupportedSyncTimeZones(referenceDate = new Date()): string[] {
+  const supported = ["UTC", ...getSupportedIanaTimeZones()];
+  return [...new Set(supported)].sort(
+    (left, right) =>
+      getTimeZoneOffsetMinutes(left, referenceDate) - getTimeZoneOffsetMinutes(right, referenceDate) ||
+      left.localeCompare(right)
+  );
+}
