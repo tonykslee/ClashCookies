@@ -11,6 +11,7 @@ import { formatError } from "../helper/formatError";
 import { runFetchTelemetryBatch } from "../helper/fetchTelemetry";
 import { prisma } from "../prisma";
 import { processRecruitmentCooldownReminders } from "../services/RecruitmentService";
+import { processDueRecruitmentReminders } from "../services/RecruitmentReminderService";
 import { processWeightInputDefermentStages } from "../services/WeightInputDefermentService";
 import { SettingsService } from "../services/SettingsService";
 import { WarEventLogService } from "../services/WarEventLogService";
@@ -58,6 +59,7 @@ import { MirrorSyncService } from "../services/MirrorSyncService";
 
 const DEFAULT_OBSERVE_INTERVAL_MINUTES = 30;
 const RECRUITMENT_REMINDER_INTERVAL_MS = 60 * 60 * 1000;
+const RECRUITMENT_RULE_REMINDER_INTERVAL_MS = 60 * 1000;
 const DEFERMENT_REMINDER_INTERVAL_MS = 60 * 60 * 1000;
 const TRACKED_MESSAGE_SWEEP_INTERVAL_MS = 60 * 1000;
 const OBSERVE_LAST_RUN_AT_KEY = "activity_observe:last_run_at_ms";
@@ -625,6 +627,30 @@ export default (client: Client, cocService: CoCService): void => {
       });
     }, RECRUITMENT_REMINDER_INTERVAL_MS);
     console.log("Recruitment reminder loop enabled (every 60 minute(s)).");
+
+    const runRecruitmentRuleReminders = async () => {
+      await runFetchTelemetryBatch("recruitment_rule_reminder_cycle", async () => {
+        try {
+          const counts = await processDueRecruitmentReminders({
+            client,
+            now: new Date(),
+          });
+          console.log(
+            `[recruitment-reminder] evaluated=${counts.evaluated} sent=${counts.sent} failed=${counts.failed}`,
+          );
+        } catch (err) {
+          console.error(`[recruitment-reminder] loop failed: ${formatError(err)}`);
+        }
+      });
+    };
+
+    await runRecruitmentRuleReminders();
+    setInterval(() => {
+      runRecruitmentRuleReminders().catch((err) => {
+        console.error(`[recruitment-reminder] interval failed: ${formatError(err)}`);
+      });
+    }, RECRUITMENT_RULE_REMINDER_INTERVAL_MS);
+    console.log("Recruitment rule reminder loop enabled (every 1 minute).");
 
     const runDefermentReminders = async () => {
       await runFetchTelemetryBatch("deferment_reminder_cycle", async () => {

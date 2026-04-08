@@ -24,6 +24,10 @@ import {
   removeUserActivityReminderRulesByIds,
   type UserActivityReminderRuleGroup,
 } from "../services/remindme/UserActivityReminderService";
+import {
+  listRecruitmentReminderRulesForUser,
+  removeRecruitmentReminderRulesByIds,
+} from "../services/RecruitmentReminderService";
 
 const REMINDME_PANEL_TIMEOUT_MS = 10 * 60 * 1000;
 
@@ -123,6 +127,135 @@ function buildRemoveComponents(input: {
   );
 
   return [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select), actions];
+}
+
+type RecruitmentReminderListRow = Awaited<
+  ReturnType<typeof listRecruitmentReminderRulesForUser>
+>[number];
+
+function formatRecruitmentReminderLine(row: RecruitmentReminderListRow): string {
+  const unix = Math.floor(row.nextReminderAt.getTime() / 1000);
+  const clanLabel = row.clanNameSnapshot
+    ? `${row.clanNameSnapshot} ${row.clanTag}`
+    : row.clanTag;
+  return `- **Recruitment** | ${clanLabel} | ${row.platform} | ${row.timezone} | <t:${unix}:R>`;
+}
+
+function buildRecruitmentReminderListSection(rows: RecruitmentReminderListRow[]): string[] {
+  if (rows.length <= 0) return ["No active recruitment reminders."];
+  return rows.map((row) => formatRecruitmentReminderLine(row));
+}
+
+function buildCombinedReminderRemovalOptions(input: {
+  activityGroups: UserActivityReminderRuleGroup[];
+  recruitmentRows: RecruitmentReminderListRow[];
+}): Array<{
+  label: string;
+  value: string;
+  description: string;
+}> {
+  const activityOptions = input.activityGroups.map((group) => {
+    const playerLabel = group.playerName ?? group.playerTag;
+    const offsets = group.offsetMinutes.map((offset) => formatOffsetMinutes(offset)).join(", ");
+    return {
+      label: `Activity ${group.type} ${playerLabel}`.slice(0, 100),
+      value: `activity|${group.key}`,
+      description: `${group.playerTag} | ${formatReminderMethodLabel(group.method)} | ${offsets}`.slice(
+        0,
+        100,
+      ),
+    };
+  });
+
+  const recruitmentOptions = input.recruitmentRows.map((row) => {
+    const clanLabel = row.clanNameSnapshot ? `${row.clanNameSnapshot} (${row.clanTag})` : row.clanTag;
+    return {
+      label: `Recruitment ${clanLabel}`.slice(0, 100),
+      value: `recruitment|${row.id}`,
+      description: `${row.platform} | ${row.timezone} | <t:${Math.floor(row.nextReminderAt.getTime() / 1000)}:R>`.slice(
+        0,
+        100,
+      ),
+    };
+  });
+
+  return [...activityOptions, ...recruitmentOptions].slice(0, 25);
+}
+
+function buildCombinedRemoveComponents(input: {
+  activityGroups: UserActivityReminderRuleGroup[];
+  recruitmentRows: RecruitmentReminderListRow[];
+  selectedGroupKeys: Set<string>;
+  interactionId: string;
+}) {
+  const options = buildCombinedReminderRemovalOptions({
+    activityGroups: input.activityGroups,
+    recruitmentRows: input.recruitmentRows,
+  });
+  const select = new StringSelectMenuBuilder()
+    .setCustomId(`remindme:remove:select:${input.interactionId}`)
+    .setPlaceholder(options.length > 0 ? "Select reminders to remove" : "No reminders available")
+    .setMinValues(0)
+    .setMaxValues(Math.max(1, options.length))
+    .setDisabled(options.length <= 0)
+    .addOptions(
+        options.length > 0
+          ? options.map((option) => ({
+              ...option,
+              default: input.selectedGroupKeys.has(option.value),
+            }))
+        : [
+            {
+              label: "No reminders",
+              value: "none",
+              description: "Nothing to remove",
+            },
+          ],
+    );
+
+  const actions = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`remindme:remove:confirm:${input.interactionId}`)
+      .setLabel("Confirm Remove")
+      .setStyle(ButtonStyle.Danger)
+      .setDisabled(options.length <= 0),
+    new ButtonBuilder()
+      .setCustomId(`remindme:remove:cancel:${input.interactionId}`)
+      .setLabel("Cancel")
+      .setStyle(ButtonStyle.Secondary),
+  );
+
+  return [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select), actions];
+}
+
+function buildCombinedReminderListEmbed(input: {
+  discordUserId: string;
+  activityGroups: UserActivityReminderRuleGroup[];
+  recruitmentRows: RecruitmentReminderListRow[];
+  title: string;
+}): EmbedBuilder {
+  const activityLines =
+    input.activityGroups.length > 0
+      ? input.activityGroups.map((group) => formatReminderGroupLine(group))
+      : ["No active activity reminders."];
+  const recruitmentLines = buildRecruitmentReminderListSection(input.recruitmentRows);
+  const lines = [
+    "Activity reminders:",
+    ...activityLines,
+    "",
+    "Recruitment reminders:",
+    ...recruitmentLines,
+  ];
+  return new EmbedBuilder()
+    .setTitle(input.title)
+    .setDescription(lines.join("\n"))
+    .setColor(0x5865f2)
+    .setFooter({
+      text: `User: ${input.discordUserId} | Activity Rules: ${input.activityGroups.reduce(
+        (sum, group) => sum + group.ruleIds.length,
+        0,
+      )} | Recruitment Rules: ${input.recruitmentRows.length}`,
+    });
 }
 
 /** Purpose: compose and register `/remindme` user-scoped reminder command flows. */
@@ -283,10 +416,22 @@ export const RemindMe: Command = {
     }
 
     if (subcommand === "list") {
-      const groups = await listUserActivityReminderRuleGroups({
+      const guildId = interaction.guildId;
+      if (!guildId) {
+        await safeReply(interaction, {
+          ephemeral: true,
+          content: "This command can only be used in a server.",
+        });
+        return;
+      }
+      const activityGroups = await listUserActivityReminderRuleGroups({
         discordUserId: interaction.user.id,
       });
-      if (groups.length <= 0) {
+      const recruitmentRows = await listRecruitmentReminderRulesForUser({
+        guildId,
+        discordUserId: interaction.user.id,
+      });
+      if (activityGroups.length <= 0 && recruitmentRows.length <= 0) {
         await safeReply(interaction, {
           ephemeral: true,
           content: "You do not have any active reminders yet.",
@@ -296,9 +441,10 @@ export const RemindMe: Command = {
 
       await interaction.editReply({
         embeds: [
-          buildReminderListEmbed({
+          buildCombinedReminderListEmbed({
             discordUserId: interaction.user.id,
-            groups,
+            activityGroups,
+            recruitmentRows,
             title: "Your Reminders",
           }),
         ],
@@ -306,10 +452,23 @@ export const RemindMe: Command = {
       return;
     }
 
-    let groups = await listUserActivityReminderRuleGroups({
+    const guildId = interaction.guildId;
+    if (!guildId) {
+      await safeReply(interaction, {
+        ephemeral: true,
+        content: "This command can only be used in a server.",
+      });
+      return;
+    }
+
+    let activityGroups = await listUserActivityReminderRuleGroups({
       discordUserId: interaction.user.id,
     });
-    if (groups.length <= 0) {
+    let recruitmentRows = await listRecruitmentReminderRulesForUser({
+      guildId,
+      discordUserId: interaction.user.id,
+    });
+    if (activityGroups.length <= 0 && recruitmentRows.length <= 0) {
       await safeReply(interaction, {
         ephemeral: true,
         content: "You do not have any active reminders to remove.",
@@ -320,18 +479,20 @@ export const RemindMe: Command = {
     const selectedGroupKeys = new Set<string>();
     await interaction.editReply({
       content:
-        groups.length > 25
+        activityGroups.length + recruitmentRows.length > 25
           ? "Only the first 25 grouped reminders are selectable in one remove action."
           : null,
       embeds: [
-        buildReminderListEmbed({
+        buildCombinedReminderListEmbed({
           discordUserId: interaction.user.id,
-          groups,
+          activityGroups,
+          recruitmentRows,
           title: "Remove Reminders",
         }),
       ],
-      components: buildRemoveComponents({
-        groups,
+      components: buildCombinedRemoveComponents({
+        activityGroups,
+        recruitmentRows,
         selectedGroupKeys,
         interactionId: interaction.id,
       }),
@@ -364,14 +525,16 @@ export const RemindMe: Command = {
         }
         await component.update({
           embeds: [
-            buildReminderListEmbed({
+            buildCombinedReminderListEmbed({
               discordUserId: interaction.user.id,
-              groups,
+              activityGroups,
+              recruitmentRows,
               title: `Remove Reminders (selected ${selectedGroupKeys.size})`,
             }),
           ],
-          components: buildRemoveComponents({
-            groups,
+          components: buildCombinedRemoveComponents({
+            activityGroups,
+            recruitmentRows,
             selectedGroupKeys,
             interactionId: interaction.id,
           }),
@@ -398,45 +561,59 @@ export const RemindMe: Command = {
           return;
         }
 
-        const selectedRuleIds = groups
-          .filter((group) => selectedGroupKeys.has(group.key))
+        const selectedActivityRuleIds = activityGroups
+          .filter((group) => selectedGroupKeys.has(`activity|${group.key}`))
           .flatMap((group) => group.ruleIds);
-        const removedCount = await removeUserActivityReminderRulesByIds({
+        const selectedRecruitmentRuleIds = recruitmentRows
+          .filter((row) => selectedGroupKeys.has(`recruitment|${row.id}`))
+          .map((row) => row.id);
+        const removedActivityCount = await removeUserActivityReminderRulesByIds({
           discordUserId: interaction.user.id,
-          ruleIds: selectedRuleIds,
+          ruleIds: selectedActivityRuleIds,
+        });
+        const removedRecruitmentCount = await removeRecruitmentReminderRulesByIds({
+          guildId,
+          discordUserId: interaction.user.id,
+          ruleIds: selectedRecruitmentRuleIds,
         });
 
-        groups = await listUserActivityReminderRuleGroups({
+        activityGroups = await listUserActivityReminderRuleGroups({
+          discordUserId: interaction.user.id,
+        });
+        recruitmentRows = await listRecruitmentReminderRulesForUser({
+          guildId,
           discordUserId: interaction.user.id,
         });
         selectedGroupKeys.clear();
 
         await component.update({
           content:
-            groups.length > 0
-              ? `Removed **${removedCount}** reminder rule(s).`
-              : `Removed **${removedCount}** reminder rule(s). No reminders remain.`,
+            activityGroups.length + recruitmentRows.length > 0
+              ? `Removed **${removedActivityCount + removedRecruitmentCount}** reminder rule(s).`
+              : `Removed **${removedActivityCount + removedRecruitmentCount}** reminder rule(s). No reminders remain.`,
           embeds:
-            groups.length > 0
+            activityGroups.length + recruitmentRows.length > 0
               ? [
-                  buildReminderListEmbed({
+                  buildCombinedReminderListEmbed({
                     discordUserId: interaction.user.id,
-                    groups,
+                    activityGroups,
+                    recruitmentRows,
                     title: "Remove Reminders",
                   }),
                 ]
               : [],
           components:
-            groups.length > 0
-              ? buildRemoveComponents({
-                  groups,
+            activityGroups.length + recruitmentRows.length > 0
+              ? buildCombinedRemoveComponents({
+                  activityGroups,
+                  recruitmentRows,
                   selectedGroupKeys,
                   interactionId: interaction.id,
                 })
               : [],
         });
 
-        if (groups.length <= 0) {
+        if (activityGroups.length + recruitmentRows.length <= 0) {
           collector.stop("completed_empty");
         }
       }

@@ -11,6 +11,11 @@ const remindMeServiceMock = vi.hoisted(() => ({
   removeUserActivityReminderRulesByIds: vi.fn(),
 }));
 
+const recruitmentReminderServiceMock = vi.hoisted(() => ({
+  listRecruitmentReminderRulesForUser: vi.fn(),
+  removeRecruitmentReminderRulesByIds: vi.fn(),
+}));
+
 vi.mock("../src/services/remindme/UserActivityReminderService", async () => {
   const actual = await vi.importActual(
     "../src/services/remindme/UserActivityReminderService",
@@ -27,6 +32,17 @@ vi.mock("../src/services/remindme/UserActivityReminderService", async () => {
   };
 });
 
+vi.mock("../src/services/RecruitmentReminderService", async () => {
+  const actual = await vi.importActual("../src/services/RecruitmentReminderService");
+  return {
+    ...actual,
+    listRecruitmentReminderRulesForUser:
+      recruitmentReminderServiceMock.listRecruitmentReminderRulesForUser,
+    removeRecruitmentReminderRulesByIds:
+      recruitmentReminderServiceMock.removeRecruitmentReminderRulesByIds,
+  };
+});
+
 import { RemindMe } from "../src/commands/RemindMe";
 
 function createInteraction(input: {
@@ -36,6 +52,7 @@ function createInteraction(input: {
   timeLeft?: string;
   method?: UserActivityReminderMethod | null;
 }) {
+  const handlers: Record<string, any> = {};
   const interaction: any = {
     id: "itx-1",
     commandName: "remindme",
@@ -53,7 +70,9 @@ function createInteraction(input: {
     editReply: vi.fn().mockResolvedValue(undefined),
     fetchReply: vi.fn().mockResolvedValue({
       createMessageComponentCollector: vi.fn().mockReturnValue({
-        on: vi.fn(),
+        on: vi.fn((event: string, callback: any) => {
+          handlers[event] = callback;
+        }),
         stop: vi.fn(),
       }),
     }),
@@ -68,6 +87,7 @@ function createInteraction(input: {
       }),
     },
   };
+  interaction.__collectorHandlers = handlers;
   return interaction;
 }
 
@@ -77,6 +97,8 @@ describe("/remindme command", () => {
     remindMeServiceMock.listLinkedPlayerTagOptionsForRemindme.mockResolvedValue([]);
     remindMeServiceMock.listUserActivityReminderRuleGroups.mockResolvedValue([]);
     remindMeServiceMock.removeUserActivityReminderRulesByIds.mockResolvedValue(0);
+    recruitmentReminderServiceMock.listRecruitmentReminderRulesForUser.mockResolvedValue([]);
+    recruitmentReminderServiceMock.removeRecruitmentReminderRulesByIds.mockResolvedValue(0);
   });
 
   it("defaults set method to DM when omitted", async () => {
@@ -188,6 +210,54 @@ describe("/remindme command", () => {
     expect(String(embed.description)).toContain("**WAR** | Alpha #PYLQ0289 | DM | 2h, 12h");
   });
 
+  it("includes recruitment reminders in the combined list output", async () => {
+    remindMeServiceMock.listUserActivityReminderRuleGroups.mockResolvedValue([
+      {
+        key: "WAR|#PYLQ0289|DM",
+        type: UserActivityReminderType.WAR,
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha",
+        method: UserActivityReminderMethod.DM,
+        offsetMinutes: [120],
+        ruleIds: ["rule-1"],
+        surfaceGuildId: null,
+        surfaceChannelId: null,
+      },
+    ]);
+    recruitmentReminderServiceMock.listRecruitmentReminderRulesForUser.mockResolvedValue([
+      {
+        id: "recruitment-1",
+        guildId: "guild-1",
+        discordUserId: "111111111111111111",
+        clanTag: "#AAA111",
+        platform: "discord",
+        timezone: "America/Los_Angeles",
+        nextReminderAt: new Date("2026-04-08T18:30:00.000Z"),
+        isActive: true,
+        lastSentAt: null,
+        clanNameSnapshot: "Alpha",
+        templateSubject: "Subject",
+        templateBody: "Body",
+        templateImageUrls: [],
+        createdAt: new Date("2026-04-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+      },
+    ]);
+
+    const interaction = createInteraction({
+      subcommand: "list",
+    });
+
+    await RemindMe.run({} as any, interaction as any, {} as any);
+
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const embed = payload.embeds[0].toJSON();
+    expect(String(embed.description)).toContain("Activity reminders:");
+    expect(String(embed.description)).toContain("Recruitment reminders:");
+    expect(String(embed.description)).toContain("Recruitment");
+    expect(String(embed.description)).toContain("#AAA111");
+  });
+
   it("returns clear remove empty-state when user has no reminders", async () => {
     remindMeServiceMock.listUserActivityReminderRuleGroups.mockResolvedValue([]);
     const interaction = createInteraction({
@@ -198,9 +268,85 @@ describe("/remindme command", () => {
 
     expect(interaction.editReply).toHaveBeenCalledWith(
       expect.objectContaining({
-        content: "You do not have any active reminders to remove.",
-      }),
+      content: "You do not have any active reminders to remove.",
+    }),
     );
+  });
+
+  it("shows recruitment reminders in remove options and removes them when selected", async () => {
+    remindMeServiceMock.listUserActivityReminderRuleGroups.mockResolvedValue([
+      {
+        key: "WAR|#PYLQ0289|DM",
+        type: UserActivityReminderType.WAR,
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha",
+        method: UserActivityReminderMethod.DM,
+        offsetMinutes: [120],
+        ruleIds: ["activity-rule-1"],
+        surfaceGuildId: null,
+        surfaceChannelId: null,
+      },
+    ]);
+    recruitmentReminderServiceMock.listRecruitmentReminderRulesForUser.mockResolvedValue([
+      {
+        id: "recruitment-1",
+        guildId: "guild-1",
+        discordUserId: "111111111111111111",
+        clanTag: "#AAA111",
+        platform: "discord",
+        timezone: "America/Los_Angeles",
+        nextReminderAt: new Date("2026-04-08T18:30:00.000Z"),
+        isActive: true,
+        lastSentAt: null,
+        clanNameSnapshot: "Alpha",
+        templateSubject: "Subject",
+        templateBody: "Body",
+        templateImageUrls: [],
+        createdAt: new Date("2026-04-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+      },
+    ]);
+    recruitmentReminderServiceMock.removeRecruitmentReminderRulesByIds.mockResolvedValue(1);
+
+    const interaction = createInteraction({
+      subcommand: "remove",
+    });
+
+    await RemindMe.run({} as any, interaction as any, {} as any);
+
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const options =
+      payload.components[0].toJSON().components[0].options.map((option: any) => option.value);
+    expect(options).toContain("activity|WAR|#PYLQ0289|DM");
+    expect(options).toContain("recruitment|recruitment-1");
+
+    await interaction.__collectorHandlers.collect({
+      customId: "remindme:remove:select:itx-1",
+      user: { id: "111111111111111111" },
+      values: ["recruitment|recruitment-1"],
+      isStringSelectMenu: () => true,
+      isButton: () => false,
+      reply: vi.fn().mockResolvedValue(undefined),
+      update: vi.fn().mockResolvedValue(undefined),
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+    });
+
+    await interaction.__collectorHandlers.collect({
+      customId: "remindme:remove:confirm:itx-1",
+      user: { id: "111111111111111111" },
+      values: [],
+      isStringSelectMenu: () => false,
+      isButton: () => true,
+      reply: vi.fn().mockResolvedValue(undefined),
+      update: vi.fn().mockResolvedValue(undefined),
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+    });
+
+    expect(recruitmentReminderServiceMock.removeRecruitmentReminderRulesByIds).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      discordUserId: "111111111111111111",
+      ruleIds: ["recruitment-1"],
+    });
   });
 
   it("autocomplete suggests only linked tags and preserves comma-prefix input", async () => {

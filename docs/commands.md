@@ -46,8 +46,8 @@
 - `/cwl rotations export` - Export the active CWL planner data to a brand-new public Google Sheet using the canonical re-importable tabular format.
 - `/accounts [visibility:private|public] [tag:<playerTag>] [discord-id:<snowflake>]` - List linked player accounts grouped by current clan. Default is your own account; provide exactly one of `tag` or `discord-id` to inspect a different linked user.
 - `/remindme set type:<WAR|CWL|RAIDS|GAMES> player_tags:<comma-separated-linked-tags> time_left:<HhMm[,HhMm...]> [method:DM|ping-me-here]` - Create durable personal recurring reminder rules for linked player tags only. `time_left` accepts one or more offsets like `12h,2h,30m`; `method` defaults to `DM`. Outbound reminder deliveries are plain-text, and `ping-me-here` includes the inline user mention in the message content so Discord notifies correctly.
-- `/remindme list` - Show your active personal activity reminders in a grouped scan-friendly embed (type, player, method, offsets).
-- `/remindme remove` - Open an owner-scoped reminder removal panel with multi-select plus confirm/cancel controls.
+- `/remindme list` - Show your active personal activity reminders plus recruitment reminders in separate grouped scan-friendly sections.
+- `/remindme remove` - Open an owner-scoped reminder removal panel with multi-select plus confirm/cancel controls for both activity and recruitment reminders.
 - `/reminders create [type:{WAR_CWL|RAIDS|GAMES}] [time_left:<HhMm[,HhMm...]>] [channel:<discordChannel>] [clan:<tag>]` - Open a preview-first reminder panel. With no args, starts as a blank interactive setup; supplied args seed initial panel state. `clan` preselects that clan in create-state and prefills channel from tracked-clan `logChannelId` when channel is unset. Clan multi-select combines FWA tracked clans plus current-season CWL tracked clans. Outbound reminder deliveries are posted as plain text with inline user mentions, and overflow continues by whole lines across up to 3 messages.
 - `/reminders list` - List guild reminder configs in an admin-scannable view (type, channel, offsets, target-count, enabled state) with pagination when needed.
 - `/reminders edit clan:<tag>` - Resolve reminder configs targeting the normalized clan tag (with or without `#`) and open an edit panel for offsets, channel, type, clan targets, and enabled state.
@@ -89,7 +89,7 @@
   - Reddit: subject (`[Recruiting] Name of Clan | #ClanTag | Required TH/Level | Clan Level | FWA | Discord`) auto-prefilled from in-game TH minimum and clan level, body (markdown), optional image URL(s)
 - `/recruitment countdown start platform:discord|reddit|band clan:<tag>` - Start exact cooldown timer for your account on that platform+clan pair.
 - `/recruitment countdown status` - Show your current recruitment cooldown timers.
-- `/recruitment dashboard` - Show readiness across all tracked clans/platforms for your account.
+- `/recruitment dashboard timezone:<ianaTz>` - Open an interactive alliance/clan dashboard in the selected timezone with timers, scripts, optimize guidance, template tabs, and recruitment reminder scheduling.
 - `/defer add player-tag:<playerTag> weight:<weight>` - Add one deferred weight-input task for a prospective member (accepts `145000`, `145,000`, or `145k`).
 - `/defer list` - Show active open deferred weight-input tasks in oldest-first order for the active scope.
 - `/defer remove player-tag:<playerTag>` - Mark one open deferred task as resolved after FWAStats weight entry is complete.

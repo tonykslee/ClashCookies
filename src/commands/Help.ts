@@ -357,14 +357,14 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
   },
   remindme: {
     summary:
-      "Configure recurring personal activity reminders for linked WAR/CWL/RAIDS/GAMES players.",
+      "Configure recurring personal activity reminders and manage recruitment reminders.",
     details: [
       "`set` creates one rule per `(type, linked player tag, method, offset)` and stores reminders durably for future event cycles.",
       "`player_tags` only accepts tags linked to your Discord account (autocomplete + server-side validation).",
       "`time_left` accepts one or more `HhMm` offsets (comma-separated), for example `12h,2h,30m`.",
       "`method` defaults to `DM`; `ping-me-here` stores the invoking channel as routing surface.",
-      "`list` shows active reminders grouped by type/player/method with normalized offsets.",
-      "`remove` opens an owner-scoped multi-select panel with confirm/cancel controls.",
+      "`list` shows activity reminders plus recruitment reminders in separate scan-friendly sections.",
+      "`remove` opens an owner-scoped multi-select panel with confirm/cancel controls for both activity and recruitment reminders.",
     ],
     examples: [
       "/remindme set type:WAR player_tags:#PYLQ0289 time_left:12h,2h",
@@ -470,14 +470,14 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`show` renders platform-specific recruitment output for a tracked clan.",
       "`edit` now requires platform and opens a platform-specific modal (discord/band/reddit fields differ).",
       "`countdown start` begins exact platform cooldown timers; `countdown status` shows your timers.",
-      "`dashboard` summarizes readiness across all tracked clans and platforms for your account.",
+      "`dashboard` requires an IANA `timezone` and opens an interactive alliance/clan dashboard with timers, scripts, optimize guidance, and reminder scheduling.",
     ],
     examples: [
       "/recruitment show platform:discord clan:2QG2C08UP",
       "/recruitment edit platform:reddit clan:2QG2C08UP",
       "/recruitment countdown start platform:reddit clan:2QG2C08UP",
       "/recruitment countdown status",
-      "/recruitment dashboard",
+      "/recruitment dashboard timezone:America/Los_Angeles",
     ],
   },
   defer: {
