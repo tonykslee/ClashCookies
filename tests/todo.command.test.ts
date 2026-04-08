@@ -2098,6 +2098,181 @@ describe("/todo command", () => {
     expect(description).toContain("planned sub in <t:");
   });
 
+  it("keeps CWL freshness tied to displayed state timestamps instead of old rotation plan metadata", async () => {
+    const displayedFreshnessAt = new Date("2026-03-25T20:00:00.000Z");
+    const oldPlanUpdatedAt = new Date("2026-03-20T00:00:00.000Z");
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },
+    ]);
+    prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
+      _count: { _all: 1 },
+      _max: { updatedAt: new Date("2026-03-26T00:00:00.000Z") },
+    });
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      makeSnapshotRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha",
+        cwlActive: true,
+        cwlPhase: "battle day",
+        cwlEndsAt: new Date("2026-03-30T12:00:00.000Z"),
+        cwlClanTag: "#QGRJ",
+        cwlClanName: "Nontracked Clan",
+      }),
+    ]);
+    prismaMock.currentCwlRound.findMany.mockResolvedValue([
+      {
+        season: "2026-03",
+        clanTag: "#QGRJ",
+        clanName: "Nontracked Clan",
+        roundDay: 2,
+        roundState: "battle day",
+        startTime: new Date("2026-03-25T12:00:00.000Z"),
+        endTime: new Date("2026-03-26T12:00:00.000Z"),
+        sourceUpdatedAt: displayedFreshnessAt,
+        updatedAt: new Date("2026-03-25T22:00:00.000Z"),
+      },
+    ]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: "#QGRJ",
+        playerTag: "#PYLQ0289",
+        subbedIn: false,
+        updatedAt: new Date("2026-03-25T21:00:00.000Z"),
+      },
+    ]);
+    vi.mocked(cwlRotationService.listActivePlanExports).mockResolvedValue([
+      {
+        season: "2026-03",
+        clanTag: "#QGRJ",
+        clanName: "Nontracked Clan",
+        version: 1,
+        updatedAt: oldPlanUpdatedAt,
+        rosterSize: 2,
+        generatedFromRoundDay: 2,
+        excludedPlayerTags: [],
+        warningSummary: null,
+        metadata: null,
+        days: [
+          {
+            roundDay: 2,
+            lineupSize: 2,
+            locked: false,
+            metadata: null,
+            rows: [],
+          },
+        ],
+      },
+    ]);
+
+    const interaction = makeTodoInteraction({ type: "CWL" });
+    await Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
+
+    const description = getReplyDescription(interaction);
+    expectTodoLegendWithLastUpdated(description);
+    expect(description).toContain(
+      `:hourglass: last updated <t:${Math.floor(displayedFreshnessAt.getTime() / 1000)}:R>`,
+    );
+    expect(description).not.toContain(
+      `:hourglass: last updated <t:${Math.floor(oldPlanUpdatedAt.getTime() / 1000)}:R>`,
+    );
+  });
+
+  it("keeps the CWL freshness legend on the oldest remaining displayed state timestamp", async () => {
+    const olderDisplayedFreshnessAt = new Date("2026-03-25T18:00:00.000Z");
+    const newerDisplayedFreshnessAt = new Date("2026-03-25T21:00:00.000Z");
+    const oldPlanUpdatedAt = new Date("2026-03-20T00:00:00.000Z");
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },
+      { playerTag: "#QGRJ2222", createdAt: new Date("2026-03-02T00:00:00.000Z") },
+    ]);
+    prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
+      _count: { _all: 2 },
+      _max: { updatedAt: new Date("2026-03-26T00:00:00.000Z") },
+    });
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      makeSnapshotRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha",
+        cwlActive: true,
+        cwlPhase: "battle day",
+        cwlEndsAt: new Date("2026-03-30T12:00:00.000Z"),
+        cwlClanTag: "#QGRJ",
+        cwlClanName: "Nontracked Clan",
+      }),
+      makeSnapshotRow({
+        playerTag: "#QGRJ2222",
+        playerName: "Bravo",
+        cwlActive: true,
+        cwlPhase: "battle day",
+        cwlEndsAt: new Date("2026-03-30T12:00:00.000Z"),
+        cwlClanTag: "#QGRJ",
+        cwlClanName: "Nontracked Clan",
+      }),
+    ]);
+    prismaMock.currentCwlRound.findMany.mockResolvedValue([
+      {
+        season: "2026-03",
+        clanTag: "#QGRJ",
+        clanName: "Nontracked Clan",
+        roundDay: 2,
+        roundState: "battle day",
+        startTime: new Date("2026-03-25T12:00:00.000Z"),
+        endTime: new Date("2026-03-26T12:00:00.000Z"),
+        sourceUpdatedAt: new Date("2026-03-25T22:00:00.000Z"),
+        updatedAt: new Date("2026-03-25T23:00:00.000Z"),
+      },
+    ]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: "#QGRJ",
+        playerTag: "#PYLQ0289",
+        subbedIn: false,
+        updatedAt: newerDisplayedFreshnessAt,
+      },
+      {
+        clanTag: "#QGRJ",
+        playerTag: "#QGRJ2222",
+        subbedIn: false,
+        updatedAt: olderDisplayedFreshnessAt,
+      },
+    ]);
+    vi.mocked(cwlRotationService.listActivePlanExports).mockResolvedValue([
+      {
+        season: "2026-03",
+        clanTag: "#QGRJ",
+        clanName: "Nontracked Clan",
+        version: 1,
+        updatedAt: oldPlanUpdatedAt,
+        rosterSize: 2,
+        generatedFromRoundDay: 2,
+        excludedPlayerTags: [],
+        warningSummary: null,
+        metadata: null,
+        days: [
+          {
+            roundDay: 2,
+            lineupSize: 2,
+            locked: false,
+            metadata: null,
+            rows: [],
+          },
+        ],
+      },
+    ]);
+
+    const interaction = makeTodoInteraction({ type: "CWL" });
+    await Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
+
+    const description = getReplyDescription(interaction);
+    expectTodoLegendWithLastUpdated(description);
+    expect(description).toContain(
+      `:hourglass: last updated <t:${Math.floor(olderDisplayedFreshnessAt.getTime() / 1000)}:R>`,
+    );
+    expect(description).not.toContain(
+      `:hourglass: last updated <t:${Math.floor(oldPlanUpdatedAt.getTime() / 1000)}:R>`,
+    );
+  });
+
   it("hides stale CWL clan context when the player is not a confirmed participant", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([
       { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },

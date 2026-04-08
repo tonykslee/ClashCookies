@@ -626,7 +626,6 @@ export async function buildTodoPagesForUser(input: {
       resolvedCwlClanTag && normalizedTag
         ? currentCwlMemberByClanAndPlayerTag.get(`${resolvedCwlClanTag}:${normalizedTag}`)?.updatedAt?.getTime() ?? null
         : null,
-      resolvedCwlClanTag ? activeCwlPlanByClanTag.get(resolvedCwlClanTag)?.updatedAt?.getTime() ?? null : null,
     ].filter((value): value is number => Number.isFinite(value));
     const raidFreshnessCandidates = [
       resolvedClanTag
