@@ -4168,17 +4168,40 @@ export const buildWarMailPostedContentForTest = buildWarMailPostedContent;
 export const buildWarMailNextRefreshLabelForTest =
   buildNextRefreshRelativeLabel;
 
+function buildWarMailSendPayload(
+  roleId: string | null | undefined,
+  nowMs: number | undefined,
+  options: {
+    pingRole: boolean;
+    planText: string | null | undefined;
+    includeNextRefresh: boolean;
+  },
+): {
+  content: string;
+  allowedMentions: { roles: string[] } | undefined;
+} {
+  const normalizedRoleId = normalizeDiscordRoleId(roleId);
+  return {
+    content: buildWarMailPostedContent(normalizedRoleId, nowMs, {
+      pingRole: options.pingRole,
+      planText: options.planText ?? undefined,
+      includeNextRefresh: options.includeNextRefresh,
+    }),
+    allowedMentions:
+      options.pingRole && normalizedRoleId
+        ? { roles: [normalizedRoleId] }
+        : undefined,
+  };
+}
+
+export const buildWarMailSendPayloadForTest = buildWarMailSendPayload;
+
 /** Purpose: keep an already-visible role mention on refresh edits without deriving new mention state. */
 function extractPostedWarMailMentionRoleId(
   existingPostedContent: string | null | undefined,
 ): string | null {
-  const lines = String(existingPostedContent ?? "").split(/\r?\n/);
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    const match = trimmed.match(/^<@&(\d{5,})>$/);
-    if (match?.[1]) return normalizeDiscordRoleId(match[1]);
-  }
+  const match = String(existingPostedContent ?? "").match(/<@&(\d{5,})>/);
+  if (match?.[1]) return normalizeDiscordRoleId(match[1]);
   return null;
 }
 
@@ -4189,14 +4212,15 @@ function buildWarMailRefreshEditPayload(
   nowMs?: number,
   options?: {
     includeNextRefresh?: boolean;
+    mentionRoleId?: string | null;
   },
 ): {
   content: string;
   allowedMentions: { parse: [] };
 } {
-  const persistedMentionRoleId = extractPostedWarMailMentionRoleId(
-    existingPostedContent,
-  );
+  const persistedMentionRoleId =
+    normalizeDiscordRoleId(options?.mentionRoleId ?? null) ??
+    extractPostedWarMailMentionRoleId(existingPostedContent);
   return {
     content: buildWarMailPostedContent(persistedMentionRoleId, nowMs, {
       planText: String(planText ?? ""),
@@ -4597,6 +4621,7 @@ async function refreshWarMailPostByResolvedTarget(params: {
     undefined,
     {
       includeNextRefresh: !rendered.freezeRefresh,
+      mentionRoleId: rendered.clanRoleId,
     },
   );
   await message.edit({
@@ -6912,17 +6937,14 @@ async function handleFwaMailConfirmAction(
     payload.tag,
     renderedWarIdNumber,
   );
-  const mentionRoleId = normalizeDiscordRoleId(rendered.clanRoleId);
+  const sendPayload = buildWarMailSendPayload(rendered.clanRoleId, undefined, {
+    pingRole: options.pingRole,
+    planText: rendered.planText,
+    includeNextRefresh: !rendered.freezeRefresh,
+  });
   const sent = await (channel as any).send({
-    content: buildWarMailPostedContent(mentionRoleId, undefined, {
-      pingRole: options.pingRole,
-      planText: rendered.planText,
-      includeNextRefresh: !rendered.freezeRefresh,
-    }),
-    allowedMentions:
-      options.pingRole && mentionRoleId
-        ? { roles: [mentionRoleId] }
-        : undefined,
+    content: sendPayload.content,
+    allowedMentions: sendPayload.allowedMentions,
     embeds: [rendered.embed],
     components: rendered.freezeRefresh
       ? []
