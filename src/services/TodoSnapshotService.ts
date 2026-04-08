@@ -518,6 +518,7 @@ export class TodoSnapshotService {
       ]),
     );
     const resolvedClanTagByPlayerTag = new Map<string, string | null>();
+    const cwlDiscoveryClanTagByPlayerTag = new Map<string, string | null>();
     for (const playerTag of normalizedTags) {
       const existing = existingByTag.get(playerTag) ?? null;
       const liveClanTag = liveClanTagByPlayerTag.get(playerTag) ?? "";
@@ -532,6 +533,10 @@ export class TodoSnapshotService {
           pinnedEventClanTag || liveClanTag || fromMember || fromExisting,
         ) || null;
       resolvedClanTagByPlayerTag.set(playerTag, resolvedClanTag);
+      const cwlDiscoveryClanTag =
+        normalizeClanTag(liveClanTag || pinnedEventClanTag || fromMember || fromExisting) ||
+        null;
+      cwlDiscoveryClanTagByPlayerTag.set(playerTag, cwlDiscoveryClanTag);
     }
 
     if (input.includeNonTrackedCwlRefresh) {
@@ -542,7 +547,7 @@ export class TodoSnapshotService {
           season: currentCwlSeason,
           candidateClanTags: [
             ...new Set(
-              [...resolvedClanTagByPlayerTag.values()].filter(
+              [...cwlDiscoveryClanTagByPlayerTag.values()].filter(
                 (value): value is string => Boolean(value),
               ),
             ),
@@ -713,7 +718,7 @@ export class TodoSnapshotService {
           clanTags: [
             ...new Set(
               [
-                ...resolvedClanTagByPlayerTag.values(),
+                ...cwlDiscoveryClanTagByPlayerTag.values(),
                 ...mappedCwlClanByPlayerTag.values(),
               ].filter(
                 (value): value is string =>
