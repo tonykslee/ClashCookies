@@ -488,25 +488,14 @@ function buildRecruitmentDashboardEmbed(input: {
       if (tracked.length <= 0) {
         lines.push("No tracked clans configured.");
       } else {
-        const tableLines = [
-          "Clan".padEnd(8),
-          "Discord".padEnd(10),
-          "Reddit".padEnd(10),
-          "Band".padEnd(10),
-        ];
         const rows = tracked.map((clan) => {
-          const label = formatRecruitmentDashboardClanShortLabel(clan).slice(0, 8).padEnd(8);
+          const label = formatRecruitmentDashboardClanShortLabel(clan).slice(0, 8);
           const discord = input.data.templates.has(`${clan.tag}:discord`) ? "✓" : "";
           const reddit = input.data.templates.has(`${clan.tag}:reddit`) ? "✓" : "";
           const band = input.data.templates.has(`${clan.tag}:band`) ? "✓" : "";
-          return [
-            label,
-            discord.padEnd(10),
-            reddit.padEnd(10),
-            band.padEnd(10),
-          ].join(" | ");
+          return [label, discord, reddit, band].join(" ");
         });
-        lines.push("```text", tableLines.join(" | "), ...rows, "```");
+        lines.push("```text", ["Clan", "Discord", "Reddit", "Band"].join(" "), ...rows, "```");
       }
     } else {
       lines.push("", "Optimization guide:");
