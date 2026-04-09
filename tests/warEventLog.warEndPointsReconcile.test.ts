@@ -1165,13 +1165,13 @@ describe("War-end points reconciliation", () => {
     expect(updateSpy).not.toHaveBeenCalled();
   });
 
-  it("mismatch edits original message with visible warning and fwa leader role ping", async () => {
+  it("mismatch edits original message with visible warning and no leader ping", async () => {
     const edit = vi.fn().mockResolvedValue({});
     const channel = {
       isTextBased: () => true,
       messages: {
         fetch: vi.fn().mockResolvedValue({
-          content: "War ended against Enemy\n<@&555>",
+          content: "War ended against Enemy\n<@&55555>",
           edit,
         }),
       },
@@ -1218,7 +1218,9 @@ describe("War-end points reconciliation", () => {
     );
     expect(editPayload.content).toContain("Expected points: 100");
     expect(editPayload.content).toContain("Actual points: 99");
-    expect(editPayload.content).toContain("<@&777>");
+    expect(editPayload.content).toContain("<@&55555>");
+    expect(editPayload.content).not.toContain("<@&777>");
+    expect(editPayload.allowedMentions).toEqual({ parse: [] });
     expect(editPayload.content).not.toContain("clan?tag=OPP123");
     expect(updateSpy).toHaveBeenCalledTimes(1);
   });
