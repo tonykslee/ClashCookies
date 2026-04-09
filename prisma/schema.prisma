@@ -659,6 +659,45 @@ model RecruitmentCooldown {
   @@index([guildId, expiresAt, reminded])
 }
 
+model RecruitmentReminderRule {
+  id               String                    @id @default(cuid())
+  guildId          String
+  discordUserId    String
+  clanTag          String
+  platform         String
+  timezone         String
+  nextReminderAt   DateTime
+  isActive         Boolean                   @default(true)
+  lastSentAt       DateTime?
+  clanNameSnapshot String?
+  templateSubject  String?
+  templateBody     String
+  templateImageUrls String[]
+  createdAt        DateTime                  @default(now())
+  updatedAt        DateTime                  @updatedAt
+  deliveries       RecruitmentReminderDelivery[]
+
+  @@unique([guildId, discordUserId, clanTag, platform])
+  @@index([guildId, discordUserId, isActive])
+  @@index([guildId, nextReminderAt, isActive])
+  @@index([guildId, clanTag, platform])
+}
+
+model RecruitmentReminderDelivery {
+  id               String                    @id @default(cuid())
+  reminderRuleId   String
+  scheduledFor     DateTime
+  sentAt           DateTime?
+  status           String
+  errorDetails     String?
+  createdAt        DateTime                  @default(now())
+  reminderRule     RecruitmentReminderRule   @relation(fields: [reminderRuleId], references: [id], onDelete: Cascade)
+
+  @@unique([reminderRuleId, scheduledFor])
+  @@index([status, createdAt])
+  @@index([reminderRuleId, createdAt])
+}
+
 model WeightInputDeferment {
   id                    String   @id @default(cuid())
   guildId               String

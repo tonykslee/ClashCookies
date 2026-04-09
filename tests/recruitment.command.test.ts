@@ -7,6 +7,7 @@ const prismaMock = vi.hoisted(() => ({
 }));
 
 const recruitmentServiceMock = vi.hoisted(() => ({
+  getRecruitmentCooldown: vi.fn(),
   getRecruitmentTemplate: vi.fn(),
   upsertRecruitmentTemplate: vi.fn(),
 }));
@@ -19,6 +20,7 @@ vi.mock("../src/services/RecruitmentService", async () => {
   const actual = await vi.importActual("../src/services/RecruitmentService");
   return {
     ...actual,
+    getRecruitmentCooldown: recruitmentServiceMock.getRecruitmentCooldown,
     getRecruitmentTemplate: recruitmentServiceMock.getRecruitmentTemplate,
     upsertRecruitmentTemplate: recruitmentServiceMock.upsertRecruitmentTemplate,
   };
@@ -44,6 +46,28 @@ function createEditInteraction(input?: { clan?: string; platform?: string }) {
     reply: vi.fn().mockResolvedValue(undefined),
     editReply: vi.fn().mockResolvedValue(undefined),
     showModal: vi.fn().mockResolvedValue(undefined),
+  };
+}
+
+function createShowInteraction(input: { clan: string; platform: "discord" | "reddit" | "band" }) {
+  return {
+    guildId: "guild-1",
+    user: { id: "user-1" },
+    deferred: false,
+    replied: false,
+    options: {
+      getSubcommandGroup: vi.fn().mockReturnValue(null),
+      getSubcommand: vi.fn().mockReturnValue("show"),
+      getString: vi.fn((name: string) => {
+        if (name === "clan") return input.clan;
+        if (name === "platform") return input.platform;
+        return null;
+      }),
+    },
+    reply: vi.fn().mockResolvedValue(undefined),
+    editReply: vi.fn().mockResolvedValue(undefined),
+    showModal: vi.fn().mockResolvedValue(undefined),
+    deferReply: vi.fn().mockResolvedValue(undefined),
   };
 }
 
@@ -74,6 +98,7 @@ describe("/recruitment command", () => {
       tag: "#PQL0289",
       name: "Clan One",
     });
+    recruitmentServiceMock.getRecruitmentCooldown.mockResolvedValue(null);
     recruitmentServiceMock.getRecruitmentTemplate.mockResolvedValue(null);
     recruitmentServiceMock.upsertRecruitmentTemplate.mockResolvedValue(undefined);
   });
@@ -140,5 +165,41 @@ describe("/recruitment command", () => {
     expect(interaction.editReply).toHaveBeenCalledWith(
       "Saved band recruitment template for Clan One (#PQL0289).",
     );
+  });
+
+  it("renders double-backtick recruitment output and platform links in show output", async () => {
+    recruitmentServiceMock.getRecruitmentTemplate.mockImplementation(async (_guildId: string, _clanTag: string, platform: string) => {
+      if (platform === "reddit") {
+        return {
+          subject: "Alpha Reddit",
+          body: "Alpha reddit body",
+          imageUrls: [],
+        } as any;
+      }
+      if (platform === "band") {
+        return {
+          subject: null,
+          body: "Band body",
+          imageUrls: [],
+        } as any;
+      }
+      return null;
+    });
+
+    const redditInteraction = createShowInteraction({ clan: "PQL0289", platform: "reddit" });
+    await Recruitment.run({} as any, redditInteraction as any, {} as any);
+
+    expect(redditInteraction.editReply).toHaveBeenCalledTimes(1);
+    const redditPayload = redditInteraction.editReply.mock.calls[0]?.[0] as string;
+    expect(redditPayload).toContain("https://www.reddit.com/r/ClashOfClansRecruit/");
+    expect(redditPayload).toContain("``Alpha reddit body``");
+
+    const bandInteraction = createShowInteraction({ clan: "PQL0289", platform: "band" });
+    await Recruitment.run({} as any, bandInteraction as any, {} as any);
+
+    expect(bandInteraction.editReply).toHaveBeenCalledTimes(1);
+    const bandPayload = bandInteraction.editReply.mock.calls[0]?.[0] as string;
+    expect(bandPayload).toContain("https://www.band.us/band/67130116/post");
+    expect(bandPayload).toContain("``Band body``");
   });
 });

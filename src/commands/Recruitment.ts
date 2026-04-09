@@ -4,6 +4,10 @@ import {
   AutocompleteInteraction,
   ChatInputCommandInteraction,
   Client,
+  ButtonBuilder,
+  ButtonStyle,
+  EmbedBuilder,
+  StringSelectMenuBuilder,
   ModalBuilder,
   ModalSubmitInteraction,
   TextInputBuilder,
@@ -14,6 +18,7 @@ import { truncateDiscordContent } from "../helper/discordContent";
 import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
+import { SettingsService } from "../services/SettingsService";
 import {
   formatClanTag,
   getRecruitmentCooldown,
@@ -21,7 +26,6 @@ import {
   getRecruitmentTemplate,
   getTrackedClanNameMapByTags,
   listRecruitmentCooldownsForUser,
-  listRecruitmentCooldownsForUserByClanTags,
   normalizeClanTag,
   parseImageUrlsCsv,
   parseRecruitmentPlatform,
@@ -30,6 +34,19 @@ import {
   toImageUrlsCsv,
   upsertRecruitmentTemplate,
 } from "../services/RecruitmentService";
+import {
+  autocompleteRecruitmentTimeZones,
+  getDateKeyInTimeZone,
+  formatRecruitmentReminderTime,
+  formatRecruitmentReminderBody,
+  formatRecruitmentReminderWindowSummaryInTimeZone,
+  formatRecruitmentReminderRhythmSummaryInTimeZone,
+  getNextRecruitmentReminderSlot,
+  getRecruitmentReminderSlotCandidates,
+  normalizeRecruitmentTimezone,
+  recruitmentReminderService,
+} from "../services/RecruitmentReminderService";
+import { getSupportedSyncTimeZones } from "../services/syncTimeZone";
 
 const RECRUITMENT_MODAL_PREFIX = "recruitment-edit";
 const DISCORD_CLAN_TAG_INPUT_ID = "discord-clan-tag";
@@ -38,6 +55,7 @@ const BODY_INPUT_ID = "body";
 const IMAGE_URLS_INPUT_ID = "image-urls";
 const DISCORD_RECRUITMENT_CHANNEL_URL =
   "https://discord.com/channels/236523452230533121/1058589765508800644";
+const PANEL_TIMEOUT_MS = 10 * 60 * 1000;
 
 const PLATFORM_CHOICES = [
   { name: "discord", value: "discord" },
@@ -63,9 +81,8 @@ function sanitizeBodyForBand(body: string): string {
     .trim();
 }
 
-function codeBlock(content: string, language = ""): string {
-  const safe = content.replaceAll("```", "`\u200b``");
-  return `\`\`\`${language}\n${safe}\n\`\`\``;
+function doubleBacktickBlock(content: string): string {
+  return formatRecruitmentReminderBody(content);
 }
 
 function parseModalCustomId(
@@ -128,7 +145,7 @@ function buildDiscordShowMessage(input: {
     `Clan: **${input.clanName}**`,
     "",
     `Recruitment Contents (${input.body.length}/1024):`,
-    codeBlock(input.body),
+    doubleBacktickBlock(input.body),
   ];
 
   if (input.imageUrls.length > 0) {
@@ -140,6 +157,7 @@ function buildDiscordShowMessage(input: {
     "Instructions:",
     `- Go to ${DISCORD_RECRUITMENT_CHANNEL_URL}`,
     "- Type `/post` in that channel and fill clan tag, recruitment contents, image URL, and language.",
+    "- Copy/paste the body from the double-backtick block below.",
     "",
     input.cooldownLine
   );
@@ -162,14 +180,20 @@ function buildBandShowMessage(input: {
     "⚠️ Do NOT mention alliances, families, or Discord servers.",
     "",
     "Recruitment Contents:",
-    codeBlock(sanitizedBody),
+    doubleBacktickBlock(sanitizedBody),
   ];
 
   if (input.imageUrls.length > 0) {
     lines.push("", "Suggested Image URLs:", ...input.imageUrls.map((url) => `- ${url}`));
   }
 
-  lines.push("", input.cooldownLine);
+  lines.push(
+    "",
+    "Destination:",
+    "- https://www.band.us/band/67130116/post",
+    "",
+    input.cooldownLine,
+  );
   return lines.join("\n");
 }
 
@@ -194,11 +218,14 @@ function buildRedditShowMessage(input: {
     `\`${input.subject}\``,
     "",
     "Recruitment Contents:",
-    codeBlock(noGiveawayBody, "md"),
+    doubleBacktickBlock(noGiveawayBody),
     "",
     "Rules:",
     "- No giveaway mentions.",
     "- Once per 7 days per account.",
+    "",
+    "Destination:",
+    "- https://www.reddit.com/r/ClashOfClansRecruit/",
     "",
     input.cooldownLine,
   ].join("\n");
@@ -214,6 +241,582 @@ function buildCooldownLine(cooldownExpiresAt: Date | null): string {
   }
   const unix = toUnixSeconds(cooldownExpiresAt);
   return `Cooldown: Active until <t:${unix}:F> (<t:${unix}:R>).`;
+}
+
+const RECRUITMENT_DASHBOARD_PREFIX = "recruitment-dashboard";
+
+type RecruitmentDashboardScope = "overview" | "clan" | "schedule";
+type RecruitmentDashboardOverviewTab = "timers" | "scripts" | "optimize";
+type RecruitmentDashboardClanTab = "discord" | "reddit" | "band";
+
+type RecruitmentDashboardState = {
+  scope: RecruitmentDashboardScope;
+  overviewTab: RecruitmentDashboardOverviewTab;
+  clanTag: string | null;
+  clanTab: RecruitmentDashboardClanTab;
+  timezone: string;
+  reminderDayKey: string | null;
+  reminderTimeIso: string | null;
+};
+
+type RecruitmentDashboardTrackedClan = {
+  tag: string;
+  name: string | null;
+  shortName: string | null;
+};
+
+type RecruitmentDashboardTemplateRow = {
+  clanTag: string;
+  platform: RecruitmentPlatform;
+  subject: string | null;
+  body: string;
+  imageUrls: string[];
+};
+
+type RecruitmentDashboardTimeOption = {
+  label: string;
+  value: string;
+  description: string;
+  default?: boolean;
+};
+
+function makeRecruitmentDashboardState(input?: Partial<RecruitmentDashboardState>): RecruitmentDashboardState {
+  return {
+    scope: input?.scope ?? "overview",
+    overviewTab: input?.overviewTab ?? "timers",
+    clanTag: input?.clanTag ?? null,
+    clanTab: input?.clanTab ?? "discord",
+    timezone: input?.timezone ?? "America/Los_Angeles",
+    reminderDayKey: input?.reminderDayKey ?? null,
+    reminderTimeIso: input?.reminderTimeIso ?? null,
+  };
+}
+
+function recruitmentDashboardCustomId(sessionId: string, action: string): string {
+  return `${RECRUITMENT_DASHBOARD_PREFIX}:${sessionId}:${action}`;
+}
+
+function parseRecruitmentDashboardCustomId(customId: string): { sessionId: string; action: string } | null {
+  const parts = String(customId ?? "").split(":");
+  if (parts.length < 3) return null;
+  if (parts[0] !== RECRUITMENT_DASHBOARD_PREFIX) return null;
+  const sessionId = parts[1]?.trim() ?? "";
+  const action = parts.slice(2).join(":").trim();
+  if (!sessionId || !action) return null;
+  return { sessionId, action };
+}
+
+function formatRecruitmentPlatformChoice(platform: RecruitmentPlatform): string {
+  return platform.charAt(0).toUpperCase() + platform.slice(1);
+}
+
+function formatClanLabel(tag: string, name: string | null): string {
+  return name?.trim() ? `${name.trim()} (${formatClanTag(tag)})` : formatClanTag(tag);
+}
+
+function fallbackTrackedClanShortLabel(name: string | null, tag: string): string {
+  const source = (name?.trim() || formatClanTag(tag)).toUpperCase();
+  const alphanumeric = source.replace(/[^A-Z0-9]/g, "");
+  const condensed = alphanumeric.length > 0 ? alphanumeric : source.replace(/\s+/g, "");
+  if (condensed.length >= 3) return condensed.slice(0, 3);
+  const fallbackTag = normalizeClanTag(tag);
+  return (condensed + fallbackTag).slice(0, 3);
+}
+
+function formatRecruitmentDashboardClanShortLabel(input: {
+  name: string | null;
+  shortName: string | null;
+  tag: string;
+}): string {
+  const shortName = input.shortName?.trim().toUpperCase() ?? "";
+  return shortName.length > 0 ? shortName : fallbackTrackedClanShortLabel(input.name, input.tag);
+}
+
+function padRecruitmentDashboardTableCell(value: string, width: number): string {
+  return value.padEnd(width);
+}
+
+function stripRecruitmentTimeOptionMarkers(label: string): string {
+  return label.replace(/\s*🔥+$/u, "").trimEnd();
+}
+
+export function decorateRecruitmentDashboardTimeOptions(
+  options: RecruitmentDashboardTimeOption[],
+  bestIndex: number
+): RecruitmentDashboardTimeOption[] {
+  if (options.length === 0) return [];
+  const normalizedBestIndex = bestIndex < 0 ? 0 : Math.min(bestIndex, options.length - 1);
+  return options.map((option, index) => {
+    const distance = Math.abs(index - normalizedBestIndex);
+    const fireSuffix = index === normalizedBestIndex ? " 🔥🔥" : distance <= 2 ? " 🔥" : "";
+    return {
+      ...option,
+      label: `${stripRecruitmentTimeOptionMarkers(option.label)}${fireSuffix}`.slice(0, 100),
+    };
+  });
+}
+
+function recruitmentDashboardTimezoneKey(userId: string): string {
+  return `user_timezone:${userId}`;
+}
+
+async function resolveRecruitmentDashboardTimezone(input: {
+  settings: SettingsService;
+  userId: string;
+  timezoneSeedRaw: string | null;
+}): Promise<string> {
+  const provided = input.timezoneSeedRaw ? normalizeRecruitmentTimezone(input.timezoneSeedRaw) : null;
+  if (input.timezoneSeedRaw && !provided) {
+    throw new Error("invalid_timezone");
+  }
+
+  const rememberedRaw = await input.settings.get(recruitmentDashboardTimezoneKey(input.userId));
+  const remembered = normalizeRecruitmentTimezone(rememberedRaw);
+  const resolved = provided ?? remembered ?? "UTC";
+  await input.settings.set(recruitmentDashboardTimezoneKey(input.userId), resolved);
+  return resolved;
+}
+
+async function persistRecruitmentDashboardTimezone(
+  settings: SettingsService,
+  userId: string,
+  timezone: string,
+): Promise<void> {
+  const normalized = normalizeRecruitmentTimezone(timezone) ?? "UTC";
+  await settings.set(recruitmentDashboardTimezoneKey(userId), normalized);
+}
+
+function stepRecruitmentDashboardTimezone(
+  currentTimezone: string,
+  delta: -1 | 1,
+  referenceDate = new Date(),
+): string {
+  const zones = getSupportedSyncTimeZones(referenceDate);
+  const current = normalizeRecruitmentTimezone(currentTimezone) ?? "UTC";
+  const index = zones.indexOf(current);
+  const baseIndex = index >= 0 ? index : zones.indexOf("UTC");
+  if (zones.length === 0 || baseIndex < 0) return "UTC";
+  const nextIndex = (baseIndex + delta + zones.length) % zones.length;
+  return zones[nextIndex] ?? "UTC";
+}
+
+function buildRecruitmentDashboardTimezoneControls(input: { sessionId: string }): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(recruitmentDashboardCustomId(input.sessionId, "timezone:prev"))
+      .setLabel("TZ -")
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(recruitmentDashboardCustomId(input.sessionId, "timezone:next"))
+      .setLabel("TZ +")
+      .setStyle(ButtonStyle.Secondary),
+  );
+}
+
+async function loadRecruitmentDashboardData(guildId: string, userId: string): Promise<{
+  trackedClans: RecruitmentDashboardTrackedClan[];
+  templates: Map<string, RecruitmentDashboardTemplateRow>;
+  cooldowns: Map<string, Date>;
+}> {
+  const [trackedClans, templates, cooldowns] = await Promise.all([
+    prisma.trackedClan.findMany({
+      orderBy: { createdAt: "asc" },
+      select: { tag: true, name: true, shortName: true },
+    }),
+    prisma.recruitmentTemplate.findMany({
+      where: { guildId },
+      select: { clanTag: true, platform: true, subject: true, body: true, imageUrls: true },
+    }),
+    prisma.recruitmentCooldown.findMany({
+      where: { guildId, userId },
+      select: { clanTag: true, platform: true, expiresAt: true },
+    }),
+  ]);
+
+  return {
+    trackedClans: trackedClans.map((row) => ({
+      tag: normalizeClanTag(row.tag),
+      name: row.name?.trim() || null,
+      shortName: row.shortName?.trim() || null,
+    })),
+    templates: new Map(
+      templates.map((row) => [
+        `${normalizeClanTag(row.clanTag)}:${String(row.platform)}`,
+        {
+          clanTag: normalizeClanTag(row.clanTag),
+          platform: row.platform as RecruitmentPlatform,
+          subject: row.subject ?? null,
+          body: row.body,
+          imageUrls: row.imageUrls ?? [],
+        },
+      ]),
+    ),
+    cooldowns: new Map(
+      cooldowns.map((row) => [`${normalizeClanTag(row.clanTag)}:${row.platform}`, row.expiresAt]),
+    ),
+  };
+}
+
+function buildRecruitmentDashboardEmbed(input: {
+  state: RecruitmentDashboardState;
+  data: Awaited<ReturnType<typeof loadRecruitmentDashboardData>>;
+  nowMs: number;
+}): EmbedBuilder {
+  const state = input.state;
+  const tracked = input.data.trackedClans;
+  const lines: string[] = [];
+
+  lines.push(`Timezone: \`${state.timezone}\``);
+  if (state.scope === "overview") {
+    lines.push("Scope: Alliance Overview");
+    if (state.overviewTab === "timers") {
+      lines.push("", "Active recruitment timers:");
+      const now = input.nowMs;
+      const timerLines = tracked.flatMap((clan) => {
+        const rowLines: string[] = [];
+        for (const platform of ["discord", "reddit", "band"] as RecruitmentPlatform[]) {
+          const key = `${clan.tag}:${platform}`;
+          const expiresAt = input.data.cooldowns.get(key) ?? null;
+          if (!expiresAt || expiresAt.getTime() <= now) continue;
+          rowLines.push(
+            `- ${formatClanLabel(clan.tag, clan.name)} | ${formatRecruitmentPlatformChoice(platform)} | <t:${toUnixSeconds(
+              expiresAt,
+            )}:R>`,
+          );
+        }
+        return rowLines;
+      });
+      lines.push(...(timerLines.length > 0 ? timerLines : ["No active recruitment timers."]));
+    } else if (state.overviewTab === "scripts") {
+      lines.push("", "Stored template coverage:");
+      if (tracked.length <= 0) {
+        lines.push("No tracked clans configured.");
+      } else {
+        const labelWidth = Math.max("Clan".length, ...tracked.map((clan) => formatRecruitmentDashboardClanShortLabel(clan).slice(0, 8).length));
+        const discordWidth = "Discord".length;
+        const redditWidth = "Reddit".length;
+        const bandWidth = "Band".length;
+        const rows = tracked.map((clan) => {
+          const label = formatRecruitmentDashboardClanShortLabel(clan).slice(0, 8);
+          const discord = input.data.templates.has(`${clan.tag}:discord`) ? "✓" : "";
+          const reddit = input.data.templates.has(`${clan.tag}:reddit`) ? "✓" : "";
+          const band = input.data.templates.has(`${clan.tag}:band`) ? "✓" : "";
+          return [
+            padRecruitmentDashboardTableCell(label, labelWidth),
+            padRecruitmentDashboardTableCell(discord, discordWidth),
+            padRecruitmentDashboardTableCell(reddit, redditWidth),
+            padRecruitmentDashboardTableCell(band, bandWidth),
+          ].join(" ");
+        });
+        lines.push(
+          "```text",
+          [
+            padRecruitmentDashboardTableCell("Clan", labelWidth),
+            padRecruitmentDashboardTableCell("Discord", discordWidth),
+            padRecruitmentDashboardTableCell("Reddit", redditWidth),
+            padRecruitmentDashboardTableCell("Band", bandWidth),
+          ].join(" "),
+          ...rows,
+          "```",
+        );
+      }
+    } else {
+      lines.push("", "Optimization guide:");
+      for (const platform of ["discord", "reddit", "band"] as RecruitmentPlatform[]) {
+        const now = new Date(input.nowMs);
+        const windows = formatRecruitmentReminderWindowSummaryInTimeZone(platform, state.timezone, now);
+        const nextSlots = getRecruitmentReminderSlotCandidates({
+          platform,
+          timezone: state.timezone,
+          after: now,
+        })
+          .slice(0, 3)
+          .map((slot) => `\`${formatRecruitmentReminderTime(slot, state.timezone)}\``)
+          .join("\n    - ");
+        lines.push(
+          `- ${formatRecruitmentPlatformChoice(platform)}`,
+          `  - Best windows: ${windows}`,
+          `  - Rhythm: ${formatRecruitmentReminderRhythmSummaryInTimeZone(platform, state.timezone, now)}`,
+          "  - Next recommended slots:",
+          nextSlots ? `    - ${nextSlots}` : "    - no upcoming slots",
+        );
+      }
+    }
+  } else if (state.scope === "clan" && state.clanTag) {
+    const clan = tracked.find((row) => row.tag === state.clanTag) ?? null;
+    const platform = state.clanTab;
+    const template = input.data.templates.get(`${state.clanTag}:${platform}`) ?? null;
+    lines.push(`Scope: ${formatClanLabel(state.clanTag, clan?.name ?? null)}`);
+    lines.push(`Platform: ${formatRecruitmentPlatformChoice(platform)}`);
+    if (!template) {
+      lines.push("", "No stored template for this platform.");
+    } else if (platform === "discord") {
+      lines.push("", buildDiscordShowMessage({
+        clanName: clan?.name ?? state.clanTag,
+        clanTag: state.clanTag,
+        body: template.body,
+        imageUrls: template.imageUrls,
+        cooldownLine: buildCooldownLine(input.data.cooldowns.get(`${state.clanTag}:${platform}`) ?? null),
+      }));
+      lines.push("", "Destination:", `- ${DISCORD_RECRUITMENT_CHANNEL_URL}`);
+    } else if (platform === "band") {
+      lines.push("", buildBandShowMessage({
+        clanName: clan?.name ?? state.clanTag,
+        clanTag: state.clanTag,
+        body: template.body,
+        imageUrls: template.imageUrls,
+        cooldownLine: buildCooldownLine(input.data.cooldowns.get(`${state.clanTag}:${platform}`) ?? null),
+      }));
+    } else {
+      lines.push("", buildRedditShowMessage({
+        clanName: clan?.name ?? state.clanTag,
+        clanTag: state.clanTag,
+        subject: template.subject ?? "",
+        body: template.body,
+        imageUrls: template.imageUrls,
+        cooldownLine: buildCooldownLine(input.data.cooldowns.get(`${state.clanTag}:${platform}`) ?? null),
+      }));
+    }
+  } else if (state.scope === "schedule" && state.clanTag) {
+    const clan = tracked.find((row) => row.tag === state.clanTag) ?? null;
+    const platform = state.clanTab;
+    const template = input.data.templates.get(`${state.clanTag}:${platform}`) ?? null;
+    const cooldown = input.data.cooldowns.get(`${state.clanTag}:${platform}`) ?? null;
+    const now = new Date(input.nowMs);
+    const slots = getRecruitmentReminderSlotCandidates({
+      platform,
+      timezone: state.timezone,
+      after: now,
+      cooldownExpiresAt: cooldown ?? null,
+    });
+    const selectedDayKey = state.reminderDayKey;
+    const dayOptions = [
+      ...new Map(
+        slots.map((slot) => {
+          const key = getDateKeyInTimeZone(slot, state.timezone);
+          return [key, key] as const;
+        }),
+      ).values(),
+    ].slice(0, 25);
+    const dayLabel = selectedDayKey ?? dayOptions[0] ?? "none";
+    lines.push(`Scheduling reminder for ${formatClanLabel(state.clanTag, clan?.name ?? null)}`);
+    lines.push(`Platform: ${formatRecruitmentPlatformChoice(platform)}`);
+    lines.push("");
+    lines.push(
+      template
+        ? "Select a day and time in 30-minute increments within the optimized posting windows."
+        : "No stored template exists for this platform. Remind creation is unavailable.",
+    );
+    lines.push(
+      template ? `Recommended: ${formatRecruitmentReminderRhythmSummaryInTimeZone(platform, state.timezone, now)}` : "",
+    );
+    if (cooldown) {
+      lines.push(`Cooldown: active until <t:${toUnixSeconds(cooldown)}:R>`);
+    } else {
+      lines.push("Cooldown: ready now");
+    }
+    lines.push(`Day choice: ${dayLabel}`);
+  }
+
+  return new EmbedBuilder()
+    .setColor(0x5865f2)
+    .setTitle("Recruitment Dashboard")
+    .setDescription(truncateDiscordContent(lines.join("\n")))
+    .setFooter({
+      text: state.scope === "overview" ? "Alliance Overview" : state.scope === "schedule" ? "Reminder Scheduling" : "Clan View",
+    });
+}
+
+function buildRecruitmentDashboardComponents(input: {
+  state: RecruitmentDashboardState;
+  data: Awaited<ReturnType<typeof loadRecruitmentDashboardData>>;
+  sessionId: string;
+}): Array<ActionRowBuilder<ButtonBuilder> | ActionRowBuilder<StringSelectMenuBuilder>> {
+  const state = input.state;
+  const tracked = input.data.trackedClans;
+  const dropdown = new StringSelectMenuBuilder()
+    .setCustomId(recruitmentDashboardCustomId(input.sessionId, "scope"))
+    .setMinValues(1)
+    .setMaxValues(1)
+    .setPlaceholder("Select alliance overview or a clan");
+
+  const menuOptions = [
+    {
+      label: "Alliance Overview",
+      value: "overview",
+      description: "Alliance-wide timers, scripts, and optimize guidance",
+      default: state.scope === "overview",
+    },
+    ...tracked.slice(0, 24).map((clan) => ({
+      label: formatClanLabel(clan.tag, clan.name).slice(0, 100),
+      value: clan.tag,
+      description: `Clan view for ${clan.tag}`.slice(0, 100),
+      default: state.scope === "clan" && state.clanTag === clan.tag,
+    })),
+  ];
+  dropdown.addOptions(menuOptions);
+  const timezoneControls = buildRecruitmentDashboardTimezoneControls({ sessionId: input.sessionId });
+
+  if (state.scope === "schedule") {
+    const confirmEnabled = Boolean(
+      state.clanTag &&
+        state.reminderDayKey &&
+        state.reminderTimeIso &&
+        input.data.templates.has(`${state.clanTag}:${state.clanTab}`),
+    );
+    const scheduleButtons = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(recruitmentDashboardCustomId(input.sessionId, "schedule:back"))
+        .setLabel("Back")
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(recruitmentDashboardCustomId(input.sessionId, "schedule:confirm"))
+        .setLabel("Confirm")
+        .setStyle(ButtonStyle.Success)
+        .setDisabled(!confirmEnabled),
+    );
+    const dayOptions = buildRecruitmentDashboardDayOptions(input.state, input.data);
+    const timeOptions = buildRecruitmentDashboardTimeOptions(input.state, input.data);
+    return [
+      timezoneControls,
+      scheduleButtons,
+      new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+        new StringSelectMenuBuilder()
+          .setCustomId(recruitmentDashboardCustomId(input.sessionId, "schedule:day"))
+          .setMinValues(1)
+          .setMaxValues(1)
+          .setPlaceholder(dayOptions.length > 0 ? "Select a day" : "No valid days")
+          .setDisabled(dayOptions.length <= 0)
+          .addOptions(dayOptions.length > 0 ? dayOptions : [{ label: "No valid days", value: "none", description: "No available reminder days" }]),
+      ),
+      new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+        new StringSelectMenuBuilder()
+          .setCustomId(recruitmentDashboardCustomId(input.sessionId, "schedule:time"))
+          .setMinValues(1)
+          .setMaxValues(1)
+          .setPlaceholder(timeOptions.length > 0 ? "Select a time" : "No valid times")
+          .setDisabled(timeOptions.length <= 0)
+          .addOptions(timeOptions.length > 0 ? timeOptions : [{ label: "No valid times", value: "none", description: "No available reminder slots" }]),
+      ),
+      new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(dropdown),
+    ];
+  }
+
+  if (state.scope === "overview") {
+    const overviewButtons = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(recruitmentDashboardCustomId(input.sessionId, "overview:timers"))
+        .setLabel("Timers")
+        .setStyle(state.overviewTab === "timers" ? ButtonStyle.Primary : ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(recruitmentDashboardCustomId(input.sessionId, "overview:scripts"))
+        .setLabel("Scripts")
+        .setStyle(state.overviewTab === "scripts" ? ButtonStyle.Primary : ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(recruitmentDashboardCustomId(input.sessionId, "overview:optimize"))
+        .setLabel("Optimize")
+        .setStyle(state.overviewTab === "optimize" ? ButtonStyle.Primary : ButtonStyle.Secondary),
+    );
+    return [
+      timezoneControls,
+      overviewButtons,
+      new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(dropdown),
+    ];
+  }
+
+  const templateExists = input.data.templates.has(`${state.clanTag}:${state.clanTab}`);
+  const clanButtons = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(recruitmentDashboardCustomId(input.sessionId, "clan:discord"))
+      .setLabel("Discord")
+      .setStyle(state.clanTab === "discord" ? ButtonStyle.Primary : ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(recruitmentDashboardCustomId(input.sessionId, "clan:reddit"))
+      .setLabel("Reddit")
+      .setStyle(state.clanTab === "reddit" ? ButtonStyle.Primary : ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(recruitmentDashboardCustomId(input.sessionId, "clan:band"))
+      .setLabel("Band")
+      .setStyle(state.clanTab === "band" ? ButtonStyle.Primary : ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(recruitmentDashboardCustomId(input.sessionId, "clan:remind"))
+      .setLabel("Remind")
+      .setStyle(ButtonStyle.Success)
+      .setDisabled(!templateExists),
+    new ButtonBuilder()
+      .setCustomId(recruitmentDashboardCustomId(input.sessionId, "clan:start-countdown"))
+      .setLabel("Start countdown")
+      .setStyle(ButtonStyle.Secondary),
+  );
+  return [
+    timezoneControls,
+    clanButtons,
+    new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(dropdown),
+  ];
+}
+
+function buildRecruitmentDashboardDayOptions(
+  state: RecruitmentDashboardState,
+  data: Awaited<ReturnType<typeof loadRecruitmentDashboardData>>,
+): Array<{ label: string; value: string; description: string; default?: boolean }> {
+  if (!state.clanTag) return [];
+  const slots = getRecruitmentReminderSlotCandidates({
+    platform: state.clanTab,
+    timezone: state.timezone,
+    after: new Date(),
+    cooldownExpiresAt: data.cooldowns.get(`${state.clanTag}:${state.clanTab}`) ?? null,
+  });
+  const days = new Map<string, { label: string; value: string; description: string }>();
+  for (const slot of slots) {
+    const dateLabel = getDateKeyInTimeZone(slot, state.timezone);
+    if (!days.has(dateLabel)) {
+      days.set(dateLabel, {
+        label: dateLabel.slice(0, 100),
+        value: dateLabel,
+        description: `Slots for ${dateLabel}`.slice(0, 100),
+      });
+    }
+  }
+  return [...days.values()].slice(0, 25).map((option) => ({
+    ...option,
+    default: option.value === state.reminderDayKey,
+  }));
+}
+
+function buildRecruitmentDashboardTimeOptions(
+  state: RecruitmentDashboardState,
+  data: Awaited<ReturnType<typeof loadRecruitmentDashboardData>>,
+): RecruitmentDashboardTimeOption[] {
+  if (!state.clanTag || !state.reminderDayKey) return [];
+  const slots = getRecruitmentReminderSlotCandidates({
+    platform: state.clanTab,
+    timezone: state.timezone,
+    after: new Date(),
+    cooldownExpiresAt: data.cooldowns.get(`${state.clanTag}:${state.clanTab}`) ?? null,
+  });
+  const matches = slots.filter((slot) => {
+    const dateLabel = getDateKeyInTimeZone(slot, state.timezone);
+    return dateLabel === state.reminderDayKey;
+  });
+  const baseOptions = matches.slice(0, 25).map((slot) => {
+    const display = formatRecruitmentReminderTime(slot, state.timezone);
+    return {
+      label: display.slice(0, 100),
+      value: slot.toISOString(),
+      description: "30-minute slot".slice(0, 100),
+      default: state.reminderTimeIso === slot.toISOString(),
+    };
+  });
+  const bestReminderSlot = getNextRecruitmentReminderSlot({
+    platform: state.clanTab,
+    timezone: state.timezone,
+    after: new Date(),
+    cooldownExpiresAt: data.cooldowns.get(`${state.clanTag}:${state.clanTab}`) ?? null,
+  });
+  const bestIndex = bestReminderSlot
+    ? baseOptions.findIndex((option) => option.value === bestReminderSlot.toISOString())
+    : -1;
+  return decorateRecruitmentDashboardTimeOptions(baseOptions, bestIndex);
 }
 
 async function handleShowSubcommand(
@@ -499,6 +1102,19 @@ async function handleDashboardSubcommand(interaction: ChatInputCommandInteractio
     return;
   }
   await interaction.deferReply({ ephemeral: true });
+  const settings = new SettingsService();
+  const timezoneSeedRaw = interaction.options.getString("timezone", false)?.trim() ?? null;
+  let normalizedTimezone: string;
+  try {
+    normalizedTimezone = await resolveRecruitmentDashboardTimezone({
+      settings,
+      userId: interaction.user.id,
+      timezoneSeedRaw,
+    });
+  } catch {
+    await interaction.editReply("Invalid timezone. Use a valid IANA timezone.");
+    return;
+  }
 
   const tracked = await prisma.trackedClan.findMany({
     orderBy: { createdAt: "asc" },
@@ -509,35 +1125,242 @@ async function handleDashboardSubcommand(interaction: ChatInputCommandInteractio
     return;
   }
 
-  const tags = tracked.map((row) => normalizeClanTag(row.tag));
-  const cooldowns = await listRecruitmentCooldownsForUserByClanTags(
-    interaction.guildId,
-    interaction.user.id,
-    tags
-  );
-  const cooldownMap = new Map<string, Date>();
-  for (const row of cooldowns) {
-    cooldownMap.set(`${normalizeClanTag(row.clanTag)}:${row.platform}`, row.expiresAt);
-  }
+  const state = makeRecruitmentDashboardState({
+    scope: "overview",
+    overviewTab: "timers",
+    timezone: normalizedTimezone,
+  });
+  const sessionId = interaction.id;
 
-  const now = Date.now();
-  const platforms: RecruitmentPlatform[] = ["discord", "band", "reddit"];
-  const lines: string[] = [];
-  for (const clan of tracked) {
-    const tag = normalizeClanTag(clan.tag);
-    lines.push(`**${mapTrackedLabel(clan.name, tag)}**`);
-    for (const platform of platforms) {
-      const expiresAt = cooldownMap.get(`${tag}:${platform}`);
-      if (!expiresAt || expiresAt.getTime() <= now) {
-        lines.push(`- ${formatPlatform(platform)}: Ready now`);
-      } else {
-        lines.push(`- ${formatPlatform(platform)}: <t:${toUnixSeconds(expiresAt)}:R>`);
+  const render = async (note: string | null = null): Promise<void> => {
+    const data = await loadRecruitmentDashboardData(interaction.guildId!, interaction.user.id);
+    await interaction.editReply({
+      content: note ?? undefined,
+      embeds: [buildRecruitmentDashboardEmbed({ state, data, nowMs: Date.now() })],
+      components: buildRecruitmentDashboardComponents({
+        state,
+        data,
+        sessionId,
+      }),
+    });
+  };
+
+  await render();
+  const message = await interaction.fetchReply();
+  const collector = message.createMessageComponentCollector({ time: PANEL_TIMEOUT_MS });
+
+  collector.on("collect", async (component) => {
+    const parsed = parseRecruitmentDashboardCustomId(component.customId);
+    if (!parsed || parsed.sessionId !== sessionId) return;
+    if (component.user.id !== interaction.user.id) {
+      await component.reply({
+        ephemeral: true,
+        content: "Only the dashboard requester can use this panel.",
+      });
+      return;
+    }
+
+    try {
+      if (component.isButton() && parsed.action === "timezone:prev") {
+        await component.deferUpdate();
+        state.timezone = stepRecruitmentDashboardTimezone(state.timezone, -1, new Date());
+        state.reminderDayKey = null;
+        state.reminderTimeIso = null;
+        await persistRecruitmentDashboardTimezone(settings, interaction.user.id, state.timezone);
+        await render();
+        return;
+      }
+
+      if (component.isButton() && parsed.action === "timezone:next") {
+        await component.deferUpdate();
+        state.timezone = stepRecruitmentDashboardTimezone(state.timezone, 1, new Date());
+        state.reminderDayKey = null;
+        state.reminderTimeIso = null;
+        await persistRecruitmentDashboardTimezone(settings, interaction.user.id, state.timezone);
+        await render();
+        return;
+      }
+
+      if (component.isStringSelectMenu() && parsed.action === "scope") {
+        await component.deferUpdate();
+        const selected = component.values[0] ?? "overview";
+        if (selected === "overview") {
+          state.scope = "overview";
+          state.clanTag = null;
+          state.overviewTab = "timers";
+        } else {
+          state.scope = "clan";
+          state.clanTag = normalizeClanTag(selected);
+          state.clanTab = "discord";
+          state.reminderDayKey = null;
+          state.reminderTimeIso = null;
+        }
+        await render();
+        return;
+      }
+
+      if (component.isButton() && parsed.action.startsWith("overview:")) {
+        await component.deferUpdate();
+        const nextTab = parsed.action.split(":")[1] as RecruitmentDashboardOverviewTab | undefined;
+        if (nextTab === "timers" || nextTab === "scripts" || nextTab === "optimize") {
+          state.scope = "overview";
+          state.clanTag = null;
+          state.overviewTab = nextTab;
+          await render();
+        }
+        return;
+      }
+
+      if (component.isButton() && parsed.action.startsWith("clan:")) {
+        await component.deferUpdate();
+        const next = parsed.action.split(":")[1] as RecruitmentDashboardClanTab | "remind" | undefined;
+        if (next === "discord" || next === "reddit" || next === "band") {
+          state.scope = "clan";
+          state.clanTab = next;
+          state.reminderDayKey = null;
+          state.reminderTimeIso = null;
+          await render();
+          return;
+        }
+        if (next === "remind") {
+          if (!state.clanTag) {
+            await render("Select a clan first.");
+            return;
+          }
+          const data = await loadRecruitmentDashboardData(interaction.guildId!, interaction.user.id);
+          if (!data.templates.has(`${state.clanTag}:${state.clanTab}`)) {
+            await render("This clan/platform has no stored template yet.");
+            return;
+          }
+          state.scope = "schedule";
+          state.reminderDayKey = null;
+          state.reminderTimeIso = null;
+          await render();
+          return;
+        }
+        if (next === "start-countdown") {
+          if (!state.clanTag) {
+            await render("Select a clan first.");
+            return;
+          }
+          const startedAt = new Date();
+          const expiresAt = new Date(startedAt.getTime() + getRecruitmentCooldownDurationMs(state.clanTab));
+          await startOrResetRecruitmentCooldown({
+            guildId: interaction.guildId!,
+            userId: interaction.user.id,
+            clanTag: state.clanTag,
+            platform: state.clanTab,
+            startedAt,
+            expiresAt,
+          });
+          await render(
+            `Started ${formatRecruitmentPlatformChoice(state.clanTab)} countdown for ${formatClanLabel(
+              state.clanTag,
+              tracked.find((row) => row.tag === state.clanTag)?.name ?? null,
+            )}.`,
+          );
+          return;
+        }
+      }
+
+      if (component.isButton() && parsed.action === "schedule:back") {
+        await component.deferUpdate();
+        state.scope = "clan";
+        await render();
+        return;
+      }
+
+      if (component.isStringSelectMenu() && parsed.action === "schedule:day") {
+        await component.deferUpdate();
+        state.reminderDayKey = component.values[0] ?? null;
+        const data = await loadRecruitmentDashboardData(interaction.guildId!, interaction.user.id);
+        const slots = getRecruitmentReminderSlotCandidates({
+          platform: state.clanTab,
+          timezone: state.timezone,
+          after: new Date(),
+          cooldownExpiresAt:
+            state.clanTag ? data.cooldowns.get(`${state.clanTag}:${state.clanTab}`) ?? null : null,
+        });
+        const selectedSlot =
+          slots.find((slot) => {
+            const dayLabel = getDateKeyInTimeZone(slot, state.timezone);
+            return dayLabel === state.reminderDayKey;
+          }) ?? null;
+        state.reminderTimeIso = selectedSlot?.toISOString() ?? null;
+        await render();
+        return;
+      }
+
+      if (component.isStringSelectMenu() && parsed.action === "schedule:time") {
+        await component.deferUpdate();
+        state.reminderTimeIso = component.values[0] ?? null;
+        await render();
+        return;
+      }
+
+      if (component.isButton() && parsed.action === "schedule:confirm") {
+        await component.deferUpdate();
+        if (!state.clanTag || !state.reminderTimeIso || !state.reminderDayKey) {
+          await render("Select a day and time before confirming.");
+          return;
+        }
+        const selectedAt = new Date(state.reminderTimeIso);
+        const data = await loadRecruitmentDashboardData(interaction.guildId!, interaction.user.id);
+        const template = await getRecruitmentTemplate(
+          interaction.guildId!,
+          state.clanTag,
+          state.clanTab,
+        );
+        if (!template) {
+          await render("No stored template exists for that clan/platform.");
+          return;
+        }
+        const clan = data.trackedClans.find((row) => row.tag === state.clanTag) ?? null;
+        const next = getNextRecruitmentReminderSlot({
+          platform: state.clanTab,
+          timezone: state.timezone,
+          after: selectedAt,
+          cooldownExpiresAt: state.clanTag
+            ? data.cooldowns.get(`${state.clanTag}:${state.clanTab}`) ?? null
+            : null,
+        });
+        const nextReminderAt = next ?? selectedAt;
+        await recruitmentReminderService.upsertRecruitmentReminderRule({
+          guildId: interaction.guildId!,
+          discordUserId: interaction.user.id,
+          clanTag: state.clanTag,
+          platform: state.clanTab,
+          timezone: state.timezone,
+          nextReminderAt,
+          isActive: true,
+          clanNameSnapshot: clan?.name ?? null,
+          templateSubject: template.subject ?? null,
+          templateBody: template.body,
+          templateImageUrls: template.imageUrls,
+        });
+        await render(`Reminder saved for ${formatClanLabel(state.clanTag, clan?.name ?? null)}.`);
+        return;
+      }
+    } catch (error) {
+      console.error(`[recruitment] dashboard interaction failed error=${formatError(error)}`);
+      if (!component.replied && !component.deferred) {
+        await component.reply({
+          ephemeral: true,
+          content: "Failed to update the recruitment dashboard.",
+        });
       }
     }
-    lines.push("");
-  }
+  });
 
-  await interaction.editReply(truncateDiscordContent(lines.join("\n").trim()));
+  collector.on("end", async () => {
+    try {
+      await interaction.editReply({
+        components: [],
+      });
+    } catch {
+      // no-op
+    }
+  });
 }
 
 export function isRecruitmentModalCustomId(customId: string): boolean {
@@ -710,6 +1533,15 @@ export const Recruitment: Command = {
       name: "dashboard",
       description: "Show readiness across all tracked clans and platforms",
       type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "timezone",
+          description: "IANA timezone to use for window display and slot selection",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          autocomplete: true,
+        },
+      ],
     },
   ],
   run: async (
@@ -750,6 +1582,14 @@ export const Recruitment: Command = {
   },
   autocomplete: async (interaction: AutocompleteInteraction) => {
     const focused = interaction.options.getFocused(true);
+    if (focused.name === "timezone") {
+      try {
+        await interaction.respond(autocompleteRecruitmentTimeZones(String(focused.value ?? "")));
+      } catch {
+        await interaction.respond([]);
+      }
+      return;
+    }
     if (focused.name !== "clan") {
       await interaction.respond([]);
       return;
