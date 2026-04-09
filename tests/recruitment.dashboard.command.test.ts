@@ -224,8 +224,8 @@ describe("/recruitment dashboard", () => {
     );
 
     prismaMock.trackedClan.findMany.mockResolvedValue([
-      { tag: "#AAA111", name: "Alpha" },
-      { tag: "#BBB222", name: "Beta" },
+      { tag: "#AAA111", name: "Alpha", shortName: "ALP" },
+      { tag: "#BBB222", name: "Beta", shortName: "BET" },
     ]);
     prismaMock.recruitmentTemplate.findMany.mockResolvedValue([
       {
@@ -311,8 +311,11 @@ describe("/recruitment dashboard", () => {
     let payload = getLastPayload(interaction);
     const scriptsDescription = String(payload.embeds[0].toJSON().description);
     expect(scriptsDescription).toMatch(/Discord\s+\|\s+Reddit\s+\|\s+Band/);
-    expect(scriptsDescription).toContain(":white_check_mark:");
-    expect(scriptsDescription).toContain("Alpha (#AAA111)");
+    expect(scriptsDescription).toContain("ALP");
+    expect(scriptsDescription).toContain("✓");
+    expect(scriptsDescription).not.toContain(":white_check_mark:");
+    expect(scriptsDescription).not.toContain("Alpha (#AAA111)");
+    expect(scriptsDescription).not.toContain("Beta (#BBB222)");
 
     await handlers.collect?.(createButtonComponent("recruitment-dashboard:dashboard-1:overview:optimize"));
     payload = getLastPayload(interaction);

@@ -262,6 +262,7 @@ type RecruitmentDashboardState = {
 type RecruitmentDashboardTrackedClan = {
   tag: string;
   name: string | null;
+  shortName: string | null;
 };
 
 type RecruitmentDashboardTemplateRow = {
@@ -304,6 +305,24 @@ function formatRecruitmentPlatformChoice(platform: RecruitmentPlatform): string 
 
 function formatClanLabel(tag: string, name: string | null): string {
   return name?.trim() ? `${name.trim()} (${formatClanTag(tag)})` : formatClanTag(tag);
+}
+
+function fallbackTrackedClanShortLabel(name: string | null, tag: string): string {
+  const source = (name?.trim() || formatClanTag(tag)).toUpperCase();
+  const alphanumeric = source.replace(/[^A-Z0-9]/g, "");
+  const condensed = alphanumeric.length > 0 ? alphanumeric : source.replace(/\s+/g, "");
+  if (condensed.length >= 3) return condensed.slice(0, 3);
+  const fallbackTag = normalizeClanTag(tag);
+  return (condensed + fallbackTag).slice(0, 3);
+}
+
+function formatRecruitmentDashboardClanShortLabel(input: {
+  name: string | null;
+  shortName: string | null;
+  tag: string;
+}): string {
+  const shortName = input.shortName?.trim().toUpperCase() ?? "";
+  return shortName.length > 0 ? shortName : fallbackTrackedClanShortLabel(input.name, input.tag);
 }
 
 function recruitmentDashboardTimezoneKey(userId: string): string {
@@ -371,7 +390,7 @@ async function loadRecruitmentDashboardData(guildId: string, userId: string): Pr
   const [trackedClans, templates, cooldowns] = await Promise.all([
     prisma.trackedClan.findMany({
       orderBy: { createdAt: "asc" },
-      select: { tag: true, name: true },
+      select: { tag: true, name: true, shortName: true },
     }),
     prisma.recruitmentTemplate.findMany({
       where: { guildId },
@@ -387,6 +406,7 @@ async function loadRecruitmentDashboardData(guildId: string, userId: string): Pr
     trackedClans: trackedClans.map((row) => ({
       tag: normalizeClanTag(row.tag),
       name: row.name?.trim() || null,
+      shortName: row.shortName?.trim() || null,
     })),
     templates: new Map(
       templates.map((row) => [
@@ -442,17 +462,18 @@ function buildRecruitmentDashboardEmbed(input: {
         lines.push("No tracked clans configured.");
       } else {
         const tableLines = [
-          "Clan".padEnd(24),
+          "Clan".padEnd(8),
           "Discord".padEnd(10),
           "Reddit".padEnd(10),
           "Band".padEnd(10),
         ];
         const rows = tracked.map((clan) => {
-          const discord = input.data.templates.has(`${clan.tag}:discord`) ? ":white_check_mark:" : "";
-          const reddit = input.data.templates.has(`${clan.tag}:reddit`) ? ":white_check_mark:" : "";
-          const band = input.data.templates.has(`${clan.tag}:band`) ? ":white_check_mark:" : "";
+          const label = formatRecruitmentDashboardClanShortLabel(clan).slice(0, 8).padEnd(8);
+          const discord = input.data.templates.has(`${clan.tag}:discord`) ? "✓" : "";
+          const reddit = input.data.templates.has(`${clan.tag}:reddit`) ? "✓" : "";
+          const band = input.data.templates.has(`${clan.tag}:band`) ? "✓" : "";
           return [
-            formatClanLabel(clan.tag, clan.name).slice(0, 24).padEnd(24),
+            label,
             discord.padEnd(10),
             reddit.padEnd(10),
             band.padEnd(10),
