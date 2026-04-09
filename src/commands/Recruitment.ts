@@ -273,6 +273,13 @@ type RecruitmentDashboardTemplateRow = {
   imageUrls: string[];
 };
 
+type RecruitmentDashboardTimeOption = {
+  label: string;
+  value: string;
+  description: string;
+  default?: boolean;
+};
+
 function makeRecruitmentDashboardState(input?: Partial<RecruitmentDashboardState>): RecruitmentDashboardState {
   return {
     scope: input?.scope ?? "overview",
@@ -323,6 +330,26 @@ function formatRecruitmentDashboardClanShortLabel(input: {
 }): string {
   const shortName = input.shortName?.trim().toUpperCase() ?? "";
   return shortName.length > 0 ? shortName : fallbackTrackedClanShortLabel(input.name, input.tag);
+}
+
+function stripRecruitmentTimeOptionMarkers(label: string): string {
+  return label.replace(/\s*🔥+$/u, "").trimEnd();
+}
+
+export function decorateRecruitmentDashboardTimeOptions(
+  options: RecruitmentDashboardTimeOption[],
+  bestIndex: number
+): RecruitmentDashboardTimeOption[] {
+  if (options.length === 0) return [];
+  const normalizedBestIndex = bestIndex < 0 ? 0 : Math.min(bestIndex, options.length - 1);
+  return options.map((option, index) => {
+    const distance = Math.abs(index - normalizedBestIndex);
+    const fireSuffix = index === normalizedBestIndex ? " 🔥🔥" : distance <= 2 ? " 🔥" : "";
+    return {
+      ...option,
+      label: `${stripRecruitmentTimeOptionMarkers(option.label)}${fireSuffix}`.slice(0, 100),
+    };
+  });
 }
 
 function recruitmentDashboardTimezoneKey(userId: string): string {
@@ -562,7 +589,6 @@ function buildRecruitmentDashboardEmbed(input: {
     const dayLabel = selectedDayKey ?? dayOptions[0] ?? "none";
     lines.push(`Scheduling reminder for ${formatClanLabel(state.clanTag, clan?.name ?? null)}`);
     lines.push(`Platform: ${formatRecruitmentPlatformChoice(platform)}`);
-    lines.push(`Timezone: \`${state.timezone}\``);
     lines.push("");
     lines.push(
       template
@@ -748,7 +774,7 @@ function buildRecruitmentDashboardDayOptions(
 function buildRecruitmentDashboardTimeOptions(
   state: RecruitmentDashboardState,
   data: Awaited<ReturnType<typeof loadRecruitmentDashboardData>>,
-): Array<{ label: string; value: string; description: string; default?: boolean }> {
+): RecruitmentDashboardTimeOption[] {
   if (!state.clanTag || !state.reminderDayKey) return [];
   const slots = getRecruitmentReminderSlotCandidates({
     platform: state.clanTab,
@@ -760,7 +786,7 @@ function buildRecruitmentDashboardTimeOptions(
     const dateLabel = getDateKeyInTimeZone(slot, state.timezone);
     return dateLabel === state.reminderDayKey;
   });
-  return matches.slice(0, 25).map((slot) => {
+  const baseOptions = matches.slice(0, 25).map((slot) => {
     const display = formatRecruitmentReminderTime(slot, state.timezone);
     return {
       label: display.slice(0, 100),
@@ -769,6 +795,16 @@ function buildRecruitmentDashboardTimeOptions(
       default: state.reminderTimeIso === slot.toISOString(),
     };
   });
+  const bestReminderSlot = getNextRecruitmentReminderSlot({
+    platform: state.clanTab,
+    timezone: state.timezone,
+    after: new Date(),
+    cooldownExpiresAt: data.cooldowns.get(`${state.clanTag}:${state.clanTab}`) ?? null,
+  });
+  const bestIndex = bestReminderSlot
+    ? baseOptions.findIndex((option) => option.value === bestReminderSlot.toISOString())
+    : -1;
+  return decorateRecruitmentDashboardTimeOptions(baseOptions, bestIndex);
 }
 
 async function handleShowSubcommand(

@@ -68,7 +68,7 @@ vi.mock("../src/services/RecruitmentService", async () => {
   };
 });
 
-import { Recruitment } from "../src/commands/Recruitment";
+import { Recruitment, decorateRecruitmentDashboardTimeOptions } from "../src/commands/Recruitment";
 import * as recruitmentServiceModule from "../src/services/RecruitmentService";
 import { recruitmentReminderService } from "../src/services/RecruitmentReminderService";
 
@@ -302,6 +302,18 @@ describe("/recruitment dashboard", () => {
     );
   });
 
+  it("shows timezone only once in the reminder scheduling view", async () => {
+    const { interaction, handlers } = createDashboardInteraction("America/Los_Angeles");
+    await Recruitment.run({} as any, interaction as any, {} as any);
+
+    await handlers.collect?.(createSelectComponent("recruitment-dashboard:dashboard-1:scope", ["AAA111"]));
+    await handlers.collect?.(createButtonComponent("recruitment-dashboard:dashboard-1:clan:discord"));
+    await handlers.collect?.(createButtonComponent("recruitment-dashboard:dashboard-1:clan:remind"));
+
+    const description = String(getLastPayload(interaction).embeds[0].toJSON().description);
+    expect(description.match(/Timezone:/g)?.length).toBe(1);
+  });
+
   it("renders scripts as a table and optimize as bullets", async () => {
     settingsStore.set("user_timezone:user-1", "UTC");
     const { interaction, handlers } = createDashboardInteraction();
@@ -390,6 +402,7 @@ describe("/recruitment dashboard", () => {
     let payload = getLastPayload(interaction);
     expect(String(payload.embeds[0].toJSON().footer?.text)).toContain("Reminder Scheduling");
     expect(getSelectMenus(payload)).toHaveLength(3);
+    expect(String(payload.embeds[0].toJSON().description)).toContain("Timezone: `America/Los_Angeles`");
 
     const dayMenu = getSelectMenus(payload)[0];
     const dayValue = dayMenu?.options?.[0]?.value;
@@ -398,6 +411,10 @@ describe("/recruitment dashboard", () => {
 
     payload = getLastPayload(interaction);
     const timeMenu = getSelectMenus(payload)[1];
+    const timeLabels = (timeMenu?.options ?? []).map((option: any) => String(option.label));
+    expect(timeLabels.some((label: string) => label.endsWith("🔥🔥"))).toBe(true);
+    expect(timeLabels.filter((label: string) => label.endsWith("🔥🔥"))).toHaveLength(1);
+    expect(timeLabels.some((label: string) => label.endsWith("🔥"))).toBe(true);
     const selectedTimeValue = timeMenu?.options?.[0]?.value;
     expect(selectedTimeValue).toBeTypeOf("string");
     await handlers.collect?.(createSelectComponent("recruitment-dashboard:dashboard-1:schedule:time", [selectedTimeValue]));
@@ -418,5 +435,51 @@ describe("/recruitment dashboard", () => {
         templateImageUrls: ["https://img.example/alpha.png"],
       }),
     );
+  });
+
+  it("decorates reminder slot labels around the best option without stacking markers", () => {
+    const options = [
+      { label: "Slot 1", value: "1", description: "" },
+      { label: "Slot 2", value: "2", description: "" },
+      { label: "Slot 3", value: "3", description: "" },
+      { label: "Slot 4", value: "4", description: "" },
+      { label: "Slot 5", value: "5", description: "" },
+      { label: "Slot 6", value: "6", description: "" },
+    ];
+
+    const decorated = decorateRecruitmentDashboardTimeOptions(options as any, 3);
+    const labels = decorated.map((option) => option.label);
+    expect(labels[3]).toBe("Slot 4 🔥🔥");
+    expect(labels[1]).toBe("Slot 2 🔥");
+    expect(labels[2]).toBe("Slot 3 🔥");
+    expect(labels[4]).toBe("Slot 5 🔥");
+    expect(labels[5]).toBe("Slot 6 🔥");
+    expect(labels[0]).toBe("Slot 1");
+
+    const rerendered = decorateRecruitmentDashboardTimeOptions(decorated, 3);
+    expect(rerendered.map((option) => option.label)).toEqual(labels);
+    expect(rerendered.map((option) => option.value)).toEqual(options.map((option) => option.value));
+  });
+
+  it("handles fire markers near the top and bottom of the option list", () => {
+    const options = [
+      { label: "Slot A", value: "A", description: "" },
+      { label: "Slot B", value: "B", description: "" },
+      { label: "Slot C", value: "C", description: "" },
+    ];
+
+    const topDecorated = decorateRecruitmentDashboardTimeOptions(options as any, 0);
+    expect(topDecorated.map((option) => option.label)).toEqual([
+      "Slot A 🔥🔥",
+      "Slot B 🔥",
+      "Slot C 🔥",
+    ]);
+
+    const bottomDecorated = decorateRecruitmentDashboardTimeOptions(options as any, 2);
+    expect(bottomDecorated.map((option) => option.label)).toEqual([
+      "Slot A 🔥",
+      "Slot B 🔥",
+      "Slot C 🔥🔥",
+    ]);
   });
 });
