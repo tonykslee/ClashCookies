@@ -41,7 +41,6 @@ import {
   formatRecruitmentReminderBody,
   formatRecruitmentReminderWindowSummaryInTimeZone,
   formatRecruitmentReminderRhythmSummaryInTimeZone,
-  getNextRecruitmentReminderSlot,
   getRecruitmentReminderPlatformWindows,
   getRecruitmentReminderSlotCandidates,
   normalizeRecruitmentTimezone,
@@ -1384,23 +1383,20 @@ async function handleDashboardSubcommand(interaction: ChatInputCommandInteractio
           await render("No stored template exists for that clan/platform.");
           return;
         }
+        const availableTimeOptions = buildRecruitmentDashboardTimeOptions(state, data);
+        const selectedTimeIso = state.reminderTimeIso;
+        if (!availableTimeOptions.some((option) => option.value === selectedTimeIso)) {
+          await render("That reminder time is no longer available. Please reselect a time.");
+          return;
+        }
         const clan = data.trackedClans.find((row) => row.tag === state.clanTag) ?? null;
-        const next = getNextRecruitmentReminderSlot({
-          platform: state.clanTab,
-          timezone: state.timezone,
-          after: selectedAt,
-          cooldownExpiresAt: state.clanTag
-            ? data.cooldowns.get(`${state.clanTag}:${state.clanTab}`) ?? null
-            : null,
-        });
-        const nextReminderAt = next ?? selectedAt;
         await recruitmentReminderService.upsertRecruitmentReminderRule({
           guildId: interaction.guildId!,
           discordUserId: interaction.user.id,
           clanTag: state.clanTag,
           platform: state.clanTab,
           timezone: state.timezone,
-          nextReminderAt,
+          nextReminderAt: selectedAt,
           isActive: true,
           clanNameSnapshot: clan?.name ?? null,
           templateSubject: template.subject ?? null,

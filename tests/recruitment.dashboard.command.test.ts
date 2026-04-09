@@ -405,7 +405,7 @@ describe("/recruitment dashboard", () => {
     expect(String(payload.embeds[0].toJSON().description)).toContain("<t:");
   });
 
-  it("supports reminder scheduling from the clan view", async () => {
+  it("saves the selected reminder slot when confirming from the clan view", async () => {
     const reminderUpsertSpy = vi
       .spyOn(recruitmentReminderService, "upsertRecruitmentReminderRule")
       .mockResolvedValue({
@@ -449,12 +449,96 @@ describe("/recruitment dashboard", () => {
         platform: "discord",
         timezone: "America/Los_Angeles",
         isActive: true,
-        nextReminderAt: expect.any(Date),
+        nextReminderAt: new Date(String(selectedTimeValue)),
         clanNameSnapshot: "Alpha",
         templateSubject: "Alpha Subject",
         templateBody: "Alpha body",
         templateImageUrls: ["https://img.example/alpha.png"],
       }),
+    );
+  });
+
+  it("keeps a near-future selected reminder slot instead of advancing to the next window", async () => {
+    vi.setSystemTime(new Date("2026-04-08T19:26:00.000Z"));
+    const reminderUpsertSpy = vi
+      .spyOn(recruitmentReminderService, "upsertRecruitmentReminderRule")
+      .mockResolvedValue({
+        id: "rule-1",
+      } as any);
+    const { interaction, handlers } = createDashboardInteraction("America/Los_Angeles");
+    await Recruitment.run({} as any, interaction as any, {} as any);
+
+    await handlers.collect?.(createSelectComponent("recruitment-dashboard:dashboard-1:scope", ["AAA111"]));
+    await handlers.collect?.(createButtonComponent("recruitment-dashboard:dashboard-1:clan:discord"));
+    await handlers.collect?.(createButtonComponent("recruitment-dashboard:dashboard-1:clan:remind"));
+
+    let payload = getLastPayload(interaction);
+    const dayMenu = getSelectMenus(payload)[0];
+    const dayValue = String(dayMenu?.options?.[0]?.value ?? "");
+    expect(dayValue).toBeTruthy();
+    await handlers.collect?.(createSelectComponent("recruitment-dashboard:dashboard-1:schedule:day", [dayValue]));
+
+    payload = getLastPayload(interaction);
+    const timeMenu = getSelectMenus(payload)[1];
+    const selectedOption = (timeMenu?.options ?? []).find((option: any) =>
+      String(option.label).includes("12:30 PM"),
+    );
+    const selectedTimeValue = String(selectedOption?.value ?? "");
+    expect(selectedTimeValue).toBeTruthy();
+
+    await handlers.collect?.(
+      createSelectComponent("recruitment-dashboard:dashboard-1:schedule:time", [selectedTimeValue]),
+    );
+    await handlers.collect?.(createButtonComponent("recruitment-dashboard:dashboard-1:schedule:confirm"));
+
+    expect(reminderUpsertSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        nextReminderAt: new Date(selectedTimeValue),
+      }),
+    );
+    expect(reminderUpsertSpy.mock.calls[0]?.[0]?.nextReminderAt.getTime() - Date.now()).toBe(
+      4 * 60 * 1000,
+    );
+  });
+
+  it("rejects a stale selected reminder slot that is no longer available", async () => {
+    vi.setSystemTime(new Date("2026-04-08T19:26:00.000Z"));
+    const reminderUpsertSpy = vi
+      .spyOn(recruitmentReminderService, "upsertRecruitmentReminderRule")
+      .mockResolvedValue({
+        id: "rule-1",
+      } as any);
+    const { interaction, handlers } = createDashboardInteraction("America/Los_Angeles");
+    await Recruitment.run({} as any, interaction as any, {} as any);
+
+    await handlers.collect?.(createSelectComponent("recruitment-dashboard:dashboard-1:scope", ["AAA111"]));
+    await handlers.collect?.(createButtonComponent("recruitment-dashboard:dashboard-1:clan:discord"));
+    await handlers.collect?.(createButtonComponent("recruitment-dashboard:dashboard-1:clan:remind"));
+
+    let payload = getLastPayload(interaction);
+    const dayMenu = getSelectMenus(payload)[0];
+    const dayValue = String(dayMenu?.options?.[0]?.value ?? "");
+    expect(dayValue).toBeTruthy();
+    await handlers.collect?.(createSelectComponent("recruitment-dashboard:dashboard-1:schedule:day", [dayValue]));
+
+    payload = getLastPayload(interaction);
+    const timeMenu = getSelectMenus(payload)[1];
+    const selectedOption = (timeMenu?.options ?? []).find((option: any) =>
+      String(option.label).includes("12:30 PM"),
+    );
+    const selectedTimeValue = String(selectedOption?.value ?? "");
+    expect(selectedTimeValue).toBeTruthy();
+
+    await handlers.collect?.(
+      createSelectComponent("recruitment-dashboard:dashboard-1:schedule:time", [selectedTimeValue]),
+    );
+
+    vi.setSystemTime(new Date("2026-04-08T19:35:00.000Z"));
+    await handlers.collect?.(createButtonComponent("recruitment-dashboard:dashboard-1:schedule:confirm"));
+
+    expect(reminderUpsertSpy).not.toHaveBeenCalled();
+    expect(String(getLastPayload(interaction).content ?? "")).toContain(
+      "That reminder time is no longer available. Please reselect a time.",
     );
   });
 
