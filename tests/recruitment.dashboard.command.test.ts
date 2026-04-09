@@ -322,9 +322,28 @@ describe("/recruitment dashboard", () => {
     await handlers.collect?.(createButtonComponent("recruitment-dashboard:dashboard-1:overview:scripts"));
     let payload = getLastPayload(interaction);
     const scriptsDescription = String(payload.embeds[0].toJSON().description);
-    expect(scriptsDescription).toContain("Clan Discord Reddit Band");
-    expect(scriptsDescription).toContain("Discord Reddit Band");
-    expect(scriptsDescription).toContain("ALP ✓ ✓ ✓");
+    const scriptsLines = scriptsDescription
+      .split("\n")
+      .filter((line) => line.length > 0 && !line.startsWith("```"));
+    const headerLine = scriptsLines.find(
+      (line) => line.includes("Clan") && line.includes("Discord") && line.includes("Reddit") && line.includes("Band"),
+    );
+    const alphaLine = scriptsLines.find((line) => line.trimStart().startsWith("ALP"));
+    const betaLine = scriptsLines.find((line) => line.trimStart().startsWith("BET"));
+    expect(headerLine).toBeTruthy();
+    expect(alphaLine).toBeTruthy();
+    expect(betaLine).toBeTruthy();
+    const discordIndex = headerLine!.indexOf("Discord");
+    const redditIndex = headerLine!.indexOf("Reddit");
+    const bandIndex = headerLine!.indexOf("Band");
+    expect(alphaLine!.length).toBe(headerLine!.length);
+    expect(betaLine!.length).toBe(headerLine!.length);
+    expect(alphaLine![discordIndex]).toBe("✓");
+    expect(alphaLine![redditIndex]).toBe("✓");
+    expect(alphaLine![bandIndex]).toBe("✓");
+    expect(betaLine![discordIndex]).toBe(" ");
+    expect(betaLine![redditIndex]).toBe(" ");
+    expect(betaLine![bandIndex]).toBe(" ");
     expect(scriptsDescription).not.toContain(":white_check_mark:");
     expect(scriptsDescription).not.toContain("Alpha (#AAA111)");
     expect(scriptsDescription).not.toContain("Beta (#BBB222)");
