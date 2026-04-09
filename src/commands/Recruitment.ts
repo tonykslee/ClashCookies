@@ -332,6 +332,10 @@ function formatRecruitmentDashboardClanShortLabel(input: {
   return shortName.length > 0 ? shortName : fallbackTrackedClanShortLabel(input.name, input.tag);
 }
 
+function padRecruitmentDashboardTableCell(value: string, width: number): string {
+  return value.padEnd(width);
+}
+
 function stripRecruitmentTimeOptionMarkers(label: string): string {
   return label.replace(/\s*🔥+$/u, "").trimEnd();
 }
@@ -488,14 +492,33 @@ function buildRecruitmentDashboardEmbed(input: {
       if (tracked.length <= 0) {
         lines.push("No tracked clans configured.");
       } else {
+        const labelWidth = Math.max("Clan".length, ...tracked.map((clan) => formatRecruitmentDashboardClanShortLabel(clan).slice(0, 8).length));
+        const discordWidth = "Discord".length;
+        const redditWidth = "Reddit".length;
+        const bandWidth = "Band".length;
         const rows = tracked.map((clan) => {
           const label = formatRecruitmentDashboardClanShortLabel(clan).slice(0, 8);
           const discord = input.data.templates.has(`${clan.tag}:discord`) ? "✓" : "";
           const reddit = input.data.templates.has(`${clan.tag}:reddit`) ? "✓" : "";
           const band = input.data.templates.has(`${clan.tag}:band`) ? "✓" : "";
-          return [label, discord, reddit, band].join(" ");
+          return [
+            padRecruitmentDashboardTableCell(label, labelWidth),
+            padRecruitmentDashboardTableCell(discord, discordWidth),
+            padRecruitmentDashboardTableCell(reddit, redditWidth),
+            padRecruitmentDashboardTableCell(band, bandWidth),
+          ].join(" ");
         });
-        lines.push("```text", ["Clan", "Discord", "Reddit", "Band"].join(" "), ...rows, "```");
+        lines.push(
+          "```text",
+          [
+            padRecruitmentDashboardTableCell("Clan", labelWidth),
+            padRecruitmentDashboardTableCell("Discord", discordWidth),
+            padRecruitmentDashboardTableCell("Reddit", redditWidth),
+            padRecruitmentDashboardTableCell("Band", bandWidth),
+          ].join(" "),
+          ...rows,
+          "```",
+        );
       }
     } else {
       lines.push("", "Optimization guide:");
