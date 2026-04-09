@@ -424,16 +424,18 @@ describe("/recruitment dashboard", () => {
     expect(String(payload.embeds[0].toJSON().description)).toContain("Timezone: `America/Los_Angeles`");
 
     const dayMenu = getSelectMenus(payload)[0];
-    const dayValue = dayMenu?.options?.[0]?.value;
+    expect(dayMenu?.options?.length).toBeGreaterThan(1);
+    const dayValue = dayMenu?.options?.[1]?.value;
     expect(dayValue).toBeTypeOf("string");
     await handlers.collect?.(createSelectComponent("recruitment-dashboard:dashboard-1:schedule:day", [dayValue]));
 
     payload = getLastPayload(interaction);
     const timeMenu = getSelectMenus(payload)[1];
     const timeLabels = (timeMenu?.options ?? []).map((option: any) => String(option.label));
-    expect(timeLabels.some((label: string) => label.endsWith("🔥🔥"))).toBe(true);
-    expect(timeLabels.filter((label: string) => label.endsWith("🔥🔥"))).toHaveLength(1);
-    expect(timeLabels.some((label: string) => label.endsWith("🔥"))).toBe(true);
+    expect(timeLabels.filter((label: string) => label.endsWith("🔥🔥"))).toHaveLength(2);
+    expect(
+      timeLabels.filter((label: string) => label.endsWith("🔥") && !label.endsWith("🔥🔥")),
+    ).toHaveLength(2);
     const selectedTimeValue = timeMenu?.options?.[0]?.value;
     expect(selectedTimeValue).toBeTypeOf("string");
     await handlers.collect?.(createSelectComponent("recruitment-dashboard:dashboard-1:schedule:time", [selectedTimeValue]));
@@ -456,26 +458,30 @@ describe("/recruitment dashboard", () => {
     );
   });
 
-  it("decorates reminder slot labels around the best option without stacking markers", () => {
+  it("decorates reminder slot labels around multiple primary options without stacking markers", () => {
     const options = [
-      { label: "Slot 1", value: "1", description: "" },
+      { label: "Slot 1 🔥", value: "1", description: "" },
       { label: "Slot 2", value: "2", description: "" },
       { label: "Slot 3", value: "3", description: "" },
-      { label: "Slot 4", value: "4", description: "" },
+      { label: "Slot 4 🔥🔥", value: "4", description: "" },
       { label: "Slot 5", value: "5", description: "" },
       { label: "Slot 6", value: "6", description: "" },
+      { label: "Slot 7", value: "7", description: "" },
     ];
 
-    const decorated = decorateRecruitmentDashboardTimeOptions(options as any, 3);
+    const decorated = decorateRecruitmentDashboardTimeOptions(options as any, [1, 4]);
     const labels = decorated.map((option) => option.label);
-    expect(labels[3]).toBe("Slot 4 🔥🔥");
-    expect(labels[1]).toBe("Slot 2 🔥");
-    expect(labels[2]).toBe("Slot 3 🔥");
-    expect(labels[4]).toBe("Slot 5 🔥");
-    expect(labels[5]).toBe("Slot 6 🔥");
-    expect(labels[0]).toBe("Slot 1");
+    expect(labels).toEqual([
+      "Slot 1 🔥",
+      "Slot 2 🔥🔥",
+      "Slot 3 🔥",
+      "Slot 4 🔥",
+      "Slot 5 🔥🔥",
+      "Slot 6 🔥",
+      "Slot 7",
+    ]);
 
-    const rerendered = decorateRecruitmentDashboardTimeOptions(decorated, 3);
+    const rerendered = decorateRecruitmentDashboardTimeOptions(decorated, [1, 4]);
     expect(rerendered.map((option) => option.label)).toEqual(labels);
     expect(rerendered.map((option) => option.value)).toEqual(options.map((option) => option.value));
   });
@@ -487,16 +493,16 @@ describe("/recruitment dashboard", () => {
       { label: "Slot C", value: "C", description: "" },
     ];
 
-    const topDecorated = decorateRecruitmentDashboardTimeOptions(options as any, 0);
+    const topDecorated = decorateRecruitmentDashboardTimeOptions(options as any, [0]);
     expect(topDecorated.map((option) => option.label)).toEqual([
       "Slot A 🔥🔥",
       "Slot B 🔥",
-      "Slot C 🔥",
+      "Slot C",
     ]);
 
-    const bottomDecorated = decorateRecruitmentDashboardTimeOptions(options as any, 2);
+    const bottomDecorated = decorateRecruitmentDashboardTimeOptions(options as any, [2]);
     expect(bottomDecorated.map((option) => option.label)).toEqual([
-      "Slot A 🔥",
+      "Slot A",
       "Slot B 🔥",
       "Slot C 🔥🔥",
     ]);
