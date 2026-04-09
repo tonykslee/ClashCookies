@@ -6,6 +6,7 @@ import {
   buildBattleDayRefreshEditPayloadForTest,
   buildWarEndedMetadataValueForTest,
   buildNotifyEventPostedContentForTest,
+  buildWarEndDiscrepancyContentForTest,
   computeWarSnapshotAttackRowsForTest,
   computeWarComplianceForTest,
   computeWarPointsDeltaForTest,
@@ -844,6 +845,26 @@ describe("WarEventLogService battle-day refresh content", () => {
     );
     expect(payload.content).toContain("War started against Enemy Clan\nNext refresh <t:");
     expect(payload.content).not.toContain("<@&123456789>");
+  });
+});
+
+describe("WarEventLogService war-end discrepancy content", () => {
+  it("builds the visible mismatch warning without adding a leader mention", () => {
+    const payload = buildWarEndDiscrepancyContentForTest({
+      existingPostedContent: "War ended against Enemy Clan",
+      clanTag: "#AAA111",
+      opponentName: "Enemy Clan",
+      expectedPoints: 100,
+      actualPoints: 99,
+    });
+
+    expect(payload.content).toContain(
+      "⚠️ War-end points mismatch detected. [points.fwafarm](<https://points.fwafarm.com/clan?tag=AAA111>)",
+    );
+    expect(payload.content).toContain("Expected points: 100");
+    expect(payload.content).toContain("Actual points: 99");
+    expect(payload.content).not.toContain("<@&");
+    expect(payload.allowedMentions).toEqual({ parse: [] });
   });
 });
 

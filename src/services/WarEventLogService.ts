@@ -242,10 +242,9 @@ function buildWarEndDiscrepancyContent(params: {
   opponentName: string | null | undefined;
   expectedPoints: number;
   actualPoints: number;
-  fwaLeaderRoleId: string | null;
 }): {
   content: string;
-  allowedMentions: { parse: []; roles?: string[] };
+  allowedMentions: { parse: [] };
 } {
   const existingMentionRoleId = extractPostedNotifyMentionRoleId(
     params.existingPostedContent,
@@ -261,14 +260,9 @@ function buildWarEndDiscrepancyContent(params: {
     `Expected points: ${Math.trunc(params.expectedPoints)}`,
     `Actual points: ${Math.trunc(params.actualPoints)}`,
   ];
-  if (params.fwaLeaderRoleId) {
-    warningLines.push(`<@&${params.fwaLeaderRoleId}>`);
-  }
   return {
     content: [baseContent, ...warningLines].join("\n"),
-    allowedMentions: params.fwaLeaderRoleId
-      ? { parse: [], roles: [params.fwaLeaderRoleId] }
-      : { parse: [] },
+    allowedMentions: { parse: [] },
   };
 }
 
@@ -3513,18 +3507,11 @@ export class WarEventLogService {
     );
     if (previousFingerprint === fingerprint) return;
 
-    const fwaLeaderRoleId = await this.commandPermissions
-      .getFwaLeaderRoleId(params.guildId)
-      .catch(() => null);
-    const allowedMentions = fwaLeaderRoleId
-      ? ({ parse: [], roles: [fwaLeaderRoleId] } as const)
-      : ({ parse: [] } as const);
     const warningContent =
       `${buildWarEndMismatchWarningHeadline(clanTag)}\n` +
       `${historyRow?.clanName ?? clanTag} (War ID: ${Math.trunc(warId)}).\n` +
       `Expected points: ${expectedPoints}\n` +
-      `Actual points: ${actualPoints}` +
-      (fwaLeaderRoleId ? `\n<@&${fwaLeaderRoleId}>` : "");
+      `Actual points: ${actualPoints}`;
 
     let alerted = false;
     const channel = await this.client.channels
@@ -3541,7 +3528,6 @@ export class WarEventLogService {
           opponentName: historyRow?.opponentName ?? params.fallbackOpponentName,
           expectedPoints,
           actualPoints,
-          fwaLeaderRoleId,
         });
         const editedOk = await message
           .edit({
@@ -3558,7 +3544,7 @@ export class WarEventLogService {
       const sent = await (channel as any)
         .send({
           content: warningContent,
-          allowedMentions,
+          allowedMentions: { parse: [] },
         })
         .catch(() => null);
       alerted = Boolean(sent);
