@@ -322,9 +322,9 @@ describe("/recruitment dashboard", () => {
     await handlers.collect?.(createButtonComponent("recruitment-dashboard:dashboard-1:overview:scripts"));
     let payload = getLastPayload(interaction);
     const scriptsDescription = String(payload.embeds[0].toJSON().description);
-    expect(scriptsDescription).toMatch(/Discord\s+\|\s+Reddit\s+\|\s+Band/);
-    expect(scriptsDescription).toContain("ALP");
-    expect(scriptsDescription).toContain("✓");
+    expect(scriptsDescription).toContain("Clan Discord Reddit Band");
+    expect(scriptsDescription).toContain("Discord Reddit Band");
+    expect(scriptsDescription).toContain("ALP ✓ ✓ ✓");
     expect(scriptsDescription).not.toContain(":white_check_mark:");
     expect(scriptsDescription).not.toContain("Alpha (#AAA111)");
     expect(scriptsDescription).not.toContain("Beta (#BBB222)");
