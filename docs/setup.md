@@ -10,6 +10,7 @@
 npm install
 npx prisma migrate deploy
 npm run seed:fwa-layouts
+npm run seed:heatmap-ref
 npm run build
 npm start
 ```
@@ -128,14 +129,18 @@ Request/concurrency controls:
 Operational notes:
 - Normal feed polling is bounded by source freshness (minimum 15 minutes).
 - Tracked-clan `Wars.json` watch is the only 5-minute exception and only runs inside active watch windows.
+- During tracked watch windows, tracked-clan `WarMembers.json?warNo=1` sync also refreshes the latest-only `FwaTrackedClanWarRosterCurrent` / `FwaTrackedClanWarRosterMemberCurrent` owners.
 - Members polling uses tracked clans only.
 - Global WarMembers / optional global Wars use cursor-based distributed sweeps from `FwaClanCatalog`.
+- `HeatMapRef` is an explicit seed/import owner and is not refreshed by per-clan watch jobs.
 - `/compo` remains sheet-backed in this phase.
 
 Manual/dev feed operations:
 ```bash
 npm run sync:fwa-feeds -- status
 npm run sync:fwa-feeds -- run --feed=clan-members --tag=#2QG2C08UP
+npm run sync:fwa-feeds -- run --feed=war-roster --tag=#2QG2C08UP
 npm run sync:fwa-feeds -- run-global --feed=clans
 npm run sync:fwa-feeds -- watch-status --tag=#2QG2C08UP
+npm run seed:heatmap-ref
 ```

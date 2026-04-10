@@ -550,6 +550,12 @@ enum FwaFeedSyncStatus {
   SKIPPED
 }
 
+enum FwaTrackedClanWarRosterEffectiveWeightStatus {
+  RAW
+  FILLED_FROM_LOWER_BLOCK
+  UNRESOLVED_TRAILING_ZERO
+}
+
 
 enum TrackedMessageFeatureType {
   FWA_BASE_SWAP
@@ -1079,6 +1085,64 @@ model FwaWarMemberCurrent {
   @@index([playerTag])
   @@index([opponentTag])
   @@index([sourceSyncedAt])
+}
+
+model FwaTrackedClanWarRosterCurrent {
+  clanTag              String   @id
+  clanName             String?
+  opponentTag          String?
+  opponentName         String?
+  rosterSize           Int
+  totalRawWeight       Int?
+  totalEffectiveWeight Int?
+  hasUnresolvedWeights Boolean  @default(false)
+  observedAt           DateTime
+  sourceUpdatedAt      DateTime?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  members              FwaTrackedClanWarRosterMemberCurrent[]
+
+  @@index([observedAt])
+  @@index([sourceUpdatedAt])
+}
+
+model FwaTrackedClanWarRosterMemberCurrent {
+  clanTag                String
+  position               Int
+  playerTag              String
+  playerName             String
+  townHall               Int
+  rawWeight              Int
+  effectiveWeight        Int?
+  effectiveWeightStatus  FwaTrackedClanWarRosterEffectiveWeightStatus
+  opponentTag            String?
+  opponentName           String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+  roster                 FwaTrackedClanWarRosterCurrent @relation(fields: [clanTag], references: [clanTag], onDelete: Cascade)
+
+  @@id([clanTag, playerTag])
+  @@unique([clanTag, position])
+  @@index([clanTag, position])
+  @@index([clanTag, playerTag])
+}
+
+model HeatMapRef {
+  weightMinInclusive Int
+  weightMaxInclusive Int
+  th18Count          Int
+  th17Count          Int
+  th16Count          Int
+  th15Count          Int
+  th14Count          Int
+  th13Count          Int
+  th12Count          Int
+  th11Count          Int
+  th10OrLowerCount   Int
+  sourceVersion      String?
+  refreshedAt        DateTime
+
+  @@id([weightMinInclusive, weightMaxInclusive])
 }
 
 model FwaClanWarLogCurrent {
