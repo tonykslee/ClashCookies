@@ -58,7 +58,7 @@ describe("/compo place command", () => {
     vi.restoreAllMocks();
   });
 
-  it("uses the DB-backed place service and does not read the compo sheet", async () => {
+  it("uses the place service and keeps sheet access out of the command layer", async () => {
     const readPlaceSpy = vi
       .spyOn(CompoPlaceService.prototype, "readPlace")
       .mockResolvedValue({

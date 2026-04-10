@@ -1,20 +1,31 @@
-import type {
-  HeatMapRef,
-  FwaTrackedClanWarRosterCurrent,
-  FwaTrackedClanWarRosterMemberCurrent,
-} from "@prisma/client";
 import { EmbedBuilder } from "discord.js";
 import { normalizeCompoClanDisplayName } from "../helper/compoDisplay";
-import { findHeatMapRefForWeight } from "../helper/compoHeatMap";
-import {
-  buildCompoWarBucketCounts,
-  collapseCompoWarBucketCountsForDisplay,
-} from "../helper/compoWarBucketCounts";
 import { type CompoWarDisplayBucket } from "../helper/compoWarWeightBuckets";
-import { prisma } from "../prisma";
-import { mapWithConcurrency } from "./fwa-feeds/concurrency";
-import { FwaFeedOpsService } from "./fwa-feeds/FwaFeedOpsService";
-import { normalizeFwaTag } from "./fwa-feeds/normalize";
+import {
+  triggerSharedSheetRefresh,
+} from "./SheetRefreshService";
+import {
+  GoogleSheetsService,
+  type GoogleSheetMode,
+} from "./GoogleSheetsService";
+import { SettingsService } from "./SettingsService";
+
+const COL_CLAN_NAME = 0; // A
+const COL_CLAN_TAG = 1; // B
+const COL_TOTAL_WEIGHT = 3; // D
+const COL_TARGET_BAND = 49; // AX
+const COL_MISSING_WEIGHT = 20; // U
+const COL_TOTAL_PLAYERS = 21; // V
+const COL_BUCKET_START = 22; // W
+const COL_BUCKET_END = 27; // AB
+const FIXED_LAYOUT_RANGE = "AllianceDashboard!A6:BE500";
+const FIXED_LAYOUT_RANGE_START_ROW = 6;
+const LOOKUP_REFRESH_RANGE = "Lookup!B10:B10";
+
+type SheetIndexedRow = {
+  row: string[];
+  sheetRowNumber: number;
+};
 
 type PlacementCandidate = {
   clanName: string;
@@ -24,15 +35,12 @@ type PlacementCandidate = {
   missingCount: number;
   remainingToTarget: number;
   bucketDeltaByHeader: Record<string, number>;
-};
-
-type PlacementCandidateWithVacancy = PlacementCandidate & {
   liveMemberCount: number | null;
   vacancySlots: number;
   hasVacancy: boolean;
 };
 
-type PlacementCandidateWithDelta = PlacementCandidateWithVacancy & {
+type PlacementCandidateWithDelta = PlacementCandidate & {
   delta: number;
 };
 
@@ -47,7 +55,21 @@ export type CompoPlaceReadResult = {
   compositionCount: number;
 };
 
-type FeedOpsLike = Pick<FwaFeedOpsService, "runTracked">;
+function normalize(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function normalizeTag(value: string): string {
+  return value.trim().toUpperCase().replace(/^#/, "");
+}
+
+function parseNumber(value: string | undefined): number {
+  if (!value) return 0;
+  const digits = value.replace(/[^0-9-]/g, "");
+  if (!digits || digits === "-") return 0;
+  const parsed = Number(digits);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
 
 function abbreviateClan(value: string): string {
   const normalized = value
@@ -77,136 +99,60 @@ function abbreviateClan(value: string): string {
   return map[normalized] ?? value;
 }
 
-function normalizeWarPlacementClanDisplayName(value: string): string {
-  const normalized = normalizeCompoClanDisplayName(value);
-  const trimmedRight = normalized.trimEnd();
-  return trimmedRight.endsWith("-war")
-    ? trimmedRight.slice(0, -"-war".length).trimEnd()
-    : trimmedRight;
+function normalizePlaceClanDisplayName(value: string): string {
+  const normalized = normalizeCompoClanDisplayName(value).trimEnd();
+  if (normalized.endsWith("-war")) {
+    return normalized.slice(0, -"-war".length).trimEnd();
+  }
+  return normalized;
+}
+
+function getAbsoluteSheetRowNumber(rangeRelativeIndex: number): number {
+  return FIXED_LAYOUT_RANGE_START_ROW + rangeRelativeIndex;
+}
+
+function isActualSheetRow(sheetRowNumber: number): boolean {
+  return sheetRowNumber >= 7 && sheetRowNumber % 3 === 1;
+}
+
+function getModeRows(rows: string[][], mode: GoogleSheetMode): SheetIndexedRow[] {
+  return rows.flatMap((row, index) => {
+    const sheetRowNumber = getAbsoluteSheetRowNumber(index);
+    const include = mode === "actual" ? isActualSheetRow(sheetRowNumber) : false;
+    return include ? [{ row, sheetRowNumber }] : [];
+  });
+}
+
+function buildRefreshLine(refreshCell: string[][]): string {
+  const rawRefresh = refreshCell[0]?.[0]?.trim();
+  return rawRefresh && /^\d+$/.test(rawRefresh)
+    ? `RAW Data last refreshed: <t:${rawRefresh}:F>`
+    : "RAW Data last refreshed: (not available)";
 }
 
 function normalizeBucketDeltaKey(bucket: CompoWarDisplayBucket): string {
   return bucket === "<=TH13" ? "<=th13-delta" : `${bucket.toLowerCase()}-delta`;
 }
 
-function toEpochLine(prefix: string, value: Date | null): string {
-  if (!value) return `${prefix}: (not available)`;
-  return `${prefix}: <t:${Math.floor(value.getTime() / 1000)}:F>`;
-}
-
-function buildBucketDeltaByHeader(
-  heatMapRef: HeatMapRef,
-  members: readonly Pick<FwaTrackedClanWarRosterMemberCurrent, "effectiveWeight">[],
-): Record<string, number> | null {
-  const bucketCounts = buildCompoWarBucketCounts(members);
-  if (!bucketCounts) return null;
-  const collapsedCounts = collapseCompoWarBucketCountsForDisplay(bucketCounts);
-  return {
-    [normalizeBucketDeltaKey("TH18")]: collapsedCounts.TH18 - heatMapRef.th18Count,
-    [normalizeBucketDeltaKey("TH17")]: collapsedCounts.TH17 - heatMapRef.th17Count,
-    [normalizeBucketDeltaKey("TH16")]: collapsedCounts.TH16 - heatMapRef.th16Count,
-    [normalizeBucketDeltaKey("TH15")]: collapsedCounts.TH15 - heatMapRef.th15Count,
-    [normalizeBucketDeltaKey("TH14")]: collapsedCounts.TH14 - heatMapRef.th14Count,
-    [normalizeBucketDeltaKey("<=TH13")]:
-      collapsedCounts["<=TH13"] -
-      (heatMapRef.th13Count +
-        heatMapRef.th12Count +
-        heatMapRef.th11Count +
-        heatMapRef.th10OrLowerCount),
-  };
-}
-
-function getIneligibleReason(input: {
-  parent: FwaTrackedClanWarRosterCurrent;
-  memberCount: number;
-  heatMapRef: HeatMapRef | null;
-}): string | null {
-  if (input.parent.rosterSize !== 50) {
-    return `roster size ${input.parent.rosterSize}/50`;
-  }
-  if (input.parent.hasUnresolvedWeights) {
-    return "unresolved effective weights";
-  }
-  if (input.parent.totalEffectiveWeight === null) {
-    return "missing total effective weight";
-  }
-  if (input.memberCount !== input.parent.rosterSize) {
-    return `persisted member rows ${input.memberCount}/${input.parent.rosterSize}`;
-  }
-  if (!input.heatMapRef) {
-    return "missing HeatMapRef band";
-  }
-  return null;
-}
-
 function formatPlacementRows(lines: string[]): string {
   return lines.length > 0 ? lines.join("\n") : "None";
 }
 
-function _buildCompoPlaceEmbed(params: {
+function buildCompoPlaceEmbed(params: {
   inputWeight: number;
   bucket: CompoWarDisplayBucket;
   recommended: PlacementCandidateWithDelta[];
-  vacancyList: PlacementCandidateWithVacancy[];
-  compositionList: PlacementCandidateWithDelta[];
-  refreshLine: string;
-}): EmbedBuilder {
-  const recommendedRows = params.recommended.map(
-    (c) =>
-      `${abbreviateClan(normalizeWarPlacementClanDisplayName(c.clanName))} — needs ${Math.abs(c.delta)} ${params.bucket}`,
-  );
-  const vacancyRows = params.vacancyList.map(
-    (c) =>
-      `${abbreviateClan(normalizeWarPlacementClanDisplayName(c.clanName))} — ${
-        c.liveMemberCount !== null ? `${c.liveMemberCount}/50` : "unknown/50"
-      }`,
-  );
-  const compositionRows = params.compositionList.map(
-    (c) =>
-      `${abbreviateClan(normalizeWarPlacementClanDisplayName(c.clanName))} — ${c.delta}`,
-  );
-
-  return new EmbedBuilder()
-    .setTitle("Compo Placement Suggestions")
-    .setDescription(
-      `Weight: **${params.inputWeight.toLocaleString("en-US")}**\n` +
-        `Bucket: **${params.bucket}**\n` +
-        params.refreshLine,
-    )
-    .addFields(
-      {
-        name: "Recommended",
-        value: formatPlacementRows(recommendedRows),
-        inline: false,
-      },
-      {
-        name: "Vacancy",
-        value: formatPlacementRows(vacancyRows),
-        inline: false,
-      },
-      {
-        name: "Composition",
-        value: formatPlacementRows(compositionRows),
-        inline: false,
-      },
-    );
-}
-
-function buildCompoPlaceEmbedDb(params: {
-  inputWeight: number;
-  bucket: CompoWarDisplayBucket;
-  recommended: PlacementCandidateWithDelta[];
-  vacancyList: PlacementCandidateWithVacancy[];
+  vacancyList: PlacementCandidate[];
   compositionList: PlacementCandidateWithDelta[];
   refreshLine: string;
 }): EmbedBuilder {
   const recommendedRows = params.recommended.map(
     (candidate) =>
-      `${abbreviateClan(normalizeWarPlacementClanDisplayName(candidate.clanName))} - needs ${Math.abs(candidate.delta)} ${params.bucket}`,
+      `${abbreviateClan(normalizePlaceClanDisplayName(candidate.clanName))} - needs ${Math.abs(candidate.delta)} ${params.bucket}`,
   );
   const vacancyRows = params.vacancyList.map(
     (candidate) =>
-      `${abbreviateClan(normalizeWarPlacementClanDisplayName(candidate.clanName))} - ${
+      `${abbreviateClan(normalizePlaceClanDisplayName(candidate.clanName))} - ${
         candidate.liveMemberCount !== null
           ? `${candidate.liveMemberCount}/50`
           : "unknown/50"
@@ -214,7 +160,7 @@ function buildCompoPlaceEmbedDb(params: {
   );
   const compositionRows = params.compositionList.map(
     (candidate) =>
-      `${abbreviateClan(normalizeWarPlacementClanDisplayName(candidate.clanName))} - ${candidate.delta}`,
+      `${abbreviateClan(normalizePlaceClanDisplayName(candidate.clanName))} - ${candidate.delta}`,
   );
 
   return new EmbedBuilder()
@@ -243,26 +189,86 @@ function buildCompoPlaceEmbedDb(params: {
     );
 }
 
-/** Purpose: derive DB-backed `/compo place` suggestions from persisted tracked WAR roster state only. */
-export class CompoPlaceService {
-  constructor(private readonly feedOps: FeedOpsLike = new FwaFeedOpsService()) {}
+function readPlacementCandidates(modeRows: SheetIndexedRow[]): PlacementCandidate[] {
+  const candidates: PlacementCandidate[] = [];
+  const seenKeys = new Set<string>();
 
-  async readPlace(inputWeight: number, bucket: CompoWarDisplayBucket): Promise<CompoPlaceReadResult> {
-    const tracked = await prisma.trackedClan.findMany({
-      orderBy: { createdAt: "asc" },
-      select: { tag: true, name: true },
+  for (const { row } of modeRows) {
+    const clanName = String(row[COL_CLAN_NAME] ?? "").trim();
+    if (!clanName) continue;
+
+    const clanTag = normalizeTag(String(row[COL_CLAN_TAG] ?? ""));
+    const dedupeKey = clanTag ? `tag:${clanTag}` : `name:${normalize(clanName)}`;
+    if (seenKeys.has(dedupeKey)) continue;
+    seenKeys.add(dedupeKey);
+
+    const totalWeight = parseNumber(row[COL_TOTAL_WEIGHT]);
+    const targetBand = parseNumber(row[COL_TARGET_BAND]);
+    const missingCount = parseNumber(row[COL_MISSING_WEIGHT]);
+    const liveMemberCount = parseNumber(row[COL_TOTAL_PLAYERS]);
+    const safeLiveMemberCount =
+      Number.isFinite(liveMemberCount) && liveMemberCount > 0
+        ? Math.max(0, Math.min(50, Math.trunc(liveMemberCount)))
+        : null;
+    const remainingToTarget = targetBand - totalWeight;
+    const vacancySlots =
+      safeLiveMemberCount !== null ? Math.max(0, 50 - safeLiveMemberCount) : 0;
+
+    const bucketDeltaByHeader: Record<string, number> = {
+      [normalize("TH18-delta")]: parseNumber(row[COL_BUCKET_START]),
+      [normalize("TH17-delta")]: parseNumber(row[COL_BUCKET_START + 1]),
+      [normalize("TH16-delta")]: parseNumber(row[COL_BUCKET_START + 2]),
+      [normalize("TH15-delta")]: parseNumber(row[COL_BUCKET_START + 3]),
+      [normalize("TH14-delta")]: parseNumber(row[COL_BUCKET_START + 4]),
+      [normalize("<=TH13-delta")]: parseNumber(row[COL_BUCKET_END]),
+    };
+
+    candidates.push({
+      clanName,
+      clanTag,
+      totalWeight,
+      targetBand,
+      missingCount,
+      remainingToTarget,
+      bucketDeltaByHeader,
+      liveMemberCount: safeLiveMemberCount,
+      vacancySlots,
+      hasVacancy: safeLiveMemberCount !== null && safeLiveMemberCount < 50,
     });
-    const trackedClanTags = tracked
-      .map((row) => normalizeFwaTag(row.tag))
-      .filter((tag): tag is string => Boolean(tag));
+  }
 
-    if (trackedClanTags.length === 0) {
+  return candidates;
+}
+
+async function readActualSheetSnapshot(): Promise<{
+  modeRows: SheetIndexedRow[];
+  refreshLine: string;
+}> {
+  const settings = new SettingsService();
+  const sheets = new GoogleSheetsService(settings);
+  const linked = await sheets.getCompoLinkedSheet(FIXED_LAYOUT_RANGE);
+  const [rows, refreshCell] = await Promise.all([
+    sheets.readCompoLinkedValues(FIXED_LAYOUT_RANGE, linked),
+    sheets.readCompoLinkedValues(LOOKUP_REFRESH_RANGE, linked),
+  ]);
+  return {
+    modeRows: getModeRows(rows, "actual"),
+    refreshLine: buildRefreshLine(refreshCell),
+  };
+}
+
+/** Purpose: derive `/compo place` suggestions from the ACTUAL AllianceDashboard composition source. */
+export class CompoPlaceService {
+  async readPlace(
+    inputWeight: number,
+    bucket: CompoWarDisplayBucket,
+  ): Promise<CompoPlaceReadResult> {
+    const snapshot = await readActualSheetSnapshot();
+    const candidates = readPlacementCandidates(snapshot.modeRows);
+
+    if (candidates.length === 0) {
       return {
-        content: [
-          "Mode Displayed: **PLACE**",
-          toEpochLine("Persisted WAR data last refreshed", null),
-          "No tracked clans are configured for DB-backed placement suggestions.",
-        ].join("\n"),
+        content: "No placement data found in ACTUAL rows from AllianceDashboard!A6:BE500.",
         embeds: [],
         trackedClanTags: [],
         eligibleClanTags: [],
@@ -271,87 +277,6 @@ export class CompoPlaceService {
         vacancyCount: 0,
         compositionCount: 0,
       };
-    }
-
-    const [parents, members, refs] = await Promise.all([
-      prisma.fwaTrackedClanWarRosterCurrent.findMany({
-        where: { clanTag: { in: trackedClanTags } },
-      }),
-      prisma.fwaTrackedClanWarRosterMemberCurrent.findMany({
-        where: { clanTag: { in: trackedClanTags } },
-        orderBy: [{ clanTag: "asc" }, { position: "asc" }],
-      }),
-      prisma.heatMapRef.findMany({
-        orderBy: [{ weightMinInclusive: "asc" }, { weightMaxInclusive: "asc" }],
-      }),
-    ]);
-
-    const trackedByTag = new Map(
-      trackedClanTags.map((tag, index) => [tag, tracked[index]?.name?.trim() ?? null]),
-    );
-    const parentByTag = new Map(parents.map((row) => [row.clanTag, row]));
-    const membersByTag = new Map<string, FwaTrackedClanWarRosterMemberCurrent[]>();
-    for (const member of members) {
-      const existing = membersByTag.get(member.clanTag) ?? [];
-      existing.push(member);
-      membersByTag.set(member.clanTag, existing);
-    }
-
-    const candidates: PlacementCandidateWithVacancy[] = [];
-    const eligibleClanTags: string[] = [];
-    const skipped: string[] = [];
-    let latestRefreshAt: Date | null = null;
-
-    for (const clanTag of trackedClanTags) {
-      const parent = parentByTag.get(clanTag);
-      if (!parent) continue;
-
-      const clanMembers = membersByTag.get(clanTag) ?? [];
-      const effectiveWeight = parent.totalEffectiveWeight;
-      const heatMapRef =
-        effectiveWeight === null ? null : findHeatMapRefForWeight(refs, effectiveWeight);
-      const displayName =
-        parent.clanName?.trim() || trackedByTag.get(clanTag) || parent.clanTag;
-
-      const freshness = parent.sourceUpdatedAt ?? parent.observedAt;
-      if (!latestRefreshAt || freshness.getTime() > latestRefreshAt.getTime()) {
-        latestRefreshAt = freshness;
-      }
-
-      const ineligibleReason = getIneligibleReason({
-        parent,
-        memberCount: clanMembers.length,
-        heatMapRef,
-      });
-      if (ineligibleReason) {
-        skipped.push(`${normalizeWarPlacementClanDisplayName(displayName)} (${ineligibleReason})`);
-        continue;
-      }
-
-      const bucketDeltaByHeader = buildBucketDeltaByHeader(
-        heatMapRef as HeatMapRef,
-        clanMembers,
-      );
-      if (!bucketDeltaByHeader) {
-        skipped.push(`${normalizeWarPlacementClanDisplayName(displayName)} (unresolved effective weights)`);
-        continue;
-      }
-
-      eligibleClanTags.push(clanTag);
-      const missingCount = clanMembers.filter((row) => row.rawWeight <= 0).length;
-      const vacancySlots = Math.max(0, 50 - parent.rosterSize);
-      candidates.push({
-        clanName: displayName,
-        clanTag: parent.clanTag,
-        totalWeight: effectiveWeight as number,
-        targetBand: (heatMapRef as HeatMapRef).weightMaxInclusive,
-        missingCount,
-        remainingToTarget: (heatMapRef as HeatMapRef).weightMaxInclusive - (effectiveWeight as number),
-        bucketDeltaByHeader,
-        liveMemberCount: parent.rosterSize,
-        vacancySlots,
-        hasVacancy: vacancySlots > 0,
-      });
     }
 
     const compositionNeeds = candidates
@@ -363,8 +288,8 @@ export class CompoPlaceService {
       .sort((a, b) => {
         if (a.delta !== b.delta) return a.delta - b.delta;
         if (b.missingCount !== a.missingCount) return b.missingCount - a.missingCount;
-        return normalizeWarPlacementClanDisplayName(a.clanName).localeCompare(
-          normalizeWarPlacementClanDisplayName(b.clanName),
+        return normalizePlaceClanDisplayName(a.clanName).localeCompare(
+          normalizePlaceClanDisplayName(b.clanName),
         );
       });
 
@@ -372,54 +297,33 @@ export class CompoPlaceService {
       .filter((candidate) => candidate.hasVacancy)
       .sort((a, b) => {
         if (b.vacancySlots !== a.vacancySlots) return b.vacancySlots - a.vacancySlots;
-        const remainingDelta =
-          Math.abs(a.remainingToTarget - inputWeight) -
-          Math.abs(b.remainingToTarget - inputWeight);
-        if (remainingDelta !== 0) return remainingDelta;
-        return normalizeWarPlacementClanDisplayName(a.clanName).localeCompare(
-          normalizeWarPlacementClanDisplayName(b.clanName),
+        const distance = Math.abs(a.remainingToTarget - inputWeight) - Math.abs(b.remainingToTarget - inputWeight);
+        if (distance !== 0) return distance;
+        return normalizePlaceClanDisplayName(a.clanName).localeCompare(
+          normalizePlaceClanDisplayName(b.clanName),
         );
       });
-    const recommended = compositionNeeds.filter((candidate) => candidate.hasVacancy);
 
-    const refreshLine = toEpochLine("Persisted WAR data last refreshed", latestRefreshAt);
-    if (candidates.length === 0) {
-      const contentLines = [
-        "Mode Displayed: **PLACE**",
-        refreshLine,
-      ];
-      if (skipped.length > 0) {
-        contentLines.push(`Skipped ineligible clans: ${skipped.join("; ")}`);
-      }
-      contentLines.push(
-        "No eligible DB-backed WAR roster snapshots are currently available for placement suggestions.",
-      );
-      return {
-        content: contentLines.join("\n"),
-        embeds: [],
-        trackedClanTags,
-        eligibleClanTags,
-        candidateCount: 0,
-        recommendedCount: 0,
-        vacancyCount: 0,
-        compositionCount: 0,
-      };
-    }
+    const recommended = compositionNeeds.filter((candidate) => candidate.hasVacancy);
 
     return {
       content: "",
       embeds: [
-        buildCompoPlaceEmbedDb({
+        buildCompoPlaceEmbed({
           inputWeight,
           bucket,
           recommended,
           vacancyList,
           compositionList: compositionNeeds,
-          refreshLine,
+          refreshLine: snapshot.refreshLine,
         }),
       ],
-      trackedClanTags,
-      eligibleClanTags,
+      trackedClanTags: candidates
+        .map((candidate) => candidate.clanTag)
+        .filter((tag): tag is string => Boolean(tag)),
+      eligibleClanTags: candidates
+        .map((candidate) => candidate.clanTag)
+        .filter((tag): tag is string => Boolean(tag)),
       candidateCount: candidates.length,
       recommendedCount: recommended.length,
       vacancyCount: vacancyList.length,
@@ -427,19 +331,18 @@ export class CompoPlaceService {
     };
   }
 
-  async refreshPlace(inputWeight: number, bucket: CompoWarDisplayBucket): Promise<CompoPlaceReadResult> {
-    const current = await this.readPlace(inputWeight, bucket);
-    if (current.trackedClanTags.length === 0) {
-      return current;
-    }
-
-    await mapWithConcurrency(current.trackedClanTags, 3, async (clanTag) => {
-      await this.feedOps.runTracked("war-roster", clanTag);
+  async refreshPlace(
+    inputWeight: number,
+    bucket: CompoWarDisplayBucket,
+    guildId?: string | null,
+  ): Promise<CompoPlaceReadResult> {
+    await triggerSharedSheetRefresh({
+      guildId: guildId ?? null,
+      mode: "actual",
     });
-
     return this.readPlace(inputWeight, bucket);
   }
 }
 
-export const buildCompoPlaceEmbedForTest = buildCompoPlaceEmbedDb;
-export const normalizeBucketDeltaKeyForTest = normalizeBucketDeltaKey;
+export const buildCompoPlaceEmbedForTest = buildCompoPlaceEmbed;
+export const readPlacementCandidatesForTest = readPlacementCandidates;

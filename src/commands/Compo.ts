@@ -790,8 +790,8 @@ function mapCompoWarStateErrorToMessage(action: "load" | "refresh"): string {
 
 function mapCompoPlaceErrorToMessage(action: "load" | "refresh"): string {
   return action === "refresh"
-    ? "Failed to refresh DB-backed placement suggestions. Try again in a moment."
-    : "Failed to load DB-backed placement suggestions. Try again in a moment.";
+    ? "Failed to refresh ACTUAL placement suggestions. Try again in a moment."
+    : "Failed to load ACTUAL placement suggestions. Try again in a moment.";
 }
 
 export async function handleCompoRefreshButton(
@@ -869,6 +869,7 @@ export async function handleCompoRefreshButton(
     const placeResult = await new CompoPlaceService().refreshPlace(
       parsed.weight,
       bucket,
+      interaction.guildId ?? null,
     );
     await interaction.editReply({
       content: placeResult.content,
@@ -942,7 +943,7 @@ export const Compo: Command = {
     {
       name: "place",
       description:
-        "Suggest clan placement for a given war weight (uses persisted WAR compo state)",
+        "Suggest clan placement for a given war weight (uses ACTUAL compo state)",
       type: ApplicationCommandOptionType.Subcommand,
       options: [
         {
@@ -1189,7 +1190,7 @@ export const Compo: Command = {
           });
           await safeReply(interaction, {
             ephemeral: !isPublic,
-            content: "Weight is outside supported ranges for persisted WAR compo buckets.",
+            content: "Weight is outside supported ranges for ACTUAL compo buckets.",
           });
           logCompoStage(interaction, "response_sent", {
             reason: "weight_out_of_range",
@@ -1202,10 +1203,10 @@ export const Compo: Command = {
           bucket,
         );
         logCompoStage(interaction, "db_fetch", {
-          entity: "tracked_war_roster_current",
-          mode: "war",
-          trackedClans: placeResult.trackedClanTags.length,
-          eligibleClans: placeResult.eligibleClanTags.length,
+          entity: "actual_compo_place_source",
+          mode: "actual",
+          candidateClans: placeResult.candidateCount,
+          taggedClans: placeResult.trackedClanTags.length,
         });
         logCompoStage(interaction, "computation_complete", {
           result: "placement_candidates",

@@ -134,7 +134,7 @@ Operational notes:
 - Global WarMembers / optional global Wars use cursor-based distributed sweeps from `FwaClanCatalog`.
 - `HeatMapRef` is an explicit seed/import owner and is not refreshed by per-clan watch jobs.
 - `/compo state mode:war` now reads persisted feed-backed tracked-clan roster state only.
-- `/compo place` now reads persisted tracked-clan WAR compo state only and refreshes tracked-clan `war-roster` feed state before rerendering from DB.
+- `/compo place` reads ACTUAL composition data and uses the ACTUAL shared sheet-refresh flow.
 - `/compo state mode:actual` remains sheet-backed in this phase.
 
 Manual/dev feed operations:
