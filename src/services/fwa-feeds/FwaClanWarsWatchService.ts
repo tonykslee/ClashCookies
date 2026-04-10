@@ -6,6 +6,8 @@ import {
 } from "../TrackedMessageService";
 import { normalizeFwaTag } from "./normalize";
 import { FwaClanWarsSyncService } from "./FwaClanWarsSyncService";
+import { FwaWarMembersSyncService } from "./FwaWarMembersSyncService";
+import { FwaTrackedClanWarRosterSyncService } from "./FwaTrackedClanWarRosterSyncService";
 import { mapWithConcurrency } from "./concurrency";
 
 type SyncSchedule = {
@@ -33,10 +35,14 @@ function buildWatchWindow(nextSyncMs: number): { nextSyncTimeAt: Date; pollWindo
   };
 }
 
-/** Purpose: coordinate per-clan tracked Wars.json watch windows tied to sync-time source data. */
+/** Purpose: coordinate per-clan tracked Wars.json watch windows and refresh tracked roster current state. */
 export class FwaClanWarsWatchService {
   /** Purpose: initialize tracked wars watch dependencies. */
-  constructor(private readonly clanWarsSync = new FwaClanWarsSyncService()) {}
+  constructor(
+    private readonly clanWarsSync = new FwaClanWarsSyncService(),
+    private readonly warMembersSync = new FwaWarMembersSyncService(),
+    private readonly trackedRosterSync = new FwaTrackedClanWarRosterSyncService(),
+  ) {}
 
   /** Purpose: execute one watch tick, activating/deactivating per-clan windows and polling active clans. */
   async runWatchTick(params?: { now?: Date; concurrency?: number }): Promise<{
@@ -143,6 +149,12 @@ export class FwaClanWarsWatchService {
         minimumIntervalMs: 0,
         now,
       });
+      await this.warMembersSync.syncClan(state.clanTag, {
+        force: true,
+        minimumIntervalMs: 0,
+        now,
+      });
+      await this.trackedRosterSync.syncClan(state.clanTag, { now });
       const previousHash = state.lastObservedContentHash ?? null;
       const nextHash = syncResult.contentHash ?? null;
       const updateAcquired = Boolean(previousHash && nextHash && previousHash !== nextHash);
