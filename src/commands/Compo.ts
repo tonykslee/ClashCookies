@@ -14,10 +14,12 @@ import {
 } from "discord.js";
 import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
+import { getCompoWarDisplayBucket } from "../helper/compoWarWeightBuckets";
 import { normalizeCompoClanDisplayName } from "../helper/compoDisplay";
 import { prisma } from "../prisma";
 import { safeReply } from "../helper/safeReply";
 import { CoCService } from "../services/CoCService";
+import { CompoPlaceService } from "../services/CompoPlaceService";
 import { CompoWarStateService } from "../services/CompoWarStateService";
 import {
   getSheetRefreshErrorHint,
@@ -77,7 +79,6 @@ function readMode(interaction: ChatInputCommandInteraction): GoogleSheetMode {
 const COL_CLAN_NAME = 0; // A
 const COL_CLAN_TAG = 1; // B
 const COL_TOTAL_WEIGHT = 3; // D
-const COL_TARGET_BAND = 49; // AX (was 48 / AW)
 const COL_MISSING_WEIGHT = 20; // U
 const COL_TOTAL_PLAYERS = 21; // V
 const COL_BUCKET_START = 22; // W (was 21 / V)
@@ -208,6 +209,34 @@ function normalizeTag(value: string): string {
   return value.trim().toUpperCase().replace(/^#/, "");
 }
 
+function abbreviateClan(value: string): string {
+  const normalized = value
+    .normalize("NFKC")
+    .replace(/["'`]/g, "")
+    .replace(/[^A-Za-z0-9 ]/g, "")
+    .replace(/\s+/g, " ")
+    .replace(/TM/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toUpperCase();
+
+  const map: Record<string, string> = {
+    "RISING DAWN": "RD",
+    "ZERO GRAVITY": "ZG",
+    "DARK EMPIRE": "DE",
+    "THE BADLANDS": "BL",
+    "LEGENDARY ROYALS": "LR",
+    "STEEL EMPIRE": "SE",
+    "STEEL EMPIRE 2": "SE",
+    THEWISECOWBOYS: "TWC",
+    MARVELS: "MV",
+    "ROCKY ROAD": "RR",
+    AKATSUKI: "AK",
+  };
+
+  return map[normalized] ?? value;
+}
+
 type SheetIndexedRow = {
   row: string[];
   sheetRowNumber: number;
@@ -324,14 +353,6 @@ function _renderStateSvg(mode: GoogleSheetMode, rows: string[][]): Buffer {
   return Buffer.from(svg, "utf8");
 }
 
-function parseNumber(value: string | undefined): number {
-  if (!value) return 0;
-  const digits = value.replace(/[^0-9-]/g, "");
-  if (!digits || digits === "-") return 0;
-  const parsed = Number(digits);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
 function parseWeightInput(input: string): number | null {
   const trimmed = input.trim().toLowerCase();
   if (!trimmed) return null;
@@ -347,18 +368,6 @@ function parseWeightInput(input: string): number | null {
   const numeric = Number(compact);
   if (!Number.isFinite(numeric)) return null;
   return Math.round(numeric);
-}
-
-type WeightBucket = "TH18" | "TH17" | "TH16" | "TH15" | "TH14" | "<=TH13";
-
-function getWeightBucket(weight: number): WeightBucket | null {
-  if (weight >= 171000 && weight <= 180000) return "TH18";
-  if (weight >= 161000 && weight <= 170000) return "TH17";
-  if (weight >= 151000 && weight <= 160000) return "TH16";
-  if (weight >= 141000 && weight <= 150000) return "TH15";
-  if (weight >= 131000 && weight <= 140000) return "TH14";
-  if (weight >= 121000 && weight <= 130000) return "<=TH13";
-  return null;
 }
 
 function clampCell(value: string): string {
@@ -397,31 +406,6 @@ function toGlyphSafeText(input: string): string {
     out += GLYPHS[ch] ? ch : "?";
   }
   return out;
-}
-
-function abbreviateClan(value: string): string {
-  const normalized = value
-    .normalize("NFKC")
-    .replace(/["'`]/g, "")
-    .replace(/[^A-Za-z0-9 ]/g, "")
-    .replace(/\s+/g, " ")
-    .replace(/TM/g, "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toUpperCase();
-
-  const map: Record<string, string> = {
-    "RISING DAWN": "RD",
-    "ZERO GRAVITY": "ZG",
-    "DARK EMPIRE": "DE",
-    "STEEL EMPIRE 2": "SE",
-    THEWISECOWBOYS: "TWC",
-    MARVELS: "MV",
-    "ROCKY ROAD": "RR",
-    AKATSUKI: "AK",
-  };
-
-  return map[normalized] ?? value;
 }
 
 function _padRows(
@@ -548,208 +532,7 @@ function buildCompoStatePayloadFromRows(input: {
   };
 }
 
-async function buildCompoPlacePayload(input: {
-  inputWeight: number;
-  bucket: WeightBucket;
-  actualRows: SheetIndexedRow[];
-  cocService: CoCService;
-  refreshLine: string;
-}): Promise<{
-  payload: CompoRenderPayload;
-  candidateCount: number;
-  recommendedCount: number;
-  vacancyCount: number;
-  compositionCount: number;
-}> {
-  const candidates = readPlacementCandidates(input.actualRows);
-  if (candidates.length === 0) {
-    return {
-      payload: {
-        content:
-          "No placement data found in ACTUAL rows from AllianceDashboard!A6:BE500.",
-      },
-      candidateCount: 0,
-      recommendedCount: 0,
-      vacancyCount: 0,
-      compositionCount: 0,
-    };
-  }
-
-  const candidatesWithLiveVacancy = await enrichCandidatesWithLiveVacancy(
-    candidates,
-    input.cocService,
-  );
-  const vacancyChoice = candidatesWithLiveVacancy
-    .filter((c) => c.hasVacancy)
-    .sort((a, b) => {
-      if (b.vacancySlots !== a.vacancySlots)
-        return b.vacancySlots - a.vacancySlots;
-      return (
-        Math.abs(a.remainingToTarget - input.inputWeight) -
-        Math.abs(b.remainingToTarget - input.inputWeight)
-      );
-    });
-
-  const compositionNeeds = candidatesWithLiveVacancy
-    .map((c) => {
-      const key = normalize(`${input.bucket}-delta`);
-      const delta = c.bucketDeltaByHeader[key] ?? 0;
-      return { ...c, delta };
-    })
-    .filter((c) => c.delta < 0)
-    .sort((a, b) => {
-      if (a.delta !== b.delta) return a.delta - b.delta;
-      return b.missingCount - a.missingCount;
-    });
-
-  const recommended = compositionNeeds.filter((c) => c.hasVacancy);
-  const vacancyList = vacancyChoice;
-  const compositionList = compositionNeeds;
-  const embed = buildCompoPlaceEmbed({
-    inputWeight: input.inputWeight,
-    bucket: input.bucket,
-    recommended,
-    vacancyList,
-    compositionList,
-    refreshLine: input.refreshLine,
-  });
-  return {
-    payload: {
-      content: "",
-      embeds: [embed],
-    },
-    candidateCount: candidates.length,
-    recommendedCount: recommended.length,
-    vacancyCount: vacancyList.length,
-    compositionCount: compositionList.length,
-  };
-}
-
-type PlacementCandidate = {
-  clanName: string;
-  clanTag: string;
-  totalWeight: number;
-  targetBand: number;
-  missingCount: number;
-  remainingToTarget: number;
-  bucketDeltaByHeader: Record<string, number>;
-};
-
-type PlacementCandidateWithVacancy = PlacementCandidate & {
-  liveMemberCount: number | null;
-  vacancySlots: number;
-  hasVacancy: boolean;
-};
-
-type PlacementCandidateWithDelta = PlacementCandidateWithVacancy & {
-  delta: number;
-};
-
-function readPlacementCandidates(
-  modeRows: SheetIndexedRow[],
-): PlacementCandidate[] {
-  const candidates: PlacementCandidate[] = [];
-  const seenKeys = new Set<string>();
-  for (const { row } of modeRows) {
-    const clanName = String(row[COL_CLAN_NAME] ?? "").trim();
-    if (!clanName) continue;
-    const clanTag = normalizeTag(String(row[COL_CLAN_TAG] ?? ""));
-    const key = clanTag ? `tag:${clanTag}` : `name:${normalize(clanName)}`;
-    if (seenKeys.has(key)) continue;
-    seenKeys.add(key);
-
-    const totalWeight = parseNumber(row[COL_TOTAL_WEIGHT]);
-    const targetBand = parseNumber(row[COL_TARGET_BAND]);
-    const missingCount = parseNumber(row[COL_MISSING_WEIGHT]);
-    const remainingToTarget = targetBand - totalWeight;
-    const bucketDeltaByHeader: Record<string, number> = {};
-    bucketDeltaByHeader[normalize("TH18-delta")] = parseNumber(
-      row[COL_BUCKET_START],
-    );
-    bucketDeltaByHeader[normalize("TH17-delta")] = parseNumber(
-      row[COL_BUCKET_START + 1],
-    );
-    bucketDeltaByHeader[normalize("TH16-delta")] = parseNumber(
-      row[COL_BUCKET_START + 2],
-    );
-    bucketDeltaByHeader[normalize("TH15-delta")] = parseNumber(
-      row[COL_BUCKET_START + 3],
-    );
-    bucketDeltaByHeader[normalize("TH14-delta")] = parseNumber(
-      row[COL_BUCKET_START + 4],
-    );
-    bucketDeltaByHeader[normalize("<=TH13-delta")] = parseNumber(
-      row[COL_BUCKET_END],
-    );
-
-    candidates.push({
-      clanName,
-      clanTag,
-      totalWeight,
-      targetBand,
-      missingCount,
-      remainingToTarget,
-      bucketDeltaByHeader,
-    });
-  }
-
-  return candidates;
-}
-
-/** Purpose: resolve live member counts from CoC API and mark vacancy from current clan size. */
-async function enrichCandidatesWithLiveVacancy(
-  candidates: PlacementCandidate[],
-  cocService: CoCService,
-): Promise<PlacementCandidateWithVacancy[]> {
-  return Promise.all(
-    candidates.map(async (candidate) => {
-      if (!candidate.clanTag) {
-        return {
-          ...candidate,
-          liveMemberCount: null,
-          vacancySlots: 0,
-          hasVacancy: false,
-        };
-      }
-
-      const clan = await cocService
-        .getClan(`#${candidate.clanTag}`)
-        .catch(() => null);
-      const liveMemberCount = (() => {
-        if (Array.isArray(clan?.memberList)) return clan.memberList.length;
-        if (Array.isArray(clan?.members)) return clan.members.length;
-        return null;
-      })();
-      const safeCount =
-        liveMemberCount !== null && Number.isFinite(liveMemberCount)
-          ? Math.max(0, Math.min(50, Math.trunc(liveMemberCount)))
-          : null;
-      const vacancySlots = safeCount !== null ? Math.max(0, 50 - safeCount) : 0;
-
-      return {
-        ...candidate,
-        liveMemberCount: safeCount,
-        vacancySlots,
-        hasVacancy: safeCount !== null && safeCount < 50,
-      };
-    }),
-  );
-}
-
-/** Purpose: format one field row per clan for compact placement embed sections. */
-function formatPlacementRows(lines: string[]): string {
-  return lines.length > 0 ? lines.join("\n") : "None";
-}
-
-/** Purpose: build `/compo place` embed output with clear sections. */
-function buildCompoPlaceEmbed(params: {
-  inputWeight: number;
-  bucket: WeightBucket;
-  recommended: PlacementCandidateWithDelta[];
-  vacancyList: PlacementCandidateWithVacancy[];
-  compositionList: PlacementCandidateWithDelta[];
-  refreshLine: string;
-}): EmbedBuilder {
+/*
   const recommendedRows = params.recommended.map(
     (c) =>
       `${abbreviateClan(normalizeCompoClanDisplayName(c.clanName))} — needs ${Math.abs(c.delta)} ${params.bucket}`,
@@ -791,6 +574,7 @@ function buildCompoPlaceEmbed(params: {
     );
 }
 
+*/
 const GLYPHS: Record<string, string[]> = {
   " ": ["00000", "00000", "00000", "00000", "00000", "00000", "00000"],
   "'": ["00100", "00100", "00100", "00000", "00000", "00000", "00000"],
@@ -1004,9 +788,15 @@ function mapCompoWarStateErrorToMessage(action: "load" | "refresh"): string {
     : "Failed to load DB-backed WAR state. Try again in a moment.";
 }
 
+function mapCompoPlaceErrorToMessage(action: "load" | "refresh"): string {
+  return action === "refresh"
+    ? "Failed to refresh DB-backed placement suggestions. Try again in a moment."
+    : "Failed to load DB-backed placement suggestions. Try again in a moment.";
+}
+
 export async function handleCompoRefreshButton(
   interaction: ButtonInteraction,
-  cocService: CoCService,
+  _cocService: CoCService,
 ): Promise<void> {
   const parsed = parseCompoRefreshCustomId(interaction.customId);
   if (!parsed) {
@@ -1072,24 +862,17 @@ export async function handleCompoRefreshButton(
       return;
     }
 
-    const bucket = getWeightBucket(parsed.weight);
+    const bucket = getCompoWarDisplayBucket(parsed.weight);
     if (!bucket) {
       throw new Error("Invalid placement bucket for refresh.");
     }
-    await triggerSharedSheetRefresh({
-      guildId: interaction.guildId ?? null,
-      mode: "actual",
-    });
-    const snapshot = await readCompoSheetSnapshot("actual");
-    const placeResult = await buildCompoPlacePayload({
-      inputWeight: parsed.weight,
+    const placeResult = await new CompoPlaceService().refreshPlace(
+      parsed.weight,
       bucket,
-      actualRows: snapshot.modeRows,
-      cocService,
-      refreshLine: snapshot.refreshLine,
-    });
+    );
     await interaction.editReply({
-      ...placeResult.payload,
+      content: placeResult.content,
+      embeds: placeResult.embeds,
       components: buildCompoRefreshComponents({
         customId: interaction.customId,
         loading: false,
@@ -1110,7 +893,9 @@ export async function handleCompoRefreshButton(
       content:
         parsed.kind === "state" && parsed.mode === "war"
           ? mapCompoWarStateErrorToMessage("refresh")
-          : mapCompoRefreshErrorToMessage(err),
+          : parsed.kind === "place"
+            ? mapCompoPlaceErrorToMessage("refresh")
+            : mapCompoRefreshErrorToMessage(err),
     });
   }
 }
@@ -1157,7 +942,7 @@ export const Compo: Command = {
     {
       name: "place",
       description:
-        "Suggest clan placement for a given war weight (uses ACTUAL state)",
+        "Suggest clan placement for a given war weight (uses persisted WAR compo state)",
       type: ApplicationCommandOptionType.Subcommand,
       options: [
         {
@@ -1172,7 +957,7 @@ export const Compo: Command = {
   run: async (
     _client: Client,
     interaction: ChatInputCommandInteraction,
-    cocService: CoCService,
+    _cocService: CoCService,
   ) => {
     const visibility =
       interaction.options.getString("visibility", false) ?? "private";
@@ -1396,7 +1181,7 @@ export const Compo: Command = {
           return;
         }
 
-        const bucket = getWeightBucket(inputWeight);
+        const bucket = getCompoWarDisplayBucket(inputWeight);
         if (!bucket) {
           logCompoStage(interaction, "response_build", {
             reason: "weight_out_of_range",
@@ -1404,7 +1189,7 @@ export const Compo: Command = {
           });
           await safeReply(interaction, {
             ephemeral: !isPublic,
-            content: "Weight is outside supported ranges (121,000 to 180,000).",
+            content: "Weight is outside supported ranges for persisted WAR compo buckets.",
           });
           logCompoStage(interaction, "response_sent", {
             reason: "weight_out_of_range",
@@ -1412,37 +1197,15 @@ export const Compo: Command = {
           return;
         }
 
-        const stateMode: GoogleSheetMode = "actual";
-        const snapshot = await readCompoSheetSnapshot(stateMode);
-        logCompoStage(interaction, "db_fetch", {
-          entity: "sheet_link",
-          mode: stateMode,
-          result: snapshot.linked.sheetId ? "found" : "missing",
-          sheetIdPresent: Boolean(snapshot.linked.sheetId),
-          resolutionSource: snapshot.linked.source,
-        });
-        logCompoStage(interaction, "read_dispatch", {
-          range: FIXED_LAYOUT_RANGE,
-          resolutionSource: snapshot.linked.source,
-        });
-        logCompoStage(interaction, "read_dispatch", {
-          range: LOOKUP_REFRESH_RANGE,
-          resolutionSource: snapshot.linked.source,
-        });
-        logCompoStage(interaction, "db_fetch", {
-          entity: "sheet_rows",
-          mode: stateMode,
-          result: snapshot.rows.length > 0 ? "found" : "missing",
-          totalRows: snapshot.rows.length,
-          modeRows: snapshot.modeRows.length,
-        });
-
-        const placeResult = await buildCompoPlacePayload({
+        const placeResult = await new CompoPlaceService().readPlace(
           inputWeight,
           bucket,
-          actualRows: snapshot.modeRows,
-          cocService,
-          refreshLine: snapshot.refreshLine,
+        );
+        logCompoStage(interaction, "db_fetch", {
+          entity: "tracked_war_roster_current",
+          mode: "war",
+          trackedClans: placeResult.trackedClanTags.length,
+          eligibleClans: placeResult.eligibleClanTags.length,
         });
         logCompoStage(interaction, "computation_complete", {
           result: "placement_candidates",
@@ -1465,7 +1228,8 @@ export const Compo: Command = {
           composition: placeResult.compositionCount,
         });
         await interaction.editReply({
-          ...placeResult.payload,
+          content: placeResult.content,
+          embeds: placeResult.embeds,
           components: buildCompoRefreshComponents({
             customId: refreshCustomId,
             loading: false,
@@ -1515,7 +1279,9 @@ export const Compo: Command = {
         content:
           getSubcommandSafe(interaction) === "state" && readMode(interaction) === "war"
             ? mapCompoWarStateErrorToMessage("load")
-            : mapCompoSheetErrorToMessage(err),
+            : getSubcommandSafe(interaction) === "place"
+              ? mapCompoPlaceErrorToMessage("load")
+              : mapCompoSheetErrorToMessage(err),
       });
       logCompoStage(interaction, "response_sent", { reason: "run_catch" });
     }
@@ -1560,11 +1326,10 @@ export const Compo: Command = {
   },
 };
 
-export const readPlacementCandidatesForTest = readPlacementCandidates;
-export const buildCompoPlaceEmbedForTest = buildCompoPlaceEmbed;
 export const buildCompoStateRowsForTest = buildCompoStateRows;
 export const getModeRowsForTest = getModeRows;
 export const getAbsoluteSheetRowNumberForTest = getAbsoluteSheetRowNumber;
 export const mapCompoSheetErrorToMessageForTest = mapCompoSheetErrorToMessage;
 export const buildCompoRefreshCustomIdForTest = buildCompoRefreshCustomId;
 export const parseCompoRefreshCustomIdForTest = parseCompoRefreshCustomId;
+export const parseWeightInputForTest = parseWeightInput;

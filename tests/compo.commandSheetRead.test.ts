@@ -120,11 +120,6 @@ describe("/compo strict sheet read path", () => {
       subcommand: "state" as const,
       expectedRanges: [FIXED_LAYOUT_RANGE, LOOKUP_REFRESH_RANGE],
     },
-    {
-      subcommand: "place" as const,
-      weight: "151k",
-      expectedRanges: [FIXED_LAYOUT_RANGE, LOOKUP_REFRESH_RANGE],
-    },
   ])("uses strict canonical resolver for /compo $subcommand", async (testCase) => {
     const getCompoLinkedSheetSpy = vi
       .spyOn(GoogleSheetsService.prototype, "getCompoLinkedSheet")
@@ -157,7 +152,6 @@ describe("/compo strict sheet read path", () => {
   it.each([
     { subcommand: "advice" as const, tag: "#LQQ99UV8" },
     { subcommand: "state" as const },
-    { subcommand: "place" as const, weight: "151k" },
   ])(
     "maps normalized sheet errors consistently for /compo $subcommand",
     async (testCase) => {
@@ -204,7 +198,7 @@ describe("/compo strict sheet read path", () => {
     expect(String(payload?.content ?? "")).not.toContain("-actual");
   });
 
-  it("adds inline refresh buttons for /compo state and /compo place outputs", async () => {
+  it("adds an inline refresh button for /compo state output", async () => {
     vi.spyOn(GoogleSheetsService.prototype, "getCompoLinkedSheet").mockResolvedValue(linkedSheet);
     vi.spyOn(GoogleSheetsService.prototype, "readCompoLinkedValues").mockImplementation(
       async (range: string) => {
@@ -221,17 +215,6 @@ describe("/compo strict sheet read path", () => {
     } as any);
     const statePayload = stateInteraction.editReply.mock.calls.at(-1)?.[0];
     expect(getComponentCustomIds(statePayload).some((id) => id.startsWith("compo-refresh:state:"))).toBe(
-      true
-    );
-
-    const placeInteraction = makeInteraction({ subcommand: "place", weight: "151k" });
-    await Compo.run({} as any, placeInteraction as any, {
-      getClan: vi.fn().mockResolvedValue({
-        memberList: Array.from({ length: 47 }, () => ({ tag: "#P" })),
-      }),
-    } as any);
-    const placePayload = placeInteraction.editReply.mock.calls.at(-1)?.[0];
-    expect(getComponentCustomIds(placePayload).some((id) => id.startsWith("compo-refresh:place:"))).toBe(
       true
     );
   });

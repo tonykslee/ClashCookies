@@ -4,10 +4,12 @@ import type {
   FwaTrackedClanWarRosterMemberCurrent,
 } from "@prisma/client";
 import { prisma } from "../prisma";
+import { findHeatMapRefForWeight } from "../helper/compoHeatMap";
 import { normalizeCompoClanDisplayName } from "../helper/compoDisplay";
+import { buildCompoWarBucketCounts } from "../helper/compoWarBucketCounts";
 import {
-  type CompoWarWeightBucket,
   getCompoWarWeightBucket,
+  type CompoWarWeightBucket,
 } from "../helper/compoWarWeightBuckets";
 import { mapWithConcurrency } from "./fwa-feeds/concurrency";
 import { FwaFeedOpsService } from "./fwa-feeds/FwaFeedOpsService";
@@ -38,20 +40,6 @@ export type CompoWarStateReadResult = {
   renderableClanTags: string[];
 };
 
-const EMPTY_BUCKET_COUNTS: BucketCounts = {
-  TH18: 0,
-  TH17: 0,
-  TH16: 0,
-  TH15: 0,
-  TH14: 0,
-  TH13: 0,
-  TH12: 0,
-  TH11: 0,
-  TH10: 0,
-  TH9: 0,
-  TH8_OR_LOWER: 0,
-};
-
 function normalizeWarStateClanDisplayName(value: string): string {
   const normalized = normalizeCompoClanDisplayName(value);
   const trimmedRight = normalized.trimEnd();
@@ -63,33 +51,6 @@ function normalizeWarStateClanDisplayName(value: string): string {
 function toEpochLine(prefix: string, value: Date | null): string {
   if (!value) return `${prefix}: (not available)`;
   return `${prefix}: <t:${Math.floor(value.getTime() / 1000)}:F>`;
-}
-
-/** Purpose: count granular compo weight buckets from persisted effective member weights. */
-function buildBucketCounts(
-  members: readonly Pick<FwaTrackedClanWarRosterMemberCurrent, "effectiveWeight">[],
-): BucketCounts | null {
-  const counts: BucketCounts = { ...EMPTY_BUCKET_COUNTS };
-  for (const member of members) {
-    const bucket = getCompoWarWeightBucket(member.effectiveWeight);
-    if (!bucket) return null;
-    counts[bucket] += 1;
-  }
-  return counts;
-}
-
-/** Purpose: resolve the matching persisted HeatMapRef band for one total effective roster weight. */
-function findHeatMapRefForWeight(
-  refs: readonly HeatMapRef[],
-  totalEffectiveWeight: number,
-): HeatMapRef | null {
-  return (
-    refs.find(
-      (row) =>
-        totalEffectiveWeight >= row.weightMinInclusive &&
-        totalEffectiveWeight <= row.weightMaxInclusive,
-    ) ?? null
-  );
 }
 
 /** Purpose: derive the legacy display delta columns while preserving granular internal TH counts. */
@@ -248,7 +209,7 @@ export class CompoWarStateService {
         continue;
       }
 
-      const bucketCounts = buildBucketCounts(clanMembers);
+      const bucketCounts = buildCompoWarBucketCounts(clanMembers);
       if (!bucketCounts) {
         skipped.push(`${normalizeWarStateClanDisplayName(displayName)} (unresolved effective weights)`);
         continue;
@@ -337,7 +298,7 @@ export class CompoWarStateService {
 }
 
 export const getCompoWarWeightBucketForTest = getCompoWarWeightBucket;
-export const buildBucketCountsForTest = buildBucketCounts;
+export const buildBucketCountsForTest = buildCompoWarBucketCounts;
 export const findHeatMapRefForWeightForTest = findHeatMapRefForWeight;
 export const buildCollapsedStateRowForTest = buildCollapsedStateRow;
 export const getIneligibleReasonForTest = getIneligibleReason;
