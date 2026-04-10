@@ -185,12 +185,12 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     ],
   },
   compo: {
-    summary: "Composition tools with DB-backed WAR state/place flows and a sheet-backed ACTUAL flow.",
+    summary: "Composition tools with DB-backed WAR state and ACTUAL-backed advice/place flows.",
     details: [
       "`advice`: fetch clan-specific adjustment notes from the existing sheet-backed flow.",
       "`state`: `mode:war` renders from persisted tracked-clan feed state only, while `mode:actual` remains on the AllianceDashboard sheet path.",
       "`state` refresh: `mode:war` refreshes tracked-clan war-roster feed state only and rerenders from DB; `mode:actual` still uses the shared sheet-refresh flow.",
-      "`place`: suggest placement by war weight from persisted tracked-clan WAR compo state only, with an inline refresh button that refreshes tracked-clan war-roster feed state before rerendering from DB.",
+      "`place`: suggest placement by war weight from ACTUAL composition rows, with an inline refresh button that uses the ACTUAL shared sheet-refresh flow before rereading placement results.",
     ],
     examples: [
       "/compo advice tag:#2QG2C08UP mode:actual",

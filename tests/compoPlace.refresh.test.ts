@@ -4,7 +4,6 @@ import {
   handleCompoRefreshButton,
 } from "../src/commands/Compo";
 import { CompoPlaceService } from "../src/services/CompoPlaceService";
-import * as SheetRefreshService from "../src/services/SheetRefreshService";
 
 function makeMessageRow(customId: string, label: string, disabled = false): {
   toJSON: () => unknown;
@@ -52,7 +51,7 @@ describe("compo place refresh button behavior", () => {
     vi.restoreAllMocks();
   });
 
-  it("refreshes DB-backed place suggestions without calling the shared sheet refresh flow", async () => {
+  it("refreshes ACTUAL-backed place suggestions through the place service", async () => {
     const refreshPlaceSpy = vi
       .spyOn(CompoPlaceService.prototype, "refreshPlace")
       .mockResolvedValue({
@@ -65,10 +64,6 @@ describe("compo place refresh button behavior", () => {
         vacancyCount: 0,
         compositionCount: 1,
       });
-    const sheetRefreshSpy = vi.spyOn(
-      SheetRefreshService,
-      "triggerSharedSheetRefresh",
-    );
     const customId = buildCompoRefreshCustomIdForTest({
       kind: "place",
       userId: "user-1",
@@ -78,8 +73,7 @@ describe("compo place refresh button behavior", () => {
 
     await handleCompoRefreshButton(interaction as any, {} as any);
 
-    expect(refreshPlaceSpy).toHaveBeenCalledWith(145000, "TH15");
-    expect(sheetRefreshSpy).not.toHaveBeenCalled();
+    expect(refreshPlaceSpy).toHaveBeenCalledWith(145000, "TH15", "guild-1");
     const payload = interaction.editReply.mock.calls.at(-1)?.[0];
     expect(String(payload?.content ?? "")).toContain("Mode Displayed: **PLACE**");
     expect(interaction.followUp).not.toHaveBeenCalled();
