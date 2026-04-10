@@ -11,6 +11,14 @@ export type CompoWarWeightBucket =
   | "TH9"
   | "TH8_OR_LOWER";
 
+export type CompoWarDisplayBucket =
+  | "TH18"
+  | "TH17"
+  | "TH16"
+  | "TH15"
+  | "TH14"
+  | "<=TH13";
+
 /** Purpose: classify one persisted effective roster weight into the WAR compo bucket ranges used for sheet parity. */
 export function getCompoWarWeightBucket(
   effectiveWeight: number | null,
@@ -30,4 +38,29 @@ export function getCompoWarWeightBucket(
   if (effectiveWeight >= 56000 && effectiveWeight <= 70000) return "TH9";
   if (effectiveWeight <= 55000) return "TH8_OR_LOWER";
   return null;
+}
+
+/** Purpose: collapse one granular WAR compo weight bucket into the stable display columns used by `/compo`. */
+export function collapseCompoWarWeightBucketForDisplay(
+  bucket: CompoWarWeightBucket,
+): CompoWarDisplayBucket {
+  if (
+    bucket === "TH13" ||
+    bucket === "TH12" ||
+    bucket === "TH11" ||
+    bucket === "TH10" ||
+    bucket === "TH9" ||
+    bucket === "TH8_OR_LOWER"
+  ) {
+    return "<=TH13";
+  }
+  return bucket;
+}
+
+/** Purpose: map one raw input or effective weight into the stable `/compo place` display bucket set. */
+export function getCompoWarDisplayBucket(
+  weight: number | null,
+): CompoWarDisplayBucket | null {
+  const granular = getCompoWarWeightBucket(weight);
+  return granular ? collapseCompoWarWeightBucketForDisplay(granular) : null;
 }

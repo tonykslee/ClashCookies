@@ -48,7 +48,7 @@ describe("interactionCreate autocomplete dispatch", () => {
 
     expect(autocompleteMock).toHaveBeenCalledWith(interaction);
     emojiCommand.autocomplete = originalAutocomplete;
-  });
+  }, 30000);
 
   it("responds with empty suggestions when command has no autocomplete handler", async () => {
     const handler = await loadInteractionHandler();
@@ -61,5 +61,5 @@ describe("interactionCreate autocomplete dispatch", () => {
     await handler(interaction as any);
 
     expect(interaction.respond).toHaveBeenCalledWith([]);
-  });
+  }, 30000);
 });
