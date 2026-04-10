@@ -36,10 +36,10 @@ async function main(): Promise<void> {
     const feed = readArg("feed");
     const tag = readArg("tag");
     if (!feed || !tag) {
-      throw new Error("Usage: fwaFeedSync run --feed=clan-members|clan-wars --tag=#CLANTAG");
+      throw new Error("Usage: fwaFeedSync run --feed=clan-members|clan-wars|war-roster --tag=#CLANTAG");
     }
-    if (feed !== "clan-members" && feed !== "clan-wars") {
-      throw new Error("feed must be clan-members or clan-wars");
+    if (feed !== "clan-members" && feed !== "clan-wars" && feed !== "war-roster") {
+      throw new Error("feed must be clan-members, clan-wars, or war-roster");
     }
     const output = await ops.runTracked(feed, tag);
     printJson(output);

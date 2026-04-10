@@ -6,6 +6,7 @@ import { FwaWarMembersSyncService } from "./FwaWarMembersSyncService";
 import { FwaClanWarsSyncService } from "./FwaClanWarsSyncService";
 import { FwaClanWarsWatchService } from "./FwaClanWarsWatchService";
 import { FwaFeedSchedulerService } from "./FwaFeedSchedulerService";
+import { FwaTrackedClanWarRosterSyncService } from "./FwaTrackedClanWarRosterSyncService";
 
 /** Purpose: expose manual status/run/watch operations for fwa-feed ingestion without command-surface expansion. */
 export class FwaFeedOpsService {
@@ -13,7 +14,12 @@ export class FwaFeedOpsService {
   private readonly clanMembersSync = new FwaClanMembersSyncService();
   private readonly warMembersSync = new FwaWarMembersSyncService();
   private readonly clanWarsSync = new FwaClanWarsSyncService();
-  private readonly watchService = new FwaClanWarsWatchService(this.clanWarsSync);
+  private readonly trackedRosterSync = new FwaTrackedClanWarRosterSyncService();
+  private readonly watchService = new FwaClanWarsWatchService(
+    this.clanWarsSync,
+    this.warMembersSync,
+    this.trackedRosterSync,
+  );
   private readonly scheduler = new FwaFeedSchedulerService();
 
   /** Purpose: return feed sync-state rows for global jobs and optional per-clan scopes. */
@@ -40,11 +46,19 @@ export class FwaFeedOpsService {
   }
 
   /** Purpose: run one tracked-clan one-off sync for clan-members or clan-wars feeds. */
-  async runTracked(feed: "clan-members" | "clan-wars", clanTag: string) {
+  async runTracked(feed: "clan-members" | "clan-wars" | "war-roster", clanTag: string) {
     const normalized = normalizeFwaTag(clanTag);
     if (!normalized) throw new Error("Invalid clan tag");
     if (feed === "clan-members") {
       return this.clanMembersSync.syncTrackedClan(normalized, { force: true });
+    }
+    if (feed === "war-roster") {
+      const warMembersResult = await this.warMembersSync.syncClan(normalized, { force: true });
+      const rosterResult = await this.trackedRosterSync.syncClan(normalized);
+      return {
+        warMembersResult,
+        rosterResult,
+      };
     }
     return this.clanWarsSync.syncClan(normalized, { force: true });
   }

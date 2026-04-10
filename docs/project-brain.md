@@ -43,7 +43,7 @@ Core subsystems:
 
 - War state: `TrackedClan -> WarEventLogService/poll loops -> CurrentWar -> ClanWarHistory / ClanWarParticipation / WarAttacks / WarLookup / WarEvent / WarMailLifecycle / ClanPostedMessage`
 - Points sync: `points.fwafarm -> PointsSyncService -> ClanPointsSync`
-- Feed-backed current state: `FWAStats JSON feeds -> FwaFeedSchedulerService -> FwaClanCatalog / FwaPlayerCatalog / FwaClanMemberCurrent / FwaWarMemberCurrent / FwaClanWarLogCurrent`
+- Feed-backed current state: `FWAStats JSON feeds -> FwaFeedSchedulerService -> FwaClanCatalog / FwaPlayerCatalog / FwaClanMemberCurrent / FwaWarMemberCurrent / FwaTrackedClanWarRosterCurrent / FwaTrackedClanWarRosterMemberCurrent / FwaClanWarLogCurrent / HeatMapRef`
 - Snapshot-backed todo: `PlayerLink + TodoUserUsage + CurrentWar + CurrentCwlRound/CwlRoundMemberCurrent + activity signals -> TodoSnapshotService -> TodoPlayerSnapshot`
 - Persisted CWL state: `CwlTrackedClan -> CwlStateService -> CurrentCwlRound / CwlRoundMemberCurrent / CurrentCwlPrepSnapshot / CwlRoundHistory / CwlRoundMemberHistory / CwlPlayerClanSeason`
 - CWL planner state: `CurrentCwlRound + CwlRoundMemberCurrent + CurrentCwlPrepSnapshot + CwlPlayerClanSeason -> CwlRotationService -> CwlRotationPlan / CwlRotationPlanDay / CwlRotationPlanMember`, with sheet import/export orchestration layered on top for admin-only planner exchange flows.
@@ -82,6 +82,7 @@ Important owners:
 | Personal reminders | UserActivityReminder* tables |
 | Tracked long-lived posts | TrackedMessage* tables |
 | FWA feed current-state tables | Fwa* current-state tables |
+| FWA compo reference bands | HeatMapRef |
 | Telemetry rollups and report schedules | Telemetry* tables |
 
 Do not duplicate ownership across tables.

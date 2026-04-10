@@ -38,7 +38,10 @@ FwaClanCatalog
 FwaPlayerCatalog
 FwaClanMemberCurrent
 FwaWarMemberCurrent
+FwaTrackedClanWarRosterCurrent
+FwaTrackedClanWarRosterMemberCurrent
 FwaClanWarLogCurrent
+HeatMapRef
 FwaFeedSyncState
 FwaClanWarsWatchState
 FwaFeedCursor
@@ -128,7 +131,8 @@ Each domain concept must have exactly one authoritative owner.
 | Guild reminder config and dedupe | Reminder, ReminderTimeOffset, ReminderTargetClan, ReminderFireLog |
 | Personal reminder config and dedupe | UserActivityReminderRule, UserActivityReminderDelivery |
 | Tracked reusable posts and claims | TrackedMessage, TrackedMessageClaim |
-| FWA feed current state | FwaClanCatalog, FwaPlayerCatalog, FwaClanMemberCurrent, FwaWarMemberCurrent, FwaClanWarLogCurrent |
+| FWA feed current state | FwaClanCatalog, FwaPlayerCatalog, FwaClanMemberCurrent, FwaWarMemberCurrent, FwaTrackedClanWarRosterCurrent, FwaTrackedClanWarRosterMemberCurrent, FwaClanWarLogCurrent |
+| FWA compo reference bands | HeatMapRef |
 | FWA feed scheduler metadata | FwaFeedSyncState, FwaClanWarsWatchState, FwaFeedCursor |
 | Unlinked alert routing and unresolved members | UnlinkedAlertConfig, UnlinkedPlayer |
 | Telemetry rollups and scheduled reports | TelemetryCommandAggregate, TelemetryUserCommandAggregate, TelemetryApiAggregate, TelemetryStageAggregate, TelemetryReportSchedule, TelemetryReportRun |

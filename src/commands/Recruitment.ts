@@ -42,6 +42,7 @@ import {
   formatRecruitmentReminderWindowSummaryInTimeZone,
   formatRecruitmentReminderRhythmSummaryInTimeZone,
   getNextRecruitmentReminderSlot,
+  getRecruitmentReminderPlatformWindows,
   getRecruitmentReminderSlotCandidates,
   normalizeRecruitmentTimezone,
   recruitmentReminderService,
@@ -56,6 +57,7 @@ const IMAGE_URLS_INPUT_ID = "image-urls";
 const DISCORD_RECRUITMENT_CHANNEL_URL =
   "https://discord.com/channels/236523452230533121/1058589765508800644";
 const PANEL_TIMEOUT_MS = 10 * 60 * 1000;
+const PACIFIC_TIME_ZONE = "America/Los_Angeles";
 
 const PLATFORM_CHOICES = [
   { name: "discord", value: "discord" },
@@ -340,15 +342,90 @@ function stripRecruitmentTimeOptionMarkers(label: string): string {
   return label.replace(/\s*🔥+$/u, "").trimEnd();
 }
 
+type RecruitmentReminderWindowSpec = ReturnType<typeof getRecruitmentReminderPlatformWindows>[number];
+
+function getRecruitmentDashboardTimeZoneParts(date: Date, timeZone: string): {
+  hour: number;
+  minute: number;
+  weekday: number;
+} {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hour: "numeric",
+    minute: "numeric",
+    hour12: false,
+    weekday: "short",
+  }).formatToParts(date);
+  const get = (type: string): string => parts.find((part) => part.type === type)?.value ?? "0";
+  const weekdayMap: Record<string, number> = {
+    Sun: 0,
+    Mon: 1,
+    Tue: 2,
+    Wed: 3,
+    Thu: 4,
+    Fri: 5,
+    Sat: 6,
+  };
+  return {
+    hour: Number(get("hour")),
+    minute: Number(get("minute")),
+    weekday: weekdayMap[get("weekday")] ?? 0,
+  };
+}
+
+function isRecruitmentDashboardSlotInWindow(
+  slot: Date,
+  window: RecruitmentReminderWindowSpec,
+): boolean {
+  const parts = getRecruitmentDashboardTimeZoneParts(slot, PACIFIC_TIME_ZONE);
+  const minutes = parts.hour * 60 + parts.minute;
+  if (minutes < window.startMinutes || minutes >= window.endMinutes) return false;
+  if (window.daysOfWeek && !window.daysOfWeek.includes(parts.weekday)) return false;
+  return true;
+}
+
+function getRecruitmentDashboardPrimaryIndexes(
+  options: RecruitmentDashboardTimeOption[],
+  platform: RecruitmentPlatform,
+): number[] {
+  if (options.length === 0) return [];
+  const windows = getRecruitmentReminderPlatformWindows(platform);
+  if (windows.length === 0) return [];
+
+  const optionSlots = options.map((option) => new Date(option.value));
+  const primaryIndexes = new Set<number>();
+
+  if (platform === "discord") {
+    for (const window of windows) {
+      const index = optionSlots.findIndex((slot) => isRecruitmentDashboardSlotInWindow(slot, window));
+      if (index >= 0) primaryIndexes.add(index);
+    }
+  } else {
+    const index = optionSlots.findIndex((slot) =>
+      windows.some((window) => isRecruitmentDashboardSlotInWindow(slot, window)),
+    );
+    if (index >= 0) primaryIndexes.add(index);
+  }
+
+  return [...primaryIndexes].sort((a, b) => a - b);
+}
+
 export function decorateRecruitmentDashboardTimeOptions(
   options: RecruitmentDashboardTimeOption[],
-  bestIndex: number
+  primaryIndexes: number[],
 ): RecruitmentDashboardTimeOption[] {
   if (options.length === 0) return [];
-  const normalizedBestIndex = bestIndex < 0 ? 0 : Math.min(bestIndex, options.length - 1);
+  const normalizedPrimaryIndexes = new Set(
+    primaryIndexes
+      .filter((index) => Number.isInteger(index))
+      .map((index) => Math.max(0, Math.min(index, options.length - 1))),
+  );
   return options.map((option, index) => {
-    const distance = Math.abs(index - normalizedBestIndex);
-    const fireSuffix = index === normalizedBestIndex ? " 🔥🔥" : distance <= 2 ? " 🔥" : "";
+    const fireSuffix = normalizedPrimaryIndexes.has(index)
+      ? " 🔥🔥"
+      : normalizedPrimaryIndexes.has(index - 1) || normalizedPrimaryIndexes.has(index + 1)
+        ? " 🔥"
+        : "";
     return {
       ...option,
       label: `${stripRecruitmentTimeOptionMarkers(option.label)}${fireSuffix}`.slice(0, 100),
@@ -807,16 +884,8 @@ function buildRecruitmentDashboardTimeOptions(
       default: state.reminderTimeIso === slot.toISOString(),
     };
   });
-  const bestReminderSlot = getNextRecruitmentReminderSlot({
-    platform: state.clanTab,
-    timezone: state.timezone,
-    after: new Date(),
-    cooldownExpiresAt: data.cooldowns.get(`${state.clanTag}:${state.clanTab}`) ?? null,
-  });
-  const bestIndex = bestReminderSlot
-    ? baseOptions.findIndex((option) => option.value === bestReminderSlot.toISOString())
-    : -1;
-  return decorateRecruitmentDashboardTimeOptions(baseOptions, bestIndex);
+  const primaryIndexes = getRecruitmentDashboardPrimaryIndexes(baseOptions, state.clanTab);
+  return decorateRecruitmentDashboardTimeOptions(baseOptions, primaryIndexes);
 }
 
 async function handleShowSubcommand(
