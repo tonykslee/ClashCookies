@@ -5,6 +5,10 @@ import type {
 } from "@prisma/client";
 import { prisma } from "../prisma";
 import { normalizeCompoClanDisplayName } from "../helper/compoDisplay";
+import {
+  type CompoWarWeightBucket,
+  getCompoWarWeightBucket,
+} from "../helper/compoWarWeightBuckets";
 import { mapWithConcurrency } from "./fwa-feeds/concurrency";
 import { FwaFeedOpsService } from "./fwa-feeds/FwaFeedOpsService";
 import { normalizeFwaTag } from "./fwa-feeds/normalize";
@@ -22,16 +26,7 @@ type CollapsedStateRow = {
   th13OrLowerDelta: string;
 };
 
-type GranularBucketKey =
-  | "TH18"
-  | "TH17"
-  | "TH16"
-  | "TH15"
-  | "TH14"
-  | "TH13"
-  | "TH12"
-  | "TH11"
-  | "TH10_OR_LOWER";
+type GranularBucketKey = CompoWarWeightBucket;
 
 type BucketCounts = Record<GranularBucketKey, number>;
 
@@ -52,7 +47,9 @@ const EMPTY_BUCKET_COUNTS: BucketCounts = {
   TH13: 0,
   TH12: 0,
   TH11: 0,
-  TH10_OR_LOWER: 0,
+  TH10: 0,
+  TH9: 0,
+  TH8_OR_LOWER: 0,
 };
 
 function normalizeWarStateClanDisplayName(value: string): string {
@@ -68,26 +65,15 @@ function toEpochLine(prefix: string, value: Date | null): string {
   return `${prefix}: <t:${Math.floor(value.getTime() / 1000)}:F>`;
 }
 
-/** Purpose: bucket one persisted Town Hall value into the canonical internal compo band set. */
-function bucketTownHall(townHall: number): GranularBucketKey {
-  if (townHall >= 18) return "TH18";
-  if (townHall === 17) return "TH17";
-  if (townHall === 16) return "TH16";
-  if (townHall === 15) return "TH15";
-  if (townHall === 14) return "TH14";
-  if (townHall === 13) return "TH13";
-  if (townHall === 12) return "TH12";
-  if (townHall === 11) return "TH11";
-  return "TH10_OR_LOWER";
-}
-
-/** Purpose: count granular Town Hall buckets from the persisted tracked-clan member rows. */
+/** Purpose: count granular compo weight buckets from persisted effective member weights. */
 function buildBucketCounts(
-  members: readonly Pick<FwaTrackedClanWarRosterMemberCurrent, "townHall">[],
-): BucketCounts {
+  members: readonly Pick<FwaTrackedClanWarRosterMemberCurrent, "effectiveWeight">[],
+): BucketCounts | null {
   const counts: BucketCounts = { ...EMPTY_BUCKET_COUNTS };
   for (const member of members) {
-    counts[bucketTownHall(member.townHall)] += 1;
+    const bucket = getCompoWarWeightBucket(member.effectiveWeight);
+    if (!bucket) return null;
+    counts[bucket] += 1;
   }
   return counts;
 }
@@ -125,7 +111,9 @@ function buildCollapsedStateRow(input: {
       input.bucketCounts.TH13 +
       input.bucketCounts.TH12 +
       input.bucketCounts.TH11 +
-      input.bucketCounts.TH10_OR_LOWER -
+      input.bucketCounts.TH10 +
+      input.bucketCounts.TH9 +
+      input.bucketCounts.TH8_OR_LOWER -
       (input.heatMapRef.th13Count +
         input.heatMapRef.th12Count +
         input.heatMapRef.th11Count +
@@ -261,6 +249,10 @@ export class CompoWarStateService {
       }
 
       const bucketCounts = buildBucketCounts(clanMembers);
+      if (!bucketCounts) {
+        skipped.push(`${normalizeWarStateClanDisplayName(displayName)} (unresolved effective weights)`);
+        continue;
+      }
       const missingWeights = clanMembers.filter((row) => row.rawWeight <= 0).length;
       const collapsed = buildCollapsedStateRow({
         clanName: displayName,
@@ -344,7 +336,7 @@ export class CompoWarStateService {
   }
 }
 
-export const bucketTownHallForTest = bucketTownHall;
+export const getCompoWarWeightBucketForTest = getCompoWarWeightBucket;
 export const buildBucketCountsForTest = buildBucketCounts;
 export const findHeatMapRefForWeightForTest = findHeatMapRefForWeight;
 export const buildCollapsedStateRowForTest = buildCollapsedStateRow;
