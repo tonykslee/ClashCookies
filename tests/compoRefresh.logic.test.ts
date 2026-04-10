@@ -76,7 +76,7 @@ describe("compo refresh button behavior", () => {
 
   it("shows loading state, routes through shared sheet refresh, and rerenders state output", async () => {
     vi.spyOn(SheetRefreshService, "triggerSharedSheetRefresh").mockResolvedValue({
-      mode: "war",
+      mode: "actual",
       resultText: "ok",
       durationSeconds: "0.10",
     });
@@ -105,7 +105,7 @@ describe("compo refresh button behavior", () => {
     const customId = buildCompoRefreshCustomIdForTest({
       kind: "state",
       userId: "user-1",
-      mode: "war",
+      mode: "actual",
     });
     const interaction = makeInteraction(customId);
 
@@ -113,7 +113,7 @@ describe("compo refresh button behavior", () => {
 
     expect(SheetRefreshService.triggerSharedSheetRefresh).toHaveBeenCalledWith({
       guildId: "guild-1",
-      mode: "war",
+      mode: "actual",
     });
     const loadingPayload = interaction.update.mock.calls[0]?.[0];
     expect(readFirstButton(loadingPayload)).toEqual({

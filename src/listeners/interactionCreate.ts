@@ -120,7 +120,7 @@ const COMMANDS_WITH_CUSTOM_VISIBILITY = new Set([
   "say",
 ]);
 
-let isRegistered = false;
+const registeredClients = new WeakSet<Client>();
 const telemetryIngest = TelemetryIngestService.getInstance();
 
 function isMissingBotPermissionsError(err: unknown): boolean {
@@ -237,12 +237,12 @@ async function runWithInteractiveQueueContext<T>(
 }
 
 export default (client: Client, cocService: CoCService): void => {
-  if (isRegistered) {
+  if (registeredClients.has(client)) {
     console.warn("interactionCreate already registered, skipping");
     return;
   }
 
-  isRegistered = true;
+  registeredClients.add(client);
 
   client.on("interactionCreate", async (interaction: Interaction) => {
     if (interaction.isAutocomplete()) {

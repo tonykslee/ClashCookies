@@ -25,7 +25,7 @@
 - `/sheet unlink [mode:actual|war]` - Remove one mode link or all links.
 - `/sheet refresh mode:actual|war` - Trigger mode-specific Apps Script raw feed refresh. Disabled when `POLLING_MODE=mirror`.
 - `/compo advice clan:<tracked-clan> [mode:actual|war]` - Pull advice using mode-specific sheet link.
-- `/compo state [mode:actual|war]` - Render AllianceDashboard state as an attached PNG image with mode label. Includes an inline `Refresh Data` button that triggers the shared sheet-refresh flow and rerenders in place.
+- `/compo state [mode:actual|war]` - Render AllianceDashboard state as an attached PNG image. `mode:war` now reads persisted feed-backed tracked-clan roster state from `FwaTrackedClanWarRosterCurrent` + `FwaTrackedClanWarRosterMemberCurrent` + `HeatMapRef` and its inline `Refresh Data` button refreshes tracked-clan war-roster feed state only before rerendering from DB. `mode:actual` remains sheet-backed and still uses the shared sheet-refresh flow.
 - `/compo place weight:<value>` - Suggest placement options from ACTUAL state (vacancy + composition fit). Accepts formats like `145000`, `145,000`, or `145k` and maps to TH weight buckets. Includes an inline `Refresh Data` button that triggers the shared sheet-refresh flow and rerenders in place.
 - `/cc player tag:<tag>` - Build `https://cc.fwafarm.com/cc_n/member.php?tag=<tag>`.
 - `/cc clan tag:<tag>` - Build `https://cc.fwafarm.com/cc_n/clan.php?tag=<tag>`.

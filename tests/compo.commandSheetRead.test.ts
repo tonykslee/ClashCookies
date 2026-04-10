@@ -213,7 +213,7 @@ describe("/compo strict sheet read path", () => {
       }
     );
 
-    const stateInteraction = makeInteraction({ subcommand: "state", mode: "war" });
+    const stateInteraction = makeInteraction({ subcommand: "state", mode: "actual" });
     await Compo.run({} as any, stateInteraction as any, {
       getClan: vi.fn().mockResolvedValue({
         memberList: Array.from({ length: 49 }, () => ({ tag: "#P" })),
