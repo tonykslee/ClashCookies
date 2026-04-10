@@ -19,7 +19,10 @@ vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
 
-import { CompoWarStateService } from "../src/services/CompoWarStateService";
+import {
+  CompoWarStateService,
+  findHeatMapRefForWeightForTest,
+} from "../src/services/CompoWarStateService";
 
 function makeParent(input: {
   clanTag: string;
@@ -36,9 +39,9 @@ function makeParent(input: {
     opponentTag: null,
     opponentName: null,
     rosterSize: input.rosterSize ?? 50,
-    totalRawWeight: 7_000_000,
+    totalRawWeight: input.totalEffectiveWeight ?? 8_100_000,
     totalEffectiveWeight:
-      input.totalEffectiveWeight === undefined ? 7_000_000 : input.totalEffectiveWeight,
+      input.totalEffectiveWeight === undefined ? 8_100_000 : input.totalEffectiveWeight,
     hasUnresolvedWeights: input.hasUnresolvedWeights ?? false,
     observedAt: input.observedAt ?? new Date("2026-04-10T17:00:00.000Z"),
     sourceUpdatedAt:
@@ -72,21 +75,33 @@ function makeMember(input: {
   };
 }
 
-function makeHeatMapRef() {
+function makeHeatMapRef(input?: {
+  weightMinInclusive?: number;
+  weightMaxInclusive?: number;
+  th18Count?: number;
+  th17Count?: number;
+  th16Count?: number;
+  th15Count?: number;
+  th14Count?: number;
+  th13Count?: number;
+  th12Count?: number;
+  th11Count?: number;
+  th10OrLowerCount?: number;
+}) {
   return {
-    weightMinInclusive: 6_900_000,
-    weightMaxInclusive: 7_100_000,
-    th18Count: 1,
-    th17Count: 2,
-    th16Count: 3,
-    th15Count: 4,
-    th14Count: 5,
-    th13Count: 6,
-    th12Count: 7,
-    th11Count: 8,
-    th10OrLowerCount: 14,
-    sourceVersion: "seed",
-    refreshedAt: new Date("2026-04-10T00:00:00.000Z"),
+    weightMinInclusive: input?.weightMinInclusive ?? 8_000_001,
+    weightMaxInclusive: input?.weightMaxInclusive ?? 8_100_000,
+    th18Count: input?.th18Count ?? 19,
+    th17Count: input?.th17Count ?? 11,
+    th16Count: input?.th16Count ?? 7,
+    th15Count: input?.th15Count ?? 6,
+    th14Count: input?.th14Count ?? 4,
+    th13Count: input?.th13Count ?? 2,
+    th12Count: input?.th12Count ?? 1,
+    th11Count: input?.th11Count ?? 0,
+    th10OrLowerCount: input?.th10OrLowerCount ?? 0,
+    sourceVersion: "bootstrap-2026-03-17",
+    refreshedAt: new Date("2026-03-17T00:00:00.000Z"),
   };
 }
 
@@ -95,46 +110,35 @@ describe("CompoWarStateService", () => {
     vi.clearAllMocks();
   });
 
-  it("builds DB-backed mode:war rows with TH deltas from persisted roster + HeatMapRef", async () => {
-    prismaMock.trackedClan.findMany.mockResolvedValue([
-      { tag: "#AAA111", name: "Alpha Clan-war" },
-    ]);
+  it("builds DB-backed mode:war rows with corrected HeatMapRef band targets", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#AAA111", name: "Alpha Clan-war" }]);
     prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue([
-      makeParent({ clanTag: "#AAA111", clanName: "Alpha Clan-war" }),
+      makeParent({
+        clanTag: "#AAA111",
+        clanName: "Alpha Clan-war",
+        totalEffectiveWeight: 8_100_000,
+      }),
     ]);
     prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([
-      makeMember({ clanTag: "#AAA111", position: 1, townHall: 18 }),
-      makeMember({ clanTag: "#AAA111", position: 2, townHall: 17 }),
-      makeMember({ clanTag: "#AAA111", position: 3, townHall: 17 }),
-      makeMember({ clanTag: "#AAA111", position: 4, townHall: 16 }),
-      makeMember({ clanTag: "#AAA111", position: 5, townHall: 16 }),
-      makeMember({ clanTag: "#AAA111", position: 6, townHall: 16 }),
-      makeMember({ clanTag: "#AAA111", position: 7, townHall: 15 }),
-      makeMember({ clanTag: "#AAA111", position: 8, townHall: 15 }),
-      makeMember({ clanTag: "#AAA111", position: 9, townHall: 15 }),
-      makeMember({ clanTag: "#AAA111", position: 10, townHall: 15 }),
-      makeMember({ clanTag: "#AAA111", position: 11, townHall: 14 }),
-      makeMember({ clanTag: "#AAA111", position: 12, townHall: 14 }),
-      makeMember({ clanTag: "#AAA111", position: 13, townHall: 14 }),
-      makeMember({ clanTag: "#AAA111", position: 14, townHall: 14 }),
-      makeMember({ clanTag: "#AAA111", position: 15, townHall: 14 }),
-      ...Array.from({ length: 6 }, (_, index) =>
-        makeMember({ clanTag: "#AAA111", position: 16 + index, townHall: 13 }),
+      ...Array.from({ length: 19 }, (_, index) =>
+        makeMember({ clanTag: "#AAA111", position: index + 1, townHall: 18 }),
+      ),
+      ...Array.from({ length: 11 }, (_, index) =>
+        makeMember({ clanTag: "#AAA111", position: 20 + index, townHall: 17 }),
       ),
       ...Array.from({ length: 7 }, (_, index) =>
-        makeMember({ clanTag: "#AAA111", position: 22 + index, townHall: 12 }),
+        makeMember({ clanTag: "#AAA111", position: 31 + index, townHall: 16 }),
       ),
-      ...Array.from({ length: 8 }, (_, index) =>
-        makeMember({ clanTag: "#AAA111", position: 29 + index, townHall: 11 }),
+      ...Array.from({ length: 6 }, (_, index) =>
+        makeMember({ clanTag: "#AAA111", position: 38 + index, townHall: 15 }),
       ),
-      ...Array.from({ length: 14 }, (_, index) =>
-        makeMember({
-          clanTag: "#AAA111",
-          position: 37 + index,
-          townHall: 10,
-          rawWeight: index === 0 ? 0 : 135000,
-        }),
+      ...Array.from({ length: 4 }, (_, index) =>
+        makeMember({ clanTag: "#AAA111", position: 44 + index, townHall: 14 }),
       ),
+      ...Array.from({ length: 2 }, (_, index) =>
+        makeMember({ clanTag: "#AAA111", position: 48 + index, townHall: 13 }),
+      ),
+      makeMember({ clanTag: "#AAA111", position: 50, townHall: 12 }),
     ]);
     prismaMock.heatMapRef.findMany.mockResolvedValue([makeHeatMapRef()]);
 
@@ -144,16 +148,60 @@ describe("CompoWarStateService", () => {
     expect(result.trackedClanTags).toEqual(["#AAA111"]);
     expect(result.stateRows).toEqual([
       ["Clan", "Total", "Missing", "Players", "TH18", "TH17", "TH16", "TH15", "TH14", "<=TH13"],
-      ["Alpha Clan", "7,000,000", "1", "50", "0", "0", "0", "0", "0", "0"],
+      ["Alpha Clan", "8,100,000", "0", "50", "0", "0", "0", "0", "0", "0"],
     ]);
     expect(result.contentLines[0]).toBe("Mode Displayed: **WAR**");
     expect(result.contentLines[1]).toContain("Persisted WAR data last refreshed");
   });
 
+  it("resolves corrected HeatMapRef bands at representative totals and boundaries", () => {
+    const refs = [
+      makeHeatMapRef({
+        weightMinInclusive: 7_300_001,
+        weightMaxInclusive: 7_400_000,
+      }),
+      makeHeatMapRef({
+        weightMinInclusive: 7_400_001,
+        weightMaxInclusive: 7_500_000,
+      }),
+      makeHeatMapRef({
+        weightMinInclusive: 7_600_001,
+        weightMaxInclusive: 7_700_000,
+        th18Count: 10,
+        th17Count: 9,
+      }),
+      makeHeatMapRef({
+        weightMinInclusive: 8_000_001,
+        weightMaxInclusive: 8_100_000,
+      }),
+      makeHeatMapRef({
+        weightMinInclusive: 8_110_000,
+        weightMaxInclusive: 9_999_999,
+        th18Count: 22,
+        th17Count: 11,
+      }),
+    ];
+
+    expect(findHeatMapRefForWeightForTest(refs, 7_429_000)).toMatchObject({
+      weightMinInclusive: 7_400_001,
+      weightMaxInclusive: 7_500_000,
+    });
+    expect(findHeatMapRefForWeightForTest(refs, 7_659_000)).toMatchObject({
+      weightMinInclusive: 7_600_001,
+      weightMaxInclusive: 7_700_000,
+    });
+    expect(findHeatMapRefForWeightForTest(refs, 8_100_000)).toMatchObject({
+      weightMinInclusive: 8_000_001,
+      weightMaxInclusive: 8_100_000,
+    });
+    expect(findHeatMapRefForWeightForTest(refs, 8_110_000)).toMatchObject({
+      weightMinInclusive: 8_110_000,
+      weightMaxInclusive: 9_999_999,
+    });
+  });
+
   it("returns honest no-renderable output when roster size is below 50", async () => {
-    prismaMock.trackedClan.findMany.mockResolvedValue([
-      { tag: "#AAA111", name: "Alpha Clan" },
-    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#AAA111", name: "Alpha Clan" }]);
     prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue([
       makeParent({ clanTag: "#AAA111", clanName: "Alpha Clan", rosterSize: 45 }),
     ]);
@@ -188,7 +236,7 @@ describe("CompoWarStateService", () => {
       makeParent({
         clanTag: "#BBB222",
         clanName: "Bravo Clan",
-        totalEffectiveWeight: 8_500_001,
+        totalEffectiveWeight: 8_100_001,
       }),
     ]);
     prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([
@@ -216,12 +264,8 @@ describe("CompoWarStateService", () => {
       { tag: "#BBB222", name: "Bravo Clan" },
     ]);
     prismaMock.fwaTrackedClanWarRosterCurrent.findMany
-      .mockResolvedValueOnce([
-        makeParent({ clanTag: "#AAA111", clanName: "Alpha Clan" }),
-      ])
-      .mockResolvedValueOnce([
-        makeParent({ clanTag: "#AAA111", clanName: "Alpha Clan" }),
-      ]);
+      .mockResolvedValueOnce([makeParent({ clanTag: "#AAA111", clanName: "Alpha Clan" })])
+      .mockResolvedValueOnce([makeParent({ clanTag: "#AAA111", clanName: "Alpha Clan" })]);
     prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany
       .mockResolvedValueOnce(
         Array.from({ length: 50 }, (_, index) =>
