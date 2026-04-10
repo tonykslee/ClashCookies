@@ -133,7 +133,7 @@ Operational notes:
 - Members polling uses tracked clans only.
 - Global WarMembers / optional global Wars use cursor-based distributed sweeps from `FwaClanCatalog`.
 - `HeatMapRef` is an explicit seed/import owner and is not refreshed by per-clan watch jobs.
-- `/compo` remains sheet-backed in this phase.
+- `/compo state mode:war` now reads persisted feed-backed tracked-clan roster state only; `/compo state mode:actual` and `/compo place` remain sheet-backed in this phase.
 
 Manual/dev feed operations:
 ```bash
