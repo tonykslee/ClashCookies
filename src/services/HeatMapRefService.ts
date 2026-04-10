@@ -28,6 +28,16 @@ export async function getAllHeatMapRefs(): Promise<HeatMapRef[]> {
 export async function upsertHeatMapRefSeedRows(
   rows: readonly HeatMapRefSeedRow[],
 ): Promise<number> {
+  const desiredKeys = new Set(
+    rows.map((row) => `${row.weightMinInclusive}:${row.weightMaxInclusive}`),
+  );
+  const existingRows = await prisma.heatMapRef.findMany({
+    select: {
+      weightMinInclusive: true,
+      weightMaxInclusive: true,
+    },
+  });
+
   for (const row of rows) {
     await prisma.heatMapRef.upsert({
       where: {
@@ -63,6 +73,22 @@ export async function upsertHeatMapRefSeedRows(
         th10OrLowerCount: row.th10OrLowerCount,
         sourceVersion: row.sourceVersion,
         refreshedAt: row.refreshedAt,
+      },
+    });
+  }
+
+  for (const row of existingRows) {
+    const key = `${row.weightMinInclusive}:${row.weightMaxInclusive}`;
+    if (desiredKeys.has(key)) {
+      continue;
+    }
+
+    await prisma.heatMapRef.delete({
+      where: {
+        weightMinInclusive_weightMaxInclusive: {
+          weightMinInclusive: row.weightMinInclusive,
+          weightMaxInclusive: row.weightMaxInclusive,
+        },
       },
     });
   }
