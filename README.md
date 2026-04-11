@@ -126,8 +126,9 @@ Cadence defaults and cost controls:
 - `WarMembers.json`: distributed sweep ticks every 15 minutes with bounded chunk size/concurrency
 - tracked-clan `Wars.json` watch: 5-minute cadence only inside active per-clan windows, starts 5 minutes before sync time, stops once update is acquired
 - optional global `Wars.json` sweep: disabled by default, configurable and chunked
-- command paths remain DB-first; `/compo state mode:war` and `/compo place` now read persisted feed-backed state, while `/compo state mode:actual` remains sheet-backed in this phase
+- command paths remain DB-first; `/compo state mode:war`, `/compo state mode:actual`, and `/compo place` now read persisted feed-backed state instead of relying on hot-path sheet reads
 - `/compo place` now includes an explicit in-message refresh button that refreshes ACTUAL tracked-clan current-member/weight state plus live CoC member counts before rerendering from persisted data
+- `/compo state mode:actual` keeps its in-message refresh button and now refreshes ACTUAL tracked-clan current-member/weight state plus live CoC member counts before rerendering from persisted data
 
 Manual/dev operations (script tooling):
 ```bash

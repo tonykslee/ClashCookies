@@ -101,7 +101,7 @@ Optional fallback auth (not required for current setup):
 When using the service-account path, make sure the token scopes include writable Sheets and Drive file permissions so the CWL planner export can create and publish a brand-new sheet.
 
 ## Optional FWAStats Feed Ingestion Scheduler
-These control the JSON-feed ingestion foundation for future DB-backed `/compo` migration.
+These control the JSON-feed ingestion foundation used by the DB-backed `/compo` ACTUAL and WAR state flows.
 
 Feed toggles:
 - `FWA_CLANS_SYNC_ENABLED` (default `true`)
@@ -136,7 +136,8 @@ Operational notes:
 - `/compo state mode:war` now reads persisted feed-backed tracked-clan roster state only.
 - `/compo place` now reads persisted ACTUAL FWAStats current-member state from `TrackedClan` + `FwaClanMemberCurrent` + `HeatMapRef`, with zero-weight fallback order `member weight -> deferred weight -> tracked WAR effective weight -> ignore`.
 - `/compo place` includes an explicit inline refresh button that refreshes tracked-clan ACTUAL feed-backed current-member/weight state plus live CoC member counts for all tracked clans before rerendering from persisted state.
-- `/compo state mode:actual` remains sheet-backed in this phase.
+- `/compo state mode:actual` now reads persisted ACTUAL FWAStats current-member state from `TrackedClan` + `FwaClanMemberCurrent` + `HeatMapRef`, with zero-weight fallback order `member weight -> deferred weight -> tracked WAR effective weight -> missing`.
+- `/compo state mode:actual` keeps its inline refresh button and now refreshes tracked-clan ACTUAL feed-backed current-member/weight state plus live CoC member counts for all tracked clans before rerendering from persisted state.
 
 Manual/dev feed operations:
 ```bash
