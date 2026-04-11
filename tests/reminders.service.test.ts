@@ -108,6 +108,160 @@ describe("ReminderService create-draft flow", () => {
     ]);
   });
 
+  it("keeps create-mode enable and disable as draft-only state before save", async () => {
+    const service = new ReminderService();
+    const draft = await service.createReminderDraft({
+      guildId: "guild-1",
+      actorUserId: "user-1",
+    });
+
+    await service.setReminderEnabled({
+      reminderId: draft.id,
+      guildId: "guild-1",
+      isEnabled: true,
+      actorUserId: "user-1",
+    });
+    await service.setReminderEnabled({
+      reminderId: draft.id,
+      guildId: "guild-1",
+      isEnabled: false,
+      actorUserId: "user-1",
+    });
+    const updated = await service.getReminderWithDetails({
+      reminderId: draft.id,
+      guildId: "guild-1",
+    });
+
+    expect(prismaMock.reminder.create).not.toHaveBeenCalled();
+    expect(updated.isEnabled).toBe(false);
+  });
+
+  it("persists a draft only when save is invoked and keeps the saved enabled state", async () => {
+    const service = new ReminderService();
+    const draft = await service.createReminderDraft({
+      guildId: "guild-1",
+      type: ReminderType.WAR_CWL,
+      channelId: "123456789012345678",
+      offsetsSeconds: [3600],
+      actorUserId: "user-1",
+    });
+    const options = await service.listSelectableClanOptions("guild-1");
+    const validValue = options[0]?.value ?? "";
+    await service.replaceReminderTargetsFromEncodedValues({
+      reminderId: draft.id,
+      guildId: "guild-1",
+      encodedValues: [validValue],
+      actorUserId: "user-1",
+    });
+    await service.setReminderEnabled({
+      reminderId: draft.id,
+      guildId: "guild-1",
+      isEnabled: true,
+      actorUserId: "user-1",
+    });
+
+    const saved = await service.saveDraftReminder({
+      reminderId: draft.id,
+      guildId: "guild-1",
+      actorUserId: "user-1",
+    });
+
+    expect(prismaMock.reminder.create).toHaveBeenCalledTimes(1);
+    expect(prismaMock.reminder.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          isEnabled: true,
+        }),
+      }),
+    );
+    expect(saved.id).toBe("rem-new-1");
+    expect(saved.isEnabled).toBe(true);
+  });
+
+  it("persists a saved draft as disabled when the draft toggle is disabled", async () => {
+    prismaMock.reminder.findFirst.mockImplementation(async (args: any) => {
+      if (args?.where?.id === "rem-new-1") {
+        return {
+          id: "rem-new-1",
+          guildId: "guild-1",
+          type: ReminderType.WAR_CWL,
+          channelId: "123456789012345678",
+          isEnabled: false,
+          createdByUserId: "user-1",
+          updatedByUserId: "user-1",
+          createdAt: new Date("2026-04-01T00:00:00.000Z"),
+          updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+          times: [{ offsetSeconds: 3600 }],
+          targetClans: [{ clanTag: "#PQL0289", clanType: ReminderTargetClanType.FWA }],
+        };
+      }
+      return null;
+    });
+    const service = new ReminderService();
+    const draft = await service.createReminderDraft({
+      guildId: "guild-1",
+      type: ReminderType.WAR_CWL,
+      channelId: "123456789012345678",
+      offsetsSeconds: [3600],
+      actorUserId: "user-1",
+    });
+    const options = await service.listSelectableClanOptions("guild-1");
+    const validValue = options[0]?.value ?? "";
+    await service.replaceReminderTargetsFromEncodedValues({
+      reminderId: draft.id,
+      guildId: "guild-1",
+      encodedValues: [validValue],
+      actorUserId: "user-1",
+    });
+
+    const saved = await service.saveDraftReminder({
+      reminderId: draft.id,
+      guildId: "guild-1",
+      actorUserId: "user-1",
+    });
+
+    expect(prismaMock.reminder.create).toHaveBeenCalledTimes(1);
+    expect(prismaMock.reminder.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          isEnabled: false,
+        }),
+      }),
+    );
+    expect(saved.id).toBe("rem-new-1");
+    expect(saved.isEnabled).toBe(false);
+  });
+
+  it("deletes a create draft after toggles without leaving behind a persisted reminder", async () => {
+    const service = new ReminderService();
+    const draft = await service.createReminderDraft({
+      guildId: "guild-1",
+      actorUserId: "user-1",
+    });
+
+    await service.setReminderEnabled({
+      reminderId: draft.id,
+      guildId: "guild-1",
+      isEnabled: true,
+      actorUserId: "user-1",
+    });
+    await service.setReminderEnabled({
+      reminderId: draft.id,
+      guildId: "guild-1",
+      isEnabled: false,
+      actorUserId: "user-1",
+    });
+    const deleted = await service.deleteReminder({
+      reminderId: draft.id,
+      guildId: "guild-1",
+      actorUserId: "user-1",
+    });
+
+    expect(deleted).toBe(true);
+    expect(prismaMock.reminder.create).not.toHaveBeenCalled();
+    expect(prismaMock.reminder.deleteMany).not.toHaveBeenCalled();
+  });
+
   it("silently merges create-save into an identical existing reminder", async () => {
     prismaMock.reminder.findMany.mockResolvedValue([
       {
@@ -158,10 +312,9 @@ describe("ReminderService create-draft flow", () => {
       encodedValues: [validValue],
       actorUserId: "user-1",
     });
-    await service.setReminderEnabled({
+    await service.saveDraftReminder({
       reminderId: draft.id,
       guildId: "guild-1",
-      isEnabled: true,
       actorUserId: "user-1",
     });
     const saved = await service.getReminderWithDetails({

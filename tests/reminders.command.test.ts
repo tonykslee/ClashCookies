@@ -12,6 +12,7 @@ const reminderServiceMock = vi.hoisted(() => ({
   replaceReminderOffsets: vi.fn(),
   setReminderType: vi.fn(),
   setReminderEnabled: vi.fn(),
+  saveDraftReminder: vi.fn(),
   setReminderChannel: vi.fn(),
   tryPrefillReminderChannelFromTrackedClanLog: vi.fn(),
   deleteReminder: vi.fn(),
@@ -295,7 +296,26 @@ describe("/reminders command", () => {
     });
   });
 
-  it("defers create save before reading reminder details and enabling the reminder", async () => {
+  it("finalizes create save after reading reminder details and persisting the reminder once", async () => {
+    reminderServiceMock.saveDraftReminder.mockResolvedValueOnce({
+      id: "reminder-1",
+      guildId: "guild-1",
+      type: ReminderType.WAR_CWL,
+      channelId: "123456789012345678",
+      isEnabled: true,
+      createdByUserId: "user-1",
+      updatedByUserId: "user-1",
+      createdAt: new Date("2026-03-26T00:00:00.000Z"),
+      updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+      offsetsSeconds: [1800],
+      targets: [
+        {
+          clanTag: "#PQL0289",
+          clanType: ReminderTargetClanType.FWA,
+          label: "FWA One (#PQL0289)",
+        },
+      ],
+    });
     reminderServiceMock.getReminderWithDetails
       .mockResolvedValueOnce({
         id: "reminder-1",
@@ -370,26 +390,59 @@ describe("/reminders command", () => {
     await endHandler(new Map(), "saved");
 
     expect(saveButton.deferUpdate).toHaveBeenCalledTimes(1);
-    expect(reminderServiceMock.setReminderEnabled).toHaveBeenCalledWith({
+    expect(reminderServiceMock.saveDraftReminder).toHaveBeenCalledWith({
       reminderId: "reminder-1",
       guildId: "guild-1",
-      isEnabled: true,
       actorUserId: "user-1",
     });
     expect(saveButton.deferUpdate.mock.invocationCallOrder[0]).toBeLessThan(
       reminderServiceMock.getReminderWithDetails.mock.invocationCallOrder[1],
     );
     expect(saveButton.deferUpdate.mock.invocationCallOrder[0]).toBeLessThan(
-      reminderServiceMock.setReminderEnabled.mock.invocationCallOrder[0],
+      reminderServiceMock.saveDraftReminder.mock.invocationCallOrder[0],
     );
     expect(interaction.__collector.stop).toHaveBeenCalledWith("saved");
     const finalPayload = interaction.editReply.mock.calls.at(-1)?.[0] as any;
     expect(finalPayload).toEqual(
       expect.objectContaining({
-        content: "Reminder saved and enabled: reminder-1",
+        content: "Reminder saved (enabled): reminder-1",
         components: [],
       }),
     );
+  });
+
+  it("keeps create-mode toggle draft-only and cancel leaves no live reminder behind", async () => {
+    const interaction = createInteraction({ subcommand: "create" });
+    await Reminders.run({} as any, interaction as any, {} as any);
+
+    const collectHandler = getCollectHandler(interaction);
+    expect(collectHandler).toBeTypeOf("function");
+
+    const toggleButton = createPanelButtonInteraction({
+      customId: "reminders:toggle:reminder-1",
+    });
+    await collectHandler(toggleButton);
+    expect(reminderServiceMock.setReminderEnabled).toHaveBeenCalledWith({
+      reminderId: "reminder-1",
+      guildId: "guild-1",
+      isEnabled: true,
+      actorUserId: "user-1",
+    });
+    expect(reminderServiceMock.saveDraftReminder).not.toHaveBeenCalled();
+
+    reminderServiceMock.deleteReminder.mockResolvedValueOnce(true);
+    const cancelButton = createPanelButtonInteraction({
+      customId: "reminders:cancel:reminder-1",
+    });
+    await collectHandler(cancelButton);
+
+    expect(reminderServiceMock.deleteReminder).toHaveBeenCalledWith({
+      reminderId: "reminder-1",
+      guildId: "guild-1",
+      actorUserId: "user-1",
+    });
+    expect(reminderServiceMock.createReminderDraft).toHaveBeenCalledTimes(1);
+    expect(reminderServiceMock.saveDraftReminder).not.toHaveBeenCalled();
   });
 
   it("keeps create save validation errors working after early defer", async () => {
@@ -409,7 +462,7 @@ describe("/reminders command", () => {
       ephemeral: true,
       content: "Select a reminder type before saving this reminder.",
     });
-    expect(reminderServiceMock.setReminderEnabled).not.toHaveBeenCalled();
+    expect(reminderServiceMock.saveDraftReminder).not.toHaveBeenCalled();
     expect(interaction.__collector.stop).not.toHaveBeenCalledWith("saved");
   });
 

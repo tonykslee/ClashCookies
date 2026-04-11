@@ -300,22 +300,9 @@ export class ReminderService {
   }): Promise<void> {
     const draft = this.draftById.get(input.reminderId);
     if (draft && draft.guildId === input.guildId) {
-      if (input.isEnabled) {
-        const persisted = await this.createOrMergeReminder({
-          guildId: input.guildId,
-          type: draft.type,
-          channelId: draft.channelId,
-          offsetsSeconds: draft.offsetsSeconds,
-          targets: draft.targets,
-          actorUserId: input.actorUserId,
-          isEnabled: true,
-        });
-        draft.persistedReminderId = persisted.id;
-      } else {
-        draft.isEnabled = false;
-        draft.updatedByUserId = input.actorUserId;
-        draft.updatedAt = new Date();
-      }
+      draft.isEnabled = input.isEnabled;
+      draft.updatedByUserId = input.actorUserId;
+      draft.updatedAt = new Date();
       return;
     }
     await prisma.reminder.updateMany({
@@ -331,6 +318,42 @@ export class ReminderService {
     console.log(
       `[reminders] action=enabled reminder_id=${input.reminderId} guild=${input.guildId} enabled=${input.isEnabled ? "1" : "0"} actor=${input.actorUserId}`,
     );
+  }
+
+  /** Purpose: finalize one create-flow draft by validating and persisting it exactly once on Save. */
+  async saveDraftReminder(input: {
+    reminderId: string;
+    guildId: string;
+    actorUserId: string;
+  }): Promise<ReminderWithDetails> {
+    const draft = this.draftById.get(input.reminderId);
+    if (!draft || draft.guildId !== input.guildId) {
+      throw new Error("REMINDER_NOT_FOUND");
+    }
+    if (draft.persistedReminderId) {
+      return this.getReminderWithDetails({
+        reminderId: draft.persistedReminderId,
+        guildId: input.guildId,
+      });
+    }
+
+    const persisted = await this.createOrMergeReminder({
+      guildId: input.guildId,
+      type: draft.type,
+      channelId: draft.channelId,
+      offsetsSeconds: draft.offsetsSeconds,
+      targets: draft.targets,
+      actorUserId: input.actorUserId,
+      isEnabled: draft.isEnabled,
+    });
+    draft.persistedReminderId = persisted.id;
+    draft.isEnabled = persisted.isEnabled;
+    draft.updatedByUserId = input.actorUserId;
+    draft.updatedAt = new Date();
+    console.log(
+      `[reminders] action=draft_saved reminder_id=${draft.id} persisted_id=${persisted.id} guild=${input.guildId} enabled=${persisted.isEnabled ? "1" : "0"} actor=${input.actorUserId}`,
+    );
+    return persisted;
   }
 
   /** Purpose: update reminder type in-place for one guild-scoped reminder. */
@@ -731,14 +754,14 @@ export class ReminderService {
       );
       return areReminderTargetListsEqual(rowTargets, targets);
     });
-    if (matchingExisting) {
-      await prisma.reminder.update({
-        where: { id: matchingExisting.id },
-        data: {
-          isEnabled: input.isEnabled ? true : matchingExisting.isEnabled,
-          updatedByUserId: input.actorUserId,
-        },
-      });
+      if (matchingExisting) {
+        await prisma.reminder.update({
+          where: { id: matchingExisting.id },
+          data: {
+            isEnabled: input.isEnabled,
+            updatedByUserId: input.actorUserId,
+          },
+        });
       console.log(
         `[reminders] action=merged_existing reminder_id=${matchingExisting.id} guild=${input.guildId} type=${type} channel=${channelId} actor=${input.actorUserId}`,
       );
