@@ -190,7 +190,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`advice`: fetch clan-specific adjustment notes from the existing sheet-backed flow.",
       "`state`: `mode:war` renders from persisted tracked-clan feed state only, while `mode:actual` remains on the AllianceDashboard sheet path.",
       "`state` refresh: `mode:war` refreshes tracked-clan war-roster feed state only and rerenders from DB; `mode:actual` still uses the shared sheet-refresh flow.",
-      "`place`: suggest placement by war weight from ACTUAL composition rows, with an inline refresh button that uses the ACTUAL shared sheet-refresh flow before rereading placement results.",
+      "`place`: suggest placement by war weight from persisted ACTUAL FWAStats current-member state (`TrackedClan` + `FwaClanMemberCurrent` + `HeatMapRef`) with deferred-weight and WAR-effective-weight fallback only for zero-weight member rows.",
     ],
     examples: [
       "/compo advice tag:#2QG2C08UP mode:actual",

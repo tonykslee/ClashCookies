@@ -874,11 +874,7 @@ export async function handleCompoRefreshButton(
     await interaction.editReply({
       content: placeResult.content,
       embeds: placeResult.embeds,
-      components: buildCompoRefreshComponents({
-        customId: interaction.customId,
-        loading: false,
-        supplementalRows,
-      }),
+      components: supplementalRows,
     });
   } catch (err) {
     console.error(`compo refresh button failed: ${formatError(err)}`);
@@ -1201,6 +1197,7 @@ export const Compo: Command = {
         const placeResult = await new CompoPlaceService().readPlace(
           inputWeight,
           bucket,
+          interaction.guildId ?? null,
         );
         logCompoStage(interaction, "db_fetch", {
           entity: "actual_compo_place_source",
@@ -1214,11 +1211,6 @@ export const Compo: Command = {
           bucket,
         });
 
-        const refreshCustomId = buildCompoRefreshCustomId({
-          kind: "place",
-          userId: interaction.user.id,
-          weight: inputWeight,
-        });
         logCompoStage(interaction, "response_build", {
           reason:
             placeResult.candidateCount === 0
@@ -1231,10 +1223,7 @@ export const Compo: Command = {
         await interaction.editReply({
           content: placeResult.content,
           embeds: placeResult.embeds,
-          components: buildCompoRefreshComponents({
-            customId: refreshCustomId,
-            loading: false,
-          }),
+          components: [],
         });
         logCompoStage(interaction, "response_sent", {
           reason:

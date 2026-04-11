@@ -51,7 +51,7 @@ describe("compo place refresh button behavior", () => {
     vi.restoreAllMocks();
   });
 
-  it("refreshes ACTUAL-backed place suggestions through the place service", async () => {
+  it("rereads ACTUAL-backed place suggestions through the place service and removes the place refresh button", async () => {
     const refreshPlaceSpy = vi
       .spyOn(CompoPlaceService.prototype, "refreshPlace")
       .mockResolvedValue({
@@ -76,6 +76,7 @@ describe("compo place refresh button behavior", () => {
     expect(refreshPlaceSpy).toHaveBeenCalledWith(145000, "TH15", "guild-1");
     const payload = interaction.editReply.mock.calls.at(-1)?.[0];
     expect(String(payload?.content ?? "")).toContain("Mode Displayed: **PLACE**");
+    expect(payload?.components ?? []).toEqual([]);
     expect(interaction.followUp).not.toHaveBeenCalled();
   });
 });
