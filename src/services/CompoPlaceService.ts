@@ -1,31 +1,23 @@
+import type {
+  FwaClanMemberCurrent,
+  FwaTrackedClanWarRosterMemberCurrent,
+  HeatMapRef,
+  TrackedClan,
+} from "@prisma/client";
 import { EmbedBuilder } from "discord.js";
 import { normalizeCompoClanDisplayName } from "../helper/compoDisplay";
+import { findHeatMapRefForWeight } from "../helper/compoHeatMap";
+import {
+  buildCompoWarBucketCounts,
+  collapseCompoWarBucketCountsForDisplay,
+} from "../helper/compoWarBucketCounts";
 import { type CompoWarDisplayBucket } from "../helper/compoWarWeightBuckets";
+import { prisma } from "../prisma";
 import {
-  triggerSharedSheetRefresh,
-} from "./SheetRefreshService";
-import {
-  GoogleSheetsService,
-  type GoogleSheetMode,
-} from "./GoogleSheetsService";
-import { SettingsService } from "./SettingsService";
-
-const COL_CLAN_NAME = 0; // A
-const COL_CLAN_TAG = 1; // B
-const COL_TOTAL_WEIGHT = 3; // D
-const COL_TARGET_BAND = 49; // AX
-const COL_MISSING_WEIGHT = 20; // U
-const COL_TOTAL_PLAYERS = 21; // V
-const COL_BUCKET_START = 22; // W
-const COL_BUCKET_END = 27; // AB
-const FIXED_LAYOUT_RANGE = "AllianceDashboard!A6:BE500";
-const FIXED_LAYOUT_RANGE_START_ROW = 6;
-const LOOKUP_REFRESH_RANGE = "Lookup!B10:B10";
-
-type SheetIndexedRow = {
-  row: string[];
-  sheetRowNumber: number;
-};
+  listOpenDeferredWeightsByClanAndPlayerTags,
+  normalizePlayerTag,
+} from "./WeightInputDefermentService";
+import { normalizeTag } from "./war-events/core";
 
 type PlacementCandidate = {
   clanName: string;
@@ -44,6 +36,16 @@ type PlacementCandidateWithDelta = PlacementCandidate & {
   delta: number;
 };
 
+type TrackedClanRow = Pick<TrackedClan, "tag" | "name">;
+type CurrentMemberRow = Pick<
+  FwaClanMemberCurrent,
+  "clanTag" | "playerTag" | "weight" | "sourceSyncedAt"
+>;
+type WarFallbackRow = Pick<
+  FwaTrackedClanWarRosterMemberCurrent,
+  "clanTag" | "playerTag" | "effectiveWeight" | "updatedAt"
+>;
+
 export type CompoPlaceReadResult = {
   content: string;
   embeds: EmbedBuilder[];
@@ -55,20 +57,12 @@ export type CompoPlaceReadResult = {
   compositionCount: number;
 };
 
-function normalize(value: string): string {
-  return value.trim().toLowerCase();
-}
-
-function normalizeTag(value: string): string {
-  return value.trim().toUpperCase().replace(/^#/, "");
-}
-
-function parseNumber(value: string | undefined): number {
-  if (!value) return 0;
-  const digits = value.replace(/[^0-9-]/g, "");
-  if (!digits || digits === "-") return 0;
-  const parsed = Number(digits);
-  return Number.isFinite(parsed) ? parsed : 0;
+function normalizePlaceClanDisplayName(value: string): string {
+  const normalized = normalizeCompoClanDisplayName(value).trimEnd();
+  if (!normalized.endsWith("-war")) {
+    return normalized;
+  }
+  return normalized.slice(0, -"-war".length).trimEnd();
 }
 
 function abbreviateClan(value: string): string {
@@ -99,37 +93,6 @@ function abbreviateClan(value: string): string {
   return map[normalized] ?? value;
 }
 
-function normalizePlaceClanDisplayName(value: string): string {
-  const normalized = normalizeCompoClanDisplayName(value).trimEnd();
-  if (normalized.endsWith("-war")) {
-    return normalized.slice(0, -"-war".length).trimEnd();
-  }
-  return normalized;
-}
-
-function getAbsoluteSheetRowNumber(rangeRelativeIndex: number): number {
-  return FIXED_LAYOUT_RANGE_START_ROW + rangeRelativeIndex;
-}
-
-function isActualSheetRow(sheetRowNumber: number): boolean {
-  return sheetRowNumber >= 7 && sheetRowNumber % 3 === 1;
-}
-
-function getModeRows(rows: string[][], mode: GoogleSheetMode): SheetIndexedRow[] {
-  return rows.flatMap((row, index) => {
-    const sheetRowNumber = getAbsoluteSheetRowNumber(index);
-    const include = mode === "actual" ? isActualSheetRow(sheetRowNumber) : false;
-    return include ? [{ row, sheetRowNumber }] : [];
-  });
-}
-
-function buildRefreshLine(refreshCell: string[][]): string {
-  const rawRefresh = refreshCell[0]?.[0]?.trim();
-  return rawRefresh && /^\d+$/.test(rawRefresh)
-    ? `RAW Data last refreshed: <t:${rawRefresh}:F>`
-    : "RAW Data last refreshed: (not available)";
-}
-
 function normalizeBucketDeltaKey(bucket: CompoWarDisplayBucket): string {
   return bucket === "<=TH13" ? "<=th13-delta" : `${bucket.toLowerCase()}-delta`;
 }
@@ -138,6 +101,7 @@ function formatPlacementRows(lines: string[]): string {
   return lines.length > 0 ? lines.join("\n") : "None";
 }
 
+/** Purpose: preserve the existing `/compo place` embed structure while swapping the source to persisted ACTUAL data. */
 function buildCompoPlaceEmbed(params: {
   inputWeight: number;
   bucket: CompoWarDisplayBucket;
@@ -189,88 +153,282 @@ function buildCompoPlaceEmbed(params: {
     );
 }
 
-function readPlacementCandidates(modeRows: SheetIndexedRow[]): PlacementCandidate[] {
-  const candidates: PlacementCandidate[] = [];
-  const seenKeys = new Set<string>();
-
-  for (const { row } of modeRows) {
-    const clanName = String(row[COL_CLAN_NAME] ?? "").trim();
-    if (!clanName) continue;
-
-    const clanTag = normalizeTag(String(row[COL_CLAN_TAG] ?? ""));
-    const dedupeKey = clanTag ? `tag:${clanTag}` : `name:${normalize(clanName)}`;
-    if (seenKeys.has(dedupeKey)) continue;
-    seenKeys.add(dedupeKey);
-
-    const totalWeight = parseNumber(row[COL_TOTAL_WEIGHT]);
-    const targetBand = parseNumber(row[COL_TARGET_BAND]);
-    const missingCount = parseNumber(row[COL_MISSING_WEIGHT]);
-    const liveMemberCount = parseNumber(row[COL_TOTAL_PLAYERS]);
-    const safeLiveMemberCount =
-      Number.isFinite(liveMemberCount) && liveMemberCount > 0
-        ? Math.max(0, Math.min(50, Math.trunc(liveMemberCount)))
-        : null;
-    const remainingToTarget = targetBand - totalWeight;
-    const vacancySlots =
-      safeLiveMemberCount !== null ? Math.max(0, 50 - safeLiveMemberCount) : 0;
-
-    const bucketDeltaByHeader: Record<string, number> = {
-      [normalize("TH18-delta")]: parseNumber(row[COL_BUCKET_START]),
-      [normalize("TH17-delta")]: parseNumber(row[COL_BUCKET_START + 1]),
-      [normalize("TH16-delta")]: parseNumber(row[COL_BUCKET_START + 2]),
-      [normalize("TH15-delta")]: parseNumber(row[COL_BUCKET_START + 3]),
-      [normalize("TH14-delta")]: parseNumber(row[COL_BUCKET_START + 4]),
-      [normalize("<=TH13-delta")]: parseNumber(row[COL_BUCKET_END]),
-    };
-
-    candidates.push({
-      clanName,
-      clanTag,
-      totalWeight,
-      targetBand,
-      missingCount,
-      remainingToTarget,
-      bucketDeltaByHeader,
-      liveMemberCount: safeLiveMemberCount,
-      vacancySlots,
-      hasVacancy: safeLiveMemberCount !== null && safeLiveMemberCount < 50,
-    });
+function buildPersistedRefreshLine(latestSourceSyncedAt: Date | null): string {
+  if (!latestSourceSyncedAt) {
+    return "RAW Data last refreshed: (not available)";
   }
-
-  return candidates;
+  return `RAW Data last refreshed: <t:${Math.floor(latestSourceSyncedAt.getTime() / 1000)}:F>`;
 }
 
-async function readActualSheetSnapshot(): Promise<{
-  modeRows: SheetIndexedRow[];
-  refreshLine: string;
-}> {
-  const settings = new SettingsService();
-  const sheets = new GoogleSheetsService(settings);
-  const linked = await sheets.getCompoLinkedSheet(FIXED_LAYOUT_RANGE);
-  const [rows, refreshCell] = await Promise.all([
-    sheets.readCompoLinkedValues(FIXED_LAYOUT_RANGE, linked),
-    sheets.readCompoLinkedValues(LOOKUP_REFRESH_RANGE, linked),
-  ]);
+function buildBucketDeltaByHeader(
+  heatMapRef: HeatMapRef,
+  counts: ReturnType<typeof collapseCompoWarBucketCountsForDisplay>,
+): Record<string, number> {
   return {
-    modeRows: getModeRows(rows, "actual"),
-    refreshLine: buildRefreshLine(refreshCell),
+    "th18-delta": counts.TH18 - heatMapRef.th18Count,
+    "th17-delta": counts.TH17 - heatMapRef.th17Count,
+    "th16-delta": counts.TH16 - heatMapRef.th16Count,
+    "th15-delta": counts.TH15 - heatMapRef.th15Count,
+    "th14-delta": counts.TH14 - heatMapRef.th14Count,
+    "<=th13-delta":
+      counts["<=TH13"] -
+      (heatMapRef.th13Count +
+        heatMapRef.th12Count +
+        heatMapRef.th11Count +
+        heatMapRef.th10OrLowerCount),
   };
 }
 
-/** Purpose: derive `/compo place` suggestions from the ACTUAL AllianceDashboard composition source. */
+function toPositiveInt(value: number | null | undefined): number | null {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return null;
+  }
+  const normalized = Math.trunc(value);
+  return normalized > 0 ? normalized : null;
+}
+
+function resolvePlacementWeight(input: {
+  memberWeight: number | null | undefined;
+  deferredWeight: number | null | undefined;
+  sameClanWarWeight: number | null | undefined;
+  anyWarWeight: number | null | undefined;
+}): number | null {
+  return (
+    toPositiveInt(input.memberWeight) ??
+    toPositiveInt(input.deferredWeight) ??
+    toPositiveInt(input.sameClanWarWeight) ??
+    toPositiveInt(input.anyWarWeight) ??
+    null
+  );
+}
+
+function buildTrackedClanDisplayName(clan: TrackedClanRow): string {
+  return clan.name?.trim() || clan.tag;
+}
+
+function buildPlacementCandidates(input: {
+  tracked: TrackedClanRow[];
+  membersByClanTag: Map<string, CurrentMemberRow[]>;
+  deferredByClanTag: Map<string, Map<string, number>>;
+  warFallbackByClanAndPlayerTag: Map<string, number>;
+  warFallbackByPlayerTag: Map<string, number>;
+  heatMapRefs: HeatMapRef[];
+}): {
+  candidates: PlacementCandidate[];
+  latestSourceSyncedAt: Date | null;
+} {
+  const candidates: PlacementCandidate[] = [];
+  let latestSourceSyncedAt: Date | null = null;
+
+  for (const clan of input.tracked) {
+    const clanTag = normalizeTag(clan.tag);
+    if (!clanTag) continue;
+
+    const members = input.membersByClanTag.get(clanTag) ?? [];
+    for (const member of members) {
+      if (
+        !latestSourceSyncedAt ||
+        member.sourceSyncedAt.getTime() > latestSourceSyncedAt.getTime()
+      ) {
+        latestSourceSyncedAt = member.sourceSyncedAt;
+      }
+    }
+
+    if (members.length === 0) {
+      continue;
+    }
+
+    const deferredByPlayerTag = input.deferredByClanTag.get(clanTag) ?? new Map();
+    const weightedMembers = members
+      .map((member) => {
+        const playerTag = normalizePlayerTag(member.playerTag);
+        const sameClanWarWeight = playerTag
+          ? input.warFallbackByClanAndPlayerTag.get(`${clanTag}|${playerTag}`)
+          : null;
+        const anyWarWeight = playerTag
+          ? input.warFallbackByPlayerTag.get(playerTag)
+          : null;
+        const deferredWeight = playerTag
+          ? deferredByPlayerTag.get(playerTag)
+          : null;
+        const effectiveWeight = resolvePlacementWeight({
+          memberWeight: member.weight,
+          deferredWeight,
+          sameClanWarWeight,
+          anyWarWeight,
+        });
+        return {
+          effectiveWeight,
+        };
+      })
+      .filter(
+        (member): member is { effectiveWeight: number } =>
+          member.effectiveWeight !== null,
+      );
+
+    if (weightedMembers.length === 0) {
+      continue;
+    }
+
+    const totalWeight = weightedMembers.reduce(
+      (sum, member) => sum + member.effectiveWeight,
+      0,
+    );
+    const heatMapRef = findHeatMapRefForWeight(input.heatMapRefs, totalWeight);
+    if (!heatMapRef) {
+      continue;
+    }
+
+    const bucketCounts = buildCompoWarBucketCounts(weightedMembers);
+    if (!bucketCounts) {
+      continue;
+    }
+    const displayCounts = collapseCompoWarBucketCountsForDisplay(bucketCounts);
+    const missingCount = members.filter(
+      (member) => toPositiveInt(member.weight) === null,
+    ).length;
+    const liveMemberCount = Math.max(0, Math.min(50, Math.trunc(members.length)));
+
+    candidates.push({
+      clanName: buildTrackedClanDisplayName(clan),
+      clanTag,
+      totalWeight,
+      targetBand: heatMapRef.weightMaxInclusive,
+      missingCount,
+      remainingToTarget: heatMapRef.weightMaxInclusive - totalWeight,
+      bucketDeltaByHeader: buildBucketDeltaByHeader(heatMapRef, displayCounts),
+      liveMemberCount,
+      vacancySlots: Math.max(0, 50 - liveMemberCount),
+      hasVacancy: liveMemberCount < 50,
+    });
+  }
+
+  return { candidates, latestSourceSyncedAt };
+}
+
+/** Purpose: derive `/compo place` suggestions from persisted ACTUAL feed-backed current-member state. */
 export class CompoPlaceService {
+  /** Purpose: load ACTUAL placement suggestions using one persisted tracked-clan/member snapshot read plus deterministic weight fallbacks. */
   async readPlace(
     inputWeight: number,
     bucket: CompoWarDisplayBucket,
+    guildId?: string | null,
   ): Promise<CompoPlaceReadResult> {
-    const snapshot = await readActualSheetSnapshot();
-    const candidates = readPlacementCandidates(snapshot.modeRows);
+    const tracked = await prisma.trackedClan.findMany({
+      orderBy: { createdAt: "asc" },
+      select: { tag: true, name: true },
+    });
+    const trackedClanTags = tracked
+      .map((clan) => normalizeTag(clan.tag))
+      .filter((tag): tag is string => Boolean(tag));
+
+    if (trackedClanTags.length === 0) {
+      return {
+        content: "No tracked clans are configured for ACTUAL placement suggestions.",
+        embeds: [],
+        trackedClanTags: [],
+        eligibleClanTags: [],
+        candidateCount: 0,
+        recommendedCount: 0,
+        vacancyCount: 0,
+        compositionCount: 0,
+      };
+    }
+
+    const [members, heatMapRefs] = await Promise.all([
+      prisma.fwaClanMemberCurrent.findMany({
+        where: { clanTag: { in: trackedClanTags } },
+        select: {
+          clanTag: true,
+          playerTag: true,
+          weight: true,
+          sourceSyncedAt: true,
+        },
+        orderBy: [{ clanTag: "asc" }, { sourceSyncedAt: "desc" }, { playerTag: "asc" }],
+      }),
+      prisma.heatMapRef.findMany({
+        orderBy: [{ weightMinInclusive: "asc" }, { weightMaxInclusive: "asc" }],
+      }),
+    ]);
+
+    const membersByClanTag = new Map<string, CurrentMemberRow[]>();
+    const allPlayerTags = new Set<string>();
+    for (const member of members) {
+      const clanTag = normalizeTag(member.clanTag);
+      const playerTag = normalizePlayerTag(member.playerTag);
+      if (!clanTag || !playerTag) continue;
+      allPlayerTags.add(playerTag);
+      const existing = membersByClanTag.get(clanTag) ?? [];
+      existing.push({
+        ...member,
+        clanTag,
+        playerTag,
+      });
+      membersByClanTag.set(clanTag, existing);
+    }
+
+    const [warFallbackMembers, deferredByClanTag] = await Promise.all([
+      allPlayerTags.size === 0
+        ? Promise.resolve([] as WarFallbackRow[])
+        : prisma.fwaTrackedClanWarRosterMemberCurrent.findMany({
+            where: {
+              playerTag: { in: [...allPlayerTags] },
+              effectiveWeight: { not: null },
+            },
+            select: {
+              clanTag: true,
+              playerTag: true,
+              effectiveWeight: true,
+              updatedAt: true,
+            },
+            orderBy: [{ updatedAt: "desc" }, { clanTag: "asc" }, { playerTag: "asc" }],
+          }),
+      guildId
+        ? listOpenDeferredWeightsByClanAndPlayerTags({
+            guildId,
+            clanPlayerTags: trackedClanTags.map((clanTag) => ({
+              clanTag,
+              playerTags: (membersByClanTag.get(clanTag) ?? []).map(
+                (member) => member.playerTag,
+              ),
+            })),
+          })
+        : Promise.resolve(new Map<string, Map<string, number>>()),
+    ]);
+
+    const warFallbackByClanAndPlayerTag = new Map<string, number>();
+    const warFallbackByPlayerTag = new Map<string, number>();
+    for (const row of warFallbackMembers) {
+      const clanTag = normalizeTag(row.clanTag);
+      const playerTag = normalizePlayerTag(row.playerTag);
+      const effectiveWeight = toPositiveInt(row.effectiveWeight);
+      if (!clanTag || !playerTag || effectiveWeight === null) {
+        continue;
+      }
+      const clanAndPlayerTagKey = `${clanTag}|${playerTag}`;
+      if (!warFallbackByClanAndPlayerTag.has(clanAndPlayerTagKey)) {
+        warFallbackByClanAndPlayerTag.set(clanAndPlayerTagKey, effectiveWeight);
+      }
+      if (!warFallbackByPlayerTag.has(playerTag)) {
+        warFallbackByPlayerTag.set(playerTag, effectiveWeight);
+      }
+    }
+
+    const { candidates, latestSourceSyncedAt } = buildPlacementCandidates({
+      tracked,
+      membersByClanTag,
+      deferredByClanTag,
+      warFallbackByClanAndPlayerTag,
+      warFallbackByPlayerTag,
+      heatMapRefs,
+    });
 
     if (candidates.length === 0) {
       return {
-        content: "No placement data found in ACTUAL rows from AllianceDashboard!A6:BE500.",
+        content:
+          "No eligible placement data found in persisted ACTUAL current-member state.",
         embeds: [],
-        trackedClanTags: [],
+        trackedClanTags,
         eligibleClanTags: [],
         candidateCount: 0,
         recommendedCount: 0,
@@ -297,7 +455,9 @@ export class CompoPlaceService {
       .filter((candidate) => candidate.hasVacancy)
       .sort((a, b) => {
         if (b.vacancySlots !== a.vacancySlots) return b.vacancySlots - a.vacancySlots;
-        const distance = Math.abs(a.remainingToTarget - inputWeight) - Math.abs(b.remainingToTarget - inputWeight);
+        const distance =
+          Math.abs(a.remainingToTarget - inputWeight) -
+          Math.abs(b.remainingToTarget - inputWeight);
         if (distance !== 0) return distance;
         return normalizePlaceClanDisplayName(a.clanName).localeCompare(
           normalizePlaceClanDisplayName(b.clanName),
@@ -315,15 +475,11 @@ export class CompoPlaceService {
           recommended,
           vacancyList,
           compositionList: compositionNeeds,
-          refreshLine: snapshot.refreshLine,
+          refreshLine: buildPersistedRefreshLine(latestSourceSyncedAt),
         }),
       ],
-      trackedClanTags: candidates
-        .map((candidate) => candidate.clanTag)
-        .filter((tag): tag is string => Boolean(tag)),
-      eligibleClanTags: candidates
-        .map((candidate) => candidate.clanTag)
-        .filter((tag): tag is string => Boolean(tag)),
+      trackedClanTags,
+      eligibleClanTags: candidates.map((candidate) => candidate.clanTag),
       candidateCount: candidates.length,
       recommendedCount: recommended.length,
       vacancyCount: vacancyList.length,
@@ -331,18 +487,16 @@ export class CompoPlaceService {
     };
   }
 
+  /** Purpose: keep legacy refresh-button calls honest by rereading the latest persisted ACTUAL snapshot without triggering external refresh work. */
   async refreshPlace(
     inputWeight: number,
     bucket: CompoWarDisplayBucket,
     guildId?: string | null,
   ): Promise<CompoPlaceReadResult> {
-    await triggerSharedSheetRefresh({
-      guildId: guildId ?? null,
-      mode: "actual",
-    });
-    return this.readPlace(inputWeight, bucket);
+    return this.readPlace(inputWeight, bucket, guildId);
   }
 }
 
 export const buildCompoPlaceEmbedForTest = buildCompoPlaceEmbed;
-export const readPlacementCandidatesForTest = readPlacementCandidates;
+export const buildBucketDeltaByHeaderForTest = buildBucketDeltaByHeader;
+export const resolvePlacementWeightForTest = resolvePlacementWeight;

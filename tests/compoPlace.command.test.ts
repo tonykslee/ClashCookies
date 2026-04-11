@@ -83,17 +83,13 @@ describe("/compo place command", () => {
     const interaction = makeInteraction("145k");
     await Compo.run({} as any, interaction as any, {} as any);
 
-    expect(readPlaceSpy).toHaveBeenCalledWith(145000, "TH15");
+    expect(readPlaceSpy).toHaveBeenCalledWith(145000, "TH15", "guild-1");
     expect(getCompoLinkedSheetSpy).not.toHaveBeenCalled();
     expect(readCompoLinkedValuesSpy).not.toHaveBeenCalled();
 
     const payload = interaction.editReply.mock.calls.at(-1)?.[0];
     expect(Array.isArray(payload?.embeds)).toBe(true);
-    expect(
-      getComponentCustomIds(payload).some((id) =>
-        id.startsWith("compo-refresh:place:"),
-      ),
-    ).toBe(true);
+    expect(getComponentCustomIds(payload)).toEqual([]);
   });
 
   it("maps lower persisted weight buckets into the stable <=TH13 place bucket", async () => {
@@ -113,6 +109,6 @@ describe("/compo place command", () => {
     const interaction = makeInteraction("100000");
     await Compo.run({} as any, interaction as any, {} as any);
 
-    expect(readPlaceSpy).toHaveBeenCalledWith(100000, "<=TH13");
+    expect(readPlaceSpy).toHaveBeenCalledWith(100000, "<=TH13", "guild-1");
   });
 });
