@@ -19,14 +19,9 @@ import { normalizeCompoClanDisplayName } from "../helper/compoDisplay";
 import { prisma } from "../prisma";
 import { safeReply } from "../helper/safeReply";
 import { CoCService } from "../services/CoCService";
+import { CompoActualStateService } from "../services/CompoActualStateService";
 import { CompoPlaceService } from "../services/CompoPlaceService";
 import { CompoWarStateService } from "../services/CompoWarStateService";
-import {
-  getSheetRefreshErrorHint,
-  mapSheetRefreshFlowErrorToMessage,
-  SheetRefreshFlowError,
-  triggerSharedSheetRefresh,
-} from "../services/SheetRefreshService";
 import {
   GoogleSheetMode,
   GoogleSheetReadError,
@@ -98,7 +93,6 @@ const STATE_HEADERS = [
   "TH14",
   "<=TH13",
 ];
-const LOOKUP_REFRESH_RANGE = "Lookup!B10:B10";
 const COMPO_REFRESH_PREFIX = "compo-refresh";
 const COMPO_REFRESH_LABEL = "Refresh Data";
 const COMPO_REFRESH_LOADING_LABEL = "Refreshing...";
@@ -196,13 +190,6 @@ function extractSupplementalRowsFromMessage(
             isCompoRefreshButtonCustomId(component.custom_id),
         ),
     );
-}
-
-function buildRefreshLine(refreshCell: string[][]): string {
-  const rawRefresh = refreshCell[0]?.[0]?.trim();
-  return rawRefresh && /^\d+$/.test(rawRefresh)
-    ? `RAW Data last refreshed: <t:${rawRefresh}:F>`
-    : "RAW Data last refreshed: (not available)";
 }
 
 function normalizeTag(value: string): string {
@@ -479,43 +466,6 @@ type CompoRenderPayload = {
   }>;
 };
 
-type CompoSheetSnapshot = {
-  linked: Awaited<ReturnType<GoogleSheetsService["getCompoLinkedSheet"]>>;
-  rows: string[][];
-  modeRows: SheetIndexedRow[];
-  refreshLine: string;
-};
-
-async function readCompoSheetSnapshot(
-  mode: GoogleSheetMode,
-): Promise<CompoSheetSnapshot> {
-  const settings = new SettingsService();
-  const sheets = new GoogleSheetsService(settings);
-  const linked = await sheets.getCompoLinkedSheet(FIXED_LAYOUT_RANGE);
-  const [rows, refreshCell] = await Promise.all([
-    sheets.readCompoLinkedValues(FIXED_LAYOUT_RANGE, linked),
-    sheets.readCompoLinkedValues(LOOKUP_REFRESH_RANGE, linked),
-  ]);
-  return {
-    linked,
-    rows,
-    modeRows: getModeRows(rows, mode),
-    refreshLine: buildRefreshLine(refreshCell),
-  };
-}
-
-function buildCompoStatePayload(input: {
-  mode: GoogleSheetMode;
-  modeRows: SheetIndexedRow[];
-  refreshLine: string;
-}): CompoRenderPayload {
-  return buildCompoStatePayloadFromRows({
-    mode: input.mode,
-    stateRows: buildCompoStateRows(input.modeRows),
-    contentLines: [input.refreshLine],
-  });
-}
-
 function buildCompoStatePayloadFromRows(input: {
   mode: GoogleSheetMode;
   stateRows: string[][];
@@ -771,15 +721,10 @@ function buildCompoRefreshComponents(input: {
   return components.slice(0, 5);
 }
 
-function mapCompoRefreshErrorToMessage(err: unknown): string {
-  if (err instanceof SheetRefreshFlowError) {
-    return mapSheetRefreshFlowErrorToMessage(err);
-  }
-  if (err instanceof GoogleSheetReadError) {
-    return mapCompoSheetErrorToMessage(err);
-  }
-  const refreshHint = getSheetRefreshErrorHint(err);
-  return `Failed to refresh compo view. ${refreshHint}`;
+function mapCompoActualStateErrorToMessage(action: "load" | "refresh"): string {
+  return action === "refresh"
+    ? "Failed to refresh DB-backed ACTUAL state. Try again in a moment."
+    : "Failed to load DB-backed ACTUAL state. Try again in a moment.";
 }
 
 function mapCompoWarStateErrorToMessage(action: "load" | "refresh"): string {
@@ -840,16 +785,18 @@ export async function handleCompoRefreshButton(
               content: warState.contentLines.join("\n"),
             };
       } else {
-        await triggerSharedSheetRefresh({
-          guildId: interaction.guildId ?? null,
-          mode: parsed.mode,
-        });
-        const snapshot = await readCompoSheetSnapshot(parsed.mode);
-        payload = buildCompoStatePayload({
-          mode: parsed.mode,
-          modeRows: snapshot.modeRows,
-          refreshLine: snapshot.refreshLine,
-        });
+        const actualState = await new CompoActualStateService().refreshState(
+          interaction.guildId ?? null,
+        );
+        payload = actualState.stateRows
+          ? buildCompoStatePayloadFromRows({
+              mode: "actual",
+              stateRows: actualState.stateRows,
+              contentLines: actualState.contentLines,
+            })
+          : {
+              content: actualState.contentLines.join("\n"),
+            };
       }
       await interaction.editReply({
         ...payload,
@@ -899,9 +846,11 @@ export async function handleCompoRefreshButton(
       content:
         parsed.kind === "state" && parsed.mode === "war"
           ? mapCompoWarStateErrorToMessage("refresh")
+          : parsed.kind === "state"
+            ? mapCompoActualStateErrorToMessage("refresh")
           : parsed.kind === "place"
             ? mapCompoPlaceErrorToMessage("refresh")
-            : mapCompoRefreshErrorToMessage(err),
+            : "Failed to refresh compo view. Try again in a moment.",
     });
   }
 }
@@ -1114,34 +1063,29 @@ export const Compo: Command = {
                     };
               })()
             : await (async () => {
-                const snapshot = await readCompoSheetSnapshot(mode);
+                const actualState = await new CompoActualStateService().readState(
+                  interaction.guildId ?? null,
+                );
                 logCompoStage(interaction, "db_fetch", {
-                  entity: "sheet_link",
+                  entity: "actual_compo_state_source",
                   mode,
-                  result: snapshot.linked.sheetId ? "found" : "missing",
-                  sheetIdPresent: Boolean(snapshot.linked.sheetId),
-                  resolutionSource: snapshot.linked.source,
-                });
-                logCompoStage(interaction, "read_dispatch", {
-                  range: FIXED_LAYOUT_RANGE,
-                  resolutionSource: snapshot.linked.source,
-                });
-                logCompoStage(interaction, "read_dispatch", {
-                  range: LOOKUP_REFRESH_RANGE,
-                  resolutionSource: snapshot.linked.source,
+                  trackedClans: actualState.trackedClanTags.length,
+                  renderableRows: actualState.renderableClanTags.length,
                 });
                 logCompoStage(interaction, "db_fetch", {
-                  entity: "sheet_rows",
+                  entity: "heat_map_ref",
                   mode,
-                  result: snapshot.rows.length > 0 ? "found" : "missing",
-                  totalRows: snapshot.rows.length,
-                  modeRows: snapshot.modeRows.length,
+                  result: actualState.stateRows ? "found" : "partial_or_missing",
                 });
-                return buildCompoStatePayload({
-                  mode,
-                  modeRows: snapshot.modeRows,
-                  refreshLine: snapshot.refreshLine,
-                });
+                return actualState.stateRows
+                  ? buildCompoStatePayloadFromRows({
+                      mode: "actual",
+                      stateRows: actualState.stateRows,
+                      contentLines: actualState.contentLines,
+                    })
+                  : {
+                      content: actualState.contentLines.join("\n"),
+                    };
               })();
         const refreshCustomId = buildCompoRefreshCustomId({
           kind: "state",
@@ -1286,6 +1230,8 @@ export const Compo: Command = {
         content:
           getSubcommandSafe(interaction) === "state" && readMode(interaction) === "war"
             ? mapCompoWarStateErrorToMessage("load")
+            : getSubcommandSafe(interaction) === "state"
+              ? mapCompoActualStateErrorToMessage("load")
             : getSubcommandSafe(interaction) === "place"
               ? mapCompoPlaceErrorToMessage("load")
               : mapCompoSheetErrorToMessage(err),

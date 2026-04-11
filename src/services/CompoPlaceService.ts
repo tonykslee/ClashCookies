@@ -5,6 +5,10 @@ import type {
   TrackedClan,
 } from "@prisma/client";
 import { EmbedBuilder } from "discord.js";
+import {
+  resolveActualCompoWeight,
+  toPositiveCompoWeight,
+} from "../helper/compoActualWeight";
 import { normalizeCompoClanDisplayName } from "../helper/compoDisplay";
 import { findHeatMapRefForWeight } from "../helper/compoHeatMap";
 import {
@@ -180,29 +184,6 @@ function buildBucketDeltaByHeader(
   };
 }
 
-function toPositiveInt(value: number | null | undefined): number | null {
-  if (value === null || value === undefined || !Number.isFinite(value)) {
-    return null;
-  }
-  const normalized = Math.trunc(value);
-  return normalized > 0 ? normalized : null;
-}
-
-function resolvePlacementWeight(input: {
-  memberWeight: number | null | undefined;
-  deferredWeight: number | null | undefined;
-  sameClanWarWeight: number | null | undefined;
-  anyWarWeight: number | null | undefined;
-}): number | null {
-  return (
-    toPositiveInt(input.memberWeight) ??
-    toPositiveInt(input.deferredWeight) ??
-    toPositiveInt(input.sameClanWarWeight) ??
-    toPositiveInt(input.anyWarWeight) ??
-    null
-  );
-}
-
 function buildTrackedClanDisplayName(clan: TrackedClanRow): string {
   return clan.name?.trim() || clan.tag;
 }
@@ -252,7 +233,7 @@ function buildPlacementCandidates(input: {
         const deferredWeight = playerTag
           ? deferredByPlayerTag.get(playerTag)
           : null;
-        const effectiveWeight = resolvePlacementWeight({
+        const effectiveWeight = resolveActualCompoWeight({
           memberWeight: member.weight,
           deferredWeight,
           sameClanWarWeight,
@@ -286,7 +267,7 @@ function buildPlacementCandidates(input: {
     }
     const displayCounts = collapseCompoWarBucketCountsForDisplay(bucketCounts);
     const missingCount = members.filter(
-      (member) => toPositiveInt(member.weight) === null,
+      (member) => toPositiveCompoWeight(member.weight) === null,
     ).length;
     const liveMemberCount = Math.max(0, Math.min(50, Math.trunc(members.length)));
 
@@ -404,7 +385,7 @@ export class CompoPlaceService {
     for (const row of warFallbackMembers) {
       const clanTag = normalizeTag(row.clanTag);
       const playerTag = normalizePlayerTag(row.playerTag);
-      const effectiveWeight = toPositiveInt(row.effectiveWeight);
+      const effectiveWeight = toPositiveCompoWeight(row.effectiveWeight);
       if (!clanTag || !playerTag || effectiveWeight === null) {
         continue;
       }
@@ -518,4 +499,4 @@ export class CompoPlaceService {
 
 export const buildCompoPlaceEmbedForTest = buildCompoPlaceEmbed;
 export const buildBucketDeltaByHeaderForTest = buildBucketDeltaByHeader;
-export const resolvePlacementWeightForTest = resolvePlacementWeight;
+export const resolvePlacementWeightForTest = resolveActualCompoWeight;
