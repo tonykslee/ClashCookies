@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Compo, mapCompoSheetErrorToMessageForTest } from "../src/commands/Compo";
+import { CompoActualStateService } from "../src/services/CompoActualStateService";
 import {
   GoogleSheetReadError,
   GoogleSheetReadErrorCode,
@@ -116,10 +117,6 @@ describe("/compo strict sheet read path", () => {
       tag: "#LQQ99UV8",
       expectedRanges: [FIXED_LAYOUT_RANGE],
     },
-    {
-      subcommand: "state" as const,
-      expectedRanges: [FIXED_LAYOUT_RANGE, LOOKUP_REFRESH_RANGE],
-    },
   ])("uses strict canonical resolver for /compo $subcommand", async (testCase) => {
     const getCompoLinkedSheetSpy = vi
       .spyOn(GoogleSheetsService.prototype, "getCompoLinkedSheet")
@@ -151,7 +148,6 @@ describe("/compo strict sheet read path", () => {
 
   it.each([
     { subcommand: "advice" as const, tag: "#LQQ99UV8" },
-    { subcommand: "state" as const },
   ])(
     "maps normalized sheet errors consistently for /compo $subcommand",
     async (testCase) => {
@@ -199,13 +195,15 @@ describe("/compo strict sheet read path", () => {
   });
 
   it("adds an inline refresh button for /compo state output", async () => {
-    vi.spyOn(GoogleSheetsService.prototype, "getCompoLinkedSheet").mockResolvedValue(linkedSheet);
-    vi.spyOn(GoogleSheetsService.prototype, "readCompoLinkedValues").mockImplementation(
-      async (range: string) => {
-        if (range === LOOKUP_REFRESH_RANGE) return [["1709900000"]];
-        return makeRows();
-      }
-    );
+    vi.spyOn(CompoActualStateService.prototype, "readState").mockResolvedValue({
+      stateRows: [
+        ["Clan", "Total", "Missing", "Players", "TH18", "TH17", "TH16", "TH15", "TH14", "<=TH13"],
+        ["DARK EMPIRE", "1,470,000", "1", "0", "0", "-1", "0", "0", "0", "0"],
+      ],
+      contentLines: ["RAW Data last refreshed: <t:1709900000:F>"],
+      trackedClanTags: ["#LQQ99UV8"],
+      renderableClanTags: ["#LQQ99UV8"],
+    });
 
     const stateInteraction = makeInteraction({ subcommand: "state", mode: "actual" });
     await Compo.run({} as any, stateInteraction as any, {
@@ -220,13 +218,15 @@ describe("/compo strict sheet read path", () => {
   });
 
   it("does not attempt a second defer when /compo is already acknowledged", async () => {
-    vi.spyOn(GoogleSheetsService.prototype, "getCompoLinkedSheet").mockResolvedValue(linkedSheet);
-    vi.spyOn(GoogleSheetsService.prototype, "readCompoLinkedValues").mockImplementation(
-      async (range: string) => {
-        if (range === LOOKUP_REFRESH_RANGE) return [["1709900000"]];
-        return makeRows();
-      }
-    );
+    vi.spyOn(CompoActualStateService.prototype, "readState").mockResolvedValue({
+      stateRows: [
+        ["Clan", "Total", "Missing", "Players", "TH18", "TH17", "TH16", "TH15", "TH14", "<=TH13"],
+        ["DARK EMPIRE", "1,470,000", "1", "0", "0", "-1", "0", "0", "0", "0"],
+      ],
+      contentLines: ["RAW Data last refreshed: <t:1709900000:F>"],
+      trackedClanTags: ["#LQQ99UV8"],
+      renderableClanTags: ["#LQQ99UV8"],
+    });
 
     const interaction = makeInteraction({ subcommand: "state" });
     interaction.deferred = true;

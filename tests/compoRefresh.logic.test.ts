@@ -3,8 +3,7 @@ import {
   buildCompoRefreshCustomIdForTest,
   handleCompoRefreshButton,
 } from "../src/commands/Compo";
-import { GoogleSheetsService } from "../src/services/GoogleSheetsService";
-import * as SheetRefreshService from "../src/services/SheetRefreshService";
+import { CompoActualStateService } from "../src/services/CompoActualStateService";
 
 function makeMessageRow(customId: string, label: string, disabled = false): { toJSON: () => unknown } {
   return {
@@ -74,33 +73,16 @@ describe("compo refresh button behavior", () => {
     vi.restoreAllMocks();
   });
 
-  it("shows loading state, routes through shared sheet refresh, and rerenders state output", async () => {
-    vi.spyOn(SheetRefreshService, "triggerSharedSheetRefresh").mockResolvedValue({
-      mode: "actual",
-      resultText: "ok",
-      durationSeconds: "0.10",
+  it("shows loading state, refreshes DB-backed ACTUAL state, and rerenders state output", async () => {
+    vi.spyOn(CompoActualStateService.prototype, "refreshState").mockResolvedValue({
+      stateRows: [
+        ["Clan", "Total", "Missing", "Players", "TH18", "TH17", "TH16", "TH15", "TH14", "<=TH13"],
+        ["ACTUAL CLAN", "1,500,000", "2", "50", "0", "-1", "0", "0", "0", "0"],
+      ],
+      contentLines: ["RAW Data last refreshed: <t:1709900000:F>"],
+      trackedClanTags: ["#AAA111"],
+      renderableClanTags: ["#AAA111"],
     });
-    vi.spyOn(GoogleSheetsService.prototype, "getCompoLinkedSheet").mockResolvedValue({
-      sheetId: "sheet-1",
-      tabName: "AllianceDashboard",
-      source: "google_sheet_id",
-    });
-    vi.spyOn(GoogleSheetsService.prototype, "readCompoLinkedValues").mockImplementation(
-      async (range: string) => {
-        if (range === "Lookup!B10:B10") return [["1709900000"]];
-        const rows = Array.from({ length: 8 }, () => Array.from({ length: 56 }, () => ""));
-        rows[2][0] = "WAR CLAN";
-        rows[2][3] = "1,500,000";
-        rows[2][20] = "2";
-        rows[2][21] = "0";
-        rows[2][22] = "0";
-        rows[2][23] = "-1";
-        rows[2][24] = "0";
-        rows[2][25] = "0";
-        rows[2][26] = "0";
-        return rows;
-      }
-    );
 
     const customId = buildCompoRefreshCustomIdForTest({
       kind: "state",
@@ -111,10 +93,9 @@ describe("compo refresh button behavior", () => {
 
     await handleCompoRefreshButton(interaction as any, {} as any);
 
-    expect(SheetRefreshService.triggerSharedSheetRefresh).toHaveBeenCalledWith({
-      guildId: "guild-1",
-      mode: "actual",
-    });
+    expect(CompoActualStateService.prototype.refreshState).toHaveBeenCalledWith(
+      "guild-1",
+    );
     const loadingPayload = interaction.update.mock.calls[0]?.[0];
     expect(readFirstButton(loadingPayload)).toEqual({
       label: "Refreshing...",
@@ -129,9 +110,9 @@ describe("compo refresh button behavior", () => {
     expect(interaction.followUp).not.toHaveBeenCalled();
   });
 
-  it("restores non-loading state and keeps previous output on refresh failure", async () => {
-    vi.spyOn(SheetRefreshService, "triggerSharedSheetRefresh").mockRejectedValue(
-      new Error("boom")
+  it("restores non-loading state and keeps previous output on DB-backed ACTUAL refresh failure", async () => {
+    vi.spyOn(CompoActualStateService.prototype, "refreshState").mockRejectedValue(
+      new Error("boom"),
     );
     const customId = buildCompoRefreshCustomIdForTest({
       kind: "state",
@@ -157,7 +138,7 @@ describe("compo refresh button behavior", () => {
     expect(Object.prototype.hasOwnProperty.call(recoveryPayload, "files")).toBe(false);
     expect(interaction.followUp).toHaveBeenCalledTimes(1);
     expect(String(interaction.followUp.mock.calls[0]?.[0]?.content ?? "")).toContain(
-      "Failed to refresh compo view."
+      "Failed to refresh DB-backed ACTUAL state."
     );
   });
 });
