@@ -87,7 +87,7 @@ describe("FwaTrackedClanWarRosterSyncService", () => {
     ]);
   });
 
-  it("marks unresolved trailing zero blocks explicitly", () => {
+  it("fills a trailing zero block from the lowest resolved non-zero weight above it", () => {
     const snapshot = deriveTrackedClanWarRosterSnapshotForTest({
       clanTag: "#AAA111",
       clanName: "Tracked Clan",
@@ -95,16 +95,93 @@ describe("FwaTrackedClanWarRosterSyncService", () => {
       rows: [
         makeSourceRow({ playerTag: "#P1", playerName: "One", position: 1, weight: 151000 }),
         makeSourceRow({ playerTag: "#P2", playerName: "Two", position: 2, weight: 0 }),
+        makeSourceRow({ playerTag: "#P3", playerName: "Three", position: 3, weight: 145000 }),
+        makeSourceRow({ playerTag: "#P4", playerName: "Four", position: 4, weight: 0 }),
+        makeSourceRow({ playerTag: "#P5", playerName: "Five", position: 5, weight: 0 }),
+      ],
+    });
+
+    expect(snapshot?.hasUnresolvedWeights).toBe(false);
+    expect(snapshot?.totalEffectiveWeight).toBeNull();
+    expect(snapshot?.members.map((row) => [row.position, row.effectiveWeight, row.effectiveWeightStatus])).toEqual([
+      [1, 151000, "RAW"],
+      [2, 145000, "FILLED_FROM_LOWER_BLOCK"],
+      [3, 145000, "RAW"],
+      [4, 145000, "FILLED_FROM_LOWER_BLOCK"],
+      [5, 145000, "FILLED_FROM_LOWER_BLOCK"],
+    ]);
+  });
+
+  it("copies the same lowest resolved non-zero weight through multiple trailing zero rows", () => {
+    const derived = applyEffectiveWeightRulesForTest([
+      {
+        playerTag: "#P1",
+        playerName: "One",
+        position: 1,
+        townHall: 16,
+        rawWeight: 170000,
+        opponentTag: "#OPP",
+        opponentName: "Opponent",
+        sourceSyncedAt: new Date("2026-04-10T12:00:00.000Z"),
+      },
+      {
+        playerTag: "#P2",
+        playerName: "Two",
+        position: 2,
+        townHall: 16,
+        rawWeight: 155000,
+        opponentTag: "#OPP",
+        opponentName: "Opponent",
+        sourceSyncedAt: new Date("2026-04-10T12:00:00.000Z"),
+      },
+      {
+        playerTag: "#P3",
+        playerName: "Three",
+        position: 3,
+        townHall: 16,
+        rawWeight: 0,
+        opponentTag: "#OPP",
+        opponentName: "Opponent",
+        sourceSyncedAt: new Date("2026-04-10T12:00:00.000Z"),
+      },
+      {
+        playerTag: "#P4",
+        playerName: "Four",
+        position: 4,
+        townHall: 16,
+        rawWeight: 0,
+        opponentTag: "#OPP",
+        opponentName: "Opponent",
+        sourceSyncedAt: new Date("2026-04-10T12:00:00.000Z"),
+      },
+    ]);
+
+    expect(derived.map((row) => [row.position, row.effectiveWeight, row.effectiveWeightStatus])).toEqual([
+      [1, 170000, "RAW"],
+      [2, 155000, "RAW"],
+      [3, 155000, "FILLED_FROM_LOWER_BLOCK"],
+      [4, 155000, "FILLED_FROM_LOWER_BLOCK"],
+    ]);
+  });
+
+  it("keeps pathological all-zero rosters explicitly unresolved", () => {
+    const snapshot = deriveTrackedClanWarRosterSnapshotForTest({
+      clanTag: "#AAA111",
+      clanName: "Tracked Clan",
+      observedAt: new Date("2026-04-10T15:00:00.000Z"),
+      rows: [
+        makeSourceRow({ playerTag: "#P1", playerName: "One", position: 1, weight: 0 }),
+        makeSourceRow({ playerTag: "#P2", playerName: "Two", position: 2, weight: 0 }),
         makeSourceRow({ playerTag: "#P3", playerName: "Three", position: 3, weight: 0 }),
       ],
     });
 
     expect(snapshot?.hasUnresolvedWeights).toBe(true);
     expect(snapshot?.totalEffectiveWeight).toBeNull();
-    expect(snapshot?.members.map((row) => row.effectiveWeightStatus)).toEqual([
-      "RAW",
-      "UNRESOLVED_TRAILING_ZERO",
-      "UNRESOLVED_TRAILING_ZERO",
+    expect(snapshot?.members.map((row) => [row.position, row.effectiveWeight, row.effectiveWeightStatus])).toEqual([
+      [1, null, "UNRESOLVED_TRAILING_ZERO"],
+      [2, null, "UNRESOLVED_TRAILING_ZERO"],
+      [3, null, "UNRESOLVED_TRAILING_ZERO"],
     ]);
   });
 

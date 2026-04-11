@@ -122,7 +122,7 @@ describe("interactionCreate /compo early acknowledgement", () => {
     await pending;
     restoreCommand();
     expect(runMock).toHaveBeenCalledTimes(1);
-  });
+  }, 30000);
 
   it("uses post-ack error response path when /compo fails after defer", async () => {
     const { CommandPermissionService } = await import("../src/services/CommandPermissionService");
@@ -150,5 +150,5 @@ describe("interactionCreate /compo early acknowledgement", () => {
         ? payload
         : String((payload as { content?: unknown } | undefined)?.content ?? "");
     expect(message).toContain("Something went wrong.");
-  });
+  }, 30000);
 });

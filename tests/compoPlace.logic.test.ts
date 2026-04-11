@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildCompoPlaceEmbedForTest,
   buildCompoStateRowsForTest,
   getAbsoluteSheetRowNumberForTest,
   getModeRowsForTest,
-  readPlacementCandidatesForTest,
+  parseWeightInputForTest,
 } from "../src/commands/Compo";
+import { buildCompoPlaceEmbedForTest } from "../src/services/CompoPlaceService";
 
 function blankRows(count: number, cols = 57): string[][] {
   return Array.from({ length: count }, () =>
@@ -21,7 +21,7 @@ function makeRow(cells: Record<number, string>, cols = 57): string[] {
   return row;
 }
 
-describe("/compo place candidate parsing", () => {
+describe("/compo helpers", () => {
   it("maps fixed-range indexes to absolute sheet rows and selects ACTUAL rows from layout", () => {
     expect(getAbsoluteSheetRowNumberForTest(0)).toBe(6);
     expect(getAbsoluteSheetRowNumberForTest(1)).toBe(7);
@@ -43,139 +43,54 @@ describe("/compo place candidate parsing", () => {
     expect(warRows.map((entry) => entry.sheetRowNumber)).toEqual([8, 11]);
   });
 
-  it("builds ACTUAL placement candidates only from ACTUAL rows and prevents duplicate clans", () => {
-    const rows = blankRows(8);
-
-    rows[1] = makeRow({
-      0: "RISING DAWN",
-      1: "#RD111",
-      3: "1,500,000",
-      20: "2",
-      21: "48",
-      22: "0",
-      23: "0",
-      24: "-1",
-      25: "-2",
-      26: "0",
-      27: "0",
-      49: "1,520,000",
-      56: "ACTUAL",
-    });
-
-    rows[2] = makeRow({
-      0: "RISING DAWN-war",
-      1: "#RDWAR",
-      3: "1,490,000",
-      20: "3",
-      21: "48",
-      22: "0",
-      23: "0",
-      24: "-9",
-      25: "0",
-      26: "0",
-      27: "0",
-      49: "1,520,000",
-      56: "WAR",
-    });
-
-    rows[4] = makeRow({
-      0: "RISING DAWN",
-      1: "#RD111",
-      3: "1,510,000",
-      20: "5",
-      21: "47",
-      22: "0",
-      23: "0",
-      24: "-7",
-      25: "0",
-      26: "0",
-      27: "0",
-      49: "1,520,000",
-      56: "ACTUAL",
-    });
-
-    rows[7] = makeRow({
-      0: "DARK EMPIRE™!-actual",
-      1: "#DE222",
-      3: "1,470,000",
-      20: "1",
-      21: "49",
-      22: "0",
-      23: "0",
-      24: "-3",
-      25: "0",
-      26: "0",
-      27: "0",
-      49: "1,500,000",
-      56: "ACTUAL",
-    });
-
-    const actualRows = getModeRowsForTest(rows, "actual");
-    const candidates = readPlacementCandidatesForTest(actualRows);
-
-    expect(actualRows.map((entry) => entry.sheetRowNumber)).toEqual([
-      7, 10, 13,
-    ]);
-    expect(candidates).toHaveLength(2);
-    expect(candidates.map((candidate) => candidate.clanTag)).toEqual([
-      "RD111",
-      "DE222",
-    ]);
-    expect(candidates.map((candidate) => candidate.clanName)).not.toContain(
-      "RISING DAWN-war",
-    );
-
-    const rd = candidates.find((candidate) => candidate.clanTag === "RD111");
-    expect(rd).toBeDefined();
-    expect(rd?.missingCount).toBe(2);
-    expect(rd?.bucketDeltaByHeader["th16-delta"]).toBe(-1);
-    expect(rd?.bucketDeltaByHeader["th15-delta"]).toBe(-2);
-
-    const uniqueTags = new Set(
-      candidates.map((candidate) => candidate.clanTag),
-    );
-    expect(uniqueTags.size).toBe(candidates.length);
+  it("keeps /compo place weight normalization unchanged", () => {
+    expect(parseWeightInputForTest("145000")).toBe(145000);
+    expect(parseWeightInputForTest("145,000")).toBe(145000);
+    expect(parseWeightInputForTest("145k")).toBe(145000);
+    expect(parseWeightInputForTest("145.5k")).toBe(145500);
+    expect(parseWeightInputForTest("")).toBeNull();
+    expect(parseWeightInputForTest("abc")).toBeNull();
   });
 
-  it("builds an embed with recommended, vacancy, and composition sections", () => {
+  it("builds a placement embed with stable section names", () => {
     const embed = buildCompoPlaceEmbedForTest({
-      inputWeight: 151000,
-      bucket: "TH16",
+      inputWeight: 145000,
+      bucket: "TH15",
       recommended: [
         {
-          clanName: "Red Riders-actual",
-          clanTag: "R8R8",
-          totalWeight: 0,
-          targetBand: 0,
+          clanName: "Red Riders-war",
+          clanTag: "#R8R8",
+          totalWeight: 8100000,
+          targetBand: 8100000,
           missingCount: 0,
           remainingToTarget: 0,
           bucketDeltaByHeader: {},
-          liveMemberCount: 47,
-          vacancySlots: 3,
-          hasVacancy: true,
+          liveMemberCount: 50,
+          vacancySlots: 0,
+          hasVacancy: false,
           delta: -2,
         },
       ],
       vacancyList: [
         {
-          clanName: "Zero Gravity-actual",
-          clanTag: "ZG99",
-          totalWeight: 0,
-          targetBand: 0,
+          clanName: "Zero Gravity-war",
+          clanTag: "#ZG99",
+          totalWeight: 8100000,
+          targetBand: 8100000,
           missingCount: 0,
           remainingToTarget: 0,
           bucketDeltaByHeader: {},
-          liveMemberCount: 47,
-          vacancySlots: 3,
-          hasVacancy: true,
+          liveMemberCount: 50,
+          vacancySlots: 0,
+          hasVacancy: false,
         },
       ],
       compositionList: [
         {
-          clanName: "The Winners Club-actual",
-          clanTag: "TWC1",
-          totalWeight: 0,
-          targetBand: 0,
+          clanName: "The Winners Club-war",
+          clanTag: "#TWC1",
+          totalWeight: 8100000,
+          targetBand: 8100000,
           missingCount: 0,
           remainingToTarget: 0,
           bucketDeltaByHeader: {},
@@ -185,24 +100,24 @@ describe("/compo place candidate parsing", () => {
           delta: -4,
         },
       ],
-      refreshLine: "RAW Data last refreshed: (not available)",
+      refreshLine: "Persisted WAR data last refreshed: (not available)",
     }).toJSON();
 
     expect(embed.title).toBe("Compo Placement Suggestions");
-    expect(embed.description).toContain("Weight: **151,000**");
-    expect(embed.description).toContain("Bucket: **TH16**");
-    expect(embed.fields?.map((f) => f.name)).toEqual([
+    expect(embed.description).toContain("Weight: **145,000**");
+    expect(embed.description).toContain("Bucket: **TH15**");
+    expect(embed.fields?.map((field) => field.name)).toEqual([
       "Recommended",
       "Vacancy",
       "Composition",
     ]);
     expect(embed.fields?.[0]?.value).toContain("Red Riders");
-    expect(embed.fields?.[0]?.value).not.toContain("-actual");
-    expect(embed.fields?.[0]?.value).toContain("needs 2 TH16");
+    expect(embed.fields?.[0]?.value).not.toContain("-war");
+    expect(embed.fields?.[0]?.value).toContain("needs 2 TH15");
     expect(embed.fields?.[1]?.value).toContain("ZG");
-    expect(embed.fields?.[1]?.value).toContain("47/50");
+    expect(embed.fields?.[1]?.value).toContain("50/50");
     expect(embed.fields?.[2]?.value).toContain("The Winners Club");
-    expect(embed.fields?.[2]?.value).not.toContain("-actual");
+    expect(embed.fields?.[2]?.value).not.toContain("-war");
     expect(embed.fields?.[2]?.value).toContain("-4");
   });
 
@@ -247,21 +162,6 @@ describe("/compo place candidate parsing", () => {
           27: "0",
         }),
         sheetRowNumber: 7,
-      },
-      {
-        row: makeRow({
-          0: "",
-          3: "1,490,000",
-          20: "5",
-          21: "46",
-          22: "0",
-          23: "0",
-          24: "-3",
-          25: "0",
-          26: "0",
-          27: "0",
-        }),
-        sheetRowNumber: 10,
       },
       {
         row: makeRow({

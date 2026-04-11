@@ -316,6 +316,125 @@ export async function listOpenDeferredWeightsByPlayerTags(input: {
   );
 }
 
+/** Purpose: resolve open deferred weights for many clan/player sets in one bulk query with the same clan-over-guild precedence rules. */
+export async function listOpenDeferredWeightsByClanAndPlayerTags(input: {
+  guildId: string | null | undefined;
+  clanPlayerTags: Array<{
+    clanTag: string | null;
+    playerTags: string[];
+  }>;
+}): Promise<Map<string, Map<string, number>>> {
+  const guildId = String(input.guildId ?? "").trim();
+  if (!guildId) return new Map<string, Map<string, number>>();
+
+  const requested = input.clanPlayerTags
+    .map((entry) => {
+      const normalizedClanTag = normalizeTag(entry.clanTag);
+      const normalizedPlayerTags = [
+        ...new Set(
+          (entry.playerTags ?? [])
+            .map((tag) => normalizePlayerTag(tag))
+            .filter((tag): tag is string => Boolean(tag)),
+        ),
+      ];
+      return {
+        clanTag: normalizedClanTag || null,
+        playerTags: normalizedPlayerTags,
+      };
+    })
+    .filter((entry) => entry.playerTags.length > 0);
+
+  if (requested.length === 0) return new Map<string, Map<string, number>>();
+
+  const guildScopeKey = buildDeferScopeKey(guildId, null);
+  const allPlayerTags = [
+    ...new Set(requested.flatMap((entry) => entry.playerTags)),
+  ];
+  const scopeKeys = [
+    ...new Set(
+      requested.flatMap((entry) => [
+        buildDeferScopeKey(guildId, entry.clanTag),
+        guildScopeKey,
+      ]),
+    ),
+  ];
+
+  const rows = await prisma.weightInputDeferment.findMany({
+    where: {
+      guildId,
+      status: "open",
+      scopeKey: { in: scopeKeys },
+      playerTag: { in: allPlayerTags },
+    },
+    select: {
+      scopeKey: true,
+      playerTag: true,
+      deferredWeight: true,
+      createdAt: true,
+    },
+    orderBy: [{ createdAt: "desc" }],
+  });
+
+  const rowsByPlayerTag = new Map<string, typeof rows>();
+  for (const row of rows) {
+    const playerTag = normalizePlayerTag(row.playerTag);
+    if (!playerTag) continue;
+    const existing = rowsByPlayerTag.get(playerTag) ?? [];
+    existing.push(row);
+    rowsByPlayerTag.set(playerTag, existing);
+  }
+
+  const result = new Map<string, Map<string, number>>();
+  for (const entry of requested) {
+    const clanTagKey = entry.clanTag ?? "";
+    const clanScopeKey = buildDeferScopeKey(guildId, entry.clanTag);
+    const deferredByPlayerTag = new Map<string, number>();
+
+    for (const playerTag of entry.playerTags) {
+      const candidates = rowsByPlayerTag.get(playerTag) ?? [];
+      let best:
+        | {
+            deferredWeight: number;
+            scopePriority: number;
+            createdAtMs: number;
+          }
+        | null = null;
+
+      for (const row of candidates) {
+        if (row.scopeKey !== clanScopeKey && row.scopeKey !== guildScopeKey) {
+          continue;
+        }
+        const deferredWeight =
+          row.deferredWeight !== null &&
+          row.deferredWeight !== undefined &&
+          Number.isFinite(row.deferredWeight)
+            ? Math.max(0, Math.trunc(row.deferredWeight))
+            : null;
+        if (deferredWeight === null) continue;
+
+        const scopePriority = row.scopeKey === clanScopeKey ? 0 : 1;
+        const createdAtMs = row.createdAt.getTime();
+        if (
+          !best ||
+          scopePriority < best.scopePriority ||
+          (scopePriority === best.scopePriority &&
+            createdAtMs > best.createdAtMs)
+        ) {
+          best = { deferredWeight, scopePriority, createdAtMs };
+        }
+      }
+
+      if (best) {
+        deferredByPlayerTag.set(playerTag, best.deferredWeight);
+      }
+    }
+
+    result.set(clanTagKey, deferredByPlayerTag);
+  }
+
+  return result;
+}
+
 /** Purpose: resolve one open deferment by tag for command-driven state transitions. */
 export async function removeOpenWeightInputDeferment(input: {
   guildId: string;
