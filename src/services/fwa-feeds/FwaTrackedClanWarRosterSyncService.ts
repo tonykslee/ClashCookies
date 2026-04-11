@@ -106,7 +106,19 @@ function applyEffectiveWeightRules(
       zeroBlockEndExclusive += 1;
     }
     const fillSource = rows[zeroBlockEndExclusive];
-    const fillWeight = fillSource?.rawWeight && fillSource.rawWeight > 0 ? fillSource.rawWeight : null;
+    const lowestResolvedWeightAbove = derived.reduce<number | null>((lowest, row) => {
+      if (row.effectiveWeight === null || row.effectiveWeight <= 0) {
+        return lowest;
+      }
+      if (lowest === null || row.effectiveWeight < lowest) {
+        return row.effectiveWeight;
+      }
+      return lowest;
+    }, null);
+    const fillWeight =
+      fillSource?.rawWeight && fillSource.rawWeight > 0
+        ? fillSource.rawWeight
+        : lowestResolvedWeightAbove;
     for (let zeroIndex = index; zeroIndex < zeroBlockEndExclusive; zeroIndex += 1) {
       const row = rows[zeroIndex];
       derived.push({
