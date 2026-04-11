@@ -53,12 +53,33 @@ function getComponentCustomIds(payload: unknown): string[] {
   });
 }
 
+function getFirstButtonState(payload: unknown): { label: string; disabled: boolean } | null {
+  if (!payload || typeof payload !== "object") return null;
+  const rows = Array.isArray((payload as { components?: unknown[] }).components)
+    ? ((payload as { components: unknown[] }).components as unknown[])
+    : [];
+  const firstRow = rows[0];
+  const normalized =
+    firstRow && typeof (firstRow as { toJSON?: () => unknown }).toJSON === "function"
+      ? (firstRow as { toJSON: () => unknown }).toJSON()
+      : firstRow;
+  if (!normalized || typeof normalized !== "object") return null;
+  const firstComponent = Array.isArray((normalized as { components?: unknown[] }).components)
+    ? (normalized as { components: unknown[] }).components[0]
+    : null;
+  if (!firstComponent || typeof firstComponent !== "object") return null;
+  return {
+    label: String((firstComponent as { label?: unknown }).label ?? ""),
+    disabled: Boolean((firstComponent as { disabled?: unknown }).disabled),
+  };
+}
+
 describe("/compo place command", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
   });
 
-  it("uses the place service and keeps sheet access out of the command layer", async () => {
+  it("uses the place service, keeps sheet access out of the command layer, and restores the place refresh button", async () => {
     const readPlaceSpy = vi
       .spyOn(CompoPlaceService.prototype, "readPlace")
       .mockResolvedValue({
@@ -89,7 +110,11 @@ describe("/compo place command", () => {
 
     const payload = interaction.editReply.mock.calls.at(-1)?.[0];
     expect(Array.isArray(payload?.embeds)).toBe(true);
-    expect(getComponentCustomIds(payload)).toEqual([]);
+    expect(getComponentCustomIds(payload)).toEqual(["compo-refresh:place:user-1:145000"]);
+    expect(getFirstButtonState(payload)).toEqual({
+      label: "Refresh Data",
+      disabled: false,
+    });
   });
 
   it("maps lower persisted weight buckets into the stable <=TH13 place bucket", async () => {
@@ -110,5 +135,11 @@ describe("/compo place command", () => {
     await Compo.run({} as any, interaction as any, {} as any);
 
     expect(readPlaceSpy).toHaveBeenCalledWith(100000, "<=TH13", "guild-1");
+    const payload = interaction.editReply.mock.calls.at(-1)?.[0];
+    expect(getComponentCustomIds(payload)).toEqual(["compo-refresh:place:user-1:100000"]);
+    expect(getFirstButtonState(payload)).toEqual({
+      label: "Refresh Data",
+      disabled: false,
+    });
   });
 });
