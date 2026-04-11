@@ -18,6 +18,7 @@ import {
   normalizePlayerTag,
 } from "./WeightInputDefermentService";
 import { normalizeTag } from "./war-events/core";
+import { FwaClanMembersSyncService } from "./fwa-feeds/FwaClanMembersSyncService";
 
 type PlacementCandidate = {
   clanName: string;
@@ -308,6 +309,8 @@ function buildPlacementCandidates(input: {
 
 /** Purpose: derive `/compo place` suggestions from persisted ACTUAL feed-backed current-member state. */
 export class CompoPlaceService {
+  private readonly clanMembersSync = new FwaClanMembersSyncService();
+
   /** Purpose: load ACTUAL placement suggestions using one persisted tracked-clan/member snapshot read plus deterministic weight fallbacks. */
   async readPlace(
     inputWeight: number,
@@ -487,12 +490,28 @@ export class CompoPlaceService {
     };
   }
 
-  /** Purpose: keep legacy refresh-button calls honest by rereading the latest persisted ACTUAL snapshot without triggering external refresh work. */
+  /** Purpose: explicitly refresh ACTUAL current-member weights plus live member counts for tracked clans, then rerender `/compo place` from persisted state. */
   async refreshPlace(
     inputWeight: number,
     bucket: CompoWarDisplayBucket,
     guildId?: string | null,
   ): Promise<CompoPlaceReadResult> {
+    const tracked = await prisma.trackedClan.findMany({
+      orderBy: { createdAt: "asc" },
+      select: { tag: true },
+    });
+    const trackedClanTags = tracked
+      .map((clan) => normalizeTag(clan.tag))
+      .filter((tag): tag is string => Boolean(tag));
+
+    if (trackedClanTags.length > 0) {
+      await this.clanMembersSync.syncAllTrackedClans({
+        force: true,
+      });
+      await this.clanMembersSync.refreshCurrentClanMembersForClanTags(
+        trackedClanTags,
+      );
+    }
     return this.readPlace(inputWeight, bucket, guildId);
   }
 }

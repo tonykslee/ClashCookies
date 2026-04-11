@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GoogleSheetsService } from "../src/services/GoogleSheetsService";
-import * as SheetRefreshService from "../src/services/SheetRefreshService";
+import { FwaClanMembersSyncService } from "../src/services/fwa-feeds/FwaClanMembersSyncService";
 
 const prismaMock = vi.hoisted(() => ({
   trackedClan: {
@@ -401,7 +401,7 @@ describe("CompoPlaceService", () => {
     );
   });
 
-  it("refreshes by rereading the persisted snapshot only and does not trigger sheet refresh", async () => {
+  it("refreshes ACTUAL member weights and live member counts for all tracked clans before rereading persisted place data", async () => {
     prismaMock.trackedClan.findMany.mockResolvedValue([
       makeTrackedClan("#AAA111", "Alpha Clan"),
     ]);
@@ -414,13 +414,33 @@ describe("CompoPlaceService", () => {
     prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
     prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.heatMapRef.findMany.mockResolvedValue([makeHeatMapRef()]);
-    const triggerSharedSheetRefreshSpy = vi.spyOn(
-      SheetRefreshService,
-      "triggerSharedSheetRefresh",
+    const syncAllTrackedClansSpy = vi
+      .spyOn(FwaClanMembersSyncService.prototype, "syncAllTrackedClans")
+      .mockResolvedValue({
+        clanCount: 1,
+        rowCount: 50,
+        changedRowCount: 50,
+        failedClans: [],
+      });
+    const refreshCurrentClanMembersSpy = vi
+      .spyOn(FwaClanMembersSyncService.prototype, "refreshCurrentClanMembersForClanTags")
+      .mockResolvedValue({
+        clanCount: 1,
+        rowCount: 50,
+        changedRowCount: 50,
+        failedClans: [],
+      });
+    const getCompoLinkedSheetSpy = vi.spyOn(
+      GoogleSheetsService.prototype,
+      "getCompoLinkedSheet",
     );
 
     await new CompoPlaceService().refreshPlace(145000, "TH15", "guild-1");
 
-    expect(triggerSharedSheetRefreshSpy).not.toHaveBeenCalled();
+    expect(syncAllTrackedClansSpy).toHaveBeenCalledWith({
+      force: true,
+    });
+    expect(refreshCurrentClanMembersSpy).toHaveBeenCalledWith(["#AAA111"]);
+    expect(getCompoLinkedSheetSpy).not.toHaveBeenCalled();
   });
 });

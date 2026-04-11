@@ -135,6 +135,7 @@ Operational notes:
 - `HeatMapRef` is an explicit seed/import owner and is not refreshed by per-clan watch jobs.
 - `/compo state mode:war` now reads persisted feed-backed tracked-clan roster state only.
 - `/compo place` now reads persisted ACTUAL FWAStats current-member state from `TrackedClan` + `FwaClanMemberCurrent` + `HeatMapRef`, with zero-weight fallback order `member weight -> deferred weight -> tracked WAR effective weight -> ignore`.
+- `/compo place` includes an explicit inline refresh button that refreshes tracked-clan ACTUAL feed-backed current-member/weight state plus live CoC member counts for all tracked clans before rerendering from persisted state.
 - `/compo state mode:actual` remains sheet-backed in this phase.
 
 Manual/dev feed operations:

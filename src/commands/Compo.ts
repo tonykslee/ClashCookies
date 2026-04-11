@@ -866,15 +866,24 @@ export async function handleCompoRefreshButton(
     if (!bucket) {
       throw new Error("Invalid placement bucket for refresh.");
     }
-    const placeResult = await new CompoPlaceService().refreshPlace(
+      const placeResult = await new CompoPlaceService().refreshPlace(
       parsed.weight,
       bucket,
       interaction.guildId ?? null,
     );
+    const refreshCustomId = buildCompoRefreshCustomId({
+      kind: "place",
+      userId: interaction.user.id,
+      weight: parsed.weight,
+    });
     await interaction.editReply({
       content: placeResult.content,
       embeds: placeResult.embeds,
-      components: supplementalRows,
+      components: buildCompoRefreshComponents({
+        customId: refreshCustomId,
+        loading: false,
+        supplementalRows,
+      }),
     });
   } catch (err) {
     console.error(`compo refresh button failed: ${formatError(err)}`);
@@ -1199,6 +1208,11 @@ export const Compo: Command = {
           bucket,
           interaction.guildId ?? null,
         );
+        const refreshCustomId = buildCompoRefreshCustomId({
+          kind: "place",
+          userId: interaction.user.id,
+          weight: inputWeight,
+        });
         logCompoStage(interaction, "db_fetch", {
           entity: "actual_compo_place_source",
           mode: "actual",
@@ -1223,7 +1237,10 @@ export const Compo: Command = {
         await interaction.editReply({
           content: placeResult.content,
           embeds: placeResult.embeds,
-          components: [],
+          components: buildCompoRefreshComponents({
+            customId: refreshCustomId,
+            loading: false,
+          }),
         });
         logCompoStage(interaction, "response_sent", {
           reason:

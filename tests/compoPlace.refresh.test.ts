@@ -51,7 +51,7 @@ describe("compo place refresh button behavior", () => {
     vi.restoreAllMocks();
   });
 
-  it("rereads ACTUAL-backed place suggestions through the place service and removes the place refresh button", async () => {
+  it("rerenders ACTUAL-backed place suggestions and restores the place refresh button after refresh", async () => {
     const refreshPlaceSpy = vi
       .spyOn(CompoPlaceService.prototype, "refreshPlace")
       .mockResolvedValue({
@@ -74,9 +74,25 @@ describe("compo place refresh button behavior", () => {
     await handleCompoRefreshButton(interaction as any, {} as any);
 
     expect(refreshPlaceSpy).toHaveBeenCalledWith(145000, "TH15", "guild-1");
+    const loadingPayload = interaction.update.mock.calls[0]?.[0];
+    expect(loadingPayload?.components?.length ?? 0).toBeGreaterThan(0);
+    expect(
+      String(
+        loadingPayload?.components?.[0]?.toJSON?.()?.components?.[0]?.label ??
+          loadingPayload?.components?.[0]?.components?.[0]?.label ??
+          "",
+      ),
+    ).toBe("Refreshing...");
     const payload = interaction.editReply.mock.calls.at(-1)?.[0];
     expect(String(payload?.content ?? "")).toContain("Mode Displayed: **PLACE**");
-    expect(payload?.components ?? []).toEqual([]);
+    expect(payload?.components?.length ?? 0).toBeGreaterThan(0);
+    expect(
+      String(
+        payload?.components?.[0]?.toJSON?.()?.components?.[0]?.label ??
+          payload?.components?.[0]?.components?.[0]?.label ??
+          "",
+      ),
+    ).toBe("Refresh Data");
     expect(interaction.followUp).not.toHaveBeenCalled();
   });
 });
