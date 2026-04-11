@@ -262,6 +262,7 @@ async function openReminderPanel(input: {
     guildId: input.interaction.guildId!,
   });
   let clanOptions = await reminderService.listSelectableClanOptions(input.interaction.guildId!);
+  let savedReminder: ReminderWithDetails | null = null;
 
   await input.interaction.editReply({
     embeds: [buildReminderPanelEmbed({ reminder, mode: input.mode })],
@@ -406,10 +407,9 @@ async function openReminderPanel(input: {
           );
           return;
         }
-        await reminderService.setReminderEnabled({
+        savedReminder = await reminderService.saveDraftReminder({
           reminderId: input.reminderId,
           guildId: input.interaction.guildId!,
-          isEnabled: true,
           actorUserId: input.ownerUserId,
         });
         createSaved = true;
@@ -487,12 +487,14 @@ async function openReminderPanel(input: {
   collector.on("end", async (_collected, reason) => {
     try {
       if (reason === "saved" && createSaved) {
-        const finalReminder = await reminderService.getReminderWithDetails({
-          reminderId: input.reminderId,
-          guildId: input.interaction.guildId!,
-        });
+        const finalReminder =
+          savedReminder ??
+          (await reminderService.getReminderWithDetails({
+            reminderId: input.reminderId,
+            guildId: input.interaction.guildId!,
+          }));
         await input.interaction.editReply({
-          content: `Reminder saved and enabled: ${finalReminder.id}`,
+          content: `Reminder saved (${finalReminder.isEnabled ? "enabled" : "disabled"}): ${finalReminder.id}`,
           embeds: [buildReminderPanelEmbed({ reminder: finalReminder, mode: input.mode })],
           components: [],
         });
