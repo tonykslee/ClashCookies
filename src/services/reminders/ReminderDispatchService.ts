@@ -4,6 +4,7 @@ import type { ClanWar } from "../../generated/coc-api";
 import { formatError } from "../../helper/formatError";
 import { splitDiscordLineMessages } from "../../helper/discordLineMessageSplit";
 import { prisma } from "../../prisma";
+import { resolveCurrentWarMatchTypeSignal } from "../MatchTypeResolutionService";
 import { CoCService, type ClanCapitalRaidSeason } from "../CoCService";
 import { normalizeClanTag, normalizePlayerTag } from "../PlayerLinkService";
 import { parseCocTime } from "../war-events/core";
@@ -55,6 +56,11 @@ type ReminderRosterEntry = {
 type ReminderRosterResolveResult = {
   windowActive: boolean;
   lines: string[];
+};
+
+type ConfirmedWarHeadline = {
+  label: "BL" | "MM" | "FWA-WIN" | "FWA-LOSE";
+  emoji: "⚫" | "⚪" | "🟢" | "🔴";
 };
 
 const MAX_REMINDER_MESSAGES = 3;
@@ -146,26 +152,35 @@ async function buildReminderDispatchContents(input: {
   cocService: ReminderDispatchCoCClient | null;
 }): Promise<string[]> {
   const payload = input.input;
-  const headerLines = buildReminderDispatchHeaderLines({
-    input: payload,
-    nowMs: input.nowMs,
-  });
   const semantic = resolveReminderRosterSemantic({
     reminderType: payload.type,
     eventIdentity: payload.eventIdentity,
   });
-  const roster = await resolveReminderRosterLines({
-    input: payload,
-    semantic,
-    cocService: input.cocService,
-    nowMs: input.nowMs,
-  });
+  const [warHeadline, roster] = await Promise.all([
+    semantic === "WAR"
+      ? resolveConfirmedWarHeadline({
+          clanTag: payload.clanTag,
+        })
+      : Promise.resolve<ConfirmedWarHeadline | null>(null),
+    resolveReminderRosterLines({
+      input: payload,
+      semantic,
+      cocService: input.cocService,
+      nowMs: input.nowMs,
+    }),
+  ]);
   if (semantic !== "OTHER" && !roster.windowActive) {
     return [];
   }
+  const headerLines = buildReminderDispatchHeaderLines({
+    input: payload,
+    nowMs: input.nowMs,
+    warHeadline,
+  });
   return buildReminderContentsWithRosterOverflow({
     headerLines,
     rosterLines: roster.lines,
+    includeRosterHeading: semantic !== "WAR",
   });
 }
 
@@ -173,6 +188,7 @@ async function buildReminderDispatchContents(input: {
 function buildReminderDispatchHeaderLines(input: {
   input: ReminderDispatchInput;
   nowMs: number;
+  warHeadline: ConfirmedWarHeadline | null;
 }): string[] {
   const payload = input.input;
   const clanLabel = payload.clanName
@@ -184,9 +200,13 @@ function buildReminderDispatchHeaderLines(input: {
     Math.floor((payload.eventEndsAt.getTime() - input.nowMs) / 1000),
   );
   const endUnix = Math.floor(payload.eventEndsAt.getTime() / 1000);
+  const headlineLabel = input.warHeadline
+    ? `${input.warHeadline.label} war ends`
+    : getReminderHeadingLabel(payload.type);
+  const headlineEmoji = input.warHeadline ? ` ${input.warHeadline.emoji}` : "";
 
   return [
-    `### ${getReminderHeadingLabel(payload.type)} in ${offsetLabel}`,
+    `### ${headlineLabel} in ${offsetLabel}${headlineEmoji}`,
     `Clan: ${clanLabel}`,
     `Time remaining: <t:${endUnix}:R> (${remainingSeconds}s)`,
     `Ends at: <t:${endUnix}:F> (<t:${endUnix}:R>)`,
@@ -274,22 +294,12 @@ async function resolveReminderRosterLines(input: {
 
   return {
     windowActive,
-    lines: sortedRoster.map((entry) => {
-      const mention = entry.discordUserId;
-      if (input.semantic === "RAIDS") {
-        if (mention) {
-          return `${entry.playerName} - <@${mention}> - ${entry.attacksRemaining} / ${entry.attacksMax}`;
-        }
-        return `:no: ${entry.playerName} - ${entry.attacksRemaining} / ${entry.attacksMax}`;
-      }
-
-      const positionLabel =
-        entry.position !== null && entry.position > 0 ? `#${entry.position}` : "#?";
-      if (mention) {
-        return `${positionLabel} - ${entry.playerName} - <@${mention}> - ${entry.attacksRemaining} / ${entry.attacksMax}`;
-      }
-      return `${positionLabel} - :no: ${entry.playerName} - ${entry.attacksRemaining} / ${entry.attacksMax}`;
-    }),
+    lines: sortedRoster.map((entry) =>
+      formatReminderRosterLine({
+        entry,
+        semantic: input.semantic,
+      }),
+    ),
   };
 }
 
@@ -467,6 +477,83 @@ async function resolveRaidsReminderRoster(input: {
   };
 }
 
+/** Purpose: resolve one confirmed WAR headline variant from the persisted current-war row when the war is leader-confirmed. */
+async function resolveConfirmedWarHeadline(input: {
+  clanTag: string;
+}): Promise<ConfirmedWarHeadline | null> {
+  const clanTag = normalizeClanTag(input.clanTag);
+  if (!clanTag) return null;
+
+  const currentWar = await prisma.currentWar.findFirst({
+    where: { clanTag },
+    orderBy: { updatedAt: "desc" },
+    select: {
+      matchType: true,
+      inferredMatchType: true,
+      outcome: true,
+    },
+  });
+  const confirmed = resolveCurrentWarMatchTypeSignal({
+    matchType: currentWar?.matchType ?? null,
+    inferredMatchType: currentWar?.inferredMatchType ?? null,
+  }).confirmed;
+  if (!confirmed) return null;
+
+  if (confirmed.matchType === "BL") {
+    return {
+      label: "BL",
+      emoji: "⚫",
+    };
+  }
+  if (confirmed.matchType === "MM") {
+    return {
+      label: "MM",
+      emoji: "⚪",
+    };
+  }
+  if (confirmed.matchType === "FWA") {
+    const outcome = String(currentWar?.outcome ?? "").trim().toUpperCase();
+    if (outcome === "WIN") {
+      return {
+        label: "FWA-WIN",
+        emoji: "🟢",
+      };
+    }
+    if (outcome === "LOSE") {
+      return {
+        label: "FWA-LOSE",
+        emoji: "🔴",
+      };
+    }
+  }
+  return null;
+}
+
+/** Purpose: render one roster line with semantic-specific WAR/CWL/RAIDS unlinked formatting. */
+function formatReminderRosterLine(input: {
+  entry: ReminderRosterEntry;
+  semantic: ReminderRosterSemantic;
+}): string {
+  const entry = input.entry;
+  const mention = entry.discordUserId;
+  if (input.semantic === "RAIDS") {
+    if (mention) {
+      return `${entry.playerName} - <@${mention}> - ${entry.attacksRemaining} / ${entry.attacksMax}`;
+    }
+    return `:no: ${entry.playerName} - ${entry.attacksRemaining} / ${entry.attacksMax}`;
+  }
+
+  const positionLabel =
+    entry.position !== null && entry.position > 0 ? `#${entry.position}` : "#?";
+  if (mention) {
+    return `${positionLabel} - ${entry.playerName} - <@${mention}> - ${entry.attacksRemaining} / ${entry.attacksMax}`;
+  }
+  if (input.semantic === "WAR") {
+    return `${positionLabel} - ❌ ${entry.playerName} \`${entry.playerTag}\` - ${entry.attacksRemaining} / ${entry.attacksMax}`;
+  }
+  return `${positionLabel} - :no: ${entry.playerName} - ${entry.attacksRemaining} / ${entry.attacksMax}`;
+}
+
 /** Purpose: select one raid season aligned to active-window or event-end timing so send-time roster resolution stays deterministic. */
 function selectActiveRaidSeasonForReminder(input: {
   seasons: ClanCapitalRaidSeason[];
@@ -558,10 +645,13 @@ async function resolveActiveCwlBattleWarForClan(input: {
 function buildReminderContentsWithRosterOverflow(input: {
   headerLines: string[];
   rosterLines: string[];
+  includeRosterHeading: boolean;
 }): string[] {
   const lines =
     input.rosterLines.length > 0
-      ? [...input.headerLines, "", "Players With Attacks Remaining:", ...input.rosterLines]
+      ? input.includeRosterHeading
+        ? [...input.headerLines, "", "Players With Attacks Remaining:", ...input.rosterLines]
+        : [...input.headerLines, "", ...input.rosterLines]
       : [...input.headerLines];
   return splitDiscordLineMessages({
     lines,

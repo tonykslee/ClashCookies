@@ -56,6 +56,13 @@ describe("ReminderDispatchService roster rendering", () => {
       { playerTag: "#PYLQ", discordUserId: "111" },
       { playerTag: "#PYLR", discordUserId: "333" },
     ]);
+    prismaMock.currentWar.findFirst.mockResolvedValue({
+      state: "inWar",
+      warId: 9,
+      matchType: "BL",
+      inferredMatchType: false,
+      outcome: null,
+    });
 
     const contents = await buildReminderDispatchContentsForTest({
       input: {
@@ -76,7 +83,7 @@ describe("ReminderDispatchService roster rendering", () => {
 
     expect(contents).toHaveLength(1);
     const lines = contents[0].split("\n");
-    expect(lines[0]).toBe("### War ends in 1h");
+    expect(lines[0]).toBe("### BL war ends in 1h ⚫");
     expect(lines[1]).toBe("Clan: Alpha Clan #PYLQ");
     expect(lines[2]).toBe("Time remaining: <t:1775782800:R> (1800s)");
     expect(lines[3]).toBe("Ends at: <t:1775782800:F> (<t:1775782800:R>)");
@@ -84,14 +91,129 @@ describe("ReminderDispatchService roster rendering", () => {
     expect(contents[0]).not.toContain("CWL reminder");
     expect(contents[0]).not.toContain("Configured offset");
     expect(contents[0]).not.toContain("Event timing");
+    expect(contents[0]).not.toContain("Players With Attacks Remaining:");
 
     const rosterLines = lines.filter((line) => /^#\d+ /.test(line));
     expect(rosterLines).toEqual([
       "#1 - Alpha - <@111> - 2 / 2",
-      "#2 - :no: Bravo - 1 / 2",
+      "#2 - ❌ Bravo `#PYLG` - 1 / 2",
       "#3 - Charlie - <@333> - 2 / 2",
     ]);
     expect(contents[0]).not.toContain("Done");
+  });
+
+  it("renders unlinked WAR reminder rows with a cross and backticked player tag", async () => {
+    prismaMock.warAttacks.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ0289", playerName: "PlayerName", playerPosition: 12, attacksUsed: 1 },
+    ]);
+    prismaMock.currentWar.findFirst.mockResolvedValue({
+      state: "inWar",
+      warId: 9,
+      matchType: "BL",
+      inferredMatchType: false,
+      outcome: null,
+    });
+
+    const contents = await buildReminderDispatchContentsForTest({
+      input: {
+        guildId: "guild-1",
+        channelId: "channel-1",
+        reminderId: "rem-1",
+        type: ReminderType.WAR_CWL,
+        clanTag: "#PYLQ",
+        clanName: "Alpha Clan",
+        offsetSeconds: 3600,
+        eventIdentity: "WAR:war-id:9",
+        eventEndsAt: new Date("2026-04-10T01:00:00.000Z"),
+        eventLabel: "war end",
+      },
+      nowMs: Date.parse("2026-04-10T00:30:00.000Z"),
+      cocService: null,
+    });
+
+    expect(contents[0]).toContain("#12 - ❌ PlayerName `#PYLQ0289` - 1 / 2");
+    expect(contents[0]).not.toContain("Players With Attacks Remaining:");
+  });
+
+  it.each([
+    {
+      title: "confirmed BL",
+      currentWar: {
+        state: "inWar",
+        warId: 9,
+        matchType: "BL",
+        inferredMatchType: false,
+        outcome: null,
+      },
+      expected: "### BL war ends in 1h ⚫",
+    },
+    {
+      title: "confirmed MM",
+      currentWar: {
+        state: "inWar",
+        warId: 9,
+        matchType: "MM",
+        inferredMatchType: false,
+        outcome: null,
+      },
+      expected: "### MM war ends in 1h ⚪",
+    },
+    {
+      title: "confirmed FWA-WIN",
+      currentWar: {
+        state: "inWar",
+        warId: 9,
+        matchType: "FWA",
+        inferredMatchType: false,
+        outcome: "WIN",
+      },
+      expected: "### FWA-WIN war ends in 1h 🟢",
+    },
+    {
+      title: "confirmed FWA-LOSE",
+      currentWar: {
+        state: "inWar",
+        warId: 9,
+        matchType: "FWA",
+        inferredMatchType: false,
+        outcome: "LOSE",
+      },
+      expected: "### FWA-LOSE war ends in 1h 🔴",
+    },
+    {
+      title: "unconfirmed war",
+      currentWar: {
+        state: "inWar",
+        warId: 9,
+        matchType: "BL",
+        inferredMatchType: true,
+        outcome: null,
+      },
+      expected: "### War ends in 1h",
+    },
+  ])("renders the $title header variant", async ({ currentWar, expected }) => {
+    prismaMock.currentWar.findFirst.mockResolvedValue(currentWar);
+    prismaMock.warAttacks.findMany.mockResolvedValue([]);
+
+    const contents = await buildReminderDispatchContentsForTest({
+      input: {
+        guildId: "guild-1",
+        channelId: "channel-1",
+        reminderId: "rem-1",
+        type: ReminderType.WAR_CWL,
+        clanTag: "#PYLQ",
+        clanName: "Header Clan",
+        offsetSeconds: 3600,
+        eventIdentity: "WAR:war-id:9",
+        eventEndsAt: new Date("2026-04-10T01:00:00.000Z"),
+        eventLabel: "war end",
+      },
+      nowMs: Date.parse("2026-04-10T00:30:00.000Z"),
+      cocService: null,
+    });
+
+    expect(contents).toHaveLength(1);
+    expect(contents[0].split("\n")[0]).toBe(expected);
   });
 
   it("ignores stale FwaWarMemberCurrent data when WarAttacks already has the authoritative counts", async () => {
@@ -163,7 +285,7 @@ describe("ReminderDispatchService roster rendering", () => {
     expect(contents[0].split("\n").filter((line) => /^#\d+ /.test(line))).toEqual([
       "#1 - First - <@111> - 2 / 2",
       "#3 - Second - <@111> - 2 / 2",
-      "#2 - :no: Middle - 2 / 2",
+      "#2 - ❌ Middle `#PYLG` - 2 / 2",
     ]);
   });
 
@@ -320,7 +442,7 @@ describe("ReminderDispatchService roster rendering", () => {
     expect(combinedRosterLines).toHaveLength(30);
     expect(
       combinedRosterLines.every((line) =>
-        /^#\d+ - :no: Player_\d{2}_X+ - 2 \/ 2$/.test(line),
+        /^#\d+ - ❌ Player_\d{2}_X+ `#.+` - 2 \/ 2$/.test(line),
       ),
     ).toBe(true);
   });
