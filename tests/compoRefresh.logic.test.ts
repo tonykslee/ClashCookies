@@ -43,6 +43,26 @@ function readFirstButton(payload: unknown): { label: string; disabled: boolean }
   };
 }
 
+function collectButtonCustomIds(payload: unknown): string[] {
+  if (!payload || typeof payload !== "object") return [];
+  const rows = Array.isArray((payload as { components?: unknown[] }).components)
+    ? ((payload as { components: unknown[] }).components as unknown[])
+    : [];
+  return rows.flatMap((row) => {
+    const normalized =
+      row && typeof (row as { toJSON?: () => unknown }).toJSON === "function"
+        ? (row as { toJSON: () => unknown }).toJSON()
+        : row;
+    if (!normalized || typeof normalized !== "object") return [];
+    const components = Array.isArray((normalized as { components?: unknown[] }).components)
+      ? ((normalized as { components: unknown[] }).components as unknown[])
+      : [];
+    return components
+      .map((component) => String((component as { custom_id?: unknown }).custom_id ?? ""))
+      .filter((customId) => customId.length > 0);
+  });
+}
+
 function makeInteraction(customId: string) {
   const interaction: any = {
     customId,
@@ -82,6 +102,7 @@ describe("compo refresh button behavior", () => {
       contentLines: ["RAW Data last refreshed: <t:1709900000:F>"],
       trackedClanTags: ["#AAA111"],
       renderableClanTags: ["#AAA111"],
+      view: "raw",
     });
 
     const customId = buildCompoRefreshCustomIdForTest({
@@ -95,6 +116,7 @@ describe("compo refresh button behavior", () => {
 
     expect(CompoActualStateService.prototype.refreshState).toHaveBeenCalledWith(
       "guild-1",
+      { view: "raw" },
     );
     const loadingPayload = interaction.update.mock.calls[0]?.[0];
     expect(readFirstButton(loadingPayload)).toEqual({
@@ -139,6 +161,79 @@ describe("compo refresh button behavior", () => {
     expect(interaction.followUp).toHaveBeenCalledTimes(1);
     expect(String(interaction.followUp.mock.calls[0]?.[0]?.content ?? "")).toContain(
       "Failed to refresh DB-backed ACTUAL state."
+    );
+  });
+
+  it("rerenders into the selected ACTUAL view and preserves that view on refresh", async () => {
+    vi.spyOn(CompoActualStateService.prototype, "readState").mockResolvedValue({
+      stateRows: [
+        ["Clan", "Total", "Missing", "Players", "TH18", "TH17", "TH16", "TH15", "TH14", "<=TH13"],
+        ["ACTUAL CLAN", "1,635,000", "2", "49", "1", "0", "-1", "0", "0", "0"],
+      ],
+      contentLines: [
+        "RAW Data last refreshed: <t:1709900000:F>",
+        "ACTUAL View: **Auto-Detect Band**",
+      ],
+      trackedClanTags: ["#AAA111"],
+      renderableClanTags: ["#AAA111"],
+      view: "auto",
+    });
+    vi.spyOn(CompoActualStateService.prototype, "refreshState").mockResolvedValue({
+      stateRows: [
+        ["Clan", "Total", "Missing", "Players", "TH18", "TH17", "TH16", "TH15", "TH14", "<=TH13"],
+        ["ACTUAL CLAN", "1,635,000", "2", "49", "1", "0", "-1", "0", "0", "0"],
+      ],
+      contentLines: [
+        "RAW Data last refreshed: <t:1709900001:F>",
+        "ACTUAL View: **Auto-Detect Band**",
+      ],
+      trackedClanTags: ["#AAA111"],
+      renderableClanTags: ["#AAA111"],
+      view: "auto",
+    });
+
+    const viewInteraction = makeInteraction(
+      buildCompoRefreshCustomIdForTest({
+        kind: "view",
+        userId: "user-1",
+        actualView: "auto",
+      }),
+    );
+    viewInteraction.message.components = [
+      makeMessageRow("compo-refresh:state:user-1:actual:raw", "Refresh Data"),
+      makeMessageRow("compo-refresh:view:user-1:raw", "Raw Data"),
+      makeMessageRow("post-channel:user-1", "Post to Channel"),
+    ];
+
+    await handleCompoRefreshButton(viewInteraction as any, {} as any);
+
+    expect(CompoActualStateService.prototype.readState).toHaveBeenCalledWith(
+      "guild-1",
+      { view: "auto" },
+    );
+    const viewPayload = viewInteraction.editReply.mock.calls.at(-1)?.[0];
+    expect(collectButtonCustomIds(viewPayload)).toEqual(
+      expect.arrayContaining([
+        "compo-refresh:state:user-1:actual:auto",
+        "compo-refresh:view:user-1:raw",
+        "compo-refresh:view:user-1:auto",
+        "compo-refresh:view:user-1:best",
+      ]),
+    );
+
+    const refreshInteraction = makeInteraction("compo-refresh:state:user-1:actual:auto");
+    refreshInteraction.message.components = (viewPayload.components as unknown[]).map(
+      (row) =>
+        row && typeof (row as { toJSON?: () => unknown }).toJSON === "function"
+          ? row
+          : { toJSON: () => row },
+    );
+
+    await handleCompoRefreshButton(refreshInteraction as any, {} as any);
+
+    expect(CompoActualStateService.prototype.refreshState).toHaveBeenCalledWith(
+      "guild-1",
+      { view: "auto" },
     );
   });
 });
