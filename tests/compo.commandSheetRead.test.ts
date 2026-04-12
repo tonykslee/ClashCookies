@@ -195,7 +195,9 @@ describe("/compo strict sheet read path", () => {
   });
 
   it("adds an inline refresh button for /compo state output", async () => {
-    vi.spyOn(CompoActualStateService.prototype, "readState").mockResolvedValue({
+    const readStateSpy = vi
+      .spyOn(CompoActualStateService.prototype, "readState")
+      .mockResolvedValue({
       stateRows: [
         ["Clan", "Total", "Missing", "Players", "TH18", "TH17", "TH16", "TH15", "TH14", "<=TH13"],
         ["DARK EMPIRE", "1,470,000", "1", "0", "0", "-1", "0", "0", "0", "0"],
@@ -203,6 +205,7 @@ describe("/compo strict sheet read path", () => {
       contentLines: ["RAW Data last refreshed: <t:1709900000:F>"],
       trackedClanTags: ["#LQQ99UV8"],
       renderableClanTags: ["#LQQ99UV8"],
+      view: "raw",
     });
 
     const stateInteraction = makeInteraction({ subcommand: "state", mode: "actual" });
@@ -212,8 +215,17 @@ describe("/compo strict sheet read path", () => {
       }),
     } as any);
     const statePayload = stateInteraction.editReply.mock.calls.at(-1)?.[0];
+    expect(readStateSpy).toHaveBeenCalledWith("guild-1", { view: "raw" });
     expect(getComponentCustomIds(statePayload).some((id) => id.startsWith("compo-refresh:state:"))).toBe(
       true
+    );
+    expect(getComponentCustomIds(statePayload)).toEqual(
+      expect.arrayContaining([
+        "compo-refresh:state:user-1:actual:raw",
+        "compo-refresh:view:user-1:raw",
+        "compo-refresh:view:user-1:auto",
+        "compo-refresh:view:user-1:best",
+      ])
     );
   });
 
@@ -226,6 +238,7 @@ describe("/compo strict sheet read path", () => {
       contentLines: ["RAW Data last refreshed: <t:1709900000:F>"],
       trackedClanTags: ["#LQQ99UV8"],
       renderableClanTags: ["#LQQ99UV8"],
+      view: "raw",
     });
 
     const interaction = makeInteraction({ subcommand: "state" });

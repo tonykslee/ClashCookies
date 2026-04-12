@@ -1,17 +1,20 @@
 import type {
   FwaClanMemberCurrent,
   FwaTrackedClanWarRosterMemberCurrent,
-  HeatMapRef,
   TrackedClan,
 } from "@prisma/client";
 import {
   resolveActualCompoWeight,
   toPositiveCompoWeight,
 } from "../helper/compoActualWeight";
-import { normalizeCompoClanDisplayName } from "../helper/compoDisplay";
-import { findHeatMapRefForWeight } from "../helper/compoHeatMap";
 import {
-  collapseCompoWarBucketCountsForDisplay,
+  getCompoActualStateViewLabel,
+  projectCompoActualStateView,
+  type CompoActualStateProjection,
+  type CompoActualStateView,
+} from "../helper/compoActualStateView";
+import { normalizeCompoClanDisplayName } from "../helper/compoDisplay";
+import {
   EMPTY_COMPO_WAR_BUCKET_COUNTS,
   type CompoWarBucketCounts,
 } from "../helper/compoWarBucketCounts";
@@ -39,6 +42,7 @@ export type CompoActualStateReadResult = {
   contentLines: string[];
   trackedClanTags: string[];
   renderableClanTags: string[];
+  view: CompoActualStateView;
 };
 
 type ActualStateRow = {
@@ -67,41 +71,37 @@ function normalizeActualStateClanDisplayName(value: string): string {
 
 function buildActualStateRow(input: {
   clanName: string;
-  totalResolvedWeight: number;
-  missingWeights: number;
-  playerCount: number;
-  bucketCounts: CompoWarBucketCounts;
-  heatMapRef: HeatMapRef | null;
+  projection: CompoActualStateProjection;
 }): ActualStateRow {
-  const displayCounts = collapseCompoWarBucketCountsForDisplay(input.bucketCounts);
-  const lowerTarget = input.heatMapRef
-    ? input.heatMapRef.th13Count +
-      input.heatMapRef.th12Count +
-      input.heatMapRef.th11Count +
-      input.heatMapRef.th10OrLowerCount
-    : null;
   return {
     clanName: normalizeActualStateClanDisplayName(input.clanName),
-    totalWeight: input.totalResolvedWeight.toLocaleString("en-US"),
-    missingWeights: `${input.missingWeights}`,
-    players: `${input.playerCount}`,
-    th18Delta: input.heatMapRef
-      ? `${displayCounts.TH18 - input.heatMapRef.th18Count}`
-      : "?",
-    th17Delta: input.heatMapRef
-      ? `${displayCounts.TH17 - input.heatMapRef.th17Count}`
-      : "?",
-    th16Delta: input.heatMapRef
-      ? `${displayCounts.TH16 - input.heatMapRef.th16Count}`
-      : "?",
-    th15Delta: input.heatMapRef
-      ? `${displayCounts.TH15 - input.heatMapRef.th15Count}`
-      : "?",
-    th14Delta: input.heatMapRef
-      ? `${displayCounts.TH14 - input.heatMapRef.th14Count}`
-      : "?",
+    totalWeight: input.projection.totalWeight.toLocaleString("en-US"),
+    missingWeights: `${input.projection.missingWeights}`,
+    players: `${input.projection.memberCount}`,
+    th18Delta:
+      input.projection.deltaByBucket.TH18 !== null
+        ? `${input.projection.deltaByBucket.TH18}`
+        : "?",
+    th17Delta:
+      input.projection.deltaByBucket.TH17 !== null
+        ? `${input.projection.deltaByBucket.TH17}`
+        : "?",
+    th16Delta:
+      input.projection.deltaByBucket.TH16 !== null
+        ? `${input.projection.deltaByBucket.TH16}`
+        : "?",
+    th15Delta:
+      input.projection.deltaByBucket.TH15 !== null
+        ? `${input.projection.deltaByBucket.TH15}`
+        : "?",
+    th14Delta:
+      input.projection.deltaByBucket.TH14 !== null
+        ? `${input.projection.deltaByBucket.TH14}`
+        : "?",
     th13OrLowerDelta:
-      lowerTarget !== null ? `${displayCounts["<=TH13"] - lowerTarget}` : "?",
+      input.projection.deltaByBucket["<=TH13"] !== null
+        ? `${input.projection.deltaByBucket["<=TH13"]}`
+        : "?",
   };
 }
 
@@ -109,12 +109,47 @@ function buildTrackedClanDisplayName(clan: TrackedClanRow): string {
   return clan.name?.trim() || clan.tag;
 }
 
+function buildActualViewSummaryLines(
+  view: CompoActualStateView,
+  latestSourceSyncedAt: Date | null,
+  missingHeatMapBands: string[],
+): string[] {
+  const contentLines = [
+    buildPersistedRefreshLine(latestSourceSyncedAt),
+    `ACTUAL View: **${getCompoActualStateViewLabel(view)}**`,
+  ];
+  if (view === "raw") {
+    contentLines.push("Displayed totals use resolved DB-backed ACTUAL weights only.");
+    contentLines.push("Missing = unresolved weights only.");
+  } else if (view === "auto") {
+    contentLines.push(
+      "Displayed totals use iterative missing-slot estimation and the converged HeatMapRef band.",
+    );
+    contentLines.push("Missing = unresolved weights plus empty-to-50 roster slots.");
+  } else {
+    contentLines.push(
+      "Displayed totals use best-fit band scoring; shown estimates are guidance, not persisted truth.",
+    );
+    contentLines.push("Missing = unresolved weights plus empty-to-50 roster slots.");
+  }
+  if (missingHeatMapBands.length > 0) {
+    contentLines.push(
+      `Missing HeatMapRef band for displayed ACTUAL totals: ${missingHeatMapBands.join("; ")}`,
+    );
+  }
+  return contentLines;
+}
+
 /** Purpose: load and explicitly refresh DB-backed ACTUAL compo state from persisted current-member rows only. */
 export class CompoActualStateService {
   private readonly clanMembersSync = new FwaClanMembersSyncService();
 
   /** Purpose: load alliance-wide ACTUAL state rows from persisted tracked-clan current-member data with deterministic weight fallbacks. */
-  async readState(guildId?: string | null): Promise<CompoActualStateReadResult> {
+  async readState(
+    guildId?: string | null,
+    options?: { view?: CompoActualStateView },
+  ): Promise<CompoActualStateReadResult> {
+    const view = options?.view ?? "raw";
     const tracked = await prisma.trackedClan.findMany({
       orderBy: { createdAt: "asc" },
       select: { tag: true, name: true },
@@ -128,8 +163,10 @@ export class CompoActualStateService {
         stateRows: null,
         trackedClanTags: [],
         renderableClanTags: [],
+        view,
         contentLines: [
           buildPersistedRefreshLine(null),
+          `ACTUAL View: **${getCompoActualStateViewLabel(view)}**`,
           "No tracked clans are configured for DB-backed ACTUAL state.",
         ],
       };
@@ -235,7 +272,7 @@ export class CompoActualStateService {
         ...EMPTY_COMPO_WAR_BUCKET_COUNTS,
       };
       let totalResolvedWeight = 0;
-      let missingWeights = 0;
+      let unresolvedWeightCount = 0;
 
       for (const member of clanMembers) {
         const playerTag = normalizePlayerTag(member.playerTag);
@@ -256,28 +293,33 @@ export class CompoActualStateService {
         });
         const bucket = getCompoWarWeightBucket(resolvedWeight);
         if (resolvedWeight === null || !bucket) {
-          missingWeights += 1;
+          unresolvedWeightCount += 1;
           continue;
         }
         totalResolvedWeight += resolvedWeight;
         bucketCounts[bucket] += 1;
       }
 
-      const heatMapRef = findHeatMapRefForWeight(heatMapRefs, totalResolvedWeight);
+      const projection = projectCompoActualStateView({
+        view,
+        base: {
+          resolvedTotalWeight: totalResolvedWeight,
+          unresolvedWeightCount,
+          memberCount: clanMembers.length,
+          bucketCounts,
+        },
+        heatMapRefs,
+      });
       const displayName = buildTrackedClanDisplayName(clan);
-      if (!heatMapRef) {
+      if (!projection.selectedHeatMapRef) {
         missingHeatMapBands.push(
-          `${normalizeActualStateClanDisplayName(displayName)} (${totalResolvedWeight.toLocaleString("en-US")})`,
+          `${normalizeActualStateClanDisplayName(displayName)} (${projection.totalWeight.toLocaleString("en-US")})`,
         );
       }
 
       const row = buildActualStateRow({
         clanName: displayName,
-        totalResolvedWeight,
-        missingWeights,
-        playerCount: clanMembers.length,
-        bucketCounts,
-        heatMapRef,
+        projection,
       });
       rows.push([
         row.clanName,
@@ -294,26 +336,27 @@ export class CompoActualStateService {
       renderableClanTags.push(clanTag);
     }
 
-    const contentLines = [buildPersistedRefreshLine(latestSourceSyncedAt)];
-    if (missingHeatMapBands.length > 0) {
-      contentLines.push(
-        `Missing HeatMapRef band for resolved ACTUAL totals: ${missingHeatMapBands.join("; ")}`,
-      );
-    }
-
     return {
       stateRows: [
         ["Clan", "Total", "Missing", "Players", "TH18", "TH17", "TH16", "TH15", "TH14", "<=TH13"],
         ...rows,
       ],
-      contentLines,
+      contentLines: buildActualViewSummaryLines(
+        view,
+        latestSourceSyncedAt,
+        missingHeatMapBands,
+      ),
       trackedClanTags,
       renderableClanTags,
+      view,
     };
   }
 
   /** Purpose: explicitly refresh ACTUAL feed-backed weights plus live member counts for tracked clans, then rerender from persisted state. */
-  async refreshState(guildId?: string | null): Promise<CompoActualStateReadResult> {
+  async refreshState(
+    guildId?: string | null,
+    options?: { view?: CompoActualStateView },
+  ): Promise<CompoActualStateReadResult> {
     const tracked = await prisma.trackedClan.findMany({
       orderBy: { createdAt: "asc" },
       select: { tag: true },
@@ -331,6 +374,6 @@ export class CompoActualStateService {
       );
     }
 
-    return this.readState(guildId);
+    return this.readState(guildId, options);
   }
 }

@@ -13,6 +13,11 @@ import {
   EmbedBuilder,
 } from "discord.js";
 import { Command } from "../Command";
+import {
+  COMPO_ACTUAL_STATE_VIEWS,
+  getCompoActualStateViewLabel,
+  type CompoActualStateView,
+} from "../helper/compoActualStateView";
 import { formatError } from "../helper/formatError";
 import { getCompoWarDisplayBucket } from "../helper/compoWarWeightBuckets";
 import { normalizeCompoClanDisplayName } from "../helper/compoDisplay";
@@ -112,7 +117,18 @@ type CompoRefreshPayload =
   | {
       kind: "state";
       userId: string;
-      mode: GoogleSheetMode;
+      mode: "war";
+    }
+  | {
+      kind: "state";
+      userId: string;
+      mode: "actual";
+      actualView: CompoActualStateView;
+    }
+  | {
+      kind: "view";
+      userId: string;
+      actualView: CompoActualStateView;
     }
   | {
       kind: "place";
@@ -122,7 +138,13 @@ type CompoRefreshPayload =
 
 function buildCompoRefreshCustomId(payload: CompoRefreshPayload): string {
   if (payload.kind === "state") {
-    return `${COMPO_REFRESH_PREFIX}:state:${payload.userId}:${payload.mode}`;
+    if (payload.mode === "actual") {
+      return `${COMPO_REFRESH_PREFIX}:state:${payload.userId}:actual:${payload.actualView ?? "raw"}`;
+    }
+    return `${COMPO_REFRESH_PREFIX}:state:${payload.userId}:war`;
+  }
+  if (payload.kind === "view") {
+    return `${COMPO_REFRESH_PREFIX}:view:${payload.userId}:${payload.actualView}`;
   }
   return `${COMPO_REFRESH_PREFIX}:place:${payload.userId}:${Math.trunc(payload.weight)}`;
 }
@@ -131,18 +153,50 @@ function parseCompoRefreshCustomId(
   customId: string,
 ): CompoRefreshPayload | null {
   const parts = String(customId ?? "").split(":");
-  if (parts.length !== 4 || parts[0] !== COMPO_REFRESH_PREFIX) return null;
-  const [, kind, userId, value] = parts;
-  if (!userId || !value) return null;
+  if (parts[0] !== COMPO_REFRESH_PREFIX) return null;
+  const kind = parts[1];
+  const userId = parts[2];
+  if (!kind || !userId) return null;
   if (kind === "state") {
-    if (value !== "actual" && value !== "war") return null;
+    const mode = parts[3];
+    if (mode === "war" && parts.length === 4) {
+      return {
+        kind: "state",
+        userId,
+        mode,
+      };
+    }
+    if (
+      mode === "actual" &&
+      (parts.length === 4 || parts.length === 5)
+    ) {
+      const actualView = parts[4] ?? "raw";
+      if (!COMPO_ACTUAL_STATE_VIEWS.includes(actualView as CompoActualStateView)) {
+        return null;
+      }
+      return {
+        kind: "state",
+        userId,
+        mode,
+        actualView: actualView as CompoActualStateView,
+      };
+    }
+    return null;
+  }
+  if (kind === "view" && parts.length === 4) {
+    const actualView = parts[3];
+    if (!COMPO_ACTUAL_STATE_VIEWS.includes(actualView as CompoActualStateView)) {
+      return null;
+    }
     return {
-      kind: "state",
+      kind: "view",
       userId,
-      mode: value,
+      actualView: actualView as CompoActualStateView,
     };
   }
-  if (kind === "place") {
+  if (kind === "place" && parts.length === 4) {
+    const value = parts[3];
+    if (!value) return null;
     const weight = Number(value);
     if (!Number.isFinite(weight) || weight <= 0) return null;
     return {
@@ -169,6 +223,31 @@ function buildCompoRefreshActionRow(
       .setLabel(loading ? COMPO_REFRESH_LOADING_LABEL : COMPO_REFRESH_LABEL)
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(loading),
+  );
+}
+
+function buildCompoActualViewActionRow(input: {
+  userId: string;
+  selectedView: CompoActualStateView;
+  loading?: boolean;
+}): ActionRowBuilder<ButtonBuilder> {
+  const loading = input.loading ?? false;
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    COMPO_ACTUAL_STATE_VIEWS.map((view) =>
+      new ButtonBuilder()
+        .setCustomId(
+          buildCompoRefreshCustomId({
+            kind: "view",
+            userId: input.userId,
+            actualView: view,
+          }),
+        )
+        .setLabel(getCompoActualStateViewLabel(view))
+        .setStyle(
+          input.selectedView === view ? ButtonStyle.Primary : ButtonStyle.Secondary,
+        )
+        .setDisabled(loading),
+    ),
   );
 }
 
@@ -470,12 +549,13 @@ function buildCompoStatePayloadFromRows(input: {
   mode: GoogleSheetMode;
   stateRows: string[][];
   contentLines: string[];
+  titleLabel?: string;
 }): CompoRenderPayload {
   return {
     content: input.contentLines.join("\n"),
     files: [
       {
-        attachment: renderStatePng(input.mode, input.stateRows),
+        attachment: renderStatePng(input.mode, input.stateRows, input.titleLabel),
         name: `compo-state-${input.mode}.png`,
       },
     ],
@@ -586,7 +666,11 @@ function hexToRgb(hex: string): [number, number, number] {
   ];
 }
 
-function renderStatePng(mode: GoogleSheetMode, rows: string[][]): Buffer {
+function renderStatePng(
+  mode: GoogleSheetMode,
+  rows: string[][],
+  titleLabel?: string,
+): Buffer {
   const { PNG } = require("pngjs");
   const tableRows = rows.length > 0 ? rows : [["(NO DATA)"]];
   const colCount = Math.max(...tableRows.map((row) => row.length), 1);
@@ -667,7 +751,10 @@ function renderStatePng(mode: GoogleSheetMode, rows: string[][]): Buffer {
   const text = hexToRgb("#f0f4ff");
   const title = hexToRgb("#9ec2ff");
   fillRect(0, 0, width, height, bg);
-  drawText(margin, margin + 2, `ALLIANCE STATE (${mode})`, title);
+  const stateTitle = titleLabel
+    ? `ALLIANCE STATE (${mode} - ${titleLabel})`
+    : `ALLIANCE STATE (${mode})`;
+  drawText(margin, margin + 2, stateTitle, title);
 
   const xStarts: number[] = [];
   let x = margin;
@@ -702,7 +789,7 @@ function renderStatePng(mode: GoogleSheetMode, rows: string[][]): Buffer {
 }
 
 function buildCompoRefreshComponents(input: {
-  customId: string;
+  refreshPayload: Extract<CompoRefreshPayload, { kind: "state" | "place" }>;
   loading: boolean;
   supplementalRows?: Array<
     APIActionRowComponent<APIComponentInMessageActionRow>
@@ -711,10 +798,20 @@ function buildCompoRefreshComponents(input: {
   | ActionRowBuilder<ButtonBuilder>
   | APIActionRowComponent<APIComponentInMessageActionRow>
 > {
+  const refreshCustomId = buildCompoRefreshCustomId(input.refreshPayload);
   const components: Array<
     | ActionRowBuilder<ButtonBuilder>
     | APIActionRowComponent<APIComponentInMessageActionRow>
-  > = [buildCompoRefreshActionRow(input.customId, { loading: input.loading })];
+  > = [buildCompoRefreshActionRow(refreshCustomId, { loading: input.loading })];
+  if (input.refreshPayload.kind === "state" && input.refreshPayload.mode === "actual") {
+    components.push(
+      buildCompoActualViewActionRow({
+        userId: input.refreshPayload.userId,
+        selectedView: input.refreshPayload.actualView,
+        loading: input.loading,
+      }),
+    );
+  }
   if (input.supplementalRows && input.supplementalRows.length > 0) {
     components.push(...input.supplementalRows);
   }
@@ -762,9 +859,18 @@ export async function handleCompoRefreshButton(
   }
 
   const supplementalRows = extractSupplementalRowsFromMessage(interaction);
+  const loadingRefreshPayload: Extract<CompoRefreshPayload, { kind: "state" | "place" }> =
+    parsed.kind === "view"
+      ? {
+          kind: "state",
+          userId: parsed.userId,
+          mode: "actual",
+          actualView: parsed.actualView,
+        }
+      : parsed;
   await interaction.update({
     components: buildCompoRefreshComponents({
-      customId: interaction.customId,
+      refreshPayload: loadingRefreshPayload,
       loading: true,
       supplementalRows,
     }),
@@ -787,12 +893,18 @@ export async function handleCompoRefreshButton(
       } else {
         const actualState = await new CompoActualStateService().refreshState(
           interaction.guildId ?? null,
+          {
+            view: parsed.actualView,
+          },
         );
         payload = actualState.stateRows
           ? buildCompoStatePayloadFromRows({
               mode: "actual",
               stateRows: actualState.stateRows,
               contentLines: actualState.contentLines,
+              titleLabel: getCompoActualStateViewLabel(
+                actualState.view ?? "raw",
+              ).toUpperCase(),
             })
           : {
               content: actualState.contentLines.join("\n"),
@@ -801,7 +913,42 @@ export async function handleCompoRefreshButton(
       await interaction.editReply({
         ...payload,
         components: buildCompoRefreshComponents({
-          customId: interaction.customId,
+          refreshPayload: parsed,
+          loading: false,
+          supplementalRows,
+        }),
+      });
+      return;
+    }
+
+    if (parsed.kind === "view") {
+      const actualState = await new CompoActualStateService().readState(
+        interaction.guildId ?? null,
+        {
+          view: parsed.actualView,
+        },
+      );
+      const payload = actualState.stateRows
+        ? buildCompoStatePayloadFromRows({
+            mode: "actual",
+            stateRows: actualState.stateRows,
+            contentLines: actualState.contentLines,
+            titleLabel: getCompoActualStateViewLabel(
+              actualState.view ?? "raw",
+            ).toUpperCase(),
+          })
+        : {
+            content: actualState.contentLines.join("\n"),
+          };
+      await interaction.editReply({
+        ...payload,
+        components: buildCompoRefreshComponents({
+          refreshPayload: {
+            kind: "state",
+            userId: parsed.userId,
+            mode: "actual",
+            actualView: parsed.actualView,
+          },
           loading: false,
           supplementalRows,
         }),
@@ -813,21 +960,20 @@ export async function handleCompoRefreshButton(
     if (!bucket) {
       throw new Error("Invalid placement bucket for refresh.");
     }
-      const placeResult = await new CompoPlaceService().refreshPlace(
+    const placeResult = await new CompoPlaceService().refreshPlace(
       parsed.weight,
       bucket,
       interaction.guildId ?? null,
     );
-    const refreshCustomId = buildCompoRefreshCustomId({
-      kind: "place",
-      userId: interaction.user.id,
-      weight: parsed.weight,
-    });
     await interaction.editReply({
       content: placeResult.content,
       embeds: placeResult.embeds,
       components: buildCompoRefreshComponents({
-        customId: refreshCustomId,
+        refreshPayload: {
+          kind: "place",
+          userId: interaction.user.id,
+          weight: parsed.weight,
+        },
         loading: false,
         supplementalRows,
       }),
@@ -836,7 +982,7 @@ export async function handleCompoRefreshButton(
     console.error(`compo refresh button failed: ${formatError(err)}`);
     await interaction.editReply({
       components: buildCompoRefreshComponents({
-        customId: interaction.customId,
+        refreshPayload: loadingRefreshPayload,
         loading: false,
         supplementalRows,
       }),
@@ -1065,6 +1211,9 @@ export const Compo: Command = {
             : await (async () => {
                 const actualState = await new CompoActualStateService().readState(
                   interaction.guildId ?? null,
+                  {
+                    view: "raw",
+                  },
                 );
                 logCompoStage(interaction, "db_fetch", {
                   entity: "actual_compo_state_source",
@@ -1082,17 +1231,14 @@ export const Compo: Command = {
                       mode: "actual",
                       stateRows: actualState.stateRows,
                       contentLines: actualState.contentLines,
+                      titleLabel: getCompoActualStateViewLabel(
+                        actualState.view ?? "raw",
+                      ).toUpperCase(),
                     })
                   : {
                       content: actualState.contentLines.join("\n"),
                     };
               })();
-        const refreshCustomId = buildCompoRefreshCustomId({
-          kind: "state",
-          userId: interaction.user.id,
-          mode,
-        });
-
         logCompoStage(interaction, "computation_complete", {
           result: "state_rendered",
           mode,
@@ -1101,7 +1247,19 @@ export const Compo: Command = {
         await interaction.editReply({
           ...payload,
           components: buildCompoRefreshComponents({
-            customId: refreshCustomId,
+            refreshPayload:
+              mode === "actual"
+                ? {
+                    kind: "state",
+                    userId: interaction.user.id,
+                    mode: "actual",
+                    actualView: "raw",
+                  }
+                : {
+                    kind: "state",
+                    userId: interaction.user.id,
+                    mode: "war",
+                  },
             loading: false,
           }),
         });
@@ -1152,11 +1310,6 @@ export const Compo: Command = {
           bucket,
           interaction.guildId ?? null,
         );
-        const refreshCustomId = buildCompoRefreshCustomId({
-          kind: "place",
-          userId: interaction.user.id,
-          weight: inputWeight,
-        });
         logCompoStage(interaction, "db_fetch", {
           entity: "actual_compo_place_source",
           mode: "actual",
@@ -1182,7 +1335,11 @@ export const Compo: Command = {
           content: placeResult.content,
           embeds: placeResult.embeds,
           components: buildCompoRefreshComponents({
-            customId: refreshCustomId,
+            refreshPayload: {
+              kind: "place",
+              userId: interaction.user.id,
+              weight: inputWeight,
+            },
             loading: false,
           }),
         });
