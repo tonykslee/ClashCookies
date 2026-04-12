@@ -100,6 +100,7 @@ describe("/compo state mode:war DB cutover", () => {
         contentLines: ["RAW Data last refreshed: <t:1775817600:F>"],
         trackedClanTags: ["#AAA111"],
         renderableClanTags: ["#AAA111"],
+        view: "raw",
       });
     const getSheetSpy = vi.spyOn(GoogleSheetsService.prototype, "getCompoLinkedSheet");
     const readSheetSpy = vi.spyOn(GoogleSheetsService.prototype, "readCompoLinkedValues");
