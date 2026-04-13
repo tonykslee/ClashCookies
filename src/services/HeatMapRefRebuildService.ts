@@ -10,7 +10,6 @@ import {
   buildHeatMapRefRebuildRows,
   computeHeatMapRefRebuildContentHash,
   computeHeatMapRefRebuildDueAt,
-  isHeatMapRefRebuildDue,
   type HeatMapRefBandDefinition,
   type HeatMapRefBucketCounts,
   type HeatMapRefRebuildExcludedRoster,
@@ -31,9 +30,14 @@ const HEAT_MAP_REF_REBUILD_STATE_KEY_PREFIX = "heatmapref_rebuild_state";
 
 type HeatMapRefRebuildCheckpoint = {
   cycleKey: string;
-  status: "success" | "noop" | "failed";
+  anchoredSyncTimeIso: string;
+  dueAtIso: string;
+  status: "scheduled" | "running" | "success" | "failed" | "no_op";
+  lastAttemptAtIso: string | null;
+  lastSuccessAtIso: string | null;
+  failureReason: string | null;
   contentHash: string | null;
-  completedAtIso: string;
+  roleId: string | null;
 };
 
 export type HeatMapRefRebuildRunResult = {
@@ -54,6 +58,7 @@ export type HeatMapRefRebuildRunResult = {
 
 type RebuildCycleContext = {
   messageId: string;
+  syncTimeIso: string;
   syncEpochSeconds: number;
   cycleKey: string;
   dueAt: Date;
@@ -68,22 +73,58 @@ function parseCheckpoint(raw: string | null): HeatMapRefRebuildCheckpoint | null
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as Partial<HeatMapRefRebuildCheckpoint>;
-    if (
-      typeof parsed.cycleKey !== "string" ||
-      !parsed.cycleKey.trim() ||
-      (parsed.status !== "success" &&
-        parsed.status !== "noop" &&
-        parsed.status !== "failed") ||
-      typeof parsed.completedAtIso !== "string"
-    ) {
-      return null;
-    }
-    return {
-      cycleKey: parsed.cycleKey.trim(),
-      status: parsed.status,
-      contentHash: typeof parsed.contentHash === "string" ? parsed.contentHash : null,
-      completedAtIso: parsed.completedAtIso,
+    const legacyParsed = JSON.parse(raw) as {
+      cycleKey?: unknown;
+      status?: unknown;
+      completedAtIso?: unknown;
+      contentHash?: unknown;
     };
+    if (typeof parsed.cycleKey === "string" && parsed.cycleKey.trim()) {
+      if (
+        (parsed.status === "scheduled" ||
+          parsed.status === "running" ||
+          parsed.status === "success" ||
+          parsed.status === "failed" ||
+          parsed.status === "no_op") &&
+        typeof parsed.anchoredSyncTimeIso === "string" &&
+        typeof parsed.dueAtIso === "string"
+      ) {
+        return {
+          cycleKey: parsed.cycleKey.trim(),
+          anchoredSyncTimeIso: parsed.anchoredSyncTimeIso,
+          dueAtIso: parsed.dueAtIso,
+          status: parsed.status,
+          lastAttemptAtIso:
+            typeof parsed.lastAttemptAtIso === "string" ? parsed.lastAttemptAtIso : null,
+          lastSuccessAtIso:
+            typeof parsed.lastSuccessAtIso === "string" ? parsed.lastSuccessAtIso : null,
+          failureReason:
+            typeof parsed.failureReason === "string" ? parsed.failureReason : null,
+          contentHash: typeof parsed.contentHash === "string" ? parsed.contentHash : null,
+          roleId: typeof parsed.roleId === "string" ? parsed.roleId : null,
+        };
+      }
+
+      if (
+        (legacyParsed.status === "success" ||
+          legacyParsed.status === "noop" ||
+          legacyParsed.status === "failed") &&
+        typeof legacyParsed.completedAtIso === "string"
+      ) {
+        return {
+          cycleKey: parsed.cycleKey.trim(),
+          anchoredSyncTimeIso: legacyParsed.completedAtIso,
+          dueAtIso: legacyParsed.completedAtIso,
+          status: legacyParsed.status === "noop" ? "no_op" : (legacyParsed.status as "success" | "failed"),
+          lastAttemptAtIso: legacyParsed.completedAtIso,
+          lastSuccessAtIso: legacyParsed.status === "failed" ? null : legacyParsed.completedAtIso,
+          failureReason: null,
+          contentHash: typeof legacyParsed.contentHash === "string" ? legacyParsed.contentHash : null,
+          roleId: null,
+        };
+      }
+    }
+    return null;
   } catch {
     return null;
   }
@@ -91,6 +132,26 @@ function parseCheckpoint(raw: string | null): HeatMapRefRebuildCheckpoint | null
 
 function stringifyCheckpoint(value: HeatMapRefRebuildCheckpoint): string {
   return JSON.stringify(value);
+}
+
+function buildCheckpointForCycle(input: {
+  cycle: RebuildCycleContext;
+}): HeatMapRefRebuildCheckpoint {
+  return {
+    cycleKey: input.cycle.cycleKey,
+    anchoredSyncTimeIso: input.cycle.syncTimeIso,
+    dueAtIso: input.cycle.dueAt.toISOString(),
+    status: "scheduled",
+    lastAttemptAtIso: null,
+    lastSuccessAtIso: null,
+    failureReason: null,
+    contentHash: null,
+    roleId: input.cycle.roleId,
+  };
+}
+
+function isTerminalCheckpointStatus(status: HeatMapRefRebuildCheckpoint["status"]): boolean {
+  return status === "success" || status === "failed" || status === "no_op";
 }
 
 function buildSeedBandDefinitions(): HeatMapRefBandDefinition[] {
@@ -364,8 +425,8 @@ export class HeatMapRefRebuildService {
       };
     }
 
-    const cycle = await this.resolveCurrentCycle(input.guildId);
-    if (!cycle) {
+    const latestCycle = await this.resolveCurrentCycle(input.guildId);
+    if (!latestCycle) {
       return {
         status: "skipped",
         reason: "no active sync-time cycle is configured",
@@ -383,12 +444,60 @@ export class HeatMapRefRebuildService {
       };
     }
 
-    if (!isHeatMapRefRebuildDue({ now, syncEpochSeconds: cycle.syncEpochSeconds })) {
+    const checkpoint = await this.readCheckpoint(input.guildId);
+    const activeCheckpoint = await this.ensureCheckpointForLatestCycle({
+      guildId: input.guildId,
+      latestCycle,
+      checkpoint,
+    });
+
+    if (activeCheckpoint.status === "running") {
       return {
         status: "skipped",
-        reason: "rebuild is not due yet",
-        cycleKey: cycle.cycleKey,
-        dueAt: cycle.dueAt,
+        reason: `cycle ${activeCheckpoint.cycleKey} is already running`,
+        cycleKey: activeCheckpoint.cycleKey,
+        dueAt: new Date(activeCheckpoint.dueAtIso),
+        trackedClanCount: 0,
+        sourceRosterCount: 0,
+        qualifyingRosterCount: 0,
+        excludedRosterCount: 0,
+        rowCount: 0,
+        changedRowCount: 0,
+        contentHash: activeCheckpoint.contentHash,
+        alertSent: false,
+        summaryLines: [
+          `Cycle ${activeCheckpoint.cycleKey} is already running.`,
+        ],
+      };
+    }
+
+    if (isTerminalCheckpointStatus(activeCheckpoint.status)) {
+      return {
+        status: "skipped",
+        reason: `cycle ${activeCheckpoint.cycleKey} already handled with ${activeCheckpoint.status}`,
+        cycleKey: activeCheckpoint.cycleKey,
+        dueAt: new Date(activeCheckpoint.dueAtIso),
+        trackedClanCount: 0,
+        sourceRosterCount: 0,
+        qualifyingRosterCount: 0,
+        excludedRosterCount: 0,
+        rowCount: 0,
+        changedRowCount: 0,
+        contentHash: activeCheckpoint.contentHash,
+        alertSent: false,
+        summaryLines: [
+          `Cycle ${activeCheckpoint.cycleKey} already handled with status ${activeCheckpoint.status}.`,
+        ],
+      };
+    }
+
+    const dueAt = new Date(activeCheckpoint.dueAtIso);
+    if (Number.isNaN(dueAt.getTime())) {
+      return {
+        status: "skipped",
+        reason: "stored rebuild checkpoint due time is invalid",
+        cycleKey: activeCheckpoint.cycleKey,
+        dueAt: null,
         trackedClanCount: 0,
         sourceRosterCount: 0,
         qualifyingRosterCount: 0,
@@ -398,64 +507,72 @@ export class HeatMapRefRebuildService {
         contentHash: null,
         alertSent: false,
         summaryLines: [
-          `Rebuild due at <t:${Math.floor(cycle.dueAt.getTime() / 1000)}:F>.`,
+          `Stored checkpoint for cycle ${activeCheckpoint.cycleKey} has an invalid due time.`,
         ],
       };
     }
-
-    const checkpoint = await this.readCheckpoint(input.guildId);
-    if (checkpoint?.cycleKey === cycle.cycleKey) {
+    if (now.getTime() < dueAt.getTime()) {
       return {
         status: "skipped",
-        reason: `cycle ${cycle.cycleKey} already handled with ${checkpoint.status}`,
-        cycleKey: cycle.cycleKey,
-        dueAt: cycle.dueAt,
+        reason: "rebuild is not due yet",
+        cycleKey: activeCheckpoint.cycleKey,
+        dueAt,
         trackedClanCount: 0,
         sourceRosterCount: 0,
         qualifyingRosterCount: 0,
         excludedRosterCount: 0,
         rowCount: 0,
         changedRowCount: 0,
-        contentHash: checkpoint.contentHash,
+        contentHash: null,
         alertSent: false,
-        summaryLines: [
-          `Cycle ${cycle.cycleKey} already handled with status ${checkpoint.status}.`,
-        ],
+        summaryLines: [`Rebuild due at <t:${Math.floor(dueAt.getTime() / 1000)}:F>.`],
       };
     }
 
+    await this.writeCheckpoint(input.guildId, {
+      ...activeCheckpoint,
+      status: "running",
+      lastAttemptAtIso: now.toISOString(),
+      failureReason: null,
+    });
+
     try {
       const result = await this.rebuildHeatMapRef(now);
+      const finalStatus =
+        result.status === "noop" || result.status === "skipped" ? "no_op" : "success";
       await this.writeCheckpoint(input.guildId, {
-        cycleKey: cycle.cycleKey,
-        status: result.status === "noop" ? "noop" : "success",
+        ...activeCheckpoint,
+        status: finalStatus,
+        lastAttemptAtIso: now.toISOString(),
+        lastSuccessAtIso: now.toISOString(),
+        failureReason: null,
         contentHash: result.contentHash,
-        completedAtIso: now.toISOString(),
       });
       return {
         ...result,
-        cycleKey: cycle.cycleKey,
-        dueAt: cycle.dueAt,
+        cycleKey: activeCheckpoint.cycleKey,
+        dueAt,
       };
     } catch (error) {
       const reason = formatError(error);
       await this.writeCheckpoint(input.guildId, {
-        cycleKey: cycle.cycleKey,
+        ...activeCheckpoint,
         status: "failed",
+        lastAttemptAtIso: now.toISOString(),
+        failureReason: reason,
         contentHash: null,
-        completedAtIso: now.toISOString(),
       });
       const alertSent = await this.sendFailureAlert({
         client: input.client,
         guildId: input.guildId,
-        cycle,
+        cycle: activeCheckpoint,
         reason,
       });
       return {
         status: "failed",
         reason,
-        cycleKey: cycle.cycleKey,
-        dueAt: cycle.dueAt,
+        cycleKey: activeCheckpoint.cycleKey,
+        dueAt,
         trackedClanCount: 0,
         sourceRosterCount: 0,
         qualifyingRosterCount: 0,
@@ -480,13 +597,21 @@ export class HeatMapRefRebuildService {
     const now = input.now ?? new Date();
     try {
       const result = await this.rebuildHeatMapRef(now);
-      const cycle = await this.resolveCurrentCycle(input.guildId);
-      if (cycle) {
+      const latestCycle = await this.resolveCurrentCycle(input.guildId);
+      if (latestCycle) {
+        const checkpoint = await this.ensureCheckpointForLatestCycle({
+          guildId: input.guildId,
+          latestCycle,
+          checkpoint: await this.readCheckpoint(input.guildId),
+        });
         await this.writeCheckpoint(input.guildId, {
-          cycleKey: cycle.cycleKey,
-          status: result.status === "noop" ? "noop" : "success",
+          ...checkpoint,
+          status:
+            result.status === "noop" || result.status === "skipped" ? "no_op" : "success",
+          lastAttemptAtIso: now.toISOString(),
+          lastSuccessAtIso: now.toISOString(),
+          failureReason: null,
           contentHash: result.contentHash,
-          completedAtIso: now.toISOString(),
         });
       }
       return result;
@@ -520,6 +645,7 @@ export class HeatMapRefRebuildService {
     });
     return {
       messageId: tracked.messageId,
+      syncTimeIso: metadata.syncTimeIso,
       syncEpochSeconds: metadata.syncEpochSeconds,
       cycleKey,
       dueAt: computeHeatMapRefRebuildDueAt(metadata.syncEpochSeconds),
@@ -532,6 +658,26 @@ export class HeatMapRefRebuildService {
     return parseCheckpoint(raw);
   }
 
+  private async ensureCheckpointForLatestCycle(input: {
+    guildId: string;
+    latestCycle: RebuildCycleContext;
+    checkpoint: HeatMapRefRebuildCheckpoint | null;
+  }): Promise<HeatMapRefRebuildCheckpoint> {
+    const existing = input.checkpoint;
+    if (existing && !isTerminalCheckpointStatus(existing.status)) {
+      return existing;
+    }
+    if (existing && existing.cycleKey === input.latestCycle.cycleKey) {
+      return existing;
+    }
+
+    const nextCheckpoint = buildCheckpointForCycle({
+      cycle: input.latestCycle,
+    });
+    await this.writeCheckpoint(input.guildId, nextCheckpoint);
+    return nextCheckpoint;
+  }
+
   private async writeCheckpoint(
     guildId: string,
     value: HeatMapRefRebuildCheckpoint,
@@ -542,15 +688,21 @@ export class HeatMapRefRebuildService {
   private async sendFailureAlert(input: {
     client: Client;
     guildId: string;
-    cycle: RebuildCycleContext;
+    cycle: Pick<HeatMapRefRebuildCheckpoint, "anchoredSyncTimeIso" | "roleId">;
     reason: string;
   }): Promise<boolean> {
     const roleId =
       (await this.permissions.getFwaLeaderRoleId(input.guildId).catch(() => null)) ||
       input.cycle.roleId;
     const roleMention = roleId ? `<@&${roleId}>` : "configured FWA leader role";
+    const anchoredTime = new Date(input.cycle.anchoredSyncTimeIso);
+    const anchoredSyncSeconds = Number.isNaN(anchoredTime.getTime())
+      ? null
+      : Math.floor(anchoredTime.getTime() / 1000);
     const message = [
-      `HeatMapRef rebuild failed for <t:${input.cycle.syncEpochSeconds}:F> (<t:${input.cycle.syncEpochSeconds}:R>).`,
+      anchoredSyncSeconds
+        ? `HeatMapRef rebuild failed for <t:${anchoredSyncSeconds}:F> (<t:${anchoredSyncSeconds}:R>).`
+        : "HeatMapRef rebuild failed for the anchored sync cycle.",
       `FWA leader role: ${roleMention}.`,
       `Reason: ${input.reason}`,
       "Repair: run `/force refresh heatmapref` after fixing the persisted FWA feed rows.",
