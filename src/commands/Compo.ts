@@ -14,6 +14,12 @@ import {
 } from "discord.js";
 import { Command } from "../Command";
 import {
+  COMPO_ADVICE_VIEW_LABELS,
+  COMPO_ADVICE_VIEWS,
+  stepCompoAdviceCustomBandIndexByCount,
+  type CompoAdviceView,
+} from "../helper/compoAdviceEngine";
+import {
   COMPO_ACTUAL_STATE_VIEWS,
   getCompoActualStateViewLabel,
   type CompoActualStateView,
@@ -24,7 +30,10 @@ import { normalizeCompoClanDisplayName } from "../helper/compoDisplay";
 import { prisma } from "../prisma";
 import { safeReply } from "../helper/safeReply";
 import { CoCService } from "../services/CoCService";
-import { CompoAdviceService } from "../services/CompoAdviceService";
+import {
+  CompoAdviceService,
+  type CompoAdviceReadResult,
+} from "../services/CompoAdviceService";
 import { CompoActualStateService } from "../services/CompoActualStateService";
 import { CompoPlaceService } from "../services/CompoPlaceService";
 import { CompoWarStateService } from "../services/CompoWarStateService";
@@ -126,14 +135,16 @@ type CompoRefreshPayload =
       userId: string;
       mode: "war";
       targetTag: string;
-    }
+  }
   | {
       kind: "advice";
       userId: string;
       mode: "actual";
-      actualView: CompoActualStateView;
+      adviceView: CompoAdviceView;
       targetTag: string;
-    }
+      customBandIndex: number | null;
+      customBandCount: number;
+  }
   | {
       kind: "view";
       userId: string;
@@ -144,8 +155,18 @@ type CompoRefreshPayload =
       kind: "view";
       userId: string;
       target: "advice";
-      actualView: CompoActualStateView;
+      adviceView: CompoAdviceView;
       targetTag: string;
+      customBandIndex: number | null;
+      customBandCount: number;
+    }
+  | {
+      kind: "advice-band";
+      userId: string;
+      targetTag: string;
+      customBandCount: number;
+      customBandIndex: number;
+      direction: "prev" | "next";
     }
   | {
       kind: "place";
@@ -162,15 +183,24 @@ function buildCompoRefreshCustomId(payload: CompoRefreshPayload): string {
   }
   if (payload.kind === "advice") {
     if (payload.mode === "actual") {
-      return `${COMPO_REFRESH_PREFIX}:advice:${payload.userId}:actual:${payload.actualView}:${payload.targetTag}`;
+      const base = `${COMPO_REFRESH_PREFIX}:advice:${payload.userId}:actual:${payload.adviceView}:${payload.targetTag}:${Math.trunc(payload.customBandCount)}`;
+      return payload.customBandIndex === null || payload.customBandIndex === undefined
+        ? `${base}:0`
+        : `${base}:${Math.trunc(payload.customBandIndex)}`;
     }
     return `${COMPO_REFRESH_PREFIX}:advice:${payload.userId}:war:${payload.targetTag}`;
   }
   if (payload.kind === "view") {
     if (payload.target === "advice") {
-      return `${COMPO_REFRESH_PREFIX}:view:${payload.userId}:advice:${payload.actualView}:${payload.targetTag}`;
+      const base = `${COMPO_REFRESH_PREFIX}:view:${payload.userId}:advice:${payload.adviceView}:${payload.targetTag}:${Math.trunc(payload.customBandCount)}`;
+      return payload.customBandIndex === null || payload.customBandIndex === undefined
+        ? `${base}:0`
+        : `${base}:${Math.trunc(payload.customBandIndex)}`;
     }
     return `${COMPO_REFRESH_PREFIX}:view:${payload.userId}:state:${payload.actualView}`;
+  }
+  if (payload.kind === "advice-band") {
+    return `${COMPO_REFRESH_PREFIX}:advice-band:${payload.userId}:${payload.targetTag}:${Math.trunc(payload.customBandCount)}:${Math.trunc(payload.customBandIndex)}:${payload.direction}`;
   }
   return `${COMPO_REFRESH_PREFIX}:place:${payload.userId}:${Math.trunc(payload.weight)}`;
 }
@@ -221,12 +251,25 @@ function parseCompoRefreshCustomId(
         targetTag,
       };
     }
-    if (mode === "actual" && parts.length === 6) {
-      const actualView = parts[4];
+    if (
+      mode === "actual" &&
+      (parts.length === 6 || parts.length === 7 || parts.length === 8)
+    ) {
+      const adviceView = parts[4];
       const targetTag = normalizeTag(parts[5] ?? "");
+      const customBandCount =
+        parts.length >= 7 ? Number(parts[6]) : 0;
+      const customBandIndexRaw =
+        parts.length === 8 ? Number(parts[7]) : null;
       if (
         !targetTag ||
-        !COMPO_ACTUAL_STATE_VIEWS.includes(actualView as CompoActualStateView)
+        !COMPO_ADVICE_VIEWS.includes(adviceView as CompoAdviceView) ||
+        (parts.length >= 7 &&
+          (!Number.isFinite(customBandCount) || customBandCount < 0)) ||
+        (parts.length === 8 &&
+          (typeof customBandIndexRaw !== "number" ||
+            !Number.isFinite(customBandIndexRaw) ||
+            customBandIndexRaw < 0))
       ) {
         return null;
       }
@@ -234,19 +277,24 @@ function parseCompoRefreshCustomId(
         kind: "advice",
         userId,
         mode,
-        actualView: actualView as CompoActualStateView,
+        adviceView: adviceView as CompoAdviceView,
         targetTag,
+        customBandCount: Math.trunc(customBandCount),
+        customBandIndex:
+          typeof customBandIndexRaw === "number"
+            ? Math.trunc(customBandIndexRaw)
+            : null,
       };
     }
     return null;
   }
   if (kind === "view" && parts.length >= 5) {
     const target = parts[3];
-    const actualView = parts[4];
-    if (!COMPO_ACTUAL_STATE_VIEWS.includes(actualView as CompoActualStateView)) {
-      return null;
-    }
     if (target === "state" && parts.length === 5) {
+      const actualView = parts[4];
+      if (!COMPO_ACTUAL_STATE_VIEWS.includes(actualView as CompoActualStateView)) {
+        return null;
+      }
       return {
         kind: "view",
         userId,
@@ -254,18 +302,66 @@ function parseCompoRefreshCustomId(
         actualView: actualView as CompoActualStateView,
       };
     }
-    if (target === "advice" && parts.length === 6) {
+    if (
+      target === "advice" &&
+      (parts.length === 6 || parts.length === 7 || parts.length === 8)
+    ) {
+      const adviceView = parts[4];
       const targetTag = normalizeTag(parts[5] ?? "");
-      if (!targetTag) return null;
+      const customBandCount =
+        parts.length >= 7 ? Number(parts[6]) : 0;
+      const customBandIndexRaw =
+        parts.length === 8 ? Number(parts[7]) : null;
+      if (
+        !targetTag ||
+        !COMPO_ADVICE_VIEWS.includes(adviceView as CompoAdviceView) ||
+        (parts.length >= 7 &&
+          (!Number.isFinite(customBandCount) || customBandCount < 0)) ||
+        (parts.length === 8 &&
+          (typeof customBandIndexRaw !== "number" ||
+            !Number.isFinite(customBandIndexRaw) ||
+            customBandIndexRaw < 0))
+      ) {
+        return null;
+      }
       return {
         kind: "view",
         userId,
         target,
-        actualView: actualView as CompoActualStateView,
+        adviceView: adviceView as CompoAdviceView,
         targetTag,
+        customBandCount: Math.trunc(customBandCount),
+        customBandIndex:
+          typeof customBandIndexRaw === "number"
+            ? Math.trunc(customBandIndexRaw)
+            : null,
       };
     }
     return null;
+  }
+  if (kind === "advice-band" && parts.length === 7) {
+    const targetTag = normalizeTag(parts[3] ?? "");
+    const customBandCount = Number(parts[4]);
+    const customBandIndex = Number(parts[5]);
+    const direction = parts[6];
+    if (
+      !targetTag ||
+      !Number.isFinite(customBandCount) ||
+      customBandCount < 0 ||
+      !Number.isFinite(customBandIndex) ||
+      customBandIndex < 0 ||
+      (direction !== "prev" && direction !== "next")
+    ) {
+      return null;
+    }
+    return {
+      kind: "advice-band",
+      userId,
+      targetTag,
+      customBandCount: Math.trunc(customBandCount),
+      customBandIndex: Math.trunc(customBandIndex),
+      direction,
+    };
   }
   if (kind === "place" && parts.length === 4) {
     const value = parts[3];
@@ -316,8 +412,10 @@ function buildCompoActualViewActionRow(input: {
                 kind: "view" as const,
                 userId: input.userId,
                 target: "advice" as const,
-                actualView: view,
+                adviceView: view as CompoAdviceView,
                 targetTag: input.targetTag ?? "",
+                customBandIndex: null,
+                customBandCount: 0,
               }
             : {
                 kind: "view" as const,
@@ -336,6 +434,82 @@ function buildCompoActualViewActionRow(input: {
           .setDisabled(loading);
       })(),
     ),
+  );
+}
+
+function buildCompoAdviceViewActionRow(input: {
+  userId: string;
+  targetTag: string;
+  selectedView: CompoAdviceView;
+  customBandIndex: number | null;
+  customBandCount: number;
+  loading?: boolean;
+}): ActionRowBuilder<ButtonBuilder> {
+  const loading = input.loading ?? false;
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    COMPO_ADVICE_VIEWS.map((view) =>
+      new ButtonBuilder()
+        .setCustomId(
+          buildCompoRefreshCustomId({
+            kind: "view",
+            userId: input.userId,
+            target: "advice",
+            adviceView: view,
+            targetTag: input.targetTag,
+            customBandIndex: input.customBandIndex,
+            customBandCount: input.customBandCount,
+          }),
+        )
+        .setLabel(COMPO_ADVICE_VIEW_LABELS[view])
+        .setStyle(
+          input.selectedView === view
+            ? ButtonStyle.Primary
+            : ButtonStyle.Secondary,
+        )
+        .setDisabled(loading),
+    ),
+  );
+}
+
+function buildCompoAdviceBandActionRow(input: {
+  userId: string;
+  targetTag: string;
+  customBandIndex: number;
+  customBandCount: number;
+  loading?: boolean;
+}): ActionRowBuilder<ButtonBuilder> {
+  const loading = input.loading ?? false;
+  const canStepPrev = input.customBandIndex > 0;
+  const canStepNext = input.customBandIndex < input.customBandCount - 1;
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(
+        buildCompoRefreshCustomId({
+          kind: "advice-band",
+          userId: input.userId,
+          targetTag: input.targetTag,
+          customBandCount: input.customBandCount,
+          customBandIndex: input.customBandIndex,
+          direction: "prev",
+        }),
+      )
+      .setLabel("-")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(loading || !canStepPrev),
+    new ButtonBuilder()
+      .setCustomId(
+        buildCompoRefreshCustomId({
+          kind: "advice-band",
+          userId: input.userId,
+          targetTag: input.targetTag,
+          customBandCount: input.customBandCount,
+          customBandIndex: input.customBandIndex,
+          direction: "next",
+        }),
+      )
+      .setLabel("+")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(loading || !canStepNext),
   );
 }
 
@@ -650,6 +824,114 @@ function buildCompoStatePayloadFromRows(input: {
   };
 }
 
+function formatSignedValue(value: number | null): string {
+  if (value === null) {
+    return "n/a";
+  }
+  return value > 0 ? `+${value}` : `${value}`;
+}
+
+function formatAdviceScore(value: number | null): string {
+  if (value === null) {
+    return "n/a";
+  }
+  return Number.isInteger(value) ? `${value}` : value.toFixed(1);
+}
+
+function buildCompoAdviceEmbed(input: { advice: CompoAdviceReadResult }): EmbedBuilder {
+  const title = input.advice.clanTag
+    ? `${normalizeCompoClanDisplayName(input.advice.clanName ?? input.advice.clanTag)} (${input.advice.clanTag}) - ${input.advice.mode.toUpperCase()}`
+    : `Compo Advice - ${input.advice.mode.toUpperCase()}`;
+
+  if (input.advice.kind === "ready") {
+    const summary = input.advice.summary;
+    const embed = new EmbedBuilder()
+      .setTitle(title)
+      .setDescription(
+        [
+          `Advice View: **${summary.viewLabel}**`,
+          `Target Band: **${summary.currentBandLabel}**`,
+          `Current Score: **${formatAdviceScore(summary.currentScore)}**`,
+        ].join("\n"),
+      );
+    const currentDeltas = [
+      `TH18: ${formatSignedValue(summary.currentProjection.deltaByBucket.TH18)}`,
+      `TH17: ${formatSignedValue(summary.currentProjection.deltaByBucket.TH17)}`,
+      `TH16: ${formatSignedValue(summary.currentProjection.deltaByBucket.TH16)}`,
+      `TH15: ${formatSignedValue(summary.currentProjection.deltaByBucket.TH15)}`,
+      `TH14: ${formatSignedValue(summary.currentProjection.deltaByBucket.TH14)}`,
+      `<=TH13: ${formatSignedValue(summary.currentProjection.deltaByBucket["<=TH13"])}`,
+    ].join("\n");
+
+    const recommendationLines = [
+      summary.recommendationText,
+      `Resulting Score: ${formatAdviceScore(summary.resultingScore)}`,
+      `Resulting Band: ${summary.resultingBandLabel}`,
+    ];
+    if (summary.statusText) {
+      recommendationLines.push(summary.statusText);
+    }
+
+    embed.addFields(
+      {
+        name: "Overview",
+        value: [
+          `Members: ${summary.currentProjection.memberCount} / 50`,
+          `Rushed: ${input.advice.rushedCount}`,
+          `Current Score: ${formatAdviceScore(summary.currentScore)}`,
+          `Current Band: ${summary.currentBandLabel}`,
+        ].join("\n"),
+        inline: false,
+      },
+      {
+        name: "Current Deltas",
+        value: currentDeltas,
+        inline: false,
+      },
+      {
+        name: "Best Recommendation",
+        value: recommendationLines.join("\n"),
+        inline: false,
+      },
+      {
+        name: "Alternates",
+        value:
+          summary.alternateTexts.length > 0
+            ? summary.alternateTexts.map((line) => `- ${line}`).join("\n")
+            : "None",
+        inline: false,
+      },
+    );
+
+    if (input.advice.refreshLine) {
+      embed.setFooter({ text: input.advice.refreshLine });
+    }
+    return embed;
+  }
+
+  const embed = new EmbedBuilder()
+    .setTitle(title)
+    .setDescription(
+      [
+        `Advice View: **${COMPO_ADVICE_VIEW_LABELS[input.advice.selectedView]}**`,
+        input.advice.message,
+      ].join("\n"),
+    );
+
+  if (input.advice.refreshLine) {
+    embed.setFooter({ text: input.advice.refreshLine });
+  }
+  return embed;
+}
+
+function buildCompoAdviceResponsePayload(input: {
+  advice: CompoAdviceReadResult;
+}): CompoRenderPayload {
+  return {
+    embeds: [buildCompoAdviceEmbed({ advice: input.advice })],
+  };
+}
+
 /*
   const recommendedRows = params.recommended.map(
     (c) =>
@@ -903,14 +1185,30 @@ function buildCompoRefreshComponents(input: {
   }
   if (input.refreshPayload.kind === "advice" && input.refreshPayload.mode === "actual") {
     components.push(
-      buildCompoActualViewActionRow({
+      buildCompoAdviceViewActionRow({
         userId: input.refreshPayload.userId,
-        target: "advice",
         targetTag: input.refreshPayload.targetTag,
-        selectedView: input.refreshPayload.actualView,
+        selectedView: input.refreshPayload.adviceView,
+        customBandIndex: input.refreshPayload.customBandIndex,
+        customBandCount: input.refreshPayload.customBandCount,
         loading: input.loading,
       }),
     );
+    if (
+      input.refreshPayload.adviceView === "custom" &&
+      input.refreshPayload.customBandIndex !== null &&
+      input.refreshPayload.customBandCount > 0
+    ) {
+      components.push(
+        buildCompoAdviceBandActionRow({
+          userId: input.refreshPayload.userId,
+          targetTag: input.refreshPayload.targetTag,
+          customBandIndex: input.refreshPayload.customBandIndex,
+          customBandCount: input.refreshPayload.customBandCount,
+          loading: input.loading,
+        }),
+      );
+    }
   }
   if (input.supplementalRows && input.supplementalRows.length > 0) {
     components.push(...input.supplementalRows);
@@ -952,6 +1250,9 @@ function getCompoRefreshFailureMessage(payload: CompoRefreshPayload): string {
   if (payload.kind === "advice") {
     return mapCompoAdviceErrorToMessage("refresh");
   }
+  if (payload.kind === "advice-band") {
+    return mapCompoAdviceErrorToMessage("refresh");
+  }
   if (payload.kind === "view" && payload.target === "advice") {
     return mapCompoAdviceErrorToMessage("refresh");
   }
@@ -987,26 +1288,51 @@ export async function handleCompoRefreshButton(
   }
 
   const supplementalRows = extractSupplementalRowsFromMessage(interaction);
-  const loadingRefreshPayload: Extract<
+  let adviceRefreshPayload: Extract<CompoRefreshPayload, { kind: "advice" }> | null = null;
+  let loadingRefreshPayload: Extract<
     CompoRefreshPayload,
     { kind: "state" | "advice" | "place" }
-  > =
-    parsed.kind === "view"
-      ? parsed.target === "advice"
-        ? {
-            kind: "advice",
-            userId: parsed.userId,
-            mode: "actual",
-            actualView: parsed.actualView,
-            targetTag: parsed.targetTag,
-          }
-        : {
-            kind: "state",
-            userId: parsed.userId,
-            mode: "actual",
-            actualView: parsed.actualView,
-          }
-      : parsed;
+  >;
+  if (parsed.kind === "view" && parsed.target === "advice") {
+    adviceRefreshPayload = {
+      kind: "advice",
+      userId: parsed.userId,
+      mode: "actual",
+      adviceView: parsed.adviceView,
+      targetTag: parsed.targetTag,
+      customBandIndex: parsed.customBandIndex ?? 0,
+      customBandCount: parsed.customBandCount,
+    };
+    loadingRefreshPayload = adviceRefreshPayload;
+  } else if (parsed.kind === "advice-band") {
+    const nextBandIndex = stepCompoAdviceCustomBandIndexByCount({
+      currentBandIndex: parsed.customBandIndex,
+      bandCount: parsed.customBandCount,
+      direction: parsed.direction,
+    });
+    adviceRefreshPayload = {
+      kind: "advice",
+      userId: parsed.userId,
+      mode: "actual",
+      adviceView: "custom",
+      targetTag: parsed.targetTag,
+      customBandIndex: nextBandIndex,
+      customBandCount: parsed.customBandCount,
+    };
+    loadingRefreshPayload = adviceRefreshPayload;
+  } else if (parsed.kind === "advice") {
+    adviceRefreshPayload = parsed;
+    loadingRefreshPayload = parsed;
+  } else if (parsed.kind === "view" && parsed.target === "state") {
+    loadingRefreshPayload = {
+      kind: "state",
+      userId: parsed.userId,
+      mode: "actual",
+      actualView: parsed.actualView,
+    };
+  } else {
+    loadingRefreshPayload = parsed;
+  }
   await interaction.update({
     components: buildCompoRefreshComponents({
       refreshPayload: loadingRefreshPayload,
@@ -1060,18 +1386,25 @@ export async function handleCompoRefreshButton(
       return;
     }
 
-    if (parsed.kind === "advice") {
+    if (adviceRefreshPayload) {
       const adviceService = new CompoAdviceService();
       const advice = await adviceService.refreshAdvice({
         guildId: interaction.guildId ?? null,
-        targetTag: parsed.targetTag,
-        mode: parsed.mode,
-        view: parsed.mode === "actual" ? parsed.actualView : "raw",
+        targetTag: adviceRefreshPayload.targetTag,
+        mode: adviceRefreshPayload.mode,
+        view:
+          adviceRefreshPayload.mode === "actual"
+            ? adviceRefreshPayload.adviceView
+            : "raw",
+        customBandIndex:
+          adviceRefreshPayload.mode === "actual"
+            ? adviceRefreshPayload.customBandIndex
+            : null,
       });
       await interaction.editReply({
-        content: advice.content,
+        ...buildCompoAdviceResponsePayload({ advice }),
         components: buildCompoRefreshComponents({
-          refreshPayload: parsed,
+          refreshPayload: adviceRefreshPayload,
           loading: false,
           supplementalRows,
         }),
@@ -1114,52 +1447,33 @@ export async function handleCompoRefreshButton(
         });
         return;
       }
+      return;
+    }
 
-      const advice = await new CompoAdviceService().readAdvice({
-        guildId: interaction.guildId ?? null,
-        targetTag: parsed.targetTag,
-        mode: "actual",
-        view: parsed.actualView,
-      });
+    if (parsed.kind === "place") {
+      const bucket = getCompoWarDisplayBucket(parsed.weight);
+      if (!bucket) {
+        throw new Error("Invalid placement bucket for refresh.");
+      }
+      const placeResult = await new CompoPlaceService().refreshPlace(
+        parsed.weight,
+        bucket,
+        interaction.guildId ?? null,
+      );
       await interaction.editReply({
-        content: advice.content,
+        content: placeResult.content,
+        embeds: placeResult.embeds,
         components: buildCompoRefreshComponents({
           refreshPayload: {
-            kind: "advice",
-            userId: parsed.userId,
-            mode: "actual",
-            actualView: parsed.actualView,
-            targetTag: parsed.targetTag,
+            kind: "place",
+            userId: interaction.user.id,
+            weight: parsed.weight,
           },
           loading: false,
           supplementalRows,
         }),
       });
-      return;
     }
-
-    const bucket = getCompoWarDisplayBucket(parsed.weight);
-    if (!bucket) {
-      throw new Error("Invalid placement bucket for refresh.");
-    }
-    const placeResult = await new CompoPlaceService().refreshPlace(
-      parsed.weight,
-      bucket,
-      interaction.guildId ?? null,
-    );
-    await interaction.editReply({
-      content: placeResult.content,
-      embeds: placeResult.embeds,
-      components: buildCompoRefreshComponents({
-        refreshPayload: {
-          kind: "place",
-          userId: interaction.user.id,
-          weight: parsed.weight,
-        },
-        loading: false,
-        supplementalRows,
-      }),
-    });
   } catch (err) {
     console.error(`compo refresh button failed: ${formatError(err)}`);
     await interaction.editReply({
@@ -1273,24 +1587,31 @@ export const Compo: Command = {
           result: "advice_rendered",
           mode,
         });
+        const adviceRefreshPayload =
+          mode === "actual"
+            ? {
+                kind: "advice" as const,
+                userId: interaction.user.id,
+                mode: "actual" as const,
+                adviceView: advice.selectedView,
+                targetTag,
+                customBandIndex:
+                  advice.kind === "ready"
+                    ? advice.summary.selectedCustomBandIndex
+                    : null,
+                customBandCount:
+                  advice.kind === "ready" ? advice.summary.customBandCount : 0,
+              }
+            : {
+                kind: "advice" as const,
+                userId: interaction.user.id,
+                mode: "war" as const,
+                targetTag,
+              };
         await interaction.editReply({
-          content: advice.content,
+          ...buildCompoAdviceResponsePayload({ advice }),
           components: buildCompoRefreshComponents({
-            refreshPayload:
-              mode === "actual"
-                ? {
-                    kind: "advice",
-                    userId: interaction.user.id,
-                    mode: "actual",
-                    actualView: advice.selectedView,
-                    targetTag,
-                  }
-                : {
-                    kind: "advice",
-                    userId: interaction.user.id,
-                    mode: "war",
-                    targetTag,
-                  },
+            refreshPayload: adviceRefreshPayload,
             loading: false,
           }),
         });

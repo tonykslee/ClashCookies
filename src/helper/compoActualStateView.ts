@@ -119,7 +119,7 @@ function buildTargetCounts(heatMapRef: HeatMapRef): CompoWarDisplayBucketCounts 
   };
 }
 
-function buildDeltaByBucket(
+export function getCompoActualStateDeltaByBucket(
   counts: CompoWarDisplayBucketCounts,
   heatMapRef: HeatMapRef | null,
 ): Record<CompoWarDisplayBucket, number | null> {
@@ -153,7 +153,10 @@ export function calculateCompoDeviationScore(input: {
     return null;
   }
 
-  const deltaByBucket = buildDeltaByBucket(input.displayCounts, input.heatMapRef);
+  const deltaByBucket = getCompoActualStateDeltaByBucket(
+    input.displayCounts,
+    input.heatMapRef,
+  );
   return DISPLAY_BUCKETS_ASC.reduce((sum, bucket) => {
     const delta = deltaByBucket[bucket];
     return sum + Math.abs(delta ?? 0) * DEVIATION_SCORE_WEIGHTS[bucket];
@@ -220,7 +223,10 @@ function buildFillPlan(input: {
     };
   }
 
-  const deltas = buildDeltaByBucket(input.displayCounts, input.heatMapRef);
+  const deltas = getCompoActualStateDeltaByBucket(
+    input.displayCounts,
+    input.heatMapRef,
+  );
   let remaining = input.nMissing;
 
   for (const bucket of DISPLAY_BUCKETS_ASC) {
@@ -293,7 +299,7 @@ function buildEstimatedProjectionForBand(input: {
     input.displayCounts,
     fillPlan.fillCounts,
   );
-  const deltaByBucket = buildDeltaByBucket(
+  const deltaByBucket = getCompoActualStateDeltaByBucket(
     estimatedDisplayCounts,
     input.heatMapRef,
   );
@@ -357,7 +363,7 @@ function buildRawProjection(input: {
       Math.max(0, 50 - input.base.memberCount) + input.base.unresolvedWeightCount,
     displayCounts: input.displayCounts,
     selectedHeatMapRef: heatMapRef,
-    deltaByBucket: buildDeltaByBucket(input.displayCounts, heatMapRef),
+    deltaByBucket: getCompoActualStateDeltaByBucket(input.displayCounts, heatMapRef),
     deviationScore: null,
   };
 }

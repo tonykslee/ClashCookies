@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GoogleSheetsService } from "../src/services/GoogleSheetsService";
-import { CompoAdviceService } from "../src/services/CompoAdviceService";
+import {
+  CompoAdviceService,
+  countRushedCompoMembers,
+} from "../src/services/CompoAdviceService";
 
 const prismaMock = vi.hoisted(() => ({
   trackedClan: {
@@ -67,12 +70,16 @@ function makeHeatMapRef(input?: Partial<{
 function makeCurrentMember(input: {
   clanTag: string;
   playerTag: string;
+  playerName?: string;
+  townHall?: number | null;
   weight: number;
   sourceSyncedAt?: Date;
 }) {
   return {
     clanTag: input.clanTag,
     playerTag: input.playerTag,
+    playerName: input.playerName ?? `Player ${input.playerTag}`,
+    townHall: input.townHall ?? 18,
     weight: input.weight,
     sourceSyncedAt:
       input.sourceSyncedAt ?? new Date("2026-04-12T00:00:00.000Z"),
@@ -140,7 +147,7 @@ describe("CompoAdviceService", () => {
     prismaMock.weightInputDeferment.findMany.mockReset();
   });
 
-  it("loads ACTUAL advice from DB-backed state and defaults to Auto-Detect Band without sheet reads", async () => {
+  it("loads ACTUAL advice from DB-backed state, defaults to Auto-Detect Band, and computes rushed members without sheet reads", async () => {
     prismaMock.trackedClan.findMany.mockResolvedValue([
       makeTrackedClan("#AAA111", "Alpha Clan-actual"),
     ]);
@@ -148,51 +155,15 @@ describe("CompoAdviceService", () => {
       makeCurrentMember({
         clanTag: "#AAA111",
         playerTag: "#P000001",
+        playerName: "Rusher",
+        townHall: 15,
         weight: 135000,
       }),
       makeCurrentMember({
         clanTag: "#AAA111",
         playerTag: "#P000002",
-        weight: 135000,
-      }),
-      makeCurrentMember({
-        clanTag: "#AAA111",
-        playerTag: "#P000003",
-        weight: 135000,
-      }),
-      makeCurrentMember({
-        clanTag: "#AAA111",
-        playerTag: "#P000004",
-        weight: 135000,
-      }),
-      makeCurrentMember({
-        clanTag: "#AAA111",
-        playerTag: "#P000005",
-        weight: 135000,
-      }),
-      makeCurrentMember({
-        clanTag: "#AAA111",
-        playerTag: "#P000006",
-        weight: 135000,
-      }),
-      makeCurrentMember({
-        clanTag: "#AAA111",
-        playerTag: "#P000007",
-        weight: 135000,
-      }),
-      makeCurrentMember({
-        clanTag: "#AAA111",
-        playerTag: "#P000008",
-        weight: 135000,
-      }),
-      makeCurrentMember({
-        clanTag: "#AAA111",
-        playerTag: "#P000009",
-        weight: 135000,
-      }),
-      makeCurrentMember({
-        clanTag: "#AAA111",
-        playerTag: "#P000010",
+        playerName: "Stable",
+        townHall: 13,
         weight: 135000,
       }),
     ]);
@@ -200,9 +171,9 @@ describe("CompoAdviceService", () => {
     prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.heatMapRef.findMany.mockResolvedValue([
       makeHeatMapRef({
-        weightMinInclusive: 1_300_000,
-        weightMaxInclusive: 2_000_000,
-        th14Count: 10,
+        weightMinInclusive: 200_000,
+        weightMaxInclusive: 300_000,
+        th14Count: 2,
       }),
     ]);
     const getCompoLinkedSheetSpy = vi.spyOn(
@@ -222,10 +193,60 @@ describe("CompoAdviceService", () => {
 
     expect(getCompoLinkedSheetSpy).not.toHaveBeenCalled();
     expect(readCompoLinkedValuesSpy).not.toHaveBeenCalled();
+    expect(result.kind).toBe("ready");
     expect(result.selectedView).toBe("auto");
-    expect(result.content).toContain("Mode: **ACTUAL**");
-    expect(result.content).toContain("Advice View: **Auto-Detect Band**");
-    expect(result.content).toContain("Current Score:");
+    expect(result.summary.viewLabel).toBe("Auto-Detect Band");
+  });
+
+  it("keeps ACTUAL custom advice on a manually selected target band", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      makeTrackedClan("#AAA111", "Alpha Clan-actual"),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      makeCurrentMember({
+        clanTag: "#AAA111",
+        playerTag: "#P000001",
+        playerName: "P1",
+        townHall: 15,
+        weight: 135000,
+      }),
+      makeCurrentMember({
+        clanTag: "#AAA111",
+        playerTag: "#P000002",
+        playerName: "P2",
+        townHall: 15,
+        weight: 135000,
+      }),
+    ]);
+    prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.heatMapRef.findMany.mockResolvedValue([
+      makeHeatMapRef({
+        weightMinInclusive: 1_000_000,
+        weightMaxInclusive: 1_499_999,
+        th14Count: 2,
+      }),
+      makeHeatMapRef({
+        weightMinInclusive: 1_500_000,
+        weightMaxInclusive: 1_999_999,
+        th15Count: 2,
+      }),
+    ]);
+
+    const result = await new CompoAdviceService().readAdvice({
+      guildId: "guild-1",
+      targetTag: "#AAA111",
+      mode: "actual",
+      view: "custom",
+      customBandIndex: 1,
+    });
+
+    expect(result.kind).toBe("ready");
+    expect(result.selectedView).toBe("custom");
+    expect(result.summary.viewLabel).toBe("Custom");
+    expect(result.summary.selectedCustomBandIndex).toBe(1);
+    expect(result.summary.currentBandLabel).toContain("1,500,000");
+    expect(result.summary.currentScore).toBeGreaterThanOrEqual(0);
   });
 
   it("loads WAR advice from DB-backed tracked war state without sheet reads", async () => {
@@ -272,9 +293,40 @@ describe("CompoAdviceService", () => {
 
     expect(getCompoLinkedSheetSpy).not.toHaveBeenCalled();
     expect(readCompoLinkedValuesSpy).not.toHaveBeenCalled();
+    expect(result.kind).toBe("ready");
     expect(result.selectedView).toBe("raw");
-    expect(result.content).toContain("Mode: **WAR**");
-    expect(result.content).toContain("Advice View: **Raw Data**");
-    expect(result.content).toContain("Current Score:");
+    expect(result.summary.viewLabel).toBe("Raw Data");
+    expect(result.summary.currentScore).toBe(0);
+  });
+
+  it("counts rushed members from the resolved bucket, not the collapsed display label", () => {
+    expect(
+      countRushedCompoMembers([
+        {
+          clanTag: "#AAA111",
+          playerTag: "#P1",
+          playerName: "Rusher",
+          townHall: 15,
+          resolvedWeight: 135000,
+          resolvedBucket: "TH14",
+        },
+        {
+          clanTag: "#AAA111",
+          playerTag: "#P2",
+          playerName: "Stable",
+          townHall: 13,
+          resolvedWeight: 135000,
+          resolvedBucket: "TH14",
+        },
+        {
+          clanTag: "#AAA111",
+          playerTag: "#P3",
+          playerName: "Low",
+          townHall: 9,
+          resolvedWeight: 55000,
+          resolvedBucket: "TH8_OR_LOWER",
+        },
+      ] as any),
+    ).toBe(2);
   });
 });

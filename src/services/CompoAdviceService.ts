@@ -1,29 +1,51 @@
 import {
+  COMPO_ADVICE_VIEW_LABELS,
   buildActualAdviceSummary,
-  buildCompoAdviceContentLines,
+  buildCustomAdviceSummary,
   buildWarAdviceSummary,
   type CompoAdviceMode,
+  type CompoAdviceSummary,
+  type CompoAdviceView,
 } from "../helper/compoAdviceEngine";
 import {
-  getCompoActualStateViewLabel,
   type CompoActualStateView,
 } from "../helper/compoActualStateView";
 import { normalizeTag } from "./war-events/core";
 import {
   CompoActualStateService,
   loadCompoActualStateContext,
+  type CompoActualStateMemberContext,
 } from "./CompoActualStateService";
 import {
   CompoWarStateService,
   loadCompoWarStateContext,
 } from "./CompoWarStateService";
 
-export type CompoAdviceReadResult = {
-  content: string;
-  trackedClanTags: string[];
-  selectedView: CompoActualStateView;
+export type CompoAdviceReadyResult = {
+  kind: "ready";
   mode: CompoAdviceMode;
+  selectedView: CompoAdviceView;
+  trackedClanTags: string[];
+  clanTag: string;
+  clanName: string;
+  summary: CompoAdviceSummary;
+  memberCount: number;
+  rushedCount: number;
+  refreshLine: string | null;
 };
+
+export type CompoAdviceEmptyResult = {
+  kind: "empty";
+  mode: CompoAdviceMode;
+  selectedView: CompoAdviceView;
+  trackedClanTags: string[];
+  clanTag: string | null;
+  clanName: string | null;
+  message: string;
+  refreshLine: string | null;
+};
+
+export type CompoAdviceReadResult = CompoAdviceReadyResult | CompoAdviceEmptyResult;
 
 function buildPersistedRefreshLine(latestSourceSyncedAt: Date | null): string {
   if (!latestSourceSyncedAt) {
@@ -32,34 +54,122 @@ function buildPersistedRefreshLine(latestSourceSyncedAt: Date | null): string {
   return `RAW Data last refreshed: <t:${Math.floor(latestSourceSyncedAt.getTime() / 1000)}:F>`;
 }
 
-function buildNoTrackedClansContent(input: {
+function buildNoTrackedClansMessage(input: {
   mode: CompoAdviceMode;
-  view: CompoActualStateView;
+  view: CompoAdviceView;
 }): string {
-  const lines = [
-    buildPersistedRefreshLine(null),
+  return [
     `Mode: **${input.mode.toUpperCase()}**`,
-    `Advice View: **${getCompoActualStateViewLabel(input.view)}**`,
+    `Advice View: **${COMPO_ADVICE_VIEW_LABELS[input.view]}**`,
     `No tracked clans are configured for DB-backed ${input.mode.toUpperCase()} advice.`,
-  ];
-  return lines.join("\n");
+  ].join("\n");
 }
 
-function buildNoTargetContent(input: {
+function buildNoTargetMessage(input: {
   mode: CompoAdviceMode;
-  view: CompoActualStateView;
+  view: CompoAdviceView;
   targetTag: string;
   knownTags: string[];
 }): string {
   const lines = [
     `Mode: **${input.mode.toUpperCase()}**`,
-    `Advice View: **${getCompoActualStateViewLabel(input.view)}**`,
+    `Advice View: **${COMPO_ADVICE_VIEW_LABELS[input.view]}**`,
     `No tracked clan matched tag \`#${input.targetTag}\`.`,
   ];
   if (input.knownTags.length > 0) {
     lines.push(`Known tags in this mode: ${input.knownTags.map((tag) => `#${tag}`).join(", ")}`);
   }
   return lines.join("\n");
+}
+
+const IMPLIES_TOWN_HALL_BY_BUCKET: Record<string, number> = {
+  TH18: 18,
+  TH17: 17,
+  TH16: 16,
+  TH15: 15,
+  TH14: 14,
+  TH13: 13,
+  TH12: 12,
+  TH11: 11,
+  TH10: 10,
+  TH9: 9,
+  TH8_OR_LOWER: 8,
+};
+
+function getActualRefreshView(view: CompoAdviceView): CompoActualStateView {
+  if (view === "best") {
+    return "best";
+  }
+  if (view === "raw" || view === "custom") {
+    return "raw";
+  }
+  return "auto";
+}
+
+/** Purpose: count rushed ACTUAL members from persisted member rows using the resolved bucket implied Town Hall. */
+export function countRushedCompoMembers(
+  members: readonly CompoActualStateMemberContext[],
+): number {
+  let rushed = 0;
+  for (const member of members) {
+    if (member.townHall === null || member.resolvedBucket === null) {
+      continue;
+    }
+    const impliedTownHall =
+      IMPLIES_TOWN_HALL_BY_BUCKET[member.resolvedBucket] ?? null;
+    if (impliedTownHall === null) {
+      continue;
+    }
+    if (member.townHall > impliedTownHall) {
+      rushed += 1;
+    }
+  }
+  return rushed;
+}
+
+function buildReadyResult(input: {
+  mode: CompoAdviceMode;
+  selectedView: CompoAdviceView;
+  trackedClanTags: string[];
+  clanTag: string;
+  clanName: string;
+  summary: CompoAdviceSummary;
+  members: readonly CompoActualStateMemberContext[];
+  refreshLine: string | null;
+}): CompoAdviceReadyResult {
+  return {
+    kind: "ready",
+    mode: input.mode,
+    selectedView: input.selectedView,
+    trackedClanTags: input.trackedClanTags,
+    clanTag: input.clanTag,
+    clanName: input.clanName,
+    summary: input.summary,
+    memberCount: input.summary.currentProjection.memberCount,
+    rushedCount: countRushedCompoMembers(input.members),
+    refreshLine: input.refreshLine,
+  };
+}
+
+function buildEmptyResult(input: {
+  mode: CompoAdviceMode;
+  selectedView: CompoAdviceView;
+  trackedClanTags: string[];
+  clanTag: string | null;
+  clanName: string | null;
+  message: string;
+  refreshLine: string | null;
+}): CompoAdviceEmptyResult {
+  return {
+    kind: "empty",
+    mode: input.mode,
+    selectedView: input.selectedView,
+    trackedClanTags: input.trackedClanTags,
+    clanTag: input.clanTag,
+    clanName: input.clanName,
+    message: input.message,
+    refreshLine: input.refreshLine,
+  };
 }
 
 /** Purpose: build DB-backed composition advice from persisted ACTUAL and WAR state snapshots only. */
@@ -71,99 +181,121 @@ export class CompoAdviceService {
     guildId?: string | null;
     targetTag: string;
     mode: CompoAdviceMode;
-    view?: CompoActualStateView;
+    view?: CompoAdviceView;
+    customBandIndex?: number | null;
   }): Promise<CompoAdviceReadResult> {
     const targetTag = normalizeTag(input.targetTag);
     const view =
       input.mode === "actual" ? input.view ?? "auto" : "raw";
 
     if (!targetTag) {
-      return {
-        content: buildNoTargetContent({
+      return buildEmptyResult({
+        mode: input.mode,
+        selectedView: view,
+        trackedClanTags: [],
+        clanTag: null,
+        clanName: null,
+        message: buildNoTargetMessage({
           mode: input.mode,
           view,
           targetTag: "",
           knownTags: [],
         }),
-        trackedClanTags: [],
-        selectedView: view,
-        mode: input.mode,
-      };
+        refreshLine: buildPersistedRefreshLine(null),
+      });
     }
 
     if (input.mode === "actual") {
       const context = await loadCompoActualStateContext(input.guildId ?? null);
       if (context.trackedClanTags.length === 0) {
-        return {
-          content: buildNoTrackedClansContent({
+        return buildEmptyResult({
+          mode: input.mode,
+          selectedView: view,
+          trackedClanTags: [],
+          clanTag: null,
+          clanName: null,
+          message: buildNoTrackedClansMessage({
             mode: input.mode,
             view,
           }),
-          trackedClanTags: [],
-          selectedView: view,
-          mode: input.mode,
-        };
+          refreshLine: buildPersistedRefreshLine(null),
+        });
       }
 
       const clan = context.clans.find((row) => row.clanTag === targetTag);
       if (!clan) {
-        return {
-          content: buildNoTargetContent({
+        return buildEmptyResult({
+          mode: input.mode,
+          selectedView: view,
+          trackedClanTags: context.trackedClanTags,
+          clanTag: null,
+          clanName: null,
+          message: buildNoTargetMessage({
             mode: input.mode,
             view,
             targetTag,
             knownTags: context.trackedClanTags,
           }),
-          trackedClanTags: context.trackedClanTags,
-          selectedView: view,
-          mode: input.mode,
-        };
+          refreshLine: buildPersistedRefreshLine(context.latestSourceSyncedAt),
+        });
       }
 
-      const summary = buildActualAdviceSummary({
-        base: clan.base,
-        heatMapRefs: context.heatMapRefs,
-        view,
-      });
-      const content = buildCompoAdviceContentLines({
-        summary,
-        modeLabel: input.mode.toUpperCase(),
-        refreshLine: buildPersistedRefreshLine(context.latestSourceSyncedAt),
-      }).join("\n");
-      return {
-        content,
-        trackedClanTags: context.trackedClanTags,
-        selectedView: view,
+      const summary =
+        view === "custom"
+          ? buildCustomAdviceSummary({
+              base: clan.base,
+              heatMapRefs: context.heatMapRefs,
+              customBandIndex: input.customBandIndex,
+            })
+          : buildActualAdviceSummary({
+              base: clan.base,
+              heatMapRefs: context.heatMapRefs,
+              view,
+            });
+      return buildReadyResult({
         mode: input.mode,
-      };
+        selectedView: view,
+        trackedClanTags: context.trackedClanTags,
+        clanTag: clan.clanTag,
+        clanName: clan.clanName,
+        summary,
+        members: clan.members,
+        refreshLine: buildPersistedRefreshLine(context.latestSourceSyncedAt),
+      });
     }
 
     const context = await loadCompoWarStateContext();
     if (context.trackedClanTags.length === 0) {
-      return {
-        content: buildNoTrackedClansContent({
+      return buildEmptyResult({
+        mode: input.mode,
+        selectedView: view,
+        trackedClanTags: [],
+        clanTag: null,
+        clanName: null,
+        message: buildNoTrackedClansMessage({
           mode: input.mode,
           view,
         }),
-        trackedClanTags: [],
-        selectedView: view,
-        mode: input.mode,
-      };
+        refreshLine: buildPersistedRefreshLine(null),
+      });
     }
 
     const clan = context.clans.find((row) => row.clanTag === targetTag);
     if (!clan) {
-      return {
-        content: buildNoTargetContent({
+      return buildEmptyResult({
+        mode: input.mode,
+        selectedView: view,
+        trackedClanTags: context.trackedClanTags,
+        clanTag: null,
+        clanName: null,
+        message: buildNoTargetMessage({
           mode: input.mode,
           view,
           targetTag,
           knownTags: context.trackedClanTags,
         }),
-        trackedClanTags: context.trackedClanTags,
-        selectedView: view,
-        mode: input.mode,
-      };
+        refreshLine: buildPersistedRefreshLine(context.latestRefreshAt),
+      });
     }
 
     const summary = buildWarAdviceSummary({
@@ -175,31 +307,31 @@ export class CompoAdviceService {
       },
       heatMapRefs: context.heatMapRefs,
     });
-    const content = buildCompoAdviceContentLines({
-      summary,
-      modeLabel: input.mode.toUpperCase(),
-      refreshLine: buildPersistedRefreshLine(context.latestRefreshAt),
-    }).join("\n");
-    return {
-      content,
-      trackedClanTags: context.trackedClanTags,
-      selectedView: view,
+    return buildReadyResult({
       mode: input.mode,
-    };
+      selectedView: view,
+      trackedClanTags: context.trackedClanTags,
+      clanTag: clan.clanTag,
+      clanName: clan.clanName,
+      summary,
+      members: [],
+      refreshLine: buildPersistedRefreshLine(context.latestRefreshAt),
+    });
   }
 
   async refreshAdvice(input: {
     guildId?: string | null;
     targetTag: string;
     mode: CompoAdviceMode;
-    view?: CompoActualStateView;
+    view?: CompoAdviceView;
+    customBandIndex?: number | null;
   }): Promise<CompoAdviceReadResult> {
     const view =
       input.mode === "actual" ? input.view ?? "auto" : "raw";
 
     if (input.mode === "actual") {
       await this.actualStateService.refreshState(input.guildId ?? null, {
-        view,
+        view: getActualRefreshView(view),
       });
     } else {
       await this.warStateService.refreshState();
@@ -209,5 +341,5 @@ export class CompoAdviceService {
   }
 }
 
-export const buildNoTrackedClansContentForTest = buildNoTrackedClansContent;
-export const buildNoTargetContentForTest = buildNoTargetContent;
+export const buildNoTrackedClansContentForTest = buildNoTrackedClansMessage;
+export const buildNoTargetContentForTest = buildNoTargetMessage;

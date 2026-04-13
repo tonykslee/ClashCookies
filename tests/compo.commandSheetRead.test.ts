@@ -62,15 +62,44 @@ describe("/compo advice command", () => {
     vi.restoreAllMocks();
   });
 
-  it("uses the DB-backed advice service and keeps sheet access out of the command layer", async () => {
+  it("uses the DB-backed advice service and renders an embed without sheet access", async () => {
     const readAdviceSpy = vi
       .spyOn(CompoAdviceService.prototype, "readAdvice")
       .mockResolvedValue({
-        content:
-          "RAW Data last refreshed: <t:1709900000:F>\nMode: **ACTUAL**\nAdvice View: **Auto-Detect Band**\nCurrent Score: **4**\nCurrent Band: **0 - 9999999**\nRecommendation: **Add TH17**\nResulting Score: **0**\nResulting Band: **0 - 9999999**",
-        trackedClanTags: ["#AAA111"],
-        selectedView: "auto",
+        kind: "ready",
         mode: "actual",
+        selectedView: "auto",
+        trackedClanTags: ["#AAA111"],
+        clanTag: "#AAA111",
+        clanName: "Alpha Clan-actual",
+        memberCount: 50,
+        rushedCount: 1,
+        refreshLine: "RAW Data last refreshed: <t:1709900000:F>",
+        summary: {
+          mode: "actual",
+          view: "auto",
+          viewLabel: "Auto-Detect Band",
+          currentProjection: {
+            memberCount: 50,
+            deltaByBucket: {
+              TH18: 0,
+              TH17: 0,
+              TH16: 0,
+              TH15: 0,
+              TH14: 0,
+              "<=TH13": 0,
+            },
+          } as any,
+          currentScore: 0,
+          currentBandLabel: "1,000,000 - 2,000,000",
+          recommendationText: "Add TH17",
+          resultingScore: 0,
+          resultingBandLabel: "1,000,000 - 2,000,000",
+          alternateTexts: [],
+          statusText: null,
+          selectedCustomBandIndex: 0,
+          customBandCount: 1,
+        } as any,
       });
     const getCompoLinkedSheetSpy = vi.spyOn(
       GoogleSheetsService.prototype,
@@ -96,24 +125,60 @@ describe("/compo advice command", () => {
     expect(readCompoLinkedValuesSpy).not.toHaveBeenCalled();
 
     const payload = interaction.editReply.mock.calls.at(-1)?.[0];
-    expect(String(payload?.content ?? "")).toContain("Advice View: **Auto-Detect Band**");
+    expect(Array.isArray(payload?.embeds)).toBe(true);
+    expect(String(payload?.embeds?.[0]?.data?.description ?? "")).toContain(
+      "Advice View: **Auto-Detect Band**",
+    );
+    expect(String(payload?.embeds?.[0]?.data?.title ?? "")).toContain(
+      "Alpha Clan (#AAA111)",
+    );
     expect(getComponentCustomIds(payload)).toEqual(
       expect.arrayContaining([
-        "compo-refresh:advice:user-1:actual:auto:LQQ99UV8",
-        "compo-refresh:view:user-1:advice:raw:LQQ99UV8",
-        "compo-refresh:view:user-1:advice:auto:LQQ99UV8",
-        "compo-refresh:view:user-1:advice:best:LQQ99UV8",
+        "compo-refresh:advice:user-1:actual:auto:LQQ99UV8:1:0",
+        "compo-refresh:view:user-1:advice:raw:LQQ99UV8:1:0",
+        "compo-refresh:view:user-1:advice:auto:LQQ99UV8:1:0",
+        "compo-refresh:view:user-1:advice:best:LQQ99UV8:1:0",
+        "compo-refresh:view:user-1:advice:custom:LQQ99UV8:1:0",
       ]),
     );
   });
 
   it("renders WAR advice with only a refresh button", async () => {
     vi.spyOn(CompoAdviceService.prototype, "readAdvice").mockResolvedValue({
-      content:
-        "RAW Data last refreshed: <t:1709900000:F>\nMode: **WAR**\nAdvice View: **Raw Data**\nCurrent Score: **0**\nCurrent Band: **0 - 9999999**\nRecommendation: **No improvement found.**\nResulting Score: **n/a**\nResulting Band: **(no band)**",
-      trackedClanTags: ["#AAA111"],
-      selectedView: "raw",
+      kind: "ready",
       mode: "war",
+      selectedView: "raw",
+      trackedClanTags: ["#AAA111"],
+      clanTag: "#AAA111",
+      clanName: "Alpha Clan-war",
+      memberCount: 50,
+      rushedCount: 0,
+      refreshLine: "RAW Data last refreshed: <t:1709900000:F>",
+      summary: {
+        mode: "war",
+        view: "raw",
+        viewLabel: "Raw Data",
+        currentProjection: {
+          memberCount: 50,
+          deltaByBucket: {
+            TH18: 0,
+            TH17: 0,
+            TH16: 0,
+            TH15: 0,
+            TH14: 0,
+            "<=TH13": 0,
+          },
+        } as any,
+        currentScore: 0,
+        currentBandLabel: "0 - 9999999",
+        recommendationText: "No improvement found.",
+        resultingScore: null,
+        resultingBandLabel: "(no band)",
+        alternateTexts: [],
+        statusText: "No improvement found.",
+        selectedCustomBandIndex: 0,
+        customBandCount: 1,
+      } as any,
     });
 
     const interaction = makeInteraction({
@@ -124,7 +189,9 @@ describe("/compo advice command", () => {
     await Compo.run({} as any, interaction as any, {} as any);
 
     const payload = interaction.editReply.mock.calls.at(-1)?.[0];
-    expect(String(payload?.content ?? "")).toContain("Mode: **WAR**");
+    expect(String(payload?.embeds?.[0]?.data?.description ?? "")).toContain(
+      "Advice View: **Raw Data**",
+    );
     expect(getComponentCustomIds(payload)).toEqual([
       "compo-refresh:advice:user-1:war:LQQ99UV8",
     ]);
