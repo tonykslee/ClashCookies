@@ -1703,7 +1703,7 @@ describe("War-start notify refresh sync fallback", () => {
   }): Promise<{
     ok: boolean;
     payloadSyncNumber: number | null;
-    getPreviousSyncNumSpy: ReturnType<typeof vi.fn>;
+    getLatestPersistedSyncBaselineSpy: ReturnType<typeof vi.fn>;
   }> {
     vi.restoreAllMocks();
     const messageEdit = vi.fn().mockResolvedValue(undefined);
@@ -1750,9 +1750,11 @@ describe("War-start notify refresh sync fallback", () => {
         .fn()
         .mockResolvedValue(input.sameWarSync === null ? null : { syncNum: input.sameWarSync }),
     };
-    const getPreviousSyncNumSpy = vi.fn().mockResolvedValue(input.previousSync);
-    (service as any).pointsSync = {
-      getPreviousSyncNum: getPreviousSyncNumSpy,
+    const getLatestPersistedSyncBaselineSpy = vi
+      .fn()
+      .mockResolvedValue(input.previousSync);
+    (service as any).syncResolution = {
+      getLatestPersistedSyncBaseline: getLatestPersistedSyncBaselineSpy,
     };
 
     const buildSpy = vi
@@ -1764,7 +1766,7 @@ describe("War-start notify refresh sync fallback", () => {
     return {
       ok,
       payloadSyncNumber,
-      getPreviousSyncNumSpy,
+      getLatestPersistedSyncBaselineSpy,
     };
   }
 
@@ -1777,7 +1779,7 @@ describe("War-start notify refresh sync fallback", () => {
 
     expect(result.ok).toBe(true);
     expect(result.payloadSyncNumber).toBe(482);
-    expect(result.getPreviousSyncNumSpy).not.toHaveBeenCalled();
+    expect(result.getLatestPersistedSyncBaselineSpy).not.toHaveBeenCalled();
   });
 
   it("falls back to posted sync when same-war sync is unavailable", async () => {
@@ -1789,7 +1791,7 @@ describe("War-start notify refresh sync fallback", () => {
 
     expect(result.ok).toBe(true);
     expect(result.payloadSyncNumber).toBe(482);
-    expect(result.getPreviousSyncNumSpy).not.toHaveBeenCalled();
+    expect(result.getLatestPersistedSyncBaselineSpy).not.toHaveBeenCalled();
   });
 
   it("derives active-war sync as previous+1 when same-war and posted sync are unavailable", async () => {
@@ -1801,7 +1803,7 @@ describe("War-start notify refresh sync fallback", () => {
 
     expect(result.ok).toBe(true);
     expect(result.payloadSyncNumber).toBe(482);
-    expect(result.getPreviousSyncNumSpy).toHaveBeenCalledTimes(1);
+    expect(result.getLatestPersistedSyncBaselineSpy).toHaveBeenCalledTimes(1);
   });
 
   it("keeps initial notify and refresh sync aligned when same-war sync exists", async () => {

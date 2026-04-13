@@ -12,6 +12,12 @@ import { hashMessageConfig } from "../helper/hashConfig";
 import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
 import { CoCService } from "./CoCService";
+import {
+  ActiveWarSyncResolutionService,
+  buildActiveWarSyncIdentity,
+  logActiveWarSyncResolution,
+  resolveActiveWarSyncNumber,
+} from "./ActiveWarSyncResolutionService";
 import { PointsProjectionService } from "./PointsProjectionService";
 import { PointsDirectFetchGateService } from "./PointsDirectFetchGateService";
 import { PostedMessageService } from "./PostedMessageService";
@@ -891,24 +897,19 @@ function hasSameWarConfirmedMailBaseline(input: {
 }
 
 function resolveEventRenderSyncNumber(input: {
+  identity: ReturnType<typeof buildActiveWarSyncIdentity>;
   sameWarSyncNumber: number | null;
   postedSyncNumber: number | null;
-  previousSyncNumber: number | null;
-  currentState: WarState;
+  latestPersistedSyncNumber: number | null;
+  allowPostedSyncReuse?: boolean;
 }): number | null {
-  const sameWarSyncNumber = toValidSyncNumber(input.sameWarSyncNumber);
-  if (sameWarSyncNumber !== null) return sameWarSyncNumber;
-
-  const postedSyncNumber = toValidSyncNumber(input.postedSyncNumber);
-  if (postedSyncNumber !== null) return postedSyncNumber;
-
-  const previousSyncNumber = toValidSyncNumber(input.previousSyncNumber);
-  if (previousSyncNumber === null) return null;
-
-  if (input.currentState === "preparation" || input.currentState === "inWar") {
-    return previousSyncNumber + 1;
-  }
-  return previousSyncNumber;
+  return resolveActiveWarSyncNumber({
+    identity: input.identity,
+    latestPersistedSyncNumber: input.latestPersistedSyncNumber,
+    sameWarPersistedSyncNumber: input.sameWarSyncNumber,
+    postedSyncNumber: input.postedSyncNumber,
+    allowPostedSyncReuse: input.allowPostedSyncReuse,
+  }).syncNumber;
 }
 
 export const resolveEventRenderSyncNumberForTest = resolveEventRenderSyncNumber;
@@ -1193,6 +1194,7 @@ export class WarEventLogService {
   private readonly pointsGate: PointsDirectFetchGateService;
   private readonly pointsSync: WarStartPointsSyncService;
   private readonly currentSyncs: PointsSyncService;
+  private readonly syncResolution: ActiveWarSyncResolutionService;
   private readonly commandPermissions: CommandPermissionService;
   private readonly history: WarEventHistoryService;
   private readonly warCompliance: WarComplianceService;
@@ -1212,6 +1214,7 @@ export class WarEventLogService {
       new SettingsService(),
     );
     this.currentSyncs = new PointsSyncService();
+    this.syncResolution = new ActiveWarSyncResolutionService(this.currentSyncs);
     this.commandPermissions = new CommandPermissionService();
     this.history = new WarEventHistoryService(coc);
     this.warCompliance = new WarComplianceService();
@@ -1221,7 +1224,7 @@ export class WarEventLogService {
 
   /** Purpose: poll. */
   async poll(): Promise<void> {
-    const previousSync = await this.pointsSync.getPreviousSyncNum();
+    const previousSync = await this.syncResolution.getLatestPersistedSyncBaseline();
     const syncContext: PollSyncContext = {
       previousSync,
       activeSync: previousSync === null ? null : previousSync + 1,
@@ -1482,7 +1485,7 @@ export class WarEventLogService {
     sub: SubscriptionRow,
     params: { eventType: EventType; source: TestSource },
   ): Promise<EventEmitPayload> {
-    const previousSync = await this.pointsSync.getPreviousSyncNum();
+    const previousSync = await this.syncResolution.getLatestPersistedSyncBaseline();
     const activeSync = previousSync === null ? null : previousSync + 1;
 
     const currentWar =
@@ -3035,6 +3038,7 @@ export class WarEventLogService {
       clanTag: sub.clanTag,
       warId: resolvedWarIdText,
       warStartTime: nextWarStartTime,
+      opponentTag: nextOpponentTag || normalizeTag(sub.opponentTag ?? ""),
       currentState,
       postedSyncNumber: null,
       previousSyncNumber: syncContext.previousSync,
@@ -4285,8 +4289,10 @@ export class WarEventLogService {
       clanTag,
       warId: warIdText,
       warStartTime,
+      opponentTag: nextOpponentTag,
       currentState: state,
       postedSyncNumber: toValidSyncNumber(existingMessage.syncNum),
+      allowPostedSyncReuse: true,
     });
 
     const basePayload = {
@@ -4511,8 +4517,10 @@ export class WarEventLogService {
       clanTag,
       warId: resolvedWarIdText,
       warStartTime,
+      opponentTag: nextOpponentTag || refreshedSub.opponentTag,
       currentState: "inWar",
       postedSyncNumber,
+      allowPostedSyncReuse: true,
     });
 
     const payload = {
@@ -4608,9 +4616,11 @@ export class WarEventLogService {
     clanTag: string;
     warId: string | null;
     warStartTime: Date | null;
+    opponentTag?: string | null;
     currentState: WarState;
     postedSyncNumber: number | null;
     previousSyncNumber?: number | null;
+    allowPostedSyncReuse?: boolean;
   }): Promise<number | null> {
     const sameWarSync = await this.currentSyncs
       .getCurrentSyncForClan({
@@ -4620,25 +4630,42 @@ export class WarEventLogService {
         warStartTime: input.warStartTime,
       })
       .catch(() => null);
-    const sameWarSyncNumber = toValidSyncNumber(sameWarSync?.syncNum ?? null);
-    if (sameWarSyncNumber !== null) {
-      return sameWarSyncNumber;
-    }
-
+    const sameWarPersistedSyncNumber = toValidSyncNumber(sameWarSync?.syncNum ?? null);
     const postedSyncNumber = toValidSyncNumber(input.postedSyncNumber);
-    if (postedSyncNumber !== null) {
-      return postedSyncNumber;
-    }
-
-    const previousSyncNumber = toValidSyncNumber(
-      input.previousSyncNumber ?? (await this.pointsSync.getPreviousSyncNum()),
-    );
-    return resolveEventRenderSyncNumber({
-      sameWarSyncNumber: null,
-      postedSyncNumber: null,
-      previousSyncNumber,
-      currentState: input.currentState,
+    const preferredBaseline = toValidSyncNumber(input.previousSyncNumber ?? null);
+    const needsLatestPersistedBaseline =
+      sameWarPersistedSyncNumber === null &&
+      !(input.allowPostedSyncReuse && postedSyncNumber !== null) &&
+      preferredBaseline === null;
+    const latestPersistedSyncNumber = needsLatestPersistedBaseline
+      ? toValidSyncNumber(
+          await this.syncResolution.getLatestPersistedSyncBaseline({
+            guildId: input.guildId,
+          }),
+        )
+      : preferredBaseline;
+    const identity = buildActiveWarSyncIdentity({
+      warState: input.currentState,
+      warId: input.warId,
+      warStartTime: input.warStartTime,
+      opponentTag: input.opponentTag ?? null,
     });
+    const resolution = resolveActiveWarSyncNumber({
+      identity,
+      latestPersistedSyncNumber,
+      sameWarPersistedSyncNumber,
+      postedSyncNumber,
+      allowPostedSyncReuse: input.allowPostedSyncReuse,
+    });
+    logActiveWarSyncResolution({
+      stage: input.allowPostedSyncReuse
+        ? "notify_refresh_sync"
+        : "notify_event_sync",
+      guildId: input.guildId,
+      clanTag: input.clanTag,
+      resolution,
+    });
+    return resolution.syncNumber;
   }
 
   private async buildBattleDayRefreshEmbed(
