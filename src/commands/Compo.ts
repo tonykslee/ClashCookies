@@ -11,6 +11,8 @@ import {
   Client,
   ComponentType,
   EmbedBuilder,
+  StringSelectMenuBuilder,
+  StringSelectMenuInteraction,
 } from "discord.js";
 import { Command } from "../Command";
 import {
@@ -146,6 +148,15 @@ type CompoRefreshPayload =
       customBandCount: number;
   }
   | {
+      kind: "advice-clan";
+      userId: string;
+      mode: "war" | "actual";
+      targetTag: string;
+      adviceView?: CompoAdviceView;
+      customBandIndex?: number | null;
+      customBandCount?: number;
+    }
+  | {
       kind: "view";
       userId: string;
       target: "state";
@@ -189,6 +200,13 @@ function buildCompoRefreshCustomId(payload: CompoRefreshPayload): string {
         : `${base}:${Math.trunc(payload.customBandIndex)}`;
     }
     return `${COMPO_REFRESH_PREFIX}:advice:${payload.userId}:war:${payload.targetTag}`;
+  }
+  if (payload.kind === "advice-clan") {
+    if (payload.mode === "actual") {
+      const base = `${COMPO_REFRESH_PREFIX}:advice-clan:${payload.userId}:actual:${payload.targetTag}:${payload.adviceView ?? "auto"}`;
+      return `${base}:${Math.trunc(payload.customBandCount ?? 0)}:${Math.trunc(payload.customBandIndex ?? 0)}`;
+    }
+    return `${COMPO_REFRESH_PREFIX}:advice-clan:${payload.userId}:war:${payload.targetTag}`;
   }
   if (payload.kind === "view") {
     if (payload.target === "advice") {
@@ -288,6 +306,45 @@ function parseCompoRefreshCustomId(
     }
     return null;
   }
+  if (kind === "advice-clan") {
+    const mode = parts[3];
+    if (mode === "war" && parts.length === 5) {
+      const targetTag = normalizeTag(parts[4] ?? "");
+      if (!targetTag) return null;
+      return {
+        kind: "advice-clan",
+        userId,
+        mode,
+        targetTag,
+      };
+    }
+    if (mode === "actual" && parts.length === 8) {
+      const targetTag = normalizeTag(parts[4] ?? "");
+      const adviceView = parts[5];
+      const customBandCount = Number(parts[6]);
+      const customBandIndex = Number(parts[7]);
+      if (
+        !targetTag ||
+        !COMPO_ADVICE_VIEWS.includes(adviceView as CompoAdviceView) ||
+        !Number.isFinite(customBandCount) ||
+        customBandCount < 0 ||
+        !Number.isFinite(customBandIndex) ||
+        customBandIndex < 0
+      ) {
+        return null;
+      }
+      return {
+        kind: "advice-clan",
+        userId,
+        mode,
+        targetTag,
+        adviceView: adviceView as CompoAdviceView,
+        customBandCount: Math.trunc(customBandCount),
+        customBandIndex: Math.trunc(customBandIndex),
+      };
+    }
+    return null;
+  }
   if (kind === "view" && parts.length >= 5) {
     const target = parts[3];
     if (target === "state" && parts.length === 5) {
@@ -381,6 +438,11 @@ export function isCompoRefreshButtonCustomId(customId: string): boolean {
   return String(customId ?? "").startsWith(`${COMPO_REFRESH_PREFIX}:`);
 }
 
+export function isCompoAdviceClanSelectMenuCustomId(customId: string): boolean {
+  const parsed = parseCompoRefreshCustomId(customId);
+  return parsed?.kind === "advice-clan";
+}
+
 function buildCompoRefreshActionRow(
   customId: string,
   options?: { loading?: boolean },
@@ -435,6 +497,111 @@ function buildCompoActualViewActionRow(input: {
       })(),
     ),
   );
+}
+
+type CompoAdviceClanChoice = {
+  tag: string;
+  name: string;
+};
+
+function buildCompoAdviceClanSelectRow(input: {
+  userId: string;
+  mode: "war" | "actual";
+  targetTag: string | null;
+  adviceView?: CompoAdviceView;
+  customBandIndex?: number | null;
+  customBandCount?: number;
+  trackedClanChoices: readonly CompoAdviceClanChoice[];
+  loading?: boolean;
+}): ActionRowBuilder<StringSelectMenuBuilder> | null {
+  const choices = [...input.trackedClanChoices]
+    .map((choice) => ({
+      tag: normalizeTag(choice.tag),
+      name: choice.name?.trim() || choice.tag,
+    }))
+    .filter((choice, index, list) => {
+      if (!choice.tag) return false;
+      return list.findIndex((entry) => entry.tag === choice.tag) === index;
+    })
+    .slice(0, 25);
+  if (choices.length === 0) {
+    return null;
+  }
+
+  const selectedChoice = choices.find(
+    (choice) => choice.tag === normalizeTag(input.targetTag ?? ""),
+  );
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId(
+      buildCompoRefreshCustomId({
+        kind: "advice-clan",
+        userId: input.userId,
+        mode: input.mode,
+        targetTag: normalizeTag(input.targetTag ?? selectedChoice?.tag ?? choices[0]!.tag),
+        adviceView: input.adviceView,
+        customBandIndex: input.customBandIndex,
+        customBandCount: input.customBandCount,
+      }),
+    )
+    .setPlaceholder(
+      selectedChoice
+        ? `Viewing: ${normalizeCompoClanDisplayName(selectedChoice.name)} (#${selectedChoice.tag})`
+        : "Select a tracked clan",
+    )
+    .setMinValues(1)
+    .setMaxValues(1)
+    .setDisabled(input.loading ?? false);
+
+  menu.addOptions(
+    choices.map((choice) => ({
+      label: `${normalizeCompoClanDisplayName(choice.name)} (#${choice.tag})`.slice(0, 100),
+      value: choice.tag,
+      default: choice.tag === selectedChoice?.tag,
+    })),
+  );
+
+  return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu);
+}
+
+function extractCompoAdviceClanChoicesFromMessage(
+  interaction: ButtonInteraction | StringSelectMenuInteraction,
+): CompoAdviceClanChoice[] {
+  const rows = interaction.message.components.map(
+    (row) => row.toJSON() as APIActionRowComponent<APIComponentInMessageActionRow>,
+  );
+  const selectRow = rows.find((row) =>
+    row.components.some(
+      (component) =>
+        component.type === ComponentType.StringSelect &&
+        "custom_id" in component &&
+        typeof component.custom_id === "string" &&
+        component.custom_id.startsWith(`${COMPO_REFRESH_PREFIX}:advice-clan:`),
+    ),
+  );
+  if (!selectRow) {
+    return [];
+  }
+  const select = selectRow.components.find(
+    (component) =>
+      component.type === ComponentType.StringSelect &&
+      "options" in component,
+  );
+  if (!select || !("options" in select) || !Array.isArray(select.options)) {
+    return [];
+  }
+  return select.options
+    .map((option) => ({
+      tag: normalizeTag(String(option.value ?? "")),
+      name: (() => {
+        const tag = normalizeTag(String(option.value ?? ""));
+        const label = String(option.label ?? "").trim();
+        const suffix = tag ? ` (#${tag})` : "";
+        return suffix && label.endsWith(suffix)
+          ? label.slice(0, -suffix.length).trimEnd()
+          : label;
+      })(),
+    }))
+    .filter((choice) => Boolean(choice.tag));
 }
 
 function buildCompoAdviceViewActionRow(input: {
@@ -514,7 +681,7 @@ function buildCompoAdviceBandActionRow(input: {
 }
 
 function extractSupplementalRowsFromMessage(
-  interaction: ButtonInteraction,
+  interaction: ButtonInteraction | StringSelectMenuInteraction,
 ): Array<APIActionRowComponent<APIComponentInMessageActionRow>> {
   return interaction.message.components
     .map(
@@ -529,6 +696,15 @@ function extractSupplementalRowsFromMessage(
             "custom_id" in component &&
             typeof component.custom_id === "string" &&
             isCompoRefreshButtonCustomId(component.custom_id),
+        ),
+    )
+    .filter(
+      (row) =>
+        !row.components.some(
+          (component) =>
+            "custom_id" in component &&
+            typeof component.custom_id === "string" &&
+            component.custom_id.startsWith(`${COMPO_REFRESH_PREFIX}:advice-clan:`),
         ),
     );
 }
@@ -878,8 +1054,6 @@ function buildCompoAdviceEmbed(input: { advice: CompoAdviceReadResult }): EmbedB
         value: [
           `Members: ${summary.currentProjection.memberCount} / 50`,
           `Rushed: ${input.advice.rushedCount}`,
-          `Current Score: ${formatAdviceScore(summary.currentScore)}`,
-          `Current Band: ${summary.currentBandLabel}`,
         ].join("\n"),
         inline: false,
       },
@@ -904,7 +1078,11 @@ function buildCompoAdviceEmbed(input: { advice: CompoAdviceReadResult }): EmbedB
     );
 
     if (input.advice.refreshLine) {
-      embed.setFooter({ text: input.advice.refreshLine });
+      embed.addFields({
+        name: "Snapshot",
+        value: input.advice.refreshLine,
+        inline: false,
+      });
     }
     return embed;
   }
@@ -919,7 +1097,11 @@ function buildCompoAdviceEmbed(input: { advice: CompoAdviceReadResult }): EmbedB
     );
 
   if (input.advice.refreshLine) {
-    embed.setFooter({ text: input.advice.refreshLine });
+    embed.addFields({
+      name: "Snapshot",
+      value: input.advice.refreshLine,
+      inline: false,
+    });
   }
   return embed;
 }
@@ -1161,16 +1343,20 @@ function renderStatePng(
 function buildCompoRefreshComponents(input: {
   refreshPayload: Extract<CompoRefreshPayload, { kind: "state" | "advice" | "place" }>;
   loading: boolean;
+  adviceClanChoices?: readonly CompoAdviceClanChoice[];
+  selectedAdviceClanTag?: string | null;
   supplementalRows?: Array<
     APIActionRowComponent<APIComponentInMessageActionRow>
   >;
 }): Array<
   | ActionRowBuilder<ButtonBuilder>
+  | ActionRowBuilder<StringSelectMenuBuilder>
   | APIActionRowComponent<APIComponentInMessageActionRow>
 > {
   const refreshCustomId = buildCompoRefreshCustomId(input.refreshPayload);
   const components: Array<
     | ActionRowBuilder<ButtonBuilder>
+    | ActionRowBuilder<StringSelectMenuBuilder>
     | APIActionRowComponent<APIComponentInMessageActionRow>
   > = [buildCompoRefreshActionRow(refreshCustomId, { loading: input.loading })];
   if (input.refreshPayload.kind === "state" && input.refreshPayload.mode === "actual") {
@@ -1184,6 +1370,19 @@ function buildCompoRefreshComponents(input: {
     );
   }
   if (input.refreshPayload.kind === "advice" && input.refreshPayload.mode === "actual") {
+    const clanRow = buildCompoAdviceClanSelectRow({
+      userId: input.refreshPayload.userId,
+      mode: input.refreshPayload.mode,
+      targetTag: input.selectedAdviceClanTag ?? input.refreshPayload.targetTag,
+      adviceView: input.refreshPayload.adviceView,
+      customBandIndex: input.refreshPayload.customBandIndex,
+      customBandCount: input.refreshPayload.customBandCount,
+      trackedClanChoices: input.adviceClanChoices ?? [],
+      loading: input.loading,
+    });
+    if (clanRow) {
+      components.push(clanRow);
+    }
     components.push(
       buildCompoAdviceViewActionRow({
         userId: input.refreshPayload.userId,
@@ -1208,6 +1407,18 @@ function buildCompoRefreshComponents(input: {
           loading: input.loading,
         }),
       );
+    }
+  }
+  if (input.refreshPayload.kind === "advice" && input.refreshPayload.mode === "war") {
+    const clanRow = buildCompoAdviceClanSelectRow({
+      userId: input.refreshPayload.userId,
+      mode: input.refreshPayload.mode,
+      targetTag: input.selectedAdviceClanTag ?? input.refreshPayload.targetTag,
+      trackedClanChoices: input.adviceClanChoices ?? [],
+      loading: input.loading,
+    });
+    if (clanRow) {
+      components.push(clanRow);
     }
   }
   if (input.supplementalRows && input.supplementalRows.length > 0) {
@@ -1288,6 +1499,7 @@ export async function handleCompoRefreshButton(
   }
 
   const supplementalRows = extractSupplementalRowsFromMessage(interaction);
+  const adviceClanChoices = extractCompoAdviceClanChoicesFromMessage(interaction);
   let adviceRefreshPayload: Extract<CompoRefreshPayload, { kind: "advice" }> | null = null;
   let loadingRefreshPayload: Extract<
     CompoRefreshPayload,
@@ -1323,6 +1535,25 @@ export async function handleCompoRefreshButton(
   } else if (parsed.kind === "advice") {
     adviceRefreshPayload = parsed;
     loadingRefreshPayload = parsed;
+  } else if (parsed.kind === "advice-clan") {
+    adviceRefreshPayload =
+      parsed.mode === "actual"
+        ? {
+            kind: "advice",
+            userId: parsed.userId,
+            mode: "actual",
+            adviceView: parsed.adviceView ?? "auto",
+            targetTag: parsed.targetTag,
+            customBandIndex: parsed.customBandIndex ?? 0,
+            customBandCount: parsed.customBandCount ?? 0,
+          }
+        : {
+            kind: "advice",
+            userId: parsed.userId,
+            mode: "war",
+            targetTag: parsed.targetTag,
+          };
+    loadingRefreshPayload = adviceRefreshPayload;
   } else if (parsed.kind === "view" && parsed.target === "state") {
     loadingRefreshPayload = {
       kind: "state",
@@ -1337,6 +1568,10 @@ export async function handleCompoRefreshButton(
     components: buildCompoRefreshComponents({
       refreshPayload: loadingRefreshPayload,
       loading: true,
+      adviceClanChoices,
+      selectedAdviceClanTag:
+        adviceRefreshPayload?.targetTag ??
+        (parsed.kind === "advice-clan" ? parsed.targetTag : null),
       supplementalRows,
     }),
   });
@@ -1380,6 +1615,8 @@ export async function handleCompoRefreshButton(
         components: buildCompoRefreshComponents({
           refreshPayload: parsed,
           loading: false,
+          adviceClanChoices,
+          selectedAdviceClanTag: null,
           supplementalRows,
         }),
       });
@@ -1406,6 +1643,8 @@ export async function handleCompoRefreshButton(
         components: buildCompoRefreshComponents({
           refreshPayload: adviceRefreshPayload,
           loading: false,
+          adviceClanChoices: advice.trackedClanChoices,
+          selectedAdviceClanTag: advice.clanTag,
           supplementalRows,
         }),
       });
@@ -1442,6 +1681,8 @@ export async function handleCompoRefreshButton(
               actualView: parsed.actualView,
             },
             loading: false,
+            adviceClanChoices,
+            selectedAdviceClanTag: null,
             supplementalRows,
           }),
         });
@@ -1470,6 +1711,8 @@ export async function handleCompoRefreshButton(
             weight: parsed.weight,
           },
           loading: false,
+          adviceClanChoices,
+          selectedAdviceClanTag: null,
           supplementalRows,
         }),
       });
@@ -1480,12 +1723,111 @@ export async function handleCompoRefreshButton(
       components: buildCompoRefreshComponents({
         refreshPayload: loadingRefreshPayload,
         loading: false,
+        adviceClanChoices,
+        selectedAdviceClanTag: adviceRefreshPayload?.targetTag ?? null,
         supplementalRows,
       }),
     });
     await interaction.followUp({
       ephemeral: true,
       content: getCompoRefreshFailureMessage(parsed),
+    });
+  }
+}
+
+export async function handleCompoAdviceClanSelectMenuInteraction(
+  interaction: StringSelectMenuInteraction,
+): Promise<void> {
+  const parsed = parseCompoRefreshCustomId(interaction.customId);
+  if (!parsed || parsed.kind !== "advice-clan") {
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.reply({
+        ephemeral: true,
+        content: "Invalid advice clan selection.",
+      });
+    }
+    return;
+  }
+  if (interaction.user.id !== parsed.userId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Only the command requester can use this clan selector.",
+    });
+    return;
+  }
+
+  const selectedTargetTag = normalizeTag(interaction.values[0] ?? "");
+  if (!selectedTargetTag) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Invalid clan selection.",
+    });
+    return;
+  }
+
+  const supplementalRows = extractSupplementalRowsFromMessage(interaction);
+  const adviceClanChoices = extractCompoAdviceClanChoicesFromMessage(interaction);
+  const adviceRefreshPayload: Extract<CompoRefreshPayload, { kind: "advice" }> =
+    parsed.mode === "actual"
+      ? {
+          kind: "advice",
+          userId: parsed.userId,
+          mode: "actual",
+          adviceView: parsed.adviceView ?? "auto",
+          targetTag: selectedTargetTag,
+          customBandIndex: parsed.customBandIndex ?? 0,
+          customBandCount: parsed.customBandCount ?? 0,
+        }
+      : {
+          kind: "advice",
+          userId: parsed.userId,
+          mode: "war",
+          targetTag: selectedTargetTag,
+        };
+
+  await interaction.update({
+    components: buildCompoRefreshComponents({
+      refreshPayload: adviceRefreshPayload,
+      loading: true,
+      adviceClanChoices,
+      selectedAdviceClanTag: selectedTargetTag,
+      supplementalRows,
+    }),
+  });
+
+  try {
+    const advice = await new CompoAdviceService().refreshAdvice({
+      guildId: interaction.guildId ?? null,
+      targetTag: selectedTargetTag,
+      mode: parsed.mode,
+      view: parsed.mode === "actual" ? parsed.adviceView : "raw",
+      customBandIndex:
+        parsed.mode === "actual" ? parsed.customBandIndex ?? 0 : null,
+    });
+    await interaction.editReply({
+      ...buildCompoAdviceResponsePayload({ advice }),
+      components: buildCompoRefreshComponents({
+        refreshPayload: adviceRefreshPayload,
+        loading: false,
+        adviceClanChoices: advice.trackedClanChoices,
+        selectedAdviceClanTag: advice.clanTag ?? selectedTargetTag,
+        supplementalRows,
+      }),
+    });
+  } catch (err) {
+    console.error(`compo advice clan selector failed: ${formatError(err)}`);
+    await interaction.editReply({
+      components: buildCompoRefreshComponents({
+        refreshPayload: adviceRefreshPayload,
+        loading: false,
+        adviceClanChoices,
+        selectedAdviceClanTag: selectedTargetTag,
+        supplementalRows,
+      }),
+    });
+    await interaction.followUp({
+      ephemeral: true,
+      content: getCompoRefreshFailureMessage(adviceRefreshPayload),
     });
   }
 }
@@ -1613,6 +1955,8 @@ export const Compo: Command = {
           components: buildCompoRefreshComponents({
             refreshPayload: adviceRefreshPayload,
             loading: false,
+            adviceClanChoices: advice.trackedClanChoices,
+            selectedAdviceClanTag: advice.clanTag,
           }),
         });
         logCompoStage(interaction, "response_sent", {

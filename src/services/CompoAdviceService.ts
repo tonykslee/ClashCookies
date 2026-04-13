@@ -26,6 +26,7 @@ export type CompoAdviceReadyResult = {
   mode: CompoAdviceMode;
   selectedView: CompoAdviceView;
   trackedClanTags: string[];
+  trackedClanChoices: Array<{ tag: string; name: string }>;
   clanTag: string;
   clanName: string;
   summary: CompoAdviceSummary;
@@ -39,6 +40,7 @@ export type CompoAdviceEmptyResult = {
   mode: CompoAdviceMode;
   selectedView: CompoAdviceView;
   trackedClanTags: string[];
+  trackedClanChoices: Array<{ tag: string; name: string }>;
   clanTag: string | null;
   clanName: string | null;
   message: string;
@@ -52,6 +54,15 @@ function buildPersistedRefreshLine(latestSourceSyncedAt: Date | null): string {
     return "RAW Data last refreshed: (not available)";
   }
   return `RAW Data last refreshed: <t:${Math.floor(latestSourceSyncedAt.getTime() / 1000)}:F>`;
+}
+
+function buildTrackedClanChoices(input: {
+  clans: Array<{ clanTag: string; clanName: string }>;
+}): Array<{ tag: string; name: string }> {
+  return input.clans.map((clan) => ({
+    tag: clan.clanTag,
+    name: clan.clanName,
+  }));
 }
 
 function buildNoTrackedClansMessage(input: {
@@ -131,6 +142,7 @@ function buildReadyResult(input: {
   mode: CompoAdviceMode;
   selectedView: CompoAdviceView;
   trackedClanTags: string[];
+  trackedClanChoices: Array<{ tag: string; name: string }>;
   clanTag: string;
   clanName: string;
   summary: CompoAdviceSummary;
@@ -142,6 +154,7 @@ function buildReadyResult(input: {
     mode: input.mode,
     selectedView: input.selectedView,
     trackedClanTags: input.trackedClanTags,
+    trackedClanChoices: input.trackedClanChoices,
     clanTag: input.clanTag,
     clanName: input.clanName,
     summary: input.summary,
@@ -155,6 +168,7 @@ function buildEmptyResult(input: {
   mode: CompoAdviceMode;
   selectedView: CompoAdviceView;
   trackedClanTags: string[];
+  trackedClanChoices: Array<{ tag: string; name: string }>;
   clanTag: string | null;
   clanName: string | null;
   message: string;
@@ -165,6 +179,7 @@ function buildEmptyResult(input: {
     mode: input.mode,
     selectedView: input.selectedView,
     trackedClanTags: input.trackedClanTags,
+    trackedClanChoices: input.trackedClanChoices,
     clanTag: input.clanTag,
     clanName: input.clanName,
     message: input.message,
@@ -193,6 +208,7 @@ export class CompoAdviceService {
         mode: input.mode,
         selectedView: view,
         trackedClanTags: [],
+        trackedClanChoices: [],
         clanTag: null,
         clanName: null,
         message: buildNoTargetMessage({
@@ -207,11 +223,15 @@ export class CompoAdviceService {
 
     if (input.mode === "actual") {
       const context = await loadCompoActualStateContext(input.guildId ?? null);
+      const trackedClanChoices = buildTrackedClanChoices({
+        clans: context.clans,
+      });
       if (context.trackedClanTags.length === 0) {
         return buildEmptyResult({
           mode: input.mode,
           selectedView: view,
           trackedClanTags: [],
+          trackedClanChoices: [],
           clanTag: null,
           clanName: null,
           message: buildNoTrackedClansMessage({
@@ -228,6 +248,7 @@ export class CompoAdviceService {
           mode: input.mode,
           selectedView: view,
           trackedClanTags: context.trackedClanTags,
+          trackedClanChoices,
           clanTag: null,
           clanName: null,
           message: buildNoTargetMessage({
@@ -256,6 +277,7 @@ export class CompoAdviceService {
         mode: input.mode,
         selectedView: view,
         trackedClanTags: context.trackedClanTags,
+        trackedClanChoices,
         clanTag: clan.clanTag,
         clanName: clan.clanName,
         summary,
@@ -265,11 +287,15 @@ export class CompoAdviceService {
     }
 
     const context = await loadCompoWarStateContext();
+    const trackedClanChoices = buildTrackedClanChoices({
+      clans: context.clans,
+    });
     if (context.trackedClanTags.length === 0) {
       return buildEmptyResult({
         mode: input.mode,
         selectedView: view,
         trackedClanTags: [],
+        trackedClanChoices: [],
         clanTag: null,
         clanName: null,
         message: buildNoTrackedClansMessage({
@@ -286,6 +312,7 @@ export class CompoAdviceService {
         mode: input.mode,
         selectedView: view,
         trackedClanTags: context.trackedClanTags,
+        trackedClanChoices,
         clanTag: null,
         clanName: null,
         message: buildNoTargetMessage({
@@ -311,6 +338,7 @@ export class CompoAdviceService {
       mode: input.mode,
       selectedView: view,
       trackedClanTags: context.trackedClanTags,
+      trackedClanChoices,
       clanTag: clan.clanTag,
       clanName: clan.clanName,
       summary,

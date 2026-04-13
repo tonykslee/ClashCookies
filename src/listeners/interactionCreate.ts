@@ -73,7 +73,9 @@ import {
 } from "../commands/Notify";
 import {
   handleCompoRefreshButton,
+  handleCompoAdviceClanSelectMenuInteraction,
   isCompoRefreshButtonCustomId,
+  isCompoAdviceClanSelectMenuCustomId,
 } from "../commands/Compo";
 import {
   handleNotifyWarEndedViewButton,
@@ -383,6 +385,22 @@ const handleSelectMenuInteraction = async (
         });
       }
     }
+    return;
+  }
+
+  if (isCompoAdviceClanSelectMenuCustomId(interaction.customId)) {
+    try {
+      await handleCompoAdviceClanSelectMenuInteraction(interaction);
+    } catch (err) {
+      console.error(`Compo advice clan select menu failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to update compo advice clan selection.",
+        });
+      }
+    }
+    return;
   }
 };
 
