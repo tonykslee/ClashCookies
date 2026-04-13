@@ -20,7 +20,10 @@ import {
   EMPTY_COMPO_WAR_BUCKET_COUNTS,
   type CompoWarBucketCounts,
 } from "../helper/compoWarBucketCounts";
-import { getCompoWarWeightBucket } from "../helper/compoWarWeightBuckets";
+import {
+  getCompoWarWeightBucket,
+  type CompoWarWeightBucket,
+} from "../helper/compoWarWeightBuckets";
 import { prisma } from "../prisma";
 import {
   listOpenDeferredWeightsByClanAndPlayerTags,
@@ -32,7 +35,7 @@ import { FwaClanMembersSyncService } from "./fwa-feeds/FwaClanMembersSyncService
 type TrackedClanRow = Pick<TrackedClan, "tag" | "name">;
 type CurrentMemberRow = Pick<
   FwaClanMemberCurrent,
-  "clanTag" | "playerTag" | "weight" | "sourceSyncedAt"
+  "clanTag" | "playerTag" | "playerName" | "townHall" | "weight" | "sourceSyncedAt"
 >;
 type WarFallbackRow = Pick<
   FwaTrackedClanWarRosterMemberCurrent,
@@ -43,6 +46,16 @@ export type CompoActualStateClanContext = {
   clanTag: string;
   clanName: string;
   base: CompoActualStateBaseMetrics;
+  members: CompoActualStateMemberContext[];
+};
+
+export type CompoActualStateMemberContext = {
+  clanTag: string;
+  playerTag: string;
+  playerName: string;
+  townHall: number | null;
+  resolvedWeight: number | null;
+  resolvedBucket: CompoWarWeightBucket | null;
 };
 
 export type CompoActualStateContext = {
@@ -184,6 +197,8 @@ export async function loadCompoActualStateContext(
       select: {
         clanTag: true,
         playerTag: true,
+        playerName: true,
+        townHall: true,
         weight: true,
         sourceSyncedAt: true,
       },
@@ -276,6 +291,7 @@ export async function loadCompoActualStateContext(
     };
     let totalResolvedWeight = 0;
     let unresolvedWeightCount = 0;
+    const members: CompoActualStateMemberContext[] = [];
 
     for (const member of clanMembers) {
       const playerTag = normalizePlayerTag(member.playerTag);
@@ -291,6 +307,18 @@ export async function loadCompoActualStateContext(
         anyWarWeight,
       });
       const bucket = getCompoWarWeightBucket(resolvedWeight);
+      const normalizedTownHall =
+        Number.isFinite(Number(member.townHall)) && Number(member.townHall) > 0
+          ? Math.trunc(Number(member.townHall))
+          : null;
+      members.push({
+        clanTag,
+        playerTag,
+        playerName: member.playerName,
+        townHall: normalizedTownHall,
+        resolvedWeight,
+        resolvedBucket: bucket,
+      });
       if (resolvedWeight === null || !bucket) {
         unresolvedWeightCount += 1;
         continue;
@@ -308,6 +336,7 @@ export async function loadCompoActualStateContext(
         memberCount: clanMembers.length,
         bucketCounts,
       },
+      members,
     });
   }
 

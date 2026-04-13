@@ -1,20 +1,18 @@
 import type { HeatMapRef } from "@prisma/client";
 import {
   calculateCompoDeviationScore,
-  getCompoActualStateViewLabel,
+  getCompoActualStateDeltaByBucket,
   getCompoDisplayBucketRepresentativeWeight,
   projectCompoActualStateView,
   type CompoActualStateBaseMetrics,
   type CompoActualStateProjection,
-  type CompoActualStateView,
 } from "./compoActualStateView";
 import {
   formatHeatMapRefBandLabel,
+  getHeatMapRefBandKey,
   getHeatMapRefBandMidpoint,
 } from "./compoHeatMap";
-import {
-  type CompoWarBucketCounts,
-} from "./compoWarBucketCounts";
+import type { CompoWarBucketCounts } from "./compoWarBucketCounts";
 import type { CompoWarDisplayBucket } from "./compoWarWeightBuckets";
 
 export const COMPO_ADVICE_DISPLAY_BUCKETS: readonly CompoWarDisplayBucket[] = [
@@ -47,7 +45,22 @@ const DISPLAY_BUCKET_TO_GRANULAR_BUCKET: Record<
   "<=TH13": "TH13",
 };
 
+export const COMPO_ADVICE_VIEWS = [
+  "raw",
+  "auto",
+  "best",
+  "custom",
+] as const;
+export type CompoAdviceView = (typeof COMPO_ADVICE_VIEWS)[number];
+
 export type CompoAdviceMode = "actual" | "war";
+
+export const COMPO_ADVICE_VIEW_LABELS: Record<CompoAdviceView, string> = {
+  raw: "Raw Data",
+  auto: "Auto-Detect Band",
+  best: "Best Fit",
+  custom: "Custom",
+};
 
 export type CompoAdviceAction =
   | {
@@ -76,7 +89,7 @@ export type CompoAdviceEvaluation = {
 
 export type CompoAdviceSummary = {
   mode: CompoAdviceMode;
-  view: CompoActualStateView;
+  view: CompoAdviceView;
   viewLabel: string;
   currentProjection: CompoActualStateProjection;
   currentScore: number | null;
@@ -86,6 +99,8 @@ export type CompoAdviceSummary = {
   resultingBandLabel: string;
   alternateTexts: string[];
   statusText: string | null;
+  selectedCustomBandIndex: number | null;
+  customBandCount: number;
 };
 
 function normalizeScore(value: number | null): number {
@@ -118,6 +133,117 @@ function cloneBucketCounts(
   counts: CompoWarBucketCounts,
 ): CompoWarBucketCounts {
   return { ...counts };
+}
+
+function sortHeatMapRefs(refs: readonly HeatMapRef[]): HeatMapRef[] {
+  return [...refs].sort((left, right) => {
+    if (left.weightMinInclusive !== right.weightMinInclusive) {
+      return left.weightMinInclusive - right.weightMinInclusive;
+    }
+    if (left.weightMaxInclusive !== right.weightMaxInclusive) {
+      return left.weightMaxInclusive - right.weightMaxInclusive;
+    }
+    return getHeatMapRefBandKey(left).localeCompare(getHeatMapRefBandKey(right));
+  });
+}
+
+function getHeatMapRefIndex(
+  refs: readonly HeatMapRef[],
+  target: HeatMapRef | null,
+): number | null {
+  if (!target) return null;
+  const targetKey = getHeatMapRefBandKey(target);
+  const index = refs.findIndex(
+    (ref) => getHeatMapRefBandKey(ref) === targetKey,
+  );
+  return index >= 0 ? index : null;
+}
+
+function clampHeatMapRefIndex(index: number, length: number): number {
+  if (length <= 0) {
+    return 0;
+  }
+  return Math.max(0, Math.min(length - 1, Math.trunc(index)));
+}
+
+function resolveCustomHeatMapRef(input: {
+  heatMapRefs: readonly HeatMapRef[];
+  currentProjection: CompoActualStateProjection;
+  customBandIndex?: number | null;
+}): {
+  heatMapRefs: HeatMapRef[];
+  selectedHeatMapRef: HeatMapRef | null;
+  selectedCustomBandIndex: number | null;
+} {
+  const heatMapRefs = sortHeatMapRefs(input.heatMapRefs);
+  if (heatMapRefs.length === 0) {
+    return {
+      heatMapRefs,
+      selectedHeatMapRef: null,
+      selectedCustomBandIndex: null,
+    };
+  }
+
+  const defaultIndex =
+    getHeatMapRefIndex(heatMapRefs, input.currentProjection.selectedHeatMapRef) ??
+    0;
+  const selectedCustomBandIndex = clampHeatMapRefIndex(
+    input.customBandIndex ?? defaultIndex,
+    heatMapRefs.length,
+  );
+  return {
+    heatMapRefs,
+    selectedHeatMapRef: heatMapRefs[selectedCustomBandIndex] ?? null,
+    selectedCustomBandIndex,
+  };
+}
+
+function buildCustomProjection(input: {
+  base: CompoActualStateBaseMetrics;
+  heatMapRefs: readonly HeatMapRef[];
+  customBandIndex?: number | null;
+}): {
+  projection: CompoActualStateProjection;
+  selectedCustomBandIndex: number | null;
+  heatMapRefs: HeatMapRef[];
+} {
+  const rawProjection = projectCompoActualStateView({
+    view: "raw",
+    base: input.base,
+    heatMapRefs: input.heatMapRefs,
+  });
+  const selection = resolveCustomHeatMapRef({
+    heatMapRefs: input.heatMapRefs,
+    currentProjection: rawProjection,
+    customBandIndex: input.customBandIndex,
+  });
+
+  if (!selection.selectedHeatMapRef) {
+    return {
+      projection: rawProjection,
+      selectedCustomBandIndex: null,
+      heatMapRefs: selection.heatMapRefs,
+    };
+  }
+
+  const deltaByBucket = getCompoActualStateDeltaByBucket(
+    rawProjection.displayCounts,
+    selection.selectedHeatMapRef,
+  );
+
+  return {
+    projection: {
+      ...rawProjection,
+      selectedHeatMapRef: selection.selectedHeatMapRef,
+      deltaByBucket,
+      deviationScore: calculateCompoDeviationScore({
+        displayCounts: rawProjection.displayCounts,
+        heatMapRef: selection.selectedHeatMapRef,
+      }),
+    },
+    selectedCustomBandIndex: selection.selectedCustomBandIndex,
+    heatMapRefs: selection.heatMapRefs,
+  };
 }
 
 function applyAdviceActionToBase(input: {
@@ -166,31 +292,57 @@ function applyAdviceActionToBase(input: {
 }
 
 function projectAdviceState(input: {
-  view: CompoActualStateView;
+  view: CompoAdviceView;
   base: CompoActualStateBaseMetrics;
   heatMapRefs: readonly HeatMapRef[];
-}): CompoActualStateProjection {
+  customBandIndex?: number | null;
+}): {
+  projection: CompoActualStateProjection;
+  selectedCustomBandIndex: number | null;
+  heatMapRefs: HeatMapRef[];
+} {
+  if (input.view === "custom") {
+    return buildCustomProjection({
+      base: input.base,
+      heatMapRefs: input.heatMapRefs,
+      customBandIndex: input.customBandIndex,
+    });
+  }
+
   const projection = projectCompoActualStateView({
     view: input.view,
     base: input.base,
     heatMapRefs: input.heatMapRefs,
   });
-
-  if (projection.deviationScore !== null || !projection.selectedHeatMapRef) {
-    return projection;
+  if (projection.deviationScore === null && projection.selectedHeatMapRef) {
+    return {
+      projection: {
+        ...projection,
+        deviationScore: calculateCompoDeviationScore({
+          displayCounts: projection.displayCounts,
+          heatMapRef: projection.selectedHeatMapRef,
+        }),
+      },
+      selectedCustomBandIndex:
+        getHeatMapRefIndex(
+          sortHeatMapRefs(input.heatMapRefs),
+          projection.selectedHeatMapRef,
+        ) ??
+        (input.heatMapRefs.length > 0 ? 0 : null),
+      heatMapRefs: sortHeatMapRefs(input.heatMapRefs),
+    };
   }
-
   return {
-    ...projection,
-    deviationScore: calculateCompoDeviationScore({
-      displayCounts: projection.displayCounts,
-      heatMapRef: projection.selectedHeatMapRef,
-    }),
+    projection,
+    selectedCustomBandIndex:
+      getHeatMapRefIndex(sortHeatMapRefs(input.heatMapRefs), projection.selectedHeatMapRef) ??
+      (input.heatMapRefs.length > 0 ? 0 : null),
+    heatMapRefs: sortHeatMapRefs(input.heatMapRefs),
   };
 }
 
 function evaluateAdviceAction(input: {
-  view: CompoActualStateView;
+  view: CompoAdviceView;
   base: CompoActualStateBaseMetrics;
   heatMapRefs: readonly HeatMapRef[];
   currentProjection: CompoActualStateProjection;
@@ -206,7 +358,7 @@ function evaluateAdviceAction(input: {
     view: input.view,
     base: nextBase,
     heatMapRefs: input.heatMapRefs,
-  });
+  }).projection;
   const resultingScore = afterProjection.deviationScore;
   const scoreImprovement =
     input.currentScore !== null && resultingScore !== null
@@ -305,17 +457,92 @@ function generateAdviceActions(input: {
   return actions;
 }
 
+function resolveCurrentProjectionBandIndex(input: {
+  heatMapRefs: readonly HeatMapRef[];
+  currentProjection: CompoActualStateProjection;
+  customBandIndex?: number | null;
+}): {
+  heatMapRefs: HeatMapRef[];
+  selectedCustomBandIndex: number | null;
+} {
+  const heatMapRefs = sortHeatMapRefs(input.heatMapRefs);
+  if (heatMapRefs.length === 0) {
+    return {
+      heatMapRefs,
+      selectedCustomBandIndex: null,
+    };
+  }
+
+  const defaultIndex =
+    getHeatMapRefIndex(heatMapRefs, input.currentProjection.selectedHeatMapRef) ??
+    0;
+  return {
+    heatMapRefs,
+    selectedCustomBandIndex: clampHeatMapRefIndex(
+      input.customBandIndex ?? defaultIndex,
+      heatMapRefs.length,
+    ),
+  };
+}
+
+export function stepCompoAdviceCustomBandIndex(input: {
+  heatMapRefs: readonly HeatMapRef[];
+  currentBandIndex: number;
+  direction: "prev" | "next";
+}): number {
+  return stepCompoAdviceCustomBandIndexByCount({
+    currentBandIndex: input.currentBandIndex,
+    bandCount: input.heatMapRefs.length,
+    direction: input.direction,
+  });
+}
+
+export function stepCompoAdviceCustomBandIndexByCount(input: {
+  currentBandIndex: number;
+  bandCount: number;
+  direction: "prev" | "next";
+}): number {
+  if (input.bandCount <= 0) {
+    return 0;
+  }
+  const delta = input.direction === "prev" ? -1 : 1;
+  return clampHeatMapRefIndex(input.currentBandIndex + delta, input.bandCount);
+}
+
+export function getCompoAdviceCustomBandSelection(input: {
+  heatMapRefs: readonly HeatMapRef[];
+  currentProjection: CompoActualStateProjection;
+  customBandIndex?: number | null;
+}): {
+  heatMapRefs: HeatMapRef[];
+  selectedHeatMapRef: HeatMapRef | null;
+  selectedCustomBandIndex: number | null;
+} {
+  const resolved = resolveCurrentProjectionBandIndex(input);
+  return {
+    heatMapRefs: resolved.heatMapRefs,
+    selectedHeatMapRef:
+      resolved.selectedCustomBandIndex === null
+        ? null
+        : resolved.heatMapRefs[resolved.selectedCustomBandIndex] ?? null,
+    selectedCustomBandIndex: resolved.selectedCustomBandIndex,
+  };
+}
+
 export function evaluateCompoAdvice(input: {
   mode: CompoAdviceMode;
-  view: CompoActualStateView;
+  view: CompoAdviceView;
   base: CompoActualStateBaseMetrics;
   heatMapRefs: readonly HeatMapRef[];
+  customBandIndex?: number | null;
 }): CompoAdviceSummary {
-  const currentProjection = projectAdviceState({
+  const projectionState = projectAdviceState({
     view: input.view,
     base: input.base,
     heatMapRefs: input.heatMapRefs,
+    customBandIndex: input.customBandIndex,
   });
+  const currentProjection = projectionState.projection;
   const currentScore = currentProjection.deviationScore;
   const currentBandLabel = getBandLabel(currentProjection.selectedHeatMapRef);
   const actions = generateAdviceActions({
@@ -356,7 +583,7 @@ export function evaluateCompoAdvice(input: {
   return {
     mode: input.mode,
     view: input.view,
-    viewLabel: getCompoActualStateViewLabel(input.view),
+    viewLabel: COMPO_ADVICE_VIEW_LABELS[input.view],
     currentProjection,
     currentScore,
     currentBandLabel,
@@ -370,6 +597,8 @@ export function evaluateCompoAdvice(input: {
           ? "No improvement found."
           : null
         : "No improvement found.",
+    selectedCustomBandIndex: projectionState.selectedCustomBandIndex,
+    customBandCount: projectionState.heatMapRefs.length,
   };
 }
 
@@ -416,7 +645,7 @@ export function buildWarAdviceSummary(input: {
 export function buildActualAdviceSummary(input: {
   base: CompoActualStateBaseMetrics;
   heatMapRefs: readonly HeatMapRef[];
-  view: CompoActualStateView;
+  view: Exclude<CompoAdviceView, "custom">;
 }): CompoAdviceSummary {
   return evaluateCompoAdvice({
     mode: "actual",
@@ -426,7 +655,23 @@ export function buildActualAdviceSummary(input: {
   });
 }
 
+export function buildCustomAdviceSummary(input: {
+  base: CompoActualStateBaseMetrics;
+  heatMapRefs: readonly HeatMapRef[];
+  customBandIndex?: number | null;
+}): CompoAdviceSummary {
+  return evaluateCompoAdvice({
+    mode: "actual",
+    view: "custom",
+    base: input.base,
+    heatMapRefs: input.heatMapRefs,
+    customBandIndex: input.customBandIndex,
+  });
+}
+
 export const getCompoAdviceActionLabelForTest = buildAdviceActionDescription;
 export const applyAdviceActionToBaseForTest = applyAdviceActionToBase;
 export const evaluateAdviceActionForTest = evaluateAdviceAction;
 export const compareEvaluationsForTest = compareEvaluations;
+export const sortHeatMapRefsForTest = sortHeatMapRefs;
+export const resolveCustomHeatMapRefForTest = resolveCustomHeatMapRef;

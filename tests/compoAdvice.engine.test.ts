@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   compareEvaluationsForTest,
   evaluateCompoAdvice,
+  stepCompoAdviceCustomBandIndexByCount,
   type CompoAdviceEvaluation,
 } from "../src/helper/compoAdviceEngine";
 import type { CompoWarBucketCounts } from "../src/helper/compoWarBucketCounts";
@@ -162,6 +163,75 @@ describe("CompoAdviceEngine", () => {
     expect(best.viewLabel).toBe("Best Fit");
     expect(raw.currentBandLabel).not.toBe(auto.currentBandLabel);
     expect(auto.currentBandLabel).not.toBe(best.currentBandLabel);
+  });
+
+  it("changes Custom advice when the target band changes", () => {
+    const base = {
+      resolvedTotalWeight: 49 * 135000 + 145000,
+      unresolvedWeightCount: 0,
+      memberCount: 50,
+      bucketCounts: makeBucketCounts({
+        TH14: 49,
+        TH15: 1,
+      }),
+    };
+    const heatMapRefs = [
+      makeHeatMapRef({
+        weightMinInclusive: 0,
+        weightMaxInclusive: 299999,
+        th14Count: 50,
+      }),
+      makeHeatMapRef({
+        weightMinInclusive: 300000,
+        weightMaxInclusive: 599999,
+        th15Count: 50,
+      }),
+    ];
+
+    const first = evaluateCompoAdvice({
+      mode: "actual",
+      view: "custom",
+      customBandIndex: 0,
+      base,
+      heatMapRefs,
+    });
+    const second = evaluateCompoAdvice({
+      mode: "actual",
+      view: "custom",
+      customBandIndex: 1,
+      base,
+      heatMapRefs,
+    });
+
+    expect(first.viewLabel).toBe("Custom");
+    expect(second.viewLabel).toBe("Custom");
+    expect(first.currentBandLabel).not.toBe(second.currentBandLabel);
+    expect(first.recommendationText).not.toBe(second.recommendationText);
+    expect(first.currentScore).not.toBe(second.currentScore);
+  });
+
+  it("steps Custom band indices deterministically and respects bounds", () => {
+    expect(
+      stepCompoAdviceCustomBandIndexByCount({
+        currentBandIndex: 0,
+        bandCount: 2,
+        direction: "prev",
+      }),
+    ).toBe(0);
+    expect(
+      stepCompoAdviceCustomBandIndexByCount({
+        currentBandIndex: 0,
+        bandCount: 2,
+        direction: "next",
+      }),
+    ).toBe(1);
+    expect(
+      stepCompoAdviceCustomBandIndexByCount({
+        currentBandIndex: 1,
+        bandCount: 2,
+        direction: "next",
+      }),
+    ).toBe(1);
   });
 
   it("orders equal candidates deterministically by incoming bucket priority", () => {
