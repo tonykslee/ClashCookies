@@ -10,10 +10,13 @@ import {
 } from "../src/helper/heatMapRefRebuild";
 
 const prismaMock = vi.hoisted(() => ({
-  trackedClan: {
+  fwaClanCatalog: {
     findMany: vi.fn(),
   },
   fwaWarMemberCurrent: {
+    findMany: vi.fn(),
+  },
+  trackedClan: {
     findMany: vi.fn(),
   },
   heatMapRef: {
@@ -160,7 +163,10 @@ describe("HeatMapRefRebuildService", () => {
     vi.clearAllMocks();
     settingsStore.clear();
     prismaMock.$transaction.mockImplementation(async (fn: any) => fn(prismaMock));
-    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#AAA111" }]);
+    prismaMock.fwaClanCatalog.findMany.mockResolvedValue([{ clanTag: "#AAA111" }]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#AAA111", logChannelId: "log-1" },
+    ]);
     prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.heatMapRef.findMany.mockResolvedValue(makeCurrentHeatMapRows());
     prismaMock.heatMapRef.deleteMany.mockResolvedValue({ count: 11 });
@@ -185,6 +191,52 @@ describe("HeatMapRefRebuildService", () => {
     expect(result.status).toBe("noop");
     expect(prismaMock.heatMapRef.createMany).not.toHaveBeenCalled();
     expect(result.summaryLines.join(" ")).toContain("rebuilt content matched");
+  });
+
+  it("includes qualifying untracked FWA clans from the persisted catalog", async () => {
+    const service = new HeatMapRefRebuildService({
+      settings: settings as never,
+      botLogChannels: botLogChannels as never,
+      permissions: permissions as never,
+    });
+    const now = new Date("2026-04-13T00:00:00.000Z");
+    prismaMock.fwaClanCatalog.findMany.mockResolvedValue([
+      { clanTag: "#TRACKED" },
+      { clanTag: "#UNTRACKED" },
+    ]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue(
+      [
+        ...Array.from({ length: 50 }, (_, index) => ({
+          clanTag: "#TRACKED",
+          playerTag: `#T${String(index + 1).padStart(3, "0")}`,
+          position: index + 1,
+          townHall: 18,
+          weight: 175_000,
+          sourceSyncedAt: now,
+        })),
+        ...Array.from({ length: 50 }, (_, index) => ({
+          clanTag: "#UNTRACKED",
+          playerTag: `#U${String(index + 1).padStart(3, "0")}`,
+          position: index + 1,
+          townHall: 17,
+          weight: 145_000,
+          sourceSyncedAt: now,
+        })),
+      ] as never,
+    );
+
+    const result = await service.rebuildHeatMapRef(now);
+
+    expect(result.status).toBe("success");
+    expect(prismaMock.fwaWarMemberCurrent.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { clanTag: { in: ["#TRACKED", "#UNTRACKED"] } },
+      }),
+    );
+    expect(result.qualifyingRosterCount).toBe(2);
+    expect(result.trackedClanCount).toBe(2);
+    expect(result.rowCount).toBeGreaterThan(0);
+    expect(prismaMock.heatMapRef.createMany).toHaveBeenCalledTimes(1);
   });
 
   it("skips the scheduled rebuild in mirror mode", async () => {

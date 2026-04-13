@@ -180,6 +180,14 @@ function buildSeedCountsByBandKey(): ReadonlyMap<string, HeatMapRefBucketCounts>
   );
 }
 
+async function loadAllFwaClanTags(): Promise<string[]> {
+  const rows = await prisma.fwaClanCatalog.findMany({
+    orderBy: { clanTag: "asc" },
+    select: { clanTag: true },
+  });
+  return [...new Set(rows.map((row) => normalizeFwaTag(row.clanTag)).filter(Boolean))];
+}
+
 function buildSourceRosters(
   members: Array<{
     clanTag: string;
@@ -221,7 +229,7 @@ function buildSummaryLines(input: {
   reason: string | null;
 }): string[] {
   const lines = [
-    `tracked clans: ${input.trackedClanCount}`,
+    `fwa clans: ${input.trackedClanCount}`,
     `source rosters: ${input.sourceRosterCount}`,
     `qualifying rosters: ${input.qualifyingRosters.length}`,
     `excluded rosters: ${input.excludedRosters.length}`,
@@ -258,15 +266,11 @@ export class HeatMapRefRebuildService {
 
   /** Purpose: rebuild HeatMapRef directly from persisted source tables without any scheduling or alert side-effects. */
   async rebuildHeatMapRef(now: Date = new Date()): Promise<HeatMapRefRebuildRunResult> {
-    const trackedClans = await prisma.trackedClan.findMany({
-      orderBy: { createdAt: "asc" },
-      select: { tag: true },
-    });
-    const trackedClanTags = [...new Set(trackedClans.map((row) => normalizeFwaTag(row.tag)).filter(Boolean))];
-    if (trackedClanTags.length === 0) {
+    const fwaClanTags = await loadAllFwaClanTags();
+    if (fwaClanTags.length === 0) {
       return {
         status: "skipped",
-        reason: "no tracked FWA clans are configured",
+        reason: "no persisted FWA clans are configured",
         cycleKey: null,
         dueAt: null,
         trackedClanCount: 0,
@@ -277,12 +281,12 @@ export class HeatMapRefRebuildService {
         changedRowCount: 0,
         contentHash: null,
         alertSent: false,
-        summaryLines: ["No tracked FWA clans are configured."],
+        summaryLines: ["No persisted FWA clans are configured."],
       };
     }
 
     const members = await prisma.fwaWarMemberCurrent.findMany({
-      where: { clanTag: { in: trackedClanTags } },
+      where: { clanTag: { in: fwaClanTags } },
       orderBy: [{ clanTag: "asc" }, { position: "asc" }, { playerTag: "asc" }],
       select: {
         clanTag: true,
@@ -329,7 +333,7 @@ export class HeatMapRefRebuildService {
         reason: "rebuilt content matched the stored HeatMapRef rows",
         cycleKey: null,
         dueAt: null,
-        trackedClanCount: trackedClanTags.length,
+        trackedClanCount: fwaClanTags.length,
         sourceRosterCount: sourceRosters.length,
         qualifyingRosterCount: rebuiltResult.qualifyingRosters.length,
         excludedRosterCount: rebuiltResult.excludedRosters.length,
@@ -338,15 +342,15 @@ export class HeatMapRefRebuildService {
         contentHash: nextHash,
         alertSent: false,
         summaryLines: buildSummaryLines({
-          trackedClanCount: trackedClanTags.length,
+          trackedClanCount: fwaClanTags.length,
           sourceRosterCount: sourceRosters.length,
           qualifyingRosters: rebuiltResult.qualifyingRosters,
           excludedRosters: rebuiltResult.excludedRosters,
-          rows: rebuilt,
-          status: "noop",
-          reason: "rebuilt content matched the stored HeatMapRef rows",
-        }),
-      };
+        rows: rebuilt,
+        status: "noop",
+        reason: "rebuilt content matched the stored HeatMapRef rows",
+      }),
+    };
     }
 
     await prisma.$transaction(async (tx) => {
@@ -374,7 +378,7 @@ export class HeatMapRefRebuildService {
     });
 
     const result = buildSummaryLines({
-      trackedClanCount: trackedClanTags.length,
+      trackedClanCount: fwaClanTags.length,
       sourceRosterCount: sourceRosters.length,
       qualifyingRosters: rebuiltResult.qualifyingRosters,
       excludedRosters: rebuiltResult.excludedRosters,
@@ -387,7 +391,7 @@ export class HeatMapRefRebuildService {
       reason: null,
       cycleKey: null,
       dueAt: null,
-      trackedClanCount: trackedClanTags.length,
+      trackedClanCount: fwaClanTags.length,
       sourceRosterCount: sourceRosters.length,
       qualifyingRosterCount: rebuiltResult.qualifyingRosters.length,
       excludedRosterCount: rebuiltResult.excludedRosters.length,
