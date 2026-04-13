@@ -30,6 +30,22 @@ function makeDefaultTableStore(): MirrorTableDataStore {
     ClanWarHistory: [{ warId: 1, clanTag: "#AAA111", warStartTime: new Date("2026-03-30T00:00:00.000Z") }],
     ClanWarParticipation: [{ id: "p1", guildId: "g1", warId: "1", clanTag: "#AAA111", playerTag: "#P1" }],
     WarLookup: [{ warId: "1", clanTag: "#AAA111", startTime: new Date("2026-03-30T00:00:00.000Z"), payload: {} }],
+    HeatMapRef: [
+      {
+        id: 1,
+        weightMinInclusive: 0,
+        weightMaxInclusive: 100000,
+        th18Count: 0,
+        th17Count: 0,
+        th16Count: 0,
+        th15Count: 0,
+        th14Count: 0,
+        th13Count: 0,
+        th12Count: 0,
+        th11Count: 0,
+        th10OrLowerCount: 50,
+      },
+    ],
   };
 }
 
@@ -110,6 +126,9 @@ function buildSourceClient(
     warLookup: {
       findMany: vi.fn(async () => cloneRows(store.WarLookup)),
     },
+    heatMapRef: {
+      findMany: vi.fn(async () => cloneRows(store.HeatMapRef)),
+    },
     $queryRawUnsafe: vi.fn(
       async (_query: string, table: (typeof MIRRORED_RUNTIME_TABLES)[number]) =>
         schemaColumns[table] ?? [],
@@ -183,6 +202,7 @@ function buildTargetClient(
       createMany: createMany("ClanWarParticipation"),
     },
     warLookup: { deleteMany: deleteMany("WarLookup"), createMany: createMany("WarLookup") },
+    heatMapRef: { deleteMany: deleteMany("HeatMapRef"), createMany: createMany("HeatMapRef") },
     $queryRawUnsafe: vi.fn(
       async (_query: string, table: (typeof MIRRORED_RUNTIME_TABLES)[number]) =>
         schemaColumns[table] ?? [],
