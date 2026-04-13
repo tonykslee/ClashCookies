@@ -17,6 +17,8 @@ import {
 import { runFetchTelemetryBatch } from "../helper/fetchTelemetry";
 import { WarEventLogService } from "../services/WarEventLogService";
 import { formatError } from "../helper/formatError";
+import { HeatMapRefRebuildService } from "../services/HeatMapRefRebuildService";
+import { isMirrorPollingMode } from "../services/PollingModeService";
 
 function normalizeTag(input: string): string {
   return input.trim().toUpperCase().replace(/^#/, "");
@@ -68,6 +70,58 @@ async function runForceBootstrapWarStateCommand(
     const message = formatError(err);
     await interaction.editReply(`War state bootstrap failed: ${message}`);
   }
+}
+
+function formatHeatMapRefRepairSummary(result: {
+  status: "success" | "noop" | "skipped" | "failed";
+  reason: string | null;
+  trackedClanCount: number;
+  sourceRosterCount: number;
+  qualifyingRosterCount: number;
+  excludedRosterCount: number;
+  rowCount: number;
+  alertSent: boolean;
+}): string {
+  const lines = [
+    `HeatMapRef refresh ${result.status}.`,
+    `Tracked clans: ${result.trackedClanCount}.`,
+    `Source rosters: ${result.sourceRosterCount}.`,
+    `Qualifying rosters: ${result.qualifyingRosterCount}.`,
+    `Excluded rosters: ${result.excludedRosterCount}.`,
+    `Rows written: ${result.rowCount}.`,
+  ];
+  if (result.reason) {
+    lines.push(`Reason: ${result.reason}.`);
+  }
+  if (result.status === "failed") {
+    lines.push(`Alert sent: ${result.alertSent ? "yes" : "no"}.`);
+  }
+  return lines.join(" ");
+}
+
+async function runForceRefreshHeatMapRefCommand(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
+  await interaction.deferReply({ ephemeral: true });
+
+  if (isMirrorPollingMode(process.env)) {
+    await interaction.editReply("HeatMapRef refresh is disabled in mirror mode.");
+    return;
+  }
+
+  const guildId = interaction.guildId;
+  if (!guildId) {
+    await interaction.editReply("This command can only be used in a server.");
+    return;
+  }
+
+  const service = new HeatMapRefRebuildService();
+  const result = await service.runManualRepair({
+    guildId,
+    now: new Date(),
+  });
+
+  await interaction.editReply(formatHeatMapRefRepairSummary(result));
 }
 
 export const Force: Command = {
@@ -216,6 +270,18 @@ export const Force: Command = {
       ],
     },
     {
+      name: "refresh",
+      description: "Repair refreshed runtime tables",
+      type: ApplicationCommandOptionType.SubcommandGroup,
+      options: [
+        {
+          name: "heatmapref",
+          description: "Rebuild HeatMapRef from persisted FWA WarMembers data",
+          type: ApplicationCommandOptionType.Subcommand,
+        },
+      ],
+    },
+    {
       name: "bootstrap-war-state",
       description: "Rebuild CurrentWar state from tracked clans",
       type: ApplicationCommandOptionType.Subcommand,
@@ -268,6 +334,10 @@ export const Force: Command = {
     }
     if (subcommandGroup === "poll" && subcommand === "war-events") {
       await runForcePollWarEventsCommand(client, interaction, cocService);
+      return;
+    }
+    if (subcommandGroup === "refresh" && subcommand === "heatmapref") {
+      await runForceRefreshHeatMapRefCommand(interaction);
       return;
     }
     if (subcommandGroup == null && subcommand === "bootstrap-war-state") {

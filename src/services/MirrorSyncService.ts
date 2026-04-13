@@ -12,6 +12,7 @@ import {
   type CwlRoundHistory,
   type CwlRoundMemberCurrent,
   type CwlRoundMemberHistory,
+  type HeatMapRef,
   type TrackedClan,
   type WarAttacks,
   type WarLookup,
@@ -41,6 +42,7 @@ export const MIRRORED_RUNTIME_TABLES = [
   "CwlRotationPlan",
   "CwlRotationPlanDay",
   "CwlRotationPlanMember",
+  "HeatMapRef",
 ] as const;
 
 type MirrorTableName = (typeof MIRRORED_RUNTIME_TABLES)[number];
@@ -97,6 +99,7 @@ type MirrorSyncSourceClient = {
   cwlRotationPlanMember: {
     findMany: (args?: unknown) => Promise<CwlRotationPlanMember[]>;
   };
+  heatMapRef: { findMany: (args?: unknown) => Promise<HeatMapRef[]> };
   $queryRawUnsafe: <T = unknown>(query: string, ...values: unknown[]) => Promise<T>;
   $disconnect?: () => Promise<void>;
 };
@@ -162,6 +165,10 @@ type MirrorSyncTargetClient = {
     deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
     createMany: (args: { data: CwlRotationPlanMember[] }) => Promise<CreateManyResult>;
   };
+  heatMapRef: {
+    deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
+    createMany: (args: { data: HeatMapRef[] }) => Promise<CreateManyResult>;
+  };
   $queryRawUnsafe: <T = unknown>(query: string, ...values: unknown[]) => Promise<T>;
   $executeRawUnsafe: (query: string, ...values: unknown[]) => Promise<number>;
   $transaction: <T>(
@@ -185,6 +192,25 @@ type SyncSafetyContext = {
   targetDatabaseUrl: string;
   sourceDatabaseName: string;
   targetDatabaseName: string;
+};
+
+type MirrorSyncSourceRows = {
+  TrackedClan: TrackedClan[];
+  CurrentWar: CurrentWar[];
+  WarAttacks: WarAttacks[];
+  ClanPointsSync: ClanPointsSync[];
+  ClanWarHistory: ClanWarHistory[];
+  ClanWarParticipation: ClanWarParticipation[];
+  WarLookup: WarLookup[];
+  CurrentCwlRound: CurrentCwlRound[];
+  CurrentCwlPrepSnapshot: CurrentCwlPrepSnapshot[];
+  CwlRoundMemberCurrent: CwlRoundMemberCurrent[];
+  CwlRoundHistory: CwlRoundHistory[];
+  CwlRoundMemberHistory: CwlRoundMemberHistory[];
+  CwlRotationPlan: CwlRotationPlan[];
+  CwlRotationPlanDay: CwlRotationPlanDay[];
+  CwlRotationPlanMember: CwlRotationPlanMember[];
+  HeatMapRef: HeatMapRef[];
 };
 
 function resolvePositiveInt(value: unknown, fallback: number): number {
@@ -425,23 +451,9 @@ export class MirrorSyncService {
     );
   }
 
-  private async readAllSourceRows(sourceClient: MirrorSyncSourceClient): Promise<{
-    TrackedClan: TrackedClan[];
-    CurrentWar: CurrentWar[];
-    WarAttacks: WarAttacks[];
-    ClanPointsSync: ClanPointsSync[];
-    ClanWarHistory: ClanWarHistory[];
-    ClanWarParticipation: ClanWarParticipation[];
-    WarLookup: WarLookup[];
-    CurrentCwlRound: CurrentCwlRound[];
-    CurrentCwlPrepSnapshot: CurrentCwlPrepSnapshot[];
-    CwlRoundMemberCurrent: CwlRoundMemberCurrent[];
-    CwlRoundHistory: CwlRoundHistory[];
-    CwlRoundMemberHistory: CwlRoundMemberHistory[];
-    CwlRotationPlan: CwlRotationPlan[];
-    CwlRotationPlanDay: CwlRotationPlanDay[];
-    CwlRotationPlanMember: CwlRotationPlanMember[];
-  }> {
+  private async readAllSourceRows(
+    sourceClient: MirrorSyncSourceClient,
+  ): Promise<MirrorSyncSourceRows> {
     return {
       TrackedClan: await sourceClient.trackedClan.findMany({
         orderBy: [{ id: "asc" }],
@@ -493,28 +505,16 @@ export class MirrorSyncService {
       CwlRotationPlanMember: await sourceClient.cwlRotationPlanMember.findMany({
         orderBy: [{ id: "asc" }],
       }),
+      HeatMapRef: await sourceClient.heatMapRef.findMany({
+        orderBy: [{ weightMinInclusive: "asc" }, { weightMaxInclusive: "asc" }],
+      }),
     };
   }
 
   private async replaceTableRows(
     tx: MirrorSyncTargetClient,
     table: MirrorTableName,
-    rows:
-      | TrackedClan[]
-      | CurrentWar[]
-      | WarAttacks[]
-      | ClanPointsSync[]
-      | ClanWarHistory[]
-      | ClanWarParticipation[]
-      | WarLookup[]
-      | CurrentCwlRound[]
-      | CurrentCwlPrepSnapshot[]
-      | CwlRoundMemberCurrent[]
-      | CwlRoundHistory[]
-      | CwlRoundMemberHistory[]
-      | CwlRotationPlan[]
-      | CwlRotationPlanDay[]
-      | CwlRotationPlanMember[],
+    rows: readonly unknown[],
   ): Promise<MirrorSyncTableSummary> {
     if (table === "TrackedClan") {
       const deletedRows = (await tx.trackedClan.deleteMany()).count;
@@ -629,6 +629,14 @@ export class MirrorSyncService {
       const insertedRows = await this.insertBatches(
         rows as CwlRotationPlanMember[],
         (batch) => tx.cwlRotationPlanMember.createMany({ data: batch }),
+      );
+      return { table, sourceRows: rows.length, deletedRows, insertedRows };
+    }
+
+    if (table === "HeatMapRef") {
+      const deletedRows = (await tx.heatMapRef.deleteMany()).count;
+      const insertedRows = await this.insertBatches(rows as HeatMapRef[], (batch) =>
+        tx.heatMapRef.createMany({ data: batch }),
       );
       return { table, sourceRows: rows.length, deletedRows, insertedRows };
     }
