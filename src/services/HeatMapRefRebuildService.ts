@@ -256,6 +256,7 @@ export class HeatMapRefRebuildService {
       th12Count: row.th12Count,
       th11Count: row.th11Count,
       th10OrLowerCount: row.th10OrLowerCount,
+      contributingClanCount: row.contributingClanCount,
       sourceVersion: row.sourceVersion,
       refreshedAt: row.refreshedAt,
     }));
@@ -303,6 +304,7 @@ export class HeatMapRefRebuildService {
             th12Count: row.th12Count,
             th11Count: row.th11Count,
             th10OrLowerCount: row.th10OrLowerCount,
+            contributingClanCount: row.contributingClanCount,
             sourceVersion: row.sourceVersion,
             refreshedAt: row.refreshedAt,
           })),

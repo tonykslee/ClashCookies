@@ -13,6 +13,7 @@ export type HeatMapRefSeedRow = {
   th12Count: number;
   th11Count: number;
   th10OrLowerCount: number;
+  contributingClanCount: number;
   sourceVersion: string | null;
   refreshedAt: Date;
 };
@@ -58,6 +59,7 @@ export async function upsertHeatMapRefSeedRows(
         th12Count: row.th12Count,
         th11Count: row.th11Count,
         th10OrLowerCount: row.th10OrLowerCount,
+        contributingClanCount: row.contributingClanCount,
         sourceVersion: row.sourceVersion,
         refreshedAt: row.refreshedAt,
       },
@@ -71,6 +73,7 @@ export async function upsertHeatMapRefSeedRows(
         th12Count: row.th12Count,
         th11Count: row.th11Count,
         th10OrLowerCount: row.th10OrLowerCount,
+        contributingClanCount: row.contributingClanCount,
         sourceVersion: row.sourceVersion,
         refreshedAt: row.refreshedAt,
       },

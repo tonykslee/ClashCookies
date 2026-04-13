@@ -15,6 +15,7 @@ import {
   StringSelectMenuInteraction,
 } from "discord.js";
 import { Command } from "../Command";
+import type { HeatMapRef } from "@prisma/client";
 import {
   COMPO_ADVICE_VIEW_LABELS,
   COMPO_ADVICE_VIEWS,
@@ -26,6 +27,7 @@ import {
   getCompoActualStateViewLabel,
   type CompoActualStateView,
 } from "../helper/compoActualStateView";
+import { formatHeatMapRefBandLabel } from "../helper/compoHeatMap";
 import { formatError } from "../helper/formatError";
 import { getCompoWarDisplayBucket } from "../helper/compoWarWeightBuckets";
 import { normalizeCompoClanDisplayName } from "../helper/compoDisplay";
@@ -39,6 +41,7 @@ import {
 import { CompoActualStateService } from "../services/CompoActualStateService";
 import { CompoPlaceService } from "../services/CompoPlaceService";
 import { CompoWarStateService } from "../services/CompoWarStateService";
+import { getAllHeatMapRefs } from "../services/HeatMapRefService";
 import {
   GoogleSheetMode,
   GoogleSheetReadError,
@@ -104,6 +107,19 @@ const STATE_HEADERS = [
   "TH15",
   "TH14",
   "<=TH13",
+];
+const HEAT_MAP_REF_HEADERS = [
+  "Band",
+  "TH18",
+  "TH17",
+  "TH16",
+  "TH15",
+  "TH14",
+  "TH13",
+  "TH12",
+  "TH11",
+  "<=TH10",
+  "Clans",
 ];
 const COMPO_REFRESH_PREFIX = "compo-refresh";
 const COMPO_REFRESH_LABEL = "Refresh Data";
@@ -974,6 +990,23 @@ function buildCompoStateRows(modeRows: SheetIndexedRow[]): string[][] {
   return [STATE_HEADERS, ...contentRows];
 }
 
+function buildCompoHeatMapRefRows(heatMapRefs: readonly HeatMapRef[]): string[][] {
+  const contentRows = heatMapRefs.map((heatMapRef) => [
+    clampCell(formatHeatMapRefBandLabel(heatMapRef)),
+    clampCell(String(heatMapRef.th18Count)),
+    clampCell(String(heatMapRef.th17Count)),
+    clampCell(String(heatMapRef.th16Count)),
+    clampCell(String(heatMapRef.th15Count)),
+    clampCell(String(heatMapRef.th14Count)),
+    clampCell(String(heatMapRef.th13Count)),
+    clampCell(String(heatMapRef.th12Count)),
+    clampCell(String(heatMapRef.th11Count)),
+    clampCell(String(heatMapRef.th10OrLowerCount)),
+    clampCell(String(heatMapRef.contributingClanCount)),
+  ]);
+  return [HEAT_MAP_REF_HEADERS, ...contentRows];
+}
+
 type CompoRenderPayload = {
   content?: string;
   embeds?: EmbedBuilder[];
@@ -989,12 +1022,28 @@ function buildCompoStatePayloadFromRows(input: {
   contentLines: string[];
   titleLabel?: string;
 }): CompoRenderPayload {
+  const title = input.titleLabel
+    ? `ALLIANCE STATE (${input.mode} - ${input.titleLabel})`
+    : `ALLIANCE STATE (${input.mode})`;
   return {
     content: input.contentLines.join("\n"),
     files: [
       {
-        attachment: renderStatePng(input.mode, input.stateRows, input.titleLabel),
+        attachment: renderStatePng(title, input.stateRows),
         name: `compo-state-${input.mode}.png`,
+      },
+    ],
+  };
+}
+
+function buildCompoHeatMapRefPayloadFromRows(input: {
+  heatMapRefs: readonly HeatMapRef[];
+}): CompoRenderPayload {
+  return {
+    files: [
+      {
+        attachment: renderStatePng("HEATMAP REF", buildCompoHeatMapRefRows(input.heatMapRefs)),
+        name: "compo-heatmapref.png",
       },
     ],
   };
@@ -1218,11 +1267,7 @@ function hexToRgb(hex: string): [number, number, number] {
   ];
 }
 
-function renderStatePng(
-  mode: GoogleSheetMode,
-  rows: string[][],
-  titleLabel?: string,
-): Buffer {
+function renderStatePng(titleText: string, rows: string[][]): Buffer {
   const { PNG } = require("pngjs");
   const tableRows = rows.length > 0 ? rows : [["(NO DATA)"]];
   const colCount = Math.max(...tableRows.map((row) => row.length), 1);
@@ -1303,10 +1348,7 @@ function renderStatePng(
   const text = hexToRgb("#f0f4ff");
   const title = hexToRgb("#9ec2ff");
   fillRect(0, 0, width, height, bg);
-  const stateTitle = titleLabel
-    ? `ALLIANCE STATE (${mode} - ${titleLabel})`
-    : `ALLIANCE STATE (${mode})`;
-  drawText(margin, margin + 2, stateTitle, title);
+  drawText(margin, margin + 2, titleText, title);
 
   const xStarts: number[] = [];
   let x = margin;
@@ -1449,6 +1491,12 @@ function mapCompoAdviceErrorToMessage(action: "load" | "refresh"): string {
   return action === "refresh"
     ? "Failed to refresh DB-backed compo advice. Try again in a moment."
     : "Failed to load DB-backed compo advice. Try again in a moment.";
+}
+
+function mapCompoHeatMapRefErrorToMessage(action: "load" | "refresh"): string {
+  return action === "refresh"
+    ? "Failed to refresh HeatMapRef snapshot. Try again in a moment."
+    : "Failed to load HeatMapRef snapshot. Try again in a moment.";
 }
 
 function getCompoRefreshFailureMessage(payload: CompoRefreshPayload): string {
@@ -1872,6 +1920,11 @@ export const Compo: Command = {
       ],
     },
     {
+      name: "heatmapref",
+      description: "Show the persisted HeatMapRef table as an image",
+      type: ApplicationCommandOptionType.Subcommand,
+    },
+    {
       name: "place",
       description:
         "Suggest clan placement for a given war weight (uses ACTUAL compo state)",
@@ -2051,6 +2104,28 @@ export const Compo: Command = {
         return;
       }
 
+      if (subcommand === "heatmapref") {
+        logCompoStage(interaction, "computation_start", { mode });
+        const heatMapRefs = await getAllHeatMapRefs();
+        logCompoStage(interaction, "db_fetch", {
+          entity: "heat_map_ref",
+          mode,
+          rows: heatMapRefs.length,
+        });
+        const payload = buildCompoHeatMapRefPayloadFromRows({ heatMapRefs });
+        logCompoStage(interaction, "computation_complete", {
+          result: "heatmapref_rendered",
+          mode,
+          rows: heatMapRefs.length,
+        });
+        logCompoStage(interaction, "response_build", { reason: "heatmapref_png" });
+        await interaction.editReply({
+          ...payload,
+        });
+        logCompoStage(interaction, "response_sent", { reason: "heatmapref_png" });
+        return;
+      }
+
       if (subcommand === "place") {
         const rawWeight = interaction.options.getString("weight", true);
         const inputWeight = parseWeightInput(rawWeight);
@@ -2173,6 +2248,8 @@ export const Compo: Command = {
             ? mapCompoWarStateErrorToMessage("load")
             : getSubcommandSafe(interaction) === "state"
               ? mapCompoActualStateErrorToMessage("load")
+              : getSubcommandSafe(interaction) === "heatmapref"
+                ? mapCompoHeatMapRefErrorToMessage("load")
               : getSubcommandSafe(interaction) === "place"
                 ? mapCompoPlaceErrorToMessage("load")
                 : getSubcommandSafe(interaction) === "advice"
@@ -2223,6 +2300,7 @@ export const Compo: Command = {
 };
 
 export const buildCompoStateRowsForTest = buildCompoStateRows;
+export const buildCompoHeatMapRefRowsForTest = buildCompoHeatMapRefRows;
 export const getModeRowsForTest = getModeRows;
 export const getAbsoluteSheetRowNumberForTest = getAbsoluteSheetRowNumber;
 export const mapCompoSheetErrorToMessageForTest = mapCompoSheetErrorToMessage;
