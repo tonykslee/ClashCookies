@@ -19,6 +19,7 @@ import { TelemetryIngestService } from "../services/telemetry/ingest";
 import { startTelemetryScheduleLoop } from "../services/telemetry/schedule";
 import { refreshAllTrackedWarMailPosts } from "../commands/Fwa";
 import { backfillMissingDiscordUsernamesForClanMembers } from "../services/PlayerLinkService";
+import { HeatMapRefRebuildService } from "../services/HeatMapRefRebuildService";
 import {
   formatStartupLogFields,
   getCommandRegistrationConfigFromEnv,
@@ -362,6 +363,7 @@ export default (client: Client, cocService: CoCService): void => {
     const pollingMode = resolvePollingMode(process.env);
     const activePollingEnabled = isActivePollingMode(process.env);
     const mirrorSyncService = new MirrorSyncService();
+    const heatMapRefRebuildService = new HeatMapRefRebuildService();
     console.log(`[polling-mode] mode=${pollingMode}`);
 
     const observeTrackedClans = async (): Promise<{
@@ -674,6 +676,19 @@ export default (client: Client, cocService: CoCService): void => {
       try {
         await trackedMessageService.processDueExpirations();
         await trackedMessageService.processDueSyncReminders(client);
+        await pollCycleGuard.run("heatmapref_rebuild_cycle", async () => {
+          const result = await heatMapRefRebuildService.runScheduledRebuildCycle({
+            client,
+            guildId,
+            pollingMode: activePollingEnabled ? "active" : "mirror",
+            now: new Date(),
+          });
+          if (result.status !== "skipped") {
+            console.log(
+              `[heatmapref] status=${result.status} cycle=${result.cycleKey ?? "none"} tracked=${result.trackedClanCount} rosters=${result.sourceRosterCount} qualifying=${result.qualifyingRosterCount} excluded=${result.excludedRosterCount} rows=${result.rowCount} alerted=${result.alertSent}`,
+            );
+          }
+        });
       } catch (err) {
         console.error(`[tracked-messages] sweep failed: ${formatError(err)}`);
       }

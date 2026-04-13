@@ -187,7 +187,8 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
   compo: {
     summary: "Composition tools with DB-backed WAR state plus DB-backed ACTUAL state/place flows.",
     details: [
-      "`advice`: fetch clan-specific adjustment notes from the existing sheet-backed flow.",
+      "`advice`: simulate bucket-level compo moves from DB-backed ACTUAL or WAR state and recommend the best improvement.",
+      "`advice` renders as an embed. ACTUAL mode defaults to `Auto-Detect Band` and can be switched between `Raw Data`, `Auto-Detect Band`, `Best Fit`, and `Custom` with inline buttons. `Custom` also exposes `-` / `+` band-step controls.",
       "`state`: `mode:war` renders from persisted tracked-clan feed state only, while `mode:actual` now renders from persisted ACTUAL current-member state (`TrackedClan` + `FwaClanMemberCurrent` + `HeatMapRef`) with deferred-weight and WAR-effective-weight fallback when member weight is zero.",
       "`state` refresh: `mode:war` refreshes tracked-clan war-roster feed state only and rerenders from DB; `mode:actual` now refreshes ACTUAL current-member/weight state plus live CoC member counts for all tracked clans, then rerenders from DB.",
       "`place`: suggest placement by war weight from persisted ACTUAL FWAStats current-member state (`TrackedClan` + `FwaClanMemberCurrent` + `HeatMapRef`) with deferred-weight and WAR-effective-weight fallback only for zero-weight member rows.",
@@ -195,6 +196,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     ],
     examples: [
       "/compo advice tag:#2QG2C08UP mode:actual",
+      "/compo advice tag:#2QG2C08UP mode:war",
       "/compo state mode:war",
       "/compo place weight:145k",
     ],
@@ -584,6 +586,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`/force sync data` refreshes live points.fwafarm data into `ClanPointsSync` for the current war when possible.",
       "`/force sync mail` validates supplied mail references against current-channel active-war identity before writing `WarMailLifecycle`, and still repairs notify references in `ClanPostedMessage`.",
       "`/force sync warid` is a DB repair tool for `CurrentWar` and `ClanWarHistory` only.",
+      "`/force refresh heatmapref` rebuilds `HeatMapRef` from persisted FWA WarMembers data, and is the manual repair path for the automatic cycle job.",
       "`/force mail update` first reconciles active-war lifecycle tracking (marking definitively missing references as DELETED), then refreshes existing sent war-mail in place and re-attaches it to the 20-minute refresh loop when valid.",
       "`/force poll war-events` runs the real war-event poll + refresh pipeline immediately.",
       "`force` commands are admin-only by default.",
@@ -595,6 +598,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/force sync mail tag:2QG2C08UP message-type:notify:war start message-id:1234567890123456789",
       "/force sync warid table:currentwar tag:2QG2C08UP",
       "/force sync warid table:clanwarhistory tag:2QG2C08UP set-war-id:1001274",
+      "/force refresh heatmapref",
       "/force poll war-events",
       "/force mail update tag:2QG2C08UP",
     ],

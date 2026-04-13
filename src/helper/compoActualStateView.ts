@@ -119,7 +119,7 @@ function buildTargetCounts(heatMapRef: HeatMapRef): CompoWarDisplayBucketCounts 
   };
 }
 
-function buildDeltaByBucket(
+export function getCompoActualStateDeltaByBucket(
   counts: CompoWarDisplayBucketCounts,
   heatMapRef: HeatMapRef | null,
 ): Record<CompoWarDisplayBucket, number | null> {
@@ -142,6 +142,25 @@ function buildDeltaByBucket(
     TH14: counts.TH14 - targetCounts.TH14,
     "<=TH13": counts["<=TH13"] - targetCounts["<=TH13"],
   };
+}
+
+/** Purpose: compute the spreadsheet-style weighted deviation score for one projected ACTUAL or WAR display state. */
+export function calculateCompoDeviationScore(input: {
+  displayCounts: CompoWarDisplayBucketCounts;
+  heatMapRef: HeatMapRef | null;
+}): number | null {
+  if (!input.heatMapRef) {
+    return null;
+  }
+
+  const deltaByBucket = getCompoActualStateDeltaByBucket(
+    input.displayCounts,
+    input.heatMapRef,
+  );
+  return DISPLAY_BUCKETS_ASC.reduce((sum, bucket) => {
+    const delta = deltaByBucket[bucket];
+    return sum + Math.abs(delta ?? 0) * DEVIATION_SCORE_WEIGHTS[bucket];
+  }, 0);
 }
 
 function getRepresentativeWeight(
@@ -167,6 +186,14 @@ function getRepresentativeWeight(
   return countTotal > 0
     ? Math.round(weightTotal / countTotal)
     : LOW_BUCKET_DEFAULT_REPRESENTATIVE_WEIGHT;
+}
+
+/** Purpose: estimate one representative total-weight delta for a displayed ACTUAL/WAR bucket. */
+export function getCompoDisplayBucketRepresentativeWeight(
+  bucket: CompoWarDisplayBucket,
+  heatMapRef: HeatMapRef | null,
+): number {
+  return getRepresentativeWeight(bucket, heatMapRef);
 }
 
 function addDisplayCounts(
@@ -196,7 +223,10 @@ function buildFillPlan(input: {
     };
   }
 
-  const deltas = buildDeltaByBucket(input.displayCounts, input.heatMapRef);
+  const deltas = getCompoActualStateDeltaByBucket(
+    input.displayCounts,
+    input.heatMapRef,
+  );
   let remaining = input.nMissing;
 
   for (const bucket of DISPLAY_BUCKETS_ASC) {
@@ -269,14 +299,14 @@ function buildEstimatedProjectionForBand(input: {
     input.displayCounts,
     fillPlan.fillCounts,
   );
-  const deltaByBucket = buildDeltaByBucket(
+  const deltaByBucket = getCompoActualStateDeltaByBucket(
     estimatedDisplayCounts,
     input.heatMapRef,
   );
-  const deviationScore = DISPLAY_BUCKETS_ASC.reduce((sum, bucket) => {
-    const delta = deltaByBucket[bucket];
-    return sum + Math.abs(delta ?? 0) * DEVIATION_SCORE_WEIGHTS[bucket];
-  }, 0);
+  const deviationScore = calculateCompoDeviationScore({
+    displayCounts: estimatedDisplayCounts,
+    heatMapRef: input.heatMapRef,
+  });
 
   return {
     view: input.view,
@@ -333,7 +363,7 @@ function buildRawProjection(input: {
       Math.max(0, 50 - input.base.memberCount) + input.base.unresolvedWeightCount,
     displayCounts: input.displayCounts,
     selectedHeatMapRef: heatMapRef,
-    deltaByBucket: buildDeltaByBucket(input.displayCounts, heatMapRef),
+    deltaByBucket: getCompoActualStateDeltaByBucket(input.displayCounts, heatMapRef),
     deviationScore: null,
   };
 }
