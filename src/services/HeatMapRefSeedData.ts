@@ -6,8 +6,9 @@ const REFRESHED_AT = new Date("2026-03-17T00:00:00.000Z");
 /**
  * Purpose: provide the checked-in authoritative HeatMapRef bootstrap dataset.
  * The source workbook currently exposes one combined `TH11+` target, so this
- * seed stores that whole combined count in `th11Count` and leaves
- * `th10OrLowerCount` at `0` consistently for every band.
+ * seed stores that whole combined count in `th11Count`, leaves
+ * `th10OrLowerCount` at `0` consistently for every band, and uses
+ * `contributingClanCount: 0` because the bootstrap rows are not rebuild-derived.
  */
 export const HEAT_MAP_REF_SEED_ROWS: readonly HeatMapRefSeedRow[] = [
   {
@@ -22,6 +23,7 @@ export const HEAT_MAP_REF_SEED_ROWS: readonly HeatMapRefSeedRow[] = [
     th12Count: 5,
     th11Count: 2,
     th10OrLowerCount: 0,
+    contributingClanCount: 0,
     sourceVersion: SOURCE_VERSION,
     refreshedAt: REFRESHED_AT,
   },
@@ -37,6 +39,7 @@ export const HEAT_MAP_REF_SEED_ROWS: readonly HeatMapRefSeedRow[] = [
     th12Count: 4,
     th11Count: 2,
     th10OrLowerCount: 0,
+    contributingClanCount: 0,
     sourceVersion: SOURCE_VERSION,
     refreshedAt: REFRESHED_AT,
   },
@@ -52,6 +55,7 @@ export const HEAT_MAP_REF_SEED_ROWS: readonly HeatMapRefSeedRow[] = [
     th12Count: 3,
     th11Count: 1,
     th10OrLowerCount: 0,
+    contributingClanCount: 0,
     sourceVersion: SOURCE_VERSION,
     refreshedAt: REFRESHED_AT,
   },
@@ -67,6 +71,7 @@ export const HEAT_MAP_REF_SEED_ROWS: readonly HeatMapRefSeedRow[] = [
     th12Count: 3,
     th11Count: 1,
     th10OrLowerCount: 0,
+    contributingClanCount: 0,
     sourceVersion: SOURCE_VERSION,
     refreshedAt: REFRESHED_AT,
   },
@@ -82,6 +87,7 @@ export const HEAT_MAP_REF_SEED_ROWS: readonly HeatMapRefSeedRow[] = [
     th12Count: 2,
     th11Count: 1,
     th10OrLowerCount: 0,
+    contributingClanCount: 0,
     sourceVersion: SOURCE_VERSION,
     refreshedAt: REFRESHED_AT,
   },
@@ -97,6 +103,7 @@ export const HEAT_MAP_REF_SEED_ROWS: readonly HeatMapRefSeedRow[] = [
     th12Count: 2,
     th11Count: 1,
     th10OrLowerCount: 0,
+    contributingClanCount: 0,
     sourceVersion: SOURCE_VERSION,
     refreshedAt: REFRESHED_AT,
   },
@@ -112,6 +119,7 @@ export const HEAT_MAP_REF_SEED_ROWS: readonly HeatMapRefSeedRow[] = [
     th12Count: 2,
     th11Count: 0,
     th10OrLowerCount: 0,
+    contributingClanCount: 0,
     sourceVersion: SOURCE_VERSION,
     refreshedAt: REFRESHED_AT,
   },
@@ -127,6 +135,7 @@ export const HEAT_MAP_REF_SEED_ROWS: readonly HeatMapRefSeedRow[] = [
     th12Count: 2,
     th11Count: 0,
     th10OrLowerCount: 0,
+    contributingClanCount: 0,
     sourceVersion: SOURCE_VERSION,
     refreshedAt: REFRESHED_AT,
   },
@@ -142,6 +151,7 @@ export const HEAT_MAP_REF_SEED_ROWS: readonly HeatMapRefSeedRow[] = [
     th12Count: 1,
     th11Count: 0,
     th10OrLowerCount: 0,
+    contributingClanCount: 0,
     sourceVersion: SOURCE_VERSION,
     refreshedAt: REFRESHED_AT,
   },
@@ -157,6 +167,7 @@ export const HEAT_MAP_REF_SEED_ROWS: readonly HeatMapRefSeedRow[] = [
     th12Count: 1,
     th11Count: 0,
     th10OrLowerCount: 0,
+    contributingClanCount: 0,
     sourceVersion: SOURCE_VERSION,
     refreshedAt: REFRESHED_AT,
   },
@@ -172,6 +183,7 @@ export const HEAT_MAP_REF_SEED_ROWS: readonly HeatMapRefSeedRow[] = [
     th12Count: 0,
     th11Count: 0,
     th10OrLowerCount: 0,
+    contributingClanCount: 0,
     sourceVersion: SOURCE_VERSION,
     refreshedAt: REFRESHED_AT,
   },

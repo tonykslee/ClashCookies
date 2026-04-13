@@ -34,6 +34,7 @@ describe("HeatMapRefService", () => {
       th12Count: 5,
       th11Count: 2,
       th10OrLowerCount: 0,
+      contributingClanCount: 0,
       sourceVersion: "bootstrap-2026-03-17",
     });
     expect(HEAT_MAP_REF_SEED_ROWS[9]).toMatchObject({
@@ -48,6 +49,7 @@ describe("HeatMapRefService", () => {
       th12Count: 1,
       th11Count: 0,
       th10OrLowerCount: 0,
+      contributingClanCount: 0,
     });
     expect(HEAT_MAP_REF_SEED_ROWS[10]).toMatchObject({
       weightMinInclusive: 8_110_000,
@@ -61,6 +63,7 @@ describe("HeatMapRefService", () => {
       th12Count: 0,
       th11Count: 0,
       th10OrLowerCount: 0,
+      contributingClanCount: 0,
     });
   });
 

@@ -115,6 +115,7 @@ describe("heatMapRefRebuild helpers", () => {
       "missing weights 11/50",
       "roster size 49/50",
     ]);
+    expect(result.rows[0]?.contributingClanCount).toBe(1);
   });
 
   it("aggregates observed averages per band and blends them against the seed baseline", () => {
@@ -169,6 +170,7 @@ describe("heatMapRefRebuild helpers", () => {
       weightMaxInclusive: 9_999_999,
       th18Count: 45,
       th14Count: 5,
+      contributingClanCount: 2,
       sourceVersion: "test-version",
     });
     expect(
@@ -212,6 +214,7 @@ describe("heatMapRefRebuild helpers", () => {
         weightMinInclusive: 0,
         weightMaxInclusive: 9_999_999,
         ...makeCounts({ th18Count: 50 }),
+        contributingClanCount: 0,
         sourceVersion: "first",
         refreshedAt: new Date("2026-04-13T00:00:00.000Z"),
       },
@@ -221,6 +224,7 @@ describe("heatMapRefRebuild helpers", () => {
         weightMinInclusive: 0,
         weightMaxInclusive: 9_999_999,
         ...makeCounts({ th18Count: 50 }),
+        contributingClanCount: 0,
         sourceVersion: "second",
         refreshedAt: new Date("2026-04-14T00:00:00.000Z"),
       },
