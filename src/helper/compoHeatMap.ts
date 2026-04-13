@@ -26,6 +26,13 @@ export function getHeatMapRefBandMidpoint(
   return (ref.weightMinInclusive + ref.weightMaxInclusive) / 2;
 }
 
+/** Purpose: render one HeatMapRef band in a compact, user-facing range format. */
+export function formatHeatMapRefBandLabel(
+  ref: Pick<HeatMapRef, "weightMinInclusive" | "weightMaxInclusive">,
+): string {
+  return `${ref.weightMinInclusive.toLocaleString("en-US")} - ${ref.weightMaxInclusive.toLocaleString("en-US")}`;
+}
+
 /** Purpose: bound HeatMapRef candidate scans to bands that intersect one possible total-weight window. */
 export function listHeatMapRefsIntersectingWeightWindow(
   refs: readonly HeatMapRef[],

@@ -144,6 +144,22 @@ function buildDeltaByBucket(
   };
 }
 
+/** Purpose: compute the spreadsheet-style weighted deviation score for one projected ACTUAL or WAR display state. */
+export function calculateCompoDeviationScore(input: {
+  displayCounts: CompoWarDisplayBucketCounts;
+  heatMapRef: HeatMapRef | null;
+}): number | null {
+  if (!input.heatMapRef) {
+    return null;
+  }
+
+  const deltaByBucket = buildDeltaByBucket(input.displayCounts, input.heatMapRef);
+  return DISPLAY_BUCKETS_ASC.reduce((sum, bucket) => {
+    const delta = deltaByBucket[bucket];
+    return sum + Math.abs(delta ?? 0) * DEVIATION_SCORE_WEIGHTS[bucket];
+  }, 0);
+}
+
 function getRepresentativeWeight(
   bucket: CompoWarDisplayBucket,
   heatMapRef: HeatMapRef | null,
@@ -167,6 +183,14 @@ function getRepresentativeWeight(
   return countTotal > 0
     ? Math.round(weightTotal / countTotal)
     : LOW_BUCKET_DEFAULT_REPRESENTATIVE_WEIGHT;
+}
+
+/** Purpose: estimate one representative total-weight delta for a displayed ACTUAL/WAR bucket. */
+export function getCompoDisplayBucketRepresentativeWeight(
+  bucket: CompoWarDisplayBucket,
+  heatMapRef: HeatMapRef | null,
+): number {
+  return getRepresentativeWeight(bucket, heatMapRef);
 }
 
 function addDisplayCounts(
@@ -273,10 +297,10 @@ function buildEstimatedProjectionForBand(input: {
     estimatedDisplayCounts,
     input.heatMapRef,
   );
-  const deviationScore = DISPLAY_BUCKETS_ASC.reduce((sum, bucket) => {
-    const delta = deltaByBucket[bucket];
-    return sum + Math.abs(delta ?? 0) * DEVIATION_SCORE_WEIGHTS[bucket];
-  }, 0);
+  const deviationScore = calculateCompoDeviationScore({
+    displayCounts: estimatedDisplayCounts,
+    heatMapRef: input.heatMapRef,
+  });
 
   return {
     view: input.view,
