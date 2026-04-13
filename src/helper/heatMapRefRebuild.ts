@@ -63,6 +63,7 @@ export type HeatMapRefObservedBandAggregate = {
 
 export type HeatMapRefRebuildRow = HeatMapRefBandDefinition &
   HeatMapRefBucketCounts & {
+    contributingClanCount: number;
     sourceVersion: string | null;
     refreshedAt: Date;
   };
@@ -516,6 +517,7 @@ export function blendHeatMapRefBandRows(input: {
       weightMinInclusive: band.weightMinInclusive,
       weightMaxInclusive: band.weightMaxInclusive,
       ...normalizedCounts,
+      contributingClanCount: aggregate?.sampleCount ?? 0,
       sourceVersion: input.sourceVersion,
       refreshedAt: input.now,
     };
@@ -524,7 +526,7 @@ export function blendHeatMapRefBandRows(input: {
 
 export function buildHeatMapRefRebuildComparisonRows(
   rows: readonly HeatMapRefRebuildRow[],
-): Array<HeatMapRefBandDefinition & HeatMapRefBucketCounts> {
+): Array<HeatMapRefBandDefinition & HeatMapRefBucketCounts & { contributingClanCount: number }> {
   return [...rows]
     .map((row) => ({
       weightMinInclusive: row.weightMinInclusive,
@@ -538,6 +540,7 @@ export function buildHeatMapRefRebuildComparisonRows(
       th12Count: row.th12Count,
       th11Count: row.th11Count,
       th10OrLowerCount: row.th10OrLowerCount,
+      contributingClanCount: row.contributingClanCount,
     }))
     .sort((left, right) => {
       const minDelta = left.weightMinInclusive - right.weightMinInclusive;

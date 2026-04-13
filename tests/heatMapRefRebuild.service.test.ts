@@ -66,6 +66,7 @@ function makeCurrentHeatMapRows() {
     th12Count: row.th12Count,
     th11Count: row.th11Count,
     th10OrLowerCount: row.th10OrLowerCount,
+    contributingClanCount: row.contributingClanCount,
     sourceVersion: row.sourceVersion,
     refreshedAt: row.refreshedAt,
   }));
@@ -95,6 +96,46 @@ function makeNoopHeatMapRows(now: Date) {
     ),
     now,
   }).rows;
+}
+
+function makeSyncPost(input: {
+  messageId: string;
+  syncTimeIso: string;
+  roleId?: string | null;
+}) {
+  return {
+    messageId: input.messageId,
+    metadata: {
+      syncTimeIso: input.syncTimeIso,
+      syncEpochSeconds: Math.floor(new Date(input.syncTimeIso).getTime() / 1000),
+      roleId: input.roleId ?? "role-1",
+      clans: [
+        {
+          clanTag: "#AAA111",
+          clanName: "Alpha",
+          emojiId: null,
+          emojiName: null,
+          emojiInline: "<:alpha:1>",
+        },
+      ],
+    },
+  } as never;
+}
+
+function getStoredCheckpoint(settingsStore: Map<string, string>, guildId: string) {
+  const raw = settingsStore.get(`heatmapref_rebuild_state:${guildId}`);
+  expect(raw).toBeTruthy();
+  return JSON.parse(String(raw)) as {
+    cycleKey: string;
+    anchoredSyncTimeIso: string;
+    dueAtIso: string;
+    status: string;
+    lastAttemptAtIso: string | null;
+    lastSuccessAtIso: string | null;
+    failureReason: string | null;
+    contentHash: string | null;
+    roleId: string | null;
+  };
 }
 
 describe("HeatMapRefRebuildService", () => {
@@ -165,24 +206,58 @@ describe("HeatMapRefRebuildService", () => {
     expect(prismaMock.heatMapRef.createMany).not.toHaveBeenCalled();
   });
 
+  it("anchors the rebuild checkpoint to the first recognized sync cycle even if sync-time post changes later", async () => {
+    const service = new HeatMapRefRebuildService({
+      settings: settings as never,
+      botLogChannels: botLogChannels as never,
+      permissions: permissions as never,
+    });
+    const guildId = "guild-1";
+    const firstSyncTimeIso = "2026-04-11T00:00:00.000Z";
+    const secondSyncTimeIso = "2026-04-12T12:00:00.000Z";
+    const firstDueAtIso = "2026-04-12T23:00:00.000Z";
+
+    vi.spyOn(trackedMessageService, "resolveLatestActiveSyncPost")
+      .mockResolvedValueOnce(makeSyncPost({ messageId: "message-1", syncTimeIso: firstSyncTimeIso }))
+      .mockResolvedValueOnce(makeSyncPost({ messageId: "message-2", syncTimeIso: secondSyncTimeIso }));
+
+    const firstResult = await service.runScheduledRebuildCycle({
+      client: {} as never,
+      guildId,
+      pollingMode: "active",
+      now: new Date("2026-04-12T22:59:00.000Z"),
+    });
+
+    expect(firstResult.status).toBe("skipped");
+    expect(firstResult.reason).toContain("not due yet");
+    expect(getStoredCheckpoint(settingsStore, guildId)).toMatchObject({
+      cycleKey: "message-1:1775865600",
+      anchoredSyncTimeIso: firstSyncTimeIso,
+      dueAtIso: firstDueAtIso,
+      status: "scheduled",
+    });
+
+    const secondResult = await service.runScheduledRebuildCycle({
+      client: {} as never,
+      guildId,
+      pollingMode: "active",
+      now: new Date("2026-04-12T22:59:30.000Z"),
+    });
+
+    expect(secondResult.status).toBe("skipped");
+    expect(secondResult.reason).toContain("not due yet");
+    expect(getStoredCheckpoint(settingsStore, guildId)).toMatchObject({
+      cycleKey: "message-1:1775865600",
+      anchoredSyncTimeIso: firstSyncTimeIso,
+      dueAtIso: firstDueAtIso,
+      status: "scheduled",
+    });
+  });
+
   it("alerts bot-logs and records a failure checkpoint when the scheduled rebuild fails", async () => {
-    vi.spyOn(trackedMessageService, "resolveLatestActiveSyncPost").mockResolvedValue({
-      messageId: "message-1",
-      metadata: {
-        syncTimeIso: "2026-04-11T00:00:00.000Z",
-        syncEpochSeconds: Math.floor(new Date("2026-04-11T00:00:00.000Z").getTime() / 1000),
-        roleId: "role-1",
-        clans: [
-          {
-            clanTag: "#AAA111",
-            clanName: "Alpha",
-            emojiId: null,
-            emojiName: null,
-            emojiInline: "<:alpha:1>",
-          },
-        ],
-      },
-    } as never);
+    vi.spyOn(trackedMessageService, "resolveLatestActiveSyncPost").mockResolvedValue(
+      makeSyncPost({ messageId: "message-1", syncTimeIso: "2026-04-11T00:00:00.000Z" }),
+    );
     prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue(
       Array.from({ length: 50 }, (_, index) => ({
         clanTag: "#AAA111",
@@ -228,9 +303,106 @@ describe("HeatMapRefRebuildService", () => {
       "HeatMapRef rebuild failed",
     );
     expect(settings.set).toHaveBeenCalled();
-    expect(String(settingsStore.get("heatmapref_rebuild_state:guild-1") ?? "")).toContain(
-      '"status":"failed"',
+    const checkpoint = getStoredCheckpoint(settingsStore, "guild-1");
+    expect(checkpoint.status).toBe("failed");
+    expect(checkpoint.failureReason).toContain("write failed");
+    expect(checkpoint.dueAtIso).toBe("2026-04-12T23:00:00.000Z");
+  });
+
+  it("creates a fresh checkpoint for the next cycle after the prior cycle completed", async () => {
+    const service = new HeatMapRefRebuildService({
+      settings: settings as never,
+      botLogChannels: botLogChannels as never,
+      permissions: permissions as never,
+    });
+    const guildId = "guild-1";
+    const firstSyncTimeIso = "2026-04-11T00:00:00.000Z";
+    const secondSyncTimeIso = "2026-04-13T00:00:00.000Z";
+    const secondDueAtIso = "2026-04-14T23:00:00.000Z";
+
+    settingsStore.set(
+      `heatmapref_rebuild_state:${guildId}`,
+      JSON.stringify({
+        cycleKey: "message-1:1775865600",
+        anchoredSyncTimeIso: firstSyncTimeIso,
+        dueAtIso: "2026-04-12T23:00:00.000Z",
+        status: "success",
+        lastAttemptAtIso: "2026-04-12T23:00:00.000Z",
+        lastSuccessAtIso: "2026-04-12T23:05:00.000Z",
+        failureReason: null,
+        contentHash: "hash-1",
+        roleId: "role-1",
+      }),
     );
+
+    vi.spyOn(trackedMessageService, "resolveLatestActiveSyncPost").mockResolvedValue(
+      makeSyncPost({ messageId: "message-2", syncTimeIso: secondSyncTimeIso }),
+    );
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue(
+      Array.from({ length: 50 }, (_, index) => ({
+        clanTag: "#AAA111",
+        playerTag: `#Q${String(index + 1).padStart(3, "0")}`,
+        position: index + 1,
+        townHall: 18,
+        weight: 175_000,
+        sourceSyncedAt: new Date(secondSyncTimeIso),
+      })),
+    );
+
+    const result = await service.runScheduledRebuildCycle({
+      client: {} as never,
+      guildId,
+      pollingMode: "active",
+      now: new Date("2026-04-15T00:00:00.000Z"),
+    });
+
+    expect(result.status).not.toBe("skipped");
+    expect(getStoredCheckpoint(settingsStore, guildId)).toMatchObject({
+      cycleKey: "message-2:1776038400",
+      anchoredSyncTimeIso: secondSyncTimeIso,
+      dueAtIso: secondDueAtIso,
+      status: expect.stringMatching(/^(success|no_op)$/),
+    });
+  });
+
+  it("skips duplicate work when a cycle is already running", async () => {
+    const service = new HeatMapRefRebuildService({
+      settings: settings as never,
+      botLogChannels: botLogChannels as never,
+      permissions: permissions as never,
+    });
+    const guildId = "guild-1";
+    const syncTimeIso = "2026-04-11T00:00:00.000Z";
+
+    settingsStore.set(
+      `heatmapref_rebuild_state:${guildId}`,
+      JSON.stringify({
+        cycleKey: "message-1:1775865600",
+        anchoredSyncTimeIso: syncTimeIso,
+        dueAtIso: "2026-04-12T23:00:00.000Z",
+        status: "running",
+        lastAttemptAtIso: "2026-04-12T23:00:00.000Z",
+        lastSuccessAtIso: null,
+        failureReason: null,
+        contentHash: null,
+        roleId: "role-1",
+      }),
+    );
+
+    vi.spyOn(trackedMessageService, "resolveLatestActiveSyncPost").mockResolvedValue(
+      makeSyncPost({ messageId: "message-1", syncTimeIso }),
+    );
+
+    const result = await service.runScheduledRebuildCycle({
+      client: {} as never,
+      guildId,
+      pollingMode: "active",
+      now: new Date("2026-04-13T00:00:00.000Z"),
+    });
+
+    expect(result.status).toBe("skipped");
+    expect(result.reason).toContain("already running");
+    expect(prismaMock.fwaWarMemberCurrent.findMany).not.toHaveBeenCalled();
   });
 
   it("writes rebuilt HeatMapRef rows and the next consumer read uses the refreshed table", async () => {
@@ -268,6 +440,7 @@ describe("HeatMapRefRebuildService", () => {
       th12Count: number;
       th11Count: number;
       th10OrLowerCount: number;
+      contributingClanCount: number;
       sourceVersion: string | null;
       refreshedAt: Date;
     }>;

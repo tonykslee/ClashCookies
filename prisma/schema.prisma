@@ -1139,6 +1139,7 @@ model HeatMapRef {
   th12Count          Int
   th11Count          Int
   th10OrLowerCount   Int
+  contributingClanCount Int @default(0)
   sourceVersion      String?
   refreshedAt        DateTime
 
