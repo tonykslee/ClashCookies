@@ -1,4 +1,5 @@
 import type {
+  HeatMapRef,
   FwaClanMemberCurrent,
   FwaTrackedClanWarRosterMemberCurrent,
   TrackedClan,
@@ -10,6 +11,7 @@ import {
 import {
   getCompoActualStateViewLabel,
   projectCompoActualStateView,
+  type CompoActualStateBaseMetrics,
   type CompoActualStateProjection,
   type CompoActualStateView,
 } from "../helper/compoActualStateView";
@@ -36,6 +38,20 @@ type WarFallbackRow = Pick<
   FwaTrackedClanWarRosterMemberCurrent,
   "clanTag" | "playerTag" | "effectiveWeight" | "updatedAt"
 >;
+
+export type CompoActualStateClanContext = {
+  clanTag: string;
+  clanName: string;
+  base: CompoActualStateBaseMetrics;
+};
+
+export type CompoActualStateContext = {
+  trackedClanTags: string[];
+  renderableClanTags: string[];
+  latestSourceSyncedAt: Date | null;
+  heatMapRefs: HeatMapRef[];
+  clans: CompoActualStateClanContext[];
+};
 
 export type CompoActualStateReadResult = {
   stateRows: string[][] | null;
@@ -140,6 +156,170 @@ function buildActualViewSummaryLines(
   return contentLines;
 }
 
+/** Purpose: load the persisted ACTUAL compo state snapshot used by both state rendering and advice simulation. */
+export async function loadCompoActualStateContext(
+  guildId?: string | null,
+): Promise<CompoActualStateContext> {
+  const tracked = await prisma.trackedClan.findMany({
+    orderBy: { createdAt: "asc" },
+    select: { tag: true, name: true },
+  });
+  const trackedClanTags = tracked
+    .map((clan) => normalizeTag(clan.tag))
+    .filter((tag): tag is string => Boolean(tag));
+
+  if (trackedClanTags.length === 0) {
+    return {
+      trackedClanTags: [],
+      renderableClanTags: [],
+      latestSourceSyncedAt: null,
+      heatMapRefs: [],
+      clans: [],
+    };
+  }
+
+  const [members, heatMapRefs] = await Promise.all([
+    prisma.fwaClanMemberCurrent.findMany({
+      where: { clanTag: { in: trackedClanTags } },
+      select: {
+        clanTag: true,
+        playerTag: true,
+        weight: true,
+        sourceSyncedAt: true,
+      },
+      orderBy: [{ clanTag: "asc" }, { sourceSyncedAt: "desc" }, { playerTag: "asc" }],
+    }),
+    prisma.heatMapRef.findMany({
+      orderBy: [{ weightMinInclusive: "asc" }, { weightMaxInclusive: "asc" }],
+    }),
+  ]);
+
+  const membersByClanTag = new Map<string, CurrentMemberRow[]>();
+  const allPlayerTags = new Set<string>();
+  let latestSourceSyncedAt: Date | null = null;
+  for (const member of members) {
+    const clanTag = normalizeTag(member.clanTag);
+    const playerTag = normalizePlayerTag(member.playerTag);
+    if (!clanTag || !playerTag) continue;
+    allPlayerTags.add(playerTag);
+    const existing = membersByClanTag.get(clanTag) ?? [];
+    existing.push({
+      ...member,
+      clanTag,
+      playerTag,
+    });
+    membersByClanTag.set(clanTag, existing);
+    if (
+      !latestSourceSyncedAt ||
+      member.sourceSyncedAt.getTime() > latestSourceSyncedAt.getTime()
+    ) {
+      latestSourceSyncedAt = member.sourceSyncedAt;
+    }
+  }
+
+  const [warFallbackMembers, deferredByClanTag] = await Promise.all([
+    allPlayerTags.size === 0
+      ? Promise.resolve([] as WarFallbackRow[])
+      : prisma.fwaTrackedClanWarRosterMemberCurrent.findMany({
+          where: {
+            playerTag: { in: [...allPlayerTags] },
+            effectiveWeight: { not: null },
+          },
+          select: {
+            clanTag: true,
+            playerTag: true,
+            effectiveWeight: true,
+            updatedAt: true,
+          },
+          orderBy: [{ updatedAt: "desc" }, { clanTag: "asc" }, { playerTag: "asc" }],
+        }),
+    guildId
+      ? listOpenDeferredWeightsByClanAndPlayerTags({
+          guildId,
+          clanPlayerTags: trackedClanTags.map((clanTag) => ({
+            clanTag,
+            playerTags: (membersByClanTag.get(clanTag) ?? []).map(
+              (member) => member.playerTag,
+            ),
+          })),
+        })
+      : Promise.resolve(new Map<string, Map<string, number>>()),
+  ]);
+
+  const warFallbackByClanAndPlayerTag = new Map<string, number>();
+  const warFallbackByPlayerTag = new Map<string, number>();
+  for (const row of warFallbackMembers) {
+    const clanTag = normalizeTag(row.clanTag);
+    const playerTag = normalizePlayerTag(row.playerTag);
+    const effectiveWeight = toPositiveCompoWeight(row.effectiveWeight);
+    if (!clanTag || !playerTag || effectiveWeight === null) {
+      continue;
+    }
+    const clanAndPlayerTagKey = `${clanTag}|${playerTag}`;
+    if (!warFallbackByClanAndPlayerTag.has(clanAndPlayerTagKey)) {
+      warFallbackByClanAndPlayerTag.set(clanAndPlayerTagKey, effectiveWeight);
+    }
+    if (!warFallbackByPlayerTag.has(playerTag)) {
+      warFallbackByPlayerTag.set(playerTag, effectiveWeight);
+    }
+  }
+
+  const clans: CompoActualStateClanContext[] = [];
+  for (const clan of tracked) {
+    const clanTag = normalizeTag(clan.tag);
+    if (!clanTag) continue;
+
+    const clanMembers = membersByClanTag.get(clanTag) ?? [];
+    const deferredByPlayerTag = deferredByClanTag.get(clanTag) ?? new Map();
+    const bucketCounts: CompoWarBucketCounts = {
+      ...EMPTY_COMPO_WAR_BUCKET_COUNTS,
+    };
+    let totalResolvedWeight = 0;
+    let unresolvedWeightCount = 0;
+
+    for (const member of clanMembers) {
+      const playerTag = normalizePlayerTag(member.playerTag);
+      const sameClanWarWeight = playerTag
+        ? warFallbackByClanAndPlayerTag.get(`${clanTag}|${playerTag}`)
+        : null;
+      const anyWarWeight = playerTag ? warFallbackByPlayerTag.get(playerTag) : null;
+      const deferredWeight = playerTag ? deferredByPlayerTag.get(playerTag) : null;
+      const resolvedWeight = resolveActualCompoWeight({
+        memberWeight: member.weight,
+        deferredWeight,
+        sameClanWarWeight,
+        anyWarWeight,
+      });
+      const bucket = getCompoWarWeightBucket(resolvedWeight);
+      if (resolvedWeight === null || !bucket) {
+        unresolvedWeightCount += 1;
+        continue;
+      }
+      totalResolvedWeight += resolvedWeight;
+      bucketCounts[bucket] += 1;
+    }
+
+    clans.push({
+      clanTag,
+      clanName: clan.name?.trim() || clan.tag,
+      base: {
+        resolvedTotalWeight: totalResolvedWeight,
+        unresolvedWeightCount,
+        memberCount: clanMembers.length,
+        bucketCounts,
+      },
+    });
+  }
+
+  return {
+    trackedClanTags,
+    renderableClanTags: clans.map((clan) => clan.clanTag),
+    latestSourceSyncedAt,
+    heatMapRefs,
+    clans,
+  };
+}
+
 /** Purpose: load and explicitly refresh DB-backed ACTUAL compo state from persisted current-member rows only. */
 export class CompoActualStateService {
   private readonly clanMembersSync = new FwaClanMembersSyncService();
@@ -150,15 +330,9 @@ export class CompoActualStateService {
     options?: { view?: CompoActualStateView },
   ): Promise<CompoActualStateReadResult> {
     const view = options?.view ?? "raw";
-    const tracked = await prisma.trackedClan.findMany({
-      orderBy: { createdAt: "asc" },
-      select: { tag: true, name: true },
-    });
-    const trackedClanTags = tracked
-      .map((clan) => normalizeTag(clan.tag))
-      .filter((tag): tag is string => Boolean(tag));
+    const context = await loadCompoActualStateContext(guildId);
 
-    if (trackedClanTags.length === 0) {
+    if (context.trackedClanTags.length === 0) {
       return {
         stateRows: null,
         trackedClanTags: [],
@@ -172,145 +346,20 @@ export class CompoActualStateService {
       };
     }
 
-    const [members, heatMapRefs] = await Promise.all([
-      prisma.fwaClanMemberCurrent.findMany({
-        where: { clanTag: { in: trackedClanTags } },
-        select: {
-          clanTag: true,
-          playerTag: true,
-          weight: true,
-          sourceSyncedAt: true,
-        },
-        orderBy: [{ clanTag: "asc" }, { sourceSyncedAt: "desc" }, { playerTag: "asc" }],
-      }),
-      prisma.heatMapRef.findMany({
-        orderBy: [{ weightMinInclusive: "asc" }, { weightMaxInclusive: "asc" }],
-      }),
-    ]);
-
-    const membersByClanTag = new Map<string, CurrentMemberRow[]>();
-    const allPlayerTags = new Set<string>();
-    let latestSourceSyncedAt: Date | null = null;
-    for (const member of members) {
-      const clanTag = normalizeTag(member.clanTag);
-      const playerTag = normalizePlayerTag(member.playerTag);
-      if (!clanTag || !playerTag) continue;
-      allPlayerTags.add(playerTag);
-      const existing = membersByClanTag.get(clanTag) ?? [];
-      existing.push({
-        ...member,
-        clanTag,
-        playerTag,
-      });
-      membersByClanTag.set(clanTag, existing);
-      if (
-        !latestSourceSyncedAt ||
-        member.sourceSyncedAt.getTime() > latestSourceSyncedAt.getTime()
-      ) {
-        latestSourceSyncedAt = member.sourceSyncedAt;
-      }
-    }
-
-    const [warFallbackMembers, deferredByClanTag] = await Promise.all([
-      allPlayerTags.size === 0
-        ? Promise.resolve([] as WarFallbackRow[])
-        : prisma.fwaTrackedClanWarRosterMemberCurrent.findMany({
-            where: {
-              playerTag: { in: [...allPlayerTags] },
-              effectiveWeight: { not: null },
-            },
-            select: {
-              clanTag: true,
-              playerTag: true,
-              effectiveWeight: true,
-              updatedAt: true,
-            },
-            orderBy: [{ updatedAt: "desc" }, { clanTag: "asc" }, { playerTag: "asc" }],
-          }),
-      guildId
-        ? listOpenDeferredWeightsByClanAndPlayerTags({
-            guildId,
-            clanPlayerTags: trackedClanTags.map((clanTag) => ({
-              clanTag,
-              playerTags: (membersByClanTag.get(clanTag) ?? []).map(
-                (member) => member.playerTag,
-              ),
-            })),
-          })
-        : Promise.resolve(new Map<string, Map<string, number>>()),
-    ]);
-
-    const warFallbackByClanAndPlayerTag = new Map<string, number>();
-    const warFallbackByPlayerTag = new Map<string, number>();
-    for (const row of warFallbackMembers) {
-      const clanTag = normalizeTag(row.clanTag);
-      const playerTag = normalizePlayerTag(row.playerTag);
-      const effectiveWeight = toPositiveCompoWeight(row.effectiveWeight);
-      if (!clanTag || !playerTag || effectiveWeight === null) {
-        continue;
-      }
-      const clanAndPlayerTagKey = `${clanTag}|${playerTag}`;
-      if (!warFallbackByClanAndPlayerTag.has(clanAndPlayerTagKey)) {
-        warFallbackByClanAndPlayerTag.set(clanAndPlayerTagKey, effectiveWeight);
-      }
-      if (!warFallbackByPlayerTag.has(playerTag)) {
-        warFallbackByPlayerTag.set(playerTag, effectiveWeight);
-      }
-    }
-
     const renderableClanTags: string[] = [];
     const missingHeatMapBands: string[] = [];
     const rows: string[][] = [];
 
-    for (const clan of tracked) {
-      const clanTag = normalizeTag(clan.tag);
-      if (!clanTag) continue;
-
-      const clanMembers = membersByClanTag.get(clanTag) ?? [];
-      const deferredByPlayerTag = deferredByClanTag.get(clanTag) ?? new Map();
-      const bucketCounts: CompoWarBucketCounts = {
-        ...EMPTY_COMPO_WAR_BUCKET_COUNTS,
-      };
-      let totalResolvedWeight = 0;
-      let unresolvedWeightCount = 0;
-
-      for (const member of clanMembers) {
-        const playerTag = normalizePlayerTag(member.playerTag);
-        const sameClanWarWeight = playerTag
-          ? warFallbackByClanAndPlayerTag.get(`${clanTag}|${playerTag}`)
-          : null;
-        const anyWarWeight = playerTag
-          ? warFallbackByPlayerTag.get(playerTag)
-          : null;
-        const deferredWeight = playerTag
-          ? deferredByPlayerTag.get(playerTag)
-          : null;
-        const resolvedWeight = resolveActualCompoWeight({
-          memberWeight: member.weight,
-          deferredWeight,
-          sameClanWarWeight,
-          anyWarWeight,
-        });
-        const bucket = getCompoWarWeightBucket(resolvedWeight);
-        if (resolvedWeight === null || !bucket) {
-          unresolvedWeightCount += 1;
-          continue;
-        }
-        totalResolvedWeight += resolvedWeight;
-        bucketCounts[bucket] += 1;
-      }
-
+    for (const clan of context.clans) {
       const projection = projectCompoActualStateView({
         view,
-        base: {
-          resolvedTotalWeight: totalResolvedWeight,
-          unresolvedWeightCount,
-          memberCount: clanMembers.length,
-          bucketCounts,
-        },
-        heatMapRefs,
+        base: clan.base,
+        heatMapRefs: context.heatMapRefs,
       });
-      const displayName = buildTrackedClanDisplayName(clan);
+      const displayName = buildTrackedClanDisplayName({
+        tag: clan.clanTag,
+        name: clan.clanName,
+      });
       if (!projection.selectedHeatMapRef) {
         missingHeatMapBands.push(
           `${normalizeActualStateClanDisplayName(displayName)} (${projection.totalWeight.toLocaleString("en-US")})`,
@@ -333,7 +382,7 @@ export class CompoActualStateService {
         row.th14Delta,
         row.th13OrLowerDelta,
       ]);
-      renderableClanTags.push(clanTag);
+      renderableClanTags.push(clan.clanTag);
     }
 
     return {
@@ -343,10 +392,10 @@ export class CompoActualStateService {
       ],
       contentLines: buildActualViewSummaryLines(
         view,
-        latestSourceSyncedAt,
+        context.latestSourceSyncedAt,
         missingHeatMapBands,
       ),
-      trackedClanTags,
+      trackedClanTags: context.trackedClanTags,
       renderableClanTags,
       view,
     };
@@ -357,20 +406,14 @@ export class CompoActualStateService {
     guildId?: string | null,
     options?: { view?: CompoActualStateView },
   ): Promise<CompoActualStateReadResult> {
-    const tracked = await prisma.trackedClan.findMany({
-      orderBy: { createdAt: "asc" },
-      select: { tag: true },
-    });
-    const trackedClanTags = tracked
-      .map((clan) => normalizeTag(clan.tag))
-      .filter((tag): tag is string => Boolean(tag));
+    const context = await loadCompoActualStateContext(guildId);
 
-    if (trackedClanTags.length > 0) {
+    if (context.trackedClanTags.length > 0) {
       await this.clanMembersSync.syncAllTrackedClans({
         force: true,
       });
       await this.clanMembersSync.refreshCurrentClanMembersForClanTags(
-        trackedClanTags,
+        context.trackedClanTags,
       );
     }
 

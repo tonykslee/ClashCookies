@@ -24,6 +24,7 @@ import { normalizeCompoClanDisplayName } from "../helper/compoDisplay";
 import { prisma } from "../prisma";
 import { safeReply } from "../helper/safeReply";
 import { CoCService } from "../services/CoCService";
+import { CompoAdviceService } from "../services/CompoAdviceService";
 import { CompoActualStateService } from "../services/CompoActualStateService";
 import { CompoPlaceService } from "../services/CompoPlaceService";
 import { CompoWarStateService } from "../services/CompoWarStateService";
@@ -31,9 +32,7 @@ import {
   GoogleSheetMode,
   GoogleSheetReadError,
   GoogleSheetReadErrorCode,
-  GoogleSheetsService,
 } from "../services/GoogleSheetsService";
-import { SettingsService } from "../services/SettingsService";
 
 function normalize(value: string): string {
   return value.trim().toLowerCase();
@@ -77,14 +76,11 @@ function readMode(interaction: ChatInputCommandInteraction): GoogleSheetMode {
 }
 
 const COL_CLAN_NAME = 0; // A
-const COL_CLAN_TAG = 1; // B
 const COL_TOTAL_WEIGHT = 3; // D
 const COL_MISSING_WEIGHT = 20; // U
 const COL_TOTAL_PLAYERS = 21; // V
 const COL_BUCKET_START = 22; // W (was 21 / V)
 const COL_BUCKET_END = 27; // AB (was 26 / AA)
-const COL_ADJUSTMENT = 54; // BC (was 53 / BB)
-const FIXED_LAYOUT_RANGE = "AllianceDashboard!A6:BE500";
 const FIXED_LAYOUT_RANGE_START_ROW = 6;
 const STATE_HEADERS = [
   "Clan",
@@ -126,9 +122,30 @@ type CompoRefreshPayload =
       actualView: CompoActualStateView;
     }
   | {
+      kind: "advice";
+      userId: string;
+      mode: "war";
+      targetTag: string;
+    }
+  | {
+      kind: "advice";
+      userId: string;
+      mode: "actual";
+      actualView: CompoActualStateView;
+      targetTag: string;
+    }
+  | {
       kind: "view";
       userId: string;
+      target: "state";
       actualView: CompoActualStateView;
+    }
+  | {
+      kind: "view";
+      userId: string;
+      target: "advice";
+      actualView: CompoActualStateView;
+      targetTag: string;
     }
   | {
       kind: "place";
@@ -143,8 +160,17 @@ function buildCompoRefreshCustomId(payload: CompoRefreshPayload): string {
     }
     return `${COMPO_REFRESH_PREFIX}:state:${payload.userId}:war`;
   }
+  if (payload.kind === "advice") {
+    if (payload.mode === "actual") {
+      return `${COMPO_REFRESH_PREFIX}:advice:${payload.userId}:actual:${payload.actualView}:${payload.targetTag}`;
+    }
+    return `${COMPO_REFRESH_PREFIX}:advice:${payload.userId}:war:${payload.targetTag}`;
+  }
   if (payload.kind === "view") {
-    return `${COMPO_REFRESH_PREFIX}:view:${payload.userId}:${payload.actualView}`;
+    if (payload.target === "advice") {
+      return `${COMPO_REFRESH_PREFIX}:view:${payload.userId}:advice:${payload.actualView}:${payload.targetTag}`;
+    }
+    return `${COMPO_REFRESH_PREFIX}:view:${payload.userId}:state:${payload.actualView}`;
   }
   return `${COMPO_REFRESH_PREFIX}:place:${payload.userId}:${Math.trunc(payload.weight)}`;
 }
@@ -183,16 +209,63 @@ function parseCompoRefreshCustomId(
     }
     return null;
   }
-  if (kind === "view" && parts.length === 4) {
-    const actualView = parts[3];
+  if (kind === "advice") {
+    const mode = parts[3];
+    if (mode === "war" && parts.length === 5) {
+      const targetTag = normalizeTag(parts[4] ?? "");
+      if (!targetTag) return null;
+      return {
+        kind: "advice",
+        userId,
+        mode,
+        targetTag,
+      };
+    }
+    if (mode === "actual" && parts.length === 6) {
+      const actualView = parts[4];
+      const targetTag = normalizeTag(parts[5] ?? "");
+      if (
+        !targetTag ||
+        !COMPO_ACTUAL_STATE_VIEWS.includes(actualView as CompoActualStateView)
+      ) {
+        return null;
+      }
+      return {
+        kind: "advice",
+        userId,
+        mode,
+        actualView: actualView as CompoActualStateView,
+        targetTag,
+      };
+    }
+    return null;
+  }
+  if (kind === "view" && parts.length >= 5) {
+    const target = parts[3];
+    const actualView = parts[4];
     if (!COMPO_ACTUAL_STATE_VIEWS.includes(actualView as CompoActualStateView)) {
       return null;
     }
-    return {
-      kind: "view",
-      userId,
-      actualView: actualView as CompoActualStateView,
-    };
+    if (target === "state" && parts.length === 5) {
+      return {
+        kind: "view",
+        userId,
+        target,
+        actualView: actualView as CompoActualStateView,
+      };
+    }
+    if (target === "advice" && parts.length === 6) {
+      const targetTag = normalizeTag(parts[5] ?? "");
+      if (!targetTag) return null;
+      return {
+        kind: "view",
+        userId,
+        target,
+        actualView: actualView as CompoActualStateView,
+        targetTag,
+      };
+    }
+    return null;
   }
   if (kind === "place" && parts.length === 4) {
     const value = parts[3];
@@ -228,25 +301,40 @@ function buildCompoRefreshActionRow(
 
 function buildCompoActualViewActionRow(input: {
   userId: string;
+  target: "state" | "advice";
+  targetTag?: string;
   selectedView: CompoActualStateView;
   loading?: boolean;
 }): ActionRowBuilder<ButtonBuilder> {
   const loading = input.loading ?? false;
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
     COMPO_ACTUAL_STATE_VIEWS.map((view) =>
-      new ButtonBuilder()
-        .setCustomId(
-          buildCompoRefreshCustomId({
-            kind: "view",
-            userId: input.userId,
-            actualView: view,
-          }),
-        )
-        .setLabel(getCompoActualStateViewLabel(view))
-        .setStyle(
-          input.selectedView === view ? ButtonStyle.Primary : ButtonStyle.Secondary,
-        )
-        .setDisabled(loading),
+      (() => {
+        const payload =
+          input.target === "advice"
+            ? {
+                kind: "view" as const,
+                userId: input.userId,
+                target: "advice" as const,
+                actualView: view,
+                targetTag: input.targetTag ?? "",
+              }
+            : {
+                kind: "view" as const,
+                userId: input.userId,
+                target: "state" as const,
+                actualView: view,
+              };
+        return new ButtonBuilder()
+          .setCustomId(buildCompoRefreshCustomId(payload))
+          .setLabel(getCompoActualStateViewLabel(view))
+          .setStyle(
+            input.selectedView === view
+              ? ButtonStyle.Primary
+              : ButtonStyle.Secondary,
+          )
+          .setDisabled(loading);
+      })(),
     ),
   );
 }
@@ -789,7 +877,7 @@ function renderStatePng(
 }
 
 function buildCompoRefreshComponents(input: {
-  refreshPayload: Extract<CompoRefreshPayload, { kind: "state" | "place" }>;
+  refreshPayload: Extract<CompoRefreshPayload, { kind: "state" | "advice" | "place" }>;
   loading: boolean;
   supplementalRows?: Array<
     APIActionRowComponent<APIComponentInMessageActionRow>
@@ -807,6 +895,18 @@ function buildCompoRefreshComponents(input: {
     components.push(
       buildCompoActualViewActionRow({
         userId: input.refreshPayload.userId,
+        target: "state",
+        selectedView: input.refreshPayload.actualView,
+        loading: input.loading,
+      }),
+    );
+  }
+  if (input.refreshPayload.kind === "advice" && input.refreshPayload.mode === "actual") {
+    components.push(
+      buildCompoActualViewActionRow({
+        userId: input.refreshPayload.userId,
+        target: "advice",
+        targetTag: input.refreshPayload.targetTag,
         selectedView: input.refreshPayload.actualView,
         loading: input.loading,
       }),
@@ -836,6 +936,34 @@ function mapCompoPlaceErrorToMessage(action: "load" | "refresh"): string {
     : "Failed to load ACTUAL placement suggestions. Try again in a moment.";
 }
 
+function mapCompoAdviceErrorToMessage(action: "load" | "refresh"): string {
+  return action === "refresh"
+    ? "Failed to refresh DB-backed compo advice. Try again in a moment."
+    : "Failed to load DB-backed compo advice. Try again in a moment.";
+}
+
+function getCompoRefreshFailureMessage(payload: CompoRefreshPayload): string {
+  if (payload.kind === "state" && payload.mode === "war") {
+    return mapCompoWarStateErrorToMessage("refresh");
+  }
+  if (payload.kind === "state") {
+    return mapCompoActualStateErrorToMessage("refresh");
+  }
+  if (payload.kind === "advice") {
+    return mapCompoAdviceErrorToMessage("refresh");
+  }
+  if (payload.kind === "view" && payload.target === "advice") {
+    return mapCompoAdviceErrorToMessage("refresh");
+  }
+  if (payload.kind === "view") {
+    return mapCompoActualStateErrorToMessage("refresh");
+  }
+  if (payload.kind === "place") {
+    return mapCompoPlaceErrorToMessage("refresh");
+  }
+  return "Failed to refresh compo view. Try again in a moment.";
+}
+
 export async function handleCompoRefreshButton(
   interaction: ButtonInteraction,
   _cocService: CoCService,
@@ -859,14 +987,25 @@ export async function handleCompoRefreshButton(
   }
 
   const supplementalRows = extractSupplementalRowsFromMessage(interaction);
-  const loadingRefreshPayload: Extract<CompoRefreshPayload, { kind: "state" | "place" }> =
+  const loadingRefreshPayload: Extract<
+    CompoRefreshPayload,
+    { kind: "state" | "advice" | "place" }
+  > =
     parsed.kind === "view"
-      ? {
-          kind: "state",
-          userId: parsed.userId,
-          mode: "actual",
-          actualView: parsed.actualView,
-        }
+      ? parsed.target === "advice"
+        ? {
+            kind: "advice",
+            userId: parsed.userId,
+            mode: "actual",
+            actualView: parsed.actualView,
+            targetTag: parsed.targetTag,
+          }
+        : {
+            kind: "state",
+            userId: parsed.userId,
+            mode: "actual",
+            actualView: parsed.actualView,
+          }
       : parsed;
   await interaction.update({
     components: buildCompoRefreshComponents({
@@ -921,33 +1060,76 @@ export async function handleCompoRefreshButton(
       return;
     }
 
-    if (parsed.kind === "view") {
-      const actualState = await new CompoActualStateService().readState(
-        interaction.guildId ?? null,
-        {
-          view: parsed.actualView,
-        },
-      );
-      const payload = actualState.stateRows
-        ? buildCompoStatePayloadFromRows({
-            mode: "actual",
-            stateRows: actualState.stateRows,
-            contentLines: actualState.contentLines,
-            titleLabel: getCompoActualStateViewLabel(
-              actualState.view ?? "raw",
-            ).toUpperCase(),
-          })
-        : {
-            content: actualState.contentLines.join("\n"),
-          };
+    if (parsed.kind === "advice") {
+      const adviceService = new CompoAdviceService();
+      const advice = await adviceService.refreshAdvice({
+        guildId: interaction.guildId ?? null,
+        targetTag: parsed.targetTag,
+        mode: parsed.mode,
+        view: parsed.mode === "actual" ? parsed.actualView : "raw",
+      });
       await interaction.editReply({
-        ...payload,
+        content: advice.content,
+        components: buildCompoRefreshComponents({
+          refreshPayload: parsed,
+          loading: false,
+          supplementalRows,
+        }),
+      });
+      return;
+    }
+
+    if (parsed.kind === "view") {
+      if (parsed.target === "state") {
+        const actualState = await new CompoActualStateService().readState(
+          interaction.guildId ?? null,
+          {
+            view: parsed.actualView,
+          },
+        );
+        const payload = actualState.stateRows
+          ? buildCompoStatePayloadFromRows({
+              mode: "actual",
+              stateRows: actualState.stateRows,
+              contentLines: actualState.contentLines,
+              titleLabel: getCompoActualStateViewLabel(
+                actualState.view ?? "raw",
+              ).toUpperCase(),
+            })
+          : {
+              content: actualState.contentLines.join("\n"),
+            };
+        await interaction.editReply({
+          ...payload,
+          components: buildCompoRefreshComponents({
+            refreshPayload: {
+              kind: "state",
+              userId: parsed.userId,
+              mode: "actual",
+              actualView: parsed.actualView,
+            },
+            loading: false,
+            supplementalRows,
+          }),
+        });
+        return;
+      }
+
+      const advice = await new CompoAdviceService().readAdvice({
+        guildId: interaction.guildId ?? null,
+        targetTag: parsed.targetTag,
+        mode: "actual",
+        view: parsed.actualView,
+      });
+      await interaction.editReply({
+        content: advice.content,
         components: buildCompoRefreshComponents({
           refreshPayload: {
-            kind: "state",
+            kind: "advice",
             userId: parsed.userId,
             mode: "actual",
             actualView: parsed.actualView,
+            targetTag: parsed.targetTag,
           },
           loading: false,
           supplementalRows,
@@ -989,14 +1171,7 @@ export async function handleCompoRefreshButton(
     });
     await interaction.followUp({
       ephemeral: true,
-      content:
-        parsed.kind === "state" && parsed.mode === "war"
-          ? mapCompoWarStateErrorToMessage("refresh")
-          : parsed.kind === "state"
-            ? mapCompoActualStateErrorToMessage("refresh")
-          : parsed.kind === "place"
-            ? mapCompoPlaceErrorToMessage("refresh")
-            : "Failed to refresh compo view. Try again in a moment.",
+      content: getCompoRefreshFailureMessage(parsed),
     });
   }
 }
@@ -1083,100 +1258,44 @@ export const Compo: Command = {
         const tagInput = interaction.options.getString("tag", true);
         const targetTag = normalizeTag(tagInput);
         logCompoStage(interaction, "computation_start", { targetTag, mode });
-
-        const settings = new SettingsService();
-        const sheets = new GoogleSheetsService(settings);
-        const linked = await sheets.getCompoLinkedSheet(FIXED_LAYOUT_RANGE);
-        logCompoStage(interaction, "db_fetch", {
-          entity: "sheet_link",
+        const adviceService = new CompoAdviceService();
+        const advice = await adviceService.readAdvice({
+          guildId: interaction.guildId ?? null,
+          targetTag,
           mode,
-          result: linked.sheetId ? "found" : "missing",
-          sheetIdPresent: Boolean(linked.sheetId),
-          resolutionSource: linked.source,
         });
-        logCompoStage(interaction, "read_dispatch", {
-          range: FIXED_LAYOUT_RANGE,
-          resolutionSource: linked.source,
-        });
-        const rows = await sheets.readCompoLinkedValues(
-          FIXED_LAYOUT_RANGE,
-          linked,
-        );
-        const modeRows = getModeRows(rows, mode);
         logCompoStage(interaction, "db_fetch", {
-          entity: "sheet_rows",
+          entity: mode === "war" ? "tracked_war_advice_source" : "actual_compo_advice_source",
           mode,
-          result: rows.length > 0 ? "found" : "missing",
-          totalRows: rows.length,
-          modeRows: modeRows.length,
+          trackedClans: advice.trackedClanTags.length,
         });
-
-        if (modeRows.length === 0) {
-          logCompoStage(interaction, "response_build", {
-            reason: "no_mode_rows",
-          });
-          await safeReply(interaction, {
-            ephemeral: !isPublic,
-            content: `No ${mode.toUpperCase()} rows found in ${FIXED_LAYOUT_RANGE}.`,
-          });
-          logCompoStage(interaction, "response_sent", {
-            reason: "no_mode_rows",
-          });
-          return;
-        }
-
-        for (const modeRow of modeRows) {
-          const row = modeRow.row;
-          const clanName = String(row[COL_CLAN_NAME] ?? "").trim();
-          const displayClanName = normalizeCompoClanDisplayName(clanName);
-          const clanTag = normalizeTag(String(row[COL_CLAN_TAG] ?? ""));
-          const advice = String(row[COL_ADJUSTMENT] ?? "").trim();
-          if (!clanName || !clanTag) continue;
-
-          if (clanTag === targetTag) {
-            logCompoStage(interaction, "computation_complete", {
-              result: "target_found",
-              clanTag,
-            });
-            logCompoStage(interaction, "response_build", {
-              reason: "target_found",
-            });
-            await safeReply(interaction, {
-              ephemeral: !isPublic,
-              content:
-                advice && advice.length > 0
-                  ? `Mode: **${mode.toUpperCase()}**\n**${displayClanName}** (\`#${clanTag}\`) adjustment:\n${advice}`
-                  : `Mode: **${mode.toUpperCase()}**\nFound **${displayClanName}** (\`#${clanTag}\`), but there is no adjustment text in column BC.`,
-            });
-            logCompoStage(interaction, "response_sent", {
-              reason: "target_found",
-            });
-            return;
-          }
-        }
-
-        const knownTags = modeRows
-          .map((modeRow) =>
-            normalizeTag(String(modeRow.row[COL_CLAN_TAG] ?? "")),
-          )
-          .filter((tag): tag is string => Boolean(tag));
         logCompoStage(interaction, "computation_complete", {
-          result: "target_missing",
-          knownTags: knownTags.length,
+          result: "advice_rendered",
+          mode,
         });
-
-        logCompoStage(interaction, "response_build", {
-          reason: "target_missing",
-        });
-        await safeReply(interaction, {
-          ephemeral: !isPublic,
-          content:
-            knownTags.length > 0
-              ? `Mode: **${mode.toUpperCase()}**\nNo adjustment mapping found for tag \`#${targetTag}\`. Known tags in this mode: ${knownTags.map((t) => `#${t}`).join(", ")}`
-              : `Mode: **${mode.toUpperCase()}**\nNo adjustment mapping found for tag \`#${targetTag}\`.`,
+        await interaction.editReply({
+          content: advice.content,
+          components: buildCompoRefreshComponents({
+            refreshPayload:
+              mode === "actual"
+                ? {
+                    kind: "advice",
+                    userId: interaction.user.id,
+                    mode: "actual",
+                    actualView: advice.selectedView,
+                    targetTag,
+                  }
+                : {
+                    kind: "advice",
+                    userId: interaction.user.id,
+                    mode: "war",
+                    targetTag,
+                  },
+            loading: false,
+          }),
         });
         logCompoStage(interaction, "response_sent", {
-          reason: "target_missing",
+          reason: "advice_rendered",
         });
         return;
       }
@@ -1389,9 +1508,11 @@ export const Compo: Command = {
             ? mapCompoWarStateErrorToMessage("load")
             : getSubcommandSafe(interaction) === "state"
               ? mapCompoActualStateErrorToMessage("load")
-            : getSubcommandSafe(interaction) === "place"
-              ? mapCompoPlaceErrorToMessage("load")
-              : mapCompoSheetErrorToMessage(err),
+              : getSubcommandSafe(interaction) === "place"
+                ? mapCompoPlaceErrorToMessage("load")
+                : getSubcommandSafe(interaction) === "advice"
+                  ? mapCompoAdviceErrorToMessage("load")
+                  : mapCompoSheetErrorToMessage(err),
       });
       logCompoStage(interaction, "response_sent", { reason: "run_catch" });
     }

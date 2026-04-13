@@ -32,6 +32,26 @@ type GranularBucketKey = CompoWarWeightBucket;
 
 type BucketCounts = Record<GranularBucketKey, number>;
 
+export type CompoWarStateClanContext = {
+  clanTag: string;
+  clanName: string;
+  totalEffectiveWeight: number;
+  rosterSize: number;
+  missingWeights: number;
+  bucketCounts: BucketCounts;
+  heatMapRef: HeatMapRef;
+};
+
+export type CompoWarStateContext = {
+  trackedClanTags: string[];
+  snapshotClanTags: string[];
+  renderableClanTags: string[];
+  latestRefreshAt: Date | null;
+  skipped: string[];
+  clans: CompoWarStateClanContext[];
+  heatMapRefs: HeatMapRef[];
+};
+
 export type CompoWarStateReadResult = {
   stateRows: string[][] | null;
   contentLines: string[];
@@ -119,6 +139,116 @@ function getIneligibleReason(input: {
   return null;
 }
 
+/** Purpose: load the persisted WAR compo state snapshot used by both state rendering and advice simulation. */
+export async function loadCompoWarStateContext(): Promise<CompoWarStateContext> {
+  const tracked = await prisma.trackedClan.findMany({
+    orderBy: { createdAt: "asc" },
+    select: { tag: true, name: true },
+  });
+  const trackedTags = tracked
+    .map((row) => normalizeFwaTag(row.tag))
+    .filter((tag): tag is string => Boolean(tag));
+
+  if (trackedTags.length === 0) {
+    return {
+      trackedClanTags: [],
+      snapshotClanTags: [],
+      renderableClanTags: [],
+      latestRefreshAt: null,
+      skipped: [],
+      clans: [],
+      heatMapRefs: [],
+    };
+  }
+
+  const [parents, members, refs] = await Promise.all([
+    prisma.fwaTrackedClanWarRosterCurrent.findMany({
+      where: { clanTag: { in: trackedTags } },
+    }),
+    prisma.fwaTrackedClanWarRosterMemberCurrent.findMany({
+      where: { clanTag: { in: trackedTags } },
+      orderBy: [{ clanTag: "asc" }, { position: "asc" }],
+    }),
+    prisma.heatMapRef.findMany({
+      orderBy: [{ weightMinInclusive: "asc" }, { weightMaxInclusive: "asc" }],
+    }),
+  ]);
+
+  const trackedByTag = new Map(
+    trackedTags.map((tag, index) => [tag, tracked[index]?.name?.trim() ?? null]),
+  );
+  const parentByTag = new Map(parents.map((row) => [row.clanTag, row]));
+  const membersByTag = new Map<string, FwaTrackedClanWarRosterMemberCurrent[]>();
+  for (const member of members) {
+    const existing = membersByTag.get(member.clanTag) ?? [];
+    existing.push(member);
+    membersByTag.set(member.clanTag, existing);
+  }
+
+  const clans: CompoWarStateClanContext[] = [];
+  const skipped: string[] = [];
+  const renderableClanTags: string[] = [];
+  const snapshotClanTags = parents.map((row) => row.clanTag);
+  let latestRefreshAt: Date | null = null;
+
+  for (const clanTag of trackedTags) {
+    const parent = parentByTag.get(clanTag);
+    if (!parent) {
+      continue;
+    }
+    const clanMembers = membersByTag.get(clanTag) ?? [];
+    const effectiveWeight = parent.totalEffectiveWeight;
+    const heatMapRef =
+      effectiveWeight === null ? null : findHeatMapRefForWeight(refs, effectiveWeight);
+    const ineligibleReason = getIneligibleReason({
+      parent,
+      memberCount: clanMembers.length,
+      heatMapRef,
+    });
+    const displayName =
+      parent.clanName?.trim() ||
+      trackedByTag.get(clanTag) ||
+      parent.clanTag;
+
+    const freshness = parent.sourceUpdatedAt ?? parent.observedAt;
+    if (!latestRefreshAt || freshness.getTime() > latestRefreshAt.getTime()) {
+      latestRefreshAt = freshness;
+    }
+
+    if (ineligibleReason) {
+      skipped.push(`${normalizeWarStateClanDisplayName(displayName)} (${ineligibleReason})`);
+      continue;
+    }
+
+    const bucketCounts = buildCompoWarBucketCounts(clanMembers);
+    if (!bucketCounts) {
+      skipped.push(`${normalizeWarStateClanDisplayName(displayName)} (unresolved effective weights)`);
+      continue;
+    }
+    const missingWeights = clanMembers.filter((row) => row.rawWeight <= 0).length;
+    clans.push({
+      clanTag,
+      clanName: displayName,
+      totalEffectiveWeight: effectiveWeight as number,
+      rosterSize: parent.rosterSize,
+      missingWeights,
+      bucketCounts,
+      heatMapRef: heatMapRef as HeatMapRef,
+    });
+    renderableClanTags.push(clanTag);
+  }
+
+  return {
+    trackedClanTags: trackedTags,
+    snapshotClanTags,
+    renderableClanTags,
+    latestRefreshAt,
+    skipped,
+    clans,
+    heatMapRefs: refs,
+  };
+}
+
 type FeedOpsLike = Pick<FwaFeedOpsService, "runTracked">;
 
 /** Purpose: read and explicitly refresh DB-backed tracked-clan war compo state without touching sheet-backed flows. */
@@ -128,15 +258,9 @@ export class CompoWarStateService {
 
   /** Purpose: load alliance-wide tracked-clan war state rows from persisted feed-owned tables only. */
   async readState(): Promise<CompoWarStateReadResult> {
-    const tracked = await prisma.trackedClan.findMany({
-      orderBy: { createdAt: "asc" },
-      select: { tag: true, name: true },
-    });
-    const trackedTags = tracked
-      .map((row) => normalizeFwaTag(row.tag))
-      .filter((tag): tag is string => Boolean(tag));
+    const context = await loadCompoWarStateContext();
 
-    if (trackedTags.length === 0) {
+    if (context.trackedClanTags.length === 0) {
       return {
         stateRows: null,
         trackedClanTags: [],
@@ -149,79 +273,15 @@ export class CompoWarStateService {
         ],
       };
     }
-
-    const [parents, members, refs] = await Promise.all([
-      prisma.fwaTrackedClanWarRosterCurrent.findMany({
-        where: { clanTag: { in: trackedTags } },
-      }),
-      prisma.fwaTrackedClanWarRosterMemberCurrent.findMany({
-        where: { clanTag: { in: trackedTags } },
-        orderBy: [{ clanTag: "asc" }, { position: "asc" }],
-      }),
-      prisma.heatMapRef.findMany({
-        orderBy: [{ weightMinInclusive: "asc" }, { weightMaxInclusive: "asc" }],
-      }),
-    ]);
-
-    const trackedByTag = new Map(
-      trackedTags.map((tag, index) => [tag, tracked[index]?.name?.trim() ?? null]),
-    );
-    const parentByTag = new Map(parents.map((row) => [row.clanTag, row]));
-    const membersByTag = new Map<string, FwaTrackedClanWarRosterMemberCurrent[]>();
-    for (const member of members) {
-      const existing = membersByTag.get(member.clanTag) ?? [];
-      existing.push(member);
-      membersByTag.set(member.clanTag, existing);
-    }
-
     const renderableRows: string[][] = [];
-    const skipped: string[] = [];
-    const renderableClanTags: string[] = [];
-    const snapshotClanTags = parents.map((row) => row.clanTag);
-    let latestRefreshAt: Date | null = null;
-
-    for (const clanTag of trackedTags) {
-      const parent = parentByTag.get(clanTag);
-      if (!parent) {
-        continue;
-      }
-      const clanMembers = membersByTag.get(clanTag) ?? [];
-      const effectiveWeight = parent.totalEffectiveWeight;
-      const heatMapRef =
-        effectiveWeight === null ? null : findHeatMapRefForWeight(refs, effectiveWeight);
-      const ineligibleReason = getIneligibleReason({
-        parent,
-        memberCount: clanMembers.length,
-        heatMapRef,
-      });
-      const displayName =
-        parent.clanName?.trim() ||
-        trackedByTag.get(clanTag) ||
-        parent.clanTag;
-
-      const freshness = parent.sourceUpdatedAt ?? parent.observedAt;
-      if (!latestRefreshAt || freshness.getTime() > latestRefreshAt.getTime()) {
-        latestRefreshAt = freshness;
-      }
-
-      if (ineligibleReason) {
-        skipped.push(`${normalizeWarStateClanDisplayName(displayName)} (${ineligibleReason})`);
-        continue;
-      }
-
-      const bucketCounts = buildCompoWarBucketCounts(clanMembers);
-      if (!bucketCounts) {
-        skipped.push(`${normalizeWarStateClanDisplayName(displayName)} (unresolved effective weights)`);
-        continue;
-      }
-      const missingWeights = clanMembers.filter((row) => row.rawWeight <= 0).length;
+    for (const clan of context.clans) {
       const collapsed = buildCollapsedStateRow({
-        clanName: displayName,
-        totalEffectiveWeight: effectiveWeight as number,
-        rosterSize: parent.rosterSize,
-        missingWeights,
-        bucketCounts,
-        heatMapRef: heatMapRef as HeatMapRef,
+        clanName: clan.clanName,
+        totalEffectiveWeight: clan.totalEffectiveWeight,
+        rosterSize: clan.rosterSize,
+        missingWeights: clan.missingWeights,
+        bucketCounts: clan.bucketCounts,
+        heatMapRef: clan.heatMapRef,
       });
       renderableRows.push([
         collapsed.clanName,
@@ -235,25 +295,24 @@ export class CompoWarStateService {
         collapsed.th14Delta,
         collapsed.th13OrLowerDelta,
       ]);
-      renderableClanTags.push(clanTag);
     }
 
     const contentLines = [
       "Mode Displayed: **WAR**",
-      toEpochLine("Persisted WAR data last refreshed", latestRefreshAt),
+      toEpochLine("Persisted WAR data last refreshed", context.latestRefreshAt),
     ];
 
-    if (skipped.length > 0) {
-      contentLines.push(`Skipped ineligible clans: ${skipped.join("; ")}`);
+    if (context.skipped.length > 0) {
+      contentLines.push(`Skipped ineligible clans: ${context.skipped.join("; ")}`);
     }
 
     if (renderableRows.length === 0) {
       contentLines.push("No DB-backed WAR roster snapshots are currently renderable.");
       return {
         stateRows: null,
-        trackedClanTags: trackedTags,
-        snapshotClanTags,
-        renderableClanTags,
+        trackedClanTags: context.trackedClanTags,
+        snapshotClanTags: context.snapshotClanTags,
+        renderableClanTags: context.renderableClanTags,
         contentLines,
       };
     }
@@ -263,9 +322,9 @@ export class CompoWarStateService {
         ["Clan", "Total", "Missing", "Players", "TH18", "TH17", "TH16", "TH15", "TH14", "<=TH13"],
         ...renderableRows,
       ],
-      trackedClanTags: trackedTags,
-      snapshotClanTags,
-      renderableClanTags,
+      trackedClanTags: context.trackedClanTags,
+      snapshotClanTags: context.snapshotClanTags,
+      renderableClanTags: context.renderableClanTags,
       contentLines,
     };
   }

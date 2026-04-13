@@ -187,7 +187,8 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
   compo: {
     summary: "Composition tools with DB-backed WAR state plus DB-backed ACTUAL state/place flows.",
     details: [
-      "`advice`: fetch clan-specific adjustment notes from the existing sheet-backed flow.",
+      "`advice`: simulate bucket-level compo moves from DB-backed ACTUAL or WAR state and recommend the best improvement.",
+      "`advice` ACTUAL mode defaults to `Auto-Detect Band` and can be switched between `Raw Data`, `Auto-Detect Band`, and `Best Fit` with inline buttons.",
       "`state`: `mode:war` renders from persisted tracked-clan feed state only, while `mode:actual` now renders from persisted ACTUAL current-member state (`TrackedClan` + `FwaClanMemberCurrent` + `HeatMapRef`) with deferred-weight and WAR-effective-weight fallback when member weight is zero.",
       "`state` refresh: `mode:war` refreshes tracked-clan war-roster feed state only and rerenders from DB; `mode:actual` now refreshes ACTUAL current-member/weight state plus live CoC member counts for all tracked clans, then rerenders from DB.",
       "`place`: suggest placement by war weight from persisted ACTUAL FWAStats current-member state (`TrackedClan` + `FwaClanMemberCurrent` + `HeatMapRef`) with deferred-weight and WAR-effective-weight fallback only for zero-weight member rows.",
@@ -195,6 +196,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     ],
     examples: [
       "/compo advice tag:#2QG2C08UP mode:actual",
+      "/compo advice tag:#2QG2C08UP mode:war",
       "/compo state mode:war",
       "/compo place weight:145k",
     ],

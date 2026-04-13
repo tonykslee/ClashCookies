@@ -3,6 +3,7 @@ import {
   buildCompoRefreshCustomIdForTest,
   handleCompoRefreshButton,
 } from "../src/commands/Compo";
+import { CompoAdviceService } from "../src/services/CompoAdviceService";
 import { CompoActualStateService } from "../src/services/CompoActualStateService";
 
 function makeMessageRow(customId: string, label: string, disabled = false): { toJSON: () => unknown } {
@@ -215,9 +216,9 @@ describe("compo refresh button behavior", () => {
     expect(collectButtonCustomIds(viewPayload)).toEqual(
       expect.arrayContaining([
         "compo-refresh:state:user-1:actual:auto",
-        "compo-refresh:view:user-1:raw",
-        "compo-refresh:view:user-1:auto",
-        "compo-refresh:view:user-1:best",
+        "compo-refresh:view:user-1:state:raw",
+        "compo-refresh:view:user-1:state:auto",
+        "compo-refresh:view:user-1:state:best",
       ]),
     );
 
@@ -235,5 +236,73 @@ describe("compo refresh button behavior", () => {
       "guild-1",
       { view: "auto" },
     );
+  });
+
+  it("keeps the selected ACTUAL advice view across view switches and refreshes", async () => {
+    vi.spyOn(CompoAdviceService.prototype, "readAdvice").mockResolvedValue({
+      content:
+        "RAW Data last refreshed: <t:1709900000:F>\nMode: **ACTUAL**\nAdvice View: **Best Fit**\nCurrent Score: **4**\nCurrent Band: **0 - 9999999**\nRecommendation: **Add TH17**\nResulting Score: **0**\nResulting Band: **0 - 9999999**",
+      trackedClanTags: ["#AAA111"],
+      selectedView: "best",
+      mode: "actual",
+    });
+    vi.spyOn(CompoAdviceService.prototype, "refreshAdvice").mockResolvedValue({
+      content:
+        "RAW Data last refreshed: <t:1709900001:F>\nMode: **ACTUAL**\nAdvice View: **Best Fit**\nCurrent Score: **4**\nCurrent Band: **0 - 9999999**\nRecommendation: **Add TH17**\nResulting Score: **0**\nResulting Band: **0 - 9999999**",
+      trackedClanTags: ["#AAA111"],
+      selectedView: "best",
+      mode: "actual",
+    });
+
+    const viewInteraction = makeInteraction(
+      buildCompoRefreshCustomIdForTest({
+        kind: "view",
+        userId: "user-1",
+        target: "advice",
+        actualView: "best",
+        targetTag: "AAA111",
+      }),
+    );
+    viewInteraction.message.components = [
+      makeMessageRow("compo-refresh:advice:user-1:actual:auto:AAA111", "Refresh Data"),
+      makeMessageRow("post-channel:user-1", "Post to Channel"),
+    ];
+
+    await handleCompoRefreshButton(viewInteraction as any, {} as any);
+
+    expect(CompoAdviceService.prototype.readAdvice).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      targetTag: "AAA111",
+      mode: "actual",
+      view: "best",
+    });
+    const viewPayload = viewInteraction.editReply.mock.calls.at(-1)?.[0];
+    expect(collectButtonCustomIds(viewPayload)).toEqual(
+      expect.arrayContaining([
+        "compo-refresh:advice:user-1:actual:best:AAA111",
+        "compo-refresh:view:user-1:advice:raw:AAA111",
+        "compo-refresh:view:user-1:advice:auto:AAA111",
+        "compo-refresh:view:user-1:advice:best:AAA111",
+      ]),
+    );
+
+    const refreshInteraction = makeInteraction(
+      "compo-refresh:advice:user-1:actual:best:AAA111",
+    );
+    refreshInteraction.message.components = (viewPayload.components as unknown[]).map(
+      (row) =>
+        row && typeof (row as { toJSON?: () => unknown }).toJSON === "function"
+          ? row
+          : { toJSON: () => row },
+    );
+
+    await handleCompoRefreshButton(refreshInteraction as any, {} as any);
+
+    expect(CompoAdviceService.prototype.refreshAdvice).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      targetTag: "AAA111",
+      mode: "actual",
+      view: "best",
+    });
   });
 });
