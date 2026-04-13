@@ -685,7 +685,7 @@ export default (client: Client, cocService: CoCService): void => {
           });
           if (result.status !== "skipped") {
             console.log(
-              `[heatmapref] status=${result.status} cycle=${result.cycleKey ?? "none"} tracked=${result.trackedClanCount} rosters=${result.sourceRosterCount} qualifying=${result.qualifyingRosterCount} excluded=${result.excludedRosterCount} rows=${result.rowCount} alerted=${result.alertSent}`,
+              `[heatmapref] status=${result.status} cycle=${result.cycleKey ?? "none"} fwa_clans=${result.trackedClanCount} rosters=${result.sourceRosterCount} qualifying=${result.qualifyingRosterCount} excluded=${result.excludedRosterCount} rows=${result.rowCount} alerted=${result.alertSent}`,
             );
           }
         });
