@@ -196,6 +196,9 @@ describe("CompoAdviceService", () => {
     expect(result.kind).toBe("ready");
     expect(result.selectedView).toBe("auto");
     expect(result.summary.viewLabel).toBe("Auto-Detect Band");
+    expect(result.trackedClanChoices).toEqual([
+      { tag: "#AAA111", name: "Alpha Clan-actual" },
+    ]);
   });
 
   it("keeps ACTUAL custom advice on a manually selected target band", async () => {
@@ -247,6 +250,9 @@ describe("CompoAdviceService", () => {
     expect(result.summary.selectedCustomBandIndex).toBe(1);
     expect(result.summary.currentBandLabel).toContain("1,500,000");
     expect(result.summary.currentScore).toBeGreaterThanOrEqual(0);
+    expect(result.trackedClanChoices).toEqual([
+      { tag: "#AAA111", name: "Alpha Clan-actual" },
+    ]);
   });
 
   it("loads WAR advice from DB-backed tracked war state without sheet reads", async () => {
@@ -297,6 +303,9 @@ describe("CompoAdviceService", () => {
     expect(result.selectedView).toBe("raw");
     expect(result.summary.viewLabel).toBe("Raw Data");
     expect(result.summary.currentScore).toBe(0);
+    expect(result.trackedClanChoices).toEqual([
+      { tag: "#AAA111", name: "Alpha Clan-war" },
+    ]);
   });
 
   it("counts rushed members from the resolved bucket, not the collapsed display label", () => {

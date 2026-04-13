@@ -244,6 +244,7 @@ describe("compo refresh button behavior", () => {
       mode: "actual",
       selectedView: "best",
       trackedClanTags: ["#AAA111"],
+      trackedClanChoices: [{ tag: "#AAA111", name: "Alpha Clan" }],
       clanTag: "#AAA111",
       clanName: "Alpha Clan-actual",
       memberCount: 49,
@@ -305,6 +306,7 @@ describe("compo refresh button behavior", () => {
     expect(collectButtonCustomIds(viewPayload)).toEqual(
       expect.arrayContaining([
         "compo-refresh:advice:user-1:actual:best:AAA111:1:0",
+        "compo-refresh:advice-clan:user-1:actual:AAA111:best:1:0",
         "compo-refresh:view:user-1:advice:raw:AAA111:1:0",
         "compo-refresh:view:user-1:advice:auto:AAA111:1:0",
         "compo-refresh:view:user-1:advice:best:AAA111:1:0",
@@ -339,6 +341,7 @@ describe("compo refresh button behavior", () => {
       mode: "actual",
       selectedView: "custom",
       trackedClanTags: ["#AAA111"],
+      trackedClanChoices: [{ tag: "#AAA111", name: "Alpha Clan" }],
       clanTag: "#AAA111",
       clanName: "Alpha Clan-actual",
       memberCount: 50,
@@ -399,6 +402,7 @@ describe("compo refresh button behavior", () => {
     expect(collectButtonCustomIds(payload)).toEqual(
       expect.arrayContaining([
         "compo-refresh:advice:user-1:actual:custom:AAA111:2:1",
+        "compo-refresh:advice-clan:user-1:actual:AAA111:custom:2:1",
         "compo-refresh:advice-band:user-1:AAA111:2:1:prev",
         "compo-refresh:advice-band:user-1:AAA111:2:1:next",
       ]),

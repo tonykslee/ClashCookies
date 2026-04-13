@@ -70,6 +70,7 @@ describe("/compo advice command", () => {
         mode: "actual",
         selectedView: "auto",
         trackedClanTags: ["#AAA111"],
+        trackedClanChoices: [{ tag: "#AAA111", name: "Alpha Clan-actual" }],
         clanTag: "#AAA111",
         clanName: "Alpha Clan-actual",
         memberCount: 50,
@@ -129,12 +130,28 @@ describe("/compo advice command", () => {
     expect(String(payload?.embeds?.[0]?.data?.description ?? "")).toContain(
       "Advice View: **Auto-Detect Band**",
     );
+    expect(String(payload?.embeds?.[0]?.data?.description ?? "")).toContain(
+      "Target Band: **1,000,000 - 2,000,000**",
+    );
+    expect(String(payload?.embeds?.[0]?.data?.description ?? "")).toContain(
+      "Current Score: **0**",
+    );
     expect(String(payload?.embeds?.[0]?.data?.title ?? "")).toContain(
       "Alpha Clan (#AAA111)",
     );
+    expect(
+      JSON.stringify(payload?.embeds?.[0]?.data?.fields ?? []),
+    ).toContain("Snapshot");
+    expect(
+      JSON.stringify(payload?.embeds?.[0]?.data?.fields ?? []),
+    ).not.toContain("Current Band");
+    expect(
+      JSON.stringify(payload?.embeds?.[0]?.data?.fields ?? []),
+    ).not.toContain("Current Score: 0");
     expect(getComponentCustomIds(payload)).toEqual(
       expect.arrayContaining([
         "compo-refresh:advice:user-1:actual:auto:LQQ99UV8:1:0",
+        "compo-refresh:advice-clan:user-1:actual:AAA111:auto:1:0",
         "compo-refresh:view:user-1:advice:raw:LQQ99UV8:1:0",
         "compo-refresh:view:user-1:advice:auto:LQQ99UV8:1:0",
         "compo-refresh:view:user-1:advice:best:LQQ99UV8:1:0",
@@ -145,13 +162,14 @@ describe("/compo advice command", () => {
 
   it("renders WAR advice with only a refresh button", async () => {
     vi.spyOn(CompoAdviceService.prototype, "readAdvice").mockResolvedValue({
-      kind: "ready",
-      mode: "war",
-      selectedView: "raw",
-      trackedClanTags: ["#AAA111"],
-      clanTag: "#AAA111",
-      clanName: "Alpha Clan-war",
-      memberCount: 50,
+        kind: "ready",
+        mode: "war",
+        selectedView: "raw",
+        trackedClanTags: ["#AAA111"],
+        trackedClanChoices: [{ tag: "#AAA111", name: "Alpha Clan-war" }],
+        clanTag: "#AAA111",
+        clanName: "Alpha Clan-war",
+        memberCount: 50,
       rushedCount: 0,
       refreshLine: "RAW Data last refreshed: <t:1709900000:F>",
       summary: {
@@ -194,6 +212,7 @@ describe("/compo advice command", () => {
     );
     expect(getComponentCustomIds(payload)).toEqual([
       "compo-refresh:advice:user-1:war:LQQ99UV8",
+      "compo-refresh:advice-clan:user-1:war:AAA111",
     ]);
   });
 });
