@@ -41,6 +41,7 @@ FwaWarMemberCurrent
 FwaTrackedClanWarRosterCurrent
 FwaTrackedClanWarRosterMemberCurrent
 FwaClanWarLogCurrent
+FwaClanMatchStatsCurrent
 HeatMapRef
 FwaFeedSyncState
 FwaClanWarsWatchState
@@ -131,7 +132,7 @@ Each domain concept must have exactly one authoritative owner.
 | Guild reminder config and dedupe | Reminder, ReminderTimeOffset, ReminderTargetClan, ReminderFireLog |
 | Personal reminder config and dedupe | UserActivityReminderRule, UserActivityReminderDelivery |
 | Tracked reusable posts and claims | TrackedMessage, TrackedMessageClaim |
-| FWA feed current state | FwaClanCatalog, FwaPlayerCatalog, FwaClanMemberCurrent, FwaWarMemberCurrent, FwaTrackedClanWarRosterCurrent, FwaTrackedClanWarRosterMemberCurrent, FwaClanWarLogCurrent |
+| FWA feed current state | FwaClanCatalog, FwaPlayerCatalog, FwaClanMemberCurrent, FwaWarMemberCurrent, FwaTrackedClanWarRosterCurrent, FwaTrackedClanWarRosterMemberCurrent, FwaClanWarLogCurrent, FwaClanMatchStatsCurrent |
 | FWA compo reference bands | HeatMapRef |
 | FWA feed scheduler metadata | FwaFeedSyncState, FwaClanWarsWatchState, FwaFeedCursor |
 | Unlinked alert routing and unresolved members | UnlinkedAlertConfig, UnlinkedPlayer |
@@ -176,6 +177,7 @@ Rules:
 
 - FWAStats JSON feed reads flow into feed-backed current-state tables, not directly into command rendering.
 - `FwaFeedSyncState`, `FwaClanWarsWatchState`, and `FwaFeedCursor` own feed scheduler metadata.
+- `FwaClanMatchStatsCurrent` is a recreatable derived snapshot owned by the clan-wars feed domain and rebuilt from `FwaClanWarLogCurrent`; it is not a source of raw truth.
 - Commands should prefer persisted feed rows over live feed calls on hot paths.
 
 ## 6) Snapshot and reminder ownership

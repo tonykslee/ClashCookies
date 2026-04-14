@@ -3,6 +3,7 @@ import { prisma } from "../../prisma";
 import { computeFeedContentHash } from "./hash";
 import { normalizeFwaTag } from "./normalize";
 import { FwaStatsClient } from "./FwaStatsClient";
+import { FwaClanMatchStatsCurrentSyncService } from "./FwaClanMatchStatsCurrentSyncService";
 import { FwaFeedCursorService } from "./FwaFeedCursorService";
 import { FwaFeedSyncStateService } from "./FwaFeedSyncStateService";
 import { mapWithConcurrency } from "./concurrency";
@@ -23,6 +24,7 @@ function buildWarRowKey(input: { endTime: Date; opponentTag: string; teamSize: n
 export class FwaClanWarsSyncService {
   private static readonly FEED_TYPE: FwaFeedType = "CLAN_WARS";
   private readonly syncState = new FwaFeedSyncStateService();
+  private readonly matchStatsSync = new FwaClanMatchStatsCurrentSyncService();
   private readonly cursor = new FwaFeedCursorService();
 
   /** Purpose: initialize clan-wars sync dependencies. */
@@ -258,6 +260,14 @@ export class FwaClanWarsSyncService {
       lastScopeKey: nextCursor,
       lastRunAt: now,
     });
+
+    if (summary.changedRowCount > 0) {
+      try {
+        await this.matchStatsSync.rebuildCurrentStats({ now });
+      } catch {
+        // The source war-log sync succeeded; keep the derived snapshot rebuild best-effort.
+      }
+    }
 
     return {
       ...summary,
