@@ -1220,12 +1220,14 @@ const GLYPHS: Record<string, string[]> = {
   " ": ["00000", "00000", "00000", "00000", "00000", "00000", "00000"],
   "'": ["00100", "00100", "00100", "00000", "00000", "00000", "00000"],
   '"': ["01010", "01010", "01010", "00000", "00000", "00000", "00000"],
+  "+": ["00000", "00100", "00100", "11111", "00100", "00100", "00000"],
   "-": ["00000", "00000", "00000", "01110", "00000", "00000", "00000"],
   ",": ["00000", "00000", "00000", "00000", "00110", "00110", "00100"],
   ".": ["00000", "00000", "00000", "00000", "00000", "00110", "00110"],
   ":": ["00000", "00110", "00110", "00000", "00110", "00110", "00000"],
   "<": ["00010", "00100", "01000", "10000", "01000", "00100", "00010"],
   "=": ["00000", "11111", "00000", "11111", "00000", "00000", "00000"],
+  "%": ["11001", "11010", "00100", "01000", "10011", "10011", "00000"],
   "/": ["00001", "00010", "00100", "01000", "10000", "00000", "00000"],
   "(": ["00010", "00100", "01000", "01000", "01000", "00100", "00010"],
   ")": ["01000", "00100", "00010", "00010", "00010", "00100", "01000"],
@@ -2362,6 +2364,7 @@ export const buildCompoHeatMapRefRowsForTest = buildCompoHeatMapRefRows;
 export const buildCompoHeatMapRefCopyTextForTest = buildCompoHeatMapRefCopyText;
 export const buildCompoHeatMapRefCopyCustomIdForTest = buildCompoHeatMapRefCopyCustomId;
 export const isCompoHeatMapRefCopyButtonCustomIdForTest = isCompoHeatMapRefCopyButtonCustomId;
+export const toGlyphSafeTextForTest = toGlyphSafeText;
 export const getModeRowsForTest = getModeRows;
 export const getAbsoluteSheetRowNumberForTest = getAbsoluteSheetRowNumber;
 export const mapCompoSheetErrorToMessageForTest = mapCompoSheetErrorToMessage;

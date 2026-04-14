@@ -4,6 +4,7 @@ import {
   Compo,
   buildCompoHeatMapRefCopyCustomIdForTest,
   buildCompoHeatMapRefRowsForTest,
+  toGlyphSafeTextForTest,
 } from "../src/commands/Compo";
 import { GoogleSheetsService } from "../src/services/GoogleSheetsService";
 import { HeatMapRefDisplayService } from "../src/services/HeatMapRefDisplayService";
@@ -159,5 +160,12 @@ describe("/compo heatmapref command", () => {
       "83.42%",
       "11",
     ]);
+  });
+
+  it("keeps glyph-safe renderer text literal for plus and percent characters", () => {
+    expect(toGlyphSafeTextForTest("TH11+")).toBe("TH11+");
+    expect(toGlyphSafeTextForTest("Match%")).toBe("MATCH%");
+    expect(toGlyphSafeTextForTest("0%")).toBe("0%");
+    expect(toGlyphSafeTextForTest("83.42%")).toBe("83.42%");
   });
 });
