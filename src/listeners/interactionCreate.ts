@@ -72,8 +72,10 @@ import {
   isNotifyWarPreviewPostButtonCustomId,
 } from "../commands/Notify";
 import {
+  handleCompoHeatMapRefCopyButton,
   handleCompoRefreshButton,
   handleCompoAdviceClanSelectMenuInteraction,
+  isCompoHeatMapRefCopyButtonCustomId,
   isCompoRefreshButtonCustomId,
   isCompoAdviceClanSelectMenuCustomId,
 } from "../commands/Compo";
@@ -434,6 +436,21 @@ const handleButtonInteraction = async (
         await interaction.reply({
           ephemeral: true,
           content: "Failed to refresh todo data.",
+        });
+      }
+    }
+    return;
+  }
+
+  if (isCompoHeatMapRefCopyButtonCustomId(interaction.customId)) {
+    try {
+      await handleCompoHeatMapRefCopyButton(interaction);
+    } catch (err) {
+      console.error(`Compo heatmapref copy button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to build the HeatMapRef copy text.",
         });
       }
     }
