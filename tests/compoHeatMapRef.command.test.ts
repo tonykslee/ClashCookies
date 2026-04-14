@@ -1,8 +1,12 @@
 import { ApplicationCommandOptionType } from "discord.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { Compo, buildCompoHeatMapRefRowsForTest } from "../src/commands/Compo";
+import {
+  Compo,
+  buildCompoHeatMapRefCopyCustomIdForTest,
+  buildCompoHeatMapRefRowsForTest,
+} from "../src/commands/Compo";
 import { GoogleSheetsService } from "../src/services/GoogleSheetsService";
-import * as HeatMapRefService from "../src/services/HeatMapRefService";
+import { HeatMapRefDisplayService } from "../src/services/HeatMapRefDisplayService";
 
 function makeInteraction() {
   const interaction: any = {
@@ -24,6 +28,32 @@ function makeInteraction() {
   return interaction;
 }
 
+function collectButtonCustomIds(payload: unknown): string[] {
+  if (!payload || typeof payload !== "object") return [];
+  const rows = Array.isArray((payload as { components?: unknown[] }).components)
+    ? ((payload as { components: unknown[] }).components as unknown[])
+    : [];
+  return rows.flatMap((row) => {
+    const normalized =
+      row && typeof (row as { toJSON?: () => unknown }).toJSON === "function"
+        ? (row as { toJSON: () => unknown }).toJSON()
+        : row;
+    if (!normalized || typeof normalized !== "object") return [];
+    const components = Array.isArray((normalized as { components?: unknown[] }).components)
+      ? ((normalized as { components: unknown[] }).components as unknown[])
+      : [];
+    return components
+      .map((component) =>
+        String(
+          (component as { custom_id?: unknown; customId?: unknown }).custom_id ??
+            (component as { custom_id?: unknown; customId?: unknown }).customId ??
+            "",
+        ),
+      )
+      .filter((value) => value.length > 0);
+  });
+}
+
 describe("/compo heatmapref command", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -42,43 +72,47 @@ describe("/compo heatmapref command", () => {
   it("reads persisted HeatMapRef rows and renders an attached PNG image", async () => {
     vi.spyOn(GoogleSheetsService.prototype, "getCompoLinkedSheet").mockResolvedValue(null as never);
     vi.spyOn(GoogleSheetsService.prototype, "readCompoLinkedValues").mockResolvedValue([] as never);
-
-    const heatMapRefs = [
-      {
-        weightMinInclusive: 0,
-        weightMaxInclusive: 7_200_000,
-        th18Count: 3,
-        th17Count: 6,
-        th16Count: 7,
-        th15Count: 9,
-        th14Count: 9,
-        th13Count: 8,
-        th12Count: 5,
-        th11Count: 2,
-        th10OrLowerCount: 0,
-        contributingClanCount: 4,
-        sourceVersion: "bootstrap-2026-03-17",
-        refreshedAt: new Date("2026-04-13T00:00:00.000Z"),
-      },
-    ];
-    vi.spyOn(HeatMapRefService, "getAllHeatMapRefs").mockResolvedValue(heatMapRefs as never);
+    vi.spyOn(HeatMapRefDisplayService.prototype, "readHeatMapRefDisplayTable").mockResolvedValue({
+      rows: [
+        [
+          "Band",
+          "TH18",
+          "TH17",
+          "TH16",
+          "TH15",
+          "TH14",
+          "TH13",
+          "TH12",
+          "TH11+",
+          "Match%",
+          "Clans",
+        ],
+        ["0 - 100", "3", "6", "7", "9", "9", "8", "5", "2", "83.42%", "4"],
+      ],
+      copyText:
+        "Band\tTH18\tTH17\tTH16\tTH15\tTH14\tTH13\tTH12\tTH11+\tMatch%\tClans\n" +
+        "0 - 100\t3\t6\t7\t9\t9\t8\t5\t2\t83.42%\t4",
+    } as never);
 
     const interaction = makeInteraction();
     await Compo.run({} as any, interaction as any, {} as any);
 
     expect(GoogleSheetsService.prototype.getCompoLinkedSheet).not.toHaveBeenCalled();
     expect(GoogleSheetsService.prototype.readCompoLinkedValues).not.toHaveBeenCalled();
-    expect(HeatMapRefService.getAllHeatMapRefs).toHaveBeenCalledTimes(1);
+    expect(HeatMapRefDisplayService.prototype.readHeatMapRefDisplayTable).toHaveBeenCalledTimes(1);
     expect(interaction.deferReply).toHaveBeenCalledTimes(1);
     expect(interaction.editReply).toHaveBeenCalledTimes(1);
     const payload = interaction.editReply.mock.calls.at(-1)?.[0];
     expect(Array.isArray(payload?.files)).toBe(true);
     expect(payload?.files?.[0]?.name).toBe("compo-heatmapref.png");
-    expect(Object.prototype.hasOwnProperty.call(payload, "components")).toBe(false);
+    expect(collectButtonCustomIds(payload)).toEqual([
+      buildCompoHeatMapRefCopyCustomIdForTest("user-1"),
+    ]);
   });
 
-  it("formats the HeatMapRef table rows with a Clans column", () => {
-    const rows = buildCompoHeatMapRefRowsForTest([
+  it("formats the HeatMapRef table rows with Match% and TH11+", () => {
+    const rows = buildCompoHeatMapRefRowsForTest(
+      [
       {
         weightMinInclusive: 0,
         weightMaxInclusive: 100,
@@ -95,7 +129,9 @@ describe("/compo heatmapref command", () => {
         sourceVersion: null,
         refreshedAt: new Date("2026-04-13T00:00:00.000Z"),
       } as never,
-    ]);
+      ],
+      new Map([["0-100", "83.42%"]]),
+    );
 
     expect(rows[0]).toEqual([
       "Band",
@@ -106,8 +142,8 @@ describe("/compo heatmapref command", () => {
       "TH14",
       "TH13",
       "TH12",
-      "TH11",
-      "<=TH10",
+      "TH11+",
+      "Match%",
       "Clans",
     ]);
     expect(rows[1]).toEqual([
@@ -119,8 +155,8 @@ describe("/compo heatmapref command", () => {
       "5",
       "6",
       "7",
-      "8",
-      "9",
+      "17",
+      "83.42%",
       "11",
     ]);
   });
