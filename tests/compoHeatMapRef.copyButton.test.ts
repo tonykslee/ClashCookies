@@ -32,8 +32,8 @@ describe("compo heatmapref copy button", () => {
 
   it("returns copy-ready table text for the requester", async () => {
     const copyText =
-      "WeightMin\tWeightMax\tTH18\tTH17\tTH16\tTH15\tTH14\tTH13\tTH12\tTH11+\tMatch%\t# Clans\n" +
-      "0\t100\t1\t2\t3\t4\t5\t6\t7\t8\t83.42%\t11";
+      "WeightMin,WeightMax,TH18,TH17,TH16,TH15,TH14,TH13,TH12,TH11+,Match%,# Clans\n" +
+      "0,100,1,2,3,4,5,6,7,8,83.42%,11";
     vi.spyOn(HeatMapRefDisplayService.prototype, "readHeatMapRefDisplayTable").mockResolvedValue({
       rows: [
         ["Band", "TH18", "TH17", "TH16", "TH15", "TH14", "TH13", "TH12", "TH11+", "Match%", "Clans"],

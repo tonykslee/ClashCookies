@@ -45,7 +45,7 @@ function formatMatchPercentText(matchPercent: string | null | undefined): string
 }
 
 function formatWeightBoundary(value: number): string {
-  return clampCell(value.toLocaleString("en-US"));
+  return clampCell(String(value));
 }
 
 /** Purpose: build the displayed HeatMapRef table rows with band-level match percentages. */
@@ -73,7 +73,7 @@ export function buildHeatMapRefDisplayRows(input: {
   return [HEAT_MAP_REF_DISPLAY_HEADERS, ...contentRows];
 }
 
-/** Purpose: build the copy/export HeatMapRef rows with split band boundaries for spreadsheet paste. */
+/** Purpose: build the copy/export HeatMapRef rows with split band boundaries for CSV paste. */
 export function buildHeatMapRefCopyRows(input: {
   heatMapRefs: readonly HeatMapRef[];
   matchPercentByBandKey?: ReadonlyMap<string, string>;
@@ -99,12 +99,12 @@ export function buildHeatMapRefCopyRows(input: {
   return [HEAT_MAP_REF_COPY_HEADERS, ...contentRows];
 }
 
-/** Purpose: serialize the displayed HeatMapRef table into tab-separated text for copy/paste flows. */
+/** Purpose: serialize the displayed HeatMapRef table into comma-separated text for copy/paste flows. */
 export function buildHeatMapRefDisplayText(rows: readonly string[][]): string {
-  return rows.map((row) => row.join("\t")).join("\n");
+  return rows.map((row) => row.join(",")).join("\n");
 }
 
-/** Purpose: serialize the HeatMapRef copy/export rows into tab-separated text for spreadsheet paste. */
+/** Purpose: serialize the HeatMapRef copy/export rows into comma-separated text for spreadsheet paste. */
 export function buildHeatMapRefCopyText(input: {
   heatMapRefs: readonly HeatMapRef[];
   matchPercentByBandKey?: ReadonlyMap<string, string>;
