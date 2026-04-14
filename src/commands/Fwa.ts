@@ -83,6 +83,14 @@ import {
 } from "./fwa/mailConfig";
 import { PostedMessageService } from "../services/PostedMessageService";
 import {
+  ActiveWarSyncResolutionService,
+  buildActiveWarSyncIdentity,
+  logActiveWarSyncResolution,
+  resolveActiveWarSyncNumber,
+  resolveCurrentWarSyncIdentity,
+  type ActiveWarSyncIdentity,
+} from "../services/ActiveWarSyncResolutionService";
+import {
   WarMailLifecycleService,
   type WarMailLifecycleReconciliationOutcome,
   type WarMailLifecycleNormalizedStatus,
@@ -231,6 +239,9 @@ const MAILBOX_NOT_SENT_EMOJI = "📭";
 const postedMessageService = new PostedMessageService();
 const warMailLifecycleService = new WarMailLifecycleService();
 const pointsSyncService = new PointsSyncService();
+const activeWarSyncResolutionService = new ActiveWarSyncResolutionService(
+  pointsSyncService,
+);
 const warComplianceService = new WarComplianceService();
 const fwaStatsWeightService = new FwaStatsWeightService();
 const fwaStatsWeightCookieService = new FwaStatsWeightCookieService();
@@ -2892,11 +2903,12 @@ async function buildWarMailEmbedForTag(
       warStartTime: warStartTimeForSync,
     })
     .catch(() => null);
-  const { resolvedCurrentSyncNum } = resolveCurrentSyncNumberForMatch({
-    warState,
-    previousSyncNum: sourceSync,
-    currentWarSyncNum: syncRow?.syncNum ?? null,
+  const syncResolution = resolveActiveWarSyncNumber({
+    identity: syncIdentity,
+    latestPersistedSyncNumber: sourceSync,
+    sameWarPersistedSyncNumber: syncRow?.syncNum ?? null,
   });
+  const resolvedCurrentSyncNum = syncResolution.syncNumber;
   const lifecycle =
     syncRow === null
       ? null
@@ -2942,6 +2954,15 @@ async function buildWarMailEmbedForTag(
     options?.fetchReason ??
     routineDecision.fetchReason ??
     (options?.routine ? "mail_refresh" : "mail_preview");
+  logActiveWarSyncResolution({
+    stage: "fwa_match_mail_embed",
+    guildId,
+    clanTag: normalizedTag,
+    pointsLockPreventedLiveValidation: options?.routine
+      ? !routineDecision.allowed
+      : null,
+    resolution: syncResolution,
+  });
   if (options?.routine && !routineDecision.allowed) {
     const line = `[fwa-mail] points fetch skipped guild=${guildId} clan=#${normalizedTag} outcome=${routineDecision.outcome} code=${routineDecision.decisionCode} reason=${routineDecision.reason}`;
     const logLevel = resolveRoutineBlockedPointsFetchSkipLogLevel({
@@ -7582,34 +7603,10 @@ async function getSourceOfTruthSync(
   _settings: SettingsService,
   _guildId?: string | null,
 ): Promise<number | null> {
-  const latestSync = await pointsSyncService.findLatestSyncNum({
+  void _settings;
+  return activeWarSyncResolutionService.getLatestPersistedSyncBaseline({
     guildId: _guildId ?? null,
   });
-  if (latestSync !== null) {
-    return Math.max(0, latestSync - 1);
-  }
-
-  const tracked = await prisma.trackedClan.findMany({
-    select: { tag: true },
-  });
-  const trackedTags = new Set(tracked.map((row) => normalizeTag(row.tag)));
-  const trackedForHistory = [...trackedTags];
-  const latestHistory = await prisma.clanWarHistory.findFirst({
-    where: {
-      syncNumber: { not: null },
-      ...(trackedForHistory.length > 0
-        ? { clanTag: { in: trackedForHistory } }
-        : {}),
-    },
-    orderBy: { warStartTime: "desc" },
-    select: { syncNumber: true },
-  });
-  const latestHistorySync = Number(latestHistory?.syncNumber ?? NaN);
-  if (Number.isFinite(latestHistorySync)) {
-    return Math.max(0, Math.trunc(latestHistorySync));
-  }
-
-  return null;
 }
 
 function getWarStartDateForSync(
@@ -7620,67 +7617,6 @@ function getWarStartDateForSync(
   const startMs = parseCocApiTime(war?.startTime);
   if (startMs === null || !Number.isFinite(startMs)) return null;
   return new Date(startMs);
-}
-
-type CurrentWarSyncIdentity = {
-  warId: string | null;
-  warStartTime: Date | null;
-  opponentTag: string | null;
-};
-
-/** Purpose: scope active-war sync identity to the live war and drop stale current-war ids on rollover. */
-function resolveCurrentWarSyncIdentity(input: {
-  warState: WarStateForSync;
-  liveWarStartTime: string | null | undefined;
-  liveOpponentTag: string | null | undefined;
-  currentWarId: number | string | null | undefined;
-  currentWarStartTime: Date | null | undefined;
-  currentWarOpponentTag: string | null | undefined;
-}): CurrentWarSyncIdentity {
-  if (input.warState === "notInWar") {
-    return {
-      warId: null,
-      warStartTime: null,
-      opponentTag: null,
-    };
-  }
-
-  const liveWarStartMs = parseCocApiTime(input.liveWarStartTime ?? null);
-  const liveWarStartTime =
-    liveWarStartMs !== null && Number.isFinite(liveWarStartMs)
-      ? new Date(Math.trunc(liveWarStartMs))
-      : null;
-  const currentWarStartTime =
-    input.currentWarStartTime instanceof Date &&
-    Number.isFinite(input.currentWarStartTime.getTime())
-      ? input.currentWarStartTime
-      : null;
-  const liveOpponentTag = normalizeTag(String(input.liveOpponentTag ?? "")) || null;
-  const currentWarOpponentTag =
-    normalizeTag(String(input.currentWarOpponentTag ?? "")) || null;
-  const currentWarId = normalizeWarIdText(input.currentWarId ?? null);
-
-  const startAligned =
-    liveWarStartTime && currentWarStartTime
-      ? liveWarStartTime.getTime() === currentWarStartTime.getTime()
-      : null;
-  const opponentAligned =
-    liveOpponentTag && currentWarOpponentTag
-      ? liveOpponentTag === currentWarOpponentTag
-      : null;
-  const identityMismatch = startAligned === false || opponentAligned === false;
-  const identityConfirmed = startAligned === true || opponentAligned === true;
-  const canUseCurrentWarId =
-    currentWarId !== null &&
-    !identityMismatch &&
-    (identityConfirmed ||
-      (liveWarStartTime === null && liveOpponentTag === null));
-
-  return {
-    warId: canUseCurrentWarId ? currentWarId : null,
-    warStartTime: liveWarStartTime ?? currentWarStartTime,
-    opponentTag: liveOpponentTag ?? currentWarOpponentTag,
-  };
 }
 
 /** Purpose: choose the best war-scoped ClanPointsSync row for the active-war identity. */
@@ -7714,34 +7650,6 @@ function resolveCurrentWarScopedSyncRow(input: {
     }
   }
   return null;
-}
-
-/** Purpose: resolve authoritative current sync using same-war persisted sync first, then previous+1 for active wars. */
-function resolveCurrentSyncNumberForMatch(input: {
-  warState: WarStateForSync;
-  previousSyncNum: number | null;
-  currentWarSyncNum: number | null | undefined;
-}): {
-  resolvedCurrentSyncNum: number | null;
-  derivedCurrentSyncNum: number | null;
-  confirmedCurrentSyncNum: number | null;
-} {
-  const isActiveWar =
-    input.warState === "preparation" || input.warState === "inWar";
-  const confirmedCurrentSyncNum = isActiveWar
-    ? toComparableSyncNumber(input.currentWarSyncNum)
-    : null;
-  const derivedCurrentSyncNum =
-    isActiveWar &&
-    input.previousSyncNum !== null &&
-    Number.isFinite(input.previousSyncNum)
-      ? Math.max(0, Math.trunc(input.previousSyncNum) + 1)
-      : null;
-  return {
-    resolvedCurrentSyncNum: confirmedCurrentSyncNum ?? derivedCurrentSyncNum,
-    derivedCurrentSyncNum,
-    confirmedCurrentSyncNum,
-  };
 }
 
 function normalizeFwaOutcomeForValidation(
@@ -7968,6 +7876,20 @@ function buildStoredSyncSummary(input: {
     differenceCount: input.validationState.differences.length,
   });
   return { syncLine, updatedLine, stateLine };
+}
+
+/** Purpose: render one resolved sync number with parity label for user-facing FWA match displays. */
+function formatResolvedSyncDisplay(syncNumber: number | null): string {
+  const comparableSyncNumber = toComparableSyncNumber(syncNumber);
+  if (comparableSyncNumber === null) return "unknown";
+  const syncMode = getSyncMode(comparableSyncNumber);
+  if (syncMode === "high") {
+    return `#${comparableSyncNumber} (High Sync)`;
+  }
+  if (syncMode === "low") {
+    return `#${comparableSyncNumber} (Low Sync)`;
+  }
+  return `#${comparableSyncNumber}`;
 }
 
 /** Purpose: normalize optional sync values into comparable integers. */
@@ -8354,8 +8276,6 @@ export const isPointsValidationCurrentForMatchupForTest =
 export const shouldHydrateAlliancePayloadForTest = shouldHydrateAlliancePayload;
 export const resolveCurrentWarSyncIdentityForTest =
   resolveCurrentWarSyncIdentity;
-export const resolveCurrentSyncNumberForMatchForTest =
-  resolveCurrentSyncNumberForMatch;
 export const deriveProjectedOutcomeForTest = deriveProjectedOutcome;
 
 export const resolveMatchTypeFromStoredSyncRowForTest =
@@ -9551,7 +9471,7 @@ async function buildTrackedMatchOverview(
   const warByClanTag = new Map<string, CurrentWarResult | null>();
   const warStateByClanTag = new Map<string, WarStateForSync>();
   const warStartMsByClanTag = new Map<string, number | null>();
-  const syncIdentityByClanTag = new Map<string, CurrentWarSyncIdentity>();
+  const syncIdentityByClanTag = new Map<string, ActiveWarSyncIdentity>();
   const activeWarStarts: number[] = [];
 
   await Promise.all(
@@ -9679,11 +9599,9 @@ async function buildTrackedMatchOverview(
   const singleViews: Record<string, MatchView> = {};
   let hasAnyInferredMatchType = false;
   let syncActionAvailableCount = 0;
-  const sourceOfTruthSyncLine = `Sync#: ${
-    sourceSync !== null && Number.isFinite(sourceSync)
-      ? `#${Math.trunc(sourceSync) + 1}`
-      : "unknown"
-  }`;
+  const sourceOfTruthSyncLine = `Latest persisted sync: ${formatResolvedSyncDisplay(
+    sourceSync,
+  )}`;
 
   for (const clan of scopedTracked) {
     const clanTag = normalizeTag(clan.tag);
@@ -9692,9 +9610,12 @@ async function buildTrackedMatchOverview(
     const war = warByClanTag.get(clanTag) ?? null;
     const warState =
       warStateByClanTag.get(clanTag) ?? deriveWarState(war?.state);
-    const clanSyncLine = withSyncModeLabel(
-      getSyncDisplay(sourceSync, warState),
-      sourceSync,
+    let clanSyncLine = formatResolvedSyncDisplay(
+      resolveActiveWarSyncNumber({
+        identity: buildActiveWarSyncIdentity({ warState }),
+        latestPersistedSyncNumber: sourceSync,
+        sameWarPersistedSyncNumber: null,
+      }).syncNumber,
     );
     const clanWarStateLine = formatWarStateLabel(warState);
     const clanTimeRemainingLine = getWarStateRemaining(war, warState);
@@ -9893,11 +9814,9 @@ async function buildTrackedMatchOverview(
       continue;
     }
 
-    const syncIdentity = syncIdentityByClanTag.get(clanTag) ?? {
-      warId: null,
-      warStartTime: null,
-      opponentTag: null,
-    };
+    const syncIdentity =
+      syncIdentityByClanTag.get(clanTag) ??
+      buildActiveWarSyncIdentity({ warState });
     const warIdForReuse = syncIdentity.warId;
     const warStartTimeForReuse = syncIdentity.warStartTime;
     const confirmedCurrentWarSyncRow = resolveCurrentWarScopedSyncRow({
@@ -9906,10 +9825,19 @@ async function buildTrackedMatchOverview(
       warStartTime: warStartTimeForReuse,
       opponentTag: opponentTag || syncIdentity.opponentTag,
     });
-    const { resolvedCurrentSyncNum } = resolveCurrentSyncNumberForMatch({
-      warState,
-      previousSyncNum: sourceSync,
-      currentWarSyncNum: confirmedCurrentWarSyncRow?.syncNum ?? null,
+    const syncResolution = resolveActiveWarSyncNumber({
+      identity: syncIdentity,
+      latestPersistedSyncNumber: sourceSync,
+      sameWarPersistedSyncNumber: confirmedCurrentWarSyncRow?.syncNum ?? null,
+    });
+    const resolvedCurrentSyncNum = syncResolution.syncNumber;
+    clanSyncLine = formatResolvedSyncDisplay(resolvedCurrentSyncNum);
+    logActiveWarSyncResolution({
+      stage: "fwa_match_alliance_view",
+      guildId,
+      clanTag,
+      pointsLockPreventedLiveValidation: false,
+      resolution: syncResolution,
     });
     const warIdForReuseNumber =
       warIdForReuse !== null && Number.isFinite(Number(warIdForReuse))
@@ -13552,10 +13480,18 @@ export const Fwa: Command = {
           warStartTime: warStartTimeForReuse,
           opponentTag: opponentTag || syncIdentity.opponentTag,
         });
-        const { resolvedCurrentSyncNum } = resolveCurrentSyncNumberForMatch({
-          warState,
-          previousSyncNum: sourceSync,
-          currentWarSyncNum: confirmedCurrentWarSyncRow?.syncNum ?? null,
+        const syncResolution = resolveActiveWarSyncNumber({
+          identity: syncIdentity,
+          latestPersistedSyncNumber: sourceSync,
+          sameWarPersistedSyncNumber: confirmedCurrentWarSyncRow?.syncNum ?? null,
+        });
+        const resolvedCurrentSyncNum = syncResolution.syncNumber;
+        logActiveWarSyncResolution({
+          stage: "fwa_match_single_view",
+          guildId: interaction.guildId ?? null,
+          clanTag: tag,
+          pointsLockPreventedLiveValidation: false,
+          resolution: syncResolution,
         });
         if (
           warState === "notInWar" ||
@@ -13590,7 +13526,7 @@ export const Fwa: Command = {
                     "No active war opponent",
                     `War State: **${formatWarStateLabel(warState)}**`,
                     `Time Remaining: **${warRemaining}**`,
-                    `Sync: **${withSyncModeLabel(getSyncDisplay(sourceSync, warState), sourceSync)}**`,
+                    `Sync: **${formatResolvedSyncDisplay(resolvedCurrentSyncNum)}**`,
                     nonActiveMailProjection.mailStatusLine,
                     ...nonActiveMailDebugLines,
                   ].join("\n"),
@@ -13615,7 +13551,7 @@ export const Fwa: Command = {
                   "No active war opponent",
                   `War State: ${formatWarStateLabel(warState)}`,
                   `Time Remaining: ${warRemaining}`,
-                  `Sync: ${withSyncModeLabel(getSyncDisplay(sourceSync, warState), sourceSync)}`,
+                  `Sync: ${formatResolvedSyncDisplay(resolvedCurrentSyncNum)}`,
                   nonActiveMailProjection.mailStatusLine.replace(/\*\*/g, ""),
                   ...nonActiveMailDebugLines,
                 ].join("\n"),
@@ -13680,7 +13616,7 @@ export const Fwa: Command = {
               `Compo advice (ACTUAL): ${actual?.compoAdvice ?? "none"}`,
               `War State: **${formatWarStateLabel(warState)}**`,
               `Time Remaining: **${warRemaining}**`,
-              `Sync: **${withSyncModeLabel(getSyncDisplay(sourceSync, warState), sourceSync)}**`,
+              `Sync: **${formatResolvedSyncDisplay(resolvedCurrentSyncNum)}**`,
               nonActiveMailProjection.mailStatusLine,
               ...nonActiveMailDebugLines,
             ];

@@ -7,6 +7,7 @@ import {
 import { normalizeFwaTag } from "./normalize";
 import { FwaClanWarsSyncService } from "./FwaClanWarsSyncService";
 import { FwaWarMembersSyncService } from "./FwaWarMembersSyncService";
+import { FwaClanMatchStatsCurrentSyncService } from "./FwaClanMatchStatsCurrentSyncService";
 import { FwaTrackedClanWarRosterSyncService } from "./FwaTrackedClanWarRosterSyncService";
 import { mapWithConcurrency } from "./concurrency";
 
@@ -42,6 +43,7 @@ export class FwaClanWarsWatchService {
     private readonly clanWarsSync = new FwaClanWarsSyncService(),
     private readonly warMembersSync = new FwaWarMembersSyncService(),
     private readonly trackedRosterSync = new FwaTrackedClanWarRosterSyncService(),
+    private readonly matchStatsSync = new FwaClanMatchStatsCurrentSyncService(),
   ) {}
 
   /** Purpose: execute one watch tick, activating/deactivating per-clan windows and polling active clans. */
@@ -187,6 +189,14 @@ export class FwaClanWarsWatchService {
         updateAcquired,
       };
     });
+
+    if (pollOutcomes.some((row) => row.updateAcquired)) {
+      try {
+        await this.matchStatsSync.rebuildCurrentStats({ now });
+      } catch {
+        // Keep tracked-wars watch best-effort; the source war-log update already completed.
+      }
+    }
 
     return {
       trackedClanCount: trackedTags.length,

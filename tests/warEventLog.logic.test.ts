@@ -22,6 +22,7 @@ import {
   resolveParticipationGuildId,
   WarEventHistoryService,
 } from "../src/services/war-events/history";
+import { buildActiveWarSyncIdentity } from "../src/services/ActiveWarSyncResolutionService";
 
 function dateAt(hour: number): Date {
   return new Date(Date.UTC(2026, 0, 1, hour, 0, 0));
@@ -101,53 +102,93 @@ describe("WarEventLogService resolved notify sync fallback", () => {
   it("prefers same-war sync over posted and derived values", () => {
     expect(
       resolveEventRenderSyncNumberForTest({
+        identity: buildActiveWarSyncIdentity({
+          warState: "inWar",
+          warId: "1001",
+        }),
         sameWarSyncNumber: 482,
         postedSyncNumber: 481,
-        previousSyncNumber: 480,
-        currentState: "inWar",
+        latestPersistedSyncNumber: 480,
+        allowPostedSyncReuse: true,
       })
     ).toBe(482);
   });
 
-  it("falls back to posted sync when same-war sync is unavailable", () => {
+  it("falls back to posted sync only for refresh continuity", () => {
     expect(
       resolveEventRenderSyncNumberForTest({
+        identity: buildActiveWarSyncIdentity({
+          warState: "inWar",
+          warId: "1001",
+        }),
         sameWarSyncNumber: null,
         postedSyncNumber: 482,
-        previousSyncNumber: 480,
-        currentState: "inWar",
+        latestPersistedSyncNumber: 480,
+        allowPostedSyncReuse: true,
+      })
+    ).toBe(482);
+    expect(
+      resolveEventRenderSyncNumberForTest({
+        identity: buildActiveWarSyncIdentity({
+          warState: "inWar",
+          warId: "1001",
+        }),
+        sameWarSyncNumber: null,
+        postedSyncNumber: 482,
+        latestPersistedSyncNumber: 480,
+      }),
+    ).toBe(481);
+  });
+
+  it("derives active-war sync as latest persisted + 1 for preparation/inWar", () => {
+    expect(
+      resolveEventRenderSyncNumberForTest({
+        identity: buildActiveWarSyncIdentity({
+          warState: "preparation",
+          warId: "1002",
+        }),
+        sameWarSyncNumber: null,
+        postedSyncNumber: null,
+        latestPersistedSyncNumber: 481,
+      })
+    ).toBe(482);
+    expect(
+      resolveEventRenderSyncNumberForTest({
+        identity: buildActiveWarSyncIdentity({
+          warState: "inWar",
+          warId: "1003",
+        }),
+        sameWarSyncNumber: null,
+        postedSyncNumber: null,
+        latestPersistedSyncNumber: 481,
       })
     ).toBe(482);
   });
 
-  it("derives active-war sync as previous + 1 for preparation/inWar", () => {
+  it("falls back to latest persisted sync when war is not active", () => {
     expect(
       resolveEventRenderSyncNumberForTest({
+        identity: buildActiveWarSyncIdentity({
+          warState: "notInWar",
+        }),
         sameWarSyncNumber: null,
         postedSyncNumber: null,
-        previousSyncNumber: 481,
-        currentState: "preparation",
-      })
-    ).toBe(482);
-    expect(
-      resolveEventRenderSyncNumberForTest({
-        sameWarSyncNumber: null,
-        postedSyncNumber: null,
-        previousSyncNumber: 481,
-        currentState: "inWar",
-      })
-    ).toBe(482);
-  });
-
-  it("falls back to previous sync when war is not active", () => {
-    expect(
-      resolveEventRenderSyncNumberForTest({
-        sameWarSyncNumber: null,
-        postedSyncNumber: null,
-        previousSyncNumber: 481,
-        currentState: "notInWar",
+        latestPersistedSyncNumber: 481,
       })
     ).toBe(481);
+  });
+
+  it("returns unknown when active-looking sync fallback is not positively resolved", () => {
+    expect(
+      resolveEventRenderSyncNumberForTest({
+        identity: buildActiveWarSyncIdentity({
+          warState: "preparation",
+        }),
+        sameWarSyncNumber: null,
+        postedSyncNumber: null,
+        latestPersistedSyncNumber: 481,
+      }),
+    ).toBeNull();
   });
 });
 

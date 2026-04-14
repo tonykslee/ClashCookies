@@ -27,7 +27,10 @@ import {
   getCompoActualStateViewLabel,
   type CompoActualStateView,
 } from "../helper/compoActualStateView";
-import { formatHeatMapRefBandLabel } from "../helper/compoHeatMap";
+import {
+  buildHeatMapRefDisplayRows,
+  buildHeatMapRefDisplayText,
+} from "../helper/heatMapRefDisplay";
 import { formatError } from "../helper/formatError";
 import { getCompoWarDisplayBucket } from "../helper/compoWarWeightBuckets";
 import { normalizeCompoClanDisplayName } from "../helper/compoDisplay";
@@ -41,7 +44,7 @@ import {
 import { CompoActualStateService } from "../services/CompoActualStateService";
 import { CompoPlaceService } from "../services/CompoPlaceService";
 import { CompoWarStateService } from "../services/CompoWarStateService";
-import { getAllHeatMapRefs } from "../services/HeatMapRefService";
+import { HeatMapRefDisplayService } from "../services/HeatMapRefDisplayService";
 import {
   GoogleSheetMode,
   GoogleSheetReadError,
@@ -108,19 +111,7 @@ const STATE_HEADERS = [
   "TH14",
   "<=TH13",
 ];
-const HEAT_MAP_REF_HEADERS = [
-  "Band",
-  "TH18",
-  "TH17",
-  "TH16",
-  "TH15",
-  "TH14",
-  "TH13",
-  "TH12",
-  "TH11",
-  "<=TH10",
-  "Clans",
-];
+const COMPO_HEATMAPREF_COPY_PREFIX = "compo-heatmapref-copy";
 const COMPO_REFRESH_PREFIX = "compo-refresh";
 const COMPO_REFRESH_LABEL = "Refresh Data";
 const COMPO_REFRESH_LOADING_LABEL = "Refreshing...";
@@ -990,21 +981,35 @@ function buildCompoStateRows(modeRows: SheetIndexedRow[]): string[][] {
   return [STATE_HEADERS, ...contentRows];
 }
 
-function buildCompoHeatMapRefRows(heatMapRefs: readonly HeatMapRef[]): string[][] {
-  const contentRows = heatMapRefs.map((heatMapRef) => [
-    clampCell(formatHeatMapRefBandLabel(heatMapRef)),
-    clampCell(String(heatMapRef.th18Count)),
-    clampCell(String(heatMapRef.th17Count)),
-    clampCell(String(heatMapRef.th16Count)),
-    clampCell(String(heatMapRef.th15Count)),
-    clampCell(String(heatMapRef.th14Count)),
-    clampCell(String(heatMapRef.th13Count)),
-    clampCell(String(heatMapRef.th12Count)),
-    clampCell(String(heatMapRef.th11Count)),
-    clampCell(String(heatMapRef.th10OrLowerCount)),
-    clampCell(String(heatMapRef.contributingClanCount)),
-  ]);
-  return [HEAT_MAP_REF_HEADERS, ...contentRows];
+function buildCompoHeatMapRefRows(
+  heatMapRefs: readonly HeatMapRef[],
+  matchPercentByBandKey?: ReadonlyMap<string, string>,
+): string[][] {
+  return buildHeatMapRefDisplayRows({
+    heatMapRefs,
+    matchPercentByBandKey,
+  });
+}
+
+function buildCompoHeatMapRefCopyText(rows: readonly string[][]): string {
+  return buildHeatMapRefDisplayText(rows);
+}
+
+function buildCompoHeatMapRefCopyCustomId(userId: string): string {
+  return `${COMPO_HEATMAPREF_COPY_PREFIX}:${userId}`;
+}
+
+export function isCompoHeatMapRefCopyButtonCustomId(customId: string): boolean {
+  return String(customId ?? "").startsWith(`${COMPO_HEATMAPREF_COPY_PREFIX}:`);
+}
+
+function buildCompoHeatMapRefCopyButtonRow(userId: string): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(buildCompoHeatMapRefCopyCustomId(userId))
+      .setLabel("Copy Table")
+      .setStyle(ButtonStyle.Primary),
+  );
 }
 
 type CompoRenderPayload = {
@@ -1014,6 +1019,9 @@ type CompoRenderPayload = {
     attachment: Buffer;
     name: string;
   }>;
+  components?: Array<
+    ActionRowBuilder<ButtonBuilder> | ActionRowBuilder<StringSelectMenuBuilder>
+  >;
 };
 
 function buildCompoStatePayloadFromRows(input: {
@@ -1037,15 +1045,17 @@ function buildCompoStatePayloadFromRows(input: {
 }
 
 function buildCompoHeatMapRefPayloadFromRows(input: {
-  heatMapRefs: readonly HeatMapRef[];
+  rows: string[][];
+  components?: Array<ActionRowBuilder<ButtonBuilder> | ActionRowBuilder<StringSelectMenuBuilder>>;
 }): CompoRenderPayload {
   return {
     files: [
       {
-        attachment: renderStatePng("HEATMAP REF", buildCompoHeatMapRefRows(input.heatMapRefs)),
+        attachment: renderStatePng("HEATMAP REF", input.rows),
         name: "compo-heatmapref.png",
       },
     ],
+    components: input.components,
   };
 }
 
@@ -1210,12 +1220,14 @@ const GLYPHS: Record<string, string[]> = {
   " ": ["00000", "00000", "00000", "00000", "00000", "00000", "00000"],
   "'": ["00100", "00100", "00100", "00000", "00000", "00000", "00000"],
   '"': ["01010", "01010", "01010", "00000", "00000", "00000", "00000"],
+  "+": ["00000", "00100", "00100", "11111", "00100", "00100", "00000"],
   "-": ["00000", "00000", "00000", "01110", "00000", "00000", "00000"],
   ",": ["00000", "00000", "00000", "00000", "00110", "00110", "00100"],
   ".": ["00000", "00000", "00000", "00000", "00000", "00110", "00110"],
   ":": ["00000", "00110", "00110", "00000", "00110", "00110", "00000"],
   "<": ["00010", "00100", "01000", "10000", "01000", "00100", "00010"],
   "=": ["00000", "11111", "00000", "11111", "00000", "00000", "00000"],
+  "%": ["11001", "11010", "00100", "01000", "10011", "10011", "00000"],
   "/": ["00001", "00010", "00100", "01000", "10000", "00000", "00000"],
   "(": ["00010", "00100", "01000", "01000", "01000", "00100", "00010"],
   ")": ["01000", "00100", "00010", "00010", "00010", "00100", "01000"],
@@ -1783,6 +1795,52 @@ export async function handleCompoRefreshButton(
   }
 }
 
+/** Purpose: reply with the copy-ready HeatMapRef table text for the requester. */
+export async function handleCompoHeatMapRefCopyButton(
+  interaction: ButtonInteraction,
+): Promise<void> {
+  const customId = String(interaction.customId ?? "");
+  if (!isCompoHeatMapRefCopyButtonCustomId(customId)) {
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.reply({
+        ephemeral: true,
+        content: "Invalid HeatMapRef copy action.",
+      });
+    }
+    return;
+  }
+
+  const requesterId = customId.split(":")[1] ?? "";
+  if (interaction.user.id !== requesterId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Only the command requester can use this copy button.",
+    });
+    return;
+  }
+
+  try {
+    await interaction.deferReply({ ephemeral: true });
+    const display = await new HeatMapRefDisplayService().readHeatMapRefDisplayTable();
+    const copyText = buildCompoHeatMapRefCopyText(display.rows);
+    await interaction.editReply({
+      content: copyText,
+    });
+  } catch (error) {
+    console.error(`compo heatmapref copy button failed: ${formatError(error)}`);
+    if (interaction.deferred || interaction.replied) {
+      await interaction.editReply({
+        content: "Failed to build HeatMapRef copy text. Try again in a moment.",
+      }).catch(() => undefined);
+      return;
+    }
+    await interaction.reply({
+      ephemeral: true,
+      content: "Failed to build HeatMapRef copy text. Try again in a moment.",
+    });
+  }
+}
+
 export async function handleCompoAdviceClanSelectMenuInteraction(
   interaction: StringSelectMenuInteraction,
 ): Promise<void> {
@@ -1921,7 +1979,7 @@ export const Compo: Command = {
     },
     {
       name: "heatmapref",
-      description: "Show the persisted HeatMapRef table as an image",
+      description: "Show the persisted HeatMapRef table as an image with copyable table text",
       type: ApplicationCommandOptionType.Subcommand,
     },
     {
@@ -2106,21 +2164,23 @@ export const Compo: Command = {
 
       if (subcommand === "heatmapref") {
         logCompoStage(interaction, "computation_start", { mode });
-        const heatMapRefs = await getAllHeatMapRefs();
+        const display = await new HeatMapRefDisplayService().readHeatMapRefDisplayTable();
         logCompoStage(interaction, "db_fetch", {
           entity: "heat_map_ref",
           mode,
-          rows: heatMapRefs.length,
+          rows: Math.max(0, display.rows.length - 1),
         });
-        const payload = buildCompoHeatMapRefPayloadFromRows({ heatMapRefs });
         logCompoStage(interaction, "computation_complete", {
           result: "heatmapref_rendered",
           mode,
-          rows: heatMapRefs.length,
+          rows: Math.max(0, display.rows.length - 1),
         });
         logCompoStage(interaction, "response_build", { reason: "heatmapref_png" });
         await interaction.editReply({
-          ...payload,
+          ...buildCompoHeatMapRefPayloadFromRows({
+            rows: display.rows,
+            components: [buildCompoHeatMapRefCopyButtonRow(interaction.user.id)],
+          }),
         });
         logCompoStage(interaction, "response_sent", { reason: "heatmapref_png" });
         return;
@@ -2301,6 +2361,10 @@ export const Compo: Command = {
 
 export const buildCompoStateRowsForTest = buildCompoStateRows;
 export const buildCompoHeatMapRefRowsForTest = buildCompoHeatMapRefRows;
+export const buildCompoHeatMapRefCopyTextForTest = buildCompoHeatMapRefCopyText;
+export const buildCompoHeatMapRefCopyCustomIdForTest = buildCompoHeatMapRefCopyCustomId;
+export const isCompoHeatMapRefCopyButtonCustomIdForTest = isCompoHeatMapRefCopyButtonCustomId;
+export const toGlyphSafeTextForTest = toGlyphSafeText;
 export const getModeRowsForTest = getModeRows;
 export const getAbsoluteSheetRowNumberForTest = getAbsoluteSheetRowNumber;
 export const mapCompoSheetErrorToMessageForTest = mapCompoSheetErrorToMessage;

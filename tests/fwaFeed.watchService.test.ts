@@ -22,6 +22,7 @@ vi.mock("../src/prisma", () => ({
 }));
 
 import { FwaClanWarsWatchService } from "../src/services/fwa-feeds/FwaClanWarsWatchService";
+import { FwaClanMatchStatsCurrentSyncService } from "../src/services/fwa-feeds/FwaClanMatchStatsCurrentSyncService";
 
 function buildSyncMetadata(params: {
   syncEpochSeconds: number;
@@ -174,6 +175,9 @@ describe("FwaClanWarsWatchService", () => {
         totalEffectiveWeight: 7600000,
       }),
     } as any;
+    const rebuildSpy = vi
+      .spyOn(FwaClanMatchStatsCurrentSyncService.prototype, "rebuildCurrentStats")
+      .mockResolvedValue({ clanCount: 1, sourceRowCount: 1, evaluatedWarCount: 1 } as any);
     const service = new FwaClanWarsWatchService(clanWarsSync, warMembersSync, trackedRosterSync);
 
     const result = await service.runWatchTick({ now, concurrency: 1 });
@@ -181,6 +185,8 @@ describe("FwaClanWarsWatchService", () => {
     expect(result.updateAcquiredCount).toBe(1);
     expect(warMembersSync.syncClan).toHaveBeenCalledWith("#AAA111", expect.any(Object));
     expect(trackedRosterSync.syncClan).toHaveBeenCalledWith("#AAA111", { now });
+    expect(rebuildSpy).toHaveBeenCalledTimes(1);
+    expect(rebuildSpy).toHaveBeenCalledWith({ now });
     expect(prismaMock.fwaClanWarsWatchState.update).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { clanTag: "#AAA111" },
