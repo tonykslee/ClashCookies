@@ -5,6 +5,7 @@ import { FwaClanMembersSyncService } from "./FwaClanMembersSyncService";
 import { FwaWarMembersSyncService } from "./FwaWarMembersSyncService";
 import { FwaClanWarsSyncService } from "./FwaClanWarsSyncService";
 import { FwaClanWarsWatchService } from "./FwaClanWarsWatchService";
+import { FwaClanMatchStatsCurrentSyncService } from "./FwaClanMatchStatsCurrentSyncService";
 import { FwaFeedSchedulerService } from "./FwaFeedSchedulerService";
 import { FwaTrackedClanWarRosterSyncService } from "./FwaTrackedClanWarRosterSyncService";
 
@@ -14,6 +15,7 @@ export class FwaFeedOpsService {
   private readonly clanMembersSync = new FwaClanMembersSyncService();
   private readonly warMembersSync = new FwaWarMembersSyncService();
   private readonly clanWarsSync = new FwaClanWarsSyncService();
+  private readonly matchStatsSync = new FwaClanMatchStatsCurrentSyncService();
   private readonly trackedRosterSync = new FwaTrackedClanWarRosterSyncService();
   private readonly watchService = new FwaClanWarsWatchService(
     this.clanWarsSync,
@@ -60,7 +62,15 @@ export class FwaFeedOpsService {
         rosterResult,
       };
     }
-    return this.clanWarsSync.syncClan(normalized, { force: true });
+    const result = await this.clanWarsSync.syncClan(normalized, { force: true });
+    if (result.changedRowCount > 0) {
+      try {
+        await this.matchStatsSync.rebuildCurrentStats();
+      } catch {
+        // Best-effort derived rebuild; the raw clan-war-log sync already completed.
+      }
+    }
+    return result;
   }
 
   /** Purpose: run one global one-off sync tick for configured feed families. */

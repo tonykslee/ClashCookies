@@ -1176,6 +1176,20 @@ model FwaClanWarLogCurrent {
   @@index([sourceSyncedAt])
 }
 
+model FwaClanMatchStatsCurrent {
+  clanTag              String   @id
+  fwaWarCount          Int
+  blacklistedWarCount  Int
+  friendlyWarCount     Int
+  unknownWarCount      Int
+  successWarCount      Int
+  evaluatedWarCount    Int
+  matchRate            Float
+  lastComputedAt       DateTime
+
+  @@index([lastComputedAt])
+}
+
 model FwaFeedSyncState {
   id                  String            @id @default(cuid())
   feedType            FwaFeedType
