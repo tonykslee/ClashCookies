@@ -18,7 +18,7 @@ vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
 
-import { Accounts } from "../src/commands/Accounts";
+import { Accounts, resolveDiscordIdAutocompleteLabel } from "../src/commands/Accounts";
 
 function makeInteraction(input?: {
   visibility?: string | null;
@@ -47,20 +47,8 @@ function makeInteraction(input?: {
 function makeAutocompleteInteraction(
   value: string,
   focusedName = "tag",
-  cachedUsernames: Record<string, string> = {},
 ) {
-  const cache = new Map(
-    Object.entries(cachedUsernames).map(([id, username]) => [
-      id,
-      { username },
-    ]),
-  );
   return {
-    client: {
-      users: {
-        cache,
-      },
-    },
     options: {
       getFocused: vi.fn(() => ({ name: focusedName, value })),
     },
@@ -242,7 +230,7 @@ describe("/accounts command", () => {
     expect((interaction.respond as any).mock.calls[0][0]).toHaveLength(25);
   });
 
-  it("autocompletes discord IDs with @username labels and raw values", async () => {
+  it("autocompletes discord IDs with raw labels and raw values", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([
       {
         discordUserId: "111111111111111111",
@@ -253,13 +241,7 @@ describe("/accounts command", () => {
         discordUsername: null,
       },
     ]);
-    const interaction = makeAutocompleteInteraction(
-      "",
-      "discord-id",
-      {
-        "111111111111111111": "AlphaUser",
-      },
-    );
+    const interaction = makeAutocompleteInteraction("", "discord-id");
 
     await Accounts.autocomplete(interaction as any);
 
@@ -270,32 +252,17 @@ describe("/accounts command", () => {
       },
     });
     expect(interaction.respond).toHaveBeenCalledWith([
-      { name: "@AlphaUser", value: "111111111111111111" },
+      { name: "111111111111111111", value: "111111111111111111" },
       { name: "222222222222222222", value: "222222222222222222" },
     ]);
   });
 
-  it("matches discord-id autocomplete by username and falls back to raw ID when unavailable", async () => {
-    prismaMock.playerLink.findMany.mockResolvedValue([
-      {
-        discordUserId: "333333333333333333",
-        discordUsername: "BravoUser",
-      },
-      {
-        discordUserId: "444444444444444444",
-        discordUsername: null,
-      },
-    ]);
-    const interaction = makeAutocompleteInteraction(
-      "brav",
-      "discord-id",
+  it("falls back to @username only when the snowflake label cannot be rendered", () => {
+    expect(resolveDiscordIdAutocompleteLabel("111111111111111111", "AlphaUser")).toBe(
+      "111111111111111111",
     );
-
-    await Accounts.autocomplete(interaction as any);
-
-    expect(interaction.respond).toHaveBeenCalledWith([
-      { name: "@BravoUser", value: "333333333333333333" },
-    ]);
+    expect(resolveDiscordIdAutocompleteLabel("", "AlphaUser")).toBe("@AlphaUser");
+    expect(resolveDiscordIdAutocompleteLabel("", null)).toBe("");
   });
 
   it("uses PlayerActivity clan name in output when local clan context is complete", async () => {

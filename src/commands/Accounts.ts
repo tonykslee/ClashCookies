@@ -71,17 +71,15 @@ function normalizeDiscordIdAutocompleteQuery(input: string): string {
     .replace(/^@+/, "");
 }
 
-function resolveDiscordIdAutocompleteLabel(
-  interaction: AutocompleteInteraction,
+export function resolveDiscordIdAutocompleteLabel(
   discordUserId: string,
   persistedUsername: string | null,
 ): string {
-  const cachedUsername = String(
-    interaction.client.users.cache.get(discordUserId)?.username ?? "",
-  ).trim();
-  const resolvedUsername =
-    sanitizeDisplayText(cachedUsername) ?? sanitizeDisplayText(persistedUsername);
-  return resolvedUsername ? `@${resolvedUsername}` : discordUserId;
+  const rawDiscordId = sanitizeDisplayText(discordUserId);
+  if (rawDiscordId) return rawDiscordId;
+
+  const resolvedUsername = sanitizeDisplayText(persistedUsername);
+  return resolvedUsername ? `@${resolvedUsername}` : "";
 }
 
 function buildAccountsTagAutocompleteChoices(
@@ -164,7 +162,6 @@ function buildAccountsTagAutocompleteChoices(
 function buildAccountsDiscordIdAutocompleteChoices(
   rows: DiscordIdAutocompleteRow[],
   query: string,
-  interaction: AutocompleteInteraction,
 ): AccountAutocompleteChoice[] {
   const normalizedQuery = normalizeDiscordIdAutocompleteQuery(query);
   const deduped = new Map<
@@ -230,11 +227,7 @@ function buildAccountsDiscordIdAutocompleteChoices(
     .slice(0, 25);
 
   return ranked.map((row) => ({
-    name: resolveDiscordIdAutocompleteLabel(
-      interaction,
-      row.discordUserId,
-      row.discordUsername,
-    ).slice(0, 100),
+    name: resolveDiscordIdAutocompleteLabel(row.discordUserId, row.discordUsername).slice(0, 100),
     value: row.discordUserId,
   }));
 }
@@ -554,7 +547,6 @@ export const Accounts: Command = {
     const choices = buildAccountsDiscordIdAutocompleteChoices(
       rows as DiscordIdAutocompleteRow[],
       query,
-      interaction,
     );
 
     await interaction.respond(choices);
