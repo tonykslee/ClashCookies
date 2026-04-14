@@ -29,7 +29,6 @@ import {
 } from "../helper/compoActualStateView";
 import {
   buildHeatMapRefDisplayRows,
-  buildHeatMapRefDisplayText,
 } from "../helper/heatMapRefDisplay";
 import { formatError } from "../helper/formatError";
 import { getCompoWarDisplayBucket } from "../helper/compoWarWeightBuckets";
@@ -991,8 +990,8 @@ function buildCompoHeatMapRefRows(
   });
 }
 
-function buildCompoHeatMapRefCopyText(rows: readonly string[][]): string {
-  return buildHeatMapRefDisplayText(rows);
+function buildCompoHeatMapRefCopyText(copyText: string): string {
+  return ["```text", copyText, "```"].join("\n");
 }
 
 function buildCompoHeatMapRefCopyCustomId(userId: string): string {
@@ -1822,7 +1821,7 @@ export async function handleCompoHeatMapRefCopyButton(
   try {
     await interaction.deferReply({ ephemeral: true });
     const display = await new HeatMapRefDisplayService().readHeatMapRefDisplayTable();
-    const copyText = buildCompoHeatMapRefCopyText(display.rows);
+    const copyText = buildCompoHeatMapRefCopyText(display.copyText);
     await interaction.editReply({
       content: copyText,
     });
