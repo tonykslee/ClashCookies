@@ -18,11 +18,15 @@ type AccountRow = {
   name: string;
   clanTag: string | null;
   clanName: string | null;
+  clanAlias: string | null;
+  clanRole: "leader" | "coleader" | null;
 };
 
 type ClanGroup = {
   key: string;
-  title: string;
+  clanTag: string | null;
+  clanName: string | null;
+  clanAlias: string | null;
   entries: AccountRow[];
 };
 
@@ -57,6 +61,13 @@ function sanitizeDisplayText(input: unknown): string | null {
   return normalized.length > 0 ? normalized : null;
 }
 
+function normalizeClanMemberRole(input: unknown): "leader" | "coleader" | null {
+  const normalized = String(input ?? "").trim().toLowerCase();
+  if (normalized === "leader") return "leader";
+  if (normalized === "coleader") return "coleader";
+  return null;
+}
+
 function normalizeAutocompleteQuery(input: string): string {
   return String(input ?? "")
     .trim()
@@ -69,6 +80,32 @@ function normalizeDiscordIdAutocompleteQuery(input: string): string {
     .trim()
     .toLowerCase()
     .replace(/^@+/, "");
+}
+
+function buildClanProfileMarkdownLink(
+  clanName: string | null,
+  clanTag: string | null,
+): string {
+  const normalizedClanTag = normalizeTag(clanTag ?? "");
+  const label = sanitizeDisplayText(clanName) || normalizedClanTag || "Unknown Clan";
+  if (!normalizedClanTag) return label;
+  const encodedTag = normalizedClanTag.replace(/^#/, "");
+  return `[${label}](https://link.clashofclans.com/en?action=OpenClanProfile&tag=${encodedTag})`;
+}
+
+function buildClanHeadingLabel(group: Pick<ClanGroup, "clanAlias" | "clanName" | "clanTag">): string {
+  const fallbackTag = normalizeTag(group.clanTag ?? "") || "Unknown Clan";
+  return (
+    sanitizeDisplayText(group.clanAlias) ??
+    sanitizeDisplayText(group.clanName) ??
+    fallbackTag
+  );
+}
+
+function buildClanHeadingMarkdown(group: Pick<ClanGroup, "clanAlias" | "clanName" | "clanTag">): string {
+  const label = buildClanHeadingLabel(group);
+  const clanTag = normalizeTag(group.clanTag ?? "");
+  return clanTag ? buildClanProfileMarkdownLink(label, clanTag) : label;
 }
 
 export function resolveDiscordIdAutocompleteLabel(
@@ -239,18 +276,26 @@ function buildAccountsDiscordIdAutocompleteChoices(
 }
 
 function buildGroups(rows: AccountRow[]): ClanGroup[] {
-  const grouped = new Map<string, { title: string; entries: AccountRow[] }>();
+  const grouped = new Map<string, ClanGroup>();
 
   for (const row of rows) {
-    const clanName = row.clanName?.trim() || null;
+    const clanName = sanitizeDisplayText(row.clanName);
     const clanTag = row.clanTag ? normalizeTag(row.clanTag) : null;
+    const clanAlias = sanitizeDisplayText(row.clanAlias);
     const key = clanTag ?? "__NO_CLAN__";
-    const title = clanTag ? `${clanName ?? "Unknown Clan"} (${clanTag})` : "No Clan";
 
     const bucket = grouped.get(key);
     if (!bucket) {
-      grouped.set(key, { title, entries: [row] });
+      grouped.set(key, {
+        key,
+        clanTag,
+        clanName,
+        clanAlias,
+        entries: [row],
+      });
     } else {
+      if (clanAlias && !bucket.clanAlias) bucket.clanAlias = clanAlias;
+      if (clanName && !bucket.clanName) bucket.clanName = clanName;
       bucket.entries.push(row);
     }
   }
@@ -259,9 +304,11 @@ function buildGroups(rows: AccountRow[]): ClanGroup[] {
     .sort((a, b) => {
       if (a[0] === "__NO_CLAN__") return 1;
       if (b[0] === "__NO_CLAN__") return -1;
-      return a[1].title.localeCompare(b[1].title);
+      return buildClanHeadingLabel(a[1]).localeCompare(buildClanHeadingLabel(b[1]), undefined, {
+        sensitivity: "base",
+      });
     })
-    .map(([key, value]) => ({ key, ...value }));
+    .map(([, value]) => value);
 
   for (const group of groups) {
     group.entries.sort((a, b) => a.name.localeCompare(b.name));
@@ -277,9 +324,10 @@ function buildPages(groups: ClanGroup[]): string[] {
 
   for (const group of groups) {
     const groupLines: string[] = [];
-    groupLines.push(`**${group.title}**`);
+    groupLines.push(`**${group.clanTag ? buildClanHeadingMarkdown(group) : "No Clan"}**`);
     for (const entry of group.entries) {
-      groupLines.push(`- ${entry.name} \`${entry.tag}\``);
+      const marker = entry.clanRole === "coleader" ? ":crown:" : "-";
+      groupLines.push(`${marker} ${entry.name} \`${entry.tag}\``);
     }
 
     const groupAccountCount = group.entries.length;
@@ -365,7 +413,7 @@ export const Accounts: Command = {
   run: async (
     _client: Client,
     interaction: ChatInputCommandInteraction,
-    _cocService: unknown
+    cocService: unknown
   ) => {
     if (!interaction.guildId) {
       await interaction.reply({ ephemeral: true, content: "This command can only be used in a server." });
@@ -444,38 +492,65 @@ export const Accounts: Command = {
     const activityByTag = new Map(
       activity.map((a) => [normalizeTag(a.tag), a])
     );
-    const candidateClanTags = [...new Set(
-      activity
+    const coc = cocService as { getPlayerRaw?: (tag: string) => Promise<any> } | null;
+    const livePlayerByTag = new Map<string, any | null>();
+    const getPlayerRaw = coc?.getPlayerRaw ?? null;
+    if (getPlayerRaw) {
+      const liveRows = await Promise.all(
+        uniqueTags.map(async (tag) => [tag, await getPlayerRaw(tag).catch(() => null)] as const),
+      );
+      for (const [tag, player] of liveRows) {
+        livePlayerByTag.set(tag, player);
+      }
+    }
+    const candidateClanTags = [...new Set([
+      ...activity
         .map((row) => (row.clanTag ? normalizeTag(row.clanTag) : ""))
-        .filter(Boolean)
-    )];
+        .filter(Boolean),
+      ...[...livePlayerByTag.values()]
+        .map((player) => (player?.clan?.tag ? normalizeTag(player.clan.tag) : ""))
+        .filter(Boolean),
+    ])];
     const trackedClanRows =
       candidateClanTags.length > 0
         ? await prisma.trackedClan.findMany({
             where: { tag: { in: candidateClanTags } },
-            select: { tag: true, name: true },
+            select: { tag: true, name: true, shortName: true },
           })
         : [];
     const trackedClanNameByTag = new Map(
-      trackedClanRows
-        .map((row) => [normalizeTag(row.tag), sanitizeDisplayText(row.name)] as const)
-        .filter((entry): entry is [string, string] => Boolean(entry[0] && entry[1]))
+      trackedClanRows.map((row) => [
+        normalizeTag(row.tag),
+        {
+          name: sanitizeDisplayText(row.name),
+          alias: sanitizeDisplayText(row.shortName),
+        },
+      ] as const)
     );
     const rows: AccountRow[] = uniqueTags.map((tag) => {
       const linkedName = linkedNameByTag.get(tag) ?? null;
       const fallback = activityByTag.get(tag);
+      const livePlayer = livePlayerByTag.get(tag) ?? null;
+      const liveClanTag = livePlayer?.clan?.tag ? normalizeTag(livePlayer.clan.tag) : null;
       const fallbackClanTag = fallback?.clanTag ? normalizeTag(fallback.clanTag) : null;
-      const clanTag = fallbackClanTag ?? "";
+      const clanTag = liveClanTag ?? fallbackClanTag ?? null;
       const activityName = sanitizeDisplayText(fallback?.name);
+      const liveName = sanitizeDisplayText(livePlayer?.name);
+      const liveClanName = sanitizeDisplayText(livePlayer?.clan?.name);
+      const trackedClan = clanTag ? trackedClanNameByTag.get(clanTag) ?? null : null;
       const clanName =
+        liveClanName ??
         sanitizeDisplayText(fallback?.clanName) ??
-        (clanTag ? trackedClanNameByTag.get(clanTag) ?? null : null);
+        trackedClan?.name ??
+        null;
 
       return {
         tag,
-        name: linkedName ?? activityName ?? tag,
-        clanTag: clanTag || null,
+        name: linkedName ?? activityName ?? liveName ?? tag,
+        clanTag,
         clanName,
+        clanAlias: trackedClan?.alias ?? null,
+        clanRole: normalizeClanMemberRole(livePlayer?.role),
       };
     });
 
