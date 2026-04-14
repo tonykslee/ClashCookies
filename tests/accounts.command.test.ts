@@ -18,7 +18,7 @@ vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
 
-import { Accounts, resolveDiscordIdAutocompleteLabel } from "../src/commands/Accounts";
+import { Accounts } from "../src/commands/Accounts";
 
 function makeInteraction(input?: {
   visibility?: string | null;
@@ -47,8 +47,43 @@ function makeInteraction(input?: {
 function makeAutocompleteInteraction(
   value: string,
   focusedName = "tag",
+  input?: {
+    cachedUsernames?: Record<string, string>;
+    memberDisplayNames?: Record<string, string>;
+    memberUsernames?: Record<string, string>;
+  },
 ) {
+  const cachedUsernames = input?.cachedUsernames ?? {};
+  const memberDisplayNames = input?.memberDisplayNames ?? {};
+  const memberUsernames = input?.memberUsernames ?? {};
+  const memberIds = new Set([
+    ...Object.keys(memberDisplayNames),
+    ...Object.keys(memberUsernames),
+  ]);
   return {
+    client: {
+      users: {
+        cache: new Map(
+          Object.entries(cachedUsernames).map(([id, username]) => [
+            id,
+            { username },
+          ]),
+        ),
+      },
+    },
+    guild: {
+      members: {
+        cache: new Map(
+          [...memberIds].map((id) => [
+            id,
+            {
+              displayName: memberDisplayNames[id] ?? "",
+              user: { username: memberUsernames[id] ?? cachedUsernames[id] ?? "" },
+            },
+          ]),
+        ),
+      },
+    },
     options: {
       getFocused: vi.fn(() => ({ name: focusedName, value })),
     },
@@ -230,7 +265,7 @@ describe("/accounts command", () => {
     expect((interaction.respond as any).mock.calls[0][0]).toHaveLength(25);
   });
 
-  it("autocompletes discord IDs with raw labels and raw values", async () => {
+  it("autocompletes discord IDs with rendered display names and raw values", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([
       {
         discordUserId: "111111111111111111",
@@ -241,7 +276,11 @@ describe("/accounts command", () => {
         discordUsername: null,
       },
     ]);
-    const interaction = makeAutocompleteInteraction("", "discord-id");
+    const interaction = makeAutocompleteInteraction("", "discord-id", {
+      memberDisplayNames: {
+        "111111111111111111": "Rendered Alpha",
+      },
+    });
 
     await Accounts.autocomplete(interaction as any);
 
@@ -252,17 +291,45 @@ describe("/accounts command", () => {
       },
     });
     expect(interaction.respond).toHaveBeenCalledWith([
-      { name: "111111111111111111", value: "111111111111111111" },
+      { name: "Rendered Alpha", value: "111111111111111111" },
       { name: "222222222222222222", value: "222222222222222222" },
     ]);
   });
 
-  it("falls back to @username only when the snowflake label cannot be rendered", () => {
-    expect(resolveDiscordIdAutocompleteLabel("111111111111111111", "AlphaUser")).toBe(
-      "111111111111111111",
-    );
-    expect(resolveDiscordIdAutocompleteLabel("", "AlphaUser")).toBe("@AlphaUser");
-    expect(resolveDiscordIdAutocompleteLabel("", null)).toBe("");
+  it("falls back to @username when the display name is unavailable", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        discordUserId: "333333333333333333",
+        discordUsername: null,
+      },
+    ]);
+    const interaction = makeAutocompleteInteraction("", "discord-id", {
+      cachedUsernames: {
+        "333333333333333333": "UsernameOnly",
+      },
+    });
+
+    await Accounts.autocomplete(interaction as any);
+
+    expect(interaction.respond).toHaveBeenCalledWith([
+      { name: "@UsernameOnly", value: "333333333333333333" },
+    ]);
+  });
+
+  it("falls back to raw Discord IDs when neither display name nor username is available", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        discordUserId: "444444444444444444",
+        discordUsername: null,
+      },
+    ]);
+    const interaction = makeAutocompleteInteraction("", "discord-id");
+
+    await Accounts.autocomplete(interaction as any);
+
+    expect(interaction.respond).toHaveBeenCalledWith([
+      { name: "444444444444444444", value: "444444444444444444" },
+    ]);
   });
 
   it("uses PlayerActivity clan name in output when local clan context is complete", async () => {
