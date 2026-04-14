@@ -131,8 +131,8 @@ describe("HeatMapRefDisplayService", () => {
       ["0 - 9,999,999", "0", "0", "0", "0", "0", "0", "0", "3", "31.25%", "2"],
     ]);
     expect(result.copyText).toBe(
-      "Band\tTH18\tTH17\tTH16\tTH15\tTH14\tTH13\tTH12\tTH11+\tMatch%\tClans\n" +
-        "0 - 9,999,999\t0\t0\t0\t0\t0\t0\t0\t3\t31.25%\t2",
+      "WeightMin\tWeightMax\tTH18\tTH17\tTH16\tTH15\tTH14\tTH13\tTH12\tTH11+\tMatch%\t# Clans\n" +
+        "0\t9,999,999\t0\t0\t0\t0\t0\t0\t0\t3\t31.25%\t2",
     );
   });
 
@@ -164,5 +164,6 @@ describe("HeatMapRefDisplayService", () => {
       "2",
     ]);
     expect(result.copyText).toContain("0%\t2");
+    expect(result.copyText.startsWith("WeightMin\tWeightMax\t")).toBe(true);
   });
 });
