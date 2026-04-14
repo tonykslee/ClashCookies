@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   Compo,
   buildCompoHeatMapRefCopyCustomIdForTest,
+  buildCompoHeatMapRefCopyTextForTest,
   buildCompoHeatMapRefRowsForTest,
   toGlyphSafeTextForTest,
 } from "../src/commands/Compo";
@@ -91,8 +92,8 @@ describe("/compo heatmapref command", () => {
         ["0 - 100", "3", "6", "7", "9", "9", "8", "5", "2", "83.42%", "4"],
       ],
       copyText:
-        "Band\tTH18\tTH17\tTH16\tTH15\tTH14\tTH13\tTH12\tTH11+\tMatch%\tClans\n" +
-        "0 - 100\t3\t6\t7\t9\t9\t8\t5\t2\t83.42%\t4",
+        "WeightMin\tWeightMax\tTH18\tTH17\tTH16\tTH15\tTH14\tTH13\tTH12\tTH11+\tMatch%\t# Clans\n" +
+        "0\t100\t3\t6\t7\t9\t9\t8\t5\t2\t83.42%\t4",
     } as never);
 
     const interaction = makeInteraction();
@@ -160,6 +161,14 @@ describe("/compo heatmapref command", () => {
       "83.42%",
       "11",
     ]);
+  });
+
+  it("wraps heatmapref copy text in a formatted text block", () => {
+    expect(
+      buildCompoHeatMapRefCopyTextForTest(
+        "WeightMin\tWeightMax\tTH18\tTH17\n0\t100\t3\t6",
+      ),
+    ).toBe("```text\nWeightMin\tWeightMax\tTH18\tTH17\n0\t100\t3\t6\n```");
   });
 
   it("keeps glyph-safe renderer text literal for plus and percent characters", () => {

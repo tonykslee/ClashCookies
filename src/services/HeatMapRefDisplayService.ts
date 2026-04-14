@@ -8,7 +8,10 @@ import {
   type HeatMapRefBucketCounts,
   type HeatMapRefRebuildSourceRoster,
 } from "../helper/heatMapRefRebuild";
-import { buildHeatMapRefDisplayRows, buildHeatMapRefDisplayText } from "../helper/heatMapRefDisplay";
+import {
+  buildHeatMapRefCopyText,
+  buildHeatMapRefDisplayRows,
+} from "../helper/heatMapRefDisplay";
 import { getHeatMapRefBandKey } from "../helper/compoHeatMap";
 
 type HeatMapRefSourceMember = {
@@ -85,16 +88,18 @@ export class HeatMapRefDisplayService {
     const heatMapRefs = await prisma.heatMapRef.findMany({
       orderBy: [{ weightMinInclusive: "asc" }, { weightMaxInclusive: "asc" }],
     });
-    const rows = await this.buildRows(heatMapRefs);
-    return {
-      rows,
-      copyText: buildHeatMapRefDisplayText(rows),
-    };
+    return this.buildDisplayData(heatMapRefs);
   }
 
-  private async buildRows(heatMapRefs: readonly HeatMapRef[]): Promise<string[][]> {
+  private async buildDisplayData(heatMapRefs: readonly HeatMapRef[]): Promise<{
+    rows: string[][];
+    copyText: string;
+  }> {
     if (heatMapRefs.length === 0) {
-      return buildHeatMapRefDisplayRows({ heatMapRefs });
+      return {
+        rows: buildHeatMapRefDisplayRows({ heatMapRefs }),
+        copyText: buildHeatMapRefCopyText({ heatMapRefs }),
+      };
     }
 
     const clanTagRows = await prisma.fwaClanCatalog.findMany({
@@ -165,14 +170,37 @@ export class HeatMapRefDisplayService {
       ]),
     );
 
+    const matchPercentByBandKey = this.buildMatchPercentByBandKeyFromStats({
+      heatMapRefs,
+      contributingTagsByBandKey,
+      statsByClanTag,
+    });
+
+    return {
+      rows: buildHeatMapRefDisplayRows({
+        heatMapRefs,
+        matchPercentByBandKey,
+      }),
+      copyText: buildHeatMapRefCopyText({
+        heatMapRefs,
+        matchPercentByBandKey,
+      }),
+    };
+  }
+
+  private buildMatchPercentByBandKeyFromStats(input: {
+    heatMapRefs: readonly HeatMapRef[];
+    contributingTagsByBandKey: ReadonlyMap<string, string[]>;
+    statsByClanTag: ReadonlyMap<string, HeatMapRefMatchStatsRow>;
+  }): ReadonlyMap<string, string> {
     const matchPercentByBandKey = new Map<string, string>();
-    for (const heatMapRef of heatMapRefs) {
+    for (const heatMapRef of input.heatMapRefs) {
       const bandKey = getHeatMapRefBandKey(heatMapRef);
-      const contributors = contributingTagsByBandKey.get(bandKey) ?? [];
+      const contributors = input.contributingTagsByBandKey.get(bandKey) ?? [];
       let weightedSum = 0;
       let denominator = 0;
       for (const clanTag of contributors) {
-        const stats = statsByClanTag.get(clanTag);
+        const stats = input.statsByClanTag.get(clanTag);
         if (!stats || stats.evaluatedWarCount <= 0) {
           continue;
         }
@@ -184,10 +212,6 @@ export class HeatMapRefDisplayService {
         denominator > 0 ? formatMatchPercent(weightedSum / denominator, denominator) : "0%",
       );
     }
-
-    return buildHeatMapRefDisplayRows({
-      heatMapRefs,
-      matchPercentByBandKey,
-    });
+    return matchPercentByBandKey;
   }
 }
