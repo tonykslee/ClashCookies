@@ -18,7 +18,6 @@ type AccountRow = {
   name: string;
   clanTag: string | null;
   clanName: string | null;
-  clanAlias: string | null;
   clanRole: "leader" | "coleader" | null;
 };
 
@@ -26,7 +25,6 @@ type ClanGroup = {
   key: string;
   clanTag: string | null;
   clanName: string | null;
-  clanAlias: string | null;
   entries: AccountRow[];
 };
 
@@ -93,16 +91,12 @@ function buildClanProfileMarkdownLink(
   return `[${label}](https://link.clashofclans.com/en?action=OpenClanProfile&tag=${encodedTag})`;
 }
 
-function buildClanHeadingLabel(group: Pick<ClanGroup, "clanAlias" | "clanName" | "clanTag">): string {
-  const fallbackTag = normalizeTag(group.clanTag ?? "") || "Unknown Clan";
-  return (
-    sanitizeDisplayText(group.clanAlias) ??
-    sanitizeDisplayText(group.clanName) ??
-    fallbackTag
-  );
+function buildClanHeadingLabel(group: Pick<ClanGroup, "clanName" | "clanTag">): string {
+  const fallbackTag = sanitizeDisplayText(group.clanTag) ?? "Unknown Clan";
+  return sanitizeDisplayText(group.clanName) ?? fallbackTag;
 }
 
-function buildClanHeadingMarkdown(group: Pick<ClanGroup, "clanAlias" | "clanName" | "clanTag">): string {
+function buildClanHeadingMarkdown(group: Pick<ClanGroup, "clanName" | "clanTag">): string {
   const label = buildClanHeadingLabel(group);
   const clanTag = normalizeTag(group.clanTag ?? "");
   return clanTag ? buildClanProfileMarkdownLink(label, clanTag) : label;
@@ -275,13 +269,81 @@ function buildAccountsDiscordIdAutocompleteChoices(
   }));
 }
 
+async function buildAccountsRows(input: {
+  cocService: unknown;
+  guildId: string;
+  linkedNameByTag: Map<string, string>;
+  tags: string[];
+}): Promise<AccountRow[]> {
+  const activity = await prisma.playerActivity.findMany({
+    where: { guildId: input.guildId, tag: { in: input.tags } },
+    select: { tag: true, name: true, clanTag: true, clanName: true },
+  });
+  const activityByTag = new Map(activity.map((a) => [normalizeTag(a.tag), a]));
+  const coc = input.cocService as { getPlayerRaw?: (tag: string) => Promise<any> } | null;
+  const livePlayerByTag = new Map<string, any | null>();
+  const getPlayerRaw = coc?.getPlayerRaw ?? null;
+  if (getPlayerRaw) {
+    const liveRows = await Promise.all(
+      input.tags.map(async (tag) => [tag, await getPlayerRaw(tag).catch(() => null)] as const),
+    );
+    for (const [tag, player] of liveRows) {
+      livePlayerByTag.set(tag, player);
+    }
+  }
+  const candidateClanTags = [...new Set([
+    ...activity
+      .map((row) => (row.clanTag ? normalizeTag(row.clanTag) : ""))
+      .filter(Boolean),
+    ...[...livePlayerByTag.values()]
+      .map((player) => (player?.clan?.tag ? normalizeTag(player.clan.tag) : ""))
+      .filter(Boolean),
+  ])];
+  const trackedClanRows =
+    candidateClanTags.length > 0
+      ? await prisma.trackedClan.findMany({
+          where: { tag: { in: candidateClanTags } },
+          select: { tag: true, name: true },
+        })
+      : [];
+  const trackedClanNameByTag = new Map(
+    trackedClanRows.map((row) => [
+      normalizeTag(row.tag),
+      sanitizeDisplayText(row.name),
+    ] as const)
+  );
+
+  return input.tags.map((tag) => {
+    const linkedName = input.linkedNameByTag.get(tag) ?? null;
+    const fallback = activityByTag.get(tag);
+    const livePlayer = livePlayerByTag.get(tag) ?? null;
+    const liveClanTag = livePlayer?.clan?.tag ? normalizeTag(livePlayer.clan.tag) : null;
+    const fallbackClanTag = fallback?.clanTag ? normalizeTag(fallback.clanTag) : null;
+    const clanTag = liveClanTag ?? fallbackClanTag ?? null;
+    const activityName = sanitizeDisplayText(fallback?.name);
+    const liveName = sanitizeDisplayText(livePlayer?.name);
+    const liveClanName = sanitizeDisplayText(livePlayer?.clan?.name);
+    const clanName =
+      liveClanName ??
+      sanitizeDisplayText(fallback?.clanName) ??
+      (clanTag ? trackedClanNameByTag.get(clanTag) ?? null : null);
+
+    return {
+      tag,
+      name: linkedName ?? activityName ?? liveName ?? tag,
+      clanTag,
+      clanName,
+      clanRole: normalizeClanMemberRole(livePlayer?.role),
+    };
+  });
+}
+
 function buildGroups(rows: AccountRow[]): ClanGroup[] {
   const grouped = new Map<string, ClanGroup>();
 
   for (const row of rows) {
     const clanName = sanitizeDisplayText(row.clanName);
     const clanTag = row.clanTag ? normalizeTag(row.clanTag) : null;
-    const clanAlias = sanitizeDisplayText(row.clanAlias);
     const key = clanTag ?? "__NO_CLAN__";
 
     const bucket = grouped.get(key);
@@ -290,11 +352,9 @@ function buildGroups(rows: AccountRow[]): ClanGroup[] {
         key,
         clanTag,
         clanName,
-        clanAlias,
         entries: [row],
       });
     } else {
-      if (clanAlias && !bucket.clanAlias) bucket.clanAlias = clanAlias;
       if (clanName && !bucket.clanName) bucket.clanName = clanName;
       bucket.entries.push(row);
     }
@@ -355,19 +415,35 @@ function buildPages(groups: ClanGroup[]): string[] {
   return pages.length > 0 ? pages : ["No accounts found."];
 }
 
-function buildPaginationRow(prefix: string, page: number, totalPages: number) {
-  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+function buildAccountsControlsRow(
+  prefix: string,
+  page: number,
+  totalPages: number,
+  refreshing: boolean,
+) {
+  const row = new ActionRowBuilder<ButtonBuilder>();
+  if (totalPages > 1) {
+    row.addComponents(
+      new ButtonBuilder()
+        .setCustomId(`${prefix}:prev`)
+        .setLabel("Prev")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(page <= 0),
+      new ButtonBuilder()
+        .setCustomId(`${prefix}:next`)
+        .setLabel("Next")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(page >= totalPages - 1),
+    );
+  }
+  row.addComponents(
     new ButtonBuilder()
-      .setCustomId(`${prefix}:prev`)
-      .setLabel("Prev")
-      .setStyle(ButtonStyle.Secondary)
-      .setDisabled(page <= 0),
-    new ButtonBuilder()
-      .setCustomId(`${prefix}:next`)
-      .setLabel("Next")
-      .setStyle(ButtonStyle.Secondary)
-      .setDisabled(page >= totalPages - 1)
+      .setCustomId(`${prefix}:refresh`)
+      .setLabel(refreshing ? "Refreshing..." : "Refresh")
+      .setStyle(ButtonStyle.Primary)
+      .setDisabled(refreshing),
   );
+  return [row];
 }
 
 function buildEmbeds(rows: AccountRow[]): EmbedBuilder[] {
@@ -415,7 +491,8 @@ export const Accounts: Command = {
     interaction: ChatInputCommandInteraction,
     cocService: unknown
   ) => {
-    if (!interaction.guildId) {
+    const guildId = interaction.guildId;
+    if (!guildId) {
       await interaction.reply({ ephemeral: true, content: "This command can only be used in a server." });
       return;
     }
@@ -485,104 +562,77 @@ export const Accounts: Command = {
         .map((link) => [normalizeTag(link.playerTag), sanitizeDisplayText(link.linkedName)] as const)
         .filter((entry): entry is [string, string] => Boolean(entry[0] && entry[1]))
     );
-    const activity = await prisma.playerActivity.findMany({
-      where: { guildId: interaction.guildId, tag: { in: uniqueTags } },
-      select: { tag: true, name: true, clanTag: true, clanName: true },
+    const rows = await buildAccountsRows({
+      cocService,
+      guildId,
+      linkedNameByTag,
+      tags: uniqueTags,
     });
-    const activityByTag = new Map(
-      activity.map((a) => [normalizeTag(a.tag), a])
-    );
-    const coc = cocService as { getPlayerRaw?: (tag: string) => Promise<any> } | null;
-    const livePlayerByTag = new Map<string, any | null>();
-    const getPlayerRaw = coc?.getPlayerRaw ?? null;
-    if (getPlayerRaw) {
-      const liveRows = await Promise.all(
-        uniqueTags.map(async (tag) => [tag, await getPlayerRaw(tag).catch(() => null)] as const),
-      );
-      for (const [tag, player] of liveRows) {
-        livePlayerByTag.set(tag, player);
-      }
-    }
-    const candidateClanTags = [...new Set([
-      ...activity
-        .map((row) => (row.clanTag ? normalizeTag(row.clanTag) : ""))
-        .filter(Boolean),
-      ...[...livePlayerByTag.values()]
-        .map((player) => (player?.clan?.tag ? normalizeTag(player.clan.tag) : ""))
-        .filter(Boolean),
-    ])];
-    const trackedClanRows =
-      candidateClanTags.length > 0
-        ? await prisma.trackedClan.findMany({
-            where: { tag: { in: candidateClanTags } },
-            select: { tag: true, name: true, shortName: true },
-          })
-        : [];
-    const trackedClanNameByTag = new Map(
-      trackedClanRows.map((row) => [
-        normalizeTag(row.tag),
-        {
-          name: sanitizeDisplayText(row.name),
-          alias: sanitizeDisplayText(row.shortName),
-        },
-      ] as const)
-    );
-    const rows: AccountRow[] = uniqueTags.map((tag) => {
-      const linkedName = linkedNameByTag.get(tag) ?? null;
-      const fallback = activityByTag.get(tag);
-      const livePlayer = livePlayerByTag.get(tag) ?? null;
-      const liveClanTag = livePlayer?.clan?.tag ? normalizeTag(livePlayer.clan.tag) : null;
-      const fallbackClanTag = fallback?.clanTag ? normalizeTag(fallback.clanTag) : null;
-      const clanTag = liveClanTag ?? fallbackClanTag ?? null;
-      const activityName = sanitizeDisplayText(fallback?.name);
-      const liveName = sanitizeDisplayText(livePlayer?.name);
-      const liveClanName = sanitizeDisplayText(livePlayer?.clan?.name);
-      const trackedClan = clanTag ? trackedClanNameByTag.get(clanTag) ?? null : null;
-      const clanName =
-        liveClanName ??
-        sanitizeDisplayText(fallback?.clanName) ??
-        trackedClan?.name ??
-        null;
-
-      return {
-        tag,
-        name: linkedName ?? activityName ?? liveName ?? tag,
-        clanTag,
-        clanName,
-        clanAlias: trackedClan?.alias ?? null,
-        clanRole: normalizeClanMemberRole(livePlayer?.role),
-      };
-    });
-
     const embeds = buildEmbeds(rows);
     for (const embed of embeds) {
       embed.setTitle(`Accounts by Clan (${rows.length})`);
     }
     const prefix = `accounts:${interaction.id}`;
     let page = 0;
+    let refreshing = false;
 
     const reply = await interaction.editReply({
       embeds: [embeds[page]],
-      components:
-        embeds.length > 1 ? [buildPaginationRow(prefix, page, embeds.length)] : [],
+      components: buildAccountsControlsRow(prefix, page, embeds.length, refreshing),
     });
-
-    if (embeds.length <= 1) return;
 
     const collector = reply.createMessageComponentCollector({
       componentType: ComponentType.Button,
       time: 5 * 60 * 1000,
       filter: (btn) =>
         btn.user.id === interaction.user.id &&
-        (btn.customId === `${prefix}:prev` || btn.customId === `${prefix}:next`),
+        (
+          btn.customId === `${prefix}:prev` ||
+          btn.customId === `${prefix}:next` ||
+          btn.customId === `${prefix}:refresh`
+        ),
     });
 
     collector.on("collect", async (btn) => {
+      if (btn.customId === `${prefix}:refresh`) {
+        if (refreshing) return;
+        refreshing = true;
+        try {
+          await btn.update({
+            embeds: [embeds[page]],
+            components: buildAccountsControlsRow(prefix, page, embeds.length, true),
+          });
+          try {
+            const refreshedRows = await buildAccountsRows({
+              cocService,
+              guildId,
+              linkedNameByTag,
+              tags: uniqueTags,
+            });
+            const refreshedEmbeds = buildEmbeds(refreshedRows);
+            for (const embed of refreshedEmbeds) {
+              embed.setTitle(`Accounts by Clan (${refreshedRows.length})`);
+            }
+            rows.splice(0, rows.length, ...refreshedRows);
+            embeds.splice(0, embeds.length, ...refreshedEmbeds);
+            if (page >= embeds.length) page = Math.max(0, embeds.length - 1);
+          } finally {
+            await interaction.editReply({
+              embeds: [embeds[page]],
+              components: buildAccountsControlsRow(prefix, page, embeds.length, false),
+            }).catch(() => undefined);
+          }
+        } finally {
+          refreshing = false;
+        }
+        return;
+      }
+
       if (btn.customId.endsWith(":prev")) page = Math.max(0, page - 1);
       if (btn.customId.endsWith(":next")) page = Math.min(embeds.length - 1, page + 1);
       await btn.update({
         embeds: [embeds[page]],
-        components: [buildPaginationRow(prefix, page, embeds.length)],
+        components: buildAccountsControlsRow(prefix, page, embeds.length, false),
       });
     });
 

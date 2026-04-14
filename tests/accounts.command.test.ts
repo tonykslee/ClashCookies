@@ -25,6 +25,13 @@ function makeInteraction(input?: {
   tag?: string | null;
   discordId?: string | null;
 }) {
+  const collectorHandlers: Record<string, any> = {};
+  const collector = {
+    on: vi.fn((event: string, handler: any) => {
+      collectorHandlers[event] = handler;
+      return collector;
+    }),
+  };
   return {
     guildId: "123456789012345678",
     id: "777777777777777777",
@@ -39,8 +46,18 @@ function makeInteraction(input?: {
     },
     deferReply: vi.fn().mockResolvedValue(undefined),
     editReply: vi.fn().mockResolvedValue({
-      createMessageComponentCollector: vi.fn(),
+      createMessageComponentCollector: vi.fn(() => collector),
     }),
+    __collector: collector,
+    __collectorHandlers: collectorHandlers,
+  };
+}
+
+function makeButtonInteraction(customId: string) {
+  return {
+    customId,
+    user: { id: "111111111111111111" },
+    update: vi.fn().mockResolvedValue(undefined),
   };
 }
 
@@ -98,7 +115,7 @@ function makeCocService(playersByTag: Record<string, any> = {}) {
 }
 
 function getEmbedDescription(interaction: any): string {
-  const payload = interaction.editReply.mock.calls.find(
+  const payload = [...interaction.editReply.mock.calls].reverse().find(
     (call: unknown[]) => call[0] && typeof call[0] === "object" && Array.isArray(call[0].embeds)
   )?.[0] as any;
   return String(payload?.embeds?.[0]?.toJSON?.().description ?? "");
@@ -142,7 +159,7 @@ describe("/accounts command", () => {
 
     const description = getEmbedDescription(interaction);
     expect(description).toContain(
-      "**[SC](https://link.clashofclans.com/en?action=OpenClanProfile&tag=PQL0289)**",
+      "**[Stored Clan](https://link.clashofclans.com/en?action=OpenClanProfile&tag=PQL0289)**",
     );
     expect(description).toContain("- Linked Alpha `#PYLQ0289`");
   });
@@ -237,6 +254,59 @@ describe("/accounts command", () => {
     );
     expect(description).toContain(":crown: Alpha `#PYLQ0289`");
     expect(description).toContain("- Bravo `#QGRJ2222`");
+  });
+
+  it("adds a refresh button that reruns clan resolution and disables itself while refreshing", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        playerName: "Linked Alpha",
+        discordUserId: "111111111111111111",
+      },
+    ]);
+    prismaMock.playerActivity.findMany.mockResolvedValue([
+      { tag: "#PYLQ0289", name: "Linked Alpha", clanTag: "#OLDTAG", clanName: "Old Clan" },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([]);
+    const cocService = makeCocService({
+      "#PYLQ0289": {
+        name: "Linked Alpha",
+        clan: { tag: "#OLDTAG", name: "Old Clan" },
+        role: "member",
+      },
+    });
+    const interaction = makeInteraction();
+
+    await Accounts.run({} as any, interaction as any, cocService as any);
+
+    const initialPayload = interaction.editReply.mock.calls[0][0] as any;
+    const initialControls = initialPayload.components[0].toJSON().components;
+    expect(initialControls.map((button: any) => button.label)).toContain("Refresh");
+
+    prismaMock.playerActivity.findMany.mockResolvedValue([
+      { tag: "#PYLQ0289", name: "Linked Alpha", clanTag: "#NEWTAG", clanName: "New Clan" },
+    ]);
+    cocService.getPlayerRaw.mockResolvedValueOnce({
+      name: "Linked Alpha",
+      clan: { tag: "#NEWTAG", name: "New Clan" },
+      role: "member",
+    });
+
+    const refreshHandler = interaction.__collectorHandlers.collect;
+    expect(refreshHandler).toBeTypeOf("function");
+    const refreshButton = makeButtonInteraction("accounts:777777777777777777:refresh");
+    await refreshHandler(refreshButton);
+
+    const refreshingPayload = refreshButton.update.mock.calls[0]?.[0] as any;
+    const refreshingLabels = refreshingPayload.components[0].toJSON().components.map(
+      (button: any) => button.label,
+    );
+    expect(refreshingLabels).toContain("Refreshing...");
+
+    const refreshedDescription = getEmbedDescription(interaction);
+    expect(refreshedDescription).toContain(
+      "**[New Clan](https://link.clashofclans.com/en?action=OpenClanProfile&tag=NEWTAG)**",
+    );
   });
 
   it("autocompletes player tags from PlayerLink and ignores tracked clans", async () => {
@@ -413,7 +483,7 @@ describe("/accounts command", () => {
     await Accounts.run({} as any, interaction as any, cocService as any);
 
     expect(getEmbedDescription(interaction)).toContain(
-      "**[SAVED](https://link.clashofclans.com/en?action=OpenClanProfile&tag=PQL0289)**",
+      "**[Saved Clan Name](https://link.clashofclans.com/en?action=OpenClanProfile&tag=PQL0289)**",
     );
   });
 
