@@ -32,6 +32,11 @@ type AccountAutocompleteRow = {
   discordUserId: string | null;
 };
 
+type DiscordIdAutocompleteRow = {
+  discordUserId: string;
+  discordUsername: string | null;
+};
+
 type AccountAutocompleteChoice = {
   name: string;
   value: string;
@@ -57,6 +62,26 @@ function normalizeAutocompleteQuery(input: string): string {
     .trim()
     .toLowerCase()
     .replace(/^#+/, "");
+}
+
+function normalizeDiscordIdAutocompleteQuery(input: string): string {
+  return String(input ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/^@+/, "");
+}
+
+function resolveDiscordIdAutocompleteLabel(
+  interaction: AutocompleteInteraction,
+  discordUserId: string,
+  persistedUsername: string | null,
+): string {
+  const cachedUsername = String(
+    interaction.client.users.cache.get(discordUserId)?.username ?? "",
+  ).trim();
+  const resolvedUsername =
+    sanitizeDisplayText(cachedUsername) ?? sanitizeDisplayText(persistedUsername);
+  return resolvedUsername ? `@${resolvedUsername}` : discordUserId;
 }
 
 function buildAccountsTagAutocompleteChoices(
@@ -133,6 +158,84 @@ function buildAccountsTagAutocompleteChoices(
   return ranked.map((row) => ({
     name: (row.linkedName ? `${row.linkedName} (${row.tag})` : row.tag).slice(0, 100),
     value: row.tag,
+  }));
+}
+
+function buildAccountsDiscordIdAutocompleteChoices(
+  rows: DiscordIdAutocompleteRow[],
+  query: string,
+  interaction: AutocompleteInteraction,
+): AccountAutocompleteChoice[] {
+  const normalizedQuery = normalizeDiscordIdAutocompleteQuery(query);
+  const deduped = new Map<
+    string,
+    { discordUserId: string; discordUsername: string | null }
+  >();
+
+  for (const row of rows) {
+    const discordUserId = String(row.discordUserId ?? "").trim();
+    if (!discordUserId) continue;
+    const discordUsername = sanitizeDisplayText(row.discordUsername);
+    const existing = deduped.get(discordUserId);
+    if (!existing) {
+      deduped.set(discordUserId, { discordUserId, discordUsername });
+      continue;
+    }
+
+    if (discordUsername && !existing.discordUsername) {
+      deduped.set(discordUserId, { discordUserId, discordUsername });
+    }
+  }
+
+  const ranked = [...deduped.values()]
+    .map((row) => {
+      const usernameLower = row.discordUsername?.toLowerCase() ?? "";
+      const exactIdMatch = normalizedQuery.length > 0 && row.discordUserId === normalizedQuery;
+      const prefixIdMatch =
+        normalizedQuery.length > 0 &&
+        row.discordUserId.startsWith(normalizedQuery) &&
+        !exactIdMatch;
+      const usernameMatch =
+        normalizedQuery.length > 0 &&
+        row.discordUsername !== null &&
+        usernameLower.includes(normalizedQuery);
+      const matchRank =
+        normalizedQuery.length === 0
+          ? 3
+          : exactIdMatch
+            ? 0
+            : prefixIdMatch
+              ? 1
+              : usernameMatch
+                ? 2
+                : 99;
+
+      return {
+        ...row,
+        matchRank,
+        sortName: row.discordUsername?.toLowerCase() ?? "\uffff",
+      };
+    })
+    .filter((row) => row.matchRank !== 99)
+    .sort((a, b) => {
+      if (a.matchRank !== b.matchRank) return a.matchRank - b.matchRank;
+      const byName = a.sortName.localeCompare(b.sortName, undefined, {
+        sensitivity: "base",
+      });
+      if (byName !== 0) return byName;
+      return a.discordUserId.localeCompare(b.discordUserId, undefined, {
+        sensitivity: "base",
+      });
+    })
+    .slice(0, 25);
+
+  return ranked.map((row) => ({
+    name: resolveDiscordIdAutocompleteLabel(
+      interaction,
+      row.discordUserId,
+      row.discordUsername,
+    ).slice(0, 100),
+    value: row.discordUserId,
   }));
 }
 
@@ -257,6 +360,7 @@ export const Accounts: Command = {
       description: "Discord user ID to inspect linked accounts",
       type: ApplicationCommandOptionType.String,
       required: false,
+      autocomplete: true,
     },
   ],
   run: async (
@@ -416,23 +520,41 @@ export const Accounts: Command = {
   },
   autocomplete: async (interaction: AutocompleteInteraction) => {
     const focused = interaction.options.getFocused(true);
-    if (focused.name !== "tag") {
+    if (focused.name !== "tag" && focused.name !== "discord-id") {
       await interaction.respond([]);
       return;
     }
 
     const query = String(focused.value ?? "");
+    if (focused.name === "tag") {
+      const rows = await prisma.playerLink.findMany({
+        select: {
+          discordUserId: true,
+          playerName: true,
+          playerTag: true,
+        },
+      });
+
+      const choices = buildAccountsTagAutocompleteChoices(
+        rows as AccountAutocompleteRow[],
+        query,
+      );
+
+      await interaction.respond(choices);
+      return;
+    }
+
     const rows = await prisma.playerLink.findMany({
       select: {
         discordUserId: true,
-        playerName: true,
-        playerTag: true,
+        discordUsername: true,
       },
     });
 
-    const choices = buildAccountsTagAutocompleteChoices(
-      rows as AccountAutocompleteRow[],
+    const choices = buildAccountsDiscordIdAutocompleteChoices(
+      rows as DiscordIdAutocompleteRow[],
       query,
+      interaction,
     );
 
     await interaction.respond(choices);
