@@ -19,6 +19,7 @@ import type { HeatMapRef } from "@prisma/client";
 import {
   COMPO_ADVICE_VIEW_LABELS,
   COMPO_ADVICE_VIEWS,
+  buildCompoAdviceContentLines,
   stepCompoAdviceCustomBandIndexByCount,
   type CompoAdviceView,
 } from "../helper/compoAdviceEngine";
@@ -1082,11 +1083,11 @@ function buildCompoAdviceEmbed(input: { advice: CompoAdviceReadResult }): EmbedB
     const embed = new EmbedBuilder()
       .setTitle(title)
       .setDescription(
-        [
-          `Advice View: **${summary.viewLabel}**`,
-          `Target Band: **${summary.currentBandLabel}**`,
-          `Current Score: **${formatAdviceScore(summary.currentScore)}**`,
-        ].join("\n"),
+        buildCompoAdviceContentLines({
+          summary,
+          modeLabel: input.advice.mode.toUpperCase(),
+          refreshLine: input.advice.refreshLine,
+        }).join("\n"),
       );
     const currentDeltas = [
       `TH18: ${formatSignedValue(summary.currentProjection.deltaByBucket.TH18)}`,

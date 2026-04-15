@@ -81,6 +81,7 @@ describe("/compo advice command", () => {
           view: "auto",
           viewLabel: "Auto-Detect Band",
           currentProjection: {
+            totalWeight: 1_500_000,
             memberCount: 50,
             deltaByBucket: {
               TH18: 0,
@@ -91,6 +92,8 @@ describe("/compo advice command", () => {
               "<=TH13": 0,
             },
           } as any,
+          currentWeight: 1_500_000,
+          targetBandMidpoint: 1_500_000,
           currentScore: 0,
           currentBandLabel: "1,000,000 - 2,000,000",
           recommendationText: "Add TH17",
@@ -132,6 +135,12 @@ describe("/compo advice command", () => {
     );
     expect(String(payload?.embeds?.[0]?.data?.description ?? "")).toContain(
       "Target Band: **1,000,000 - 2,000,000**",
+    );
+    expect(String(payload?.embeds?.[0]?.data?.description ?? "")).toContain(
+      "Current Weight: 1,500,000",
+    );
+    expect(String(payload?.embeds?.[0]?.data?.description ?? "")).toContain(
+      "Distance to Midpoint: → +0",
     );
     expect(String(payload?.embeds?.[0]?.data?.description ?? "")).toContain(
       "Current Score: **0**",
@@ -177,6 +186,7 @@ describe("/compo advice command", () => {
         view: "raw",
         viewLabel: "Raw Data",
         currentProjection: {
+          totalWeight: 1_500_000,
           memberCount: 50,
           deltaByBucket: {
             TH18: 0,
@@ -187,6 +197,8 @@ describe("/compo advice command", () => {
             "<=TH13": 0,
           },
         } as any,
+        currentWeight: 1_500_000,
+        targetBandMidpoint: 1_500_000,
         currentScore: 0,
         currentBandLabel: "0 - 9999999",
         recommendationText: "No improvement found.",
