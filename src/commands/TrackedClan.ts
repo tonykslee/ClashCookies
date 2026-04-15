@@ -25,6 +25,13 @@ import {
   resolveCurrentCwlSeasonKey,
   type TrackedClanRegistryType,
 } from "../services/CwlRegistryService";
+import {
+  buildRaidTrackedClanListLines,
+  listRaidTrackedClansForDisplay,
+  parseRaidTrackedClanTagsInput,
+  normalizeRaidTrackedClanTag,
+  upsertRaidTrackedClansForTags,
+} from "../services/RaidTrackedClanService";
 
 const CUSTOM_EMOJI_PATTERN = /^<(a?):([A-Za-z0-9_]+):(\d+)>$/;
 const SHORTCODE_EMOJI_PATTERN = /^:([A-Za-z0-9_]+):$/;
@@ -32,6 +39,32 @@ const SHORTCODE_EMOJI_PATTERN = /^:([A-Za-z0-9_]+):$/;
 function normalizeClanShortNameInput(input: string): string | null {
   const normalized = input.trim().toUpperCase();
   return normalized.length > 0 ? normalized : null;
+}
+
+function paginateTextLines(lines: string[]): string[] {
+  const pages: string[] = [];
+  const maxChars = 3900;
+  let current: string[] = [];
+  let currentLength = 0;
+
+  for (const line of lines) {
+    const nextLength = currentLength + (current.length > 0 ? 1 : 0) + line.length;
+    if (current.length > 0 && nextLength > maxChars) {
+      pages.push(current.join("\n"));
+      current = [line];
+      currentLength = line.length;
+      continue;
+    }
+
+    current.push(line);
+    currentLength = nextLength;
+  }
+
+  if (current.length > 0) {
+    pages.push(current.join("\n"));
+  }
+
+  return pages;
 }
 
 function buildTrackedClanBlock(clan: {
@@ -114,6 +147,19 @@ function buildCwlTrackedClanListEmbed(
     .setTitle(`Tracked Clans (CWL ${season}) (${total})`)
     .setDescription(pageContent)
     .setColor(0xfee75c)
+    .setFooter({ text: `Page ${page + 1}/${pages}` });
+}
+
+function buildRaidTrackedClanListEmbed(
+  total: number,
+  pageContent: string,
+  page: number,
+  pages: number,
+) {
+  return new EmbedBuilder()
+    .setTitle(`Tracked Clans (RAIDS) (${total})`)
+    .setDescription(pageContent)
+    .setColor(0x5865f2)
     .setFooter({ text: `Page ${page + 1}/${pages}` });
 }
 
@@ -253,6 +299,7 @@ export const TrackedClan: Command = {
           choices: [
             { name: "FWA", value: "FWA" },
             { name: "CWL", value: "CWL" },
+            { name: "RAIDS", value: "RAIDS" },
           ],
         },
       ],
@@ -270,6 +317,7 @@ export const TrackedClan: Command = {
           choices: [
             { name: "FWA", value: "FWA" },
             { name: "CWL", value: "CWL" },
+            { name: "RAIDS", value: "RAIDS" },
           ],
         },
       ],
@@ -284,6 +332,25 @@ export const TrackedClan: Command = {
           description: "Array-style or comma-separated clan tags (with or without #)",
           type: ApplicationCommandOptionType.String,
           required: true,
+        },
+      ],
+    },
+    {
+      name: "raid-tags",
+      description: "Add or update one or more RAIDS tracked clan tags",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "raid-tags",
+          description: "Array-style or comma-separated raid tags (with or without #)",
+          type: ApplicationCommandOptionType.String,
+          required: true,
+        },
+        {
+          name: "upgrades",
+          description: "Optional manual upgrade count for one raid tag",
+          type: ApplicationCommandOptionType.Integer,
+          required: false,
         },
       ],
     },
@@ -376,6 +443,84 @@ export const TrackedClan: Command = {
             try {
               await interaction.editReply({
                 embeds: [buildCwlTrackedClanListEmbed(tracked.length, season, pages[page], page, pages.length)],
+                components: [],
+              });
+            } catch {
+              // no-op
+            }
+          });
+          return;
+        }
+
+        if (listType === "RAIDS") {
+          const tracked = await listRaidTrackedClansForDisplay();
+          if (tracked.length === 0) {
+            await safeReply(interaction, {
+              ephemeral: true,
+              content: "No RAIDS tracked clans in the database.",
+            });
+            return;
+          }
+
+          const blocks = buildRaidTrackedClanListLines(tracked);
+          const pages = paginateTextLines(blocks);
+          let page = 0;
+          const paginatorPrefix = `tracked-clan-list:raids:${interaction.id}`;
+
+          await interaction.editReply({
+            embeds: [buildRaidTrackedClanListEmbed(tracked.length, pages[page], page, pages.length)],
+            components:
+              pages.length > 1 ? [buildTrackedClanListRow(paginatorPrefix, page, pages.length)] : [],
+          });
+
+          if (pages.length <= 1) {
+            return;
+          }
+
+          const message = await interaction.fetchReply();
+          const collector = message.createMessageComponentCollector({
+            componentType: ComponentType.Button,
+            time: 10 * 60 * 1000,
+          });
+
+          collector.on("collect", async (button: ButtonInteraction) => {
+            try {
+              if (button.user.id !== interaction.user.id) {
+                await button.reply({
+                  content: "Only the command user can control this paginator.",
+                  ephemeral: true,
+                });
+                return;
+              }
+              if (
+                button.customId !== `${paginatorPrefix}:prev` &&
+                button.customId !== `${paginatorPrefix}:next`
+              ) {
+                return;
+              }
+
+              if (button.customId.endsWith(":prev")) page = Math.max(0, page - 1);
+              if (button.customId.endsWith(":next")) page = Math.min(pages.length - 1, page + 1);
+
+              await button.update({
+                embeds: [buildRaidTrackedClanListEmbed(tracked.length, pages[page], page, pages.length)],
+                components: [buildTrackedClanListRow(paginatorPrefix, page, pages.length)],
+              });
+            } catch (err) {
+              console.error(`tracked-clan RAIDS list paginator failed: ${formatError(err)}`);
+              if (!button.replied && !button.deferred) {
+                await button.reply({
+                  ephemeral: true,
+                  content: "Failed to update tracked-clan RAIDS list page.",
+                });
+              }
+            }
+          });
+
+          collector.on("end", async () => {
+            try {
+              await interaction.editReply({
+                embeds: [buildRaidTrackedClanListEmbed(tracked.length, pages[page], page, pages.length)],
                 components: [],
               });
             } catch {
@@ -493,6 +638,66 @@ export const TrackedClan: Command = {
             );
           });
         }
+        return;
+      }
+
+      if (subcommand === "raid-tags") {
+        const rawRaidTags = interaction.options.getString("raid-tags", true);
+        if (!String(rawRaidTags ?? "").trim()) {
+          await safeReply(interaction, {
+            ephemeral: true,
+            content: "Please provide at least one raid tag.",
+          });
+          return;
+        }
+
+        const parsedRaidTags = parseRaidTrackedClanTagsInput(rawRaidTags);
+        if (parsedRaidTags.validTags.length === 0) {
+          await safeReply(interaction, {
+            ephemeral: true,
+            content: "Raid tags must be valid Clash tags.",
+          });
+          return;
+        }
+
+        const upgrades = interaction.options.getInteger("upgrades", false);
+        if (upgrades !== null && parsedRaidTags.validTags.length !== 1) {
+          await safeReply(interaction, {
+            ephemeral: true,
+            content: "upgrades can only be set when exactly one raid tag is provided.",
+          });
+          return;
+        }
+        if (upgrades !== null && (upgrades < 2000 || upgrades > 3331)) {
+          await safeReply(interaction, {
+            ephemeral: true,
+            content: "upgrades must be a whole number between 2000 and 3331.",
+          });
+          return;
+        }
+
+        const result = await upsertRaidTrackedClansForTags({
+          rawTags: rawRaidTags,
+          upgrades,
+          cocService,
+        });
+
+        await safeReply(interaction, {
+          ephemeral: true,
+          content: [
+            "Updated RAIDS tracked clans.",
+            `added: ${formatTagListForSummary(result.added)}`,
+            `updated upgrades: ${formatTagListForSummary(result.updated)}`,
+            `already-existing: ${formatTagListForSummary(result.alreadyExisting)}`,
+            `invalid: ${formatTagListForSummary(result.invalid)}`,
+            `duplicates-ignored: ${formatTagListForSummary(result.duplicateInRequest)}`,
+            ...(result.joinTypeRefreshFailures.length > 0
+              ? [
+                  `joinType refresh failures: ${formatTagListForSummary(result.joinTypeRefreshFailures)}`,
+                ]
+              : []),
+          ].join("\n"),
+        });
         return;
       }
 
@@ -727,8 +932,8 @@ export const TrackedClan: Command = {
           await safeReply(interaction, {
             ephemeral: true,
             content:
-              `Ambiguous remove for ${tag}: it exists in both FWA and CWL (${result.season}) registries.\n` +
-              "Re-run `/tracked-clan remove` with `type:FWA` or `type:CWL`.",
+              `Ambiguous remove for ${tag}: it exists in multiple tracked-clan registries (${result.season}).\n` +
+              "Re-run `/tracked-clan remove` with `type:FWA`, `type:CWL`, or `type:RAIDS`.",
           });
           return;
         }
@@ -747,7 +952,9 @@ export const TrackedClan: Command = {
           content:
             result.removedFrom === "FWA"
               ? `Removed tracked clan ${tag} from FWA registry.`
-              : `Removed tracked clan ${tag} from CWL registry for season ${result.season}.`,
+              : result.removedFrom === "CWL"
+                ? `Removed tracked clan ${tag} from CWL registry for season ${result.season}.`
+                : `Removed tracked clan ${tag} from RAIDS registry.`,
         });
       }
     } catch (err) {
@@ -769,7 +976,7 @@ export const TrackedClan: Command = {
     const query = String(focused.value ?? "").trim().toLowerCase();
     if (subcommand === "remove") {
       const season = resolveCurrentCwlSeasonKey();
-      const [trackedFwa, trackedCwl] = await Promise.all([
+      const [trackedFwa, trackedCwl, trackedRaid] = await Promise.all([
         prisma.trackedClan.findMany({
           orderBy: { createdAt: "asc" },
           select: { name: true, tag: true },
@@ -778,6 +985,10 @@ export const TrackedClan: Command = {
           where: { season },
           orderBy: { createdAt: "asc" },
           select: { name: true, tag: true },
+        }),
+        prisma.raidTrackedClan.findMany({
+          orderBy: [{ createdAt: "asc" }, { clanTag: "asc" }],
+          select: { clanTag: true },
         }),
       ]);
 
@@ -806,6 +1017,25 @@ export const TrackedClan: Command = {
           ? `${clan.name.trim()} (${tag}) [CWL ${season}]`
           : `${tag} [CWL ${season}]`;
         choiceByTag.set(tag, { name: label.slice(0, 100), value: tag });
+      }
+      for (const clan of trackedRaid) {
+        const tag = normalizeRaidTrackedClanTag(clan.clanTag);
+        if (!tag) continue;
+        const existing = choiceByTag.get(`#${tag}`);
+        if (existing) {
+          const merged = existing.name.includes("[RAIDS]")
+            ? existing.name
+            : `${existing.name} [RAIDS]`;
+          choiceByTag.set(`#${tag}`, {
+            name: merged.slice(0, 100),
+            value: `#${tag}`,
+          });
+          continue;
+        }
+        choiceByTag.set(`#${tag}`, {
+          name: `${tag} [RAIDS]`.slice(0, 100),
+          value: `#${tag}`,
+        });
       }
 
       const choices = [...choiceByTag.values()]
