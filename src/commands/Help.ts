@@ -107,7 +107,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     summary: "List players inactive for a given number of days.",
     details: [
       "Shows oldest inactive players first.",
-      "Supports `wars` mode to list tracked members who used 0/2 attacks in each of the last X ended wars.",
+      "Supports `wars` mode to list tracked members who used 0/2 attacks in each of the last X ended wars they actually participated in.",
       "Large results are clipped to keep replies readable.",
     ],
     examples: ["/inactive days:7", "/inactive days:30", "/inactive wars:3"],
