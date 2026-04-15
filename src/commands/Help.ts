@@ -296,7 +296,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     summary: "List linked player accounts grouped by their current clan.",
     details: [
       "Default behavior lists accounts linked to your Discord account.",
-      "If `discord-id` is provided, lists accounts for that user.",
+      "If `discord-id` is provided, lists accounts for that Discord user.",
       "If `tag` is provided, resolves linked Discord ID from local PlayerLink, then lists that user's accounts.",
       "Only one of `tag` or `discord-id` can be provided.",
       "Runtime link resolution is local-only from `PlayerLink`.",
@@ -305,7 +305,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     ],
     examples: [
       "/accounts",
-      "/accounts discord-id:143827744717799425",
+      "/accounts discord-id:@user",
       "/accounts tag:G2RG9JCRL",
       "/accounts visibility:public",
     ],
