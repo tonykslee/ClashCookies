@@ -11,6 +11,7 @@ import {
   formatHeatMapRefBandLabel,
   getHeatMapRefBandKey,
   getHeatMapRefBandMidpoint,
+  getHeatMapRefAdviceMidpoint,
 } from "./compoHeatMap";
 import type { CompoWarBucketCounts } from "./compoWarBucketCounts";
 import type { CompoWarDisplayBucket } from "./compoWarWeightBuckets";
@@ -92,6 +93,8 @@ export type CompoAdviceSummary = {
   view: CompoAdviceView;
   viewLabel: string;
   currentProjection: CompoActualStateProjection;
+  currentWeight: number | null;
+  targetBandMidpoint: number | null;
   currentScore: number | null;
   currentBandLabel: string;
   recommendationText: string;
@@ -112,6 +115,51 @@ function formatScore(value: number | null): string {
     return "n/a";
   }
   return Number.isInteger(value) ? `${value}` : value.toFixed(1);
+}
+
+function formatFullWeight(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return "unknown";
+  }
+  return Math.trunc(value).toLocaleString("en-US");
+}
+
+function formatCompactWeight(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return "unknown";
+  }
+
+  const magnitude = Math.abs(value);
+  const formatScaled = (scaled: number, suffix: string): string => {
+    const text = scaled.toFixed(3).replace(/\.?0+$/, "");
+    return `${text}${suffix}`;
+  };
+
+  if (magnitude >= 1_000_000_000) {
+    return formatScaled(magnitude / 1_000_000_000, "b");
+  }
+  if (magnitude >= 1_000_000) {
+    return formatScaled(magnitude / 1_000_000, "m");
+  }
+  if (magnitude >= 1_000) {
+    return formatScaled(magnitude / 1_000, "k");
+  }
+  return `${magnitude}`;
+}
+
+function formatSignedCompoAdviceDelta(delta: number | null | undefined): string {
+  if (delta === null || delta === undefined || !Number.isFinite(delta)) {
+    return "unknown";
+  }
+
+  const normalized = Number(delta);
+  if (Math.abs(normalized) < Number.EPSILON) {
+    return "→ +0";
+  }
+
+  const arrow = normalized > 0 ? "↑" : "↓";
+  const sign = normalized > 0 ? "+" : "-";
+  return `${arrow} ${sign}${formatCompactWeight(Math.abs(normalized))}`;
 }
 
 function getBandLabel(ref: HeatMapRef | null): string {
@@ -485,6 +533,13 @@ function resolveCurrentProjectionBandIndex(input: {
   };
 }
 
+function resolveAdviceTargetBandMidpoint(input: {
+  heatMapRefs: readonly HeatMapRef[];
+  selectedHeatMapRef: HeatMapRef | null;
+}): number | null {
+  return getHeatMapRefAdviceMidpoint(input.heatMapRefs, input.selectedHeatMapRef);
+}
+
 export function stepCompoAdviceCustomBandIndex(input: {
   heatMapRefs: readonly HeatMapRef[];
   currentBandIndex: number;
@@ -545,6 +600,13 @@ export function evaluateCompoAdvice(input: {
   const currentProjection = projectionState.projection;
   const currentScore = currentProjection.deviationScore;
   const currentBandLabel = getBandLabel(currentProjection.selectedHeatMapRef);
+  const currentWeight = Number.isFinite(currentProjection.totalWeight)
+    ? currentProjection.totalWeight
+    : null;
+  const targetBandMidpoint = resolveAdviceTargetBandMidpoint({
+    heatMapRefs: projectionState.heatMapRefs,
+    selectedHeatMapRef: currentProjection.selectedHeatMapRef,
+  });
   const actions = generateAdviceActions({
     base: input.base,
     currentProjection,
@@ -585,6 +647,8 @@ export function evaluateCompoAdvice(input: {
     view: input.view,
     viewLabel: COMPO_ADVICE_VIEW_LABELS[input.view],
     currentProjection,
+    currentWeight,
+    targetBandMidpoint,
     currentScore,
     currentBandLabel,
     recommendationText,
@@ -614,7 +678,15 @@ export function buildCompoAdviceContentLines(input: {
   lines.push(`Mode: **${input.modeLabel}**`);
   lines.push(`Advice View: **${input.summary.viewLabel}**`);
   lines.push(`Current Score: **${formatScore(input.summary.currentScore)}**`);
-  lines.push(`Current Band: **${input.summary.currentBandLabel}**`);
+  lines.push(`Target Band: **${input.summary.currentBandLabel}**`);
+  lines.push(`Current Weight: ${formatFullWeight(input.summary.currentWeight)}`);
+  lines.push(
+    `Distance to Midpoint: ${formatSignedCompoAdviceDelta(
+      input.summary.currentWeight === null || input.summary.targetBandMidpoint === null
+        ? null
+        : input.summary.currentWeight - input.summary.targetBandMidpoint,
+    )}`,
+  );
   lines.push(`Recommendation: **${input.summary.recommendationText}**`);
   lines.push(`Resulting Score: **${formatScore(input.summary.resultingScore)}**`);
   lines.push(`Resulting Band: **${input.summary.resultingBandLabel}**`);
@@ -675,3 +747,7 @@ export const evaluateAdviceActionForTest = evaluateAdviceAction;
 export const compareEvaluationsForTest = compareEvaluations;
 export const sortHeatMapRefsForTest = sortHeatMapRefs;
 export const resolveCustomHeatMapRefForTest = resolveCustomHeatMapRef;
+export const buildCompoAdviceContentLinesForTest = buildCompoAdviceContentLines;
+export const formatFullWeightForTest = formatFullWeight;
+export const formatSignedCompoAdviceDeltaForTest = formatSignedCompoAdviceDelta;
+export const resolveAdviceTargetBandMidpointForTest = resolveAdviceTargetBandMidpoint;

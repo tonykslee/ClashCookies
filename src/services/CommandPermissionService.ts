@@ -27,6 +27,7 @@ export const COMMAND_PERMISSION_TARGETS = [
   "reminders:edit",
   "link",
   "layout",
+  "dump",
   "link:create",
   "link:create:other-user",
   "link:delete",
@@ -40,6 +41,7 @@ export const COMMAND_PERMISSION_TARGETS = [
   "warplan",
   "tracked-clan:configure",
   "tracked-clan:cwl-tags",
+  "tracked-clan:raid-tags",
   "tracked-clan:remove",
   "tracked-clan:list",
   "sheet:link",
@@ -123,6 +125,7 @@ type GuildInteraction = ChatInputCommandInteraction | ModalSubmitInteraction;
 const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "tracked-clan:configure",
   "tracked-clan:cwl-tags",
+  "tracked-clan:raid-tags",
   "tracked-clan:remove",
   "reminders",
   "reminders:create",

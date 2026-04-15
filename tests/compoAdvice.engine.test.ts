@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   compareEvaluationsForTest,
+  buildCompoAdviceContentLinesForTest,
   evaluateCompoAdvice,
+  formatFullWeightForTest,
+  formatSignedCompoAdviceDeltaForTest,
+  resolveAdviceTargetBandMidpointForTest,
   stepCompoAdviceCustomBandIndexByCount,
   type CompoAdviceEvaluation,
 } from "../src/helper/compoAdviceEngine";
@@ -208,6 +212,76 @@ describe("CompoAdviceEngine", () => {
     expect(first.currentBandLabel).not.toBe(second.currentBandLabel);
     expect(first.recommendationText).not.toBe(second.recommendationText);
     expect(first.currentScore).not.toBe(second.currentScore);
+  });
+
+  it("computes midpoint advice using middle-band arithmetic and end-band offsets", () => {
+    const refs = [
+      makeHeatMapRef({
+        weightMinInclusive: 0,
+        weightMaxInclusive: 99_999,
+      }),
+      makeHeatMapRef({
+        weightMinInclusive: 1_000_000,
+        weightMaxInclusive: 1_199_998,
+      }),
+      makeHeatMapRef({
+        weightMinInclusive: 2_000_000,
+        weightMaxInclusive: 2_099_999,
+      }),
+    ];
+
+    expect(
+      resolveAdviceTargetBandMidpointForTest({
+        heatMapRefs: refs,
+        selectedHeatMapRef: refs[1] ?? null,
+      }),
+    ).toBe(1_099_999);
+    expect(
+      resolveAdviceTargetBandMidpointForTest({
+        heatMapRefs: refs,
+        selectedHeatMapRef: refs[0] ?? null,
+      }),
+    ).toBe(49_999);
+    expect(
+      resolveAdviceTargetBandMidpointForTest({
+        heatMapRefs: refs,
+        selectedHeatMapRef: refs[2] ?? null,
+      }),
+    ).toBe(2_050_000);
+  });
+
+  it("formats current weight and midpoint distances for advice summaries", () => {
+    expect(formatFullWeightForTest(7_245_000)).toBe("7,245,000");
+    expect(formatFullWeightForTest(null)).toBe("unknown");
+    expect(formatSignedCompoAdviceDeltaForTest(125_000)).toBe("↑ +125k");
+    expect(formatSignedCompoAdviceDeltaForTest(-80_000)).toBe("↓ -80k");
+    expect(formatSignedCompoAdviceDeltaForTest(0)).toBe("→ +0");
+    expect(formatSignedCompoAdviceDeltaForTest(null)).toBe("unknown");
+  });
+
+  it("renders unknown fallback lines when current weight or midpoint is missing", () => {
+    const lines = buildCompoAdviceContentLinesForTest({
+      modeLabel: "ACTUAL",
+      refreshLine: null,
+      summary: {
+        viewLabel: "Raw Data",
+        currentScore: null,
+        currentBandLabel: "(no band)",
+        currentProjection: {
+          totalWeight: NaN,
+        } as any,
+        currentWeight: null,
+        targetBandMidpoint: null,
+        recommendationText: "No improvement found.",
+        resultingScore: null,
+        resultingBandLabel: "(no band)",
+        alternateTexts: [],
+        statusText: null,
+      } as any,
+    });
+
+    expect(lines).toContain("Current Weight: unknown");
+    expect(lines).toContain("Distance to Midpoint: unknown");
   });
 
   it("steps Custom band indices deterministically and respects bounds", () => {

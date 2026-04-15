@@ -22,6 +22,7 @@ import { Telemetry } from "./commands/Telemetry";
 import { ClanHealth } from "./commands/ClanHealth";
 import { Defer } from "./commands/Defer";
 import { Link } from "./commands/Link";
+import { Dump } from "./commands/Dump";
 import { Layout } from "./commands/Layout";
 import { Say } from "./commands/Say";
 import { BotLogs } from "./commands/BotLogs";
@@ -59,6 +60,7 @@ export const Commands = [
   ClanHealth,
   Defer,
   Force,
+  Dump,
   Post,
   Say,
   BotLogs,

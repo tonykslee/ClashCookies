@@ -3,7 +3,7 @@ import { formatError } from "../helper/formatError";
 import { normalizeClanTag } from "./PlayerLinkService";
 import { CoCService } from "./CoCService";
 
-export type TrackedClanRegistryType = "FWA" | "CWL";
+export type TrackedClanRegistryType = "FWA" | "CWL" | "RAIDS";
 
 export type ParsedCwlTagInput = {
   validTags: string[];
@@ -407,7 +407,23 @@ export async function removeTrackedClanTagFromRegistries(input: {
     };
   }
 
-  const [fwaRow, cwlRow] = await Promise.all([
+  if (input.type === "RAIDS") {
+    const deleted = await prisma.raidTrackedClan.deleteMany({
+      where: { clanTag: stripRaidClanTag(normalizedTag) },
+    });
+    if (deleted.count <= 0) {
+      return { outcome: "not_found", tag: normalizedTag, season };
+    }
+    return {
+      outcome: "removed",
+      tag: normalizedTag,
+      removedFrom: "RAIDS",
+      season,
+      removedCount: deleted.count,
+    };
+  }
+
+  const [fwaRow, cwlRow, raidRow] = await Promise.all([
     prisma.trackedClan.findUnique({
       where: { tag: normalizedTag },
       select: { tag: true },
@@ -416,9 +432,13 @@ export async function removeTrackedClanTagFromRegistries(input: {
       where: { season, tag: normalizedTag },
       select: { id: true },
     }),
+    prisma.raidTrackedClan.findFirst({
+      where: { clanTag: stripRaidClanTag(normalizedTag) },
+      select: { id: true },
+    }),
   ]);
 
-  if (fwaRow && cwlRow) {
+  if ((fwaRow ? 1 : 0) + (cwlRow ? 1 : 0) + (raidRow ? 1 : 0) > 1) {
     return {
       outcome: "ambiguous",
       tag: normalizedTag,
@@ -457,9 +477,27 @@ export async function removeTrackedClanTagFromRegistries(input: {
     };
   }
 
+  if (raidRow) {
+    const deleted = await prisma.raidTrackedClan.deleteMany({
+      where: { clanTag: stripRaidClanTag(normalizedTag) },
+    });
+    return {
+      outcome: "removed",
+      tag: normalizedTag,
+      removedFrom: "RAIDS",
+      season,
+      removedCount: deleted.count,
+    };
+  }
+
   return {
     outcome: "not_found",
     tag: normalizedTag,
     season,
   };
+}
+
+/** Purpose: normalize a raid tracked clan tag into stored uppercase no-hash form. */
+function stripRaidClanTag(input: string): string {
+  return input.startsWith("#") ? input.slice(1) : input;
 }

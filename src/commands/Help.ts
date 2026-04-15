@@ -21,6 +21,7 @@ const HELP_POST_BUTTON_PREFIX = "help-post-channel";
 const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "tracked-clan:configure",
   "tracked-clan:cwl-tags",
+  "tracked-clan:raid-tags",
   "tracked-clan:remove",
   "reminders",
   "reminders:create",
@@ -150,15 +151,25 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/layout th:12 type:RISINGDAWN edit:https://link.clashofclans.com/en?action=OpenLayout&id=TH12... img-url:https://i.imgur.com/example.png",
     ],
   },
+  dump: {
+    summary: "Show or update the stored dump link without embed previews.",
+    details: [
+      "Use `/dump` to show the configured guild link as plain text wrapped in angle brackets.",
+      "Wrapping the link in `< >` prevents Discord from building an embed preview.",
+      "`edit` is admin-only and stores one link per guild/server.",
+    ],
+    examples: ["/dump", "/dump edit:https://example.com/dump"],
+  },
   "tracked-clan": {
     summary: "Manage tracked clans used by activity features.",
     details: [
       "Configure/remove tracked clans or list current tracked set.",
       "`configure` upserts tracked clan settings (lose-style, mail channel, log channel, clan role, clan badge emoji, short name).",
       "`cwl-tags` adds one seasonal CWL throwaway clan batch (array-style or comma-separated tags) without polluting the FWA tracked list.",
-      "`list type:FWA|CWL` switches between permanent FWA tracked clans (default) and seasonal CWL registry.",
-      "`remove` supports deterministic FWA/CWL deletion; when a tag exists in both registries, pass `type` explicitly.",
-      "`configure`, `cwl-tags`, and `remove` are admin-only by default.",
+      "`raid-tags` adds or updates the RAIDS registry with optional manual upgrades for one tag, and best-effort caches the clan join status from the clan profile API on write.",
+      "`list type:FWA|CWL|RAIDS` switches between permanent FWA tracked clans (default), seasonal CWL registry, and the RAIDS registry.",
+      "`remove` supports deterministic FWA/CWL/RAIDS deletion; when a tag exists in more than one registry, pass `type` explicitly.",
+      "`configure`, `cwl-tags`, `raid-tags`, and `remove` are admin-only by default.",
     ],
     examples: [
       "/tracked-clan configure tag:#2QG2C08UP",
@@ -166,8 +177,11 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/tracked-clan configure tag:#2QG2C08UP clan-badge::Logo_Gabbar:",
       "/tracked-clan configure tag:#2QG2C08UP short-name:GB",
       "/tracked-clan cwl-tags cwl-tags:[#PYLQ0289,#QGRJ2222]",
+      "/tracked-clan raid-tags raid-tags:[#2RVGJYLC0] upgrades:3331",
+      "/tracked-clan list type:RAIDS",
       "/tracked-clan list type:CWL",
       "/tracked-clan remove tag:#2QG2C08UP type:FWA",
+      "/tracked-clan remove tag:#2RVGJYLC0 type:RAIDS",
       "/tracked-clan list",
     ],
   },
@@ -296,7 +310,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     summary: "List linked player accounts grouped by their current clan.",
     details: [
       "Default behavior lists accounts linked to your Discord account.",
-      "If `discord-id` is provided, lists accounts for that user.",
+      "If `discord-id` is provided, lists accounts for that Discord user.",
       "If `tag` is provided, resolves linked Discord ID from local PlayerLink, then lists that user's accounts.",
       "Only one of `tag` or `discord-id` can be provided.",
       "Runtime link resolution is local-only from `PlayerLink`.",
@@ -305,7 +319,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     ],
     examples: [
       "/accounts",
-      "/accounts discord-id:143827744717799425",
+      "/accounts discord-id:@user",
       "/accounts tag:G2RG9JCRL",
       "/accounts visibility:public",
     ],
