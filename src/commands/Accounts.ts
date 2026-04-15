@@ -18,11 +18,13 @@ type AccountRow = {
   name: string;
   clanTag: string | null;
   clanName: string | null;
+  clanRole: "leader" | "coleader" | null;
 };
 
 type ClanGroup = {
   key: string;
-  title: string;
+  clanTag: string | null;
+  clanName: string | null;
   entries: AccountRow[];
 };
 
@@ -30,6 +32,11 @@ type AccountAutocompleteRow = {
   playerTag: string;
   playerName: string | null;
   discordUserId: string | null;
+};
+
+type DiscordIdAutocompleteRow = {
+  discordUserId: string;
+  discordUsername: string | null;
 };
 
 type AccountAutocompleteChoice = {
@@ -52,11 +59,63 @@ function sanitizeDisplayText(input: unknown): string | null {
   return normalized.length > 0 ? normalized : null;
 }
 
+function normalizeClanMemberRole(input: unknown): "leader" | "coleader" | null {
+  const normalized = String(input ?? "").trim().toLowerCase();
+  if (normalized === "leader") return "leader";
+  if (normalized === "coleader") return "coleader";
+  return null;
+}
+
 function normalizeAutocompleteQuery(input: string): string {
   return String(input ?? "")
     .trim()
     .toLowerCase()
     .replace(/^#+/, "");
+}
+
+function normalizeDiscordIdAutocompleteQuery(input: string): string {
+  return String(input ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/^@+/, "");
+}
+
+function buildClanProfileMarkdownLink(
+  clanName: string | null,
+  clanTag: string | null,
+): string {
+  const normalizedClanTag = normalizeTag(clanTag ?? "");
+  const label = sanitizeDisplayText(clanName) || normalizedClanTag || "Unknown Clan";
+  if (!normalizedClanTag) return label;
+  const encodedTag = normalizedClanTag.replace(/^#/, "");
+  return `[${label}](https://link.clashofclans.com/en?action=OpenClanProfile&tag=${encodedTag})`;
+}
+
+function buildClanHeadingLabel(group: Pick<ClanGroup, "clanName" | "clanTag">): string {
+  const fallbackTag = sanitizeDisplayText(group.clanTag) ?? "Unknown Clan";
+  return sanitizeDisplayText(group.clanName) ?? fallbackTag;
+}
+
+function buildClanHeadingMarkdown(group: Pick<ClanGroup, "clanName" | "clanTag">): string {
+  const label = buildClanHeadingLabel(group);
+  const clanTag = normalizeTag(group.clanTag ?? "");
+  return clanTag ? buildClanProfileMarkdownLink(label, clanTag) : label;
+}
+
+export function resolveDiscordIdAutocompleteLabel(
+  interaction: AutocompleteInteraction,
+  discordUserId: string,
+): string {
+  const member = interaction.guild?.members.cache.get(discordUserId) ?? null;
+  const displayName = sanitizeDisplayText(member?.displayName);
+  if (displayName) return displayName;
+
+  const username =
+    sanitizeDisplayText(member?.user?.username) ??
+    sanitizeDisplayText(interaction.client.users.cache.get(discordUserId)?.username);
+  if (username) return `@${username}`;
+
+  return sanitizeDisplayText(discordUserId) ?? "";
 }
 
 function buildAccountsTagAutocompleteChoices(
@@ -136,19 +195,167 @@ function buildAccountsTagAutocompleteChoices(
   }));
 }
 
-function buildGroups(rows: AccountRow[]): ClanGroup[] {
-  const grouped = new Map<string, { title: string; entries: AccountRow[] }>();
+function buildAccountsDiscordIdAutocompleteChoices(
+  rows: DiscordIdAutocompleteRow[],
+  query: string,
+  interaction: AutocompleteInteraction,
+): AccountAutocompleteChoice[] {
+  const normalizedQuery = normalizeDiscordIdAutocompleteQuery(query);
+  const deduped = new Map<
+    string,
+    { discordUserId: string; discordUsername: string | null }
+  >();
 
   for (const row of rows) {
-    const clanName = row.clanName?.trim() || null;
+    const discordUserId = String(row.discordUserId ?? "").trim();
+    if (!discordUserId) continue;
+    const discordUsername = sanitizeDisplayText(row.discordUsername);
+    const existing = deduped.get(discordUserId);
+    if (!existing) {
+      deduped.set(discordUserId, { discordUserId, discordUsername });
+      continue;
+    }
+
+    if (discordUsername && !existing.discordUsername) {
+      deduped.set(discordUserId, { discordUserId, discordUsername });
+    }
+  }
+
+  const ranked = [...deduped.values()]
+    .map((row) => {
+      const usernameLower = row.discordUsername?.toLowerCase() ?? "";
+      const exactIdMatch = normalizedQuery.length > 0 && row.discordUserId === normalizedQuery;
+      const prefixIdMatch =
+        normalizedQuery.length > 0 &&
+        row.discordUserId.startsWith(normalizedQuery) &&
+        !exactIdMatch;
+      const usernameMatch =
+        normalizedQuery.length > 0 &&
+        row.discordUsername !== null &&
+        usernameLower.includes(normalizedQuery);
+      const matchRank =
+        normalizedQuery.length === 0
+          ? 3
+          : exactIdMatch
+            ? 0
+            : prefixIdMatch
+              ? 1
+              : usernameMatch
+                ? 2
+                : 99;
+
+      return {
+        ...row,
+        matchRank,
+        sortName: row.discordUsername?.toLowerCase() ?? "\uffff",
+      };
+    })
+    .filter((row) => row.matchRank !== 99)
+    .sort((a, b) => {
+      if (a.matchRank !== b.matchRank) return a.matchRank - b.matchRank;
+      const byName = a.sortName.localeCompare(b.sortName, undefined, {
+        sensitivity: "base",
+      });
+      if (byName !== 0) return byName;
+      return a.discordUserId.localeCompare(b.discordUserId, undefined, {
+        sensitivity: "base",
+      });
+    })
+    .slice(0, 25);
+
+  return ranked.map((row) => ({
+    name: resolveDiscordIdAutocompleteLabel(interaction, row.discordUserId).slice(0, 100),
+    value: row.discordUserId,
+  }));
+}
+
+async function buildAccountsRows(input: {
+  cocService: unknown;
+  guildId: string;
+  linkedNameByTag: Map<string, string>;
+  tags: string[];
+}): Promise<AccountRow[]> {
+  const activity = await prisma.playerActivity.findMany({
+    where: { guildId: input.guildId, tag: { in: input.tags } },
+    select: { tag: true, name: true, clanTag: true, clanName: true },
+  });
+  const activityByTag = new Map(activity.map((a) => [normalizeTag(a.tag), a]));
+  const coc = input.cocService as { getPlayerRaw?: (tag: string) => Promise<any> } | null;
+  const livePlayerByTag = new Map<string, any | null>();
+  const getPlayerRaw = coc?.getPlayerRaw ?? null;
+  if (getPlayerRaw) {
+    const liveRows = await Promise.all(
+      input.tags.map(async (tag) => [tag, await getPlayerRaw(tag).catch(() => null)] as const),
+    );
+    for (const [tag, player] of liveRows) {
+      livePlayerByTag.set(tag, player);
+    }
+  }
+  const candidateClanTags = [...new Set([
+    ...activity
+      .map((row) => (row.clanTag ? normalizeTag(row.clanTag) : ""))
+      .filter(Boolean),
+    ...[...livePlayerByTag.values()]
+      .map((player) => (player?.clan?.tag ? normalizeTag(player.clan.tag) : ""))
+      .filter(Boolean),
+  ])];
+  const trackedClanRows =
+    candidateClanTags.length > 0
+      ? await prisma.trackedClan.findMany({
+          where: { tag: { in: candidateClanTags } },
+          select: { tag: true, name: true },
+        })
+      : [];
+  const trackedClanNameByTag = new Map(
+    trackedClanRows.map((row) => [
+      normalizeTag(row.tag),
+      sanitizeDisplayText(row.name),
+    ] as const)
+  );
+
+  return input.tags.map((tag) => {
+    const linkedName = input.linkedNameByTag.get(tag) ?? null;
+    const fallback = activityByTag.get(tag);
+    const livePlayer = livePlayerByTag.get(tag) ?? null;
+    const liveClanTag = livePlayer?.clan?.tag ? normalizeTag(livePlayer.clan.tag) : null;
+    const fallbackClanTag = fallback?.clanTag ? normalizeTag(fallback.clanTag) : null;
+    const clanTag = liveClanTag ?? fallbackClanTag ?? null;
+    const activityName = sanitizeDisplayText(fallback?.name);
+    const liveName = sanitizeDisplayText(livePlayer?.name);
+    const liveClanName = sanitizeDisplayText(livePlayer?.clan?.name);
+    const clanName =
+      liveClanName ??
+      sanitizeDisplayText(fallback?.clanName) ??
+      (clanTag ? trackedClanNameByTag.get(clanTag) ?? null : null);
+
+    return {
+      tag,
+      name: linkedName ?? activityName ?? liveName ?? tag,
+      clanTag,
+      clanName,
+      clanRole: normalizeClanMemberRole(livePlayer?.role),
+    };
+  });
+}
+
+function buildGroups(rows: AccountRow[]): ClanGroup[] {
+  const grouped = new Map<string, ClanGroup>();
+
+  for (const row of rows) {
+    const clanName = sanitizeDisplayText(row.clanName);
     const clanTag = row.clanTag ? normalizeTag(row.clanTag) : null;
     const key = clanTag ?? "__NO_CLAN__";
-    const title = clanTag ? `${clanName ?? "Unknown Clan"} (${clanTag})` : "No Clan";
 
     const bucket = grouped.get(key);
     if (!bucket) {
-      grouped.set(key, { title, entries: [row] });
+      grouped.set(key, {
+        key,
+        clanTag,
+        clanName,
+        entries: [row],
+      });
     } else {
+      if (clanName && !bucket.clanName) bucket.clanName = clanName;
       bucket.entries.push(row);
     }
   }
@@ -157,9 +364,11 @@ function buildGroups(rows: AccountRow[]): ClanGroup[] {
     .sort((a, b) => {
       if (a[0] === "__NO_CLAN__") return 1;
       if (b[0] === "__NO_CLAN__") return -1;
-      return a[1].title.localeCompare(b[1].title);
+      return buildClanHeadingLabel(a[1]).localeCompare(buildClanHeadingLabel(b[1]), undefined, {
+        sensitivity: "base",
+      });
     })
-    .map(([key, value]) => ({ key, ...value }));
+    .map(([, value]) => value);
 
   for (const group of groups) {
     group.entries.sort((a, b) => a.name.localeCompare(b.name));
@@ -175,9 +384,10 @@ function buildPages(groups: ClanGroup[]): string[] {
 
   for (const group of groups) {
     const groupLines: string[] = [];
-    groupLines.push(`**${group.title}**`);
+    groupLines.push(`**${group.clanTag ? buildClanHeadingMarkdown(group) : "No Clan"}**`);
     for (const entry of group.entries) {
-      groupLines.push(`- ${entry.name} \`${entry.tag}\``);
+      const marker = entry.clanRole === "coleader" ? ":crown:" : "-";
+      groupLines.push(`${marker} ${entry.name} \`${entry.tag}\``);
     }
 
     const groupAccountCount = group.entries.length;
@@ -205,19 +415,35 @@ function buildPages(groups: ClanGroup[]): string[] {
   return pages.length > 0 ? pages : ["No accounts found."];
 }
 
-function buildPaginationRow(prefix: string, page: number, totalPages: number) {
-  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+function buildAccountsControlsRow(
+  prefix: string,
+  page: number,
+  totalPages: number,
+  refreshing: boolean,
+) {
+  const row = new ActionRowBuilder<ButtonBuilder>();
+  if (totalPages > 1) {
+    row.addComponents(
+      new ButtonBuilder()
+        .setCustomId(`${prefix}:prev`)
+        .setLabel("Prev")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(page <= 0),
+      new ButtonBuilder()
+        .setCustomId(`${prefix}:next`)
+        .setLabel("Next")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(page >= totalPages - 1),
+    );
+  }
+  row.addComponents(
     new ButtonBuilder()
-      .setCustomId(`${prefix}:prev`)
-      .setLabel("Prev")
-      .setStyle(ButtonStyle.Secondary)
-      .setDisabled(page <= 0),
-    new ButtonBuilder()
-      .setCustomId(`${prefix}:next`)
-      .setLabel("Next")
-      .setStyle(ButtonStyle.Secondary)
-      .setDisabled(page >= totalPages - 1)
+      .setCustomId(`${prefix}:refresh`)
+      .setLabel(refreshing ? "Refreshing..." : "Refresh")
+      .setStyle(ButtonStyle.Primary)
+      .setDisabled(refreshing),
   );
+  return [row];
 }
 
 function buildEmbeds(rows: AccountRow[]): EmbedBuilder[] {
@@ -257,14 +483,16 @@ export const Accounts: Command = {
       description: "Discord user ID to inspect linked accounts",
       type: ApplicationCommandOptionType.String,
       required: false,
+      autocomplete: true,
     },
   ],
   run: async (
     _client: Client,
     interaction: ChatInputCommandInteraction,
-    _cocService: unknown
+    cocService: unknown
   ) => {
-    if (!interaction.guildId) {
+    const guildId = interaction.guildId;
+    if (!guildId) {
       await interaction.reply({ ephemeral: true, content: "This command can only be used in a server." });
       return;
     }
@@ -334,77 +562,77 @@ export const Accounts: Command = {
         .map((link) => [normalizeTag(link.playerTag), sanitizeDisplayText(link.linkedName)] as const)
         .filter((entry): entry is [string, string] => Boolean(entry[0] && entry[1]))
     );
-    const activity = await prisma.playerActivity.findMany({
-      where: { guildId: interaction.guildId, tag: { in: uniqueTags } },
-      select: { tag: true, name: true, clanTag: true, clanName: true },
+    const rows = await buildAccountsRows({
+      cocService,
+      guildId,
+      linkedNameByTag,
+      tags: uniqueTags,
     });
-    const activityByTag = new Map(
-      activity.map((a) => [normalizeTag(a.tag), a])
-    );
-    const candidateClanTags = [...new Set(
-      activity
-        .map((row) => (row.clanTag ? normalizeTag(row.clanTag) : ""))
-        .filter(Boolean)
-    )];
-    const trackedClanRows =
-      candidateClanTags.length > 0
-        ? await prisma.trackedClan.findMany({
-            where: { tag: { in: candidateClanTags } },
-            select: { tag: true, name: true },
-          })
-        : [];
-    const trackedClanNameByTag = new Map(
-      trackedClanRows
-        .map((row) => [normalizeTag(row.tag), sanitizeDisplayText(row.name)] as const)
-        .filter((entry): entry is [string, string] => Boolean(entry[0] && entry[1]))
-    );
-    const rows: AccountRow[] = uniqueTags.map((tag) => {
-      const linkedName = linkedNameByTag.get(tag) ?? null;
-      const fallback = activityByTag.get(tag);
-      const fallbackClanTag = fallback?.clanTag ? normalizeTag(fallback.clanTag) : null;
-      const clanTag = fallbackClanTag ?? "";
-      const activityName = sanitizeDisplayText(fallback?.name);
-      const clanName =
-        sanitizeDisplayText(fallback?.clanName) ??
-        (clanTag ? trackedClanNameByTag.get(clanTag) ?? null : null);
-
-      return {
-        tag,
-        name: linkedName ?? activityName ?? tag,
-        clanTag: clanTag || null,
-        clanName,
-      };
-    });
-
     const embeds = buildEmbeds(rows);
     for (const embed of embeds) {
       embed.setTitle(`Accounts by Clan (${rows.length})`);
     }
     const prefix = `accounts:${interaction.id}`;
     let page = 0;
+    let refreshing = false;
 
     const reply = await interaction.editReply({
       embeds: [embeds[page]],
-      components:
-        embeds.length > 1 ? [buildPaginationRow(prefix, page, embeds.length)] : [],
+      components: buildAccountsControlsRow(prefix, page, embeds.length, refreshing),
     });
-
-    if (embeds.length <= 1) return;
 
     const collector = reply.createMessageComponentCollector({
       componentType: ComponentType.Button,
       time: 5 * 60 * 1000,
       filter: (btn) =>
         btn.user.id === interaction.user.id &&
-        (btn.customId === `${prefix}:prev` || btn.customId === `${prefix}:next`),
+        (
+          btn.customId === `${prefix}:prev` ||
+          btn.customId === `${prefix}:next` ||
+          btn.customId === `${prefix}:refresh`
+        ),
     });
 
     collector.on("collect", async (btn) => {
+      if (btn.customId === `${prefix}:refresh`) {
+        if (refreshing) return;
+        refreshing = true;
+        try {
+          await btn.update({
+            embeds: [embeds[page]],
+            components: buildAccountsControlsRow(prefix, page, embeds.length, true),
+          });
+          try {
+            const refreshedRows = await buildAccountsRows({
+              cocService,
+              guildId,
+              linkedNameByTag,
+              tags: uniqueTags,
+            });
+            const refreshedEmbeds = buildEmbeds(refreshedRows);
+            for (const embed of refreshedEmbeds) {
+              embed.setTitle(`Accounts by Clan (${refreshedRows.length})`);
+            }
+            rows.splice(0, rows.length, ...refreshedRows);
+            embeds.splice(0, embeds.length, ...refreshedEmbeds);
+            if (page >= embeds.length) page = Math.max(0, embeds.length - 1);
+          } finally {
+            await interaction.editReply({
+              embeds: [embeds[page]],
+              components: buildAccountsControlsRow(prefix, page, embeds.length, false),
+            }).catch(() => undefined);
+          }
+        } finally {
+          refreshing = false;
+        }
+        return;
+      }
+
       if (btn.customId.endsWith(":prev")) page = Math.max(0, page - 1);
       if (btn.customId.endsWith(":next")) page = Math.min(embeds.length - 1, page + 1);
       await btn.update({
         embeds: [embeds[page]],
-        components: [buildPaginationRow(prefix, page, embeds.length)],
+        components: buildAccountsControlsRow(prefix, page, embeds.length, false),
       });
     });
 
@@ -416,23 +644,41 @@ export const Accounts: Command = {
   },
   autocomplete: async (interaction: AutocompleteInteraction) => {
     const focused = interaction.options.getFocused(true);
-    if (focused.name !== "tag") {
+    if (focused.name !== "tag" && focused.name !== "discord-id") {
       await interaction.respond([]);
       return;
     }
 
     const query = String(focused.value ?? "");
+    if (focused.name === "tag") {
+      const rows = await prisma.playerLink.findMany({
+        select: {
+          discordUserId: true,
+          playerName: true,
+          playerTag: true,
+        },
+      });
+
+      const choices = buildAccountsTagAutocompleteChoices(
+        rows as AccountAutocompleteRow[],
+        query,
+      );
+
+      await interaction.respond(choices);
+      return;
+    }
+
     const rows = await prisma.playerLink.findMany({
       select: {
         discordUserId: true,
-        playerName: true,
-        playerTag: true,
+        discordUsername: true,
       },
     });
 
-    const choices = buildAccountsTagAutocompleteChoices(
-      rows as AccountAutocompleteRow[],
+    const choices = buildAccountsDiscordIdAutocompleteChoices(
+      rows as DiscordIdAutocompleteRow[],
       query,
+      interaction,
     );
 
     await interaction.respond(choices);
