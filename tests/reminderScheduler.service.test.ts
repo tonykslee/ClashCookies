@@ -161,7 +161,7 @@ describe("ReminderSchedulerService v1 trigger semantics", () => {
         warId: 902,
         state: "inWar",
         startTime: new Date(nowMs - 6 * 60 * 60 * 1000),
-        endTime: new Date(nowMs + 30 * 60 * 1000),
+        endTime: new Date(nowMs + 60 * 60 * 1000),
         updatedAt: new Date(nowMs),
       },
     ]);
@@ -173,7 +173,7 @@ describe("ReminderSchedulerService v1 trigger semantics", () => {
           cwlClanTag: null,
           cwlClanName: null,
           raidActive: true,
-          raidEndsAt: new Date(nowMs + 30 * 60 * 1000),
+          raidEndsAt: new Date(nowMs + 60 * 60 * 1000),
           gamesActive: false,
           gamesEndsAt: null,
           updatedAt: new Date(nowMs),
@@ -184,7 +184,7 @@ describe("ReminderSchedulerService v1 trigger semantics", () => {
           cwlClanTag: null,
           cwlClanName: null,
           raidActive: false,
-          raidEndsAt: new Date(nowMs + 30 * 60 * 1000),
+          raidEndsAt: new Date(nowMs + 60 * 60 * 1000),
           gamesActive: false,
           gamesEndsAt: null,
           updatedAt: new Date(nowMs),
@@ -197,7 +197,7 @@ describe("ReminderSchedulerService v1 trigger semantics", () => {
           raidActive: false,
           raidEndsAt: null,
           gamesActive: true,
-          gamesEndsAt: new Date(nowMs + 30 * 60 * 1000),
+          gamesEndsAt: new Date(nowMs + 60 * 60 * 1000),
           updatedAt: new Date(nowMs),
         },
       ],
@@ -239,7 +239,7 @@ describe("ReminderSchedulerService v1 trigger semantics", () => {
     );
   });
 
-  it("applies threshold crossing + late-fire before end, and never fires after event end", () => {
+  it("fires only when the scheduler window crosses the offset boundary and never after event end", () => {
     const endMs = Date.parse("2026-04-05T02:00:00.000Z");
 
     const crossed = shouldReminderOffsetFireForTest({
@@ -262,8 +262,134 @@ describe("ReminderSchedulerService v1 trigger semantics", () => {
     });
 
     expect(crossed).toBe(true);
-    expect(lateFire).toBe(true);
+    expect(lateFire).toBe(false);
     expect(expired).toBe(false);
+  });
+
+  it("skips already-missed offsets for a newly created active-war reminder", async () => {
+    const nowMs = Date.parse("2026-04-05T01:00:00.000Z");
+    const eventEndsAtMs = nowMs + 60 * 60 * 1000;
+    prismaMock.reminder.findMany.mockResolvedValue([
+      {
+        id: "rem-war",
+        guildId: "guild-1",
+        channelId: "channel-war",
+        type: ReminderType.WAR_CWL,
+        isEnabled: true,
+        times: [
+          { offsetSeconds: 24 * 60 * 60 },
+          { offsetSeconds: 12 * 60 * 60 },
+          { offsetSeconds: 6 * 60 * 60 },
+          { offsetSeconds: 60 * 60 },
+        ],
+        targetClans: [{ clanTag: "#PYLQ0289", clanType: "FWA" }],
+      },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#PYLQ0289",
+        clanName: "War Clan",
+        warId: 903,
+        state: "inWar",
+        startTime: new Date(nowMs - 23 * 60 * 60 * 1000),
+        endTime: new Date(eventEndsAtMs),
+        updatedAt: new Date(nowMs),
+      },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#PYLQ0289", name: "War Clan" }]);
+    prismaMock.reminderFireLog.create.mockImplementation(async ({ data }: any) => ({
+      id: `fire-${String(data?.offsetSeconds ?? "x")}`,
+    }));
+    const dispatch = {
+      dispatchReminder: vi.fn().mockResolvedValue({
+        status: "sent",
+        messageId: "msg-1",
+      }),
+    };
+
+    const firstCounts = await runReminderSchedulerCycle({
+      client: {} as any,
+      dispatch: dispatch as any,
+      nowMs,
+      intervalMs: 60_000,
+    });
+
+    expect(firstCounts).toEqual({
+      evaluated: 4,
+      fired: 1,
+      deduped: 0,
+      failed: 0,
+    });
+    expect(dispatch.dispatchReminder).toHaveBeenCalledTimes(1);
+    expect(dispatch.dispatchReminder.mock.calls.map(([, payload]) => payload.offsetSeconds)).toEqual([60 * 60]);
+  });
+
+  it("fires a future offset when the scheduler crosses its boundary later", async () => {
+    const nowMs = Date.parse("2026-04-05T01:00:00.000Z");
+    const eventEndsAtMs = nowMs + 2 * 60 * 60 * 1000;
+    prismaMock.reminder.findMany.mockResolvedValue([
+      {
+        id: "rem-war",
+        guildId: "guild-1",
+        channelId: "channel-war",
+        type: ReminderType.WAR_CWL,
+        isEnabled: true,
+        times: [
+          { offsetSeconds: 24 * 60 * 60 },
+          { offsetSeconds: 60 * 60 },
+        ],
+        targetClans: [{ clanTag: "#PYLQ0289", clanType: "FWA" }],
+      },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#PYLQ0289",
+        clanName: "War Clan",
+        warId: 904,
+        state: "inWar",
+        startTime: new Date(nowMs - 22 * 60 * 60 * 1000),
+        endTime: new Date(eventEndsAtMs),
+        updatedAt: new Date(nowMs),
+      },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#PYLQ0289", name: "War Clan" }]);
+    prismaMock.reminderFireLog.create.mockImplementation(async ({ data }: any) => ({
+      id: `fire-${String(data?.offsetSeconds ?? "x")}`,
+    }));
+    const dispatch = {
+      dispatchReminder: vi.fn().mockResolvedValue({
+        status: "sent",
+        messageId: "msg-1",
+      }),
+    };
+
+    const initialCounts = await runReminderSchedulerCycle({
+      client: {} as any,
+      dispatch: dispatch as any,
+      nowMs,
+      intervalMs: 60_000,
+    });
+    const laterCounts = await runReminderSchedulerCycle({
+      client: {} as any,
+      dispatch: dispatch as any,
+      nowMs: nowMs + 60 * 60 * 1000 + 30 * 1000,
+      intervalMs: 60_000,
+    });
+
+    expect(initialCounts).toEqual({
+      evaluated: 2,
+      fired: 0,
+      deduped: 0,
+      failed: 0,
+    });
+    expect(laterCounts).toEqual({
+      evaluated: 2,
+      fired: 1,
+      deduped: 0,
+      failed: 0,
+    });
+    expect(dispatch.dispatchReminder).toHaveBeenCalledTimes(1);
+    expect(dispatch.dispatchReminder.mock.calls[0]?.[1]?.offsetSeconds).toBe(60 * 60);
   });
 
   it("dedupes multi-offset deliveries per event and resets eligibility when event identity changes", async () => {
@@ -275,7 +401,7 @@ describe("ReminderSchedulerService v1 trigger semantics", () => {
         channelId: "channel-raids",
         type: ReminderType.RAIDS,
         isEnabled: true,
-        times: [{ offsetSeconds: 60 * 60 }, { offsetSeconds: 30 * 60 }],
+        times: [{ offsetSeconds: 60 * 60 }],
         targetClans: [{ clanTag: "#QGRJ2222", clanType: "FWA" }],
       },
     ]);
@@ -288,20 +414,22 @@ describe("ReminderSchedulerService v1 trigger semantics", () => {
           cwlClanTag: null,
           cwlClanName: null,
           raidActive: true,
-          raidEndsAt: new Date(nowMs + 20 * 60 * 1000),
+          raidEndsAt: new Date(nowMs + 60 * 60 * 1000),
           gamesActive: false,
           gamesEndsAt: null,
           updatedAt: new Date(nowMs),
         },
       ],
     });
-    prismaMock.reminderFireLog.create
-      .mockResolvedValueOnce({ id: "fire-1" })
-      .mockResolvedValueOnce({ id: "fire-2" })
-      .mockRejectedValueOnce({ code: "P2002" })
-      .mockRejectedValueOnce({ code: "P2002" })
-      .mockResolvedValueOnce({ id: "fire-3" })
-      .mockResolvedValueOnce({ id: "fire-4" });
+    prismaMock.reminderFireLog.create.mockReset();
+    let fireLogCreateCount = 0;
+    prismaMock.reminderFireLog.create.mockImplementation(async () => {
+      fireLogCreateCount += 1;
+      if (fireLogCreateCount === 1 || fireLogCreateCount === 3) {
+        return { id: `fire-${fireLogCreateCount}` };
+      }
+      throw { code: "P2002" };
+    });
     const dispatch = {
       dispatchReminder: vi.fn().mockResolvedValue({
         status: "sent",
@@ -330,7 +458,7 @@ describe("ReminderSchedulerService v1 trigger semantics", () => {
           cwlClanTag: null,
           cwlClanName: null,
           raidActive: true,
-          raidEndsAt: new Date(nowMs + 7 * 24 * 60 * 60 * 1000 + 20 * 60 * 1000),
+          raidEndsAt: new Date(nowMs + 7 * 24 * 60 * 60 * 1000 + 60 * 60 * 1000),
           gamesActive: false,
           gamesEndsAt: null,
           updatedAt: new Date(nowMs + 7 * 24 * 60 * 60 * 1000),
@@ -345,24 +473,24 @@ describe("ReminderSchedulerService v1 trigger semantics", () => {
     });
 
     expect(first).toEqual({
-      evaluated: 2,
-      fired: 2,
+      evaluated: 1,
+      fired: 1,
       deduped: 0,
       failed: 0,
     });
     expect(second).toEqual({
-      evaluated: 2,
+      evaluated: 1,
       fired: 0,
-      deduped: 2,
+      deduped: 1,
       failed: 0,
     });
     expect(third).toEqual({
-      evaluated: 2,
-      fired: 2,
+      evaluated: 1,
+      fired: 1,
       deduped: 0,
       failed: 0,
     });
-    expect(dispatch.dispatchReminder).toHaveBeenCalledTimes(4);
+    expect(dispatch.dispatchReminder).toHaveBeenCalledTimes(2);
   });
 
   it("keeps deduped counts but does not emit per-item dedupe log spam by default", async () => {
@@ -387,14 +515,17 @@ describe("ReminderSchedulerService v1 trigger semantics", () => {
           cwlClanTag: null,
           cwlClanName: null,
           raidActive: true,
-          raidEndsAt: new Date(nowMs + 20 * 60 * 1000),
+          raidEndsAt: new Date(nowMs + 60 * 60 * 1000),
           gamesActive: false,
           gamesEndsAt: null,
           updatedAt: new Date(nowMs),
         },
       ],
     });
-    prismaMock.reminderFireLog.create.mockRejectedValue({ code: "P2002" });
+    prismaMock.reminderFireLog.create.mockReset();
+    prismaMock.reminderFireLog.create.mockImplementation(async () => {
+      throw { code: "P2002" };
+    });
     const dispatch = {
       dispatchReminder: vi.fn(),
     };
@@ -428,11 +559,11 @@ describe("ReminderSchedulerService v1 trigger semantics", () => {
         {
           id: "rem-raids",
           guildId: "guild-1",
-          channelId: "channel-raids",
-          type: ReminderType.RAIDS,
-          isEnabled: true,
-          times: [{ offsetSeconds: 60 * 60 }],
-          targetClans: [{ clanTag: "#QGRJ2222", clanType: "FWA" }],
+        channelId: "channel-raids",
+        type: ReminderType.RAIDS,
+        isEnabled: true,
+        times: [{ offsetSeconds: 60 * 60 }],
+        targetClans: [{ clanTag: "#QGRJ2222", clanType: "FWA" }],
         },
       ])
       .mockResolvedValueOnce([])
@@ -456,16 +587,22 @@ describe("ReminderSchedulerService v1 trigger semantics", () => {
           cwlClanTag: null,
           cwlClanName: null,
           raidActive: true,
-          raidEndsAt: new Date(nowMs + 20 * 60 * 1000),
+          raidEndsAt: new Date(nowMs + 60 * 60 * 1000),
           gamesActive: false,
           gamesEndsAt: null,
           updatedAt: new Date(nowMs),
         },
       ],
     });
-    prismaMock.reminderFireLog.create
-      .mockResolvedValueOnce({ id: "fire-1" })
-      .mockRejectedValueOnce({ code: "P2002" });
+    prismaMock.reminderFireLog.create.mockReset();
+    let fireLogCreateCount = 0;
+    prismaMock.reminderFireLog.create.mockImplementation(async () => {
+      fireLogCreateCount += 1;
+      if (fireLogCreateCount === 1) {
+        return { id: "fire-1" };
+      }
+      throw { code: "P2002" };
+    });
     const dispatch = {
       dispatchReminder: vi.fn().mockResolvedValue({
         status: "sent",

@@ -276,7 +276,7 @@ export const shouldReminderOffsetFireForTest = shouldReminderOffsetFire;
 /** Purpose: expose reminder event-context resolution for isolated scheduler unit tests. */
 export const resolveReminderContextBundleForTest = resolveReminderContextBundle;
 
-/** Purpose: detect whether one reminder offset is currently due for firing before event end. */
+/** Purpose: detect whether one reminder offset is currently due for firing in the active scheduler window. */
 function shouldReminderOffsetFire(input: {
   nowMs: number;
   intervalMs: number;
@@ -289,8 +289,7 @@ function shouldReminderOffsetFire(input: {
   if (input.nowMs >= input.eventEndsAtMs) return false;
   const previousTickMs = input.nowMs - Math.max(1, input.intervalMs);
   const crossedThisCycle = triggerAtMs > previousTickMs && triggerAtMs <= input.nowMs;
-  const lateFireBeforeEnd = triggerAtMs <= previousTickMs;
-  return crossedThisCycle || lateFireBeforeEnd;
+  return crossedThisCycle;
 }
 
 /** Purpose: build deterministic dedupe key per reminder+clan+event identity+offset. */
