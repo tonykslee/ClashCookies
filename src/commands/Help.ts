@@ -150,6 +150,15 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/layout th:12 type:RISINGDAWN edit:https://link.clashofclans.com/en?action=OpenLayout&id=TH12... img-url:https://i.imgur.com/example.png",
     ],
   },
+  dump: {
+    summary: "Show or update the stored dump link without embed previews.",
+    details: [
+      "Use `/dump` to show the configured guild link as plain text wrapped in angle brackets.",
+      "Wrapping the link in `< >` prevents Discord from building an embed preview.",
+      "`edit` is admin-only and stores one link per guild/server.",
+    ],
+    examples: ["/dump", "/dump edit:https://example.com/dump"],
+  },
   "tracked-clan": {
     summary: "Manage tracked clans used by activity features.",
     details: [
