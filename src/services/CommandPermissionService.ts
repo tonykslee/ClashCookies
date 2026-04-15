@@ -27,6 +27,7 @@ export const COMMAND_PERMISSION_TARGETS = [
   "reminders:edit",
   "link",
   "layout",
+  "dump",
   "link:create",
   "link:create:other-user",
   "link:delete",

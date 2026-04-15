@@ -70,6 +70,16 @@ model PlayerLink {
   @@index([discordUserId])
 }
 
+model DumpLink {
+  guildId               String   @id
+  link                  String
+  updatedByDiscordUserId String
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@index([updatedAt])
+}
+
 model UnlinkedAlertConfig {
   guildId    String   @id
   channelId  String
