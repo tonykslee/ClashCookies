@@ -50,6 +50,17 @@ model TrackedClan {
   createdAt       DateTime  @default(now())
 }
 
+model RaidTrackedClan {
+  id         Int      @id @default(autoincrement())
+  clanTag    String   @unique @db.VarChar(16)
+  upgrades   Int?
+  joinType   String?  @db.VarChar(16)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([clanTag])
+}
+
 model BotSetting {
   key       String   @id
   value     String

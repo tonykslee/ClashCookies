@@ -14,6 +14,13 @@ const prismaMock = vi.hoisted(() => ({
     deleteMany: vi.fn(),
     updateMany: vi.fn(),
   },
+  raidTrackedClan: {
+    findMany: vi.fn(),
+    createMany: vi.fn(),
+    updateMany: vi.fn(),
+    deleteMany: vi.fn(),
+    findFirst: vi.fn(),
+  },
   cwlPlayerClanSeason: {
     findMany: vi.fn(),
     deleteMany: vi.fn(),
@@ -38,12 +45,14 @@ import { TrackedClan } from "../src/commands/TrackedClan";
 type InteractionInput = {
   subcommand: string;
   strings?: Record<string, string | null | undefined>;
+  integers?: Record<string, number | null | undefined>;
   guildId?: string | null;
 };
 
 /** Purpose: build a focused tracked-clan chat interaction mock for subcommand tests. */
 function createInteraction(input: InteractionInput) {
   const strings = input.strings ?? {};
+  const integers = input.integers ?? {};
   return {
     id: "tracked-clan-itx-1",
     commandName: "tracked-clan",
@@ -55,6 +64,7 @@ function createInteraction(input: InteractionInput) {
     options: {
       getSubcommand: vi.fn().mockReturnValue(input.subcommand),
       getString: vi.fn((name: string) => strings[name] ?? null),
+      getInteger: vi.fn((name: string) => integers[name] ?? null),
       getChannel: vi.fn().mockReturnValue(null),
       getRole: vi.fn().mockReturnValue(null),
     },
@@ -85,6 +95,11 @@ describe("/tracked-clan command behavior", () => {
     prismaMock.cwlTrackedClan.findFirst.mockResolvedValue(null);
     prismaMock.cwlTrackedClan.deleteMany.mockResolvedValue({ count: 0 });
     prismaMock.cwlTrackedClan.updateMany.mockResolvedValue({ count: 0 });
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.raidTrackedClan.createMany.mockResolvedValue({ count: 0 });
+    prismaMock.raidTrackedClan.updateMany.mockResolvedValue({ count: 0 });
+    prismaMock.raidTrackedClan.deleteMany.mockResolvedValue({ count: 0 });
+    prismaMock.raidTrackedClan.findFirst.mockResolvedValue(null);
     prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
     prismaMock.cwlPlayerClanSeason.deleteMany.mockResolvedValue({ count: 0 });
     prismaMock.currentWar.deleteMany.mockResolvedValue({ count: 0 });
@@ -141,6 +156,109 @@ describe("/tracked-clan command behavior", () => {
     expect(infoLogs.some((line: string) => line.includes("stage=cwl_tags_final_reply_sent"))).toBe(true);
   });
 
+  it("adds raid tags with optional upgrades and refreshes joinType best-effort", async () => {
+    prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([]);
+    const interaction = createInteraction({
+      subcommand: "raid-tags",
+      strings: {
+        "raid-tags": "[#2RVGJYLC0]",
+      },
+      integers: {
+        upgrades: 3331,
+      },
+    });
+    const cocService = {
+      getClan: vi.fn().mockResolvedValue({ type: "open" }),
+    };
+
+    await TrackedClan.run({} as any, interaction as any, cocService as any);
+
+    expect(prismaMock.raidTrackedClan.createMany).toHaveBeenCalledWith({
+      data: [
+        {
+          clanTag: "2RVGJYLC0",
+          upgrades: 3331,
+          joinType: null,
+        },
+      ],
+      skipDuplicates: true,
+    });
+    expect(getReplyContent(interaction)).toContain("Updated RAIDS tracked clans.");
+    expect(getReplyContent(interaction)).toContain("added: #2RVGJYLC0");
+    expect(getReplyContent(interaction)).toContain("updated upgrades: none");
+    expect(getReplyContent(interaction)).toContain("already-existing: none");
+    expect(getReplyContent(interaction)).toContain("duplicates-ignored: none");
+    expect(prismaMock.raidTrackedClan.updateMany).toHaveBeenCalledWith({
+      where: { clanTag: "2RVGJYLC0" },
+      data: { joinType: "open" },
+    });
+  });
+
+  it("rejects upgrades when multiple raid tags are provided", async () => {
+    const interaction = createInteraction({
+      subcommand: "raid-tags",
+      strings: {
+        "raid-tags": "#2RVGJYLC0,#2QG2C08UP",
+      },
+      integers: {
+        upgrades: 3000,
+      },
+    });
+
+    await TrackedClan.run({} as any, interaction as any, {} as any);
+
+    expect(getReplyContent(interaction)).toContain(
+      "upgrades can only be set when exactly one raid tag is provided.",
+    );
+  });
+
+  it("rejects upgrades outside the allowed range", async () => {
+    const interaction = createInteraction({
+      subcommand: "raid-tags",
+      strings: {
+        "raid-tags": "#2RVGJYLC0",
+      },
+      integers: {
+        upgrades: 1999,
+      },
+    });
+
+    await TrackedClan.run({} as any, interaction as any, {} as any);
+
+    expect(prismaMock.raidTrackedClan.createMany).not.toHaveBeenCalled();
+    expect(getReplyContent(interaction)).toContain(
+      "upgrades must be a whole number between 2000 and 3331.",
+    );
+  });
+
+  it("renders the RAIDS list with join-status emoji, upgrades, and tag", async () => {
+    prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        clanTag: "2RVGJYLC0",
+        upgrades: 3331,
+        joinType: "open",
+        createdAt: new Date("2026-04-15T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-15T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValueOnce([
+      { tag: "#2RVGJYLC0", name: "Vanilla" },
+    ]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValueOnce([]);
+
+    const interaction = createInteraction({
+      subcommand: "list",
+      strings: { type: "RAIDS" },
+    });
+
+    await TrackedClan.run({} as any, interaction as any, {} as any);
+
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const description = String(payload?.embeds?.[0]?.toJSON?.().description ?? "");
+    expect(description).toContain("## 🟢 [Vanilla | 3331]");
+    expect(description).toContain("2RVGJYLC0");
+  });
+
   it("keeps default /tracked-clan list behavior on FWA registry when type is omitted", async () => {
     const interaction = createInteraction({
       subcommand: "list",
@@ -173,6 +291,23 @@ describe("/tracked-clan command behavior", () => {
       },
     });
     expect(getReplyContent(interaction)).toContain("No CWL tracked clans for season 2026-03.");
+  });
+
+  it("removes a RAIDS clan when explicit type:RAIDS is provided", async () => {
+    prismaMock.raidTrackedClan.deleteMany.mockResolvedValue({ count: 1 });
+    const interaction = createInteraction({
+      subcommand: "remove",
+      strings: { tag: "#2RVGJYLC0", type: "RAIDS" },
+    });
+
+    await TrackedClan.run({} as any, interaction as any, {} as any);
+
+    expect(prismaMock.raidTrackedClan.deleteMany).toHaveBeenCalledWith({
+      where: { clanTag: "2RVGJYLC0" },
+    });
+    expect(getReplyContent(interaction)).toContain(
+      "Removed tracked clan #2RVGJYLC0 from RAIDS registry.",
+    );
   });
 
   it("blocks ambiguous remove when tag exists in both FWA and CWL registries", async () => {
