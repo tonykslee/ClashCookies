@@ -7,10 +7,10 @@ import {
   ComponentType,
   EmbedBuilder,
 } from "discord.js";
-import { Prisma } from "@prisma/client";
 import { Command } from "../Command";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
+import { InactiveWarService, type InactiveWarSummary } from "../services/InactiveWarService";
 import { formatError } from "../helper/formatError";
 
 const DEFAULT_STALE_HOURS = 6;
@@ -96,16 +96,7 @@ type InactiveDaysEntry = {
   daysAgo: number;
 };
 
-type InactiveWarRow = {
-  clanTag: string;
-  playerTag: string;
-  playerName: string;
-  missedWars: number;
-  totalTrueStars: number;
-  avgAttackDelay: number | null;
-  lateAttacks: number;
-  warsAvailable: number;
-};
+const inactiveWarService = new InactiveWarService();
 
 async function fetchInactiveDaysEntries(
   interaction: ChatInputCommandInteraction,
@@ -233,114 +224,14 @@ async function fetchInactiveDaysEntries(
 async function fetchInactiveWarEntries(
   interaction: ChatInputCommandInteraction,
   wars: number
-): Promise<{
-  results: InactiveWarRow[];
-  trackedTags: string[];
-  trackedNameByTag: Map<string, string>;
-  warnings: string[];
-}> {
+): Promise<InactiveWarSummary> {
   if (!interaction.guildId) {
     throw new Error("This command can only be used in a server.");
   }
-
-  const trackedClans = await prisma.trackedClan.findMany({
-    orderBy: { createdAt: "asc" },
-    select: { tag: true, name: true },
+  return inactiveWarService.listInactiveWarPlayers({
+    guildId: interaction.guildId,
+    wars,
   });
-  const trackedTags = trackedClans.map((c) => c.tag);
-  const trackedNameByTag = new Map(trackedClans.map((c) => [c.tag, c.name?.trim() || c.tag]));
-  if (trackedTags.length === 0) {
-    return { results: [], trackedTags, trackedNameByTag, warnings: [] };
-  }
-
-  const results = await prisma.$queryRaw<InactiveWarRow[]>(
-    Prisma.sql`
-      WITH available AS (
-        SELECT
-          ended_wars."clanTag",
-          COUNT(*)::int AS "warsAvailable"
-        FROM (
-          SELECT DISTINCT "clanTag", "warId"
-          FROM "ClanWarParticipation"
-          WHERE "guildId" = ${interaction.guildId}
-            AND "clanTag" IN (${Prisma.join(trackedTags)})
-            AND "matchType" = 'FWA'
-        ) ended_wars
-        GROUP BY ended_wars."clanTag"
-      ),
-      ranked AS (
-        SELECT
-          cwp."clanTag",
-          cwp."playerTag",
-          FIRST_VALUE(COALESCE(NULLIF(BTRIM(cwp."playerName"), ''), cwp."playerTag"))
-            OVER (
-              PARTITION BY cwp."clanTag", cwp."playerTag"
-              ORDER BY cwp."warStartTime" DESC, cwp."createdAt" DESC
-            ) AS "playerName",
-          cwp."missedBoth",
-          cwp."trueStars",
-          cwp."attackDelayMinutes",
-          cwp."attackWindowMissed",
-          ROW_NUMBER() OVER (
-            PARTITION BY cwp."clanTag", cwp."playerTag"
-            ORDER BY cwp."warStartTime" DESC, cwp."createdAt" DESC
-          ) AS rn
-        FROM "ClanWarParticipation" cwp
-        WHERE cwp."guildId" = ${interaction.guildId}
-          AND cwp."clanTag" IN (${Prisma.join(trackedTags)})
-          AND cwp."matchType" = 'FWA'
-      ),
-      selected AS (
-        SELECT *
-        FROM ranked
-        WHERE rn <= ${wars}
-      )
-      SELECT
-        s."clanTag",
-        s."playerTag",
-        MAX(s."playerName") AS "playerName",
-        COUNT(*) FILTER (WHERE s."missedBoth" = true)::int AS "missedWars",
-        COALESCE(SUM(s."trueStars"), 0)::int AS "totalTrueStars",
-        AVG(s."attackDelayMinutes")::float8 AS "avgAttackDelay",
-        COUNT(*) FILTER (WHERE s."attackWindowMissed" = true)::int AS "lateAttacks",
-        COALESCE(MAX(a."warsAvailable"), 0)::int AS "warsAvailable"
-      FROM selected s
-      LEFT JOIN available a
-        ON a."clanTag" = s."clanTag"
-      GROUP BY s."clanTag", s."playerTag"
-      HAVING COUNT(*) FILTER (WHERE s."missedBoth" = true) > 0
-      ORDER BY s."clanTag" ASC, "missedWars" DESC, MAX(s."playerName") ASC
-    `
-  );
-
-  const availableRows = await prisma.$queryRaw<Array<{ clanTag: string; warsAvailable: number }>>(
-    Prisma.sql`
-      SELECT
-        ended_wars."clanTag",
-        COUNT(*)::int AS "warsAvailable"
-      FROM (
-        SELECT DISTINCT "clanTag", "warId"
-        FROM "ClanWarParticipation"
-        WHERE "guildId" = ${interaction.guildId}
-          AND "clanTag" IN (${Prisma.join(trackedTags)})
-          AND "matchType" = 'FWA'
-      ) ended_wars
-      GROUP BY ended_wars."clanTag"
-    `
-  );
-  const availableByClan = new Map<string, number>(
-    availableRows.map((row) => [row.clanTag, row.warsAvailable])
-  );
-  const warnings = trackedTags
-    .map((clanTag) => {
-      const warsAvailable = availableByClan.get(clanTag) ?? 0;
-      return warsAvailable < wars
-        ? `${trackedNameByTag.get(clanTag) ?? clanTag}: only ${warsAvailable}/${wars} ended FWA wars tracked`
-        : null;
-    })
-    .filter((value): value is string => value !== null);
-
-  return { results, trackedTags, trackedNameByTag, warnings };
 }
 
 async function renderEmbedsWithPager(
@@ -625,7 +516,7 @@ async function runWarsMode(
     results,
     (e) => trackedNameByTag.get(e.clanTag) ?? e.clanTag,
     (e) =>
-      `- **${e.playerName}** (${e.playerTag}) - missed both in ${e.missedWars}/${Math.min(wars, e.warsAvailable)} war(s), true stars ${e.totalTrueStars}, avg delay ${e.avgAttackDelay !== null ? `${Math.round(e.avgAttackDelay)}m` : "n/a"}, late attacks ${e.lateAttacks}`
+      `- **${e.playerName}** (${e.playerTag}) - missed both in ${e.missedWars}/${e.participationWars} war(s), true stars ${e.totalTrueStars}, avg delay ${e.avgAttackDelay !== null ? `${Math.round(e.avgAttackDelay)}m` : "n/a"}, late attacks ${e.lateAttacks}`
   );
 
   const footerSuffix = warnings.length > 0 ? ` • Partial data: ${warnings.length} clan(s)` : "";
@@ -662,6 +553,7 @@ async function runCombinedMode(
       playerName: string;
       daysAgo: number | null;
       missedWars: number | null;
+      participationWars: number | null;
       warsAvailable: number | null;
       totalTrueStars: number | null;
       avgAttackDelay: number | null;
@@ -677,6 +569,7 @@ async function runCombinedMode(
       playerName: entry.playerName,
       daysAgo: entry.daysAgo,
       missedWars: null,
+      participationWars: null,
       warsAvailable: null,
       totalTrueStars: null,
       avgAttackDelay: null,
@@ -694,6 +587,7 @@ async function runCombinedMode(
       playerName: existing?.playerName ?? entry.playerName,
       daysAgo: existing?.daysAgo ?? null,
       missedWars: entry.missedWars,
+      participationWars: entry.participationWars,
       warsAvailable: entry.warsAvailable,
       totalTrueStars: entry.totalTrueStars,
       avgAttackDelay: entry.avgAttackDelay,
@@ -733,9 +627,7 @@ async function runCombinedMode(
       const reasons: string[] = [];
       if (e.daysAgo !== null) reasons.push(`${e.daysAgo}d inactive`);
       if (e.missedWars !== null) {
-        reasons.push(
-          `missed both in ${e.missedWars}/${Math.min(wars, e.warsAvailable ?? wars)} war(s)`
-        );
+        reasons.push(`missed both in ${e.missedWars}/${e.participationWars ?? 0} war(s)`);
       }
       const metrics =
         e.missedWars !== null
