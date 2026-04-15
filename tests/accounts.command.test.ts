@@ -1,3 +1,4 @@
+import { ApplicationCommandOptionType } from "discord.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const prismaMock = vi.hoisted(() => ({
@@ -23,7 +24,7 @@ import { Accounts } from "../src/commands/Accounts";
 function makeInteraction(input?: {
   visibility?: string | null;
   tag?: string | null;
-  discordId?: string | null;
+  discordUserId?: string | null;
 }) {
   const collectorHandlers: Record<string, any> = {};
   const collector = {
@@ -40,7 +41,12 @@ function makeInteraction(input?: {
       getString: vi.fn((name: string) => {
         if (name === "visibility") return input?.visibility ?? null;
         if (name === "tag") return input?.tag ?? null;
-        if (name === "discord-id") return input?.discordId ?? null;
+        return null;
+      }),
+      getUser: vi.fn((name: string) => {
+        if (name === "discord-id" && input?.discordUserId) {
+          return { id: input.discordUserId };
+        }
         return null;
       }),
     },
@@ -64,43 +70,8 @@ function makeButtonInteraction(customId: string) {
 function makeAutocompleteInteraction(
   value: string,
   focusedName = "tag",
-  input?: {
-    cachedUsernames?: Record<string, string>;
-    memberDisplayNames?: Record<string, string>;
-    memberUsernames?: Record<string, string>;
-  },
 ) {
-  const cachedUsernames = input?.cachedUsernames ?? {};
-  const memberDisplayNames = input?.memberDisplayNames ?? {};
-  const memberUsernames = input?.memberUsernames ?? {};
-  const memberIds = new Set([
-    ...Object.keys(memberDisplayNames),
-    ...Object.keys(memberUsernames),
-  ]);
   return {
-    client: {
-      users: {
-        cache: new Map(
-          Object.entries(cachedUsernames).map(([id, username]) => [
-            id,
-            { username },
-          ]),
-        ),
-      },
-    },
-    guild: {
-      members: {
-        cache: new Map(
-          [...memberIds].map((id) => [
-            id,
-            {
-              displayName: memberDisplayNames[id] ?? "",
-              user: { username: memberUsernames[id] ?? cachedUsernames[id] ?? "" },
-            },
-          ]),
-        ),
-      },
-    },
     options: {
       getFocused: vi.fn(() => ({ name: focusedName, value })),
     },
@@ -130,6 +101,13 @@ describe("/accounts command", () => {
     prismaMock.playerLink.updateMany.mockResolvedValue({ count: 0 });
     prismaMock.playerActivity.findMany.mockResolvedValue([]);
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
+  });
+
+  it("registers discord-id as a native User option without autocomplete", () => {
+    const discordIdOption = Accounts.options?.find((option) => option.name === "discord-id");
+
+    expect(discordIdOption?.type).toBe(ApplicationCommandOptionType.User);
+    expect(discordIdOption?.autocomplete).toBeUndefined();
   });
 
   it("renders tracked clan headings as alias hyperlinks and keeps rows under that clan", async () => {
@@ -309,6 +287,54 @@ describe("/accounts command", () => {
     );
   });
 
+  it("uses the selected Discord user id when discord-id is provided", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        playerName: "Linked Alpha",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+    ]);
+    const interaction = makeInteraction({
+      discordUserId: "222222222222222222",
+    });
+
+    await Accounts.run({} as any, interaction as any, makeCocService() as any);
+
+    expect(prismaMock.playerLink.findMany).toHaveBeenCalledWith({
+      where: { discordUserId: "222222222222222222" },
+      orderBy: [{ createdAt: "asc" }, { playerTag: "asc" }],
+      select: {
+        playerTag: true,
+        playerName: true,
+        createdAt: true,
+      },
+    });
+  });
+
+  it("defaults to the caller's Discord account when discord-id is omitted", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        playerName: "Linked Self",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+    ]);
+    const interaction = makeInteraction();
+
+    await Accounts.run({} as any, interaction as any, makeCocService() as any);
+
+    expect(prismaMock.playerLink.findMany).toHaveBeenCalledWith({
+      where: { discordUserId: "111111111111111111" },
+      orderBy: [{ createdAt: "asc" }, { playerTag: "asc" }],
+      select: {
+        playerTag: true,
+        playerName: true,
+        createdAt: true,
+      },
+    });
+  });
+
   it("autocompletes player tags from PlayerLink and ignores tracked clans", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([
       {
@@ -390,71 +416,13 @@ describe("/accounts command", () => {
     expect((interaction.respond as any).mock.calls[0][0]).toHaveLength(25);
   });
 
-  it("autocompletes discord IDs with rendered display names and raw values", async () => {
-    prismaMock.playerLink.findMany.mockResolvedValue([
-      {
-        discordUserId: "111111111111111111",
-        discordUsername: "persisted_alpha",
-      },
-      {
-        discordUserId: "222222222222222222",
-        discordUsername: null,
-      },
-    ]);
-    const interaction = makeAutocompleteInteraction("", "discord-id", {
-      memberDisplayNames: {
-        "111111111111111111": "Rendered Alpha",
-      },
-    });
-
-    await Accounts.autocomplete(interaction as any);
-
-    expect(prismaMock.playerLink.findMany).toHaveBeenCalledWith({
-      select: {
-        discordUserId: true,
-        discordUsername: true,
-      },
-    });
-    expect(interaction.respond).toHaveBeenCalledWith([
-      { name: "Rendered Alpha", value: "111111111111111111" },
-      { name: "222222222222222222", value: "222222222222222222" },
-    ]);
-  });
-
-  it("falls back to @username when the display name is unavailable", async () => {
-    prismaMock.playerLink.findMany.mockResolvedValue([
-      {
-        discordUserId: "333333333333333333",
-        discordUsername: null,
-      },
-    ]);
-    const interaction = makeAutocompleteInteraction("", "discord-id", {
-      cachedUsernames: {
-        "333333333333333333": "UsernameOnly",
-      },
-    });
-
-    await Accounts.autocomplete(interaction as any);
-
-    expect(interaction.respond).toHaveBeenCalledWith([
-      { name: "@UsernameOnly", value: "333333333333333333" },
-    ]);
-  });
-
-  it("falls back to raw Discord IDs when neither display name nor username is available", async () => {
-    prismaMock.playerLink.findMany.mockResolvedValue([
-      {
-        discordUserId: "444444444444444444",
-        discordUsername: null,
-      },
-    ]);
+  it("does not autocomplete discord-id anymore", async () => {
     const interaction = makeAutocompleteInteraction("", "discord-id");
 
     await Accounts.autocomplete(interaction as any);
 
-    expect(interaction.respond).toHaveBeenCalledWith([
-      { name: "444444444444444444", value: "444444444444444444" },
-    ]);
+    expect(prismaMock.playerLink.findMany).not.toHaveBeenCalled();
+    expect(interaction.respond).toHaveBeenCalledWith([]);
   });
 
   it("uses PlayerActivity clan name in output when local clan context is complete", async () => {
