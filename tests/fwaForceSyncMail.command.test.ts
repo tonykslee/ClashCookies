@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { runForceSyncMailCommand } from "../src/commands/Fwa";
+import {
+  persistActiveWarMailLifecycleForTest,
+  runForceSyncMailCommand,
+} from "../src/commands/Fwa";
 import { prisma } from "../src/prisma";
 import { WarMailLifecycleService } from "../src/services/WarMailLifecycleService";
 import { PointsSyncService } from "../src/services/PointsSyncService";
@@ -158,6 +161,34 @@ describe("runForceSyncMailCommand", () => {
     const reply = String(interaction.editReply.mock.calls[0]?.[0] ?? "");
     expect(reply).toContain("Validation: tracked message exists in this channel and matches active-war identity.");
     expect(reply).toContain("Mail lifecycle saved in **WarMailLifecycle**.");
+  });
+
+  it("persists active-war lifecycle writes with warStartTime-scoped identity", async () => {
+    const markPostedSpy = vi
+      .spyOn(WarMailLifecycleService.prototype, "markPosted")
+      .mockResolvedValueOnce(undefined);
+
+    await persistActiveWarMailLifecycleForTest({
+      guildId: "guild-1",
+      clanTag: "R80L8VYG",
+      warId: 1000110,
+      warStartTime: new Date("2026-03-25T04:22:17.000Z"),
+      opponentTag: "2Q0PL9GRJ",
+      channelId: "mail-channel-1",
+      messageId: "1485883255436611624",
+    });
+
+    expect(markPostedSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guildId: "guild-1",
+        clanTag: "R80L8VYG",
+        warId: 1000110,
+        warStartTime: new Date("2026-03-25T04:22:17.000Z"),
+        opponentTag: "2Q0PL9GRJ",
+        channelId: "mail-channel-1",
+        messageId: "1485883255436611624",
+      }),
+    );
   });
 });
 

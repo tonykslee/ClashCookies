@@ -366,6 +366,46 @@ describe("WarMailLifecycleService", () => {
     expect(debugSpy).not.toHaveBeenCalled();
   });
 
+  it("resolves active-war lifecycle rows by warStartTime before warId", async () => {
+    const findFirstSpy = vi
+      .spyOn(prisma.warMailLifecycle, "findFirst")
+      .mockResolvedValueOnce({
+        id: "row-1",
+        guildId: "guild-1",
+        clanTag: "#AAA111",
+        warId: 9999,
+        warStartTime: new Date("2026-03-12T00:00:00.000Z"),
+        opponentTag: "#2NEW",
+        status: "POSTED",
+        channelId: "123",
+        messageId: "456",
+        postedAt: new Date(),
+        deletedAt: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      } as never);
+    const service = new WarMailLifecycleService();
+
+    const result = await service.getLifecycleForWar({
+      guildId: "guild-1",
+      clanTag: "AAA111",
+      warId: 1001,
+      warStartTime: new Date("2026-03-12T00:00:00.000Z"),
+      opponentTag: "#2NEW",
+    });
+
+    expect(findFirstSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          guildId: "guild-1",
+          clanTag: "#AAA111",
+          warStartTime: new Date("2026-03-12T00:00:00.000Z"),
+        }),
+      }),
+    );
+    expect(result?.warId).toBe(9999);
+  });
+
   it("scopes message lookup to one war identity when warId is provided", async () => {
     const findFirstSpy = vi.spyOn(prisma.warMailLifecycle, "findFirst").mockResolvedValueOnce({
       guildId: "guild-1",

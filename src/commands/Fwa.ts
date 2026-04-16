@@ -3365,6 +3365,17 @@ type ResolvedLiveWarMailStatus = {
   debug: WarMailLifecycleStatusDebugInfo;
 };
 
+type ActiveWarMailLifecycleIdentity = {
+  guildId: string;
+  clanTag: string;
+  warId: number | null;
+  warStartTime: Date | null;
+  opponentTag: string | null;
+  channelId: string;
+  messageId: string;
+  postedAt?: Date;
+};
+
 type FwaMatchMailStatusDebugRow = {
   clanTag: string;
   clanName: string;
@@ -6806,6 +6817,21 @@ async function restoreSourceMatchMessageFromMailPreview(
   return true;
 }
 
+async function persistActiveWarMailLifecycle(
+  input: ActiveWarMailLifecycleIdentity,
+): Promise<void> {
+  await warMailLifecycleService.markPosted({
+    guildId: input.guildId,
+    clanTag: input.clanTag,
+    warId: input.warId,
+    warStartTime: input.warStartTime,
+    opponentTag: input.opponentTag,
+    channelId: input.channelId,
+    messageId: input.messageId,
+    postedAt: input.postedAt,
+  });
+}
+
 type CurrentWarConfirmedState = {
   warId: number;
   startTime: Date | null;
@@ -7010,6 +7036,12 @@ async function handleFwaMailConfirmAction(
     Number.isFinite(rendered.warId)
       ? Math.trunc(rendered.warId)
       : null;
+  const renderedWarStartTime =
+    rendered.warStartMs !== null &&
+    rendered.warStartMs !== undefined &&
+    Number.isFinite(rendered.warStartMs)
+      ? new Date(Math.trunc(rendered.warStartMs))
+      : null;
   const postKey = buildWarMailPollKey(
     payload.guildId,
     payload.tag,
@@ -7111,6 +7143,8 @@ async function handleFwaMailConfirmAction(
             guildId: payload.guildId,
             clanTag: payload.tag,
             warId: renderedWarIdNumber,
+            warStartTime: renderedWarStartTime,
+            opponentTag: rendered.opponentTag ?? null,
           })
           .catch(() => null)
       : null;
@@ -7138,10 +7172,12 @@ async function handleFwaMailConfirmAction(
   if (!rendered.freezeRefresh) {
     startWarMailPolling(interaction.client, postKey);
   }
-  await warMailLifecycleService.markPosted({
+  await persistActiveWarMailLifecycle({
     guildId: payload.guildId,
     clanTag: payload.tag,
     warId: Number(renderedWarIdNumber),
+    warStartTime: renderedWarStartTime,
+    opponentTag: rendered.opponentTag ?? null,
     channelId: channel.id,
     messageId: sent.id,
     postedAt: new Date(nowMs),
@@ -8371,6 +8407,8 @@ export const resolveCurrentWarSyncIdentityForTest =
   resolveCurrentWarSyncIdentity;
 export const resolveCurrentWarScopedSyncRowForTest =
   resolveCurrentWarScopedSyncRow;
+export const persistActiveWarMailLifecycleForTest =
+  persistActiveWarMailLifecycle;
 export const deriveProjectedOutcomeForTest = deriveProjectedOutcome;
 
 export const resolveMatchTypeFromStoredSyncRowForTest =
@@ -10978,7 +11016,7 @@ export async function runForceSyncMailCommand(
   });
 
   if (parsedType.messageType === "mail") {
-    await warMailLifecycleService.markPosted({
+    await persistActiveWarMailLifecycle({
       guildId: interaction.guildId,
       clanTag: tag,
       warId: Number(warIdText),
