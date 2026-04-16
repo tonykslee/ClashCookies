@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import axios from "axios";
 import type {
   AutocompleteInteraction,
@@ -6,6 +6,7 @@ import type {
   Client,
   PermissionResolvable,
 } from "discord.js";
+import { BotLogChannelService } from "../src/services/BotLogChannelService";
 import {
   Emoji,
   applyEmojiPageActionForTest,
@@ -30,6 +31,12 @@ type EmojiResolverStub = {
 type CommandPermissionStub = {
   canUseAnyTarget: ReturnType<typeof vi.fn>;
 };
+
+beforeEach(() => {
+  vi.restoreAllMocks();
+  vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(null);
+  vi.spyOn(BotLogChannelService.prototype, "clearChannelId").mockResolvedValue(undefined);
+});
 
 /** Purpose: build resolver stub for deterministic command behavior assertions. */
 function buildResolverStub(): EmojiResolverStub {
@@ -123,6 +130,8 @@ function buildInteraction(input?: {
       create?: ReturnType<typeof vi.fn>;
     };
   } | null;
+  channelFetch?: ReturnType<typeof vi.fn>;
+  messageFetchResult?: Record<string, unknown>;
   messageFetchError?: unknown;
   reactionError?: unknown;
   appPermissionHas?: (permission: PermissionResolvable) => boolean;
@@ -143,6 +152,7 @@ function buildInteraction(input?: {
   const fetchReply = vi.fn().mockResolvedValue({
     createMessageComponentCollector: vi.fn(),
   });
+  const channelFetch = input?.channelFetch ?? vi.fn().mockResolvedValue(null);
 
   const messageReact = vi.fn();
   if (input?.reactionError) {
@@ -155,7 +165,10 @@ function buildInteraction(input?: {
   if (input?.messageFetchError) {
     messageFetch.mockRejectedValue(input.messageFetchError);
   } else {
-    messageFetch.mockResolvedValue({ react: messageReact });
+    messageFetch.mockResolvedValue({
+      react: messageReact,
+      ...(input?.messageFetchResult ?? {}),
+    });
   }
 
   const interaction = {
@@ -165,6 +178,9 @@ function buildInteraction(input?: {
     user: { id: "user-1" },
     client: {
       application: input?.application ?? null,
+      channels: {
+        fetch: channelFetch,
+      },
     } as Client,
     appPermissions: {
       has: vi.fn((permission: PermissionResolvable) =>
@@ -826,18 +842,102 @@ describe("/emoji command", () => {
       ]),
     );
     setEmojiResolverForTest(resolver as any);
-    const { interaction, editReply, messageFetch, messageReact } =
+    const botLogSend = vi.fn().mockResolvedValue({});
+    const { interaction, deferReply, editReply, followUp, deleteReply, messageFetch, messageReact } =
       buildInteraction({
         name: "arrow_arrow",
         react: "123456789012345678",
+        messageFetchResult: {
+          url: "https://discord.com/channels/guild-1/channel-1/123456789012345678",
+        },
+        channelFetch: vi.fn().mockResolvedValue({
+          guildId: "guild-1",
+          isTextBased: () => true,
+          send: botLogSend,
+        }),
       });
+    vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue("bot-log-channel-1");
 
     await Emoji.run({} as Client, interaction, {} as any);
 
     expect(messageFetch).toHaveBeenCalledWith("123456789012345678");
     expect(messageReact).toHaveBeenCalledWith("<:arrow_arrow:1>");
-    const payload = editReply.mock.calls[0]?.[0] ?? {};
+    expect(deferReply).toHaveBeenCalledWith({ ephemeral: false });
+    expect(followUp).toHaveBeenCalledTimes(1);
+    expect(followUp.mock.calls[0]?.[0]?.ephemeral).toBe(true);
+    expect(deleteReply).toHaveBeenCalledTimes(1);
+    expect(editReply).not.toHaveBeenCalled();
+    expect(botLogSend).toHaveBeenCalledTimes(1);
+    const payload = botLogSend.mock.calls[0]?.[0] ?? {};
     expect(String(payload.content ?? "")).toContain("Reacted to message");
+    expect(String(payload.content ?? "")).toContain("Actor: <@user-1>");
+    expect(String(payload.content ?? "")).toContain("Source channel: <#channel-1>");
+    expect(String(payload.content ?? "")).toContain(
+      "Jump link: https://discord.com/channels/guild-1/channel-1/123456789012345678",
+    );
+  });
+
+  it("keeps react success private when visibility is public", async () => {
+    const resolver = buildResolverStub();
+    resolver.fetchApplicationEmojiInventory.mockResolvedValue(
+      buildSuccessResult([
+        {
+          id: "1",
+          name: "arrow_arrow",
+          shortcode: ":arrow_arrow:",
+          rendered: "<:arrow_arrow:1>",
+          animated: false,
+        },
+      ]),
+    );
+    setEmojiResolverForTest(resolver as any);
+    const { interaction, deferReply, editReply, followUp, deleteReply } = buildInteraction({
+      name: "arrow_arrow",
+      react: "123456789012345678",
+      visibility: "public",
+    });
+
+    await Emoji.run({} as Client, interaction, {} as any);
+
+    expect(deferReply).toHaveBeenCalledWith({ ephemeral: false });
+    expect(followUp).toHaveBeenCalledTimes(1);
+    const payload = followUp.mock.calls[0]?.[0] ?? {};
+    expect(String(payload.content ?? "")).toContain("Reacted to message");
+    expect(payload.ephemeral).toBe(true);
+    expect(deleteReply).toHaveBeenCalledTimes(1);
+    expect(editReply).not.toHaveBeenCalled();
+  });
+
+  it("does not block react success when bot logs are missing", async () => {
+    const resolver = buildResolverStub();
+    resolver.fetchApplicationEmojiInventory.mockResolvedValue(
+      buildSuccessResult([
+        {
+          id: "1",
+          name: "arrow_arrow",
+          shortcode: ":arrow_arrow:",
+          rendered: "<:arrow_arrow:1>",
+          animated: false,
+        },
+      ]),
+    );
+    setEmojiResolverForTest(resolver as any);
+    const botLogSend = vi.fn().mockResolvedValue({});
+    const { interaction, followUp, deleteReply } = buildInteraction({
+      name: "arrow_arrow",
+      react: "123456789012345678",
+      channelFetch: vi.fn().mockResolvedValue({
+        guildId: "guild-1",
+        isTextBased: () => true,
+        send: botLogSend,
+      }),
+    });
+
+    await Emoji.run({} as Client, interaction, {} as any);
+
+    expect(followUp).toHaveBeenCalledTimes(1);
+    expect(deleteReply).toHaveBeenCalledTimes(1);
+    expect(botLogSend).not.toHaveBeenCalled();
   });
 
   it("rejects invalid message id before fetch", async () => {
@@ -929,6 +1029,40 @@ describe("/emoji command", () => {
     expect(payload.ephemeral).toBe(true);
     expect(deleteReply).toHaveBeenCalledTimes(1);
     expect(editReply).not.toHaveBeenCalled();
+  });
+
+  it("does not emit a success audit when reaction fails", async () => {
+    const resolver = buildResolverStub();
+    resolver.fetchApplicationEmojiInventory.mockResolvedValue(
+      buildSuccessResult([
+        {
+          id: "1",
+          name: "arrow_arrow",
+          shortcode: ":arrow_arrow:",
+          rendered: "<:arrow_arrow:1>",
+          animated: false,
+        },
+      ]),
+    );
+    setEmojiResolverForTest(resolver as any);
+    const botLogSend = vi.fn().mockResolvedValue({});
+    vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue("bot-log-channel-1");
+    const { interaction, followUp, deleteReply } = buildInteraction({
+      name: "arrow_arrow",
+      react: "123456789012345678",
+      reactionError: { code: 50013 },
+      channelFetch: vi.fn().mockResolvedValue({
+        guildId: "guild-1",
+        isTextBased: () => true,
+        send: botLogSend,
+      }),
+    });
+
+    await Emoji.run({} as Client, interaction, {} as any);
+
+    expect(followUp).toHaveBeenCalledTimes(1);
+    expect(deleteReply).toHaveBeenCalledTimes(1);
+    expect(botLogSend).not.toHaveBeenCalled();
   });
 
   it("shows runtime-unavailable message when resolver reports manager unavailable", async () => {

@@ -78,7 +78,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     summary: "Resolve or browse bot-owned application emojis by shortcode name.",
     details: [
       "Use `/emoji name:<emoji_name>` to resolve one emoji and show rendered + raw token output.",
-      "Use `/emoji name:<emoji_name> react:<message-id>` to react to a message in the current channel with that resolved emoji.",
+      "Use `/emoji name:<emoji_name> react:<message-id>` to react to a message in the current channel with that resolved emoji; successful reacts confirm privately and are logged to `/bot-logs` when configured.",
       "Use `/emoji emoji:<emoji-token-or-url> short-code:<name>` to add one new bot application emoji (admin-only by default).",
       "Use `/emoji` with no args to browse a paginated list of all available bot application emojis.",
       "No-arg list pages are capped to ~2500 characters of emoji-entry content and shown in compact row-wise 3 columns sorted by shortcode length.",
