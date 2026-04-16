@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  resolveCurrentWarScopedSyncRowForTest,
   deriveProjectedOutcomeForTest,
   resolveRenderedSyncNumberForStoredSummaryForTest,
 } from "../src/commands/Fwa";
@@ -87,6 +88,34 @@ describe("fwa match resolved current sync", () => {
 
     expect(resolvedOutcome).toBe("WIN");
     expect(staleOutcome).toBe("LOSE");
+  });
+
+  it("prefers warStartTime over a stale same-warId sync row when both are available", () => {
+    const resolved = resolveCurrentWarScopedSyncRowForTest({
+      rows: [
+        {
+          warId: "1001",
+          warStartTime: new Date("2026-03-10T09:00:00.000Z"),
+          opponentTag: "#2OLD",
+          needsValidation: false,
+        } as any,
+        {
+          warId: "1001",
+          warStartTime: new Date("2026-03-12T09:00:00.000Z"),
+          opponentTag: "#2NEW",
+          needsValidation: false,
+        } as any,
+      ],
+      warId: "1001",
+      warStartTime: new Date("2026-03-12T09:00:00.000Z"),
+      opponentTag: "2NEW",
+    });
+
+    expect(resolved).toMatchObject({
+      warId: "1001",
+      opponentTag: "#2NEW",
+    });
+    expect(resolved?.warStartTime?.toISOString()).toBe("2026-03-12T09:00:00.000Z");
   });
 
   it("renders resolved fallback sync for active war when no same-war persisted row exists", () => {

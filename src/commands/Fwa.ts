@@ -2882,6 +2882,7 @@ async function buildWarMailEmbedForTag(
     !hasLiveWar && hasStoredWarIdentity && Boolean(effectiveOpponentTag);
 
   const syncIdentity = resolveCurrentWarSyncIdentity({
+    clanTag: tag,
     warState,
     liveWarStartTime: war?.startTime ?? null,
     liveOpponentTag: opponentTag || null,
@@ -3353,6 +3354,8 @@ type ResolveLiveWarMailStatusParams = {
   guildId: string | null;
   tag: string;
   warId: number | null | undefined;
+  warStartTime?: Date | null;
+  opponentTag?: string | null;
   emitDebugLog?: boolean;
 };
 
@@ -3511,28 +3514,36 @@ async function collectFwaMatchMailStatusDebugRows(params: {
       guildId: params.guildId,
       clanTag: { in: normalizedTags.map((tag) => `#${tag}`) },
     },
-    select: { clanTag: true, warId: true },
+    select: { clanTag: true, warId: true, startTime: true, opponentTag: true },
   });
-  const warIdByTag = new Map(
+  const currentWarIdentityByTag = new Map(
     currentWars.map((row) => [
       normalizeTag(row.clanTag),
-      row.warId !== null &&
-      row.warId !== undefined &&
-      Number.isFinite(row.warId)
-        ? Math.trunc(row.warId)
-        : null,
+      {
+        warId:
+          row.warId !== null &&
+          row.warId !== undefined &&
+          Number.isFinite(row.warId)
+            ? Math.trunc(row.warId)
+            : null,
+        warStartTime: row.startTime ?? null,
+        opponentTag: row.opponentTag ?? null,
+      },
     ]),
   );
 
   const rows = await Promise.all(
     tracked.map(async (row) => {
       const normalizedTag = normalizeTag(row.tag);
-      const warId = warIdByTag.get(normalizedTag) ?? null;
+      const currentWarIdentity = currentWarIdentityByTag.get(normalizedTag) ?? null;
+      const warId = currentWarIdentity?.warId ?? null;
       const resolved = await resolveLiveWarMailStatus({
         client: params.client,
         guildId: params.guildId,
         tag: normalizedTag,
         warId,
+        warStartTime: currentWarIdentity?.warStartTime ?? null,
+        opponentTag: currentWarIdentity?.opponentTag ?? null,
         emitDebugLog: true,
       });
       return {
@@ -3574,6 +3585,8 @@ async function resolveLiveWarMailStatus(
     guildId: params.guildId,
     clanTag: params.tag,
     warId: params.warId ?? null,
+    warStartTime: params.warStartTime ?? null,
+    opponentTag: params.opponentTag ?? null,
     emitDebugLog: params.emitDebugLog,
     sentEmoji: MAILBOX_SENT_EMOJI,
     unsentEmoji: MAILBOX_NOT_SENT_EMOJI,
@@ -4112,25 +4125,35 @@ function buildWarMailPollKey(
   guildId: string,
   tag: string,
   warId: number | null,
+  warStartMs?: number | null,
 ): string {
-  return `${guildId}|${normalizeTag(tag)}|${warId ?? 0}`;
+  return `${guildId}|${normalizeTag(tag)}|${warId ?? 0}|${
+    warStartMs !== null && warStartMs !== undefined && Number.isFinite(warStartMs)
+      ? Math.trunc(warStartMs)
+      : 0
+  }`;
 }
 
 /** Purpose: parse deterministic poll/refresh lookup key into lifecycle identity. */
 function parseWarMailPollKey(
   key: string,
-): { guildId: string; tag: string; warId: number | null } | null {
+): { guildId: string; tag: string; warId: number | null; warStartMs: number | null } | null {
   const parts = key.split("|");
-  if (parts.length !== 3) return null;
+  if (parts.length !== 3 && parts.length !== 4) return null;
   const guildId = parts[0]?.trim() ?? "";
   const tag = normalizeTag(parts[1] ?? "");
   const warIdRaw = Number(parts[2]);
+  const warStartMsRaw = parts.length === 4 ? Number(parts[3]) : NaN;
   if (!guildId || !tag) return null;
   const warId =
     Number.isFinite(warIdRaw) && Math.trunc(warIdRaw) > 0
       ? Math.trunc(warIdRaw)
       : null;
-  return { guildId, tag, warId };
+  const warStartMs =
+    Number.isFinite(warStartMsRaw) && Math.trunc(warStartMsRaw) > 0
+      ? Math.trunc(warStartMsRaw)
+      : null;
+  return { guildId, tag, warId, warStartMs };
 }
 
 function buildNextRefreshRelativeLabel(
@@ -4381,6 +4404,8 @@ async function refreshWarMailPost(
       guildId: parsed.guildId,
       clanTag: parsed.tag,
       warId: parsed.warId,
+      warStartTime:
+        parsed.warStartMs !== null ? new Date(parsed.warStartMs) : null,
     })
     .catch(() => null);
   if (
@@ -4400,11 +4425,13 @@ async function refreshWarMailPost(
     messageId: lifecycle.messageId,
     key,
     expectedWarId: String(parsed.warId),
-    expectedWarStartMs: await resolveExpectedWarStartMsForRefresh({
-      guildId: parsed.guildId,
-      tag: parsed.tag,
-      warId: parsed.warId,
-    }),
+    expectedWarStartMs:
+      parsed.warStartMs ??
+      (await resolveExpectedWarStartMsForRefresh({
+        guildId: parsed.guildId,
+        tag: parsed.tag,
+        warId: parsed.warId,
+      })),
     fetchReason: "mail_refresh",
     routine: true,
   });
@@ -4423,6 +4450,7 @@ async function refreshWarMailPostByResolvedTarget(params: {
   key?: string;
   expectedWarId?: string | null;
   expectedWarStartMs?: number | null;
+  expectedOpponentTag?: string | null;
   fetchReason?: PointsApiFetchReason;
   routine?: boolean;
 }): Promise<"refreshed" | "frozen" | "missing"> {
@@ -4446,6 +4474,10 @@ async function refreshWarMailPostByResolvedTarget(params: {
       Number.isFinite(params.expectedWarStartMs)
         ? String(Math.trunc(params.expectedWarStartMs))
         : "none";
+    const expectedOpponentText = String(params.expectedOpponentTag ?? "")
+      .trim()
+      .toUpperCase()
+      .replace(/^#/, "");
     const renderedWarIdText =
       input.renderedWarId !== null &&
       input.renderedWarId !== undefined &&
@@ -4457,14 +4489,20 @@ async function refreshWarMailPostByResolvedTarget(params: {
       Number.isFinite(input.renderedWarStartMs)
         ? String(Math.trunc(input.renderedWarStartMs))
         : "unknown";
-    const renderedOpponentTag = normalizeTag(String(input.renderedOpponentTag ?? ""));
+    const renderedOpponentTag = String(input.renderedOpponentTag ?? "")
+      .trim()
+      .toUpperCase()
+      .replace(/^#/, "");
     const postedWarIdText =
       typeof input.postedWarId === "string" && input.postedWarId.trim()
         ? input.postedWarId.trim()
         : "unknown";
-    const postedOpponentTag = normalizeTag(String(input.postedOpponentTag ?? ""));
+    const postedOpponentTag = String(input.postedOpponentTag ?? "")
+      .trim()
+      .toUpperCase()
+      .replace(/^#/, "");
     console.info(
-      `[fwa-mail-refresh-identity] guild=${params.guildId} clan=#${normalizedTag} message_id=${params.messageId} expected_war_id=${expectedWarIdText} expected_war_start_ms=${expectedWarStartText} posted_war_id=${postedWarIdText} posted_opponent=${postedOpponentTag ? `#${postedOpponentTag}` : "unknown"} rendered_war_id=${renderedWarIdText} rendered_war_start_ms=${renderedWarStartText} rendered_opponent=${renderedOpponentTag ? `#${renderedOpponentTag}` : "unknown"} identity_shifted=${input.identityShifted ? "1" : "0"} action=${input.action}`,
+      `[fwa-mail-refresh-identity] guild=${params.guildId} clan=#${normalizedTag} message_id=${params.messageId} expected_war_id=${expectedWarIdText} expected_war_start_ms=${expectedWarStartText} expected_opponent=${expectedOpponentText ? `#${expectedOpponentText}` : "unknown"} posted_war_id=${postedWarIdText} posted_opponent=${postedOpponentTag ? `#${postedOpponentTag}` : "unknown"} rendered_war_id=${renderedWarIdText} rendered_war_start_ms=${renderedWarStartText} rendered_opponent=${renderedOpponentTag ? `#${renderedOpponentTag}` : "unknown"} identity_shifted=${input.identityShifted ? "1" : "0"} action=${input.action}`,
     );
   };
   const reconcileMissingExplicitTarget = async (): Promise<void> => {
@@ -4480,6 +4518,11 @@ async function refreshWarMailPostByResolvedTarget(params: {
         guildId: params.guildId,
         clanTag: normalizedTag,
         warId: expectedWarIdNumber,
+        warStartTime:
+          typeof params.expectedWarStartMs === "number" &&
+          Number.isFinite(params.expectedWarStartMs)
+            ? new Date(Math.trunc(params.expectedWarStartMs))
+            : null,
         channelId: params.channelId,
         messageId: params.messageId,
       })
@@ -4635,6 +4678,7 @@ async function refreshWarMailPostByResolvedTarget(params: {
       nextWarIdText && Number.isFinite(Number(nextWarIdText))
         ? Number(nextWarIdText)
         : null,
+      rendered.warStartMs,
     );
   const refreshEditPayload = buildWarMailRefreshEditPayload(
     String(message?.content ?? ""),
@@ -4669,6 +4713,12 @@ async function refreshWarMailPostByResolvedTarget(params: {
         guildId: params.guildId,
         clanTag: normalizedTag,
         warId: Number(lifecycleWarIdText),
+        warStartTime:
+          typeof rendered.warStartMs === "number" &&
+          Number.isFinite(rendered.warStartMs)
+            ? new Date(Math.trunc(rendered.warStartMs))
+            : null,
+        opponentTag: rendered.opponentTag ?? null,
         channelId: params.channelId,
         messageId: params.messageId,
       })
@@ -4878,6 +4928,8 @@ async function findWarMailTargetFromLifecycle(params: {
   channelId: string;
   messageId: string;
   warId?: string | null;
+  warStartMs?: number | null;
+  opponentTag?: string | null;
 }): Promise<{
   tag: string;
   warId: string | null;
@@ -4896,6 +4948,11 @@ async function findWarMailTargetFromLifecycle(params: {
       requestedWarId !== null && Number.isFinite(requestedWarId)
         ? requestedWarId
         : null,
+    warStartTime:
+      typeof params.warStartMs === "number" && Number.isFinite(params.warStartMs)
+        ? new Date(Math.trunc(params.warStartMs))
+        : null,
+    opponentTag: params.opponentTag ?? null,
   });
   if (!row || !row.channelId || !row.messageId) return null;
   return {
@@ -6957,6 +7014,7 @@ async function handleFwaMailConfirmAction(
     payload.guildId,
     payload.tag,
     renderedWarIdNumber,
+    rendered.warStartMs,
   );
   const sendPayload = buildWarMailSendPayload(rendered.clanRoleId, undefined, {
     pingRole: options.pingRole,
@@ -7307,6 +7365,17 @@ export async function handleFwaMailRefreshButton(
   const guildId = interaction.guildId ?? "";
   const fallbackTag = extractWarMailTagFromMessage(interaction.message);
   const fallbackWarId = extractWarMailIdFromMessage(interaction.message);
+  const fallbackOpponentTag = extractWarMailOpponentTagFromMessage(
+    interaction.message,
+  );
+  const fallbackWarStartMs =
+    guildId && fallbackTag && fallbackWarId
+      ? await resolveExpectedWarStartMsForRefresh({
+          guildId,
+          tag: fallbackTag,
+          warId: Number(fallbackWarId),
+        }).catch(() => null)
+      : null;
   const fallbackTarget =
     guildId && fallbackTag
       ? {
@@ -7321,6 +7390,8 @@ export async function handleFwaMailRefreshButton(
             channelId: interaction.channelId,
             messageId: interaction.message.id,
             warId: fallbackWarId,
+            warStartMs: fallbackWarStartMs,
+            opponentTag: fallbackOpponentTag,
           })
         : null;
   if (!guildId || !fallbackTarget) {
@@ -7337,14 +7408,8 @@ export async function handleFwaMailRefreshButton(
     channelId: fallbackTarget.channelId,
     messageId: fallbackTarget.messageId,
     expectedWarId: fallbackTarget.warId ?? null,
-    expectedWarStartMs:
-      fallbackTarget.warId !== null
-        ? await resolveExpectedWarStartMsForRefresh({
-            guildId,
-            tag: fallbackTarget.tag,
-            warId: Number(fallbackTarget.warId),
-          })
-        : null,
+    expectedWarStartMs: fallbackWarStartMs,
+    expectedOpponentTag: fallbackOpponentTag,
     fetchReason: "mail_refresh",
     routine: true,
   }).catch(() => "missing" as const);
@@ -7368,6 +7433,7 @@ export async function refreshAllTrackedWarMailPosts(
       clanTag: true,
       warId: true,
       startTime: true,
+      opponentTag: true,
     },
   });
 
@@ -7386,6 +7452,8 @@ export async function refreshAllTrackedWarMailPosts(
         guildId,
         clanTag: row.clanTag,
         warId: warIdNumber,
+        warStartTime: row.startTime ?? null,
+        opponentTag: row.opponentTag ?? null,
       })
       .catch(() => null);
     if (
@@ -7396,7 +7464,12 @@ export async function refreshAllTrackedWarMailPosts(
     ) {
       continue;
     }
-    const pollKey = buildWarMailPollKey(guildId, row.clanTag, warIdNumber);
+    const pollKey = buildWarMailPollKey(
+      guildId,
+      row.clanTag,
+      warIdNumber,
+      row.startTime ? row.startTime.getTime() : null,
+    );
     const refreshed = await refreshWarMailPostByResolvedTarget({
       client,
       guildId,
@@ -7406,6 +7479,7 @@ export async function refreshAllTrackedWarMailPosts(
       key: pollKey,
       expectedWarId: String(warIdNumber),
       expectedWarStartMs: row.startTime ? row.startTime.getTime() : null,
+      expectedOpponentTag: row.opponentTag ?? null,
       fetchReason: "mail_refresh",
       routine: true,
     }).catch(() => "missing" as const);
@@ -7450,6 +7524,7 @@ export async function runForceMailUpdateCommand(
     select: {
       warId: true,
       startTime: true,
+      opponentTag: true,
     },
   });
   const currentWarIdNumber =
@@ -7474,6 +7549,8 @@ export async function runForceMailUpdateCommand(
       guildId: interaction.guildId,
       clanTag: tag,
       warId: currentWarIdNumber,
+      warStartTime: currentWar?.startTime ?? null,
+      opponentTag: currentWar?.opponentTag ?? null,
       sentEmoji: MAILBOX_SENT_EMOJI,
       unsentEmoji: MAILBOX_NOT_SENT_EMOJI,
     })
@@ -7516,6 +7593,7 @@ export async function runForceMailUpdateCommand(
     interaction.guildId,
     tag,
     currentWarIdNumber,
+    currentWarStartMs,
   );
 
   const refreshed = await refreshWarMailPostByResolvedTarget({
@@ -7627,26 +7705,41 @@ function resolveCurrentWarScopedSyncRow(input: {
   opponentTag: string | null;
 }): WarScopedSyncReuseRow | null {
   const expectedOpponentTag = normalizeTag(String(input.opponentTag ?? ""));
-  for (const row of input.rows) {
-    if (row.needsValidation) continue;
-    if (expectedOpponentTag) {
-      const rowOpponentTag = normalizeTag(String(row.opponentTag ?? ""));
-      if (rowOpponentTag !== expectedOpponentTag) continue;
-    }
-    if (input.warId) {
-      if (normalizeWarIdText(row.warId ?? null) === input.warId) {
+  if (input.warStartTime instanceof Date) {
+    for (const row of input.rows) {
+      if (row.needsValidation) continue;
+      if (expectedOpponentTag) {
+        const rowOpponentTag = normalizeTag(String(row.opponentTag ?? ""));
+        if (rowOpponentTag !== expectedOpponentTag) continue;
+      }
+      if (
+        row.warStartTime instanceof Date &&
+        Number.isFinite(row.warStartTime.getTime()) &&
+        row.warStartTime.getTime() === input.warStartTime.getTime()
+      ) {
+        console.info(
+          `[fwa-sync-row] resolution=war_start_time war_start=${input.warStartTime.toISOString()} war_id=${input.warId ?? "none"} opponent=${expectedOpponentTag ? `#${expectedOpponentTag}` : "none"}`,
+        );
         return row;
       }
-      continue;
     }
-    if (
-      input.warStartTime instanceof Date &&
-      row.warStartTime instanceof Date &&
-      Number.isFinite(input.warStartTime.getTime()) &&
-      Number.isFinite(row.warStartTime.getTime()) &&
-      row.warStartTime.getTime() === input.warStartTime.getTime()
-    ) {
-      return row;
+    return null;
+  }
+  if (input.warId) {
+    for (const row of input.rows) {
+      if (row.needsValidation) continue;
+      if (expectedOpponentTag) {
+        const rowOpponentTag = normalizeTag(String(row.opponentTag ?? ""));
+        if (rowOpponentTag !== expectedOpponentTag) continue;
+      }
+      if (normalizeWarIdText(row.warId ?? null) === input.warId) {
+        const warStartTime = input.warStartTime as Date | null;
+        const warStartText = warStartTime ? warStartTime.toISOString() : "none";
+        console.info(
+          `[fwa-sync-row] resolution=war_id_fallback war_start=${warStartText} war_id=${input.warId} opponent=${expectedOpponentTag ? `#${expectedOpponentTag}` : "none"}`,
+        );
+        return row;
+      }
     }
   }
   return null;
@@ -8276,6 +8369,8 @@ export const isPointsValidationCurrentForMatchupForTest =
 export const shouldHydrateAlliancePayloadForTest = shouldHydrateAlliancePayload;
 export const resolveCurrentWarSyncIdentityForTest =
   resolveCurrentWarSyncIdentity;
+export const resolveCurrentWarScopedSyncRowForTest =
+  resolveCurrentWarScopedSyncRow;
 export const deriveProjectedOutcomeForTest = deriveProjectedOutcome;
 
 export const resolveMatchTypeFromStoredSyncRowForTest =
@@ -9504,6 +9599,7 @@ async function buildTrackedMatchOverview(
     syncIdentityByClanTag.set(
       clanTag,
       resolveCurrentWarSyncIdentity({
+        clanTag,
         warState,
         liveWarStartTime: war?.startTime ?? null,
         liveOpponentTag: war?.opponent?.tag ?? null,
@@ -10886,6 +10982,8 @@ export async function runForceSyncMailCommand(
       guildId: interaction.guildId,
       clanTag: tag,
       warId: Number(warIdText),
+      warStartTime: existing?.startTime ?? null,
+      opponentTag: opponentTag || null,
       channelId: validatedMailReference?.channelId ?? interaction.channelId,
       messageId: validatedMailReference?.messageId ?? messageID,
     });
@@ -13424,6 +13522,7 @@ export const Fwa: Command = {
           : null;
         opponentTag = normalizeTag(String(war?.opponent?.tag ?? ""));
         const syncIdentity = resolveCurrentWarSyncIdentity({
+          clanTag: tag,
           warState,
           liveWarStartTime: war?.startTime ?? null,
           liveOpponentTag: opponentTag || null,

@@ -96,6 +96,7 @@ export function buildActiveWarSyncIdentity(input: {
 
 /** Purpose: scope active-war sync identity to the live war and drop stale CurrentWar ids on rollover. */
 export function resolveCurrentWarSyncIdentity(input: {
+  clanTag?: string | null;
   warState: ActiveWarSyncState;
   liveWarStartTime: string | null | undefined;
   liveOpponentTag: string | null | undefined;
@@ -112,6 +113,7 @@ export function resolveCurrentWarSyncIdentity(input: {
   const liveOpponentTag = normalizeTag(input.liveOpponentTag ?? null);
   const currentWarOpponentTag = normalizeTag(input.currentWarOpponentTag ?? null);
   const currentWarId = normalizeWarId(input.currentWarId ?? null);
+  const clanTag = normalizeTag(input.clanTag ?? null);
 
   const startAligned =
     liveWarStartTime && currentWarStartTime
@@ -121,12 +123,36 @@ export function resolveCurrentWarSyncIdentity(input: {
     liveOpponentTag && currentWarOpponentTag
       ? liveOpponentTag === currentWarOpponentTag
       : null;
-  const identityMismatch = startAligned === false || opponentAligned === false;
-  const identityConfirmed = startAligned === true || opponentAligned === true;
+  const hasFullLiveIdentity =
+    liveWarStartTime !== null &&
+    liveOpponentTag !== null &&
+    currentWarStartTime !== null &&
+    currentWarOpponentTag !== null;
+  const identityMismatch =
+    (liveWarStartTime !== null &&
+      currentWarStartTime !== null &&
+      startAligned === false) ||
+    (liveOpponentTag !== null &&
+      currentWarOpponentTag !== null &&
+      opponentAligned === false);
   const canUseCurrentWarId =
     currentWarId !== null &&
+    hasFullLiveIdentity &&
     !identityMismatch &&
-    (identityConfirmed || (liveWarStartTime === null && liveOpponentTag === null));
+    startAligned === true &&
+    opponentAligned === true;
+
+  if (currentWarId !== null) {
+    const decision = canUseCurrentWarId ? "reuse" : "drop";
+    const reason = !hasFullLiveIdentity
+      ? "partial_live_identity"
+      : identityMismatch
+        ? "identity_mismatch"
+        : "unconfirmed_identity";
+    console.info(
+      `[sync-identity] clan=${clanTag ? `#${clanTag}` : "unknown"} war_state=${input.warState} current_war_id=${currentWarId} current_war_start=${currentWarStartTime?.toISOString() ?? "none"} current_war_opponent=${currentWarOpponentTag ? `#${currentWarOpponentTag}` : "none"} live_war_start=${liveWarStartTime?.toISOString() ?? "none"} live_opponent=${liveOpponentTag ? `#${liveOpponentTag}` : "none"} decision=${decision} reason=${reason}`,
+    );
+  }
 
   return buildActiveWarSyncIdentity({
     warState: input.warState,

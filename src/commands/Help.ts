@@ -449,7 +449,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "Running `/fwa match tag:<clan>` and then pressing `Alliance View` restores the full alliance overview (not a one-clan scoped view).",
       "Confirm-and-send pings the tracked clan role (`TrackedClan.clanRoleId`) when pinging is enabled.",
       "The `/fwa match` single-clan `Send Mail` button uses the same permissions as `/fwa mail send`.",
-      "Mail freshness is scoped to the current war identity (war/opponent/config): sent/up-to-date disables resend, sent/out-of-date re-enables resend on matchType/outcome change, and new wars reset to unsent across both `/fwa match` and `/fwa mail send`.",
+      "Mail freshness is scoped to the current war identity (war start time/opponent/config): sent/up-to-date disables resend, sent/out-of-date re-enables resend on matchType/outcome change, and new wars reset to unsent across both `/fwa match` and `/fwa mail send`.",
       "Default access for `/fwa mail send` is FWA leader role + Administrator (or override via `/permission add command:fwa:mail:send`).",
       "Default access for `/fwa compliance` is FWA leader role + Administrator (or override via `/permission add command:fwa:compliance`).",
       "Default access for `/fwa police` is FWA leader role + Administrator (or override via `/permission add command:fwa:police`).",
@@ -600,7 +600,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "Run manual repair and refresh actions for war data, points sync, and tracked messages.",
     details: [
       "`/force sync data` refreshes live points.fwafarm data into `ClanPointsSync` for the current war when possible.",
-      "`/force sync mail` validates supplied mail references against current-channel active-war identity before writing `WarMailLifecycle`, and still repairs notify references in `ClanPostedMessage`.",
+      "`/force sync mail` validates supplied mail references against the current-channel active-war identity before writing `WarMailLifecycle`, and still repairs notify references in `ClanPostedMessage`. Lifecycle ownership follows the full active-war identity (war start time + opponent when available), not `warId` alone.",
       "`/force sync warid` is a DB repair tool for `CurrentWar` and `ClanWarHistory` only.",
       "`/force refresh heatmapref` rebuilds `HeatMapRef` from persisted FWA WarMembers data, and is the manual repair path for the automatic cycle job.",
       "`/force mail update` first reconciles active-war lifecycle tracking (marking definitively missing references as DELETED), then refreshes existing sent war-mail in place and re-attaches it to the 20-minute refresh loop when valid.",

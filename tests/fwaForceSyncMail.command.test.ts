@@ -149,6 +149,8 @@ describe("runForceSyncMailCommand", () => {
         guildId: "guild-1",
         clanTag: "R80L8VYG",
         warId: 1000110,
+        warStartTime: new Date("2026-03-25T04:22:17.000Z"),
+        opponentTag: "2Q0PL9GRJ",
         channelId: "mail-channel-1",
         messageId: "1485883255436611624",
       }),

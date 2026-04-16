@@ -141,21 +141,6 @@ export class PointsSyncService {
         ? String(input.warId)
         : null;
     const requestedWarStartTime = normalizeDate(input.warStartTime);
-    if (input.warId) {
-      const byWarId = await prisma.clanPointsSync.findFirst({
-        where: {
-          guildId: input.guildId,
-          clanTag,
-          warId: String(input.warId),
-        },
-        orderBy: [
-          { syncFetchedAt: "desc" },
-          { lastSuccessfulPointsApiFetchAt: "desc" },
-          { updatedAt: "desc" },
-        ],
-      });
-      if (byWarId) return byWarId;
-    }
     if (input.warStartTime) {
       const byWarStartTime = await prisma.clanPointsSync.findUnique({
         where: {
@@ -166,7 +151,38 @@ export class PointsSyncService {
           },
         },
       });
-      if (byWarStartTime) return byWarStartTime;
+      if (byWarStartTime) {
+        console.info(
+          `[points-sync] guild=${input.guildId} clan=${clanTag} war_id=${requestedWarId ?? "none"} war_start=${requestedWarStartTime?.toISOString() ?? "none"} resolution=war_start_time`,
+        );
+        return byWarStartTime;
+      }
+      if (requestedWarId) {
+        console.info(
+          `[points-sync] guild=${input.guildId} clan=${clanTag} war_id=${requestedWarId} war_start=${requestedWarStartTime?.toISOString() ?? "none"} resolution=missed_war_start_time`,
+        );
+        return null;
+      }
+    }
+    if (requestedWarId) {
+      const byWarId = await prisma.clanPointsSync.findFirst({
+        where: {
+          guildId: input.guildId,
+          clanTag,
+          warId: requestedWarId,
+        },
+        orderBy: [
+          { syncFetchedAt: "desc" },
+          { lastSuccessfulPointsApiFetchAt: "desc" },
+          { updatedAt: "desc" },
+        ],
+      });
+      if (byWarId) {
+        console.info(
+          `[points-sync] guild=${input.guildId} clan=${clanTag} war_id=${requestedWarId} war_start=none resolution=war_id_fallback`,
+        );
+        return byWarId;
+      }
     }
     if (requestedWarId || requestedWarStartTime) {
       return null;
