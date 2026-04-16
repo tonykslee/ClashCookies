@@ -66,9 +66,9 @@ describe("runForceMailUpdateCommand", () => {
       warId: 1000110,
       startTime: new Date("2026-03-25T04:22:17.000Z"),
     } as never);
-    vi.spyOn(WarMailLifecycleService.prototype, "resolveStatusForCurrentWar").mockResolvedValueOnce(
-      buildLifecycleResult(),
-    );
+    const resolveStatusSpy = vi
+      .spyOn(WarMailLifecycleService.prototype, "resolveStatusForCurrentWar")
+      .mockResolvedValueOnce(buildLifecycleResult());
     const interaction = createInteraction();
 
     await runForceMailUpdateCommand(interaction);
@@ -79,6 +79,15 @@ describe("runForceMailUpdateCommand", () => {
     );
     expect(reply).toContain("WarMailLifecycle -> DELETED");
     expect(reply).toContain("`/force sync mail`");
+    expect(resolveStatusSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guildId: "guild-1",
+        clanTag: "R80L8VYG",
+        warId: 1000110,
+        warStartTime: new Date("2026-03-25T04:22:17.000Z"),
+        opponentTag: null,
+      }),
+    );
   });
 
   it("keeps existing no-reference behavior when lifecycle is not posted", async () => {
@@ -190,6 +199,7 @@ describe("runForceMailUpdateCommand", () => {
       guildId: "guild-1",
       clanTag: "R80L8VYG",
       warId: 1000110,
+      warStartTime: new Date("2026-03-25T04:22:17.000Z"),
       channelId: "mail-channel-1",
       messageId: "mail-message-1",
     });

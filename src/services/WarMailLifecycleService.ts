@@ -50,15 +50,27 @@ type ResolveWarMailLifecycleStatusParams = {
   guildId: string | null;
   clanTag: string;
   warId: number | null | undefined;
+  warStartTime?: Date | null;
+  opponentTag?: string | null;
   emitDebugLog?: boolean;
   sentEmoji: string;
   unsentEmoji: string;
 };
 
+type WarMailLifecycleIdentity = {
+  guildId: string;
+  clanTag: string;
+  warId?: number | null;
+  warStartTime?: Date | null;
+  opponentTag?: string | null;
+};
+
 type UpsertPostedLifecycleInput = {
   guildId: string;
   clanTag: string;
-  warId: number;
+  warId?: number | null;
+  warStartTime?: Date | null;
+  opponentTag?: string | null;
   channelId: string;
   messageId: string;
   postedAt?: Date;
@@ -67,7 +79,9 @@ type UpsertPostedLifecycleInput = {
 type MarkDeletedLifecycleInput = {
   guildId: string;
   clanTag: string;
-  warId: number;
+  warId?: number | null;
+  warStartTime?: Date | null;
+  opponentTag?: string | null;
   deletedAt?: Date;
   requirePosted?: boolean;
   matchChannelId?: string;
@@ -77,7 +91,9 @@ type MarkDeletedLifecycleInput = {
 type MarkDeletedIfTrackedMessageMatchesInput = {
   guildId: string;
   clanTag: string;
-  warId: number;
+  warId?: number | null;
+  warStartTime?: Date | null;
+  opponentTag?: string | null;
   channelId: string;
   messageId: string;
   deletedAt?: Date;
@@ -92,7 +108,9 @@ export type MarkDeletedIfTrackedMessageMatchesResult =
 type GetLifecycleInput = {
   guildId: string;
   clanTag: string;
-  warId: number;
+  warId?: number | null;
+  warStartTime?: Date | null;
+  opponentTag?: string | null;
 };
 
 type FindByMessageInput = {
@@ -100,11 +118,34 @@ type FindByMessageInput = {
   channelId: string;
   messageId: string;
   warId?: number | null;
+  warStartTime?: Date | null;
+  opponentTag?: string | null;
 };
 
 /** Purpose: normalize clan tags for deterministic lifecycle lookups. */
 function normalizeTag(input: string): string {
   return `#${input.trim().toUpperCase().replace(/^#/, "")}`;
+}
+
+/** Purpose: normalize optional clan tags for logging and lookups. */
+function normalizeOptionalTag(input: string | null | undefined): string | null {
+  const normalized = String(input ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/^#/, "");
+  return normalized ? normalized : null;
+}
+
+/** Purpose: normalize optional war IDs used in lifecycle identity lookups. */
+function normalizeOptionalWarId(input: number | string | null | undefined): number | null {
+  const value = typeof input === "number" ? input : Number(input);
+  return Number.isFinite(value) ? Math.trunc(value) : null;
+}
+
+/** Purpose: normalize optional lifecycle timestamps for deterministic lookups. */
+function normalizeOptionalDate(input: Date | null | undefined): Date | null {
+  if (!(input instanceof Date)) return null;
+  return Number.isFinite(input.getTime()) ? input : null;
 }
 
 /** Purpose: read numeric Discord API error codes from unknown thrown values. */
@@ -192,52 +233,111 @@ export class WarMailLifecycleService {
     );
   }
 
+  /** Purpose: normalize one active-war lifecycle identity for lookups and logs. */
+  private normalizeIdentity(input: WarMailLifecycleIdentity): {
+    guildId: string;
+    clanTag: string;
+    warId: number | null;
+    warStartTime: Date | null;
+    opponentTag: string | null;
+  } {
+    return {
+      guildId: input.guildId,
+      clanTag: normalizeTag(input.clanTag),
+      warId: normalizeOptionalWarId(input.warId),
+      warStartTime: normalizeOptionalDate(input.warStartTime ?? null),
+      opponentTag: normalizeOptionalTag(input.opponentTag ?? null),
+    };
+  }
+
+  /** Purpose: format lifecycle identity fields for structured diagnostics. */
+  private formatIdentityLogFields(input: {
+    warId: number | null;
+    warStartTime: Date | null;
+    opponentTag: string | null;
+  }): string {
+    return [
+      `war_id=${input.warId ?? "none"}`,
+      `war_start=${input.warStartTime?.toISOString() ?? "none"}`,
+      `opponent=${input.opponentTag ? `#${input.opponentTag}` : "none"}`,
+    ].join(" ");
+  }
+
+  /** Purpose: resolve one lifecycle row by active-war start time first and legacy war ID second. */
+  private async findLifecycleRow(input: WarMailLifecycleIdentity) {
+    const identity = this.normalizeIdentity(input);
+    if (identity.warStartTime) {
+      const row = await prisma.warMailLifecycle.findFirst({
+        where: {
+          guildId: identity.guildId,
+          clanTag: identity.clanTag,
+          warStartTime: identity.warStartTime,
+        },
+        orderBy: { updatedAt: "desc" },
+      });
+      return row;
+    }
+    if (identity.warId !== null) {
+      return prisma.warMailLifecycle.findFirst({
+        where: {
+          guildId: identity.guildId,
+          clanTag: identity.clanTag,
+          warId: identity.warId,
+        },
+        orderBy: { updatedAt: "desc" },
+      });
+    }
+    return null;
+  }
+
   /** Purpose: persist lifecycle status=POSTED for one clan and one war. */
   async markPosted(input: UpsertPostedLifecycleInput): Promise<void> {
-    const clanTag = normalizeTag(input.clanTag);
-    const warId = Math.trunc(input.warId);
+    const identity = this.normalizeIdentity(input);
+    if (!identity.warStartTime && identity.warId === null) {
+      throw new Error("markPosted requires warStartTime or warId.");
+    }
     const postedAt = input.postedAt ?? new Date();
-    const existing = await prisma.warMailLifecycle.findUnique({
-      where: {
-        guildId_clanTag_warId: {
-          guildId: input.guildId,
-          clanTag,
-          warId,
+    const existing = await this.findLifecycleRow(identity);
+    if (existing) {
+      await prisma.warMailLifecycle.update({
+        where: { id: existing.id },
+        data: {
+          status: WarMailLifecycleStatus.POSTED,
+          guildId: identity.guildId,
+          clanTag: identity.clanTag,
+          warId: identity.warId,
+          warStartTime: identity.warStartTime,
+          opponentTag: identity.opponentTag,
+          channelId: input.channelId,
+          messageId: input.messageId,
+          postedAt,
+          deletedAt: null,
         },
-      },
-    });
-    await prisma.warMailLifecycle.upsert({
-      where: {
-        guildId_clanTag_warId: {
-          guildId: input.guildId,
-          clanTag,
-          warId,
+      });
+    } else {
+      await prisma.warMailLifecycle.create({
+        data: {
+          guildId: identity.guildId,
+          clanTag: identity.clanTag,
+          warId: identity.warId,
+          warStartTime: identity.warStartTime,
+          opponentTag: identity.opponentTag,
+          status: WarMailLifecycleStatus.POSTED,
+          channelId: input.channelId,
+          messageId: input.messageId,
+          postedAt,
+          deletedAt: null,
         },
-      },
-      create: {
-        guildId: input.guildId,
-        clanTag,
-        warId,
-        status: WarMailLifecycleStatus.POSTED,
-        channelId: input.channelId,
-        messageId: input.messageId,
-        postedAt,
-        deletedAt: null,
-      },
-      update: {
-        status: WarMailLifecycleStatus.POSTED,
-        channelId: input.channelId,
-        messageId: input.messageId,
-        postedAt,
-        deletedAt: null,
-      },
-    });
+      });
+    }
     const isTransitionToPosted =
       !existing || existing.status !== WarMailLifecycleStatus.POSTED;
     const postedIdentityChanged =
       existing?.channelId !== input.channelId ||
       existing?.messageId !== input.messageId;
-    const logLine = `[mail-lifecycle] guild=${input.guildId} clan=${clanTag} war=${warId} status=POSTED`;
+    const logLine =
+      `[mail-lifecycle] guild=${identity.guildId} clan=${identity.clanTag} ` +
+      `${this.formatIdentityLogFields(identity)} status=POSTED`;
     if (isTransitionToPosted || postedIdentityChanged) {
       console.info(logLine);
       return;
@@ -247,22 +347,39 @@ export class WarMailLifecycleService {
 
   /** Purpose: persist lifecycle status=DELETED for one clan and one war. */
   async markDeleted(input: MarkDeletedLifecycleInput): Promise<boolean> {
-    const clanTag = normalizeTag(input.clanTag);
+    const identity = this.normalizeIdentity(input);
+    if (!identity.warStartTime && identity.warId === null) {
+      return false;
+    }
     const deletedAt = input.deletedAt ?? new Date();
-    const warId = Math.trunc(input.warId);
+    const where =
+      identity.warStartTime !== null
+        ? {
+            guildId: identity.guildId,
+            clanTag: identity.clanTag,
+            warStartTime: identity.warStartTime,
+            ...(input.requirePosted ? { status: WarMailLifecycleStatus.POSTED } : {}),
+            ...(typeof input.matchChannelId === "string" && input.matchChannelId.trim()
+              ? { channelId: input.matchChannelId }
+              : {}),
+            ...(typeof input.matchMessageId === "string" && input.matchMessageId.trim()
+              ? { messageId: input.matchMessageId }
+              : {}),
+          }
+        : {
+            guildId: identity.guildId,
+            clanTag: identity.clanTag,
+            warId: identity.warId,
+            ...(input.requirePosted ? { status: WarMailLifecycleStatus.POSTED } : {}),
+            ...(typeof input.matchChannelId === "string" && input.matchChannelId.trim()
+              ? { channelId: input.matchChannelId }
+              : {}),
+            ...(typeof input.matchMessageId === "string" && input.matchMessageId.trim()
+              ? { messageId: input.matchMessageId }
+              : {}),
+          };
     const updated = await prisma.warMailLifecycle.updateMany({
-      where: {
-        guildId: input.guildId,
-        clanTag,
-        warId,
-        ...(input.requirePosted ? { status: WarMailLifecycleStatus.POSTED } : {}),
-        ...(typeof input.matchChannelId === "string" && input.matchChannelId.trim()
-          ? { channelId: input.matchChannelId }
-          : {}),
-        ...(typeof input.matchMessageId === "string" && input.matchMessageId.trim()
-          ? { messageId: input.matchMessageId }
-          : {}),
-      },
+      where,
       data: {
         status: WarMailLifecycleStatus.DELETED,
         deletedAt,
@@ -270,7 +387,7 @@ export class WarMailLifecycleService {
     });
     if (updated.count > 0) {
       console.info(
-        `[mail-lifecycle] guild=${input.guildId} clan=${clanTag} war=${warId} status=DELETED`
+        `[mail-lifecycle] guild=${identity.guildId} clan=${identity.clanTag} ${this.formatIdentityLogFields(identity)} status=DELETED`
       );
       return true;
     }
@@ -281,13 +398,8 @@ export class WarMailLifecycleService {
   async markDeletedIfTrackedMessageMatches(
     input: MarkDeletedIfTrackedMessageMatchesInput
   ): Promise<MarkDeletedIfTrackedMessageMatchesResult> {
-    const clanTag = normalizeTag(input.clanTag);
-    const warId = Math.trunc(input.warId);
-    const row = await this.getLifecycleForWar({
-      guildId: input.guildId,
-      clanTag,
-      warId,
-    });
+    const identity = this.normalizeIdentity(input);
+    const row = await this.getLifecycleForWar(identity);
     if (!row) {
       return "missing_row";
     }
@@ -300,14 +412,16 @@ export class WarMailLifecycleService {
     }
     if (row.channelId !== input.channelId || row.messageId !== input.messageId) {
       console.info(
-        `[mail-lifecycle] guild=${input.guildId} clan=${clanTag} war=${warId} status=NOOP_STALE_TARGET tracked_channel=${row.channelId} tracked_message=${row.messageId} failing_channel=${input.channelId} failing_message=${input.messageId}`
+        `[mail-lifecycle] guild=${input.guildId} clan=${identity.clanTag} ${this.formatIdentityLogFields(identity)} status=NOOP_STALE_TARGET tracked_channel=${row.channelId} tracked_message=${row.messageId} failing_channel=${input.channelId} failing_message=${input.messageId}`
       );
       return "stale_target";
     }
     const deleted = await this.markDeleted({
       guildId: input.guildId,
-      clanTag,
-      warId,
+      clanTag: identity.clanTag,
+      warId: identity.warId,
+      warStartTime: identity.warStartTime,
+      opponentTag: identity.opponentTag,
       deletedAt: input.deletedAt,
       requirePosted: true,
       matchChannelId: input.channelId,
@@ -318,29 +432,24 @@ export class WarMailLifecycleService {
 
   /** Purpose: fetch one lifecycle row by guild/clan/war identity. */
   async getLifecycleForWar(input: GetLifecycleInput) {
-    const clanTag = normalizeTag(input.clanTag);
-    return prisma.warMailLifecycle.findUnique({
-      where: {
-        guildId_clanTag_warId: {
-          guildId: input.guildId,
-          clanTag,
-          warId: Math.trunc(input.warId),
-        },
-      },
-    });
+    return this.findLifecycleRow(input);
   }
 
   /** Purpose: resolve lifecycle row by concrete Discord message target. */
   async findLifecycleByMessage(input: FindByMessageInput) {
+    const warId = normalizeOptionalWarId(input.warId);
+    const warStartTime = normalizeOptionalDate(input.warStartTime ?? null);
     return prisma.warMailLifecycle.findFirst({
       where: {
         guildId: input.guildId,
         channelId: input.channelId,
         messageId: input.messageId,
         status: WarMailLifecycleStatus.POSTED,
-        ...(typeof input.warId === "number" && Number.isFinite(input.warId)
-          ? { warId: Math.trunc(input.warId) }
-          : {}),
+        ...(warStartTime
+          ? { warStartTime }
+          : warId !== null
+            ? { warId }
+            : {}),
       },
       orderBy: { updatedAt: "desc" },
     });
@@ -351,13 +460,10 @@ export class WarMailLifecycleService {
     params: ResolveWarMailLifecycleStatusParams
   ): Promise<ResolveWarMailLifecycleStatusResult> {
     const normalizedTag = normalizeTag(params.clanTag);
-    const warId =
-      params.warId !== null &&
-      params.warId !== undefined &&
-      Number.isFinite(params.warId)
-        ? Math.trunc(params.warId)
-        : null;
-    if (!params.guildId || warId === null) {
+    const warId = normalizeOptionalWarId(params.warId);
+    const warStartTime = normalizeOptionalDate(params.warStartTime ?? null);
+    const opponentTag = normalizeOptionalTag(params.opponentTag ?? null);
+    if (!params.guildId || (warId === null && warStartTime === null)) {
       return {
         status: "not_posted",
         mailStatusEmoji: params.unsentEmoji,
@@ -377,14 +483,16 @@ export class WarMailLifecycleService {
       guildId: params.guildId,
       clanTag: normalizedTag,
       warId,
+      warStartTime,
+      opponentTag,
     });
     if (!row || row.status !== WarMailLifecycleStatus.POSTED) {
       const status: WarMailLifecycleNormalizedStatus =
         row?.status === WarMailLifecycleStatus.DELETED ? "deleted" : "not_posted";
       const outcome: WarMailLifecycleReconciliationOutcome = "not_checked";
       const debug = this.buildDebugInfo({
-        currentWarId: String(warId),
-        trackedWarId: row ? String(row.warId) : null,
+        currentWarId: warId !== null ? String(warId) : null,
+        trackedWarId: row?.warId !== null && row?.warId !== undefined ? String(row.warId) : null,
         channelId: row?.channelId ?? null,
         messageId: row?.messageId ?? null,
         status,
@@ -413,8 +521,8 @@ export class WarMailLifecycleService {
         action: trackingCleared ? "mark_deleted" : "no_change",
       });
       const debug = this.buildDebugInfo({
-        currentWarId: String(warId),
-        trackedWarId: String(row.warId),
+        currentWarId: warId !== null ? String(warId) : null,
+        trackedWarId: row.warId !== null && row.warId !== undefined ? String(row.warId) : null,
         channelId: row.channelId ?? null,
         messageId: row.messageId ?? null,
         status: "deleted",
@@ -448,8 +556,8 @@ export class WarMailLifecycleService {
         action: trackingCleared ? "mark_deleted" : "no_change",
       });
       const debug = this.buildDebugInfo({
-        currentWarId: String(warId),
-        trackedWarId: String(row.warId),
+        currentWarId: warId !== null ? String(warId) : null,
+        trackedWarId: row.warId !== null && row.warId !== undefined ? String(row.warId) : null,
         channelId: row.channelId,
         messageId: row.messageId,
         status: "deleted",
@@ -465,8 +573,8 @@ export class WarMailLifecycleService {
     }
 
     const debug = this.buildDebugInfo({
-      currentWarId: String(warId),
-      trackedWarId: String(row.warId),
+      currentWarId: warId !== null ? String(warId) : null,
+      trackedWarId: row.warId !== null && row.warId !== undefined ? String(row.warId) : null,
       channelId: row.channelId,
       messageId: row.messageId,
       status: "posted",
@@ -643,7 +751,7 @@ export class WarMailLifecycleService {
   private logReconcile(input: {
     guildId: string;
     clanTag: string;
-    warId: number;
+    warId: number | null;
     outcome: WarMailLifecycleReconciliationOutcome;
     action: "mark_deleted" | "no_change";
   }): void {
@@ -655,7 +763,7 @@ export class WarMailLifecycleService {
           ? "false"
           : "unknown";
     console.info(
-      `[mail-lifecycle-reconcile] guild=${input.guildId} clan=${input.clanTag} war_id=${input.warId} message_exists=${messageExists} outcome=${input.outcome} action=${input.action}`
+      `[mail-lifecycle-reconcile] guild=${input.guildId} clan=${input.clanTag} war_id=${input.warId ?? "none"} message_exists=${messageExists} outcome=${input.outcome} action=${input.action}`
     );
   }
 

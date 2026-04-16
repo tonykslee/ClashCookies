@@ -66,7 +66,12 @@ describe("war scoped points reuse selection", () => {
 
   it("does not reuse when war identity changes", () => {
     const selected = selectWarScopedReuseRow({
-      rows: [buildRow({ warId: "2222" })],
+      rows: [
+        buildRow({
+          warId: "2222",
+          warStartTime: new Date("2026-03-06T00:00:00.000Z"),
+        }),
+      ],
       warId: "1234",
       warStartTime: new Date("2026-03-08T00:00:00.000Z"),
       opponentTag: "#ABC123",
@@ -75,6 +80,32 @@ describe("war scoped points reuse selection", () => {
     });
 
     expect(selected).toBeNull();
+  });
+
+  it("prefers warStartTime over a matching stale warId when both are available", () => {
+    const currentStartTime = new Date("2026-03-08T00:00:00.000Z");
+    const selected = selectWarScopedReuseRow({
+      rows: [
+        buildRow({
+          warId: "1234",
+          warStartTime: new Date("2026-03-06T00:00:00.000Z"),
+        }),
+        buildRow({
+          warId: "1234",
+          warStartTime: currentStartTime,
+        }),
+      ],
+      warId: "1234",
+      warStartTime: currentStartTime,
+      opponentTag: "#ABC123",
+      currentSyncNumber: 42,
+      sourceSyncNumber: 41,
+    });
+
+    expect(selected).not.toBeNull();
+    expect(selected?.warStartTime.toISOString()).toBe(
+      currentStartTime.toISOString(),
+    );
   });
 
   it("does not reuse when opponent alignment differs", () => {

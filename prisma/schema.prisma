@@ -898,9 +898,12 @@ model ClanPostedMessage {
 }
 
 model WarMailLifecycle {
+  id        String   @id @default(cuid())
   guildId   String
   clanTag   String
-  warId     Int
+  warId     Int?
+  warStartTime DateTime?
+  opponentTag String?
   status    WarMailLifecycleStatus @default(NOT_POSTED)
   messageId String?
   channelId String?
@@ -909,9 +912,10 @@ model WarMailLifecycle {
   createdAt DateTime              @default(now())
   updatedAt DateTime              @updatedAt
 
-  @@id([guildId, clanTag, warId])
+  @@unique([guildId, clanTag, warStartTime])
   @@index([guildId, clanTag, status])
   @@index([clanTag, warId])
+  @@index([guildId, clanTag, warStartTime])
 }
 
 model ClanPointsSync {

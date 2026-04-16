@@ -999,17 +999,26 @@ export class PointsDirectFetchGateService {
         (warId !== null || warStartTime !== null)
     );
     const mailLifecycleRow =
-      guildId !== null && warId !== null
-        ? await prisma.warMailLifecycle.findUnique({
-            where: {
-              guildId_clanTag_warId: {
+      guildId !== null
+        ? warStartTime !== null
+          ? await prisma.warMailLifecycle.findFirst({
+              where: {
                 guildId,
                 clanTag: normalizedTag,
-                warId: Number(warId),
+                warStartTime,
               },
-            },
-            select: { status: true },
-          })
+              select: { status: true },
+            })
+          : warId !== null
+            ? await prisma.warMailLifecycle.findFirst({
+                where: {
+                  guildId,
+                  clanTag: normalizedTag,
+                  warId: Number(warId),
+                },
+                select: { status: true },
+              })
+            : null
         : null;
     const latestSync =
       syncRow ??

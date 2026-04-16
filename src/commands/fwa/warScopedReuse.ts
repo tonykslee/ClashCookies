@@ -26,13 +26,13 @@ function isSameWarIdentity(input: {
   warId: string | null;
   warStartTime: Date | null;
 }): boolean {
-  if (input.warId) {
-    return String(input.rowWarId ?? "") === String(input.warId);
-  }
   if (input.warStartTime instanceof Date) {
     const targetMs = input.warStartTime.getTime();
     const rowMs = input.rowWarStartTime.getTime();
     return Number.isFinite(targetMs) && Number.isFinite(rowMs) && targetMs === rowMs;
+  }
+  if (input.warId) {
+    return String(input.rowWarId ?? "") === String(input.warId);
   }
   return false;
 }
