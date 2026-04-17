@@ -86,6 +86,8 @@ model DumpLink {
   guildId               String   @id
   link                  String
   updatedByDiscordUserId String
+  clanInfoJson          Json?
+  clanInfoFetchedAt     DateTime?
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
 

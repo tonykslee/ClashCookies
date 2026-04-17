@@ -152,10 +152,11 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     ],
   },
   dump: {
-    summary: "Show or update the stored dump link without embed previews.",
+    summary: "Show or update the stored dump link with a short clan summary.",
     details: [
-      "Use `/dump` to show the configured guild link as plain text wrapped in angle brackets.",
-      "Wrapping the link in `< >` prevents Discord from building an embed preview.",
+      "Use `/dump` to show a short clan summary plus the configured guild link, all as plain text.",
+      "The link is wrapped in `< >` to prevent Discord from building an embed preview.",
+      "If live clan data is unavailable, `/dump` falls back to the cached clan summary when present.",
       "`edit` is admin-only and stores one link per guild/server.",
     ],
     examples: ["/dump", "/dump edit:https://example.com/dump"],
