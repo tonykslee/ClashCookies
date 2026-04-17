@@ -19,7 +19,6 @@ import type { HeatMapRef } from "@prisma/client";
 import {
   COMPO_ADVICE_VIEW_LABELS,
   COMPO_ADVICE_VIEWS,
-  buildCompoAdviceContentLines,
   stepCompoAdviceCustomBandIndexByCount,
   type CompoAdviceView,
 } from "../helper/compoAdviceEngine";
@@ -1073,6 +1072,55 @@ function formatAdviceScore(value: number | null): string {
   return Number.isInteger(value) ? `${value}` : value.toFixed(1);
 }
 
+function formatCompoAdviceFullWeight(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) {
+    return "unknown";
+  }
+  return Math.trunc(value).toLocaleString("en-US");
+}
+
+function formatCompoAdviceDistanceToMidpoint(summary: {
+  currentWeight: number | null;
+  targetBandMidpoint: number | null;
+}): string {
+  const currentWeight = summary.currentWeight;
+  const targetBandMidpoint = summary.targetBandMidpoint;
+  if (
+    currentWeight === null ||
+    targetBandMidpoint === null ||
+    !Number.isFinite(currentWeight) ||
+    !Number.isFinite(targetBandMidpoint)
+  ) {
+    return "unknown";
+  }
+
+  const delta = currentWeight - targetBandMidpoint;
+  if (Math.abs(delta) < Number.EPSILON) {
+    return "â†’ +0";
+  }
+
+  const arrow = delta > 0 ? "â†‘" : "â†“";
+  const sign = delta > 0 ? "+" : "-";
+  const magnitude = Math.abs(delta);
+  const formatScaled = (scaled: number, suffix: string): string => {
+    const text = scaled.toFixed(3).replace(/\.?0+$/, "");
+    return `${text}${suffix}`;
+  };
+
+  let formattedMagnitude: string;
+  if (magnitude >= 1_000_000_000) {
+    formattedMagnitude = formatScaled(magnitude / 1_000_000_000, "b");
+  } else if (magnitude >= 1_000_000) {
+    formattedMagnitude = formatScaled(magnitude / 1_000_000, "m");
+  } else if (magnitude >= 1_000) {
+    formattedMagnitude = formatScaled(magnitude / 1_000, "k");
+  } else {
+    formattedMagnitude = `${magnitude}`;
+  }
+
+  return `${arrow} ${sign}${formattedMagnitude}`;
+}
+
 function buildCompoAdviceEmbed(input: { advice: CompoAdviceReadResult }): EmbedBuilder {
   const title = input.advice.clanTag
     ? `${normalizeCompoClanDisplayName(input.advice.clanName ?? input.advice.clanTag)} (${input.advice.clanTag}) - ${input.advice.mode.toUpperCase()}`
@@ -1080,15 +1128,7 @@ function buildCompoAdviceEmbed(input: { advice: CompoAdviceReadResult }): EmbedB
 
   if (input.advice.kind === "ready") {
     const summary = input.advice.summary;
-    const embed = new EmbedBuilder()
-      .setTitle(title)
-      .setDescription(
-        buildCompoAdviceContentLines({
-          summary,
-          modeLabel: input.advice.mode.toUpperCase(),
-          refreshLine: input.advice.refreshLine,
-        }).join("\n"),
-      );
+    const embed = new EmbedBuilder().setTitle(title);
     const currentDeltas = [
       `TH18: ${formatSignedValue(summary.currentProjection.deltaByBucket.TH18)}`,
       `TH17: ${formatSignedValue(summary.currentProjection.deltaByBucket.TH17)}`,
@@ -1098,22 +1138,42 @@ function buildCompoAdviceEmbed(input: { advice: CompoAdviceReadResult }): EmbedB
       `<=TH13: ${formatSignedValue(summary.currentProjection.deltaByBucket["<=TH13"])}`,
     ].join("\n");
 
-    const recommendationLines = [
-      summary.recommendationText,
-      `Resulting Score: ${formatAdviceScore(summary.resultingScore)}`,
-      `Resulting Band: ${summary.resultingBandLabel}`,
-    ];
-    if (summary.statusText) {
-      recommendationLines.push(summary.statusText);
-    }
-
     embed.addFields(
       {
         name: "Overview",
         value: [
+          `Mode: **${input.advice.mode.toUpperCase()}**`,
+          `Advice View: **${COMPO_ADVICE_VIEW_LABELS[input.advice.selectedView]}**`,
           `Members: ${summary.currentProjection.memberCount} / 50`,
           `Rushed: ${input.advice.rushedCount}`,
         ].join("\n"),
+        inline: false,
+      },
+      {
+        name: "Current",
+        value: [
+          `Current Weight: ${formatCompoAdviceFullWeight(summary.currentWeight)}`,
+          `Current Match Score: **${formatAdviceScore(summary.currentScore)}**`,
+        ].join("\n"),
+        inline: false,
+      },
+      {
+        name: "Target",
+        value: [
+          `Target Band: **${summary.currentBandLabel}**`,
+          `Distance to Midpoint: ${formatCompoAdviceDistanceToMidpoint(summary)}`,
+          `Resulting Score: **${formatAdviceScore(summary.resultingScore)}**`,
+        ].join("\n"),
+        inline: false,
+      },
+      {
+        name: "Recommendation",
+        value: [
+          `__${summary.recommendationText}__`,
+          summary.statusText ?? null,
+        ]
+          .filter((line): line is string => line !== null)
+          .join("\n"),
         inline: false,
       },
       {
@@ -1121,27 +1181,9 @@ function buildCompoAdviceEmbed(input: { advice: CompoAdviceReadResult }): EmbedB
         value: currentDeltas,
         inline: false,
       },
-      {
-        name: "Best Recommendation",
-        value: recommendationLines.join("\n"),
-        inline: false,
-      },
-      {
-        name: "Alternates",
-        value:
-          summary.alternateTexts.length > 0
-            ? summary.alternateTexts.map((line) => `- ${line}`).join("\n")
-            : "None",
-        inline: false,
-      },
     );
-
     if (input.advice.refreshLine) {
-      embed.addFields({
-        name: "Snapshot",
-        value: input.advice.refreshLine,
-        inline: false,
-      });
+      embed.setFooter({ text: input.advice.refreshLine });
     }
     return embed;
   }
@@ -1156,11 +1198,7 @@ function buildCompoAdviceEmbed(input: { advice: CompoAdviceReadResult }): EmbedB
     );
 
   if (input.advice.refreshLine) {
-    embed.addFields({
-      name: "Snapshot",
-      value: input.advice.refreshLine,
-      inline: false,
-    });
+    embed.setFooter({ text: input.advice.refreshLine });
   }
   return embed;
 }
