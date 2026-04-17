@@ -147,17 +147,18 @@ function formatCompactWeight(value: number | null | undefined): string {
   return `${magnitude}`;
 }
 
-function formatSignedCompoAdviceDelta(delta: number | null | undefined): string {
+export function formatSignedCompoAdviceDelta(delta: number | null | undefined): string {
   if (delta === null || delta === undefined || !Number.isFinite(delta)) {
     return "unknown";
   }
 
   const normalized = Number(delta);
   if (Math.abs(normalized) < Number.EPSILON) {
-    return "→ +0";
+    return "-> +0";
   }
 
-  const arrow = normalized > 0 ? "↑" : "↓";
+  const arrow =
+    normalized > 0 ? ":small_red_triangle:" : ":small_red_triangle_down:";
   const sign = normalized > 0 ? "+" : "-";
   return `${arrow} ${sign}${formatCompactWeight(Math.abs(normalized))}`;
 }
@@ -677,7 +678,7 @@ export function buildCompoAdviceContentLines(input: {
   }
   lines.push(`Mode: **${input.modeLabel}**`);
   lines.push(`Advice View: **${input.summary.viewLabel}**`);
-  lines.push(`Current Score: **${formatScore(input.summary.currentScore)}**`);
+  lines.push(`Current Deviation Score: **${formatScore(input.summary.currentScore)}**`);
   lines.push(`Target Band: **${input.summary.currentBandLabel}**`);
   lines.push(`Current Weight: ${formatFullWeight(input.summary.currentWeight)}`);
   lines.push(
@@ -687,17 +688,10 @@ export function buildCompoAdviceContentLines(input: {
         : input.summary.currentWeight - input.summary.targetBandMidpoint,
     )}`,
   );
-  lines.push(`Recommendation: **${input.summary.recommendationText}**`);
-  lines.push(`Resulting Score: **${formatScore(input.summary.resultingScore)}**`);
-  lines.push(`Resulting Band: **${input.summary.resultingBandLabel}**`);
+  lines.push(`Recommendation: :arrow_arrow: __${input.summary.recommendationText}__`);
+  lines.push(`Resulting Deviation Score: **${formatScore(input.summary.resultingScore)}**`);
   if (input.summary.statusText) {
     lines.push(input.summary.statusText);
-  }
-  if (input.summary.alternateTexts.length > 0) {
-    lines.push("Alternates:");
-    for (const alternate of input.summary.alternateTexts) {
-      lines.push(`- ${alternate}`);
-    }
   }
   return lines;
 }

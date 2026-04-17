@@ -140,16 +140,24 @@ describe("/compo advice command", () => {
       "Advice View: **Auto-Detect Band**",
     );
     expect(JSON.stringify(embed?.fields ?? [])).toContain("Current Weight: 1,500,000");
-    expect(JSON.stringify(embed?.fields ?? [])).toContain("Distance to Midpoint: â†’ +0");
-    expect(JSON.stringify(embed?.fields ?? [])).toContain("Current Match Score: **0**");
+    expect(JSON.stringify(embed?.fields ?? [])).toContain(
+      "Distance to Midpoint: -> +0",
+    );
+    expect(JSON.stringify(embed?.fields ?? [])).toContain(
+      "Current Deviation Score: **0**",
+    );
     expect(String(embed?.title ?? "")).toContain("Alpha Clan (#AAA111)");
     expect(JSON.stringify(embed?.fields ?? [])).not.toContain("Alternates");
     expect(JSON.stringify(embed?.fields ?? [])).not.toContain("Snapshot");
-    expect(JSON.stringify(embed?.fields ?? [])).toContain("__Add TH17__");
-    expect(JSON.stringify(embed?.fields ?? [])).toContain("Resulting Score: **0**");
+    expect(JSON.stringify(embed?.fields ?? [])).toContain(
+      ":arrow_arrow: __Add TH17__",
+    );
+    expect(JSON.stringify(embed?.fields ?? [])).toContain(
+      "Resulting Deviation Score: **0**",
+    );
     expect(JSON.stringify(embed?.fields ?? [])).not.toContain("Resulting Band");
     expect(String(embed?.footer?.text ?? "")).toBe(
-      "RAW Data last refreshed: <t:1709900000:F>",
+      "RAW Data last refreshed: <t:1709900000:F> • Lower deviation score is better.",
     );
     expect(getComponentCustomIds(payload)).toEqual(
       expect.arrayContaining([
@@ -217,7 +225,7 @@ describe("/compo advice command", () => {
       "Advice View: **Raw Data**",
     );
     expect(String(payload?.embeds?.[0]?.data?.footer?.text ?? "")).toBe(
-      "RAW Data last refreshed: <t:1709900000:F>",
+      "RAW Data last refreshed: <t:1709900000:F> • Lower deviation score is better.",
     );
     expect(getComponentCustomIds(payload)).toEqual([
       "compo-refresh:advice:user-1:war:LQQ99UV8",

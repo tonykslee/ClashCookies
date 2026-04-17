@@ -253,9 +253,9 @@ describe("CompoAdviceEngine", () => {
   it("formats current weight and midpoint distances for advice summaries", () => {
     expect(formatFullWeightForTest(7_245_000)).toBe("7,245,000");
     expect(formatFullWeightForTest(null)).toBe("unknown");
-    expect(formatSignedCompoAdviceDeltaForTest(125_000)).toBe("↑ +125k");
-    expect(formatSignedCompoAdviceDeltaForTest(-80_000)).toBe("↓ -80k");
-    expect(formatSignedCompoAdviceDeltaForTest(0)).toBe("→ +0");
+    expect(formatSignedCompoAdviceDeltaForTest(125_000)).toBe(":small_red_triangle: +125k");
+    expect(formatSignedCompoAdviceDeltaForTest(-80_000)).toBe(":small_red_triangle_down: -80k");
+    expect(formatSignedCompoAdviceDeltaForTest(0)).toBe("-> +0");
     expect(formatSignedCompoAdviceDeltaForTest(null)).toBe("unknown");
   });
 
