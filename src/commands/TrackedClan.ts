@@ -16,6 +16,7 @@ import { safeReply } from "../helper/safeReply";
 import { prisma } from "../prisma";
 import { ActivityService } from "../services/ActivityService";
 import { CoCService } from "../services/CoCService";
+import { runWithCoCQueueContext } from "../services/CoCQueueContext";
 import { normalizeClanTag } from "../services/PlayerLinkService";
 import {
   addCwlClanTagsForSeason,
@@ -212,6 +213,18 @@ function buildRaidTrackedClanListComponents(
 function formatTagListForSummary(tags: string[]): string {
   if (tags.length <= 0) return "none";
   return tags.join(", ");
+}
+
+export async function refreshRaidTrackedClanListWithQueueContext(input: {
+  cocService: CoCService;
+}): Promise<Awaited<ReturnType<typeof refreshRaidTrackedClansMetadata>>> {
+  return runWithCoCQueueContext(
+    {
+      priority: "interactive",
+      source: "tracked-clan:list:raids:refresh",
+    },
+    () => refreshRaidTrackedClansMetadata({ cocService: input.cocService }),
+  );
 }
 
 async function normalizeClanBadgeInput(
@@ -553,7 +566,9 @@ export const TrackedClan: Command = {
                 });
 
                 try {
-                  const refreshResult = await refreshRaidTrackedClansMetadata({ cocService });
+                  const refreshResult = await refreshRaidTrackedClanListWithQueueContext({
+                    cocService,
+                  });
                   tracked = await listRaidTrackedClansForDisplay();
                   blocks = buildRaidTrackedClanListLines(tracked);
                   pages = paginateTextLines(blocks);
