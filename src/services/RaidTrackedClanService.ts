@@ -1,7 +1,9 @@
 import { prisma } from "../prisma";
 import { normalizeClanTag } from "./PlayerLinkService";
 import { CoCService } from "./CoCService";
+import { formatError } from "../helper/formatError";
 import { RecruitingType } from "../generated/coc-api";
+import { toFailureTelemetry } from "./telemetry/ingest";
 
 export type RaidTrackedClanJoinType = "open" | "inviteOnly" | "closed";
 
@@ -125,6 +127,7 @@ export function getRaidTrackedClanJoinTypeEmoji(
 async function readRaidTrackedClanLiveData(input: {
   clanTag: string;
   cocService: CoCService;
+  source: string;
 }): Promise<{ clanName: string | null; joinType: RaidTrackedClanJoinType | null } | null> {
   try {
     const clan = await input.cocService.getClan(toDisplayTag(input.clanTag));
@@ -132,7 +135,13 @@ async function readRaidTrackedClanLiveData(input: {
       clanName: normalizeRaidTrackedClanName(clan?.name),
       joinType: normalizeRaidJoinType(clan?.type),
     };
-  } catch {
+  } catch (err) {
+    const failure = toFailureTelemetry(err);
+    if (failure.errorCode === "COC_QUEUE_CONTEXT_MISSING") {
+      console.error(
+        `[tracked-clan] stage=raid_live_fetch_failed source=${input.source} operation=getClan tag=${toDisplayTag(input.clanTag)} error=${formatError(err)}`,
+      );
+    }
     return null;
   }
 }
@@ -235,6 +244,7 @@ export async function upsertRaidTrackedClansForTags(input: {
     const liveData = await readRaidTrackedClanLiveData({
       clanTag: tag,
       cocService: input.cocService,
+      source: "tracked-clan:raid-tags",
     });
 
     if (!liveData) {
@@ -319,6 +329,7 @@ export async function refreshRaidTrackedClansMetadata(input: {
     const liveData = await readRaidTrackedClanLiveData({
       clanTag: normalizedTag,
       cocService: input.cocService,
+      source: "tracked-clan:list:raids:refresh",
     });
     if (!liveData) {
       joinTypeRefreshFailures.push(toDisplayTag(row.clanTag));
