@@ -1,2 +1,2 @@
 -- AlterTable
-ALTER TABLE "RaidTrackedClan" ADD COLUMN "name" TEXT;
+ALTER TABLE IF EXISTS "RaidTrackedClan" ADD COLUMN IF NOT EXISTS "name" TEXT;
