@@ -246,8 +246,8 @@ export async function buildTodoPagesForUser(input: {
       : Promise.resolve([]),
     clanTags.length > 0
       ? prisma.raidTrackedClan.findMany({
-          where: { tag: { in: clanTags } },
-          select: { tag: true },
+          where: { clanTag: { in: clanTags } },
+          select: { clanTag: true },
         })
       : Promise.resolve([]),
     clanTags.length > 0
@@ -346,8 +346,8 @@ export async function buildTodoPagesForUser(input: {
     ? activeCwlPlans
     : [];
   const raidTrackedClanTagSet = new Set(
-    (raidTrackedClanRows as Array<{ tag: string }>)
-      .map((row) => normalizeClanTag(row.tag))
+    (raidTrackedClanRows as Array<{ clanTag: string }>)
+      .map((row) => normalizeClanTag(row.clanTag))
       .filter(Boolean),
   );
 

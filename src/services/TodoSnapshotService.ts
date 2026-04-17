@@ -299,7 +299,7 @@ export class TodoSnapshotService {
     );
     const raidTrackedClanTagSet = new Set(
       raidTrackedClanTagRows
-        .map((row) => normalizeClanTag(row.tag))
+        .map((row) => normalizeClanTag(row.clanTag))
         .filter(Boolean),
     );
     const trackedRaidClanTagSet = new Set([
@@ -661,7 +661,7 @@ export class TodoSnapshotService {
     const raidTrackedClanNameByTag = new Map(
       raidTrackedClanRows
         .map((row) => [
-          normalizeClanTag(row.tag),
+          normalizeClanTag(row.clanTag),
           sanitizeDisplayText(String(row.name ?? "")),
         ] as const)
         .filter((entry): entry is [string, string] => Boolean(entry[0] && entry[1])),
@@ -1072,10 +1072,10 @@ export function resolveClanGamesCycleBoundaryFromCycleKey(input: unknown): {
 }
 
 /** Purpose: load the currently stored RAID-tracked clan rows for snapshot scope decisions. */
-async function listRaidTrackedClanRows(): Promise<Array<{ tag: string; name: string | null }>> {
+async function listRaidTrackedClanRows(): Promise<Array<{ clanTag: string; name: string | null }>> {
   return prisma.raidTrackedClan.findMany({
     select: {
-      tag: true,
+      clanTag: true,
       name: true,
     },
   });
