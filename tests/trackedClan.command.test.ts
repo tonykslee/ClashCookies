@@ -36,11 +36,22 @@ const prismaMock = vi.hoisted(() => ({
   }),
 }));
 
+const cocQueueMock = vi.hoisted(() => ({
+  runWithCoCQueueContext: vi.fn(async (_context: unknown, run: () => Promise<unknown>) => run()),
+}));
+
 vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
 
-import { TrackedClan } from "../src/commands/TrackedClan";
+vi.mock("../src/services/CoCQueueContext", () => ({
+  runWithCoCQueueContext: cocQueueMock.runWithCoCQueueContext,
+}));
+
+import {
+  TrackedClan,
+  refreshRaidTrackedClanListWithQueueContext,
+} from "../src/commands/TrackedClan";
 
 type InteractionInput = {
   subcommand: string;
@@ -190,6 +201,41 @@ describe("/tracked-clan command behavior", () => {
     expect(getReplyContent(interaction)).toContain("already-existing: none");
     expect(getReplyContent(interaction)).toContain("duplicates-ignored: none");
     expect(prismaMock.raidTrackedClan.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("wraps RAID refresh metadata fetches in a CoC queue context", async () => {
+    prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        clanTag: "2RVGJYLC0",
+        name: null,
+        joinType: null,
+        createdAt: new Date("2026-04-15T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-15T00:00:00.000Z"),
+      },
+    ]);
+    const cocService = {
+      getClan: vi.fn().mockResolvedValue({ name: "Vanilla", type: "open" }),
+    };
+
+    const result = await refreshRaidTrackedClanListWithQueueContext({
+      cocService: cocService as any,
+    });
+
+    expect(cocQueueMock.runWithCoCQueueContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        priority: "interactive",
+        source: "tracked-clan:list:raids:refresh",
+      }),
+      expect.any(Function),
+    );
+    expect(prismaMock.raidTrackedClan.updateMany).toHaveBeenCalledWith({
+      where: { clanTag: "2RVGJYLC0" },
+      data: {
+        name: "Vanilla",
+        joinType: "open",
+      },
+    });
+    expect(result.joinTypeRefreshFailures).toEqual([]);
   });
 
   it("rejects upgrades when multiple raid tags are provided", async () => {

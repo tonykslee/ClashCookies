@@ -67,5 +67,13 @@ export function classifyTelemetryError(error: unknown): TelemetryErrorInfo {
     return { category: "network", code: code || "NETWORK_ERROR", timeout: false };
   }
 
+  if (code.startsWith("COC_QUEUE_CONTEXT_MISSING") || msg.includes("coc_queue_context_missing")) {
+    return {
+      category: "internal",
+      code: "COC_QUEUE_CONTEXT_MISSING",
+      timeout: false,
+    };
+  }
+
   return { category: "internal", code: code || "INTERNAL_ERROR", timeout: false };
 }

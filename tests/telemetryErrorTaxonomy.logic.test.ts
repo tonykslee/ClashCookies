@@ -32,4 +32,10 @@ describe("telemetry error taxonomy", () => {
     const classified = classifyTelemetryError(new Error("boom"));
     expect(classified.category).toBe("internal");
   });
+
+  it("classifies missing CoC queue context explicitly", () => {
+    const classified = classifyTelemetryError(new Error("COC_QUEUE_CONTEXT_MISSING:getClan"));
+    expect(classified.category).toBe("internal");
+    expect(classified.code).toBe("COC_QUEUE_CONTEXT_MISSING");
+  });
 });
