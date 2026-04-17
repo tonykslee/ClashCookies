@@ -803,7 +803,10 @@ export class TodoSnapshotService {
       await loadLiveRaidAttacksUsedByPlayerTag({
         cocService: input.cocService,
         raidWindow,
-        resolvedClanTagByPlayerTag,
+        primaryClanTagByPlayerTag: resolvedClanTagByPlayerTag,
+        fallbackClanTags: raidTrackedClanRows
+          .map((row) => normalizeClanTag(row.clanTag))
+          .filter(Boolean),
       });
 
     const snapshotUpserts: Array<
@@ -1734,7 +1737,8 @@ async function loadLiveClanTagsByPlayerTag(input: {
 async function loadLiveRaidAttacksUsedByPlayerTag(input: {
   cocService?: CoCService;
   raidWindow: TodoWindow;
-  resolvedClanTagByPlayerTag: Map<string, string | null>;
+  primaryClanTagByPlayerTag: Map<string, string | null>;
+  fallbackClanTags: string[];
 }): Promise<Map<string, number>> {
   if (
     !input.raidWindow.active ||
@@ -1744,20 +1748,22 @@ async function loadLiveRaidAttacksUsedByPlayerTag(input: {
     return new Map();
   }
 
-  const playerTagsByClanTag = new Map<string, string[]>();
-  for (const [playerTag, clanTag] of input.resolvedClanTagByPlayerTag.entries()) {
-    if (!clanTag) continue;
-    const existing = playerTagsByClanTag.get(clanTag);
-    if (existing) {
-      existing.push(playerTag);
-      continue;
-    }
-    playerTagsByClanTag.set(clanTag, [playerTag]);
+  const primaryClanTagsByPlayerTag = new Map<string, string | null>();
+  for (const [playerTag, clanTag] of input.primaryClanTagByPlayerTag.entries()) {
+    primaryClanTagsByPlayerTag.set(playerTag, clanTag ? normalizeClanTag(clanTag) || null : null);
   }
-  if (playerTagsByClanTag.size <= 0) return new Map();
+
+  const clanTags = [
+    ...new Set(
+      [
+        ...primaryClanTagsByPlayerTag.values(),
+        ...input.fallbackClanTags.map((tag) => normalizeClanTag(tag)).filter(Boolean),
+      ].filter((value): value is string => Boolean(value)),
+    ),
+  ];
+  if (clanTags.length <= 0) return new Map();
 
   const attacksByPlayerTag = new Map<string, number>();
-  const clanTags = [...playerTagsByClanTag.keys()];
   const clanMemberMaps = await Promise.all(
     clanTags.map(async (clanTag) => {
       const seasons = await input.cocService!
@@ -1778,14 +1784,23 @@ async function loadLiveRaidAttacksUsedByPlayerTag(input: {
   );
   const memberAttacksByClanTag = new Map(clanMemberMaps);
 
-  for (const [clanTag, playerTags] of playerTagsByClanTag.entries()) {
-    const memberAttacksByTag = memberAttacksByClanTag.get(clanTag) ?? new Map<string, number>();
-    for (const playerTag of playerTags) {
-      attacksByPlayerTag.set(
-        playerTag,
-        clampInt(memberAttacksByTag.get(playerTag), 0, 6),
-      );
+  const fallbackClanTags = input.fallbackClanTags
+    .map((tag) => normalizeClanTag(tag))
+    .filter(Boolean);
+  for (const [playerTag, primaryClanTag] of primaryClanTagsByPlayerTag.entries()) {
+    const primaryAttacks =
+      primaryClanTag !== null
+        ? clampInt(memberAttacksByClanTag.get(primaryClanTag)?.get(playerTag), 0, 6)
+        : 0;
+    if (primaryAttacks > 0) {
+      attacksByPlayerTag.set(playerTag, primaryAttacks);
+      continue;
     }
+
+    const fallbackAttacks = fallbackClanTags
+      .map((clanTag) => clampInt(memberAttacksByClanTag.get(clanTag)?.get(playerTag), 0, 6))
+      .find((attacks) => attacks > 0);
+    attacksByPlayerTag.set(playerTag, fallbackAttacks ?? primaryAttacks);
   }
 
   return attacksByPlayerTag;
