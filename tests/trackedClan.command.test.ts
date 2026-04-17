@@ -168,7 +168,7 @@ describe("/tracked-clan command behavior", () => {
       },
     });
     const cocService = {
-      getClan: vi.fn().mockResolvedValue({ type: "open" }),
+      getClan: vi.fn().mockResolvedValue({ name: "Vanilla", type: "open" }),
     };
 
     await TrackedClan.run({} as any, interaction as any, cocService as any);
@@ -177,8 +177,9 @@ describe("/tracked-clan command behavior", () => {
       data: [
         {
           clanTag: "2RVGJYLC0",
+          name: "Vanilla",
           upgrades: 3331,
-          joinType: null,
+          joinType: "open",
         },
       ],
       skipDuplicates: true,
@@ -188,10 +189,7 @@ describe("/tracked-clan command behavior", () => {
     expect(getReplyContent(interaction)).toContain("updated upgrades: none");
     expect(getReplyContent(interaction)).toContain("already-existing: none");
     expect(getReplyContent(interaction)).toContain("duplicates-ignored: none");
-    expect(prismaMock.raidTrackedClan.updateMany).toHaveBeenCalledWith({
-      where: { clanTag: "2RVGJYLC0" },
-      data: { joinType: "open" },
-    });
+    expect(prismaMock.raidTrackedClan.updateMany).not.toHaveBeenCalled();
   });
 
   it("rejects upgrades when multiple raid tags are provided", async () => {
@@ -231,20 +229,17 @@ describe("/tracked-clan command behavior", () => {
     );
   });
 
-  it("renders the RAIDS list with join-status emoji, upgrades, and tag", async () => {
+  it("renders the RAIDS list with stored clan name, lock/unlock emoji, and a refresh button", async () => {
     prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
       {
         clanTag: "2RVGJYLC0",
+        name: "Vanilla",
         upgrades: 3331,
         joinType: "open",
         createdAt: new Date("2026-04-15T00:00:00.000Z"),
         updatedAt: new Date("2026-04-15T00:00:00.000Z"),
       },
     ]);
-    prismaMock.trackedClan.findMany.mockResolvedValueOnce([
-      { tag: "#2RVGJYLC0", name: "Vanilla" },
-    ]);
-    prismaMock.cwlTrackedClan.findMany.mockResolvedValueOnce([]);
 
     const interaction = createInteraction({
       subcommand: "list",
@@ -255,8 +250,14 @@ describe("/tracked-clan command behavior", () => {
 
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
     const description = String(payload?.embeds?.[0]?.toJSON?.().description ?? "");
-    expect(description).toContain("## 🟢 [Vanilla | 3331]");
+    expect(description).toContain("### 🔓 [Vanilla | 3331]");
     expect(description).toContain("2RVGJYLC0");
+    const buttonIds = payload?.components?.[0]?.toJSON?.().components.map((component: any) =>
+      String(component.custom_id ?? ""),
+    );
+    expect(buttonIds).toContain("tracked-clan-list:raids:tracked-clan-itx-1:refresh");
+    expect(prismaMock.trackedClan.findMany).not.toHaveBeenCalled();
+    expect(prismaMock.cwlTrackedClan.findMany).not.toHaveBeenCalled();
   });
 
   it("keeps default /tracked-clan list behavior on FWA registry when type is omitted", async () => {

@@ -30,6 +30,7 @@ import {
   listRaidTrackedClansForDisplay,
   parseRaidTrackedClanTagsInput,
   normalizeRaidTrackedClanTag,
+  refreshRaidTrackedClansMetadata,
   upsertRaidTrackedClansForTags,
 } from "../services/RaidTrackedClanService";
 
@@ -163,19 +164,49 @@ function buildRaidTrackedClanListEmbed(
     .setFooter({ text: `Page ${page + 1}/${pages}` });
 }
 
-function buildTrackedClanListRow(prefix: string, page: number, totalPages: number) {
+function buildTrackedClanListRow(
+  prefix: string,
+  page: number,
+  totalPages: number,
+  disabled = false,
+) {
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
       .setCustomId(`${prefix}:prev`)
       .setLabel("Previous")
       .setStyle(ButtonStyle.Secondary)
-      .setDisabled(page <= 0),
+      .setDisabled(disabled || page <= 0),
     new ButtonBuilder()
       .setCustomId(`${prefix}:next`)
       .setLabel("Next")
       .setStyle(ButtonStyle.Secondary)
-      .setDisabled(page >= totalPages - 1)
+      .setDisabled(disabled || page >= totalPages - 1)
   );
+}
+
+function buildRaidTrackedClanRefreshRow(prefix: string, refreshing: boolean) {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`${prefix}:refresh`)
+      .setEmoji("🔄")
+      .setLabel(refreshing ? "Refreshing..." : "Refresh")
+      .setStyle(ButtonStyle.Primary)
+      .setDisabled(refreshing),
+  );
+}
+
+function buildRaidTrackedClanListComponents(
+  prefix: string,
+  page: number,
+  totalPages: number,
+  refreshing: boolean,
+) {
+  const rows: ActionRowBuilder<ButtonBuilder>[] = [];
+  if (totalPages > 1) {
+    rows.push(buildTrackedClanListRow(prefix, page, totalPages, refreshing));
+  }
+  rows.push(buildRaidTrackedClanRefreshRow(prefix, refreshing));
+  return rows;
 }
 
 function formatTagListForSummary(tags: string[]): string {
@@ -453,7 +484,7 @@ export const TrackedClan: Command = {
         }
 
         if (listType === "RAIDS") {
-          const tracked = await listRaidTrackedClansForDisplay();
+          let tracked = await listRaidTrackedClansForDisplay();
           if (tracked.length === 0) {
             await safeReply(interaction, {
               ephemeral: true,
@@ -462,25 +493,31 @@ export const TrackedClan: Command = {
             return;
           }
 
-          const blocks = buildRaidTrackedClanListLines(tracked);
-          const pages = paginateTextLines(blocks);
+          let blocks = buildRaidTrackedClanListLines(tracked);
+          let pages = paginateTextLines(blocks);
           let page = 0;
+          let refreshing = false;
           const paginatorPrefix = `tracked-clan-list:raids:${interaction.id}`;
 
           await interaction.editReply({
             embeds: [buildRaidTrackedClanListEmbed(tracked.length, pages[page], page, pages.length)],
-            components:
-              pages.length > 1 ? [buildTrackedClanListRow(paginatorPrefix, page, pages.length)] : [],
+            components: buildRaidTrackedClanListComponents(
+              paginatorPrefix,
+              page,
+              pages.length,
+              refreshing,
+            ),
           });
-
-          if (pages.length <= 1) {
-            return;
-          }
 
           const message = await interaction.fetchReply();
           const collector = message.createMessageComponentCollector({
             componentType: ComponentType.Button,
             time: 10 * 60 * 1000,
+            filter: (button) =>
+              button.user.id === interaction.user.id &&
+              (button.customId === `${paginatorPrefix}:refresh` ||
+                button.customId === `${paginatorPrefix}:prev` ||
+                button.customId === `${paginatorPrefix}:next`),
           });
 
           collector.on("collect", async (button: ButtonInteraction) => {
@@ -492,10 +529,81 @@ export const TrackedClan: Command = {
                 });
                 return;
               }
-              if (
-                button.customId !== `${paginatorPrefix}:prev` &&
-                button.customId !== `${paginatorPrefix}:next`
-              ) {
+
+              if (button.customId === `${paginatorPrefix}:refresh`) {
+                if (refreshing) {
+                  return;
+                }
+
+                refreshing = true;
+                const currentEmbed = buildRaidTrackedClanListEmbed(
+                  tracked.length,
+                  pages[page],
+                  page,
+                  pages.length,
+                );
+                await button.update({
+                  embeds: [currentEmbed],
+                  components: buildRaidTrackedClanListComponents(
+                    paginatorPrefix,
+                    page,
+                    pages.length,
+                    true,
+                  ),
+                });
+
+                try {
+                  const refreshResult = await refreshRaidTrackedClansMetadata({ cocService });
+                  tracked = await listRaidTrackedClansForDisplay();
+                  blocks = buildRaidTrackedClanListLines(tracked);
+                  pages = paginateTextLines(blocks);
+                  page = Math.min(page, pages.length - 1);
+                  if (tracked.length === 0 || pages.length === 0) {
+                    await interaction.editReply({
+                      content: "No RAIDS tracked clans in the database.",
+                      embeds: [],
+                      components: [],
+                    });
+                    return;
+                  }
+
+                  if (refreshResult.joinTypeRefreshFailures.length > 0) {
+                    console.error(
+                      `[tracked-clan] stage=raids_refresh_failed tags=${formatTagListForSummary(refreshResult.joinTypeRefreshFailures)}`,
+                    );
+                  }
+
+                  await interaction.editReply({
+                    embeds: [buildRaidTrackedClanListEmbed(tracked.length, pages[page], page, pages.length)],
+                    components: buildRaidTrackedClanListComponents(
+                      paginatorPrefix,
+                      page,
+                      pages.length,
+                      false,
+                    ),
+                  });
+                } catch (err) {
+                  console.error(`tracked-clan RAIDS list refresh failed: ${formatError(err)}`);
+                  await interaction.editReply({
+                    embeds: [currentEmbed],
+                    components: buildRaidTrackedClanListComponents(
+                      paginatorPrefix,
+                      page,
+                      pages.length,
+                      false,
+                    ),
+                  });
+                  await button.followUp({
+                    ephemeral: true,
+                    content: "Failed to refresh tracked-clan RAIDS data.",
+                  });
+                } finally {
+                  refreshing = false;
+                }
+                return;
+              }
+
+              if (button.customId !== `${paginatorPrefix}:prev` && button.customId !== `${paginatorPrefix}:next`) {
                 return;
               }
 
@@ -504,7 +612,12 @@ export const TrackedClan: Command = {
 
               await button.update({
                 embeds: [buildRaidTrackedClanListEmbed(tracked.length, pages[page], page, pages.length)],
-                components: [buildTrackedClanListRow(paginatorPrefix, page, pages.length)],
+                components: buildRaidTrackedClanListComponents(
+                  paginatorPrefix,
+                  page,
+                  pages.length,
+                  false,
+                ),
               });
             } catch (err) {
               console.error(`tracked-clan RAIDS list paginator failed: ${formatError(err)}`);

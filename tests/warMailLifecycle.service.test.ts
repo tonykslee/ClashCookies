@@ -52,7 +52,7 @@ describe("WarMailLifecycleService", () => {
   });
 
   it("returns not_posted when no lifecycle row exists for current war", async () => {
-    vi.spyOn(prisma.warMailLifecycle, "findUnique").mockResolvedValueOnce(null as never);
+    vi.spyOn(prisma.warMailLifecycle, "findFirst").mockResolvedValueOnce(null as never);
     const service = new WarMailLifecycleService();
     const { client } = buildClient({});
 
@@ -71,7 +71,7 @@ describe("WarMailLifecycleService", () => {
   });
 
   it("returns posted when lifecycle row exists and message resolves", async () => {
-    vi.spyOn(prisma.warMailLifecycle, "findUnique").mockResolvedValueOnce({
+    vi.spyOn(prisma.warMailLifecycle, "findFirst").mockResolvedValueOnce({
       guildId: "guild-1",
       clanTag: "#AAA111",
       warId: 1001,
@@ -102,7 +102,7 @@ describe("WarMailLifecycleService", () => {
   });
 
   it("marks lifecycle deleted when tracked message is definitively missing", async () => {
-    const findSpy = vi.spyOn(prisma.warMailLifecycle, "findUnique").mockResolvedValueOnce({
+    const findSpy = vi.spyOn(prisma.warMailLifecycle, "findFirst").mockResolvedValueOnce({
       guildId: "guild-1",
       clanTag: "#AAA111",
       warId: 1001,
@@ -140,7 +140,7 @@ describe("WarMailLifecycleService", () => {
   });
 
   it("skips deletion when a failing explicit target is stale versus current tracked lifecycle message", async () => {
-    vi.spyOn(prisma.warMailLifecycle, "findUnique").mockResolvedValueOnce({
+    vi.spyOn(prisma.warMailLifecycle, "findFirst").mockResolvedValueOnce({
       guildId: "guild-1",
       clanTag: "#AAA111",
       warId: 1001,
@@ -168,7 +168,7 @@ describe("WarMailLifecycleService", () => {
   });
 
   it("deletes lifecycle when failing explicit target still matches current tracked lifecycle identity", async () => {
-    vi.spyOn(prisma.warMailLifecycle, "findUnique").mockResolvedValueOnce({
+    vi.spyOn(prisma.warMailLifecycle, "findFirst").mockResolvedValueOnce({
       guildId: "guild-1",
       clanTag: "#AAA111",
       warId: 1001,
@@ -209,7 +209,7 @@ describe("WarMailLifecycleService", () => {
   });
 
   it("marks lifecycle deleted when tracked channel is inaccessible for active-war mail", async () => {
-    vi.spyOn(prisma.warMailLifecycle, "findUnique").mockResolvedValueOnce({
+    vi.spyOn(prisma.warMailLifecycle, "findFirst").mockResolvedValueOnce({
       guildId: "guild-1",
       clanTag: "#AAA111",
       warId: 1001,
@@ -244,7 +244,7 @@ describe("WarMailLifecycleService", () => {
   });
 
   it("keeps lifecycle posted on transient reconciliation errors", async () => {
-    vi.spyOn(prisma.warMailLifecycle, "findUnique").mockResolvedValueOnce({
+    vi.spyOn(prisma.warMailLifecycle, "findFirst").mockResolvedValueOnce({
       guildId: "guild-1",
       clanTag: "#AAA111",
       warId: 1001,
@@ -277,8 +277,8 @@ describe("WarMailLifecycleService", () => {
   });
 
   it("logs POSTED at info for first lifecycle transition", async () => {
-    const findSpy = vi.spyOn(prisma.warMailLifecycle, "findUnique").mockResolvedValueOnce(null as never);
-    const upsertSpy = vi.spyOn(prisma.warMailLifecycle, "upsert").mockResolvedValueOnce({} as never);
+    const findSpy = vi.spyOn(prisma.warMailLifecycle, "findFirst").mockResolvedValueOnce(null as never);
+    const createSpy = vi.spyOn(prisma.warMailLifecycle, "create").mockResolvedValueOnce({} as never);
     const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
     const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => {});
     const service = new WarMailLifecycleService();
@@ -287,22 +287,24 @@ describe("WarMailLifecycleService", () => {
       guildId: "guild-1",
       clanTag: "AAA111",
       warId: 1001,
+      warStartTime: new Date("2026-03-12T00:00:00.000Z"),
       channelId: "123",
       messageId: "456",
     });
 
     expect(findSpy).toHaveBeenCalledTimes(1);
-    expect(upsertSpy).toHaveBeenCalledTimes(1);
+    expect(createSpy).toHaveBeenCalledTimes(1);
     expect(infoSpy).toHaveBeenCalledTimes(1);
     expect(String(infoSpy.mock.calls[0]?.[0] ?? "")).toContain("status=POSTED");
     expect(debugSpy).not.toHaveBeenCalled();
   });
 
   it("does not repeat POSTED info for no-op upserts with same message identity", async () => {
-    vi.spyOn(prisma.warMailLifecycle, "findUnique").mockResolvedValueOnce({
+    vi.spyOn(prisma.warMailLifecycle, "findFirst").mockResolvedValueOnce({
       guildId: "guild-1",
       clanTag: "#AAA111",
       warId: 1001,
+      warStartTime: new Date("2026-03-12T00:00:00.000Z"),
       status: "POSTED",
       channelId: "123",
       messageId: "456",
@@ -311,7 +313,7 @@ describe("WarMailLifecycleService", () => {
       createdAt: new Date(),
       updatedAt: new Date(),
     } as never);
-    vi.spyOn(prisma.warMailLifecycle, "upsert").mockResolvedValueOnce({} as never);
+    const updateSpy = vi.spyOn(prisma.warMailLifecycle, "update").mockResolvedValueOnce({} as never);
     const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
     const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => {});
     const service = new WarMailLifecycleService();
@@ -320,20 +322,23 @@ describe("WarMailLifecycleService", () => {
       guildId: "guild-1",
       clanTag: "AAA111",
       warId: 1001,
+      warStartTime: new Date("2026-03-12T00:00:00.000Z"),
       channelId: "123",
       messageId: "456",
     });
 
+    expect(updateSpy).toHaveBeenCalledTimes(1);
     expect(infoSpy).not.toHaveBeenCalled();
     expect(debugSpy).toHaveBeenCalledTimes(1);
     expect(String(debugSpy.mock.calls[0]?.[0] ?? "")).toContain("status=POSTED");
   });
 
   it("logs POSTED info when posted message identity changes", async () => {
-    vi.spyOn(prisma.warMailLifecycle, "findUnique").mockResolvedValueOnce({
+    vi.spyOn(prisma.warMailLifecycle, "findFirst").mockResolvedValueOnce({
       guildId: "guild-1",
       clanTag: "#AAA111",
       warId: 1001,
+      warStartTime: new Date("2026-03-12T00:00:00.000Z"),
       status: "POSTED",
       channelId: "123",
       messageId: "old-message",
@@ -342,7 +347,7 @@ describe("WarMailLifecycleService", () => {
       createdAt: new Date(),
       updatedAt: new Date(),
     } as never);
-    vi.spyOn(prisma.warMailLifecycle, "upsert").mockResolvedValueOnce({} as never);
+    const updateSpy = vi.spyOn(prisma.warMailLifecycle, "update").mockResolvedValueOnce({} as never);
     const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
     const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => {});
     const service = new WarMailLifecycleService();
@@ -351,12 +356,54 @@ describe("WarMailLifecycleService", () => {
       guildId: "guild-1",
       clanTag: "AAA111",
       warId: 1001,
+      warStartTime: new Date("2026-03-12T00:00:00.000Z"),
       channelId: "123",
       messageId: "new-message",
     });
 
+    expect(updateSpy).toHaveBeenCalledTimes(1);
     expect(infoSpy).toHaveBeenCalledTimes(1);
     expect(debugSpy).not.toHaveBeenCalled();
+  });
+
+  it("resolves active-war lifecycle rows by warStartTime before warId", async () => {
+    const findFirstSpy = vi
+      .spyOn(prisma.warMailLifecycle, "findFirst")
+      .mockResolvedValueOnce({
+        id: "row-1",
+        guildId: "guild-1",
+        clanTag: "#AAA111",
+        warId: 9999,
+        warStartTime: new Date("2026-03-12T00:00:00.000Z"),
+        opponentTag: "#2NEW",
+        status: "POSTED",
+        channelId: "123",
+        messageId: "456",
+        postedAt: new Date(),
+        deletedAt: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      } as never);
+    const service = new WarMailLifecycleService();
+
+    const result = await service.getLifecycleForWar({
+      guildId: "guild-1",
+      clanTag: "AAA111",
+      warId: 1001,
+      warStartTime: new Date("2026-03-12T00:00:00.000Z"),
+      opponentTag: "#2NEW",
+    });
+
+    expect(findFirstSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          guildId: "guild-1",
+          clanTag: "#AAA111",
+          warStartTime: new Date("2026-03-12T00:00:00.000Z"),
+        }),
+      }),
+    );
+    expect(result?.warId).toBe(9999);
   });
 
   it("scopes message lookup to one war identity when warId is provided", async () => {

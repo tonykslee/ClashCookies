@@ -20,9 +20,12 @@ describe("PointsSyncService.getCurrentSyncForClan", () => {
     vi.clearAllMocks();
   });
 
-  it("returns null instead of reusing the latest row when a requested war identity has no match", async () => {
-    prismaMock.clanPointsSync.findFirst.mockResolvedValue(null);
+  it("returns null instead of reusing the latest row when a requested war identity has no start-time match", async () => {
     prismaMock.clanPointsSync.findUnique.mockResolvedValue(null);
+    prismaMock.clanPointsSync.findFirst.mockResolvedValue({
+      syncNum: 999,
+      warId: "1001",
+    });
     const service = new PointsSyncService();
 
     const result = await service.getCurrentSyncForClan({
@@ -33,8 +36,34 @@ describe("PointsSyncService.getCurrentSyncForClan", () => {
     });
 
     expect(result).toBeNull();
-    expect(prismaMock.clanPointsSync.findFirst).toHaveBeenCalledTimes(1);
     expect(prismaMock.clanPointsSync.findUnique).toHaveBeenCalledTimes(1);
+    expect(prismaMock.clanPointsSync.findFirst).not.toHaveBeenCalled();
+  });
+
+  it("prefers warStartTime lookup over warId fallback when both are provided", async () => {
+    prismaMock.clanPointsSync.findUnique.mockResolvedValue({
+      syncNum: 483,
+      warId: "1002",
+    });
+    prismaMock.clanPointsSync.findFirst.mockResolvedValue({
+      syncNum: 482,
+      warId: "1001",
+    });
+    const service = new PointsSyncService();
+
+    const result = await service.getCurrentSyncForClan({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+      warId: "1001",
+      warStartTime: new Date("2026-03-10T08:00:00.000Z"),
+    });
+
+    expect(result).toMatchObject({
+      syncNum: 483,
+      warId: "1002",
+    });
+    expect(prismaMock.clanPointsSync.findUnique).toHaveBeenCalledTimes(1);
+    expect(prismaMock.clanPointsSync.findFirst).not.toHaveBeenCalled();
   });
 
   it("returns null for warStartTime-only lookups when no current-war row exists", async () => {

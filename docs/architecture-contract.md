@@ -197,7 +197,7 @@ Rules:
 
 - `WarEvent` is the war-event dedupe guard.
 - `ClanPostedMessage` tracks posted notify/mail messages.
-- `WarMailLifecycle` owns active-war mail send lifecycle state.
+- `WarMailLifecycle` owns active-war mail send lifecycle state, keyed by the full active-war identity instead of `warId` alone.
 - `TrackedMessage` owns long-lived tracked posts such as sync-time and base-swap flows.
 - Do not collapse these responsibilities into one generic table or back into config blobs.
 

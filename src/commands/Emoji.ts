@@ -14,6 +14,7 @@ import {
 import axios from "axios";
 import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
+import { BotLogChannelService } from "../services/BotLogChannelService";
 import {
   emojiResolverService,
   isValidEmojiShortcodeName,
@@ -397,6 +398,113 @@ async function replyEmojiUserError(params: {
     }
   }
   await params.interaction.editReply(payload);
+}
+
+/** Purpose: keep /emoji react success private even when the command was deferred publicly. */
+async function replyEmojiReactSuccess(params: {
+  interaction: ChatInputCommandInteraction;
+  visibilityState: "private" | "public";
+  content: string;
+}): Promise<void> {
+  const payload = {
+    content: params.content,
+    embeds: [],
+    components: [],
+  };
+  if (params.visibilityState === "public") {
+    const sentEphemeral = await params.interaction
+      .followUp({
+        ...payload,
+        ephemeral: true,
+      })
+      .then(() => true)
+      .catch(() => false);
+    if (sentEphemeral) {
+      await params.interaction.deleteReply().catch(() => undefined);
+      return;
+    }
+  }
+  await params.interaction.editReply(payload);
+}
+
+/** Purpose: resolve configured bot-log destination channel for the current guild, clearing stale ids. */
+async function resolveBotLogChannel(
+  interaction: ChatInputCommandInteraction,
+  botLogChannelService: BotLogChannelService,
+): Promise<{ send: (payload: { content: string }) => Promise<unknown> } | null> {
+  if (!interaction.guildId) return null;
+
+  const configuredChannelId = await botLogChannelService.getChannelId(interaction.guildId);
+  if (!configuredChannelId) return null;
+
+  let fetchedChannel: unknown;
+  try {
+    fetchedChannel = await interaction.client.channels.fetch(configuredChannelId);
+  } catch (error) {
+    const code = (error as { code?: number } | null | undefined)?.code;
+    if (code === 10003) {
+      await botLogChannelService.clearChannelId(interaction.guildId);
+    }
+    return null;
+  }
+
+  if (!fetchedChannel) {
+    await botLogChannelService.clearChannelId(interaction.guildId);
+    return null;
+  }
+
+  const logChannel = fetchedChannel as {
+    guildId?: string;
+    isTextBased?: () => boolean;
+    send?: (payload: { content: string }) => Promise<unknown>;
+  };
+
+  const logGuildId = String(logChannel.guildId ?? "").trim();
+  if (!logGuildId || logGuildId !== interaction.guildId) {
+    await botLogChannelService.clearChannelId(interaction.guildId);
+    return null;
+  }
+  if (typeof logChannel.isTextBased !== "function" || !logChannel.isTextBased()) {
+    return null;
+  }
+  if (typeof logChannel.send !== "function") {
+    return null;
+  }
+
+  return { send: logChannel.send.bind(logChannel) };
+}
+
+/** Purpose: write audit logs for successful /emoji reactions without affecting user-facing flow. */
+async function logEmojiReactionSuccess(
+  interaction: ChatInputCommandInteraction,
+  input: {
+    renderedEmoji: string;
+    targetMessageId: string;
+    jumpLink?: string | null;
+  },
+): Promise<void> {
+  if (!interaction.guildId) return;
+
+  const botLogChannelService = new BotLogChannelService();
+  const logChannel = await resolveBotLogChannel(interaction, botLogChannelService);
+  if (!logChannel) return;
+
+  const lines = [
+    `Reacted to message \`${input.targetMessageId}\` with ${input.renderedEmoji}.`,
+    `Actor: <@${interaction.user.id}>`,
+    `Source channel: <#${interaction.channelId}>`,
+  ];
+  if (input.jumpLink) {
+    lines.push(`Jump link: ${input.jumpLink}`);
+  }
+
+  try {
+    await logChannel.send({
+      content: lines.join("\n"),
+    });
+  } catch {
+    // non-blocking: /emoji reactions must succeed even if bot-log posting fails
+  }
 }
 
 /** Purpose: map resolver failure code to the most accurate user-facing /emoji error response. */
@@ -1258,10 +1366,15 @@ export const Emoji: Command = {
         reaction_result: "success",
         failure_code: "none",
       });
-      await interaction.editReply({
+      await logEmojiReactionSuccess(interaction, {
+        renderedEmoji: resolved.rendered,
+        targetMessageId,
+        jumpLink: (targetMessage as { url?: string | null }).url ?? null,
+      });
+      await replyEmojiReactSuccess({
+        interaction,
+        visibilityState,
         content: `Reacted to message \`${targetMessageId}\` with ${resolved.rendered}.`,
-        embeds: [],
-        components: [],
       });
     } catch (error) {
       console.error(`[emoji] command failed: ${formatError(error)}`);

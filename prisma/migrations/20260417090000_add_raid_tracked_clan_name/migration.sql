@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE IF EXISTS "RaidTrackedClan" ADD COLUMN IF NOT EXISTS "name" TEXT;

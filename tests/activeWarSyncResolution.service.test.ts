@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildActiveWarSyncIdentity,
   resolveActiveWarSyncNumber,
+  resolveCurrentWarSyncIdentity,
 } from "../src/services/ActiveWarSyncResolutionService";
 
 describe("ActiveWarSyncResolutionService resolver", () => {
@@ -20,6 +21,23 @@ describe("ActiveWarSyncResolutionService resolver", () => {
       source: "derived_latest_plus_one",
       isDerived: true,
     });
+  });
+
+  it("drops CurrentWar warId when live identity is only partially available", () => {
+    const identity = resolveCurrentWarSyncIdentity({
+      clanTag: "AAA111",
+      warState: "inWar",
+      liveWarStartTime: "20260312T090000.000Z",
+      liveOpponentTag: null,
+      currentWarId: 1001,
+      currentWarStartTime: new Date("2026-03-12T09:00:00.000Z"),
+      currentWarOpponentTag: "#2OLD",
+    });
+
+    expect(identity.warId).toBeNull();
+    expect(identity.warStartTime?.toISOString()).toBe("2026-03-12T09:00:00.000Z");
+    expect(identity.opponentTag).toBe("2OLD");
+    expect(identity.positivelyResolved).toBe(true);
   });
 
   it("derives latest persisted + 1 for positively resolved in-war identities", () => {
