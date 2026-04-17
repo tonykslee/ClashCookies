@@ -53,11 +53,11 @@ WHERE cw."guildId" = wml."guildId"
   AND wml."warStartTime" IS NULL;
 
 ALTER TABLE "WarMailLifecycle"
-  ALTER COLUMN "id" SET NOT NULL,
-  ALTER COLUMN "warId" DROP NOT NULL;
+  DROP CONSTRAINT IF EXISTS "WarMailLifecycle_pkey";
 
 ALTER TABLE "WarMailLifecycle"
-  DROP CONSTRAINT IF EXISTS "WarMailLifecycle_pkey";
+  ALTER COLUMN "id" SET NOT NULL,
+  ALTER COLUMN "warId" DROP NOT NULL;
 
 ALTER TABLE "WarMailLifecycle"
   ADD CONSTRAINT "WarMailLifecycle_pkey" PRIMARY KEY ("id");
