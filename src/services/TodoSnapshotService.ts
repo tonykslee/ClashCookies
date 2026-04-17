@@ -291,17 +291,27 @@ export class TodoSnapshotService {
     const trackedClanTagRows = await prisma.trackedClan.findMany({
       select: { tag: true },
     });
+    const raidTrackedClanTagRows = await listRaidTrackedClanRows();
     const trackedClanTagSet = new Set(
       trackedClanTagRows
         .map((row) => normalizeClanTag(row.tag))
         .filter(Boolean),
     );
+    const raidTrackedClanTagSet = new Set(
+      raidTrackedClanTagRows
+        .map((row) => normalizeClanTag(row.clanTag))
+        .filter(Boolean),
+    );
+    const trackedRaidClanTagSet = new Set([
+      ...trackedClanTagSet,
+      ...raidTrackedClanTagSet,
+    ]);
 
     const trackedPlayerTags: string[] = [];
     const nonTrackedPlayerTags: string[] = [];
     for (const playerTag of activatedPlayerTags) {
       const clanTag = snapshotClanTagByPlayerTag.get(playerTag) ?? null;
-      if (clanTag && trackedClanTagSet.has(clanTag)) {
+      if (clanTag && trackedRaidClanTagSet.has(clanTag)) {
         trackedPlayerTags.push(playerTag);
       } else {
         nonTrackedPlayerTags.push(playerTag);
@@ -647,6 +657,15 @@ export class TodoSnapshotService {
         ] as const)
         .filter((entry): entry is [string, string] => Boolean(entry[0] && entry[1])),
     );
+    const raidTrackedClanRows = await listRaidTrackedClanRows();
+    const raidTrackedClanNameByTag = new Map(
+      raidTrackedClanRows
+        .map((row) => [
+          normalizeClanTag(row.clanTag),
+          sanitizeDisplayText(String(row.name ?? "")),
+        ] as const)
+        .filter((entry): entry is [string, string] => Boolean(entry[0] && entry[1])),
+    );
     const currentWarByClanTag = pickLatestCurrentWarByClanTag(currentWarRows);
     const trackedClanTagSet = new Set(
       trackedClanRows
@@ -784,7 +803,10 @@ export class TodoSnapshotService {
       await loadLiveRaidAttacksUsedByPlayerTag({
         cocService: input.cocService,
         raidWindow,
-        resolvedClanTagByPlayerTag,
+        primaryClanTagByPlayerTag: resolvedClanTagByPlayerTag,
+        fallbackClanTags: raidTrackedClanRows
+          .map((row) => normalizeClanTag(row.clanTag))
+          .filter(Boolean),
       });
 
     const snapshotUpserts: Array<
@@ -797,6 +819,7 @@ export class TodoSnapshotService {
       const resolvedClanTag = resolvedClanTagByPlayerTag.get(playerTag) ?? null;
       const resolvedClanName =
         (resolvedClanTag ? trackedClanNameByTag.get(resolvedClanTag) : null) ||
+        (resolvedClanTag ? raidTrackedClanNameByTag.get(resolvedClanTag) : null) ||
         sanitizeDisplayText(existing?.clanName ?? "") ||
         null;
       const activeMappedCwlClanTag =
@@ -1049,6 +1072,16 @@ export function resolveClanGamesCycleBoundaryFromCycleKey(input: unknown): {
     cycleStart.getUTCFullYear(),
     cycleStart.getUTCMonth(),
   );
+}
+
+/** Purpose: load the currently stored RAID-tracked clan rows for snapshot scope decisions. */
+async function listRaidTrackedClanRows(): Promise<Array<{ clanTag: string; name: string | null }>> {
+  return prisma.raidTrackedClan.findMany({
+    select: {
+      clanTag: true,
+      name: true,
+    },
+  });
 }
 
 /** Purpose: normalize potentially-empty cycle-key input into nullable stable string. */
@@ -1704,7 +1737,8 @@ async function loadLiveClanTagsByPlayerTag(input: {
 async function loadLiveRaidAttacksUsedByPlayerTag(input: {
   cocService?: CoCService;
   raidWindow: TodoWindow;
-  resolvedClanTagByPlayerTag: Map<string, string | null>;
+  primaryClanTagByPlayerTag: Map<string, string | null>;
+  fallbackClanTags: string[];
 }): Promise<Map<string, number>> {
   if (
     !input.raidWindow.active ||
@@ -1714,20 +1748,22 @@ async function loadLiveRaidAttacksUsedByPlayerTag(input: {
     return new Map();
   }
 
-  const playerTagsByClanTag = new Map<string, string[]>();
-  for (const [playerTag, clanTag] of input.resolvedClanTagByPlayerTag.entries()) {
-    if (!clanTag) continue;
-    const existing = playerTagsByClanTag.get(clanTag);
-    if (existing) {
-      existing.push(playerTag);
-      continue;
-    }
-    playerTagsByClanTag.set(clanTag, [playerTag]);
+  const primaryClanTagsByPlayerTag = new Map<string, string | null>();
+  for (const [playerTag, clanTag] of input.primaryClanTagByPlayerTag.entries()) {
+    primaryClanTagsByPlayerTag.set(playerTag, clanTag ? normalizeClanTag(clanTag) || null : null);
   }
-  if (playerTagsByClanTag.size <= 0) return new Map();
+
+  const clanTags = [
+    ...new Set(
+      [
+        ...primaryClanTagsByPlayerTag.values(),
+        ...input.fallbackClanTags.map((tag) => normalizeClanTag(tag)).filter(Boolean),
+      ].filter((value): value is string => Boolean(value)),
+    ),
+  ];
+  if (clanTags.length <= 0) return new Map();
 
   const attacksByPlayerTag = new Map<string, number>();
-  const clanTags = [...playerTagsByClanTag.keys()];
   const clanMemberMaps = await Promise.all(
     clanTags.map(async (clanTag) => {
       const seasons = await input.cocService!
@@ -1748,14 +1784,23 @@ async function loadLiveRaidAttacksUsedByPlayerTag(input: {
   );
   const memberAttacksByClanTag = new Map(clanMemberMaps);
 
-  for (const [clanTag, playerTags] of playerTagsByClanTag.entries()) {
-    const memberAttacksByTag = memberAttacksByClanTag.get(clanTag) ?? new Map<string, number>();
-    for (const playerTag of playerTags) {
-      attacksByPlayerTag.set(
-        playerTag,
-        clampInt(memberAttacksByTag.get(playerTag), 0, 6),
-      );
+  const fallbackClanTags = input.fallbackClanTags
+    .map((tag) => normalizeClanTag(tag))
+    .filter(Boolean);
+  for (const [playerTag, primaryClanTag] of primaryClanTagsByPlayerTag.entries()) {
+    const primaryAttacks =
+      primaryClanTag !== null
+        ? clampInt(memberAttacksByClanTag.get(primaryClanTag)?.get(playerTag), 0, 6)
+        : 0;
+    if (primaryAttacks > 0) {
+      attacksByPlayerTag.set(playerTag, primaryAttacks);
+      continue;
     }
+
+    const fallbackAttacks = fallbackClanTags
+      .map((clanTag) => clampInt(memberAttacksByClanTag.get(clanTag)?.get(playerTag), 0, 6))
+      .find((attacks) => attacks > 0);
+    attacksByPlayerTag.set(playerTag, fallbackAttacks ?? primaryAttacks);
   }
 
   return attacksByPlayerTag;

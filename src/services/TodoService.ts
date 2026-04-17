@@ -40,6 +40,7 @@ type TodoRenderRow = {
   townHall: number | null;
   clanTag: string | null;
   clanName: string | null;
+  raidClanTracked: boolean;
   cwlClanTag: string | null;
   cwlClanName: string | null;
   cwlPlannedSubInAt: Date | null;
@@ -227,6 +228,7 @@ export async function buildTodoPagesForUser(input: {
 
   const [
     trackedClanRows,
+    raidTrackedClanRows,
     currentWarRows,
     clanMemberTownHallRows,
     playerCatalogTownHallRows,
@@ -240,6 +242,12 @@ export async function buildTodoPagesForUser(input: {
       ? prisma.trackedClan.findMany({
           where: { tag: { in: clanTags } },
           select: { tag: true, clanBadge: true },
+        })
+      : Promise.resolve([]),
+    clanTags.length > 0
+      ? prisma.raidTrackedClan.findMany({
+          where: { clanTag: { in: clanTags } },
+          select: { clanTag: true },
         })
       : Promise.resolve([]),
     clanTags.length > 0
@@ -337,6 +345,11 @@ export async function buildTodoPagesForUser(input: {
   const activeCwlPlanList = Array.isArray(activeCwlPlans)
     ? activeCwlPlans
     : [];
+  const raidTrackedClanTagSet = new Set(
+    (raidTrackedClanRows as Array<{ clanTag: string }>)
+      .map((row) => normalizeClanTag(row.clanTag))
+      .filter(Boolean),
+  );
 
   const townHallByClanAndPlayer = new Map<string, number>();
   const latestTownHallByClanAndPlayer = new Map<string, Date>();
@@ -601,6 +614,11 @@ export async function buildTodoPagesForUser(input: {
     const matchContext = resolvedClanTag
       ? warMatchContextByClanTag.get(resolvedClanTag) ?? null
       : null;
+    const raidClanTracked = Boolean(
+      resolvedClanTag &&
+        (trackedClanTagSet.has(resolvedClanTag) ||
+          raidTrackedClanTagSet.has(resolvedClanTag)),
+    );
     const resolvedPlayerName = resolveTodoPlayerDisplayName({
       playerTag: normalizedTag,
       snapshotPlayerName: snapshot?.playerName,
@@ -628,11 +646,8 @@ export async function buildTodoPagesForUser(input: {
         : null,
     ].filter((value): value is number => Number.isFinite(value));
     const raidFreshnessCandidates = [
-      resolvedClanTag
-        ? latestTownHallByClanAndPlayer.get(`${resolvedClanTag}:${normalizedTag}`)?.getTime() ?? null
-        : null,
-      latestTownHallByPlayerTag.get(normalizedTag)?.getTime() ?? null,
-      latestPlayerCatalogSeenAtByTag.get(normalizedTag)?.getTime() ?? null,
+      snapshot?.lastUpdatedAt?.getTime() ?? null,
+      snapshot?.updatedAt?.getTime() ?? null,
     ].filter((value): value is number => Number.isFinite(value));
     const gamesFreshnessCandidates = [
       playerSignalStateFreshnessByTag.get(normalizedTag) ?? null,
@@ -651,6 +666,7 @@ export async function buildTodoPagesForUser(input: {
       warAttackDetails: resolvedWarAttackDetails,
       warHeaderBadge: resolvedClanTag ? clanBadgeByTag.get(resolvedClanTag) ?? null : null,
       warMatchIndicator: resolveWarMatchStatusIndicator(matchContext),
+      raidClanTracked,
       inValidatedWarMemberSet: Boolean(trackedClanActive && trackedWarMember),
       snapshot,
       missingSnapshot,
@@ -736,7 +752,9 @@ function pruneExpiredTodoRenderCache(nowMs: number): void {
 
 /** Purpose: classify snapshot freshness using per-type priority windows. */
 function isSnapshotStale(snapshot: TodoSnapshotRecord, nowMs: number): boolean {
-  const ageMs = Math.max(0, nowMs - snapshot.lastUpdatedAt.getTime());
+  const freshnessAt = snapshot.lastUpdatedAt ?? snapshot.updatedAt ?? null;
+  if (!freshnessAt) return false;
+  const ageMs = Math.max(0, nowMs - freshnessAt.getTime());
   if (snapshot.warActive) return ageMs > TODO_STALE_ACTIVE_WAR_MS;
   if (snapshot.cwlActive) return ageMs > TODO_STALE_ACTIVE_CWL_MS;
   if (snapshot.raidActive) return ageMs > TODO_STALE_ACTIVE_RAID_MS;
@@ -1159,7 +1177,7 @@ function formatGamesTodoRow(
 /** Purpose: format one RAIDS row with completion marker emojis and unchanged status text. */
 function formatRaidsTodoRow(row: TodoRenderRow, status: string): string {
   const marker = getRaidRowMarker(row);
-  return `${marker} ${formatPlayerIdentity(row)} - ${status}`;
+  return `${marker} ${row.playerName} - ${status}`;
 }
 
 /** Purpose: build one stable player identity token for todo row prefixes. */
@@ -1343,10 +1361,10 @@ function getRaidRowStatus(row: TodoRenderRow): string {
   const { used, max } = getRaidRowProgress(row);
   const staleSuffix = row.staleSnapshot ? " - :hourglass:" : "";
 
-  if (!row.snapshot.raidActive) {
-    return `clan capital raids: ${used}/${max} - not active${staleSuffix}`;
+  if (row.snapshot.raidActive && used > 0 && !row.raidClanTracked) {
+    return `started raids in unknown clan${staleSuffix}`;
   }
-  return `clan capital raids: ${used}/${max}${staleSuffix}`;
+  return `${used} / ${max}${staleSuffix}`;
 }
 
 /** Purpose: compute stable RAIDS used/max progress and completion flag for row marker decisions. */
