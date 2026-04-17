@@ -615,7 +615,9 @@ export async function buildTodoPagesForUser(input: {
       ? warMatchContextByClanTag.get(resolvedClanTag) ?? null
       : null;
     const raidClanTracked = Boolean(
-      resolvedClanTag && raidTrackedClanTagSet.has(resolvedClanTag),
+      resolvedClanTag &&
+        (trackedClanTagSet.has(resolvedClanTag) ||
+          raidTrackedClanTagSet.has(resolvedClanTag)),
     );
     const resolvedPlayerName = resolveTodoPlayerDisplayName({
       playerTag: normalizedTag,
@@ -1359,7 +1361,7 @@ function getRaidRowStatus(row: TodoRenderRow): string {
   const { used, max } = getRaidRowProgress(row);
   const staleSuffix = row.staleSnapshot ? " - :hourglass:" : "";
 
-  if (row.snapshot.raidActive && !row.raidClanTracked) {
+  if (row.snapshot.raidActive && used > 0 && !row.raidClanTracked) {
     return `started raids in unknown clan${staleSuffix}`;
   }
   return `${used} / ${max}${staleSuffix}`;
