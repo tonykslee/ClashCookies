@@ -27,6 +27,7 @@ import { SettingsService } from "./SettingsService";
 import { CommandPermissionService } from "./CommandPermissionService";
 import {
   chooseMatchTypeResolution,
+  compareActiveWarIdentities,
   inferMatchTypeFromOpponentPoints,
   resolveCurrentWarMatchTypeSignal,
   toSyncIsFwa,
@@ -2679,7 +2680,20 @@ export class WarEventLogService {
     const nextWarEndTime = timing.warEndTime;
     const nextPrepStartTime =
       parseCocTime(war?.preparationStartTime ?? null) ?? sub.prepStartTime;
-    const warIdentityChanged = isNewWarCycle(sub.startTime, nextWarStartTime);
+    const warIdentityComparison = compareActiveWarIdentities({
+      persisted: {
+        warId: sub.warId,
+        warStartTime: sub.startTime ?? null,
+        opponentTag: sub.opponentTag ?? null,
+      },
+      active: {
+        warStartTime: nextWarStartTime,
+        opponentTag: nextOpponentTag || null,
+      },
+    });
+    const warIdentityChanged =
+      isNewWarCycle(sub.startTime, nextWarStartTime) ||
+      warIdentityComparison.identityChanged;
     const pollNow = new Date();
     const previousPhaseExpectedActive = isWarPhaseExpectedActive({
       state: prevState,
