@@ -100,6 +100,7 @@ import type { PointsApiFetchReason } from "../services/PointsFetchTypes";
 import { PointsSyncService } from "../services/PointsSyncService";
 import {
   chooseMatchTypeResolution,
+  compareActiveWarIdentities,
   inferMatchTypeFromOpponentPoints,
   resolveCurrentWarMatchTypeSignal,
   resolveMatchTypeFromStoredSyncRow,
@@ -2832,13 +2833,32 @@ async function buildWarMailEmbedForTag(
     },
   });
 
+  const syncIdentity = resolveCurrentWarSyncIdentity({
+    clanTag: tag,
+    warState,
+    liveWarStartTime: war?.startTime ?? null,
+    liveOpponentTag: opponentTag || null,
+    currentWarId: subscription?.warId ?? null,
+    currentWarStartTime: subscription?.startTime ?? null,
+    currentWarOpponentTag: subscription?.opponentTag ?? null,
+  });
+  const warIdForSync = syncIdentity.warId;
+  const warStartTimeForSync = syncIdentity.warStartTime;
+  const warIdForSyncNumber =
+    warIdForSync !== null && Number.isFinite(Number(warIdForSync))
+      ? Math.trunc(Number(warIdForSync))
+      : null;
   const fallbackResolution = await resolveMatchTypeWithFallback({
     guildId,
     clanTag: normalizedTag,
     opponentTag,
     warState,
-    warId: subscription?.warId ?? null,
-    warStartTime: getWarStartDateForSync(subscription?.startTime ?? null, war),
+    currentWarId: subscription?.warId ?? null,
+    currentWarStartTime: subscription?.startTime ?? null,
+    currentWarOpponentTag: subscription?.opponentTag ?? null,
+    activeWarId: warIdForSync,
+    activeWarStartTime: warStartTimeForSync,
+    activeOpponentTag: syncIdentity.opponentTag ?? opponentTag,
     existingMatchType:
       (subscription?.matchType as
         | "FWA"
@@ -2880,22 +2900,6 @@ async function buildWarMailEmbedForTag(
   );
   const freezeRefresh =
     !hasLiveWar && hasStoredWarIdentity && Boolean(effectiveOpponentTag);
-
-  const syncIdentity = resolveCurrentWarSyncIdentity({
-    clanTag: tag,
-    warState,
-    liveWarStartTime: war?.startTime ?? null,
-    liveOpponentTag: opponentTag || null,
-    currentWarId: subscription?.warId ?? null,
-    currentWarStartTime: subscription?.startTime ?? null,
-    currentWarOpponentTag: subscription?.opponentTag ?? null,
-  });
-  const warIdForSync = syncIdentity.warId;
-  const warStartTimeForSync = syncIdentity.warStartTime;
-  const warIdForSyncNumber =
-    warIdForSync !== null && Number.isFinite(Number(warIdForSync))
-      ? Math.trunc(Number(warIdForSync))
-      : null;
   const syncRow = await pointsSyncService
     .getCurrentSyncForClan({
       guildId,
@@ -8280,29 +8284,16 @@ function hasSameWarExplicitFwaConfirmation(input: {
     confirmed.confirmed !== true
   )
     return false;
-  const persistedOpponentTag = normalizeTag(
-    String(input.currentWarOpponentTag ?? ""),
-  );
-  const activeOpponentTag = normalizeTag(String(input.activeOpponentTag ?? ""));
-  if (
-    !persistedOpponentTag ||
-    !activeOpponentTag ||
-    persistedOpponentTag !== activeOpponentTag
-  ) {
-    return false;
-  }
-  const persistedWarStartMs =
-    input.currentWarStartTime instanceof Date &&
-    Number.isFinite(input.currentWarStartTime.getTime())
-      ? input.currentWarStartTime.getTime()
-      : null;
-  const activeWarStartMs =
-    input.activeWarStartTime instanceof Date &&
-    Number.isFinite(input.activeWarStartTime.getTime())
-      ? input.activeWarStartTime.getTime()
-      : null;
-  if (persistedWarStartMs === null || activeWarStartMs === null) return false;
-  return persistedWarStartMs === activeWarStartMs;
+  return compareActiveWarIdentities({
+    persisted: {
+      warStartTime: input.currentWarStartTime ?? null,
+      opponentTag: input.currentWarOpponentTag ?? null,
+    },
+    active: {
+      warStartTime: input.activeWarStartTime ?? null,
+      opponentTag: input.activeOpponentTag ?? null,
+    },
+  }).sameWar;
 }
 
 /** Purpose: block fallback FWA-family auto-selection on explicit opponent not-found unless same-war confirmation exists. */
@@ -8475,15 +8466,15 @@ async function resolveMatchTypeFromStoredSync(params: {
   guildId: string | null;
   clanTag: string;
   opponentTag: string;
-  warId?: number | null;
+  warId?: string | number | null;
   warStartTime?: Date | null;
 }): Promise<MatchTypeResolution | null> {
   if (!params.guildId || !params.opponentTag) return null;
   const warIdText =
     params.warId !== null &&
     params.warId !== undefined &&
-    Number.isFinite(params.warId)
-      ? String(Math.trunc(params.warId))
+    Number.isFinite(Number(params.warId))
+      ? String(Math.trunc(Number(params.warId)))
       : null;
   const warStartTime =
     params.warStartTime instanceof Date ? params.warStartTime : null;
@@ -8512,20 +8503,55 @@ async function resolveMatchTypeWithFallback(params: {
   clanTag: string;
   opponentTag: string;
   warState: WarStateForSync;
-  warId?: number | null;
-  warStartTime?: Date | null;
+  currentWarId?: number | string | null;
+  currentWarStartTime?: Date | null;
+  currentWarOpponentTag?: string | null;
+  activeWarId?: number | string | null;
+  activeWarStartTime?: Date | null;
+  activeOpponentTag?: string | null;
   existingMatchType: "FWA" | "BL" | "MM" | "SKIP" | null | undefined;
   existingInferredMatchType?: boolean | null | undefined;
 }): Promise<MatchTypeFallbackResolution> {
+  const sameActiveWar =
+    params.warState === "notInWar"
+      ? true
+      : compareActiveWarIdentities({
+          persisted: {
+            warId: params.currentWarId ?? null,
+            warStartTime: params.currentWarStartTime ?? null,
+            opponentTag: params.currentWarOpponentTag ?? null,
+          },
+          active: {
+            warId: params.activeWarId ?? null,
+            warStartTime: params.activeWarStartTime ?? null,
+            opponentTag: params.activeOpponentTag ?? params.opponentTag,
+          },
+        }).sameWar;
   const currentResolution = resolveCurrentWarMatchTypeSignal({
-    matchType: params.existingMatchType ?? null,
-    inferredMatchType: params.existingInferredMatchType ?? true,
+    matchType: sameActiveWar ? (params.existingMatchType ?? null) : null,
+    inferredMatchType: sameActiveWar
+      ? (params.existingInferredMatchType ?? true)
+      : true,
   });
+  const lookupWarId =
+    params.warState === "notInWar"
+      ? (params.currentWarId ?? params.activeWarId ?? null)
+      : (params.activeWarId ?? null);
+  const lookupWarStartTime =
+    params.warState === "notInWar"
+      ? (params.currentWarStartTime ?? params.activeWarStartTime ?? null)
+      : (params.activeWarStartTime ?? null);
+  const lookupOpponentTag =
+    params.warState === "notInWar"
+      ? (params.currentWarOpponentTag ??
+          params.activeOpponentTag ??
+          params.opponentTag)
+      : (params.activeOpponentTag ?? params.opponentTag);
   const hasWarIdentity =
-    (params.warId !== null &&
-      params.warId !== undefined &&
-      Number.isFinite(params.warId)) ||
-    params.warStartTime instanceof Date;
+    (lookupWarId !== null &&
+      lookupWarId !== undefined &&
+      Number.isFinite(Number(lookupWarId))) ||
+    lookupWarStartTime instanceof Date;
   if (params.warState === "notInWar") {
     return {
       confirmedCurrent: currentResolution.confirmed,
@@ -8533,9 +8559,9 @@ async function resolveMatchTypeWithFallback(params: {
         ? await resolveMatchTypeFromStoredSync({
             guildId: params.guildId,
             clanTag: params.clanTag,
-            opponentTag: params.opponentTag,
-            warId: params.warId,
-            warStartTime: params.warStartTime,
+            opponentTag: lookupOpponentTag,
+            warId: lookupWarId,
+            warStartTime: lookupWarStartTime,
           })
         : null,
       unconfirmedCurrent: currentResolution.unconfirmed,
@@ -8547,9 +8573,9 @@ async function resolveMatchTypeWithFallback(params: {
       ? await resolveMatchTypeFromStoredSync({
           guildId: params.guildId,
           clanTag: params.clanTag,
-          opponentTag: params.opponentTag,
-          warId: params.warId,
-          warStartTime: params.warStartTime,
+          opponentTag: lookupOpponentTag,
+          warId: lookupWarId,
+          warStartTime: lookupWarStartTime,
         })
       : null,
     unconfirmedCurrent: currentResolution.unconfirmed,
@@ -9867,13 +9893,20 @@ async function buildTrackedMatchOverview(
     const opponentTag = normalizeTag(String(war?.opponent?.tag ?? ""));
     const opponentName =
       sanitizeClanName(String(war?.opponent?.name ?? "")) ?? "Unknown";
+    const syncIdentity =
+      syncIdentityByClanTag.get(clanTag) ??
+      buildActiveWarSyncIdentity({ warState });
     const fallbackResolution = await resolveMatchTypeWithFallback({
       guildId,
       clanTag,
       opponentTag,
       warState,
-      warId: sub?.warId ?? null,
-      warStartTime: getWarStartDateForSync(sub?.startTime ?? null, war),
+      currentWarId: sub?.warId ?? null,
+      currentWarStartTime: sub?.startTime ?? null,
+      currentWarOpponentTag: sub?.opponentTag ?? null,
+      activeWarId: syncIdentity.warId,
+      activeWarStartTime: syncIdentity.warStartTime,
+      activeOpponentTag: syncIdentity.opponentTag ?? opponentTag,
       existingMatchType: sub?.matchType ?? null,
       existingInferredMatchType: sub?.inferredMatchType ?? null,
     });
@@ -9948,9 +9981,6 @@ async function buildTrackedMatchOverview(
       continue;
     }
 
-    const syncIdentity =
-      syncIdentityByClanTag.get(clanTag) ??
-      buildActiveWarSyncIdentity({ warState });
     const warIdForReuse = syncIdentity.warId;
     const warStartTimeForReuse = syncIdentity.warStartTime;
     const confirmedCurrentWarSyncRow = resolveCurrentWarScopedSyncRow({
@@ -13895,8 +13925,12 @@ export const Fwa: Command = {
           clanTag: tag,
           opponentTag,
           warState,
-          warId: subscription?.warId ?? null,
-          warStartTime: warStartTimeForReuse,
+          currentWarId: subscription?.warId ?? null,
+          currentWarStartTime: subscription?.startTime ?? null,
+          currentWarOpponentTag: subscription?.opponentTag ?? null,
+          activeWarId: warIdForReuse,
+          activeWarStartTime: warStartTimeForReuse,
+          activeOpponentTag: syncIdentity.opponentTag ?? opponentTag,
           existingMatchType: subscription?.matchType ?? null,
           existingInferredMatchType: subscription?.inferredMatchType ?? null,
         });
