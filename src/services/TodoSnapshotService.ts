@@ -291,17 +291,27 @@ export class TodoSnapshotService {
     const trackedClanTagRows = await prisma.trackedClan.findMany({
       select: { tag: true },
     });
+    const raidTrackedClanTagRows = await listRaidTrackedClanRows();
     const trackedClanTagSet = new Set(
       trackedClanTagRows
         .map((row) => normalizeClanTag(row.tag))
         .filter(Boolean),
     );
+    const raidTrackedClanTagSet = new Set(
+      raidTrackedClanTagRows
+        .map((row) => normalizeClanTag(row.tag))
+        .filter(Boolean),
+    );
+    const trackedRaidClanTagSet = new Set([
+      ...trackedClanTagSet,
+      ...raidTrackedClanTagSet,
+    ]);
 
     const trackedPlayerTags: string[] = [];
     const nonTrackedPlayerTags: string[] = [];
     for (const playerTag of activatedPlayerTags) {
       const clanTag = snapshotClanTagByPlayerTag.get(playerTag) ?? null;
-      if (clanTag && trackedClanTagSet.has(clanTag)) {
+      if (clanTag && trackedRaidClanTagSet.has(clanTag)) {
         trackedPlayerTags.push(playerTag);
       } else {
         nonTrackedPlayerTags.push(playerTag);
@@ -647,6 +657,15 @@ export class TodoSnapshotService {
         ] as const)
         .filter((entry): entry is [string, string] => Boolean(entry[0] && entry[1])),
     );
+    const raidTrackedClanRows = await listRaidTrackedClanRows();
+    const raidTrackedClanNameByTag = new Map(
+      raidTrackedClanRows
+        .map((row) => [
+          normalizeClanTag(row.tag),
+          sanitizeDisplayText(String(row.name ?? "")),
+        ] as const)
+        .filter((entry): entry is [string, string] => Boolean(entry[0] && entry[1])),
+    );
     const currentWarByClanTag = pickLatestCurrentWarByClanTag(currentWarRows);
     const trackedClanTagSet = new Set(
       trackedClanRows
@@ -797,6 +816,7 @@ export class TodoSnapshotService {
       const resolvedClanTag = resolvedClanTagByPlayerTag.get(playerTag) ?? null;
       const resolvedClanName =
         (resolvedClanTag ? trackedClanNameByTag.get(resolvedClanTag) : null) ||
+        (resolvedClanTag ? raidTrackedClanNameByTag.get(resolvedClanTag) : null) ||
         sanitizeDisplayText(existing?.clanName ?? "") ||
         null;
       const activeMappedCwlClanTag =
@@ -1049,6 +1069,16 @@ export function resolveClanGamesCycleBoundaryFromCycleKey(input: unknown): {
     cycleStart.getUTCFullYear(),
     cycleStart.getUTCMonth(),
   );
+}
+
+/** Purpose: load the currently stored RAID-tracked clan rows for snapshot scope decisions. */
+async function listRaidTrackedClanRows(): Promise<Array<{ tag: string; name: string | null }>> {
+  return prisma.raidTrackedClan.findMany({
+    select: {
+      tag: true,
+      name: true,
+    },
+  });
 }
 
 /** Purpose: normalize potentially-empty cycle-key input into nullable stable string. */

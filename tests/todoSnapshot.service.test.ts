@@ -38,6 +38,9 @@ const prismaMock = vi.hoisted(() => ({
   trackedClan: {
     findMany: vi.fn(),
   },
+  raidTrackedClan: {
+    findMany: vi.fn(),
+  },
   cwlTrackedClan: {
     findMany: vi.fn(),
   },
@@ -172,6 +175,7 @@ describe("TodoSnapshotService", () => {
     prismaMock.trackedClan.findMany.mockResolvedValue([
       { tag: "#PQL0289", name: "Clan One" },
     ]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([
       { tag: "#PQL0289", name: "Clan One" },
     ]);
@@ -865,6 +869,58 @@ describe("TodoSnapshotService", () => {
     expect(result.trackedPlayerCount).toBe(1);
     expect(result.nonTrackedPlayerCount).toBe(1);
     expect(result.selectedPlayerCount).toBe(1);
+  });
+
+  it("hydrates raid-tracked clan names during snapshot refresh", async () => {
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      buildSnapshotRow({
+        playerTag: "#PYLQ0289",
+        clanTag: "#QGRJ",
+        clanName: null,
+        raidActive: false,
+        raidAttacksUsed: 0,
+      }),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.currentWar.findMany.mockResolvedValue([]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([
+      { tag: "#QGRJ", name: "Raid Clan" },
+    ]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+    const cocService = {
+      getPlayerRaw: vi.fn().mockResolvedValue({
+        tag: "#PYLQ0289",
+        clan: { tag: "#QGRJ" },
+      }),
+      getClanCapitalRaidSeasons: vi.fn().mockResolvedValue([
+        {
+          startTime: "20260327T070000.000Z",
+          endTime: "20260330T070000.000Z",
+          members: [{ tag: "#PYLQ0289", attacks: 3 }],
+        },
+      ]),
+    };
+
+    await todoSnapshotService.refreshSnapshotsForPlayerTags({
+      playerTags: ["#PYLQ0289"],
+      cocService: cocService as any,
+      nowMs: Date.UTC(2026, 2, 27, 12, 0, 0, 0),
+    });
+
+    expect(cocService.getClanCapitalRaidSeasons).toHaveBeenCalledWith("#QGRJ", 2);
+    expect(prismaMock.todoPlayerSnapshot.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          clanTag: "#QGRJ",
+          clanName: "Raid Clan",
+          raidActive: true,
+          raidAttacksUsed: 3,
+        }),
+      }),
+    );
   });
 
   it("refreshes activated users' non-tracked-clan players in the observe cadence", async () => {
