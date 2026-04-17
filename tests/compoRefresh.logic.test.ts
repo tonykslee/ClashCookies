@@ -254,8 +254,16 @@ describe("compo refresh button behavior", () => {
         mode: "actual",
         view: "best",
         viewLabel: "Best Fit",
+        heatMapRefs: [
+          { weightMinInclusive: 0, weightMaxInclusive: 9_999_999 },
+        ],
+        bandMatchRatesByBandKey: new Map([["0-9999999", 0.5]]),
         currentProjection: {
           memberCount: 49,
+          selectedHeatMapRef: {
+            weightMinInclusive: 0,
+            weightMaxInclusive: 9_999_999,
+          },
           deltaByBucket: {
             TH18: 1,
             TH17: 0,
@@ -351,8 +359,20 @@ describe("compo refresh button behavior", () => {
         mode: "actual",
         view: "custom",
         viewLabel: "Custom",
+        heatMapRefs: [
+          { weightMinInclusive: 1_500_000, weightMaxInclusive: 1_999_999 },
+          { weightMinInclusive: 2_000_000, weightMaxInclusive: 2_499_999 },
+        ],
+        bandMatchRatesByBandKey: new Map([
+          ["1500000-1999999", 0.5],
+          ["2000000-2499999", 0.55],
+        ]),
         currentProjection: {
           memberCount: 50,
+          selectedHeatMapRef: {
+            weightMinInclusive: 1_500_000,
+            weightMaxInclusive: 1_999_999,
+          },
           deltaByBucket: {
             TH18: 0,
             TH17: -1,

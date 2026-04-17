@@ -61,8 +61,16 @@ describe("handleCompoAdviceClanSelectMenuInteraction", () => {
           mode: "actual",
           view: "custom",
           viewLabel: "Custom",
+          heatMapRefs: [
+            { weightMinInclusive: 0, weightMaxInclusive: 9_999_999 },
+          ],
+          bandMatchRatesByBandKey: new Map([["0-9999999", 0.5]]),
           currentProjection: {
             memberCount: 50,
+            selectedHeatMapRef: {
+              weightMinInclusive: 0,
+              weightMaxInclusive: 9_999_999,
+            },
             deltaByBucket: {
               TH18: 0,
               TH17: 0,
