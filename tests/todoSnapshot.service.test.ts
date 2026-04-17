@@ -886,7 +886,7 @@ describe("TodoSnapshotService", () => {
     prismaMock.currentWar.findMany.mockResolvedValue([]);
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.raidTrackedClan.findMany.mockResolvedValue([
-      { tag: "#QGRJ", name: "Raid Clan" },
+      { clanTag: "#QGRJ", name: "Raid Clan" },
     ]);
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
     prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
