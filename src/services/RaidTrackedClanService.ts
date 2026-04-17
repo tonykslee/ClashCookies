@@ -1,6 +1,5 @@
 import { prisma } from "../prisma";
 import { normalizeClanTag } from "./PlayerLinkService";
-import { resolveCurrentCwlSeasonKey } from "./CwlRegistryService";
 import { CoCService } from "./CoCService";
 import { RecruitingType } from "../generated/coc-api";
 
@@ -24,12 +23,22 @@ export type RaidTrackedClanWriteResult = {
   joinTypeRefreshFailures: string[];
 };
 
+export type RaidTrackedClanRefreshResult = {
+  refreshed: string[];
+  joinTypeRefreshFailures: string[];
+};
+
 function stripLeadingHash(tag: string): string {
   return tag.startsWith("#") ? tag.slice(1) : tag;
 }
 
 function toDisplayTag(tag: string): string {
   return `#${stripLeadingHash(tag)}`;
+}
+
+function normalizeRaidTrackedClanName(name: string | null | undefined): string | null {
+  const trimmed = String(name ?? "").trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 export function normalizeRaidTrackedClanTag(input: string): string | null {
@@ -87,80 +96,54 @@ export function parseRaidTrackedClanTagsInput(rawInput: string): {
   };
 }
 
-export function getRaidTrackedClanJoinTypeEmoji(
-  joinType: RaidTrackedClanJoinType | null,
-): string {
-  switch (joinType) {
-    case "open":
-      return "🟢";
-    case "inviteOnly":
-      return "🟡";
-    case "closed":
-      return "🔴";
-    default:
-      return "⚪";
-  }
-}
-
 function normalizeRaidJoinType(
   joinType: RecruitingType | string | null | undefined,
 ): RaidTrackedClanJoinType | null {
   const raw = String(joinType ?? "").trim();
-  if (raw === "open" || raw === "inviteOnly" || raw === "closed") {
+  if (raw === "open" || raw === "anyoneCanJoin") {
+    return "open";
+  }
+  if (raw === "inviteOnly" || raw === "closed") {
     return raw;
   }
   return null;
 }
 
-async function resolveRaidTrackedClanDisplayNames(
-  storedClanTags: string[],
-): Promise<Map<string, string>> {
-  const displayTagMap = new Map<string, string>();
-  const normalizedTags = [...new Set(storedClanTags.map((tag) => toDisplayTag(tag)))];
-  if (normalizedTags.length === 0) return displayTagMap;
-
-  const season = resolveCurrentCwlSeasonKey();
-  const [trackedRows, cwlRows] = await Promise.all([
-    prisma.trackedClan.findMany({
-      where: { tag: { in: normalizedTags } },
-      select: { tag: true, name: true },
-    }),
-    prisma.cwlTrackedClan.findMany({
-      where: { season, tag: { in: normalizedTags } },
-      select: { tag: true, name: true },
-    }),
-  ]);
-
-  for (const row of trackedRows) {
-    const tag = normalizeClanTag(row.tag);
-    if (!tag) continue;
-    const storedTag = stripLeadingHash(tag);
-    const name = String(row.name ?? "").trim();
-    if (name && !displayTagMap.has(storedTag)) {
-      displayTagMap.set(storedTag, name);
-    }
+export function getRaidTrackedClanJoinTypeEmoji(
+  joinType: RaidTrackedClanJoinType | "anyoneCanJoin" | null | undefined,
+): string {
+  const normalized = normalizeRaidJoinType(joinType);
+  if (normalized === "open") {
+    return "🔓";
   }
-
-  for (const row of cwlRows) {
-    const tag = normalizeClanTag(row.tag);
-    if (!tag) continue;
-    const storedTag = stripLeadingHash(tag);
-    const name = String(row.name ?? "").trim();
-    if (name && !displayTagMap.has(storedTag)) {
-      displayTagMap.set(storedTag, name);
-    }
+  if (normalized === "inviteOnly" || normalized === "closed") {
+    return "🔒";
   }
+  return "⚪";
+}
 
-  return displayTagMap;
+async function readRaidTrackedClanLiveData(input: {
+  clanTag: string;
+  cocService: CoCService;
+}): Promise<{ clanName: string | null; joinType: RaidTrackedClanJoinType | null } | null> {
+  try {
+    const clan = await input.cocService.getClan(toDisplayTag(input.clanTag));
+    return {
+      clanName: normalizeRaidTrackedClanName(clan?.name),
+      joinType: normalizeRaidJoinType(clan?.type),
+    };
+  } catch {
+    return null;
+  }
 }
 
 function formatRaidTrackedClanListLine(input: RaidTrackedClanDisplayRow): string {
   const clanTagDisplay = stripLeadingHash(input.clanTag);
-  const clanName = String(input.clanName ?? "").trim() || clanTagDisplay;
+  const clanName = normalizeRaidTrackedClanName(input.clanName) ?? clanTagDisplay;
   const upgradesText = input.upgrades === null ? "—" : String(input.upgrades);
   const emoji = getRaidTrackedClanJoinTypeEmoji(input.joinType);
   const url = `https://link.clashofclans.com/en?action=OpenClanProfile&tag=${encodeURIComponent(clanTagDisplay)}`;
-  return `## ${emoji} [${clanName} | ${upgradesText}](<${url}>) \`${clanTagDisplay}\``;
+  return `### ${emoji} [${clanName} | ${upgradesText}](<${url}>) \`${clanTagDisplay}\``;
 }
 
 export function buildRaidTrackedClanListLines(
@@ -176,6 +159,7 @@ export async function listRaidTrackedClansForDisplay(): Promise<
     orderBy: [{ createdAt: "asc" }, { clanTag: "asc" }],
     select: {
       clanTag: true,
+      name: true,
       upgrades: true,
       joinType: true,
       createdAt: true,
@@ -185,13 +169,9 @@ export async function listRaidTrackedClansForDisplay(): Promise<
 
   if (rows.length === 0) return [];
 
-  const displayNames = await resolveRaidTrackedClanDisplayNames(
-    rows.map((row) => row.clanTag),
-  );
-
   return rows.map((row) => ({
     clanTag: normalizeRaidTrackedClanTag(row.clanTag) ?? row.clanTag,
-    clanName: displayNames.get(normalizeRaidTrackedClanTag(row.clanTag) ?? row.clanTag) ?? null,
+    clanName: normalizeRaidTrackedClanName(row.name),
     upgrades:
       row.upgrades !== null && row.upgrades !== undefined && Number.isFinite(row.upgrades)
         ? Math.trunc(row.upgrades)
@@ -226,48 +206,88 @@ export async function upsertRaidTrackedClansForTags(input: {
 
   const existingRows = await prisma.raidTrackedClan.findMany({
     where: { clanTag: { in: parsed.validTags } },
-    select: { clanTag: true },
+    select: {
+      clanTag: true,
+      name: true,
+      upgrades: true,
+      joinType: true,
+    },
   });
-  const existingSet = new Set(existingRows.map((row) => normalizeRaidTrackedClanTag(row.clanTag)).filter(Boolean));
+  const existingMap = new Map(
+    existingRows
+      .map((row) => [normalizeRaidTrackedClanTag(row.clanTag) ?? row.clanTag, row] as const)
+      .filter((entry): entry is readonly [string, (typeof existingRows)[number]] => Boolean(entry[0])),
+  );
+  const existingSet = new Set(existingMap.keys());
   const newTags = parsed.validTags.filter((tag) => !existingSet.has(tag));
   const existingTags = parsed.validTags.filter((tag) => existingSet.has(tag));
 
-  if (newTags.length > 0) {
-    await prisma.raidTrackedClan.createMany({
-      data: newTags.map((tag) => ({
+  const createRows: {
+    clanTag: string;
+    name: string | null;
+    upgrades: number | null;
+    joinType: RaidTrackedClanJoinType | null;
+  }[] = [];
+  const joinTypeRefreshFailures: string[] = [];
+
+  for (const tag of parsed.validTags) {
+    const existing = existingMap.get(tag) ?? null;
+    const liveData = await readRaidTrackedClanLiveData({
+      clanTag: tag,
+      cocService: input.cocService,
+    });
+
+    if (!liveData) {
+      joinTypeRefreshFailures.push(toDisplayTag(tag));
+    }
+
+    if (!existing) {
+      createRows.push({
         clanTag: tag,
+        name: liveData?.clanName ?? null,
         upgrades,
-        joinType: null,
-      })),
+        joinType: liveData?.joinType ?? null,
+      });
+      continue;
+    }
+
+    const updateData: {
+      upgrades?: number | null;
+      name?: string | null;
+      joinType?: RaidTrackedClanJoinType | null;
+    } = {};
+    if (upgrades !== null && existing.upgrades !== upgrades) {
+      updateData.upgrades = upgrades;
+    }
+
+    if (liveData) {
+      const storedName = normalizeRaidTrackedClanName(existing.name);
+      if (liveData.clanName && liveData.clanName !== storedName) {
+        updateData.name = liveData.clanName;
+      }
+      if (liveData.joinType !== existing.joinType) {
+        updateData.joinType = liveData.joinType;
+      }
+    }
+
+    if (Object.keys(updateData).length > 0) {
+      await prisma.raidTrackedClan.updateMany({
+        where: { clanTag: tag },
+        data: updateData,
+      });
+    }
+  }
+
+  if (createRows.length > 0) {
+    await prisma.raidTrackedClan.createMany({
+      data: createRows,
       skipDuplicates: true,
     });
   }
 
-  if (upgrades !== null && existingTags.length > 0) {
-    await prisma.raidTrackedClan.updateMany({
-      where: { clanTag: { in: existingTags } },
-      data: { upgrades },
-    });
-  }
-
-  const joinTypeRefreshFailures: string[] = [];
-  for (const tag of parsed.validTags) {
-    try {
-      const clan = await input.cocService.getClan(toDisplayTag(tag));
-      const joinType = normalizeRaidJoinType(clan?.type);
-      await prisma.raidTrackedClan.updateMany({
-        where: { clanTag: tag },
-        data: { joinType },
-      });
-    } catch {
-      joinTypeRefreshFailures.push(toDisplayTag(tag));
-    }
-  }
-
   const added = newTags.map(toDisplayTag);
   const updated = upgrades !== null ? existingTags.map(toDisplayTag) : [];
-  const alreadyExisting =
-    upgrades !== null ? [] : existingTags.map(toDisplayTag);
+  const alreadyExisting = upgrades !== null ? [] : existingTags.map(toDisplayTag);
 
   return {
     added,
@@ -275,6 +295,59 @@ export async function upsertRaidTrackedClansForTags(input: {
     alreadyExisting,
     invalid: parsed.invalidTags,
     duplicateInRequest: parsed.duplicateTagsInRequest.map(toDisplayTag),
+    joinTypeRefreshFailures,
+  };
+}
+
+export async function refreshRaidTrackedClansMetadata(input: {
+  cocService: CoCService;
+}): Promise<RaidTrackedClanRefreshResult> {
+  const rows = await prisma.raidTrackedClan.findMany({
+    orderBy: [{ createdAt: "asc" }, { clanTag: "asc" }],
+    select: {
+      clanTag: true,
+      name: true,
+      joinType: true,
+    },
+  });
+
+  const refreshed: string[] = [];
+  const joinTypeRefreshFailures: string[] = [];
+
+  for (const row of rows) {
+    const normalizedTag = normalizeRaidTrackedClanTag(row.clanTag) ?? row.clanTag;
+    const liveData = await readRaidTrackedClanLiveData({
+      clanTag: normalizedTag,
+      cocService: input.cocService,
+    });
+    if (!liveData) {
+      joinTypeRefreshFailures.push(toDisplayTag(row.clanTag));
+      continue;
+    }
+
+    const updateData: {
+      name?: string | null;
+      joinType?: RaidTrackedClanJoinType | null;
+    } = {};
+    const storedName = normalizeRaidTrackedClanName(row.name);
+    if (liveData.clanName && liveData.clanName !== storedName) {
+      updateData.name = liveData.clanName;
+    }
+    if (liveData.joinType !== row.joinType) {
+      updateData.joinType = liveData.joinType;
+    }
+
+    if (Object.keys(updateData).length > 0) {
+      await prisma.raidTrackedClan.updateMany({
+        where: { clanTag: normalizedTag },
+        data: updateData,
+      });
+      refreshed.push(toDisplayTag(row.clanTag));
+    }
+  }
+
+  return {
+    refreshed,
     joinTypeRefreshFailures,
   };
 }
