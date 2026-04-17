@@ -1,4 +1,4 @@
-import {
+﻿import {
   ActionRowBuilder,
   APIActionRowComponent,
   APIComponentInMessageActionRow,
@@ -19,6 +19,10 @@ import type { HeatMapRef } from "@prisma/client";
 import {
   COMPO_ADVICE_VIEW_LABELS,
   COMPO_ADVICE_VIEWS,
+  COMPO_ADVICE_DEVIATION_PENALTY_CONSTANT,
+  estimateMatchrateFromDeviation,
+  formatMatchratePercent,
+  getAdjacentHeatMapRefs,
   stepCompoAdviceCustomBandIndexByCount,
   type CompoAdviceView,
 } from "../helper/compoAdviceEngine";
@@ -30,6 +34,7 @@ import {
 import {
   buildHeatMapRefDisplayRows,
 } from "../helper/heatMapRefDisplay";
+import { formatHeatMapRefBandLabel, getHeatMapRefBandKey } from "../helper/compoHeatMap";
 import { formatError } from "../helper/formatError";
 import { getCompoWarDisplayBucket } from "../helper/compoWarWeightBuckets";
 import { normalizeCompoClanDisplayName } from "../helper/compoDisplay";
@@ -1108,6 +1113,17 @@ function buildCompoAdviceFooterText(refreshLine: string | null): string {
   return refreshLine ? `${refreshLine} • ${note}` : note;
 }
 
+function getCompoAdviceBandMatchrate(input: {
+  summary: Extract<CompoAdviceReadResult, { kind: "ready" }>["summary"];
+  heatMapRef: HeatMapRef | null;
+}): number | null {
+  if (!input.heatMapRef) {
+    return null;
+  }
+  const bandKey = getHeatMapRefBandKey(input.heatMapRef);
+  return input.summary.bandMatchRatesByBandKey?.get(bandKey) ?? null;
+}
+
 async function buildCompoAdviceEmbed(input: {
   advice: CompoAdviceReadResult;
   client: Client;
@@ -1119,6 +1135,25 @@ async function buildCompoAdviceEmbed(input: {
   if (input.advice.kind === "ready") {
     const summary = input.advice.summary;
     const embed = new EmbedBuilder().setTitle(title);
+    const selectedHeatMapRef = summary.currentProjection.selectedHeatMapRef;
+    const selectedBandMatchrate = getCompoAdviceBandMatchrate({
+      summary,
+      heatMapRef: selectedHeatMapRef,
+    });
+    const currentMatchrate = estimateMatchrateFromDeviation({
+      bandMatchrate: selectedBandMatchrate,
+      deviationScore: summary.currentScore,
+      penaltyConstant: COMPO_ADVICE_DEVIATION_PENALTY_CONSTANT,
+    });
+    const resultingMatchrate = estimateMatchrateFromDeviation({
+      bandMatchrate: selectedBandMatchrate,
+      deviationScore: summary.resultingScore,
+      penaltyConstant: COMPO_ADVICE_DEVIATION_PENALTY_CONSTANT,
+    });
+    const adjacentBands = getAdjacentHeatMapRefs({
+      heatMapRefs: summary.heatMapRefs,
+      selectedHeatMapRef,
+    });
     const currentDeltas = [
       `TH18: ${formatSignedValue(summary.currentProjection.deltaByBucket.TH18)}`,
       `TH17: ${formatSignedValue(summary.currentProjection.deltaByBucket.TH17)}`,
@@ -1142,14 +1177,17 @@ async function buildCompoAdviceEmbed(input: {
       [
         `Current Weight: ${formatCompoAdviceFullWeight(summary.currentWeight)}`,
         `Current Deviation Score: **${formatAdviceScore(summary.currentScore)}**`,
+        `Matchrate: ${formatMatchratePercent(currentMatchrate)}`,
       ].join("\n"),
     );
     const targetValue = await renderCompoAdviceEmojiShortcodes(
       input.client,
       [
         `Target Band: **${summary.currentBandLabel}**`,
+        `Perfect compo matchrate: ${formatMatchratePercent(selectedBandMatchrate)}`,
         `Distance to Midpoint: ${formatCompoAdviceDistanceToMidpoint(summary)}`,
         `Resulting Deviation Score: **${formatAdviceScore(summary.resultingScore)}**`,
+        `Matchrate: ${formatMatchratePercent(resultingMatchrate)}`,
       ].join("\n"),
     );
     const recommendationValue = await renderCompoAdviceEmojiShortcodes(
@@ -1160,6 +1198,29 @@ async function buildCompoAdviceEmbed(input: {
       ]
         .filter((line): line is string => line !== null)
         .join("\n"),
+    );
+    const adjacentBandsValue = await renderCompoAdviceEmojiShortcodes(
+      input.client,
+      [
+        `Lower band: ${
+          adjacentBands.lower ? `**${formatHeatMapRefBandLabel(adjacentBands.lower)}**` : "N/A"
+        }`,
+        `Matchrate: ${formatMatchratePercent(
+          getCompoAdviceBandMatchrate({
+            summary,
+            heatMapRef: adjacentBands.lower,
+          }),
+        )}`,
+        `Higher band: ${
+          adjacentBands.higher ? `**${formatHeatMapRefBandLabel(adjacentBands.higher)}**` : "N/A"
+        }`,
+        `Matchrate: ${formatMatchratePercent(
+          getCompoAdviceBandMatchrate({
+            summary,
+            heatMapRef: adjacentBands.higher,
+          }),
+        )}`,
+      ].join("\n"),
     );
 
     embed.addFields(
@@ -1186,6 +1247,11 @@ async function buildCompoAdviceEmbed(input: {
       {
         name: "Current Deltas",
         value: currentDeltas,
+        inline: false,
+      },
+      {
+        name: "Adjacent Bands",
+        value: adjacentBandsValue,
         inline: false,
       },
     );
@@ -1222,17 +1288,17 @@ async function buildCompoAdviceResponsePayload(input: {
 /*
   const recommendedRows = params.recommended.map(
     (c) =>
-      `${abbreviateClan(normalizeCompoClanDisplayName(c.clanName))} â€” needs ${Math.abs(c.delta)} ${params.bucket}`,
+      `${abbreviateClan(normalizeCompoClanDisplayName(c.clanName))} Ã¢â‚¬â€ needs ${Math.abs(c.delta)} ${params.bucket}`,
   );
   const vacancyRows = params.vacancyList.map(
     (c) =>
-      `${abbreviateClan(normalizeCompoClanDisplayName(c.clanName))} â€” ${
+      `${abbreviateClan(normalizeCompoClanDisplayName(c.clanName))} Ã¢â‚¬â€ ${
         c.liveMemberCount !== null ? `${c.liveMemberCount}/50` : "unknown/50"
       }`,
   );
   const compositionRows = params.compositionList.map(
     (c) =>
-      `${abbreviateClan(normalizeCompoClanDisplayName(c.clanName))} â€” ${c.delta}`,
+      `${abbreviateClan(normalizeCompoClanDisplayName(c.clanName))} Ã¢â‚¬â€ ${c.delta}`,
   );
 
   return new EmbedBuilder()

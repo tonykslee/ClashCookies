@@ -4,6 +4,8 @@ import {
   buildCompoAdviceContentLinesForTest,
   evaluateCompoAdvice,
   formatFullWeightForTest,
+  formatMatchratePercentForTest,
+  estimateMatchrateFromDeviationForTest,
   formatSignedCompoAdviceDeltaForTest,
   resolveAdviceTargetBandMidpointForTest,
   stepCompoAdviceCustomBandIndexByCount,
@@ -259,6 +261,30 @@ describe("CompoAdviceEngine", () => {
     expect(formatSignedCompoAdviceDeltaForTest(null)).toBe("unknown");
   });
 
+  it("formats and estimates matchrates using the shared compo advice helper", () => {
+    expect(formatMatchratePercentForTest(0.7214)).toBe("72.14%");
+    expect(formatMatchratePercentForTest(72.14)).toBe("72.14%");
+    expect(formatMatchratePercentForTest(null)).toBe("Unknown");
+    expect(
+      estimateMatchrateFromDeviationForTest({
+        bandMatchrate: 0.7214,
+        deviationScore: 0,
+      }),
+    ).toBe(0.7214);
+    expect(
+      estimateMatchrateFromDeviationForTest({
+        bandMatchrate: 0.7214,
+        deviationScore: 32.5,
+      }),
+    ).toBeCloseTo(0.6629, 4);
+    expect(
+      estimateMatchrateFromDeviationForTest({
+        bandMatchrate: null,
+        deviationScore: 32.5,
+      }),
+    ).toBeNull();
+  });
+
   it("renders unknown fallback lines when current weight or midpoint is missing", () => {
     const lines = buildCompoAdviceContentLinesForTest({
       modeLabel: "ACTUAL",
@@ -269,7 +295,10 @@ describe("CompoAdviceEngine", () => {
         currentBandLabel: "(no band)",
         currentProjection: {
           totalWeight: NaN,
+          selectedHeatMapRef: null,
         } as any,
+        heatMapRefs: [],
+        bandMatchRatesByBandKey: new Map(),
         currentWeight: null,
         targetBandMidpoint: null,
         recommendationText: "No improvement found.",
@@ -282,6 +311,51 @@ describe("CompoAdviceEngine", () => {
 
     expect(lines).toContain("Current Weight: unknown");
     expect(lines).toContain("Distance to Midpoint: unknown");
+    expect(lines).toContain("Matchrate: Unknown");
+  });
+
+  it("renders current, target, and adjacent matchrate lines from band rates and deviation penalties", () => {
+    const refs = [
+      makeHeatMapRef({ weightMinInclusive: 0, weightMaxInclusive: 999_999 }),
+      makeHeatMapRef({ weightMinInclusive: 1_000_000, weightMaxInclusive: 2_000_000 }),
+      makeHeatMapRef({ weightMinInclusive: 2_000_001, weightMaxInclusive: 3_000_000 }),
+    ];
+    const lines = buildCompoAdviceContentLinesForTest({
+      modeLabel: "ACTUAL",
+      refreshLine: null,
+      summary: {
+        viewLabel: "Auto-Detect Band",
+        currentScore: 32.5,
+        currentBandLabel: "1,000,000 - 2,000,000",
+        currentProjection: {
+          totalWeight: 1_500_000,
+          selectedHeatMapRef: refs[1],
+        } as any,
+        heatMapRefs: refs,
+        bandMatchRatesByBandKey: new Map([
+          ["0-999999", 0.7],
+          ["1000000-2000000", 0.7214],
+          ["2000001-3000000", 0.74],
+        ]),
+        currentWeight: 1_500_000,
+        targetBandMidpoint: 1_500_000,
+        recommendationText: "Add TH17",
+        resultingScore: 12.5,
+        resultingBandLabel: "1,000,000 - 2,000,000",
+        alternateTexts: [],
+        statusText: null,
+      } as any,
+    });
+
+    expect(lines).toContain("Current Deviation Score: **32.5**");
+    expect(lines).toContain("Matchrate: 66.29%");
+    expect(lines).toContain("Perfect compo matchrate: 72.14%");
+    expect(lines).toContain("Resulting Deviation Score: **12.5**");
+    expect(lines).toContain("Matchrate: 69.89%");
+    expect(lines).toContain("Lower band: **0 - 999,999**");
+    expect(lines).toContain("Higher band: **2,000,001 - 3,000,000**");
+    expect(lines).toContain("Matchrate: 70.00%");
+    expect(lines).toContain("Matchrate: 74.00%");
   });
 
   it("steps Custom band indices deterministically and respects bounds", () => {
