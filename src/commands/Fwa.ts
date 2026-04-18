@@ -8825,6 +8825,26 @@ type FreshMatchupEvidence = {
   usedTrackedFallback: boolean;
 };
 
+/** Purpose: choose the manual-match freshness baseline immediately before the resolved current sync. */
+function resolveManualMatchupFreshnessSourceSync(input: {
+  sourceSync: number | null;
+  resolvedCurrentSyncNum: number | null;
+}): number | null {
+  if (
+    input.resolvedCurrentSyncNum !== null &&
+    Number.isFinite(input.resolvedCurrentSyncNum)
+  ) {
+    const resolvedCurrentSyncNum = Math.trunc(input.resolvedCurrentSyncNum);
+    if (resolvedCurrentSyncNum > 0) {
+      return resolvedCurrentSyncNum - 1;
+    }
+  }
+  return input.sourceSync;
+}
+
+export const resolveManualMatchupFreshnessSourceSyncForTest =
+  resolveManualMatchupFreshnessSourceSync;
+
 /** Purpose: fetch fresh points proof for manual match rendering before applying the strict currentness check. */
 async function resolveFreshMatchupEvidence(input: {
   trackedClanTag: string;
@@ -13908,10 +13928,14 @@ export const Fwa: Command = {
           return;
         }
 
+        const manualFreshSourceSync = resolveManualMatchupFreshnessSourceSync({
+          sourceSync,
+          resolvedCurrentSyncNum,
+        });
         const freshMatchupEvidence = await resolveFreshMatchupEvidence({
           trackedClanTag: tag,
           opponentTag,
-          sourceSync,
+          sourceSync: manualFreshSourceSync,
           fetchClanPoints: (clanTag) =>
             scrapeClanPoints(clanTag, "manual_refresh", {
               manualForceBypass: true,
