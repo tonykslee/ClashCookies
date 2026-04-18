@@ -10060,6 +10060,10 @@ async function buildTrackedMatchOverview(
       sameWarPersistedSyncNumber: confirmedCurrentWarSyncRow?.syncNum ?? null,
     });
     const resolvedCurrentSyncNum = syncResolution.syncNumber;
+    const trackedFreshSourceSync = resolveManualMatchupFreshnessSourceSync({
+      sourceSync,
+      resolvedCurrentSyncNum,
+    });
     clanSyncLine = formatResolvedSyncDisplay(resolvedCurrentSyncNum);
     logActiveWarSyncResolution({
       stage: "fwa_match_alliance_view",
@@ -10098,7 +10102,7 @@ async function buildTrackedMatchOverview(
       const siteUpdated = isPointsSiteUpdatedForOpponent(
         primaryPoints,
         opponentTag,
-        sourceSync,
+        trackedFreshSourceSync,
       );
       const opponentFromPrimary = siteUpdated
         ? deriveOpponentBalanceFromPrimarySnapshot(
@@ -10147,13 +10151,17 @@ async function buildTrackedMatchOverview(
     });
     const siteUpdatedFromPrimaryEvidence = Boolean(
       primaryPoints &&
-      isPointsSiteUpdatedForOpponent(primaryPoints, opponentTag, sourceSync),
+      isPointsSiteUpdatedForOpponent(
+        primaryPoints,
+        opponentTag,
+        trackedFreshSourceSync,
+      ),
     );
     const siteUpdatedForAlert = isPointsValidationCurrentForMatchup({
       primarySnapshot: primaryPoints,
       opponentSnapshot: opponentPoints,
       opponentTag,
-      sourceSync,
+      sourceSync: trackedFreshSourceSync,
     });
     if (
       siteUpdatedForAlert &&
