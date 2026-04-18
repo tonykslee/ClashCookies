@@ -248,8 +248,9 @@ describe("fwa match stored sync fallback", () => {
       clanTag: "9GLGQCCU",
       opponentTag: "20P292Q2V",
       warState: "notInWar",
-      warId: 1001383,
-      warStartTime: new Date("2026-03-18T22:12:43.000Z"),
+      currentWarId: 1001383,
+      currentWarStartTime: new Date("2026-03-18T22:12:43.000Z"),
+      currentWarOpponentTag: "#20P292Q2V",
       existingMatchType: "MM",
       existingInferredMatchType: true,
     });
@@ -267,6 +268,68 @@ describe("fwa match stored sync fallback", () => {
       confirmed: false,
       syncIsFwa: false,
     });
+  });
+
+  it("drops stale confirmed CurrentWar match type when the active war identity changes", async () => {
+    const syncLookup = vi
+      .spyOn(PointsSyncService.prototype, "getCurrentSyncForClan")
+      .mockResolvedValue(null as any);
+    const activeWarStartTime = new Date("2026-03-20T22:12:43.000Z");
+
+    const fallback = await resolveMatchTypeWithFallbackForTest({
+      guildId: "guild-1",
+      clanTag: "9GLGQCCU",
+      opponentTag: "20P292Q2V",
+      warState: "preparation",
+      currentWarId: 1001383,
+      currentWarStartTime: new Date("2026-03-18T22:12:43.000Z"),
+      currentWarOpponentTag: "#2OLDTAG",
+      activeWarId: null,
+      activeWarStartTime,
+      activeOpponentTag: "#20P292Q2V",
+      existingMatchType: "BL",
+      existingInferredMatchType: false,
+    });
+
+    expect(fallback.confirmedCurrent).toBeNull();
+    expect(fallback.unconfirmedCurrent).toBeNull();
+    expect(syncLookup).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      clanTag: "9GLGQCCU",
+      warId: null,
+      warStartTime: activeWarStartTime,
+    });
+  });
+
+  it("keeps confirmed CurrentWar match type when the active war identity still matches", async () => {
+    vi.spyOn(PointsSyncService.prototype, "getCurrentSyncForClan").mockResolvedValue(
+      null as any,
+    );
+    const activeWarStartTime = new Date("2026-03-20T22:12:43.000Z");
+
+    const fallback = await resolveMatchTypeWithFallbackForTest({
+      guildId: "guild-1",
+      clanTag: "9GLGQCCU",
+      opponentTag: "20P292Q2V",
+      warState: "preparation",
+      currentWarId: 1001383,
+      currentWarStartTime: activeWarStartTime,
+      currentWarOpponentTag: "#20P292Q2V",
+      activeWarId: 1001383,
+      activeWarStartTime,
+      activeOpponentTag: "#20P292Q2V",
+      existingMatchType: "BL",
+      existingInferredMatchType: false,
+    });
+
+    expect(fallback.confirmedCurrent).toMatchObject({
+      matchType: "BL",
+      source: "confirmed_current_war",
+      inferred: false,
+      confirmed: true,
+      syncIsFwa: false,
+    });
+    expect(fallback.unconfirmedCurrent).toBeNull();
   });
 });
 

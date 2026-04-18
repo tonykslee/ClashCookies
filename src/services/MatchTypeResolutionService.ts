@@ -43,8 +43,28 @@ type CurrentWarMatchTypeSignal = {
   inferredMatchType: boolean | null | undefined;
 };
 
+export type MatchTypeWarIdentity = {
+  warId?: string | number | null | undefined;
+  warStartTime?: Date | null | undefined;
+  opponentTag?: string | null | undefined;
+};
+
 function normalizeTag(input: string): string {
   return input.trim().toUpperCase().replace(/^#/, "");
+}
+
+function normalizeWarId(input: string | number | null | undefined): string | null {
+  const raw = String(input ?? "").trim();
+  if (!raw) return null;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return null;
+  const normalized = Math.trunc(parsed);
+  return normalized > 0 ? String(normalized) : null;
+}
+
+function normalizeDate(input: Date | null | undefined): Date | null {
+  if (!(input instanceof Date)) return null;
+  return Number.isFinite(input.getTime()) ? input : null;
 }
 
 /** Purpose: normalize persisted match-type strings into known values. */
@@ -59,6 +79,43 @@ export function toSyncIsFwa(matchType: MatchType | null): boolean | null {
   if (matchType === "FWA") return true;
   if (matchType === "BL" || matchType === "MM") return false;
   return null;
+}
+
+/** Purpose: compare persisted and active current-war identity before trusting current-war match state. */
+export function compareActiveWarIdentities(input: {
+  persisted: MatchTypeWarIdentity;
+  active: MatchTypeWarIdentity;
+}): { sameWar: boolean; identityChanged: boolean } {
+  const persistedWarStartTime = normalizeDate(input.persisted.warStartTime ?? null);
+  const activeWarStartTime = normalizeDate(input.active.warStartTime ?? null);
+  const persistedOpponentTag = normalizeTag(String(input.persisted.opponentTag ?? ""));
+  const activeOpponentTag = normalizeTag(String(input.active.opponentTag ?? ""));
+  const persistedWarId = normalizeWarId(input.persisted.warId ?? null);
+  const activeWarId = normalizeWarId(input.active.warId ?? null);
+
+  const startTimeMatches =
+    persistedWarStartTime !== null && activeWarStartTime !== null
+      ? persistedWarStartTime.getTime() === activeWarStartTime.getTime()
+      : null;
+  const opponentTagMatches =
+    persistedOpponentTag && activeOpponentTag
+      ? persistedOpponentTag === activeOpponentTag
+      : null;
+  const warIdMatches =
+    persistedWarId !== null && activeWarId !== null
+      ? persistedWarId === activeWarId
+      : null;
+
+  return {
+    sameWar:
+      startTimeMatches === true &&
+      opponentTagMatches === true &&
+      warIdMatches !== false,
+    identityChanged:
+      startTimeMatches === false ||
+      opponentTagMatches === false ||
+      warIdMatches === false,
+  };
 }
 
 /** Purpose: split current-war match type into confirmed vs unconfirmed candidates. */

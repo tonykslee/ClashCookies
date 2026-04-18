@@ -12,10 +12,19 @@ const prismaMock = vi.hoisted(() => ({
   fwaClanMemberCurrent: {
     findMany: vi.fn(),
   },
+  fwaClanCatalog: {
+    findMany: vi.fn(),
+  },
+  fwaWarMemberCurrent: {
+    findMany: vi.fn(),
+  },
   fwaTrackedClanWarRosterCurrent: {
     findMany: vi.fn(),
   },
   fwaTrackedClanWarRosterMemberCurrent: {
+    findMany: vi.fn(),
+  },
+  fwaClanMatchStatsCurrent: {
     findMany: vi.fn(),
   },
   heatMapRef: {
@@ -141,10 +150,16 @@ describe("CompoAdviceService", () => {
     vi.restoreAllMocks();
     prismaMock.trackedClan.findMany.mockReset();
     prismaMock.fwaClanMemberCurrent.findMany.mockReset();
+    prismaMock.fwaClanCatalog.findMany.mockReset();
+    prismaMock.fwaWarMemberCurrent.findMany.mockReset();
     prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockReset();
     prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockReset();
+    prismaMock.fwaClanMatchStatsCurrent.findMany.mockReset();
     prismaMock.heatMapRef.findMany.mockReset();
     prismaMock.weightInputDeferment.findMany.mockReset();
+    prismaMock.fwaClanCatalog.findMany.mockResolvedValue([]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMatchStatsCurrent.findMany.mockResolvedValue([]);
   });
 
   it("loads ACTUAL advice from DB-backed state, defaults to Auto-Detect Band, and computes rushed members without sheet reads", async () => {
@@ -166,6 +181,14 @@ describe("CompoAdviceService", () => {
         townHall: 13,
         weight: 135000,
       }),
+    ]);
+    prismaMock.fwaClanCatalog.findMany.mockResolvedValue([{ clanTag: "#AAA111" }]);
+    prismaMock.fwaClanMatchStatsCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: "#AAA111",
+        matchRate: 0.72,
+        evaluatedWarCount: 10,
+      },
     ]);
     prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
     prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
@@ -265,6 +288,14 @@ describe("CompoAdviceService", () => {
         clanName: "Alpha Clan-war",
         totalEffectiveWeight: 8_100_000,
       }),
+    ]);
+    prismaMock.fwaClanCatalog.findMany.mockResolvedValue([{ clanTag: "#AAA111" }]);
+    prismaMock.fwaClanMatchStatsCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: "#AAA111",
+        matchRate: 0.72,
+        evaluatedWarCount: 10,
+      },
     ]);
     prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([
       ...Array.from({ length: 50 }, (_, index) =>

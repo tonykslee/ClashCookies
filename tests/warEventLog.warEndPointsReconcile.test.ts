@@ -516,6 +516,7 @@ describe("Match-type confirmation rollover via processSubscription", () => {
       observedWar: buildObservedWarSnapshot({
         state: "inWar",
         startTime: "20260312T000000.000Z",
+        opponentTag: "#OPP123",
       }),
       expectedMatchType: "BL",
       expectedInferredMatchType: false,

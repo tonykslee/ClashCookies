@@ -6,14 +6,41 @@ import {
 } from "discord.js";
 import { Command } from "../Command";
 import { safeReply } from "../helper/safeReply";
+import { CoCService } from "../services/CoCService";
 import {
+  buildDumpClanInfoCacheFromClan,
+  buildDumpClanInfoContent,
+  buildDumpClanInfoFallbackContent,
+  extractDumpClanTagFromLink,
   getDumpLinkForGuild,
   normalizeDumpLink,
+  parseDumpClanInfoCache,
+  updateDumpLinkClanInfoForGuild,
   upsertDumpLinkForGuild,
 } from "../services/DumpLinkService";
 
 function formatDumpLink(link: string): string {
   return `<${link}>`;
+}
+
+async function fetchLiveDumpClanInfo(input: {
+  link: string;
+  cachedClanTag: string | null;
+}): Promise<ReturnType<typeof buildDumpClanInfoCacheFromClan> | null> {
+  const clanTag =
+    extractDumpClanTagFromLink(input.link) ?? input.cachedClanTag ?? null;
+  if (!clanTag) return null;
+
+  try {
+    const cocService = new CoCService();
+    const clan = await cocService.getClan(clanTag);
+    return buildDumpClanInfoCacheFromClan({
+      clan,
+      clanTag,
+    });
+  } catch {
+    return null;
+  }
 }
 
 export const Dump: Command = {
@@ -83,9 +110,37 @@ export const Dump: Command = {
       return;
     }
 
+    const cachedClanInfo = parseDumpClanInfoCache(record.clanInfoJson);
+    const liveClanInfo = await fetchLiveDumpClanInfo({
+      link: record.link,
+      cachedClanTag: cachedClanInfo?.clanTag ?? null,
+    });
+
+    if (liveClanInfo) {
+      await updateDumpLinkClanInfoForGuild({
+        guildId: record.guildId,
+        clanInfoJson: liveClanInfo,
+        clanInfoFetchedAt: new Date(),
+      }).catch(() => null);
+
+      await safeReply(interaction, {
+        ephemeral: true,
+        content: buildDumpClanInfoContent(liveClanInfo, record.link),
+      });
+      return;
+    }
+
+    if (cachedClanInfo) {
+      await safeReply(interaction, {
+        ephemeral: true,
+        content: buildDumpClanInfoContent(cachedClanInfo, record.link),
+      });
+      return;
+    }
+
     await safeReply(interaction, {
       ephemeral: true,
-      content: formatDumpLink(record.link),
+      content: buildDumpClanInfoFallbackContent(record.link),
     });
   },
 };

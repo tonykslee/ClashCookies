@@ -152,10 +152,11 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     ],
   },
   dump: {
-    summary: "Show or update the stored dump link without embed previews.",
+    summary: "Show or update the stored dump link with a short clan summary.",
     details: [
-      "Use `/dump` to show the configured guild link as plain text wrapped in angle brackets.",
-      "Wrapping the link in `< >` prevents Discord from building an embed preview.",
+      "Use `/dump` to show a short clan summary plus the configured guild link, all as plain text.",
+      "The link is wrapped in `< >` to prevent Discord from building an embed preview.",
+      "If live clan data is unavailable, `/dump` falls back to the cached clan summary when present.",
       "`edit` is admin-only and stores one link per guild/server.",
     ],
     examples: ["/dump", "/dump edit:https://example.com/dump"],
@@ -440,7 +441,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "Selecting the same inferred match type again counts as explicit confirmation for that active war.",
       "Final mail confirm/send persists explicit match confirmation for that same active war identity, so rerender/refresh does not regress to inferred fallback.",
       "Tracked clan mail channel is configured via `/tracked-clan configure ... mail-channel`.",
-      "`/fwa mail send` opens an ephemeral war mail preview with confirm/send.",
+      "`/fwa mail send` opens an ephemeral war mail preview; inferred matches can preview, but send stays blocked until the current active war is confirmed.",
       "War mail embed sidebar colors are state-coded: BL=black, MM=white, FWA WIN=green, FWA LOSE=red, unresolved=gray.",
       "Single-clan `/fwa match` embed sidebar color follows the same state mapping from the currently displayed effective state, including draft revisions.",
       "`/fwa match` war-changing state now shows field-specific mismatch lines (opponent, sync #, outcome, match type) against persisted points validation.",

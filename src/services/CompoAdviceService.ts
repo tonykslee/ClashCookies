@@ -10,6 +10,7 @@ import {
 import {
   type CompoActualStateView,
 } from "../helper/compoActualStateView";
+import { HeatMapRefDisplayService } from "./HeatMapRefDisplayService";
 import { normalizeTag } from "./war-events/core";
 import {
   CompoActualStateService,
@@ -191,6 +192,7 @@ function buildEmptyResult(input: {
 export class CompoAdviceService {
   private readonly actualStateService = new CompoActualStateService();
   private readonly warStateService = new CompoWarStateService();
+  private readonly heatMapRefDisplayService = new HeatMapRefDisplayService();
 
   async readAdvice(input: {
     guildId?: string | null;
@@ -273,6 +275,9 @@ export class CompoAdviceService {
               heatMapRefs: context.heatMapRefs,
               view,
             });
+      const bandMatchRatesByBandKey = await this.heatMapRefDisplayService.readHeatMapRefBandMatchRates({
+        heatMapRefs: summary.heatMapRefs,
+      });
       return buildReadyResult({
         mode: input.mode,
         selectedView: view,
@@ -280,7 +285,10 @@ export class CompoAdviceService {
         trackedClanChoices,
         clanTag: clan.clanTag,
         clanName: clan.clanName,
-        summary,
+        summary: {
+          ...summary,
+          bandMatchRatesByBandKey,
+        },
         members: clan.members,
         refreshLine: buildPersistedRefreshLine(context.latestSourceSyncedAt),
       });
@@ -334,6 +342,9 @@ export class CompoAdviceService {
       },
       heatMapRefs: context.heatMapRefs,
     });
+    const bandMatchRatesByBandKey = await this.heatMapRefDisplayService.readHeatMapRefBandMatchRates({
+      heatMapRefs: summary.heatMapRefs,
+    });
     return buildReadyResult({
       mode: input.mode,
       selectedView: view,
@@ -341,7 +352,10 @@ export class CompoAdviceService {
       trackedClanChoices,
       clanTag: clan.clanTag,
       clanName: clan.clanName,
-      summary,
+      summary: {
+        ...summary,
+        bandMatchRatesByBandKey,
+      },
       members: [],
       refreshLine: buildPersistedRefreshLine(context.latestRefreshAt),
     });

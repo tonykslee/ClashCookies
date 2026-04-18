@@ -63,6 +63,8 @@ export const COMPO_ADVICE_VIEW_LABELS: Record<CompoAdviceView, string> = {
   custom: "Custom",
 };
 
+export const COMPO_ADVICE_DEVIATION_PENALTY_CONSTANT = 0.0018;
+
 export type CompoAdviceAction =
   | {
       kind: "add";
@@ -93,6 +95,8 @@ export type CompoAdviceSummary = {
   view: CompoAdviceView;
   viewLabel: string;
   currentProjection: CompoActualStateProjection;
+  heatMapRefs: readonly HeatMapRef[];
+  bandMatchRatesByBandKey?: ReadonlyMap<string, number | null>;
   currentWeight: number | null;
   targetBandMidpoint: number | null;
   currentScore: number | null;
@@ -124,6 +128,43 @@ function formatFullWeight(value: number | null | undefined): string {
   return Math.trunc(value).toLocaleString("en-US");
 }
 
+function normalizeMatchrate(value: number | null | undefined): number | null {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return null;
+  }
+
+  const normalized = Math.abs(value) > 1 ? value / 100 : value;
+  return Math.max(0, Math.min(1, normalized));
+}
+
+export function formatMatchratePercent(value: number | null | undefined): string {
+  const normalized = normalizeMatchrate(value);
+  return normalized === null ? "Unknown" : `${(normalized * 100).toFixed(2)}%`;
+}
+
+export function estimateMatchrateFromDeviation(input: {
+  bandMatchrate: number | null | undefined;
+  deviationScore: number | null | undefined;
+  penaltyConstant?: number;
+}): number | null {
+  if (
+    input.deviationScore === null ||
+    input.deviationScore === undefined ||
+    !Number.isFinite(input.deviationScore)
+  ) {
+    return null;
+  }
+
+  const bandMatchrate = normalizeMatchrate(input.bandMatchrate);
+  if (bandMatchrate === null) {
+    return null;
+  }
+
+  const penaltyConstant = input.penaltyConstant ?? COMPO_ADVICE_DEVIATION_PENALTY_CONSTANT;
+  const estimated = bandMatchrate - input.deviationScore * penaltyConstant;
+  return Math.max(0, Math.min(1, estimated));
+}
+
 function formatCompactWeight(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value)) {
     return "unknown";
@@ -147,23 +188,60 @@ function formatCompactWeight(value: number | null | undefined): string {
   return `${magnitude}`;
 }
 
-function formatSignedCompoAdviceDelta(delta: number | null | undefined): string {
+export function formatSignedCompoAdviceDelta(delta: number | null | undefined): string {
   if (delta === null || delta === undefined || !Number.isFinite(delta)) {
     return "unknown";
   }
 
   const normalized = Number(delta);
   if (Math.abs(normalized) < Number.EPSILON) {
-    return "→ +0";
+    return "-> +0";
   }
 
-  const arrow = normalized > 0 ? "↑" : "↓";
+  const arrow =
+    normalized > 0 ? ":small_red_triangle:" : ":small_red_triangle_down:";
   const sign = normalized > 0 ? "+" : "-";
   return `${arrow} ${sign}${formatCompactWeight(Math.abs(normalized))}`;
 }
 
 function getBandLabel(ref: HeatMapRef | null): string {
   return ref ? formatHeatMapRefBandLabel(ref) : "(no band)";
+}
+
+export function getAdjacentHeatMapRefs(input: {
+  heatMapRefs: readonly HeatMapRef[];
+  selectedHeatMapRef: HeatMapRef | null;
+}): {
+  lower: HeatMapRef | null;
+  higher: HeatMapRef | null;
+} {
+  if (!input.selectedHeatMapRef || input.heatMapRefs.length === 0) {
+    return { lower: null, higher: null };
+  }
+
+  const selectedKey = getHeatMapRefBandKey(input.selectedHeatMapRef);
+  const index = input.heatMapRefs.findIndex(
+    (ref) => getHeatMapRefBandKey(ref) === selectedKey,
+  );
+  if (index < 0) {
+    return { lower: null, higher: null };
+  }
+
+  return {
+    lower: index > 0 ? input.heatMapRefs[index - 1] ?? null : null,
+    higher: index < input.heatMapRefs.length - 1 ? input.heatMapRefs[index + 1] ?? null : null,
+  };
+}
+
+function getBandMatchrate(input: {
+  summary: Pick<CompoAdviceSummary, "currentProjection" | "bandMatchRatesByBandKey">;
+  heatMapRef: HeatMapRef | null;
+}): number | null {
+  if (!input.heatMapRef) {
+    return null;
+  }
+  const bandKey = getHeatMapRefBandKey(input.heatMapRef);
+  return input.summary.bandMatchRatesByBandKey?.get(bandKey) ?? null;
 }
 
 function getDisplayBucketPriority(bucket: CompoWarDisplayBucket): number {
@@ -647,6 +725,7 @@ export function evaluateCompoAdvice(input: {
     view: input.view,
     viewLabel: COMPO_ADVICE_VIEW_LABELS[input.view],
     currentProjection,
+    heatMapRefs: projectionState.heatMapRefs,
     currentWeight,
     targetBandMidpoint,
     currentScore,
@@ -677,9 +756,22 @@ export function buildCompoAdviceContentLines(input: {
   }
   lines.push(`Mode: **${input.modeLabel}**`);
   lines.push(`Advice View: **${input.summary.viewLabel}**`);
-  lines.push(`Current Score: **${formatScore(input.summary.currentScore)}**`);
+  lines.push(`Current Deviation Score: **${formatScore(input.summary.currentScore)}**`);
   lines.push(`Target Band: **${input.summary.currentBandLabel}**`);
   lines.push(`Current Weight: ${formatFullWeight(input.summary.currentWeight)}`);
+  const currentMatchrate = estimateMatchrateFromDeviation({
+    bandMatchrate: getBandMatchrate({
+      summary: input.summary,
+      heatMapRef: input.summary.currentProjection.selectedHeatMapRef,
+    }),
+    deviationScore: input.summary.currentScore,
+  });
+  lines.push(`Matchrate: ${formatMatchratePercent(currentMatchrate)}`);
+  const perfectMatchrate = getBandMatchrate({
+    summary: input.summary,
+    heatMapRef: input.summary.currentProjection.selectedHeatMapRef,
+  });
+  lines.push(`Perfect compo matchrate: ${formatMatchratePercent(perfectMatchrate)}`);
   lines.push(
     `Distance to Midpoint: ${formatSignedCompoAdviceDelta(
       input.summary.currentWeight === null || input.summary.targetBandMidpoint === null
@@ -687,17 +779,42 @@ export function buildCompoAdviceContentLines(input: {
         : input.summary.currentWeight - input.summary.targetBandMidpoint,
     )}`,
   );
-  lines.push(`Recommendation: **${input.summary.recommendationText}**`);
-  lines.push(`Resulting Score: **${formatScore(input.summary.resultingScore)}**`);
-  lines.push(`Resulting Band: **${input.summary.resultingBandLabel}**`);
+  lines.push(`Recommendation: :arrow_arrow: __${input.summary.recommendationText}__`);
+  lines.push(`Resulting Deviation Score: **${formatScore(input.summary.resultingScore)}**`);
+  const resultingMatchrate = estimateMatchrateFromDeviation({
+    bandMatchrate: getBandMatchrate({
+      summary: input.summary,
+      heatMapRef: input.summary.currentProjection.selectedHeatMapRef,
+    }),
+    deviationScore: input.summary.resultingScore,
+  });
+  lines.push(`Matchrate: ${formatMatchratePercent(resultingMatchrate)}`);
+  const adjacent = getAdjacentHeatMapRefs({
+    heatMapRefs: input.summary.heatMapRefs,
+    selectedHeatMapRef: input.summary.currentProjection.selectedHeatMapRef,
+  });
+  lines.push(
+    `Lower band: ${
+      adjacent.lower ? `**${formatHeatMapRefBandLabel(adjacent.lower)}**` : "N/A"
+    }`,
+  );
+  lines.push(
+    `Matchrate: ${formatMatchratePercent(
+      getBandMatchrate({ summary: input.summary, heatMapRef: adjacent.lower }),
+    )}`,
+  );
+  lines.push(
+    `Higher band: ${
+      adjacent.higher ? `**${formatHeatMapRefBandLabel(adjacent.higher)}**` : "N/A"
+    }`,
+  );
+  lines.push(
+    `Matchrate: ${formatMatchratePercent(
+      getBandMatchrate({ summary: input.summary, heatMapRef: adjacent.higher }),
+    )}`,
+  );
   if (input.summary.statusText) {
     lines.push(input.summary.statusText);
-  }
-  if (input.summary.alternateTexts.length > 0) {
-    lines.push("Alternates:");
-    for (const alternate of input.summary.alternateTexts) {
-      lines.push(`- ${alternate}`);
-    }
   }
   return lines;
 }
@@ -750,4 +867,7 @@ export const resolveCustomHeatMapRefForTest = resolveCustomHeatMapRef;
 export const buildCompoAdviceContentLinesForTest = buildCompoAdviceContentLines;
 export const formatFullWeightForTest = formatFullWeight;
 export const formatSignedCompoAdviceDeltaForTest = formatSignedCompoAdviceDelta;
+export const formatMatchratePercentForTest = formatMatchratePercent;
+export const estimateMatchrateFromDeviationForTest = estimateMatchrateFromDeviation;
+export const getAdjacentHeatMapRefsForTest = getAdjacentHeatMapRefs;
 export const resolveAdviceTargetBandMidpointForTest = resolveAdviceTargetBandMidpoint;

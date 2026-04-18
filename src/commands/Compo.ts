@@ -1,4 +1,4 @@
-import {
+﻿import {
   ActionRowBuilder,
   APIActionRowComponent,
   APIComponentInMessageActionRow,
@@ -19,7 +19,10 @@ import type { HeatMapRef } from "@prisma/client";
 import {
   COMPO_ADVICE_VIEW_LABELS,
   COMPO_ADVICE_VIEWS,
-  buildCompoAdviceContentLines,
+  COMPO_ADVICE_DEVIATION_PENALTY_CONSTANT,
+  estimateMatchrateFromDeviation,
+  formatMatchratePercent,
+  getAdjacentHeatMapRefs,
   stepCompoAdviceCustomBandIndexByCount,
   type CompoAdviceView,
 } from "../helper/compoAdviceEngine";
@@ -31,9 +34,12 @@ import {
 import {
   buildHeatMapRefDisplayRows,
 } from "../helper/heatMapRefDisplay";
+import { formatHeatMapRefBandLabel, getHeatMapRefBandKey } from "../helper/compoHeatMap";
 import { formatError } from "../helper/formatError";
 import { getCompoWarDisplayBucket } from "../helper/compoWarWeightBuckets";
 import { normalizeCompoClanDisplayName } from "../helper/compoDisplay";
+import { formatSignedCompoAdviceDelta } from "../helper/compoAdviceEngine";
+import { emojiResolverService } from "../services/emoji/EmojiResolverService";
 import { prisma } from "../prisma";
 import { safeReply } from "../helper/safeReply";
 import { CoCService } from "../services/CoCService";
@@ -1073,22 +1079,81 @@ function formatAdviceScore(value: number | null): string {
   return Number.isInteger(value) ? `${value}` : value.toFixed(1);
 }
 
-function buildCompoAdviceEmbed(input: { advice: CompoAdviceReadResult }): EmbedBuilder {
+function formatCompoAdviceFullWeight(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) {
+    return "unknown";
+  }
+  return Math.trunc(value).toLocaleString("en-US");
+}
+
+async function renderCompoAdviceEmojiShortcodes(client: Client, text: string): Promise<string> {
+  return emojiResolverService.replaceShortcodes(client, text).catch(() => text);
+}
+
+function formatCompoAdviceDistanceToMidpoint(summary: {
+  currentWeight: number | null;
+  targetBandMidpoint: number | null;
+}): string {
+  const currentWeight = summary.currentWeight;
+  const targetBandMidpoint = summary.targetBandMidpoint;
+  if (
+    currentWeight === null ||
+    targetBandMidpoint === null ||
+    !Number.isFinite(currentWeight) ||
+    !Number.isFinite(targetBandMidpoint)
+  ) {
+    return "unknown";
+  }
+
+  return formatSignedCompoAdviceDelta(currentWeight - targetBandMidpoint);
+}
+
+function buildCompoAdviceFooterText(refreshLine: string | null): string {
+  const note = "Lower deviation score is better.";
+  return refreshLine ? `${refreshLine} • ${note}` : note;
+}
+
+function getCompoAdviceBandMatchrate(input: {
+  summary: Extract<CompoAdviceReadResult, { kind: "ready" }>["summary"];
+  heatMapRef: HeatMapRef | null;
+}): number | null {
+  if (!input.heatMapRef) {
+    return null;
+  }
+  const bandKey = getHeatMapRefBandKey(input.heatMapRef);
+  return input.summary.bandMatchRatesByBandKey?.get(bandKey) ?? null;
+}
+
+async function buildCompoAdviceEmbed(input: {
+  advice: CompoAdviceReadResult;
+  client: Client;
+}): Promise<EmbedBuilder> {
   const title = input.advice.clanTag
     ? `${normalizeCompoClanDisplayName(input.advice.clanName ?? input.advice.clanTag)} (${input.advice.clanTag}) - ${input.advice.mode.toUpperCase()}`
     : `Compo Advice - ${input.advice.mode.toUpperCase()}`;
 
   if (input.advice.kind === "ready") {
     const summary = input.advice.summary;
-    const embed = new EmbedBuilder()
-      .setTitle(title)
-      .setDescription(
-        buildCompoAdviceContentLines({
-          summary,
-          modeLabel: input.advice.mode.toUpperCase(),
-          refreshLine: input.advice.refreshLine,
-        }).join("\n"),
-      );
+    const embed = new EmbedBuilder().setTitle(title);
+    const selectedHeatMapRef = summary.currentProjection.selectedHeatMapRef;
+    const selectedBandMatchrate = getCompoAdviceBandMatchrate({
+      summary,
+      heatMapRef: selectedHeatMapRef,
+    });
+    const currentMatchrate = estimateMatchrateFromDeviation({
+      bandMatchrate: selectedBandMatchrate,
+      deviationScore: summary.currentScore,
+      penaltyConstant: COMPO_ADVICE_DEVIATION_PENALTY_CONSTANT,
+    });
+    const resultingMatchrate = estimateMatchrateFromDeviation({
+      bandMatchrate: selectedBandMatchrate,
+      deviationScore: summary.resultingScore,
+      penaltyConstant: COMPO_ADVICE_DEVIATION_PENALTY_CONSTANT,
+    });
+    const adjacentBands = getAdjacentHeatMapRefs({
+      heatMapRefs: summary.heatMapRefs,
+      selectedHeatMapRef,
+    });
     const currentDeltas = [
       `TH18: ${formatSignedValue(summary.currentProjection.deltaByBucket.TH18)}`,
       `TH17: ${formatSignedValue(summary.currentProjection.deltaByBucket.TH17)}`,
@@ -1098,22 +1163,85 @@ function buildCompoAdviceEmbed(input: { advice: CompoAdviceReadResult }): EmbedB
       `<=TH13: ${formatSignedValue(summary.currentProjection.deltaByBucket["<=TH13"])}`,
     ].join("\n");
 
-    const recommendationLines = [
-      summary.recommendationText,
-      `Resulting Score: ${formatAdviceScore(summary.resultingScore)}`,
-      `Resulting Band: ${summary.resultingBandLabel}`,
-    ];
-    if (summary.statusText) {
-      recommendationLines.push(summary.statusText);
-    }
+    const overviewValue = await renderCompoAdviceEmojiShortcodes(
+      input.client,
+      [
+        `Mode: **${input.advice.mode.toUpperCase()}**`,
+        `Advice View: **${COMPO_ADVICE_VIEW_LABELS[input.advice.selectedView]}**`,
+        `Members: ${summary.currentProjection.memberCount} / 50`,
+        `Rushed: ${input.advice.rushedCount}`,
+      ].join("\n"),
+    );
+    const currentValue = await renderCompoAdviceEmojiShortcodes(
+      input.client,
+      [
+        `Current Weight: ${formatCompoAdviceFullWeight(summary.currentWeight)}`,
+        `Current Deviation Score: **${formatAdviceScore(summary.currentScore)}**`,
+        `Matchrate: ${formatMatchratePercent(currentMatchrate)}`,
+      ].join("\n"),
+    );
+    const targetValue = await renderCompoAdviceEmojiShortcodes(
+      input.client,
+      [
+        `Target Band: **${summary.currentBandLabel}**`,
+        `Perfect compo matchrate: ${formatMatchratePercent(selectedBandMatchrate)}`,
+        `Distance to Midpoint: ${formatCompoAdviceDistanceToMidpoint(summary)}`,
+        `Resulting Deviation Score: **${formatAdviceScore(summary.resultingScore)}**`,
+        `Matchrate: ${formatMatchratePercent(resultingMatchrate)}`,
+      ].join("\n"),
+    );
+    const recommendationValue = await renderCompoAdviceEmojiShortcodes(
+      input.client,
+      [
+        `:arrow_arrow: __${summary.recommendationText}__`,
+        summary.statusText ?? null,
+      ]
+        .filter((line): line is string => line !== null)
+        .join("\n"),
+    );
+    const adjacentBandsValue = await renderCompoAdviceEmojiShortcodes(
+      input.client,
+      [
+        `Lower band: ${
+          adjacentBands.lower ? `**${formatHeatMapRefBandLabel(adjacentBands.lower)}**` : "N/A"
+        }`,
+        `Matchrate: ${formatMatchratePercent(
+          getCompoAdviceBandMatchrate({
+            summary,
+            heatMapRef: adjacentBands.lower,
+          }),
+        )}`,
+        `Higher band: ${
+          adjacentBands.higher ? `**${formatHeatMapRefBandLabel(adjacentBands.higher)}**` : "N/A"
+        }`,
+        `Matchrate: ${formatMatchratePercent(
+          getCompoAdviceBandMatchrate({
+            summary,
+            heatMapRef: adjacentBands.higher,
+          }),
+        )}`,
+      ].join("\n"),
+    );
 
     embed.addFields(
       {
         name: "Overview",
-        value: [
-          `Members: ${summary.currentProjection.memberCount} / 50`,
-          `Rushed: ${input.advice.rushedCount}`,
-        ].join("\n"),
+        value: overviewValue,
+        inline: false,
+      },
+      {
+        name: "Current",
+        value: currentValue,
+        inline: false,
+      },
+      {
+        name: "Target",
+        value: targetValue,
+        inline: false,
+      },
+      {
+        name: "Recommendation",
+        value: recommendationValue,
         inline: false,
       },
       {
@@ -1122,27 +1250,14 @@ function buildCompoAdviceEmbed(input: { advice: CompoAdviceReadResult }): EmbedB
         inline: false,
       },
       {
-        name: "Best Recommendation",
-        value: recommendationLines.join("\n"),
-        inline: false,
-      },
-      {
-        name: "Alternates",
-        value:
-          summary.alternateTexts.length > 0
-            ? summary.alternateTexts.map((line) => `- ${line}`).join("\n")
-            : "None",
+        name: "Adjacent Bands",
+        value: adjacentBandsValue,
         inline: false,
       },
     );
-
-    if (input.advice.refreshLine) {
-      embed.addFields({
-        name: "Snapshot",
-        value: input.advice.refreshLine,
-        inline: false,
-      });
-    }
+    embed.setFooter({
+      text: buildCompoAdviceFooterText(input.advice.refreshLine),
+    });
     return embed;
   }
 
@@ -1155,38 +1270,35 @@ function buildCompoAdviceEmbed(input: { advice: CompoAdviceReadResult }): EmbedB
       ].join("\n"),
     );
 
-  if (input.advice.refreshLine) {
-    embed.addFields({
-      name: "Snapshot",
-      value: input.advice.refreshLine,
-      inline: false,
-    });
-  }
+  embed.setFooter({
+    text: buildCompoAdviceFooterText(input.advice.refreshLine),
+  });
   return embed;
 }
 
-function buildCompoAdviceResponsePayload(input: {
+async function buildCompoAdviceResponsePayload(input: {
   advice: CompoAdviceReadResult;
-}): CompoRenderPayload {
+  client: Client;
+}): Promise<CompoRenderPayload> {
   return {
-    embeds: [buildCompoAdviceEmbed({ advice: input.advice })],
+    embeds: [await buildCompoAdviceEmbed({ advice: input.advice, client: input.client })],
   };
 }
 
 /*
   const recommendedRows = params.recommended.map(
     (c) =>
-      `${abbreviateClan(normalizeCompoClanDisplayName(c.clanName))} — needs ${Math.abs(c.delta)} ${params.bucket}`,
+      `${abbreviateClan(normalizeCompoClanDisplayName(c.clanName))} Ã¢â‚¬â€ needs ${Math.abs(c.delta)} ${params.bucket}`,
   );
   const vacancyRows = params.vacancyList.map(
     (c) =>
-      `${abbreviateClan(normalizeCompoClanDisplayName(c.clanName))} — ${
+      `${abbreviateClan(normalizeCompoClanDisplayName(c.clanName))} Ã¢â‚¬â€ ${
         c.liveMemberCount !== null ? `${c.liveMemberCount}/50` : "unknown/50"
       }`,
   );
   const compositionRows = params.compositionList.map(
     (c) =>
-      `${abbreviateClan(normalizeCompoClanDisplayName(c.clanName))} — ${c.delta}`,
+      `${abbreviateClan(normalizeCompoClanDisplayName(c.clanName))} Ã¢â‚¬â€ ${c.delta}`,
   );
 
   return new EmbedBuilder()
@@ -1699,7 +1811,10 @@ export async function handleCompoRefreshButton(
             : null,
       });
       await interaction.editReply({
-        ...buildCompoAdviceResponsePayload({ advice }),
+        ...(await buildCompoAdviceResponsePayload({
+          advice,
+          client: interaction.client,
+        })),
         components: buildCompoRefreshComponents({
           refreshPayload: adviceRefreshPayload,
           loading: false,
@@ -1911,7 +2026,7 @@ export async function handleCompoAdviceClanSelectMenuInteraction(
         parsed.mode === "actual" ? parsed.customBandIndex ?? 0 : null,
     });
     await interaction.editReply({
-      ...buildCompoAdviceResponsePayload({ advice }),
+      ...(await buildCompoAdviceResponsePayload({ advice, client: interaction.client })),
       components: buildCompoRefreshComponents({
         refreshPayload: adviceRefreshPayload,
         loading: false,
@@ -2062,7 +2177,7 @@ export const Compo: Command = {
                 targetTag,
               };
         await interaction.editReply({
-          ...buildCompoAdviceResponsePayload({ advice }),
+          ...(await buildCompoAdviceResponsePayload({ advice, client: interaction.client })),
           components: buildCompoRefreshComponents({
             refreshPayload: adviceRefreshPayload,
             loading: false,

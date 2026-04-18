@@ -80,9 +80,23 @@ describe("/compo advice command", () => {
           mode: "actual",
           view: "auto",
           viewLabel: "Auto-Detect Band",
+          heatMapRefs: [
+            { weightMinInclusive: 0, weightMaxInclusive: 999_999 },
+            { weightMinInclusive: 1_000_000, weightMaxInclusive: 2_000_000 },
+            { weightMinInclusive: 2_000_001, weightMaxInclusive: 3_000_000 },
+          ],
+          bandMatchRatesByBandKey: new Map([
+            ["0-999999", 0.7],
+            ["1000000-2000000", 0.7214],
+            ["2000001-3000000", 0.74],
+          ]),
           currentProjection: {
             totalWeight: 1_500_000,
             memberCount: 50,
+            selectedHeatMapRef: {
+              weightMinInclusive: 1_000_000,
+              weightMaxInclusive: 2_000_000,
+            },
             deltaByBucket: {
               TH18: 0,
               TH17: 0,
@@ -130,33 +144,47 @@ describe("/compo advice command", () => {
 
     const payload = interaction.editReply.mock.calls.at(-1)?.[0];
     expect(Array.isArray(payload?.embeds)).toBe(true);
-    expect(String(payload?.embeds?.[0]?.data?.description ?? "")).toContain(
+    const embed = payload?.embeds?.[0]?.data ?? {};
+    expect(String(embed?.description ?? "")).toBe("");
+    expect(
+      (embed?.fields ?? []).map((field: { name?: unknown }) => String(field.name ?? "")),
+    ).toEqual([
+      "Overview",
+      "Current",
+      "Target",
+      "Recommendation",
+      "Current Deltas",
+      "Adjacent Bands",
+    ]);
+    expect(JSON.stringify(embed?.fields ?? [])).toContain("Mode: **ACTUAL**");
+    expect(JSON.stringify(embed?.fields ?? [])).toContain(
       "Advice View: **Auto-Detect Band**",
     );
-    expect(String(payload?.embeds?.[0]?.data?.description ?? "")).toContain(
-      "Target Band: **1,000,000 - 2,000,000**",
+    expect(JSON.stringify(embed?.fields ?? [])).toContain("Current Weight: 1,500,000");
+    expect(JSON.stringify(embed?.fields ?? [])).toContain("Current Deviation Score: **0**");
+    expect(JSON.stringify(embed?.fields ?? [])).toContain("Matchrate: 72.14%");
+    expect(JSON.stringify(embed?.fields ?? [])).toContain("Perfect compo matchrate: 72.14%");
+    expect(JSON.stringify(embed?.fields ?? [])).toContain(
+      "Distance to Midpoint: -> +0",
     );
-    expect(String(payload?.embeds?.[0]?.data?.description ?? "")).toContain(
-      "Current Weight: 1,500,000",
+    expect(String(embed?.title ?? "")).toContain("Alpha Clan (#AAA111)");
+    expect(JSON.stringify(embed?.fields ?? [])).not.toContain("Alternates");
+    expect(JSON.stringify(embed?.fields ?? [])).not.toContain("Snapshot");
+    expect(JSON.stringify(embed?.fields ?? [])).toContain(
+      ":arrow_arrow: __Add TH17__",
     );
-    expect(String(payload?.embeds?.[0]?.data?.description ?? "")).toContain(
-      "Distance to Midpoint: → +0",
+    expect(JSON.stringify(embed?.fields ?? [])).toContain(
+      "Resulting Deviation Score: **0**",
     );
-    expect(String(payload?.embeds?.[0]?.data?.description ?? "")).toContain(
-      "Current Score: **0**",
+    expect(JSON.stringify(embed?.fields ?? [])).toContain("Lower band: **0 - 999,999**");
+    expect(JSON.stringify(embed?.fields ?? [])).toContain(
+      "Higher band: **2,000,001 - 3,000,000**",
     );
-    expect(String(payload?.embeds?.[0]?.data?.title ?? "")).toContain(
-      "Alpha Clan (#AAA111)",
+    expect(JSON.stringify(embed?.fields ?? [])).toContain("Matchrate: 70.00%");
+    expect(JSON.stringify(embed?.fields ?? [])).toContain("Matchrate: 74.00%");
+    expect(String(embed?.footer?.text ?? "")).toBe(
+      "RAW Data last refreshed: <t:1709900000:F> • Lower deviation score is better.",
     );
-    expect(
-      JSON.stringify(payload?.embeds?.[0]?.data?.fields ?? []),
-    ).toContain("Snapshot");
-    expect(
-      JSON.stringify(payload?.embeds?.[0]?.data?.fields ?? []),
-    ).not.toContain("Current Band");
-    expect(
-      JSON.stringify(payload?.embeds?.[0]?.data?.fields ?? []),
-    ).not.toContain("Current Score: 0");
     expect(getComponentCustomIds(payload)).toEqual(
       expect.arrayContaining([
         "compo-refresh:advice:user-1:actual:auto:LQQ99UV8:1:0",
@@ -171,23 +199,31 @@ describe("/compo advice command", () => {
 
   it("renders WAR advice with only a refresh button", async () => {
     vi.spyOn(CompoAdviceService.prototype, "readAdvice").mockResolvedValue({
-        kind: "ready",
-        mode: "war",
-        selectedView: "raw",
-        trackedClanTags: ["#AAA111"],
-        trackedClanChoices: [{ tag: "#AAA111", name: "Alpha Clan-war" }],
-        clanTag: "#AAA111",
-        clanName: "Alpha Clan-war",
-        memberCount: 50,
+      kind: "ready",
+      mode: "war",
+      selectedView: "raw",
+      trackedClanTags: ["#AAA111"],
+      trackedClanChoices: [{ tag: "#AAA111", name: "Alpha Clan-war" }],
+      clanTag: "#AAA111",
+      clanName: "Alpha Clan-war",
+      memberCount: 50,
       rushedCount: 0,
       refreshLine: "RAW Data last refreshed: <t:1709900000:F>",
       summary: {
         mode: "war",
         view: "raw",
         viewLabel: "Raw Data",
+        heatMapRefs: [
+          { weightMinInclusive: 0, weightMaxInclusive: 9_999_999 },
+        ],
+        bandMatchRatesByBandKey: new Map([["0-9999999", 0.5]]),
         currentProjection: {
           totalWeight: 1_500_000,
           memberCount: 50,
+          selectedHeatMapRef: {
+            weightMinInclusive: 0,
+            weightMaxInclusive: 9_999_999,
+          },
           deltaByBucket: {
             TH18: 0,
             TH17: 0,
@@ -219,8 +255,11 @@ describe("/compo advice command", () => {
     await Compo.run({} as any, interaction as any, {} as any);
 
     const payload = interaction.editReply.mock.calls.at(-1)?.[0];
-    expect(String(payload?.embeds?.[0]?.data?.description ?? "")).toContain(
+    expect(JSON.stringify(payload?.embeds?.[0]?.data?.fields ?? [])).toContain(
       "Advice View: **Raw Data**",
+    );
+    expect(String(payload?.embeds?.[0]?.data?.footer?.text ?? "")).toBe(
+      "RAW Data last refreshed: <t:1709900000:F> • Lower deviation score is better.",
     );
     expect(getComponentCustomIds(payload)).toEqual([
       "compo-refresh:advice:user-1:war:LQQ99UV8",

@@ -29,6 +29,11 @@ type HeatMapRefMatchStatsRow = {
   evaluatedWarCount: number;
 };
 
+type HeatMapRefBandMatchRateStats = {
+  matchRate: number | null;
+  evaluatedWarCount: number;
+};
+
 function buildSourceRosters(members: readonly HeatMapRefSourceMember[]): HeatMapRefRebuildSourceRoster[] {
   const byClanTag = new Map<string, HeatMapRefRebuildSourceRoster>();
   for (const member of members) {
@@ -91,6 +96,18 @@ export class HeatMapRefDisplayService {
     return this.buildDisplayData(heatMapRefs);
   }
 
+  async readHeatMapRefBandMatchRates(input?: {
+    heatMapRefs?: readonly HeatMapRef[];
+  }): Promise<ReadonlyMap<string, number | null>> {
+    const heatMapRefs =
+      input?.heatMapRefs ??
+      (await prisma.heatMapRef.findMany({
+        orderBy: [{ weightMinInclusive: "asc" }, { weightMaxInclusive: "asc" }],
+      }));
+    const statsByBandKey = await this.buildMatchRateStatsByBandKey(heatMapRefs);
+    return new Map([...statsByBandKey.entries()].map(([bandKey, stats]) => [bandKey, stats.matchRate]));
+  }
+
   private async buildDisplayData(heatMapRefs: readonly HeatMapRef[]): Promise<{
     rows: string[][];
     copyText: string;
@@ -100,6 +117,33 @@ export class HeatMapRefDisplayService {
         rows: buildHeatMapRefDisplayRows({ heatMapRefs }),
         copyText: buildHeatMapRefCopyText({ heatMapRefs }),
       };
+    }
+
+    const matchRateStatsByBandKey = await this.buildMatchRateStatsByBandKey(heatMapRefs);
+    const matchPercentByBandKey = new Map<string, string>(
+      [...matchRateStatsByBandKey.entries()].map(([bandKey, stats]) => [
+        bandKey,
+        formatMatchPercent(stats.matchRate ?? 0, stats.evaluatedWarCount),
+      ]),
+    );
+
+    return {
+      rows: buildHeatMapRefDisplayRows({
+        heatMapRefs,
+        matchPercentByBandKey,
+      }),
+      copyText: buildHeatMapRefCopyText({
+        heatMapRefs,
+        matchPercentByBandKey,
+      }),
+    };
+  }
+
+  private async buildMatchRateStatsByBandKey(
+    heatMapRefs: readonly HeatMapRef[],
+  ): Promise<ReadonlyMap<string, HeatMapRefBandMatchRateStats>> {
+    if (heatMapRefs.length === 0) {
+      return new Map();
     }
 
     const clanTagRows = await prisma.fwaClanCatalog.findMany({
@@ -170,48 +214,27 @@ export class HeatMapRefDisplayService {
       ]),
     );
 
-    const matchPercentByBandKey = this.buildMatchPercentByBandKeyFromStats({
-      heatMapRefs,
-      contributingTagsByBandKey,
-      statsByClanTag,
-    });
-
-    return {
-      rows: buildHeatMapRefDisplayRows({
-        heatMapRefs,
-        matchPercentByBandKey,
-      }),
-      copyText: buildHeatMapRefCopyText({
-        heatMapRefs,
-        matchPercentByBandKey,
-      }),
-    };
-  }
-
-  private buildMatchPercentByBandKeyFromStats(input: {
-    heatMapRefs: readonly HeatMapRef[];
-    contributingTagsByBandKey: ReadonlyMap<string, string[]>;
-    statsByClanTag: ReadonlyMap<string, HeatMapRefMatchStatsRow>;
-  }): ReadonlyMap<string, string> {
-    const matchPercentByBandKey = new Map<string, string>();
-    for (const heatMapRef of input.heatMapRefs) {
+    const matchRateByBandKey = new Map<string, HeatMapRefBandMatchRateStats>();
+    for (const heatMapRef of heatMapRefs) {
       const bandKey = getHeatMapRefBandKey(heatMapRef);
-      const contributors = input.contributingTagsByBandKey.get(bandKey) ?? [];
+      const contributors = contributingTagsByBandKey.get(bandKey) ?? [];
       let weightedSum = 0;
       let denominator = 0;
       for (const clanTag of contributors) {
-        const stats = input.statsByClanTag.get(clanTag);
+        const stats = statsByClanTag.get(clanTag);
         if (!stats || stats.evaluatedWarCount <= 0) {
           continue;
         }
         weightedSum += stats.matchRate * stats.evaluatedWarCount;
         denominator += stats.evaluatedWarCount;
       }
-      matchPercentByBandKey.set(
+      matchRateByBandKey.set(
         bandKey,
-        denominator > 0 ? formatMatchPercent(weightedSum / denominator, denominator) : "0%",
+        denominator > 0
+          ? { matchRate: weightedSum / denominator, evaluatedWarCount: denominator }
+          : { matchRate: null, evaluatedWarCount: 0 },
       );
     }
-    return matchPercentByBandKey;
+    return matchRateByBandKey;
   }
 }
