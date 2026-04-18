@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  isPointsValidationCurrentForMatchupForTest,
   resolveFreshMatchupEvidenceForTest,
   resolveManualMatchupFreshnessSourceSyncForTest,
 } from "../src/commands/Fwa";
@@ -41,6 +42,48 @@ describe("fwa manual fresh matchup evidence", () => {
         resolvedCurrentSyncNum: 477,
       }),
     ).toBe(476);
+  });
+
+  it("applies the same freshness baseline to the tracked single-view currentness check", () => {
+    const trackedFreshSourceSync =
+      resolveManualMatchupFreshnessSourceSyncForTest({
+        sourceSync: 493,
+        resolvedCurrentSyncNum: 493,
+      });
+    const primary = buildSnapshot({
+      winnerBoxSync: 493,
+      effectiveSync: 493,
+      headerPrimaryTag: "2TRACK",
+      headerOpponentTag: "2OPP",
+      headerOpponentBalance: 980,
+    });
+    const opponent = buildSnapshot({
+      tag: "2OPP",
+      url: "https://points.fwafarm.com/clan?tag=2OPP",
+      snapshotSource: "direct",
+      lookupState: "ok",
+      balance: 980,
+      clanName: "Opponent Clan",
+      activeFwa: false,
+      notFound: false,
+      winnerBoxTags: ["2TRACK", "2OPP"],
+      winnerBoxSync: 493,
+      effectiveSync: 493,
+      headerPrimaryTag: "2TRACK",
+      headerOpponentTag: "2OPP",
+      headerPrimaryBalance: 1200,
+      headerOpponentBalance: 980,
+      winnerBoxHasTag: true,
+    });
+
+    expect(
+      isPointsValidationCurrentForMatchupForTest({
+        primarySnapshot: primary,
+        opponentSnapshot: opponent,
+        opponentTag: "2OPP",
+        sourceSync: trackedFreshSourceSync,
+      }),
+    ).toBe(true);
   });
 
   it("fetches fresh proof for both clans before classifying currentness", async () => {
