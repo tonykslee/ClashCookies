@@ -2561,6 +2561,7 @@ async function markMatchLiveDataChanged(params: {
   guildId: string;
   tag: string;
   channelId: string;
+  needsValidation?: boolean;
 }): Promise<void> {
   const current = await getCurrentWarMailConfig(params.guildId, params.tag);
   const live = await prisma.currentWar.findUnique({
@@ -2591,15 +2592,23 @@ async function markMatchLiveDataChanged(params: {
     channelId: params.channelId,
     mailConfig: next,
   });
-  await pointsSyncService
-    .markNeedsValidation({
-      guildId: params.guildId,
-      clanTag: params.tag,
-      warId: live?.warId ?? null,
-      warStartTime: live?.startTime ?? null,
-    })
-    .catch(() => undefined);
+  const lifecycleUpdate = params.needsValidation === false
+    ? pointsSyncService.clearNeedsValidation({
+        guildId: params.guildId,
+        clanTag: params.tag,
+        warId: live?.warId ?? null,
+        warStartTime: live?.startTime ?? null,
+      })
+    : pointsSyncService.markNeedsValidation({
+        guildId: params.guildId,
+        clanTag: params.tag,
+        warId: live?.warId ?? null,
+        warStartTime: live?.startTime ?? null,
+      });
+  await lifecycleUpdate.catch(() => undefined);
 }
+
+export const markMatchLiveDataChangedForTest = markMatchLiveDataChanged;
 
 function buildMatchStatusHeader(params: {
   clanName: string;
@@ -5619,6 +5628,7 @@ export async function handleFwaMatchTypeActionButton(
           guildId: interaction.guildId,
           tag: parsed.tag,
           channelId: interaction.channelId,
+          needsValidation: false,
         });
       }
       const draftPayload: FwaMatchCopyPayload = {
