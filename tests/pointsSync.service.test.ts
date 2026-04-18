@@ -5,6 +5,7 @@ const prismaMock = vi.hoisted(() => ({
     findFirst: vi.fn(),
     findUnique: vi.fn(),
     upsert: vi.fn(),
+    update: vi.fn(),
     updateMany: vi.fn(),
   },
 }));
@@ -166,6 +167,56 @@ describe("PointsSyncService.checkpointCurrentWarSync", () => {
 
     expect(updated).toBe(false);
     expect(prismaMock.clanPointsSync.updateMany).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("PointsSyncService.clearNeedsValidation", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("clears the dirty flag for a targeted same-war row by war start time", async () => {
+    prismaMock.clanPointsSync.updateMany.mockResolvedValue({ count: 1 });
+    const service = new PointsSyncService();
+    const warStartTime = new Date("2026-03-11T08:00:00.000Z");
+
+    const updated = await service.clearNeedsValidation({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+      warStartTime,
+    });
+
+    expect(updated).toBe(true);
+    expect(prismaMock.clanPointsSync.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          guildId: "guild-1",
+          clanTag: "#AAA111",
+          warStartTime,
+        }),
+        data: { needsValidation: false },
+      }),
+    );
+  });
+
+  it("falls back to the latest same-clan row when no war identity is provided", async () => {
+    prismaMock.clanPointsSync.findFirst.mockResolvedValue({ id: 42 });
+    prismaMock.clanPointsSync.update.mockResolvedValue({ id: 42 });
+    const service = new PointsSyncService();
+
+    const updated = await service.clearNeedsValidation({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+    });
+
+    expect(updated).toBe(true);
+    expect(prismaMock.clanPointsSync.findFirst).toHaveBeenCalledTimes(1);
+    expect(prismaMock.clanPointsSync.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 42 },
+        data: { needsValidation: false },
+      }),
+    );
   });
 });
 

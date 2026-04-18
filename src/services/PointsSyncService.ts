@@ -307,6 +307,49 @@ export class PointsSyncService {
     return true;
   }
 
+  /** Purpose: clear lifecycle validation dirtiness for a targeted war row after same-war confirmation. */
+  async clearNeedsValidation(params: {
+    guildId: string;
+    clanTag: string;
+    warId?: string | number | null;
+    warStartTime?: Date | null;
+  }): Promise<boolean> {
+    const clanTag = normalizeTag(params.clanTag);
+    if (params.warStartTime) {
+      const updated = await prisma.clanPointsSync.updateMany({
+        where: {
+          guildId: params.guildId,
+          clanTag,
+          warStartTime: params.warStartTime,
+        },
+        data: { needsValidation: false },
+      });
+      return updated.count > 0;
+    }
+    if (params.warId !== null && params.warId !== undefined) {
+      const updated = await prisma.clanPointsSync.updateMany({
+        where: {
+          guildId: params.guildId,
+          clanTag,
+          warId: String(params.warId),
+        },
+        data: { needsValidation: false },
+      });
+      return updated.count > 0;
+    }
+    const latest = await prisma.clanPointsSync.findFirst({
+      where: { guildId: params.guildId, clanTag },
+      orderBy: [{ warStartTime: "desc" }, { updatedAt: "desc" }],
+      select: { id: true },
+    });
+    if (!latest?.id) return false;
+    await prisma.clanPointsSync.update({
+      where: { id: latest.id },
+      data: { needsValidation: false },
+    });
+    return true;
+  }
+
   /** Purpose: checkpoint a trusted current-war sync number without rewriting full points fields. */
   async checkpointCurrentWarSync(params: {
     guildId: string;
