@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { resolveFreshMatchupEvidenceForTest } from "../src/commands/Fwa";
+import {
+  resolveFreshMatchupEvidenceForTest,
+  resolveManualMatchupFreshnessSourceSyncForTest,
+} from "../src/commands/Fwa";
 
 function buildSnapshot(overrides: Record<string, unknown>): any {
   return {
@@ -31,6 +34,15 @@ function buildSnapshot(overrides: Record<string, unknown>): any {
 }
 
 describe("fwa manual fresh matchup evidence", () => {
+  it("uses the predecessor of the resolved current sync as the manual freshness baseline", () => {
+    expect(
+      resolveManualMatchupFreshnessSourceSyncForTest({
+        sourceSync: 477,
+        resolvedCurrentSyncNum: 477,
+      }),
+    ).toBe(476);
+  });
+
   it("fetches fresh proof for both clans before classifying currentness", async () => {
     const calls: string[] = [];
     const primary = buildSnapshot({
@@ -78,17 +90,22 @@ describe("fwa manual fresh matchup evidence", () => {
   });
 
   it("still rejects stale freshness even with fresh proof sourcing", async () => {
+    const manualFreshSourceSync =
+      resolveManualMatchupFreshnessSourceSyncForTest({
+        sourceSync: 476,
+        resolvedCurrentSyncNum: 477,
+      });
     const resolved = await resolveFreshMatchupEvidenceForTest({
       trackedClanTag: "2TRACK",
       opponentTag: "2OPP",
-      sourceSync: 477,
+      sourceSync: manualFreshSourceSync,
       fetchClanPoints: async (tag: string) =>
         buildSnapshot({
           tag,
           url: `https://points.fwafarm.com/clan?tag=${tag}`,
           winnerBoxTags: ["2TRACK", "2OPP"],
-          winnerBoxSync: 477,
-          effectiveSync: 477,
+          winnerBoxSync: 476,
+          effectiveSync: 476,
           headerPrimaryTag: "2TRACK",
           headerOpponentTag: "2OPP",
           headerOpponentBalance: 980,
