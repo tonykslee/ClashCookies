@@ -295,6 +295,7 @@ describe("CompoAdviceEngine", () => {
         currentBandLabel: "(no band)",
         currentProjection: {
           totalWeight: NaN,
+          missingWeights: 0,
           selectedHeatMapRef: null,
         } as any,
         heatMapRefs: [],
@@ -310,7 +311,8 @@ describe("CompoAdviceEngine", () => {
     });
 
     expect(lines).toContain("Current Weight: unknown");
-    expect(lines).toContain("Distance to Midpoint: unknown");
+    expect(lines).toContain("Missing weights: 0");
+    expect(lines).toContain("Band midpoint: unknown");
     expect(lines).toContain("Matchrate: Unknown");
   });
 
@@ -323,12 +325,14 @@ describe("CompoAdviceEngine", () => {
     const lines = buildCompoAdviceContentLinesForTest({
       modeLabel: "ACTUAL",
       refreshLine: null,
+      clanTag: "#AAA111",
       summary: {
         viewLabel: "Auto-Detect Band",
         currentScore: 32.5,
         currentBandLabel: "1,000,000 - 2,000,000",
         currentProjection: {
           totalWeight: 1_500_000,
+          missingWeights: 2,
           selectedHeatMapRef: refs[1],
         } as any,
         heatMapRefs: refs,
@@ -348,14 +352,52 @@ describe("CompoAdviceEngine", () => {
     });
 
     expect(lines).toContain("Current Deviation Score: **32.5**");
+    expect(lines).toContain(
+      "Missing weights: 2 [FWA Stats](https://fwastats.com/Clan/AAA111/Weight)",
+    );
     expect(lines).toContain("Matchrate: 66.29%");
-    expect(lines).toContain("Perfect compo matchrate: 72.14%");
-    expect(lines).toContain("Resulting Deviation Score: **12.5**");
+    expect(lines).toContain("Band matchrate: 72.14%");
+    expect(lines).toContain("Band midpoint: +0");
+    expect(lines).toContain("Deviation Score: **12.5**");
     expect(lines).toContain("Matchrate: 69.89%");
     expect(lines).toContain("Lower band: **0 - 999,999**");
     expect(lines).toContain("Higher band: **2,000,001 - 3,000,000**");
     expect(lines).toContain("Matchrate: 70.00%");
     expect(lines).toContain("Matchrate: 74.00%");
+  });
+
+  it("prefixes the midpoint line with a warning when the current weight is outside the selected band", () => {
+    const lines = buildCompoAdviceContentLinesForTest({
+      modeLabel: "ACTUAL",
+      refreshLine: null,
+      clanTag: "#AAA111",
+      summary: {
+        viewLabel: "Custom",
+        currentScore: 5,
+        currentBandLabel: "2,000,000 - 2,500,000",
+        currentProjection: {
+          totalWeight: 1_500_000,
+          missingWeights: 1,
+          selectedHeatMapRef: makeHeatMapRef({
+            weightMinInclusive: 2_000_000,
+            weightMaxInclusive: 2_500_000,
+          }),
+        } as any,
+        heatMapRefs: [makeHeatMapRef({ weightMinInclusive: 2_000_000, weightMaxInclusive: 2_500_000 })],
+        bandMatchRatesByBandKey: new Map([["2000000-2500000", 0.6]]),
+        currentWeight: 1_500_000,
+        targetBandMidpoint: 1_420_000,
+        recommendationText: "Add TH17",
+        resultingScore: 4,
+        resultingBandLabel: "2,000,000 - 2,500,000",
+        alternateTexts: [],
+        statusText: null,
+      } as any,
+    });
+
+    expect(lines).toContain("Band midpoint: :warning: -80k");
+    expect(lines.join("\n")).not.toContain(":small_red_triangle");
+    expect(lines.join("\n")).not.toContain(":small_red_triangle_down");
   });
 
   it("steps Custom band indices deterministically and respects bounds", () => {

@@ -13,6 +13,7 @@ import {
   getHeatMapRefBandMidpoint,
   getHeatMapRefAdviceMidpoint,
 } from "./compoHeatMap";
+import { buildFwaWeightPageUrl } from "../services/FwaStatsWeightService";
 import type { CompoWarBucketCounts } from "./compoWarBucketCounts";
 import type { CompoWarDisplayBucket } from "./compoWarWeightBuckets";
 
@@ -186,6 +187,40 @@ function formatCompactWeight(value: number | null | undefined): string {
     return formatScaled(magnitude / 1_000, "k");
   }
   return `${magnitude}`;
+}
+
+function formatSignedCompactWeight(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return "unknown";
+  }
+
+  const normalized = Math.trunc(value);
+  const sign = normalized >= 0 ? "+" : "-";
+  return `${sign}${formatCompactWeight(Math.abs(normalized))}`;
+}
+
+function formatBandMidpointLine(input: {
+  currentWeight: number | null | undefined;
+  targetBandMidpoint: number | null | undefined;
+  selectedHeatMapRef: HeatMapRef | null;
+}): string {
+  if (
+    input.currentWeight === null ||
+    input.currentWeight === undefined ||
+    input.targetBandMidpoint === null ||
+    input.targetBandMidpoint === undefined ||
+    input.selectedHeatMapRef === null ||
+    !Number.isFinite(input.currentWeight) ||
+    !Number.isFinite(input.targetBandMidpoint)
+  ) {
+    return "unknown";
+  }
+
+  const withinDisplayedBand =
+    input.currentWeight >= input.selectedHeatMapRef.weightMinInclusive &&
+    input.currentWeight <= input.selectedHeatMapRef.weightMaxInclusive;
+  const warning = withinDisplayedBand ? "" : ":warning: ";
+  return `${warning}${formatSignedCompactWeight(input.targetBandMidpoint - input.currentWeight)}`;
 }
 
 export function formatSignedCompoAdviceDelta(delta: number | null | undefined): string {
@@ -749,16 +784,22 @@ export function buildCompoAdviceContentLines(input: {
   summary: CompoAdviceSummary;
   modeLabel: string;
   refreshLine: string | null;
+  clanTag?: string | null;
 }): string[] {
   const lines: string[] = [];
-  if (input.refreshLine) {
-    lines.push(input.refreshLine);
-  }
+  void input.refreshLine;
   lines.push(`Mode: **${input.modeLabel}**`);
   lines.push(`Advice View: **${input.summary.viewLabel}**`);
   lines.push(`Current Deviation Score: **${formatScore(input.summary.currentScore)}**`);
   lines.push(`Target Band: **${input.summary.currentBandLabel}**`);
   lines.push(`Current Weight: ${formatFullWeight(input.summary.currentWeight)}`);
+  lines.push(
+    `Missing weights: ${input.summary.currentProjection.missingWeights}${
+      input.summary.currentProjection.missingWeights > 0 && input.clanTag
+        ? ` [FWA Stats](${buildFwaWeightPageUrl(input.clanTag)})`
+        : ""
+    }`,
+  );
   const currentMatchrate = estimateMatchrateFromDeviation({
     bandMatchrate: getBandMatchrate({
       summary: input.summary,
@@ -771,16 +812,16 @@ export function buildCompoAdviceContentLines(input: {
     summary: input.summary,
     heatMapRef: input.summary.currentProjection.selectedHeatMapRef,
   });
-  lines.push(`Perfect compo matchrate: ${formatMatchratePercent(perfectMatchrate)}`);
+  lines.push(`Band matchrate: ${formatMatchratePercent(perfectMatchrate)}`);
   lines.push(
-    `Distance to Midpoint: ${formatSignedCompoAdviceDelta(
-      input.summary.currentWeight === null || input.summary.targetBandMidpoint === null
-        ? null
-        : input.summary.currentWeight - input.summary.targetBandMidpoint,
-    )}`,
+    `Band midpoint: ${formatBandMidpointLine({
+      currentWeight: input.summary.currentWeight,
+      targetBandMidpoint: input.summary.targetBandMidpoint,
+      selectedHeatMapRef: input.summary.currentProjection.selectedHeatMapRef,
+    })}`,
   );
   lines.push(`Recommendation: :arrow_arrow: __${input.summary.recommendationText}__`);
-  lines.push(`Resulting Deviation Score: **${formatScore(input.summary.resultingScore)}**`);
+  lines.push(`Deviation Score: **${formatScore(input.summary.resultingScore)}**`);
   const resultingMatchrate = estimateMatchrateFromDeviation({
     bandMatchrate: getBandMatchrate({
       summary: input.summary,

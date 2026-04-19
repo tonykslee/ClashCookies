@@ -38,7 +38,6 @@ import { formatHeatMapRefBandLabel, getHeatMapRefBandKey } from "../helper/compo
 import { formatError } from "../helper/formatError";
 import { getCompoWarDisplayBucket } from "../helper/compoWarWeightBuckets";
 import { normalizeCompoClanDisplayName } from "../helper/compoDisplay";
-import { formatSignedCompoAdviceDelta } from "../helper/compoAdviceEngine";
 import { emojiResolverService } from "../services/emoji/EmojiResolverService";
 import { prisma } from "../prisma";
 import { safeReply } from "../helper/safeReply";
@@ -50,6 +49,7 @@ import {
 import { CompoActualStateService } from "../services/CompoActualStateService";
 import { CompoPlaceService } from "../services/CompoPlaceService";
 import { CompoWarStateService } from "../services/CompoWarStateService";
+import { buildFwaWeightPageUrl } from "../services/FwaStatsWeightService";
 import { HeatMapRefDisplayService } from "../services/HeatMapRefDisplayService";
 import {
   GoogleSheetMode,
@@ -1086,31 +1086,64 @@ function formatCompoAdviceFullWeight(value: number | null): string {
   return Math.trunc(value).toLocaleString("en-US");
 }
 
-async function renderCompoAdviceEmojiShortcodes(client: Client, text: string): Promise<string> {
-  return emojiResolverService.replaceShortcodes(client, text).catch(() => text);
+function formatCompoAdviceCompactWeight(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) {
+    return "unknown";
+  }
+
+  const magnitude = Math.abs(Math.trunc(value));
+  const formatScaled = (scaled: number, suffix: string): string => {
+    const text = scaled.toFixed(3).replace(/\.?0+$/, "");
+    return `${text}${suffix}`;
+  };
+
+  if (magnitude >= 1_000_000_000) {
+    return formatScaled(magnitude / 1_000_000_000, "b");
+  }
+  if (magnitude >= 1_000_000) {
+    return formatScaled(magnitude / 1_000_000, "m");
+  }
+  if (magnitude >= 1_000) {
+    return formatScaled(magnitude / 1_000, "k");
+  }
+  return `${magnitude}`;
 }
 
-function formatCompoAdviceDistanceToMidpoint(summary: {
+function formatCompoAdviceSignedDistance(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) {
+    return "unknown";
+  }
+
+  const normalized = Math.trunc(value);
+  const sign = normalized >= 0 ? "+" : "-";
+  return `${sign}${formatCompoAdviceCompactWeight(Math.abs(normalized))}`;
+}
+
+function formatCompoAdviceBandMidpointLine(input: {
   currentWeight: number | null;
   targetBandMidpoint: number | null;
+  selectedHeatMapRef: HeatMapRef | null;
 }): string {
-  const currentWeight = summary.currentWeight;
-  const targetBandMidpoint = summary.targetBandMidpoint;
+  const { currentWeight, targetBandMidpoint, selectedHeatMapRef } = input;
   if (
     currentWeight === null ||
     targetBandMidpoint === null ||
+    selectedHeatMapRef === null ||
     !Number.isFinite(currentWeight) ||
     !Number.isFinite(targetBandMidpoint)
   ) {
     return "unknown";
   }
 
-  return formatSignedCompoAdviceDelta(currentWeight - targetBandMidpoint);
+  const withinDisplayedBand =
+    currentWeight >= selectedHeatMapRef.weightMinInclusive &&
+    currentWeight <= selectedHeatMapRef.weightMaxInclusive;
+  const warning = withinDisplayedBand ? "" : ":warning: ";
+  return `${warning}${formatCompoAdviceSignedDistance(targetBandMidpoint - currentWeight)}`;
 }
 
-function buildCompoAdviceFooterText(refreshLine: string | null): string {
-  const note = "Lower deviation score is better.";
-  return refreshLine ? `${refreshLine} • ${note}` : note;
+async function renderCompoAdviceEmojiShortcodes(client: Client, text: string): Promise<string> {
+  return emojiResolverService.replaceShortcodes(client, text).catch(() => text);
 }
 
 function getCompoAdviceBandMatchrate(input: {
@@ -1169,6 +1202,11 @@ async function buildCompoAdviceEmbed(input: {
         `Mode: **${input.advice.mode.toUpperCase()}**`,
         `Advice View: **${COMPO_ADVICE_VIEW_LABELS[input.advice.selectedView]}**`,
         `Members: ${summary.currentProjection.memberCount} / 50`,
+        `Missing weights: ${summary.currentProjection.missingWeights}${
+          summary.currentProjection.missingWeights > 0 && input.advice.clanTag
+            ? ` [FWA Stats](${buildFwaWeightPageUrl(input.advice.clanTag)})`
+            : ""
+        }`,
         `Rushed: ${input.advice.rushedCount}`,
       ].join("\n"),
     );
@@ -1184,10 +1222,12 @@ async function buildCompoAdviceEmbed(input: {
       input.client,
       [
         `Target Band: **${summary.currentBandLabel}**`,
-        `Perfect compo matchrate: ${formatMatchratePercent(selectedBandMatchrate)}`,
-        `Distance to Midpoint: ${formatCompoAdviceDistanceToMidpoint(summary)}`,
-        `Resulting Deviation Score: **${formatAdviceScore(summary.resultingScore)}**`,
-        `Matchrate: ${formatMatchratePercent(resultingMatchrate)}`,
+        `Band matchrate: ${formatMatchratePercent(selectedBandMatchrate)}`,
+        `Band midpoint: ${formatCompoAdviceBandMidpointLine({
+          currentWeight: summary.currentWeight,
+          targetBandMidpoint: summary.targetBandMidpoint,
+          selectedHeatMapRef: selectedHeatMapRef ?? null,
+        })}`,
       ].join("\n"),
     );
     const recommendationValue = await renderCompoAdviceEmojiShortcodes(
@@ -1198,6 +1238,13 @@ async function buildCompoAdviceEmbed(input: {
       ]
         .filter((line): line is string => line !== null)
         .join("\n"),
+    );
+    const resultValue = await renderCompoAdviceEmojiShortcodes(
+      input.client,
+      [
+        `Deviation Score: **${formatAdviceScore(summary.resultingScore)}**`,
+        `Matchrate: ${formatMatchratePercent(resultingMatchrate)}`,
+      ].join("\n"),
     );
     const adjacentBandsValue = await renderCompoAdviceEmojiShortcodes(
       input.client,
@@ -1245,6 +1292,11 @@ async function buildCompoAdviceEmbed(input: {
         inline: false,
       },
       {
+        name: "Result",
+        value: resultValue,
+        inline: false,
+      },
+      {
         name: "Current Deltas",
         value: currentDeltas,
         inline: false,
@@ -1255,9 +1307,6 @@ async function buildCompoAdviceEmbed(input: {
         inline: false,
       },
     );
-    embed.setFooter({
-      text: buildCompoAdviceFooterText(input.advice.refreshLine),
-    });
     return embed;
   }
 
@@ -1270,9 +1319,6 @@ async function buildCompoAdviceEmbed(input: {
       ].join("\n"),
     );
 
-  embed.setFooter({
-    text: buildCompoAdviceFooterText(input.advice.refreshLine),
-  });
   return embed;
 }
 
@@ -1281,6 +1327,7 @@ async function buildCompoAdviceResponsePayload(input: {
   client: Client;
 }): Promise<CompoRenderPayload> {
   return {
+    content: input.advice.refreshLine ?? undefined,
     embeds: [await buildCompoAdviceEmbed({ advice: input.advice, client: input.client })],
   };
 }
