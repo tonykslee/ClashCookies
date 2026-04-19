@@ -93,6 +93,7 @@ describe("/compo advice command", () => {
           currentProjection: {
             totalWeight: 1_500_000,
             memberCount: 50,
+            missingWeights: 2,
             selectedHeatMapRef: {
               weightMinInclusive: 1_000_000,
               weightMaxInclusive: 2_000_000,
@@ -106,10 +107,18 @@ describe("/compo advice command", () => {
               "<=TH13": 0,
             },
           } as any,
+          currentMatchrate: 0.7214,
+          targetBandMatchrate: 0.7214,
+          resultingMatchrate: 0.7214,
           currentWeight: 1_500_000,
           targetBandMidpoint: 1_500_000,
           currentScore: 0,
           currentBandLabel: "1,000,000 - 2,000,000",
+          targetBandLabel: "1,000,000 - 2,000,000",
+          targetHeatMapRef: {
+            weightMinInclusive: 1_000_000,
+            weightMaxInclusive: 2_000_000,
+          },
           recommendationText: "Add TH17",
           resultingScore: 0,
           resultingBandLabel: "1,000,000 - 2,000,000",
@@ -143,6 +152,7 @@ describe("/compo advice command", () => {
     expect(readCompoLinkedValuesSpy).not.toHaveBeenCalled();
 
     const payload = interaction.editReply.mock.calls.at(-1)?.[0];
+    expect(String(payload?.content ?? "")).toBe("RAW Data last refreshed: <t:1709900000:F>");
     expect(Array.isArray(payload?.embeds)).toBe(true);
     const embed = payload?.embeds?.[0]?.data ?? {};
     expect(String(embed?.description ?? "")).toBe("");
@@ -153,6 +163,7 @@ describe("/compo advice command", () => {
       "Current",
       "Target",
       "Recommendation",
+      "Result",
       "Current Deltas",
       "Adjacent Bands",
     ]);
@@ -163,28 +174,25 @@ describe("/compo advice command", () => {
     expect(JSON.stringify(embed?.fields ?? [])).toContain("Current Weight: 1,500,000");
     expect(JSON.stringify(embed?.fields ?? [])).toContain("Current Deviation Score: **0**");
     expect(JSON.stringify(embed?.fields ?? [])).toContain("Matchrate: 72.14%");
-    expect(JSON.stringify(embed?.fields ?? [])).toContain("Perfect compo matchrate: 72.14%");
     expect(JSON.stringify(embed?.fields ?? [])).toContain(
-      "Distance to Midpoint: -> +0",
+      "Missing weights: 2 [FWA Stats](https://fwastats.com/Clan/AAA111/Weight)",
     );
+    expect(JSON.stringify(embed?.fields ?? [])).toContain("Band matchrate: 72.14%");
+    expect(JSON.stringify(embed?.fields ?? [])).toContain("Band midpoint: +0");
     expect(String(embed?.title ?? "")).toContain("Alpha Clan (#AAA111)");
     expect(JSON.stringify(embed?.fields ?? [])).not.toContain("Alternates");
     expect(JSON.stringify(embed?.fields ?? [])).not.toContain("Snapshot");
     expect(JSON.stringify(embed?.fields ?? [])).toContain(
       ":arrow_arrow: __Add TH17__",
     );
-    expect(JSON.stringify(embed?.fields ?? [])).toContain(
-      "Resulting Deviation Score: **0**",
-    );
+    expect(JSON.stringify(embed?.fields ?? [])).toContain("Deviation Score: **0**");
     expect(JSON.stringify(embed?.fields ?? [])).toContain("Lower band: **0 - 999,999**");
     expect(JSON.stringify(embed?.fields ?? [])).toContain(
       "Higher band: **2,000,001 - 3,000,000**",
     );
     expect(JSON.stringify(embed?.fields ?? [])).toContain("Matchrate: 70.00%");
     expect(JSON.stringify(embed?.fields ?? [])).toContain("Matchrate: 74.00%");
-    expect(String(embed?.footer?.text ?? "")).toBe(
-      "RAW Data last refreshed: <t:1709900000:F> • Lower deviation score is better.",
-    );
+    expect(embed?.footer).toBeUndefined();
     expect(getComponentCustomIds(payload)).toEqual(
       expect.arrayContaining([
         "compo-refresh:advice:user-1:actual:auto:LQQ99UV8:1:0",
@@ -233,10 +241,18 @@ describe("/compo advice command", () => {
             "<=TH13": 0,
           },
         } as any,
+        currentMatchrate: 0.5,
+        targetBandMatchrate: 0.5,
+        resultingMatchrate: 0.5,
         currentWeight: 1_500_000,
         targetBandMidpoint: 1_500_000,
         currentScore: 0,
         currentBandLabel: "0 - 9999999",
+        targetBandLabel: "0 - 9999999",
+        targetHeatMapRef: {
+          weightMinInclusive: 0,
+          weightMaxInclusive: 9_999_999,
+        },
         recommendationText: "No improvement found.",
         resultingScore: null,
         resultingBandLabel: "(no band)",
@@ -255,15 +271,41 @@ describe("/compo advice command", () => {
     await Compo.run({} as any, interaction as any, {} as any);
 
     const payload = interaction.editReply.mock.calls.at(-1)?.[0];
+    expect(String(payload?.content ?? "")).toBe("RAW Data last refreshed: <t:1709900000:F>");
     expect(JSON.stringify(payload?.embeds?.[0]?.data?.fields ?? [])).toContain(
       "Advice View: **Raw Data**",
     );
-    expect(String(payload?.embeds?.[0]?.data?.footer?.text ?? "")).toBe(
-      "RAW Data last refreshed: <t:1709900000:F> • Lower deviation score is better.",
-    );
+    expect(payload?.embeds?.[0]?.data?.footer).toBeUndefined();
     expect(getComponentCustomIds(payload)).toEqual([
       "compo-refresh:advice:user-1:war:LQQ99UV8",
       "compo-refresh:advice-clan:user-1:war:AAA111",
     ]);
+  });
+
+  it("renders empty advice with refresh content below the embed and no footer note", async () => {
+    vi.spyOn(CompoAdviceService.prototype, "readAdvice").mockResolvedValue({
+      kind: "empty",
+      mode: "actual",
+      selectedView: "auto",
+      trackedClanTags: ["#AAA111"],
+      trackedClanChoices: [{ tag: "#AAA111", name: "Alpha Clan-actual" }],
+      clanTag: null,
+      clanName: null,
+      message: "No tracked clan matched tag `#LQQ99UV8`.",
+      refreshLine: "RAW Data last refreshed: <t:1709900000:F>",
+    });
+
+    const interaction = makeInteraction({
+      subcommand: "advice",
+      tag: "#LQQ99UV8",
+    });
+    await Compo.run({} as any, interaction as any, {} as any);
+
+    const payload = interaction.editReply.mock.calls.at(-1)?.[0];
+    expect(String(payload?.content ?? "")).toBe("RAW Data last refreshed: <t:1709900000:F>");
+    expect(String(payload?.embeds?.[0]?.data?.description ?? "")).toContain(
+      "No tracked clan matched tag `#LQQ99UV8`.",
+    );
+    expect(payload?.embeds?.[0]?.data?.footer).toBeUndefined();
   });
 });

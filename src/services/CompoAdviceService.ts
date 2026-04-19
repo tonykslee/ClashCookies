@@ -263,21 +263,23 @@ export class CompoAdviceService {
         });
       }
 
+      const bandMatchRatesByBandKey = await this.heatMapRefDisplayService.readHeatMapRefBandMatchRates({
+        heatMapRefs: context.heatMapRefs,
+      });
       const summary =
         view === "custom"
           ? buildCustomAdviceSummary({
               base: clan.base,
               heatMapRefs: context.heatMapRefs,
+              bandMatchRatesByBandKey,
               customBandIndex: input.customBandIndex,
             })
           : buildActualAdviceSummary({
               base: clan.base,
               heatMapRefs: context.heatMapRefs,
+              bandMatchRatesByBandKey,
               view,
             });
-      const bandMatchRatesByBandKey = await this.heatMapRefDisplayService.readHeatMapRefBandMatchRates({
-        heatMapRefs: summary.heatMapRefs,
-      });
       return buildReadyResult({
         mode: input.mode,
         selectedView: view,
@@ -333,6 +335,9 @@ export class CompoAdviceService {
       });
     }
 
+    const bandMatchRatesByBandKey = await this.heatMapRefDisplayService.readHeatMapRefBandMatchRates({
+      heatMapRefs: context.heatMapRefs,
+    });
     const summary = buildWarAdviceSummary({
       base: {
         resolvedTotalWeight: clan.totalEffectiveWeight,
@@ -341,9 +346,7 @@ export class CompoAdviceService {
         bucketCounts: clan.bucketCounts,
       },
       heatMapRefs: context.heatMapRefs,
-    });
-    const bandMatchRatesByBandKey = await this.heatMapRefDisplayService.readHeatMapRefBandMatchRates({
-      heatMapRefs: summary.heatMapRefs,
+      bandMatchRatesByBandKey,
     });
     return buildReadyResult({
       mode: input.mode,
