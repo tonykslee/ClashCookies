@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GoogleSheetsService } from "../src/services/GoogleSheetsService";
+import { HeatMapRefDisplayService } from "../src/services/HeatMapRefDisplayService";
 import {
   CompoAdviceService,
   countRushedCompoMembers,
@@ -277,6 +278,82 @@ describe("CompoAdviceService", () => {
     expect(result.trackedClanChoices).toEqual([
       { tag: "#AAA111", name: "Alpha Clan-actual" },
     ]);
+  });
+
+  it("keeps Custom current score and matchrate populated while shifting the target band", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      makeTrackedClan("#AAA111", "Alpha Clan-actual"),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      makeCurrentMember({
+        clanTag: "#AAA111",
+        playerTag: "#P000001",
+        playerName: "P1",
+        townHall: 15,
+        weight: 175000,
+      }),
+      makeCurrentMember({
+        clanTag: "#AAA111",
+        playerTag: "#P000002",
+        playerName: "P2",
+        townHall: 15,
+        weight: 175000,
+      }),
+    ]);
+    prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.heatMapRef.findMany.mockResolvedValue([
+      makeHeatMapRef({
+        weightMinInclusive: 0,
+        weightMaxInclusive: 299_999,
+        th14Count: 50,
+      }),
+      makeHeatMapRef({
+        weightMinInclusive: 300_000,
+        weightMaxInclusive: 599_999,
+        th15Count: 50,
+      }),
+    ]);
+    vi.spyOn(
+      HeatMapRefDisplayService.prototype,
+      "readHeatMapRefBandMatchRates",
+    ).mockResolvedValue(
+      new Map([
+        ["0-299999", 0.7025],
+        ["300000-599999", 0.7412],
+      ]),
+    );
+
+    const first = await new CompoAdviceService().readAdvice({
+      guildId: "guild-1",
+      targetTag: "#AAA111",
+      mode: "actual",
+      view: "custom",
+      customBandIndex: 0,
+    });
+    const second = await new CompoAdviceService().readAdvice({
+      guildId: "guild-1",
+      targetTag: "#AAA111",
+      mode: "actual",
+      view: "custom",
+      customBandIndex: 1,
+    });
+
+    expect(first.kind).toBe("ready");
+    expect(second.kind).toBe("ready");
+    expect(first.summary.viewLabel).toBe("Custom");
+    expect(second.summary.viewLabel).toBe("Custom");
+    expect(first.summary.currentBandLabel).not.toBe("(no band)");
+    expect(first.summary.currentBandLabel).toBe(second.summary.currentBandLabel);
+    expect(first.summary.currentScore).not.toBeNull();
+    expect(first.summary.currentMatchrate).not.toBeNull();
+    expect(first.summary.currentScore).toBe(second.summary.currentScore);
+    expect(first.summary.currentMatchrate).toBeCloseTo(
+      second.summary.currentMatchrate ?? 0,
+      6,
+    );
+    expect(first.summary.targetBandLabel).not.toBe(second.summary.targetBandLabel);
+    expect(first.summary.targetBandMatchrate).not.toBe(second.summary.targetBandMatchrate);
   });
 
   it("loads WAR advice from DB-backed tracked war state without sheet reads", async () => {
