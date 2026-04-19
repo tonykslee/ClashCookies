@@ -3619,6 +3619,7 @@ describe("/todo refresh button", () => {
     expect(description).toContain(
       `<t:${Math.floor(refreshedAt.getTime() / 1000)}:R>`,
     );
+    expect(description).not.toContain("No raids active");
     expect(description).toContain(":yellow_circle: Alpha - 3 / 6");
   });
 

@@ -83,6 +83,7 @@ vi.mock("../src/services/CoCRequestQueueService", () => ({
 
 import {
   resolveClanGamesWindowForTest,
+  resolveRaidWeekendWindowForTest,
   resolveWarEventLinkedPlayerRefreshPlanForTest,
   resetTodoSnapshotServiceForTest,
   todoSnapshotService,
@@ -1214,6 +1215,117 @@ describe("TodoSnapshotService", () => {
         }),
       }),
     );
+  });
+
+  it("resolves raid weekend windows across the Friday UTC start and Monday UTC end", () => {
+    const beforeStart = resolveRaidWeekendWindowForTest(
+      Date.UTC(2026, 2, 27, 6, 59, 59, 999),
+    );
+    const atStart = resolveRaidWeekendWindowForTest(
+      Date.UTC(2026, 2, 27, 7, 0, 0, 0),
+    );
+    const midWeekend = resolveRaidWeekendWindowForTest(
+      Date.UTC(2026, 2, 29, 12, 0, 0, 0),
+    );
+    const beforeEnd = resolveRaidWeekendWindowForTest(
+      Date.UTC(2026, 2, 30, 6, 59, 59, 999),
+    );
+    const atEnd = resolveRaidWeekendWindowForTest(
+      Date.UTC(2026, 2, 30, 7, 0, 0, 0),
+    );
+    const afterEnd = resolveRaidWeekendWindowForTest(
+      Date.UTC(2026, 2, 30, 7, 0, 0, 1),
+    );
+
+    expect(beforeStart.active).toBe(false);
+    expect(beforeStart.startMs).toBe(Date.UTC(2026, 2, 27, 7, 0, 0, 0));
+    expect(beforeStart.endMs).toBe(Date.UTC(2026, 2, 30, 7, 0, 0, 0));
+
+    expect(atStart.active).toBe(true);
+    expect(atStart.startMs).toBe(Date.UTC(2026, 2, 27, 7, 0, 0, 0));
+    expect(atStart.endMs).toBe(Date.UTC(2026, 2, 30, 7, 0, 0, 0));
+
+    expect(midWeekend.active).toBe(true);
+    expect(midWeekend.startMs).toBe(Date.UTC(2026, 2, 27, 7, 0, 0, 0));
+    expect(midWeekend.endMs).toBe(Date.UTC(2026, 2, 30, 7, 0, 0, 0));
+
+    expect(beforeEnd.active).toBe(true);
+    expect(beforeEnd.startMs).toBe(Date.UTC(2026, 2, 27, 7, 0, 0, 0));
+    expect(beforeEnd.endMs).toBe(Date.UTC(2026, 2, 30, 7, 0, 0, 0));
+
+    expect(atEnd.active).toBe(false);
+    expect(atEnd.startMs).toBe(Date.UTC(2026, 3, 3, 7, 0, 0, 0));
+    expect(atEnd.endMs).toBe(Date.UTC(2026, 3, 6, 7, 0, 0, 0));
+
+    expect(afterEnd.active).toBe(false);
+    expect(afterEnd.startMs).toBe(Date.UTC(2026, 3, 3, 7, 0, 0, 0));
+    expect(afterEnd.endMs).toBe(Date.UTC(2026, 3, 6, 7, 0, 0, 0));
+  });
+
+  it("writes raidActive=true for snapshots refreshed during an active raid weekend and false outside it", async () => {
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      buildSnapshotRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha",
+        raidActive: false,
+        raidAttacksUsed: 0,
+      }),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.currentWar.findMany.mockResolvedValue([]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+    const cocService = {
+      getPlayerRaw: vi.fn().mockResolvedValue({
+        tag: "#PYLQ0289",
+        clan: { tag: "#PQL0289" },
+      }),
+      getClanCapitalRaidSeasons: vi.fn().mockResolvedValue([
+        {
+          startTime: "20260327T070000.000Z",
+          endTime: "20260330T070000.000Z",
+          members: [{ tag: "#PYLQ0289", attacks: 3 }],
+        },
+      ]),
+    };
+
+    await todoSnapshotService.refreshSnapshotsForPlayerTags({
+      playerTags: ["#PYLQ0289"],
+      cocService: cocService as any,
+      nowMs: Date.UTC(2026, 2, 29, 12, 0, 0, 0),
+    });
+
+    expect(prismaMock.todoPlayerSnapshot.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          raidActive: true,
+          raidAttacksUsed: 3,
+        }),
+      }),
+    );
+    expect(cocService.getClanCapitalRaidSeasons).toHaveBeenCalledWith("#PQL0289", 2);
+
+    prismaMock.todoPlayerSnapshot.upsert.mockClear();
+    (cocService.getClanCapitalRaidSeasons as ReturnType<typeof vi.fn>).mockClear();
+
+    await todoSnapshotService.refreshSnapshotsForPlayerTags({
+      playerTags: ["#PYLQ0289"],
+      cocService: cocService as any,
+      nowMs: Date.UTC(2026, 3, 2, 12, 0, 0, 0),
+    });
+
+    expect(prismaMock.todoPlayerSnapshot.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          raidActive: false,
+          raidAttacksUsed: 0,
+        }),
+      }),
+    );
+    expect(cocService.getClanCapitalRaidSeasons).not.toHaveBeenCalled();
   });
 
   it("preserves the active war clan context when a linked account moves clans", async () => {
