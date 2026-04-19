@@ -10,6 +10,7 @@ const prismaMock = vi.hoisted(() => ({
     create: vi.fn(),
     delete: vi.fn(),
     findMany: vi.fn(),
+    updateMany: vi.fn(),
   },
   trackedClan: {
     findMany: vi.fn(),
@@ -36,15 +37,26 @@ import {
   buildLinkEmbedTagModalCustomId,
   buildLinkListSelectCustomId,
   buildLinkListSortButtonCustomId,
+  handleReminderLinkButtonInteraction,
+  handleReminderLinkCancelButtonInteraction,
+  handleReminderLinkConfirmButtonInteraction,
   handleLinkEmbedButtonInteraction,
   handleLinkEmbedModalSubmit,
   handleLinkListSelectMenu,
   handleLinkListSortButton,
   isLinkEmbedAccountButtonCustomId,
   isLinkEmbedModalCustomId,
+  isReminderLinkButtonCustomId,
+  isReminderLinkCancelButtonCustomId,
+  isReminderLinkConfirmButtonCustomId,
   Link,
 } from "../src/commands/Link";
 import { CommandPermissionService } from "../src/services/CommandPermissionService";
+import {
+  buildReminderLinkButtonCustomId,
+  buildReminderLinkCancelCustomId,
+  buildReminderLinkConfirmCustomId,
+} from "../src/services/reminders/ReminderLinkActions";
 
 type InteractionInput = {
   subcommand: "create" | "delete" | "list" | "embed" | "sync-clashperk";
@@ -172,6 +184,57 @@ function getInlineRows(description: string): string[] {
     .filter((line) => /^(?:✅|❌|<a?:yes:\d+>|<a?:no:\d+>) `/.test(line));
 }
 
+function makeReminderButtonInteraction(input: {
+  customId: string;
+  guildId?: string;
+  channelId?: string;
+  messageId?: string;
+  userId?: string;
+  messageComponents?: Array<{ toJSON: () => unknown }>;
+}) {
+  const edit = vi.fn().mockResolvedValue(undefined);
+  const channel = {
+    id: input.channelId ?? "channel-1",
+    guildId: input.guildId ?? "guild-1",
+    isTextBased: () => true,
+    messages: {
+      fetch: vi.fn().mockResolvedValue({
+        id: input.messageId ?? "message-1",
+        components: input.messageComponents ?? [],
+        edit,
+      }),
+    },
+  };
+  const interaction: any = {
+    customId: input.customId,
+    guildId: input.guildId ?? "guild-1",
+    channelId: input.channelId ?? "channel-1",
+    user: { id: input.userId ?? "user-1" },
+    message: {
+      id: input.messageId ?? "message-1",
+      components: input.messageComponents ?? [],
+    },
+    client: {
+      channels: {
+        fetch: vi.fn().mockResolvedValue(channel),
+      },
+    },
+    replied: false,
+    deferred: false,
+    reply: vi.fn(async () => {
+      interaction.replied = true;
+    }),
+    deferUpdate: vi.fn(async () => {
+      interaction.deferred = true;
+    }),
+    update: vi.fn(async () => {
+      interaction.replied = true;
+    }),
+    editReply: vi.fn().mockResolvedValue(undefined),
+  };
+  return interaction;
+}
+
 describe("/link run", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -180,6 +243,7 @@ describe("/link run", () => {
     prismaMock.playerLink.create.mockReset();
     prismaMock.playerLink.delete.mockReset();
     prismaMock.playerLink.findMany.mockReset();
+    prismaMock.playerLink.updateMany.mockReset();
     prismaMock.trackedClan.findMany.mockReset();
     prismaMock.trackedClan.findUnique.mockReset();
     prismaMock.currentWar.findMany.mockReset();
@@ -1739,5 +1803,256 @@ describe("/link embed interactions", () => {
       isLinkEmbedModalCustomId(buildLinkEmbedTagModalCustomId("guild-1")),
     ).toBe(true);
     expect(isLinkEmbedModalCustomId("other:modal")).toBe(false);
+  });
+});
+
+describe("/reminder link interactions", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.clearAllMocks();
+    prismaMock.playerLink.findUnique.mockReset();
+    prismaMock.playerLink.create.mockReset();
+    prismaMock.playerLink.updateMany.mockReset();
+  });
+
+  it("opens an ephemeral confirmation for the clicked reminder player", async () => {
+    const interaction = makeReminderButtonInteraction({
+      customId: buildReminderLinkButtonCustomId({
+        guildId: "guild-1",
+        reminderId: "rem-1",
+        playerTag: "#PYLQ0289",
+      }),
+      messageId: "message-1",
+      channelId: "channel-1",
+      guildId: "guild-1",
+      userId: "111111111111111111",
+    });
+
+    await handleReminderLinkButtonInteraction(interaction as any);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "Link `#PYLQ0289` to your Discord account?",
+      components: expect.any(Array),
+    });
+    const payload = interaction.reply.mock.calls[0]?.[0] as any;
+    expect(payload.components[0].toJSON().components.map((button: any) => button.label)).toEqual([
+      "Confirm",
+      "Cancel",
+    ]);
+  });
+
+  it("confirms a reminder link and disables the original reminder button", async () => {
+    prismaMock.playerLink.findUnique.mockResolvedValue(null);
+    prismaMock.playerLink.create.mockResolvedValue({});
+    const messageEdit = vi.fn().mockResolvedValue(undefined);
+    const originalMessage = {
+      id: "message-1",
+      components: [
+        {
+          toJSON: () => ({
+            type: 1,
+            components: [
+              {
+                type: 2,
+                style: 1,
+                label: "Link player",
+                custom_id: buildReminderLinkButtonCustomId({
+                  guildId: "guild-1",
+                  reminderId: "rem-1",
+                  playerTag: "#PYLQ0289",
+                }),
+                disabled: false,
+              },
+            ],
+          }),
+        },
+      ],
+      edit: messageEdit,
+    };
+    const interaction = makeReminderButtonInteraction({
+      customId: buildReminderLinkConfirmCustomId({
+        channelId: "channel-1",
+        messageId: "message-1",
+        playerTag: "#PYLQ0289",
+      }),
+      messageId: "message-1",
+      channelId: "channel-1",
+      guildId: "guild-1",
+      userId: "111111111111111111",
+    });
+    interaction.client.channels.fetch.mockResolvedValue({
+      id: "channel-1",
+      guildId: "guild-1",
+      isTextBased: () => true,
+      messages: {
+        fetch: vi.fn().mockResolvedValue(originalMessage),
+      },
+    });
+
+    await handleReminderLinkConfirmButtonInteraction(interaction as any);
+
+    expect(prismaMock.playerLink.create).toHaveBeenCalledWith({
+      data: { playerTag: "#PYLQ0289", discordUserId: "111111111111111111" },
+    });
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "created: #PYLQ0289 linked to you.",
+    );
+    expect(messageEdit).toHaveBeenCalledWith({
+      components: [
+        {
+          type: 1,
+          components: [
+            expect.objectContaining({
+              custom_id: buildReminderLinkButtonCustomId({
+                guildId: "guild-1",
+                reminderId: "rem-1",
+                playerTag: "#PYLQ0289",
+              }),
+              disabled: true,
+            }),
+          ],
+        },
+      ],
+    });
+  });
+
+  it("cancels a reminder link confirmation without changing state", async () => {
+    const interaction = makeReminderButtonInteraction({
+      customId: buildReminderLinkCancelCustomId({
+        channelId: "channel-1",
+        messageId: "message-1",
+        playerTag: "#PYLQ0289",
+      }),
+      messageId: "message-1",
+      channelId: "channel-1",
+      guildId: "guild-1",
+      userId: "111111111111111111",
+    });
+
+    await handleReminderLinkCancelButtonInteraction(interaction as any);
+
+    expect(prismaMock.playerLink.create).not.toHaveBeenCalled();
+    expect(interaction.update).toHaveBeenCalledWith({
+      content: "Canceled.",
+      components: [],
+    });
+  });
+
+  it("rejects stale reminder confirmations when the channel context no longer matches", async () => {
+    const interaction = makeReminderButtonInteraction({
+      customId: buildReminderLinkConfirmCustomId({
+        channelId: "channel-1",
+        messageId: "message-1",
+        playerTag: "#PYLQ0289",
+      }),
+      messageId: "message-1",
+      channelId: "channel-2",
+      guildId: "guild-1",
+      userId: "111111111111111111",
+    });
+
+    await handleReminderLinkConfirmButtonInteraction(interaction as any);
+
+    expect(prismaMock.playerLink.create).not.toHaveBeenCalled();
+    expect(interaction.reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content:
+        "invalid_context: this reminder link confirmation can only be used in its original channel.",
+    });
+  });
+
+  it("rejects stale reminder confirmations when the player is already linked", async () => {
+    prismaMock.playerLink.findUnique.mockResolvedValue({
+      discordUserId: "222222222222222222",
+    });
+    const interaction = makeReminderButtonInteraction({
+      customId: buildReminderLinkConfirmCustomId({
+        channelId: "channel-1",
+        messageId: "message-1",
+        playerTag: "#PYLQ0289",
+      }),
+      messageId: "message-1",
+      channelId: "channel-1",
+      guildId: "guild-1",
+      userId: "111111111111111111",
+    });
+
+    await handleReminderLinkConfirmButtonInteraction(interaction as any);
+
+    expect(prismaMock.playerLink.create).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "already_linked_to_other_user: #PYLQ0289 is linked to <@222222222222222222>. delete-first is required.",
+    );
+  });
+
+  it("allows only one user to claim the same unlinked reminder player", async () => {
+    prismaMock.playerLink.findUnique
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ discordUserId: "111111111111111111" });
+    prismaMock.playerLink.create.mockResolvedValue({});
+    const first = makeReminderButtonInteraction({
+      customId: buildReminderLinkConfirmCustomId({
+        channelId: "channel-1",
+        messageId: "message-1",
+        playerTag: "#PYLQ0289",
+      }),
+      messageId: "message-1",
+      channelId: "channel-1",
+      guildId: "guild-1",
+      userId: "111111111111111111",
+    });
+    const second = makeReminderButtonInteraction({
+      customId: buildReminderLinkConfirmCustomId({
+        channelId: "channel-1",
+        messageId: "message-1",
+        playerTag: "#PYLQ0289",
+      }),
+      messageId: "message-1",
+      channelId: "channel-1",
+      guildId: "guild-1",
+      userId: "222222222222222222",
+    });
+
+    await handleReminderLinkConfirmButtonInteraction(first as any);
+    await handleReminderLinkConfirmButtonInteraction(second as any);
+
+    expect(prismaMock.playerLink.create).toHaveBeenCalledTimes(1);
+    expect(first.editReply).toHaveBeenCalledWith(
+      "created: #PYLQ0289 linked to you.",
+    );
+    expect(second.editReply).toHaveBeenCalledWith(
+      "already_linked_to_other_user: #PYLQ0289 is linked to <@111111111111111111>. delete-first is required.",
+    );
+  });
+
+  it("treats reminder link custom ids as stable guards", () => {
+    expect(
+      isReminderLinkButtonCustomId(
+        buildReminderLinkButtonCustomId({
+          guildId: "guild-1",
+          reminderId: "rem-1",
+          playerTag: "#PYLQ0289",
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      isReminderLinkConfirmButtonCustomId(
+        buildReminderLinkConfirmCustomId({
+          channelId: "channel-1",
+          messageId: "message-1",
+          playerTag: "#PYLQ0289",
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      isReminderLinkCancelButtonCustomId(
+        buildReminderLinkCancelCustomId({
+          channelId: "channel-1",
+          messageId: "message-1",
+          playerTag: "#PYLQ0289",
+        }),
+      ),
+    ).toBe(true);
   });
 });

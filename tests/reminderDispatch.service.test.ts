@@ -22,8 +22,10 @@ vi.mock("../src/prisma", () => ({
 
 import {
   ReminderDispatchService,
+  buildReminderDispatchMessagesForTest,
   buildReminderDispatchContentsForTest,
 } from "../src/services/reminders/ReminderDispatchService";
+import { buildReminderLinkButtonCustomId } from "../src/services/reminders/ReminderLinkActions";
 
 function buildValidPlayerTag(index: number): string {
   const alphabet = "PYLQGRJCUV0289";
@@ -133,6 +135,50 @@ describe("ReminderDispatchService roster rendering", () => {
 
     expect(contents[0]).toContain("#12 - ❌ PlayerName `#PYLQ0289` - 1 / 2");
     expect(contents[0]).not.toContain("Players With Attacks Remaining:");
+  });
+
+  it("attaches a Link player action to unlinked reminder rows", async () => {
+    prismaMock.warAttacks.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ0289", playerName: "PlayerName", playerPosition: 12, attacksUsed: 1 },
+    ]);
+    prismaMock.currentWar.findFirst.mockResolvedValue({
+      state: "inWar",
+      warId: 9,
+      matchType: "BL",
+      inferredMatchType: false,
+      outcome: null,
+    });
+
+    const messages = await buildReminderDispatchMessagesForTest({
+      input: {
+        guildId: "guild-1",
+        channelId: "channel-1",
+        reminderId: "rem-1",
+        type: ReminderType.WAR_CWL,
+        clanTag: "#PYLQ",
+        clanName: "Alpha Clan",
+        offsetSeconds: 3600,
+        eventIdentity: "WAR:war-id:9",
+        eventEndsAt: new Date("2026-04-10T01:00:00.000Z"),
+        eventLabel: "war end",
+      },
+      nowMs: Date.parse("2026-04-10T00:30:00.000Z"),
+      cocService: null,
+    });
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0].content).toContain("Is this you?");
+    expect(messages[0].components).toHaveLength(1);
+    const row = messages[0].components[0]?.toJSON() as any;
+    expect(row.components).toHaveLength(1);
+    expect(row.components[0].label).toBe("Link player");
+    expect(row.components[0].custom_id).toBe(
+      buildReminderLinkButtonCustomId({
+        guildId: "guild-1",
+        reminderId: "rem-1",
+        playerTag: "#PYLQ0289",
+      }),
+    );
   });
 
   it.each([
@@ -432,7 +478,7 @@ describe("ReminderDispatchService roster rendering", () => {
       cocService: null,
     });
 
-    expect(contents).toHaveLength(2);
+    expect(contents).toHaveLength(3);
     expect(contents.every((content) => content.length <= 2000)).toBe(true);
     expect(contents[1]).not.toContain("Clan: Overflow Clan #PYLQ");
 

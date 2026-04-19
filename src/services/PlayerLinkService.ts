@@ -144,20 +144,77 @@ export async function createPlayerLink(input: {
     };
   }
 
-  if (existing) {
-    await prisma.playerLink.update({
+  try {
+    if (existing) {
+      const updated = await prisma.playerLink.updateMany({
+        where: {
+          playerTag: normalizedTag,
+          OR: [{ discordUserId: null }, { discordUserId: normalizedUserId }],
+        },
+        data: {
+          discordUserId: normalizedUserId,
+        },
+      });
+
+      if (updated.count <= 0) {
+        const racedExisting = await prisma.playerLink.findUnique({
+          where: { playerTag: normalizedTag },
+          select: { discordUserId: true },
+        });
+        if (racedExisting?.discordUserId) {
+          if (racedExisting.discordUserId === normalizedUserId) {
+            return {
+              outcome: input.selfService ? "already_linked_to_you" : "already_linked_to_target_user",
+              playerTag: normalizedTag,
+              discordUserId: normalizedUserId,
+              existingDiscordUserId: racedExisting.discordUserId,
+            };
+          }
+          return {
+            outcome: "already_linked_to_other_user",
+            playerTag: normalizedTag,
+            discordUserId: normalizedUserId,
+            existingDiscordUserId: racedExisting.discordUserId,
+          };
+        }
+
+        await prisma.playerLink.create({
+          data: {
+            playerTag: normalizedTag,
+            discordUserId: normalizedUserId,
+          },
+        });
+      }
+    } else {
+      await prisma.playerLink.create({
+        data: {
+          playerTag: normalizedTag,
+          discordUserId: normalizedUserId,
+        },
+      });
+    }
+  } catch (err) {
+    const code = (err as { code?: string } | null | undefined)?.code ?? "";
+    if (code !== "P2002") throw err;
+
+    const racedExisting = await prisma.playerLink.findUnique({
       where: { playerTag: normalizedTag },
-      data: {
-        discordUserId: normalizedUserId,
-      },
+      select: { discordUserId: true },
     });
-  } else {
-    await prisma.playerLink.create({
-      data: {
+    if (racedExisting?.discordUserId === normalizedUserId) {
+      return {
+        outcome: input.selfService ? "already_linked_to_you" : "already_linked_to_target_user",
         playerTag: normalizedTag,
         discordUserId: normalizedUserId,
-      },
-    });
+        existingDiscordUserId: racedExisting.discordUserId,
+      };
+    }
+    return {
+      outcome: "already_linked_to_other_user",
+      playerTag: normalizedTag,
+      discordUserId: normalizedUserId,
+      existingDiscordUserId: racedExisting?.discordUserId ?? null,
+    };
   }
   return {
     outcome: "created",

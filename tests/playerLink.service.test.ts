@@ -17,6 +17,7 @@ vi.mock("../src/prisma", () => ({
 }));
 
 import {
+  createPlayerLink,
   createPlayerLinkFromEmbed,
   backfillMissingDiscordUsernamesForClanMembers,
   listCurrentWeightsForClanMembers,
@@ -224,6 +225,26 @@ describe("PlayerLinkService link identity", () => {
     expect(result).toEqual({
       outcome: "already_linked",
       playerTag: "#PYL0289",
+      discordUserId: "111111111111111111",
+      existingDiscordUserId: "222222222222222222",
+    });
+  });
+
+  it("maps self-link create races to deterministic conflict outcomes", async () => {
+    prismaMock.playerLink.findUnique
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ discordUserId: "222222222222222222" });
+    prismaMock.playerLink.create.mockRejectedValue({ code: "P2002" });
+
+    const result = await createPlayerLink({
+      playerTag: "#PYLQ0289",
+      targetDiscordUserId: "111111111111111111",
+      selfService: true,
+    });
+
+    expect(result).toEqual({
+      outcome: "already_linked_to_other_user",
+      playerTag: "#PYLQ0289",
       discordUserId: "111111111111111111",
       existingDiscordUserId: "222222222222222222",
     });

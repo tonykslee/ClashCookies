@@ -88,9 +88,15 @@ import {
 import {
   handleLinkEmbedButtonInteraction,
   handleLinkEmbedModalSubmit,
+  handleReminderLinkButtonInteraction,
+  handleReminderLinkCancelButtonInteraction,
+  handleReminderLinkConfirmButtonInteraction,
   handleLinkListSelectMenu,
   handleLinkListSortButton,
   isLinkEmbedAccountButtonCustomId,
+  isReminderLinkButtonCustomId,
+  isReminderLinkCancelButtonCustomId,
+  isReminderLinkConfirmButtonCustomId,
   isLinkEmbedModalCustomId,
   isLinkListSelectCustomId,
   isLinkListSortButtonCustomId,
@@ -481,6 +487,51 @@ const handleButtonInteraction = async (
         await interaction.reply({
           ephemeral: true,
           content: "Failed to open link modal.",
+        });
+      }
+    }
+    return;
+  }
+
+  if (isReminderLinkButtonCustomId(interaction.customId)) {
+    try {
+      await handleReminderLinkButtonInteraction(interaction);
+    } catch (err) {
+      console.error(`Reminder link button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to open reminder link confirmation.",
+        });
+      }
+    }
+    return;
+  }
+
+  if (isReminderLinkConfirmButtonCustomId(interaction.customId)) {
+    try {
+      await handleReminderLinkConfirmButtonInteraction(interaction);
+    } catch (err) {
+      console.error(`Reminder link confirm button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to confirm reminder link.",
+        });
+      }
+    }
+    return;
+  }
+
+  if (isReminderLinkCancelButtonCustomId(interaction.customId)) {
+    try {
+      await handleReminderLinkCancelButtonInteraction(interaction);
+    } catch (err) {
+      console.error(`Reminder link cancel button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to cancel reminder link.",
         });
       }
     }

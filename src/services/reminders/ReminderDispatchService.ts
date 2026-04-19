@@ -1,12 +1,15 @@
 import { ReminderType } from "@prisma/client";
-import { Client } from "discord.js";
+import { ActionRowBuilder, ButtonBuilder, ButtonStyle, Client } from "discord.js";
 import type { ClanWar } from "../../generated/coc-api";
 import { formatError } from "../../helper/formatError";
-import { splitDiscordLineMessages } from "../../helper/discordLineMessageSplit";
+import { truncateDiscordContent } from "../../helper/discordContent";
 import { prisma } from "../../prisma";
 import { resolveCurrentWarMatchTypeSignal } from "../MatchTypeResolutionService";
 import { CoCService, type ClanCapitalRaidSeason } from "../CoCService";
 import { normalizeClanTag, normalizePlayerTag } from "../PlayerLinkService";
+import {
+  buildReminderLinkButtonCustomId,
+} from "./ReminderLinkActions";
 import { parseCocTime } from "../war-events/core";
 
 export type ReminderDispatchInput = {
@@ -55,7 +58,19 @@ type ReminderRosterEntry = {
 
 type ReminderRosterResolveResult = {
   windowActive: boolean;
-  lines: string[];
+  roster: ReminderRosterEntry[];
+};
+
+type ReminderDispatchMessage = {
+  content: string;
+  components: ActionRowBuilder<ButtonBuilder>[];
+};
+
+type ReminderDispatchLine = {
+  text: string;
+  button?: {
+    playerTag: string;
+  } | null;
 };
 
 type ConfirmedWarHeadline = {
@@ -84,7 +99,7 @@ export class ReminderDispatchService {
         };
       }
 
-      const contents = await buildReminderDispatchContents({
+      const contents = await buildReminderDispatchMessages({
         input,
         nowMs: this.getNowMs(),
         cocService: this.getCoCService(),
@@ -98,10 +113,11 @@ export class ReminderDispatchService {
       let firstMessageId: string | null = null;
       for (const content of contents) {
         const sent = await channel.send({
-          content,
+          content: content.content,
           allowedMentions: {
             parse: ["users"],
           },
+          ...(content.components.length > 0 ? { components: content.components } : {}),
         });
         if (!firstMessageId) {
           firstMessageId = sent.id;
@@ -146,11 +162,11 @@ export class ReminderDispatchService {
 export const reminderDispatchService = new ReminderDispatchService();
 
 /** Purpose: build one to three reminder messages with optional attack-remaining roster continuation for send-time reminder posts. */
-async function buildReminderDispatchContents(input: {
+async function buildReminderDispatchMessages(input: {
   input: ReminderDispatchInput;
   nowMs: number;
   cocService: ReminderDispatchCoCClient | null;
-}): Promise<string[]> {
+}): Promise<ReminderDispatchMessage[]> {
   const payload = input.input;
   const semantic = resolveReminderRosterSemantic({
     reminderType: payload.type,
@@ -162,7 +178,7 @@ async function buildReminderDispatchContents(input: {
           clanTag: payload.clanTag,
         })
       : Promise.resolve<ConfirmedWarHeadline | null>(null),
-    resolveReminderRosterLines({
+    resolveReminderRosterEntries({
       input: payload,
       semantic,
       cocService: input.cocService,
@@ -177,10 +193,12 @@ async function buildReminderDispatchContents(input: {
     nowMs: input.nowMs,
     warHeadline,
   });
-  return buildReminderContentsWithRosterOverflow({
+  return buildReminderMessagesWithRosterOverflow({
     headerLines,
-    rosterLines: roster.lines,
+    rosterEntries: roster.roster,
     includeRosterHeading: semantic !== "WAR",
+    input: payload,
+    semantic,
   });
 }
 
@@ -224,14 +242,14 @@ function resolveReminderRosterSemantic(input: {
 }
 
 /** Purpose: resolve and format all send-time roster lines with linked-user mentions for eligible members with attacks remaining. */
-async function resolveReminderRosterLines(input: {
+async function resolveReminderRosterEntries(input: {
   input: ReminderDispatchInput;
   semantic: ReminderRosterSemantic;
   cocService: ReminderDispatchCoCClient | null;
   nowMs: number;
 }): Promise<ReminderRosterResolveResult> {
   if (input.semantic === "OTHER") {
-    return { windowActive: true, lines: [] };
+    return { windowActive: true, roster: [] };
   }
 
   let windowActive = false;
@@ -262,7 +280,7 @@ async function resolveReminderRosterLines(input: {
   if (!windowActive || roster.length <= 0) {
     return {
       windowActive,
-      lines: [],
+      roster: [],
     };
   }
 
@@ -294,12 +312,7 @@ async function resolveReminderRosterLines(input: {
 
   return {
     windowActive,
-    lines: sortedRoster.map((entry) =>
-      formatReminderRosterLine({
-        entry,
-        semantic: input.semantic,
-      }),
-    ),
+    roster: sortedRoster,
   };
 }
 
@@ -642,21 +655,129 @@ async function resolveActiveCwlBattleWarForClan(input: {
 }
 
 /** Purpose: build final one-to-three message output with line-safe overflow handling and hard cap at three messages. */
-function buildReminderContentsWithRosterOverflow(input: {
+function buildReminderMessagesWithRosterOverflow(input: {
   headerLines: string[];
-  rosterLines: string[];
+  rosterEntries: ReminderRosterEntry[];
   includeRosterHeading: boolean;
-}): string[] {
-  const lines =
-    input.rosterLines.length > 0
-      ? input.includeRosterHeading
-        ? [...input.headerLines, "", "Players With Attacks Remaining:", ...input.rosterLines]
-        : [...input.headerLines, "", ...input.rosterLines]
-      : [...input.headerLines];
-  return splitDiscordLineMessages({
+  input: ReminderDispatchInput;
+  semantic: ReminderRosterSemantic;
+}): ReminderDispatchMessage[] {
+  const lines: ReminderDispatchLine[] =
+    input.rosterEntries.length > 0
+      ? [
+          ...input.headerLines.map((text) => ({ text }) satisfies ReminderDispatchLine),
+          { text: "" },
+          ...(input.includeRosterHeading
+            ? [{ text: "Players With Attacks Remaining:" }]
+            : []),
+          ...input.rosterEntries.flatMap((entry) => {
+            const line = formatReminderRosterLine({
+              entry,
+              semantic: input.semantic,
+            });
+            return entry.discordUserId
+              ? [{ text: line }]
+              : [
+                  {
+                    text: line,
+                    button: {
+                      playerTag: entry.playerTag,
+                    },
+                  },
+                ];
+          }),
+        ]
+      : input.headerLines.map((text) => ({ text }) satisfies ReminderDispatchLine);
+
+  return splitReminderDispatchMessages({
     lines,
     maxMessages: MAX_REMINDER_MESSAGES,
+    reminderInput: input.input,
   });
+}
+
+/** Purpose: split reminder render lines and matching component rows into Discord-safe messages without breaking line boundaries. */
+function splitReminderDispatchMessages(input: {
+  lines: ReminderDispatchLine[];
+  maxMessages: number;
+  reminderInput: ReminderDispatchInput;
+}): ReminderDispatchMessage[] {
+  const messages: ReminderDispatchMessage[] = [];
+  let currentLines: string[] = [];
+  let currentButtonTags: string[] = [];
+  const promptLine = "Is this you?";
+
+  const flushCurrent = (): void => {
+    if (currentLines.length <= 0 || messages.length >= input.maxMessages) return;
+    messages.push({
+      content:
+        currentButtonTags.length > 0
+          ? [...currentLines, promptLine].join("\n")
+          : currentLines.join("\n"),
+      components: buildReminderLinkButtonRows({
+        guildId: input.reminderInput.guildId,
+        reminderId: input.reminderInput.reminderId,
+        playerTags: currentButtonTags,
+      }),
+    });
+    currentLines = [];
+    currentButtonTags = [];
+  };
+
+  for (const rawLine of input.lines) {
+    if (messages.length >= input.maxMessages) break;
+
+    const line = truncateDiscordContent(rawLine.text, 2000);
+    const nextButtonTags = rawLine.button
+      ? [...currentButtonTags, rawLine.button.playerTag]
+      : currentButtonTags;
+    const candidate =
+      currentLines.length > 0 ? [...currentLines, line].join("\n") : line;
+    const candidateLength =
+      candidate.length + (nextButtonTags.length > 0 ? 1 + promptLine.length : 0);
+
+    if (candidateLength > 2000 || nextButtonTags.length > 25) {
+      flushCurrent();
+      if (messages.length >= input.maxMessages) break;
+    }
+
+    currentLines.push(line);
+    if (rawLine.button) {
+      currentButtonTags.push(rawLine.button.playerTag);
+    }
+  }
+
+  flushCurrent();
+  return messages;
+}
+
+/** Purpose: build reminder self-link button rows grouped into Discord-safe rows of five buttons each. */
+function buildReminderLinkButtonRows(input: {
+  guildId: string;
+  reminderId: string;
+  playerTags: string[];
+}): ActionRowBuilder<ButtonBuilder>[] {
+  const rows: ActionRowBuilder<ButtonBuilder>[] = [];
+  for (let index = 0; index < input.playerTags.length; index += 5) {
+    const group = input.playerTags.slice(index, index + 5);
+    const row = new ActionRowBuilder<ButtonBuilder>();
+    for (const playerTag of group) {
+      row.addComponents(
+        new ButtonBuilder()
+          .setCustomId(
+            buildReminderLinkButtonCustomId({
+              guildId: input.guildId,
+              reminderId: input.reminderId,
+              playerTag,
+            }),
+          )
+          .setLabel("Link player")
+          .setStyle(ButtonStyle.Primary),
+      );
+    }
+    rows.push(row);
+  }
+  return rows;
 }
 
 /** Purpose: compare roster rows by lineup position first, then stable name/tag fallback ordering. */
@@ -745,4 +866,13 @@ function formatOffsetLabel(offsetSeconds: number): string {
   return `${hours}h${minutes}m`;
 }
 
-export const buildReminderDispatchContentsForTest = buildReminderDispatchContents;
+/** Purpose: expose reminder message builder for tests without exporting internal message splitting helpers. */
+export const buildReminderDispatchMessagesForTest = buildReminderDispatchMessages;
+
+/** Purpose: expose reminder content builder for tests without exporting internal message splitting helpers. */
+export const buildReminderDispatchContentsForTest = async (
+  input: Parameters<typeof buildReminderDispatchMessages>[0],
+): Promise<string[]> => {
+  const messages = await buildReminderDispatchMessages(input);
+  return messages.map((message) => message.content);
+};
