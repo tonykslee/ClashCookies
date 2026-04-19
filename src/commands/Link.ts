@@ -1108,6 +1108,35 @@ function buildReminderLinkConfirmationRows(input: {
   ];
 }
 
+function resolveReminderLinkPlayerDisplayName(input: {
+  messageContent: string;
+  playerTag: string;
+}): string {
+  const normalizedTag = normalizePlayerTag(input.playerTag);
+  const firstLine = sanitizeTableText(String(input.messageContent ?? "").split("\n")[0] ?? "");
+  if (!normalizedTag || !firstLine) return normalizedTag || "";
+
+  const backtickedTag = `\`${normalizedTag}\``;
+  const backtickedIndex = firstLine.indexOf(backtickedTag);
+  if (backtickedIndex >= 0) {
+    const beforeTag = firstLine.slice(0, backtickedIndex);
+    const displayName = sanitizeTableText(
+      beforeTag.replace(/^(?:#\d+\s*-\s*)?(?:❌|âŒ|:no:)\s+/, ""),
+    );
+    if (displayName) return displayName;
+  }
+
+  const rowMatch = firstLine.match(
+    /^(?:#\d+\s*-\s*)?(?:❌|âŒ|:no:)\s+(.+?)\s+-\s+\d+\s+\/\s+\d+$/,
+  );
+  if (rowMatch?.[1]) {
+    const displayName = sanitizeTableText(rowMatch[1]);
+    if (displayName) return displayName;
+  }
+
+  return normalizedTag;
+}
+
 export function isReminderLinkButtonCustomId(customId: string): boolean {
   return parseReminderLinkButtonCustomId(customId) !== null;
 }
@@ -1324,9 +1353,18 @@ export async function handleReminderLinkButtonInteraction(
     return;
   }
 
+  const playerName = resolveReminderLinkPlayerDisplayName({
+    messageContent: interaction.message?.content ?? "",
+    playerTag: parsed.playerTag,
+  });
+  const confirmationIdentity =
+    playerName && playerName !== parsed.playerTag
+      ? `${playerName} ${parsed.playerTag}`
+      : parsed.playerTag;
+
   await interaction.reply({
     ephemeral: true,
-    content: `Link \`${parsed.playerTag}\` to your Discord account?`,
+    content: `Link ${confirmationIdentity} to your Discord account?`,
     components: buildReminderLinkConfirmationRows({
       channelId: interaction.channelId,
       messageId: interaction.message.id,
