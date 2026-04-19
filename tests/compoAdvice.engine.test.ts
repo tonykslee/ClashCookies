@@ -173,12 +173,11 @@ describe("CompoAdviceEngine", () => {
 
   it("changes Custom advice when the target band changes", () => {
     const base = {
-      resolvedTotalWeight: 49 * 135000 + 145000,
+      resolvedTotalWeight: 350_000,
       unresolvedWeightCount: 0,
       memberCount: 50,
       bucketCounts: makeBucketCounts({
-        TH14: 49,
-        TH15: 1,
+        TH15: 50,
       }),
     };
     const heatMapRefs = [
@@ -218,12 +217,14 @@ describe("CompoAdviceEngine", () => {
     expect(first.viewLabel).toBe("Custom");
     expect(second.viewLabel).toBe("Custom");
     expect(first.currentBandLabel).toBe(second.currentBandLabel);
+    expect(first.currentBandLabel).not.toBe("(no band)");
     expect(first.targetBandLabel).not.toBe(second.targetBandLabel);
     expect(first.currentMatchrate).toBeCloseTo(second.currentMatchrate ?? 0, 6);
     expect(first.targetBandMatchrate).not.toBe(second.targetBandMatchrate);
     expect(first.resultingMatchrate).not.toBe(second.resultingMatchrate);
     expect(first.recommendationText).not.toBe(second.recommendationText);
     expect(first.currentScore).toBe(second.currentScore);
+    expect(first.currentScore).not.toBeNull();
   });
 
   it("computes midpoint advice using middle-band arithmetic and end-band offsets", () => {
@@ -275,6 +276,18 @@ describe("CompoAdviceEngine", () => {
     expect(formatMatchratePercentForTest(0.7214)).toBe("72.14%");
     expect(formatMatchratePercentForTest(72.14)).toBe("72.14%");
     expect(formatMatchratePercentForTest(null)).toBe("Unknown");
+    const currentMatchrate = estimateMatchrateFromDeviationForTest({
+      bandMatchrate: 0.7214,
+      deviationScore: 23,
+    });
+    const resultingMatchrate = estimateMatchrateFromDeviationForTest({
+      bandMatchrate: 0.7214,
+      deviationScore: 15,
+    });
+    expect(currentMatchrate).toBeCloseTo(0.68, 4);
+    expect(resultingMatchrate).toBeCloseTo(0.6944, 4);
+    expect(resultingMatchrate).toBeGreaterThan(currentMatchrate ?? 0);
+    expect(resultingMatchrate).not.toBe(currentMatchrate);
     expect(
       estimateMatchrateFromDeviationForTest({
         bandMatchrate: 0.7214,
