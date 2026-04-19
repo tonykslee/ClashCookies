@@ -11,15 +11,31 @@ Use loaded context as the source of truth:
 # 2) Start branch
 ./scripts/start-feature.sh <short-feature-name>
 
-After Step 2, stop and explicitly report:
+Immediately after Step 2, self-verify the branch before doing any other work.
+
+Required verification output:
 - current branch name
 - `git status --short --branch`
-- whether the branch is based on latest `origin/dev`
+- `git rev-parse HEAD`
+- `git rev-parse origin/dev`
 
-Do not start Step 3 until that confirmation has been shown.
+Required verification rule:
+- before any file reads, edits, or Step 3 work, `HEAD` must exactly equal `origin/dev`
+- do not rely on assumption; verify with the commands above
 
-If the branch confirmation is missing or ambiguous, stop and do not continue.
-Do not read other files, edit files, or run Step 3 until branch confirmation has been shown.
+If verification passes:
+- continue automatically to Step 3 without asking me to confirm
+
+If verification fails:
+- stop Step 3
+- fix it yourself by creating a fresh feature branch from the latest `origin/dev`
+- rerun the verification block
+- only continue once `HEAD == origin/dev`
+
+Hard rules:
+- do not ask me whether to continue if the verification passes
+- do not read other files, edit files, or run Step 3 until verification has passed
+- do not continue on a branch that is not based exactly on the latest `origin/dev`
 
 # 3) Task
 (Paste task here)

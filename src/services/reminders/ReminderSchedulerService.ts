@@ -11,6 +11,7 @@ import { normalizeClanTag } from "../PlayerLinkService";
 import { reminderDispatchService, type ReminderDispatchService } from "./ReminderDispatchService";
 
 const DEFAULT_REMINDER_SCHEDULER_INTERVAL_MS = 60 * 1000;
+const DEFAULT_REMINDER_SCHEDULER_CATCH_UP_GRACE_MS = 2 * 60 * 1000;
 
 type ReminderSchedulerRow = {
   id: string;
@@ -18,6 +19,7 @@ type ReminderSchedulerRow = {
   channelId: string;
   type: ReminderType;
   isEnabled: boolean;
+  createdAt: Date | null;
   times: Array<{ offsetSeconds: number }>;
   targetClans: Array<{ clanTag: string; clanType: ReminderTargetClanType }>;
 };
@@ -172,6 +174,7 @@ export async function runReminderSchedulerCycle(input: {
     channelId: row.channelId,
     type: row.type,
     isEnabled: row.isEnabled,
+    createdAt: row.createdAt ?? null,
     times: row.times,
     targetClans: row.targetClans,
   }));
@@ -203,6 +206,7 @@ export async function runReminderSchedulerCycle(input: {
             intervalMs,
             eventEndsAtMs: context.eventEndsAt.getTime(),
             offsetSeconds,
+            reminderCreatedAtMs: reminder.createdAt?.getTime() ?? null,
           })
         ) {
           continue;
@@ -282,14 +286,20 @@ function shouldReminderOffsetFire(input: {
   intervalMs: number;
   eventEndsAtMs: number;
   offsetSeconds: number;
+  reminderCreatedAtMs?: number | null;
 }): boolean {
   const offsetMs = Math.max(1, Math.trunc(input.offsetSeconds)) * 1000;
   const triggerAtMs = input.eventEndsAtMs - offsetMs;
   if (!Number.isFinite(triggerAtMs)) return false;
   if (input.nowMs >= input.eventEndsAtMs) return false;
-  const previousTickMs = input.nowMs - Math.max(1, input.intervalMs);
-  const crossedThisCycle = triggerAtMs > previousTickMs && triggerAtMs <= input.nowMs;
-  return crossedThisCycle;
+  if (Number.isFinite(input.reminderCreatedAtMs) && triggerAtMs < Number(input.reminderCreatedAtMs)) {
+    return false;
+  }
+  const allowedGraceMs = Math.max(
+    Math.max(1, Math.trunc(input.intervalMs)),
+    DEFAULT_REMINDER_SCHEDULER_CATCH_UP_GRACE_MS,
+  );
+  return triggerAtMs <= input.nowMs && triggerAtMs >= input.nowMs - allowedGraceMs;
 }
 
 /** Purpose: build deterministic dedupe key per reminder+clan+event identity+offset. */
