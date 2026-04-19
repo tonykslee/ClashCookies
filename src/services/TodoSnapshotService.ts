@@ -812,6 +812,8 @@ export class TodoSnapshotService {
     const snapshotUpserts: Array<
       Parameters<typeof prisma.todoPlayerSnapshot.upsert>[0]
     > = [];
+    let raidActiveTrueCount = 0;
+    let raidActiveFalseCount = 0;
 
     for (const playerTag of normalizedTags) {
       const existing = existingByTag.get(playerTag);
@@ -981,6 +983,11 @@ export class TodoSnapshotService {
         gamesEndsAt: new Date(gamesWindow.endMs),
         lastUpdatedAt: now,
       };
+      if (data.raidActive) {
+        raidActiveTrueCount += 1;
+      } else {
+        raidActiveFalseCount += 1;
+      }
 
       snapshotUpserts.push({
         where: { playerTag },
@@ -991,6 +998,10 @@ export class TodoSnapshotService {
         },
       });
     }
+
+    console.info(
+      `[todo-snapshot] event=raid_snapshot_refresh now_ms=${nowMs} raid_start_ms=${raidWindow.startMs} raid_end_ms=${raidWindow.endMs} raid_active=${raidWindow.active} player_count=${normalizedTags.length} raid_active_rows=${raidActiveTrueCount} raid_inactive_rows=${raidActiveFalseCount}`,
+    );
 
     try {
       await runChunkedWrites(
@@ -1854,17 +1865,16 @@ function resolveRaidWeekendWindow(nowMs: number): TodoWindow {
     0,
     0,
   );
-  const weekStartMs = dayStartMs - now.getUTCDay() * dayMs;
-  const fridayStartMs = weekStartMs + 5 * dayMs + 7 * hourMs;
+  const fridayDayOffset = (now.getUTCDay() - 5 + 7) % 7;
+  let fridayStartMs = dayStartMs - fridayDayOffset * dayMs + 7 * hourMs;
+  if (nowMs < fridayStartMs) {
+    fridayStartMs -= 7 * dayMs;
+  }
   const raidEndMs = fridayStartMs + 3 * dayMs;
 
   if (nowMs >= fridayStartMs && nowMs < raidEndMs) {
     return { active: true, startMs: fridayStartMs, endMs: raidEndMs };
   }
-  if (nowMs < fridayStartMs) {
-    return { active: false, startMs: fridayStartMs, endMs: raidEndMs };
-  }
-
   const nextStartMs = fridayStartMs + 7 * dayMs;
   return {
     active: false,
@@ -1872,6 +1882,9 @@ function resolveRaidWeekendWindow(nowMs: number): TodoWindow {
     endMs: nextStartMs + 3 * dayMs,
   };
 }
+
+/** Purpose: expose raid-weekend window resolution for isolated tests. */
+export const resolveRaidWeekendWindowForTest = resolveRaidWeekendWindow;
 
 /** Purpose: build one UTC-safe Clan Games cycle boundary set for a specific calendar month. */
 function buildClanGamesCycleBoundary(

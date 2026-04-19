@@ -239,31 +239,73 @@ describe("ReminderSchedulerService v1 trigger semantics", () => {
     );
   });
 
-  it("fires only when the scheduler window crosses the offset boundary and never after event end", () => {
-    const endMs = Date.parse("2026-04-05T02:00:00.000Z");
+  it("fires a 24h WAR_CWL reminder when the scheduler lands shortly after battle day start", () => {
+    const eventEndsAtMs = Date.parse("2026-04-06T00:00:00.000Z");
+    const battleDayStartMs = eventEndsAtMs - 24 * 60 * 60 * 1000;
 
-    const crossed = shouldReminderOffsetFireForTest({
-      nowMs: endMs - 30 * 60 * 1000,
+    const slightlyLate = shouldReminderOffsetFireForTest({
+      nowMs: battleDayStartMs + 90_000,
       intervalMs: 60_000,
-      eventEndsAtMs: endMs,
-      offsetSeconds: 30 * 60,
+      eventEndsAtMs,
+      offsetSeconds: 24 * 60 * 60,
+      reminderCreatedAtMs: battleDayStartMs - 10 * 60 * 1000,
     });
-    const lateFire = shouldReminderOffsetFireForTest({
-      nowMs: endMs - 5 * 60 * 1000,
+    const tooLate = shouldReminderOffsetFireForTest({
+      nowMs: battleDayStartMs + 3 * 60 * 1000,
       intervalMs: 60_000,
-      eventEndsAtMs: endMs,
-      offsetSeconds: 30 * 60,
+      eventEndsAtMs,
+      offsetSeconds: 24 * 60 * 60,
+      reminderCreatedAtMs: battleDayStartMs - 10 * 60 * 1000,
     });
     const expired = shouldReminderOffsetFireForTest({
-      nowMs: endMs + 1,
+      nowMs: eventEndsAtMs + 1,
       intervalMs: 60_000,
-      eventEndsAtMs: endMs,
-      offsetSeconds: 30 * 60,
+      eventEndsAtMs,
+      offsetSeconds: 24 * 60 * 60,
+      reminderCreatedAtMs: battleDayStartMs - 10 * 60 * 1000,
     });
 
-    expect(crossed).toBe(true);
-    expect(lateFire).toBe(false);
+    expect(slightlyLate).toBe(true);
+    expect(tooLate).toBe(false);
     expect(expired).toBe(false);
+  });
+
+  it("does not fire after the bounded grace window has passed", () => {
+    const eventEndsAtMs = Date.parse("2026-04-05T02:00:00.000Z");
+
+    const withinGrace = shouldReminderOffsetFireForTest({
+      nowMs: eventEndsAtMs - 30 * 60 * 1000 + 90_000,
+      intervalMs: 60_000,
+      eventEndsAtMs,
+      offsetSeconds: 30 * 60,
+      reminderCreatedAtMs: eventEndsAtMs - 60 * 60 * 1000,
+    });
+    const beyondGrace = shouldReminderOffsetFireForTest({
+      nowMs: eventEndsAtMs - 30 * 60 * 1000 + 3 * 60 * 1000,
+      intervalMs: 60_000,
+      eventEndsAtMs,
+      offsetSeconds: 30 * 60,
+      reminderCreatedAtMs: eventEndsAtMs - 60 * 60 * 1000,
+    });
+
+    expect(withinGrace).toBe(true);
+    expect(beyondGrace).toBe(false);
+  });
+
+  it("does not backfill a reminder that was created after the trigger time", () => {
+    const eventEndsAtMs = Date.parse("2026-04-06T00:00:00.000Z");
+    const battleDayStartMs = eventEndsAtMs - 24 * 60 * 60 * 1000;
+    const reminderCreatedAtMs = battleDayStartMs + 30_000;
+
+    const backfillBlocked = shouldReminderOffsetFireForTest({
+      nowMs: battleDayStartMs + 90_000,
+      intervalMs: 60_000,
+      eventEndsAtMs,
+      offsetSeconds: 24 * 60 * 60,
+      reminderCreatedAtMs,
+    });
+
+    expect(backfillBlocked).toBe(false);
   });
 
   it("skips already-missed offsets for a newly created active-war reminder", async () => {

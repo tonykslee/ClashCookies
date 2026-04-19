@@ -387,8 +387,8 @@ function buildCustomProjection(input: {
 
   if (!selection.selectedHeatMapRef) {
     return {
-      currentProjection: rawProjection,
-      targetProjection: rawProjection,
+      currentProjection: scoreProjectionIfNeeded(rawProjection),
+      targetProjection: scoreProjectionIfNeeded(rawProjection),
       selectedCustomBandIndex: null,
       heatMapRefs: selection.heatMapRefs,
     };
@@ -400,7 +400,7 @@ function buildCustomProjection(input: {
   );
 
   return {
-    currentProjection: rawProjection,
+    currentProjection: scoreProjectionIfNeeded(rawProjection),
     targetProjection: {
       ...rawProjection,
       selectedHeatMapRef: selection.selectedHeatMapRef,
@@ -479,36 +479,11 @@ function projectAdviceState(input: {
     });
   }
 
-  const projection = projectCompoActualStateView({
+  const projection = scoreProjectionIfNeeded(projectCompoActualStateView({
     view: input.view,
     base: input.base,
     heatMapRefs: input.heatMapRefs,
-  });
-  if (projection.deviationScore === null && projection.selectedHeatMapRef) {
-    return {
-      currentProjection: {
-        ...projection,
-        deviationScore: calculateCompoDeviationScore({
-          displayCounts: projection.displayCounts,
-          heatMapRef: projection.selectedHeatMapRef,
-        }),
-      },
-      targetProjection: {
-        ...projection,
-        deviationScore: calculateCompoDeviationScore({
-          displayCounts: projection.displayCounts,
-          heatMapRef: projection.selectedHeatMapRef,
-        }),
-      },
-      selectedCustomBandIndex:
-        getHeatMapRefIndex(
-          sortHeatMapRefs(input.heatMapRefs),
-          projection.selectedHeatMapRef,
-        ) ??
-        (input.heatMapRefs.length > 0 ? 0 : null),
-      heatMapRefs: sortHeatMapRefs(input.heatMapRefs),
-    };
-  }
+  }));
   return {
     currentProjection: projection,
     targetProjection: projection,
@@ -516,6 +491,19 @@ function projectAdviceState(input: {
       getHeatMapRefIndex(sortHeatMapRefs(input.heatMapRefs), projection.selectedHeatMapRef) ??
       (input.heatMapRefs.length > 0 ? 0 : null),
     heatMapRefs: sortHeatMapRefs(input.heatMapRefs),
+  };
+}
+
+function scoreProjectionIfNeeded(projection: CompoActualStateProjection): CompoActualStateProjection {
+  if (projection.deviationScore !== null || projection.selectedHeatMapRef === null) {
+    return projection;
+  }
+  return {
+    ...projection,
+    deviationScore: calculateCompoDeviationScore({
+      displayCounts: projection.displayCounts,
+      heatMapRef: projection.selectedHeatMapRef,
+    }),
   };
 }
 
@@ -755,10 +743,6 @@ export function evaluateCompoAdvice(input: {
     bandMatchrate: currentBandMatchrate,
     deviationScore: currentScore,
   });
-  const targetMatchrate = estimateMatchrateFromDeviation({
-    bandMatchrate: targetBandMatchrate,
-    deviationScore: targetScore,
-  });
   const targetBandMidpoint = resolveAdviceTargetBandMidpoint({
     heatMapRefs: projectionState.heatMapRefs,
     selectedHeatMapRef: targetProjection.selectedHeatMapRef,
@@ -809,7 +793,10 @@ export function evaluateCompoAdvice(input: {
     targetBandMidpoint,
     currentMatchrate,
     targetBandMatchrate,
-    resultingMatchrate: targetMatchrate,
+    resultingMatchrate: estimateMatchrateFromDeviation({
+      bandMatchrate: targetBandMatchrate,
+      deviationScore: resultingScore,
+    }),
     currentScore,
     currentBandLabel,
     targetBandLabel,
