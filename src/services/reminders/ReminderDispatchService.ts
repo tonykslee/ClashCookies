@@ -66,13 +66,6 @@ type ReminderDispatchMessage = {
   components: ActionRowBuilder<ButtonBuilder>[];
 };
 
-type ReminderDispatchLine = {
-  text: string;
-  button?: {
-    playerTag: string;
-  } | null;
-};
-
 type ConfirmedWarHeadline = {
   label: "BL" | "MM" | "FWA-WIN" | "FWA-LOSE";
   emoji: "⚫" | "⚪" | "🟢" | "🔴";
@@ -193,13 +186,21 @@ async function buildReminderDispatchMessages(input: {
     nowMs: input.nowMs,
     warHeadline,
   });
-  return buildReminderMessagesWithRosterOverflow({
-    headerLines,
-    rosterEntries: roster.roster,
-    includeRosterHeading: semantic !== "WAR",
-    input: payload,
-    semantic,
-  });
+  const linkedRosterEntries = roster.roster.filter((entry) => entry.discordUserId);
+  const unlinkedRosterEntries = roster.roster.filter((entry) => !entry.discordUserId);
+  return [
+    ...buildReminderLinkedRosterMessages({
+      headerLines,
+      rosterEntries: linkedRosterEntries,
+      includeRosterHeading: semantic !== "WAR",
+      semantic,
+    }),
+    ...buildReminderUnlinkedFollowUpMessages({
+      rosterEntries: unlinkedRosterEntries,
+      input: payload,
+      semantic,
+    }),
+  ];
 }
 
 /** Purpose: build deterministic core reminder header lines shared by all reminder dispatch messages. */
@@ -654,97 +655,91 @@ async function resolveActiveCwlBattleWarForClan(input: {
   return null;
 }
 
-/** Purpose: build final one-to-three message output with line-safe overflow handling and hard cap at three messages. */
-function buildReminderMessagesWithRosterOverflow(input: {
+/** Purpose: build final main reminder message output with line-safe overflow handling and hard cap at three messages. */
+function buildReminderLinkedRosterMessages(input: {
   headerLines: string[];
   rosterEntries: ReminderRosterEntry[];
   includeRosterHeading: boolean;
-  input: ReminderDispatchInput;
   semantic: ReminderRosterSemantic;
 }): ReminderDispatchMessage[] {
-  const lines: ReminderDispatchLine[] =
+  const lines =
     input.rosterEntries.length > 0
       ? [
-          ...input.headerLines.map((text) => ({ text }) satisfies ReminderDispatchLine),
-          { text: "" },
+          ...input.headerLines,
+          "",
           ...(input.includeRosterHeading
-            ? [{ text: "Players With Attacks Remaining:" }]
+            ? ["Players With Attacks Remaining:"]
             : []),
-          ...input.rosterEntries.flatMap((entry) => {
-            const line = formatReminderRosterLine({
+          ...input.rosterEntries.map((entry) =>
+            formatReminderRosterLine({
               entry,
               semantic: input.semantic,
-            });
-            return entry.discordUserId
-              ? [{ text: line }]
-              : [
-                  {
-                    text: line,
-                    button: {
-                      playerTag: entry.playerTag,
-                    },
-                  },
-                ];
-          }),
+            }),
+          ),
         ]
-      : input.headerLines.map((text) => ({ text }) satisfies ReminderDispatchLine);
+      : input.headerLines;
 
   return splitReminderDispatchMessages({
     lines,
     maxMessages: MAX_REMINDER_MESSAGES,
-    reminderInput: input.input,
   });
 }
 
-/** Purpose: split reminder render lines and matching component rows into Discord-safe messages without breaking line boundaries. */
+/** Purpose: build one follow-up reminder message per unlinked player with a single self-link button. */
+function buildReminderUnlinkedFollowUpMessages(input: {
+  rosterEntries: ReminderRosterEntry[];
+  input: ReminderDispatchInput;
+  semantic: ReminderRosterSemantic;
+}): ReminderDispatchMessage[] {
+  return input.rosterEntries.map((entry) => {
+    const row = truncateDiscordContent(
+      formatReminderRosterLine({
+        entry,
+        semantic: input.semantic,
+      }),
+      2000,
+    );
+    return {
+      content: [row, "Is this you?"].join("\n"),
+      components: buildReminderLinkButtonRows({
+        guildId: input.input.guildId,
+        reminderId: input.input.reminderId,
+        playerTags: [entry.playerTag],
+      }),
+    };
+  });
+}
+
+/** Purpose: split reminder render lines into Discord-safe messages without breaking line boundaries. */
 function splitReminderDispatchMessages(input: {
-  lines: ReminderDispatchLine[];
+  lines: string[];
   maxMessages: number;
-  reminderInput: ReminderDispatchInput;
 }): ReminderDispatchMessage[] {
   const messages: ReminderDispatchMessage[] = [];
   let currentLines: string[] = [];
-  let currentButtonTags: string[] = [];
-  const promptLine = "Is this you?";
 
   const flushCurrent = (): void => {
     if (currentLines.length <= 0 || messages.length >= input.maxMessages) return;
     messages.push({
-      content:
-        currentButtonTags.length > 0
-          ? [...currentLines, promptLine].join("\n")
-          : currentLines.join("\n"),
-      components: buildReminderLinkButtonRows({
-        guildId: input.reminderInput.guildId,
-        reminderId: input.reminderInput.reminderId,
-        playerTags: currentButtonTags,
-      }),
+      content: currentLines.join("\n"),
+      components: [],
     });
     currentLines = [];
-    currentButtonTags = [];
   };
 
   for (const rawLine of input.lines) {
     if (messages.length >= input.maxMessages) break;
 
-    const line = truncateDiscordContent(rawLine.text, 2000);
-    const nextButtonTags = rawLine.button
-      ? [...currentButtonTags, rawLine.button.playerTag]
-      : currentButtonTags;
+    const line = truncateDiscordContent(rawLine, 2000);
     const candidate =
       currentLines.length > 0 ? [...currentLines, line].join("\n") : line;
-    const candidateLength =
-      candidate.length + (nextButtonTags.length > 0 ? 1 + promptLine.length : 0);
 
-    if (candidateLength > 2000 || nextButtonTags.length > 25) {
+    if (candidate.length > 2000) {
       flushCurrent();
       if (messages.length >= input.maxMessages) break;
     }
 
     currentLines.push(line);
-    if (rawLine.button) {
-      currentButtonTags.push(rawLine.button.playerTag);
-    }
   }
 
   flushCurrent();

@@ -190,6 +190,7 @@ function makeReminderButtonInteraction(input: {
   channelId?: string;
   messageId?: string;
   userId?: string;
+  messageContent?: string;
   messageComponents?: Array<{ toJSON: () => unknown }>;
 }) {
   const edit = vi.fn().mockResolvedValue(undefined);
@@ -212,6 +213,7 @@ function makeReminderButtonInteraction(input: {
     user: { id: input.userId ?? "user-1" },
     message: {
       id: input.messageId ?? "message-1",
+      content: input.messageContent ?? "",
       components: input.messageComponents ?? [],
     },
     client: {
@@ -1826,13 +1828,14 @@ describe("/reminder link interactions", () => {
       channelId: "channel-1",
       guildId: "guild-1",
       userId: "111111111111111111",
+      messageContent: "#12 - ❌ RASEL RAJ `#PYLQ0289` - 1 / 2\nIs this you?",
     });
 
     await handleReminderLinkButtonInteraction(interaction as any);
 
     expect(interaction.reply).toHaveBeenCalledWith({
       ephemeral: true,
-      content: "Link `#PYLQ0289` to your Discord account?",
+      content: "Link RASEL RAJ #PYLQ0289 to your Discord account?",
       components: expect.any(Array),
     });
     const payload = interaction.reply.mock.calls[0]?.[0] as any;
