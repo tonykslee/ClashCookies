@@ -19,8 +19,6 @@ import type { HeatMapRef } from "@prisma/client";
 import {
   COMPO_ADVICE_VIEW_LABELS,
   COMPO_ADVICE_VIEWS,
-  COMPO_ADVICE_DEVIATION_PENALTY_CONSTANT,
-  estimateMatchrateFromDeviation,
   formatMatchratePercent,
   getAdjacentHeatMapRefs,
   stepCompoAdviceCustomBandIndexByCount,
@@ -1168,24 +1166,9 @@ async function buildCompoAdviceEmbed(input: {
   if (input.advice.kind === "ready") {
     const summary = input.advice.summary;
     const embed = new EmbedBuilder().setTitle(title);
-    const selectedHeatMapRef = summary.currentProjection.selectedHeatMapRef;
-    const selectedBandMatchrate = getCompoAdviceBandMatchrate({
-      summary,
-      heatMapRef: selectedHeatMapRef,
-    });
-    const currentMatchrate = estimateMatchrateFromDeviation({
-      bandMatchrate: selectedBandMatchrate,
-      deviationScore: summary.currentScore,
-      penaltyConstant: COMPO_ADVICE_DEVIATION_PENALTY_CONSTANT,
-    });
-    const resultingMatchrate = estimateMatchrateFromDeviation({
-      bandMatchrate: selectedBandMatchrate,
-      deviationScore: summary.resultingScore,
-      penaltyConstant: COMPO_ADVICE_DEVIATION_PENALTY_CONSTANT,
-    });
     const adjacentBands = getAdjacentHeatMapRefs({
       heatMapRefs: summary.heatMapRefs,
-      selectedHeatMapRef,
+      selectedHeatMapRef: summary.targetHeatMapRef,
     });
     const currentDeltas = [
       `TH18: ${formatSignedValue(summary.currentProjection.deltaByBucket.TH18)}`,
@@ -1215,18 +1198,18 @@ async function buildCompoAdviceEmbed(input: {
       [
         `Current Weight: ${formatCompoAdviceFullWeight(summary.currentWeight)}`,
         `Current Deviation Score: **${formatAdviceScore(summary.currentScore)}**`,
-        `Matchrate: ${formatMatchratePercent(currentMatchrate)}`,
+        `Matchrate: ${formatMatchratePercent(summary.currentMatchrate)}`,
       ].join("\n"),
     );
     const targetValue = await renderCompoAdviceEmojiShortcodes(
       input.client,
       [
-        `Target Band: **${summary.currentBandLabel}**`,
-        `Band matchrate: ${formatMatchratePercent(selectedBandMatchrate)}`,
+        `Target Band: **${summary.targetBandLabel}**`,
+        `Band matchrate: ${formatMatchratePercent(summary.targetBandMatchrate)}`,
         `Band midpoint: ${formatCompoAdviceBandMidpointLine({
           currentWeight: summary.currentWeight,
           targetBandMidpoint: summary.targetBandMidpoint,
-          selectedHeatMapRef: selectedHeatMapRef ?? null,
+          selectedHeatMapRef: summary.targetHeatMapRef,
         })}`,
       ].join("\n"),
     );
@@ -1243,7 +1226,7 @@ async function buildCompoAdviceEmbed(input: {
       input.client,
       [
         `Deviation Score: **${formatAdviceScore(summary.resultingScore)}**`,
-        `Matchrate: ${formatMatchratePercent(resultingMatchrate)}`,
+        `Matchrate: ${formatMatchratePercent(summary.resultingMatchrate)}`,
       ].join("\n"),
     );
     const adjacentBandsValue = await renderCompoAdviceEmojiShortcodes(
