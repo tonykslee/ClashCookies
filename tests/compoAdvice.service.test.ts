@@ -271,8 +271,9 @@ describe("CompoAdviceService", () => {
     expect(result.selectedView).toBe("custom");
     expect(result.summary.viewLabel).toBe("Custom");
     expect(result.summary.selectedCustomBandIndex).toBe(1);
-    expect(result.summary.currentBandLabel).toContain("1,500,000");
-    expect(result.summary.currentScore).toBeGreaterThanOrEqual(0);
+    expect(result.summary.currentBandLabel).toBe("(no band)");
+    expect(result.summary.targetBandLabel).toContain("1,500,000");
+    expect(result.summary.currentScore).toBeNull();
     expect(result.trackedClanChoices).toEqual([
       { tag: "#AAA111", name: "Alpha Clan-actual" },
     ]);
