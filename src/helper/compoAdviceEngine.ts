@@ -100,8 +100,13 @@ export type CompoAdviceSummary = {
   bandMatchRatesByBandKey?: ReadonlyMap<string, number | null>;
   currentWeight: number | null;
   targetBandMidpoint: number | null;
+  currentMatchrate: number | null;
+  targetBandMatchrate: number | null;
+  resultingMatchrate: number | null;
   currentScore: number | null;
   currentBandLabel: string;
+  targetBandLabel: string;
+  targetHeatMapRef: HeatMapRef | null;
   recommendationText: string;
   resultingScore: number | null;
   resultingBandLabel: string;
@@ -364,7 +369,8 @@ function buildCustomProjection(input: {
   heatMapRefs: readonly HeatMapRef[];
   customBandIndex?: number | null;
 }): {
-  projection: CompoActualStateProjection;
+  currentProjection: CompoActualStateProjection;
+  targetProjection: CompoActualStateProjection;
   selectedCustomBandIndex: number | null;
   heatMapRefs: HeatMapRef[];
 } {
@@ -381,7 +387,8 @@ function buildCustomProjection(input: {
 
   if (!selection.selectedHeatMapRef) {
     return {
-      projection: rawProjection,
+      currentProjection: rawProjection,
+      targetProjection: rawProjection,
       selectedCustomBandIndex: null,
       heatMapRefs: selection.heatMapRefs,
     };
@@ -393,7 +400,8 @@ function buildCustomProjection(input: {
   );
 
   return {
-    projection: {
+    currentProjection: rawProjection,
+    targetProjection: {
       ...rawProjection,
       selectedHeatMapRef: selection.selectedHeatMapRef,
       deltaByBucket,
@@ -458,7 +466,8 @@ function projectAdviceState(input: {
   heatMapRefs: readonly HeatMapRef[];
   customBandIndex?: number | null;
 }): {
-  projection: CompoActualStateProjection;
+  currentProjection: CompoActualStateProjection;
+  targetProjection: CompoActualStateProjection;
   selectedCustomBandIndex: number | null;
   heatMapRefs: HeatMapRef[];
 } {
@@ -477,7 +486,14 @@ function projectAdviceState(input: {
   });
   if (projection.deviationScore === null && projection.selectedHeatMapRef) {
     return {
-      projection: {
+      currentProjection: {
+        ...projection,
+        deviationScore: calculateCompoDeviationScore({
+          displayCounts: projection.displayCounts,
+          heatMapRef: projection.selectedHeatMapRef,
+        }),
+      },
+      targetProjection: {
         ...projection,
         deviationScore: calculateCompoDeviationScore({
           displayCounts: projection.displayCounts,
@@ -494,7 +510,8 @@ function projectAdviceState(input: {
     };
   }
   return {
-    projection,
+    currentProjection: projection,
+    targetProjection: projection,
     selectedCustomBandIndex:
       getHeatMapRefIndex(sortHeatMapRefs(input.heatMapRefs), projection.selectedHeatMapRef) ??
       (input.heatMapRefs.length > 0 ? 0 : null),
@@ -519,7 +536,7 @@ function evaluateAdviceAction(input: {
     view: input.view,
     base: nextBase,
     heatMapRefs: input.heatMapRefs,
-  }).projection;
+  }).targetProjection;
   const resultingScore = afterProjection.deviationScore;
   const scoreImprovement =
     input.currentScore !== null && resultingScore !== null
@@ -702,6 +719,7 @@ export function evaluateCompoAdvice(input: {
   view: CompoAdviceView;
   base: CompoActualStateBaseMetrics;
   heatMapRefs: readonly HeatMapRef[];
+  bandMatchRatesByBandKey?: ReadonlyMap<string, number | null>;
   customBandIndex?: number | null;
 }): CompoAdviceSummary {
   const projectionState = projectAdviceState({
@@ -710,19 +728,44 @@ export function evaluateCompoAdvice(input: {
     heatMapRefs: input.heatMapRefs,
     customBandIndex: input.customBandIndex,
   });
-  const currentProjection = projectionState.projection;
+  const currentProjection = projectionState.currentProjection;
+  const targetProjection = projectionState.targetProjection;
   const currentScore = currentProjection.deviationScore;
+  const targetScore = targetProjection.deviationScore;
   const currentBandLabel = getBandLabel(currentProjection.selectedHeatMapRef);
+  const targetBandLabel = getBandLabel(targetProjection.selectedHeatMapRef);
   const currentWeight = Number.isFinite(currentProjection.totalWeight)
     ? currentProjection.totalWeight
     : null;
+  const currentBandMatchrate = getBandMatchrate({
+    summary: {
+      currentProjection,
+      bandMatchRatesByBandKey: input.bandMatchRatesByBandKey,
+    },
+    heatMapRef: currentProjection.selectedHeatMapRef,
+  });
+  const targetBandMatchrate = getBandMatchrate({
+    summary: {
+      currentProjection: targetProjection,
+      bandMatchRatesByBandKey: input.bandMatchRatesByBandKey,
+    },
+    heatMapRef: targetProjection.selectedHeatMapRef,
+  });
+  const currentMatchrate = estimateMatchrateFromDeviation({
+    bandMatchrate: currentBandMatchrate,
+    deviationScore: currentScore,
+  });
+  const targetMatchrate = estimateMatchrateFromDeviation({
+    bandMatchrate: targetBandMatchrate,
+    deviationScore: targetScore,
+  });
   const targetBandMidpoint = resolveAdviceTargetBandMidpoint({
     heatMapRefs: projectionState.heatMapRefs,
-    selectedHeatMapRef: currentProjection.selectedHeatMapRef,
+    selectedHeatMapRef: targetProjection.selectedHeatMapRef,
   });
   const actions = generateAdviceActions({
     base: input.base,
-    currentProjection,
+    currentProjection: targetProjection,
   });
   const evaluations = actions
     .map((action) =>
@@ -730,8 +773,8 @@ export function evaluateCompoAdvice(input: {
         view: input.view,
         base: input.base,
         heatMapRefs: input.heatMapRefs,
-        currentProjection,
-        currentScore,
+        currentProjection: targetProjection,
+        currentScore: targetScore,
         action,
       }),
     )
@@ -761,10 +804,16 @@ export function evaluateCompoAdvice(input: {
     viewLabel: COMPO_ADVICE_VIEW_LABELS[input.view],
     currentProjection,
     heatMapRefs: projectionState.heatMapRefs,
+    bandMatchRatesByBandKey: input.bandMatchRatesByBandKey,
     currentWeight,
     targetBandMidpoint,
+    currentMatchrate,
+    targetBandMatchrate,
+    resultingMatchrate: targetMatchrate,
     currentScore,
     currentBandLabel,
+    targetBandLabel,
+    targetHeatMapRef: targetProjection.selectedHeatMapRef,
     recommendationText,
     resultingScore,
     resultingBandLabel,
@@ -791,7 +840,7 @@ export function buildCompoAdviceContentLines(input: {
   lines.push(`Mode: **${input.modeLabel}**`);
   lines.push(`Advice View: **${input.summary.viewLabel}**`);
   lines.push(`Current Deviation Score: **${formatScore(input.summary.currentScore)}**`);
-  lines.push(`Target Band: **${input.summary.currentBandLabel}**`);
+  lines.push(`Target Band: **${input.summary.targetBandLabel}**`);
   lines.push(`Current Weight: ${formatFullWeight(input.summary.currentWeight)}`);
   lines.push(
     `Missing weights: ${input.summary.currentProjection.missingWeights}${
@@ -800,39 +849,21 @@ export function buildCompoAdviceContentLines(input: {
         : ""
     }`,
   );
-  const currentMatchrate = estimateMatchrateFromDeviation({
-    bandMatchrate: getBandMatchrate({
-      summary: input.summary,
-      heatMapRef: input.summary.currentProjection.selectedHeatMapRef,
-    }),
-    deviationScore: input.summary.currentScore,
-  });
-  lines.push(`Matchrate: ${formatMatchratePercent(currentMatchrate)}`);
-  const perfectMatchrate = getBandMatchrate({
-    summary: input.summary,
-    heatMapRef: input.summary.currentProjection.selectedHeatMapRef,
-  });
-  lines.push(`Band matchrate: ${formatMatchratePercent(perfectMatchrate)}`);
+  lines.push(`Matchrate: ${formatMatchratePercent(input.summary.currentMatchrate)}`);
+  lines.push(`Band matchrate: ${formatMatchratePercent(input.summary.targetBandMatchrate)}`);
   lines.push(
     `Band midpoint: ${formatBandMidpointLine({
       currentWeight: input.summary.currentWeight,
       targetBandMidpoint: input.summary.targetBandMidpoint,
-      selectedHeatMapRef: input.summary.currentProjection.selectedHeatMapRef,
+      selectedHeatMapRef: input.summary.targetHeatMapRef,
     })}`,
   );
   lines.push(`Recommendation: :arrow_arrow: __${input.summary.recommendationText}__`);
   lines.push(`Deviation Score: **${formatScore(input.summary.resultingScore)}**`);
-  const resultingMatchrate = estimateMatchrateFromDeviation({
-    bandMatchrate: getBandMatchrate({
-      summary: input.summary,
-      heatMapRef: input.summary.currentProjection.selectedHeatMapRef,
-    }),
-    deviationScore: input.summary.resultingScore,
-  });
-  lines.push(`Matchrate: ${formatMatchratePercent(resultingMatchrate)}`);
+  lines.push(`Matchrate: ${formatMatchratePercent(input.summary.resultingMatchrate)}`);
   const adjacent = getAdjacentHeatMapRefs({
     heatMapRefs: input.summary.heatMapRefs,
-    selectedHeatMapRef: input.summary.currentProjection.selectedHeatMapRef,
+    selectedHeatMapRef: input.summary.targetHeatMapRef,
   });
   lines.push(
     `Lower band: ${
@@ -863,12 +894,14 @@ export function buildCompoAdviceContentLines(input: {
 export function buildWarAdviceSummary(input: {
   base: CompoActualStateBaseMetrics;
   heatMapRefs: readonly HeatMapRef[];
+  bandMatchRatesByBandKey?: ReadonlyMap<string, number | null>;
 }): CompoAdviceSummary {
   return evaluateCompoAdvice({
     mode: "war",
     view: "raw",
     base: input.base,
     heatMapRefs: input.heatMapRefs,
+    bandMatchRatesByBandKey: input.bandMatchRatesByBandKey,
   });
 }
 
@@ -876,18 +909,21 @@ export function buildActualAdviceSummary(input: {
   base: CompoActualStateBaseMetrics;
   heatMapRefs: readonly HeatMapRef[];
   view: Exclude<CompoAdviceView, "custom">;
+  bandMatchRatesByBandKey?: ReadonlyMap<string, number | null>;
 }): CompoAdviceSummary {
   return evaluateCompoAdvice({
     mode: "actual",
     view: input.view,
     base: input.base,
     heatMapRefs: input.heatMapRefs,
+    bandMatchRatesByBandKey: input.bandMatchRatesByBandKey,
   });
 }
 
 export function buildCustomAdviceSummary(input: {
   base: CompoActualStateBaseMetrics;
   heatMapRefs: readonly HeatMapRef[];
+  bandMatchRatesByBandKey?: ReadonlyMap<string, number | null>;
   customBandIndex?: number | null;
 }): CompoAdviceSummary {
   return evaluateCompoAdvice({
@@ -895,6 +931,7 @@ export function buildCustomAdviceSummary(input: {
     view: "custom",
     base: input.base,
     heatMapRefs: input.heatMapRefs,
+    bandMatchRatesByBandKey: input.bandMatchRatesByBandKey,
     customBandIndex: input.customBandIndex,
   });
 }

@@ -193,6 +193,10 @@ describe("CompoAdviceEngine", () => {
         th15Count: 50,
       }),
     ];
+    const bandMatchRatesByBandKey = new Map([
+      ["0-299999", 0.7025],
+      ["300000-599999", 0.7412],
+    ]);
 
     const first = evaluateCompoAdvice({
       mode: "actual",
@@ -200,6 +204,7 @@ describe("CompoAdviceEngine", () => {
       customBandIndex: 0,
       base,
       heatMapRefs,
+      bandMatchRatesByBandKey,
     });
     const second = evaluateCompoAdvice({
       mode: "actual",
@@ -207,13 +212,18 @@ describe("CompoAdviceEngine", () => {
       customBandIndex: 1,
       base,
       heatMapRefs,
+      bandMatchRatesByBandKey,
     });
 
     expect(first.viewLabel).toBe("Custom");
     expect(second.viewLabel).toBe("Custom");
-    expect(first.currentBandLabel).not.toBe(second.currentBandLabel);
+    expect(first.currentBandLabel).toBe(second.currentBandLabel);
+    expect(first.targetBandLabel).not.toBe(second.targetBandLabel);
+    expect(first.currentMatchrate).toBeCloseTo(second.currentMatchrate ?? 0, 6);
+    expect(first.targetBandMatchrate).not.toBe(second.targetBandMatchrate);
+    expect(first.resultingMatchrate).not.toBe(second.resultingMatchrate);
     expect(first.recommendationText).not.toBe(second.recommendationText);
-    expect(first.currentScore).not.toBe(second.currentScore);
+    expect(first.currentScore).toBe(second.currentScore);
   });
 
   it("computes midpoint advice using middle-band arithmetic and end-band offsets", () => {
@@ -293,6 +303,7 @@ describe("CompoAdviceEngine", () => {
         viewLabel: "Raw Data",
         currentScore: null,
         currentBandLabel: "(no band)",
+        targetBandLabel: "(no band)",
         currentProjection: {
           totalWeight: NaN,
           missingWeights: 0,
@@ -300,8 +311,12 @@ describe("CompoAdviceEngine", () => {
         } as any,
         heatMapRefs: [],
         bandMatchRatesByBandKey: new Map(),
+        currentMatchrate: null,
+        targetBandMatchrate: null,
+        resultingMatchrate: null,
         currentWeight: null,
         targetBandMidpoint: null,
+        targetHeatMapRef: null,
         recommendationText: "No improvement found.",
         resultingScore: null,
         resultingBandLabel: "(no band)",
@@ -330,6 +345,7 @@ describe("CompoAdviceEngine", () => {
         viewLabel: "Auto-Detect Band",
         currentScore: 32.5,
         currentBandLabel: "1,000,000 - 2,000,000",
+        targetBandLabel: "1,000,000 - 2,000,000",
         currentProjection: {
           totalWeight: 1_500_000,
           missingWeights: 2,
@@ -341,8 +357,12 @@ describe("CompoAdviceEngine", () => {
           ["1000000-2000000", 0.7214],
           ["2000001-3000000", 0.74],
         ]),
+        currentMatchrate: 0.6629,
+        targetBandMatchrate: 0.7214,
+        resultingMatchrate: 0.6989,
         currentWeight: 1_500_000,
         targetBandMidpoint: 1_500_000,
+        targetHeatMapRef: refs[1],
         recommendationText: "Add TH17",
         resultingScore: 12.5,
         resultingBandLabel: "1,000,000 - 2,000,000",
@@ -374,19 +394,33 @@ describe("CompoAdviceEngine", () => {
       summary: {
         viewLabel: "Custom",
         currentScore: 5,
-        currentBandLabel: "2,000,000 - 2,500,000",
+        currentBandLabel: "1,000,000 - 1,499,999",
+        targetBandLabel: "2,000,000 - 2,500,000",
         currentProjection: {
           totalWeight: 1_500_000,
           missingWeights: 1,
           selectedHeatMapRef: makeHeatMapRef({
-            weightMinInclusive: 2_000_000,
-            weightMaxInclusive: 2_500_000,
+            weightMinInclusive: 1_000_000,
+            weightMaxInclusive: 1_499_999,
           }),
         } as any,
-        heatMapRefs: [makeHeatMapRef({ weightMinInclusive: 2_000_000, weightMaxInclusive: 2_500_000 })],
-        bandMatchRatesByBandKey: new Map([["2000000-2500000", 0.6]]),
+        heatMapRefs: [
+          makeHeatMapRef({ weightMinInclusive: 1_000_000, weightMaxInclusive: 1_499_999 }),
+          makeHeatMapRef({ weightMinInclusive: 2_000_000, weightMaxInclusive: 2_500_000 }),
+        ],
+        bandMatchRatesByBandKey: new Map([
+          ["1000000-1499999", 0.72],
+          ["2000000-2500000", 0.6],
+        ]),
+        currentMatchrate: 0.7,
+        targetBandMatchrate: 0.6,
+        resultingMatchrate: 0.59,
         currentWeight: 1_500_000,
         targetBandMidpoint: 1_420_000,
+        targetHeatMapRef: makeHeatMapRef({
+          weightMinInclusive: 2_000_000,
+          weightMaxInclusive: 2_500_000,
+        }),
         recommendationText: "Add TH17",
         resultingScore: 4,
         resultingBandLabel: "2,000,000 - 2,500,000",
