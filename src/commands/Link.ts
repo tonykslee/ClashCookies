@@ -35,6 +35,13 @@ import {
   normalizePlayerTag,
 } from "../services/PlayerLinkService";
 import { PlayerLinkSyncService } from "../services/PlayerLinkSyncService";
+import {
+  buildReminderLinkCancelCustomId,
+  buildReminderLinkConfirmCustomId,
+  parseReminderLinkButtonCustomId,
+  parseReminderLinkCancelCustomId,
+  parseReminderLinkConfirmCustomId,
+} from "../services/reminders/ReminderLinkActions";
 
 const permissionService = new CommandPermissionService();
 const LINK_LIST_SELECT_PREFIX = "link-list-select";
@@ -1070,6 +1077,93 @@ export function isLinkEmbedAccountButtonCustomId(customId: string): boolean {
   return String(customId ?? "").startsWith(`${LINK_EMBED_BUTTON_PREFIX}:`);
 }
 
+function buildReminderLinkConfirmationRows(input: {
+  channelId: string;
+  messageId: string;
+  playerTag: string;
+}): ActionRowBuilder<ButtonBuilder>[] {
+  return [
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(
+          buildReminderLinkConfirmCustomId({
+            channelId: input.channelId,
+            messageId: input.messageId,
+            playerTag: input.playerTag,
+          }),
+        )
+        .setLabel("Confirm")
+        .setStyle(ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId(
+          buildReminderLinkCancelCustomId({
+            channelId: input.channelId,
+            messageId: input.messageId,
+            playerTag: input.playerTag,
+          }),
+        )
+        .setLabel("Cancel")
+        .setStyle(ButtonStyle.Secondary),
+    ),
+  ];
+}
+
+function resolveReminderLinkPlayerDisplayName(input: {
+  messageContent: string;
+  playerTag: string;
+}): string {
+  const normalizedTag = normalizePlayerTag(input.playerTag);
+  const firstLine = sanitizeTableText(String(input.messageContent ?? "").split("\n")[0] ?? "");
+  if (!normalizedTag || !firstLine) return normalizedTag || "";
+
+  const backtickedTag = `\`${normalizedTag}\``;
+  const backtickedIndex = firstLine.indexOf(backtickedTag);
+  if (backtickedIndex >= 0) {
+    const beforeTag = firstLine.slice(0, backtickedIndex);
+    const displayName = sanitizeTableText(
+      beforeTag.replace(/^(?:#\d+\s*-\s*)?(?:❌|âŒ|:no:)\s+/, ""),
+    );
+    if (displayName) return displayName;
+  }
+
+  const rowMatch = firstLine.match(
+    /^(?:#\d+\s*-\s*)?(?:❌|âŒ|:no:)\s+(.+?)\s+-\s+\d+\s+\/\s+\d+$/,
+  );
+  if (rowMatch?.[1]) {
+    const displayName = sanitizeTableText(rowMatch[1]);
+    if (displayName) return displayName;
+  }
+
+  return normalizedTag;
+}
+
+export function isReminderLinkButtonCustomId(customId: string): boolean {
+  return parseReminderLinkButtonCustomId(customId) !== null;
+}
+
+export function isReminderLinkConfirmButtonCustomId(customId: string): boolean {
+  return parseReminderLinkConfirmCustomId(customId) !== null;
+}
+
+export function isReminderLinkCancelButtonCustomId(customId: string): boolean {
+  return parseReminderLinkCancelCustomId(customId) !== null;
+}
+
+function buildReminderLinkRejectedMessage(input: {
+  playerTag: string;
+  existingDiscordUserId?: string | null;
+  outcome: PlayerLinkCreateResult["outcome"];
+  targetDiscordUserId: string;
+}): string {
+  return formatLinkCreateResultMessage({
+    outcome: input.outcome,
+    playerTag: input.playerTag,
+    existingDiscordUserId: input.existingDiscordUserId ?? null,
+    targetDiscordUserId: input.targetDiscordUserId,
+    isSelfCreate: true,
+  });
+}
+
 export function isLinkEmbedModalCustomId(customId: string): boolean {
   const input = String(customId ?? "");
   return (
@@ -1234,6 +1328,156 @@ export async function handleLinkEmbedButtonInteraction(
     );
 
   await interaction.showModal(modal);
+}
+
+export async function handleReminderLinkButtonInteraction(
+  interaction: ButtonInteraction,
+): Promise<void> {
+  const parsed = parseReminderLinkButtonCustomId(interaction.customId);
+  if (!parsed) return;
+
+  if (!interaction.guildId || interaction.guildId !== parsed.guildId) {
+    await interaction.reply({
+      ephemeral: true,
+      content:
+        "invalid_context: this reminder link button can only be used in its original server.",
+    });
+    return;
+  }
+
+  if (!interaction.channelId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "invalid_context: unable to open reminder link confirmation.",
+    });
+    return;
+  }
+
+  const playerName = resolveReminderLinkPlayerDisplayName({
+    messageContent: interaction.message?.content ?? "",
+    playerTag: parsed.playerTag,
+  });
+  const confirmationIdentity =
+    playerName && playerName !== parsed.playerTag
+      ? `${playerName} ${parsed.playerTag}`
+      : parsed.playerTag;
+
+  await interaction.reply({
+    ephemeral: true,
+    content: `Link ${confirmationIdentity} to your Discord account?`,
+    components: buildReminderLinkConfirmationRows({
+      channelId: interaction.channelId,
+      messageId: interaction.message.id,
+      playerTag: parsed.playerTag,
+    }),
+  });
+}
+
+export async function handleReminderLinkConfirmButtonInteraction(
+  interaction: ButtonInteraction,
+): Promise<void> {
+  const parsed = parseReminderLinkConfirmCustomId(interaction.customId);
+  if (!parsed) return;
+
+  if (!interaction.guildId || interaction.channelId !== parsed.channelId) {
+    await interaction.reply({
+      ephemeral: true,
+      content:
+        "invalid_context: this reminder link confirmation can only be used in its original channel.",
+    });
+    return;
+  }
+
+  await interaction.deferUpdate();
+
+  const result = await createPlayerLink({
+    playerTag: parsed.playerTag,
+    targetDiscordUserId: interaction.user.id,
+    selfService: true,
+  });
+
+  if (result.outcome === "created") {
+    await disableReminderLinkButtonOnOriginalMessage({
+      interaction,
+      channelId: parsed.channelId,
+      messageId: parsed.messageId,
+      playerTag: parsed.playerTag,
+    });
+  }
+
+  await interaction.editReply(
+    buildReminderLinkRejectedMessage({
+      outcome: result.outcome,
+      playerTag: result.playerTag,
+      existingDiscordUserId: result.existingDiscordUserId,
+      targetDiscordUserId: interaction.user.id,
+    }),
+  );
+}
+
+export async function handleReminderLinkCancelButtonInteraction(
+  interaction: ButtonInteraction,
+): Promise<void> {
+  const parsed = parseReminderLinkCancelCustomId(interaction.customId);
+  if (!parsed) return;
+
+  if (!interaction.guildId || interaction.channelId !== parsed.channelId) {
+    await interaction.reply({
+      ephemeral: true,
+      content:
+        "invalid_context: this reminder link cancellation can only be used in its original channel.",
+    });
+    return;
+  }
+
+  await interaction.update({
+    content: "Canceled.",
+    components: [],
+  });
+}
+
+function disableReminderLinkButtonOnOriginalMessage(input: {
+  interaction: ButtonInteraction;
+  channelId: string;
+  messageId: string;
+  playerTag: string;
+}): Promise<void> {
+  return (async () => {
+    const channel = await input.interaction.client.channels.fetch(input.channelId).catch(() => null);
+    if (!channel || !channel.isTextBased() || !("messages" in channel)) {
+      return;
+    }
+
+    const message = await channel.messages.fetch(input.messageId).catch(() => null);
+    if (!message) return;
+
+    const updatedComponents = message.components.map((row) => {
+      const rowJson = row.toJSON() as {
+        type?: number;
+        components?: Array<Record<string, unknown>>;
+      };
+      return {
+        ...rowJson,
+        components: Array.isArray(rowJson.components)
+          ? rowJson.components.map((component) => {
+              const customId = String(component.custom_id ?? component.customId ?? "");
+              if (
+                customId.startsWith("reminder-link:claim:") &&
+                customId.endsWith(`:${input.playerTag}`)
+              ) {
+                return {
+                  ...component,
+                  disabled: true,
+                };
+              }
+              return component;
+            })
+          : [],
+      };
+    });
+
+    await message.edit({ components: updatedComponents as any }).catch(() => undefined);
+  })();
 }
 
 export async function handleLinkEmbedModalSubmit(

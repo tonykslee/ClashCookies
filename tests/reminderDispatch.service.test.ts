@@ -22,8 +22,10 @@ vi.mock("../src/prisma", () => ({
 
 import {
   ReminderDispatchService,
+  buildReminderDispatchMessagesForTest,
   buildReminderDispatchContentsForTest,
 } from "../src/services/reminders/ReminderDispatchService";
+import { buildReminderLinkButtonCustomId } from "../src/services/reminders/ReminderLinkActions";
 
 function buildValidPlayerTag(index: number): string {
   const alphabet = "PYLQGRJCUV0289";
@@ -45,7 +47,7 @@ describe("ReminderDispatchService roster rendering", () => {
     prismaMock.currentWar.findFirst.mockResolvedValue({ state: "inWar", warId: 9 });
   });
 
-  it("renders WAR reminder content in plain text with inline mentions and updated header lines", async () => {
+  it("renders WAR reminder content in plain text with linked players in the main post and unlinked players in follow-ups", async () => {
     prismaMock.warAttacks.findMany.mockResolvedValue([
       { playerTag: "#PYLG", playerName: "Bravo", playerPosition: 2, attacksUsed: 1 },
       { playerTag: "#PYLQ", playerName: "Alpha", playerPosition: 1, attacksUsed: 0 },
@@ -81,7 +83,7 @@ describe("ReminderDispatchService roster rendering", () => {
       cocService: null,
     });
 
-    expect(contents).toHaveLength(1);
+    expect(contents).toHaveLength(2);
     const lines = contents[0].split("\n");
     expect(lines[0]).toBe("### BL war ends in 1h ⚫");
     expect(lines[1]).toBe("Clan: Alpha Clan #PYLQ");
@@ -96,13 +98,15 @@ describe("ReminderDispatchService roster rendering", () => {
     const rosterLines = lines.filter((line) => /^#\d+ /.test(line));
     expect(rosterLines).toEqual([
       "#1 - Alpha - <@111> - 2 / 2",
-      "#2 - ❌ Bravo `#PYLG` - 1 / 2",
       "#3 - Charlie - <@333> - 2 / 2",
     ]);
+    expect(contents[0]).not.toContain("Bravo");
     expect(contents[0]).not.toContain("Done");
+    expect(contents[1].split("\n")[0]).toBe("#2 - ❌ Bravo `#PYLG` - 1 / 2");
+    expect(contents[1]).toContain("Is this you?");
   });
 
-  it("renders unlinked WAR reminder rows with a cross and backticked player tag", async () => {
+  it("renders unlinked WAR reminder rows as dedicated follow-up messages", async () => {
     prismaMock.warAttacks.findMany.mockResolvedValue([
       { playerTag: "#PYLQ0289", playerName: "PlayerName", playerPosition: 12, attacksUsed: 1 },
     ]);
@@ -131,8 +135,74 @@ describe("ReminderDispatchService roster rendering", () => {
       cocService: null,
     });
 
-    expect(contents[0]).toContain("#12 - ❌ PlayerName `#PYLQ0289` - 1 / 2");
+    expect(contents).toHaveLength(2);
+    expect(contents[0]).not.toContain("PlayerName");
     expect(contents[0]).not.toContain("Players With Attacks Remaining:");
+    expect(contents[1].split("\n")[0]).toBe("#12 - ❌ PlayerName `#PYLQ0289` - 1 / 2");
+    expect(contents[1]).toContain("Is this you?");
+  });
+
+  it("creates one follow-up message per unlinked reminder player", async () => {
+    prismaMock.warAttacks.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ0289", playerName: "PlayerName", playerPosition: 12, attacksUsed: 1 },
+      { playerTag: "#PYLQ0290", playerName: "PlayerTwo", playerPosition: 13, attacksUsed: 0 },
+    ]);
+    prismaMock.currentWar.findFirst.mockResolvedValue({
+      state: "inWar",
+      warId: 9,
+      matchType: "BL",
+      inferredMatchType: false,
+      outcome: null,
+    });
+
+    const messages = await buildReminderDispatchMessagesForTest({
+      input: {
+        guildId: "guild-1",
+        channelId: "channel-1",
+        reminderId: "rem-1",
+        type: ReminderType.WAR_CWL,
+        clanTag: "#PYLQ",
+        clanName: "Alpha Clan",
+        offsetSeconds: 3600,
+        eventIdentity: "WAR:war-id:9",
+        eventEndsAt: new Date("2026-04-10T01:00:00.000Z"),
+        eventLabel: "war end",
+      },
+      nowMs: Date.parse("2026-04-10T00:30:00.000Z"),
+      cocService: null,
+    });
+
+    expect(messages).toHaveLength(3);
+    expect(messages[0].content).not.toContain("Is this you?");
+    expect(messages[1].content).toContain("Is this you?");
+    expect(messages[2].content).toContain("Is this you?");
+    expect(messages[0].components).toHaveLength(0);
+    expect(messages[1].components).toHaveLength(1);
+    expect(messages[2].components).toHaveLength(1);
+
+    const firstRow = messages[1].components[0]?.toJSON() as any;
+    expect(firstRow.components).toHaveLength(1);
+    expect(firstRow.components[0].label).toBe("Link player");
+    expect(firstRow.components[0].custom_id).toBe(
+      buildReminderLinkButtonCustomId({
+        guildId: "guild-1",
+        reminderId: "rem-1",
+        playerTag: "#PYLQ0289",
+      }),
+    );
+    expect(messages[1].content).toContain("#12 - ❌ PlayerName `#PYLQ0289` - 1 / 2");
+
+    const secondRow = messages[2].components[0]?.toJSON() as any;
+    expect(secondRow.components).toHaveLength(1);
+    expect(secondRow.components[0].label).toBe("Link player");
+    expect(secondRow.components[0].custom_id).toBe(
+      buildReminderLinkButtonCustomId({
+        guildId: "guild-1",
+        reminderId: "rem-1",
+        playerTag: "#PYLQ0290",
+      }),
+    );
+    expect(messages[2].content).toContain("#13 - ❌ PlayerTwo `#PYLQ0290` - 2 / 2");
   });
 
   it.each([
@@ -282,11 +352,14 @@ describe("ReminderDispatchService roster rendering", () => {
       cocService: null,
     });
 
+    expect(contents).toHaveLength(2);
     expect(contents[0].split("\n").filter((line) => /^#\d+ /.test(line))).toEqual([
       "#1 - First - <@111> - 2 / 2",
       "#3 - Second - <@111> - 2 / 2",
-      "#2 - ❌ Middle `#PYLG` - 2 / 2",
     ]);
+    expect(contents[0]).not.toContain("Middle");
+    expect(contents[1].split("\n")[0]).toBe("#2 - ❌ Middle `#PYLG` - 2 / 2");
+    expect(contents[1]).toContain("Is this you?");
   });
 
   it("renders CWL roster from active CWL war participants only and sorts by map position", async () => {
@@ -334,15 +407,18 @@ describe("ReminderDispatchService roster rendering", () => {
       cocService,
     });
 
+    expect(contents).toHaveLength(2);
     const rosterLines = contents[0]
       .split("\n")
       .filter((line) => /^#\d+ /.test(line));
     expect(rosterLines).toEqual([
-      "#1 - :no: One - 1 / 1",
       "#2 - Two - <@222> - 1 / 1",
     ]);
+    expect(contents[0]).not.toContain("One");
     expect(contents[0]).not.toContain("Outside");
     expect(contents[0]).not.toContain("Done");
+    expect(contents[1].split("\n")[0]).toBe("#1 - :no: One - 1 / 1");
+    expect(contents[1]).toContain("Is this you?");
   });
 
   it("renders RAIDS roster sorted by remaining attacks then player name and excludes non-season members", async () => {
@@ -392,26 +468,34 @@ describe("ReminderDispatchService roster rendering", () => {
       cocService,
     });
 
+    expect(contents).toHaveLength(2);
     const rosterLines = contents[0]
       .split("\n")
       .filter((line) => line.includes("/ 6"));
     expect(rosterLines).toEqual([
       "Alpha - <@333> - 1 / 6",
-      ":no: Zulu - 1 / 6",
       "Bravo - <@222> - 6 / 6",
     ]);
+    expect(contents[0]).not.toContain("Zulu");
     expect(contents[0]).not.toContain("Spent");
     expect(contents[0]).not.toContain("IneligibleElsewhere");
     expect(contents[0]).not.toContain("#1 -");
+    expect(contents[1].split("\n")[0]).toBe(":no: Zulu - 1 / 6");
+    expect(contents[1]).toContain("Is this you?");
   });
 
   it("splits long reminder output into two plain-text messages on whole lines only", async () => {
-    prismaMock.warAttacks.findMany.mockResolvedValue(
-      Array.from({ length: 30 }, (_, index) => ({
-        playerTag: buildValidPlayerTag(index),
-        playerName: `Player_${String(index + 1).padStart(2, "0")}_${"X".repeat(90)}`,
-        playerPosition: index + 1,
-        attacksUsed: 0,
+    const roster = Array.from({ length: 30 }, (_, index) => ({
+      playerTag: buildValidPlayerTag(index),
+      playerName: `Player_${String(index + 1).padStart(2, "0")}_${"X".repeat(90)}`,
+      playerPosition: index + 1,
+      attacksUsed: 0,
+    }));
+    prismaMock.warAttacks.findMany.mockResolvedValue(roster);
+    prismaMock.playerLink.findMany.mockResolvedValue(
+      roster.map((entry, index) => ({
+        playerTag: entry.playerTag,
+        discordUserId: String(100000000000000000n + BigInt(index)),
       })),
     );
 
@@ -432,7 +516,8 @@ describe("ReminderDispatchService roster rendering", () => {
       cocService: null,
     });
 
-    expect(contents).toHaveLength(2);
+    expect(contents.length).toBeGreaterThan(1);
+    expect(contents.length).toBeLessThanOrEqual(3);
     expect(contents.every((content) => content.length <= 2000)).toBe(true);
     expect(contents[1]).not.toContain("Clan: Overflow Clan #PYLQ");
 
@@ -442,18 +527,23 @@ describe("ReminderDispatchService roster rendering", () => {
     expect(combinedRosterLines).toHaveLength(30);
     expect(
       combinedRosterLines.every((line) =>
-        /^#\d+ - ❌ Player_\d{2}_X+ `#.+` - 2 \/ 2$/.test(line),
+        /^#\d+ - Player_\d{2}_X+ - <@\d+> - 2 \/ 2$/.test(line),
       ),
     ).toBe(true);
   });
 
   it("splits overflow into at most three messages and stops after the third message", async () => {
-    prismaMock.warAttacks.findMany.mockResolvedValue(
-      Array.from({ length: 240 }, (_, index) => ({
-        playerTag: buildValidPlayerTag(index + 1000),
-        playerName: `Player_${String(index + 1).padStart(3, "0")}_${"Y".repeat(80)}`,
-        playerPosition: index + 1,
-        attacksUsed: 0,
+    const roster = Array.from({ length: 240 }, (_, index) => ({
+      playerTag: buildValidPlayerTag(index + 1000),
+      playerName: `Player_${String(index + 1).padStart(3, "0")}_${"Y".repeat(80)}`,
+      playerPosition: index + 1,
+      attacksUsed: 0,
+    }));
+    prismaMock.warAttacks.findMany.mockResolvedValue(roster);
+    prismaMock.playerLink.findMany.mockResolvedValue(
+      roster.map((entry, index) => ({
+        playerTag: entry.playerTag,
+        discordUserId: String(200000000000000000n + BigInt(index)),
       })),
     );
 
