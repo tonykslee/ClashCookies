@@ -267,6 +267,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     details: [
       "`/cwl members clan:<tag>` shows the observed current-season CWL roster for one tracked CWL clan using persisted round observations only.",
       "`/cwl members clan:<tag> inwar:true` narrows to the persisted current/prep lineup and includes current round status when available.",
+      "`/cwl signup clan:<tag> [timezone:<ianaTz>]` posts a CWL signup roster with Confirmed and Substitute buttons; each button opens an account picker so you can choose one or more linked player accounts for that group from the posted roster message, and the roster also includes a self-service Remove signup button.",
       "`/cwl rotations show` renders an interactive overview of active CWL plans with status, next battle-day timing, current-clan leadership summary, and a dropdown to open the detailed clan view; the clan page supports paging and manual refresh of that clan's actual CWL state.",
       "`/cwl rotations create` is admin-only by default and only works during persisted CWL preparation state for the tracked clan.",
       "`/cwl rotations import` is admin-only by default and imports active planner tabs from one public Google Sheet after a confirmation preview and clan-by-clan row-review step. Structural rows may be skipped automatically, but player-like rows are never dropped silently. Public imports do not require Google Sheets credentials; export/write still does.",
@@ -276,6 +277,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     examples: [
       "/cwl members clan:#2QG2C08UP",
       "/cwl members clan:#2QG2C08UP inwar:true",
+      "/cwl signup clan:#2QG2C08UP timezone:America/Los_Angeles",
       "/cwl rotations show",
       "/cwl rotations show clan:#2QG2C08UP day:3",
       "/cwl rotations create clan:#2QG2C08UP exclude:#PYLQ0289,#QGRJ2222 overwrite:true",

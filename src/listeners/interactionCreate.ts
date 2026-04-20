@@ -110,7 +110,17 @@ import {
   isCwlRotationShowButtonCustomId,
   handleCwlRotationShowSelectMenuInteraction,
   isCwlRotationShowSelectMenuCustomId,
+  handleRosterSignupButtonInteraction,
+  handleRosterRemoveButtonInteraction,
+  handleRosterSelectionMenuInteraction,
+  handleRosterSelectionActionButtonInteraction,
 } from "../commands/Cwl";
+import {
+  isRosterSignupButtonCustomId,
+  isRosterRemoveButtonCustomId,
+  isRosterSelectionMenuCustomId,
+  isRosterSelectionActionButtonCustomId,
+} from "../services/RosterService";
 import {
   handleTodoPageButtonInteraction,
   handleTodoRefreshButtonInteraction,
@@ -336,6 +346,21 @@ const handleSelectMenuInteraction = async (
   interaction: StringSelectMenuInteraction,
   cocService: CoCService
 ): Promise<void> => {
+  if (isRosterSelectionMenuCustomId(interaction.customId)) {
+    try {
+      await handleRosterSelectionMenuInteraction(interaction);
+    } catch (err) {
+      console.error(`Roster selection menu failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to update roster selection.",
+        });
+      }
+    }
+    return;
+  }
+
   if (isCwlRotationImportSelectMenuCustomId(interaction.customId)) {
     try {
       await handleCwlRotationImportSelectMenuInteraction(interaction);
@@ -562,6 +587,51 @@ const handleButtonInteraction = async (
         await interaction.reply({
           ephemeral: true,
           content: "Failed to update the CWL rotation show view.",
+        });
+      }
+    }
+    return;
+  }
+
+  if (isRosterSignupButtonCustomId(interaction.customId)) {
+    try {
+      await handleRosterSignupButtonInteraction(interaction);
+    } catch (err) {
+      console.error(`CWL roster signup button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to update the CWL signup roster.",
+        });
+      }
+    }
+    return;
+  }
+
+  if (isRosterRemoveButtonCustomId(interaction.customId)) {
+    try {
+      await handleRosterRemoveButtonInteraction(interaction);
+    } catch (err) {
+      console.error(`CWL roster remove button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to open roster removal.",
+        });
+      }
+    }
+    return;
+  }
+
+  if (isRosterSelectionActionButtonCustomId(interaction.customId)) {
+    try {
+      await handleRosterSelectionActionButtonInteraction(interaction);
+    } catch (err) {
+      console.error(`Roster selection action button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to update roster selection.",
         });
       }
     }

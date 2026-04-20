@@ -3,11 +3,16 @@ import { describe, expect, it } from "vitest";
 import { Cwl } from "../src/commands/Cwl";
 
 describe("/cwl command shape", () => {
-  it("registers members plus rotations show/create/import/export without drift", () => {
+  it("registers members, signup, and rotations show/create/import/export without drift", () => {
     const members = Cwl.options?.find(
       (option) =>
         option.type === ApplicationCommandOptionType.Subcommand &&
         option.name === "members",
+    );
+    const signup = Cwl.options?.find(
+      (option) =>
+        option.type === ApplicationCommandOptionType.Subcommand &&
+        option.name === "signup",
     );
     const rotations = Cwl.options?.find(
       (option) =>
@@ -20,12 +25,17 @@ describe("/cwl command shape", () => {
     const exportOption = rotations?.options?.find((option: any) => option.name === "export");
 
     expect(members).toBeTruthy();
+    expect(signup).toBeTruthy();
     expect(rotations).toBeTruthy();
     expect(show?.type).toBe(ApplicationCommandOptionType.Subcommand);
     expect(create?.type).toBe(ApplicationCommandOptionType.Subcommand);
     expect(importOption?.type).toBe(ApplicationCommandOptionType.Subcommand);
     expect(exportOption?.type).toBe(ApplicationCommandOptionType.Subcommand);
     expect(members?.options?.find((option: any) => option.name === "clan")?.required).toBe(true);
+    expect(signup?.options?.find((option: any) => option.name === "clan")?.required).toBe(true);
+    expect(signup?.options?.find((option: any) => option.name === "timezone")?.autocomplete).toBe(
+      true,
+    );
     const showDay = show?.options?.find((option: any) => option.name === "day");
     expect(showDay?.type).toBe(ApplicationCommandOptionType.Integer);
     expect(showDay?.minValue).toBe(1);
