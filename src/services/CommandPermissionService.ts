@@ -106,6 +106,7 @@ export const COMMAND_PERMISSION_TARGETS = [
   "unlinked:set-alert",
   "unlinked:list",
   "cwl",
+  "cwl:signup",
   "cwl:members",
   "cwl:rotations",
   "cwl:rotations:show",

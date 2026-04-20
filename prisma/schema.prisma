@@ -635,6 +635,75 @@ model TrackedMessageClaim {
   @@index([clanTag])
 }
 
+enum RosterLifecycleState {
+  ACTIVE
+  OPEN
+  CLOSED
+  ARCHIVED
+}
+
+model Roster {
+  id                   String               @id @default(cuid())
+  guildId              String
+  rosterType           String
+  rosterCategory       String?
+  title                String
+  clanTag              String?
+  startsAt             DateTime?
+  endsAt               DateTime?
+  timezone             String
+  displayTimezone      String?
+  lifecycleState       RosterLifecycleState @default(OPEN)
+  postedChannelId      String?
+  postedMessageId      String?              @unique
+  postedMessageUrl     String?
+  postedAt             DateTime?
+  createdByDiscordUserId String?
+  updatedByDiscordUserId String?
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
+  groups               RosterGroup[]
+  signups              RosterSignup[]
+
+  @@index([guildId, rosterType, lifecycleState])
+  @@index([guildId, clanTag])
+  @@index([guildId, startsAt])
+}
+
+model RosterGroup {
+  id          String   @id @default(cuid())
+  rosterId    String
+  key         String
+  name        String
+  description String?
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  roster      Roster   @relation(fields: [rosterId], references: [id], onDelete: Cascade)
+  signups     RosterSignup[]
+
+  @@unique([rosterId, key])
+  @@index([rosterId, sortOrder])
+}
+
+model RosterSignup {
+  id            String   @id @default(cuid())
+  rosterId      String
+  groupId       String?
+  playerTag     String
+  playerName    String?
+  discordUserId String
+  signedUpAt    DateTime @default(now())
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  roster        Roster   @relation(fields: [rosterId], references: [id], onDelete: Cascade)
+  group         RosterGroup? @relation(fields: [groupId], references: [id], onDelete: SetNull)
+
+  @@unique([rosterId, playerTag])
+  @@index([rosterId, discordUserId])
+  @@index([rosterId, groupId])
+}
+
 model KickListEntry {
   id            Int            @id @default(autoincrement())
   guildId       String

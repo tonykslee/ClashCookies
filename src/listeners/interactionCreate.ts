@@ -110,6 +110,8 @@ import {
   isCwlRotationShowButtonCustomId,
   handleCwlRotationShowSelectMenuInteraction,
   isCwlRotationShowSelectMenuCustomId,
+  handleRosterSignupButtonInteraction,
+  isRosterSignupButtonCustomId,
 } from "../commands/Cwl";
 import {
   handleTodoPageButtonInteraction,
@@ -562,6 +564,21 @@ const handleButtonInteraction = async (
         await interaction.reply({
           ephemeral: true,
           content: "Failed to update the CWL rotation show view.",
+        });
+      }
+    }
+    return;
+  }
+
+  if (isRosterSignupButtonCustomId(interaction.customId)) {
+    try {
+      await handleRosterSignupButtonInteraction(interaction);
+    } catch (err) {
+      console.error(`CWL roster signup button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to update the CWL signup roster.",
         });
       }
     }

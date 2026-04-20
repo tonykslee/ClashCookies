@@ -17,6 +17,11 @@ import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
 import { resolveCurrentCwlSeasonKey } from "../services/CwlRegistryService";
+import {
+  parseRosterSignupButtonCustomId,
+  rosterService,
+  ROSTER_LIFECYCLE_STATE,
+} from "../services/RosterService";
 import { cwlRotationService } from "../services/CwlRotationService";
 import { emojiResolverService } from "../services/emoji/EmojiResolverService";
 import {
@@ -28,6 +33,7 @@ import {
 } from "../services/CwlRotationSheetService";
 import { cwlStateService } from "../services/CwlStateService";
 import { normalizeClanTag, normalizePlayerTag } from "../services/PlayerLinkService";
+import { normalizeSyncTimeZone, autocompleteSyncTimeZones } from "../services/syncTimeZone";
 
 const CWL_EMBED_COLOR = 0xfee75c;
 const DISCORD_DESCRIPTION_LIMIT = 4096;
@@ -96,14 +102,31 @@ function buildDescription(lines: string[]): string {
   return `${description.slice(0, DISCORD_DESCRIPTION_LIMIT - 13)}\n...truncated`;
 }
 
-function normalizeClanMemberRole(input: unknown): "leader" | "coleader" | null {
-  const normalized = String(input ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z]/g, "");
-  if (normalized === "leader") return "leader";
-  if (normalized === "coleader") return "coleader";
-  return null;
+function formatRosterSignupResultSummary(result: Awaited<ReturnType<typeof rosterService.signupLinkedAccounts>>): string {
+  if (result.outcome === "roster_not_found") {
+    return "That roster no longer exists.";
+  }
+  if (result.outcome === "roster_closed") {
+    return "Signups are closed for that roster.";
+  }
+  if (result.outcome === "group_not_found") {
+    return "That roster group is no longer available.";
+  }
+  if (result.outcome === "no_linked_accounts") {
+    return "No linked player accounts were found for your Discord user.";
+  }
+  if (result.outcome === "already_signed_up" && result.createdTags.length <= 0) {
+    return result.linkedTags.length > 0
+      ? `Those linked accounts were already signed up for ${result.groupName}.`
+      : "No linked player accounts were available for signup.";
+  }
+
+  const created = result.createdTags.length > 0 ? result.createdTags.join(", ") : "no accounts";
+  const duplicateNote =
+    result.duplicateTags.length > 0
+      ? ` (${result.duplicateTags.length} already signed up)`
+      : "";
+  return `Signed up ${created} to ${result.groupName}${duplicateNote}.`;
 }
 
 async function resolveCwlRotationOverviewStatusIcons(client: Client): Promise<{ yes: string; no: string }> {
@@ -118,24 +141,6 @@ async function resolveCwlRotationOverviewStatusIcons(client: Client): Promise<{ 
   } catch {
     return fallback;
   }
-}
-
-function buildCwlRotationMemberLines(input: {
-  members: Array<{
-    playerTag: string;
-    playerName: string;
-    subbedOut: boolean;
-  }>;
-  emptyMessage: string;
-}): string[] {
-  if (input.members.length <= 0) {
-    return [input.emptyMessage];
-  }
-
-  return input.members.map((member) => {
-    const prefix = member.subbedOut ? ":x:" : ":black_circle:";
-    return `${prefix} ${member.playerName} (${member.playerTag})`;
-  });
 }
 
 function buildCwlRotationOverviewLines(input: {
@@ -228,24 +233,6 @@ function renderMembersListLines(input: {
     );
   }
   return lines;
-}
-
-function renderValidationSummary(input: {
-  missingExpectedPlayerTags: string[];
-  extraActualPlayerTags: string[];
-  actualAvailable: boolean;
-  complete: boolean;
-}): string {
-  if (!input.actualAvailable) return "actual lineup unavailable";
-  if (input.complete) return "complete";
-  const parts: string[] = [];
-  if (input.missingExpectedPlayerTags.length > 0) {
-    parts.push(`missing ${input.missingExpectedPlayerTags.join(", ")}`);
-  }
-  if (input.extraActualPlayerTags.length > 0) {
-    parts.push(`extra ${input.extraActualPlayerTags.join(", ")}`);
-  }
-  return parts.join(" | ");
 }
 
 function buildCwlRotationMergedRosterLines(input: {
@@ -2017,6 +2004,98 @@ async function handleRotationExportSubcommand(interaction: ChatInputCommandInter
   });
 }
 
+async function handleRosterSignupSubcommand(interaction: ChatInputCommandInteraction): Promise<void> {
+  if (!interaction.inGuild() || !interaction.guildId) {
+    await interaction.editReply("This command can only be used in a server.");
+    return;
+  }
+
+  const clanTag = normalizeClanTag(interaction.options.getString("clan", true));
+  if (!clanTag) {
+    await interaction.editReply("Use a valid tracked CWL clan tag.");
+    return;
+  }
+
+  const timezoneSeed = interaction.options.getString("timezone", false);
+  const timezone = timezoneSeed ? normalizeSyncTimeZone(timezoneSeed) : "UTC";
+  if (timezoneSeed && !timezone) {
+    await interaction.editReply(
+      "Invalid timezone. Use a valid IANA timezone like America/New_York, or a supported US alias like EST, EDT, PST, or PDT.",
+    );
+    return;
+  }
+
+  const season = resolveCurrentCwlSeasonKey();
+  const trackedClan = await prisma.cwlTrackedClan.findFirst({
+    where: {
+      season,
+      tag: clanTag,
+    },
+    select: {
+      tag: true,
+      name: true,
+    },
+  });
+  if (!trackedClan) {
+    await interaction.editReply(`No tracked CWL clan found for ${clanTag} in ${season}.`);
+    return;
+  }
+
+  const channel = interaction.channel;
+  if (!channel?.isTextBased()) {
+    await interaction.editReply("This command can only post to a text channel.");
+    return;
+  }
+  if (!("send" in channel)) {
+    await interaction.editReply("This command can only post in a server text channel.");
+    return;
+  }
+
+  const roster = await rosterService.createRoster({
+    guildId: interaction.guildId,
+    rosterType: "CWL",
+    rosterCategory: "signup",
+    title: `${trackedClan.name?.trim() || trackedClan.tag} CWL Signup (${season})`,
+    clanTag: trackedClan.tag,
+    startsAt: new Date(),
+    timezone,
+    displayTimezone: timezone,
+    lifecycleState: ROSTER_LIFECYCLE_STATE.OPEN,
+    createdByDiscordUserId: interaction.user.id,
+    updatedByDiscordUserId: interaction.user.id,
+  });
+
+  const payload = await rosterService.buildRosterSignupPayload(roster.id);
+  if (!payload) {
+    await interaction.editReply("Failed to build the CWL signup post.");
+    return;
+  }
+
+  const postedMessage = await channel
+    .send({
+      embeds: [payload.embed],
+      components: payload.components,
+    })
+    .catch(async (err) => {
+      console.error(`[cwl] roster signup post_failed error=${formatError(err)}`);
+      await interaction.editReply("Failed to post the CWL signup roster.");
+      return null;
+    });
+  if (!postedMessage) return;
+
+  await rosterService.recordRosterPostedMessage({
+    rosterId: roster.id,
+    channelId: postedMessage.channelId,
+    messageId: postedMessage.id,
+    messageUrl: postedMessage.url,
+    postedByDiscordUserId: interaction.user.id,
+  });
+
+  await interaction.editReply(
+    `Posted CWL signup roster for ${trackedClan.name?.trim() || trackedClan.tag} in <#${postedMessage.channelId}>.`,
+  );
+}
+
 export async function handleCwlRotationImportButtonInteraction(
   interaction: ButtonInteraction,
 ): Promise<void> {
@@ -2476,6 +2555,40 @@ export async function handleCwlRotationShowSelectMenuInteraction(
   });
 }
 
+export async function handleRosterSignupButtonInteraction(
+  interaction: ButtonInteraction,
+): Promise<void> {
+  const parsed = parseRosterSignupButtonCustomId(interaction.customId);
+  if (!parsed) return;
+
+  const signupResult = await rosterService.signupLinkedAccounts({
+    rosterId: parsed.rosterId,
+    groupKey: parsed.groupKey,
+    discordUserId: interaction.user.id,
+  });
+  const payload = await rosterService.buildRosterSignupPayload(parsed.rosterId);
+  if (!payload) {
+    await interaction.reply({
+      content: "That roster is no longer available.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await interaction.update({
+    embeds: [payload.embed],
+    components: payload.components,
+  });
+
+  const summary = formatRosterSignupResultSummary(signupResult);
+  if (summary) {
+    await interaction.followUp({
+      content: summary,
+      ephemeral: true,
+    });
+  }
+}
+
 export const Cwl: Command = {
   name: "cwl",
   description: "Inspect persisted CWL rosters, day-paged rotation plans, and planner sheet imports/exports",
@@ -2497,6 +2610,27 @@ export const Cwl: Command = {
           description: "Only show the persisted current/prep lineup",
           type: ApplicationCommandOptionType.Boolean,
           required: false,
+        },
+      ],
+    },
+    {
+      name: "signup",
+      description: "Post a CWL signup roster with account-aware signup buttons",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "clan",
+          description: "Tracked CWL clan tag",
+          type: ApplicationCommandOptionType.String,
+          required: true,
+          autocomplete: true,
+        },
+        {
+          name: "timezone",
+          description: "Timezone to show on the signup roster",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          autocomplete: true,
         },
       ],
     },
@@ -2596,6 +2730,10 @@ export const Cwl: Command = {
         await handleMembersSubcommand(interaction);
         return;
       }
+      if (!group && subcommand === "signup") {
+        await handleRosterSignupSubcommand(interaction);
+        return;
+      }
       if (group === "rotations" && subcommand === "create") {
         await handleRotationCreateSubcommand(interaction);
         return;
@@ -2622,6 +2760,10 @@ export const Cwl: Command = {
     const focused = interaction.options.getFocused(true);
     if (focused.name === "day") {
       await autocompleteCwlRotationShowDay(interaction);
+      return;
+    }
+    if (focused.name === "timezone") {
+      await interaction.respond(autocompleteSyncTimeZones(focused.value));
       return;
     }
     if (focused.name === "clan") {

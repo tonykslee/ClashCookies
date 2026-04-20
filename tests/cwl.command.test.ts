@@ -1,3 +1,9 @@
+import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  EmbedBuilder,
+} from "discord.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const prismaMock = vi.hoisted(() => ({
@@ -22,12 +28,14 @@ import {
 } from "../src/services/CwlRotationSheetService";
 import { cwlRotationService } from "../src/services/CwlRotationService";
 import { cwlStateService } from "../src/services/CwlStateService";
+import { rosterService } from "../src/services/RosterService";
 import { emojiResolverService } from "../src/services/emoji/EmojiResolverService";
 
 function makeInteraction(input: {
   group?: "rotations" | null;
-  subcommand: "members" | "show" | "create" | "import" | "export";
+  subcommand: "members" | "signup" | "show" | "create" | "import" | "export";
   clan?: string | null;
+  timezone?: string | null;
   inwar?: boolean | null;
   day?: number | null;
   exclude?: string | null;
@@ -40,6 +48,7 @@ function makeInteraction(input: {
       getSubcommand: vi.fn().mockReturnValue(input.subcommand),
       getString: vi.fn((name: string) => {
         if (name === "clan") return input.clan ?? null;
+        if (name === "timezone") return input.timezone ?? null;
         if (name === "exclude") return input.exclude ?? null;
         if (name === "visibility") return null;
         return null;
@@ -166,6 +175,9 @@ describe("/cwl command", () => {
 
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
     prismaMock.cwlTrackedClan.findFirst.mockResolvedValue({ tag: "#2QG2C08UP", name: "CWL Alpha" });
+    vi.spyOn(rosterService, "createRoster");
+    vi.spyOn(rosterService, "buildRosterSignupPayload");
+    vi.spyOn(rosterService, "recordRosterPostedMessage");
     vi.spyOn(cwlRotationSheetService, "buildImportPreview");
     vi.spyOn(cwlRotationSheetService, "confirmImport");
     vi.spyOn(cwlRotationSheetService, "exportActivePlans");
@@ -249,6 +261,69 @@ describe("/cwl command", () => {
     expect(getDescription(interaction)).toContain("Season: 2026-04");
     expect(getDescription(interaction)).toContain("CWL Alpha (#2QG2C08UP) - Day 1 Preparation vs Opponent One (#OPP1)");
     expect(getDescription(interaction)).toContain("Alpha `#P1` - days 2 - <@111111111111111111> - preparation 0/0");
+  });
+
+  it("posts a CWL signup roster with buttons and persistence", async () => {
+    (rosterService.createRoster as any).mockResolvedValue({ id: "roster-1" });
+    (rosterService.buildRosterSignupPayload as any).mockResolvedValue({
+      embed: new EmbedBuilder().setTitle("CWL Alpha CWL Signup (2026-04)"),
+      components: [
+        new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder()
+            .setCustomId("roster-signup:roster-1:confirmed")
+            .setLabel("Confirmed (0)")
+            .setStyle(ButtonStyle.Primary),
+        ),
+      ],
+    });
+    (rosterService.recordRosterPostedMessage as any).mockResolvedValue(undefined);
+
+    const interaction = makeInteraction({
+      subcommand: "signup",
+      clan: "#2QG2C08UP",
+      timezone: "America/Los_Angeles",
+    }) as any;
+    interaction.inGuild = () => true;
+    interaction.guildId = "guild-1";
+    interaction.channel = {
+      isTextBased: () => true,
+      send: vi.fn().mockResolvedValue({
+        id: "message-1",
+        channelId: "channel-1",
+        url: "https://discord.com/channels/guild-1/channel-1/message-1",
+      }),
+    };
+
+    await Cwl.run({} as any, interaction as any, {} as any);
+
+    expect(rosterService.createRoster).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guildId: "guild-1",
+        rosterType: "CWL",
+        rosterCategory: "signup",
+        clanTag: "#2QG2C08UP",
+        timezone: "America/Los_Angeles",
+        displayTimezone: "America/Los_Angeles",
+      }),
+    );
+    expect(interaction.channel.send).toHaveBeenCalledTimes(1);
+    expect(interaction.channel.send.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({
+        embeds: [expect.any(EmbedBuilder)],
+        components: [expect.any(ActionRowBuilder)],
+      }),
+    );
+    expect(rosterService.recordRosterPostedMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rosterId: "roster-1",
+        channelId: "channel-1",
+        messageId: "message-1",
+        messageUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+      }),
+    );
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "Posted CWL signup roster for CWL Alpha in <#channel-1>.",
+    );
   });
 
   it("returns a clear message when /cwl members inwar:true has no active persisted round", async () => {
