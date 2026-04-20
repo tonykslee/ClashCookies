@@ -112,6 +112,9 @@ function formatRosterSignupResultSummary(result: Awaited<ReturnType<typeof roste
   if (result.outcome === "roster_closed") {
     return "Signups are closed for that roster.";
   }
+  if (result.outcome === "roster_archived") {
+    return "That roster is archived.";
+  }
   if (result.outcome === "group_not_found") {
     return "That roster group is no longer available.";
   }
@@ -137,6 +140,9 @@ function formatRosterRemoveResultSummary(
 ): string {
   if (result.outcome === "roster_not_found") {
     return "That roster no longer exists.";
+  }
+  if (result.outcome === "roster_archived") {
+    return "That roster is archived and can no longer be modified.";
   }
 
   if (result.outcome === "nothing_removed" && result.removedTags.length <= 0) {
@@ -170,6 +176,9 @@ function formatRosterManagerRemoveResultSummary(
   if (result.outcome === "roster_not_found") {
     return "That roster no longer exists.";
   }
+  if (result.outcome === "roster_archived") {
+    return "That roster is archived and can no longer be modified.";
+  }
   if (result.outcome === "nothing_removed" && result.removedTags.length <= 0) {
     return result.notOwnedTags.length > 0
       ? "None of the selected signups were found on that roster."
@@ -189,6 +198,9 @@ function formatRosterManagerMoveResultSummary(
 ): string {
   if (result.outcome === "roster_not_found") {
     return "That roster no longer exists.";
+  }
+  if (result.outcome === "roster_archived") {
+    return "That roster is archived and can no longer be modified.";
   }
   if (result.outcome === "group_not_found") {
     return "That roster group is no longer available.";
@@ -2245,6 +2257,7 @@ async function handleRosterManagerSubcommand(interaction: ChatInputCommandIntera
   const subcommand = interaction.options.getSubcommand(true);
 
   if (subcommand === "report" || subcommand === "readiness") {
+    // Report and readiness intentionally share the same manager-facing roster view in Phase 2.
     const reportText = await rosterService.buildRosterManagerReadinessText({ rosterId: roster.id });
     if (!reportText) {
       await interaction.editReply("Failed to build the roster readiness report.");

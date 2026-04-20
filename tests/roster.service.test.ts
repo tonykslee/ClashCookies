@@ -397,7 +397,7 @@ describe("RosterService", () => {
     ["closed", "CLOSED"],
     ["archived", "ARCHIVED"],
   ] as const)("blocks signup selection when the roster is %s", async (_label, lifecycleState) => {
-    prismaMock.roster.findUnique.mockResolvedValueOnce({
+    prismaMock.roster.findUnique.mockResolvedValue({
       id: "roster-1",
       guildId: "guild-1",
       rosterType: "CWL",
@@ -431,45 +431,171 @@ describe("RosterService", () => {
     });
   });
 
-  it("allows managers to add, move, and remove roster entries without ownership checks", async () => {
-    prismaMock.playerLink.findMany.mockResolvedValue([
-      {
-        playerTag: "#PQL0289",
-        discordUserId: "111111111111111111",
-        playerName: "Alpha",
-      },
-      {
-        playerTag: "#QGRJ2222",
-        discordUserId: "222222222222222222",
-        playerName: "Bravo",
-      },
-    ]);
-    prismaMock.rosterSignup.findMany
-      .mockResolvedValueOnce([]) // add existing rows
-      .mockResolvedValueOnce([
-        { playerTag: "#PQL0289", groupId: "group-confirmed" },
-        { playerTag: "#QGRJ2222", groupId: "group-confirmed" },
-      ] as any)
-      .mockResolvedValueOnce([
-        { playerTag: "#PQL0289" },
-        { playerTag: "#QGRJ2222" },
-      ] as any);
-    prismaMock.rosterSignup.createMany.mockResolvedValue({ count: 2 });
-    prismaMock.rosterSignup.updateMany.mockResolvedValue({ count: 1 });
-    prismaMock.rosterSignup.deleteMany.mockResolvedValue({ count: 2 });
-    prismaMock.rosterGroup.findFirst.mockResolvedValueOnce({
-      id: "group-confirmed",
-      key: "confirmed",
-      name: "Confirmed",
-      description: "Primary roster members",
-      sortOrder: 0,
-    });
-    prismaMock.rosterGroup.findFirst.mockResolvedValueOnce({
-      id: "group-substitute",
-      key: "substitute",
-      name: "Substitute",
-      description: "Reserve roster members",
-      sortOrder: 1,
+  it.each(["OPEN", "CLOSED"] as const)(
+    "allows managers to add, move, and remove roster entries on %s rosters",
+    async (lifecycleState) => {
+      prismaMock.roster.findUnique.mockResolvedValue({
+        id: "roster-1",
+        guildId: "guild-1",
+        rosterType: "CWL",
+        rosterCategory: "signup",
+        title: "CWL Alpha Signup",
+        clanTag: "#2QG2C08UP",
+        startsAt: new Date("2026-04-20T00:00:00.000Z"),
+        endsAt: null,
+        timezone: "America/Los_Angeles",
+        displayTimezone: "America/Los_Angeles",
+        lifecycleState,
+        postedChannelId: null,
+        postedMessageId: null,
+        postedMessageUrl: null,
+        postedAt: null,
+        createdByDiscordUserId: "111111111111111111",
+        updatedByDiscordUserId: "111111111111111111",
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+      });
+      prismaMock.playerLink.findMany.mockResolvedValue([
+        {
+          playerTag: "#PQL0289",
+          discordUserId: "111111111111111111",
+          playerName: "Alpha",
+        },
+        {
+          playerTag: "#QGRJ2222",
+          discordUserId: "222222222222222222",
+          playerName: "Bravo",
+        },
+      ]);
+      prismaMock.rosterSignup.findMany
+        .mockResolvedValueOnce([]) // add existing rows
+        .mockResolvedValueOnce([
+          { playerTag: "#PQL0289", groupId: "group-confirmed" },
+          { playerTag: "#QGRJ2222", groupId: "group-confirmed" },
+        ] as any)
+        .mockResolvedValueOnce([
+          { playerTag: "#PQL0289" },
+          { playerTag: "#QGRJ2222" },
+        ] as any);
+      prismaMock.rosterSignup.createMany.mockResolvedValue({ count: 2 });
+      prismaMock.rosterSignup.updateMany.mockResolvedValue({ count: 1 });
+      prismaMock.rosterSignup.deleteMany.mockResolvedValue({ count: 2 });
+      prismaMock.rosterGroup.findFirst.mockResolvedValueOnce({
+        id: "group-confirmed",
+        key: "confirmed",
+        name: "Confirmed",
+        description: "Primary roster members",
+        sortOrder: 0,
+      });
+      prismaMock.rosterGroup.findFirst.mockResolvedValueOnce({
+        id: "group-substitute",
+        key: "substitute",
+        name: "Substitute",
+        description: "Reserve roster members",
+        sortOrder: 1,
+      });
+
+      const added = await rosterService.addRosterSignupsForManager({
+        rosterId: "roster-1",
+        groupKey: "confirmed",
+        playerTags: ["#PQL0289", "#QGRJ2222"],
+        updatedByDiscordUserId: "999999999999999999",
+      });
+      const moved = await rosterService.moveRosterSignups({
+        rosterId: "roster-1",
+        groupKey: "substitute",
+        playerTags: ["#PQL0289", "#QGRJ2222"],
+        updatedByDiscordUserId: "999999999999999999",
+      });
+      const removed = await rosterService.removeRosterSignupsAsManager({
+        rosterId: "roster-1",
+        playerTags: ["#PQL0289", "#QGRJ2222"],
+        updatedByDiscordUserId: "999999999999999999",
+      });
+
+      expect(added).toMatchObject({
+        outcome: "created",
+        linkedTags: ["#PQL0289", "#QGRJ2222"],
+        createdTags: ["#PQL0289", "#QGRJ2222"],
+        duplicateTags: [],
+        missingLinkedTags: [],
+      });
+      expect(prismaMock.rosterSignup.createMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.arrayContaining([
+            expect.objectContaining({
+              rosterId: "roster-1",
+              groupId: "group-confirmed",
+              playerTag: "#PQL0289",
+              playerName: "Alpha",
+              discordUserId: "111111111111111111",
+            }),
+            expect.objectContaining({
+              rosterId: "roster-1",
+              groupId: "group-confirmed",
+              playerTag: "#QGRJ2222",
+              playerName: "Bravo",
+              discordUserId: "222222222222222222",
+            }),
+          ]),
+          skipDuplicates: true,
+        }),
+      );
+
+      expect(moved).toMatchObject({
+        outcome: "moved",
+        groupKey: "substitute",
+        movedTags: ["#PQL0289", "#QGRJ2222"],
+        duplicateTags: [],
+        missingTags: [],
+      });
+      expect(prismaMock.rosterSignup.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            rosterId: "roster-1",
+            playerTag: { in: ["#PQL0289", "#QGRJ2222"] },
+          }),
+          data: { groupId: "group-substitute" },
+        }),
+      );
+
+      expect(removed).toMatchObject({
+        outcome: "removed",
+        removedTags: ["#PQL0289", "#QGRJ2222"],
+        notOwnedTags: [],
+      });
+      expect(prismaMock.rosterSignup.deleteMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            rosterId: "roster-1",
+            playerTag: { in: ["#PQL0289", "#QGRJ2222"] },
+          }),
+        }),
+      );
+    },
+  );
+
+  it("rejects archived roster mutations for manager add, move, and remove actions", async () => {
+    prismaMock.roster.findUnique.mockResolvedValue({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      lifecycleState: "ARCHIVED",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
     });
 
     const added = await rosterService.addRosterSignupsForManager({
@@ -491,64 +617,38 @@ describe("RosterService", () => {
     });
 
     expect(added).toMatchObject({
-      outcome: "created",
-      linkedTags: ["#PQL0289", "#QGRJ2222"],
-      createdTags: ["#PQL0289", "#QGRJ2222"],
+      outcome: "roster_archived",
+      rosterId: "roster-1",
+      groupKey: "confirmed",
+      groupName: null,
+      requestedTags: ["#PQL0289", "#QGRJ2222"],
+      linkedTags: [],
+      createdTags: [],
       duplicateTags: [],
-      missingLinkedTags: [],
+      missingLinkedTags: ["#PQL0289", "#QGRJ2222"],
     });
-    expect(prismaMock.rosterSignup.createMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.arrayContaining([
-          expect.objectContaining({
-            rosterId: "roster-1",
-            groupId: "group-confirmed",
-            playerTag: "#PQL0289",
-            playerName: "Alpha",
-            discordUserId: "111111111111111111",
-          }),
-          expect.objectContaining({
-            rosterId: "roster-1",
-            groupId: "group-confirmed",
-            playerTag: "#QGRJ2222",
-            playerName: "Bravo",
-            discordUserId: "222222222222222222",
-          }),
-        ]),
-        skipDuplicates: true,
-      }),
-    );
-
     expect(moved).toMatchObject({
-      outcome: "moved",
+      outcome: "roster_archived",
+      rosterId: "roster-1",
       groupKey: "substitute",
-      movedTags: ["#PQL0289", "#QGRJ2222"],
+      requestedTags: ["#PQL0289", "#QGRJ2222"],
+      movedTags: [],
       duplicateTags: [],
-      missingTags: [],
+      missingTags: ["#PQL0289", "#QGRJ2222"],
     });
-    expect(prismaMock.rosterSignup.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          rosterId: "roster-1",
-          playerTag: { in: ["#PQL0289", "#QGRJ2222"] },
-        }),
-        data: { groupId: "group-substitute" },
-      }),
-    );
-
     expect(removed).toMatchObject({
-      outcome: "removed",
-      removedTags: ["#PQL0289", "#QGRJ2222"],
+      outcome: "roster_archived",
+      rosterId: "roster-1",
+      removedTags: [],
+      ignoredTags: ["#PQL0289", "#QGRJ2222"],
       notOwnedTags: [],
     });
-    expect(prismaMock.rosterSignup.deleteMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          rosterId: "roster-1",
-          playerTag: { in: ["#PQL0289", "#QGRJ2222"] },
-        }),
-      }),
-    );
+    expect(prismaMock.playerLink.findMany).not.toHaveBeenCalled();
+    expect(prismaMock.rosterGroup.findFirst).not.toHaveBeenCalled();
+    expect(prismaMock.rosterSignup.findMany).not.toHaveBeenCalled();
+    expect(prismaMock.rosterSignup.createMany).not.toHaveBeenCalled();
+    expect(prismaMock.rosterSignup.updateMany).not.toHaveBeenCalled();
+    expect(prismaMock.rosterSignup.deleteMany).not.toHaveBeenCalled();
   });
 
   it("builds a manager readiness view that surfaces unsigned and out-of-clan players", async () => {

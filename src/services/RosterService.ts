@@ -254,6 +254,17 @@ export type SignupLinkedAccountsResult =
       missingLinkedTags: string[];
     }
   | {
+      outcome: "roster_archived";
+      rosterId: string;
+      groupKey: string;
+      groupName: string | null;
+      requestedTags: string[];
+      linkedTags: string[];
+      createdTags: string[];
+      duplicateTags: string[];
+      missingLinkedTags: string[];
+    }
+  | {
       outcome: "group_not_found";
       rosterId: string;
       groupKey: string;
@@ -282,6 +293,13 @@ export type RemoveRosterSignupsResult =
     }
   | {
       outcome: "roster_not_found";
+      rosterId: string;
+      removedTags: string[];
+      ignoredTags: string[];
+      notOwnedTags: string[];
+    }
+  | {
+      outcome: "roster_archived";
       rosterId: string;
       removedTags: string[];
       ignoredTags: string[];
@@ -320,6 +338,15 @@ export type RosterManagerMoveSignupsResult =
     }
   | {
       outcome: "roster_not_found";
+      rosterId: string;
+      groupKey: string;
+      requestedTags: string[];
+      movedTags: string[];
+      duplicateTags: string[];
+      missingTags: string[];
+    }
+  | {
+      outcome: "roster_archived";
       rosterId: string;
       groupKey: string;
       requestedTags: string[];
@@ -412,6 +439,10 @@ function isRosterAcceptingSignups(state: RosterLifecycleState): boolean {
 
 function isRosterArchived(state: RosterLifecycleState): boolean {
   return state === ROSTER_LIFECYCLE_STATE.ARCHIVED;
+}
+
+function canManagerMutateRoster(state: RosterLifecycleState): boolean {
+  return !isRosterArchived(state);
 }
 
 type RosterRecordLike = {
@@ -1300,7 +1331,10 @@ export class RosterService {
   }): Promise<RosterLifecycleUpdateResult> {
     const roster = await prisma.roster.findUnique({
       where: { id: input.rosterId },
-      select: { id: true },
+      select: {
+        id: true,
+        lifecycleState: true,
+      },
     });
     if (!roster) {
       return { outcome: "roster_not_found", rosterId: input.rosterId };
@@ -1336,6 +1370,32 @@ export class RosterService {
     const requestedTags = normalizeRosterPlayerTags(
       Array.isArray(input.playerTags) ? input.playerTags : [],
     );
+    if (!roster) {
+      return {
+        outcome: "roster_not_found",
+        rosterId: input.rosterId,
+        groupKey: normalizeRosterGroupKey(input.groupKey),
+        groupName: null,
+        requestedTags,
+        linkedTags: [],
+        createdTags: [],
+        duplicateTags: [],
+        missingLinkedTags: requestedTags,
+      };
+    }
+    if (!canManagerMutateRoster(roster.lifecycleState)) {
+      return {
+        outcome: "roster_archived",
+        rosterId: roster.id,
+        groupKey: normalizeRosterGroupKey(input.groupKey),
+        groupName: null,
+        requestedTags,
+        linkedTags: [],
+        createdTags: [],
+        duplicateTags: [],
+        missingLinkedTags: requestedTags,
+      };
+    }
     const linkedAccounts = await prisma.playerLink.findMany({
       where: {
         playerTag: { in: requestedTags },
@@ -1355,35 +1415,7 @@ export class RosterService {
     }
     const linkedTags = requestedTags.filter((tag) => linkedByTag.has(tag));
     const missingLinkedTags = requestedTags.filter((tag) => !linkedByTag.has(tag));
-    const group = roster ? await getRosterGroupByKey({ rosterId: roster.id, groupKey: input.groupKey }) : null;
-
-    if (!roster) {
-      return {
-        outcome: "roster_not_found",
-        rosterId: input.rosterId,
-        groupKey: normalizeRosterGroupKey(input.groupKey),
-        groupName: null,
-        requestedTags,
-        linkedTags,
-        createdTags: [],
-        duplicateTags: [],
-        missingLinkedTags,
-      };
-    }
-
-    if (!isRosterAcceptingSignups(roster.lifecycleState) && !isRosterArchived(roster.lifecycleState)) {
-      return {
-        outcome: "roster_closed",
-        rosterId: roster.id,
-        groupKey: normalizeRosterGroupKey(input.groupKey),
-        groupName: null,
-        requestedTags,
-        linkedTags,
-        createdTags: [],
-        duplicateTags: [],
-        missingLinkedTags,
-      };
-    }
+    const group = await getRosterGroupByKey({ rosterId: roster.id, groupKey: input.groupKey });
 
     if (!group) {
       return {
@@ -1480,9 +1512,9 @@ export class RosterService {
         missingTags: requestedTags,
       };
     }
-    if (isRosterArchived(roster.lifecycleState)) {
+    if (!canManagerMutateRoster(roster.lifecycleState)) {
       return {
-        outcome: "nothing_moved",
+        outcome: "roster_archived",
         rosterId: roster.id,
         groupKey: normalizeRosterGroupKey(input.groupKey),
         requestedTags,
@@ -1554,7 +1586,10 @@ export class RosterService {
   }): Promise<RemoveRosterSignupsResult> {
     const roster = await prisma.roster.findUnique({
       where: { id: input.rosterId },
-      select: { id: true },
+      select: {
+        id: true,
+        lifecycleState: true,
+      },
     });
     const selectedTags = normalizeRosterPlayerTags(Array.isArray(input.playerTags) ? input.playerTags : []);
 
@@ -1572,6 +1607,15 @@ export class RosterService {
       return {
         outcome: "roster_not_found",
         rosterId: input.rosterId,
+        removedTags: [],
+        ignoredTags: selectedTags,
+        notOwnedTags: [],
+      };
+    }
+    if (!canManagerMutateRoster(roster.lifecycleState)) {
+      return {
+        outcome: "roster_archived",
+        rosterId: roster.id,
         removedTags: [],
         ignoredTags: selectedTags,
         notOwnedTags: [],
