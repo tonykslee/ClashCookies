@@ -112,6 +112,9 @@ function formatRosterSignupResultSummary(result: Awaited<ReturnType<typeof roste
   if (result.outcome === "roster_closed") {
     return "Signups are closed for that roster.";
   }
+  if (result.outcome === "roster_archived") {
+    return "That roster is archived.";
+  }
   if (result.outcome === "group_not_found") {
     return "That roster group is no longer available.";
   }
@@ -138,6 +141,9 @@ function formatRosterRemoveResultSummary(
   if (result.outcome === "roster_not_found") {
     return "That roster no longer exists.";
   }
+  if (result.outcome === "roster_archived") {
+    return "That roster is archived and can no longer be modified.";
+  }
 
   if (result.outcome === "nothing_removed" && result.removedTags.length <= 0) {
     return result.notOwnedTags.length > 0
@@ -151,6 +157,75 @@ function formatRosterRemoveResultSummary(
       ? ` (${result.notOwnedTags.length} not owned by you)`
       : "";
   return `Removed ${removed}${ignored}.`;
+}
+
+function parseRosterPlayerTags(input: string): string[] {
+  return [
+    ...new Set(
+      String(input ?? "")
+        .split(/[\s,]+/g)
+        .map((token) => normalizePlayerTag(token))
+        .filter(Boolean),
+    ),
+  ];
+}
+
+function formatRosterManagerRemoveResultSummary(
+  result: Awaited<ReturnType<typeof rosterService.removeRosterSignupsAsManager>>,
+): string {
+  if (result.outcome === "roster_not_found") {
+    return "That roster no longer exists.";
+  }
+  if (result.outcome === "roster_archived") {
+    return "That roster is archived and can no longer be modified.";
+  }
+  if (result.outcome === "nothing_removed" && result.removedTags.length <= 0) {
+    return result.notOwnedTags.length > 0
+      ? "None of the selected signups were found on that roster."
+      : "No roster signups were removed.";
+  }
+
+  const removed = result.removedTags.length > 0 ? result.removedTags.join(", ") : "no signups";
+  const ignored =
+    result.notOwnedTags.length > 0
+      ? ` (${result.notOwnedTags.length} not found on that roster)`
+      : "";
+  return `Removed ${removed}${ignored}.`;
+}
+
+function formatRosterManagerMoveResultSummary(
+  result: Awaited<ReturnType<typeof rosterService.moveRosterSignups>>,
+): string {
+  if (result.outcome === "roster_not_found") {
+    return "That roster no longer exists.";
+  }
+  if (result.outcome === "roster_archived") {
+    return "That roster is archived and can no longer be modified.";
+  }
+  if (result.outcome === "group_not_found") {
+    return "That roster group is no longer available.";
+  }
+  if (result.outcome === "nothing_moved" && result.movedTags.length <= 0) {
+    return result.missingTags.length > 0
+      ? "None of the selected signups were found on that roster."
+      : "No roster signups were moved.";
+  }
+
+  const moved = result.movedTags.length > 0 ? result.movedTags.join(", ") : "no signups";
+  const duplicate =
+    result.duplicateTags.length > 0 ? ` (${result.duplicateTags.length} already in ${result.groupKey})` : "";
+  const missing =
+    result.missingTags.length > 0 ? ` (${result.missingTags.length} not found on that roster)` : "";
+  return `Moved ${moved} to ${result.groupKey}${duplicate}${missing}.`;
+}
+
+function buildRosterManagerLifecycleSummary(
+  rosterTitle: string,
+  lifecycleState: "OPEN" | "CLOSED" | "ARCHIVED",
+): string {
+  const label =
+    lifecycleState === "OPEN" ? "opened" : lifecycleState === "CLOSED" ? "closed" : "archived";
+  return `${rosterTitle} was ${label}.`;
 }
 
 async function refreshRosterSignupPost(interaction: ChatInputCommandInteraction | ButtonInteraction | StringSelectMenuInteraction, rosterId: string): Promise<void> {
@@ -2140,6 +2215,159 @@ async function handleRosterSignupSubcommand(interaction: ChatInputCommandInterac
   );
 }
 
+async function handleRosterManagerSubcommand(interaction: ChatInputCommandInteraction): Promise<void> {
+  if (!interaction.inGuild() || !interaction.guildId) {
+    await interaction.editReply("This command can only be used in a server.");
+    return;
+  }
+
+  const clanTag = normalizeClanTag(interaction.options.getString("clan", true));
+  if (!clanTag) {
+    await interaction.editReply("Use a valid tracked CWL clan tag.");
+    return;
+  }
+
+  const season = resolveCurrentCwlSeasonKey();
+  const trackedClan = await prisma.cwlTrackedClan.findFirst({
+    where: {
+      season,
+      tag: clanTag,
+    },
+    select: {
+      tag: true,
+      name: true,
+    },
+  });
+  if (!trackedClan) {
+    await interaction.editReply(`No tracked CWL clan found for ${clanTag} in ${season}.`);
+    return;
+  }
+
+  const roster = await rosterService.findCwlRosterForClan({
+    guildId: interaction.guildId,
+    clanTag: trackedClan.tag,
+    season,
+  });
+  if (!roster) {
+    await interaction.editReply(`No CWL signup roster found for ${trackedClan.name?.trim() || trackedClan.tag}.`);
+    return;
+  }
+
+  const rosterLabel = trackedClan.name?.trim() || trackedClan.tag;
+  const subcommand = interaction.options.getSubcommand(true);
+
+  if (subcommand === "report" || subcommand === "readiness") {
+    // Report and readiness intentionally share the same manager-facing roster view in Phase 2.
+    const reportText = await rosterService.buildRosterManagerReadinessText({ rosterId: roster.id });
+    if (!reportText) {
+      await interaction.editReply("Failed to build the roster readiness report.");
+      return;
+    }
+    await interaction.editReply({
+      embeds: [
+        new EmbedBuilder()
+          .setColor(CWL_EMBED_COLOR)
+          .setTitle(`${rosterLabel} CWL readiness`)
+          .setDescription(reportText),
+      ],
+    });
+    return;
+  }
+
+  if (subcommand === "refresh") {
+    await refreshRosterSignupPost(interaction, roster.id).catch(() => undefined);
+    await interaction.editReply(`Refreshed the posted CWL roster for ${rosterLabel}.`);
+    return;
+  }
+
+  if (subcommand === "open" || subcommand === "close" || subcommand === "archive") {
+    const lifecycleState =
+      subcommand === "open"
+        ? "OPEN"
+        : subcommand === "close"
+          ? "CLOSED"
+          : "ARCHIVED";
+    const result = await rosterService.updateRosterLifecycleState({
+      rosterId: roster.id,
+      lifecycleState,
+      updatedByDiscordUserId: interaction.user.id,
+    });
+    if (result.outcome === "roster_not_found") {
+      await interaction.editReply("That roster is no longer available.");
+      return;
+    }
+    await refreshRosterSignupPost(interaction, roster.id).catch(() => undefined);
+    await interaction.editReply(buildRosterManagerLifecycleSummary(rosterLabel, lifecycleState));
+    return;
+  }
+
+  const playersInput = interaction.options.getString("players", false) ?? "";
+  const playerTags = parseRosterPlayerTags(playersInput);
+  if (playerTags.length <= 0) {
+    await interaction.editReply("Provide one or more player tags to update.");
+    return;
+  }
+
+  if (subcommand === "add" || subcommand === "move") {
+    const groupKey = interaction.options.getString("group", false);
+    if (!groupKey) {
+      await interaction.editReply("Provide a roster group for this action.");
+      return;
+    }
+
+    if (subcommand === "add") {
+      const result = await rosterService.addRosterSignupsForManager({
+        rosterId: roster.id,
+        groupKey,
+        playerTags,
+        updatedByDiscordUserId: interaction.user.id,
+      });
+      if (result.outcome === "roster_not_found") {
+        await interaction.editReply("That roster is no longer available.");
+        return;
+      }
+      await refreshRosterSignupPost(interaction, roster.id).catch(() => undefined);
+      await interaction.editReply(formatRosterSignupResultSummary(result));
+      return;
+    }
+
+    const result = await rosterService.moveRosterSignups({
+      rosterId: roster.id,
+      groupKey,
+      playerTags,
+      updatedByDiscordUserId: interaction.user.id,
+    });
+    if (result.outcome === "roster_not_found") {
+      await interaction.editReply("That roster is no longer available.");
+      return;
+    }
+    if (result.outcome === "group_not_found") {
+      await interaction.editReply("That roster group is no longer available.");
+      return;
+    }
+    await refreshRosterSignupPost(interaction, roster.id).catch(() => undefined);
+    await interaction.editReply(formatRosterManagerMoveResultSummary(result));
+    return;
+  }
+
+  if (subcommand === "remove") {
+    const result = await rosterService.removeRosterSignupsAsManager({
+      rosterId: roster.id,
+      playerTags,
+      updatedByDiscordUserId: interaction.user.id,
+    });
+    if (result.outcome === "roster_not_found") {
+      await interaction.editReply("That roster is no longer available.");
+      return;
+    }
+    await refreshRosterSignupPost(interaction, roster.id).catch(() => undefined);
+    await interaction.editReply(formatRosterManagerRemoveResultSummary(result));
+    return;
+  }
+
+  await interaction.editReply("Unsupported CWL roster subcommand.");
+}
+
 export async function handleCwlRotationImportButtonInteraction(
   interaction: ButtonInteraction,
 ): Promise<void> {
@@ -2842,6 +3070,169 @@ export const Cwl: Command = {
       ],
     },
     {
+      name: "roster",
+      description: "Manager controls for the current CWL signup roster",
+      type: ApplicationCommandOptionType.SubcommandGroup,
+      options: [
+        {
+          name: "report",
+          description: "Show a manager-readable signup readiness report",
+          type: ApplicationCommandOptionType.Subcommand,
+          options: [
+            {
+              name: "clan",
+              description: "Tracked CWL clan tag",
+              type: ApplicationCommandOptionType.String,
+              required: true,
+              autocomplete: true,
+            },
+          ],
+        },
+        {
+          name: "readiness",
+          description: "Show an export-friendly roster readiness view",
+          type: ApplicationCommandOptionType.Subcommand,
+          options: [
+            {
+              name: "clan",
+              description: "Tracked CWL clan tag",
+              type: ApplicationCommandOptionType.String,
+              required: true,
+              autocomplete: true,
+            },
+          ],
+        },
+        {
+          name: "refresh",
+          description: "Re-render the posted CWL signup roster from DB truth",
+          type: ApplicationCommandOptionType.Subcommand,
+          options: [
+            {
+              name: "clan",
+              description: "Tracked CWL clan tag",
+              type: ApplicationCommandOptionType.String,
+              required: true,
+              autocomplete: true,
+            },
+          ],
+        },
+        {
+          name: "open",
+          description: "Open roster signups for the tracked CWL clan",
+          type: ApplicationCommandOptionType.Subcommand,
+          options: [
+            {
+              name: "clan",
+              description: "Tracked CWL clan tag",
+              type: ApplicationCommandOptionType.String,
+              required: true,
+              autocomplete: true,
+            },
+          ],
+        },
+        {
+          name: "close",
+          description: "Close roster signups for the tracked CWL clan",
+          type: ApplicationCommandOptionType.Subcommand,
+          options: [
+            {
+              name: "clan",
+              description: "Tracked CWL clan tag",
+              type: ApplicationCommandOptionType.String,
+              required: true,
+              autocomplete: true,
+            },
+          ],
+        },
+        {
+          name: "archive",
+          description: "Archive the tracked CWL roster",
+          type: ApplicationCommandOptionType.Subcommand,
+          options: [
+            {
+              name: "clan",
+              description: "Tracked CWL clan tag",
+              type: ApplicationCommandOptionType.String,
+              required: true,
+              autocomplete: true,
+            },
+          ],
+        },
+        {
+          name: "add",
+          description: "Manually add one or more linked player accounts to a roster group",
+          type: ApplicationCommandOptionType.Subcommand,
+          options: [
+            {
+              name: "clan",
+              description: "Tracked CWL clan tag",
+              type: ApplicationCommandOptionType.String,
+              required: true,
+              autocomplete: true,
+            },
+            {
+              name: "group",
+              description: "Roster group key",
+              type: ApplicationCommandOptionType.String,
+              required: true,
+            },
+            {
+              name: "players",
+              description: "Comma or space separated player tags",
+              type: ApplicationCommandOptionType.String,
+              required: true,
+            },
+          ],
+        },
+        {
+          name: "move",
+          description: "Move one or more signup entries to another roster group",
+          type: ApplicationCommandOptionType.Subcommand,
+          options: [
+            {
+              name: "clan",
+              description: "Tracked CWL clan tag",
+              type: ApplicationCommandOptionType.String,
+              required: true,
+              autocomplete: true,
+            },
+            {
+              name: "group",
+              description: "Destination roster group key",
+              type: ApplicationCommandOptionType.String,
+              required: true,
+            },
+            {
+              name: "players",
+              description: "Comma or space separated player tags",
+              type: ApplicationCommandOptionType.String,
+              required: true,
+            },
+          ],
+        },
+        {
+          name: "remove",
+          description: "Remove one or more signup entries from the roster",
+          type: ApplicationCommandOptionType.Subcommand,
+          options: [
+            {
+              name: "clan",
+              description: "Tracked CWL clan tag",
+              type: ApplicationCommandOptionType.String,
+              required: true,
+              autocomplete: true,
+            },
+            {
+              name: "players",
+              description: "Comma or space separated player tags",
+              type: ApplicationCommandOptionType.String,
+              required: true,
+            },
+          ],
+        },
+      ],
+    },
+    {
       name: "rotations",
       description: "Show or create current-season CWL rotation plans",
       type: ApplicationCommandOptionType.SubcommandGroup,
@@ -2939,6 +3330,10 @@ export const Cwl: Command = {
       }
       if (!group && subcommand === "signup") {
         await handleRosterSignupSubcommand(interaction);
+        return;
+      }
+      if (group === "roster") {
+        await handleRosterManagerSubcommand(interaction);
         return;
       }
       if (group === "rotations" && subcommand === "create") {
