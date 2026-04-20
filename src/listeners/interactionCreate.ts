@@ -112,6 +112,12 @@ import {
   isCwlRotationShowSelectMenuCustomId,
   handleRosterSignupButtonInteraction,
   isRosterSignupButtonCustomId,
+  handleRosterRemoveButtonInteraction,
+  isRosterRemoveButtonCustomId,
+  handleRosterSelectionMenuInteraction,
+  isRosterSelectionMenuCustomId,
+  handleRosterSelectionActionButtonInteraction,
+  isRosterSelectionActionButtonCustomId,
 } from "../commands/Cwl";
 import {
   handleTodoPageButtonInteraction,
@@ -338,6 +344,21 @@ const handleSelectMenuInteraction = async (
   interaction: StringSelectMenuInteraction,
   cocService: CoCService
 ): Promise<void> => {
+  if (isRosterSelectionMenuCustomId(interaction.customId)) {
+    try {
+      await handleRosterSelectionMenuInteraction(interaction);
+    } catch (err) {
+      console.error(`Roster selection menu failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to update roster selection.",
+        });
+      }
+    }
+    return;
+  }
+
   if (isCwlRotationImportSelectMenuCustomId(interaction.customId)) {
     try {
       await handleCwlRotationImportSelectMenuInteraction(interaction);
@@ -579,6 +600,36 @@ const handleButtonInteraction = async (
         await interaction.reply({
           ephemeral: true,
           content: "Failed to update the CWL signup roster.",
+        });
+      }
+    }
+    return;
+  }
+
+  if (isRosterRemoveButtonCustomId(interaction.customId)) {
+    try {
+      await handleRosterRemoveButtonInteraction(interaction);
+    } catch (err) {
+      console.error(`CWL roster remove button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to open roster removal.",
+        });
+      }
+    }
+    return;
+  }
+
+  if (isRosterSelectionActionButtonCustomId(interaction.customId)) {
+    try {
+      await handleRosterSelectionActionButtonInteraction(interaction);
+    } catch (err) {
+      console.error(`Roster selection action button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to update roster selection.",
         });
       }
     }

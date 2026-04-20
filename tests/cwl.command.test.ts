@@ -3,6 +3,7 @@ import {
   ButtonBuilder,
   ButtonStyle,
   EmbedBuilder,
+  StringSelectMenuBuilder,
 } from "discord.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -22,6 +23,10 @@ import { handleCwlRotationImportButtonInteraction } from "../src/commands/Cwl";
 import { handleCwlRotationImportSelectMenuInteraction } from "../src/commands/Cwl";
 import { handleCwlRotationShowButtonInteraction } from "../src/commands/Cwl";
 import { handleCwlRotationShowSelectMenuInteraction } from "../src/commands/Cwl";
+import { handleRosterRemoveButtonInteraction } from "../src/commands/Cwl";
+import { handleRosterSelectionActionButtonInteraction } from "../src/commands/Cwl";
+import { handleRosterSelectionMenuInteraction } from "../src/commands/Cwl";
+import { handleRosterSignupButtonInteraction } from "../src/commands/Cwl";
 import {
   cwlRotationSheetService,
   type CwlRotationSheetImportPreview,
@@ -164,6 +169,27 @@ function getComponentSelectMenuOptions(interaction: any): Array<{ label: string;
   return [];
 }
 
+function getPayloadComponentCustomIds(payload: any): string[] {
+  const rows = Array.isArray(payload?.components) ? payload.components : [];
+  const ids: string[] = [];
+  for (const row of rows) {
+    const rowJson = typeof row?.toJSON === "function" ? row.toJSON() : row;
+    for (const component of Array.isArray(rowJson?.components) ? rowJson.components : []) {
+      const componentJson = typeof component?.toJSON === "function" ? component.toJSON() : component;
+      const id =
+        componentJson?.custom_id ??
+        componentJson?.customId ??
+        componentJson?.data?.custom_id ??
+        componentJson?.data?.customId ??
+        null;
+      if (typeof id === "string" && id.length > 0) {
+        ids.push(id);
+      }
+    }
+  }
+  return ids;
+}
+
 function makeParticipationCounts(entries: Array<[string, number]>): Map<string, number> {
   return new Map(entries);
 }
@@ -176,8 +202,14 @@ describe("/cwl command", () => {
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
     prismaMock.cwlTrackedClan.findFirst.mockResolvedValue({ tag: "#2QG2C08UP", name: "CWL Alpha" });
     vi.spyOn(rosterService, "createRoster");
+    vi.spyOn(rosterService, "createRosterSignupSelectionPanel");
+    vi.spyOn(rosterService, "createRosterRemoveSelectionPanel");
     vi.spyOn(rosterService, "buildRosterSignupPayload");
     vi.spyOn(rosterService, "recordRosterPostedMessage");
+    vi.spyOn(rosterService, "updateRosterSelectionPanel");
+    vi.spyOn(rosterService, "confirmRosterSelectionPanel");
+    vi.spyOn(rosterService, "cancelRosterSelectionPanel");
+    vi.spyOn(rosterService, "removeRosterSignups");
     vi.spyOn(cwlRotationSheetService, "buildImportPreview");
     vi.spyOn(cwlRotationSheetService, "confirmImport");
     vi.spyOn(cwlRotationSheetService, "exportActivePlans");
@@ -323,6 +355,176 @@ describe("/cwl command", () => {
     );
     expect(interaction.editReply).toHaveBeenCalledWith(
       "Posted CWL signup roster for CWL Alpha in <#channel-1>.",
+    );
+  });
+
+  it("opens an account selection panel when a roster group button is clicked", async () => {
+    (rosterService.createRosterSignupSelectionPanel as any).mockResolvedValue({
+      outcome: "ready",
+      panel: {
+        sessionId: "session-1",
+        mode: "signup",
+        selectedTags: [],
+        embed: new EmbedBuilder().setTitle("Choose accounts for Confirmed"),
+        components: [
+          new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+            new StringSelectMenuBuilder()
+              .setCustomId("roster-selection:menu:session-1")
+              .setMinValues(0)
+              .setMaxValues(2)
+              .addOptions([
+                { label: "Alpha", value: "#P1", description: "#P1 | available" },
+                { label: "Bravo", value: "#P2", description: "#P2 | already signed up" },
+              ]),
+          ),
+          new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder()
+              .setCustomId("roster-selection:confirm:session-1")
+              .setLabel("Confirm Signup")
+              .setStyle(ButtonStyle.Success)
+              .setDisabled(true),
+            new ButtonBuilder()
+              .setCustomId("roster-selection:cancel:session-1")
+              .setLabel("Cancel")
+              .setStyle(ButtonStyle.Secondary),
+          ),
+        ],
+      },
+    } as any);
+
+    const interaction = {
+      customId: "roster-signup:roster-1:confirmed",
+      user: { id: "111111111111111111" },
+      reply: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await handleRosterSignupButtonInteraction(interaction as any);
+
+    expect(rosterService.createRosterSignupSelectionPanel).toHaveBeenCalledWith({
+      rosterId: "roster-1",
+      groupKey: "confirmed",
+      discordUserId: "111111111111111111",
+    });
+    expect(interaction.reply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ephemeral: true,
+        embeds: [expect.any(EmbedBuilder)],
+      }),
+    );
+    const payload = interaction.reply.mock.calls[0]?.[0] as any;
+    expect(getPayloadComponentCustomIds(payload)).toEqual(
+      expect.arrayContaining([
+        "roster-selection:menu:session-1",
+        "roster-selection:confirm:session-1",
+        "roster-selection:cancel:session-1",
+      ]),
+    );
+  });
+
+  it("supports multi-account roster selection and self-service removal panels", async () => {
+    (rosterService.updateRosterSelectionPanel as any).mockResolvedValue({
+      outcome: "updated",
+      panel: {
+        sessionId: "session-2",
+        mode: "signup",
+        selectedTags: ["#P1", "#P2"],
+        embed: new EmbedBuilder().setTitle("Choose accounts for Confirmed"),
+        components: [],
+      },
+    });
+    (rosterService.confirmRosterSelectionPanel as any).mockResolvedValue({
+      outcome: "signup",
+      result: {
+        outcome: "created",
+        rosterId: "roster-1",
+        groupKey: "confirmed",
+        groupName: "Confirmed",
+        requestedTags: ["#P1", "#P2"],
+        linkedTags: ["#P1", "#P2"],
+        createdTags: ["#P1", "#P2"],
+        duplicateTags: [],
+        missingLinkedTags: [],
+      },
+    });
+    (rosterService.createRosterRemoveSelectionPanel as any).mockResolvedValue({
+      outcome: "ready",
+      panel: {
+        sessionId: "session-3",
+        mode: "remove",
+        selectedTags: [],
+        embed: new EmbedBuilder().setTitle("Remove signup entries from CWL Alpha"),
+        components: [],
+      },
+    });
+    (rosterService.cancelRosterSelectionPanel as any).mockResolvedValue({
+      outcome: "updated",
+      panel: {
+        sessionId: "session-3",
+        mode: "remove",
+        selectedTags: [],
+        embed: new EmbedBuilder().setTitle("Remove signup entries from CWL Alpha"),
+        components: [],
+      },
+    });
+
+    const updateInteraction = {
+      customId: "roster-selection:menu:session-2",
+      user: { id: "111111111111111111" },
+      values: ["#P1", "#P2"],
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    };
+    await handleRosterSelectionMenuInteraction(updateInteraction as any);
+    expect(rosterService.updateRosterSelectionPanel).toHaveBeenCalledWith({
+      sessionId: "session-2",
+      discordUserId: "111111111111111111",
+      selectedTags: ["#P1", "#P2"],
+    });
+    expect(updateInteraction.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        embeds: [expect.any(EmbedBuilder)],
+      }),
+    );
+
+    const confirmInteraction = {
+      customId: "roster-selection:confirm:session-2",
+      user: { id: "111111111111111111" },
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+      client: {
+        channels: {
+          fetch: vi.fn().mockResolvedValue(null),
+        },
+      },
+    };
+    await handleRosterSelectionActionButtonInteraction(confirmInteraction as any);
+    expect(rosterService.confirmRosterSelectionPanel).toHaveBeenCalledWith({
+      sessionId: "session-2",
+      discordUserId: "111111111111111111",
+    });
+    expect(confirmInteraction.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining("Signed up #P1, #P2"),
+        embeds: [],
+        components: [],
+      }),
+    );
+
+    const removeInteraction = {
+      customId: "roster-remove:roster-1",
+      user: { id: "111111111111111111" },
+      reply: vi.fn().mockResolvedValue(undefined),
+    };
+    await handleRosterRemoveButtonInteraction(removeInteraction as any);
+    expect(rosterService.createRosterRemoveSelectionPanel).toHaveBeenCalledWith({
+      rosterId: "roster-1",
+      discordUserId: "111111111111111111",
+    });
+    expect(removeInteraction.reply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ephemeral: true,
+        embeds: [expect.any(EmbedBuilder)],
+      }),
     );
   });
 

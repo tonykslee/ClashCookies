@@ -19,6 +19,9 @@ import { CoCService } from "../services/CoCService";
 import { resolveCurrentCwlSeasonKey } from "../services/CwlRegistryService";
 import {
   parseRosterSignupButtonCustomId,
+  parseRosterRemoveButtonCustomId,
+  parseRosterSelectionActionButtonCustomId,
+  parseRosterSelectionMenuCustomId,
   rosterService,
   ROSTER_LIFECYCLE_STATE,
 } from "../services/RosterService";
@@ -127,6 +130,47 @@ function formatRosterSignupResultSummary(result: Awaited<ReturnType<typeof roste
       ? ` (${result.duplicateTags.length} already signed up)`
       : "";
   return `Signed up ${created} to ${result.groupName}${duplicateNote}.`;
+}
+
+function formatRosterRemoveResultSummary(
+  result: Awaited<ReturnType<typeof rosterService.removeRosterSignups>>,
+): string {
+  if (result.outcome === "roster_not_found") {
+    return "That roster no longer exists.";
+  }
+
+  if (result.outcome === "nothing_removed" && result.removedTags.length <= 0) {
+    return result.notOwnedTags.length > 0
+      ? "None of the selected signups were yours to remove."
+      : "No roster signups were removed.";
+  }
+
+  const removed = result.removedTags.length > 0 ? result.removedTags.join(", ") : "no signups";
+  const ignored =
+    result.notOwnedTags.length > 0
+      ? ` (${result.notOwnedTags.length} not owned by you)`
+      : "";
+  return `Removed ${removed}${ignored}.`;
+}
+
+async function refreshRosterSignupPost(interaction: ChatInputCommandInteraction | ButtonInteraction | StringSelectMenuInteraction, rosterId: string): Promise<void> {
+  const payload = await rosterService.buildRosterSignupPayload(rosterId);
+  const rosterView = await rosterService.getRosterView(rosterId);
+  if (!payload || !rosterView?.roster.postedChannelId || !rosterView.roster.postedMessageId) {
+    return;
+  }
+
+  const channel = await interaction.client.channels.fetch(rosterView.roster.postedChannelId).catch(() => null);
+  if (!channel?.isTextBased() || !("messages" in channel)) {
+    return;
+  }
+
+  const message = await channel.messages.fetch(rosterView.roster.postedMessageId).catch(() => null);
+  if (!message) return;
+  await message.edit({
+    embeds: [payload.embed],
+    components: payload.components,
+  }).catch(() => undefined);
 }
 
 async function resolveCwlRotationOverviewStatusIcons(client: Client): Promise<{ yes: string; no: string }> {
@@ -2561,13 +2605,13 @@ export async function handleRosterSignupButtonInteraction(
   const parsed = parseRosterSignupButtonCustomId(interaction.customId);
   if (!parsed) return;
 
-  const signupResult = await rosterService.signupLinkedAccounts({
+  const result = await rosterService.createRosterSignupSelectionPanel({
     rosterId: parsed.rosterId,
     groupKey: parsed.groupKey,
     discordUserId: interaction.user.id,
   });
-  const payload = await rosterService.buildRosterSignupPayload(parsed.rosterId);
-  if (!payload) {
+
+  if (result.outcome === "roster_not_found") {
     await interaction.reply({
       content: "That roster is no longer available.",
       ephemeral: true,
@@ -2575,18 +2619,173 @@ export async function handleRosterSignupButtonInteraction(
     return;
   }
 
-  await interaction.update({
-    embeds: [payload.embed],
-    components: payload.components,
-  });
-
-  const summary = formatRosterSignupResultSummary(signupResult);
-  if (summary) {
-    await interaction.followUp({
-      content: summary,
+  if (result.outcome === "roster_closed") {
+    await interaction.reply({
+      content: "Signups are closed for that roster.",
       ephemeral: true,
     });
+    return;
   }
+
+  if (result.outcome === "group_not_found") {
+    await interaction.reply({
+      content: "That roster group is no longer available.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (result.outcome === "no_linked_accounts") {
+    await interaction.reply({
+      content: "No linked player accounts were found for your Discord user.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await interaction.reply({
+    embeds: [result.panel.embed],
+    components: result.panel.components,
+    ephemeral: true,
+  });
+}
+
+export async function handleRosterRemoveButtonInteraction(
+  interaction: ButtonInteraction,
+): Promise<void> {
+  const parsed = parseRosterRemoveButtonCustomId(interaction.customId);
+  if (!parsed) return;
+
+  const result = await rosterService.createRosterRemoveSelectionPanel({
+    rosterId: parsed.rosterId,
+    discordUserId: interaction.user.id,
+  });
+
+  if (result.outcome === "roster_not_found") {
+    await interaction.reply({
+      content: "That roster is no longer available.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (result.outcome === "no_owned_entries") {
+    await interaction.reply({
+      content: "You do not have any roster signups to remove.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await interaction.reply({
+    embeds: [result.panel.embed],
+    components: result.panel.components,
+    ephemeral: true,
+  });
+}
+
+export async function handleRosterSelectionMenuInteraction(
+  interaction: StringSelectMenuInteraction,
+): Promise<void> {
+  const parsed = parseRosterSelectionMenuCustomId(interaction.customId);
+  if (!parsed) return;
+
+  const result = await rosterService.updateRosterSelectionPanel({
+    sessionId: parsed.sessionId,
+    discordUserId: interaction.user.id,
+    selectedTags: interaction.values,
+  });
+
+  if (result.outcome === "session_not_found") {
+    await interaction.reply({
+      content: "That roster selection has expired. Please start again.",
+      ephemeral: true,
+    });
+    return;
+  }
+  if (result.outcome === "forbidden") {
+    await interaction.reply({
+      content: "Only the original requester can use this roster selection.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await interaction.update({
+    embeds: [result.panel.embed],
+    components: result.panel.components,
+  });
+}
+
+export async function handleRosterSelectionActionButtonInteraction(
+  interaction: ButtonInteraction,
+): Promise<void> {
+  const parsed = parseRosterSelectionActionButtonCustomId(interaction.customId);
+  if (!parsed) return;
+
+  if (parsed.action === "cancel") {
+    const result = await rosterService.cancelRosterSelectionPanel({
+      sessionId: parsed.sessionId,
+      discordUserId: interaction.user.id,
+    });
+    if (result.outcome === "session_not_found") {
+      await interaction.reply({
+        content: "That roster selection has expired. Please start again.",
+        ephemeral: true,
+      });
+      return;
+    }
+    if (result.outcome === "forbidden") {
+      await interaction.reply({
+        content: "Only the original requester can use this roster selection.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    await interaction.update({
+      content: "Roster selection cancelled.",
+      embeds: [],
+      components: [],
+    });
+    return;
+  }
+
+  const result = await rosterService.confirmRosterSelectionPanel({
+    sessionId: parsed.sessionId,
+    discordUserId: interaction.user.id,
+  });
+  if (result.outcome === "session_not_found") {
+    await interaction.reply({
+      content: "That roster selection has expired. Please start again.",
+      ephemeral: true,
+    });
+    return;
+  }
+  if (result.outcome === "forbidden") {
+    await interaction.reply({
+      content: "Only the original requester can use this roster selection.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (result.outcome === "signup") {
+    await refreshRosterSignupPost(interaction, result.result.rosterId).catch(() => undefined);
+    await interaction.update({
+      content: formatRosterSignupResultSummary(result.result),
+      embeds: [],
+      components: [],
+    });
+    return;
+  }
+
+  await refreshRosterSignupPost(interaction, result.result.rosterId).catch(() => undefined);
+  await interaction.update({
+    content: formatRosterRemoveResultSummary(result.result),
+    embeds: [],
+    components: [],
+  });
 }
 
 export const Cwl: Command = {
