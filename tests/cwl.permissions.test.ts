@@ -33,6 +33,12 @@ describe("cwl permission defaults", () => {
     await expect(
       service.canUseAnyTarget(["cwl:rotations:create"], buildInteraction({ isAdmin: true })),
     ).resolves.toBe(true);
+    await expect(
+      service.canUseAnyTarget(["cwl:roster"], buildInteraction({ isAdmin: false })),
+    ).resolves.toBe(false);
+    await expect(
+      service.canUseAnyTarget(["cwl:roster"], buildInteraction({ isAdmin: true })),
+    ).resolves.toBe(true);
   });
 
   it("keeps /cwl rotations import and export admin-only by default", async () => {

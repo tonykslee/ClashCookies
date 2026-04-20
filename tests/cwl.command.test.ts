@@ -37,9 +37,26 @@ import { rosterService } from "../src/services/RosterService";
 import { emojiResolverService } from "../src/services/emoji/EmojiResolverService";
 
 function makeInteraction(input: {
-  group?: "rotations" | null;
-  subcommand: "members" | "signup" | "show" | "create" | "import" | "export";
+  group?: "roster" | "rotations" | null;
+  subcommand:
+    | "members"
+    | "signup"
+    | "report"
+    | "readiness"
+    | "refresh"
+    | "open"
+    | "close"
+    | "archive"
+    | "add"
+    | "move"
+    | "remove"
+    | "show"
+    | "create"
+    | "import"
+    | "export";
   clan?: string | null;
+  groupKey?: string | null;
+  players?: string | null;
   timezone?: string | null;
   inwar?: boolean | null;
   day?: number | null;
@@ -53,6 +70,8 @@ function makeInteraction(input: {
       getSubcommand: vi.fn().mockReturnValue(input.subcommand),
       getString: vi.fn((name: string) => {
         if (name === "clan") return input.clan ?? null;
+        if (name === "group") return input.groupKey ?? null;
+        if (name === "players") return input.players ?? null;
         if (name === "timezone") return input.timezone ?? null;
         if (name === "exclude") return input.exclude ?? null;
         if (name === "visibility") return null;
@@ -205,11 +224,18 @@ describe("/cwl command", () => {
     vi.spyOn(rosterService, "createRosterSignupSelectionPanel");
     vi.spyOn(rosterService, "createRosterRemoveSelectionPanel");
     vi.spyOn(rosterService, "buildRosterSignupPayload");
+    vi.spyOn(rosterService, "findCwlRosterForClan");
+    vi.spyOn(rosterService, "updateRosterLifecycleState");
     vi.spyOn(rosterService, "recordRosterPostedMessage");
+    vi.spyOn(rosterService, "getRosterView");
     vi.spyOn(rosterService, "updateRosterSelectionPanel");
     vi.spyOn(rosterService, "confirmRosterSelectionPanel");
     vi.spyOn(rosterService, "cancelRosterSelectionPanel");
     vi.spyOn(rosterService, "removeRosterSignups");
+    vi.spyOn(rosterService, "addRosterSignupsForManager");
+    vi.spyOn(rosterService, "moveRosterSignups");
+    vi.spyOn(rosterService, "removeRosterSignupsAsManager");
+    vi.spyOn(rosterService, "buildRosterManagerReadinessText");
     vi.spyOn(cwlRotationSheetService, "buildImportPreview");
     vi.spyOn(cwlRotationSheetService, "confirmImport");
     vi.spyOn(cwlRotationSheetService, "exportActivePlans");
@@ -525,6 +551,195 @@ describe("/cwl command", () => {
         ephemeral: true,
         embeds: [expect.any(EmbedBuilder)],
       }),
+    );
+  });
+
+  it("renders a manager readiness report for /cwl roster report", async () => {
+    (rosterService.findCwlRosterForClan as any).mockResolvedValue({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      lifecycleState: "OPEN",
+      postedChannelId: "channel-1",
+      postedMessageId: "message-1",
+      postedMessageUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    });
+    (rosterService.buildRosterManagerReadinessText as any).mockResolvedValue(
+      "CWL Alpha Signup\nUnsigned tracked clan members:\n- Bravo `#QGRJ2222` <@222222222222222222>",
+    );
+
+    const interaction = makeInteraction({
+      group: "roster",
+      subcommand: "report",
+      clan: "#2QG2C08UP",
+    }) as any;
+    interaction.inGuild = () => true;
+    interaction.guildId = "guild-1";
+
+    await Cwl.run({} as any, interaction as any, {} as any);
+
+    expect(rosterService.findCwlRosterForClan).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guildId: "guild-1",
+        clanTag: "#2QG2C08UP",
+      }),
+    );
+    expect(rosterService.buildRosterManagerReadinessText).toHaveBeenCalledWith({
+      rosterId: "roster-1",
+    });
+    expect(getEditedDescription(interaction)).toContain("Unsigned tracked clan members:");
+  });
+
+  it.each([
+    ["open", "OPEN", "was opened"],
+    ["close", "CLOSED", "was closed"],
+    ["archive", "ARCHIVED", "was archived"],
+  ] as const)("updates roster lifecycle through /cwl roster %s", async (subcommand, lifecycleState, message) => {
+    (rosterService.findCwlRosterForClan as any).mockResolvedValue({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      lifecycleState: "OPEN",
+      postedChannelId: "channel-1",
+      postedMessageId: "message-1",
+      postedMessageUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    });
+    (rosterService.updateRosterLifecycleState as any).mockResolvedValue({
+      outcome: "updated",
+      rosterId: "roster-1",
+      lifecycleState,
+    });
+
+    const interaction = makeInteraction({
+      group: "roster",
+      subcommand,
+      clan: "#2QG2C08UP",
+    }) as any;
+    interaction.inGuild = () => true;
+    interaction.guildId = "guild-1";
+
+    await Cwl.run({} as any, interaction as any, {} as any);
+
+    expect(rosterService.updateRosterLifecycleState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rosterId: "roster-1",
+        lifecycleState,
+        updatedByDiscordUserId: "111111111111111111",
+      }),
+    );
+    expect(String(interaction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(message);
+  });
+
+  it("refreshes the posted roster from DB truth through /cwl roster refresh", async () => {
+    (rosterService.findCwlRosterForClan as any).mockResolvedValue({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      lifecycleState: "OPEN",
+      postedChannelId: "channel-1",
+      postedMessageId: "message-1",
+      postedMessageUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    });
+    (rosterService.buildRosterSignupPayload as any).mockResolvedValue({
+      embed: new EmbedBuilder().setTitle("CWL Alpha Signup"),
+      components: [],
+    });
+    (rosterService.getRosterView as any).mockResolvedValue({
+      roster: {
+        id: "roster-1",
+        guildId: "guild-1",
+        rosterType: "CWL",
+        rosterCategory: "signup",
+        title: "CWL Alpha Signup",
+        clanTag: "#2QG2C08UP",
+        startsAt: new Date("2026-04-20T00:00:00.000Z"),
+        endsAt: null,
+        timezone: "America/Los_Angeles",
+        displayTimezone: "America/Los_Angeles",
+        lifecycleState: "OPEN",
+        postedChannelId: "channel-1",
+        postedMessageId: "message-1",
+        postedMessageUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+        postedAt: null,
+        createdByDiscordUserId: "111111111111111111",
+        updatedByDiscordUserId: "111111111111111111",
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+      },
+      groups: [],
+      signups: [],
+      totalSignupCount: 0,
+    });
+
+    const messageEdit = vi.fn().mockResolvedValue(undefined);
+    const messageFetch = vi.fn().mockResolvedValue({ edit: messageEdit });
+    const channelFetch = vi.fn().mockResolvedValue({
+      isTextBased: () => true,
+      messages: {
+        fetch: messageFetch,
+      },
+    });
+
+    const interaction = makeInteraction({
+      group: "roster",
+      subcommand: "refresh",
+      clan: "#2QG2C08UP",
+    }) as any;
+    interaction.inGuild = () => true;
+    interaction.guildId = "guild-1";
+    interaction.client = {
+      channels: {
+        fetch: channelFetch,
+      },
+    };
+
+    await Cwl.run({} as any, interaction as any, {} as any);
+
+    expect(channelFetch).toHaveBeenCalledWith("channel-1");
+    expect(messageFetch).toHaveBeenCalledWith("message-1");
+    expect(messageEdit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        embeds: [expect.any(EmbedBuilder)],
+      }),
+    );
+    expect(String(interaction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
+      "Refreshed the posted CWL roster for CWL Alpha.",
     );
   });
 

@@ -108,6 +108,7 @@ export const COMMAND_PERMISSION_TARGETS = [
   "cwl",
   "cwl:signup",
   "cwl:members",
+  "cwl:roster",
   "cwl:rotations",
   "cwl:rotations:show",
   "cwl:rotations:create",
@@ -152,6 +153,7 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "cwl:rotations:create",
   "cwl:rotations:import",
   "cwl:rotations:export",
+  "cwl:roster",
   `${MANAGE_COMMAND_ROLES_COMMAND}:add`,
   `${MANAGE_COMMAND_ROLES_COMMAND}:remove`,
 ]);
