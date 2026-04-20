@@ -2643,6 +2643,10 @@ export async function handleRosterSignupButtonInteraction(
     return;
   }
 
+  if (result.outcome !== "ready") {
+    return;
+  }
+
   await interaction.reply({
     embeds: [result.panel.embed],
     components: result.panel.components,
@@ -2674,6 +2678,10 @@ export async function handleRosterRemoveButtonInteraction(
       content: "You do not have any roster signups to remove.",
       ephemeral: true,
     });
+    return;
+  }
+
+  if (result.outcome !== "ready") {
     return;
   }
 

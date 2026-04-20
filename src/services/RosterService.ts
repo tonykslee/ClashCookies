@@ -128,6 +128,35 @@ export type RosterSelectionOpenResult =
   | { outcome: "no_linked_accounts"; rosterId: string }
   | { outcome: "no_owned_entries"; rosterId: string };
 
+type RosterSelectionLoadErrorResult =
+  | { outcome: "roster_not_found"; rosterId: string }
+  | { outcome: "roster_closed"; rosterId: string }
+  | { outcome: "group_not_found"; rosterId: string; groupKey: string }
+  | { outcome: "no_linked_accounts"; rosterId: string }
+  | { outcome: "no_owned_entries"; rosterId: string };
+
+type RosterSelectionSignupLoadReadyResult = {
+  outcome: "ready";
+  roster: RosterRecord;
+  group: RosterGroupRecord;
+  options: RosterSelectionOption[];
+};
+
+type RosterSelectionRemoveLoadReadyResult = {
+  outcome: "ready";
+  roster: RosterRecord;
+  group: null;
+  options: RosterSelectionOption[];
+};
+
+type RosterSelectionSignupLoadResult =
+  | RosterSelectionSignupLoadReadyResult
+  | RosterSelectionLoadErrorResult;
+
+type RosterSelectionRemoveLoadResult =
+  | RosterSelectionRemoveLoadReadyResult
+  | RosterSelectionLoadErrorResult;
+
 export type RosterSelectionUpdateResult =
   | { outcome: "updated"; panel: RosterSelectionPanel }
   | { outcome: "session_not_found" }
@@ -350,42 +379,11 @@ function buildRosterSelectionActionButtonCustomId(action: "confirm" | "cancel", 
   return `${ROSTER_SELECTION_PREFIX}:${action}:${String(sessionId ?? "").trim()}`;
 }
 
-export function isRosterSelectionMenuCustomId(customId: string): boolean {
-  return String(customId ?? "").startsWith(`${ROSTER_SELECTION_PREFIX}:menu:`);
-}
-
-export function isRosterSelectionActionButtonCustomId(customId: string): boolean {
-  return String(customId ?? "").startsWith(`${ROSTER_SELECTION_PREFIX}:`);
-}
-
-export function parseRosterSelectionMenuCustomId(customId: string): { sessionId: string } | null {
-  const parts = String(customId ?? "").split(":");
-  if (parts.length !== 3 || parts[0] !== ROSTER_SELECTION_PREFIX || parts[1] !== "menu") {
-    return null;
-  }
-  const sessionId = parts[2]?.trim() ?? "";
-  return sessionId ? { sessionId } : null;
-}
-
-export function parseRosterSelectionActionButtonCustomId(
-  customId: string,
-): { action: "confirm" | "cancel"; sessionId: string } | null {
-  const parts = String(customId ?? "").split(":");
-  if (parts.length !== 3 || parts[0] !== ROSTER_SELECTION_PREFIX) {
-    return null;
-  }
-  const action = parts[1];
-  if (action !== "confirm" && action !== "cancel") {
-    return null;
-  }
-  const sessionId = parts[2]?.trim() ?? "";
-  return sessionId ? { action, sessionId } : null;
-}
-
 type RosterSelectionSession = {
   sessionId: string;
   mode: RosterSelectionMode;
   rosterId: string;
+  rosterTitle: string;
   groupKey: string | null;
   groupName: string | null;
   ownerDiscordUserId: string;
@@ -525,16 +523,21 @@ function buildRosterSelectionPayload(session: RosterSelectionSession): RosterSel
 async function loadRosterSelectionOptions(input: {
   rosterId: string;
   discordUserId: string;
+  mode: "signup";
+  groupKey?: string | null;
+}): Promise<RosterSelectionSignupLoadResult>;
+async function loadRosterSelectionOptions(input: {
+  rosterId: string;
+  discordUserId: string;
+  mode: "remove";
+  groupKey?: string | null;
+}): Promise<RosterSelectionRemoveLoadResult>;
+async function loadRosterSelectionOptions(input: {
+  rosterId: string;
+  discordUserId: string;
   mode: RosterSelectionMode;
   groupKey?: string | null;
-}): Promise<
-  | { outcome: "ready"; roster: RosterRecord; group: RosterGroupRecord | null; options: RosterSelectionOption[] }
-  | { outcome: "roster_not_found" }
-  | { outcome: "roster_closed"; roster: RosterRecord }
-  | { outcome: "group_not_found"; roster: RosterRecord; groupKey: string }
-  | { outcome: "no_linked_accounts"; roster: RosterRecord }
-  | { outcome: "no_owned_entries"; roster: RosterRecord }
-> {
+}): Promise<RosterSelectionSignupLoadResult | RosterSelectionRemoveLoadResult> {
   const roster = await prisma.roster.findUnique({
     where: { id: input.rosterId },
     select: {
@@ -559,23 +562,23 @@ async function loadRosterSelectionOptions(input: {
       updatedAt: true,
     },
   });
-  if (!roster) return { outcome: "roster_not_found" };
+  if (!roster) return { outcome: "roster_not_found", rosterId: input.rosterId };
   if (
     input.mode === "signup" &&
     roster.lifecycleState !== ROSTER_LIFECYCLE_STATE.OPEN &&
     roster.lifecycleState !== ROSTER_LIFECYCLE_STATE.ACTIVE
   ) {
-    return { outcome: "roster_closed", roster };
+    return { outcome: "roster_closed", rosterId: roster.id };
   }
 
   if (input.mode === "signup") {
     const group = input.groupKey ? await getRosterGroupByKey({ rosterId: roster.id, groupKey: input.groupKey }) : null;
     if (!group) {
-      return { outcome: "group_not_found", roster, groupKey: normalizeRosterGroupKey(input.groupKey ?? "") };
+      return { outcome: "group_not_found", rosterId: roster.id, groupKey: normalizeRosterGroupKey(input.groupKey ?? "") };
     }
     const linkedAccounts = await listPlayerLinksForDiscordUser({ discordUserId: input.discordUserId });
     if (linkedAccounts.length <= 0) {
-      return { outcome: "no_linked_accounts", roster };
+      return { outcome: "no_linked_accounts", rosterId: roster.id };
     }
     const linkedTags = linkedAccounts.map((account) => account.playerTag);
     const existing = await prisma.rosterSignup.findMany({
@@ -626,7 +629,7 @@ async function loadRosterSelectionOptions(input: {
     },
   });
   if (ownedEntries.length <= 0) {
-    return { outcome: "no_owned_entries", roster };
+    return { outcome: "no_owned_entries", rosterId: roster.id };
   }
 
   return {
@@ -916,6 +919,38 @@ export function parseRosterRemoveButtonCustomId(customId: string): { rosterId: s
   return rosterId ? { rosterId } : null;
 }
 
+export function isRosterSelectionMenuCustomId(customId: string): boolean {
+  return String(customId ?? "").startsWith(`${ROSTER_SELECTION_PREFIX}:menu:`);
+}
+
+export function isRosterSelectionActionButtonCustomId(customId: string): boolean {
+  return String(customId ?? "").startsWith(`${ROSTER_SELECTION_PREFIX}:`);
+}
+
+export function parseRosterSelectionMenuCustomId(customId: string): { sessionId: string } | null {
+  const parts = String(customId ?? "").split(":");
+  if (parts.length !== 3 || parts[0] !== ROSTER_SELECTION_PREFIX || parts[1] !== "menu") {
+    return null;
+  }
+  const sessionId = parts[2]?.trim() ?? "";
+  return sessionId ? { sessionId } : null;
+}
+
+export function parseRosterSelectionActionButtonCustomId(
+  customId: string,
+): { action: "confirm" | "cancel"; sessionId: string } | null {
+  const parts = String(customId ?? "").split(":");
+  if (parts.length !== 3 || parts[0] !== ROSTER_SELECTION_PREFIX) {
+    return null;
+  }
+  const action = parts[1];
+  if (action !== "confirm" && action !== "cancel") {
+    return null;
+  }
+  const sessionId = parts[2]?.trim() ?? "";
+  return sessionId ? { action, sessionId } : null;
+}
+
 export class RosterService {
   async createRoster(input: CreateRosterInput): Promise<RosterRecord> {
     const guildId = String(input.guildId ?? "").trim();
@@ -1049,10 +1084,18 @@ export class RosterService {
     if (loaded.outcome !== "ready") {
       return loaded;
     }
+    if (!loaded.group) {
+      return {
+        outcome: "group_not_found",
+        rosterId: loaded.roster.id,
+        groupKey: normalizeRosterGroupKey(input.groupKey ?? ""),
+      };
+    }
 
     const session = createRosterSelectionSession({
       mode: "signup",
       rosterId: loaded.roster.id,
+      rosterTitle: loaded.roster.title,
       groupKey: loaded.group.key,
       groupName: loaded.group.name,
       ownerDiscordUserId: normalizeDiscordUserId(input.discordUserId) ?? input.discordUserId,
@@ -1081,6 +1124,7 @@ export class RosterService {
     const session = createRosterSelectionSession({
       mode: "remove",
       rosterId: loaded.roster.id,
+      rosterTitle: loaded.roster.title,
       groupKey: null,
       groupName: null,
       ownerDiscordUserId: normalizeDiscordUserId(input.discordUserId) ?? input.discordUserId,

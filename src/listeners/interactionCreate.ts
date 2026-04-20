@@ -111,14 +111,16 @@ import {
   handleCwlRotationShowSelectMenuInteraction,
   isCwlRotationShowSelectMenuCustomId,
   handleRosterSignupButtonInteraction,
-  isRosterSignupButtonCustomId,
   handleRosterRemoveButtonInteraction,
-  isRosterRemoveButtonCustomId,
   handleRosterSelectionMenuInteraction,
-  isRosterSelectionMenuCustomId,
   handleRosterSelectionActionButtonInteraction,
-  isRosterSelectionActionButtonCustomId,
 } from "../commands/Cwl";
+import {
+  isRosterSignupButtonCustomId,
+  isRosterRemoveButtonCustomId,
+  isRosterSelectionMenuCustomId,
+  isRosterSelectionActionButtonCustomId,
+} from "../services/RosterService";
 import {
   handleTodoPageButtonInteraction,
   handleTodoRefreshButtonInteraction,
