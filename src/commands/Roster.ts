@@ -813,7 +813,10 @@ export async function handleRosterPostClearButtonInteraction(
   });
 }
 
-async function handleRosterCreateSubcommand(interaction: ChatInputCommandInteraction): Promise<void> {
+async function handleRosterCreateSubcommand(
+  interaction: ChatInputCommandInteraction,
+  cocService: CoCService,
+): Promise<void> {
   if (!interaction.inGuild() || !interaction.guildId) {
     await interaction.editReply("This command can only be used in a server.");
     return;
@@ -936,6 +939,7 @@ async function handleRosterCreateSubcommand(interaction: ChatInputCommandInterac
     lifecycleState: ROSTER_LIFECYCLE_STATE.OPEN,
     createdByDiscordUserId: interaction.user.id,
     updatedByDiscordUserId: interaction.user.id,
+    cocService,
   });
   if (importMembers) {
     await syncRosterRolesForRoster(interaction, roster.id).catch(() => undefined);
@@ -1793,7 +1797,7 @@ export const Roster: Command = {
     try {
       const subcommand = interaction.options.getSubcommand(true);
       if (subcommand === "create") {
-        await handleRosterCreateSubcommand(interaction);
+        await handleRosterCreateSubcommand(interaction, cocService);
         return;
       }
       if (subcommand === "list") {

@@ -168,6 +168,54 @@ describe("/tracked-clan command behavior", () => {
     expect(infoLogs.some((line: string) => line.includes("stage=cwl_tags_final_reply_sent"))).toBe(true);
   });
 
+  it("hydrates CWL metadata immediately after adding tracked clans when clan lookups succeed", async () => {
+    prismaMock.cwlTrackedClan.findMany
+      .mockResolvedValueOnce([{ tag: "#QGRJ2222" }])
+      .mockResolvedValueOnce([{ tag: "#PYLQ0289" }, { tag: "#QGRJ2222" }])
+      .mockResolvedValueOnce([{ tag: "#PYLQ0289" }, { tag: "#QGRJ2222" }]);
+    prismaMock.cwlTrackedClan.updateMany.mockResolvedValue({ count: 1 });
+    const interaction = createInteraction({
+      subcommand: "cwl-tags",
+      strings: {
+        "cwl-tags": "[#PYLQ0289,QGRJ2222]",
+      },
+    });
+    const cocService = {
+      getClan: vi.fn(async (tag: string) => ({
+        name: tag === "#PYLQ0289" ? "CWL Alpha" : "CWL Beta",
+        warLeague: { name: tag === "#PYLQ0289" ? "Champion League II" : "Champion League I" },
+      })),
+    };
+
+    await TrackedClan.run({} as any, interaction as any, cocService as any);
+
+    expect(cocService.getClan).toHaveBeenCalledWith("#PYLQ0289");
+    expect(cocService.getClan).toHaveBeenCalledWith("#QGRJ2222");
+    expect(prismaMock.cwlTrackedClan.updateMany).toHaveBeenCalledWith({
+      where: {
+        season: "2026-03",
+        tag: "#PYLQ0289",
+        OR: [{ name: null }, { name: "" }, { leagueLabel: null }, { leagueLabel: "" }],
+      },
+      data: {
+        name: "CWL Alpha",
+        leagueLabel: "Champion League II",
+      },
+    });
+    expect(prismaMock.cwlTrackedClan.updateMany).toHaveBeenCalledWith({
+      where: {
+        season: "2026-03",
+        tag: "#QGRJ2222",
+        OR: [{ name: null }, { name: "" }, { leagueLabel: null }, { leagueLabel: "" }],
+      },
+      data: {
+        name: "CWL Beta",
+        leagueLabel: "Champion League I",
+      },
+    });
+    expect(getReplyContent(interaction)).toContain("Updated CWL tracked clans for season 2026-03.");
+  });
+
   it("adds raid tags with optional upgrades and refreshes joinType best-effort", async () => {
     prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([]);
     const interaction = createInteraction({

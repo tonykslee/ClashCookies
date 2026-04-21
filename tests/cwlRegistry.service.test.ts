@@ -14,6 +14,7 @@ vi.mock("../src/prisma", () => ({
 
 import {
   addCwlClanTagsForSeason,
+  ensureAndHydrateCwlTrackedClanMetadataForSeason,
   hydrateMissingCwlClanNamesForSeason,
 } from "../src/services/CwlRegistryService";
 
@@ -147,5 +148,64 @@ describe("CwlRegistryService helpers", () => {
       (call) => String(call[0] ?? ""),
     );
     expect(errorLogs.some((line) => line.includes("stage=cwl_tags_name_lookup"))).toBe(true);
+  });
+
+  it("ensures tracked CWL rows and hydrates clan name and league label in one pass", async () => {
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValueOnce([
+      { tag: "#PYLQ0289" },
+      { tag: "#QGRJ2222" },
+    ]);
+    prismaMock.cwlTrackedClan.updateMany.mockResolvedValue({ count: 1 });
+    const cocService = {
+      getClan: vi.fn(async (tag: string) => ({
+        name: tag === "#PYLQ0289" ? "CWL Alpha" : "CWL Beta",
+        warLeague: { name: tag === "#PYLQ0289" ? "Champion League II" : "Champion League I" },
+      })),
+    };
+
+    const result = await ensureAndHydrateCwlTrackedClanMetadataForSeason({
+      clanTags: ["#PYLQ0289", "#QGRJ2222"],
+      season: "2026-03",
+      cocService: cocService as any,
+    });
+
+    expect(prismaMock.cwlTrackedClan.createMany).toHaveBeenCalledWith({
+      data: [
+        { season: "2026-03", tag: "#PYLQ0289", name: null, leagueLabel: null },
+        { season: "2026-03", tag: "#QGRJ2222", name: null, leagueLabel: null },
+      ],
+      skipDuplicates: true,
+    });
+    expect(cocService.getClan).toHaveBeenCalledWith("#PYLQ0289");
+    expect(cocService.getClan).toHaveBeenCalledWith("#QGRJ2222");
+    expect(prismaMock.cwlTrackedClan.updateMany).toHaveBeenCalledWith({
+      where: {
+        season: "2026-03",
+        tag: "#PYLQ0289",
+        OR: [{ name: null }, { name: "" }, { leagueLabel: null }, { leagueLabel: "" }],
+      },
+      data: {
+        name: "CWL Alpha",
+        leagueLabel: "Champion League II",
+      },
+    });
+    expect(prismaMock.cwlTrackedClan.updateMany).toHaveBeenCalledWith({
+      where: {
+        season: "2026-03",
+        tag: "#QGRJ2222",
+        OR: [{ name: null }, { name: "" }, { leagueLabel: null }, { leagueLabel: "" }],
+      },
+      data: {
+        name: "CWL Beta",
+        leagueLabel: "Champion League I",
+      },
+    });
+    expect(result).toEqual({
+      season: "2026-03",
+      requestedCount: 2,
+      ensuredCount: 0,
+      hydratedCount: 2,
+      skippedCount: 0,
+    });
   });
 });

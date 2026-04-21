@@ -2155,7 +2155,10 @@ async function handleRotationExportSubcommand(interaction: ChatInputCommandInter
   });
 }
 
-export async function handleRosterSignupSubcommand(interaction: ChatInputCommandInteraction): Promise<void> {
+export async function handleRosterSignupSubcommand(
+  interaction: ChatInputCommandInteraction,
+  cocService: CoCService,
+): Promise<void> {
   if (!interaction.inGuild() || !interaction.guildId) {
     await interaction.editReply("This command can only be used in a server.");
     return;
@@ -2214,6 +2217,7 @@ export async function handleRosterSignupSubcommand(interaction: ChatInputCommand
     lifecycleState: ROSTER_LIFECYCLE_STATE.OPEN,
     createdByDiscordUserId: interaction.user.id,
     updatedByDiscordUserId: interaction.user.id,
+    cocService,
   });
 
   const payload = await rosterService.buildRosterSignupPayload(roster.id);
@@ -3187,7 +3191,7 @@ export const Cwl: Command = {
         return;
       }
       if (!group && subcommand === "signup") {
-        await handleRosterSignupSubcommand(interaction);
+        await handleRosterSignupSubcommand(interaction, cocService);
         return;
       }
       if (group === "roster") {

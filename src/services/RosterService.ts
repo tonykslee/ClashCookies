@@ -16,7 +16,10 @@ import {
   normalizeDiscordUserId,
   normalizePlayerTag,
 } from "./PlayerLinkService";
-import { resolveCurrentCwlSeasonKey } from "./CwlRegistryService";
+import {
+  ensureAndHydrateCwlTrackedClanMetadataForSeason,
+  resolveCurrentCwlSeasonKey,
+} from "./CwlRegistryService";
 import { cwlStateService } from "./CwlStateService";
 import { todoSnapshotService } from "./TodoSnapshotService";
 import { normalizeSyncTimeZone } from "./syncTimeZone";
@@ -274,6 +277,7 @@ export type CreateRosterInput = {
   createdByDiscordUserId?: string | null;
   updatedByDiscordUserId?: string | null;
   groups?: RosterGroupSeed[];
+  cocService?: CoCService | null;
 };
 
 export type SignupLinkedAccountsResult =
@@ -2013,6 +2017,17 @@ export class RosterService {
     }
 
     const roster = mapRosterRecord(created);
+    if (roster.rosterType === "CWL" && roster.clanTag && input.cocService) {
+      await ensureAndHydrateCwlTrackedClanMetadataForSeason({
+        clanTags: [roster.clanTag],
+        season: resolveCurrentCwlSeasonKey(),
+        cocService: input.cocService,
+      }).catch((err) => {
+        console.error(
+          `[roster] stage=cwl_metadata_hydration_failed roster_id=${roster.id} clan_tag=${roster.clanTag} error=${String((err as Error)?.message ?? err)}`,
+        );
+      });
+    }
     if (importMembers) {
       await this.importRosterMembers({ rosterId: roster.id });
     }
@@ -2050,6 +2065,8 @@ export class RosterService {
       where: { id: rosterId },
       select: {
         id: true,
+        rosterType: true,
+        clanTag: true,
       },
     });
     if (!roster) return null;
@@ -2066,6 +2083,18 @@ export class RosterService {
           cocService,
         });
       }
+    }
+
+    if (cocService && roster.rosterType === "CWL" && roster.clanTag) {
+      await ensureAndHydrateCwlTrackedClanMetadataForSeason({
+        clanTags: [roster.clanTag],
+        season: resolveCurrentCwlSeasonKey(),
+        cocService,
+      }).catch((err) => {
+        console.error(
+          `[roster] stage=cwl_metadata_refresh_failed roster_id=${roster.id} clan_tag=${roster.clanTag} error=${String((err as Error)?.message ?? err)}`,
+        );
+      });
     }
 
     return this.buildRosterSignupPayload(rosterId, cocService ?? null);

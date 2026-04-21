@@ -336,6 +336,12 @@ describe("/cwl command", () => {
       ],
     });
     (rosterService.recordRosterPostedMessage as any).mockResolvedValue(undefined);
+    const cocService = {
+      getClan: vi.fn().mockResolvedValue({
+        name: "CWL Alpha",
+        warLeague: { name: "Champion League II" },
+      }),
+    };
 
     const interaction = makeInteraction({
       subcommand: "signup",
@@ -353,7 +359,7 @@ describe("/cwl command", () => {
       }),
     };
 
-    await Cwl.run({} as any, interaction as any, {} as any);
+    await Cwl.run({} as any, interaction as any, cocService as any);
 
     expect(rosterService.createRoster).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -363,6 +369,7 @@ describe("/cwl command", () => {
         clanTag: "#2QG2C08UP",
         timezone: "America/Los_Angeles",
         displayTimezone: "America/Los_Angeles",
+        cocService,
       }),
     );
     expect(interaction.channel.send).toHaveBeenCalledTimes(1);
