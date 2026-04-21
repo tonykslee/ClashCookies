@@ -30,13 +30,27 @@ const interactionClientFetchMock = vi.fn();
 function makeInteraction(input: {
   subcommand: RosterSubcommand;
   clan?: string | null;
+  category?: string | null;
+  name?: string | null;
   roster?: string | null;
   action?: string | null;
   group?: string | null;
   players?: string | null;
-  title?: string | null;
   timezone?: string | null;
   displayTimezone?: string | null;
+  startTime?: string | null;
+  endTime?: string | null;
+  maxMembers?: number | null;
+  maxAccountsPerUser?: number | null;
+  minTownhall?: number | null;
+  maxTownhall?: number | null;
+  rosterRole?: string | null;
+  allowMultiSignup?: boolean | null;
+  sortBy?: string | null;
+  importMembers?: boolean | null;
+  deleteRole?: boolean | null;
+  user?: string | null;
+  player?: string | null;
 }) {
   return {
     user: { id: "111111111111111111" },
@@ -46,13 +60,33 @@ function makeInteraction(input: {
       getSubcommand: vi.fn(() => input.subcommand),
       getString: vi.fn((name: string) => {
         if (name === "clan") return input.clan ?? null;
+        if (name === "category") return input.category ?? null;
+        if (name === "name") return input.name ?? null;
         if (name === "roster") return input.roster ?? null;
         if (name === "action") return input.action ?? null;
         if (name === "group") return input.group ?? null;
         if (name === "players") return input.players ?? null;
-        if (name === "title") return input.title ?? null;
         if (name === "timezone") return input.timezone ?? null;
         if (name === "display-timezone") return input.displayTimezone ?? null;
+        if (name === "start_time") return input.startTime ?? null;
+        if (name === "end_time") return input.endTime ?? null;
+        if (name === "roster_role") return input.rosterRole ?? null;
+        if (name === "sort_by") return input.sortBy ?? null;
+        if (name === "user") return input.user ?? null;
+        if (name === "player") return input.player ?? null;
+        return null;
+      }),
+      getInteger: vi.fn((name: string) => {
+        if (name === "max_members") return input.maxMembers ?? null;
+        if (name === "max_accounts_per_user") return input.maxAccountsPerUser ?? null;
+        if (name === "min_townhall") return input.minTownhall ?? null;
+        if (name === "max_townhall") return input.maxTownhall ?? null;
+        return null;
+      }),
+      getBoolean: vi.fn((name: string) => {
+        if (name === "allow_multi_signup") return input.allowMultiSignup ?? null;
+        if (name === "import_members") return input.importMembers ?? null;
+        if (name === "delete_role") return input.deleteRole ?? null;
         return null;
       }),
     },
@@ -97,6 +131,7 @@ describe("/roster command", () => {
     vi.spyOn(rosterService, "updateRoster");
     vi.spyOn(rosterService, "deleteRoster");
     vi.spyOn(rosterService, "getRosterView");
+    vi.spyOn(rosterService, "getRosterRoleSyncTargets").mockResolvedValue(null as any);
     vi.spyOn(rosterService, "addRosterSignupsForManager");
     vi.spyOn(rosterService, "moveRosterSignups");
     vi.spyOn(rosterService, "removeRosterSignupsAsManager");
@@ -121,6 +156,8 @@ describe("/roster command", () => {
         clanTag: "#2QG2C08UP",
         timezone: "America/Los_Angeles",
         displayTimezone: "America/Los_Angeles",
+        name: expect.stringContaining("CWL Alpha"),
+        startsAt: expect.any(Date),
       }),
     );
     expect(rosterService.recordRosterPostedMessage).not.toHaveBeenCalled();
@@ -239,9 +276,15 @@ describe("/roster command", () => {
 
     await Roster.run({} as any, interaction as any);
 
-    expect(rosterService.listGuildRosters).toHaveBeenCalledWith({
-      guildId: "guild-1",
-    });
+    expect(rosterService.listGuildRosters).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guildId: "guild-1",
+        name: null,
+        user: null,
+        player: null,
+        clan: null,
+      }),
+    );
     const embed = getEditedEmbed(interaction);
     expect(embed?.title).toBe("Guild Rosters");
     expect(String(embed?.fields?.[0]?.value ?? "")).toContain("Type: CWL / signup");
@@ -490,7 +533,7 @@ describe("/roster command", () => {
     const editInteraction = makeInteraction({
       subcommand: "edit",
       roster: "roster-1",
-      title: "CWL Alpha Signup (Updated)",
+      name: "CWL Alpha Signup (Updated)",
       timezone: "America/New_York",
       displayTimezone: "America/New_York",
     }) as any;
@@ -501,7 +544,7 @@ describe("/roster command", () => {
     expect(rosterService.updateRoster).toHaveBeenCalledWith(
       expect.objectContaining({
         rosterId: "roster-1",
-        title: "CWL Alpha Signup (Updated)",
+        name: "CWL Alpha Signup (Updated)",
         timezone: "America/New_York",
         displayTimezone: "America/New_York",
         updatedByDiscordUserId: "111111111111111111",

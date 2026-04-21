@@ -653,6 +653,14 @@ model Roster {
   endsAt               DateTime?
   timezone             String
   displayTimezone      String?
+  maxMembers           Int?
+  maxAccountsPerUser    Int?
+  minTownhall          Int?
+  maxTownhall          Int?
+  rosterRoleId         String?
+  allowMultiSignup     Boolean              @default(true)
+  sortBy               String?
+  importMembers        Boolean              @default(false)
   lifecycleState       RosterLifecycleState @default(OPEN)
   postedChannelId      String?
   postedMessageId      String?              @unique

@@ -47,6 +47,11 @@ export const ROSTER_SIGNUP_BUTTON_PREFIX = "roster-signup";
 export const ROSTER_REMOVE_BUTTON_PREFIX = "roster-remove";
 export const ROSTER_SELECTION_PREFIX = "roster-selection";
 const ROSTER_SELECTION_SESSION_TTL_MS = 15 * 60 * 1000;
+const ROSTER_CONFLICT_LIFECYCLE_STATES: readonly RosterLifecycleState[] = [
+  ROSTER_LIFECYCLE_STATE.ACTIVE,
+  ROSTER_LIFECYCLE_STATE.OPEN,
+  ROSTER_LIFECYCLE_STATE.CLOSED,
+];
 
 export type RosterGroupSeed = {
   key: string;
@@ -74,6 +79,14 @@ export type RosterRecord = {
   endsAt: Date | null;
   timezone: string;
   displayTimezone: string | null;
+  maxMembers: number | null;
+  maxAccountsPerUser: number | null;
+  minTownhall: number | null;
+  maxTownhall: number | null;
+  rosterRoleId: string | null;
+  allowMultiSignup: boolean;
+  sortBy: string | null;
+  importMembers: boolean;
   lifecycleState: RosterLifecycleState;
   postedChannelId: string | null;
   postedMessageId: string | null;
@@ -99,6 +112,7 @@ export type RosterSignupRecord = {
 
 export type RosterSignupViewRecord = RosterSignupRecord & {
   group: RosterGroupRecord | null;
+  townHall: number | null;
 };
 
 export type RosterSignupPayload = {
@@ -197,6 +211,14 @@ const ROSTER_RECORD_SELECT = {
   endsAt: true,
   timezone: true,
   displayTimezone: true,
+  maxMembers: true,
+  maxAccountsPerUser: true,
+  minTownhall: true,
+  maxTownhall: true,
+  rosterRoleId: true,
+  allowMultiSignup: true,
+  sortBy: true,
+  importMembers: true,
   lifecycleState: true,
   postedChannelId: true,
   postedMessageId: true,
@@ -211,13 +233,22 @@ const ROSTER_RECORD_SELECT = {
 export type CreateRosterInput = {
   guildId: string;
   rosterType: string;
-  title: string;
+  title?: string | null;
+  name?: string | null;
   clanTag?: string | null;
   rosterCategory?: string | null;
   startsAt?: Date | null;
   endsAt?: Date | null;
   timezone?: string | null;
   displayTimezone?: string | null;
+  maxMembers?: number | null;
+  maxAccountsPerUser?: number | null;
+  minTownhall?: number | null;
+  maxTownhall?: number | null;
+  rosterRoleId?: string | null;
+  allowMultiSignup?: boolean | null;
+  sortBy?: string | null;
+  importMembers?: boolean | null;
   lifecycleState?: RosterLifecycleState;
   createdByDiscordUserId?: string | null;
   updatedByDiscordUserId?: string | null;
@@ -235,6 +266,67 @@ export type SignupLinkedAccountsResult =
       createdTags: string[];
       duplicateTags: string[];
       missingLinkedTags: string[];
+    }
+  | {
+      outcome: "roster_full";
+      rosterId: string;
+      groupKey: string;
+      groupName: string | null;
+      requestedTags: string[];
+      linkedTags: string[];
+      createdTags: string[];
+      duplicateTags: string[];
+      missingLinkedTags: string[];
+      blockedTags: string[];
+    }
+  | {
+      outcome: "account_limit_exceeded";
+      rosterId: string;
+      groupKey: string;
+      groupName: string | null;
+      requestedTags: string[];
+      linkedTags: string[];
+      createdTags: string[];
+      duplicateTags: string[];
+      missingLinkedTags: string[];
+      blockedTags: string[];
+    }
+  | {
+      outcome: "townhall_unavailable";
+      rosterId: string;
+      groupKey: string;
+      groupName: string | null;
+      requestedTags: string[];
+      linkedTags: string[];
+      createdTags: string[];
+      duplicateTags: string[];
+      missingLinkedTags: string[];
+      blockedTags: string[];
+    }
+  | {
+      outcome: "townhall_out_of_range";
+      rosterId: string;
+      groupKey: string;
+      groupName: string | null;
+      requestedTags: string[];
+      linkedTags: string[];
+      createdTags: string[];
+      duplicateTags: string[];
+      missingLinkedTags: string[];
+      blockedTags: string[];
+    }
+  | {
+      outcome: "roster_conflict";
+      rosterId: string;
+      groupKey: string;
+      groupName: string | null;
+      requestedTags: string[];
+      linkedTags: string[];
+      createdTags: string[];
+      duplicateTags: string[];
+      missingLinkedTags: string[];
+      blockedTags: string[];
+      conflictingRosterIds: string[];
     }
   | {
       outcome: "no_linked_accounts";
@@ -405,6 +497,10 @@ function normalizeRosterType(input: string): string {
     .toUpperCase();
 }
 
+function isSupportedRosterType(input: string): boolean {
+  return input === "CWL" || input === "FWA";
+}
+
 function normalizeRosterCategory(input: string | null | undefined): string | null {
   const normalized = String(input ?? "")
     .trim()
@@ -423,6 +519,121 @@ function normalizeRosterText(input: string | null | undefined): string | null {
     .replace(/\s+/g, " ")
     .trim();
   return normalized.length > 0 ? normalized : null;
+}
+
+function normalizeRosterInt(input: unknown): number | null {
+  if (input === null || input === undefined || input === "") return null;
+  const parsed = Math.trunc(Number(input));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+export const ROSTER_SORT_BY = {
+  SIGNED_UP_AT: "signed_up_at",
+  PLAYER_NAME: "player_name",
+  PLAYER_TAG: "player_tag",
+  DISCORD_USER: "discord_user",
+  TOWNHALL: "townhall",
+} as const;
+
+export type RosterSortBy = (typeof ROSTER_SORT_BY)[keyof typeof ROSTER_SORT_BY];
+
+function normalizeRosterSortBy(input: string | null | undefined): RosterSortBy | null {
+  const normalized = String(input ?? "")
+    .trim()
+    .toLowerCase();
+  if (!normalized) return null;
+  if (
+    normalized === ROSTER_SORT_BY.SIGNED_UP_AT ||
+    normalized === ROSTER_SORT_BY.PLAYER_NAME ||
+    normalized === ROSTER_SORT_BY.PLAYER_TAG ||
+    normalized === ROSTER_SORT_BY.DISCORD_USER ||
+    normalized === ROSTER_SORT_BY.TOWNHALL
+  ) {
+    return normalized;
+  }
+  return null;
+}
+
+function normalizeRosterRoleId(input: string | null | undefined): string | null {
+  const trimmed = String(input ?? "").trim();
+  if (!trimmed) return null;
+  const raw = trimmed
+    .replace(/^<@&/, "")
+    .replace(/>$/, "")
+    .trim();
+  return /^\d{15,22}$/.test(raw) ? raw : null;
+}
+
+const ROSTER_CREATE_EDIT_DATE_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}$/;
+
+function getTimeZoneOffsetMs(date: Date, timeZone: string): number {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+
+  const parts = formatter.formatToParts(date);
+  const map = new Map(parts.map((part) => [part.type, part.value]));
+  const year = Number(map.get("year"));
+  const month = Number(map.get("month"));
+  const day = Number(map.get("day"));
+  const hour = Number(map.get("hour"));
+  const minute = Number(map.get("minute"));
+  const second = Number(map.get("second"));
+  const asUtc = Date.UTC(year, month - 1, day, hour, minute, second);
+  return asUtc - date.getTime();
+}
+
+function toEpochSeconds(
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute: number,
+  timeZone: string,
+): number {
+  const utcGuess = Date.UTC(year, month - 1, day, hour, minute, 0);
+  const firstOffset = getTimeZoneOffsetMs(new Date(utcGuess), timeZone);
+  let result = utcGuess - firstOffset;
+  const secondOffset = getTimeZoneOffsetMs(new Date(result), timeZone);
+  result = utcGuess - secondOffset;
+  return Math.floor(result / 1000);
+}
+
+export function parseRosterDateTimeInTimeZone(input: string, timeZone: string): Date | null {
+  const normalizedTimeZone = normalizeRosterDisplayTimezone(timeZone);
+  if (!normalizedTimeZone) return null;
+  const normalizedInput = String(input ?? "").trim();
+  if (!ROSTER_CREATE_EDIT_DATE_TIME_PATTERN.test(normalizedInput)) return null;
+
+  const [datePart, timePart] = normalizedInput.split(/\s+/g);
+  const [year, month, day] = datePart.split("-").map((value) => Number(value));
+  const [hour, minute] = timePart.split(":").map((value) => Number(value));
+  if (
+    !Number.isInteger(year) ||
+    !Number.isInteger(month) ||
+    !Number.isInteger(day) ||
+    !Number.isInteger(hour) ||
+    !Number.isInteger(minute)
+  ) {
+    return null;
+  }
+  if (month < 1 || month > 12 || day < 1 || day > 31 || hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+    return null;
+  }
+
+  const epochSeconds = toEpochSeconds(year, month, day, hour, minute, normalizedTimeZone);
+  const parsed = new Date(epochSeconds * 1000);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+  return parsed;
 }
 
 function normalizeRosterGroupKey(input: string): string {
@@ -468,8 +679,47 @@ function isRosterArchived(state: RosterLifecycleState): boolean {
   return state === ROSTER_LIFECYCLE_STATE.ARCHIVED;
 }
 
+function isRosterConflictEligible(state: RosterLifecycleState): boolean {
+  return ROSTER_CONFLICT_LIFECYCLE_STATES.includes(state);
+}
+
 function canManagerMutateRoster(state: RosterLifecycleState): boolean {
   return !isRosterArchived(state);
+}
+
+function sortRosterSignupsForRoster(
+  signups: RosterSignupViewRecord[],
+  sortBy: string | null | undefined,
+): RosterSignupViewRecord[] {
+  const normalizedSortBy = normalizeRosterSortBy(sortBy) ?? ROSTER_SORT_BY.SIGNED_UP_AT;
+  const signupsCopy = [...signups];
+  signupsCopy.sort((left, right) => {
+    if (normalizedSortBy === ROSTER_SORT_BY.PLAYER_NAME) {
+      return (
+        String(left.playerName ?? left.playerTag).localeCompare(String(right.playerName ?? right.playerTag)) ||
+        left.playerTag.localeCompare(right.playerTag)
+      );
+    }
+    if (normalizedSortBy === ROSTER_SORT_BY.PLAYER_TAG) {
+      return left.playerTag.localeCompare(right.playerTag);
+    }
+    if (normalizedSortBy === ROSTER_SORT_BY.DISCORD_USER) {
+      return (
+        String(left.discordUserId ?? "").localeCompare(String(right.discordUserId ?? "")) ||
+        left.playerTag.localeCompare(right.playerTag)
+      );
+    }
+    if (normalizedSortBy === ROSTER_SORT_BY.TOWNHALL) {
+      const leftTownHall = Number(left.townHall ?? 0);
+      const rightTownHall = Number(right.townHall ?? 0);
+      return rightTownHall - leftTownHall || left.playerTag.localeCompare(right.playerTag);
+    }
+    return (
+      left.signedUpAt.getTime() - right.signedUpAt.getTime() ||
+      left.playerTag.localeCompare(right.playerTag)
+    );
+  });
+  return signupsCopy;
 }
 
 type RosterRecordLike = {
@@ -483,6 +733,14 @@ type RosterRecordLike = {
   endsAt: Date | null;
   timezone: string;
   displayTimezone: string | null;
+  maxMembers: number | null;
+  maxAccountsPerUser: number | null;
+  minTownhall: number | null;
+  maxTownhall: number | null;
+  rosterRoleId: string | null;
+  allowMultiSignup: boolean;
+  sortBy: string | null;
+  importMembers: boolean;
   lifecycleState: string;
   postedChannelId: string | null;
   postedMessageId: string | null;
@@ -506,6 +764,14 @@ function mapRosterRecord(row: RosterRecordLike): RosterRecord {
     endsAt: row.endsAt,
     timezone: row.timezone,
     displayTimezone: row.displayTimezone,
+    maxMembers: row.maxMembers,
+    maxAccountsPerUser: row.maxAccountsPerUser,
+    minTownhall: row.minTownhall,
+    maxTownhall: row.maxTownhall,
+    rosterRoleId: row.rosterRoleId,
+    allowMultiSignup: row.allowMultiSignup,
+    sortBy: row.sortBy,
+    importMembers: row.importMembers,
     lifecycleState: row.lifecycleState as RosterLifecycleState,
     postedChannelId: row.postedChannelId,
     postedMessageId: row.postedMessageId,
@@ -547,10 +813,54 @@ function buildRosterSignupEntryLine(signup: {
   playerName: string | null;
   playerTag: string;
   discordUserId: string | null;
+  townHall?: number | null;
 }): string {
   const playerLabel = signup.playerName ? `${signup.playerName} \`${signup.playerTag}\`` : `\`${signup.playerTag}\``;
   const userLabel = signup.discordUserId ? ` <@${signup.discordUserId}>` : "";
-  return `- ${playerLabel}${userLabel}`;
+  const townHallLabel = signup.townHall !== undefined && signup.townHall !== null ? ` TH${signup.townHall}` : "";
+  return `- ${playerLabel}${townHallLabel}${userLabel}`;
+}
+
+function buildRosterConfigurationLines(roster: RosterRecord): string[] {
+  const lines: string[] = [
+    `Type: ${roster.rosterType}${roster.rosterCategory ? ` / ${roster.rosterCategory}` : ""}`,
+  ];
+  if (roster.clanTag) {
+    lines.push(`Clan: ${roster.clanTag}`);
+  }
+  if (roster.timezone) {
+    lines.push(`Timezone: ${roster.displayTimezone ?? roster.timezone}`);
+  }
+  if (roster.startsAt) {
+    lines.push(`Starts: ${formatRosterTimestamp(roster.startsAt)}`);
+  }
+  if (roster.endsAt) {
+    const relativeEndLabel = formatRosterRelativeTimestamp(roster.endsAt);
+    lines.push(`Ends: ${formatRosterTimestamp(roster.endsAt)}${relativeEndLabel ? ` (${relativeEndLabel})` : ""}`);
+  }
+  if (roster.maxMembers != null) {
+    lines.push(`Max members: ${roster.maxMembers}`);
+  }
+  if (roster.maxAccountsPerUser != null) {
+    lines.push(`Max accounts/user: ${roster.maxAccountsPerUser}`);
+  }
+  if (roster.minTownhall != null || roster.maxTownhall != null) {
+    lines.push(`TH range: ${roster.minTownhall ?? "any"}-${roster.maxTownhall ?? "any"}`);
+  }
+  if (roster.rosterRoleId) {
+    lines.push(`Roster role: <@&${roster.rosterRoleId}>`);
+  }
+  if (roster.sortBy) {
+    lines.push(`Sort by: ${roster.sortBy}`);
+  }
+  if (typeof roster.allowMultiSignup === "boolean") {
+    lines.push(`Allow multi-signup: ${roster.allowMultiSignup ? "yes" : "no"}`);
+  }
+  if (roster.importMembers) {
+    lines.push("Import members: yes");
+  }
+  lines.push(`State: ${buildRosterStateLabel(roster.lifecycleState)}`);
+  return lines;
 }
 
 function buildRosterSelectionMenuCustomId(sessionId: string): string {
@@ -723,25 +1033,7 @@ async function loadRosterSelectionOptions(input: {
   const roster = await prisma.roster.findUnique({
     where: { id: input.rosterId },
     select: {
-      id: true,
-      guildId: true,
-      rosterType: true,
-      rosterCategory: true,
-      title: true,
-      clanTag: true,
-      startsAt: true,
-      endsAt: true,
-      timezone: true,
-      displayTimezone: true,
-      lifecycleState: true,
-      postedChannelId: true,
-      postedMessageId: true,
-      postedMessageUrl: true,
-      postedAt: true,
-      createdByDiscordUserId: true,
-      updatedByDiscordUserId: true,
-      createdAt: true,
-      updatedAt: true,
+      ...ROSTER_RECORD_SELECT,
     },
   });
   if (!roster) return { outcome: "roster_not_found", rosterId: input.rosterId };
@@ -832,6 +1124,51 @@ function normalizeRosterSelectionTags(selectedTags: string[], allowedTags: strin
 
 function normalizeRosterPlayerTags(input: string[]): string[] {
   return [...new Set(input.map((tag) => normalizePlayerTag(tag)).filter(Boolean))];
+}
+
+async function loadRosterPlayerTownHallMap(input: {
+  rosterType: string;
+  clanTag: string | null;
+  playerTags: string[];
+}): Promise<Map<string, number>> {
+  const normalizedTags = [...new Set(input.playerTags.map((tag) => normalizePlayerTag(tag)).filter(Boolean))];
+  if (normalizedTags.length <= 0) {
+    return new Map();
+  }
+
+  const normalizedRosterType = normalizeRosterType(input.rosterType);
+  if ((normalizedRosterType === "CWL" || normalizedRosterType === "FWA") && !input.clanTag) {
+    return new Map();
+  }
+
+  if (normalizedRosterType === "CWL" && input.clanTag) {
+    const rosterEntries = await cwlStateService.listSeasonRosterForClan({ clanTag: input.clanTag });
+    const result = new Map<string, number>();
+    for (const entry of rosterEntries) {
+      const playerTag = normalizePlayerTag(entry.playerTag);
+      const townHall = normalizeRosterInt(entry.townHall);
+      if (!playerTag || townHall === null || !normalizedTags.includes(playerTag)) continue;
+      result.set(playerTag, townHall);
+    }
+    return result;
+  }
+
+  const rows = await prisma.fwaPlayerCatalog.findMany({
+    where: { playerTag: { in: normalizedTags } },
+    select: {
+      playerTag: true,
+      latestTownHall: true,
+    },
+  });
+
+  const result = new Map<string, number>();
+  for (const row of rows) {
+    const playerTag = normalizePlayerTag(row.playerTag);
+    const townHall = normalizeRosterInt(row.latestTownHall);
+    if (!playerTag || townHall === null) continue;
+    result.set(playerTag, townHall);
+  }
+  return result;
 }
 
 function buildRosterManagerGroupSummaryLine(group: RosterGroupRecord & { signupCount: number }): string {
@@ -933,29 +1270,7 @@ function buildRosterGroupSectionLines(input: {
 }
 function buildRosterSignupPayloadFromView(view: RosterSignupView): RosterSignupPayload {
   const title = view.roster.title || "Roster Signup";
-  const descriptionLines: string[] = [
-    `Type: ${view.roster.rosterType}`,
-  ];
-  if (view.roster.rosterCategory) {
-    descriptionLines.push(`Category: ${view.roster.rosterCategory}`);
-  }
-  if (view.roster.clanTag) {
-    descriptionLines.push(`Clan: ${view.roster.clanTag}`);
-  }
-  if (view.roster.timezone) {
-    descriptionLines.push(`Timezone: ${view.roster.displayTimezone ?? view.roster.timezone}`);
-  }
-
-  const startLabel = formatRosterTimestamp(view.roster.startsAt);
-  const endLabel = formatRosterTimestamp(view.roster.endsAt);
-  const relativeEndLabel = formatRosterRelativeTimestamp(view.roster.endsAt);
-  if (startLabel) {
-    descriptionLines.push(`Starts: ${startLabel}`);
-  }
-  if (endLabel) {
-    descriptionLines.push(`Ends: ${endLabel}${relativeEndLabel ? ` (${relativeEndLabel})` : ""}`);
-  }
-  descriptionLines.push(`State: ${buildRosterStateLabel(view.roster.lifecycleState)}`);
+  const descriptionLines: string[] = buildRosterConfigurationLines(view.roster);
   descriptionLines.push(`Total signups: ${view.totalSignupCount}`);
   descriptionLines.push("");
   descriptionLines.push("Groups:");
@@ -1015,6 +1330,14 @@ async function loadRosterView(rosterId: string): Promise<RosterSignupView | null
       endsAt: true,
       timezone: true,
       displayTimezone: true,
+      maxMembers: true,
+      maxAccountsPerUser: true,
+      minTownhall: true,
+      maxTownhall: true,
+      rosterRoleId: true,
+      allowMultiSignup: true,
+      sortBy: true,
+      importMembers: true,
       lifecycleState: true,
       postedChannelId: true,
       postedMessageId: true,
@@ -1041,7 +1364,6 @@ async function loadRosterView(rosterId: string): Promise<RosterSignupView | null
   });
   const signups = await prisma.rosterSignup.findMany({
     where: { rosterId: roster.id },
-    orderBy: [{ signedUpAt: "asc" }, { playerTag: "asc" }],
     select: {
       id: true,
       rosterId: true,
@@ -1063,8 +1385,18 @@ async function loadRosterView(rosterId: string): Promise<RosterSignupView | null
       },
     },
   });
+  const townHallByTag = await loadRosterPlayerTownHallMap({
+    rosterType: roster.rosterType,
+    clanTag: roster.clanTag,
+    playerTags: signups.map((signup) => signup.playerTag),
+  });
+  const signupsWithTownHall = signups.map((signup) => ({
+    ...signup,
+    townHall: townHallByTag.get(normalizePlayerTag(signup.playerTag)) ?? null,
+  }));
+  const sortedSignups = sortRosterSignupsForRoster(signupsWithTownHall, roster.sortBy);
   const signupCountByGroupId = new Map<string, number>();
-  for (const signup of signups) {
+  for (const signup of sortedSignups) {
     if (!signup.groupId) continue;
     signupCountByGroupId.set(signup.groupId, (signupCountByGroupId.get(signup.groupId) ?? 0) + 1);
   }
@@ -1075,7 +1407,7 @@ async function loadRosterView(rosterId: string): Promise<RosterSignupView | null
       ...group,
       signupCount: signupCountByGroupId.get(group.id) ?? 0,
     })),
-    signups: signups.map((signup) => ({
+    signups: sortedSignups.map((signup) => ({
       id: signup.id,
       rosterId: signup.rosterId,
       groupId: signup.groupId,
@@ -1085,6 +1417,7 @@ async function loadRosterView(rosterId: string): Promise<RosterSignupView | null
       signedUpAt: signup.signedUpAt,
       createdAt: signup.createdAt,
       updatedAt: signup.updatedAt,
+      townHall: signup.townHall,
       group: signup.group
         ? {
             id: signup.group.id,
@@ -1095,7 +1428,7 @@ async function loadRosterView(rosterId: string): Promise<RosterSignupView | null
           }
         : null,
     })),
-    totalSignupCount: signups.length,
+    totalSignupCount: sortedSignups.length,
   };
 }
 
@@ -1198,12 +1531,26 @@ export class RosterService {
   async createRoster(input: CreateRosterInput): Promise<RosterRecord> {
     const guildId = String(input.guildId ?? "").trim();
     const rosterType = normalizeRosterType(input.rosterType);
-    const title = normalizeRosterTitle(input.title);
+    if (!isSupportedRosterType(rosterType)) {
+      throw new Error(`Unsupported roster category: ${rosterType || "unknown"}`);
+    }
+    const title = normalizeRosterTitle(input.name ?? input.title ?? "");
+    if (!title) {
+      throw new Error("Roster name is required.");
+    }
     const timezone = normalizeRosterDisplayTimezone(input.timezone) ?? "UTC";
     const displayTimezone =
       normalizeRosterDisplayTimezone(input.displayTimezone) ?? timezone;
     const clanTag = input.clanTag ? normalizeClanTag(input.clanTag) : null;
     const rosterCategory = normalizeRosterCategory(input.rosterCategory);
+    const maxMembers = normalizeRosterInt(input.maxMembers);
+    const maxAccountsPerUser = normalizeRosterInt(input.maxAccountsPerUser);
+    const minTownhall = normalizeRosterInt(input.minTownhall);
+    const maxTownhall = normalizeRosterInt(input.maxTownhall);
+    const rosterRoleId = normalizeRosterRoleId(input.rosterRoleId);
+    const allowMultiSignup = input.allowMultiSignup !== false;
+    const sortBy = normalizeRosterSortBy(input.sortBy);
+    const importMembers = Boolean(input.importMembers);
     const lifecycleState = input.lifecycleState ?? ROSTER_LIFECYCLE_STATE.OPEN;
     const startsAt = input.startsAt ?? new Date();
     const endsAt = input.endsAt ?? null;
@@ -1233,6 +1580,14 @@ export class RosterService {
           endsAt,
           timezone,
           displayTimezone,
+          maxMembers,
+          maxAccountsPerUser,
+          minTownhall,
+          maxTownhall,
+          rosterRoleId,
+          allowMultiSignup,
+          sortBy,
+          importMembers,
           lifecycleState,
           createdByDiscordUserId,
           updatedByDiscordUserId,
@@ -1260,7 +1615,11 @@ export class RosterService {
       throw new Error("Failed to create roster.");
     }
 
-    return mapRosterRecord(created);
+    const roster = mapRosterRecord(created);
+    if (importMembers) {
+      await this.importRosterMembers({ rosterId: roster.id });
+    }
+    return roster;
   }
 
   async recordRosterPostedMessage(input: {
@@ -1293,6 +1652,49 @@ export class RosterService {
     return loadRosterView(rosterId);
   }
 
+  async getRosterRoleSyncTargets(input: {
+    rosterId: string;
+  }): Promise<{
+    roster: RosterRecord;
+    rosterRoleId: string;
+    discordUserIds: string[];
+  } | null> {
+    const roster = await prisma.roster.findUnique({
+      where: { id: input.rosterId },
+      select: {
+        ...ROSTER_RECORD_SELECT,
+      },
+    });
+    if (!roster) {
+      return null;
+    }
+
+    const mappedRoster = mapRosterRecord(roster);
+    if (!mappedRoster.rosterRoleId) {
+      return null;
+    }
+
+    const signups = await prisma.rosterSignup.findMany({
+      where: { rosterId: mappedRoster.id },
+      select: {
+        discordUserId: true,
+      },
+    });
+    const discordUserIds = [
+      ...new Set(
+        signups
+          .map((signup) => normalizeDiscordUserId(signup.discordUserId))
+          .filter((discordUserId): discordUserId is string => Boolean(discordUserId)),
+      ),
+    ];
+
+    return {
+      roster: mappedRoster,
+      rosterRoleId: mappedRoster.rosterRoleId,
+      discordUserIds,
+    };
+  }
+
   async findGuildRosterById(input: {
     guildId: string;
     rosterId: string;
@@ -1315,7 +1717,10 @@ export class RosterService {
 
   async listGuildRosters(input: {
     guildId: string;
-    query?: string | null;
+    name?: string | null;
+    user?: string | null;
+    player?: string | null;
+    clan?: string | null;
     limit?: number | null;
   }): Promise<RosterSummaryRecord[]> {
     const guildId = String(input.guildId ?? "").trim();
@@ -1323,41 +1728,65 @@ export class RosterService {
       return [];
     }
 
-    const query = normalizeRosterText(input.query);
+    const name = normalizeRosterText(input.name);
+    const player = normalizeRosterText(input.player);
+    const clan = normalizeClanTag(input.clan ?? "");
+    const user = normalizeDiscordUserId(input.user ?? "");
+    const where: any = { guildId };
+    const andConditions: any[] = [];
+    if (name) {
+      andConditions.push({
+        title: {
+          contains: name,
+          mode: "insensitive",
+        },
+      });
+    }
+    if (clan) {
+      andConditions.push({
+        clanTag: {
+          contains: clan,
+          mode: "insensitive",
+        },
+      });
+    }
+    if (user) {
+      andConditions.push({
+        signups: {
+          some: {
+            discordUserId: user,
+          },
+        },
+      });
+    }
+    if (player) {
+      andConditions.push({
+        signups: {
+          some: {
+            OR: [
+              {
+                playerTag: {
+                  contains: player,
+                  mode: "insensitive",
+                },
+              },
+              {
+                playerName: {
+                  contains: player,
+                  mode: "insensitive",
+                },
+              },
+            ],
+          },
+        },
+      });
+    }
+    if (andConditions.length > 0) {
+      where.AND = andConditions;
+    }
+
     const rosterRows = await prisma.roster.findMany({
-      where: {
-        guildId,
-        ...(query
-          ? {
-              OR: [
-                {
-                  title: {
-                    contains: query,
-                    mode: "insensitive",
-                  },
-                },
-                {
-                  clanTag: {
-                    contains: query,
-                    mode: "insensitive",
-                  },
-                },
-                {
-                  rosterType: {
-                    contains: query,
-                    mode: "insensitive",
-                  },
-                },
-                {
-                  rosterCategory: {
-                    contains: query,
-                    mode: "insensitive",
-                  },
-                },
-              ],
-            }
-          : {}),
-      },
+      where,
       orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
       take: Math.max(1, Math.min(25, Math.trunc(Number(input.limit ?? 25) || 25))),
       select: {
@@ -1377,11 +1806,22 @@ export class RosterService {
   async updateRoster(input: {
     rosterId: string;
     title?: string | null;
+    name?: string | null;
+    rosterType?: string | null;
+    rosterCategory?: string | null;
     clanTag?: string | null;
     timezone?: string | null;
     displayTimezone?: string | null;
     startsAt?: Date | null;
     endsAt?: Date | null;
+    maxMembers?: number | null;
+    maxAccountsPerUser?: number | null;
+    minTownhall?: number | null;
+    maxTownhall?: number | null;
+    rosterRoleId?: string | null;
+    allowMultiSignup?: boolean | null;
+    sortBy?: string | null;
+    importMembers?: boolean | null;
     lifecycleState?: RosterLifecycleState | null;
     updatedByDiscordUserId?: string | null;
   }): Promise<RosterRecord | null> {
@@ -1396,11 +1836,21 @@ export class RosterService {
     }
 
     const data: any = {};
-    if (input.title !== undefined && input.title !== null) {
-      data.title = normalizeRosterTitle(input.title);
+    if ((input.name !== undefined && input.name !== null) || (input.title !== undefined && input.title !== null)) {
+      data.title = normalizeRosterTitle(input.name ?? input.title ?? "");
     }
     if (input.clanTag !== undefined) {
       data.clanTag = input.clanTag ? normalizeClanTag(input.clanTag) : null;
+    }
+    if (input.rosterType !== undefined && input.rosterType !== null) {
+      const normalizedType = normalizeRosterType(input.rosterType);
+      if (!isSupportedRosterType(normalizedType)) {
+        throw new Error(`Unsupported roster category: ${normalizedType || "unknown"}`);
+      }
+      data.rosterType = normalizedType;
+    }
+    if (input.rosterCategory !== undefined) {
+      data.rosterCategory = normalizeRosterCategory(input.rosterCategory);
     }
     if (input.timezone !== undefined) {
       const normalizedTimezone = normalizeRosterDisplayTimezone(input.timezone) ?? "UTC";
@@ -1418,6 +1868,30 @@ export class RosterService {
     if (input.endsAt !== undefined) {
       data.endsAt = input.endsAt;
     }
+    if (input.maxMembers !== undefined) {
+      data.maxMembers = normalizeRosterInt(input.maxMembers);
+    }
+    if (input.maxAccountsPerUser !== undefined) {
+      data.maxAccountsPerUser = normalizeRosterInt(input.maxAccountsPerUser);
+    }
+    if (input.minTownhall !== undefined) {
+      data.minTownhall = normalizeRosterInt(input.minTownhall);
+    }
+    if (input.maxTownhall !== undefined) {
+      data.maxTownhall = normalizeRosterInt(input.maxTownhall);
+    }
+    if (input.rosterRoleId !== undefined) {
+      data.rosterRoleId = normalizeRosterRoleId(input.rosterRoleId);
+    }
+    if (input.allowMultiSignup !== undefined && input.allowMultiSignup !== null) {
+      data.allowMultiSignup = Boolean(input.allowMultiSignup);
+    }
+    if (input.sortBy !== undefined) {
+      data.sortBy = normalizeRosterSortBy(input.sortBy);
+    }
+    if (input.importMembers !== undefined && input.importMembers !== null) {
+      data.importMembers = Boolean(input.importMembers);
+    }
     if (input.lifecycleState !== undefined && input.lifecycleState !== null) {
       data.lifecycleState = input.lifecycleState;
     }
@@ -1430,8 +1904,11 @@ export class RosterService {
       data,
       select: ROSTER_RECORD_SELECT,
     });
-
-    return mapRosterRecord(updated);
+    const mapped = mapRosterRecord(updated);
+    if (input.importMembers) {
+      await this.importRosterMembers({ rosterId: mapped.id });
+    }
+    return mapped;
   }
 
   async deleteRoster(input: {
@@ -1467,6 +1944,107 @@ export class RosterService {
     };
   }
 
+  async importRosterMembers(input: { rosterId: string }): Promise<{
+    importedCount: number;
+    skippedCount: number;
+  }> {
+    const roster = await prisma.roster.findUnique({
+      where: { id: input.rosterId },
+      select: {
+        id: true,
+        rosterType: true,
+        rosterCategory: true,
+        clanTag: true,
+        importMembers: true,
+      },
+    });
+    if (!roster || !roster.importMembers || !roster.clanTag) {
+      return { importedCount: 0, skippedCount: 0 };
+    }
+
+    const defaultGroup = await prisma.rosterGroup.findFirst({
+      where: { rosterId: roster.id },
+      orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+      select: {
+        id: true,
+        key: true,
+        name: true,
+        description: true,
+        sortOrder: true,
+      },
+    });
+    if (!defaultGroup) {
+      return { importedCount: 0, skippedCount: 0 };
+    }
+
+    const candidateGroups = new Map<string, string[]>();
+    if (roster.rosterType === "CWL") {
+      const entries = await cwlStateService.listSeasonRosterForClan({ clanTag: roster.clanTag });
+      for (const entry of entries) {
+        if (!entry.linkedDiscordUserId) continue;
+        const playerTag = normalizePlayerTag(entry.playerTag);
+        if (!playerTag) continue;
+        const existing = candidateGroups.get(entry.linkedDiscordUserId) ?? [];
+        existing.push(playerTag);
+        candidateGroups.set(entry.linkedDiscordUserId, existing);
+      }
+    } else if (roster.rosterType === "FWA") {
+      const rows = await prisma.fwaClanMemberCurrent.findMany({
+        where: { clanTag: roster.clanTag },
+        select: {
+          playerTag: true,
+          playerName: true,
+        },
+      });
+      const linkedRows = rows.length > 0
+        ? await prisma.playerLink.findMany({
+            where: {
+              playerTag: { in: rows.map((row) => normalizePlayerTag(row.playerTag)).filter(Boolean) },
+              discordUserId: { not: null },
+            },
+            select: {
+              playerTag: true,
+              discordUserId: true,
+            },
+          })
+        : [];
+      const discordUserIdByTag = new Map(
+        linkedRows
+          .map((row) => [normalizePlayerTag(row.playerTag), normalizeDiscordUserId(row.discordUserId)] as const)
+          .filter((entry): entry is readonly [string, string] => Boolean(entry[0] && entry[1])),
+      );
+      for (const row of rows) {
+        const playerTag = normalizePlayerTag(row.playerTag);
+        if (!playerTag) continue;
+        const discordUserId = discordUserIdByTag.get(playerTag) ?? null;
+        if (!discordUserId) continue;
+        const existing = candidateGroups.get(discordUserId) ?? [];
+        existing.push(playerTag);
+        candidateGroups.set(discordUserId, existing);
+      }
+    }
+
+    let importedCount = 0;
+    let skippedCount = 0;
+    for (const [discordUserId, playerTags] of candidateGroups.entries()) {
+      const result = await this.signupLinkedAccounts({
+        rosterId: roster.id,
+        groupKey: defaultGroup.key,
+        discordUserId,
+        playerTags,
+      });
+      if (result.outcome === "created") {
+        importedCount += result.createdTags.length;
+      } else if (result.outcome === "already_signed_up") {
+        skippedCount += result.duplicateTags.length;
+      } else {
+        skippedCount += playerTags.length;
+      }
+    }
+
+    return { importedCount, skippedCount };
+  }
+
   async findCwlRosterForClan(input: {
     guildId: string;
     clanTag: string;
@@ -1485,25 +2063,7 @@ export class RosterService {
       : { in: [ROSTER_LIFECYCLE_STATE.OPEN, ROSTER_LIFECYCLE_STATE.CLOSED, ROSTER_LIFECYCLE_STATE.ACTIVE] };
 
     const select = {
-      id: true,
-      guildId: true,
-      rosterType: true,
-      rosterCategory: true,
-      title: true,
-      clanTag: true,
-      startsAt: true,
-      endsAt: true,
-      timezone: true,
-      displayTimezone: true,
-      lifecycleState: true,
-      postedChannelId: true,
-      postedMessageId: true,
-      postedMessageUrl: true,
-      postedAt: true,
-      createdByDiscordUserId: true,
-      updatedByDiscordUserId: true,
-      createdAt: true,
-      updatedAt: true,
+      ...ROSTER_RECORD_SELECT,
     } as const;
 
     const currentSeasonRoster = await prisma.roster.findFirst({
@@ -2072,6 +2632,14 @@ export class RosterService {
       select: {
         id: true,
         lifecycleState: true,
+        rosterType: true,
+        rosterCategory: true,
+        clanTag: true,
+        maxMembers: true,
+        maxAccountsPerUser: true,
+        minTownhall: true,
+        maxTownhall: true,
+        allowMultiSignup: true,
       },
     });
     const requestedTags = [
@@ -2160,8 +2728,143 @@ export class RosterService {
       select: { playerTag: true },
     });
     const existingTags = new Set(existing.map((row) => normalizePlayerTag(row.playerTag)).filter(Boolean));
-    const createdTags = selectedTags.filter((tag) => !existingTags.has(tag));
+    const createdCandidates = selectedTags.filter((tag) => !existingTags.has(tag));
     const duplicateTags = selectedTags.filter((tag) => existingTags.has(tag));
+
+    const activeRosterSignups = await prisma.rosterSignup.count({
+      where: {
+        rosterId: roster.id,
+      },
+    });
+
+    if (createdCandidates.length > 0) {
+      const maxMembers = normalizeRosterInt(roster.maxMembers);
+      if (maxMembers !== null && activeRosterSignups + createdCandidates.length > maxMembers) {
+        return {
+          outcome: "roster_full",
+          rosterId: roster.id,
+          groupKey: group.key,
+          groupName: group.name,
+          requestedTags,
+          linkedTags: selectedTags,
+          createdTags: [],
+          duplicateTags,
+          missingLinkedTags,
+          blockedTags: createdCandidates,
+        };
+      }
+
+      const effectiveMaxAccountsPerUser =
+        roster.allowMultiSignup === false
+          ? 1
+          : normalizeRosterInt(roster.maxAccountsPerUser);
+      if (effectiveMaxAccountsPerUser !== null) {
+        const ownedCount = await prisma.rosterSignup.count({
+          where: {
+            rosterId: roster.id,
+            discordUserId: normalizeDiscordUserId(input.discordUserId) ?? input.discordUserId,
+          },
+        });
+        if (ownedCount + createdCandidates.length > effectiveMaxAccountsPerUser) {
+          return {
+            outcome: "account_limit_exceeded",
+            rosterId: roster.id,
+            groupKey: group.key,
+            groupName: group.name,
+            requestedTags,
+            linkedTags: selectedTags,
+            createdTags: [],
+            duplicateTags,
+            missingLinkedTags,
+            blockedTags: createdCandidates,
+          };
+        }
+      }
+
+    const playerTownHallByTag = await loadRosterPlayerTownHallMap({
+      rosterType: roster.rosterType,
+      clanTag: roster.clanTag,
+      playerTags: createdCandidates,
+    });
+    if (normalizeRosterInt(roster.minTownhall) !== null || normalizeRosterInt(roster.maxTownhall) !== null) {
+      const blockedUnavailableTags: string[] = [];
+      const blockedOutOfRangeTags: string[] = [];
+      for (const tag of createdCandidates) {
+        const townHall = playerTownHallByTag.get(tag) ?? null;
+        if (townHall === null) {
+          blockedUnavailableTags.push(tag);
+          continue;
+        }
+        const minTownhall = normalizeRosterInt(roster.minTownhall);
+        const maxTownhall = normalizeRosterInt(roster.maxTownhall);
+        if ((minTownhall !== null && townHall < minTownhall) || (maxTownhall !== null && townHall > maxTownhall)) {
+          blockedOutOfRangeTags.push(tag);
+        }
+      }
+      if (blockedUnavailableTags.length > 0) {
+        return {
+          outcome: "townhall_unavailable",
+          rosterId: roster.id,
+          groupKey: group.key,
+          groupName: group.name,
+          requestedTags,
+          linkedTags: selectedTags,
+          createdTags: [],
+          duplicateTags,
+          missingLinkedTags,
+          blockedTags: blockedUnavailableTags,
+        };
+      }
+      if (blockedOutOfRangeTags.length > 0) {
+        return {
+          outcome: "townhall_out_of_range",
+          rosterId: roster.id,
+          groupKey: group.key,
+          groupName: group.name,
+          requestedTags,
+          linkedTags: selectedTags,
+          createdTags: [],
+          duplicateTags,
+          missingLinkedTags,
+          blockedTags: blockedOutOfRangeTags,
+        };
+      }
+    }
+
+      const conflictingRows = await prisma.rosterSignup.findMany({
+        where: {
+          playerTag: { in: createdCandidates },
+          rosterId: { not: roster.id },
+          roster: {
+            rosterType: roster.rosterType,
+            rosterCategory: roster.rosterCategory,
+            lifecycleState: { in: ROSTER_CONFLICT_LIFECYCLE_STATES.filter(isRosterConflictEligible) },
+          },
+        },
+        select: {
+          playerTag: true,
+          rosterId: true,
+        },
+      });
+      const conflictingTags = normalizeRosterPlayerTags(conflictingRows.map((row) => row.playerTag));
+      if (conflictingTags.length > 0) {
+        return {
+          outcome: "roster_conflict",
+          rosterId: roster.id,
+          groupKey: group.key,
+          groupName: group.name,
+          requestedTags,
+          linkedTags: selectedTags,
+          createdTags: [],
+          duplicateTags,
+          missingLinkedTags,
+          blockedTags: conflictingTags,
+          conflictingRosterIds: [...new Set(conflictingRows.map((row) => row.rosterId))],
+        };
+      }
+    }
+
+    const createdTags = createdCandidates;
 
     if (createdTags.length > 0) {
       await prisma.rosterSignup.createMany({

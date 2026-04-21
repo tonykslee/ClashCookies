@@ -17,6 +17,7 @@ const prismaMock = vi.hoisted(() => ({
   },
   rosterSignup: {
     findMany: vi.fn(),
+    count: vi.fn(),
     createMany: vi.fn(),
     updateMany: vi.fn(),
     deleteMany: vi.fn(),
@@ -64,6 +65,27 @@ import {
 } from "../src/services/RosterService";
 
 describe("RosterService", () => {
+  function mockConflictLookupForLifecycleState(
+    conflictLifecycleState: "ACTIVE" | "OPEN" | "CLOSED" | "ARCHIVED",
+  ) {
+    let rosterSignupFindManyCallCount = 0;
+    prismaMock.rosterSignup.findMany.mockImplementation(async (args: any) => {
+      rosterSignupFindManyCallCount += 1;
+      if (rosterSignupFindManyCallCount === 1) {
+        return [];
+      }
+
+      const lifecycleFilter = args?.where?.roster?.lifecycleState?.in as string[] | undefined;
+      if (!Array.isArray(lifecycleFilter)) {
+        return [{ playerTag: "#PQL0289", rosterId: "archived-roster" }];
+      }
+
+      return lifecycleFilter.includes(conflictLifecycleState)
+        ? [{ playerTag: "#PQL0289", rosterId: "archived-roster" }]
+        : [];
+    });
+  }
+
   beforeEach(() => {
     vi.clearAllMocks();
     prismaMock.$transaction.mockImplementation(async (callback: (tx: typeof prismaMock) => Promise<unknown>) =>
@@ -166,6 +188,7 @@ describe("RosterService", () => {
       sortOrder: 0,
     });
     prismaMock.rosterSignup.findMany.mockResolvedValue([]);
+    prismaMock.rosterSignup.count.mockResolvedValue(0);
     prismaMock.rosterSignup.createMany.mockResolvedValue({ count: 0 });
     prismaMock.rosterSignup.updateMany.mockResolvedValue({ count: 0 });
     prismaMock.rosterSignup.deleteMany.mockResolvedValue({ count: 0 });
@@ -211,7 +234,9 @@ describe("RosterService", () => {
       { playerTag: "#PQL0289", linkedName: "Alpha", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
       { playerTag: "#QGRJ2222", linkedName: "Bravo", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
     ]);
-    prismaMock.rosterSignup.findMany.mockResolvedValue([{ playerTag: "#PQL0289" }]);
+    prismaMock.rosterSignup.findMany
+      .mockResolvedValueOnce([{ playerTag: "#PQL0289" }])
+      .mockResolvedValueOnce([]);
 
     const result = await rosterService.signupLinkedAccounts({
       rosterId: "roster-1",
@@ -242,6 +267,74 @@ describe("RosterService", () => {
       ],
       skipDuplicates: true,
     });
+  });
+
+  it.each(["OPEN", "CLOSED", "ACTIVE"] as const)(
+    "blocks signup when the same player is already signed up on another relevant %s roster",
+    async (conflictLifecycleState) => {
+      playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
+        { playerTag: "#PQL0289", linkedName: "Alpha", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+      ]);
+      mockConflictLookupForLifecycleState(conflictLifecycleState);
+
+      const result = await rosterService.signupLinkedAccounts({
+        rosterId: "roster-1",
+        groupKey: "confirmed",
+        discordUserId: "111111111111111111",
+      });
+
+      expect(result).toMatchObject({
+        outcome: "roster_conflict",
+        rosterId: "roster-1",
+        blockedTags: ["#PQL0289"],
+        conflictingRosterIds: ["archived-roster"],
+      });
+      expect(prismaMock.rosterSignup.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            roster: expect.objectContaining({
+              lifecycleState: expect.objectContaining({
+                in: expect.arrayContaining([conflictLifecycleState]),
+              }),
+            }),
+          }),
+        }),
+      );
+    },
+  );
+
+  it("does not block signup when the only prior signup is on an archived roster", async () => {
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
+      { playerTag: "#PQL0289", linkedName: "Alpha", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+    ]);
+    mockConflictLookupForLifecycleState("ARCHIVED");
+
+    const result = await rosterService.signupLinkedAccounts({
+      rosterId: "roster-1",
+      groupKey: "confirmed",
+      discordUserId: "111111111111111111",
+    });
+
+    expect(result).toMatchObject({
+      outcome: "created",
+      rosterId: "roster-1",
+      groupKey: "confirmed",
+      linkedTags: ["#PQL0289"],
+      createdTags: ["#PQL0289"],
+      duplicateTags: [],
+      missingLinkedTags: [],
+    });
+    expect(prismaMock.rosterSignup.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          roster: expect.objectContaining({
+            lifecycleState: expect.objectContaining({
+              in: expect.not.arrayContaining(["ARCHIVED"]),
+            }),
+          }),
+        }),
+      }),
+    );
   });
 
   it("renders grouped signup entries and includes the remove button on the roster post", async () => {
