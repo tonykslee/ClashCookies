@@ -32,7 +32,10 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
   },
   cwlTrackedClan: {
+    findMany: vi.fn(),
     findFirst: vi.fn(),
+    createMany: vi.fn(),
+    updateMany: vi.fn(),
   },
   todoPlayerSnapshot: {
     findMany: vi.fn(),
@@ -98,6 +101,7 @@ import {
   ROSTER_DEFAULT_GROUPS,
   rosterService,
 } from "../src/services/RosterService";
+import { resolveCurrentCwlSeasonKey } from "../src/services/CwlRegistryService";
 
 describe("RosterService", () => {
   function mockConflictLookupForLifecycleState(
@@ -230,10 +234,13 @@ describe("RosterService", () => {
     prismaMock.playerLink.findMany.mockResolvedValue([]);
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
     prismaMock.cwlTrackedClan.findFirst.mockResolvedValue({
       name: "CWL Alpha",
       leagueLabel: "Champion League II",
     });
+    prismaMock.cwlTrackedClan.createMany.mockResolvedValue({ count: 0 });
+    prismaMock.cwlTrackedClan.updateMany.mockResolvedValue({ count: 0 });
     prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([]);
     prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
       _count: { _all: 0 },
@@ -251,6 +258,7 @@ describe("RosterService", () => {
     });
     cocServiceMock.getClan.mockReset();
     cocServiceMock.getClan.mockResolvedValue({
+      name: "CWL Alpha",
       warLeague: { name: "Champion League II" },
     });
   });
@@ -284,6 +292,46 @@ describe("RosterService", () => {
           }),
         ),
       ),
+    });
+  });
+
+  it("hydrates CWL tracked-clan metadata while creating a CWL roster", async () => {
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValueOnce([{ tag: "#2QG2C08UP" }]);
+    prismaMock.cwlTrackedClan.updateMany.mockResolvedValue({ count: 1 });
+
+    await rosterService.createRoster({
+      guildId: "guild-1",
+      rosterType: "cwl",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      timezone: "PST",
+      createdByDiscordUserId: "111111111111111111",
+      cocService: cocServiceMock as any,
+    });
+
+    const season = resolveCurrentCwlSeasonKey();
+    expect(prismaMock.cwlTrackedClan.createMany).toHaveBeenCalledWith({
+      data: [
+        {
+          season,
+          tag: "#2QG2C08UP",
+          name: null,
+          leagueLabel: null,
+        },
+      ],
+      skipDuplicates: true,
+    });
+    expect(cocServiceMock.getClan).toHaveBeenCalledWith("#2QG2C08UP");
+    expect(prismaMock.cwlTrackedClan.updateMany).toHaveBeenCalledWith({
+      where: {
+        season,
+        tag: "#2QG2C08UP",
+        OR: [{ name: null }, { name: "" }, { leagueLabel: null }, { leagueLabel: "" }],
+      },
+      data: {
+        name: "CWL Alpha",
+        leagueLabel: "Champion League II",
+      },
     });
   });
 
@@ -926,6 +974,8 @@ describe("RosterService", () => {
         },
       },
     ] as any);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValueOnce([{ tag: "#2QG2C08UP" }]);
+    prismaMock.cwlTrackedClan.updateMany.mockResolvedValue({ count: 1 });
     todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValue([
       {
         playerTag: "#PQL0289",
@@ -965,6 +1015,18 @@ describe("RosterService", () => {
         cocService: cocServiceMock,
       }),
     );
+    expect(cocServiceMock.getClan).toHaveBeenCalledWith("#2QG2C08UP");
+    expect(prismaMock.cwlTrackedClan.updateMany).toHaveBeenCalledWith({
+      where: {
+        season: resolveCurrentCwlSeasonKey(),
+        tag: "#2QG2C08UP",
+        OR: [{ name: null }, { name: "" }, { leagueLabel: null }, { leagueLabel: "" }],
+      },
+      data: {
+        name: "CWL Alpha",
+        leagueLabel: "Champion League II",
+      },
+    });
     expect(payload).toBeTruthy();
     expect(String(payload?.embed.toJSON().title ?? "")).toBe("CWL Alpha");
     expect(String(payload?.embed.toJSON().description ?? "")).toContain(

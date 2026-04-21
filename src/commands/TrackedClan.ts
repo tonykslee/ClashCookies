@@ -20,7 +20,7 @@ import { runWithCoCQueueContext } from "../services/CoCQueueContext";
 import { normalizeClanTag } from "../services/PlayerLinkService";
 import {
   addCwlClanTagsForSeason,
-  hydrateMissingCwlClanNamesForSeason,
+  ensureAndHydrateCwlTrackedClanMetadataForSeason,
   listCwlTrackedClansForSeason,
   removeTrackedClanTagFromRegistries,
   resolveCurrentCwlSeasonKey,
@@ -740,6 +740,22 @@ export const TrackedClan: Command = {
         const result = await addCwlClanTagsForSeason({
           rawTags: rawCwlTags,
         });
+        const hydrationTags = [...new Set([...result.added, ...result.alreadyExisting])];
+        const hydrationPromise =
+          cocService && hydrationTags.length > 0
+            ? ensureAndHydrateCwlTrackedClanMetadataForSeason({
+                season: result.season,
+                clanTags: hydrationTags,
+                cocService,
+                ensureRows: false,
+              })
+            : Promise.resolve({
+                season: result.season,
+                requestedCount: 0,
+                ensuredCount: 0,
+                hydratedCount: 0,
+                skippedCount: 0,
+              });
 
         await safeReply(interaction, {
           ephemeral: true,
@@ -754,18 +770,11 @@ export const TrackedClan: Command = {
         console.info(
           `[tracked-clan] stage=cwl_tags_final_reply_sent season=${result.season} added_count=${result.added.length} existing_count=${result.alreadyExisting.length}`,
         );
-
-        if (cocService && typeof cocService.getClan === "function") {
-          void hydrateMissingCwlClanNamesForSeason({
-            rawTags: rawCwlTags,
-            season: result.season,
-            cocService,
-          }).catch((err) => {
-            console.error(
-              `[tracked-clan] stage=cwl_tags_name_hydration_unhandled_error season=${result.season} error=${formatError(err)}`,
-            );
-          });
-        }
+        await hydrationPromise.catch((err) => {
+          console.error(
+            `[tracked-clan] stage=cwl_tags_metadata_hydration_unhandled_error season=${result.season} error=${formatError(err)}`,
+          );
+        });
         return;
       }
 

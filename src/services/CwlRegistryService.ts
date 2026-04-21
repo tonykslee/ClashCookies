@@ -52,6 +52,10 @@ function formatCwlTagStageDetails(details?: CwlTagStageDetails): string {
   return parts.length > 0 ? ` ${parts.join(" ")}` : "";
 }
 
+function normalizeUniqueCwlClanTags(input: string[]): string[] {
+  return [...new Set(input.map((tag) => normalizeClanTag(String(tag ?? ""))).filter(Boolean))];
+}
+
 async function runBoundedCwlTagStage<T>(input: {
   stage: string;
   timeoutMs: number;
@@ -236,33 +240,58 @@ export async function addCwlClanTagsForSeason(input: {
   };
 }
 
-/** Purpose: hydrate missing CWL clan names as best-effort enrichment after rows exist. */
-export async function hydrateMissingCwlClanNamesForSeason(input: {
-  rawTags: string;
+/** Purpose: ensure tracked CWL clan rows exist and hydrate clan metadata from live CoC in one bounded step. */
+export async function ensureAndHydrateCwlTrackedClanMetadataForSeason(input: {
+  clanTags: string[];
   season?: string;
   cocService: CoCService;
-}): Promise<void> {
+  ensureRows?: boolean;
+}): Promise<{
+  season: string;
+  requestedCount: number;
+  ensuredCount: number;
+  hydratedCount: number;
+  skippedCount: number;
+}> {
   const season = input.season ?? resolveCurrentCwlSeasonKey();
-  const parsed = parseCwlClanTagsInput(input.rawTags);
-  console.info(
-    `[tracked-clan] stage=cwl_tags_name_hydration_started season=${season} valid_count=${parsed.validTags.length}`,
-  );
-  if (parsed.validTags.length <= 0) {
-    console.info(
-      `[tracked-clan] stage=cwl_tags_name_hydration_completed season=${season} hydrated_count=0 skipped_count=0`,
-    );
-    return;
+  const clanTags = normalizeUniqueCwlClanTags(input.clanTags);
+  if (clanTags.length <= 0) {
+    return {
+      season,
+      requestedCount: 0,
+      ensuredCount: 0,
+      hydratedCount: 0,
+      skippedCount: 0,
+    };
   }
+
+  const ensured = input.ensureRows === false
+    ? { count: 0 }
+    : await runBoundedCwlTagStage({
+        stage: "cwl_tags_ensure_rows",
+        timeoutMs: CWL_TAG_DB_STAGE_TIMEOUT_MS,
+        details: { season, requested_count: clanTags.length },
+        action: () =>
+          prisma.cwlTrackedClan.createMany({
+            data: clanTags.map((tag) => ({
+              season,
+              tag,
+              name: null,
+              leagueLabel: null,
+            })),
+            skipDuplicates: true,
+          }),
+      });
 
   const missingRows = await runBoundedCwlTagStage({
     stage: "cwl_tags_missing_metadata_rows_query",
     timeoutMs: CWL_TAG_DB_STAGE_TIMEOUT_MS,
-    details: { season, valid_count: parsed.validTags.length },
+    details: { season, requested_count: clanTags.length },
     action: () =>
       prisma.cwlTrackedClan.findMany({
         where: {
           season,
-          tag: { in: parsed.validTags },
+          tag: { in: clanTags },
           OR: [
             { name: null },
             { name: "" },
@@ -276,9 +305,15 @@ export async function hydrateMissingCwlClanNamesForSeason(input: {
 
   if (missingRows.length <= 0) {
     console.info(
-      `[tracked-clan] stage=cwl_tags_name_hydration_completed season=${season} hydrated_count=0 skipped_count=0`,
+      `[tracked-clan] stage=cwl_tags_metadata_hydration_completed season=${season} requested_count=${clanTags.length} ensured_count=${ensured.count} hydrated_count=0 skipped_count=0`,
     );
-    return;
+    return {
+      season,
+      requestedCount: clanTags.length,
+      ensuredCount: ensured.count,
+      hydratedCount: 0,
+      skippedCount: 0,
+    };
   }
 
   let hydratedCount = 0;
@@ -298,7 +333,7 @@ export async function hydrateMissingCwlClanNamesForSeason(input: {
         if (!clanName && !leagueLabel) {
           skippedCount += 1;
           console.info(
-            `[tracked-clan] stage=cwl_tags_name_hydration_skipped season=${season} tag=${tag} reason=empty_name_and_league`,
+            `[tracked-clan] stage=cwl_tags_metadata_hydration_skipped season=${season} tag=${tag} reason=empty_name_and_league`,
           );
           return;
         }
@@ -332,14 +367,50 @@ export async function hydrateMissingCwlClanNamesForSeason(input: {
       } catch (err) {
         skippedCount += 1;
         console.error(
-          `[tracked-clan] stage=cwl_tags_name_hydration_failed season=${season} tag=${tag} error=${formatError(err)}`,
+          `[tracked-clan] stage=cwl_tags_metadata_hydration_failed season=${season} tag=${tag} error=${formatError(err)}`,
         );
       }
     }),
   );
 
   console.info(
-    `[tracked-clan] stage=cwl_tags_name_hydration_completed season=${season} hydrated_count=${hydratedCount} skipped_count=${skippedCount}`,
+    `[tracked-clan] stage=cwl_tags_metadata_hydration_completed season=${season} requested_count=${clanTags.length} ensured_count=${ensured.count} hydrated_count=${hydratedCount} skipped_count=${skippedCount}`,
+  );
+
+  return {
+    season,
+    requestedCount: clanTags.length,
+    ensuredCount: ensured.count,
+    hydratedCount,
+    skippedCount,
+  };
+}
+
+/** Purpose: hydrate missing CWL clan names as best-effort enrichment after rows exist. */
+export async function hydrateMissingCwlClanNamesForSeason(input: {
+  rawTags: string;
+  season?: string;
+  cocService: CoCService;
+}): Promise<void> {
+  const parsed = parseCwlClanTagsInput(input.rawTags);
+  const season = input.season ?? resolveCurrentCwlSeasonKey();
+  console.info(
+    `[tracked-clan] stage=cwl_tags_name_hydration_started season=${season} valid_count=${parsed.validTags.length}`,
+  );
+  if (parsed.validTags.length <= 0) {
+    console.info(
+      `[tracked-clan] stage=cwl_tags_name_hydration_completed season=${season} hydrated_count=0 skipped_count=0`,
+    );
+    return;
+  }
+
+  const result = await ensureAndHydrateCwlTrackedClanMetadataForSeason({
+    season,
+    clanTags: parsed.validTags,
+    cocService: input.cocService,
+  });
+  console.info(
+    `[tracked-clan] stage=cwl_tags_name_hydration_completed season=${result.season} hydrated_count=${result.hydratedCount} skipped_count=${result.skippedCount}`,
   );
 }
 
