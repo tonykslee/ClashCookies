@@ -106,6 +106,14 @@ function buildDescription(lines: string[]): string {
   return `${description.slice(0, DISCORD_DESCRIPTION_LIMIT - 13)}\n...truncated`;
 }
 
+function formatRosterAccountIdentity(account: { playerTag: string; playerName: string | null }): string {
+  return account.playerName ? `${account.playerName} \`${account.playerTag}\`` : `\`${account.playerTag}\``;
+}
+
+function formatRosterAccountIdentityList(accounts: Array<{ playerTag: string; playerName: string | null }>): string {
+  return accounts.map(formatRosterAccountIdentity).join(", ");
+}
+
 function formatRosterSignupResultSummary(result: Awaited<ReturnType<typeof rosterService.signupLinkedAccounts>>): string {
   if (result.outcome === "roster_not_found") {
     return "That roster no longer exists.";
@@ -123,10 +131,16 @@ function formatRosterSignupResultSummary(result: Awaited<ReturnType<typeof roste
     return "You have reached the maximum accounts allowed on that roster.";
   }
   if (result.outcome === "townhall_unavailable") {
-    return "Town hall data is unavailable for some selected accounts.";
+    return result.blockedAccounts.length > 0
+      ? `Town hall data is unavailable for: ${formatRosterAccountIdentityList(result.blockedAccounts)}.`
+      : "Town hall data is unavailable for some selected accounts.";
   }
   if (result.outcome === "townhall_out_of_range") {
-    return "Some selected accounts do not meet the town hall requirements.";
+    return result.blockedAccounts.length > 0
+      ? `Some selected accounts do not meet the town hall requirements: ${formatRosterAccountIdentityList(
+          result.blockedAccounts,
+        )}.`
+      : "Some selected accounts do not meet the town hall requirements.";
   }
   if (result.outcome === "roster_conflict") {
     return "Some selected accounts are already signed up on another roster of this type.";

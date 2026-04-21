@@ -42,6 +42,14 @@ function parseRosterPlayerTags(input: string): string[] {
   ];
 }
 
+function formatRosterAccountIdentity(account: { playerTag: string; playerName: string | null }): string {
+  return account.playerName ? `${account.playerName} \`${account.playerTag}\`` : `\`${account.playerTag}\``;
+}
+
+function formatRosterAccountIdentityList(accounts: Array<{ playerTag: string; playerName: string | null }>): string {
+  return accounts.map(formatRosterAccountIdentity).join(", ");
+}
+
 function buildRosterStateLabel(state: RosterRecord["lifecycleState"]): string {
   if (state === ROSTER_LIFECYCLE_STATE.ACTIVE) return "Active";
   if (state === ROSTER_LIFECYCLE_STATE.CLOSED) return "Closed";
@@ -73,10 +81,16 @@ function buildRosterSignupResultSummary(result: Awaited<ReturnType<typeof roster
     return "That user has reached the maximum accounts allowed on this roster.";
   }
   if (result.outcome === "townhall_unavailable") {
-    return "Town hall data is unavailable for some selected accounts.";
+    return result.blockedAccounts.length > 0
+      ? `Town hall data is unavailable for: ${formatRosterAccountIdentityList(result.blockedAccounts)}.`
+      : "Town hall data is unavailable for some selected accounts.";
   }
   if (result.outcome === "townhall_out_of_range") {
-    return "Some selected accounts do not meet the town hall requirements.";
+    return result.blockedAccounts.length > 0
+      ? `Some selected accounts do not meet the town hall requirements: ${formatRosterAccountIdentityList(
+          result.blockedAccounts,
+        )}.`
+      : "Some selected accounts do not meet the town hall requirements.";
   }
   if (result.outcome === "roster_conflict") {
     return "Some selected accounts are already signed up on another roster of this type.";

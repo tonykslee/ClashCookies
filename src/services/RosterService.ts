@@ -128,6 +128,11 @@ export type RosterSelectionOption = {
   description: string | null;
 };
 
+export type RosterAccountIdentity = {
+  playerTag: string;
+  playerName: string | null;
+};
+
 export type RosterSelectionPanel = {
   sessionId: string;
   mode: RosterSelectionMode;
@@ -302,6 +307,7 @@ export type SignupLinkedAccountsResult =
       duplicateTags: string[];
       missingLinkedTags: string[];
       blockedTags: string[];
+      blockedAccounts: RosterAccountIdentity[];
     }
   | {
       outcome: "townhall_out_of_range";
@@ -314,6 +320,7 @@ export type SignupLinkedAccountsResult =
       duplicateTags: string[];
       missingLinkedTags: string[];
       blockedTags: string[];
+      blockedAccounts: RosterAccountIdentity[];
     }
   | {
       outcome: "roster_conflict";
@@ -525,6 +532,10 @@ function normalizeRosterInt(input: unknown): number | null {
   if (input === null || input === undefined || input === "") return null;
   const parsed = Math.trunc(Number(input));
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function isRosterTownHallGated(roster: { minTownhall: number | null; maxTownhall: number | null }): boolean {
+  return normalizeRosterInt(roster.minTownhall) !== null || normalizeRosterInt(roster.maxTownhall) !== null;
 }
 
 export const ROSTER_SORT_BY = {
@@ -2105,6 +2116,10 @@ export class RosterService {
       where: { id: input.rosterId },
       select: {
         id: true,
+        rosterType: true,
+        clanTag: true,
+        minTownhall: true,
+        maxTownhall: true,
         lifecycleState: true,
       },
     });
@@ -2136,6 +2151,10 @@ export class RosterService {
       where: { id: input.rosterId },
       select: {
         id: true,
+        rosterType: true,
+        clanTag: true,
+        minTownhall: true,
+        maxTownhall: true,
         lifecycleState: true,
       },
     });
@@ -2217,6 +2236,7 @@ export class RosterService {
       };
     }
 
+    const townHallGated = isRosterTownHallGated(roster);
     const existing = await prisma.rosterSignup.findMany({
       where: {
         rosterId: roster.id,
@@ -2227,6 +2247,67 @@ export class RosterService {
     const existingTags = new Set(existing.map((row) => normalizePlayerTag(row.playerTag)).filter(Boolean));
     const createdTags = linkedTags.filter((tag) => !existingTags.has(tag));
     const duplicateTags = linkedTags.filter((tag) => existingTags.has(tag));
+
+    if (townHallGated && createdTags.length > 0) {
+      const playerTownHallByTag = await loadRosterPlayerTownHallMap({
+        rosterType: roster.rosterType,
+        clanTag: roster.clanTag,
+        playerTags: createdTags,
+      });
+      const minTownhall = normalizeRosterInt(roster.minTownhall);
+      const maxTownhall = normalizeRosterInt(roster.maxTownhall);
+      const blockedUnavailableTags: string[] = [];
+      const blockedUnavailableAccounts: RosterAccountIdentity[] = [];
+      const blockedOutOfRangeTags: string[] = [];
+      const blockedOutOfRangeAccounts: RosterAccountIdentity[] = [];
+      for (const tag of createdTags) {
+        const linked = linkedByTag.get(tag) ?? null;
+        const blockedAccount = {
+          playerTag: tag,
+          playerName: normalizeRosterText(linked?.playerName ?? null),
+        };
+        const townHall = playerTownHallByTag.get(tag) ?? null;
+        if (townHall === null) {
+          blockedUnavailableTags.push(tag);
+          blockedUnavailableAccounts.push(blockedAccount);
+          continue;
+        }
+        if ((minTownhall !== null && townHall < minTownhall) || (maxTownhall !== null && townHall > maxTownhall)) {
+          blockedOutOfRangeTags.push(tag);
+          blockedOutOfRangeAccounts.push(blockedAccount);
+        }
+      }
+      if (blockedUnavailableTags.length > 0) {
+        return {
+          outcome: "townhall_unavailable",
+          rosterId: roster.id,
+          groupKey: group.key,
+          groupName: group.name,
+          requestedTags,
+          linkedTags,
+          createdTags: [],
+          duplicateTags,
+          missingLinkedTags,
+          blockedTags: blockedUnavailableTags,
+          blockedAccounts: blockedUnavailableAccounts,
+        };
+      }
+      if (blockedOutOfRangeTags.length > 0) {
+        return {
+          outcome: "townhall_out_of_range",
+          rosterId: roster.id,
+          groupKey: group.key,
+          groupName: group.name,
+          requestedTags,
+          linkedTags,
+          createdTags: [],
+          duplicateTags,
+          missingLinkedTags,
+          blockedTags: blockedOutOfRangeTags,
+          blockedAccounts: blockedOutOfRangeAccounts,
+        };
+      }
+    }
 
     if (createdTags.length > 0) {
       await prisma.rosterSignup.createMany({
@@ -2781,55 +2862,66 @@ export class RosterService {
         }
       }
 
-    const playerTownHallByTag = await loadRosterPlayerTownHallMap({
-      rosterType: roster.rosterType,
-      clanTag: roster.clanTag,
-      playerTags: createdCandidates,
-    });
-    if (normalizeRosterInt(roster.minTownhall) !== null || normalizeRosterInt(roster.maxTownhall) !== null) {
-      const blockedUnavailableTags: string[] = [];
-      const blockedOutOfRangeTags: string[] = [];
-      for (const tag of createdCandidates) {
-        const townHall = playerTownHallByTag.get(tag) ?? null;
-        if (townHall === null) {
-          blockedUnavailableTags.push(tag);
-          continue;
-        }
+      if (isRosterTownHallGated(roster)) {
+        const playerTownHallByTag = await loadRosterPlayerTownHallMap({
+          rosterType: roster.rosterType,
+          clanTag: roster.clanTag,
+          playerTags: createdCandidates,
+        });
         const minTownhall = normalizeRosterInt(roster.minTownhall);
         const maxTownhall = normalizeRosterInt(roster.maxTownhall);
-        if ((minTownhall !== null && townHall < minTownhall) || (maxTownhall !== null && townHall > maxTownhall)) {
-          blockedOutOfRangeTags.push(tag);
+        const blockedUnavailableTags: string[] = [];
+        const blockedUnavailableAccounts: RosterAccountIdentity[] = [];
+        const blockedOutOfRangeTags: string[] = [];
+        const blockedOutOfRangeAccounts: RosterAccountIdentity[] = [];
+        for (const tag of createdCandidates) {
+          const linked = linkedByTag.get(tag) ?? null;
+          const blockedAccount = {
+            playerTag: tag,
+            playerName: normalizeRosterText(linked?.linkedName ?? null),
+          };
+          const townHall = playerTownHallByTag.get(tag) ?? null;
+          if (townHall === null) {
+            blockedUnavailableTags.push(tag);
+            blockedUnavailableAccounts.push(blockedAccount);
+            continue;
+          }
+          if ((minTownhall !== null && townHall < minTownhall) || (maxTownhall !== null && townHall > maxTownhall)) {
+            blockedOutOfRangeTags.push(tag);
+            blockedOutOfRangeAccounts.push(blockedAccount);
+          }
+        }
+        if (blockedUnavailableTags.length > 0) {
+          return {
+            outcome: "townhall_unavailable",
+            rosterId: roster.id,
+            groupKey: group.key,
+            groupName: group.name,
+            requestedTags,
+            linkedTags: selectedTags,
+            createdTags: [],
+            duplicateTags,
+            missingLinkedTags,
+            blockedTags: blockedUnavailableTags,
+            blockedAccounts: blockedUnavailableAccounts,
+          };
+        }
+        if (blockedOutOfRangeTags.length > 0) {
+          return {
+            outcome: "townhall_out_of_range",
+            rosterId: roster.id,
+            groupKey: group.key,
+            groupName: group.name,
+            requestedTags,
+            linkedTags: selectedTags,
+            createdTags: [],
+            duplicateTags,
+            missingLinkedTags,
+            blockedTags: blockedOutOfRangeTags,
+            blockedAccounts: blockedOutOfRangeAccounts,
+          };
         }
       }
-      if (blockedUnavailableTags.length > 0) {
-        return {
-          outcome: "townhall_unavailable",
-          rosterId: roster.id,
-          groupKey: group.key,
-          groupName: group.name,
-          requestedTags,
-          linkedTags: selectedTags,
-          createdTags: [],
-          duplicateTags,
-          missingLinkedTags,
-          blockedTags: blockedUnavailableTags,
-        };
-      }
-      if (blockedOutOfRangeTags.length > 0) {
-        return {
-          outcome: "townhall_out_of_range",
-          rosterId: roster.id,
-          groupKey: group.key,
-          groupName: group.name,
-          requestedTags,
-          linkedTags: selectedTags,
-          createdTags: [],
-          duplicateTags,
-          missingLinkedTags,
-          blockedTags: blockedOutOfRangeTags,
-        };
-      }
-    }
 
       const conflictingRows = await prisma.rosterSignup.findMany({
         where: {
