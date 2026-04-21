@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  buildCommandRegistrationDebugSummary,
   formatStartupLogFields,
   getCommandRegistrationConfigFromEnv,
   getDiscordRestTimeoutMsFromEnv,
@@ -12,6 +13,7 @@ import {
   runWithTransientRetry,
   shouldEmitStartupRetrySummary,
 } from "../src/services/StartupCommandRegistrationService";
+import { Roster } from "../src/commands/Roster";
 
 describe("StartupCommandRegistrationService config", () => {
   it("uses deterministic defaults when env is missing or invalid", () => {
@@ -294,5 +296,20 @@ describe("StartupCommandRegistrationService shared retry helper", () => {
     expect(result.transient).toBe(true);
     expect(sleep).toHaveBeenCalledTimes(1);
     expect(sleep).toHaveBeenCalledWith(1000);
+  });
+});
+
+describe("StartupCommandRegistrationService registration summary", () => {
+  it("captures the roster create/edit option names for runtime diagnostics", () => {
+    const summary = buildCommandRegistrationDebugSummary([Roster, { name: "emoji" }]);
+
+    expect(summary.commandCount).toBe(2);
+    expect(summary.rosterIncluded).toBe(true);
+    expect(summary.rosterCreateOptionNames).toEqual(
+      expect.arrayContaining(["name", "title"]),
+    );
+    expect(summary.rosterEditOptionNames).toEqual(
+      expect.arrayContaining(["name", "title"]),
+    );
   });
 });

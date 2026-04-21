@@ -88,6 +88,7 @@ Recommended localhost-only port mapping on the droplet:
   - `HEALTHCHECK_LIVE_PATH=/livez`
   - `HEALTHCHECK_READY_PATH=/healthz`
 - These defaults are currently relied on directly; no extra env overrides are required unless you intentionally want non-default paths or ports.
+- Startup command registration logs now include the runtime environment, bot identity, guild scope, and the `/roster create` option names so staging deploys can verify the published slash-command shape.
 
 ## Droplet Dependency Cache
 

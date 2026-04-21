@@ -21,6 +21,7 @@ import { refreshAllTrackedWarMailPosts } from "../commands/Fwa";
 import { backfillMissingDiscordUsernamesForClanMembers } from "../services/PlayerLinkService";
 import { HeatMapRefRebuildService } from "../services/HeatMapRefRebuildService";
 import {
+  buildCommandRegistrationDebugSummary,
   formatStartupLogFields,
   getCommandRegistrationConfigFromEnv,
   getStartupErrorDiagnostics,
@@ -51,6 +52,7 @@ import { runWithCoCQueueContext } from "../services/CoCQueueContext";
 import {
   isActivePollingMode,
   resolveMirrorSyncIntervalMsFromEnv,
+  resolveRuntimeEnvironment,
   resolvePollingMode,
 } from "../services/PollingModeService";
 import {
@@ -326,6 +328,23 @@ export default (client: Client, cocService: CoCService): void => {
 
     // Register ONLY guild commands
     const commandsWithVisibility = Commands.map((cmd) => injectVisibilityOptions(cmd));
+    const registrationDebugSummary = buildCommandRegistrationDebugSummary(commandsWithVisibility);
+    const runtimeEnvironment = resolveRuntimeEnvironment(process.env);
+    console.log(
+      `[startup:commands] env=${runtimeEnvironment} bot_id=${client.user?.id ?? "unknown"} bot_username=${
+        client.user?.username ?? "unknown"
+      } guild_id=${guildId} scope=guild payload_count=${registrationDebugSummary.commandCount} roster_included=${
+        registrationDebugSummary.rosterIncluded ? 1 : 0
+      } roster_create_options=${
+        registrationDebugSummary.rosterCreateOptionNames.length > 0
+          ? registrationDebugSummary.rosterCreateOptionNames.join(",")
+          : "none"
+      } roster_edit_options=${
+        registrationDebugSummary.rosterEditOptionNames.length > 0
+          ? registrationDebugSummary.rosterEditOptionNames.join(",")
+          : "none"
+      }`
+    );
     const registrationConfig = getCommandRegistrationConfigFromEnv(process.env);
     const registrationResult = await registerGuildCommandsWithRetry({
       guild,
