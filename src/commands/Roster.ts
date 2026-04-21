@@ -47,6 +47,7 @@ const rosterPermissionService = new CommandPermissionService();
 type RosterMutationAction = "add" | "move" | "remove" | "open" | "close" | "archive";
 type RosterPostSettingsAction =
   | "roster_info"
+  | "open_roster"
   | "close_roster"
   | "clear_roster"
   | "hide_buttons"
@@ -401,17 +402,31 @@ async function deletePostedRosterMessage(
   }
 }
 
-const ROSTER_POST_SETTINGS_ACTIONS = [
-  { label: "Roster info", value: "roster_info", description: "Show roster settings and state" },
-  { label: "Close roster", value: "close_roster", description: "Prevent new signups" },
-  { label: "Clear roster", value: "clear_roster", description: "Remove all roster signups" },
-  { label: "Hide buttons", value: "hide_buttons", description: "Hide member buttons" },
-  { label: "Archive mode", value: "archive_mode", description: "Disable the post actions" },
-  { label: "Unregistered members", value: "unregistered_members", description: "List clan members who did not sign up" },
-  { label: "Missing members", value: "missing_members", description: "List signups not currently in clan" },
-] as const;
+function buildRosterPostSettingsActions(lifecycleState: RosterRecord["lifecycleState"]) {
+  const lifecycleAction =
+    lifecycleState === ROSTER_LIFECYCLE_STATE.CLOSED
+      ? { label: "Open roster", value: "open_roster", description: "Reopen the roster for signups" }
+      : { label: "Close roster", value: "close_roster", description: "Prevent new signups" };
 
-function buildRosterPostSettingsMenu(rosterId: string): ActionRowBuilder<StringSelectMenuBuilder> {
+  return [
+    { label: "Roster info", value: "roster_info", description: "Show roster settings and state" },
+    lifecycleAction,
+    { label: "Clear roster", value: "clear_roster", description: "Remove all roster signups" },
+    { label: "Hide buttons", value: "hide_buttons", description: "Hide member buttons" },
+    { label: "Archive mode", value: "archive_mode", description: "Disable the post actions" },
+    {
+      label: "Unregistered members",
+      value: "unregistered_members",
+      description: "List clan members who did not sign up",
+    },
+    { label: "Missing members", value: "missing_members", description: "List signups not currently in clan" },
+  ] as const;
+}
+
+function buildRosterPostSettingsMenu(
+  rosterId: string,
+  lifecycleState: RosterRecord["lifecycleState"],
+): ActionRowBuilder<StringSelectMenuBuilder> {
   return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
     new StringSelectMenuBuilder()
       .setCustomId(buildRosterPostSettingsMenuCustomId(rosterId))
@@ -419,7 +434,7 @@ function buildRosterPostSettingsMenu(rosterId: string): ActionRowBuilder<StringS
       .setMinValues(1)
       .setMaxValues(1)
       .addOptions(
-        ROSTER_POST_SETTINGS_ACTIONS.map((option) => ({
+        buildRosterPostSettingsActions(lifecycleState).map((option) => ({
           label: option.label,
           value: option.value,
           description: option.description,
@@ -472,6 +487,8 @@ async function buildRosterSettingsPanel(rosterId: string): Promise<{
   embed: EmbedBuilder;
   components: ActionRowBuilder<StringSelectMenuBuilder>[];
 } | null> {
+  const view = await rosterService.getRosterView(rosterId);
+  if (!view) return null;
   const info = await buildRosterInfoText(rosterId);
   if (!info) return null;
 
@@ -480,7 +497,7 @@ async function buildRosterSettingsPanel(rosterId: string): Promise<{
       .setColor(0xfee75c)
       .setTitle("Roster settings")
       .setDescription(info),
-    components: [buildRosterPostSettingsMenu(rosterId)],
+    components: [buildRosterPostSettingsMenu(rosterId, view.roster.lifecycleState)],
   };
 }
 
@@ -630,10 +647,12 @@ export async function handleRosterPostSettingsMenuInteraction(
     return;
   }
 
-  if (choice === "close_roster") {
+  if (choice === "open_roster" || choice === "close_roster") {
+    const lifecycleState =
+      choice === "open_roster" ? ROSTER_LIFECYCLE_STATE.OPEN : ROSTER_LIFECYCLE_STATE.CLOSED;
     await rosterService.updateRosterLifecycleState({
       rosterId: roster.id,
-      lifecycleState: ROSTER_LIFECYCLE_STATE.CLOSED,
+      lifecycleState,
       updatedByDiscordUserId: interaction.user.id,
     });
     const refreshed = await refreshExistingRosterPost(
@@ -642,7 +661,7 @@ export async function handleRosterPostSettingsMenuInteraction(
       cocService,
     );
     await interaction.update({
-      content: "Roster closed.",
+      content: lifecycleState === ROSTER_LIFECYCLE_STATE.OPEN ? "Roster opened." : "Roster closed.",
       embeds: [],
       components: [],
     });

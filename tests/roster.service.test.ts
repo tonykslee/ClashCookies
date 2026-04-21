@@ -826,19 +826,27 @@ describe("RosterService", () => {
 
     expect(payload).toBeTruthy();
     const description = payload?.embed.toJSON().description ?? "";
+    const lines = description.split("\n");
+    const headerLine = lines.find((line) => line.startsWith("`TH "));
+    const confirmedRow = lines.find((line) => line.startsWith("`16 Alpha"));
+    const substituteRow = lines.find((line) => line.startsWith("`15 Bravo"));
+    expect(headerLine).toBeTruthy();
+    expect(confirmedRow).toBeTruthy();
+    expect(substituteRow).toBeTruthy();
     expect(description).toContain("CWL Alpha (#2QG2C08UP)");
     expect(description).toContain("CWL Alpha Signup CWL");
-    expect(description).toContain("`TH Player");
     expect(description).toContain("**Confirmed - 1**");
     expect(description).toContain("**Substitute - 1**");
-    expect(description).toContain("`16 Alpha");
     expect(description).toContain("TonyLee");
     expect(description).toContain("Rising Dawn");
-    expect(description).toContain("`15 Bravo");
     expect(description).toContain("Gabbar");
     expect(description).toContain("\nTotal 2/");
     expect(description).not.toContain("```");
     expect(description).not.toContain("<@");
+    expect((headerLine ?? "").replace(/`/g, "").indexOf("Player")).toBe((confirmedRow ?? "").replace(/`/g, "").indexOf("Alpha"));
+    expect((headerLine ?? "").replace(/`/g, "").indexOf("Discord")).toBe((confirmedRow ?? "").replace(/`/g, "").indexOf("TonyLee"));
+    expect((headerLine ?? "").replace(/`/g, "").indexOf("Clan")).toBe((confirmedRow ?? "").replace(/`/g, "").indexOf("Rising Dawn"));
+    expect((headerLine ?? "").replace(/`/g, "").indexOf("Discord")).toBe((substituteRow ?? "").replace(/`/g, "").indexOf("-"));
     expect(cocServiceMock.getClan).not.toHaveBeenCalled();
     const componentIds = payload?.components.flatMap((row) => {
       const rowJson = row.toJSON() as any;

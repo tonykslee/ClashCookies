@@ -531,7 +531,8 @@ describe("/roster command", () => {
     );
     const payload = interaction.reply.mock.calls[0]?.[0] as any;
     const menu = payload.components[0]?.toJSON?.().components?.[0];
-    expect(menu?.options?.map((option: any) => option.value)).toEqual([
+    const optionValues = menu?.options?.map((option: any) => option.value) ?? [];
+    expect(optionValues).toEqual([
       "roster_info",
       "close_roster",
       "clear_roster",
@@ -540,6 +541,48 @@ describe("/roster command", () => {
       "unregistered_members",
       "missing_members",
     ]);
+    expect(optionValues).not.toContain("open_roster");
+  });
+
+  it("shows open roster instead of close roster when the roster is already closed", async () => {
+    (rosterService.getRosterView as any).mockResolvedValue({
+      roster: {
+        id: "roster-1",
+        title: "CWL Alpha Signup",
+        clanTag: "#2QG2C08UP",
+        lifecycleState: "CLOSED",
+        postedMessageUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+        postedChannelId: "channel-1",
+        postedMessageId: "message-1",
+        postButtonMode: "standard",
+        minTownhall: 13,
+        maxTownhall: null,
+        rosterRoleId: null,
+      },
+      clanDisplayName: "CWL Alpha",
+      clanLeagueLabel: "Champion League II",
+      groups: [],
+      signups: [],
+      totalSignupCount: 0,
+    });
+    const interaction = {
+      customId: "roster-post-action:settings:roster-1",
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      memberPermissions: {
+        has: vi.fn().mockReturnValue(true),
+      },
+      reply: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    await handleRosterPostSettingsButtonInteraction(interaction);
+
+    const payload = interaction.reply.mock.calls[0]?.[0] as any;
+    const menu = payload.components[0]?.toJSON?.().components?.[0];
+    const optionValues = menu?.options?.map((option: any) => option.value) ?? [];
+    expect(optionValues).toContain("open_roster");
+    expect(optionValues).not.toContain("close_roster");
   });
 
   it("refreshes the posted roster from the service-owned current-clan refresh path", async () => {
@@ -797,6 +840,27 @@ describe("/roster command", () => {
         },
       },
     } as any;
+
+    await handleRosterPostSettingsMenuInteraction(
+      { ...baseInteraction, customId: "roster-post-settings:roster-1", values: ["open_roster"] } as any,
+      {} as any,
+    );
+    expect(rosterService.updateRosterLifecycleState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rosterId: "roster-1",
+        lifecycleState: "OPEN",
+        updatedByDiscordUserId: "111111111111111111",
+      }),
+    );
+    expect(rosterService.refreshRosterSignupPayload).toHaveBeenCalledWith("roster-1", expect.anything());
+    expect(editedMessage.edit).toHaveBeenCalledWith(expect.objectContaining({ embeds: [expect.any(EmbedBuilder)] }));
+    expect(baseInteraction.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: "Roster opened.",
+        embeds: [],
+        components: [],
+      }),
+    );
 
     await handleRosterPostSettingsMenuInteraction(
       { ...baseInteraction, customId: "roster-post-settings:roster-1", values: ["close_roster"] } as any,
