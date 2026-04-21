@@ -6,7 +6,9 @@ const prismaMock = vi.hoisted(() => ({
     create: vi.fn(),
     findUnique: vi.fn(),
     findFirst: vi.fn(),
+    findMany: vi.fn(),
     update: vi.fn(),
+    delete: vi.fn(),
   },
   rosterGroup: {
     createMany: vi.fn(),
@@ -110,7 +112,35 @@ describe("RosterService", () => {
       createdAt: new Date("2026-04-20T00:00:00.000Z"),
       updatedAt: new Date("2026-04-20T00:00:00.000Z"),
     });
+    prismaMock.roster.findMany.mockResolvedValue([
+      {
+        id: "roster-1",
+        guildId: "guild-1",
+        rosterType: "CWL",
+        rosterCategory: "signup",
+        title: "CWL Alpha Signup",
+        clanTag: "#2QG2C08UP",
+        startsAt: new Date("2026-04-20T00:00:00.000Z"),
+        endsAt: null,
+        timezone: "America/Los_Angeles",
+        displayTimezone: "America/Los_Angeles",
+        lifecycleState: "OPEN",
+        postedChannelId: null,
+        postedMessageId: null,
+        postedMessageUrl: null,
+        postedAt: null,
+        createdByDiscordUserId: "111111111111111111",
+        updatedByDiscordUserId: "111111111111111111",
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+        _count: {
+          groups: 2,
+          signups: 2,
+        },
+      },
+    ]);
     prismaMock.roster.update.mockResolvedValue({} as never);
+    prismaMock.roster.delete.mockResolvedValue({} as never);
     prismaMock.rosterGroup.createMany.mockResolvedValue({ count: 2 });
     prismaMock.rosterGroup.findMany.mockResolvedValue([
       {
@@ -801,6 +831,116 @@ describe("RosterService", () => {
           lifecycleState: "ARCHIVED",
           updatedByDiscordUserId: "999999999999999999",
         }),
+      }),
+    );
+  });
+
+  it("updates roster metadata explicitly for roster edit flows", async () => {
+    prismaMock.roster.findUnique.mockResolvedValueOnce({
+      id: "roster-1",
+    } as any);
+    prismaMock.roster.update.mockResolvedValueOnce({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup (Updated)",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/New_York",
+      displayTimezone: "America/New_York",
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "999999999999999999",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    } as any);
+
+    const result = await rosterService.updateRoster({
+      rosterId: "roster-1",
+      title: "CWL Alpha Signup (Updated)",
+      clanTag: "#2QG2C08UP",
+      timezone: "America/New_York",
+      displayTimezone: "America/New_York",
+      updatedByDiscordUserId: "999999999999999999",
+    });
+
+    expect(result).toMatchObject({
+      id: "roster-1",
+      title: "CWL Alpha Signup (Updated)",
+      clanTag: "#2QG2C08UP",
+      timezone: "America/New_York",
+      displayTimezone: "America/New_York",
+    });
+    expect(prismaMock.roster.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "roster-1" },
+        data: expect.objectContaining({
+          title: "CWL Alpha Signup (Updated)",
+          clanTag: "#2QG2C08UP",
+          timezone: "America/New_York",
+          displayTimezone: "America/New_York",
+          updatedByDiscordUserId: "999999999999999999",
+        }),
+      }),
+    );
+  });
+
+  it("lists guild rosters with roster metadata and posting state", async () => {
+    const rosters = await rosterService.listGuildRosters({
+      guildId: "guild-1",
+    });
+
+    expect(rosters).toEqual([
+      expect.objectContaining({
+        id: "roster-1",
+        guildId: "guild-1",
+        rosterType: "CWL",
+        rosterCategory: "signup",
+        clanTag: "#2QG2C08UP",
+        lifecycleState: "OPEN",
+        groupCount: 2,
+        signupCount: 2,
+      }),
+    ]);
+    expect(prismaMock.roster.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          guildId: "guild-1",
+        }),
+      }),
+    );
+  });
+
+  it("finds guild rosters by id and hard-deletes rosters explicitly", async () => {
+    const found = await rosterService.findGuildRosterById({
+      guildId: "guild-1",
+      rosterId: "roster-1",
+    });
+    expect(found).toMatchObject({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+    });
+
+    const deleted = await rosterService.deleteRoster({
+      rosterId: "roster-1",
+    });
+    expect(deleted).toMatchObject({
+      outcome: "deleted",
+      roster: {
+        id: "roster-1",
+        title: "CWL Alpha Signup",
+      },
+    });
+    expect(prismaMock.roster.delete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "roster-1" },
       }),
     );
   });
