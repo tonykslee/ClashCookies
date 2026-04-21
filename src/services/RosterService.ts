@@ -6,9 +6,9 @@ import {
   StringSelectMenuBuilder,
 } from "discord.js";
 import { randomUUID } from "crypto";
+import { CoCService } from "./CoCService";
 import { prisma } from "../prisma";
 import { truncateDiscordContent } from "../helper/discordContent";
-import { CoCService } from "./CoCService";
 import {
   listPlayerLinksForDiscordUser,
   normalizeClanTag,
@@ -48,6 +48,8 @@ export const ROSTER_DEFAULT_GROUPS = [
 export const ROSTER_SIGNUP_BUTTON_PREFIX = "roster-signup";
 export const ROSTER_REMOVE_BUTTON_PREFIX = "roster-remove";
 export const ROSTER_SELECTION_PREFIX = "roster-selection";
+export const ROSTER_POST_ACTION_PREFIX = "roster-post-action";
+export const ROSTER_POST_SETTINGS_PREFIX = "roster-post-settings";
 const ROSTER_SELECTION_SESSION_TTL_MS = 15 * 60 * 1000;
 const ROSTER_CONFLICT_LIFECYCLE_STATES: readonly RosterLifecycleState[] = [
   ROSTER_LIFECYCLE_STATE.ACTIVE,
@@ -89,6 +91,7 @@ export type RosterRecord = {
   allowMultiSignup: boolean;
   sortBy: string | null;
   importMembers: boolean;
+  postButtonMode: string;
   lifecycleState: RosterLifecycleState;
   postedChannelId: string | null;
   postedMessageId: string | null;
@@ -115,6 +118,8 @@ export type RosterSignupRecord = {
 export type RosterSignupViewRecord = RosterSignupRecord & {
   group: RosterGroupRecord | null;
   townHall: number | null;
+  clanTag: string | null;
+  clanName: string | null;
 };
 
 export type RosterSignupPayload = {
@@ -123,6 +128,8 @@ export type RosterSignupPayload = {
 };
 
 export type RosterSelectionMode = "signup" | "remove";
+
+type RosterPostButtonMode = "standard" | "hidden" | "archived";
 
 export type RosterSelectionOption = {
   value: string;
@@ -161,7 +168,9 @@ type RosterSelectionLoadErrorResult =
 type RosterSelectionSignupLoadReadyResult = {
   outcome: "ready";
   roster: RosterRecord;
-  group: RosterGroupRecord;
+  group: RosterGroupRecord | null;
+  groups: RosterGroupRecord[];
+  selectedGroupKey: string | null;
   options: RosterSelectionOption[];
 };
 
@@ -226,6 +235,7 @@ const ROSTER_RECORD_SELECT = {
   allowMultiSignup: true,
   sortBy: true,
   importMembers: true,
+  postButtonMode: true,
   lifecycleState: true,
   postedChannelId: true,
   postedMessageId: true,
@@ -663,20 +673,6 @@ function normalizeRosterDisplayTimezone(input: string | null | undefined): strin
   return normalized;
 }
 
-function formatRosterTimestamp(input: Date | null): string | null {
-  if (!(input instanceof Date) || Number.isNaN(input.getTime())) {
-    return null;
-  }
-  return `<t:${Math.floor(input.getTime() / 1000)}:F>`;
-}
-
-function formatRosterRelativeTimestamp(input: Date | null): string | null {
-  if (!(input instanceof Date) || Number.isNaN(input.getTime())) {
-    return null;
-  }
-  return `<t:${Math.floor(input.getTime() / 1000)}:R>`;
-}
-
 function buildRosterStateLabel(state: RosterLifecycleState): string {
   if (state === ROSTER_LIFECYCLE_STATE.ACTIVE) return "Active";
   if (state === ROSTER_LIFECYCLE_STATE.CLOSED) return "Closed";
@@ -754,6 +750,7 @@ type RosterRecordLike = {
   allowMultiSignup: boolean;
   sortBy: string | null;
   importMembers: boolean;
+  postButtonMode: string;
   lifecycleState: string;
   postedChannelId: string | null;
   postedMessageId: string | null;
@@ -785,6 +782,7 @@ function mapRosterRecord(row: RosterRecordLike): RosterRecord {
     allowMultiSignup: row.allowMultiSignup,
     sortBy: row.sortBy,
     importMembers: row.importMembers,
+    postButtonMode: row.postButtonMode,
     lifecycleState: row.lifecycleState as RosterLifecycleState,
     postedChannelId: row.postedChannelId,
     postedMessageId: row.postedMessageId,
@@ -808,20 +806,6 @@ function mapRosterSummaryRecord(
   };
 }
 
-function buildRosterGroupButtonStyle(key: string): ButtonStyle {
-  if (key === "confirmed") return ButtonStyle.Primary;
-  if (key === "substitute") return ButtonStyle.Secondary;
-  return ButtonStyle.Secondary;
-}
-
-function chunkButtons<T>(input: T[], size: number): T[][] {
-  const chunks: T[][] = [];
-  for (let index = 0; index < input.length; index += size) {
-    chunks.push(input.slice(index, index + size));
-  }
-  return chunks;
-}
-
 function buildRosterSignupEntryLine(signup: {
   playerName: string | null;
   playerTag: string;
@@ -834,54 +818,24 @@ function buildRosterSignupEntryLine(signup: {
   return `- ${playerLabel}${townHallLabel}${userLabel}`;
 }
 
-function buildRosterConfigurationLines(roster: RosterRecord): string[] {
-  const lines: string[] = [
-    `Type: ${roster.rosterType}${roster.rosterCategory ? ` / ${roster.rosterCategory}` : ""}`,
-  ];
-  if (roster.clanTag) {
-    lines.push(`Clan: ${roster.clanTag}`);
-  }
-  if (roster.timezone) {
-    lines.push(`Timezone: ${roster.displayTimezone ?? roster.timezone}`);
-  }
-  if (roster.startsAt) {
-    lines.push(`Starts: ${formatRosterTimestamp(roster.startsAt)}`);
-  }
-  if (roster.endsAt) {
-    const relativeEndLabel = formatRosterRelativeTimestamp(roster.endsAt);
-    lines.push(`Ends: ${formatRosterTimestamp(roster.endsAt)}${relativeEndLabel ? ` (${relativeEndLabel})` : ""}`);
-  }
-  if (roster.maxMembers != null) {
-    lines.push(`Max members: ${roster.maxMembers}`);
-  }
-  if (roster.maxAccountsPerUser != null) {
-    lines.push(`Max accounts/user: ${roster.maxAccountsPerUser}`);
-  }
-  if (roster.minTownhall != null || roster.maxTownhall != null) {
-    lines.push(`TH range: ${roster.minTownhall ?? "any"}-${roster.maxTownhall ?? "any"}`);
-  }
-  if (roster.rosterRoleId) {
-    lines.push(`Roster role: <@&${roster.rosterRoleId}>`);
-  }
-  if (roster.sortBy) {
-    lines.push(`Sort by: ${roster.sortBy}`);
-  }
-  if (typeof roster.allowMultiSignup === "boolean") {
-    lines.push(`Allow multi-signup: ${roster.allowMultiSignup ? "yes" : "no"}`);
-  }
-  if (roster.importMembers) {
-    lines.push("Import members: yes");
-  }
-  lines.push(`State: ${buildRosterStateLabel(roster.lifecycleState)}`);
-  return lines;
+function buildRosterSelectionMenuCustomId(sessionId: string): string {
+  return `${ROSTER_SELECTION_PREFIX}:account:${String(sessionId ?? "").trim()}`;
 }
 
-function buildRosterSelectionMenuCustomId(sessionId: string): string {
-  return `${ROSTER_SELECTION_PREFIX}:menu:${String(sessionId ?? "").trim()}`;
+function buildRosterSelectionGroupMenuCustomId(sessionId: string): string {
+  return `${ROSTER_SELECTION_PREFIX}:group:${String(sessionId ?? "").trim()}`;
 }
 
 function buildRosterSelectionActionButtonCustomId(action: "confirm" | "cancel", sessionId: string): string {
-  return `${ROSTER_SELECTION_PREFIX}:${action}:${String(sessionId ?? "").trim()}`;
+  return `${ROSTER_SELECTION_PREFIX}:action:${action}:${String(sessionId ?? "").trim()}`;
+}
+
+export function buildRosterPostActionButtonCustomId(action: "refresh" | "signup" | "optout" | "settings", rosterId: string): string {
+  return `${ROSTER_POST_ACTION_PREFIX}:${action}:${String(rosterId ?? "").trim()}`;
+}
+
+export function buildRosterPostSettingsMenuCustomId(rosterId: string): string {
+  return `${ROSTER_POST_SETTINGS_PREFIX}:${String(rosterId ?? "").trim()}`;
 }
 
 type RosterSelectionSession = {
@@ -891,6 +845,8 @@ type RosterSelectionSession = {
   rosterTitle: string;
   groupKey: string | null;
   groupName: string | null;
+  selectedGroupKey: string | null;
+  groupOptions: RosterSelectionOption[];
   ownerDiscordUserId: string;
   createdAtMs: number;
   options: RosterSelectionOption[];
@@ -936,7 +892,7 @@ function buildRosterSelectionDescription(input: {
 }): string[] {
   const lines: string[] = [];
   if (input.mode === "signup") {
-    lines.push(`Select linked accounts to sign up for ${input.groupName ?? input.rosterTitle}.`);
+    lines.push(`Choose a group and linked accounts for ${input.groupName ?? input.rosterTitle}.`);
   } else {
     lines.push(`Select your signup entries to remove from ${input.rosterTitle}.`);
   }
@@ -958,7 +914,7 @@ function buildRosterSelectionDescription(input: {
 function buildRosterSelectionPayload(session: RosterSelectionSession): RosterSelectionPanel {
   const selectedTags = [...new Set(session.selectedTags)];
   const visibleOptions = session.options.slice(0, 25);
-  const select = new StringSelectMenuBuilder()
+  const accountSelect = new StringSelectMenuBuilder()
     .setCustomId(buildRosterSelectionMenuCustomId(session.sessionId))
     .setPlaceholder(
       session.mode === "signup" ? "Select linked accounts" : "Select signups to remove",
@@ -983,6 +939,32 @@ function buildRosterSelectionPayload(session: RosterSelectionSession): RosterSel
           ],
     );
 
+  const groupSelect =
+    session.mode === "signup"
+      ? new StringSelectMenuBuilder()
+          .setCustomId(buildRosterSelectionGroupMenuCustomId(session.sessionId))
+          .setPlaceholder("Select roster group")
+          .setMinValues(1)
+          .setMaxValues(1)
+          .setDisabled(session.groupOptions.length <= 0)
+          .addOptions(
+            session.groupOptions.length > 0
+              ? session.groupOptions.map((option) => ({
+                  label: option.label.slice(0, 100),
+                  value: option.value,
+                  description: option.description ? option.description.slice(0, 100) : undefined,
+                  default: session.selectedGroupKey === option.value,
+                }))
+              : [
+                  {
+                    label: "No groups available",
+                    value: "none",
+                    description: "Nothing to select",
+                  },
+                ],
+          )
+      : null;
+
   const confirmStyle = session.mode === "signup" ? ButtonStyle.Success : ButtonStyle.Danger;
   const embed = new EmbedBuilder()
     .setColor(session.mode === "signup" ? 0xfee75c : 0xed4245)
@@ -1002,7 +984,8 @@ function buildRosterSelectionPayload(session: RosterSelectionSession): RosterSel
     );
 
   const components: ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>[] = [
-    new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select),
+    ...(groupSelect ? [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(groupSelect)] : []),
+    new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(accountSelect),
     new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder()
         .setCustomId(buildRosterSelectionActionButtonCustomId("confirm", session.sessionId))
@@ -1058,9 +1041,23 @@ async function loadRosterSelectionOptions(input: {
   }
 
   if (input.mode === "signup") {
-    const group = input.groupKey ? await getRosterGroupByKey({ rosterId: roster.id, groupKey: input.groupKey }) : null;
-    if (!group) {
-      return { outcome: "group_not_found", rosterId: roster.id, groupKey: normalizeRosterGroupKey(input.groupKey ?? "") };
+    const groups = await prisma.rosterGroup.findMany({
+      where: { rosterId: roster.id },
+      orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+      select: {
+        id: true,
+        key: true,
+        name: true,
+        description: true,
+        sortOrder: true,
+      },
+    });
+    const requestedGroupKey = normalizeRosterGroupKey(input.groupKey ?? "");
+    const selectedGroup = requestedGroupKey
+      ? groups.find((group) => group.key === requestedGroupKey) ?? null
+      : groups.find((group) => group.key === normalizeRosterGroupKey("confirmed")) ?? groups[0] ?? null;
+    if (requestedGroupKey && !selectedGroup) {
+      return { outcome: "group_not_found", rosterId: roster.id, groupKey: requestedGroupKey };
     }
     const linkedAccounts = await listPlayerLinksForDiscordUser({ discordUserId: input.discordUserId });
     if (linkedAccounts.length <= 0) {
@@ -1078,7 +1075,9 @@ async function loadRosterSelectionOptions(input: {
     return {
       outcome: "ready",
       roster,
-      group,
+      group: selectedGroup,
+      groups,
+      selectedGroupKey: selectedGroup?.key ?? null,
       options: linkedAccounts.map((account) => ({
         value: account.playerTag,
         label: account.linkedName ?? account.playerTag,
@@ -1224,6 +1223,33 @@ async function loadRosterPlayerTownHallMap(input: {
   return result;
 }
 
+type RosterTownHallResolution = {
+  townHallByTag: Map<string, number>;
+  missingTags: string[];
+};
+
+async function resolveRosterPlayerTownHallMap(input: {
+  rosterType: string;
+  clanTag: string | null;
+  playerTags: string[];
+  cocService?: CoCService | null;
+}): Promise<RosterTownHallResolution> {
+  const normalizedTags = [...new Set(input.playerTags.map((tag) => normalizePlayerTag(tag)).filter(Boolean))];
+  if (normalizedTags.length <= 0) {
+    return { townHallByTag: new Map(), missingTags: [] };
+  }
+
+  const townHallByTag = await loadRosterPlayerTownHallMap({
+    rosterType: input.rosterType,
+    clanTag: input.clanTag,
+    playerTags: normalizedTags,
+    allowLiveFetch: Boolean(input.cocService),
+    cocService: input.cocService ?? null,
+  });
+  const missingTags = normalizedTags.filter((tag) => !townHallByTag.has(tag));
+  return { townHallByTag, missingTags };
+}
+
 function buildRosterManagerGroupSummaryLine(group: RosterGroupRecord & { signupCount: number }): string {
   return `${group.name} (${group.signupCount})`;
 }
@@ -1304,67 +1330,104 @@ function buildRosterGroupsWithSignups(view: RosterSignupView): Array<
   }));
 }
 
-function buildRosterGroupSectionLines(input: {
-  group: RosterGroupRecord & {
-    signupCount: number;
-    signups: RosterSignupViewRecord[];
-  };
-}): string[] {
-  const lines: string[] = [`${input.group.name} (${input.group.signupCount})`];
-  if (input.group.description) {
-    lines.push(`- ${input.group.description}`);
-  }
-  if (input.group.signups.length <= 0) {
-    lines.push("- None yet");
-    return lines;
-  }
-  lines.push(...input.group.signups.map((signup) => buildRosterSignupEntryLine(signup)));
-  return lines;
+function normalizeRosterPostButtonMode(input: unknown): RosterPostButtonMode {
+  const value = normalizeRosterText(typeof input === "string" ? input : null);
+  if (value === "hidden") return "hidden";
+  if (value === "archived") return "archived";
+  return "standard";
 }
+
+function getRosterCurrentClanLabel(view: RosterSignupView): string {
+  const currentClanName = view.signups.find((signup) => signup.clanName)?.clanName ?? null;
+  const currentClanTag = view.signups.find((signup) => signup.clanTag)?.clanTag ?? view.roster.clanTag ?? null;
+  const label = currentClanName || currentClanTag || "unscoped";
+  return currentClanTag ? `${label} (${currentClanTag})` : label;
+}
+
+function formatRosterTableCell(input: string, width: number): string {
+  const value = normalizeRosterText(input) || "-";
+  const trimmed = value.length > width ? value.slice(0, width) : value;
+  return trimmed.padEnd(width, " ");
+}
+
+function buildRosterTableLine(signup: RosterSignupViewRecord): string {
+  const player = formatRosterTableCell(signup.playerName || signup.playerTag, 18);
+  const discord = formatRosterTableCell(signup.discordUserId ? `<@${signup.discordUserId}>` : "-", 22);
+  const clan = formatRosterTableCell(signup.clanName || signup.clanTag || "-", 18);
+  return `${player} ${discord} ${clan}`.trimEnd();
+}
+
+function buildRosterTableLines(signups: RosterSignupViewRecord[]): string[] {
+  if (signups.length <= 0) {
+    return ["None"];
+  }
+  return signups.map((signup) => buildRosterTableLine(signup));
+}
+
 function buildRosterSignupPayloadFromView(view: RosterSignupView): RosterSignupPayload {
   const title = view.roster.title || "Roster Signup";
-  const descriptionLines: string[] = buildRosterConfigurationLines(view.roster);
-  descriptionLines.push(`Total signups: ${view.totalSignupCount}`);
-  descriptionLines.push("");
-  descriptionLines.push("Groups:");
-  descriptionLines.push(
-    ...buildRosterGroupsWithSignups(view).flatMap((group) => [
-      ...buildRosterGroupSectionLines({ group }),
-      "",
-    ]),
-  );
-  if (descriptionLines.at(-1) === "") {
-    descriptionLines.pop();
+  const groups = buildRosterGroupsWithSignups(view);
+  const currentClanLabel = getRosterCurrentClanLabel(view);
+  const rosterLabel = `${title}${view.roster.rosterCategory ? ` ${view.roster.rosterCategory}` : ""}`;
+  const maxMembersLabel = view.roster.maxMembers === null || view.roster.maxMembers === undefined ? "-" : String(view.roster.maxMembers);
+  const minTownHallLabel = view.roster.minTownhall === null || view.roster.minTownhall === undefined ? "##" : String(view.roster.minTownhall);
+  const lines: string[] = [
+    currentClanLabel,
+    rosterLabel,
+    "",
+    "```text",
+    `Player               Discord                Clan`,
+  ];
+
+  for (const group of groups) {
+    lines.push(`${group.name} - ${group.signupCount}`);
+    lines.push(...buildRosterTableLines(group.signups));
   }
-  descriptionLines.push("");
-  descriptionLines.push("Use the group buttons to choose accounts, and Remove signup to opt out.");
+
+  lines.push(`Total ${view.totalSignupCount}/${maxMembersLabel} | Min. TH${minTownHallLabel}`);
+  lines.push("```");
 
   const embed = new EmbedBuilder()
     .setColor(0xfee75c)
     .setTitle(title)
-    .setDescription(truncateDiscordContent(descriptionLines.join("\n"), 4096));
+    .setDescription(truncateDiscordContent(lines.join("\n"), 4096));
 
-  const buttonRows = chunkButtons(
-    view.groups.map((group) =>
+  const buttonMode = normalizeRosterPostButtonMode(view.roster.postButtonMode);
+  const buttonRows: ActionRowBuilder<ButtonBuilder>[] = [];
+  if (buttonMode !== "archived") {
+    const rowButtons: ButtonBuilder[] = [
       new ButtonBuilder()
-        .setCustomId(buildRosterSignupButtonCustomId(view.roster.id, group.key))
-        .setLabel(`${group.name} (${group.signupCount})`)
-        .setStyle(buildRosterGroupButtonStyle(group.key))
-        .setDisabled(
-          view.roster.lifecycleState === ROSTER_LIFECYCLE_STATE.CLOSED ||
-            view.roster.lifecycleState === ROSTER_LIFECYCLE_STATE.ARCHIVED,
-        ),
-    ),
-    5,
-  ).map((buttons) => new ActionRowBuilder<ButtonBuilder>().addComponents(...buttons));
-  buttonRows.push(
-    new ActionRowBuilder<ButtonBuilder>().addComponents(
+        .setCustomId(buildRosterPostActionButtonCustomId("refresh", view.roster.id))
+        .setEmoji("🔄")
+        .setLabel("Refresh")
+        .setStyle(ButtonStyle.Secondary),
+    ];
+    if (buttonMode === "standard") {
+      rowButtons.push(
+        new ButtonBuilder()
+          .setCustomId(buildRosterPostActionButtonCustomId("signup", view.roster.id))
+          .setLabel("Signup")
+          .setStyle(ButtonStyle.Success)
+          .setDisabled(
+            view.roster.lifecycleState === ROSTER_LIFECYCLE_STATE.CLOSED ||
+              view.roster.lifecycleState === ROSTER_LIFECYCLE_STATE.ARCHIVED,
+          ),
+        new ButtonBuilder()
+          .setCustomId(buildRosterPostActionButtonCustomId("optout", view.roster.id))
+          .setLabel("Opt-out")
+          .setStyle(ButtonStyle.Danger),
+      );
+    }
+    rowButtons.push(
       new ButtonBuilder()
-        .setCustomId(buildRosterRemoveButtonCustomId(view.roster.id))
-        .setLabel("Remove signup")
-        .setStyle(ButtonStyle.Danger),
-    ),
-  );
+        .setCustomId(buildRosterPostActionButtonCustomId("settings", view.roster.id))
+        .setEmoji("⚙️")
+        .setLabel("Settings")
+        .setStyle(ButtonStyle.Secondary),
+    );
+    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(...rowButtons);
+    buttonRows.push(row);
+  }
 
   return { embed, components: buttonRows };
 }
@@ -1391,6 +1454,7 @@ async function loadRosterView(rosterId: string): Promise<RosterSignupView | null
       allowMultiSignup: true,
       sortBy: true,
       importMembers: true,
+      postButtonMode: true,
       lifecycleState: true,
       postedChannelId: true,
       postedMessageId: true,
@@ -1444,9 +1508,15 @@ async function loadRosterView(rosterId: string): Promise<RosterSignupView | null
     playerTags: signups.map((signup) => signup.playerTag),
     allowLiveFetch: false,
   });
+  const snapshotRows = await todoSnapshotService.listSnapshotsByPlayerTags({
+    playerTags: signups.map((signup) => signup.playerTag),
+  });
+  const snapshotByTag = new Map(snapshotRows.map((row) => [normalizePlayerTag(row.playerTag), row] as const));
   const signupsWithTownHall = signups.map((signup) => ({
     ...signup,
     townHall: townHallByTag.get(normalizePlayerTag(signup.playerTag)) ?? null,
+    clanTag: snapshotByTag.get(normalizePlayerTag(signup.playerTag))?.clanTag ?? null,
+    clanName: snapshotByTag.get(normalizePlayerTag(signup.playerTag))?.clanName ?? null,
   }));
   const sortedSignups = sortRosterSignupsForRoster(signupsWithTownHall, roster.sortBy);
   const signupCountByGroupId = new Map<string, number>();
@@ -1472,6 +1542,8 @@ async function loadRosterView(rosterId: string): Promise<RosterSignupView | null
       createdAt: signup.createdAt,
       updatedAt: signup.updatedAt,
       townHall: signup.townHall,
+      clanTag: signup.clanTag,
+      clanName: signup.clanName,
       group: signup.group
         ? {
             id: signup.group.id,
@@ -1509,40 +1581,73 @@ async function getRosterGroupByKey(input: {
   return group;
 }
 
-export function buildRosterSignupButtonCustomId(rosterId: string, groupKey: string): string {
-  return `${ROSTER_SIGNUP_BUTTON_PREFIX}:${String(rosterId ?? "").trim()}:${normalizeRosterGroupKey(
-    groupKey,
-  )}`;
+export function buildRosterSignupButtonCustomId(rosterId: string): string {
+  return buildRosterPostActionButtonCustomId("signup", rosterId);
 }
 
 export function buildRosterRemoveButtonCustomId(rosterId: string): string {
-  return `${ROSTER_REMOVE_BUTTON_PREFIX}:${String(rosterId ?? "").trim()}`;
+  return buildRosterPostActionButtonCustomId("optout", rosterId);
 }
 
 export function isRosterSignupButtonCustomId(customId: string): boolean {
-  return String(customId ?? "").startsWith(`${ROSTER_SIGNUP_BUTTON_PREFIX}:`);
+  return String(customId ?? "").startsWith(`${ROSTER_POST_ACTION_PREFIX}:signup:`);
 }
 
 export function isRosterRemoveButtonCustomId(customId: string): boolean {
-  return String(customId ?? "").startsWith(`${ROSTER_REMOVE_BUTTON_PREFIX}:`);
+  return String(customId ?? "").startsWith(`${ROSTER_POST_ACTION_PREFIX}:optout:`);
 }
 
-export function parseRosterSignupButtonCustomId(
-  customId: string,
-): { rosterId: string; groupKey: string } | null {
+export function isRosterPostRefreshButtonCustomId(customId: string): boolean {
+  return String(customId ?? "").startsWith(`${ROSTER_POST_ACTION_PREFIX}:refresh:`);
+}
+
+export function isRosterPostSettingsButtonCustomId(customId: string): boolean {
+  return String(customId ?? "").startsWith(`${ROSTER_POST_ACTION_PREFIX}:settings:`);
+}
+
+export function parseRosterSignupButtonCustomId(customId: string): { rosterId: string } | null {
   const parts = String(customId ?? "").split(":");
-  if (parts.length !== 3 || parts[0] !== ROSTER_SIGNUP_BUTTON_PREFIX) {
+  if (parts.length !== 3 || parts[0] !== ROSTER_POST_ACTION_PREFIX || parts[1] !== "signup") {
     return null;
   }
-  const rosterId = parts[1]?.trim() ?? "";
-  const groupKey = normalizeRosterGroupKey(parts[2] ?? "");
-  if (!rosterId || !groupKey) return null;
-  return { rosterId, groupKey };
+  const rosterId = parts[2]?.trim() ?? "";
+  return rosterId ? { rosterId } : null;
 }
 
 export function parseRosterRemoveButtonCustomId(customId: string): { rosterId: string } | null {
   const parts = String(customId ?? "").split(":");
-  if (parts.length !== 2 || parts[0] !== ROSTER_REMOVE_BUTTON_PREFIX) {
+  if (parts.length !== 3 || parts[0] !== ROSTER_POST_ACTION_PREFIX || parts[1] !== "optout") {
+    return null;
+  }
+  const rosterId = parts[2]?.trim() ?? "";
+  return rosterId ? { rosterId } : null;
+}
+
+export function parseRosterPostRefreshButtonCustomId(customId: string): { rosterId: string } | null {
+  const parts = String(customId ?? "").split(":");
+  if (parts.length !== 3 || parts[0] !== ROSTER_POST_ACTION_PREFIX || parts[1] !== "refresh") {
+    return null;
+  }
+  const rosterId = parts[2]?.trim() ?? "";
+  return rosterId ? { rosterId } : null;
+}
+
+export function parseRosterPostSettingsButtonCustomId(customId: string): { rosterId: string } | null {
+  const parts = String(customId ?? "").split(":");
+  if (parts.length !== 3 || parts[0] !== ROSTER_POST_ACTION_PREFIX || parts[1] !== "settings") {
+    return null;
+  }
+  const rosterId = parts[2]?.trim() ?? "";
+  return rosterId ? { rosterId } : null;
+}
+
+export function isRosterPostSettingsMenuCustomId(customId: string): boolean {
+  return String(customId ?? "").startsWith(`${ROSTER_POST_SETTINGS_PREFIX}:`);
+}
+
+export function parseRosterPostSettingsMenuCustomId(customId: string): { rosterId: string } | null {
+  const parts = String(customId ?? "").split(":");
+  if (parts.length !== 2 || parts[0] !== ROSTER_POST_SETTINGS_PREFIX) {
     return null;
   }
   const rosterId = parts[1]?.trim() ?? "";
@@ -1550,16 +1655,29 @@ export function parseRosterRemoveButtonCustomId(customId: string): { rosterId: s
 }
 
 export function isRosterSelectionMenuCustomId(customId: string): boolean {
-  return String(customId ?? "").startsWith(`${ROSTER_SELECTION_PREFIX}:menu:`);
+  return String(customId ?? "").startsWith(`${ROSTER_SELECTION_PREFIX}:account:`);
+}
+
+export function isRosterSelectionGroupMenuCustomId(customId: string): boolean {
+  return String(customId ?? "").startsWith(`${ROSTER_SELECTION_PREFIX}:group:`);
 }
 
 export function isRosterSelectionActionButtonCustomId(customId: string): boolean {
-  return String(customId ?? "").startsWith(`${ROSTER_SELECTION_PREFIX}:`);
+  return String(customId ?? "").startsWith(`${ROSTER_SELECTION_PREFIX}:action:`);
 }
 
 export function parseRosterSelectionMenuCustomId(customId: string): { sessionId: string } | null {
   const parts = String(customId ?? "").split(":");
-  if (parts.length !== 3 || parts[0] !== ROSTER_SELECTION_PREFIX || parts[1] !== "menu") {
+  if (parts.length !== 3 || parts[0] !== ROSTER_SELECTION_PREFIX || parts[1] !== "account") {
+    return null;
+  }
+  const sessionId = parts[2]?.trim() ?? "";
+  return sessionId ? { sessionId } : null;
+}
+
+export function parseRosterSelectionGroupMenuCustomId(customId: string): { sessionId: string } | null {
+  const parts = String(customId ?? "").split(":");
+  if (parts.length !== 3 || parts[0] !== ROSTER_SELECTION_PREFIX || parts[1] !== "group") {
     return null;
   }
   const sessionId = parts[2]?.trim() ?? "";
@@ -1570,14 +1688,14 @@ export function parseRosterSelectionActionButtonCustomId(
   customId: string,
 ): { action: "confirm" | "cancel"; sessionId: string } | null {
   const parts = String(customId ?? "").split(":");
-  if (parts.length !== 3 || parts[0] !== ROSTER_SELECTION_PREFIX) {
+  if (parts.length !== 4 || parts[0] !== ROSTER_SELECTION_PREFIX || parts[1] !== "action") {
     return null;
   }
-  const action = parts[1];
+  const action = parts[2];
   if (action !== "confirm" && action !== "cancel") {
     return null;
   }
-  const sessionId = parts[2]?.trim() ?? "";
+  const sessionId = parts[3]?.trim() ?? "";
   return sessionId ? { action, sessionId } : null;
 }
 
@@ -2184,6 +2302,35 @@ export class RosterService {
     };
   }
 
+  async updateRosterPostButtonMode(input: {
+    rosterId: string;
+    postButtonMode: RosterPostButtonMode;
+    updatedByDiscordUserId?: string | null;
+  }): Promise<{ outcome: "updated" | "roster_not_found"; rosterId: string; postButtonMode?: RosterPostButtonMode }> {
+    const roster = await prisma.roster.findUnique({
+      where: { id: input.rosterId },
+      select: {
+        id: true,
+      },
+    });
+    if (!roster) {
+      return { outcome: "roster_not_found", rosterId: input.rosterId };
+    }
+
+    await prisma.roster.update({
+      where: { id: roster.id },
+      data: {
+        postButtonMode: normalizeRosterPostButtonMode(input.postButtonMode),
+        updatedByDiscordUserId: normalizeDiscordUserId(input.updatedByDiscordUserId),
+      },
+    });
+    return {
+      outcome: "updated",
+      rosterId: roster.id,
+      postButtonMode: normalizeRosterPostButtonMode(input.postButtonMode),
+    };
+  }
+
   async addRosterSignupsForManager(input: {
     rosterId: string;
     groupKey: string;
@@ -2293,7 +2440,7 @@ export class RosterService {
     const duplicateTags = linkedTags.filter((tag) => existingTags.has(tag));
 
     if (townHallGated && createdTags.length > 0) {
-      const playerTownHallByTag = await loadRosterPlayerTownHallMap({
+      const playerTownHallResolution = await resolveRosterPlayerTownHallMap({
         rosterType: roster.rosterType,
         clanTag: roster.clanTag,
         playerTags: createdTags,
@@ -2312,7 +2459,7 @@ export class RosterService {
           playerTag: tag,
           playerName: normalizeRosterText(linked?.playerName ?? null),
         };
-        const townHall = playerTownHallByTag.get(tag) ?? null;
+        const townHall = playerTownHallResolution.townHallByTag.get(tag) ?? null;
         if (townHall === null) {
           blockedUnavailableTags.push(tag);
           blockedUnavailableAccounts.push(blockedAccount);
@@ -2598,8 +2745,8 @@ export class RosterService {
 
   async createRosterSignupSelectionPanel(input: {
     rosterId: string;
-    groupKey: string;
     discordUserId: string;
+    groupKey?: string | null;
   }): Promise<RosterSelectionOpenResult> {
     const loaded = await loadRosterSelectionOptions({
       rosterId: input.rosterId,
@@ -2610,7 +2757,7 @@ export class RosterService {
     if (loaded.outcome !== "ready") {
       return loaded;
     }
-    if (!loaded.group) {
+    if (!loaded.group && loaded.groups.length <= 0) {
       return {
         outcome: "group_not_found",
         rosterId: loaded.roster.id,
@@ -2618,12 +2765,21 @@ export class RosterService {
       };
     }
 
+    const defaultGroup = loaded.group ?? loaded.groups[0] ?? null;
+    const groupOptions = loaded.groups.map((group) => ({
+      value: group.key,
+      label: group.name,
+      description: group.description,
+    }));
+
     const session = createRosterSelectionSession({
       mode: "signup",
       rosterId: loaded.roster.id,
       rosterTitle: loaded.roster.title,
-      groupKey: loaded.group.key,
-      groupName: loaded.group.name,
+      groupKey: defaultGroup?.key ?? null,
+      groupName: defaultGroup?.name ?? null,
+      selectedGroupKey: loaded.selectedGroupKey ?? defaultGroup?.key ?? null,
+      groupOptions,
       ownerDiscordUserId: normalizeDiscordUserId(input.discordUserId) ?? input.discordUserId,
       options: loaded.options,
       selectedTags: [],
@@ -2653,6 +2809,8 @@ export class RosterService {
       rosterTitle: loaded.roster.title,
       groupKey: null,
       groupName: null,
+      selectedGroupKey: null,
+      groupOptions: [],
       ownerDiscordUserId: normalizeDiscordUserId(input.discordUserId) ?? input.discordUserId,
       options: loaded.options,
       selectedTags: [],
@@ -2666,7 +2824,8 @@ export class RosterService {
   async updateRosterSelectionPanel(input: {
     sessionId: string;
     discordUserId: string;
-    selectedTags: string[];
+    selectedTags?: string[];
+    selectedGroupKey?: string | null;
   }): Promise<RosterSelectionUpdateResult> {
     const session = getRosterSelectionSession(input.sessionId);
     if (!session) {
@@ -2677,10 +2836,23 @@ export class RosterService {
       return { outcome: "forbidden" };
     }
 
-    session.selectedTags = normalizeRosterSelectionTags(
-      input.selectedTags,
-      session.options.map((option) => option.value),
-    );
+    if (Array.isArray(input.selectedTags)) {
+      session.selectedTags = normalizeRosterSelectionTags(
+        input.selectedTags,
+        session.options.map((option) => option.value),
+      );
+    }
+    if (input.selectedGroupKey !== undefined) {
+      const normalizedGroupKey = input.selectedGroupKey ? normalizeRosterGroupKey(input.selectedGroupKey) : "";
+      const selectedGroup = normalizedGroupKey
+        ? session.groupOptions.find((option) => option.value === normalizedGroupKey) ?? null
+        : null;
+      if (selectedGroup) {
+        session.selectedGroupKey = selectedGroup.value;
+        session.groupKey = selectedGroup.value;
+        session.groupName = selectedGroup.label;
+      }
+    }
     rosterSelectionSessions.set(session.sessionId, session);
     return {
       outcome: "updated",
@@ -2912,7 +3084,7 @@ export class RosterService {
       }
 
       if (isRosterTownHallGated(roster)) {
-        const playerTownHallByTag = await loadRosterPlayerTownHallMap({
+        const playerTownHallResolution = await resolveRosterPlayerTownHallMap({
           rosterType: roster.rosterType,
           clanTag: roster.clanTag,
           playerTags: createdCandidates,
@@ -2931,7 +3103,7 @@ export class RosterService {
             playerTag: tag,
             playerName: normalizeRosterText(linked?.linkedName ?? null),
           };
-          const townHall = playerTownHallByTag.get(tag) ?? null;
+          const townHall = playerTownHallResolution.townHallByTag.get(tag) ?? null;
           if (townHall === null) {
             blockedUnavailableTags.push(tag);
             blockedUnavailableAccounts.push(blockedAccount);

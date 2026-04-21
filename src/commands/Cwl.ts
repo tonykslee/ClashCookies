@@ -22,6 +22,7 @@ import {
   parseRosterRemoveButtonCustomId,
   parseRosterSelectionActionButtonCustomId,
   parseRosterSelectionMenuCustomId,
+  parseRosterSelectionGroupMenuCustomId,
   rosterService,
   ROSTER_LIFECYCLE_STATE,
 } from "../services/RosterService";
@@ -2870,7 +2871,6 @@ export async function handleRosterSignupButtonInteraction(
 
   const result = await rosterService.createRosterSignupSelectionPanel({
     rosterId: parsed.rosterId,
-    groupKey: parsed.groupKey,
     discordUserId: interaction.user.id,
   });
 
@@ -2958,13 +2958,16 @@ export async function handleRosterRemoveButtonInteraction(
 export async function handleRosterSelectionMenuInteraction(
   interaction: StringSelectMenuInteraction,
 ): Promise<void> {
-  const parsed = parseRosterSelectionMenuCustomId(interaction.customId);
+  const accountParsed = parseRosterSelectionMenuCustomId(interaction.customId);
+  const groupParsed = accountParsed ? null : parseRosterSelectionGroupMenuCustomId(interaction.customId);
+  const parsed = accountParsed ?? groupParsed;
   if (!parsed) return;
 
   const result = await rosterService.updateRosterSelectionPanel({
     sessionId: parsed.sessionId,
     discordUserId: interaction.user.id,
-    selectedTags: interaction.values,
+    selectedTags: accountParsed ? interaction.values : undefined,
+    selectedGroupKey: groupParsed ? interaction.values[0] ?? null : undefined,
   });
 
   if (result.outcome === "session_not_found") {

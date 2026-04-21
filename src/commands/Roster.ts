@@ -3,7 +3,12 @@ import {
   AutocompleteInteraction,
   ChatInputCommandInteraction,
   Client,
+  ActionRowBuilder,
+  ButtonInteraction,
   EmbedBuilder,
+  PermissionFlagsBits,
+  StringSelectMenuBuilder,
+  StringSelectMenuInteraction,
 } from "discord.js";
 import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
@@ -16,6 +21,11 @@ import {
   ROSTER_LIFECYCLE_STATE,
   ROSTER_SORT_BY,
   parseRosterDateTimeInTimeZone,
+  buildRosterPostSettingsMenuCustomId,
+  isRosterPostSettingsMenuCustomId,
+  parseRosterPostRefreshButtonCustomId,
+  parseRosterPostSettingsButtonCustomId,
+  parseRosterPostSettingsMenuCustomId,
   rosterService,
   type RosterRecord,
   type RosterSummaryRecord,
@@ -370,6 +380,38 @@ async function deletePostedRosterMessage(
   }
 }
 
+const ROSTER_POST_SETTINGS_ACTIONS = [
+  { label: "Roster info", value: "roster_info", description: "Show roster settings and state" },
+  { label: "Close roster", value: "close_roster", description: "Prevent new signups" },
+  { label: "Clear roster", value: "clear_roster", description: "Remove all roster signups" },
+  { label: "Hide buttons", value: "hide_buttons", description: "Hide member buttons" },
+  { label: "Archive mode", value: "archive_mode", description: "Disable the post actions" },
+  { label: "Add user", value: "add_user", description: "Open roster add flow" },
+  { label: "Remove user", value: "remove_user", description: "Open roster remove flow" },
+  { label: "Change roster", value: "change_roster", description: "Move players to another roster" },
+  { label: "Change group", value: "change_group", description: "Move players between groups" },
+  { label: "Edit roster", value: "edit_roster", description: "Edit roster configuration" },
+  { label: "Unregistered members", value: "unregistered_members", description: "List clan members who did not sign up" },
+  { label: "Missing members", value: "missing_members", description: "List signups not currently in clan" },
+] as const;
+
+function buildRosterPostSettingsMenu(rosterId: string): ActionRowBuilder<StringSelectMenuBuilder> {
+  return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(buildRosterPostSettingsMenuCustomId(rosterId))
+      .setPlaceholder("Choose a roster action")
+      .setMinValues(1)
+      .setMaxValues(1)
+      .addOptions(
+        ROSTER_POST_SETTINGS_ACTIONS.map((option) => ({
+          label: option.label,
+          value: option.value,
+          description: option.description,
+        })),
+      ),
+  );
+}
+
 async function resolveRosterForGuild(
   interaction: ChatInputCommandInteraction,
   rosterId: string,
@@ -388,6 +430,216 @@ async function resolveRosterForGuild(
     return null;
   }
   return roster;
+}
+
+async function buildRosterInfoText(rosterId: string): Promise<string | null> {
+  const view = await rosterService.getRosterView(rosterId);
+  if (!view) return null;
+
+  const roster = view.roster;
+  const lines = [
+    `${roster.title}${roster.rosterCategory ? ` (${roster.rosterCategory})` : ""}`,
+    `Clan: ${roster.clanTag ?? "-"}`,
+    `State: ${roster.lifecycleState}`,
+    `Posted: ${roster.postedMessageUrl ? "yes" : "no"}`,
+    `Groups: ${view.groups.length}`,
+    `Signups: ${view.totalSignupCount}`,
+    `Min. TH: ${roster.minTownhall ?? "-"}`,
+    `Max. TH: ${roster.maxTownhall ?? "-"}`,
+    `Roster role: ${roster.rosterRoleId ? `<@&${roster.rosterRoleId}>` : "-"}`,
+    `Post buttons: ${roster.postButtonMode}`,
+  ];
+  return lines.join("\n");
+}
+
+async function buildRosterSettingsPanel(rosterId: string): Promise<{
+  embed: EmbedBuilder;
+  components: ActionRowBuilder<StringSelectMenuBuilder>[];
+} | null> {
+  const info = await buildRosterInfoText(rosterId);
+  if (!info) return null;
+
+  return {
+    embed: new EmbedBuilder()
+      .setColor(0xfee75c)
+      .setTitle("Roster settings")
+      .setDescription(info),
+    components: [buildRosterPostSettingsMenu(rosterId)],
+  };
+}
+
+export async function handleRosterPostRefreshButtonInteraction(interaction: ButtonInteraction): Promise<void> {
+  const parsed = parseRosterPostRefreshButtonCustomId(interaction.customId);
+  if (!parsed) return;
+
+  if (!interaction.inGuild() || !interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
+    await interaction.reply({
+      content: "You don't have permission to refresh this roster.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const payload = await rosterService.buildRosterSignupPayload(parsed.rosterId);
+  if (!payload) {
+    await interaction.reply({
+      content: "That roster is no longer available.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await interaction.update({
+    embeds: [payload.embed],
+    components: payload.components,
+  });
+}
+
+export async function handleRosterPostSettingsButtonInteraction(interaction: ButtonInteraction): Promise<void> {
+  const parsed = parseRosterPostSettingsButtonCustomId(interaction.customId);
+  if (!parsed) return;
+
+  if (!interaction.inGuild() || !interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
+    await interaction.reply({
+      content: "You don't have permission to manage this roster.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const panel = await buildRosterSettingsPanel(parsed.rosterId);
+  if (!panel) {
+    await interaction.reply({
+      content: "That roster is no longer available.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await interaction.reply({
+    embeds: [panel.embed],
+    components: panel.components,
+    ephemeral: true,
+  });
+}
+
+export async function handleRosterPostSettingsMenuInteraction(interaction: StringSelectMenuInteraction): Promise<void> {
+  if (!isRosterPostSettingsMenuCustomId(interaction.customId)) return;
+  const parsed = parseRosterPostSettingsMenuCustomId(interaction.customId);
+  if (!parsed) return;
+
+  if (!interaction.inGuild() || !interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
+    await interaction.reply({
+      content: "You don't have permission to manage this roster.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const choice = interaction.values[0] ?? "";
+  const roster = await resolveRosterForGuild(
+    interaction as unknown as ChatInputCommandInteraction,
+    parsed.rosterId,
+  );
+  if (!roster) {
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.reply({
+        content: "That roster is no longer available.",
+        ephemeral: true,
+      });
+    }
+    return;
+  }
+
+  if (choice === "roster_info") {
+    const info = await buildRosterInfoText(roster.id);
+    await interaction.reply({
+      content: info ?? "That roster is no longer available.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (choice === "close_roster") {
+    await rosterService.updateRosterLifecycleState({
+      rosterId: roster.id,
+      lifecycleState: ROSTER_LIFECYCLE_STATE.CLOSED,
+      updatedByDiscordUserId: interaction.user.id,
+    });
+    const payload = await rosterService.buildRosterSignupPayload(roster.id);
+    await interaction.update({
+      content: "Roster closed.",
+      embeds: payload ? [payload.embed] : [],
+      components: payload ? payload.components : [],
+    });
+    return;
+  }
+
+  if (choice === "hide_buttons") {
+    await rosterService.updateRosterPostButtonMode({
+      rosterId: roster.id,
+      postButtonMode: "hidden",
+      updatedByDiscordUserId: interaction.user.id,
+    });
+    const payload = await rosterService.buildRosterSignupPayload(roster.id);
+    await interaction.update({
+      content: "Roster buttons hidden.",
+      embeds: payload ? [payload.embed] : [],
+      components: payload ? payload.components : [],
+    });
+    return;
+  }
+
+  if (choice === "archive_mode") {
+    await rosterService.updateRosterLifecycleState({
+      rosterId: roster.id,
+      lifecycleState: ROSTER_LIFECYCLE_STATE.ARCHIVED,
+      updatedByDiscordUserId: interaction.user.id,
+    });
+    await rosterService.updateRosterPostButtonMode({
+      rosterId: roster.id,
+      postButtonMode: "archived",
+      updatedByDiscordUserId: interaction.user.id,
+    });
+    const payload = await rosterService.buildRosterSignupPayload(roster.id);
+    await interaction.update({
+      content: "Roster archived.",
+      embeds: payload ? [payload.embed] : [],
+      components: payload ? payload.components : [],
+    });
+    return;
+  }
+
+  if (choice === "unregistered_members" || choice === "missing_members") {
+    const readiness = await rosterService.buildRosterManagerReadinessView({
+      rosterId: roster.id,
+    });
+    const lines = !readiness
+      ? ["That roster is no longer available."]
+      : choice === "unregistered_members"
+        ? [
+            `Unregistered members for ${readiness.roster.title}:`,
+            ...(readiness.unsignedTrackedMembers.length > 0
+              ? readiness.unsignedTrackedMembers.map((entry) => `- ${entry.playerName} ${entry.playerTag}`)
+              : ["- None"]),
+          ]
+        : [
+            `Missing members for ${readiness.roster.title}:`,
+            ...(readiness.signedUpButUntracked.length > 0
+              ? readiness.signedUpButUntracked.map((entry) => `- ${entry.playerName ?? entry.playerTag} ${entry.playerTag}`)
+              : ["- None"]),
+          ];
+    await interaction.reply({
+      content: lines.join("\n"),
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await interaction.reply({
+    content: `Use /roster manage to continue with ${choice.replace(/_/g, " ")}.`,
+    ephemeral: true,
+  });
 }
 
 async function handleRosterCreateSubcommand(interaction: ChatInputCommandInteraction): Promise<void> {

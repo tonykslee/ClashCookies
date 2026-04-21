@@ -662,6 +662,7 @@ model Roster {
   allowMultiSignup     Boolean              @default(true)
   sortBy               String?
   importMembers        Boolean              @default(false)
+  postButtonMode       String               @default("standard")
   lifecycleState       RosterLifecycleState @default(OPEN)
   postedChannelId      String?
   postedMessageId      String?              @unique

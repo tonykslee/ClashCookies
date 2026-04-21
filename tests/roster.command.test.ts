@@ -227,8 +227,8 @@ describe("/roster command", () => {
       components: [
         new ActionRowBuilder<ButtonBuilder>().addComponents(
           new ButtonBuilder()
-            .setCustomId("roster-signup:roster-1:confirmed")
-            .setLabel("Confirmed (0)")
+            .setCustomId("roster-post-action:signup:roster-1")
+            .setLabel("Signup")
             .setStyle(ButtonStyle.Primary),
         ),
       ],

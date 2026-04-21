@@ -27,6 +27,10 @@ const prismaMock = vi.hoisted(() => ({
   },
   fwaPlayerCatalog: {
     findMany: vi.fn(),
+  todoPlayerSnapshot: {
+    findMany: vi.fn(),
+    aggregate: vi.fn(),
+    upsert: vi.fn(),
   },
 }));
 
@@ -212,6 +216,12 @@ describe("RosterService", () => {
     prismaMock.rosterSignup.deleteMany.mockResolvedValue({ count: 0 });
     prismaMock.playerLink.findMany.mockResolvedValue([]);
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([]);
+    prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
+      _count: { _all: 0 },
+      _max: { lastUpdatedAt: null, updatedAt: null },
+    });
+    prismaMock.todoPlayerSnapshot.upsert.mockResolvedValue({} as never);
     playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([]);
     cwlStateServiceMock.listSeasonRosterForClan.mockResolvedValue([]);
     todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValue([]);
@@ -767,17 +777,24 @@ describe("RosterService", () => {
 
     expect(payload).toBeTruthy();
     const description = payload?.embed.toJSON().description ?? "";
-    expect(description).toContain("Confirmed (1)");
-    expect(description).toContain("Alpha `#PQL0289` <@111111111111111111>");
-    expect(description).toContain("Substitute (1)");
-    expect(description).toContain("Bravo `#QGRJ2222` <@222222222222222222>");
+    expect(description).toContain("Confirmed - 1");
+    expect(description).toContain("Player               Discord                Clan");
+    expect(description).toContain("Substitute - 1");
+    expect(description).toContain("Total 2/");
     const componentIds = payload?.components.flatMap((row) => {
       const rowJson = row.toJSON() as any;
       return Array.isArray(rowJson.components)
         ? rowJson.components.map((component: any) => component.custom_id ?? component.customId ?? component.data?.custom_id ?? component.data?.customId)
         : [];
     }) ?? [];
-    expect(componentIds).toContain("roster-remove:roster-1");
+    expect(componentIds).toEqual(
+      expect.arrayContaining([
+        "roster-post-action:refresh:roster-1",
+        "roster-post-action:signup:roster-1",
+        "roster-post-action:optout:roster-1",
+        "roster-post-action:settings:roster-1",
+      ]),
+    );
   });
 
   it("builds a signup selection panel that lets a user choose linked accounts", async () => {
@@ -797,7 +814,7 @@ describe("RosterService", () => {
     if (result.outcome !== "ready") return;
     const payload = result.panel;
     const description = payload.embed.toJSON().description ?? "";
-    expect(description).toContain("Select linked accounts to sign up for Confirmed.");
+    expect(description).toContain("Choose a group and linked accounts for Confirmed.");
     expect(description).toContain("Selected: 0 / 2");
     const selectIds = payload.components.flatMap((row) => {
       const rowJson = row.toJSON() as any;
@@ -805,7 +822,12 @@ describe("RosterService", () => {
         ? rowJson.components.map((component: any) => component.custom_id ?? component.customId ?? component.data?.custom_id ?? component.data?.customId)
         : [];
     });
-    expect(selectIds.some((id) => String(id).startsWith("roster-selection:menu:"))).toBe(true);
+    expect(selectIds).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/^roster-selection:group:/),
+        expect.stringMatching(/^roster-selection:account:/),
+      ]),
+    );
     expect(payload.selectedTags).toEqual([]);
   });
 
@@ -1281,9 +1303,16 @@ describe("RosterService", () => {
         ? rowJson.components.map((component: any) => component.custom_id ?? component.customId ?? component.data?.custom_id ?? component.data?.customId)
         : [];
     }) ?? [];
-    expect(componentIds).toContain("roster-signup:roster-1:confirmed");
+    expect(componentIds).toEqual(
+      expect.arrayContaining([
+        "roster-post-action:refresh:roster-1",
+        "roster-post-action:signup:roster-1",
+        "roster-post-action:optout:roster-1",
+        "roster-post-action:settings:roster-1",
+      ]),
+    );
     const buttonJson = payload?.components[0]?.toJSON() as any;
-    const firstButton = buttonJson?.components?.[0];
+    const firstButton = buttonJson?.components?.[1];
     expect(Boolean(firstButton?.disabled ?? firstButton?.data?.disabled)).toBe(true);
   });
 
