@@ -252,22 +252,27 @@ async function postRosterSignupMessage(
 async function deletePostedRosterMessage(
   interaction: ChatInputCommandInteraction,
   roster: RosterRecord,
-): Promise<void> {
+): Promise<boolean> {
   if (!roster.postedChannelId || !roster.postedMessageId) {
-    return;
+    return true;
   }
 
   const channel = await interaction.client.channels.fetch(roster.postedChannelId).catch(() => null);
   if (!channel?.isTextBased() || !("messages" in channel)) {
-    return;
+    return false;
   }
 
   const message = await channel.messages.fetch(roster.postedMessageId).catch(() => null);
   if (!message) {
-    return;
+    return false;
   }
 
-  await message.delete().catch(() => undefined);
+  try {
+    await message.delete();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function resolveRosterForGuild(
@@ -617,6 +622,14 @@ async function handleRosterDeleteSubcommand(interaction: ChatInputCommandInterac
     return;
   }
 
+  const postedMessageDeleted = await deletePostedRosterMessage(interaction, roster);
+  if (!postedMessageDeleted) {
+    await interaction.editReply(
+      "I couldn't remove the posted Discord message, so the roster was left intact. Try the delete again once the message cleanup issue is resolved.",
+    );
+    return;
+  }
+
   const deleted = await rosterService.deleteRoster({
     rosterId: roster.id,
   });
@@ -625,8 +638,11 @@ async function handleRosterDeleteSubcommand(interaction: ChatInputCommandInterac
     return;
   }
 
-  await deletePostedRosterMessage(interaction, deleted.roster).catch(() => undefined);
-  await interaction.editReply(`Deleted roster ${deleted.roster.title} and its persisted signup data.`);
+  await interaction.editReply(
+    deleted.roster.postedMessageId
+      ? `Deleted roster ${deleted.roster.title} after removing its posted Discord message and persisted signup data.`
+      : `Deleted roster ${deleted.roster.title} and its persisted signup data.`,
+  );
 }
 
 async function autocompleteRosterOption(interaction: AutocompleteInteraction): Promise<void> {

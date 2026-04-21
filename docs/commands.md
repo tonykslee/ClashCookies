@@ -48,7 +48,7 @@
 - `/roster post roster:<roster>` - Post the signup message for an existing roster, or refresh the existing posted message if it already exists.
 - `/roster manage roster:<roster> action:<add|move|remove|open|close|archive> [group:<groupKey>] [players:<playerTags>]` - Roster-keyed manager controls. `add`, `move`, and `remove` mutate signup rows; `open`, `close`, and `archive` control lifecycle. `add` and `move` take a `group` plus comma/space-separated `players` tags.
 - `/roster edit roster:<roster> [title:<text>] [clan:<trackedCwlClanTag>] [timezone:<ianaTz>] [display-timezone:<ianaTz>]` - Edit practical roster metadata and CWL clan/timezone scope fields.
-- `/roster delete roster:<roster>` - Hard-delete a roster and its persisted signup data.
+- `/roster delete roster:<roster>` - Removes the posted Discord message first when one exists, then hard-deletes a roster and its persisted signup data. If the message cannot be removed, the roster stays intact so you can retry safely.
 - `/roster [report|readiness|refresh] roster:<roster>` - Readiness/report views and posted-message refresh for one roster. `report` and `readiness` intentionally share the same readiness text for now.
 - `/cwl rotations show [clan:<trackedCwlClanTag>] [day:<1-7>]` - Show active CWL rotation validation across tracked CWL clans, or inspect one clan's planned vs actual lineup one CWL day per page. The no-arg overview includes current-clan leadership names from persisted membership state.
 - `/cwl rotations create clan:<trackedCwlClanTag> [exclude:<comma-separated-player-tags>] [overwrite:true]` - Create or replace the active current-season CWL planner version for one tracked CWL clan during persisted preparation-day state.

@@ -565,7 +565,52 @@ describe("/roster command", () => {
     });
     expect(deleteMessage.delete).toHaveBeenCalled();
     expect(String(deleteInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
-      "Deleted roster CWL Alpha Signup (Updated) and its persisted signup data.",
+      "Deleted roster CWL Alpha Signup (Updated) after removing its posted Discord message and persisted signup data.",
+    );
+  });
+
+  it("keeps the roster intact if the posted message cannot be removed before delete", async () => {
+    (rosterService.findGuildRosterById as any).mockResolvedValue({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      lifecycleState: "OPEN",
+      postedChannelId: "channel-1",
+      postedMessageId: "message-1",
+      postedMessageUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    });
+    const failingMessage = {
+      delete: vi.fn().mockRejectedValue(new Error("discord delete failed")),
+    };
+    const failingChannel = {
+      isTextBased: () => true,
+      messages: {
+        fetch: vi.fn().mockResolvedValue(failingMessage),
+      },
+    };
+    const failedDeleteInteraction = makeInteraction({
+      subcommand: "delete",
+      roster: "roster-1",
+    }) as any;
+    failedDeleteInteraction.client.channels.fetch = vi.fn().mockResolvedValue(failingChannel);
+
+    await Roster.run({} as any, failedDeleteInteraction as any);
+
+    expect(rosterService.deleteRoster).not.toHaveBeenCalled();
+    expect(String(failedDeleteInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
+      "I couldn't remove the posted Discord message, so the roster was left intact.",
     );
   });
 

@@ -301,7 +301,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`/roster post roster:<roster>` posts the roster signup message or refreshes the existing post if it already exists.",
       "`/roster manage roster:<roster> action:<add|move|remove|open|close|archive> ...` is the roster-keyed manager surface for mutation and lifecycle changes.",
       "`/roster edit roster:<roster>` edits roster metadata such as title, clan scope, and timezone fields.",
-      "`/roster delete roster:<roster>` hard-deletes the roster and its persisted signup data.",
+      "`/roster delete roster:<roster>` removes the posted Discord message first when one exists, then hard-deletes the roster and its persisted signup data. If the message cannot be removed, the roster stays intact so you can retry safely.",
       "`/roster report` and `/roster readiness` intentionally share the same roster readiness view for now.",
       "`/roster refresh roster:<roster>` re-renders the posted roster message from DB truth.",
     ],
