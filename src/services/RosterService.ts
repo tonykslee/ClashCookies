@@ -47,6 +47,11 @@ export const ROSTER_SIGNUP_BUTTON_PREFIX = "roster-signup";
 export const ROSTER_REMOVE_BUTTON_PREFIX = "roster-remove";
 export const ROSTER_SELECTION_PREFIX = "roster-selection";
 const ROSTER_SELECTION_SESSION_TTL_MS = 15 * 60 * 1000;
+const ROSTER_CONFLICT_LIFECYCLE_STATES: readonly RosterLifecycleState[] = [
+  ROSTER_LIFECYCLE_STATE.ACTIVE,
+  ROSTER_LIFECYCLE_STATE.OPEN,
+  ROSTER_LIFECYCLE_STATE.CLOSED,
+];
 
 export type RosterGroupSeed = {
   key: string;
@@ -672,6 +677,10 @@ function isRosterAcceptingSignups(state: RosterLifecycleState): boolean {
 
 function isRosterArchived(state: RosterLifecycleState): boolean {
   return state === ROSTER_LIFECYCLE_STATE.ARCHIVED;
+}
+
+function isRosterConflictEligible(state: RosterLifecycleState): boolean {
+  return ROSTER_CONFLICT_LIFECYCLE_STATES.includes(state);
 }
 
 function canManagerMutateRoster(state: RosterLifecycleState): boolean {
@@ -2829,6 +2838,7 @@ export class RosterService {
           roster: {
             rosterType: roster.rosterType,
             rosterCategory: roster.rosterCategory,
+            lifecycleState: { in: ROSTER_CONFLICT_LIFECYCLE_STATES.filter(isRosterConflictEligible) },
           },
         },
         select: {
