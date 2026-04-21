@@ -477,6 +477,70 @@ describe("/roster command", () => {
     expect(String(archiveInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain("was archived");
   });
 
+  it("shows exactly which selected accounts are missing town hall data when roster add is blocked", async () => {
+    (rosterService.findGuildRosterById as any).mockResolvedValue({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    });
+    (rosterService.getRosterView as any).mockResolvedValue({
+      roster: {
+        id: "roster-1",
+        postedChannelId: null,
+        postedMessageId: null,
+      },
+      groups: [],
+      signups: [],
+      totalSignupCount: 0,
+    });
+    (rosterService.addRosterSignupsForManager as any).mockResolvedValue({
+      outcome: "townhall_unavailable",
+      rosterId: "roster-1",
+      groupKey: "confirmed",
+      groupName: "Confirmed",
+      requestedTags: ["#PQL0289", "#QGRJ2222"],
+      linkedTags: ["#PQL0289", "#QGRJ2222"],
+      createdTags: [],
+      duplicateTags: [],
+      missingLinkedTags: [],
+      blockedTags: ["#PQL0289", "#QGRJ2222"],
+      blockedAccounts: [
+        { playerTag: "#PQL0289", playerName: "Alpha" },
+        { playerTag: "#QGRJ2222", playerName: null },
+      ],
+    });
+
+    const interaction = makeInteraction({
+      subcommand: "manage",
+      roster: "roster-1",
+      action: "add",
+      group: "confirmed",
+      players: "#PQL0289 #QGRJ2222",
+    }) as any;
+
+    await Roster.run({} as any, interaction as any);
+
+    expect(String(interaction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
+      "Town hall data is unavailable for: Alpha `#PQL0289`, `#QGRJ2222`.",
+    );
+  });
+
   it("edits roster metadata and can refresh the posted roster from DB truth", async () => {
     (rosterService.findGuildRosterById as any).mockResolvedValue({
       id: "roster-1",

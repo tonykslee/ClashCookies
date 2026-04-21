@@ -555,6 +555,50 @@ describe("/cwl command", () => {
     );
   });
 
+  it("shows exactly which selected accounts are missing town hall data when selection confirm is blocked", async () => {
+    (rosterService.confirmRosterSelectionPanel as any).mockResolvedValue({
+      outcome: "signup",
+      result: {
+        outcome: "townhall_unavailable",
+        rosterId: "roster-1",
+        groupKey: "confirmed",
+        groupName: "Confirmed",
+        requestedTags: ["#P1", "#P2"],
+        linkedTags: ["#P1", "#P2"],
+        createdTags: [],
+        duplicateTags: [],
+        missingLinkedTags: [],
+        blockedTags: ["#P1", "#P2"],
+        blockedAccounts: [
+          { playerTag: "#P1", playerName: "Alpha" },
+          { playerTag: "#P2", playerName: null },
+        ],
+      },
+    });
+
+    const confirmInteraction = {
+      customId: "roster-selection:confirm:session-2",
+      user: { id: "111111111111111111" },
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+      client: {
+        channels: {
+          fetch: vi.fn().mockResolvedValue(null),
+        },
+      },
+    };
+
+    await handleRosterSelectionActionButtonInteraction(confirmInteraction as any);
+
+    expect(confirmInteraction.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining("Town hall data is unavailable for: Alpha `#P1`, `#P2`."),
+        embeds: [],
+        components: [],
+      }),
+    );
+  });
+
   it("renders a manager readiness report for /cwl roster report", async () => {
     (rosterService.findCwlRosterForClan as any).mockResolvedValue({
       id: "roster-1",
