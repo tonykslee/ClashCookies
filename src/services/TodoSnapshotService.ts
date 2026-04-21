@@ -211,6 +211,33 @@ export class TodoSnapshotService {
       });
   }
 
+  /** Purpose: load ordered snapshot rows for one clan tag using the requested current-clan source. */
+  async listSnapshotsByClanTag(input: {
+    clanTag: string;
+    source?: "clanTag" | "cwlClanTag";
+  }): Promise<TodoSnapshotRecord[]> {
+    const normalizedClanTag = normalizeClanTag(input.clanTag);
+    if (!normalizedClanTag) return [];
+
+    const source = input.source ?? "clanTag";
+    const rows = await prisma.todoPlayerSnapshot.findMany({
+      where:
+        source === "cwlClanTag"
+          ? { cwlClanTag: normalizedClanTag }
+          : { clanTag: normalizedClanTag },
+      select: TODO_SNAPSHOT_SELECT,
+      orderBy: [{ playerName: "asc" }, { playerTag: "asc" }],
+    });
+
+    return rows.map((row) => ({
+      ...row,
+      playerTag: normalizePlayerTag(row.playerTag),
+      townHall: Number.isFinite(Number(row.townHall)) ? Math.trunc(Number(row.townHall)) : null,
+      clanTag: row.clanTag ? normalizeClanTag(row.clanTag) : null,
+      cwlClanTag: row.cwlClanTag ? normalizeClanTag(row.cwlClanTag) : null,
+    })) as TodoSnapshotRecord[];
+  }
+
   /** Purpose: return compact snapshot-version metadata for cache-key construction. */
   async getSnapshotVersion(input: {
     playerTags: string[];

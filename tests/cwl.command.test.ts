@@ -633,7 +633,7 @@ describe("/cwl command", () => {
       updatedAt: new Date("2026-04-20T00:00:00.000Z"),
     });
     (rosterService.buildRosterManagerReadinessText as any).mockResolvedValue(
-      "CWL Alpha Signup\nUnsigned tracked clan members:\n- Bravo `#QGRJ2222` <@222222222222222222>",
+      "CWL Alpha Signup\nUnregistered members:\n- Bravo `#QGRJ2222` <@222222222222222222>",
     );
 
     const interaction = makeInteraction({
@@ -655,7 +655,7 @@ describe("/cwl command", () => {
     expect(rosterService.buildRosterManagerReadinessText).toHaveBeenCalledWith({
       rosterId: "roster-1",
     });
-    expect(getEditedDescription(interaction)).toContain("Unsigned tracked clan members:");
+    expect(getEditedDescription(interaction)).toContain("Unregistered members:");
   });
 
   it.each([

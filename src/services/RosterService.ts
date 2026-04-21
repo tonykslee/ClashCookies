@@ -1277,12 +1277,15 @@ async function loadCurrentCwlRosterManagerMembers(clanTag: string): Promise<Arra
   playerName: string;
   townHall: number | null;
 }>> {
-  const currentRound = await cwlStateService.getCurrentRoundForClan({ clanTag });
-  if (!currentRound || currentRound.members.length <= 0) {
+  const currentClanRows = await todoSnapshotService.listSnapshotsByClanTag({
+    clanTag,
+    source: "cwlClanTag",
+  });
+  if (currentClanRows.length <= 0) {
     return [];
   }
 
-  return currentRound.members.map((member) => ({
+  return currentClanRows.map((member) => ({
     playerTag: member.playerTag,
     playerName: member.playerName,
     townHall: member.townHall,
@@ -1406,20 +1409,11 @@ function normalizeRosterPostButtonMode(input: unknown): RosterPostButtonMode {
   return "standard";
 }
 
-function getRosterCurrentClanLabel(view: RosterSignupView): string {
-  const currentClanTag = normalizeClanTag(view.roster.clanTag ?? "") || null;
-  const currentClanName = normalizeRosterText(view.clanDisplayName ?? null);
-  if (currentClanName && currentClanTag && currentClanName !== currentClanTag) {
-    return `${currentClanName} (${currentClanTag})`;
-  }
-  return currentClanName ?? currentClanTag ?? "unscoped";
-}
-
-const ROSTER_BOARD_COLUMN_WIDTHS = {
+const ROSTER_BOARD_COLUMN_LIMITS = {
   th: 2,
-  player: 16,
-  discord: 16,
-  clan: 16,
+  player: 12,
+  discord: 12,
+  clan: 12,
 } as const;
 
 function sanitizeRosterBoardText(input: string | null | undefined): string {
@@ -1432,61 +1426,132 @@ function formatRosterBoardCell(input: string | null | undefined, width: number):
   return trimmed.padEnd(width, " ");
 }
 
-function buildRosterBoardLine(columns: {
-  th: string;
-  player: string;
-  discord: string | null;
-  clan: string;
-}): string {
-  const th = formatRosterBoardCell(columns.th, ROSTER_BOARD_COLUMN_WIDTHS.th);
-  const player = formatRosterBoardCell(columns.player, ROSTER_BOARD_COLUMN_WIDTHS.player);
-  const discord = formatRosterBoardCell(columns.discord, ROSTER_BOARD_COLUMN_WIDTHS.discord);
-  const clan = formatRosterBoardCell(columns.clan, ROSTER_BOARD_COLUMN_WIDTHS.clan);
+function buildClanProfileMarkdownLink(clanName: string | null, clanTag: string | null): string {
+  const normalizedClanTag = normalizeClanTag(clanTag ?? "");
+  const label = sanitizeRosterBoardText(clanName) || normalizedClanTag || "Unknown Clan";
+  if (!normalizedClanTag) return label;
+  const encodedTag = normalizedClanTag.replace(/^#/, "");
+  return `[${label}](https://link.clashofclans.com/en?action=OpenClanProfile&tag=${encodedTag})`;
+}
+
+function measureRosterBoardColumnWidths(signups: RosterSignupViewRecord[]): {
+  th: number;
+  player: number;
+  discord: number;
+  clan: number;
+} {
+  const playerWidth = signups.reduce(
+    (max, signup) => Math.max(max, sanitizeRosterBoardText(signup.playerName || signup.playerTag).length),
+    "Player".length,
+  );
+  const discordWidth = signups.reduce(
+    (max, signup) => Math.max(max, sanitizeRosterBoardText(signup.discordUsername).length),
+    "Discord".length,
+  );
+  const clanWidth = signups.reduce(
+    (max, signup) =>
+      Math.max(max, sanitizeRosterBoardText(signup.clanName || signup.clanTag || "-").length),
+    "Clan".length,
+  );
+  return {
+    th: ROSTER_BOARD_COLUMN_LIMITS.th,
+    player: Math.min(playerWidth, ROSTER_BOARD_COLUMN_LIMITS.player),
+    discord: Math.min(discordWidth, ROSTER_BOARD_COLUMN_LIMITS.discord),
+    clan: Math.min(clanWidth, ROSTER_BOARD_COLUMN_LIMITS.clan),
+  };
+}
+
+function buildRosterBoardLine(
+  columns: {
+    th: string;
+    player: string;
+    discord: string | null;
+    clan: string;
+  },
+  widths: {
+    th: number;
+    player: number;
+    discord: number;
+    clan: number;
+  },
+): string {
+  const th = formatRosterBoardCell(columns.th, widths.th);
+  const player = formatRosterBoardCell(columns.player, widths.player);
+  const discord = formatRosterBoardCell(columns.discord, widths.discord);
+  const clan = formatRosterBoardCell(columns.clan, widths.clan);
   return `${th} ${player} ${discord} ${clan}`.trimEnd();
 }
 
-function buildRosterBoardHeaderLine(): string {
-  return buildRosterBoardLine({
-    th: "TH",
-    player: "Player",
-    discord: "Discord",
-    clan: "Clan",
-  });
+function buildRosterBoardHeaderLine(widths: {
+  th: number;
+  player: number;
+  discord: number;
+  clan: number;
+}): string {
+  return buildRosterBoardLine(
+    {
+      th: "TH",
+      player: "Player",
+      discord: "Discord",
+      clan: "Clan",
+    },
+    widths,
+  );
 }
 
-function buildRosterBoardRowLine(signup: RosterSignupViewRecord): string {
-  return buildRosterBoardLine({
-    th: signup.townHall === null ? "-" : String(signup.townHall),
-    player: signup.playerName || signup.playerTag,
-    discord: signup.discordUsername,
-    clan: signup.clanName || signup.clanTag || "-",
-  });
+function buildRosterBoardRowLine(
+  signup: RosterSignupViewRecord,
+  widths: {
+    th: number;
+    player: number;
+    discord: number;
+    clan: number;
+  },
+): string {
+  return buildRosterBoardLine(
+    {
+      th: signup.townHall === null ? "-" : String(signup.townHall),
+      player: signup.playerName || signup.playerTag,
+      discord: signup.discordUsername,
+      clan: signup.clanName || signup.clanTag || "-",
+    },
+    widths,
+  );
 }
 
-function buildRosterBoardRowLines(signups: RosterSignupViewRecord[]): string[] {
+function buildRosterBoardRowLines(
+  signups: RosterSignupViewRecord[],
+  widths: {
+    th: number;
+    player: number;
+    discord: number;
+    clan: number;
+  },
+): string[] {
   if (signups.length <= 0) {
     return ["`- None`"];
   }
-  return signups.map((signup) => `\`${buildRosterBoardRowLine(signup)}\``);
+  return signups.map((signup) => `\`${buildRosterBoardRowLine(signup, widths)}\``);
 }
 
 function buildRosterSignupPayloadFromView(view: RosterSignupView): RosterSignupPayload {
-  const title = view.roster.title || "Roster Signup";
+  const title = normalizeRosterText(view.clanDisplayName ?? null) ?? normalizeClanTag(view.roster.clanTag ?? "") ?? "Roster";
   const groups = buildRosterGroupsWithSignups(view);
-  const currentClanLabel = getRosterCurrentClanLabel(view);
-  const rosterLabel = `${title} ${view.clanLeagueLabel ?? view.roster.rosterType}`.trim();
+  const widths = measureRosterBoardColumnWidths(groups.flatMap((group) => group.signups));
+  const rosterLabel = `## ${buildClanProfileMarkdownLink(view.roster.title || "Roster Signup", view.roster.clanTag)} ${
+    view.clanLeagueLabel ?? view.roster.rosterType
+  }`.trim();
   const maxMembersLabel = view.roster.maxMembers === null || view.roster.maxMembers === undefined ? "-" : String(view.roster.maxMembers);
   const minTownHallLabel = view.roster.minTownhall === null || view.roster.minTownhall === undefined ? "##" : String(view.roster.minTownhall);
   const lines: string[] = [
-    currentClanLabel,
     rosterLabel,
     "",
-    `\`${buildRosterBoardHeaderLine()}\``,
+    `\`${buildRosterBoardHeaderLine(widths)}\``,
   ];
 
   for (const group of groups) {
     lines.push(`**${group.name} - ${group.signupCount}**`);
-    lines.push(...buildRosterBoardRowLines(group.signups));
+    lines.push(...buildRosterBoardRowLines(group.signups, widths));
     lines.push("");
   }
 
@@ -1618,6 +1683,18 @@ async function loadRosterView(rosterId: string): Promise<RosterSignupView | null
   const snapshotRows = await todoSnapshotService.listSnapshotsByPlayerTags({
     playerTags: signups.map((signup) => signup.playerTag),
   });
+  const currentClanRows =
+    roster.clanTag && roster.rosterType === "CWL"
+      ? await todoSnapshotService.listSnapshotsByClanTag({
+          clanTag: roster.clanTag,
+          source: "cwlClanTag",
+        })
+      : roster.clanTag
+        ? await todoSnapshotService.listSnapshotsByClanTag({
+            clanTag: roster.clanTag,
+            source: "clanTag",
+          })
+        : [];
   const linkedPlayerRows = await prisma.playerLink.findMany({
     where: {
       playerTag: { in: signups.map((signup) => normalizePlayerTag(signup.playerTag)).filter(Boolean) },
@@ -1633,8 +1710,12 @@ async function loadRosterView(rosterId: string): Promise<RosterSignupView | null
       .filter((entry): entry is readonly [string, string] => Boolean(entry[0])),
   );
   const snapshotByTag = new Map(snapshotRows.map((row) => [normalizePlayerTag(row.playerTag), row] as const));
-  const snapshotClanName =
-    snapshotRows.find((row) => normalizeRosterText(row.clanName ?? null))?.clanName ?? null;
+  const currentClanName =
+    currentClanRows.find((row) => normalizeRosterText(row.cwlClanName ?? row.clanName ?? null))
+      ?.cwlClanName ??
+    currentClanRows.find((row) => normalizeRosterText(row.clanName ?? null))?.clanName ??
+    snapshotRows.find((row) => normalizeRosterText(row.clanName ?? null))?.clanName ??
+    null;
   const trackedClan =
     roster.rosterType === "CWL" && roster.clanTag
       ? await prisma.cwlTrackedClan.findFirst({
@@ -1655,8 +1736,8 @@ async function loadRosterView(rosterId: string): Promise<RosterSignupView | null
     clanName: snapshotByTag.get(normalizePlayerTag(signup.playerTag))?.clanName ?? null,
   }));
   const clanDisplayName =
+    normalizeRosterText(currentClanName ?? null) ??
     normalizeRosterText(trackedClan?.name ?? null) ??
-    normalizeRosterText(snapshotClanName ?? null) ??
     null;
   const sortedSignups = sortRosterSignupsForRoster(signupsWithTownHall, roster.sortBy);
   const signupCountByGroupId = new Map<string, number>();
