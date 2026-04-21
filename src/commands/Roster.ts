@@ -3,12 +3,19 @@ import {
   AutocompleteInteraction,
   ChatInputCommandInteraction,
   Client,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonInteraction,
+  ButtonStyle,
   EmbedBuilder,
+  StringSelectMenuBuilder,
+  StringSelectMenuInteraction,
 } from "discord.js";
 import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
+import { CommandPermissionService } from "../services/CommandPermissionService";
 import { resolveCurrentCwlSeasonKey } from "../services/CwlRegistryService";
 import { normalizeClanTag, normalizePlayerTag } from "../services/PlayerLinkService";
 import { autocompleteSyncTimeZones, normalizeSyncTimeZone } from "../services/syncTimeZone";
@@ -16,6 +23,11 @@ import {
   ROSTER_LIFECYCLE_STATE,
   ROSTER_SORT_BY,
   parseRosterDateTimeInTimeZone,
+  buildRosterPostSettingsMenuCustomId,
+  isRosterPostSettingsMenuCustomId,
+  parseRosterPostRefreshButtonCustomId,
+  parseRosterPostSettingsButtonCustomId,
+  parseRosterPostSettingsMenuCustomId,
   rosterService,
   type RosterRecord,
   type RosterSummaryRecord,
@@ -30,7 +42,17 @@ export {
   handleRosterSelectionActionButtonInteraction,
 } from "./Cwl";
 
+const rosterPermissionService = new CommandPermissionService();
+
 type RosterMutationAction = "add" | "move" | "remove" | "open" | "close" | "archive";
+type RosterPostSettingsAction =
+  | "roster_info"
+  | "close_roster"
+  | "clear_roster"
+  | "hide_buttons"
+  | "archive_mode"
+  | "unregistered_members"
+  | "missing_members";
 
 function parseRosterPlayerTags(input: string): string[] {
   return [
@@ -262,16 +284,24 @@ async function syncRosterRolesForRoster(interaction: ChatInputCommandInteraction
   });
 }
 
+async function canUseRosterPostTarget(
+  interaction: ButtonInteraction | StringSelectMenuInteraction | ChatInputCommandInteraction,
+  target: "roster:manage" | "roster:refresh" | "roster:report",
+): Promise<boolean> {
+  return rosterPermissionService.canUseAnyTarget([target], interaction as any);
+}
+
 async function refreshExistingRosterPost(
   interaction: ChatInputCommandInteraction,
   rosterId: string,
+  cocService?: CoCService | null,
 ): Promise<boolean> {
   const rosterView = await rosterService.getRosterView(rosterId);
   if (!rosterView?.roster.postedChannelId || !rosterView.roster.postedMessageId) {
     return false;
   }
 
-  const payload = await rosterService.buildRosterSignupPayload(rosterId);
+  const payload = await rosterService.refreshRosterSignupPayload(rosterId, cocService ?? null);
   if (!payload) {
     return false;
   }
@@ -297,19 +327,20 @@ async function refreshExistingRosterPost(
 async function postRosterSignupMessage(
   interaction: ChatInputCommandInteraction,
   rosterId: string,
+  cocService?: CoCService | null,
 ): Promise<"posted" | "refreshed" | "no_payload" | "no_channel" | "failed"> {
   const rosterView = await rosterService.getRosterView(rosterId);
   if (!rosterView) {
     return "failed";
   }
 
-  const payload = await rosterService.buildRosterSignupPayload(rosterId);
+  const payload = await rosterService.buildRosterSignupPayload(rosterId, cocService ?? null);
   if (!payload) {
     return "no_payload";
   }
 
   if (rosterView.roster.postedChannelId && rosterView.roster.postedMessageId) {
-    const refreshed = await refreshExistingRosterPost(interaction, rosterId);
+    const refreshed = await refreshExistingRosterPost(interaction, rosterId, cocService);
     if (refreshed) {
       return "refreshed";
     }
@@ -370,6 +401,33 @@ async function deletePostedRosterMessage(
   }
 }
 
+const ROSTER_POST_SETTINGS_ACTIONS = [
+  { label: "Roster info", value: "roster_info", description: "Show roster settings and state" },
+  { label: "Close roster", value: "close_roster", description: "Prevent new signups" },
+  { label: "Clear roster", value: "clear_roster", description: "Remove all roster signups" },
+  { label: "Hide buttons", value: "hide_buttons", description: "Hide member buttons" },
+  { label: "Archive mode", value: "archive_mode", description: "Disable the post actions" },
+  { label: "Unregistered members", value: "unregistered_members", description: "List clan members who did not sign up" },
+  { label: "Missing members", value: "missing_members", description: "List signups not currently in clan" },
+] as const;
+
+function buildRosterPostSettingsMenu(rosterId: string): ActionRowBuilder<StringSelectMenuBuilder> {
+  return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(buildRosterPostSettingsMenuCustomId(rosterId))
+      .setPlaceholder("Choose a roster action")
+      .setMinValues(1)
+      .setMaxValues(1)
+      .addOptions(
+        ROSTER_POST_SETTINGS_ACTIONS.map((option) => ({
+          label: option.label,
+          value: option.value,
+          description: option.description,
+        })),
+      ),
+  );
+}
+
 async function resolveRosterForGuild(
   interaction: ChatInputCommandInteraction,
   rosterId: string,
@@ -388,6 +446,352 @@ async function resolveRosterForGuild(
     return null;
   }
   return roster;
+}
+
+async function buildRosterInfoText(rosterId: string): Promise<string | null> {
+  const view = await rosterService.getRosterView(rosterId);
+  if (!view) return null;
+
+  const roster = view.roster;
+  const lines = [
+    `${roster.title}${roster.rosterCategory ? ` (${roster.rosterCategory})` : ""}`,
+    `Clan: ${roster.clanTag ?? "-"}`,
+    `State: ${roster.lifecycleState}`,
+    `Posted: ${roster.postedMessageUrl ? "yes" : "no"}`,
+    `Groups: ${view.groups.length}`,
+    `Signups: ${view.totalSignupCount}`,
+    `Min. TH: ${roster.minTownhall ?? "-"}`,
+    `Max. TH: ${roster.maxTownhall ?? "-"}`,
+    `Roster role: ${roster.rosterRoleId ? `<@&${roster.rosterRoleId}>` : "-"}`,
+    `Post buttons: ${roster.postButtonMode}`,
+  ];
+  return lines.join("\n");
+}
+
+async function buildRosterSettingsPanel(rosterId: string): Promise<{
+  embed: EmbedBuilder;
+  components: ActionRowBuilder<StringSelectMenuBuilder>[];
+} | null> {
+  const info = await buildRosterInfoText(rosterId);
+  if (!info) return null;
+
+  return {
+    embed: new EmbedBuilder()
+      .setColor(0xfee75c)
+      .setTitle("Roster settings")
+      .setDescription(info),
+    components: [buildRosterPostSettingsMenu(rosterId)],
+  };
+}
+
+function buildRosterClearConfirmationCustomId(action: "confirm" | "cancel", rosterId: string): string {
+  return `roster-post-clear:${action}:${rosterId}`;
+}
+
+export function isRosterPostClearButtonCustomId(customId: string): boolean {
+  return String(customId ?? "").startsWith("roster-post-clear:");
+}
+
+export function parseRosterPostClearButtonCustomId(customId: string): { action: "confirm" | "cancel"; rosterId: string } | null {
+  const parts = String(customId ?? "").split(":");
+  if (parts.length !== 3 || parts[0] !== "roster-post-clear") {
+    return null;
+  }
+  const action = parts[1];
+  if (action !== "confirm" && action !== "cancel") {
+    return null;
+  }
+  const rosterId = parts[2]?.trim() ?? "";
+  return rosterId ? { action, rosterId } : null;
+}
+
+function buildRosterClearConfirmationPanel(rosterId: string): {
+  embed: EmbedBuilder;
+  components: ActionRowBuilder<ButtonBuilder>[];
+} {
+  return {
+    embed: new EmbedBuilder()
+      .setColor(0xfee75c)
+      .setTitle("Clear roster")
+      .setDescription("This will remove every signup from the roster. Confirm only if you want to clear it completely."),
+    components: [
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setCustomId(buildRosterClearConfirmationCustomId("confirm", rosterId))
+          .setLabel("Confirm clear")
+          .setStyle(ButtonStyle.Danger),
+        new ButtonBuilder()
+          .setCustomId(buildRosterClearConfirmationCustomId("cancel", rosterId))
+          .setLabel("Cancel")
+          .setStyle(ButtonStyle.Secondary),
+      ),
+    ],
+  };
+}
+
+export async function handleRosterPostRefreshButtonInteraction(
+  interaction: ButtonInteraction,
+  cocService: CoCService,
+): Promise<void> {
+  const parsed = parseRosterPostRefreshButtonCustomId(interaction.customId);
+  if (!parsed) return;
+
+  if (!(await canUseRosterPostTarget(interaction, "roster:refresh"))) {
+    await interaction.reply({
+      content: "You don't have permission to refresh this roster.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const payload = await rosterService.refreshRosterSignupPayload(parsed.rosterId, cocService);
+  if (!payload) {
+    await interaction.reply({
+      content: "That roster is no longer available.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await interaction.update({
+    embeds: [payload.embed],
+    components: payload.components,
+  });
+}
+
+export async function handleRosterPostSettingsButtonInteraction(
+  interaction: ButtonInteraction,
+  _cocService?: CoCService | null,
+): Promise<void> {
+  const parsed = parseRosterPostSettingsButtonCustomId(interaction.customId);
+  if (!parsed) return;
+
+  if (!(await canUseRosterPostTarget(interaction, "roster:manage"))) {
+    await interaction.reply({
+      content: "You don't have permission to manage this roster.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const panel = await buildRosterSettingsPanel(parsed.rosterId);
+  if (!panel) {
+    await interaction.reply({
+      content: "That roster is no longer available.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await interaction.reply({
+    embeds: [panel.embed],
+    components: panel.components,
+    ephemeral: true,
+  });
+}
+
+export async function handleRosterPostSettingsMenuInteraction(
+  interaction: StringSelectMenuInteraction,
+  cocService: CoCService,
+): Promise<void> {
+  if (!isRosterPostSettingsMenuCustomId(interaction.customId)) return;
+  const parsed = parseRosterPostSettingsMenuCustomId(interaction.customId);
+  if (!parsed) return;
+
+  if (!(await canUseRosterPostTarget(interaction, "roster:manage"))) {
+    await interaction.reply({
+      content: "You don't have permission to manage this roster.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const choice = (interaction.values[0] ?? "") as RosterPostSettingsAction | "";
+  const roster = await resolveRosterForGuild(
+    interaction as unknown as ChatInputCommandInteraction,
+    parsed.rosterId,
+  );
+  if (!roster) {
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.reply({
+        content: "That roster is no longer available.",
+        ephemeral: true,
+      });
+    }
+    return;
+  }
+
+  if (choice === "roster_info") {
+    const info = await buildRosterInfoText(roster.id);
+    await interaction.reply({
+      content: info ?? "That roster is no longer available.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (choice === "close_roster") {
+    await rosterService.updateRosterLifecycleState({
+      rosterId: roster.id,
+      lifecycleState: ROSTER_LIFECYCLE_STATE.CLOSED,
+      updatedByDiscordUserId: interaction.user.id,
+    });
+    const refreshed = await refreshExistingRosterPost(
+      interaction as unknown as ChatInputCommandInteraction,
+      roster.id,
+      cocService,
+    );
+    await interaction.update({
+      content: "Roster closed.",
+      embeds: [],
+      components: [],
+    });
+    if (!refreshed) {
+      await syncRosterRolesForRoster(interaction as unknown as ChatInputCommandInteraction, roster.id).catch(() => undefined);
+    }
+    return;
+  }
+
+  if (choice === "hide_buttons") {
+    await rosterService.updateRosterPostButtonMode({
+      rosterId: roster.id,
+      postButtonMode: "hidden",
+      updatedByDiscordUserId: interaction.user.id,
+    });
+    await refreshExistingRosterPost(
+      interaction as unknown as ChatInputCommandInteraction,
+      roster.id,
+      cocService,
+    ).catch(() => undefined);
+    await interaction.update({
+      content: "Roster buttons hidden.",
+      embeds: [],
+      components: [],
+    });
+    return;
+  }
+
+  if (choice === "archive_mode") {
+    await rosterService.updateRosterLifecycleState({
+      rosterId: roster.id,
+      lifecycleState: ROSTER_LIFECYCLE_STATE.ARCHIVED,
+      updatedByDiscordUserId: interaction.user.id,
+    });
+    await rosterService.updateRosterPostButtonMode({
+      rosterId: roster.id,
+      postButtonMode: "archived",
+      updatedByDiscordUserId: interaction.user.id,
+    });
+    await refreshExistingRosterPost(
+      interaction as unknown as ChatInputCommandInteraction,
+      roster.id,
+      cocService,
+    ).catch(() => undefined);
+    await interaction.update({
+      content: "Roster archived.",
+      embeds: [],
+      components: [],
+    });
+    return;
+  }
+
+  if (choice === "unregistered_members" || choice === "missing_members") {
+    const readiness = await rosterService.buildRosterManagerReadinessView({
+      rosterId: roster.id,
+    });
+    const lines = !readiness
+      ? ["That roster is no longer available."]
+      : choice === "unregistered_members"
+        ? [
+            `Unregistered members for ${readiness.roster.title}:`,
+            ...(readiness.unsignedTrackedMembers.length > 0
+              ? readiness.unsignedTrackedMembers.map((entry) => `- ${entry.playerName} ${entry.playerTag}`)
+              : ["- None"]),
+          ]
+        : [
+            `Missing members for ${readiness.roster.title}:`,
+            ...(readiness.signedUpButUntracked.length > 0
+              ? readiness.signedUpButUntracked.map((entry) => `- ${entry.playerName ?? entry.playerTag} ${entry.playerTag}`)
+              : ["- None"]),
+          ];
+    await interaction.reply({
+      content: lines.join("\n"),
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (choice === "clear_roster") {
+    const panel = buildRosterClearConfirmationPanel(roster.id);
+    await interaction.reply({
+      embeds: [panel.embed],
+      components: panel.components,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await interaction.reply({
+    content: "Unsupported roster settings action.",
+    ephemeral: true,
+  });
+}
+
+export async function handleRosterPostClearButtonInteraction(
+  interaction: ButtonInteraction,
+  cocService: CoCService,
+): Promise<void> {
+  const parsed = parseRosterPostClearButtonCustomId(interaction.customId);
+  if (!parsed) return;
+
+  if (!(await canUseRosterPostTarget(interaction, "roster:manage"))) {
+    await interaction.reply({
+      content: "You don't have permission to manage this roster.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const roster = await resolveRosterForGuild(
+    interaction as unknown as ChatInputCommandInteraction,
+    parsed.rosterId,
+  );
+  if (!roster) {
+    return;
+  }
+
+  if (parsed.action === "cancel") {
+    await interaction.update({
+      content: "Roster clear cancelled.",
+      embeds: [],
+      components: [],
+    });
+    return;
+  }
+
+  const result = await rosterService.clearRosterSignups({
+    rosterId: roster.id,
+    updatedByDiscordUserId: interaction.user.id,
+  });
+  if (result.outcome === "roster_not_found") {
+    await interaction.reply({
+      content: "That roster is no longer available.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await refreshExistingRosterPost(interaction as unknown as ChatInputCommandInteraction, roster.id, cocService).catch(
+    () => undefined,
+  );
+  await interaction.update({
+    content:
+      result.outcome === "cleared"
+        ? `Cleared ${result.removedCount} roster signup${result.removedCount === 1 ? "" : "s"}.`
+        : "No roster signups needed clearing.",
+    embeds: [],
+    components: [],
+  });
 }
 
 async function handleRosterCreateSubcommand(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -541,7 +945,10 @@ async function handleRosterListSubcommand(interaction: ChatInputCommandInteracti
   });
 }
 
-async function handleRosterPostSubcommand(interaction: ChatInputCommandInteraction): Promise<void> {
+async function handleRosterPostSubcommand(
+  interaction: ChatInputCommandInteraction,
+  cocService: CoCService,
+): Promise<void> {
   if (!interaction.inGuild() || !interaction.guildId) {
     await interaction.editReply("This command can only be used in a server.");
     return;
@@ -553,7 +960,7 @@ async function handleRosterPostSubcommand(interaction: ChatInputCommandInteracti
     return;
   }
 
-  const result = await postRosterSignupMessage(interaction, roster.id);
+  const result = await postRosterSignupMessage(interaction, roster.id, cocService);
   if (result === "no_channel") {
     await interaction.editReply("This command can only post to a text channel.");
     return;
@@ -600,7 +1007,10 @@ async function handleRosterReadinessSubcommand(interaction: ChatInputCommandInte
   await handleRosterReportSubcommand(interaction);
 }
 
-async function handleRosterRefreshSubcommand(interaction: ChatInputCommandInteraction): Promise<void> {
+async function handleRosterRefreshSubcommand(
+  interaction: ChatInputCommandInteraction,
+  cocService: CoCService,
+): Promise<void> {
   if (!interaction.inGuild() || !interaction.guildId) {
     await interaction.editReply("This command can only be used in a server.");
     return;
@@ -611,7 +1021,7 @@ async function handleRosterRefreshSubcommand(interaction: ChatInputCommandIntera
     return;
   }
 
-  const refreshed = await refreshExistingRosterPost(interaction, roster.id);
+  const refreshed = await refreshExistingRosterPost(interaction, roster.id, cocService);
   if (!refreshed) {
     await interaction.editReply("That roster has not been posted yet.");
     return;
@@ -656,7 +1066,7 @@ async function handleRosterManageSubcommand(
       return;
     }
     await syncRosterRolesForRoster(interaction, roster.id).catch(() => undefined);
-    await refreshExistingRosterPost(interaction, roster.id).catch(() => undefined);
+    await refreshExistingRosterPost(interaction, roster.id, cocService).catch(() => undefined);
     await interaction.editReply(buildRosterLifecycleSummary(roster, lifecycleState));
     return;
   }
@@ -682,7 +1092,7 @@ async function handleRosterManageSubcommand(
         cocService,
       });
       await syncRosterRolesForRoster(interaction, roster.id).catch(() => undefined);
-      await refreshExistingRosterPost(interaction, roster.id).catch(() => undefined);
+      await refreshExistingRosterPost(interaction, roster.id, cocService).catch(() => undefined);
       await interaction.editReply(buildRosterSignupResultSummary(result));
       return;
     }
@@ -698,7 +1108,7 @@ async function handleRosterManageSubcommand(
       return;
     }
     await syncRosterRolesForRoster(interaction, roster.id).catch(() => undefined);
-    await refreshExistingRosterPost(interaction, roster.id).catch(() => undefined);
+    await refreshExistingRosterPost(interaction, roster.id, cocService).catch(() => undefined);
     await interaction.editReply(buildRosterMoveResultSummary(result));
     return;
   }
@@ -710,7 +1120,7 @@ async function handleRosterManageSubcommand(
       updatedByDiscordUserId: interaction.user.id,
     });
     await syncRosterRolesForRoster(interaction, roster.id).catch(() => undefined);
-    await refreshExistingRosterPost(interaction, roster.id).catch(() => undefined);
+    await refreshExistingRosterPost(interaction, roster.id, cocService).catch(() => undefined);
     await interaction.editReply(buildRosterRemoveResultSummary(result));
     return;
   }
@@ -718,7 +1128,10 @@ async function handleRosterManageSubcommand(
   await interaction.editReply("Unsupported roster manage action.");
 }
 
-async function handleRosterEditSubcommand(interaction: ChatInputCommandInteraction): Promise<void> {
+async function handleRosterEditSubcommand(
+  interaction: ChatInputCommandInteraction,
+  cocService: CoCService,
+): Promise<void> {
   if (!interaction.inGuild() || !interaction.guildId) {
     await interaction.editReply("This command can only be used in a server.");
     return;
@@ -910,7 +1323,7 @@ async function handleRosterEditSubcommand(interaction: ChatInputCommandInteracti
   }
 
   await syncRosterRolesForRoster(interaction, roster.id).catch(() => undefined);
-  await refreshExistingRosterPost(interaction, roster.id).catch(() => undefined);
+  await refreshExistingRosterPost(interaction, roster.id, cocService).catch(() => undefined);
   await interaction.editReply(`Updated roster ${updated.title}.`);
 }
 
@@ -1369,7 +1782,7 @@ export const Roster: Command = {
         return;
       }
       if (subcommand === "post") {
-        await handleRosterPostSubcommand(interaction);
+        await handleRosterPostSubcommand(interaction, cocService);
         return;
       }
       if (subcommand === "manage") {
@@ -1377,7 +1790,7 @@ export const Roster: Command = {
         return;
       }
       if (subcommand === "edit") {
-        await handleRosterEditSubcommand(interaction);
+        await handleRosterEditSubcommand(interaction, cocService);
         return;
       }
       if (subcommand === "delete") {
@@ -1393,7 +1806,7 @@ export const Roster: Command = {
         return;
       }
       if (subcommand === "refresh") {
-        await handleRosterRefreshSubcommand(interaction);
+        await handleRosterRefreshSubcommand(interaction, cocService);
         return;
       }
 

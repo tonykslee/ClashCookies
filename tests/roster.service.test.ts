@@ -28,6 +28,14 @@ const prismaMock = vi.hoisted(() => ({
   fwaPlayerCatalog: {
     findMany: vi.fn(),
   },
+  cwlTrackedClan: {
+    findFirst: vi.fn(),
+  },
+  todoPlayerSnapshot: {
+    findMany: vi.fn(),
+    aggregate: vi.fn(),
+    upsert: vi.fn(),
+  },
 }));
 
 const playerLinkServiceMock = vi.hoisted(() => ({
@@ -36,6 +44,10 @@ const playerLinkServiceMock = vi.hoisted(() => ({
 
 const cwlStateServiceMock = vi.hoisted(() => ({
   listSeasonRosterForClan: vi.fn(),
+}));
+
+const cocServiceMock = vi.hoisted(() => ({
+  getClan: vi.fn(),
 }));
 
 const todoSnapshotServiceMock = vi.hoisted(() => ({
@@ -212,12 +224,25 @@ describe("RosterService", () => {
     prismaMock.rosterSignup.deleteMany.mockResolvedValue({ count: 0 });
     prismaMock.playerLink.findMany.mockResolvedValue([]);
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findFirst.mockResolvedValue({
+      name: "CWL Alpha",
+    });
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([]);
+    prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
+      _count: { _all: 0 },
+      _max: { lastUpdatedAt: null, updatedAt: null },
+    });
+    prismaMock.todoPlayerSnapshot.upsert.mockResolvedValue({} as never);
     playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([]);
     cwlStateServiceMock.listSeasonRosterForClan.mockResolvedValue([]);
     todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValue([]);
     todoSnapshotServiceMock.refreshSnapshotsForPlayerTags.mockResolvedValue({
       playerCount: 0,
       updatedCount: 0,
+    });
+    cocServiceMock.getClan.mockReset();
+    cocServiceMock.getClan.mockResolvedValue({
+      warLeague: { name: "Champion League II" },
     });
   });
 
@@ -723,7 +748,7 @@ describe("RosterService", () => {
     );
   });
 
-  it("renders grouped signup entries and includes the remove button on the roster post", async () => {
+  it("renders grouped signup entries and shows the compact roster board header", async () => {
     prismaMock.rosterSignup.findMany.mockResolvedValue([
       {
         id: "signup-1",
@@ -767,17 +792,73 @@ describe("RosterService", () => {
 
     expect(payload).toBeTruthy();
     const description = payload?.embed.toJSON().description ?? "";
-    expect(description).toContain("Confirmed (1)");
-    expect(description).toContain("Alpha `#PQL0289` <@111111111111111111>");
-    expect(description).toContain("Substitute (1)");
-    expect(description).toContain("Bravo `#QGRJ2222` <@222222222222222222>");
+    expect(description).toContain("CWL Alpha (#2QG2C08UP)");
+    expect(description).toContain("CWL Alpha Signup CWL");
+    expect(description).toContain("Confirmed - 1");
+    expect(description).toContain("Player               Discord                Clan");
+    expect(description).toContain("Substitute - 1");
+    expect(description).toContain("Total 2/");
+    expect(cocServiceMock.getClan).not.toHaveBeenCalled();
     const componentIds = payload?.components.flatMap((row) => {
       const rowJson = row.toJSON() as any;
       return Array.isArray(rowJson.components)
         ? rowJson.components.map((component: any) => component.custom_id ?? component.customId ?? component.data?.custom_id ?? component.data?.customId)
         : [];
     }) ?? [];
-    expect(componentIds).toContain("roster-remove:roster-1");
+    expect(componentIds).toEqual(
+      expect.arrayContaining([
+        "roster-post-action:refresh:roster-1",
+        "roster-post-action:signup:roster-1",
+        "roster-post-action:optout:roster-1",
+        "roster-post-action:settings:roster-1",
+      ]),
+    );
+  });
+
+  it("refreshes only rostered player tags before rebuilding the posted roster payload", async () => {
+    prismaMock.rosterSignup.findMany.mockResolvedValue([
+      {
+        id: "signup-1",
+        rosterId: "roster-1",
+        groupId: "group-confirmed",
+        playerTag: "#PQL0289",
+        playerName: "Alpha",
+        discordUserId: "111111111111111111",
+        signedUpAt: new Date("2026-04-20T00:00:00.000Z"),
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+        group: {
+          id: "group-confirmed",
+          key: "confirmed",
+          name: "Confirmed",
+          description: "Primary roster members",
+          sortOrder: 0,
+        },
+      },
+    ] as any);
+    todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValue([
+      {
+        playerTag: "#PQL0289",
+        townHall: 15,
+        clanTag: "#2QG2C08UP",
+        clanName: "CWL Alpha",
+      },
+    ] as any);
+    todoSnapshotServiceMock.refreshSnapshotsForPlayerTags.mockResolvedValue({
+      playerCount: 1,
+      updatedCount: 1,
+    });
+
+    const payload = await rosterService.refreshRosterSignupPayload("roster-1", cocServiceMock as any);
+
+    expect(todoSnapshotServiceMock.refreshSnapshotsForPlayerTags).toHaveBeenCalledWith(
+      expect.objectContaining({
+        playerTags: ["#PQL0289"],
+        cocService: cocServiceMock,
+      }),
+    );
+    expect(payload).toBeTruthy();
+    expect(String(payload?.embed.toJSON().description ?? "")).toContain("CWL Alpha (#2QG2C08UP)");
   });
 
   it("builds a signup selection panel that lets a user choose linked accounts", async () => {
@@ -797,7 +878,7 @@ describe("RosterService", () => {
     if (result.outcome !== "ready") return;
     const payload = result.panel;
     const description = payload.embed.toJSON().description ?? "";
-    expect(description).toContain("Select linked accounts to sign up for Confirmed.");
+    expect(description).toContain("Choose a group and linked accounts for Confirmed.");
     expect(description).toContain("Selected: 0 / 2");
     const selectIds = payload.components.flatMap((row) => {
       const rowJson = row.toJSON() as any;
@@ -805,7 +886,12 @@ describe("RosterService", () => {
         ? rowJson.components.map((component: any) => component.custom_id ?? component.customId ?? component.data?.custom_id ?? component.data?.customId)
         : [];
     });
-    expect(selectIds.some((id) => String(id).startsWith("roster-selection:menu:"))).toBe(true);
+    expect(selectIds).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/^roster-selection:group:/),
+        expect.stringMatching(/^roster-selection:account:/),
+      ]),
+    );
     expect(payload.selectedTags).toEqual([]);
   });
 
@@ -1281,9 +1367,16 @@ describe("RosterService", () => {
         ? rowJson.components.map((component: any) => component.custom_id ?? component.customId ?? component.data?.custom_id ?? component.data?.customId)
         : [];
     }) ?? [];
-    expect(componentIds).toContain("roster-signup:roster-1:confirmed");
+    expect(componentIds).toEqual(
+      expect.arrayContaining([
+        "roster-post-action:refresh:roster-1",
+        "roster-post-action:signup:roster-1",
+        "roster-post-action:optout:roster-1",
+        "roster-post-action:settings:roster-1",
+      ]),
+    );
     const buttonJson = payload?.components[0]?.toJSON() as any;
-    const firstButton = buttonJson?.components?.[0];
+    const firstButton = buttonJson?.components?.[1];
     expect(Boolean(firstButton?.disabled ?? firstButton?.data?.disabled)).toBe(true);
   });
 

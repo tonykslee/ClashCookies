@@ -2,6 +2,7 @@ import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } from "disc
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const prismaMock = vi.hoisted(() => ({
+  $queryRaw: vi.fn(),
   cwlTrackedClan: {
     findFirst: vi.fn(),
   },
@@ -11,7 +12,13 @@ vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
 
-import { Roster } from "../src/commands/Roster";
+import {
+  Roster,
+  handleRosterPostClearButtonInteraction,
+  handleRosterPostRefreshButtonInteraction,
+  handleRosterPostSettingsButtonInteraction,
+  handleRosterPostSettingsMenuInteraction,
+} from "../src/commands/Roster";
 import { rosterService } from "../src/services/RosterService";
 
 type RosterSubcommand =
@@ -121,17 +128,21 @@ describe("/roster command", () => {
     vi.restoreAllMocks();
     vi.clearAllMocks();
     interactionClientFetchMock.mockReset();
+    prismaMock.$queryRaw.mockResolvedValue([]);
 
     prismaMock.cwlTrackedClan.findFirst.mockResolvedValue({ tag: "#2QG2C08UP", name: "CWL Alpha" });
     vi.spyOn(rosterService, "createRoster");
     vi.spyOn(rosterService, "buildRosterSignupPayload");
+    vi.spyOn(rosterService, "refreshRosterSignupPayload");
     vi.spyOn(rosterService, "recordRosterPostedMessage");
     vi.spyOn(rosterService, "findGuildRosterById");
     vi.spyOn(rosterService, "listGuildRosters");
     vi.spyOn(rosterService, "buildRosterManagerReadinessText");
     vi.spyOn(rosterService, "updateRosterLifecycleState");
+    vi.spyOn(rosterService, "updateRosterPostButtonMode");
     vi.spyOn(rosterService, "updateRoster");
     vi.spyOn(rosterService, "deleteRoster");
+    vi.spyOn(rosterService, "clearRosterSignups");
     vi.spyOn(rosterService, "getRosterView");
     vi.spyOn(rosterService, "getRosterRoleSyncTargets").mockResolvedValue(null as any);
     vi.spyOn(rosterService, "addRosterSignupsForManager");
@@ -227,8 +238,8 @@ describe("/roster command", () => {
       components: [
         new ActionRowBuilder<ButtonBuilder>().addComponents(
           new ButtonBuilder()
-            .setCustomId("roster-signup:roster-1:confirmed")
-            .setLabel("Confirmed (0)")
+            .setCustomId("roster-post-action:signup:roster-1")
+            .setLabel("Signup")
             .setStyle(ButtonStyle.Primary),
         ),
       ],
@@ -477,6 +488,361 @@ describe("/roster command", () => {
     expect(String(archiveInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain("was archived");
   });
 
+  it("opens the compact roster settings menu with only real actions", async () => {
+    (rosterService.getRosterView as any).mockResolvedValue({
+      roster: {
+        id: "roster-1",
+        title: "CWL Alpha Signup",
+        clanTag: "#2QG2C08UP",
+        lifecycleState: "OPEN",
+        postedMessageUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+        postedChannelId: "channel-1",
+        postedMessageId: "message-1",
+        postButtonMode: "standard",
+        minTownhall: 13,
+        maxTownhall: null,
+        rosterRoleId: null,
+      },
+      clanDisplayName: "CWL Alpha",
+      clanLeagueLabel: "Champion League II",
+      groups: [],
+      signups: [],
+      totalSignupCount: 0,
+    });
+    const interaction = {
+      customId: "roster-post-action:settings:roster-1",
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      memberPermissions: {
+        has: vi.fn().mockReturnValue(true),
+      },
+      reply: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    await handleRosterPostSettingsButtonInteraction(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ephemeral: true,
+        embeds: [expect.any(EmbedBuilder)],
+        components: [expect.any(ActionRowBuilder)],
+      }),
+    );
+    const payload = interaction.reply.mock.calls[0]?.[0] as any;
+    const menu = payload.components[0]?.toJSON?.().components?.[0];
+    expect(menu?.options?.map((option: any) => option.value)).toEqual([
+      "roster_info",
+      "close_roster",
+      "clear_roster",
+      "hide_buttons",
+      "archive_mode",
+      "unregistered_members",
+      "missing_members",
+    ]);
+  });
+
+  it("refreshes the posted roster from the service-owned current-clan refresh path", async () => {
+    (rosterService.refreshRosterSignupPayload as any).mockResolvedValue({
+      embed: new EmbedBuilder().setTitle("CWL Alpha Signup (Refreshed)"),
+      components: [],
+    });
+    const update = vi.fn().mockResolvedValue(undefined);
+    const interaction = {
+      customId: "roster-post-action:refresh:roster-1",
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      memberPermissions: {
+        has: vi.fn().mockReturnValue(true),
+      },
+      reply: vi.fn().mockResolvedValue(undefined),
+      update,
+    } as any;
+
+    await handleRosterPostRefreshButtonInteraction(interaction, {} as any);
+
+    expect(rosterService.refreshRosterSignupPayload).toHaveBeenCalledWith("roster-1", expect.anything());
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        embeds: [expect.any(EmbedBuilder)],
+        components: [],
+      }),
+    );
+  });
+
+  it("blocks roster post refresh actions when the user lacks the roster permission target", async () => {
+    const interaction = {
+      customId: "roster-post-action:refresh:roster-1",
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      memberPermissions: {
+        has: vi.fn().mockReturnValue(false),
+      },
+      reply: vi.fn().mockResolvedValue(undefined),
+      update: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    await handleRosterPostRefreshButtonInteraction(interaction, {} as any);
+
+    expect(interaction.reply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: "You don't have permission to refresh this roster.",
+        ephemeral: true,
+      }),
+    );
+    expect(interaction.update).not.toHaveBeenCalled();
+  });
+
+  it("shows a clear confirmation panel before removing roster signups", async () => {
+    (rosterService.findGuildRosterById as any).mockResolvedValue({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      lifecycleState: "OPEN",
+      postedChannelId: "channel-1",
+      postedMessageId: "message-1",
+      postedMessageUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    });
+    (rosterService.getRosterView as any).mockResolvedValue({
+      roster: {
+        id: "roster-1",
+        postedChannelId: "channel-1",
+        postedMessageId: "message-1",
+      },
+      clanDisplayName: "CWL Alpha",
+      clanLeagueLabel: "Champion League II",
+      groups: [],
+      signups: [],
+      totalSignupCount: 0,
+    });
+    (rosterService.refreshRosterSignupPayload as any).mockResolvedValue({
+      embed: new EmbedBuilder().setTitle("CWL Alpha Signup"),
+      components: [],
+    });
+    (rosterService.clearRosterSignups as any).mockResolvedValue({
+      outcome: "cleared",
+      rosterId: "roster-1",
+      removedCount: 2,
+    });
+    const editedMessage = {
+      edit: vi.fn().mockResolvedValue(undefined),
+    };
+    const rosterChannel = {
+      isTextBased: () => true,
+      messages: {
+        fetch: vi.fn().mockResolvedValue(editedMessage),
+      },
+    };
+    const settingsInteraction = {
+      customId: "roster-post-settings:roster-1",
+      values: ["clear_roster"],
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      memberPermissions: {
+        has: vi.fn().mockReturnValue(true),
+      },
+      reply: vi.fn().mockResolvedValue(undefined),
+      update: vi.fn().mockResolvedValue(undefined),
+      replied: false,
+      deferred: false,
+      client: {
+        channels: {
+          fetch: vi.fn().mockResolvedValue(rosterChannel),
+        },
+      },
+    } as any;
+
+    await handleRosterPostSettingsMenuInteraction(settingsInteraction, {} as any);
+
+    expect(settingsInteraction.reply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ephemeral: true,
+        embeds: [expect.any(EmbedBuilder)],
+        components: [expect.any(ActionRowBuilder)],
+      }),
+    );
+    const panel = settingsInteraction.reply.mock.calls[0]?.[0] as any;
+    expect(String(panel.embeds[0]?.toJSON?.().description ?? "")).toContain(
+      "This will remove every signup from the roster.",
+    );
+    const panelButtons = panel.components[0]?.toJSON?.().components ?? [];
+    expect(panelButtons.map((button: any) => button.custom_id ?? button.customId)).toEqual(
+      expect.arrayContaining([
+        "roster-post-clear:confirm:roster-1",
+        "roster-post-clear:cancel:roster-1",
+      ]),
+    );
+
+    const clearInteraction = {
+      customId: "roster-post-clear:confirm:roster-1",
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      memberPermissions: {
+        has: vi.fn().mockReturnValue(true),
+      },
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+      client: {
+        channels: {
+          fetch: vi.fn().mockResolvedValue(rosterChannel),
+        },
+      },
+    } as any;
+
+    await handleRosterPostClearButtonInteraction(clearInteraction, {} as any);
+
+    expect(rosterService.clearRosterSignups).toHaveBeenCalledWith({
+      rosterId: "roster-1",
+      updatedByDiscordUserId: "111111111111111111",
+    });
+    expect(editedMessage.edit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        embeds: [expect.any(EmbedBuilder)],
+      }),
+    );
+    expect(clearInteraction.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: "Cleared 2 roster signups.",
+        components: [],
+      }),
+    );
+  });
+
+  it("applies close, hide, and archive settings to the posted roster board", async () => {
+    (rosterService.findGuildRosterById as any).mockResolvedValue({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      lifecycleState: "OPEN",
+      postedChannelId: "channel-1",
+      postedMessageId: "message-1",
+      postedMessageUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    });
+    (rosterService.getRosterView as any).mockResolvedValue({
+      roster: {
+        id: "roster-1",
+        postedChannelId: "channel-1",
+        postedMessageId: "message-1",
+      },
+      clanDisplayName: "CWL Alpha",
+      clanLeagueLabel: "Champion League II",
+      groups: [],
+      signups: [],
+      totalSignupCount: 0,
+    });
+    (rosterService.refreshRosterSignupPayload as any).mockResolvedValue({
+      embed: new EmbedBuilder().setTitle("CWL Alpha Signup"),
+      components: [],
+    });
+    (rosterService.updateRosterLifecycleState as any).mockResolvedValue({
+      outcome: "updated",
+      rosterId: "roster-1",
+      lifecycleState: "CLOSED",
+    });
+    (rosterService.updateRosterPostButtonMode as any).mockResolvedValue({
+      rosterId: "roster-1",
+      postButtonMode: "hidden",
+    });
+    const editedMessage = {
+      edit: vi.fn().mockResolvedValue(undefined),
+    };
+    const rosterChannel = {
+      isTextBased: () => true,
+      messages: {
+        fetch: vi.fn().mockResolvedValue(editedMessage),
+      },
+    };
+    const baseInteraction = {
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      memberPermissions: {
+        has: vi.fn().mockReturnValue(true),
+      },
+      reply: vi.fn().mockResolvedValue(undefined),
+      update: vi.fn().mockResolvedValue(undefined),
+      replied: false,
+      deferred: false,
+      client: {
+        channels: {
+          fetch: vi.fn().mockResolvedValue(rosterChannel),
+        },
+      },
+    } as any;
+
+    await handleRosterPostSettingsMenuInteraction(
+      { ...baseInteraction, customId: "roster-post-settings:roster-1", values: ["close_roster"] } as any,
+      {} as any,
+    );
+    expect(rosterService.updateRosterLifecycleState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rosterId: "roster-1",
+        lifecycleState: "CLOSED",
+        updatedByDiscordUserId: "111111111111111111",
+      }),
+    );
+    expect(editedMessage.edit).toHaveBeenCalledWith(expect.objectContaining({ embeds: [expect.any(EmbedBuilder)] }));
+
+    await handleRosterPostSettingsMenuInteraction(
+      { ...baseInteraction, customId: "roster-post-settings:roster-1", values: ["hide_buttons"] } as any,
+      {} as any,
+    );
+    expect(rosterService.updateRosterPostButtonMode).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rosterId: "roster-1",
+        postButtonMode: "hidden",
+        updatedByDiscordUserId: "111111111111111111",
+      }),
+    );
+
+    await handleRosterPostSettingsMenuInteraction(
+      { ...baseInteraction, customId: "roster-post-settings:roster-1", values: ["archive_mode"] } as any,
+      {} as any,
+    );
+    expect(rosterService.updateRosterLifecycleState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rosterId: "roster-1",
+        lifecycleState: "ARCHIVED",
+        updatedByDiscordUserId: "111111111111111111",
+      }),
+    );
+    expect(rosterService.updateRosterPostButtonMode).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rosterId: "roster-1",
+        postButtonMode: "archived",
+        updatedByDiscordUserId: "111111111111111111",
+      }),
+    );
+  });
+
   it("shows exactly which selected accounts are missing town hall data when roster add is blocked", async () => {
     (rosterService.findGuildRosterById as any).mockResolvedValue({
       id: "roster-1",
@@ -584,7 +950,7 @@ describe("/roster command", () => {
       createdAt: new Date("2026-04-20T00:00:00.000Z"),
       updatedAt: new Date("2026-04-20T00:00:00.000Z"),
     });
-    (rosterService.buildRosterSignupPayload as any).mockResolvedValue({
+    (rosterService.refreshRosterSignupPayload as any).mockResolvedValue({
       embed: new EmbedBuilder().setTitle("CWL Alpha Signup (Updated)"),
       components: [],
     });
@@ -711,6 +1077,7 @@ describe("/roster command", () => {
       guildId: "guild-1",
       rosterId: "roster-1",
     });
+    expect(rosterService.refreshRosterSignupPayload).toHaveBeenCalledWith("roster-1", null);
     expect(String(refreshInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain("Refreshed the posted roster for CWL Alpha Signup.");
 
     (rosterService.deleteRoster as any).mockResolvedValue({

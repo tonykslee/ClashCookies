@@ -192,14 +192,14 @@ export class TodoSnapshotService {
     });
 
     const indexByTag = new Map(normalizedTags.map((tag, idx) => [tag, idx]));
-    return rows
-      .map((row) => ({
-        ...row,
-        playerTag: normalizePlayerTag(row.playerTag),
-        townHall: Number.isFinite(Number(row.townHall)) ? Math.trunc(Number(row.townHall)) : null,
-        clanTag: row.clanTag ? normalizeClanTag(row.clanTag) : null,
-        cwlClanTag: row.cwlClanTag ? normalizeClanTag(row.cwlClanTag) : null,
-      }))
+    const normalizedRows = rows.map((row) => ({
+      ...row,
+      playerTag: normalizePlayerTag(row.playerTag),
+      townHall: Number.isFinite(Number(row.townHall)) ? Math.trunc(Number(row.townHall)) : null,
+      clanTag: row.clanTag ? normalizeClanTag(row.clanTag) : null,
+      cwlClanTag: row.cwlClanTag ? normalizeClanTag(row.cwlClanTag) : null,
+    })) as TodoSnapshotRecord[];
+    return normalizedRows
       .filter((row) => row.playerTag.length > 0)
       .sort((a, b) => {
         const aIndex = indexByTag.get(a.playerTag);

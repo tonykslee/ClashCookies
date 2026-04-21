@@ -329,7 +329,7 @@ describe("/cwl command", () => {
       components: [
         new ActionRowBuilder<ButtonBuilder>().addComponents(
           new ButtonBuilder()
-            .setCustomId("roster-signup:roster-1:confirmed")
+            .setCustomId("roster-post-action:signup:roster-1")
             .setLabel("Confirmed (0)")
             .setStyle(ButtonStyle.Primary),
         ),
@@ -396,7 +396,17 @@ describe("/cwl command", () => {
         components: [
           new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
             new StringSelectMenuBuilder()
-              .setCustomId("roster-selection:menu:session-1")
+              .setCustomId("roster-selection:group:session-1")
+              .setMinValues(0)
+              .setMaxValues(2)
+              .addOptions([
+                { label: "Alpha", value: "#P1", description: "#P1 | available" },
+                { label: "Bravo", value: "#P2", description: "#P2 | already signed up" },
+              ]),
+          ),
+          new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+            new StringSelectMenuBuilder()
+              .setCustomId("roster-selection:account:session-1")
               .setMinValues(0)
               .setMaxValues(2)
               .addOptions([
@@ -406,12 +416,12 @@ describe("/cwl command", () => {
           ),
           new ActionRowBuilder<ButtonBuilder>().addComponents(
             new ButtonBuilder()
-              .setCustomId("roster-selection:confirm:session-1")
+              .setCustomId("roster-selection:action:confirm:session-1")
               .setLabel("Confirm Signup")
               .setStyle(ButtonStyle.Success)
               .setDisabled(true),
             new ButtonBuilder()
-              .setCustomId("roster-selection:cancel:session-1")
+              .setCustomId("roster-selection:action:cancel:session-1")
               .setLabel("Cancel")
               .setStyle(ButtonStyle.Secondary),
           ),
@@ -420,7 +430,7 @@ describe("/cwl command", () => {
     } as any);
 
     const interaction = {
-      customId: "roster-signup:roster-1:confirmed",
+      customId: "roster-post-action:signup:roster-1",
       user: { id: "111111111111111111" },
       reply: vi.fn().mockResolvedValue(undefined),
     };
@@ -429,7 +439,6 @@ describe("/cwl command", () => {
 
     expect(rosterService.createRosterSignupSelectionPanel).toHaveBeenCalledWith({
       rosterId: "roster-1",
-      groupKey: "confirmed",
       discordUserId: "111111111111111111",
     });
     expect(interaction.reply).toHaveBeenCalledWith(
@@ -441,9 +450,10 @@ describe("/cwl command", () => {
     const payload = interaction.reply.mock.calls[0]?.[0] as any;
     expect(getPayloadComponentCustomIds(payload)).toEqual(
       expect.arrayContaining([
-        "roster-selection:menu:session-1",
-        "roster-selection:confirm:session-1",
-        "roster-selection:cancel:session-1",
+        "roster-selection:group:session-1",
+        "roster-selection:account:session-1",
+        "roster-selection:action:confirm:session-1",
+        "roster-selection:action:cancel:session-1",
       ]),
     );
   });
@@ -495,7 +505,7 @@ describe("/cwl command", () => {
     });
 
     const updateInteraction = {
-      customId: "roster-selection:menu:session-2",
+      customId: "roster-selection:account:session-2",
       user: { id: "111111111111111111" },
       values: ["#P1", "#P2"],
       update: vi.fn().mockResolvedValue(undefined),
@@ -514,7 +524,7 @@ describe("/cwl command", () => {
     );
 
     const confirmInteraction = {
-      customId: "roster-selection:confirm:session-2",
+      customId: "roster-selection:action:confirm:session-2",
       user: { id: "111111111111111111" },
       update: vi.fn().mockResolvedValue(undefined),
       reply: vi.fn().mockResolvedValue(undefined),
@@ -539,7 +549,7 @@ describe("/cwl command", () => {
     );
 
     const removeInteraction = {
-      customId: "roster-remove:roster-1",
+      customId: "roster-post-action:optout:roster-1",
       user: { id: "111111111111111111" },
       reply: vi.fn().mockResolvedValue(undefined),
     };
@@ -578,7 +588,7 @@ describe("/cwl command", () => {
     });
 
     const confirmInteraction = {
-      customId: "roster-selection:confirm:session-2",
+      customId: "roster-selection:action:confirm:session-2",
       user: { id: "111111111111111111" },
       update: vi.fn().mockResolvedValue(undefined),
       reply: vi.fn().mockResolvedValue(undefined),
