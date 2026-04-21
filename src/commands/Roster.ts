@@ -227,6 +227,20 @@ function parseRosterIntegerOption(value: number | null | undefined): number | nu
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
+function resolveRosterNameOption(interaction: ChatInputCommandInteraction): {
+  name: string | null;
+  title: string | null;
+  conflict: boolean;
+} {
+  const name = interaction.options.getString("name", false)?.trim() ?? null;
+  const title = interaction.options.getString("title", false)?.trim() ?? null;
+  return {
+    name,
+    title,
+    conflict: Boolean(name && title),
+  };
+}
+
 async function syncRosterRolesForRoster(interaction: ChatInputCommandInteraction, rosterId: string): Promise<void> {
   await syncRosterRoleAssignments(interaction.client, rosterId).catch((error) => {
     console.error(`[roster] role_sync_failed rosterId=${rosterId} error=${formatError(error)}`);
@@ -379,7 +393,11 @@ async function handleRosterCreateSubcommand(interaction: ChatInputCommandInterac
     return;
   }
 
-  const nameSeed = interaction.options.getString("name", false);
+  const { name: nameSeed, title: titleSeed, conflict: nameConflict } = resolveRosterNameOption(interaction);
+  if (nameConflict) {
+    await interaction.editReply("Choose either name or title, not both.");
+    return;
+  }
   const timezoneSeed = interaction.options.getString("timezone", false);
   const timezone = timezoneSeed ? normalizeSyncTimeZone(timezoneSeed) : "UTC";
   if (timezoneSeed && !timezone) {
@@ -463,7 +481,7 @@ async function handleRosterCreateSubcommand(interaction: ChatInputCommandInterac
     guildId: interaction.guildId,
     rosterType,
     rosterCategory: "signup",
-    name: defaultName,
+    name: nameSeed ?? titleSeed ?? defaultName,
     clanTag,
     startsAt: startsAt ?? new Date(),
     endsAt,
@@ -692,7 +710,11 @@ async function handleRosterEditSubcommand(interaction: ChatInputCommandInteracti
     return;
   }
 
-  const nameSeed = interaction.options.getString("name", false);
+  const { name: nameSeed, title: titleSeed, conflict: nameConflict } = resolveRosterNameOption(interaction);
+  if (nameConflict) {
+    await interaction.editReply("Choose either name or title, not both.");
+    return;
+  }
   const categorySeed = normalizeRosterCategoryChoice(interaction.options.getString("category", false));
   if (interaction.options.getString("category", false) && !categorySeed) {
     await interaction.editReply("Use a supported roster category: CWL or FWA.");
@@ -728,6 +750,7 @@ async function handleRosterEditSubcommand(interaction: ChatInputCommandInteracti
 
   if (
     !nameSeed &&
+    !titleSeed &&
     !categorySeed &&
     !clanSeed &&
     !timezoneSeed &&
@@ -845,7 +868,7 @@ async function handleRosterEditSubcommand(interaction: ChatInputCommandInteracti
 
   const updated = await rosterService.updateRoster({
     rosterId: roster.id,
-    name: nameSeed ?? undefined,
+    name: nameSeed ?? titleSeed ?? undefined,
     rosterType: categorySeed ?? undefined,
     clanTag: clanSeed ?? undefined,
     timezone: timezone ?? undefined,
@@ -949,6 +972,12 @@ export const Roster: Command = {
         {
           name: "name",
           description: "Roster name",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+        },
+        {
+          name: "title",
+          description: "Backwards-compatible alias for roster name",
           type: ApplicationCommandOptionType.String,
           required: false,
         },
@@ -1135,6 +1164,12 @@ export const Roster: Command = {
         {
           name: "name",
           description: "Roster name",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+        },
+        {
+          name: "title",
+          description: "Backwards-compatible alias for roster name",
           type: ApplicationCommandOptionType.String,
           required: false,
         },
