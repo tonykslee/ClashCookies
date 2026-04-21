@@ -25,6 +25,9 @@ const prismaMock = vi.hoisted(() => ({
   playerLink: {
     findMany: vi.fn(),
   },
+  fwaClanMemberCurrent: {
+    findMany: vi.fn(),
+  },
   fwaPlayerCatalog: {
     findMany: vi.fn(),
   },
@@ -44,6 +47,7 @@ const playerLinkServiceMock = vi.hoisted(() => ({
 
 const cwlStateServiceMock = vi.hoisted(() => ({
   listSeasonRosterForClan: vi.fn(),
+  getCurrentRoundForClan: vi.fn(),
 }));
 
 const cocServiceMock = vi.hoisted(() => ({
@@ -223,6 +227,7 @@ describe("RosterService", () => {
     prismaMock.rosterSignup.updateMany.mockResolvedValue({ count: 0 });
     prismaMock.rosterSignup.deleteMany.mockResolvedValue({ count: 0 });
     prismaMock.playerLink.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
     prismaMock.cwlTrackedClan.findFirst.mockResolvedValue({
       name: "CWL Alpha",
@@ -235,6 +240,7 @@ describe("RosterService", () => {
     prismaMock.todoPlayerSnapshot.upsert.mockResolvedValue({} as never);
     playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([]);
     cwlStateServiceMock.listSeasonRosterForClan.mockResolvedValue([]);
+    cwlStateServiceMock.getCurrentRoundForClan.mockResolvedValue(null);
     todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValue([]);
     todoSnapshotServiceMock.refreshSnapshotsForPlayerTags.mockResolvedValue({
       playerCount: 0,
@@ -1301,7 +1307,7 @@ describe("RosterService", () => {
     expect(prismaMock.rosterSignup.deleteMany).not.toHaveBeenCalled();
   });
 
-  it("builds a manager readiness view that surfaces unsigned and out-of-clan players", async () => {
+  it("builds a manager readiness view from current CWL clan members, not stale season roster participants", async () => {
     prismaMock.rosterSignup.findMany.mockResolvedValue([
       {
         id: "signup-1",
@@ -1356,38 +1362,147 @@ describe("RosterService", () => {
         sortOrder: 1,
       },
     ]);
-    cwlStateServiceMock.listSeasonRosterForClan.mockResolvedValue([
+    cwlStateServiceMock.getCurrentRoundForClan.mockResolvedValue({
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      clanName: "Current Clan",
+      roundDay: 4,
+      roundState: "inWar",
+      opponentTag: "#OPPONENT",
+      opponentName: "Opponent Clan",
+      teamSize: 15,
+      attacksPerMember: 1,
+      preparationStartTime: new Date("2026-04-20T00:00:00.000Z"),
+      startTime: new Date("2026-04-20T01:00:00.000Z"),
+      endTime: new Date("2026-04-20T02:00:00.000Z"),
+      sourceUpdatedAt: new Date("2026-04-20T00:00:00.000Z"),
+      members: [
+        {
+          season: "2026-04",
+          clanTag: "#2QG2C08UP",
+          playerTag: "#QGRJ2222",
+          roundDay: 4,
+          playerName: "Bravo",
+          mapPosition: 2,
+          townHall: 15,
+          attacksUsed: 0,
+          attacksAvailable: 1,
+          stars: 0,
+          destruction: 0,
+          subbedIn: true,
+          subbedOut: false,
+        },
+      ],
+    } as any);
+    prismaMock.playerLink.findMany.mockResolvedValue([
       {
-        season: "2026-04",
-        clanTag: "#2QG2C08UP",
         playerTag: "#PQL0289",
-        playerName: "Alpha",
-        townHall: 16,
-        linkedDiscordUserId: "111111111111111111",
-        linkedDiscordUsername: "alpha-user",
-        daysParticipated: 2,
-        currentRound: null,
+        discordUserId: "111111111111111111",
+        discordUsername: "alpha-user",
       },
       {
-        season: "2026-04",
-        clanTag: "#2QG2C08UP",
         playerTag: "#QGRJ2222",
-        playerName: "Bravo",
-        townHall: 15,
-        linkedDiscordUserId: "222222222222222222",
-        linkedDiscordUsername: "bravo-user",
-        daysParticipated: 1,
-        currentRound: null,
+        discordUserId: "222222222222222222",
+        discordUsername: "bravo-user",
       },
-    ]);
+    ] as any);
 
     const report = await rosterService.buildRosterManagerReadinessText({ rosterId: "roster-1" });
 
     expect(report).toContain("CWL Alpha Signup");
-    expect(report).toContain("Unsigned tracked clan members:");
+    expect(report).toContain("Current clan members:");
+    expect(report).toContain("Unregistered members:");
     expect(report).toContain("- Bravo `#QGRJ2222` <@222222222222222222>");
     expect(report).toContain("Out-of-clan signups:");
     expect(report).toContain("- Outlier `#ZZZZ1111` <@333333333333333333>");
+    expect(report).not.toContain("#OLD1111");
+  });
+
+  it("builds a manager readiness view from the current FWA clan membership table", async () => {
+    prismaMock.roster.findUnique.mockResolvedValueOnce({
+      id: "roster-2",
+      guildId: "guild-1",
+      rosterType: "FWA",
+      rosterCategory: "signup",
+      title: "FWA Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    });
+    prismaMock.rosterSignup.findMany.mockResolvedValueOnce([
+      {
+        id: "signup-1",
+        rosterId: "roster-2",
+        groupId: "group-confirmed",
+        playerTag: "#PQL0289",
+        playerName: "Alpha",
+        discordUserId: "111111111111111111",
+        signedUpAt: new Date("2026-04-20T00:00:00.000Z"),
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+        group: {
+          id: "group-confirmed",
+          key: "confirmed",
+          name: "Confirmed",
+          description: "Primary roster members",
+          sortOrder: 0,
+        },
+      },
+    ] as any);
+    prismaMock.rosterGroup.findMany.mockResolvedValueOnce([
+      {
+        id: "group-confirmed",
+        key: "confirmed",
+        name: "Confirmed",
+        description: "Primary roster members",
+        sortOrder: 0,
+      },
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValueOnce([
+      {
+        clanTag: "#2QG2C08UP",
+        playerTag: "#PQL0289",
+        playerName: "Alpha",
+        townHall: 16,
+      },
+      {
+        clanTag: "#2QG2C08UP",
+        playerTag: "#QGRJ2222",
+        playerName: "Bravo",
+        townHall: 15,
+      },
+    ] as any);
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PQL0289",
+        discordUserId: "111111111111111111",
+        discordUsername: "alpha-user",
+      },
+      {
+        playerTag: "#QGRJ2222",
+        discordUserId: "222222222222222222",
+        discordUsername: "bravo-user",
+      },
+    ] as any);
+
+    const report = await rosterService.buildRosterManagerReadinessText({ rosterId: "roster-2" });
+
+    expect(report).toContain("FWA Alpha Signup");
+    expect(report).toContain("Current clan members:");
+    expect(report).toContain("Unregistered members:");
+    expect(report).toContain("- Bravo `#QGRJ2222` <@222222222222222222>");
+    expect(report).not.toContain("#OLD1111");
   });
 
   it("renders closed rosters with disabled signup controls", async () => {
