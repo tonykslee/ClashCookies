@@ -1437,7 +1437,7 @@ function buildRosterSignupPayloadFromView(view: RosterSignupView): RosterSignupP
   return { embed, components: buttonRows };
 }
 
-async function loadRosterView(rosterId: string, cocService?: CoCService | null): Promise<RosterSignupView | null> {
+async function loadRosterView(rosterId: string): Promise<RosterSignupView | null> {
   const roster = await prisma.roster.findUnique({
     where: { id: rosterId },
     select: {
@@ -1541,12 +1541,6 @@ async function loadRosterView(rosterId: string, cocService?: CoCService | null):
     normalizeRosterText(trackedClan?.name ?? null) ??
     normalizeRosterText(snapshotClanName ?? null) ??
     null;
-  let clanLeagueLabel: string | null = null;
-  if (roster.rosterType === "CWL" && roster.clanTag && cocService) {
-    const clan = await cocService.getClan(roster.clanTag).catch(() => null);
-    const warLeagueName = (clan as { warLeague?: { name?: unknown } | null } | null)?.warLeague?.name;
-    clanLeagueLabel = normalizeRosterText(typeof warLeagueName === "string" ? warLeagueName : null);
-  }
   const sortedSignups = sortRosterSignupsForRoster(signupsWithTownHall, roster.sortBy);
   const signupCountByGroupId = new Map<string, number>();
   for (const signup of sortedSignups) {
@@ -1557,7 +1551,7 @@ async function loadRosterView(rosterId: string, cocService?: CoCService | null):
   return {
     roster,
     clanDisplayName,
-    clanLeagueLabel,
+    clanLeagueLabel: null,
     groups: groups.map((group) => ({
       ...group,
       signupCount: signupCountByGroupId.get(group.id) ?? 0,
@@ -1845,8 +1839,8 @@ export class RosterService {
     });
   }
 
-  async buildRosterSignupPayload(rosterId: string, cocService?: CoCService | null): Promise<RosterSignupPayload | null> {
-    const view = await loadRosterView(rosterId, cocService ?? null);
+  async buildRosterSignupPayload(rosterId: string, _cocService?: CoCService | null): Promise<RosterSignupPayload | null> {
+    const view = await loadRosterView(rosterId);
     if (!view) return null;
     return buildRosterSignupPayloadFromView(view);
   }
@@ -1877,8 +1871,8 @@ export class RosterService {
     return this.buildRosterSignupPayload(rosterId, cocService ?? null);
   }
 
-  async getRosterView(rosterId: string, cocService?: CoCService | null): Promise<RosterSignupView | null> {
-    return loadRosterView(rosterId, cocService ?? null);
+  async getRosterView(rosterId: string, _cocService?: CoCService | null): Promise<RosterSignupView | null> {
+    return loadRosterView(rosterId);
   }
 
   async getRosterRoleSyncTargets(input: {

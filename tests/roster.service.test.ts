@@ -788,16 +788,17 @@ describe("RosterService", () => {
       },
     ] as any);
 
-    const payload = await rosterService.buildRosterSignupPayload("roster-1", cocServiceMock as any);
+    const payload = await rosterService.buildRosterSignupPayload("roster-1");
 
     expect(payload).toBeTruthy();
     const description = payload?.embed.toJSON().description ?? "";
     expect(description).toContain("CWL Alpha (#2QG2C08UP)");
-    expect(description).toContain("CWL Alpha Signup Champion League II");
+    expect(description).toContain("CWL Alpha Signup CWL");
     expect(description).toContain("Confirmed - 1");
     expect(description).toContain("Player               Discord                Clan");
     expect(description).toContain("Substitute - 1");
     expect(description).toContain("Total 2/");
+    expect(cocServiceMock.getClan).not.toHaveBeenCalled();
     const componentIds = payload?.components.flatMap((row) => {
       const rowJson = row.toJSON() as any;
       return Array.isArray(rowJson.components)
