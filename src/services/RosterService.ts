@@ -202,6 +202,8 @@ export type RosterSelectionCommitResult =
 
 export type RosterSignupView = {
   roster: RosterRecord;
+  clanDisplayName: string | null;
+  clanLeagueLabel: string | null;
   groups: Array<
     RosterGroupRecord & {
       signupCount: number;
@@ -1232,6 +1234,7 @@ async function resolveRosterPlayerTownHallMap(input: {
   rosterType: string;
   clanTag: string | null;
   playerTags: string[];
+  allowLiveFetch?: boolean;
   cocService?: CoCService | null;
 }): Promise<RosterTownHallResolution> {
   const normalizedTags = [...new Set(input.playerTags.map((tag) => normalizePlayerTag(tag)).filter(Boolean))];
@@ -1338,10 +1341,12 @@ function normalizeRosterPostButtonMode(input: unknown): RosterPostButtonMode {
 }
 
 function getRosterCurrentClanLabel(view: RosterSignupView): string {
-  const currentClanName = view.signups.find((signup) => signup.clanName)?.clanName ?? null;
-  const currentClanTag = view.signups.find((signup) => signup.clanTag)?.clanTag ?? view.roster.clanTag ?? null;
-  const label = currentClanName || currentClanTag || "unscoped";
-  return currentClanTag ? `${label} (${currentClanTag})` : label;
+  const currentClanTag = normalizeClanTag(view.roster.clanTag ?? "") || null;
+  const currentClanName = normalizeRosterText(view.clanDisplayName ?? null);
+  if (currentClanName && currentClanTag && currentClanName !== currentClanTag) {
+    return `${currentClanName} (${currentClanTag})`;
+  }
+  return currentClanName ?? currentClanTag ?? "unscoped";
 }
 
 function formatRosterTableCell(input: string, width: number): string {
@@ -1368,7 +1373,7 @@ function buildRosterSignupPayloadFromView(view: RosterSignupView): RosterSignupP
   const title = view.roster.title || "Roster Signup";
   const groups = buildRosterGroupsWithSignups(view);
   const currentClanLabel = getRosterCurrentClanLabel(view);
-  const rosterLabel = `${title}${view.roster.rosterCategory ? ` ${view.roster.rosterCategory}` : ""}`;
+  const rosterLabel = `${title} ${view.clanLeagueLabel ?? view.roster.rosterType}`.trim();
   const maxMembersLabel = view.roster.maxMembers === null || view.roster.maxMembers === undefined ? "-" : String(view.roster.maxMembers);
   const minTownHallLabel = view.roster.minTownhall === null || view.roster.minTownhall === undefined ? "##" : String(view.roster.minTownhall);
   const lines: string[] = [
@@ -1432,7 +1437,7 @@ function buildRosterSignupPayloadFromView(view: RosterSignupView): RosterSignupP
   return { embed, components: buttonRows };
 }
 
-async function loadRosterView(rosterId: string): Promise<RosterSignupView | null> {
+async function loadRosterView(rosterId: string, cocService?: CoCService | null): Promise<RosterSignupView | null> {
   const roster = await prisma.roster.findUnique({
     where: { id: rosterId },
     select: {
@@ -1512,12 +1517,36 @@ async function loadRosterView(rosterId: string): Promise<RosterSignupView | null
     playerTags: signups.map((signup) => signup.playerTag),
   });
   const snapshotByTag = new Map(snapshotRows.map((row) => [normalizePlayerTag(row.playerTag), row] as const));
+  const snapshotClanName =
+    snapshotRows.find((row) => normalizeRosterText(row.clanName ?? null))?.clanName ?? null;
+  const trackedClan =
+    roster.rosterType === "CWL" && roster.clanTag
+      ? await prisma.cwlTrackedClan.findFirst({
+          where: {
+            season: resolveCurrentCwlSeasonKey(),
+            tag: normalizeClanTag(roster.clanTag),
+          },
+          select: {
+            name: true,
+          },
+        })
+      : null;
   const signupsWithTownHall = signups.map((signup) => ({
     ...signup,
     townHall: townHallByTag.get(normalizePlayerTag(signup.playerTag)) ?? null,
     clanTag: snapshotByTag.get(normalizePlayerTag(signup.playerTag))?.clanTag ?? null,
     clanName: snapshotByTag.get(normalizePlayerTag(signup.playerTag))?.clanName ?? null,
   }));
+  const clanDisplayName =
+    normalizeRosterText(trackedClan?.name ?? null) ??
+    normalizeRosterText(snapshotClanName ?? null) ??
+    null;
+  let clanLeagueLabel: string | null = null;
+  if (roster.rosterType === "CWL" && roster.clanTag && cocService) {
+    const clan = await cocService.getClan(roster.clanTag).catch(() => null);
+    const warLeagueName = (clan as { warLeague?: { name?: unknown } | null } | null)?.warLeague?.name;
+    clanLeagueLabel = normalizeRosterText(typeof warLeagueName === "string" ? warLeagueName : null);
+  }
   const sortedSignups = sortRosterSignupsForRoster(signupsWithTownHall, roster.sortBy);
   const signupCountByGroupId = new Map<string, number>();
   for (const signup of sortedSignups) {
@@ -1527,6 +1556,8 @@ async function loadRosterView(rosterId: string): Promise<RosterSignupView | null
 
   return {
     roster,
+    clanDisplayName,
+    clanLeagueLabel,
     groups: groups.map((group) => ({
       ...group,
       signupCount: signupCountByGroupId.get(group.id) ?? 0,
@@ -1814,14 +1845,40 @@ export class RosterService {
     });
   }
 
-  async buildRosterSignupPayload(rosterId: string): Promise<RosterSignupPayload | null> {
-    const view = await loadRosterView(rosterId);
+  async buildRosterSignupPayload(rosterId: string, cocService?: CoCService | null): Promise<RosterSignupPayload | null> {
+    const view = await loadRosterView(rosterId, cocService ?? null);
     if (!view) return null;
     return buildRosterSignupPayloadFromView(view);
   }
 
-  async getRosterView(rosterId: string): Promise<RosterSignupView | null> {
-    return loadRosterView(rosterId);
+  async refreshRosterSignupPayload(rosterId: string, cocService?: CoCService | null): Promise<RosterSignupPayload | null> {
+    const roster = await prisma.roster.findUnique({
+      where: { id: rosterId },
+      select: {
+        id: true,
+      },
+    });
+    if (!roster) return null;
+
+    if (cocService) {
+      const rosteredTags = await prisma.rosterSignup.findMany({
+        where: { rosterId: roster.id },
+        select: { playerTag: true },
+      });
+      const playerTags = [...new Set(rosteredTags.map((row) => normalizePlayerTag(row.playerTag)).filter(Boolean))];
+      if (playerTags.length > 0) {
+        await todoSnapshotService.refreshSnapshotsForPlayerTags({
+          playerTags,
+          cocService,
+        });
+      }
+    }
+
+    return this.buildRosterSignupPayload(rosterId, cocService ?? null);
+  }
+
+  async getRosterView(rosterId: string, cocService?: CoCService | null): Promise<RosterSignupView | null> {
+    return loadRosterView(rosterId, cocService ?? null);
   }
 
   async getRosterRoleSyncTargets(input: {
@@ -2328,6 +2385,62 @@ export class RosterService {
       outcome: "updated",
       rosterId: roster.id,
       postButtonMode: normalizeRosterPostButtonMode(input.postButtonMode),
+    };
+  }
+
+  async clearRosterSignups(input: {
+    rosterId: string;
+    updatedByDiscordUserId?: string | null;
+  }): Promise<
+    | {
+        outcome: "cleared";
+        rosterId: string;
+        removedCount: number;
+      }
+    | {
+        outcome: "nothing_cleared";
+        rosterId: string;
+        removedCount: number;
+      }
+    | {
+        outcome: "roster_not_found";
+        rosterId: string;
+      }
+    | {
+        outcome: "roster_archived";
+        rosterId: string;
+      }
+  > {
+    const roster = await prisma.roster.findUnique({
+      where: { id: input.rosterId },
+      select: {
+        id: true,
+        lifecycleState: true,
+      },
+    });
+    if (!roster) {
+      return { outcome: "roster_not_found", rosterId: input.rosterId };
+    }
+    if (!canManagerMutateRoster(roster.lifecycleState)) {
+      return { outcome: "roster_archived", rosterId: roster.id };
+    }
+
+    const deleteResult = await prisma.rosterSignup.deleteMany({
+      where: { rosterId: roster.id },
+    });
+    if (deleteResult.count > 0) {
+      await prisma.roster.update({
+        where: { id: roster.id },
+        data: {
+          updatedByDiscordUserId: normalizeDiscordUserId(input.updatedByDiscordUserId),
+        },
+      });
+    }
+
+    return {
+      outcome: deleteResult.count > 0 ? "cleared" : "nothing_cleared",
+      rosterId: roster.id,
+      removedCount: deleteResult.count,
     };
   }
 

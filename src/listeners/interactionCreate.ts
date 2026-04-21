@@ -119,6 +119,8 @@ import {
   handleRosterPostRefreshButtonInteraction,
   handleRosterPostSettingsButtonInteraction,
   handleRosterPostSettingsMenuInteraction,
+  handleRosterPostClearButtonInteraction,
+  isRosterPostClearButtonCustomId,
 } from "../commands/Roster";
 import {
   isRosterSignupButtonCustomId,
@@ -387,7 +389,7 @@ const handleSelectMenuInteraction = async (
 
   if (isRosterPostSettingsMenuCustomId(interaction.customId)) {
     try {
-      await handleRosterPostSettingsMenuInteraction(interaction);
+      await handleRosterPostSettingsMenuInteraction(interaction, cocService);
     } catch (err) {
       console.error(`Roster settings menu failed: ${formatError(err)}`);
       if (!interaction.replied && !interaction.deferred) {
@@ -649,7 +651,7 @@ const handleButtonInteraction = async (
 
   if (isRosterPostRefreshButtonCustomId(interaction.customId)) {
     try {
-      await handleRosterPostRefreshButtonInteraction(interaction);
+      await handleRosterPostRefreshButtonInteraction(interaction, cocService);
     } catch (err) {
       console.error(`Roster refresh button failed: ${formatError(err)}`);
       if (!interaction.replied && !interaction.deferred) {
@@ -679,13 +681,28 @@ const handleButtonInteraction = async (
 
   if (isRosterPostSettingsButtonCustomId(interaction.customId)) {
     try {
-      await handleRosterPostSettingsButtonInteraction(interaction);
+      await handleRosterPostSettingsButtonInteraction(interaction, cocService);
     } catch (err) {
       console.error(`Roster settings button failed: ${formatError(err)}`);
       if (!interaction.replied && !interaction.deferred) {
         await interaction.reply({
           ephemeral: true,
           content: "Failed to open roster settings.",
+        });
+      }
+    }
+    return;
+  }
+
+  if (isRosterPostClearButtonCustomId(interaction.customId)) {
+    try {
+      await handleRosterPostClearButtonInteraction(interaction, cocService);
+    } catch (err) {
+      console.error(`Roster clear confirmation button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to clear the roster.",
         });
       }
     }
