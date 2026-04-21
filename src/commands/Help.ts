@@ -49,6 +49,15 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "cwl:rotations:create",
   "cwl:rotations:import",
   "cwl:rotations:export",
+  "roster:report",
+  "roster:readiness",
+  "roster:refresh",
+  "roster:open",
+  "roster:close",
+  "roster:archive",
+  "roster:add",
+  "roster:move",
+  "roster:remove",
 ]);
 
 type CommandDoc = {
@@ -267,8 +276,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     details: [
       "`/cwl members clan:<tag>` shows the observed current-season CWL roster for one tracked CWL clan using persisted round observations only.",
       "`/cwl members clan:<tag> inwar:true` narrows to the persisted current/prep lineup and includes current round status when available.",
-      "`/cwl signup clan:<tag> [timezone:<ianaTz>]` posts a CWL signup roster with Confirmed and Substitute buttons; each button opens an account picker so you can choose one or more linked player accounts for that group from the posted roster message, and the roster also includes a self-service Remove signup button.",
-      "`/cwl roster ...` is the manager-only CWL roster surface: `add`, `move`, and `remove` adjust signup entries; `open`, `close`, and `archive` control lifecycle; `refresh` re-renders the posted roster from DB truth; `report` and `readiness` show manager-readable unsigned/mismatch output. It is admin-only by default, but can be role-whitelisted with `/permission add command:cwl:roster role:@Leaders`.",
+      "Roster signup, lifecycle, and manager controls now live under `/roster` so `/cwl` can stay focused on persisted CWL observations and rotation tooling.",
       "`/cwl rotations show` renders an interactive overview of active CWL plans with status, next battle-day timing, current-clan leadership summary, and a dropdown to open the detailed clan view; the clan page supports paging and manual refresh of that clan's actual CWL state.",
       "`/cwl rotations create` is admin-only by default and only works during persisted CWL preparation state for the tracked clan.",
       "`/cwl rotations import` is admin-only by default and imports active planner tabs from one public Google Sheet after a confirmation preview and clan-by-clan row-review step. Structural rows may be skipped automatically, but player-like rows are never dropped silently. Public imports do not require Google Sheets credentials; export/write still does.",
@@ -278,16 +286,32 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     examples: [
       "/cwl members clan:#2QG2C08UP",
       "/cwl members clan:#2QG2C08UP inwar:true",
-      "/cwl signup clan:#2QG2C08UP timezone:America/Los_Angeles",
-      "/cwl roster report clan:#2QG2C08UP",
-      "/cwl roster add clan:#2QG2C08UP group:confirmed players:#PQL0289,#QGRJ2222",
-      "/cwl roster move clan:#2QG2C08UP group:substitute players:#PQL0289",
-      "/cwl roster refresh clan:#2QG2C08UP",
       "/cwl rotations show",
       "/cwl rotations show clan:#2QG2C08UP day:3",
       "/cwl rotations create clan:#2QG2C08UP exclude:#PYLQ0289,#QGRJ2222 overwrite:true",
       "/cwl rotations import sheet:https://docs.google.com/spreadsheets/d/... overwrite:true",
       "/cwl rotations export",
+    ],
+  },
+  roster: {
+    summary: "Create and manage roster signups.",
+    details: [
+      "`/roster create clan:<trackedCwlClanTag> [timezone:<ianaTz>]` posts a CWL signup roster with Confirmed and Substitute buttons, account-aware signups, and self-service removal.",
+      "`/roster report` and `/roster readiness` show the same manager-facing unsigned/mismatch view for the tracked clan roster; the duplicate names are kept for operational familiarity.",
+      "`/roster refresh` re-renders the posted roster message from DB truth.",
+      "`/roster open`, `/roster close`, and `/roster archive` control roster lifecycle.",
+      "`/roster add`, `/roster move`, and `/roster remove` are manager-only entry mutation controls.",
+      "Roster manager permissions are admin-only by default and can be role-whitelisted with `/permission add`.",
+    ],
+    examples: [
+      "/roster create clan:#2QG2C08UP timezone:America/Los_Angeles",
+      "/roster report clan:#2QG2C08UP",
+      "/roster readiness clan:#2QG2C08UP",
+      "/roster refresh clan:#2QG2C08UP",
+      "/roster open clan:#2QG2C08UP",
+      "/roster add clan:#2QG2C08UP group:confirmed players:#PQL0289,#QGRJ2222",
+      "/roster move clan:#2QG2C08UP group:substitute players:#PQL0289",
+      "/roster remove clan:#2QG2C08UP players:#PQL0289",
     ],
   },
   warplan: {

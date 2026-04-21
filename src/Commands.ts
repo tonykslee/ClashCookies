@@ -30,6 +30,7 @@ import { Todo } from "./commands/Todo";
 import { Reminders } from "./commands/Reminders";
 import { RemindMe } from "./commands/RemindMe";
 import { Unlinked } from "./commands/Unlinked";
+import { Roster } from "./commands/Roster";
 import { Cwl } from "./commands/Cwl";
 
 // ...existing code...
@@ -65,6 +66,7 @@ export const Commands = [
   Say,
   BotLogs,
   Unlinked,
+  Roster,
   Cwl,
   CommandRole,
 ];

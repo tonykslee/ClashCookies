@@ -110,11 +110,13 @@ import {
   isCwlRotationShowButtonCustomId,
   handleCwlRotationShowSelectMenuInteraction,
   isCwlRotationShowSelectMenuCustomId,
+} from "../commands/Cwl";
+import {
   handleRosterSignupButtonInteraction,
   handleRosterRemoveButtonInteraction,
   handleRosterSelectionMenuInteraction,
   handleRosterSelectionActionButtonInteraction,
-} from "../commands/Cwl";
+} from "../commands/Roster";
 import {
   isRosterSignupButtonCustomId,
   isRosterRemoveButtonCustomId,

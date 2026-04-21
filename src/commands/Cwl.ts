@@ -1868,7 +1868,7 @@ function buildCwlRotationImportSessionMessage(
   };
 }
 
-async function autocompleteCwlTrackedClan(
+export async function autocompleteCwlTrackedClan(
   interaction: AutocompleteInteraction,
 ): Promise<void> {
   const season = resolveCurrentCwlSeasonKey();
@@ -2123,7 +2123,7 @@ async function handleRotationExportSubcommand(interaction: ChatInputCommandInter
   });
 }
 
-async function handleRosterSignupSubcommand(interaction: ChatInputCommandInteraction): Promise<void> {
+export async function handleRosterSignupSubcommand(interaction: ChatInputCommandInteraction): Promise<void> {
   if (!interaction.inGuild() || !interaction.guildId) {
     await interaction.editReply("This command can only be used in a server.");
     return;
@@ -2215,7 +2215,7 @@ async function handleRosterSignupSubcommand(interaction: ChatInputCommandInterac
   );
 }
 
-async function handleRosterManagerSubcommand(interaction: ChatInputCommandInteraction): Promise<void> {
+export async function handleRosterManagerSubcommand(interaction: ChatInputCommandInteraction): Promise<void> {
   if (!interaction.inGuild() || !interaction.guildId) {
     await interaction.editReply("This command can only be used in a server.");
     return;
@@ -3045,190 +3045,6 @@ export const Cwl: Command = {
           description: "Only show the persisted current/prep lineup",
           type: ApplicationCommandOptionType.Boolean,
           required: false,
-        },
-      ],
-    },
-    {
-      name: "signup",
-      description: "Post a CWL signup roster with account-aware signup buttons",
-      type: ApplicationCommandOptionType.Subcommand,
-      options: [
-        {
-          name: "clan",
-          description: "Tracked CWL clan tag",
-          type: ApplicationCommandOptionType.String,
-          required: true,
-          autocomplete: true,
-        },
-        {
-          name: "timezone",
-          description: "Timezone to show on the signup roster",
-          type: ApplicationCommandOptionType.String,
-          required: false,
-          autocomplete: true,
-        },
-      ],
-    },
-    {
-      name: "roster",
-      description: "Manager controls for the current CWL signup roster",
-      type: ApplicationCommandOptionType.SubcommandGroup,
-      options: [
-        {
-          name: "report",
-          description: "Show a manager-readable signup readiness report",
-          type: ApplicationCommandOptionType.Subcommand,
-          options: [
-            {
-              name: "clan",
-              description: "Tracked CWL clan tag",
-              type: ApplicationCommandOptionType.String,
-              required: true,
-              autocomplete: true,
-            },
-          ],
-        },
-        {
-          name: "readiness",
-          description: "Show an export-friendly roster readiness view",
-          type: ApplicationCommandOptionType.Subcommand,
-          options: [
-            {
-              name: "clan",
-              description: "Tracked CWL clan tag",
-              type: ApplicationCommandOptionType.String,
-              required: true,
-              autocomplete: true,
-            },
-          ],
-        },
-        {
-          name: "refresh",
-          description: "Re-render the posted CWL signup roster from DB truth",
-          type: ApplicationCommandOptionType.Subcommand,
-          options: [
-            {
-              name: "clan",
-              description: "Tracked CWL clan tag",
-              type: ApplicationCommandOptionType.String,
-              required: true,
-              autocomplete: true,
-            },
-          ],
-        },
-        {
-          name: "open",
-          description: "Open roster signups for the tracked CWL clan",
-          type: ApplicationCommandOptionType.Subcommand,
-          options: [
-            {
-              name: "clan",
-              description: "Tracked CWL clan tag",
-              type: ApplicationCommandOptionType.String,
-              required: true,
-              autocomplete: true,
-            },
-          ],
-        },
-        {
-          name: "close",
-          description: "Close roster signups for the tracked CWL clan",
-          type: ApplicationCommandOptionType.Subcommand,
-          options: [
-            {
-              name: "clan",
-              description: "Tracked CWL clan tag",
-              type: ApplicationCommandOptionType.String,
-              required: true,
-              autocomplete: true,
-            },
-          ],
-        },
-        {
-          name: "archive",
-          description: "Archive the tracked CWL roster",
-          type: ApplicationCommandOptionType.Subcommand,
-          options: [
-            {
-              name: "clan",
-              description: "Tracked CWL clan tag",
-              type: ApplicationCommandOptionType.String,
-              required: true,
-              autocomplete: true,
-            },
-          ],
-        },
-        {
-          name: "add",
-          description: "Manually add one or more linked player accounts to a roster group",
-          type: ApplicationCommandOptionType.Subcommand,
-          options: [
-            {
-              name: "clan",
-              description: "Tracked CWL clan tag",
-              type: ApplicationCommandOptionType.String,
-              required: true,
-              autocomplete: true,
-            },
-            {
-              name: "group",
-              description: "Roster group key",
-              type: ApplicationCommandOptionType.String,
-              required: true,
-            },
-            {
-              name: "players",
-              description: "Comma or space separated player tags",
-              type: ApplicationCommandOptionType.String,
-              required: true,
-            },
-          ],
-        },
-        {
-          name: "move",
-          description: "Move one or more signup entries to another roster group",
-          type: ApplicationCommandOptionType.Subcommand,
-          options: [
-            {
-              name: "clan",
-              description: "Tracked CWL clan tag",
-              type: ApplicationCommandOptionType.String,
-              required: true,
-              autocomplete: true,
-            },
-            {
-              name: "group",
-              description: "Destination roster group key",
-              type: ApplicationCommandOptionType.String,
-              required: true,
-            },
-            {
-              name: "players",
-              description: "Comma or space separated player tags",
-              type: ApplicationCommandOptionType.String,
-              required: true,
-            },
-          ],
-        },
-        {
-          name: "remove",
-          description: "Remove one or more signup entries from the roster",
-          type: ApplicationCommandOptionType.Subcommand,
-          options: [
-            {
-              name: "clan",
-              description: "Tracked CWL clan tag",
-              type: ApplicationCommandOptionType.String,
-              required: true,
-              autocomplete: true,
-            },
-            {
-              name: "players",
-              description: "Comma or space separated player tags",
-              type: ApplicationCommandOptionType.String,
-              required: true,
-            },
-          ],
         },
       ],
     },
