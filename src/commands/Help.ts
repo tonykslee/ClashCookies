@@ -295,12 +295,12 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
   roster: {
     summary: "Create, list, post, and manage persisted rosters.",
     details: [
-      "`/roster create category:<CWL|FWA> clan:<trackedClanTag> [name:<text>] [timezone:<ianaTz>] [start_time:YYYY-MM-DD HH:mm] [end_time:YYYY-MM-DD HH:mm] [max_members:<n>] [max_accounts_per_user:<n>] [min_townhall:<n>] [max_townhall:<n>] [roster_role:<role>] [allow_multi_signup:<bool>] [sort_by:<signed_up_at|player_name|player_tag|discord_user|townhall>] [import_members:<bool>]` creates a roster object without posting it yet.",
+      "`/roster create category:<CWL|FWA> clan:<trackedClanTag> [name:<text>] [title:<text>] [timezone:<ianaTz>] [start_time:YYYY-MM-DD HH:mm] [end_time:YYYY-MM-DD HH:mm] [max_members:<n>] [max_accounts_per_user:<n>] [min_townhall:<n>] [max_townhall:<n>] [roster_role:<role>] [allow_multi_signup:<bool>] [sort_by:<signed_up_at|player_name|player_tag|discord_user|townhall>] [import_members:<bool>]` creates a roster object without posting it yet. `name` is the preferred field and `title` is a compatibility alias.",
       "`/roster list [name:<text>] [user:<discordId>] [player:<playerTagOrName>] [clan:<clanTag>]` shows roster title, type, clan scope, lifecycle state, and posted/unposted status for the guild.",
       "`/roster list` is public by default; create/post/manage/edit/delete/report/readiness/refresh are admin-only by default unless you whitelist roles.",
       "`/roster post roster:<roster>` posts the roster signup message or refreshes the existing post if it already exists.",
       "`/roster manage roster:<roster> action:<add|move|remove|open|close|archive> ...` is the roster-keyed manager surface for mutation and lifecycle changes.",
-      "`/roster edit roster:<roster>` edits roster metadata such as name, category, clan scope, limits, town-hall gates, roster role, sort order, and timezone fields.",
+      "`/roster edit roster:<roster>` edits roster metadata such as name, category, clan scope, limits, town-hall gates, roster role, sort order, and timezone fields. `name` is preferred; `title` remains a compatibility alias.",
       "`/roster delete roster:<roster>` removes the posted Discord message first when one exists, then hard-deletes the roster and its persisted signup data. If the message cannot be removed, the roster stays intact so you can retry safely.",
       "`/roster report` and `/roster readiness` intentionally share the same roster readiness view for now.",
       "`/roster refresh roster:<roster>` re-renders the posted roster message from DB truth.",

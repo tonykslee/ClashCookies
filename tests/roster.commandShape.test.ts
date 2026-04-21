@@ -40,6 +40,7 @@ describe("/roster command shape", () => {
       "FWA",
     ]);
     expect(create?.options?.find((option: any) => option.name === "name")?.required).toBe(false);
+    expect(create?.options?.find((option: any) => option.name === "title")?.required).toBe(false);
     expect(create?.options?.find((option: any) => option.name === "clan")?.required).toBe(true);
     expect(create?.options?.find((option: any) => option.name === "timezone")?.autocomplete).toBe(true);
     expect(create?.options?.find((option: any) => option.name === "start_time")?.required).toBe(false);
@@ -87,6 +88,7 @@ describe("/roster command shape", () => {
 
     expect(edit?.options?.find((option: any) => option.name === "roster")?.required).toBe(true);
     expect(edit?.options?.find((option: any) => option.name === "name")?.required).toBe(false);
+    expect(edit?.options?.find((option: any) => option.name === "title")?.required).toBe(false);
     expect(edit?.options?.find((option: any) => option.name === "category")?.choices?.map((choice: any) => choice.value)).toEqual([
       "CWL",
       "FWA",

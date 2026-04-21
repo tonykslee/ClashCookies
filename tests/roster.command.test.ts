@@ -32,6 +32,7 @@ function makeInteraction(input: {
   clan?: string | null;
   category?: string | null;
   name?: string | null;
+  title?: string | null;
   roster?: string | null;
   action?: string | null;
   group?: string | null;
@@ -62,6 +63,7 @@ function makeInteraction(input: {
         if (name === "clan") return input.clan ?? null;
         if (name === "category") return input.category ?? null;
         if (name === "name") return input.name ?? null;
+        if (name === "title") return input.title ?? null;
         if (name === "roster") return input.roster ?? null;
         if (name === "action") return input.action ?? null;
         if (name === "group") return input.group ?? null;
@@ -163,6 +165,28 @@ describe("/roster command", () => {
     expect(rosterService.recordRosterPostedMessage).not.toHaveBeenCalled();
     expect(String(interaction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
       "Use /roster post roster:roster-1 to publish it.",
+    );
+  });
+
+  it("accepts title as a compatibility alias when creating a roster", async () => {
+    (rosterService.createRoster as any).mockResolvedValue({ id: "roster-2" });
+
+    const interaction = makeInteraction({
+      subcommand: "create",
+      clan: "#2QG2C08UP",
+      title: "CWL Alpha Signup",
+      timezone: "America/Los_Angeles",
+    }) as any;
+
+    await Roster.run({} as any, interaction as any);
+
+    expect(rosterService.createRoster).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "CWL Alpha Signup",
+      }),
+    );
+    expect(String(interaction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
+      "Use /roster post roster:roster-2 to publish it.",
     );
   });
 
@@ -556,6 +580,62 @@ describe("/roster command", () => {
       }),
     );
     expect(String(editInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain("Updated roster CWL Alpha Signup (Updated).");
+
+    (rosterService.updateRoster as any).mockResolvedValueOnce({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup (Alias)",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/New_York",
+      displayTimezone: "America/New_York",
+      lifecycleState: "OPEN",
+      postedChannelId: "channel-1",
+      postedMessageId: "message-1",
+      postedMessageUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    });
+    const titleAliasInteraction = makeInteraction({
+      subcommand: "edit",
+      roster: "roster-1",
+      title: "CWL Alpha Signup (Alias)",
+    }) as any;
+    titleAliasInteraction.client.channels.fetch = vi.fn().mockResolvedValue(rosterChannel);
+
+    await Roster.run({} as any, titleAliasInteraction as any);
+
+    expect(rosterService.updateRoster).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rosterId: "roster-1",
+        name: "CWL Alpha Signup (Alias)",
+        updatedByDiscordUserId: "111111111111111111",
+      }),
+    );
+    expect(String(titleAliasInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
+      "Updated roster CWL Alpha Signup (Alias).",
+    );
+
+    const conflictInteraction = makeInteraction({
+      subcommand: "edit",
+      roster: "roster-1",
+      name: "CWL Alpha Signup (Name)",
+      title: "CWL Alpha Signup (Title)",
+    }) as any;
+    conflictInteraction.client.channels.fetch = vi.fn().mockResolvedValue(rosterChannel);
+
+    await Roster.run({} as any, conflictInteraction as any);
+
+    expect(String(conflictInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
+      "Choose either name or title, not both.",
+    );
+    expect(rosterService.updateRoster).toHaveBeenCalledTimes(2);
 
     const refreshInteraction = makeInteraction({
       subcommand: "refresh",
