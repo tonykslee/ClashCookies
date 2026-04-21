@@ -39,6 +39,7 @@ describe("/roster command shape", () => {
       "CWL",
       "FWA",
     ]);
+    expect(create?.options?.slice(0, 2)?.map((option: any) => option.name)).toEqual(["clan", "category"]);
     expect(create?.options?.find((option: any) => option.name === "name")?.required).toBe(false);
     expect(create?.options?.find((option: any) => option.name === "title")?.required).toBe(false);
     expect(create?.options?.find((option: any) => option.name === "clan")?.required).toBe(true);
@@ -114,5 +115,25 @@ describe("/roster command shape", () => {
       ApplicationCommandOptionType.Boolean,
     );
     expect(edit?.options?.find((option: any) => option.name === "display-timezone")?.autocomplete).toBe(true);
+  });
+
+  it("keeps required options before optional options in every /roster subcommand", () => {
+    for (const subcommand of Roster.options ?? []) {
+      if (subcommand.type !== ApplicationCommandOptionType.Subcommand) continue;
+      const optionNames = (subcommand.options ?? []).map((option: any) => option.name);
+      const requiredFlags = (subcommand.options ?? []).map((option: any) => Boolean(option.required));
+      const firstOptionalIndex = requiredFlags.findIndex((required: boolean) => !required);
+      if (firstOptionalIndex === -1) continue;
+      expect(requiredFlags.slice(firstOptionalIndex).every((required: boolean) => !required)).toBe(true);
+      if (subcommand.name === "create") {
+        expect(optionNames.slice(0, 2)).toEqual(["clan", "category"]);
+      }
+      if (subcommand.name === "edit") {
+        expect(optionNames[0]).toBe("roster");
+      }
+      if (subcommand.name === "manage") {
+        expect(optionNames.slice(0, 2)).toEqual(["roster", "action"]);
+      }
+    }
   });
 });

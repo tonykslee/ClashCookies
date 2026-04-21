@@ -960,6 +960,13 @@ export const Roster: Command = {
       type: ApplicationCommandOptionType.Subcommand,
       options: [
         {
+          name: "clan",
+          description: "Tracked clan tag",
+          type: ApplicationCommandOptionType.String,
+          required: true,
+          autocomplete: true,
+        },
+        {
           name: "category",
           description: "Roster category",
           type: ApplicationCommandOptionType.String,
@@ -980,13 +987,6 @@ export const Roster: Command = {
           description: "Backwards-compatible alias for roster name",
           type: ApplicationCommandOptionType.String,
           required: false,
-        },
-        {
-          name: "clan",
-          description: "Tracked clan tag",
-          type: ApplicationCommandOptionType.String,
-          required: true,
-          autocomplete: true,
         },
         {
           name: "timezone",
