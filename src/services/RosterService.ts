@@ -8,6 +8,7 @@ import {
 import { randomUUID } from "crypto";
 import { prisma } from "../prisma";
 import { truncateDiscordContent } from "../helper/discordContent";
+import { CoCService } from "./CoCService";
 import {
   listPlayerLinksForDiscordUser,
   normalizeClanTag,
@@ -16,6 +17,7 @@ import {
 } from "./PlayerLinkService";
 import { resolveCurrentCwlSeasonKey } from "./CwlRegistryService";
 import { cwlStateService, type CwlSeasonRosterEntry } from "./CwlStateService";
+import { todoSnapshotService } from "./TodoSnapshotService";
 import { normalizeSyncTimeZone } from "./syncTimeZone";
 
 export const ROSTER_LIFECYCLE_STATE = {
@@ -1141,6 +1143,8 @@ async function loadRosterPlayerTownHallMap(input: {
   rosterType: string;
   clanTag: string | null;
   playerTags: string[];
+  allowLiveFetch?: boolean;
+  cocService?: CoCService | null;
 }): Promise<Map<string, number>> {
   const normalizedTags = [...new Set(input.playerTags.map((tag) => normalizePlayerTag(tag)).filter(Boolean))];
   if (normalizedTags.length <= 0) {
@@ -1148,37 +1152,75 @@ async function loadRosterPlayerTownHallMap(input: {
   }
 
   const normalizedRosterType = normalizeRosterType(input.rosterType);
-  if ((normalizedRosterType === "CWL" || normalizedRosterType === "FWA") && !input.clanTag) {
-    return new Map();
-  }
+  const result = new Map<string, number>();
+  const missingAfterPrimary = new Set(normalizedTags);
 
   if (normalizedRosterType === "CWL" && input.clanTag) {
     const rosterEntries = await cwlStateService.listSeasonRosterForClan({ clanTag: input.clanTag });
-    const result = new Map<string, number>();
     for (const entry of rosterEntries) {
       const playerTag = normalizePlayerTag(entry.playerTag);
       const townHall = normalizeRosterInt(entry.townHall);
-      if (!playerTag || townHall === null || !normalizedTags.includes(playerTag)) continue;
+      if (!playerTag || townHall === null || !missingAfterPrimary.has(playerTag)) continue;
       result.set(playerTag, townHall);
+      missingAfterPrimary.delete(playerTag);
     }
+  } else if (normalizedRosterType === "FWA") {
+    const rows = await prisma.fwaPlayerCatalog.findMany({
+      where: { playerTag: { in: normalizedTags } },
+      select: {
+        playerTag: true,
+        latestTownHall: true,
+      },
+    });
+    for (const row of rows) {
+      const playerTag = normalizePlayerTag(row.playerTag);
+      const townHall = normalizeRosterInt(row.latestTownHall);
+      if (!playerTag || townHall === null || !missingAfterPrimary.has(playerTag)) continue;
+      result.set(playerTag, townHall);
+      missingAfterPrimary.delete(playerTag);
+    }
+  }
+
+  if (missingAfterPrimary.size <= 0) {
     return result;
   }
 
-  const rows = await prisma.fwaPlayerCatalog.findMany({
-    where: { playerTag: { in: normalizedTags } },
-    select: {
-      playerTag: true,
-      latestTownHall: true,
-    },
+  const missingTagsAfterPrimary = [...missingAfterPrimary];
+  const snapshotRows = await todoSnapshotService.listSnapshotsByPlayerTags({
+    playerTags: missingTagsAfterPrimary,
   });
-
-  const result = new Map<string, number>();
-  for (const row of rows) {
+  for (const row of snapshotRows) {
     const playerTag = normalizePlayerTag(row.playerTag);
-    const townHall = normalizeRosterInt(row.latestTownHall);
-    if (!playerTag || townHall === null) continue;
+    const townHall = normalizeRosterInt((row as { townHall?: unknown }).townHall ?? null);
+    if (!playerTag || townHall === null || !missingAfterPrimary.has(playerTag)) continue;
     result.set(playerTag, townHall);
+    missingAfterPrimary.delete(playerTag);
   }
+
+  if (!input.allowLiveFetch || missingAfterPrimary.size <= 0) {
+    return result;
+  }
+
+  const cocService = input.cocService ?? null;
+  if (!cocService) {
+    return result;
+  }
+
+  await todoSnapshotService.refreshSnapshotsForPlayerTags({
+    playerTags: [...missingAfterPrimary],
+    cocService,
+  });
+  const refreshedRows = await todoSnapshotService.listSnapshotsByPlayerTags({
+    playerTags: [...missingAfterPrimary],
+  });
+  for (const row of refreshedRows) {
+    const playerTag = normalizePlayerTag(row.playerTag);
+    const townHall = normalizeRosterInt((row as { townHall?: unknown }).townHall ?? null);
+    if (!playerTag || townHall === null || !missingAfterPrimary.has(playerTag)) continue;
+    result.set(playerTag, townHall);
+    missingAfterPrimary.delete(playerTag);
+  }
+
   return result;
 }
 
@@ -1400,6 +1442,7 @@ async function loadRosterView(rosterId: string): Promise<RosterSignupView | null
     rosterType: roster.rosterType,
     clanTag: roster.clanTag,
     playerTags: signups.map((signup) => signup.playerTag),
+    allowLiveFetch: false,
   });
   const signupsWithTownHall = signups.map((signup) => ({
     ...signup,
@@ -2146,6 +2189,7 @@ export class RosterService {
     groupKey: string;
     playerTags?: string[] | null;
     updatedByDiscordUserId?: string | null;
+    cocService?: CoCService | null;
   }): Promise<SignupLinkedAccountsResult> {
     const roster = await prisma.roster.findUnique({
       where: { id: input.rosterId },
@@ -2253,6 +2297,8 @@ export class RosterService {
         rosterType: roster.rosterType,
         clanTag: roster.clanTag,
         playerTags: createdTags,
+        allowLiveFetch: true,
+        cocService: input.cocService ?? null,
       });
       const minTownhall = normalizeRosterInt(roster.minTownhall);
       const maxTownhall = normalizeRosterInt(roster.maxTownhall);
@@ -2645,6 +2691,7 @@ export class RosterService {
   async confirmRosterSelectionPanel(input: {
     sessionId: string;
     discordUserId: string;
+    cocService?: CoCService | null;
   }): Promise<RosterSelectionCommitResult> {
     const session = getRosterSelectionSession(input.sessionId);
     if (!session) {
@@ -2662,6 +2709,7 @@ export class RosterService {
           groupKey: session.groupKey ?? "",
           discordUserId: session.ownerDiscordUserId,
           playerTags: session.selectedTags,
+          cocService: input.cocService ?? null,
         });
         deleteRosterSelectionSession(session.sessionId);
         return { outcome: "signup", result };
@@ -2707,6 +2755,7 @@ export class RosterService {
     groupKey: string;
     discordUserId: string;
     playerTags?: string[] | null;
+    cocService?: CoCService | null;
   }): Promise<SignupLinkedAccountsResult> {
     const roster = await prisma.roster.findUnique({
       where: { id: input.rosterId },
@@ -2867,6 +2916,8 @@ export class RosterService {
           rosterType: roster.rosterType,
           clanTag: roster.clanTag,
           playerTags: createdCandidates,
+          allowLiveFetch: true,
+          cocService: input.cocService ?? null,
         });
         const minTownhall = normalizeRosterInt(roster.minTownhall);
         const maxTownhall = normalizeRosterInt(roster.maxTownhall);

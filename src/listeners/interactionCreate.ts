@@ -627,7 +627,7 @@ const handleButtonInteraction = async (
 
   if (isRosterSelectionActionButtonCustomId(interaction.customId)) {
     try {
-      await handleRosterSelectionActionButtonInteraction(interaction);
+      await handleRosterSelectionActionButtonInteraction(interaction, cocService);
     } catch (err) {
       console.error(`Roster selection action button failed: ${formatError(err)}`);
       if (!interaction.replied && !interaction.deferred) {

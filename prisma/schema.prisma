@@ -119,6 +119,7 @@ model UnlinkedPlayer {
 model TodoPlayerSnapshot {
   playerTag       String   @id
   playerName      String
+  townHall        Int?
   clanTag         String?
   clanName        String?
   cwlClanTag      String?

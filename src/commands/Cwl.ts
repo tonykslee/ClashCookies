@@ -2246,7 +2246,10 @@ export async function handleRosterSignupSubcommand(interaction: ChatInputCommand
   );
 }
 
-export async function handleRosterManagerSubcommand(interaction: ChatInputCommandInteraction): Promise<void> {
+export async function handleRosterManagerSubcommand(
+  interaction: ChatInputCommandInteraction,
+  cocService: CoCService,
+): Promise<void> {
   if (!interaction.inGuild() || !interaction.guildId) {
     await interaction.editReply("This command can only be used in a server.");
     return;
@@ -2352,6 +2355,7 @@ export async function handleRosterManagerSubcommand(interaction: ChatInputComman
         groupKey,
         playerTags,
         updatedByDiscordUserId: interaction.user.id,
+        cocService,
       });
       if (result.outcome === "roster_not_found") {
         await interaction.editReply("That roster is no longer available.");
@@ -2986,6 +2990,7 @@ export async function handleRosterSelectionMenuInteraction(
 
 export async function handleRosterSelectionActionButtonInteraction(
   interaction: ButtonInteraction,
+  cocService?: CoCService | null,
 ): Promise<void> {
   const parsed = parseRosterSelectionActionButtonCustomId(interaction.customId);
   if (!parsed) return;
@@ -3021,6 +3026,7 @@ export async function handleRosterSelectionActionButtonInteraction(
   const result = await rosterService.confirmRosterSelectionPanel({
     sessionId: parsed.sessionId,
     discordUserId: interaction.user.id,
+    cocService: cocService ?? null,
   });
   if (result.outcome === "session_not_found") {
     await interaction.reply({
@@ -3164,6 +3170,7 @@ export const Cwl: Command = {
   run: async (
     client: Client,
     interaction: ChatInputCommandInteraction,
+    cocService: CoCService,
   ) => {
     const visibility = interaction.options.getString("visibility", false) ?? "private";
     const isPublic = visibility === "public";
@@ -3181,7 +3188,7 @@ export const Cwl: Command = {
         return;
       }
       if (group === "roster") {
-        await handleRosterManagerSubcommand(interaction);
+        await handleRosterManagerSubcommand(interaction, cocService);
         return;
       }
       if (group === "rotations" && subcommand === "create") {

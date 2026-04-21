@@ -8,6 +8,7 @@ import {
 import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
+import { CoCService } from "../services/CoCService";
 import { resolveCurrentCwlSeasonKey } from "../services/CwlRegistryService";
 import { normalizeClanTag, normalizePlayerTag } from "../services/PlayerLinkService";
 import { autocompleteSyncTimeZones, normalizeSyncTimeZone } from "../services/syncTimeZone";
@@ -620,7 +621,10 @@ async function handleRosterRefreshSubcommand(interaction: ChatInputCommandIntera
   await interaction.editReply(`Refreshed the posted roster for ${roster.title}.`);
 }
 
-async function handleRosterManageSubcommand(interaction: ChatInputCommandInteraction): Promise<void> {
+async function handleRosterManageSubcommand(
+  interaction: ChatInputCommandInteraction,
+  cocService: CoCService,
+): Promise<void> {
   if (!interaction.inGuild() || !interaction.guildId) {
     await interaction.editReply("This command can only be used in a server.");
     return;
@@ -675,6 +679,7 @@ async function handleRosterManageSubcommand(interaction: ChatInputCommandInterac
         groupKey,
         playerTags,
         updatedByDiscordUserId: interaction.user.id,
+        cocService,
       });
       await syncRosterRolesForRoster(interaction, roster.id).catch(() => undefined);
       await refreshExistingRosterPost(interaction, roster.id).catch(() => undefined);
@@ -1350,7 +1355,7 @@ export const Roster: Command = {
       ],
     },
   ],
-  run: async (_client: Client, interaction: ChatInputCommandInteraction) => {
+  run: async (_client: Client, interaction: ChatInputCommandInteraction, cocService: CoCService) => {
     await interaction.deferReply({ ephemeral: true });
 
     try {
@@ -1368,7 +1373,7 @@ export const Roster: Command = {
         return;
       }
       if (subcommand === "manage") {
-        await handleRosterManageSubcommand(interaction);
+        await handleRosterManageSubcommand(interaction, cocService);
         return;
       }
       if (subcommand === "edit") {

@@ -528,6 +528,7 @@ describe("/cwl command", () => {
     expect(rosterService.confirmRosterSelectionPanel).toHaveBeenCalledWith({
       sessionId: "session-2",
       discordUserId: "111111111111111111",
+      cocService: null,
     });
     expect(confirmInteraction.update).toHaveBeenCalledWith(
       expect.objectContaining({
