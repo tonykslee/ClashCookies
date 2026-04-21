@@ -194,6 +194,7 @@ export async function addCwlClanTagsForSeason(input: {
             season,
             tag,
             name: null,
+            leagueLabel: null,
           })),
           skipDuplicates: true,
         }),
@@ -254,7 +255,7 @@ export async function hydrateMissingCwlClanNamesForSeason(input: {
   }
 
   const missingRows = await runBoundedCwlTagStage({
-    stage: "cwl_tags_missing_name_rows_query",
+    stage: "cwl_tags_missing_metadata_rows_query",
     timeoutMs: CWL_TAG_DB_STAGE_TIMEOUT_MS,
     details: { season, valid_count: parsed.validTags.length },
     action: () =>
@@ -262,7 +263,12 @@ export async function hydrateMissingCwlClanNamesForSeason(input: {
         where: {
           season,
           tag: { in: parsed.validTags },
-          OR: [{ name: null }, { name: "" }],
+          OR: [
+            { name: null },
+            { name: "" },
+            { leagueLabel: null },
+            { leagueLabel: "" },
+          ],
         },
         select: { tag: true },
       }),
@@ -288,10 +294,11 @@ export async function hydrateMissingCwlClanNamesForSeason(input: {
           action: () => input.cocService.getClan(tag),
         });
         const clanName = String(clan?.name ?? "").trim();
-        if (!clanName) {
+        const leagueLabel = String(clan?.warLeague?.name ?? "").trim();
+        if (!clanName && !leagueLabel) {
           skippedCount += 1;
           console.info(
-            `[tracked-clan] stage=cwl_tags_name_hydration_skipped season=${season} tag=${tag} reason=empty_name`,
+            `[tracked-clan] stage=cwl_tags_name_hydration_skipped season=${season} tag=${tag} reason=empty_name_and_league`,
           );
           return;
         }
@@ -304,10 +311,16 @@ export async function hydrateMissingCwlClanNamesForSeason(input: {
               where: {
                 season,
                 tag,
-                OR: [{ name: null }, { name: "" }],
+                OR: [
+                  { name: null },
+                  { name: "" },
+                  { leagueLabel: null },
+                  { leagueLabel: "" },
+                ],
               },
               data: {
-                name: clanName,
+                ...(clanName ? { name: clanName } : {}),
+                ...(leagueLabel ? { leagueLabel } : {}),
               },
             }),
         });

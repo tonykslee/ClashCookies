@@ -47,8 +47,8 @@ describe("CwlRegistryService helpers", () => {
 
     expect(prismaMock.cwlTrackedClan.createMany).toHaveBeenCalledWith({
       data: [
-        { season: "2026-03", tag: "#PYLQ0289", name: null },
-        { season: "2026-03", tag: "#QGRJ2222", name: null },
+        { season: "2026-03", tag: "#PYLQ0289", name: null, leagueLabel: null },
+        { season: "2026-03", tag: "#QGRJ2222", name: null, leagueLabel: null },
       ],
       skipDuplicates: true,
     });
@@ -84,7 +84,7 @@ describe("CwlRegistryService helpers", () => {
     const cocService = {
       getClan: vi.fn(async (tag: string) => {
         if (tag === "#PYLQ0289") {
-          return { name: "CWL Alpha" };
+          return { name: "CWL Alpha", warLeague: { name: "Champion League II" } };
         }
         throw new Error("boom");
       }),
@@ -101,10 +101,11 @@ describe("CwlRegistryService helpers", () => {
       where: {
         season: "2026-03",
         tag: "#PYLQ0289",
-        OR: [{ name: null }, { name: "" }],
+        OR: [{ name: null }, { name: "" }, { leagueLabel: null }, { leagueLabel: "" }],
       },
       data: {
         name: "CWL Alpha",
+        leagueLabel: "Champion League II",
       },
     });
 

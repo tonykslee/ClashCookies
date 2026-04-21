@@ -1725,6 +1725,7 @@ async function loadRosterView(rosterId: string): Promise<RosterSignupView | null
           },
           select: {
             name: true,
+            leagueLabel: true,
           },
         })
       : null;
@@ -1749,7 +1750,7 @@ async function loadRosterView(rosterId: string): Promise<RosterSignupView | null
   return {
     roster,
     clanDisplayName,
-    clanLeagueLabel: null,
+    clanLeagueLabel: normalizeRosterText(trackedClan?.leagueLabel ?? null) ?? null,
     groups: groups.map((group) => ({
       ...group,
       signupCount: signupCountByGroupId.get(group.id) ?? 0,

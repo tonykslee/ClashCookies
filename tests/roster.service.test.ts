@@ -232,6 +232,7 @@ describe("RosterService", () => {
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
     prismaMock.cwlTrackedClan.findFirst.mockResolvedValue({
       name: "CWL Alpha",
+      leagueLabel: "Champion League II",
     });
     prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([]);
     prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
@@ -866,7 +867,9 @@ describe("RosterService", () => {
     expect(confirmedRow).toBeTruthy();
     expect(substituteRow).toBeTruthy();
     expect(embedTitle).toBe("Rising Crowns");
-    expect(description).toContain("## [CWL Alpha Signup](https://link.clashofclans.com/en?action=OpenClanProfile&tag=2QG2C08UP) CWL");
+    expect(description).toContain(
+      "## [CWL Alpha Signup](https://link.clashofclans.com/en?action=OpenClanProfile&tag=2QG2C08UP) Champion League II",
+    );
     expect(description).toContain("**Confirmed - 1**");
     expect(description).toContain("**Substitute - 1**");
     expect(description).toContain("TonyLee");
@@ -964,6 +967,52 @@ describe("RosterService", () => {
     );
     expect(payload).toBeTruthy();
     expect(String(payload?.embed.toJSON().title ?? "")).toBe("CWL Alpha");
+    expect(String(payload?.embed.toJSON().description ?? "")).toContain(
+      "## [CWL Alpha Signup](https://link.clashofclans.com/en?action=OpenClanProfile&tag=2QG2C08UP) Champion League II",
+    );
+  });
+
+  it("falls back cleanly when no persisted CWL league label is available", async () => {
+    prismaMock.cwlTrackedClan.findFirst.mockResolvedValueOnce({
+      name: "CWL Alpha",
+      leagueLabel: null,
+    });
+    prismaMock.roster.findUnique.mockResolvedValueOnce({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    } as any);
+    prismaMock.rosterGroup.findMany.mockResolvedValueOnce([
+      {
+        id: "group-confirmed",
+        rosterId: "roster-1",
+        key: "confirmed",
+        name: "Confirmed",
+        description: "Primary roster members",
+        sortOrder: 0,
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+      },
+    ] as any);
+    prismaMock.rosterSignup.findMany.mockResolvedValueOnce([] as any);
+    prismaMock.rosterSignup.count.mockResolvedValueOnce(0);
+    const payload = await rosterService.buildRosterSignupPayload("roster-1");
     expect(String(payload?.embed.toJSON().description ?? "")).toContain(
       "## [CWL Alpha Signup](https://link.clashofclans.com/en?action=OpenClanProfile&tag=2QG2C08UP) CWL",
     );
