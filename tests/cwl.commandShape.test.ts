@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { Cwl } from "../src/commands/Cwl";
 
 describe("/cwl command shape", () => {
-  it("registers members plus rotations show/create/import/export without drift", () => {
+  it("registers members, signup, roster manager controls, and rotations show/create/import/export without drift", () => {
     const members = Cwl.options?.find(
       (option) =>
         option.type === ApplicationCommandOptionType.Subcommand &&
@@ -20,6 +20,8 @@ describe("/cwl command shape", () => {
     const exportOption = rotations?.options?.find((option: any) => option.name === "export");
 
     expect(members).toBeTruthy();
+    expect(Cwl.options?.find((option) => option.type === ApplicationCommandOptionType.Subcommand && option.name === "signup")).toBeUndefined();
+    expect(Cwl.options?.find((option) => option.type === ApplicationCommandOptionType.SubcommandGroup && option.name === "roster")).toBeUndefined();
     expect(rotations).toBeTruthy();
     expect(show?.type).toBe(ApplicationCommandOptionType.Subcommand);
     expect(create?.type).toBe(ApplicationCommandOptionType.Subcommand);

@@ -24,6 +24,7 @@ import { parseCocTime } from "./war-events/core";
 const TODO_SNAPSHOT_SELECT = {
   playerTag: true,
   playerName: true,
+  townHall: true,
   clanTag: true,
   clanName: true,
   cwlClanTag: true,
@@ -158,6 +159,14 @@ const TODO_GAMES_TARGET_POINTS = 4000;
 const TODO_GAMES_POINTS_MAX = 4000;
 const TODO_GAMES_REWARD_COLLECTION_DURATION_MS = 7 * 24 * 60 * 60 * 1000;
 const TODO_SNAPSHOT_WRITE_CHUNK_SIZE = 50;
+
+function normalizeRosterInt(input: unknown): number | null {
+  const value = Number(input);
+  if (!Number.isFinite(value)) return null;
+  const normalized = Math.trunc(value);
+  return normalized >= 0 ? normalized : null;
+}
+
 /** Purpose: keep all Todo snapshot reads/writes in one service boundary. */
 export class TodoSnapshotService {
   private readonly refreshByBatchKey = new Map<
@@ -183,13 +192,14 @@ export class TodoSnapshotService {
     });
 
     const indexByTag = new Map(normalizedTags.map((tag, idx) => [tag, idx]));
-    return rows
-      .map((row) => ({
-        ...row,
-        playerTag: normalizePlayerTag(row.playerTag),
-        clanTag: row.clanTag ? normalizeClanTag(row.clanTag) : null,
-        cwlClanTag: row.cwlClanTag ? normalizeClanTag(row.cwlClanTag) : null,
-      }))
+    const normalizedRows = rows.map((row) => ({
+      ...row,
+      playerTag: normalizePlayerTag(row.playerTag),
+      townHall: Number.isFinite(Number(row.townHall)) ? Math.trunc(Number(row.townHall)) : null,
+      clanTag: row.clanTag ? normalizeClanTag(row.clanTag) : null,
+      cwlClanTag: row.cwlClanTag ? normalizeClanTag(row.cwlClanTag) : null,
+    })) as TodoSnapshotRecord[];
+    return normalizedRows
       .filter((row) => row.playerTag.length > 0)
       .sort((a, b) => {
         const aIndex = indexByTag.get(a.playerTag);
@@ -199,6 +209,33 @@ export class TodoSnapshotService {
         }
         return a.playerTag.localeCompare(b.playerTag);
       });
+  }
+
+  /** Purpose: load ordered snapshot rows for one clan tag using the requested current-clan source. */
+  async listSnapshotsByClanTag(input: {
+    clanTag: string;
+    source?: "clanTag" | "cwlClanTag";
+  }): Promise<TodoSnapshotRecord[]> {
+    const normalizedClanTag = normalizeClanTag(input.clanTag);
+    if (!normalizedClanTag) return [];
+
+    const source = input.source ?? "clanTag";
+    const rows = await prisma.todoPlayerSnapshot.findMany({
+      where:
+        source === "cwlClanTag"
+          ? { cwlClanTag: normalizedClanTag }
+          : { clanTag: normalizedClanTag },
+      select: TODO_SNAPSHOT_SELECT,
+      orderBy: [{ playerName: "asc" }, { playerTag: "asc" }],
+    });
+
+    return rows.map((row) => ({
+      ...row,
+      playerTag: normalizePlayerTag(row.playerTag),
+      townHall: Number.isFinite(Number(row.townHall)) ? Math.trunc(Number(row.townHall)) : null,
+      clanTag: row.clanTag ? normalizeClanTag(row.clanTag) : null,
+      cwlClanTag: row.cwlClanTag ? normalizeClanTag(row.cwlClanTag) : null,
+    })) as TodoSnapshotRecord[];
   }
 
   /** Purpose: return compact snapshot-version metadata for cache-key construction. */
@@ -531,7 +568,8 @@ export class TodoSnapshotService {
     const cwlDiscoveryClanTagByPlayerTag = new Map<string, string | null>();
     for (const playerTag of normalizedTags) {
       const existing = existingByTag.get(playerTag) ?? null;
-      const liveClanTag = liveClanTagByPlayerTag.get(playerTag) ?? "";
+      const livePlayer = liveClanTagByPlayerTag.get(playerTag) ?? { clanTag: "", townHall: null };
+      const liveClanTag = livePlayer.clanTag ?? "";
       const fromMember = latestClanMemberByTag.get(playerTag)?.clanTag ?? "";
       const fromExisting = existingByTag.get(playerTag)?.clanTag ?? "";
       const pinnedEventClanTag =
@@ -907,6 +945,7 @@ export class TodoSnapshotService {
         latestCatalogNameByTag.get(playerTag) ||
         sanitizeDisplayText(existing?.playerName ?? "") ||
         playerTag;
+      const livePlayer = liveClanTagByPlayerTag.get(playerTag) ?? { clanTag: "", townHall: null };
 
       const currentWar = resolvedClanTag
         ? currentWarByClanTag.get(resolvedClanTag) ?? null
@@ -954,6 +993,9 @@ export class TodoSnapshotService {
 
       const data = {
         playerName: resolvedPlayerName,
+        townHall:
+          livePlayer.townHall ??
+          normalizeRosterInt(existing?.townHall ?? null),
         clanTag: resolvedClanTag,
         clanName: resolvedClanName,
         cwlClanTag: resolvedCwlClanTag,
@@ -1672,7 +1714,7 @@ async function loadLiveClanTagsByPlayerTag(input: {
   cocService?: CoCService;
   playerTags: string[];
   producer?: WarEventLinkedPlayerRefreshProducer | null;
-}): Promise<Map<string, string>> {
+}): Promise<Map<string, { clanTag: string; townHall: number | null }>> {
   if (!input.cocService || typeof input.cocService.getPlayerRaw !== "function") {
     return new Map();
   }
@@ -1690,7 +1732,7 @@ async function loadLiveClanTagsByPlayerTag(input: {
     );
   }
 
-  const entries: Array<readonly [string, string]> = [];
+  const entries: Array<readonly [string, { clanTag: string; townHall: number | null }]> = [];
   let enqueuedCount = 0;
   let deferredCount = 0;
   for (let chunkIndex = 0; chunkIndex < chunkedTags.length; chunkIndex += 1) {
@@ -1720,15 +1762,16 @@ async function loadLiveClanTagsByPlayerTag(input: {
         `[todo-snapshot] event=war_event_player_refresh_chunk source=${input.producer.source} chunk_index=${chunkIndex + 1} chunk_count=${chunkedTags.length} chunk_size=${chunk.length} background_depth=${queueStatus.backgroundQueueDepth}`,
       );
     }
-    const chunkEntries = await Promise.all(
-      chunk.map(async (playerTag) => {
-        const player = await input.cocService!
-          .getPlayerRaw(playerTag, { suppressTelemetry: true })
-          .catch(() => null);
-        const clanTag = normalizeClanTag(String(player?.clan?.tag ?? ""));
-        return [playerTag, clanTag] as const;
-      }),
-    );
+      const chunkEntries = await Promise.all(
+        chunk.map(async (playerTag) => {
+          const player = await input.cocService!
+            .getPlayerRaw(playerTag, { suppressTelemetry: true })
+            .catch(() => null);
+          const clanTag = normalizeClanTag(String(player?.clan?.tag ?? ""));
+          const townHall = normalizeRosterInt(player?.townHallLevel ?? player?.townHall ?? null);
+          return [playerTag, { clanTag, townHall }] as const;
+        }),
+      );
     entries.push(...chunkEntries);
     enqueuedCount += chunk.length;
   }
@@ -1740,7 +1783,10 @@ async function loadLiveClanTagsByPlayerTag(input: {
   }
 
   return new Map(
-    entries.filter((entry): entry is [string, string] => Boolean(entry[0] && entry[1])),
+    entries.filter(
+      (entry): entry is [string, { clanTag: string; townHall: number | null }] =>
+        Boolean(entry[0] && entry[1].clanTag),
+    ),
   );
 }
 

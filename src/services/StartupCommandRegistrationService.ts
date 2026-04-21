@@ -56,6 +56,13 @@ export type RunWithTransientRetryResult<T> =
   | { status: "success"; attempts: number; value: T }
   | { status: "failed"; attempts: number; transient: boolean; error: unknown };
 
+export type CommandRegistrationDebugSummary = {
+  commandCount: number;
+  rosterIncluded: boolean;
+  rosterCreateOptionNames: string[];
+  rosterEditOptionNames: string[];
+};
+
 export type StartupErrorDiagnostics = {
   code: string;
   name: string;
@@ -217,6 +224,39 @@ function computeBackoffMs(config: TransientRetryConfig, attempt: number): number
   const exponent = Math.max(0, attempt - 1);
   const candidate = config.baseBackoffMs * Math.pow(2, exponent);
   return Math.min(config.maxBackoffMs, Math.floor(candidate));
+}
+
+function normalizeOptionNameList(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  return input
+    .map((option) => String((option as { name?: unknown } | null | undefined)?.name ?? "").trim())
+    .filter((name) => name.length > 0);
+}
+
+function findSubcommandOptionNames(command: unknown, subcommandName: string): string[] {
+  if (!command || typeof command !== "object") return [];
+  const commandOptions = Array.isArray((command as { options?: unknown }).options)
+    ? ((command as { options?: unknown[] }).options ?? [])
+    : [];
+  const subcommand = commandOptions.find(
+    (option) => String((option as { name?: unknown } | null | undefined)?.name ?? "").trim() === subcommandName
+  );
+  return normalizeOptionNameList((subcommand as { options?: unknown } | null | undefined)?.options);
+}
+
+/** Purpose: build a compact startup summary for command registration diagnostics. */
+export function buildCommandRegistrationDebugSummary(
+  commands: unknown[]
+): CommandRegistrationDebugSummary {
+  const roster = commands.find(
+    (command) => String((command as { name?: unknown } | null | undefined)?.name ?? "").trim() === "roster"
+  );
+  return {
+    commandCount: Array.isArray(commands) ? commands.length : 0,
+    rosterIncluded: Boolean(roster),
+    rosterCreateOptionNames: findSubcommandOptionNames(roster, "create"),
+    rosterEditOptionNames: findSubcommandOptionNames(roster, "edit"),
+  };
 }
 
 /** Purpose: run one async operation with transient-aware retry policy. */
