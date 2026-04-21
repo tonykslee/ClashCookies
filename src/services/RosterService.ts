@@ -1350,6 +1350,13 @@ function getRosterCurrentClanLabel(view: RosterSignupView): string {
   return currentClanName ?? currentClanTag ?? "unscoped";
 }
 
+const ROSTER_BOARD_COLUMN_WIDTHS = {
+  th: 2,
+  player: 16,
+  discord: 16,
+  clan: 16,
+} as const;
+
 function sanitizeRosterBoardText(input: string | null | undefined): string {
   return (normalizeRosterText(input ?? null) ?? "").replace(/`/g, "'");
 }
@@ -1360,19 +1367,42 @@ function formatRosterBoardCell(input: string | null | undefined, width: number):
   return trimmed.padEnd(width, " ");
 }
 
-function buildRosterBoardLine(signup: RosterSignupViewRecord): string {
-  const th = formatRosterBoardCell(signup.townHall === null ? "-" : String(signup.townHall), 2);
-  const player = formatRosterBoardCell(signup.playerName || signup.playerTag, 18);
-  const discord = formatRosterBoardCell(signup.discordUsername, 18);
-  const clan = formatRosterBoardCell(signup.clanName || signup.clanTag || "-", 18);
+function buildRosterBoardLine(columns: {
+  th: string;
+  player: string;
+  discord: string | null;
+  clan: string;
+}): string {
+  const th = formatRosterBoardCell(columns.th, ROSTER_BOARD_COLUMN_WIDTHS.th);
+  const player = formatRosterBoardCell(columns.player, ROSTER_BOARD_COLUMN_WIDTHS.player);
+  const discord = formatRosterBoardCell(columns.discord, ROSTER_BOARD_COLUMN_WIDTHS.discord);
+  const clan = formatRosterBoardCell(columns.clan, ROSTER_BOARD_COLUMN_WIDTHS.clan);
   return `${th} ${player} ${discord} ${clan}`.trimEnd();
+}
+
+function buildRosterBoardHeaderLine(): string {
+  return buildRosterBoardLine({
+    th: "TH",
+    player: "Player",
+    discord: "Discord",
+    clan: "Clan",
+  });
+}
+
+function buildRosterBoardRowLine(signup: RosterSignupViewRecord): string {
+  return buildRosterBoardLine({
+    th: signup.townHall === null ? "-" : String(signup.townHall),
+    player: signup.playerName || signup.playerTag,
+    discord: signup.discordUsername,
+    clan: signup.clanName || signup.clanTag || "-",
+  });
 }
 
 function buildRosterBoardRowLines(signups: RosterSignupViewRecord[]): string[] {
   if (signups.length <= 0) {
     return ["`- None`"];
   }
-  return signups.map((signup) => `\`${buildRosterBoardLine(signup)}\``);
+  return signups.map((signup) => `\`${buildRosterBoardRowLine(signup)}\``);
 }
 
 function buildRosterSignupPayloadFromView(view: RosterSignupView): RosterSignupPayload {
@@ -1386,7 +1416,7 @@ function buildRosterSignupPayloadFromView(view: RosterSignupView): RosterSignupP
     currentClanLabel,
     rosterLabel,
     "",
-    "`TH Player              Discord             Clan`",
+    `\`${buildRosterBoardHeaderLine()}\``,
   ];
 
   for (const group of groups) {
