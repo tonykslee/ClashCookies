@@ -431,6 +431,7 @@ describe("TodoSnapshotService", () => {
       getPlayerRaw: vi.fn().mockResolvedValue({
         tag: "#PYLQ0289",
         clan: { tag: "#2CJYQ0U82", name: "Infinity Meow" },
+        townHallLevel: 16,
       }),
       getClanWarLeagueGroup: vi.fn().mockImplementation(async (clanTag: string) => {
         if (clanTag !== "#2CJYQ0U82") {
@@ -493,6 +494,7 @@ describe("TodoSnapshotService", () => {
     expect(prismaMock.todoPlayerSnapshot.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         update: expect.objectContaining({
+          townHall: 16,
           cwlClanTag: "#2CJYQ0U82",
           cwlClanName: "Infinity Meow",
           cwlActive: true,

@@ -25,6 +25,9 @@ const prismaMock = vi.hoisted(() => ({
   playerLink: {
     findMany: vi.fn(),
   },
+  fwaPlayerCatalog: {
+    findMany: vi.fn(),
+  },
 }));
 
 const playerLinkServiceMock = vi.hoisted(() => ({
@@ -33,6 +36,11 @@ const playerLinkServiceMock = vi.hoisted(() => ({
 
 const cwlStateServiceMock = vi.hoisted(() => ({
   listSeasonRosterForClan: vi.fn(),
+}));
+
+const todoSnapshotServiceMock = vi.hoisted(() => ({
+  listSnapshotsByPlayerTags: vi.fn(),
+  refreshSnapshotsForPlayerTags: vi.fn(),
 }));
 
 vi.mock("../src/prisma", () => ({
@@ -56,6 +64,16 @@ vi.mock("../src/services/CwlStateService", async () => {
   return {
     ...actual,
     cwlStateService: cwlStateServiceMock,
+  };
+});
+
+vi.mock("../src/services/TodoSnapshotService", async () => {
+  const actual = await vi.importActual<typeof import("../src/services/TodoSnapshotService")>(
+    "../src/services/TodoSnapshotService",
+  );
+  return {
+    ...actual,
+    todoSnapshotService: todoSnapshotServiceMock,
   };
 });
 
@@ -193,8 +211,14 @@ describe("RosterService", () => {
     prismaMock.rosterSignup.updateMany.mockResolvedValue({ count: 0 });
     prismaMock.rosterSignup.deleteMany.mockResolvedValue({ count: 0 });
     prismaMock.playerLink.findMany.mockResolvedValue([]);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
     playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([]);
     cwlStateServiceMock.listSeasonRosterForClan.mockResolvedValue([]);
+    todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValue([]);
+    todoSnapshotServiceMock.refreshSnapshotsForPlayerTags.mockResolvedValue({
+      playerCount: 0,
+      updatedCount: 0,
+    });
   });
 
   it("creates a roster with default Confirmed and Substitute groups", async () => {
@@ -320,6 +344,293 @@ describe("RosterService", () => {
     });
     expect(cwlStateServiceMock.listSeasonRosterForClan).toHaveBeenCalledWith({
       clanTag: "#2QG2C08UP",
+    });
+  });
+
+  it("uses the CWL season roster town hall before snapshot fallback when available", async () => {
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
+      { playerTag: "#PQL0289", linkedName: "Alpha", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+    ]);
+    prismaMock.roster.findUnique.mockResolvedValueOnce({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      maxMembers: null,
+      maxAccountsPerUser: null,
+      minTownhall: 13,
+      maxTownhall: null,
+      rosterRoleId: null,
+      allowMultiSignup: true,
+      sortBy: null,
+      importMembers: false,
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    } as any);
+    cwlStateServiceMock.listSeasonRosterForClan.mockResolvedValue([
+      { playerTag: "#PQL0289", playerName: "Alpha", townHall: 16 },
+    ]);
+
+    const result = await rosterService.signupLinkedAccounts({
+      rosterId: "roster-1",
+      groupKey: "confirmed",
+      discordUserId: "111111111111111111",
+    });
+
+    expect(result).toMatchObject({
+      outcome: "created",
+      createdTags: ["#PQL0289"],
+    });
+    expect(todoSnapshotServiceMock.listSnapshotsByPlayerTags).not.toHaveBeenCalled();
+  });
+
+  it("uses the FWA catalog town hall before snapshot fallback when available", async () => {
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
+      { playerTag: "#PQL0289", linkedName: "Alpha", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+    ]);
+    prismaMock.roster.findUnique.mockResolvedValueOnce({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "FWA",
+      rosterCategory: "signup",
+      title: "FWA Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      maxMembers: null,
+      maxAccountsPerUser: null,
+      minTownhall: 13,
+      maxTownhall: null,
+      rosterRoleId: null,
+      allowMultiSignup: true,
+      sortBy: null,
+      importMembers: false,
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    } as any);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([
+      { playerTag: "#PQL0289", latestTownHall: 15 },
+    ]);
+
+    const result = await rosterService.signupLinkedAccounts({
+      rosterId: "roster-1",
+      groupKey: "confirmed",
+      discordUserId: "111111111111111111",
+    });
+
+    expect(result).toMatchObject({
+      outcome: "created",
+      createdTags: ["#PQL0289"],
+    });
+    expect(todoSnapshotServiceMock.listSnapshotsByPlayerTags).not.toHaveBeenCalled();
+  });
+
+  it("falls back to persisted player snapshots when the primary roster source misses town hall", async () => {
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
+      { playerTag: "#PQL0289", linkedName: "Alpha", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+    ]);
+    prismaMock.roster.findUnique.mockResolvedValueOnce({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      maxMembers: null,
+      maxAccountsPerUser: null,
+      minTownhall: 13,
+      maxTownhall: null,
+      rosterRoleId: null,
+      allowMultiSignup: true,
+      sortBy: null,
+      importMembers: false,
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    } as any);
+    cwlStateServiceMock.listSeasonRosterForClan.mockResolvedValue([
+      { playerTag: "#PQL0289", playerName: "Alpha", townHall: null },
+    ]);
+    todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValue([
+      { playerTag: "#PQL0289", townHall: 15 },
+    ]);
+
+    const result = await rosterService.signupLinkedAccounts({
+      rosterId: "roster-1",
+      groupKey: "confirmed",
+      discordUserId: "111111111111111111",
+    });
+
+    expect(result).toMatchObject({
+      outcome: "created",
+      createdTags: ["#PQL0289"],
+    });
+    expect(todoSnapshotServiceMock.listSnapshotsByPlayerTags).toHaveBeenCalledWith({
+      playerTags: ["#PQL0289"],
+    });
+  });
+
+  it("uses a live player refresh for only the still-missing tags and reuses the persisted snapshot on later checks", async () => {
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
+      { playerTag: "#PQL0289", linkedName: "Alpha", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+    ]);
+    prismaMock.roster.findUnique.mockResolvedValue({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      maxMembers: null,
+      maxAccountsPerUser: null,
+      minTownhall: 13,
+      maxTownhall: null,
+      rosterRoleId: null,
+      allowMultiSignup: true,
+      sortBy: null,
+      importMembers: false,
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    } as any);
+    cwlStateServiceMock.listSeasonRosterForClan.mockResolvedValue([
+      { playerTag: "#PQL0289", playerName: "Alpha", townHall: null },
+    ]);
+    todoSnapshotServiceMock.listSnapshotsByPlayerTags
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ playerTag: "#PQL0289", townHall: 14 }])
+      .mockResolvedValueOnce([{ playerTag: "#PQL0289", townHall: 14 }]);
+    todoSnapshotServiceMock.refreshSnapshotsForPlayerTags.mockResolvedValue({
+      playerCount: 1,
+      updatedCount: 1,
+    });
+    const cocService = { getPlayerRaw: vi.fn() } as any;
+
+    const first = await rosterService.signupLinkedAccounts({
+      rosterId: "roster-1",
+      groupKey: "confirmed",
+      discordUserId: "111111111111111111",
+      cocService,
+    });
+    const second = await rosterService.signupLinkedAccounts({
+      rosterId: "roster-1",
+      groupKey: "confirmed",
+      discordUserId: "111111111111111111",
+      cocService,
+    });
+
+    expect(first).toMatchObject({
+      outcome: "created",
+      createdTags: ["#PQL0289"],
+    });
+    expect(second).toMatchObject({
+      outcome: "created",
+      createdTags: ["#PQL0289"],
+    });
+    expect(todoSnapshotServiceMock.refreshSnapshotsForPlayerTags).toHaveBeenCalledTimes(1);
+    expect(todoSnapshotServiceMock.refreshSnapshotsForPlayerTags).toHaveBeenCalledWith({
+      playerTags: ["#PQL0289"],
+      cocService,
+    });
+  });
+
+  it("still blocks when the recovered town hall is out of range", async () => {
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
+      { playerTag: "#PQL0289", linkedName: "Alpha", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+    ]);
+    prismaMock.roster.findUnique.mockResolvedValueOnce({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      maxMembers: null,
+      maxAccountsPerUser: null,
+      minTownhall: 15,
+      maxTownhall: null,
+      rosterRoleId: null,
+      allowMultiSignup: true,
+      sortBy: null,
+      importMembers: false,
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    } as any);
+    cwlStateServiceMock.listSeasonRosterForClan.mockResolvedValue([
+      { playerTag: "#PQL0289", playerName: "Alpha", townHall: null },
+    ]);
+    todoSnapshotServiceMock.listSnapshotsByPlayerTags
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ playerTag: "#PQL0289", townHall: 13 }]);
+    todoSnapshotServiceMock.refreshSnapshotsForPlayerTags.mockResolvedValue({
+      playerCount: 1,
+      updatedCount: 1,
+    });
+
+    const result = await rosterService.signupLinkedAccounts({
+      rosterId: "roster-1",
+      groupKey: "confirmed",
+      discordUserId: "111111111111111111",
+      cocService: { getPlayerRaw: vi.fn() } as any,
+    });
+
+    expect(result).toMatchObject({
+      outcome: "townhall_out_of_range",
+      blockedTags: ["#PQL0289"],
+      blockedAccounts: [{ playerTag: "#PQL0289", playerName: "Alpha" }],
     });
   });
 
