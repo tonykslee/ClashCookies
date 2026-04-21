@@ -17,6 +17,7 @@ const prismaMock = vi.hoisted(() => ({
   },
   rosterSignup: {
     findMany: vi.fn(),
+    count: vi.fn(),
     createMany: vi.fn(),
     updateMany: vi.fn(),
     deleteMany: vi.fn(),
@@ -166,6 +167,7 @@ describe("RosterService", () => {
       sortOrder: 0,
     });
     prismaMock.rosterSignup.findMany.mockResolvedValue([]);
+    prismaMock.rosterSignup.count.mockResolvedValue(0);
     prismaMock.rosterSignup.createMany.mockResolvedValue({ count: 0 });
     prismaMock.rosterSignup.updateMany.mockResolvedValue({ count: 0 });
     prismaMock.rosterSignup.deleteMany.mockResolvedValue({ count: 0 });
@@ -211,7 +213,9 @@ describe("RosterService", () => {
       { playerTag: "#PQL0289", linkedName: "Alpha", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
       { playerTag: "#QGRJ2222", linkedName: "Bravo", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
     ]);
-    prismaMock.rosterSignup.findMany.mockResolvedValue([{ playerTag: "#PQL0289" }]);
+    prismaMock.rosterSignup.findMany
+      .mockResolvedValueOnce([{ playerTag: "#PQL0289" }])
+      .mockResolvedValueOnce([]);
 
     const result = await rosterService.signupLinkedAccounts({
       rosterId: "roster-1",

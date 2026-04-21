@@ -25,6 +25,7 @@ import {
   rosterService,
   ROSTER_LIFECYCLE_STATE,
 } from "../services/RosterService";
+import { syncRosterRoleAssignments } from "../services/RosterRoleSyncService";
 import { cwlRotationService } from "../services/CwlRotationService";
 import { emojiResolverService } from "../services/emoji/EmojiResolverService";
 import {
@@ -114,6 +115,21 @@ function formatRosterSignupResultSummary(result: Awaited<ReturnType<typeof roste
   }
   if (result.outcome === "roster_archived") {
     return "That roster is archived.";
+  }
+  if (result.outcome === "roster_full") {
+    return "That roster is full.";
+  }
+  if (result.outcome === "account_limit_exceeded") {
+    return "You have reached the maximum accounts allowed on that roster.";
+  }
+  if (result.outcome === "townhall_unavailable") {
+    return "Town hall data is unavailable for some selected accounts.";
+  }
+  if (result.outcome === "townhall_out_of_range") {
+    return "Some selected accounts do not meet the town hall requirements.";
+  }
+  if (result.outcome === "roster_conflict") {
+    return "Some selected accounts are already signed up on another roster of this type.";
   }
   if (result.outcome === "group_not_found") {
     return "That roster group is no longer available.";
@@ -246,6 +262,7 @@ async function refreshRosterSignupPost(interaction: ChatInputCommandInteraction 
     embeds: [payload.embed],
     components: payload.components,
   }).catch(() => undefined);
+  await syncRosterRoleAssignments(interaction.client, rosterId).catch(() => undefined);
 }
 
 async function resolveCwlRotationOverviewStatusIcons(client: Client): Promise<{ yes: string; no: string }> {
@@ -3007,6 +3024,7 @@ export async function handleRosterSelectionActionButtonInteraction(
   }
 
   if (result.outcome === "signup") {
+    await syncRosterRoleAssignments(interaction.client, result.result.rosterId).catch(() => undefined);
     await refreshRosterSignupPost(interaction, result.result.rosterId).catch(() => undefined);
     await interaction.update({
       content: formatRosterSignupResultSummary(result.result),

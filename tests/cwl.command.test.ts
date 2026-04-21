@@ -228,6 +228,7 @@ describe("/cwl command", () => {
     vi.spyOn(rosterService, "updateRosterLifecycleState");
     vi.spyOn(rosterService, "recordRosterPostedMessage");
     vi.spyOn(rosterService, "getRosterView");
+    vi.spyOn(rosterService, "getRosterRoleSyncTargets").mockResolvedValue(null as any);
     vi.spyOn(rosterService, "updateRosterSelectionPanel");
     vi.spyOn(rosterService, "confirmRosterSelectionPanel");
     vi.spyOn(rosterService, "cancelRosterSelectionPanel");
