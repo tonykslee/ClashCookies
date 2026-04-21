@@ -181,6 +181,33 @@ export type RosterSignupView = {
   totalSignupCount: number;
 };
 
+export type RosterSummaryRecord = RosterRecord & {
+  groupCount: number;
+  signupCount: number;
+};
+
+const ROSTER_RECORD_SELECT = {
+  id: true,
+  guildId: true,
+  rosterType: true,
+  rosterCategory: true,
+  title: true,
+  clanTag: true,
+  startsAt: true,
+  endsAt: true,
+  timezone: true,
+  displayTimezone: true,
+  lifecycleState: true,
+  postedChannelId: true,
+  postedMessageId: true,
+  postedMessageUrl: true,
+  postedAt: true,
+  createdByDiscordUserId: true,
+  updatedByDiscordUserId: true,
+  createdAt: true,
+  updatedAt: true,
+} as const;
+
 export type CreateRosterInput = {
   guildId: string;
   rosterType: string;
@@ -488,6 +515,17 @@ function mapRosterRecord(row: RosterRecordLike): RosterRecord {
     updatedByDiscordUserId: row.updatedByDiscordUserId,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+  };
+}
+
+function mapRosterSummaryRecord(
+  row: RosterRecordLike & { _count: { groups: number; signups: number } },
+): RosterSummaryRecord {
+  const roster = mapRosterRecord(row);
+  return {
+    ...roster,
+    groupCount: row._count.groups,
+    signupCount: row._count.signups,
   };
 }
 
@@ -1253,6 +1291,180 @@ export class RosterService {
 
   async getRosterView(rosterId: string): Promise<RosterSignupView | null> {
     return loadRosterView(rosterId);
+  }
+
+  async findGuildRosterById(input: {
+    guildId: string;
+    rosterId: string;
+  }): Promise<RosterRecord | null> {
+    const guildId = String(input.guildId ?? "").trim();
+    const rosterId = String(input.rosterId ?? "").trim();
+    if (!guildId || !rosterId) {
+      return null;
+    }
+
+    const roster = await prisma.roster.findFirst({
+      where: {
+        id: rosterId,
+        guildId,
+      },
+      select: ROSTER_RECORD_SELECT,
+    });
+    return roster ? mapRosterRecord(roster) : null;
+  }
+
+  async listGuildRosters(input: {
+    guildId: string;
+    query?: string | null;
+    limit?: number | null;
+  }): Promise<RosterSummaryRecord[]> {
+    const guildId = String(input.guildId ?? "").trim();
+    if (!guildId) {
+      return [];
+    }
+
+    const query = normalizeRosterText(input.query);
+    const rosterRows = await prisma.roster.findMany({
+      where: {
+        guildId,
+        ...(query
+          ? {
+              OR: [
+                {
+                  title: {
+                    contains: query,
+                    mode: "insensitive",
+                  },
+                },
+                {
+                  clanTag: {
+                    contains: query,
+                    mode: "insensitive",
+                  },
+                },
+                {
+                  rosterType: {
+                    contains: query,
+                    mode: "insensitive",
+                  },
+                },
+                {
+                  rosterCategory: {
+                    contains: query,
+                    mode: "insensitive",
+                  },
+                },
+              ],
+            }
+          : {}),
+      },
+      orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+      take: Math.max(1, Math.min(25, Math.trunc(Number(input.limit ?? 25) || 25))),
+      select: {
+        ...ROSTER_RECORD_SELECT,
+        _count: {
+          select: {
+            groups: true,
+            signups: true,
+          },
+        },
+      },
+    });
+
+    return rosterRows.map((row) => mapRosterSummaryRecord(row as RosterRecordLike & { _count: { groups: number; signups: number } }));
+  }
+
+  async updateRoster(input: {
+    rosterId: string;
+    title?: string | null;
+    clanTag?: string | null;
+    timezone?: string | null;
+    displayTimezone?: string | null;
+    startsAt?: Date | null;
+    endsAt?: Date | null;
+    lifecycleState?: RosterLifecycleState | null;
+    updatedByDiscordUserId?: string | null;
+  }): Promise<RosterRecord | null> {
+    const roster = await prisma.roster.findUnique({
+      where: { id: input.rosterId },
+      select: {
+        id: true,
+      },
+    });
+    if (!roster) {
+      return null;
+    }
+
+    const data: any = {};
+    if (input.title !== undefined && input.title !== null) {
+      data.title = normalizeRosterTitle(input.title);
+    }
+    if (input.clanTag !== undefined) {
+      data.clanTag = input.clanTag ? normalizeClanTag(input.clanTag) : null;
+    }
+    if (input.timezone !== undefined) {
+      const normalizedTimezone = normalizeRosterDisplayTimezone(input.timezone) ?? "UTC";
+      data.timezone = normalizedTimezone;
+      if (input.displayTimezone === undefined) {
+        data.displayTimezone = normalizedTimezone;
+      }
+    }
+    if (input.displayTimezone !== undefined) {
+      data.displayTimezone = normalizeRosterDisplayTimezone(input.displayTimezone);
+    }
+    if (input.startsAt !== undefined) {
+      data.startsAt = input.startsAt;
+    }
+    if (input.endsAt !== undefined) {
+      data.endsAt = input.endsAt;
+    }
+    if (input.lifecycleState !== undefined && input.lifecycleState !== null) {
+      data.lifecycleState = input.lifecycleState;
+    }
+    if (input.updatedByDiscordUserId !== undefined) {
+      data.updatedByDiscordUserId = normalizeDiscordUserId(input.updatedByDiscordUserId);
+    }
+
+    const updated = await prisma.roster.update({
+      where: { id: roster.id },
+      data,
+      select: ROSTER_RECORD_SELECT,
+    });
+
+    return mapRosterRecord(updated);
+  }
+
+  async deleteRoster(input: {
+    rosterId: string;
+  }): Promise<
+    | {
+        outcome: "deleted";
+        roster: RosterRecord;
+      }
+    | {
+        outcome: "roster_not_found";
+        rosterId: string;
+      }
+  > {
+    const roster = await prisma.roster.findUnique({
+      where: { id: input.rosterId },
+      select: ROSTER_RECORD_SELECT,
+    });
+    if (!roster) {
+      return {
+        outcome: "roster_not_found",
+        rosterId: input.rosterId,
+      };
+    }
+
+    await prisma.roster.delete({
+      where: { id: roster.id },
+    });
+
+    return {
+      outcome: "deleted",
+      roster: mapRosterRecord(roster),
+    };
   }
 
   async findCwlRosterForClan(input: {
