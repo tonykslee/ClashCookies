@@ -787,6 +787,40 @@ describe("RosterService", () => {
         },
       },
     ] as any);
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PQL0289",
+        discordUsername: "TonyLee",
+      },
+      {
+        playerTag: "#QGRJ2222",
+        discordUsername: null,
+      },
+    ] as any);
+    todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValue([
+      {
+        playerTag: "#PQL0289",
+        clanTag: "#2QG2C08UP",
+        clanName: "Rising Dawn",
+      },
+      {
+        playerTag: "#QGRJ2222",
+        clanTag: "#2QG2C08UP",
+        clanName: "Gabbar",
+      },
+    ] as any);
+    cwlStateServiceMock.listSeasonRosterForClan.mockResolvedValue([
+      {
+        playerTag: "#PQL0289",
+        playerName: "Alpha",
+        townHall: 16,
+      },
+      {
+        playerTag: "#QGRJ2222",
+        playerName: "Bravo",
+        townHall: 15,
+      },
+    ] as any);
 
     const payload = await rosterService.buildRosterSignupPayload("roster-1");
 
@@ -794,10 +828,17 @@ describe("RosterService", () => {
     const description = payload?.embed.toJSON().description ?? "";
     expect(description).toContain("CWL Alpha (#2QG2C08UP)");
     expect(description).toContain("CWL Alpha Signup CWL");
-    expect(description).toContain("Confirmed - 1");
-    expect(description).toContain("Player               Discord                Clan");
-    expect(description).toContain("Substitute - 1");
-    expect(description).toContain("Total 2/");
+    expect(description).toContain("`TH Player");
+    expect(description).toContain("**Confirmed - 1**");
+    expect(description).toContain("**Substitute - 1**");
+    expect(description).toContain("`16 Alpha");
+    expect(description).toContain("TonyLee");
+    expect(description).toContain("Rising Dawn");
+    expect(description).toContain("`15 Bravo");
+    expect(description).toContain("Gabbar");
+    expect(description).toContain("\nTotal 2/");
+    expect(description).not.toContain("```");
+    expect(description).not.toContain("<@");
     expect(cocServiceMock.getClan).not.toHaveBeenCalled();
     const componentIds = payload?.components.flatMap((row) => {
       const rowJson = row.toJSON() as any;
@@ -813,6 +854,12 @@ describe("RosterService", () => {
         "roster-post-action:settings:roster-1",
       ]),
     );
+    const buttonJson = payload?.components[0]?.toJSON() as any;
+    const buttons = buttonJson?.components ?? [];
+    const refreshButton = buttons.find((button: any) => button.custom_id === "roster-post-action:refresh:roster-1");
+    const settingsButton = buttons.find((button: any) => button.custom_id === "roster-post-action:settings:roster-1");
+    expect(refreshButton?.label ?? refreshButton?.data?.label ?? null).toBeNull();
+    expect(settingsButton?.label ?? settingsButton?.data?.label ?? null).toBeNull();
   });
 
   it("refreshes only rostered player tags before rebuilding the posted roster payload", async () => {

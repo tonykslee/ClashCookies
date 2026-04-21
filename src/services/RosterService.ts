@@ -118,6 +118,7 @@ export type RosterSignupRecord = {
 export type RosterSignupViewRecord = RosterSignupRecord & {
   group: RosterGroupRecord | null;
   townHall: number | null;
+  discordUsername: string | null;
   clanTag: string | null;
   clanName: string | null;
 };
@@ -1349,24 +1350,29 @@ function getRosterCurrentClanLabel(view: RosterSignupView): string {
   return currentClanName ?? currentClanTag ?? "unscoped";
 }
 
-function formatRosterTableCell(input: string, width: number): string {
-  const value = normalizeRosterText(input) || "-";
+function sanitizeRosterBoardText(input: string | null | undefined): string {
+  return (normalizeRosterText(input ?? null) ?? "").replace(/`/g, "'");
+}
+
+function formatRosterBoardCell(input: string | null | undefined, width: number): string {
+  const value = sanitizeRosterBoardText(input) || "-";
   const trimmed = value.length > width ? value.slice(0, width) : value;
   return trimmed.padEnd(width, " ");
 }
 
-function buildRosterTableLine(signup: RosterSignupViewRecord): string {
-  const player = formatRosterTableCell(signup.playerName || signup.playerTag, 18);
-  const discord = formatRosterTableCell(signup.discordUserId ? `<@${signup.discordUserId}>` : "-", 22);
-  const clan = formatRosterTableCell(signup.clanName || signup.clanTag || "-", 18);
-  return `${player} ${discord} ${clan}`.trimEnd();
+function buildRosterBoardLine(signup: RosterSignupViewRecord): string {
+  const th = formatRosterBoardCell(signup.townHall === null ? "-" : String(signup.townHall), 2);
+  const player = formatRosterBoardCell(signup.playerName || signup.playerTag, 18);
+  const discord = formatRosterBoardCell(signup.discordUsername, 18);
+  const clan = formatRosterBoardCell(signup.clanName || signup.clanTag || "-", 18);
+  return `${th} ${player} ${discord} ${clan}`.trimEnd();
 }
 
-function buildRosterTableLines(signups: RosterSignupViewRecord[]): string[] {
+function buildRosterBoardRowLines(signups: RosterSignupViewRecord[]): string[] {
   if (signups.length <= 0) {
-    return ["None"];
+    return ["`- None`"];
   }
-  return signups.map((signup) => buildRosterTableLine(signup));
+  return signups.map((signup) => `\`${buildRosterBoardLine(signup)}\``);
 }
 
 function buildRosterSignupPayloadFromView(view: RosterSignupView): RosterSignupPayload {
@@ -1380,17 +1386,20 @@ function buildRosterSignupPayloadFromView(view: RosterSignupView): RosterSignupP
     currentClanLabel,
     rosterLabel,
     "",
-    "```text",
-    `Player               Discord                Clan`,
+    "`TH Player              Discord             Clan`",
   ];
 
   for (const group of groups) {
-    lines.push(`${group.name} - ${group.signupCount}`);
-    lines.push(...buildRosterTableLines(group.signups));
+    lines.push(`**${group.name} - ${group.signupCount}**`);
+    lines.push(...buildRosterBoardRowLines(group.signups));
+    lines.push("");
   }
 
-  lines.push(`Total ${view.totalSignupCount}/${maxMembersLabel} | Min. TH${minTownHallLabel}`);
-  lines.push("```");
+  if (lines.at(-1) === "") {
+    lines.pop();
+  }
+  lines.push("");
+  lines.push(`Total ${view.totalSignupCount}/${maxMembersLabel} | Min. TH ${minTownHallLabel}`);
 
   const embed = new EmbedBuilder()
     .setColor(0xfee75c)
@@ -1404,7 +1413,6 @@ function buildRosterSignupPayloadFromView(view: RosterSignupView): RosterSignupP
       new ButtonBuilder()
         .setCustomId(buildRosterPostActionButtonCustomId("refresh", view.roster.id))
         .setEmoji("🔄")
-        .setLabel("Refresh")
         .setStyle(ButtonStyle.Secondary),
     ];
     if (buttonMode === "standard") {
@@ -1427,7 +1435,6 @@ function buildRosterSignupPayloadFromView(view: RosterSignupView): RosterSignupP
       new ButtonBuilder()
         .setCustomId(buildRosterPostActionButtonCustomId("settings", view.roster.id))
         .setEmoji("⚙️")
-        .setLabel("Settings")
         .setStyle(ButtonStyle.Secondary),
     );
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(...rowButtons);
@@ -1516,6 +1523,20 @@ async function loadRosterView(rosterId: string): Promise<RosterSignupView | null
   const snapshotRows = await todoSnapshotService.listSnapshotsByPlayerTags({
     playerTags: signups.map((signup) => signup.playerTag),
   });
+  const linkedPlayerRows = await prisma.playerLink.findMany({
+    where: {
+      playerTag: { in: signups.map((signup) => normalizePlayerTag(signup.playerTag)).filter(Boolean) },
+    },
+    select: {
+      playerTag: true,
+      discordUsername: true,
+    },
+  });
+  const discordUsernameByTag = new Map(
+    linkedPlayerRows
+      .map((row) => [normalizePlayerTag(row.playerTag), normalizeRosterText(row.discordUsername ?? null)] as const)
+      .filter((entry): entry is readonly [string, string] => Boolean(entry[0])),
+  );
   const snapshotByTag = new Map(snapshotRows.map((row) => [normalizePlayerTag(row.playerTag), row] as const));
   const snapshotClanName =
     snapshotRows.find((row) => normalizeRosterText(row.clanName ?? null))?.clanName ?? null;
@@ -1534,6 +1555,7 @@ async function loadRosterView(rosterId: string): Promise<RosterSignupView | null
   const signupsWithTownHall = signups.map((signup) => ({
     ...signup,
     townHall: townHallByTag.get(normalizePlayerTag(signup.playerTag)) ?? null,
+    discordUsername: discordUsernameByTag.get(normalizePlayerTag(signup.playerTag)) ?? null,
     clanTag: snapshotByTag.get(normalizePlayerTag(signup.playerTag))?.clanTag ?? null,
     clanName: snapshotByTag.get(normalizePlayerTag(signup.playerTag))?.clanName ?? null,
   }));
@@ -1567,6 +1589,7 @@ async function loadRosterView(rosterId: string): Promise<RosterSignupView | null
       createdAt: signup.createdAt,
       updatedAt: signup.updatedAt,
       townHall: signup.townHall,
+      discordUsername: signup.discordUsername,
       clanTag: signup.clanTag,
       clanName: signup.clanName,
       group: signup.group
