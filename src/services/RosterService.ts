@@ -10,13 +10,14 @@ import { CoCService } from "./CoCService";
 import { prisma } from "../prisma";
 import { truncateDiscordContent } from "../helper/discordContent";
 import {
+  listPlayerLinksForClanMembers,
   listPlayerLinksForDiscordUser,
   normalizeClanTag,
   normalizeDiscordUserId,
   normalizePlayerTag,
 } from "./PlayerLinkService";
 import { resolveCurrentCwlSeasonKey } from "./CwlRegistryService";
-import { cwlStateService, type CwlSeasonRosterEntry } from "./CwlStateService";
+import { cwlStateService } from "./CwlStateService";
 import { todoSnapshotService } from "./TodoSnapshotService";
 import { normalizeSyncTimeZone } from "./syncTimeZone";
 
@@ -507,10 +508,18 @@ export type RosterManagerMoveSignupsResult =
 
 export type RosterManagerReadinessView = {
   roster: RosterRecord;
-  trackedClanRoster: CwlSeasonRosterEntry[];
+  trackedClanRoster: RosterManagerTrackedClanMemberRecord[];
   signupView: RosterSignupView;
   signedUpButUntracked: RosterSignupViewRecord[];
-  unsignedTrackedMembers: CwlSeasonRosterEntry[];
+  unsignedTrackedMembers: RosterManagerTrackedClanMemberRecord[];
+};
+
+type RosterManagerTrackedClanMemberRecord = {
+  playerTag: string;
+  playerName: string;
+  townHall: number | null;
+  linkedDiscordUserId: string | null;
+  linkedDiscordUsername: string | null;
 };
 
 function normalizeRosterType(input: string): string {
@@ -1258,9 +1267,65 @@ function buildRosterManagerGroupSummaryLine(group: RosterGroupRecord & { signupC
   return `${group.name} (${group.signupCount})`;
 }
 
-function buildRosterManagerMemberLine(entry: CwlSeasonRosterEntry): string {
+function buildRosterManagerMemberLine(entry: RosterManagerTrackedClanMemberRecord): string {
   const discordLabel = entry.linkedDiscordUserId ? ` <@${entry.linkedDiscordUserId}>` : "";
   return `- ${entry.playerName} \`${entry.playerTag}\`${discordLabel}`;
+}
+
+async function loadCurrentCwlRosterManagerMembers(clanTag: string): Promise<Array<{
+  playerTag: string;
+  playerName: string;
+  townHall: number | null;
+}>> {
+  const currentRound = await cwlStateService.getCurrentRoundForClan({ clanTag });
+  if (!currentRound || currentRound.members.length <= 0) {
+    return [];
+  }
+
+  return currentRound.members.map((member) => ({
+    playerTag: member.playerTag,
+    playerName: member.playerName,
+    townHall: member.townHall,
+  }));
+}
+
+async function loadRosterManagerTrackedClanMembers(roster: RosterRecord): Promise<RosterManagerTrackedClanMemberRecord[]> {
+  const trackedClanTag = normalizeClanTag(roster.clanTag ?? "");
+  if (!trackedClanTag) return [];
+
+  const rawMembers =
+    roster.rosterType === "FWA"
+      ? await prisma.fwaClanMemberCurrent.findMany({
+          where: { clanTag: trackedClanTag },
+          orderBy: [{ playerName: "asc" }, { playerTag: "asc" }],
+          select: {
+            playerTag: true,
+            playerName: true,
+            townHall: true,
+          },
+        })
+      : roster.rosterType === "CWL"
+        ? await loadCurrentCwlRosterManagerMembers(trackedClanTag)
+        : [];
+
+  if (rawMembers.length <= 0) {
+    return [];
+  }
+
+  const links = await listPlayerLinksForClanMembers({
+    memberTagsInOrder: rawMembers.map((member) => member.playerTag),
+  });
+  const linkByTag = new Map(links.map((link) => [link.playerTag, link] as const));
+  return rawMembers.map((member) => {
+    const link = linkByTag.get(member.playerTag) ?? null;
+    return {
+      playerTag: member.playerTag,
+      playerName: normalizeRosterText(member.playerName) ?? member.playerTag,
+      townHall: Number.isFinite(Number(member.townHall)) ? Math.trunc(Number(member.townHall)) : null,
+      linkedDiscordUserId: link?.discordUserId ?? null,
+      linkedDiscordUsername: link?.discordUsername ?? null,
+    };
+  });
 }
 
 function buildRosterManagerReadinessLines(view: RosterManagerReadinessView): string[] {
@@ -1270,8 +1335,8 @@ function buildRosterManagerReadinessLines(view: RosterManagerReadinessView): str
     `Clan: ${view.roster.clanTag ?? "unscoped"}`,
     `Posted message: ${view.roster.postedMessageUrl ?? "not posted"}`,
     `Signed up: ${view.signupView.totalSignupCount}`,
-    `Tracked clan roster: ${view.trackedClanRoster.length}`,
-    `Unsigned tracked clan members: ${view.unsignedTrackedMembers.length}`,
+    `Current clan members: ${view.trackedClanRoster.length}`,
+    `Unregistered members: ${view.unsignedTrackedMembers.length}`,
     `Out-of-clan signups: ${view.signedUpButUntracked.length}`,
   ];
 
@@ -1294,7 +1359,7 @@ function buildRosterManagerReadinessLines(view: RosterManagerReadinessView): str
   }
 
   lines.push("");
-  lines.push("Unsigned tracked clan members:");
+  lines.push("Unregistered members:");
   if (view.unsignedTrackedMembers.length <= 0) {
     lines.push("- None");
   } else {
@@ -2870,11 +2935,7 @@ export class RosterService {
     const view = await loadRosterView(input.rosterId);
     if (!view) return null;
 
-    const trackedClanTag = view.roster.clanTag ? normalizeClanTag(view.roster.clanTag) : null;
-    const trackedClanRoster =
-      trackedClanTag && view.roster.rosterType === "CWL"
-        ? await cwlStateService.listSeasonRosterForClan({ clanTag: trackedClanTag })
-        : [];
+    const trackedClanRoster = await loadRosterManagerTrackedClanMembers(view.roster);
     const trackedTagSet = new Set(trackedClanRoster.map((entry) => normalizePlayerTag(entry.playerTag)).filter(Boolean));
     const signupsByTag = new Map(view.signups.map((signup) => [normalizePlayerTag(signup.playerTag), signup] as const));
     const signedUpButUntracked = view.signups.filter((signup) => {
