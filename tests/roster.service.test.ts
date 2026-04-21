@@ -916,7 +916,7 @@ describe("RosterService", () => {
     expect(substituteRow).toBeTruthy();
     expect(embedTitle).toBe("Rising Crowns");
     expect(description).toContain(
-      "## [CWL Alpha Signup](https://link.clashofclans.com/en?action=OpenClanProfile&tag=2QG2C08UP) Champion League II",
+      "**[CWL Alpha Signup](https://link.clashofclans.com/en?action=OpenClanProfile&tag=2QG2C08UP)** Champion League II",
     );
     expect(description).toContain("**Confirmed - 1**");
     expect(description).toContain("**Substitute - 1**");
@@ -1030,7 +1030,7 @@ describe("RosterService", () => {
     expect(payload).toBeTruthy();
     expect(String(payload?.embed.toJSON().title ?? "")).toBe("CWL Alpha");
     expect(String(payload?.embed.toJSON().description ?? "")).toContain(
-      "## [CWL Alpha Signup](https://link.clashofclans.com/en?action=OpenClanProfile&tag=2QG2C08UP) Champion League II",
+      "**[CWL Alpha Signup](https://link.clashofclans.com/en?action=OpenClanProfile&tag=2QG2C08UP)** Champion League II",
     );
   });
 
@@ -1076,7 +1076,7 @@ describe("RosterService", () => {
     prismaMock.rosterSignup.count.mockResolvedValueOnce(0);
     const payload = await rosterService.buildRosterSignupPayload("roster-1");
     expect(String(payload?.embed.toJSON().description ?? "")).toContain(
-      "## [CWL Alpha Signup](https://link.clashofclans.com/en?action=OpenClanProfile&tag=2QG2C08UP) CWL",
+      "**[CWL Alpha Signup](https://link.clashofclans.com/en?action=OpenClanProfile&tag=2QG2C08UP)** CWL",
     );
   });
 

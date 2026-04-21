@@ -1542,7 +1542,7 @@ function buildRosterSignupPayloadFromView(view: RosterSignupView): RosterSignupP
   const title = normalizeRosterText(view.clanDisplayName ?? null) ?? normalizeClanTag(view.roster.clanTag ?? "") ?? "Roster";
   const groups = buildRosterGroupsWithSignups(view);
   const widths = measureRosterBoardColumnWidths(groups.flatMap((group) => group.signups));
-  const rosterLabel = `## ${buildClanProfileMarkdownLink(view.roster.title || "Roster Signup", view.roster.clanTag)} ${
+  const rosterLabel = `**${buildClanProfileMarkdownLink(view.roster.title || "Roster Signup", view.roster.clanTag)}** ${
     view.clanLeagueLabel ?? view.roster.rosterType
   }`.trim();
   const maxMembersLabel = view.roster.maxMembers === null || view.roster.maxMembers === undefined ? "-" : String(view.roster.maxMembers);
