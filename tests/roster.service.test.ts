@@ -56,6 +56,7 @@ const cocServiceMock = vi.hoisted(() => ({
 
 const todoSnapshotServiceMock = vi.hoisted(() => ({
   listSnapshotsByPlayerTags: vi.fn(),
+  listSnapshotsByClanTag: vi.fn(),
   refreshSnapshotsForPlayerTags: vi.fn(),
 }));
 
@@ -231,6 +232,7 @@ describe("RosterService", () => {
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
     prismaMock.cwlTrackedClan.findFirst.mockResolvedValue({
       name: "CWL Alpha",
+      leagueLabel: "Champion League II",
     });
     prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([]);
     prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
@@ -242,6 +244,7 @@ describe("RosterService", () => {
     cwlStateServiceMock.listSeasonRosterForClan.mockResolvedValue([]);
     cwlStateServiceMock.getCurrentRoundForClan.mockResolvedValue(null);
     todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValue([]);
+    todoSnapshotServiceMock.listSnapshotsByClanTag.mockResolvedValue([]);
     todoSnapshotServiceMock.refreshSnapshotsForPlayerTags.mockResolvedValue({
       playerCount: 0,
       updatedCount: 0,
@@ -815,6 +818,24 @@ describe("RosterService", () => {
         clanName: "Gabbar",
       },
     ] as any);
+    todoSnapshotServiceMock.listSnapshotsByClanTag.mockResolvedValue([
+      {
+        playerTag: "#PQL0289",
+        playerName: "Alpha",
+        clanTag: "#2QG2C08UP",
+        clanName: "Rising Crowns",
+        cwlClanTag: "#2QG2C08UP",
+        cwlClanName: "Rising Crowns",
+      },
+      {
+        playerTag: "#QGRJ2222",
+        playerName: "Bravo",
+        clanTag: "#2QG2C08UP",
+        clanName: "Rising Crowns",
+        cwlClanTag: "#2QG2C08UP",
+        cwlClanName: "Rising Crowns",
+      },
+    ] as any);
     cwlStateServiceMock.listSeasonRosterForClan.mockResolvedValue([
       {
         playerTag: "#PQL0289",
@@ -826,12 +847,18 @@ describe("RosterService", () => {
         playerName: "Bravo",
         townHall: 15,
       },
+      {
+        playerTag: "#OLD1111",
+        playerName: "OldTimer",
+        townHall: 14,
+      },
     ] as any);
 
     const payload = await rosterService.buildRosterSignupPayload("roster-1");
 
     expect(payload).toBeTruthy();
     const description = payload?.embed.toJSON().description ?? "";
+    const embedTitle = payload?.embed.toJSON().title ?? "";
     const lines = description.split("\n");
     const headerLine = lines.find((line) => line.startsWith("`TH "));
     const confirmedRow = lines.find((line) => line.startsWith("`16 Alpha"));
@@ -839,8 +866,10 @@ describe("RosterService", () => {
     expect(headerLine).toBeTruthy();
     expect(confirmedRow).toBeTruthy();
     expect(substituteRow).toBeTruthy();
-    expect(description).toContain("CWL Alpha (#2QG2C08UP)");
-    expect(description).toContain("CWL Alpha Signup CWL");
+    expect(embedTitle).toBe("Rising Crowns");
+    expect(description).toContain(
+      "## [CWL Alpha Signup](https://link.clashofclans.com/en?action=OpenClanProfile&tag=2QG2C08UP) Champion League II",
+    );
     expect(description).toContain("**Confirmed - 1**");
     expect(description).toContain("**Substitute - 1**");
     expect(description).toContain("TonyLee");
@@ -905,6 +934,24 @@ describe("RosterService", () => {
         clanName: "CWL Alpha",
       },
     ] as any);
+    todoSnapshotServiceMock.listSnapshotsByClanTag.mockResolvedValue([
+      {
+        playerTag: "#PQL0289",
+        playerName: "Alpha",
+        townHall: 15,
+        clanTag: "#2QG2C08UP",
+        clanName: "CWL Alpha",
+        cwlClanTag: "#2QG2C08UP",
+        cwlClanName: "CWL Alpha",
+      },
+    ] as any);
+    cwlStateServiceMock.listSeasonRosterForClan.mockResolvedValue([
+      {
+        playerTag: "#PQL0289",
+        playerName: "Alpha",
+        townHall: 15,
+      },
+    ] as any);
     todoSnapshotServiceMock.refreshSnapshotsForPlayerTags.mockResolvedValue({
       playerCount: 1,
       updatedCount: 1,
@@ -919,7 +966,56 @@ describe("RosterService", () => {
       }),
     );
     expect(payload).toBeTruthy();
-    expect(String(payload?.embed.toJSON().description ?? "")).toContain("CWL Alpha (#2QG2C08UP)");
+    expect(String(payload?.embed.toJSON().title ?? "")).toBe("CWL Alpha");
+    expect(String(payload?.embed.toJSON().description ?? "")).toContain(
+      "## [CWL Alpha Signup](https://link.clashofclans.com/en?action=OpenClanProfile&tag=2QG2C08UP) Champion League II",
+    );
+  });
+
+  it("falls back cleanly when no persisted CWL league label is available", async () => {
+    prismaMock.cwlTrackedClan.findFirst.mockResolvedValueOnce({
+      name: "CWL Alpha",
+      leagueLabel: null,
+    });
+    prismaMock.roster.findUnique.mockResolvedValueOnce({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    } as any);
+    prismaMock.rosterGroup.findMany.mockResolvedValueOnce([
+      {
+        id: "group-confirmed",
+        rosterId: "roster-1",
+        key: "confirmed",
+        name: "Confirmed",
+        description: "Primary roster members",
+        sortOrder: 0,
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+      },
+    ] as any);
+    prismaMock.rosterSignup.findMany.mockResolvedValueOnce([] as any);
+    prismaMock.rosterSignup.count.mockResolvedValueOnce(0);
+    const payload = await rosterService.buildRosterSignupPayload("roster-1");
+    expect(String(payload?.embed.toJSON().description ?? "")).toContain(
+      "## [CWL Alpha Signup](https://link.clashofclans.com/en?action=OpenClanProfile&tag=2QG2C08UP) CWL",
+    );
   });
 
   it("builds a signup selection panel that lets a user choose linked accounts", async () => {
@@ -1362,38 +1458,43 @@ describe("RosterService", () => {
         sortOrder: 1,
       },
     ]);
-    cwlStateServiceMock.getCurrentRoundForClan.mockResolvedValue({
-      season: "2026-04",
-      clanTag: "#2QG2C08UP",
-      clanName: "Current Clan",
-      roundDay: 4,
-      roundState: "inWar",
-      opponentTag: "#OPPONENT",
-      opponentName: "Opponent Clan",
-      teamSize: 15,
-      attacksPerMember: 1,
-      preparationStartTime: new Date("2026-04-20T00:00:00.000Z"),
-      startTime: new Date("2026-04-20T01:00:00.000Z"),
-      endTime: new Date("2026-04-20T02:00:00.000Z"),
-      sourceUpdatedAt: new Date("2026-04-20T00:00:00.000Z"),
-      members: [
-        {
-          season: "2026-04",
-          clanTag: "#2QG2C08UP",
-          playerTag: "#QGRJ2222",
-          roundDay: 4,
-          playerName: "Bravo",
-          mapPosition: 2,
-          townHall: 15,
-          attacksUsed: 0,
-          attacksAvailable: 1,
-          stars: 0,
-          destruction: 0,
-          subbedIn: true,
-          subbedOut: false,
-        },
-      ],
-    } as any);
+    todoSnapshotServiceMock.listSnapshotsByClanTag.mockResolvedValue([
+      {
+        playerTag: "#PQL0289",
+        playerName: "Alpha",
+        townHall: 16,
+        clanTag: "#2QG2C08UP",
+        clanName: "Rising Crowns",
+        cwlClanTag: "#2QG2C08UP",
+        cwlClanName: "Rising Crowns",
+      },
+      {
+        playerTag: "#QGRJ2222",
+        playerName: "Bravo",
+        townHall: 15,
+        clanTag: "#2QG2C08UP",
+        clanName: "Rising Crowns",
+        cwlClanTag: "#2QG2C08UP",
+        cwlClanName: "Rising Crowns",
+      },
+    ] as any);
+    cwlStateServiceMock.listSeasonRosterForClan.mockResolvedValue([
+      {
+        playerTag: "#PQL0289",
+        playerName: "Alpha",
+        townHall: 16,
+      },
+      {
+        playerTag: "#QGRJ2222",
+        playerName: "Bravo",
+        townHall: 15,
+      },
+      {
+        playerTag: "#OLD1111",
+        playerName: "OldTimer",
+        townHall: 14,
+      },
+    ] as any);
     prismaMock.playerLink.findMany.mockResolvedValue([
       {
         playerTag: "#PQL0289",
@@ -1413,6 +1514,7 @@ describe("RosterService", () => {
     expect(report).toContain("Current clan members:");
     expect(report).toContain("Unregistered members:");
     expect(report).toContain("- Bravo `#QGRJ2222` <@222222222222222222>");
+    expect(report).not.toContain("None");
     expect(report).toContain("Out-of-clan signups:");
     expect(report).toContain("- Outlier `#ZZZZ1111` <@333333333333333333>");
     expect(report).not.toContain("#OLD1111");

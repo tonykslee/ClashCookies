@@ -143,6 +143,7 @@ describe("/tracked-clan command behavior", () => {
           season: "2026-03",
           tag: "#PYLQ0289",
           name: null,
+          leagueLabel: null,
         },
       ],
       skipDuplicates: true,
