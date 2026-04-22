@@ -1421,7 +1421,7 @@ async function loadCurrentCwlRosterManagerMembers(clanTag: string): Promise<Arra
 }>> {
   const currentClanRows = await todoSnapshotService.listSnapshotsByClanTag({
     clanTag,
-    source: "cwlClanTag",
+    source: "clanTag",
   });
   if (currentClanRows.length <= 0) {
     return [];
@@ -1884,17 +1884,12 @@ async function loadRosterView(rosterId: string, options?: RosterViewLoadOptions)
     }),
   ]);
   const currentClanRows =
-    roster.clanTag && roster.rosterType === "CWL"
+    roster.clanTag
       ? await todoSnapshotService.listSnapshotsByClanTag({
           clanTag: roster.clanTag,
-          source: "cwlClanTag",
+          source: "clanTag",
         })
-      : roster.clanTag
-        ? await todoSnapshotService.listSnapshotsByClanTag({
-            clanTag: roster.clanTag,
-            source: "clanTag",
-        })
-        : [];
+      : [];
   const discordUsernameByTag = new Map(
     linkedPlayerRows
       .map((row) => [normalizePlayerTag(row.playerTag), normalizeRosterText(row.discordUsername ?? null)] as const)
