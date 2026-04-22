@@ -11,7 +11,6 @@ export type FwaTrackedClanDisplayRow = {
   clanBadge: string | null;
   shortName: string | null;
   createdAt: Date;
-  updatedAt: Date;
 };
 
 /** Purpose: list tracked FWA clans in deterministic creation order for command rendering. */
@@ -28,7 +27,6 @@ export async function listFwaTrackedClansForDisplay(): Promise<FwaTrackedClanDis
       clanBadge: true,
       shortName: true,
       createdAt: true,
-      updatedAt: true,
     },
   });
 
@@ -42,6 +40,5 @@ export async function listFwaTrackedClansForDisplay(): Promise<FwaTrackedClanDis
     clanBadge: row.clanBadge,
     shortName: row.shortName,
     createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
   }));
 }
