@@ -21,7 +21,11 @@ import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
 import { CommandPermissionService } from "../services/CommandPermissionService";
 import { resolveCurrentCwlSeasonKey } from "../services/CwlRegistryService";
-import { normalizeClanTag, normalizePlayerTag } from "../services/PlayerLinkService";
+import {
+  listPlayerLinksForDiscordUser,
+  normalizeClanTag,
+  normalizePlayerTag,
+} from "../services/PlayerLinkService";
 import { autocompleteSyncTimeZones, normalizeSyncTimeZone } from "../services/syncTimeZone";
 import {
   ROSTER_LIFECYCLE_STATE,
@@ -44,7 +48,6 @@ import {
 } from "../services/RosterWeightService";
 import { syncRosterRoleAssignments } from "../services/RosterRoleSyncService";
 import { rosterExportService } from "../services/RosterExportService";
-import { autocompleteCwlTrackedClan } from "./Cwl";
 
 export {
   handleRosterSignupButtonInteraction,
@@ -1815,11 +1818,7 @@ async function handleRosterEditSubcommand(
     return;
   }
 
-  const { name: nameSeed, title: titleSeed, conflict: nameConflict } = resolveRosterNameOption(interaction);
-  if (nameConflict) {
-    await interaction.editReply("Choose either name or title, not both.");
-    return;
-  }
+  const nameSeed = interaction.options.getString("name", false)?.trim() ?? null;
   const categorySeed = normalizeRosterCategoryChoice(interaction.options.getString("category", false));
   if (interaction.options.getString("category", false) && !categorySeed) {
     await interaction.editReply("Use a supported roster category: CWL or FWA.");
@@ -1855,7 +1854,6 @@ async function handleRosterEditSubcommand(
 
   if (
     !nameSeed &&
-    !titleSeed &&
     !categorySeed &&
     !clanSeed &&
     !timezoneSeed &&
@@ -1973,7 +1971,7 @@ async function handleRosterEditSubcommand(
 
   const updated = await rosterService.updateRoster({
     rosterId: roster.id,
-    name: nameSeed ?? titleSeed ?? undefined,
+    name: nameSeed ?? undefined,
     rosterType: categorySeed ?? undefined,
     clanTag: clanSeed ?? undefined,
     timezone: timezone ?? undefined,
@@ -2053,6 +2051,165 @@ async function autocompleteRosterOption(interaction: AutocompleteInteraction): P
       description: `Type ${roster.rosterType}${roster.rosterCategory ? ` / ${roster.rosterCategory}` : ""} • ${roster.postedMessageId ? "posted" : "unposted"} • ${roster.signupCount} signups`.slice(0, 100),
     })),
   );
+}
+
+function buildRosterTrackedClanChoiceLabel(clan: { name: string | null; tag: string }): string {
+  const tag = normalizeClanTag(clan.tag);
+  const name = clan.name?.trim();
+  return name ? `${name} (${tag})` : tag;
+}
+
+async function autocompleteRosterTrackedClan(interaction: AutocompleteInteraction): Promise<void> {
+  if (!interaction.inGuild() || !interaction.guildId) {
+    await interaction.respond([]);
+    return;
+  }
+
+  const focused = interaction.options.getFocused(true);
+  if (focused.name !== "clan") {
+    await interaction.respond([]);
+    return;
+  }
+
+  const query = String(focused.value ?? "")
+    .trim()
+    .toLowerCase();
+  const tracked = await prisma.trackedClan.findMany({
+    orderBy: [{ createdAt: "asc" }, { tag: "asc" }],
+    select: { name: true, tag: true },
+  });
+
+  await interaction.respond(
+    tracked
+      .map((clan) => {
+        const value = normalizeClanTag(clan.tag);
+        const name = buildRosterTrackedClanChoiceLabel(clan);
+        return { name: name.slice(0, 100), value };
+      })
+      .filter(
+        (choice) =>
+          choice.name.toLowerCase().includes(query) || choice.value.toLowerCase().includes(query),
+      )
+      .slice(0, 25),
+  );
+}
+
+async function autocompleteRosterGroup(interaction: AutocompleteInteraction): Promise<void> {
+  if (!interaction.inGuild() || !interaction.guildId) {
+    await interaction.respond([]);
+    return;
+  }
+
+  const focused = interaction.options.getFocused(true);
+  if (focused.name !== "group") {
+    await interaction.respond([]);
+    return;
+  }
+
+  const rosterId = interaction.options.getString("roster", false)?.trim();
+  if (!rosterId) {
+    await interaction.respond([]);
+    return;
+  }
+
+  const rosterView = await rosterService.getRosterView(rosterId);
+  if (!rosterView) {
+    await interaction.respond([]);
+    return;
+  }
+
+  const query = String(focused.value ?? "")
+    .trim()
+    .toLowerCase();
+  const groups = [...rosterView.groups].sort(
+    (a, b) => a.sortOrder - b.sortOrder || a.key.localeCompare(b.key) || a.name.localeCompare(b.name),
+  );
+
+  await interaction.respond(
+    groups
+      .map((group) => {
+        const label = `${group.name} (${group.key})`;
+        return { name: label.slice(0, 100), value: group.key };
+      })
+      .filter(
+        (choice) =>
+          choice.name.toLowerCase().includes(query) || choice.value.toLowerCase().includes(query),
+      )
+      .slice(0, 25),
+  );
+}
+
+async function autocompleteRosterPlayers(interaction: AutocompleteInteraction): Promise<void> {
+  if (!interaction.inGuild()) {
+    await interaction.respond([]);
+    return;
+  }
+
+  const focused = interaction.options.getFocused(true);
+  if (focused.name !== "players") {
+    await interaction.respond([]);
+    return;
+  }
+
+  const query = String(focused.value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/^#/, "");
+  const links = await listPlayerLinksForDiscordUser({ discordUserId: interaction.user.id });
+
+  await interaction.respond(
+    links
+      .map((link) => {
+        const value = normalizePlayerTag(link.playerTag);
+        const label = link.linkedName ? `${link.linkedName} (${value})` : value;
+        return { name: label.slice(0, 100), value };
+      })
+      .filter((choice) => {
+        const searchable = `${choice.name} ${choice.value}`.toLowerCase();
+        return searchable.includes(query);
+      })
+      .slice(0, 25),
+  );
+}
+
+async function autocompleteRosterUsers(interaction: AutocompleteInteraction): Promise<void> {
+  if (!interaction.inGuild()) {
+    await interaction.respond([]);
+    return;
+  }
+
+  const focused = interaction.options.getFocused(true);
+  if (focused.name !== "user") {
+    await interaction.respond([]);
+    return;
+  }
+
+  const members = interaction.guild?.members?.cache;
+  if (!members) {
+    await interaction.respond([]);
+    return;
+  }
+
+  const query = String(focused.value ?? "")
+    .trim()
+    .toLowerCase();
+
+  const choices = [...members.values()]
+    .filter((member) => Boolean(member?.id) && !member.user?.bot)
+    .map((member) => {
+      const displayName = String(member.displayName ?? "").trim();
+      const username = String(member.user?.username ?? "").trim();
+      const value = String(member.id ?? "").trim();
+      const label = displayName ? `${displayName} (@${username || value})` : `@${username || value}`;
+      const searchable = `${displayName} ${username} ${value}`.toLowerCase();
+      return { name: label.slice(0, 100), value, searchable };
+    })
+    .filter((choice) => choice.searchable.includes(query))
+    .sort((a, b) => a.name.localeCompare(b.name) || a.value.localeCompare(b.value))
+    .slice(0, 25)
+    .map(({ searchable: _searchable, ...choice }) => choice);
+
+  await interaction.respond(choices);
 }
 
 export const Roster: Command = {
@@ -2185,6 +2342,7 @@ export const Roster: Command = {
           description: "Filter by Discord user ID",
           type: ApplicationCommandOptionType.String,
           required: false,
+          autocomplete: true,
         },
         {
           name: "player",
@@ -2197,6 +2355,7 @@ export const Roster: Command = {
           description: "Filter by clan tag",
           type: ApplicationCommandOptionType.String,
           required: false,
+          autocomplete: true,
         },
       ],
     },
@@ -2246,12 +2405,14 @@ export const Roster: Command = {
           description: "Roster group key",
           type: ApplicationCommandOptionType.String,
           required: false,
+          autocomplete: true,
         },
         {
           name: "players",
           description: "Comma or space separated player tags",
           type: ApplicationCommandOptionType.String,
           required: false,
+          autocomplete: true,
         },
       ],
     },
@@ -2270,12 +2431,6 @@ export const Roster: Command = {
         {
           name: "name",
           description: "Roster name",
-          type: ApplicationCommandOptionType.String,
-          required: false,
-        },
-        {
-          name: "title",
-          description: "Backwards-compatible alias for roster name",
           type: ApplicationCommandOptionType.String,
           required: false,
         },
@@ -2497,7 +2652,19 @@ export const Roster: Command = {
       return;
     }
     if (focused.name === "clan") {
-      await autocompleteCwlTrackedClan(interaction);
+      await autocompleteRosterTrackedClan(interaction);
+      return;
+    }
+    if (focused.name === "group") {
+      await autocompleteRosterGroup(interaction);
+      return;
+    }
+    if (focused.name === "players") {
+      await autocompleteRosterPlayers(interaction);
+      return;
+    }
+    if (focused.name === "user") {
+      await autocompleteRosterUsers(interaction);
       return;
     }
     if (focused.name === "roster") {

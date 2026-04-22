@@ -3,6 +3,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const prismaMock = vi.hoisted(() => ({
   $queryRaw: vi.fn(),
+  trackedClan: {
+    findMany: vi.fn(),
+  },
   cwlTrackedClan: {
     findFirst: vi.fn(),
   },
@@ -25,6 +28,7 @@ import {
 import { rosterService } from "../src/services/RosterService";
 import { rosterExportService } from "../src/services/RosterExportService";
 import { rosterWeightService } from "../src/services/RosterWeightService";
+import * as playerLinkService from "../src/services/PlayerLinkService";
 
 type RosterSubcommand =
   | "create"
@@ -115,6 +119,50 @@ function makeInteraction(input: {
   };
 }
 
+function makeAutocompleteInteraction(input: {
+  focusedName: string;
+  focusedValue?: string;
+  subcommand: RosterSubcommand;
+  roster?: string | null;
+  guildMembers?: Array<{
+    id: string;
+    displayName: string;
+    username: string;
+    bot?: boolean;
+  }>;
+}) {
+  const members = new Map(
+    (input.guildMembers ?? []).map((member) => [
+      member.id,
+      {
+        id: member.id,
+        displayName: member.displayName,
+        user: {
+          id: member.id,
+          username: member.username,
+          bot: member.bot ?? false,
+        },
+      },
+    ]),
+  );
+
+  return {
+    user: { id: "111111111111111111" },
+    guildId: "guild-1",
+    guild: { members: { cache: members } },
+    inGuild: () => true,
+    respond: vi.fn().mockResolvedValue(undefined),
+    options: {
+      getFocused: vi.fn(() => ({ name: input.focusedName, value: input.focusedValue ?? "" })),
+      getSubcommand: vi.fn(() => input.subcommand),
+      getString: vi.fn((name: string) => {
+        if (name === "roster") return input.roster ?? null;
+        return null;
+      }),
+    },
+  };
+}
+
 function getEditedDescription(interaction: any): string {
   const payload = interaction.editReply.mock.calls.at(-1)?.[0] as any;
   if (typeof payload === "string") {
@@ -134,6 +182,8 @@ describe("/roster command", () => {
     vi.clearAllMocks();
     interactionClientFetchMock.mockReset();
     prismaMock.$queryRaw.mockResolvedValue([]);
+    prismaMock.trackedClan.findMany.mockReset();
+    prismaMock.trackedClan.findMany.mockResolvedValue([]);
 
     prismaMock.cwlTrackedClan.findFirst.mockResolvedValue({ tag: "#2QG2C08UP", name: "CWL Alpha" });
     vi.spyOn(rosterService, "createRoster");
@@ -1812,61 +1862,19 @@ describe("/roster command", () => {
     );
     expect(String(editInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain("Updated roster CWL Alpha Signup (Updated).");
 
-    (rosterService.updateRoster as any).mockResolvedValueOnce({
-      id: "roster-1",
-      guildId: "guild-1",
-      rosterType: "CWL",
-      rosterCategory: "signup",
-      title: "CWL Alpha Signup (Alias)",
-      clanTag: "#2QG2C08UP",
-      startsAt: new Date("2026-04-20T00:00:00.000Z"),
-      endsAt: null,
-      timezone: "America/New_York",
-      displayTimezone: "America/New_York",
-      lifecycleState: "OPEN",
-      postedChannelId: "channel-1",
-      postedMessageId: "message-1",
-      postedMessageUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
-      postedAt: null,
-      createdByDiscordUserId: "111111111111111111",
-      updatedByDiscordUserId: "111111111111111111",
-      createdAt: new Date("2026-04-20T00:00:00.000Z"),
-      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
-    });
-    const titleAliasInteraction = makeInteraction({
+    const titleOnlyInteraction = makeInteraction({
       subcommand: "edit",
       roster: "roster-1",
       title: "CWL Alpha Signup (Alias)",
     }) as any;
-    titleAliasInteraction.client.channels.fetch = vi.fn().mockResolvedValue(rosterChannel);
+    titleOnlyInteraction.client.channels.fetch = vi.fn().mockResolvedValue(rosterChannel);
 
-    await Roster.run({} as any, titleAliasInteraction as any);
+    await Roster.run({} as any, titleOnlyInteraction as any);
 
-    expect(rosterService.updateRoster).toHaveBeenCalledWith(
-      expect.objectContaining({
-        rosterId: "roster-1",
-        name: "CWL Alpha Signup (Alias)",
-        updatedByDiscordUserId: "111111111111111111",
-      }),
+    expect(String(titleOnlyInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
+      "Provide at least one roster field to edit.",
     );
-    expect(String(titleAliasInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
-      "Updated roster CWL Alpha Signup (Alias).",
-    );
-
-    const conflictInteraction = makeInteraction({
-      subcommand: "edit",
-      roster: "roster-1",
-      name: "CWL Alpha Signup (Name)",
-      title: "CWL Alpha Signup (Title)",
-    }) as any;
-    conflictInteraction.client.channels.fetch = vi.fn().mockResolvedValue(rosterChannel);
-
-    await Roster.run({} as any, conflictInteraction as any);
-
-    expect(String(conflictInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
-      "Choose either name or title, not both.",
-    );
-    expect(rosterService.updateRoster).toHaveBeenCalledTimes(2);
+    expect(rosterService.updateRoster).toHaveBeenCalledTimes(1);
 
     const refreshInteraction = makeInteraction({
       subcommand: "refresh",
@@ -2014,4 +2022,98 @@ describe("/roster command", () => {
       expect(getEditedDescription(interaction)).toContain("Unregistered members:");
     },
   );
+
+  it("autocompletes roster groups from the selected roster only", async () => {
+    (rosterService.getRosterView as any).mockResolvedValue({
+      roster: {
+        id: "roster-1",
+        title: "CWL Alpha Signup",
+      },
+      groups: [
+        { id: "group-2", key: "substitute", name: "Substitute", description: null, sortOrder: 1 },
+        { id: "group-1", key: "confirmed", name: "Confirmed", description: null, sortOrder: 0 },
+      ],
+      signups: [],
+      clanDisplayName: null,
+      clanLeagueLabel: null,
+      totalSignupCount: 0,
+    });
+
+    const interaction = makeAutocompleteInteraction({
+      focusedName: "group",
+      focusedValue: "con",
+      subcommand: "manage",
+      roster: "roster-1",
+    }) as any;
+
+    await Roster.autocomplete(interaction);
+
+    expect(rosterService.getRosterView).toHaveBeenCalledWith("roster-1");
+    expect(interaction.respond).toHaveBeenCalledWith([
+      { name: "Confirmed (confirmed)", value: "confirmed" },
+    ]);
+  });
+
+  it("autocompletes linked player accounts for the invoking user", async () => {
+    vi.spyOn(playerLinkService, "listPlayerLinksForDiscordUser").mockResolvedValue([
+      { playerTag: "#PYLQ0289", linkedAt: new Date("2026-04-01T00:00:00.000Z"), linkedName: "Alpha Prime" },
+      { playerTag: "#QGRJ2222", linkedAt: new Date("2026-04-02T00:00:00.000Z"), linkedName: null },
+    ] as any);
+
+    const interaction = makeAutocompleteInteraction({
+      focusedName: "players",
+      focusedValue: "alpha",
+      subcommand: "manage",
+    }) as any;
+
+    await Roster.autocomplete(interaction);
+
+    expect(playerLinkService.listPlayerLinksForDiscordUser).toHaveBeenCalledWith({
+      discordUserId: "111111111111111111",
+    });
+    expect(interaction.respond).toHaveBeenCalledWith([
+      { name: "Alpha Prime (#PYLQ0289)", value: "#PYLQ0289" },
+    ]);
+  });
+
+  it("autocompletes tracked clans for roster clan fields and filters deterministically", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { name: "Beta", tag: "#2QG2C08UP" },
+      { name: "Alpha", tag: "#9GLGQCCU" },
+    ]);
+
+    const interaction = makeAutocompleteInteraction({
+      focusedName: "clan",
+      focusedValue: "alpha",
+      subcommand: "edit",
+    }) as any;
+
+    await Roster.autocomplete(interaction);
+
+    expect(prismaMock.trackedClan.findMany).toHaveBeenCalledWith({
+      orderBy: [{ createdAt: "asc" }, { tag: "asc" }],
+      select: { name: true, tag: true },
+    });
+    expect(interaction.respond).toHaveBeenCalledWith([
+      { name: "Alpha (#9GLGQCCU)", value: "#9GLGQCCU" },
+    ]);
+  });
+
+  it("autocompletes roster user filters from guild display names and usernames", async () => {
+    const interaction = makeAutocompleteInteraction({
+      focusedName: "user",
+      focusedValue: "sin",
+      subcommand: "list",
+      guildMembers: [
+        { id: "111111111111111111", displayName: "Sin Display", username: "SinUser" },
+        { id: "222222222222222222", displayName: "Bravado", username: "BravoUser" },
+      ],
+    }) as any;
+
+    await Roster.autocomplete(interaction);
+
+    expect(interaction.respond).toHaveBeenCalledWith([
+      { name: "Sin Display (@SinUser)", value: "111111111111111111" },
+    ]);
+  });
 });
