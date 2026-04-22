@@ -224,6 +224,7 @@ describe("/cwl command", () => {
     vi.spyOn(rosterService, "createRosterSignupSelectionPanel");
     vi.spyOn(rosterService, "createRosterRemoveSelectionPanel");
     vi.spyOn(rosterService, "buildRosterSignupPayload");
+    vi.spyOn(rosterService, "refreshRosterSignupPayload");
     vi.spyOn(rosterService, "findCwlRosterForClan");
     vi.spyOn(rosterService, "updateRosterLifecycleState");
     vi.spyOn(rosterService, "recordRosterPostedMessage");
@@ -739,7 +740,7 @@ describe("/cwl command", () => {
       createdAt: new Date("2026-04-20T00:00:00.000Z"),
       updatedAt: new Date("2026-04-20T00:00:00.000Z"),
     });
-    (rosterService.buildRosterSignupPayload as any).mockResolvedValue({
+    (rosterService.refreshRosterSignupPayload as any).mockResolvedValue({
       embed: new EmbedBuilder().setTitle("CWL Alpha Signup"),
       components: [],
     });

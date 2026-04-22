@@ -78,6 +78,8 @@ describe("/roster command shape", () => {
     expect(manageAction?.required).toBe(true);
     expect(manageGroup?.required).toBe(false);
     expect(managePlayers?.required).toBe(false);
+    expect(manageGroup?.autocomplete).toBe(true);
+    expect(managePlayers?.autocomplete).toBe(true);
     expect(manageAction?.choices?.map((choice: any) => choice.value)).toEqual([
       "add",
       "move",
@@ -90,7 +92,7 @@ describe("/roster command shape", () => {
 
     expect(edit?.options?.find((option: any) => option.name === "roster")?.required).toBe(true);
     expect(edit?.options?.find((option: any) => option.name === "name")?.required).toBe(false);
-    expect(edit?.options?.find((option: any) => option.name === "title")?.required).toBe(false);
+    expect(edit?.options?.find((option: any) => option.name === "title")).toBeUndefined();
     expect(edit?.options?.find((option: any) => option.name === "category")?.choices?.map((choice: any) => choice.value)).toEqual([
       "CWL",
       "FWA",
@@ -136,5 +138,19 @@ describe("/roster command shape", () => {
         expect(optionNames.slice(0, 2)).toEqual(["roster", "action"]);
       }
     }
+  });
+
+  it("autocompletes roster list user and clan options, plus edit/create clan selectors", () => {
+    const create = Roster.options?.find(
+      (option) =>
+        option.type === ApplicationCommandOptionType.Subcommand &&
+        option.name === "create",
+    );
+    const list = Roster.options?.find((option) => option.name === "list");
+    const edit = Roster.options?.find((option) => option.name === "edit");
+    expect(list?.options?.find((option: any) => option.name === "user")?.autocomplete).toBe(true);
+    expect(list?.options?.find((option: any) => option.name === "clan")?.autocomplete).toBe(true);
+    expect(create?.options?.find((option: any) => option.name === "clan")?.autocomplete).toBe(true);
+    expect(edit?.options?.find((option: any) => option.name === "clan")?.autocomplete).toBe(true);
   });
 });
