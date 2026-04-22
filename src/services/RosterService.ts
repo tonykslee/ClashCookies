@@ -1574,6 +1574,17 @@ function formatRosterBoardCell(input: string | null | undefined, width: number):
   return trimmed.padEnd(width, " ");
 }
 
+function formatRosterBoardWeightValue(weight: number | null | undefined): string | null {
+  if (weight === null || weight === undefined || !Number.isFinite(weight)) {
+    return null;
+  }
+  const normalized = Math.max(0, Math.trunc(weight));
+  if (normalized < 1000) {
+    return String(normalized);
+  }
+  return `${Math.trunc(normalized / 1000)}k`;
+}
+
 function buildClanProfileMarkdownLink(clanName: string | null, clanTag: string | null): string {
   const normalizedClanTag = normalizeClanTag(clanTag ?? "");
   const label = sanitizeRosterBoardText(clanName) || normalizedClanTag || "Unknown Clan";
@@ -1612,7 +1623,7 @@ function getRosterDisplayColumnValue(signup: RosterSignupViewRecord, column: Ros
     return signup.trophies === null ? null : String(signup.trophies);
   }
   if (column === ROSTER_DISPLAY_COLUMNS.WEIGHT) {
-    return signup.weight === null ? null : String(signup.weight);
+    return formatRosterBoardWeightValue(signup.weight);
   }
   return null;
 }
@@ -1643,8 +1654,7 @@ function buildRosterBoardLine(
 ): string {
   return columns
     .map((column) => formatRosterBoardCell(values[column], widths[column]))
-    .join(" ")
-    .trimEnd();
+    .join(" ");
 }
 
 function buildRosterBoardHeaderLine(
@@ -1691,7 +1701,7 @@ function buildRosterSignupPayloadFromView(view: RosterSignupView): RosterSignupP
     view.clanLeagueLabel ?? view.roster.rosterType
   }`.trim();
   const maxMembersLabel = view.roster.maxMembers === null || view.roster.maxMembers === undefined ? "-" : String(view.roster.maxMembers);
-  const minTownHallLabel = view.roster.minTownhall === null || view.roster.minTownhall === undefined ? "##" : String(view.roster.minTownhall);
+  const minTownHallLabel = view.roster.minTownhall === null || view.roster.minTownhall === undefined ? "-" : String(view.roster.minTownhall);
   const lines: string[] = [
     rosterLabel,
     "",
