@@ -1068,7 +1068,7 @@ describe("RosterService", () => {
         clanName: "Rising Dawn",
       },
     ] as any);
-    prismaMock.cwlTrackedClan.findFirst.mockResolvedValueOnce(null as any);
+    prismaMock.cwlTrackedClan.findFirst.mockResolvedValue(null as any);
 
     const payload = await rosterService.buildRosterSignupPayload("roster-1");
 
@@ -1114,6 +1114,10 @@ describe("RosterService", () => {
     ] as any);
     prismaMock.cwlTrackedClan.findMany.mockResolvedValueOnce([{ tag: "#2QG2C08UP" }]);
     prismaMock.cwlTrackedClan.updateMany.mockResolvedValue({ count: 1 });
+    prismaMock.cwlTrackedClan.findFirst.mockResolvedValue({
+      name: "CWL Alpha",
+      leagueLabel: "Champion League II",
+    });
     todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValue([
       {
         playerTag: "#PQL0289",
@@ -1168,12 +1172,12 @@ describe("RosterService", () => {
     expect(payload).toBeTruthy();
     expect(String(payload?.embed.toJSON().title ?? "")).toBe("CWL Alpha");
     expect(String(payload?.embed.toJSON().description ?? "")).toContain(
-      "**[CWL Alpha Signup](https://link.clashofclans.com/en?action=OpenClanProfile&tag=2QG2C08UP)** CWL",
+      "**[CWL Alpha Signup](https://link.clashofclans.com/en?action=OpenClanProfile&tag=2QG2C08UP)** Champion League II",
     );
   });
 
   it("falls back cleanly when no persisted CWL league label is available", async () => {
-    prismaMock.cwlTrackedClan.findFirst.mockResolvedValueOnce({
+    prismaMock.cwlTrackedClan.findFirst.mockResolvedValue({
       name: "CWL Alpha",
       leagueLabel: null,
     });
