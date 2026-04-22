@@ -30,3 +30,6 @@ export class BotLogChannelService {
     await this.settings.delete(botLogChannelKey(guildId));
   }
 }
+
+/** Purpose: share a single bot-log routing service instance across callers. */
+export const botLogChannelService = new BotLogChannelService();

@@ -17,10 +17,21 @@ describe("/unlinked command shape", () => {
 
     expect(setAlert).toBeTruthy();
     expect(list).toBeTruthy();
+    expect(setAlert?.options?.find((option: any) => option.name === "enable")).toMatchObject({
+      type: ApplicationCommandOptionType.String,
+      description: "How unlinked-player alerts should be routed",
+      required: true,
+      choices: [
+        { name: "clan-log channel", value: "clan-log channel" },
+        { name: "bot-log channel", value: "bot-log channel" },
+        { name: "custom", value: "custom" },
+        { name: "false", value: "false" },
+      ],
+    });
     expect(setAlert?.options?.find((option: any) => option.name === "channel")).toMatchObject({
       type: ApplicationCommandOptionType.Channel,
-      description: "Channel or thread for unlinked-player alerts",
-      required: true,
+      description: "Custom channel or thread for unlinked-player alerts",
+      required: false,
       channel_types: [
         ChannelType.GuildText,
         ChannelType.GuildAnnouncement,

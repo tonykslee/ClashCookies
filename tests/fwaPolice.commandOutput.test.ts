@@ -106,6 +106,9 @@ describe("/fwa police command output", () => {
           withTrackedLogChannel: 1,
           logEnabledWithoutTrackedLogChannel: 1,
         },
+        enabledClanShortNamesLine: "RD, GB",
+        dmEnabledClanShortNamesLine: "RD",
+        logEnabledClanShortNamesLine: "GB",
         clan: null,
         warnings: [],
       },
@@ -137,6 +140,50 @@ describe("/fwa police command output", () => {
     expect(content).toContain("FWA Police enabled: yes");
     expect(content).toContain("DM sending enabled: yes");
     expect(content).toContain("Stored /bot-logs fallback: <#bot-log-1> (ok)");
+    expect(content).toContain("Enabled clans: RD, GB");
+    expect(content).toContain("DM enabled: RD");
+    expect(content).toContain("Log enabled: GB");
+  });
+
+  it("renders guild police status coverage lists as none when empty", async () => {
+    fwaPoliceServiceMock.getStatusReport.mockResolvedValue({
+      ok: true,
+      report: {
+        scope: "guild",
+        policeEnabled: false,
+        dmEnabled: false,
+        logEnabled: false,
+        storedPoliceLogChannelOverrideId: null,
+        storedBotLogChannelId: null,
+        storedBotLogChannelHealth: "not_configured",
+        fallbackBehavior:
+          "tracked-clan log-channel when configured, otherwise /bot-logs fallback, otherwise unresolved",
+        enabledViolationTypes: [],
+        trackedClanSummary: {
+          total: 0,
+          policeEnabled: 0,
+          dmEnabled: 0,
+          logEnabled: 0,
+          withTrackedLogChannel: 0,
+          logEnabledWithoutTrackedLogChannel: 0,
+        },
+        enabledClanShortNamesLine: "none",
+        dmEnabledClanShortNamesLine: "none",
+        logEnabledClanShortNamesLine: "none",
+        clan: null,
+        warnings: [],
+      },
+    });
+
+    const run = makeInteraction({
+      subcommand: "status",
+    });
+    await Fwa.run({} as any, run.interaction as any, {} as any);
+
+    const content = String(run.editReply.mock.calls[0]?.[0]?.content ?? "");
+    expect(content).toContain("Enabled clans: none");
+    expect(content).toContain("DM enabled: none");
+    expect(content).toContain("Log enabled: none");
   });
 
   it("renders clan-scoped status and warnings when resolved channel is unavailable", async () => {
@@ -161,6 +208,9 @@ describe("/fwa police command output", () => {
           withTrackedLogChannel: 1,
           logEnabledWithoutTrackedLogChannel: 0,
         },
+        enabledClanShortNamesLine: "RD",
+        dmEnabledClanShortNamesLine: "RD",
+        logEnabledClanShortNamesLine: "RD",
         clan: {
           clanTag: "#2QG2C08UP",
           clanName: "Alpha",

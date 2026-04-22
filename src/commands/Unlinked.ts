@@ -14,6 +14,7 @@ import { resolveCurrentCwlSeasonKey } from "../services/CwlRegistryService";
 import { normalizeClanTag } from "../services/PlayerLinkService";
 import {
   UnlinkedStageTimeoutError,
+  type UnlinkedAlertRoutingMode,
   unlinkedMemberAlertService,
 } from "../services/UnlinkedMemberAlertService";
 
@@ -21,6 +22,13 @@ const UNLINKED_ALERT_THREAD_CHANNEL_TYPES = [
   ChannelType.AnnouncementThread,
   ChannelType.PublicThread,
   ChannelType.PrivateThread,
+] as const;
+
+const UNLINKED_ALERT_SET_ENABLE_CHOICES = [
+  "clan-log channel",
+  "bot-log channel",
+  "custom",
+  "false",
 ] as const;
 
 const UNLINKED_ALERT_SUPPORTED_CHANNEL_TYPES = [
@@ -65,13 +73,29 @@ function isSupportedAlertChannel(channel: GuildChannelLike): boolean {
 
 function formatUnlinkedAlertDestinationConfirmation(channel: GuildChannelLike): string {
   if (!isThreadChannel(channel)) {
-    return `Saved the unlinked-player alert channel: <#${channel.id}>.`;
+    return `Saved unlinked-player alert routing: custom channel <#${channel.id}>.`;
   }
 
   const parentId = channel.parentId ?? channel.parent?.id ?? null;
   return parentId
-    ? `Saved the unlinked-player alert thread: <#${channel.id}> (in <#${parentId}>).`
-    : `Saved the unlinked-player alert thread: <#${channel.id}>.`;
+    ? `Saved unlinked-player alert routing: custom thread <#${channel.id}> (in <#${parentId}>).`
+    : `Saved unlinked-player alert routing: custom thread <#${channel.id}>.`;
+}
+
+function formatUnlinkedAlertRoutingConfirmation(
+  routingMode: UnlinkedAlertRoutingMode,
+  channel: GuildChannelLike | null,
+): string {
+  if (routingMode === "CLAN_LOG") {
+    return "Saved unlinked-player alert routing: tracked clan log channel.";
+  }
+  if (routingMode === "BOT_LOG") {
+    return "Saved unlinked-player alert routing: /bot-logs channel.";
+  }
+  if (routingMode === "CUSTOM" && channel) {
+    return formatUnlinkedAlertDestinationConfirmation(channel);
+  }
+  return "Disabled unlinked-player alerts.";
 }
 
 function buildUnlinkedListLines(input: {
@@ -167,14 +191,24 @@ export const Unlinked: Command = {
   options: [
     {
       name: "set-alert",
-      description: "Set the guild-level alert channel or thread for unlinked tracked members",
+      description: "Set the routing mode for unlinked tracked-member alerts",
       type: ApplicationCommandOptionType.Subcommand,
       options: [
         {
-          name: "channel",
-          description: "Channel or thread for unlinked-player alerts",
-          type: ApplicationCommandOptionType.Channel,
+          name: "enable",
+          description: "How unlinked-player alerts should be routed",
+          type: ApplicationCommandOptionType.String,
           required: true,
+          choices: [...UNLINKED_ALERT_SET_ENABLE_CHOICES].map((choice) => ({
+            name: choice,
+            value: choice,
+          })),
+        },
+        {
+          name: "channel",
+          description: "Custom channel or thread for unlinked-player alerts",
+          type: ApplicationCommandOptionType.Channel,
+          required: false,
           channel_types: [...UNLINKED_ALERT_SUPPORTED_CHANNEL_TYPES],
         },
       ],
@@ -222,27 +256,96 @@ export const Unlinked: Command = {
 
       const subcommand = interaction.options.getSubcommand(true);
       if (subcommand === "set-alert") {
-        const requestedChannel = interaction.options.getChannel("channel", true) as GuildChannelLike;
-        if (!isGuildScopedChannel(requestedChannel, interaction.guildId)) {
-          await interaction.editReply("Selected channel must belong to this server.");
-          return;
-        }
-        if (!isSupportedAlertChannel(requestedChannel)) {
+        const enable = interaction.options.getString("enable", true) ?? "";
+        const requestedChannel = interaction.options.getChannel(
+          "channel",
+          false,
+        ) as GuildChannelLike | null;
+
+        if (requestedChannel && enable !== "custom") {
           await interaction.editReply(
-            "Selected destination must be a server text channel, announcement channel, or thread in this server.",
+            "The `channel` option is only used when `enable=custom`.",
           );
+          logUnlinkedCommandStage("reply_sent", {
+            method: "editReply",
+            status: "error",
+            subcommand,
+            reason: "channel_not_allowed_for_non_custom_mode",
+          });
           return;
         }
 
-        await unlinkedMemberAlertService.setAlertChannelId({
+        if (enable === "custom") {
+          if (!requestedChannel) {
+            await interaction.editReply(
+              "The `channel` option is required when `enable=custom`.",
+            );
+            logUnlinkedCommandStage("reply_sent", {
+              method: "editReply",
+              status: "error",
+              subcommand,
+              reason: "missing_custom_channel",
+            });
+            return;
+          }
+          if (!isGuildScopedChannel(requestedChannel, interaction.guildId)) {
+            await interaction.editReply("Selected channel must belong to this server.");
+            return;
+          }
+          if (!isSupportedAlertChannel(requestedChannel)) {
+            await interaction.editReply(
+              "Selected destination must be a server text channel, announcement channel, or thread in this server.",
+            );
+            return;
+          }
+
+          await unlinkedMemberAlertService.setAlertRoutingConfig({
+            guildId: interaction.guildId,
+            routingMode: "CUSTOM",
+            channelId: requestedChannel.id,
+          });
+          await interaction.editReply(
+            formatUnlinkedAlertRoutingConfirmation("CUSTOM", requestedChannel),
+          );
+          logUnlinkedCommandStage("reply_sent", {
+            method: "editReply",
+            status: "success",
+            subcommand,
+            routing_mode: "CUSTOM",
+          });
+          return;
+        }
+
+        const routingModeMap = new Map<string, UnlinkedAlertRoutingMode>([
+          ["clan-log channel", "CLAN_LOG"],
+          ["bot-log channel", "BOT_LOG"],
+          ["false", "DISABLED"],
+        ]);
+        const routingMode = routingModeMap.get(enable);
+        if (!routingMode) {
+          await interaction.editReply("Unsupported unlinked alert routing mode.");
+          logUnlinkedCommandStage("reply_sent", {
+            method: "editReply",
+            status: "error",
+            subcommand,
+            reason: "invalid_routing_mode",
+          });
+          return;
+        }
+
+        await unlinkedMemberAlertService.setAlertRoutingConfig({
           guildId: interaction.guildId,
-          channelId: requestedChannel.id,
+          routingMode,
+          channelId: null,
         });
-        await interaction.editReply(formatUnlinkedAlertDestinationConfirmation(requestedChannel));
+        await interaction.editReply(
+          formatUnlinkedAlertRoutingConfirmation(routingMode, null),
+        );
         logUnlinkedCommandStage("reply_sent", {
           method: "editReply",
           status: "success",
           subcommand,
+          routing_mode: routingMode,
         });
         return;
       }

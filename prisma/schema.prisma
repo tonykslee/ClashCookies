@@ -95,10 +95,11 @@ model DumpLink {
 }
 
 model UnlinkedAlertConfig {
-  guildId    String   @id
-  channelId  String
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  guildId      String   @id
+  routingMode   String   @default("CLAN_LOG")
+  channelId     String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 }
 
 model UnlinkedPlayer {
@@ -662,6 +663,7 @@ model Roster {
   rosterRoleId         String?
   allowMultiSignup     Boolean              @default(true)
   sortBy               String?
+  displayColumns       String?
   importMembers        Boolean              @default(false)
   postButtonMode       String               @default("standard")
   lifecycleState       RosterLifecycleState @default(OPEN)
@@ -1162,6 +1164,20 @@ model FwaClanMemberCurrent {
   @@index([clanTag])
   @@index([playerTag])
   @@index([sourceSyncedAt])
+}
+
+model ExternalPlayerWeightCurrent {
+  id              String   @id @default(cuid())
+  playerTag       String   @unique
+  weight          Int
+  source          String
+  measuredAt      DateTime
+  createdByUserId String?
+  updatedByUserId String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([measuredAt])
 }
 
 model FwaWarMemberCurrent {

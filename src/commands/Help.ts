@@ -1,5 +1,6 @@
 import {
   ActionRowBuilder,
+  type APIEmbed,
   ApplicationCommandOptionType,
   AutocompleteInteraction,
   ButtonBuilder,
@@ -63,6 +64,17 @@ type CommandDoc = {
   summary: string;
   details: string[];
   examples: string[];
+};
+
+type HelpField = {
+  name: string;
+  value: string;
+  inline: boolean;
+};
+
+type HelpEmbedPage = {
+  description?: string;
+  fields: HelpField[];
 };
 
 type HelpOption = {
@@ -176,7 +188,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`configure` upserts tracked clan settings (lose-style, mail channel, log channel, clan role, clan badge emoji, short name).",
       "`cwl-tags` adds one seasonal CWL throwaway clan batch (array-style or comma-separated tags) without polluting the FWA tracked list.",
       "`raid-tags` adds or updates the RAIDS registry with optional manual upgrades for one tag, stores the clan name from the clan profile API on write, and caches the clan join status from the clan profile API on write.",
-      "`list type:FWA|CWL|RAIDS` switches between permanent FWA tracked clans (default), seasonal CWL registry, and the RAIDS registry. RAIDS list rows use the stored clan name, show join status with 🔒/🔓, and include an inline refresh button to re-sync missing names or join status.",
+      "`list` without `type` shows one embed grouped by FWA/CWL/RAIDS; `type:FWA|CWL|RAIDS` switches to the per-registry view. RAIDS list rows use the stored clan name, show join status with 🔒/🔓, and include an inline refresh button to re-sync missing names or join status.",
       "`remove` supports deterministic FWA/CWL/RAIDS deletion; when a tag exists in more than one registry, pass `type` explicitly.",
       "`configure`, `cwl-tags`, `raid-tags`, and `remove` are admin-only by default.",
     ],
@@ -187,11 +199,11 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/tracked-clan configure tag:#2QG2C08UP short-name:GB",
       "/tracked-clan cwl-tags cwl-tags:[#PYLQ0289,#QGRJ2222]",
       "/tracked-clan raid-tags raid-tags:[#2RVGJYLC0] upgrades:3331",
+      "/tracked-clan list",
       "/tracked-clan list type:RAIDS",
       "/tracked-clan list type:CWL",
       "/tracked-clan remove tag:#2QG2C08UP type:FWA",
       "/tracked-clan remove tag:#2RVGJYLC0 type:RAIDS",
-      "/tracked-clan list",
     ],
   },
   sheet: {
@@ -298,10 +310,10 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`/roster create category:<CWL|FWA> clan:<trackedClanTag> [name:<text>] [title:<text>] [timezone:<ianaTz>] [start_time:YYYY-MM-DD HH:mm] [end_time:YYYY-MM-DD HH:mm] [max_members:<n>] [max_accounts_per_user:<n>] [min_townhall:<n>] [max_townhall:<n>] [roster_role:<role>] [allow_multi_signup:<bool>] [sort_by:<signed_up_at|player_name|player_tag|discord_user|townhall>] [import_members:<bool>]` creates a roster object without posting it yet. `name` is the preferred field and `title` is a compatibility alias.",
       "`/roster list [name:<text>] [user:<discordId>] [player:<playerTagOrName>] [clan:<clanTag>]` shows roster title, type, clan scope, lifecycle state, and posted/unposted status for the guild.",
       "`/roster list` is public by default; create/post/manage/edit/delete/report/readiness/refresh are admin-only by default unless you whitelist roles.",
-      "`/roster post roster:<roster>` posts the roster signup message or refreshes the existing post if it already exists. The published board uses a compact Player / Discord / Clan table plus `Refresh`, `Signup`, `Opt-out`, and `Settings` controls.",
-      "`/roster manage roster:<roster> action:<add|move|remove|open|close|archive> ...` is the roster-keyed manager surface for mutation and lifecycle changes.",
+      "`/roster post roster:<roster>` posts the roster signup message or refreshes the existing post if it already exists. The published board uses a compact Player / Discord / Clan table by default plus `Refresh`, `Signup`, `Opt-out`, and `Settings` controls. `Settings` includes `Customize` for saved column-order and sort-mode overrides, and optional `Weight Source` / `Weight Age` columns can be enabled from there.",
+      "`/roster manage roster:<roster> action:<add|move|remove|set_weight|open|close|archive> ...` is the roster-keyed manager surface for mutation, manual fallback weight entry, and lifecycle changes. Resolved roster weights prefer `FwaPlayerCatalog.latestKnownWeight` first, then `ExternalPlayerWeightCurrent` as the fallback owner when needed.",
       "`/roster edit roster:<roster>` edits roster metadata such as name, category, clan scope, limits, town-hall gates, roster role, sort order, and timezone fields. `name` is preferred; `title` remains a compatibility alias.",
-      "`/roster` settings actions currently include roster info, close roster, clear roster, hide buttons, archive mode, unregistered members, and missing members; destructive actions require confirmation where applicable.",
+      "`/roster` settings actions currently include export, customize, close roster, clear roster, hide buttons, archive mode, unregistered members, and missing members; destructive actions require confirmation where applicable. Export opens a Google Sheet from the ephemeral roster settings flow.",
       "`/roster delete roster:<roster>` removes the posted Discord message first when one exists, then hard-deletes the roster and its persisted signup data. If the message cannot be removed, the roster stays intact so you can retry safely.",
       "`/roster report` and `/roster readiness` intentionally share the same roster readiness view for now.",
       "`/roster refresh roster:<roster>` refreshes rostered players' current-clan state through the service layer before rerendering the posted roster message from DB truth.",
@@ -437,7 +449,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "Existing links are never implicitly reassigned; delete-first is required before relinking to another user.",
       "`delete` removes a link when run by the linked user or an admin override target.",
       "`list` renders non-zero linked/unlinked count buckets with padded inline rows: linked rows start with a resolved `yes` status emoji and show `TH ServerDisplayName Player Wt`, unlinked rows start with a resolved `no` status emoji and show `TH #PLAYER_TAG Player Wt`.",
-      "Weight (`Wt`) comes from `FwaClanMemberCurrent.weight` and is shown as compact lowercase `k` text (for example `145k`), with `—` when missing.",
+      "Weight (`Wt`) comes from `FwaClanMemberCurrent.weight` first, then the manual `ExternalPlayerWeightCurrent` fallback when needed, and is shown as compact lowercase `k` text (for example `145k`), with `—` when missing.",
       "If `Wt` resolves to `0` and an open deferred weight exists for the same normalized player tag, `/link list` shows that deferred weight and appends a right-side `⏳` marker for that row.",
       "`embed` is admin-gated and posts a reusable self-service Link Account embed with button + modal flow.",
       "`list` includes a tracked-clan dropdown and a sort-cycle button (`Discord Name -> Weight Desc -> Player Tags -> Player Name`) and updates the same message in place.",
@@ -619,14 +631,16 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
   unlinked: {
     summary: "Alert leaders when tracked-clan members are not linked to Discord, and list unresolved players.",
     details: [
-      "`set-alert` stores one guild-level alert channel or thread in dedicated unlinked-alert persistence instead of `BotSetting`.",
-      "If no guild-level alert channel is configured, live alerts fall back to the tracked clan `log-channel` when available.",
+      "`set-alert` stores explicit unlinked-alert routing in dedicated feature-owned persistence instead of `BotSetting`.",
+      "Use `enable:clan-log channel`, `enable:bot-log channel`, `enable:custom`, or `enable:false`; `channel` is only used with `enable:custom`.",
+      "Clan-log mode sends to the tracked clan `log-channel`, bot-log mode sends to `/bot-logs`, custom mode sends to the saved guild channel or thread, and `false` disables delivery.",
       "`list` resolves the current live unresolved set across tracked FWA clans and active current-season CWL clans.",
       "A player is only considered linked when `PlayerLink.discordUserId` points to a Discord user; rows without a Discord user still count as unlinked.",
       "Default access is FWA Leader role + Administrator unless role policy is changed with `/permission add`.",
     ],
     examples: [
-      "/unlinked set-alert channel:#leadership-alerts",
+      "/unlinked set-alert enable:custom channel:#leadership-alerts",
+      "/unlinked set-alert enable:clan-log channel",
       "/unlinked list",
       "/unlinked list clan:#2QG2C08UP",
     ],
@@ -721,10 +735,293 @@ export function getHelpDocumentedCommandNames(): string[] {
   return Object.keys(COMMAND_DOCS).sort((a, b) => a.localeCompare(b));
 }
 
-type RenderState = {
+const DISCORD_EMBED_LIMITS = {
+  title: 256,
+  description: 4096,
+  fieldName: 256,
+  fieldValue: 1024,
+  fieldsPerEmbed: 25,
+  totalChars: 5800,
+} as const;
+
+const HELP_DETAIL_MAX_EMBEDS = 10;
+const HELP_DETAIL_SOFT_PAGE_TARGET = 3500;
+const HELP_DETAIL_HARD_PAGE_LIMIT = 4000;
+const HELP_DETAIL_FOOTER_RESERVE = 240;
+
+function truncateForDiscord(text: string, maxLength: number): string {
+  if (text.length <= maxLength) return text;
+  if (maxLength <= 1) return text.slice(0, maxLength);
+  return `${text.slice(0, maxLength - 1)}…`;
+}
+
+function splitTextByLength(text: string, maxLength: number): string[] {
+  if (text.length <= maxLength) return [text];
+
+  const parts: string[] = [];
+  for (let start = 0; start < text.length; start += maxLength) {
+    parts.push(text.slice(start, start + maxLength));
+  }
+  return parts;
+}
+
+function chunkFormattedLines(lines: string[], maxLength: number): string[] {
+  const chunks: string[] = [];
+  let current = "";
+
+  for (const line of lines) {
+    const lineParts = splitTextByLength(line, maxLength);
+    for (const part of lineParts) {
+      if (!current) {
+        current = part;
+        continue;
+      }
+
+      if (current.length + 1 + part.length <= maxLength) {
+        current = `${current}\n${part}`;
+      } else {
+        chunks.push(current);
+        current = part;
+      }
+    }
+  }
+
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+function buildSectionFields(
+  sectionName: string,
+  lines: string[],
+  formatter: (line: string) => string,
+): HelpField[] {
+  const formattedLines = lines.map(formatter);
+  const chunks = chunkFormattedLines(
+    formattedLines.length > 0 ? formattedLines : [""],
+    DISCORD_EMBED_LIMITS.fieldValue,
+  );
+
+  return chunks.map((chunk, index) => ({
+    name: truncateForDiscord(
+      chunks.length > 1
+        ? `${sectionName} (${index + 1}/${chunks.length})`
+        : sectionName,
+      DISCORD_EMBED_LIMITS.fieldName,
+    ),
+    value: truncateForDiscord(chunk || " ", DISCORD_EMBED_LIMITS.fieldValue),
+    inline: false,
+  }));
+}
+
+function createPage(description?: string): HelpEmbedPage {
+  return {
+    description,
+    fields: [],
+  };
+}
+
+function pageCharCount(
+  page: HelpEmbedPage,
+  title: string,
+  footerReserve: number,
+): number {
+  return (
+    title.length +
+    (page.description?.length ?? 0) +
+    page.fields.reduce((sum, field) => sum + field.name.length + field.value.length, 0) +
+    footerReserve
+  );
+}
+
+export function getHelpEmbedCharacterCount(embed: APIEmbed): number {
+  return (
+    (embed.title?.length ?? 0) +
+    (embed.description?.length ?? 0) +
+    (embed.footer?.text?.length ?? 0) +
+    (embed.fields?.reduce(
+      (sum, field) => sum + field.name.length + field.value.length,
+      0,
+    ) ?? 0)
+  );
+}
+
+function toEmbed(
+  page: HelpEmbedPage,
+  title: string,
+  footer: string,
+): EmbedBuilder {
+  const embed = new EmbedBuilder().setTitle(
+    truncateForDiscord(title, DISCORD_EMBED_LIMITS.title),
+  );
+
+  embed.setColor(0x57f287);
+
+  if (page.description) {
+    embed.setDescription(truncateForDiscord(page.description, DISCORD_EMBED_LIMITS.description));
+  }
+
+  for (const field of page.fields) {
+    embed.addFields(field);
+  }
+
+  embed.setFooter({ text: footer });
+  return embed;
+}
+
+function buildHelpDetailFooter(
+  baseFooter: string,
+  omittedPages: number,
+  trimmedFields: number,
+): string {
+  const suffixParts: string[] = [];
+  if (omittedPages > 0) {
+    suffixParts.push(
+      `Continued/truncated: ${omittedPages} additional page(s) omitted to stay within Discord's 10-embed limit.`,
+    );
+  }
+  if (trimmedFields > 0) {
+    suffixParts.push(
+      `${trimmedFields} field(s) trimmed to fit Discord's 6000-char embed limit.`,
+    );
+  }
+
+  return suffixParts.length > 0
+    ? `${baseFooter} ${suffixParts.join(" ")}`
+    : baseFooter;
+}
+
+function finalizeHelpDetailPage(
+  page: HelpEmbedPage,
+  title: string,
+  baseFooter: string,
+): EmbedBuilder {
+  const workingPage: HelpEmbedPage = {
+    description: page.description,
+    fields: [...page.fields],
+  };
+  let omittedFields = 0;
+  let footer = baseFooter;
+  let embed = toEmbed(workingPage, title, footer);
+
+  while (getHelpEmbedCharacterCount(embed.toJSON()) > HELP_DETAIL_HARD_PAGE_LIMIT) {
+    if (workingPage.fields.length > 0) {
+      workingPage.fields.pop();
+      omittedFields += 1;
+      footer = buildHelpDetailFooter(baseFooter, 0, omittedFields);
+      embed = toEmbed(workingPage, title, footer);
+      continue;
+    }
+
+    if (workingPage.description) {
+      const fixedSize = getHelpEmbedCharacterCount({
+        title: title.length > 0 ? title : undefined,
+        description: undefined,
+        footer: footer.length > 0 ? { text: footer } : undefined,
+        fields: workingPage.fields.map((field) => ({
+          name: field.name,
+          value: field.value,
+          inline: field.inline,
+        })),
+      });
+      const remaining = Math.max(0, HELP_DETAIL_HARD_PAGE_LIMIT - fixedSize);
+      const nextDescription = truncateForDiscord(
+        workingPage.description,
+        remaining,
+      );
+      if (nextDescription === workingPage.description) {
+        break;
+      }
+      workingPage.description = nextDescription;
+      footer = buildHelpDetailFooter(baseFooter, 0, omittedFields);
+      embed = toEmbed(workingPage, title, footer);
+      continue;
+    }
+
+    break;
+  }
+
+  return embed;
+}
+
+export function buildHelpDetailEmbeds(
+  command: Pick<Command, "name" | "description" | "options">,
+  docOverride?: CommandDoc,
+): EmbedBuilder[] {
+  const usageLines = buildUsageLines(command as Command);
+  const doc = docOverride ?? COMMAND_DOCS[command.name];
+  const adminDefaults = getAdminDefaultTargetsForCommand(command.name);
+
+  const detailLines = doc?.details ?? [
+    "Use this command to run the described operation.",
+    "If this command has subcommands, use one of the syntax lines below.",
+  ];
+
+  const exampleLines = doc?.examples?.length
+    ? doc.examples
+    : [usageLines[0] ?? `/${command.name}`];
+
+  const accessText =
+    adminDefaults.length === 0
+      ? "Default access: everyone (unless restricted with `/permission`)."
+      : `Admin-only by default: ${adminDefaults.map((t) => `\`${t}\``).join(", ")}`;
+
+  const allFields = [
+    ...buildSectionFields("What It Does", detailLines, (line) => `- ${line}`),
+    ...buildSectionFields("Syntax", usageLines, (line) => `\`${line}\``),
+    ...buildSectionFields("Examples", exampleLines, (line) => `\`${line}\``),
+    ...buildSectionFields("Access", [accessText, "Use `/permission add` to whitelist roles."], (line) => line),
+  ];
+
+  const baseTitle = `/${command.name}`;
+  const pages: HelpEmbedPage[] = [];
+  let current = createPage(
+    truncateForDiscord(doc?.summary ?? command.description, DISCORD_EMBED_LIMITS.description),
+  );
+
+  for (const field of allFields) {
+    const projectedCharCount = pageCharCount(
+      current,
+      baseTitle,
+      HELP_DETAIL_FOOTER_RESERVE,
+    );
+    const fieldCharCount = field.name.length + field.value.length;
+    const exceedsFieldCount = current.fields.length >= DISCORD_EMBED_LIMITS.fieldsPerEmbed;
+    const exceedsPageChars =
+      projectedCharCount + fieldCharCount > HELP_DETAIL_SOFT_PAGE_TARGET;
+
+    if (current.fields.length > 0 && (exceedsFieldCount || exceedsPageChars)) {
+      pages.push(current);
+      current = createPage(undefined);
+    }
+
+    current.fields.push(field);
+  }
+
+  pages.push(current);
+
+  const cappedPages = pages.slice(0, HELP_DETAIL_MAX_EMBEDS);
+  const truncatedPages = pages.length - cappedPages.length;
+  const totalPages = cappedPages.length;
+
+  return cappedPages.map((page, index) => {
+    const isLastCappedPage = index === cappedPages.length - 1;
+    const footer =
+      totalPages === 1
+        ? "Select another command or click Back to overview."
+        : `Help details page ${index + 1}/${totalPages}. Select another command or click Back to overview.`;
+    const pageFooter =
+      truncatedPages > 0 && isLastCappedPage
+        ? buildHelpDetailFooter(footer, truncatedPages, 0)
+        : footer;
+    return finalizeHelpDetailPage(page, baseTitle, pageFooter);
+  });
+}
+
+export type HelpRenderState = {
   page: number;
   selectedCommand: string;
   detailView: boolean;
+  detailPage: number;
 };
 
 function getAllCommands(): Command[] {
@@ -807,7 +1104,7 @@ function buildUsageLines(command: Command): string[] {
 
 function getOverviewEmbed(
   commands: Command[],
-  state: RenderState,
+  state: HelpRenderState,
 ): EmbedBuilder {
   const pageCount = Math.max(
     1,
@@ -827,9 +1124,18 @@ function getOverviewEmbed(
 
   for (const cmd of slice) {
     const usage = buildUsageLines(cmd)[0] ?? `/${cmd.name}`;
+    const exampleLine = `\nExample: \`${usage}\``;
+    const descriptionLimit = Math.max(
+      0,
+      DISCORD_EMBED_LIMITS.fieldValue - exampleLine.length,
+    );
+    const fieldValue = truncateForDiscord(
+      `${truncateForDiscord(cmd.description, descriptionLimit)}${exampleLine}`,
+      DISCORD_EMBED_LIMITS.fieldValue,
+    );
     embed.addFields({
       name: `/${cmd.name}`,
-      value: `${cmd.description}\nExample: \`${usage}\``,
+      value: fieldValue,
       inline: false,
     });
   }
@@ -837,59 +1143,12 @@ function getOverviewEmbed(
   return embed;
 }
 
-function getDetailEmbed(command: Command): EmbedBuilder {
-  const usageLines = buildUsageLines(command);
-  const doc = COMMAND_DOCS[command.name];
-  const adminDefaults = getAdminDefaultTargetsForCommand(command.name);
-
-  const detailLines = doc?.details ?? [
-    "Use this command to run the described operation.",
-    "If this command has subcommands, use one of the syntax lines below.",
-  ];
-
-  const exampleLines = doc?.examples?.length
-    ? doc.examples
-    : [usageLines[0] ?? `/${command.name}`];
-
-  const accessText =
-    adminDefaults.length === 0
-      ? "Default access: everyone (unless restricted with `/permission`)."
-      : `Admin-only by default: ${adminDefaults.map((t) => `\`${t}\``).join(", ")}`;
-
-  return new EmbedBuilder()
-    .setTitle(`/${command.name}`)
-    .setColor(0x57f287)
-    .setDescription(doc?.summary ?? command.description)
-    .addFields(
-      {
-        name: "What It Does",
-        value: detailLines.map((line) => `- ${line}`).join("\n"),
-        inline: false,
-      },
-      {
-        name: "Syntax",
-        value: usageLines.map((line) => `\`${line}\``).join("\n"),
-        inline: false,
-      },
-      {
-        name: "Examples",
-        value: exampleLines.map((line) => `\`${line}\``).join("\n"),
-        inline: false,
-      },
-      {
-        name: "Access",
-        value: `${accessText}\nUse \`/permission add\` to whitelist roles.`,
-        inline: false,
-      },
-    )
-    .setFooter({ text: "Select another command or click Back to overview." });
-}
-
 function getControls(
   commands: Command[],
-  state: RenderState,
+  state: HelpRenderState,
   interactionId: string,
   allowPostToChannel: boolean,
+  detailPageCount: number,
 ) {
   const pageCount = Math.max(
     1,
@@ -904,6 +1163,20 @@ function getControls(
 
   const buttonRow = new ActionRowBuilder<ButtonBuilder>();
   if (state.detailView) {
+    if (detailPageCount > 1) {
+      buttonRow.addComponents(
+        new ButtonBuilder()
+          .setCustomId(prevId)
+          .setLabel("Previous")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(state.detailPage <= 0),
+        new ButtonBuilder()
+          .setCustomId(nextId)
+          .setLabel("Next")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(state.detailPage >= detailPageCount - 1),
+      );
+    }
     buttonRow.addComponents(
       new ButtonBuilder()
         .setCustomId(backId)
@@ -968,22 +1241,59 @@ function getControls(
 
 function getResponsePayload(
   commands: Command[],
-  state: RenderState,
+  state: HelpRenderState,
   interactionId: string,
   allowPostToChannel: boolean,
 ) {
   const selected =
     commands.find((cmd) => cmd.name === state.selectedCommand) ?? commands[0];
-  const embed = state.detailView
-    ? getDetailEmbed(selected)
-    : getOverviewEmbed(commands, state);
+  const detailEmbeds = state.detailView ? buildHelpDetailEmbeds(selected) : [];
+  const selectedDetailPage = Math.max(
+    0,
+    Math.min(state.detailPage, Math.max(0, detailEmbeds.length - 1)),
+  );
+  const embeds = state.detailView
+    ? [detailEmbeds[selectedDetailPage] ?? detailEmbeds[0] ?? getOverviewEmbed(commands, state)]
+    : [getOverviewEmbed(commands, state)];
   const components = getControls(
     commands,
     state,
     interactionId,
     allowPostToChannel,
+    detailEmbeds.length,
   );
-  return { embeds: [embed], components };
+  return { embeds, components };
+}
+
+export function setHelpSelectedCommand(
+  state: HelpRenderState,
+  commands: Command[],
+  commandName: string,
+): void {
+  const match = commands.find((cmd) => cmd.name === commandName);
+  if (!match) return;
+  state.selectedCommand = match.name;
+  state.detailView = true;
+  state.detailPage = 0;
+  state.page = Math.floor(
+    commands.findIndex((cmd) => cmd.name === match.name) / OVERVIEW_PAGE_SIZE,
+  );
+}
+
+export function moveHelpDetailPage(
+  state: HelpRenderState,
+  delta: number,
+  pageCount: number,
+): void {
+  if (pageCount <= 0) {
+    state.detailPage = 0;
+    return;
+  }
+
+  state.detailPage = Math.max(
+    0,
+    Math.min(state.detailPage + delta, pageCount - 1),
+  );
 }
 
 export const Help: Command = {
@@ -1019,10 +1329,11 @@ export const Help: Command = {
     const isPublic = visibility === "public";
     const allowPostToChannel = !isPublic;
 
-    const state: RenderState = {
+    const state: HelpRenderState = {
       page: 0,
       selectedCommand: commands[0]?.name ?? "help",
       detailView: false,
+      detailPage: 0,
     };
 
     if (requestedCommand) {
@@ -1034,13 +1345,7 @@ export const Help: Command = {
         });
         return;
       }
-
-      state.detailView = true;
-      state.selectedCommand = match.name;
-      state.page = Math.floor(
-        commands.findIndex((cmd) => cmd.name === match.name) /
-          OVERVIEW_PAGE_SIZE,
-      );
+      setHelpSelectedCommand(state, commands, match.name);
     }
 
     await interaction.reply({
@@ -1071,18 +1376,27 @@ export const Help: Command = {
           }
 
           if (component.isButton()) {
-            if (
-              component.customId === `help-prev:${interaction.id}` &&
-              state.page > 0
-            ) {
-              state.page -= 1;
-              state.detailView = false;
+            const selectedCommand =
+              commands.find((cmd) => cmd.name === state.selectedCommand) ??
+              commands[0];
+            const selectedCommandPageCount = buildHelpDetailEmbeds(
+              selectedCommand ?? commands[0],
+            ).length;
+
+            if (component.customId === `help-prev:${interaction.id}`) {
+              moveHelpDetailPage(
+                state,
+                -1,
+                selectedCommandPageCount,
+              );
             } else if (
-              component.customId === `help-next:${interaction.id}` &&
-              state.page < Math.ceil(commands.length / OVERVIEW_PAGE_SIZE) - 1
+              component.customId === `help-next:${interaction.id}`
             ) {
-              state.page += 1;
-              state.detailView = false;
+              moveHelpDetailPage(
+                state,
+                1,
+                selectedCommandPageCount,
+              );
             } else if (component.customId === `help-back:${interaction.id}`) {
               state.detailView = false;
             } else if (component.customId === `help-close:${interaction.id}`) {
@@ -1126,12 +1440,7 @@ export const Help: Command = {
             const picked = component.values[0];
             const found = commands.find((cmd) => cmd.name === picked);
             if (found) {
-              state.selectedCommand = found.name;
-              state.detailView = true;
-              state.page = Math.floor(
-                commands.findIndex((cmd) => cmd.name === found.name) /
-                  OVERVIEW_PAGE_SIZE,
-              );
+              setHelpSelectedCommand(state, commands, found.name);
             }
           }
 

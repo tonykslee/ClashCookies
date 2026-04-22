@@ -6,6 +6,7 @@ import {
   type CurrentCwlPrepSnapshot,
   type CurrentCwlRound,
   type CurrentWar,
+  type ExternalPlayerWeightCurrent,
   type CwlRotationPlan,
   type CwlRotationPlanDay,
   type CwlRotationPlanMember,
@@ -43,6 +44,7 @@ export const MIRRORED_RUNTIME_TABLES = [
   "CwlRotationPlanDay",
   "CwlRotationPlanMember",
   "HeatMapRef",
+  "ExternalPlayerWeightCurrent",
 ] as const;
 
 type MirrorTableName = (typeof MIRRORED_RUNTIME_TABLES)[number];
@@ -100,6 +102,9 @@ type MirrorSyncSourceClient = {
     findMany: (args?: unknown) => Promise<CwlRotationPlanMember[]>;
   };
   heatMapRef: { findMany: (args?: unknown) => Promise<HeatMapRef[]> };
+  externalPlayerWeightCurrent: {
+    findMany: (args?: unknown) => Promise<ExternalPlayerWeightCurrent[]>;
+  };
   $queryRawUnsafe: <T = unknown>(query: string, ...values: unknown[]) => Promise<T>;
   $disconnect?: () => Promise<void>;
 };
@@ -169,6 +174,10 @@ type MirrorSyncTargetClient = {
     deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
     createMany: (args: { data: HeatMapRef[] }) => Promise<CreateManyResult>;
   };
+  externalPlayerWeightCurrent: {
+    deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
+    createMany: (args: { data: ExternalPlayerWeightCurrent[] }) => Promise<CreateManyResult>;
+  };
   $queryRawUnsafe: <T = unknown>(query: string, ...values: unknown[]) => Promise<T>;
   $executeRawUnsafe: (query: string, ...values: unknown[]) => Promise<number>;
   $transaction: <T>(
@@ -211,6 +220,7 @@ type MirrorSyncSourceRows = {
   CwlRotationPlanDay: CwlRotationPlanDay[];
   CwlRotationPlanMember: CwlRotationPlanMember[];
   HeatMapRef: HeatMapRef[];
+  ExternalPlayerWeightCurrent: ExternalPlayerWeightCurrent[];
 };
 
 function resolvePositiveInt(value: unknown, fallback: number): number {
@@ -508,6 +518,9 @@ export class MirrorSyncService {
       HeatMapRef: await sourceClient.heatMapRef.findMany({
         orderBy: [{ weightMinInclusive: "asc" }, { weightMaxInclusive: "asc" }],
       }),
+      ExternalPlayerWeightCurrent: await sourceClient.externalPlayerWeightCurrent.findMany({
+        orderBy: [{ playerTag: "asc" }],
+      }),
     };
   }
 
@@ -637,6 +650,15 @@ export class MirrorSyncService {
       const deletedRows = (await tx.heatMapRef.deleteMany()).count;
       const insertedRows = await this.insertBatches(rows as HeatMapRef[], (batch) =>
         tx.heatMapRef.createMany({ data: batch }),
+      );
+      return { table, sourceRows: rows.length, deletedRows, insertedRows };
+    }
+
+    if (table === "ExternalPlayerWeightCurrent") {
+      const deletedRows = (await tx.externalPlayerWeightCurrent.deleteMany()).count;
+      const insertedRows = await this.insertBatches(
+        rows as ExternalPlayerWeightCurrent[],
+        (batch) => tx.externalPlayerWeightCurrent.createMany({ data: batch }),
       );
       return { table, sourceRows: rows.length, deletedRows, insertedRows };
     }

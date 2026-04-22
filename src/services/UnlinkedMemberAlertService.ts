@@ -12,6 +12,7 @@ import {
   normalizeDiscordUserId,
   normalizePlayerTag,
 } from "./PlayerLinkService";
+import { botLogChannelService } from "./BotLogChannelService";
 
 type DiscordClientLike = {
   guilds: {
@@ -151,10 +152,61 @@ function normalizeChannelId(input: string | null | undefined): string | null {
   return /^\d+$/.test(trimmed) ? trimmed : null;
 }
 
+export type UnlinkedAlertRoutingMode =
+  | "CLAN_LOG"
+  | "BOT_LOG"
+  | "CUSTOM"
+  | "DISABLED";
+
+export type UnlinkedAlertRoutingConfig = {
+  routingMode: UnlinkedAlertRoutingMode;
+  channelId: string | null;
+};
+
 type AlertChannelCandidate = {
   channelId: string;
-  source: "configured" | "fallback";
+  source: "clan_log" | "bot_log" | "custom";
 };
+
+/** Purpose: normalize the persisted explicit routing mode for unlinked alerts. */
+function normalizeUnlinkedAlertRoutingMode(
+  input: string | null | undefined,
+): UnlinkedAlertRoutingMode | null {
+  const normalized = String(input ?? "").trim().toUpperCase();
+  if (
+    normalized === "CLAN_LOG" ||
+    normalized === "BOT_LOG" ||
+    normalized === "CUSTOM" ||
+    normalized === "DISABLED"
+  ) {
+    return normalized;
+  }
+  return null;
+}
+
+/** Purpose: preserve legacy custom rows while defaulting missing configs to clan-log routing. */
+function resolveLegacyUnlinkedAlertRoutingMode(input: {
+  routingMode?: string | null;
+  channelId?: string | null;
+} | null): UnlinkedAlertRoutingMode {
+  const normalizedRoutingMode = normalizeUnlinkedAlertRoutingMode(
+    input?.routingMode ?? null,
+  );
+  if (normalizedRoutingMode) {
+    return normalizedRoutingMode;
+  }
+  return normalizeChannelId(input?.channelId) ? "CUSTOM" : "CLAN_LOG";
+}
+
+/** Purpose: render a stable label for the resolved unlinked-alert routing mode in logs. */
+function resolveUnlinkedAlertRoutingModeLabel(
+  routingMode: UnlinkedAlertRoutingMode,
+): string {
+  if (routingMode === "CLAN_LOG") return "clan_log";
+  if (routingMode === "BOT_LOG") return "bot_log";
+  if (routingMode === "CUSTOM") return "custom";
+  return "disabled";
+}
 
 function normalizeDisplayText(input: string | null | undefined, fallback: string): string {
   const normalized = String(input ?? "").replace(/\s+/g, " ").trim();
@@ -439,36 +491,78 @@ function dedupeTrackedMembers(
 }
 
 export class UnlinkedMemberAlertService {
-  /** Purpose: persist one guild-level unlinked alert channel in the feature-owned table. */
-  async setAlertChannelId(input: { guildId: string; channelId: string }): Promise<void> {
+  /** Purpose: persist one guild-level unlinked-alert routing configuration in the feature-owned table. */
+  async setAlertRoutingConfig(input: {
+    guildId: string;
+    routingMode: UnlinkedAlertRoutingMode;
+    channelId?: string | null;
+  }): Promise<void> {
     const guildId = normalizeGuildId(input.guildId);
-    const channelId = normalizeChannelId(input.channelId);
-    if (!guildId || !channelId) {
+    const routingMode = normalizeUnlinkedAlertRoutingMode(input.routingMode);
+    if (!guildId || !routingMode) {
+      throw new Error("INVALID_UNLINKED_ALERT_CONFIG");
+    }
+    const channelId = normalizeChannelId(input.channelId ?? null);
+    if (routingMode === "CUSTOM" && !channelId) {
       throw new Error("INVALID_UNLINKED_ALERT_CHANNEL");
     }
+    if (routingMode !== "CUSTOM" && channelId) {
+      throw new Error("INVALID_UNLINKED_ALERT_CHANNEL");
+    }
+    const persistedChannelId = routingMode === "CUSTOM" ? channelId : null;
 
     await prisma.unlinkedAlertConfig.upsert({
       where: { guildId },
       create: {
         guildId,
-        channelId,
+        routingMode,
+        channelId: persistedChannelId,
       },
       update: {
-        channelId,
+        routingMode,
+        channelId: persistedChannelId,
       },
+    });
+  }
+
+  /** Purpose: return the persisted guild-level unlinked-alert routing configuration. */
+  async getAlertRoutingConfig(guildId: string): Promise<UnlinkedAlertRoutingConfig> {
+    const normalizedGuildId = normalizeGuildId(guildId);
+    if (!normalizedGuildId) {
+      return {
+        routingMode: "CLAN_LOG",
+        channelId: null,
+      };
+    }
+
+    const row = await prisma.unlinkedAlertConfig.findUnique({
+      where: { guildId: normalizedGuildId },
+      select: {
+        routingMode: true,
+        channelId: true,
+      },
+    });
+    const routingMode = resolveLegacyUnlinkedAlertRoutingMode(row);
+    return {
+      routingMode,
+      channelId:
+        routingMode === "CUSTOM" ? normalizeChannelId(row?.channelId) : null,
+    };
+  }
+
+  /** Purpose: persist one guild-level unlinked alert channel in the feature-owned table. */
+  async setAlertChannelId(input: { guildId: string; channelId: string }): Promise<void> {
+    await this.setAlertRoutingConfig({
+      guildId: input.guildId,
+      routingMode: "CUSTOM",
+      channelId: input.channelId,
     });
   }
 
   /** Purpose: return the configured guild-level unlinked alert channel when valid. */
   async getAlertChannelId(guildId: string): Promise<string | null> {
-    const normalizedGuildId = normalizeGuildId(guildId);
-    if (!normalizedGuildId) return null;
-
-    const row = await prisma.unlinkedAlertConfig.findUnique({
-      where: { guildId: normalizedGuildId },
-      select: { channelId: true },
-    });
-    return normalizeChannelId(row?.channelId);
+    const routingConfig = await this.getAlertRoutingConfig(guildId);
+    return routingConfig.routingMode === "CUSTOM" ? routingConfig.channelId : null;
   }
 
   /** Purpose: resolve the current live unlinked-member set across tracked FWA and active CWL clans. */
@@ -608,7 +702,7 @@ export class UnlinkedMemberAlertService {
     }
 
     const trackedClanLogChannelByTag = await loadTrackedClanLogChannelByTag();
-    const [fwaMembers, cwlMembers, configuredAlertChannelId, existingRows] =
+    const [fwaMembers, cwlMembers, routingConfig, existingRows] =
       await Promise.all([
         loadLiveFwaMembers({
           cocService: input.cocService,
@@ -619,12 +713,16 @@ export class UnlinkedMemberAlertService {
           cocService: input.cocService,
           trackedClanLogChannelByTag,
         }),
-        this.getAlertChannelId(guildId),
+        this.getAlertRoutingConfig(guildId),
         prisma.unlinkedPlayer.findMany({
           where: { guildId },
           orderBy: [{ createdAt: "asc" }, { playerTag: "asc" }],
         }),
       ]);
+    const botLogChannelId =
+      routingConfig.routingMode === "BOT_LOG"
+        ? await botLogChannelService.getChannelId(guildId)
+        : null;
 
     const currentMembers = dedupeTrackedMembers([...fwaMembers, ...cwlMembers]);
     const linkedRows =
@@ -708,53 +806,46 @@ export class UnlinkedMemberAlertService {
         continue;
       }
 
-      const fallbackChannelId = trackedClanLogChannelByTag.get(member.clanTag) ?? null;
-      const channelCandidates = await this.resolveAlertChannelCandidates({
-        configuredAlertChannelId,
-        fallbackChannelId,
+      const candidate = this.resolveAlertChannelCandidate({
+        routingConfig,
+        trackedClanLogChannelByTag,
+        botLogChannelId,
+        clanTag: member.clanTag,
       });
-      if (channelCandidates.length <= 0) {
+      if (!candidate) {
+        if (routingConfig.routingMode !== "DISABLED") {
+          console.info(
+            `[unlinked] alert_destination_unusable guild=${guildId} player=${member.playerTag} clan=${member.clanTag} destination=none source=${resolveUnlinkedAlertRoutingModeLabel(routingConfig.routingMode)}`,
+          );
+        }
         continue;
       }
 
-      let sent = false;
-      for (const candidate of channelCandidates) {
-        const channel = await resolveSendableGuildChannel({
-          client: input.client,
-          guildId,
-          channelId: candidate.channelId,
-        });
-        if (!channel) {
-          console.info(
-            `[unlinked] alert_destination_unusable guild=${guildId} player=${member.playerTag} clan=${member.clanTag} destination=${candidate.channelId} source=${candidate.source}`,
-          );
-          continue;
-        }
-
-        try {
-          await channel.send({
-            content: buildUnlinkedAlertContent({
-              playerName: member.playerName,
-              playerTag: member.playerTag,
-              clanName: member.clanName,
-            }),
-            allowedMentions: { parse: [] },
-          });
-          if (candidate.source === "fallback") {
-            console.info(
-              `[unlinked] alert_fallback_used guild=${guildId} player=${member.playerTag} clan=${member.clanTag} destination=${candidate.channelId}`,
-            );
-          }
-          sent = true;
-          break;
-        } catch (err) {
-          console.error(
-            `[unlinked] alert_send_failed guild=${guildId} player=${member.playerTag} clan=${member.clanTag} destination=${candidate.channelId} source=${candidate.source} error=${formatError(err)}`,
-          );
-        }
+      const channel = await resolveSendableGuildChannel({
+        client: input.client,
+        guildId,
+        channelId: candidate.channelId,
+      });
+      if (!channel) {
+        console.info(
+          `[unlinked] alert_destination_unusable guild=${guildId} player=${member.playerTag} clan=${member.clanTag} destination=${candidate.channelId} source=${candidate.source}`,
+        );
+        continue;
       }
 
-      if (!sent) {
+      try {
+        await channel.send({
+          content: buildUnlinkedAlertContent({
+            playerName: member.playerName,
+            playerTag: member.playerTag,
+            clanName: member.clanName,
+          }),
+          allowedMentions: { parse: [] },
+        });
+      } catch (err) {
+        console.error(
+          `[unlinked] alert_send_failed guild=${guildId} player=${member.playerTag} clan=${member.clanTag} destination=${candidate.channelId} source=${candidate.source} error=${formatError(err)}`,
+        );
         continue;
       }
 
@@ -779,28 +870,29 @@ export class UnlinkedMemberAlertService {
     };
   }
 
-  /** Purpose: prefer configured guild-level alert routing and fall back to tracked-clan log routing when needed. */
-  private async resolveAlertChannelCandidates(input: {
-    configuredAlertChannelId: string | null;
-    fallbackChannelId: string | null;
-  }): Promise<AlertChannelCandidate[]> {
-    const candidates: AlertChannelCandidate[] = [];
-    const configured = normalizeChannelId(input.configuredAlertChannelId);
-    if (configured) {
-      candidates.push({
-        channelId: configured,
-        source: "configured",
-      });
+  /** Purpose: resolve one explicit unlinked-alert destination for the configured routing mode. */
+  private resolveAlertChannelCandidate(input: {
+    routingConfig: UnlinkedAlertRoutingConfig;
+    trackedClanLogChannelByTag: Map<string, string | null>;
+    botLogChannelId: string | null;
+    clanTag: string;
+  }): AlertChannelCandidate | null {
+    const clanTag = normalizeClanTag(input.clanTag);
+    if (input.routingConfig.routingMode === "CLAN_LOG") {
+      const channelId = normalizeChannelId(
+        input.trackedClanLogChannelByTag.get(clanTag) ?? null,
+      );
+      return channelId ? { channelId, source: "clan_log" } : null;
     }
-
-    const fallback = normalizeChannelId(input.fallbackChannelId);
-    if (fallback && fallback !== configured) {
-      candidates.push({
-        channelId: fallback,
-        source: "fallback",
-      });
+    if (input.routingConfig.routingMode === "BOT_LOG") {
+      const channelId = normalizeChannelId(input.botLogChannelId);
+      return channelId ? { channelId, source: "bot_log" } : null;
     }
-    return candidates;
+    if (input.routingConfig.routingMode === "CUSTOM") {
+      const channelId = normalizeChannelId(input.routingConfig.channelId);
+      return channelId ? { channelId, source: "custom" } : null;
+    }
+    return null;
   }
 }
 
