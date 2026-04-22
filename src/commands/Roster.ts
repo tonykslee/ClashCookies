@@ -890,18 +890,17 @@ export async function handleRosterPostRefreshButtonInteraction(
     return;
   }
 
+  await interaction.deferUpdate();
+
   const payload = await rosterService.refreshRosterSignupPayload(parsed.rosterId, cocService, {
     discordDisplayNamesByUserId: buildRosterDiscordDisplayNameMap(interaction),
   });
   if (!payload) {
-    await interaction.reply({
-      content: "That roster is no longer available.",
-      ephemeral: true,
-    });
+    await interaction.editReply("That roster is no longer available.");
     return;
   }
 
-  await interaction.update({
+  await interaction.editReply({
     embeds: [payload.embed],
     components: payload.components,
   });
