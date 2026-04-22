@@ -1556,6 +1556,73 @@ describe("RosterService", () => {
     );
   });
 
+  it("keeps a live-recovered town hall visible when the posted roster payload is rebuilt", async () => {
+    prismaMock.rosterSignup.findMany.mockResolvedValue([
+      {
+        id: "signup-1",
+        rosterId: "roster-1",
+        groupId: "group-confirmed",
+        playerTag: "#298CG8UJG",
+        playerName: "Player 298",
+        discordUserId: "111111111111111111",
+        signedUpAt: new Date("2026-04-20T00:00:00.000Z"),
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+        group: {
+          id: "group-confirmed",
+          key: "confirmed",
+          name: "Confirmed",
+          description: "Primary roster members",
+          sortOrder: 0,
+        },
+      },
+    ] as any);
+    todoSnapshotServiceMock.refreshSnapshotsForPlayerTags.mockImplementation(async ({ cocService }) => {
+      await cocService?.getPlayerRaw("#298CG8UJG", { suppressTelemetry: true });
+      return {
+        playerCount: 1,
+        updatedCount: 1,
+      };
+    });
+    todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValue([
+      {
+        playerTag: "#298CG8UJG",
+        townHall: 15,
+        clanTag: "#2QG2C08UP",
+        clanName: "CWL Alpha",
+        cwlClanTag: "#2QG2C08UP",
+        cwlClanName: "CWL Alpha",
+      },
+    ] as any);
+    cwlStateServiceMock.listSeasonRosterForClan.mockResolvedValue([
+      {
+        playerTag: "#298CG8UJG",
+        playerName: "Player 298",
+        townHall: null,
+      },
+    ] as any);
+    const cocService = {
+      getPlayerRaw: vi.fn().mockResolvedValue({
+        townHallLevel: 15,
+        clan: { tag: "#2QG2C08UP" },
+      }),
+    } as any;
+
+    const payload = await rosterService.refreshRosterSignupPayload("roster-1", cocService);
+
+    expect(todoSnapshotServiceMock.refreshSnapshotsForPlayerTags).toHaveBeenCalledWith({
+      playerTags: ["#298CG8UJG"],
+      cocService,
+    });
+    expect(cocService.getPlayerRaw).toHaveBeenCalledWith("#298CG8UJG", {
+      suppressTelemetry: true,
+    });
+    expect(payload).toBeTruthy();
+    const description = String(payload?.embed.toJSON().description ?? "");
+    expect(description).toContain("`15 Player 298");
+    expect(description).not.toContain("`- Player 298");
+  });
+
   it("falls back cleanly when no persisted CWL league label is available", async () => {
     prismaMock.cwlTrackedClan.findFirst.mockResolvedValue({
       name: "CWL Alpha",
