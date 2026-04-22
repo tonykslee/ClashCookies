@@ -51,7 +51,7 @@ describe("command coverage", () => {
     expect(missing).toEqual([]);
   });
 
-  it("splits oversized help docs into safe embed pages", () => {
+  it("caps oversized help docs at ten embeds", () => {
     const embeds = buildHelpDetailEmbeds(
       {
         name: "oversized",
@@ -60,16 +60,19 @@ describe("command coverage", () => {
       },
       {
         summary: "y".repeat(5000),
-        details: Array.from({ length: 80 }, (_value, index) =>
-          `Detail ${index + 1} ${"d".repeat(120)}`,
+        details: Array.from({ length: 220 }, (_value, index) =>
+          `Detail ${index + 1} ${"d".repeat(260)}`,
         ),
-        examples: Array.from({ length: 80 }, (_value, index) =>
-          `Example ${index + 1} ${"e".repeat(120)}`,
+        examples: Array.from({ length: 220 }, (_value, index) =>
+          `Example ${index + 1} ${"e".repeat(260)}`,
         ),
       },
     );
 
-    expect(embeds.length).toBeGreaterThan(1);
+    expect(embeds).toHaveLength(10);
+    expect(embeds.at(-1)?.toJSON().footer?.text?.toLowerCase()).toContain(
+      "continued/truncated",
+    );
     for (const embed of embeds) {
       const json = embed.toJSON() as any;
       expect(json.description?.length ?? 0).toBeLessThanOrEqual(4096);
@@ -79,6 +82,21 @@ describe("command coverage", () => {
         expect(field.value.length).toBeLessThanOrEqual(1024);
       }
       expect(embedCharCount(json)).toBeLessThanOrEqual(6000);
+    }
+  });
+
+  it("keeps real /fwa help detail pages within the ten-embed limit", () => {
+    const fwa = Commands.find((command) => command.name === "fwa");
+    expect(fwa).toBeTruthy();
+
+    const embeds = buildHelpDetailEmbeds(fwa!);
+    expect(embeds.length).toBeLessThanOrEqual(10);
+    expect(embeds[0]?.toJSON().title).toBe("/fwa");
+
+    if (embeds.length === 10) {
+      expect(embeds.at(-1)?.toJSON().footer?.text?.toLowerCase()).toContain(
+        "continued/truncated",
+      );
     }
   });
 
