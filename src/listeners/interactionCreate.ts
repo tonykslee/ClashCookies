@@ -119,8 +119,11 @@ import {
   handleRosterPostRefreshButtonInteraction,
   handleRosterPostSettingsButtonInteraction,
   handleRosterPostSettingsMenuInteraction,
+  handleRosterPostCustomizeMenuInteraction,
   handleRosterPostClearButtonInteraction,
   isRosterPostClearButtonCustomId,
+  isRosterPostCustomizeColumnsMenuCustomId,
+  isRosterPostCustomizeSortMenuCustomId,
 } from "../commands/Roster";
 import {
   isRosterSignupButtonCustomId,
@@ -396,6 +399,21 @@ const handleSelectMenuInteraction = async (
         await interaction.reply({
           ephemeral: true,
           content: "Failed to update roster settings.",
+        });
+      }
+    }
+    return;
+  }
+
+  if (isRosterPostCustomizeColumnsMenuCustomId(interaction.customId) || isRosterPostCustomizeSortMenuCustomId(interaction.customId)) {
+    try {
+      await handleRosterPostCustomizeMenuInteraction(interaction, cocService);
+    } catch (err) {
+      console.error(`Roster customize menu failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to update roster customization.",
         });
       }
     }
