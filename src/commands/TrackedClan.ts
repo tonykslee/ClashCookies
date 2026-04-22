@@ -12,6 +12,7 @@ import {
 } from "discord.js";
 import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
+import { buildClanProfileMarkdownLink } from "../helper/clanProfileLink";
 import { safeReply } from "../helper/safeReply";
 import { prisma } from "../prisma";
 import { ActivityService } from "../services/ActivityService";
@@ -28,12 +29,14 @@ import {
 } from "../services/CwlRegistryService";
 import {
   buildRaidTrackedClanListLines,
+  getRaidTrackedClanJoinTypeEmoji,
   listRaidTrackedClansForDisplay,
   parseRaidTrackedClanTagsInput,
   normalizeRaidTrackedClanTag,
   refreshRaidTrackedClansMetadata,
   upsertRaidTrackedClansForTags,
 } from "../services/RaidTrackedClanService";
+import { listFwaTrackedClansForDisplay } from "../services/TrackedClanListService";
 
 const CUSTOM_EMOJI_PATTERN = /^<(a?):([A-Za-z0-9_]+):(\d+)>$/;
 const SHORTCODE_EMOJI_PATTERN = /^:([A-Za-z0-9_]+):$/;
@@ -79,14 +82,16 @@ function buildTrackedClanBlock(clan: {
   clanBadge: string | null;
   shortName: string | null;
 }): string {
-  const label = clan.name ? `${clan.tag} (${clan.name})` : clan.tag;
+  const title = buildClanProfileMarkdownLink(clan.name, clan.tag);
+  const clanTag = normalizeClanTag(clan.tag);
+  const label = clan.name && clanTag ? `**${title}** \`${clanTag}\`` : `**${title}**`;
   const mailChannel = clan.mailChannelId ? `<#${clan.mailChannelId}>` : "not set";
   const logChannel = clan.logChannelId ? `<#${clan.logChannelId}>` : "not set";
   const clanRole = clan.clanRoleId ? `<@&${clan.clanRoleId}>` : "not set";
   const clanBadge = clan.clanBadge ?? "not set";
   const shortName = clan.shortName ?? "not set";
   return [
-    `**${label}**`,
+    label,
     `shortName: ${shortName}`,
     `lose-style: ${clan.loseStyle}`,
     `mailChannel: ${mailChannel}`,
@@ -100,8 +105,10 @@ function buildCwlTrackedClanBlock(clan: {
   name: string | null;
   tag: string;
 }): string {
-  const label = clan.name ? `${clan.tag} (${clan.name})` : clan.tag;
-  return [`**${label}**`, "registry: CWL seasonal"].join("\n");
+  const title = buildClanProfileMarkdownLink(clan.name, clan.tag);
+  const clanTag = normalizeClanTag(clan.tag);
+  const label = clan.name && clanTag ? `**${title}** \`${clanTag}\`` : `**${title}**`;
+  return [label, "registry: CWL seasonal"].join("\n");
 }
 
 function paginateTrackedClanBlocks(blocks: string[]): string[] {
@@ -208,6 +215,39 @@ function buildRaidTrackedClanListComponents(
   }
   rows.push(buildRaidTrackedClanRefreshRow(prefix, refreshing));
   return rows;
+}
+
+function buildTrackedClanSummaryLine(clan: { name: string | null; tag: string }): string {
+  const title = buildClanProfileMarkdownLink(clan.name, clan.tag);
+  const clanTag = normalizeClanTag(clan.tag);
+  return clan.name && clanTag ? `- ${title} \`${clanTag}\`` : `- ${title}`;
+}
+
+function buildRaidTrackedClanSummaryLine(clan: {
+  clanTag: string;
+  clanName: string | null;
+  upgrades: number | null;
+  joinType: "open" | "inviteOnly" | "closed" | null;
+}): string {
+  const clanTag = normalizeRaidTrackedClanTag(clan.clanTag) || clan.clanTag;
+  const upgradesText = clan.upgrades === null ? "—" : String(clan.upgrades);
+  const emoji = getRaidTrackedClanJoinTypeEmoji(clan.joinType);
+  const title = buildClanProfileMarkdownLink(
+    `${clan.clanName ?? clanTag} | ${upgradesText}`,
+    clan.clanTag,
+  );
+  return `- ${emoji} ${title} \`${clanTag}\``;
+}
+
+function buildCombinedTrackedClanListDescription(sections: Array<{ title: string; lines: string[] }>) {
+  return sections.map((section) => [`**${section.title}**`, ...section.lines].join("\n")).join("\n\n");
+}
+
+function buildCombinedTrackedClanListEmbed(total: number, description: string) {
+  return new EmbedBuilder()
+    .setTitle(`Tracked Clans (All Types) (${total})`)
+    .setDescription(description)
+    .setColor(0x57f287);
 }
 
 function formatTagListForSummary(tags: string[]): string {
@@ -415,9 +455,53 @@ export const TrackedClan: Command = {
       const subcommand = interaction.options.getSubcommand(true);
 
       if (subcommand === "list") {
-        const listType =
-          (interaction.options.getString("type", false) as TrackedClanRegistryType | null) ??
-          "FWA";
+        const listType = interaction.options.getString("type", false) as
+          | TrackedClanRegistryType
+          | null;
+        if (listType === null) {
+          const season = resolveCurrentCwlSeasonKey();
+          const [fwaTracked, cwlTracked, raidTracked] = await Promise.all([
+            listFwaTrackedClansForDisplay(),
+            listCwlTrackedClansForSeason({ season }),
+            listRaidTrackedClansForDisplay(),
+          ]);
+
+          if (fwaTracked.length === 0 && cwlTracked.length === 0 && raidTracked.length === 0) {
+            await safeReply(interaction, {
+              ephemeral: true,
+              content: "No tracked clans in the database.",
+            });
+            return;
+          }
+
+          const sections: Array<{ title: string; lines: string[] }> = [];
+          if (fwaTracked.length > 0) {
+            sections.push({
+              title: "FWA",
+              lines: fwaTracked.map((clan) => buildTrackedClanSummaryLine(clan)),
+            });
+          }
+          if (cwlTracked.length > 0) {
+            sections.push({
+              title: "CWL",
+              lines: cwlTracked.map((clan) => buildTrackedClanSummaryLine(clan)),
+            });
+          }
+          if (raidTracked.length > 0) {
+            sections.push({
+              title: "RAIDS",
+              lines: raidTracked.map((clan) => buildRaidTrackedClanSummaryLine(clan)),
+            });
+          }
+
+          const totalTracked = fwaTracked.length + cwlTracked.length + raidTracked.length;
+          await interaction.editReply({
+            embeds: [buildCombinedTrackedClanListEmbed(totalTracked, buildCombinedTrackedClanListDescription(sections))],
+            components: [],
+          });
+          return;
+        }
+
         if (listType === "CWL") {
           const season = resolveCurrentCwlSeasonKey();
           const tracked = await listCwlTrackedClansForSeason({ season });
@@ -658,9 +742,7 @@ export const TrackedClan: Command = {
           return;
         }
 
-        const tracked = await prisma.trackedClan.findMany({
-          orderBy: { createdAt: "asc" },
-        });
+        const tracked = await listFwaTrackedClansForDisplay();
 
         if (tracked.length === 0) {
           await safeReply(interaction, {
