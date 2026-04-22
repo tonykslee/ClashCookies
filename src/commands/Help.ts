@@ -743,6 +743,8 @@ const DISCORD_EMBED_LIMITS = {
   totalChars: 5800,
 } as const;
 
+const HELP_DETAIL_MAX_EMBEDS = 10;
+
 function truncateForDiscord(text: string, maxLength: number): string {
   if (text.length <= maxLength) return text;
   if (maxLength <= 1) return text.slice(0, maxLength);
@@ -823,10 +825,16 @@ function pageCharCount(page: HelpEmbedPage, title: string, footer: string): numb
   );
 }
 
-function toEmbed(page: HelpEmbedPage, title: string, footer: string): EmbedBuilder {
+function toEmbed(
+  page: HelpEmbedPage,
+  title: string,
+  footer: string,
+): EmbedBuilder {
   const embed = new EmbedBuilder().setTitle(
     truncateForDiscord(title, DISCORD_EMBED_LIMITS.title),
-  ).setColor(0x57f287);
+  );
+
+  embed.setColor(0x57f287);
 
   if (page.description) {
     embed.setDescription(truncateForDiscord(page.description, DISCORD_EMBED_LIMITS.description));
@@ -892,15 +900,22 @@ export function buildHelpDetailEmbeds(
 
   pages.push(current);
 
-  return pages.map((page, index) =>
-    toEmbed(
-      page,
-      baseTitle,
-      pages.length === 1
+  const cappedPages = pages.slice(0, HELP_DETAIL_MAX_EMBEDS);
+  const truncatedPages = pages.length - cappedPages.length;
+  const totalPages = cappedPages.length;
+
+  return cappedPages.map((page, index) => {
+    const isLastCappedPage = index === cappedPages.length - 1;
+    const footer =
+      totalPages === 1
         ? "Select another command or click Back to overview."
-        : `Help details page ${index + 1}/${pages.length}. Select another command or click Back to overview.`,
-    ),
-  );
+        : `Help details page ${index + 1}/${totalPages}. Select another command or click Back to overview.`;
+    const suffix =
+      truncatedPages > 0 && isLastCappedPage
+        ? ` Continued/truncated: ${truncatedPages} additional page(s) omitted to stay within Discord's 10-embed limit.`
+        : "";
+    return toEmbed(page, baseTitle, `${footer}${suffix}`);
+  });
 }
 
 type RenderState = {
