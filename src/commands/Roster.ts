@@ -43,6 +43,7 @@ import {
   rosterWeightService,
 } from "../services/RosterWeightService";
 import { syncRosterRoleAssignments } from "../services/RosterRoleSyncService";
+import { rosterExportService } from "../services/RosterExportService";
 import { autocompleteCwlTrackedClan } from "./Cwl";
 
 export {
@@ -56,7 +57,7 @@ const rosterPermissionService = new CommandPermissionService();
 
 type RosterMutationAction = "add" | "move" | "remove" | "set_weight" | "open" | "close" | "archive";
 type RosterPostSettingsAction =
-  | "roster_info"
+  | "export"
   | "customize"
   | "open_roster"
   | "close_roster"
@@ -501,7 +502,7 @@ function buildRosterPostSettingsActions(lifecycleState: RosterRecord["lifecycleS
       : { label: "Close roster", value: "close_roster", description: "Prevent new signups" };
 
   return [
-    { label: "Roster info", value: "roster_info", description: "Show roster settings and state" },
+    { label: "Export", value: "export", description: "Create a Google Sheet export" },
     { label: "Customize", value: "customize", description: "Change board columns and sort order" },
     lifecycleAction,
     { label: "Clear roster", value: "clear_roster", description: "Remove all roster signups" },
@@ -594,6 +595,15 @@ async function buildRosterSettingsPanel(rosterId: string): Promise<{
       .setDescription(info),
     components: [buildRosterPostSettingsMenu(rosterId, view.roster.lifecycleState)],
   };
+}
+
+function buildRosterExportLinkRow(spreadsheetUrl: string): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setLabel("Open Google Sheet")
+      .setStyle(ButtonStyle.Link)
+      .setURL(spreadsheetUrl),
+  );
 }
 
 const ROSTER_POST_CUSTOMIZE_PREFIX = "roster-post-customize";
@@ -959,15 +969,6 @@ export async function handleRosterPostSettingsMenuInteraction(
     return;
   }
 
-  if (choice === "roster_info") {
-    const info = await buildRosterInfoText(roster.id);
-    await interaction.reply({
-      content: info ?? "That roster is no longer available.",
-      ephemeral: true,
-    });
-    return;
-  }
-
   if (choice === "customize") {
     const panel = await buildRosterCustomizePanel(roster.id);
     if (!panel) {
@@ -983,6 +984,46 @@ export async function handleRosterPostSettingsMenuInteraction(
       components: panel.components,
       ephemeral: true,
     });
+    return;
+  }
+
+  if (choice === "export") {
+    await interaction.deferReply({ ephemeral: true }).catch(() => undefined);
+
+    try {
+      const exportResult = await rosterExportService.createRosterExport({
+        rosterId: roster.id,
+      });
+      if (!exportResult) {
+        await interaction.editReply({
+          content: "That roster is no longer available.",
+          embeds: [],
+          components: [],
+        });
+        return;
+      }
+
+      const panel = await buildRosterSettingsPanel(roster.id);
+      if (!panel) {
+        await interaction.editReply({
+          content: "That roster is no longer available.",
+          embeds: [],
+          components: [],
+        });
+        return;
+      }
+
+      await interaction.editReply({
+        content: "Roster export ready.",
+        embeds: [panel.embed],
+        components: [...panel.components, buildRosterExportLinkRow(exportResult.spreadsheetUrl)],
+      });
+    } catch (error) {
+      console.error(`[roster] export_failed rosterId=${roster.id} error=${formatError(error)}`);
+      await interaction.editReply({
+        content: "Unable to create the Google Sheet export right now.",
+      });
+    }
     return;
   }
 
