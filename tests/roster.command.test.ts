@@ -15,7 +15,9 @@ vi.mock("../src/prisma", () => ({
 import {
   Roster,
   handleRosterPostClearButtonInteraction,
+  handleRosterPostCustomizeColumnsOrderModalSubmit,
   handleRosterPostCustomizeMenuInteraction,
+  buildRosterPostCustomizeColumnsOrderModalCustomId,
   handleRosterPostRefreshButtonInteraction,
   handleRosterPostSettingsButtonInteraction,
   handleRosterPostSettingsMenuInteraction,
@@ -106,6 +108,39 @@ function makeInteraction(input: {
     client: {
       channels: {
         fetch: vi.fn().mockResolvedValue(null),
+      },
+    },
+  };
+}
+
+function makeModalInteraction(input: {
+  customId: string;
+  values?: Record<string, string>;
+}) {
+  return {
+    customId: input.customId,
+    user: { id: "111111111111111111" },
+    guildId: "guild-1",
+    inGuild: () => true,
+    memberPermissions: {
+      has: vi.fn().mockReturnValue(true),
+    },
+    fields: {
+      getTextInputValue: vi.fn((name: string) => input.values?.[name] ?? input.values?.["*"] ?? ""),
+    },
+    deferReply: vi.fn().mockResolvedValue(undefined),
+    editReply: vi.fn().mockResolvedValue(undefined),
+    reply: vi.fn().mockResolvedValue(undefined),
+    client: {
+      channels: {
+        fetch: vi.fn().mockResolvedValue({
+          isTextBased: () => true,
+          messages: {
+            fetch: vi.fn().mockResolvedValue({
+              edit: vi.fn().mockResolvedValue(undefined),
+            }),
+          },
+        }),
       },
     },
   };
@@ -546,7 +581,7 @@ describe("/roster command", () => {
     expect(optionValues).not.toContain("open_roster");
   });
 
-  it("persists ordered customize columns and rerenders the posted roster board", async () => {
+  it("opens a reorder modal instead of persisting column order from the select menu alone", async () => {
     (rosterService.findGuildRosterById as any).mockResolvedValue({
       id: "roster-1",
       guildId: "guild-1",
@@ -615,6 +650,101 @@ describe("/roster command", () => {
       createdAt: new Date("2026-04-20T00:00:00.000Z"),
       updatedAt: new Date("2026-04-20T00:00:00.000Z"),
     });
+    const showModal = vi.fn().mockResolvedValue(undefined);
+    const interaction = {
+      customId: "roster-post-customize:columns:roster-1",
+      values: ["player_name", "discord_username", "clan_name"],
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      memberPermissions: {
+        has: vi.fn().mockReturnValue(true),
+      },
+      showModal,
+      reply: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    await handleRosterPostCustomizeMenuInteraction(interaction, {} as any);
+
+    expect(rosterService.updateRoster).not.toHaveBeenCalled();
+    expect(showModal).toHaveBeenCalledTimes(1);
+    const modal = showModal.mock.calls[0]?.[0]?.toJSON?.() as any;
+    expect(modal?.title).toBe("Reorder roster columns");
+    expect(String(modal?.components?.[0]?.components?.[0]?.value ?? "")).toContain("Player name");
+    expect(String(modal?.components?.[0]?.components?.[0]?.value ?? "")).toContain("Discord username");
+    expect(String(modal?.components?.[0]?.components?.[0]?.value ?? "")).toContain("Clan name");
+    expect(String(modal?.custom_id ?? modal?.customId ?? "")).toContain("roster-post-customize-columns-order");
+  });
+
+  it("persists ordered customize columns from the reorder modal and rerenders the posted roster board", async () => {
+    (rosterService.findGuildRosterById as any).mockResolvedValue({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      sortBy: null,
+      displayColumns: null,
+      lifecycleState: "OPEN",
+      postedChannelId: "channel-1",
+      postedMessageId: "message-1",
+      postedMessageUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    });
+    (rosterService.getRosterView as any).mockResolvedValue({
+      roster: {
+        id: "roster-1",
+        title: "CWL Alpha Signup",
+        clanTag: "#2QG2C08UP",
+        lifecycleState: "OPEN",
+        postedMessageUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+        postedChannelId: "channel-1",
+        postedMessageId: "message-1",
+        postButtonMode: "standard",
+        minTownhall: 13,
+        maxTownhall: null,
+        rosterRoleId: null,
+        sortBy: null,
+        displayColumns: ["player_name", "discord_username", "clan_name"],
+      },
+      clanDisplayName: "CWL Alpha",
+      clanLeagueLabel: "Champion League II",
+      groups: [],
+      signups: [],
+      totalSignupCount: 0,
+    });
+    (rosterService.updateRoster as any).mockResolvedValue({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      sortBy: null,
+      displayColumns: ["clan_name", "discord_username", "player_name"],
+      lifecycleState: "OPEN",
+      postedChannelId: "channel-1",
+      postedMessageId: "message-1",
+      postedMessageUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    });
     (rosterService.refreshRosterSignupPayload as any).mockResolvedValue({
       embed: new EmbedBuilder().setTitle("CWL Alpha Signup"),
       components: [],
@@ -626,40 +756,34 @@ describe("/roster command", () => {
         fetch: vi.fn().mockResolvedValue(editedMessage),
       },
     };
-    const interaction = {
-      customId: "roster-post-customize:columns:roster-1",
-      values: ["player_name", "discord_username", "clan_name"],
-      user: { id: "111111111111111111" },
-      guildId: "guild-1",
-      inGuild: () => true,
-      memberPermissions: {
-        has: vi.fn().mockReturnValue(true),
+    const interaction = makeModalInteraction({
+      customId: buildRosterPostCustomizeColumnsOrderModalCustomId("roster-1", [
+        "player_name",
+        "discord_username",
+        "clan_name",
+      ]),
+      values: {
+        "*": ["Clan name", "Discord username", "Player name"].join("\n"),
       },
-      deferUpdate: vi.fn().mockResolvedValue(undefined),
-      editReply: vi.fn().mockResolvedValue(undefined),
-      reply: vi.fn().mockResolvedValue(undefined),
-      client: {
-        channels: {
-          fetch: vi.fn().mockResolvedValue(rosterChannel),
-        },
-      },
-    } as any;
+    }) as any;
+    interaction.client.channels.fetch = vi.fn().mockResolvedValue(rosterChannel);
 
-    await handleRosterPostCustomizeMenuInteraction(interaction, {} as any);
+    await handleRosterPostCustomizeColumnsOrderModalSubmit(interaction, {} as any);
 
     expect(rosterService.updateRoster).toHaveBeenCalledWith(
       expect.objectContaining({
         rosterId: "roster-1",
-        displayColumns: ["player_name", "discord_username", "clan_name"],
+        displayColumns: ["clan_name", "discord_username", "player_name"],
         updatedByDiscordUserId: "111111111111111111",
       }),
     );
     expect(rosterService.refreshRosterSignupPayload).toHaveBeenCalledWith("roster-1", expect.anything(), expect.anything());
-    expect(interaction.deferUpdate).toHaveBeenCalled();
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
     expect(interaction.editReply).toHaveBeenCalledWith(
       expect.objectContaining({
         embeds: [expect.any(EmbedBuilder)],
         components: [expect.any(ActionRowBuilder), expect.any(ActionRowBuilder)],
+        content: "Roster columns updated.",
       }),
     );
     expect(editedMessage.edit).toHaveBeenCalledWith(expect.objectContaining({ embeds: [expect.any(EmbedBuilder)] }));
