@@ -2,7 +2,10 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { Commands } from "../src/Commands";
-import { getHelpDocumentedCommandNames } from "../src/commands/Help";
+import {
+  buildHelpDetailEmbeds,
+  getHelpDocumentedCommandNames,
+} from "../src/commands/Help";
 import { hasPermissionTargetForCommand } from "../src/services/CommandPermissionService";
 
 function docsCommandNames(): Set<string> {
@@ -19,6 +22,19 @@ function docsCommandNames(): Set<string> {
   return names;
 }
 
+function embedCharCount(embed: any): number {
+  return (
+    (embed.title?.length ?? 0) +
+    (embed.description?.length ?? 0) +
+    (embed.footer?.text?.length ?? 0) +
+    (embed.fields ?? []).reduce(
+      (sum: number, field: any) =>
+        sum + (field.name?.length ?? 0) + (field.value?.length ?? 0),
+      0,
+    )
+  );
+}
+
 describe("command coverage", () => {
   it("ensures every registered command has a permissions target", () => {
     const missing = Commands.map((command) => command.name).filter(
@@ -27,12 +43,59 @@ describe("command coverage", () => {
     expect(missing).toEqual([]);
   });
 
-  it("ensures every registered command has help docs", () => {
+  it("ensures every registered root command has help docs", () => {
     const documented = new Set(getHelpDocumentedCommandNames());
     const missing = Commands.map((command) => command.name).filter(
       (name) => !documented.has(name)
     );
     expect(missing).toEqual([]);
+  });
+
+  it("splits oversized help docs into safe embed pages", () => {
+    const embeds = buildHelpDetailEmbeds(
+      {
+        name: "oversized",
+        description: "x".repeat(5000),
+        options: [],
+      },
+      {
+        summary: "y".repeat(5000),
+        details: Array.from({ length: 80 }, (_value, index) =>
+          `Detail ${index + 1} ${"d".repeat(120)}`,
+        ),
+        examples: Array.from({ length: 80 }, (_value, index) =>
+          `Example ${index + 1} ${"e".repeat(120)}`,
+        ),
+      },
+    );
+
+    expect(embeds.length).toBeGreaterThan(1);
+    for (const embed of embeds) {
+      const json = embed.toJSON() as any;
+      expect(json.description?.length ?? 0).toBeLessThanOrEqual(4096);
+      expect(json.fields?.length ?? 0).toBeLessThanOrEqual(25);
+      for (const field of json.fields ?? []) {
+        expect(field.name.length).toBeLessThanOrEqual(256);
+        expect(field.value.length).toBeLessThanOrEqual(1024);
+      }
+      expect(embedCharCount(json)).toBeLessThanOrEqual(6000);
+    }
+  });
+
+  it("keeps short help pages to one embed", () => {
+    const help = Commands.find((command) => command.name === "help");
+    expect(help).toBeTruthy();
+
+    const embeds = buildHelpDetailEmbeds(help!);
+    expect(embeds).toHaveLength(1);
+
+    const json = embeds[0]?.toJSON() as any;
+    expect(json.fields?.map((field: any) => field.name)).toEqual([
+      "What It Does",
+      "Syntax",
+      "Examples",
+      "Access",
+    ]);
   });
 
   it("ensures every registered command is documented in docs/commands.md", () => {
