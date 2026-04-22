@@ -437,7 +437,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "Existing links are never implicitly reassigned; delete-first is required before relinking to another user.",
       "`delete` removes a link when run by the linked user or an admin override target.",
       "`list` renders non-zero linked/unlinked count buckets with padded inline rows: linked rows start with a resolved `yes` status emoji and show `TH ServerDisplayName Player Wt`, unlinked rows start with a resolved `no` status emoji and show `TH #PLAYER_TAG Player Wt`.",
-      "Weight (`Wt`) comes from `FwaPlayerCatalog.latestKnownWeight` first, then the manual `ExternalPlayerWeightCurrent` fallback when needed, and is shown as compact lowercase `k` text (for example `145k`), with `—` when missing.",
+      "Weight (`Wt`) comes from `FwaClanMemberCurrent.weight` first, then the manual `ExternalPlayerWeightCurrent` fallback when needed, and is shown as compact lowercase `k` text (for example `145k`), with `—` when missing.",
       "If `Wt` resolves to `0` and an open deferred weight exists for the same normalized player tag, `/link list` shows that deferred weight and appends a right-side `⏳` marker for that row.",
       "`embed` is admin-gated and posts a reusable self-service Link Account embed with button + modal flow.",
       "`list` includes a tracked-clan dropdown and a sort-cycle button (`Discord Name -> Weight Desc -> Player Tags -> Player Name`) and updates the same message in place.",
