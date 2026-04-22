@@ -662,6 +662,7 @@ model Roster {
   rosterRoleId         String?
   allowMultiSignup     Boolean              @default(true)
   sortBy               String?
+  displayColumns       String?
   importMembers        Boolean              @default(false)
   postButtonMode       String               @default("standard")
   lifecycleState       RosterLifecycleState @default(OPEN)

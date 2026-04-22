@@ -94,6 +94,7 @@ export type RosterRecord = {
   rosterRoleId: string | null;
   allowMultiSignup: boolean;
   sortBy: string | null;
+  displayColumns: string[] | null;
   importMembers: boolean;
   postButtonMode: string;
   lifecycleState: RosterLifecycleState;
@@ -122,6 +123,9 @@ export type RosterSignupRecord = {
 export type RosterSignupViewRecord = RosterSignupRecord & {
   group: RosterGroupRecord | null;
   townHall: number | null;
+  trophies: number | null;
+  weight: number | null;
+  discordDisplayName: string | null;
   discordUsername: string | null;
   clanTag: string | null;
   clanName: string | null;
@@ -241,6 +245,7 @@ const ROSTER_RECORD_SELECT = {
   rosterRoleId: true,
   allowMultiSignup: true,
   sortBy: true,
+  displayColumns: true,
   importMembers: true,
   postButtonMode: true,
   lifecycleState: true,
@@ -272,6 +277,7 @@ export type CreateRosterInput = {
   rosterRoleId?: string | null;
   allowMultiSignup?: boolean | null;
   sortBy?: string | null;
+  displayColumns?: string[] | null;
   importMembers?: boolean | null;
   lifecycleState?: RosterLifecycleState;
   createdByDiscordUserId?: string | null;
@@ -571,7 +577,13 @@ export const ROSTER_SORT_BY = {
   PLAYER_NAME: "player_name",
   PLAYER_TAG: "player_tag",
   DISCORD_USER: "discord_user",
+  DISCORD_NAME: "discord_name",
+  DISCORD_USERNAME: "discord_username",
   TOWNHALL: "townhall",
+  TOWNHALL_LEVEL: "townhall_level",
+  WEIGHT: "weight",
+  CLAN_NAME: "clan_name",
+  TROPHIES: "trophies",
 } as const;
 
 export type RosterSortBy = (typeof ROSTER_SORT_BY)[keyof typeof ROSTER_SORT_BY];
@@ -586,11 +598,81 @@ function normalizeRosterSortBy(input: string | null | undefined): RosterSortBy |
     normalized === ROSTER_SORT_BY.PLAYER_NAME ||
     normalized === ROSTER_SORT_BY.PLAYER_TAG ||
     normalized === ROSTER_SORT_BY.DISCORD_USER ||
-    normalized === ROSTER_SORT_BY.TOWNHALL
+    normalized === ROSTER_SORT_BY.DISCORD_NAME ||
+    normalized === ROSTER_SORT_BY.DISCORD_USERNAME ||
+    normalized === ROSTER_SORT_BY.TOWNHALL ||
+    normalized === ROSTER_SORT_BY.TOWNHALL_LEVEL ||
+    normalized === ROSTER_SORT_BY.WEIGHT ||
+    normalized === ROSTER_SORT_BY.CLAN_NAME ||
+    normalized === ROSTER_SORT_BY.TROPHIES
   ) {
     return normalized;
   }
   return null;
+}
+
+export const ROSTER_DISPLAY_COLUMNS = {
+  TH_LEVEL: "th_level",
+  DISCORD_NAME: "discord_name",
+  DISCORD_USERNAME: "discord_username",
+  DISCORD_USER_ID: "discord_user_id",
+  PLAYER_NAME: "player_name",
+  PLAYER_TAG: "player_tag",
+  CLAN_NAME: "clan_name",
+  TROPHIES: "trophies",
+  WEIGHT: "weight",
+} as const;
+
+export type RosterDisplayColumn = (typeof ROSTER_DISPLAY_COLUMNS)[keyof typeof ROSTER_DISPLAY_COLUMNS];
+
+const ROSTER_DEFAULT_DISPLAY_COLUMNS: readonly RosterDisplayColumn[] = [
+  ROSTER_DISPLAY_COLUMNS.TH_LEVEL,
+  ROSTER_DISPLAY_COLUMNS.PLAYER_NAME,
+  ROSTER_DISPLAY_COLUMNS.DISCORD_USERNAME,
+  ROSTER_DISPLAY_COLUMNS.CLAN_NAME,
+];
+
+function normalizeRosterDisplayColumn(input: string | null | undefined): RosterDisplayColumn | null {
+  const normalized = String(input ?? "")
+    .trim()
+    .toLowerCase();
+  if (!normalized) return null;
+  const values = Object.values(ROSTER_DISPLAY_COLUMNS) as RosterDisplayColumn[];
+  return values.includes(normalized as RosterDisplayColumn) ? (normalized as RosterDisplayColumn) : null;
+}
+
+function normalizeRosterDisplayColumns(input: string[] | null | undefined): RosterDisplayColumn[] | null {
+  const normalized = (Array.isArray(input) ? input : [])
+    .map((value) => normalizeRosterDisplayColumn(value))
+    .filter((value): value is RosterDisplayColumn => Boolean(value));
+  const uniqueOrdered = [...new Set(normalized)];
+  if (uniqueOrdered.length <= 0) {
+    return null;
+  }
+  if (
+    uniqueOrdered.length === ROSTER_DEFAULT_DISPLAY_COLUMNS.length &&
+    uniqueOrdered.every((value, index) => value === ROSTER_DEFAULT_DISPLAY_COLUMNS[index])
+  ) {
+    return null;
+  }
+  return uniqueOrdered;
+}
+
+function parseRosterDisplayColumns(input: string | null | undefined): RosterDisplayColumn[] | null {
+  const raw = normalizeRosterText(input ?? null);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return null;
+    return normalizeRosterDisplayColumns(parsed.map((value) => String(value ?? "")));
+  } catch {
+    return null;
+  }
+}
+
+function serializeRosterDisplayColumns(input: string[] | null | undefined): string | null {
+  const normalized = normalizeRosterDisplayColumns(input);
+  return normalized ? JSON.stringify(normalized) : null;
 }
 
 function normalizeRosterRoleId(input: string | null | undefined): string | null {
@@ -734,10 +816,40 @@ function sortRosterSignupsForRoster(
         left.playerTag.localeCompare(right.playerTag)
       );
     }
-    if (normalizedSortBy === ROSTER_SORT_BY.TOWNHALL) {
+    if (normalizedSortBy === ROSTER_SORT_BY.DISCORD_NAME) {
+      return (
+        String(left.discordDisplayName ?? left.discordUsername ?? left.discordUserId ?? "").localeCompare(
+          String(right.discordDisplayName ?? right.discordUsername ?? right.discordUserId ?? ""),
+        ) || left.playerTag.localeCompare(right.playerTag)
+      );
+    }
+    if (normalizedSortBy === ROSTER_SORT_BY.DISCORD_USERNAME) {
+      return (
+        String(left.discordUsername ?? left.discordUserId ?? "").localeCompare(
+          String(right.discordUsername ?? right.discordUserId ?? ""),
+        ) || left.playerTag.localeCompare(right.playerTag)
+      );
+    }
+    if (normalizedSortBy === ROSTER_SORT_BY.TOWNHALL || normalizedSortBy === ROSTER_SORT_BY.TOWNHALL_LEVEL) {
       const leftTownHall = Number(left.townHall ?? 0);
       const rightTownHall = Number(right.townHall ?? 0);
       return rightTownHall - leftTownHall || left.playerTag.localeCompare(right.playerTag);
+    }
+    if (normalizedSortBy === ROSTER_SORT_BY.WEIGHT) {
+      const leftWeight = Number(left.weight ?? -1);
+      const rightWeight = Number(right.weight ?? -1);
+      return rightWeight - leftWeight || left.playerTag.localeCompare(right.playerTag);
+    }
+    if (normalizedSortBy === ROSTER_SORT_BY.CLAN_NAME) {
+      return (
+        String(left.clanName ?? left.clanTag ?? "").localeCompare(String(right.clanName ?? right.clanTag ?? "")) ||
+        left.playerTag.localeCompare(right.playerTag)
+      );
+    }
+    if (normalizedSortBy === ROSTER_SORT_BY.TROPHIES) {
+      const leftTrophies = Number(left.trophies ?? -1);
+      const rightTrophies = Number(right.trophies ?? -1);
+      return rightTrophies - leftTrophies || left.playerTag.localeCompare(right.playerTag);
     }
     return (
       left.signedUpAt.getTime() - right.signedUpAt.getTime() ||
@@ -765,6 +877,7 @@ type RosterRecordLike = {
   rosterRoleId: string | null;
   allowMultiSignup: boolean;
   sortBy: string | null;
+  displayColumns: string | null;
   importMembers: boolean;
   postButtonMode: string;
   lifecycleState: string;
@@ -797,6 +910,7 @@ function mapRosterRecord(row: RosterRecordLike): RosterRecord {
     rosterRoleId: row.rosterRoleId,
     allowMultiSignup: row.allowMultiSignup,
     sortBy: row.sortBy,
+    displayColumns: parseRosterDisplayColumns(row.displayColumns),
     importMembers: row.importMembers,
     postButtonMode: row.postButtonMode,
     lifecycleState: row.lifecycleState as RosterLifecycleState,
@@ -1055,6 +1169,7 @@ async function loadRosterSelectionOptions(input: {
   ) {
     return { outcome: "roster_closed", rosterId: roster.id };
   }
+  const mappedRoster = mapRosterRecord(roster);
 
   if (input.mode === "signup") {
     const groups = await prisma.rosterGroup.findMany({
@@ -1090,7 +1205,7 @@ async function loadRosterSelectionOptions(input: {
     const existingTags = new Set(existing.map((row) => normalizePlayerTag(row.playerTag)).filter(Boolean));
     return {
       outcome: "ready",
-      roster,
+      roster: mappedRoster,
       group: selectedGroup,
       groups,
       selectedGroupKey: selectedGroup?.key ?? null,
@@ -1135,7 +1250,7 @@ async function loadRosterSelectionOptions(input: {
 
   return {
     outcome: "ready",
-    roster,
+    roster: mappedRoster,
     group: null,
     options: ownedEntries.map((entry) => ({
       value: entry.playerTag,
@@ -1413,12 +1528,29 @@ function normalizeRosterPostButtonMode(input: unknown): RosterPostButtonMode {
   return "standard";
 }
 
-const ROSTER_BOARD_COLUMN_LIMITS = {
-  th: 2,
-  player: 12,
-  discord: 12,
-  clan: 12,
-} as const;
+const ROSTER_BOARD_COLUMN_LIMITS: Record<RosterDisplayColumn, number> = {
+  [ROSTER_DISPLAY_COLUMNS.TH_LEVEL]: 2,
+  [ROSTER_DISPLAY_COLUMNS.DISCORD_NAME]: 12,
+  [ROSTER_DISPLAY_COLUMNS.DISCORD_USERNAME]: 16,
+  [ROSTER_DISPLAY_COLUMNS.DISCORD_USER_ID]: 18,
+  [ROSTER_DISPLAY_COLUMNS.PLAYER_NAME]: 12,
+  [ROSTER_DISPLAY_COLUMNS.PLAYER_TAG]: 12,
+  [ROSTER_DISPLAY_COLUMNS.CLAN_NAME]: 12,
+  [ROSTER_DISPLAY_COLUMNS.TROPHIES]: 8,
+  [ROSTER_DISPLAY_COLUMNS.WEIGHT]: 6,
+};
+
+const ROSTER_BOARD_COLUMN_HEADERS: Record<RosterDisplayColumn, string> = {
+  [ROSTER_DISPLAY_COLUMNS.TH_LEVEL]: "TH",
+  [ROSTER_DISPLAY_COLUMNS.DISCORD_NAME]: "Discord name",
+  [ROSTER_DISPLAY_COLUMNS.DISCORD_USERNAME]: "Discord username",
+  [ROSTER_DISPLAY_COLUMNS.DISCORD_USER_ID]: "Discord ID",
+  [ROSTER_DISPLAY_COLUMNS.PLAYER_NAME]: "Player name",
+  [ROSTER_DISPLAY_COLUMNS.PLAYER_TAG]: "Player tag",
+  [ROSTER_DISPLAY_COLUMNS.CLAN_NAME]: "Clan name",
+  [ROSTER_DISPLAY_COLUMNS.TROPHIES]: "Trophies",
+  [ROSTER_DISPLAY_COLUMNS.WEIGHT]: "Weight",
+};
 
 function sanitizeRosterBoardText(input: string | null | undefined): string {
   return (normalizeRosterText(input ?? null) ?? "").replace(/`/g, "'");
@@ -1438,110 +1570,111 @@ function buildClanProfileMarkdownLink(clanName: string | null, clanTag: string |
   return `[${label}](https://link.clashofclans.com/en?action=OpenClanProfile&tag=${encodedTag})`;
 }
 
-function measureRosterBoardColumnWidths(signups: RosterSignupViewRecord[]): {
-  th: number;
-  player: number;
-  discord: number;
-  clan: number;
-} {
-  const playerWidth = signups.reduce(
-    (max, signup) => Math.max(max, sanitizeRosterBoardText(signup.playerName || signup.playerTag).length),
-    "Player".length,
-  );
-  const discordWidth = signups.reduce(
-    (max, signup) => Math.max(max, sanitizeRosterBoardText(signup.discordUsername).length),
-    "Discord".length,
-  );
-  const clanWidth = signups.reduce(
-    (max, signup) =>
-      Math.max(max, sanitizeRosterBoardText(signup.clanName || signup.clanTag || "-").length),
-    "Clan".length,
-  );
-  return {
-    th: ROSTER_BOARD_COLUMN_LIMITS.th,
-    player: Math.min(playerWidth, ROSTER_BOARD_COLUMN_LIMITS.player),
-    discord: Math.min(discordWidth, ROSTER_BOARD_COLUMN_LIMITS.discord),
-    clan: Math.min(clanWidth, ROSTER_BOARD_COLUMN_LIMITS.clan),
-  };
+function getRosterDisplayColumnHeader(column: RosterDisplayColumn): string {
+  return ROSTER_BOARD_COLUMN_HEADERS[column];
+}
+
+function getRosterDisplayColumnValue(signup: RosterSignupViewRecord, column: RosterDisplayColumn): string | null {
+  if (column === ROSTER_DISPLAY_COLUMNS.TH_LEVEL) {
+    return signup.townHall === null ? null : String(signup.townHall);
+  }
+  if (column === ROSTER_DISPLAY_COLUMNS.DISCORD_NAME) {
+    return signup.discordDisplayName ?? signup.discordUsername ?? signup.discordUserId ?? null;
+  }
+  if (column === ROSTER_DISPLAY_COLUMNS.DISCORD_USERNAME) {
+    return signup.discordUsername ?? null;
+  }
+  if (column === ROSTER_DISPLAY_COLUMNS.DISCORD_USER_ID) {
+    return signup.discordUserId;
+  }
+  if (column === ROSTER_DISPLAY_COLUMNS.PLAYER_NAME) {
+    return signup.playerName ?? signup.playerTag;
+  }
+  if (column === ROSTER_DISPLAY_COLUMNS.PLAYER_TAG) {
+    return signup.playerTag;
+  }
+  if (column === ROSTER_DISPLAY_COLUMNS.CLAN_NAME) {
+    return signup.clanName ?? signup.clanTag ?? null;
+  }
+  if (column === ROSTER_DISPLAY_COLUMNS.TROPHIES) {
+    return signup.trophies === null ? null : String(signup.trophies);
+  }
+  if (column === ROSTER_DISPLAY_COLUMNS.WEIGHT) {
+    return signup.weight === null ? null : String(signup.weight);
+  }
+  return null;
+}
+
+function measureRosterBoardColumnWidths(
+  signups: RosterSignupViewRecord[],
+  columns: readonly RosterDisplayColumn[],
+): Record<RosterDisplayColumn, number> {
+  const widths = Object.fromEntries(
+    columns.map((column) => [column, getRosterDisplayColumnHeader(column).length] as const),
+  ) as Record<RosterDisplayColumn, number>;
+  for (const signup of signups) {
+    for (const column of columns) {
+      const value = sanitizeRosterBoardText(getRosterDisplayColumnValue(signup, column));
+      widths[column] = Math.min(
+        Math.max(widths[column], value.length),
+        ROSTER_BOARD_COLUMN_LIMITS[column],
+      );
+    }
+  }
+  return widths;
 }
 
 function buildRosterBoardLine(
-  columns: {
-    th: string;
-    player: string;
-    discord: string | null;
-    clan: string;
-  },
-  widths: {
-    th: number;
-    player: number;
-    discord: number;
-    clan: number;
-  },
+  columns: readonly RosterDisplayColumn[],
+  values: Record<RosterDisplayColumn, string | null>,
+  widths: Record<RosterDisplayColumn, number>,
 ): string {
-  const th = formatRosterBoardCell(columns.th, widths.th);
-  const player = formatRosterBoardCell(columns.player, widths.player);
-  const discord = formatRosterBoardCell(columns.discord, widths.discord);
-  const clan = formatRosterBoardCell(columns.clan, widths.clan);
-  return `${th} ${player} ${discord} ${clan}`.trimEnd();
+  return columns
+    .map((column) => formatRosterBoardCell(values[column], widths[column]))
+    .join(" ")
+    .trimEnd();
 }
 
-function buildRosterBoardHeaderLine(widths: {
-  th: number;
-  player: number;
-  discord: number;
-  clan: number;
-}): string {
-  return buildRosterBoardLine(
-    {
-      th: "TH",
-      player: "Player",
-      discord: "Discord",
-      clan: "Clan",
-    },
-    widths,
-  );
+function buildRosterBoardHeaderLine(
+  columns: readonly RosterDisplayColumn[],
+  widths: Record<RosterDisplayColumn, number>,
+): string {
+  const values = Object.fromEntries(columns.map((column) => [column, getRosterDisplayColumnHeader(column)] as const)) as Record<
+    RosterDisplayColumn,
+    string | null
+  >;
+  return buildRosterBoardLine(columns, values, widths);
 }
 
 function buildRosterBoardRowLine(
   signup: RosterSignupViewRecord,
-  widths: {
-    th: number;
-    player: number;
-    discord: number;
-    clan: number;
-  },
+  columns: readonly RosterDisplayColumn[],
+  widths: Record<RosterDisplayColumn, number>,
 ): string {
-  return buildRosterBoardLine(
-    {
-      th: signup.townHall === null ? "-" : String(signup.townHall),
-      player: signup.playerName || signup.playerTag,
-      discord: signup.discordUsername,
-      clan: signup.clanName || signup.clanTag || "-",
-    },
-    widths,
-  );
+  const values = Object.fromEntries(columns.map((column) => [column, getRosterDisplayColumnValue(signup, column)] as const)) as Record<
+    RosterDisplayColumn,
+    string | null
+  >;
+  return buildRosterBoardLine(columns, values, widths);
 }
 
 function buildRosterBoardRowLines(
   signups: RosterSignupViewRecord[],
-  widths: {
-    th: number;
-    player: number;
-    discord: number;
-    clan: number;
-  },
+  columns: readonly RosterDisplayColumn[],
+  widths: Record<RosterDisplayColumn, number>,
 ): string[] {
   if (signups.length <= 0) {
     return ["`- None`"];
   }
-  return signups.map((signup) => `\`${buildRosterBoardRowLine(signup, widths)}\``);
+  return signups.map((signup) => `\`${buildRosterBoardRowLine(signup, columns, widths)}\``);
 }
 
 function buildRosterSignupPayloadFromView(view: RosterSignupView): RosterSignupPayload {
   const title = normalizeRosterText(view.clanDisplayName ?? null) ?? normalizeClanTag(view.roster.clanTag ?? "") ?? "Roster";
   const groups = buildRosterGroupsWithSignups(view);
-  const widths = measureRosterBoardColumnWidths(groups.flatMap((group) => group.signups));
+  const columns =
+    normalizeRosterDisplayColumns(view.roster.displayColumns) ?? [...ROSTER_DEFAULT_DISPLAY_COLUMNS];
+  const widths = measureRosterBoardColumnWidths(groups.flatMap((group) => group.signups), columns);
   const rosterLabel = `**${buildClanProfileMarkdownLink(view.roster.title || "Roster Signup", view.roster.clanTag)}** ${
     view.clanLeagueLabel ?? view.roster.rosterType
   }`.trim();
@@ -1550,12 +1683,12 @@ function buildRosterSignupPayloadFromView(view: RosterSignupView): RosterSignupP
   const lines: string[] = [
     rosterLabel,
     "",
-    `\`${buildRosterBoardHeaderLine(widths)}\``,
+    `\`${buildRosterBoardHeaderLine(columns, widths)}\``,
   ];
 
   for (const group of groups) {
     lines.push(`**${group.name} - ${group.signupCount}**`);
-    lines.push(...buildRosterBoardRowLines(group.signups, widths));
+    lines.push(...buildRosterBoardRowLines(group.signups, columns, widths));
     lines.push("");
   }
 
@@ -1608,7 +1741,11 @@ function buildRosterSignupPayloadFromView(view: RosterSignupView): RosterSignupP
   return { embed, components: buttonRows };
 }
 
-async function loadRosterView(rosterId: string): Promise<RosterSignupView | null> {
+type RosterViewLoadOptions = {
+  discordDisplayNamesByUserId?: Map<string, string | null>;
+};
+
+async function loadRosterView(rosterId: string, options?: RosterViewLoadOptions): Promise<RosterSignupView | null> {
   const roster = await prisma.roster.findUnique({
     where: { id: rosterId },
     select: {
@@ -1629,6 +1766,7 @@ async function loadRosterView(rosterId: string): Promise<RosterSignupView | null
       rosterRoleId: true,
       allowMultiSignup: true,
       sortBy: true,
+      displayColumns: true,
       importMembers: true,
       postButtonMode: true,
       lifecycleState: true,
@@ -1678,15 +1816,45 @@ async function loadRosterView(rosterId: string): Promise<RosterSignupView | null
       },
     },
   });
+  const signupTags = signups.map((signup) => normalizePlayerTag(signup.playerTag)).filter(Boolean);
   const townHallByTag = await loadRosterPlayerTownHallMap({
     rosterType: roster.rosterType,
     clanTag: roster.clanTag,
-    playerTags: signups.map((signup) => signup.playerTag),
+    playerTags: signupTags,
     allowLiveFetch: false,
   });
-  const snapshotRows = await todoSnapshotService.listSnapshotsByPlayerTags({
-    playerTags: signups.map((signup) => signup.playerTag),
-  });
+  const [snapshotRows, linkedPlayerRows, currentFwaRows, fwaCatalogRows] = await Promise.all([
+    todoSnapshotService.listSnapshotsByPlayerTags({
+      playerTags: signupTags,
+    }),
+    prisma.playerLink.findMany({
+      where: {
+        playerTag: { in: signupTags },
+      },
+      select: {
+        playerTag: true,
+        discordUsername: true,
+      },
+    }),
+    prisma.fwaClanMemberCurrent.findMany({
+      where: {
+        playerTag: { in: signupTags },
+      },
+      select: {
+        playerTag: true,
+        trophies: true,
+      },
+    }),
+    prisma.fwaPlayerCatalog.findMany({
+      where: {
+        playerTag: { in: signupTags },
+      },
+      select: {
+        playerTag: true,
+        latestKnownWeight: true,
+      },
+    }),
+  ]);
   const currentClanRows =
     roster.clanTag && roster.rosterType === "CWL"
       ? await todoSnapshotService.listSnapshotsByClanTag({
@@ -1697,22 +1865,24 @@ async function loadRosterView(rosterId: string): Promise<RosterSignupView | null
         ? await todoSnapshotService.listSnapshotsByClanTag({
             clanTag: roster.clanTag,
             source: "clanTag",
-          })
+        })
         : [];
-  const linkedPlayerRows = await prisma.playerLink.findMany({
-    where: {
-      playerTag: { in: signups.map((signup) => normalizePlayerTag(signup.playerTag)).filter(Boolean) },
-    },
-    select: {
-      playerTag: true,
-      discordUsername: true,
-    },
-  });
   const discordUsernameByTag = new Map(
     linkedPlayerRows
       .map((row) => [normalizePlayerTag(row.playerTag), normalizeRosterText(row.discordUsername ?? null)] as const)
       .filter((entry): entry is readonly [string, string] => Boolean(entry[0])),
   );
+  const trophiesByTag = new Map(
+    currentFwaRows
+      .map((row) => [normalizePlayerTag(row.playerTag), normalizeRosterInt(row.trophies)] as const)
+      .filter((entry): entry is readonly [string, number | null] => Boolean(entry[0])),
+  );
+  const weightByTag = new Map(
+    fwaCatalogRows
+      .map((row) => [normalizePlayerTag(row.playerTag), normalizeRosterInt(row.latestKnownWeight)] as const)
+      .filter((entry): entry is readonly [string, number | null] => Boolean(entry[0])),
+  );
+  const discordDisplayNameByUserId = options?.discordDisplayNamesByUserId ?? new Map<string, string | null>();
   const snapshotByTag = new Map(snapshotRows.map((row) => [normalizePlayerTag(row.playerTag), row] as const));
   const currentClanName =
     currentClanRows.find((row) => normalizeRosterText(row.cwlClanName ?? row.clanName ?? null))
@@ -1736,6 +1906,9 @@ async function loadRosterView(rosterId: string): Promise<RosterSignupView | null
   const signupsWithTownHall = signups.map((signup) => ({
     ...signup,
     townHall: townHallByTag.get(normalizePlayerTag(signup.playerTag)) ?? null,
+    trophies: trophiesByTag.get(normalizePlayerTag(signup.playerTag)) ?? null,
+    weight: weightByTag.get(normalizePlayerTag(signup.playerTag)) ?? null,
+    discordDisplayName: discordDisplayNameByUserId.get(signup.discordUserId) ?? null,
     discordUsername: discordUsernameByTag.get(normalizePlayerTag(signup.playerTag)) ?? null,
     clanTag: snapshotByTag.get(normalizePlayerTag(signup.playerTag))?.clanTag ?? null,
     clanName: snapshotByTag.get(normalizePlayerTag(signup.playerTag))?.clanName ?? null,
@@ -1750,9 +1923,10 @@ async function loadRosterView(rosterId: string): Promise<RosterSignupView | null
     if (!signup.groupId) continue;
     signupCountByGroupId.set(signup.groupId, (signupCountByGroupId.get(signup.groupId) ?? 0) + 1);
   }
+  const mappedRoster = mapRosterRecord(roster);
 
   return {
-    roster,
+    roster: mappedRoster,
     clanDisplayName,
     clanLeagueLabel: normalizeRosterText(trackedClan?.leagueLabel ?? null) ?? null,
     groups: groups.map((group) => ({
@@ -1770,6 +1944,9 @@ async function loadRosterView(rosterId: string): Promise<RosterSignupView | null
       createdAt: signup.createdAt,
       updatedAt: signup.updatedAt,
       townHall: signup.townHall,
+      trophies: signup.trophies,
+      weight: signup.weight,
+      discordDisplayName: signup.discordDisplayName,
       discordUsername: signup.discordUsername,
       clanTag: signup.clanTag,
       clanName: signup.clanName,
@@ -1951,6 +2128,7 @@ export class RosterService {
     const rosterRoleId = normalizeRosterRoleId(input.rosterRoleId);
     const allowMultiSignup = input.allowMultiSignup !== false;
     const sortBy = normalizeRosterSortBy(input.sortBy);
+    const displayColumns = serializeRosterDisplayColumns(input.displayColumns);
     const importMembers = Boolean(input.importMembers);
     const lifecycleState = input.lifecycleState ?? ROSTER_LIFECYCLE_STATE.OPEN;
     const startsAt = input.startsAt ?? new Date();
@@ -1988,6 +2166,7 @@ export class RosterService {
           rosterRoleId,
           allowMultiSignup,
           sortBy,
+          displayColumns,
           importMembers,
           lifecycleState,
           createdByDiscordUserId,
@@ -2054,13 +2233,21 @@ export class RosterService {
     });
   }
 
-  async buildRosterSignupPayload(rosterId: string, _cocService?: CoCService | null): Promise<RosterSignupPayload | null> {
-    const view = await loadRosterView(rosterId);
+  async buildRosterSignupPayload(
+    rosterId: string,
+    _cocService?: CoCService | null,
+    options?: RosterViewLoadOptions,
+  ): Promise<RosterSignupPayload | null> {
+    const view = await loadRosterView(rosterId, options);
     if (!view) return null;
     return buildRosterSignupPayloadFromView(view);
   }
 
-  async refreshRosterSignupPayload(rosterId: string, cocService?: CoCService | null): Promise<RosterSignupPayload | null> {
+  async refreshRosterSignupPayload(
+    rosterId: string,
+    cocService?: CoCService | null,
+    options?: RosterViewLoadOptions,
+  ): Promise<RosterSignupPayload | null> {
     const roster = await prisma.roster.findUnique({
       where: { id: rosterId },
       select: {
@@ -2097,11 +2284,15 @@ export class RosterService {
       });
     }
 
-    return this.buildRosterSignupPayload(rosterId, cocService ?? null);
+    return this.buildRosterSignupPayload(rosterId, cocService ?? null, options);
   }
 
-  async getRosterView(rosterId: string, _cocService?: CoCService | null): Promise<RosterSignupView | null> {
-    return loadRosterView(rosterId);
+  async getRosterView(
+    rosterId: string,
+    _cocService?: CoCService | null,
+    options?: RosterViewLoadOptions,
+  ): Promise<RosterSignupView | null> {
+    return loadRosterView(rosterId, options);
   }
 
   async getRosterRoleSyncTargets(input: {
@@ -2270,12 +2461,13 @@ export class RosterService {
     maxAccountsPerUser?: number | null;
     minTownhall?: number | null;
     maxTownhall?: number | null;
-    rosterRoleId?: string | null;
-    allowMultiSignup?: boolean | null;
-    sortBy?: string | null;
-    importMembers?: boolean | null;
-    lifecycleState?: RosterLifecycleState | null;
-    updatedByDiscordUserId?: string | null;
+  rosterRoleId?: string | null;
+  allowMultiSignup?: boolean | null;
+  sortBy?: string | null;
+  displayColumns?: string[] | null;
+  importMembers?: boolean | null;
+  lifecycleState?: RosterLifecycleState | null;
+  updatedByDiscordUserId?: string | null;
   }): Promise<RosterRecord | null> {
     const roster = await prisma.roster.findUnique({
       where: { id: input.rosterId },
@@ -2340,6 +2532,9 @@ export class RosterService {
     }
     if (input.sortBy !== undefined) {
       data.sortBy = normalizeRosterSortBy(input.sortBy);
+    }
+    if (input.displayColumns !== undefined) {
+      data.displayColumns = serializeRosterDisplayColumns(input.displayColumns);
     }
     if (input.importMembers !== undefined && input.importMembers !== null) {
       data.importMembers = Boolean(input.importMembers);
