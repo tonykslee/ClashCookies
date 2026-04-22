@@ -1165,6 +1165,20 @@ model FwaClanMemberCurrent {
   @@index([sourceSyncedAt])
 }
 
+model ExternalPlayerWeightCurrent {
+  id              String   @id @default(cuid())
+  playerTag       String   @unique
+  weight          Int
+  source          String
+  measuredAt      DateTime
+  createdByUserId String?
+  updatedByUserId String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([measuredAt])
+}
+
 model FwaWarMemberCurrent {
   clanTag                 String
   playerTag               String
