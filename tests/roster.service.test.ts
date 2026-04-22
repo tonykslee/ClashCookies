@@ -926,10 +926,10 @@ describe("RosterService", () => {
     expect(description).toContain("\nTotal 2/");
     expect(description).not.toContain("```");
     expect(description).not.toContain("<@");
-    expect((headerLine ?? "").replace(/`/g, "").indexOf("Player")).toBe((confirmedRow ?? "").replace(/`/g, "").indexOf("Alpha"));
-    expect((headerLine ?? "").replace(/`/g, "").indexOf("Discord")).toBe((confirmedRow ?? "").replace(/`/g, "").indexOf("TonyLee"));
-    expect((headerLine ?? "").replace(/`/g, "").indexOf("Clan")).toBe((confirmedRow ?? "").replace(/`/g, "").indexOf("Rising Dawn"));
-    expect((headerLine ?? "").replace(/`/g, "").indexOf("Discord")).toBe((substituteRow ?? "").replace(/`/g, "").indexOf("-"));
+    expect((headerLine ?? "").replace(/`/g, "").indexOf("PLAYER")).toBe((confirmedRow ?? "").replace(/`/g, "").indexOf("Alpha"));
+    expect((headerLine ?? "").replace(/`/g, "").indexOf("USERNAME")).toBe((confirmedRow ?? "").replace(/`/g, "").indexOf("TonyLee"));
+    expect((headerLine ?? "").replace(/`/g, "").indexOf("CLAN")).toBe((confirmedRow ?? "").replace(/`/g, "").indexOf("Rising Dawn"));
+    expect((headerLine ?? "").replace(/`/g, "").indexOf("USERNAME")).toBe((substituteRow ?? "").replace(/`/g, "").indexOf("-"));
     expect(cocServiceMock.getClan).not.toHaveBeenCalled();
     const componentIds = payload?.components.flatMap((row) => {
       const rowJson = row.toJSON() as any;
@@ -1075,13 +1075,16 @@ describe("RosterService", () => {
     expect(payload).toBeTruthy();
     const description = payload?.embed.toJSON().description ?? "";
     const lines = description.split("\n");
-    const headerLine = lines.find((line) => line.startsWith("`Player name"));
+    const headerLine = lines.find((line) => line.startsWith("`PLAYER"));
     const bravoRowIndex = lines.findIndex((line) => line.startsWith("`") && line.includes("Bravo"));
     const alphaRowIndex = lines.findIndex((line) => line.startsWith("`") && line.includes("Alpha"));
-    expect(headerLine).toContain("Player name");
-    expect(headerLine).toContain("Discord username");
-    expect(headerLine).toContain("Clan name");
+    expect(headerLine).toContain("PLAYER");
+    expect(headerLine).toContain("USERNAME");
+    expect(headerLine).toContain("CLAN");
     expect(headerLine).toContain("Weight");
+    expect(headerLine).not.toContain("Player name");
+    expect(headerLine).not.toContain("Discord username");
+    expect(headerLine).not.toContain("Clan name");
     expect(bravoRowIndex).toBeGreaterThan(-1);
     expect(alphaRowIndex).toBeGreaterThan(-1);
     expect(bravoRowIndex).toBeLessThan(alphaRowIndex);

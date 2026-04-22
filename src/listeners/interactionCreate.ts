@@ -120,11 +120,9 @@ import {
   handleRosterPostSettingsButtonInteraction,
   handleRosterPostSettingsMenuInteraction,
   handleRosterPostCustomizeMenuInteraction,
-  handleRosterPostCustomizeColumnsOrderModalSubmit,
   handleRosterPostClearButtonInteraction,
   isRosterPostClearButtonCustomId,
   isRosterPostCustomizeColumnsMenuCustomId,
-  isRosterPostCustomizeColumnsOrderModalCustomId,
   isRosterPostCustomizeSortMenuCustomId,
 } from "../commands/Roster";
 import {
@@ -1111,23 +1109,17 @@ const handleButtonInteraction = async (
 
 const handleModalSubmit = async (
   interaction: ModalSubmitInteraction,
-  cocService: CoCService,
+  _cocService: CoCService,
 ): Promise<void> => {
   const isPostModal = isPostModalCustomId(interaction.customId);
   const isRecruitmentModal = isRecruitmentModalCustomId(interaction.customId);
   const isLinkEmbedModal = isLinkEmbedModalCustomId(interaction.customId);
   const isSayModal = isSayModalCustomId(interaction.customId);
-  const isRosterCustomizeModal = isRosterPostCustomizeColumnsOrderModalCustomId(interaction.customId);
-  if (!isPostModal && !isRecruitmentModal && !isLinkEmbedModal && !isSayModal && !isRosterCustomizeModal) {
+  if (!isPostModal && !isRecruitmentModal && !isLinkEmbedModal && !isSayModal) {
     return;
   }
 
   try {
-    if (isRosterCustomizeModal) {
-      await handleRosterPostCustomizeColumnsOrderModalSubmit(interaction, cocService);
-      return;
-    }
-
     if (isLinkEmbedModal) {
       await handleLinkEmbedModalSubmit(interaction);
       return;
