@@ -259,8 +259,14 @@ function buildRosterManagerLifecycleSummary(
   return `${rosterTitle} was ${label}.`;
 }
 
-async function refreshRosterSignupPost(interaction: ChatInputCommandInteraction | ButtonInteraction | StringSelectMenuInteraction, rosterId: string): Promise<void> {
-  const payload = await rosterService.buildRosterSignupPayload(rosterId);
+async function refreshRosterSignupPost(
+  interaction: ChatInputCommandInteraction | ButtonInteraction | StringSelectMenuInteraction,
+  rosterId: string,
+  cocService?: CoCService | null,
+): Promise<void> {
+  const payload = cocService
+    ? await rosterService.refreshRosterSignupPayload(rosterId, cocService)
+    : await rosterService.buildRosterSignupPayload(rosterId);
   const rosterView = await rosterService.getRosterView(rosterId);
   if (!payload || !rosterView?.roster.postedChannelId || !rosterView.roster.postedMessageId) {
     return;
@@ -2314,7 +2320,7 @@ export async function handleRosterManagerSubcommand(
   }
 
   if (subcommand === "refresh") {
-    await refreshRosterSignupPost(interaction, roster.id).catch(() => undefined);
+    await refreshRosterSignupPost(interaction, roster.id, cocService).catch(() => undefined);
     await interaction.editReply(`Refreshed the posted CWL roster for ${rosterLabel}.`);
     return;
   }
@@ -2335,7 +2341,7 @@ export async function handleRosterManagerSubcommand(
       await interaction.editReply("That roster is no longer available.");
       return;
     }
-    await refreshRosterSignupPost(interaction, roster.id).catch(() => undefined);
+    await refreshRosterSignupPost(interaction, roster.id, cocService).catch(() => undefined);
     await interaction.editReply(buildRosterManagerLifecycleSummary(rosterLabel, lifecycleState));
     return;
   }
@@ -2366,7 +2372,7 @@ export async function handleRosterManagerSubcommand(
         await interaction.editReply("That roster is no longer available.");
         return;
       }
-      await refreshRosterSignupPost(interaction, roster.id).catch(() => undefined);
+      await refreshRosterSignupPost(interaction, roster.id, cocService).catch(() => undefined);
       await interaction.editReply(formatRosterSignupResultSummary(result));
       return;
     }
@@ -2385,7 +2391,7 @@ export async function handleRosterManagerSubcommand(
       await interaction.editReply("That roster group is no longer available.");
       return;
     }
-    await refreshRosterSignupPost(interaction, roster.id).catch(() => undefined);
+    await refreshRosterSignupPost(interaction, roster.id, cocService).catch(() => undefined);
     await interaction.editReply(formatRosterManagerMoveResultSummary(result));
     return;
   }
@@ -2400,7 +2406,7 @@ export async function handleRosterManagerSubcommand(
       await interaction.editReply("That roster is no longer available.");
       return;
     }
-    await refreshRosterSignupPost(interaction, roster.id).catch(() => undefined);
+    await refreshRosterSignupPost(interaction, roster.id, cocService).catch(() => undefined);
     await interaction.editReply(formatRosterManagerRemoveResultSummary(result));
     return;
   }
@@ -3052,7 +3058,7 @@ export async function handleRosterSelectionActionButtonInteraction(
 
   if (result.outcome === "signup") {
     await syncRosterRoleAssignments(interaction.client, result.result.rosterId).catch(() => undefined);
-    await refreshRosterSignupPost(interaction, result.result.rosterId).catch(() => undefined);
+    await refreshRosterSignupPost(interaction, result.result.rosterId, cocService).catch(() => undefined);
     await interaction.update({
       content: formatRosterSignupResultSummary(result.result),
       embeds: [],
@@ -3061,7 +3067,7 @@ export async function handleRosterSelectionActionButtonInteraction(
     return;
   }
 
-  await refreshRosterSignupPost(interaction, result.result.rosterId).catch(() => undefined);
+  await refreshRosterSignupPost(interaction, result.result.rosterId, cocService).catch(() => undefined);
   await interaction.update({
     content: formatRosterRemoveResultSummary(result.result),
     embeds: [],
