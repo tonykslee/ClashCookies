@@ -7,6 +7,9 @@ const prismaMock = vi.hoisted(() => ({
   rosterSignup: {
     findFirst: vi.fn(),
   },
+  fwaPlayerCatalog: {
+    findMany: vi.fn(),
+  },
   fwaClanMemberCurrent: {
     findMany: vi.fn(),
   },
@@ -33,6 +36,7 @@ describe("RosterWeightService", () => {
     vi.clearAllMocks();
     prismaMock.roster.findUnique.mockResolvedValue({ id: "roster-1" });
     prismaMock.rosterSignup.findFirst.mockResolvedValue({ playerTag: "#PQL0289" });
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.externalPlayerWeightCurrent.findMany.mockResolvedValue([]);
     prismaMock.externalPlayerWeightCurrent.upsert.mockResolvedValue({} as never);
@@ -107,26 +111,20 @@ describe("RosterWeightService", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-22T12:00:00.000Z"));
     try {
-      prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([
         {
           playerTag: "#PQL0289",
-          weight: 145000,
-          trophies: 5200,
-          sourceSyncedAt: new Date("2026-04-22T10:00:00.000Z"),
+          latestKnownWeight: 145000,
+          lastSyncedAt: new Date("2026-04-22T10:00:00.000Z"),
         },
+      ]);
+      prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
         {
           playerTag: "#QGRJ2222",
-          weight: null,
           trophies: 5400,
-          sourceSyncedAt: new Date("2026-04-22T08:00:00.000Z"),
         },
       ]);
       prismaMock.externalPlayerWeightCurrent.findMany.mockResolvedValue([
-        {
-          playerTag: "#PQL0289",
-          weight: 160000,
-          measuredAt: new Date("2026-04-21T09:00:00.000Z"),
-        },
         {
           playerTag: "#QGRJ2222",
           weight: 150000,
@@ -143,7 +141,7 @@ describe("RosterWeightService", () => {
         weight: 145000,
         weightSource: "FWA",
         weightMeasuredAt: new Date("2026-04-22T10:00:00.000Z"),
-        trophies: 5200,
+        trophies: null,
       });
       expect(resolved.get("#QGRJ2222")).toEqual({
         playerTag: "#QGRJ2222",

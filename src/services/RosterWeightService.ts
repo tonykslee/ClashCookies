@@ -91,15 +91,21 @@ export async function resolveRosterCurrentWeightRecords(input: {
     return result;
   }
 
-  const [fwaRows, manualRows] = await Promise.all([
+  const [catalogRows, trophiesRows, manualRows] = await Promise.all([
+    prisma.fwaPlayerCatalog.findMany({
+      where: { playerTag: { in: normalizedTags } },
+      select: {
+        playerTag: true,
+        latestKnownWeight: true,
+        lastSyncedAt: true,
+      },
+    }),
     prisma.fwaClanMemberCurrent.findMany({
       where: { playerTag: { in: normalizedTags } },
       orderBy: [{ playerTag: "asc" }, { sourceSyncedAt: "desc" }, { clanTag: "asc" }],
       select: {
         playerTag: true,
-        weight: true,
         trophies: true,
-        sourceSyncedAt: true,
       },
     }),
     prisma.externalPlayerWeightCurrent.findMany({
@@ -112,15 +118,21 @@ export async function resolveRosterCurrentWeightRecords(input: {
     }),
   ]);
 
-  const latestFwaByTag = new Map<string, { weight: number | null; trophies: number | null; measuredAt: Date }>();
-  for (const row of fwaRows) {
+  const latestFwaByTag = new Map<string, { weight: number | null; measuredAt: Date }>();
+  for (const row of catalogRows) {
     const playerTag = normalizePlayerTag(row.playerTag);
     if (!playerTag || latestFwaByTag.has(playerTag)) continue;
     latestFwaByTag.set(playerTag, {
-      weight: normalizeRosterWeightValue(row.weight),
-      trophies: normalizeRosterWeightValue(row.trophies),
-      measuredAt: row.sourceSyncedAt,
+      weight: normalizeRosterWeightValue(row.latestKnownWeight),
+      measuredAt: row.lastSyncedAt,
     });
+  }
+
+  const trophiesByTag = new Map<string, number | null>();
+  for (const row of trophiesRows) {
+    const playerTag = normalizePlayerTag(row.playerTag);
+    if (!playerTag || trophiesByTag.has(playerTag)) continue;
+    trophiesByTag.set(playerTag, normalizeRosterWeightValue(row.trophies));
   }
 
   const manualByTag = new Map<string, { weight: number; measuredAt: Date }>();
@@ -143,7 +155,7 @@ export async function resolveRosterCurrentWeightRecords(input: {
         weight: fwa.weight,
         weightSource: "FWA",
         weightMeasuredAt: fwa.measuredAt,
-        trophies: fwa.trophies,
+        trophies: trophiesByTag.get(playerTag) ?? null,
       });
       continue;
     }
@@ -153,7 +165,7 @@ export async function resolveRosterCurrentWeightRecords(input: {
         weight: manual.weight,
         weightSource: "Manual",
         weightMeasuredAt: manual.measuredAt,
-        trophies: fwa?.trophies ?? null,
+        trophies: trophiesByTag.get(playerTag) ?? null,
       });
       continue;
     }
@@ -162,7 +174,7 @@ export async function resolveRosterCurrentWeightRecords(input: {
       weight: null,
       weightSource: "Unknown",
       weightMeasuredAt: null,
-      trophies: fwa?.trophies ?? null,
+      trophies: trophiesByTag.get(playerTag) ?? null,
     });
   }
 

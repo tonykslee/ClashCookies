@@ -862,6 +862,34 @@ describe("RosterService", () => {
         discordUsername: null,
       },
     ] as any);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([
+      {
+        playerTag: "#PQL0289",
+        latestTownHall: 16,
+        latestKnownWeight: 42_000,
+        lastSyncedAt: new Date("2026-04-20T01:00:00.000Z"),
+      },
+      {
+        playerTag: "#QGRJ2222",
+        latestTownHall: 15,
+        latestKnownWeight: 55_000,
+        lastSyncedAt: new Date("2026-04-20T01:05:00.000Z"),
+      },
+    ] as any);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValueOnce([
+      {
+        playerTag: "#PQL0289",
+        trophies: 5200,
+        weight: 99_000,
+        sourceSyncedAt: new Date("2026-04-20T01:00:00.000Z"),
+      },
+      {
+        playerTag: "#QGRJ2222",
+        trophies: 5400,
+        weight: 88_000,
+        sourceSyncedAt: new Date("2026-04-20T01:05:00.000Z"),
+      },
+    ] as any);
     todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValue([
       {
         playerTag: "#PQL0289",
@@ -890,6 +918,7 @@ describe("RosterService", () => {
         clanName: "Rising Crowns",
         cwlClanTag: "#2QG2C08UP",
         cwlClanName: "Rising Crowns",
+        weight: 88_000,
       },
     ] as any);
     cwlStateServiceMock.listSeasonRosterForClan.mockResolvedValue([
@@ -1115,8 +1144,7 @@ describe("RosterService", () => {
     expect(bravoRowIndex).toBeLessThan(alphaRowIndex);
     expect(description).toContain("bravo-user");
     expect(description).toContain("55k");
-    expect(description).toContain("42k");
-    expect(description).not.toContain("40k");
+    expect(description).toContain("40k");
     expect(description).toContain("Min. TH 13");
     expect(description).not.toContain("```");
   });
@@ -1197,17 +1225,25 @@ describe("RosterService", () => {
         { playerTag: "#PQL0289", discordUsername: "alpha-user" },
         { playerTag: "#QGRJ2222", discordUsername: "bravo-user" },
       ] as any);
+      prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([
+        {
+          playerTag: "#PQL0289",
+          latestTownHall: 16,
+          latestKnownWeight: 42_000,
+          lastSyncedAt: new Date("2026-04-22T10:00:00.000Z"),
+        },
+      ] as any);
       prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValueOnce([
         {
           playerTag: "#PQL0289",
           trophies: 5200,
-          weight: 42_000,
+          weight: 99_000,
           sourceSyncedAt: new Date("2026-04-22T10:00:00.000Z"),
         },
         {
           playerTag: "#QGRJ2222",
           trophies: 5400,
-          weight: null,
+          weight: 88_000,
           sourceSyncedAt: new Date("2026-04-22T08:00:00.000Z"),
         },
       ] as any);
@@ -1961,6 +1997,10 @@ describe("RosterService", () => {
     expect(report).toContain("Out-of-clan signups:");
     expect(report).toContain("- Outlier `#ZZZZ1111` <@333333333333333333>");
     expect(report).not.toContain("#OLD1111");
+    expect(todoSnapshotServiceMock.listSnapshotsByClanTag).toHaveBeenCalledWith({
+      clanTag: "#2QG2C08UP",
+      source: "clanTag",
+    });
   });
 
   it("builds a manager readiness view from the current FWA clan membership table", async () => {
