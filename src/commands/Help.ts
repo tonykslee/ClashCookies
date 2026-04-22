@@ -1017,10 +1017,11 @@ export function buildHelpDetailEmbeds(
   });
 }
 
-type RenderState = {
+export type HelpRenderState = {
   page: number;
   selectedCommand: string;
   detailView: boolean;
+  detailPage: number;
 };
 
 function getAllCommands(): Command[] {
@@ -1103,7 +1104,7 @@ function buildUsageLines(command: Command): string[] {
 
 function getOverviewEmbed(
   commands: Command[],
-  state: RenderState,
+  state: HelpRenderState,
 ): EmbedBuilder {
   const pageCount = Math.max(
     1,
@@ -1144,9 +1145,10 @@ function getOverviewEmbed(
 
 function getControls(
   commands: Command[],
-  state: RenderState,
+  state: HelpRenderState,
   interactionId: string,
   allowPostToChannel: boolean,
+  detailPageCount: number,
 ) {
   const pageCount = Math.max(
     1,
@@ -1161,6 +1163,20 @@ function getControls(
 
   const buttonRow = new ActionRowBuilder<ButtonBuilder>();
   if (state.detailView) {
+    if (detailPageCount > 1) {
+      buttonRow.addComponents(
+        new ButtonBuilder()
+          .setCustomId(prevId)
+          .setLabel("Previous")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(state.detailPage <= 0),
+        new ButtonBuilder()
+          .setCustomId(nextId)
+          .setLabel("Next")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(state.detailPage >= detailPageCount - 1),
+      );
+    }
     buttonRow.addComponents(
       new ButtonBuilder()
         .setCustomId(backId)
@@ -1225,22 +1241,59 @@ function getControls(
 
 function getResponsePayload(
   commands: Command[],
-  state: RenderState,
+  state: HelpRenderState,
   interactionId: string,
   allowPostToChannel: boolean,
 ) {
   const selected =
     commands.find((cmd) => cmd.name === state.selectedCommand) ?? commands[0];
+  const detailEmbeds = state.detailView ? buildHelpDetailEmbeds(selected) : [];
+  const selectedDetailPage = Math.max(
+    0,
+    Math.min(state.detailPage, Math.max(0, detailEmbeds.length - 1)),
+  );
   const embeds = state.detailView
-    ? buildHelpDetailEmbeds(selected)
+    ? [detailEmbeds[selectedDetailPage] ?? detailEmbeds[0] ?? getOverviewEmbed(commands, state)]
     : [getOverviewEmbed(commands, state)];
   const components = getControls(
     commands,
     state,
     interactionId,
     allowPostToChannel,
+    detailEmbeds.length,
   );
   return { embeds, components };
+}
+
+export function setHelpSelectedCommand(
+  state: HelpRenderState,
+  commands: Command[],
+  commandName: string,
+): void {
+  const match = commands.find((cmd) => cmd.name === commandName);
+  if (!match) return;
+  state.selectedCommand = match.name;
+  state.detailView = true;
+  state.detailPage = 0;
+  state.page = Math.floor(
+    commands.findIndex((cmd) => cmd.name === match.name) / OVERVIEW_PAGE_SIZE,
+  );
+}
+
+export function moveHelpDetailPage(
+  state: HelpRenderState,
+  delta: number,
+  pageCount: number,
+): void {
+  if (pageCount <= 0) {
+    state.detailPage = 0;
+    return;
+  }
+
+  state.detailPage = Math.max(
+    0,
+    Math.min(state.detailPage + delta, pageCount - 1),
+  );
 }
 
 export const Help: Command = {
@@ -1276,10 +1329,11 @@ export const Help: Command = {
     const isPublic = visibility === "public";
     const allowPostToChannel = !isPublic;
 
-    const state: RenderState = {
+    const state: HelpRenderState = {
       page: 0,
       selectedCommand: commands[0]?.name ?? "help",
       detailView: false,
+      detailPage: 0,
     };
 
     if (requestedCommand) {
@@ -1291,13 +1345,7 @@ export const Help: Command = {
         });
         return;
       }
-
-      state.detailView = true;
-      state.selectedCommand = match.name;
-      state.page = Math.floor(
-        commands.findIndex((cmd) => cmd.name === match.name) /
-          OVERVIEW_PAGE_SIZE,
-      );
+      setHelpSelectedCommand(state, commands, match.name);
     }
 
     await interaction.reply({
@@ -1328,18 +1376,27 @@ export const Help: Command = {
           }
 
           if (component.isButton()) {
-            if (
-              component.customId === `help-prev:${interaction.id}` &&
-              state.page > 0
-            ) {
-              state.page -= 1;
-              state.detailView = false;
+            const selectedCommand =
+              commands.find((cmd) => cmd.name === state.selectedCommand) ??
+              commands[0];
+            const selectedCommandPageCount = buildHelpDetailEmbeds(
+              selectedCommand ?? commands[0],
+            ).length;
+
+            if (component.customId === `help-prev:${interaction.id}`) {
+              moveHelpDetailPage(
+                state,
+                -1,
+                selectedCommandPageCount,
+              );
             } else if (
-              component.customId === `help-next:${interaction.id}` &&
-              state.page < Math.ceil(commands.length / OVERVIEW_PAGE_SIZE) - 1
+              component.customId === `help-next:${interaction.id}`
             ) {
-              state.page += 1;
-              state.detailView = false;
+              moveHelpDetailPage(
+                state,
+                1,
+                selectedCommandPageCount,
+              );
             } else if (component.customId === `help-back:${interaction.id}`) {
               state.detailView = false;
             } else if (component.customId === `help-close:${interaction.id}`) {
@@ -1383,12 +1440,7 @@ export const Help: Command = {
             const picked = component.values[0];
             const found = commands.find((cmd) => cmd.name === picked);
             if (found) {
-              state.selectedCommand = found.name;
-              state.detailView = true;
-              state.page = Math.floor(
-                commands.findIndex((cmd) => cmd.name === found.name) /
-                  OVERVIEW_PAGE_SIZE,
-              );
+              setHelpSelectedCommand(state, commands, found.name);
             }
           }
 

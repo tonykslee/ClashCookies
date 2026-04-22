@@ -6,6 +6,8 @@ import {
   buildHelpDetailEmbeds,
   getHelpEmbedCharacterCount,
   getHelpDocumentedCommandNames,
+  moveHelpDetailPage,
+  setHelpSelectedCommand,
 } from "../src/commands/Help";
 import { hasPermissionTargetForCommand } from "../src/services/CommandPermissionService";
 
@@ -99,6 +101,27 @@ describe("command coverage", () => {
         "continued/truncated",
       );
     }
+  });
+
+  it("moves and resets help detail navigation state", () => {
+    const commands = [Commands.find((command) => command.name === "help")!, Commands.find((command) => command.name === "fwa")!];
+    const state = {
+      page: 3,
+      selectedCommand: "help",
+      detailView: true,
+      detailPage: 2,
+    };
+
+    moveHelpDetailPage(state, -1, 5);
+    expect(state.detailPage).toBe(1);
+
+    moveHelpDetailPage(state, 999, 5);
+    expect(state.detailPage).toBe(4);
+
+    setHelpSelectedCommand(state, commands, "fwa");
+    expect(state.selectedCommand).toBe("fwa");
+    expect(state.detailView).toBe(true);
+    expect(state.detailPage).toBe(0);
   });
 
   it("keeps short help pages to one embed", () => {
