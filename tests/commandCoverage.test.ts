@@ -57,6 +57,7 @@ describe("command coverage", () => {
       },
     );
 
+    expect(embeds.length).toBeGreaterThan(1);
     expect(embeds).toHaveLength(10);
     expect(embeds.at(-1)?.toJSON().footer?.text?.toLowerCase()).toContain(
       "continued/truncated",
@@ -69,7 +70,7 @@ describe("command coverage", () => {
         expect(field.name.length).toBeLessThanOrEqual(256);
         expect(field.value.length).toBeLessThanOrEqual(1024);
       }
-      expect(getHelpEmbedCharacterCount(json)).toBeLessThanOrEqual(6000);
+      expect(getHelpEmbedCharacterCount(json)).toBeLessThanOrEqual(4000);
     }
   });
 
@@ -81,7 +82,11 @@ describe("command coverage", () => {
     expect(embeds.length).toBeLessThanOrEqual(10);
     expect(embeds[0]?.toJSON().title).toBe("/fwa");
 
-    expect(embeds.every((embed) => getHelpEmbedCharacterCount(embed.toJSON() as any) <= 6000)).toBe(true);
+    expect(
+      embeds.every(
+        (embed) => getHelpEmbedCharacterCount(embed.toJSON() as any) <= 4000,
+      ),
+    ).toBe(true);
     expect(
       embeds.every((embed) =>
         (embed.toJSON().fields ?? []).every(

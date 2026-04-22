@@ -745,6 +745,8 @@ const DISCORD_EMBED_LIMITS = {
 } as const;
 
 const HELP_DETAIL_MAX_EMBEDS = 10;
+const HELP_DETAIL_SOFT_PAGE_TARGET = 3500;
+const HELP_DETAIL_HARD_PAGE_LIMIT = 4000;
 const HELP_DETAIL_FOOTER_RESERVE = 240;
 
 function truncateForDiscord(text: string, maxLength: number): string {
@@ -901,7 +903,7 @@ function finalizeHelpDetailPage(
   let footer = baseFooter;
   let embed = toEmbed(workingPage, title, footer);
 
-  while (getHelpEmbedCharacterCount(embed.toJSON()) > 6000) {
+  while (getHelpEmbedCharacterCount(embed.toJSON()) > HELP_DETAIL_HARD_PAGE_LIMIT) {
     if (workingPage.fields.length > 0) {
       workingPage.fields.pop();
       omittedFields += 1;
@@ -921,7 +923,7 @@ function finalizeHelpDetailPage(
           inline: field.inline,
         })),
       });
-      const remaining = Math.max(0, 6000 - fixedSize);
+      const remaining = Math.max(0, HELP_DETAIL_HARD_PAGE_LIMIT - fixedSize);
       const nextDescription = truncateForDiscord(
         workingPage.description,
         remaining,
@@ -985,7 +987,7 @@ export function buildHelpDetailEmbeds(
     const fieldCharCount = field.name.length + field.value.length;
     const exceedsFieldCount = current.fields.length >= DISCORD_EMBED_LIMITS.fieldsPerEmbed;
     const exceedsPageChars =
-      projectedCharCount + fieldCharCount > DISCORD_EMBED_LIMITS.totalChars;
+      projectedCharCount + fieldCharCount > HELP_DETAIL_SOFT_PAGE_TARGET;
 
     if (current.fields.length > 0 && (exceedsFieldCount || exceedsPageChars)) {
       pages.push(current);
