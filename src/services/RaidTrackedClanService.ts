@@ -2,7 +2,6 @@ import { prisma } from "../prisma";
 import { normalizeClanTag } from "./PlayerLinkService";
 import { CoCService } from "./CoCService";
 import { formatError } from "../helper/formatError";
-import { buildClanProfileMarkdownLink } from "../helper/clanProfileLink";
 import { RecruitingType } from "../generated/coc-api";
 import { toFailureTelemetry } from "./telemetry/ingest";
 
@@ -152,8 +151,8 @@ function formatRaidTrackedClanListLine(input: RaidTrackedClanDisplayRow): string
   const clanName = normalizeRaidTrackedClanName(input.clanName) ?? clanTagDisplay;
   const upgradesText = input.upgrades === null ? "—" : String(input.upgrades);
   const emoji = getRaidTrackedClanJoinTypeEmoji(input.joinType);
-  const title = buildClanProfileMarkdownLink(`${clanName} | ${upgradesText}`, input.clanTag);
-  return `### ${emoji} ${title} \`${clanTagDisplay}\``;
+  const url = `https://link.clashofclans.com/en?action=OpenClanProfile&tag=${encodeURIComponent(clanTagDisplay)}`;
+  return `### ${emoji} [${clanName} | ${upgradesText}](<${url}>) \`${clanTagDisplay}\``;
 }
 
 export function buildRaidTrackedClanListLines(
