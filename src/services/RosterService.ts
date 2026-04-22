@@ -1292,21 +1292,92 @@ function normalizeRosterPlayerTags(input: string[]): string[] {
   return [...new Set(input.map((tag) => normalizePlayerTag(tag)).filter(Boolean))];
 }
 
-async function loadRosterPlayerTownHallMap(input: {
-  rosterType: string;
-  clanTag: string | null;
+type RosterTownHallSource =
+  | "cwl_season_roster"
+  | "fwa_player_catalog"
+  | "todo_snapshot"
+  | "live_refresh"
+  | "missing";
+
+type RosterTownHallResolutionDetail = {
+  source: RosterTownHallSource;
+  townHall: number | null;
+  primarySourceHit: boolean;
+  snapshotSourceHit: boolean;
+  liveRefreshInvoked: boolean;
+};
+
+type RosterTownHallLookupResult = {
+  townHallByTag: Map<string, number>;
+  detailByTag: Map<string, RosterTownHallResolutionDetail>;
+  liveRefreshInvoked: boolean;
+};
+
+type RosterTownHallResolution = RosterTownHallLookupResult & {
+  missingTags: string[];
+};
+
+function getRosterTownHallPrimarySourceLabel(rosterType: string): RosterTownHallSource {
+  const normalizedRosterType = normalizeRosterType(rosterType);
+  if (normalizedRosterType === "CWL") return "cwl_season_roster";
+  if (normalizedRosterType === "FWA") return "fwa_player_catalog";
+  return "missing";
+}
+
+async function loadLiveRosterPlayerTownHallMap(input: {
   playerTags: string[];
-  allowLiveFetch?: boolean;
   cocService?: CoCService | null;
 }): Promise<Map<string, number>> {
   const normalizedTags = [...new Set(input.playerTags.map((tag) => normalizePlayerTag(tag)).filter(Boolean))];
   if (normalizedTags.length <= 0) {
     return new Map();
   }
+  const cocService = input.cocService ?? null;
+  if (!cocService || typeof cocService.getPlayerRaw !== "function") {
+    return new Map();
+  }
+
+  const entries = await Promise.all(
+    normalizedTags.map(async (playerTag) => {
+      const player = await cocService.getPlayerRaw(playerTag, { suppressTelemetry: true }).catch(() => null);
+      const townHall = normalizeRosterInt(player?.townHallLevel ?? player?.townHall ?? null);
+      return [playerTag, townHall] as const;
+    }),
+  );
+  return new Map(entries.filter((entry): entry is readonly [string, number] => entry[1] !== null));
+}
+
+async function loadRosterPlayerTownHallMap(input: {
+  rosterType: string;
+  clanTag: string | null;
+  playerTags: string[];
+  allowLiveFetch?: boolean;
+  cocService?: CoCService | null;
+}): Promise<RosterTownHallLookupResult> {
+  const normalizedTags = [...new Set(input.playerTags.map((tag) => normalizePlayerTag(tag)).filter(Boolean))];
+  if (normalizedTags.length <= 0) {
+    return {
+      townHallByTag: new Map(),
+      detailByTag: new Map(),
+      liveRefreshInvoked: false,
+    };
+  }
 
   const normalizedRosterType = normalizeRosterType(input.rosterType);
   const result = new Map<string, number>();
   const missingAfterPrimary = new Set(normalizedTags);
+  const detailByTag = new Map<string, RosterTownHallResolutionDetail>(
+    normalizedTags.map((tag) => [
+      tag,
+      {
+        source: getRosterTownHallPrimarySourceLabel(normalizedRosterType),
+        townHall: null,
+        primarySourceHit: false,
+        snapshotSourceHit: false,
+        liveRefreshInvoked: false,
+      },
+    ] as const),
+  );
 
   if (normalizedRosterType === "CWL" && input.clanTag) {
     const rosterEntries = await cwlStateService.listSeasonRosterForClan({ clanTag: input.clanTag });
@@ -1315,6 +1386,12 @@ async function loadRosterPlayerTownHallMap(input: {
       const townHall = normalizeRosterInt(entry.townHall);
       if (!playerTag || townHall === null || !missingAfterPrimary.has(playerTag)) continue;
       result.set(playerTag, townHall);
+      const detail = detailByTag.get(playerTag);
+      if (detail) {
+        detail.source = "cwl_season_roster";
+        detail.townHall = townHall;
+        detail.primarySourceHit = true;
+      }
       missingAfterPrimary.delete(playerTag);
     }
   } else if (normalizedRosterType === "FWA") {
@@ -1330,12 +1407,22 @@ async function loadRosterPlayerTownHallMap(input: {
       const townHall = normalizeRosterInt(row.latestTownHall);
       if (!playerTag || townHall === null || !missingAfterPrimary.has(playerTag)) continue;
       result.set(playerTag, townHall);
+      const detail = detailByTag.get(playerTag);
+      if (detail) {
+        detail.source = "fwa_player_catalog";
+        detail.townHall = townHall;
+        detail.primarySourceHit = true;
+      }
       missingAfterPrimary.delete(playerTag);
     }
   }
 
   if (missingAfterPrimary.size <= 0) {
-    return result;
+    return {
+      townHallByTag: result,
+      detailByTag,
+      liveRefreshInvoked: false,
+    };
   }
 
   const missingTagsAfterPrimary = [...missingAfterPrimary];
@@ -1347,18 +1434,48 @@ async function loadRosterPlayerTownHallMap(input: {
     const townHall = normalizeRosterInt((row as { townHall?: unknown }).townHall ?? null);
     if (!playerTag || townHall === null || !missingAfterPrimary.has(playerTag)) continue;
     result.set(playerTag, townHall);
+    const detail = detailByTag.get(playerTag);
+    if (detail) {
+      detail.source = "todo_snapshot";
+      detail.townHall = townHall;
+      detail.snapshotSourceHit = true;
+    }
     missingAfterPrimary.delete(playerTag);
   }
 
+  let liveRefreshInvoked = false;
   if (!input.allowLiveFetch || missingAfterPrimary.size <= 0) {
-    return result;
+    for (const playerTag of missingAfterPrimary) {
+      const detail = detailByTag.get(playerTag);
+      if (detail) {
+        detail.source = "missing";
+        detail.liveRefreshInvoked = liveRefreshInvoked;
+      }
+    }
+    return {
+      townHallByTag: result,
+      detailByTag,
+      liveRefreshInvoked,
+    };
   }
 
   const cocService = input.cocService ?? null;
   if (!cocService) {
-    return result;
+    for (const playerTag of missingAfterPrimary) {
+      const detail = detailByTag.get(playerTag);
+      if (detail) {
+        detail.source = "missing";
+        detail.liveRefreshInvoked = liveRefreshInvoked;
+      }
+    }
+    return {
+      townHallByTag: result,
+      detailByTag,
+      liveRefreshInvoked,
+    };
   }
 
+  liveRefreshInvoked = true;
   await todoSnapshotService.refreshSnapshotsForPlayerTags({
     playerTags: [...missingAfterPrimary],
     cocService,
@@ -1371,16 +1488,47 @@ async function loadRosterPlayerTownHallMap(input: {
     const townHall = normalizeRosterInt((row as { townHall?: unknown }).townHall ?? null);
     if (!playerTag || townHall === null || !missingAfterPrimary.has(playerTag)) continue;
     result.set(playerTag, townHall);
+    const detail = detailByTag.get(playerTag);
+    if (detail) {
+      detail.source = "live_refresh";
+      detail.townHall = townHall;
+      detail.liveRefreshInvoked = true;
+    }
     missingAfterPrimary.delete(playerTag);
   }
 
-  return result;
-}
+  if (missingAfterPrimary.size > 0) {
+    const liveRefreshRows = await loadLiveRosterPlayerTownHallMap({
+      playerTags: [...missingAfterPrimary],
+      cocService,
+    });
+    for (const [playerTag, townHall] of liveRefreshRows.entries()) {
+      if (!missingAfterPrimary.has(playerTag)) continue;
+      result.set(playerTag, townHall);
+      const detail = detailByTag.get(playerTag);
+      if (detail) {
+        detail.source = "live_refresh";
+        detail.townHall = townHall;
+        detail.liveRefreshInvoked = true;
+      }
+      missingAfterPrimary.delete(playerTag);
+    }
+  }
 
-type RosterTownHallResolution = {
-  townHallByTag: Map<string, number>;
-  missingTags: string[];
-};
+  for (const playerTag of missingAfterPrimary) {
+    const detail = detailByTag.get(playerTag);
+    if (detail) {
+      detail.source = "missing";
+      detail.liveRefreshInvoked = liveRefreshInvoked;
+    }
+  }
+
+  return {
+    townHallByTag: result,
+    detailByTag,
+    liveRefreshInvoked,
+  };
+}
 
 async function resolveRosterPlayerTownHallMap(input: {
   rosterType: string;
@@ -1391,18 +1539,78 @@ async function resolveRosterPlayerTownHallMap(input: {
 }): Promise<RosterTownHallResolution> {
   const normalizedTags = [...new Set(input.playerTags.map((tag) => normalizePlayerTag(tag)).filter(Boolean))];
   if (normalizedTags.length <= 0) {
-    return { townHallByTag: new Map(), missingTags: [] };
+    return {
+      townHallByTag: new Map(),
+      missingTags: [],
+      detailByTag: new Map(),
+      liveRefreshInvoked: false,
+    };
   }
 
-  const townHallByTag = await loadRosterPlayerTownHallMap({
+  const lookup = await loadRosterPlayerTownHallMap({
     rosterType: input.rosterType,
     clanTag: input.clanTag,
     playerTags: normalizedTags,
-    allowLiveFetch: Boolean(input.cocService),
+    allowLiveFetch: Boolean(input.allowLiveFetch ?? input.cocService),
     cocService: input.cocService ?? null,
   });
-  const missingTags = normalizedTags.filter((tag) => !townHallByTag.has(tag));
-  return { townHallByTag, missingTags };
+  const missingTags = normalizedTags.filter((tag) => !lookup.townHallByTag.has(tag));
+  return {
+    townHallByTag: lookup.townHallByTag,
+    missingTags,
+    detailByTag: lookup.detailByTag,
+    liveRefreshInvoked: lookup.liveRefreshInvoked,
+  };
+}
+
+function logRosterTownHallResolutionDiagnostics(input: {
+  rosterId: string;
+  rosterType: string;
+  clanTag: string | null;
+  requestedTags: string[];
+  linkedTags: string[];
+  resolution: RosterTownHallResolution;
+  blockedUnavailableTags: string[];
+  blockedOutOfRangeTags: string[];
+  cocServicePresent: boolean;
+}): void {
+  const effectiveRequestedTags = input.requestedTags.length > 0 ? input.requestedTags : input.linkedTags;
+  const resolutionEntries = [...new Set(effectiveRequestedTags.map((tag) => normalizePlayerTag(tag)).filter(Boolean))].map(
+    (playerTag) => {
+      const detail =
+        input.resolution.detailByTag.get(playerTag) ?? {
+          source: "missing" as const,
+          townHall: null,
+          primarySourceHit: false,
+          snapshotSourceHit: false,
+          liveRefreshInvoked: input.resolution.liveRefreshInvoked,
+        };
+      return {
+        player_tag: playerTag,
+        source: detail.source,
+        town_hall: detail.townHall,
+        primary_source_hit: detail.primarySourceHit,
+        snapshot_hit: detail.snapshotSourceHit,
+        live_refresh_invoked: detail.liveRefreshInvoked,
+      };
+    },
+  );
+  const blockedTags = [...new Set([...input.blockedUnavailableTags, ...input.blockedOutOfRangeTags])];
+  console.info(
+    `[roster-townhall] ${JSON.stringify({
+      roster_id: input.rosterId,
+      roster_type: input.rosterType,
+      roster_clan_tag: input.clanTag,
+      requested_player_tags: effectiveRequestedTags,
+      linked_tags: input.linkedTags,
+      coc_service_present: input.cocServicePresent,
+      live_refresh_invoked: input.resolution.liveRefreshInvoked,
+      resolution: resolutionEntries,
+      blocked_unavailable_tags: input.blockedUnavailableTags,
+      blocked_out_of_range_tags: input.blockedOutOfRangeTags,
+      blocked_tags: blockedTags,
+    })}`,
+  );
 }
 
 function buildRosterManagerGroupSummaryLine(group: RosterGroupRecord & { signupCount: number }): string {
@@ -1860,12 +2068,13 @@ async function loadRosterView(rosterId: string, options?: RosterViewLoadOptions)
     },
   });
   const signupTags = signups.map((signup) => normalizePlayerTag(signup.playerTag)).filter(Boolean);
-  const townHallByTag = await loadRosterPlayerTownHallMap({
+  const townHallResolution = await loadRosterPlayerTownHallMap({
     rosterType: roster.rosterType,
     clanTag: roster.clanTag,
     playerTags: signupTags,
     allowLiveFetch: false,
   });
+  const townHallByTag = townHallResolution.townHallByTag;
   const [snapshotRows, linkedPlayerRows, resolvedWeightRows] = await Promise.all([
     todoSnapshotService.listSnapshotsByPlayerTags({
       playerTags: signupTags,
@@ -3022,6 +3231,17 @@ export class RosterService {
           blockedOutOfRangeAccounts.push(blockedAccount);
         }
       }
+      logRosterTownHallResolutionDiagnostics({
+        rosterId: roster.id,
+        rosterType: roster.rosterType,
+        clanTag: roster.clanTag,
+        requestedTags,
+        linkedTags,
+        resolution: playerTownHallResolution,
+        blockedUnavailableTags,
+        blockedOutOfRangeTags,
+        cocServicePresent: Boolean(input.cocService),
+      });
       if (blockedUnavailableTags.length > 0) {
         return {
           outcome: "townhall_unavailable",
@@ -3662,6 +3882,17 @@ export class RosterService {
             blockedOutOfRangeAccounts.push(blockedAccount);
           }
         }
+        logRosterTownHallResolutionDiagnostics({
+          rosterId: roster.id,
+          rosterType: roster.rosterType,
+          clanTag: roster.clanTag,
+          requestedTags,
+          linkedTags: selectedTags,
+          resolution: playerTownHallResolution,
+          blockedUnavailableTags,
+          blockedOutOfRangeTags,
+          cocServicePresent: Boolean(input.cocService),
+        });
         if (blockedUnavailableTags.length > 0) {
           return {
             outcome: "townhall_unavailable",

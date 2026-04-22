@@ -666,6 +666,111 @@ describe("RosterService", () => {
     });
   });
 
+  it("logs town hall source diagnostics and reuses live refresh data when refreshed snapshots are still invisible", async () => {
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
+      { playerTag: "#298CG8UJG", linkedName: "Player 298", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+    ]);
+    prismaMock.roster.findUnique.mockResolvedValueOnce({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      maxMembers: null,
+      maxAccountsPerUser: null,
+      minTownhall: 13,
+      maxTownhall: null,
+      rosterRoleId: null,
+      allowMultiSignup: true,
+      sortBy: null,
+      importMembers: false,
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    } as any);
+    cwlStateServiceMock.listSeasonRosterForClan.mockResolvedValue([
+      { playerTag: "#298CG8UJG", playerName: "Player 298", townHall: null },
+    ]);
+    todoSnapshotServiceMock.listSnapshotsByPlayerTags
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    todoSnapshotServiceMock.refreshSnapshotsForPlayerTags.mockImplementation(async ({ cocService }) => {
+      await cocService?.getPlayerRaw("#298CG8UJG", { suppressTelemetry: true });
+      return {
+        playerCount: 1,
+        updatedCount: 1,
+      };
+    });
+    const cocService = {
+      getPlayerRaw: vi.fn().mockResolvedValue({
+        townHallLevel: 15,
+        clan: { tag: "#2QG2C08UP" },
+      }),
+    } as any;
+    const consoleInfoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+
+    try {
+      const result = await rosterService.signupLinkedAccounts({
+        rosterId: "roster-1",
+        groupKey: "confirmed",
+        discordUserId: "111111111111111111",
+        cocService,
+      });
+
+      expect(result).toMatchObject({
+        outcome: "created",
+        createdTags: ["#298CG8UJG"],
+      });
+      expect(cocService.getPlayerRaw).toHaveBeenCalledWith("#298CG8UJG", {
+        suppressTelemetry: true,
+      });
+      expect(todoSnapshotServiceMock.refreshSnapshotsForPlayerTags).toHaveBeenCalledWith({
+        playerTags: ["#298CG8UJG"],
+        cocService,
+      });
+
+      const lastCall = consoleInfoSpy.mock.calls[consoleInfoSpy.mock.calls.length - 1] ?? [];
+      const logLine = String(lastCall[0] ?? "");
+      expect(logLine).toContain("[roster-townhall] ");
+      const payload = JSON.parse(logLine.replace(/^\[roster-townhall\]\s*/, ""));
+      expect(payload).toMatchObject({
+        roster_id: "roster-1",
+        roster_type: "CWL",
+        roster_clan_tag: "#2QG2C08UP",
+        requested_player_tags: ["#298CG8UJG"],
+        linked_tags: ["#298CG8UJG"],
+        coc_service_present: true,
+        live_refresh_invoked: true,
+        blocked_unavailable_tags: [],
+        blocked_out_of_range_tags: [],
+        blocked_tags: [],
+      });
+      expect(payload.resolution).toEqual([
+        expect.objectContaining({
+          player_tag: "#298CG8UJG",
+          source: "live_refresh",
+          town_hall: 15,
+          primary_source_hit: false,
+          snapshot_hit: false,
+          live_refresh_invoked: true,
+        }),
+      ]);
+    } finally {
+      consoleInfoSpy.mockRestore();
+    }
+  });
+
   it("still blocks when the recovered town hall is out of range", async () => {
     playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
       { playerTag: "#PQL0289", linkedName: "Alpha", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
