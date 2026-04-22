@@ -1014,16 +1014,20 @@ export async function handleRosterPostSettingsMenuInteraction(
   }
 
   if (choice === "customize") {
-    const selectedColumns = normalizeRosterCustomizeColumns(interaction.values) ?? [];
-    if (selectedColumns.length <= 0) {
+    const panel = await buildRosterCustomizePanel(roster.id);
+    if (!panel) {
       await interaction.reply({
-        content: "Choose at least one column to customize.",
+        content: "That roster is no longer available.",
         ephemeral: true,
       });
       return;
     }
 
-    await interaction.showModal(buildRosterCustomizeColumnsOrderModal(roster, selectedColumns));
+    await interaction.reply({
+      embeds: [panel.embed],
+      components: panel.components,
+      ephemeral: true,
+    });
     return;
   }
 

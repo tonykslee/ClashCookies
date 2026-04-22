@@ -581,6 +581,78 @@ describe("/roster command", () => {
     expect(optionValues).not.toContain("open_roster");
   });
 
+  it("opens the roster customization panel when Settings -> Customize is selected", async () => {
+    (rosterService.findGuildRosterById as any).mockResolvedValue({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      lifecycleState: "OPEN",
+      postedChannelId: "channel-1",
+      postedMessageId: "message-1",
+      postedMessageUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    });
+    (rosterService.getRosterView as any).mockResolvedValue({
+      roster: {
+        id: "roster-1",
+        title: "CWL Alpha Signup",
+        clanTag: "#2QG2C08UP",
+        lifecycleState: "OPEN",
+        postedMessageUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+        postedChannelId: "channel-1",
+        postedMessageId: "message-1",
+        postButtonMode: "standard",
+        minTownhall: 13,
+        maxTownhall: null,
+        rosterRoleId: null,
+        sortBy: "weight",
+        displayColumns: ["player_name", "discord_username", "clan_name"],
+      },
+      clanDisplayName: "CWL Alpha",
+      clanLeagueLabel: "Champion League II",
+      groups: [],
+      signups: [],
+      totalSignupCount: 0,
+    });
+    const interaction = {
+      customId: "roster-post-settings:roster-1",
+      values: ["customize"],
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      memberPermissions: {
+        has: vi.fn().mockReturnValue(true),
+      },
+      reply: vi.fn().mockResolvedValue(undefined),
+      showModal: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    await handleRosterPostSettingsMenuInteraction(interaction, {} as any);
+
+    expect(interaction.reply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ephemeral: true,
+        embeds: [expect.any(EmbedBuilder)],
+        components: [expect.any(ActionRowBuilder), expect.any(ActionRowBuilder)],
+      }),
+    );
+    expect(String(interaction.reply.mock.calls[0]?.[0]?.content ?? "")).not.toContain(
+      "Choose at least one column to customize.",
+    );
+    expect(interaction.showModal).not.toHaveBeenCalled();
+  });
+
   it("opens a reorder modal instead of persisting column order from the select menu alone", async () => {
     (rosterService.findGuildRosterById as any).mockResolvedValue({
       id: "roster-1",
