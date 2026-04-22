@@ -82,6 +82,7 @@ describe("/roster command shape", () => {
       "add",
       "move",
       "remove",
+      "set_weight",
       "open",
       "close",
       "archive",

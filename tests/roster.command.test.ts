@@ -16,11 +16,14 @@ import {
   Roster,
   handleRosterPostClearButtonInteraction,
   handleRosterPostCustomizeMenuInteraction,
+  handleRosterManageWeightOpenButtonInteraction,
+  handleRosterManageWeightModalSubmit,
   handleRosterPostRefreshButtonInteraction,
   handleRosterPostSettingsButtonInteraction,
   handleRosterPostSettingsMenuInteraction,
 } from "../src/commands/Roster";
 import { rosterService } from "../src/services/RosterService";
+import { rosterWeightService } from "../src/services/RosterWeightService";
 
 type RosterSubcommand =
   | "create"
@@ -149,6 +152,7 @@ describe("/roster command", () => {
     vi.spyOn(rosterService, "addRosterSignupsForManager");
     vi.spyOn(rosterService, "moveRosterSignups");
     vi.spyOn(rosterService, "removeRosterSignupsAsManager");
+    vi.spyOn(rosterWeightService, "setManualWeightForRoster");
   });
 
   it("creates a roster object without posting it immediately", async () => {
@@ -487,6 +491,298 @@ describe("/roster command", () => {
       }),
     );
     expect(String(archiveInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain("was archived");
+
+    (rosterService.getRosterView as any).mockResolvedValueOnce({
+      roster: {
+        id: "roster-1",
+        title: "CWL Alpha Signup",
+        clanTag: "#2QG2C08UP",
+        lifecycleState: "OPEN",
+        postedMessageUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+        postedChannelId: "channel-1",
+        postedMessageId: "message-1",
+        postButtonMode: "standard",
+        minTownhall: 13,
+        maxTownhall: null,
+        rosterRoleId: null,
+      },
+      clanDisplayName: "CWL Alpha",
+      clanLeagueLabel: "Champion League II",
+      groups: [],
+      signups: [
+        {
+          id: "signup-1",
+          rosterId: "roster-1",
+          groupId: "group-confirmed",
+          playerTag: "#PQL0289",
+          playerName: "Alpha",
+          discordUserId: "111111111111111111",
+          signedUpAt: new Date("2026-04-20T00:00:00.000Z"),
+          createdAt: new Date("2026-04-20T00:00:00.000Z"),
+          updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+          townHall: 15,
+          trophies: 5200,
+          weight: 145000,
+          weightSource: "FWA",
+          weightMeasuredAt: new Date("2026-04-20T00:00:00.000Z"),
+          discordDisplayName: "Alpha",
+          discordUsername: "alpha-user",
+          clanTag: "#2QG2C08UP",
+          clanName: "CWL Alpha",
+          group: {
+            id: "group-confirmed",
+            key: "confirmed",
+            name: "Confirmed",
+            description: "Primary roster members",
+            sortOrder: 0,
+          },
+        },
+      ],
+      totalSignupCount: 1,
+    });
+    const setWeightInteraction = makeInteraction({
+      subcommand: "manage",
+      roster: "roster-1",
+      action: "set_weight",
+      players: "#PQL0289",
+    }) as any;
+    await Roster.run({} as any, setWeightInteraction as any);
+    const setWeightPayload = setWeightInteraction.editReply.mock.calls.at(-1)?.[0] as any;
+    expect(setWeightPayload.embeds[0]?.toJSON?.().title).toBe("Set weight");
+    const setWeightButton = setWeightPayload.components[0]?.toJSON?.().components?.[0];
+    expect(setWeightButton?.label).toBe("Set weight");
+    expect(setWeightButton?.custom_id).toBe("roster-manage-weight:open:roster-1:#PQL0289");
+  });
+
+  it("rejects roster manage set_weight when the selected player is not on the roster", async () => {
+    (rosterService.findGuildRosterById as any).mockResolvedValue({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    });
+    (rosterService.getRosterView as any).mockResolvedValue({
+      roster: {
+        id: "roster-1",
+        title: "CWL Alpha Signup",
+        clanTag: "#2QG2C08UP",
+        lifecycleState: "OPEN",
+        postedMessageUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+        postedChannelId: "channel-1",
+        postedMessageId: "message-1",
+        postButtonMode: "standard",
+        minTownhall: 13,
+        maxTownhall: null,
+        rosterRoleId: null,
+      },
+      clanDisplayName: "CWL Alpha",
+      clanLeagueLabel: "Champion League II",
+      groups: [],
+      signups: [],
+      totalSignupCount: 0,
+    });
+
+    const interaction = makeInteraction({
+      subcommand: "manage",
+      roster: "roster-1",
+      action: "set_weight",
+      players: "#PQL0289",
+    }) as any;
+
+    await Roster.run({} as any, interaction as any);
+
+    expect(String(interaction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
+      "That player is not signed up on this roster.",
+    );
+  });
+
+  it("opens the roster weight modal from the manage weight instructions panel", async () => {
+    (rosterService.getRosterView as any).mockResolvedValue({
+      roster: {
+        id: "roster-1",
+        title: "CWL Alpha Signup",
+        clanTag: "#2QG2C08UP",
+        lifecycleState: "OPEN",
+        postedMessageUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+        postedChannelId: "channel-1",
+        postedMessageId: "message-1",
+        postButtonMode: "standard",
+        minTownhall: 13,
+        maxTownhall: null,
+        rosterRoleId: null,
+      },
+      clanDisplayName: "CWL Alpha",
+      clanLeagueLabel: "Champion League II",
+      groups: [],
+      signups: [
+        {
+          id: "signup-1",
+          rosterId: "roster-1",
+          groupId: "group-confirmed",
+          playerTag: "#PQL0289",
+          playerName: "Alpha",
+          discordUserId: "111111111111111111",
+          signedUpAt: new Date("2026-04-20T00:00:00.000Z"),
+          createdAt: new Date("2026-04-20T00:00:00.000Z"),
+          updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+          townHall: 15,
+          trophies: 5200,
+          weight: 145000,
+          weightSource: "FWA",
+          weightMeasuredAt: new Date("2026-04-20T00:00:00.000Z"),
+          discordDisplayName: "Alpha",
+          discordUsername: "alpha-user",
+          clanTag: "#2QG2C08UP",
+          clanName: "CWL Alpha",
+          group: {
+            id: "group-confirmed",
+            key: "confirmed",
+            name: "Confirmed",
+            description: "Primary roster members",
+            sortOrder: 0,
+          },
+        },
+      ],
+      totalSignupCount: 1,
+    });
+    const interaction = {
+      customId: "roster-manage-weight:open:roster-1:#PQL0289",
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      memberPermissions: {
+        has: vi.fn().mockReturnValue(true),
+      },
+      reply: vi.fn().mockResolvedValue(undefined),
+      showModal: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    await handleRosterManageWeightOpenButtonInteraction(interaction);
+
+    expect(interaction.showModal).toHaveBeenCalledWith(expect.anything());
+    const modal = interaction.showModal.mock.calls[0]?.[0] as any;
+    expect(modal.toJSON?.().custom_id).toBe("roster-manage-weight:submit:roster-1:#PQL0289");
+    expect(modal.toJSON?.().title).toBe("Set Weight");
+  });
+
+  it("persists a roster weight from the modal submit flow and refreshes the posted board", async () => {
+    (rosterService.getRosterView as any).mockResolvedValue({
+      roster: {
+        id: "roster-1",
+        title: "CWL Alpha Signup",
+        clanTag: "#2QG2C08UP",
+        lifecycleState: "OPEN",
+        postedMessageUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+        postedChannelId: "channel-1",
+        postedMessageId: "message-1",
+        postButtonMode: "standard",
+        minTownhall: 13,
+        maxTownhall: null,
+        rosterRoleId: null,
+      },
+      clanDisplayName: "CWL Alpha",
+      clanLeagueLabel: "Champion League II",
+      groups: [],
+      signups: [
+        {
+          id: "signup-1",
+          rosterId: "roster-1",
+          groupId: "group-confirmed",
+          playerTag: "#PQL0289",
+          playerName: "Alpha",
+          discordUserId: "111111111111111111",
+          signedUpAt: new Date("2026-04-20T00:00:00.000Z"),
+          createdAt: new Date("2026-04-20T00:00:00.000Z"),
+          updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+          townHall: 15,
+          trophies: 5200,
+          weight: 145000,
+          weightSource: "FWA",
+          weightMeasuredAt: new Date("2026-04-20T00:00:00.000Z"),
+          discordDisplayName: "Alpha",
+          discordUsername: "alpha-user",
+          clanTag: "#2QG2C08UP",
+          clanName: "CWL Alpha",
+          group: {
+            id: "group-confirmed",
+            key: "confirmed",
+            name: "Confirmed",
+            description: "Primary roster members",
+            sortOrder: 0,
+          },
+        },
+      ],
+      totalSignupCount: 1,
+    });
+    (rosterWeightService.setManualWeightForRoster as any).mockResolvedValue({
+      outcome: "saved",
+      rosterId: "roster-1",
+      playerTag: "#PQL0289",
+      weight: 145000,
+      measuredAt: new Date("2026-04-22T12:00:00.000Z"),
+    });
+    (rosterService.refreshRosterSignupPayload as any).mockResolvedValue({
+      embed: new EmbedBuilder().setTitle("CWL Alpha Signup"),
+      components: [],
+    });
+    const editedMessage = { edit: vi.fn().mockResolvedValue(undefined) };
+    const rosterChannel = {
+      isTextBased: () => true,
+      messages: {
+        fetch: vi.fn().mockResolvedValue(editedMessage),
+      },
+    };
+    const interaction = {
+      customId: "roster-manage-weight:submit:roster-1:#PQL0289",
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      memberPermissions: {
+        has: vi.fn().mockReturnValue(true),
+      },
+      deferReply: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+      fields: {
+        getTextInputValue: vi.fn(() => "145k"),
+      },
+      client: {
+        channels: {
+          fetch: vi.fn().mockResolvedValue(rosterChannel),
+        },
+      },
+    } as any;
+
+    await handleRosterManageWeightModalSubmit(interaction, {} as any);
+
+    expect(rosterWeightService.setManualWeightForRoster).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rosterId: "roster-1",
+        playerTag: "#PQL0289",
+        weight: 145000,
+        updatedByUserId: "111111111111111111",
+      }),
+    );
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(editedMessage.edit).toHaveBeenCalledWith(expect.objectContaining({ embeds: [expect.any(EmbedBuilder)] }));
+    expect(String(interaction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
+      "Saved manual weight 145k for Alpha.",
+    );
   });
 
   it("opens the compact roster settings menu with only real actions", async () => {

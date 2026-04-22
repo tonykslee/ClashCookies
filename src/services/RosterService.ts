@@ -21,6 +21,11 @@ import {
   resolveCurrentCwlSeasonKey,
 } from "./CwlRegistryService";
 import { cwlStateService } from "./CwlStateService";
+import {
+  formatRosterWeightAge,
+  resolveRosterCurrentWeightRecords,
+  type RosterWeightSource,
+} from "./RosterWeightService";
 import { todoSnapshotService } from "./TodoSnapshotService";
 import { normalizeSyncTimeZone } from "./syncTimeZone";
 
@@ -125,6 +130,8 @@ export type RosterSignupViewRecord = RosterSignupRecord & {
   townHall: number | null;
   trophies: number | null;
   weight: number | null;
+  weightSource: RosterWeightSource;
+  weightMeasuredAt: Date | null;
   discordDisplayName: string | null;
   discordUsername: string | null;
   clanTag: string | null;
@@ -621,6 +628,8 @@ export const ROSTER_DISPLAY_COLUMNS = {
   CLAN_NAME: "clan_name",
   TROPHIES: "trophies",
   WEIGHT: "weight",
+  WEIGHT_SOURCE: "weight_source",
+  WEIGHT_AGE: "weight_age",
 } as const;
 
 export type RosterDisplayColumn = (typeof ROSTER_DISPLAY_COLUMNS)[keyof typeof ROSTER_DISPLAY_COLUMNS];
@@ -635,6 +644,8 @@ export const ROSTER_DISPLAY_COLUMN_ORDER: readonly RosterDisplayColumn[] = [
   ROSTER_DISPLAY_COLUMNS.CLAN_NAME,
   ROSTER_DISPLAY_COLUMNS.TROPHIES,
   ROSTER_DISPLAY_COLUMNS.WEIGHT,
+  ROSTER_DISPLAY_COLUMNS.WEIGHT_SOURCE,
+  ROSTER_DISPLAY_COLUMNS.WEIGHT_AGE,
 ] as const;
 
 const ROSTER_DEFAULT_DISPLAY_COLUMNS: readonly RosterDisplayColumn[] = [
@@ -1550,6 +1561,8 @@ const ROSTER_BOARD_COLUMN_LIMITS: Record<RosterDisplayColumn, number> = {
   [ROSTER_DISPLAY_COLUMNS.CLAN_NAME]: 12,
   [ROSTER_DISPLAY_COLUMNS.TROPHIES]: 8,
   [ROSTER_DISPLAY_COLUMNS.WEIGHT]: 6,
+  [ROSTER_DISPLAY_COLUMNS.WEIGHT_SOURCE]: 7,
+  [ROSTER_DISPLAY_COLUMNS.WEIGHT_AGE]: 8,
 };
 
 const ROSTER_BOARD_COLUMN_HEADERS: Record<RosterDisplayColumn, string> = {
@@ -1562,6 +1575,8 @@ const ROSTER_BOARD_COLUMN_HEADERS: Record<RosterDisplayColumn, string> = {
   [ROSTER_DISPLAY_COLUMNS.CLAN_NAME]: "CLAN",
   [ROSTER_DISPLAY_COLUMNS.TROPHIES]: "Trophies",
   [ROSTER_DISPLAY_COLUMNS.WEIGHT]: "Weight",
+  [ROSTER_DISPLAY_COLUMNS.WEIGHT_SOURCE]: "SOURCE",
+  [ROSTER_DISPLAY_COLUMNS.WEIGHT_AGE]: "AGE",
 };
 
 function sanitizeRosterBoardText(input: string | null | undefined): string {
@@ -1624,6 +1639,12 @@ function getRosterDisplayColumnValue(signup: RosterSignupViewRecord, column: Ros
   }
   if (column === ROSTER_DISPLAY_COLUMNS.WEIGHT) {
     return formatRosterBoardWeightValue(signup.weight);
+  }
+  if (column === ROSTER_DISPLAY_COLUMNS.WEIGHT_SOURCE) {
+    return signup.weightSource;
+  }
+  if (column === ROSTER_DISPLAY_COLUMNS.WEIGHT_AGE) {
+    return formatRosterWeightAge(signup.weightMeasuredAt);
   }
   return null;
 }
@@ -1845,7 +1866,7 @@ async function loadRosterView(rosterId: string, options?: RosterViewLoadOptions)
     playerTags: signupTags,
     allowLiveFetch: false,
   });
-  const [snapshotRows, linkedPlayerRows, currentFwaRows, fwaCatalogRows] = await Promise.all([
+  const [snapshotRows, linkedPlayerRows, resolvedWeightRows] = await Promise.all([
     todoSnapshotService.listSnapshotsByPlayerTags({
       playerTags: signupTags,
     }),
@@ -1858,23 +1879,8 @@ async function loadRosterView(rosterId: string, options?: RosterViewLoadOptions)
         discordUsername: true,
       },
     }),
-    prisma.fwaClanMemberCurrent.findMany({
-      where: {
-        playerTag: { in: signupTags },
-      },
-      select: {
-        playerTag: true,
-        trophies: true,
-      },
-    }),
-    prisma.fwaPlayerCatalog.findMany({
-      where: {
-        playerTag: { in: signupTags },
-      },
-      select: {
-        playerTag: true,
-        latestKnownWeight: true,
-      },
+    resolveRosterCurrentWeightRecords({
+      playerTags: signupTags,
     }),
   ]);
   const currentClanRows =
@@ -1893,16 +1899,6 @@ async function loadRosterView(rosterId: string, options?: RosterViewLoadOptions)
     linkedPlayerRows
       .map((row) => [normalizePlayerTag(row.playerTag), normalizeRosterText(row.discordUsername ?? null)] as const)
       .filter((entry): entry is readonly [string, string] => Boolean(entry[0])),
-  );
-  const trophiesByTag = new Map(
-    currentFwaRows
-      .map((row) => [normalizePlayerTag(row.playerTag), normalizeRosterInt(row.trophies)] as const)
-      .filter((entry): entry is readonly [string, number | null] => Boolean(entry[0])),
-  );
-  const weightByTag = new Map(
-    fwaCatalogRows
-      .map((row) => [normalizePlayerTag(row.playerTag), normalizeRosterInt(row.latestKnownWeight)] as const)
-      .filter((entry): entry is readonly [string, number | null] => Boolean(entry[0])),
   );
   const discordDisplayNameByUserId = options?.discordDisplayNamesByUserId ?? new Map<string, string | null>();
   const snapshotByTag = new Map(snapshotRows.map((row) => [normalizePlayerTag(row.playerTag), row] as const));
@@ -1925,16 +1921,22 @@ async function loadRosterView(rosterId: string, options?: RosterViewLoadOptions)
           },
         })
       : null;
-  const signupsWithTownHall = signups.map((signup) => ({
-    ...signup,
-    townHall: townHallByTag.get(normalizePlayerTag(signup.playerTag)) ?? null,
-    trophies: trophiesByTag.get(normalizePlayerTag(signup.playerTag)) ?? null,
-    weight: weightByTag.get(normalizePlayerTag(signup.playerTag)) ?? null,
-    discordDisplayName: discordDisplayNameByUserId.get(signup.discordUserId) ?? null,
-    discordUsername: discordUsernameByTag.get(normalizePlayerTag(signup.playerTag)) ?? null,
-    clanTag: snapshotByTag.get(normalizePlayerTag(signup.playerTag))?.clanTag ?? null,
-    clanName: snapshotByTag.get(normalizePlayerTag(signup.playerTag))?.clanName ?? null,
-  }));
+  const signupsWithTownHall = signups.map((signup) => {
+    const playerTag = normalizePlayerTag(signup.playerTag);
+    const weightRecord = resolvedWeightRows.get(playerTag) ?? null;
+    return {
+      ...signup,
+      townHall: townHallByTag.get(playerTag) ?? null,
+      trophies: weightRecord?.trophies ?? null,
+      weight: weightRecord?.weight ?? null,
+      weightSource: weightRecord?.weightSource ?? "Unknown",
+      weightMeasuredAt: weightRecord?.weightMeasuredAt ?? null,
+      discordDisplayName: discordDisplayNameByUserId.get(signup.discordUserId) ?? null,
+      discordUsername: discordUsernameByTag.get(playerTag) ?? null,
+      clanTag: snapshotByTag.get(playerTag)?.clanTag ?? null,
+      clanName: snapshotByTag.get(playerTag)?.clanName ?? null,
+    };
+  });
   const clanDisplayName =
     normalizeRosterText(currentClanName ?? null) ??
     normalizeRosterText(trackedClan?.name ?? null) ??
@@ -1968,6 +1970,8 @@ async function loadRosterView(rosterId: string, options?: RosterViewLoadOptions)
       townHall: signup.townHall,
       trophies: signup.trophies,
       weight: signup.weight,
+      weightSource: signup.weightSource,
+      weightMeasuredAt: signup.weightMeasuredAt,
       discordDisplayName: signup.discordDisplayName,
       discordUsername: signup.discordUsername,
       clanTag: signup.clanTag,

@@ -50,6 +50,7 @@ Mirror mode behavior:
   - `ClanWarHistory`
   - `ClanWarParticipation`
   - `WarLookup`
+  - `ExternalPlayerWeightCurrent`
 - Sync direction is always source/prod -> target/current DATABASE_URL.
 
 Manual sync now:

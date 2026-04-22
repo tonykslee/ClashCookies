@@ -18,21 +18,34 @@ function makeDefaultTableStore(): MirrorTableDataStore {
     TrackedClan: [{ id: 1, tag: "#AAA111", createdAt: new Date("2026-04-01T00:00:00.000Z") }],
     CurrentWar: [{ guildId: "g1", clanTag: "#AAA111", channelId: "c1", notify: true }],
     WarAttacks: [{ warId: 1, playerTag: "#P1", attackNumber: 1 }],
-    CurrentCwlRound: [],
-    CurrentCwlPrepSnapshot: [],
-    CwlRoundMemberCurrent: [],
-    CwlRoundHistory: [],
-    CwlRoundMemberHistory: [],
-    CwlRotationPlan: [],
-    CwlRotationPlanDay: [],
-    CwlRotationPlanMember: [],
-    ClanPointsSync: [{ id: "ps1", guildId: "g1", clanTag: "#AAA111", syncNum: 42 }],
-    ClanWarHistory: [{ warId: 1, clanTag: "#AAA111", warStartTime: new Date("2026-03-30T00:00:00.000Z") }],
-    ClanWarParticipation: [{ id: "p1", guildId: "g1", warId: "1", clanTag: "#AAA111", playerTag: "#P1" }],
-    WarLookup: [{ warId: "1", clanTag: "#AAA111", startTime: new Date("2026-03-30T00:00:00.000Z"), payload: {} }],
-    HeatMapRef: [
-      {
-        id: 1,
+  CurrentCwlRound: [],
+  CurrentCwlPrepSnapshot: [],
+  CwlRoundMemberCurrent: [],
+  CwlRoundHistory: [],
+  CwlRoundMemberHistory: [],
+  CwlRotationPlan: [],
+  CwlRotationPlanDay: [],
+  CwlRotationPlanMember: [],
+  ClanPointsSync: [{ id: "ps1", guildId: "g1", clanTag: "#AAA111", syncNum: 42 }],
+  ClanWarHistory: [{ warId: 1, clanTag: "#AAA111", warStartTime: new Date("2026-03-30T00:00:00.000Z") }],
+  ClanWarParticipation: [{ id: "p1", guildId: "g1", warId: "1", clanTag: "#AAA111", playerTag: "#P1" }],
+  WarLookup: [{ warId: "1", clanTag: "#AAA111", startTime: new Date("2026-03-30T00:00:00.000Z"), payload: {} }],
+  ExternalPlayerWeightCurrent: [
+    {
+      id: "w1",
+      playerTag: "#P1",
+      weight: 145000,
+      source: "ROSTER_MANAGE",
+      measuredAt: new Date("2026-04-01T00:00:00.000Z"),
+      createdByUserId: "u1",
+      updatedByUserId: "u1",
+      createdAt: new Date("2026-04-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+    },
+  ],
+  HeatMapRef: [
+    {
+      id: 1,
         weightMinInclusive: 0,
         weightMaxInclusive: 100000,
         th18Count: 0,
@@ -129,6 +142,9 @@ function buildSourceClient(
     heatMapRef: {
       findMany: vi.fn(async () => cloneRows(store.HeatMapRef)),
     },
+    externalPlayerWeightCurrent: {
+      findMany: vi.fn(async () => cloneRows(store.ExternalPlayerWeightCurrent)),
+    },
     $queryRawUnsafe: vi.fn(
       async (_query: string, table: (typeof MIRRORED_RUNTIME_TABLES)[number]) =>
         schemaColumns[table] ?? [],
@@ -203,6 +219,10 @@ function buildTargetClient(
     },
     warLookup: { deleteMany: deleteMany("WarLookup"), createMany: createMany("WarLookup") },
     heatMapRef: { deleteMany: deleteMany("HeatMapRef"), createMany: createMany("HeatMapRef") },
+    externalPlayerWeightCurrent: {
+      deleteMany: deleteMany("ExternalPlayerWeightCurrent"),
+      createMany: createMany("ExternalPlayerWeightCurrent"),
+    },
     $queryRawUnsafe: vi.fn(
       async (_query: string, table: (typeof MIRRORED_RUNTIME_TABLES)[number]) =>
         schemaColumns[table] ?? [],

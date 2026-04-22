@@ -9,6 +9,9 @@ import {
   ButtonStyle,
   EmbedBuilder,
   ModalSubmitInteraction,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
   StringSelectMenuBuilder,
   StringSelectMenuInteraction,
 } from "discord.js";
@@ -32,8 +35,13 @@ import {
   parseRosterPostSettingsMenuCustomId,
   rosterService,
   type RosterRecord,
+  type RosterSignupViewRecord,
   type RosterSummaryRecord,
 } from "../services/RosterService";
+import {
+  parseRosterManageWeightInput,
+  rosterWeightService,
+} from "../services/RosterWeightService";
 import { syncRosterRoleAssignments } from "../services/RosterRoleSyncService";
 import { autocompleteCwlTrackedClan } from "./Cwl";
 
@@ -46,7 +54,7 @@ export {
 
 const rosterPermissionService = new CommandPermissionService();
 
-type RosterMutationAction = "add" | "move" | "remove" | "open" | "close" | "archive";
+type RosterMutationAction = "add" | "move" | "remove" | "set_weight" | "open" | "close" | "archive";
 type RosterPostSettingsAction =
   | "roster_info"
   | "customize"
@@ -110,6 +118,8 @@ function describeRosterDisplayColumns(columns: string[] | null | undefined): str
       if (column === ROSTER_DISPLAY_COLUMNS.CLAN_NAME) return "Clan name";
       if (column === ROSTER_DISPLAY_COLUMNS.TROPHIES) return "Trophies";
       if (column === ROSTER_DISPLAY_COLUMNS.WEIGHT) return "Weight";
+      if (column === ROSTER_DISPLAY_COLUMNS.WEIGHT_SOURCE) return "Weight Source";
+      if (column === ROSTER_DISPLAY_COLUMNS.WEIGHT_AGE) return "Weight Age";
       return null;
     })
     .filter((value) => value !== null) as string[];
@@ -637,6 +647,8 @@ function buildRosterCustomizeColumnsMenu(roster: RosterRecord): StringSelectMenu
     { label: "Clan name", value: ROSTER_DISPLAY_COLUMNS.CLAN_NAME },
     { label: "Trophies", value: ROSTER_DISPLAY_COLUMNS.TROPHIES },
     { label: "Weight", value: ROSTER_DISPLAY_COLUMNS.WEIGHT },
+    { label: "Weight Source", value: ROSTER_DISPLAY_COLUMNS.WEIGHT_SOURCE },
+    { label: "Weight Age", value: ROSTER_DISPLAY_COLUMNS.WEIGHT_AGE },
   ] as const;
 
   return new StringSelectMenuBuilder()
@@ -699,8 +711,8 @@ async function buildRosterCustomizePanel(rosterId: string): Promise<{
           `Current columns: ${columns}`,
           `Current sort: ${sortBy}`,
           "",
-          "Choose visible columns, then reorder them in the popup if needed.",
-          "Sort changes save immediately.",
+          "Choose visible columns and sort mode from the menus below.",
+          "Changes save immediately after the select menu is submitted.",
         ].join("\n"),
       ),
     components: [
@@ -708,6 +720,104 @@ async function buildRosterCustomizePanel(rosterId: string): Promise<{
       new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(buildRosterCustomizeSortMenu(view.roster)),
     ],
   };
+}
+
+const ROSTER_MANAGE_WEIGHT_PREFIX = "roster-manage-weight";
+
+function buildRosterManageWeightOpenButtonCustomId(rosterId: string, playerTag: string): string {
+  return `${ROSTER_MANAGE_WEIGHT_PREFIX}:open:${String(rosterId ?? "").trim()}:${normalizePlayerTag(playerTag)}`;
+}
+
+function buildRosterManageWeightSubmitModalCustomId(rosterId: string, playerTag: string): string {
+  return `${ROSTER_MANAGE_WEIGHT_PREFIX}:submit:${String(rosterId ?? "").trim()}:${normalizePlayerTag(playerTag)}`;
+}
+
+function parseRosterManageWeightCustomId(
+  customId: string,
+): { action: "open" | "submit"; rosterId: string; playerTag: string } | null {
+  const parts = String(customId ?? "").split(":");
+  if (parts.length !== 4 || parts[0] !== ROSTER_MANAGE_WEIGHT_PREFIX) {
+    return null;
+  }
+  const action = parts[1];
+  if (action !== "open" && action !== "submit") {
+    return null;
+  }
+  const rosterId = parts[2]?.trim() ?? "";
+  const playerTag = normalizePlayerTag(parts[3] ?? "");
+  if (!rosterId || !playerTag) {
+    return null;
+  }
+  return { action, rosterId, playerTag };
+}
+
+export function isRosterManageWeightOpenButtonCustomId(customId: string): boolean {
+  const parsed = parseRosterManageWeightCustomId(customId);
+  return parsed?.action === "open";
+}
+
+export function isRosterManageWeightModalCustomId(customId: string): boolean {
+  const parsed = parseRosterManageWeightCustomId(customId);
+  return parsed?.action === "submit";
+}
+
+function buildRosterManageWeightInstructionsPanel(input: {
+  roster: RosterRecord;
+  signup: RosterSignupViewRecord;
+}): {
+  embed: EmbedBuilder;
+  components: ActionRowBuilder<ButtonBuilder>[];
+} {
+  const playerLabel = input.signup.playerName ?? input.signup.playerTag;
+  const playerTag = input.signup.playerTag;
+  return {
+    embed: new EmbedBuilder()
+      .setColor(0xfee75c)
+      .setTitle("Set weight")
+      .setDescription(
+        [
+          `Set a fallback manual weight for **${input.roster.title}**.`,
+          `Player: **${playerLabel}** \`${playerTag}\``,
+          "",
+          "## How to calculate war weights",
+          "1. Post a Friendly Challenge in chat. Scout your base. Click on the gold storage.",
+          '2. Tap on "info" button and note the total amount of gold it has.',
+          "3. Multiply the amount of gold by 5. That is your war weight.",
+          "- Ex: If you have 31,800 gold in your storage, you would do 31,800 × 5 = 159,000. Your war weight would be 159,000.",
+          "",
+          "All values must end with 000. If they don't, you're doing it wrong.",
+          "https://cdn.discordapp.com/attachments/1325245045690863776/1366514475263463434/War_Weight.mp4?ex=68113947&is=680fe7c7&hm=7bec1925bfe7f4c0867942176d29ec291403bb4fb3e5c63d723bf1d9c868179a&",
+          "",
+          "Click **Set weight** to open the modal.",
+        ].join("\n"),
+      ),
+    components: [
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setCustomId(buildRosterManageWeightOpenButtonCustomId(input.roster.id, input.signup.playerTag))
+          .setLabel("Set weight")
+          .setStyle(ButtonStyle.Primary),
+      ),
+    ],
+  };
+}
+
+function buildRosterManageWeightModal(input: {
+  roster: RosterRecord;
+  signup: RosterSignupViewRecord;
+}): ModalBuilder {
+  const modal = new ModalBuilder()
+    .setCustomId(buildRosterManageWeightSubmitModalCustomId(input.roster.id, input.signup.playerTag))
+    .setTitle("Set Weight");
+  const weightInput = new TextInputBuilder()
+    .setCustomId("weight")
+    .setLabel("Weight")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setMaxLength(16)
+    .setPlaceholder("145000, 145,000, 145k, or 0 to delete");
+  modal.addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(weightInput));
+  return modal;
 }
 
 function buildRosterClearConfirmationCustomId(action: "confirm" | "cancel", rosterId: string): string {
@@ -983,6 +1093,127 @@ export async function handleRosterPostSettingsMenuInteraction(
     content: "Unsupported roster settings action.",
     ephemeral: true,
   });
+}
+
+function formatRosterManageWeightK(weight: number): string {
+  return `${Math.trunc(weight / 1000)}k`;
+}
+
+export async function handleRosterManageWeightOpenButtonInteraction(
+  interaction: ButtonInteraction,
+): Promise<void> {
+  if (!isRosterManageWeightOpenButtonCustomId(interaction.customId)) return;
+
+  if (!(await canUseRosterPostTarget(interaction, "roster:manage"))) {
+    await interaction.reply({
+      content: "You do not have permission to manage this roster.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const parsed = parseRosterManageWeightCustomId(interaction.customId);
+  if (!parsed || parsed.action !== "open") {
+    return;
+  }
+
+  const rosterView = await rosterService.getRosterView(parsed.rosterId);
+  const targetSignup = rosterView?.signups.find(
+    (signup) => normalizePlayerTag(signup.playerTag) === parsed.playerTag,
+  );
+  if (!rosterView || !targetSignup) {
+    await interaction.reply({
+      content: "That player is no longer on this roster.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await interaction.showModal(
+    buildRosterManageWeightModal({
+      roster: rosterView.roster,
+      signup: targetSignup,
+    }),
+  );
+}
+
+export async function handleRosterManageWeightModalSubmit(
+  interaction: ModalSubmitInteraction,
+  cocService: CoCService,
+): Promise<void> {
+  if (!isRosterManageWeightModalCustomId(interaction.customId)) return;
+
+  if (!(await canUseRosterPostTarget(interaction, "roster:manage"))) {
+    await interaction.reply({
+      content: "You do not have permission to manage this roster.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (!interaction.inGuild() || !interaction.guildId) {
+    await interaction.reply({
+      content: "This command can only be used in a server.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const parsed = parseRosterManageWeightCustomId(interaction.customId);
+  if (!parsed || parsed.action !== "submit") {
+    return;
+  }
+
+  await interaction.deferReply({ ephemeral: true }).catch(() => undefined);
+
+  const rosterView = await rosterService.getRosterView(parsed.rosterId);
+  const targetSignup = rosterView?.signups.find(
+    (signup) => normalizePlayerTag(signup.playerTag) === parsed.playerTag,
+  );
+  if (!rosterView || !targetSignup) {
+    await interaction.editReply("That player is no longer on this roster.");
+    return;
+  }
+
+  const rawWeight = interaction.fields.getTextInputValue("weight");
+  const parsedWeight = parseRosterManageWeightInput(rawWeight);
+  if (parsedWeight === null) {
+    await interaction.editReply("Invalid weight. Use formats like `145000`, `145,000`, `145k`, or `0`.");
+    return;
+  }
+
+  const result = await rosterWeightService.setManualWeightForRoster({
+    rosterId: rosterView.roster.id,
+    playerTag: targetSignup.playerTag,
+    weight: parsedWeight,
+    updatedByUserId: interaction.user.id,
+  });
+
+  if (result.outcome === "roster_not_found") {
+    await interaction.editReply("That roster is no longer available.");
+    return;
+  }
+  if (result.outcome === "player_not_on_roster") {
+    await interaction.editReply("That player is no longer on this roster.");
+    return;
+  }
+
+  await refreshExistingRosterPost(
+    interaction as unknown as ChatInputCommandInteraction,
+    rosterView.roster.id,
+    cocService,
+  ).catch(() => undefined);
+
+  if (result.outcome === "deleted") {
+    await interaction.editReply(`Removed the manual weight for ${targetSignup.playerName ?? targetSignup.playerTag}.`);
+    return;
+  }
+
+  await interaction.editReply(
+    `Saved manual weight ${formatRosterManageWeightK(result.weight)} for ${
+      targetSignup.playerName ?? targetSignup.playerTag
+    }.`,
+  );
 }
 
 export async function handleRosterPostCustomizeMenuInteraction(
@@ -1424,6 +1655,32 @@ async function handleRosterManageSubcommand(
   const action = interaction.options.getString("action", true) as RosterMutationAction;
   const playersInput = interaction.options.getString("players", false) ?? "";
   const playerTags = parseRosterPlayerTags(playersInput);
+
+  if (action === "set_weight") {
+    if (playerTags.length !== 1) {
+      await interaction.editReply("Provide exactly one player tag for set weight.");
+      return;
+    }
+
+    const rosterView = await rosterService.getRosterView(roster.id);
+    const targetSignup = rosterView?.signups.find(
+      (signup) => normalizePlayerTag(signup.playerTag) === playerTags[0],
+    );
+    if (!rosterView || !targetSignup) {
+      await interaction.editReply("That player is not signed up on this roster.");
+      return;
+    }
+
+    const panel = buildRosterManageWeightInstructionsPanel({
+      roster: rosterView.roster,
+      signup: targetSignup,
+    });
+    await interaction.editReply({
+      embeds: [panel.embed],
+      components: panel.components,
+    });
+    return;
+  }
 
   if (action === "open" || action === "close" || action === "archive") {
     const lifecycleState =
@@ -1938,6 +2195,7 @@ export const Roster: Command = {
             { name: "Add players", value: "add" },
             { name: "Move players", value: "move" },
             { name: "Remove players", value: "remove" },
+            { name: "Set weight", value: "set_weight" },
             { name: "Open roster", value: "open" },
             { name: "Close roster", value: "close" },
             { name: "Archive roster", value: "archive" },
