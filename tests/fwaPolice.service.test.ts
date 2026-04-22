@@ -346,6 +346,121 @@ describe("FwaPoliceService", () => {
     }
   });
 
+  it("renders guild-scope tracked clan coverage lists with deterministic short-name ordering", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      {
+        tag: "#1AAA",
+        name: "Alpha",
+        shortName: null,
+        loseStyle: "TRIPLE_TOP_30",
+        fwaPoliceDmEnabled: true,
+        fwaPoliceLogEnabled: false,
+        logChannelId: "channel-alpha",
+      },
+      {
+        tag: "#2BBB",
+        name: "Bravo",
+        shortName: "RD",
+        loseStyle: "TRIPLE_TOP_30",
+        fwaPoliceDmEnabled: false,
+        fwaPoliceLogEnabled: true,
+        logChannelId: "channel-bravo",
+      },
+    ]);
+    botLogServiceMock.getChannelId.mockResolvedValue(null);
+    const client = {
+      channels: {
+        fetch: vi.fn().mockResolvedValue({
+          isTextBased: () => true,
+          send: vi.fn(),
+        }),
+      },
+    } as any;
+    const service = new FwaPoliceService();
+
+    const result = await service.getStatusReport({
+      client,
+      guildId: "guild-1",
+      clanTag: null,
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.report.scope).toBe("guild");
+      expect(result.report.enabledClanShortNamesLine).toBe("Alpha, RD");
+      expect(result.report.dmEnabledClanShortNamesLine).toBe("Alpha");
+      expect(result.report.logEnabledClanShortNamesLine).toBe("RD");
+    }
+  });
+
+  it("falls back to normalized clan tag when a tracked clan has no short name or clan name", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      {
+        tag: "#2QG2C08UP",
+        name: null,
+        shortName: null,
+        loseStyle: "TRIPLE_TOP_30",
+        fwaPoliceDmEnabled: true,
+        fwaPoliceLogEnabled: false,
+        logChannelId: null,
+      },
+    ]);
+    botLogServiceMock.getChannelId.mockResolvedValue(null);
+    const client = {
+      channels: {
+        fetch: vi.fn(),
+      },
+    } as any;
+    const service = new FwaPoliceService();
+
+    const result = await service.getStatusReport({
+      client,
+      guildId: "guild-1",
+      clanTag: null,
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.report.enabledClanShortNamesLine).toBe("#2QG2C08UP");
+      expect(result.report.dmEnabledClanShortNamesLine).toBe("#2QG2C08UP");
+      expect(result.report.logEnabledClanShortNamesLine).toBe("none");
+    }
+  });
+
+  it("renders none for guild-scope coverage lists when no clans are enabled", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      {
+        tag: "#2QG2C08UP",
+        name: "Alpha",
+        shortName: "RD",
+        loseStyle: "TRIPLE_TOP_30",
+        fwaPoliceDmEnabled: false,
+        fwaPoliceLogEnabled: false,
+        logChannelId: null,
+      },
+    ]);
+    botLogServiceMock.getChannelId.mockResolvedValue(null);
+    const client = {
+      channels: {
+        fetch: vi.fn(),
+      },
+    } as any;
+    const service = new FwaPoliceService();
+
+    const result = await service.getStatusReport({
+      client,
+      guildId: "guild-1",
+      clanTag: null,
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.report.enabledClanShortNamesLine).toBe("none");
+      expect(result.report.dmEnabledClanShortNamesLine).toBe("none");
+      expect(result.report.logEnabledClanShortNamesLine).toBe("none");
+    }
+  });
+
   it("logs warning when live current-war compliance evaluation returns non-ok status", async () => {
     prismaMock.trackedClan.findFirst.mockResolvedValue({
       tag: "#2QG2C08UP",

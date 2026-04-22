@@ -1190,6 +1190,9 @@ function formatFwaPoliceStatusReport(report: FwaPoliceStatusReport): string {
       `Tracked clans with log enabled: ${report.trackedClanSummary.logEnabled}`,
       `Tracked clans with stored log-channel: ${report.trackedClanSummary.withTrackedLogChannel}`,
       `Log-enabled clans without tracked log-channel: ${report.trackedClanSummary.logEnabledWithoutTrackedLogChannel}`,
+      `Enabled clans: ${report.enabledClanShortNamesLine}`,
+      `DM enabled: ${report.dmEnabledClanShortNamesLine}`,
+      `Log enabled: ${report.logEnabledClanShortNamesLine}`,
     );
   }
 
