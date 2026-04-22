@@ -37,11 +37,21 @@ const todoSnapshotMock = vi.hoisted(() => ({
   buildActiveCwlClanByPlayerTag: vi.fn(),
 }));
 
+const botLogChannelServiceMock = vi.hoisted(() => ({
+  getChannelId: vi.fn(),
+}));
+
 vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
 
 vi.mock("../src/services/TodoSnapshotService", () => todoSnapshotMock);
+
+vi.mock("../src/services/BotLogChannelService", () => ({
+  botLogChannelService: {
+    getChannelId: botLogChannelServiceMock.getChannelId,
+  },
+}));
 
 import {
   buildUnlinkedAlertContent,
@@ -102,6 +112,7 @@ describe("UnlinkedMemberAlertService", () => {
 
     todoSnapshotMock.loadActiveCwlWarsByClan.mockResolvedValue(new Map());
     todoSnapshotMock.buildActiveCwlClanByPlayerTag.mockReturnValue(new Map());
+    botLogChannelServiceMock.getChannelId.mockResolvedValue(null);
   });
 
   it("renders the required plain-text alert copy", () => {
@@ -159,6 +170,33 @@ describe("UnlinkedMemberAlertService", () => {
     );
     expect(prismaMock.trackedClan.findMany).not.toHaveBeenCalled();
     expect(prismaMock.cwlTrackedClan.findMany).not.toHaveBeenCalled();
+  });
+
+  it("defaults missing routing config to clan-log mode", async () => {
+    prismaMock.unlinkedAlertConfig.findUnique.mockResolvedValue(null);
+    const service = new UnlinkedMemberAlertService();
+
+    await expect(
+      service.getAlertRoutingConfig("guild-1"),
+    ).resolves.toEqual({
+      routingMode: "CLAN_LOG",
+      channelId: null,
+    });
+  });
+
+  it("resolves a legacy custom routing row as custom mode", async () => {
+    prismaMock.unlinkedAlertConfig.findUnique.mockResolvedValue({
+      routingMode: null,
+      channelId: "111111111111111111",
+    });
+    const service = new UnlinkedMemberAlertService();
+
+    await expect(
+      service.getAlertRoutingConfig("guild-1"),
+    ).resolves.toEqual({
+      routingMode: "CUSTOM",
+      channelId: "111111111111111111",
+    });
   });
 
   it("filters persisted unresolved rows by clan tag", async () => {
@@ -481,7 +519,7 @@ describe("UnlinkedMemberAlertService", () => {
     expect(result.resolvedCount).toBe(1);
   });
 
-  it("falls back to the tracked clan log channel when no guild alert channel is configured", async () => {
+  it("defaults missing alert config to clan-log routing", async () => {
     prismaMock.trackedClan.findMany
       .mockResolvedValueOnce([{ tag: "#2QG2C08UP", logChannelId: "222222222222222222" }])
       .mockResolvedValueOnce([]);
@@ -507,11 +545,12 @@ describe("UnlinkedMemberAlertService", () => {
     expect(send).toHaveBeenCalledTimes(1);
   });
 
-  it("posts alerts directly into a configured thread destination", async () => {
+  it("resolves a legacy custom config row as custom routing", async () => {
     prismaMock.trackedClan.findMany
       .mockResolvedValueOnce([{ tag: "#2QG2C08UP", logChannelId: "333333333333333333" }])
       .mockResolvedValueOnce([]);
     prismaMock.unlinkedAlertConfig.findUnique.mockResolvedValue({
+      routingMode: null,
       channelId: "111111111111111111",
     });
     const threadSend = vi.fn().mockResolvedValue(undefined);
@@ -563,29 +602,30 @@ describe("UnlinkedMemberAlertService", () => {
     expect(fallbackSend).not.toHaveBeenCalled();
   });
 
-  it("falls back to the tracked clan log channel when a configured thread cannot be used", async () => {
+  it("sends alerts only to tracked clan log channels when clan-log routing is selected", async () => {
     prismaMock.trackedClan.findMany
       .mockResolvedValueOnce([{ tag: "#2QG2C08UP", logChannelId: "333333333333333333" }])
       .mockResolvedValueOnce([]);
     prismaMock.unlinkedAlertConfig.findUnique.mockResolvedValue({
-      channelId: "111111111111111111",
+      routingMode: "CLAN_LOG",
+      channelId: null,
     });
-    const threadSend = vi.fn().mockRejectedValue(new Error("archived thread"));
-    const fallbackSend = vi.fn().mockResolvedValue(undefined);
+    const trackedSend = vi.fn().mockResolvedValue(undefined);
+    const botLogSend = vi.fn().mockResolvedValue(undefined);
     const client = createClient(
       new Map<string, unknown>([
-        [
-          "111111111111111111",
-          {
-            id: "111111111111111111",
-            send: threadSend,
-          },
-        ],
         [
           "333333333333333333",
           {
             id: "333333333333333333",
-            send: fallbackSend,
+            send: trackedSend,
+          },
+        ],
+        [
+          "bot-log-1",
+          {
+            id: "bot-log-1",
+            send: botLogSend,
           },
         ],
       ]),
@@ -606,9 +646,214 @@ describe("UnlinkedMemberAlertService", () => {
       ],
     });
 
-    expect(threadSend).toHaveBeenCalledTimes(1);
-    expect(fallbackSend).toHaveBeenCalledTimes(1);
+    expect(trackedSend).toHaveBeenCalledTimes(1);
+    expect(botLogSend).not.toHaveBeenCalled();
+    expect(botLogChannelServiceMock.getChannelId).not.toHaveBeenCalled();
     expect(result.alertedCount).toBe(1);
+  });
+
+  it("sends alerts only to /bot-logs when bot-log routing is selected", async () => {
+    prismaMock.trackedClan.findMany
+      .mockResolvedValueOnce([{ tag: "#2QG2C08UP", logChannelId: "333333333333333333" }])
+      .mockResolvedValueOnce([]);
+    prismaMock.unlinkedAlertConfig.findUnique.mockResolvedValue({
+      routingMode: "BOT_LOG",
+      channelId: null,
+    });
+    botLogChannelServiceMock.getChannelId.mockResolvedValue("444444444444444444");
+    const trackedSend = vi.fn().mockResolvedValue(undefined);
+    const botLogSend = vi.fn().mockResolvedValue(undefined);
+    const client = createClient(
+      new Map<string, unknown>([
+        [
+          "333333333333333333",
+          {
+            id: "333333333333333333",
+            send: trackedSend,
+          },
+        ],
+        [
+          "444444444444444444",
+          {
+            id: "444444444444444444",
+            send: botLogSend,
+          },
+        ],
+      ]),
+    );
+    const service = new UnlinkedMemberAlertService();
+
+    await service.reconcileGuildAlerts({
+      client,
+      guildId: "guild-1",
+      cocService: {} as any,
+      observedFwaClans: [
+        {
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha Clan",
+          logChannelId: "333333333333333333",
+          members: [{ playerTag: "#PYLQ0289", playerName: "One" }],
+        },
+      ],
+    });
+
+    expect(botLogChannelServiceMock.getChannelId).toHaveBeenCalledWith("guild-1");
+    expect(botLogSend).toHaveBeenCalledTimes(1);
+    expect(trackedSend).not.toHaveBeenCalled();
+  });
+
+  it("sends alerts only to the saved custom destination when custom routing is selected", async () => {
+    prismaMock.trackedClan.findMany
+      .mockResolvedValueOnce([{ tag: "#2QG2C08UP", logChannelId: "333333333333333333" }])
+      .mockResolvedValueOnce([]);
+    prismaMock.unlinkedAlertConfig.findUnique.mockResolvedValue({
+      routingMode: "CUSTOM",
+      channelId: "111111111111111111",
+    });
+    const customSend = vi.fn().mockResolvedValue(undefined);
+    const trackedSend = vi.fn().mockResolvedValue(undefined);
+    const botLogSend = vi.fn().mockResolvedValue(undefined);
+    const client = createClient(
+      new Map<string, unknown>([
+        [
+          "111111111111111111",
+          {
+            id: "111111111111111111",
+            send: customSend,
+          },
+        ],
+        [
+          "333333333333333333",
+          {
+            id: "333333333333333333",
+            send: trackedSend,
+          },
+        ],
+        [
+          "bot-log-1",
+          {
+            id: "bot-log-1",
+            send: botLogSend,
+          },
+        ],
+      ]),
+    );
+    const service = new UnlinkedMemberAlertService();
+
+    await service.reconcileGuildAlerts({
+      client,
+      guildId: "guild-1",
+      cocService: {} as any,
+      observedFwaClans: [
+        {
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha Clan",
+          logChannelId: "333333333333333333",
+          members: [{ playerTag: "#PYLQ0289", playerName: "One" }],
+        },
+      ],
+    });
+
+    expect(customSend).toHaveBeenCalledTimes(1);
+    expect(trackedSend).not.toHaveBeenCalled();
+    expect(botLogSend).not.toHaveBeenCalled();
+  });
+
+  it("sends no alerts when routing is disabled", async () => {
+    prismaMock.trackedClan.findMany
+      .mockResolvedValueOnce([{ tag: "#2QG2C08UP", logChannelId: "333333333333333333" }])
+      .mockResolvedValueOnce([]);
+    prismaMock.unlinkedAlertConfig.findUnique.mockResolvedValue({
+      routingMode: "DISABLED",
+      channelId: null,
+    });
+    const customSend = vi.fn().mockResolvedValue(undefined);
+    const trackedSend = vi.fn().mockResolvedValue(undefined);
+    const botLogSend = vi.fn().mockResolvedValue(undefined);
+    const client = createClient(
+      new Map<string, unknown>([
+        [
+          "111111111111111111",
+          {
+            id: "111111111111111111",
+            send: customSend,
+          },
+        ],
+        [
+          "333333333333333333",
+          {
+            id: "333333333333333333",
+            send: trackedSend,
+          },
+        ],
+        [
+          "444444444444444444",
+          {
+            id: "444444444444444444",
+            send: botLogSend,
+          },
+        ],
+      ]),
+    );
+    const service = new UnlinkedMemberAlertService();
+
+    await service.reconcileGuildAlerts({
+      client,
+      guildId: "guild-1",
+      cocService: {} as any,
+      observedFwaClans: [
+        {
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha Clan",
+          logChannelId: "333333333333333333",
+          members: [{ playerTag: "#PYLQ0289", playerName: "One" }],
+        },
+      ],
+    });
+
+    expect(customSend).not.toHaveBeenCalled();
+    expect(trackedSend).not.toHaveBeenCalled();
+    expect(botLogSend).not.toHaveBeenCalled();
+  });
+
+  it("does not silently reroute when the selected destination is unavailable", async () => {
+    prismaMock.trackedClan.findMany
+      .mockResolvedValueOnce([{ tag: "#2QG2C08UP", logChannelId: "333333333333333333" }])
+      .mockResolvedValueOnce([]);
+    prismaMock.unlinkedAlertConfig.findUnique.mockResolvedValue({
+      routingMode: "BOT_LOG",
+      channelId: null,
+    });
+    botLogChannelServiceMock.getChannelId.mockResolvedValue(null);
+    const trackedSend = vi.fn().mockResolvedValue(undefined);
+    const client = createClient(
+      new Map<string, unknown>([
+        [
+          "333333333333333333",
+          {
+            id: "333333333333333333",
+            send: trackedSend,
+          },
+        ],
+      ]),
+    );
+    const service = new UnlinkedMemberAlertService();
+
+    await service.reconcileGuildAlerts({
+      client,
+      guildId: "guild-1",
+      cocService: {} as any,
+      observedFwaClans: [
+        {
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha Clan",
+          logChannelId: "333333333333333333",
+          members: [{ playerTag: "#PYLQ0289", playerName: "One" }],
+        },
+      ],
+    });
+
+    expect(trackedSend).not.toHaveBeenCalled();
   });
 
   it("supports clan-scoped list filtering and includes active CWL clan members", async () => {
@@ -665,14 +910,15 @@ describe("UnlinkedMemberAlertService", () => {
     ]);
   });
 
-  it("stores config and unresolved state without touching BotSetting", async () => {
+  it("persists routing config and unresolved state without touching BotSetting", async () => {
     prismaMock.trackedClan.findMany
       .mockResolvedValueOnce([{ tag: "#2QG2C08UP", logChannelId: "222222222222222222" }])
       .mockResolvedValueOnce([]);
     const service = new UnlinkedMemberAlertService();
 
-    await service.setAlertChannelId({
+    await service.setAlertRoutingConfig({
       guildId: "guild-1",
+      routingMode: "CUSTOM",
       channelId: "111111111111111111",
     });
     await service.reconcileGuildAlerts({
@@ -689,7 +935,18 @@ describe("UnlinkedMemberAlertService", () => {
       ],
     });
 
-    expect(prismaMock.unlinkedAlertConfig.upsert).toHaveBeenCalled();
+    expect(prismaMock.unlinkedAlertConfig.upsert).toHaveBeenCalledWith({
+      where: { guildId: "guild-1" },
+      create: {
+        guildId: "guild-1",
+        routingMode: "CUSTOM",
+        channelId: "111111111111111111",
+      },
+      update: {
+        routingMode: "CUSTOM",
+        channelId: "111111111111111111",
+      },
+    });
     expect(prismaMock.unlinkedPlayer.upsert).toHaveBeenCalled();
     expect(prismaMock.botSetting.findMany).not.toHaveBeenCalled();
     expect(prismaMock.botSetting.findUnique).not.toHaveBeenCalled();

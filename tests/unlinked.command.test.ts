@@ -9,6 +9,7 @@ import {
 type InteractionInput = {
   subcommand: "set-alert" | "list";
   guildId?: string | null;
+  enable?: string | null;
   channel?:
     | {
         id: string;
@@ -32,8 +33,12 @@ function createInteraction(input: InteractionInput) {
     reply: vi.fn().mockResolvedValue(undefined),
     options: {
       getSubcommand: vi.fn().mockReturnValue(input.subcommand),
+      getString: vi.fn((name: string) => {
+        if (name === "enable") return input.enable ?? null;
+        if (name === "clan") return input.clan ?? null;
+        return null;
+      }),
       getChannel: vi.fn((name: string) => (name === "channel" ? (input.channel ?? null) : null)),
-      getString: vi.fn((name: string) => (name === "clan" ? (input.clan ?? null) : null)),
     },
     deferReply: vi.fn().mockResolvedValue(undefined),
     editReply: vi.fn().mockResolvedValue(undefined),
@@ -54,36 +59,55 @@ describe("/unlinked command", () => {
     vi.restoreAllMocks();
   });
 
-  it("stores the configured alert channel through the dedicated service", async () => {
-    const setAlertChannelId = vi
-      .spyOn(unlinkedMemberAlertService, "setAlertChannelId")
+  it("stores clan-log routing through the dedicated service", async () => {
+    const setAlertRoutingConfig = vi
+      .spyOn(unlinkedMemberAlertService, "setAlertRoutingConfig")
       .mockResolvedValue(undefined);
     const interaction = createInteraction({
       subcommand: "set-alert",
-      channel: {
-        id: "channel-1",
-        guildId: "guild-1",
-        type: ChannelType.GuildText,
-      },
+      enable: "clan-log channel",
     });
 
     await Unlinked.run({} as any, interaction as any, {} as any);
 
-    expect(setAlertChannelId).toHaveBeenCalledWith({
+    expect(setAlertRoutingConfig).toHaveBeenCalledWith({
       guildId: "guild-1",
-      channelId: "channel-1",
+      routingMode: "CLAN_LOG",
+      channelId: null,
     });
     expect(interaction.editReply).toHaveBeenCalledWith(
-      "Saved the unlinked-player alert channel: <#channel-1>.",
+      "Saved unlinked-player alert routing: tracked clan log channel.",
     );
   });
 
-  it("stores a configured thread destination and mentions its parent channel", async () => {
-    const setAlertChannelId = vi
-      .spyOn(unlinkedMemberAlertService, "setAlertChannelId")
+  it("stores bot-log routing through the dedicated service", async () => {
+    const setAlertRoutingConfig = vi
+      .spyOn(unlinkedMemberAlertService, "setAlertRoutingConfig")
       .mockResolvedValue(undefined);
     const interaction = createInteraction({
       subcommand: "set-alert",
+      enable: "bot-log channel",
+    });
+
+    await Unlinked.run({} as any, interaction as any, {} as any);
+
+    expect(setAlertRoutingConfig).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      routingMode: "BOT_LOG",
+      channelId: null,
+    });
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "Saved unlinked-player alert routing: /bot-logs channel.",
+    );
+  });
+
+  it("stores a custom thread destination and mentions its parent channel", async () => {
+    const setAlertRoutingConfig = vi
+      .spyOn(unlinkedMemberAlertService, "setAlertRoutingConfig")
+      .mockResolvedValue(undefined);
+    const interaction = createInteraction({
+      subcommand: "set-alert",
+      enable: "custom",
       channel: {
         id: "thread-1",
         guildId: "guild-1",
@@ -94,12 +118,79 @@ describe("/unlinked command", () => {
 
     await Unlinked.run({} as any, interaction as any, {} as any);
 
-    expect(setAlertChannelId).toHaveBeenCalledWith({
+    expect(setAlertRoutingConfig).toHaveBeenCalledWith({
       guildId: "guild-1",
+      routingMode: "CUSTOM",
       channelId: "thread-1",
     });
     expect(interaction.editReply).toHaveBeenCalledWith(
-      "Saved the unlinked-player alert thread: <#thread-1> (in <#parent-1>).",
+      "Saved unlinked-player alert routing: custom thread <#thread-1> (in <#parent-1>).",
+    );
+  });
+
+  it("disables unlinked-player alerts through the dedicated service", async () => {
+    const setAlertRoutingConfig = vi
+      .spyOn(unlinkedMemberAlertService, "setAlertRoutingConfig")
+      .mockResolvedValue(undefined);
+    const interaction = createInteraction({
+      subcommand: "set-alert",
+      enable: "false",
+    });
+
+    await Unlinked.run({} as any, interaction as any, {} as any);
+
+    expect(setAlertRoutingConfig).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      routingMode: "DISABLED",
+      channelId: null,
+    });
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "Disabled unlinked-player alerts.",
+    );
+  });
+
+  it("requires a channel for custom routing", async () => {
+    const setAlertRoutingConfig = vi.spyOn(
+      unlinkedMemberAlertService,
+      "setAlertRoutingConfig",
+    );
+    const interaction = createInteraction({
+      subcommand: "set-alert",
+      enable: "custom",
+    });
+
+    await Unlinked.run({} as any, interaction as any, {} as any);
+
+    expect(setAlertRoutingConfig).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "The `channel` option is required when `enable=custom`.",
+    );
+  });
+
+  it.each([
+    "clan-log channel",
+    "bot-log channel",
+    "false",
+  ] as const)("rejects stray channel input for %s", async (enable) => {
+    const setAlertRoutingConfig = vi.spyOn(
+      unlinkedMemberAlertService,
+      "setAlertRoutingConfig",
+    );
+    const interaction = createInteraction({
+      subcommand: "set-alert",
+      enable,
+      channel: {
+        id: "channel-1",
+        guildId: "guild-1",
+        type: ChannelType.GuildText,
+      },
+    });
+
+    await Unlinked.run({} as any, interaction as any, {} as any);
+
+    expect(setAlertRoutingConfig).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "The `channel` option is only used when `enable=custom`.",
     );
   });
 

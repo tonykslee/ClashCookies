@@ -619,14 +619,16 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
   unlinked: {
     summary: "Alert leaders when tracked-clan members are not linked to Discord, and list unresolved players.",
     details: [
-      "`set-alert` stores one guild-level alert channel or thread in dedicated unlinked-alert persistence instead of `BotSetting`.",
-      "If no guild-level alert channel is configured, live alerts fall back to the tracked clan `log-channel` when available.",
+      "`set-alert` stores explicit unlinked-alert routing in dedicated feature-owned persistence instead of `BotSetting`.",
+      "Use `enable:clan-log channel`, `enable:bot-log channel`, `enable:custom`, or `enable:false`; `channel` is only used with `enable:custom`.",
+      "Clan-log mode sends to the tracked clan `log-channel`, bot-log mode sends to `/bot-logs`, custom mode sends to the saved guild channel or thread, and `false` disables delivery.",
       "`list` resolves the current live unresolved set across tracked FWA clans and active current-season CWL clans.",
       "A player is only considered linked when `PlayerLink.discordUserId` points to a Discord user; rows without a Discord user still count as unlinked.",
       "Default access is FWA Leader role + Administrator unless role policy is changed with `/permission add`.",
     ],
     examples: [
-      "/unlinked set-alert channel:#leadership-alerts",
+      "/unlinked set-alert enable:custom channel:#leadership-alerts",
+      "/unlinked set-alert enable:clan-log channel",
       "/unlinked list",
       "/unlinked list clan:#2QG2C08UP",
     ],
