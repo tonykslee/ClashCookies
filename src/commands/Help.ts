@@ -65,6 +65,17 @@ type CommandDoc = {
   examples: string[];
 };
 
+type HelpField = {
+  name: string;
+  value: string;
+  inline: boolean;
+};
+
+type HelpEmbedPage = {
+  description?: string;
+  fields: HelpField[];
+};
+
 type HelpOption = {
   name: string;
   type: ApplicationCommandOptionType;
@@ -723,6 +734,175 @@ export function getHelpDocumentedCommandNames(): string[] {
   return Object.keys(COMMAND_DOCS).sort((a, b) => a.localeCompare(b));
 }
 
+const DISCORD_EMBED_LIMITS = {
+  title: 256,
+  description: 4096,
+  fieldName: 256,
+  fieldValue: 1024,
+  fieldsPerEmbed: 25,
+  totalChars: 5800,
+} as const;
+
+function truncateForDiscord(text: string, maxLength: number): string {
+  if (text.length <= maxLength) return text;
+  if (maxLength <= 1) return text.slice(0, maxLength);
+  return `${text.slice(0, maxLength - 1)}…`;
+}
+
+function splitTextByLength(text: string, maxLength: number): string[] {
+  if (text.length <= maxLength) return [text];
+
+  const parts: string[] = [];
+  for (let start = 0; start < text.length; start += maxLength) {
+    parts.push(text.slice(start, start + maxLength));
+  }
+  return parts;
+}
+
+function chunkFormattedLines(lines: string[], maxLength: number): string[] {
+  const chunks: string[] = [];
+  let current = "";
+
+  for (const line of lines) {
+    const lineParts = splitTextByLength(line, maxLength);
+    for (const part of lineParts) {
+      if (!current) {
+        current = part;
+        continue;
+      }
+
+      if (current.length + 1 + part.length <= maxLength) {
+        current = `${current}\n${part}`;
+      } else {
+        chunks.push(current);
+        current = part;
+      }
+    }
+  }
+
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+function buildSectionFields(
+  sectionName: string,
+  lines: string[],
+  formatter: (line: string) => string,
+): HelpField[] {
+  const formattedLines = lines.map(formatter);
+  const chunks = chunkFormattedLines(
+    formattedLines.length > 0 ? formattedLines : [""],
+    DISCORD_EMBED_LIMITS.fieldValue,
+  );
+
+  return chunks.map((chunk, index) => ({
+    name: truncateForDiscord(
+      chunks.length > 1
+        ? `${sectionName} (${index + 1}/${chunks.length})`
+        : sectionName,
+      DISCORD_EMBED_LIMITS.fieldName,
+    ),
+    value: truncateForDiscord(chunk || " ", DISCORD_EMBED_LIMITS.fieldValue),
+    inline: false,
+  }));
+}
+
+function createPage(description?: string): HelpEmbedPage {
+  return {
+    description,
+    fields: [],
+  };
+}
+
+function pageCharCount(page: HelpEmbedPage, title: string, footer: string): number {
+  return (
+    title.length +
+    (page.description?.length ?? 0) +
+    page.fields.reduce((sum, field) => sum + field.name.length + field.value.length, 0) +
+    footer.length
+  );
+}
+
+function toEmbed(page: HelpEmbedPage, title: string, footer: string): EmbedBuilder {
+  const embed = new EmbedBuilder().setTitle(
+    truncateForDiscord(title, DISCORD_EMBED_LIMITS.title),
+  ).setColor(0x57f287);
+
+  if (page.description) {
+    embed.setDescription(truncateForDiscord(page.description, DISCORD_EMBED_LIMITS.description));
+  }
+
+  for (const field of page.fields) {
+    embed.addFields(field);
+  }
+
+  embed.setFooter({ text: footer });
+  return embed;
+}
+
+export function buildHelpDetailEmbeds(
+  command: Pick<Command, "name" | "description" | "options">,
+  docOverride?: CommandDoc,
+): EmbedBuilder[] {
+  const usageLines = buildUsageLines(command as Command);
+  const doc = docOverride ?? COMMAND_DOCS[command.name];
+  const adminDefaults = getAdminDefaultTargetsForCommand(command.name);
+
+  const detailLines = doc?.details ?? [
+    "Use this command to run the described operation.",
+    "If this command has subcommands, use one of the syntax lines below.",
+  ];
+
+  const exampleLines = doc?.examples?.length
+    ? doc.examples
+    : [usageLines[0] ?? `/${command.name}`];
+
+  const accessText =
+    adminDefaults.length === 0
+      ? "Default access: everyone (unless restricted with `/permission`)."
+      : `Admin-only by default: ${adminDefaults.map((t) => `\`${t}\``).join(", ")}`;
+
+  const allFields = [
+    ...buildSectionFields("What It Does", detailLines, (line) => `- ${line}`),
+    ...buildSectionFields("Syntax", usageLines, (line) => `\`${line}\``),
+    ...buildSectionFields("Examples", exampleLines, (line) => `\`${line}\``),
+    ...buildSectionFields("Access", [accessText, "Use `/permission add` to whitelist roles."], (line) => line),
+  ];
+
+  const baseTitle = `/${command.name}`;
+  const pages: HelpEmbedPage[] = [];
+  let current = createPage(
+    truncateForDiscord(doc?.summary ?? command.description, DISCORD_EMBED_LIMITS.description),
+  );
+
+  for (const field of allFields) {
+    const projectedCharCount = pageCharCount(current, baseTitle, "");
+    const fieldCharCount = field.name.length + field.value.length;
+    const exceedsFieldCount = current.fields.length >= DISCORD_EMBED_LIMITS.fieldsPerEmbed;
+    const exceedsPageChars =
+      projectedCharCount + fieldCharCount > DISCORD_EMBED_LIMITS.totalChars;
+
+    if (current.fields.length > 0 && (exceedsFieldCount || exceedsPageChars)) {
+      pages.push(current);
+      current = createPage(undefined);
+    }
+
+    current.fields.push(field);
+  }
+
+  pages.push(current);
+
+  return pages.map((page, index) =>
+    toEmbed(
+      page,
+      baseTitle,
+      pages.length === 1
+        ? "Select another command or click Back to overview."
+        : `Help details page ${index + 1}/${pages.length}. Select another command or click Back to overview.`,
+    ),
+  );
+}
+
 type RenderState = {
   page: number;
   selectedCommand: string;
@@ -829,62 +1009,23 @@ function getOverviewEmbed(
 
   for (const cmd of slice) {
     const usage = buildUsageLines(cmd)[0] ?? `/${cmd.name}`;
+    const exampleLine = `\nExample: \`${usage}\``;
+    const descriptionLimit = Math.max(
+      0,
+      DISCORD_EMBED_LIMITS.fieldValue - exampleLine.length,
+    );
+    const fieldValue = truncateForDiscord(
+      `${truncateForDiscord(cmd.description, descriptionLimit)}${exampleLine}`,
+      DISCORD_EMBED_LIMITS.fieldValue,
+    );
     embed.addFields({
       name: `/${cmd.name}`,
-      value: `${cmd.description}\nExample: \`${usage}\``,
+      value: fieldValue,
       inline: false,
     });
   }
 
   return embed;
-}
-
-function getDetailEmbed(command: Command): EmbedBuilder {
-  const usageLines = buildUsageLines(command);
-  const doc = COMMAND_DOCS[command.name];
-  const adminDefaults = getAdminDefaultTargetsForCommand(command.name);
-
-  const detailLines = doc?.details ?? [
-    "Use this command to run the described operation.",
-    "If this command has subcommands, use one of the syntax lines below.",
-  ];
-
-  const exampleLines = doc?.examples?.length
-    ? doc.examples
-    : [usageLines[0] ?? `/${command.name}`];
-
-  const accessText =
-    adminDefaults.length === 0
-      ? "Default access: everyone (unless restricted with `/permission`)."
-      : `Admin-only by default: ${adminDefaults.map((t) => `\`${t}\``).join(", ")}`;
-
-  return new EmbedBuilder()
-    .setTitle(`/${command.name}`)
-    .setColor(0x57f287)
-    .setDescription(doc?.summary ?? command.description)
-    .addFields(
-      {
-        name: "What It Does",
-        value: detailLines.map((line) => `- ${line}`).join("\n"),
-        inline: false,
-      },
-      {
-        name: "Syntax",
-        value: usageLines.map((line) => `\`${line}\``).join("\n"),
-        inline: false,
-      },
-      {
-        name: "Examples",
-        value: exampleLines.map((line) => `\`${line}\``).join("\n"),
-        inline: false,
-      },
-      {
-        name: "Access",
-        value: `${accessText}\nUse \`/permission add\` to whitelist roles.`,
-        inline: false,
-      },
-    )
-    .setFooter({ text: "Select another command or click Back to overview." });
 }
 
 function getControls(
@@ -976,16 +1117,16 @@ function getResponsePayload(
 ) {
   const selected =
     commands.find((cmd) => cmd.name === state.selectedCommand) ?? commands[0];
-  const embed = state.detailView
-    ? getDetailEmbed(selected)
-    : getOverviewEmbed(commands, state);
+  const embeds = state.detailView
+    ? buildHelpDetailEmbeds(selected)
+    : [getOverviewEmbed(commands, state)];
   const components = getControls(
     commands,
     state,
     interactionId,
     allowPostToChannel,
   );
-  return { embeds: [embed], components };
+  return { embeds, components };
 }
 
 export const Help: Command = {
