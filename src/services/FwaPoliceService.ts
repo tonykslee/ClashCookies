@@ -33,6 +33,7 @@ import { BotLogChannelService } from "./BotLogChannelService";
 type TrackedClanPoliceRow = {
   tag: string;
   name: string | null;
+  shortName: string | null;
   loseStyle: FwaLoseStyle;
   fwaPoliceDmEnabled: boolean;
   fwaPoliceLogEnabled: boolean;
@@ -112,6 +113,9 @@ export type FwaPoliceStatusReport = {
     withTrackedLogChannel: number;
     logEnabledWithoutTrackedLogChannel: number;
   };
+  enabledClanShortNamesLine: string;
+  dmEnabledClanShortNamesLine: string;
+  logEnabledClanShortNamesLine: string;
   clan: null | {
     clanTag: string;
     clanName: string | null;
@@ -216,6 +220,57 @@ function buildViolationKey(issue: WarComplianceIssue): string {
 
 function resolveClanLogChannelId(clan: TrackedClanPoliceRow): string | null {
   return normalizeFwaPoliceText(clan.logChannelId) || null;
+}
+
+/** Purpose: derive the compact clan label used in guild police-status coverage lines. */
+function formatTrackedClanCoverageLabel(clan: {
+  tag: string;
+  name: string | null;
+  shortName: string | null;
+}): string {
+  return (
+    normalizeFwaPoliceText(clan.shortName) ||
+    normalizeFwaPoliceText(clan.name) ||
+    normalizeClanTag(clan.tag) ||
+    clan.tag
+  );
+}
+
+/** Purpose: keep guild police-status coverage lists deterministic and compact. */
+function sortTrackedClanCoverageRows(
+  rows: TrackedClanPoliceRow[],
+): TrackedClanPoliceRow[] {
+  return [...rows].sort((a, b) => {
+    const labelA = formatTrackedClanCoverageLabel(a).toLowerCase();
+    const labelB = formatTrackedClanCoverageLabel(b).toLowerCase();
+    if (labelA !== labelB) return labelA.localeCompare(labelB);
+    const tagA = normalizeClanTag(a.tag) || a.tag;
+    const tagB = normalizeClanTag(b.tag) || b.tag;
+    return tagA.localeCompare(tagB);
+  });
+}
+
+/** Purpose: render a compact comma-separated clan coverage line with safe truncation. */
+function formatTrackedClanCoverageList(rows: TrackedClanPoliceRow[]): string {
+  if (rows.length <= 0) return "none";
+
+  const labels = sortTrackedClanCoverageRows(rows).map((row) =>
+    formatTrackedClanCoverageLabel(row),
+  );
+  const maxLength = 180;
+  let rendered = labels[0] ?? "none";
+  for (let index = 1; index < labels.length; index += 1) {
+    const next = labels[index];
+    const candidate = `${rendered}, ${next}`;
+    if (candidate.length <= maxLength) {
+      rendered = candidate;
+      continue;
+    }
+    const remaining = labels.length - index;
+    return `${rendered} ... (+${remaining} more)`;
+  }
+
+  return rendered;
 }
 
 function buildOffenderLabel(input: {
@@ -480,6 +535,7 @@ async function resolveTrackedClanByTag(
     select: {
       tag: true,
       name: true,
+      shortName: true,
       loseStyle: true,
       fwaPoliceDmEnabled: true,
       fwaPoliceLogEnabled: true,
@@ -673,6 +729,7 @@ export class FwaPoliceService {
       select: {
         tag: true,
         name: true,
+        shortName: true,
         loseStyle: true,
         fwaPoliceDmEnabled: true,
         fwaPoliceLogEnabled: true,
@@ -771,6 +828,15 @@ export class FwaPoliceService {
             "tracked-clan log-channel when configured, otherwise /bot-logs fallback, otherwise unresolved",
           enabledViolationTypes: [...FWA_POLICE_VIOLATIONS],
           trackedClanSummary,
+          enabledClanShortNamesLine: formatTrackedClanCoverageList(
+            trackedRows.filter((row) => Boolean(row.fwaPoliceDmEnabled || row.fwaPoliceLogEnabled)),
+          ),
+          dmEnabledClanShortNamesLine: formatTrackedClanCoverageList(
+            trackedRows.filter((row) => Boolean(row.fwaPoliceDmEnabled)),
+          ),
+          logEnabledClanShortNamesLine: formatTrackedClanCoverageList(
+            trackedRows.filter((row) => Boolean(row.fwaPoliceLogEnabled)),
+          ),
           clan: null,
           warnings,
         },
@@ -845,6 +911,15 @@ export class FwaPoliceService {
           "tracked-clan log-channel when configured, otherwise /bot-logs fallback, otherwise unresolved",
         enabledViolationTypes: [...FWA_POLICE_VIOLATIONS],
         trackedClanSummary,
+        enabledClanShortNamesLine: formatTrackedClanCoverageList(
+          trackedRows.filter((row) => Boolean(row.fwaPoliceDmEnabled || row.fwaPoliceLogEnabled)),
+        ),
+        dmEnabledClanShortNamesLine: formatTrackedClanCoverageList(
+          trackedRows.filter((row) => Boolean(row.fwaPoliceDmEnabled)),
+        ),
+        logEnabledClanShortNamesLine: formatTrackedClanCoverageList(
+          trackedRows.filter((row) => Boolean(row.fwaPoliceLogEnabled)),
+        ),
         clan: {
           clanTag,
           clanName: normalizeFwaPoliceText(tracked.name) || null,
