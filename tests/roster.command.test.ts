@@ -1282,7 +1282,9 @@ describe("/roster command", () => {
       embed: new EmbedBuilder().setTitle("CWL Alpha Signup (Refreshed)"),
       components: [],
     });
+    const deferUpdate = vi.fn().mockResolvedValue(undefined);
     const update = vi.fn().mockResolvedValue(undefined);
+    const editReply = vi.fn().mockResolvedValue(undefined);
     const interaction = {
       customId: "roster-post-action:refresh:roster-1",
       user: { id: "111111111111111111" },
@@ -1292,22 +1294,57 @@ describe("/roster command", () => {
         has: vi.fn().mockReturnValue(true),
       },
       reply: vi.fn().mockResolvedValue(undefined),
+      deferUpdate,
+      editReply,
       update,
     } as any;
 
     await handleRosterPostRefreshButtonInteraction(interaction, {} as any);
 
+    expect(deferUpdate).toHaveBeenCalledTimes(1);
+    expect(deferUpdate.mock.invocationCallOrder[0]).toBeLessThan(
+      (rosterService.refreshRosterSignupPayload as any).mock.invocationCallOrder[0],
+    );
     expect(rosterService.refreshRosterSignupPayload).toHaveBeenCalledWith(
       "roster-1",
       expect.anything(),
       expect.anything(),
     );
-    expect(update).toHaveBeenCalledWith(
+    expect(editReply).toHaveBeenCalledWith(
       expect.objectContaining({
         embeds: [expect.any(EmbedBuilder)],
         components: [],
       }),
     );
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("acknowledges the refresh button before reporting a missing roster", async () => {
+    (rosterService.refreshRosterSignupPayload as any).mockResolvedValue(null);
+    const deferUpdate = vi.fn().mockResolvedValue(undefined);
+    const editReply = vi.fn().mockResolvedValue(undefined);
+    const interaction = {
+      customId: "roster-post-action:refresh:roster-1",
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      memberPermissions: {
+        has: vi.fn().mockReturnValue(true),
+      },
+      reply: vi.fn().mockResolvedValue(undefined),
+      deferUpdate,
+      editReply,
+    } as any;
+
+    await handleRosterPostRefreshButtonInteraction(interaction, {} as any);
+
+    expect(deferUpdate).toHaveBeenCalledTimes(1);
+    expect(rosterService.refreshRosterSignupPayload).toHaveBeenCalledWith(
+      "roster-1",
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(editReply).toHaveBeenCalledWith("That roster is no longer available.");
   });
 
   it("blocks roster post refresh actions when the user lacks the roster permission target", async () => {
