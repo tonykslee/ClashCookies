@@ -6,8 +6,12 @@ const prismaMock = vi.hoisted(() => ({
   trackedClan: {
     findMany: vi.fn(),
   },
+  raidTrackedClan: {
+    findMany: vi.fn(),
+  },
   cwlTrackedClan: {
     findFirst: vi.fn(),
+    findMany: vi.fn(),
   },
 }));
 
@@ -184,8 +188,12 @@ describe("/roster command", () => {
     prismaMock.$queryRaw.mockResolvedValue([]);
     prismaMock.trackedClan.findMany.mockReset();
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
+    prismaMock.raidTrackedClan.findMany.mockReset();
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
 
     prismaMock.cwlTrackedClan.findFirst.mockResolvedValue({ tag: "#2QG2C08UP", name: "CWL Alpha" });
+    prismaMock.cwlTrackedClan.findMany.mockReset();
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
     vi.spyOn(rosterService, "createRoster");
     vi.spyOn(rosterService, "buildRosterSignupPayload");
     vi.spyOn(rosterService, "refreshRosterSignupPayload");
@@ -2076,15 +2084,24 @@ describe("/roster command", () => {
     ]);
   });
 
-  it("autocompletes tracked clans for roster clan fields and filters deterministically", async () => {
+  it("autocompletes tracked clans across FWA, raid, and CWL sources without duplicates", async () => {
     prismaMock.trackedClan.findMany.mockResolvedValue([
-      { name: "Beta", tag: "#2QG2C08UP" },
-      { name: "Alpha", tag: "#9GLGQCCU" },
+      { name: "Alpha FWA", tag: "#9GLGQCCU" },
+      { name: null, tag: "#2QG2C08UP" },
+    ]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([
+      { name: "Alpha Raid", clanTag: "9GLGQCCU" },
+      { name: "Raid Beta", clanTag: "2RVGJYLC0" },
+    ]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([
+      { name: "Alpha CWL", tag: "#9GLGQCCU" },
+      { name: "CWL Gamma", tag: "#2QG2C08UP" },
+      { name: "CWL Gamma Duplicate", tag: "#2QG2C08UP" },
     ]);
 
     const interaction = makeAutocompleteInteraction({
       focusedName: "clan",
-      focusedValue: "alpha",
+      focusedValue: "",
       subcommand: "edit",
     }) as any;
 
@@ -2094,8 +2111,19 @@ describe("/roster command", () => {
       orderBy: [{ createdAt: "asc" }, { tag: "asc" }],
       select: { name: true, tag: true },
     });
+    expect(prismaMock.raidTrackedClan.findMany).toHaveBeenCalledWith({
+      orderBy: [{ createdAt: "asc" }, { clanTag: "asc" }],
+      select: { name: true, clanTag: true },
+    });
+    expect(prismaMock.cwlTrackedClan.findMany).toHaveBeenCalledWith({
+      where: { season: expect.any(String) },
+      orderBy: [{ createdAt: "asc" }, { tag: "asc" }],
+      select: { name: true, tag: true },
+    });
     expect(interaction.respond).toHaveBeenCalledWith([
-      { name: "Alpha (#9GLGQCCU)", value: "#9GLGQCCU" },
+      { name: "Alpha FWA (#9GLGQCCU)", value: "#9GLGQCCU" },
+      { name: "CWL Gamma (#2QG2C08UP)", value: "#2QG2C08UP" },
+      { name: "Raid Beta (#2RVGJYLC0)", value: "#2RVGJYLC0" },
     ]);
   });
 

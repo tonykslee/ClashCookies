@@ -2053,10 +2053,37 @@ async function autocompleteRosterOption(interaction: AutocompleteInteraction): P
   );
 }
 
+function normalizeRosterTrackedClanAutocompleteName(input: string | null | undefined): string | null {
+  const trimmed = String(input ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 function buildRosterTrackedClanChoiceLabel(clan: { name: string | null; tag: string }): string {
   const tag = normalizeClanTag(clan.tag);
-  const name = clan.name?.trim();
+  const name = normalizeRosterTrackedClanAutocompleteName(clan.name);
   return name ? `${name} (${tag})` : tag;
+}
+
+function upsertRosterTrackedClanAutocompleteChoice(
+  choiceByTag: Map<string, { tag: string; name: string | null }>,
+  tagInput: string,
+  nameInput: string | null | undefined,
+): void {
+  const tag = normalizeClanTag(tagInput);
+  if (!tag) return;
+
+  const name = normalizeRosterTrackedClanAutocompleteName(nameInput);
+  const existing = choiceByTag.get(tag);
+  if (!existing) {
+    choiceByTag.set(tag, { tag, name });
+    return;
+  }
+
+  if (!existing.name && name) {
+    choiceByTag.set(tag, { tag, name });
+  }
 }
 
 async function autocompleteRosterTrackedClan(interaction: AutocompleteInteraction): Promise<void> {
@@ -2074,24 +2101,47 @@ async function autocompleteRosterTrackedClan(interaction: AutocompleteInteractio
   const query = String(focused.value ?? "")
     .trim()
     .toLowerCase();
-  const tracked = await prisma.trackedClan.findMany({
-    orderBy: [{ createdAt: "asc" }, { tag: "asc" }],
-    select: { name: true, tag: true },
-  });
+  const season = resolveCurrentCwlSeasonKey();
+  const [trackedRows, raidRows, cwlRows] = await Promise.all([
+    prisma.trackedClan.findMany({
+      orderBy: [{ createdAt: "asc" }, { tag: "asc" }],
+      select: { name: true, tag: true },
+    }),
+    prisma.raidTrackedClan.findMany({
+      orderBy: [{ createdAt: "asc" }, { clanTag: "asc" }],
+      select: { name: true, clanTag: true },
+    }),
+    prisma.cwlTrackedClan.findMany({
+      where: { season },
+      orderBy: [{ createdAt: "asc" }, { tag: "asc" }],
+      select: { name: true, tag: true },
+    }),
+  ]);
 
-  await interaction.respond(
-    tracked
-      .map((clan) => {
-        const value = normalizeClanTag(clan.tag);
-        const name = buildRosterTrackedClanChoiceLabel(clan);
-        return { name: name.slice(0, 100), value };
-      })
-      .filter(
-        (choice) =>
-          choice.name.toLowerCase().includes(query) || choice.value.toLowerCase().includes(query),
-      )
-      .slice(0, 25),
-  );
+  const choiceByTag = new Map<string, { tag: string; name: string | null }>();
+  for (const clan of trackedRows) {
+    upsertRosterTrackedClanAutocompleteChoice(choiceByTag, clan.tag, clan.name);
+  }
+  for (const clan of raidRows) {
+    upsertRosterTrackedClanAutocompleteChoice(choiceByTag, clan.clanTag, clan.name);
+  }
+  for (const clan of cwlRows) {
+    upsertRosterTrackedClanAutocompleteChoice(choiceByTag, clan.tag, clan.name);
+  }
+
+  const choices = [...choiceByTag.values()]
+    .map((clan) => {
+      const name = buildRosterTrackedClanChoiceLabel(clan).slice(0, 100);
+      return { name, value: clan.tag };
+    })
+    .sort((a, b) => a.name.localeCompare(b.name) || a.value.localeCompare(b.value))
+    .filter(
+      (choice) =>
+        choice.name.toLowerCase().includes(query) || choice.value.toLowerCase().includes(query),
+    )
+    .slice(0, 25);
+
+  await interaction.respond(choices);
 }
 
 async function autocompleteRosterGroup(interaction: AutocompleteInteraction): Promise<void> {
