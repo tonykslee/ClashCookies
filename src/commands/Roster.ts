@@ -8,8 +8,12 @@ import {
   ButtonInteraction,
   ButtonStyle,
   EmbedBuilder,
+  ModalBuilder,
+  ModalSubmitInteraction,
   StringSelectMenuBuilder,
   StringSelectMenuInteraction,
+  TextInputBuilder,
+  TextInputStyle,
 } from "discord.js";
 import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
@@ -21,6 +25,8 @@ import { normalizeClanTag, normalizePlayerTag } from "../services/PlayerLinkServ
 import { autocompleteSyncTimeZones, normalizeSyncTimeZone } from "../services/syncTimeZone";
 import {
   ROSTER_LIFECYCLE_STATE,
+  ROSTER_DISPLAY_COLUMNS,
+  ROSTER_DISPLAY_COLUMN_ORDER,
   ROSTER_SORT_BY,
   parseRosterDateTimeInTimeZone,
   buildRosterPostSettingsMenuCustomId,
@@ -47,6 +53,7 @@ const rosterPermissionService = new CommandPermissionService();
 type RosterMutationAction = "add" | "move" | "remove" | "open" | "close" | "archive";
 type RosterPostSettingsAction =
   | "roster_info"
+  | "customize"
   | "open_roster"
   | "close_roster"
   | "clear_roster"
@@ -89,6 +96,124 @@ function buildRosterLifecycleSummary(roster: RosterRecord, lifecycleState: Roste
         ? "closed"
         : "archived";
   return `${roster.title} was ${label}.`;
+}
+
+function describeRosterDisplayColumns(columns: string[] | null | undefined): string {
+  const resolved = (Array.isArray(columns) ? columns : []).map((column) => String(column ?? "").trim().toLowerCase());
+  if (resolved.length <= 0) {
+    return "default";
+  }
+  const labels = resolved
+    .map((column) => {
+      if (column === ROSTER_DISPLAY_COLUMNS.TH_LEVEL) return "TH";
+      if (column === ROSTER_DISPLAY_COLUMNS.DISCORD_NAME) return "Discord name";
+      if (column === ROSTER_DISPLAY_COLUMNS.DISCORD_USERNAME) return "Discord username";
+      if (column === ROSTER_DISPLAY_COLUMNS.DISCORD_USER_ID) return "Discord ID";
+      if (column === ROSTER_DISPLAY_COLUMNS.PLAYER_NAME) return "Player name";
+      if (column === ROSTER_DISPLAY_COLUMNS.PLAYER_TAG) return "Player tag";
+      if (column === ROSTER_DISPLAY_COLUMNS.CLAN_NAME) return "Clan name";
+      if (column === ROSTER_DISPLAY_COLUMNS.TROPHIES) return "Trophies";
+      if (column === ROSTER_DISPLAY_COLUMNS.WEIGHT) return "Weight";
+      return null;
+    })
+    .filter((value) => value !== null) as string[];
+  return labels.length > 0 ? labels.join(" > ") : "default";
+}
+
+const ROSTER_CUSTOMIZE_COLUMN_LABELS: Record<string, string> = {
+  [ROSTER_DISPLAY_COLUMNS.TH_LEVEL]: "TH level",
+  [ROSTER_DISPLAY_COLUMNS.DISCORD_NAME]: "Discord name",
+  [ROSTER_DISPLAY_COLUMNS.DISCORD_USERNAME]: "Discord username",
+  [ROSTER_DISPLAY_COLUMNS.DISCORD_USER_ID]: "Discord User ID",
+  [ROSTER_DISPLAY_COLUMNS.PLAYER_NAME]: "Player name",
+  [ROSTER_DISPLAY_COLUMNS.PLAYER_TAG]: "Player tag",
+  [ROSTER_DISPLAY_COLUMNS.CLAN_NAME]: "Clan name",
+  [ROSTER_DISPLAY_COLUMNS.TROPHIES]: "Trophies",
+  [ROSTER_DISPLAY_COLUMNS.WEIGHT]: "Weight",
+};
+
+function describeRosterCustomizeColumn(column: string | null | undefined): string {
+  const normalized = String(column ?? "").trim().toLowerCase();
+  return ROSTER_CUSTOMIZE_COLUMN_LABELS[normalized] ?? "Unknown";
+}
+
+function normalizeRosterCustomizeDisplayColumnValue(input: string | null | undefined): string | null {
+  const normalized = String(input ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+  if (!normalized) return null;
+  if (normalized === "th" || normalized === "townhall" || normalized === "town hall" || normalized === "town hall level") {
+    return ROSTER_DISPLAY_COLUMNS.TH_LEVEL;
+  }
+  if (normalized === "discord name") return ROSTER_DISPLAY_COLUMNS.DISCORD_NAME;
+  if (normalized === "discord username") return ROSTER_DISPLAY_COLUMNS.DISCORD_USERNAME;
+  if (normalized === "discord id" || normalized === "discord user id") return ROSTER_DISPLAY_COLUMNS.DISCORD_USER_ID;
+  if (normalized === "player name") return ROSTER_DISPLAY_COLUMNS.PLAYER_NAME;
+  if (normalized === "player tag") return ROSTER_DISPLAY_COLUMNS.PLAYER_TAG;
+  if (normalized === "clan name") return ROSTER_DISPLAY_COLUMNS.CLAN_NAME;
+  if (normalized === "trophies") return ROSTER_DISPLAY_COLUMNS.TROPHIES;
+  if (normalized === "weight") return ROSTER_DISPLAY_COLUMNS.WEIGHT;
+  return normalized;
+}
+
+function normalizeRosterCustomizeSortByChoice(input: string | null | undefined): string | null {
+  const normalized = String(input ?? "")
+    .trim()
+    .toLowerCase();
+  if (!normalized) return null;
+  if (normalized === ROSTER_SORT_BY.DISCORD_USER) return ROSTER_SORT_BY.DISCORD_USERNAME;
+  if (normalized === ROSTER_SORT_BY.TOWNHALL) return ROSTER_SORT_BY.TOWNHALL_LEVEL;
+  if (normalized === ROSTER_SORT_BY.SIGNED_UP_AT) return ROSTER_SORT_BY.SIGNED_UP_AT;
+  if (normalized === ROSTER_SORT_BY.PLAYER_NAME) return ROSTER_SORT_BY.PLAYER_NAME;
+  if (normalized === ROSTER_SORT_BY.DISCORD_NAME) return ROSTER_SORT_BY.DISCORD_NAME;
+  if (normalized === ROSTER_SORT_BY.DISCORD_USERNAME) return ROSTER_SORT_BY.DISCORD_USERNAME;
+  if (normalized === ROSTER_SORT_BY.TOWNHALL_LEVEL) return ROSTER_SORT_BY.TOWNHALL_LEVEL;
+  if (normalized === ROSTER_SORT_BY.WEIGHT) return ROSTER_SORT_BY.WEIGHT;
+  if (normalized === ROSTER_SORT_BY.CLAN_NAME) return ROSTER_SORT_BY.CLAN_NAME;
+  if (normalized === ROSTER_SORT_BY.TROPHIES) return ROSTER_SORT_BY.TROPHIES;
+  return null;
+}
+
+function describeRosterSortByChoice(sortBy: string | null | undefined): string {
+  const normalized = normalizeRosterCustomizeSortByChoice(sortBy) ?? ROSTER_SORT_BY.SIGNED_UP_AT;
+  if (normalized === ROSTER_SORT_BY.PLAYER_NAME) return "Player name";
+  if (normalized === ROSTER_SORT_BY.DISCORD_NAME) return "Discord name";
+  if (normalized === ROSTER_SORT_BY.DISCORD_USERNAME) return "Discord username";
+  if (normalized === ROSTER_SORT_BY.TOWNHALL_LEVEL) return "Townhall level";
+  if (normalized === ROSTER_SORT_BY.WEIGHT) return "Weight";
+  if (normalized === ROSTER_SORT_BY.CLAN_NAME) return "Clan name";
+  if (normalized === ROSTER_SORT_BY.TROPHIES) return "Trophies";
+  return "Signup time";
+}
+
+function normalizeRosterCustomizeColumns(columns: string[] | null | undefined): string[] | null {
+  const allowed = new Set<string>(Object.values(ROSTER_DISPLAY_COLUMNS));
+  const ordered = Array.isArray(columns)
+    ? columns.map((column) => String(column ?? "").trim().toLowerCase()).filter((column) => allowed.has(column))
+    : [];
+  const uniqueOrdered = [...new Set(ordered)];
+  if (
+    uniqueOrdered.length === 4 &&
+    uniqueOrdered[0] === ROSTER_DISPLAY_COLUMNS.TH_LEVEL &&
+    uniqueOrdered[1] === ROSTER_DISPLAY_COLUMNS.PLAYER_NAME &&
+    uniqueOrdered[2] === ROSTER_DISPLAY_COLUMNS.DISCORD_USERNAME &&
+    uniqueOrdered[3] === ROSTER_DISPLAY_COLUMNS.CLAN_NAME
+  ) {
+    return null;
+  }
+  return uniqueOrdered.length > 0 ? uniqueOrdered : null;
+}
+
+function buildRosterDiscordDisplayNameMap(interaction: { guild?: { members?: { cache: Map<string, { displayName: string }> } | null } | null }): Map<string, string | null> {
+  const map = new Map<string, string | null>();
+  const members = interaction.guild?.members?.cache;
+  if (!members) return map;
+  for (const [userId, member] of members.entries()) {
+    if (!userId) continue;
+    map.set(userId, member?.displayName ?? null);
+  }
+  return map;
 }
 
 function buildRosterSignupResultSummary(result: Awaited<ReturnType<typeof rosterService.addRosterSignupsForManager>>): string {
@@ -279,21 +404,24 @@ function resolveRosterNameOption(interaction: ChatInputCommandInteraction): {
   };
 }
 
-async function syncRosterRolesForRoster(interaction: ChatInputCommandInteraction, rosterId: string): Promise<void> {
-  await syncRosterRoleAssignments(interaction.client, rosterId).catch((error) => {
+async function syncRosterRolesForRoster(client: Client, rosterId: string): Promise<void> {
+  await syncRosterRoleAssignments(client, rosterId).catch((error) => {
     console.error(`[roster] role_sync_failed rosterId=${rosterId} error=${formatError(error)}`);
   });
 }
 
 async function canUseRosterPostTarget(
-  interaction: ButtonInteraction | StringSelectMenuInteraction | ChatInputCommandInteraction,
+  interaction: ButtonInteraction | StringSelectMenuInteraction | ChatInputCommandInteraction | ModalSubmitInteraction,
   target: "roster:manage" | "roster:refresh" | "roster:report",
 ): Promise<boolean> {
   return rosterPermissionService.canUseAnyTarget([target], interaction as any);
 }
 
 async function refreshExistingRosterPost(
-  interaction: ChatInputCommandInteraction,
+  interaction: {
+    client: Client;
+    guild?: { members?: { cache: Map<string, { displayName: string }> } | null } | null;
+  },
   rosterId: string,
   cocService?: CoCService | null,
 ): Promise<boolean> {
@@ -302,7 +430,9 @@ async function refreshExistingRosterPost(
     return false;
   }
 
-  const payload = await rosterService.refreshRosterSignupPayload(rosterId, cocService ?? null);
+  const payload = await rosterService.refreshRosterSignupPayload(rosterId, cocService ?? null, {
+    discordDisplayNamesByUserId: buildRosterDiscordDisplayNameMap(interaction),
+  });
   if (!payload) {
     return false;
   }
@@ -321,7 +451,7 @@ async function refreshExistingRosterPost(
     embeds: [payload.embed],
     components: payload.components,
   });
-  await syncRosterRolesForRoster(interaction, rosterId);
+  await syncRosterRolesForRoster(interaction.client, rosterId);
   return true;
 }
 
@@ -335,7 +465,9 @@ async function postRosterSignupMessage(
     return "failed";
   }
 
-  const payload = await rosterService.buildRosterSignupPayload(rosterId, cocService ?? null);
+  const payload = await rosterService.buildRosterSignupPayload(rosterId, cocService ?? null, {
+    discordDisplayNamesByUserId: buildRosterDiscordDisplayNameMap(interaction),
+  });
   if (!payload) {
     return "no_payload";
   }
@@ -372,7 +504,7 @@ async function postRosterSignupMessage(
     messageUrl: postedMessage.url,
     postedByDiscordUserId: interaction.user.id,
   });
-  await syncRosterRolesForRoster(interaction, rosterId);
+  await syncRosterRolesForRoster(interaction.client, rosterId);
   return "posted";
 }
 
@@ -410,6 +542,7 @@ function buildRosterPostSettingsActions(lifecycleState: RosterRecord["lifecycleS
 
   return [
     { label: "Roster info", value: "roster_info", description: "Show roster settings and state" },
+    { label: "Customize", value: "customize", description: "Change board columns and sort order" },
     lifecycleAction,
     { label: "Clear roster", value: "clear_roster", description: "Remove all roster signups" },
     { label: "Hide buttons", value: "hide_buttons", description: "Hide member buttons" },
@@ -479,6 +612,8 @@ async function buildRosterInfoText(rosterId: string): Promise<string | null> {
     `Max. TH: ${roster.maxTownhall ?? "-"}`,
     `Roster role: ${roster.rosterRoleId ? `<@&${roster.rosterRoleId}>` : "-"}`,
     `Post buttons: ${roster.postButtonMode}`,
+    `Columns: ${describeRosterDisplayColumns(roster.displayColumns)}`,
+    `Sort: ${describeRosterSortByChoice(roster.sortBy)}`,
   ];
   return lines.join("\n");
 }
@@ -498,6 +633,235 @@ async function buildRosterSettingsPanel(rosterId: string): Promise<{
       .setTitle("Roster settings")
       .setDescription(info),
     components: [buildRosterPostSettingsMenu(rosterId, view.roster.lifecycleState)],
+  };
+}
+
+const ROSTER_POST_CUSTOMIZE_PREFIX = "roster-post-customize";
+const ROSTER_POST_CUSTOMIZE_COLUMNS_ORDER_MODAL_PREFIX = "roster-post-customize-columns-order";
+const ROSTER_POST_CUSTOMIZE_COLUMNS_ORDER_FIELD_ID = "roster-post-customize-columns-order-field";
+
+export function buildRosterPostCustomizeColumnsMenuCustomId(rosterId: string): string {
+  return `${ROSTER_POST_CUSTOMIZE_PREFIX}:columns:${String(rosterId ?? "").trim()}`;
+}
+
+export function buildRosterPostCustomizeSortMenuCustomId(rosterId: string): string {
+  return `${ROSTER_POST_CUSTOMIZE_PREFIX}:sort:${String(rosterId ?? "").trim()}`;
+}
+
+export function isRosterPostCustomizeColumnsMenuCustomId(customId: string): boolean {
+  return String(customId ?? "").startsWith(`${ROSTER_POST_CUSTOMIZE_PREFIX}:columns:`);
+}
+
+export function isRosterPostCustomizeSortMenuCustomId(customId: string): boolean {
+  return String(customId ?? "").startsWith(`${ROSTER_POST_CUSTOMIZE_PREFIX}:sort:`);
+}
+
+export function buildRosterPostCustomizeColumnsOrderModalCustomId(rosterId: string, selectedColumns: string[]): string {
+  const selectedIndexByColumn = new Map<string, number>(
+    ROSTER_DISPLAY_COLUMN_ORDER.map((column, index) => [String(column), index] as [string, number]),
+  );
+  const encodedColumns = [...new Set(selectedColumns)]
+    .map((column) => String(column ?? "").trim().toLowerCase())
+    .map((column) => selectedIndexByColumn.get(column))
+    .filter((index): index is number => typeof index === "number" && index >= 0)
+    .sort((left, right) => left - right)
+    .map((index) => String(index))
+    .join("");
+  return `${ROSTER_POST_CUSTOMIZE_COLUMNS_ORDER_MODAL_PREFIX}:${String(rosterId ?? "").trim()}:${encodedColumns}`;
+}
+
+export function isRosterPostCustomizeColumnsOrderModalCustomId(customId: string): boolean {
+  return String(customId ?? "").startsWith(`${ROSTER_POST_CUSTOMIZE_COLUMNS_ORDER_MODAL_PREFIX}:`);
+}
+
+function parseRosterPostCustomizeColumnsOrderModalCustomId(
+  customId: string,
+): { rosterId: string; selectedColumns: string[] } | null {
+  const parts = String(customId ?? "").split(":");
+  if (parts.length !== 3 || parts[0] !== ROSTER_POST_CUSTOMIZE_COLUMNS_ORDER_MODAL_PREFIX) {
+    return null;
+  }
+  const rosterId = parts[1]?.trim() ?? "";
+  const encodedColumns = parts[2] ?? "";
+  if (!rosterId || !encodedColumns) {
+    return null;
+  }
+  const selectedColumns = [...encodedColumns]
+    .map((digit) => Number.parseInt(digit, 10))
+    .filter((index) => Number.isInteger(index) && index >= 0 && index < ROSTER_DISPLAY_COLUMN_ORDER.length)
+    .map((index) => ROSTER_DISPLAY_COLUMN_ORDER[index]);
+  if (selectedColumns.length <= 0) {
+    return null;
+  }
+  return { rosterId, selectedColumns };
+}
+
+function parseRosterPostCustomizeMenuCustomId(
+  customId: string,
+): { kind: "columns" | "sort"; rosterId: string } | null {
+  const parts = String(customId ?? "").split(":");
+  if (parts.length !== 3 || parts[0] !== ROSTER_POST_CUSTOMIZE_PREFIX) {
+    return null;
+  }
+  const kind = parts[1];
+  if (kind !== "columns" && kind !== "sort") {
+    return null;
+  }
+  const rosterId = parts[2]?.trim() ?? "";
+  return rosterId ? { kind, rosterId } : null;
+}
+
+function buildRosterCustomizeColumnsMenu(roster: RosterRecord): StringSelectMenuBuilder {
+  const selectedColumns =
+    normalizeRosterCustomizeColumns(roster.displayColumns) ?? [
+      ROSTER_DISPLAY_COLUMNS.TH_LEVEL,
+      ROSTER_DISPLAY_COLUMNS.PLAYER_NAME,
+      ROSTER_DISPLAY_COLUMNS.DISCORD_USERNAME,
+      ROSTER_DISPLAY_COLUMNS.CLAN_NAME,
+    ];
+  const options = [
+    { label: "TH level", value: ROSTER_DISPLAY_COLUMNS.TH_LEVEL },
+    { label: "Discord name", value: ROSTER_DISPLAY_COLUMNS.DISCORD_NAME },
+    { label: "Discord username", value: ROSTER_DISPLAY_COLUMNS.DISCORD_USERNAME },
+    { label: "Discord User ID", value: ROSTER_DISPLAY_COLUMNS.DISCORD_USER_ID },
+    { label: "Player name", value: ROSTER_DISPLAY_COLUMNS.PLAYER_NAME },
+    { label: "Player tag", value: ROSTER_DISPLAY_COLUMNS.PLAYER_TAG },
+    { label: "Clan name", value: ROSTER_DISPLAY_COLUMNS.CLAN_NAME },
+    { label: "Trophies", value: ROSTER_DISPLAY_COLUMNS.TROPHIES },
+    { label: "Weight", value: ROSTER_DISPLAY_COLUMNS.WEIGHT },
+  ] as const;
+
+  return new StringSelectMenuBuilder()
+    .setCustomId(buildRosterPostCustomizeColumnsMenuCustomId(roster.id))
+    .setPlaceholder("Choose visible columns")
+    .setMinValues(1)
+    .setMaxValues(options.length)
+    .addOptions(
+      options.map((option) => ({
+        label: option.label,
+        value: option.value,
+        default: selectedColumns.includes(option.value),
+      })),
+    );
+}
+
+function buildRosterCustomizeColumnsOrderDraft(
+  roster: RosterRecord,
+  selectedColumns: string[],
+): string[] {
+  const selectedSet = new Set(
+    selectedColumns.map((column) => String(column ?? "").trim().toLowerCase()).filter(Boolean),
+  );
+  const currentOrder = normalizeRosterCustomizeColumns(roster.displayColumns) ?? [...ROSTER_DISPLAY_COLUMN_ORDER];
+  const ordered = currentOrder.filter((column) => selectedSet.has(column));
+  for (const column of ROSTER_DISPLAY_COLUMN_ORDER) {
+    if (selectedSet.has(column) && !ordered.includes(column)) {
+      ordered.push(column);
+    }
+  }
+  return ordered;
+}
+
+function buildRosterCustomizeColumnsOrderModal(
+  roster: RosterRecord,
+  selectedColumns: string[],
+): ModalBuilder {
+  const orderedColumns = buildRosterCustomizeColumnsOrderDraft(roster, selectedColumns);
+  const orderInput = new TextInputBuilder()
+    .setCustomId(ROSTER_POST_CUSTOMIZE_COLUMNS_ORDER_FIELD_ID)
+    .setLabel("Column order")
+    .setStyle(TextInputStyle.Paragraph)
+    .setRequired(true)
+    .setMaxLength(400)
+    .setValue(orderedColumns.map((column) => describeRosterCustomizeColumn(column)).join("\n"))
+    .setPlaceholder("Enter one column per line in the order you want them displayed.");
+
+  return new ModalBuilder()
+    .setCustomId(buildRosterPostCustomizeColumnsOrderModalCustomId(roster.id, selectedColumns))
+    .setTitle("Reorder roster columns")
+    .addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(orderInput));
+}
+
+function parseRosterCustomizeColumnsOrderSubmission(
+  rawInput: string,
+  allowedColumns: readonly string[],
+): string[] | null {
+  const allowedSet = new Set(
+    allowedColumns.map((column) => String(column ?? "").trim().toLowerCase()).filter(Boolean),
+  );
+  const values = String(rawInput ?? "")
+    .split(/[\n,]+/g)
+    .map((entry) => normalizeRosterCustomizeDisplayColumnValue(entry))
+    .filter((entry): entry is string => Boolean(entry));
+  const ordered: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    if (!allowedSet.has(value) || seen.has(value)) {
+      return null;
+    }
+    seen.add(value);
+    ordered.push(value);
+  }
+  if (ordered.length !== allowedColumns.length) {
+    return null;
+  }
+  return ordered;
+}
+
+function buildRosterCustomizeSortMenu(roster: RosterRecord): StringSelectMenuBuilder {
+  const selectedSort = normalizeRosterCustomizeSortByChoice(roster.sortBy) ?? ROSTER_SORT_BY.SIGNED_UP_AT;
+  return new StringSelectMenuBuilder()
+    .setCustomId(buildRosterPostCustomizeSortMenuCustomId(roster.id))
+    .setPlaceholder("Choose sort mode")
+    .setMinValues(1)
+    .setMaxValues(1)
+    .addOptions([
+      { label: "Player name", value: ROSTER_SORT_BY.PLAYER_NAME, default: selectedSort === ROSTER_SORT_BY.PLAYER_NAME },
+      { label: "Discord name", value: ROSTER_SORT_BY.DISCORD_NAME, default: selectedSort === ROSTER_SORT_BY.DISCORD_NAME },
+      { label: "Discord username", value: ROSTER_SORT_BY.DISCORD_USERNAME, default: selectedSort === ROSTER_SORT_BY.DISCORD_USERNAME },
+      {
+        label: "Townhall level",
+        value: ROSTER_SORT_BY.TOWNHALL_LEVEL,
+        default: selectedSort === ROSTER_SORT_BY.TOWNHALL_LEVEL || selectedSort === ROSTER_SORT_BY.TOWNHALL,
+      },
+      { label: "Weight", value: ROSTER_SORT_BY.WEIGHT, default: selectedSort === ROSTER_SORT_BY.WEIGHT },
+      { label: "Clan name", value: ROSTER_SORT_BY.CLAN_NAME, default: selectedSort === ROSTER_SORT_BY.CLAN_NAME },
+      {
+        label: "Signup time",
+        value: ROSTER_SORT_BY.SIGNED_UP_AT,
+        default: selectedSort === ROSTER_SORT_BY.SIGNED_UP_AT,
+      },
+      { label: "Trophies", value: ROSTER_SORT_BY.TROPHIES, default: selectedSort === ROSTER_SORT_BY.TROPHIES },
+    ]);
+}
+
+async function buildRosterCustomizePanel(rosterId: string): Promise<{
+  embed: EmbedBuilder;
+  components: ActionRowBuilder<StringSelectMenuBuilder>[];
+} | null> {
+  const view = await rosterService.getRosterView(rosterId);
+  if (!view) return null;
+
+  const columns = describeRosterDisplayColumns(view.roster.displayColumns);
+  const sortBy = describeRosterSortByChoice(view.roster.sortBy);
+  return {
+    embed: new EmbedBuilder()
+      .setColor(0xfee75c)
+      .setTitle("Roster customization")
+      .setDescription(
+        [
+          `Configure the posted roster board for **${view.roster.title}**.`,
+          `Current columns: ${columns}`,
+          `Current sort: ${sortBy}`,
+          "",
+          "Choose visible columns, then reorder them in the popup if needed.",
+          "Sort changes save immediately.",
+        ].join("\n"),
+      ),
+    components: [
+      new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(buildRosterCustomizeColumnsMenu(view.roster)),
+      new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(buildRosterCustomizeSortMenu(view.roster)),
+    ],
   };
 }
 
@@ -561,7 +925,9 @@ export async function handleRosterPostRefreshButtonInteraction(
     return;
   }
 
-  const payload = await rosterService.refreshRosterSignupPayload(parsed.rosterId, cocService);
+  const payload = await rosterService.refreshRosterSignupPayload(parsed.rosterId, cocService, {
+    discordDisplayNamesByUserId: buildRosterDiscordDisplayNameMap(interaction),
+  });
   if (!payload) {
     await interaction.reply({
       content: "That roster is no longer available.",
@@ -647,6 +1013,24 @@ export async function handleRosterPostSettingsMenuInteraction(
     return;
   }
 
+  if (choice === "customize") {
+    const panel = await buildRosterCustomizePanel(roster.id);
+    if (!panel) {
+      await interaction.reply({
+        content: "That roster is no longer available.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    await interaction.reply({
+      embeds: [panel.embed],
+      components: panel.components,
+      ephemeral: true,
+    });
+    return;
+  }
+
   if (choice === "open_roster" || choice === "close_roster") {
     const lifecycleState =
       choice === "open_roster" ? ROSTER_LIFECYCLE_STATE.OPEN : ROSTER_LIFECYCLE_STATE.CLOSED;
@@ -666,7 +1050,7 @@ export async function handleRosterPostSettingsMenuInteraction(
       components: [],
     });
     if (!refreshed) {
-      await syncRosterRolesForRoster(interaction as unknown as ChatInputCommandInteraction, roster.id).catch(() => undefined);
+      await syncRosterRolesForRoster(interaction.client, roster.id).catch(() => undefined);
     }
     return;
   }
@@ -753,6 +1137,189 @@ export async function handleRosterPostSettingsMenuInteraction(
   await interaction.reply({
     content: "Unsupported roster settings action.",
     ephemeral: true,
+  });
+}
+
+export async function handleRosterPostCustomizeMenuInteraction(
+  interaction: StringSelectMenuInteraction,
+  cocService: CoCService,
+): Promise<void> {
+  if (
+    !isRosterPostCustomizeColumnsMenuCustomId(interaction.customId) &&
+    !isRosterPostCustomizeSortMenuCustomId(interaction.customId)
+  ) {
+    return;
+  }
+
+  if (!(await canUseRosterPostTarget(interaction, "roster:manage"))) {
+    await interaction.reply({
+      content: "You don't have permission to manage this roster.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (!interaction.inGuild() || !interaction.guildId) {
+    await interaction.reply({
+      content: "This command can only be used in a server.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const parsed = parseRosterPostCustomizeMenuCustomId(interaction.customId);
+  if (!parsed) {
+    return;
+  }
+
+  const roster = await rosterService.findGuildRosterById({
+    guildId: interaction.guildId,
+    rosterId: parsed.rosterId,
+  });
+  if (!roster) {
+    await interaction.reply({
+      content: "That roster is no longer available.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (parsed.kind === "columns") {
+    const selectedColumns = normalizeRosterCustomizeColumns(interaction.values) ?? [];
+    if (selectedColumns.length <= 0) {
+      await interaction.reply({
+        content: "Choose at least one column to customize.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    await interaction.showModal(buildRosterCustomizeColumnsOrderModal(roster, selectedColumns));
+    return;
+  }
+
+  await interaction.deferUpdate().catch(() => undefined);
+
+  const normalizedSortBy = normalizeRosterCustomizeSortByChoice(interaction.values[0] ?? "");
+  const updated = await rosterService.updateRoster({
+    rosterId: roster.id,
+    updatedByDiscordUserId: interaction.user.id,
+    sortBy: normalizedSortBy === ROSTER_SORT_BY.SIGNED_UP_AT ? null : normalizedSortBy,
+  });
+
+  if (!updated) {
+    await interaction.editReply({
+      content: "That roster is no longer available.",
+      embeds: [],
+      components: [],
+    });
+    return;
+  }
+
+  await refreshExistingRosterPost(interaction, roster.id, cocService).catch(() => undefined);
+  const panel = await buildRosterCustomizePanel(roster.id);
+  if (!panel) {
+    await interaction.editReply({
+      content: "That roster is no longer available.",
+      embeds: [],
+      components: [],
+    });
+    return;
+  }
+
+  await interaction.editReply({
+    embeds: [panel.embed],
+    components: panel.components,
+  });
+}
+
+export async function handleRosterPostCustomizeColumnsOrderModalSubmit(
+  interaction: ModalSubmitInteraction,
+  cocService: CoCService,
+): Promise<void> {
+  if (!isRosterPostCustomizeColumnsOrderModalCustomId(interaction.customId)) return;
+
+  if (!(await canUseRosterPostTarget(interaction, "roster:manage"))) {
+    await interaction.reply({
+      content: "You don't have permission to manage this roster.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (!interaction.inGuild() || !interaction.guildId) {
+    await interaction.reply({
+      content: "This command can only be used in a server.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const parsed = parseRosterPostCustomizeColumnsOrderModalCustomId(interaction.customId);
+  if (!parsed) {
+    await interaction.reply({
+      content: "That roster is no longer available.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const roster = await rosterService.findGuildRosterById({
+    guildId: interaction.guildId,
+    rosterId: parsed.rosterId,
+  });
+  if (!roster) {
+    await interaction.reply({
+      content: "That roster is no longer available.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const orderedColumns = parseRosterCustomizeColumnsOrderSubmission(
+    interaction.fields.getTextInputValue(ROSTER_POST_CUSTOMIZE_COLUMNS_ORDER_FIELD_ID),
+    parsed.selectedColumns,
+  );
+  if (!orderedColumns) {
+    await interaction.reply({
+      content:
+        "List each selected column once, one per line, using either the column names or keys in the order you want them displayed.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await interaction.deferReply({ ephemeral: true });
+
+  const updated = await rosterService.updateRoster({
+    rosterId: roster.id,
+    updatedByDiscordUserId: interaction.user.id,
+    displayColumns: orderedColumns,
+  });
+  if (!updated) {
+    await interaction.editReply({
+      content: "That roster is no longer available.",
+      embeds: [],
+      components: [],
+    });
+    return;
+  }
+
+  await refreshExistingRosterPost(interaction, roster.id, cocService).catch(() => undefined);
+  const panel = await buildRosterCustomizePanel(roster.id);
+  if (!panel) {
+    await interaction.editReply({
+      content: "That roster is no longer available.",
+      embeds: [],
+      components: [],
+    });
+    return;
+  }
+
+  await interaction.editReply({
+    embeds: [panel.embed],
+    components: panel.components,
+    content: "Roster columns updated.",
   });
 }
 
@@ -942,7 +1509,7 @@ async function handleRosterCreateSubcommand(
     cocService,
   });
   if (importMembers) {
-    await syncRosterRolesForRoster(interaction, roster.id).catch(() => undefined);
+    await syncRosterRolesForRoster(interaction.client, roster.id).catch(() => undefined);
   }
 
   await interaction.editReply(
@@ -1050,7 +1617,7 @@ async function handleRosterRefreshSubcommand(
     return;
   }
 
-  await syncRosterRolesForRoster(interaction, roster.id).catch(() => undefined);
+  await syncRosterRolesForRoster(interaction.client, roster.id).catch(() => undefined);
   await interaction.editReply(`Refreshed the posted roster for ${roster.title}.`);
 }
 
@@ -1088,7 +1655,7 @@ async function handleRosterManageSubcommand(
       await interaction.editReply("That roster is no longer available.");
       return;
     }
-    await syncRosterRolesForRoster(interaction, roster.id).catch(() => undefined);
+    await syncRosterRolesForRoster(interaction.client, roster.id).catch(() => undefined);
     await refreshExistingRosterPost(interaction, roster.id, cocService).catch(() => undefined);
     await interaction.editReply(buildRosterLifecycleSummary(roster, lifecycleState));
     return;
@@ -1114,7 +1681,7 @@ async function handleRosterManageSubcommand(
         updatedByDiscordUserId: interaction.user.id,
         cocService,
       });
-      await syncRosterRolesForRoster(interaction, roster.id).catch(() => undefined);
+      await syncRosterRolesForRoster(interaction.client, roster.id).catch(() => undefined);
       await refreshExistingRosterPost(interaction, roster.id, cocService).catch(() => undefined);
       await interaction.editReply(buildRosterSignupResultSummary(result));
       return;
@@ -1130,7 +1697,7 @@ async function handleRosterManageSubcommand(
       await interaction.editReply("That roster group is no longer available.");
       return;
     }
-    await syncRosterRolesForRoster(interaction, roster.id).catch(() => undefined);
+    await syncRosterRolesForRoster(interaction.client, roster.id).catch(() => undefined);
     await refreshExistingRosterPost(interaction, roster.id, cocService).catch(() => undefined);
     await interaction.editReply(buildRosterMoveResultSummary(result));
     return;
@@ -1142,7 +1709,7 @@ async function handleRosterManageSubcommand(
       playerTags,
       updatedByDiscordUserId: interaction.user.id,
     });
-    await syncRosterRolesForRoster(interaction, roster.id).catch(() => undefined);
+    await syncRosterRolesForRoster(interaction.client, roster.id).catch(() => undefined);
     await refreshExistingRosterPost(interaction, roster.id, cocService).catch(() => undefined);
     await interaction.editReply(buildRosterRemoveResultSummary(result));
     return;
@@ -1345,7 +1912,7 @@ async function handleRosterEditSubcommand(
     return;
   }
 
-  await syncRosterRolesForRoster(interaction, roster.id).catch(() => undefined);
+  await syncRosterRolesForRoster(interaction.client, roster.id).catch(() => undefined);
   await refreshExistingRosterPost(interaction, roster.id, cocService).catch(() => undefined);
   await interaction.editReply(`Updated roster ${updated.title}.`);
 }

@@ -119,8 +119,13 @@ import {
   handleRosterPostRefreshButtonInteraction,
   handleRosterPostSettingsButtonInteraction,
   handleRosterPostSettingsMenuInteraction,
+  handleRosterPostCustomizeMenuInteraction,
+  handleRosterPostCustomizeColumnsOrderModalSubmit,
   handleRosterPostClearButtonInteraction,
   isRosterPostClearButtonCustomId,
+  isRosterPostCustomizeColumnsMenuCustomId,
+  isRosterPostCustomizeColumnsOrderModalCustomId,
+  isRosterPostCustomizeSortMenuCustomId,
 } from "../commands/Roster";
 import {
   isRosterSignupButtonCustomId,
@@ -320,7 +325,7 @@ export default (client: Client, cocService: CoCService): void => {
     if (interaction.isModalSubmit()) {
       await runWithInteractiveQueueContext(
         `modal:${interaction.customId.split(":")[0] ?? "unknown"}`,
-        () => handleModalSubmit(interaction),
+        () => handleModalSubmit(interaction, cocService),
       );
       return;
     }
@@ -396,6 +401,21 @@ const handleSelectMenuInteraction = async (
         await interaction.reply({
           ephemeral: true,
           content: "Failed to update roster settings.",
+        });
+      }
+    }
+    return;
+  }
+
+  if (isRosterPostCustomizeColumnsMenuCustomId(interaction.customId) || isRosterPostCustomizeSortMenuCustomId(interaction.customId)) {
+    try {
+      await handleRosterPostCustomizeMenuInteraction(interaction, cocService);
+    } catch (err) {
+      console.error(`Roster customize menu failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to update roster customization.",
         });
       }
     }
@@ -1090,15 +1110,24 @@ const handleButtonInteraction = async (
 };
 
 const handleModalSubmit = async (
-  interaction: ModalSubmitInteraction
+  interaction: ModalSubmitInteraction,
+  cocService: CoCService,
 ): Promise<void> => {
   const isPostModal = isPostModalCustomId(interaction.customId);
   const isRecruitmentModal = isRecruitmentModalCustomId(interaction.customId);
   const isLinkEmbedModal = isLinkEmbedModalCustomId(interaction.customId);
   const isSayModal = isSayModalCustomId(interaction.customId);
-  if (!isPostModal && !isRecruitmentModal && !isLinkEmbedModal && !isSayModal) return;
+  const isRosterCustomizeModal = isRosterPostCustomizeColumnsOrderModalCustomId(interaction.customId);
+  if (!isPostModal && !isRecruitmentModal && !isLinkEmbedModal && !isSayModal && !isRosterCustomizeModal) {
+    return;
+  }
 
   try {
+    if (isRosterCustomizeModal) {
+      await handleRosterPostCustomizeColumnsOrderModalSubmit(interaction, cocService);
+      return;
+    }
+
     if (isLinkEmbedModal) {
       await handleLinkEmbedModalSubmit(interaction);
       return;

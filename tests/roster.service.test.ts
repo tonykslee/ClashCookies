@@ -953,6 +953,144 @@ describe("RosterService", () => {
     expect(settingsButton?.label ?? settingsButton?.data?.label ?? null).toBeNull();
   });
 
+  it("renders a customized posted roster board using saved ordered columns and sort mode", async () => {
+    prismaMock.roster.findUnique.mockResolvedValueOnce({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "FWA",
+      rosterCategory: "signup",
+      title: "FWA Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      maxMembers: 50,
+      maxAccountsPerUser: null,
+      minTownhall: 13,
+      maxTownhall: null,
+      rosterRoleId: null,
+      allowMultiSignup: true,
+      sortBy: "weight",
+      displayColumns: JSON.stringify([
+        "player_name",
+        "discord_username",
+        "clan_name",
+        "weight",
+      ]),
+      importMembers: false,
+      postButtonMode: "standard",
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    } as any);
+    prismaMock.rosterGroup.findMany.mockResolvedValueOnce([
+      {
+        id: "group-confirmed",
+        rosterId: "roster-1",
+        key: "confirmed",
+        name: "Confirmed",
+        description: "Primary roster members",
+        sortOrder: 0,
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+      },
+    ] as any);
+    prismaMock.rosterSignup.findMany.mockResolvedValueOnce([
+      {
+        id: "signup-1",
+        rosterId: "roster-1",
+        groupId: "group-confirmed",
+        playerTag: "#PQL0289",
+        playerName: "Alpha",
+        discordUserId: "111111111111111111",
+        signedUpAt: new Date("2026-04-20T00:00:00.000Z"),
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+        group: {
+          id: "group-confirmed",
+          key: "confirmed",
+          name: "Confirmed",
+          description: "Primary roster members",
+          sortOrder: 0,
+        },
+      },
+      {
+        id: "signup-2",
+        rosterId: "roster-1",
+        groupId: "group-confirmed",
+        playerTag: "#QGRJ2222",
+        playerName: "Bravo",
+        discordUserId: "222222222222222222",
+        signedUpAt: new Date("2026-04-20T00:05:00.000Z"),
+        createdAt: new Date("2026-04-20T00:05:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:05:00.000Z"),
+        group: {
+          id: "group-confirmed",
+          key: "confirmed",
+          name: "Confirmed",
+          description: "Primary roster members",
+          sortOrder: 0,
+        },
+      },
+    ] as any);
+    prismaMock.playerLink.findMany.mockResolvedValueOnce([
+      { playerTag: "#PQL0289", discordUsername: "alpha-user" },
+      { playerTag: "#QGRJ2222", discordUsername: "bravo-user" },
+    ] as any);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValueOnce([
+      { playerTag: "#PQL0289", trophies: 5200 },
+      { playerTag: "#QGRJ2222", trophies: 5400 },
+    ] as any);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValueOnce([
+      { playerTag: "#PQL0289", latestTownHall: 15 },
+      { playerTag: "#QGRJ2222", latestTownHall: 16 },
+    ] as any);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValueOnce([
+      { playerTag: "#PQL0289", latestKnownWeight: 42 },
+      { playerTag: "#QGRJ2222", latestKnownWeight: 55 },
+    ] as any);
+    todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValueOnce([
+      {
+        playerTag: "#PQL0289",
+        clanTag: "#2QG2C08UP",
+        clanName: "Rising Dawn",
+      },
+      {
+        playerTag: "#QGRJ2222",
+        clanTag: "#2QG2C08UP",
+        clanName: "Rising Dawn",
+      },
+    ] as any);
+    prismaMock.cwlTrackedClan.findFirst.mockResolvedValue(null as any);
+
+    const payload = await rosterService.buildRosterSignupPayload("roster-1");
+
+    expect(payload).toBeTruthy();
+    const description = payload?.embed.toJSON().description ?? "";
+    const lines = description.split("\n");
+    const headerLine = lines.find((line) => line.startsWith("`Player name"));
+    const bravoRowIndex = lines.findIndex((line) => line.startsWith("`") && line.includes("Bravo"));
+    const alphaRowIndex = lines.findIndex((line) => line.startsWith("`") && line.includes("Alpha"));
+    expect(headerLine).toContain("Player name");
+    expect(headerLine).toContain("Discord username");
+    expect(headerLine).toContain("Clan name");
+    expect(headerLine).toContain("Weight");
+    expect(bravoRowIndex).toBeGreaterThan(-1);
+    expect(alphaRowIndex).toBeGreaterThan(-1);
+    expect(bravoRowIndex).toBeLessThan(alphaRowIndex);
+    expect(description).toContain("bravo-user");
+    expect(description).toContain("55");
+    expect(description).toContain("Rising Dawn");
+    expect(description).not.toContain("```");
+  });
+
   it("refreshes only rostered player tags before rebuilding the posted roster payload", async () => {
     prismaMock.rosterSignup.findMany.mockResolvedValue([
       {
@@ -976,6 +1114,10 @@ describe("RosterService", () => {
     ] as any);
     prismaMock.cwlTrackedClan.findMany.mockResolvedValueOnce([{ tag: "#2QG2C08UP" }]);
     prismaMock.cwlTrackedClan.updateMany.mockResolvedValue({ count: 1 });
+    prismaMock.cwlTrackedClan.findFirst.mockResolvedValue({
+      name: "CWL Alpha",
+      leagueLabel: "Champion League II",
+    });
     todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValue([
       {
         playerTag: "#PQL0289",
@@ -1035,7 +1177,7 @@ describe("RosterService", () => {
   });
 
   it("falls back cleanly when no persisted CWL league label is available", async () => {
-    prismaMock.cwlTrackedClan.findFirst.mockResolvedValueOnce({
+    prismaMock.cwlTrackedClan.findFirst.mockResolvedValue({
       name: "CWL Alpha",
       leagueLabel: null,
     });
@@ -1633,7 +1775,7 @@ describe("RosterService", () => {
         sortOrder: 0,
       },
     ]);
-    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValueOnce([
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
       {
         clanTag: "#2QG2C08UP",
         playerTag: "#PQL0289",
