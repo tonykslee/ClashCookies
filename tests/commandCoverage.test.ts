@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { Commands } from "../src/Commands";
 import {
   buildHelpDetailEmbeds,
+  getHelpEmbedCharacterCount,
   getHelpDocumentedCommandNames,
 } from "../src/commands/Help";
 import { hasPermissionTargetForCommand } from "../src/services/CommandPermissionService";
@@ -20,19 +21,6 @@ function docsCommandNames(): Set<string> {
     match = regex.exec(text);
   }
   return names;
-}
-
-function embedCharCount(embed: any): number {
-  return (
-    (embed.title?.length ?? 0) +
-    (embed.description?.length ?? 0) +
-    (embed.footer?.text?.length ?? 0) +
-    (embed.fields ?? []).reduce(
-      (sum: number, field: any) =>
-        sum + (field.name?.length ?? 0) + (field.value?.length ?? 0),
-      0,
-    )
-  );
 }
 
 describe("command coverage", () => {
@@ -81,7 +69,7 @@ describe("command coverage", () => {
         expect(field.name.length).toBeLessThanOrEqual(256);
         expect(field.value.length).toBeLessThanOrEqual(1024);
       }
-      expect(embedCharCount(json)).toBeLessThanOrEqual(6000);
+      expect(getHelpEmbedCharacterCount(json)).toBeLessThanOrEqual(6000);
     }
   });
 
@@ -93,6 +81,14 @@ describe("command coverage", () => {
     expect(embeds.length).toBeLessThanOrEqual(10);
     expect(embeds[0]?.toJSON().title).toBe("/fwa");
 
+    expect(embeds.every((embed) => getHelpEmbedCharacterCount(embed.toJSON() as any) <= 6000)).toBe(true);
+    expect(
+      embeds.every((embed) =>
+        (embed.toJSON().fields ?? []).every(
+          (field: any) => field.name.length <= 256 && field.value.length <= 1024,
+        ),
+      ),
+    ).toBe(true);
     if (embeds.length === 10) {
       expect(embeds.at(-1)?.toJSON().footer?.text?.toLowerCase()).toContain(
         "continued/truncated",

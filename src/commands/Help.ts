@@ -1,5 +1,6 @@
 import {
   ActionRowBuilder,
+  type APIEmbed,
   ApplicationCommandOptionType,
   AutocompleteInteraction,
   ButtonBuilder,
@@ -744,6 +745,7 @@ const DISCORD_EMBED_LIMITS = {
 } as const;
 
 const HELP_DETAIL_MAX_EMBEDS = 10;
+const HELP_DETAIL_FOOTER_RESERVE = 240;
 
 function truncateForDiscord(text: string, maxLength: number): string {
   if (text.length <= maxLength) return text;
@@ -816,12 +818,28 @@ function createPage(description?: string): HelpEmbedPage {
   };
 }
 
-function pageCharCount(page: HelpEmbedPage, title: string, footer: string): number {
+function pageCharCount(
+  page: HelpEmbedPage,
+  title: string,
+  footerReserve: number,
+): number {
   return (
     title.length +
     (page.description?.length ?? 0) +
     page.fields.reduce((sum, field) => sum + field.name.length + field.value.length, 0) +
-    footer.length
+    footerReserve
+  );
+}
+
+export function getHelpEmbedCharacterCount(embed: APIEmbed): number {
+  return (
+    (embed.title?.length ?? 0) +
+    (embed.description?.length ?? 0) +
+    (embed.footer?.text?.length ?? 0) +
+    (embed.fields?.reduce(
+      (sum, field) => sum + field.name.length + field.value.length,
+      0,
+    ) ?? 0)
   );
 }
 
@@ -845,6 +863,81 @@ function toEmbed(
   }
 
   embed.setFooter({ text: footer });
+  return embed;
+}
+
+function buildHelpDetailFooter(
+  baseFooter: string,
+  omittedPages: number,
+  trimmedFields: number,
+): string {
+  const suffixParts: string[] = [];
+  if (omittedPages > 0) {
+    suffixParts.push(
+      `Continued/truncated: ${omittedPages} additional page(s) omitted to stay within Discord's 10-embed limit.`,
+    );
+  }
+  if (trimmedFields > 0) {
+    suffixParts.push(
+      `${trimmedFields} field(s) trimmed to fit Discord's 6000-char embed limit.`,
+    );
+  }
+
+  return suffixParts.length > 0
+    ? `${baseFooter} ${suffixParts.join(" ")}`
+    : baseFooter;
+}
+
+function finalizeHelpDetailPage(
+  page: HelpEmbedPage,
+  title: string,
+  baseFooter: string,
+): EmbedBuilder {
+  const workingPage: HelpEmbedPage = {
+    description: page.description,
+    fields: [...page.fields],
+  };
+  let omittedFields = 0;
+  let footer = baseFooter;
+  let embed = toEmbed(workingPage, title, footer);
+
+  while (getHelpEmbedCharacterCount(embed.toJSON()) > 6000) {
+    if (workingPage.fields.length > 0) {
+      workingPage.fields.pop();
+      omittedFields += 1;
+      footer = buildHelpDetailFooter(baseFooter, 0, omittedFields);
+      embed = toEmbed(workingPage, title, footer);
+      continue;
+    }
+
+    if (workingPage.description) {
+      const fixedSize = getHelpEmbedCharacterCount({
+        title: title.length > 0 ? title : undefined,
+        description: undefined,
+        footer: footer.length > 0 ? { text: footer } : undefined,
+        fields: workingPage.fields.map((field) => ({
+          name: field.name,
+          value: field.value,
+          inline: field.inline,
+        })),
+      });
+      const remaining = Math.max(0, 6000 - fixedSize);
+      const nextDescription = truncateForDiscord(
+        workingPage.description,
+        remaining,
+      );
+      if (nextDescription === workingPage.description) {
+        break;
+      }
+      workingPage.description = nextDescription;
+      footer = buildHelpDetailFooter(baseFooter, 0, omittedFields);
+      embed = toEmbed(workingPage, title, footer);
+      continue;
+    }
+
+    break;
+  }
+
   return embed;
 }
 
@@ -884,7 +977,11 @@ export function buildHelpDetailEmbeds(
   );
 
   for (const field of allFields) {
-    const projectedCharCount = pageCharCount(current, baseTitle, "");
+    const projectedCharCount = pageCharCount(
+      current,
+      baseTitle,
+      HELP_DETAIL_FOOTER_RESERVE,
+    );
     const fieldCharCount = field.name.length + field.value.length;
     const exceedsFieldCount = current.fields.length >= DISCORD_EMBED_LIMITS.fieldsPerEmbed;
     const exceedsPageChars =
@@ -910,11 +1007,11 @@ export function buildHelpDetailEmbeds(
       totalPages === 1
         ? "Select another command or click Back to overview."
         : `Help details page ${index + 1}/${totalPages}. Select another command or click Back to overview.`;
-    const suffix =
+    const pageFooter =
       truncatedPages > 0 && isLastCappedPage
-        ? ` Continued/truncated: ${truncatedPages} additional page(s) omitted to stay within Discord's 10-embed limit.`
-        : "";
-    return toEmbed(page, baseTitle, `${footer}${suffix}`);
+        ? buildHelpDetailFooter(footer, truncatedPages, 0)
+        : footer;
+    return finalizeHelpDetailPage(page, baseTitle, pageFooter);
   });
 }
 
