@@ -1386,6 +1386,113 @@ describe("RosterService", () => {
     }
   });
 
+  it("renders townhall icons and row indexes in displayed order", async () => {
+    prismaMock.roster.findUnique.mockResolvedValueOnce({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+      sortBy: "player_name",
+      displayColumns: JSON.stringify(["player_name", "townhall_icons", "index"]),
+      minTownhall: 13,
+      maxTownhall: null,
+      maxMembers: 50,
+      maxAccountsPerUser: null,
+      rosterRoleId: null,
+      allowMultiSignup: true,
+      importMembers: false,
+    } as any);
+    prismaMock.rosterSignup.findMany.mockResolvedValueOnce([
+      {
+        id: "signup-1",
+        rosterId: "roster-1",
+        groupId: "group-confirmed",
+        playerTag: "#QGRJ2222",
+        playerName: "Bravo",
+        discordUserId: "222222222222222222",
+        signedUpAt: new Date("2026-04-20T00:05:00.000Z"),
+        createdAt: new Date("2026-04-20T00:05:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:05:00.000Z"),
+        group: {
+          id: "group-confirmed",
+          key: "confirmed",
+          name: "Confirmed",
+          description: "Primary roster members",
+          sortOrder: 0,
+        },
+      },
+      {
+        id: "signup-2",
+        rosterId: "roster-1",
+        groupId: "group-confirmed",
+        playerTag: "#PQL0289",
+        playerName: "Alpha",
+        discordUserId: "111111111111111111",
+        signedUpAt: new Date("2026-04-20T00:00:00.000Z"),
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+        group: {
+          id: "group-confirmed",
+          key: "confirmed",
+          name: "Confirmed",
+          description: "Primary roster members",
+          sortOrder: 0,
+        },
+      },
+    ] as any);
+    prismaMock.playerLink.findMany.mockResolvedValueOnce([
+      { playerTag: "#QGRJ2222", discordUsername: "bravo-user" },
+      { playerTag: "#PQL0289", discordUsername: "alpha-user" },
+    ] as any);
+    cwlStateServiceMock.listSeasonRosterForClan.mockResolvedValueOnce([
+      { playerTag: "#QGRJ2222", playerName: "Bravo", townHall: 18 },
+      { playerTag: "#PQL0289", playerName: "Alpha", townHall: 8 },
+    ] as any);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValueOnce([] as any);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValueOnce([] as any);
+    prismaMock.externalPlayerWeightCurrent.findMany.mockResolvedValueOnce([] as any);
+    todoSnapshotServiceMock.listSnapshotsByClanTag.mockResolvedValueOnce([
+      { playerTag: "#QGRJ2222", clanTag: "#2QG2C08UP", clanName: "Rising Dawn" },
+      { playerTag: "#PQL0289", clanTag: "#2QG2C08UP", clanName: "Rising Dawn" },
+    ] as any);
+    prismaMock.cwlTrackedClan.findFirst.mockResolvedValueOnce(null as any);
+
+    const payload = await rosterService.buildRosterSignupPayload("roster-1");
+    const description = payload?.embed.toJSON().description ?? "";
+    const lines = description.split("\n");
+    const headerLine = lines.find((line) => line.startsWith("`PLAYER")) ?? "";
+    const alphaRowIndex = lines.findIndex((line) => line.startsWith("`") && line.includes("Alpha"));
+    const bravoRowIndex = lines.findIndex((line) => line.startsWith("`") && line.includes("Bravo"));
+    const bravoRow = lines.find((line) => line.startsWith("`") && line.includes("Bravo")) ?? "";
+    const alphaRow = lines.find((line) => line.startsWith("`") && line.includes("Alpha")) ?? "";
+
+    expect(headerLine).toContain("PLAYER");
+    expect(headerLine).toContain("TH ICONS");
+    expect(headerLine).toContain("INDEX");
+    expect(alphaRowIndex).toBeGreaterThan(-1);
+    expect(bravoRowIndex).toBeGreaterThan(-1);
+    expect(alphaRowIndex).toBeLessThan(bravoRowIndex);
+    expect(bravoRow).toContain(":th18:");
+    expect(alphaRow).toContain("8");
+    expect(alphaRow).toContain("1");
+    expect(bravoRow).toContain("2");
+  });
+
   it("renders Min. TH as a dash when no minimum town hall is configured", async () => {
     prismaMock.roster.findUnique.mockResolvedValueOnce({
       id: "roster-1",

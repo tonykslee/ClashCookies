@@ -114,6 +114,8 @@ function describeRosterDisplayColumns(columns: string[] | null | undefined): str
   const labels = resolved
     .map((column) => {
       if (column === ROSTER_DISPLAY_COLUMNS.TH_LEVEL) return "TH";
+      if (column === ROSTER_DISPLAY_COLUMNS.TOWNHALL_ICONS) return "Townhall Icons";
+      if (column === ROSTER_DISPLAY_COLUMNS.INDEX) return "Index";
       if (column === ROSTER_DISPLAY_COLUMNS.DISCORD_NAME) return "Discord name";
       if (column === ROSTER_DISPLAY_COLUMNS.DISCORD_USERNAME) return "Discord username";
       if (column === ROSTER_DISPLAY_COLUMNS.DISCORD_USER_ID) return "Discord ID";
@@ -275,7 +277,25 @@ function buildRosterRemoveResultSummary(
   return `Removed ${removed}${ignored}.`;
 }
 
-function buildRosterListEmbed(rosters: RosterSummaryRecord[]): EmbedBuilder {
+function formatRosterListClanLine(clanName: string | null, clanTag: string | null): string {
+  const normalizedClanName = String(clanName ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const normalizedClanTag = normalizeClanTag(clanTag ?? "");
+  if (normalizedClanName && normalizedClanTag) {
+    return `${normalizedClanName} (\`${normalizedClanTag}\`)`;
+  }
+  if (normalizedClanName) {
+    return normalizedClanName;
+  }
+  if (normalizedClanTag) {
+    return `\`${normalizedClanTag}\``;
+  }
+  return "none";
+}
+
+async function buildRosterListEmbed(rosters: RosterSummaryRecord[]): Promise<EmbedBuilder> {
+  const clanNameByTag = await buildRosterAutocompleteClanNameMap(rosters);
   const embed = new EmbedBuilder()
     .setColor(0xfee75c)
     .setTitle("Guild Rosters")
@@ -286,13 +306,21 @@ function buildRosterListEmbed(rosters: RosterSummaryRecord[]): EmbedBuilder {
     );
 
   for (const roster of rosters.slice(0, 25)) {
+    const clanTag = normalizeClanTag(roster.clanTag ?? "") || null;
+    const clanName = clanTag ? clanNameByTag.get(clanTag) ?? null : null;
     embed.addFields({
       name: roster.title.slice(0, 100),
       value: [
         `Type: ${roster.rosterType}${roster.rosterCategory ? ` / ${roster.rosterCategory}` : ""}`,
-        `Clan: ${roster.clanTag ?? "none"}`,
+        `Clan: ${formatRosterListClanLine(clanName, clanTag)}`,
         `State: ${buildRosterStateLabel(roster.lifecycleState)}`,
-        `Posted: ${roster.postedMessageId ? `yes${roster.postedChannelId ? ` in <#${roster.postedChannelId}>` : ""}` : "no"}`,
+        `Posted: ${
+          roster.postedMessageUrl
+            ? `Yes ([Open posted roster](${roster.postedMessageUrl}))`
+            : roster.postedMessageId
+              ? `Yes${roster.postedChannelId ? ` in <#${roster.postedChannelId}>` : ""}`
+              : "No"
+        }`,
         `Groups: ${roster.groupCount} | Signups: ${roster.signupCount}`,
         `ID: \`${roster.id}\``,
       ].join("\n"),
@@ -423,29 +451,35 @@ async function postRosterSignupMessage(
   interaction: ChatInputCommandInteraction,
   rosterId: string,
   cocService?: CoCService | null,
-): Promise<"posted" | "refreshed" | "no_payload" | "no_channel" | "failed"> {
+): Promise<
+  | { outcome: "posted"; postedMessageUrl: string | null }
+  | { outcome: "refreshed"; postedMessageUrl: string | null }
+  | { outcome: "no_payload"; postedMessageUrl: string | null }
+  | { outcome: "no_channel"; postedMessageUrl: string | null }
+  | { outcome: "failed"; postedMessageUrl: string | null }
+> {
   const rosterView = await rosterService.getRosterView(rosterId);
   if (!rosterView) {
-    return "failed";
+    return { outcome: "failed", postedMessageUrl: null };
   }
 
   const payload = await rosterService.buildRosterSignupPayload(rosterId, cocService ?? null, {
     discordDisplayNamesByUserId: buildRosterDiscordDisplayNameMap(interaction),
   });
   if (!payload) {
-    return "no_payload";
+    return { outcome: "no_payload", postedMessageUrl: rosterView.roster.postedMessageUrl ?? null };
   }
 
   if (rosterView.roster.postedChannelId && rosterView.roster.postedMessageId) {
     const refreshed = await refreshExistingRosterPost(interaction, rosterId, cocService);
     if (refreshed) {
-      return "refreshed";
+      return { outcome: "refreshed", postedMessageUrl: rosterView.roster.postedMessageUrl ?? null };
     }
   }
 
   const channel = interaction.channel;
   if (!channel?.isTextBased() || !("send" in channel)) {
-    return "no_channel";
+    return { outcome: "no_channel", postedMessageUrl: rosterView.roster.postedMessageUrl ?? null };
   }
 
   const postedMessage = await channel
@@ -458,7 +492,7 @@ async function postRosterSignupMessage(
       return null;
     });
   if (!postedMessage) {
-    return "failed";
+    return { outcome: "failed", postedMessageUrl: rosterView.roster.postedMessageUrl ?? null };
   }
 
   await rosterService.recordRosterPostedMessage({
@@ -469,7 +503,7 @@ async function postRosterSignupMessage(
     postedByDiscordUserId: interaction.user.id,
   });
   await syncRosterRolesForRoster(interaction.client, rosterId);
-  return "posted";
+  return { outcome: "posted", postedMessageUrl: postedMessage.url };
 }
 
 async function deletePostedRosterMessage(
@@ -652,6 +686,8 @@ function buildRosterCustomizeColumnsMenu(roster: RosterRecord): StringSelectMenu
     ];
   const options = [
     { label: "TH level", value: ROSTER_DISPLAY_COLUMNS.TH_LEVEL },
+    { label: "Townhall Icons", value: ROSTER_DISPLAY_COLUMNS.TOWNHALL_ICONS },
+    { label: "Index", value: ROSTER_DISPLAY_COLUMNS.INDEX },
     { label: "Discord name", value: ROSTER_DISPLAY_COLUMNS.DISCORD_NAME },
     { label: "Discord username", value: ROSTER_DISPLAY_COLUMNS.DISCORD_USERNAME },
     { label: "Discord User ID", value: ROSTER_DISPLAY_COLUMNS.DISCORD_USER_ID },
@@ -1591,7 +1627,7 @@ async function handleRosterListSubcommand(interaction: ChatInputCommandInteracti
     clan: interaction.options.getString("clan", false),
   });
   await interaction.editReply({
-    embeds: [buildRosterListEmbed(rosters)],
+    embeds: [await buildRosterListEmbed(rosters)],
   });
 }
 
@@ -1611,22 +1647,27 @@ async function handleRosterPostSubcommand(
   }
 
   const result = await postRosterSignupMessage(interaction, roster.id, cocService);
-  if (result === "no_channel") {
+  if (result.outcome === "no_channel") {
     await interaction.editReply("This command can only post to a text channel.");
     return;
   }
-  if (result === "no_payload") {
+  if (result.outcome === "no_payload") {
     await interaction.editReply("Failed to build that roster post.");
     return;
   }
-  if (result === "failed") {
+  if (result.outcome === "failed") {
     await interaction.editReply("Failed to post that roster.");
     return;
   }
 
+  if (result.outcome === "posted") {
+    await interaction.editReply(`Posted roster ${roster.title} in the current channel.`);
+    return;
+  }
+
   await interaction.editReply(
-    result === "posted"
-      ? `Posted roster ${roster.title} in the current channel.`
+    result.postedMessageUrl
+      ? `Refreshed roster ${roster.title}. Original post: [Open posted roster](${result.postedMessageUrl})`
       : `Refreshed roster ${roster.title}.`,
   );
 }
