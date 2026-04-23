@@ -264,11 +264,16 @@ async function refreshRosterSignupPost(
   rosterId: string,
   cocService?: CoCService | null,
 ): Promise<void> {
-  const payload = cocService
-    ? await rosterService.refreshRosterSignupPayload(rosterId, cocService)
-    : await rosterService.buildRosterSignupPayload(rosterId);
   const rosterView = await rosterService.getRosterView(rosterId);
-  if (!payload || !rosterView?.roster.postedChannelId || !rosterView.roster.postedMessageId) {
+  if (!rosterView?.roster.postedChannelId || !rosterView.roster.postedMessageId) {
+    return;
+  }
+
+  const loadingPayload = await rosterService.buildRosterSignupPayload(rosterId, null, {
+    emojiClient: interaction.client,
+    refreshButtonDisabled: true,
+  });
+  if (!loadingPayload) {
     return;
   }
 
@@ -279,6 +284,34 @@ async function refreshRosterSignupPost(
 
   const message = await channel.messages.fetch(rosterView.roster.postedMessageId).catch(() => null);
   if (!message) return;
+  await message.edit({
+    embeds: [loadingPayload.embed],
+    components: loadingPayload.components,
+  }).catch(() => undefined);
+
+  const payload = cocService
+    ? await rosterService.refreshRosterSignupPayload(rosterId, cocService, {
+        emojiClient: interaction.client,
+        refreshButtonDisabled: false,
+      })
+    : await rosterService.buildRosterSignupPayload(rosterId, null, {
+        emojiClient: interaction.client,
+        refreshButtonDisabled: false,
+      });
+  if (!payload) {
+    const restoredPayload = await rosterService.buildRosterSignupPayload(rosterId, null, {
+      emojiClient: interaction.client,
+      refreshButtonDisabled: false,
+    });
+    if (restoredPayload) {
+      await message.edit({
+        embeds: [restoredPayload.embed],
+        components: restoredPayload.components,
+      }).catch(() => undefined);
+    }
+    return;
+  }
+
   await message.edit({
     embeds: [payload.embed],
     components: payload.components,
@@ -2226,7 +2259,9 @@ export async function handleRosterSignupSubcommand(
     cocService,
   });
 
-  const payload = await rosterService.buildRosterSignupPayload(roster.id);
+  const payload = await rosterService.buildRosterSignupPayload(roster.id, null, {
+    emojiClient: interaction.client,
+  });
   if (!payload) {
     await interaction.editReply("Failed to build the CWL signup post.");
     return;

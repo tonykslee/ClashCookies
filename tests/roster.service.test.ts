@@ -68,6 +68,29 @@ const todoSnapshotServiceMock = vi.hoisted(() => ({
   refreshSnapshotsForPlayerTags: vi.fn(),
 }));
 
+function makeRosterEmojiClient() {
+  const makeEmoji = (name: string, rendered: string) => ({
+    id: `${name}-id`,
+    name,
+    animated: false,
+    toString: () => rendered,
+  });
+
+  const emojis = new Map([
+    ["house", makeEmoji("house", "<:house:111>")],
+    ["th18", makeEmoji("th18", "<:th18:118>")],
+  ]);
+
+  return {
+    application: {
+      fetch: vi.fn().mockResolvedValue(undefined),
+      emojis: {
+        fetch: vi.fn().mockResolvedValue(emojis),
+      },
+    },
+  } as any;
+}
+
 vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
@@ -1472,7 +1495,9 @@ describe("RosterService", () => {
     ] as any);
     prismaMock.cwlTrackedClan.findFirst.mockResolvedValueOnce(null as any);
 
-    const payload = await rosterService.buildRosterSignupPayload("roster-1");
+    const payload = await rosterService.buildRosterSignupPayload("roster-1", null, {
+      emojiClient: makeRosterEmojiClient(),
+    });
     const description = payload?.embed.toJSON().description ?? "";
     const lines = description.split("\n");
     const headerLine = lines.find((line) => line.startsWith("`PLAYER")) ?? "";
@@ -1482,12 +1507,12 @@ describe("RosterService", () => {
     const alphaRow = lines.find((line) => line.startsWith("`") && line.includes("Alpha")) ?? "";
 
     expect(headerLine).toContain("PLAYER");
-    expect(headerLine).toContain("TH ICONS");
+    expect(headerLine).toContain("<:house:111>");
     expect(headerLine).toContain("INDEX");
     expect(alphaRowIndex).toBeGreaterThan(-1);
     expect(bravoRowIndex).toBeGreaterThan(-1);
     expect(alphaRowIndex).toBeLessThan(bravoRowIndex);
-    expect(bravoRow).toContain(":th18:");
+    expect(bravoRow).toContain("<:th18:118>");
     expect(alphaRow).toContain("8");
     expect(alphaRow).toContain("1");
     expect(bravoRow).toContain("2");

@@ -2,6 +2,7 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  Client,
   EmbedBuilder,
   StringSelectMenuBuilder,
 } from "discord.js";
@@ -9,6 +10,7 @@ import { randomUUID } from "crypto";
 import { CoCService } from "./CoCService";
 import { prisma } from "../prisma";
 import { truncateDiscordContent } from "../helper/discordContent";
+import { emojiResolverService } from "./emoji/EmojiResolverService";
 import {
   listPlayerLinksForClanMembers,
   listPlayerLinksForDiscordUser,
@@ -146,6 +148,11 @@ export type RosterSignupPayload = {
 export type RosterSelectionMode = "signup" | "remove";
 
 type RosterPostButtonMode = "standard" | "hidden" | "archived";
+
+type RosterSignupPayloadBuildOptions = RosterViewLoadOptions & {
+  emojiClient?: Client | null;
+  refreshButtonDisabled?: boolean;
+};
 
 export type RosterSelectionOption = {
   value: string;
@@ -1781,7 +1788,7 @@ const ROSTER_BOARD_COLUMN_LIMITS: Record<RosterDisplayColumn, number> = {
 
 const ROSTER_BOARD_COLUMN_HEADERS: Record<RosterDisplayColumn, string> = {
   [ROSTER_DISPLAY_COLUMNS.TH_LEVEL]: "TH",
-  [ROSTER_DISPLAY_COLUMNS.TOWNHALL_ICONS]: "TH ICONS",
+  [ROSTER_DISPLAY_COLUMNS.TOWNHALL_ICONS]: ":house:",
   [ROSTER_DISPLAY_COLUMNS.INDEX]: "INDEX",
   [ROSTER_DISPLAY_COLUMNS.DISCORD_NAME]: "DISCORD",
   [ROSTER_DISPLAY_COLUMNS.DISCORD_USERNAME]: "USERNAME",
@@ -1921,6 +1928,33 @@ function buildRosterBoardLine(
     .join(" ");
 }
 
+function buildRosterBoardDisplayLine(
+  columns: readonly RosterDisplayColumn[],
+  values: Record<RosterDisplayColumn, string | null>,
+  widths: Record<RosterDisplayColumn, number>,
+): string {
+  const townhallIconColumnIndex = columns.indexOf(ROSTER_DISPLAY_COLUMNS.TOWNHALL_ICONS);
+  if (townhallIconColumnIndex < 0) {
+    return `\`${buildRosterBoardLine(columns, values, widths)}\``;
+  }
+
+  const parts: string[] = [];
+  const prefixColumns = columns.slice(0, townhallIconColumnIndex);
+  const suffixColumns = columns.slice(townhallIconColumnIndex + 1);
+
+  if (prefixColumns.length > 0) {
+    parts.push(`\`${buildRosterBoardLine(prefixColumns, values, widths)}\``);
+  }
+
+  parts.push(formatRosterBoardCell(values[ROSTER_DISPLAY_COLUMNS.TOWNHALL_ICONS], widths[ROSTER_DISPLAY_COLUMNS.TOWNHALL_ICONS]));
+
+  if (suffixColumns.length > 0) {
+    parts.push(`\`${buildRosterBoardLine(suffixColumns, values, widths)}\``);
+  }
+
+  return parts.join(" ");
+}
+
 function buildRosterBoardHeaderLine(
   columns: readonly RosterDisplayColumn[],
   widths: Record<RosterDisplayColumn, number>,
@@ -1929,7 +1963,7 @@ function buildRosterBoardHeaderLine(
     RosterDisplayColumn,
     string | null
   >;
-  return buildRosterBoardLine(columns, values, widths);
+  return buildRosterBoardDisplayLine(columns, values, widths);
 }
 
 function buildRosterBoardRowLine(
@@ -1941,7 +1975,7 @@ function buildRosterBoardRowLine(
   const values = Object.fromEntries(
     columns.map((column) => [column, getRosterDisplayColumnValue(signup, column, rowIndex)] as const),
   ) as Record<RosterDisplayColumn, string | null>;
-  return buildRosterBoardLine(columns, values, widths);
+  return buildRosterBoardDisplayLine(columns, values, widths);
 }
 
 function buildRosterBoardRowLines(
@@ -1955,14 +1989,22 @@ function buildRosterBoardRowLines(
   }
   let rowIndex = startIndex;
   const lines = signups.map((signup) => {
-    const line = `\`${buildRosterBoardRowLine(signup, columns, widths, rowIndex)}\``;
+    const line = buildRosterBoardRowLine(signup, columns, widths, rowIndex);
     rowIndex += 1;
     return line;
   });
   return { lines, nextIndex: rowIndex };
 }
 
-function buildRosterSignupPayloadFromView(view: RosterSignupView): RosterSignupPayload {
+async function renderRosterBoardShortcodes(text: string, client?: Client | null): Promise<string> {
+  if (!client) return text;
+  return emojiResolverService.replaceShortcodes(client, text).catch(() => text);
+}
+
+async function buildRosterSignupPayloadFromView(
+  view: RosterSignupView,
+  options?: RosterSignupPayloadBuildOptions,
+): Promise<RosterSignupPayload> {
   const title = normalizeRosterText(view.clanDisplayName ?? null) ?? normalizeClanTag(view.roster.clanTag ?? "") ?? "Roster";
   const groups = buildRosterGroupsWithSignups(view);
   const columns =
@@ -1976,7 +2018,7 @@ function buildRosterSignupPayloadFromView(view: RosterSignupView): RosterSignupP
   const lines: string[] = [
     rosterLabel,
     "",
-    `\`${buildRosterBoardHeaderLine(columns, widths)}\``,
+    buildRosterBoardHeaderLine(columns, widths),
   ];
 
   let rowIndex = 1;
@@ -1994,12 +2036,14 @@ function buildRosterSignupPayloadFromView(view: RosterSignupView): RosterSignupP
   lines.push("");
   lines.push(`Total ${view.totalSignupCount}/${maxMembersLabel} | Min. TH ${minTownHallLabel}`);
 
+  const renderedDescription = await renderRosterBoardShortcodes(lines.join("\n"), options?.emojiClient ?? null);
   const embed = new EmbedBuilder()
     .setColor(0xfee75c)
     .setTitle(title)
-    .setDescription(truncateDiscordContent(lines.join("\n"), 4096));
+    .setDescription(truncateDiscordContent(renderedDescription, 4096));
 
   const buttonMode = normalizeRosterPostButtonMode(view.roster.postButtonMode);
+  const refreshButtonDisabled = options?.refreshButtonDisabled ?? false;
   const buttonRows: ActionRowBuilder<ButtonBuilder>[] = [];
   if (buttonMode !== "archived") {
     const rowButtons: ButtonBuilder[] = [
@@ -2008,6 +2052,7 @@ function buildRosterSignupPayloadFromView(view: RosterSignupView): RosterSignupP
         .setEmoji("🔄")
         .setStyle(ButtonStyle.Secondary),
     ];
+    rowButtons[0].setDisabled(refreshButtonDisabled);
     if (buttonMode === "standard") {
       rowButtons.push(
         new ButtonBuilder()
@@ -2511,17 +2556,17 @@ export class RosterService {
   async buildRosterSignupPayload(
     rosterId: string,
     _cocService?: CoCService | null,
-    options?: RosterViewLoadOptions,
+    options?: RosterSignupPayloadBuildOptions,
   ): Promise<RosterSignupPayload | null> {
     const view = await loadRosterView(rosterId, options);
     if (!view) return null;
-    return buildRosterSignupPayloadFromView(view);
+    return buildRosterSignupPayloadFromView(view, options);
   }
 
   async refreshRosterSignupPayload(
     rosterId: string,
     cocService?: CoCService | null,
-    options?: RosterViewLoadOptions,
+    options?: RosterSignupPayloadBuildOptions,
   ): Promise<RosterSignupPayload | null> {
     const roster = await prisma.roster.findUnique({
       where: { id: rosterId },

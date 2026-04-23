@@ -422,10 +422,12 @@ async function refreshExistingRosterPost(
     return false;
   }
 
-  const payload = await rosterService.refreshRosterSignupPayload(rosterId, cocService ?? null, {
+  const loadingPayload = await rosterService.buildRosterSignupPayload(rosterId, null, {
     discordDisplayNamesByUserId: buildRosterDiscordDisplayNameMap(interaction),
+    emojiClient: interaction.client,
+    refreshButtonDisabled: true,
   });
-  if (!payload) {
+  if (!loadingPayload) {
     return false;
   }
 
@@ -436,6 +438,31 @@ async function refreshExistingRosterPost(
 
   const message = await channel.messages.fetch(rosterView.roster.postedMessageId).catch(() => null);
   if (!message) {
+    return false;
+  }
+
+  await message.edit({
+    embeds: [loadingPayload.embed],
+    components: loadingPayload.components,
+  }).catch(() => undefined);
+
+  const payload = await rosterService.refreshRosterSignupPayload(rosterId, cocService ?? null, {
+    discordDisplayNamesByUserId: buildRosterDiscordDisplayNameMap(interaction),
+    emojiClient: interaction.client,
+    refreshButtonDisabled: false,
+  });
+  if (!payload) {
+    const restoredPayload = await rosterService.buildRosterSignupPayload(rosterId, null, {
+      discordDisplayNamesByUserId: buildRosterDiscordDisplayNameMap(interaction),
+      emojiClient: interaction.client,
+      refreshButtonDisabled: false,
+    });
+    if (restoredPayload) {
+      await message.edit({
+        embeds: [restoredPayload.embed],
+        components: restoredPayload.components,
+      }).catch(() => undefined);
+    }
     return false;
   }
 
@@ -465,6 +492,7 @@ async function postRosterSignupMessage(
 
   const payload = await rosterService.buildRosterSignupPayload(rosterId, cocService ?? null, {
     discordDisplayNamesByUserId: buildRosterDiscordDisplayNameMap(interaction),
+    emojiClient: interaction.client,
   });
   if (!payload) {
     return { outcome: "no_payload", postedMessageUrl: rosterView.roster.postedMessageUrl ?? null };
@@ -931,11 +959,42 @@ export async function handleRosterPostRefreshButtonInteraction(
 
   await interaction.deferUpdate();
 
+  const loadingPayload = await rosterService.buildRosterSignupPayload(parsed.rosterId, null, {
+    discordDisplayNamesByUserId: buildRosterDiscordDisplayNameMap(interaction),
+    emojiClient: interaction.client,
+    refreshButtonDisabled: true,
+  });
+  if (!loadingPayload) {
+    await interaction.editReply("That roster is no longer available.");
+    return;
+  }
+
+  await interaction.editReply({
+    embeds: [loadingPayload.embed],
+    components: loadingPayload.components,
+  });
+
   const payload = await rosterService.refreshRosterSignupPayload(parsed.rosterId, cocService, {
     discordDisplayNamesByUserId: buildRosterDiscordDisplayNameMap(interaction),
+    emojiClient: interaction.client,
+    refreshButtonDisabled: false,
   });
   if (!payload) {
-    await interaction.editReply("That roster is no longer available.");
+    const restoredPayload = await rosterService.buildRosterSignupPayload(parsed.rosterId, null, {
+      discordDisplayNamesByUserId: buildRosterDiscordDisplayNameMap(interaction),
+      emojiClient: interaction.client,
+      refreshButtonDisabled: false,
+    });
+    if (restoredPayload) {
+      await interaction.editReply({
+        embeds: [restoredPayload.embed],
+        components: restoredPayload.components,
+      });
+    }
+    await interaction.followUp({
+      content: "That roster is no longer available.",
+      ephemeral: true,
+    }).catch(() => undefined);
     return;
   }
 
