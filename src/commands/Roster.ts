@@ -2918,6 +2918,14 @@ async function autocompleteRosterManagePlayers(interaction: AutocompleteInteract
     await interaction.respond([]);
     return;
   }
+  const normalizedGroupKey = String(groupKey ?? "").trim().toLowerCase();
+  const rosterGroups = Array.isArray((rosterView as { groups?: Array<{ key: string }> }).groups)
+    ? (rosterView as { groups: Array<{ key: string }> }).groups
+    : [];
+  if (action === "move" && !rosterGroups.some((group) => String(group.key ?? "").trim().toLowerCase() === normalizedGroupKey)) {
+    await interaction.respond([]);
+    return;
+  }
 
   const query = String(focused.value ?? "")
     .trim()
@@ -2942,7 +2950,7 @@ async function autocompleteRosterManagePlayers(interaction: AutocompleteInteract
           .filter((signup) => {
             if (action === "move") {
               const signupGroupKey = String(signup.group?.key ?? "").trim().toLowerCase();
-              return signupGroupKey === groupKey.toLowerCase();
+              return signupGroupKey !== normalizedGroupKey;
             }
             return true;
           })

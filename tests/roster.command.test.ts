@@ -2547,6 +2547,10 @@ describe("/roster command", () => {
         id: "roster-1",
         lifecycleState: "OPEN",
       },
+      groups: [
+        { id: "group-confirmed", key: "confirmed", name: "Confirmed", description: null, sortOrder: 0 },
+        { id: "group-substitute", key: "substitute", name: "Substitute", description: null, sortOrder: 1 },
+      ],
       signups: [
         {
           id: "signup-1",
@@ -2624,9 +2628,19 @@ describe("/roster command", () => {
     }) as any;
     await Roster.autocomplete(moveInteraction);
     expect(moveInteraction.respond).toHaveBeenCalledWith([
-      { name: "Alpha (#PYLQ0289)", value: "#PYLQ0289" },
-      { name: "Bravo (#QGRJ2222)", value: "#QGRJ2222" },
+      { name: "Charlie (#CUV02898)", value: "#CUV02898" },
     ]);
+
+    const invalidMoveInteraction = makeAutocompleteInteraction({
+      focusedName: "players",
+      focusedValue: "",
+      subcommand: "manage",
+      roster: "roster-1",
+      action: "move",
+      group: "not-real",
+    }) as any;
+    await Roster.autocomplete(invalidMoveInteraction);
+    expect(invalidMoveInteraction.respond).toHaveBeenCalledWith([]);
 
     const removeInteraction = makeAutocompleteInteraction({
       focusedName: "players",
