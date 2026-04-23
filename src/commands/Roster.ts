@@ -1935,24 +1935,35 @@ export async function handleRosterPostCustomizeMenuInteraction(
     return;
   }
 
-  if (!(await canUseRosterPostTarget(interaction, "roster:manage"))) {
+  const parsed = parseRosterPostCustomizeMenuCustomId(interaction.customId);
+  if (!parsed) {
+    return;
+  }
+
+  const deferred = await interaction.deferUpdate().then(() => true).catch(() => false);
+
+  const sendCustomizeError = async (content: string): Promise<void> => {
+    if (deferred || interaction.replied) {
+      await interaction.followUp({
+        content,
+        ephemeral: true,
+      }).catch(() => undefined);
+      return;
+    }
+
     await interaction.reply({
-      content: "You don't have permission to manage this roster.",
+      content,
       ephemeral: true,
-    });
+    }).catch(() => undefined);
+  };
+
+  if (!(await canUseRosterPostTarget(interaction, "roster:manage"))) {
+    await sendCustomizeError("You don't have permission to manage this roster.");
     return;
   }
 
   if (!interaction.inGuild() || !interaction.guildId) {
-    await interaction.reply({
-      content: "This command can only be used in a server.",
-      ephemeral: true,
-    });
-    return;
-  }
-
-  const parsed = parseRosterPostCustomizeMenuCustomId(interaction.customId);
-  if (!parsed) {
+    await sendCustomizeError("This command can only be used in a server.");
     return;
   }
 
@@ -1961,24 +1972,16 @@ export async function handleRosterPostCustomizeMenuInteraction(
     rosterId: parsed.rosterId,
   });
   if (!roster) {
-    await interaction.reply({
-      content: "That roster is no longer available.",
-      ephemeral: true,
-    });
+    await sendCustomizeError("That roster is no longer available.");
     return;
   }
 
   if (parsed.kind === "columns") {
     const selectedColumns = normalizeRosterCustomizeColumns(interaction.values) ?? [];
     if (selectedColumns.length <= 0) {
-      await interaction.reply({
-        content: "Choose at least one column to customize.",
-        ephemeral: true,
-      });
+      await sendCustomizeError("Choose at least one column to customize.");
       return;
     }
-
-    await interaction.deferUpdate().catch(() => undefined);
 
     const updated = await rosterService.updateRoster({
       rosterId: roster.id,
@@ -2013,8 +2016,6 @@ export async function handleRosterPostCustomizeMenuInteraction(
     return;
   }
 
-  await interaction.deferUpdate().catch(() => undefined);
-
   const normalizedSortBy = normalizeRosterCustomizeSortByChoice(interaction.values[0] ?? "");
   const updated = await rosterService.updateRoster({
     rosterId: roster.id,
@@ -2023,11 +2024,7 @@ export async function handleRosterPostCustomizeMenuInteraction(
   });
 
   if (!updated) {
-    await interaction.editReply({
-      content: "That roster is no longer available.",
-      embeds: [],
-      components: [],
-    });
+    await sendCustomizeError("That roster is no longer available.");
     return;
   }
 
