@@ -919,6 +919,81 @@ describe("/roster command", () => {
     expect(setWeightButton?.custom_id).toBe("roster-manage-weight:open:roster-1:#PQL0289");
   });
 
+  it("refreshes the posted roster after manager add before returning the add summary", async () => {
+    (rosterService.findGuildRosterById as any).mockResolvedValue({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      lifecycleState: "OPEN",
+      postedChannelId: "channel-1",
+      postedMessageId: "message-1",
+      postedMessageUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    });
+    (rosterService.getRosterView as any).mockResolvedValue({
+      roster: {
+        id: "roster-1",
+        postedChannelId: "channel-1",
+        postedMessageId: "message-1",
+      },
+      groups: [],
+      signups: [],
+      totalSignupCount: 0,
+    });
+    (rosterService.addRosterSignupsForManager as any).mockResolvedValue({
+      outcome: "created",
+      rosterId: "roster-1",
+      groupKey: "confirmed",
+      groupName: "Confirmed",
+      requestedTags: ["#PQL0289"],
+      linkedTags: ["#PQL0289"],
+      createdTags: ["#PQL0289"],
+      createdAccounts: [{ playerTag: "#PQL0289", playerName: "Alpha" }],
+      duplicateTags: [],
+      missingLinkedTags: [],
+    });
+    const editedMessage = { edit: vi.fn().mockResolvedValue(undefined) };
+    const rosterChannel = {
+      isTextBased: () => true,
+      messages: {
+        fetch: vi.fn().mockResolvedValue(editedMessage),
+      },
+    };
+    const interaction = makeInteraction({
+      subcommand: "manage",
+      roster: "roster-1",
+      action: "add",
+      group: "confirmed",
+      players: "#PQL0289",
+    }) as any;
+    interaction.client.channels.fetch = vi.fn().mockResolvedValue(rosterChannel);
+
+    await Roster.run({} as any, interaction as any);
+
+    expect(rosterService.refreshRosterSignupPayload).toHaveBeenCalledWith(
+      "roster-1",
+      null,
+      expect.objectContaining({
+        refreshButtonDisabled: false,
+      }),
+    );
+    expect(editedMessage.edit).toHaveBeenCalled();
+    expect(String(interaction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
+      "Signed up #PQL0289",
+    );
+  });
+
   it("rejects roster manage set_weight when the selected player is not on the roster", async () => {
     (rosterService.findGuildRosterById as any).mockResolvedValue({
       id: "roster-1",
@@ -1321,8 +1396,8 @@ describe("/roster command", () => {
         id: "roster-1",
         title: "CWL Alpha Signup",
         clanTag: "#2QG2C08UP",
-        postedChannelId: null,
-        postedMessageId: null,
+        postedChannelId: "channel-1",
+        postedMessageId: "message-1",
         rosterRoleId: null,
       },
       clanDisplayName: "CWL Alpha",
@@ -1330,6 +1405,15 @@ describe("/roster command", () => {
       signups: [],
       totalSignupCount: 0,
     });
+    const editedMessage = {
+      edit: vi.fn().mockResolvedValue(undefined),
+    };
+    const rosterChannel = {
+      isTextBased: () => true,
+      messages: {
+        fetch: vi.fn().mockResolvedValue(editedMessage),
+      },
+    };
 
     const interaction = {
       customId,
@@ -1344,7 +1428,7 @@ describe("/roster command", () => {
       followUp: vi.fn().mockResolvedValue(undefined),
       client: {
         channels: {
-          fetch: vi.fn().mockResolvedValue(null),
+          fetch: vi.fn().mockResolvedValue(rosterChannel),
         },
       },
     } as any;
@@ -1356,6 +1440,13 @@ describe("/roster command", () => {
       discordUserId: "111111111111111111",
       cocService: null,
     });
+    expect(rosterService.refreshRosterSignupPayload).toHaveBeenCalledWith(
+      "roster-1",
+      null,
+      expect.objectContaining({
+        refreshButtonDisabled: false,
+      }),
+    );
     expect(String(interaction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).toBe(expectedContent);
   });
 
