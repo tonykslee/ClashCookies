@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { Roster } from "../src/commands/Roster";
 
 describe("/roster command shape", () => {
-  it("registers create, list, post, manage, edit, delete, report, readiness, and refresh without flat manager drift", () => {
+  it("registers create, list, post, ping, manage, edit, delete, report, readiness, and refresh without flat manager drift", () => {
     const create = Roster.options?.find(
       (option) =>
         option.type === ApplicationCommandOptionType.Subcommand &&
@@ -11,6 +11,7 @@ describe("/roster command shape", () => {
     );
     const list = Roster.options?.find((option) => option.name === "list");
     const post = Roster.options?.find((option) => option.name === "post");
+    const ping = Roster.options?.find((option) => option.name === "ping");
     const manage = Roster.options?.find((option) => option.name === "manage");
     const edit = Roster.options?.find((option) => option.name === "edit");
     const deleteOption = Roster.options?.find((option) => option.name === "delete");
@@ -22,6 +23,7 @@ describe("/roster command shape", () => {
     expect(list?.type).toBe(ApplicationCommandOptionType.Subcommand);
     expect(list?.options?.map((option: any) => option.name)).toEqual(["name", "user", "player", "clan"]);
     expect(post?.type).toBe(ApplicationCommandOptionType.Subcommand);
+    expect(ping?.type).toBe(ApplicationCommandOptionType.Subcommand);
     expect(manage?.type).toBe(ApplicationCommandOptionType.Subcommand);
     expect(edit?.type).toBe(ApplicationCommandOptionType.Subcommand);
     expect(deleteOption?.type).toBe(ApplicationCommandOptionType.Subcommand);
@@ -64,6 +66,14 @@ describe("/roster command shape", () => {
     );
 
     expect(post?.options?.find((option: any) => option.name === "roster")?.required).toBe(true);
+    expect(ping?.options?.find((option: any) => option.name === "roster")?.required).toBe(true);
+    expect(ping?.options?.find((option: any) => option.name === "message")?.required).toBe(false);
+    expect(ping?.options?.find((option: any) => option.name === "ping_option")?.choices?.map((choice: any) => choice.value)).toEqual([
+      "unregistered",
+      "missing",
+      "everyone",
+    ]);
+    expect(ping?.options?.find((option: any) => option.name === "group")?.autocomplete).toBe(true);
     expect(report?.options?.find((option: any) => option.name === "roster")?.required).toBe(true);
     expect(readiness?.options?.find((option: any) => option.name === "roster")?.required).toBe(true);
     expect(refresh?.options?.find((option: any) => option.name === "roster")?.required).toBe(true);
