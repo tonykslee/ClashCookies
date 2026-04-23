@@ -113,6 +113,8 @@ import {
 } from "../commands/Cwl";
 import {
   handleRosterPostSettingsActionButtonInteraction,
+  handleRosterReportPingButtonInteraction,
+  handleRosterPingActionButtonInteraction,
   handleRosterPostSettingsGroupSelectInteraction,
   handleRosterPostSettingsPlayerSelectInteraction,
   handleRosterPostSettingsUserSelectInteraction,
@@ -142,6 +144,8 @@ import {
   isRosterPostRefreshButtonCustomId,
   isRosterPostSettingsButtonCustomId,
   isRosterPostSettingsMenuCustomId,
+  isRosterReportPingButtonCustomId,
+  isRosterPingActionButtonCustomId,
   isRosterPostUsersActionButtonCustomId,
   isRosterPostUsersGroupSelectMenuCustomId,
   isRosterPostUsersPlayerSelectMenuCustomId,
@@ -785,6 +789,36 @@ const handleButtonInteraction = async (
         await interaction.reply({
           ephemeral: true,
           content: "Failed to update roster settings.",
+        });
+      }
+    }
+    return;
+  }
+
+  if (isRosterReportPingButtonCustomId(interaction.customId)) {
+    try {
+      await handleRosterReportPingButtonInteraction(interaction, cocService);
+    } catch (err) {
+      console.error(`Roster report ping button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to open roster ping.",
+        });
+      }
+    }
+    return;
+  }
+
+  if (isRosterPingActionButtonCustomId(interaction.customId)) {
+    try {
+      await handleRosterPingActionButtonInteraction(interaction);
+    } catch (err) {
+      console.error(`Roster ping confirmation button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to post the roster ping.",
         });
       }
     }

@@ -46,9 +46,6 @@ describe("roster permission defaults", () => {
       service.canUseAnyTarget(["roster:report"], buildInteraction({ isAdmin: false })),
     ).resolves.toBe(false);
     await expect(
-      service.canUseAnyTarget(["roster:readiness"], buildInteraction({ isAdmin: false })),
-    ).resolves.toBe(false);
-    await expect(
       service.canUseAnyTarget(["roster:refresh"], buildInteraction({ isAdmin: false })),
     ).resolves.toBe(false);
     await expect(
@@ -71,9 +68,6 @@ describe("roster permission defaults", () => {
     ).resolves.toBe(true);
     await expect(
       service.canUseAnyTarget(["roster:report"], buildInteraction({ isAdmin: true })),
-    ).resolves.toBe(true);
-    await expect(
-      service.canUseAnyTarget(["roster:readiness"], buildInteraction({ isAdmin: true })),
     ).resolves.toBe(true);
     await expect(
       service.canUseAnyTarget(["roster:refresh"], buildInteraction({ isAdmin: true })),

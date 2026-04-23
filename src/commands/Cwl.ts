@@ -2338,7 +2338,10 @@ export async function handleRosterManagerSubcommand(
 
   if (subcommand === "report" || subcommand === "readiness") {
     // Report and readiness intentionally share the same manager-facing roster view in Phase 2.
-    const reportText = await rosterService.buildRosterManagerReadinessText({ rosterId: roster.id });
+    const reportText = await rosterService.buildRosterManagerReadinessText({
+      rosterId: roster.id,
+      cocService,
+    });
     if (!reportText) {
       await interaction.editReply("Failed to build the roster readiness report.");
       return;

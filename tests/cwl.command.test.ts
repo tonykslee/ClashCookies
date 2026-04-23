@@ -666,6 +666,7 @@ describe("/cwl command", () => {
     (rosterService.buildRosterManagerReadinessText as any).mockResolvedValue(
       "CWL Alpha Signup\nUnregistered members:\n- Bravo `#QGRJ2222` <@222222222222222222>",
     );
+    const cocService = {} as any;
 
     const interaction = makeInteraction({
       group: "roster",
@@ -675,7 +676,7 @@ describe("/cwl command", () => {
     interaction.inGuild = () => true;
     interaction.guildId = "guild-1";
 
-    await Cwl.run({} as any, interaction as any, {} as any);
+    await Cwl.run({} as any, interaction as any, cocService);
 
     expect(rosterService.findCwlRosterForClan).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -685,6 +686,7 @@ describe("/cwl command", () => {
     );
     expect(rosterService.buildRosterManagerReadinessText).toHaveBeenCalledWith({
       rosterId: "roster-1",
+      cocService,
     });
     expect(getEditedDescription(interaction)).toContain("Unregistered members:");
   });

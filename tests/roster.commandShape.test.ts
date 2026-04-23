@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { Roster } from "../src/commands/Roster";
 
 describe("/roster command shape", () => {
-  it("registers create, list, post, manage, edit, delete, report, readiness, and refresh without flat manager drift", () => {
+  it("registers create, list, post, ping, manage, edit, delete, report, and refresh without flat manager drift", () => {
     const create = Roster.options?.find(
       (option) =>
         option.type === ApplicationCommandOptionType.Subcommand &&
@@ -11,22 +11,22 @@ describe("/roster command shape", () => {
     );
     const list = Roster.options?.find((option) => option.name === "list");
     const post = Roster.options?.find((option) => option.name === "post");
+    const ping = Roster.options?.find((option) => option.name === "ping");
     const manage = Roster.options?.find((option) => option.name === "manage");
     const edit = Roster.options?.find((option) => option.name === "edit");
     const deleteOption = Roster.options?.find((option) => option.name === "delete");
     const report = Roster.options?.find((option) => option.name === "report");
-    const readiness = Roster.options?.find((option) => option.name === "readiness");
     const refresh = Roster.options?.find((option) => option.name === "refresh");
 
     expect(create?.type).toBe(ApplicationCommandOptionType.Subcommand);
     expect(list?.type).toBe(ApplicationCommandOptionType.Subcommand);
     expect(list?.options?.map((option: any) => option.name)).toEqual(["name", "user", "player", "clan"]);
     expect(post?.type).toBe(ApplicationCommandOptionType.Subcommand);
+    expect(ping?.type).toBe(ApplicationCommandOptionType.Subcommand);
     expect(manage?.type).toBe(ApplicationCommandOptionType.Subcommand);
     expect(edit?.type).toBe(ApplicationCommandOptionType.Subcommand);
     expect(deleteOption?.type).toBe(ApplicationCommandOptionType.Subcommand);
     expect(report?.type).toBe(ApplicationCommandOptionType.Subcommand);
-    expect(readiness?.type).toBe(ApplicationCommandOptionType.Subcommand);
     expect(refresh?.type).toBe(ApplicationCommandOptionType.Subcommand);
     expect(Roster.options?.find((option) => option.name === "open")).toBeUndefined();
     expect(Roster.options?.find((option) => option.name === "close")).toBeUndefined();
@@ -64,18 +64,32 @@ describe("/roster command shape", () => {
     );
 
     expect(post?.options?.find((option: any) => option.name === "roster")?.required).toBe(true);
+    expect(ping?.options?.find((option: any) => option.name === "roster")?.required).toBe(true);
+    expect(ping?.options?.find((option: any) => option.name === "message")?.required).toBe(false);
+    expect(ping?.options?.find((option: any) => option.name === "ping_option")?.choices?.map((choice: any) => choice.value)).toEqual([
+      "unregistered",
+      "missing",
+      "everyone",
+    ]);
+    expect(ping?.options?.find((option: any) => option.name === "group")?.autocomplete).toBe(true);
     expect(report?.options?.find((option: any) => option.name === "roster")?.required).toBe(true);
-    expect(readiness?.options?.find((option: any) => option.name === "roster")?.required).toBe(true);
     expect(refresh?.options?.find((option: any) => option.name === "roster")?.required).toBe(true);
     expect(deleteOption?.options?.find((option: any) => option.name === "roster")?.required).toBe(true);
 
     const manageRoster = manage?.options?.find((option: any) => option.name === "roster");
     const manageAction = manage?.options?.find((option: any) => option.name === "action");
+    const manageTargetRoster = manage?.options?.find((option: any) => option.name === "target_roster");
+    const manageTargetGroup = manage?.options?.find((option: any) => option.name === "target_group");
+    const manageUser = manage?.options?.find((option: any) => option.name === "user");
     const manageGroup = manage?.options?.find((option: any) => option.name === "group");
     const managePlayers = manage?.options?.find((option: any) => option.name === "players");
 
     expect(manageRoster?.required).toBe(true);
     expect(manageAction?.required).toBe(true);
+    expect(manageTargetRoster?.autocomplete).toBe(true);
+    expect(manageTargetGroup?.autocomplete).toBe(true);
+    expect(manageUser?.type).toBe(ApplicationCommandOptionType.User);
+    expect(manageUser?.autocomplete).not.toBe(true);
     expect(manageGroup?.required).toBe(false);
     expect(managePlayers?.required).toBe(false);
     expect(manageGroup?.autocomplete).toBe(true);
@@ -84,6 +98,7 @@ describe("/roster command shape", () => {
       "add",
       "move",
       "remove",
+      "change_roster",
       "set_weight",
       "open",
       "close",
@@ -140,7 +155,7 @@ describe("/roster command shape", () => {
     }
   });
 
-  it("autocompletes roster list user and clan options, plus edit/create clan selectors", () => {
+  it("uses a native Discord user selector for roster list user and autocompletes clan selectors", () => {
     const create = Roster.options?.find(
       (option) =>
         option.type === ApplicationCommandOptionType.Subcommand &&
@@ -148,7 +163,10 @@ describe("/roster command shape", () => {
     );
     const list = Roster.options?.find((option) => option.name === "list");
     const edit = Roster.options?.find((option) => option.name === "edit");
-    expect(list?.options?.find((option: any) => option.name === "user")?.autocomplete).toBe(true);
+    expect(list?.options?.find((option: any) => option.name === "user")?.type).toBe(
+      ApplicationCommandOptionType.User,
+    );
+    expect(list?.options?.find((option: any) => option.name === "user")?.autocomplete).not.toBe(true);
     expect(list?.options?.find((option: any) => option.name === "clan")?.autocomplete).toBe(true);
     expect(create?.options?.find((option: any) => option.name === "clan")?.autocomplete).toBe(true);
     expect(edit?.options?.find((option: any) => option.name === "clan")?.autocomplete).toBe(true);

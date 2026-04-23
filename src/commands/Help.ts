@@ -56,7 +56,6 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "roster:edit",
   "roster:delete",
   "roster:report",
-  "roster:readiness",
   "roster:refresh",
 ]);
 
@@ -309,13 +308,13 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     details: [
       "`/roster create category:<CWL|FWA> clan:<trackedClanTag> [name:<text>] [title:<text>] [timezone:<ianaTz>] [start_time:YYYY-MM-DD HH:mm] [end_time:YYYY-MM-DD HH:mm] [max_members:<n>] [max_accounts_per_user:<n>] [min_townhall:<n>] [max_townhall:<n>] [roster_role:<role>] [allow_multi_signup:<bool>] [sort_by:<signed_up_at|player_name|player_tag|discord_user|townhall>] [import_members:<bool>]` creates a roster object without posting it yet. `name` is the preferred field and `title` is a compatibility alias.",
       "`/roster list [name:<text>] [user:<discordId>] [player:<playerTagOrName>] [clan:<clanTag>]` shows roster title, type, clan scope, lifecycle state, and posted status for the guild.",
-      "`/roster list` is public by default; create/post/manage/edit/delete/report/readiness/refresh are admin-only by default unless you whitelist roles.",
+      "`/roster list` is public by default; create/post/manage/edit/delete/report/refresh are admin-only by default unless you whitelist roles.",
       "`/roster post roster:<roster>` posts the roster signup message or refreshes the existing post if it already exists. The published board uses a compact Player / Discord / Clan table by default plus `Refresh`, `Signup`, `Opt-out`, and `Settings` controls. `Settings` includes `Customize` for saved column-order and sort-mode overrides, `Add User` and `Remove User` roster member panels, and optional `Townhall Icons`, `Index`, `Weight Source`, and `Weight Age` columns can be enabled from there.",
       "`/roster manage roster:<roster> action:<add|move|remove|set_weight|open|close|archive> ...` is the roster-keyed manager surface for mutation, manual fallback weight entry, and lifecycle changes. Resolved roster weights prefer `FwaPlayerCatalog.latestKnownWeight` first, then `ExternalPlayerWeightCurrent` as the fallback owner when needed.",
       "`/roster edit roster:<roster>` edits roster metadata such as name, category, clan scope, limits, town-hall gates, roster role, sort order, and timezone fields. `name` is the supported label for edit.",
       "`/roster` settings actions currently include export, customize, close roster, clear roster, hide buttons, archive mode, unregistered members, and missing members; destructive actions require confirmation where applicable. Export opens a Google Sheet from the ephemeral roster settings flow.",
       "`/roster delete roster:<roster>` removes the posted Discord message first when one exists, then hard-deletes the roster and its persisted signup data. If the message cannot be removed, the roster stays intact so you can retry safely.",
-      "`/roster report` and `/roster readiness` intentionally share the same roster readiness view for now.",
+      "`/roster report` shows the richer roster status view, and `/roster refresh` rerenders the posted board from refreshed DB truth.",
       "`/roster refresh roster:<roster>` refreshes rostered players' current-clan state through the service layer before rerendering the posted roster message from DB truth.",
     ],
     examples: [

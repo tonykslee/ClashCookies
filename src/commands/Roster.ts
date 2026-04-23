@@ -38,6 +38,9 @@ import {
   parseRosterPostRefreshButtonCustomId,
   parseRosterPostSettingsButtonCustomId,
   parseRosterPostSettingsMenuCustomId,
+  buildRosterReportPingButtonCustomId,
+  parseRosterReportPingButtonCustomId,
+  parseRosterPingActionButtonCustomId,
   parseRosterPostUsersActionButtonCustomId,
   parseRosterPostUsersGroupSelectMenuCustomId,
   parseRosterPostUsersPlayerSelectMenuCustomId,
@@ -63,7 +66,15 @@ export {
 
 const rosterPermissionService = new CommandPermissionService();
 
-type RosterMutationAction = "add" | "move" | "remove" | "set_weight" | "open" | "close" | "archive";
+type RosterMutationAction =
+  | "add"
+  | "move"
+  | "remove"
+  | "change_roster"
+  | "set_weight"
+  | "open"
+  | "close"
+  | "archive";
 type RosterPostSettingsAction =
   | "export"
   | "customize"
@@ -94,6 +105,19 @@ function formatRosterAccountIdentity(account: { playerTag: string; playerName: s
 
 function formatRosterAccountIdentityList(accounts: Array<{ playerTag: string; playerName: string | null }>): string {
   return accounts.map(formatRosterAccountIdentity).join(", ");
+}
+
+function getAutocompleteUserOptionId(interaction: AutocompleteInteraction): string | null {
+  const options = interaction.options as unknown as {
+    getUser?: (name: string, required?: boolean) => { id?: string } | null;
+    data?: Array<{ name?: string; value?: unknown }>;
+  };
+  const selectedUser = options.getUser?.("user", false);
+  if (selectedUser?.id && String(selectedUser.id).trim().length > 0) {
+    return String(selectedUser.id).trim();
+  }
+  const rawValue = options.data?.find((option) => option.name === "user")?.value;
+  return typeof rawValue === "string" && rawValue.trim().length > 0 ? rawValue.trim() : null;
 }
 
 function formatRosterDiscordUserSelectionLabel(
@@ -129,6 +153,15 @@ function buildRosterLifecycleSummary(roster: RosterRecord, lifecycleState: Roste
         ? "closed"
         : "archived";
   return `${roster.title} was ${label}.`;
+}
+
+function normalizeRosterPingOptionChoice(input: string | null | undefined): string | null {
+  const normalized = String(input ?? "").trim().toLowerCase();
+  if (!normalized) return null;
+  if (normalized === "unregistered" || normalized === "missing" || normalized === "everyone") {
+    return normalized;
+  }
+  return null;
 }
 
 function describeRosterDisplayColumns(columns: string[] | null | undefined): string {
@@ -279,6 +312,61 @@ function buildRosterMoveResultSummary(result: Awaited<ReturnType<typeof rosterSe
   return `Moved ${moved} to ${result.groupKey}${duplicate}${missing}.`;
 }
 
+function buildRosterChangeResultSummary(
+  result: Awaited<ReturnType<typeof rosterService.changeRosterSignups>>,
+): string {
+  if (result.outcome === "roster_not_found") {
+    return "That source roster is no longer available.";
+  }
+  if (result.outcome === "target_roster_not_found") {
+    return "That target roster is no longer available.";
+  }
+  if (result.outcome === "same_roster") {
+    return "Source and target rosters must be different.";
+  }
+  if (result.outcome === "source_roster_archived") {
+    return "That source roster is archived and can no longer be modified.";
+  }
+  if (result.outcome === "target_roster_archived") {
+    return "That target roster is archived and can no longer be modified.";
+  }
+  if (result.outcome === "target_group_not_found") {
+    return "That target roster group is no longer available.";
+  }
+
+  const destinationForAccount = (account: { targetGroupName: string | null; targetGroupKey: string }) =>
+    account.targetGroupName ?? account.targetGroupKey;
+  const lines = result.movedAccounts.map((account) => {
+    const destination = destinationForAccount(account);
+    const destinationLabel = destination ? `${result.targetRosterTitle} - ${destination}` : result.targetRosterTitle;
+    return `Moved ${formatRosterAccountIdentity(account)} to ${destinationLabel}.`;
+  });
+
+  if (result.duplicateTags.length > 0) {
+    lines.push(`Already on the target roster: ${result.duplicateTags.join(", ")}.`);
+  }
+  if (result.missingTags.length > 0) {
+    lines.push(`Not found on the source roster: ${result.missingTags.join(", ")}.`);
+  }
+  if (result.blockedAccounts.length > 0) {
+    const reason =
+      result.outcome === "roster_full"
+        ? "Roster full"
+        : result.outcome === "account_limit_exceeded"
+          ? "Account limit exceeded"
+          : result.outcome === "townhall_unavailable"
+            ? "Town hall data unavailable"
+            : result.outcome === "townhall_out_of_range"
+              ? "Town hall out of range"
+              : result.outcome === "roster_conflict"
+                ? "Roster conflict"
+                : "Blocked";
+    lines.push(`${reason}: ${formatRosterAccountIdentityList(result.blockedAccounts)}.`);
+  }
+
+  return lines.length > 0 ? lines.join("\n") : "No roster signups were changed.";
+}
+
 function buildRosterRemoveResultSummary(
   result: Awaited<ReturnType<typeof rosterService.removeRosterSignupsAsManager>>,
 ): string {
@@ -300,6 +388,65 @@ function buildRosterRemoveResultSummary(
       ? ` (${result.notOwnedTags.length} not found on that roster)`
       : "";
   return `Removed ${removed}${ignored}.`;
+}
+
+function normalizeRosterMutationLabel(value: string | null | undefined, fallback: string): string {
+  const normalized = String(value ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return normalized || fallback;
+}
+
+function buildRosterMutationConfirmationLine(
+  action: "add" | "remove",
+  account: { playerTag: string; playerName: string | null },
+  rosterName: string,
+  clanName: string,
+): string {
+  const verb = action === "add" ? "Added" : "Removed";
+  const direction = action === "add" ? "to" : "from";
+  const playerName = normalizeRosterMutationLabel(account.playerName, account.playerTag);
+  return `${verb} ${playerName} (${account.playerTag}) ${direction} ${rosterName} - ${clanName}`;
+}
+
+async function buildRosterMutationConfirmationContent(
+  action: "add" | "remove",
+  result: Awaited<ReturnType<typeof rosterService.addRosterSignupsForManager>> | Awaited<ReturnType<typeof rosterService.removeRosterSignupsAsManager>>,
+): Promise<string> {
+  const addResult = result as Awaited<ReturnType<typeof rosterService.addRosterSignupsForManager>>;
+  const removeResult = result as Awaited<ReturnType<typeof rosterService.removeRosterSignupsAsManager>>;
+  const summary =
+    action === "add"
+      ? buildRosterSignupResultSummary(addResult)
+      : buildRosterRemoveResultSummary(removeResult);
+  const rosterView = await rosterService.getRosterView(result.rosterId).catch(() => null);
+  if (!rosterView) {
+    return summary;
+  }
+
+  const rosterName = normalizeRosterMutationLabel(rosterView.roster.title, "Roster");
+  const clanName = normalizeRosterMutationLabel(
+    rosterView.clanDisplayName ?? normalizeClanTag(rosterView.roster.clanTag ?? "") ?? null,
+    "Unknown Clan",
+  );
+  const accounts =
+    action === "add"
+      ? addResult.createdAccounts
+      : removeResult.removedAccounts;
+  if (accounts.length <= 0) {
+    return summary;
+  }
+
+  const lines = accounts.map((account) =>
+    buildRosterMutationConfirmationLine(action, account, rosterName, clanName),
+  );
+  const hasMixedFailure =
+    action === "add" ? addResult.duplicateTags.length > 0 : removeResult.notOwnedTags.length > 0;
+  if (!hasMixedFailure) {
+    return lines.join("\n");
+  }
+
+  return `${lines.join("\n")}\n\n${summary}`;
 }
 
 function formatRosterListClanLine(clanName: string | null, clanTag: string | null): string {
@@ -360,11 +507,20 @@ async function buildRosterListEmbed(rosters: RosterSummaryRecord[]): Promise<Emb
   return embed;
 }
 
-function buildRosterReadinessEmbed(title: string, body: string): EmbedBuilder {
+function buildRosterReportEmbed(title: string, body: string): EmbedBuilder {
   return new EmbedBuilder()
     .setColor(0xfee75c)
-    .setTitle(`${title} roster readiness`)
+    .setTitle(`${title} Report`)
     .setDescription(body);
+}
+
+function buildRosterReportPingButtonRow(rosterId: string): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(buildRosterReportPingButtonCustomId(rosterId))
+      .setLabel("Ping roster")
+      .setStyle(ButtonStyle.Primary),
+  );
 }
 
 function normalizeRosterCategoryChoice(input: string | null | undefined): string | null {
@@ -1247,6 +1403,7 @@ export async function handleRosterPostSettingsMenuInteraction(
   if (choice === "unregistered_members" || choice === "missing_members") {
     const readiness = await rosterService.buildRosterManagerReadinessView({
       rosterId: roster.id,
+      cocService,
     });
     const lines = !readiness
       ? ["That roster is no longer available."]
@@ -1550,8 +1707,9 @@ export async function handleRosterPostSettingsActionButtonInteraction(
   if (result.outcome === "add_user") {
     await syncRosterRoleAssignments(interaction.client, result.result.rosterId).catch(() => undefined);
     await refreshExistingRosterPost(interaction as unknown as ChatInputCommandInteraction, result.result.rosterId, cocService ?? null).catch(() => undefined);
+    const confirmationContent = await buildRosterMutationConfirmationContent("add", result.result);
     await interaction.editReply({
-      content: buildRosterSignupResultSummary(result.result),
+      content: confirmationContent,
       embeds: [],
       components: [],
     });
@@ -1561,8 +1719,9 @@ export async function handleRosterPostSettingsActionButtonInteraction(
   if (result.outcome === "remove_user") {
     await syncRosterRoleAssignments(interaction.client, result.result.rosterId).catch(() => undefined);
     await refreshExistingRosterPost(interaction as unknown as ChatInputCommandInteraction, result.result.rosterId, cocService ?? null).catch(() => undefined);
+    const confirmationContent = await buildRosterMutationConfirmationContent("remove", result.result);
     await interaction.editReply({
-      content: buildRosterRemoveResultSummary(result.result),
+      content: confirmationContent,
       embeds: [],
       components: [],
     });
@@ -1586,6 +1745,62 @@ export async function handleRosterPostSettingsActionButtonInteraction(
     embeds: [],
     components: [],
   });
+}
+
+export async function handleRosterPingActionButtonInteraction(interaction: ButtonInteraction): Promise<void> {
+  const parsed = parseRosterPingActionButtonCustomId(interaction.customId);
+  if (!parsed) return;
+
+  await interaction.deferUpdate().catch(() => undefined);
+  const result = await rosterService.confirmRosterPingSelectionPanel({
+    sessionId: parsed.sessionId,
+    discordUserId: interaction.user.id,
+  });
+
+  if (result.outcome === "session_not_found") {
+    await interaction.followUp({
+      content: "That roster ping preview has expired. Please start again.",
+      ephemeral: true,
+    }).catch(() => undefined);
+    return;
+  }
+  if (result.outcome === "forbidden") {
+    await interaction.followUp({
+      content: "Only the original requester can use this roster ping preview.",
+      ephemeral: true,
+    }).catch(() => undefined);
+    return;
+  }
+
+  const channel = interaction.channel;
+  if (!channel?.isTextBased() || !("send" in channel)) {
+    await interaction.editReply({
+      content: "Could not post the ping to this channel.",
+      embeds: [],
+      components: [],
+    }).catch(() => undefined);
+    return;
+  }
+
+  try {
+    for (const content of result.messageContents) {
+      await channel.send({
+        content,
+      });
+    }
+    await interaction.editReply({
+      content: `Posted ping for ${result.targetCount} player${result.targetCount === 1 ? "" : "s"}.`,
+      embeds: [],
+      components: [],
+    });
+  } catch (error) {
+    console.error(`[roster] ping_post_failed error=${formatError(error)}`);
+    await interaction.editReply({
+      content: "Failed to post the ping to the channel.",
+      embeds: [],
+      components: [],
+    }).catch(() => undefined);
+  }
 }
 
 function formatRosterManageWeightK(weight: number): string {
@@ -2036,7 +2251,7 @@ async function handleRosterListSubcommand(interaction: ChatInputCommandInteracti
   const rosters = await rosterService.listGuildRosters({
     guildId: interaction.guildId,
     name: interaction.options.getString("name", false),
-    user: interaction.options.getString("user", false),
+    user: interaction.options.getUser("user", false)?.id ?? null,
     player: interaction.options.getString("player", false),
     clan: interaction.options.getString("clan", false),
   });
@@ -2086,7 +2301,10 @@ async function handleRosterPostSubcommand(
   );
 }
 
-async function handleRosterReportSubcommand(interaction: ChatInputCommandInteraction): Promise<void> {
+async function handleRosterReportSubcommand(
+  interaction: ChatInputCommandInteraction,
+  cocService: CoCService,
+): Promise<void> {
   if (!interaction.inGuild() || !interaction.guildId) {
     await interaction.editReply("This command can only be used in a server.");
     return;
@@ -2097,19 +2315,121 @@ async function handleRosterReportSubcommand(interaction: ChatInputCommandInterac
     return;
   }
 
-  const reportText = await rosterService.buildRosterManagerReadinessText({ rosterId: roster.id });
+  const reportText = await rosterService.buildRosterManagerReadinessText({
+    rosterId: roster.id,
+    cocService,
+    emojiClient: interaction.client,
+  });
   if (!reportText) {
-    await interaction.editReply("Failed to build the roster readiness report.");
+    await interaction.editReply("Failed to build the roster report.");
     return;
   }
 
   await interaction.editReply({
-    embeds: [buildRosterReadinessEmbed(roster.title, reportText)],
+    embeds: [buildRosterReportEmbed(roster.title, reportText)],
+    components: [buildRosterReportPingButtonRow(roster.id)],
   });
 }
 
-async function handleRosterReadinessSubcommand(interaction: ChatInputCommandInteraction): Promise<void> {
-  await handleRosterReportSubcommand(interaction);
+export async function handleRosterReportPingButtonInteraction(
+  interaction: ButtonInteraction,
+  cocService: CoCService,
+): Promise<void> {
+  const parsed = parseRosterReportPingButtonCustomId(interaction.customId);
+  if (!parsed) return;
+
+  if (!(await canUseRosterPostTarget(interaction, "roster:manage"))) {
+    await interaction.reply({
+      content: "You do not have permission to manage this roster.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const panel = await rosterService.createRosterPingSelectionPanel({
+    rosterId: parsed.rosterId,
+    discordUserId: interaction.user.id,
+    pingOption: "everyone",
+    cocService,
+  });
+
+  if (panel.outcome === "roster_not_found") {
+    await interaction.reply({
+      content: "That roster is no longer available.",
+      ephemeral: true,
+    });
+    return;
+  }
+  if (panel.outcome === "group_not_found") {
+    await interaction.reply({
+      content: "That roster group is no longer available.",
+      ephemeral: true,
+    });
+    return;
+  }
+  if (panel.outcome === "no_targets") {
+    await interaction.reply({
+      content: "No linked roster members matched that ping selection.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await interaction.reply({
+    embeds: [panel.panel.embed],
+    components: panel.panel.components,
+    ephemeral: true,
+  });
+}
+
+async function handleRosterPingSubcommand(
+  interaction: ChatInputCommandInteraction,
+  cocService: CoCService,
+): Promise<void> {
+  if (!interaction.inGuild() || !interaction.guildId) {
+    await interaction.editReply("This command can only be used in a server.");
+    return;
+  }
+
+  if (!(await canUseRosterPostTarget(interaction, "roster:manage"))) {
+    await interaction.editReply("You do not have permission to manage this roster.");
+    return;
+  }
+
+  const roster = await resolveRosterForGuild(interaction, interaction.options.getString("roster", true));
+  if (!roster) {
+    return;
+  }
+
+  const pingOption = normalizeRosterPingOptionChoice(interaction.options.getString("ping_option", false)) ?? "everyone";
+  const message = interaction.options.getString("message", false)?.trim() ?? null;
+  const groupKey = interaction.options.getString("group", false);
+  const panel = await rosterService.createRosterPingSelectionPanel({
+    rosterId: roster.id,
+    discordUserId: interaction.user.id,
+    pingOption,
+    groupKey,
+    message,
+    cocService,
+  });
+
+  if (panel.outcome === "roster_not_found") {
+    await interaction.editReply("That roster is no longer available.");
+    return;
+  }
+  if (panel.outcome === "group_not_found") {
+    await interaction.editReply("That roster group is no longer available.");
+    return;
+  }
+  if (panel.outcome === "no_targets") {
+    await interaction.editReply("No linked roster members matched that ping selection.");
+    return;
+  }
+
+  await interaction.editReply({
+    embeds: [panel.panel.embed],
+    components: panel.panel.components,
+  });
 }
 
 async function handleRosterRefreshSubcommand(
@@ -2152,6 +2472,8 @@ async function handleRosterManageSubcommand(
 
   const action = interaction.options.getString("action", true) as RosterMutationAction;
   const playersInput = interaction.options.getString("players", false) ?? "";
+  const targetRosterId = interaction.options.getString("target_roster", false)?.trim() ?? "";
+  const targetGroupKey = interaction.options.getString("target_group", false)?.trim() ?? null;
   const playerTags = parseRosterPlayerTags(playersInput);
 
   if (action === "set_weight") {
@@ -2205,6 +2527,75 @@ async function handleRosterManageSubcommand(
   if (playerTags.length <= 0) {
     await interaction.editReply("Provide one or more player tags to update.");
     return;
+  }
+
+  if (action === "change_roster") {
+    if (!targetRosterId) {
+      await interaction.editReply("Provide a target roster for this action.");
+      return;
+    }
+
+    const targetRoster = await rosterService.findGuildRosterById({
+      guildId: interaction.guildId,
+      rosterId: targetRosterId,
+    });
+    if (!targetRoster) {
+      await interaction.editReply("That target roster is no longer available.");
+      return;
+    }
+
+    const result = await rosterService.changeRosterSignups({
+      sourceRosterId: roster.id,
+      targetRosterId: targetRoster.id,
+      targetGroupKey,
+      playerTags,
+      updatedByDiscordUserId: interaction.user.id,
+      cocService,
+    });
+
+    if (
+      result.outcome === "changed" ||
+      result.outcome === "nothing_changed" ||
+      result.outcome === "roster_conflict" ||
+      result.outcome === "townhall_unavailable" ||
+      result.outcome === "townhall_out_of_range" ||
+      result.outcome === "roster_full" ||
+      result.outcome === "account_limit_exceeded"
+    ) {
+      if (result.movedTags.length > 0) {
+        await syncRosterRolesForRoster(interaction.client, roster.id).catch(() => undefined);
+        await syncRosterRolesForRoster(interaction.client, targetRoster.id).catch(() => undefined);
+        await refreshExistingRosterPost(interaction, roster.id, cocService).catch(() => undefined);
+        await refreshExistingRosterPost(interaction, targetRoster.id, cocService).catch(() => undefined);
+      }
+      await interaction.editReply(buildRosterChangeResultSummary(result));
+      return;
+    }
+
+    if (result.outcome === "roster_not_found") {
+      await interaction.editReply("That source roster is no longer available.");
+      return;
+    }
+    if (result.outcome === "target_roster_not_found") {
+      await interaction.editReply("That target roster is no longer available.");
+      return;
+    }
+    if (result.outcome === "same_roster") {
+      await interaction.editReply("Source and target rosters must be different.");
+      return;
+    }
+    if (result.outcome === "source_roster_archived") {
+      await interaction.editReply("That source roster is archived and can no longer be modified.");
+      return;
+    }
+    if (result.outcome === "target_roster_archived") {
+      await interaction.editReply("That target roster is archived and can no longer be modified.");
+      return;
+    }
+    if (result.outcome === "target_group_not_found") {
+      await interaction.editReply("That target roster group is no longer available.");
+      return;
+    }
   }
 
   if (action === "add" || action === "move") {
@@ -2487,7 +2878,10 @@ async function handleRosterDeleteSubcommand(interaction: ChatInputCommandInterac
   );
 }
 
-async function autocompleteRosterOption(interaction: AutocompleteInteraction): Promise<void> {
+async function autocompleteRosterOption(
+  interaction: AutocompleteInteraction,
+  excludeRosterId: string | null = null,
+): Promise<void> {
   if (!interaction.inGuild() || !interaction.guildId) {
     await interaction.respond([]);
     return;
@@ -2498,11 +2892,15 @@ async function autocompleteRosterOption(interaction: AutocompleteInteraction): P
     guildId: interaction.guildId,
     name: focused,
   });
+  const filteredRosters =
+    excludeRosterId && excludeRosterId.length > 0
+      ? rosters.filter((roster) => roster.id !== excludeRosterId)
+      : rosters;
 
-  const clanNameByTag = await buildRosterAutocompleteClanNameMap(rosters);
+  const clanNameByTag = await buildRosterAutocompleteClanNameMap(filteredRosters);
 
   await interaction.respond(
-    rosters.slice(0, 25).map((roster) => {
+    filteredRosters.slice(0, 25).map((roster) => {
       const clanTag = normalizeClanTag(roster.clanTag ?? "") || null;
       const clanName = clanTag ? clanNameByTag.get(clanTag) ?? null : null;
       const labelParts = [roster.title];
@@ -2677,12 +3075,14 @@ async function autocompleteRosterGroup(interaction: AutocompleteInteraction): Pr
   }
 
   const focused = interaction.options.getFocused(true);
-  if (focused.name !== "group") {
+  if (focused.name !== "group" && focused.name !== "target_group") {
     await interaction.respond([]);
     return;
   }
 
-  const rosterId = interaction.options.getString("roster", false)?.trim();
+  const rosterId = interaction.options
+    .getString(focused.name === "target_group" ? "target_roster" : "roster", false)
+    ?.trim();
   if (!rosterId) {
     await interaction.respond([]);
     return;
@@ -2715,7 +3115,7 @@ async function autocompleteRosterGroup(interaction: AutocompleteInteraction): Pr
   );
 }
 
-async function autocompleteRosterPlayers(interaction: AutocompleteInteraction): Promise<void> {
+async function autocompleteRosterManagePlayers(interaction: AutocompleteInteraction): Promise<void> {
   if (!interaction.inGuild()) {
     await interaction.respond([]);
     return;
@@ -2727,65 +3127,113 @@ async function autocompleteRosterPlayers(interaction: AutocompleteInteraction): 
     return;
   }
 
+  const rosterId = interaction.options.getString("roster", false)?.trim();
+  const action = interaction.options.getString("action", false)?.trim().toLowerCase();
+  if (
+    !rosterId ||
+    !action ||
+    (action !== "add" && action !== "move" && action !== "remove" && action !== "change_roster")
+  ) {
+    await interaction.respond([]);
+    return;
+  }
+
+  const rosterView = await rosterService.getRosterView(rosterId);
+  if (!rosterView || rosterView.roster.lifecycleState === ROSTER_LIFECYCLE_STATE.ARCHIVED) {
+    await interaction.respond([]);
+    return;
+  }
+
+  const groupKey = interaction.options.getString("group", false)?.trim() ?? "";
+  if (action === "move" && !groupKey) {
+    await interaction.respond([]);
+    return;
+  }
+  const normalizedGroupKey = String(groupKey ?? "").trim().toLowerCase();
+  const rosterGroups = Array.isArray((rosterView as { groups?: Array<{ key: string }> }).groups)
+    ? (rosterView as { groups: Array<{ key: string }> }).groups
+    : [];
+  if (
+    action === "move" &&
+    !rosterGroups.some((group) => String(group.key ?? "").trim().toLowerCase() === normalizedGroupKey)
+  ) {
+    await interaction.respond([]);
+    return;
+  }
+
   const query = String(focused.value ?? "")
     .trim()
     .toLowerCase()
     .replace(/^#/, "");
-  const links = await listPlayerLinksForDiscordUser({ discordUserId: interaction.user.id });
+  const existingTags = new Set(
+    rosterView.signups.map((signup) => normalizePlayerTag(signup.playerTag)).filter(Boolean),
+  );
+  const selectedUserId = getAutocompleteUserOptionId(interaction);
+  const targetRosterId = interaction.options.getString("target_roster", false)?.trim() ?? "";
+  const targetRosterView =
+    action === "change_roster" && targetRosterId ? await rosterService.getRosterView(targetRosterId) : null;
+  if (action === "change_roster") {
+    if (!targetRosterId || !targetRosterView) {
+      await interaction.respond([]);
+      return;
+    }
+    if (
+      targetRosterView.roster.id === rosterView.roster.id ||
+      targetRosterView.roster.lifecycleState === ROSTER_LIFECYCLE_STATE.ARCHIVED
+    ) {
+      await interaction.respond([]);
+      return;
+    }
+  }
+  const targetExistingTags =
+    action === "change_roster" && targetRosterView
+      ? new Set(targetRosterView.signups.map((signup) => normalizePlayerTag(signup.playerTag)).filter(Boolean))
+      : new Set<string>();
+
+  const choices =
+    action === "add"
+      ? (
+          await listPlayerLinksForDiscordUser({ discordUserId: interaction.user.id })
+        )
+          .filter((link) => !existingTags.has(normalizePlayerTag(link.playerTag)))
+          .map((link) => {
+            const value = normalizePlayerTag(link.playerTag);
+            const label = link.linkedName ? `${link.linkedName} (${value})` : value;
+            return { name: label.slice(0, 100), value };
+          })
+      : rosterView.signups
+          .filter((signup) => {
+            const signupTag = normalizePlayerTag(signup.playerTag);
+            if (action === "move") {
+              const signupGroupKey = String(signup.group?.key ?? "").trim().toLowerCase();
+              return signupGroupKey !== normalizedGroupKey;
+            }
+            if (action === "change_roster") {
+              if (selectedUserId && String(signup.discordUserId ?? "").trim() !== selectedUserId) {
+                return false;
+              }
+              if (targetExistingTags.has(signupTag)) {
+                return false;
+              }
+              return true;
+            }
+            return true;
+          })
+          .map((signup) => {
+            const value = normalizePlayerTag(signup.playerTag);
+            const label = signup.playerName ? `${signup.playerName} (${value})` : value;
+            return { name: label.slice(0, 100), value };
+          });
 
   await interaction.respond(
-    links
-      .map((link) => {
-        const value = normalizePlayerTag(link.playerTag);
-        const label = link.linkedName ? `${link.linkedName} (${value})` : value;
-        return { name: label.slice(0, 100), value };
-      })
+    choices
       .filter((choice) => {
         const searchable = `${choice.name} ${choice.value}`.toLowerCase();
         return searchable.includes(query);
       })
+      .sort((a, b) => a.name.localeCompare(b.name) || a.value.localeCompare(b.value))
       .slice(0, 25),
   );
-}
-
-async function autocompleteRosterUsers(interaction: AutocompleteInteraction): Promise<void> {
-  if (!interaction.inGuild()) {
-    await interaction.respond([]);
-    return;
-  }
-
-  const focused = interaction.options.getFocused(true);
-  if (focused.name !== "user") {
-    await interaction.respond([]);
-    return;
-  }
-
-  const members = interaction.guild?.members?.cache;
-  if (!members) {
-    await interaction.respond([]);
-    return;
-  }
-
-  const query = String(focused.value ?? "")
-    .trim()
-    .toLowerCase();
-
-  const choices = [...members.values()]
-    .filter((member) => Boolean(member?.id) && !member.user?.bot)
-    .map((member) => {
-      const displayName = String(member.displayName ?? "").trim();
-      const username = String(member.user?.username ?? "").trim();
-      const value = String(member.id ?? "").trim();
-      const label = displayName ? `${displayName} (@${username || value})` : `@${username || value}`;
-      const searchable = `${displayName} ${username} ${value}`.toLowerCase();
-      return { name: label.slice(0, 100), value, searchable };
-    })
-    .filter((choice) => choice.searchable.includes(query))
-    .sort((a, b) => a.name.localeCompare(b.name) || a.value.localeCompare(b.value))
-    .slice(0, 25)
-    .map(({ searchable: _searchable, ...choice }) => choice);
-
-  await interaction.respond(choices);
 }
 
 export const Roster: Command = {
@@ -2915,10 +3363,9 @@ export const Roster: Command = {
         },
         {
           name: "user",
-          description: "Filter by Discord user ID",
-          type: ApplicationCommandOptionType.String,
+          description: "Filter by Discord user",
+          type: ApplicationCommandOptionType.User,
           required: false,
-          autocomplete: true,
         },
         {
           name: "player",
@@ -2950,6 +3397,44 @@ export const Roster: Command = {
       ],
     },
     {
+      name: "ping",
+      description: "Preview and ping roster-related members",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "roster",
+          description: "Roster to ping from",
+          type: ApplicationCommandOptionType.String,
+          required: true,
+          autocomplete: true,
+        },
+        {
+          name: "message",
+          description: "Optional custom ping message",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+        },
+        {
+          name: "ping_option",
+          description: "Who to ping",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          choices: [
+            { name: "Unregistered", value: "unregistered" },
+            { name: "Missing", value: "missing" },
+            { name: "Everyone", value: "everyone" },
+          ],
+        },
+        {
+          name: "group",
+          description: "Restrict to a roster group",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          autocomplete: true,
+        },
+      ],
+    },
+    {
       name: "manage",
       description: "Mutate roster signups or lifecycle state",
       type: ApplicationCommandOptionType.Subcommand,
@@ -2970,11 +3455,32 @@ export const Roster: Command = {
             { name: "Add players", value: "add" },
             { name: "Move players", value: "move" },
             { name: "Remove players", value: "remove" },
+            { name: "Change roster", value: "change_roster" },
             { name: "Set weight", value: "set_weight" },
             { name: "Open roster", value: "open" },
             { name: "Close roster", value: "close" },
             { name: "Archive roster", value: "archive" },
           ],
+        },
+        {
+          name: "target_roster",
+          description: "Target roster for change roster",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          autocomplete: true,
+        },
+        {
+          name: "target_group",
+          description: "Target roster group key",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          autocomplete: true,
+        },
+        {
+          name: "user",
+          description: "Filter source players by Discord user",
+          type: ApplicationCommandOptionType.User,
+          required: false,
         },
         {
           name: "group",
@@ -3132,21 +3638,7 @@ export const Roster: Command = {
     },
     {
       name: "report",
-      description: "Show a manager readiness report for one roster",
-      type: ApplicationCommandOptionType.Subcommand,
-      options: [
-        {
-          name: "roster",
-          description: "Roster to inspect",
-          type: ApplicationCommandOptionType.String,
-          required: true,
-          autocomplete: true,
-        },
-      ],
-    },
-    {
-      name: "readiness",
-      description: "Show the export-friendly readiness report for one roster",
+      description: "Show a roster report for one roster",
       type: ApplicationCommandOptionType.Subcommand,
       options: [
         {
@@ -3190,6 +3682,10 @@ export const Roster: Command = {
         await handleRosterPostSubcommand(interaction, cocService);
         return;
       }
+      if (subcommand === "ping") {
+        await handleRosterPingSubcommand(interaction, cocService);
+        return;
+      }
       if (subcommand === "manage") {
         await handleRosterManageSubcommand(interaction, cocService);
         return;
@@ -3203,11 +3699,7 @@ export const Roster: Command = {
         return;
       }
       if (subcommand === "report") {
-        await handleRosterReportSubcommand(interaction);
-        return;
-      }
-      if (subcommand === "readiness") {
-        await handleRosterReadinessSubcommand(interaction);
+        await handleRosterReportSubcommand(interaction, cocService);
         return;
       }
       if (subcommand === "refresh") {
@@ -3231,16 +3723,25 @@ export const Roster: Command = {
       await autocompleteRosterTrackedClan(interaction);
       return;
     }
+    if (focused.name === "target_roster") {
+      const sourceRosterId = interaction.options.getString("roster", false)?.trim() ?? null;
+      await autocompleteRosterOption(interaction, sourceRosterId);
+      return;
+    }
     if (focused.name === "group") {
       await autocompleteRosterGroup(interaction);
       return;
     }
-    if (focused.name === "players") {
-      await autocompleteRosterPlayers(interaction);
+    if (focused.name === "target_group") {
+      await autocompleteRosterGroup(interaction);
       return;
     }
-    if (focused.name === "user") {
-      await autocompleteRosterUsers(interaction);
+    if (focused.name === "players") {
+      if (interaction.options.getSubcommand(false) === "manage") {
+        await autocompleteRosterManagePlayers(interaction);
+      } else {
+        await interaction.respond([]);
+      }
       return;
     }
     if (focused.name === "roster") {

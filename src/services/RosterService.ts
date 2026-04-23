@@ -24,6 +24,7 @@ import {
   resolveCurrentCwlSeasonKey,
 } from "./CwlRegistryService";
 import { cwlStateService } from "./CwlStateService";
+import { FwaClanMembersSyncService } from "./fwa-feeds/FwaClanMembersSyncService";
 import {
   formatRosterWeightAge,
   resolveRosterCurrentWeightRecords,
@@ -63,6 +64,7 @@ export const ROSTER_SELECTION_PREFIX = "roster-selection";
 export const ROSTER_POST_ACTION_PREFIX = "roster-post-action";
 export const ROSTER_POST_SETTINGS_PREFIX = "roster-post-settings";
 export const ROSTER_POST_USERS_PREFIX = "roster-post-users";
+export const ROSTER_PING_PREFIX = "roster-ping";
 const ROSTER_MANAGER_PLAYER_PAGE_ROW_COUNT = 3;
 const ROSTER_SELECTION_SESSION_TTL_MS = 15 * 60 * 1000;
 const ROSTER_CONFLICT_LIFECYCLE_STATES: readonly RosterLifecycleState[] = [
@@ -70,6 +72,8 @@ const ROSTER_CONFLICT_LIFECYCLE_STATES: readonly RosterLifecycleState[] = [
   ROSTER_LIFECYCLE_STATE.OPEN,
   ROSTER_LIFECYCLE_STATE.CLOSED,
 ];
+
+const fwaClanMembersSyncService = new FwaClanMembersSyncService();
 
 export type RosterGroupSeed = {
   key: string;
@@ -176,6 +180,28 @@ export type RosterSelectionPanel = {
   selectedTags: string[];
 };
 
+export type RosterPingOption = "unregistered" | "missing" | "everyone";
+
+export type RosterPingTargetRecord = {
+  playerTag: string;
+  playerName: string;
+  discordUserId: string;
+  discordMention: string;
+};
+
+export type RosterPingSelectionPanel = {
+  sessionId: string;
+  embed: EmbedBuilder;
+  components: ActionRowBuilder<ButtonBuilder>[];
+  targetCount: number;
+};
+
+export type RosterReportPingOpenResult =
+  | { outcome: "ready"; panel: RosterPingSelectionPanel }
+  | { outcome: "roster_not_found"; rosterId: string }
+  | { outcome: "group_not_found"; rosterId: string; groupKey: string }
+  | { outcome: "no_targets"; rosterId: string; pingOption: RosterPingOption; groupKey: string | null };
+
 export type RosterSelectionOpenResult =
   | { outcome: "ready"; panel: RosterSelectionPanel }
   | { outcome: "roster_not_found"; rosterId: string }
@@ -216,6 +242,22 @@ type RosterSelectionSignupLoadResult =
 type RosterSelectionRemoveLoadResult =
   | RosterSelectionRemoveLoadReadyResult
   | RosterSelectionLoadErrorResult;
+
+export type RosterPingOpenResult =
+  | { outcome: "ready"; panel: RosterPingSelectionPanel }
+  | { outcome: "roster_not_found"; rosterId: string }
+  | { outcome: "group_not_found"; rosterId: string; groupKey: string }
+  | { outcome: "no_targets"; rosterId: string; pingOption: RosterPingOption; groupKey: string | null };
+
+export type RosterPingConfirmResult =
+  | {
+      outcome: "posted";
+      rosterId: string;
+      targetCount: number;
+      messageContents: string[];
+    }
+  | { outcome: "session_not_found"; sessionId: string }
+  | { outcome: "forbidden"; sessionId: string };
 
 export type RosterSelectionUpdateResult =
   | { outcome: "updated"; panel: RosterSelectionPanel }
@@ -319,6 +361,7 @@ export type SignupLinkedAccountsResult =
       requestedTags: string[];
       linkedTags: string[];
       createdTags: string[];
+      createdAccounts: RosterAccountIdentity[];
       duplicateTags: string[];
       missingLinkedTags: string[];
     }
@@ -330,6 +373,7 @@ export type SignupLinkedAccountsResult =
       requestedTags: string[];
       linkedTags: string[];
       createdTags: string[];
+      createdAccounts: RosterAccountIdentity[];
       duplicateTags: string[];
       missingLinkedTags: string[];
       blockedTags: string[];
@@ -342,6 +386,7 @@ export type SignupLinkedAccountsResult =
       requestedTags: string[];
       linkedTags: string[];
       createdTags: string[];
+      createdAccounts: RosterAccountIdentity[];
       duplicateTags: string[];
       missingLinkedTags: string[];
       blockedTags: string[];
@@ -354,6 +399,7 @@ export type SignupLinkedAccountsResult =
       requestedTags: string[];
       linkedTags: string[];
       createdTags: string[];
+      createdAccounts: RosterAccountIdentity[];
       duplicateTags: string[];
       missingLinkedTags: string[];
       blockedTags: string[];
@@ -367,6 +413,7 @@ export type SignupLinkedAccountsResult =
       requestedTags: string[];
       linkedTags: string[];
       createdTags: string[];
+      createdAccounts: RosterAccountIdentity[];
       duplicateTags: string[];
       missingLinkedTags: string[];
       blockedTags: string[];
@@ -380,6 +427,7 @@ export type SignupLinkedAccountsResult =
       requestedTags: string[];
       linkedTags: string[];
       createdTags: string[];
+      createdAccounts: RosterAccountIdentity[];
       duplicateTags: string[];
       missingLinkedTags: string[];
       blockedTags: string[];
@@ -393,6 +441,7 @@ export type SignupLinkedAccountsResult =
       requestedTags: string[];
       linkedTags: string[];
       createdTags: string[];
+      createdAccounts: RosterAccountIdentity[];
       duplicateTags: string[];
       missingLinkedTags: string[];
     }
@@ -404,6 +453,7 @@ export type SignupLinkedAccountsResult =
       requestedTags: string[];
       linkedTags: string[];
       createdTags: string[];
+      createdAccounts: RosterAccountIdentity[];
       duplicateTags: string[];
       missingLinkedTags: string[];
     }
@@ -415,6 +465,7 @@ export type SignupLinkedAccountsResult =
       requestedTags: string[];
       linkedTags: string[];
       createdTags: string[];
+      createdAccounts: RosterAccountIdentity[];
       duplicateTags: string[];
       missingLinkedTags: string[];
     }
@@ -426,6 +477,7 @@ export type SignupLinkedAccountsResult =
       requestedTags: string[];
       linkedTags: string[];
       createdTags: string[];
+      createdAccounts: RosterAccountIdentity[];
       duplicateTags: string[];
       missingLinkedTags: string[];
     }
@@ -437,6 +489,7 @@ export type SignupLinkedAccountsResult =
       requestedTags: string[];
       linkedTags: string[];
       createdTags: string[];
+      createdAccounts: RosterAccountIdentity[];
       duplicateTags: string[];
       missingLinkedTags: string[];
     }
@@ -448,6 +501,7 @@ export type SignupLinkedAccountsResult =
       requestedTags: string[];
       linkedTags: string[];
       createdTags: string[];
+      createdAccounts: RosterAccountIdentity[];
       duplicateTags: string[];
       missingLinkedTags: string[];
     };
@@ -457,6 +511,7 @@ export type RemoveRosterSignupsResult =
       outcome: "removed";
       rosterId: string;
       removedTags: string[];
+      removedAccounts: RosterAccountIdentity[];
       ignoredTags: string[];
       notOwnedTags: string[];
     }
@@ -464,6 +519,7 @@ export type RemoveRosterSignupsResult =
       outcome: "nothing_removed";
       rosterId: string;
       removedTags: string[];
+      removedAccounts: RosterAccountIdentity[];
       ignoredTags: string[];
       notOwnedTags: string[];
     }
@@ -471,6 +527,7 @@ export type RemoveRosterSignupsResult =
       outcome: "roster_not_found";
       rosterId: string;
       removedTags: string[];
+      removedAccounts: RosterAccountIdentity[];
       ignoredTags: string[];
       notOwnedTags: string[];
     }
@@ -478,8 +535,221 @@ export type RemoveRosterSignupsResult =
       outcome: "roster_archived";
       rosterId: string;
       removedTags: string[];
+      removedAccounts: RosterAccountIdentity[];
       ignoredTags: string[];
       notOwnedTags: string[];
+    };
+
+export type RosterChangeRosterIdentity = RosterAccountIdentity & {
+  targetGroupKey: string;
+  targetGroupName: string;
+};
+
+export type ChangeRosterSignupsResult =
+  | {
+      outcome: "changed";
+      sourceRosterId: string;
+      sourceRosterTitle: string;
+      targetRosterId: string;
+      targetRosterTitle: string;
+      targetRosterClanTag: string | null;
+      targetRosterClanName: string | null;
+      targetGroupKey: string | null;
+      targetGroupName: string | null;
+      requestedTags: string[];
+      movedTags: string[];
+      movedAccounts: RosterChangeRosterIdentity[];
+      duplicateTags: string[];
+      missingTags: string[];
+      blockedTags: string[];
+      blockedAccounts: RosterAccountIdentity[];
+    }
+  | {
+      outcome: "nothing_changed";
+      sourceRosterId: string;
+      sourceRosterTitle: string;
+      targetRosterId: string;
+      targetRosterTitle: string;
+      targetRosterClanTag: string | null;
+      targetRosterClanName: string | null;
+      targetGroupKey: string | null;
+      targetGroupName: string | null;
+      requestedTags: string[];
+      movedTags: string[];
+      movedAccounts: RosterChangeRosterIdentity[];
+      duplicateTags: string[];
+      missingTags: string[];
+      blockedTags: string[];
+      blockedAccounts: RosterAccountIdentity[];
+    }
+  | {
+      outcome: "roster_not_found";
+      sourceRosterId: string;
+      targetRosterId: string;
+      requestedTags: string[];
+      movedTags: string[];
+      movedAccounts: RosterChangeRosterIdentity[];
+      duplicateTags: string[];
+      missingTags: string[];
+      blockedTags: string[];
+      blockedAccounts: RosterAccountIdentity[];
+    }
+  | {
+      outcome: "target_roster_not_found";
+      sourceRosterId: string;
+      targetRosterId: string;
+      requestedTags: string[];
+      movedTags: string[];
+      movedAccounts: RosterChangeRosterIdentity[];
+      duplicateTags: string[];
+      missingTags: string[];
+      blockedTags: string[];
+      blockedAccounts: RosterAccountIdentity[];
+    }
+  | {
+      outcome: "same_roster";
+      sourceRosterId: string;
+      targetRosterId: string;
+      requestedTags: string[];
+      movedTags: string[];
+      movedAccounts: RosterChangeRosterIdentity[];
+      duplicateTags: string[];
+      missingTags: string[];
+      blockedTags: string[];
+      blockedAccounts: RosterAccountIdentity[];
+    }
+  | {
+      outcome: "source_roster_archived";
+      sourceRosterId: string;
+      sourceRosterTitle: string;
+      targetRosterId: string;
+      targetRosterTitle: string;
+      requestedTags: string[];
+      movedTags: string[];
+      movedAccounts: RosterChangeRosterIdentity[];
+      duplicateTags: string[];
+      missingTags: string[];
+      blockedTags: string[];
+      blockedAccounts: RosterAccountIdentity[];
+    }
+  | {
+      outcome: "target_roster_archived";
+      sourceRosterId: string;
+      sourceRosterTitle: string;
+      targetRosterId: string;
+      targetRosterTitle: string;
+      requestedTags: string[];
+      movedTags: string[];
+      movedAccounts: RosterChangeRosterIdentity[];
+      duplicateTags: string[];
+      missingTags: string[];
+      blockedTags: string[];
+      blockedAccounts: RosterAccountIdentity[];
+    }
+  | {
+      outcome: "target_group_not_found";
+      sourceRosterId: string;
+      sourceRosterTitle: string;
+      targetRosterId: string;
+      targetRosterTitle: string;
+      targetGroupKey: string;
+      requestedTags: string[];
+      movedTags: string[];
+      movedAccounts: RosterChangeRosterIdentity[];
+      duplicateTags: string[];
+      missingTags: string[];
+      blockedTags: string[];
+      blockedAccounts: RosterAccountIdentity[];
+    }
+  | {
+      outcome: "roster_full";
+      sourceRosterId: string;
+      sourceRosterTitle: string;
+      targetRosterId: string;
+      targetRosterTitle: string;
+      targetRosterClanTag: string | null;
+      targetRosterClanName: string | null;
+      targetGroupKey: string | null;
+      targetGroupName: string | null;
+      requestedTags: string[];
+      movedTags: string[];
+      movedAccounts: RosterChangeRosterIdentity[];
+      duplicateTags: string[];
+      missingTags: string[];
+      blockedTags: string[];
+      blockedAccounts: RosterAccountIdentity[];
+    }
+  | {
+      outcome: "account_limit_exceeded";
+      sourceRosterId: string;
+      sourceRosterTitle: string;
+      targetRosterId: string;
+      targetRosterTitle: string;
+      targetRosterClanTag: string | null;
+      targetRosterClanName: string | null;
+      targetGroupKey: string | null;
+      targetGroupName: string | null;
+      requestedTags: string[];
+      movedTags: string[];
+      movedAccounts: RosterChangeRosterIdentity[];
+      duplicateTags: string[];
+      missingTags: string[];
+      blockedTags: string[];
+      blockedAccounts: RosterAccountIdentity[];
+    }
+  | {
+      outcome: "townhall_unavailable";
+      sourceRosterId: string;
+      sourceRosterTitle: string;
+      targetRosterId: string;
+      targetRosterTitle: string;
+      targetRosterClanTag: string | null;
+      targetRosterClanName: string | null;
+      targetGroupKey: string | null;
+      targetGroupName: string | null;
+      requestedTags: string[];
+      movedTags: string[];
+      movedAccounts: RosterChangeRosterIdentity[];
+      duplicateTags: string[];
+      missingTags: string[];
+      blockedTags: string[];
+      blockedAccounts: RosterAccountIdentity[];
+    }
+  | {
+      outcome: "townhall_out_of_range";
+      sourceRosterId: string;
+      sourceRosterTitle: string;
+      targetRosterId: string;
+      targetRosterTitle: string;
+      targetRosterClanTag: string | null;
+      targetRosterClanName: string | null;
+      targetGroupKey: string | null;
+      targetGroupName: string | null;
+      requestedTags: string[];
+      movedTags: string[];
+      movedAccounts: RosterChangeRosterIdentity[];
+      duplicateTags: string[];
+      missingTags: string[];
+      blockedTags: string[];
+      blockedAccounts: RosterAccountIdentity[];
+    }
+  | {
+      outcome: "roster_conflict";
+      sourceRosterId: string;
+      sourceRosterTitle: string;
+      targetRosterId: string;
+      targetRosterTitle: string;
+      targetRosterClanTag: string | null;
+      targetRosterClanName: string | null;
+      targetGroupKey: string | null;
+      targetGroupName: string | null;
+      requestedTags: string[];
+      movedTags: string[];
+      movedAccounts: RosterChangeRosterIdentity[];
+      duplicateTags: string[];
+      missingTags: string[];
+      blockedTags: string[];
+      blockedAccounts: RosterAccountIdentity[];
     };
 
 export type RosterLifecycleUpdateResult =
@@ -1023,6 +1293,10 @@ function buildRosterPostUsersActionButtonCustomId(
   return `${ROSTER_POST_USERS_PREFIX}:action:${action}:${String(sessionId ?? "").trim()}`;
 }
 
+function buildRosterPingActionButtonCustomId(sessionId: string): string {
+  return `${ROSTER_PING_PREFIX}:confirm:${String(sessionId ?? "").trim()}`;
+}
+
 export function buildRosterPostActionButtonCustomId(action: "refresh" | "signup" | "optout" | "settings", rosterId: string): string {
   return `${ROSTER_POST_ACTION_PREFIX}:${action}:${String(rosterId ?? "").trim()}`;
 }
@@ -1078,6 +1352,51 @@ function getRosterSelectionSession(sessionId: string): RosterSelectionSession | 
 
 function deleteRosterSelectionSession(sessionId: string): void {
   rosterSelectionSessions.delete(sessionId);
+}
+
+type RosterPingSession = {
+  sessionId: string;
+  rosterId: string;
+  rosterTitle: string;
+  clanName: string;
+  clanTag: string;
+  pingOption: RosterPingOption;
+  groupKey: string | null;
+  groupName: string | null;
+  message: string | null;
+  ownerDiscordUserId: string;
+  createdAtMs: number;
+  targets: RosterPingTargetRecord[];
+};
+
+const rosterPingSessions = new Map<string, RosterPingSession>();
+
+function pruneExpiredRosterPingSessions(nowMs = Date.now()): void {
+  for (const [sessionId, session] of rosterPingSessions.entries()) {
+    if (session.createdAtMs + ROSTER_SELECTION_SESSION_TTL_MS <= nowMs) {
+      rosterPingSessions.delete(sessionId);
+    }
+  }
+}
+
+function createRosterPingSession(input: Omit<RosterPingSession, "sessionId" | "createdAtMs">): RosterPingSession {
+  const session: RosterPingSession = {
+    ...input,
+    sessionId: randomUUID().replace(/-/g, "").slice(0, 18),
+    createdAtMs: Date.now(),
+  };
+  rosterPingSessions.set(session.sessionId, session);
+  pruneExpiredRosterPingSessions();
+  return session;
+}
+
+function getRosterPingSession(sessionId: string): RosterPingSession | null {
+  pruneExpiredRosterPingSessions();
+  return rosterPingSessions.get(sessionId) ?? null;
+}
+
+function deleteRosterPingSession(sessionId: string): void {
+  rosterPingSessions.delete(sessionId);
 }
 
 function buildRosterSelectionDescription(input: {
@@ -1453,6 +1772,160 @@ function buildRosterSelectionPayload(session: RosterSelectionSession): RosterSel
     embed,
     components,
     selectedTags,
+  };
+}
+
+function normalizeRosterPingOption(input: string | null | undefined): RosterPingOption | null {
+  const normalized = String(input ?? "")
+    .trim()
+    .toLowerCase();
+  if (!normalized) return null;
+  if (normalized === "unregistered" || normalized === "missing" || normalized === "everyone") {
+    return normalized;
+  }
+  return null;
+}
+
+function buildRosterPingTargetLine(target: RosterPingTargetRecord, includeBullet = false): string {
+  const prefix = includeBullet ? "- " : "";
+  return `${prefix}${target.playerName} (${target.playerTag}) ${target.discordMention}`;
+}
+
+function buildRosterPingPreviewLines(session: RosterPingSession): string[] {
+  const lines: string[] = [
+    `Roster: ${session.rosterTitle}`,
+    `Clan: ${session.clanName} (${session.clanTag})`,
+    `Ping option: ${session.pingOption}`,
+    `Targets: ${session.targets.length}`,
+  ];
+  if (session.groupName) {
+    lines.push(`Group: ${session.groupName}${session.pingOption === "unregistered" ? " (not applied)" : ""}`);
+  }
+  if (session.message) {
+    lines.push("");
+    lines.push("Message:");
+    lines.push(session.message);
+  }
+  if (session.targets.length > 0) {
+    lines.push("");
+    lines.push("Targets:");
+    lines.push(...session.targets.map((target) => buildRosterPingTargetLine(target, true)));
+  }
+  return lines;
+}
+
+const ROSTER_PING_MESSAGE_LIMIT = 2000;
+
+function splitRosterPingMessageLine(line: string, maxLength: number): string[] {
+  const normalized = String(line ?? "");
+  if (normalized.length <= maxLength) {
+    return [normalized];
+  }
+  const segments: string[] = [];
+  for (let index = 0; index < normalized.length; index += maxLength) {
+    segments.push(normalized.slice(index, index + maxLength));
+  }
+  return segments;
+}
+
+function buildRosterPingPublicMessageContents(session: RosterPingSession): string[] {
+  const headerLabel = `${session.rosterTitle} - ${session.clanName} (${session.clanTag})`;
+  const headerLine = buildClanProfileMarkdownLink(headerLabel, session.clanTag);
+  const messageLines: string[] = [];
+  if (session.message) {
+    messageLines.push("");
+    messageLines.push("Message:");
+    for (const line of String(session.message).split(/\r?\n/)) {
+      messageLines.push(...splitRosterPingMessageLine(line, ROSTER_PING_MESSAGE_LIMIT - headerLine.length - 1));
+    }
+    messageLines.push("");
+  }
+  const targetLines = session.targets.map((target) => buildRosterPingTargetLine(target));
+
+  const chunks: string[] = [];
+  let currentLines: string[] = [headerLine];
+  let currentLength = headerLine.length;
+
+  const flush = (): void => {
+    if (currentLines.length > 0) {
+      chunks.push(currentLines.join("\n"));
+    }
+    currentLines = [headerLine];
+    currentLength = headerLine.length;
+  };
+
+  const appendLine = (line: string, allowSplit = false): void => {
+    const lineText = String(line ?? "");
+    const nextLength = currentLength + 1 + lineText.length;
+    if (nextLength <= ROSTER_PING_MESSAGE_LIMIT) {
+      currentLines.push(lineText);
+      currentLength = nextLength;
+      return;
+    }
+
+    if (currentLines.length > 1) {
+      flush();
+      appendLine(lineText, allowSplit);
+      return;
+    }
+
+    if (!allowSplit || lineText.length <= 0) {
+      currentLines.push(lineText);
+      currentLength = nextLength;
+      return;
+    }
+
+    const available = Math.max(1, ROSTER_PING_MESSAGE_LIMIT - currentLength - 1);
+    const segments = splitRosterPingMessageLine(lineText, available);
+    if (segments.length <= 1) {
+      currentLines.push(lineText);
+      currentLength = nextLength;
+      return;
+    }
+    for (const segment of segments) {
+      const segmentLength = currentLength + 1 + segment.length;
+      if (segmentLength > ROSTER_PING_MESSAGE_LIMIT && currentLines.length > 1) {
+        flush();
+      }
+      currentLines.push(segment);
+      currentLength = currentLines.join("\n").length;
+    }
+  };
+
+  for (const line of messageLines) {
+    appendLine(line, true);
+  }
+  for (const line of targetLines) {
+    appendLine(line, false);
+  }
+
+  if (currentLines.length > 1 || chunks.length <= 0) {
+    chunks.push(currentLines.join("\n"));
+  }
+
+  return chunks.filter((chunk) => chunk.length > 0 && chunk.length <= ROSTER_PING_MESSAGE_LIMIT);
+}
+
+function buildRosterPingSelectionPayload(session: RosterPingSession): RosterPingSelectionPanel {
+  const embed = new EmbedBuilder()
+    .setColor(0x5865f2)
+    .setTitle(`Ping preview for ${session.rosterTitle}`)
+    .setDescription(truncateDiscordContent(buildRosterPingPreviewLines(session).join("\n"), 4096));
+
+  const components = [
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(buildRosterPingActionButtonCustomId(session.sessionId))
+        .setLabel("Confirm and ping")
+        .setStyle(ButtonStyle.Success),
+    ),
+  ];
+
+  return {
+    sessionId: session.sessionId,
+    embed,
+    components,
+    targetCount: session.targets.length,
   };
 }
 
@@ -1914,35 +2387,54 @@ function buildRosterManagerGroupSummaryLine(group: RosterGroupRecord & { signupC
 
 function buildRosterManagerMemberLine(entry: RosterManagerTrackedClanMemberRecord): string {
   const discordLabel = entry.linkedDiscordUserId ? ` <@${entry.linkedDiscordUserId}>` : "";
-  return `- ${entry.playerName} \`${entry.playerTag}\`${discordLabel}`;
+  const townHall = formatRosterTownhallIconsValue(entry.townHall) ?? "-";
+  return `- ${townHall} ${entry.playerName} \`${entry.playerTag}\`${discordLabel}`;
 }
 
-async function loadCurrentCwlRosterManagerMembers(clanTag: string): Promise<Array<{
+async function loadCurrentCwlRosterManagerMembers(
+  clanTag: string,
+  cocService?: CoCService | null,
+): Promise<Array<{
   playerTag: string;
   playerName: string;
   townHall: number | null;
 }>> {
-  const currentClanRows = await todoSnapshotService.listSnapshotsByClanTag({
-    clanTag,
-    source: "clanTag",
-  });
-  if (currentClanRows.length <= 0) {
+  if (!cocService) {
     return [];
   }
 
-  return currentClanRows.map((member) => ({
-    playerTag: member.playerTag,
-    playerName: member.playerName,
-    townHall: member.townHall,
-  }));
+  const clan = await cocService.getClan(clanTag).catch(() => null);
+  const currentClanRows = (Array.isArray(clan?.members) ? clan.members : []) as Array<{
+    tag?: unknown;
+    name?: unknown;
+  }>;
+  const liveMembers: Array<{
+    playerTag: string;
+    playerName: string;
+    townHall: number | null;
+  }> = currentClanRows.flatMap((member: { tag?: unknown; name?: unknown }) => {
+      const playerTag = normalizePlayerTag(String(member?.tag ?? ""));
+      if (!playerTag) return [];
+      return [
+        {
+          playerTag,
+          playerName: normalizeRosterText(String(member?.name ?? "")) ?? playerTag,
+          townHall: null,
+        },
+      ];
+    });
+  return liveMembers;
 }
 
-async function loadRosterManagerTrackedClanMembers(roster: RosterRecord): Promise<RosterManagerTrackedClanMemberRecord[]> {
+async function loadRosterManagerTrackedClanMembers(
+  roster: RosterRecord,
+  cocService?: CoCService | null,
+): Promise<RosterManagerTrackedClanMemberRecord[]> {
   const trackedClanTag = normalizeClanTag(roster.clanTag ?? "");
   if (!trackedClanTag) return [];
 
   const rawMembers =
-    roster.rosterType === "FWA"
+      roster.rosterType === "FWA"
       ? await prisma.fwaClanMemberCurrent.findMany({
           where: { clanTag: trackedClanTag },
           orderBy: [{ playerName: "asc" }, { playerTag: "asc" }],
@@ -1953,7 +2445,7 @@ async function loadRosterManagerTrackedClanMembers(roster: RosterRecord): Promis
           },
         })
       : roster.rosterType === "CWL"
-        ? await loadCurrentCwlRosterManagerMembers(trackedClanTag)
+        ? await loadCurrentCwlRosterManagerMembers(trackedClanTag, cocService)
         : [];
 
   if (rawMembers.length <= 0) {
@@ -1976,53 +2468,154 @@ async function loadRosterManagerTrackedClanMembers(roster: RosterRecord): Promis
   });
 }
 
-function buildRosterManagerReadinessLines(view: RosterManagerReadinessView): string[] {
+function buildRosterReportStateEmoji(inClan: boolean): string {
+  return inClan ? ":yes:" : ":no:";
+}
+
+function buildRosterReportClanLine(view: RosterManagerReadinessView): string {
+  const clanTag = normalizeClanTag(view.roster.clanTag ?? "");
+  if (!clanTag) {
+    return `Clan: ${normalizeRosterText(view.signupView.clanDisplayName ?? null) ?? "unscoped"}`;
+  }
+  const clanName = normalizeRosterText(view.signupView.clanDisplayName ?? null) ?? "Unknown Clan";
+  const encodedTag = clanTag.replace(/^#/, "");
+  return `Clan: ${clanName} \`${clanTag}\` ([Open in-game](<https://link.clashofclans.com/en?action=OpenClanProfile&tag=${encodedTag}>))`;
+}
+
+function buildRosterManagerReportLines(view: RosterManagerReadinessView): string[] {
+  const trackedTagSet = new Set(view.trackedClanRoster.map((entry) => normalizePlayerTag(entry.playerTag)).filter(Boolean));
   const lines: string[] = [
-    `${view.roster.title}`,
     `State: ${buildRosterStateLabel(view.roster.lifecycleState)}`,
-    `Clan: ${view.roster.clanTag ?? "unscoped"}`,
+    buildRosterReportClanLine(view),
     `Posted message: ${view.roster.postedMessageUrl ?? "not posted"}`,
     `Signed up: ${view.signupView.totalSignupCount}`,
     `Current clan members: ${view.trackedClanRoster.length}`,
     `Unregistered members: ${view.unsignedTrackedMembers.length}`,
-    `Out-of-clan signups: ${view.signedUpButUntracked.length}`,
   ];
 
   lines.push("");
-  lines.push("Groups:");
+  lines.push("**Groups**");
   const groupedSignups = buildRosterGroupsWithSignups(view.signupView);
   if (groupedSignups.length <= 0) {
     lines.push("- None");
   } else {
     for (const group of groupedSignups) {
-      lines.push(`- ${buildRosterManagerGroupSummaryLine(group)}`);
+      lines.push(`**${group.name}** (${group.signupCount})`);
       if (group.signups.length <= 0) {
-        lines.push("  - None yet");
+        lines.push("- None");
         continue;
       }
       for (const signup of group.signups) {
-        lines.push(`  ${buildRosterSignupEntryLine(signup)}`);
+        const playerTag = normalizePlayerTag(signup.playerTag);
+        const stateEmoji = buildRosterReportStateEmoji(Boolean(playerTag && trackedTagSet.has(playerTag)));
+        const townHall = formatRosterTownhallIconsValue(signup.townHall) ?? "-";
+        const playerName = normalizeRosterText(signup.playerName ?? null) ?? signup.playerTag;
+        lines.push(`- ${townHall} ${playerName} ${stateEmoji}`);
       }
     }
   }
 
   lines.push("");
-  lines.push("Unregistered members:");
+  lines.push("**Unregistered members**");
   if (view.unsignedTrackedMembers.length <= 0) {
     lines.push("- None");
   } else {
     lines.push(...view.unsignedTrackedMembers.map((entry) => buildRosterManagerMemberLine(entry)));
   }
 
-  lines.push("");
-  lines.push("Out-of-clan signups:");
-  if (view.signedUpButUntracked.length <= 0) {
-    lines.push("- None");
-  } else {
-    lines.push(...view.signedUpButUntracked.map((signup) => buildRosterSignupEntryLine(signup)));
+  return lines;
+}
+
+async function loadRosterPingTargets(input: {
+  rosterId: string;
+  pingOption: RosterPingOption;
+  groupKey: string | null;
+  cocService?: CoCService | null;
+}): Promise<
+  | {
+      outcome: "ready";
+      roster: RosterRecord;
+      clanName: string;
+      groupKey: string | null;
+      groupName: string | null;
+      targets: RosterPingTargetRecord[];
+    }
+  | { outcome: "roster_not_found"; rosterId: string }
+  | { outcome: "group_not_found"; rosterId: string; groupKey: string }
+> {
+  const view = await loadRosterView(input.rosterId);
+  if (!view) {
+    return { outcome: "roster_not_found", rosterId: input.rosterId };
   }
 
-  return lines;
+  const normalizedGroupKey = input.groupKey ? normalizeRosterGroupKey(input.groupKey) : null;
+  const group = normalizedGroupKey
+    ? view.groups.find((entry) => entry.key === normalizedGroupKey) ?? null
+    : null;
+  if (normalizedGroupKey && !group) {
+    return { outcome: "group_not_found", rosterId: view.roster.id, groupKey: normalizedGroupKey };
+  }
+
+  const [trackedClanRoster, signupLinks] = await Promise.all([
+    loadRosterManagerTrackedClanMembers(view.roster, input.cocService ?? null),
+    listPlayerLinksForClanMembers({
+      memberTagsInOrder: view.signups.map((signup) => signup.playerTag),
+    }),
+  ]);
+  const signupTagSet = new Set(view.signups.map((signup) => normalizePlayerTag(signup.playerTag)).filter(Boolean));
+  const trackedTagSet = new Set(trackedClanRoster.map((member) => normalizePlayerTag(member.playerTag)).filter(Boolean));
+  const signupLinkByTag = new Map(signupLinks.map((link) => [link.playerTag, link] as const));
+
+  const signupsByGroup = view.signups.filter((signup) => {
+    if (!normalizedGroupKey) return true;
+    return signup.group?.key === normalizedGroupKey;
+  });
+
+  const targets: RosterPingTargetRecord[] =
+    input.pingOption === "unregistered"
+      ? trackedClanRoster
+          .filter((member) => member.linkedDiscordUserId && !signupTagSet.has(member.playerTag))
+          .map((member) => ({
+            playerTag: member.playerTag,
+            playerName: normalizeRosterText(member.playerName) ?? member.playerTag,
+            discordUserId: member.linkedDiscordUserId as string,
+            discordMention: `<@${member.linkedDiscordUserId}>`,
+          }))
+      : input.pingOption === "missing"
+        ? signupsByGroup
+            .filter((signup) => !trackedTagSet.has(signup.playerTag))
+            .map((signup) => {
+              const link = signupLinkByTag.get(signup.playerTag) ?? null;
+              if (!link?.discordUserId) return null;
+              return {
+                playerTag: signup.playerTag,
+                playerName: normalizeRosterText(signup.playerName ?? null) ?? signup.playerTag,
+                discordUserId: link.discordUserId,
+                discordMention: `<@${link.discordUserId}>`,
+              } as RosterPingTargetRecord;
+            })
+            .filter((target): target is RosterPingTargetRecord => Boolean(target))
+        : signupsByGroup
+            .map((signup) => {
+              const link = signupLinkByTag.get(signup.playerTag) ?? null;
+              if (!link?.discordUserId) return null;
+              return {
+                playerTag: signup.playerTag,
+                playerName: normalizeRosterText(signup.playerName ?? null) ?? signup.playerTag,
+                discordUserId: link.discordUserId,
+                discordMention: `<@${link.discordUserId}>`,
+              } as RosterPingTargetRecord;
+            })
+            .filter((target): target is RosterPingTargetRecord => Boolean(target));
+
+  return {
+    outcome: "ready",
+    roster: view.roster,
+    clanName: normalizeRosterText(view.clanDisplayName ?? null) ?? normalizeRosterText(view.roster.title) ?? view.roster.clanTag ?? "Roster",
+    groupKey: group?.key ?? null,
+    groupName: group?.name ?? null,
+    targets,
+  };
 }
 
 function buildRosterGroupsWithSignups(view: RosterSignupView): Array<
@@ -2107,7 +2700,7 @@ function formatRosterBoardWeightValue(weight: number | null | undefined): string
   return `${Math.trunc(normalized / 1000)}k`;
 }
 
-function buildClanProfileMarkdownLink(clanName: string | null, clanTag: string | null): string {
+export function buildClanProfileMarkdownLink(clanName: string | null, clanTag: string | null): string {
   const normalizedClanTag = normalizeClanTag(clanTag ?? "");
   const label = sanitizeRosterBoardText(clanName) || normalizedClanTag || "Unknown Clan";
   if (!normalizedClanTag) return label;
@@ -2127,10 +2720,7 @@ function formatRosterTownhallIconsValue(townHall: number | null | undefined): st
   if (normalized <= 0) {
     return null;
   }
-  if (normalized <= 8) {
-    return String(normalized);
-  }
-  if (normalized >= 9 && normalized <= 18) {
+  if (normalized <= 18) {
     return `:th${normalized}:`;
   }
   return String(normalized);
@@ -2725,6 +3315,29 @@ export function isRosterPostUsersActionButtonCustomId(customId: string): boolean
   return String(customId ?? "").startsWith(`${ROSTER_POST_USERS_PREFIX}:action:`);
 }
 
+export function isRosterPingActionButtonCustomId(customId: string): boolean {
+  return String(customId ?? "").startsWith(`${ROSTER_PING_PREFIX}:confirm:`);
+}
+
+const ROSTER_REPORT_PREFIX = "roster-report";
+
+export function buildRosterReportPingButtonCustomId(rosterId: string): string {
+  return `${ROSTER_REPORT_PREFIX}:ping:${String(rosterId ?? "").trim()}`;
+}
+
+export function isRosterReportPingButtonCustomId(customId: string): boolean {
+  return String(customId ?? "").startsWith(`${ROSTER_REPORT_PREFIX}:ping:`);
+}
+
+export function parseRosterReportPingButtonCustomId(customId: string): { rosterId: string } | null {
+  const parts = String(customId ?? "").split(":");
+  if (parts.length !== 3 || parts[0] !== ROSTER_REPORT_PREFIX || parts[1] !== "ping") {
+    return null;
+  }
+  const rosterId = parts[2]?.trim() ?? "";
+  return rosterId ? { rosterId } : null;
+}
+
 export function parseRosterPostUsersUserSelectMenuCustomId(customId: string): { sessionId: string } | null {
   const parts = String(customId ?? "").split(":");
   if (parts.length !== 3 || parts[0] !== ROSTER_POST_USERS_PREFIX || parts[1] !== "user") {
@@ -2768,6 +3381,15 @@ export function parseRosterPostUsersActionButtonCustomId(
   }
   const sessionId = parts[3]?.trim() ?? "";
   return sessionId ? { action, sessionId } : null;
+}
+
+export function parseRosterPingActionButtonCustomId(customId: string): { sessionId: string } | null {
+  const parts = String(customId ?? "").split(":");
+  if (parts.length !== 3 || parts[0] !== ROSTER_PING_PREFIX || parts[1] !== "confirm") {
+    return null;
+  }
+  const sessionId = parts[2]?.trim() ?? "";
+  return sessionId ? { sessionId } : null;
 }
 
 export class RosterService {
@@ -2913,6 +3535,13 @@ export class RosterService {
     cocService?: CoCService | null,
     options?: RosterSignupPayloadBuildOptions,
   ): Promise<RosterSignupPayload | null> {
+    const hydrated = await this.refreshRosterBoardSourceData(rosterId, cocService ?? null);
+    if (!hydrated) return null;
+    return this.buildRosterSignupPayload(rosterId, cocService ?? null, options);
+  }
+
+  /** Purpose: refresh the live/persisted board owners for one roster before rerendering its post. */
+  async refreshRosterBoardSourceData(rosterId: string, cocService?: CoCService | null): Promise<boolean> {
     const roster = await prisma.roster.findUnique({
       where: { id: rosterId },
       select: {
@@ -2921,17 +3550,28 @@ export class RosterService {
         clanTag: true,
       },
     });
-    if (!roster) return null;
+    if (!roster) return false;
 
-    if (cocService) {
-      const rosteredTags = await prisma.rosterSignup.findMany({
-        where: { rosterId: roster.id },
-        select: { playerTag: true },
+    const rosteredTags = await prisma.rosterSignup.findMany({
+      where: { rosterId: roster.id },
+      select: { playerTag: true },
+    });
+    const playerTags = [...new Set(rosteredTags.map((row) => normalizePlayerTag(row.playerTag)).filter(Boolean))];
+    if (cocService && playerTags.length > 0) {
+      await todoSnapshotService.refreshSnapshotsForPlayerTags({
+        playerTags,
+        cocService,
       });
-      const playerTags = [...new Set(rosteredTags.map((row) => normalizePlayerTag(row.playerTag)).filter(Boolean))];
-      if (playerTags.length > 0) {
-        await todoSnapshotService.refreshSnapshotsForPlayerTags({
-          playerTags,
+    }
+
+    if (cocService && roster.clanTag) {
+      if (roster.rosterType === "CWL") {
+        await cwlStateService.refreshTrackedCwlStateForClan({
+          cocService,
+          clanTag: roster.clanTag,
+        });
+      } else if (roster.rosterType === "FWA") {
+        await fwaClanMembersSyncService.refreshCurrentClanMembersForClanTags([roster.clanTag], {
           cocService,
         });
       }
@@ -2949,7 +3589,7 @@ export class RosterService {
       });
     }
 
-    return this.buildRosterSignupPayload(rosterId, cocService ?? null, options);
+    return true;
   }
 
   async getRosterView(
@@ -3557,6 +4197,7 @@ export class RosterService {
         requestedTags,
         linkedTags: [],
         createdTags: [],
+        createdAccounts: [],
         duplicateTags: [],
         missingLinkedTags: requestedTags,
       };
@@ -3570,6 +4211,7 @@ export class RosterService {
         requestedTags,
         linkedTags: [],
         createdTags: [],
+        createdAccounts: [],
         duplicateTags: [],
         missingLinkedTags: requestedTags,
       };
@@ -3604,6 +4246,7 @@ export class RosterService {
         requestedTags,
         linkedTags,
         createdTags: [],
+        createdAccounts: [],
         duplicateTags: [],
         missingLinkedTags,
       };
@@ -3618,6 +4261,7 @@ export class RosterService {
         requestedTags,
         linkedTags: [],
         createdTags: [],
+        createdAccounts: [],
         duplicateTags: [],
         missingLinkedTags,
       };
@@ -3686,6 +4330,7 @@ export class RosterService {
           requestedTags,
           linkedTags,
           createdTags: [],
+          createdAccounts: [],
           duplicateTags,
           missingLinkedTags,
           blockedTags: blockedUnavailableTags,
@@ -3701,6 +4346,7 @@ export class RosterService {
           requestedTags,
           linkedTags,
           createdTags: [],
+          createdAccounts: [],
           duplicateTags,
           missingLinkedTags,
           blockedTags: blockedOutOfRangeTags,
@@ -3724,6 +4370,13 @@ export class RosterService {
         skipDuplicates: true,
       });
     }
+    const createdAccounts = createdTags.map((playerTag) => {
+      const linked = linkedByTag.get(playerTag) ?? null;
+      return {
+        playerTag,
+        playerName: normalizeRosterText(linked?.playerName ?? null),
+      };
+    });
 
     return {
       outcome: createdTags.length > 0 ? "created" : "already_signed_up",
@@ -3733,6 +4386,7 @@ export class RosterService {
       requestedTags,
       linkedTags,
       createdTags,
+      createdAccounts,
       duplicateTags,
       missingLinkedTags,
     };
@@ -3832,6 +4486,610 @@ export class RosterService {
     };
   }
 
+  async changeRosterSignups(input: {
+    sourceRosterId: string;
+    targetRosterId: string;
+    targetGroupKey?: string | null;
+    playerTags?: string[] | null;
+    updatedByDiscordUserId?: string | null;
+    cocService?: CoCService | null;
+  }): Promise<ChangeRosterSignupsResult> {
+    const requestedTags = normalizeRosterPlayerTags(Array.isArray(input.playerTags) ? input.playerTags : []);
+    if (requestedTags.length <= 0) {
+      return {
+        outcome: "nothing_changed",
+        sourceRosterId: input.sourceRosterId,
+        sourceRosterTitle: "Unknown Roster",
+        targetRosterId: input.targetRosterId,
+        targetRosterTitle: "Unknown Roster",
+        targetRosterClanTag: null,
+        targetRosterClanName: null,
+        targetGroupKey: null,
+        targetGroupName: null,
+        requestedTags,
+        movedTags: [],
+        movedAccounts: [],
+        duplicateTags: [],
+        missingTags: [],
+        blockedTags: [],
+        blockedAccounts: [],
+      };
+    }
+
+    return prisma.$transaction(async (tx: any) => {
+      const sourceRoster = await tx.roster.findUnique({
+        where: { id: input.sourceRosterId },
+        select: {
+          id: true,
+          guildId: true,
+          lifecycleState: true,
+          rosterType: true,
+          rosterCategory: true,
+          title: true,
+          clanTag: true,
+          maxMembers: true,
+          maxAccountsPerUser: true,
+          minTownhall: true,
+          maxTownhall: true,
+          allowMultiSignup: true,
+        },
+      });
+      if (!sourceRoster) {
+        return {
+          outcome: "roster_not_found",
+          sourceRosterId: input.sourceRosterId,
+          targetRosterId: input.targetRosterId,
+          requestedTags,
+          movedTags: [],
+          movedAccounts: [],
+          duplicateTags: [],
+          missingTags: requestedTags,
+          blockedTags: [],
+          blockedAccounts: [],
+        } as const;
+      }
+      if (!canManagerMutateRoster(sourceRoster.lifecycleState)) {
+        return {
+          outcome: "source_roster_archived",
+          sourceRosterId: sourceRoster.id,
+          sourceRosterTitle: sourceRoster.title,
+          targetRosterId: input.targetRosterId,
+          targetRosterTitle: "Unknown Roster",
+          requestedTags,
+          movedTags: [],
+          movedAccounts: [],
+          duplicateTags: [],
+          missingTags: requestedTags,
+          blockedTags: [],
+          blockedAccounts: [],
+        } as const;
+      }
+
+      const targetRoster = await tx.roster.findFirst({
+        where: {
+          id: input.targetRosterId,
+          guildId: sourceRoster.guildId,
+        },
+        select: {
+          id: true,
+          lifecycleState: true,
+          rosterType: true,
+          rosterCategory: true,
+          title: true,
+          clanTag: true,
+          maxMembers: true,
+          maxAccountsPerUser: true,
+          minTownhall: true,
+          maxTownhall: true,
+          allowMultiSignup: true,
+        },
+      });
+      if (!targetRoster) {
+        return {
+          outcome: "target_roster_not_found",
+          sourceRosterId: sourceRoster.id,
+          targetRosterId: input.targetRosterId,
+          requestedTags,
+          movedTags: [],
+          movedAccounts: [],
+          duplicateTags: [],
+          missingTags: requestedTags,
+          blockedTags: [],
+          blockedAccounts: [],
+        } as const;
+      }
+      if (sourceRoster.id === targetRoster.id) {
+        return {
+          outcome: "same_roster",
+          sourceRosterId: sourceRoster.id,
+          targetRosterId: targetRoster.id,
+          requestedTags,
+          movedTags: [],
+          movedAccounts: [],
+          duplicateTags: [],
+          missingTags: requestedTags,
+          blockedTags: [],
+          blockedAccounts: [],
+        } as const;
+      }
+      if (!canManagerMutateRoster(targetRoster.lifecycleState)) {
+        return {
+          outcome: "target_roster_archived",
+          sourceRosterId: sourceRoster.id,
+          sourceRosterTitle: sourceRoster.title,
+          targetRosterId: targetRoster.id,
+          targetRosterTitle: targetRoster.title,
+          requestedTags,
+          movedTags: [],
+          movedAccounts: [],
+          duplicateTags: [],
+          missingTags: requestedTags,
+          blockedTags: [],
+          blockedAccounts: [],
+        } as const;
+      }
+
+      type ChangeRosterGroupRow = {
+        id: string;
+        key: string;
+        name: string;
+        description: string | null;
+        sortOrder: number;
+      };
+      type ChangeRosterSignupRow = {
+        id: string;
+        rosterId: string;
+        groupId: string | null;
+        playerTag: string;
+        playerName: string | null;
+        discordUserId: string;
+        group: ChangeRosterGroupRow | null;
+      };
+
+      const targetGroups = (await tx.rosterGroup.findMany({
+        where: { rosterId: targetRoster.id },
+        orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+        select: {
+          id: true,
+          key: true,
+          name: true,
+          description: true,
+          sortOrder: true,
+        },
+      })) as ChangeRosterGroupRow[];
+      const targetGroupKeyInput = input.targetGroupKey !== undefined ? String(input.targetGroupKey ?? "").trim() : null;
+      const normalizedTargetGroupKey = targetGroupKeyInput ? normalizeRosterGroupKey(targetGroupKeyInput) : null;
+      const targetGroupByKey = new Map<string, ChangeRosterGroupRow>(
+        targetGroups.map((group) => [normalizeRosterGroupKey(group.key), group] as const),
+      );
+      const defaultTargetGroup = targetGroups[0] ?? null;
+      if (normalizedTargetGroupKey) {
+        if (!targetGroupByKey.has(normalizedTargetGroupKey)) {
+          return {
+            outcome: "target_group_not_found",
+            sourceRosterId: sourceRoster.id,
+            sourceRosterTitle: sourceRoster.title,
+            targetRosterId: targetRoster.id,
+            targetRosterTitle: targetRoster.title,
+            targetGroupKey: normalizedTargetGroupKey,
+            requestedTags,
+            movedTags: [],
+            movedAccounts: [],
+            duplicateTags: [],
+            missingTags: requestedTags,
+            blockedTags: [],
+            blockedAccounts: [],
+          } as const;
+        }
+      } else if (!defaultTargetGroup) {
+        return {
+          outcome: "target_group_not_found",
+          sourceRosterId: sourceRoster.id,
+          sourceRosterTitle: sourceRoster.title,
+          targetRosterId: targetRoster.id,
+          targetRosterTitle: targetRoster.title,
+          targetGroupKey: "",
+          requestedTags,
+          movedTags: [],
+          movedAccounts: [],
+          duplicateTags: [],
+          missingTags: requestedTags,
+          blockedTags: [],
+          blockedAccounts: [],
+        } as const;
+      }
+
+      const sourceSignups = (await tx.rosterSignup.findMany({
+        where: {
+          rosterId: sourceRoster.id,
+          playerTag: { in: requestedTags },
+        },
+        select: {
+          id: true,
+          rosterId: true,
+          groupId: true,
+          playerTag: true,
+          playerName: true,
+          discordUserId: true,
+          group: {
+            select: {
+              id: true,
+              key: true,
+              name: true,
+              description: true,
+              sortOrder: true,
+            },
+          },
+        },
+      })) as ChangeRosterSignupRow[];
+      const sourceByTag = new Map<string, ChangeRosterSignupRow>(
+        sourceSignups
+          .map((signup) => [normalizePlayerTag(signup.playerTag), signup] as const)
+          .filter((entry): entry is readonly [string, ChangeRosterSignupRow] => Boolean(entry[0])),
+      );
+      const sourceTags = requestedTags.filter((tag) => sourceByTag.has(tag));
+      const missingTags = requestedTags.filter((tag) => !sourceByTag.has(tag));
+
+      const targetExistingSignups = (await tx.rosterSignup.findMany({
+        where: {
+          rosterId: targetRoster.id,
+        },
+        select: {
+          playerTag: true,
+          discordUserId: true,
+        },
+      })) as Array<{ playerTag: string; discordUserId: string | null }>;
+      const targetExistingTags = new Set(
+        targetExistingSignups.map((signup) => normalizePlayerTag(signup.playerTag)).filter(Boolean),
+      );
+      const duplicateTags = sourceTags.filter((tag) => targetExistingTags.has(tag));
+      const candidateTags = sourceTags.filter((tag) => !targetExistingTags.has(tag));
+
+      let targetCount = targetExistingSignups.length;
+      const targetOwnedCountByUser = new Map<string, number>();
+      for (const signup of targetExistingSignups) {
+        const normalizedDiscordUserId = normalizeDiscordUserId(signup.discordUserId) ?? signup.discordUserId;
+        if (!normalizedDiscordUserId) continue;
+        targetOwnedCountByUser.set(normalizedDiscordUserId, (targetOwnedCountByUser.get(normalizedDiscordUserId) ?? 0) + 1);
+      }
+
+      const conflictRows =
+        candidateTags.length > 0
+          ? ((await tx.rosterSignup.findMany({
+              where: {
+                playerTag: { in: candidateTags },
+                rosterId: { notIn: [sourceRoster.id, targetRoster.id] },
+                roster: {
+                  rosterType: targetRoster.rosterType,
+                  rosterCategory: targetRoster.rosterCategory,
+                  lifecycleState: { in: ROSTER_CONFLICT_LIFECYCLE_STATES.filter(isRosterConflictEligible) },
+                },
+              },
+              select: {
+                playerTag: true,
+                rosterId: true,
+              },
+            })) as Array<{ playerTag: string; rosterId: string }>)
+          : [];
+      const conflictTags = new Set(normalizeRosterPlayerTags(conflictRows.map((row) => row.playerTag)));
+
+      const targetTownHallResolution =
+        isRosterTownHallGated(targetRoster) && candidateTags.length > 0
+          ? await resolveRosterPlayerTownHallMap({
+              rosterType: targetRoster.rosterType,
+              clanTag: targetRoster.clanTag,
+              playerTags: candidateTags,
+              allowLiveFetch: true,
+              cocService: input.cocService ?? null,
+            })
+          : null;
+      const blockedConflictTags: string[] = [];
+      const blockedConflictAccounts: RosterAccountIdentity[] = [];
+      const blockedRosterFullTags: string[] = [];
+      const blockedRosterFullAccounts: RosterAccountIdentity[] = [];
+      const blockedAccountLimitTags: string[] = [];
+      const blockedAccountLimitAccounts: RosterAccountIdentity[] = [];
+      const blockedUnavailableTags: string[] = [];
+      const blockedUnavailableAccounts: RosterAccountIdentity[] = [];
+      const blockedOutOfRangeTags: string[] = [];
+      const blockedOutOfRangeAccounts: RosterAccountIdentity[] = [];
+      const blockedOutcomeOrder: Array<
+        "roster_conflict" | "roster_full" | "account_limit_exceeded" | "townhall_unavailable" | "townhall_out_of_range"
+      > = [];
+      const movedTags: string[] = [];
+      const movedAccounts: RosterChangeRosterIdentity[] = [];
+      const movedRowsByGroupId = new Map<
+        string,
+        Array<{
+          rosterId: string;
+          groupId: string;
+          playerTag: string;
+          playerName: string | null;
+          discordUserId: string;
+        }>
+      >();
+
+      if (targetTownHallResolution) {
+        logRosterTownHallResolutionDiagnostics({
+          rosterId: targetRoster.id,
+          rosterType: targetRoster.rosterType,
+          clanTag: targetRoster.clanTag,
+          requestedTags,
+          linkedTags: sourceTags,
+          resolution: targetTownHallResolution,
+          blockedUnavailableTags,
+          blockedOutOfRangeTags,
+          cocServicePresent: Boolean(input.cocService),
+        });
+      }
+
+      for (const tag of candidateTags) {
+        const sourceSignup = sourceByTag.get(tag) ?? null;
+        if (!sourceSignup) {
+          continue;
+        }
+        const blockedAccount = {
+          playerTag: tag,
+          playerName: normalizeRosterText(sourceSignup.playerName ?? null),
+        };
+        if (conflictTags.has(tag)) {
+          blockedConflictTags.push(tag);
+          blockedConflictAccounts.push(blockedAccount);
+          blockedOutcomeOrder.push("roster_conflict");
+          continue;
+        }
+
+        const sourceGroupKey = normalizeRosterGroupKey(sourceSignup.group?.key ?? "");
+        const resolvedTargetGroup =
+          normalizedTargetGroupKey && targetGroupByKey.has(normalizedTargetGroupKey)
+            ? targetGroupByKey.get(normalizedTargetGroupKey) ?? null
+            : (sourceGroupKey && targetGroupByKey.get(sourceGroupKey)) ?? defaultTargetGroup;
+        if (!resolvedTargetGroup) {
+          return {
+            outcome: "target_group_not_found",
+            sourceRosterId: sourceRoster.id,
+            sourceRosterTitle: sourceRoster.title,
+            targetRosterId: targetRoster.id,
+            targetRosterTitle: targetRoster.title,
+            targetGroupKey: normalizedTargetGroupKey ?? sourceGroupKey ?? "",
+            requestedTags,
+            movedTags,
+            movedAccounts,
+            duplicateTags,
+            missingTags,
+            blockedTags: [],
+            blockedAccounts: [],
+          } as const;
+        }
+
+        const maxMembers = normalizeRosterInt(targetRoster.maxMembers);
+        if (maxMembers !== null && targetCount + movedTags.length + 1 > maxMembers) {
+          blockedRosterFullTags.push(tag);
+          blockedRosterFullAccounts.push(blockedAccount);
+          blockedOutcomeOrder.push("roster_full");
+          continue;
+        }
+
+        const normalizedDiscordUserId = normalizeDiscordUserId(sourceSignup.discordUserId) ?? sourceSignup.discordUserId;
+        const effectiveMaxAccountsPerUser =
+          targetRoster.allowMultiSignup === false
+            ? 1
+            : normalizeRosterInt(targetRoster.maxAccountsPerUser);
+        if (effectiveMaxAccountsPerUser !== null) {
+          const ownedCount = targetOwnedCountByUser.get(normalizedDiscordUserId) ?? 0;
+          if (ownedCount + 1 > effectiveMaxAccountsPerUser) {
+            blockedAccountLimitTags.push(tag);
+            blockedAccountLimitAccounts.push(blockedAccount);
+            blockedOutcomeOrder.push("account_limit_exceeded");
+            continue;
+          }
+        }
+
+        if (targetTownHallResolution) {
+          const townHall = targetTownHallResolution.townHallByTag.get(tag) ?? null;
+          if (townHall === null) {
+            blockedUnavailableTags.push(tag);
+            blockedUnavailableAccounts.push(blockedAccount);
+            blockedOutcomeOrder.push("townhall_unavailable");
+            continue;
+          }
+          const minTownhall = normalizeRosterInt(targetRoster.minTownhall);
+          const maxTownhall = normalizeRosterInt(targetRoster.maxTownhall);
+          if ((minTownhall !== null && townHall < minTownhall) || (maxTownhall !== null && townHall > maxTownhall)) {
+            blockedOutOfRangeTags.push(tag);
+            blockedOutOfRangeAccounts.push(blockedAccount);
+            blockedOutcomeOrder.push("townhall_out_of_range");
+            continue;
+          }
+        }
+
+        const movedRow = {
+          rosterId: targetRoster.id,
+          groupId: resolvedTargetGroup.id,
+          playerTag: tag,
+          playerName: normalizeRosterText(sourceSignup.playerName ?? null),
+          discordUserId: normalizedDiscordUserId,
+        };
+        const rows = movedRowsByGroupId.get(resolvedTargetGroup.id) ?? [];
+        rows.push(movedRow);
+        movedRowsByGroupId.set(resolvedTargetGroup.id, rows);
+        movedTags.push(tag);
+        movedAccounts.push({
+          playerTag: tag,
+          playerName: normalizeRosterText(sourceSignup.playerName ?? null),
+          targetGroupKey: resolvedTargetGroup.key,
+          targetGroupName: resolvedTargetGroup.name,
+        });
+        targetCount += 1;
+        targetOwnedCountByUser.set(normalizedDiscordUserId, (targetOwnedCountByUser.get(normalizedDiscordUserId) ?? 0) + 1);
+      }
+
+      if (movedTags.length > 0) {
+        for (const rows of movedRowsByGroupId.values()) {
+          await tx.rosterSignup.createMany({
+            data: rows,
+            skipDuplicates: false,
+          });
+        }
+        await tx.rosterSignup.deleteMany({
+          where: {
+            rosterId: sourceRoster.id,
+            playerTag: { in: movedTags },
+          },
+        });
+      }
+
+      const buildSharedResult = <T extends { outcome: string }>(result: T): T => result;
+      if (movedTags.length > 0) {
+        return buildSharedResult({
+          outcome: "changed",
+          sourceRosterId: sourceRoster.id,
+          sourceRosterTitle: sourceRoster.title,
+          targetRosterId: targetRoster.id,
+          targetRosterTitle: targetRoster.title,
+          targetRosterClanTag: targetRoster.clanTag ?? null,
+          targetRosterClanName: null,
+          targetGroupKey: normalizedTargetGroupKey,
+          targetGroupName: normalizedTargetGroupKey
+            ? targetGroupByKey.get(normalizedTargetGroupKey)?.name ?? null
+            : null,
+          requestedTags,
+          movedTags,
+          movedAccounts,
+          duplicateTags,
+          missingTags,
+          blockedTags: [
+            ...blockedConflictTags,
+            ...blockedRosterFullTags,
+            ...blockedAccountLimitTags,
+            ...blockedUnavailableTags,
+            ...blockedOutOfRangeTags,
+          ],
+          blockedAccounts: [
+            ...blockedConflictAccounts,
+            ...blockedRosterFullAccounts,
+            ...blockedAccountLimitAccounts,
+            ...blockedUnavailableAccounts,
+            ...blockedOutOfRangeAccounts,
+          ],
+        });
+      }
+
+      if (blockedUnavailableTags.length > 0) {
+        return buildSharedResult({
+          outcome: "townhall_unavailable",
+          sourceRosterId: sourceRoster.id,
+          sourceRosterTitle: sourceRoster.title,
+          targetRosterId: targetRoster.id,
+          targetRosterTitle: targetRoster.title,
+          targetRosterClanTag: targetRoster.clanTag ?? null,
+          targetRosterClanName: null,
+          targetGroupKey: normalizedTargetGroupKey,
+          targetGroupName: normalizedTargetGroupKey
+            ? targetGroupByKey.get(normalizedTargetGroupKey)?.name ?? null
+            : null,
+          requestedTags,
+          movedTags,
+          movedAccounts,
+          duplicateTags,
+          missingTags,
+          blockedTags: blockedUnavailableTags,
+          blockedAccounts: blockedUnavailableAccounts,
+        });
+      }
+      if (blockedOutOfRangeTags.length > 0) {
+        return buildSharedResult({
+          outcome: "townhall_out_of_range",
+          sourceRosterId: sourceRoster.id,
+          sourceRosterTitle: sourceRoster.title,
+          targetRosterId: targetRoster.id,
+          targetRosterTitle: targetRoster.title,
+          targetRosterClanTag: targetRoster.clanTag ?? null,
+          targetRosterClanName: null,
+          targetGroupKey: normalizedTargetGroupKey,
+          targetGroupName: normalizedTargetGroupKey
+            ? targetGroupByKey.get(normalizedTargetGroupKey)?.name ?? null
+            : null,
+          requestedTags,
+          movedTags,
+          movedAccounts,
+          duplicateTags,
+          missingTags,
+          blockedTags: blockedOutOfRangeTags,
+          blockedAccounts: blockedOutOfRangeAccounts,
+        });
+      }
+      if (blockedOutcomeOrder.length > 0) {
+        const blockedOutcome = blockedOutcomeOrder[0];
+        const blockedTags =
+          blockedOutcome === "roster_conflict"
+            ? blockedConflictTags
+            : blockedOutcome === "roster_full"
+              ? blockedRosterFullTags
+              : blockedOutcome === "account_limit_exceeded"
+                ? blockedAccountLimitTags
+                : blockedOutcome === "townhall_unavailable"
+                  ? blockedUnavailableTags
+                  : blockedOutOfRangeTags;
+        const blockedAccounts =
+          blockedOutcome === "roster_conflict"
+            ? blockedConflictAccounts
+            : blockedOutcome === "roster_full"
+              ? blockedRosterFullAccounts
+              : blockedOutcome === "account_limit_exceeded"
+                ? blockedAccountLimitAccounts
+                : blockedOutcome === "townhall_unavailable"
+                  ? blockedUnavailableAccounts
+                  : blockedOutOfRangeAccounts;
+        return buildSharedResult({
+          outcome: blockedOutcome,
+          sourceRosterId: sourceRoster.id,
+          sourceRosterTitle: sourceRoster.title,
+          targetRosterId: targetRoster.id,
+          targetRosterTitle: targetRoster.title,
+          targetRosterClanTag: targetRoster.clanTag ?? null,
+          targetRosterClanName: null,
+          targetGroupKey: normalizedTargetGroupKey,
+          targetGroupName: normalizedTargetGroupKey
+            ? targetGroupByKey.get(normalizedTargetGroupKey)?.name ?? null
+            : null,
+          requestedTags,
+          movedTags,
+          movedAccounts,
+          duplicateTags,
+          missingTags,
+          blockedTags,
+          blockedAccounts,
+          conflictingRosterIds:
+            blockedOutcome === "roster_conflict"
+              ? [...new Set(conflictRows.map((row) => row.rosterId))]
+              : undefined,
+        } as any);
+      }
+
+      return buildSharedResult({
+        outcome: "nothing_changed",
+        sourceRosterId: sourceRoster.id,
+        sourceRosterTitle: sourceRoster.title,
+        targetRosterId: targetRoster.id,
+        targetRosterTitle: targetRoster.title,
+        targetRosterClanTag: targetRoster.clanTag ?? null,
+        targetRosterClanName: null,
+        targetGroupKey: normalizedTargetGroupKey,
+        targetGroupName: normalizedTargetGroupKey
+          ? targetGroupByKey.get(normalizedTargetGroupKey)?.name ?? null
+          : null,
+        requestedTags,
+        movedTags,
+        movedAccounts,
+        duplicateTags,
+        missingTags,
+        blockedTags: [],
+        blockedAccounts: [],
+      });
+    });
+  }
+
   async removeRosterSignupsAsManager(input: {
     rosterId: string;
     playerTags?: string[] | null;
@@ -3851,6 +5109,7 @@ export class RosterService {
         outcome: "nothing_removed",
         rosterId: input.rosterId,
         removedTags: [],
+        removedAccounts: [],
         ignoredTags: [],
         notOwnedTags: [],
       };
@@ -3861,6 +5120,7 @@ export class RosterService {
         outcome: "roster_not_found",
         rosterId: input.rosterId,
         removedTags: [],
+        removedAccounts: [],
         ignoredTags: selectedTags,
         notOwnedTags: [],
       };
@@ -3870,6 +5130,7 @@ export class RosterService {
         outcome: "roster_archived",
         rosterId: roster.id,
         removedTags: [],
+        removedAccounts: [],
         ignoredTags: selectedTags,
         notOwnedTags: [],
       };
@@ -3880,16 +5141,24 @@ export class RosterService {
         rosterId: roster.id,
         playerTag: { in: selectedTags },
       },
-      select: { playerTag: true },
+      select: { playerTag: true, playerName: true },
     });
     const existingTags = normalizeRosterPlayerTags(existing.map((entry) => entry.playerTag));
     const notOwnedTags = selectedTags.filter((tag) => !existingTags.includes(tag));
+    const removedAccounts = existingTags.map((playerTag) => {
+      const existingEntry = existing.find((entry) => normalizePlayerTag(entry.playerTag) === playerTag) ?? null;
+      return {
+        playerTag,
+        playerName: normalizeRosterText(existingEntry?.playerName ?? null),
+      };
+    });
 
     if (existingTags.length <= 0) {
       return {
         outcome: "nothing_removed",
         rosterId: roster.id,
         removedTags: [],
+        removedAccounts: [],
         ignoredTags: selectedTags,
         notOwnedTags,
       };
@@ -3906,6 +5175,7 @@ export class RosterService {
       outcome: deleteResult.count > 0 ? "removed" : "nothing_removed",
       rosterId: roster.id,
       removedTags: existingTags,
+      removedAccounts,
       ignoredTags: selectedTags.filter((tag) => !existingTags.includes(tag)),
       notOwnedTags,
     };
@@ -3913,11 +5183,12 @@ export class RosterService {
 
   async buildRosterManagerReadinessView(input: {
     rosterId: string;
+    cocService?: CoCService | null;
   }): Promise<RosterManagerReadinessView | null> {
     const view = await loadRosterView(input.rosterId);
     if (!view) return null;
 
-    const trackedClanRoster = await loadRosterManagerTrackedClanMembers(view.roster);
+    const trackedClanRoster = await loadRosterManagerTrackedClanMembers(view.roster, input.cocService ?? null);
     const trackedTagSet = new Set(trackedClanRoster.map((entry) => normalizePlayerTag(entry.playerTag)).filter(Boolean));
     const signupsByTag = new Map(view.signups.map((signup) => [normalizePlayerTag(signup.playerTag), signup] as const));
     const signedUpButUntracked = view.signups.filter((signup) => {
@@ -3940,10 +5211,13 @@ export class RosterService {
 
   async buildRosterManagerReadinessText(input: {
     rosterId: string;
+    cocService?: CoCService | null;
+    emojiClient?: Client | null;
   }): Promise<string | null> {
     const view = await this.buildRosterManagerReadinessView(input);
     if (!view) return null;
-    return truncateDiscordContent(buildRosterManagerReadinessLines(view).join("\n"), 4096);
+    const text = truncateDiscordContent(buildRosterManagerReportLines(view).join("\n"), 4096);
+    return renderRosterBoardShortcodes(text, input.emojiClient ?? null);
   }
 
   async createRosterSignupSelectionPanel(input: {
@@ -4077,6 +5351,53 @@ export class RosterService {
     };
   }
 
+  async createRosterPingSelectionPanel(input: {
+    rosterId: string;
+    discordUserId: string;
+    pingOption?: string | null;
+    groupKey?: string | null;
+    message?: string | null;
+    cocService?: CoCService | null;
+  }): Promise<RosterPingOpenResult> {
+    const pingOption = normalizeRosterPingOption(input.pingOption) ?? "everyone";
+    const selectedGroupKey = input.groupKey ? normalizeRosterGroupKey(input.groupKey) : null;
+    const loaded = await loadRosterPingTargets({
+      rosterId: input.rosterId,
+      pingOption,
+      groupKey: selectedGroupKey,
+      cocService: input.cocService ?? null,
+    });
+    if (loaded.outcome !== "ready") {
+      return loaded;
+    }
+    if (loaded.targets.length <= 0) {
+      return {
+        outcome: "no_targets",
+        rosterId: loaded.roster.id,
+        pingOption,
+        groupKey: loaded.groupKey,
+      };
+    }
+
+    const session = createRosterPingSession({
+      rosterId: loaded.roster.id,
+      rosterTitle: loaded.roster.title,
+      clanName: loaded.clanName,
+      clanTag: normalizeRosterText(loaded.roster.clanTag ?? null) ?? loaded.roster.clanTag ?? "unknown",
+      pingOption,
+      groupKey: loaded.groupKey,
+      groupName: loaded.groupName,
+      message: String(input.message ?? "").trim() || null,
+      ownerDiscordUserId: normalizeDiscordUserId(input.discordUserId) ?? input.discordUserId,
+      targets: loaded.targets,
+    });
+
+    return {
+      outcome: "ready",
+      panel: buildRosterPingSelectionPayload(session),
+    };
+  }
+
   async updateRosterSelectionPanel(input: {
     sessionId: string;
     discordUserId: string;
@@ -4166,6 +5487,28 @@ export class RosterService {
     return {
       outcome: "updated",
       panel: buildRosterSelectionPayload(session),
+    };
+  }
+
+  async confirmRosterPingSelectionPanel(input: {
+    sessionId: string;
+    discordUserId: string;
+  }): Promise<RosterPingConfirmResult> {
+    const session = getRosterPingSession(input.sessionId);
+    if (!session) {
+      return { outcome: "session_not_found", sessionId: input.sessionId };
+    }
+    const normalizedDiscordUserId = normalizeDiscordUserId(input.discordUserId) ?? input.discordUserId;
+    if (session.ownerDiscordUserId !== normalizedDiscordUserId) {
+      return { outcome: "forbidden", sessionId: input.sessionId };
+    }
+
+    deleteRosterPingSession(session.sessionId);
+    return {
+      outcome: "posted",
+      rosterId: session.rosterId,
+      targetCount: session.targets.length,
+      messageContents: buildRosterPingPublicMessageContents(session),
     };
   }
 
@@ -4315,6 +5658,7 @@ export class RosterService {
         requestedTags,
         linkedTags: selectedTags,
         createdTags: [],
+        createdAccounts: [],
         duplicateTags: [],
         missingLinkedTags,
       };
@@ -4329,6 +5673,7 @@ export class RosterService {
         requestedTags,
         linkedTags: selectedTags,
         createdTags: [],
+        createdAccounts: [],
         duplicateTags: [],
         missingLinkedTags,
       };
@@ -4343,6 +5688,7 @@ export class RosterService {
         requestedTags,
         linkedTags: selectedTags,
         createdTags: [],
+        createdAccounts: [],
         duplicateTags: [],
         missingLinkedTags,
       };
@@ -4357,6 +5703,7 @@ export class RosterService {
         requestedTags,
         linkedTags: [],
         createdTags: [],
+        createdAccounts: [],
         duplicateTags: [],
         missingLinkedTags,
       } as const;
@@ -4390,6 +5737,7 @@ export class RosterService {
           requestedTags,
           linkedTags: selectedTags,
           createdTags: [],
+          createdAccounts: [],
           duplicateTags,
           missingLinkedTags,
           blockedTags: createdCandidates,
@@ -4416,6 +5764,7 @@ export class RosterService {
             requestedTags,
             linkedTags: selectedTags,
             createdTags: [],
+            createdAccounts: [],
             duplicateTags,
             missingLinkedTags,
             blockedTags: createdCandidates,
@@ -4474,6 +5823,7 @@ export class RosterService {
             requestedTags,
             linkedTags: selectedTags,
             createdTags: [],
+            createdAccounts: [],
             duplicateTags,
             missingLinkedTags,
             blockedTags: blockedUnavailableTags,
@@ -4489,6 +5839,7 @@ export class RosterService {
             requestedTags,
             linkedTags: selectedTags,
             createdTags: [],
+            createdAccounts: [],
             duplicateTags,
             missingLinkedTags,
             blockedTags: blockedOutOfRangeTags,
@@ -4522,6 +5873,7 @@ export class RosterService {
           requestedTags,
           linkedTags: selectedTags,
           createdTags: [],
+          createdAccounts: [],
           duplicateTags,
           missingLinkedTags,
           blockedTags: conflictingTags,
@@ -4556,6 +5908,13 @@ export class RosterService {
       requestedTags,
       linkedTags: selectedTags,
       createdTags,
+      createdAccounts: createdTags.map((playerTag) => {
+        const linked = linkedByTag.get(playerTag) ?? null;
+        return {
+          playerTag,
+          playerName: normalizeRosterText(linked?.linkedName ?? null),
+        };
+      }),
       duplicateTags,
       missingLinkedTags,
     };
@@ -4583,6 +5942,7 @@ export class RosterService {
         outcome: "nothing_removed",
         rosterId: input.rosterId,
         removedTags: [],
+        removedAccounts: [],
         ignoredTags: [],
         notOwnedTags: [],
       };
@@ -4593,6 +5953,7 @@ export class RosterService {
         outcome: "roster_not_found",
         rosterId: input.rosterId,
         removedTags: [],
+        removedAccounts: [],
         ignoredTags: selectedTags,
         notOwnedTags: [],
       };
@@ -4607,17 +5968,26 @@ export class RosterService {
       },
       select: {
         playerTag: true,
+        playerName: true,
       },
     });
     const ownedTags = [...new Set(ownedEntries.map((entry) => normalizePlayerTag(entry.playerTag)).filter(Boolean))];
     const ownedTagSet = new Set(ownedTags);
     const notOwnedTags = selectedTags.filter((tag) => !ownedTagSet.has(tag));
+    const ownedAccounts = ownedTags.map((playerTag) => {
+      const ownedEntry = ownedEntries.find((entry) => normalizePlayerTag(entry.playerTag) === playerTag) ?? null;
+      return {
+        playerTag,
+        playerName: normalizeRosterText(ownedEntry?.playerName ?? null),
+      };
+    });
 
     if (ownedTags.length <= 0) {
       return {
         outcome: "nothing_removed",
         rosterId: roster.id,
         removedTags: [],
+        removedAccounts: [],
         ignoredTags: selectedTags,
         notOwnedTags,
       };
@@ -4635,6 +6005,7 @@ export class RosterService {
       outcome: deleteResult.count > 0 ? "removed" : "nothing_removed",
       rosterId: roster.id,
       removedTags: ownedTags,
+      removedAccounts: ownedAccounts,
       ignoredTags: selectedTags.filter((tag) => !ownedTagSet.has(tag)),
       notOwnedTags,
     };

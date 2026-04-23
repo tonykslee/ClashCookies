@@ -181,6 +181,7 @@ describe("CwlStateService", () => {
     expect(txMock.currentCwlPrepSnapshot.deleteMany).toHaveBeenCalledWith({
       where: { season: "2026-04", clanTag: "#2QG2C08UP" },
     });
+    expect(prismaMock.$transaction).toHaveBeenCalledTimes(5);
   });
 
   it("refreshes one clan only when asked for a targeted CWL clan refresh", async () => {
