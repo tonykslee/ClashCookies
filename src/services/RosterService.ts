@@ -4711,12 +4711,21 @@ export class RosterService {
               cocService: input.cocService ?? null,
             })
           : null;
+      const blockedConflictTags: string[] = [];
+      const blockedConflictAccounts: RosterAccountIdentity[] = [];
+      const blockedRosterFullTags: string[] = [];
+      const blockedRosterFullAccounts: RosterAccountIdentity[] = [];
+      const blockedAccountLimitTags: string[] = [];
+      const blockedAccountLimitAccounts: RosterAccountIdentity[] = [];
       const blockedUnavailableTags: string[] = [];
+      const blockedUnavailableAccounts: RosterAccountIdentity[] = [];
       const blockedOutOfRangeTags: string[] = [];
+      const blockedOutOfRangeAccounts: RosterAccountIdentity[] = [];
+      const blockedOutcomeOrder: Array<
+        "roster_conflict" | "roster_full" | "account_limit_exceeded" | "townhall_unavailable" | "townhall_out_of_range"
+      > = [];
       const movedTags: string[] = [];
       const movedAccounts: RosterChangeRosterIdentity[] = [];
-      const blockedTags: string[] = [];
-      const blockedAccounts: RosterAccountIdentity[] = [];
       const movedRowsByGroupId = new Map<
         string,
         Array<{
@@ -4752,8 +4761,9 @@ export class RosterService {
           playerName: normalizeRosterText(sourceSignup.playerName ?? null),
         };
         if (conflictTags.has(tag)) {
-          blockedTags.push(tag);
-          blockedAccounts.push(blockedAccount);
+          blockedConflictTags.push(tag);
+          blockedConflictAccounts.push(blockedAccount);
+          blockedOutcomeOrder.push("roster_conflict");
           continue;
         }
 
@@ -4775,15 +4785,16 @@ export class RosterService {
             movedAccounts,
             duplicateTags,
             missingTags,
-            blockedTags,
-            blockedAccounts,
+            blockedTags: [],
+            blockedAccounts: [],
           } as const;
         }
 
         const maxMembers = normalizeRosterInt(targetRoster.maxMembers);
         if (maxMembers !== null && targetCount + movedTags.length + 1 > maxMembers) {
-          blockedTags.push(tag);
-          blockedAccounts.push(blockedAccount);
+          blockedRosterFullTags.push(tag);
+          blockedRosterFullAccounts.push(blockedAccount);
+          blockedOutcomeOrder.push("roster_full");
           continue;
         }
 
@@ -4795,8 +4806,9 @@ export class RosterService {
         if (effectiveMaxAccountsPerUser !== null) {
           const ownedCount = targetOwnedCountByUser.get(normalizedDiscordUserId) ?? 0;
           if (ownedCount + 1 > effectiveMaxAccountsPerUser) {
-            blockedTags.push(tag);
-            blockedAccounts.push(blockedAccount);
+            blockedAccountLimitTags.push(tag);
+            blockedAccountLimitAccounts.push(blockedAccount);
+            blockedOutcomeOrder.push("account_limit_exceeded");
             continue;
           }
         }
@@ -4805,14 +4817,16 @@ export class RosterService {
           const townHall = targetTownHallResolution.townHallByTag.get(tag) ?? null;
           if (townHall === null) {
             blockedUnavailableTags.push(tag);
-            blockedAccounts.push(blockedAccount);
+            blockedUnavailableAccounts.push(blockedAccount);
+            blockedOutcomeOrder.push("townhall_unavailable");
             continue;
           }
           const minTownhall = normalizeRosterInt(targetRoster.minTownhall);
           const maxTownhall = normalizeRosterInt(targetRoster.maxTownhall);
           if ((minTownhall !== null && townHall < minTownhall) || (maxTownhall !== null && townHall > maxTownhall)) {
             blockedOutOfRangeTags.push(tag);
-            blockedAccounts.push(blockedAccount);
+            blockedOutOfRangeAccounts.push(blockedAccount);
+            blockedOutcomeOrder.push("townhall_out_of_range");
             continue;
           }
         }
@@ -4872,8 +4886,20 @@ export class RosterService {
           movedAccounts,
           duplicateTags,
           missingTags,
-          blockedTags,
-          blockedAccounts,
+          blockedTags: [
+            ...blockedConflictTags,
+            ...blockedRosterFullTags,
+            ...blockedAccountLimitTags,
+            ...blockedUnavailableTags,
+            ...blockedOutOfRangeTags,
+          ],
+          blockedAccounts: [
+            ...blockedConflictAccounts,
+            ...blockedRosterFullAccounts,
+            ...blockedAccountLimitAccounts,
+            ...blockedUnavailableAccounts,
+            ...blockedOutOfRangeAccounts,
+          ],
         });
       }
 
@@ -4896,7 +4922,7 @@ export class RosterService {
           duplicateTags,
           missingTags,
           blockedTags: blockedUnavailableTags,
-          blockedAccounts,
+          blockedAccounts: blockedUnavailableAccounts,
         });
       }
       if (blockedOutOfRangeTags.length > 0) {
@@ -4918,16 +4944,31 @@ export class RosterService {
           duplicateTags,
           missingTags,
           blockedTags: blockedOutOfRangeTags,
-          blockedAccounts,
+          blockedAccounts: blockedOutOfRangeAccounts,
         });
       }
-      if (blockedTags.length > 0) {
-        const blockedOutcome =
-          conflictTags.size > 0
-            ? "roster_conflict"
-            : blockedTags.length > 0 && normalizeRosterInt(targetRoster.maxMembers) !== null
-              ? "roster_full"
-              : "account_limit_exceeded";
+      if (blockedOutcomeOrder.length > 0) {
+        const blockedOutcome = blockedOutcomeOrder[0];
+        const blockedTags =
+          blockedOutcome === "roster_conflict"
+            ? blockedConflictTags
+            : blockedOutcome === "roster_full"
+              ? blockedRosterFullTags
+              : blockedOutcome === "account_limit_exceeded"
+                ? blockedAccountLimitTags
+                : blockedOutcome === "townhall_unavailable"
+                  ? blockedUnavailableTags
+                  : blockedOutOfRangeTags;
+        const blockedAccounts =
+          blockedOutcome === "roster_conflict"
+            ? blockedConflictAccounts
+            : blockedOutcome === "roster_full"
+              ? blockedRosterFullAccounts
+              : blockedOutcome === "account_limit_exceeded"
+                ? blockedAccountLimitAccounts
+                : blockedOutcome === "townhall_unavailable"
+                  ? blockedUnavailableAccounts
+                  : blockedOutOfRangeAccounts;
         return buildSharedResult({
           outcome: blockedOutcome,
           sourceRosterId: sourceRoster.id,
@@ -4947,6 +4988,10 @@ export class RosterService {
           missingTags,
           blockedTags,
           blockedAccounts,
+          conflictingRosterIds:
+            blockedOutcome === "roster_conflict"
+              ? [...new Set(conflictRows.map((row) => row.rosterId))]
+              : undefined,
         } as any);
       }
 
@@ -4967,8 +5012,8 @@ export class RosterService {
         movedAccounts,
         duplicateTags,
         missingTags,
-        blockedTags,
-        blockedAccounts,
+        blockedTags: [],
+        blockedAccounts: [],
       });
     });
   }
