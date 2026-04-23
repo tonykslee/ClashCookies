@@ -203,6 +203,26 @@ function getInteractionSubcommandPath(interaction: ChatInputCommandInteraction):
   return "";
 }
 
+async function respondBestEffortToRosterCustomizeFailure(
+  interaction: StringSelectMenuInteraction,
+): Promise<void> {
+  const payload = {
+    ephemeral: true,
+    content: "Failed to update roster customization.",
+  };
+
+  try {
+    if (interaction.deferred || interaction.replied) {
+      await interaction.followUp(payload);
+      return;
+    }
+
+    await interaction.reply(payload);
+  } catch (responseError) {
+    console.warn(`Roster customize fallback response failed: ${formatError(responseError)}`);
+  }
+}
+
 function buildGlobalPostButton(userId: string): ActionRowBuilder<ButtonBuilder> {
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
@@ -463,12 +483,7 @@ const handleSelectMenuInteraction = async (
       await handleRosterPostCustomizeMenuInteraction(interaction, cocService);
     } catch (err) {
       console.error(`Roster customize menu failed: ${formatError(err)}`);
-      if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({
-          ephemeral: true,
-          content: "Failed to update roster customization.",
-        });
-      }
+      await respondBestEffortToRosterCustomizeFailure(interaction);
     }
     return;
   }
