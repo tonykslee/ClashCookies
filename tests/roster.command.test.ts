@@ -27,6 +27,7 @@ import {
   handleRosterManageWeightModalSubmit,
   handleRosterPostRefreshButtonInteraction,
   handleRosterPostSettingsButtonInteraction,
+  handleRosterPostSettingsActionButtonInteraction,
   handleRosterPostSettingsMenuInteraction,
 } from "../src/commands/Roster";
 import { rosterService } from "../src/services/RosterService";
@@ -1109,6 +1110,93 @@ describe("/roster command", () => {
       );
     },
   );
+
+  it.each([
+    {
+      action: "add_user" as const,
+      customId: "roster-post-users:action:confirm:session-1",
+      result: {
+        outcome: "created" as const,
+        rosterId: "roster-1",
+        groupKey: "confirmed",
+        groupName: "Confirmed",
+        requestedTags: ["#PQL0289", "#QGRJ2222"],
+        linkedTags: ["#PQL0289", "#QGRJ2222"],
+        createdTags: ["#PQL0289", "#QGRJ2222"],
+        createdAccounts: [
+          { playerTag: "#PQL0289", playerName: "Alpha" },
+          { playerTag: "#QGRJ2222", playerName: "Bravo" },
+        ],
+        duplicateTags: [],
+        missingLinkedTags: [],
+      },
+      expectedContent:
+        "Added Alpha (#PQL0289) to CWL Alpha Signup - CWL Alpha\nAdded Bravo (#QGRJ2222) to CWL Alpha Signup - CWL Alpha",
+    },
+    {
+      action: "remove_user" as const,
+      customId: "roster-post-users:action:confirm:session-2",
+      result: {
+        outcome: "removed" as const,
+        rosterId: "roster-1",
+        removedTags: ["#PQL0289", "#QGRJ2222"],
+        removedAccounts: [
+          { playerTag: "#PQL0289", playerName: "Alpha" },
+          { playerTag: "#QGRJ2222", playerName: "Bravo" },
+        ],
+        ignoredTags: [],
+        notOwnedTags: [],
+      },
+      expectedContent:
+        "Removed Alpha (#PQL0289) from CWL Alpha Signup - CWL Alpha\nRemoved Bravo (#QGRJ2222) from CWL Alpha Signup - CWL Alpha",
+    },
+  ])("confirms Settings -> %s with ephemeral success feedback", async ({ action, customId, result, expectedContent }) => {
+    (rosterService.confirmRosterSelectionPanel as any).mockResolvedValue({
+      outcome: action,
+      result,
+    });
+    (rosterService.getRosterView as any).mockResolvedValue({
+      roster: {
+        id: "roster-1",
+        title: "CWL Alpha Signup",
+        clanTag: "#2QG2C08UP",
+        postedChannelId: null,
+        postedMessageId: null,
+        rosterRoleId: null,
+      },
+      clanDisplayName: "CWL Alpha",
+      groups: [],
+      signups: [],
+      totalSignupCount: 0,
+    });
+
+    const interaction = {
+      customId,
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      memberPermissions: {
+        has: vi.fn().mockReturnValue(true),
+      },
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      followUp: vi.fn().mockResolvedValue(undefined),
+      client: {
+        channels: {
+          fetch: vi.fn().mockResolvedValue(null),
+        },
+      },
+    } as any;
+
+    await handleRosterPostSettingsActionButtonInteraction(interaction);
+
+    expect(rosterService.confirmRosterSelectionPanel).toHaveBeenCalledWith({
+      sessionId: customId.split(":").at(-1),
+      discordUserId: "111111111111111111",
+      cocService: null,
+    });
+    expect(String(interaction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).toBe(expectedContent);
+  });
 
   it("opens the roster customization panel when Settings -> Customize is selected", async () => {
     (rosterService.findGuildRosterById as any).mockResolvedValue({
