@@ -1827,6 +1827,7 @@ describe("/roster command", () => {
       deferUpdate: vi.fn().mockResolvedValue(undefined),
       editReply: vi.fn().mockResolvedValue(undefined),
       reply: vi.fn().mockResolvedValue(undefined),
+      followUp: vi.fn().mockResolvedValue(undefined),
       client: {
         channels: {
           fetch: vi.fn().mockResolvedValue(rosterChannel),
@@ -1845,6 +1846,9 @@ describe("/roster command", () => {
     );
     expect(rosterService.refreshRosterSignupPayload).toHaveBeenCalledWith("roster-1", expect.anything(), expect.anything());
     expect(interaction.deferUpdate).toHaveBeenCalled();
+    expect(interaction.deferUpdate.mock.invocationCallOrder[0]).toBeLessThan(
+      (rosterService.findGuildRosterById as any).mock.invocationCallOrder[0],
+    );
     expect(interaction.editReply).toHaveBeenCalledWith(
       expect.objectContaining({
         embeds: [expect.any(EmbedBuilder)],
@@ -1947,6 +1951,7 @@ describe("/roster command", () => {
       deferUpdate: vi.fn().mockResolvedValue(undefined),
       editReply: vi.fn().mockResolvedValue(undefined),
       reply: vi.fn().mockResolvedValue(undefined),
+      followUp: vi.fn().mockResolvedValue(undefined),
       client: {
         channels: {
           fetch: vi.fn().mockResolvedValue(rosterChannel),
@@ -1964,6 +1969,10 @@ describe("/roster command", () => {
       }),
     );
     expect(rosterService.refreshRosterSignupPayload).toHaveBeenCalledWith("roster-1", expect.anything(), expect.anything());
+    expect(interaction.deferUpdate).toHaveBeenCalled();
+    expect(interaction.deferUpdate.mock.invocationCallOrder[0]).toBeLessThan(
+      (rosterService.findGuildRosterById as any).mock.invocationCallOrder[0],
+    );
     expect(interaction.editReply).toHaveBeenCalledWith(
       expect.objectContaining({
         embeds: [expect.any(EmbedBuilder)],
@@ -2011,6 +2020,65 @@ describe("/roster command", () => {
     const optionValues = menu?.options?.map((option: any) => option.value) ?? [];
     expect(optionValues).toContain("open_roster");
     expect(optionValues).not.toContain("close_roster");
+  });
+
+  it("acks before rejecting invalid roster customize column selections", async () => {
+    (rosterService.findGuildRosterById as any).mockResolvedValue({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      sortBy: null,
+      displayColumns: null,
+      lifecycleState: "OPEN",
+      postedChannelId: "channel-1",
+      postedMessageId: "message-1",
+      postedMessageUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    });
+    const deferUpdate = vi.fn().mockResolvedValue(undefined);
+    const followUp = vi.fn().mockResolvedValue(undefined);
+    const interaction = {
+      customId: "roster-post-customize:columns:roster-1",
+      values: [],
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      memberPermissions: {
+        has: vi.fn().mockReturnValue(true),
+      },
+      deferUpdate,
+      editReply: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+      followUp,
+      client: {
+        channels: {
+          fetch: vi.fn().mockResolvedValue(null),
+        },
+      },
+    } as any;
+
+    await handleRosterPostCustomizeMenuInteraction(interaction, {} as any);
+
+    expect(deferUpdate).toHaveBeenCalledTimes(1);
+    expect(interaction.reply).not.toHaveBeenCalled();
+    expect(followUp).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ephemeral: true,
+        content: "Choose at least one column to customize.",
+      }),
+    );
+    expect(rosterService.updateRoster).not.toHaveBeenCalled();
   });
 
   it("refreshes the posted roster from the service-owned current-clan refresh path", async () => {
