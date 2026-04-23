@@ -63,6 +63,7 @@ export const ROSTER_SELECTION_PREFIX = "roster-selection";
 export const ROSTER_POST_ACTION_PREFIX = "roster-post-action";
 export const ROSTER_POST_SETTINGS_PREFIX = "roster-post-settings";
 export const ROSTER_POST_USERS_PREFIX = "roster-post-users";
+const ROSTER_MANAGER_PLAYER_PAGE_ROW_COUNT = 3;
 const ROSTER_SELECTION_SESSION_TTL_MS = 15 * 60 * 1000;
 const ROSTER_CONFLICT_LIFECYCLE_STATES: readonly RosterLifecycleState[] = [
   ROSTER_LIFECYCLE_STATE.ACTIVE,
@@ -1016,7 +1017,7 @@ function buildRosterPostUsersGroupSelectMenuCustomId(sessionId: string): string 
 }
 
 function buildRosterPostUsersActionButtonCustomId(
-  action: "confirm" | "cancel" | "select_group",
+  action: "confirm" | "cancel" | "select_group" | "previous_page" | "next_page",
   sessionId: string,
 ): string {
   return `${ROSTER_POST_USERS_PREFIX}:action:${action}:${String(sessionId ?? "").trim()}`;
@@ -1046,6 +1047,7 @@ type RosterSelectionSession = {
   selectedDiscordUserId: string | null;
   selectedDiscordUserLabel: string | null;
   groupPickerVisible: boolean;
+  playerPageWindowStart: number;
 };
 
 const rosterSelectionSessions = new Map<string, RosterSelectionSession>();
@@ -1109,6 +1111,10 @@ function buildRosterSelectionDescription(input: {
 function buildRosterManagerSelectionDescription(session: RosterSelectionSession): string[] {
   const lines: string[] = [];
   const isAddMode = session.mode === "add_user";
+  const totalPlayerChunks = Math.max(1, Math.ceil(session.options.length / 25));
+  const maxWindowStart = Math.max(0, totalPlayerChunks - ROSTER_MANAGER_PLAYER_PAGE_ROW_COUNT);
+  const windowStart = Math.max(0, Math.min(Math.trunc(session.playerPageWindowStart || 0), maxWindowStart));
+  const windowEnd = Math.min(totalPlayerChunks, windowStart + ROSTER_MANAGER_PLAYER_PAGE_ROW_COUNT);
   lines.push(
     isAddMode ? `Adding Roster Users to ${session.rosterTitle}.` : `Removing Roster Users from ${session.rosterTitle}.`,
   );
@@ -1120,6 +1126,14 @@ function buildRosterManagerSelectionDescription(session: RosterSelectionSession)
   );
   lines.push("3. Confirm when the selection looks right.");
   lines.push("");
+  if (session.options.length > 0) {
+    const startPlayerIndex = windowStart * 25 + 1;
+    const endPlayerIndex = Math.min(session.options.length, windowEnd * 25);
+    lines.push(`Showing players ${startPlayerIndex} - ${endPlayerIndex} of ${session.options.length}.`);
+    if (totalPlayerChunks > ROSTER_MANAGER_PLAYER_PAGE_ROW_COUNT) {
+      lines.push("Use Previous and Next to page through linked players.");
+    }
+  }
   if (session.groupPickerVisible && isAddMode) {
     lines.push("Select a roster group to continue.");
     lines.push(`Selected group: ${session.groupName ?? "none"}`);
@@ -1160,7 +1174,10 @@ function buildRosterManagerSelectionPlayerSelectRows(session: RosterSelectionSes
   for (let index = 0; index < session.options.length; index += 25) {
     chunks.push(session.options.slice(index, index + 25));
   }
-  const visibleChunks = chunks.slice(0, 5);
+  const totalChunks = chunks.length;
+  const maxWindowStart = Math.max(0, totalChunks - ROSTER_MANAGER_PLAYER_PAGE_ROW_COUNT);
+  const windowStart = Math.max(0, Math.min(Math.trunc(session.playerPageWindowStart || 0), maxWindowStart));
+  const visibleChunks = chunks.slice(windowStart, windowStart + ROSTER_MANAGER_PLAYER_PAGE_ROW_COUNT);
   const selectedTags = new Set(session.selectedTags);
   if (visibleChunks.length <= 0) {
     const select = new StringSelectMenuBuilder()
@@ -1180,10 +1197,11 @@ function buildRosterManagerSelectionPlayerSelectRows(session: RosterSelectionSes
   }
 
   return visibleChunks.map((chunk, pageIndex) => {
-    const start = pageIndex * 25 + 1;
+    const actualPageIndex = windowStart + pageIndex;
+    const start = actualPageIndex * 25 + 1;
     const end = start + chunk.length - 1;
     const select = new StringSelectMenuBuilder()
-      .setCustomId(buildRosterPostUsersPlayerSelectMenuCustomId(session.sessionId, pageIndex))
+      .setCustomId(buildRosterPostUsersPlayerSelectMenuCustomId(session.sessionId, actualPageIndex))
       .setPlaceholder(`Select Players [${start} - ${end}]`)
       .setMinValues(0)
       .setMaxValues(Math.max(1, chunk.length))
@@ -1228,6 +1246,24 @@ function buildRosterManagerSelectionGroupSelectRow(
   return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
 }
 
+function buildRosterManagerSelectionPagingButtons(session: RosterSelectionSession): ButtonBuilder[] {
+  const totalChunks = Math.max(1, Math.ceil(session.options.length / 25));
+  const maxWindowStart = Math.max(0, totalChunks - ROSTER_MANAGER_PLAYER_PAGE_ROW_COUNT);
+  const windowStart = Math.max(0, Math.min(Math.trunc(session.playerPageWindowStart || 0), maxWindowStart));
+  return [
+    new ButtonBuilder()
+      .setCustomId(buildRosterPostUsersActionButtonCustomId("previous_page", session.sessionId))
+      .setLabel("Previous")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(windowStart <= 0),
+    new ButtonBuilder()
+      .setCustomId(buildRosterPostUsersActionButtonCustomId("next_page", session.sessionId))
+      .setLabel("Next")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(windowStart >= maxWindowStart),
+  ];
+}
+
 function buildRosterManagerSelectionPayload(session: RosterSelectionSession): RosterSelectionPanel {
   const isAddMode = session.mode === "add_user";
   const selectedTags = [...new Set(session.selectedTags)];
@@ -1249,11 +1285,11 @@ function buildRosterManagerSelectionPayload(session: RosterSelectionSession): Ro
 
   const components: ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder | UserSelectMenuBuilder>[] = [];
 
-  if (session.groupPickerVisible && isAddMode) {
-    components.push(buildRosterManagerSelectionGroupSelectRow(session));
-    return {
-      sessionId: session.sessionId,
-      mode: session.mode,
+    if (session.groupPickerVisible && isAddMode) {
+      components.push(buildRosterManagerSelectionGroupSelectRow(session));
+      return {
+        sessionId: session.sessionId,
+        mode: session.mode,
       embed,
       components,
       selectedTags,
@@ -1264,41 +1300,49 @@ function buildRosterManagerSelectionPayload(session: RosterSelectionSession): Ro
   components.push(...buildRosterManagerSelectionPlayerSelectRows(session));
 
   if (isAddMode) {
+    const actionButtons = [
+      ...buildRosterManagerSelectionPagingButtons(session),
+      new ButtonBuilder()
+        .setCustomId(buildRosterPostUsersActionButtonCustomId("select_group", session.sessionId))
+        .setLabel("Select Group")
+        .setStyle(ButtonStyle.Primary)
+        .setDisabled(session.groupOptions.length <= 0),
+      new ButtonBuilder()
+        .setCustomId(buildRosterPostUsersActionButtonCustomId("confirm", session.sessionId))
+        .setLabel("Confirm")
+        .setStyle(ButtonStyle.Success)
+        .setDisabled(
+          !session.selectedDiscordUserId ||
+            selectedTags.length <= 0 ||
+            session.groupOptions.length <= 0 ||
+            !session.selectedGroupKey,
+        ),
+      new ButtonBuilder()
+        .setCustomId(buildRosterPostUsersActionButtonCustomId("cancel", session.sessionId))
+        .setLabel("Cancel")
+        .setStyle(ButtonStyle.Secondary),
+    ];
     components.push(
       new ActionRowBuilder<ButtonBuilder>().addComponents(
-        new ButtonBuilder()
-          .setCustomId(buildRosterPostUsersActionButtonCustomId("select_group", session.sessionId))
-          .setLabel("Select Group")
-          .setStyle(ButtonStyle.Primary)
-          .setDisabled(session.groupOptions.length <= 0),
-        new ButtonBuilder()
-          .setCustomId(buildRosterPostUsersActionButtonCustomId("confirm", session.sessionId))
-          .setLabel("Confirm")
-          .setStyle(ButtonStyle.Success)
-          .setDisabled(
-            !session.selectedDiscordUserId ||
-              selectedTags.length <= 0 ||
-              session.groupOptions.length <= 0 ||
-              !session.selectedGroupKey,
-          ),
-        new ButtonBuilder()
-          .setCustomId(buildRosterPostUsersActionButtonCustomId("cancel", session.sessionId))
-          .setLabel("Cancel")
-          .setStyle(ButtonStyle.Secondary),
+        ...actionButtons,
       ),
     );
   } else {
+    const actionButtons = [
+      ...buildRosterManagerSelectionPagingButtons(session),
+      new ButtonBuilder()
+        .setCustomId(buildRosterPostUsersActionButtonCustomId("confirm", session.sessionId))
+        .setLabel("Confirm")
+        .setStyle(ButtonStyle.Danger)
+        .setDisabled(!session.selectedDiscordUserId || selectedTags.length <= 0),
+      new ButtonBuilder()
+        .setCustomId(buildRosterPostUsersActionButtonCustomId("cancel", session.sessionId))
+        .setLabel("Cancel")
+        .setStyle(ButtonStyle.Secondary),
+    ];
     components.push(
       new ActionRowBuilder<ButtonBuilder>().addComponents(
-        new ButtonBuilder()
-          .setCustomId(buildRosterPostUsersActionButtonCustomId("confirm", session.sessionId))
-          .setLabel("Confirm")
-          .setStyle(ButtonStyle.Danger)
-          .setDisabled(!session.selectedDiscordUserId || selectedTags.length <= 0),
-        new ButtonBuilder()
-          .setCustomId(buildRosterPostUsersActionButtonCustomId("cancel", session.sessionId))
-          .setLabel("Cancel")
-          .setStyle(ButtonStyle.Secondary),
+        ...actionButtons,
       ),
     );
   }
@@ -2713,13 +2757,13 @@ export function parseRosterPostUsersGroupSelectMenuCustomId(customId: string): {
 
 export function parseRosterPostUsersActionButtonCustomId(
   customId: string,
-): { action: "confirm" | "cancel" | "select_group"; sessionId: string } | null {
+): { action: "confirm" | "cancel" | "select_group" | "previous_page" | "next_page"; sessionId: string } | null {
   const parts = String(customId ?? "").split(":");
   if (parts.length !== 4 || parts[0] !== ROSTER_POST_USERS_PREFIX || parts[1] !== "action") {
     return null;
   }
   const action = parts[2];
-  if (action !== "confirm" && action !== "cancel" && action !== "select_group") {
+  if (action !== "confirm" && action !== "cancel" && action !== "select_group" && action !== "previous_page" && action !== "next_page") {
     return null;
   }
   const sessionId = parts[3]?.trim() ?? "";
@@ -3945,6 +3989,7 @@ export class RosterService {
       selectedDiscordUserId: null,
       selectedDiscordUserLabel: null,
       groupPickerVisible: false,
+      playerPageWindowStart: 0,
     });
     return {
       outcome: "ready",
@@ -3979,6 +4024,7 @@ export class RosterService {
       selectedDiscordUserId: null,
       selectedDiscordUserLabel: null,
       groupPickerVisible: false,
+      playerPageWindowStart: 0,
     });
     return {
       outcome: "ready",
@@ -4023,6 +4069,7 @@ export class RosterService {
       selectedDiscordUserId: null,
       selectedDiscordUserLabel: null,
       groupPickerVisible: false,
+      playerPageWindowStart: 0,
     });
     return {
       outcome: "ready",
@@ -4040,6 +4087,7 @@ export class RosterService {
     selectedPlayerTags?: string[];
     playerPageIndex?: number | null;
     groupPickerVisible?: boolean;
+    playerPageWindowDelta?: number | null;
   }): Promise<RosterSelectionUpdateResult> {
     const session = getRosterSelectionSession(input.sessionId);
     if (!session) {
@@ -4070,6 +4118,7 @@ export class RosterService {
 
       if (previousUserId !== normalizedSelectedUserId) {
         session.selectedTags = [];
+        session.playerPageWindowStart = 0;
       } else {
         session.selectedTags = normalizeRosterSelectionTags(session.selectedTags, session.options.map((option) => option.value));
       }
@@ -4105,6 +4154,13 @@ export class RosterService {
     }
     if (input.groupPickerVisible !== undefined) {
       session.groupPickerVisible = input.groupPickerVisible && session.mode === "add_user";
+    }
+    if (input.playerPageWindowDelta !== undefined) {
+      const totalChunks = Math.max(1, Math.ceil(session.options.length / 25));
+      const maxWindowStart = Math.max(0, totalChunks - ROSTER_MANAGER_PLAYER_PAGE_ROW_COUNT);
+      const delta = Math.trunc(Number(input.playerPageWindowDelta ?? 0)) || 0;
+      const nextWindowStart = Math.max(0, Math.min(Math.trunc(session.playerPageWindowStart || 0) + delta * ROSTER_MANAGER_PLAYER_PAGE_ROW_COUNT, maxWindowStart));
+      session.playerPageWindowStart = nextWindowStart;
     }
     rosterSelectionSessions.set(session.sessionId, session);
     return {

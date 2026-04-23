@@ -1477,6 +1477,34 @@ export async function handleRosterPostSettingsActionButtonInteraction(
     return;
   }
 
+  if (parsed.action === "previous_page" || parsed.action === "next_page") {
+    const result = await rosterService.updateRosterSelectionPanel({
+      sessionId: parsed.sessionId,
+      discordUserId: interaction.user.id,
+      playerPageWindowDelta: parsed.action === "previous_page" ? -1 : 1,
+    });
+    if (result.outcome === "session_not_found") {
+      await interaction.reply({
+        content: "That roster selection has expired. Please start again.",
+        ephemeral: true,
+      });
+      return;
+    }
+    if (result.outcome === "forbidden") {
+      await interaction.reply({
+        content: "Only the original requester can use this roster selection.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    await interaction.update({
+      embeds: [result.panel.embed],
+      components: result.panel.components,
+    });
+    return;
+  }
+
   await interaction.deferUpdate().catch(() => undefined);
   const result = await rosterService.confirmRosterSelectionPanel({
     sessionId: parsed.sessionId,

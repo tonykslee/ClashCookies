@@ -23,6 +23,7 @@ function makeCompoSlashInteraction() {
     },
     isAutocomplete: () => false,
     isButton: () => false,
+    isUserSelectMenu: () => false,
     isStringSelectMenu: () => false,
     isModalSubmit: () => false,
     isChatInputCommand: () => true,
