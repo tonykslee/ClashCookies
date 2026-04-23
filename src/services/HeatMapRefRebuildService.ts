@@ -5,6 +5,7 @@ import { CommandPermissionService } from "./CommandPermissionService";
 import { SettingsService } from "./SettingsService";
 import { formatError } from "../helper/formatError";
 import { getHeatMapRefBandKey } from "../helper/compoHeatMap";
+import { assertHeatMapRefContinuityOrThrow } from "../helper/heatMapRefContinuity";
 import {
   buildHeatMapRefRebuildCycleKey,
   buildHeatMapRefRebuildRows,
@@ -308,6 +309,10 @@ export class HeatMapRefRebuildService {
       now,
     });
     const rebuilt = rebuiltResult.rows;
+    assertHeatMapRefContinuityOrThrow({
+      operation: "rebuild",
+      rows: rebuilt,
+    });
     const currentRows = await getAllHeatMapRefs();
     const currentComparableRows = currentRows.map((row) => ({
       weightMinInclusive: row.weightMinInclusive,

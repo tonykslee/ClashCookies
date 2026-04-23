@@ -21,7 +21,7 @@ describe("HeatMapRefService", () => {
   });
 
   it("uses the corrected checked-in HeatMapRef bootstrap rows", () => {
-    expect(HEAT_MAP_REF_SEED_ROWS).toHaveLength(11);
+    expect(HEAT_MAP_REF_SEED_ROWS).toHaveLength(12);
     expect(HEAT_MAP_REF_SEED_ROWS[0]).toMatchObject({
       weightMinInclusive: 0,
       weightMaxInclusive: 7_200_000,
@@ -52,6 +52,20 @@ describe("HeatMapRefService", () => {
       contributingClanCount: 0,
     });
     expect(HEAT_MAP_REF_SEED_ROWS[10]).toMatchObject({
+      weightMinInclusive: 8_100_001,
+      weightMaxInclusive: 8_109_999,
+      th18Count: 21,
+      th17Count: 11,
+      th16Count: 7,
+      th15Count: 6,
+      th14Count: 4,
+      th13Count: 2,
+      th12Count: 1,
+      th11Count: 0,
+      th10OrLowerCount: 0,
+      contributingClanCount: 0,
+    });
+    expect(HEAT_MAP_REF_SEED_ROWS[11]).toMatchObject({
       weightMinInclusive: 8_110_000,
       weightMaxInclusive: 9_999_999,
       th18Count: 22,
@@ -65,6 +79,49 @@ describe("HeatMapRefService", () => {
       th10OrLowerCount: 0,
       contributingClanCount: 0,
     });
+  });
+
+  it("refuses to persist gapped HeatMapRef seed rows before any write occurs", async () => {
+    const gappedRows = [
+      {
+        weightMinInclusive: 0,
+        weightMaxInclusive: 7_200_000,
+        th18Count: 0,
+        th17Count: 0,
+        th16Count: 0,
+        th15Count: 0,
+        th14Count: 0,
+        th13Count: 0,
+        th12Count: 0,
+        th11Count: 0,
+        th10OrLowerCount: 0,
+        contributingClanCount: 0,
+        sourceVersion: "test",
+        refreshedAt: new Date("2026-04-12T00:00:00.000Z"),
+      },
+      {
+        weightMinInclusive: 8_110_000,
+        weightMaxInclusive: 9_999_999,
+        th18Count: 0,
+        th17Count: 0,
+        th16Count: 0,
+        th15Count: 0,
+        th14Count: 0,
+        th13Count: 0,
+        th12Count: 0,
+        th11Count: 0,
+        th10OrLowerCount: 0,
+        contributingClanCount: 0,
+        sourceVersion: "test",
+        refreshedAt: new Date("2026-04-12T00:00:00.000Z"),
+      },
+    ] as const;
+
+    await expect(upsertHeatMapRefSeedRows(gappedRows)).rejects.toThrow(
+      /HeatMapRef continuity validation failed/,
+    );
+    expect(prismaMock.heatMapRef.upsert).not.toHaveBeenCalled();
+    expect(prismaMock.heatMapRef.delete).not.toHaveBeenCalled();
   });
 
   it("upserts the checked-in HeatMapRef bootstrap dataset by composite key and prunes obsolete rows", async () => {
