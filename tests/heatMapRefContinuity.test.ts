@@ -89,7 +89,7 @@ describe("HeatMapRef continuity", () => {
     expect(validation.duplicateBandKeys).toEqual([]);
     expect(resolvedBand).toMatchObject({
       weightMinInclusive: 8_100_001,
-      weightMaxInclusive: 8_109_999,
+      weightMaxInclusive: 9_999_999,
     });
   });
 

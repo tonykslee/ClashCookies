@@ -344,7 +344,7 @@ describe("CompoWarStateService", () => {
         weightMaxInclusive: 8_100_000,
       }),
       makeHeatMapRef({
-        weightMinInclusive: 8_110_000,
+        weightMinInclusive: 8_100_001,
         weightMaxInclusive: 9_999_999,
         th18Count: 22,
         th17Count: 11,
@@ -363,8 +363,8 @@ describe("CompoWarStateService", () => {
       weightMinInclusive: 8_000_001,
       weightMaxInclusive: 8_100_000,
     });
-    expect(findHeatMapRefForWeightForTest(refs, 8_110_000)).toMatchObject({
-      weightMinInclusive: 8_110_000,
+    expect(findHeatMapRefForWeightForTest(refs, 8_109_000)).toMatchObject({
+      weightMinInclusive: 8_100_001,
       weightMaxInclusive: 9_999_999,
     });
   });
