@@ -81,11 +81,18 @@ describe("/roster command shape", () => {
 
     const manageRoster = manage?.options?.find((option: any) => option.name === "roster");
     const manageAction = manage?.options?.find((option: any) => option.name === "action");
+    const manageTargetRoster = manage?.options?.find((option: any) => option.name === "target_roster");
+    const manageTargetGroup = manage?.options?.find((option: any) => option.name === "target_group");
+    const manageUser = manage?.options?.find((option: any) => option.name === "user");
     const manageGroup = manage?.options?.find((option: any) => option.name === "group");
     const managePlayers = manage?.options?.find((option: any) => option.name === "players");
 
     expect(manageRoster?.required).toBe(true);
     expect(manageAction?.required).toBe(true);
+    expect(manageTargetRoster?.autocomplete).toBe(true);
+    expect(manageTargetGroup?.autocomplete).toBe(true);
+    expect(manageUser?.type).toBe(ApplicationCommandOptionType.User);
+    expect(manageUser?.autocomplete).not.toBe(true);
     expect(manageGroup?.required).toBe(false);
     expect(managePlayers?.required).toBe(false);
     expect(manageGroup?.autocomplete).toBe(true);
@@ -94,6 +101,7 @@ describe("/roster command shape", () => {
       "add",
       "move",
       "remove",
+      "change_roster",
       "set_weight",
       "open",
       "close",

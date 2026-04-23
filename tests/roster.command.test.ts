@@ -60,6 +60,8 @@ function makeInteraction(input: {
   action?: string | null;
   message?: string | null;
   group?: string | null;
+  targetRoster?: string | null;
+  targetGroup?: string | null;
   players?: string | null;
   pingOption?: string | null;
   userId?: string | null;
@@ -96,6 +98,8 @@ function makeInteraction(input: {
         if (name === "roster") return input.roster ?? null;
         if (name === "action") return input.action ?? null;
         if (name === "message") return input.message ?? null;
+        if (name === "target_roster") return input.targetRoster ?? null;
+        if (name === "target_group") return input.targetGroup ?? null;
         if (name === "group") return input.group ?? null;
         if (name === "players") return input.players ?? null;
         if (name === "ping_option") return input.pingOption ?? null;
@@ -148,6 +152,9 @@ function makeAutocompleteInteraction(input: {
   roster?: string | null;
   action?: string | null;
   group?: string | null;
+  targetRoster?: string | null;
+  targetGroup?: string | null;
+  userId?: string | null;
   guildMembers?: Array<{
     id: string;
     displayName: string;
@@ -183,7 +190,17 @@ function makeAutocompleteInteraction(input: {
         if (name === "roster") return input.roster ?? null;
         if (name === "action") return input.action ?? null;
         if (name === "group") return input.group ?? null;
+        if (name === "target_roster") return input.targetRoster ?? null;
+        if (name === "target_group") return input.targetGroup ?? null;
         return null;
+      }),
+      getUser: vi.fn((name: string) => {
+        if (name !== "user" || !input.userId) return null;
+        return {
+          id: input.userId,
+          bot: false,
+          username: "selected-user",
+        };
       }),
     },
   };
@@ -253,6 +270,7 @@ describe("/roster command", () => {
     vi.spyOn(rosterService, "addRosterSignupsForManager");
     vi.spyOn(rosterService, "moveRosterSignups");
     vi.spyOn(rosterService, "removeRosterSignupsAsManager");
+    vi.spyOn(rosterService, "changeRosterSignups");
     vi.spyOn(rosterWeightService, "setManualWeightForRoster");
     vi.spyOn(rosterExportService, "createRosterExport");
     (rosterService.buildRosterSignupPayload as any).mockResolvedValue(
@@ -581,7 +599,7 @@ describe("/roster command", () => {
     );
   });
 
-  it("routes roster manage actions to the existing add, move, remove, and lifecycle helpers", async () => {
+  it("routes roster manage actions to the existing add, move, remove, change roster, and lifecycle helpers", async () => {
     (rosterService.findGuildRosterById as any).mockResolvedValue({
       id: "roster-1",
       guildId: "guild-1",
@@ -640,6 +658,37 @@ describe("/roster command", () => {
       ignoredTags: [],
       notOwnedTags: [],
     });
+    (rosterService.changeRosterSignups as any).mockResolvedValue({
+      outcome: "changed",
+      sourceRosterId: "roster-1",
+      sourceRosterTitle: "Source Roster",
+      targetRosterId: "roster-2",
+      targetRosterTitle: "Target Roster",
+      targetRosterClanTag: "#2QG2C08UP",
+      targetRosterClanName: null,
+      targetGroupKey: null,
+      targetGroupName: null,
+      requestedTags: ["#PQL0289", "#QGRJ2222"],
+      movedTags: ["#PQL0289", "#QGRJ2222"],
+      movedAccounts: [
+        {
+          playerTag: "#PQL0289",
+          playerName: "Alpha",
+          targetGroupKey: "confirmed",
+          targetGroupName: "Confirmed",
+        },
+        {
+          playerTag: "#QGRJ2222",
+          playerName: "Bravo",
+          targetGroupKey: "substitute",
+          targetGroupName: "Substitute",
+        },
+      ],
+      duplicateTags: [],
+      missingTags: [],
+      blockedTags: [],
+      blockedAccounts: [],
+    });
     (rosterService.updateRosterLifecycleState as any).mockResolvedValue({
       outcome: "updated",
       rosterId: "roster-1",
@@ -694,6 +743,74 @@ describe("/roster command", () => {
       }),
     );
     expect(String(removeInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain("Removed #PQL0289");
+
+    const changeInteraction = makeInteraction({
+      subcommand: "manage",
+      roster: "roster-1",
+      action: "change_roster",
+      targetRoster: "roster-2",
+      targetGroup: "substitute",
+      players: "#PQL0289 #QGRJ2222",
+    }) as any;
+    (rosterService.findGuildRosterById as any).mockImplementation(({ rosterId }: { rosterId: string }) =>
+      Promise.resolve(
+        rosterId === "roster-1"
+          ? {
+              id: "roster-1",
+              guildId: "guild-1",
+              rosterType: "CWL",
+              rosterCategory: "signup",
+              title: "Source Roster",
+              clanTag: "#2QG2C08UP",
+              startsAt: new Date("2026-04-20T00:00:00.000Z"),
+              endsAt: null,
+              timezone: "America/Los_Angeles",
+              displayTimezone: "America/Los_Angeles",
+              lifecycleState: "OPEN",
+              postedChannelId: null,
+              postedMessageId: null,
+              postedMessageUrl: null,
+              postedAt: null,
+              createdByDiscordUserId: "111111111111111111",
+              updatedByDiscordUserId: "111111111111111111",
+              createdAt: new Date("2026-04-20T00:00:00.000Z"),
+              updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+            }
+          : {
+              id: "roster-2",
+              guildId: "guild-1",
+              rosterType: "CWL",
+              rosterCategory: "signup",
+              title: "Target Roster",
+              clanTag: "#2QG2C08UP",
+              startsAt: new Date("2026-04-20T00:00:00.000Z"),
+              endsAt: null,
+              timezone: "America/Los_Angeles",
+              displayTimezone: "America/Los_Angeles",
+              lifecycleState: "OPEN",
+              postedChannelId: null,
+              postedMessageId: null,
+              postedMessageUrl: null,
+              postedAt: null,
+              createdByDiscordUserId: "111111111111111111",
+              updatedByDiscordUserId: "111111111111111111",
+              createdAt: new Date("2026-04-20T00:00:00.000Z"),
+              updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+            },
+      ),
+    );
+    await Roster.run({} as any, changeInteraction as any);
+    expect(rosterService.changeRosterSignups).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceRosterId: "roster-1",
+        targetRosterId: "roster-2",
+        targetGroupKey: "substitute",
+        playerTags: ["#PQL0289", "#QGRJ2222"],
+      }),
+    );
+    expect(String(changeInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
+      "Moved Alpha `#PQL0289` to Target Roster - Confirmed.",
+    );
 
     const closeInteraction = makeInteraction({
       subcommand: "manage",
@@ -2598,6 +2715,54 @@ describe("/roster command", () => {
       { playerTag: "#QGRJ2222", linkedAt: new Date("2026-04-02T00:00:00.000Z"), linkedName: null },
       { playerTag: "#VJQ28888", linkedAt: new Date("2026-04-03T00:00:00.000Z"), linkedName: "Delta" },
     ] as any);
+    (rosterService.listGuildRosters as any).mockResolvedValue([
+      {
+        id: "roster-1",
+        guildId: "guild-1",
+        rosterType: "CWL",
+        rosterCategory: "signup",
+        title: "CWL Alpha Signup",
+        clanTag: "#2QG2C08UP",
+        startsAt: new Date("2026-04-20T00:00:00.000Z"),
+        endsAt: null,
+        timezone: "America/Los_Angeles",
+        displayTimezone: "America/Los_Angeles",
+        lifecycleState: "OPEN",
+        postedChannelId: null,
+        postedMessageId: null,
+        postedMessageUrl: null,
+        postedAt: null,
+        createdByDiscordUserId: "111111111111111111",
+        updatedByDiscordUserId: "111111111111111111",
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+        groupCount: 2,
+        signupCount: 3,
+      },
+      {
+        id: "roster-2",
+        guildId: "guild-1",
+        rosterType: "CWL",
+        rosterCategory: "signup",
+        title: "Target Roster",
+        clanTag: "#2QG2C08UP",
+        startsAt: new Date("2026-04-20T00:00:00.000Z"),
+        endsAt: null,
+        timezone: "America/Los_Angeles",
+        displayTimezone: "America/Los_Angeles",
+        lifecycleState: "OPEN",
+        postedChannelId: null,
+        postedMessageId: null,
+        postedMessageUrl: null,
+        postedAt: null,
+        createdByDiscordUserId: "111111111111111111",
+        updatedByDiscordUserId: "111111111111111111",
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+        groupCount: 1,
+        signupCount: 1,
+      },
+    ] as any);
 
     const noRosterInteraction = makeAutocompleteInteraction({
       focusedName: "players",
@@ -2669,6 +2834,233 @@ describe("/roster command", () => {
     });
     expect(addInteraction.respond).toHaveBeenCalledWith([
       { name: "Delta (#VJQ28888)", value: "#VJQ28888" },
+    ]);
+
+    const changeTargetInteraction = makeAutocompleteInteraction({
+      focusedName: "target_roster",
+      focusedValue: "",
+      subcommand: "manage",
+      roster: "roster-1",
+    }) as any;
+    await Roster.autocomplete(changeTargetInteraction);
+    expect(rosterService.listGuildRosters).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guildId: "guild-1",
+        name: "",
+      }),
+    );
+    expect(changeTargetInteraction.respond).toHaveBeenCalledWith([
+      expect.objectContaining({ value: expect.any(String) }),
+    ]);
+
+    const changeTargetGroupInteraction = makeAutocompleteInteraction({
+      focusedName: "target_group",
+      focusedValue: "con",
+      subcommand: "manage",
+      roster: "roster-1",
+      targetRoster: "roster-2",
+    }) as any;
+    (rosterService.getRosterView as any).mockResolvedValueOnce({
+      roster: {
+        id: "roster-2",
+        lifecycleState: "OPEN",
+      },
+      groups: [
+        { id: "group-confirmed", key: "confirmed", name: "Confirmed", description: null, sortOrder: 0 },
+        { id: "group-substitute", key: "substitute", name: "Substitute", description: null, sortOrder: 1 },
+      ],
+      signups: [],
+      clanDisplayName: null,
+      clanLeagueLabel: null,
+      totalSignupCount: 0,
+    });
+    await Roster.autocomplete(changeTargetGroupInteraction);
+    expect(changeTargetGroupInteraction.respond).toHaveBeenCalledWith([
+      { name: "Confirmed (confirmed)", value: "confirmed" },
+    ]);
+
+    const changeInteraction = makeAutocompleteInteraction({
+      focusedName: "players",
+      focusedValue: "",
+      subcommand: "manage",
+      roster: "roster-1",
+      action: "change_roster",
+      targetRoster: "roster-2",
+    }) as any;
+    (rosterService.getRosterView as any).mockResolvedValueOnce({
+      roster: {
+        id: "roster-1",
+        lifecycleState: "OPEN",
+      },
+      groups: [
+        { id: "group-confirmed", key: "confirmed", name: "Confirmed", description: null, sortOrder: 0 },
+        { id: "group-substitute", key: "substitute", name: "Substitute", description: null, sortOrder: 1 },
+      ],
+      signups: [
+        {
+          id: "signup-1",
+          rosterId: "roster-1",
+          groupId: "group-confirmed",
+          playerTag: "#PYLQ0289",
+          playerName: "Alpha",
+          discordUserId: "111111111111111111",
+          signedUpAt: new Date("2026-04-01T00:00:00.000Z"),
+          createdAt: new Date("2026-04-01T00:00:00.000Z"),
+          updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+          group: { key: "confirmed" },
+        },
+        {
+          id: "signup-2",
+          rosterId: "roster-1",
+          groupId: "group-confirmed",
+          playerTag: "#QGRJ2222",
+          playerName: "Bravo",
+          discordUserId: "222222222222222222",
+          signedUpAt: new Date("2026-04-01T00:00:00.000Z"),
+          createdAt: new Date("2026-04-01T00:00:00.000Z"),
+          updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+          group: { key: "confirmed" },
+        },
+        {
+          id: "signup-3",
+          rosterId: "roster-1",
+          groupId: "group-substitute",
+          playerTag: "#CUV02898",
+          playerName: "Charlie",
+          discordUserId: "333333333333333333",
+          signedUpAt: new Date("2026-04-01T00:00:00.000Z"),
+          createdAt: new Date("2026-04-01T00:00:00.000Z"),
+          updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+          group: { key: "substitute" },
+        },
+      ],
+      clanDisplayName: null,
+      clanLeagueLabel: null,
+      totalSignupCount: 3,
+    });
+    (rosterService.getRosterView as any).mockResolvedValueOnce({
+      roster: {
+        id: "roster-2",
+        lifecycleState: "OPEN",
+      },
+      groups: [
+        { id: "group-confirmed", key: "confirmed", name: "Confirmed", description: null, sortOrder: 0 },
+        { id: "group-substitute", key: "substitute", name: "Substitute", description: null, sortOrder: 1 },
+      ],
+      signups: [
+        {
+          id: "signup-4",
+          rosterId: "roster-2",
+          groupId: "group-confirmed",
+          playerTag: "#QGRJ2222",
+          playerName: "Bravo",
+          discordUserId: "222222222222222222",
+          signedUpAt: new Date("2026-04-01T00:00:00.000Z"),
+          createdAt: new Date("2026-04-01T00:00:00.000Z"),
+          updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+          group: { key: "confirmed" },
+        },
+      ],
+      clanDisplayName: null,
+      clanLeagueLabel: null,
+      totalSignupCount: 1,
+    });
+    await Roster.autocomplete(changeInteraction);
+    expect(changeInteraction.respond).toHaveBeenCalledWith([
+      { name: "Alpha (#PYLQ0289)", value: "#PYLQ0289" },
+      { name: "Charlie (#CUV02898)", value: "#CUV02898" },
+    ]);
+
+    (rosterService.getRosterView as any).mockResolvedValueOnce({
+      roster: {
+        id: "roster-1",
+        lifecycleState: "OPEN",
+      },
+      groups: [
+        { id: "group-confirmed", key: "confirmed", name: "Confirmed", description: null, sortOrder: 0 },
+        { id: "group-substitute", key: "substitute", name: "Substitute", description: null, sortOrder: 1 },
+      ],
+      signups: [
+        {
+          id: "signup-1",
+          rosterId: "roster-1",
+          groupId: "group-confirmed",
+          playerTag: "#PYLQ0289",
+          playerName: "Alpha",
+          discordUserId: "111111111111111111",
+          signedUpAt: new Date("2026-04-01T00:00:00.000Z"),
+          createdAt: new Date("2026-04-01T00:00:00.000Z"),
+          updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+          group: { key: "confirmed" },
+        },
+        {
+          id: "signup-2",
+          rosterId: "roster-1",
+          groupId: "group-confirmed",
+          playerTag: "#QGRJ2222",
+          playerName: "Bravo",
+          discordUserId: "222222222222222222",
+          signedUpAt: new Date("2026-04-01T00:00:00.000Z"),
+          createdAt: new Date("2026-04-01T00:00:00.000Z"),
+          updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+          group: { key: "confirmed" },
+        },
+        {
+          id: "signup-3",
+          rosterId: "roster-1",
+          groupId: "group-substitute",
+          playerTag: "#CUV02898",
+          playerName: "Charlie",
+          discordUserId: "333333333333333333",
+          signedUpAt: new Date("2026-04-01T00:00:00.000Z"),
+          createdAt: new Date("2026-04-01T00:00:00.000Z"),
+          updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+          group: { key: "substitute" },
+        },
+      ],
+      clanDisplayName: null,
+      clanLeagueLabel: null,
+      totalSignupCount: 3,
+    });
+    (rosterService.getRosterView as any).mockResolvedValueOnce({
+      roster: {
+        id: "roster-2",
+        lifecycleState: "OPEN",
+      },
+      groups: [
+        { id: "group-confirmed", key: "confirmed", name: "Confirmed", description: null, sortOrder: 0 },
+        { id: "group-substitute", key: "substitute", name: "Substitute", description: null, sortOrder: 1 },
+      ],
+      signups: [
+        {
+          id: "signup-4",
+          rosterId: "roster-2",
+          groupId: "group-confirmed",
+          playerTag: "#QGRJ2222",
+          playerName: "Bravo",
+          discordUserId: "222222222222222222",
+          signedUpAt: new Date("2026-04-01T00:00:00.000Z"),
+          createdAt: new Date("2026-04-01T00:00:00.000Z"),
+          updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+          group: { key: "confirmed" },
+        },
+      ],
+      clanDisplayName: null,
+      clanLeagueLabel: null,
+      totalSignupCount: 1,
+    });
+    const changeUserInteraction = makeAutocompleteInteraction({
+      focusedName: "players",
+      focusedValue: "",
+      subcommand: "manage",
+      roster: "roster-1",
+      action: "change_roster",
+      targetRoster: "roster-2",
+      userId: "111111111111111111",
+    }) as any;
+    await Roster.autocomplete(changeUserInteraction);
+    expect(changeUserInteraction.respond).toHaveBeenCalledWith([
+      { name: "Alpha (#PYLQ0289)", value: "#PYLQ0289" },
     ]);
   });
 
