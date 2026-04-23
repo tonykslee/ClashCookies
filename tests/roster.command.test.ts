@@ -180,6 +180,21 @@ function getEditedEmbed(interaction: any): any {
   return payload?.embeds?.[0]?.toJSON?.() ?? null;
 }
 
+function makeRosterRefreshPayload(refreshDisabled: boolean, title: string) {
+  return {
+    embed: new EmbedBuilder().setTitle(title),
+    components: [
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setCustomId("roster-post-action:refresh:roster-1")
+          .setLabel("Refresh")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(refreshDisabled),
+      ),
+    ],
+  };
+}
+
 describe("/roster command", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -213,6 +228,12 @@ describe("/roster command", () => {
     vi.spyOn(rosterService, "removeRosterSignupsAsManager");
     vi.spyOn(rosterWeightService, "setManualWeightForRoster");
     vi.spyOn(rosterExportService, "createRosterExport");
+    (rosterService.buildRosterSignupPayload as any).mockResolvedValue(
+      makeRosterRefreshPayload(false, "Roster Signup"),
+    );
+    (rosterService.refreshRosterSignupPayload as any).mockResolvedValue(
+      makeRosterRefreshPayload(false, "Roster Signup"),
+    );
   });
 
   it("creates a roster object without posting it immediately", async () => {
@@ -1460,10 +1481,12 @@ describe("/roster command", () => {
   });
 
   it("refreshes the posted roster from the service-owned current-clan refresh path", async () => {
-    (rosterService.refreshRosterSignupPayload as any).mockResolvedValue({
-      embed: new EmbedBuilder().setTitle("CWL Alpha Signup (Refreshed)"),
-      components: [],
-    });
+    (rosterService.buildRosterSignupPayload as any).mockResolvedValueOnce(
+      makeRosterRefreshPayload(true, "CWL Alpha Signup (Loading)"),
+    );
+    (rosterService.refreshRosterSignupPayload as any).mockResolvedValueOnce(
+      makeRosterRefreshPayload(false, "CWL Alpha Signup (Refreshed)"),
+    );
     const deferUpdate = vi.fn().mockResolvedValue(undefined);
     const update = vi.fn().mockResolvedValue(undefined);
     const editReply = vi.fn().mockResolvedValue(undefined);
@@ -1485,24 +1508,46 @@ describe("/roster command", () => {
 
     expect(deferUpdate).toHaveBeenCalledTimes(1);
     expect(deferUpdate.mock.invocationCallOrder[0]).toBeLessThan(
-      (rosterService.refreshRosterSignupPayload as any).mock.invocationCallOrder[0],
+      (rosterService.buildRosterSignupPayload as any).mock.invocationCallOrder[0],
+    );
+    expect(rosterService.buildRosterSignupPayload).toHaveBeenCalledWith(
+      "roster-1",
+      null,
+      expect.objectContaining({
+        emojiClient: interaction.client,
+        refreshButtonDisabled: true,
+      }),
     );
     expect(rosterService.refreshRosterSignupPayload).toHaveBeenCalledWith(
       "roster-1",
       expect.anything(),
-      expect.anything(),
-    );
-    expect(editReply).toHaveBeenCalledWith(
       expect.objectContaining({
-        embeds: [expect.any(EmbedBuilder)],
-        components: [],
+        emojiClient: interaction.client,
+        refreshButtonDisabled: false,
       }),
     );
+    expect(editReply).toHaveBeenCalledTimes(2);
+    const loadingPayload = editReply.mock.calls[0]?.[0] as any;
+    const finalPayload = editReply.mock.calls.at(-1)?.[0] as any;
+    expect(loadingPayload).toEqual(
+      expect.objectContaining({
+        embeds: [expect.any(EmbedBuilder)],
+        components: [expect.any(ActionRowBuilder)],
+      }),
+    );
+    expect(loadingPayload.components[0]?.toJSON?.().components?.[0]?.disabled).toBe(true);
+    expect(finalPayload).toEqual(
+      expect.objectContaining({
+        embeds: [expect.any(EmbedBuilder)],
+        components: [expect.any(ActionRowBuilder)],
+      }),
+    );
+    expect(finalPayload.components[0]?.toJSON?.().components?.[0]?.disabled).toBe(false);
     expect(update).not.toHaveBeenCalled();
   });
 
   it("acknowledges the refresh button before reporting a missing roster", async () => {
-    (rosterService.refreshRosterSignupPayload as any).mockResolvedValue(null);
+    (rosterService.buildRosterSignupPayload as any).mockResolvedValue(null);
     const deferUpdate = vi.fn().mockResolvedValue(undefined);
     const editReply = vi.fn().mockResolvedValue(undefined);
     const interaction = {
@@ -1521,11 +1566,8 @@ describe("/roster command", () => {
     await handleRosterPostRefreshButtonInteraction(interaction, {} as any);
 
     expect(deferUpdate).toHaveBeenCalledTimes(1);
-    expect(rosterService.refreshRosterSignupPayload).toHaveBeenCalledWith(
-      "roster-1",
-      expect.anything(),
-      expect.anything(),
-    );
+    expect(rosterService.buildRosterSignupPayload).toHaveBeenCalledWith("roster-1", null, expect.anything());
+    expect(rosterService.refreshRosterSignupPayload).not.toHaveBeenCalled();
     expect(editReply).toHaveBeenCalledWith("That roster is no longer available.");
   });
 
@@ -1933,6 +1975,9 @@ describe("/roster command", () => {
       createdAt: new Date("2026-04-20T00:00:00.000Z"),
       updatedAt: new Date("2026-04-20T00:00:00.000Z"),
     });
+    (rosterService.buildRosterSignupPayload as any).mockResolvedValue(
+      makeRosterRefreshPayload(true, "CWL Alpha Signup (Loading)"),
+    );
     (rosterService.refreshRosterSignupPayload as any).mockResolvedValue({
       embed: new EmbedBuilder().setTitle("CWL Alpha Signup (Updated)"),
       components: [],
@@ -2018,7 +2063,20 @@ describe("/roster command", () => {
       guildId: "guild-1",
       rosterId: "roster-1",
     });
-    expect(rosterService.refreshRosterSignupPayload).toHaveBeenCalledWith("roster-1", null, expect.anything());
+    expect(rosterService.buildRosterSignupPayload).toHaveBeenCalledWith(
+      "roster-1",
+      null,
+      expect.objectContaining({
+        refreshButtonDisabled: true,
+      }),
+    );
+    expect(rosterService.refreshRosterSignupPayload).toHaveBeenCalledWith(
+      "roster-1",
+      null,
+      expect.objectContaining({
+        refreshButtonDisabled: false,
+      }),
+    );
     expect(String(refreshInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain("Refreshed the posted roster for CWL Alpha Signup.");
 
     (rosterService.deleteRoster as any).mockResolvedValue({

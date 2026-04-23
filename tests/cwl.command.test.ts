@@ -213,6 +213,21 @@ function makeParticipationCounts(entries: Array<[string, number]>): Map<string, 
   return new Map(entries);
 }
 
+function makeRosterRefreshPayload(refreshDisabled: boolean, title: string) {
+  return {
+    embed: new EmbedBuilder().setTitle(title),
+    components: [
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setCustomId("roster-post-action:refresh:roster-1")
+          .setLabel("Refresh")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(refreshDisabled),
+      ),
+    ],
+  };
+}
+
 describe("/cwl command", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -238,6 +253,14 @@ describe("/cwl command", () => {
     vi.spyOn(rosterService, "moveRosterSignups");
     vi.spyOn(rosterService, "removeRosterSignupsAsManager");
     vi.spyOn(rosterService, "buildRosterManagerReadinessText");
+    (rosterService.buildRosterSignupPayload as any).mockResolvedValue({
+      embed: new EmbedBuilder().setTitle("Roster Signup"),
+      components: [],
+    });
+    (rosterService.refreshRosterSignupPayload as any).mockResolvedValue({
+      embed: new EmbedBuilder().setTitle("Roster Signup"),
+      components: [],
+    });
     vi.spyOn(cwlRotationSheetService, "buildImportPreview");
     vi.spyOn(cwlRotationSheetService, "confirmImport");
     vi.spyOn(cwlRotationSheetService, "exportActivePlans");
@@ -740,9 +763,20 @@ describe("/cwl command", () => {
       createdAt: new Date("2026-04-20T00:00:00.000Z"),
       updatedAt: new Date("2026-04-20T00:00:00.000Z"),
     });
+    (rosterService.buildRosterSignupPayload as any).mockResolvedValue(
+      makeRosterRefreshPayload(true, "CWL Alpha Signup (Loading)"),
+    );
     (rosterService.refreshRosterSignupPayload as any).mockResolvedValue({
       embed: new EmbedBuilder().setTitle("CWL Alpha Signup"),
-      components: [],
+      components: [
+        new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder()
+            .setCustomId("roster-post-action:refresh:roster-1")
+            .setLabel("Refresh")
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(false),
+        ),
+      ],
     });
     (rosterService.getRosterView as any).mockResolvedValue({
       roster: {
@@ -797,11 +831,35 @@ describe("/cwl command", () => {
 
     expect(channelFetch).toHaveBeenCalledWith("channel-1");
     expect(messageFetch).toHaveBeenCalledWith("message-1");
-    expect(messageEdit).toHaveBeenCalledWith(
+    expect(rosterService.buildRosterSignupPayload).toHaveBeenCalledWith(
+      "roster-1",
+      null,
       expect.objectContaining({
-        embeds: [expect.any(EmbedBuilder)],
+        refreshButtonDisabled: true,
       }),
     );
+    expect(rosterService.refreshRosterSignupPayload).toHaveBeenCalledWith(
+      "roster-1",
+      expect.anything(),
+      expect.objectContaining({
+        refreshButtonDisabled: false,
+      }),
+    );
+    expect(messageEdit).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        embeds: [expect.any(EmbedBuilder)],
+        components: [expect.any(ActionRowBuilder)],
+      }),
+    );
+    expect(messageEdit.mock.calls[0]?.[0]?.components?.[0]?.toJSON?.().components?.[0]?.disabled).toBe(true);
+    expect(messageEdit).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        embeds: [expect.any(EmbedBuilder)],
+        components: [expect.any(ActionRowBuilder)],
+      }),
+    );
+    expect(messageEdit.mock.calls.at(-1)?.[0]?.components?.[0]?.toJSON?.().components?.[0]?.disabled).toBe(false);
     expect(String(interaction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
       "Refreshed the posted CWL roster for CWL Alpha.",
     );
