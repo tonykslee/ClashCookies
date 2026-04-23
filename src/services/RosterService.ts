@@ -1994,13 +1994,45 @@ async function loadRosterSelectionOptions(input: {
       select: { playerTag: true },
     });
     const existingTags = new Set(existing.map((row) => normalizePlayerTag(row.playerTag)).filter(Boolean));
+    const minTownhall = normalizeRosterInt(roster.minTownhall);
+    const maxTownhall = normalizeRosterInt(roster.maxTownhall);
+    const townHallGated = minTownhall !== null || maxTownhall !== null;
+    const townHallByTag = townHallGated
+      ? (
+          await resolveRosterPlayerTownHallMap({
+            rosterType: roster.rosterType,
+            clanTag: roster.clanTag,
+            playerTags: linkedTags,
+            allowLiveFetch: false,
+            cocService: null,
+          })
+        ).townHallByTag
+      : null;
+
+    const signupOptions = linkedAccounts.filter((account) => {
+      if (!townHallGated) {
+        return true;
+      }
+
+      const townHall = townHallByTag?.get(account.playerTag) ?? null;
+      if (townHall === null) {
+        return false;
+      }
+      if (minTownhall !== null && townHall < minTownhall) {
+        return false;
+      }
+      if (maxTownhall !== null && townHall > maxTownhall) {
+        return false;
+      }
+      return true;
+    });
     return {
       outcome: "ready",
       roster: mappedRoster,
       group: selectedGroup,
       groups,
       selectedGroupKey: selectedGroup?.key ?? null,
-      options: linkedAccounts.map((account) => ({
+      options: signupOptions.map((account) => ({
         value: account.playerTag,
         label: account.linkedName ?? account.playerTag,
         description: `${account.playerTag}${existingTags.has(account.playerTag) ? " | already signed up" : " | available"}`,

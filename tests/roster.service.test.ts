@@ -2075,6 +2075,63 @@ describe("RosterService", () => {
     expect(payload.selectedTags).toEqual([]);
   });
 
+  it("filters TH-gated signup selection options to only viable linked accounts", async () => {
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
+      { playerTag: "#PQL0289", linkedName: "Low TH", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+      { playerTag: "#QGRJ2222", linkedName: "Eligible TH", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+      { playerTag: "#2QG2C08UP", linkedName: "Unknown TH", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+    ]);
+    prismaMock.roster.findUnique.mockResolvedValueOnce({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+      minTownhall: 13,
+      maxTownhall: 15,
+      allowMultiSignup: true,
+    } as any);
+    prismaMock.rosterSignup.findMany.mockResolvedValueOnce([] as any);
+    todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValueOnce([
+      { playerTag: "#PQL0289", townHall: 12 },
+      { playerTag: "#QGRJ2222", townHall: 13 },
+    ] as any);
+
+    const result = await rosterService.createRosterSignupSelectionPanel({
+      rosterId: "roster-1",
+      discordUserId: "111111111111111111",
+      groupKey: "confirmed",
+    });
+
+    expect(result).toMatchObject({ outcome: "ready" });
+    if (result.outcome !== "ready") return;
+    const optionValues = result.panel.components.flatMap((row) => {
+      const rowJson = row.toJSON?.() as any;
+      return Array.isArray(rowJson?.components)
+        ? rowJson.components.flatMap((component: any) =>
+            Array.isArray(component.options) ? component.options.map((option: any) => option.value) : [],
+          )
+        : [];
+    });
+    expect(optionValues).toContain("#QGRJ2222");
+    expect(optionValues).not.toContain("#PQL0289");
+    expect(optionValues).not.toContain("#2QG2C08UP");
+  });
+
   it("builds the manager add-user panel with chunked linked-player menus and a disabled confirm button until required selections exist", async () => {
     playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValueOnce(
       Array.from({ length: 30 }, (_, index) => {

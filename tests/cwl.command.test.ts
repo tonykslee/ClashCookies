@@ -557,6 +557,8 @@ describe("/cwl command", () => {
     const confirmInteraction = {
       customId: "roster-selection:action:confirm:session-2",
       user: { id: "111111111111111111" },
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
       update: vi.fn().mockResolvedValue(undefined),
       reply: vi.fn().mockResolvedValue(undefined),
       client: {
@@ -571,13 +573,18 @@ describe("/cwl command", () => {
       discordUserId: "111111111111111111",
       cocService: null,
     });
-    expect(confirmInteraction.update).toHaveBeenCalledWith(
+    expect(confirmInteraction.deferUpdate).toHaveBeenCalledTimes(1);
+    expect(confirmInteraction.deferUpdate.mock.invocationCallOrder[0]).toBeLessThan(
+      (rosterService.confirmRosterSelectionPanel as any).mock.invocationCallOrder[0],
+    );
+    expect(confirmInteraction.editReply).toHaveBeenCalledWith(
       expect.objectContaining({
         content: expect.stringContaining("Signed up #P1, #P2"),
         embeds: [],
         components: [],
       }),
     );
+    expect(confirmInteraction.update).not.toHaveBeenCalled();
 
     const removeInteraction = {
       customId: "roster-post-action:optout:roster-1",
@@ -621,6 +628,8 @@ describe("/cwl command", () => {
     const confirmInteraction = {
       customId: "roster-selection:action:confirm:session-2",
       user: { id: "111111111111111111" },
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
       update: vi.fn().mockResolvedValue(undefined),
       reply: vi.fn().mockResolvedValue(undefined),
       client: {
@@ -632,13 +641,58 @@ describe("/cwl command", () => {
 
     await handleRosterSelectionActionButtonInteraction(confirmInteraction as any);
 
-    expect(confirmInteraction.update).toHaveBeenCalledWith(
+    expect(confirmInteraction.deferUpdate).toHaveBeenCalledTimes(1);
+    expect(confirmInteraction.editReply).toHaveBeenCalledWith(
       expect.objectContaining({
         content: expect.stringContaining("Town hall data is unavailable for: Alpha `#P1`, `#P2`."),
         embeds: [],
         components: [],
       }),
     );
+    expect(confirmInteraction.update).not.toHaveBeenCalled();
+  });
+
+  it("defers and edits the roster selection when confirming self-service removal", async () => {
+    (rosterService.confirmRosterSelectionPanel as any).mockResolvedValue({
+      outcome: "remove_user",
+      result: {
+        outcome: "removed" as const,
+        rosterId: "roster-1",
+        removedTags: ["#P1", "#P2"],
+        removedAccounts: [
+          { playerTag: "#P1", playerName: "Alpha" },
+          { playerTag: "#P2", playerName: "Bravo" },
+        ],
+        ignoredTags: [],
+        notOwnedTags: [],
+      },
+    });
+
+    const confirmInteraction = {
+      customId: "roster-selection:action:confirm:session-3",
+      user: { id: "111111111111111111" },
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+      client: {
+        channels: {
+          fetch: vi.fn().mockResolvedValue(null),
+        },
+      },
+    };
+
+    await handleRosterSelectionActionButtonInteraction(confirmInteraction as any);
+
+    expect(confirmInteraction.deferUpdate).toHaveBeenCalledTimes(1);
+    expect(confirmInteraction.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining("Removed #P1, #P2"),
+        embeds: [],
+        components: [],
+      }),
+    );
+    expect(confirmInteraction.update).not.toHaveBeenCalled();
   });
 
   it("renders a manager readiness report for /cwl roster report", async () => {
