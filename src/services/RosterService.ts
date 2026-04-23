@@ -2381,32 +2381,50 @@ function buildRosterManagerMemberLine(entry: RosterManagerTrackedClanMemberRecor
   return `- ${entry.playerName} \`${entry.playerTag}\`${discordLabel}`;
 }
 
-async function loadCurrentCwlRosterManagerMembers(clanTag: string): Promise<Array<{
+async function loadCurrentCwlRosterManagerMembers(
+  clanTag: string,
+  cocService?: CoCService | null,
+): Promise<Array<{
   playerTag: string;
   playerName: string;
   townHall: number | null;
 }>> {
-  const currentClanRows = await todoSnapshotService.listSnapshotsByClanTag({
-    clanTag,
-    source: "clanTag",
-  });
-  if (currentClanRows.length <= 0) {
+  if (!cocService) {
     return [];
   }
 
-  return currentClanRows.map((member) => ({
-    playerTag: member.playerTag,
-    playerName: member.playerName,
-    townHall: member.townHall,
-  }));
+  const clan = await cocService.getClan(clanTag).catch(() => null);
+  const currentClanRows = (Array.isArray(clan?.members) ? clan.members : []) as Array<{
+    tag?: unknown;
+    name?: unknown;
+  }>;
+  const liveMembers: Array<{
+    playerTag: string;
+    playerName: string;
+    townHall: number | null;
+  }> = currentClanRows.flatMap((member: { tag?: unknown; name?: unknown }) => {
+      const playerTag = normalizePlayerTag(String(member?.tag ?? ""));
+      if (!playerTag) return [];
+      return [
+        {
+          playerTag,
+          playerName: normalizeRosterText(String(member?.name ?? "")) ?? playerTag,
+          townHall: null,
+        },
+      ];
+    });
+  return liveMembers;
 }
 
-async function loadRosterManagerTrackedClanMembers(roster: RosterRecord): Promise<RosterManagerTrackedClanMemberRecord[]> {
+async function loadRosterManagerTrackedClanMembers(
+  roster: RosterRecord,
+  cocService?: CoCService | null,
+): Promise<RosterManagerTrackedClanMemberRecord[]> {
   const trackedClanTag = normalizeClanTag(roster.clanTag ?? "");
   if (!trackedClanTag) return [];
 
   const rawMembers =
-    roster.rosterType === "FWA"
+      roster.rosterType === "FWA"
       ? await prisma.fwaClanMemberCurrent.findMany({
           where: { clanTag: trackedClanTag },
           orderBy: [{ playerName: "asc" }, { playerTag: "asc" }],
@@ -2417,7 +2435,7 @@ async function loadRosterManagerTrackedClanMembers(roster: RosterRecord): Promis
           },
         })
       : roster.rosterType === "CWL"
-        ? await loadCurrentCwlRosterManagerMembers(trackedClanTag)
+        ? await loadCurrentCwlRosterManagerMembers(trackedClanTag, cocService)
         : [];
 
   if (rawMembers.length <= 0) {
@@ -2493,6 +2511,7 @@ async function loadRosterPingTargets(input: {
   rosterId: string;
   pingOption: RosterPingOption;
   groupKey: string | null;
+  cocService?: CoCService | null;
 }): Promise<
   | {
       outcome: "ready";
@@ -2519,7 +2538,7 @@ async function loadRosterPingTargets(input: {
   }
 
   const [trackedClanRoster, signupLinks] = await Promise.all([
-    loadRosterManagerTrackedClanMembers(view.roster),
+    loadRosterManagerTrackedClanMembers(view.roster, input.cocService ?? null),
     listPlayerLinksForClanMembers({
       memberTagsInOrder: view.signups.map((signup) => signup.playerTag),
     }),
@@ -5111,11 +5130,12 @@ export class RosterService {
 
   async buildRosterManagerReadinessView(input: {
     rosterId: string;
+    cocService?: CoCService | null;
   }): Promise<RosterManagerReadinessView | null> {
     const view = await loadRosterView(input.rosterId);
     if (!view) return null;
 
-    const trackedClanRoster = await loadRosterManagerTrackedClanMembers(view.roster);
+    const trackedClanRoster = await loadRosterManagerTrackedClanMembers(view.roster, input.cocService ?? null);
     const trackedTagSet = new Set(trackedClanRoster.map((entry) => normalizePlayerTag(entry.playerTag)).filter(Boolean));
     const signupsByTag = new Map(view.signups.map((signup) => [normalizePlayerTag(signup.playerTag), signup] as const));
     const signedUpButUntracked = view.signups.filter((signup) => {
@@ -5138,6 +5158,7 @@ export class RosterService {
 
   async buildRosterManagerReadinessText(input: {
     rosterId: string;
+    cocService?: CoCService | null;
   }): Promise<string | null> {
     const view = await this.buildRosterManagerReadinessView(input);
     if (!view) return null;
@@ -5281,6 +5302,7 @@ export class RosterService {
     pingOption?: string | null;
     groupKey?: string | null;
     message?: string | null;
+    cocService?: CoCService | null;
   }): Promise<RosterPingOpenResult> {
     const pingOption = normalizeRosterPingOption(input.pingOption) ?? "everyone";
     const selectedGroupKey = input.groupKey ? normalizeRosterGroupKey(input.groupKey) : null;
@@ -5288,6 +5310,7 @@ export class RosterService {
       rosterId: input.rosterId,
       pingOption,
       groupKey: selectedGroupKey,
+      cocService: input.cocService ?? null,
     });
     if (loaded.outcome !== "ready") {
       return loaded;
