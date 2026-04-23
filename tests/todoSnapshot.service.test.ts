@@ -316,6 +316,56 @@ describe("TodoSnapshotService", () => {
     );
   });
 
+  it("persists live town hall even when the fetched player has no clan tag", async () => {
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      buildSnapshotRow({
+        playerTag: "#298CG8UJG",
+        townHall: null,
+        clanTag: null,
+        clanName: null,
+        cwlClanTag: null,
+        cwlClanName: null,
+      }),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.currentWar.findMany.mockResolvedValue([]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.currentCwlRound.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+    const cocService = {
+      getPlayerRaw: vi.fn().mockResolvedValue({
+        tag: "#298CG8UJG",
+        townHallLevel: 15,
+      }),
+    };
+
+    const result = await todoSnapshotService.refreshSnapshotsForPlayerTags({
+      playerTags: ["#298CG8UJG"],
+      cocService: cocService as any,
+      nowMs: Date.UTC(2026, 2, 26, 0, 0, 0, 0),
+    });
+
+    expect(result.playerCount).toBe(1);
+    expect(result.updatedCount).toBe(1);
+    expect(cocService.getPlayerRaw).toHaveBeenCalledWith("#298CG8UJG", {
+      suppressTelemetry: true,
+    });
+    expect(prismaMock.todoPlayerSnapshot.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          townHall: 15,
+          clanTag: null,
+          clanName: null,
+        }),
+      }),
+    );
+  });
+
   it("hydrates one live non-tracked CWL clan once and fans out the snapshot to multiple linked players", async () => {
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
     prismaMock.currentCwlRound.findMany.mockResolvedValue([]);
