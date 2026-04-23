@@ -4242,6 +4242,7 @@ export class RosterService {
         outcome: "roster_archived",
         rosterId: roster.id,
         removedTags: [],
+        removedAccounts: [],
         ignoredTags: selectedTags,
         notOwnedTags: [],
       };
@@ -4252,16 +4253,24 @@ export class RosterService {
         rosterId: roster.id,
         playerTag: { in: selectedTags },
       },
-      select: { playerTag: true },
+      select: { playerTag: true, playerName: true },
     });
     const existingTags = normalizeRosterPlayerTags(existing.map((entry) => entry.playerTag));
     const notOwnedTags = selectedTags.filter((tag) => !existingTags.includes(tag));
+    const removedAccounts = existingTags.map((playerTag) => {
+      const existingEntry = existing.find((entry) => normalizePlayerTag(entry.playerTag) === playerTag) ?? null;
+      return {
+        playerTag,
+        playerName: normalizeRosterText(existingEntry?.playerName ?? null),
+      };
+    });
 
     if (existingTags.length <= 0) {
       return {
         outcome: "nothing_removed",
         rosterId: roster.id,
         removedTags: [],
+        removedAccounts: [],
         ignoredTags: selectedTags,
         notOwnedTags,
       };
@@ -4278,6 +4287,7 @@ export class RosterService {
       outcome: deleteResult.count > 0 ? "removed" : "nothing_removed",
       rosterId: roster.id,
       removedTags: existingTags,
+      removedAccounts,
       ignoredTags: selectedTags.filter((tag) => !existingTags.includes(tag)),
       notOwnedTags,
     };
@@ -5004,6 +5014,13 @@ export class RosterService {
       requestedTags,
       linkedTags: selectedTags,
       createdTags,
+      createdAccounts: createdTags.map((playerTag) => {
+        const linked = linkedByTag.get(playerTag) ?? null;
+        return {
+          playerTag,
+          playerName: normalizeRosterText(linked?.linkedName ?? null),
+        };
+      }),
       duplicateTags,
       missingLinkedTags,
     };
@@ -5031,6 +5048,7 @@ export class RosterService {
         outcome: "nothing_removed",
         rosterId: input.rosterId,
         removedTags: [],
+        removedAccounts: [],
         ignoredTags: [],
         notOwnedTags: [],
       };
@@ -5041,6 +5059,7 @@ export class RosterService {
         outcome: "roster_not_found",
         rosterId: input.rosterId,
         removedTags: [],
+        removedAccounts: [],
         ignoredTags: selectedTags,
         notOwnedTags: [],
       };
