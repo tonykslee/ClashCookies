@@ -4,6 +4,7 @@ import {
   type ClanWarLeagueGroup,
   type ClanWarMember,
 } from "../generated/coc-api";
+import { Prisma } from "@prisma/client";
 import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
 import { CoCService } from "./CoCService";
@@ -354,6 +355,128 @@ function buildPrepSnapshotLineupJson(
     subbedIn: member.subbedIn,
     subbedOut: member.subbedOut,
   }));
+}
+
+function buildCwlPersistLogSuffix(input: {
+  season: string;
+  clanTag: string;
+  currentRoundCount: number;
+  currentMemberCount: number;
+  historyRoundCount: number;
+  historyMemberCount: number;
+  phase: string;
+  block?: string | null;
+  status: string;
+  durationMs?: number | null;
+  lastBlock?: string | null;
+  error?: unknown;
+}): string {
+  const parts = [
+    `season=${input.season}`,
+    `clan_tag=${input.clanTag}`,
+    `phase=${input.phase}`,
+    `status=${input.status}`,
+    `current_round_count=${input.currentRoundCount}`,
+    `current_member_count=${input.currentMemberCount}`,
+    `history_round_count=${input.historyRoundCount}`,
+    `history_member_count=${input.historyMemberCount}`,
+  ];
+  if (input.block) parts.push(`block=${input.block}`);
+  if (input.lastBlock) parts.push(`last_block=${input.lastBlock}`);
+  if (typeof input.durationMs === "number") parts.push(`duration_ms=${input.durationMs}`);
+  if (input.error) parts.push(`error=${formatError(input.error)}`);
+  return parts.join(" ");
+}
+
+function logCwlPersistPhase(input: {
+  season: string;
+  clanTag: string;
+  currentRoundCount: number;
+  currentMemberCount: number;
+  historyRoundCount: number;
+  historyMemberCount: number;
+  phase: string;
+  block?: string | null;
+  status: string;
+  durationMs?: number | null;
+  lastBlock?: string | null;
+  error?: unknown;
+}): void {
+  const message = `[cwl-state] event=tracked_cwl_persist ${buildCwlPersistLogSuffix(input)}`;
+  if (input.status === "failed") {
+    console.error(message);
+    return;
+  }
+  console.info(message);
+}
+
+async function runCwlPersistPhase(input: {
+  season: string;
+  clanTag: string;
+  currentRoundCount: number;
+  currentMemberCount: number;
+  historyRoundCount: number;
+  historyMemberCount: number;
+  phase: string;
+  work: (tx: Prisma.TransactionClient, trackBlock: (block: string) => void) => Promise<void>;
+}): Promise<void> {
+  const startedAt = Date.now();
+  let lastBlock = "phase_start";
+  logCwlPersistPhase({
+    season: input.season,
+    clanTag: input.clanTag,
+    currentRoundCount: input.currentRoundCount,
+    currentMemberCount: input.currentMemberCount,
+    historyRoundCount: input.historyRoundCount,
+    historyMemberCount: input.historyMemberCount,
+    phase: input.phase,
+    status: "start",
+  });
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      logCwlPersistPhase({
+        season: input.season,
+        clanTag: input.clanTag,
+        currentRoundCount: input.currentRoundCount,
+        currentMemberCount: input.currentMemberCount,
+        historyRoundCount: input.historyRoundCount,
+        historyMemberCount: input.historyMemberCount,
+        phase: input.phase,
+        status: "transaction_started",
+      });
+      await input.work(tx, (block) => {
+        lastBlock = block;
+      });
+    });
+    logCwlPersistPhase({
+      season: input.season,
+      clanTag: input.clanTag,
+      currentRoundCount: input.currentRoundCount,
+      currentMemberCount: input.currentMemberCount,
+      historyRoundCount: input.historyRoundCount,
+      historyMemberCount: input.historyMemberCount,
+      phase: input.phase,
+      status: "complete",
+      durationMs: Date.now() - startedAt,
+      lastBlock,
+    });
+  } catch (error) {
+    logCwlPersistPhase({
+      season: input.season,
+      clanTag: input.clanTag,
+      currentRoundCount: input.currentRoundCount,
+      currentMemberCount: input.currentMemberCount,
+      historyRoundCount: input.historyRoundCount,
+      historyMemberCount: input.historyMemberCount,
+      phase: input.phase,
+      status: "failed",
+      durationMs: Date.now() - startedAt,
+      lastBlock,
+      error,
+    });
+    throw error;
+  }
 }
 
 /** Purpose: map one persisted CWL round owner row into a lineup response with sorted members. */
@@ -1204,230 +1327,467 @@ export class CwlStateService {
     let historyRoundCount = 0;
     let historyMemberCount = 0;
 
-    await prisma.$transaction(async (tx) => {
-      for (const observed of observedStates) {
-        if (!observed.fetched) continue;
+    for (const observed of observedStates) {
+      if (!observed.fetched) continue;
 
-        if (observed.currentRound) {
-          currentRoundCount += 1;
-          currentMemberCount += observed.currentRound.members.length;
-          await tx.currentCwlRound.upsert({
-            where: {
-              season_clanTag: {
+      const currentRoundPlan = observed.currentRound
+        ? {
+            roundDay: observed.currentRound.roundDay,
+            clanName: observed.currentRound.clanName,
+            opponentTag: observed.currentRound.opponentTag,
+            opponentName: observed.currentRound.opponentName,
+            roundState: observed.currentRound.roundState,
+            leagueGroupState: observed.currentRound.leagueGroupState,
+            teamSize: observed.currentRound.teamSize,
+            attacksPerMember: observed.currentRound.attacksPerMember,
+            preparationStartTime: observed.currentRound.preparationStartTime,
+            startTime: observed.currentRound.startTime,
+            endTime: observed.currentRound.endTime,
+            sourceUpdatedAt: observed.currentRound.sourceUpdatedAt,
+            memberRows: observed.currentRound.members.map((member) => ({
+              season: observed.season,
+              clanTag: observed.clanTag,
+              playerTag: member.playerTag,
+              roundDay: observed.currentRound!.roundDay,
+              playerName: member.playerName,
+              mapPosition: member.mapPosition,
+              townHall: member.townHall,
+              attacksUsed: member.attacksUsed,
+              attacksAvailable: member.attacksAvailable,
+              stars: member.stars,
+              destruction: member.destruction,
+              subbedIn: member.subbedIn,
+              subbedOut: member.subbedOut,
+              sourceRoundState: observed.currentRound!.roundState,
+            })),
+          }
+        : null;
+      const currentRoundCountForClan = currentRoundPlan ? 1 : 0;
+      const currentMemberCountForClan = currentRoundPlan?.memberRows.length ?? 0;
+
+      const currentPrepSnapshotPlan = observed.currentPreparationRound
+        ? {
+            roundDay: observed.currentPreparationRound.roundDay,
+            clanName: observed.currentPreparationRound.clanName,
+            opponentTag: observed.currentPreparationRound.opponentTag,
+            opponentName: observed.currentPreparationRound.opponentName,
+            roundState: observed.currentPreparationRound.roundState,
+            leagueGroupState: observed.currentPreparationRound.leagueGroupState,
+            preparationStartTime: observed.currentPreparationRound.preparationStartTime,
+            startTime: observed.currentPreparationRound.startTime,
+            endTime: observed.currentPreparationRound.endTime,
+            lineupJson: buildPrepSnapshotLineupJson(
+              observed.currentPreparationRound.members,
+            ),
+            sourceUpdatedAt: observed.currentPreparationRound.sourceUpdatedAt,
+          }
+        : null;
+
+      const historyRoundPlans = observed.historyRounds.map((round) => ({
+        roundDay: round.roundDay,
+        clanName: round.clanName,
+        opponentTag: round.opponentTag,
+        opponentName: round.opponentName,
+        roundState: round.roundState,
+        leagueGroupState: round.leagueGroupState,
+        teamSize: round.teamSize,
+        attacksPerMember: round.attacksPerMember,
+        preparationStartTime: round.preparationStartTime,
+        startTime: round.startTime,
+        endTime: round.endTime,
+        sourceUpdatedAt: round.sourceUpdatedAt,
+        memberRows: round.members.map((member) => ({
+          season: observed.season,
+          clanTag: observed.clanTag,
+          roundDay: round.roundDay,
+          playerTag: member.playerTag,
+          playerName: member.playerName,
+          mapPosition: member.mapPosition,
+          townHall: member.townHall,
+          attacksUsed: member.attacksUsed,
+          attacksAvailable: member.attacksAvailable,
+          stars: member.stars,
+          destruction: member.destruction,
+          subbedIn: member.subbedIn,
+          subbedOut: member.subbedOut,
+        })),
+      }));
+      const historyRoundCountForClan = historyRoundPlans.length;
+      const historyMemberCountForClan = historyRoundPlans.reduce(
+        (sum, round) => sum + round.memberRows.length,
+        0,
+      );
+
+      const seasonRosterRows = observed.seasonRoster.map((rosterMember) => ({
+        season: observed.season,
+        playerTag: rosterMember.playerTag,
+        cwlClanTag: observed.clanTag,
+        playerName: rosterMember.playerName,
+        townHall: rosterMember.townHall,
+        daysParticipated: rosterMember.daysParticipated,
+        lastRoundDay: rosterMember.lastRoundDay,
+      }));
+
+      currentRoundCount += currentRoundCountForClan;
+      currentMemberCount += currentMemberCountForClan;
+      historyRoundCount += historyRoundCountForClan;
+      historyMemberCount += historyMemberCountForClan;
+
+      await runCwlPersistPhase({
+        season: observed.season,
+        clanTag: observed.clanTag,
+        currentRoundCount: currentRoundCountForClan,
+        currentMemberCount: currentMemberCountForClan,
+        historyRoundCount: historyRoundCountForClan,
+        historyMemberCount: historyMemberCountForClan,
+        phase: "current_round",
+        work: async (tx, trackBlock) => {
+          trackBlock("current_round");
+          logCwlPersistPhase({
+            season: observed.season,
+            clanTag: observed.clanTag,
+            currentRoundCount: currentRoundCountForClan,
+            currentMemberCount: currentMemberCountForClan,
+            historyRoundCount: historyRoundCountForClan,
+            historyMemberCount: historyMemberCountForClan,
+            phase: "current_round",
+            block: "current_round",
+            status: "block_start",
+          });
+          if (currentRoundPlan) {
+            await tx.currentCwlRound.upsert({
+              where: {
+                season_clanTag: {
+                  season: observed.season,
+                  clanTag: observed.clanTag,
+                },
+              },
+              create: {
+                season: observed.season,
+                clanTag: observed.clanTag,
+                roundDay: currentRoundPlan.roundDay,
+                clanName: currentRoundPlan.clanName,
+                opponentTag: currentRoundPlan.opponentTag,
+                opponentName: currentRoundPlan.opponentName,
+                roundState: currentRoundPlan.roundState,
+                leagueGroupState: currentRoundPlan.leagueGroupState,
+                teamSize: currentRoundPlan.teamSize,
+                attacksPerMember: currentRoundPlan.attacksPerMember,
+                preparationStartTime: currentRoundPlan.preparationStartTime,
+                startTime: currentRoundPlan.startTime,
+                endTime: currentRoundPlan.endTime,
+                sourceUpdatedAt: currentRoundPlan.sourceUpdatedAt,
+              },
+              update: {
+                roundDay: currentRoundPlan.roundDay,
+                clanName: currentRoundPlan.clanName,
+                opponentTag: currentRoundPlan.opponentTag,
+                opponentName: currentRoundPlan.opponentName,
+                roundState: currentRoundPlan.roundState,
+                leagueGroupState: currentRoundPlan.leagueGroupState,
+                teamSize: currentRoundPlan.teamSize,
+                attacksPerMember: currentRoundPlan.attacksPerMember,
+                preparationStartTime: currentRoundPlan.preparationStartTime,
+                startTime: currentRoundPlan.startTime,
+                endTime: currentRoundPlan.endTime,
+                sourceUpdatedAt: currentRoundPlan.sourceUpdatedAt,
+              },
+            });
+            await tx.cwlRoundMemberCurrent.deleteMany({
+              where: {
                 season: observed.season,
                 clanTag: observed.clanTag,
               },
-            },
-            create: {
-              season: observed.season,
-              clanTag: observed.clanTag,
-              roundDay: observed.currentRound.roundDay,
-              clanName: observed.currentRound.clanName,
-              opponentTag: observed.currentRound.opponentTag,
-              opponentName: observed.currentRound.opponentName,
-              roundState: observed.currentRound.roundState,
-              leagueGroupState: observed.currentRound.leagueGroupState,
-              teamSize: observed.currentRound.teamSize,
-              attacksPerMember: observed.currentRound.attacksPerMember,
-              preparationStartTime: observed.currentRound.preparationStartTime,
-              startTime: observed.currentRound.startTime,
-              endTime: observed.currentRound.endTime,
-              sourceUpdatedAt: observed.currentRound.sourceUpdatedAt,
-            },
-            update: {
-              roundDay: observed.currentRound.roundDay,
-              clanName: observed.currentRound.clanName,
-              opponentTag: observed.currentRound.opponentTag,
-              opponentName: observed.currentRound.opponentName,
-              roundState: observed.currentRound.roundState,
-              leagueGroupState: observed.currentRound.leagueGroupState,
-              teamSize: observed.currentRound.teamSize,
-              attacksPerMember: observed.currentRound.attacksPerMember,
-              preparationStartTime: observed.currentRound.preparationStartTime,
-              startTime: observed.currentRound.startTime,
-              endTime: observed.currentRound.endTime,
-              sourceUpdatedAt: observed.currentRound.sourceUpdatedAt,
-            },
-          });
-          await tx.cwlRoundMemberCurrent.deleteMany({
-            where: {
-              season: observed.season,
-              clanTag: observed.clanTag,
-            },
-          });
-          if (observed.currentRound.members.length > 0) {
-            await tx.cwlRoundMemberCurrent.createMany({
-              data: observed.currentRound.members.map((member) => ({
-                season: observed.season,
-                clanTag: observed.clanTag,
-                playerTag: member.playerTag,
-                roundDay: observed.currentRound!.roundDay,
-                playerName: member.playerName,
-                mapPosition: member.mapPosition,
-                townHall: member.townHall,
-                attacksUsed: member.attacksUsed,
-                attacksAvailable: member.attacksAvailable,
-                stars: member.stars,
-                destruction: member.destruction,
-                subbedIn: member.subbedIn,
-                subbedOut: member.subbedOut,
-                sourceRoundState: observed.currentRound!.roundState,
-              })),
+            });
+            if (currentRoundPlan.memberRows.length > 0) {
+              await tx.cwlRoundMemberCurrent.createMany({
+                data: currentRoundPlan.memberRows,
+              });
+            }
+          } else {
+            await tx.cwlRoundMemberCurrent.deleteMany({
+              where: { season: observed.season, clanTag: observed.clanTag },
+            });
+            await tx.currentCwlRound.deleteMany({
+              where: { season: observed.season, clanTag: observed.clanTag },
             });
           }
-        } else {
-          await tx.cwlRoundMemberCurrent.deleteMany({
-            where: { season: observed.season, clanTag: observed.clanTag },
+          logCwlPersistPhase({
+            season: observed.season,
+            clanTag: observed.clanTag,
+            currentRoundCount: currentRoundCountForClan,
+            currentMemberCount: currentMemberCountForClan,
+            historyRoundCount: historyRoundCountForClan,
+            historyMemberCount: historyMemberCountForClan,
+            phase: "current_round",
+            block: "current_round",
+            status: "block_complete",
           });
-          await tx.currentCwlRound.deleteMany({
-            where: { season: observed.season, clanTag: observed.clanTag },
-          });
-        }
+        },
+      });
 
-        if (observed.currentPreparationRound) {
-          await tx.currentCwlPrepSnapshot.upsert({
-            where: {
-              season_clanTag: {
+      await runCwlPersistPhase({
+        season: observed.season,
+        clanTag: observed.clanTag,
+        currentRoundCount: currentRoundCountForClan,
+        currentMemberCount: currentMemberCountForClan,
+        historyRoundCount: historyRoundCountForClan,
+        historyMemberCount: historyMemberCountForClan,
+        phase: "prep_snapshot",
+        work: async (tx, trackBlock) => {
+          trackBlock("prep_snapshot");
+          logCwlPersistPhase({
+            season: observed.season,
+            clanTag: observed.clanTag,
+            currentRoundCount: currentRoundCountForClan,
+            currentMemberCount: currentMemberCountForClan,
+            historyRoundCount: historyRoundCountForClan,
+            historyMemberCount: historyMemberCountForClan,
+            phase: "prep_snapshot",
+            block: "prep_snapshot",
+            status: "block_start",
+          });
+          if (currentPrepSnapshotPlan) {
+            await tx.currentCwlPrepSnapshot.upsert({
+              where: {
+                season_clanTag: {
+                  season: observed.season,
+                  clanTag: observed.clanTag,
+                },
+              },
+              create: {
                 season: observed.season,
                 clanTag: observed.clanTag,
+                roundDay: currentPrepSnapshotPlan.roundDay,
+                clanName: currentPrepSnapshotPlan.clanName,
+                opponentTag: currentPrepSnapshotPlan.opponentTag,
+                opponentName: currentPrepSnapshotPlan.opponentName,
+                roundState: currentPrepSnapshotPlan.roundState,
+                leagueGroupState: currentPrepSnapshotPlan.leagueGroupState,
+                preparationStartTime: currentPrepSnapshotPlan.preparationStartTime,
+                startTime: currentPrepSnapshotPlan.startTime,
+                endTime: currentPrepSnapshotPlan.endTime,
+                lineupJson: currentPrepSnapshotPlan.lineupJson,
+                sourceUpdatedAt: currentPrepSnapshotPlan.sourceUpdatedAt,
               },
-            },
-            create: {
+              update: {
+                roundDay: currentPrepSnapshotPlan.roundDay,
+                clanName: currentPrepSnapshotPlan.clanName,
+                opponentTag: currentPrepSnapshotPlan.opponentTag,
+                opponentName: currentPrepSnapshotPlan.opponentName,
+                roundState: currentPrepSnapshotPlan.roundState,
+                leagueGroupState: currentPrepSnapshotPlan.leagueGroupState,
+                preparationStartTime: currentPrepSnapshotPlan.preparationStartTime,
+                startTime: currentPrepSnapshotPlan.startTime,
+                endTime: currentPrepSnapshotPlan.endTime,
+                lineupJson: currentPrepSnapshotPlan.lineupJson,
+                sourceUpdatedAt: currentPrepSnapshotPlan.sourceUpdatedAt,
+              },
+            });
+          } else {
+            await tx.currentCwlPrepSnapshot.deleteMany({
+              where: { season: observed.season, clanTag: observed.clanTag },
+            });
+          }
+          logCwlPersistPhase({
+            season: observed.season,
+            clanTag: observed.clanTag,
+            currentRoundCount: currentRoundCountForClan,
+            currentMemberCount: currentMemberCountForClan,
+            historyRoundCount: historyRoundCountForClan,
+            historyMemberCount: historyMemberCountForClan,
+            phase: "prep_snapshot",
+            block: "prep_snapshot",
+            status: "block_complete",
+          });
+        },
+      });
+
+      await runCwlPersistPhase({
+        season: observed.season,
+        clanTag: observed.clanTag,
+        currentRoundCount: currentRoundCountForClan,
+        currentMemberCount: currentMemberCountForClan,
+        historyRoundCount: historyRoundCountForClan,
+        historyMemberCount: historyMemberCountForClan,
+        phase: "history_rounds",
+        work: async (tx, trackBlock) => {
+          for (const round of historyRoundPlans) {
+            trackBlock(`history_round_${round.roundDay}`);
+            logCwlPersistPhase({
               season: observed.season,
               clanTag: observed.clanTag,
-              roundDay: observed.currentPreparationRound.roundDay,
-              clanName: observed.currentPreparationRound.clanName,
-              opponentTag: observed.currentPreparationRound.opponentTag,
-              opponentName: observed.currentPreparationRound.opponentName,
-              roundState: observed.currentPreparationRound.roundState,
-              leagueGroupState: observed.currentPreparationRound.leagueGroupState,
-              preparationStartTime: observed.currentPreparationRound.preparationStartTime,
-              startTime: observed.currentPreparationRound.startTime,
-              endTime: observed.currentPreparationRound.endTime,
-              lineupJson: buildPrepSnapshotLineupJson(
-                observed.currentPreparationRound.members,
-              ),
-              sourceUpdatedAt: observed.currentPreparationRound.sourceUpdatedAt,
-            },
-            update: {
-              roundDay: observed.currentPreparationRound.roundDay,
-              clanName: observed.currentPreparationRound.clanName,
-              opponentTag: observed.currentPreparationRound.opponentTag,
-              opponentName: observed.currentPreparationRound.opponentName,
-              roundState: observed.currentPreparationRound.roundState,
-              leagueGroupState: observed.currentPreparationRound.leagueGroupState,
-              preparationStartTime: observed.currentPreparationRound.preparationStartTime,
-              startTime: observed.currentPreparationRound.startTime,
-              endTime: observed.currentPreparationRound.endTime,
-              lineupJson: buildPrepSnapshotLineupJson(
-                observed.currentPreparationRound.members,
-              ),
-              sourceUpdatedAt: observed.currentPreparationRound.sourceUpdatedAt,
-            },
-          });
-        } else {
-          await tx.currentCwlPrepSnapshot.deleteMany({
-            where: { season: observed.season, clanTag: observed.clanTag },
-          });
-        }
+              currentRoundCount: currentRoundCountForClan,
+              currentMemberCount: currentMemberCountForClan,
+              historyRoundCount: historyRoundCountForClan,
+              historyMemberCount: historyMemberCountForClan,
+              phase: "history_rounds",
+              block: `history_round_${round.roundDay}`,
+              status: "block_start",
+            });
+            await tx.cwlRoundHistory.upsert({
+              where: {
+                season_clanTag_roundDay: {
+                  season: observed.season,
+                  clanTag: observed.clanTag,
+                  roundDay: round.roundDay,
+                },
+              },
+              create: {
+                season: observed.season,
+                clanTag: observed.clanTag,
+                roundDay: round.roundDay,
+                clanName: round.clanName,
+                opponentTag: round.opponentTag,
+                opponentName: round.opponentName,
+                roundState: round.roundState,
+                leagueGroupState: round.leagueGroupState,
+                teamSize: round.teamSize,
+                attacksPerMember: round.attacksPerMember,
+                preparationStartTime: round.preparationStartTime,
+                startTime: round.startTime,
+                endTime: round.endTime,
+                sourceUpdatedAt: round.sourceUpdatedAt,
+              },
+              update: {
+                clanName: round.clanName,
+                opponentTag: round.opponentTag,
+                opponentName: round.opponentName,
+                roundState: round.roundState,
+                leagueGroupState: round.leagueGroupState,
+                teamSize: round.teamSize,
+                attacksPerMember: round.attacksPerMember,
+                preparationStartTime: round.preparationStartTime,
+                startTime: round.startTime,
+                endTime: round.endTime,
+                sourceUpdatedAt: round.sourceUpdatedAt,
+              },
+            });
+            logCwlPersistPhase({
+              season: observed.season,
+              clanTag: observed.clanTag,
+              currentRoundCount: currentRoundCountForClan,
+              currentMemberCount: currentMemberCountForClan,
+              historyRoundCount: historyRoundCountForClan,
+              historyMemberCount: historyMemberCountForClan,
+              phase: "history_rounds",
+              block: `history_round_${round.roundDay}`,
+              status: "block_complete",
+            });
+          }
+        },
+      });
 
-        for (const round of observed.historyRounds) {
-          historyRoundCount += 1;
-          historyMemberCount += round.members.length;
-          await tx.cwlRoundHistory.upsert({
-            where: {
-              season_clanTag_roundDay: {
+      await runCwlPersistPhase({
+        season: observed.season,
+        clanTag: observed.clanTag,
+        currentRoundCount: currentRoundCountForClan,
+        currentMemberCount: currentMemberCountForClan,
+        historyRoundCount: historyRoundCountForClan,
+        historyMemberCount: historyMemberCountForClan,
+        phase: "history_members",
+        work: async (tx, trackBlock) => {
+          for (const round of historyRoundPlans) {
+            trackBlock(`history_members_${round.roundDay}`);
+            logCwlPersistPhase({
+              season: observed.season,
+              clanTag: observed.clanTag,
+              currentRoundCount: currentRoundCountForClan,
+              currentMemberCount: currentMemberCountForClan,
+              historyRoundCount: historyRoundCountForClan,
+              historyMemberCount: historyMemberCountForClan,
+              phase: "history_members",
+              block: `history_members_${round.roundDay}`,
+              status: "block_start",
+            });
+            await tx.cwlRoundMemberHistory.deleteMany({
+              where: {
                 season: observed.season,
                 clanTag: observed.clanTag,
                 roundDay: round.roundDay,
               },
-            },
-            create: {
+            });
+            if (round.memberRows.length > 0) {
+              await tx.cwlRoundMemberHistory.createMany({
+                data: round.memberRows,
+              });
+            }
+            logCwlPersistPhase({
               season: observed.season,
               clanTag: observed.clanTag,
-              roundDay: round.roundDay,
-              clanName: round.clanName,
-              opponentTag: round.opponentTag,
-              opponentName: round.opponentName,
-              roundState: round.roundState,
-              leagueGroupState: round.leagueGroupState,
-              teamSize: round.teamSize,
-              attacksPerMember: round.attacksPerMember,
-              preparationStartTime: round.preparationStartTime,
-              startTime: round.startTime,
-              endTime: round.endTime,
-              sourceUpdatedAt: round.sourceUpdatedAt,
-            },
-            update: {
-              clanName: round.clanName,
-              opponentTag: round.opponentTag,
-              opponentName: round.opponentName,
-              roundState: round.roundState,
-              leagueGroupState: round.leagueGroupState,
-              teamSize: round.teamSize,
-              attacksPerMember: round.attacksPerMember,
-              preparationStartTime: round.preparationStartTime,
-              startTime: round.startTime,
-              endTime: round.endTime,
-              sourceUpdatedAt: round.sourceUpdatedAt,
-            },
-          });
-          await tx.cwlRoundMemberHistory.deleteMany({
-            where: {
-              season: observed.season,
-              clanTag: observed.clanTag,
-              roundDay: round.roundDay,
-            },
-          });
-          if (round.members.length > 0) {
-            await tx.cwlRoundMemberHistory.createMany({
-              data: round.members.map((member) => ({
-                season: observed.season,
-                clanTag: observed.clanTag,
-                roundDay: round.roundDay,
-                playerTag: member.playerTag,
-                playerName: member.playerName,
-                mapPosition: member.mapPosition,
-                townHall: member.townHall,
-                attacksUsed: member.attacksUsed,
-                attacksAvailable: member.attacksAvailable,
-                stars: member.stars,
-                destruction: member.destruction,
-                subbedIn: member.subbedIn,
-                subbedOut: member.subbedOut,
-              })),
+              currentRoundCount: currentRoundCountForClan,
+              currentMemberCount: currentMemberCountForClan,
+              historyRoundCount: historyRoundCountForClan,
+              historyMemberCount: historyMemberCountForClan,
+              phase: "history_members",
+              block: `history_members_${round.roundDay}`,
+              status: "block_complete",
             });
           }
-        }
+        },
+      });
 
-        for (const rosterMember of observed.seasonRoster) {
-          await tx.cwlPlayerClanSeason.upsert({
-            where: {
-              season_playerTag: {
+      await runCwlPersistPhase({
+        season: observed.season,
+        clanTag: observed.clanTag,
+        currentRoundCount: currentRoundCountForClan,
+        currentMemberCount: currentMemberCountForClan,
+        historyRoundCount: historyRoundCountForClan,
+        historyMemberCount: historyMemberCountForClan,
+        phase: "season_roster",
+        work: async (tx, trackBlock) => {
+          for (const rosterMember of seasonRosterRows) {
+            trackBlock(rosterMember.playerTag);
+            logCwlPersistPhase({
+              season: observed.season,
+              clanTag: observed.clanTag,
+              currentRoundCount: currentRoundCountForClan,
+              currentMemberCount: currentMemberCountForClan,
+              historyRoundCount: historyRoundCountForClan,
+              historyMemberCount: historyMemberCountForClan,
+              phase: "season_roster",
+              block: rosterMember.playerTag,
+              status: "block_start",
+            });
+            await tx.cwlPlayerClanSeason.upsert({
+              where: {
+                season_playerTag: {
+                  season: observed.season,
+                  playerTag: rosterMember.playerTag,
+                },
+              },
+              create: {
                 season: observed.season,
                 playerTag: rosterMember.playerTag,
+                cwlClanTag: observed.clanTag,
+                playerName: rosterMember.playerName,
+                townHall: rosterMember.townHall,
+                daysParticipated: rosterMember.daysParticipated,
+                lastRoundDay: rosterMember.lastRoundDay,
               },
-            },
-            create: {
+              update: {
+                cwlClanTag: observed.clanTag,
+                playerName: rosterMember.playerName,
+                townHall: rosterMember.townHall,
+                daysParticipated: rosterMember.daysParticipated,
+                lastRoundDay: rosterMember.lastRoundDay,
+              },
+            });
+            logCwlPersistPhase({
               season: observed.season,
-              playerTag: rosterMember.playerTag,
-              cwlClanTag: observed.clanTag,
-              playerName: rosterMember.playerName,
-              townHall: rosterMember.townHall,
-              daysParticipated: rosterMember.daysParticipated,
-              lastRoundDay: rosterMember.lastRoundDay,
-            },
-            update: {
-              cwlClanTag: observed.clanTag,
-              playerName: rosterMember.playerName,
-              townHall: rosterMember.townHall,
-              daysParticipated: rosterMember.daysParticipated,
-              lastRoundDay: rosterMember.lastRoundDay,
-            },
-          });
-        }
-      }
-    });
+              clanTag: observed.clanTag,
+              currentRoundCount: currentRoundCountForClan,
+              currentMemberCount: currentMemberCountForClan,
+              historyRoundCount: historyRoundCountForClan,
+              historyMemberCount: historyMemberCountForClan,
+              phase: "season_roster",
+              block: rosterMember.playerTag,
+              status: "block_complete",
+            });
+          }
+        },
+      });
+    }
 
     return {
       season: input.season,
