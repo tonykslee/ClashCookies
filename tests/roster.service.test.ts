@@ -2490,8 +2490,9 @@ describe("RosterService", () => {
     });
     if (confirmed.outcome !== "posted") return;
 
-    expect(confirmed.messageContent).toContain("CWL Alpha Signup - CWL Alpha");
-    expect(confirmed.messageContent).toContain(`Alpha (${alphaTag}) <@111111111111111111>`);
+    expect(confirmed.messageContents).toHaveLength(1);
+    expect(confirmed.messageContents[0]).toContain("CWL Alpha Signup - CWL Alpha");
+    expect(confirmed.messageContents[0]).toContain(`Alpha (${alphaTag}) <@111111111111111111>`);
 
     const replay = await rosterService.confirmRosterPingSelectionPanel({
       sessionId: opened.panel.sessionId,
@@ -2501,6 +2502,80 @@ describe("RosterService", () => {
       outcome: "session_not_found",
       sessionId: opened.panel.sessionId,
     });
+  });
+
+  it("chunks roster ping output without dropping targets when the public message exceeds Discord limits", async () => {
+    const targetCount = 80;
+    const signups = Array.from({ length: targetCount }, (_, index) => {
+      const playerTag = makeValidRosterPlayerTag(index + 1);
+      return {
+        id: `signup-${index + 1}`,
+        rosterId: "roster-1",
+        groupId: "group-confirmed",
+        playerTag,
+        playerName: `Player ${String(index + 1).padStart(2, "0")}`,
+        discordUserId: `11111111111111${String(index + 1).padStart(5, "0")}`,
+        signedUpAt: new Date("2026-04-20T00:00:00.000Z"),
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+        group: {
+          id: "group-confirmed",
+          key: "confirmed",
+          name: "Confirmed",
+          description: "Primary roster members",
+          sortOrder: 0,
+        },
+      };
+    });
+
+    prismaMock.rosterSignup.findMany.mockResolvedValue(signups as any);
+    prismaMock.playerLink.findMany.mockImplementation(async (args: any) => {
+      const tagList = (args?.where?.playerTag?.in ?? []) as string[];
+      const select = args?.select ?? {};
+      if (!select.discordUserId) {
+        return [];
+      }
+      return tagList.map((playerTag, index) => ({
+        playerTag,
+        discordUserId: `11111111111111${String(index + 1).padStart(5, "0")}`,
+        discordUsername: `user-${String(index + 1).padStart(2, "0")}`,
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      }));
+    });
+    todoSnapshotServiceMock.listSnapshotsByClanTag.mockResolvedValue([] as any);
+
+    const opened = await rosterService.createRosterPingSelectionPanel({
+      rosterId: "roster-1",
+      discordUserId: "111111111111111111",
+      pingOption: "everyone",
+    });
+    expect(opened).toMatchObject({ outcome: "ready" });
+    if (opened.outcome !== "ready") {
+      throw new Error("Expected roster ping preview to open.");
+    }
+    expect(opened.panel.targetCount).toBe(targetCount);
+
+    const confirmed = await rosterService.confirmRosterPingSelectionPanel({
+      sessionId: opened.panel.sessionId,
+      discordUserId: "111111111111111111",
+    });
+    expect(confirmed).toMatchObject({
+      outcome: "posted",
+      rosterId: "roster-1",
+      targetCount,
+    });
+    if (confirmed.outcome !== "posted") return;
+
+    expect(confirmed.messageContents.length).toBeGreaterThan(1);
+    expect(confirmed.messageContents.every((content) => content.length <= 2000)).toBe(true);
+    expect(confirmed.messageContents[0]).toContain("CWL Alpha Signup - CWL Alpha");
+    expect(confirmed.messageContents.every((content) => content.startsWith("[CWL Alpha Signup"))).toBe(true);
+    const joined = confirmed.messageContents.join("\n");
+    expect((joined.match(/<@/g) ?? []).length).toBe(targetCount);
+    for (const signup of signups) {
+      expect(joined).toContain(signup.playerTag);
+      expect(joined).toContain(signup.playerName);
+    }
   });
 
   it("signs up multiple selected accounts through the roster selection session", async () => {

@@ -1271,8 +1271,10 @@ describe("/roster command", () => {
       outcome: "posted",
       rosterId: "roster-1",
       targetCount: 2,
-      messageContent:
-        "[CWL Alpha Signup - CWL Alpha](https://link.example)\nAlpha (#PQL0289) <@222222222222222222>\nBravo (#QGRJ2222) <@333333333333333333>",
+      messageContents: [
+        "[CWL Alpha Signup - CWL Alpha](https://link.example)\nAlpha (#PQL0289) <@222222222222222222>",
+        "[CWL Alpha Signup - CWL Alpha](https://link.example)\nBravo (#QGRJ2222) <@333333333333333333>",
+      ],
     });
 
     const sendMock = vi.fn().mockResolvedValue(undefined);
@@ -1296,9 +1298,9 @@ describe("/roster command", () => {
       sessionId: "session-1",
       discordUserId: "111111111111111111",
     });
-    expect(sendMock).toHaveBeenCalledWith({
-      content: expect.stringContaining("CWL Alpha Signup - CWL Alpha"),
-    });
+    expect(sendMock).toHaveBeenCalledTimes(2);
+    expect(sendMock.mock.calls[0]?.[0]?.content).toContain("Alpha (#PQL0289)");
+    expect(sendMock.mock.calls[1]?.[0]?.content).toContain("Bravo (#QGRJ2222)");
     expect(String(interaction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).toBe(
       "Posted ping for 2 players.",
     );

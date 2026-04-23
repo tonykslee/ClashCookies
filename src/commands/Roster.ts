@@ -1695,9 +1695,11 @@ export async function handleRosterPingActionButtonInteraction(interaction: Butto
   }
 
   try {
-    await channel.send({
-      content: result.messageContent,
-    });
+    for (const content of result.messageContents) {
+      await channel.send({
+        content,
+      });
+    }
     await interaction.editReply({
       content: `Posted ping for ${result.targetCount} player${result.targetCount === 1 ? "" : "s"}.`,
       embeds: [],

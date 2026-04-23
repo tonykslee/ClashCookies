@@ -245,7 +245,7 @@ export type RosterPingConfirmResult =
       outcome: "posted";
       rosterId: string;
       targetCount: number;
-      messageContent: string;
+      messageContents: string[];
     }
   | { outcome: "session_not_found"; sessionId: string }
   | { outcome: "forbidden"; sessionId: string };
@@ -1593,17 +1593,96 @@ function buildRosterPingPreviewLines(session: RosterPingSession): string[] {
   return lines;
 }
 
-function buildRosterPingPublicMessageContent(session: RosterPingSession): string {
+const ROSTER_PING_MESSAGE_LIMIT = 2000;
+
+function splitRosterPingMessageLine(line: string, maxLength: number): string[] {
+  const normalized = String(line ?? "");
+  if (normalized.length <= maxLength) {
+    return [normalized];
+  }
+  const segments: string[] = [];
+  for (let index = 0; index < normalized.length; index += maxLength) {
+    segments.push(normalized.slice(index, index + maxLength));
+  }
+  return segments;
+}
+
+function buildRosterPingPublicMessageContents(session: RosterPingSession): string[] {
   const headerLabel = `${session.rosterTitle} - ${session.clanName} (${session.clanTag})`;
-  const lines = [buildClanProfileMarkdownLink(headerLabel, session.clanTag)];
-  for (const target of session.targets) {
-    lines.push(buildRosterPingTargetLine(target));
-  }
+  const headerLine = buildClanProfileMarkdownLink(headerLabel, session.clanTag);
+  const messageLines: string[] = [];
   if (session.message) {
-    lines.push("");
-    lines.push(session.message);
+    messageLines.push("");
+    messageLines.push("Message:");
+    for (const line of String(session.message).split(/\r?\n/)) {
+      messageLines.push(...splitRosterPingMessageLine(line, ROSTER_PING_MESSAGE_LIMIT - headerLine.length - 1));
+    }
+    messageLines.push("");
   }
-  return truncateDiscordContent(lines.join("\n"), 2000);
+  const targetLines = session.targets.map((target) => buildRosterPingTargetLine(target));
+
+  const chunks: string[] = [];
+  let currentLines: string[] = [headerLine];
+  let currentLength = headerLine.length;
+
+  const flush = (): void => {
+    if (currentLines.length > 0) {
+      chunks.push(currentLines.join("\n"));
+    }
+    currentLines = [headerLine];
+    currentLength = headerLine.length;
+  };
+
+  const appendLine = (line: string, allowSplit = false): void => {
+    const lineText = String(line ?? "");
+    const nextLength = currentLength + 1 + lineText.length;
+    if (nextLength <= ROSTER_PING_MESSAGE_LIMIT) {
+      currentLines.push(lineText);
+      currentLength = nextLength;
+      return;
+    }
+
+    if (currentLines.length > 1) {
+      flush();
+      appendLine(lineText, allowSplit);
+      return;
+    }
+
+    if (!allowSplit || lineText.length <= 0) {
+      currentLines.push(lineText);
+      currentLength = nextLength;
+      return;
+    }
+
+    const available = Math.max(1, ROSTER_PING_MESSAGE_LIMIT - currentLength - 1);
+    const segments = splitRosterPingMessageLine(lineText, available);
+    if (segments.length <= 1) {
+      currentLines.push(lineText);
+      currentLength = nextLength;
+      return;
+    }
+    for (const segment of segments) {
+      const segmentLength = currentLength + 1 + segment.length;
+      if (segmentLength > ROSTER_PING_MESSAGE_LIMIT && currentLines.length > 1) {
+        flush();
+      }
+      currentLines.push(segment);
+      currentLength = currentLines.join("\n").length;
+    }
+  };
+
+  for (const line of messageLines) {
+    appendLine(line, true);
+  }
+  for (const line of targetLines) {
+    appendLine(line, false);
+  }
+
+  if (currentLines.length > 1 || chunks.length <= 0) {
+    chunks.push(currentLines.join("\n"));
+  }
+
+  return chunks.filter((chunk) => chunk.length > 0 && chunk.length <= ROSTER_PING_MESSAGE_LIMIT);
 }
 
 function buildRosterPingSelectionPayload(session: RosterPingSession): RosterPingSelectionPanel {
@@ -4525,7 +4604,7 @@ export class RosterService {
       outcome: "posted",
       rosterId: session.rosterId,
       targetCount: session.targets.length,
-      messageContent: buildRosterPingPublicMessageContent(session),
+      messageContents: buildRosterPingPublicMessageContents(session),
     };
   }
 
