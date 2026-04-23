@@ -257,4 +257,46 @@ describe("CompoActualStateService", () => {
     });
     expect(refreshCurrentClanMembersSpy).toHaveBeenCalledWith(["#AAA111"]);
   });
+
+  it("logs a narrow Rocky Road ACTUAL diagnostics line when the selected HeatMapRef band is missing", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      makeTrackedClan("#2RYGLU2UY", "Rocky Road"),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      makeMember({
+        clanTag: "#2RYGLU2UY",
+        playerTag: "#P000001",
+        weight: 100,
+      }),
+    ]);
+    prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.heatMapRef.findMany.mockResolvedValue([
+      makeHeatMapRef({
+        weightMinInclusive: 200,
+        weightMaxInclusive: 300,
+      }),
+    ]);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await new CompoActualStateService().readState("guild-1");
+
+    expect(logSpy).toHaveBeenCalledTimes(1);
+    expect(String(logSpy.mock.calls[0]?.[0] ?? "")).toContain(
+      "[compo-actual-debug]",
+    );
+    expect(String(logSpy.mock.calls[0]?.[0] ?? "")).toContain("surface=state");
+    expect(String(logSpy.mock.calls[0]?.[0] ?? "")).toContain(
+      "clanTag=#2RYGLU2UY",
+    );
+    expect(String(logSpy.mock.calls[0]?.[0] ?? "")).toContain(
+      "selectedHeatMapRefBandKey=null",
+    );
+    expect(String(logSpy.mock.calls[0]?.[0] ?? "")).toContain(
+      "coverageReason=out_of_range_low",
+    );
+    expect(String(logSpy.mock.calls[0]?.[0] ?? "")).toContain(
+      "deltaByBucketNull=true",
+    );
+  });
 });

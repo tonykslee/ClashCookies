@@ -15,6 +15,7 @@ import {
   type CompoActualStateProjection,
   type CompoActualStateView,
 } from "../helper/compoActualStateView";
+import { findHeatMapRefForWeight, getHeatMapRefBandKey } from "../helper/compoHeatMap";
 import { normalizeCompoClanDisplayName } from "../helper/compoDisplay";
 import {
   EMPTY_COMPO_WAR_BUCKET_COUNTS,
@@ -41,6 +42,14 @@ type WarFallbackRow = Pick<
   FwaTrackedClanWarRosterMemberCurrent,
   "clanTag" | "playerTag" | "effectiveWeight" | "updatedAt"
 >;
+
+type CompoActualDiagnosticsSurface = "state" | "advice";
+type CompoActualDiagnosticsCoverageReason =
+  | "no_heatmap_refs"
+  | "out_of_range_low"
+  | "out_of_range_high"
+  | "coverage_gap"
+  | "selected";
 
 export type CompoActualStateClanContext = {
   clanTag: string;
@@ -168,6 +177,146 @@ function buildActualViewSummaryLines(
   }
   return contentLines;
 }
+
+function getDebugTaggedClanTags(): Set<string> {
+  const raw = String(process.env.COMPO_ACTUAL_DEBUG_CLAN_TAGS ?? "").trim();
+  if (!raw) {
+    return new Set();
+  }
+
+  return new Set(
+    raw
+      .split(/[\s,]+/)
+      .map((value) => normalizeTag(value))
+      .filter((value): value is string => Boolean(value)),
+  );
+}
+
+function shouldLogCompoActualDiagnostics(clanTag: string): boolean {
+  const normalizedClanTag = normalizeTag(clanTag);
+  if (!normalizedClanTag) {
+    return false;
+  }
+
+  if (normalizedClanTag === "#2RYGLU2UY") {
+    return true;
+  }
+
+  return getDebugTaggedClanTags().has(normalizedClanTag);
+}
+
+function getCompoActualDiagnosticsCoverageReason(input: {
+  heatMapRefs: readonly HeatMapRef[];
+  totalWeight: number;
+}): CompoActualDiagnosticsCoverageReason {
+  if (input.heatMapRefs.length === 0) {
+    return "no_heatmap_refs";
+  }
+  if (findHeatMapRefForWeight(input.heatMapRefs, input.totalWeight)) {
+    return "selected";
+  }
+
+  const minWeightInclusive = Math.min(
+    ...input.heatMapRefs.map((ref) => ref.weightMinInclusive),
+  );
+  const maxWeightInclusive = Math.max(
+    ...input.heatMapRefs.map((ref) => ref.weightMaxInclusive),
+  );
+  if (input.totalWeight < minWeightInclusive) {
+    return "out_of_range_low";
+  }
+  if (input.totalWeight > maxWeightInclusive) {
+    return "out_of_range_high";
+  }
+  return "coverage_gap";
+}
+
+function getLowestCoverageBandRef(refs: readonly HeatMapRef[]): HeatMapRef {
+  return refs.reduce((lowest, current) =>
+    current.weightMinInclusive < lowest.weightMinInclusive ||
+    (current.weightMinInclusive === lowest.weightMinInclusive &&
+      current.weightMaxInclusive < lowest.weightMaxInclusive)
+      ? current
+      : lowest,
+  refs[0] as HeatMapRef);
+}
+
+function getHighestCoverageBandRef(refs: readonly HeatMapRef[]): HeatMapRef {
+  return refs.reduce((highest, current) =>
+    current.weightMaxInclusive > highest.weightMaxInclusive ||
+    (current.weightMaxInclusive === highest.weightMaxInclusive &&
+      current.weightMinInclusive > highest.weightMinInclusive)
+      ? current
+      : highest,
+  refs[0] as HeatMapRef);
+}
+
+function buildCompoActualDiagnosticsLine(input: {
+  surface: CompoActualDiagnosticsSurface;
+  clanTag: string;
+  clanName: string;
+  view: CompoActualStateView;
+  base: CompoActualStateBaseMetrics;
+  projection: CompoActualStateProjection;
+  heatMapRefs: readonly HeatMapRef[];
+}): string | null {
+  if (!shouldLogCompoActualDiagnostics(input.clanTag)) {
+    return null;
+  }
+
+  const normalizedClanTag = normalizeTag(input.clanTag);
+  const selectedHeatMapRefBandKey = input.projection.selectedHeatMapRef
+    ? getHeatMapRefBandKey(input.projection.selectedHeatMapRef)
+    : null;
+  const coverageReason = getCompoActualDiagnosticsCoverageReason({
+    heatMapRefs: input.heatMapRefs,
+    totalWeight: input.projection.totalWeight,
+  });
+  const coverageMinBandKey =
+    input.heatMapRefs.length > 0
+      ? getHeatMapRefBandKey(getLowestCoverageBandRef(input.heatMapRefs))
+      : null;
+  const coverageMaxBandKey =
+    input.heatMapRefs.length > 0
+      ? getHeatMapRefBandKey(getHighestCoverageBandRef(input.heatMapRefs))
+      : null;
+
+  return [
+    "[compo-actual-debug]",
+    `surface=${input.surface}`,
+    `clanTag=${normalizedClanTag}`,
+    `clanName=${input.clanName.trim() || "none"}`,
+    `view=${input.view}`,
+    `resolvedTotalWeight=${input.base.resolvedTotalWeight}`,
+    `unresolvedWeightCount=${input.base.unresolvedWeightCount}`,
+    `memberCount=${input.base.memberCount}`,
+    `missingTo50Count=${input.projection.missingTo50Count}`,
+    `projectedTotalWeight=${input.projection.totalWeight}`,
+    `selectedHeatMapRefBandKey=${selectedHeatMapRefBandKey ?? "null"}`,
+    `coverageMinBandKey=${coverageMinBandKey ?? "null"}`,
+    `coverageMaxBandKey=${coverageMaxBandKey ?? "null"}`,
+    `heatMapRefsEmpty=${input.heatMapRefs.length === 0 ? "true" : "false"}`,
+    `coverageReason=${coverageReason}`,
+    `deltaByBucketNull=${input.projection.selectedHeatMapRef ? "false" : "true"}`,
+  ].join(" ");
+}
+
+export function maybeLogCompoActualDiagnostics(input: {
+  surface: CompoActualDiagnosticsSurface;
+  clanTag: string;
+  clanName: string;
+  view: CompoActualStateView;
+  base: CompoActualStateBaseMetrics;
+  projection: CompoActualStateProjection;
+  heatMapRefs: readonly HeatMapRef[];
+}): void {
+  const line = buildCompoActualDiagnosticsLine(input);
+  if (line) {
+    console.log(line);
+  }
+}
+
+export const buildCompoActualDiagnosticsLineForTest = buildCompoActualDiagnosticsLine;
 
 /** Purpose: load the persisted ACTUAL compo state snapshot used by both state rendering and advice simulation. */
 export async function loadCompoActualStateContext(
@@ -398,6 +547,15 @@ export class CompoActualStateService {
       const row = buildActualStateRow({
         clanName: displayName,
         projection,
+      });
+      maybeLogCompoActualDiagnostics({
+        surface: "state",
+        clanTag: clan.clanTag,
+        clanName: clan.clanName,
+        view,
+        base: clan.base,
+        projection,
+        heatMapRefs: context.heatMapRefs,
       });
       rows.push([
         row.clanName,
