@@ -2704,10 +2704,7 @@ function formatRosterTownhallIconsValue(townHall: number | null | undefined): st
   if (normalized <= 0) {
     return null;
   }
-  if (normalized <= 8) {
-    return String(normalized);
-  }
-  if (normalized >= 9 && normalized <= 18) {
+  if (normalized <= 18) {
     return `:th${normalized}:`;
   }
   return String(normalized);

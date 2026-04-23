@@ -74,7 +74,7 @@ const todoSnapshotServiceMock = vi.hoisted(() => ({
   refreshSnapshotsForPlayerTags: vi.fn(),
 }));
 
-function makeRosterEmojiClient() {
+function makeRosterEmojiClient(options?: { missing?: string[] }) {
   const makeEmoji = (name: string, rendered: string) => ({
     id: `${name}-id`,
     name,
@@ -82,10 +82,16 @@ function makeRosterEmojiClient() {
     toString: () => rendered,
   });
 
-  const emojis = new Map([
-    ["house", makeEmoji("house", "<:house:111>")],
-    ["th18", makeEmoji("th18", "<:th18:118>")],
-  ]);
+  const missing = new Set((options?.missing ?? []).map((entry) => String(entry).trim()).filter(Boolean));
+  const emojis = new Map(
+    [
+      ["house", makeEmoji("house", "<:house:111>")],
+      ...Array.from({ length: 18 }, (_, index) => {
+        const name = `th${index + 1}`;
+        return missing.has(name) ? null : [name, makeEmoji(name, `<:${name}:${index + 101}>`)] as const;
+      }).filter((entry): entry is readonly [string, ReturnType<typeof makeEmoji>] => Boolean(entry)),
+    ],
+  );
 
   return {
     application: {
@@ -1565,9 +1571,119 @@ describe("RosterService", () => {
     expect(bravoRowIndex).toBeGreaterThan(-1);
     expect(alphaRowIndex).toBeLessThan(bravoRowIndex);
     expect(bravoRow).toContain("<:th18:118>");
-    expect(alphaRow).toContain("8");
+    expect(alphaRow).toContain("<:th8:108>");
     expect(alphaRow).toContain("1");
     expect(bravoRow).toContain("2");
+  });
+
+  it("renders TH1 through TH18 as app emojis and falls back safely when one emoji is missing", async () => {
+    prismaMock.roster.findUnique.mockResolvedValueOnce({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      maxMembers: null,
+      maxAccountsPerUser: null,
+      minTownhall: null,
+      maxTownhall: null,
+      rosterRoleId: null,
+      allowMultiSignup: true,
+      sortBy: null,
+      displayColumns: JSON.stringify(["townhall_icons", "player_name"]),
+      importMembers: false,
+      postButtonMode: "standard",
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    } as any);
+    prismaMock.rosterGroup.findMany.mockResolvedValueOnce([
+      {
+        id: "group-confirmed",
+        rosterId: "roster-1",
+        key: "confirmed",
+        name: "Confirmed",
+        description: "Primary roster members",
+        sortOrder: 0,
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+      },
+    ] as any);
+    prismaMock.rosterSignup.findMany.mockResolvedValueOnce(
+      Array.from({ length: 18 }, (_, index) => {
+        const townHall = index + 1;
+        return {
+          id: `signup-${townHall}`,
+          rosterId: "roster-1",
+          groupId: "group-confirmed",
+          playerTag: makeValidRosterPlayerTag(townHall),
+          playerName: `Player ${townHall}`,
+          discordUserId: `${townHall}`.padStart(18, "1"),
+          signedUpAt: new Date("2026-04-20T00:00:00.000Z"),
+          createdAt: new Date("2026-04-20T00:00:00.000Z"),
+          updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+          group: {
+            id: "group-confirmed",
+            key: "confirmed",
+            name: "Confirmed",
+            description: "Primary roster members",
+            sortOrder: 0,
+          },
+        };
+      }) as any,
+    );
+    prismaMock.playerLink.findMany.mockResolvedValueOnce(
+      Array.from({ length: 18 }, (_, index) => ({
+        playerTag: makeValidRosterPlayerTag(index + 1),
+        discordUsername: `player-${index + 1}`,
+      })) as any,
+    );
+    cwlStateServiceMock.listSeasonRosterForClan.mockResolvedValueOnce(
+      Array.from({ length: 18 }, (_, index) => ({
+        playerTag: makeValidRosterPlayerTag(index + 1),
+        playerName: `Player ${index + 1}`,
+        townHall: index + 1,
+      })) as any,
+    );
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValueOnce([] as any);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValueOnce([] as any);
+    prismaMock.externalPlayerWeightCurrent.findMany.mockResolvedValueOnce([] as any);
+    todoSnapshotServiceMock.listSnapshotsByClanTag.mockResolvedValueOnce(
+      Array.from({ length: 18 }, (_, index) => ({
+        playerTag: makeValidRosterPlayerTag(index + 1),
+        clanTag: "#2QG2C08UP",
+        clanName: "Rising Dawn",
+      })) as any,
+    );
+    prismaMock.cwlTrackedClan.findFirst.mockResolvedValueOnce(null as any);
+
+    const payload = await rosterService.buildRosterSignupPayload("roster-1", null, {
+      emojiClient: makeRosterEmojiClient({ missing: ["th7"] }),
+    });
+    const description = String(payload?.embed.toJSON().description ?? "");
+
+    expect(payload).toBeTruthy();
+    expect(description).toContain("<:th1:101>");
+    expect(description).toContain("<:th2:102>");
+    expect(description).toContain("<:th3:103>");
+    expect(description).toContain("<:th4:104>");
+    expect(description).toContain("<:th5:105>");
+    expect(description).toContain("<:th6:106>");
+    expect(description).toContain(":th7:");
+    expect(description).toContain("<:th8:108>");
+    expect(description).toContain("<:th9:109>");
+    expect(description).toContain("<:th18:118>");
   });
 
   it("renders Min. TH as a dash when no minimum town hall is configured", async () => {
