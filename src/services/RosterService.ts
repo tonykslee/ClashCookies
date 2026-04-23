@@ -620,6 +620,8 @@ function normalizeRosterSortBy(input: string | null | undefined): RosterSortBy |
 
 export const ROSTER_DISPLAY_COLUMNS = {
   TH_LEVEL: "th_level",
+  TOWNHALL_ICONS: "townhall_icons",
+  INDEX: "index",
   DISCORD_NAME: "discord_name",
   DISCORD_USERNAME: "discord_username",
   DISCORD_USER_ID: "discord_user_id",
@@ -636,6 +638,8 @@ export type RosterDisplayColumn = (typeof ROSTER_DISPLAY_COLUMNS)[keyof typeof R
 
 export const ROSTER_DISPLAY_COLUMN_ORDER: readonly RosterDisplayColumn[] = [
   ROSTER_DISPLAY_COLUMNS.TH_LEVEL,
+  ROSTER_DISPLAY_COLUMNS.TOWNHALL_ICONS,
+  ROSTER_DISPLAY_COLUMNS.INDEX,
   ROSTER_DISPLAY_COLUMNS.DISCORD_NAME,
   ROSTER_DISPLAY_COLUMNS.DISCORD_USERNAME,
   ROSTER_DISPLAY_COLUMNS.DISCORD_USER_ID,
@@ -1761,6 +1765,8 @@ function normalizeRosterPostButtonMode(input: unknown): RosterPostButtonMode {
 
 const ROSTER_BOARD_COLUMN_LIMITS: Record<RosterDisplayColumn, number> = {
   [ROSTER_DISPLAY_COLUMNS.TH_LEVEL]: 2,
+  [ROSTER_DISPLAY_COLUMNS.TOWNHALL_ICONS]: 8,
+  [ROSTER_DISPLAY_COLUMNS.INDEX]: 5,
   [ROSTER_DISPLAY_COLUMNS.DISCORD_NAME]: 12,
   [ROSTER_DISPLAY_COLUMNS.DISCORD_USERNAME]: 16,
   [ROSTER_DISPLAY_COLUMNS.DISCORD_USER_ID]: 18,
@@ -1775,6 +1781,8 @@ const ROSTER_BOARD_COLUMN_LIMITS: Record<RosterDisplayColumn, number> = {
 
 const ROSTER_BOARD_COLUMN_HEADERS: Record<RosterDisplayColumn, string> = {
   [ROSTER_DISPLAY_COLUMNS.TH_LEVEL]: "TH",
+  [ROSTER_DISPLAY_COLUMNS.TOWNHALL_ICONS]: "TH ICONS",
+  [ROSTER_DISPLAY_COLUMNS.INDEX]: "INDEX",
   [ROSTER_DISPLAY_COLUMNS.DISCORD_NAME]: "DISCORD",
   [ROSTER_DISPLAY_COLUMNS.DISCORD_USERNAME]: "USERNAME",
   [ROSTER_DISPLAY_COLUMNS.DISCORD_USER_ID]: "ID",
@@ -1820,9 +1828,36 @@ function getRosterDisplayColumnHeader(column: RosterDisplayColumn): string {
   return ROSTER_BOARD_COLUMN_HEADERS[column];
 }
 
-function getRosterDisplayColumnValue(signup: RosterSignupViewRecord, column: RosterDisplayColumn): string | null {
+function formatRosterTownhallIconsValue(townHall: number | null | undefined): string | null {
+  if (townHall === null || townHall === undefined || !Number.isFinite(townHall)) {
+    return null;
+  }
+  const normalized = Math.max(0, Math.trunc(townHall));
+  if (normalized <= 0) {
+    return null;
+  }
+  if (normalized <= 8) {
+    return String(normalized);
+  }
+  if (normalized >= 9 && normalized <= 18) {
+    return `:th${normalized}:`;
+  }
+  return String(normalized);
+}
+
+function getRosterDisplayColumnValue(
+  signup: RosterSignupViewRecord,
+  column: RosterDisplayColumn,
+  rowIndex?: number,
+): string | null {
   if (column === ROSTER_DISPLAY_COLUMNS.TH_LEVEL) {
     return signup.townHall === null ? null : String(signup.townHall);
+  }
+  if (column === ROSTER_DISPLAY_COLUMNS.TOWNHALL_ICONS) {
+    return formatRosterTownhallIconsValue(signup.townHall);
+  }
+  if (column === ROSTER_DISPLAY_COLUMNS.INDEX) {
+    return rowIndex === null || rowIndex === undefined ? null : String(rowIndex);
   }
   if (column === ROSTER_DISPLAY_COLUMNS.DISCORD_NAME) {
     return signup.discordDisplayName ?? signup.discordUsername ?? signup.discordUserId ?? null;
@@ -1864,9 +1899,9 @@ function measureRosterBoardColumnWidths(
   const widths = Object.fromEntries(
     columns.map((column) => [column, getRosterDisplayColumnHeader(column).length] as const),
   ) as Record<RosterDisplayColumn, number>;
-  for (const signup of signups) {
+  for (const [rowIndex, signup] of signups.entries()) {
     for (const column of columns) {
-      const value = sanitizeRosterBoardText(getRosterDisplayColumnValue(signup, column));
+      const value = sanitizeRosterBoardText(getRosterDisplayColumnValue(signup, column, rowIndex + 1));
       widths[column] = Math.min(
         Math.max(widths[column], value.length),
         ROSTER_BOARD_COLUMN_LIMITS[column],
@@ -1901,11 +1936,11 @@ function buildRosterBoardRowLine(
   signup: RosterSignupViewRecord,
   columns: readonly RosterDisplayColumn[],
   widths: Record<RosterDisplayColumn, number>,
+  rowIndex: number,
 ): string {
-  const values = Object.fromEntries(columns.map((column) => [column, getRosterDisplayColumnValue(signup, column)] as const)) as Record<
-    RosterDisplayColumn,
-    string | null
-  >;
+  const values = Object.fromEntries(
+    columns.map((column) => [column, getRosterDisplayColumnValue(signup, column, rowIndex)] as const),
+  ) as Record<RosterDisplayColumn, string | null>;
   return buildRosterBoardLine(columns, values, widths);
 }
 
@@ -1913,11 +1948,18 @@ function buildRosterBoardRowLines(
   signups: RosterSignupViewRecord[],
   columns: readonly RosterDisplayColumn[],
   widths: Record<RosterDisplayColumn, number>,
-): string[] {
+  startIndex = 1,
+): { lines: string[]; nextIndex: number } {
   if (signups.length <= 0) {
-    return ["`- None`"];
+    return { lines: ["`- None`"], nextIndex: startIndex };
   }
-  return signups.map((signup) => `\`${buildRosterBoardRowLine(signup, columns, widths)}\``);
+  let rowIndex = startIndex;
+  const lines = signups.map((signup) => {
+    const line = `\`${buildRosterBoardRowLine(signup, columns, widths, rowIndex)}\``;
+    rowIndex += 1;
+    return line;
+  });
+  return { lines, nextIndex: rowIndex };
 }
 
 function buildRosterSignupPayloadFromView(view: RosterSignupView): RosterSignupPayload {
@@ -1937,9 +1979,12 @@ function buildRosterSignupPayloadFromView(view: RosterSignupView): RosterSignupP
     `\`${buildRosterBoardHeaderLine(columns, widths)}\``,
   ];
 
+  let rowIndex = 1;
   for (const group of groups) {
     lines.push(`**${group.name} - ${group.signupCount}**`);
-    lines.push(...buildRosterBoardRowLines(group.signups, columns, widths));
+    const renderedRows = buildRosterBoardRowLines(group.signups, columns, widths, rowIndex);
+    lines.push(...renderedRows.lines);
+    rowIndex = renderedRows.nextIndex;
     lines.push("");
   }
 

@@ -343,7 +343,98 @@ describe("/roster command", () => {
     );
   });
 
+  it("includes the original post link when refreshing an already-posted roster", async () => {
+    (rosterService.findGuildRosterById as any).mockResolvedValue({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      lifecycleState: "OPEN",
+      postedChannelId: "channel-1",
+      postedMessageId: "message-1",
+      postedMessageUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    });
+    (rosterService.getRosterView as any).mockResolvedValue({
+      roster: {
+        id: "roster-1",
+        postedChannelId: "channel-1",
+        postedMessageId: "message-1",
+        postedMessageUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+      },
+      groups: [],
+      signups: [],
+      totalSignupCount: 0,
+    });
+    (rosterService.buildRosterSignupPayload as any).mockResolvedValue({
+      embed: new EmbedBuilder().setTitle("CWL Alpha Signup"),
+      components: [
+        new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder()
+            .setCustomId("roster-post-action:signup:roster-1")
+            .setLabel("Signup")
+            .setStyle(ButtonStyle.Primary),
+        ),
+      ],
+    });
+    (rosterService.refreshRosterSignupPayload as any).mockResolvedValue({
+      embed: new EmbedBuilder().setTitle("CWL Alpha Signup"),
+      components: [
+        new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder()
+            .setCustomId("roster-post-action:signup:roster-1")
+            .setLabel("Signup")
+            .setStyle(ButtonStyle.Primary),
+        ),
+      ],
+    });
+    const editedMessage = { edit: vi.fn().mockResolvedValue(undefined) };
+    const rosterChannel = {
+      isTextBased: () => true,
+      messages: {
+        fetch: vi.fn().mockResolvedValue(editedMessage),
+      },
+    };
+    const interaction = makeInteraction({
+      subcommand: "post",
+      roster: "roster-1",
+    }) as any;
+    interaction.channel = {
+      isTextBased: () => true,
+      send: vi.fn(),
+    };
+    interaction.client = {
+      channels: {
+        fetch: vi.fn().mockResolvedValue(rosterChannel),
+      },
+    };
+
+    await Roster.run({} as any, interaction as any);
+
+    expect(rosterService.refreshRosterSignupPayload).toHaveBeenCalledWith(
+      "roster-1",
+      null,
+      expect.objectContaining({
+        discordDisplayNamesByUserId: expect.any(Map),
+      }),
+    );
+    expect(String(interaction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
+      "Original post: [Open posted roster](https://discord.com/channels/guild-1/channel-1/message-1)",
+    );
+  });
+
   it("shows roster list metadata for managers", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([{ name: "CWL Alpha", tag: "#2QG2C08UP" }]);
     (rosterService.listGuildRosters as any).mockResolvedValue([
       {
         id: "roster-1",
@@ -368,6 +459,29 @@ describe("/roster command", () => {
         groupCount: 2,
         signupCount: 5,
       },
+      {
+        id: "roster-2",
+        guildId: "guild-1",
+        rosterType: "FWA",
+        rosterCategory: "signup",
+        title: "FWA Beta Signup",
+        clanTag: null,
+        startsAt: new Date("2026-04-20T00:00:00.000Z"),
+        endsAt: null,
+        timezone: "America/Los_Angeles",
+        displayTimezone: "America/Los_Angeles",
+        lifecycleState: "CLOSED",
+        postedChannelId: null,
+        postedMessageId: null,
+        postedMessageUrl: null,
+        postedAt: null,
+        createdByDiscordUserId: "111111111111111111",
+        updatedByDiscordUserId: "111111111111111111",
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+        groupCount: 1,
+        signupCount: 2,
+      },
     ]);
 
     const interaction = makeInteraction({
@@ -389,8 +503,13 @@ describe("/roster command", () => {
     expect(embed?.title).toBe("Guild Rosters");
     expect(String(embed?.fields?.[0]?.value ?? "")).toContain("Type: CWL / signup");
     expect(String(embed?.fields?.[0]?.value ?? "")).toContain("State: Open");
-    expect(String(embed?.fields?.[0]?.value ?? "")).toContain("Posted: yes in <#channel-1>");
+    expect(String(embed?.fields?.[0]?.value ?? "")).toContain(
+      "Posted: Yes ([Open posted roster](https://discord.com/channels/guild-1/channel-1/message-1))",
+    );
+    expect(String(embed?.fields?.[0]?.value ?? "")).toContain("Clan: CWL Alpha (`#2QG2C08UP`)");
     expect(String(embed?.fields?.[0]?.value ?? "")).toContain("Groups: 2 | Signups: 5");
+    expect(String(embed?.fields?.[1]?.value ?? "")).toContain("Posted: No");
+    expect(String(embed?.fields?.[1]?.value ?? "")).toContain("Clan: none");
   });
 
   it("routes roster manage actions to the existing add, move, remove, and lifecycle helpers", async () => {
@@ -970,6 +1089,11 @@ describe("/roster command", () => {
     );
     expect(String(interaction.reply.mock.calls[0]?.[0]?.content ?? "")).not.toContain(
       "Choose at least one column to customize.",
+    );
+    const payload = interaction.reply.mock.calls[0]?.[0] as any;
+    const columnMenu = payload.components[0]?.toJSON?.().components?.[0];
+    expect(columnMenu?.options?.map((option: any) => option.value)).toEqual(
+      expect.arrayContaining(["townhall_icons", "index"]),
     );
     expect(interaction.showModal).not.toHaveBeenCalled();
   });
@@ -2157,7 +2281,7 @@ describe("/roster command", () => {
       },
     ]);
     prismaMock.trackedClan.findMany.mockResolvedValue([{ name: "Alpha Clan", tag: "#9GLGQCCU" }]);
-    prismaMock.raidTrackedClan.findMany.mockResolvedValue([{ name: "Raid Clan", clanTag: "2RVGJYLC0" }]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
 
     const interaction = makeAutocompleteInteraction({
@@ -2181,7 +2305,7 @@ describe("/roster command", () => {
         description: expect.any(String),
       },
       {
-        name: "Roster Two • Raid Clan • #2RVGJYLC0 • Archived",
+        name: "Roster Two • #2RVGJYLC0 • Archived",
         value: "roster-2",
         description: expect.any(String),
       },
