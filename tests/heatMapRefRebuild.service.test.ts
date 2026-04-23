@@ -183,12 +183,17 @@ describe("HeatMapRefRebuildService", () => {
       permissions: permissions as never,
     });
     const now = new Date("2026-04-13T00:00:00.000Z");
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
 
     prismaMock.heatMapRef.findMany.mockResolvedValue(makeNoopHeatMapRows(now) as never);
 
     const result = await service.rebuildHeatMapRef(now);
 
     expect(result.status).toBe("noop");
+    expect(logSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[heatmapref-continuity]"),
+    );
+    expect(logSpy.mock.calls[0]?.[0]).toContain("continuity=ok");
     expect(prismaMock.heatMapRef.createMany).not.toHaveBeenCalled();
     expect(result.summaryLines.join(" ")).toContain("rebuilt content matched");
   });
