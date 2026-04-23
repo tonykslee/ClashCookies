@@ -1,5 +1,8 @@
 import type { HeatMapRef } from "@prisma/client";
 import { prisma } from "../prisma";
+import {
+  assertHeatMapRefContinuityOrThrow,
+} from "../helper/heatMapRefContinuity";
 
 export type HeatMapRefSeedRow = {
   weightMinInclusive: number;
@@ -29,6 +32,10 @@ export async function getAllHeatMapRefs(): Promise<HeatMapRef[]> {
 export async function upsertHeatMapRefSeedRows(
   rows: readonly HeatMapRefSeedRow[],
 ): Promise<number> {
+  assertHeatMapRefContinuityOrThrow({
+    operation: "seed-write",
+    rows,
+  });
   const desiredKeys = new Set(
     rows.map((row) => `${row.weightMinInclusive}:${row.weightMaxInclusive}`),
   );
