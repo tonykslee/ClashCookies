@@ -168,6 +168,14 @@ const COMMANDS_WITH_CUSTOM_VISIBILITY = new Set([
 const registeredClients = new WeakSet<Client>();
 const telemetryIngest = TelemetryIngestService.getInstance();
 
+function isInteractionType(
+  interaction: Interaction,
+  method: "isAutocomplete" | "isButton" | "isUserSelectMenu" | "isStringSelectMenu" | "isModalSubmit" | "isChatInputCommand",
+): boolean {
+  const candidate = (interaction as unknown as Record<string, unknown>)[method];
+  return typeof candidate === "function" && Boolean((candidate as () => boolean).call(interaction));
+}
+
 function isMissingBotPermissionsError(err: unknown): boolean {
   const code = (err as { code?: number } | null | undefined)?.code;
   return code === 50013 || code === 50001;
@@ -290,7 +298,7 @@ export default (client: Client, cocService: CoCService): void => {
   registeredClients.add(client);
 
   client.on("interactionCreate", async (interaction: Interaction) => {
-    if (interaction.isAutocomplete()) {
+    if (isInteractionType(interaction, "isAutocomplete")) {
       await runWithInteractiveQueueContext(
         `autocomplete:${interaction.commandName}`,
         () => handleAutocomplete(interaction),
@@ -298,7 +306,7 @@ export default (client: Client, cocService: CoCService): void => {
       return;
     }
 
-  if (interaction.isButton()) {
+  if (isInteractionType(interaction, "isButton")) {
     try {
       await runWithInteractiveQueueContext(
         `button:${interaction.customId.split(":")[0] ?? "unknown"}`,
@@ -323,7 +331,7 @@ export default (client: Client, cocService: CoCService): void => {
     return;
   }
 
-  if (interaction.isUserSelectMenu()) {
+  if (isInteractionType(interaction, "isUserSelectMenu")) {
     await runWithInteractiveQueueContext(
       `select:${interaction.customId.split(":")[0] ?? "unknown"}`,
       () => handleRosterPostSettingsUserSelectInteraction(interaction),
@@ -331,7 +339,7 @@ export default (client: Client, cocService: CoCService): void => {
     return;
   }
 
-  if (interaction.isStringSelectMenu()) {
+  if (isInteractionType(interaction, "isStringSelectMenu")) {
     await runWithInteractiveQueueContext(
       `select:${interaction.customId.split(":")[0] ?? "unknown"}`,
       () => handleSelectMenuInteraction(interaction, cocService),
@@ -339,7 +347,7 @@ export default (client: Client, cocService: CoCService): void => {
     return;
   }
 
-    if (interaction.isModalSubmit()) {
+    if (isInteractionType(interaction, "isModalSubmit")) {
       await runWithInteractiveQueueContext(
         `modal:${interaction.customId.split(":")[0] ?? "unknown"}`,
         () => handleModalSubmit(interaction, cocService),
@@ -347,7 +355,7 @@ export default (client: Client, cocService: CoCService): void => {
       return;
     }
 
-    if (!interaction.isChatInputCommand()) return;
+    if (!isInteractionType(interaction, "isChatInputCommand")) return;
 
     const user = `${interaction.user.tag} (${interaction.user.id})`;
     const guild = interaction.guild
@@ -549,7 +557,7 @@ const handleButtonInteraction = async (
   interaction: Interaction,
   cocService: CoCService
 ): Promise<void> => {
-  if (!interaction.isButton()) return;
+  if (!isInteractionType(interaction, "isButton")) return;
 
   if (isTodoPageButtonCustomId(interaction.customId)) {
     try {
