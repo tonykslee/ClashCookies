@@ -2845,6 +2845,13 @@ describe("RosterService", () => {
         },
       },
     ] as any);
+    cocServiceMock.getClan.mockResolvedValue({
+      name: "CWL Alpha",
+      members: [
+        { tag: alphaTag, name: "Alpha" },
+        { tag: deltaTag, name: "Delta" },
+      ],
+    } as any);
     prismaMock.playerLink.findMany.mockImplementation(async (args: any) => {
       const select = args?.select ?? {};
       const tagList = (args?.where?.playerTag?.in ?? []) as string[];
@@ -2908,17 +2915,20 @@ describe("RosterService", () => {
       pingOption: "everyone",
       groupKey: "confirmed",
       message: "Good luck tonight!",
+      cocService: cocServiceMock as any,
     });
     const missing = await rosterService.createRosterPingSelectionPanel({
       rosterId: "roster-1",
       discordUserId: "111111111111111111",
       pingOption: "missing",
+      cocService: cocServiceMock as any,
     });
     const unregistered = await rosterService.createRosterPingSelectionPanel({
       rosterId: "roster-1",
       discordUserId: "111111111111111111",
       pingOption: "unregistered",
       groupKey: "confirmed",
+      cocService: cocServiceMock as any,
     });
 
     expect(everyone).toMatchObject({ outcome: "ready" });
@@ -3501,6 +3511,13 @@ describe("RosterService", () => {
         sortOrder: 1,
       },
     ]);
+    cocServiceMock.getClan.mockResolvedValue({
+      name: "Rising Crowns",
+      members: [
+        { tag: "#PQL0289", name: "Alpha" },
+        { tag: "#QGRJ2222", name: "Bravo" },
+      ],
+    } as any);
     todoSnapshotServiceMock.listSnapshotsByClanTag.mockResolvedValue([
       {
         playerTag: "#PQL0289",
@@ -3512,9 +3529,9 @@ describe("RosterService", () => {
         cwlClanName: "Rising Crowns",
       },
       {
-        playerTag: "#QGRJ2222",
-        playerName: "Bravo",
-        townHall: 15,
+        playerTag: "#OLD1111",
+        playerName: "OldTimer",
+        townHall: 14,
         clanTag: "#2QG2C08UP",
         clanName: "Rising Crowns",
         cwlClanTag: "#2QG2C08UP",
@@ -3526,11 +3543,6 @@ describe("RosterService", () => {
         playerTag: "#PQL0289",
         playerName: "Alpha",
         townHall: 16,
-      },
-      {
-        playerTag: "#QGRJ2222",
-        playerName: "Bravo",
-        townHall: 15,
       },
       {
         playerTag: "#OLD1111",
@@ -3551,7 +3563,10 @@ describe("RosterService", () => {
       },
     ] as any);
 
-    const report = await rosterService.buildRosterManagerReadinessText({ rosterId: "roster-1" });
+    const report = await rosterService.buildRosterManagerReadinessText({
+      rosterId: "roster-1",
+      cocService: cocServiceMock as any,
+    });
 
     expect(report).toContain("CWL Alpha Signup");
     expect(report).toContain("Current clan members:");
@@ -3561,10 +3576,7 @@ describe("RosterService", () => {
     expect(report).toContain("Out-of-clan signups:");
     expect(report).toContain("- Outlier `#ZZZZ1111` <@333333333333333333>");
     expect(report).not.toContain("#OLD1111");
-    expect(todoSnapshotServiceMock.listSnapshotsByClanTag).toHaveBeenCalledWith({
-      clanTag: "#2QG2C08UP",
-      source: "clanTag",
-    });
+    expect(cocServiceMock.getClan).toHaveBeenCalledWith("#2QG2C08UP");
   });
 
   it("builds a manager readiness view from the current FWA clan membership table", async () => {
@@ -3645,7 +3657,10 @@ describe("RosterService", () => {
       },
     ] as any);
 
-    const report = await rosterService.buildRosterManagerReadinessText({ rosterId: "roster-2" });
+    const report = await rosterService.buildRosterManagerReadinessText({
+      rosterId: "roster-2",
+      cocService: cocServiceMock as any,
+    });
 
     expect(report).toContain("FWA Alpha Signup");
     expect(report).toContain("Current clan members:");

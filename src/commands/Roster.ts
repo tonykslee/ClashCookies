@@ -1392,6 +1392,7 @@ export async function handleRosterPostSettingsMenuInteraction(
   if (choice === "unregistered_members" || choice === "missing_members") {
     const readiness = await rosterService.buildRosterManagerReadinessView({
       rosterId: roster.id,
+      cocService,
     });
     const lines = !readiness
       ? ["That roster is no longer available."]
@@ -2289,7 +2290,10 @@ async function handleRosterPostSubcommand(
   );
 }
 
-async function handleRosterReportSubcommand(interaction: ChatInputCommandInteraction): Promise<void> {
+async function handleRosterReportSubcommand(
+  interaction: ChatInputCommandInteraction,
+  cocService: CoCService,
+): Promise<void> {
   if (!interaction.inGuild() || !interaction.guildId) {
     await interaction.editReply("This command can only be used in a server.");
     return;
@@ -2300,7 +2304,10 @@ async function handleRosterReportSubcommand(interaction: ChatInputCommandInterac
     return;
   }
 
-  const reportText = await rosterService.buildRosterManagerReadinessText({ rosterId: roster.id });
+  const reportText = await rosterService.buildRosterManagerReadinessText({
+    rosterId: roster.id,
+    cocService,
+  });
   if (!reportText) {
     await interaction.editReply("Failed to build the roster readiness report.");
     return;
@@ -2311,11 +2318,17 @@ async function handleRosterReportSubcommand(interaction: ChatInputCommandInterac
   });
 }
 
-async function handleRosterReadinessSubcommand(interaction: ChatInputCommandInteraction): Promise<void> {
-  await handleRosterReportSubcommand(interaction);
+async function handleRosterReadinessSubcommand(
+  interaction: ChatInputCommandInteraction,
+  cocService: CoCService,
+): Promise<void> {
+  await handleRosterReportSubcommand(interaction, cocService);
 }
 
-async function handleRosterPingSubcommand(interaction: ChatInputCommandInteraction): Promise<void> {
+async function handleRosterPingSubcommand(
+  interaction: ChatInputCommandInteraction,
+  cocService: CoCService,
+): Promise<void> {
   if (!interaction.inGuild() || !interaction.guildId) {
     await interaction.editReply("This command can only be used in a server.");
     return;
@@ -2340,6 +2353,7 @@ async function handleRosterPingSubcommand(interaction: ChatInputCommandInteracti
     pingOption,
     groupKey,
     message,
+    cocService,
   });
 
   if (panel.outcome === "roster_not_found") {
@@ -3626,7 +3640,7 @@ export const Roster: Command = {
         return;
       }
       if (subcommand === "ping") {
-        await handleRosterPingSubcommand(interaction);
+        await handleRosterPingSubcommand(interaction, cocService);
         return;
       }
       if (subcommand === "manage") {
@@ -3642,11 +3656,11 @@ export const Roster: Command = {
         return;
       }
       if (subcommand === "report") {
-        await handleRosterReportSubcommand(interaction);
+        await handleRosterReportSubcommand(interaction, cocService);
         return;
       }
       if (subcommand === "readiness") {
-        await handleRosterReadinessSubcommand(interaction);
+        await handleRosterReadinessSubcommand(interaction, cocService);
         return;
       }
       if (subcommand === "refresh") {

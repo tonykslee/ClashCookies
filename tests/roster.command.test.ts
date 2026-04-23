@@ -1399,7 +1399,8 @@ describe("/roster command", () => {
       group: "confirmed",
     }) as any;
 
-    await Roster.run({} as any, interaction as any);
+    const cocService = {} as any;
+    await Roster.run({} as any, interaction as any, cocService);
 
     expect(rosterService.createRosterPingSelectionPanel).toHaveBeenCalledWith({
       rosterId: "roster-1",
@@ -1407,6 +1408,7 @@ describe("/roster command", () => {
       pingOption: "everyone",
       groupKey: "confirmed",
       message: "Good luck tonight!",
+      cocService,
     });
     expect(interaction.editReply).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -2608,13 +2610,14 @@ describe("/roster command", () => {
       (rosterService.buildRosterManagerReadinessText as any).mockResolvedValue(
         "CWL Alpha Signup\nUnregistered members:\n- Bravo `#QGRJ2222` <@222222222222222222>",
       );
+      const cocService = {} as any;
 
       const interaction = makeInteraction({
         subcommand,
         roster: "roster-1",
       }) as any;
 
-      await Roster.run({} as any, interaction as any);
+      await Roster.run({} as any, interaction as any, cocService);
 
       expect(rosterService.findGuildRosterById).toHaveBeenCalledWith({
         guildId: "guild-1",
@@ -2622,6 +2625,7 @@ describe("/roster command", () => {
       });
       expect(rosterService.buildRosterManagerReadinessText).toHaveBeenCalledWith({
         rosterId: "roster-1",
+        cocService,
       });
       expect(getEditedDescription(interaction)).toContain("Unregistered members:");
     },
