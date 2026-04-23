@@ -38,6 +38,7 @@ import {
   parseRosterPostRefreshButtonCustomId,
   parseRosterPostSettingsButtonCustomId,
   parseRosterPostSettingsMenuCustomId,
+  parseRosterPingActionButtonCustomId,
   parseRosterPostUsersActionButtonCustomId,
   parseRosterPostUsersGroupSelectMenuCustomId,
   parseRosterPostUsersPlayerSelectMenuCustomId,
@@ -129,6 +130,15 @@ function buildRosterLifecycleSummary(roster: RosterRecord, lifecycleState: Roste
         ? "closed"
         : "archived";
   return `${roster.title} was ${label}.`;
+}
+
+function normalizeRosterPingOptionChoice(input: string | null | undefined): string | null {
+  const normalized = String(input ?? "").trim().toLowerCase();
+  if (!normalized) return null;
+  if (normalized === "unregistered" || normalized === "missing" || normalized === "everyone") {
+    return normalized;
+  }
+  return null;
 }
 
 function describeRosterDisplayColumns(columns: string[] | null | undefined): string {
@@ -1649,6 +1659,60 @@ export async function handleRosterPostSettingsActionButtonInteraction(
   });
 }
 
+export async function handleRosterPingActionButtonInteraction(interaction: ButtonInteraction): Promise<void> {
+  const parsed = parseRosterPingActionButtonCustomId(interaction.customId);
+  if (!parsed) return;
+
+  await interaction.deferUpdate().catch(() => undefined);
+  const result = await rosterService.confirmRosterPingSelectionPanel({
+    sessionId: parsed.sessionId,
+    discordUserId: interaction.user.id,
+  });
+
+  if (result.outcome === "session_not_found") {
+    await interaction.followUp({
+      content: "That roster ping preview has expired. Please start again.",
+      ephemeral: true,
+    }).catch(() => undefined);
+    return;
+  }
+  if (result.outcome === "forbidden") {
+    await interaction.followUp({
+      content: "Only the original requester can use this roster ping preview.",
+      ephemeral: true,
+    }).catch(() => undefined);
+    return;
+  }
+
+  const channel = interaction.channel;
+  if (!channel?.isTextBased() || !("send" in channel)) {
+    await interaction.editReply({
+      content: "Could not post the ping to this channel.",
+      embeds: [],
+      components: [],
+    }).catch(() => undefined);
+    return;
+  }
+
+  try {
+    await channel.send({
+      content: result.messageContent,
+    });
+    await interaction.editReply({
+      content: `Posted ping for ${result.targetCount} player${result.targetCount === 1 ? "" : "s"}.`,
+      embeds: [],
+      components: [],
+    });
+  } catch (error) {
+    console.error(`[roster] ping_post_failed error=${formatError(error)}`);
+    await interaction.editReply({
+      content: "Failed to post the ping to the channel.",
+      embeds: [],
+      components: [],
+    }).catch(() => undefined);
+  }
+}
+
 function formatRosterManageWeightK(weight: number): string {
   return `${Math.trunc(weight / 1000)}k`;
 }
@@ -2171,6 +2235,52 @@ async function handleRosterReportSubcommand(interaction: ChatInputCommandInterac
 
 async function handleRosterReadinessSubcommand(interaction: ChatInputCommandInteraction): Promise<void> {
   await handleRosterReportSubcommand(interaction);
+}
+
+async function handleRosterPingSubcommand(interaction: ChatInputCommandInteraction): Promise<void> {
+  if (!interaction.inGuild() || !interaction.guildId) {
+    await interaction.editReply("This command can only be used in a server.");
+    return;
+  }
+
+  if (!(await canUseRosterPostTarget(interaction, "roster:manage"))) {
+    await interaction.editReply("You do not have permission to manage this roster.");
+    return;
+  }
+
+  const roster = await resolveRosterForGuild(interaction, interaction.options.getString("roster", true));
+  if (!roster) {
+    return;
+  }
+
+  const pingOption = normalizeRosterPingOptionChoice(interaction.options.getString("ping_option", false)) ?? "everyone";
+  const message = interaction.options.getString("message", false)?.trim() ?? null;
+  const groupKey = interaction.options.getString("group", false);
+  const panel = await rosterService.createRosterPingSelectionPanel({
+    rosterId: roster.id,
+    discordUserId: interaction.user.id,
+    pingOption,
+    groupKey,
+    message,
+  });
+
+  if (panel.outcome === "roster_not_found") {
+    await interaction.editReply("That roster is no longer available.");
+    return;
+  }
+  if (panel.outcome === "group_not_found") {
+    await interaction.editReply("That roster group is no longer available.");
+    return;
+  }
+  if (panel.outcome === "no_targets") {
+    await interaction.editReply("No linked roster members matched that ping selection.");
+    return;
+  }
+
+  await interaction.editReply({
+    embeds: [panel.panel.embed],
+    components: panel.panel.components,
+  });
 }
 
 async function handleRosterRefreshSubcommand(
@@ -3011,6 +3121,44 @@ export const Roster: Command = {
       ],
     },
     {
+      name: "ping",
+      description: "Preview and ping roster-related members",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "roster",
+          description: "Roster to ping from",
+          type: ApplicationCommandOptionType.String,
+          required: true,
+          autocomplete: true,
+        },
+        {
+          name: "message",
+          description: "Optional custom ping message",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+        },
+        {
+          name: "ping_option",
+          description: "Who to ping",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          choices: [
+            { name: "Unregistered", value: "unregistered" },
+            { name: "Missing", value: "missing" },
+            { name: "Everyone", value: "everyone" },
+          ],
+        },
+        {
+          name: "group",
+          description: "Restrict to a roster group",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          autocomplete: true,
+        },
+      ],
+    },
+    {
       name: "manage",
       description: "Mutate roster signups or lifecycle state",
       type: ApplicationCommandOptionType.Subcommand,
@@ -3249,6 +3397,10 @@ export const Roster: Command = {
       }
       if (subcommand === "post") {
         await handleRosterPostSubcommand(interaction, cocService);
+        return;
+      }
+      if (subcommand === "ping") {
+        await handleRosterPingSubcommand(interaction);
         return;
       }
       if (subcommand === "manage") {

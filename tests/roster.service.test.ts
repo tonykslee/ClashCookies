@@ -2271,6 +2271,238 @@ describe("RosterService", () => {
     }
   });
 
+  it("builds roster ping previews for everyone, missing, and unregistered targets", async () => {
+    const alphaTag = makeValidRosterPlayerTag(1);
+    const bravoTag = makeValidRosterPlayerTag(2);
+    const charlieTag = makeValidRosterPlayerTag(3);
+    const deltaTag = makeValidRosterPlayerTag(4);
+    prismaMock.rosterSignup.findMany.mockResolvedValue([
+      {
+        id: "signup-a",
+        rosterId: "roster-1",
+        groupId: "group-confirmed",
+        playerTag: alphaTag,
+        playerName: "Alpha",
+        discordUserId: "111111111111111111",
+        signedUpAt: new Date("2026-04-20T00:00:00.000Z"),
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+        group: {
+          id: "group-confirmed",
+          key: "confirmed",
+          name: "Confirmed",
+          description: "Primary roster members",
+          sortOrder: 0,
+        },
+      },
+      {
+        id: "signup-b",
+        rosterId: "roster-1",
+        groupId: "group-substitute",
+        playerTag: bravoTag,
+        playerName: "Bravo",
+        discordUserId: "222222222222222222",
+        signedUpAt: new Date("2026-04-20T00:00:00.000Z"),
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+        group: {
+          id: "group-substitute",
+          key: "substitute",
+          name: "Substitute",
+          description: "Reserve roster members",
+          sortOrder: 1,
+        },
+      },
+      {
+        id: "signup-c",
+        rosterId: "roster-1",
+        groupId: "group-confirmed",
+        playerTag: charlieTag,
+        playerName: "Charlie",
+        discordUserId: "333333333333333333",
+        signedUpAt: new Date("2026-04-20T00:00:00.000Z"),
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+        group: {
+          id: "group-confirmed",
+          key: "confirmed",
+          name: "Confirmed",
+          description: "Primary roster members",
+          sortOrder: 0,
+        },
+      },
+    ] as any);
+    prismaMock.playerLink.findMany.mockImplementation(async (args: any) => {
+      const select = args?.select ?? {};
+      const tagList = (args?.where?.playerTag?.in ?? []) as string[];
+      if (select.discordUserId) {
+        const rows = tagList.includes(deltaTag)
+          ? [
+              {
+                playerTag: alphaTag,
+                discordUserId: "111111111111111111",
+                discordUsername: "alpha",
+                createdAt: new Date("2026-04-20T00:00:00.000Z"),
+              },
+              {
+                playerTag: deltaTag,
+                discordUserId: "444444444444444444",
+                discordUsername: "delta",
+                createdAt: new Date("2026-04-20T00:00:00.000Z"),
+              },
+            ]
+          : [
+              {
+                playerTag: alphaTag,
+                discordUserId: "111111111111111111",
+                discordUsername: "alpha",
+                createdAt: new Date("2026-04-20T00:00:00.000Z"),
+              },
+              {
+                playerTag: bravoTag,
+                discordUserId: "222222222222222222",
+                discordUsername: "bravo",
+                createdAt: new Date("2026-04-20T00:00:00.000Z"),
+              },
+            ];
+        return rows.filter((row) => tagList.includes(row.playerTag));
+      }
+      return [
+        { playerTag: alphaTag, discordUsername: "alpha", createdAt: new Date("2026-04-20T00:00:00.000Z") },
+        { playerTag: bravoTag, discordUsername: "bravo", createdAt: new Date("2026-04-20T00:00:00.000Z") },
+      ].filter((row) => tagList.includes(row.playerTag));
+    });
+    todoSnapshotServiceMock.listSnapshotsByClanTag.mockResolvedValue([
+      {
+        playerTag: alphaTag,
+        playerName: "Alpha",
+        clanTag: "#2QG2C08UP",
+        clanName: "CWL Alpha",
+        townHall: 15,
+      },
+      {
+        playerTag: deltaTag,
+        playerName: "Delta",
+        clanTag: "#2QG2C08UP",
+        clanName: "CWL Alpha",
+        townHall: 16,
+      },
+    ] as any);
+
+    const everyone = await rosterService.createRosterPingSelectionPanel({
+      rosterId: "roster-1",
+      discordUserId: "111111111111111111",
+      pingOption: "everyone",
+      groupKey: "confirmed",
+      message: "Good luck tonight!",
+    });
+    const missing = await rosterService.createRosterPingSelectionPanel({
+      rosterId: "roster-1",
+      discordUserId: "111111111111111111",
+      pingOption: "missing",
+    });
+    const unregistered = await rosterService.createRosterPingSelectionPanel({
+      rosterId: "roster-1",
+      discordUserId: "111111111111111111",
+      pingOption: "unregistered",
+      groupKey: "confirmed",
+    });
+
+    expect(everyone).toMatchObject({ outcome: "ready" });
+    expect(missing).toMatchObject({ outcome: "ready" });
+    expect(unregistered).toMatchObject({ outcome: "ready" });
+    if (everyone.outcome !== "ready" || missing.outcome !== "ready" || unregistered.outcome !== "ready") {
+      throw new Error("Expected roster ping previews to open.");
+    }
+
+    expect(everyone.panel.targetCount).toBe(1);
+    expect(String(everyone.panel.embed.toJSON().description ?? "")).toContain("Ping option: everyone");
+    expect(String(everyone.panel.embed.toJSON().description ?? "")).toContain(`Alpha (${alphaTag}) <@111111111111111111>`);
+    expect(String(everyone.panel.embed.toJSON().description ?? "")).not.toContain(`Bravo (${bravoTag})`);
+
+    expect(missing.panel.targetCount).toBe(1);
+    expect(String(missing.panel.embed.toJSON().description ?? "")).toContain("Ping option: missing");
+    expect(String(missing.panel.embed.toJSON().description ?? "")).toContain(`Bravo (${bravoTag}) <@222222222222222222>`);
+
+    expect(unregistered.panel.targetCount).toBe(1);
+    expect(String(unregistered.panel.embed.toJSON().description ?? "")).toContain("Ping option: unregistered");
+    expect(String(unregistered.panel.embed.toJSON().description ?? "")).toContain("Group: Confirmed (not applied)");
+    expect(String(unregistered.panel.embed.toJSON().description ?? "")).toContain(`Delta (${deltaTag}) <@444444444444444444>`);
+  });
+
+  it("confirms a roster ping session once and builds the consolidated public message", async () => {
+    const alphaTag = makeValidRosterPlayerTag(1);
+    prismaMock.rosterSignup.findMany.mockResolvedValue([
+      {
+        id: "signup-a",
+        rosterId: "roster-1",
+        groupId: "group-confirmed",
+        playerTag: alphaTag,
+        playerName: "Alpha",
+        discordUserId: "111111111111111111",
+        signedUpAt: new Date("2026-04-20T00:00:00.000Z"),
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+        group: {
+          id: "group-confirmed",
+          key: "confirmed",
+          name: "Confirmed",
+          description: "Primary roster members",
+          sortOrder: 0,
+        },
+      },
+    ] as any);
+    prismaMock.playerLink.findMany.mockImplementation(async (args: any) => {
+      const select = args?.select ?? {};
+      const tagList = (args?.where?.playerTag?.in ?? []) as string[];
+      if (select.discordUserId) {
+        return [
+          {
+            playerTag: alphaTag,
+            discordUserId: "111111111111111111",
+            discordUsername: "alpha",
+            createdAt: new Date("2026-04-20T00:00:00.000Z"),
+          },
+        ];
+      }
+      return [{ playerTag: alphaTag, discordUsername: "alpha", createdAt: new Date("2026-04-20T00:00:00.000Z") }].filter(
+        (row) => tagList.includes(row.playerTag),
+      );
+    });
+
+    const opened = await rosterService.createRosterPingSelectionPanel({
+      rosterId: "roster-1",
+      discordUserId: "111111111111111111",
+      pingOption: "everyone",
+    });
+    if (opened.outcome !== "ready") {
+      throw new Error("Expected roster ping preview to open.");
+    }
+
+    const confirmed = await rosterService.confirmRosterPingSelectionPanel({
+      sessionId: opened.panel.sessionId,
+      discordUserId: "111111111111111111",
+    });
+    expect(confirmed).toMatchObject({
+      outcome: "posted",
+      rosterId: "roster-1",
+      targetCount: 1,
+    });
+    if (confirmed.outcome !== "posted") return;
+
+    expect(confirmed.messageContent).toContain("CWL Alpha Signup - CWL Alpha");
+    expect(confirmed.messageContent).toContain(`Alpha (${alphaTag}) <@111111111111111111>`);
+
+    const replay = await rosterService.confirmRosterPingSelectionPanel({
+      sessionId: opened.panel.sessionId,
+      discordUserId: "111111111111111111",
+    });
+    expect(replay).toEqual({
+      outcome: "session_not_found",
+      sessionId: opened.panel.sessionId,
+    });
+  });
+
   it("signs up multiple selected accounts through the roster selection session", async () => {
     playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
       { playerTag: "#PQL0289", linkedName: "Alpha", linkedAt: new Date("2026-04-20T00:00:00.000Z") },

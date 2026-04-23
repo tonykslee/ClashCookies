@@ -25,6 +25,7 @@ import {
   handleRosterPostCustomizeMenuInteraction,
   handleRosterManageWeightOpenButtonInteraction,
   handleRosterManageWeightModalSubmit,
+  handleRosterPingActionButtonInteraction,
   handleRosterPostRefreshButtonInteraction,
   handleRosterPostSettingsButtonInteraction,
   handleRosterPostSettingsActionButtonInteraction,
@@ -39,6 +40,7 @@ type RosterSubcommand =
   | "create"
   | "list"
   | "post"
+  | "ping"
   | "manage"
   | "edit"
   | "delete"
@@ -56,8 +58,10 @@ function makeInteraction(input: {
   title?: string | null;
   roster?: string | null;
   action?: string | null;
+  message?: string | null;
   group?: string | null;
   players?: string | null;
+  pingOption?: string | null;
   timezone?: string | null;
   displayTimezone?: string | null;
   startTime?: string | null;
@@ -78,6 +82,9 @@ function makeInteraction(input: {
     user: { id: "111111111111111111" },
     guildId: "guild-1",
     inGuild: () => true,
+    memberPermissions: {
+      has: vi.fn().mockReturnValue(true),
+    },
     options: {
       getSubcommand: vi.fn(() => input.subcommand),
       getString: vi.fn((name: string) => {
@@ -87,8 +94,10 @@ function makeInteraction(input: {
         if (name === "title") return input.title ?? null;
         if (name === "roster") return input.roster ?? null;
         if (name === "action") return input.action ?? null;
+        if (name === "message") return input.message ?? null;
         if (name === "group") return input.group ?? null;
         if (name === "players") return input.players ?? null;
+        if (name === "ping_option") return input.pingOption ?? null;
         if (name === "timezone") return input.timezone ?? null;
         if (name === "display-timezone") return input.displayTimezone ?? null;
         if (name === "start_time") return input.startTime ?? null;
@@ -222,8 +231,10 @@ describe("/roster command", () => {
     vi.spyOn(rosterService, "updateRoster");
     vi.spyOn(rosterService, "deleteRoster");
     vi.spyOn(rosterService, "createRosterManagerUserSelectionPanel");
+    vi.spyOn(rosterService, "createRosterPingSelectionPanel");
     vi.spyOn(rosterService, "updateRosterSelectionPanel");
     vi.spyOn(rosterService, "confirmRosterSelectionPanel");
+    vi.spyOn(rosterService, "confirmRosterPingSelectionPanel");
     vi.spyOn(rosterService, "clearRosterSignups");
     vi.spyOn(rosterService, "getRosterView");
     vi.spyOn(rosterService, "getRosterRoleSyncTargets").mockResolvedValue(null as any);
@@ -1196,6 +1207,101 @@ describe("/roster command", () => {
       cocService: null,
     });
     expect(String(interaction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).toBe(expectedContent);
+  });
+
+  it("opens the roster ping preview with the requested target set", async () => {
+    (rosterService.createRosterPingSelectionPanel as any).mockResolvedValue({
+      outcome: "ready",
+      panel: {
+        sessionId: "session-1",
+        embed: new EmbedBuilder().setTitle("Ping preview for CWL Alpha Signup"),
+        components: [],
+        targetCount: 2,
+      },
+    });
+    (rosterService.findGuildRosterById as any).mockResolvedValue({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      lifecycleState: "OPEN",
+      postedChannelId: "channel-1",
+      postedMessageId: "message-1",
+      postedMessageUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    });
+
+    const interaction = makeInteraction({
+      subcommand: "ping",
+      roster: "roster-1",
+      message: "Good luck tonight!",
+      pingOption: "everyone",
+      group: "confirmed",
+    }) as any;
+
+    await Roster.run({} as any, interaction as any);
+
+    expect(rosterService.createRosterPingSelectionPanel).toHaveBeenCalledWith({
+      rosterId: "roster-1",
+      discordUserId: "111111111111111111",
+      pingOption: "everyone",
+      groupKey: "confirmed",
+      message: "Good luck tonight!",
+    });
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        embeds: [expect.any(EmbedBuilder)],
+        components: [],
+      }),
+    );
+  });
+
+  it("posts the roster ping message once the preview confirm button is pressed", async () => {
+    (rosterService.confirmRosterPingSelectionPanel as any).mockResolvedValue({
+      outcome: "posted",
+      rosterId: "roster-1",
+      targetCount: 2,
+      messageContent:
+        "[CWL Alpha Signup - CWL Alpha](https://link.example)\nAlpha (#PQL0289) <@222222222222222222>\nBravo (#QGRJ2222) <@333333333333333333>",
+    });
+
+    const sendMock = vi.fn().mockResolvedValue(undefined);
+    const interaction = {
+      customId: "roster-ping:confirm:session-1",
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      followUp: vi.fn().mockResolvedValue(undefined),
+      channel: {
+        isTextBased: () => true,
+        send: sendMock,
+      },
+    } as any;
+
+    await handleRosterPingActionButtonInteraction(interaction);
+
+    expect(rosterService.confirmRosterPingSelectionPanel).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      discordUserId: "111111111111111111",
+    });
+    expect(sendMock).toHaveBeenCalledWith({
+      content: expect.stringContaining("CWL Alpha Signup - CWL Alpha"),
+    });
+    expect(String(interaction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).toBe(
+      "Posted ping for 2 players.",
+    );
   });
 
   it("opens the roster customization panel when Settings -> Customize is selected", async () => {
