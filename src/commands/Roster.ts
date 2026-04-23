@@ -2163,7 +2163,7 @@ async function handleRosterListSubcommand(interaction: ChatInputCommandInteracti
   const rosters = await rosterService.listGuildRosters({
     guildId: interaction.guildId,
     name: interaction.options.getString("name", false),
-    user: interaction.options.getString("user", false),
+    user: interaction.options.getUser("user", false)?.id ?? null,
     player: interaction.options.getString("player", false),
     clan: interaction.options.getString("clan", false),
   });
@@ -2888,7 +2888,7 @@ async function autocompleteRosterGroup(interaction: AutocompleteInteraction): Pr
   );
 }
 
-async function autocompleteRosterPlayers(interaction: AutocompleteInteraction): Promise<void> {
+async function autocompleteRosterManagePlayers(interaction: AutocompleteInteraction): Promise<void> {
   if (!interaction.inGuild()) {
     await interaction.respond([]);
     return;
@@ -2900,65 +2900,67 @@ async function autocompleteRosterPlayers(interaction: AutocompleteInteraction): 
     return;
   }
 
+  const rosterId = interaction.options.getString("roster", false)?.trim();
+  const action = interaction.options.getString("action", false)?.trim().toLowerCase();
+  if (!rosterId || !action || (action !== "add" && action !== "move" && action !== "remove")) {
+    await interaction.respond([]);
+    return;
+  }
+
+  const rosterView = await rosterService.getRosterView(rosterId);
+  if (!rosterView || rosterView.roster.lifecycleState === ROSTER_LIFECYCLE_STATE.ARCHIVED) {
+    await interaction.respond([]);
+    return;
+  }
+
+  const groupKey = interaction.options.getString("group", false)?.trim() ?? "";
+  if (action === "move" && !groupKey) {
+    await interaction.respond([]);
+    return;
+  }
+
   const query = String(focused.value ?? "")
     .trim()
     .toLowerCase()
     .replace(/^#/, "");
-  const links = await listPlayerLinksForDiscordUser({ discordUserId: interaction.user.id });
+  const existingTags = new Set(
+    rosterView.signups.map((signup) => normalizePlayerTag(signup.playerTag)).filter(Boolean),
+  );
+
+  const choices =
+    action === "add"
+      ? (
+          await listPlayerLinksForDiscordUser({ discordUserId: interaction.user.id })
+        )
+          .filter((link) => !existingTags.has(normalizePlayerTag(link.playerTag)))
+          .map((link) => {
+            const value = normalizePlayerTag(link.playerTag);
+            const label = link.linkedName ? `${link.linkedName} (${value})` : value;
+            return { name: label.slice(0, 100), value };
+          })
+      : rosterView.signups
+          .filter((signup) => {
+            if (action === "move") {
+              const signupGroupKey = String(signup.group?.key ?? "").trim().toLowerCase();
+              return signupGroupKey === groupKey.toLowerCase();
+            }
+            return true;
+          })
+          .map((signup) => {
+            const value = normalizePlayerTag(signup.playerTag);
+            const label = signup.playerName ? `${signup.playerName} (${value})` : value;
+            return { name: label.slice(0, 100), value };
+          });
 
   await interaction.respond(
-    links
-      .map((link) => {
-        const value = normalizePlayerTag(link.playerTag);
-        const label = link.linkedName ? `${link.linkedName} (${value})` : value;
-        return { name: label.slice(0, 100), value };
-      })
+    choices
       .filter((choice) => {
         const searchable = `${choice.name} ${choice.value}`.toLowerCase();
         return searchable.includes(query);
       })
+      .sort((a, b) => a.name.localeCompare(b.name) || a.value.localeCompare(b.value))
       .slice(0, 25),
   );
-}
-
-async function autocompleteRosterUsers(interaction: AutocompleteInteraction): Promise<void> {
-  if (!interaction.inGuild()) {
-    await interaction.respond([]);
-    return;
-  }
-
-  const focused = interaction.options.getFocused(true);
-  if (focused.name !== "user") {
-    await interaction.respond([]);
-    return;
-  }
-
-  const members = interaction.guild?.members?.cache;
-  if (!members) {
-    await interaction.respond([]);
-    return;
-  }
-
-  const query = String(focused.value ?? "")
-    .trim()
-    .toLowerCase();
-
-  const choices = [...members.values()]
-    .filter((member) => Boolean(member?.id) && !member.user?.bot)
-    .map((member) => {
-      const displayName = String(member.displayName ?? "").trim();
-      const username = String(member.user?.username ?? "").trim();
-      const value = String(member.id ?? "").trim();
-      const label = displayName ? `${displayName} (@${username || value})` : `@${username || value}`;
-      const searchable = `${displayName} ${username} ${value}`.toLowerCase();
-      return { name: label.slice(0, 100), value, searchable };
-    })
-    .filter((choice) => choice.searchable.includes(query))
-    .sort((a, b) => a.name.localeCompare(b.name) || a.value.localeCompare(b.value))
-    .slice(0, 25)
-    .map(({ searchable: _searchable, ...choice }) => choice);
-
-  await interaction.respond(choices);
 }
 
 export const Roster: Command = {
@@ -3088,10 +3090,9 @@ export const Roster: Command = {
         },
         {
           name: "user",
-          description: "Filter by Discord user ID",
-          type: ApplicationCommandOptionType.String,
+          description: "Filter by Discord user",
+          type: ApplicationCommandOptionType.User,
           required: false,
-          autocomplete: true,
         },
         {
           name: "player",
@@ -3451,11 +3452,11 @@ export const Roster: Command = {
       return;
     }
     if (focused.name === "players") {
-      await autocompleteRosterPlayers(interaction);
-      return;
-    }
-    if (focused.name === "user") {
-      await autocompleteRosterUsers(interaction);
+      if (interaction.options.getSubcommand(false) === "manage") {
+        await autocompleteRosterManagePlayers(interaction);
+      } else {
+        await interaction.respond([]);
+      }
       return;
     }
     if (focused.name === "roster") {

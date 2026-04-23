@@ -150,7 +150,7 @@ describe("/roster command shape", () => {
     }
   });
 
-  it("autocompletes roster list user and clan options, plus edit/create clan selectors", () => {
+  it("uses a native Discord user selector for roster list user and autocompletes clan selectors", () => {
     const create = Roster.options?.find(
       (option) =>
         option.type === ApplicationCommandOptionType.Subcommand &&
@@ -158,7 +158,10 @@ describe("/roster command shape", () => {
     );
     const list = Roster.options?.find((option) => option.name === "list");
     const edit = Roster.options?.find((option) => option.name === "edit");
-    expect(list?.options?.find((option: any) => option.name === "user")?.autocomplete).toBe(true);
+    expect(list?.options?.find((option: any) => option.name === "user")?.type).toBe(
+      ApplicationCommandOptionType.User,
+    );
+    expect(list?.options?.find((option: any) => option.name === "user")?.autocomplete).not.toBe(true);
     expect(list?.options?.find((option: any) => option.name === "clan")?.autocomplete).toBe(true);
     expect(create?.options?.find((option: any) => option.name === "clan")?.autocomplete).toBe(true);
     expect(edit?.options?.find((option: any) => option.name === "clan")?.autocomplete).toBe(true);
