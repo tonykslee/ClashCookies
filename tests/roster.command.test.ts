@@ -2127,6 +2127,146 @@ describe("/roster command", () => {
     ]);
   });
 
+  it("labels roster manage autocomplete entries with clan name when available and falls back cleanly when missing", async () => {
+    (rosterService.listGuildRosters as any).mockResolvedValue([
+      {
+        id: "roster-1",
+        guildId: "guild-1",
+        rosterType: "CWL",
+        rosterCategory: "signup",
+        title: "Roster One",
+        clanTag: "#9GLGQCCU",
+        startsAt: new Date("2026-04-20T00:00:00.000Z"),
+        endsAt: null,
+        timezone: "America/Los_Angeles",
+        displayTimezone: "America/Los_Angeles",
+        lifecycleState: "OPEN",
+        postedChannelId: null,
+        postedMessageId: null,
+        postedMessageUrl: null,
+        postedAt: null,
+        createdByDiscordUserId: "111111111111111111",
+        updatedByDiscordUserId: "111111111111111111",
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+        groupCount: 0,
+        signupCount: 0,
+      },
+      {
+        id: "roster-2",
+        guildId: "guild-1",
+        rosterType: "FWA",
+        rosterCategory: "signup",
+        title: "Roster Two",
+        clanTag: "#2RVGJYLC0",
+        startsAt: new Date("2026-04-20T00:00:00.000Z"),
+        endsAt: null,
+        timezone: "America/Los_Angeles",
+        displayTimezone: "America/Los_Angeles",
+        lifecycleState: "ARCHIVED",
+        postedChannelId: null,
+        postedMessageId: null,
+        postedMessageUrl: null,
+        postedAt: null,
+        createdByDiscordUserId: "111111111111111111",
+        updatedByDiscordUserId: "111111111111111111",
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+        groupCount: 0,
+        signupCount: 0,
+      },
+      {
+        id: "roster-3",
+        guildId: "guild-1",
+        rosterType: "CWL",
+        rosterCategory: "signup",
+        title: "Roster Three",
+        clanTag: "#2QG2C08UP",
+        startsAt: new Date("2026-04-20T00:00:00.000Z"),
+        endsAt: null,
+        timezone: "America/Los_Angeles",
+        displayTimezone: "America/Los_Angeles",
+        lifecycleState: "CLOSED",
+        postedChannelId: null,
+        postedMessageId: null,
+        postedMessageUrl: null,
+        postedAt: null,
+        createdByDiscordUserId: "111111111111111111",
+        updatedByDiscordUserId: "111111111111111111",
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+        groupCount: 0,
+        signupCount: 0,
+      },
+      {
+        id: "roster-4",
+        guildId: "guild-1",
+        rosterType: "CWL",
+        rosterCategory: "signup",
+        title: "Roster Four",
+        clanTag: null,
+        startsAt: new Date("2026-04-20T00:00:00.000Z"),
+        endsAt: null,
+        timezone: "America/Los_Angeles",
+        displayTimezone: "America/Los_Angeles",
+        lifecycleState: "OPEN",
+        postedChannelId: null,
+        postedMessageId: null,
+        postedMessageUrl: null,
+        postedAt: null,
+        createdByDiscordUserId: "111111111111111111",
+        updatedByDiscordUserId: "111111111111111111",
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+        groupCount: 0,
+        signupCount: 0,
+      },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([{ name: "Alpha Clan", tag: "#9GLGQCCU" }]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([{ name: "Raid Clan", clanTag: "2RVGJYLC0" }]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([
+      { name: "CWL Clan", tag: "#9GLGQCCU" },
+      { name: "CWL Clan Duplicate", tag: "#9GLGQCCU" },
+    ]);
+
+    const interaction = makeAutocompleteInteraction({
+      focusedName: "roster",
+      focusedValue: "",
+      subcommand: "manage",
+    }) as any;
+
+    await Roster.autocomplete(interaction);
+
+    expect(rosterService.listGuildRosters).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guildId: "guild-1",
+        name: "",
+      }),
+    );
+    expect(interaction.respond).toHaveBeenCalledWith([
+      {
+        name: "Roster One • Alpha Clan • #9GLGQCCU • Open",
+        value: "roster-1",
+        description: expect.any(String),
+      },
+      {
+        name: "Roster Two • Raid Clan • #2RVGJYLC0 • Archived",
+        value: "roster-2",
+        description: expect.any(String),
+      },
+      {
+        name: "Roster Three • #2QG2C08UP • Closed",
+        value: "roster-3",
+        description: expect.any(String),
+      },
+      {
+        name: "Roster Four • Open",
+        value: "roster-4",
+        description: expect.any(String),
+      },
+    ]);
+  });
+
   it("autocompletes roster user filters from guild display names and usernames", async () => {
     const interaction = makeAutocompleteInteraction({
       focusedName: "user",
