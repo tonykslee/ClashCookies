@@ -173,7 +173,7 @@ describe("RosterService", () => {
   }
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     prismaMock.$transaction.mockImplementation(async (callback: (tx: typeof prismaMock) => Promise<unknown>) =>
       callback(prismaMock as any),
     );
@@ -2445,8 +2445,8 @@ describe("RosterService", () => {
           { playerTag: "#QGRJ2222", groupId: "group-confirmed" },
         ] as any)
         .mockResolvedValueOnce([
-          { playerTag: "#PQL0289" },
-          { playerTag: "#QGRJ2222" },
+          { playerTag: "#PQL0289", playerName: "Alpha" },
+          { playerTag: "#QGRJ2222", playerName: "Bravo" },
         ] as any);
       prismaMock.rosterSignup.createMany.mockResolvedValue({ count: 2 });
       prismaMock.rosterSignup.updateMany.mockResolvedValue({ count: 1 });
@@ -2488,6 +2488,10 @@ describe("RosterService", () => {
         outcome: "created",
         linkedTags: ["#PQL0289", "#QGRJ2222"],
         createdTags: ["#PQL0289", "#QGRJ2222"],
+        createdAccounts: [
+          { playerTag: "#PQL0289", playerName: "Alpha" },
+          { playerTag: "#QGRJ2222", playerName: "Bravo" },
+        ],
         duplicateTags: [],
         missingLinkedTags: [],
       });

@@ -302,6 +302,65 @@ function buildRosterRemoveResultSummary(
   return `Removed ${removed}${ignored}.`;
 }
 
+function normalizeRosterMutationLabel(value: string | null | undefined, fallback: string): string {
+  const normalized = String(value ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return normalized || fallback;
+}
+
+function buildRosterMutationConfirmationLine(
+  action: "add" | "remove",
+  account: { playerTag: string; playerName: string | null },
+  rosterName: string,
+  clanName: string,
+): string {
+  const verb = action === "add" ? "Added" : "Removed";
+  const direction = action === "add" ? "to" : "from";
+  const playerName = normalizeRosterMutationLabel(account.playerName, account.playerTag);
+  return `${verb} ${playerName} (${account.playerTag}) ${direction} ${rosterName} - ${clanName}`;
+}
+
+async function buildRosterMutationConfirmationContent(
+  action: "add" | "remove",
+  result: Awaited<ReturnType<typeof rosterService.addRosterSignupsForManager>> | Awaited<ReturnType<typeof rosterService.removeRosterSignupsAsManager>>,
+): Promise<string> {
+  const addResult = result as Awaited<ReturnType<typeof rosterService.addRosterSignupsForManager>>;
+  const removeResult = result as Awaited<ReturnType<typeof rosterService.removeRosterSignupsAsManager>>;
+  const summary =
+    action === "add"
+      ? buildRosterSignupResultSummary(addResult)
+      : buildRosterRemoveResultSummary(removeResult);
+  const rosterView = await rosterService.getRosterView(result.rosterId).catch(() => null);
+  if (!rosterView) {
+    return summary;
+  }
+
+  const rosterName = normalizeRosterMutationLabel(rosterView.roster.title, "Roster");
+  const clanName = normalizeRosterMutationLabel(
+    rosterView.clanDisplayName ?? normalizeClanTag(rosterView.roster.clanTag ?? "") ?? null,
+    "Unknown Clan",
+  );
+  const accounts =
+    action === "add"
+      ? addResult.createdAccounts
+      : removeResult.removedAccounts;
+  if (accounts.length <= 0) {
+    return summary;
+  }
+
+  const lines = accounts.map((account) =>
+    buildRosterMutationConfirmationLine(action, account, rosterName, clanName),
+  );
+  const hasMixedFailure =
+    action === "add" ? addResult.duplicateTags.length > 0 : removeResult.notOwnedTags.length > 0;
+  if (!hasMixedFailure) {
+    return lines.join("\n");
+  }
+
+  return `${lines.join("\n")}\n\n${summary}`;
+}
+
 function formatRosterListClanLine(clanName: string | null, clanTag: string | null): string {
   const normalizedClanName = String(clanName ?? "")
     .replace(/\s+/g, " ")
@@ -1550,8 +1609,9 @@ export async function handleRosterPostSettingsActionButtonInteraction(
   if (result.outcome === "add_user") {
     await syncRosterRoleAssignments(interaction.client, result.result.rosterId).catch(() => undefined);
     await refreshExistingRosterPost(interaction as unknown as ChatInputCommandInteraction, result.result.rosterId, cocService ?? null).catch(() => undefined);
+    const confirmationContent = await buildRosterMutationConfirmationContent("add", result.result);
     await interaction.editReply({
-      content: buildRosterSignupResultSummary(result.result),
+      content: confirmationContent,
       embeds: [],
       components: [],
     });
@@ -1561,8 +1621,9 @@ export async function handleRosterPostSettingsActionButtonInteraction(
   if (result.outcome === "remove_user") {
     await syncRosterRoleAssignments(interaction.client, result.result.rosterId).catch(() => undefined);
     await refreshExistingRosterPost(interaction as unknown as ChatInputCommandInteraction, result.result.rosterId, cocService ?? null).catch(() => undefined);
+    const confirmationContent = await buildRosterMutationConfirmationContent("remove", result.result);
     await interaction.editReply({
-      content: buildRosterRemoveResultSummary(result.result),
+      content: confirmationContent,
       embeds: [],
       components: [],
     });

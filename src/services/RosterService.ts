@@ -319,6 +319,7 @@ export type SignupLinkedAccountsResult =
       requestedTags: string[];
       linkedTags: string[];
       createdTags: string[];
+      createdAccounts: RosterAccountIdentity[];
       duplicateTags: string[];
       missingLinkedTags: string[];
     }
@@ -330,6 +331,7 @@ export type SignupLinkedAccountsResult =
       requestedTags: string[];
       linkedTags: string[];
       createdTags: string[];
+      createdAccounts: RosterAccountIdentity[];
       duplicateTags: string[];
       missingLinkedTags: string[];
       blockedTags: string[];
@@ -342,6 +344,7 @@ export type SignupLinkedAccountsResult =
       requestedTags: string[];
       linkedTags: string[];
       createdTags: string[];
+      createdAccounts: RosterAccountIdentity[];
       duplicateTags: string[];
       missingLinkedTags: string[];
       blockedTags: string[];
@@ -354,6 +357,7 @@ export type SignupLinkedAccountsResult =
       requestedTags: string[];
       linkedTags: string[];
       createdTags: string[];
+      createdAccounts: RosterAccountIdentity[];
       duplicateTags: string[];
       missingLinkedTags: string[];
       blockedTags: string[];
@@ -367,6 +371,7 @@ export type SignupLinkedAccountsResult =
       requestedTags: string[];
       linkedTags: string[];
       createdTags: string[];
+      createdAccounts: RosterAccountIdentity[];
       duplicateTags: string[];
       missingLinkedTags: string[];
       blockedTags: string[];
@@ -380,6 +385,7 @@ export type SignupLinkedAccountsResult =
       requestedTags: string[];
       linkedTags: string[];
       createdTags: string[];
+      createdAccounts: RosterAccountIdentity[];
       duplicateTags: string[];
       missingLinkedTags: string[];
       blockedTags: string[];
@@ -393,6 +399,7 @@ export type SignupLinkedAccountsResult =
       requestedTags: string[];
       linkedTags: string[];
       createdTags: string[];
+      createdAccounts: RosterAccountIdentity[];
       duplicateTags: string[];
       missingLinkedTags: string[];
     }
@@ -404,6 +411,7 @@ export type SignupLinkedAccountsResult =
       requestedTags: string[];
       linkedTags: string[];
       createdTags: string[];
+      createdAccounts: RosterAccountIdentity[];
       duplicateTags: string[];
       missingLinkedTags: string[];
     }
@@ -415,6 +423,7 @@ export type SignupLinkedAccountsResult =
       requestedTags: string[];
       linkedTags: string[];
       createdTags: string[];
+      createdAccounts: RosterAccountIdentity[];
       duplicateTags: string[];
       missingLinkedTags: string[];
     }
@@ -426,6 +435,7 @@ export type SignupLinkedAccountsResult =
       requestedTags: string[];
       linkedTags: string[];
       createdTags: string[];
+      createdAccounts: RosterAccountIdentity[];
       duplicateTags: string[];
       missingLinkedTags: string[];
     }
@@ -437,6 +447,7 @@ export type SignupLinkedAccountsResult =
       requestedTags: string[];
       linkedTags: string[];
       createdTags: string[];
+      createdAccounts: RosterAccountIdentity[];
       duplicateTags: string[];
       missingLinkedTags: string[];
     }
@@ -448,6 +459,7 @@ export type SignupLinkedAccountsResult =
       requestedTags: string[];
       linkedTags: string[];
       createdTags: string[];
+      createdAccounts: RosterAccountIdentity[];
       duplicateTags: string[];
       missingLinkedTags: string[];
     };
@@ -457,6 +469,7 @@ export type RemoveRosterSignupsResult =
       outcome: "removed";
       rosterId: string;
       removedTags: string[];
+      removedAccounts: RosterAccountIdentity[];
       ignoredTags: string[];
       notOwnedTags: string[];
     }
@@ -464,6 +477,7 @@ export type RemoveRosterSignupsResult =
       outcome: "nothing_removed";
       rosterId: string;
       removedTags: string[];
+      removedAccounts: RosterAccountIdentity[];
       ignoredTags: string[];
       notOwnedTags: string[];
     }
@@ -471,6 +485,7 @@ export type RemoveRosterSignupsResult =
       outcome: "roster_not_found";
       rosterId: string;
       removedTags: string[];
+      removedAccounts: RosterAccountIdentity[];
       ignoredTags: string[];
       notOwnedTags: string[];
     }
@@ -478,6 +493,7 @@ export type RemoveRosterSignupsResult =
       outcome: "roster_archived";
       rosterId: string;
       removedTags: string[];
+      removedAccounts: RosterAccountIdentity[];
       ignoredTags: string[];
       notOwnedTags: string[];
     };
@@ -3557,6 +3573,7 @@ export class RosterService {
         requestedTags,
         linkedTags: [],
         createdTags: [],
+        createdAccounts: [],
         duplicateTags: [],
         missingLinkedTags: requestedTags,
       };
@@ -3570,6 +3587,7 @@ export class RosterService {
         requestedTags,
         linkedTags: [],
         createdTags: [],
+        createdAccounts: [],
         duplicateTags: [],
         missingLinkedTags: requestedTags,
       };
@@ -3604,6 +3622,7 @@ export class RosterService {
         requestedTags,
         linkedTags,
         createdTags: [],
+        createdAccounts: [],
         duplicateTags: [],
         missingLinkedTags,
       };
@@ -3618,6 +3637,7 @@ export class RosterService {
         requestedTags,
         linkedTags: [],
         createdTags: [],
+        createdAccounts: [],
         duplicateTags: [],
         missingLinkedTags,
       };
@@ -3686,6 +3706,7 @@ export class RosterService {
           requestedTags,
           linkedTags,
           createdTags: [],
+          createdAccounts: [],
           duplicateTags,
           missingLinkedTags,
           blockedTags: blockedUnavailableTags,
@@ -3701,6 +3722,7 @@ export class RosterService {
           requestedTags,
           linkedTags,
           createdTags: [],
+          createdAccounts: [],
           duplicateTags,
           missingLinkedTags,
           blockedTags: blockedOutOfRangeTags,
@@ -3724,6 +3746,13 @@ export class RosterService {
         skipDuplicates: true,
       });
     }
+    const createdAccounts = createdTags.map((playerTag) => {
+      const linked = linkedByTag.get(playerTag) ?? null;
+      return {
+        playerTag,
+        playerName: normalizeRosterText(linked?.playerName ?? null),
+      };
+    });
 
     return {
       outcome: createdTags.length > 0 ? "created" : "already_signed_up",
@@ -3733,6 +3762,7 @@ export class RosterService {
       requestedTags,
       linkedTags,
       createdTags,
+      createdAccounts,
       duplicateTags,
       missingLinkedTags,
     };
@@ -3851,6 +3881,7 @@ export class RosterService {
         outcome: "nothing_removed",
         rosterId: input.rosterId,
         removedTags: [],
+        removedAccounts: [],
         ignoredTags: [],
         notOwnedTags: [],
       };
@@ -3861,6 +3892,7 @@ export class RosterService {
         outcome: "roster_not_found",
         rosterId: input.rosterId,
         removedTags: [],
+        removedAccounts: [],
         ignoredTags: selectedTags,
         notOwnedTags: [],
       };
@@ -4315,6 +4347,7 @@ export class RosterService {
         requestedTags,
         linkedTags: selectedTags,
         createdTags: [],
+        createdAccounts: [],
         duplicateTags: [],
         missingLinkedTags,
       };
@@ -4329,6 +4362,7 @@ export class RosterService {
         requestedTags,
         linkedTags: selectedTags,
         createdTags: [],
+        createdAccounts: [],
         duplicateTags: [],
         missingLinkedTags,
       };
@@ -4343,6 +4377,7 @@ export class RosterService {
         requestedTags,
         linkedTags: selectedTags,
         createdTags: [],
+        createdAccounts: [],
         duplicateTags: [],
         missingLinkedTags,
       };
@@ -4357,6 +4392,7 @@ export class RosterService {
         requestedTags,
         linkedTags: [],
         createdTags: [],
+        createdAccounts: [],
         duplicateTags: [],
         missingLinkedTags,
       } as const;
@@ -4390,6 +4426,7 @@ export class RosterService {
           requestedTags,
           linkedTags: selectedTags,
           createdTags: [],
+          createdAccounts: [],
           duplicateTags,
           missingLinkedTags,
           blockedTags: createdCandidates,
@@ -4416,6 +4453,7 @@ export class RosterService {
             requestedTags,
             linkedTags: selectedTags,
             createdTags: [],
+            createdAccounts: [],
             duplicateTags,
             missingLinkedTags,
             blockedTags: createdCandidates,
@@ -4474,6 +4512,7 @@ export class RosterService {
             requestedTags,
             linkedTags: selectedTags,
             createdTags: [],
+            createdAccounts: [],
             duplicateTags,
             missingLinkedTags,
             blockedTags: blockedUnavailableTags,
@@ -4489,6 +4528,7 @@ export class RosterService {
             requestedTags,
             linkedTags: selectedTags,
             createdTags: [],
+            createdAccounts: [],
             duplicateTags,
             missingLinkedTags,
             blockedTags: blockedOutOfRangeTags,
@@ -4522,6 +4562,7 @@ export class RosterService {
           requestedTags,
           linkedTags: selectedTags,
           createdTags: [],
+          createdAccounts: [],
           duplicateTags,
           missingLinkedTags,
           blockedTags: conflictingTags,
@@ -4607,17 +4648,26 @@ export class RosterService {
       },
       select: {
         playerTag: true,
+        playerName: true,
       },
     });
     const ownedTags = [...new Set(ownedEntries.map((entry) => normalizePlayerTag(entry.playerTag)).filter(Boolean))];
     const ownedTagSet = new Set(ownedTags);
     const notOwnedTags = selectedTags.filter((tag) => !ownedTagSet.has(tag));
+    const ownedAccounts = ownedTags.map((playerTag) => {
+      const ownedEntry = ownedEntries.find((entry) => normalizePlayerTag(entry.playerTag) === playerTag) ?? null;
+      return {
+        playerTag,
+        playerName: normalizeRosterText(ownedEntry?.playerName ?? null),
+      };
+    });
 
     if (ownedTags.length <= 0) {
       return {
         outcome: "nothing_removed",
         rosterId: roster.id,
         removedTags: [],
+        removedAccounts: [],
         ignoredTags: selectedTags,
         notOwnedTags,
       };
@@ -4635,6 +4685,7 @@ export class RosterService {
       outcome: deleteResult.count > 0 ? "removed" : "nothing_removed",
       rosterId: roster.id,
       removedTags: ownedTags,
+      removedAccounts: ownedAccounts,
       ignoredTags: selectedTags.filter((tag) => !ownedTagSet.has(tag)),
       notOwnedTags,
     };
