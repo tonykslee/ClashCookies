@@ -1783,9 +1783,8 @@ async function loadLiveClanTagsByPlayerTag(input: {
   }
 
   return new Map(
-    entries.filter(
-      (entry): entry is [string, { clanTag: string; townHall: number | null }] =>
-        Boolean(entry[0] && entry[1].clanTag),
+    entries.filter((entry): entry is [string, { clanTag: string; townHall: number | null }] =>
+      Boolean(entry[0]),
     ),
   );
 }
