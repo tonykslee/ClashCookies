@@ -86,6 +86,8 @@ function makeRosterEmojiClient(options?: { missing?: string[] }) {
   const emojis = new Map(
     [
       ["house", makeEmoji("house", "<:house:111>")],
+      ["yes", makeEmoji("yes", "<:yes:901>")],
+      ["no", makeEmoji("no", "<:no:902>")],
       ...Array.from({ length: 18 }, (_, index) => {
         const name = `th${index + 1}`;
         return missing.has(name) ? null : [name, makeEmoji(name, `<:${name}:${index + 101}>`)] as const;
@@ -3682,7 +3684,7 @@ describe("RosterService", () => {
     expect(prismaMock.rosterSignup.deleteMany).not.toHaveBeenCalled();
   });
 
-  it("builds a manager readiness view from current CWL clan members, not stale season roster participants", async () => {
+  it("builds a manager roster report view from current CWL clan members, not stale season roster participants", async () => {
     prismaMock.rosterSignup.findMany.mockResolvedValue([
       {
         id: "signup-1",
@@ -3792,20 +3794,21 @@ describe("RosterService", () => {
     const report = await rosterService.buildRosterManagerReadinessText({
       rosterId: "roster-1",
       cocService: cocServiceMock as any,
+      emojiClient: makeRosterEmojiClient(),
     });
 
-    expect(report).toContain("CWL Alpha Signup");
-    expect(report).toContain("Current clan members:");
+    expect(report).toContain("Clan: Rising Crowns `#2QG2C08UP` ([Open in-game](<https://link.clashofclans.com/en?action=OpenClanProfile&tag=2QG2C08UP>))");
+    expect(report).toContain("**Groups**");
+    expect(report).toContain("**Confirmed** (1)");
+    expect(report).toContain("- <:th16:116> Alpha <:yes:901>");
     expect(report).toContain("Unregistered members:");
-    expect(report).toContain("- Bravo `#QGRJ2222` <@222222222222222222>");
+    expect(report).toContain("- - Bravo `#QGRJ2222` <@222222222222222222>");
     expect(report).not.toContain("None");
-    expect(report).toContain("Out-of-clan signups:");
-    expect(report).toContain("- Outlier `#ZZZZ1111` <@333333333333333333>");
     expect(report).not.toContain("#OLD1111");
     expect(cocServiceMock.getClan).toHaveBeenCalledWith("#2QG2C08UP");
   });
 
-  it("builds a manager readiness view from the current FWA clan membership table", async () => {
+  it("builds a manager roster report view from the current FWA clan membership table", async () => {
     prismaMock.roster.findUnique.mockResolvedValueOnce({
       id: "roster-2",
       guildId: "guild-1",
@@ -3886,12 +3889,12 @@ describe("RosterService", () => {
     const report = await rosterService.buildRosterManagerReadinessText({
       rosterId: "roster-2",
       cocService: cocServiceMock as any,
+      emojiClient: makeRosterEmojiClient(),
     });
 
-    expect(report).toContain("FWA Alpha Signup");
-    expect(report).toContain("Current clan members:");
-    expect(report).toContain("Unregistered members:");
-    expect(report).toContain("- Bravo `#QGRJ2222` <@222222222222222222>");
+    expect(report).toContain("Clan: Unknown Clan `#2QG2C08UP` ([Open in-game](<https://link.clashofclans.com/en?action=OpenClanProfile&tag=2QG2C08UP>))");
+    expect(report).toContain("**Groups**");
+    expect(report).toContain("**Confirmed** (1)");
     expect(report).not.toContain("#OLD1111");
   });
 
