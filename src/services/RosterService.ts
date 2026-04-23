@@ -196,6 +196,12 @@ export type RosterPingSelectionPanel = {
   targetCount: number;
 };
 
+export type RosterReportPingOpenResult =
+  | { outcome: "ready"; panel: RosterPingSelectionPanel }
+  | { outcome: "roster_not_found"; rosterId: string }
+  | { outcome: "group_not_found"; rosterId: string; groupKey: string }
+  | { outcome: "no_targets"; rosterId: string; pingOption: RosterPingOption; groupKey: string | null };
+
 export type RosterSelectionOpenResult =
   | { outcome: "ready"; panel: RosterSelectionPanel }
   | { outcome: "roster_not_found"; rosterId: string }
@@ -2381,7 +2387,8 @@ function buildRosterManagerGroupSummaryLine(group: RosterGroupRecord & { signupC
 
 function buildRosterManagerMemberLine(entry: RosterManagerTrackedClanMemberRecord): string {
   const discordLabel = entry.linkedDiscordUserId ? ` <@${entry.linkedDiscordUserId}>` : "";
-  return `- ${entry.playerName} \`${entry.playerTag}\`${discordLabel}`;
+  const townHall = formatRosterTownhallIconsValue(entry.townHall) ?? "-";
+  return `- ${townHall} ${entry.playerName} \`${entry.playerTag}\`${discordLabel}`;
 }
 
 async function loadCurrentCwlRosterManagerMembers(
@@ -2461,50 +2468,59 @@ async function loadRosterManagerTrackedClanMembers(
   });
 }
 
-function buildRosterManagerReadinessLines(view: RosterManagerReadinessView): string[] {
+function buildRosterReportStateEmoji(inClan: boolean): string {
+  return inClan ? ":yes:" : ":no:";
+}
+
+function buildRosterReportClanLine(view: RosterManagerReadinessView): string {
+  const clanTag = normalizeClanTag(view.roster.clanTag ?? "");
+  if (!clanTag) {
+    return `Clan: ${normalizeRosterText(view.signupView.clanDisplayName ?? null) ?? "unscoped"}`;
+  }
+  const clanName = normalizeRosterText(view.signupView.clanDisplayName ?? null) ?? "Unknown Clan";
+  const encodedTag = clanTag.replace(/^#/, "");
+  return `Clan: ${clanName} \`${clanTag}\` ([Open in-game](<https://link.clashofclans.com/en?action=OpenClanProfile&tag=${encodedTag}>))`;
+}
+
+function buildRosterManagerReportLines(view: RosterManagerReadinessView): string[] {
+  const trackedTagSet = new Set(view.trackedClanRoster.map((entry) => normalizePlayerTag(entry.playerTag)).filter(Boolean));
   const lines: string[] = [
-    `${view.roster.title}`,
     `State: ${buildRosterStateLabel(view.roster.lifecycleState)}`,
-    `Clan: ${view.roster.clanTag ?? "unscoped"}`,
+    buildRosterReportClanLine(view),
     `Posted message: ${view.roster.postedMessageUrl ?? "not posted"}`,
     `Signed up: ${view.signupView.totalSignupCount}`,
     `Current clan members: ${view.trackedClanRoster.length}`,
     `Unregistered members: ${view.unsignedTrackedMembers.length}`,
-    `Out-of-clan signups: ${view.signedUpButUntracked.length}`,
   ];
 
   lines.push("");
-  lines.push("Groups:");
+  lines.push("**Groups**");
   const groupedSignups = buildRosterGroupsWithSignups(view.signupView);
   if (groupedSignups.length <= 0) {
     lines.push("- None");
   } else {
     for (const group of groupedSignups) {
-      lines.push(`- ${buildRosterManagerGroupSummaryLine(group)}`);
+      lines.push(`**${group.name}** (${group.signupCount})`);
       if (group.signups.length <= 0) {
-        lines.push("  - None yet");
+        lines.push("- None");
         continue;
       }
       for (const signup of group.signups) {
-        lines.push(`  ${buildRosterSignupEntryLine(signup)}`);
+        const playerTag = normalizePlayerTag(signup.playerTag);
+        const stateEmoji = buildRosterReportStateEmoji(Boolean(playerTag && trackedTagSet.has(playerTag)));
+        const townHall = formatRosterTownhallIconsValue(signup.townHall) ?? "-";
+        const playerName = normalizeRosterText(signup.playerName ?? null) ?? signup.playerTag;
+        lines.push(`- ${townHall} ${playerName} ${stateEmoji}`);
       }
     }
   }
 
   lines.push("");
-  lines.push("Unregistered members:");
+  lines.push("**Unregistered members**");
   if (view.unsignedTrackedMembers.length <= 0) {
     lines.push("- None");
   } else {
     lines.push(...view.unsignedTrackedMembers.map((entry) => buildRosterManagerMemberLine(entry)));
-  }
-
-  lines.push("");
-  lines.push("Out-of-clan signups:");
-  if (view.signedUpButUntracked.length <= 0) {
-    lines.push("- None");
-  } else {
-    lines.push(...view.signedUpButUntracked.map((signup) => buildRosterSignupEntryLine(signup)));
   }
 
   return lines;
@@ -3301,6 +3317,25 @@ export function isRosterPostUsersActionButtonCustomId(customId: string): boolean
 
 export function isRosterPingActionButtonCustomId(customId: string): boolean {
   return String(customId ?? "").startsWith(`${ROSTER_PING_PREFIX}:confirm:`);
+}
+
+const ROSTER_REPORT_PREFIX = "roster-report";
+
+export function buildRosterReportPingButtonCustomId(rosterId: string): string {
+  return `${ROSTER_REPORT_PREFIX}:ping:${String(rosterId ?? "").trim()}`;
+}
+
+export function isRosterReportPingButtonCustomId(customId: string): boolean {
+  return String(customId ?? "").startsWith(`${ROSTER_REPORT_PREFIX}:ping:`);
+}
+
+export function parseRosterReportPingButtonCustomId(customId: string): { rosterId: string } | null {
+  const parts = String(customId ?? "").split(":");
+  if (parts.length !== 3 || parts[0] !== ROSTER_REPORT_PREFIX || parts[1] !== "ping") {
+    return null;
+  }
+  const rosterId = parts[2]?.trim() ?? "";
+  return rosterId ? { rosterId } : null;
 }
 
 export function parseRosterPostUsersUserSelectMenuCustomId(customId: string): { sessionId: string } | null {
@@ -5177,10 +5212,12 @@ export class RosterService {
   async buildRosterManagerReadinessText(input: {
     rosterId: string;
     cocService?: CoCService | null;
+    emojiClient?: Client | null;
   }): Promise<string | null> {
     const view = await this.buildRosterManagerReadinessView(input);
     if (!view) return null;
-    return truncateDiscordContent(buildRosterManagerReadinessLines(view).join("\n"), 4096);
+    const text = truncateDiscordContent(buildRosterManagerReportLines(view).join("\n"), 4096);
+    return renderRosterBoardShortcodes(text, input.emojiClient ?? null);
   }
 
   async createRosterSignupSelectionPanel(input: {

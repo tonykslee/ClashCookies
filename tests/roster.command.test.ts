@@ -25,6 +25,7 @@ import {
   handleRosterPostCustomizeMenuInteraction,
   handleRosterManageWeightOpenButtonInteraction,
   handleRosterManageWeightModalSubmit,
+  handleRosterReportPingButtonInteraction,
   handleRosterPingActionButtonInteraction,
   handleRosterPostRefreshButtonInteraction,
   handleRosterPostSettingsButtonInteraction,
@@ -45,7 +46,6 @@ type RosterSubcommand =
   | "edit"
   | "delete"
   | "report"
-  | "readiness"
   | "refresh";
 
 const interactionClientFetchMock = vi.fn();
@@ -206,17 +206,14 @@ function makeAutocompleteInteraction(input: {
   };
 }
 
-function getEditedDescription(interaction: any): string {
-  const payload = interaction.editReply.mock.calls.at(-1)?.[0] as any;
-  if (typeof payload === "string") {
-    return payload;
-  }
-  return String(payload?.embeds?.[0]?.toJSON?.().description ?? "");
-}
-
 function getEditedEmbed(interaction: any): any {
   const payload = interaction.editReply.mock.calls.at(-1)?.[0] as any;
   return payload?.embeds?.[0]?.toJSON?.() ?? null;
+}
+
+function getEditedButtonPayload(interaction: any): any[] {
+  const payload = interaction.editReply.mock.calls.at(-1)?.[0] as any;
+  return Array.isArray(payload?.components) ? payload.components : [];
 }
 
 function makeRosterRefreshPayload(refreshDisabled: boolean, title: string) {
@@ -232,6 +229,35 @@ function makeRosterRefreshPayload(refreshDisabled: boolean, title: string) {
       ),
     ],
   };
+}
+
+function makeRosterEmojiClient() {
+  const makeEmoji = (name: string, rendered: string) => ({
+    id: `${name}-id`,
+    name,
+    animated: false,
+    toString: () => rendered,
+  });
+
+  const emojis = new Map(
+    [
+      ["yes", makeEmoji("yes", "<:yes:901>")],
+      ["no", makeEmoji("no", "<:no:902>")],
+      ...Array.from({ length: 18 }, (_, index) => {
+        const name = `th${index + 1}`;
+        return [name, makeEmoji(name, `<:${name}:${index + 1001}>`)] as const;
+      }),
+    ],
+  );
+
+  return {
+    application: {
+      fetch: vi.fn().mockResolvedValue(undefined),
+      emojis: {
+        fetch: vi.fn().mockResolvedValue(emojis),
+      },
+    },
+  } as any;
 }
 
 describe("/roster command", () => {
@@ -2674,53 +2700,114 @@ describe("/roster command", () => {
     );
   });
 
-  it.each(["report", "readiness"] as const)(
-    "renders the roster readiness view for /roster %s",
-    async (subcommand) => {
-      (rosterService.findGuildRosterById as any).mockResolvedValue({
-        id: "roster-1",
-        guildId: "guild-1",
-        rosterType: "CWL",
-        rosterCategory: "signup",
-        title: "CWL Alpha Signup",
-        clanTag: "#2QG2C08UP",
-        startsAt: new Date("2026-04-20T00:00:00.000Z"),
-        endsAt: null,
-        timezone: "America/Los_Angeles",
-        displayTimezone: "America/Los_Angeles",
-        lifecycleState: "OPEN",
-        postedChannelId: "channel-1",
-        postedMessageId: "message-1",
-        postedMessageUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
-        postedAt: null,
-        createdByDiscordUserId: "111111111111111111",
-        updatedByDiscordUserId: "111111111111111111",
-        createdAt: new Date("2026-04-20T00:00:00.000Z"),
-        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
-      });
-      (rosterService.buildRosterManagerReadinessText as any).mockResolvedValue(
-        "CWL Alpha Signup\nUnregistered members:\n- Bravo `#QGRJ2222` <@222222222222222222>",
-      );
-      const cocService = {} as any;
+  it("renders the roster report view and includes a ping-roster button", async () => {
+    (rosterService.findGuildRosterById as any).mockResolvedValue({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      lifecycleState: "OPEN",
+      postedChannelId: "channel-1",
+      postedMessageId: "message-1",
+      postedMessageUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    });
+    (rosterService.buildRosterManagerReadinessText as any).mockResolvedValue(
+      "State: Open\nClan: CWL Alpha `#2QG2C08UP` ([Open in-game](<https://link.clashofclans.com/en?action=OpenClanProfile&tag=2QG2C08UP>))\n**Groups**\n**Confirmed** (1)\n- <:th15:1001> Alpha <:yes:901>",
+    );
+    const cocService = {} as any;
 
-      const interaction = makeInteraction({
-        subcommand,
-        roster: "roster-1",
-      }) as any;
+    const interaction = makeInteraction({
+      subcommand: "report",
+      roster: "roster-1",
+    }) as any;
+    interaction.client = makeRosterEmojiClient();
 
-      await Roster.run({} as any, interaction as any, cocService);
+    await Roster.run({} as any, interaction as any, cocService);
 
-      expect(rosterService.findGuildRosterById).toHaveBeenCalledWith({
-        guildId: "guild-1",
-        rosterId: "roster-1",
-      });
-      expect(rosterService.buildRosterManagerReadinessText).toHaveBeenCalledWith({
-        rosterId: "roster-1",
-        cocService,
-      });
-      expect(getEditedDescription(interaction)).toContain("Unregistered members:");
-    },
-  );
+    expect(rosterService.findGuildRosterById).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      rosterId: "roster-1",
+    });
+    expect(rosterService.buildRosterManagerReadinessText).toHaveBeenCalledWith({
+      rosterId: "roster-1",
+      cocService,
+      emojiClient: interaction.client,
+    });
+    const embed = getEditedEmbed(interaction);
+    expect(String(embed?.title ?? "")).toBe("CWL Alpha Signup Report");
+    expect(String(embed?.description ?? "")).toContain("**Groups**");
+    expect(String(embed?.description ?? "")).toContain("**Confirmed**");
+    expect(String(embed?.description ?? "")).not.toContain("CWL Alpha Signup Report");
+    const buttons = getEditedButtonPayload(interaction);
+    const button = buttons[0]?.toJSON?.()?.components?.[0];
+    expect(String(button?.label ?? "")).toBe("Ping roster");
+    expect(String(button?.custom_id ?? button?.customId ?? "")).toContain("roster-report:ping:roster-1");
+  });
+
+  it("opens the roster ping preview from the report button using the same ping flow", async () => {
+    (rosterService.createRosterPingSelectionPanel as any).mockResolvedValue({
+      outcome: "ready",
+      panel: {
+        sessionId: "session-1",
+        embed: new EmbedBuilder().setTitle("Ping preview"),
+        components: [
+          new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder()
+              .setCustomId("roster-ping:confirm:session-1")
+              .setLabel("Confirm and ping")
+              .setStyle(ButtonStyle.Success),
+          ),
+        ],
+        targetCount: 1,
+      },
+    });
+
+    const interaction = {
+      customId: "roster-report:ping:roster-1",
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      memberPermissions: {
+        has: vi.fn().mockReturnValue(true),
+      },
+      member: {
+        roles: {
+          cache: new Map(),
+        },
+      },
+      deferReply: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      followUp: vi.fn().mockResolvedValue(undefined),
+      inGuild: () => true,
+    } as any;
+
+    await handleRosterReportPingButtonInteraction(interaction, {} as any);
+
+    expect(rosterService.createRosterPingSelectionPanel).toHaveBeenCalledWith({
+      rosterId: "roster-1",
+      discordUserId: "111111111111111111",
+      pingOption: "everyone",
+      cocService: {},
+    });
+    expect(interaction.reply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ephemeral: true,
+        embeds: [expect.any(EmbedBuilder)],
+        components: [expect.any(ActionRowBuilder)],
+      }),
+    );
+  });
 
   it("autocompletes roster groups from the selected roster only", async () => {
     (rosterService.getRosterView as any).mockResolvedValue({

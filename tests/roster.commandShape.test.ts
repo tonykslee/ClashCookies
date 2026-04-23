@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { Roster } from "../src/commands/Roster";
 
 describe("/roster command shape", () => {
-  it("registers create, list, post, ping, manage, edit, delete, report, readiness, and refresh without flat manager drift", () => {
+  it("registers create, list, post, ping, manage, edit, delete, report, and refresh without flat manager drift", () => {
     const create = Roster.options?.find(
       (option) =>
         option.type === ApplicationCommandOptionType.Subcommand &&
@@ -16,7 +16,6 @@ describe("/roster command shape", () => {
     const edit = Roster.options?.find((option) => option.name === "edit");
     const deleteOption = Roster.options?.find((option) => option.name === "delete");
     const report = Roster.options?.find((option) => option.name === "report");
-    const readiness = Roster.options?.find((option) => option.name === "readiness");
     const refresh = Roster.options?.find((option) => option.name === "refresh");
 
     expect(create?.type).toBe(ApplicationCommandOptionType.Subcommand);
@@ -28,7 +27,6 @@ describe("/roster command shape", () => {
     expect(edit?.type).toBe(ApplicationCommandOptionType.Subcommand);
     expect(deleteOption?.type).toBe(ApplicationCommandOptionType.Subcommand);
     expect(report?.type).toBe(ApplicationCommandOptionType.Subcommand);
-    expect(readiness?.type).toBe(ApplicationCommandOptionType.Subcommand);
     expect(refresh?.type).toBe(ApplicationCommandOptionType.Subcommand);
     expect(Roster.options?.find((option) => option.name === "open")).toBeUndefined();
     expect(Roster.options?.find((option) => option.name === "close")).toBeUndefined();
@@ -75,7 +73,6 @@ describe("/roster command shape", () => {
     ]);
     expect(ping?.options?.find((option: any) => option.name === "group")?.autocomplete).toBe(true);
     expect(report?.options?.find((option: any) => option.name === "roster")?.required).toBe(true);
-    expect(readiness?.options?.find((option: any) => option.name === "roster")?.required).toBe(true);
     expect(refresh?.options?.find((option: any) => option.name === "roster")?.required).toBe(true);
     expect(deleteOption?.options?.find((option: any) => option.name === "roster")?.required).toBe(true);
 

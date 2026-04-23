@@ -113,6 +113,7 @@ import {
 } from "../commands/Cwl";
 import {
   handleRosterPostSettingsActionButtonInteraction,
+  handleRosterReportPingButtonInteraction,
   handleRosterPingActionButtonInteraction,
   handleRosterPostSettingsGroupSelectInteraction,
   handleRosterPostSettingsPlayerSelectInteraction,
@@ -143,6 +144,7 @@ import {
   isRosterPostRefreshButtonCustomId,
   isRosterPostSettingsButtonCustomId,
   isRosterPostSettingsMenuCustomId,
+  isRosterReportPingButtonCustomId,
   isRosterPingActionButtonCustomId,
   isRosterPostUsersActionButtonCustomId,
   isRosterPostUsersGroupSelectMenuCustomId,
@@ -787,6 +789,21 @@ const handleButtonInteraction = async (
         await interaction.reply({
           ephemeral: true,
           content: "Failed to update roster settings.",
+        });
+      }
+    }
+    return;
+  }
+
+  if (isRosterReportPingButtonCustomId(interaction.customId)) {
+    try {
+      await handleRosterReportPingButtonInteraction(interaction, cocService);
+    } catch (err) {
+      console.error(`Roster report ping button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to open roster ping.",
         });
       }
     }

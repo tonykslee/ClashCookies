@@ -38,6 +38,8 @@ import {
   parseRosterPostRefreshButtonCustomId,
   parseRosterPostSettingsButtonCustomId,
   parseRosterPostSettingsMenuCustomId,
+  buildRosterReportPingButtonCustomId,
+  parseRosterReportPingButtonCustomId,
   parseRosterPingActionButtonCustomId,
   parseRosterPostUsersActionButtonCustomId,
   parseRosterPostUsersGroupSelectMenuCustomId,
@@ -505,11 +507,20 @@ async function buildRosterListEmbed(rosters: RosterSummaryRecord[]): Promise<Emb
   return embed;
 }
 
-function buildRosterReadinessEmbed(title: string, body: string): EmbedBuilder {
+function buildRosterReportEmbed(title: string, body: string): EmbedBuilder {
   return new EmbedBuilder()
     .setColor(0xfee75c)
-    .setTitle(`${title} roster readiness`)
+    .setTitle(`${title} Report`)
     .setDescription(body);
+}
+
+function buildRosterReportPingButtonRow(rosterId: string): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(buildRosterReportPingButtonCustomId(rosterId))
+      .setLabel("Ping roster")
+      .setStyle(ButtonStyle.Primary),
+  );
 }
 
 function normalizeRosterCategoryChoice(input: string | null | undefined): string | null {
@@ -2307,22 +2318,68 @@ async function handleRosterReportSubcommand(
   const reportText = await rosterService.buildRosterManagerReadinessText({
     rosterId: roster.id,
     cocService,
+    emojiClient: interaction.client,
   });
   if (!reportText) {
-    await interaction.editReply("Failed to build the roster readiness report.");
+    await interaction.editReply("Failed to build the roster report.");
     return;
   }
 
   await interaction.editReply({
-    embeds: [buildRosterReadinessEmbed(roster.title, reportText)],
+    embeds: [buildRosterReportEmbed(roster.title, reportText)],
+    components: [buildRosterReportPingButtonRow(roster.id)],
   });
 }
 
-async function handleRosterReadinessSubcommand(
-  interaction: ChatInputCommandInteraction,
+export async function handleRosterReportPingButtonInteraction(
+  interaction: ButtonInteraction,
   cocService: CoCService,
 ): Promise<void> {
-  await handleRosterReportSubcommand(interaction, cocService);
+  const parsed = parseRosterReportPingButtonCustomId(interaction.customId);
+  if (!parsed) return;
+
+  if (!(await canUseRosterPostTarget(interaction, "roster:manage"))) {
+    await interaction.reply({
+      content: "You do not have permission to manage this roster.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const panel = await rosterService.createRosterPingSelectionPanel({
+    rosterId: parsed.rosterId,
+    discordUserId: interaction.user.id,
+    pingOption: "everyone",
+    cocService,
+  });
+
+  if (panel.outcome === "roster_not_found") {
+    await interaction.reply({
+      content: "That roster is no longer available.",
+      ephemeral: true,
+    });
+    return;
+  }
+  if (panel.outcome === "group_not_found") {
+    await interaction.reply({
+      content: "That roster group is no longer available.",
+      ephemeral: true,
+    });
+    return;
+  }
+  if (panel.outcome === "no_targets") {
+    await interaction.reply({
+      content: "No linked roster members matched that ping selection.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await interaction.reply({
+    embeds: [panel.panel.embed],
+    components: panel.panel.components,
+    ephemeral: true,
+  });
 }
 
 async function handleRosterPingSubcommand(
@@ -3581,21 +3638,7 @@ export const Roster: Command = {
     },
     {
       name: "report",
-      description: "Show a manager readiness report for one roster",
-      type: ApplicationCommandOptionType.Subcommand,
-      options: [
-        {
-          name: "roster",
-          description: "Roster to inspect",
-          type: ApplicationCommandOptionType.String,
-          required: true,
-          autocomplete: true,
-        },
-      ],
-    },
-    {
-      name: "readiness",
-      description: "Show the export-friendly readiness report for one roster",
+      description: "Show a roster report for one roster",
       type: ApplicationCommandOptionType.Subcommand,
       options: [
         {
@@ -3657,10 +3700,6 @@ export const Roster: Command = {
       }
       if (subcommand === "report") {
         await handleRosterReportSubcommand(interaction, cocService);
-        return;
-      }
-      if (subcommand === "readiness") {
-        await handleRosterReadinessSubcommand(interaction, cocService);
         return;
       }
       if (subcommand === "refresh") {
