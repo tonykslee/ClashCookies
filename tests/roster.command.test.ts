@@ -220,6 +220,9 @@ describe("/roster command", () => {
     vi.spyOn(rosterService, "updateRosterPostButtonMode");
     vi.spyOn(rosterService, "updateRoster");
     vi.spyOn(rosterService, "deleteRoster");
+    vi.spyOn(rosterService, "createRosterManagerUserSelectionPanel");
+    vi.spyOn(rosterService, "updateRosterSelectionPanel");
+    vi.spyOn(rosterService, "confirmRosterSelectionPanel");
     vi.spyOn(rosterService, "clearRosterSignups");
     vi.spyOn(rosterService, "getRosterView");
     vi.spyOn(rosterService, "getRosterRoleSyncTargets").mockResolvedValue(null as any);
@@ -1032,6 +1035,8 @@ describe("/roster command", () => {
     expect(optionValues).toEqual([
       "export",
       "customize",
+      "add_user",
+      "remove_user",
       "close_roster",
       "clear_roster",
       "hide_buttons",
@@ -1041,6 +1046,69 @@ describe("/roster command", () => {
     ]);
     expect(optionValues).not.toContain("open_roster");
   });
+
+  it.each(["add_user", "remove_user"] as const)(
+    "opens the roster user panel when Settings -> %s is selected",
+    async (action) => {
+      (rosterService.createRosterManagerUserSelectionPanel as any).mockResolvedValue({
+        outcome: "ready",
+        panel: {
+          sessionId: "session-1",
+          mode: action,
+          embed: new EmbedBuilder().setTitle(action === "add_user" ? "Adding Roster Users" : "Removing Roster Users"),
+          components: [],
+          selectedTags: [],
+        },
+      });
+      (rosterService.findGuildRosterById as any).mockResolvedValue({
+        id: "roster-1",
+        guildId: "guild-1",
+        rosterType: "CWL",
+        rosterCategory: "signup",
+        title: "CWL Alpha Signup",
+        clanTag: "#2QG2C08UP",
+        startsAt: new Date("2026-04-20T00:00:00.000Z"),
+        endsAt: null,
+        timezone: "America/Los_Angeles",
+        displayTimezone: "America/Los_Angeles",
+        lifecycleState: "OPEN",
+        postedChannelId: "channel-1",
+        postedMessageId: "message-1",
+        postedMessageUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+        postedAt: null,
+        createdByDiscordUserId: "111111111111111111",
+        updatedByDiscordUserId: "111111111111111111",
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+      });
+      const interaction = {
+        customId: "roster-post-settings:roster-1",
+        values: [action],
+        user: { id: "111111111111111111" },
+        guildId: "guild-1",
+        inGuild: () => true,
+        memberPermissions: {
+          has: vi.fn().mockReturnValue(true),
+        },
+        reply: vi.fn().mockResolvedValue(undefined),
+      } as any;
+
+      await handleRosterPostSettingsMenuInteraction(interaction, {} as any);
+
+      expect(rosterService.createRosterManagerUserSelectionPanel).toHaveBeenCalledWith({
+        rosterId: "roster-1",
+        discordUserId: "111111111111111111",
+        mode: action,
+      });
+      expect(interaction.reply).toHaveBeenCalledWith(
+        expect.objectContaining({
+          ephemeral: true,
+          embeds: [expect.any(EmbedBuilder)],
+          components: [],
+        }),
+      );
+    },
+  );
 
   it("opens the roster customization panel when Settings -> Customize is selected", async () => {
     (rosterService.findGuildRosterById as any).mockResolvedValue({

@@ -12,6 +12,7 @@ import {
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
+  UserSelectMenuInteraction,
   StringSelectMenuBuilder,
   StringSelectMenuInteraction,
 } from "discord.js";
@@ -37,6 +38,10 @@ import {
   parseRosterPostRefreshButtonCustomId,
   parseRosterPostSettingsButtonCustomId,
   parseRosterPostSettingsMenuCustomId,
+  parseRosterPostUsersActionButtonCustomId,
+  parseRosterPostUsersGroupSelectMenuCustomId,
+  parseRosterPostUsersPlayerSelectMenuCustomId,
+  parseRosterPostUsersUserSelectMenuCustomId,
   rosterService,
   type RosterRecord,
   type RosterSignupViewRecord,
@@ -62,6 +67,8 @@ type RosterMutationAction = "add" | "move" | "remove" | "set_weight" | "open" | 
 type RosterPostSettingsAction =
   | "export"
   | "customize"
+  | "add_user"
+  | "remove_user"
   | "open_roster"
   | "close_roster"
   | "clear_roster"
@@ -87,6 +94,24 @@ function formatRosterAccountIdentity(account: { playerTag: string; playerName: s
 
 function formatRosterAccountIdentityList(accounts: Array<{ playerTag: string; playerName: string | null }>): string {
   return accounts.map(formatRosterAccountIdentity).join(", ");
+}
+
+function formatRosterDiscordUserSelectionLabel(
+  interaction: {
+    users?: { get: (userId: string) => unknown };
+    members?: { get: (userId: string) => unknown };
+  },
+  userId: string,
+): string {
+  const member = (interaction.members?.get(userId) ?? null) as { displayName?: string | null } | null;
+  const user = (interaction.users?.get(userId) ?? null) as { username?: string | null } | null;
+  const displayName = String(member?.displayName ?? "").trim();
+  const username = String(user?.username ?? "").trim();
+  const fallback = String(userId ?? "").trim();
+  if (displayName) {
+    return `${displayName} (@${username || fallback})`;
+  }
+  return `@${username || fallback}`;
 }
 
 function buildRosterStateLabel(state: RosterRecord["lifecycleState"]): string {
@@ -569,6 +594,8 @@ function buildRosterPostSettingsActions(lifecycleState: RosterRecord["lifecycleS
   return [
     { label: "Export", value: "export", description: "Create a Google Sheet export" },
     { label: "Customize", value: "customize", description: "Change board columns and sort order" },
+    { label: "Add User", value: "add_user", description: "Add linked players through an interactive panel" },
+    { label: "Remove User", value: "remove_user", description: "Remove linked players through an interactive panel" },
     lifecycleAction,
     { label: "Clear roster", value: "clear_roster", description: "Remove all roster signups" },
     { label: "Hide buttons", value: "hide_buttons", description: "Hide member buttons" },
@@ -1124,6 +1151,32 @@ export async function handleRosterPostSettingsMenuInteraction(
     return;
   }
 
+  if (choice === "add_user" || choice === "remove_user") {
+    const panel = await rosterService.createRosterManagerUserSelectionPanel({
+      rosterId: roster.id,
+      discordUserId: interaction.user.id,
+      mode: choice,
+    });
+    if (panel.outcome !== "ready") {
+      const message =
+        panel.outcome === "roster_not_found"
+          ? "That roster is no longer available."
+          : "That roster can no longer be modified.";
+      await interaction.reply({
+        content: message,
+        ephemeral: true,
+      });
+      return;
+    }
+
+    await interaction.reply({
+      embeds: [panel.panel.embed],
+      components: panel.panel.components,
+      ephemeral: true,
+    });
+    return;
+  }
+
   if (choice === "open_roster" || choice === "close_roster") {
     const lifecycleState =
       choice === "open_roster" ? ROSTER_LIFECYCLE_STATE.OPEN : ROSTER_LIFECYCLE_STATE.CLOSED;
@@ -1230,6 +1283,280 @@ export async function handleRosterPostSettingsMenuInteraction(
   await interaction.reply({
     content: "Unsupported roster settings action.",
     ephemeral: true,
+  });
+}
+
+async function replyRosterUserPanelStateChange(
+  interaction:
+    | UserSelectMenuInteraction
+    | StringSelectMenuInteraction
+    | ButtonInteraction,
+  payload: {
+    content?: string | null;
+    embeds?: EmbedBuilder[];
+    components?: any[];
+  },
+): Promise<void> {
+  await interaction.update({
+    content: payload.content ?? undefined,
+    embeds: payload.embeds ?? [],
+    components: payload.components ?? [],
+  });
+}
+
+export async function handleRosterPostSettingsUserSelectInteraction(
+  interaction: UserSelectMenuInteraction,
+): Promise<void> {
+  const parsed = parseRosterPostUsersUserSelectMenuCustomId(interaction.customId);
+  if (!parsed) return;
+
+  const selectedUserId = interaction.values[0] ?? "";
+  if (!selectedUserId) {
+    await interaction.reply({
+      content: "Select a Discord user to continue.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const result = await rosterService.updateRosterSelectionPanel({
+    sessionId: parsed.sessionId,
+    discordUserId: interaction.user.id,
+    selectedDiscordUserId: selectedUserId,
+    selectedDiscordUserLabel: formatRosterDiscordUserSelectionLabel(interaction, selectedUserId),
+  });
+
+  if (result.outcome === "session_not_found") {
+    await interaction.reply({
+      content: "That roster selection has expired. Please start again.",
+      ephemeral: true,
+    });
+    return;
+  }
+  if (result.outcome === "forbidden") {
+    await interaction.reply({
+      content: "Only the original requester can use this roster selection.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await replyRosterUserPanelStateChange(interaction, {
+    embeds: [result.panel.embed],
+    components: result.panel.components,
+  });
+}
+
+export async function handleRosterPostSettingsPlayerSelectInteraction(
+  interaction: StringSelectMenuInteraction,
+): Promise<void> {
+  const parsed = parseRosterPostUsersPlayerSelectMenuCustomId(interaction.customId);
+  if (!parsed) return;
+
+  const result = await rosterService.updateRosterSelectionPanel({
+    sessionId: parsed.sessionId,
+    discordUserId: interaction.user.id,
+    selectedPlayerTags: interaction.values,
+    playerPageIndex: parsed.pageIndex,
+  });
+
+  if (result.outcome === "session_not_found") {
+    await interaction.reply({
+      content: "That roster selection has expired. Please start again.",
+      ephemeral: true,
+    });
+    return;
+  }
+  if (result.outcome === "forbidden") {
+    await interaction.reply({
+      content: "Only the original requester can use this roster selection.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await replyRosterUserPanelStateChange(interaction, {
+    embeds: [result.panel.embed],
+    components: result.panel.components,
+  });
+}
+
+export async function handleRosterPostSettingsGroupSelectInteraction(
+  interaction: StringSelectMenuInteraction,
+): Promise<void> {
+  const parsed = parseRosterPostUsersGroupSelectMenuCustomId(interaction.customId);
+  if (!parsed) return;
+
+  const result = await rosterService.updateRosterSelectionPanel({
+    sessionId: parsed.sessionId,
+    discordUserId: interaction.user.id,
+    selectedGroupKey: interaction.values[0] ?? null,
+  });
+
+  if (result.outcome === "session_not_found") {
+    await interaction.reply({
+      content: "That roster selection has expired. Please start again.",
+      ephemeral: true,
+    });
+    return;
+  }
+  if (result.outcome === "forbidden") {
+    await interaction.reply({
+      content: "Only the original requester can use this roster selection.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await replyRosterUserPanelStateChange(interaction, {
+    embeds: [result.panel.embed],
+    components: result.panel.components,
+  });
+}
+
+export async function handleRosterPostSettingsActionButtonInteraction(
+  interaction: ButtonInteraction,
+  cocService?: CoCService | null,
+): Promise<void> {
+  const parsed = parseRosterPostUsersActionButtonCustomId(interaction.customId);
+  if (!parsed) return;
+
+  if (parsed.action === "cancel") {
+    const result = await rosterService.cancelRosterSelectionPanel({
+      sessionId: parsed.sessionId,
+      discordUserId: interaction.user.id,
+    });
+    if (result.outcome === "session_not_found") {
+      await interaction.reply({
+        content: "That roster selection has expired. Please start again.",
+        ephemeral: true,
+      });
+      return;
+    }
+    if (result.outcome === "forbidden") {
+      await interaction.reply({
+        content: "Only the original requester can use this roster selection.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    await interaction.update({
+      content: "Roster selection cancelled.",
+      embeds: [],
+      components: [],
+    });
+    return;
+  }
+
+  if (parsed.action === "select_group") {
+    const result = await rosterService.updateRosterSelectionPanel({
+      sessionId: parsed.sessionId,
+      discordUserId: interaction.user.id,
+      groupPickerVisible: true,
+    });
+    if (result.outcome === "session_not_found") {
+      await interaction.reply({
+        content: "That roster selection has expired. Please start again.",
+        ephemeral: true,
+      });
+      return;
+    }
+    if (result.outcome === "forbidden") {
+      await interaction.reply({
+        content: "Only the original requester can use this roster selection.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    await interaction.update({
+      embeds: [result.panel.embed],
+      components: result.panel.components,
+    });
+    return;
+  }
+
+  await interaction.deferUpdate().catch(() => undefined);
+  const result = await rosterService.confirmRosterSelectionPanel({
+    sessionId: parsed.sessionId,
+    discordUserId: interaction.user.id,
+    cocService: cocService ?? null,
+  });
+  if (result.outcome === "session_not_found") {
+    await interaction.followUp({
+      content: "That roster selection has expired. Please start again.",
+      ephemeral: true,
+    }).catch(() => undefined);
+    return;
+  }
+  if (result.outcome === "forbidden") {
+    await interaction.followUp({
+      content: "Only the original requester can use this roster selection.",
+      ephemeral: true,
+    }).catch(() => undefined);
+    return;
+  }
+  if (result.outcome === "missing_user") {
+    await interaction.followUp({
+      content: "Select a Discord user first.",
+      ephemeral: true,
+    }).catch(() => undefined);
+    return;
+  }
+  if (result.outcome === "missing_players") {
+    await interaction.followUp({
+      content: "Select at least one linked player.",
+      ephemeral: true,
+    }).catch(() => undefined);
+    return;
+  }
+  if (result.outcome === "missing_group") {
+    await interaction.followUp({
+      content: "Select a roster group first.",
+      ephemeral: true,
+    }).catch(() => undefined);
+    return;
+  }
+
+  if (result.outcome === "add_user") {
+    await syncRosterRoleAssignments(interaction.client, result.result.rosterId).catch(() => undefined);
+    await refreshExistingRosterPost(interaction as unknown as ChatInputCommandInteraction, result.result.rosterId, cocService ?? null).catch(() => undefined);
+    await interaction.editReply({
+      content: buildRosterSignupResultSummary(result.result),
+      embeds: [],
+      components: [],
+    });
+    return;
+  }
+
+  if (result.outcome === "remove_user") {
+    await syncRosterRoleAssignments(interaction.client, result.result.rosterId).catch(() => undefined);
+    await refreshExistingRosterPost(interaction as unknown as ChatInputCommandInteraction, result.result.rosterId, cocService ?? null).catch(() => undefined);
+    await interaction.editReply({
+      content: buildRosterRemoveResultSummary(result.result),
+      embeds: [],
+      components: [],
+    });
+    return;
+  }
+
+  if (result.outcome === "signup") {
+    await syncRosterRoleAssignments(interaction.client, result.result.rosterId).catch(() => undefined);
+    await refreshExistingRosterPost(interaction as unknown as ChatInputCommandInteraction, result.result.rosterId, cocService).catch(() => undefined);
+    await interaction.update({
+      content: buildRosterSignupResultSummary(result.result),
+      embeds: [],
+      components: [],
+    });
+    return;
+  }
+
+  await refreshExistingRosterPost(interaction as unknown as ChatInputCommandInteraction, result.result.rosterId, cocService).catch(() => undefined);
+  await interaction.update({
+    content: buildRosterRemoveResultSummary(result.result),
+    embeds: [],
+    components: [],
   });
 }
 

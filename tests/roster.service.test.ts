@@ -91,6 +91,25 @@ function makeRosterEmojiClient() {
   } as any;
 }
 
+function flattenComponentRows(components: any[]): any[] {
+  return components.flatMap((row) => {
+    const rowJson = row.toJSON?.() ?? row;
+    return Array.isArray(rowJson?.components) ? rowJson.components : [];
+  });
+}
+
+function makeValidRosterPlayerTag(index: number): string {
+  const alphabet = ["0", "2", "8", "9"];
+  const normalizedIndex = Math.max(0, Math.trunc(index));
+  let remaining = normalizedIndex;
+  const digits = [0, 0, 0, 0];
+  for (let position = digits.length - 1; position >= 0; position -= 1) {
+    digits[position] = remaining % alphabet.length;
+    remaining = Math.trunc(remaining / alphabet.length);
+  }
+  return `#PQL${digits.map((digit) => alphabet[digit] ?? "0").join("")}`;
+}
+
 vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
@@ -1833,6 +1852,281 @@ describe("RosterService", () => {
       ]),
     );
     expect(payload.selectedTags).toEqual([]);
+  });
+
+  it("builds the manager add-user panel with chunked linked-player menus and a disabled confirm button until required selections exist", async () => {
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValueOnce(
+      Array.from({ length: 30 }, (_, index) => {
+        return {
+          playerTag: makeValidRosterPlayerTag(index),
+          linkedName: `Player ${index + 1}`,
+          linkedAt: new Date("2026-04-20T00:00:00.000Z"),
+        };
+      }),
+    );
+
+    const opened = await rosterService.createRosterManagerUserSelectionPanel({
+      rosterId: "roster-1",
+      discordUserId: "111111111111111111",
+      mode: "add_user",
+    });
+    expect(opened).toMatchObject({ outcome: "ready" });
+    if (opened.outcome !== "ready") return;
+
+    const openedJson = opened.panel.embed.toJSON();
+    expect(String(openedJson.title ?? "")).toBe("Adding Roster Users");
+    expect(String(openedJson.description ?? "")).toContain("Select a Discord user.");
+    expect(String(openedJson.description ?? "")).toContain("Selected user: none");
+    expect(String(openedJson.description ?? "")).toContain("Selected group: Confirmed");
+    expect(String(openedJson.description ?? "")).toContain("Selected players: 0");
+
+    const openedComponents = flattenComponentRows(opened.panel.components);
+    expect(
+      openedComponents
+        .filter((component) => Array.isArray(component.options))
+        .map((component) => component.placeholder ?? component.data?.placeholder),
+    ).toEqual(["No linked players found"]);
+    expect(
+      openedComponents
+        .filter((component) => typeof component.style === "number")
+        .map((component) => ({ label: component.label ?? component.data?.label, disabled: Boolean(component.disabled ?? component.data?.disabled) })),
+    ).toEqual([
+      { label: "Select Group", disabled: false },
+      { label: "Confirm", disabled: true },
+      { label: "Cancel", disabled: false },
+    ]);
+
+    const selected = await rosterService.updateRosterSelectionPanel({
+      sessionId: opened.panel.sessionId,
+      discordUserId: "111111111111111111",
+      selectedDiscordUserId: "222222222222222222",
+      selectedDiscordUserLabel: "Roster User (@rosteruser)",
+    });
+    expect(selected).toMatchObject({ outcome: "updated" });
+    if (selected.outcome !== "updated") return;
+
+    const selectedJson = selected.panel.embed.toJSON();
+    expect(String(selectedJson.description ?? "")).toContain("Selected user: Roster User (@rosteruser)");
+    expect(String(selectedJson.description ?? "")).toContain("Selected players: 0");
+    const selectedComponents = flattenComponentRows(selected.panel.components);
+    expect(
+      selectedComponents
+        .filter((component) => Array.isArray(component.options))
+        .map((component) => component.placeholder ?? component.data?.placeholder),
+    ).toEqual(["Select Players [1 - 25]", "Select Players [26 - 30]"]);
+    expect(
+      selectedComponents
+        .filter((component) => typeof component.style === "number")
+        .map((component) => ({ label: component.label ?? component.data?.label, disabled: Boolean(component.disabled ?? component.data?.disabled) })),
+    ).toEqual([
+      { label: "Select Group", disabled: false },
+      { label: "Confirm", disabled: true },
+      { label: "Cancel", disabled: false },
+    ]);
+
+    const selectedWithPlayers = await rosterService.updateRosterSelectionPanel({
+      sessionId: opened.panel.sessionId,
+      discordUserId: "111111111111111111",
+      selectedTags: [makeValidRosterPlayerTag(0), makeValidRosterPlayerTag(14)],
+    });
+    expect(selectedWithPlayers).toMatchObject({ outcome: "updated" });
+    if (selectedWithPlayers.outcome !== "updated") return;
+    expect(selectedWithPlayers.panel.selectedTags).toEqual([makeValidRosterPlayerTag(0), makeValidRosterPlayerTag(14)]);
+    expect(
+      flattenComponentRows(selectedWithPlayers.panel.components)
+        .filter((component) => typeof component.style === "number")
+        .map((component) => ({ label: component.label ?? component.data?.label, disabled: Boolean(component.disabled ?? component.data?.disabled) })),
+    ).toEqual([
+      { label: "Select Group", disabled: false },
+      { label: "Confirm", disabled: false },
+      { label: "Cancel", disabled: false },
+    ]);
+
+    const groupPicker = await rosterService.updateRosterSelectionPanel({
+      sessionId: opened.panel.sessionId,
+      discordUserId: "111111111111111111",
+      groupPickerVisible: true,
+    });
+    expect(groupPicker).toMatchObject({ outcome: "updated" });
+    if (groupPicker.outcome !== "updated") return;
+    expect(flattenComponentRows(groupPicker.panel.components)).toHaveLength(1);
+    expect(String(groupPicker.panel.embed.toJSON().description ?? "")).toContain("Select a roster group to continue.");
+
+    const restored = await rosterService.updateRosterSelectionPanel({
+      sessionId: opened.panel.sessionId,
+      discordUserId: "111111111111111111",
+      selectedGroupKey: "confirmed",
+    });
+    expect(restored).toMatchObject({ outcome: "updated" });
+    if (restored.outcome !== "updated") return;
+    expect(restored.panel.selectedTags).toEqual([makeValidRosterPlayerTag(0), makeValidRosterPlayerTag(14)]);
+    expect(
+      flattenComponentRows(restored.panel.components)
+        .filter((component) => Array.isArray(component.options))
+        .map((component) => component.placeholder ?? component.data?.placeholder),
+    ).toEqual(["Select Players [1 - 25]", "Select Players [26 - 30]"]);
+    expect(
+      flattenComponentRows(restored.panel.components)
+        .filter((component) => typeof component.style === "number")
+        .map((component) => ({ label: component.label ?? component.data?.label, disabled: Boolean(component.disabled ?? component.data?.disabled) })),
+    ).toEqual([
+      { label: "Select Group", disabled: false },
+      { label: "Confirm", disabled: false },
+      { label: "Cancel", disabled: false },
+    ]);
+  });
+
+  it("shows a clear empty state and keeps confirm disabled when the selected Discord user has no linked player accounts", async () => {
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValueOnce([]);
+
+    const opened = await rosterService.createRosterManagerUserSelectionPanel({
+      rosterId: "roster-1",
+      discordUserId: "111111111111111111",
+      mode: "add_user",
+    });
+    if (opened.outcome !== "ready") {
+      throw new Error("Expected roster selection panel to open.");
+    }
+
+    const updated = await rosterService.updateRosterSelectionPanel({
+      sessionId: opened.panel.sessionId,
+      discordUserId: "111111111111111111",
+      selectedDiscordUserId: "222222222222222222",
+      selectedDiscordUserLabel: "Empty User (@empty)",
+    });
+    expect(updated).toMatchObject({ outcome: "updated" });
+    if (updated.outcome !== "updated") return;
+
+    expect(String(updated.panel.embed.toJSON().description ?? "")).toContain(
+      "No linked player accounts were found for that Discord user.",
+    );
+    expect(
+      flattenComponentRows(updated.panel.components)
+        .filter((component) => typeof component.style === "number")
+        .map((component) => ({ label: component.label ?? component.data?.label, disabled: Boolean(component.disabled ?? component.data?.disabled) })),
+    ).toEqual([
+      { label: "Select Group", disabled: false },
+      { label: "Confirm", disabled: true },
+      { label: "Cancel", disabled: false },
+    ]);
+  });
+
+  it("confirms manager add and remove flows through the roster mutation helpers", async () => {
+    const addRosterSignupsForManagerSpy = vi
+      .spyOn(rosterService, "addRosterSignupsForManager")
+      .mockResolvedValue({
+        outcome: "created",
+        rosterId: "roster-1",
+        groupKey: "confirmed",
+        groupName: "Confirmed",
+        requestedTags: [makeValidRosterPlayerTag(1), makeValidRosterPlayerTag(2)],
+        linkedTags: [makeValidRosterPlayerTag(1), makeValidRosterPlayerTag(2)],
+        createdTags: [makeValidRosterPlayerTag(1), makeValidRosterPlayerTag(2)],
+        duplicateTags: [],
+        missingLinkedTags: [],
+      } as any);
+    const removeRosterSignupsAsManagerSpy = vi
+      .spyOn(rosterService, "removeRosterSignupsAsManager")
+      .mockResolvedValue({
+        outcome: "removed",
+        rosterId: "roster-1",
+        removedTags: [makeValidRosterPlayerTag(1), makeValidRosterPlayerTag(2)],
+        missingTags: [],
+      } as any);
+    try {
+      playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValueOnce([
+        { playerTag: makeValidRosterPlayerTag(1), linkedName: "Alpha", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+        { playerTag: makeValidRosterPlayerTag(2), linkedName: "Bravo", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+      ]);
+
+      const addOpened = await rosterService.createRosterManagerUserSelectionPanel({
+        rosterId: "roster-1",
+        discordUserId: "111111111111111111",
+        mode: "add_user",
+      });
+      if (addOpened.outcome !== "ready") throw new Error("Expected add panel to open.");
+      await rosterService.updateRosterSelectionPanel({
+        sessionId: addOpened.panel.sessionId,
+        discordUserId: "111111111111111111",
+        selectedDiscordUserId: "222222222222222222",
+        selectedDiscordUserLabel: "Roster User (@rosteruser)",
+      });
+      await rosterService.updateRosterSelectionPanel({
+        sessionId: addOpened.panel.sessionId,
+        discordUserId: "111111111111111111",
+        selectedTags: [makeValidRosterPlayerTag(1), makeValidRosterPlayerTag(2)],
+      });
+      await rosterService.updateRosterSelectionPanel({
+        sessionId: addOpened.panel.sessionId,
+        discordUserId: "111111111111111111",
+        selectedGroupKey: "confirmed",
+      });
+      const addConfirmed = await rosterService.confirmRosterSelectionPanel({
+        sessionId: addOpened.panel.sessionId,
+        discordUserId: "111111111111111111",
+      });
+      expect(addConfirmed).toMatchObject({
+        outcome: "add_user",
+        result: {
+          outcome: "created",
+          rosterId: "roster-1",
+          groupKey: "confirmed",
+          groupName: "Confirmed",
+        },
+      });
+      expect(addRosterSignupsForManagerSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          rosterId: "roster-1",
+          groupKey: "confirmed",
+          playerTags: [makeValidRosterPlayerTag(1), makeValidRosterPlayerTag(2)],
+          updatedByDiscordUserId: "111111111111111111",
+        }),
+      );
+
+      playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValueOnce([
+        { playerTag: makeValidRosterPlayerTag(1), linkedName: "Alpha", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+        { playerTag: makeValidRosterPlayerTag(2), linkedName: "Bravo", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+      ]);
+      const removeOpened = await rosterService.createRosterManagerUserSelectionPanel({
+        rosterId: "roster-1",
+        discordUserId: "111111111111111111",
+        mode: "remove_user",
+      });
+      if (removeOpened.outcome !== "ready") throw new Error("Expected remove panel to open.");
+      await rosterService.updateRosterSelectionPanel({
+        sessionId: removeOpened.panel.sessionId,
+        discordUserId: "111111111111111111",
+        selectedDiscordUserId: "222222222222222222",
+        selectedDiscordUserLabel: "Roster User (@rosteruser)",
+      });
+      await rosterService.updateRosterSelectionPanel({
+        sessionId: removeOpened.panel.sessionId,
+        discordUserId: "111111111111111111",
+        selectedTags: [makeValidRosterPlayerTag(1), makeValidRosterPlayerTag(2)],
+      });
+      const removeConfirmed = await rosterService.confirmRosterSelectionPanel({
+        sessionId: removeOpened.panel.sessionId,
+        discordUserId: "111111111111111111",
+      });
+      expect(removeConfirmed).toMatchObject({
+        outcome: "remove_user",
+        result: {
+          outcome: "removed",
+          rosterId: "roster-1",
+          removedTags: [makeValidRosterPlayerTag(1), makeValidRosterPlayerTag(2)],
+        },
+      });
+      expect(removeRosterSignupsAsManagerSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          rosterId: "roster-1",
+          playerTags: [makeValidRosterPlayerTag(1), makeValidRosterPlayerTag(2)],
+          updatedByDiscordUserId: "111111111111111111",
+        }),
+      );
+    } finally {
+      addRosterSignupsForManagerSpy.mockRestore();
+      removeRosterSignupsAsManagerSpy.mockRestore();
+    }
   });
 
   it("signs up multiple selected accounts through the roster selection session", async () => {
