@@ -3074,86 +3074,76 @@ export async function handleRosterSelectionActionButtonInteraction(
     return;
   }
 
+  const deferred = await interaction.deferUpdate().then(() => true).catch(() => false);
+  const sendSelectionResponse = async (content: string): Promise<void> => {
+    if (deferred) {
+      await interaction
+        .editReply({
+          content,
+          embeds: [],
+          components: [],
+        })
+        .catch(() => undefined);
+      return;
+    }
+
+    await interaction
+      .reply({
+        content,
+        ephemeral: true,
+      })
+      .catch(() => undefined);
+  };
+
   const result = await rosterService.confirmRosterSelectionPanel({
     sessionId: parsed.sessionId,
     discordUserId: interaction.user.id,
     cocService: cocService ?? null,
   });
   if (result.outcome === "session_not_found") {
-    await interaction.reply({
-      content: "That roster selection has expired. Please start again.",
-      ephemeral: true,
-    });
+    await sendSelectionResponse("That roster selection has expired. Please start again.");
     return;
   }
   if (result.outcome === "forbidden") {
-    await interaction.reply({
-      content: "Only the original requester can use this roster selection.",
-      ephemeral: true,
-    });
+    await sendSelectionResponse("Only the original requester can use this roster selection.");
     return;
   }
 
   if (result.outcome === "missing_user") {
-    await interaction.reply({
-      content: "Select a Discord user first.",
-      ephemeral: true,
-    });
+    await sendSelectionResponse("Select a Discord user first.");
     return;
   }
   if (result.outcome === "missing_players") {
-    await interaction.reply({
-      content: "Select at least one linked player.",
-      ephemeral: true,
-    });
+    await sendSelectionResponse("Select at least one linked player.");
     return;
   }
   if (result.outcome === "missing_group") {
-    await interaction.reply({
-      content: "Select a roster group first.",
-      ephemeral: true,
-    });
+    await sendSelectionResponse("Select a roster group first.");
     return;
   }
 
   if (result.outcome === "add_user") {
     await syncRosterRoleAssignments(interaction.client, result.result.rosterId).catch(() => undefined);
     await refreshRosterSignupPost(interaction, result.result.rosterId, cocService).catch(() => undefined);
-    await interaction.update({
-      content: formatRosterSignupResultSummary(result.result),
-      embeds: [],
-      components: [],
-    });
+    await sendSelectionResponse(formatRosterSignupResultSummary(result.result));
     return;
   }
 
   if (result.outcome === "remove_user") {
     await refreshRosterSignupPost(interaction, result.result.rosterId, cocService).catch(() => undefined);
-    await interaction.update({
-      content: formatRosterRemoveResultSummary(result.result),
-      embeds: [],
-      components: [],
-    });
+    await sendSelectionResponse(formatRosterRemoveResultSummary(result.result));
     return;
   }
 
   if (result.outcome === "signup") {
     await syncRosterRoleAssignments(interaction.client, result.result.rosterId).catch(() => undefined);
     await refreshRosterSignupPost(interaction, result.result.rosterId, cocService).catch(() => undefined);
-    await interaction.update({
-      content: formatRosterSignupResultSummary(result.result),
-      embeds: [],
-      components: [],
-    });
+    await sendSelectionResponse(formatRosterSignupResultSummary(result.result));
     return;
   }
 
   await refreshRosterSignupPost(interaction, result.result.rosterId, cocService).catch(() => undefined);
-  await interaction.update({
-    content: formatRosterRemoveResultSummary(result.result),
-    embeds: [],
-    components: [],
-  });
+  await sendSelectionResponse(formatRosterRemoveResultSummary(result.result));
 }
 
 export const Cwl: Command = {
