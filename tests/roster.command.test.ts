@@ -62,6 +62,7 @@ function makeInteraction(input: {
   group?: string | null;
   players?: string | null;
   pingOption?: string | null;
+  userId?: string | null;
   timezone?: string | null;
   displayTimezone?: string | null;
   startTime?: string | null;
@@ -104,9 +105,16 @@ function makeInteraction(input: {
         if (name === "end_time") return input.endTime ?? null;
         if (name === "roster_role") return input.rosterRole ?? null;
         if (name === "sort_by") return input.sortBy ?? null;
-        if (name === "user") return input.user ?? null;
         if (name === "player") return input.player ?? null;
         return null;
+      }),
+      getUser: vi.fn((name: string) => {
+        if (name !== "user" || !input.userId) return null;
+        return {
+          id: input.userId,
+          bot: false,
+          username: "selected-user",
+        };
       }),
       getInteger: vi.fn((name: string) => {
         if (name === "max_members") return input.maxMembers ?? null;
@@ -138,6 +146,8 @@ function makeAutocompleteInteraction(input: {
   focusedValue?: string;
   subcommand: RosterSubcommand;
   roster?: string | null;
+  action?: string | null;
+  group?: string | null;
   guildMembers?: Array<{
     id: string;
     displayName: string;
@@ -171,6 +181,8 @@ function makeAutocompleteInteraction(input: {
       getSubcommand: vi.fn(() => input.subcommand),
       getString: vi.fn((name: string) => {
         if (name === "roster") return input.roster ?? null;
+        if (name === "action") return input.action ?? null;
+        if (name === "group") return input.group ?? null;
         return null;
       }),
     },
@@ -546,6 +558,27 @@ describe("/roster command", () => {
     expect(String(embed?.fields?.[0]?.value ?? "")).toContain("Groups: 2 | Signups: 5");
     expect(String(embed?.fields?.[1]?.value ?? "")).toContain("Posted: No");
     expect(String(embed?.fields?.[1]?.value ?? "")).toContain("Clan: none");
+  });
+
+  it("passes the selected Discord user picker id through roster list filters", async () => {
+    (rosterService.listGuildRosters as any).mockResolvedValue([]);
+
+    const interaction = makeInteraction({
+      subcommand: "list",
+      userId: "222222222222222222",
+    }) as any;
+
+    await Roster.run({} as any, interaction as any);
+
+    expect(rosterService.listGuildRosters).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guildId: "guild-1",
+        name: null,
+        user: "222222222222222222",
+        player: null,
+        clan: null,
+      }),
+    );
   });
 
   it("routes roster manage actions to the existing add, move, remove, and lifecycle helpers", async () => {
@@ -2508,25 +2541,134 @@ describe("/roster command", () => {
     ]);
   });
 
-  it("autocompletes linked player accounts for the invoking user", async () => {
+  it("scopes roster manage player autocomplete by roster, action, and group context", async () => {
+    (rosterService.getRosterView as any).mockResolvedValue({
+      roster: {
+        id: "roster-1",
+        lifecycleState: "OPEN",
+      },
+      groups: [
+        { id: "group-confirmed", key: "confirmed", name: "Confirmed", description: null, sortOrder: 0 },
+        { id: "group-substitute", key: "substitute", name: "Substitute", description: null, sortOrder: 1 },
+      ],
+      signups: [
+        {
+          id: "signup-1",
+          rosterId: "roster-1",
+          groupId: "group-confirmed",
+          playerTag: "#PYLQ0289",
+          playerName: "Alpha",
+          discordUserId: "111111111111111111",
+          signedUpAt: new Date("2026-04-01T00:00:00.000Z"),
+          createdAt: new Date("2026-04-01T00:00:00.000Z"),
+          updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+          group: { key: "confirmed" },
+        },
+        {
+          id: "signup-2",
+          rosterId: "roster-1",
+          groupId: "group-confirmed",
+          playerTag: "#QGRJ2222",
+          playerName: "Bravo",
+          discordUserId: "222222222222222222",
+          signedUpAt: new Date("2026-04-01T00:00:00.000Z"),
+          createdAt: new Date("2026-04-01T00:00:00.000Z"),
+          updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+          group: { key: "confirmed" },
+        },
+        {
+          id: "signup-3",
+          rosterId: "roster-1",
+          groupId: "group-substitute",
+          playerTag: "#CUV02898",
+          playerName: "Charlie",
+          discordUserId: "333333333333333333",
+          signedUpAt: new Date("2026-04-01T00:00:00.000Z"),
+          createdAt: new Date("2026-04-01T00:00:00.000Z"),
+          updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+          group: { key: "substitute" },
+        },
+      ],
+      clanDisplayName: null,
+      clanLeagueLabel: null,
+      totalSignupCount: 3,
+    });
     vi.spyOn(playerLinkService, "listPlayerLinksForDiscordUser").mockResolvedValue([
       { playerTag: "#PYLQ0289", linkedAt: new Date("2026-04-01T00:00:00.000Z"), linkedName: "Alpha Prime" },
       { playerTag: "#QGRJ2222", linkedAt: new Date("2026-04-02T00:00:00.000Z"), linkedName: null },
+      { playerTag: "#VJQ28888", linkedAt: new Date("2026-04-03T00:00:00.000Z"), linkedName: "Delta" },
     ] as any);
 
-    const interaction = makeAutocompleteInteraction({
+    const noRosterInteraction = makeAutocompleteInteraction({
       focusedName: "players",
-      focusedValue: "alpha",
+      focusedValue: "",
       subcommand: "manage",
+      action: "remove",
     }) as any;
+    await Roster.autocomplete(noRosterInteraction);
+    expect(noRosterInteraction.respond).toHaveBeenCalledWith([]);
 
-    await Roster.autocomplete(interaction);
+    const moveMissingGroupInteraction = makeAutocompleteInteraction({
+      focusedName: "players",
+      focusedValue: "",
+      subcommand: "manage",
+      roster: "roster-1",
+      action: "move",
+    }) as any;
+    await Roster.autocomplete(moveMissingGroupInteraction);
+    expect(moveMissingGroupInteraction.respond).toHaveBeenCalledWith([]);
 
+    const moveInteraction = makeAutocompleteInteraction({
+      focusedName: "players",
+      focusedValue: "",
+      subcommand: "manage",
+      roster: "roster-1",
+      action: "move",
+      group: "confirmed",
+    }) as any;
+    await Roster.autocomplete(moveInteraction);
+    expect(moveInteraction.respond).toHaveBeenCalledWith([
+      { name: "Charlie (#CUV02898)", value: "#CUV02898" },
+    ]);
+
+    const invalidMoveInteraction = makeAutocompleteInteraction({
+      focusedName: "players",
+      focusedValue: "",
+      subcommand: "manage",
+      roster: "roster-1",
+      action: "move",
+      group: "not-real",
+    }) as any;
+    await Roster.autocomplete(invalidMoveInteraction);
+    expect(invalidMoveInteraction.respond).toHaveBeenCalledWith([]);
+
+    const removeInteraction = makeAutocompleteInteraction({
+      focusedName: "players",
+      focusedValue: "",
+      subcommand: "manage",
+      roster: "roster-1",
+      action: "remove",
+    }) as any;
+    await Roster.autocomplete(removeInteraction);
+    expect(removeInteraction.respond).toHaveBeenCalledWith([
+      { name: "Alpha (#PYLQ0289)", value: "#PYLQ0289" },
+      { name: "Bravo (#QGRJ2222)", value: "#QGRJ2222" },
+      { name: "Charlie (#CUV02898)", value: "#CUV02898" },
+    ]);
+
+    const addInteraction = makeAutocompleteInteraction({
+      focusedName: "players",
+      focusedValue: "",
+      subcommand: "manage",
+      roster: "roster-1",
+      action: "add",
+    }) as any;
+    await Roster.autocomplete(addInteraction);
     expect(playerLinkService.listPlayerLinksForDiscordUser).toHaveBeenCalledWith({
       discordUserId: "111111111111111111",
     });
-    expect(interaction.respond).toHaveBeenCalledWith([
-      { name: "Alpha Prime (#PYLQ0289)", value: "#PYLQ0289" },
+    expect(addInteraction.respond).toHaveBeenCalledWith([
+      { name: "Delta (#VJQ28888)", value: "#VJQ28888" },
     ]);
   });
 
@@ -2682,21 +2824,4 @@ describe("/roster command", () => {
     ]);
   });
 
-  it("autocompletes roster user filters from guild display names and usernames", async () => {
-    const interaction = makeAutocompleteInteraction({
-      focusedName: "user",
-      focusedValue: "sin",
-      subcommand: "list",
-      guildMembers: [
-        { id: "111111111111111111", displayName: "Sin Display", username: "SinUser" },
-        { id: "222222222222222222", displayName: "Bravado", username: "BravoUser" },
-      ],
-    }) as any;
-
-    await Roster.autocomplete(interaction);
-
-    expect(interaction.respond).toHaveBeenCalledWith([
-      { name: "Sin Display (@SinUser)", value: "111111111111111111" },
-    ]);
-  });
 });
