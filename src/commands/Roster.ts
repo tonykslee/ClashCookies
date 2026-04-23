@@ -64,7 +64,15 @@ export {
 
 const rosterPermissionService = new CommandPermissionService();
 
-type RosterMutationAction = "add" | "move" | "remove" | "set_weight" | "open" | "close" | "archive";
+type RosterMutationAction =
+  | "add"
+  | "move"
+  | "remove"
+  | "change_roster"
+  | "set_weight"
+  | "open"
+  | "close"
+  | "archive";
 type RosterPostSettingsAction =
   | "export"
   | "customize"
@@ -95,6 +103,19 @@ function formatRosterAccountIdentity(account: { playerTag: string; playerName: s
 
 function formatRosterAccountIdentityList(accounts: Array<{ playerTag: string; playerName: string | null }>): string {
   return accounts.map(formatRosterAccountIdentity).join(", ");
+}
+
+function getAutocompleteUserOptionId(interaction: AutocompleteInteraction): string | null {
+  const options = interaction.options as unknown as {
+    getUser?: (name: string, required?: boolean) => { id?: string } | null;
+    data?: Array<{ name?: string; value?: unknown }>;
+  };
+  const selectedUser = options.getUser?.("user", false);
+  if (selectedUser?.id && String(selectedUser.id).trim().length > 0) {
+    return String(selectedUser.id).trim();
+  }
+  const rawValue = options.data?.find((option) => option.name === "user")?.value;
+  return typeof rawValue === "string" && rawValue.trim().length > 0 ? rawValue.trim() : null;
 }
 
 function formatRosterDiscordUserSelectionLabel(
@@ -287,6 +308,61 @@ function buildRosterMoveResultSummary(result: Awaited<ReturnType<typeof rosterSe
   const missing =
     result.missingTags.length > 0 ? ` (${result.missingTags.length} not found on that roster)` : "";
   return `Moved ${moved} to ${result.groupKey}${duplicate}${missing}.`;
+}
+
+function buildRosterChangeResultSummary(
+  result: Awaited<ReturnType<typeof rosterService.changeRosterSignups>>,
+): string {
+  if (result.outcome === "roster_not_found") {
+    return "That source roster is no longer available.";
+  }
+  if (result.outcome === "target_roster_not_found") {
+    return "That target roster is no longer available.";
+  }
+  if (result.outcome === "same_roster") {
+    return "Source and target rosters must be different.";
+  }
+  if (result.outcome === "source_roster_archived") {
+    return "That source roster is archived and can no longer be modified.";
+  }
+  if (result.outcome === "target_roster_archived") {
+    return "That target roster is archived and can no longer be modified.";
+  }
+  if (result.outcome === "target_group_not_found") {
+    return "That target roster group is no longer available.";
+  }
+
+  const destinationForAccount = (account: { targetGroupName: string | null; targetGroupKey: string }) =>
+    account.targetGroupName ?? account.targetGroupKey;
+  const lines = result.movedAccounts.map((account) => {
+    const destination = destinationForAccount(account);
+    const destinationLabel = destination ? `${result.targetRosterTitle} - ${destination}` : result.targetRosterTitle;
+    return `Moved ${formatRosterAccountIdentity(account)} to ${destinationLabel}.`;
+  });
+
+  if (result.duplicateTags.length > 0) {
+    lines.push(`Already on the target roster: ${result.duplicateTags.join(", ")}.`);
+  }
+  if (result.missingTags.length > 0) {
+    lines.push(`Not found on the source roster: ${result.missingTags.join(", ")}.`);
+  }
+  if (result.blockedAccounts.length > 0) {
+    const reason =
+      result.outcome === "roster_full"
+        ? "Roster full"
+        : result.outcome === "account_limit_exceeded"
+          ? "Account limit exceeded"
+          : result.outcome === "townhall_unavailable"
+            ? "Town hall data unavailable"
+            : result.outcome === "townhall_out_of_range"
+              ? "Town hall out of range"
+              : result.outcome === "roster_conflict"
+                ? "Roster conflict"
+                : "Blocked";
+    lines.push(`${reason}: ${formatRosterAccountIdentityList(result.blockedAccounts)}.`);
+  }
+
+  return lines.length > 0 ? lines.join("\n") : "No roster signups were changed.";
 }
 
 function buildRosterRemoveResultSummary(
@@ -2325,6 +2401,8 @@ async function handleRosterManageSubcommand(
 
   const action = interaction.options.getString("action", true) as RosterMutationAction;
   const playersInput = interaction.options.getString("players", false) ?? "";
+  const targetRosterId = interaction.options.getString("target_roster", false)?.trim() ?? "";
+  const targetGroupKey = interaction.options.getString("target_group", false)?.trim() ?? null;
   const playerTags = parseRosterPlayerTags(playersInput);
 
   if (action === "set_weight") {
@@ -2378,6 +2456,75 @@ async function handleRosterManageSubcommand(
   if (playerTags.length <= 0) {
     await interaction.editReply("Provide one or more player tags to update.");
     return;
+  }
+
+  if (action === "change_roster") {
+    if (!targetRosterId) {
+      await interaction.editReply("Provide a target roster for this action.");
+      return;
+    }
+
+    const targetRoster = await rosterService.findGuildRosterById({
+      guildId: interaction.guildId,
+      rosterId: targetRosterId,
+    });
+    if (!targetRoster) {
+      await interaction.editReply("That target roster is no longer available.");
+      return;
+    }
+
+    const result = await rosterService.changeRosterSignups({
+      sourceRosterId: roster.id,
+      targetRosterId: targetRoster.id,
+      targetGroupKey,
+      playerTags,
+      updatedByDiscordUserId: interaction.user.id,
+      cocService,
+    });
+
+    if (
+      result.outcome === "changed" ||
+      result.outcome === "nothing_changed" ||
+      result.outcome === "roster_conflict" ||
+      result.outcome === "townhall_unavailable" ||
+      result.outcome === "townhall_out_of_range" ||
+      result.outcome === "roster_full" ||
+      result.outcome === "account_limit_exceeded"
+    ) {
+      if (result.movedTags.length > 0) {
+        await syncRosterRolesForRoster(interaction.client, roster.id).catch(() => undefined);
+        await syncRosterRolesForRoster(interaction.client, targetRoster.id).catch(() => undefined);
+        await refreshExistingRosterPost(interaction, roster.id, cocService).catch(() => undefined);
+        await refreshExistingRosterPost(interaction, targetRoster.id, cocService).catch(() => undefined);
+      }
+      await interaction.editReply(buildRosterChangeResultSummary(result));
+      return;
+    }
+
+    if (result.outcome === "roster_not_found") {
+      await interaction.editReply("That source roster is no longer available.");
+      return;
+    }
+    if (result.outcome === "target_roster_not_found") {
+      await interaction.editReply("That target roster is no longer available.");
+      return;
+    }
+    if (result.outcome === "same_roster") {
+      await interaction.editReply("Source and target rosters must be different.");
+      return;
+    }
+    if (result.outcome === "source_roster_archived") {
+      await interaction.editReply("That source roster is archived and can no longer be modified.");
+      return;
+    }
+    if (result.outcome === "target_roster_archived") {
+      await interaction.editReply("That target roster is archived and can no longer be modified.");
+      return;
+    }
+    if (result.outcome === "target_group_not_found") {
+      await interaction.editReply("That target roster group is no longer available.");
+      return;
+    }
   }
 
   if (action === "add" || action === "move") {
@@ -2660,7 +2807,10 @@ async function handleRosterDeleteSubcommand(interaction: ChatInputCommandInterac
   );
 }
 
-async function autocompleteRosterOption(interaction: AutocompleteInteraction): Promise<void> {
+async function autocompleteRosterOption(
+  interaction: AutocompleteInteraction,
+  excludeRosterId: string | null = null,
+): Promise<void> {
   if (!interaction.inGuild() || !interaction.guildId) {
     await interaction.respond([]);
     return;
@@ -2671,11 +2821,15 @@ async function autocompleteRosterOption(interaction: AutocompleteInteraction): P
     guildId: interaction.guildId,
     name: focused,
   });
+  const filteredRosters =
+    excludeRosterId && excludeRosterId.length > 0
+      ? rosters.filter((roster) => roster.id !== excludeRosterId)
+      : rosters;
 
-  const clanNameByTag = await buildRosterAutocompleteClanNameMap(rosters);
+  const clanNameByTag = await buildRosterAutocompleteClanNameMap(filteredRosters);
 
   await interaction.respond(
-    rosters.slice(0, 25).map((roster) => {
+    filteredRosters.slice(0, 25).map((roster) => {
       const clanTag = normalizeClanTag(roster.clanTag ?? "") || null;
       const clanName = clanTag ? clanNameByTag.get(clanTag) ?? null : null;
       const labelParts = [roster.title];
@@ -2850,12 +3004,14 @@ async function autocompleteRosterGroup(interaction: AutocompleteInteraction): Pr
   }
 
   const focused = interaction.options.getFocused(true);
-  if (focused.name !== "group") {
+  if (focused.name !== "group" && focused.name !== "target_group") {
     await interaction.respond([]);
     return;
   }
 
-  const rosterId = interaction.options.getString("roster", false)?.trim();
+  const rosterId = interaction.options
+    .getString(focused.name === "target_group" ? "target_roster" : "roster", false)
+    ?.trim();
   if (!rosterId) {
     await interaction.respond([]);
     return;
@@ -2902,7 +3058,11 @@ async function autocompleteRosterManagePlayers(interaction: AutocompleteInteract
 
   const rosterId = interaction.options.getString("roster", false)?.trim();
   const action = interaction.options.getString("action", false)?.trim().toLowerCase();
-  if (!rosterId || !action || (action !== "add" && action !== "move" && action !== "remove")) {
+  if (
+    !rosterId ||
+    !action ||
+    (action !== "add" && action !== "move" && action !== "remove" && action !== "change_roster")
+  ) {
     await interaction.respond([]);
     return;
   }
@@ -2922,7 +3082,10 @@ async function autocompleteRosterManagePlayers(interaction: AutocompleteInteract
   const rosterGroups = Array.isArray((rosterView as { groups?: Array<{ key: string }> }).groups)
     ? (rosterView as { groups: Array<{ key: string }> }).groups
     : [];
-  if (action === "move" && !rosterGroups.some((group) => String(group.key ?? "").trim().toLowerCase() === normalizedGroupKey)) {
+  if (
+    action === "move" &&
+    !rosterGroups.some((group) => String(group.key ?? "").trim().toLowerCase() === normalizedGroupKey)
+  ) {
     await interaction.respond([]);
     return;
   }
@@ -2934,6 +3097,27 @@ async function autocompleteRosterManagePlayers(interaction: AutocompleteInteract
   const existingTags = new Set(
     rosterView.signups.map((signup) => normalizePlayerTag(signup.playerTag)).filter(Boolean),
   );
+  const selectedUserId = getAutocompleteUserOptionId(interaction);
+  const targetRosterId = interaction.options.getString("target_roster", false)?.trim() ?? "";
+  const targetRosterView =
+    action === "change_roster" && targetRosterId ? await rosterService.getRosterView(targetRosterId) : null;
+  if (action === "change_roster") {
+    if (!targetRosterId || !targetRosterView) {
+      await interaction.respond([]);
+      return;
+    }
+    if (
+      targetRosterView.roster.id === rosterView.roster.id ||
+      targetRosterView.roster.lifecycleState === ROSTER_LIFECYCLE_STATE.ARCHIVED
+    ) {
+      await interaction.respond([]);
+      return;
+    }
+  }
+  const targetExistingTags =
+    action === "change_roster" && targetRosterView
+      ? new Set(targetRosterView.signups.map((signup) => normalizePlayerTag(signup.playerTag)).filter(Boolean))
+      : new Set<string>();
 
   const choices =
     action === "add"
@@ -2948,9 +3132,19 @@ async function autocompleteRosterManagePlayers(interaction: AutocompleteInteract
           })
       : rosterView.signups
           .filter((signup) => {
+            const signupTag = normalizePlayerTag(signup.playerTag);
             if (action === "move") {
               const signupGroupKey = String(signup.group?.key ?? "").trim().toLowerCase();
               return signupGroupKey !== normalizedGroupKey;
+            }
+            if (action === "change_roster") {
+              if (selectedUserId && String(signup.discordUserId ?? "").trim() !== selectedUserId) {
+                return false;
+              }
+              if (targetExistingTags.has(signupTag)) {
+                return false;
+              }
+              return true;
             }
             return true;
           })
@@ -3190,11 +3384,32 @@ export const Roster: Command = {
             { name: "Add players", value: "add" },
             { name: "Move players", value: "move" },
             { name: "Remove players", value: "remove" },
+            { name: "Change roster", value: "change_roster" },
             { name: "Set weight", value: "set_weight" },
             { name: "Open roster", value: "open" },
             { name: "Close roster", value: "close" },
             { name: "Archive roster", value: "archive" },
           ],
+        },
+        {
+          name: "target_roster",
+          description: "Target roster for change roster",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          autocomplete: true,
+        },
+        {
+          name: "target_group",
+          description: "Target roster group key",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          autocomplete: true,
+        },
+        {
+          name: "user",
+          description: "Filter source players by Discord user",
+          type: ApplicationCommandOptionType.User,
+          required: false,
         },
         {
           name: "group",
@@ -3455,7 +3670,16 @@ export const Roster: Command = {
       await autocompleteRosterTrackedClan(interaction);
       return;
     }
+    if (focused.name === "target_roster") {
+      const sourceRosterId = interaction.options.getString("roster", false)?.trim() ?? null;
+      await autocompleteRosterOption(interaction, sourceRosterId);
+      return;
+    }
     if (focused.name === "group") {
+      await autocompleteRosterGroup(interaction);
+      return;
+    }
+    if (focused.name === "target_group") {
       await autocompleteRosterGroup(interaction);
       return;
     }

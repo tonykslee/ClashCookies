@@ -2271,6 +2271,519 @@ describe("RosterService", () => {
     }
   });
 
+  it("moves roster signups to a different roster and preserves the resolved destination group per player", async () => {
+    prismaMock.roster.findUnique.mockResolvedValueOnce({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "Source Roster",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      maxMembers: null,
+      maxAccountsPerUser: null,
+      minTownhall: null,
+      maxTownhall: null,
+      rosterRoleId: null,
+      allowMultiSignup: true,
+      sortBy: null,
+      importMembers: false,
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    } as any);
+    prismaMock.roster.findFirst.mockResolvedValueOnce({
+      id: "roster-2",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "Target Roster",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      maxMembers: null,
+      maxAccountsPerUser: null,
+      minTownhall: null,
+      maxTownhall: null,
+      rosterRoleId: null,
+      allowMultiSignup: true,
+      sortBy: null,
+      importMembers: false,
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    } as any);
+    prismaMock.rosterGroup.findMany.mockResolvedValueOnce([
+      {
+        id: "group-confirmed",
+        key: "confirmed",
+        name: "Confirmed",
+        description: "Primary roster members",
+        sortOrder: 0,
+      },
+      {
+        id: "group-substitute",
+        key: "substitute",
+        name: "Substitute",
+        description: "Reserve roster members",
+        sortOrder: 1,
+      },
+    ] as any);
+    prismaMock.rosterSignup.findMany
+      .mockResolvedValueOnce([
+        {
+          id: "signup-1",
+          rosterId: "roster-1",
+          groupId: "group-confirmed",
+          playerTag: "#PQL0289",
+          playerName: "Alpha",
+          discordUserId: "111111111111111111",
+          group: {
+            id: "group-confirmed",
+            key: "confirmed",
+            name: "Confirmed",
+            description: "Primary roster members",
+            sortOrder: 0,
+          },
+        },
+        {
+          id: "signup-2",
+          rosterId: "roster-1",
+          groupId: "group-confirmed",
+          playerTag: "#QGRJ2222",
+          playerName: "Bravo",
+          discordUserId: "222222222222222222",
+          group: {
+            id: "group-confirmed",
+            key: "confirmed",
+            name: "Confirmed",
+            description: "Primary roster members",
+            sortOrder: 0,
+          },
+        },
+        {
+          id: "signup-3",
+          rosterId: "roster-1",
+          groupId: "group-confirmed",
+          playerTag: "#CUV02898",
+          playerName: "Charlie",
+          discordUserId: "333333333333333333",
+          group: {
+            id: "group-confirmed",
+            key: "confirmed",
+            name: "Confirmed",
+            description: "Primary roster members",
+            sortOrder: 0,
+          },
+        },
+      ] as any)
+      .mockResolvedValueOnce([
+        {
+          playerTag: "#QGRJ2222",
+          discordUserId: "222222222222222222",
+        },
+      ] as any)
+      .mockResolvedValueOnce([] as any);
+    prismaMock.rosterSignup.createMany.mockResolvedValueOnce({ count: 2 });
+    prismaMock.rosterSignup.deleteMany.mockResolvedValueOnce({ count: 2 });
+
+    const result = await rosterService.changeRosterSignups({
+      sourceRosterId: "roster-1",
+      targetRosterId: "roster-2",
+      playerTags: ["#PQL0289", "#QGRJ2222", "#CUV02898"],
+      updatedByDiscordUserId: "111111111111111111",
+    });
+
+    expect(result).toMatchObject({
+      outcome: "changed",
+      sourceRosterId: "roster-1",
+      sourceRosterTitle: "Source Roster",
+      targetRosterId: "roster-2",
+      targetRosterTitle: "Target Roster",
+      requestedTags: ["#PQL0289", "#QGRJ2222", "#CUV02898"],
+      movedTags: ["#PQL0289", "#CUV02898"],
+      duplicateTags: ["#QGRJ2222"],
+      missingTags: [],
+    });
+    expect(result.movedAccounts).toEqual([
+      {
+        playerTag: "#PQL0289",
+        playerName: "Alpha",
+        targetGroupKey: "confirmed",
+        targetGroupName: "Confirmed",
+      },
+      {
+        playerTag: "#CUV02898",
+        playerName: "Charlie",
+        targetGroupKey: "confirmed",
+        targetGroupName: "Confirmed",
+      },
+    ]);
+    expect(prismaMock.rosterSignup.createMany).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({
+          rosterId: "roster-2",
+          groupId: "group-confirmed",
+          playerTag: "#PQL0289",
+          playerName: "Alpha",
+          discordUserId: "111111111111111111",
+        }),
+        expect.objectContaining({
+          rosterId: "roster-2",
+          groupId: "group-confirmed",
+          playerTag: "#CUV02898",
+          playerName: "Charlie",
+          discordUserId: "333333333333333333",
+        }),
+      ],
+      skipDuplicates: false,
+    });
+    expect(prismaMock.rosterSignup.deleteMany).toHaveBeenCalledWith({
+      where: {
+        rosterId: "roster-1",
+        playerTag: { in: ["#PQL0289", "#CUV02898"] },
+      },
+    });
+  });
+
+  it("rejects change roster when the requested target group is missing from the destination roster", async () => {
+    prismaMock.roster.findUnique.mockResolvedValueOnce({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "Source Roster",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      maxMembers: null,
+      maxAccountsPerUser: null,
+      minTownhall: null,
+      maxTownhall: null,
+      rosterRoleId: null,
+      allowMultiSignup: true,
+      sortBy: null,
+      importMembers: false,
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    } as any);
+    prismaMock.roster.findFirst.mockResolvedValueOnce({
+      id: "roster-2",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "Target Roster",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      maxMembers: null,
+      maxAccountsPerUser: null,
+      minTownhall: null,
+      maxTownhall: null,
+      rosterRoleId: null,
+      allowMultiSignup: true,
+      sortBy: null,
+      importMembers: false,
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    } as any);
+    prismaMock.rosterGroup.findMany.mockResolvedValueOnce([
+      {
+        id: "group-confirmed",
+        key: "confirmed",
+        name: "Confirmed",
+        description: "Primary roster members",
+        sortOrder: 0,
+      },
+    ] as any);
+
+    const result = await rosterService.changeRosterSignups({
+      sourceRosterId: "roster-1",
+      targetRosterId: "roster-2",
+      targetGroupKey: "substitute",
+      playerTags: ["#PQL0289"],
+      updatedByDiscordUserId: "111111111111111111",
+    });
+
+    expect(result).toMatchObject({
+      outcome: "target_group_not_found",
+      targetGroupKey: "substitute",
+      requestedTags: ["#PQL0289"],
+      movedTags: [],
+      duplicateTags: [],
+      missingTags: ["#PQL0289"],
+    });
+    expect(prismaMock.rosterSignup.createMany).not.toHaveBeenCalled();
+    expect(prismaMock.rosterSignup.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it("returns account_limit_exceeded when the target roster still has space but the player exceeds the per-user limit", async () => {
+    prismaMock.roster.findUnique.mockResolvedValueOnce({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "Source Roster",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      maxMembers: null,
+      maxAccountsPerUser: null,
+      minTownhall: null,
+      maxTownhall: null,
+      rosterRoleId: null,
+      allowMultiSignup: true,
+      sortBy: null,
+      importMembers: false,
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    } as any);
+    prismaMock.roster.findFirst.mockResolvedValueOnce({
+      id: "roster-2",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "Target Roster",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      maxMembers: 10,
+      maxAccountsPerUser: 1,
+      minTownhall: null,
+      maxTownhall: null,
+      rosterRoleId: null,
+      allowMultiSignup: true,
+      sortBy: null,
+      importMembers: false,
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    } as any);
+    prismaMock.rosterGroup.findMany.mockResolvedValueOnce([
+      {
+        id: "group-confirmed",
+        key: "confirmed",
+        name: "Confirmed",
+        description: "Primary roster members",
+        sortOrder: 0,
+      },
+    ] as any);
+    prismaMock.rosterSignup.findMany
+      .mockResolvedValueOnce([
+        {
+          id: "signup-1",
+          rosterId: "roster-1",
+          groupId: "group-confirmed",
+          playerTag: "#PQL0289",
+          playerName: "Alpha",
+          discordUserId: "111111111111111111",
+          group: {
+            id: "group-confirmed",
+            key: "confirmed",
+            name: "Confirmed",
+            description: "Primary roster members",
+            sortOrder: 0,
+          },
+        },
+      ] as any)
+      .mockResolvedValueOnce([
+        {
+          playerTag: "#ZZZ99999",
+          discordUserId: "111111111111111111",
+        },
+      ] as any)
+      .mockResolvedValueOnce([] as any);
+
+    const result = await rosterService.changeRosterSignups({
+      sourceRosterId: "roster-1",
+      targetRosterId: "roster-2",
+      playerTags: ["#PQL0289"],
+      updatedByDiscordUserId: "111111111111111111",
+    });
+
+    expect(result).toMatchObject({
+      outcome: "account_limit_exceeded",
+      sourceRosterId: "roster-1",
+      targetRosterId: "roster-2",
+      requestedTags: ["#PQL0289"],
+      movedTags: [],
+      duplicateTags: [],
+      missingTags: [],
+      blockedTags: ["#PQL0289"],
+      blockedAccounts: [{ playerTag: "#PQL0289", playerName: "Alpha" }],
+    });
+    expect(prismaMock.rosterSignup.createMany).not.toHaveBeenCalled();
+    expect(prismaMock.rosterSignup.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it("returns roster_full when the target roster capacity is exhausted", async () => {
+    prismaMock.roster.findUnique.mockResolvedValueOnce({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "Source Roster",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      maxMembers: null,
+      maxAccountsPerUser: null,
+      minTownhall: null,
+      maxTownhall: null,
+      rosterRoleId: null,
+      allowMultiSignup: true,
+      sortBy: null,
+      importMembers: false,
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    } as any);
+    prismaMock.roster.findFirst.mockResolvedValueOnce({
+      id: "roster-2",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "Target Roster",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      maxMembers: 1,
+      maxAccountsPerUser: null,
+      minTownhall: null,
+      maxTownhall: null,
+      rosterRoleId: null,
+      allowMultiSignup: true,
+      sortBy: null,
+      importMembers: false,
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    } as any);
+    prismaMock.rosterGroup.findMany.mockResolvedValueOnce([
+      {
+        id: "group-confirmed",
+        key: "confirmed",
+        name: "Confirmed",
+        description: "Primary roster members",
+        sortOrder: 0,
+      },
+    ] as any);
+    prismaMock.rosterSignup.findMany
+      .mockResolvedValueOnce([
+        {
+          id: "signup-1",
+          rosterId: "roster-1",
+          groupId: "group-confirmed",
+          playerTag: "#PQL0289",
+          playerName: "Alpha",
+          discordUserId: "111111111111111111",
+          group: {
+            id: "group-confirmed",
+            key: "confirmed",
+            name: "Confirmed",
+            description: "Primary roster members",
+            sortOrder: 0,
+          },
+        },
+      ] as any)
+      .mockResolvedValueOnce([
+        {
+          playerTag: "#ZZZ99999",
+          discordUserId: "222222222222222222",
+        },
+      ] as any)
+      .mockResolvedValueOnce([] as any);
+
+    const result = await rosterService.changeRosterSignups({
+      sourceRosterId: "roster-1",
+      targetRosterId: "roster-2",
+      playerTags: ["#PQL0289"],
+      updatedByDiscordUserId: "111111111111111111",
+    });
+
+    expect(result).toMatchObject({
+      outcome: "roster_full",
+      sourceRosterId: "roster-1",
+      targetRosterId: "roster-2",
+      requestedTags: ["#PQL0289"],
+      movedTags: [],
+      duplicateTags: [],
+      missingTags: [],
+      blockedTags: ["#PQL0289"],
+      blockedAccounts: [{ playerTag: "#PQL0289", playerName: "Alpha" }],
+    });
+    expect(prismaMock.rosterSignup.createMany).not.toHaveBeenCalled();
+    expect(prismaMock.rosterSignup.deleteMany).not.toHaveBeenCalled();
+  });
+
   it("builds roster ping previews for everyone, missing, and unregistered targets", async () => {
     const alphaTag = makeValidRosterPlayerTag(1);
     const bravoTag = makeValidRosterPlayerTag(2);

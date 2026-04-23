@@ -531,6 +531,218 @@ export type RemoveRosterSignupsResult =
       notOwnedTags: string[];
     };
 
+export type RosterChangeRosterIdentity = RosterAccountIdentity & {
+  targetGroupKey: string;
+  targetGroupName: string;
+};
+
+export type ChangeRosterSignupsResult =
+  | {
+      outcome: "changed";
+      sourceRosterId: string;
+      sourceRosterTitle: string;
+      targetRosterId: string;
+      targetRosterTitle: string;
+      targetRosterClanTag: string | null;
+      targetRosterClanName: string | null;
+      targetGroupKey: string | null;
+      targetGroupName: string | null;
+      requestedTags: string[];
+      movedTags: string[];
+      movedAccounts: RosterChangeRosterIdentity[];
+      duplicateTags: string[];
+      missingTags: string[];
+      blockedTags: string[];
+      blockedAccounts: RosterAccountIdentity[];
+    }
+  | {
+      outcome: "nothing_changed";
+      sourceRosterId: string;
+      sourceRosterTitle: string;
+      targetRosterId: string;
+      targetRosterTitle: string;
+      targetRosterClanTag: string | null;
+      targetRosterClanName: string | null;
+      targetGroupKey: string | null;
+      targetGroupName: string | null;
+      requestedTags: string[];
+      movedTags: string[];
+      movedAccounts: RosterChangeRosterIdentity[];
+      duplicateTags: string[];
+      missingTags: string[];
+      blockedTags: string[];
+      blockedAccounts: RosterAccountIdentity[];
+    }
+  | {
+      outcome: "roster_not_found";
+      sourceRosterId: string;
+      targetRosterId: string;
+      requestedTags: string[];
+      movedTags: string[];
+      movedAccounts: RosterChangeRosterIdentity[];
+      duplicateTags: string[];
+      missingTags: string[];
+      blockedTags: string[];
+      blockedAccounts: RosterAccountIdentity[];
+    }
+  | {
+      outcome: "target_roster_not_found";
+      sourceRosterId: string;
+      targetRosterId: string;
+      requestedTags: string[];
+      movedTags: string[];
+      movedAccounts: RosterChangeRosterIdentity[];
+      duplicateTags: string[];
+      missingTags: string[];
+      blockedTags: string[];
+      blockedAccounts: RosterAccountIdentity[];
+    }
+  | {
+      outcome: "same_roster";
+      sourceRosterId: string;
+      targetRosterId: string;
+      requestedTags: string[];
+      movedTags: string[];
+      movedAccounts: RosterChangeRosterIdentity[];
+      duplicateTags: string[];
+      missingTags: string[];
+      blockedTags: string[];
+      blockedAccounts: RosterAccountIdentity[];
+    }
+  | {
+      outcome: "source_roster_archived";
+      sourceRosterId: string;
+      sourceRosterTitle: string;
+      targetRosterId: string;
+      targetRosterTitle: string;
+      requestedTags: string[];
+      movedTags: string[];
+      movedAccounts: RosterChangeRosterIdentity[];
+      duplicateTags: string[];
+      missingTags: string[];
+      blockedTags: string[];
+      blockedAccounts: RosterAccountIdentity[];
+    }
+  | {
+      outcome: "target_roster_archived";
+      sourceRosterId: string;
+      sourceRosterTitle: string;
+      targetRosterId: string;
+      targetRosterTitle: string;
+      requestedTags: string[];
+      movedTags: string[];
+      movedAccounts: RosterChangeRosterIdentity[];
+      duplicateTags: string[];
+      missingTags: string[];
+      blockedTags: string[];
+      blockedAccounts: RosterAccountIdentity[];
+    }
+  | {
+      outcome: "target_group_not_found";
+      sourceRosterId: string;
+      sourceRosterTitle: string;
+      targetRosterId: string;
+      targetRosterTitle: string;
+      targetGroupKey: string;
+      requestedTags: string[];
+      movedTags: string[];
+      movedAccounts: RosterChangeRosterIdentity[];
+      duplicateTags: string[];
+      missingTags: string[];
+      blockedTags: string[];
+      blockedAccounts: RosterAccountIdentity[];
+    }
+  | {
+      outcome: "roster_full";
+      sourceRosterId: string;
+      sourceRosterTitle: string;
+      targetRosterId: string;
+      targetRosterTitle: string;
+      targetRosterClanTag: string | null;
+      targetRosterClanName: string | null;
+      targetGroupKey: string | null;
+      targetGroupName: string | null;
+      requestedTags: string[];
+      movedTags: string[];
+      movedAccounts: RosterChangeRosterIdentity[];
+      duplicateTags: string[];
+      missingTags: string[];
+      blockedTags: string[];
+      blockedAccounts: RosterAccountIdentity[];
+    }
+  | {
+      outcome: "account_limit_exceeded";
+      sourceRosterId: string;
+      sourceRosterTitle: string;
+      targetRosterId: string;
+      targetRosterTitle: string;
+      targetRosterClanTag: string | null;
+      targetRosterClanName: string | null;
+      targetGroupKey: string | null;
+      targetGroupName: string | null;
+      requestedTags: string[];
+      movedTags: string[];
+      movedAccounts: RosterChangeRosterIdentity[];
+      duplicateTags: string[];
+      missingTags: string[];
+      blockedTags: string[];
+      blockedAccounts: RosterAccountIdentity[];
+    }
+  | {
+      outcome: "townhall_unavailable";
+      sourceRosterId: string;
+      sourceRosterTitle: string;
+      targetRosterId: string;
+      targetRosterTitle: string;
+      targetRosterClanTag: string | null;
+      targetRosterClanName: string | null;
+      targetGroupKey: string | null;
+      targetGroupName: string | null;
+      requestedTags: string[];
+      movedTags: string[];
+      movedAccounts: RosterChangeRosterIdentity[];
+      duplicateTags: string[];
+      missingTags: string[];
+      blockedTags: string[];
+      blockedAccounts: RosterAccountIdentity[];
+    }
+  | {
+      outcome: "townhall_out_of_range";
+      sourceRosterId: string;
+      sourceRosterTitle: string;
+      targetRosterId: string;
+      targetRosterTitle: string;
+      targetRosterClanTag: string | null;
+      targetRosterClanName: string | null;
+      targetGroupKey: string | null;
+      targetGroupName: string | null;
+      requestedTags: string[];
+      movedTags: string[];
+      movedAccounts: RosterChangeRosterIdentity[];
+      duplicateTags: string[];
+      missingTags: string[];
+      blockedTags: string[];
+      blockedAccounts: RosterAccountIdentity[];
+    }
+  | {
+      outcome: "roster_conflict";
+      sourceRosterId: string;
+      sourceRosterTitle: string;
+      targetRosterId: string;
+      targetRosterTitle: string;
+      targetRosterClanTag: string | null;
+      targetRosterClanName: string | null;
+      targetGroupKey: string | null;
+      targetGroupName: string | null;
+      requestedTags: string[];
+      movedTags: string[];
+      movedAccounts: RosterChangeRosterIdentity[];
+      duplicateTags: string[];
+      missingTags: string[];
+      blockedTags: string[];
+      blockedAccounts: RosterAccountIdentity[];
+    };
+
 export type RosterLifecycleUpdateResult =
   | {
       outcome: "updated";
@@ -4200,6 +4412,610 @@ export class RosterService {
       duplicateTags,
       missingTags,
     };
+  }
+
+  async changeRosterSignups(input: {
+    sourceRosterId: string;
+    targetRosterId: string;
+    targetGroupKey?: string | null;
+    playerTags?: string[] | null;
+    updatedByDiscordUserId?: string | null;
+    cocService?: CoCService | null;
+  }): Promise<ChangeRosterSignupsResult> {
+    const requestedTags = normalizeRosterPlayerTags(Array.isArray(input.playerTags) ? input.playerTags : []);
+    if (requestedTags.length <= 0) {
+      return {
+        outcome: "nothing_changed",
+        sourceRosterId: input.sourceRosterId,
+        sourceRosterTitle: "Unknown Roster",
+        targetRosterId: input.targetRosterId,
+        targetRosterTitle: "Unknown Roster",
+        targetRosterClanTag: null,
+        targetRosterClanName: null,
+        targetGroupKey: null,
+        targetGroupName: null,
+        requestedTags,
+        movedTags: [],
+        movedAccounts: [],
+        duplicateTags: [],
+        missingTags: [],
+        blockedTags: [],
+        blockedAccounts: [],
+      };
+    }
+
+    return prisma.$transaction(async (tx: any) => {
+      const sourceRoster = await tx.roster.findUnique({
+        where: { id: input.sourceRosterId },
+        select: {
+          id: true,
+          guildId: true,
+          lifecycleState: true,
+          rosterType: true,
+          rosterCategory: true,
+          title: true,
+          clanTag: true,
+          maxMembers: true,
+          maxAccountsPerUser: true,
+          minTownhall: true,
+          maxTownhall: true,
+          allowMultiSignup: true,
+        },
+      });
+      if (!sourceRoster) {
+        return {
+          outcome: "roster_not_found",
+          sourceRosterId: input.sourceRosterId,
+          targetRosterId: input.targetRosterId,
+          requestedTags,
+          movedTags: [],
+          movedAccounts: [],
+          duplicateTags: [],
+          missingTags: requestedTags,
+          blockedTags: [],
+          blockedAccounts: [],
+        } as const;
+      }
+      if (!canManagerMutateRoster(sourceRoster.lifecycleState)) {
+        return {
+          outcome: "source_roster_archived",
+          sourceRosterId: sourceRoster.id,
+          sourceRosterTitle: sourceRoster.title,
+          targetRosterId: input.targetRosterId,
+          targetRosterTitle: "Unknown Roster",
+          requestedTags,
+          movedTags: [],
+          movedAccounts: [],
+          duplicateTags: [],
+          missingTags: requestedTags,
+          blockedTags: [],
+          blockedAccounts: [],
+        } as const;
+      }
+
+      const targetRoster = await tx.roster.findFirst({
+        where: {
+          id: input.targetRosterId,
+          guildId: sourceRoster.guildId,
+        },
+        select: {
+          id: true,
+          lifecycleState: true,
+          rosterType: true,
+          rosterCategory: true,
+          title: true,
+          clanTag: true,
+          maxMembers: true,
+          maxAccountsPerUser: true,
+          minTownhall: true,
+          maxTownhall: true,
+          allowMultiSignup: true,
+        },
+      });
+      if (!targetRoster) {
+        return {
+          outcome: "target_roster_not_found",
+          sourceRosterId: sourceRoster.id,
+          targetRosterId: input.targetRosterId,
+          requestedTags,
+          movedTags: [],
+          movedAccounts: [],
+          duplicateTags: [],
+          missingTags: requestedTags,
+          blockedTags: [],
+          blockedAccounts: [],
+        } as const;
+      }
+      if (sourceRoster.id === targetRoster.id) {
+        return {
+          outcome: "same_roster",
+          sourceRosterId: sourceRoster.id,
+          targetRosterId: targetRoster.id,
+          requestedTags,
+          movedTags: [],
+          movedAccounts: [],
+          duplicateTags: [],
+          missingTags: requestedTags,
+          blockedTags: [],
+          blockedAccounts: [],
+        } as const;
+      }
+      if (!canManagerMutateRoster(targetRoster.lifecycleState)) {
+        return {
+          outcome: "target_roster_archived",
+          sourceRosterId: sourceRoster.id,
+          sourceRosterTitle: sourceRoster.title,
+          targetRosterId: targetRoster.id,
+          targetRosterTitle: targetRoster.title,
+          requestedTags,
+          movedTags: [],
+          movedAccounts: [],
+          duplicateTags: [],
+          missingTags: requestedTags,
+          blockedTags: [],
+          blockedAccounts: [],
+        } as const;
+      }
+
+      type ChangeRosterGroupRow = {
+        id: string;
+        key: string;
+        name: string;
+        description: string | null;
+        sortOrder: number;
+      };
+      type ChangeRosterSignupRow = {
+        id: string;
+        rosterId: string;
+        groupId: string | null;
+        playerTag: string;
+        playerName: string | null;
+        discordUserId: string;
+        group: ChangeRosterGroupRow | null;
+      };
+
+      const targetGroups = (await tx.rosterGroup.findMany({
+        where: { rosterId: targetRoster.id },
+        orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+        select: {
+          id: true,
+          key: true,
+          name: true,
+          description: true,
+          sortOrder: true,
+        },
+      })) as ChangeRosterGroupRow[];
+      const targetGroupKeyInput = input.targetGroupKey !== undefined ? String(input.targetGroupKey ?? "").trim() : null;
+      const normalizedTargetGroupKey = targetGroupKeyInput ? normalizeRosterGroupKey(targetGroupKeyInput) : null;
+      const targetGroupByKey = new Map<string, ChangeRosterGroupRow>(
+        targetGroups.map((group) => [normalizeRosterGroupKey(group.key), group] as const),
+      );
+      const defaultTargetGroup = targetGroups[0] ?? null;
+      if (normalizedTargetGroupKey) {
+        if (!targetGroupByKey.has(normalizedTargetGroupKey)) {
+          return {
+            outcome: "target_group_not_found",
+            sourceRosterId: sourceRoster.id,
+            sourceRosterTitle: sourceRoster.title,
+            targetRosterId: targetRoster.id,
+            targetRosterTitle: targetRoster.title,
+            targetGroupKey: normalizedTargetGroupKey,
+            requestedTags,
+            movedTags: [],
+            movedAccounts: [],
+            duplicateTags: [],
+            missingTags: requestedTags,
+            blockedTags: [],
+            blockedAccounts: [],
+          } as const;
+        }
+      } else if (!defaultTargetGroup) {
+        return {
+          outcome: "target_group_not_found",
+          sourceRosterId: sourceRoster.id,
+          sourceRosterTitle: sourceRoster.title,
+          targetRosterId: targetRoster.id,
+          targetRosterTitle: targetRoster.title,
+          targetGroupKey: "",
+          requestedTags,
+          movedTags: [],
+          movedAccounts: [],
+          duplicateTags: [],
+          missingTags: requestedTags,
+          blockedTags: [],
+          blockedAccounts: [],
+        } as const;
+      }
+
+      const sourceSignups = (await tx.rosterSignup.findMany({
+        where: {
+          rosterId: sourceRoster.id,
+          playerTag: { in: requestedTags },
+        },
+        select: {
+          id: true,
+          rosterId: true,
+          groupId: true,
+          playerTag: true,
+          playerName: true,
+          discordUserId: true,
+          group: {
+            select: {
+              id: true,
+              key: true,
+              name: true,
+              description: true,
+              sortOrder: true,
+            },
+          },
+        },
+      })) as ChangeRosterSignupRow[];
+      const sourceByTag = new Map<string, ChangeRosterSignupRow>(
+        sourceSignups
+          .map((signup) => [normalizePlayerTag(signup.playerTag), signup] as const)
+          .filter((entry): entry is readonly [string, ChangeRosterSignupRow] => Boolean(entry[0])),
+      );
+      const sourceTags = requestedTags.filter((tag) => sourceByTag.has(tag));
+      const missingTags = requestedTags.filter((tag) => !sourceByTag.has(tag));
+
+      const targetExistingSignups = (await tx.rosterSignup.findMany({
+        where: {
+          rosterId: targetRoster.id,
+        },
+        select: {
+          playerTag: true,
+          discordUserId: true,
+        },
+      })) as Array<{ playerTag: string; discordUserId: string | null }>;
+      const targetExistingTags = new Set(
+        targetExistingSignups.map((signup) => normalizePlayerTag(signup.playerTag)).filter(Boolean),
+      );
+      const duplicateTags = sourceTags.filter((tag) => targetExistingTags.has(tag));
+      const candidateTags = sourceTags.filter((tag) => !targetExistingTags.has(tag));
+
+      let targetCount = targetExistingSignups.length;
+      const targetOwnedCountByUser = new Map<string, number>();
+      for (const signup of targetExistingSignups) {
+        const normalizedDiscordUserId = normalizeDiscordUserId(signup.discordUserId) ?? signup.discordUserId;
+        if (!normalizedDiscordUserId) continue;
+        targetOwnedCountByUser.set(normalizedDiscordUserId, (targetOwnedCountByUser.get(normalizedDiscordUserId) ?? 0) + 1);
+      }
+
+      const conflictRows =
+        candidateTags.length > 0
+          ? ((await tx.rosterSignup.findMany({
+              where: {
+                playerTag: { in: candidateTags },
+                rosterId: { notIn: [sourceRoster.id, targetRoster.id] },
+                roster: {
+                  rosterType: targetRoster.rosterType,
+                  rosterCategory: targetRoster.rosterCategory,
+                  lifecycleState: { in: ROSTER_CONFLICT_LIFECYCLE_STATES.filter(isRosterConflictEligible) },
+                },
+              },
+              select: {
+                playerTag: true,
+                rosterId: true,
+              },
+            })) as Array<{ playerTag: string; rosterId: string }>)
+          : [];
+      const conflictTags = new Set(normalizeRosterPlayerTags(conflictRows.map((row) => row.playerTag)));
+
+      const targetTownHallResolution =
+        isRosterTownHallGated(targetRoster) && candidateTags.length > 0
+          ? await resolveRosterPlayerTownHallMap({
+              rosterType: targetRoster.rosterType,
+              clanTag: targetRoster.clanTag,
+              playerTags: candidateTags,
+              allowLiveFetch: true,
+              cocService: input.cocService ?? null,
+            })
+          : null;
+      const blockedConflictTags: string[] = [];
+      const blockedConflictAccounts: RosterAccountIdentity[] = [];
+      const blockedRosterFullTags: string[] = [];
+      const blockedRosterFullAccounts: RosterAccountIdentity[] = [];
+      const blockedAccountLimitTags: string[] = [];
+      const blockedAccountLimitAccounts: RosterAccountIdentity[] = [];
+      const blockedUnavailableTags: string[] = [];
+      const blockedUnavailableAccounts: RosterAccountIdentity[] = [];
+      const blockedOutOfRangeTags: string[] = [];
+      const blockedOutOfRangeAccounts: RosterAccountIdentity[] = [];
+      const blockedOutcomeOrder: Array<
+        "roster_conflict" | "roster_full" | "account_limit_exceeded" | "townhall_unavailable" | "townhall_out_of_range"
+      > = [];
+      const movedTags: string[] = [];
+      const movedAccounts: RosterChangeRosterIdentity[] = [];
+      const movedRowsByGroupId = new Map<
+        string,
+        Array<{
+          rosterId: string;
+          groupId: string;
+          playerTag: string;
+          playerName: string | null;
+          discordUserId: string;
+        }>
+      >();
+
+      if (targetTownHallResolution) {
+        logRosterTownHallResolutionDiagnostics({
+          rosterId: targetRoster.id,
+          rosterType: targetRoster.rosterType,
+          clanTag: targetRoster.clanTag,
+          requestedTags,
+          linkedTags: sourceTags,
+          resolution: targetTownHallResolution,
+          blockedUnavailableTags,
+          blockedOutOfRangeTags,
+          cocServicePresent: Boolean(input.cocService),
+        });
+      }
+
+      for (const tag of candidateTags) {
+        const sourceSignup = sourceByTag.get(tag) ?? null;
+        if (!sourceSignup) {
+          continue;
+        }
+        const blockedAccount = {
+          playerTag: tag,
+          playerName: normalizeRosterText(sourceSignup.playerName ?? null),
+        };
+        if (conflictTags.has(tag)) {
+          blockedConflictTags.push(tag);
+          blockedConflictAccounts.push(blockedAccount);
+          blockedOutcomeOrder.push("roster_conflict");
+          continue;
+        }
+
+        const sourceGroupKey = normalizeRosterGroupKey(sourceSignup.group?.key ?? "");
+        const resolvedTargetGroup =
+          normalizedTargetGroupKey && targetGroupByKey.has(normalizedTargetGroupKey)
+            ? targetGroupByKey.get(normalizedTargetGroupKey) ?? null
+            : (sourceGroupKey && targetGroupByKey.get(sourceGroupKey)) ?? defaultTargetGroup;
+        if (!resolvedTargetGroup) {
+          return {
+            outcome: "target_group_not_found",
+            sourceRosterId: sourceRoster.id,
+            sourceRosterTitle: sourceRoster.title,
+            targetRosterId: targetRoster.id,
+            targetRosterTitle: targetRoster.title,
+            targetGroupKey: normalizedTargetGroupKey ?? sourceGroupKey ?? "",
+            requestedTags,
+            movedTags,
+            movedAccounts,
+            duplicateTags,
+            missingTags,
+            blockedTags: [],
+            blockedAccounts: [],
+          } as const;
+        }
+
+        const maxMembers = normalizeRosterInt(targetRoster.maxMembers);
+        if (maxMembers !== null && targetCount + movedTags.length + 1 > maxMembers) {
+          blockedRosterFullTags.push(tag);
+          blockedRosterFullAccounts.push(blockedAccount);
+          blockedOutcomeOrder.push("roster_full");
+          continue;
+        }
+
+        const normalizedDiscordUserId = normalizeDiscordUserId(sourceSignup.discordUserId) ?? sourceSignup.discordUserId;
+        const effectiveMaxAccountsPerUser =
+          targetRoster.allowMultiSignup === false
+            ? 1
+            : normalizeRosterInt(targetRoster.maxAccountsPerUser);
+        if (effectiveMaxAccountsPerUser !== null) {
+          const ownedCount = targetOwnedCountByUser.get(normalizedDiscordUserId) ?? 0;
+          if (ownedCount + 1 > effectiveMaxAccountsPerUser) {
+            blockedAccountLimitTags.push(tag);
+            blockedAccountLimitAccounts.push(blockedAccount);
+            blockedOutcomeOrder.push("account_limit_exceeded");
+            continue;
+          }
+        }
+
+        if (targetTownHallResolution) {
+          const townHall = targetTownHallResolution.townHallByTag.get(tag) ?? null;
+          if (townHall === null) {
+            blockedUnavailableTags.push(tag);
+            blockedUnavailableAccounts.push(blockedAccount);
+            blockedOutcomeOrder.push("townhall_unavailable");
+            continue;
+          }
+          const minTownhall = normalizeRosterInt(targetRoster.minTownhall);
+          const maxTownhall = normalizeRosterInt(targetRoster.maxTownhall);
+          if ((minTownhall !== null && townHall < minTownhall) || (maxTownhall !== null && townHall > maxTownhall)) {
+            blockedOutOfRangeTags.push(tag);
+            blockedOutOfRangeAccounts.push(blockedAccount);
+            blockedOutcomeOrder.push("townhall_out_of_range");
+            continue;
+          }
+        }
+
+        const movedRow = {
+          rosterId: targetRoster.id,
+          groupId: resolvedTargetGroup.id,
+          playerTag: tag,
+          playerName: normalizeRosterText(sourceSignup.playerName ?? null),
+          discordUserId: normalizedDiscordUserId,
+        };
+        const rows = movedRowsByGroupId.get(resolvedTargetGroup.id) ?? [];
+        rows.push(movedRow);
+        movedRowsByGroupId.set(resolvedTargetGroup.id, rows);
+        movedTags.push(tag);
+        movedAccounts.push({
+          playerTag: tag,
+          playerName: normalizeRosterText(sourceSignup.playerName ?? null),
+          targetGroupKey: resolvedTargetGroup.key,
+          targetGroupName: resolvedTargetGroup.name,
+        });
+        targetCount += 1;
+        targetOwnedCountByUser.set(normalizedDiscordUserId, (targetOwnedCountByUser.get(normalizedDiscordUserId) ?? 0) + 1);
+      }
+
+      if (movedTags.length > 0) {
+        for (const rows of movedRowsByGroupId.values()) {
+          await tx.rosterSignup.createMany({
+            data: rows,
+            skipDuplicates: false,
+          });
+        }
+        await tx.rosterSignup.deleteMany({
+          where: {
+            rosterId: sourceRoster.id,
+            playerTag: { in: movedTags },
+          },
+        });
+      }
+
+      const buildSharedResult = <T extends { outcome: string }>(result: T): T => result;
+      if (movedTags.length > 0) {
+        return buildSharedResult({
+          outcome: "changed",
+          sourceRosterId: sourceRoster.id,
+          sourceRosterTitle: sourceRoster.title,
+          targetRosterId: targetRoster.id,
+          targetRosterTitle: targetRoster.title,
+          targetRosterClanTag: targetRoster.clanTag ?? null,
+          targetRosterClanName: null,
+          targetGroupKey: normalizedTargetGroupKey,
+          targetGroupName: normalizedTargetGroupKey
+            ? targetGroupByKey.get(normalizedTargetGroupKey)?.name ?? null
+            : null,
+          requestedTags,
+          movedTags,
+          movedAccounts,
+          duplicateTags,
+          missingTags,
+          blockedTags: [
+            ...blockedConflictTags,
+            ...blockedRosterFullTags,
+            ...blockedAccountLimitTags,
+            ...blockedUnavailableTags,
+            ...blockedOutOfRangeTags,
+          ],
+          blockedAccounts: [
+            ...blockedConflictAccounts,
+            ...blockedRosterFullAccounts,
+            ...blockedAccountLimitAccounts,
+            ...blockedUnavailableAccounts,
+            ...blockedOutOfRangeAccounts,
+          ],
+        });
+      }
+
+      if (blockedUnavailableTags.length > 0) {
+        return buildSharedResult({
+          outcome: "townhall_unavailable",
+          sourceRosterId: sourceRoster.id,
+          sourceRosterTitle: sourceRoster.title,
+          targetRosterId: targetRoster.id,
+          targetRosterTitle: targetRoster.title,
+          targetRosterClanTag: targetRoster.clanTag ?? null,
+          targetRosterClanName: null,
+          targetGroupKey: normalizedTargetGroupKey,
+          targetGroupName: normalizedTargetGroupKey
+            ? targetGroupByKey.get(normalizedTargetGroupKey)?.name ?? null
+            : null,
+          requestedTags,
+          movedTags,
+          movedAccounts,
+          duplicateTags,
+          missingTags,
+          blockedTags: blockedUnavailableTags,
+          blockedAccounts: blockedUnavailableAccounts,
+        });
+      }
+      if (blockedOutOfRangeTags.length > 0) {
+        return buildSharedResult({
+          outcome: "townhall_out_of_range",
+          sourceRosterId: sourceRoster.id,
+          sourceRosterTitle: sourceRoster.title,
+          targetRosterId: targetRoster.id,
+          targetRosterTitle: targetRoster.title,
+          targetRosterClanTag: targetRoster.clanTag ?? null,
+          targetRosterClanName: null,
+          targetGroupKey: normalizedTargetGroupKey,
+          targetGroupName: normalizedTargetGroupKey
+            ? targetGroupByKey.get(normalizedTargetGroupKey)?.name ?? null
+            : null,
+          requestedTags,
+          movedTags,
+          movedAccounts,
+          duplicateTags,
+          missingTags,
+          blockedTags: blockedOutOfRangeTags,
+          blockedAccounts: blockedOutOfRangeAccounts,
+        });
+      }
+      if (blockedOutcomeOrder.length > 0) {
+        const blockedOutcome = blockedOutcomeOrder[0];
+        const blockedTags =
+          blockedOutcome === "roster_conflict"
+            ? blockedConflictTags
+            : blockedOutcome === "roster_full"
+              ? blockedRosterFullTags
+              : blockedOutcome === "account_limit_exceeded"
+                ? blockedAccountLimitTags
+                : blockedOutcome === "townhall_unavailable"
+                  ? blockedUnavailableTags
+                  : blockedOutOfRangeTags;
+        const blockedAccounts =
+          blockedOutcome === "roster_conflict"
+            ? blockedConflictAccounts
+            : blockedOutcome === "roster_full"
+              ? blockedRosterFullAccounts
+              : blockedOutcome === "account_limit_exceeded"
+                ? blockedAccountLimitAccounts
+                : blockedOutcome === "townhall_unavailable"
+                  ? blockedUnavailableAccounts
+                  : blockedOutOfRangeAccounts;
+        return buildSharedResult({
+          outcome: blockedOutcome,
+          sourceRosterId: sourceRoster.id,
+          sourceRosterTitle: sourceRoster.title,
+          targetRosterId: targetRoster.id,
+          targetRosterTitle: targetRoster.title,
+          targetRosterClanTag: targetRoster.clanTag ?? null,
+          targetRosterClanName: null,
+          targetGroupKey: normalizedTargetGroupKey,
+          targetGroupName: normalizedTargetGroupKey
+            ? targetGroupByKey.get(normalizedTargetGroupKey)?.name ?? null
+            : null,
+          requestedTags,
+          movedTags,
+          movedAccounts,
+          duplicateTags,
+          missingTags,
+          blockedTags,
+          blockedAccounts,
+          conflictingRosterIds:
+            blockedOutcome === "roster_conflict"
+              ? [...new Set(conflictRows.map((row) => row.rosterId))]
+              : undefined,
+        } as any);
+      }
+
+      return buildSharedResult({
+        outcome: "nothing_changed",
+        sourceRosterId: sourceRoster.id,
+        sourceRosterTitle: sourceRoster.title,
+        targetRosterId: targetRoster.id,
+        targetRosterTitle: targetRoster.title,
+        targetRosterClanTag: targetRoster.clanTag ?? null,
+        targetRosterClanName: null,
+        targetGroupKey: normalizedTargetGroupKey,
+        targetGroupName: normalizedTargetGroupKey
+          ? targetGroupByKey.get(normalizedTargetGroupKey)?.name ?? null
+          : null,
+        requestedTags,
+        movedTags,
+        movedAccounts,
+        duplicateTags,
+        missingTags,
+        blockedTags: [],
+        blockedAccounts: [],
+      });
+    });
   }
 
   async removeRosterSignupsAsManager(input: {
