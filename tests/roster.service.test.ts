@@ -68,6 +68,48 @@ const todoSnapshotServiceMock = vi.hoisted(() => ({
   refreshSnapshotsForPlayerTags: vi.fn(),
 }));
 
+function makeRosterEmojiClient() {
+  const makeEmoji = (name: string, rendered: string) => ({
+    id: `${name}-id`,
+    name,
+    animated: false,
+    toString: () => rendered,
+  });
+
+  const emojis = new Map([
+    ["house", makeEmoji("house", "<:house:111>")],
+    ["th18", makeEmoji("th18", "<:th18:118>")],
+  ]);
+
+  return {
+    application: {
+      fetch: vi.fn().mockResolvedValue(undefined),
+      emojis: {
+        fetch: vi.fn().mockResolvedValue(emojis),
+      },
+    },
+  } as any;
+}
+
+function flattenComponentRows(components: any[]): any[] {
+  return components.flatMap((row) => {
+    const rowJson = row.toJSON?.() ?? row;
+    return Array.isArray(rowJson?.components) ? rowJson.components : [];
+  });
+}
+
+function makeValidRosterPlayerTag(index: number): string {
+  const alphabet = ["0", "2", "8", "9"];
+  const normalizedIndex = Math.max(0, Math.trunc(index));
+  let remaining = normalizedIndex;
+  const digits = [0, 0, 0, 0];
+  for (let position = digits.length - 1; position >= 0; position -= 1) {
+    digits[position] = remaining % alphabet.length;
+    remaining = Math.trunc(remaining / alphabet.length);
+  }
+  return `#PQL${digits.map((digit) => alphabet[digit] ?? "0").join("")}`;
+}
+
 vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
@@ -664,6 +706,111 @@ describe("RosterService", () => {
       playerTags: ["#PQL0289"],
       cocService,
     });
+  });
+
+  it("logs town hall source diagnostics and reuses live refresh data when refreshed snapshots are still invisible", async () => {
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
+      { playerTag: "#298CG8UJG", linkedName: "Player 298", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+    ]);
+    prismaMock.roster.findUnique.mockResolvedValueOnce({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      maxMembers: null,
+      maxAccountsPerUser: null,
+      minTownhall: 13,
+      maxTownhall: null,
+      rosterRoleId: null,
+      allowMultiSignup: true,
+      sortBy: null,
+      importMembers: false,
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    } as any);
+    cwlStateServiceMock.listSeasonRosterForClan.mockResolvedValue([
+      { playerTag: "#298CG8UJG", playerName: "Player 298", townHall: null },
+    ]);
+    todoSnapshotServiceMock.listSnapshotsByPlayerTags
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    todoSnapshotServiceMock.refreshSnapshotsForPlayerTags.mockImplementation(async ({ cocService }) => {
+      await cocService?.getPlayerRaw("#298CG8UJG", { suppressTelemetry: true });
+      return {
+        playerCount: 1,
+        updatedCount: 1,
+      };
+    });
+    const cocService = {
+      getPlayerRaw: vi.fn().mockResolvedValue({
+        townHallLevel: 15,
+        clan: { tag: "#2QG2C08UP" },
+      }),
+    } as any;
+    const consoleInfoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+
+    try {
+      const result = await rosterService.signupLinkedAccounts({
+        rosterId: "roster-1",
+        groupKey: "confirmed",
+        discordUserId: "111111111111111111",
+        cocService,
+      });
+
+      expect(result).toMatchObject({
+        outcome: "created",
+        createdTags: ["#298CG8UJG"],
+      });
+      expect(cocService.getPlayerRaw).toHaveBeenCalledWith("#298CG8UJG", {
+        suppressTelemetry: true,
+      });
+      expect(todoSnapshotServiceMock.refreshSnapshotsForPlayerTags).toHaveBeenCalledWith({
+        playerTags: ["#298CG8UJG"],
+        cocService,
+      });
+
+      const lastCall = consoleInfoSpy.mock.calls[consoleInfoSpy.mock.calls.length - 1] ?? [];
+      const logLine = String(lastCall[0] ?? "");
+      expect(logLine).toContain("[roster-townhall] ");
+      const payload = JSON.parse(logLine.replace(/^\[roster-townhall\]\s*/, ""));
+      expect(payload).toMatchObject({
+        roster_id: "roster-1",
+        roster_type: "CWL",
+        roster_clan_tag: "#2QG2C08UP",
+        requested_player_tags: ["#298CG8UJG"],
+        linked_tags: ["#298CG8UJG"],
+        coc_service_present: true,
+        live_refresh_invoked: true,
+        blocked_unavailable_tags: [],
+        blocked_out_of_range_tags: [],
+        blocked_tags: [],
+      });
+      expect(payload.resolution).toEqual([
+        expect.objectContaining({
+          player_tag: "#298CG8UJG",
+          source: "live_refresh",
+          town_hall: 15,
+          primary_source_hit: false,
+          snapshot_hit: false,
+          live_refresh_invoked: true,
+        }),
+      ]);
+    } finally {
+      consoleInfoSpy.mockRestore();
+    }
   });
 
   it("still blocks when the recovered town hall is out of range", async () => {
@@ -1281,6 +1428,115 @@ describe("RosterService", () => {
     }
   });
 
+  it("renders townhall icons and row indexes in displayed order", async () => {
+    prismaMock.roster.findUnique.mockResolvedValueOnce({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+      sortBy: "player_name",
+      displayColumns: JSON.stringify(["player_name", "townhall_icons", "index"]),
+      minTownhall: 13,
+      maxTownhall: null,
+      maxMembers: 50,
+      maxAccountsPerUser: null,
+      rosterRoleId: null,
+      allowMultiSignup: true,
+      importMembers: false,
+    } as any);
+    prismaMock.rosterSignup.findMany.mockResolvedValueOnce([
+      {
+        id: "signup-1",
+        rosterId: "roster-1",
+        groupId: "group-confirmed",
+        playerTag: "#QGRJ2222",
+        playerName: "Bravo",
+        discordUserId: "222222222222222222",
+        signedUpAt: new Date("2026-04-20T00:05:00.000Z"),
+        createdAt: new Date("2026-04-20T00:05:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:05:00.000Z"),
+        group: {
+          id: "group-confirmed",
+          key: "confirmed",
+          name: "Confirmed",
+          description: "Primary roster members",
+          sortOrder: 0,
+        },
+      },
+      {
+        id: "signup-2",
+        rosterId: "roster-1",
+        groupId: "group-confirmed",
+        playerTag: "#PQL0289",
+        playerName: "Alpha",
+        discordUserId: "111111111111111111",
+        signedUpAt: new Date("2026-04-20T00:00:00.000Z"),
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+        group: {
+          id: "group-confirmed",
+          key: "confirmed",
+          name: "Confirmed",
+          description: "Primary roster members",
+          sortOrder: 0,
+        },
+      },
+    ] as any);
+    prismaMock.playerLink.findMany.mockResolvedValueOnce([
+      { playerTag: "#QGRJ2222", discordUsername: "bravo-user" },
+      { playerTag: "#PQL0289", discordUsername: "alpha-user" },
+    ] as any);
+    cwlStateServiceMock.listSeasonRosterForClan.mockResolvedValueOnce([
+      { playerTag: "#QGRJ2222", playerName: "Bravo", townHall: 18 },
+      { playerTag: "#PQL0289", playerName: "Alpha", townHall: 8 },
+    ] as any);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValueOnce([] as any);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValueOnce([] as any);
+    prismaMock.externalPlayerWeightCurrent.findMany.mockResolvedValueOnce([] as any);
+    todoSnapshotServiceMock.listSnapshotsByClanTag.mockResolvedValueOnce([
+      { playerTag: "#QGRJ2222", clanTag: "#2QG2C08UP", clanName: "Rising Dawn" },
+      { playerTag: "#PQL0289", clanTag: "#2QG2C08UP", clanName: "Rising Dawn" },
+    ] as any);
+    prismaMock.cwlTrackedClan.findFirst.mockResolvedValueOnce(null as any);
+
+    const payload = await rosterService.buildRosterSignupPayload("roster-1", null, {
+      emojiClient: makeRosterEmojiClient(),
+    });
+    const description = payload?.embed.toJSON().description ?? "";
+    const lines = description.split("\n");
+    const headerLine = lines.find((line) => line.startsWith("`PLAYER")) ?? "";
+    const alphaRowIndex = lines.findIndex((line) => line.startsWith("`") && line.includes("Alpha"));
+    const bravoRowIndex = lines.findIndex((line) => line.startsWith("`") && line.includes("Bravo"));
+    const bravoRow = lines.find((line) => line.startsWith("`") && line.includes("Bravo")) ?? "";
+    const alphaRow = lines.find((line) => line.startsWith("`") && line.includes("Alpha")) ?? "";
+
+    expect(headerLine).toContain("PLAYER");
+    expect(headerLine).toContain("<:house:111>");
+    expect(headerLine).toContain("INDEX");
+    expect(alphaRowIndex).toBeGreaterThan(-1);
+    expect(bravoRowIndex).toBeGreaterThan(-1);
+    expect(alphaRowIndex).toBeLessThan(bravoRowIndex);
+    expect(bravoRow).toContain("<:th18:118>");
+    expect(alphaRow).toContain("8");
+    expect(alphaRow).toContain("1");
+    expect(bravoRow).toContain("2");
+  });
+
   it("renders Min. TH as a dash when no minimum town hall is configured", async () => {
     prismaMock.roster.findUnique.mockResolvedValueOnce({
       id: "roster-1",
@@ -1451,6 +1707,73 @@ describe("RosterService", () => {
     );
   });
 
+  it("keeps a live-recovered town hall visible when the posted roster payload is rebuilt", async () => {
+    prismaMock.rosterSignup.findMany.mockResolvedValue([
+      {
+        id: "signup-1",
+        rosterId: "roster-1",
+        groupId: "group-confirmed",
+        playerTag: "#298CG8UJG",
+        playerName: "Player 298",
+        discordUserId: "111111111111111111",
+        signedUpAt: new Date("2026-04-20T00:00:00.000Z"),
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+        group: {
+          id: "group-confirmed",
+          key: "confirmed",
+          name: "Confirmed",
+          description: "Primary roster members",
+          sortOrder: 0,
+        },
+      },
+    ] as any);
+    todoSnapshotServiceMock.refreshSnapshotsForPlayerTags.mockImplementation(async ({ cocService }) => {
+      await cocService?.getPlayerRaw("#298CG8UJG", { suppressTelemetry: true });
+      return {
+        playerCount: 1,
+        updatedCount: 1,
+      };
+    });
+    todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValue([
+      {
+        playerTag: "#298CG8UJG",
+        townHall: 15,
+        clanTag: "#2QG2C08UP",
+        clanName: "CWL Alpha",
+        cwlClanTag: "#2QG2C08UP",
+        cwlClanName: "CWL Alpha",
+      },
+    ] as any);
+    cwlStateServiceMock.listSeasonRosterForClan.mockResolvedValue([
+      {
+        playerTag: "#298CG8UJG",
+        playerName: "Player 298",
+        townHall: null,
+      },
+    ] as any);
+    const cocService = {
+      getPlayerRaw: vi.fn().mockResolvedValue({
+        townHallLevel: 15,
+        clan: { tag: "#2QG2C08UP" },
+      }),
+    } as any;
+
+    const payload = await rosterService.refreshRosterSignupPayload("roster-1", cocService);
+
+    expect(todoSnapshotServiceMock.refreshSnapshotsForPlayerTags).toHaveBeenCalledWith({
+      playerTags: ["#298CG8UJG"],
+      cocService,
+    });
+    expect(cocService.getPlayerRaw).toHaveBeenCalledWith("#298CG8UJG", {
+      suppressTelemetry: true,
+    });
+    expect(payload).toBeTruthy();
+    const description = String(payload?.embed.toJSON().description ?? "");
+    expect(description).toContain("`15 Player 298");
+    expect(description).not.toContain("`- Player 298");
+  });
+
   it("falls back cleanly when no persisted CWL league label is available", async () => {
     prismaMock.cwlTrackedClan.findFirst.mockResolvedValue({
       name: "CWL Alpha",
@@ -1529,6 +1852,423 @@ describe("RosterService", () => {
       ]),
     );
     expect(payload.selectedTags).toEqual([]);
+  });
+
+  it("builds the manager add-user panel with chunked linked-player menus and a disabled confirm button until required selections exist", async () => {
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValueOnce(
+      Array.from({ length: 30 }, (_, index) => {
+        return {
+          playerTag: makeValidRosterPlayerTag(index),
+          linkedName: `Player ${index + 1}`,
+          linkedAt: new Date("2026-04-20T00:00:00.000Z"),
+        };
+      }),
+    );
+
+    const opened = await rosterService.createRosterManagerUserSelectionPanel({
+      rosterId: "roster-1",
+      discordUserId: "111111111111111111",
+      mode: "add_user",
+    });
+    expect(opened).toMatchObject({ outcome: "ready" });
+    if (opened.outcome !== "ready") return;
+
+    const openedJson = opened.panel.embed.toJSON();
+    expect(String(openedJson.title ?? "")).toBe("Adding Roster Users");
+    expect(String(openedJson.description ?? "")).toContain("Select a Discord user.");
+    expect(String(openedJson.description ?? "")).toContain("Selected user: none");
+    expect(String(openedJson.description ?? "")).toContain("Selected group: Confirmed");
+    expect(String(openedJson.description ?? "")).toContain("Selected players: 0");
+    expect(opened.panel.components.length).toBeLessThanOrEqual(5);
+
+    const openedComponents = flattenComponentRows(opened.panel.components);
+    expect(
+      openedComponents
+        .filter((component) => Array.isArray(component.options))
+        .map((component) => component.placeholder ?? component.data?.placeholder),
+    ).toEqual(["No linked players found"]);
+    expect(
+      openedComponents
+        .filter((component) => typeof component.style === "number")
+        .map((component) => ({ label: component.label ?? component.data?.label, disabled: Boolean(component.disabled ?? component.data?.disabled) })),
+    ).toEqual([
+      { label: "Previous", disabled: true },
+      { label: "Next", disabled: true },
+      { label: "Select Group", disabled: false },
+      { label: "Confirm", disabled: true },
+      { label: "Cancel", disabled: false },
+    ]);
+
+    const selected = await rosterService.updateRosterSelectionPanel({
+      sessionId: opened.panel.sessionId,
+      discordUserId: "111111111111111111",
+      selectedDiscordUserId: "222222222222222222",
+      selectedDiscordUserLabel: "Roster User (@rosteruser)",
+    });
+    expect(selected).toMatchObject({ outcome: "updated" });
+    if (selected.outcome !== "updated") return;
+
+    const selectedJson = selected.panel.embed.toJSON();
+    expect(String(selectedJson.description ?? "")).toContain("Selected user: Roster User (@rosteruser)");
+    expect(String(selectedJson.description ?? "")).toContain("Selected players: 0");
+    expect(selected.panel.components.length).toBeLessThanOrEqual(5);
+    const selectedComponents = flattenComponentRows(selected.panel.components);
+    expect(
+      selectedComponents
+        .filter((component) => Array.isArray(component.options))
+        .map((component) => component.placeholder ?? component.data?.placeholder),
+    ).toEqual(["Select Players [1 - 25]", "Select Players [26 - 30]"]);
+    expect(
+      selectedComponents
+        .filter((component) => typeof component.style === "number")
+        .map((component) => ({ label: component.label ?? component.data?.label, disabled: Boolean(component.disabled ?? component.data?.disabled) })),
+    ).toEqual([
+      { label: "Previous", disabled: true },
+      { label: "Next", disabled: true },
+      { label: "Select Group", disabled: false },
+      { label: "Confirm", disabled: true },
+      { label: "Cancel", disabled: false },
+    ]);
+
+    const selectedWithPlayers = await rosterService.updateRosterSelectionPanel({
+      sessionId: opened.panel.sessionId,
+      discordUserId: "111111111111111111",
+      selectedTags: [makeValidRosterPlayerTag(0), makeValidRosterPlayerTag(14)],
+    });
+    expect(selectedWithPlayers).toMatchObject({ outcome: "updated" });
+    if (selectedWithPlayers.outcome !== "updated") return;
+    expect(selectedWithPlayers.panel.selectedTags).toEqual([makeValidRosterPlayerTag(0), makeValidRosterPlayerTag(14)]);
+    expect(
+      flattenComponentRows(selectedWithPlayers.panel.components)
+        .filter((component) => typeof component.style === "number")
+        .map((component) => ({ label: component.label ?? component.data?.label, disabled: Boolean(component.disabled ?? component.data?.disabled) })),
+    ).toEqual([
+      { label: "Previous", disabled: true },
+      { label: "Next", disabled: true },
+      { label: "Select Group", disabled: false },
+      { label: "Confirm", disabled: false },
+      { label: "Cancel", disabled: false },
+    ]);
+
+    const groupPicker = await rosterService.updateRosterSelectionPanel({
+      sessionId: opened.panel.sessionId,
+      discordUserId: "111111111111111111",
+      groupPickerVisible: true,
+    });
+    expect(groupPicker).toMatchObject({ outcome: "updated" });
+    if (groupPicker.outcome !== "updated") return;
+    expect(flattenComponentRows(groupPicker.panel.components)).toHaveLength(1);
+    expect(String(groupPicker.panel.embed.toJSON().description ?? "")).toContain("Select a roster group to continue.");
+
+    const restored = await rosterService.updateRosterSelectionPanel({
+      sessionId: opened.panel.sessionId,
+      discordUserId: "111111111111111111",
+      selectedGroupKey: "confirmed",
+    });
+    expect(restored).toMatchObject({ outcome: "updated" });
+    if (restored.outcome !== "updated") return;
+    expect(restored.panel.selectedTags).toEqual([makeValidRosterPlayerTag(0), makeValidRosterPlayerTag(14)]);
+    expect(
+      flattenComponentRows(restored.panel.components)
+        .filter((component) => Array.isArray(component.options))
+        .map((component) => component.placeholder ?? component.data?.placeholder),
+    ).toEqual(["Select Players [1 - 25]", "Select Players [26 - 30]"]);
+    expect(
+      flattenComponentRows(restored.panel.components)
+        .filter((component) => typeof component.style === "number")
+        .map((component) => ({ label: component.label ?? component.data?.label, disabled: Boolean(component.disabled ?? component.data?.disabled) })),
+    ).toEqual([
+      { label: "Previous", disabled: true },
+      { label: "Next", disabled: true },
+      { label: "Select Group", disabled: false },
+      { label: "Confirm", disabled: false },
+      { label: "Cancel", disabled: false },
+    ]);
+  });
+
+  it("pages manager add-user linked players across more than three select rows without dropping selections", async () => {
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValueOnce(
+      Array.from({ length: 76 }, (_, index) => ({
+        playerTag: makeValidRosterPlayerTag(index),
+        linkedName: `Player ${index + 1}`,
+        linkedAt: new Date("2026-04-20T00:00:00.000Z"),
+      })),
+    );
+
+    const opened = await rosterService.createRosterManagerUserSelectionPanel({
+      rosterId: "roster-1",
+      discordUserId: "111111111111111111",
+      mode: "add_user",
+    });
+    expect(opened).toMatchObject({ outcome: "ready" });
+    if (opened.outcome !== "ready") return;
+
+    const selectedUser = await rosterService.updateRosterSelectionPanel({
+      sessionId: opened.panel.sessionId,
+      discordUserId: "111111111111111111",
+      selectedDiscordUserId: "222222222222222222",
+      selectedDiscordUserLabel: "Roster User (@rosteruser)",
+    });
+    expect(selectedUser).toMatchObject({ outcome: "updated" });
+    if (selectedUser.outcome !== "updated") return;
+
+    expect(selectedUser.panel.components.length).toBeLessThanOrEqual(5);
+    expect(
+      flattenComponentRows(selectedUser.panel.components)
+        .filter((component) => Array.isArray(component.options))
+        .map((component) => component.placeholder ?? component.data?.placeholder),
+    ).toEqual(["Select Players [1 - 25]", "Select Players [26 - 50]", "Select Players [51 - 75]"]);
+    expect(
+      flattenComponentRows(selectedUser.panel.components)
+        .filter((component) => typeof component.style === "number")
+        .map((component) => ({ label: component.label ?? component.data?.label, disabled: Boolean(component.disabled ?? component.data?.disabled) })),
+    ).toEqual([
+      { label: "Previous", disabled: true },
+      { label: "Next", disabled: false },
+      { label: "Select Group", disabled: false },
+      { label: "Confirm", disabled: true },
+      { label: "Cancel", disabled: false },
+    ]);
+
+    const firstPageSelection = await rosterService.updateRosterSelectionPanel({
+      sessionId: opened.panel.sessionId,
+      discordUserId: "111111111111111111",
+      selectedPlayerTags: [makeValidRosterPlayerTag(0), makeValidRosterPlayerTag(1)],
+      playerPageIndex: 0,
+    });
+    expect(firstPageSelection).toMatchObject({ outcome: "updated" });
+    if (firstPageSelection.outcome !== "updated") return;
+    expect(firstPageSelection.panel.selectedTags).toEqual([makeValidRosterPlayerTag(0), makeValidRosterPlayerTag(1)]);
+
+    const secondWindow = await rosterService.updateRosterSelectionPanel({
+      sessionId: opened.panel.sessionId,
+      discordUserId: "111111111111111111",
+      playerPageWindowDelta: 1,
+    });
+    expect(secondWindow).toMatchObject({ outcome: "updated" });
+    if (secondWindow.outcome !== "updated") return;
+    expect(secondWindow.panel.selectedTags).toEqual([makeValidRosterPlayerTag(0), makeValidRosterPlayerTag(1)]);
+    expect(
+      flattenComponentRows(secondWindow.panel.components)
+        .filter((component) => Array.isArray(component.options))
+        .map((component) => component.placeholder ?? component.data?.placeholder),
+    ).toEqual(["Select Players [26 - 50]", "Select Players [51 - 75]", "Select Players [76 - 76]"]);
+    expect(
+      flattenComponentRows(secondWindow.panel.components)
+        .filter((component) => typeof component.style === "number")
+        .map((component) => ({ label: component.label ?? component.data?.label, disabled: Boolean(component.disabled ?? component.data?.disabled) })),
+    ).toEqual([
+      { label: "Previous", disabled: false },
+      { label: "Next", disabled: true },
+      { label: "Select Group", disabled: false },
+      { label: "Confirm", disabled: false },
+      { label: "Cancel", disabled: false },
+    ]);
+
+    const secondPageSelection = await rosterService.updateRosterSelectionPanel({
+      sessionId: opened.panel.sessionId,
+      discordUserId: "111111111111111111",
+      selectedPlayerTags: [makeValidRosterPlayerTag(75)],
+      playerPageIndex: 3,
+    });
+    expect(secondPageSelection).toMatchObject({ outcome: "updated" });
+    if (secondPageSelection.outcome !== "updated") return;
+    expect(secondPageSelection.panel.selectedTags).toEqual([
+      makeValidRosterPlayerTag(0),
+      makeValidRosterPlayerTag(1),
+      makeValidRosterPlayerTag(75),
+    ]);
+
+    const addRosterSignupsForManagerSpy = vi.spyOn(rosterService, "addRosterSignupsForManager").mockResolvedValueOnce({
+      outcome: "created",
+      rosterId: "roster-1",
+      groupKey: "confirmed",
+      groupName: "Confirmed",
+      requestedTags: [makeValidRosterPlayerTag(0), makeValidRosterPlayerTag(1), makeValidRosterPlayerTag(75)],
+      linkedTags: [makeValidRosterPlayerTag(0), makeValidRosterPlayerTag(1), makeValidRosterPlayerTag(75)],
+      createdTags: [makeValidRosterPlayerTag(0), makeValidRosterPlayerTag(1), makeValidRosterPlayerTag(75)],
+      duplicateTags: [],
+      missingLinkedTags: [],
+    } as any);
+    try {
+      const confirmed = await rosterService.confirmRosterSelectionPanel({
+        sessionId: opened.panel.sessionId,
+        discordUserId: "111111111111111111",
+      });
+      expect(confirmed).toMatchObject({
+        outcome: "add_user",
+        result: {
+          outcome: "created",
+          rosterId: "roster-1",
+          groupKey: "confirmed",
+          groupName: "Confirmed",
+        },
+      });
+      expect(addRosterSignupsForManagerSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          rosterId: "roster-1",
+          groupKey: "confirmed",
+          playerTags: [makeValidRosterPlayerTag(0), makeValidRosterPlayerTag(1), makeValidRosterPlayerTag(75)],
+        }),
+      );
+    } finally {
+      addRosterSignupsForManagerSpy.mockRestore();
+    }
+  });
+
+  it("shows a clear empty state and keeps confirm disabled when the selected Discord user has no linked player accounts", async () => {
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValueOnce([]);
+
+    const opened = await rosterService.createRosterManagerUserSelectionPanel({
+      rosterId: "roster-1",
+      discordUserId: "111111111111111111",
+      mode: "add_user",
+    });
+    if (opened.outcome !== "ready") {
+      throw new Error("Expected roster selection panel to open.");
+    }
+
+    const updated = await rosterService.updateRosterSelectionPanel({
+      sessionId: opened.panel.sessionId,
+      discordUserId: "111111111111111111",
+      selectedDiscordUserId: "222222222222222222",
+      selectedDiscordUserLabel: "Empty User (@empty)",
+    });
+    expect(updated).toMatchObject({ outcome: "updated" });
+    if (updated.outcome !== "updated") return;
+
+    expect(String(updated.panel.embed.toJSON().description ?? "")).toContain(
+      "No linked player accounts were found for that Discord user.",
+    );
+    expect(
+      flattenComponentRows(updated.panel.components)
+        .filter((component) => typeof component.style === "number")
+        .map((component) => ({ label: component.label ?? component.data?.label, disabled: Boolean(component.disabled ?? component.data?.disabled) })),
+    ).toEqual([
+      { label: "Previous", disabled: true },
+      { label: "Next", disabled: true },
+      { label: "Select Group", disabled: false },
+      { label: "Confirm", disabled: true },
+      { label: "Cancel", disabled: false },
+    ]);
+  });
+
+  it("confirms manager add and remove flows through the roster mutation helpers", async () => {
+    const addRosterSignupsForManagerSpy = vi
+      .spyOn(rosterService, "addRosterSignupsForManager")
+      .mockResolvedValue({
+        outcome: "created",
+        rosterId: "roster-1",
+        groupKey: "confirmed",
+        groupName: "Confirmed",
+        requestedTags: [makeValidRosterPlayerTag(1), makeValidRosterPlayerTag(2)],
+        linkedTags: [makeValidRosterPlayerTag(1), makeValidRosterPlayerTag(2)],
+        createdTags: [makeValidRosterPlayerTag(1), makeValidRosterPlayerTag(2)],
+        duplicateTags: [],
+        missingLinkedTags: [],
+      } as any);
+    const removeRosterSignupsAsManagerSpy = vi
+      .spyOn(rosterService, "removeRosterSignupsAsManager")
+      .mockResolvedValue({
+        outcome: "removed",
+        rosterId: "roster-1",
+        removedTags: [makeValidRosterPlayerTag(1), makeValidRosterPlayerTag(2)],
+        missingTags: [],
+      } as any);
+    try {
+      playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValueOnce([
+        { playerTag: makeValidRosterPlayerTag(1), linkedName: "Alpha", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+        { playerTag: makeValidRosterPlayerTag(2), linkedName: "Bravo", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+      ]);
+
+      const addOpened = await rosterService.createRosterManagerUserSelectionPanel({
+        rosterId: "roster-1",
+        discordUserId: "111111111111111111",
+        mode: "add_user",
+      });
+      if (addOpened.outcome !== "ready") throw new Error("Expected add panel to open.");
+      await rosterService.updateRosterSelectionPanel({
+        sessionId: addOpened.panel.sessionId,
+        discordUserId: "111111111111111111",
+        selectedDiscordUserId: "222222222222222222",
+        selectedDiscordUserLabel: "Roster User (@rosteruser)",
+      });
+      await rosterService.updateRosterSelectionPanel({
+        sessionId: addOpened.panel.sessionId,
+        discordUserId: "111111111111111111",
+        selectedTags: [makeValidRosterPlayerTag(1), makeValidRosterPlayerTag(2)],
+      });
+      await rosterService.updateRosterSelectionPanel({
+        sessionId: addOpened.panel.sessionId,
+        discordUserId: "111111111111111111",
+        selectedGroupKey: "confirmed",
+      });
+      const addConfirmed = await rosterService.confirmRosterSelectionPanel({
+        sessionId: addOpened.panel.sessionId,
+        discordUserId: "111111111111111111",
+      });
+      expect(addConfirmed).toMatchObject({
+        outcome: "add_user",
+        result: {
+          outcome: "created",
+          rosterId: "roster-1",
+          groupKey: "confirmed",
+          groupName: "Confirmed",
+        },
+      });
+      expect(addRosterSignupsForManagerSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          rosterId: "roster-1",
+          groupKey: "confirmed",
+          playerTags: [makeValidRosterPlayerTag(1), makeValidRosterPlayerTag(2)],
+          updatedByDiscordUserId: "111111111111111111",
+        }),
+      );
+
+      playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValueOnce([
+        { playerTag: makeValidRosterPlayerTag(1), linkedName: "Alpha", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+        { playerTag: makeValidRosterPlayerTag(2), linkedName: "Bravo", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+      ]);
+      const removeOpened = await rosterService.createRosterManagerUserSelectionPanel({
+        rosterId: "roster-1",
+        discordUserId: "111111111111111111",
+        mode: "remove_user",
+      });
+      if (removeOpened.outcome !== "ready") throw new Error("Expected remove panel to open.");
+      await rosterService.updateRosterSelectionPanel({
+        sessionId: removeOpened.panel.sessionId,
+        discordUserId: "111111111111111111",
+        selectedDiscordUserId: "222222222222222222",
+        selectedDiscordUserLabel: "Roster User (@rosteruser)",
+      });
+      await rosterService.updateRosterSelectionPanel({
+        sessionId: removeOpened.panel.sessionId,
+        discordUserId: "111111111111111111",
+        selectedTags: [makeValidRosterPlayerTag(1), makeValidRosterPlayerTag(2)],
+      });
+      const removeConfirmed = await rosterService.confirmRosterSelectionPanel({
+        sessionId: removeOpened.panel.sessionId,
+        discordUserId: "111111111111111111",
+      });
+      expect(removeConfirmed).toMatchObject({
+        outcome: "remove_user",
+        result: {
+          outcome: "removed",
+          rosterId: "roster-1",
+          removedTags: [makeValidRosterPlayerTag(1), makeValidRosterPlayerTag(2)],
+        },
+      });
+      expect(removeRosterSignupsAsManagerSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          rosterId: "roster-1",
+          playerTags: [makeValidRosterPlayerTag(1), makeValidRosterPlayerTag(2)],
+          updatedByDiscordUserId: "111111111111111111",
+        }),
+      );
+    } finally {
+      addRosterSignupsForManagerSpy.mockRestore();
+      removeRosterSignupsAsManagerSpy.mockRestore();
+    }
   });
 
   it("signs up multiple selected accounts through the roster selection session", async () => {

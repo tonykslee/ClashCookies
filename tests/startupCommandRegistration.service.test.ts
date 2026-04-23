@@ -309,7 +309,8 @@ describe("StartupCommandRegistrationService registration summary", () => {
       expect.arrayContaining(["name", "title"]),
     );
     expect(summary.rosterEditOptionNames).toEqual(
-      expect.arrayContaining(["name", "title"]),
+      expect.arrayContaining(["name"]),
     );
+    expect(summary.rosterEditOptionNames).not.toContain("title");
   });
 });

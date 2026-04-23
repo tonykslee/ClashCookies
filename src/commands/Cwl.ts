@@ -259,10 +259,21 @@ function buildRosterManagerLifecycleSummary(
   return `${rosterTitle} was ${label}.`;
 }
 
-async function refreshRosterSignupPost(interaction: ChatInputCommandInteraction | ButtonInteraction | StringSelectMenuInteraction, rosterId: string): Promise<void> {
-  const payload = await rosterService.buildRosterSignupPayload(rosterId);
+async function refreshRosterSignupPost(
+  interaction: ChatInputCommandInteraction | ButtonInteraction | StringSelectMenuInteraction,
+  rosterId: string,
+  cocService?: CoCService | null,
+): Promise<void> {
   const rosterView = await rosterService.getRosterView(rosterId);
-  if (!payload || !rosterView?.roster.postedChannelId || !rosterView.roster.postedMessageId) {
+  if (!rosterView?.roster.postedChannelId || !rosterView.roster.postedMessageId) {
+    return;
+  }
+
+  const loadingPayload = await rosterService.buildRosterSignupPayload(rosterId, null, {
+    emojiClient: interaction.client,
+    refreshButtonDisabled: true,
+  });
+  if (!loadingPayload) {
     return;
   }
 
@@ -273,6 +284,34 @@ async function refreshRosterSignupPost(interaction: ChatInputCommandInteraction 
 
   const message = await channel.messages.fetch(rosterView.roster.postedMessageId).catch(() => null);
   if (!message) return;
+  await message.edit({
+    embeds: [loadingPayload.embed],
+    components: loadingPayload.components,
+  }).catch(() => undefined);
+
+  const payload = cocService
+    ? await rosterService.refreshRosterSignupPayload(rosterId, cocService, {
+        emojiClient: interaction.client,
+        refreshButtonDisabled: false,
+      })
+    : await rosterService.buildRosterSignupPayload(rosterId, null, {
+        emojiClient: interaction.client,
+        refreshButtonDisabled: false,
+      });
+  if (!payload) {
+    const restoredPayload = await rosterService.buildRosterSignupPayload(rosterId, null, {
+      emojiClient: interaction.client,
+      refreshButtonDisabled: false,
+    });
+    if (restoredPayload) {
+      await message.edit({
+        embeds: [restoredPayload.embed],
+        components: restoredPayload.components,
+      }).catch(() => undefined);
+    }
+    return;
+  }
+
   await message.edit({
     embeds: [payload.embed],
     components: payload.components,
@@ -2220,7 +2259,9 @@ export async function handleRosterSignupSubcommand(
     cocService,
   });
 
-  const payload = await rosterService.buildRosterSignupPayload(roster.id);
+  const payload = await rosterService.buildRosterSignupPayload(roster.id, null, {
+    emojiClient: interaction.client,
+  });
   if (!payload) {
     await interaction.editReply("Failed to build the CWL signup post.");
     return;
@@ -2314,7 +2355,7 @@ export async function handleRosterManagerSubcommand(
   }
 
   if (subcommand === "refresh") {
-    await refreshRosterSignupPost(interaction, roster.id).catch(() => undefined);
+    await refreshRosterSignupPost(interaction, roster.id, cocService).catch(() => undefined);
     await interaction.editReply(`Refreshed the posted CWL roster for ${rosterLabel}.`);
     return;
   }
@@ -2335,7 +2376,7 @@ export async function handleRosterManagerSubcommand(
       await interaction.editReply("That roster is no longer available.");
       return;
     }
-    await refreshRosterSignupPost(interaction, roster.id).catch(() => undefined);
+    await refreshRosterSignupPost(interaction, roster.id, cocService).catch(() => undefined);
     await interaction.editReply(buildRosterManagerLifecycleSummary(rosterLabel, lifecycleState));
     return;
   }
@@ -2366,7 +2407,7 @@ export async function handleRosterManagerSubcommand(
         await interaction.editReply("That roster is no longer available.");
         return;
       }
-      await refreshRosterSignupPost(interaction, roster.id).catch(() => undefined);
+      await refreshRosterSignupPost(interaction, roster.id, cocService).catch(() => undefined);
       await interaction.editReply(formatRosterSignupResultSummary(result));
       return;
     }
@@ -2385,7 +2426,7 @@ export async function handleRosterManagerSubcommand(
       await interaction.editReply("That roster group is no longer available.");
       return;
     }
-    await refreshRosterSignupPost(interaction, roster.id).catch(() => undefined);
+    await refreshRosterSignupPost(interaction, roster.id, cocService).catch(() => undefined);
     await interaction.editReply(formatRosterManagerMoveResultSummary(result));
     return;
   }
@@ -2400,7 +2441,7 @@ export async function handleRosterManagerSubcommand(
       await interaction.editReply("That roster is no longer available.");
       return;
     }
-    await refreshRosterSignupPost(interaction, roster.id).catch(() => undefined);
+    await refreshRosterSignupPost(interaction, roster.id, cocService).catch(() => undefined);
     await interaction.editReply(formatRosterManagerRemoveResultSummary(result));
     return;
   }
@@ -3050,9 +3091,31 @@ export async function handleRosterSelectionActionButtonInteraction(
     return;
   }
 
-  if (result.outcome === "signup") {
+  if (result.outcome === "missing_user") {
+    await interaction.reply({
+      content: "Select a Discord user first.",
+      ephemeral: true,
+    });
+    return;
+  }
+  if (result.outcome === "missing_players") {
+    await interaction.reply({
+      content: "Select at least one linked player.",
+      ephemeral: true,
+    });
+    return;
+  }
+  if (result.outcome === "missing_group") {
+    await interaction.reply({
+      content: "Select a roster group first.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (result.outcome === "add_user") {
     await syncRosterRoleAssignments(interaction.client, result.result.rosterId).catch(() => undefined);
-    await refreshRosterSignupPost(interaction, result.result.rosterId).catch(() => undefined);
+    await refreshRosterSignupPost(interaction, result.result.rosterId, cocService).catch(() => undefined);
     await interaction.update({
       content: formatRosterSignupResultSummary(result.result),
       embeds: [],
@@ -3061,7 +3124,28 @@ export async function handleRosterSelectionActionButtonInteraction(
     return;
   }
 
-  await refreshRosterSignupPost(interaction, result.result.rosterId).catch(() => undefined);
+  if (result.outcome === "remove_user") {
+    await refreshRosterSignupPost(interaction, result.result.rosterId, cocService).catch(() => undefined);
+    await interaction.update({
+      content: formatRosterRemoveResultSummary(result.result),
+      embeds: [],
+      components: [],
+    });
+    return;
+  }
+
+  if (result.outcome === "signup") {
+    await syncRosterRoleAssignments(interaction.client, result.result.rosterId).catch(() => undefined);
+    await refreshRosterSignupPost(interaction, result.result.rosterId, cocService).catch(() => undefined);
+    await interaction.update({
+      content: formatRosterSignupResultSummary(result.result),
+      embeds: [],
+      components: [],
+    });
+    return;
+  }
+
+  await refreshRosterSignupPost(interaction, result.result.rosterId, cocService).catch(() => undefined);
   await interaction.update({
     content: formatRosterRemoveResultSummary(result.result),
     embeds: [],

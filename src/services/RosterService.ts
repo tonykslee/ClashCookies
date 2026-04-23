@@ -2,13 +2,16 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  Client,
   EmbedBuilder,
+  UserSelectMenuBuilder,
   StringSelectMenuBuilder,
 } from "discord.js";
 import { randomUUID } from "crypto";
 import { CoCService } from "./CoCService";
 import { prisma } from "../prisma";
 import { truncateDiscordContent } from "../helper/discordContent";
+import { emojiResolverService } from "./emoji/EmojiResolverService";
 import {
   listPlayerLinksForClanMembers,
   listPlayerLinksForDiscordUser,
@@ -59,6 +62,8 @@ export const ROSTER_REMOVE_BUTTON_PREFIX = "roster-remove";
 export const ROSTER_SELECTION_PREFIX = "roster-selection";
 export const ROSTER_POST_ACTION_PREFIX = "roster-post-action";
 export const ROSTER_POST_SETTINGS_PREFIX = "roster-post-settings";
+export const ROSTER_POST_USERS_PREFIX = "roster-post-users";
+const ROSTER_MANAGER_PLAYER_PAGE_ROW_COUNT = 3;
 const ROSTER_SELECTION_SESSION_TTL_MS = 15 * 60 * 1000;
 const ROSTER_CONFLICT_LIFECYCLE_STATES: readonly RosterLifecycleState[] = [
   ROSTER_LIFECYCLE_STATE.ACTIVE,
@@ -143,9 +148,14 @@ export type RosterSignupPayload = {
   components: ActionRowBuilder<ButtonBuilder>[];
 };
 
-export type RosterSelectionMode = "signup" | "remove";
+export type RosterSelectionMode = "signup" | "remove" | "add_user" | "remove_user";
 
 type RosterPostButtonMode = "standard" | "hidden" | "archived";
+
+type RosterSignupPayloadBuildOptions = RosterViewLoadOptions & {
+  emojiClient?: Client | null;
+  refreshButtonDisabled?: boolean;
+};
 
 export type RosterSelectionOption = {
   value: string;
@@ -162,7 +172,7 @@ export type RosterSelectionPanel = {
   sessionId: string;
   mode: RosterSelectionMode;
   embed: EmbedBuilder;
-  components: ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>[];
+  components: ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder | UserSelectMenuBuilder>[];
   selectedTags: string[];
 };
 
@@ -170,6 +180,7 @@ export type RosterSelectionOpenResult =
   | { outcome: "ready"; panel: RosterSelectionPanel }
   | { outcome: "roster_not_found"; rosterId: string }
   | { outcome: "roster_closed"; rosterId: string }
+  | { outcome: "roster_archived"; rosterId: string }
   | { outcome: "group_not_found"; rosterId: string; groupKey: string }
   | { outcome: "no_linked_accounts"; rosterId: string }
   | { outcome: "no_owned_entries"; rosterId: string };
@@ -177,6 +188,7 @@ export type RosterSelectionOpenResult =
 type RosterSelectionLoadErrorResult =
   | { outcome: "roster_not_found"; rosterId: string }
   | { outcome: "roster_closed"; rosterId: string }
+  | { outcome: "roster_archived"; rosterId: string }
   | { outcome: "group_not_found"; rosterId: string; groupKey: string }
   | { outcome: "no_linked_accounts"; rosterId: string }
   | { outcome: "no_owned_entries"; rosterId: string };
@@ -213,6 +225,11 @@ export type RosterSelectionUpdateResult =
 export type RosterSelectionCommitResult =
   | { outcome: "signup"; result: SignupLinkedAccountsResult }
   | { outcome: "remove"; result: RemoveRosterSignupsResult }
+  | { outcome: "add_user"; result: SignupLinkedAccountsResult }
+  | { outcome: "remove_user"; result: RemoveRosterSignupsResult }
+  | { outcome: "missing_user" }
+  | { outcome: "missing_players" }
+  | { outcome: "missing_group" }
   | { outcome: "session_not_found" }
   | { outcome: "forbidden" };
 
@@ -620,6 +637,8 @@ function normalizeRosterSortBy(input: string | null | undefined): RosterSortBy |
 
 export const ROSTER_DISPLAY_COLUMNS = {
   TH_LEVEL: "th_level",
+  TOWNHALL_ICONS: "townhall_icons",
+  INDEX: "index",
   DISCORD_NAME: "discord_name",
   DISCORD_USERNAME: "discord_username",
   DISCORD_USER_ID: "discord_user_id",
@@ -636,6 +655,8 @@ export type RosterDisplayColumn = (typeof ROSTER_DISPLAY_COLUMNS)[keyof typeof R
 
 export const ROSTER_DISPLAY_COLUMN_ORDER: readonly RosterDisplayColumn[] = [
   ROSTER_DISPLAY_COLUMNS.TH_LEVEL,
+  ROSTER_DISPLAY_COLUMNS.TOWNHALL_ICONS,
+  ROSTER_DISPLAY_COLUMNS.INDEX,
   ROSTER_DISPLAY_COLUMNS.DISCORD_NAME,
   ROSTER_DISPLAY_COLUMNS.DISCORD_USERNAME,
   ROSTER_DISPLAY_COLUMNS.DISCORD_USER_ID,
@@ -983,6 +1004,25 @@ function buildRosterSelectionActionButtonCustomId(action: "confirm" | "cancel", 
   return `${ROSTER_SELECTION_PREFIX}:action:${action}:${String(sessionId ?? "").trim()}`;
 }
 
+function buildRosterPostUsersUserSelectMenuCustomId(sessionId: string): string {
+  return `${ROSTER_POST_USERS_PREFIX}:user:${String(sessionId ?? "").trim()}`;
+}
+
+function buildRosterPostUsersPlayerSelectMenuCustomId(sessionId: string, pageIndex: number): string {
+  return `${ROSTER_POST_USERS_PREFIX}:players:${Math.max(0, Math.trunc(Number(pageIndex) || 0))}:${String(sessionId ?? "").trim()}`;
+}
+
+function buildRosterPostUsersGroupSelectMenuCustomId(sessionId: string): string {
+  return `${ROSTER_POST_USERS_PREFIX}:group:${String(sessionId ?? "").trim()}`;
+}
+
+function buildRosterPostUsersActionButtonCustomId(
+  action: "confirm" | "cancel" | "select_group" | "previous_page" | "next_page",
+  sessionId: string,
+): string {
+  return `${ROSTER_POST_USERS_PREFIX}:action:${action}:${String(sessionId ?? "").trim()}`;
+}
+
 export function buildRosterPostActionButtonCustomId(action: "refresh" | "signup" | "optout" | "settings", rosterId: string): string {
   return `${ROSTER_POST_ACTION_PREFIX}:${action}:${String(rosterId ?? "").trim()}`;
 }
@@ -1004,6 +1044,10 @@ type RosterSelectionSession = {
   createdAtMs: number;
   options: RosterSelectionOption[];
   selectedTags: string[];
+  selectedDiscordUserId: string | null;
+  selectedDiscordUserLabel: string | null;
+  groupPickerVisible: boolean;
+  playerPageWindowStart: number;
 };
 
 const rosterSelectionSessions = new Map<string, RosterSelectionSession>();
@@ -1064,7 +1108,258 @@ function buildRosterSelectionDescription(input: {
   return lines;
 }
 
+function buildRosterManagerSelectionDescription(session: RosterSelectionSession): string[] {
+  const lines: string[] = [];
+  const isAddMode = session.mode === "add_user";
+  const totalPlayerChunks = Math.max(1, Math.ceil(session.options.length / 25));
+  const maxWindowStart = Math.max(0, totalPlayerChunks - ROSTER_MANAGER_PLAYER_PAGE_ROW_COUNT);
+  const windowStart = Math.max(0, Math.min(Math.trunc(session.playerPageWindowStart || 0), maxWindowStart));
+  const windowEnd = Math.min(totalPlayerChunks, windowStart + ROSTER_MANAGER_PLAYER_PAGE_ROW_COUNT);
+  lines.push(
+    isAddMode ? `Adding Roster Users to ${session.rosterTitle}.` : `Removing Roster Users from ${session.rosterTitle}.`,
+  );
+  lines.push("1. Select a Discord user.");
+  lines.push(
+    isAddMode
+      ? "2. Select one or more linked players, then choose a roster group."
+      : "2. Select one or more linked players to remove.",
+  );
+  lines.push("3. Confirm when the selection looks right.");
+  lines.push("");
+  if (session.options.length > 0) {
+    const startPlayerIndex = windowStart * 25 + 1;
+    const endPlayerIndex = Math.min(session.options.length, windowEnd * 25);
+    lines.push(`Showing players ${startPlayerIndex} - ${endPlayerIndex} of ${session.options.length}.`);
+    if (totalPlayerChunks > ROSTER_MANAGER_PLAYER_PAGE_ROW_COUNT) {
+      lines.push("Use Previous and Next to page through linked players.");
+    }
+  }
+  if (session.groupPickerVisible && isAddMode) {
+    lines.push("Select a roster group to continue.");
+    lines.push(`Selected group: ${session.groupName ?? "none"}`);
+    return lines;
+  }
+
+  lines.push(`Selected user: ${session.selectedDiscordUserLabel ?? "none"}`);
+  lines.push(`Selected group: ${isAddMode ? session.groupName ?? "none" : "n/a"}`);
+  lines.push(`Selected players: ${session.selectedTags.length}`);
+  if (session.selectedDiscordUserId && session.options.length <= 0) {
+    lines.push("No linked player accounts were found for that Discord user.");
+    return lines;
+  }
+
+  const selectedOptions = session.options.filter((option) => session.selectedTags.includes(option.value));
+  if (selectedOptions.length > 0) {
+    lines.push("Selected player identities:");
+    const visibleSelected = selectedOptions.slice(0, 5);
+    for (const option of visibleSelected) {
+      lines.push(`- ${option.label}`);
+    }
+    if (selectedOptions.length > visibleSelected.length) {
+      lines.push(`- ...and ${selectedOptions.length - visibleSelected.length} more`);
+    }
+  } else {
+    lines.push("Selected player identities: none");
+  }
+
+  if (isAddMode && session.groupOptions.length <= 0) {
+    lines.push("No roster groups are available for this roster.");
+  }
+
+  return lines;
+}
+
+function buildRosterManagerSelectionPlayerSelectRows(session: RosterSelectionSession): ActionRowBuilder<StringSelectMenuBuilder>[] {
+  const chunks: Array<RosterSelectionOption[]> = [];
+  for (let index = 0; index < session.options.length; index += 25) {
+    chunks.push(session.options.slice(index, index + 25));
+  }
+  const totalChunks = chunks.length;
+  const maxWindowStart = Math.max(0, totalChunks - ROSTER_MANAGER_PLAYER_PAGE_ROW_COUNT);
+  const windowStart = Math.max(0, Math.min(Math.trunc(session.playerPageWindowStart || 0), maxWindowStart));
+  const visibleChunks = chunks.slice(windowStart, windowStart + ROSTER_MANAGER_PLAYER_PAGE_ROW_COUNT);
+  const selectedTags = new Set(session.selectedTags);
+  if (visibleChunks.length <= 0) {
+    const select = new StringSelectMenuBuilder()
+      .setCustomId(buildRosterPostUsersPlayerSelectMenuCustomId(session.sessionId, 0))
+      .setPlaceholder("No linked players found")
+      .setMinValues(0)
+      .setMaxValues(1)
+      .setDisabled(true)
+      .addOptions([
+        {
+          label: "No linked players found",
+          value: "none",
+          description: "Select a different Discord user",
+        },
+      ]);
+    return [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select)];
+  }
+
+  return visibleChunks.map((chunk, pageIndex) => {
+    const actualPageIndex = windowStart + pageIndex;
+    const start = actualPageIndex * 25 + 1;
+    const end = start + chunk.length - 1;
+    const select = new StringSelectMenuBuilder()
+      .setCustomId(buildRosterPostUsersPlayerSelectMenuCustomId(session.sessionId, actualPageIndex))
+      .setPlaceholder(`Select Players [${start} - ${end}]`)
+      .setMinValues(0)
+      .setMaxValues(Math.max(1, chunk.length))
+      .addOptions(
+        chunk.map((option) => ({
+          label: option.label.slice(0, 100),
+          value: option.value,
+          description: option.description ? option.description.slice(0, 100) : undefined,
+          default: selectedTags.has(option.value),
+        })),
+      );
+    return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
+  });
+}
+
+function buildRosterManagerSelectionGroupSelectRow(
+  session: RosterSelectionSession,
+): ActionRowBuilder<StringSelectMenuBuilder> {
+  const groups = session.groupOptions.slice(0, 25);
+  const select = new StringSelectMenuBuilder()
+    .setCustomId(buildRosterPostUsersGroupSelectMenuCustomId(session.sessionId))
+    .setPlaceholder("Select roster group")
+    .setMinValues(1)
+    .setMaxValues(1)
+    .setDisabled(groups.length <= 0)
+    .addOptions(
+      groups.length > 0
+        ? groups.map((option) => ({
+            label: option.label.slice(0, 100),
+            value: option.value,
+            description: option.description ? option.description.slice(0, 100) : undefined,
+            default: session.selectedGroupKey === option.value,
+          }))
+        : [
+            {
+              label: "No groups available",
+              value: "none",
+              description: "Nothing to select",
+            },
+          ],
+    );
+  return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
+}
+
+function buildRosterManagerSelectionPagingButtons(session: RosterSelectionSession): ButtonBuilder[] {
+  const totalChunks = Math.max(1, Math.ceil(session.options.length / 25));
+  const maxWindowStart = Math.max(0, totalChunks - ROSTER_MANAGER_PLAYER_PAGE_ROW_COUNT);
+  const windowStart = Math.max(0, Math.min(Math.trunc(session.playerPageWindowStart || 0), maxWindowStart));
+  return [
+    new ButtonBuilder()
+      .setCustomId(buildRosterPostUsersActionButtonCustomId("previous_page", session.sessionId))
+      .setLabel("Previous")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(windowStart <= 0),
+    new ButtonBuilder()
+      .setCustomId(buildRosterPostUsersActionButtonCustomId("next_page", session.sessionId))
+      .setLabel("Next")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(windowStart >= maxWindowStart),
+  ];
+}
+
+function buildRosterManagerSelectionPayload(session: RosterSelectionSession): RosterSelectionPanel {
+  const isAddMode = session.mode === "add_user";
+  const selectedTags = [...new Set(session.selectedTags)];
+  const userSelect = new UserSelectMenuBuilder()
+    .setCustomId(buildRosterPostUsersUserSelectMenuCustomId(session.sessionId))
+    .setPlaceholder("Select Discord user")
+    .setMinValues(1)
+    .setMaxValues(1);
+
+  const embed = new EmbedBuilder()
+    .setColor(isAddMode ? 0xfee75c : 0xed4245)
+    .setTitle(isAddMode ? "Adding Roster Users" : "Removing Roster Users")
+    .setDescription(
+      buildRosterManagerSelectionDescription({
+        ...session,
+        selectedTags,
+      }).join("\n"),
+    );
+
+  const components: ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder | UserSelectMenuBuilder>[] = [];
+
+    if (session.groupPickerVisible && isAddMode) {
+      components.push(buildRosterManagerSelectionGroupSelectRow(session));
+      return {
+        sessionId: session.sessionId,
+        mode: session.mode,
+      embed,
+      components,
+      selectedTags,
+    };
+  }
+
+  components.push(new ActionRowBuilder<UserSelectMenuBuilder>().addComponents(userSelect));
+  components.push(...buildRosterManagerSelectionPlayerSelectRows(session));
+
+  if (isAddMode) {
+    const actionButtons = [
+      ...buildRosterManagerSelectionPagingButtons(session),
+      new ButtonBuilder()
+        .setCustomId(buildRosterPostUsersActionButtonCustomId("select_group", session.sessionId))
+        .setLabel("Select Group")
+        .setStyle(ButtonStyle.Primary)
+        .setDisabled(session.groupOptions.length <= 0),
+      new ButtonBuilder()
+        .setCustomId(buildRosterPostUsersActionButtonCustomId("confirm", session.sessionId))
+        .setLabel("Confirm")
+        .setStyle(ButtonStyle.Success)
+        .setDisabled(
+          !session.selectedDiscordUserId ||
+            selectedTags.length <= 0 ||
+            session.groupOptions.length <= 0 ||
+            !session.selectedGroupKey,
+        ),
+      new ButtonBuilder()
+        .setCustomId(buildRosterPostUsersActionButtonCustomId("cancel", session.sessionId))
+        .setLabel("Cancel")
+        .setStyle(ButtonStyle.Secondary),
+    ];
+    components.push(
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        ...actionButtons,
+      ),
+    );
+  } else {
+    const actionButtons = [
+      ...buildRosterManagerSelectionPagingButtons(session),
+      new ButtonBuilder()
+        .setCustomId(buildRosterPostUsersActionButtonCustomId("confirm", session.sessionId))
+        .setLabel("Confirm")
+        .setStyle(ButtonStyle.Danger)
+        .setDisabled(!session.selectedDiscordUserId || selectedTags.length <= 0),
+      new ButtonBuilder()
+        .setCustomId(buildRosterPostUsersActionButtonCustomId("cancel", session.sessionId))
+        .setLabel("Cancel")
+        .setStyle(ButtonStyle.Secondary),
+    ];
+    components.push(
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        ...actionButtons,
+      ),
+    );
+  }
+
+  return {
+    sessionId: session.sessionId,
+    mode: session.mode,
+    embed,
+    components,
+    selectedTags,
+  };
+}
+
 function buildRosterSelectionPayload(session: RosterSelectionSession): RosterSelectionPanel {
+  if (session.mode === "add_user" || session.mode === "remove_user") {
+    return buildRosterManagerSelectionPayload(session);
+  }
   const selectedTags = [...new Set(session.selectedTags)];
   const visibleOptions = session.options.slice(0, 25);
   const accountSelect = new StringSelectMenuBuilder()
@@ -1292,21 +1587,92 @@ function normalizeRosterPlayerTags(input: string[]): string[] {
   return [...new Set(input.map((tag) => normalizePlayerTag(tag)).filter(Boolean))];
 }
 
-async function loadRosterPlayerTownHallMap(input: {
-  rosterType: string;
-  clanTag: string | null;
+type RosterTownHallSource =
+  | "cwl_season_roster"
+  | "fwa_player_catalog"
+  | "todo_snapshot"
+  | "live_refresh"
+  | "missing";
+
+type RosterTownHallResolutionDetail = {
+  source: RosterTownHallSource;
+  townHall: number | null;
+  primarySourceHit: boolean;
+  snapshotSourceHit: boolean;
+  liveRefreshInvoked: boolean;
+};
+
+type RosterTownHallLookupResult = {
+  townHallByTag: Map<string, number>;
+  detailByTag: Map<string, RosterTownHallResolutionDetail>;
+  liveRefreshInvoked: boolean;
+};
+
+type RosterTownHallResolution = RosterTownHallLookupResult & {
+  missingTags: string[];
+};
+
+function getRosterTownHallPrimarySourceLabel(rosterType: string): RosterTownHallSource {
+  const normalizedRosterType = normalizeRosterType(rosterType);
+  if (normalizedRosterType === "CWL") return "cwl_season_roster";
+  if (normalizedRosterType === "FWA") return "fwa_player_catalog";
+  return "missing";
+}
+
+async function loadLiveRosterPlayerTownHallMap(input: {
   playerTags: string[];
-  allowLiveFetch?: boolean;
   cocService?: CoCService | null;
 }): Promise<Map<string, number>> {
   const normalizedTags = [...new Set(input.playerTags.map((tag) => normalizePlayerTag(tag)).filter(Boolean))];
   if (normalizedTags.length <= 0) {
     return new Map();
   }
+  const cocService = input.cocService ?? null;
+  if (!cocService || typeof cocService.getPlayerRaw !== "function") {
+    return new Map();
+  }
+
+  const entries = await Promise.all(
+    normalizedTags.map(async (playerTag) => {
+      const player = await cocService.getPlayerRaw(playerTag, { suppressTelemetry: true }).catch(() => null);
+      const townHall = normalizeRosterInt(player?.townHallLevel ?? player?.townHall ?? null);
+      return [playerTag, townHall] as const;
+    }),
+  );
+  return new Map(entries.filter((entry): entry is readonly [string, number] => entry[1] !== null));
+}
+
+async function loadRosterPlayerTownHallMap(input: {
+  rosterType: string;
+  clanTag: string | null;
+  playerTags: string[];
+  allowLiveFetch?: boolean;
+  cocService?: CoCService | null;
+}): Promise<RosterTownHallLookupResult> {
+  const normalizedTags = [...new Set(input.playerTags.map((tag) => normalizePlayerTag(tag)).filter(Boolean))];
+  if (normalizedTags.length <= 0) {
+    return {
+      townHallByTag: new Map(),
+      detailByTag: new Map(),
+      liveRefreshInvoked: false,
+    };
+  }
 
   const normalizedRosterType = normalizeRosterType(input.rosterType);
   const result = new Map<string, number>();
   const missingAfterPrimary = new Set(normalizedTags);
+  const detailByTag = new Map<string, RosterTownHallResolutionDetail>(
+    normalizedTags.map((tag) => [
+      tag,
+      {
+        source: getRosterTownHallPrimarySourceLabel(normalizedRosterType),
+        townHall: null,
+        primarySourceHit: false,
+        snapshotSourceHit: false,
+        liveRefreshInvoked: false,
+      },
+    ] as const),
+  );
 
   if (normalizedRosterType === "CWL" && input.clanTag) {
     const rosterEntries = await cwlStateService.listSeasonRosterForClan({ clanTag: input.clanTag });
@@ -1315,6 +1681,12 @@ async function loadRosterPlayerTownHallMap(input: {
       const townHall = normalizeRosterInt(entry.townHall);
       if (!playerTag || townHall === null || !missingAfterPrimary.has(playerTag)) continue;
       result.set(playerTag, townHall);
+      const detail = detailByTag.get(playerTag);
+      if (detail) {
+        detail.source = "cwl_season_roster";
+        detail.townHall = townHall;
+        detail.primarySourceHit = true;
+      }
       missingAfterPrimary.delete(playerTag);
     }
   } else if (normalizedRosterType === "FWA") {
@@ -1330,12 +1702,22 @@ async function loadRosterPlayerTownHallMap(input: {
       const townHall = normalizeRosterInt(row.latestTownHall);
       if (!playerTag || townHall === null || !missingAfterPrimary.has(playerTag)) continue;
       result.set(playerTag, townHall);
+      const detail = detailByTag.get(playerTag);
+      if (detail) {
+        detail.source = "fwa_player_catalog";
+        detail.townHall = townHall;
+        detail.primarySourceHit = true;
+      }
       missingAfterPrimary.delete(playerTag);
     }
   }
 
   if (missingAfterPrimary.size <= 0) {
-    return result;
+    return {
+      townHallByTag: result,
+      detailByTag,
+      liveRefreshInvoked: false,
+    };
   }
 
   const missingTagsAfterPrimary = [...missingAfterPrimary];
@@ -1347,18 +1729,48 @@ async function loadRosterPlayerTownHallMap(input: {
     const townHall = normalizeRosterInt((row as { townHall?: unknown }).townHall ?? null);
     if (!playerTag || townHall === null || !missingAfterPrimary.has(playerTag)) continue;
     result.set(playerTag, townHall);
+    const detail = detailByTag.get(playerTag);
+    if (detail) {
+      detail.source = "todo_snapshot";
+      detail.townHall = townHall;
+      detail.snapshotSourceHit = true;
+    }
     missingAfterPrimary.delete(playerTag);
   }
 
+  let liveRefreshInvoked = false;
   if (!input.allowLiveFetch || missingAfterPrimary.size <= 0) {
-    return result;
+    for (const playerTag of missingAfterPrimary) {
+      const detail = detailByTag.get(playerTag);
+      if (detail) {
+        detail.source = "missing";
+        detail.liveRefreshInvoked = liveRefreshInvoked;
+      }
+    }
+    return {
+      townHallByTag: result,
+      detailByTag,
+      liveRefreshInvoked,
+    };
   }
 
   const cocService = input.cocService ?? null;
   if (!cocService) {
-    return result;
+    for (const playerTag of missingAfterPrimary) {
+      const detail = detailByTag.get(playerTag);
+      if (detail) {
+        detail.source = "missing";
+        detail.liveRefreshInvoked = liveRefreshInvoked;
+      }
+    }
+    return {
+      townHallByTag: result,
+      detailByTag,
+      liveRefreshInvoked,
+    };
   }
 
+  liveRefreshInvoked = true;
   await todoSnapshotService.refreshSnapshotsForPlayerTags({
     playerTags: [...missingAfterPrimary],
     cocService,
@@ -1371,16 +1783,47 @@ async function loadRosterPlayerTownHallMap(input: {
     const townHall = normalizeRosterInt((row as { townHall?: unknown }).townHall ?? null);
     if (!playerTag || townHall === null || !missingAfterPrimary.has(playerTag)) continue;
     result.set(playerTag, townHall);
+    const detail = detailByTag.get(playerTag);
+    if (detail) {
+      detail.source = "live_refresh";
+      detail.townHall = townHall;
+      detail.liveRefreshInvoked = true;
+    }
     missingAfterPrimary.delete(playerTag);
   }
 
-  return result;
-}
+  if (missingAfterPrimary.size > 0) {
+    const liveRefreshRows = await loadLiveRosterPlayerTownHallMap({
+      playerTags: [...missingAfterPrimary],
+      cocService,
+    });
+    for (const [playerTag, townHall] of liveRefreshRows.entries()) {
+      if (!missingAfterPrimary.has(playerTag)) continue;
+      result.set(playerTag, townHall);
+      const detail = detailByTag.get(playerTag);
+      if (detail) {
+        detail.source = "live_refresh";
+        detail.townHall = townHall;
+        detail.liveRefreshInvoked = true;
+      }
+      missingAfterPrimary.delete(playerTag);
+    }
+  }
 
-type RosterTownHallResolution = {
-  townHallByTag: Map<string, number>;
-  missingTags: string[];
-};
+  for (const playerTag of missingAfterPrimary) {
+    const detail = detailByTag.get(playerTag);
+    if (detail) {
+      detail.source = "missing";
+      detail.liveRefreshInvoked = liveRefreshInvoked;
+    }
+  }
+
+  return {
+    townHallByTag: result,
+    detailByTag,
+    liveRefreshInvoked,
+  };
+}
 
 async function resolveRosterPlayerTownHallMap(input: {
   rosterType: string;
@@ -1391,18 +1834,78 @@ async function resolveRosterPlayerTownHallMap(input: {
 }): Promise<RosterTownHallResolution> {
   const normalizedTags = [...new Set(input.playerTags.map((tag) => normalizePlayerTag(tag)).filter(Boolean))];
   if (normalizedTags.length <= 0) {
-    return { townHallByTag: new Map(), missingTags: [] };
+    return {
+      townHallByTag: new Map(),
+      missingTags: [],
+      detailByTag: new Map(),
+      liveRefreshInvoked: false,
+    };
   }
 
-  const townHallByTag = await loadRosterPlayerTownHallMap({
+  const lookup = await loadRosterPlayerTownHallMap({
     rosterType: input.rosterType,
     clanTag: input.clanTag,
     playerTags: normalizedTags,
-    allowLiveFetch: Boolean(input.cocService),
+    allowLiveFetch: Boolean(input.allowLiveFetch ?? input.cocService),
     cocService: input.cocService ?? null,
   });
-  const missingTags = normalizedTags.filter((tag) => !townHallByTag.has(tag));
-  return { townHallByTag, missingTags };
+  const missingTags = normalizedTags.filter((tag) => !lookup.townHallByTag.has(tag));
+  return {
+    townHallByTag: lookup.townHallByTag,
+    missingTags,
+    detailByTag: lookup.detailByTag,
+    liveRefreshInvoked: lookup.liveRefreshInvoked,
+  };
+}
+
+function logRosterTownHallResolutionDiagnostics(input: {
+  rosterId: string;
+  rosterType: string;
+  clanTag: string | null;
+  requestedTags: string[];
+  linkedTags: string[];
+  resolution: RosterTownHallResolution;
+  blockedUnavailableTags: string[];
+  blockedOutOfRangeTags: string[];
+  cocServicePresent: boolean;
+}): void {
+  const effectiveRequestedTags = input.requestedTags.length > 0 ? input.requestedTags : input.linkedTags;
+  const resolutionEntries = [...new Set(effectiveRequestedTags.map((tag) => normalizePlayerTag(tag)).filter(Boolean))].map(
+    (playerTag) => {
+      const detail =
+        input.resolution.detailByTag.get(playerTag) ?? {
+          source: "missing" as const,
+          townHall: null,
+          primarySourceHit: false,
+          snapshotSourceHit: false,
+          liveRefreshInvoked: input.resolution.liveRefreshInvoked,
+        };
+      return {
+        player_tag: playerTag,
+        source: detail.source,
+        town_hall: detail.townHall,
+        primary_source_hit: detail.primarySourceHit,
+        snapshot_hit: detail.snapshotSourceHit,
+        live_refresh_invoked: detail.liveRefreshInvoked,
+      };
+    },
+  );
+  const blockedTags = [...new Set([...input.blockedUnavailableTags, ...input.blockedOutOfRangeTags])];
+  console.info(
+    `[roster-townhall] ${JSON.stringify({
+      roster_id: input.rosterId,
+      roster_type: input.rosterType,
+      roster_clan_tag: input.clanTag,
+      requested_player_tags: effectiveRequestedTags,
+      linked_tags: input.linkedTags,
+      coc_service_present: input.cocServicePresent,
+      live_refresh_invoked: input.resolution.liveRefreshInvoked,
+      resolution: resolutionEntries,
+      blocked_unavailable_tags: input.blockedUnavailableTags,
+      blocked_out_of_range_tags: input.blockedOutOfRangeTags,
+      blocked_tags: blockedTags,
+    })}`,
+  );
 }
 
 function buildRosterManagerGroupSummaryLine(group: RosterGroupRecord & { signupCount: number }): string {
@@ -1553,6 +2056,8 @@ function normalizeRosterPostButtonMode(input: unknown): RosterPostButtonMode {
 
 const ROSTER_BOARD_COLUMN_LIMITS: Record<RosterDisplayColumn, number> = {
   [ROSTER_DISPLAY_COLUMNS.TH_LEVEL]: 2,
+  [ROSTER_DISPLAY_COLUMNS.TOWNHALL_ICONS]: 8,
+  [ROSTER_DISPLAY_COLUMNS.INDEX]: 5,
   [ROSTER_DISPLAY_COLUMNS.DISCORD_NAME]: 12,
   [ROSTER_DISPLAY_COLUMNS.DISCORD_USERNAME]: 16,
   [ROSTER_DISPLAY_COLUMNS.DISCORD_USER_ID]: 18,
@@ -1567,6 +2072,8 @@ const ROSTER_BOARD_COLUMN_LIMITS: Record<RosterDisplayColumn, number> = {
 
 const ROSTER_BOARD_COLUMN_HEADERS: Record<RosterDisplayColumn, string> = {
   [ROSTER_DISPLAY_COLUMNS.TH_LEVEL]: "TH",
+  [ROSTER_DISPLAY_COLUMNS.TOWNHALL_ICONS]: ":house:",
+  [ROSTER_DISPLAY_COLUMNS.INDEX]: "INDEX",
   [ROSTER_DISPLAY_COLUMNS.DISCORD_NAME]: "DISCORD",
   [ROSTER_DISPLAY_COLUMNS.DISCORD_USERNAME]: "USERNAME",
   [ROSTER_DISPLAY_COLUMNS.DISCORD_USER_ID]: "ID",
@@ -1612,9 +2119,36 @@ function getRosterDisplayColumnHeader(column: RosterDisplayColumn): string {
   return ROSTER_BOARD_COLUMN_HEADERS[column];
 }
 
-function getRosterDisplayColumnValue(signup: RosterSignupViewRecord, column: RosterDisplayColumn): string | null {
+function formatRosterTownhallIconsValue(townHall: number | null | undefined): string | null {
+  if (townHall === null || townHall === undefined || !Number.isFinite(townHall)) {
+    return null;
+  }
+  const normalized = Math.max(0, Math.trunc(townHall));
+  if (normalized <= 0) {
+    return null;
+  }
+  if (normalized <= 8) {
+    return String(normalized);
+  }
+  if (normalized >= 9 && normalized <= 18) {
+    return `:th${normalized}:`;
+  }
+  return String(normalized);
+}
+
+function getRosterDisplayColumnValue(
+  signup: RosterSignupViewRecord,
+  column: RosterDisplayColumn,
+  rowIndex?: number,
+): string | null {
   if (column === ROSTER_DISPLAY_COLUMNS.TH_LEVEL) {
     return signup.townHall === null ? null : String(signup.townHall);
+  }
+  if (column === ROSTER_DISPLAY_COLUMNS.TOWNHALL_ICONS) {
+    return formatRosterTownhallIconsValue(signup.townHall);
+  }
+  if (column === ROSTER_DISPLAY_COLUMNS.INDEX) {
+    return rowIndex === null || rowIndex === undefined ? null : String(rowIndex);
   }
   if (column === ROSTER_DISPLAY_COLUMNS.DISCORD_NAME) {
     return signup.discordDisplayName ?? signup.discordUsername ?? signup.discordUserId ?? null;
@@ -1656,9 +2190,9 @@ function measureRosterBoardColumnWidths(
   const widths = Object.fromEntries(
     columns.map((column) => [column, getRosterDisplayColumnHeader(column).length] as const),
   ) as Record<RosterDisplayColumn, number>;
-  for (const signup of signups) {
+  for (const [rowIndex, signup] of signups.entries()) {
     for (const column of columns) {
-      const value = sanitizeRosterBoardText(getRosterDisplayColumnValue(signup, column));
+      const value = sanitizeRosterBoardText(getRosterDisplayColumnValue(signup, column, rowIndex + 1));
       widths[column] = Math.min(
         Math.max(widths[column], value.length),
         ROSTER_BOARD_COLUMN_LIMITS[column],
@@ -1678,6 +2212,33 @@ function buildRosterBoardLine(
     .join(" ");
 }
 
+function buildRosterBoardDisplayLine(
+  columns: readonly RosterDisplayColumn[],
+  values: Record<RosterDisplayColumn, string | null>,
+  widths: Record<RosterDisplayColumn, number>,
+): string {
+  const townhallIconColumnIndex = columns.indexOf(ROSTER_DISPLAY_COLUMNS.TOWNHALL_ICONS);
+  if (townhallIconColumnIndex < 0) {
+    return `\`${buildRosterBoardLine(columns, values, widths)}\``;
+  }
+
+  const parts: string[] = [];
+  const prefixColumns = columns.slice(0, townhallIconColumnIndex);
+  const suffixColumns = columns.slice(townhallIconColumnIndex + 1);
+
+  if (prefixColumns.length > 0) {
+    parts.push(`\`${buildRosterBoardLine(prefixColumns, values, widths)}\``);
+  }
+
+  parts.push(formatRosterBoardCell(values[ROSTER_DISPLAY_COLUMNS.TOWNHALL_ICONS], widths[ROSTER_DISPLAY_COLUMNS.TOWNHALL_ICONS]));
+
+  if (suffixColumns.length > 0) {
+    parts.push(`\`${buildRosterBoardLine(suffixColumns, values, widths)}\``);
+  }
+
+  return parts.join(" ");
+}
+
 function buildRosterBoardHeaderLine(
   columns: readonly RosterDisplayColumn[],
   widths: Record<RosterDisplayColumn, number>,
@@ -1686,33 +2247,48 @@ function buildRosterBoardHeaderLine(
     RosterDisplayColumn,
     string | null
   >;
-  return buildRosterBoardLine(columns, values, widths);
+  return buildRosterBoardDisplayLine(columns, values, widths);
 }
 
 function buildRosterBoardRowLine(
   signup: RosterSignupViewRecord,
   columns: readonly RosterDisplayColumn[],
   widths: Record<RosterDisplayColumn, number>,
+  rowIndex: number,
 ): string {
-  const values = Object.fromEntries(columns.map((column) => [column, getRosterDisplayColumnValue(signup, column)] as const)) as Record<
-    RosterDisplayColumn,
-    string | null
-  >;
-  return buildRosterBoardLine(columns, values, widths);
+  const values = Object.fromEntries(
+    columns.map((column) => [column, getRosterDisplayColumnValue(signup, column, rowIndex)] as const),
+  ) as Record<RosterDisplayColumn, string | null>;
+  return buildRosterBoardDisplayLine(columns, values, widths);
 }
 
 function buildRosterBoardRowLines(
   signups: RosterSignupViewRecord[],
   columns: readonly RosterDisplayColumn[],
   widths: Record<RosterDisplayColumn, number>,
-): string[] {
+  startIndex = 1,
+): { lines: string[]; nextIndex: number } {
   if (signups.length <= 0) {
-    return ["`- None`"];
+    return { lines: ["`- None`"], nextIndex: startIndex };
   }
-  return signups.map((signup) => `\`${buildRosterBoardRowLine(signup, columns, widths)}\``);
+  let rowIndex = startIndex;
+  const lines = signups.map((signup) => {
+    const line = buildRosterBoardRowLine(signup, columns, widths, rowIndex);
+    rowIndex += 1;
+    return line;
+  });
+  return { lines, nextIndex: rowIndex };
 }
 
-function buildRosterSignupPayloadFromView(view: RosterSignupView): RosterSignupPayload {
+async function renderRosterBoardShortcodes(text: string, client?: Client | null): Promise<string> {
+  if (!client) return text;
+  return emojiResolverService.replaceShortcodes(client, text).catch(() => text);
+}
+
+async function buildRosterSignupPayloadFromView(
+  view: RosterSignupView,
+  options?: RosterSignupPayloadBuildOptions,
+): Promise<RosterSignupPayload> {
   const title = normalizeRosterText(view.clanDisplayName ?? null) ?? normalizeClanTag(view.roster.clanTag ?? "") ?? "Roster";
   const groups = buildRosterGroupsWithSignups(view);
   const columns =
@@ -1726,12 +2302,15 @@ function buildRosterSignupPayloadFromView(view: RosterSignupView): RosterSignupP
   const lines: string[] = [
     rosterLabel,
     "",
-    `\`${buildRosterBoardHeaderLine(columns, widths)}\``,
+    buildRosterBoardHeaderLine(columns, widths),
   ];
 
+  let rowIndex = 1;
   for (const group of groups) {
     lines.push(`**${group.name} - ${group.signupCount}**`);
-    lines.push(...buildRosterBoardRowLines(group.signups, columns, widths));
+    const renderedRows = buildRosterBoardRowLines(group.signups, columns, widths, rowIndex);
+    lines.push(...renderedRows.lines);
+    rowIndex = renderedRows.nextIndex;
     lines.push("");
   }
 
@@ -1741,12 +2320,14 @@ function buildRosterSignupPayloadFromView(view: RosterSignupView): RosterSignupP
   lines.push("");
   lines.push(`Total ${view.totalSignupCount}/${maxMembersLabel} | Min. TH ${minTownHallLabel}`);
 
+  const renderedDescription = await renderRosterBoardShortcodes(lines.join("\n"), options?.emojiClient ?? null);
   const embed = new EmbedBuilder()
     .setColor(0xfee75c)
     .setTitle(title)
-    .setDescription(truncateDiscordContent(lines.join("\n"), 4096));
+    .setDescription(truncateDiscordContent(renderedDescription, 4096));
 
   const buttonMode = normalizeRosterPostButtonMode(view.roster.postButtonMode);
+  const refreshButtonDisabled = options?.refreshButtonDisabled ?? false;
   const buttonRows: ActionRowBuilder<ButtonBuilder>[] = [];
   if (buttonMode !== "archived") {
     const rowButtons: ButtonBuilder[] = [
@@ -1755,6 +2336,7 @@ function buildRosterSignupPayloadFromView(view: RosterSignupView): RosterSignupP
         .setEmoji("🔄")
         .setStyle(ButtonStyle.Secondary),
     ];
+    rowButtons[0].setDisabled(refreshButtonDisabled);
     if (buttonMode === "standard") {
       rowButtons.push(
         new ButtonBuilder()
@@ -1860,12 +2442,13 @@ async function loadRosterView(rosterId: string, options?: RosterViewLoadOptions)
     },
   });
   const signupTags = signups.map((signup) => normalizePlayerTag(signup.playerTag)).filter(Boolean);
-  const townHallByTag = await loadRosterPlayerTownHallMap({
+  const townHallResolution = await loadRosterPlayerTownHallMap({
     rosterType: roster.rosterType,
     clanTag: roster.clanTag,
     playerTags: signupTags,
     allowLiveFetch: false,
   });
+  const townHallByTag = townHallResolution.townHallByTag;
   const [snapshotRows, linkedPlayerRows, resolvedWeightRows] = await Promise.all([
     todoSnapshotService.listSnapshotsByPlayerTags({
       playerTags: signupTags,
@@ -2126,6 +2709,67 @@ export function parseRosterSelectionActionButtonCustomId(
   return sessionId ? { action, sessionId } : null;
 }
 
+export function isRosterPostUsersUserSelectMenuCustomId(customId: string): boolean {
+  return String(customId ?? "").startsWith(`${ROSTER_POST_USERS_PREFIX}:user:`);
+}
+
+export function isRosterPostUsersPlayerSelectMenuCustomId(customId: string): boolean {
+  return String(customId ?? "").startsWith(`${ROSTER_POST_USERS_PREFIX}:players:`);
+}
+
+export function isRosterPostUsersGroupSelectMenuCustomId(customId: string): boolean {
+  return String(customId ?? "").startsWith(`${ROSTER_POST_USERS_PREFIX}:group:`);
+}
+
+export function isRosterPostUsersActionButtonCustomId(customId: string): boolean {
+  return String(customId ?? "").startsWith(`${ROSTER_POST_USERS_PREFIX}:action:`);
+}
+
+export function parseRosterPostUsersUserSelectMenuCustomId(customId: string): { sessionId: string } | null {
+  const parts = String(customId ?? "").split(":");
+  if (parts.length !== 3 || parts[0] !== ROSTER_POST_USERS_PREFIX || parts[1] !== "user") {
+    return null;
+  }
+  const sessionId = parts[2]?.trim() ?? "";
+  return sessionId ? { sessionId } : null;
+}
+
+export function parseRosterPostUsersPlayerSelectMenuCustomId(
+  customId: string,
+): { sessionId: string; pageIndex: number } | null {
+  const parts = String(customId ?? "").split(":");
+  if (parts.length !== 4 || parts[0] !== ROSTER_POST_USERS_PREFIX || parts[1] !== "players") {
+    return null;
+  }
+  const pageIndex = Math.trunc(Number(parts[2] ?? ""));
+  const sessionId = parts[3]?.trim() ?? "";
+  return Number.isFinite(pageIndex) && pageIndex >= 0 && sessionId ? { sessionId, pageIndex } : null;
+}
+
+export function parseRosterPostUsersGroupSelectMenuCustomId(customId: string): { sessionId: string } | null {
+  const parts = String(customId ?? "").split(":");
+  if (parts.length !== 3 || parts[0] !== ROSTER_POST_USERS_PREFIX || parts[1] !== "group") {
+    return null;
+  }
+  const sessionId = parts[2]?.trim() ?? "";
+  return sessionId ? { sessionId } : null;
+}
+
+export function parseRosterPostUsersActionButtonCustomId(
+  customId: string,
+): { action: "confirm" | "cancel" | "select_group" | "previous_page" | "next_page"; sessionId: string } | null {
+  const parts = String(customId ?? "").split(":");
+  if (parts.length !== 4 || parts[0] !== ROSTER_POST_USERS_PREFIX || parts[1] !== "action") {
+    return null;
+  }
+  const action = parts[2];
+  if (action !== "confirm" && action !== "cancel" && action !== "select_group" && action !== "previous_page" && action !== "next_page") {
+    return null;
+  }
+  const sessionId = parts[3]?.trim() ?? "";
+  return sessionId ? { action, sessionId } : null;
+}
+
 export class RosterService {
   async createRoster(input: CreateRosterInput): Promise<RosterRecord> {
     const guildId = String(input.guildId ?? "").trim();
@@ -2257,17 +2901,17 @@ export class RosterService {
   async buildRosterSignupPayload(
     rosterId: string,
     _cocService?: CoCService | null,
-    options?: RosterViewLoadOptions,
+    options?: RosterSignupPayloadBuildOptions,
   ): Promise<RosterSignupPayload | null> {
     const view = await loadRosterView(rosterId, options);
     if (!view) return null;
-    return buildRosterSignupPayloadFromView(view);
+    return buildRosterSignupPayloadFromView(view, options);
   }
 
   async refreshRosterSignupPayload(
     rosterId: string,
     cocService?: CoCService | null,
-    options?: RosterViewLoadOptions,
+    options?: RosterSignupPayloadBuildOptions,
   ): Promise<RosterSignupPayload | null> {
     const roster = await prisma.roster.findUnique({
       where: { id: rosterId },
@@ -3022,6 +3666,17 @@ export class RosterService {
           blockedOutOfRangeAccounts.push(blockedAccount);
         }
       }
+      logRosterTownHallResolutionDiagnostics({
+        rosterId: roster.id,
+        rosterType: roster.rosterType,
+        clanTag: roster.clanTag,
+        requestedTags,
+        linkedTags,
+        resolution: playerTownHallResolution,
+        blockedUnavailableTags,
+        blockedOutOfRangeTags,
+        cocServicePresent: Boolean(input.cocService),
+      });
       if (blockedUnavailableTags.length > 0) {
         return {
           outcome: "townhall_unavailable",
@@ -3331,6 +3986,10 @@ export class RosterService {
       ownerDiscordUserId: normalizeDiscordUserId(input.discordUserId) ?? input.discordUserId,
       options: loaded.options,
       selectedTags: [],
+      selectedDiscordUserId: null,
+      selectedDiscordUserLabel: null,
+      groupPickerVisible: false,
+      playerPageWindowStart: 0,
     });
     return {
       outcome: "ready",
@@ -3362,6 +4021,55 @@ export class RosterService {
       ownerDiscordUserId: normalizeDiscordUserId(input.discordUserId) ?? input.discordUserId,
       options: loaded.options,
       selectedTags: [],
+      selectedDiscordUserId: null,
+      selectedDiscordUserLabel: null,
+      groupPickerVisible: false,
+      playerPageWindowStart: 0,
+    });
+    return {
+      outcome: "ready",
+      panel: buildRosterSelectionPayload(session),
+    };
+  }
+
+  async createRosterManagerUserSelectionPanel(input: {
+    rosterId: string;
+    discordUserId: string;
+    mode: "add_user" | "remove_user";
+  }): Promise<RosterSelectionOpenResult> {
+    const view = await loadRosterView(input.rosterId);
+    if (!view) {
+      return { outcome: "roster_not_found", rosterId: input.rosterId };
+    }
+    if (!canManagerMutateRoster(view.roster.lifecycleState)) {
+      return { outcome: "roster_archived", rosterId: view.roster.id };
+    }
+
+    const defaultGroup =
+      input.mode === "add_user"
+        ? view.groups.find((group) => group.key === normalizeRosterGroupKey("confirmed")) ?? view.groups[0] ?? null
+        : null;
+    const groupOptions = view.groups.map((group) => ({
+      value: group.key,
+      label: group.name,
+      description: group.description,
+    }));
+
+    const session = createRosterSelectionSession({
+      mode: input.mode,
+      rosterId: view.roster.id,
+      rosterTitle: view.roster.title,
+      groupKey: defaultGroup?.key ?? null,
+      groupName: defaultGroup?.name ?? null,
+      selectedGroupKey: defaultGroup?.key ?? null,
+      groupOptions,
+      ownerDiscordUserId: normalizeDiscordUserId(input.discordUserId) ?? input.discordUserId,
+      options: [],
+      selectedTags: [],
+      selectedDiscordUserId: null,
+      selectedDiscordUserLabel: null,
+      groupPickerVisible: false,
+      playerPageWindowStart: 0,
     });
     return {
       outcome: "ready",
@@ -3374,6 +4082,12 @@ export class RosterService {
     discordUserId: string;
     selectedTags?: string[];
     selectedGroupKey?: string | null;
+    selectedDiscordUserId?: string | null;
+    selectedDiscordUserLabel?: string | null;
+    selectedPlayerTags?: string[];
+    playerPageIndex?: number | null;
+    groupPickerVisible?: boolean;
+    playerPageWindowDelta?: number | null;
   }): Promise<RosterSelectionUpdateResult> {
     const session = getRosterSelectionSession(input.sessionId);
     if (!session) {
@@ -3384,9 +4098,45 @@ export class RosterService {
       return { outcome: "forbidden" };
     }
 
+    if ((session.mode === "add_user" || session.mode === "remove_user") && input.selectedDiscordUserId !== undefined) {
+      const normalizedSelectedUserId = normalizeDiscordUserId(input.selectedDiscordUserId ?? "") ?? null;
+      const previousUserId = session.selectedDiscordUserId;
+      session.selectedDiscordUserId = normalizedSelectedUserId;
+      session.selectedDiscordUserLabel = normalizeRosterText(input.selectedDiscordUserLabel ?? null);
+      session.groupPickerVisible = false;
+
+      if (normalizedSelectedUserId) {
+        const linkedAccounts = await listPlayerLinksForDiscordUser({ discordUserId: normalizedSelectedUserId });
+        session.options = linkedAccounts.map((account) => ({
+          value: account.playerTag,
+          label: account.linkedName ? `${account.linkedName} (${account.playerTag})` : account.playerTag,
+          description: account.linkedName ? "Linked player account" : "Linked player account",
+        }));
+      } else {
+        session.options = [];
+      }
+
+      if (previousUserId !== normalizedSelectedUserId) {
+        session.selectedTags = [];
+        session.playerPageWindowStart = 0;
+      } else {
+        session.selectedTags = normalizeRosterSelectionTags(session.selectedTags, session.options.map((option) => option.value));
+      }
+    }
+
     if (Array.isArray(input.selectedTags)) {
       session.selectedTags = normalizeRosterSelectionTags(
         input.selectedTags,
+        session.options.map((option) => option.value),
+      );
+    }
+    if (Array.isArray(input.selectedPlayerTags)) {
+      const pageIndex = Math.max(0, Math.trunc(Number(input.playerPageIndex ?? 0)));
+      const pageStart = pageIndex * 25;
+      const pageOptions = session.options.slice(pageStart, pageStart + 25).map((option) => option.value);
+      const remaining = session.selectedTags.filter((tag) => !pageOptions.includes(tag));
+      session.selectedTags = normalizeRosterSelectionTags(
+        [...remaining, ...input.selectedPlayerTags],
         session.options.map((option) => option.value),
       );
     }
@@ -3399,7 +4149,18 @@ export class RosterService {
         session.selectedGroupKey = selectedGroup.value;
         session.groupKey = selectedGroup.value;
         session.groupName = selectedGroup.label;
+        session.groupPickerVisible = false;
       }
+    }
+    if (input.groupPickerVisible !== undefined) {
+      session.groupPickerVisible = input.groupPickerVisible && session.mode === "add_user";
+    }
+    if (input.playerPageWindowDelta !== undefined) {
+      const totalChunks = Math.max(1, Math.ceil(session.options.length / 25));
+      const maxWindowStart = Math.max(0, totalChunks - ROSTER_MANAGER_PLAYER_PAGE_ROW_COUNT);
+      const delta = Math.trunc(Number(input.playerPageWindowDelta ?? 0)) || 0;
+      const nextWindowStart = Math.max(0, Math.min(Math.trunc(session.playerPageWindowStart || 0) + delta * ROSTER_MANAGER_PLAYER_PAGE_ROW_COUNT, maxWindowStart));
+      session.playerPageWindowStart = nextWindowStart;
     }
     rosterSelectionSessions.set(session.sessionId, session);
     return {
@@ -3435,13 +4196,44 @@ export class RosterService {
         return { outcome: "signup", result };
       }
 
-      const result = await this.removeRosterSignups({
+      if (session.mode === "remove") {
+        const result = await this.removeRosterSignups({
+          rosterId: session.rosterId,
+          discordUserId: session.ownerDiscordUserId,
+          playerTags: session.selectedTags,
+        });
+        deleteRosterSelectionSession(session.sessionId);
+        return { outcome: "remove", result };
+      }
+
+      if (!session.selectedDiscordUserId) {
+        return { outcome: "missing_user" };
+      }
+      if (session.selectedTags.length <= 0) {
+        return { outcome: "missing_players" };
+      }
+      if (session.mode === "add_user") {
+        if (!session.selectedGroupKey) {
+          return { outcome: "missing_group" };
+        }
+        const result = await this.addRosterSignupsForManager({
+          rosterId: session.rosterId,
+          groupKey: session.selectedGroupKey,
+          playerTags: session.selectedTags,
+          updatedByDiscordUserId: session.ownerDiscordUserId,
+          cocService: input.cocService ?? null,
+        });
+        deleteRosterSelectionSession(session.sessionId);
+        return { outcome: "add_user", result };
+      }
+
+      const result = await this.removeRosterSignupsAsManager({
         rosterId: session.rosterId,
-        discordUserId: session.ownerDiscordUserId,
         playerTags: session.selectedTags,
+        updatedByDiscordUserId: session.ownerDiscordUserId,
       });
       deleteRosterSelectionSession(session.sessionId);
-      return { outcome: "remove", result };
+      return { outcome: "remove_user", result };
     } catch (error) {
       deleteRosterSelectionSession(session.sessionId);
       throw error;
@@ -3662,6 +4454,17 @@ export class RosterService {
             blockedOutOfRangeAccounts.push(blockedAccount);
           }
         }
+        logRosterTownHallResolutionDiagnostics({
+          rosterId: roster.id,
+          rosterType: roster.rosterType,
+          clanTag: roster.clanTag,
+          requestedTags,
+          linkedTags: selectedTags,
+          resolution: playerTownHallResolution,
+          blockedUnavailableTags,
+          blockedOutOfRangeTags,
+          cocServicePresent: Boolean(input.cocService),
+        });
         if (blockedUnavailableTags.length > 0) {
           return {
             outcome: "townhall_unavailable",

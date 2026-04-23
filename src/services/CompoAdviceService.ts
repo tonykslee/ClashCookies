@@ -14,6 +14,7 @@ import { HeatMapRefDisplayService } from "./HeatMapRefDisplayService";
 import { normalizeTag } from "./war-events/core";
 import {
   CompoActualStateService,
+  maybeLogCompoActualDiagnostics,
   loadCompoActualStateContext,
   type CompoActualStateMemberContext,
 } from "./CompoActualStateService";
@@ -225,6 +226,8 @@ export class CompoAdviceService {
 
     if (input.mode === "actual") {
       const context = await loadCompoActualStateContext(input.guildId ?? null);
+      const actualView =
+        view === "best" ? "best" : view === "raw" || view === "custom" ? "raw" : "auto";
       const trackedClanChoices = buildTrackedClanChoices({
         clans: context.clans,
       });
@@ -280,6 +283,15 @@ export class CompoAdviceService {
               bandMatchRatesByBandKey,
               view,
             });
+      maybeLogCompoActualDiagnostics({
+        surface: "advice",
+        clanTag: clan.clanTag,
+        clanName: clan.clanName,
+        view: actualView,
+        base: clan.base,
+        projection: summary.currentProjection,
+        heatMapRefs: context.heatMapRefs,
+      });
       return buildReadyResult({
         mode: input.mode,
         selectedView: view,

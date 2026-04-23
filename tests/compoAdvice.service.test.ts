@@ -225,6 +225,51 @@ describe("CompoAdviceService", () => {
     ]);
   });
 
+  it("logs a narrow Rocky Road ACTUAL diagnostics line for advice when the selected HeatMapRef band is missing", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      makeTrackedClan("#2RYGLU2UY", "Rocky Road"),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      makeCurrentMember({
+        clanTag: "#2RYGLU2UY",
+        playerTag: "#P000001",
+        playerName: "Member",
+        townHall: 15,
+        weight: 100,
+      }),
+    ]);
+    prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.heatMapRef.findMany.mockResolvedValue([
+      makeHeatMapRef({
+        weightMinInclusive: 200,
+        weightMaxInclusive: 300,
+      }),
+    ]);
+    prismaMock.fwaClanCatalog.findMany.mockResolvedValue([{ clanTag: "#2RYGLU2UY" }]);
+    prismaMock.fwaClanMatchStatsCurrent.findMany.mockResolvedValue([]);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const result = await new CompoAdviceService().readAdvice({
+      guildId: "guild-1",
+      targetTag: "#2RYGLU2UY",
+      mode: "actual",
+    });
+
+    expect(result.kind).toBe("ready");
+    expect(logSpy).toHaveBeenCalledTimes(1);
+    expect(String(logSpy.mock.calls[0]?.[0] ?? "")).toContain(
+      "[compo-actual-debug]",
+    );
+    expect(String(logSpy.mock.calls[0]?.[0] ?? "")).toContain("surface=advice");
+    expect(String(logSpy.mock.calls[0]?.[0] ?? "")).toContain(
+      "selectedHeatMapRefBandKey=null",
+    );
+    expect(String(logSpy.mock.calls[0]?.[0] ?? "")).toContain(
+      "coverageReason=out_of_range_low",
+    );
+  });
+
   it("keeps ACTUAL custom advice on a manually selected target band", async () => {
     prismaMock.trackedClan.findMany.mockResolvedValue([
       makeTrackedClan("#AAA111", "Alpha Clan-actual"),

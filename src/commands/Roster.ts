@@ -12,6 +12,7 @@ import {
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
+  UserSelectMenuInteraction,
   StringSelectMenuBuilder,
   StringSelectMenuInteraction,
 } from "discord.js";
@@ -21,7 +22,11 @@ import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
 import { CommandPermissionService } from "../services/CommandPermissionService";
 import { resolveCurrentCwlSeasonKey } from "../services/CwlRegistryService";
-import { normalizeClanTag, normalizePlayerTag } from "../services/PlayerLinkService";
+import {
+  listPlayerLinksForDiscordUser,
+  normalizeClanTag,
+  normalizePlayerTag,
+} from "../services/PlayerLinkService";
 import { autocompleteSyncTimeZones, normalizeSyncTimeZone } from "../services/syncTimeZone";
 import {
   ROSTER_LIFECYCLE_STATE,
@@ -33,6 +38,10 @@ import {
   parseRosterPostRefreshButtonCustomId,
   parseRosterPostSettingsButtonCustomId,
   parseRosterPostSettingsMenuCustomId,
+  parseRosterPostUsersActionButtonCustomId,
+  parseRosterPostUsersGroupSelectMenuCustomId,
+  parseRosterPostUsersPlayerSelectMenuCustomId,
+  parseRosterPostUsersUserSelectMenuCustomId,
   rosterService,
   type RosterRecord,
   type RosterSignupViewRecord,
@@ -44,7 +53,6 @@ import {
 } from "../services/RosterWeightService";
 import { syncRosterRoleAssignments } from "../services/RosterRoleSyncService";
 import { rosterExportService } from "../services/RosterExportService";
-import { autocompleteCwlTrackedClan } from "./Cwl";
 
 export {
   handleRosterSignupButtonInteraction,
@@ -59,6 +67,8 @@ type RosterMutationAction = "add" | "move" | "remove" | "set_weight" | "open" | 
 type RosterPostSettingsAction =
   | "export"
   | "customize"
+  | "add_user"
+  | "remove_user"
   | "open_roster"
   | "close_roster"
   | "clear_roster"
@@ -86,6 +96,24 @@ function formatRosterAccountIdentityList(accounts: Array<{ playerTag: string; pl
   return accounts.map(formatRosterAccountIdentity).join(", ");
 }
 
+function formatRosterDiscordUserSelectionLabel(
+  interaction: {
+    users?: { get: (userId: string) => unknown };
+    members?: { get: (userId: string) => unknown };
+  },
+  userId: string,
+): string {
+  const member = (interaction.members?.get(userId) ?? null) as { displayName?: string | null } | null;
+  const user = (interaction.users?.get(userId) ?? null) as { username?: string | null } | null;
+  const displayName = String(member?.displayName ?? "").trim();
+  const username = String(user?.username ?? "").trim();
+  const fallback = String(userId ?? "").trim();
+  if (displayName) {
+    return `${displayName} (@${username || fallback})`;
+  }
+  return `@${username || fallback}`;
+}
+
 function buildRosterStateLabel(state: RosterRecord["lifecycleState"]): string {
   if (state === ROSTER_LIFECYCLE_STATE.ACTIVE) return "Active";
   if (state === ROSTER_LIFECYCLE_STATE.CLOSED) return "Closed";
@@ -111,6 +139,8 @@ function describeRosterDisplayColumns(columns: string[] | null | undefined): str
   const labels = resolved
     .map((column) => {
       if (column === ROSTER_DISPLAY_COLUMNS.TH_LEVEL) return "TH";
+      if (column === ROSTER_DISPLAY_COLUMNS.TOWNHALL_ICONS) return "Townhall Icons";
+      if (column === ROSTER_DISPLAY_COLUMNS.INDEX) return "Index";
       if (column === ROSTER_DISPLAY_COLUMNS.DISCORD_NAME) return "Discord name";
       if (column === ROSTER_DISPLAY_COLUMNS.DISCORD_USERNAME) return "Discord username";
       if (column === ROSTER_DISPLAY_COLUMNS.DISCORD_USER_ID) return "Discord ID";
@@ -272,7 +302,25 @@ function buildRosterRemoveResultSummary(
   return `Removed ${removed}${ignored}.`;
 }
 
-function buildRosterListEmbed(rosters: RosterSummaryRecord[]): EmbedBuilder {
+function formatRosterListClanLine(clanName: string | null, clanTag: string | null): string {
+  const normalizedClanName = String(clanName ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const normalizedClanTag = normalizeClanTag(clanTag ?? "");
+  if (normalizedClanName && normalizedClanTag) {
+    return `${normalizedClanName} (\`${normalizedClanTag}\`)`;
+  }
+  if (normalizedClanName) {
+    return normalizedClanName;
+  }
+  if (normalizedClanTag) {
+    return `\`${normalizedClanTag}\``;
+  }
+  return "none";
+}
+
+async function buildRosterListEmbed(rosters: RosterSummaryRecord[]): Promise<EmbedBuilder> {
+  const clanNameByTag = await buildRosterAutocompleteClanNameMap(rosters);
   const embed = new EmbedBuilder()
     .setColor(0xfee75c)
     .setTitle("Guild Rosters")
@@ -283,13 +331,21 @@ function buildRosterListEmbed(rosters: RosterSummaryRecord[]): EmbedBuilder {
     );
 
   for (const roster of rosters.slice(0, 25)) {
+    const clanTag = normalizeClanTag(roster.clanTag ?? "") || null;
+    const clanName = clanTag ? clanNameByTag.get(clanTag) ?? null : null;
     embed.addFields({
       name: roster.title.slice(0, 100),
       value: [
         `Type: ${roster.rosterType}${roster.rosterCategory ? ` / ${roster.rosterCategory}` : ""}`,
-        `Clan: ${roster.clanTag ?? "none"}`,
+        `Clan: ${formatRosterListClanLine(clanName, clanTag)}`,
         `State: ${buildRosterStateLabel(roster.lifecycleState)}`,
-        `Posted: ${roster.postedMessageId ? `yes${roster.postedChannelId ? ` in <#${roster.postedChannelId}>` : ""}` : "no"}`,
+        `Posted: ${
+          roster.postedMessageUrl
+            ? `Yes ([Open posted roster](${roster.postedMessageUrl}))`
+            : roster.postedMessageId
+              ? `Yes${roster.postedChannelId ? ` in <#${roster.postedChannelId}>` : ""}`
+              : "No"
+        }`,
         `Groups: ${roster.groupCount} | Signups: ${roster.signupCount}`,
         `ID: \`${roster.id}\``,
       ].join("\n"),
@@ -391,10 +447,12 @@ async function refreshExistingRosterPost(
     return false;
   }
 
-  const payload = await rosterService.refreshRosterSignupPayload(rosterId, cocService ?? null, {
+  const loadingPayload = await rosterService.buildRosterSignupPayload(rosterId, null, {
     discordDisplayNamesByUserId: buildRosterDiscordDisplayNameMap(interaction),
+    emojiClient: interaction.client,
+    refreshButtonDisabled: true,
   });
-  if (!payload) {
+  if (!loadingPayload) {
     return false;
   }
 
@@ -405,6 +463,31 @@ async function refreshExistingRosterPost(
 
   const message = await channel.messages.fetch(rosterView.roster.postedMessageId).catch(() => null);
   if (!message) {
+    return false;
+  }
+
+  await message.edit({
+    embeds: [loadingPayload.embed],
+    components: loadingPayload.components,
+  }).catch(() => undefined);
+
+  const payload = await rosterService.refreshRosterSignupPayload(rosterId, cocService ?? null, {
+    discordDisplayNamesByUserId: buildRosterDiscordDisplayNameMap(interaction),
+    emojiClient: interaction.client,
+    refreshButtonDisabled: false,
+  });
+  if (!payload) {
+    const restoredPayload = await rosterService.buildRosterSignupPayload(rosterId, null, {
+      discordDisplayNamesByUserId: buildRosterDiscordDisplayNameMap(interaction),
+      emojiClient: interaction.client,
+      refreshButtonDisabled: false,
+    });
+    if (restoredPayload) {
+      await message.edit({
+        embeds: [restoredPayload.embed],
+        components: restoredPayload.components,
+      }).catch(() => undefined);
+    }
     return false;
   }
 
@@ -420,29 +503,36 @@ async function postRosterSignupMessage(
   interaction: ChatInputCommandInteraction,
   rosterId: string,
   cocService?: CoCService | null,
-): Promise<"posted" | "refreshed" | "no_payload" | "no_channel" | "failed"> {
+): Promise<
+  | { outcome: "posted"; postedMessageUrl: string | null }
+  | { outcome: "refreshed"; postedMessageUrl: string | null }
+  | { outcome: "no_payload"; postedMessageUrl: string | null }
+  | { outcome: "no_channel"; postedMessageUrl: string | null }
+  | { outcome: "failed"; postedMessageUrl: string | null }
+> {
   const rosterView = await rosterService.getRosterView(rosterId);
   if (!rosterView) {
-    return "failed";
+    return { outcome: "failed", postedMessageUrl: null };
   }
 
   const payload = await rosterService.buildRosterSignupPayload(rosterId, cocService ?? null, {
     discordDisplayNamesByUserId: buildRosterDiscordDisplayNameMap(interaction),
+    emojiClient: interaction.client,
   });
   if (!payload) {
-    return "no_payload";
+    return { outcome: "no_payload", postedMessageUrl: rosterView.roster.postedMessageUrl ?? null };
   }
 
   if (rosterView.roster.postedChannelId && rosterView.roster.postedMessageId) {
     const refreshed = await refreshExistingRosterPost(interaction, rosterId, cocService);
     if (refreshed) {
-      return "refreshed";
+      return { outcome: "refreshed", postedMessageUrl: rosterView.roster.postedMessageUrl ?? null };
     }
   }
 
   const channel = interaction.channel;
   if (!channel?.isTextBased() || !("send" in channel)) {
-    return "no_channel";
+    return { outcome: "no_channel", postedMessageUrl: rosterView.roster.postedMessageUrl ?? null };
   }
 
   const postedMessage = await channel
@@ -455,7 +545,7 @@ async function postRosterSignupMessage(
       return null;
     });
   if (!postedMessage) {
-    return "failed";
+    return { outcome: "failed", postedMessageUrl: rosterView.roster.postedMessageUrl ?? null };
   }
 
   await rosterService.recordRosterPostedMessage({
@@ -466,7 +556,7 @@ async function postRosterSignupMessage(
     postedByDiscordUserId: interaction.user.id,
   });
   await syncRosterRolesForRoster(interaction.client, rosterId);
-  return "posted";
+  return { outcome: "posted", postedMessageUrl: postedMessage.url };
 }
 
 async function deletePostedRosterMessage(
@@ -504,6 +594,8 @@ function buildRosterPostSettingsActions(lifecycleState: RosterRecord["lifecycleS
   return [
     { label: "Export", value: "export", description: "Create a Google Sheet export" },
     { label: "Customize", value: "customize", description: "Change board columns and sort order" },
+    { label: "Add User", value: "add_user", description: "Add linked players through an interactive panel" },
+    { label: "Remove User", value: "remove_user", description: "Remove linked players through an interactive panel" },
     lifecycleAction,
     { label: "Clear roster", value: "clear_roster", description: "Remove all roster signups" },
     { label: "Hide buttons", value: "hide_buttons", description: "Hide member buttons" },
@@ -649,6 +741,8 @@ function buildRosterCustomizeColumnsMenu(roster: RosterRecord): StringSelectMenu
     ];
   const options = [
     { label: "TH level", value: ROSTER_DISPLAY_COLUMNS.TH_LEVEL },
+    { label: "Townhall Icons", value: ROSTER_DISPLAY_COLUMNS.TOWNHALL_ICONS },
+    { label: "Index", value: ROSTER_DISPLAY_COLUMNS.INDEX },
     { label: "Discord name", value: ROSTER_DISPLAY_COLUMNS.DISCORD_NAME },
     { label: "Discord username", value: ROSTER_DISPLAY_COLUMNS.DISCORD_USERNAME },
     { label: "Discord User ID", value: ROSTER_DISPLAY_COLUMNS.DISCORD_USER_ID },
@@ -890,18 +984,48 @@ export async function handleRosterPostRefreshButtonInteraction(
     return;
   }
 
-  const payload = await rosterService.refreshRosterSignupPayload(parsed.rosterId, cocService, {
+  await interaction.deferUpdate();
+
+  const loadingPayload = await rosterService.buildRosterSignupPayload(parsed.rosterId, null, {
     discordDisplayNamesByUserId: buildRosterDiscordDisplayNameMap(interaction),
+    emojiClient: interaction.client,
+    refreshButtonDisabled: true,
   });
-  if (!payload) {
-    await interaction.reply({
-      content: "That roster is no longer available.",
-      ephemeral: true,
-    });
+  if (!loadingPayload) {
+    await interaction.editReply("That roster is no longer available.");
     return;
   }
 
-  await interaction.update({
+  await interaction.editReply({
+    embeds: [loadingPayload.embed],
+    components: loadingPayload.components,
+  });
+
+  const payload = await rosterService.refreshRosterSignupPayload(parsed.rosterId, cocService, {
+    discordDisplayNamesByUserId: buildRosterDiscordDisplayNameMap(interaction),
+    emojiClient: interaction.client,
+    refreshButtonDisabled: false,
+  });
+  if (!payload) {
+    const restoredPayload = await rosterService.buildRosterSignupPayload(parsed.rosterId, null, {
+      discordDisplayNamesByUserId: buildRosterDiscordDisplayNameMap(interaction),
+      emojiClient: interaction.client,
+      refreshButtonDisabled: false,
+    });
+    if (restoredPayload) {
+      await interaction.editReply({
+        embeds: [restoredPayload.embed],
+        components: restoredPayload.components,
+      });
+    }
+    await interaction.followUp({
+      content: "That roster is no longer available.",
+      ephemeral: true,
+    }).catch(() => undefined);
+    return;
+  }
+
+  await interaction.editReply({
     embeds: [payload.embed],
     components: payload.components,
   });
@@ -1027,6 +1151,32 @@ export async function handleRosterPostSettingsMenuInteraction(
     return;
   }
 
+  if (choice === "add_user" || choice === "remove_user") {
+    const panel = await rosterService.createRosterManagerUserSelectionPanel({
+      rosterId: roster.id,
+      discordUserId: interaction.user.id,
+      mode: choice,
+    });
+    if (panel.outcome !== "ready") {
+      const message =
+        panel.outcome === "roster_not_found"
+          ? "That roster is no longer available."
+          : "That roster can no longer be modified.";
+      await interaction.reply({
+        content: message,
+        ephemeral: true,
+      });
+      return;
+    }
+
+    await interaction.reply({
+      embeds: [panel.panel.embed],
+      components: panel.panel.components,
+      ephemeral: true,
+    });
+    return;
+  }
+
   if (choice === "open_roster" || choice === "close_roster") {
     const lifecycleState =
       choice === "open_roster" ? ROSTER_LIFECYCLE_STATE.OPEN : ROSTER_LIFECYCLE_STATE.CLOSED;
@@ -1133,6 +1283,308 @@ export async function handleRosterPostSettingsMenuInteraction(
   await interaction.reply({
     content: "Unsupported roster settings action.",
     ephemeral: true,
+  });
+}
+
+async function replyRosterUserPanelStateChange(
+  interaction:
+    | UserSelectMenuInteraction
+    | StringSelectMenuInteraction
+    | ButtonInteraction,
+  payload: {
+    content?: string | null;
+    embeds?: EmbedBuilder[];
+    components?: any[];
+  },
+): Promise<void> {
+  await interaction.update({
+    content: payload.content ?? undefined,
+    embeds: payload.embeds ?? [],
+    components: payload.components ?? [],
+  });
+}
+
+export async function handleRosterPostSettingsUserSelectInteraction(
+  interaction: UserSelectMenuInteraction,
+): Promise<void> {
+  const parsed = parseRosterPostUsersUserSelectMenuCustomId(interaction.customId);
+  if (!parsed) return;
+
+  const selectedUserId = interaction.values[0] ?? "";
+  if (!selectedUserId) {
+    await interaction.reply({
+      content: "Select a Discord user to continue.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const result = await rosterService.updateRosterSelectionPanel({
+    sessionId: parsed.sessionId,
+    discordUserId: interaction.user.id,
+    selectedDiscordUserId: selectedUserId,
+    selectedDiscordUserLabel: formatRosterDiscordUserSelectionLabel(interaction, selectedUserId),
+  });
+
+  if (result.outcome === "session_not_found") {
+    await interaction.reply({
+      content: "That roster selection has expired. Please start again.",
+      ephemeral: true,
+    });
+    return;
+  }
+  if (result.outcome === "forbidden") {
+    await interaction.reply({
+      content: "Only the original requester can use this roster selection.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await replyRosterUserPanelStateChange(interaction, {
+    embeds: [result.panel.embed],
+    components: result.panel.components,
+  });
+}
+
+export async function handleRosterPostSettingsPlayerSelectInteraction(
+  interaction: StringSelectMenuInteraction,
+): Promise<void> {
+  const parsed = parseRosterPostUsersPlayerSelectMenuCustomId(interaction.customId);
+  if (!parsed) return;
+
+  const result = await rosterService.updateRosterSelectionPanel({
+    sessionId: parsed.sessionId,
+    discordUserId: interaction.user.id,
+    selectedPlayerTags: interaction.values,
+    playerPageIndex: parsed.pageIndex,
+  });
+
+  if (result.outcome === "session_not_found") {
+    await interaction.reply({
+      content: "That roster selection has expired. Please start again.",
+      ephemeral: true,
+    });
+    return;
+  }
+  if (result.outcome === "forbidden") {
+    await interaction.reply({
+      content: "Only the original requester can use this roster selection.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await replyRosterUserPanelStateChange(interaction, {
+    embeds: [result.panel.embed],
+    components: result.panel.components,
+  });
+}
+
+export async function handleRosterPostSettingsGroupSelectInteraction(
+  interaction: StringSelectMenuInteraction,
+): Promise<void> {
+  const parsed = parseRosterPostUsersGroupSelectMenuCustomId(interaction.customId);
+  if (!parsed) return;
+
+  const result = await rosterService.updateRosterSelectionPanel({
+    sessionId: parsed.sessionId,
+    discordUserId: interaction.user.id,
+    selectedGroupKey: interaction.values[0] ?? null,
+  });
+
+  if (result.outcome === "session_not_found") {
+    await interaction.reply({
+      content: "That roster selection has expired. Please start again.",
+      ephemeral: true,
+    });
+    return;
+  }
+  if (result.outcome === "forbidden") {
+    await interaction.reply({
+      content: "Only the original requester can use this roster selection.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await replyRosterUserPanelStateChange(interaction, {
+    embeds: [result.panel.embed],
+    components: result.panel.components,
+  });
+}
+
+export async function handleRosterPostSettingsActionButtonInteraction(
+  interaction: ButtonInteraction,
+  cocService?: CoCService | null,
+): Promise<void> {
+  const parsed = parseRosterPostUsersActionButtonCustomId(interaction.customId);
+  if (!parsed) return;
+
+  if (parsed.action === "cancel") {
+    const result = await rosterService.cancelRosterSelectionPanel({
+      sessionId: parsed.sessionId,
+      discordUserId: interaction.user.id,
+    });
+    if (result.outcome === "session_not_found") {
+      await interaction.reply({
+        content: "That roster selection has expired. Please start again.",
+        ephemeral: true,
+      });
+      return;
+    }
+    if (result.outcome === "forbidden") {
+      await interaction.reply({
+        content: "Only the original requester can use this roster selection.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    await interaction.update({
+      content: "Roster selection cancelled.",
+      embeds: [],
+      components: [],
+    });
+    return;
+  }
+
+  if (parsed.action === "select_group") {
+    const result = await rosterService.updateRosterSelectionPanel({
+      sessionId: parsed.sessionId,
+      discordUserId: interaction.user.id,
+      groupPickerVisible: true,
+    });
+    if (result.outcome === "session_not_found") {
+      await interaction.reply({
+        content: "That roster selection has expired. Please start again.",
+        ephemeral: true,
+      });
+      return;
+    }
+    if (result.outcome === "forbidden") {
+      await interaction.reply({
+        content: "Only the original requester can use this roster selection.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    await interaction.update({
+      embeds: [result.panel.embed],
+      components: result.panel.components,
+    });
+    return;
+  }
+
+  if (parsed.action === "previous_page" || parsed.action === "next_page") {
+    const result = await rosterService.updateRosterSelectionPanel({
+      sessionId: parsed.sessionId,
+      discordUserId: interaction.user.id,
+      playerPageWindowDelta: parsed.action === "previous_page" ? -1 : 1,
+    });
+    if (result.outcome === "session_not_found") {
+      await interaction.reply({
+        content: "That roster selection has expired. Please start again.",
+        ephemeral: true,
+      });
+      return;
+    }
+    if (result.outcome === "forbidden") {
+      await interaction.reply({
+        content: "Only the original requester can use this roster selection.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    await interaction.update({
+      embeds: [result.panel.embed],
+      components: result.panel.components,
+    });
+    return;
+  }
+
+  await interaction.deferUpdate().catch(() => undefined);
+  const result = await rosterService.confirmRosterSelectionPanel({
+    sessionId: parsed.sessionId,
+    discordUserId: interaction.user.id,
+    cocService: cocService ?? null,
+  });
+  if (result.outcome === "session_not_found") {
+    await interaction.followUp({
+      content: "That roster selection has expired. Please start again.",
+      ephemeral: true,
+    }).catch(() => undefined);
+    return;
+  }
+  if (result.outcome === "forbidden") {
+    await interaction.followUp({
+      content: "Only the original requester can use this roster selection.",
+      ephemeral: true,
+    }).catch(() => undefined);
+    return;
+  }
+  if (result.outcome === "missing_user") {
+    await interaction.followUp({
+      content: "Select a Discord user first.",
+      ephemeral: true,
+    }).catch(() => undefined);
+    return;
+  }
+  if (result.outcome === "missing_players") {
+    await interaction.followUp({
+      content: "Select at least one linked player.",
+      ephemeral: true,
+    }).catch(() => undefined);
+    return;
+  }
+  if (result.outcome === "missing_group") {
+    await interaction.followUp({
+      content: "Select a roster group first.",
+      ephemeral: true,
+    }).catch(() => undefined);
+    return;
+  }
+
+  if (result.outcome === "add_user") {
+    await syncRosterRoleAssignments(interaction.client, result.result.rosterId).catch(() => undefined);
+    await refreshExistingRosterPost(interaction as unknown as ChatInputCommandInteraction, result.result.rosterId, cocService ?? null).catch(() => undefined);
+    await interaction.editReply({
+      content: buildRosterSignupResultSummary(result.result),
+      embeds: [],
+      components: [],
+    });
+    return;
+  }
+
+  if (result.outcome === "remove_user") {
+    await syncRosterRoleAssignments(interaction.client, result.result.rosterId).catch(() => undefined);
+    await refreshExistingRosterPost(interaction as unknown as ChatInputCommandInteraction, result.result.rosterId, cocService ?? null).catch(() => undefined);
+    await interaction.editReply({
+      content: buildRosterRemoveResultSummary(result.result),
+      embeds: [],
+      components: [],
+    });
+    return;
+  }
+
+  if (result.outcome === "signup") {
+    await syncRosterRoleAssignments(interaction.client, result.result.rosterId).catch(() => undefined);
+    await refreshExistingRosterPost(interaction as unknown as ChatInputCommandInteraction, result.result.rosterId, cocService).catch(() => undefined);
+    await interaction.update({
+      content: buildRosterSignupResultSummary(result.result),
+      embeds: [],
+      components: [],
+    });
+    return;
+  }
+
+  await refreshExistingRosterPost(interaction as unknown as ChatInputCommandInteraction, result.result.rosterId, cocService).catch(() => undefined);
+  await interaction.update({
+    content: buildRosterRemoveResultSummary(result.result),
+    embeds: [],
+    components: [],
   });
 }
 
@@ -1589,7 +2041,7 @@ async function handleRosterListSubcommand(interaction: ChatInputCommandInteracti
     clan: interaction.options.getString("clan", false),
   });
   await interaction.editReply({
-    embeds: [buildRosterListEmbed(rosters)],
+    embeds: [await buildRosterListEmbed(rosters)],
   });
 }
 
@@ -1609,22 +2061,27 @@ async function handleRosterPostSubcommand(
   }
 
   const result = await postRosterSignupMessage(interaction, roster.id, cocService);
-  if (result === "no_channel") {
+  if (result.outcome === "no_channel") {
     await interaction.editReply("This command can only post to a text channel.");
     return;
   }
-  if (result === "no_payload") {
+  if (result.outcome === "no_payload") {
     await interaction.editReply("Failed to build that roster post.");
     return;
   }
-  if (result === "failed") {
+  if (result.outcome === "failed") {
     await interaction.editReply("Failed to post that roster.");
     return;
   }
 
+  if (result.outcome === "posted") {
+    await interaction.editReply(`Posted roster ${roster.title} in the current channel.`);
+    return;
+  }
+
   await interaction.editReply(
-    result === "posted"
-      ? `Posted roster ${roster.title} in the current channel.`
+    result.postedMessageUrl
+      ? `Refreshed roster ${roster.title}. Original post: [Open posted roster](${result.postedMessageUrl})`
       : `Refreshed roster ${roster.title}.`,
   );
 }
@@ -1816,11 +2273,7 @@ async function handleRosterEditSubcommand(
     return;
   }
 
-  const { name: nameSeed, title: titleSeed, conflict: nameConflict } = resolveRosterNameOption(interaction);
-  if (nameConflict) {
-    await interaction.editReply("Choose either name or title, not both.");
-    return;
-  }
+  const nameSeed = interaction.options.getString("name", false)?.trim() ?? null;
   const categorySeed = normalizeRosterCategoryChoice(interaction.options.getString("category", false));
   if (interaction.options.getString("category", false) && !categorySeed) {
     await interaction.editReply("Use a supported roster category: CWL or FWA.");
@@ -1856,7 +2309,6 @@ async function handleRosterEditSubcommand(
 
   if (
     !nameSeed &&
-    !titleSeed &&
     !categorySeed &&
     !clanSeed &&
     !timezoneSeed &&
@@ -1974,7 +2426,7 @@ async function handleRosterEditSubcommand(
 
   const updated = await rosterService.updateRoster({
     rosterId: roster.id,
-    name: nameSeed ?? titleSeed ?? undefined,
+    name: nameSeed ?? undefined,
     rosterType: categorySeed ?? undefined,
     clanTag: clanSeed ?? undefined,
     timezone: timezone ?? undefined,
@@ -2047,13 +2499,293 @@ async function autocompleteRosterOption(interaction: AutocompleteInteraction): P
     name: focused,
   });
 
+  const clanNameByTag = await buildRosterAutocompleteClanNameMap(rosters);
+
   await interaction.respond(
-    rosters.slice(0, 25).map((roster) => ({
-      name: `${roster.title} • ${roster.clanTag ?? "no clan"} • ${buildRosterStateLabel(roster.lifecycleState)}`.slice(0, 100),
-      value: roster.id,
-      description: `Type ${roster.rosterType}${roster.rosterCategory ? ` / ${roster.rosterCategory}` : ""} • ${roster.postedMessageId ? "posted" : "unposted"} • ${roster.signupCount} signups`.slice(0, 100),
-    })),
+    rosters.slice(0, 25).map((roster) => {
+      const clanTag = normalizeClanTag(roster.clanTag ?? "") || null;
+      const clanName = clanTag ? clanNameByTag.get(clanTag) ?? null : null;
+      const labelParts = [roster.title];
+      if (clanName) {
+        labelParts.push(clanName);
+      }
+      if (clanTag) {
+        labelParts.push(clanTag);
+      }
+      labelParts.push(buildRosterStateLabel(roster.lifecycleState));
+      return {
+        name: labelParts.join(" • ").slice(0, 100),
+        value: roster.id,
+        description: `Type ${roster.rosterType}${roster.rosterCategory ? ` / ${roster.rosterCategory}` : ""} • ${roster.postedMessageId ? "posted" : "unposted"} • ${roster.signupCount} signups`.slice(0, 100),
+      };
+    }),
   );
+}
+
+async function buildRosterAutocompleteClanNameMap(
+  rosters: Array<Pick<RosterSummaryRecord, "clanTag">>,
+): Promise<Map<string, string>> {
+  const rosterTags = [...new Set(rosters.map((roster) => normalizeClanTag(roster.clanTag ?? "")).filter(Boolean))];
+  if (rosterTags.length <= 0) {
+    return new Map();
+  }
+
+  const season = resolveCurrentCwlSeasonKey();
+  const [trackedRows, raidRows, cwlRows] = await Promise.all([
+    prisma.trackedClan.findMany({
+      where: { tag: { in: rosterTags } },
+      orderBy: [{ createdAt: "asc" }, { tag: "asc" }],
+      select: { tag: true, name: true },
+    }),
+    prisma.raidTrackedClan.findMany({
+      where: {
+        clanTag: {
+          in: rosterTags.map((tag) => tag.replace(/^#/, "")),
+        },
+      },
+      orderBy: [{ createdAt: "asc" }, { clanTag: "asc" }],
+      select: { clanTag: true, name: true },
+    }),
+    prisma.cwlTrackedClan.findMany({
+      where: { season, tag: { in: rosterTags } },
+      orderBy: [{ createdAt: "asc" }, { tag: "asc" }],
+      select: { tag: true, name: true },
+    }),
+  ]);
+
+  const clanNameByTag = new Map<string, string>();
+  for (const row of trackedRows) {
+    const tag = normalizeClanTag(row.tag);
+    const name = normalizeRosterTrackedClanAutocompleteName(row.name);
+    if (tag && name && !clanNameByTag.has(tag)) {
+      clanNameByTag.set(tag, name);
+    }
+  }
+  for (const row of raidRows) {
+    const tag = normalizeClanTag(row.clanTag);
+    const name = normalizeRosterTrackedClanAutocompleteName(row.name);
+    if (tag && name && !clanNameByTag.has(tag)) {
+      clanNameByTag.set(tag, name);
+    }
+  }
+  for (const row of cwlRows) {
+    const tag = normalizeClanTag(row.tag);
+    const name = normalizeRosterTrackedClanAutocompleteName(row.name);
+    if (tag && name && !clanNameByTag.has(tag)) {
+      clanNameByTag.set(tag, name);
+    }
+  }
+
+  return clanNameByTag;
+}
+
+function normalizeRosterTrackedClanAutocompleteName(input: string | null | undefined): string | null {
+  const trimmed = String(input ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function buildRosterTrackedClanChoiceLabel(clan: { name: string | null; tag: string }): string {
+  const tag = normalizeClanTag(clan.tag);
+  const name = normalizeRosterTrackedClanAutocompleteName(clan.name);
+  return name ? `${name} (${tag})` : tag;
+}
+
+function upsertRosterTrackedClanAutocompleteChoice(
+  choiceByTag: Map<string, { tag: string; name: string | null }>,
+  tagInput: string,
+  nameInput: string | null | undefined,
+): void {
+  const tag = normalizeClanTag(tagInput);
+  if (!tag) return;
+
+  const name = normalizeRosterTrackedClanAutocompleteName(nameInput);
+  const existing = choiceByTag.get(tag);
+  if (!existing) {
+    choiceByTag.set(tag, { tag, name });
+    return;
+  }
+
+  if (!existing.name && name) {
+    choiceByTag.set(tag, { tag, name });
+  }
+}
+
+async function autocompleteRosterTrackedClan(interaction: AutocompleteInteraction): Promise<void> {
+  if (!interaction.inGuild() || !interaction.guildId) {
+    await interaction.respond([]);
+    return;
+  }
+
+  const focused = interaction.options.getFocused(true);
+  if (focused.name !== "clan") {
+    await interaction.respond([]);
+    return;
+  }
+
+  const query = String(focused.value ?? "")
+    .trim()
+    .toLowerCase();
+  const season = resolveCurrentCwlSeasonKey();
+  const [trackedRows, raidRows, cwlRows] = await Promise.all([
+    prisma.trackedClan.findMany({
+      orderBy: [{ createdAt: "asc" }, { tag: "asc" }],
+      select: { name: true, tag: true },
+    }),
+    prisma.raidTrackedClan.findMany({
+      orderBy: [{ createdAt: "asc" }, { clanTag: "asc" }],
+      select: { name: true, clanTag: true },
+    }),
+    prisma.cwlTrackedClan.findMany({
+      where: { season },
+      orderBy: [{ createdAt: "asc" }, { tag: "asc" }],
+      select: { name: true, tag: true },
+    }),
+  ]);
+
+  const choiceByTag = new Map<string, { tag: string; name: string | null }>();
+  for (const clan of trackedRows) {
+    upsertRosterTrackedClanAutocompleteChoice(choiceByTag, clan.tag, clan.name);
+  }
+  for (const clan of raidRows) {
+    upsertRosterTrackedClanAutocompleteChoice(choiceByTag, clan.clanTag, clan.name);
+  }
+  for (const clan of cwlRows) {
+    upsertRosterTrackedClanAutocompleteChoice(choiceByTag, clan.tag, clan.name);
+  }
+
+  const choices = [...choiceByTag.values()]
+    .map((clan) => {
+      const name = buildRosterTrackedClanChoiceLabel(clan).slice(0, 100);
+      return { name, value: clan.tag };
+    })
+    .sort((a, b) => a.name.localeCompare(b.name) || a.value.localeCompare(b.value))
+    .filter(
+      (choice) =>
+        choice.name.toLowerCase().includes(query) || choice.value.toLowerCase().includes(query),
+    )
+    .slice(0, 25);
+
+  await interaction.respond(choices);
+}
+
+async function autocompleteRosterGroup(interaction: AutocompleteInteraction): Promise<void> {
+  if (!interaction.inGuild() || !interaction.guildId) {
+    await interaction.respond([]);
+    return;
+  }
+
+  const focused = interaction.options.getFocused(true);
+  if (focused.name !== "group") {
+    await interaction.respond([]);
+    return;
+  }
+
+  const rosterId = interaction.options.getString("roster", false)?.trim();
+  if (!rosterId) {
+    await interaction.respond([]);
+    return;
+  }
+
+  const rosterView = await rosterService.getRosterView(rosterId);
+  if (!rosterView) {
+    await interaction.respond([]);
+    return;
+  }
+
+  const query = String(focused.value ?? "")
+    .trim()
+    .toLowerCase();
+  const groups = [...rosterView.groups].sort(
+    (a, b) => a.sortOrder - b.sortOrder || a.key.localeCompare(b.key) || a.name.localeCompare(b.name),
+  );
+
+  await interaction.respond(
+    groups
+      .map((group) => {
+        const label = `${group.name} (${group.key})`;
+        return { name: label.slice(0, 100), value: group.key };
+      })
+      .filter(
+        (choice) =>
+          choice.name.toLowerCase().includes(query) || choice.value.toLowerCase().includes(query),
+      )
+      .slice(0, 25),
+  );
+}
+
+async function autocompleteRosterPlayers(interaction: AutocompleteInteraction): Promise<void> {
+  if (!interaction.inGuild()) {
+    await interaction.respond([]);
+    return;
+  }
+
+  const focused = interaction.options.getFocused(true);
+  if (focused.name !== "players") {
+    await interaction.respond([]);
+    return;
+  }
+
+  const query = String(focused.value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/^#/, "");
+  const links = await listPlayerLinksForDiscordUser({ discordUserId: interaction.user.id });
+
+  await interaction.respond(
+    links
+      .map((link) => {
+        const value = normalizePlayerTag(link.playerTag);
+        const label = link.linkedName ? `${link.linkedName} (${value})` : value;
+        return { name: label.slice(0, 100), value };
+      })
+      .filter((choice) => {
+        const searchable = `${choice.name} ${choice.value}`.toLowerCase();
+        return searchable.includes(query);
+      })
+      .slice(0, 25),
+  );
+}
+
+async function autocompleteRosterUsers(interaction: AutocompleteInteraction): Promise<void> {
+  if (!interaction.inGuild()) {
+    await interaction.respond([]);
+    return;
+  }
+
+  const focused = interaction.options.getFocused(true);
+  if (focused.name !== "user") {
+    await interaction.respond([]);
+    return;
+  }
+
+  const members = interaction.guild?.members?.cache;
+  if (!members) {
+    await interaction.respond([]);
+    return;
+  }
+
+  const query = String(focused.value ?? "")
+    .trim()
+    .toLowerCase();
+
+  const choices = [...members.values()]
+    .filter((member) => Boolean(member?.id) && !member.user?.bot)
+    .map((member) => {
+      const displayName = String(member.displayName ?? "").trim();
+      const username = String(member.user?.username ?? "").trim();
+      const value = String(member.id ?? "").trim();
+      const label = displayName ? `${displayName} (@${username || value})` : `@${username || value}`;
+      const searchable = `${displayName} ${username} ${value}`.toLowerCase();
+      return { name: label.slice(0, 100), value, searchable };
+    })
+    .filter((choice) => choice.searchable.includes(query))
+    .sort((a, b) => a.name.localeCompare(b.name) || a.value.localeCompare(b.value))
+    .slice(0, 25)
+    .map(({ searchable: _searchable, ...choice }) => choice);
+
+  await interaction.respond(choices);
 }
 
 export const Roster: Command = {
@@ -2186,6 +2918,7 @@ export const Roster: Command = {
           description: "Filter by Discord user ID",
           type: ApplicationCommandOptionType.String,
           required: false,
+          autocomplete: true,
         },
         {
           name: "player",
@@ -2198,6 +2931,7 @@ export const Roster: Command = {
           description: "Filter by clan tag",
           type: ApplicationCommandOptionType.String,
           required: false,
+          autocomplete: true,
         },
       ],
     },
@@ -2247,12 +2981,14 @@ export const Roster: Command = {
           description: "Roster group key",
           type: ApplicationCommandOptionType.String,
           required: false,
+          autocomplete: true,
         },
         {
           name: "players",
           description: "Comma or space separated player tags",
           type: ApplicationCommandOptionType.String,
           required: false,
+          autocomplete: true,
         },
       ],
     },
@@ -2271,12 +3007,6 @@ export const Roster: Command = {
         {
           name: "name",
           description: "Roster name",
-          type: ApplicationCommandOptionType.String,
-          required: false,
-        },
-        {
-          name: "title",
-          description: "Backwards-compatible alias for roster name",
           type: ApplicationCommandOptionType.String,
           required: false,
         },
@@ -2498,7 +3228,19 @@ export const Roster: Command = {
       return;
     }
     if (focused.name === "clan") {
-      await autocompleteCwlTrackedClan(interaction);
+      await autocompleteRosterTrackedClan(interaction);
+      return;
+    }
+    if (focused.name === "group") {
+      await autocompleteRosterGroup(interaction);
+      return;
+    }
+    if (focused.name === "players") {
+      await autocompleteRosterPlayers(interaction);
+      return;
+    }
+    if (focused.name === "user") {
+      await autocompleteRosterUsers(interaction);
       return;
     }
     if (focused.name === "roster") {
