@@ -2044,13 +2044,84 @@ async function autocompleteRosterOption(interaction: AutocompleteInteraction): P
     name: focused,
   });
 
+  const clanNameByTag = await buildRosterAutocompleteClanNameMap(rosters);
+
   await interaction.respond(
-    rosters.slice(0, 25).map((roster) => ({
-      name: `${roster.title} • ${roster.clanTag ?? "no clan"} • ${buildRosterStateLabel(roster.lifecycleState)}`.slice(0, 100),
-      value: roster.id,
-      description: `Type ${roster.rosterType}${roster.rosterCategory ? ` / ${roster.rosterCategory}` : ""} • ${roster.postedMessageId ? "posted" : "unposted"} • ${roster.signupCount} signups`.slice(0, 100),
-    })),
+    rosters.slice(0, 25).map((roster) => {
+      const clanTag = normalizeClanTag(roster.clanTag ?? "") || null;
+      const clanName = clanTag ? clanNameByTag.get(clanTag) ?? null : null;
+      const labelParts = [roster.title];
+      if (clanName) {
+        labelParts.push(clanName);
+      }
+      if (clanTag) {
+        labelParts.push(clanTag);
+      }
+      labelParts.push(buildRosterStateLabel(roster.lifecycleState));
+      return {
+        name: labelParts.join(" • ").slice(0, 100),
+        value: roster.id,
+        description: `Type ${roster.rosterType}${roster.rosterCategory ? ` / ${roster.rosterCategory}` : ""} • ${roster.postedMessageId ? "posted" : "unposted"} • ${roster.signupCount} signups`.slice(0, 100),
+      };
+    }),
   );
+}
+
+async function buildRosterAutocompleteClanNameMap(
+  rosters: Array<Pick<RosterSummaryRecord, "clanTag">>,
+): Promise<Map<string, string>> {
+  const rosterTags = [...new Set(rosters.map((roster) => normalizeClanTag(roster.clanTag ?? "")).filter(Boolean))];
+  if (rosterTags.length <= 0) {
+    return new Map();
+  }
+
+  const season = resolveCurrentCwlSeasonKey();
+  const [trackedRows, raidRows, cwlRows] = await Promise.all([
+    prisma.trackedClan.findMany({
+      where: { tag: { in: rosterTags } },
+      orderBy: [{ createdAt: "asc" }, { tag: "asc" }],
+      select: { tag: true, name: true },
+    }),
+    prisma.raidTrackedClan.findMany({
+      where: {
+        clanTag: {
+          in: rosterTags.map((tag) => tag.replace(/^#/, "")),
+        },
+      },
+      orderBy: [{ createdAt: "asc" }, { clanTag: "asc" }],
+      select: { clanTag: true, name: true },
+    }),
+    prisma.cwlTrackedClan.findMany({
+      where: { season, tag: { in: rosterTags } },
+      orderBy: [{ createdAt: "asc" }, { tag: "asc" }],
+      select: { tag: true, name: true },
+    }),
+  ]);
+
+  const clanNameByTag = new Map<string, string>();
+  for (const row of trackedRows) {
+    const tag = normalizeClanTag(row.tag);
+    const name = normalizeRosterTrackedClanAutocompleteName(row.name);
+    if (tag && name && !clanNameByTag.has(tag)) {
+      clanNameByTag.set(tag, name);
+    }
+  }
+  for (const row of raidRows) {
+    const tag = normalizeClanTag(row.clanTag);
+    const name = normalizeRosterTrackedClanAutocompleteName(row.name);
+    if (tag && name && !clanNameByTag.has(tag)) {
+      clanNameByTag.set(tag, name);
+    }
+  }
+  for (const row of cwlRows) {
+    const tag = normalizeClanTag(row.tag);
+    const name = normalizeRosterTrackedClanAutocompleteName(row.name);
+    if (tag && name && !clanNameByTag.has(tag)) {
+      clanNameByTag.set(tag, name);
+    }
+  }
+
+  return clanNameByTag;
 }
 
 function normalizeRosterTrackedClanAutocompleteName(input: string | null | undefined): string | null {
