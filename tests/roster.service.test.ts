@@ -56,10 +56,16 @@ const playerLinkServiceMock = vi.hoisted(() => ({
 const cwlStateServiceMock = vi.hoisted(() => ({
   listSeasonRosterForClan: vi.fn(),
   getCurrentRoundForClan: vi.fn(),
+  refreshTrackedCwlStateForClan: vi.fn(),
 }));
 
 const cocServiceMock = vi.hoisted(() => ({
   getClan: vi.fn(),
+  getPlayerRaw: vi.fn(),
+}));
+
+const fwaClanMembersSyncServiceMock = vi.hoisted(() => ({
+  refreshCurrentClanMembersForClanTags: vi.fn(),
 }));
 
 const todoSnapshotServiceMock = vi.hoisted(() => ({
@@ -141,6 +147,18 @@ vi.mock("../src/services/TodoSnapshotService", async () => {
   return {
     ...actual,
     todoSnapshotService: todoSnapshotServiceMock,
+  };
+});
+
+vi.mock("../src/services/fwa-feeds/FwaClanMembersSyncService", async () => {
+  const actual = await vi.importActual<typeof import("../src/services/fwa-feeds/FwaClanMembersSyncService")>(
+    "../src/services/fwa-feeds/FwaClanMembersSyncService",
+  );
+  return {
+    ...actual,
+    FwaClanMembersSyncService: class {
+      refreshCurrentClanMembersForClanTags = fwaClanMembersSyncServiceMock.refreshCurrentClanMembersForClanTags;
+    },
   };
 });
 
@@ -300,11 +318,26 @@ describe("RosterService", () => {
     playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([]);
     cwlStateServiceMock.listSeasonRosterForClan.mockResolvedValue([]);
     cwlStateServiceMock.getCurrentRoundForClan.mockResolvedValue(null);
+    cwlStateServiceMock.refreshTrackedCwlStateForClan.mockResolvedValue({
+      season: resolveCurrentCwlSeasonKey(),
+      trackedClanCount: 1,
+      refreshedClanCount: 1,
+      currentRoundCount: 1,
+      currentMemberCount: 1,
+      historyRoundCount: 1,
+      historyMemberCount: 1,
+    });
     todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValue([]);
     todoSnapshotServiceMock.listSnapshotsByClanTag.mockResolvedValue([]);
     todoSnapshotServiceMock.refreshSnapshotsForPlayerTags.mockResolvedValue({
       playerCount: 0,
       updatedCount: 0,
+    });
+    fwaClanMembersSyncServiceMock.refreshCurrentClanMembersForClanTags.mockResolvedValue({
+      clanCount: 1,
+      rowCount: 1,
+      changedRowCount: 1,
+      failedClans: [],
     });
     cocServiceMock.getClan.mockReset();
     cocServiceMock.getClan.mockResolvedValue({
@@ -961,7 +994,7 @@ describe("RosterService", () => {
   });
 
   it("renders grouped signup entries and shows the compact roster board header", async () => {
-    prismaMock.rosterSignup.findMany.mockResolvedValue([
+    prismaMock.rosterSignup.findMany.mockResolvedValueOnce([
       {
         id: "signup-1",
         rosterId: "roster-1",
@@ -1675,19 +1708,31 @@ describe("RosterService", () => {
         townHall: 15,
       },
     ] as any);
-    todoSnapshotServiceMock.refreshSnapshotsForPlayerTags.mockResolvedValue({
-      playerCount: 1,
-      updatedCount: 1,
+    todoSnapshotServiceMock.refreshSnapshotsForPlayerTags.mockImplementation(async ({ cocService }) => {
+      await cocService?.getPlayerRaw("#PQL0289", { suppressTelemetry: true });
+      return {
+        playerCount: 1,
+        updatedCount: 1,
+      };
     });
+    const refreshRosterBoardSourceDataSpy = vi.spyOn(
+      rosterService,
+      "refreshRosterBoardSourceData",
+    );
 
     const payload = await rosterService.refreshRosterSignupPayload("roster-1", cocServiceMock as any);
 
+    expect(refreshRosterBoardSourceDataSpy).toHaveBeenCalledWith("roster-1", cocServiceMock);
     expect(todoSnapshotServiceMock.refreshSnapshotsForPlayerTags).toHaveBeenCalledWith(
       expect.objectContaining({
         playerTags: ["#PQL0289"],
         cocService: cocServiceMock,
       }),
     );
+    expect(cwlStateServiceMock.refreshTrackedCwlStateForClan).toHaveBeenCalledWith({
+      cocService: cocServiceMock,
+      clanTag: "#2QG2C08UP",
+    });
     expect(cocServiceMock.getClan).toHaveBeenCalledWith("#2QG2C08UP");
     expect(prismaMock.cwlTrackedClan.updateMany).toHaveBeenCalledWith({
       where: {
@@ -1752,22 +1797,18 @@ describe("RosterService", () => {
         townHall: null,
       },
     ] as any);
+    const refreshRosterBoardSourceDataSpy = vi
+      .spyOn(rosterService, "refreshRosterBoardSourceData")
+      .mockResolvedValue(true);
     const cocService = {
       getPlayerRaw: vi.fn().mockResolvedValue({
         townHallLevel: 15,
         clan: { tag: "#2QG2C08UP" },
       }),
     } as any;
-
     const payload = await rosterService.refreshRosterSignupPayload("roster-1", cocService);
 
-    expect(todoSnapshotServiceMock.refreshSnapshotsForPlayerTags).toHaveBeenCalledWith({
-      playerTags: ["#298CG8UJG"],
-      cocService,
-    });
-    expect(cocService.getPlayerRaw).toHaveBeenCalledWith("#298CG8UJG", {
-      suppressTelemetry: true,
-    });
+    expect(refreshRosterBoardSourceDataSpy).toHaveBeenCalledWith("roster-1", cocService);
     expect(payload).toBeTruthy();
     const description = String(payload?.embed.toJSON().description ?? "");
     expect(description).toContain("`15 Player 298");
@@ -2346,61 +2387,68 @@ describe("RosterService", () => {
         sortOrder: 1,
       },
     ] as any);
-    prismaMock.rosterSignup.findMany
-      .mockResolvedValueOnce([
-        {
-          id: "signup-1",
-          rosterId: "roster-1",
-          groupId: "group-confirmed",
-          playerTag: "#PQL0289",
-          playerName: "Alpha",
-          discordUserId: "111111111111111111",
-          group: {
-            id: "group-confirmed",
-            key: "confirmed",
-            name: "Confirmed",
-            description: "Primary roster members",
-            sortOrder: 0,
+    let rosterSignupFindManyCall = 0;
+    prismaMock.rosterSignup.findMany.mockImplementation(async () => {
+      rosterSignupFindManyCall += 1;
+      if (rosterSignupFindManyCall === 1) {
+        return [
+          {
+            id: "signup-1",
+            rosterId: "roster-1",
+            groupId: "group-confirmed",
+            playerTag: "#PQL0289",
+            playerName: "Alpha",
+            discordUserId: "111111111111111111",
+            group: {
+              id: "group-confirmed",
+              key: "confirmed",
+              name: "Confirmed",
+              description: "Primary roster members",
+              sortOrder: 0,
+            },
           },
-        },
-        {
-          id: "signup-2",
-          rosterId: "roster-1",
-          groupId: "group-confirmed",
-          playerTag: "#QGRJ2222",
-          playerName: "Bravo",
-          discordUserId: "222222222222222222",
-          group: {
-            id: "group-confirmed",
-            key: "confirmed",
-            name: "Confirmed",
-            description: "Primary roster members",
-            sortOrder: 0,
+          {
+            id: "signup-2",
+            rosterId: "roster-1",
+            groupId: "group-confirmed",
+            playerTag: "#QGRJ2222",
+            playerName: "Bravo",
+            discordUserId: "222222222222222222",
+            group: {
+              id: "group-confirmed",
+              key: "confirmed",
+              name: "Confirmed",
+              description: "Primary roster members",
+              sortOrder: 0,
+            },
           },
-        },
-        {
-          id: "signup-3",
-          rosterId: "roster-1",
-          groupId: "group-confirmed",
-          playerTag: "#CUV02898",
-          playerName: "Charlie",
-          discordUserId: "333333333333333333",
-          group: {
-            id: "group-confirmed",
-            key: "confirmed",
-            name: "Confirmed",
-            description: "Primary roster members",
-            sortOrder: 0,
+          {
+            id: "signup-3",
+            rosterId: "roster-1",
+            groupId: "group-confirmed",
+            playerTag: "#CUV02898",
+            playerName: "Charlie",
+            discordUserId: "333333333333333333",
+            group: {
+              id: "group-confirmed",
+              key: "confirmed",
+              name: "Confirmed",
+              description: "Primary roster members",
+              sortOrder: 0,
+            },
           },
-        },
-      ] as any)
-      .mockResolvedValueOnce([
-        {
-          playerTag: "#QGRJ2222",
-          discordUserId: "222222222222222222",
-        },
-      ] as any)
-      .mockResolvedValueOnce([] as any);
+        ] as any;
+      }
+      if (rosterSignupFindManyCall === 2) {
+        return [
+          {
+            playerTag: "#QGRJ2222",
+            discordUserId: "222222222222222222",
+          },
+        ] as any;
+      }
+      return [] as any;
+    });
     prismaMock.rosterSignup.createMany.mockResolvedValueOnce({ count: 2 });
     prismaMock.rosterSignup.deleteMany.mockResolvedValueOnce({ count: 2 });
 

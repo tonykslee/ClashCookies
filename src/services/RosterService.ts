@@ -24,6 +24,7 @@ import {
   resolveCurrentCwlSeasonKey,
 } from "./CwlRegistryService";
 import { cwlStateService } from "./CwlStateService";
+import { FwaClanMembersSyncService } from "./fwa-feeds/FwaClanMembersSyncService";
 import {
   formatRosterWeightAge,
   resolveRosterCurrentWeightRecords,
@@ -71,6 +72,8 @@ const ROSTER_CONFLICT_LIFECYCLE_STATES: readonly RosterLifecycleState[] = [
   ROSTER_LIFECYCLE_STATE.OPEN,
   ROSTER_LIFECYCLE_STATE.CLOSED,
 ];
+
+const fwaClanMembersSyncService = new FwaClanMembersSyncService();
 
 export type RosterGroupSeed = {
   key: string;
@@ -3500,6 +3503,13 @@ export class RosterService {
     cocService?: CoCService | null,
     options?: RosterSignupPayloadBuildOptions,
   ): Promise<RosterSignupPayload | null> {
+    const hydrated = await this.refreshRosterBoardSourceData(rosterId, cocService ?? null);
+    if (!hydrated) return null;
+    return this.buildRosterSignupPayload(rosterId, cocService ?? null, options);
+  }
+
+  /** Purpose: refresh the live/persisted board owners for one roster before rerendering its post. */
+  async refreshRosterBoardSourceData(rosterId: string, cocService?: CoCService | null): Promise<boolean> {
     const roster = await prisma.roster.findUnique({
       where: { id: rosterId },
       select: {
@@ -3508,17 +3518,28 @@ export class RosterService {
         clanTag: true,
       },
     });
-    if (!roster) return null;
+    if (!roster) return false;
 
-    if (cocService) {
-      const rosteredTags = await prisma.rosterSignup.findMany({
-        where: { rosterId: roster.id },
-        select: { playerTag: true },
+    const rosteredTags = await prisma.rosterSignup.findMany({
+      where: { rosterId: roster.id },
+      select: { playerTag: true },
+    });
+    const playerTags = [...new Set(rosteredTags.map((row) => normalizePlayerTag(row.playerTag)).filter(Boolean))];
+    if (cocService && playerTags.length > 0) {
+      await todoSnapshotService.refreshSnapshotsForPlayerTags({
+        playerTags,
+        cocService,
       });
-      const playerTags = [...new Set(rosteredTags.map((row) => normalizePlayerTag(row.playerTag)).filter(Boolean))];
-      if (playerTags.length > 0) {
-        await todoSnapshotService.refreshSnapshotsForPlayerTags({
-          playerTags,
+    }
+
+    if (cocService && roster.clanTag) {
+      if (roster.rosterType === "CWL") {
+        await cwlStateService.refreshTrackedCwlStateForClan({
+          cocService,
+          clanTag: roster.clanTag,
+        });
+      } else if (roster.rosterType === "FWA") {
+        await fwaClanMembersSyncService.refreshCurrentClanMembersForClanTags([roster.clanTag], {
           cocService,
         });
       }
@@ -3536,7 +3557,7 @@ export class RosterService {
       });
     }
 
-    return this.buildRosterSignupPayload(rosterId, cocService ?? null, options);
+    return true;
   }
 
   async getRosterView(
