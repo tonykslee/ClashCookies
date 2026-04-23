@@ -21,7 +21,7 @@ describe("HeatMapRefService", () => {
   });
 
   it("uses the corrected checked-in HeatMapRef bootstrap rows", () => {
-    expect(HEAT_MAP_REF_SEED_ROWS).toHaveLength(12);
+    expect(HEAT_MAP_REF_SEED_ROWS).toHaveLength(11);
     expect(HEAT_MAP_REF_SEED_ROWS[0]).toMatchObject({
       weightMinInclusive: 0,
       weightMaxInclusive: 7_200_000,
@@ -53,20 +53,6 @@ describe("HeatMapRefService", () => {
     });
     expect(HEAT_MAP_REF_SEED_ROWS[10]).toMatchObject({
       weightMinInclusive: 8_100_001,
-      weightMaxInclusive: 8_109_999,
-      th18Count: 21,
-      th17Count: 11,
-      th16Count: 7,
-      th15Count: 6,
-      th14Count: 4,
-      th13Count: 2,
-      th12Count: 1,
-      th11Count: 0,
-      th10OrLowerCount: 0,
-      contributingClanCount: 0,
-    });
-    expect(HEAT_MAP_REF_SEED_ROWS[11]).toMatchObject({
-      weightMinInclusive: 8_110_000,
       weightMaxInclusive: 9_999_999,
       th18Count: 22,
       th17Count: 11,
