@@ -112,6 +112,10 @@ import {
   isCwlRotationShowSelectMenuCustomId,
 } from "../commands/Cwl";
 import {
+  handleRosterPostSettingsActionButtonInteraction,
+  handleRosterPostSettingsGroupSelectInteraction,
+  handleRosterPostSettingsPlayerSelectInteraction,
+  handleRosterPostSettingsUserSelectInteraction,
   handleRosterSignupButtonInteraction,
   handleRosterRemoveButtonInteraction,
   handleRosterSelectionMenuInteraction,
@@ -138,6 +142,9 @@ import {
   isRosterPostRefreshButtonCustomId,
   isRosterPostSettingsButtonCustomId,
   isRosterPostSettingsMenuCustomId,
+  isRosterPostUsersActionButtonCustomId,
+  isRosterPostUsersGroupSelectMenuCustomId,
+  isRosterPostUsersPlayerSelectMenuCustomId,
 } from "../services/RosterService";
 import {
   handleTodoPageButtonInteraction,
@@ -316,6 +323,14 @@ export default (client: Client, cocService: CoCService): void => {
     return;
   }
 
+  if (interaction.isUserSelectMenu()) {
+    await runWithInteractiveQueueContext(
+      `select:${interaction.customId.split(":")[0] ?? "unknown"}`,
+      () => handleRosterPostSettingsUserSelectInteraction(interaction),
+    );
+    return;
+  }
+
   if (interaction.isStringSelectMenu()) {
     await runWithInteractiveQueueContext(
       `select:${interaction.customId.split(":")[0] ?? "unknown"}`,
@@ -388,6 +403,36 @@ const handleSelectMenuInteraction = async (
         await interaction.reply({
           ephemeral: true,
           content: "Failed to update roster selection.",
+        });
+      }
+    }
+    return;
+  }
+
+  if (isRosterPostUsersPlayerSelectMenuCustomId(interaction.customId)) {
+    try {
+      await handleRosterPostSettingsPlayerSelectInteraction(interaction);
+    } catch (err) {
+      console.error(`Roster settings player menu failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to update roster settings.",
+        });
+      }
+    }
+    return;
+  }
+
+  if (isRosterPostUsersGroupSelectMenuCustomId(interaction.customId)) {
+    try {
+      await handleRosterPostSettingsGroupSelectInteraction(interaction);
+    } catch (err) {
+      console.error(`Roster settings group menu failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to update roster settings.",
         });
       }
     }
@@ -725,6 +770,21 @@ const handleButtonInteraction = async (
         await interaction.reply({
           ephemeral: true,
           content: "Failed to open roster settings.",
+        });
+      }
+    }
+    return;
+  }
+
+  if (isRosterPostUsersActionButtonCustomId(interaction.customId)) {
+    try {
+      await handleRosterPostSettingsActionButtonInteraction(interaction, cocService);
+    } catch (err) {
+      console.error(`Roster settings user action button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to update roster settings.",
         });
       }
     }

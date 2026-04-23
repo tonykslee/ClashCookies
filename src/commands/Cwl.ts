@@ -3091,6 +3091,49 @@ export async function handleRosterSelectionActionButtonInteraction(
     return;
   }
 
+  if (result.outcome === "missing_user") {
+    await interaction.reply({
+      content: "Select a Discord user first.",
+      ephemeral: true,
+    });
+    return;
+  }
+  if (result.outcome === "missing_players") {
+    await interaction.reply({
+      content: "Select at least one linked player.",
+      ephemeral: true,
+    });
+    return;
+  }
+  if (result.outcome === "missing_group") {
+    await interaction.reply({
+      content: "Select a roster group first.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (result.outcome === "add_user") {
+    await syncRosterRoleAssignments(interaction.client, result.result.rosterId).catch(() => undefined);
+    await refreshRosterSignupPost(interaction, result.result.rosterId, cocService).catch(() => undefined);
+    await interaction.update({
+      content: formatRosterSignupResultSummary(result.result),
+      embeds: [],
+      components: [],
+    });
+    return;
+  }
+
+  if (result.outcome === "remove_user") {
+    await refreshRosterSignupPost(interaction, result.result.rosterId, cocService).catch(() => undefined);
+    await interaction.update({
+      content: formatRosterRemoveResultSummary(result.result),
+      embeds: [],
+      components: [],
+    });
+    return;
+  }
+
   if (result.outcome === "signup") {
     await syncRosterRoleAssignments(interaction.client, result.result.rosterId).catch(() => undefined);
     await refreshRosterSignupPost(interaction, result.result.rosterId, cocService).catch(() => undefined);
