@@ -722,7 +722,7 @@ const handleButtonInteraction = async (
 
   if (isRosterSignupButtonCustomId(interaction.customId)) {
     try {
-      await handleRosterSignupButtonInteraction(interaction);
+      await handleRosterSignupButtonInteraction(interaction, cocService);
     } catch (err) {
       console.error(`CWL roster signup button failed: ${formatError(err)}`);
       if (!interaction.replied && !interaction.deferred) {

@@ -25,6 +25,10 @@ const prismaMock = vi.hoisted(() => ({
   playerLink: {
     findMany: vi.fn(),
   },
+  playerCurrent: {
+    findMany: vi.fn(),
+    upsert: vi.fn(),
+  },
   fwaClanMemberCurrent: {
     findMany: vi.fn(),
   },
@@ -72,6 +76,13 @@ const todoSnapshotServiceMock = vi.hoisted(() => ({
   listSnapshotsByPlayerTags: vi.fn(),
   listSnapshotsByClanTag: vi.fn(),
   refreshSnapshotsForPlayerTags: vi.fn(),
+}));
+
+const playerCurrentServiceMock = vi.hoisted(() => ({
+  resolveCurrentPlayersForTags: vi.fn(),
+  hydrateMissingCurrentPlayersForTags: vi.fn(),
+  listPlayerCurrentByTags: vi.fn(),
+  upsertPlayerCurrentFromLivePlayer: vi.fn(),
 }));
 
 function makeRosterEmojiClient(options?: { missing?: string[] }) {
@@ -124,6 +135,33 @@ function makeValidRosterPlayerTag(index: number): string {
   return `#PQL${digits.map((digit) => alphabet[digit] ?? "0").join("")}`;
 }
 
+function makeResolvedPlayerCurrent(playerTag: string, townHall: number | null): any {
+  return {
+    playerTag,
+    playerName: null,
+    townHall,
+    currentClanTag: null,
+    currentClanName: null,
+    trophies: null,
+    builderTrophies: null,
+    warStars: null,
+    expLevel: null,
+    role: null,
+    leagueName: null,
+    currentWeight: null,
+    currentWeightSource: null,
+    currentWeightMeasuredAt: null,
+    achievementsJson: null,
+    lastSeenAt: null,
+    lastFetchedAt: null,
+    lastSource: null,
+    createdAt: null,
+    updatedAt: null,
+    source: townHall === null ? "missing" : "player_current",
+    liveRefreshInvoked: false,
+  };
+}
+
 vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
@@ -158,6 +196,16 @@ vi.mock("../src/services/TodoSnapshotService", async () => {
   };
 });
 
+vi.mock("../src/services/PlayerCurrentService", async () => {
+  const actual = await vi.importActual<typeof import("../src/services/PlayerCurrentService")>(
+    "../src/services/PlayerCurrentService",
+  );
+  return {
+    ...actual,
+    playerCurrentService: playerCurrentServiceMock,
+  };
+});
+
 vi.mock("../src/services/fwa-feeds/FwaClanMembersSyncService", async () => {
   const actual = await vi.importActual<typeof import("../src/services/fwa-feeds/FwaClanMembersSyncService")>(
     "../src/services/fwa-feeds/FwaClanMembersSyncService",
@@ -175,6 +223,7 @@ import {
   rosterService,
 } from "../src/services/RosterService";
 import { resolveCurrentCwlSeasonKey } from "../src/services/CwlRegistryService";
+import { PLAYER_CURRENT_SIGNUP_MAX_AGE_MS } from "../src/services/PlayerCurrentService";
 
 describe("RosterService", () => {
   function mockConflictLookupForLifecycleState(
@@ -305,6 +354,8 @@ describe("RosterService", () => {
     prismaMock.rosterSignup.updateMany.mockResolvedValue({ count: 0 });
     prismaMock.rosterSignup.deleteMany.mockResolvedValue({ count: 0 });
     prismaMock.playerLink.findMany.mockResolvedValue([]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    prismaMock.playerCurrent.upsert.mockResolvedValue({} as never);
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
     prismaMock.externalPlayerWeightCurrent.findMany.mockResolvedValue([]);
@@ -341,6 +392,10 @@ describe("RosterService", () => {
       playerCount: 0,
       updatedCount: 0,
     });
+    playerCurrentServiceMock.listPlayerCurrentByTags.mockResolvedValue(new Map());
+    playerCurrentServiceMock.resolveCurrentPlayersForTags.mockResolvedValue(new Map());
+    playerCurrentServiceMock.hydrateMissingCurrentPlayersForTags.mockResolvedValue(new Map());
+    playerCurrentServiceMock.upsertPlayerCurrentFromLivePlayer.mockResolvedValue(null);
     fwaClanMembersSyncServiceMock.refreshCurrentClanMembersForClanTags.mockResolvedValue({
       clanCount: 1,
       rowCount: 1,
@@ -471,6 +526,12 @@ describe("RosterService", () => {
       { playerTag: "#PQL0289", linkedName: "Alpha", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
       { playerTag: "#QGRJ2222", linkedName: "Bravo", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
     ]);
+    playerCurrentServiceMock.resolveCurrentPlayersForTags.mockResolvedValue(
+      new Map([
+        ["#PQL0289", makeResolvedPlayerCurrent("#PQL0289", null)],
+        ["#QGRJ2222", makeResolvedPlayerCurrent("#QGRJ2222", null)],
+      ]),
+    );
     prismaMock.roster.findUnique.mockResolvedValueOnce({
       id: "roster-1",
       guildId: "guild-1",
@@ -515,15 +576,22 @@ describe("RosterService", () => {
         { playerTag: "#QGRJ2222", playerName: "Bravo" },
       ],
     });
-    expect(cwlStateServiceMock.listSeasonRosterForClan).toHaveBeenCalledWith({
-      clanTag: "#2QG2C08UP",
+    expect(playerCurrentServiceMock.resolveCurrentPlayersForTags).toHaveBeenCalledWith({
+      playerTags: ["#PQL0289", "#QGRJ2222"],
+      cocService: null,
+      requireFields: ["townHall"],
+      refreshPolicy: "missing_or_stale",
+      maxAcceptedAgeMs: PLAYER_CURRENT_SIGNUP_MAX_AGE_MS,
     });
   });
 
-  it("uses the CWL season roster town hall before snapshot fallback when available", async () => {
+  it("prefers resolved current-player town hall when available for signup eligibility", async () => {
     playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
       { playerTag: "#PQL0289", linkedName: "Alpha", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
     ]);
+    playerCurrentServiceMock.resolveCurrentPlayersForTags.mockResolvedValue(
+      new Map([["#PQL0289", makeResolvedPlayerCurrent("#PQL0289", 16)]]),
+    );
     prismaMock.roster.findUnique.mockResolvedValueOnce({
       id: "roster-1",
       guildId: "guild-1",
@@ -567,13 +635,22 @@ describe("RosterService", () => {
       outcome: "created",
       createdTags: ["#PQL0289"],
     });
-    expect(todoSnapshotServiceMock.listSnapshotsByPlayerTags).not.toHaveBeenCalled();
+    expect(playerCurrentServiceMock.resolveCurrentPlayersForTags).toHaveBeenCalledWith({
+      playerTags: ["#PQL0289"],
+      cocService: null,
+      requireFields: ["townHall"],
+      refreshPolicy: "missing_or_stale",
+      maxAcceptedAgeMs: PLAYER_CURRENT_SIGNUP_MAX_AGE_MS,
+    });
   });
 
-  it("uses the FWA catalog town hall before snapshot fallback when available", async () => {
+  it("uses persisted fallback data when the current-player cache is missing town hall", async () => {
     playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
       { playerTag: "#PQL0289", linkedName: "Alpha", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
     ]);
+    playerCurrentServiceMock.resolveCurrentPlayersForTags.mockResolvedValue(
+      new Map([["#PQL0289", makeResolvedPlayerCurrent("#PQL0289", 15)]]),
+    );
     prismaMock.roster.findUnique.mockResolvedValueOnce({
       id: "roster-1",
       guildId: "guild-1",
@@ -617,13 +694,22 @@ describe("RosterService", () => {
       outcome: "created",
       createdTags: ["#PQL0289"],
     });
-    expect(todoSnapshotServiceMock.listSnapshotsByPlayerTags).not.toHaveBeenCalled();
+    expect(playerCurrentServiceMock.resolveCurrentPlayersForTags).toHaveBeenCalledWith({
+      playerTags: ["#PQL0289"],
+      cocService: null,
+      requireFields: ["townHall"],
+      refreshPolicy: "missing_or_stale",
+      maxAcceptedAgeMs: PLAYER_CURRENT_SIGNUP_MAX_AGE_MS,
+    });
   });
 
-  it("falls back to persisted player snapshots when the primary roster source misses town hall", async () => {
+  it("keeps signup blocked when the resolved town hall is still unavailable", async () => {
     playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
       { playerTag: "#PQL0289", linkedName: "Alpha", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
     ]);
+    playerCurrentServiceMock.resolveCurrentPlayersForTags.mockResolvedValue(
+      new Map([["#PQL0289", makeResolvedPlayerCurrent("#PQL0289", null)]]),
+    );
     prismaMock.roster.findUnique.mockResolvedValueOnce({
       id: "roster-1",
       guildId: "guild-1",
@@ -667,18 +753,25 @@ describe("RosterService", () => {
     });
 
     expect(result).toMatchObject({
-      outcome: "created",
-      createdTags: ["#PQL0289"],
+      outcome: "townhall_unavailable",
+      blockedTags: ["#PQL0289"],
     });
-    expect(todoSnapshotServiceMock.listSnapshotsByPlayerTags).toHaveBeenCalledWith({
+    expect(playerCurrentServiceMock.resolveCurrentPlayersForTags).toHaveBeenCalledWith({
       playerTags: ["#PQL0289"],
+      cocService: null,
+      requireFields: ["townHall"],
+      refreshPolicy: "missing_or_stale",
+      maxAcceptedAgeMs: PLAYER_CURRENT_SIGNUP_MAX_AGE_MS,
     });
   });
 
-  it("uses a live player refresh for only the still-missing tags and reuses the persisted snapshot on later checks", async () => {
+  it("reuses resolved current-player data on repeated signup checks for the same roster", async () => {
     playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
       { playerTag: "#PQL0289", linkedName: "Alpha", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
     ]);
+    playerCurrentServiceMock.resolveCurrentPlayersForTags
+      .mockResolvedValueOnce(new Map([["#PQL0289", makeResolvedPlayerCurrent("#PQL0289", 15)]]))
+      .mockResolvedValueOnce(new Map([["#PQL0289", makeResolvedPlayerCurrent("#PQL0289", 14)]]));
     prismaMock.roster.findUnique.mockResolvedValue({
       id: "roster-1",
       guildId: "guild-1",
@@ -708,30 +801,15 @@ describe("RosterService", () => {
       createdAt: new Date("2026-04-20T00:00:00.000Z"),
       updatedAt: new Date("2026-04-20T00:00:00.000Z"),
     } as any);
-    cwlStateServiceMock.listSeasonRosterForClan.mockResolvedValue([
-      { playerTag: "#PQL0289", playerName: "Alpha", townHall: null },
-    ]);
-    todoSnapshotServiceMock.listSnapshotsByPlayerTags
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([{ playerTag: "#PQL0289", townHall: 14 }])
-      .mockResolvedValueOnce([{ playerTag: "#PQL0289", townHall: 14 }]);
-    todoSnapshotServiceMock.refreshSnapshotsForPlayerTags.mockResolvedValue({
-      playerCount: 1,
-      updatedCount: 1,
-    });
-    const cocService = { getPlayerRaw: vi.fn() } as any;
-
     const first = await rosterService.signupLinkedAccounts({
       rosterId: "roster-1",
       groupKey: "confirmed",
       discordUserId: "111111111111111111",
-      cocService,
     });
     const second = await rosterService.signupLinkedAccounts({
       rosterId: "roster-1",
       groupKey: "confirmed",
       discordUserId: "111111111111111111",
-      cocService,
     });
 
     expect(first).toMatchObject({
@@ -742,17 +820,30 @@ describe("RosterService", () => {
       outcome: "created",
       createdTags: ["#PQL0289"],
     });
-    expect(todoSnapshotServiceMock.refreshSnapshotsForPlayerTags).toHaveBeenCalledTimes(1);
-    expect(todoSnapshotServiceMock.refreshSnapshotsForPlayerTags).toHaveBeenCalledWith({
+    expect(playerCurrentServiceMock.resolveCurrentPlayersForTags).toHaveBeenCalledTimes(2);
+    expect(playerCurrentServiceMock.resolveCurrentPlayersForTags).toHaveBeenNthCalledWith(1, {
       playerTags: ["#PQL0289"],
-      cocService,
+      cocService: null,
+      requireFields: ["townHall"],
+      refreshPolicy: "missing_or_stale",
+      maxAcceptedAgeMs: PLAYER_CURRENT_SIGNUP_MAX_AGE_MS,
+    });
+    expect(playerCurrentServiceMock.resolveCurrentPlayersForTags).toHaveBeenNthCalledWith(2, {
+      playerTags: ["#PQL0289"],
+      cocService: null,
+      requireFields: ["townHall"],
+      refreshPolicy: "missing_or_stale",
+      maxAcceptedAgeMs: PLAYER_CURRENT_SIGNUP_MAX_AGE_MS,
     });
   });
 
-  it("logs town hall source diagnostics and reuses live refresh data when refreshed snapshots are still invisible", async () => {
+  it("uses live current-player hydration when the cached town hall is still missing", async () => {
     playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
       { playerTag: "#298CG8UJG", linkedName: "Player 298", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
     ]);
+    playerCurrentServiceMock.resolveCurrentPlayersForTags.mockResolvedValue(
+      new Map([["#298CG8UJG", makeResolvedPlayerCurrent("#298CG8UJG", 15)]]),
+    );
     prismaMock.roster.findUnique.mockResolvedValueOnce({
       id: "roster-1",
       guildId: "guild-1",
@@ -782,82 +873,33 @@ describe("RosterService", () => {
       createdAt: new Date("2026-04-20T00:00:00.000Z"),
       updatedAt: new Date("2026-04-20T00:00:00.000Z"),
     } as any);
-    cwlStateServiceMock.listSeasonRosterForClan.mockResolvedValue([
-      { playerTag: "#298CG8UJG", playerName: "Player 298", townHall: null },
-    ]);
-    todoSnapshotServiceMock.listSnapshotsByPlayerTags
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]);
-    todoSnapshotServiceMock.refreshSnapshotsForPlayerTags.mockImplementation(async ({ cocService }) => {
-      await cocService?.getPlayerRaw("#298CG8UJG", { suppressTelemetry: true });
-      return {
-        playerCount: 1,
-        updatedCount: 1,
-      };
+    const result = await rosterService.signupLinkedAccounts({
+      rosterId: "roster-1",
+      groupKey: "confirmed",
+      discordUserId: "111111111111111111",
+      cocService: { getPlayerRaw: vi.fn() } as any,
     });
-    const cocService = {
-      getPlayerRaw: vi.fn().mockResolvedValue({
-        townHallLevel: 15,
-        clan: { tag: "#2QG2C08UP" },
-      }),
-    } as any;
-    const consoleInfoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
 
-    try {
-      const result = await rosterService.signupLinkedAccounts({
-        rosterId: "roster-1",
-        groupKey: "confirmed",
-        discordUserId: "111111111111111111",
-        cocService,
-      });
-
-      expect(result).toMatchObject({
-        outcome: "created",
-        createdTags: ["#298CG8UJG"],
-      });
-      expect(cocService.getPlayerRaw).toHaveBeenCalledWith("#298CG8UJG", {
-        suppressTelemetry: true,
-      });
-      expect(todoSnapshotServiceMock.refreshSnapshotsForPlayerTags).toHaveBeenCalledWith({
-        playerTags: ["#298CG8UJG"],
-        cocService,
-      });
-
-      const lastCall = consoleInfoSpy.mock.calls[consoleInfoSpy.mock.calls.length - 1] ?? [];
-      const logLine = String(lastCall[0] ?? "");
-      expect(logLine).toContain("[roster-townhall] ");
-      const payload = JSON.parse(logLine.replace(/^\[roster-townhall\]\s*/, ""));
-      expect(payload).toMatchObject({
-        roster_id: "roster-1",
-        roster_type: "CWL",
-        roster_clan_tag: "#2QG2C08UP",
-        requested_player_tags: ["#298CG8UJG"],
-        linked_tags: ["#298CG8UJG"],
-        coc_service_present: true,
-        live_refresh_invoked: true,
-        blocked_unavailable_tags: [],
-        blocked_out_of_range_tags: [],
-        blocked_tags: [],
-      });
-      expect(payload.resolution).toEqual([
-        expect.objectContaining({
-          player_tag: "#298CG8UJG",
-          source: "live_refresh",
-          town_hall: 15,
-          primary_source_hit: false,
-          snapshot_hit: false,
-          live_refresh_invoked: true,
-        }),
-      ]);
-    } finally {
-      consoleInfoSpy.mockRestore();
-    }
+    expect(result).toMatchObject({
+      outcome: "created",
+      createdTags: ["#298CG8UJG"],
+    });
+    expect(playerCurrentServiceMock.resolveCurrentPlayersForTags).toHaveBeenCalledWith({
+      playerTags: ["#298CG8UJG"],
+      cocService: expect.objectContaining({ getPlayerRaw: expect.any(Function) }),
+      requireFields: ["townHall"],
+      refreshPolicy: "missing_or_stale",
+      maxAcceptedAgeMs: PLAYER_CURRENT_SIGNUP_MAX_AGE_MS,
+    });
   });
 
   it("still blocks when the recovered town hall is out of range", async () => {
     playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
       { playerTag: "#PQL0289", linkedName: "Alpha", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
     ]);
+    playerCurrentServiceMock.resolveCurrentPlayersForTags.mockResolvedValue(
+      new Map([["#PQL0289", makeResolvedPlayerCurrent("#PQL0289", 13)]]),
+    );
     prismaMock.roster.findUnique.mockResolvedValueOnce({
       id: "roster-1",
       guildId: "guild-1",
@@ -887,17 +929,6 @@ describe("RosterService", () => {
       createdAt: new Date("2026-04-20T00:00:00.000Z"),
       updatedAt: new Date("2026-04-20T00:00:00.000Z"),
     } as any);
-    cwlStateServiceMock.listSeasonRosterForClan.mockResolvedValue([
-      { playerTag: "#PQL0289", playerName: "Alpha", townHall: null },
-    ]);
-    todoSnapshotServiceMock.listSnapshotsByPlayerTags
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([{ playerTag: "#PQL0289", townHall: 13 }]);
-    todoSnapshotServiceMock.refreshSnapshotsForPlayerTags.mockResolvedValue({
-      playerCount: 1,
-      updatedCount: 1,
-    });
-
     const result = await rosterService.signupLinkedAccounts({
       rosterId: "roster-1",
       groupKey: "confirmed",
@@ -2081,6 +2112,13 @@ describe("RosterService", () => {
       { playerTag: "#QGRJ2222", linkedName: "Eligible TH", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
       { playerTag: "#2QG2C08UP", linkedName: "Unknown TH", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
     ]);
+    playerCurrentServiceMock.resolveCurrentPlayersForTags.mockResolvedValue(
+      new Map([
+        ["#PQL0289", makeResolvedPlayerCurrent("#PQL0289", 12)],
+        ["#QGRJ2222", makeResolvedPlayerCurrent("#QGRJ2222", 13)],
+        ["#2QG2C08UP", makeResolvedPlayerCurrent("#2QG2C08UP", null)],
+      ]),
+    );
     prismaMock.roster.findUnique.mockResolvedValueOnce({
       id: "roster-1",
       guildId: "guild-1",
@@ -2130,6 +2168,114 @@ describe("RosterService", () => {
     expect(optionValues).toContain("#QGRJ2222");
     expect(optionValues).not.toContain("#PQL0289");
     expect(optionValues).not.toContain("#2QG2C08UP");
+  });
+
+  it("explains when TH-gated signup accounts are hidden because town hall could not be determined", async () => {
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
+      { playerTag: "#PQL0289", linkedName: "Low TH", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+      { playerTag: "#2QG2C08UP", linkedName: "Unknown TH", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+    ]);
+    playerCurrentServiceMock.resolveCurrentPlayersForTags.mockResolvedValue(
+      new Map([
+        ["#PQL0289", makeResolvedPlayerCurrent("#PQL0289", null)],
+        ["#2QG2C08UP", makeResolvedPlayerCurrent("#2QG2C08UP", null)],
+      ]),
+    );
+    prismaMock.roster.findUnique.mockResolvedValueOnce({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+      minTownhall: 13,
+      maxTownhall: 15,
+      allowMultiSignup: true,
+    } as any);
+    prismaMock.rosterSignup.findMany.mockResolvedValueOnce([] as any);
+
+    const result = await rosterService.createRosterSignupSelectionPanel({
+      rosterId: "roster-1",
+      discordUserId: "111111111111111111",
+      groupKey: "confirmed",
+    });
+
+    expect(result).toMatchObject({ outcome: "ready" });
+    if (result.outcome !== "ready") return;
+    const description = result.panel.embed.toJSON().description ?? "";
+    expect(description).toContain("Town hall could not be determined for your linked accounts right now.");
+    const accountMenu = result.panel.components
+      .map((row) => row.toJSON?.() as any)
+      .flatMap((rowJson) => (Array.isArray(rowJson?.components) ? rowJson.components : []))
+      .find((component: any) => String(component?.custom_id ?? component?.customId ?? component?.data?.custom_id ?? component?.data?.customId ?? "").startsWith("roster-selection:account:"));
+    expect((accountMenu?.options ?? []).map((option: any) => option.value)).toEqual(["none"]);
+  });
+
+  it("explains when TH-gated signup accounts are all outside the roster town hall range", async () => {
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
+      { playerTag: "#PQL0289", linkedName: "Low TH", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+      { playerTag: "#QGRJ2222", linkedName: "High TH", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+    ]);
+    playerCurrentServiceMock.resolveCurrentPlayersForTags.mockResolvedValue(
+      new Map([
+        ["#PQL0289", makeResolvedPlayerCurrent("#PQL0289", 12)],
+        ["#QGRJ2222", makeResolvedPlayerCurrent("#QGRJ2222", 16)],
+      ]),
+    );
+    prismaMock.roster.findUnique.mockResolvedValueOnce({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+      minTownhall: 13,
+      maxTownhall: 15,
+      allowMultiSignup: true,
+    } as any);
+    prismaMock.rosterSignup.findMany.mockResolvedValueOnce([] as any);
+
+    const result = await rosterService.createRosterSignupSelectionPanel({
+      rosterId: "roster-1",
+      discordUserId: "111111111111111111",
+      groupKey: "confirmed",
+    });
+
+    expect(result).toMatchObject({ outcome: "ready" });
+    if (result.outcome !== "ready") return;
+    const description = result.panel.embed.toJSON().description ?? "";
+    expect(description).toContain("No linked accounts met this roster's town hall requirements.");
+    const accountMenu = result.panel.components
+      .map((row) => row.toJSON?.() as any)
+      .flatMap((rowJson) => (Array.isArray(rowJson?.components) ? rowJson.components : []))
+      .find((component: any) => String(component?.custom_id ?? component?.customId ?? component?.data?.custom_id ?? component?.data?.customId ?? "").startsWith("roster-selection:account:"));
+    expect((accountMenu?.options ?? []).map((option: any) => option.value)).toEqual(["none"]);
   });
 
   it("builds the manager add-user panel with chunked linked-player menus and a disabled confirm button until required selections exist", async () => {
