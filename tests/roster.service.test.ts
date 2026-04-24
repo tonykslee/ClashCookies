@@ -223,7 +223,7 @@ import {
   rosterService,
 } from "../src/services/RosterService";
 import { resolveCurrentCwlSeasonKey } from "../src/services/CwlRegistryService";
-import { playerCurrentService } from "../src/services/PlayerCurrentService";
+import { PLAYER_CURRENT_SIGNUP_MAX_AGE_MS } from "../src/services/PlayerCurrentService";
 
 describe("RosterService", () => {
   function mockConflictLookupForLifecycleState(
@@ -580,6 +580,8 @@ describe("RosterService", () => {
       playerTags: ["#PQL0289", "#QGRJ2222"],
       cocService: null,
       requireFields: ["townHall"],
+      refreshPolicy: "missing_or_stale",
+      maxAcceptedAgeMs: PLAYER_CURRENT_SIGNUP_MAX_AGE_MS,
     });
   });
 
@@ -637,6 +639,8 @@ describe("RosterService", () => {
       playerTags: ["#PQL0289"],
       cocService: null,
       requireFields: ["townHall"],
+      refreshPolicy: "missing_or_stale",
+      maxAcceptedAgeMs: PLAYER_CURRENT_SIGNUP_MAX_AGE_MS,
     });
   });
 
@@ -694,6 +698,8 @@ describe("RosterService", () => {
       playerTags: ["#PQL0289"],
       cocService: null,
       requireFields: ["townHall"],
+      refreshPolicy: "missing_or_stale",
+      maxAcceptedAgeMs: PLAYER_CURRENT_SIGNUP_MAX_AGE_MS,
     });
   });
 
@@ -754,6 +760,8 @@ describe("RosterService", () => {
       playerTags: ["#PQL0289"],
       cocService: null,
       requireFields: ["townHall"],
+      refreshPolicy: "missing_or_stale",
+      maxAcceptedAgeMs: PLAYER_CURRENT_SIGNUP_MAX_AGE_MS,
     });
   });
 
@@ -817,11 +825,15 @@ describe("RosterService", () => {
       playerTags: ["#PQL0289"],
       cocService: null,
       requireFields: ["townHall"],
+      refreshPolicy: "missing_or_stale",
+      maxAcceptedAgeMs: PLAYER_CURRENT_SIGNUP_MAX_AGE_MS,
     });
     expect(playerCurrentServiceMock.resolveCurrentPlayersForTags).toHaveBeenNthCalledWith(2, {
       playerTags: ["#PQL0289"],
       cocService: null,
       requireFields: ["townHall"],
+      refreshPolicy: "missing_or_stale",
+      maxAcceptedAgeMs: PLAYER_CURRENT_SIGNUP_MAX_AGE_MS,
     });
   });
 
@@ -876,6 +888,8 @@ describe("RosterService", () => {
       playerTags: ["#298CG8UJG"],
       cocService: expect.objectContaining({ getPlayerRaw: expect.any(Function) }),
       requireFields: ["townHall"],
+      refreshPolicy: "missing_or_stale",
+      maxAcceptedAgeMs: PLAYER_CURRENT_SIGNUP_MAX_AGE_MS,
     });
   });
 
@@ -2154,6 +2168,114 @@ describe("RosterService", () => {
     expect(optionValues).toContain("#QGRJ2222");
     expect(optionValues).not.toContain("#PQL0289");
     expect(optionValues).not.toContain("#2QG2C08UP");
+  });
+
+  it("explains when TH-gated signup accounts are hidden because town hall could not be determined", async () => {
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
+      { playerTag: "#PQL0289", linkedName: "Low TH", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+      { playerTag: "#2QG2C08UP", linkedName: "Unknown TH", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+    ]);
+    playerCurrentServiceMock.resolveCurrentPlayersForTags.mockResolvedValue(
+      new Map([
+        ["#PQL0289", makeResolvedPlayerCurrent("#PQL0289", null)],
+        ["#2QG2C08UP", makeResolvedPlayerCurrent("#2QG2C08UP", null)],
+      ]),
+    );
+    prismaMock.roster.findUnique.mockResolvedValueOnce({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+      minTownhall: 13,
+      maxTownhall: 15,
+      allowMultiSignup: true,
+    } as any);
+    prismaMock.rosterSignup.findMany.mockResolvedValueOnce([] as any);
+
+    const result = await rosterService.createRosterSignupSelectionPanel({
+      rosterId: "roster-1",
+      discordUserId: "111111111111111111",
+      groupKey: "confirmed",
+    });
+
+    expect(result).toMatchObject({ outcome: "ready" });
+    if (result.outcome !== "ready") return;
+    const description = result.panel.embed.toJSON().description ?? "";
+    expect(description).toContain("Town hall could not be determined for your linked accounts right now.");
+    const accountMenu = result.panel.components
+      .map((row) => row.toJSON?.() as any)
+      .flatMap((rowJson) => (Array.isArray(rowJson?.components) ? rowJson.components : []))
+      .find((component: any) => String(component?.custom_id ?? component?.customId ?? component?.data?.custom_id ?? component?.data?.customId ?? "").startsWith("roster-selection:account:"));
+    expect((accountMenu?.options ?? []).map((option: any) => option.value)).toEqual(["none"]);
+  });
+
+  it("explains when TH-gated signup accounts are all outside the roster town hall range", async () => {
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
+      { playerTag: "#PQL0289", linkedName: "Low TH", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+      { playerTag: "#QGRJ2222", linkedName: "High TH", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+    ]);
+    playerCurrentServiceMock.resolveCurrentPlayersForTags.mockResolvedValue(
+      new Map([
+        ["#PQL0289", makeResolvedPlayerCurrent("#PQL0289", 12)],
+        ["#QGRJ2222", makeResolvedPlayerCurrent("#QGRJ2222", 16)],
+      ]),
+    );
+    prismaMock.roster.findUnique.mockResolvedValueOnce({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+      minTownhall: 13,
+      maxTownhall: 15,
+      allowMultiSignup: true,
+    } as any);
+    prismaMock.rosterSignup.findMany.mockResolvedValueOnce([] as any);
+
+    const result = await rosterService.createRosterSignupSelectionPanel({
+      rosterId: "roster-1",
+      discordUserId: "111111111111111111",
+      groupKey: "confirmed",
+    });
+
+    expect(result).toMatchObject({ outcome: "ready" });
+    if (result.outcome !== "ready") return;
+    const description = result.panel.embed.toJSON().description ?? "";
+    expect(description).toContain("No linked accounts met this roster's town hall requirements.");
+    const accountMenu = result.panel.components
+      .map((row) => row.toJSON?.() as any)
+      .flatMap((rowJson) => (Array.isArray(rowJson?.components) ? rowJson.components : []))
+      .find((component: any) => String(component?.custom_id ?? component?.customId ?? component?.data?.custom_id ?? component?.data?.customId ?? "").startsWith("roster-selection:account:"));
+    expect((accountMenu?.options ?? []).map((option: any) => option.value)).toEqual(["none"]);
   });
 
   it("builds the manager add-user panel with chunked linked-player menus and a disabled confirm button until required selections exist", async () => {
