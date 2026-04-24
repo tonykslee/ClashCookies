@@ -870,6 +870,11 @@ function isTagLikeRosterPlayerName(input: string | null | undefined): boolean {
   return Boolean(normalizePlayerTag(normalized));
 }
 
+function isUsableRosterPlayerName(input: string | null | undefined): boolean {
+  const normalized = normalizeRosterText(input ?? null);
+  return normalized !== null && !isTagLikeRosterPlayerName(normalized);
+}
+
 function resolveBestRosterPlayerName(input: {
   playerTag: string;
   rosterPlayerName?: string | null;
@@ -3764,11 +3769,15 @@ export class RosterService {
 
     if (playerTags.length > 0) {
       const nameSources = await loadRosterSignupNameSourceMaps(playerTags);
-      const nameUpdates = rosteredSignups.filter((signup) => normalizeRosterText(signup.playerName ?? null) === null);
-      await Promise.all(
-        nameUpdates.map((signup) => {
+      const nameUpdates = rosteredSignups.filter((signup) => !isUsableRosterPlayerName(signup.playerName ?? null));
+      const repairedNameUpdates = await Promise.all(
+        nameUpdates.map(async (signup) => {
           const playerTag = normalizePlayerTag(signup.playerTag);
-          if (!playerTag) return Promise.resolve();
+          if (!playerTag) {
+            return { playerTag: null, playerName: null, updatedCount: 0 };
+          }
+
+          const currentPlayerName = normalizeRosterText(signup.playerName ?? null);
           const playerName = resolveBestRosterPlayerName({
             playerTag,
             playerCurrentName: nameSources.playerCurrentNameByTag.get(playerTag) ?? null,
@@ -3776,21 +3785,37 @@ export class RosterService {
             snapshotPlayerName: nameSources.snapshotByTag.get(playerTag)?.playerName ?? null,
             playerLinkPlayerName: nameSources.linkByTag.get(playerTag)?.playerName ?? null,
           });
-          if (playerName === normalizeRosterText(signup.playerName ?? null)) {
-            return Promise.resolve();
+          if (!isUsableRosterPlayerName(playerName)) {
+            console.info(
+              `[roster] stage=signup_name_refresh roster_id=${roster.id} player_tag=${playerTag} current_name=${currentPlayerName ?? ""} repair_name=none updated_count=0`,
+            );
+            return { playerTag, playerName: null, updatedCount: 0 };
           }
-          return prisma.rosterSignup.updateMany({
+
+          const updateResult = await prisma.rosterSignup.updateMany({
             where: {
               rosterId: roster.id,
               playerTag,
-              OR: [{ playerName: null }, { playerName: "" }],
+              ...(signup.playerName === null || signup.playerName === ""
+                ? { OR: [{ playerName: null }, { playerName: "" }] }
+                : { playerName: signup.playerName }),
             },
             data: {
               playerName,
             },
-          }).then(() => undefined);
+          });
+
+          console.info(
+            `[roster] stage=signup_name_refresh roster_id=${roster.id} player_tag=${playerTag} current_name=${currentPlayerName ?? ""} repair_name=${playerName} updated_count=${updateResult.count}`,
+          );
+          return { playerTag, playerName, updatedCount: updateResult.count };
         }),
       );
+
+      const repairedNameCount = repairedNameUpdates.reduce((count, row) => count + (row.updatedCount ?? 0), 0);
+      if (repairedNameCount > 0) {
+        console.info(`[roster] stage=signup_name_refresh_complete roster_id=${roster.id} repaired_count=${repairedNameCount}`);
+      }
 
       if (discordClient) {
         await backfillMissingDiscordUsernamesForClanMembers({
