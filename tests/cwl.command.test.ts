@@ -463,6 +463,8 @@ describe("/cwl command", () => {
     const interaction = {
       customId: "roster-post-action:signup:roster-1",
       user: { id: "111111111111111111" },
+      deferReply: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
       reply: vi.fn().mockResolvedValue(undefined),
     };
 
@@ -471,14 +473,15 @@ describe("/cwl command", () => {
     expect(rosterService.createRosterSignupSelectionPanel).toHaveBeenCalledWith({
       rosterId: "roster-1",
       discordUserId: "111111111111111111",
+      cocService: null,
     });
-    expect(interaction.reply).toHaveBeenCalledWith(
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(interaction.editReply).toHaveBeenCalledWith(
       expect.objectContaining({
-        ephemeral: true,
         embeds: [expect.any(EmbedBuilder)],
       }),
     );
-    const payload = interaction.reply.mock.calls[0]?.[0] as any;
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
     expect(getPayloadComponentCustomIds(payload)).toEqual(
       expect.arrayContaining([
         "roster-selection:group:session-1",

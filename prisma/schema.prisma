@@ -82,6 +82,34 @@ model PlayerLink {
   @@index([discordUserId])
 }
 
+model PlayerCurrent {
+  playerTag               String   @id
+  playerName              String?
+  townHall                Int?
+  currentClanTag          String?
+  currentClanName         String?
+  trophies                Int?
+  builderTrophies         Int?
+  warStars                Int?
+  expLevel                Int?
+  role                    String?
+  leagueName              String?
+  currentWeight           Int?
+  currentWeightSource     String?
+  currentWeightMeasuredAt DateTime?
+  achievementsJson        Json?
+  lastSeenAt              DateTime?
+  lastFetchedAt           DateTime?
+  lastSource              String?
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  @@index([currentClanTag])
+  @@index([updatedAt])
+  @@index([lastFetchedAt])
+  @@index([currentWeightMeasuredAt])
+}
+
 model DumpLink {
   guildId               String   @id
   link                  String

@@ -30,6 +30,7 @@ import {
   resolveRosterCurrentWeightRecords,
   type RosterWeightSource,
 } from "./RosterWeightService";
+import { playerCurrentService } from "./PlayerCurrentService";
 import { todoSnapshotService } from "./TodoSnapshotService";
 import { normalizeSyncTimeZone } from "./syncTimeZone";
 
@@ -226,6 +227,7 @@ type RosterSelectionSignupLoadReadyResult = {
   groups: RosterGroupRecord[];
   selectedGroupKey: string | null;
   options: RosterSelectionOption[];
+  emptyStateMessage: string | null;
 };
 
 type RosterSelectionRemoveLoadReadyResult = {
@@ -1322,6 +1324,7 @@ type RosterSelectionSession = {
   selectedDiscordUserLabel: string | null;
   groupPickerVisible: boolean;
   playerPageWindowStart: number;
+  emptyStateMessage: string | null;
 };
 
 const rosterSelectionSessions = new Map<string, RosterSelectionSession>();
@@ -1405,6 +1408,7 @@ function buildRosterSelectionDescription(input: {
   groupName: string | null;
   selectedTags: string[];
   options: RosterSelectionOption[];
+  emptyStateMessage?: string | null;
 }): string[] {
   const lines: string[] = [];
   if (input.mode === "signup") {
@@ -1423,6 +1427,10 @@ function buildRosterSelectionDescription(input: {
     lines.push(
       ...selectedLines.map((option) => `- ${option.label}${option.description ? ` - ${option.description}` : ""}`),
     );
+  }
+  if (input.emptyStateMessage) {
+    lines.push("");
+    lines.push(input.emptyStateMessage);
   }
   return lines;
 }
@@ -1747,6 +1755,7 @@ function buildRosterSelectionPayload(session: RosterSelectionSession): RosterSel
         groupName: session.groupName,
         selectedTags,
         options: visibleOptions,
+        emptyStateMessage: session.emptyStateMessage,
       }).join("\n"),
     );
 
@@ -1934,18 +1943,21 @@ async function loadRosterSelectionOptions(input: {
   discordUserId: string;
   mode: "signup";
   groupKey?: string | null;
+  cocService?: CoCService | null;
 }): Promise<RosterSelectionSignupLoadResult>;
 async function loadRosterSelectionOptions(input: {
   rosterId: string;
   discordUserId: string;
   mode: "remove";
   groupKey?: string | null;
+  cocService?: CoCService | null;
 }): Promise<RosterSelectionRemoveLoadResult>;
 async function loadRosterSelectionOptions(input: {
   rosterId: string;
   discordUserId: string;
   mode: RosterSelectionMode;
   groupKey?: string | null;
+  cocService?: CoCService | null;
 }): Promise<RosterSelectionSignupLoadResult | RosterSelectionRemoveLoadResult> {
   const roster = await prisma.roster.findUnique({
     where: { id: input.rosterId },
@@ -1997,16 +2009,12 @@ async function loadRosterSelectionOptions(input: {
     const minTownhall = normalizeRosterInt(roster.minTownhall);
     const maxTownhall = normalizeRosterInt(roster.maxTownhall);
     const townHallGated = minTownhall !== null || maxTownhall !== null;
-    const townHallByTag = townHallGated
-      ? (
-          await resolveRosterPlayerTownHallMap({
-            rosterType: roster.rosterType,
-            clanTag: roster.clanTag,
-            playerTags: linkedTags,
-            allowLiveFetch: false,
-            cocService: null,
-          })
-        ).townHallByTag
+    const resolvedPlayersByTag = townHallGated
+      ? await playerCurrentService.resolveCurrentPlayersForTags({
+          playerTags: linkedTags,
+          cocService: input.cocService ?? null,
+          requireFields: ["townHall"],
+        })
       : null;
 
     const signupOptions = linkedAccounts.filter((account) => {
@@ -2014,7 +2022,7 @@ async function loadRosterSelectionOptions(input: {
         return true;
       }
 
-      const townHall = townHallByTag?.get(account.playerTag) ?? null;
+      const townHall = normalizeRosterInt(resolvedPlayersByTag?.get(account.playerTag)?.townHall ?? null);
       if (townHall === null) {
         return false;
       }
@@ -2026,6 +2034,10 @@ async function loadRosterSelectionOptions(input: {
       }
       return true;
     });
+    const emptyStateMessage =
+      townHallGated && linkedAccounts.length > 0 && signupOptions.length <= 0
+        ? "No linked accounts met this roster's town hall requirements."
+        : null;
     return {
       outcome: "ready",
       roster: mappedRoster,
@@ -2037,6 +2049,7 @@ async function loadRosterSelectionOptions(input: {
         label: account.linkedName ?? account.playerTag,
         description: `${account.playerTag}${existingTags.has(account.playerTag) ? " | already signed up" : " | available"}`,
       })),
+      emptyStateMessage,
     };
   }
 
@@ -5256,12 +5269,14 @@ export class RosterService {
     rosterId: string;
     discordUserId: string;
     groupKey?: string | null;
+    cocService?: CoCService | null;
   }): Promise<RosterSelectionOpenResult> {
     const loaded = await loadRosterSelectionOptions({
       rosterId: input.rosterId,
       discordUserId: input.discordUserId,
       mode: "signup",
       groupKey: input.groupKey,
+      cocService: input.cocService ?? null,
     });
     if (loaded.outcome !== "ready") {
       return loaded;
@@ -5296,6 +5311,7 @@ export class RosterService {
       selectedDiscordUserLabel: null,
       groupPickerVisible: false,
       playerPageWindowStart: 0,
+      emptyStateMessage: loaded.emptyStateMessage,
     });
     return {
       outcome: "ready",
@@ -5331,6 +5347,7 @@ export class RosterService {
       selectedDiscordUserLabel: null,
       groupPickerVisible: false,
       playerPageWindowStart: 0,
+      emptyStateMessage: null,
     });
     return {
       outcome: "ready",
@@ -5376,6 +5393,7 @@ export class RosterService {
       selectedDiscordUserLabel: null,
       groupPickerVisible: false,
       playerPageWindowStart: 0,
+      emptyStateMessage: null,
     });
     return {
       outcome: "ready",
@@ -5805,12 +5823,10 @@ export class RosterService {
       }
 
       if (isRosterTownHallGated(roster)) {
-        const playerTownHallResolution = await resolveRosterPlayerTownHallMap({
-          rosterType: roster.rosterType,
-          clanTag: roster.clanTag,
+        const playerCurrentByTag = await playerCurrentService.resolveCurrentPlayersForTags({
           playerTags: createdCandidates,
-          allowLiveFetch: true,
           cocService: input.cocService ?? null,
+          requireFields: ["townHall"],
         });
         const minTownhall = normalizeRosterInt(roster.minTownhall);
         const maxTownhall = normalizeRosterInt(roster.maxTownhall);
@@ -5824,7 +5840,7 @@ export class RosterService {
             playerTag: tag,
             playerName: normalizeRosterText(linked?.linkedName ?? null),
           };
-          const townHall = playerTownHallResolution.townHallByTag.get(tag) ?? null;
+          const townHall = normalizeRosterInt(playerCurrentByTag.get(tag)?.townHall ?? null);
           if (townHall === null) {
             blockedUnavailableTags.push(tag);
             blockedUnavailableAccounts.push(blockedAccount);
@@ -5835,17 +5851,6 @@ export class RosterService {
             blockedOutOfRangeAccounts.push(blockedAccount);
           }
         }
-        logRosterTownHallResolutionDiagnostics({
-          rosterId: roster.id,
-          rosterType: roster.rosterType,
-          clanTag: roster.clanTag,
-          requestedTags,
-          linkedTags: selectedTags,
-          resolution: playerTownHallResolution,
-          blockedUnavailableTags,
-          blockedOutOfRangeTags,
-          cocServicePresent: Boolean(input.cocService),
-        });
         if (blockedUnavailableTags.length > 0) {
           return {
             outcome: "townhall_unavailable",
