@@ -2150,6 +2150,7 @@ describe("RosterService", () => {
         },
       },
     ] as any);
+    prismaMock.rosterSignup.updateMany.mockResolvedValue({ count: 1 } as any);
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([
       { playerTag: rosterPlayerTag, latestName: "DJ13" },
     ] as any);
@@ -2172,10 +2173,76 @@ describe("RosterService", () => {
 
     const hydrated = await rosterService.refreshRosterBoardSourceData("roster-1", cocServiceMock as any, null);
     expect(hydrated).toBe(true);
+    expect(prismaMock.rosterSignup.updateMany).toHaveBeenCalledWith({
+      where: {
+        rosterId: "roster-1",
+        playerTag: rosterPlayerTag,
+        OR: [{ playerName: null }, { playerName: "" }],
+      },
+      data: {
+        playerName: "DJ13",
+      },
+    });
     const payload = await rosterService.buildRosterSignupPayload("roster-1", cocServiceMock as any);
 
     expect(payload).toBeTruthy();
     expect(String(payload?.embed.toJSON().description ?? "")).toContain("DJ13");
+  });
+
+  it("repairs missing signup names from the snapshot owner during roster refresh", async () => {
+    const rosterPlayerTag = makeValidRosterPlayerTag(2);
+    prismaMock.rosterSignup.findMany.mockResolvedValue([
+      {
+        id: "signup-1",
+        rosterId: "roster-1",
+        groupId: "group-confirmed",
+        playerTag: rosterPlayerTag,
+        playerName: null,
+        discordUserId: "111111111111111111",
+        signedUpAt: new Date("2026-04-20T00:00:00.000Z"),
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+        group: {
+          id: "group-confirmed",
+          key: "confirmed",
+          name: "Confirmed",
+          description: "Primary roster members",
+          sortOrder: 0,
+        },
+      },
+    ] as any);
+    prismaMock.rosterSignup.updateMany.mockResolvedValue({ count: 1 } as any);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([] as any);
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: rosterPlayerTag,
+        playerName: null,
+        discordUsername: null,
+        discordUserId: "111111111111111111",
+      },
+    ] as any);
+    todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValue([
+      {
+        playerTag: rosterPlayerTag,
+        playerName: "naruto uzumaki",
+        clanTag: "#2QG2C08UP",
+        clanName: "CWL Alpha",
+      },
+    ] as any);
+
+    const hydrated = await rosterService.refreshRosterBoardSourceData("roster-1", null, null);
+
+    expect(hydrated).toBe(true);
+    expect(prismaMock.rosterSignup.updateMany).toHaveBeenCalledWith({
+      where: {
+        rosterId: "roster-1",
+        playerTag: rosterPlayerTag,
+        OR: [{ playerName: null }, { playerName: "" }],
+      },
+      data: {
+        playerName: "naruto uzumaki",
+      },
+    });
   });
 
   it("does not overwrite an existing signup name during roster refresh", async () => {
@@ -2223,6 +2290,63 @@ describe("RosterService", () => {
     await rosterService.refreshRosterBoardSourceData("roster-1", null, null);
 
     expect(prismaMock.rosterSignup.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("repairs tag-like signup names during roster refresh when a better source exists", async () => {
+    const rosterPlayerTag = "#PQL0289";
+    prismaMock.rosterSignup.findMany.mockResolvedValue([
+      {
+        id: "signup-1",
+        rosterId: "roster-1",
+        groupId: "group-confirmed",
+        playerTag: rosterPlayerTag,
+        playerName: rosterPlayerTag,
+        discordUserId: "111111111111111111",
+        signedUpAt: new Date("2026-04-20T00:00:00.000Z"),
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+        group: {
+          id: "group-confirmed",
+          key: "confirmed",
+          name: "Confirmed",
+          description: "Primary roster members",
+          sortOrder: 0,
+        },
+      },
+    ] as any);
+    prismaMock.rosterSignup.updateMany.mockResolvedValue({ count: 1 } as any);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([
+      { playerTag: rosterPlayerTag, latestName: "DJ13" },
+    ] as any);
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: rosterPlayerTag,
+        playerName: null,
+        discordUsername: null,
+        discordUserId: "111111111111111111",
+      },
+    ] as any);
+    todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValue([
+      {
+        playerTag: rosterPlayerTag,
+        playerName: null,
+        clanTag: "#2QG2C08UP",
+        clanName: "CWL Alpha",
+      },
+    ] as any);
+
+    await rosterService.refreshRosterBoardSourceData("roster-1", null, null);
+
+    expect(prismaMock.rosterSignup.updateMany).toHaveBeenCalledWith({
+      where: {
+        rosterId: "roster-1",
+        playerTag: rosterPlayerTag,
+        playerName: rosterPlayerTag,
+      },
+      data: {
+        playerName: "DJ13",
+      },
+    });
   });
 
   it("backfills missing discord usernames during roster refresh when Discord can resolve them", async () => {
