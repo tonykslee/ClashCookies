@@ -15,6 +15,7 @@ import { emojiResolverService } from "./emoji/EmojiResolverService";
 import {
   listPlayerLinksForClanMembers,
   listPlayerLinksForDiscordUser,
+  backfillMissingDiscordUsernamesForClanMembers,
   normalizeClanTag,
   normalizeDiscordUserId,
   normalizePlayerTag,
@@ -859,6 +860,42 @@ function normalizeRosterText(input: string | null | undefined): string | null {
     .replace(/\s+/g, " ")
     .trim();
   return normalized.length > 0 ? normalized : null;
+}
+
+function isTagLikeRosterPlayerName(input: string | null | undefined): boolean {
+  const normalized = normalizeRosterText(input ?? null);
+  if (!normalized) {
+    return false;
+  }
+  return Boolean(normalizePlayerTag(normalized));
+}
+
+function resolveBestRosterPlayerName(input: {
+  playerTag: string;
+  rosterPlayerName?: string | null;
+  playerCurrentName?: string | null;
+  fwaPlayerName?: string | null;
+  snapshotPlayerName?: string | null;
+  playerLinkPlayerName?: string | null;
+}): string {
+  const candidates = [
+    input.rosterPlayerName,
+    input.playerCurrentName,
+    input.fwaPlayerName,
+    input.snapshotPlayerName,
+    input.playerLinkPlayerName,
+  ];
+  for (const candidate of candidates) {
+    const normalized = normalizeRosterText(candidate ?? null);
+    if (!normalized) {
+      continue;
+    }
+    if (isTagLikeRosterPlayerName(normalized)) {
+      continue;
+    }
+    return normalized;
+  }
+  return normalizeRosterText(input.playerTag) ?? input.playerTag;
 }
 
 function normalizeRosterInt(input: unknown): number | null {
@@ -3019,6 +3056,101 @@ type RosterViewLoadOptions = {
   discordDisplayNamesByUserId?: Map<string, string | null>;
 };
 
+type RosterSignupNameSourceMaps = {
+  playerCurrentNameByTag: Map<string, string | null>;
+  fwaPlayerNameByTag: Map<string, string | null>;
+  snapshotByTag: Map<string, RosterSignupNameSourceSnapshotRow>;
+  linkByTag: Map<string, RosterSignupNameSourceLinkRow>;
+};
+
+type RosterSignupNameSourceSnapshotRow = {
+  playerTag: string;
+  playerName: string | null;
+  clanTag: string | null;
+  clanName: string | null;
+};
+
+type RosterSignupNameSourceLinkRow = {
+  playerTag: string;
+  playerName: string | null;
+  discordUsername: string | null;
+  discordUserId: string | null;
+};
+
+async function loadRosterSignupNameSourceMaps(playerTags: string[]): Promise<RosterSignupNameSourceMaps> {
+  const normalizedTags = [...new Set(playerTags.map((tag) => normalizePlayerTag(tag)).filter(Boolean))];
+  if (normalizedTags.length <= 0) {
+    return {
+      playerCurrentNameByTag: new Map(),
+      fwaPlayerNameByTag: new Map(),
+      snapshotByTag: new Map(),
+      linkByTag: new Map(),
+    };
+  }
+
+  const [currentRows, fwaRows, snapshotRows, linkRows] = await Promise.all([
+    playerCurrentService.listPlayerCurrentByTags(normalizedTags),
+    prisma.fwaPlayerCatalog.findMany({
+      where: { playerTag: { in: normalizedTags } },
+      select: {
+        playerTag: true,
+        latestName: true,
+      },
+    }),
+    todoSnapshotService.listSnapshotsByPlayerTags({
+      playerTags: normalizedTags,
+    }),
+    prisma.playerLink.findMany({
+      where: { playerTag: { in: normalizedTags } },
+      select: {
+        playerTag: true,
+        playerName: true,
+        discordUsername: true,
+        discordUserId: true,
+      },
+    }),
+  ]);
+
+  const playerCurrentNameByTag = new Map(
+    Array.from(currentRows.entries()).map(([playerTag, row]) => [playerTag, normalizeRosterText(row.playerName ?? null)] as const),
+  );
+  const fwaPlayerNameByTag = new Map<string, string | null>();
+  for (const row of fwaRows) {
+    const playerTag = normalizePlayerTag(row.playerTag);
+    if (!playerTag) continue;
+    fwaPlayerNameByTag.set(playerTag, normalizeRosterText(row.latestName ?? null));
+  }
+  const snapshotByTag = new Map<string, RosterSignupNameSourceSnapshotRow>();
+  for (const row of snapshotRows as RosterSignupNameSourceSnapshotRow[]) {
+    const playerTag = normalizePlayerTag(row.playerTag);
+    if (!playerTag) continue;
+    snapshotByTag.set(playerTag, {
+      playerTag,
+      playerName: normalizeRosterText(row.playerName ?? null),
+      clanTag: normalizeClanTag(String(row.clanTag ?? "")) || null,
+      clanName: normalizeRosterText(row.clanName ?? null),
+    });
+  }
+  const linkByTag = new Map<string, RosterSignupNameSourceLinkRow>();
+  for (const row of linkRows) {
+    const playerTag = normalizePlayerTag(row.playerTag);
+    if (!playerTag) continue;
+    linkByTag.set(playerTag, {
+      playerTag,
+      playerName: normalizeRosterText(row.playerName ?? null),
+      discordUsername: normalizeRosterText(row.discordUsername ?? null),
+      discordUserId: normalizeDiscordUserId(row.discordUserId),
+    });
+  }
+
+  return {
+    playerCurrentNameByTag,
+    fwaPlayerNameByTag,
+    snapshotByTag,
+    linkByTag,
+  };
+}
+
 async function loadRosterView(rosterId: string, options?: RosterViewLoadOptions): Promise<RosterSignupView | null> {
   const roster = await prisma.roster.findUnique({
     where: { id: rosterId },
@@ -3098,41 +3230,24 @@ async function loadRosterView(rosterId: string, options?: RosterViewLoadOptions)
     allowLiveFetch: false,
   });
   const townHallByTag = townHallResolution.townHallByTag;
-  const [snapshotRows, linkedPlayerRows, resolvedWeightRows] = await Promise.all([
-    todoSnapshotService.listSnapshotsByPlayerTags({
-      playerTags: signupTags,
-    }),
-    prisma.playerLink.findMany({
-      where: {
-        playerTag: { in: signupTags },
-      },
-      select: {
-        playerTag: true,
-        discordUsername: true,
-      },
-    }),
+  const [sourceMaps, resolvedWeightRows, currentClanSnapshotRows] = await Promise.all([
+    loadRosterSignupNameSourceMaps(signupTags),
     resolveRosterCurrentWeightRecords({
       playerTags: signupTags,
     }),
-  ]);
-  const currentClanRows =
     roster.clanTag
-      ? await todoSnapshotService.listSnapshotsByClanTag({
+      ? todoSnapshotService.listSnapshotsByClanTag({
           clanTag: roster.clanTag,
           source: "clanTag",
         })
-      : [];
-  const discordUsernameByTag = new Map(
-    linkedPlayerRows
-      .map((row) => [normalizePlayerTag(row.playerTag), normalizeRosterText(row.discordUsername ?? null)] as const)
-      .filter((entry): entry is readonly [string, string] => Boolean(entry[0])),
-  );
+      : Promise.resolve([]),
+  ]);
+  const snapshotRows = [...sourceMaps.snapshotByTag.values()];
   const discordDisplayNameByUserId = options?.discordDisplayNamesByUserId ?? new Map<string, string | null>();
-  const snapshotByTag = new Map(snapshotRows.map((row) => [normalizePlayerTag(row.playerTag), row] as const));
   const currentClanName =
-    currentClanRows.find((row) => normalizeRosterText(row.cwlClanName ?? row.clanName ?? null))
+    currentClanSnapshotRows.find((row) => normalizeRosterText(row.cwlClanName ?? row.clanName ?? null))
       ?.cwlClanName ??
-    currentClanRows.find((row) => normalizeRosterText(row.clanName ?? null))?.clanName ??
+    currentClanSnapshotRows.find((row) => normalizeRosterText(row.clanName ?? null))?.clanName ??
     snapshotRows.find((row) => normalizeRosterText(row.clanName ?? null))?.clanName ??
     null;
   const trackedClan =
@@ -3151,6 +3266,8 @@ async function loadRosterView(rosterId: string, options?: RosterViewLoadOptions)
   const signupsWithTownHall = signups.map((signup) => {
     const playerTag = normalizePlayerTag(signup.playerTag);
     const weightRecord = resolvedWeightRows.get(playerTag) ?? null;
+    const sourceRow = sourceMaps.snapshotByTag.get(playerTag) ?? null;
+    const linkRow = sourceMaps.linkByTag.get(playerTag) ?? null;
     return {
       ...signup,
       townHall: townHallByTag.get(playerTag) ?? null,
@@ -3159,9 +3276,17 @@ async function loadRosterView(rosterId: string, options?: RosterViewLoadOptions)
       weightSource: weightRecord?.weightSource ?? "Unknown",
       weightMeasuredAt: weightRecord?.weightMeasuredAt ?? null,
       discordDisplayName: discordDisplayNameByUserId.get(signup.discordUserId) ?? null,
-      discordUsername: discordUsernameByTag.get(playerTag) ?? null,
-      clanTag: snapshotByTag.get(playerTag)?.clanTag ?? null,
-      clanName: snapshotByTag.get(playerTag)?.clanName ?? null,
+      discordUsername: linkRow?.discordUsername ?? null,
+      playerName: resolveBestRosterPlayerName({
+        playerTag,
+        rosterPlayerName: signup.playerName ?? null,
+        playerCurrentName: sourceMaps.playerCurrentNameByTag.get(playerTag) ?? null,
+        fwaPlayerName: sourceMaps.fwaPlayerNameByTag.get(playerTag) ?? null,
+        snapshotPlayerName: sourceRow?.playerName ?? null,
+        playerLinkPlayerName: linkRow?.playerName ?? null,
+      }),
+      clanTag: sourceRow?.clanTag ?? null,
+      clanName: sourceRow?.clanName ?? null,
     };
   });
   const clanDisplayName =
@@ -3594,33 +3719,100 @@ export class RosterService {
     cocService?: CoCService | null,
     options?: RosterSignupPayloadBuildOptions,
   ): Promise<RosterSignupPayload | null> {
-    const hydrated = await this.refreshRosterBoardSourceData(rosterId, cocService ?? null);
+    const hydrated = await this.refreshRosterBoardSourceData(rosterId, cocService ?? null, options?.emojiClient ?? null);
     if (!hydrated) return null;
     return this.buildRosterSignupPayload(rosterId, cocService ?? null, options);
   }
 
   /** Purpose: refresh the live/persisted board owners for one roster before rerendering its post. */
-  async refreshRosterBoardSourceData(rosterId: string, cocService?: CoCService | null): Promise<boolean> {
+  async refreshRosterBoardSourceData(
+    rosterId: string,
+    cocService?: CoCService | null,
+    discordClient?: Client | null,
+  ): Promise<boolean> {
     const roster = await prisma.roster.findUnique({
       where: { id: rosterId },
       select: {
         id: true,
+        guildId: true,
         rosterType: true,
         clanTag: true,
       },
     });
     if (!roster) return false;
 
-    const rosteredTags = await prisma.rosterSignup.findMany({
+    const rosteredSignups = await prisma.rosterSignup.findMany({
       where: { rosterId: roster.id },
-      select: { playerTag: true },
+      select: { playerTag: true, playerName: true, discordUserId: true },
     });
-    const playerTags = [...new Set(rosteredTags.map((row) => normalizePlayerTag(row.playerTag)).filter(Boolean))];
+    const playerTags = [...new Set(rosteredSignups.map((row) => normalizePlayerTag(row.playerTag)).filter(Boolean))];
+    if (cocService && playerTags.length > 0) {
+      await playerCurrentService.resolveCurrentPlayersForTags({
+        playerTags,
+        cocService,
+        requireFields: ["playerName", "townHall"],
+        refreshPolicy: "missing_or_stale",
+        maxAcceptedAgeMs: PLAYER_CURRENT_SIGNUP_MAX_AGE_MS,
+      });
+    }
     if (cocService && playerTags.length > 0) {
       await todoSnapshotService.refreshSnapshotsForPlayerTags({
         playerTags,
         cocService,
       });
+    }
+
+    if (playerTags.length > 0) {
+      const nameSources = await loadRosterSignupNameSourceMaps(playerTags);
+      const nameUpdates = rosteredSignups.filter((signup) => normalizeRosterText(signup.playerName ?? null) === null);
+      await Promise.all(
+        nameUpdates.map((signup) => {
+          const playerTag = normalizePlayerTag(signup.playerTag);
+          if (!playerTag) return Promise.resolve();
+          const playerName = resolveBestRosterPlayerName({
+            playerTag,
+            playerCurrentName: nameSources.playerCurrentNameByTag.get(playerTag) ?? null,
+            fwaPlayerName: nameSources.fwaPlayerNameByTag.get(playerTag) ?? null,
+            snapshotPlayerName: nameSources.snapshotByTag.get(playerTag)?.playerName ?? null,
+            playerLinkPlayerName: nameSources.linkByTag.get(playerTag)?.playerName ?? null,
+          });
+          if (playerName === normalizeRosterText(signup.playerName ?? null)) {
+            return Promise.resolve();
+          }
+          return prisma.rosterSignup.updateMany({
+            where: {
+              rosterId: roster.id,
+              playerTag,
+              OR: [{ playerName: null }, { playerName: "" }],
+            },
+            data: {
+              playerName,
+            },
+          }).then(() => undefined);
+        }),
+      );
+
+      if (discordClient) {
+        await backfillMissingDiscordUsernamesForClanMembers({
+          memberTagsInOrder: playerTags,
+          resolveDiscordUsername: async (discordUserId) => {
+            const normalizedDiscordUserId = normalizeDiscordUserId(discordUserId);
+            if (!normalizedDiscordUserId) return null;
+            const guild = await discordClient.guilds.fetch(roster.guildId).catch(() => null);
+            const member = guild ? await guild.members.fetch(normalizedDiscordUserId).catch(() => null) : null;
+            const usernameFromMember = normalizeRosterText(member?.user?.username ?? null);
+            if (usernameFromMember) {
+              return usernameFromMember;
+            }
+            const user = await discordClient.users.fetch(normalizedDiscordUserId).catch(() => null);
+            return normalizeRosterText(user?.username ?? null);
+          },
+        }).catch((err) => {
+          console.error(
+            `[roster] stage=discord_username_refresh_failed roster_id=${roster.id} error=${String((err as Error)?.message ?? err)}`,
+          );
+        });
+      }
     }
 
     if (cocService && roster.clanTag) {
@@ -4337,15 +4529,19 @@ export class RosterService {
     const existingTags = new Set(existing.map((row) => normalizePlayerTag(row.playerTag)).filter(Boolean));
     const createdTags = linkedTags.filter((tag) => !existingTags.has(tag));
     const duplicateTags = linkedTags.filter((tag) => existingTags.has(tag));
+    const resolvedCurrentCandidates =
+      createdTags.length > 0
+        ? await playerCurrentService.resolveCurrentPlayersForTags({
+            playerTags: createdTags,
+            cocService: input.cocService ?? null,
+            requireFields: isRosterTownHallGated(roster) ? ["townHall"] : ["playerName"],
+            refreshPolicy: "missing_or_stale",
+            maxAcceptedAgeMs: PLAYER_CURRENT_SIGNUP_MAX_AGE_MS,
+          })
+        : new Map();
+    const nameSources = createdTags.length > 0 ? await loadRosterSignupNameSourceMaps(createdTags) : null;
 
     if (townHallGated && createdTags.length > 0) {
-      const playerTownHallResolution = await resolveRosterPlayerTownHallMap({
-        rosterType: roster.rosterType,
-        clanTag: roster.clanTag,
-        playerTags: createdTags,
-        allowLiveFetch: true,
-        cocService: input.cocService ?? null,
-      });
       const minTownhall = normalizeRosterInt(roster.minTownhall);
       const maxTownhall = normalizeRosterInt(roster.maxTownhall);
       const blockedUnavailableTags: string[] = [];
@@ -4353,12 +4549,17 @@ export class RosterService {
       const blockedOutOfRangeTags: string[] = [];
       const blockedOutOfRangeAccounts: RosterAccountIdentity[] = [];
       for (const tag of createdTags) {
-        const linked = linkedByTag.get(tag) ?? null;
         const blockedAccount = {
           playerTag: tag,
-          playerName: normalizeRosterText(linked?.playerName ?? null),
+          playerName: resolveBestRosterPlayerName({
+            playerTag: tag,
+            playerCurrentName: nameSources?.playerCurrentNameByTag.get(tag) ?? null,
+            fwaPlayerName: nameSources?.fwaPlayerNameByTag.get(tag) ?? null,
+            snapshotPlayerName: nameSources?.snapshotByTag.get(tag)?.playerName ?? null,
+            playerLinkPlayerName: nameSources?.linkByTag.get(tag)?.playerName ?? null,
+          }),
         };
-        const townHall = playerTownHallResolution.townHallByTag.get(tag) ?? null;
+        const townHall = normalizeRosterInt(resolvedCurrentCandidates.get(tag)?.townHall ?? null);
         if (townHall === null) {
           blockedUnavailableTags.push(tag);
           blockedUnavailableAccounts.push(blockedAccount);
@@ -4375,7 +4576,27 @@ export class RosterService {
         clanTag: roster.clanTag,
         requestedTags,
         linkedTags,
-        resolution: playerTownHallResolution,
+        resolution: {
+          townHallByTag: new Map(
+            createdTags
+              .map((tag) => [tag, normalizeRosterInt(resolvedCurrentCandidates.get(tag)?.townHall ?? null)] as const)
+              .filter((entry): entry is readonly [string, number] => entry[1] !== null),
+          ),
+          detailByTag: new Map(
+            createdTags.map((tag) => [
+              tag,
+              {
+                source: "live_refresh" as const,
+                townHall: normalizeRosterInt(resolvedCurrentCandidates.get(tag)?.townHall ?? null),
+                primarySourceHit: false,
+                snapshotSourceHit: false,
+                liveRefreshInvoked: Boolean(resolvedCurrentCandidates.get(tag)?.liveRefreshInvoked),
+              },
+            ] as const),
+          ),
+          liveRefreshInvoked: createdTags.some((tag) => Boolean(resolvedCurrentCandidates.get(tag)?.liveRefreshInvoked)),
+          missingTags: createdTags.filter((tag) => normalizeRosterInt(resolvedCurrentCandidates.get(tag)?.townHall ?? null) === null),
+        } as RosterTownHallResolution,
         blockedUnavailableTags,
         blockedOutOfRangeTags,
         cocServicePresent: Boolean(input.cocService),
@@ -4417,23 +4638,36 @@ export class RosterService {
     if (createdTags.length > 0) {
       await prisma.rosterSignup.createMany({
         data: createdTags.map((playerTag) => {
-          const linked = linkedByTag.get(playerTag) ?? null;
           return {
             rosterId: roster.id,
             groupId: group.id,
             playerTag,
-            playerName: linked?.playerName ?? null,
-            discordUserId: normalizeDiscordUserId(linked?.discordUserId) ?? input.updatedByDiscordUserId ?? "",
+            playerName: resolveBestRosterPlayerName({
+              playerTag,
+              playerCurrentName: nameSources?.playerCurrentNameByTag.get(playerTag) ?? null,
+              fwaPlayerName: nameSources?.fwaPlayerNameByTag.get(playerTag) ?? null,
+              snapshotPlayerName: nameSources?.snapshotByTag.get(playerTag)?.playerName ?? null,
+              playerLinkPlayerName: nameSources?.linkByTag.get(playerTag)?.playerName ?? null,
+            }),
+            discordUserId:
+              normalizeDiscordUserId(nameSources?.linkByTag.get(playerTag)?.discordUserId ?? null) ??
+              input.updatedByDiscordUserId ??
+              "",
           };
         }),
         skipDuplicates: true,
       });
     }
     const createdAccounts = createdTags.map((playerTag) => {
-      const linked = linkedByTag.get(playerTag) ?? null;
       return {
         playerTag,
-        playerName: normalizeRosterText(linked?.playerName ?? null),
+        playerName: resolveBestRosterPlayerName({
+          playerTag,
+          playerCurrentName: nameSources?.playerCurrentNameByTag.get(playerTag) ?? null,
+          fwaPlayerName: nameSources?.fwaPlayerNameByTag.get(playerTag) ?? null,
+          snapshotPlayerName: nameSources?.snapshotByTag.get(playerTag)?.playerName ?? null,
+          playerLinkPlayerName: nameSources?.linkByTag.get(playerTag)?.playerName ?? null,
+        }),
       };
     });
 
@@ -5783,6 +6017,17 @@ export class RosterService {
     const existingTags = new Set(existing.map((row) => normalizePlayerTag(row.playerTag)).filter(Boolean));
     const createdCandidates = selectedTags.filter((tag) => !existingTags.has(tag));
     const duplicateTags = selectedTags.filter((tag) => existingTags.has(tag));
+    const linkedNameSources = createdCandidates.length > 0 ? await loadRosterSignupNameSourceMaps(createdCandidates) : null;
+    const resolvedCurrentCandidates =
+      createdCandidates.length > 0
+        ? await playerCurrentService.resolveCurrentPlayersForTags({
+            playerTags: createdCandidates,
+            cocService: input.cocService ?? null,
+            requireFields: isRosterTownHallGated(roster) ? ["townHall"] : ["playerName"],
+            refreshPolicy: "missing_or_stale",
+            maxAcceptedAgeMs: PLAYER_CURRENT_SIGNUP_MAX_AGE_MS,
+          })
+        : new Map();
 
     const activeRosterSignups = await prisma.rosterSignup.count({
       where: {
@@ -5837,13 +6082,6 @@ export class RosterService {
       }
 
       if (isRosterTownHallGated(roster)) {
-        const playerCurrentByTag = await playerCurrentService.resolveCurrentPlayersForTags({
-          playerTags: createdCandidates,
-          cocService: input.cocService ?? null,
-          requireFields: ["townHall"],
-          refreshPolicy: "missing_or_stale",
-          maxAcceptedAgeMs: PLAYER_CURRENT_SIGNUP_MAX_AGE_MS,
-        });
         const minTownhall = normalizeRosterInt(roster.minTownhall);
         const maxTownhall = normalizeRosterInt(roster.maxTownhall);
         const blockedUnavailableTags: string[] = [];
@@ -5851,12 +6089,17 @@ export class RosterService {
         const blockedOutOfRangeTags: string[] = [];
         const blockedOutOfRangeAccounts: RosterAccountIdentity[] = [];
         for (const tag of createdCandidates) {
-          const linked = linkedByTag.get(tag) ?? null;
           const blockedAccount = {
             playerTag: tag,
-            playerName: normalizeRosterText(linked?.linkedName ?? null),
+            playerName: resolveBestRosterPlayerName({
+              playerTag: tag,
+              playerCurrentName: linkedNameSources?.playerCurrentNameByTag.get(tag) ?? null,
+              fwaPlayerName: linkedNameSources?.fwaPlayerNameByTag.get(tag) ?? null,
+              snapshotPlayerName: linkedNameSources?.snapshotByTag.get(tag)?.playerName ?? null,
+              playerLinkPlayerName: linkedNameSources?.linkByTag.get(tag)?.playerName ?? null,
+            }),
           };
-          const townHall = normalizeRosterInt(playerCurrentByTag.get(tag)?.townHall ?? null);
+          const townHall = normalizeRosterInt(resolvedCurrentCandidates.get(tag)?.townHall ?? null);
           if (townHall === null) {
             blockedUnavailableTags.push(tag);
             blockedUnavailableAccounts.push(blockedAccount);
@@ -5940,13 +6183,21 @@ export class RosterService {
     if (createdTags.length > 0) {
       await prisma.rosterSignup.createMany({
         data: createdTags.map((playerTag) => {
-          const linked = linkedByTag.get(playerTag) ?? null;
           return {
             rosterId: roster.id,
             groupId: group.id,
             playerTag,
-            playerName: linked?.linkedName ?? null,
-            discordUserId: normalizeDiscordUserId(input.discordUserId) ?? input.discordUserId,
+            playerName: resolveBestRosterPlayerName({
+              playerTag,
+              rosterPlayerName: null,
+              playerCurrentName: linkedNameSources?.playerCurrentNameByTag.get(playerTag) ?? null,
+              fwaPlayerName: linkedNameSources?.fwaPlayerNameByTag.get(playerTag) ?? null,
+              snapshotPlayerName: linkedNameSources?.snapshotByTag.get(playerTag)?.playerName ?? null,
+              playerLinkPlayerName: linkedNameSources?.linkByTag.get(playerTag)?.playerName ?? null,
+            }),
+            discordUserId:
+              normalizeDiscordUserId(linkedNameSources?.linkByTag.get(playerTag)?.discordUserId ?? null) ??
+              input.discordUserId,
           };
         }),
         skipDuplicates: true,
@@ -5962,10 +6213,16 @@ export class RosterService {
       linkedTags: selectedTags,
       createdTags,
       createdAccounts: createdTags.map((playerTag) => {
-        const linked = linkedByTag.get(playerTag) ?? null;
         return {
           playerTag,
-          playerName: normalizeRosterText(linked?.linkedName ?? null),
+          playerName: resolveBestRosterPlayerName({
+            playerTag,
+            rosterPlayerName: null,
+            playerCurrentName: linkedNameSources?.playerCurrentNameByTag.get(playerTag) ?? null,
+            fwaPlayerName: linkedNameSources?.fwaPlayerNameByTag.get(playerTag) ?? null,
+            snapshotPlayerName: linkedNameSources?.snapshotByTag.get(playerTag)?.playerName ?? null,
+            playerLinkPlayerName: linkedNameSources?.linkByTag.get(playerTag)?.playerName ?? null,
+          }),
         };
       }),
       duplicateTags,
