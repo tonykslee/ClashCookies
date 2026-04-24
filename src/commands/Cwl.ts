@@ -2913,43 +2913,62 @@ export async function handleCwlRotationShowSelectMenuInteraction(
 
 export async function handleRosterSignupButtonInteraction(
   interaction: ButtonInteraction,
+  cocService?: CoCService | null,
 ): Promise<void> {
   const parsed = parseRosterSignupButtonCustomId(interaction.customId);
   if (!parsed) return;
 
+  const deferred = await interaction.deferReply({ ephemeral: true }).then(() => true).catch(() => false);
+  const sendSignupResponse = async (payload: { content?: string; embeds?: any[]; components?: any[] }): Promise<void> => {
+    if (deferred) {
+      await interaction
+        .editReply({
+          ...payload,
+          embeds: payload.embeds ?? [],
+          components: payload.components ?? [],
+        })
+        .catch(() => undefined);
+      return;
+    }
+
+    await interaction
+      .reply({
+        ...payload,
+        ephemeral: true,
+      })
+      .catch(() => undefined);
+  };
+
   const result = await rosterService.createRosterSignupSelectionPanel({
     rosterId: parsed.rosterId,
     discordUserId: interaction.user.id,
+    cocService: cocService ?? null,
   });
 
   if (result.outcome === "roster_not_found") {
-    await interaction.reply({
+    await sendSignupResponse({
       content: "That roster is no longer available.",
-      ephemeral: true,
     });
     return;
   }
 
   if (result.outcome === "roster_closed") {
-    await interaction.reply({
+    await sendSignupResponse({
       content: "Signups are closed for that roster.",
-      ephemeral: true,
     });
     return;
   }
 
   if (result.outcome === "group_not_found") {
-    await interaction.reply({
+    await sendSignupResponse({
       content: "That roster group is no longer available.",
-      ephemeral: true,
     });
     return;
   }
 
   if (result.outcome === "no_linked_accounts") {
-    await interaction.reply({
+    await sendSignupResponse({
       content: "No linked player accounts were found for your Discord user.",
-      ephemeral: true,
     });
     return;
   }
@@ -2958,10 +2977,9 @@ export async function handleRosterSignupButtonInteraction(
     return;
   }
 
-  await interaction.reply({
+  await sendSignupResponse({
     embeds: [result.panel.embed],
     components: result.panel.components,
-    ephemeral: true,
   });
 }
 
