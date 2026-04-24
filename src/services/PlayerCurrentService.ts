@@ -24,6 +24,10 @@ export type PlayerCurrentResolutionSource =
   | "live_refresh"
   | "missing";
 
+export type PlayerCurrentRefreshPolicy = "missing_only" | "missing_or_stale";
+
+export const PLAYER_CURRENT_SIGNUP_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+
 export type PlayerCurrentLike = {
   playerTag: string;
   playerName: string | null;
@@ -325,6 +329,35 @@ function normalizeFields(input: string[]): string[] {
   return [...new Set(input.map((tag) => normalizePlayerTag(tag)).filter(Boolean))];
 }
 
+function isPlayerCurrentStaleForSignup(
+  record: PlayerCurrentLike | null | undefined,
+  now: Date,
+  maxAcceptedAgeMs: number,
+): boolean {
+  if (!record?.lastFetchedAt) {
+    return true;
+  }
+  return now.getTime() - record.lastFetchedAt.getTime() >= maxAcceptedAgeMs;
+}
+
+function shouldLiveRefreshForRequiredFields(input: {
+  currentRecord: PlayerCurrentLike | null | undefined;
+  resolvedRecord: PlayerCurrentLike;
+  requireFields: PlayerCurrentResolutionField[];
+  refreshPolicy: PlayerCurrentRefreshPolicy;
+  now: Date;
+  maxAcceptedAgeMs: number;
+}): boolean {
+  const hasMissingRequiredField = input.requireFields.some((field) => isFieldMissing(input.resolvedRecord, field));
+  if (hasMissingRequiredField) {
+    return true;
+  }
+  if (input.refreshPolicy !== "missing_or_stale") {
+    return false;
+  }
+  return isPlayerCurrentStaleForSignup(input.currentRecord, input.now, input.maxAcceptedAgeMs);
+}
+
 export class PlayerCurrentService {
   async listPlayerCurrentByTags(tags: string[]): Promise<Map<string, PlayerCurrentLike>> {
     const normalizedTags = normalizeFields(tags);
@@ -381,6 +414,8 @@ export class PlayerCurrentService {
     playerTags: string[];
     cocService?: CoCService | null;
     requireFields?: PlayerCurrentResolutionField[];
+    refreshPolicy?: PlayerCurrentRefreshPolicy;
+    maxAcceptedAgeMs?: number;
   }): Promise<Map<string, PlayerCurrentLike>> {
     const normalizedTags = normalizeFields(input.playerTags);
     if (normalizedTags.length <= 0) {
@@ -388,6 +423,8 @@ export class PlayerCurrentService {
     }
 
     const requireFields = input.requireFields && input.requireFields.length > 0 ? [...new Set(input.requireFields)] : DEFAULT_REQUIRE_FIELDS;
+    const refreshPolicy: PlayerCurrentRefreshPolicy = input.refreshPolicy ?? "missing_only";
+    const maxAcceptedAgeMs = Math.max(1, Math.trunc(Number(input.maxAcceptedAgeMs ?? PLAYER_CURRENT_SIGNUP_MAX_AGE_MS) || PLAYER_CURRENT_SIGNUP_MAX_AGE_MS));
     const now = new Date();
 
     const [playerCurrentRows, fwaRows, snapshotRows] = await Promise.all([
@@ -480,7 +517,14 @@ export class PlayerCurrentService {
     }
 
     const liveCandidates = normalizedTags.filter((playerTag) =>
-      requireFields.some((field) => isFieldMissing(resolved.get(playerTag) ?? createMissingPlayerCurrent({ playerTag }), field)),
+      shouldLiveRefreshForRequiredFields({
+        currentRecord: playerCurrentRows.get(playerTag) ?? null,
+        resolvedRecord: resolved.get(playerTag) ?? createMissingPlayerCurrent({ playerTag }),
+        requireFields,
+        refreshPolicy,
+        now,
+        maxAcceptedAgeMs,
+      }),
     );
 
     const cocService = input.cocService ?? null;
@@ -555,6 +599,10 @@ export class PlayerCurrentService {
       source: input.source ?? "live_refresh",
       liveRefreshInvoked: true,
     };
+  }
+
+  isPlayerCurrentStaleForSignup(record: PlayerCurrentLike | null | undefined, now = new Date(), maxAcceptedAgeMs = PLAYER_CURRENT_SIGNUP_MAX_AGE_MS): boolean {
+    return isPlayerCurrentStaleForSignup(record, now, maxAcceptedAgeMs);
   }
 }
 

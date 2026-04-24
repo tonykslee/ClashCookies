@@ -43,6 +43,25 @@ function makeCurrentRow(overrides: Record<string, unknown> = {}): Record<string,
   };
 }
 
+function makeLivePlayer(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    name: "Live Player",
+    townHallLevel: 16,
+    clan: {
+      tag: "#2QG2C08UP",
+      name: "Live Clan",
+    },
+    trophies: 6100,
+    builderBaseTrophies: 4200,
+    warStars: 101,
+    expLevel: 201,
+    role: "member",
+    league: { name: "Legend League" },
+    achievements: [{ name: "Friend in Need", value: 1 }],
+    ...overrides,
+  };
+}
+
 describe("PlayerCurrentService", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -135,18 +154,7 @@ describe("PlayerCurrentService", () => {
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValueOnce([]);
     (todoSnapshotService.listSnapshotsByPlayerTags as any).mockResolvedValueOnce([]);
     const cocService = {
-      getPlayerRaw: vi.fn().mockResolvedValue({
-        name: "Live Player",
-        townHallLevel: 16,
-        clan: null,
-        trophies: 6100,
-        builderBaseTrophies: 4200,
-        warStars: 101,
-        expLevel: 201,
-        role: "member",
-        league: { name: "Legend League" },
-        achievements: [{ name: "Friend in Need", value: 1 }],
-      }),
+      getPlayerRaw: vi.fn().mockResolvedValue(makeLivePlayer({ clan: null })),
     } as any;
 
     const resolved = await playerCurrentService.resolveCurrentPlayersForTags({
@@ -182,5 +190,114 @@ describe("PlayerCurrentService", () => {
         }),
       }),
     );
+  });
+
+  it("refreshes stale signup-path player current data even when town hall is already populated", async () => {
+    prismaMock.playerCurrent.findMany.mockResolvedValueOnce([
+      makeCurrentRow({
+        playerTag: "#PQL0289",
+        playerName: "Cached Player",
+        townHall: 14,
+        lastFetchedAt: new Date(Date.now() - (7 * 60 * 60 * 1000)),
+      }),
+    ]);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValueOnce([]);
+    (todoSnapshotService.listSnapshotsByPlayerTags as any).mockResolvedValueOnce([]);
+    const cocService = {
+      getPlayerRaw: vi.fn().mockResolvedValue(makeLivePlayer({ townHallLevel: 15 })),
+    } as any;
+
+    const resolved = await playerCurrentService.resolveCurrentPlayersForTags({
+      playerTags: ["#PQL0289"],
+      cocService,
+      requireFields: ["townHall"],
+      refreshPolicy: "missing_or_stale",
+      maxAcceptedAgeMs: 6 * 60 * 60 * 1000,
+    });
+
+    expect(cocService.getPlayerRaw).toHaveBeenCalledWith("#PQL0289");
+    expect(resolved.get("#PQL0289")).toMatchObject({
+      playerTag: "#PQL0289",
+      playerName: "Live Player",
+      townHall: 15,
+      source: "live_refresh",
+      liveRefreshInvoked: true,
+    });
+    expect(prismaMock.playerCurrent.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { playerTag: "#PQL0289" },
+        create: expect.objectContaining({
+          playerTag: "#PQL0289",
+          townHall: 15,
+          lastSource: "live_refresh",
+        }),
+      }),
+    );
+  });
+
+  it("keeps fresh signup-path player current data cached when town hall is already populated", async () => {
+    prismaMock.playerCurrent.findMany.mockResolvedValueOnce([
+      makeCurrentRow({
+        playerTag: "#QGRJ2222",
+        playerName: "Cached Player",
+        townHall: 14,
+        lastFetchedAt: new Date(Date.now() - (2 * 60 * 60 * 1000)),
+      }),
+    ]);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValueOnce([]);
+    (todoSnapshotService.listSnapshotsByPlayerTags as any).mockResolvedValueOnce([]);
+    const cocService = {
+      getPlayerRaw: vi.fn().mockResolvedValue(makeLivePlayer({ townHallLevel: 15 })),
+    } as any;
+
+    const resolved = await playerCurrentService.resolveCurrentPlayersForTags({
+      playerTags: ["#QGRJ2222"],
+      cocService,
+      requireFields: ["townHall"],
+      refreshPolicy: "missing_or_stale",
+      maxAcceptedAgeMs: 6 * 60 * 60 * 1000,
+    });
+
+    expect(cocService.getPlayerRaw).not.toHaveBeenCalled();
+    expect(resolved.get("#QGRJ2222")).toMatchObject({
+      playerTag: "#QGRJ2222",
+      playerName: "Cached Player",
+      townHall: 14,
+      source: "player_current",
+      liveRefreshInvoked: false,
+    });
+  });
+
+  it("treats missing lastFetchedAt as stale for signup refresh", async () => {
+    prismaMock.playerCurrent.findMany.mockResolvedValueOnce([
+      makeCurrentRow({
+        playerTag: "#298CG8UJG",
+        playerName: "Cached Player",
+        townHall: 14,
+        lastFetchedAt: null,
+      }),
+    ]);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValueOnce([]);
+    (todoSnapshotService.listSnapshotsByPlayerTags as any).mockResolvedValueOnce([]);
+    const cocService = {
+      getPlayerRaw: vi.fn().mockResolvedValue(makeLivePlayer({ townHallLevel: 15 })),
+    } as any;
+
+    const resolved = await playerCurrentService.resolveCurrentPlayersForTags({
+      playerTags: ["#298CG8UJG"],
+      cocService,
+      requireFields: ["townHall"],
+      refreshPolicy: "missing_or_stale",
+      maxAcceptedAgeMs: 6 * 60 * 60 * 1000,
+    });
+
+    expect(cocService.getPlayerRaw).toHaveBeenCalledWith("#298CG8UJG");
+    expect(resolved.get("#298CG8UJG")).toMatchObject({
+      playerTag: "#298CG8UJG",
+      playerName: "Live Player",
+      townHall: 15,
+      source: "live_refresh",
+      liveRefreshInvoked: true,
+    });
   });
 });

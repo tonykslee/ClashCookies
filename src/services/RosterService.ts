@@ -30,7 +30,10 @@ import {
   resolveRosterCurrentWeightRecords,
   type RosterWeightSource,
 } from "./RosterWeightService";
-import { playerCurrentService } from "./PlayerCurrentService";
+import {
+  PLAYER_CURRENT_SIGNUP_MAX_AGE_MS,
+  playerCurrentService,
+} from "./PlayerCurrentService";
 import { todoSnapshotService } from "./TodoSnapshotService";
 import { normalizeSyncTimeZone } from "./syncTimeZone";
 
@@ -2014,9 +2017,15 @@ async function loadRosterSelectionOptions(input: {
           playerTags: linkedTags,
           cocService: input.cocService ?? null,
           requireFields: ["townHall"],
+          refreshPolicy: "missing_or_stale",
+          maxAcceptedAgeMs: PLAYER_CURRENT_SIGNUP_MAX_AGE_MS,
         })
       : null;
-
+    const filteredOutReasons = {
+      unknown: 0,
+      belowMin: 0,
+      aboveMax: 0,
+    };
     const signupOptions = linkedAccounts.filter((account) => {
       if (!townHallGated) {
         return true;
@@ -2024,19 +2033,24 @@ async function loadRosterSelectionOptions(input: {
 
       const townHall = normalizeRosterInt(resolvedPlayersByTag?.get(account.playerTag)?.townHall ?? null);
       if (townHall === null) {
+        filteredOutReasons.unknown += 1;
         return false;
       }
       if (minTownhall !== null && townHall < minTownhall) {
+        filteredOutReasons.belowMin += 1;
         return false;
       }
       if (maxTownhall !== null && townHall > maxTownhall) {
+        filteredOutReasons.aboveMax += 1;
         return false;
       }
       return true;
     });
     const emptyStateMessage =
       townHallGated && linkedAccounts.length > 0 && signupOptions.length <= 0
-        ? "No linked accounts met this roster's town hall requirements."
+        ? filteredOutReasons.unknown > 0
+          ? "Town hall could not be determined for your linked accounts right now."
+          : "No linked accounts met this roster's town hall requirements."
         : null;
     return {
       outcome: "ready",
@@ -5827,6 +5841,8 @@ export class RosterService {
           playerTags: createdCandidates,
           cocService: input.cocService ?? null,
           requireFields: ["townHall"],
+          refreshPolicy: "missing_or_stale",
+          maxAcceptedAgeMs: PLAYER_CURRENT_SIGNUP_MAX_AGE_MS,
         });
         const minTownhall = normalizeRosterInt(roster.minTownhall);
         const maxTownhall = normalizeRosterInt(roster.maxTownhall);
