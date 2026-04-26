@@ -32,6 +32,7 @@ import { RemindMe } from "./commands/RemindMe";
 import { Unlinked } from "./commands/Unlinked";
 import { Roster } from "./commands/Roster";
 import { Cwl } from "./commands/Cwl";
+import { CopyChannel } from "./commands/CopyChannel";
 
 // ...existing code...
 export const Commands = [
@@ -68,5 +69,6 @@ export const Commands = [
   Unlinked,
   Roster,
   Cwl,
+  CopyChannel,
   CommandRole,
 ];

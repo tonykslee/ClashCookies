@@ -617,6 +617,17 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/say text:Draft body type:EMBED",
     ],
   },
+  "copy-channel": {
+    summary: "Export recent messages from the current channel as copy-friendly text.",
+    details: [
+      "Reads the last `messages` recent messages from the current server text or announcement channel.",
+      "Each row is formatted as `[YYYY-MM-DD HH:mm] DisplayName: content` using UTC timestamps.",
+      "Short exports are returned in a formatted code block; longer exports are returned as a `.txt` attachment.",
+      "Non-text messages are annotated with safe placeholders for attachments, embeds, stickers, or empty content.",
+      "The response is ephemeral.",
+    ],
+    examples: ["/copy-channel messages:10", "/copy-channel messages:100"],
+  },
   "bot-logs": {
     summary: "Set or inspect the guild channel used for important bot logs.",
     details: [

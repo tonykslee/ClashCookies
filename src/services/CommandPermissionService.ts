@@ -101,6 +101,7 @@ export const COMMAND_PERMISSION_TARGETS = [
   "sync:time:post",
   "sync:post:status",
   "say",
+  "copy-channel",
   "bot-logs",
   "unlinked",
   "unlinked:set-alert",
