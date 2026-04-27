@@ -2432,6 +2432,87 @@ async function resolveRosterPlayerTownHallMap(input: {
   };
 }
 
+async function loadRosterDisplayTownHallMap(input: {
+  clanTag: string | null;
+  playerTags: string[];
+}): Promise<Map<string, number>> {
+  const normalizedTags = [...new Set(input.playerTags.map((tag) => normalizePlayerTag(tag)).filter(Boolean))];
+  if (normalizedTags.length <= 0) {
+    return new Map();
+  }
+
+  const season = resolveCurrentCwlSeasonKey();
+  const [playerCurrentRows, snapshotRows, fwaRows, cwlRows] = await Promise.all([
+    playerCurrentService.listPlayerCurrentByTags(normalizedTags),
+    todoSnapshotService.listSnapshotsByPlayerTags({
+      playerTags: normalizedTags,
+    }),
+    prisma.fwaPlayerCatalog.findMany({
+      where: {
+        playerTag: { in: normalizedTags },
+      },
+      select: {
+        playerTag: true,
+        latestTownHall: true,
+      },
+    }),
+    input.clanTag
+      ? prisma.cwlPlayerClanSeason.findMany({
+          where: {
+            season,
+            cwlClanTag: normalizeClanTag(input.clanTag),
+            playerTag: { in: normalizedTags },
+          },
+          select: {
+            playerTag: true,
+            townHall: true,
+          },
+        })
+      : Promise.resolve([] as Array<{ playerTag: string; townHall: number | null }>),
+  ]);
+
+  const snapshotByTag = new Map(
+    snapshotRows.map((row) => [
+      normalizePlayerTag(row.playerTag),
+      normalizeRosterInt((row as { townHall?: unknown }).townHall ?? null),
+    ] as const),
+  );
+  const fwaByTag = new Map(
+    fwaRows.map((row) => [normalizePlayerTag(row.playerTag), normalizeRosterInt(row.latestTownHall)] as const),
+  );
+  const cwlByTag = new Map(
+    cwlRows.map((row) => [normalizePlayerTag(row.playerTag), normalizeRosterInt(row.townHall)] as const),
+  );
+
+  const result = new Map<string, number>();
+  for (const playerTag of normalizedTags) {
+    const currentTownHall = normalizeRosterInt(playerCurrentRows.get(playerTag)?.townHall ?? null);
+    if (currentTownHall !== null) {
+      result.set(playerTag, currentTownHall);
+      continue;
+    }
+
+    const snapshotTownHall = snapshotByTag.get(playerTag) ?? null;
+    if (snapshotTownHall !== null) {
+      result.set(playerTag, snapshotTownHall);
+      continue;
+    }
+
+    const fwaTownHall = fwaByTag.get(playerTag) ?? null;
+    if (fwaTownHall !== null) {
+      result.set(playerTag, fwaTownHall);
+      continue;
+    }
+
+    const cwlTownHall = cwlByTag.get(playerTag) ?? null;
+    if (cwlTownHall !== null) {
+      result.set(playerTag, cwlTownHall);
+    }
+  }
+
+  return result;
+}
+
 function logRosterTownHallResolutionDiagnostics(input: {
   rosterId: string;
   rosterType: string;
@@ -3228,13 +3309,10 @@ async function loadRosterView(rosterId: string, options?: RosterViewLoadOptions)
     },
   });
   const signupTags = signups.map((signup) => normalizePlayerTag(signup.playerTag)).filter(Boolean);
-  const townHallResolution = await loadRosterPlayerTownHallMap({
-    rosterType: roster.rosterType,
+  const townHallByTag = await loadRosterDisplayTownHallMap({
     clanTag: roster.clanTag,
     playerTags: signupTags,
-    allowLiveFetch: false,
   });
-  const townHallByTag = townHallResolution.townHallByTag;
   const [sourceMaps, resolvedWeightRows, currentClanSnapshotRows] = await Promise.all([
     loadRosterSignupNameSourceMaps(signupTags),
     resolveRosterCurrentWeightRecords({
