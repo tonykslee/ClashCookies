@@ -4527,7 +4527,9 @@ export class RosterService {
     playerTags?: string[] | null;
     updatedByDiscordUserId?: string | null;
     cocService?: CoCService | null;
+    bypassEligibility?: boolean;
   }): Promise<SignupLinkedAccountsResult> {
+    const bypassEligibility = input.bypassEligibility ?? false;
     const roster = await prisma.roster.findUnique({
       where: { id: input.rosterId },
       select: {
@@ -4637,14 +4639,14 @@ export class RosterService {
         ? await playerCurrentService.resolveCurrentPlayersForTags({
             playerTags: createdTags,
             cocService: input.cocService ?? null,
-            requireFields: isRosterTownHallGated(roster) ? ["townHall"] : ["playerName"],
+            requireFields: !bypassEligibility && townHallGated ? ["townHall"] : ["playerName"],
             refreshPolicy: "missing_or_stale",
             maxAcceptedAgeMs: PLAYER_CURRENT_SIGNUP_MAX_AGE_MS,
           })
         : new Map();
     const nameSources = createdTags.length > 0 ? await loadRosterSignupNameSourceMaps(createdTags) : null;
 
-    if (townHallGated && createdTags.length > 0) {
+    if (!bypassEligibility && townHallGated && createdTags.length > 0) {
       const minTownhall = normalizeRosterInt(roster.minTownhall);
       const maxTownhall = normalizeRosterInt(roster.maxTownhall);
       const blockedUnavailableTags: string[] = [];
@@ -4889,7 +4891,9 @@ export class RosterService {
     playerTags?: string[] | null;
     updatedByDiscordUserId?: string | null;
     cocService?: CoCService | null;
+    bypassEligibility?: boolean;
   }): Promise<ChangeRosterSignupsResult> {
+    const bypassEligibility = input.bypassEligibility ?? false;
     const requestedTags = normalizeRosterPlayerTags(Array.isArray(input.playerTags) ? input.playerTags : []);
     if (requestedTags.length <= 0) {
       return {
@@ -5150,7 +5154,7 @@ export class RosterService {
       }
 
       const conflictRows =
-        candidateTags.length > 0
+        !bypassEligibility && candidateTags.length > 0
           ? ((await tx.rosterSignup.findMany({
               where: {
                 playerTag: { in: candidateTags },
@@ -5170,7 +5174,7 @@ export class RosterService {
       const conflictTags = new Set(normalizeRosterPlayerTags(conflictRows.map((row) => row.playerTag)));
 
       const targetTownHallResolution =
-        isRosterTownHallGated(targetRoster) && candidateTags.length > 0
+        !bypassEligibility && isRosterTownHallGated(targetRoster) && candidateTags.length > 0
           ? await resolveRosterPlayerTownHallMap({
               rosterType: targetRoster.rosterType,
               clanTag: targetRoster.clanTag,
@@ -5258,44 +5262,46 @@ export class RosterService {
           } as const;
         }
 
-        const maxMembers = normalizeRosterInt(targetRoster.maxMembers);
-        if (maxMembers !== null && targetCount + movedTags.length + 1 > maxMembers) {
-          blockedRosterFullTags.push(tag);
-          blockedRosterFullAccounts.push(blockedAccount);
-          blockedOutcomeOrder.push("roster_full");
-          continue;
-        }
-
         const normalizedDiscordUserId = normalizeDiscordUserId(sourceSignup.discordUserId) ?? sourceSignup.discordUserId;
-        const effectiveMaxAccountsPerUser =
-          targetRoster.allowMultiSignup === false
-            ? 1
-            : normalizeRosterInt(targetRoster.maxAccountsPerUser);
-        if (effectiveMaxAccountsPerUser !== null) {
-          const ownedCount = targetOwnedCountByUser.get(normalizedDiscordUserId) ?? 0;
-          if (ownedCount + 1 > effectiveMaxAccountsPerUser) {
-            blockedAccountLimitTags.push(tag);
-            blockedAccountLimitAccounts.push(blockedAccount);
-            blockedOutcomeOrder.push("account_limit_exceeded");
+        if (!bypassEligibility) {
+          const maxMembers = normalizeRosterInt(targetRoster.maxMembers);
+          if (maxMembers !== null && targetCount + movedTags.length + 1 > maxMembers) {
+            blockedRosterFullTags.push(tag);
+            blockedRosterFullAccounts.push(blockedAccount);
+            blockedOutcomeOrder.push("roster_full");
             continue;
           }
-        }
 
-        if (targetTownHallResolution) {
-          const townHall = targetTownHallResolution.townHallByTag.get(tag) ?? null;
-          if (townHall === null) {
-            blockedUnavailableTags.push(tag);
-            blockedUnavailableAccounts.push(blockedAccount);
-            blockedOutcomeOrder.push("townhall_unavailable");
-            continue;
+          const effectiveMaxAccountsPerUser =
+            targetRoster.allowMultiSignup === false
+              ? 1
+              : normalizeRosterInt(targetRoster.maxAccountsPerUser);
+          if (effectiveMaxAccountsPerUser !== null) {
+            const ownedCount = targetOwnedCountByUser.get(normalizedDiscordUserId) ?? 0;
+            if (ownedCount + 1 > effectiveMaxAccountsPerUser) {
+              blockedAccountLimitTags.push(tag);
+              blockedAccountLimitAccounts.push(blockedAccount);
+              blockedOutcomeOrder.push("account_limit_exceeded");
+              continue;
+            }
           }
-          const minTownhall = normalizeRosterInt(targetRoster.minTownhall);
-          const maxTownhall = normalizeRosterInt(targetRoster.maxTownhall);
-          if ((minTownhall !== null && townHall < minTownhall) || (maxTownhall !== null && townHall > maxTownhall)) {
-            blockedOutOfRangeTags.push(tag);
-            blockedOutOfRangeAccounts.push(blockedAccount);
-            blockedOutcomeOrder.push("townhall_out_of_range");
-            continue;
+
+          if (targetTownHallResolution) {
+            const townHall = targetTownHallResolution.townHallByTag.get(tag) ?? null;
+            if (townHall === null) {
+              blockedUnavailableTags.push(tag);
+              blockedUnavailableAccounts.push(blockedAccount);
+              blockedOutcomeOrder.push("townhall_unavailable");
+              continue;
+            }
+            const minTownhall = normalizeRosterInt(targetRoster.minTownhall);
+            const maxTownhall = normalizeRosterInt(targetRoster.maxTownhall);
+            if ((minTownhall !== null && townHall < minTownhall) || (maxTownhall !== null && townHall > maxTownhall)) {
+              blockedOutOfRangeTags.push(tag);
+              blockedOutOfRangeAccounts.push(blockedAccount);
+              blockedOutcomeOrder.push("townhall_out_of_range");
+              continue;
+            }
           }
         }
 
@@ -5966,6 +5972,7 @@ export class RosterService {
           playerTags: session.selectedTags,
           updatedByDiscordUserId: session.ownerDiscordUserId,
           cocService: input.cocService ?? null,
+          bypassEligibility: true,
         });
         deleteRosterSelectionSession(session.sessionId);
         return { outcome: "add_user", result };
