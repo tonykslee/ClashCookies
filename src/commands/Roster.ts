@@ -2541,14 +2541,15 @@ async function handleRosterManageSubcommand(
       return;
     }
 
-    const result = await rosterService.changeRosterSignups({
-      sourceRosterId: roster.id,
-      targetRosterId: targetRoster.id,
-      targetGroupKey,
-      playerTags,
-      updatedByDiscordUserId: interaction.user.id,
-      cocService,
-    });
+      const result = await rosterService.changeRosterSignups({
+        sourceRosterId: roster.id,
+        targetRosterId: targetRoster.id,
+        targetGroupKey,
+        playerTags,
+        updatedByDiscordUserId: interaction.user.id,
+        bypassEligibility: true,
+        cocService,
+      });
 
     if (
       result.outcome === "changed" ||
@@ -2608,6 +2609,7 @@ async function handleRosterManageSubcommand(
         groupKey,
         playerTags,
         updatedByDiscordUserId: interaction.user.id,
+        bypassEligibility: true,
         cocService,
       });
       await syncRosterRolesForRoster(interaction.client, roster.id).catch(() => undefined);

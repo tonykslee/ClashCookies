@@ -734,6 +734,7 @@ describe("/roster command", () => {
         rosterId: "roster-1",
         groupKey: "confirmed",
         playerTags: ["#PQL0289", "#QGRJ2222"],
+        bypassEligibility: true,
       }),
     );
     expect(String(addInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain("Signed up #PQL0289, #QGRJ2222");
@@ -832,6 +833,7 @@ describe("/roster command", () => {
         targetRosterId: "roster-2",
         targetGroupKey: "substitute",
         playerTags: ["#PQL0289", "#QGRJ2222"],
+        bypassEligibility: true,
       }),
     );
     expect(String(changeInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
