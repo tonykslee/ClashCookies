@@ -34,7 +34,7 @@ export type FwaBaseSwapTrackedMetadata = {
     playerName: string;
     discordUserId: string | null;
     townhallLevel: number | null;
-    section: "war_bases" | "base_errors";
+    section: "war_bases" | "base_errors" | "fwa_bases";
     acknowledged: boolean;
   }>;
   layoutLinks?: Array<{
@@ -82,7 +82,12 @@ export function parseFwaBaseSwapMetadata(value: unknown): FwaBaseSwapTrackedMeta
       const playerName = String(entry.playerName ?? "").trim();
       const discordUserIdRaw = String(entry.discordUserId ?? "").trim();
       const townhallLevel = Number(entry.townhallLevel);
-      const section = entry.section === "base_errors" ? "base_errors" : "war_bases";
+      const section =
+        entry.section === "base_errors"
+          ? "base_errors"
+          : entry.section === "fwa_bases"
+            ? "fwa_bases"
+            : "war_bases";
       return {
         position: Number.isFinite(position) ? Math.trunc(position) : 0,
         playerTag,
