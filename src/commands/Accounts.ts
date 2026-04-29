@@ -275,7 +275,7 @@ async function refreshAccountsPlayerCurrentData(input: {
   tags: string[];
 }): Promise<void> {
   const coc = input.cocService as { getPlayerRaw?: (tag: string) => Promise<any> } | null;
-  const getPlayerRaw = coc?.getPlayerRaw ?? null;
+  const getPlayerRaw = coc?.getPlayerRaw?.bind(coc) ?? null;
   if (!getPlayerRaw) return;
 
   const existingByTag = await playerCurrentService.listPlayerCurrentByTags(input.tags);
