@@ -1,7 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   advanceCocWarOutageStateForTest,
   applyWarEndedMaintenanceGuardForTest,
+  buildFwaBaseSwapBattleDayReminderContentForTest,
+  buildFwaBaseSwapBattleDayReminderLogContentForTest,
   buildNotifyWarEndedViewCustomId,
   buildBattleDayRefreshEditPayloadForTest,
   buildWarEndedMetadataValueForTest,
@@ -17,7 +19,10 @@ import {
   resolveActiveWarTimingForTest,
   sanitizeWarPlanForEmbedForTest,
   shouldPreserveWarIdentityDuringOutageRecoveryForTest,
+  WarEventLogService,
 } from "../src/services/WarEventLogService";
+import { BotLogChannelService } from "../src/services/BotLogChannelService";
+import { trackedMessageService } from "../src/services/TrackedMessageService";
 import {
   resolveParticipationGuildId,
   WarEventHistoryService,
@@ -886,6 +891,116 @@ describe("WarEventLogService battle-day refresh content", () => {
     );
     expect(payload.content).toContain("War started against Enemy Clan\nNext refresh <t:");
     expect(payload.content).not.toContain("<@&123456789>");
+  });
+});
+
+describe("WarEventLogService FWA battle-day reminder", () => {
+  it("builds reminder content with an optional clan role mention", () => {
+    expect(
+      buildFwaBaseSwapBattleDayReminderContentForTest({
+        clanRoleId: "123456789",
+      }),
+    ).toBe(
+      "Battle day has started! Thank you for your help swapping to war bases, please swap back to FWA bases asap!\n\n<@&123456789>",
+    );
+    expect(
+      buildFwaBaseSwapBattleDayReminderContentForTest({ clanRoleId: null }),
+    ).toBe(
+      "Battle day has started! Thank you for your help swapping to war bases, please swap back to FWA bases asap!",
+    );
+  });
+
+  it("sends the reminder to the original base-swap channel and writes a bot-log entry", async () => {
+    const reminderSend = vi.fn().mockResolvedValue({
+      id: "reminder-1",
+      url: "https://discord.com/channels/guild-1/base-channel/reminder-1",
+    });
+    const botLogSend = vi.fn().mockResolvedValue(undefined);
+
+    vi.spyOn(trackedMessageService, "findLatestActiveFwaBaseSwapReminderCandidate").mockResolvedValue({
+      id: "tracked-1",
+      guildId: "guild-1",
+      channelId: "base-channel",
+      messageId: "base-message-1",
+      referenceId: "fwa-base-swap:split-key",
+      clanTag: "2QG2C08UP",
+      createdAt: new Date("2026-03-20T00:05:00.000Z"),
+      expiresAt: new Date("2026-03-22T00:00:00.000Z"),
+      metadata: {
+        clanName: "Test Clan",
+        createdByUserId: "user-1",
+        createdAtIso: "2026-03-20T00:05:00.000Z",
+        swapReminder: true,
+        entries: [
+          {
+            position: 1,
+            playerTag: "#AAA111",
+            playerName: "Alpha",
+            discordUserId: "100",
+            townhallLevel: 18,
+            section: "fwa_bases",
+            acknowledged: false,
+          },
+        ],
+        layoutLinks: [],
+      },
+    });
+    vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
+      "bot-log-1",
+    );
+
+    const client = {
+      channels: {
+        fetch: vi.fn().mockImplementation(async (channelId: string) => {
+          if (channelId === "bot-log-1") {
+            return {
+              guildId: "guild-1",
+              isTextBased: () => true,
+              send: botLogSend,
+            };
+          }
+          return {
+            guildId: "guild-1",
+            isTextBased: () => true,
+            send: reminderSend,
+          };
+        }),
+      },
+    } as any;
+
+    const service = new WarEventLogService(client, {} as any);
+    const sent = await (service as any).sendFwaBaseSwapBattleDayReminder({
+      sub: {
+        guildId: "guild-1",
+        clanTag: "2QG2C08UP",
+        clanName: "Test Clan",
+        clanRoleId: "123456789",
+      },
+      payload: {
+        eventType: "battle_day",
+        matchType: "BL",
+      },
+    });
+
+    expect(sent).toBe(true);
+    expect(reminderSend).toHaveBeenCalledTimes(1);
+    expect(reminderSend).toHaveBeenCalledWith({
+      content:
+        "Battle day has started! Thank you for your help swapping to war bases, please swap back to FWA bases asap!\n\n<@&123456789>",
+    });
+    expect(botLogSend).toHaveBeenCalledTimes(1);
+    const botLogContent = String(botLogSend.mock.calls[0]?.[0]?.content ?? "");
+    expect(botLogContent).toBe(
+      buildFwaBaseSwapBattleDayReminderLogContentForTest({
+        clanName: "Test Clan",
+        clanTag: "2QG2C08UP",
+        targetChannelId: "base-channel",
+        reminderMessageUrl:
+          "https://discord.com/channels/guild-1/base-channel/reminder-1",
+        referenceId: "fwa-base-swap:split-key",
+        clanRoleMentionIncluded: true,
+      }),
+    );
   });
 });
 

@@ -354,6 +354,7 @@ type FwaBaseSwapSplitPostPayload = {
   alertEmoji?: string | null;
   layoutBulletEmoji?: string | null;
   mentionUserIds: string[];
+  swapReminder: boolean;
   createdAtIso: string;
   splitContents: [string, string];
 };
@@ -488,6 +489,7 @@ export async function handleFwaBaseSwapSplitPostButton(
             phaseTimingLine: payload.phaseTimingLine,
             alertEmoji: payload.alertEmoji,
             layoutBulletEmoji: payload.layoutBulletEmoji,
+            swapReminder: payload.swapReminder,
             renderVariant: "split_part_1",
           },
         },
@@ -503,6 +505,7 @@ export async function handleFwaBaseSwapSplitPostButton(
             phaseTimingLine: payload.phaseTimingLine,
             alertEmoji: payload.alertEmoji,
             layoutBulletEmoji: payload.layoutBulletEmoji,
+            swapReminder: payload.swapReminder,
             renderVariant: "split_part_2",
           },
         },
@@ -1171,6 +1174,7 @@ function buildFwaBaseSwapCommandText(input: {
   warBases: string | null;
   fwaBases: string | null;
   baseErrors: string | null;
+  swapReminder: boolean | null;
 }): string {
   const parts = [`/fwa base-swap clan:${input.clanTag}`];
   const appendOption = (name: string, value: string | null) => {
@@ -1181,8 +1185,24 @@ function buildFwaBaseSwapCommandText(input: {
   appendOption("war-bases", input.warBases);
   appendOption("fwa-bases", input.fwaBases);
   appendOption("base-errors", input.baseErrors);
+  if (input.swapReminder !== null) {
+    parts.push(`swap-reminder:${input.swapReminder ? "true" : "false"}`);
+  }
   return parts.join(" ");
 }
+
+function validateFwaBaseSwapSwapReminderOption(input: {
+  fwaBasesRaw: string | null;
+  swapReminderRaw: boolean | null;
+}): string | null {
+  if (input.swapReminderRaw !== null && input.fwaBasesRaw === null) {
+    return "`swap-reminder` can only be used when `fwa-bases` is provided.";
+  }
+  return null;
+}
+
+export const validateFwaBaseSwapSwapReminderOptionForTest =
+  validateFwaBaseSwapSwapReminderOption;
 
 async function logFwaBaseSwapPublication(input: {
   client: Client;
@@ -12452,6 +12472,13 @@ export const Fwa: Command = {
           type: ApplicationCommandOptionType.String,
           required: false,
         },
+        {
+          name: "swap-reminder",
+          description:
+            "Optional battle-day swap-back reminder for fwa-bases flows (defaults to true)",
+          type: ApplicationCommandOptionType.Boolean,
+          required: false,
+        },
       ],
     },
     {
@@ -12880,11 +12907,25 @@ export const Fwa: Command = {
       const warBasesRaw = interaction.options.getString("war-bases", false);
       const fwaBasesRaw = interaction.options.getString("fwa-bases", false);
       const baseErrorsRaw = interaction.options.getString("base-errors", false);
+      const swapReminderRaw = interaction.options.getBoolean(
+        "swap-reminder",
+        false,
+      );
+      const swapReminderError = validateFwaBaseSwapSwapReminderOption({
+        fwaBasesRaw,
+        swapReminderRaw,
+      });
+      if (swapReminderError) {
+        await editReplySafe(swapReminderError);
+        return;
+      }
+      const swapReminder = fwaBasesRaw === null ? null : swapReminderRaw ?? true;
       const commandText = buildFwaBaseSwapCommandText({
         clanTag,
         warBases: warBasesRaw,
         fwaBases: fwaBasesRaw,
         baseErrors: baseErrorsRaw,
+        swapReminder,
       });
       const parsedSelectionsResult = parseFwaBaseSwapPositionSelections({
         selections: [
@@ -13081,6 +13122,7 @@ export const Fwa: Command = {
           alertEmoji: inlineEmojis.alertEmoji,
           layoutBulletEmoji: inlineEmojis.layoutBulletEmoji,
           mentionUserIds,
+          swapReminder: Boolean(swapReminder),
           createdAtIso,
           splitContents: renderPlan.splitContents,
         });
@@ -13130,6 +13172,7 @@ export const Fwa: Command = {
               alertEmoji: inlineEmojis.alertEmoji,
               layoutBulletEmoji: inlineEmojis.layoutBulletEmoji,
               renderVariant: "single",
+              swapReminder: Boolean(swapReminder),
             },
           },
         ],
