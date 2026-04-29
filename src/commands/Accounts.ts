@@ -11,6 +11,7 @@ import {
 } from "discord.js";
 import { Command } from "../Command";
 import { prisma } from "../prisma";
+import { playerCurrentService } from "../services/PlayerCurrentService";
 import { listPlayerLinksForDiscordUser } from "../services/PlayerLinkService";
 
 type AccountRow = {
@@ -19,12 +20,14 @@ type AccountRow = {
   clanTag: string | null;
   clanName: string | null;
   clanRole: "leader" | "coleader" | null;
+  clanState: "known" | "no_clan" | "unknown";
 };
 
 type ClanGroup = {
   key: string;
   clanTag: string | null;
   clanName: string | null;
+  clanState: "known" | "no_clan" | "unknown";
   entries: AccountRow[];
 };
 
@@ -38,6 +41,12 @@ type AccountAutocompleteChoice = {
   name: string;
   value: string;
 };
+
+type PlayerCurrentSnapshot = Awaited<
+  ReturnType<typeof playerCurrentService.listPlayerCurrentByTags>
+> extends Map<string, infer T>
+  ? T
+  : never;
 
 const MAX_ACCOUNTS_PER_PAGE = 18;
 
@@ -88,6 +97,17 @@ function buildClanHeadingMarkdown(group: Pick<ClanGroup, "clanName" | "clanTag">
   const label = buildClanHeadingLabel(group);
   const clanTag = normalizeTag(group.clanTag ?? "");
   return clanTag ? buildClanProfileMarkdownLink(label, clanTag) : label;
+}
+
+function resolveAccountClanState(input: {
+  playerCurrent: PlayerCurrentSnapshot | null;
+  playerActivity: { clanTag: string | null; clanName: string | null } | null;
+}): "known" | "no_clan" | "unknown" {
+  const currentClanTag = sanitizeDisplayText(input.playerCurrent?.currentClanTag);
+  const activityClanTag = sanitizeDisplayText(input.playerActivity?.clanTag);
+  if (currentClanTag || activityClanTag) return "known";
+  if (input.playerCurrent || input.playerActivity) return "no_clan";
+  return "unknown";
 }
 
 function buildAccountsTagAutocompleteChoices(
@@ -168,33 +188,27 @@ function buildAccountsTagAutocompleteChoices(
 }
 
 async function buildAccountsRows(input: {
-  cocService: unknown;
   guildId: string;
   linkedNameByTag: Map<string, string>;
   tags: string[];
 }): Promise<AccountRow[]> {
+  const playerCurrentByTag = await playerCurrentService.listPlayerCurrentByTags(
+    input.tags,
+  );
   const activity = await prisma.playerActivity.findMany({
     where: { guildId: input.guildId, tag: { in: input.tags } },
     select: { tag: true, name: true, clanTag: true, clanName: true },
   });
   const activityByTag = new Map(activity.map((a) => [normalizeTag(a.tag), a]));
-  const coc = input.cocService as { getPlayerRaw?: (tag: string) => Promise<any> } | null;
-  const livePlayerByTag = new Map<string, any | null>();
-  const getPlayerRaw = coc?.getPlayerRaw ?? null;
-  if (getPlayerRaw) {
-    const liveRows = await Promise.all(
-      input.tags.map(async (tag) => [tag, await getPlayerRaw(tag).catch(() => null)] as const),
-    );
-    for (const [tag, player] of liveRows) {
-      livePlayerByTag.set(tag, player);
-    }
-  }
   const candidateClanTags = [...new Set([
+    ...input.tags
+      .map((tag) => {
+        const current = playerCurrentByTag.get(tag) ?? null;
+        return current?.currentClanTag ? normalizeTag(current.currentClanTag) : "";
+      })
+      .filter(Boolean),
     ...activity
       .map((row) => (row.clanTag ? normalizeTag(row.clanTag) : ""))
-      .filter(Boolean),
-    ...[...livePlayerByTag.values()]
-      .map((player) => (player?.clan?.tag ? normalizeTag(player.clan.tag) : ""))
       .filter(Boolean),
   ])];
   const trackedClanRows =
@@ -212,28 +226,68 @@ async function buildAccountsRows(input: {
   );
 
   return input.tags.map((tag) => {
+    const playerCurrent = playerCurrentByTag.get(tag) ?? null;
+    const fallback = activityByTag.get(tag) ?? null;
     const linkedName = input.linkedNameByTag.get(tag) ?? null;
-    const fallback = activityByTag.get(tag);
-    const livePlayer = livePlayerByTag.get(tag) ?? null;
-    const liveClanTag = livePlayer?.clan?.tag ? normalizeTag(livePlayer.clan.tag) : null;
+    const currentClanTag = playerCurrent?.currentClanTag
+      ? normalizeTag(playerCurrent.currentClanTag)
+      : null;
     const fallbackClanTag = fallback?.clanTag ? normalizeTag(fallback.clanTag) : null;
-    const clanTag = liveClanTag ?? fallbackClanTag ?? null;
-    const activityName = sanitizeDisplayText(fallback?.name);
-    const liveName = sanitizeDisplayText(livePlayer?.name);
-    const liveClanName = sanitizeDisplayText(livePlayer?.clan?.name);
+    const clanTag = currentClanTag ?? fallbackClanTag ?? null;
+    const currentClanName = sanitizeDisplayText(playerCurrent?.currentClanName);
+    const fallbackClanName = sanitizeDisplayText(fallback?.clanName);
     const clanName =
-      liveClanName ??
-      sanitizeDisplayText(fallback?.clanName) ??
+      currentClanName ??
+      fallbackClanName ??
       (clanTag ? trackedClanNameByTag.get(clanTag) ?? null : null);
+    const clanState = resolveAccountClanState({
+      playerCurrent,
+      playerActivity: fallback
+        ? {
+            clanTag: fallback.clanTag ?? null,
+            clanName: fallback.clanName ?? null,
+          }
+        : null,
+    });
 
     return {
       tag,
-      name: linkedName ?? activityName ?? liveName ?? tag,
-      clanTag,
-      clanName,
-      clanRole: normalizeClanMemberRole(livePlayer?.role),
+      name:
+        sanitizeDisplayText(playerCurrent?.playerName) ??
+        linkedName ??
+        sanitizeDisplayText(fallback?.name) ??
+        tag,
+      clanTag: clanState === "known" ? clanTag : null,
+      clanName: clanState === "known" ? clanName : null,
+      clanRole: normalizeClanMemberRole(playerCurrent?.role),
+      clanState,
     };
   });
+}
+
+async function refreshAccountsPlayerCurrentData(input: {
+  cocService: unknown;
+  tags: string[];
+}): Promise<void> {
+  const coc = input.cocService as { getPlayerRaw?: (tag: string) => Promise<any> } | null;
+  const getPlayerRaw = coc?.getPlayerRaw ?? null;
+  if (!getPlayerRaw) return;
+
+  const existingByTag = await playerCurrentService.listPlayerCurrentByTags(input.tags);
+  await Promise.all(
+    input.tags.map(async (tag) => {
+      const livePlayer = await getPlayerRaw(tag).catch(() => null);
+      if (!livePlayer) return;
+      await playerCurrentService
+        .upsertPlayerCurrentFromLivePlayer({
+          playerTag: tag,
+          livePlayer,
+          existing: existingByTag.get(tag) ?? null,
+          source: "accounts-refresh",
+        })
+        .catch(() => undefined);
+    }),
+  );
 }
 
 function buildGroups(rows: AccountRow[]): ClanGroup[] {
@@ -242,7 +296,8 @@ function buildGroups(rows: AccountRow[]): ClanGroup[] {
   for (const row of rows) {
     const clanName = sanitizeDisplayText(row.clanName);
     const clanTag = row.clanTag ? normalizeTag(row.clanTag) : null;
-    const key = clanTag ?? "__NO_CLAN__";
+    const key =
+      clanTag ?? (row.clanState === "unknown" ? "__UNKNOWN_CLAN__" : "__NO_CLAN__");
 
     const bucket = grouped.get(key);
     if (!bucket) {
@@ -250,18 +305,27 @@ function buildGroups(rows: AccountRow[]): ClanGroup[] {
         key,
         clanTag,
         clanName,
+        clanState: row.clanState,
         entries: [row],
       });
     } else {
       if (clanName && !bucket.clanName) bucket.clanName = clanName;
+      if (bucket.clanState === "unknown" && row.clanState !== "unknown") {
+        bucket.clanState = row.clanState;
+      }
       bucket.entries.push(row);
     }
   }
 
   const groups: ClanGroup[] = [...grouped.entries()]
     .sort((a, b) => {
-      if (a[0] === "__NO_CLAN__") return 1;
-      if (b[0] === "__NO_CLAN__") return -1;
+      const rank = (group: ClanGroup) => {
+        if (group.clanState === "unknown") return 1;
+        if (group.clanState === "no_clan") return 2;
+        return 0;
+      };
+      const rankDelta = rank(a[1]) - rank(b[1]);
+      if (rankDelta !== 0) return rankDelta;
       return buildClanHeadingLabel(a[1]).localeCompare(buildClanHeadingLabel(b[1]), undefined, {
         sensitivity: "base",
       });
@@ -282,7 +346,15 @@ function buildPages(groups: ClanGroup[]): string[] {
 
   for (const group of groups) {
     const groupLines: string[] = [];
-    groupLines.push(`**${group.clanTag ? buildClanHeadingMarkdown(group) : "No Clan"}**`);
+    groupLines.push(
+      `**${
+        group.clanState === "known" && group.clanTag
+          ? buildClanHeadingMarkdown(group)
+          : group.clanState === "unknown"
+            ? "Unknown Clan"
+            : "No Clan"
+      }**`,
+    );
     for (const entry of group.entries) {
       const marker = entry.clanRole === "coleader" ? ":crown:" : "-";
       groupLines.push(`${marker} ${entry.name} \`${entry.tag}\``);
@@ -452,7 +524,6 @@ export const Accounts: Command = {
         .filter((entry): entry is [string, string] => Boolean(entry[0] && entry[1]))
     );
     const rows = await buildAccountsRows({
-      cocService,
       guildId,
       linkedNameByTag,
       tags: uniqueTags,
@@ -492,8 +563,11 @@ export const Accounts: Command = {
             components: buildAccountsControlsRow(prefix, page, embeds.length, true),
           });
           try {
-            const refreshedRows = await buildAccountsRows({
+            await refreshAccountsPlayerCurrentData({
               cocService,
+              tags: uniqueTags,
+            });
+            const refreshedRows = await buildAccountsRows({
               guildId,
               linkedNameByTag,
               tags: uniqueTags,

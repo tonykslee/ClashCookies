@@ -22,6 +22,7 @@ export type PlayerCurrentResolutionSource =
   | "fwa_player_catalog"
   | "todo_snapshot"
   | "live_refresh"
+  | "accounts-refresh"
   | "missing";
 
 export type PlayerCurrentRefreshPolicy = "missing_only" | "missing_or_stale";
@@ -585,6 +586,8 @@ export class PlayerCurrentService {
 
     const state = input.existing ? { ...input.existing } : createMissingPlayerCurrent({ playerTag });
     applyLivePlayer(state, input.livePlayer, input.now ?? new Date());
+    const source = input.source ?? "live_refresh";
+    state.lastSource = source;
     const data = buildPersistData(state);
     await prisma.playerCurrent.upsert({
       where: { playerTag },
@@ -596,7 +599,7 @@ export class PlayerCurrentService {
     });
     return {
       ...state,
-      source: input.source ?? "live_refresh",
+      source,
       liveRefreshInvoked: true,
     };
   }
