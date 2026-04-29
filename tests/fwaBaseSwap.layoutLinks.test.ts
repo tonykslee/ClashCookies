@@ -8,10 +8,15 @@ const prismaMock = vi.hoisted(() => ({
     updateMany: vi.fn(),
     upsert: vi.fn(),
   },
+  trackedMessageClaim: {
+    findFirst: vi.fn(),
+    createMany: vi.fn(),
+  },
   $transaction: vi.fn(async (arg: unknown) => {
     if (typeof arg === "function") {
       return (arg as (tx: unknown) => Promise<unknown>)({
         trackedMessage: prismaMock.trackedMessage,
+        trackedMessageClaim: prismaMock.trackedMessageClaim,
       });
     }
     if (Array.isArray(arg)) return Promise.all(arg as Promise<unknown>[]);
@@ -1155,6 +1160,53 @@ describe("FWA base-swap reminder selection", () => {
     expect(candidate?.referenceId).toBe("fwa-base-swap:split-key");
     expect(candidate?.metadata.swapReminder).toBe(true);
     expect(candidate?.metadata.entries.some((entry) => entry.section === "fwa_bases")).toBe(true);
+  });
+
+  it("claims a reminder once per reference id across split rows", async () => {
+    prismaMock.trackedMessage.findMany.mockResolvedValue([
+      {
+        id: "tracked-new",
+        guildId: "guild-1",
+        channelId: "channel-1",
+        messageId: "message-new",
+        referenceId: "fwa-base-swap:split-key",
+        clanTag: "2QG2C08UP",
+        createdAt: new Date("2026-03-20T00:10:00.000Z"),
+        expiresAt: new Date("2026-03-22T00:00:00.000Z"),
+      },
+      {
+        id: "tracked-old",
+        guildId: "guild-1",
+        channelId: "channel-2",
+        messageId: "message-old",
+        referenceId: "fwa-base-swap:split-key",
+        clanTag: "2QG2C08UP",
+        createdAt: new Date("2026-03-20T00:05:00.000Z"),
+        expiresAt: new Date("2026-03-22T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedMessageClaim.findFirst
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        id: "claim-1",
+      });
+    prismaMock.trackedMessageClaim.createMany.mockResolvedValue({ count: 1 });
+
+    const service = new TrackedMessageService();
+    const first = await service.claimFwaBaseSwapBattleDayReminder({
+      guildId: "guild-1",
+      clanTag: "2QG2C08UP",
+      referenceId: "fwa-base-swap:split-key",
+    });
+    const second = await service.claimFwaBaseSwapBattleDayReminder({
+      guildId: "guild-1",
+      clanTag: "2QG2C08UP",
+      referenceId: "fwa-base-swap:split-key",
+    });
+
+    expect(first).toBe(true);
+    expect(second).toBe(false);
+    expect(prismaMock.trackedMessageClaim.createMany).toHaveBeenCalledTimes(1);
   });
 });
 

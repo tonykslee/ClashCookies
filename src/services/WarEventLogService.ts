@@ -3576,6 +3576,13 @@ export class WarEventLogService {
         clanTag: params.sub.clanTag,
       });
     if (!candidate) return false;
+    const referenceId = String(candidate.referenceId ?? candidate.messageId).trim();
+    const claimed = await trackedMessageService.claimFwaBaseSwapBattleDayReminder({
+      guildId: params.sub.guildId,
+      clanTag: params.sub.clanTag,
+      referenceId,
+    });
+    if (!claimed) return false;
 
     const channel = await this.client.channels
       .fetch(candidate.channelId)
@@ -3584,6 +3591,11 @@ export class WarEventLogService {
       console.error(
         `[fwa base-swap] battle-day reminder skipped guild=${params.sub.guildId} clan=${params.sub.clanTag} reference=${candidate.referenceId ?? candidate.messageId} reason=channel_unavailable`,
       );
+      await this.logFwaBaseSwapBattleDayReminderFailure({
+        sub: params.sub,
+        candidate,
+        reason: "channel_unavailable",
+      });
       return false;
     }
 
@@ -3592,10 +3604,15 @@ export class WarEventLogService {
     });
     const sent = await (channel as any)
       .send({ content: reminderContent })
-      .catch((err: unknown) => {
+      .catch(async (err: unknown) => {
         console.error(
           `[fwa base-swap] battle-day reminder send failed guild=${params.sub.guildId} clan=${params.sub.clanTag} reference=${candidate.referenceId ?? candidate.messageId} error=${formatError(err)}`,
         );
+        await this.logFwaBaseSwapBattleDayReminderFailure({
+          sub: params.sub,
+          candidate,
+          reason: `send_failed:${formatError(err)}`,
+        });
         return null;
       });
     if (!sent) return false;
@@ -3608,6 +3625,37 @@ export class WarEventLogService {
         `https://discord.com/channels/${params.sub.guildId}/${candidate.channelId}/${sent.id}`,
     });
     return true;
+  }
+
+  private async logFwaBaseSwapBattleDayReminderFailure(params: {
+    sub: SubscriptionRow;
+    candidate: Awaited<
+      ReturnType<typeof trackedMessageService.findLatestActiveFwaBaseSwapReminderCandidate>
+    > extends infer T
+      ? NonNullable<T>
+      : never;
+    reason: string;
+  }): Promise<void> {
+    const logChannel = await resolveBotLogChannel(
+      this.client,
+      params.sub.guildId,
+      this.botLogChannels,
+    );
+    if (!logChannel) return;
+
+    try {
+      await logChannel.send({
+        content: [
+          "FWA base-swap battle-day reminder failed",
+          `/fwa base-swap reminder tied to ${params.sub.clanName ?? params.candidate.metadata.clanName} (#${params.sub.clanTag})`,
+          `Target channel: <#${params.candidate.channelId}>`,
+          `Base-swap reference id: ${params.candidate.referenceId ?? params.candidate.messageId}`,
+          `Failure reason: ${params.reason}`,
+        ].join("\n"),
+      });
+    } catch {
+      // non-blocking
+    }
   }
 
   private async logFwaBaseSwapBattleDayReminder(params: {

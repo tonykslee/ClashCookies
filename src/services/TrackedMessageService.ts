@@ -56,6 +56,14 @@ export type FwaBaseSwapReminderCandidate = {
   metadata: FwaBaseSwapTrackedMetadata;
 };
 
+function buildFwaBaseSwapBattleDayReminderClaimKey(params: {
+  guildId: string;
+  clanTag: string;
+  referenceId: string;
+}): string {
+  return `fwa-base-swap-battle-day-reminder:${String(params.guildId ?? "").trim()}:${normalizeTagBare(params.clanTag)}:${String(params.referenceId ?? "").trim()}`;
+}
+
 export type SyncTimeTrackedMetadata = {
   syncTimeIso: string;
   syncEpochSeconds: number;
@@ -75,6 +83,13 @@ function activeWhere(featureType?: TrackedMessageFeatureType) {
     status: TRACKED_MESSAGE_STATUS.ACTIVE,
     ...(featureType ? { featureType } : {}),
   };
+}
+
+function normalizeTagBare(tag: string): string {
+  return String(tag ?? "")
+    .trim()
+    .replace(/^#/, "")
+    .toUpperCase();
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -346,6 +361,62 @@ export class TrackedMessageService {
     }
 
     return null;
+  }
+
+  async claimFwaBaseSwapBattleDayReminder(params: {
+    guildId: string;
+    clanTag: string;
+    referenceId: string;
+  }): Promise<boolean> {
+    const guildId = String(params.guildId ?? "").trim();
+    const clanTag = normalizeTagBare(params.clanTag);
+    const referenceId = String(params.referenceId ?? "").trim();
+    if (!guildId || !clanTag || !referenceId) return false;
+
+    const claimKey = buildFwaBaseSwapBattleDayReminderClaimKey({
+      guildId,
+      clanTag,
+      referenceId,
+    });
+    const rows = await prisma.trackedMessage.findMany({
+      where: {
+        guildId,
+        featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_BASE_SWAP,
+        status: TRACKED_MESSAGE_STATUS.ACTIVE,
+        expiresAt: { gt: new Date() },
+        OR: [
+          { referenceId },
+          { messageId: referenceId },
+          { clanTag: { equals: clanTag, mode: "insensitive" } },
+          { clanTag: { equals: `#${clanTag}`, mode: "insensitive" } },
+        ],
+      },
+      orderBy: [{ createdAt: "desc" }],
+      select: { id: true },
+    });
+    if (rows.length === 0) return false;
+
+    const existingClaim = await prisma.trackedMessageClaim.findFirst({
+      where: {
+        trackedMessageId: { in: rows.map((row) => row.id) },
+        userId: claimKey,
+        clanTag: claimKey,
+      },
+      select: { id: true },
+    });
+    if (existingClaim) return false;
+
+    const claimed = await prisma.trackedMessageClaim.createMany({
+      data: [
+        {
+          trackedMessageId: rows[0].id,
+          userId: claimKey,
+          clanTag: claimKey,
+        },
+      ],
+      skipDuplicates: true,
+    });
+    return claimed.count > 0;
   }
 
   async markMessageDeleted(messageId: string): Promise<void> {

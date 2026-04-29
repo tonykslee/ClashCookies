@@ -945,6 +945,7 @@ describe("WarEventLogService FWA battle-day reminder", () => {
         layoutLinks: [],
       },
     });
+    vi.spyOn(trackedMessageService, "claimFwaBaseSwapBattleDayReminder").mockResolvedValue(true);
     vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
       "bot-log-1",
     );
@@ -1001,6 +1002,170 @@ describe("WarEventLogService FWA battle-day reminder", () => {
         clanRoleMentionIncluded: true,
       }),
     );
+  });
+
+  it("sends only once when the same reference is claimed twice", async () => {
+    const reminderSend = vi.fn().mockResolvedValue({
+      id: "reminder-1",
+      url: "https://discord.com/channels/guild-1/base-channel/reminder-1",
+    });
+    const botLogSend = vi.fn().mockResolvedValue(undefined);
+
+    vi.spyOn(trackedMessageService, "findLatestActiveFwaBaseSwapReminderCandidate").mockResolvedValue({
+      id: "tracked-1",
+      guildId: "guild-1",
+      channelId: "base-channel",
+      messageId: "base-message-1",
+      referenceId: "fwa-base-swap:split-key",
+      clanTag: "2QG2C08UP",
+      createdAt: new Date("2026-03-20T00:05:00.000Z"),
+      expiresAt: new Date("2026-03-22T00:00:00.000Z"),
+      metadata: {
+        clanName: "Test Clan",
+        createdByUserId: "user-1",
+        createdAtIso: "2026-03-20T00:05:00.000Z",
+        swapReminder: true,
+        entries: [
+          {
+            position: 1,
+            playerTag: "#AAA111",
+            playerName: "Alpha",
+            discordUserId: "100",
+            townhallLevel: 18,
+            section: "fwa_bases",
+            acknowledged: false,
+          },
+        ],
+        layoutLinks: [],
+      },
+    });
+    vi.spyOn(trackedMessageService, "claimFwaBaseSwapBattleDayReminder")
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false);
+    vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
+      "bot-log-1",
+    );
+
+    const client = {
+      channels: {
+        fetch: vi.fn().mockImplementation(async (channelId: string) => {
+          if (channelId === "bot-log-1") {
+            return {
+              guildId: "guild-1",
+              isTextBased: () => true,
+              send: botLogSend,
+            };
+          }
+          return {
+            guildId: "guild-1",
+            isTextBased: () => true,
+            send: reminderSend,
+          };
+        }),
+      },
+    } as any;
+
+    const service = new WarEventLogService(client, {} as any);
+    const payload = {
+      eventType: "battle_day",
+      matchType: "BL",
+    } as const;
+
+    const first = await (service as any).sendFwaBaseSwapBattleDayReminder({
+      sub: {
+        guildId: "guild-1",
+        clanTag: "2QG2C08UP",
+        clanName: "Test Clan",
+        clanRoleId: "123456789",
+      },
+      payload,
+    });
+    const second = await (service as any).sendFwaBaseSwapBattleDayReminder({
+      sub: {
+        guildId: "guild-1",
+        clanTag: "2QG2C08UP",
+        clanName: "Test Clan",
+        clanRoleId: "123456789",
+      },
+      payload,
+    });
+
+    expect(first).toBe(true);
+    expect(second).toBe(false);
+    expect(reminderSend).toHaveBeenCalledTimes(1);
+    expect(botLogSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips non-BL wars before claiming or sending", async () => {
+    const reminderSend = vi.fn();
+    const claimSpy = vi.spyOn(
+      trackedMessageService,
+      "claimFwaBaseSwapBattleDayReminder",
+    );
+    vi.spyOn(trackedMessageService, "findLatestActiveFwaBaseSwapReminderCandidate");
+    const client = {
+      channels: {
+        fetch: vi.fn().mockResolvedValue({
+          guildId: "guild-1",
+          isTextBased: () => true,
+          send: reminderSend,
+        }),
+      },
+    } as any;
+
+    const service = new WarEventLogService(client, {} as any);
+    const sent = await (service as any).sendFwaBaseSwapBattleDayReminder({
+      sub: {
+        guildId: "guild-1",
+        clanTag: "2QG2C08UP",
+        clanName: "Test Clan",
+        clanRoleId: "123456789",
+      },
+      payload: {
+        eventType: "battle_day",
+        matchType: "MM",
+      },
+    });
+
+    expect(sent).toBe(false);
+    expect(claimSpy).not.toHaveBeenCalled();
+    expect(reminderSend).not.toHaveBeenCalled();
+  });
+
+  it("skips when no qualifying candidate exists", async () => {
+    const reminderSend = vi.fn();
+    vi.spyOn(trackedMessageService, "findLatestActiveFwaBaseSwapReminderCandidate").mockResolvedValue(null);
+    const claimSpy = vi.spyOn(
+      trackedMessageService,
+      "claimFwaBaseSwapBattleDayReminder",
+    );
+    const client = {
+      channels: {
+        fetch: vi.fn().mockResolvedValue({
+          guildId: "guild-1",
+          isTextBased: () => true,
+          send: reminderSend,
+        }),
+      },
+    } as any;
+
+    const service = new WarEventLogService(client, {} as any);
+    const sent = await (service as any).sendFwaBaseSwapBattleDayReminder({
+      sub: {
+        guildId: "guild-1",
+        clanTag: "2QG2C08UP",
+        clanName: "Test Clan",
+        clanRoleId: "123456789",
+      },
+      payload: {
+        eventType: "battle_day",
+        matchType: "BL",
+      },
+    });
+
+    expect(sent).toBe(false);
+    expect(claimSpy).not.toHaveBeenCalled();
+    expect(reminderSend).not.toHaveBeenCalled();
   });
 });
 
