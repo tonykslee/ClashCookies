@@ -34,7 +34,7 @@ async function runForcePollWarEventsCommand(
   const warEventLogService = new WarEventLogService(client, cocService);
   try {
     await runFetchTelemetryBatch("war_event_poll_manual", async () => {
-      await warEventLogService.poll();
+      await warEventLogService.poll({ sendBattleDaySwapReminders: false });
       await warEventLogService.refreshBattleDayPosts();
       await refreshAllTrackedWarMailPosts(client);
     });
@@ -61,7 +61,7 @@ async function runForceBootstrapWarStateCommand(
   try {
     console.log(`[war-events] bootstrap requested tracked_clans=${trackedClans.length}`);
     await runFetchTelemetryBatch("war_event_bootstrap_manual", async () => {
-      await warEventLogService.poll();
+      await warEventLogService.poll({ sendBattleDaySwapReminders: false });
     });
     await interaction.editReply(
       `War state bootstrap completed for ${trackedClans.length} tracked clan(s).`

@@ -742,7 +742,9 @@ export default (client: Client, cocService: CoCService): void => {
             }
             await runFetchTelemetryBatch("war_event_poll_cycle", async () => {
               try {
-                await warEventLogService.poll();
+                await warEventLogService.poll({
+                  sendBattleDaySwapReminders: true,
+                });
                 await warEventLogService.refreshBattleDayPosts();
                 await refreshAllTrackedWarMailPosts(client);
                 await cwlStateService.refreshTrackedCwlState({

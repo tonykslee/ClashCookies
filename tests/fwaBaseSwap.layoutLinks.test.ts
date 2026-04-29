@@ -8,10 +8,15 @@ const prismaMock = vi.hoisted(() => ({
     updateMany: vi.fn(),
     upsert: vi.fn(),
   },
+  trackedMessageClaim: {
+    findFirst: vi.fn(),
+    createMany: vi.fn(),
+  },
   $transaction: vi.fn(async (arg: unknown) => {
     if (typeof arg === "function") {
       return (arg as (tx: unknown) => Promise<unknown>)({
         trackedMessage: prismaMock.trackedMessage,
+        trackedMessageClaim: prismaMock.trackedMessageClaim,
       });
     }
     if (Array.isArray(arg)) return Promise.all(arg as Promise<unknown>[]);
@@ -26,8 +31,12 @@ vi.mock("../src/prisma", () => ({
 import {
   batchFwaBaseSwapPingLinesForTest,
   buildFwaBaseSwapActiveWarDmLinesForTest,
+  buildFwaBaseSwapAuditLogContentForTest,
+  buildFwaBaseSwapAnnouncementEntriesForTest,
   buildFwaBaseSwapBaseErrorDmLinesForTest,
+  buildFwaBaseSwapCommandTextForTest,
   buildFwaBaseSwapDmContentForTest,
+  buildFwaBaseSwapFwaBaseDmLinesForTest,
   buildFwaBaseSwapRenderPlanForTest,
   clearFwaBaseSwapSplitPostPayloadsForTest,
   deliverFwaBaseSwapDmMessagesForTest,
@@ -35,11 +44,15 @@ import {
   FWA_BASE_SWAP_ALERT_FALLBACK_EMOJI,
   FWA_BASE_SWAP_LAYOUT_BULLET_FALLBACK_EMOJI,
   buildFwaBaseSwapPhaseTimingLineForTest,
+  parseFwaBaseSwapPositionSelectionsForTest,
+  logFwaBaseSwapPublicationForTest,
   handleFwaBaseSwapSplitPostButton,
   renderFwaBaseSwapAnnouncementForTest,
   setFwaBaseSwapSplitPostPayloadForTest,
+  validateFwaBaseSwapSwapReminderOptionForTest,
 } from "../src/commands/Fwa";
 import { buildFwaBaseSwapSplitPostCustomId } from "../src/commands/fwa/customIds";
+import { BotLogChannelService } from "../src/services/BotLogChannelService";
 import {
   FwaBaseSwapTrackedMetadata,
   TRACKED_MESSAGE_FEATURE_TYPE,
@@ -55,7 +68,7 @@ function buildEntry(input: {
   position: number;
   playerTag: string;
   playerName: string;
-  section: "war_bases" | "base_errors";
+  section: "war_bases" | "base_errors" | "fwa_bases";
   discordUserId?: string | null;
   townhallLevel?: number | null;
   acknowledged?: boolean;
@@ -75,6 +88,24 @@ function buildLayoutLink(input: { townhall: number; layoutLink: string }) {
   return {
     townhall: input.townhall,
     layoutLink: input.layoutLink,
+  };
+}
+
+function buildRosterMember(input: {
+  position: number;
+  playerTag: string;
+  playerName: string;
+  section: "war_bases" | "base_errors" | "fwa_bases";
+  discordUserId?: string | null;
+  townhallLevel?: number | null;
+}) {
+  return {
+    position: input.position,
+    playerTag: input.playerTag,
+    playerName: input.playerName,
+    townhallLevel: input.townhallLevel ?? null,
+    discordUserId: input.discordUserId ?? null,
+    section: input.section,
   };
 }
 
@@ -125,6 +156,8 @@ describe("FWA base-swap layout links", () => {
     const th17Index = content.indexOf(th17Line);
     const reactIndex = content.indexOf(reactLine);
     const playerLineIndex = content.indexOf("#2 - *(unlinked)* - Bravo - :x:");
+    const lines = content.split("\n");
+    const th17LineIndex = lines.lastIndexOf(th17Line);
 
     expect(th18Index).toBeGreaterThan(-1);
     expect(th17Index).toBeGreaterThan(-1);
@@ -132,6 +165,7 @@ describe("FWA base-swap layout links", () => {
     expect(playerLineIndex).toBeGreaterThan(-1);
     expect(th18Index).toBeGreaterThan(playerLineIndex);
     expect(reactIndex).toBeGreaterThan(th17Index);
+    expect(lines[th17LineIndex + 2]).toBe(reactLine);
   });
 
   it("builds preparation-day phase timing lines from prep-end timestamps", () => {
@@ -338,11 +372,445 @@ describe("FWA base-swap layout links", () => {
     expect(content).not.toContain("TH17:");
   });
 
+  it("filters fwa-bases from layout links while keeping war-bases links", () => {
+    const content = renderFwaBaseSwapAnnouncementForTest({
+      entries: [
+        buildEntry({
+          position: 1,
+          playerTag: "#AAA111",
+          playerName: "Alpha",
+          section: "war_bases",
+          townhallLevel: 18,
+        }),
+        buildEntry({
+          position: 2,
+          playerTag: "#BBB222",
+          playerName: "Bravo",
+          section: "fwa_bases",
+          townhallLevel: 17,
+        }),
+      ],
+      layoutLinks: [
+        buildLayoutLink({
+          townhall: 18,
+          layoutLink:
+            "https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg",
+        }),
+        buildLayoutLink({
+          townhall: 17,
+          layoutLink:
+            "https://link.clashofclans.com/en?action=OpenLayout&id=TH17%3AWB%3AAAAARQAAAAI6ppxkTfH3WnNJjWK96bqn",
+        }),
+      ],
+    });
+
+    expect(content).toContain("TH18:");
+    expect(content).not.toContain("TH17:");
+  });
+
+  it("filters fwa-bases from layout links while keeping base-errors links", () => {
+    const content = renderFwaBaseSwapAnnouncementForTest({
+      entries: [
+        buildEntry({
+          position: 1,
+          playerTag: "#AAA111",
+          playerName: "Alpha",
+          section: "base_errors",
+          townhallLevel: 18,
+        }),
+        buildEntry({
+          position: 2,
+          playerTag: "#BBB222",
+          playerName: "Bravo",
+          section: "fwa_bases",
+          townhallLevel: 17,
+        }),
+      ],
+      layoutLinks: [
+        buildLayoutLink({
+          townhall: 18,
+          layoutLink:
+            "https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg",
+        }),
+        buildLayoutLink({
+          townhall: 17,
+          layoutLink:
+            "https://link.clashofclans.com/en?action=OpenLayout&id=TH17%3AWB%3AAAAARQAAAAI6ppxkTfH3WnNJjWK96bqn",
+        }),
+      ],
+    });
+
+    expect(content).toContain("TH18:");
+    expect(content).not.toContain("TH17:");
+  });
+
+  it("parses valid fwa-bases selections and builds blacklist-war swap entries", () => {
+    const parsed = parseFwaBaseSwapPositionSelectionsForTest({
+      selections: [
+        {
+          label: "fwa-bases",
+          section: "fwa_bases",
+          raw: "1, 2, 3",
+        },
+      ],
+    });
+
+    expect(parsed).toEqual({
+      ok: true,
+      selections: [
+        {
+          label: "fwa-bases",
+          section: "fwa_bases",
+          positions: [1, 2, 3],
+        },
+      ],
+    });
+    if (!parsed.ok) return;
+
+    const entries = buildFwaBaseSwapAnnouncementEntriesForTest({
+      clanTag: "2QG2C08UP",
+      roster: [
+        buildRosterMember({
+          position: 1,
+          playerTag: "#AAA111",
+          playerName: "Alpha",
+          section: "fwa_bases",
+          townhallLevel: 18,
+          discordUserId: "100",
+        }),
+        buildRosterMember({
+          position: 2,
+          playerTag: "#BBB222",
+          playerName: "Bravo",
+          section: "fwa_bases",
+          townhallLevel: 17,
+          discordUserId: null,
+        }),
+        buildRosterMember({
+          position: 3,
+          playerTag: "#CCC333",
+          playerName: "Charlie",
+          section: "fwa_bases",
+          townhallLevel: 16,
+          discordUserId: "300",
+        }),
+      ],
+      selections: parsed.selections,
+    });
+
+    expect(entries.ok).toBe(true);
+    if (!entries.ok) return;
+    expect(entries.entries).toHaveLength(3);
+    expect(entries.entries.map((entry) => entry.section)).toEqual([
+      "fwa_bases",
+      "fwa_bases",
+      "fwa_bases",
+    ]);
+    expect(entries.entries.map((entry) => entry.position)).toEqual([1, 2, 3]);
+  });
+
+  it("rejects invalid fwa-bases positions and duplicate inputs", () => {
+    const invalid = parseFwaBaseSwapPositionSelectionsForTest({
+      selections: [
+        {
+          label: "fwa-bases",
+          section: "fwa_bases",
+          raw: "1,abc",
+        },
+      ],
+    });
+    expect(invalid).toEqual({
+      ok: false,
+      error:
+        "Invalid positions in `fwa-bases`: abc. Use comma-separated positive roster positions like `1,4,7`.",
+    });
+
+    const duplicate = parseFwaBaseSwapPositionSelectionsForTest({
+      selections: [
+        {
+          label: "fwa-bases",
+          section: "fwa_bases",
+          raw: "1,1",
+        },
+      ],
+    });
+    expect(duplicate).toEqual({
+      ok: false,
+      error: "Duplicate positions in `fwa-bases`: #1.",
+    });
+  });
+
+  it("allows war-bases and base-errors to share a position", () => {
+    const overlap = parseFwaBaseSwapPositionSelectionsForTest({
+      selections: [
+        {
+          label: "war-bases",
+          section: "war_bases",
+          raw: "1",
+        },
+        {
+          label: "base-errors",
+          section: "base_errors",
+          raw: "1",
+        },
+      ],
+    });
+
+    expect(overlap).toEqual({
+      ok: true,
+      selections: [
+        {
+          label: "war-bases",
+          section: "war_bases",
+          positions: [1],
+        },
+        {
+          label: "base-errors",
+          section: "base_errors",
+          positions: [1],
+        },
+      ],
+    });
+  });
+
+  it("renders the same position in both existing sections when war-bases overlaps base-errors", () => {
+    const content = renderFwaBaseSwapAnnouncementForTest({
+      entries: [
+        buildEntry({
+          position: 1,
+          playerTag: "#AAA111",
+          playerName: "Alpha",
+          section: "war_bases",
+          discordUserId: "100",
+          townhallLevel: 18,
+        }),
+        buildEntry({
+          position: 1,
+          playerTag: "#AAA111",
+          playerName: "Alpha",
+          section: "base_errors",
+          discordUserId: "100",
+          townhallLevel: 18,
+        }),
+      ],
+      layoutLinks: [],
+    });
+
+    expect(content).toContain("YOU HAVE AN ACTIVE WAR BASE");
+    expect(content).toContain("YOU HAVE BASE ERRORS");
+    expect((content.match(/#1 - <@100> - Alpha - :x:/g) ?? []).length).toBe(2);
+  });
+
+  it("rejects fwa-bases overlap with war-bases and base-errors", () => {
+    const warOverlap = parseFwaBaseSwapPositionSelectionsForTest({
+      selections: [
+        {
+          label: "war-bases",
+          section: "war_bases",
+          raw: "1,2",
+        },
+        {
+          label: "fwa-bases",
+          section: "fwa_bases",
+          raw: "2,3",
+        },
+      ],
+    });
+    expect(warOverlap).toEqual({
+      ok: false,
+      error:
+        "Positions cannot appear in both `war-bases` and `fwa-bases`: #2.",
+    });
+
+    const baseErrorOverlap = parseFwaBaseSwapPositionSelectionsForTest({
+      selections: [
+        {
+          label: "base-errors",
+          section: "base_errors",
+          raw: "3,4",
+        },
+        {
+          label: "fwa-bases",
+          section: "fwa_bases",
+          raw: "4,5",
+        },
+      ],
+    });
+    expect(baseErrorOverlap).toEqual({
+      ok: false,
+      error:
+        "Positions cannot appear in both `base-errors` and `fwa-bases`: #4.",
+    });
+  });
+
+  it("allows swap-reminder only when fwa-bases is present", () => {
+    expect(
+      validateFwaBaseSwapSwapReminderOptionForTest({
+        fwaBasesRaw: null,
+        swapReminderRaw: true,
+      }),
+    ).toBe("`swap-reminder` can only be used when `fwa-bases` is provided.");
+    expect(
+      validateFwaBaseSwapSwapReminderOptionForTest({
+        fwaBasesRaw: null,
+        swapReminderRaw: false,
+      }),
+    ).toBe("`swap-reminder` can only be used when `fwa-bases` is provided.");
+    expect(
+      validateFwaBaseSwapSwapReminderOptionForTest({
+        fwaBasesRaw: "1,2",
+        swapReminderRaw: null,
+      }),
+    ).toBeNull();
+  });
+
+  it("renders the fwa-bases section and keeps the preparation and react prompt lines", () => {
+    const content = renderFwaBaseSwapAnnouncementForTest({
+      entries: [
+        buildEntry({
+          position: 1,
+          playerTag: "#AAA111",
+          playerName: "Alpha",
+          section: "fwa_bases",
+          discordUserId: "100",
+          townhallLevel: 18,
+        }),
+      ],
+      layoutLinks: [
+        buildLayoutLink({
+          townhall: 18,
+          layoutLink:
+            "https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg",
+        }),
+      ],
+      phaseTimingLine:
+        "## Preparation Day ends <t:1740000000:F> (<t:1740000000:R>)",
+      alertEmoji: "<a:alert:10001>",
+      fwaAlertEmoji: "<a:alert_blue:10003>",
+    });
+
+    expect(content).toContain(
+      "# <a:alert_blue:10003> YOU HAVE AN ACTIVE FWA BASE <a:alert_blue:10003>",
+    );
+    expect(content).toContain(
+      "These players currently have an active FWA base. Please swap to an active war base to increase our chances of beating the blacklisted clan!",
+    );
+    expect(content).not.toContain("TH18:");
+    expect(content).toContain("Preparation Day ends <t:1740000000:F>");
+    expect(content).toContain(
+      `React with ${FWA_BASE_SWAP_ACK_EMOJI} once your base is fixed.`,
+    );
+  });
+
+  it("uses alert for war-bases and alert_blue for fwa-bases in mixed sections", () => {
+    const content = renderFwaBaseSwapAnnouncementForTest({
+      entries: [
+        buildEntry({
+          position: 1,
+          playerTag: "#AAA111",
+          playerName: "Alpha",
+          section: "war_bases",
+          discordUserId: "100",
+          townhallLevel: 18,
+        }),
+        buildEntry({
+          position: 2,
+          playerTag: "#BBB222",
+          playerName: "Bravo",
+          section: "fwa_bases",
+          discordUserId: "101",
+          townhallLevel: 17,
+        }),
+      ],
+      layoutLinks: [],
+      alertEmoji: "<a:alert:10001>",
+      fwaAlertEmoji: "<a:alert_blue:10003>",
+    });
+
+    expect(content).toContain(
+      "# <a:alert:10001> YOU HAVE AN ACTIVE WAR BASE <a:alert:10001>",
+    );
+    expect(content).toContain(
+      "# <a:alert_blue:10003> YOU HAVE AN ACTIVE FWA BASE <a:alert_blue:10003>",
+    );
+  });
+
+  it("falls back to the unicode alert glyph for fwa-bases when alert_blue is unavailable", () => {
+    const content = renderFwaBaseSwapAnnouncementForTest({
+      entries: [
+        buildEntry({
+          position: 1,
+          playerTag: "#AAA111",
+          playerName: "Alpha",
+          section: "fwa_bases",
+          discordUserId: "100",
+          townhallLevel: 18,
+        }),
+      ],
+      layoutLinks: [],
+    });
+
+    expect(content).toContain(
+      `# ${FWA_BASE_SWAP_ALERT_FALLBACK_EMOJI} YOU HAVE AN ACTIVE FWA BASE ${FWA_BASE_SWAP_ALERT_FALLBACK_EMOJI}`,
+    );
+  });
+
+  it("updates fwa-bases rows from :x: to the acknowledged mark on reaction", async () => {
+    const metadata: FwaBaseSwapTrackedMetadata = {
+      clanName: "Test Clan",
+      createdByUserId: "admin-1",
+      createdAtIso: "2026-03-19T00:00:00.000Z",
+      swapReminder: false,
+      entries: [
+        buildEntry({
+          position: 1,
+          playerTag: "#AAA111",
+          playerName: "Alpha",
+          section: "fwa_bases",
+          discordUserId: "reactor-1",
+          acknowledged: false,
+        }),
+      ],
+      layoutLinks: [],
+    };
+
+    prismaMock.trackedMessage.findUnique.mockResolvedValue({
+      id: 42,
+      messageId: "message-2",
+      status: TRACKED_MESSAGE_STATUS.ACTIVE,
+      featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_BASE_SWAP,
+      metadata,
+    });
+    prismaMock.trackedMessage.update.mockResolvedValue(undefined);
+
+    const service = new TrackedMessageService();
+    const message = {
+      id: "message-2",
+      channelId: "channel-1",
+      edit: vi.fn().mockResolvedValue(undefined),
+    };
+
+    const changed = await service.handleFwaBaseSwapReaction({
+      messageId: "message-2",
+      reactorUserId: "reactor-1",
+      message,
+      render: renderFwaBaseSwapAnnouncementForTest,
+    });
+
+    expect(changed).toBe(true);
+    expect(message.edit).toHaveBeenCalledTimes(1);
+    const editPayload = message.edit.mock.calls[0]?.[0];
+    expect(String(editPayload.content)).toContain("#1 - <@reactor-1> - Alpha -");
+    expect(String(editPayload.content)).toContain(FWA_BASE_SWAP_ACK_EMOJI);
+    expect(String(editPayload.content)).not.toContain(":x:");
+  });
+
   it("preserves TH links during tracked-message reaction re-renders", async () => {
     const metadata: FwaBaseSwapTrackedMetadata = {
       clanName: "Test Clan",
       createdByUserId: "admin-1",
       createdAtIso: "2026-03-19T00:00:00.000Z",
+      swapReminder: false,
       alertEmoji: "<a:alert:10001>",
       layoutBulletEmoji: "<a:arrow_arrow:10002>",
       entries: [
@@ -417,6 +885,7 @@ describe("FWA base-swap layout links", () => {
       clanName: "Test Clan",
       createdByUserId: "admin-1",
       createdAtIso: "2026-03-19T00:00:00.000Z",
+      swapReminder: false,
       entries: [
         buildEntry({
           position: 1,
@@ -551,6 +1020,7 @@ describe("FWA base-swap split-post reaction tracking", () => {
       clanName: "Test Clan",
       createdByUserId: "admin-1",
       createdAtIso: "2026-03-19T00:00:00.000Z",
+      swapReminder: false,
       renderVariant: "split_part_1",
       entries: [
         buildEntry({
@@ -650,6 +1120,153 @@ describe("FWA base-swap split-post reaction tracking", () => {
   });
 });
 
+describe("FWA base-swap reminder selection", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("selects the newest qualifying reminder candidate with fwa-bases and swap-reminder enabled", async () => {
+    prismaMock.trackedMessage.findMany.mockResolvedValue([
+      {
+        id: "row-newer-skip",
+        guildId: "guild-1",
+        channelId: "channel-1",
+        messageId: "message-2",
+        referenceId: "fwa-base-swap:split-key",
+        clanTag: "2QG2C08UP",
+        createdAt: new Date("2026-03-20T00:10:00.000Z"),
+        expiresAt: new Date("2026-03-22T00:00:00.000Z"),
+        metadata: {
+          clanName: "Test Clan",
+          createdByUserId: "user-1",
+          createdAtIso: "2026-03-20T00:10:00.000Z",
+          swapReminder: true,
+          entries: [
+            buildEntry({
+              position: 2,
+              playerTag: "#BBB222",
+              playerName: "Bravo",
+              section: "war_bases",
+              discordUserId: "user-2",
+            }),
+          ],
+          layoutLinks: [],
+        },
+      },
+      {
+        id: "row-older-qualifying",
+        guildId: "guild-1",
+        channelId: "channel-2",
+        messageId: "message-1",
+        referenceId: "fwa-base-swap:split-key",
+        clanTag: "2QG2C08UP",
+        createdAt: new Date("2026-03-20T00:05:00.000Z"),
+        expiresAt: new Date("2026-03-22T00:00:00.000Z"),
+        metadata: {
+          clanName: "Test Clan",
+          createdByUserId: "user-1",
+          createdAtIso: "2026-03-20T00:05:00.000Z",
+          swapReminder: true,
+          entries: [
+            buildEntry({
+              position: 1,
+              playerTag: "#AAA111",
+              playerName: "Alpha",
+              section: "fwa_bases",
+              discordUserId: "user-1",
+            }),
+          ],
+          layoutLinks: [],
+        },
+      },
+      {
+        id: "row-old-skip",
+        guildId: "guild-1",
+        channelId: "channel-3",
+        messageId: "message-3",
+        referenceId: null,
+        clanTag: "2QG2C08UP",
+        createdAt: new Date("2026-03-20T00:01:00.000Z"),
+        expiresAt: new Date("2026-03-22T00:00:00.000Z"),
+        metadata: {
+          clanName: "Test Clan",
+          createdByUserId: "user-1",
+          createdAtIso: "2026-03-20T00:01:00.000Z",
+          swapReminder: false,
+          entries: [
+            buildEntry({
+              position: 3,
+              playerTag: "#CCC333",
+              playerName: "Charlie",
+              section: "fwa_bases",
+              discordUserId: "user-3",
+            }),
+          ],
+          layoutLinks: [],
+        },
+      },
+    ]);
+
+    const service = new TrackedMessageService();
+    const candidate = await service.findLatestActiveFwaBaseSwapReminderCandidate({
+      guildId: "guild-1",
+      clanTag: "2QG2C08UP",
+    });
+
+    expect(candidate?.messageId).toBe("message-1");
+    expect(candidate?.referenceId).toBe("fwa-base-swap:split-key");
+    expect(candidate?.metadata.swapReminder).toBe(true);
+    expect(candidate?.metadata.entries.some((entry) => entry.section === "fwa_bases")).toBe(true);
+  });
+
+  it("claims a reminder once per reference id across split rows", async () => {
+    prismaMock.trackedMessage.findMany.mockResolvedValue([
+      {
+        id: "tracked-new",
+        guildId: "guild-1",
+        channelId: "channel-1",
+        messageId: "message-new",
+        referenceId: "fwa-base-swap:split-key",
+        clanTag: "2QG2C08UP",
+        createdAt: new Date("2026-03-20T00:10:00.000Z"),
+        expiresAt: new Date("2026-03-22T00:00:00.000Z"),
+      },
+      {
+        id: "tracked-old",
+        guildId: "guild-1",
+        channelId: "channel-2",
+        messageId: "message-old",
+        referenceId: "fwa-base-swap:split-key",
+        clanTag: "2QG2C08UP",
+        createdAt: new Date("2026-03-20T00:05:00.000Z"),
+        expiresAt: new Date("2026-03-22T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedMessageClaim.findFirst
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        id: "claim-1",
+      });
+    prismaMock.trackedMessageClaim.createMany.mockResolvedValue({ count: 1 });
+
+    const service = new TrackedMessageService();
+    const first = await service.claimFwaBaseSwapBattleDayReminder({
+      guildId: "guild-1",
+      clanTag: "2QG2C08UP",
+      referenceId: "fwa-base-swap:split-key",
+    });
+    const second = await service.claimFwaBaseSwapBattleDayReminder({
+      guildId: "guild-1",
+      clanTag: "2QG2C08UP",
+      referenceId: "fwa-base-swap:split-key",
+    });
+
+    expect(first).toBe(true);
+    expect(second).toBe(false);
+    expect(prismaMock.trackedMessageClaim.createMany).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("FWA base-swap split-post prompt actions", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -659,10 +1276,18 @@ describe("FWA base-swap split-post prompt actions", () => {
     const key = "split-key-yes";
     setFwaBaseSwapSplitPostPayloadForTest(key, {
       userId: "user-1",
+      username: "Requester",
       guildId: "guild-1",
       channelId: "channel-1",
       clanTag: "2QG2C08UP",
       clanName: "Test Clan",
+      commandText: buildFwaBaseSwapCommandTextForTest({
+        clanTag: "2QG2C08UP",
+        warBases: "1",
+        fwaBases: null,
+        baseErrors: null,
+        swapReminder: null,
+      }),
       entries: [
         buildEntry({
           position: 1,
@@ -678,6 +1303,7 @@ describe("FWA base-swap split-post prompt actions", () => {
       alertEmoji: null,
       layoutBulletEmoji: null,
       mentionUserIds: ["user-1"],
+      swapReminder: false,
       createdAtIso: "2026-03-20T00:00:00.000Z",
       splitContents: [
         "Part 1 content\nline 2",
@@ -699,6 +1325,10 @@ describe("FWA base-swap split-post prompt actions", () => {
       .fn()
       .mockResolvedValueOnce(postedA)
       .mockResolvedValueOnce(postedB);
+    const botLogSend = vi.fn().mockResolvedValue(undefined);
+    vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
+      "bot-log-1",
+    );
 
     const interaction = {
       customId: buildFwaBaseSwapSplitPostCustomId({
@@ -708,10 +1338,20 @@ describe("FWA base-swap split-post prompt actions", () => {
       }),
       user: {
         id: "user-1",
+        username: "Requester",
         send: vi.fn().mockResolvedValue(undefined),
       },
       guildId: "guild-1",
       channelId: "channel-1",
+      client: {
+        channels: {
+          fetch: vi.fn().mockResolvedValue({
+            guildId: "guild-1",
+            isTextBased: () => true,
+            send: botLogSend,
+          }),
+        },
+      },
       channel: {
         isTextBased: () => true,
         send,
@@ -740,6 +1380,19 @@ describe("FWA base-swap split-post prompt actions", () => {
     );
     expect(postedA.react).toHaveBeenCalledWith(FWA_BASE_SWAP_ACK_EMOJI);
     expect(postedB.react).toHaveBeenCalledWith(FWA_BASE_SWAP_ACK_EMOJI);
+    expect(botLogSend).toHaveBeenCalledTimes(1);
+    expect(String(botLogSend.mock.calls[0]?.[0]?.content ?? "")).toContain(
+      "Test Clan (#2QG2C08UP)",
+    );
+    expect(String(botLogSend.mock.calls[0]?.[0]?.content ?? "")).toContain(
+      "Source channel: <#channel-1>",
+    );
+    expect(String(botLogSend.mock.calls[0]?.[0]?.content ?? "")).toContain(
+      postedA.url,
+    );
+    expect(String(botLogSend.mock.calls[0]?.[0]?.content ?? "")).toContain(
+      postedB.url,
+    );
     expect(prismaMock.trackedMessage.updateMany).toHaveBeenCalledTimes(1);
     expect(prismaMock.trackedMessage.upsert).toHaveBeenCalledTimes(2);
     expect(interaction.update).toHaveBeenCalledWith(
@@ -755,16 +1408,25 @@ describe("FWA base-swap split-post prompt actions", () => {
     const key = "split-key-cancel";
     setFwaBaseSwapSplitPostPayloadForTest(key, {
       userId: "user-1",
+      username: "Requester",
       guildId: "guild-1",
       channelId: "channel-1",
       clanTag: "2QG2C08UP",
       clanName: "Test Clan",
+      commandText: buildFwaBaseSwapCommandTextForTest({
+        clanTag: "2QG2C08UP",
+        warBases: null,
+        fwaBases: null,
+        baseErrors: null,
+        swapReminder: null,
+      }),
       entries: [],
       layoutLinks: [],
       phaseTimingLine: null,
       alertEmoji: null,
       layoutBulletEmoji: null,
       mentionUserIds: [],
+      swapReminder: false,
       createdAtIso: "2026-03-20T00:00:00.000Z",
       splitContents: ["part-1", "part-2"],
     });
@@ -778,6 +1440,11 @@ describe("FWA base-swap split-post prompt actions", () => {
       user: { id: "user-1", send: vi.fn() },
       guildId: "guild-1",
       channelId: "channel-1",
+      client: {
+        channels: {
+          fetch: vi.fn().mockResolvedValue(null),
+        },
+      },
       channel: {
         isTextBased: () => true,
         send: vi.fn(),
@@ -967,6 +1634,48 @@ describe("FWA base-swap DM copy helpers", () => {
     );
   });
 
+  it("includes a separate blacklist-war swap DM section for fwa-bases entries", () => {
+    const lines = buildFwaBaseSwapFwaBaseDmLinesForTest([
+      buildEntry({
+        position: 5,
+        playerTag: "#C1",
+        playerName: "Charlie",
+        section: "fwa_bases",
+      }),
+      buildEntry({
+        position: 6,
+        playerTag: "#D1",
+        playerName: "Delta",
+        section: "fwa_bases",
+      }),
+    ]);
+
+    expect(lines).toEqual([
+      "ACTIVE FWA BASE: swap to WAR BASE now @Charlie @Delta",
+    ]);
+
+    const content = buildFwaBaseSwapDmContentForTest([
+      buildEntry({
+        position: 1,
+        playerTag: "#A1",
+        playerName: "Alpha",
+        section: "war_bases",
+      }),
+      buildEntry({
+        position: 5,
+        playerTag: "#C1",
+        playerName: "Charlie",
+        section: "fwa_bases",
+      }),
+    ]);
+
+    expect(content).toContain("FWA base swap messages:");
+    expect(content).toContain(
+      "`ACTIVE FWA BASE: swap to WAR BASE now @Charlie`",
+    );
+    expect(content).toContain("----------");
+  });
+
   it("omits empty sections and returns null when there are no players in either category", () => {
     const onlyActive = buildFwaBaseSwapDmContentForTest([
       buildEntry({
@@ -1009,6 +1718,119 @@ describe("FWA base-swap DM copy helpers", () => {
       expect(raw.includes("\n")).toBe(false);
       expect(raw.length).toBeLessThanOrEqual(256);
     }
+  });
+});
+
+describe("FWA base-swap bot-log audit", () => {
+  it("builds a structured audit log with user, source channel, links, and command text", () => {
+    const content = buildFwaBaseSwapAuditLogContentForTest({
+      userId: "user-1",
+      username: "Requester",
+      sourceChannelId: "channel-1",
+      clanTag: "2QG2C08UP",
+      clanName: "Test Clan",
+      commandText: buildFwaBaseSwapCommandTextForTest({
+        clanTag: "2QG2C08UP",
+        warBases: "1,4",
+        fwaBases: "5,6",
+        baseErrors: "2,3",
+        swapReminder: true,
+      }),
+      messageUrls: [
+        "https://discord.com/channels/guild-1/channel-1/msg-1",
+      ],
+    });
+
+    expect(content).toContain("FWA base-swap announcement posted");
+    expect(content).toContain("<@user-1> (Requester, user-1) posted /fwa base-swap");
+    expect(content).toContain("Source channel: <#channel-1>");
+    expect(content).toContain("Posted message link(s):");
+    expect(content).toContain(
+      "https://discord.com/channels/guild-1/channel-1/msg-1",
+    );
+    expect(content).toContain(
+      "/fwa base-swap clan:2QG2C08UP war-bases:1,4 fwa-bases:5,6 base-errors:2,3 swap-reminder:true",
+    );
+  });
+
+  it("sends the audit log to the configured bot-log channel when available", async () => {
+    const botLogSend = vi.fn().mockResolvedValue(undefined);
+    vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
+      "bot-log-1",
+    );
+    const client = {
+      channels: {
+        fetch: vi.fn().mockResolvedValue({
+          guildId: "guild-1",
+          isTextBased: () => true,
+          send: botLogSend,
+        }),
+      },
+    } as any;
+
+    await logFwaBaseSwapPublicationForTest({
+      client,
+      guildId: "guild-1",
+      sourceChannelId: "channel-1",
+      userId: "user-1",
+      username: "Requester",
+      clanTag: "2QG2C08UP",
+      clanName: "Test Clan",
+      commandText: buildFwaBaseSwapCommandTextForTest({
+        clanTag: "2QG2C08UP",
+        warBases: "1",
+        fwaBases: "5",
+        baseErrors: "2",
+        swapReminder: true,
+      }),
+      messageUrls: ["https://discord.com/channels/guild-1/channel-1/msg-1"],
+    });
+
+    expect(client.channels.fetch).toHaveBeenCalledWith("bot-log-1");
+    expect(botLogSend).toHaveBeenCalledTimes(1);
+    const payload = botLogSend.mock.calls[0]?.[0] ?? {};
+    expect(String(payload.content ?? "")).toContain("Test Clan (#2QG2C08UP)");
+    expect(String(payload.content ?? "")).toContain("Source channel: <#channel-1>");
+    expect(String(payload.content ?? "")).toContain(
+      "/fwa base-swap clan:2QG2C08UP war-bases:1 fwa-bases:5 base-errors:2 swap-reminder:true",
+    );
+  });
+
+  it("does nothing when no bot-log channel is configured", async () => {
+    vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
+      null,
+    );
+    const botLogSend = vi.fn().mockResolvedValue(undefined);
+    const client = {
+      channels: {
+        fetch: vi.fn().mockResolvedValue({
+          guildId: "guild-1",
+          isTextBased: () => true,
+          send: botLogSend,
+        }),
+      },
+    } as any;
+
+    await logFwaBaseSwapPublicationForTest({
+      client,
+      guildId: "guild-1",
+      sourceChannelId: "channel-1",
+      userId: "user-1",
+      username: "Requester",
+      clanTag: "2QG2C08UP",
+      clanName: "Test Clan",
+      commandText: buildFwaBaseSwapCommandTextForTest({
+        clanTag: "2QG2C08UP",
+        warBases: "1",
+        fwaBases: null,
+        baseErrors: null,
+        swapReminder: null,
+      }),
+      messageUrls: ["https://discord.com/channels/guild-1/channel-1/msg-1"],
+    });
+
+    expect(client.channels.fetch).not.toHaveBeenCalled();
+    expect(botLogSend).not.toHaveBeenCalled();
   });
 });
 

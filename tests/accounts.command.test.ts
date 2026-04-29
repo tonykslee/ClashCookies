@@ -2,6 +2,10 @@ import { ApplicationCommandOptionType } from "discord.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const prismaMock = vi.hoisted(() => ({
+  playerCurrent: {
+    findMany: vi.fn(),
+    upsert: vi.fn(),
+  },
   playerLink: {
     findUnique: vi.fn(),
     findMany: vi.fn(),
@@ -15,8 +19,29 @@ const prismaMock = vi.hoisted(() => ({
   },
 }));
 
+const cocQueueMock = vi.hoisted(() => {
+  const state = { active: false };
+  const defaultImpl = async (_context: unknown, run: () => Promise<unknown>) => {
+    state.active = true;
+    try {
+      return await run();
+    } finally {
+      state.active = false;
+    }
+  };
+  return {
+    state,
+    defaultImpl,
+    runWithCoCQueueContext: vi.fn(defaultImpl),
+  };
+});
+
 vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
+}));
+
+vi.mock("../src/services/CoCQueueContext", () => ({
+  runWithCoCQueueContext: cocQueueMock.runWithCoCQueueContext,
 }));
 
 import { Accounts } from "../src/commands/Accounts";
@@ -81,7 +106,36 @@ function makeAutocompleteInteraction(
 
 function makeCocService(playersByTag: Record<string, any> = {}) {
   return {
-    getPlayerRaw: vi.fn(async (tag: string) => playersByTag[tag] ?? null),
+    playersByTag,
+    getPlayerRaw: vi.fn(async function (this: { playersByTag?: Record<string, any> }, tag: string) {
+      return this.playersByTag?.[tag] ?? null;
+    }),
+  };
+}
+
+function makePlayerCurrentRow(overrides: Record<string, any> = {}) {
+  return {
+    playerTag: "#PYLQ0289",
+    playerName: "Current Alpha",
+    townHall: 16,
+    currentClanTag: "#PQL0289",
+    currentClanName: "Current Clan",
+    trophies: 6000,
+    builderTrophies: 4000,
+    warStars: 100,
+    expLevel: 200,
+    role: "leader",
+    leagueName: "Legend League",
+    currentWeight: null,
+    currentWeightSource: null,
+    currentWeightMeasuredAt: null,
+    achievementsJson: null,
+    lastSeenAt: new Date("2026-04-20T00:00:00.000Z"),
+    lastFetchedAt: new Date("2026-04-20T00:00:00.000Z"),
+    lastSource: "accounts-refresh",
+    createdAt: new Date("2026-04-20T00:00:00.000Z"),
+    updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    ...overrides,
   };
 }
 
@@ -95,7 +149,11 @@ function getEmbedDescription(interaction: any): string {
 describe("/accounts command", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    cocQueueMock.state.active = false;
+    cocQueueMock.runWithCoCQueueContext.mockImplementation(cocQueueMock.defaultImpl);
 
+    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    prismaMock.playerCurrent.upsert.mockResolvedValue({} as never);
     prismaMock.playerLink.findUnique.mockResolvedValue(null);
     prismaMock.playerLink.findMany.mockResolvedValue([]);
     prismaMock.playerLink.updateMany.mockResolvedValue({ count: 0 });
@@ -172,7 +230,7 @@ describe("/accounts command", () => {
     expect(getEmbedDescription(interaction)).toContain("- Activity Bravo `#QGRJ2222`");
   });
 
-  it("falls back to raw tag when neither local name source exists", async () => {
+  it("renders Unknown Clan when neither PlayerCurrent nor PlayerActivity has clan data", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([
       {
         playerTag: "#CUV9082",
@@ -181,6 +239,7 @@ describe("/accounts command", () => {
       },
     ]);
     prismaMock.playerActivity.findMany.mockResolvedValue([]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
     const cocService = makeCocService({
       "#CUV9082": null,
     });
@@ -188,8 +247,61 @@ describe("/accounts command", () => {
 
     await Accounts.run({} as any, interaction as any, cocService as any);
 
-    expect(getEmbedDescription(interaction)).toContain("**No Clan**");
+    expect(getEmbedDescription(interaction)).toContain("**Unknown Clan**");
     expect(getEmbedDescription(interaction)).toContain("- #CUV9082 `#CUV9082`");
+  });
+
+  it("renders Unknown Clan when PlayerCurrent only has catalog hydration data", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#CUV9082",
+        playerName: "",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([
+      makePlayerCurrentRow({
+        playerTag: "#CUV9082",
+        playerName: "Catalog Alpha",
+        currentClanTag: null,
+        currentClanName: null,
+        lastSource: "fwa_player_catalog",
+      }),
+    ]);
+    prismaMock.playerActivity.findMany.mockResolvedValue([]);
+    const interaction = makeInteraction();
+
+    await Accounts.run({} as any, interaction as any, makeCocService() as any);
+
+    const description = getEmbedDescription(interaction);
+    expect(description).toContain("**Unknown Clan**");
+    expect(description).toContain("Catalog Alpha");
+  });
+
+  it("renders No Clan when PlayerCurrent confirms the player is clanless", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#CUV9082",
+        playerName: "",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([
+      makePlayerCurrentRow({
+        playerTag: "#CUV9082",
+        playerName: "Clanless Current",
+        currentClanTag: null,
+        currentClanName: null,
+        lastSource: "accounts-refresh",
+      }),
+    ]);
+    prismaMock.playerActivity.findMany.mockResolvedValue([]);
+    const interaction = makeInteraction();
+
+    await Accounts.run({} as any, interaction as any, makeCocService() as any);
+
+    expect(getEmbedDescription(interaction)).toContain("**No Clan**");
+    expect(getEmbedDescription(interaction)).toContain("Clanless Current");
   });
 
   it("groups untracked clans under their current clan heading and renders co-leader crowns", async () => {
@@ -205,26 +317,27 @@ describe("/accounts command", () => {
         createdAt: new Date("2026-03-02T00:00:00.000Z"),
       },
     ]);
-    prismaMock.playerActivity.findMany.mockResolvedValue([
-      { tag: "#PYLQ0289", name: "Alpha", clanTag: "#UNTRK1", clanName: "Untracked Clan" },
-      { tag: "#QGRJ2222", name: "Bravo", clanTag: "#UNTRK1", clanName: "Untracked Clan" },
-    ]);
-    prismaMock.trackedClan.findMany.mockResolvedValue([]);
-    const cocService = makeCocService({
-      "#PYLQ0289": {
-        name: "Alpha",
-        clan: { tag: "#UNTRK1", name: "Untracked Clan" },
-        role: "coLeader",
-      },
-      "#QGRJ2222": {
-        name: "Bravo",
-        clan: { tag: "#UNTRK1", name: "Untracked Clan" },
+    prismaMock.playerCurrent.findMany.mockResolvedValue([
+      makePlayerCurrentRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha",
+        currentClanTag: "#UNTRK1",
+        currentClanName: "Untracked Clan",
+        role: "coleader",
+      }),
+      makePlayerCurrentRow({
+        playerTag: "#QGRJ2222",
+        playerName: "Bravo",
+        currentClanTag: "#UNTRK1",
+        currentClanName: "Untracked Clan",
         role: "member",
-      },
-    });
+      }),
+    ]);
+    prismaMock.playerActivity.findMany.mockResolvedValue([]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([]);
     const interaction = makeInteraction();
 
-    await Accounts.run({} as any, interaction as any, cocService as any);
+    await Accounts.run({} as any, interaction as any, makeCocService() as any);
 
     const description = getEmbedDescription(interaction);
     expect(description).toContain(
@@ -242,14 +355,38 @@ describe("/accounts command", () => {
         discordUserId: "111111111111111111",
       },
     ]);
-    prismaMock.playerActivity.findMany.mockResolvedValue([
-      { tag: "#PYLQ0289", name: "Linked Alpha", clanTag: "#OLDTAG", clanName: "Old Clan" },
-    ]);
+    prismaMock.playerCurrent.findMany
+      .mockResolvedValueOnce([
+        makePlayerCurrentRow({
+          playerTag: "#PYLQ0289",
+          playerName: "Linked Alpha",
+          currentClanTag: "#PQL0289",
+          currentClanName: "Old Clan",
+        }),
+      ])
+      .mockResolvedValueOnce([
+        makePlayerCurrentRow({
+          playerTag: "#PYLQ0289",
+          playerName: "Linked Alpha",
+          currentClanTag: "#PQL0289",
+          currentClanName: "Old Clan",
+        }),
+      ])
+      .mockResolvedValueOnce([
+        makePlayerCurrentRow({
+          playerTag: "#PYLQ0289",
+          playerName: "Linked Alpha",
+          currentClanTag: "#GRJ0289",
+          currentClanName: "New Clan",
+          lastSource: "accounts-refresh",
+        }),
+      ]);
+    prismaMock.playerActivity.findMany.mockResolvedValue([]);
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     const cocService = makeCocService({
       "#PYLQ0289": {
         name: "Linked Alpha",
-        clan: { tag: "#OLDTAG", name: "Old Clan" },
+        clan: { tag: "#PQL0289", name: "Old Clan" },
         role: "member",
       },
     });
@@ -262,18 +399,26 @@ describe("/accounts command", () => {
     expect(initialControls.map((button: any) => button.label)).toContain("Refresh");
 
     prismaMock.playerActivity.findMany.mockResolvedValue([
-      { tag: "#PYLQ0289", name: "Linked Alpha", clanTag: "#NEWTAG", clanName: "New Clan" },
+      { tag: "#PYLQ0289", name: "Linked Alpha", clanTag: "#GRJ0289", clanName: "New Clan" },
     ]);
-    cocService.getPlayerRaw.mockResolvedValueOnce({
+    cocService.playersByTag["#PYLQ0289"] = {
       name: "Linked Alpha",
-      clan: { tag: "#NEWTAG", name: "New Clan" },
+      clan: { tag: "#GRJ0289", name: "New Clan" },
       role: "member",
-    });
+    };
 
     const refreshHandler = interaction.__collectorHandlers.collect;
     expect(refreshHandler).toBeTypeOf("function");
     const refreshButton = makeButtonInteraction("accounts:777777777777777777:refresh");
     await refreshHandler(refreshButton);
+
+    expect(cocQueueMock.runWithCoCQueueContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        priority: "interactive",
+        source: "accounts:list:refresh",
+      }),
+      expect.any(Function),
+    );
 
     const refreshingPayload = refreshButton.update.mock.calls[0]?.[0] as any;
     const refreshingLabels = refreshingPayload.components[0].toJSON().components.map(
@@ -283,8 +428,119 @@ describe("/accounts command", () => {
 
     const refreshedDescription = getEmbedDescription(interaction);
     expect(refreshedDescription).toContain(
-      "**[New Clan](https://link.clashofclans.com/en?action=OpenClanProfile&tag=NEWTAG)**",
+      "**[New Clan](https://link.clashofclans.com/en?action=OpenClanProfile&tag=GRJ0289)**",
     );
+    expect(prismaMock.playerCurrent.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { playerTag: "#PYLQ0289" },
+        update: expect.objectContaining({
+          currentClanTag: "#GRJ0289",
+          currentClanName: "New Clan",
+          lastSource: "accounts-refresh",
+        }),
+      }),
+    );
+  });
+
+  it("calls refresh getPlayerRaw with the service binding", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        playerName: "Linked Alpha",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([
+      makePlayerCurrentRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Linked Alpha",
+        currentClanTag: "#PQL0289",
+        currentClanName: "Old Clan",
+      }),
+    ]);
+    prismaMock.playerActivity.findMany.mockResolvedValue([]);
+    const cocService = {
+      getPlayerRaw: vi.fn(async function (this: any, tag: string) {
+        expect(this).toBe(cocService);
+        expect(tag).toBe("#PYLQ0289");
+        expect(cocQueueMock.state.active).toBe(true);
+        return {
+          name: "Linked Alpha",
+          clan: { tag: "#GRJ0289", name: "New Clan" },
+          role: "member",
+        };
+      }),
+    };
+    const interaction = makeInteraction();
+
+    await Accounts.run({} as any, interaction as any, cocService as any);
+
+    const refreshHandler = interaction.__collectorHandlers.collect;
+    expect(refreshHandler).toBeTypeOf("function");
+    const refreshButton = makeButtonInteraction("accounts:777777777777777777:refresh");
+    await refreshHandler(refreshButton);
+
+    expect(cocService.getPlayerRaw).toHaveBeenCalledTimes(1);
+    expect(prismaMock.playerCurrent.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { playerTag: "#PYLQ0289" },
+        update: expect.objectContaining({
+          currentClanTag: "#GRJ0289",
+          currentClanName: "New Clan",
+          lastSource: "accounts-refresh",
+        }),
+      }),
+    );
+  });
+
+  it("logs refresh fetch failures without aborting the refresh flow", async () => {
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        playerName: "Linked Alpha",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([
+      makePlayerCurrentRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Linked Alpha",
+        currentClanTag: "#PQL0289",
+        currentClanName: "Old Clan",
+      }),
+    ]);
+    prismaMock.playerActivity.findMany.mockResolvedValue([]);
+    const cocService = {
+      getPlayerRaw: vi.fn(async function (this: any) {
+        expect(cocQueueMock.state.active).toBe(true);
+        throw new Error("COC_QUEUE_CONTEXT_MISSING:getPlayerRaw");
+      }),
+    };
+    const interaction = makeInteraction();
+
+    await Accounts.run({} as any, interaction as any, cocService as any);
+
+    const refreshHandler = interaction.__collectorHandlers.collect;
+    expect(refreshHandler).toBeTypeOf("function");
+    const refreshButton = makeButtonInteraction("accounts:777777777777777777:refresh");
+    await refreshHandler(refreshButton);
+
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("command=/accounts source=accounts:list:refresh stage=fetch"),
+    );
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("tag=#PYLQ0289"),
+    );
+    expect(prismaMock.playerCurrent.upsert).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { playerTag: "#PYLQ0289" },
+        update: expect.objectContaining({
+          currentClanTag: "#GRJ0289",
+        }),
+      }),
+    );
+    consoleErrorSpy.mockRestore();
   });
 
   it("uses the selected Discord user id when discord-id is provided", async () => {
@@ -312,6 +568,37 @@ describe("/accounts command", () => {
     });
   });
 
+  it("renders improved PlayerCurrent data when tag lookup resolves a linked Discord user", async () => {
+    prismaMock.playerLink.findUnique.mockResolvedValue({
+      discordUserId: "222222222222222222",
+    });
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        playerName: "Linked Alpha",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([
+      makePlayerCurrentRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Current Alpha",
+        currentClanTag: "#PQL0289",
+        currentClanName: "Current Clan",
+      }),
+    ]);
+    prismaMock.playerActivity.findMany.mockResolvedValue([]);
+    const interaction = makeInteraction({ tag: "#PYLQ0289" });
+
+    await Accounts.run({} as any, interaction as any, makeCocService() as any);
+
+    const description = getEmbedDescription(interaction);
+    expect(description).toContain("Current Alpha");
+    expect(description).toContain(
+      "**[Current Clan](https://link.clashofclans.com/en?action=OpenClanProfile&tag=PQL0289)**",
+    );
+  });
+
   it("defaults to the caller's Discord account when discord-id is omitted", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([
       {
@@ -333,6 +620,36 @@ describe("/accounts command", () => {
         createdAt: true,
       },
     });
+  });
+
+  it("renders improved PlayerCurrent data when /accounts discord-id is used", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        playerName: "Linked Alpha",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([
+      makePlayerCurrentRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Discord Alpha",
+        currentClanTag: "#GRJ0289",
+        currentClanName: "Discord Clan",
+      }),
+    ]);
+    prismaMock.playerActivity.findMany.mockResolvedValue([]);
+    const interaction = makeInteraction({
+      discordUserId: "222222222222222222",
+    });
+
+    await Accounts.run({} as any, interaction as any, makeCocService() as any);
+
+    const description = getEmbedDescription(interaction);
+    expect(description).toContain("Discord Alpha");
+    expect(description).toContain(
+      "**[Discord Clan](https://link.clashofclans.com/en?action=OpenClanProfile&tag=GRJ0289)**",
+    );
   });
 
   it("autocompletes player tags from PlayerLink and ignores tracked clans", async () => {
