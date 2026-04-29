@@ -619,26 +619,24 @@ function buildBaseSwapPositionSelectionErrorMessage(input: {
   return null;
 }
 
-function findBaseSwapSelectionOverlap(input: {
-  selections: readonly ParsedFwaBaseSwapPositionSelection[];
+function findFwaBaseSwapExclusiveOverlap(input: {
+  fwaSelection: ParsedFwaBaseSwapPositionSelection | null;
+  otherSelections: readonly ParsedFwaBaseSwapPositionSelection[];
 }): {
   labels: [FwaBaseSwapPositionSelectionLabel, FwaBaseSwapPositionSelectionLabel];
   positions: number[];
 } | null {
-  for (let firstIndex = 0; firstIndex < input.selections.length; firstIndex += 1) {
-    const first = input.selections[firstIndex];
-    if (!first) continue;
-    const firstSet = new Set(first.positions);
-    for (let secondIndex = firstIndex + 1; secondIndex < input.selections.length; secondIndex += 1) {
-      const second = input.selections[secondIndex];
-      if (!second) continue;
-      const overlap = second.positions.filter((position) => firstSet.has(position));
-      if (overlap.length === 0) continue;
-      return {
-        labels: [first.label, second.label],
-        positions: [...new Set(overlap)],
-      };
-    }
+  if (!input.fwaSelection) return null;
+  const fwaPositions = new Set(input.fwaSelection.positions);
+  for (const selection of input.otherSelections) {
+    const overlap = selection.positions.filter((position) =>
+      fwaPositions.has(position),
+    );
+    if (overlap.length === 0) continue;
+    return {
+      labels: [selection.label, input.fwaSelection.label],
+      positions: [...new Set(overlap)],
+    };
   }
   return null;
 }
@@ -682,8 +680,14 @@ function parseFwaBaseSwapPositionSelections(input: {
     };
   }
 
-  const overlap = findBaseSwapSelectionOverlap({
-    selections: parsedSelections,
+  const fwaSelection = parsedSelections.find(
+    (selection) => selection.section === "fwa_bases",
+  );
+  const overlap = findFwaBaseSwapExclusiveOverlap({
+    fwaSelection: fwaSelection ?? null,
+    otherSelections: parsedSelections.filter(
+      (selection) => selection.section !== "fwa_bases",
+    ),
   });
   if (overlap) {
     return {

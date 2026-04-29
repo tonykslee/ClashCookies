@@ -455,6 +455,67 @@ describe("FWA base-swap layout links", () => {
     });
   });
 
+  it("allows war-bases and base-errors to share a position", () => {
+    const overlap = parseFwaBaseSwapPositionSelectionsForTest({
+      selections: [
+        {
+          label: "war-bases",
+          section: "war_bases",
+          raw: "1",
+        },
+        {
+          label: "base-errors",
+          section: "base_errors",
+          raw: "1",
+        },
+      ],
+    });
+
+    expect(overlap).toEqual({
+      ok: true,
+      selections: [
+        {
+          label: "war-bases",
+          section: "war_bases",
+          positions: [1],
+        },
+        {
+          label: "base-errors",
+          section: "base_errors",
+          positions: [1],
+        },
+      ],
+    });
+  });
+
+  it("renders the same position in both existing sections when war-bases overlaps base-errors", () => {
+    const content = renderFwaBaseSwapAnnouncementForTest({
+      entries: [
+        buildEntry({
+          position: 1,
+          playerTag: "#AAA111",
+          playerName: "Alpha",
+          section: "war_bases",
+          discordUserId: "100",
+          townhallLevel: 18,
+        }),
+        buildEntry({
+          position: 1,
+          playerTag: "#AAA111",
+          playerName: "Alpha",
+          section: "base_errors",
+          discordUserId: "100",
+          townhallLevel: 18,
+        }),
+      ],
+      layoutLinks: [],
+    });
+
+    expect(content).toContain("YOU HAVE AN ACTIVE WAR BASE");
+    expect(content).toContain("YOU HAVE BASE ERRORS");
+    expect((content.match(/#1 - <@100> - Alpha - :x:/g) ?? []).length).toBe(2);
+  });
+
   it("rejects fwa-bases overlap with war-bases and base-errors", () => {
     const warOverlap = parseFwaBaseSwapPositionSelectionsForTest({
       selections: [
