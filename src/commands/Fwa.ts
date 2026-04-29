@@ -329,7 +329,7 @@ const FWA_BASE_SWAP_SPLIT_PROMPT = "This base-swap post is too large for one Dis
 const FWA_BASE_SWAP_FWA_ANNOUNCEMENT_HEADING =
   "# {emoji} YOU HAVE AN ACTIVE FWA BASE {emoji}";
 const FWA_BASE_SWAP_FWA_ANNOUNCEMENT_NOTE =
-  "**These players currently have an active FWA base and must swap to a war base for the blacklist war before preparation ends.**";
+  "These players currently have an active FWA base. Please swap to an active war base to increase our chances of beating the blacklisted clan!";
 const FWA_BASE_SWAP_AUDIT_LOG_LIMIT = 1800;
 
 type FwaBaseSwapRenderVariant = "single" | "split_part_1" | "split_part_2";
@@ -781,8 +781,14 @@ function getBaseSwapTownhallLevel(member: unknown): number | null {
 
 function collectBaseSwapTownhallLevels(
   entries: readonly FwaBaseSwapAnnouncementEntry[],
+  sections: readonly FwaBaseSwapSection[] = ["war_bases", "base_errors"],
 ): number[] {
-  return [...new Set(entries.map((entry) => entry.townhallLevel))]
+  const sectionSet = new Set(sections);
+  return [...new Set(
+    entries
+      .filter((entry) => sectionSet.has(entry.section))
+      .map((entry) => entry.townhallLevel),
+  )]
     .filter(
       (townhall): townhall is number =>
         typeof townhall === "number" &&
@@ -1376,7 +1382,6 @@ function buildFwaBaseSwapAnnouncementLines(state: {
   if (lines.length > 0) {
     lines.push("", FWA_BASE_SWAP_SECTION_SEPARATOR);
     if (layoutLinkLines.length > 0) lines.push("", ...layoutLinkLines);
-    lines.push("", FWA_BASE_SWAP_SECTION_SEPARATOR);
     if (state.phaseTimingLine) lines.push("", state.phaseTimingLine);
     lines.push("", FWA_BASE_SWAP_REACT_LINE);
   }

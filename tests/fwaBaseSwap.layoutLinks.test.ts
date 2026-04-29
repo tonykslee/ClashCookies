@@ -150,6 +150,8 @@ describe("FWA base-swap layout links", () => {
     const th17Index = content.indexOf(th17Line);
     const reactIndex = content.indexOf(reactLine);
     const playerLineIndex = content.indexOf("#2 - *(unlinked)* - Bravo - :x:");
+    const lines = content.split("\n");
+    const th17LineIndex = lines.lastIndexOf(th17Line);
 
     expect(th18Index).toBeGreaterThan(-1);
     expect(th17Index).toBeGreaterThan(-1);
@@ -157,6 +159,7 @@ describe("FWA base-swap layout links", () => {
     expect(playerLineIndex).toBeGreaterThan(-1);
     expect(th18Index).toBeGreaterThan(playerLineIndex);
     expect(reactIndex).toBeGreaterThan(th17Index);
+    expect(lines[th17LineIndex + 2]).toBe(reactLine);
   });
 
   it("builds preparation-day phase timing lines from prep-end timestamps", () => {
@@ -355,6 +358,78 @@ describe("FWA base-swap layout links", () => {
           townhall: 18,
           layoutLink:
             "https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg",
+        }),
+      ],
+    });
+
+    expect(content).toContain("TH18:");
+    expect(content).not.toContain("TH17:");
+  });
+
+  it("filters fwa-bases from layout links while keeping war-bases links", () => {
+    const content = renderFwaBaseSwapAnnouncementForTest({
+      entries: [
+        buildEntry({
+          position: 1,
+          playerTag: "#AAA111",
+          playerName: "Alpha",
+          section: "war_bases",
+          townhallLevel: 18,
+        }),
+        buildEntry({
+          position: 2,
+          playerTag: "#BBB222",
+          playerName: "Bravo",
+          section: "fwa_bases",
+          townhallLevel: 17,
+        }),
+      ],
+      layoutLinks: [
+        buildLayoutLink({
+          townhall: 18,
+          layoutLink:
+            "https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg",
+        }),
+        buildLayoutLink({
+          townhall: 17,
+          layoutLink:
+            "https://link.clashofclans.com/en?action=OpenLayout&id=TH17%3AWB%3AAAAARQAAAAI6ppxkTfH3WnNJjWK96bqn",
+        }),
+      ],
+    });
+
+    expect(content).toContain("TH18:");
+    expect(content).not.toContain("TH17:");
+  });
+
+  it("filters fwa-bases from layout links while keeping base-errors links", () => {
+    const content = renderFwaBaseSwapAnnouncementForTest({
+      entries: [
+        buildEntry({
+          position: 1,
+          playerTag: "#AAA111",
+          playerName: "Alpha",
+          section: "base_errors",
+          townhallLevel: 18,
+        }),
+        buildEntry({
+          position: 2,
+          playerTag: "#BBB222",
+          playerName: "Bravo",
+          section: "fwa_bases",
+          townhallLevel: 17,
+        }),
+      ],
+      layoutLinks: [
+        buildLayoutLink({
+          townhall: 18,
+          layoutLink:
+            "https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg",
+        }),
+        buildLayoutLink({
+          townhall: 17,
+          layoutLink:
+            "https://link.clashofclans.com/en?action=OpenLayout&id=TH17%3AWB%3AAAAARQAAAAI6ppxkTfH3WnNJjWK96bqn",
         }),
       ],
     });
@@ -587,8 +662,9 @@ describe("FWA base-swap layout links", () => {
 
     expect(content).toContain("YOU HAVE AN ACTIVE FWA BASE");
     expect(content).toContain(
-      "currently have an active FWA base and must swap to a war base for the blacklist war",
+      "These players currently have an active FWA base. Please swap to an active war base to increase our chances of beating the blacklisted clan!",
     );
+    expect(content).not.toContain("TH18:");
     expect(content).toContain("Preparation Day ends <t:1740000000:F>");
     expect(content).toContain(
       `React with ${FWA_BASE_SWAP_ACK_EMOJI} once your base is fixed.`,
