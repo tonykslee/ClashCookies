@@ -36,6 +36,7 @@ import { GoogleSheetsService } from "../services/GoogleSheetsService";
 import { SettingsService } from "../services/SettingsService";
 import { trackedMessageService } from "../services/TrackedMessageService";
 import { wrapDiscordLink } from "../services/FwaLayoutService";
+import { BotLogChannelService } from "../services/BotLogChannelService";
 import {
   WarComplianceService,
   type WarComplianceIssue,
@@ -329,6 +330,7 @@ const FWA_BASE_SWAP_FWA_ANNOUNCEMENT_HEADING =
   "# {emoji} YOU HAVE AN ACTIVE FWA BASE {emoji}";
 const FWA_BASE_SWAP_FWA_ANNOUNCEMENT_NOTE =
   "**These players currently have an active FWA base and must swap to a war base for the blacklist war before preparation ends.**";
+const FWA_BASE_SWAP_AUDIT_LOG_LIMIT = 1800;
 
 type FwaBaseSwapRenderVariant = "single" | "split_part_1" | "split_part_2";
 
@@ -340,10 +342,12 @@ type FwaBaseSwapRenderPlan = {
 
 type FwaBaseSwapSplitPostPayload = {
   userId: string;
+  username: string;
   guildId: string;
   channelId: string;
   clanTag: string;
   clanName: string;
+  commandText: string;
   entries: FwaBaseSwapAnnouncementEntry[];
   layoutLinks?: FwaBaseSwapLayoutLink[];
   phaseTimingLine?: string | null;
@@ -518,6 +522,18 @@ export async function handleFwaBaseSwapSplitPostButton(
           err,
         )}`,
       );
+    });
+
+    await logFwaBaseSwapPublication({
+      client: interaction.client,
+      guildId: payload.guildId,
+      sourceChannelId: payload.channelId,
+      userId: payload.userId,
+      username: payload.username,
+      clanTag: payload.clanTag,
+      clanName: payload.clanName,
+      commandText: payload.commandText,
+      messageUrls: [postedA.url, postedB.url],
     });
 
     await deliverFwaBaseSwapDmMessages({
@@ -1060,6 +1076,140 @@ async function deliverFwaBaseSwapDmMessages(input: {
       )}`,
     );
     return "failed_unnoticed";
+  }
+}
+
+/** Purpose: resolve configured bot-log destination channel for the current guild, clearing stale ids when the channel is missing. */
+async function resolveBotLogChannel(
+  client: Client,
+  guildId: string | null,
+  botLogChannelService: BotLogChannelService,
+): Promise<{ send: (payload: { content: string }) => Promise<unknown> } | null> {
+  if (!guildId) return null;
+
+  const configuredChannelId = await botLogChannelService.getChannelId(guildId);
+  if (!configuredChannelId) return null;
+
+  let fetchedChannel: unknown;
+  try {
+    fetchedChannel = await client.channels.fetch(configuredChannelId);
+  } catch (error) {
+    const code = (error as { code?: number } | null | undefined)?.code;
+    if (code === 10003) {
+      await botLogChannelService.clearChannelId(guildId);
+    }
+    return null;
+  }
+
+  if (!fetchedChannel) {
+    await botLogChannelService.clearChannelId(guildId);
+    return null;
+  }
+
+  const logChannel = fetchedChannel as {
+    guildId?: string;
+    isTextBased?: () => boolean;
+    send?: (payload: { content: string }) => Promise<unknown>;
+  };
+
+  const logGuildId = String(logChannel.guildId ?? "").trim();
+  if (!logGuildId || logGuildId !== guildId) {
+    await botLogChannelService.clearChannelId(guildId);
+    return null;
+  }
+  if (typeof logChannel.isTextBased !== "function" || !logChannel.isTextBased()) {
+    return null;
+  }
+  if (typeof logChannel.send !== "function") {
+    return null;
+  }
+
+  return { send: logChannel.send.bind(logChannel) };
+}
+
+function formatFwaBaseSwapAuditBlock(input: string | null | undefined): string {
+  const normalized = String(input ?? "").trim();
+  if (!normalized) return "(none)";
+  return truncateDiscordContent(normalized.replaceAll("```", "'''"), 1200);
+}
+
+function buildFwaBaseSwapAuditLogContent(input: {
+  userId: string;
+  username: string;
+  sourceChannelId: string | null;
+  clanTag: string;
+  clanName: string;
+  commandText: string;
+  messageUrls: readonly string[];
+}): string {
+  const displayUsername = String(input.username ?? "").trim() || "unknown";
+  const links = input.messageUrls
+    .map((url) => String(url ?? "").trim())
+    .filter(Boolean);
+  const lines = [
+    "FWA base-swap announcement posted",
+    `<@${input.userId}> (${displayUsername}, ${input.userId}) posted /fwa base-swap in ${input.sourceChannelId ? `<#${input.sourceChannelId}>` : "unknown"} for ${input.clanName} (#${input.clanTag})`,
+    `Source channel: ${input.sourceChannelId ? `<#${input.sourceChannelId}>` : "unknown"}`,
+    "Posted message link(s):",
+    ...(links.length > 0 ? links.map((link) => `- ${link}`) : ["- (none)"]),
+    "Command:",
+    "```text",
+    formatFwaBaseSwapAuditBlock(input.commandText),
+    "```",
+  ];
+  return truncateDiscordContent(lines.join("\n"), FWA_BASE_SWAP_AUDIT_LOG_LIMIT);
+}
+
+function buildFwaBaseSwapCommandText(input: {
+  clanTag: string;
+  warBases: string | null;
+  fwaBases: string | null;
+  baseErrors: string | null;
+}): string {
+  const parts = [`/fwa base-swap clan:${input.clanTag}`];
+  const appendOption = (name: string, value: string | null) => {
+    const normalized = String(value ?? "").trim();
+    if (!normalized) return;
+    parts.push(`${name}:${normalized}`);
+  };
+  appendOption("war-bases", input.warBases);
+  appendOption("fwa-bases", input.fwaBases);
+  appendOption("base-errors", input.baseErrors);
+  return parts.join(" ");
+}
+
+async function logFwaBaseSwapPublication(input: {
+  client: Client;
+  guildId: string | null;
+  sourceChannelId: string | null;
+  userId: string;
+  username: string;
+  clanTag: string;
+  clanName: string;
+  commandText: string;
+  messageUrls: readonly string[];
+}): Promise<void> {
+  const logChannel = await resolveBotLogChannel(
+    input.client,
+    input.guildId,
+    new BotLogChannelService(),
+  );
+  if (!logChannel) return;
+
+  try {
+    await logChannel.send({
+      content: buildFwaBaseSwapAuditLogContent({
+        userId: input.userId,
+        username: input.username,
+        sourceChannelId: input.sourceChannelId,
+        clanTag: input.clanTag,
+        clanName: input.clanName,
+        commandText: input.commandText,
+        messageUrls: input.messageUrls,
+      }),
+    });
+  } catch {
+    // non-blocking: base-swap publishing must succeed even if bot-log posting fails
   }
 }
 
@@ -8659,6 +8809,11 @@ export const buildFwaBaseSwapBaseErrorDmLinesForTest =
   buildFwaBaseSwapBaseErrorDmLines;
 export const buildFwaBaseSwapDmContentForTest = buildFwaBaseSwapDmContent;
 export const deliverFwaBaseSwapDmMessagesForTest = deliverFwaBaseSwapDmMessages;
+export const buildFwaBaseSwapAuditLogContentForTest =
+  buildFwaBaseSwapAuditLogContent;
+export const buildFwaBaseSwapCommandTextForTest =
+  buildFwaBaseSwapCommandText;
+export const logFwaBaseSwapPublicationForTest = logFwaBaseSwapPublication;
 export const buildFwaBaseSwapRenderPlanForTest = buildFwaBaseSwapRenderPlan;
 export const splitFwaBaseSwapAnnouncementLinesForTest =
   splitFwaBaseSwapAnnouncementLines;
@@ -12717,22 +12872,31 @@ export const Fwa: Command = {
         return;
       }
       const clanTag = normalizeTag(interaction.options.getString("clan", true));
+      const warBasesRaw = interaction.options.getString("war-bases", false);
+      const fwaBasesRaw = interaction.options.getString("fwa-bases", false);
+      const baseErrorsRaw = interaction.options.getString("base-errors", false);
+      const commandText = buildFwaBaseSwapCommandText({
+        clanTag,
+        warBases: warBasesRaw,
+        fwaBases: fwaBasesRaw,
+        baseErrors: baseErrorsRaw,
+      });
       const parsedSelectionsResult = parseFwaBaseSwapPositionSelections({
         selections: [
           {
             label: "war-bases",
             section: "war_bases",
-            raw: interaction.options.getString("war-bases", false),
+            raw: warBasesRaw,
           },
           {
             label: "base-errors",
             section: "base_errors",
-            raw: interaction.options.getString("base-errors", false),
+            raw: baseErrorsRaw,
           },
           {
             label: "fwa-bases",
             section: "fwa_bases",
-            raw: interaction.options.getString("fwa-bases", false),
+            raw: fwaBasesRaw,
           },
         ],
       });
@@ -12900,10 +13064,12 @@ export const Fwa: Command = {
         const key = createTransientFwaKey();
         fwaBaseSwapSplitPostPayloads.set(key, {
           userId: interaction.user.id,
+          username: interaction.user.username,
           guildId: interaction.guildId,
           channelId: interaction.channelId,
           clanTag,
           clanName,
+          commandText,
           entries,
           layoutLinks,
           phaseTimingLine: baseSwapPhaseTimingLine,
@@ -12970,6 +13136,18 @@ export const Fwa: Command = {
             err,
           )}`,
         );
+      });
+
+      await logFwaBaseSwapPublication({
+        client: interaction.client,
+        guildId: interaction.guildId,
+        sourceChannelId: interaction.channelId,
+        userId: interaction.user.id,
+        username: interaction.user.username,
+        clanTag,
+        clanName,
+        commandText,
+        messageUrls: [posted.url],
       });
 
       await editReplySafe(
