@@ -29,6 +29,15 @@ describe("tracked message metadata parsing", () => {
           acknowledged: 1,
         },
         {
+          position: "2",
+          playerTag: " #BBB222 ",
+          playerName: " Bravo ",
+          discordUserId: " 888 ",
+          townhallLevel: "17",
+          section: "fwa_bases",
+          acknowledged: false,
+        },
+        {
           position: 0,
           playerTag: "#DROP",
           playerName: "Drop",
@@ -64,6 +73,15 @@ describe("tracked message metadata parsing", () => {
           townhallLevel: 18,
           section: "base_errors",
           acknowledged: true,
+        },
+        {
+          position: 2,
+          playerTag: "#BBB222",
+          playerName: "Bravo",
+          discordUserId: "888",
+          townhallLevel: 17,
+          section: "fwa_bases",
+          acknowledged: false,
         },
       ],
       layoutLinks: [
