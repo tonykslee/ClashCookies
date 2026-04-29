@@ -232,6 +232,7 @@ import {
 } from "../src/services/RosterService";
 import { resolveCurrentCwlSeasonKey } from "../src/services/CwlRegistryService";
 import { PLAYER_CURRENT_SIGNUP_MAX_AGE_MS } from "../src/services/PlayerCurrentService";
+import { rosterService, ROSTER_LIFECYCLE_STATE } from "../src/services/RosterService";
 
 describe("RosterService", () => {
   function mockConflictLookupForLifecycleState(
@@ -5059,6 +5060,74 @@ describe("RosterService", () => {
       expect.objectContaining({
         where: expect.objectContaining({
           guildId: "guild-1",
+        }),
+      }),
+    );
+  });
+
+  it("lists only open-or-closed CWL rosters for the selected clan in roster autocomplete", async () => {
+    prismaMock.roster.findMany.mockResolvedValueOnce([
+      {
+        id: "roster-1",
+        guildId: "guild-1",
+        rosterType: "CWL",
+        rosterCategory: "signup",
+        title: "CWL Alpha Open",
+        clanTag: "#2QG2C08UP",
+        startsAt: new Date("2026-04-20T00:00:00.000Z"),
+        endsAt: null,
+        timezone: "UTC",
+        displayTimezone: "UTC",
+        maxMembers: 15,
+        maxAccountsPerUser: null,
+        minTownhall: null,
+        maxTownhall: null,
+        rosterRoleId: null,
+        allowMultiSignup: true,
+        sortBy: null,
+        displayColumns: null,
+        importMembers: false,
+        postButtonMode: "standard",
+        lifecycleState: "OPEN",
+        postedChannelId: null,
+        postedMessageId: null,
+        postedMessageUrl: null,
+        postedAt: null,
+        createdByDiscordUserId: null,
+        updatedByDiscordUserId: null,
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+        _count: { groups: 1, signups: 2 },
+      },
+    ] as any);
+
+    const rosters = await rosterService.listCwlRostersForClan({
+      guildId: "guild-1",
+      clanTag: "#2QG2C08UP",
+      query: "alpha",
+    });
+
+    expect(rosters).toEqual([
+      expect.objectContaining({
+        id: "roster-1",
+        title: "CWL Alpha Open",
+        rosterType: "CWL",
+        lifecycleState: "OPEN",
+      }),
+    ]);
+    expect(prismaMock.roster.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          guildId: "guild-1",
+          rosterType: "CWL",
+          clanTag: "#2QG2C08UP",
+          lifecycleState: {
+            in: [ROSTER_LIFECYCLE_STATE.OPEN, ROSTER_LIFECYCLE_STATE.CLOSED],
+          },
+          title: {
+            contains: "alpha",
+            mode: "insensitive",
+          },
         }),
       }),
     );

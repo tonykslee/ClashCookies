@@ -55,6 +55,7 @@ function makeInteraction(input: {
     | "import"
     | "export";
   clan?: string | null;
+  roster?: string | null;
   groupKey?: string | null;
   players?: string | null;
   timezone?: string | null;
@@ -65,11 +66,14 @@ function makeInteraction(input: {
 }) {
   return {
     user: { id: "111111111111111111" },
+    guildId: "guild-1",
+    inGuild: () => true,
     options: {
       getSubcommandGroup: vi.fn().mockReturnValue(input.group ?? null),
       getSubcommand: vi.fn().mockReturnValue(input.subcommand),
       getString: vi.fn((name: string) => {
         if (name === "clan") return input.clan ?? null;
+        if (name === "roster") return input.roster ?? null;
         if (name === "group") return input.groupKey ?? null;
         if (name === "players") return input.players ?? null;
         if (name === "timezone") return input.timezone ?? null;
@@ -92,9 +96,19 @@ function makeInteraction(input: {
   };
 }
 
-function makeAutocompleteInteraction(value: string, name: "clan" | "day" = "clan") {
+function makeAutocompleteInteraction(
+  value: string,
+  name: "clan" | "day" | "roster" = "clan",
+  clan: string | null = "#2QG2C08UP",
+) {
   return {
+    guildId: "guild-1",
+    inGuild: () => true,
     options: {
+      getString: vi.fn((optionName: string) => {
+        if (optionName === "clan") return clan;
+        return null;
+      }),
       getFocused: vi.fn(() => ({ name, value })),
     },
     respond: vi.fn().mockResolvedValue(undefined),
@@ -244,6 +258,7 @@ describe("/cwl command", () => {
     vi.spyOn(rosterService, "updateRosterLifecycleState");
     vi.spyOn(rosterService, "recordRosterPostedMessage");
     vi.spyOn(rosterService, "getRosterView");
+    vi.spyOn(rosterService, "listCwlRostersForClan");
     vi.spyOn(rosterService, "getRosterRoleSyncTargets").mockResolvedValue(null as any);
     vi.spyOn(rosterService, "updateRosterSelectionPanel");
     vi.spyOn(rosterService, "confirmRosterSelectionPanel");
@@ -253,6 +268,7 @@ describe("/cwl command", () => {
     vi.spyOn(rosterService, "moveRosterSignups");
     vi.spyOn(rosterService, "removeRosterSignupsAsManager");
     vi.spyOn(rosterService, "buildRosterManagerReadinessText");
+    vi.spyOn(cwlRotationService, "createPlanFromRoster");
     (rosterService.buildRosterSignupPayload as any).mockResolvedValue({
       embed: new EmbedBuilder().setTitle("Roster Signup"),
       components: [],
@@ -967,6 +983,125 @@ describe("/cwl command", () => {
     expect(getDescription(interaction)).toContain("Created CWL rotation plan for #2QG2C08UP.");
     expect(getDescription(interaction)).toContain("Version: 2");
     expect(getDescription(interaction)).toContain("Could not reach 5 planned CWL days");
+  });
+
+  it("renders roster-backed created-plan output with source and warnings for /cwl rotations create", async () => {
+    vi.spyOn(cwlRotationService, "createPlanFromRoster").mockResolvedValue({
+      outcome: "created",
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      rosterId: "roster-1",
+      rosterTitle: "CWL Alpha roster",
+      version: 3,
+      lineupSize: 2,
+      warnings: ["Missing Town Hall data for confirmed roster players: Charlie (#P3)."],
+      sourceLabel: "CWL roster - CWL Alpha roster",
+    });
+    const interaction = makeInteraction({
+      group: "rotations",
+      subcommand: "create",
+      clan: "#2QG2C08UP",
+      roster: "roster-1",
+      overwrite: true,
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    expect(cwlRotationService.createPlanFromRoster).toHaveBeenCalledWith({
+      clanTag: "#2QG2C08UP",
+      rosterId: "roster-1",
+      guildId: "guild-1",
+      overwrite: true,
+    });
+    expect(getDescription(interaction)).toContain("Created CWL rotation plan for #2QG2C08UP.");
+    expect(getDescription(interaction)).toContain("Source: CWL roster - CWL Alpha roster");
+    expect(getDescription(interaction)).toContain("Version: 3");
+    expect(getDescription(interaction)).toContain("Missing Town Hall data for confirmed roster players");
+  });
+
+  it.each([
+    [
+      "roster_not_found",
+      { outcome: "roster_not_found", season: "2026-04", clanTag: "#2QG2C08UP", rosterId: "roster-1" },
+      "That roster no longer exists.",
+    ],
+    [
+      "roster_not_cwl",
+      {
+        outcome: "roster_not_cwl",
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        rosterId: "roster-1",
+        rosterType: "FWA",
+      },
+      "That roster is not a CWL roster.",
+    ],
+    [
+      "roster_archived",
+      {
+        outcome: "roster_archived",
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        rosterId: "roster-1",
+        rosterTitle: "CWL Alpha roster",
+      },
+      "That roster is archived.",
+    ],
+    [
+      "roster_not_open_or_closed",
+      {
+        outcome: "roster_not_open_or_closed",
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        rosterId: "roster-1",
+        rosterTitle: "CWL Alpha roster",
+        lifecycleState: "ACTIVE",
+      },
+      "That CWL roster must be open or closed before it can be used for rotation creation.",
+    ],
+    [
+      "roster_clan_mismatch",
+      {
+        outcome: "roster_clan_mismatch",
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        rosterId: "roster-1",
+        rosterTitle: "CWL Beta roster",
+        rosterClanTag: "#9GLGQCCU",
+      },
+      "That roster belongs to #9GLGQCCU, not #2QG2C08UP.",
+    ],
+    [
+      "no_confirmed_players",
+      {
+        outcome: "no_confirmed_players",
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        rosterId: "roster-1",
+        rosterTitle: "CWL Alpha roster",
+      },
+      "That roster has no confirmed signed-up accounts.",
+    ],
+  ])("rejects roster-backed create when %s", async (_outcome, response, expectedMessage) => {
+    vi.mocked(cwlRotationService.createPlanFromRoster).mockResolvedValueOnce(response as any);
+    const interaction = makeInteraction({
+      group: "rotations",
+      subcommand: "create",
+      clan: "#2QG2C08UP",
+      roster: "roster-1",
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    expect(cwlRotationService.createPlanFromRoster).toHaveBeenCalledWith(
+      expect.objectContaining({
+        clanTag: "#2QG2C08UP",
+        rosterId: "roster-1",
+        guildId: "guild-1",
+        overwrite: false,
+      }),
+    );
+    expect(String(interaction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(expectedMessage);
   });
 
   it("renders overview status lines for /cwl rotations show with no clan filter", async () => {
@@ -3314,6 +3449,36 @@ describe("/cwl command", () => {
     expect(prismaMock.cwlTrackedClan.findMany).toHaveBeenCalled();
     expect(interaction.respond).toHaveBeenCalledWith([
       { name: "CWL Alpha (#2QG2C08UP)", value: "#2QG2C08UP" },
+    ]);
+  });
+
+  it("returns no roster autocomplete choices without a selected clan", async () => {
+    const interaction = makeAutocompleteInteraction("ro", "roster", null);
+
+    await Cwl.autocomplete(interaction as any);
+
+    expect(rosterService.listCwlRostersForClan).not.toHaveBeenCalled();
+    expect(interaction.respond).toHaveBeenCalledWith([]);
+  });
+
+  it("autocompletes roster-backed CWL rotations from the selected clan", async () => {
+    (rosterService.listCwlRostersForClan as any).mockResolvedValue([
+      { id: "roster-1", title: "CWL Alpha Roster", lifecycleState: "OPEN", clanTag: "#2QG2C08UP" },
+      { id: "roster-2", title: "CWL Alpha Closed", lifecycleState: "CLOSED", clanTag: "#2QG2C08UP" },
+    ]);
+    const interaction = makeAutocompleteInteraction("alpha", "roster", "#2qg2c08up");
+
+    await Cwl.autocomplete(interaction as any);
+
+    expect(rosterService.listCwlRostersForClan).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      clanTag: "#2QG2C08UP",
+      query: "alpha",
+      limit: 25,
+    });
+    expect(interaction.respond).toHaveBeenCalledWith([
+      { name: "CWL Alpha Roster", value: "roster-1" },
+      { name: "CWL Alpha Closed", value: "roster-2" },
     ]);
   });
 });

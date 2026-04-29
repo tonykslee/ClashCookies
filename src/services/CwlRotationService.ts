@@ -2,8 +2,9 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "../prisma";
 import { resolveCurrentCwlSeasonKey } from "./CwlRegistryService";
 import { cwlStateService, type CwlActualLineup, type CwlSeasonRosterEntry } from "./CwlStateService";
-import { normalizeClanTag, normalizePlayerTag } from "./PlayerLinkService";
+import { normalizeClanTag, normalizePersistedPlayerName, normalizePlayerTag } from "./PlayerLinkService";
 import { FwaClanMembersSyncService } from "./fwa-feeds/FwaClanMembersSyncService";
+import { rosterService, ROSTER_LIFECYCLE_STATE } from "./RosterService";
 
 type CwlRotationPlanPlayerRow = {
   playerTag: string;
@@ -101,6 +102,76 @@ export type CreateCwlRotationPlanResult =
       clanTag: string;
       lineupSize: number;
       availablePlayers: number;
+    };
+
+export type CreateCwlRotationRosterPlanResult =
+  | {
+      outcome: "created";
+      season: string;
+      clanTag: string;
+      rosterId: string;
+      rosterTitle: string;
+      version: number;
+      lineupSize: number;
+      warnings: string[];
+      sourceLabel: string;
+    }
+  | {
+      outcome: "blocked_existing";
+      season: string;
+      clanTag: string;
+      rosterId: string;
+      rosterTitle: string;
+      existingVersion: number;
+    }
+  | {
+      outcome: "not_tracked";
+      season: string;
+      clanTag: string;
+      rosterId: string;
+    }
+  | {
+      outcome: "roster_not_found";
+      season: string;
+      clanTag: string;
+      rosterId: string;
+    }
+  | {
+      outcome: "roster_not_cwl";
+      season: string;
+      clanTag: string;
+      rosterId: string;
+      rosterType: string;
+    }
+  | {
+      outcome: "roster_clan_mismatch";
+      season: string;
+      clanTag: string;
+      rosterId: string;
+      rosterTitle: string;
+      rosterClanTag: string | null;
+    }
+  | {
+      outcome: "roster_archived";
+      season: string;
+      clanTag: string;
+      rosterId: string;
+      rosterTitle: string;
+    }
+  | {
+      outcome: "roster_not_open_or_closed";
+      season: string;
+      clanTag: string;
+      rosterId: string;
+      rosterTitle: string;
+      lifecycleState: string;
+    }
+  | {
+      outcome: "no_confirmed_players";
+      season: string;
+      clanTag: string;
+      rosterId: string;
+      rosterTitle: string;
     };
 
 export type PersistImportedCwlRotationPlanResult =
@@ -305,6 +376,52 @@ function buildCoverageWarnings(input: {
     `Could not reach 5 planned CWL days for: ${names}`,
     "Consider excluding lower-priority players to improve 5-day coverage.",
   ];
+}
+
+type CwlRosterRotationSourceEntry = {
+  playerTag: string;
+  playerName: string;
+  townHall: number | null;
+  weight: number | null;
+  signedUpAt: Date;
+};
+
+function compareCwlRosterRotationSourceEntries(
+  left: CwlRosterRotationSourceEntry,
+  right: CwlRosterRotationSourceEntry,
+): number {
+  const leftHasWeight = left.weight !== null;
+  const rightHasWeight = right.weight !== null;
+  if (leftHasWeight !== rightHasWeight) {
+    return leftHasWeight ? -1 : 1;
+  }
+  if (leftHasWeight && rightHasWeight && left.weight !== right.weight) {
+    const leftWeight = left.weight ?? -1;
+    const rightWeight = right.weight ?? -1;
+    return rightWeight - leftWeight;
+  }
+  const leftTownHall = left.townHall ?? -1;
+  const rightTownHall = right.townHall ?? -1;
+  if (leftTownHall !== rightTownHall) {
+    return rightTownHall - leftTownHall;
+  }
+  const byName = left.playerName.localeCompare(right.playerName, undefined, {
+    sensitivity: "base",
+  });
+  if (byName !== 0) return byName;
+  return left.playerTag.localeCompare(right.playerTag);
+}
+
+function buildCwlRosterRotationSourceLabel(rosterTitle: string | null | undefined): string {
+  const title = String(rosterTitle ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return title.length > 0 ? `CWL roster - ${title}` : "CWL roster";
+}
+
+function formatCwlRosterRotationPlayerLabel(input: { playerName: string | null; playerTag: string }): string {
+  const playerName = normalizePersistedPlayerName(input.playerName);
+  return playerName ? `${playerName} (${input.playerTag})` : input.playerTag;
 }
 
 async function loadActivePlan(input: {
@@ -725,6 +842,210 @@ export class CwlRotationService {
       version,
       lineupSize,
       warnings,
+    };
+  }
+
+  async createPlanFromRoster(input: {
+    clanTag: string;
+    rosterId: string;
+    guildId?: string | null;
+    overwrite?: boolean;
+    season?: string;
+  }): Promise<CreateCwlRotationRosterPlanResult> {
+    const season = input.season ?? resolveCurrentCwlSeasonKey();
+    const clanTag = normalizeClanTag(input.clanTag);
+    const rosterId = String(input.rosterId ?? "").trim();
+    if (!clanTag) {
+      return { outcome: "not_tracked", season, clanTag: "", rosterId };
+    }
+
+    const trackedClan = await prisma.cwlTrackedClan.findFirst({
+      where: { season, tag: clanTag },
+      select: { tag: true },
+    });
+    if (!trackedClan) {
+      return { outcome: "not_tracked", season, clanTag, rosterId };
+    }
+
+    const rosterView = await rosterService.getRosterView(rosterId);
+    if (!rosterView) {
+      return { outcome: "roster_not_found", season, clanTag, rosterId };
+    }
+
+    const roster = rosterView.roster;
+    if (input.guildId && roster.guildId !== input.guildId) {
+      return { outcome: "roster_not_found", season, clanTag, rosterId };
+    }
+
+    const rosterTitle = roster.title;
+    const rosterClanTag = normalizeClanTag(roster.clanTag ?? "");
+    if (roster.rosterType !== "CWL") {
+      return { outcome: "roster_not_cwl", season, clanTag, rosterId, rosterType: roster.rosterType };
+    }
+    if (roster.lifecycleState === ROSTER_LIFECYCLE_STATE.ARCHIVED) {
+      return { outcome: "roster_archived", season, clanTag, rosterId, rosterTitle };
+    }
+    if (
+      roster.lifecycleState !== ROSTER_LIFECYCLE_STATE.OPEN &&
+      roster.lifecycleState !== ROSTER_LIFECYCLE_STATE.CLOSED
+    ) {
+      return {
+        outcome: "roster_not_open_or_closed",
+        season,
+        clanTag,
+        rosterId,
+        rosterTitle,
+        lifecycleState: roster.lifecycleState,
+      };
+    }
+    if (!rosterClanTag || rosterClanTag !== clanTag) {
+      return {
+        outcome: "roster_clan_mismatch",
+        season,
+        clanTag,
+        rosterId,
+        rosterTitle,
+        rosterClanTag,
+      };
+    }
+
+    const confirmedSignups = rosterView.signups.filter((signup) => signup.group?.key === "confirmed");
+    const normalizedConfirmedSignups = confirmedSignups
+      .map((signup) => ({
+        playerTag: normalizePlayerTag(signup.playerTag),
+        playerName: normalizePersistedPlayerName(signup.playerName) ?? signup.playerTag,
+        townHall: signup.townHall ?? null,
+        weight: signup.weight ?? null,
+        signedUpAt: signup.signedUpAt,
+      }))
+      .filter((signup) => Boolean(signup.playerTag));
+    if (normalizedConfirmedSignups.length <= 0) {
+      return { outcome: "no_confirmed_players", season, clanTag, rosterId, rosterTitle };
+    }
+
+    const invalidTagPlayers = confirmedSignups
+      .filter((signup) => !normalizePlayerTag(signup.playerTag))
+      .map((signup) => formatCwlRosterRotationPlayerLabel({
+        playerName: signup.playerName ?? null,
+        playerTag: String(signup.playerTag ?? "").trim() || "unknown",
+      }));
+    const missingTownHallPlayers = normalizedConfirmedSignups
+      .filter((signup) => signup.townHall === null)
+      .map((signup) => formatCwlRosterRotationPlayerLabel({
+        playerName: signup.playerName,
+        playerTag: signup.playerTag,
+      }));
+
+    const dedupedConfirmedSignups = [...normalizedConfirmedSignups]
+      .sort(compareCwlRosterRotationSourceEntries)
+      .filter((signup, index, rows) => rows.findIndex((candidate) => candidate.playerTag === signup.playerTag) === index);
+    if (dedupedConfirmedSignups.length <= 0) {
+      return { outcome: "no_confirmed_players", season, clanTag, rosterId, rosterTitle };
+    }
+
+    const configuredLineupSize = roster.maxMembers && roster.maxMembers > 0 ? roster.maxMembers : 15;
+    const lineupSize = Math.max(1, Math.min(15, configuredLineupSize, dedupedConfirmedSignups.length));
+    const rosterEntries = dedupedConfirmedSignups.map<CwlSeasonRosterEntry>((signup) => ({
+      season,
+      clanTag,
+      playerTag: signup.playerTag,
+      playerName: signup.playerName,
+      townHall: signup.townHall,
+      linkedDiscordUserId: null,
+      linkedDiscordUsername: null,
+      daysParticipated: 0,
+      currentRound: null,
+    }));
+    const currentLineupTags = rosterEntries.slice(0, lineupSize).map((entry) => entry.playerTag);
+    const planDays = buildPlanDays({
+      roster: rosterEntries,
+      lineupSize,
+      currentRoundDay: 1,
+      currentLineupTags,
+      seedRoundAlreadyCountedInParticipation: false,
+    });
+    const warnings = [
+      ...(invalidTagPlayers.length > 0
+        ? [
+            `Skipped invalid confirmed roster tags: ${invalidTagPlayers.join(", ")}.`,
+          ]
+        : []),
+      ...(missingTownHallPlayers.length > 0
+        ? [
+            `Missing Town Hall data for confirmed roster players: ${missingTownHallPlayers.join(", ")}.`,
+          ]
+        : []),
+      ...buildCoverageWarnings({
+        roster: rosterEntries,
+        planDays,
+        currentRoundDay: 1,
+        seedRoundAlreadyCountedInParticipation: false,
+      }),
+    ];
+    const sourceLabel = buildCwlRosterRotationSourceLabel(rosterTitle);
+    const rosterRows = buildRosterRowsForMetadata(rosterEntries);
+    const existingActivePlan = await loadActivePlan({ clanTag, season });
+    if (existingActivePlan && !input.overwrite) {
+      return {
+        outcome: "blocked_existing",
+        season,
+        clanTag,
+        rosterId,
+        rosterTitle,
+        existingVersion: existingActivePlan.version,
+      };
+    }
+
+    const version = (existingActivePlan?.version ?? 0) + 1;
+    await prisma.$transaction(async (tx) => {
+      await persistRotationPlanVersion(tx, {
+        clanTag,
+        season,
+        version,
+        overwriteExisting: Boolean(existingActivePlan),
+        rosterSize: lineupSize,
+        generatedFromRoundDay: null,
+        excludedPlayerTags: [],
+        warningSummary: warnings.join(" | ") || null,
+        metadata: {
+          source: sourceLabel,
+          rosterId,
+          rosterTitle,
+          rosterClanTag,
+          rosterRows,
+          confirmedRosterSize: rosterEntries.length,
+          lineupSize,
+        } as Prisma.InputJsonValue,
+        days: planDays.map((day) => ({
+          roundDay: day.roundDay,
+          lineupSize,
+          locked: false,
+          metadata: {
+            source: sourceLabel,
+            rosterId,
+            rosterTitle,
+            generatedFromRoundDay: null,
+          } as Prisma.InputJsonValue,
+          members: day.members.map((member, index) => ({
+            playerTag: member.playerTag,
+            playerName: member.playerName,
+            assignmentOrder: index,
+            manualOverride: false,
+          })),
+        })),
+      });
+    });
+
+    return {
+      outcome: "created",
+      season,
+      clanTag,
+      rosterId,
+      rosterTitle,
+      version,
+      lineupSize,
+      warnings,
+      sourceLabel,
     };
   }
 
