@@ -10,9 +10,12 @@ import {
   EmbedBuilder,
 } from "discord.js";
 import { Command } from "../Command";
+import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
 import { playerCurrentService } from "../services/PlayerCurrentService";
 import { listPlayerLinksForDiscordUser } from "../services/PlayerLinkService";
+import { runWithCoCQueueContext } from "../services/CoCQueueContext";
+import { toFailureTelemetry } from "../services/telemetry/ingest";
 
 type AccountRow = {
   tag: string;
@@ -49,6 +52,7 @@ type PlayerCurrentSnapshot = Awaited<
   : never;
 
 const MAX_ACCOUNTS_PER_PAGE = 18;
+const ACCOUNTS_REFRESH_QUEUE_SOURCE = "accounts:list:refresh";
 
 function normalizeTag(input: string): string {
   const trimmed = input.trim().toUpperCase();
@@ -273,6 +277,8 @@ async function buildAccountsRows(input: {
 async function refreshAccountsPlayerCurrentData(input: {
   cocService: unknown;
   tags: string[];
+  guildId: string;
+  userId: string;
 }): Promise<void> {
   const coc = input.cocService as { getPlayerRaw?: (tag: string) => Promise<any> } | null;
   const getPlayerRaw = coc?.getPlayerRaw?.bind(coc) ?? null;
@@ -281,16 +287,32 @@ async function refreshAccountsPlayerCurrentData(input: {
   const existingByTag = await playerCurrentService.listPlayerCurrentByTags(input.tags);
   await Promise.all(
     input.tags.map(async (tag) => {
-      const livePlayer = await getPlayerRaw(tag).catch(() => null);
+      let livePlayer: any = null;
+      try {
+        livePlayer = await getPlayerRaw(tag);
+      } catch (err) {
+        const failure = toFailureTelemetry(err);
+        console.error(
+          `[accounts] command=/accounts source=${ACCOUNTS_REFRESH_QUEUE_SOURCE} stage=fetch guild=${input.guildId} user=${input.userId} tag=${tag} errorCategory=${failure.errorCategory} errorCode=${failure.errorCode} error=${formatError(err)}`,
+        );
+        return;
+      }
+
       if (!livePlayer) return;
-      await playerCurrentService
-        .upsertPlayerCurrentFromLivePlayer({
+
+      try {
+        await playerCurrentService.upsertPlayerCurrentFromLivePlayer({
           playerTag: tag,
           livePlayer,
           existing: existingByTag.get(tag) ?? null,
           source: "accounts-refresh",
-        })
-        .catch(() => undefined);
+        });
+      } catch (err) {
+        const failure = toFailureTelemetry(err);
+        console.error(
+          `[accounts] command=/accounts source=${ACCOUNTS_REFRESH_QUEUE_SOURCE} stage=upsert guild=${input.guildId} user=${input.userId} tag=${tag} errorCategory=${failure.errorCategory} errorCode=${failure.errorCode} error=${formatError(err)}`,
+        );
+      }
     }),
   );
 }
@@ -568,10 +590,19 @@ export const Accounts: Command = {
             components: buildAccountsControlsRow(prefix, page, embeds.length, true),
           });
           try {
-            await refreshAccountsPlayerCurrentData({
-              cocService,
-              tags: uniqueTags,
-            });
+            await runWithCoCQueueContext(
+              {
+                priority: "interactive",
+                source: ACCOUNTS_REFRESH_QUEUE_SOURCE,
+              },
+              () =>
+                refreshAccountsPlayerCurrentData({
+                  cocService,
+                  tags: uniqueTags,
+                  guildId,
+                  userId: interaction.user.id,
+                }),
+            );
             const refreshedRows = await buildAccountsRows({
               guildId,
               linkedNameByTag,
