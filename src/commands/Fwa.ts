@@ -302,6 +302,7 @@ type FwaBaseSwapAnnouncementState = {
   layoutLinks?: FwaBaseSwapLayoutLink[];
   phaseTimingLine?: string | null;
   alertEmoji?: string | null;
+  fwaAlertEmoji?: string | null;
   layoutBulletEmoji?: string | null;
   createdAtIso: string;
 };
@@ -310,6 +311,7 @@ const FWA_BASE_SWAP_TTL_MS = 48 * 60 * 60 * 1000;
 export const FWA_BASE_SWAP_ACK_EMOJI = "✅";
 const FWA_BASE_SWAP_LAYOUT_TYPE = "RISINGDAWN";
 const FWA_BASE_SWAP_ALERT_EMOJI_NAME = "alert";
+const FWA_BASE_SWAP_FWA_ALERT_EMOJI_NAME = "alert_blue";
 const FWA_BASE_SWAP_LAYOUT_BULLET_EMOJI_NAME = "arrow_arrow";
 export const FWA_BASE_SWAP_ALERT_FALLBACK_EMOJI = "\u26A0\uFE0F";
 export const FWA_BASE_SWAP_LAYOUT_BULLET_FALLBACK_EMOJI = "\u27A1\uFE0F";
@@ -352,6 +354,7 @@ type FwaBaseSwapSplitPostPayload = {
   layoutLinks?: FwaBaseSwapLayoutLink[];
   phaseTimingLine?: string | null;
   alertEmoji?: string | null;
+  fwaAlertEmoji?: string | null;
   layoutBulletEmoji?: string | null;
   mentionUserIds: string[];
   swapReminder: boolean;
@@ -361,6 +364,7 @@ type FwaBaseSwapSplitPostPayload = {
 
 type FwaBaseSwapResolvedInlineEmojis = {
   alertEmoji: string;
+  fwaAlertEmoji: string;
   layoutBulletEmoji: string;
 };
 
@@ -1288,6 +1292,7 @@ async function resolveFwaBaseSwapInlineEmojis(
 ): Promise<FwaBaseSwapResolvedInlineEmojis> {
   const fallback: FwaBaseSwapResolvedInlineEmojis = {
     alertEmoji: FWA_BASE_SWAP_ALERT_FALLBACK_EMOJI,
+    fwaAlertEmoji: FWA_BASE_SWAP_ALERT_FALLBACK_EMOJI,
     layoutBulletEmoji: FWA_BASE_SWAP_LAYOUT_BULLET_FALLBACK_EMOJI,
   };
   const inventoryResult =
@@ -1307,6 +1312,8 @@ async function resolveFwaBaseSwapInlineEmojis(
 
   return {
     alertEmoji: resolveByName(FWA_BASE_SWAP_ALERT_EMOJI_NAME) ?? fallback.alertEmoji,
+    fwaAlertEmoji:
+      resolveByName(FWA_BASE_SWAP_FWA_ALERT_EMOJI_NAME) ?? fallback.alertEmoji,
     layoutBulletEmoji:
       resolveByName(FWA_BASE_SWAP_LAYOUT_BULLET_EMOJI_NAME) ??
       fallback.layoutBulletEmoji,
@@ -1340,10 +1347,14 @@ function buildFwaBaseSwapAnnouncementLines(state: {
   layoutLinks?: FwaBaseSwapLayoutLink[];
   phaseTimingLine?: string | null;
   alertEmoji?: string | null;
+  fwaAlertEmoji?: string | null;
   layoutBulletEmoji?: string | null;
 }): string[] {
   const alertEmoji =
     String(state.alertEmoji ?? "").trim() || FWA_BASE_SWAP_ALERT_FALLBACK_EMOJI;
+  const fwaAlertEmoji =
+    String(state.fwaAlertEmoji ?? state.alertEmoji ?? "").trim() ||
+    FWA_BASE_SWAP_ALERT_FALLBACK_EMOJI;
   const layoutBulletEmoji =
     String(state.layoutBulletEmoji ?? "").trim() ||
     FWA_BASE_SWAP_LAYOUT_BULLET_FALLBACK_EMOJI;
@@ -1382,7 +1393,7 @@ function buildFwaBaseSwapAnnouncementLines(state: {
       entries: state.entries,
       section: "fwa_bases",
       headingLine: FWA_BASE_SWAP_FWA_ANNOUNCEMENT_HEADING.split("{emoji}").join(
-        alertEmoji,
+        fwaAlertEmoji,
       ),
       noteLine: FWA_BASE_SWAP_FWA_ANNOUNCEMENT_NOTE,
       separatorBefore: true,
@@ -1460,6 +1471,7 @@ function buildFwaBaseSwapRenderPlan(state: {
   layoutLinks?: FwaBaseSwapLayoutLink[];
   phaseTimingLine?: string | null;
   alertEmoji?: string | null;
+  fwaAlertEmoji?: string | null;
   layoutBulletEmoji?: string | null;
 }): FwaBaseSwapRenderPlan {
   const lines = buildFwaBaseSwapAnnouncementLines(state);
@@ -1484,6 +1496,7 @@ function renderFwaBaseSwapAnnouncement(
     layoutLinks?: FwaBaseSwapLayoutLink[];
     phaseTimingLine?: string | null;
     alertEmoji?: string | null;
+    fwaAlertEmoji?: string | null;
     layoutBulletEmoji?: string | null;
     renderVariant?: FwaBaseSwapRenderVariant;
   },
@@ -13094,6 +13107,7 @@ export const Fwa: Command = {
         layoutLinks,
         phaseTimingLine: baseSwapPhaseTimingLine,
         alertEmoji: inlineEmojis.alertEmoji,
+        fwaAlertEmoji: inlineEmojis.fwaAlertEmoji,
         layoutBulletEmoji: inlineEmojis.layoutBulletEmoji,
       });
       const mentionUserIds = buildFwaBaseSwapMentionUserIds(entries);
@@ -13120,6 +13134,7 @@ export const Fwa: Command = {
           layoutLinks,
           phaseTimingLine: baseSwapPhaseTimingLine,
           alertEmoji: inlineEmojis.alertEmoji,
+          fwaAlertEmoji: inlineEmojis.fwaAlertEmoji,
           layoutBulletEmoji: inlineEmojis.layoutBulletEmoji,
           mentionUserIds,
           swapReminder: Boolean(swapReminder),
@@ -13170,6 +13185,7 @@ export const Fwa: Command = {
               layoutLinks,
               phaseTimingLine: baseSwapPhaseTimingLine,
               alertEmoji: inlineEmojis.alertEmoji,
+              fwaAlertEmoji: inlineEmojis.fwaAlertEmoji,
               layoutBulletEmoji: inlineEmojis.layoutBulletEmoji,
               renderVariant: "single",
               swapReminder: Boolean(swapReminder),

@@ -685,9 +685,13 @@ describe("FWA base-swap layout links", () => {
       ],
       phaseTimingLine:
         "## Preparation Day ends <t:1740000000:F> (<t:1740000000:R>)",
+      alertEmoji: "<a:alert:10001>",
+      fwaAlertEmoji: "<a:alert_blue:10003>",
     });
 
-    expect(content).toContain("YOU HAVE AN ACTIVE FWA BASE");
+    expect(content).toContain(
+      "# <a:alert_blue:10003> YOU HAVE AN ACTIVE FWA BASE <a:alert_blue:10003>",
+    );
     expect(content).toContain(
       "These players currently have an active FWA base. Please swap to an active war base to increase our chances of beating the blacklisted clan!",
     );
@@ -695,6 +699,59 @@ describe("FWA base-swap layout links", () => {
     expect(content).toContain("Preparation Day ends <t:1740000000:F>");
     expect(content).toContain(
       `React with ${FWA_BASE_SWAP_ACK_EMOJI} once your base is fixed.`,
+    );
+  });
+
+  it("uses alert for war-bases and alert_blue for fwa-bases in mixed sections", () => {
+    const content = renderFwaBaseSwapAnnouncementForTest({
+      entries: [
+        buildEntry({
+          position: 1,
+          playerTag: "#AAA111",
+          playerName: "Alpha",
+          section: "war_bases",
+          discordUserId: "100",
+          townhallLevel: 18,
+        }),
+        buildEntry({
+          position: 2,
+          playerTag: "#BBB222",
+          playerName: "Bravo",
+          section: "fwa_bases",
+          discordUserId: "101",
+          townhallLevel: 17,
+        }),
+      ],
+      layoutLinks: [],
+      alertEmoji: "<a:alert:10001>",
+      fwaAlertEmoji: "<a:alert_blue:10003>",
+    });
+
+    expect(content).toContain(
+      "# <a:alert:10001> YOU HAVE AN ACTIVE WAR BASE <a:alert:10001>",
+    );
+    expect(content).toContain(
+      "# <a:alert_blue:10003> YOU HAVE AN ACTIVE FWA BASE <a:alert_blue:10003>",
+    );
+  });
+
+  it("falls back to the unicode alert glyph for fwa-bases when alert_blue is unavailable", () => {
+    const content = renderFwaBaseSwapAnnouncementForTest({
+      entries: [
+        buildEntry({
+          position: 1,
+          playerTag: "#AAA111",
+          playerName: "Alpha",
+          section: "fwa_bases",
+          discordUserId: "100",
+          townhallLevel: 18,
+        }),
+      ],
+      layoutLinks: [],
+    });
+
+    expect(content).toContain(
+      `# ${FWA_BASE_SWAP_ALERT_FALLBACK_EMOJI} YOU HAVE AN ACTIVE FWA BASE ${FWA_BASE_SWAP_ALERT_FALLBACK_EMOJI}`,
     );
   });
 
