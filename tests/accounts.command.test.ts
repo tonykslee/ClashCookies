@@ -225,6 +225,33 @@ describe("/accounts command", () => {
     expect(getEmbedDescription(interaction)).toContain("- #CUV9082 `#CUV9082`");
   });
 
+  it("renders Unknown Clan when PlayerCurrent only has catalog hydration data", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#CUV9082",
+        playerName: "",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([
+      makePlayerCurrentRow({
+        playerTag: "#CUV9082",
+        playerName: "Catalog Alpha",
+        currentClanTag: null,
+        currentClanName: null,
+        lastSource: "fwa_player_catalog",
+      }),
+    ]);
+    prismaMock.playerActivity.findMany.mockResolvedValue([]);
+    const interaction = makeInteraction();
+
+    await Accounts.run({} as any, interaction as any, makeCocService() as any);
+
+    const description = getEmbedDescription(interaction);
+    expect(description).toContain("**Unknown Clan**");
+    expect(description).toContain("Catalog Alpha");
+  });
+
   it("renders No Clan when PlayerCurrent confirms the player is clanless", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([
       {

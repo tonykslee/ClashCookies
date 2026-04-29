@@ -99,6 +99,11 @@ function buildClanHeadingMarkdown(group: Pick<ClanGroup, "clanName" | "clanTag">
   return clanTag ? buildClanProfileMarkdownLink(label, clanTag) : label;
 }
 
+function isConfirmedClanlessSource(source: string | null | undefined): boolean {
+  const normalized = sanitizeDisplayText(source)?.toLowerCase() ?? null;
+  return normalized === "accounts-refresh" || normalized === "live_refresh";
+}
+
 function resolveAccountClanState(input: {
   playerCurrent: PlayerCurrentSnapshot | null;
   playerActivity: { clanTag: string | null; clanName: string | null } | null;
@@ -106,7 +111,7 @@ function resolveAccountClanState(input: {
   const currentClanTag = sanitizeDisplayText(input.playerCurrent?.currentClanTag);
   const activityClanTag = sanitizeDisplayText(input.playerActivity?.clanTag);
   if (currentClanTag || activityClanTag) return "known";
-  if (input.playerCurrent || input.playerActivity) return "no_clan";
+  if (isConfirmedClanlessSource(input.playerCurrent?.lastSource)) return "no_clan";
   return "unknown";
 }
 
