@@ -28,6 +28,7 @@ export type FwaBaseSwapTrackedMetadata = {
   renderVariant?: "single" | "split_part_1" | "split_part_2";
   phaseTimingLine?: string | null;
   alertEmoji?: string | null;
+  fwaAlertEmoji?: string | null;
   layoutBulletEmoji?: string | null;
   entries: Array<{
     position: number;
@@ -156,6 +157,7 @@ export function parseFwaBaseSwapMetadata(value: unknown): FwaBaseSwapTrackedMeta
     : undefined;
   const phaseTimingLineRaw = String(value.phaseTimingLine ?? "").trim();
   const alertEmojiRaw = String(value.alertEmoji ?? "").trim();
+  const fwaAlertEmojiRaw = String(value.fwaAlertEmoji ?? "").trim();
   const layoutBulletEmojiRaw = String(value.layoutBulletEmoji ?? "").trim();
   const rawRenderVariant = String(value.renderVariant ?? "").trim();
   const renderVariant: FwaBaseSwapTrackedMetadata["renderVariant"] =
@@ -169,6 +171,7 @@ export function parseFwaBaseSwapMetadata(value: unknown): FwaBaseSwapTrackedMeta
     renderVariant,
     phaseTimingLine: phaseTimingLineRaw || null,
     alertEmoji: alertEmojiRaw || null,
+    fwaAlertEmoji: fwaAlertEmojiRaw || null,
     layoutBulletEmoji: layoutBulletEmojiRaw || null,
     swapReminder,
     entries,

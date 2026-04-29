@@ -64,6 +64,7 @@ describe("tracked message metadata parsing", () => {
       renderVariant: "single",
       phaseTimingLine: "## Battle Day ends <t:1740003600:F> (<t:1740003600:R>)",
       alertEmoji: "<a:alert:1>",
+      fwaAlertEmoji: null,
       layoutBulletEmoji: "<a:arrow_arrow:2>",
       swapReminder: true,
       entries: [
@@ -124,6 +125,7 @@ describe("tracked message metadata parsing", () => {
       renderVariant: "single",
       phaseTimingLine: null,
       alertEmoji: null,
+      fwaAlertEmoji: null,
       layoutBulletEmoji: null,
       swapReminder: false,
       entries: [
