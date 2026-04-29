@@ -19,8 +19,29 @@ const prismaMock = vi.hoisted(() => ({
   },
 }));
 
+const cocQueueMock = vi.hoisted(() => {
+  const state = { active: false };
+  const defaultImpl = async (_context: unknown, run: () => Promise<unknown>) => {
+    state.active = true;
+    try {
+      return await run();
+    } finally {
+      state.active = false;
+    }
+  };
+  return {
+    state,
+    defaultImpl,
+    runWithCoCQueueContext: vi.fn(defaultImpl),
+  };
+});
+
 vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
+}));
+
+vi.mock("../src/services/CoCQueueContext", () => ({
+  runWithCoCQueueContext: cocQueueMock.runWithCoCQueueContext,
 }));
 
 import { Accounts } from "../src/commands/Accounts";
@@ -128,6 +149,8 @@ function getEmbedDescription(interaction: any): string {
 describe("/accounts command", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    cocQueueMock.state.active = false;
+    cocQueueMock.runWithCoCQueueContext.mockImplementation(cocQueueMock.defaultImpl);
 
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
     prismaMock.playerCurrent.upsert.mockResolvedValue({} as never);
@@ -389,6 +412,14 @@ describe("/accounts command", () => {
     const refreshButton = makeButtonInteraction("accounts:777777777777777777:refresh");
     await refreshHandler(refreshButton);
 
+    expect(cocQueueMock.runWithCoCQueueContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        priority: "interactive",
+        source: "accounts:list:refresh",
+      }),
+      expect.any(Function),
+    );
+
     const refreshingPayload = refreshButton.update.mock.calls[0]?.[0] as any;
     const refreshingLabels = refreshingPayload.components[0].toJSON().components.map(
       (button: any) => button.label,
@@ -432,6 +463,7 @@ describe("/accounts command", () => {
       getPlayerRaw: vi.fn(async function (this: any, tag: string) {
         expect(this).toBe(cocService);
         expect(tag).toBe("#PYLQ0289");
+        expect(cocQueueMock.state.active).toBe(true);
         return {
           name: "Linked Alpha",
           clan: { tag: "#GRJ0289", name: "New Clan" },
@@ -459,6 +491,56 @@ describe("/accounts command", () => {
         }),
       }),
     );
+  });
+
+  it("logs refresh fetch failures without aborting the refresh flow", async () => {
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        playerName: "Linked Alpha",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([
+      makePlayerCurrentRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Linked Alpha",
+        currentClanTag: "#PQL0289",
+        currentClanName: "Old Clan",
+      }),
+    ]);
+    prismaMock.playerActivity.findMany.mockResolvedValue([]);
+    const cocService = {
+      getPlayerRaw: vi.fn(async function (this: any) {
+        expect(cocQueueMock.state.active).toBe(true);
+        throw new Error("COC_QUEUE_CONTEXT_MISSING:getPlayerRaw");
+      }),
+    };
+    const interaction = makeInteraction();
+
+    await Accounts.run({} as any, interaction as any, cocService as any);
+
+    const refreshHandler = interaction.__collectorHandlers.collect;
+    expect(refreshHandler).toBeTypeOf("function");
+    const refreshButton = makeButtonInteraction("accounts:777777777777777777:refresh");
+    await refreshHandler(refreshButton);
+
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("command=/accounts source=accounts:list:refresh stage=fetch"),
+    );
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("tag=#PYLQ0289"),
+    );
+    expect(prismaMock.playerCurrent.upsert).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { playerTag: "#PYLQ0289" },
+        update: expect.objectContaining({
+          currentClanTag: "#GRJ0289",
+        }),
+      }),
+    );
+    consoleErrorSpy.mockRestore();
   });
 
   it("uses the selected Discord user id when discord-id is provided", async () => {
