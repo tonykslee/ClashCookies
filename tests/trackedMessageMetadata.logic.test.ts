@@ -15,6 +15,7 @@ describe("tracked message metadata parsing", () => {
       clanName: " Rocky Road ",
       createdByUserId: " 123456 ",
       createdAtIso: "2026-03-19T12:00:00.000Z",
+      swapReminder: true,
       phaseTimingLine: "  ## Battle Day ends <t:1740003600:F> (<t:1740003600:R>)  ",
       alertEmoji: "  <a:alert:1> ",
       layoutBulletEmoji: "  <a:arrow_arrow:2> ",
@@ -64,6 +65,7 @@ describe("tracked message metadata parsing", () => {
       phaseTimingLine: "## Battle Day ends <t:1740003600:F> (<t:1740003600:R>)",
       alertEmoji: "<a:alert:1>",
       layoutBulletEmoji: "<a:arrow_arrow:2>",
+      swapReminder: true,
       entries: [
         {
           position: 1,
@@ -98,6 +100,7 @@ describe("tracked message metadata parsing", () => {
       clanName: "Clan",
       createdByUserId: "123",
       createdAtIso: "2026-03-19T12:00:00.000Z",
+      swapReminder: "",
       phaseTimingLine: "   ",
       alertEmoji: "",
       layoutBulletEmoji: " ",
@@ -122,6 +125,7 @@ describe("tracked message metadata parsing", () => {
       phaseTimingLine: null,
       alertEmoji: null,
       layoutBulletEmoji: null,
+      swapReminder: false,
       entries: [
         {
           position: 2,

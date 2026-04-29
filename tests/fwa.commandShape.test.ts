@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { Fwa } from "../src/commands/Fwa";
 
 describe("/fwa base-swap command shape", () => {
-  it("registers war-bases, base-errors, and fwa-bases string options", () => {
+  it("registers war-bases, base-errors, fwa-bases, and swap-reminder options", () => {
     const baseSwap = Fwa.options?.find(
       (option) =>
         option.type === ApplicationCommandOptionType.Subcommand &&
@@ -29,5 +29,11 @@ describe("/fwa base-swap command shape", () => {
     expect(fwaBases?.type).toBe(ApplicationCommandOptionType.String);
     expect(fwaBases?.required).toBe(false);
     expect(fwaBases?.description).toContain("blacklist-war swap");
+
+    const swapReminder = baseSwap?.options?.find(
+      (option: { name: string }) => option.name === "swap-reminder",
+    );
+    expect(swapReminder?.type).toBe(ApplicationCommandOptionType.Boolean);
+    expect(swapReminder?.required).toBe(false);
   });
 });

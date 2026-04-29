@@ -25,6 +25,7 @@ import { PointsSyncService } from "./PointsSyncService";
 import type { PointsApiFetchReason } from "./PointsFetchTypes";
 import { SettingsService } from "./SettingsService";
 import { CommandPermissionService } from "./CommandPermissionService";
+import { BotLogChannelService } from "./BotLogChannelService";
 import {
   chooseMatchTypeResolution,
   compareActiveWarIdentities,
@@ -62,6 +63,7 @@ import {
   shouldEmit,
   toDiscordRelativeTime,
 } from "./war-events/core";
+import { trackedMessageService } from "./TrackedMessageService";
 export {
   computeWarComplianceForTest,
   computeWarPointsDeltaForTest,
@@ -208,6 +210,91 @@ function buildBattleDayRefreshEditPayload(
 export const buildBattleDayRefreshEditPayloadForTest =
   buildBattleDayRefreshEditPayload;
 
+function buildFwaBaseSwapBattleDayReminderContent(input: {
+  clanRoleId: string | null;
+}): string {
+  const lines = [
+    "Battle day has started! Thank you for your help swapping to war bases, please swap back to FWA bases asap!",
+  ];
+  const clanRoleId = String(input.clanRoleId ?? "").trim();
+  if (clanRoleId) {
+    lines.push("", `<@&${clanRoleId}>`);
+  }
+  return lines.join("\n");
+}
+
+export const buildFwaBaseSwapBattleDayReminderContentForTest =
+  buildFwaBaseSwapBattleDayReminderContent;
+
+function buildFwaBaseSwapBattleDayReminderLogContent(input: {
+  clanName: string;
+  clanTag: string;
+  targetChannelId: string;
+  reminderMessageUrl: string;
+  referenceId: string;
+  clanRoleMentionIncluded: boolean;
+}): string {
+  return [
+    "FWA base-swap battle-day reminder sent",
+    `/fwa base-swap reminder tied to ${input.clanName} (#${input.clanTag})`,
+    `Target channel: <#${input.targetChannelId}>`,
+    `Reminder message link: ${input.reminderMessageUrl}`,
+    `Base-swap reference id: ${input.referenceId}`,
+    `Clan role ping included: ${input.clanRoleMentionIncluded ? "yes" : "no"}`,
+  ].join("\n");
+}
+
+export const buildFwaBaseSwapBattleDayReminderLogContentForTest =
+  buildFwaBaseSwapBattleDayReminderLogContent;
+
+/** Purpose: resolve configured bot-log destination channel for the current guild, clearing stale ids. */
+async function resolveBotLogChannel(
+  client: Client,
+  guildId: string | null,
+  botLogChannelService: BotLogChannelService,
+): Promise<{ send: (payload: { content: string }) => Promise<unknown> } | null> {
+  if (!guildId) return null;
+
+  const configuredChannelId = await botLogChannelService.getChannelId(guildId);
+  if (!configuredChannelId) return null;
+
+  let fetchedChannel: unknown;
+  try {
+    fetchedChannel = await client.channels.fetch(configuredChannelId);
+  } catch (error) {
+    const code = (error as { code?: number } | null | undefined)?.code;
+    if (code === 10003) {
+      await botLogChannelService.clearChannelId(guildId);
+    }
+    return null;
+  }
+
+  if (!fetchedChannel) {
+    await botLogChannelService.clearChannelId(guildId);
+    return null;
+  }
+
+  const logChannel = fetchedChannel as {
+    guildId?: string;
+    isTextBased?: () => boolean;
+    send?: (payload: { content: string }) => Promise<unknown>;
+  };
+
+  const logGuildId = String(logChannel.guildId ?? "").trim();
+  if (!logGuildId || logGuildId !== guildId) {
+    await botLogChannelService.clearChannelId(guildId);
+    return null;
+  }
+  if (typeof logChannel.isTextBased !== "function" || !logChannel.isTextBased()) {
+    return null;
+  }
+  if (typeof logChannel.send !== "function") {
+    return null;
+  }
+
+  return { send: logChannel.send.bind(logChannel) };
+}
+
 /** Purpose: normalize and persist discrepancy fingerprint data on tracked notify rows. */
 function parseWarEndDiscrepancyFingerprint(
   configHash: string | null | undefined,
@@ -313,6 +400,7 @@ type SubscriptionRow = {
   opponentTag: string | null;
   opponentName: string | null;
   clanName: string | null;
+  clanRoleId: string | null;
   pointsConfirmedByClanMail: boolean | null;
   pointsNeedsValidation: boolean | null;
   pointsLastSuccessfulFetchAt: Date | null;
@@ -1201,6 +1289,7 @@ export class WarEventLogService {
   private readonly warCompliance: WarComplianceService;
   private readonly fwaPolice: FwaPoliceService;
   private readonly postedMessages: PostedMessageService;
+  private readonly botLogChannels = new BotLogChannelService();
   private readonly cocWarOutageByClanTag = new Map<string, CocWarOutageState>();
 
   /** Purpose: initialize service dependencies. */
@@ -1224,7 +1313,11 @@ export class WarEventLogService {
   }
 
   /** Purpose: poll. */
-  async poll(): Promise<void> {
+  async poll(input?: {
+    sendBattleDaySwapReminders?: boolean;
+  }): Promise<void> {
+    const sendBattleDaySwapReminders =
+      input?.sendBattleDaySwapReminders === true;
     const previousSync = await this.syncResolution.getLatestPersistedSyncBaseline();
     const syncContext: PollSyncContext = {
       previousSync,
@@ -1237,6 +1330,7 @@ export class WarEventLogService {
         target.guildId,
         target.clanTag,
         syncContext,
+        { sendBattleDaySwapReminders },
       ).catch((err) => {
         console.error(
           `[war-events] process failed guild=${target.guildId} clan=${target.clanTag} error=${formatError(
@@ -2434,6 +2528,7 @@ export class WarEventLogService {
           cw."fwaPoints",cw."opponentFwaPoints",cw."outcome",cw."matchType",cw."warStartFwaPoints",cw."warEndFwaPoints",
           cw."clanStars",cw."opponentStars",cw."state",cw."prepStartTime",cw."startTime",cw."endTime",
           cw."opponentTag",cw."opponentName",cw."clanName",
+          tc."clanRoleId" AS "clanRoleId",
           cps."confirmedByClanMail" AS "pointsConfirmedByClanMail",
           cps."needsValidation" AS "pointsNeedsValidation",
           cps."lastSuccessfulPointsApiFetchAt" AS "pointsLastSuccessfulFetchAt",
@@ -2608,6 +2703,7 @@ export class WarEventLogService {
     guildId: string,
     clanTag: string,
     syncContext: PollSyncContext,
+    options?: { sendBattleDaySwapReminders?: boolean },
   ): Promise<boolean> {
     const rows = await prisma.$queryRaw<SubscriptionRow[]>(
       Prisma.sql`
@@ -3199,6 +3295,8 @@ export class WarEventLogService {
         sub,
         payload: detectedEventPayload,
         resolvedWarId,
+        sendBattleDaySwapReminders:
+          options?.sendBattleDaySwapReminders === true,
       });
     }
     if (currentState === "notInWar" && eventType !== "war_ended") {
@@ -3361,6 +3459,7 @@ export class WarEventLogService {
     sub: SubscriptionRow;
     payload: EventEmitPayload;
     resolvedWarId: number | null;
+    sendBattleDaySwapReminders?: boolean;
   }): Promise<void> {
     let payloadForDelivery = params.payload;
     let resolvedWarIdForDelivery = params.resolvedWarId;
@@ -3452,6 +3551,143 @@ export class WarEventLogService {
       resolvedWarIdForDelivery,
       params.sub,
     );
+    if (
+      params.sendBattleDaySwapReminders === true &&
+      payloadForDelivery.eventType === "battle_day"
+    ) {
+      const battleDayPayload =
+        payloadForDelivery as EventEmitPayload & { eventType: "battle_day" };
+      await this.sendFwaBaseSwapBattleDayReminder({
+        sub: params.sub,
+        payload: battleDayPayload,
+      });
+    }
+  }
+
+  private async sendFwaBaseSwapBattleDayReminder(params: {
+    sub: SubscriptionRow;
+    payload: EventEmitPayload & { eventType: "battle_day" };
+  }): Promise<boolean> {
+    if (params.payload.matchType !== "BL") return false;
+
+    const candidate =
+      await trackedMessageService.findLatestActiveFwaBaseSwapReminderCandidate({
+        guildId: params.sub.guildId,
+        clanTag: params.sub.clanTag,
+      });
+    if (!candidate) return false;
+    const referenceId = String(candidate.referenceId ?? candidate.messageId).trim();
+    const claimed = await trackedMessageService.claimFwaBaseSwapBattleDayReminder({
+      guildId: params.sub.guildId,
+      clanTag: params.sub.clanTag,
+      referenceId,
+    });
+    if (!claimed) return false;
+
+    const channel = await this.client.channels
+      .fetch(candidate.channelId)
+      .catch(() => null);
+    if (!channel || !channel.isTextBased() || typeof (channel as any).send !== "function") {
+      console.error(
+        `[fwa base-swap] battle-day reminder skipped guild=${params.sub.guildId} clan=${params.sub.clanTag} reference=${candidate.referenceId ?? candidate.messageId} reason=channel_unavailable`,
+      );
+      await this.logFwaBaseSwapBattleDayReminderFailure({
+        sub: params.sub,
+        candidate,
+        reason: "channel_unavailable",
+      });
+      return false;
+    }
+
+    const reminderContent = buildFwaBaseSwapBattleDayReminderContent({
+      clanRoleId: params.sub.clanRoleId,
+    });
+    const sent = await (channel as any)
+      .send({ content: reminderContent })
+      .catch(async (err: unknown) => {
+        console.error(
+          `[fwa base-swap] battle-day reminder send failed guild=${params.sub.guildId} clan=${params.sub.clanTag} reference=${candidate.referenceId ?? candidate.messageId} error=${formatError(err)}`,
+        );
+        await this.logFwaBaseSwapBattleDayReminderFailure({
+          sub: params.sub,
+          candidate,
+          reason: `send_failed:${formatError(err)}`,
+        });
+        return null;
+      });
+    if (!sent) return false;
+
+    await this.logFwaBaseSwapBattleDayReminder({
+      sub: params.sub,
+      candidate,
+      reminderMessageUrl:
+        String(sent.url ?? "").trim() ||
+        `https://discord.com/channels/${params.sub.guildId}/${candidate.channelId}/${sent.id}`,
+    });
+    return true;
+  }
+
+  private async logFwaBaseSwapBattleDayReminderFailure(params: {
+    sub: SubscriptionRow;
+    candidate: Awaited<
+      ReturnType<typeof trackedMessageService.findLatestActiveFwaBaseSwapReminderCandidate>
+    > extends infer T
+      ? NonNullable<T>
+      : never;
+    reason: string;
+  }): Promise<void> {
+    const logChannel = await resolveBotLogChannel(
+      this.client,
+      params.sub.guildId,
+      this.botLogChannels,
+    );
+    if (!logChannel) return;
+
+    try {
+      await logChannel.send({
+        content: [
+          "FWA base-swap battle-day reminder failed",
+          `/fwa base-swap reminder tied to ${params.sub.clanName ?? params.candidate.metadata.clanName} (#${params.sub.clanTag})`,
+          `Target channel: <#${params.candidate.channelId}>`,
+          `Base-swap reference id: ${params.candidate.referenceId ?? params.candidate.messageId}`,
+          `Failure reason: ${params.reason}`,
+        ].join("\n"),
+      });
+    } catch {
+      // non-blocking
+    }
+  }
+
+  private async logFwaBaseSwapBattleDayReminder(params: {
+    sub: SubscriptionRow;
+    candidate: Awaited<
+      ReturnType<typeof trackedMessageService.findLatestActiveFwaBaseSwapReminderCandidate>
+    > extends infer T
+      ? NonNullable<T>
+      : never;
+    reminderMessageUrl: string;
+  }): Promise<void> {
+    const logChannel = await resolveBotLogChannel(
+      this.client,
+      params.sub.guildId,
+      this.botLogChannels,
+    );
+    if (!logChannel) return;
+
+    try {
+      await logChannel.send({
+        content: buildFwaBaseSwapBattleDayReminderLogContent({
+          clanName: params.sub.clanName ?? params.candidate.metadata.clanName,
+          clanTag: params.sub.clanTag,
+          targetChannelId: params.candidate.channelId,
+          reminderMessageUrl: params.reminderMessageUrl,
+          referenceId: params.candidate.referenceId ?? params.candidate.messageId,
+          clanRoleMentionIncluded: Boolean(String(params.sub.clanRoleId ?? "").trim()),
+        }),
+      });
+    } catch {
+      // non-blocking: reminder delivery must succeed even if bot-log posting fails
+    }
   }
 
   /** Purpose: reconcile ended-war provider points against persisted expected points and alert once per mismatch fingerprint. */

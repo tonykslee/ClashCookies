@@ -24,6 +24,7 @@ export type FwaBaseSwapTrackedMetadata = {
   clanName: string;
   createdByUserId: string;
   createdAtIso: string;
+  swapReminder: boolean;
   renderVariant?: "single" | "split_part_1" | "split_part_2";
   phaseTimingLine?: string | null;
   alertEmoji?: string | null;
@@ -42,6 +43,26 @@ export type FwaBaseSwapTrackedMetadata = {
     layoutLink: string;
   }>;
 };
+
+export type FwaBaseSwapReminderCandidate = {
+  id: string;
+  guildId: string;
+  channelId: string;
+  messageId: string;
+  referenceId: string | null;
+  clanTag: string | null;
+  createdAt: Date;
+  expiresAt: Date | null;
+  metadata: FwaBaseSwapTrackedMetadata;
+};
+
+function buildFwaBaseSwapBattleDayReminderClaimKey(params: {
+  guildId: string;
+  clanTag: string;
+  referenceId: string;
+}): string {
+  return `fwa-base-swap-battle-day-reminder:${String(params.guildId ?? "").trim()}:${normalizeTagBare(params.clanTag)}:${String(params.referenceId ?? "").trim()}`;
+}
 
 export type SyncTimeTrackedMetadata = {
   syncTimeIso: string;
@@ -64,6 +85,13 @@ function activeWhere(featureType?: TrackedMessageFeatureType) {
   };
 }
 
+function normalizeTagBare(tag: string): string {
+  return String(tag ?? "")
+    .trim()
+    .replace(/^#/, "")
+    .toUpperCase();
+}
+
 function isObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -74,6 +102,9 @@ export function parseFwaBaseSwapMetadata(value: unknown): FwaBaseSwapTrackedMeta
   const createdByUserId = String(value.createdByUserId ?? "").trim();
   const createdAtIso = String(value.createdAtIso ?? "").trim();
   if (!clanName || !createdByUserId || !createdAtIso) return null;
+  const swapReminder =
+    value.swapReminder === true ||
+    String(value.swapReminder ?? "").trim().toLowerCase() === "true";
   const entries = value.entries
     .map((entry) => {
       if (!isObject(entry)) return null;
@@ -139,6 +170,7 @@ export function parseFwaBaseSwapMetadata(value: unknown): FwaBaseSwapTrackedMeta
     phaseTimingLine: phaseTimingLineRaw || null,
     alertEmoji: alertEmojiRaw || null,
     layoutBulletEmoji: layoutBulletEmojiRaw || null,
+    swapReminder,
     entries,
     layoutLinks,
   };
@@ -262,6 +294,129 @@ export class TrackedMessageService {
 
   async getActiveByMessageId(messageId: string) {
     return prisma.trackedMessage.findUnique({ where: { messageId } });
+  }
+
+  async findLatestActiveFwaBaseSwapReminderCandidate(params: {
+    guildId: string;
+    clanTag: string;
+  }): Promise<FwaBaseSwapReminderCandidate | null> {
+    const now = new Date();
+    const normalizedClanTag = String(params.clanTag ?? "").trim();
+    if (!params.guildId || !normalizedClanTag) return null;
+
+    const rows = await prisma.trackedMessage.findMany({
+      where: {
+        guildId: params.guildId,
+        featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_BASE_SWAP,
+        status: TRACKED_MESSAGE_STATUS.ACTIVE,
+        expiresAt: { gt: now },
+        OR: [
+          { clanTag: { equals: normalizedClanTag, mode: "insensitive" } },
+          {
+            clanTag: {
+              equals: normalizedClanTag.replace(/^#/, ""),
+              mode: "insensitive",
+            },
+          },
+          {
+            clanTag: {
+              equals: `#${normalizedClanTag.replace(/^#/, "")}`,
+              mode: "insensitive",
+            },
+          },
+        ],
+      },
+      orderBy: [{ createdAt: "desc" }],
+      select: {
+        id: true,
+        guildId: true,
+        channelId: true,
+        messageId: true,
+        referenceId: true,
+        clanTag: true,
+        createdAt: true,
+        expiresAt: true,
+        metadata: true,
+      },
+    });
+
+    for (const row of rows) {
+      const metadata = parseFwaBaseSwapMetadata(row.metadata);
+      if (!metadata) continue;
+      if (!metadata.swapReminder) continue;
+      if (!metadata.entries.some((entry) => entry.section === "fwa_bases")) {
+        continue;
+      }
+      return {
+        id: row.id,
+        guildId: row.guildId,
+        channelId: row.channelId,
+        messageId: row.messageId,
+        referenceId: row.referenceId ?? null,
+        clanTag: row.clanTag ?? null,
+        createdAt: row.createdAt,
+        expiresAt: row.expiresAt ?? null,
+        metadata,
+      };
+    }
+
+    return null;
+  }
+
+  async claimFwaBaseSwapBattleDayReminder(params: {
+    guildId: string;
+    clanTag: string;
+    referenceId: string;
+  }): Promise<boolean> {
+    const guildId = String(params.guildId ?? "").trim();
+    const clanTag = normalizeTagBare(params.clanTag);
+    const referenceId = String(params.referenceId ?? "").trim();
+    if (!guildId || !clanTag || !referenceId) return false;
+
+    const claimKey = buildFwaBaseSwapBattleDayReminderClaimKey({
+      guildId,
+      clanTag,
+      referenceId,
+    });
+    const rows = await prisma.trackedMessage.findMany({
+      where: {
+        guildId,
+        featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_BASE_SWAP,
+        status: TRACKED_MESSAGE_STATUS.ACTIVE,
+        expiresAt: { gt: new Date() },
+        OR: [
+          { referenceId },
+          { messageId: referenceId },
+          { clanTag: { equals: clanTag, mode: "insensitive" } },
+          { clanTag: { equals: `#${clanTag}`, mode: "insensitive" } },
+        ],
+      },
+      orderBy: [{ createdAt: "desc" }],
+      select: { id: true },
+    });
+    if (rows.length === 0) return false;
+
+    const existingClaim = await prisma.trackedMessageClaim.findFirst({
+      where: {
+        trackedMessageId: { in: rows.map((row) => row.id) },
+        userId: claimKey,
+        clanTag: claimKey,
+      },
+      select: { id: true },
+    });
+    if (existingClaim) return false;
+
+    const claimed = await prisma.trackedMessageClaim.createMany({
+      data: [
+        {
+          trackedMessageId: rows[0].id,
+          userId: claimKey,
+          clanTag: claimKey,
+        },
+      ],
+      skipDuplicates: true,
+    });
+    return claimed.count > 0;
   }
 
   async markMessageDeleted(messageId: string): Promise<void> {

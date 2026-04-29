@@ -8,10 +8,15 @@ const prismaMock = vi.hoisted(() => ({
     updateMany: vi.fn(),
     upsert: vi.fn(),
   },
+  trackedMessageClaim: {
+    findFirst: vi.fn(),
+    createMany: vi.fn(),
+  },
   $transaction: vi.fn(async (arg: unknown) => {
     if (typeof arg === "function") {
       return (arg as (tx: unknown) => Promise<unknown>)({
         trackedMessage: prismaMock.trackedMessage,
+        trackedMessageClaim: prismaMock.trackedMessageClaim,
       });
     }
     if (Array.isArray(arg)) return Promise.all(arg as Promise<unknown>[]);
@@ -44,6 +49,7 @@ import {
   handleFwaBaseSwapSplitPostButton,
   renderFwaBaseSwapAnnouncementForTest,
   setFwaBaseSwapSplitPostPayloadForTest,
+  validateFwaBaseSwapSwapReminderOptionForTest,
 } from "../src/commands/Fwa";
 import { buildFwaBaseSwapSplitPostCustomId } from "../src/commands/fwa/customIds";
 import { BotLogChannelService } from "../src/services/BotLogChannelService";
@@ -637,6 +643,27 @@ describe("FWA base-swap layout links", () => {
     });
   });
 
+  it("allows swap-reminder only when fwa-bases is present", () => {
+    expect(
+      validateFwaBaseSwapSwapReminderOptionForTest({
+        fwaBasesRaw: null,
+        swapReminderRaw: true,
+      }),
+    ).toBe("`swap-reminder` can only be used when `fwa-bases` is provided.");
+    expect(
+      validateFwaBaseSwapSwapReminderOptionForTest({
+        fwaBasesRaw: null,
+        swapReminderRaw: false,
+      }),
+    ).toBe("`swap-reminder` can only be used when `fwa-bases` is provided.");
+    expect(
+      validateFwaBaseSwapSwapReminderOptionForTest({
+        fwaBasesRaw: "1,2",
+        swapReminderRaw: null,
+      }),
+    ).toBeNull();
+  });
+
   it("renders the fwa-bases section and keeps the preparation and react prompt lines", () => {
     const content = renderFwaBaseSwapAnnouncementForTest({
       entries: [
@@ -676,6 +703,7 @@ describe("FWA base-swap layout links", () => {
       clanName: "Test Clan",
       createdByUserId: "admin-1",
       createdAtIso: "2026-03-19T00:00:00.000Z",
+      swapReminder: false,
       entries: [
         buildEntry({
           position: 1,
@@ -725,6 +753,7 @@ describe("FWA base-swap layout links", () => {
       clanName: "Test Clan",
       createdByUserId: "admin-1",
       createdAtIso: "2026-03-19T00:00:00.000Z",
+      swapReminder: false,
       alertEmoji: "<a:alert:10001>",
       layoutBulletEmoji: "<a:arrow_arrow:10002>",
       entries: [
@@ -799,6 +828,7 @@ describe("FWA base-swap layout links", () => {
       clanName: "Test Clan",
       createdByUserId: "admin-1",
       createdAtIso: "2026-03-19T00:00:00.000Z",
+      swapReminder: false,
       entries: [
         buildEntry({
           position: 1,
@@ -933,6 +963,7 @@ describe("FWA base-swap split-post reaction tracking", () => {
       clanName: "Test Clan",
       createdByUserId: "admin-1",
       createdAtIso: "2026-03-19T00:00:00.000Z",
+      swapReminder: false,
       renderVariant: "split_part_1",
       entries: [
         buildEntry({
@@ -1032,6 +1063,153 @@ describe("FWA base-swap split-post reaction tracking", () => {
   });
 });
 
+describe("FWA base-swap reminder selection", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("selects the newest qualifying reminder candidate with fwa-bases and swap-reminder enabled", async () => {
+    prismaMock.trackedMessage.findMany.mockResolvedValue([
+      {
+        id: "row-newer-skip",
+        guildId: "guild-1",
+        channelId: "channel-1",
+        messageId: "message-2",
+        referenceId: "fwa-base-swap:split-key",
+        clanTag: "2QG2C08UP",
+        createdAt: new Date("2026-03-20T00:10:00.000Z"),
+        expiresAt: new Date("2026-03-22T00:00:00.000Z"),
+        metadata: {
+          clanName: "Test Clan",
+          createdByUserId: "user-1",
+          createdAtIso: "2026-03-20T00:10:00.000Z",
+          swapReminder: true,
+          entries: [
+            buildEntry({
+              position: 2,
+              playerTag: "#BBB222",
+              playerName: "Bravo",
+              section: "war_bases",
+              discordUserId: "user-2",
+            }),
+          ],
+          layoutLinks: [],
+        },
+      },
+      {
+        id: "row-older-qualifying",
+        guildId: "guild-1",
+        channelId: "channel-2",
+        messageId: "message-1",
+        referenceId: "fwa-base-swap:split-key",
+        clanTag: "2QG2C08UP",
+        createdAt: new Date("2026-03-20T00:05:00.000Z"),
+        expiresAt: new Date("2026-03-22T00:00:00.000Z"),
+        metadata: {
+          clanName: "Test Clan",
+          createdByUserId: "user-1",
+          createdAtIso: "2026-03-20T00:05:00.000Z",
+          swapReminder: true,
+          entries: [
+            buildEntry({
+              position: 1,
+              playerTag: "#AAA111",
+              playerName: "Alpha",
+              section: "fwa_bases",
+              discordUserId: "user-1",
+            }),
+          ],
+          layoutLinks: [],
+        },
+      },
+      {
+        id: "row-old-skip",
+        guildId: "guild-1",
+        channelId: "channel-3",
+        messageId: "message-3",
+        referenceId: null,
+        clanTag: "2QG2C08UP",
+        createdAt: new Date("2026-03-20T00:01:00.000Z"),
+        expiresAt: new Date("2026-03-22T00:00:00.000Z"),
+        metadata: {
+          clanName: "Test Clan",
+          createdByUserId: "user-1",
+          createdAtIso: "2026-03-20T00:01:00.000Z",
+          swapReminder: false,
+          entries: [
+            buildEntry({
+              position: 3,
+              playerTag: "#CCC333",
+              playerName: "Charlie",
+              section: "fwa_bases",
+              discordUserId: "user-3",
+            }),
+          ],
+          layoutLinks: [],
+        },
+      },
+    ]);
+
+    const service = new TrackedMessageService();
+    const candidate = await service.findLatestActiveFwaBaseSwapReminderCandidate({
+      guildId: "guild-1",
+      clanTag: "2QG2C08UP",
+    });
+
+    expect(candidate?.messageId).toBe("message-1");
+    expect(candidate?.referenceId).toBe("fwa-base-swap:split-key");
+    expect(candidate?.metadata.swapReminder).toBe(true);
+    expect(candidate?.metadata.entries.some((entry) => entry.section === "fwa_bases")).toBe(true);
+  });
+
+  it("claims a reminder once per reference id across split rows", async () => {
+    prismaMock.trackedMessage.findMany.mockResolvedValue([
+      {
+        id: "tracked-new",
+        guildId: "guild-1",
+        channelId: "channel-1",
+        messageId: "message-new",
+        referenceId: "fwa-base-swap:split-key",
+        clanTag: "2QG2C08UP",
+        createdAt: new Date("2026-03-20T00:10:00.000Z"),
+        expiresAt: new Date("2026-03-22T00:00:00.000Z"),
+      },
+      {
+        id: "tracked-old",
+        guildId: "guild-1",
+        channelId: "channel-2",
+        messageId: "message-old",
+        referenceId: "fwa-base-swap:split-key",
+        clanTag: "2QG2C08UP",
+        createdAt: new Date("2026-03-20T00:05:00.000Z"),
+        expiresAt: new Date("2026-03-22T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedMessageClaim.findFirst
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        id: "claim-1",
+      });
+    prismaMock.trackedMessageClaim.createMany.mockResolvedValue({ count: 1 });
+
+    const service = new TrackedMessageService();
+    const first = await service.claimFwaBaseSwapBattleDayReminder({
+      guildId: "guild-1",
+      clanTag: "2QG2C08UP",
+      referenceId: "fwa-base-swap:split-key",
+    });
+    const second = await service.claimFwaBaseSwapBattleDayReminder({
+      guildId: "guild-1",
+      clanTag: "2QG2C08UP",
+      referenceId: "fwa-base-swap:split-key",
+    });
+
+    expect(first).toBe(true);
+    expect(second).toBe(false);
+    expect(prismaMock.trackedMessageClaim.createMany).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("FWA base-swap split-post prompt actions", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1051,6 +1229,7 @@ describe("FWA base-swap split-post prompt actions", () => {
         warBases: "1",
         fwaBases: null,
         baseErrors: null,
+        swapReminder: null,
       }),
       entries: [
         buildEntry({
@@ -1067,6 +1246,7 @@ describe("FWA base-swap split-post prompt actions", () => {
       alertEmoji: null,
       layoutBulletEmoji: null,
       mentionUserIds: ["user-1"],
+      swapReminder: false,
       createdAtIso: "2026-03-20T00:00:00.000Z",
       splitContents: [
         "Part 1 content\nline 2",
@@ -1181,6 +1361,7 @@ describe("FWA base-swap split-post prompt actions", () => {
         warBases: null,
         fwaBases: null,
         baseErrors: null,
+        swapReminder: null,
       }),
       entries: [],
       layoutLinks: [],
@@ -1188,6 +1369,7 @@ describe("FWA base-swap split-post prompt actions", () => {
       alertEmoji: null,
       layoutBulletEmoji: null,
       mentionUserIds: [],
+      swapReminder: false,
       createdAtIso: "2026-03-20T00:00:00.000Z",
       splitContents: ["part-1", "part-2"],
     });
@@ -1495,6 +1677,7 @@ describe("FWA base-swap bot-log audit", () => {
         warBases: "1,4",
         fwaBases: "5,6",
         baseErrors: "2,3",
+        swapReminder: true,
       }),
       messageUrls: [
         "https://discord.com/channels/guild-1/channel-1/msg-1",
@@ -1509,7 +1692,7 @@ describe("FWA base-swap bot-log audit", () => {
       "https://discord.com/channels/guild-1/channel-1/msg-1",
     );
     expect(content).toContain(
-      "/fwa base-swap clan:2QG2C08UP war-bases:1,4 fwa-bases:5,6 base-errors:2,3",
+      "/fwa base-swap clan:2QG2C08UP war-bases:1,4 fwa-bases:5,6 base-errors:2,3 swap-reminder:true",
     );
   });
 
@@ -1541,6 +1724,7 @@ describe("FWA base-swap bot-log audit", () => {
         warBases: "1",
         fwaBases: "5",
         baseErrors: "2",
+        swapReminder: true,
       }),
       messageUrls: ["https://discord.com/channels/guild-1/channel-1/msg-1"],
     });
@@ -1551,7 +1735,7 @@ describe("FWA base-swap bot-log audit", () => {
     expect(String(payload.content ?? "")).toContain("Test Clan (#2QG2C08UP)");
     expect(String(payload.content ?? "")).toContain("Source channel: <#channel-1>");
     expect(String(payload.content ?? "")).toContain(
-      "/fwa base-swap clan:2QG2C08UP war-bases:1 fwa-bases:5 base-errors:2",
+      "/fwa base-swap clan:2QG2C08UP war-bases:1 fwa-bases:5 base-errors:2 swap-reminder:true",
     );
   });
 
@@ -1583,6 +1767,7 @@ describe("FWA base-swap bot-log audit", () => {
         warBases: "1",
         fwaBases: null,
         baseErrors: null,
+        swapReminder: null,
       }),
       messageUrls: ["https://discord.com/channels/guild-1/channel-1/msg-1"],
     });
