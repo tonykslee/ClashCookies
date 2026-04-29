@@ -85,7 +85,10 @@ function makeAutocompleteInteraction(
 
 function makeCocService(playersByTag: Record<string, any> = {}) {
   return {
-    getPlayerRaw: vi.fn(async (tag: string) => playersByTag[tag] ?? null),
+    playersByTag,
+    getPlayerRaw: vi.fn(async function (this: { playersByTag?: Record<string, any> }, tag: string) {
+      return this.playersByTag?.[tag] ?? null;
+    }),
   };
 }
 
@@ -375,11 +378,11 @@ describe("/accounts command", () => {
     prismaMock.playerActivity.findMany.mockResolvedValue([
       { tag: "#PYLQ0289", name: "Linked Alpha", clanTag: "#GRJ0289", clanName: "New Clan" },
     ]);
-    cocService.getPlayerRaw.mockResolvedValueOnce({
+    cocService.playersByTag["#PYLQ0289"] = {
       name: "Linked Alpha",
       clan: { tag: "#GRJ0289", name: "New Clan" },
       role: "member",
-    });
+    };
 
     const refreshHandler = interaction.__collectorHandlers.collect;
     expect(refreshHandler).toBeTypeOf("function");
@@ -396,6 +399,56 @@ describe("/accounts command", () => {
     expect(refreshedDescription).toContain(
       "**[New Clan](https://link.clashofclans.com/en?action=OpenClanProfile&tag=GRJ0289)**",
     );
+    expect(prismaMock.playerCurrent.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { playerTag: "#PYLQ0289" },
+        update: expect.objectContaining({
+          currentClanTag: "#GRJ0289",
+          currentClanName: "New Clan",
+          lastSource: "accounts-refresh",
+        }),
+      }),
+    );
+  });
+
+  it("calls refresh getPlayerRaw with the service binding", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        playerName: "Linked Alpha",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([
+      makePlayerCurrentRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Linked Alpha",
+        currentClanTag: "#PQL0289",
+        currentClanName: "Old Clan",
+      }),
+    ]);
+    prismaMock.playerActivity.findMany.mockResolvedValue([]);
+    const cocService = {
+      getPlayerRaw: vi.fn(async function (this: any, tag: string) {
+        expect(this).toBe(cocService);
+        expect(tag).toBe("#PYLQ0289");
+        return {
+          name: "Linked Alpha",
+          clan: { tag: "#GRJ0289", name: "New Clan" },
+          role: "member",
+        };
+      }),
+    };
+    const interaction = makeInteraction();
+
+    await Accounts.run({} as any, interaction as any, cocService as any);
+
+    const refreshHandler = interaction.__collectorHandlers.collect;
+    expect(refreshHandler).toBeTypeOf("function");
+    const refreshButton = makeButtonInteraction("accounts:777777777777777777:refresh");
+    await refreshHandler(refreshButton);
+
+    expect(cocService.getPlayerRaw).toHaveBeenCalledTimes(1);
     expect(prismaMock.playerCurrent.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { playerTag: "#PYLQ0289" },
