@@ -17,6 +17,12 @@ const prismaMock = vi.hoisted(() => ({
   trackedClan: {
     findMany: vi.fn(),
   },
+  fwaClanMemberCurrent: {
+    findMany: vi.fn(),
+  },
+  fwaPlayerCatalog: {
+    findMany: vi.fn(),
+  },
 }));
 
 const cocQueueMock = vi.hoisted(() => {
@@ -159,6 +165,8 @@ describe("/accounts command", () => {
     prismaMock.playerLink.updateMany.mockResolvedValue({ count: 0 });
     prismaMock.playerActivity.findMany.mockResolvedValue([]);
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
   });
 
   it("registers discord-id as a native User option without autocomplete", () => {
@@ -175,6 +183,16 @@ describe("/accounts command", () => {
         playerName: "Linked Alpha",
         createdAt: new Date("2026-03-01T00:00:00.000Z"),
       },
+    ]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([
+      makePlayerCurrentRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Linked Alpha",
+        townHall: 16,
+        currentClanTag: "#PQL0289",
+        currentClanName: "Stored Clan",
+        role: "member",
+      }),
     ]);
     prismaMock.playerActivity.findMany.mockResolvedValue([
       { tag: "#PYLQ0289", name: "Activity Alpha", clanTag: "#PQL0289", clanName: "Stored Clan" },
@@ -197,7 +215,7 @@ describe("/accounts command", () => {
     expect(description).toContain(
       "**[Stored Clan](https://link.clashofclans.com/en?action=OpenClanProfile&tag=PQL0289)**",
     );
-    expect(description).toContain("- Linked Alpha `#PYLQ0289`");
+    expect(description).toContain("TH16 Linked Alpha `#PYLQ0289` - —");
   });
 
   it("falls back to playerActivity.name when playerName is missing", async () => {
@@ -227,7 +245,7 @@ describe("/accounts command", () => {
 
     await Accounts.run({} as any, interaction as any, cocService as any);
 
-    expect(getEmbedDescription(interaction)).toContain("- Activity Bravo `#QGRJ2222`");
+    expect(getEmbedDescription(interaction)).toContain("TH? Activity Bravo `#QGRJ2222` - —");
   });
 
   it("renders Unknown Clan when neither PlayerCurrent nor PlayerActivity has clan data", async () => {
@@ -248,7 +266,7 @@ describe("/accounts command", () => {
     await Accounts.run({} as any, interaction as any, cocService as any);
 
     expect(getEmbedDescription(interaction)).toContain("**Unknown Clan**");
-    expect(getEmbedDescription(interaction)).toContain("- #CUV9082 `#CUV9082`");
+    expect(getEmbedDescription(interaction)).toContain("TH? #CUV9082 `#CUV9082` - —");
   });
 
   it("renders Unknown Clan when PlayerCurrent only has catalog hydration data", async () => {
@@ -321,16 +339,18 @@ describe("/accounts command", () => {
       makePlayerCurrentRow({
         playerTag: "#PYLQ0289",
         playerName: "Alpha",
+        townHall: 16,
         currentClanTag: "#UNTRK1",
         currentClanName: "Untracked Clan",
-        role: "coleader",
+        role: "leader",
       }),
       makePlayerCurrentRow({
         playerTag: "#QGRJ2222",
         playerName: "Bravo",
+        townHall: 16,
         currentClanTag: "#UNTRK1",
         currentClanName: "Untracked Clan",
-        role: "member",
+        role: "coleader",
       }),
     ]);
     prismaMock.playerActivity.findMany.mockResolvedValue([]);
@@ -343,8 +363,128 @@ describe("/accounts command", () => {
     expect(description).toContain(
       "**[Untracked Clan](https://link.clashofclans.com/en?action=OpenClanProfile&tag=UNTRK1)**",
     );
-    expect(description).toContain(":crown: Alpha `#PYLQ0289`");
-    expect(description).toContain("- Bravo `#QGRJ2222`");
+    expect(description).toContain("TH16 Alpha :crown: `#PYLQ0289` - —");
+    expect(description).toContain("TH16 Bravo :crown: `#QGRJ2222` - —");
+  });
+
+  it("shows tracked FWA clans before non-tracked clans and uses FWA weight precedence", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        playerName: "Tracked One",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+      {
+        playerTag: "#QGRJ2222",
+        playerName: "Free One",
+        createdAt: new Date("2026-03-02T00:00:00.000Z"),
+      },
+      {
+        playerTag: "#LQ9P8R2",
+        playerName: "Weight Missing",
+        createdAt: new Date("2026-03-03T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([
+      makePlayerCurrentRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Tracked One",
+        townHall: 17,
+        currentClanTag: "#TRK0289",
+        currentClanName: "Tracked FWA Clan",
+        role: "leader",
+      }),
+      makePlayerCurrentRow({
+        playerTag: "#QGRJ2222",
+        playerName: "Free One",
+        townHall: 18,
+        currentClanTag: "#FREE0289",
+        currentClanName: "Free Clan",
+        role: "member",
+      }),
+      makePlayerCurrentRow({
+        playerTag: "#LQ9P8R2",
+        playerName: "Weight Missing",
+        townHall: 16,
+        currentClanTag: "#FREE0289",
+        currentClanName: "Free Clan",
+        role: null,
+      }),
+    ]);
+    prismaMock.playerActivity.findMany.mockResolvedValue([]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#TRK0289", name: "Tracked FWA Clan", shortName: "TRACK" },
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        clanTag: "#TRK0289",
+        townHall: 17,
+        weight: 210000,
+        sourceSyncedAt: new Date("2026-03-10T00:00:00.000Z"),
+      },
+      {
+        playerTag: "#QGRJ2222",
+        clanTag: "#FREE0289",
+        townHall: 18,
+        weight: null,
+        sourceSyncedAt: new Date("2026-03-10T00:00:00.000Z"),
+      },
+      {
+        playerTag: "#LQ9P8R2",
+        clanTag: "#FREE0289",
+        townHall: 16,
+        weight: null,
+        sourceSyncedAt: new Date("2026-03-10T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        latestTownHall: 17,
+        latestKnownWeight: 145000,
+      },
+      {
+        playerTag: "#QGRJ2222",
+        latestTownHall: 18,
+        latestKnownWeight: 145000,
+      },
+      {
+        playerTag: "#LQ9P8R2",
+        latestTownHall: 16,
+        latestKnownWeight: null,
+      },
+    ]);
+    const interaction = makeInteraction();
+
+    await Accounts.run({} as any, interaction as any, makeCocService() as any);
+
+    const description = getEmbedDescription(interaction);
+    const trackedHeadingIndex = description.indexOf("Tracked FWA Clan");
+    const freeHeadingIndex = description.indexOf("Free Clan");
+    expect(trackedHeadingIndex).toBeGreaterThanOrEqual(0);
+    expect(freeHeadingIndex).toBeGreaterThan(trackedHeadingIndex);
+    expect(description).toContain("TH17 Tracked One :crown: `#PYLQ0289` - 210k");
+    expect(description).toContain("TH18 Free One `#QGRJ2222` - 145k");
+    expect(description).toContain("TH16 Weight Missing `#LQ9P8R2` - —");
+    expect(prismaMock.fwaClanMemberCurrent.findMany).toHaveBeenCalledWith({
+      where: { playerTag: { in: ["#PYLQ0289", "#QGRJ2222", "#LQ9P8R2"] } },
+      select: {
+        clanTag: true,
+        playerTag: true,
+        sourceSyncedAt: true,
+        townHall: true,
+        weight: true,
+      },
+    });
+    expect(prismaMock.fwaPlayerCatalog.findMany).toHaveBeenCalledWith({
+      where: { playerTag: { in: ["#PYLQ0289", "#QGRJ2222", "#LQ9P8R2"] } },
+      select: {
+        latestKnownWeight: true,
+        latestTownHall: true,
+        playerTag: true,
+      },
+    });
   });
 
   it("adds a refresh button that reruns clan resolution and disables itself while refreshing", async () => {

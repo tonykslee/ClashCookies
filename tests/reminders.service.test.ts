@@ -415,3 +415,127 @@ describe("ReminderService create-draft flow", () => {
     expect(updated.channelId).toBe("123456789012345678");
   });
 });
+
+describe("ReminderService reminder listing and autocomplete", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      {
+        tag: "#PQL0289",
+        name: "Rising Dawn",
+      },
+    ]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([
+      {
+        tag: "#2QG2C08UP",
+        name: "Zero Gravity",
+      },
+    ]);
+  });
+
+  it("resolves reminder list targets to clan names and tag fallbacks", async () => {
+    prismaMock.reminder.findMany.mockResolvedValue([
+      {
+        id: "reminder-1",
+        guildId: "guild-1",
+        type: ReminderType.WAR_CWL,
+        channelId: "123456789012345678",
+        isEnabled: true,
+        createdByUserId: "user-1",
+        updatedByUserId: "user-1",
+        createdAt: new Date("2026-04-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+        times: [{ offsetSeconds: 3600 }],
+        targetClans: [
+          { clanTag: "#PQL0289", clanType: ReminderTargetClanType.FWA },
+          { clanTag: "#MISSINGTAG", clanType: ReminderTargetClanType.FWA },
+          { clanTag: "#2QG2C08UP", clanType: ReminderTargetClanType.CWL },
+        ],
+        _count: { targetClans: 3 },
+      },
+    ]);
+
+    const service = new ReminderService();
+    const rows = await service.listReminderSummariesForGuild("guild-1");
+
+    expect(prismaMock.reminder.findMany.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({
+        include: expect.objectContaining({
+          targetClans: expect.objectContaining({
+            select: { clanTag: true, clanType: true },
+          }),
+        }),
+      }),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.targets).toEqual([
+      expect.objectContaining({
+        clanTag: "#PQL0289",
+        name: "Rising Dawn",
+      }),
+      expect.objectContaining({
+        clanTag: "#MISSINGTAG",
+        name: null,
+      }),
+      expect.objectContaining({
+        clanTag: "#2QG2C08UP",
+        name: "Zero Gravity",
+      }),
+    ]);
+  });
+
+  it("filters reminder autocomplete rows by query and keeps labels guild-scoped", async () => {
+    prismaMock.reminder.findMany.mockResolvedValue([
+      {
+        id: "reminder-abc12345",
+        guildId: "guild-1",
+        type: ReminderType.WAR_CWL,
+        channelId: "123456789012345678",
+        isEnabled: true,
+        createdByUserId: "user-1",
+        updatedByUserId: "user-1",
+        createdAt: new Date("2026-04-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+        times: [{ offsetSeconds: 3600 }, { offsetSeconds: 43200 }],
+        targetClans: [
+          { clanTag: "#PQL0289", clanType: ReminderTargetClanType.FWA },
+          { clanTag: "#2QG2C08UP", clanType: ReminderTargetClanType.CWL },
+        ],
+        _count: { targetClans: 2 },
+      },
+      {
+        id: "reminder-xyz98765",
+        guildId: "guild-1",
+        type: ReminderType.RAIDS,
+        channelId: "987654321098765432",
+        isEnabled: false,
+        createdByUserId: "user-1",
+        updatedByUserId: "user-1",
+        createdAt: new Date("2026-04-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+        times: [{ offsetSeconds: 1800 }],
+        targetClans: [{ clanTag: "#MISSINGTAG", clanType: ReminderTargetClanType.FWA }],
+        _count: { targetClans: 1 },
+      },
+    ]);
+
+    const service = new ReminderService();
+    const rows = await service.listReminderAutocompleteRowsForGuild("guild-1", "gravity");
+
+    expect(prismaMock.reminder.findMany.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({
+        include: expect.objectContaining({
+          targetClans: expect.any(Object),
+        }),
+      }),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toEqual(
+      expect.objectContaining({
+        id: "reminder-abc12345",
+        value: "reminder-abc12345",
+        label: "WAR_CWL reminder | 1h, 12h | Rising Dawn, Zero Gravity | enabled",
+      }),
+    );
+  });
+});

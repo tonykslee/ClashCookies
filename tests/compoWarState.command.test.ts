@@ -30,6 +30,26 @@ function makeInteraction(params: {
   return interaction;
 }
 
+function getComponentCustomIds(payload: unknown): string[] {
+  if (!payload || typeof payload !== "object") return [];
+  const rows = Array.isArray((payload as { components?: unknown[] }).components)
+    ? ((payload as { components: unknown[] }).components as unknown[])
+    : [];
+  return rows.flatMap((row) => {
+    const normalized =
+      row && typeof (row as { toJSON?: () => unknown }).toJSON === "function"
+        ? (row as { toJSON: () => unknown }).toJSON()
+        : row;
+    if (!normalized || typeof normalized !== "object") return [];
+    const components = Array.isArray((normalized as { components?: unknown[] }).components)
+      ? ((normalized as { components: unknown[] }).components as unknown[])
+      : [];
+    return components
+      .map((component) => String((component as { custom_id?: unknown }).custom_id ?? ""))
+      .filter((customId) => customId.length > 0);
+  });
+}
+
 describe("/compo state mode:war DB cutover", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -88,7 +108,7 @@ describe("/compo state mode:war DB cutover", () => {
     expect(Object.prototype.hasOwnProperty.call(payload, "files")).toBe(false);
   });
 
-  it("renders mode:actual from the DB-backed ACTUAL state service without sheet reads", async () => {
+  it("renders mode:actual from the DB-backed ACTUAL state service without sheet reads and defaults to Auto-Detect Band", async () => {
     const readStateSpy = vi.spyOn(CompoWarStateService.prototype, "readState");
     const actualReadStateSpy = vi
       .spyOn(CompoActualStateService.prototype, "readState")
@@ -100,7 +120,7 @@ describe("/compo state mode:war DB cutover", () => {
         contentLines: ["RAW Data last refreshed: <t:1775817600:F>"],
         trackedClanTags: ["#AAA111"],
         renderableClanTags: ["#AAA111"],
-        view: "raw",
+        view: "auto",
       });
     const getSheetSpy = vi.spyOn(GoogleSheetsService.prototype, "getCompoLinkedSheet");
     const readSheetSpy = vi.spyOn(GoogleSheetsService.prototype, "readCompoLinkedValues");
@@ -110,10 +130,17 @@ describe("/compo state mode:war DB cutover", () => {
 
     expect(readStateSpy).not.toHaveBeenCalled();
     expect(actualReadStateSpy).toHaveBeenCalledTimes(1);
+    expect(actualReadStateSpy).toHaveBeenCalledWith("guild-1", { view: "auto" });
     expect(getSheetSpy).not.toHaveBeenCalled();
     expect(readSheetSpy).not.toHaveBeenCalled();
     const payload = interaction.editReply.mock.calls.at(-1)?.[0];
     expect(String(payload?.content ?? "")).toContain("RAW Data last refreshed:");
     expect(Array.isArray(payload?.files)).toBe(true);
+    expect(getComponentCustomIds(payload)).toEqual(
+      expect.arrayContaining([
+        "compo-refresh:state:user-1:actual:auto",
+        "compo-refresh:view:user-1:state:auto",
+      ]),
+    );
   });
 });
