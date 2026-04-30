@@ -22,6 +22,12 @@ const prismaMock = vi.hoisted(() => ({
     updateMany: vi.fn(),
     deleteMany: vi.fn(),
   },
+  trackedClan: {
+    findMany: vi.fn(),
+  },
+  raidTrackedClan: {
+    findMany: vi.fn(),
+  },
   playerLink: {
     findMany: vi.fn(),
     updateMany: vi.fn(),
@@ -5495,6 +5501,186 @@ describe("RosterService", () => {
       expect.objectContaining({
         where: expect.objectContaining({
           guildId: "guild-1",
+        }),
+      }),
+    );
+  });
+
+  it("lists linked roster signups for a Discord user grouped by roster and roster group", async () => {
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
+      { playerTag: "#GGYLPVCUQ", linkedAt: new Date("2026-04-19T00:00:00.000Z"), linkedName: "Charmander" },
+      { playerTag: "#YJCLLYU8C", linkedAt: new Date("2026-04-19T00:10:00.000Z"), linkedName: "Bulbasaur" },
+      { playerTag: "#PQL0002", linkedAt: new Date("2026-04-19T00:20:00.000Z"), linkedName: "Pikachu" },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#2P0J0YL8", name: "Serenity" }]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+
+    const rosterOne = {
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "Masters 2 [C] | TH17",
+      clanTag: "#2P0J0YL8",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      maxMembers: 40,
+      maxAccountsPerUser: 2,
+      minTownhall: 17,
+      maxTownhall: 17,
+      requiredSignupRoleId: null,
+      noRoleSignupLimit: 0,
+      rosterRoleId: null,
+      allowMultiSignup: true,
+      sortBy: null,
+      displayColumns: null,
+      importMembers: false,
+      postButtonMode: "standard",
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: null,
+      updatedByDiscordUserId: null,
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    };
+    const rosterTwo = {
+      id: "roster-2",
+      guildId: "guild-1",
+      rosterType: "FWA",
+      rosterCategory: "signup",
+      title: "FWA Beta Signup",
+      clanTag: null,
+      startsAt: new Date("2026-04-22T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      maxMembers: 30,
+      maxAccountsPerUser: 1,
+      minTownhall: null,
+      maxTownhall: null,
+      requiredSignupRoleId: null,
+      noRoleSignupLimit: 0,
+      rosterRoleId: null,
+      allowMultiSignup: true,
+      sortBy: null,
+      displayColumns: null,
+      importMembers: false,
+      postButtonMode: "standard",
+      lifecycleState: "CLOSED",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: null,
+      updatedByDiscordUserId: null,
+      createdAt: new Date("2026-04-22T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-22T00:00:00.000Z"),
+    };
+    prismaMock.rosterSignup.findMany.mockImplementation(async (args: any) => {
+      const allowedTags = new Set(((args?.where?.playerTag?.in as string[] | undefined) ?? []).map((tag) => String(tag)));
+      return [
+        {
+          id: "signup-1",
+          rosterId: rosterOne.id,
+          groupId: "group-confirmed",
+          playerTag: "#GGYLPVCUQ",
+          playerName: "Charmander",
+          signedUpAt: new Date("2026-04-20T10:00:00.000Z"),
+          roster: rosterOne,
+          group: {
+            id: "group-confirmed",
+            key: "confirmed",
+            name: "Confirmed",
+            description: null,
+            sortOrder: 0,
+          },
+        },
+        {
+          id: "signup-2",
+          rosterId: rosterOne.id,
+          groupId: "group-substitute",
+          playerTag: "#YJCLLYU8C",
+          playerName: "Bulbasaur",
+          signedUpAt: new Date("2026-04-20T11:00:00.000Z"),
+          roster: rosterOne,
+          group: {
+            id: "group-substitute",
+            key: "substitute",
+            name: "Substitute",
+            description: null,
+            sortOrder: 1,
+          },
+        },
+        {
+          id: "signup-3",
+          rosterId: rosterTwo.id,
+          groupId: null,
+          playerTag: "#PQL0002",
+          playerName: null,
+          signedUpAt: new Date("2026-04-22T10:00:00.000Z"),
+          roster: rosterTwo,
+          group: null,
+        },
+        {
+          id: "signup-4",
+          rosterId: "archived-roster",
+          groupId: null,
+          playerTag: "#PQL0002",
+          playerName: "Archived",
+          signedUpAt: new Date("2026-04-23T10:00:00.000Z"),
+          roster: {
+            ...rosterTwo,
+            id: "archived-roster",
+            title: "Archived Roster",
+            clanTag: "#ARCHIV3D0",
+            lifecycleState: "ARCHIVED",
+          },
+          group: null,
+        },
+      ]
+        .filter((row) => allowedTags.has(row.playerTag))
+        .filter((row) => row.roster.lifecycleState !== "ARCHIVED");
+    });
+
+    const result = await rosterService.listRosterSignupsForDiscordUser({
+      guildId: "guild-1",
+      discordUserId: "222222222222222222",
+    });
+
+    expect(result.linkedAccountCount).toBe(3);
+    expect(result.signupCount).toBe(3);
+    expect(result.sections).toHaveLength(2);
+    expect(result.sections[0]).toMatchObject({
+      roster: expect.objectContaining({
+        id: "roster-1",
+        title: "Masters 2 [C] | TH17",
+        clanTag: "#2P0J0YL8",
+      }),
+      clanName: "Serenity",
+    });
+    expect(result.sections[0].groups.map((group) => group.name)).toEqual(["Confirmed", "Substitute"]);
+    expect(result.sections[0].groups[0].signups.map((signup) => signup.playerTag)).toEqual(["#GGYLPVCUQ"]);
+    expect(result.sections[0].groups[1].signups.map((signup) => signup.playerTag)).toEqual(["#YJCLLYU8C"]);
+    expect(result.sections[1].groups.map((group) => group.name)).toEqual(["Ungrouped"]);
+    expect(result.sections[1].groups[0].signups.map((signup) => signup.playerTag)).toEqual(["#PQL0002"]);
+    expect(prismaMock.rosterSignup.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          playerTag: {
+            in: ["#GGYLPVCUQ", "#YJCLLYU8C", "#PQL0002"],
+          },
+          roster: expect.objectContaining({
+            guildId: "guild-1",
+            lifecycleState: {
+              in: [ROSTER_LIFECYCLE_STATE.OPEN, ROSTER_LIFECYCLE_STATE.ACTIVE, ROSTER_LIFECYCLE_STATE.CLOSED],
+            },
+          }),
         }),
       }),
     );
