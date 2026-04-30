@@ -319,6 +319,7 @@ describe("/roster command", () => {
     vi.spyOn(rosterService, "clearRosterSignups");
     vi.spyOn(rosterService, "getRosterView");
     vi.spyOn(rosterService, "getRosterRoleSyncTargets").mockResolvedValue(null as any);
+    vi.spyOn(rosterService, "createRosterManageActionPanel");
     vi.spyOn(rosterService, "addRosterSignupsForManager");
     vi.spyOn(rosterService, "moveRosterSignups");
     vi.spyOn(rosterService, "removeRosterSignupsAsManager");
@@ -1150,6 +1151,60 @@ describe("/roster command", () => {
       }),
     );
     expect(String(archiveInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain("was archived");
+
+    (rosterService.createRosterManageActionPanel as any).mockResolvedValue({
+      outcome: "ready",
+      panel: {
+        sessionId: "session-1",
+        action: "add",
+        embed: new EmbedBuilder().setTitle("Manage Roster — Add Player"),
+        components: [
+          new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder()
+              .setCustomId("roster-manage:action:confirm:session-1")
+              .setLabel("Confirm")
+              .setStyle(ButtonStyle.Success),
+          ),
+        ],
+      },
+    });
+
+    const managedInteraction = makeInteraction({
+      subcommand: "manage",
+      roster: "roster-1",
+      action: "add",
+      userId: "222222222222222222",
+    }) as any;
+    await Roster.run({} as any, managedInteraction as any);
+
+    expect(rosterService.createRosterManageActionPanel).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rosterId: "roster-1",
+        action: "add",
+        discordUserId: "111111111111111111",
+        selectedDiscordUserId: "222222222222222222",
+      }),
+    );
+    expect(managedInteraction.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        embeds: [expect.any(EmbedBuilder)],
+        components: expect.arrayContaining([expect.any(ActionRowBuilder)]),
+      }),
+    );
+
+    (rosterService.createRosterManageActionPanel as any).mockReset();
+
+    const missingUserInteraction = makeInteraction({
+      subcommand: "manage",
+      roster: "roster-1",
+      action: "remove",
+    }) as any;
+    await Roster.run({} as any, missingUserInteraction as any);
+
+    expect(String(missingUserInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toBe(
+      "Select a user to manage accounts for this action.",
+    );
+    expect(rosterService.createRosterManageActionPanel).not.toHaveBeenCalled();
 
     (rosterService.getRosterView as any).mockResolvedValueOnce({
       roster: {
