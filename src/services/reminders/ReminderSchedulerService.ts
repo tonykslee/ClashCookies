@@ -1,5 +1,6 @@
 import { ReminderDispatchStatus, ReminderTargetClanType, ReminderType } from "@prisma/client";
 import { Client } from "discord.js";
+import { randomUUID } from "node:crypto";
 import { formatError } from "../../helper/formatError";
 import { prisma } from "../../prisma";
 import {
@@ -12,6 +13,10 @@ import { reminderDispatchService, type ReminderDispatchService } from "./Reminde
 
 const DEFAULT_REMINDER_SCHEDULER_INTERVAL_MS = 60 * 1000;
 const DEFAULT_REMINDER_SCHEDULER_CATCH_UP_GRACE_MS = 2 * 60 * 1000;
+const RETRYABLE_WAR_24H_OFFSET_SECONDS = 24 * 60 * 60;
+const RETRYABLE_WAR_24H_RETRY_WINDOW_MS = 15 * 60 * 1000;
+const RETRYABLE_WAR_24H_ERROR_MESSAGE = "attack_window_not_active";
+const RETRYABLE_WAR_24H_RETRY_LOCK_PREFIX = `${RETRYABLE_WAR_24H_ERROR_MESSAGE}|retry_lock=`;
 
 type ReminderSchedulerRow = {
   id: string;
@@ -200,15 +205,21 @@ export async function runReminderSchedulerCycle(input: {
       for (const offset of reminder.times) {
         const offsetSeconds = Math.max(1, Math.trunc(Number(offset.offsetSeconds)));
         evaluated += 1;
-        if (
-          !shouldReminderOffsetFire({
-            nowMs,
-            intervalMs,
-            eventEndsAtMs: context.eventEndsAt.getTime(),
-            offsetSeconds,
-            reminderCreatedAtMs: reminder.createdAt?.getTime() ?? null,
-          })
-        ) {
+        const isRegularDue = shouldReminderOffsetFire({
+          nowMs,
+          intervalMs,
+          eventEndsAtMs: context.eventEndsAt.getTime(),
+          offsetSeconds,
+          reminderCreatedAtMs: reminder.createdAt?.getTime() ?? null,
+        });
+        const retryableWar24hFireLog = await resolveRetryableWar24hFireLog({
+          reminder,
+          context,
+          offsetSeconds,
+          nowMs,
+        });
+
+        if (!isRegularDue && !retryableWar24hFireLog) {
           continue;
         }
 
@@ -219,6 +230,68 @@ export async function runReminderSchedulerCycle(input: {
           eventIdentity: context.eventIdentity,
           offsetSeconds,
         });
+        if (retryableWar24hFireLog) {
+          const retryClaim = await claimRetryableWar24hFireLog({
+            fireLog: retryableWar24hFireLog.fireLog,
+            dedupeKey,
+            nowMs,
+          });
+          if (!retryClaim.claimed) {
+            deduped += 1;
+            continue;
+          }
+
+          console.log(
+            `[reminders] retry_claim reminder_id=${reminder.id} clan=${context.clanTag} offset_s=${offsetSeconds} identity=${context.eventIdentity} prior_status=${retryableWar24hFireLog.fireLog.dispatchStatus} prior_error=${retryableWar24hFireLog.fireLog.errorMessage ?? ""} retry_attempt=1 due_at=${new Date(retryableWar24hFireLog.dueAtMs).toISOString()} now=${new Date(nowMs).toISOString()} outcome=claimed`,
+          );
+
+          const dispatchResult = await input.dispatch.dispatchReminder(input.client, {
+            guildId: reminder.guildId,
+            channelId: reminder.channelId,
+            reminderId: reminder.id,
+            type: reminder.type,
+            clanTag: context.clanTag,
+            clanName: context.clanName,
+            offsetSeconds,
+            eventIdentity: context.eventIdentity,
+            eventEndsAt: context.eventEndsAt,
+            eventLabel: context.eventLabel,
+          });
+          if (dispatchResult.status === "sent") {
+            fired += 1;
+            await finalizeReminderFireLogSuccess({
+              fireLogId: retryableWar24hFireLog.fireLog.id,
+              messageId: dispatchResult.messageId,
+              nowMs,
+            });
+            console.log(
+              `[reminders] retry_sent reminder_id=${reminder.id} clan=${context.clanTag} offset_s=${offsetSeconds} identity=${context.eventIdentity} message_id=${dispatchResult.messageId} outcome=sent`,
+            );
+            continue;
+          }
+
+          failed += 1;
+          const retryableAgain = isRetryableWar24hAttackWindowInactiveFailure({
+            reminderType: reminder.type,
+            offsetSeconds,
+            eventIdentity: context.eventIdentity,
+            eventEndsAtMs: context.eventEndsAt.getTime(),
+            nowMs,
+            errorMessage: dispatchResult.errorMessage,
+          });
+          await finalizeReminderFireLogFailure({
+            fireLogId: retryableWar24hFireLog.fireLog.id,
+            errorMessage: retryableAgain
+              ? RETRYABLE_WAR_24H_ERROR_MESSAGE
+              : dispatchResult.errorMessage.slice(0, 500),
+            nowMs,
+          });
+          console.error(
+            `[reminders] retry_failed reminder_id=${reminder.id} clan=${context.clanTag} offset_s=${offsetSeconds} identity=${context.eventIdentity} prior_status=${retryableWar24hFireLog.fireLog.dispatchStatus} prior_error=${retryableWar24hFireLog.fireLog.errorMessage ?? ""} retry_attempt=1 due_at=${new Date(retryableWar24hFireLog.dueAtMs).toISOString()} now=${new Date(nowMs).toISOString()} outcome=${retryableAgain ? "retryable_attack_window_not_active" : "terminal"} error=${dispatchResult.errorMessage}`,
+          );
+          continue;
+        }
+
         const fireLog = await createReminderFireLogIfFirst({
           dedupeKey,
           reminder,
@@ -244,12 +317,10 @@ export async function runReminderSchedulerCycle(input: {
         });
         if (dispatchResult.status === "sent") {
           fired += 1;
-          await prisma.reminderFireLog.update({
-            where: { id: fireLog.id },
-            data: {
-              dispatchStatus: ReminderDispatchStatus.SENT,
-              messageId: dispatchResult.messageId,
-            },
+          await finalizeReminderFireLogSuccess({
+            fireLogId: fireLog.id,
+            messageId: dispatchResult.messageId,
+            nowMs,
           });
           console.log(
             `[reminders] fired reminder_id=${reminder.id} clan=${context.clanTag} offset_s=${offsetSeconds} identity=${context.eventIdentity} message_id=${dispatchResult.messageId}`,
@@ -258,12 +329,10 @@ export async function runReminderSchedulerCycle(input: {
         }
 
         failed += 1;
-        await prisma.reminderFireLog.update({
-          where: { id: fireLog.id },
-          data: {
-            dispatchStatus: ReminderDispatchStatus.FAILED,
-            errorMessage: dispatchResult.errorMessage.slice(0, 500),
-          },
+        await finalizeReminderFireLogFailure({
+          fireLogId: fireLog.id,
+          errorMessage: dispatchResult.errorMessage.slice(0, 500),
+          nowMs,
         });
         console.error(
           `[reminders] dispatch_failed reminder_id=${reminder.id} clan=${context.clanTag} offset_s=${offsetSeconds} identity=${context.eventIdentity} error=${dispatchResult.errorMessage}`,
@@ -343,6 +412,222 @@ async function createReminderFireLogIfFirst(input: {
     console.error(`[reminders] firelog_create_failed error=${formatError(error)}`);
     return { created: false };
   }
+}
+
+/** Purpose: fetch one previously failed 24h WAR reminder fire log that may retry while battle day is still becoming active. */
+async function resolveRetryableWar24hFireLog(input: {
+  reminder: ReminderSchedulerRow;
+  context: ReminderEventContext;
+  offsetSeconds: number;
+  nowMs: number;
+}): Promise<
+  | {
+      fireLog: {
+        id: string;
+        dispatchStatus: ReminderDispatchStatus;
+        errorMessage: string | null;
+      };
+      dueAtMs: number;
+    }
+  | null
+> {
+  if (
+    input.reminder.type !== ReminderType.WAR_CWL ||
+    input.offsetSeconds !== RETRYABLE_WAR_24H_OFFSET_SECONDS ||
+    !String(input.context.eventIdentity ?? "").startsWith("WAR:")
+  ) {
+    return null;
+  }
+  const dueAtMs = input.context.eventEndsAt.getTime() - input.offsetSeconds * 1000;
+  if (!Number.isFinite(dueAtMs)) return null;
+  if (input.nowMs < dueAtMs) return null;
+  if (input.nowMs > dueAtMs + RETRYABLE_WAR_24H_RETRY_WINDOW_MS) {
+    const fireLog = await prisma.reminderFireLog.findUnique({
+      where: {
+        dedupeKey: buildReminderDedupeKey({
+          reminderId: input.reminder.id,
+          clanTag: input.context.clanTag,
+          clanType: input.context.clanType,
+          eventIdentity: input.context.eventIdentity,
+          offsetSeconds: input.offsetSeconds,
+        }),
+      },
+      select: {
+        id: true,
+        dispatchStatus: true,
+        errorMessage: true,
+      },
+    });
+    if (
+      fireLog &&
+      fireLog.dispatchStatus === ReminderDispatchStatus.FAILED &&
+      parseRetryableWar24hFireLogErrorMessage(fireLog.errorMessage)?.isRetryable
+    ) {
+      console.warn(
+        `[reminders] retry_window_expired reminder_id=${input.reminder.id} clan=${input.context.clanTag} offset_s=${input.offsetSeconds} identity=${input.context.eventIdentity} prior_status=${fireLog.dispatchStatus} prior_error=${fireLog.errorMessage ?? ""} due_at=${new Date(dueAtMs).toISOString()} now=${new Date(input.nowMs).toISOString()} outcome=expired`,
+      );
+    }
+    return null;
+  }
+
+  const fireLog = await prisma.reminderFireLog.findUnique({
+    where: {
+      dedupeKey: buildReminderDedupeKey({
+        reminderId: input.reminder.id,
+        clanTag: input.context.clanTag,
+        clanType: input.context.clanType,
+        eventIdentity: input.context.eventIdentity,
+        offsetSeconds: input.offsetSeconds,
+      }),
+    },
+    select: {
+      id: true,
+      dispatchStatus: true,
+      errorMessage: true,
+    },
+  });
+  if (
+    !fireLog ||
+    fireLog.dispatchStatus !== ReminderDispatchStatus.FAILED ||
+    !parseRetryableWar24hFireLogErrorMessage(fireLog.errorMessage)?.isRetryable
+  ) {
+    return null;
+  }
+  const parsed = parseRetryableWar24hFireLogErrorMessage(fireLog.errorMessage);
+  if (parsed?.retryLockExpiresAtMs && parsed.retryLockExpiresAtMs > input.nowMs) {
+    return null;
+  }
+  return {
+    fireLog,
+    dueAtMs,
+  };
+}
+
+/** Purpose: encode one transient retry lock into the persisted fire-log failure payload without schema changes. */
+function buildRetryableWar24hFireLogErrorMessage(input: {
+  lockToken: string;
+  lockExpiresAtMs: number;
+}): string {
+  return `${RETRYABLE_WAR_24H_ERROR_MESSAGE}|retry_lock=${input.lockToken}|retry_lock_expires_at_ms=${Math.trunc(input.lockExpiresAtMs)}`;
+}
+
+/** Purpose: parse the retryable WAR 24h fire-log error payload and its optional transient lock metadata. */
+function parseRetryableWar24hFireLogErrorMessage(input: string | null): {
+  isRetryable: boolean;
+  retryLockToken: string | null;
+  retryLockExpiresAtMs: number | null;
+} | null {
+  const errorMessage = String(input ?? "").trim();
+  if (errorMessage.length <= 0) return null;
+  if (errorMessage === RETRYABLE_WAR_24H_ERROR_MESSAGE) {
+    return {
+      isRetryable: true,
+      retryLockToken: null,
+      retryLockExpiresAtMs: null,
+    };
+  }
+  if (!errorMessage.startsWith(RETRYABLE_WAR_24H_RETRY_LOCK_PREFIX)) {
+    return null;
+  }
+  const lockToken = errorMessage.slice(RETRYABLE_WAR_24H_RETRY_LOCK_PREFIX.length).split("|")[0]?.trim() ?? "";
+  const expiresMatch = /retry_lock_expires_at_ms=(\d+)/.exec(errorMessage);
+  const retryLockExpiresAtMs = Number(expiresMatch?.[1] ?? "");
+  if (!lockToken || !Number.isFinite(retryLockExpiresAtMs)) {
+    return null;
+  }
+  return {
+    isRetryable: true,
+    retryLockToken: lockToken,
+    retryLockExpiresAtMs,
+  };
+}
+
+/** Purpose: compare-and-swap a retryable 24h fire log into a transient lock so only one scheduler tick can retry it. */
+async function claimRetryableWar24hFireLog(input: {
+  fireLog: {
+    id: string;
+    dispatchStatus: ReminderDispatchStatus;
+    errorMessage: string | null;
+  };
+  dedupeKey: string;
+  nowMs: number;
+}): Promise<{ claimed: boolean }> {
+  const parsed = parseRetryableWar24hFireLogErrorMessage(input.fireLog.errorMessage);
+  if (!parsed?.isRetryable || input.fireLog.dispatchStatus !== ReminderDispatchStatus.FAILED) {
+    return { claimed: false };
+  }
+  const lockToken = randomUUID();
+  const lockExpiresAtMs = input.nowMs + 2 * 60 * 1000;
+  const claimed = await prisma.reminderFireLog.updateMany({
+    where: {
+      id: input.fireLog.id,
+      dedupeKey: input.dedupeKey,
+      dispatchStatus: ReminderDispatchStatus.FAILED,
+      errorMessage: input.fireLog.errorMessage ?? RETRYABLE_WAR_24H_ERROR_MESSAGE,
+    },
+    data: {
+      errorMessage: buildRetryableWar24hFireLogErrorMessage({
+        lockToken,
+        lockExpiresAtMs,
+      }),
+    },
+  });
+  return { claimed: claimed.count > 0 };
+}
+
+/** Purpose: persist a successful reminder send back onto the existing fire-log row. */
+async function finalizeReminderFireLogSuccess(input: {
+  fireLogId: string;
+  messageId: string;
+  nowMs: number;
+}): Promise<void> {
+  await prisma.reminderFireLog.update({
+    where: { id: input.fireLogId },
+    data: {
+      dispatchStatus: ReminderDispatchStatus.SENT,
+      messageId: input.messageId,
+      errorMessage: null,
+      dispatchedAt: new Date(input.nowMs),
+    },
+  });
+}
+
+/** Purpose: persist a failed reminder send back onto the existing fire-log row. */
+async function finalizeReminderFireLogFailure(input: {
+  fireLogId: string;
+  errorMessage: string;
+  nowMs: number;
+}): Promise<void> {
+  await prisma.reminderFireLog.update({
+    where: { id: input.fireLogId },
+    data: {
+      dispatchStatus: ReminderDispatchStatus.FAILED,
+      errorMessage: input.errorMessage,
+      dispatchedAt: new Date(input.nowMs),
+    },
+  });
+}
+
+/** Purpose: detect whether a retryable 24h WAR reminder failure should remain retryable after the latest attempt. */
+function isRetryableWar24hAttackWindowInactiveFailure(input: {
+  reminderType: ReminderType;
+  offsetSeconds: number;
+  eventIdentity: string;
+  eventEndsAtMs: number;
+  nowMs: number;
+  errorMessage: string;
+}): boolean {
+  if (
+    input.reminderType !== ReminderType.WAR_CWL ||
+    input.offsetSeconds !== RETRYABLE_WAR_24H_OFFSET_SECONDS ||
+    !String(input.eventIdentity ?? "").startsWith("WAR:")
+  ) {
+    return false;
+  }
+  const dueAtMs = input.eventEndsAtMs - input.offsetSeconds * 1000;
+  if (!Number.isFinite(dueAtMs)) return false;
+  if (input.nowMs > dueAtMs + RETRYABLE_WAR_24H_RETRY_WINDOW_MS) return false;
+  return String(input.errorMessage ?? "").trim() === RETRYABLE_WAR_24H_ERROR_MESSAGE;
 }
 
 /** Purpose: choose one applicable context for a clan-target based on reminder type semantics. */
