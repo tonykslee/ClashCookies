@@ -8,6 +8,7 @@ const reminderServiceMock = vi.hoisted(() => ({
   getReminderWithDetails: vi.fn(),
   listReminderSummariesForGuild: vi.fn(),
   findReminderSummariesByClan: vi.fn(),
+  listReminderAutocompleteRowsForGuild: vi.fn(),
   replaceReminderTargetsFromEncodedValues: vi.fn(),
   replaceReminderOffsets: vi.fn(),
   setReminderType: vi.fn(),
@@ -41,6 +42,7 @@ function createInteraction(input: {
   timeLeft?: string;
   channelId?: string;
   clan?: string;
+  id?: string;
 }) {
   const collector = buildCollector();
   const fetchReply = vi.fn().mockResolvedValue({
@@ -68,6 +70,7 @@ function createInteraction(input: {
         if (name === "type") return input.type ?? null;
         if (name === "time_left") return input.timeLeft ?? null;
         if (name === "clan") return input.clan ?? null;
+        if (name === "id") return input.id ?? null;
         return null;
       }),
       getChannel: vi.fn((name: string) => {
@@ -154,6 +157,7 @@ describe("/reminders command", () => {
     reminderServiceMock.tryPrefillReminderChannelFromTrackedClanLog.mockResolvedValue(null);
     reminderServiceMock.listReminderSummariesForGuild.mockResolvedValue([]);
     reminderServiceMock.findReminderSummariesByClan.mockResolvedValue([]);
+    reminderServiceMock.listReminderAutocompleteRowsForGuild.mockResolvedValue([]);
   });
 
   it("initializes create flow with a blank preview panel when no create args are supplied", async () => {
@@ -504,6 +508,20 @@ describe("/reminders command", () => {
         isEnabled: true,
         offsetsSeconds: [1800, 3600],
         targetCount: 3,
+        targets: [
+          {
+            clanTag: "#PQL0289",
+            clanType: ReminderTargetClanType.FWA,
+            name: "Rising Dawn",
+            label: "Rising Dawn (#PQL0289) [FWA]",
+          },
+          {
+            clanTag: "#2QG2C08UP",
+            clanType: ReminderTargetClanType.CWL,
+            name: "Zero Gravity",
+            label: "Zero Gravity (#2QG2C08UP) [CWL 2026-03]",
+          },
+        ],
         createdAt: new Date("2026-03-26T00:00:00.000Z"),
         updatedAt: new Date("2026-03-26T00:00:00.000Z"),
       },
@@ -517,7 +535,117 @@ describe("/reminders command", () => {
     expect(embed.title).toContain("Reminders (1)");
     expect(String(embed.description)).toContain("RAIDS");
     expect(String(embed.description)).toContain("<#channel-55>");
-    expect(String(embed.description)).toContain("targets: 3");
+    expect(String(embed.description)).toContain("targets: Rising Dawn, Zero Gravity");
+    expect(String(embed.description)).not.toContain("targets: 3");
+    expect(String(embed.description)).not.toContain("...and");
+  });
+
+  it("renders all target names without a hard cap or overflow truncation", async () => {
+    reminderServiceMock.listReminderSummariesForGuild.mockResolvedValue([
+      {
+        id: "reminder-1234",
+        type: ReminderType.WAR_CWL,
+        channelId: "channel-55",
+        isEnabled: true,
+        offsetsSeconds: [1800],
+        targetCount: 12,
+        targets: Array.from({ length: 12 }, (_, index) => ({
+          clanTag: `#TAG${index.toString().padStart(2, "0")}`,
+          clanType: index % 2 === 0 ? ReminderTargetClanType.FWA : ReminderTargetClanType.CWL,
+          name: `Clan ${index + 1}`,
+          label: `Clan ${index + 1} (#TAG${index.toString().padStart(2, "0")})`,
+        })),
+        createdAt: new Date("2026-03-26T00:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+    ]);
+    const interaction = createInteraction({ subcommand: "list" });
+
+    await Reminders.run({} as any, interaction as any, {} as any);
+
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const embed = payload.embeds[0].toJSON();
+    for (let index = 1; index <= 12; index += 1) {
+      expect(String(embed.description)).toContain(`Clan ${index}`);
+    }
+    expect(String(embed.description)).not.toContain("...and");
+    expect(String(embed.description)).not.toContain("targets: 12");
+  });
+
+  it("moves a whole reminder configuration to the next page instead of splitting it", async () => {
+    const hugeTargets = Array.from({ length: 60 }, (_, index) => ({
+      clanTag: `#BIG${index.toString().padStart(4, "0")}`,
+      clanType: index % 2 === 0 ? ReminderTargetClanType.FWA : ReminderTargetClanType.CWL,
+      name: `Very Long Clan Name Number ${index + 1} For Atomic Pagination Check`,
+      label: `Very Long Clan Name Number ${index + 1} For Atomic Pagination Check (#BIG${index
+        .toString()
+        .padStart(4, "0")})`,
+    }));
+    reminderServiceMock.listReminderSummariesForGuild.mockResolvedValue([
+      {
+        id: "reminder-huge",
+        type: ReminderType.WAR_CWL,
+        channelId: "channel-55",
+        isEnabled: true,
+        offsetsSeconds: [1800],
+        targetCount: hugeTargets.length,
+        targets: hugeTargets,
+        createdAt: new Date("2026-03-26T00:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+      {
+        id: "reminder-next",
+        type: ReminderType.RAIDS,
+        channelId: "channel-77",
+        isEnabled: false,
+        offsetsSeconds: [3600],
+        targetCount: 25,
+        targets: Array.from({ length: 25 }, (_, index) => ({
+          clanTag: `#SMALL${index.toString().padStart(2, "0")}`,
+          clanType: index % 2 === 0 ? ReminderTargetClanType.FWA : ReminderTargetClanType.CWL,
+          name: `Compact Clan ${index + 1} For Page Two`,
+          label: `Compact Clan ${index + 1} For Page Two (#SMALL${index
+            .toString()
+            .padStart(2, "0")})`,
+        })),
+        createdAt: new Date("2026-03-26T00:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+    ]);
+    const interaction = createInteraction({ subcommand: "list" });
+
+    await Reminders.run({} as any, interaction as any, {} as any);
+
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const embed = payload.embeds[0].toJSON();
+    expect(String(embed.description)).toContain("Very Long Clan Name Number 1");
+    expect(String(embed.description)).not.toContain("reminder-next");
+
+    const collectHandler = getCollectHandler(interaction);
+    expect(collectHandler).toBeTypeOf("function");
+    const nextButton = {
+      isButton: () => true,
+      isStringSelectMenu: () => false,
+      user: { id: "user-1" },
+      customId: "reminders-list:itx-1:next",
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+      followUp: vi.fn().mockResolvedValue(undefined),
+      deferred: false,
+      replied: false,
+    } as any;
+    await collectHandler(nextButton);
+
+    expect(nextButton.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        embeds: [expect.any(Object)],
+      }),
+    );
+    const nextPayload = nextButton.update.mock.calls[0][0] as any;
+    const nextEmbed = nextPayload.embeds[0].toJSON();
+    expect(String(nextEmbed.description)).toContain("<#channel-77>");
+    expect(String(nextEmbed.description)).toContain("Compact Clan 1 For Page Two");
+    expect(String(nextEmbed.description)).not.toContain("Very Long Clan Name Number 1");
   });
 
   it("normalizes edit clan tag input with/without # during reminder lookup", async () => {
@@ -537,5 +665,126 @@ describe("/reminders command", () => {
         content: "No reminders found targeting #PQL0289.",
       }),
     );
+  });
+
+  it("opens edit panel directly when reminder id is provided", async () => {
+    reminderServiceMock.getReminderWithDetails.mockResolvedValueOnce({
+      id: "reminder-1234abcd",
+      guildId: "guild-1",
+      type: ReminderType.WAR_CWL,
+      channelId: "channel-55",
+      isEnabled: true,
+      createdByUserId: "user-1",
+      updatedByUserId: "user-1",
+      createdAt: new Date("2026-03-26T00:00:00.000Z"),
+      updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+      offsetsSeconds: [3600],
+      targets: [],
+    });
+    const interaction = createInteraction({
+      subcommand: "edit",
+      id: "reminder-1234abcd",
+    });
+
+    await Reminders.run({} as any, interaction as any, {} as any);
+
+    expect(reminderServiceMock.getReminderWithDetails.mock.calls[0]?.[0]).toEqual({
+      reminderId: "reminder-1234abcd",
+      guildId: "guild-1",
+    });
+    expect(reminderServiceMock.findReminderSummariesByClan).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        embeds: [expect.objectContaining({ data: expect.any(Object) })],
+      }),
+    );
+  });
+
+  it("rejects edit when both id and clan are provided", async () => {
+    const interaction = createInteraction({
+      subcommand: "edit",
+      id: "reminder-1234abcd",
+      clan: "#PQL0289",
+    });
+
+    await Reminders.run({} as any, interaction as any, {} as any);
+
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: "Use only one of id or clan.",
+      }),
+    );
+  });
+
+  it("rejects edit when neither id nor clan is provided", async () => {
+    const interaction = createInteraction({
+      subcommand: "edit",
+    });
+
+    await Reminders.run({} as any, interaction as any, {} as any);
+
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: "Provide either reminder id or clan.",
+      }),
+    );
+  });
+
+  it("returns a guild-scoped not-found error for invalid reminder id lookup", async () => {
+    reminderServiceMock.getReminderWithDetails.mockRejectedValueOnce(new Error("REMINDER_NOT_FOUND"));
+    const interaction = createInteraction({
+      subcommand: "edit",
+      id: "missing-reminder",
+    });
+
+    await Reminders.run({} as any, interaction as any, {} as any);
+
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: "No reminder found for id missing-reminder.",
+      }),
+    );
+  });
+
+  it("autocompletes reminder ids only within the current guild", async () => {
+    reminderServiceMock.listReminderAutocompleteRowsForGuild.mockResolvedValue([
+      {
+        id: "reminder-1234abcd",
+        type: ReminderType.WAR_CWL,
+        channelId: "channel-55",
+        isEnabled: true,
+        offsetsSeconds: [3600],
+        targets: [
+          {
+            clanTag: "#PQL0289",
+            clanType: ReminderTargetClanType.FWA,
+            name: "Rising Dawn",
+            label: "Rising Dawn (#PQL0289) [FWA]",
+          },
+        ],
+        value: "reminder-1234abcd",
+        label: "WAR_CWL reminder-1 | 1h | Rising Dawn | enabled",
+      },
+    ]);
+    const interaction: any = {
+      guildId: "guild-1",
+      options: {
+        getFocused: vi.fn().mockReturnValue({ name: "id", value: "reminder" }),
+      },
+      respond: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await Reminders.autocomplete(interaction);
+
+    expect(reminderServiceMock.listReminderAutocompleteRowsForGuild).toHaveBeenCalledWith(
+      "guild-1",
+      "reminder",
+    );
+    expect(interaction.respond).toHaveBeenCalledWith([
+      expect.objectContaining({
+        name: "WAR_CWL reminder-1 | 1h | Rising Dawn | enabled",
+        value: "reminder-1234abcd",
+      }),
+    ]);
   });
 });

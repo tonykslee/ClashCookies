@@ -24,7 +24,9 @@ import {
   getReminderOffsetPresetSeconds,
   parseReminderOffsetsInputList,
   reminderService,
+  type ReminderAutocompleteRow,
   type ReminderClanOption,
+  type ReminderListRow,
   type ReminderWithDetails,
 } from "../services/reminders/ReminderService";
 
@@ -66,6 +68,22 @@ async function sendComponentEphemeralMessage(
 function formatOffsetList(offsetsSeconds: number[]): string {
   if (offsetsSeconds.length <= 0) return "not set";
   return offsetsSeconds.map((offset) => formatReminderOffsetSeconds(offset)).join(", ");
+}
+
+/** Purpose: render one reminder target name for list/autocomplete output, falling back to the clan tag. */
+function getReminderTargetDisplayName(target: ReminderListRow["targets"][number]): string {
+  return target.name ?? target.clanTag;
+}
+
+/** Purpose: build readable reminder list target lines with clan names and safe overflow handling. */
+function buildReminderListTargetLines(targets: ReminderListRow["targets"]): string[] {
+  const names = targets.map((target) => getReminderTargetDisplayName(target)).filter(Boolean);
+  if (names.length <= 0) return ["  targets: none"];
+  const inline = `targets: ${names.join(", ")}`;
+  if (inline.length <= 2000) {
+    return [inline];
+  }
+  return ["targets:", ...names.map((name) => `  - ${name}`)];
 }
 
 /** Purpose: build selected clan lines for preview embeds with safe row limits. */
@@ -550,34 +568,31 @@ async function openReminderPanel(input: {
 }
 
 /** Purpose: build concise admin list pages for guild reminder overview command output. */
-function buildReminderListPages(rows: Array<{
-  id: string;
-  type: ReminderType;
-  channelId: string;
-  isEnabled: boolean;
-  offsetsSeconds: number[];
-  targetCount: number;
-}>): string[] {
-  const lines = rows.map((row) =>
+function buildReminderListPages(rows: ReminderListRow[]): string[] {
+  const entries = rows.map((row) =>
     [
       `- \`${row.id.slice(0, 8)}\` **${row.type}**`,
       `  channel: <#${row.channelId}>`,
       `  offsets: ${formatOffsetList(row.offsetsSeconds)}`,
-      `  targets: ${row.targetCount}`,
+      ...buildReminderListTargetLines(row.targets),
       `  enabled: ${row.isEnabled ? "yes" : "no"}`,
     ].join("\n"),
   );
-  if (lines.length <= 0) return [];
+  if (entries.length <= 0) return [];
 
   const pages: string[] = [];
   let current = "";
-  for (const line of lines) {
-    const next = current ? `${current}\n\n${line}` : line;
-    if (next.length > 3900) {
-      pages.push(current);
-      current = line;
+  for (const entry of entries) {
+    if (!current) {
+      current = entry;
     } else {
-      current = next;
+      const next = `${current}\n\n${entry}`;
+      if (next.length > 3900) {
+        pages.push(current);
+        current = entry;
+      } else {
+        current = next;
+      }
     }
   }
   if (current) pages.push(current);
@@ -659,14 +674,21 @@ export const Reminders: Command = {
     },
     {
       name: "edit",
-      description: "Edit reminder configs targeting a clan",
+      description: "Edit reminder configs by clan or id",
       type: ApplicationCommandOptionType.Subcommand,
       options: [
+        {
+          name: "id",
+          description: "Reminder id to edit",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          autocomplete: true,
+        },
         {
           name: "clan",
           description: "Clan tag (with or without #)",
           type: ApplicationCommandOptionType.String,
-          required: true,
+          required: false,
           autocomplete: true,
         },
       ],
@@ -824,8 +846,52 @@ export const Reminders: Command = {
         return;
       }
 
-      const clanInput = interaction.options.getString("clan", true);
-      const normalizedClan = normalizeClanTag(clanInput);
+      const reminderIdInput = interaction.options.getString("id", false);
+      const clanInput = interaction.options.getString("clan", false);
+      const reminderId = String(reminderIdInput ?? "").trim();
+      const normalizedClan = normalizeClanTag(clanInput ?? "");
+      if (!reminderId && !normalizedClan) {
+        await safeReply(interaction, {
+          ephemeral: true,
+          content: "Provide either reminder id or clan.",
+        });
+        return;
+      }
+      if (reminderId && normalizedClan) {
+        await safeReply(interaction, {
+          ephemeral: true,
+          content: "Use only one of id or clan.",
+        });
+        return;
+      }
+
+      if (reminderId) {
+        let reminder: ReminderWithDetails;
+        try {
+          reminder = await reminderService.getReminderWithDetails({
+            reminderId,
+            guildId: interaction.guildId,
+          });
+        } catch (error) {
+          if (error instanceof Error && error.message === "REMINDER_NOT_FOUND") {
+            await safeReply(interaction, {
+              ephemeral: true,
+              content: `No reminder found for id ${reminderId}.`,
+            });
+            return;
+          }
+          throw error;
+        }
+
+        await openReminderPanel({
+          interaction,
+          reminderId: reminder.id,
+          mode: REMINDER_EDIT_MODE,
+          ownerUserId: interaction.user.id,
+        });
+        return;
+      }
+
       if (!normalizedClan) {
         await safeReply(interaction, {
           ephemeral: true,
@@ -903,11 +969,24 @@ export const Reminders: Command = {
   },
   autocomplete: async (interaction: AutocompleteInteraction) => {
     const focused = interaction.options.getFocused(true);
-    if (focused.name !== "clan") {
+    if (!interaction.guildId) {
       await interaction.respond([]);
       return;
     }
-    if (!interaction.guildId) {
+    if (focused.name === "id") {
+      const rows = await reminderService.listReminderAutocompleteRowsForGuild(
+        interaction.guildId,
+        String(focused.value ?? ""),
+      );
+      await interaction.respond(
+        rows.map((row: ReminderAutocompleteRow) => ({
+          name: row.label.slice(0, 100),
+          value: row.value,
+        })),
+      );
+      return;
+    }
+    if (focused.name !== "clan") {
       await interaction.respond([]);
       return;
     }
