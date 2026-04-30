@@ -51,7 +51,12 @@ describe("/reminders command shape", () => {
     );
     expect(create?.options?.find((o: any) => o.name === "clan")?.autocomplete).toBe(true);
 
-    expect(edit?.options?.find((o: any) => o.name === "clan")?.required).toBe(true);
+    expect(edit?.options?.find((o: any) => o.name === "id")?.required).toBe(false);
+    expect(edit?.options?.find((o: any) => o.name === "id")?.type).toBe(
+      ApplicationCommandOptionType.String,
+    );
+    expect(edit?.options?.find((o: any) => o.name === "id")?.autocomplete).toBe(true);
+    expect(edit?.options?.find((o: any) => o.name === "clan")?.required).toBe(false);
     expect(edit?.options?.find((o: any) => o.name === "clan")?.autocomplete).toBe(true);
   });
 });

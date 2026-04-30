@@ -53,8 +53,20 @@ export type ReminderListRow = {
   isEnabled: boolean;
   offsetsSeconds: number[];
   targetCount: number;
+  targets: ReminderTargetDisplay[];
   createdAt: Date;
   updatedAt: Date;
+};
+
+export type ReminderAutocompleteRow = {
+  id: string;
+  type: ReminderType;
+  channelId: string;
+  isEnabled: boolean;
+  offsetsSeconds: number[];
+  targets: ReminderTargetDisplay[];
+  value: string;
+  label: string;
 };
 
 type ReminderDraftRow = {
@@ -70,6 +82,23 @@ type ReminderDraftRow = {
   offsetsSeconds: number[];
   targets: Array<{ clanTag: string; clanType: ReminderTargetClanType }>;
   persistedReminderId: string | null;
+};
+
+type ReminderQueryRow = {
+  id: string;
+  guildId: string;
+  type: ReminderType;
+  channelId: string;
+  isEnabled: boolean;
+  createdByUserId: string;
+  updatedByUserId: string;
+  createdAt: Date;
+  updatedAt: Date;
+  times: Array<{ offsetSeconds: number }>;
+  targetClans: Array<{ clanTag: string; clanType: ReminderTargetClanType }>;
+  _count: {
+    targetClans: number;
+  };
 };
 
 /** Purpose: parse `HhMm` reminder offsets into positive total seconds. */
@@ -145,6 +174,26 @@ export function decodeReminderClanTargetValue(
 /** Purpose: keep reminder persistence and guild-scoped reads/writes in one service boundary. */
 export class ReminderService {
   private readonly draftById = new Map<string, ReminderDraftRow>();
+
+  private async mapReminderQueryRowsToListRows(
+    rows: ReminderQueryRow[],
+  ): Promise<ReminderListRow[]> {
+    if (rows.length <= 0) return [];
+    const resolvedTargets = await Promise.all(
+      rows.map((row) => resolveReminderTargetDisplays(row.targetClans)),
+    );
+    return rows.map((row, index) => ({
+      id: row.id,
+      type: row.type,
+      channelId: row.channelId,
+      isEnabled: row.isEnabled,
+      offsetsSeconds: row.times.map((time) => time.offsetSeconds),
+      targetCount: row._count.targetClans,
+      targets: resolvedTargets[index] ?? [],
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    }));
+  }
 
   /** Purpose: return selectable clan options from both FWA tracked and current-season CWL registries. */
   async listSelectableClanOptions(guildId: string): Promise<ReminderClanOption[]> {
@@ -625,7 +674,7 @@ export class ReminderService {
 
   /** Purpose: list guild-scoped reminder rows for admin list views with cheap aggregate metadata. */
   async listReminderSummariesForGuild(guildId: string): Promise<ReminderListRow[]> {
-    const rows = await prisma.reminder.findMany({
+    const rows = (await prisma.reminder.findMany({
       where: { guildId },
       include: {
         times: {
@@ -637,17 +686,8 @@ export class ReminderService {
         },
       },
       orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-    });
-    return rows.map((row) => ({
-      id: row.id,
-      type: row.type,
-      channelId: row.channelId,
-      isEnabled: row.isEnabled,
-      offsetsSeconds: row.times.map((time) => time.offsetSeconds),
-      targetCount: row._count.targetClans,
-      createdAt: row.createdAt,
-      updatedAt: row.updatedAt,
-    }));
+    })) as ReminderQueryRow[];
+    return this.mapReminderQueryRowsToListRows(rows);
   }
 
   /** Purpose: find reminders targeting one normalized clan tag for edit flow lookup/disambiguation. */
@@ -657,7 +697,7 @@ export class ReminderService {
   }): Promise<ReminderListRow[]> {
     const clanTag = normalizeClanTag(input.clanTag);
     if (!clanTag) return [];
-    const rows = await prisma.reminder.findMany({
+    const rows = (await prisma.reminder.findMany({
       where: {
         guildId: input.guildId,
         targetClans: {
@@ -676,17 +716,61 @@ export class ReminderService {
         },
       },
       orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    })) as ReminderQueryRow[];
+    return this.mapReminderQueryRowsToListRows(rows);
+  }
+
+  /** Purpose: list guild reminder rows for autocomplete with stable guild-scoped filters. */
+  async listReminderAutocompleteRowsForGuild(
+    guildId: string,
+    query: string | null | undefined,
+  ): Promise<ReminderAutocompleteRow[]> {
+    const rows = await this.listReminderSummariesForGuild(guildId);
+    const normalizedQuery = String(query ?? "")
+      .trim()
+      .toLowerCase();
+    const filtered = rows.filter((row) => {
+      if (!normalizedQuery) return true;
+      const targetNames = row.targets.map((target) => target.name ?? target.clanTag);
+      const searchParts = [
+        row.id,
+        row.id.slice(0, 8),
+        row.type,
+        row.channelId,
+        row.isEnabled ? "enabled" : "disabled",
+        ...targetNames,
+        ...row.targets.map((target) => target.clanTag),
+        ...row.targets.map((target) => target.label),
+      ];
+      return searchParts.some((part) =>
+        String(part ?? "")
+          .toLowerCase()
+          .includes(normalizedQuery),
+      );
     });
-    return rows.map((row) => ({
-      id: row.id,
-      type: row.type,
-      channelId: row.channelId,
-      isEnabled: row.isEnabled,
-      offsetsSeconds: row.times.map((time) => time.offsetSeconds),
-      targetCount: row._count.targetClans,
-      createdAt: row.createdAt,
-      updatedAt: row.updatedAt,
-    }));
+    return filtered.slice(0, 25).map((row) => {
+      const shortId = row.id.slice(0, 8);
+      const targetNames = row.targets
+        .map((target) => target.name ?? target.clanTag)
+        .filter(Boolean);
+      const offsets = row.offsetsSeconds.map((offset) => formatReminderOffsetSeconds(offset));
+      const parts = [
+        `${row.type} ${shortId}`,
+        offsets.length > 0 ? offsets.join(", ") : null,
+        targetNames.length > 0 ? targetNames.join(", ") : null,
+        row.isEnabled ? "enabled" : "disabled",
+      ].filter((part): part is string => Boolean(part));
+      return {
+        id: row.id,
+        type: row.type,
+        channelId: row.channelId,
+        isEnabled: row.isEnabled,
+        offsetsSeconds: row.offsetsSeconds,
+        targets: row.targets,
+        value: row.id,
+        label: parts.join(" | ").slice(0, 100),
+      };
+    });
   }
 
   /** Purpose: persist one final create-panel config, merging with an identical existing reminder when present. */
