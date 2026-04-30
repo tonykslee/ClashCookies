@@ -23,6 +23,7 @@ import {
   Roster,
   handleRosterPostClearButtonInteraction,
   handleRosterPostCustomizeMenuInteraction,
+  handleRosterManageActionButtonInteraction,
   handleRosterManageWeightOpenButtonInteraction,
   handleRosterManageWeightModalSubmit,
   handleRosterReportPingButtonInteraction,
@@ -34,6 +35,8 @@ import {
   paginateRosterSignupUserBlocks,
 } from "../src/commands/Roster";
 import { rosterService } from "../src/services/RosterService";
+import * as rosterServiceModule from "../src/services/RosterService";
+import * as rosterRoleSyncService from "../src/services/RosterRoleSyncService";
 import { rosterExportService } from "../src/services/RosterExportService";
 import { rosterWeightService } from "../src/services/RosterWeightService";
 import * as playerLinkService from "../src/services/PlayerLinkService";
@@ -319,10 +322,12 @@ describe("/roster command", () => {
     vi.spyOn(rosterService, "clearRosterSignups");
     vi.spyOn(rosterService, "getRosterView");
     vi.spyOn(rosterService, "getRosterRoleSyncTargets").mockResolvedValue(null as any);
+    vi.spyOn(rosterService, "createRosterManageActionPanel");
     vi.spyOn(rosterService, "addRosterSignupsForManager");
     vi.spyOn(rosterService, "moveRosterSignups");
     vi.spyOn(rosterService, "removeRosterSignupsAsManager");
     vi.spyOn(rosterService, "changeRosterSignups");
+    vi.spyOn(rosterService, "confirmRosterManageSession");
     vi.spyOn(rosterWeightService, "setManualWeightForRoster");
     vi.spyOn(rosterExportService, "createRosterExport");
     (rosterService.buildRosterSignupPayload as any).mockResolvedValue(
@@ -1151,6 +1156,60 @@ describe("/roster command", () => {
     );
     expect(String(archiveInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain("was archived");
 
+    (rosterService.createRosterManageActionPanel as any).mockResolvedValue({
+      outcome: "ready",
+      panel: {
+        sessionId: "session-1",
+        action: "add",
+        embed: new EmbedBuilder().setTitle("Manage Roster — Add Player"),
+        components: [
+          new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder()
+              .setCustomId("roster-manage:action:confirm:session-1")
+              .setLabel("Confirm")
+              .setStyle(ButtonStyle.Success),
+          ),
+        ],
+      },
+    });
+
+    const managedInteraction = makeInteraction({
+      subcommand: "manage",
+      roster: "roster-1",
+      action: "add",
+      userId: "222222222222222222",
+    }) as any;
+    await Roster.run({} as any, managedInteraction as any);
+
+    expect(rosterService.createRosterManageActionPanel).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rosterId: "roster-1",
+        action: "add",
+        discordUserId: "111111111111111111",
+        selectedDiscordUserId: "222222222222222222",
+      }),
+    );
+    expect(managedInteraction.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        embeds: [expect.any(EmbedBuilder)],
+        components: expect.arrayContaining([expect.any(ActionRowBuilder)]),
+      }),
+    );
+
+    (rosterService.createRosterManageActionPanel as any).mockReset();
+
+    const missingUserInteraction = makeInteraction({
+      subcommand: "manage",
+      roster: "roster-1",
+      action: "remove",
+    }) as any;
+    await Roster.run({} as any, missingUserInteraction as any);
+
+    expect(String(missingUserInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toBe(
+      "Select a user to manage accounts for this action.",
+    );
+    expect(rosterService.createRosterManageActionPanel).not.toHaveBeenCalled();
+
     (rosterService.getRosterView as any).mockResolvedValueOnce({
       roster: {
         id: "roster-1",
@@ -1345,7 +1404,7 @@ describe("/roster command", () => {
     );
   });
 
-  it("opens the roster weight modal from the manage weight instructions panel", async () => {
+  it("renders the roster weight instructions panel with the legacy open button", async () => {
     (rosterService.getRosterView as any).mockResolvedValue({
       roster: {
         id: "roster-1",
@@ -1394,8 +1453,81 @@ describe("/roster command", () => {
       ],
       totalSignupCount: 1,
     });
+    vi.spyOn(rosterServiceModule, "getRosterManageSession").mockReturnValue({
+      sessionId: "session-1",
+      action: "set_weight",
+      guildId: "guild-1",
+      rosterId: "roster-1",
+      rosterTitle: "CWL Alpha Signup",
+      rosterLifecycleState: "OPEN",
+      rosterClanTag: "#2QG2C08UP",
+      rosterClanName: "CWL Alpha",
+      ownerDiscordUserId: "111111111111111111",
+      selectedDiscordUserId: "111111111111111111",
+      selectedDiscordUserLabel: "Roster User (@rosteruser)",
+      rosterSignups: [],
+      selectedPlayerTags: ["#PQL0289"],
+      selectedGroupKey: null,
+      selectedTargetRosterId: null,
+      selectedTargetGroupKey: null,
+      playerOptions: [],
+      blockedPlayerOptions: [],
+      groupOptions: [],
+      targetRosterOptions: [],
+      targetGroupOptions: [],
+      playerPageWindowStart: 0,
+      createdAtMs: Date.now(),
+    } as any);
     const interaction = {
-      customId: "roster-manage-weight:open:roster-1:#PQL0289",
+      customId: "roster-manage:action:open_weight:session-1",
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      memberPermissions: {
+        has: vi.fn().mockReturnValue(true),
+      },
+      reply: vi.fn().mockResolvedValue(undefined),
+      showModal: vi.fn().mockResolvedValue(undefined),
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    await handleRosterManageActionButtonInteraction(interaction);
+
+    expect(interaction.showModal).toHaveBeenCalledWith(expect.anything());
+    const modal = interaction.showModal.mock.calls[0]?.[0] as any;
+    expect(modal.toJSON?.().custom_id).toBe("roster-manage-weight:submit:roster-1:#PQL0289");
+    expect(modal.toJSON?.().title).toBe("Set Weight");
+  });
+
+  it("rejects interactive set_weight when zero or multiple players are selected", async () => {
+    const sessionSpy = vi.spyOn(rosterServiceModule, "getRosterManageSession");
+    sessionSpy.mockReturnValueOnce({
+      sessionId: "session-1",
+      action: "set_weight",
+      guildId: "guild-1",
+      rosterId: "roster-1",
+      rosterTitle: "CWL Alpha Signup",
+      rosterLifecycleState: "OPEN",
+      rosterClanTag: "#2QG2C08UP",
+      rosterClanName: "CWL Alpha",
+      ownerDiscordUserId: "111111111111111111",
+      selectedDiscordUserId: "111111111111111111",
+      selectedDiscordUserLabel: "Roster User (@rosteruser)",
+      rosterSignups: [],
+      selectedPlayerTags: [],
+      selectedGroupKey: null,
+      selectedTargetRosterId: null,
+      selectedTargetGroupKey: null,
+      playerOptions: [],
+      blockedPlayerOptions: [],
+      groupOptions: [],
+      targetRosterOptions: [],
+      targetGroupOptions: [],
+      playerPageWindowStart: 0,
+      createdAtMs: Date.now(),
+    } as any);
+    const zeroInteraction = {
+      customId: "roster-manage:action:open_weight:session-1",
       user: { id: "111111111111111111" },
       guildId: "guild-1",
       inGuild: () => true,
@@ -1406,12 +1538,90 @@ describe("/roster command", () => {
       showModal: vi.fn().mockResolvedValue(undefined),
     } as any;
 
-    await handleRosterManageWeightOpenButtonInteraction(interaction);
+    await handleRosterManageActionButtonInteraction(zeroInteraction);
+    expect(String(zeroInteraction.reply.mock.calls.at(-1)?.[0]?.content ?? "")).toContain(
+      "Select exactly one linked player",
+    );
 
-    expect(interaction.showModal).toHaveBeenCalledWith(expect.anything());
-    const modal = interaction.showModal.mock.calls[0]?.[0] as any;
-    expect(modal.toJSON?.().custom_id).toBe("roster-manage-weight:submit:roster-1:#PQL0289");
-    expect(modal.toJSON?.().title).toBe("Set Weight");
+    sessionSpy.mockReturnValueOnce({
+      sessionId: "session-2",
+      action: "set_weight",
+      guildId: "guild-1",
+      rosterId: "roster-1",
+      rosterTitle: "CWL Alpha Signup",
+      rosterLifecycleState: "OPEN",
+      rosterClanTag: "#2QG2C08UP",
+      rosterClanName: "CWL Alpha",
+      ownerDiscordUserId: "111111111111111111",
+      selectedDiscordUserId: "111111111111111111",
+      selectedDiscordUserLabel: "Roster User (@rosteruser)",
+      rosterSignups: [],
+      selectedPlayerTags: [makeValidRosterPlayerTag(1), makeValidRosterPlayerTag(2)],
+      selectedGroupKey: null,
+      selectedTargetRosterId: null,
+      selectedTargetGroupKey: null,
+      playerOptions: [],
+      blockedPlayerOptions: [],
+      groupOptions: [],
+      targetRosterOptions: [],
+      targetGroupOptions: [],
+      playerPageWindowStart: 0,
+      createdAtMs: Date.now(),
+    } as any);
+    const multiInteraction = {
+      customId: "roster-manage:action:open_weight:session-2",
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      memberPermissions: {
+        has: vi.fn().mockReturnValue(true),
+      },
+      reply: vi.fn().mockResolvedValue(undefined),
+      showModal: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    await handleRosterManageActionButtonInteraction(multiInteraction);
+    expect(String(multiInteraction.reply.mock.calls.at(-1)?.[0]?.content ?? "")).toContain(
+      "Select exactly one linked player",
+    );
+  });
+
+  it("does not sync roster roles when the interactive manage flow confirms", async () => {
+    const syncSpy = vi.spyOn(rosterRoleSyncService, "syncRosterRoleAssignments");
+    (rosterService.confirmRosterManageSession as any).mockResolvedValue({
+      outcome: "completed",
+      action: "add",
+      rosterId: "roster-1",
+      targetRosterId: null,
+      summary: "Signed up #PQL0289 to Confirmed.",
+    });
+    const interaction = {
+      customId: "roster-manage:action:confirm:session-1",
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      memberPermissions: {
+        has: vi.fn().mockReturnValue(true),
+      },
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+      followUp: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      client: {
+        channels: {
+          fetch: vi.fn().mockResolvedValue(null),
+        },
+      },
+    } as any;
+
+    await handleRosterManageActionButtonInteraction(interaction, {} as any);
+
+    expect(rosterService.confirmRosterManageSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "session-1",
+        discordUserId: "111111111111111111",
+      }),
+    );
+    expect(syncSpy).not.toHaveBeenCalled();
   });
 
   it("persists a roster weight from the modal submit flow and refreshes the posted board", async () => {
