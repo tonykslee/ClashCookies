@@ -343,6 +343,7 @@ export type RosterSummaryRecord = RosterRecord & {
 export type RosterUserSignupListSignupRecord = {
   playerTag: string;
   playerName: string | null;
+  townHall: number | null;
   signedUpAt: Date;
 };
 
@@ -1580,7 +1581,7 @@ export async function listRosterSignupsForDiscordUser(input: {
     };
   }
 
-  const currentRosterSignups = await prisma.rosterSignup.findMany({
+  const currentRosterSignups = (await prisma.rosterSignup.findMany({
     where: {
       playerTag: { in: linkedTags },
       roster: {
@@ -1611,23 +1612,7 @@ export async function listRosterSignupsForDiscordUser(input: {
         },
       },
     },
-  });
-
-  if (currentRosterSignups.length <= 0) {
-    return {
-      discordUserId,
-      linkedAccountCount: linkedAccounts.length,
-      signupCount: 0,
-      sections: [],
-    };
-  }
-
-  const clanNameByTag = await resolveRosterClanNameMap(
-    currentRosterSignups.map((row) => normalizeClanTag((row as { roster: { clanTag: string | null } }).roster.clanTag ?? "")).filter(Boolean),
-  );
-
-  const sectionByRosterId = new Map<string, RosterUserSignupListSectionRecord>();
-  for (const row of currentRosterSignups as Array<{
+  })) as Array<{
     rosterId: string;
     playerTag: string;
     playerName: string | null;
@@ -1640,7 +1625,28 @@ export async function listRosterSignupsForDiscordUser(input: {
       description: string | null;
       sortOrder: number;
     } | null;
-  }>) {
+  }>;
+
+  if (currentRosterSignups.length <= 0) {
+    return {
+      discordUserId,
+      linkedAccountCount: linkedAccounts.length,
+      signupCount: 0,
+      sections: [],
+    };
+  }
+
+  const townHallByTag = await loadRosterDisplayTownHallMap({
+    clanTag: null,
+    playerTags: currentRosterSignups.map((row) => row.playerTag),
+  });
+
+  const clanNameByTag = await resolveRosterClanNameMap(
+    currentRosterSignups.map((row) => normalizeClanTag(row.roster.clanTag ?? "")).filter(Boolean),
+  );
+
+  const sectionByRosterId = new Map<string, RosterUserSignupListSectionRecord>();
+  for (const row of currentRosterSignups) {
     const roster = mapRosterRecord(row.roster);
     let section = sectionByRosterId.get(roster.id);
     if (!section) {
@@ -1681,6 +1687,7 @@ export async function listRosterSignupsForDiscordUser(input: {
     group.signups.push({
       playerTag: normalizePlayerTag(row.playerTag),
       playerName: normalizeRosterText(row.playerName ?? null),
+      townHall: townHallByTag.get(normalizePlayerTag(row.playerTag)) ?? null,
       signedUpAt: row.signedUpAt,
     });
   }
@@ -3723,7 +3730,7 @@ function getRosterDisplayColumnHeader(column: RosterDisplayColumn): string {
   return ROSTER_BOARD_COLUMN_HEADERS[column];
 }
 
-function formatRosterTownhallIconsValue(townHall: number | null | undefined): string | null {
+export function formatRosterTownhallIconsValue(townHall: number | null | undefined): string | null {
   if (townHall === null || townHall === undefined || !Number.isFinite(townHall)) {
     return null;
   }

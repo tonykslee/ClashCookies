@@ -5614,6 +5614,13 @@ describe("RosterService", () => {
     prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#2P0J0YL8", name: "Serenity" }]);
     prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    playerCurrentServiceMock.listPlayerCurrentByTags.mockResolvedValue(
+      makePlayerCurrentMap([
+        ["#GGYLPVCUQ", 18],
+        ["#YJCLLYU8C", 17],
+        ["#PQL0002", null],
+      ]),
+    );
 
     const rosterOne = {
       id: "roster-1",
@@ -5690,6 +5697,7 @@ describe("RosterService", () => {
           groupId: "group-confirmed",
           playerTag: "#GGYLPVCUQ",
           playerName: "Charmander",
+          townHall: 18,
           signedUpAt: new Date("2026-04-20T10:00:00.000Z"),
           roster: rosterOne,
           group: {
@@ -5706,6 +5714,7 @@ describe("RosterService", () => {
           groupId: "group-substitute",
           playerTag: "#YJCLLYU8C",
           playerName: "Bulbasaur",
+          townHall: 17,
           signedUpAt: new Date("2026-04-20T11:00:00.000Z"),
           roster: rosterOne,
           group: {
@@ -5722,6 +5731,7 @@ describe("RosterService", () => {
           groupId: null,
           playerTag: "#PQL0002",
           playerName: null,
+          townHall: null,
           signedUpAt: new Date("2026-04-22T10:00:00.000Z"),
           roster: rosterTwo,
           group: null,
@@ -5765,9 +5775,12 @@ describe("RosterService", () => {
     });
     expect(result.sections[0].groups.map((group) => group.name)).toEqual(["Confirmed", "Substitute"]);
     expect(result.sections[0].groups[0].signups.map((signup) => signup.playerTag)).toEqual(["#GGYLPVCUQ"]);
+    expect(result.sections[0].groups[0].signups[0]?.townHall).toBe(18);
     expect(result.sections[0].groups[1].signups.map((signup) => signup.playerTag)).toEqual(["#YJCLLYU8C"]);
+    expect(result.sections[0].groups[1].signups[0]?.townHall).toBe(17);
     expect(result.sections[1].groups.map((group) => group.name)).toEqual(["Ungrouped"]);
     expect(result.sections[1].groups[0].signups.map((signup) => signup.playerTag)).toEqual(["#PQL0002"]);
+    expect(result.sections[1].groups[0].signups[0]?.townHall).toBeNull();
     expect(prismaMock.rosterSignup.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({

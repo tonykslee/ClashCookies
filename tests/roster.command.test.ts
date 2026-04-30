@@ -752,6 +752,7 @@ describe("/roster command", () => {
                 {
                   playerTag: "#GGYLPVCUQ",
                   playerName: "Charmander",
+                  townHall: 18,
                   signedUpAt: new Date("2026-04-20T10:00:00.000Z"),
                 },
               ],
@@ -766,6 +767,7 @@ describe("/roster command", () => {
                 {
                   playerTag: "#YJCLLYU8C",
                   playerName: "Bulbasaur",
+                  townHall: 17,
                   signedUpAt: new Date("2026-04-20T11:00:00.000Z"),
                 },
               ],
@@ -818,6 +820,7 @@ describe("/roster command", () => {
                 {
                   playerTag: makeValidRosterPlayerTag(1),
                   playerName: "Pikachu",
+                  townHall: null,
                   signedUpAt: new Date("2026-04-22T10:00:00.000Z"),
                 },
               ],
@@ -844,17 +847,18 @@ describe("/roster command", () => {
     expect(Array.isArray(payload?.embeds)).toBe(true);
     expect(payload.embeds).toHaveLength(1);
     const firstEmbed = payload.embeds[0]?.toJSON?.() ?? payload.embeds[0];
-    expect(String(firstEmbed?.title ?? "")).toBe("Roster Signups for <@222222222222222222>");
+    expect(String(firstEmbed?.title ?? "")).toBe("Roster Signups");
+    expect(String(firstEmbed?.description ?? "")).toContain("User: <@222222222222222222>");
     expect(String(firstEmbed?.description ?? "")).toContain(
       "Masters 2 [C] | TH17 ([Serenity](<https://cc.fwafarm.com/cc_n/clan.php?tag=2P0J0YL8>))",
     );
     expect(String(firstEmbed?.description ?? "")).toContain("Confirmed");
-    expect(String(firstEmbed?.description ?? "")).toContain("  - Charmander `#GGYLPVCUQ`");
+    expect(String(firstEmbed?.description ?? "")).toContain("TH18 Charmander `#GGYLPVCUQ`");
     expect(String(firstEmbed?.description ?? "")).toContain("Substitute");
-    expect(String(firstEmbed?.description ?? "")).toContain("  - Bulbasaur `#YJCLLYU8C`");
+    expect(String(firstEmbed?.description ?? "")).toContain("TH17 Bulbasaur `#YJCLLYU8C`");
     expect(String(firstEmbed?.description ?? "")).toContain("FWA Beta Signup (Beta Force)");
     expect(String(firstEmbed?.description ?? "")).toContain("Ungrouped");
-    expect(String(firstEmbed?.description ?? "")).toContain(`  - Pikachu \`${makeValidRosterPlayerTag(1)}\``);
+    expect(String(firstEmbed?.description ?? "")).toContain(`TH? Pikachu \`${makeValidRosterPlayerTag(1)}\``);
   });
 
   it("shows an empty state when the selected user has no linked roster signups", async () => {
@@ -881,12 +885,12 @@ describe("/roster command", () => {
     const largeRosterBlock = [
       "Masters 2 [C] | TH17 ([Serenity](<https://cc.fwafarm.com/cc_n/clan.php?tag=2P0J0YL8>))",
       "Confirmed",
-      ...Array.from({ length: 157 }, (_, index) => `  - Player ${index + 1} \`${makeValidRosterPlayerTag(index)}\``),
+      ...Array.from({ length: 157 }, (_, index) => `TH18 Player ${index + 1} \`${makeValidRosterPlayerTag(index)}\``),
     ].join("\n");
     const secondRosterBlock = [
       "FWA Beta Signup (Beta Force)",
       "Ungrouped",
-      `  - Pikachu \`${makeValidRosterPlayerTag(1)}\``,
+      `TH? Pikachu \`${makeValidRosterPlayerTag(1)}\``,
     ].join("\n");
 
     const pages = paginateRosterSignupUserBlocks([largeRosterBlock, secondRosterBlock]);

@@ -22,6 +22,7 @@ import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
 import { CommandPermissionService } from "../services/CommandPermissionService";
 import { resolveCurrentCwlSeasonKey } from "../services/CwlRegistryService";
+import { emojiResolverService } from "../services/emoji/EmojiResolverService";
 import {
   listPlayerLinksForDiscordUser,
   normalizeClanTag,
@@ -52,6 +53,7 @@ import {
   parseRosterManageRosterSelectMenuCustomId,
   getRosterManageSession,
   buildRosterSignupRoleRequirementLines,
+  formatRosterTownhallIconsValue,
   rosterService,
   type RosterRecord,
   type RosterSignupViewRecord,
@@ -517,9 +519,11 @@ function buildRosterSignupUserGroupHeading(group: {
 function buildRosterSignupUserAccountLine(account: {
   playerTag: string;
   playerName: string | null;
+  townHall: number | null;
 }): string {
   const playerName = normalizeRosterMutationLabel(account.playerName, "");
-  return playerName ? `  - ${playerName} \`${account.playerTag}\`` : `  - \`${account.playerTag}\``;
+  const townHall = formatRosterTownhallIconsValue(account.townHall) ?? "TH?";
+  return playerName ? `${townHall} ${playerName} \`${account.playerTag}\`` : `${townHall} \`${account.playerTag}\``;
 }
 
 export function paginateRosterSignupUserBlocks(blocks: string[]): string[] {
@@ -554,28 +558,38 @@ export function paginateRosterSignupUserBlocks(blocks: string[]): string[] {
 
 async function buildRosterSignupUserEmbeds(input: {
   discordUserId: string;
+  client: Client;
   sections: Awaited<ReturnType<typeof rosterService.listRosterSignupsForDiscordUser>>["sections"];
 }): Promise<EmbedBuilder[]> {
-  const blocks = input.sections.map((section) => {
-    const clanTag = normalizeClanTag(section.roster.clanTag ?? "") || null;
-    const clanName = section.clanName ?? null;
-    const lines: string[] = [buildRosterSignupUserSectionTitle(section.roster.title, clanName, clanTag)];
+  const blocks = [
+    `User: <@${input.discordUserId}>`,
+    ...input.sections.map((section) => {
+      const clanTag = normalizeClanTag(section.roster.clanTag ?? "") || null;
+      const clanName = section.clanName ?? null;
+      const lines: string[] = [buildRosterSignupUserSectionTitle(section.roster.title, clanName, clanTag)];
 
-    for (const group of section.groups) {
-      lines.push(buildRosterSignupUserGroupHeading(group));
-      for (const signup of group.signups) {
-        lines.push(buildRosterSignupUserAccountLine(signup));
+      for (const group of section.groups) {
+        lines.push(buildRosterSignupUserGroupHeading(group));
+        for (const signup of group.signups) {
+          lines.push(buildRosterSignupUserAccountLine(signup));
+        }
       }
-    }
 
-    return lines.join("\n");
-  });
+      return lines.join("\n");
+    }),
+  ];
   const pages = paginateRosterSignupUserBlocks(blocks);
-  return pages.map(
+  const renderedPages = await Promise.all(
+    pages.map(async (description) => {
+      const rendered = await emojiResolverService.replaceShortcodes(input.client, description).catch(() => description);
+      return rendered.replace(/:th(\d+):/gi, (_match, level: string) => `TH${level}`);
+    }),
+  );
+  return renderedPages.map(
     (description, index) =>
       new EmbedBuilder()
         .setColor(0xfee75c)
-        .setTitle(`Roster Signups for <@${input.discordUserId}>`)
+        .setTitle("Roster Signups")
         .setDescription(description)
         .setFooter({ text: `Page ${index + 1}/${pages.length}` }),
   );
@@ -2676,6 +2690,7 @@ async function handleRosterListSubcommand(interaction: ChatInputCommandInteracti
     });
     const embeds = await buildRosterSignupUserEmbeds({
       discordUserId: selectedUser.id,
+      client: interaction.client,
       sections: result.sections,
     });
     if (result.signupCount <= 0) {
