@@ -15,15 +15,21 @@ import { prisma } from "../prisma";
 import { playerCurrentService } from "../services/PlayerCurrentService";
 import { listPlayerLinksForDiscordUser } from "../services/PlayerLinkService";
 import { runWithCoCQueueContext } from "../services/CoCQueueContext";
+import { emojiResolverService } from "../services/emoji/EmojiResolverService";
 import { toFailureTelemetry } from "../services/telemetry/ingest";
 
 type AccountRow = {
   tag: string;
   name: string;
+  townHall: number | null;
+  weight: number | null;
+  weightSource: "FwaClanMemberCurrent" | "FwaPlayerCatalog" | null;
   clanTag: string | null;
   clanName: string | null;
   clanRole: "leader" | "coleader" | null;
   clanState: "known" | "no_clan" | "unknown";
+  isTrackedFwaClan: boolean;
+  trackedClanSortOrder: number | null;
 };
 
 type ClanGroup = {
@@ -31,6 +37,8 @@ type ClanGroup = {
   clanTag: string | null;
   clanName: string | null;
   clanState: "known" | "no_clan" | "unknown";
+  isTrackedFwaClan: boolean;
+  trackedClanSortOrder: number | null;
   entries: AccountRow[];
 };
 
@@ -50,6 +58,22 @@ type PlayerCurrentSnapshot = Awaited<
 > extends Map<string, infer T>
   ? T
   : never;
+
+type FwaClanMemberCurrentRow = {
+  playerTag: string;
+  clanTag: string;
+  townHall: number | null;
+  weight: number | null;
+  sourceSyncedAt: Date;
+};
+
+type FwaPlayerCatalogRow = {
+  playerTag: string;
+  latestTownHall: number | null;
+  latestKnownWeight: number | null;
+};
+
+type AccountDisplayEmojiMap = Map<number, string>;
 
 const MAX_ACCOUNTS_PER_PAGE = 18;
 const ACCOUNTS_REFRESH_QUEUE_SOURCE = "accounts:list:refresh";
@@ -72,6 +96,62 @@ function normalizeClanMemberRole(input: unknown): "leader" | "coleader" | null {
   if (normalized === "leader") return "leader";
   if (normalized === "coleader") return "coleader";
   return null;
+}
+
+function normalizePositiveInteger(input: unknown): number | null {
+  const parsed = Math.trunc(Number(input));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function formatCompactWeightK(weight: number | null | undefined): string {
+  const normalized = normalizePositiveInteger(weight);
+  if (normalized === null) return "—";
+  if (normalized < 1000) return String(normalized);
+  return `${Math.trunc(normalized / 1000)}k`;
+}
+
+function formatTownHallFallback(townHall: number | null | undefined): string {
+  const normalized = normalizePositiveInteger(townHall);
+  return normalized === null ? "TH?" : `TH${normalized}`;
+}
+
+async function resolveTownHallEmojiMap(client: Client): Promise<AccountDisplayEmojiMap> {
+  const inventory = await emojiResolverService.fetchApplicationEmojiInventory(client).catch(() => null);
+  if (!inventory?.ok) return new Map();
+
+  const renderedByTownHall = new Map<number, string>();
+  for (let townHall = 1; townHall <= 18; townHall += 1) {
+    const shortcode = `th${townHall}`;
+    const exact = inventory.snapshot.exactByName.get(shortcode);
+    const lower = inventory.snapshot.lowercaseByName.get(shortcode.toLowerCase());
+    const rendered = exact?.rendered ?? lower?.rendered ?? null;
+    if (rendered) {
+      renderedByTownHall.set(townHall, rendered);
+    }
+  }
+  return renderedByTownHall;
+}
+
+function renderTownHallIcon(
+  townHall: number | null,
+  townHallEmojiByLevel: AccountDisplayEmojiMap,
+): string {
+  const normalized = normalizePositiveInteger(townHall);
+  if (normalized === null) return "TH?";
+  return townHallEmojiByLevel.get(normalized) ?? formatTownHallFallback(normalized);
+}
+
+function pickPreferredFwaMemberRow(
+  rows: FwaClanMemberCurrentRow[],
+  clanTag: string | null,
+): FwaClanMemberCurrentRow | null {
+  if (rows.length === 0) return null;
+  const normalizedClanTag = normalizeTag(clanTag ?? "");
+  if (normalizedClanTag) {
+    const exactMatch = rows.find((row) => normalizeTag(row.clanTag) === normalizedClanTag);
+    if (exactMatch) return exactMatch;
+  }
+  return [...rows].sort((a, b) => b.sourceSyncedAt.getTime() - a.sourceSyncedAt.getTime())[0] ?? null;
 }
 
 function normalizeAutocompleteQuery(input: string): string {
@@ -209,6 +289,48 @@ async function buildAccountsRows(input: {
     select: { tag: true, name: true, clanTag: true, clanName: true },
   });
   const activityByTag = new Map(activity.map((a) => [normalizeTag(a.tag), a]));
+  const fwaMemberRows = await prisma.fwaClanMemberCurrent.findMany({
+    where: { playerTag: { in: input.tags } },
+    select: {
+      playerTag: true,
+      clanTag: true,
+      townHall: true,
+      weight: true,
+      sourceSyncedAt: true,
+    },
+  });
+  const fwaMemberRowsByTag = new Map<string, FwaClanMemberCurrentRow[]>();
+  for (const row of fwaMemberRows as FwaClanMemberCurrentRow[]) {
+    const playerTag = normalizeTag(row.playerTag);
+    if (!playerTag) continue;
+    const bucket = fwaMemberRowsByTag.get(playerTag) ?? [];
+    bucket.push({
+      playerTag,
+      clanTag: normalizeTag(row.clanTag),
+      townHall: normalizePositiveInteger(row.townHall),
+      weight: normalizePositiveInteger(row.weight),
+      sourceSyncedAt: row.sourceSyncedAt,
+    });
+    fwaMemberRowsByTag.set(playerTag, bucket);
+  }
+  const fwaCatalogRows = await prisma.fwaPlayerCatalog.findMany({
+    where: { playerTag: { in: input.tags } },
+    select: {
+      playerTag: true,
+      latestTownHall: true,
+      latestKnownWeight: true,
+    },
+  });
+  const fwaCatalogByTag = new Map<string, FwaPlayerCatalogRow>();
+  for (const row of fwaCatalogRows as FwaPlayerCatalogRow[]) {
+    const playerTag = normalizeTag(row.playerTag);
+    if (!playerTag) continue;
+    fwaCatalogByTag.set(playerTag, {
+      playerTag,
+      latestTownHall: normalizePositiveInteger(row.latestTownHall),
+      latestKnownWeight: normalizePositiveInteger(row.latestKnownWeight),
+    });
+  }
   const candidateClanTags = [...new Set([
     ...input.tags
       .map((tag) => {
@@ -223,6 +345,7 @@ async function buildAccountsRows(input: {
   const trackedClanRows =
     candidateClanTags.length > 0
       ? await prisma.trackedClan.findMany({
+          orderBy: { createdAt: "asc" },
           where: { tag: { in: candidateClanTags } },
           select: { tag: true, name: true },
         })
@@ -232,6 +355,9 @@ async function buildAccountsRows(input: {
       normalizeTag(row.tag),
       sanitizeDisplayText(row.name),
     ] as const)
+  );
+  const trackedClanSortOrderByTag = new Map(
+    trackedClanRows.map((row, index) => [normalizeTag(row.tag), index] as const),
   );
 
   return input.tags.map((tag) => {
@@ -258,6 +384,26 @@ async function buildAccountsRows(input: {
           }
         : null,
     });
+    const memberRows = fwaMemberRowsByTag.get(tag) ?? [];
+    const preferredMemberRow = pickPreferredFwaMemberRow(memberRows, clanTag);
+    const fwaCatalogRow = fwaCatalogByTag.get(tag) ?? null;
+    const townHall =
+      normalizePositiveInteger(playerCurrent?.townHall) ??
+      preferredMemberRow?.townHall ??
+      fwaCatalogRow?.latestTownHall ??
+      null;
+    const weight =
+      preferredMemberRow?.weight ??
+      fwaCatalogRow?.latestKnownWeight ??
+      null;
+    const weightSource =
+      preferredMemberRow?.weight !== null && preferredMemberRow?.weight !== undefined
+        ? "FwaClanMemberCurrent"
+        : fwaCatalogRow?.latestKnownWeight !== null && fwaCatalogRow?.latestKnownWeight !== undefined
+          ? "FwaPlayerCatalog"
+          : null;
+    const isTrackedFwaClan = Boolean(clanTag && trackedClanNameByTag.has(clanTag));
+    const trackedClanSortOrder = clanTag ? trackedClanSortOrderByTag.get(clanTag) ?? null : null;
 
     return {
       tag,
@@ -266,10 +412,15 @@ async function buildAccountsRows(input: {
         linkedName ??
         sanitizeDisplayText(fallback?.name) ??
         tag,
+      townHall,
+      weight,
+      weightSource,
       clanTag: clanState === "known" ? clanTag : null,
       clanName: clanState === "known" ? clanName : null,
       clanRole: normalizeClanMemberRole(playerCurrent?.role),
       clanState,
+      isTrackedFwaClan,
+      trackedClanSortOrder,
     };
   });
 }
@@ -333,12 +484,24 @@ function buildGroups(rows: AccountRow[]): ClanGroup[] {
         clanTag,
         clanName,
         clanState: row.clanState,
+        isTrackedFwaClan: row.isTrackedFwaClan,
+        trackedClanSortOrder: row.trackedClanSortOrder,
         entries: [row],
       });
     } else {
       if (clanName && !bucket.clanName) bucket.clanName = clanName;
       if (bucket.clanState === "unknown" && row.clanState !== "unknown") {
         bucket.clanState = row.clanState;
+      }
+      if (!bucket.isTrackedFwaClan && row.isTrackedFwaClan) {
+        bucket.isTrackedFwaClan = true;
+      }
+      if (
+        bucket.trackedClanSortOrder === null &&
+        row.trackedClanSortOrder !== null &&
+        row.trackedClanSortOrder !== undefined
+      ) {
+        bucket.trackedClanSortOrder = row.trackedClanSortOrder;
       }
       bucket.entries.push(row);
     }
@@ -347,13 +510,28 @@ function buildGroups(rows: AccountRow[]): ClanGroup[] {
   const groups: ClanGroup[] = [...grouped.entries()]
     .sort((a, b) => {
       const rank = (group: ClanGroup) => {
-        if (group.clanState === "unknown") return 1;
-        if (group.clanState === "no_clan") return 2;
-        return 0;
+        if (group.clanState !== "known") {
+          return group.clanState === "unknown" ? 2 : 3;
+        }
+        return group.isTrackedFwaClan ? 0 : 1;
       };
       const rankDelta = rank(a[1]) - rank(b[1]);
       if (rankDelta !== 0) return rankDelta;
-      return buildClanHeadingLabel(a[1]).localeCompare(buildClanHeadingLabel(b[1]), undefined, {
+      if (a[1].clanState === "known" && b[1].clanState === "known") {
+        if (a[1].isTrackedFwaClan !== b[1].isTrackedFwaClan) {
+          return a[1].isTrackedFwaClan ? -1 : 1;
+        }
+        if (a[1].isTrackedFwaClan) {
+          const leftSort = a[1].trackedClanSortOrder ?? Number.MAX_SAFE_INTEGER;
+          const rightSort = b[1].trackedClanSortOrder ?? Number.MAX_SAFE_INTEGER;
+          if (leftSort !== rightSort) return leftSort - rightSort;
+        }
+      }
+      const byLabel = buildClanHeadingLabel(a[1]).localeCompare(buildClanHeadingLabel(b[1]), undefined, {
+        sensitivity: "base",
+      });
+      if (byLabel !== 0) return byLabel;
+      return (a[1].clanTag ?? "").localeCompare(b[1].clanTag ?? "", undefined, {
         sensitivity: "base",
       });
     })
@@ -366,7 +544,10 @@ function buildGroups(rows: AccountRow[]): ClanGroup[] {
   return groups;
 }
 
-function buildPages(groups: ClanGroup[]): string[] {
+function buildPages(
+  groups: ClanGroup[],
+  townHallEmojiByLevel: AccountDisplayEmojiMap,
+): string[] {
   const pages: string[] = [];
   let lines: string[] = [];
   let accountCount = 0;
@@ -383,8 +564,10 @@ function buildPages(groups: ClanGroup[]): string[] {
       }**`,
     );
     for (const entry of group.entries) {
-      const marker = entry.clanRole === "coleader" ? ":crown:" : "-";
-      groupLines.push(`${marker} ${entry.name} \`${entry.tag}\``);
+      const crown = entry.clanRole ? " :crown:" : "";
+      groupLines.push(
+        `${renderTownHallIcon(entry.townHall, townHallEmojiByLevel)} ${entry.name}${crown} \`${entry.tag}\` - ${formatCompactWeightK(entry.weight)}`,
+      );
     }
 
     const groupAccountCount = group.entries.length;
@@ -443,9 +626,12 @@ function buildAccountsControlsRow(
   return [row];
 }
 
-function buildEmbeds(rows: AccountRow[]): EmbedBuilder[] {
+function buildEmbeds(
+  rows: AccountRow[],
+  townHallEmojiByLevel: AccountDisplayEmojiMap,
+): EmbedBuilder[] {
   const groups = buildGroups(rows);
-  const pages = buildPages(groups);
+  const pages = buildPages(groups, townHallEmojiByLevel);
   return pages.map((description, index) =>
     new EmbedBuilder()
       .setTitle(`My Accounts by Clan (${rows.length})`)
@@ -483,7 +669,7 @@ export const Accounts: Command = {
     },
   ],
   run: async (
-    _client: Client,
+    client: Client,
     interaction: ChatInputCommandInteraction,
     cocService: unknown
   ) => {
@@ -550,12 +736,13 @@ export const Accounts: Command = {
         .map((link) => [normalizeTag(link.playerTag), sanitizeDisplayText(link.linkedName)] as const)
         .filter((entry): entry is [string, string] => Boolean(entry[0] && entry[1]))
     );
+    const townHallEmojiByLevel = await resolveTownHallEmojiMap(client);
     const rows = await buildAccountsRows({
       guildId,
       linkedNameByTag,
       tags: uniqueTags,
     });
-    const embeds = buildEmbeds(rows);
+    const embeds = buildEmbeds(rows, townHallEmojiByLevel);
     for (const embed of embeds) {
       embed.setTitle(`Accounts by Clan (${rows.length})`);
     }
@@ -608,7 +795,7 @@ export const Accounts: Command = {
               linkedNameByTag,
               tags: uniqueTags,
             });
-            const refreshedEmbeds = buildEmbeds(refreshedRows);
+            const refreshedEmbeds = buildEmbeds(refreshedRows, townHallEmojiByLevel);
             for (const embed of refreshedEmbeds) {
               embed.setTitle(`Accounts by Clan (${refreshedRows.length})`);
             }

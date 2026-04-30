@@ -355,14 +355,14 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     ],
   },
   accounts: {
-    summary: "List linked player accounts grouped by their current clan.",
+    summary: "List linked player accounts grouped by their current clan, with tracked FWA clans first.",
     details: [
       "Default behavior lists accounts linked to your Discord account.",
       "If `discord-id` is provided, lists accounts for that Discord user.",
       "If `tag` is provided, resolves linked Discord ID from local PlayerLink, then lists that user's accounts.",
       "Only one of `tag` or `discord-id` can be provided.",
       "Runtime link resolution is local-only from `PlayerLink`.",
-      "Account display uses persisted local data only.",
+      "Account display uses persisted local data only, with TH badges, crowns for leaders/co-leaders, and compact FWA weights when available.",
       "Set `visibility:public` to post the response directly in channel.",
     ],
     examples: [
