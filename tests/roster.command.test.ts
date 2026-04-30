@@ -3166,6 +3166,26 @@ describe("/roster command", () => {
       { name: "Delta (#VJQ28888)", value: "#VJQ28888" },
     ]);
 
+    const selectedUserAddInteraction = makeAutocompleteInteraction({
+      focusedName: "players",
+      focusedValue: "del",
+      subcommand: "manage",
+      roster: "roster-1",
+      action: "add",
+      userId: "222222222222222222",
+    }) as any;
+    vi.spyOn(playerLinkService, "listPlayerLinksForDiscordUser").mockResolvedValueOnce([
+      { playerTag: "#VJQ28888", linkedAt: new Date("2026-04-03T00:00:00.000Z"), linkedName: "Delta" },
+      { playerTag: "#PYLQ0289", linkedAt: new Date("2026-04-01T00:00:00.000Z"), linkedName: "Alpha Prime" },
+    ] as any);
+    await Roster.autocomplete(selectedUserAddInteraction);
+    expect(playerLinkService.listPlayerLinksForDiscordUser).toHaveBeenCalledWith({
+      discordUserId: "222222222222222222",
+    });
+    expect(selectedUserAddInteraction.respond).toHaveBeenCalledWith([
+      { name: "Delta (#VJQ28888)", value: "#VJQ28888" },
+    ]);
+
     const changeTargetInteraction = makeAutocompleteInteraction({
       focusedName: "target_roster",
       focusedValue: "",
