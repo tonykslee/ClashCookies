@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ReminderType } from "@prisma/client";
+import { ReminderDispatchStatus, ReminderType } from "@prisma/client";
 
 const prismaMock = vi.hoisted(() => ({
   reminder: {
@@ -7,10 +7,13 @@ const prismaMock = vi.hoisted(() => ({
   },
   reminderFireLog: {
     create: vi.fn(),
+    findUnique: vi.fn(),
+    updateMany: vi.fn(),
     update: vi.fn(),
   },
   currentWar: {
     findMany: vi.fn(),
+    findFirst: vi.fn(),
   },
   todoPlayerSnapshot: {
     findMany: vi.fn(),
@@ -68,6 +71,8 @@ function setTodoSnapshotRows(input: {
 describe("ReminderSchedulerService v1 trigger semantics", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    prismaMock.reminderFireLog.findUnique.mockResolvedValue(null);
+    prismaMock.reminderFireLog.updateMany.mockResolvedValue({ count: 0 });
     prismaMock.reminderFireLog.update.mockResolvedValue({});
     prismaMock.currentWar.findMany.mockResolvedValue([]);
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
@@ -690,5 +695,427 @@ describe("ReminderSchedulerService v1 trigger semantics", () => {
       failed: 0,
     });
     expect(dispatch.dispatchReminder).toHaveBeenCalledTimes(1);
+  });
+});
+
+type SchedulerFireLogRecord = {
+  id: string;
+  dedupeKey: string;
+  dispatchStatus: ReminderDispatchStatus;
+  errorMessage: string | null;
+  messageId: string | null;
+  dispatchedAt: Date;
+};
+
+function installReminderFireLogStore() {
+  const byId = new Map<string, SchedulerFireLogRecord>();
+  const byDedupeKey = new Map<string, SchedulerFireLogRecord>();
+  let nextId = 1;
+
+  prismaMock.reminderFireLog.create.mockImplementation(async ({ data }: any) => {
+    const dedupeKey = String(data?.dedupeKey ?? "");
+    if (byDedupeKey.has(dedupeKey)) {
+      throw { code: "P2002" };
+    }
+    const record: SchedulerFireLogRecord = {
+      id: `fire-${nextId++}`,
+      dedupeKey,
+      dispatchStatus: ReminderDispatchStatus.FAILED,
+      errorMessage: null,
+      messageId: null,
+      dispatchedAt: new Date(),
+    };
+    byId.set(record.id, record);
+    byDedupeKey.set(record.dedupeKey, record);
+    return { id: record.id };
+  });
+  prismaMock.reminderFireLog.findUnique.mockImplementation(async ({ where }: any) => {
+    const record = byDedupeKey.get(String(where?.dedupeKey ?? ""));
+    if (!record) return null;
+    return {
+      id: record.id,
+      dispatchStatus: record.dispatchStatus,
+      errorMessage: record.errorMessage,
+    };
+  });
+  prismaMock.reminderFireLog.updateMany.mockImplementation(async ({ where, data }: any) => {
+    const record = byId.get(String(where?.id ?? ""));
+    if (
+      !record ||
+      String(where?.dedupeKey ?? "") !== record.dedupeKey ||
+      String(where?.dispatchStatus ?? "") !== record.dispatchStatus ||
+      String(where?.errorMessage ?? "") !== String(record.errorMessage ?? "")
+    ) {
+      return { count: 0 };
+    }
+    if (Object.prototype.hasOwnProperty.call(data ?? {}, "errorMessage")) {
+      record.errorMessage = data.errorMessage ?? null;
+    }
+    return { count: 1 };
+  });
+  prismaMock.reminderFireLog.update.mockImplementation(async ({ where, data }: any) => {
+    const record = byId.get(String(where?.id ?? ""));
+    if (!record) return {};
+    if (Object.prototype.hasOwnProperty.call(data ?? {}, "dispatchStatus")) {
+      record.dispatchStatus = data.dispatchStatus;
+    }
+    if (Object.prototype.hasOwnProperty.call(data ?? {}, "errorMessage")) {
+      record.errorMessage = data.errorMessage ?? null;
+    }
+    if (Object.prototype.hasOwnProperty.call(data ?? {}, "messageId")) {
+      record.messageId = data.messageId ?? null;
+    }
+    if (Object.prototype.hasOwnProperty.call(data ?? {}, "dispatchedAt")) {
+      record.dispatchedAt = data.dispatchedAt ?? record.dispatchedAt;
+    }
+    return {};
+  });
+
+  return {
+    byId,
+    byDedupeKey,
+  };
+}
+
+describe("ReminderSchedulerService retryable 24h WAR reminder dispatch", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    prismaMock.reminderFireLog.findUnique.mockResolvedValue(null);
+    prismaMock.reminderFireLog.updateMany.mockResolvedValue({ count: 0 });
+    prismaMock.reminderFireLog.update.mockResolvedValue({});
+    prismaMock.currentWar.findMany.mockResolvedValue([]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    setTodoSnapshotRows({});
+  });
+
+  it("retries a failed 24h WAR_CWL attack_window_not_active reminder while battle day becomes active", async () => {
+    const nowMs = Date.parse("2026-04-29T13:01:38.901Z");
+    const eventEndsAt = new Date(nowMs + 24 * 60 * 60 * 1000);
+    const reminder = {
+      id: "rem-war",
+      guildId: "guild-1",
+      channelId: "channel-war",
+      type: ReminderType.WAR_CWL,
+      isEnabled: true,
+      createdAt: new Date("2026-04-28T00:00:00.000Z"),
+      times: [{ offsetSeconds: 24 * 60 * 60 }],
+      targetClans: [{ clanTag: "#R80L8VYG", clanType: "FWA" }],
+    };
+    prismaMock.reminder.findMany.mockResolvedValue([reminder]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#R80L8VYG", name: "Tracked Clan" }]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#R80L8VYG",
+        clanName: "Tracked Clan",
+        warId: 1000267,
+        state: "preparation",
+        startTime: new Date("2026-04-28T14:03:35.852Z"),
+        endTime: eventEndsAt,
+        updatedAt: new Date(nowMs),
+      },
+    ]);
+    let currentWarState: "preparation" | "inWar" = "preparation";
+    prismaMock.currentWar.findFirst.mockImplementation(async () => ({
+      clanTag: "#R80L8VYG",
+      clanName: "Tracked Clan",
+      warId: 1000267,
+      state: currentWarState,
+      startTime: new Date("2026-04-28T14:03:35.852Z"),
+      endTime: eventEndsAt,
+      updatedAt: new Date(nowMs),
+    } as any));
+
+    const fireLogs = installReminderFireLogStore();
+    const dispatch = {
+      dispatchReminder: vi
+        .fn()
+        .mockResolvedValueOnce({
+          status: "failed",
+          errorMessage: "attack_window_not_active",
+        })
+        .mockResolvedValueOnce({
+          status: "sent",
+          messageId: "msg-retry",
+        }),
+    };
+
+    const firstCounts = await runReminderSchedulerCycle({
+      client: {} as any,
+      dispatch: dispatch as any,
+      nowMs,
+      intervalMs: 60_000,
+    });
+
+    currentWarState = "inWar";
+    const secondCounts = await runReminderSchedulerCycle({
+      client: {} as any,
+      dispatch: dispatch as any,
+      nowMs: nowMs + 90_000,
+      intervalMs: 60_000,
+    });
+    const thirdCounts = await runReminderSchedulerCycle({
+      client: {} as any,
+      dispatch: dispatch as any,
+      nowMs: nowMs + 150_000,
+      intervalMs: 60_000,
+    });
+
+    expect(firstCounts).toEqual({
+      evaluated: 1,
+      fired: 0,
+      deduped: 0,
+      failed: 1,
+    });
+    expect(secondCounts).toEqual({
+      evaluated: 1,
+      fired: 1,
+      deduped: 0,
+      failed: 0,
+    });
+    expect(thirdCounts).toEqual({
+      evaluated: 1,
+      fired: 0,
+      deduped: 0,
+      failed: 0,
+    });
+    expect(dispatch.dispatchReminder).toHaveBeenCalledTimes(2);
+    expect(prismaMock.reminderFireLog.create).toHaveBeenCalledTimes(1);
+    expect(prismaMock.reminderFireLog.updateMany).toHaveBeenCalledTimes(1);
+    expect(fireLogs.byDedupeKey.size).toBe(1);
+    expect(fireLogs.byId.values().next().value).toMatchObject({
+      dispatchStatus: ReminderDispatchStatus.SENT,
+      messageId: "msg-retry",
+      errorMessage: null,
+    });
+  });
+
+  it("does not retry a 12h attack_window_not_active reminder", async () => {
+    const nowMs = Date.parse("2026-04-29T01:01:38.901Z");
+    const eventEndsAt = new Date(nowMs + 12 * 60 * 60 * 1000);
+    const reminder = {
+      id: "rem-war",
+      guildId: "guild-1",
+      channelId: "channel-war",
+      type: ReminderType.WAR_CWL,
+      isEnabled: true,
+      createdAt: new Date("2026-04-28T00:00:00.000Z"),
+      times: [{ offsetSeconds: 12 * 60 * 60 }],
+      targetClans: [{ clanTag: "#R80L8VYG", clanType: "FWA" }],
+    };
+    prismaMock.reminder.findMany.mockResolvedValue([reminder]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#R80L8VYG", name: "Tracked Clan" }]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#R80L8VYG",
+        clanName: "Tracked Clan",
+        warId: 1000268,
+        state: "preparation",
+        startTime: new Date("2026-04-28T14:03:35.852Z"),
+        endTime: eventEndsAt,
+        updatedAt: new Date(nowMs),
+      },
+    ]);
+    prismaMock.currentWar.findFirst.mockResolvedValue({
+      clanTag: "#R80L8VYG",
+      clanName: "Tracked Clan",
+      warId: 1000268,
+      state: "inWar",
+      startTime: new Date("2026-04-28T14:03:35.852Z"),
+      endTime: eventEndsAt,
+      updatedAt: new Date(nowMs),
+    });
+    installReminderFireLogStore();
+    const dispatch = {
+      dispatchReminder: vi
+        .fn()
+        .mockResolvedValueOnce({
+          status: "failed",
+          errorMessage: "attack_window_not_active",
+        })
+        .mockResolvedValueOnce({
+          status: "sent",
+          messageId: "msg-should-not-send",
+        }),
+    };
+
+    const firstCounts = await runReminderSchedulerCycle({
+      client: {} as any,
+      dispatch: dispatch as any,
+      nowMs,
+      intervalMs: 60_000,
+    });
+    const secondCounts = await runReminderSchedulerCycle({
+      client: {} as any,
+      dispatch: dispatch as any,
+      nowMs: nowMs + 90_000,
+      intervalMs: 60_000,
+    });
+
+    expect(firstCounts).toEqual({
+      evaluated: 1,
+      fired: 0,
+      deduped: 0,
+      failed: 1,
+    });
+    expect(secondCounts).toEqual({
+      evaluated: 1,
+      fired: 0,
+      deduped: 1,
+      failed: 0,
+    });
+    expect(dispatch.dispatchReminder).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry a channel failure for a 24h WAR_CWL reminder", async () => {
+    const nowMs = Date.parse("2026-04-29T13:01:38.901Z");
+    const eventEndsAt = new Date(nowMs + 24 * 60 * 60 * 1000);
+    const reminder = {
+      id: "rem-war",
+      guildId: "guild-1",
+      channelId: "channel-war",
+      type: ReminderType.WAR_CWL,
+      isEnabled: true,
+      createdAt: new Date("2026-04-28T00:00:00.000Z"),
+      times: [{ offsetSeconds: 24 * 60 * 60 }],
+      targetClans: [{ clanTag: "#R80L8VYG", clanType: "FWA" }],
+    };
+    prismaMock.reminder.findMany.mockResolvedValue([reminder]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#R80L8VYG", name: "Tracked Clan" }]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#R80L8VYG",
+        clanName: "Tracked Clan",
+        warId: 1000267,
+        state: "preparation",
+        startTime: new Date("2026-04-28T14:03:35.852Z"),
+        endTime: eventEndsAt,
+        updatedAt: new Date(nowMs),
+      },
+    ]);
+    prismaMock.currentWar.findFirst.mockResolvedValue({
+      clanTag: "#R80L8VYG",
+      clanName: "Tracked Clan",
+      warId: 1000267,
+      state: "inWar",
+      startTime: new Date("2026-04-28T14:03:35.852Z"),
+      endTime: eventEndsAt,
+      updatedAt: new Date(nowMs),
+    });
+    installReminderFireLogStore();
+    const dispatch = {
+      dispatchReminder: vi
+        .fn()
+        .mockResolvedValueOnce({
+          status: "failed",
+          errorMessage: "channel_unavailable_or_not_text_based",
+        })
+        .mockResolvedValueOnce({
+          status: "sent",
+          messageId: "msg-should-not-send",
+        }),
+    };
+
+    const firstCounts = await runReminderSchedulerCycle({
+      client: {} as any,
+      dispatch: dispatch as any,
+      nowMs,
+      intervalMs: 60_000,
+    });
+    const secondCounts = await runReminderSchedulerCycle({
+      client: {} as any,
+      dispatch: dispatch as any,
+      nowMs: nowMs + 90_000,
+      intervalMs: 60_000,
+    });
+
+    expect(firstCounts).toEqual({
+      evaluated: 1,
+      fired: 0,
+      deduped: 0,
+      failed: 1,
+    });
+    expect(secondCounts).toEqual({
+      evaluated: 1,
+      fired: 0,
+      deduped: 1,
+      failed: 0,
+    });
+    expect(dispatch.dispatchReminder).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops retrying a 24h WAR_CWL attack_window_not_active reminder after the retry window expires", async () => {
+    const nowMs = Date.parse("2026-04-29T13:01:38.901Z");
+    const eventEndsAt = new Date(nowMs + 24 * 60 * 60 * 1000);
+    const reminder = {
+      id: "rem-war",
+      guildId: "guild-1",
+      channelId: "channel-war",
+      type: ReminderType.WAR_CWL,
+      isEnabled: true,
+      createdAt: new Date("2026-04-28T00:00:00.000Z"),
+      times: [{ offsetSeconds: 24 * 60 * 60 }],
+      targetClans: [{ clanTag: "#R80L8VYG", clanType: "FWA" }],
+    };
+    prismaMock.reminder.findMany.mockResolvedValue([reminder]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#R80L8VYG", name: "Tracked Clan" }]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#R80L8VYG",
+        clanName: "Tracked Clan",
+        warId: 1000267,
+        state: "preparation",
+        startTime: new Date("2026-04-28T14:03:35.852Z"),
+        endTime: eventEndsAt,
+        updatedAt: new Date(nowMs),
+      },
+    ]);
+    prismaMock.currentWar.findFirst.mockResolvedValue({
+      clanTag: "#R80L8VYG",
+      clanName: "Tracked Clan",
+      warId: 1000267,
+      state: "inWar",
+      startTime: new Date("2026-04-28T14:03:35.852Z"),
+      endTime: eventEndsAt,
+      updatedAt: new Date(nowMs),
+    });
+    const fireLogs = installReminderFireLogStore();
+    const dispatch = {
+      dispatchReminder: vi.fn().mockResolvedValue({
+        status: "failed",
+        errorMessage: "attack_window_not_active",
+      }),
+    };
+
+    const firstCounts = await runReminderSchedulerCycle({
+      client: {} as any,
+      dispatch: dispatch as any,
+      nowMs,
+      intervalMs: 60_000,
+    });
+    const secondCounts = await runReminderSchedulerCycle({
+      client: {} as any,
+      dispatch: dispatch as any,
+      nowMs: nowMs + 16 * 60 * 1000,
+      intervalMs: 60_000,
+    });
+
+    expect(firstCounts).toEqual({
+      evaluated: 1,
+      fired: 0,
+      deduped: 0,
+      failed: 1,
+    });
+    expect(secondCounts).toEqual({
+      evaluated: 1,
+      fired: 0,
+      deduped: 0,
+      failed: 0,
+    });
+    expect(dispatch.dispatchReminder).toHaveBeenCalledTimes(1);
+    expect(fireLogs.byId.values().next().value).toMatchObject({
+      dispatchStatus: ReminderDispatchStatus.FAILED,
+      errorMessage: "attack_window_not_active",
+    });
   });
 });
