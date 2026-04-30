@@ -2128,7 +2128,7 @@ async function handleRotationCreateSubcommand(interaction: ChatInputCommandInter
   }
   if (result.outcome === "blocked_existing") {
     await interaction.editReply(
-      `An active CWL rotation plan already exists for ${result.clanTag} in ${result.season} (version ${result.existingVersion}). Re-run with overwrite:true to replace it.`,
+      `A CWL rotation plan already exists for ${result.clanTag} this season. Use overwrite:true to replace version ${result.existingVersion}.`,
     );
     return;
   }

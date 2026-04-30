@@ -985,6 +985,32 @@ describe("/cwl command", () => {
     expect(getDescription(interaction)).toContain("Could not reach 5 planned CWL days");
   });
 
+  it("returns the blocked-existing message for /cwl rotations create without roster", async () => {
+    vi.spyOn(cwlRotationService, "createPlan").mockResolvedValue({
+      outcome: "blocked_existing",
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      existingVersion: 4,
+    });
+    const interaction = makeInteraction({
+      group: "rotations",
+      subcommand: "create",
+      clan: "#2QG2C08UP",
+      overwrite: false,
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    expect(cwlRotationService.createPlan).toHaveBeenCalledWith({
+      clanTag: "#2QG2C08UP",
+      excludeTagsRaw: null,
+      overwrite: false,
+    });
+    expect(String(interaction.editReply.mock.calls.at(-1)?.[0] ?? "")).toBe(
+      "A CWL rotation plan already exists for #2QG2C08UP this season. Use overwrite:true to replace version 4.",
+    );
+  });
+
   it("renders roster-backed created-plan output with source and warnings for /cwl rotations create", async () => {
     vi.spyOn(cwlRotationService, "createPlanFromRoster").mockResolvedValue({
       outcome: "created",
@@ -1017,6 +1043,36 @@ describe("/cwl command", () => {
     expect(getDescription(interaction)).toContain("Source: CWL roster - CWL Alpha roster");
     expect(getDescription(interaction)).toContain("Version: 3");
     expect(getDescription(interaction)).toContain("Missing Town Hall data for confirmed roster players");
+  });
+
+  it("returns the blocked-existing message for roster-backed /cwl rotations create", async () => {
+    vi.spyOn(cwlRotationService, "createPlanFromRoster").mockResolvedValue({
+      outcome: "blocked_existing",
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      rosterId: "roster-1",
+      rosterTitle: "CWL Alpha roster",
+      existingVersion: 6,
+    });
+    const interaction = makeInteraction({
+      group: "rotations",
+      subcommand: "create",
+      clan: "#2QG2C08UP",
+      roster: "roster-1",
+      overwrite: false,
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    expect(cwlRotationService.createPlanFromRoster).toHaveBeenCalledWith({
+      clanTag: "#2QG2C08UP",
+      rosterId: "roster-1",
+      guildId: "guild-1",
+      overwrite: false,
+    });
+    expect(String(interaction.editReply.mock.calls.at(-1)?.[0] ?? "")).toBe(
+      "A CWL rotation plan already exists for #2QG2C08UP this season. Use overwrite:true to replace version 6.",
+    );
   });
 
   it.each([
